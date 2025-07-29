@@ -43,19 +43,19 @@ jobs:
     - name: 🔧 安装代码检查工具
       run: |
         # 检查是否已有预装版本
-        if command -v clang-format-14 &> /dev/null; then
-          echo "✅ clang-format-14 已预装"
+        if command -v clang-format &> /dev/null; then
+          echo "✅ clang-format 已预装"
         else
-          echo "安装 clang-format-14..."
+          echo "安装 clang-format..."
           sudo apt-get update -qq
-          sudo apt-get install -y clang-format-14
+          sudo apt-get install -y clang-format
         fi
         
-        if command -v clang-tidy-14 &> /dev/null; then
-          echo "✅ clang-tidy-14 已预装"
+        if command -v clang-tidy &> /dev/null; then
+          echo "✅ clang-tidy 已预装"
         else
-          echo "安装 clang-tidy-14..."
-          sudo apt-get install -y clang-tidy-14
+          echo "安装 clang-tidy..."
+          sudo apt-get install -y clang-tidy
         fi
         
         # 检查 cmake-format 是否已安装
@@ -73,9 +73,9 @@ jobs:
         # 使用并行处理加速检查
         find include src -name "*.hpp" -o -name "*.cpp" | \
         xargs -P $(nproc) -I {} sh -c '
-          if ! clang-format-14 --dry-run --Werror "{}" > /dev/null 2>&1; then
+          if ! clang-format --dry-run --Werror "{}" > /dev/null 2>&1; then
             echo "❌ 格式错误: {}"
-            clang-format-14 --dry-run --Werror "{}" 2>&1
+            clang-format --dry-run --Werror "{}" 2>&1
             exit 1
           else
             echo "✅ 格式正确: {}"
@@ -104,14 +104,14 @@ jobs:
         # 仅为 clang-tidy 创建最小配置
         cmake -B build_tidy \
           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-          -DCMAKE_CXX_COMPILER=clang++-14 \
-          -DCMAKE_C_COMPILER=clang-14
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_C_COMPILER=clang
         
         # 并行检查关键文件，限制数量避免超时
         find include src -name "*.cpp" -o -name "*.hpp" | head -20 | \
         xargs -P 4 -I {} sh -c '
           echo "🔍 检查: {}"
-          if ! timeout 30s clang-tidy-14 -p build_tidy "{}" --quiet 2>/dev/null; then
+          if ! timeout 30s clang-tidy -p build_tidy "{}" --quiet 2>/dev/null; then
             echo "⚠️  静态分析发现问题: {}"
             # 继续检查其他文件
           fi
