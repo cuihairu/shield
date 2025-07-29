@@ -48,8 +48,7 @@
             "name": "grpc"
         },
         {
-            "name": "etcd-cpp-apiv3",
-            "features": ["async"]
+            "name": "etcd-cpp-apiv3"
         },
         {
             "name": "cpprestsdk",
@@ -59,7 +58,6 @@
             "name": "msgpack"
         }
     ],
-    "builtin-baseline": "f7423ee180c4b7f40d43402c2feb3859161ef625",
     "supports": "!uwp",
     "overrides": [
     ]

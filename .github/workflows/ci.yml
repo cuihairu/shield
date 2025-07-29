@@ -155,14 +155,18 @@ jobs:
       with:
         submodules: recursive
 
-    # Linux 依赖安装
-    - name: 🔧 安装构建依赖 (Linux)
+    # Linux dependencies installation
+    - name: 🔧 Install build dependencies (Linux)
       if: matrix.platform == 'linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential cmake ninja-build pkg-config curl zip unzip tar git
         
-        # 安装特定编译器
+        # Verify ninja installation
+        ninja --version
+        which ninja
+        
+        # Install specific compiler
         if [[ "${{ matrix.compiler }}" == "gcc-11" ]]; then
           sudo apt-get install -y gcc-11 g++-11
           echo "CC=gcc-11" >> $GITHUB_ENV
@@ -173,10 +177,13 @@ jobs:
           echo "CXX=clang++-14" >> $GITHUB_ENV
         fi
 
-    # macOS 依赖安装
-    - name: 🔧 安装构建依赖 (macOS)
+    # macOS dependencies installation
+    - name: 🔧 Install build dependencies (macOS)
       if: matrix.platform == 'macos'
       run: |
+        # Update Homebrew first
+        brew update
+        # Install required tools
         brew install cmake ninja pkg-config
 
     # Windows 环境配置
@@ -230,6 +237,14 @@ jobs:
         restore-keys: |
           vcpkg-legacy-${{ matrix.platform }}-
 
+        # Clear any cached vcpkg state to ensure fresh dependency resolution
+        - name: 🧹 Clear vcpkg cache
+          shell: bash
+          run: |
+            rm -rf "${{ github.workspace }}/build" || true
+            rm -rf "${{ github.workspace }}/vcpkg_installed" || true
+            echo "Cleared local vcpkg cache"
+            
     # Set vcpkg environment variables
     - name: 🔧 Set vcpkg environment
       shell: bash
@@ -245,46 +260,75 @@ jobs:
 
     # CMake configure with retry
     - name: 🏗️ Configure CMake
-      uses: nick-invision/retry@v2
-      with:
-        timeout_minutes: 20
-        max_attempts: 3
-        retry_on: error
-        command: |
-          echo "VCPKG_ROOT: ${VCPKG_ROOT}"
-          echo "Build type: ${{ matrix.build_type }}"
+      shell: bash
+      run: |
+        echo "VCPKG_ROOT: ${VCPKG_ROOT}"
+        echo "Build type: ${{ matrix.build_type }}"
+        
+        # Retry logic with exponential backoff
+        for attempt in 1 2 3; do
+          echo "Configuration attempt $attempt..."
           
           if [ "${{ matrix.platform }}" = "windows" ]; then
-            cmake -B build \
+            if cmake -B build \
               -G "${{ env.VS_GENERATOR }}" -A "${{ env.VS_PLATFORM }}" \
               -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
               -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
               -DSHIELD_BUILD_TESTS=ON \
-              -DSHIELD_BUILD_EXAMPLES=ON
+              -DSHIELD_BUILD_EXAMPLES=ON; then
+              echo "✅ Configuration successful on attempt $attempt"
+              break
+            fi
           else
-            cmake -B build \
+            if cmake -B build \
               -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
               -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
               -DSHIELD_BUILD_TESTS=ON \
               -DSHIELD_BUILD_EXAMPLES=ON \
-              -G Ninja
+              -G Ninja; then
+              echo "✅ Configuration successful on attempt $attempt"
+              break
+            fi
           fi
+          
+          if [ $attempt -lt 3 ]; then
+            echo "⚠️ Configuration failed, retrying in $((attempt * 10)) seconds..."
+            sleep $((attempt * 10))
+          else
+            echo "❌ Configuration failed after 3 attempts"
+            exit 1
+          fi
+        done
 
     # Build project with retry
     - name: 🔨 Build project
-      uses: nick-invision/retry@v2
-      with:
-        timeout_minutes: 30
-        max_attempts: 2
-        retry_on: error
-        command: |
+      shell: bash
+      run: |
+        # Retry logic for build
+        for attempt in 1 2; do
+          echo "Build attempt $attempt..."
+          
           if [ "${{ matrix.platform }}" = "linux" ]; then
-            cmake --build build --config ${{ matrix.build_type }} --parallel $(nproc)
+            BUILD_CMD="cmake --build build --config ${{ matrix.build_type }} --parallel $(nproc)"
           elif [ "${{ matrix.platform }}" = "macos" ]; then
-            cmake --build build --config ${{ matrix.build_type }} --parallel $(sysctl -n hw.logicalcpu)
+            BUILD_CMD="cmake --build build --config ${{ matrix.build_type }} --parallel $(sysctl -n hw.logicalcpu)"
           else
-            cmake --build build --config ${{ matrix.build_type }} --parallel
+            BUILD_CMD="cmake --build build --config ${{ matrix.build_type }} --parallel"
           fi
+          
+          if eval "$BUILD_CMD"; then
+            echo "✅ Build successful on attempt $attempt"
+            break
+          else
+            if [ $attempt -lt 2 ]; then
+              echo "⚠️ Build failed, retrying in 30 seconds..."
+              sleep 30
+            else
+              echo "❌ Build failed after 2 attempts"
+              exit 1
+            fi
+          fi
+        done
 
     # 运行测试
     - name: 🧪 运行测试
