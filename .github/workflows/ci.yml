@@ -42,21 +42,15 @@ jobs:
     # 批量安装所有需要的工具
     - name: 🔧 安装代码检查工具
       run: |
-        # 检查是否已有预装版本
-        if command -v clang-format &> /dev/null; then
-          echo "✅ clang-format 已预装"
-        else
-          echo "安装 clang-format..."
-          sudo apt-get update -qq
-          sudo apt-get install -y clang-format
-        fi
+        # 安装指定版本的 clang-format 以确保一致性
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+        sudo apt-get update -qq
+        sudo apt-get install -y clang-format-18 clang-tidy-18
         
-        if command -v clang-tidy &> /dev/null; then
-          echo "✅ clang-tidy 已预装"
-        else
-          echo "安装 clang-tidy..."
-          sudo apt-get install -y clang-tidy
-        fi
+        # 创建符号链接确保使用一致版本
+        sudo ln -sf /usr/bin/clang-format-18 /usr/local/bin/clang-format
+        sudo ln -sf /usr/bin/clang-tidy-18 /usr/local/bin/clang-tidy
         
         # 检查 cmake-format 是否已安装
         if command -v cmake-format &> /dev/null; then
@@ -69,7 +63,8 @@ jobs:
         
     - name: 🔍 C++ 代码格式检查
       run: |
-        echo "检查 C++ 代码格式..."
+        echo "检查 C++ 代码格式 (使用 clang-format-18)..."
+        clang-format --version
         # 使用并行处理加速检查
         find include src -name "*.hpp" -o -name "*.cpp" | \
         xargs -P $(nproc) -I {} sh -c '
