@@ -8,8 +8,5 @@
 # add_executable(distributed_actor_demo distributed_actor_demo.cpp)
 # target_link_libraries(distributed_actor_demo PRIVATE shield_core)
 
-# Set output directory for examples
-# set_target_properties(distributed_actor_demo
-#     PROPERTIES
-#     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples
-# )
+# Set output directory for examples set_target_properties(distributed_actor_demo
+# PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/examples )

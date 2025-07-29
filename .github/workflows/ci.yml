@@ -81,7 +81,8 @@ jobs:
     - name: 🔍 CMake 格式检查
       run: |
         echo "检查 CMake 文件格式..."
-        find . -name "CMakeLists.txt" -o -name "*.cmake" | \
+        # 只检查项目源码中的 CMake 文件，排除构建目录和第三方依赖
+        find . -name "CMakeLists.txt" -not -path "./build*" -not -path "./vcpkg*" -not -path "./CMakeFiles*" | \
         xargs -P $(nproc) -I {} sh -c '
           if ! cmake-format --check "{}" > /dev/null 2>&1; then
             echo "❌ CMake 格式错误: {}"
