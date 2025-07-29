@@ -237,14 +237,13 @@ jobs:
         restore-keys: |
           vcpkg-legacy-${{ matrix.platform }}-
 
-        # Clear any cached vcpkg state to ensure fresh dependency resolution
-        - name: 🧹 Clear vcpkg cache
-          shell: bash
-          run: |
-            rm -rf "${{ github.workspace }}/build" || true
-            rm -rf "${{ github.workspace }}/vcpkg_installed" || true
-            echo "Cleared local vcpkg cache"
-            
+    # Clear any cached vcpkg state to ensure fresh dependency resolution
+    - name: 🧹 Clear vcpkg cache
+      shell: bash
+      run: |
+        rm -rf "${{ github.workspace }}/build" || true
+        rm -rf "${{ github.workspace }}/vcpkg_installed" || true
+        echo "Cleared local vcpkg cache"
     # Set vcpkg environment variables
     - name: 🔧 Set vcpkg environment
       shell: bash
