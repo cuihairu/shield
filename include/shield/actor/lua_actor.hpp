@@ -4,6 +4,7 @@
 #include "shield/script/lua_vm_pool.hpp"
 #include "shield/core/logger.hpp"
 #include "caf/event_based_actor.hpp"
+#include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -49,6 +50,21 @@ struct LuaResponse {
         return f.object(x).fields(f.field("success", x.success),
                                   f.field("data", x.data),
                                   f.field("error_message", x.error_message));
+    }
+    
+    // JSON serialization support (nlohmann::json ADL)
+    friend void to_json(nlohmann::json& j, const LuaResponse& r) {
+        j = nlohmann::json{
+            {"success", r.success},
+            {"data", r.data},
+            {"error_message", r.error_message}
+        };
+    }
+    
+    friend void from_json(const nlohmann::json& j, LuaResponse& r) {
+        j.at("success").get_to(r.success);
+        j.at("data").get_to(r.data);
+        j.at("error_message").get_to(r.error_message);
     }
 };
 

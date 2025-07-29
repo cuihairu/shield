@@ -34,7 +34,7 @@ Shield supports multiple network protocols out of the box:
 - High-throughput binary protocol support
 - Connection pooling and load balancing
 
-### UDP Protocol (New!)
+### UDP Protocol
 - Connectionless packet processing with session tracking
 - Automatic session timeout and cleanup
 - Multi-threaded packet handling

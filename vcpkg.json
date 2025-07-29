@@ -54,6 +54,9 @@
         {
             "name": "cpprestsdk",
             "features": ["compression"]
+        },
+        {
+            "name": "msgpack"
         }
     ],
     "builtin-baseline": "4002e3abc6d3e468c73d2d9777a7dd96af5dc224",

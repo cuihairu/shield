@@ -3,6 +3,7 @@
 #include "shield/core/config.hpp"
 #include "shield/actor/lua_actor.hpp"
 #include "shield/caf_type_ids.hpp"
+#include "shield/serialization/json_universal_serializer.hpp"
 
 namespace shield::gateway {
 
@@ -329,8 +330,8 @@ void GatewayComponent::handle_lua_actor_response(uint64_t session_id, const acto
     }
     
     try {
-        // Serialize LuaResponse to JSON
-        std::string json_response = serialization::JsonSerializer::serialize(response);
+        // Serialize LuaResponse to JSON using convenience function
+        std::string json_response = shield::serialization::to_json_string(response);
         
         // Encode the JSON response using binary protocol
         auto encoded_response = protocol::BinaryProtocol::encode(json_response);

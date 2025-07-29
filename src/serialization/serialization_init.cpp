@@ -1,19 +1,33 @@
-#include "shield/serialization/serializer.hpp"
-#include "shield/serialization/json_serializer_new.hpp"
+#include "shield/serialization/universal_serialization_system.hpp"
 #include "shield/core/logger.hpp"
 
 namespace shield::serialization {
 
-// Initialize the serialization system with built-in serializers
+// Initialize the serialization system with universal serializers
 void initialize_serialization_system() {
-    auto& registry = SerializerRegistry::instance();
+    SHIELD_LOG_INFO << "Initializing universal serialization system...";
     
-    // Register JSON serializer
-    registry.register_serializer(SerializationFormat::JSON, create_json_serializer());
+    // Configure serialization options
+    SerializationConfig config;
+    config.enable_json = true;
+    config.enable_protobuf = true;
+    config.enable_messagepack = true;
+    config.enable_sproto = false;  // Not implemented yet
+    config.default_format = SerializationFormat::JSON;
+    config.enable_auto_format_detection = true;
     
-    SHIELD_LOG_INFO << "Serialization system initialized with JSON support";
+    // Initialize the universal serialization system
+    initialize_universal_serialization_system(config);
     
-    // TODO: Add other serializers (Binary, Protobuf, MessagePack) as they are implemented
+    SHIELD_LOG_INFO << "Universal serialization system initialized successfully";
+    
+    // Log available formats
+    auto& system = UniversalSerializationSystem::instance();
+    auto available_formats = system.get_available_formats();
+    SHIELD_LOG_INFO << "Available serialization formats: ";
+    for (const auto& format : available_formats) {
+        SHIELD_LOG_INFO << "  - " << format;
+    }
 }
 
 } // namespace shield::serialization

@@ -7,10 +7,12 @@
 #include "shield/protocol/protocol_handler.hpp"
 #include "shield/protocol/http_handler.hpp"
 #include "shield/protocol/websocket_handler.hpp"
+#include "shield/script/lua_vm_pool.hpp"
+#include "shield/actor/lua_actor.hpp"
 #include <memory>
 #include <chrono>
 #include "shield/protocol/binary_protocol.hpp"
-#include "shield/serialization/json_serializer.hpp"
+#include "shield/serialization/universal_serializer.hpp"
 
 namespace shield::gateway {
 

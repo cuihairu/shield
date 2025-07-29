@@ -19,7 +19,7 @@
 #include "shield/actor/distributed_actor_system.hpp"
 #include "shield/discovery/local_discovery.hpp"
 #include "shield/script/lua_vm_pool.hpp"
-#include "shield/serialization/serializer.hpp"
+#include "shield/serialization/universal_serialization_system.hpp"
 #include "shield/actor/lua_actor.hpp"
 #include "shield/metrics/prometheus_component.hpp"
 
@@ -70,7 +70,7 @@ int main(int argc, char* argv[]) {
     SHIELD_LOG_INFO << "Application starting...";
 
     // Initialize serialization system
-    shield::serialization::initialize_serialization_system();
+    shield::serialization::initialize_universal_serialization_system();
 
     // Initialize CAF global meta objects for core types
     caf::core::init_global_meta_objects();

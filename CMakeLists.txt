@@ -160,6 +160,16 @@ else()
 endif()
 
 find_package(Boost REQUIRED COMPONENTS asio beast log log_setup program_options url unit_test_framework) # <--- ADDED
+
+# Try to find msgpack-cxx
+find_package(msgpack-cxx CONFIG QUIET)
+if(msgpack-cxx_FOUND)
+    message(STATUS "Found msgpack-cxx, enabling MessagePack support")
+    add_definitions(-DSHIELD_ENABLE_MESSAGEPACK)
+else()
+    message(STATUS "msgpack-cxx not found, MessagePack support disabled")
+endif()
+
 find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp")
 
 # Set output directories
@@ -229,7 +239,16 @@ target_link_libraries(shield_core
         gRPC::grpc++_alts
         OpenSSL::SSL
         OpenSSL::Crypto
+        protobuf::libprotobuf
 )
+
+# Add msgpack-cxx if available
+if(msgpack-cxx_FOUND)
+    target_link_libraries(shield_core
+        PUBLIC
+            msgpack-cxx
+    )
+endif()
 
 # Add prometheus-cpp if available
 if(prometheus-cpp_FOUND)
