@@ -188,7 +188,7 @@ file(GLOB_RECURSE CORE_SOURCES
     "src/metrics/*.cpp"
     "src/caf_initializer.cpp"
 )
-list(REMOVE_ITEM CORE_SOURCES "${CMAKE_SOURCE_DIR}/src/main.cpp") # 明确排除 main.cpp
+list(REMOVE_ITEM CORE_SOURCES "${CMAKE_SOURCE_DIR}/src/main.cpp") # Explicitly exclude main.cpp
 
 # Print found source files (optional, for debugging)
 message(STATUS "Found core library source files:")

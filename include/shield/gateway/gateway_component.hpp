@@ -37,8 +37,8 @@ private:
 
     actor::DistributedActorSystem& m_actor_system;
     std::unique_ptr<net::MasterReactor> m_master_reactor;
-    std::unique_ptr<net::MasterReactor> m_http_reactor;   // HTTP服务器
-    std::unique_ptr<net::MasterReactor> m_ws_reactor;     // WebSocket服务器
+    std::unique_ptr<net::MasterReactor> m_http_reactor;   // HTTP server
+    std::unique_ptr<net::MasterReactor> m_ws_reactor;     // WebSocket server
     
     std::unordered_map<uint64_t, std::vector<char>> m_session_recv_buffers;
     std::unordered_map<uint64_t, caf::actor> m_session_actors; // Map session ID to LuaActor

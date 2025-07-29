@@ -10,37 +10,37 @@ using namespace std::chrono_literals;
 void heavy_computation(int id) {
     SHIELD_LOG_INFO << "Task " << id << " started in thread " << std::this_thread::get_id();
     
-    // 模拟耗时计算
+    // Simulate time-consuming computation
     std::this_thread::sleep_for(2s);
     
     SHIELD_LOG_INFO << "Task " << id << " completed in thread " << std::this_thread::get_id();
 }
 
 int main() {
-    // 配置日志系统
+    // Configure logging system
     LogConfig log_config;
-    log_config.level = 1;  // 对应 debug 级别
-    log_config.log_file = "logs/reactor_example.log";  // 设置日志文件路径
-    log_config.console_output = true;  // 同时输出到控制台
+    log_config.level = 1;  // Corresponds to debug level
+    log_config.log_file = "logs/reactor_example.log";  // Set log file path
+    log_config.console_output = true;  // Also output to console
     
-    // 初始化日志系统
+    // Initialize logging system
     Logger::init(log_config);
     
-    // 创建一个有4个工作线程的 Reactor
+    // Create a Reactor with 4 worker threads
     Reactor reactor(4);
     
     SHIELD_LOG_INFO << "Main thread: " << std::this_thread::get_id();
     
-    // 提交10个任务
+    // Submit 10 tasks
     for (int i = 0; i < 10; ++i) {
         SHIELD_LOG_DEBUG << "Submitting task " << i;
         reactor.submit_task([i]() { heavy_computation(i); });
     }
     
-    // 在主线程中运行事件循环
+    // Run event loop in main thread
     reactor.run();
     
-    // 关闭日志系统
+    // Shutdown logging system
     Logger::shutdown();
     
     return 0;

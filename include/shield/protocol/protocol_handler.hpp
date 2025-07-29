@@ -10,6 +10,7 @@ namespace shield::protocol {
 // Protocol types supported by the gateway
 enum class ProtocolType {
     TCP,
+    UDP,
     HTTP,
     WEBSOCKET
 };

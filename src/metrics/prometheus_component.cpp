@@ -146,6 +146,43 @@ NetworkMetricsCollector::NetworkMetricsCollector(std::shared_ptr<prometheus::Reg
         .Register(*registry);
     request_duration_histogram_ = &request_duration_family_->Add({}, 
         prometheus::Histogram::BucketBoundaries{0.001, 0.01, 0.1, 1.0, 10.0});
+    
+    // UDP-specific metrics
+    active_udp_sessions_family_ = &prometheus::BuildGauge()
+        .Name("shield_active_udp_sessions")
+        .Help("Number of active UDP sessions")
+        .Register(*registry);
+    active_udp_sessions_gauge_ = &active_udp_sessions_family_->Add({});
+    
+    udp_packets_sent_family_ = &prometheus::BuildCounter()
+        .Name("shield_udp_packets_sent_total")
+        .Help("Total UDP packets sent")
+        .Register(*registry);
+    udp_packets_sent_counter_ = &udp_packets_sent_family_->Add({});
+    
+    udp_packets_received_family_ = &prometheus::BuildCounter()
+        .Name("shield_udp_packets_received_total")
+        .Help("Total UDP packets received")
+        .Register(*registry);
+    udp_packets_received_counter_ = &udp_packets_received_family_->Add({});
+    
+    udp_bytes_sent_family_ = &prometheus::BuildCounter()
+        .Name("shield_udp_bytes_sent_total")
+        .Help("Total UDP bytes sent")
+        .Register(*registry);
+    udp_bytes_sent_counter_ = &udp_bytes_sent_family_->Add({});
+    
+    udp_bytes_received_family_ = &prometheus::BuildCounter()
+        .Name("shield_udp_bytes_received_total")
+        .Help("Total UDP bytes received")
+        .Register(*registry);
+    udp_bytes_received_counter_ = &udp_bytes_received_family_->Add({});
+    
+    udp_timeouts_family_ = &prometheus::BuildCounter()
+        .Name("shield_udp_timeouts_total")
+        .Help("Total UDP session timeouts")
+        .Register(*registry);
+    udp_timeouts_counter_ = &udp_timeouts_family_->Add({});
 }
 
 void NetworkMetricsCollector::collect() {
@@ -174,6 +211,35 @@ void NetworkMetricsCollector::increment_requests() {
 
 void NetworkMetricsCollector::record_request_duration(double seconds) {
     request_duration_histogram_->Observe(seconds);
+}
+
+// UDP-specific metric methods
+void NetworkMetricsCollector::increment_udp_sessions() {
+    active_udp_sessions_gauge_->Increment();
+}
+
+void NetworkMetricsCollector::decrement_udp_sessions() {
+    active_udp_sessions_gauge_->Decrement();
+}
+
+void NetworkMetricsCollector::increment_udp_packets_sent() {
+    udp_packets_sent_counter_->Increment();
+}
+
+void NetworkMetricsCollector::increment_udp_packets_received() {
+    udp_packets_received_counter_->Increment();
+}
+
+void NetworkMetricsCollector::add_udp_bytes_sent(size_t bytes) {
+    udp_bytes_sent_counter_->Increment(static_cast<double>(bytes));
+}
+
+void NetworkMetricsCollector::add_udp_bytes_received(size_t bytes) {
+    udp_bytes_received_counter_->Increment(static_cast<double>(bytes));
+}
+
+void NetworkMetricsCollector::increment_udp_timeouts() {
+    udp_timeouts_counter_->Increment();
 }
 
 // GameMetricsCollector implementation

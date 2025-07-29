@@ -19,7 +19,7 @@ void GatewayComponent::on_init() {
     SHIELD_LOG_INFO << "Initializing GatewayComponent: " << name();
     auto& config = core::Config::instance();
     
-    // TCP服务器配置
+    // TCP server configuration
     auto host = config.get<std::string>("gateway.listener.host");
     auto port = config.get<uint16_t>("gateway.listener.port");
     auto io_threads = config.get<int>("gateway.threading.io_threads");
@@ -34,14 +34,14 @@ void GatewayComponent::on_init() {
         return session;
     });
 
-    // HTTP服务器配置
+    // HTTP server configuration
     if (config.get<bool>("gateway.http.enabled")) {
         auto http_port = config.get<uint16_t>("gateway.http.port");
         m_http_reactor = std::make_unique<net::MasterReactor>(host, http_port, io_threads);
         
         m_http_reactor->set_session_creator([this](auto socket) {
             auto session = std::make_shared<net::Session>(std::move(socket));
-            // HTTP会话特殊处理
+            // HTTP session special handling
             m_sessions[session->id()] = std::weak_ptr<net::Session>(session);
             m_session_protocols[session->id()] = protocol::ProtocolType::HTTP;
             
@@ -61,14 +61,14 @@ void GatewayComponent::on_init() {
         });
     }
 
-    // WebSocket服务器配置
+    // WebSocket server configuration
     if (config.get<bool>("gateway.websocket.enabled")) {
         auto ws_port = config.get<uint16_t>("gateway.websocket.port");
         m_ws_reactor = std::make_unique<net::MasterReactor>(host, ws_port, io_threads);
         
         m_ws_reactor->set_session_creator([this](auto socket) {
             auto session = std::make_shared<net::Session>(std::move(socket));
-            // WebSocket会话特殊处理
+            // WebSocket session special handling
             m_sessions[session->id()] = std::weak_ptr<net::Session>(session);
             m_session_protocols[session->id()] = protocol::ProtocolType::WEBSOCKET;
             
@@ -95,16 +95,16 @@ void GatewayComponent::on_init() {
 void GatewayComponent::on_start() {
     SHIELD_LOG_INFO << "Starting GatewayComponent: " << name();
     
-    // 启动TCP服务器
+    // Start TCP server
     m_master_reactor->start();
     
-    // 启动HTTP服务器
+    // Start HTTP server
     if (m_http_reactor) {
         m_http_reactor->start();
         SHIELD_LOG_INFO << "HTTP server started on port " << core::Config::instance().get<uint16_t>("gateway.http.port");
     }
     
-    // 启动WebSocket服务器
+    // Start WebSocket server
     if (m_ws_reactor) {
         m_ws_reactor->start();
         SHIELD_LOG_INFO << "WebSocket server started on port " << core::Config::instance().get<uint16_t>("gateway.websocket.port");
@@ -128,7 +128,7 @@ void GatewayComponent::on_stop() {
 }
 
 void GatewayComponent::setup_protocol_handlers() {
-    // 创建HTTP处理器
+    // Create HTTP handler
     m_http_handler = protocol::create_http_handler();
     m_http_handler->set_session_provider([this](uint64_t session_id) {
         return get_session(session_id);
@@ -136,16 +136,16 @@ void GatewayComponent::setup_protocol_handlers() {
     
     setup_http_routes();
     
-    // 创建WebSocket处理器
+    // Create WebSocket handler
     m_websocket_handler = protocol::create_websocket_handler();
     m_websocket_handler->set_session_provider([this](uint64_t session_id) {
         return get_session(session_id);
     });
     
-    // 设置WebSocket消息处理器
+    // Set WebSocket message handler
     m_websocket_handler->set_message_handler([this](uint64_t connection_id, const std::string& message) {
         try {
-            // 创建或获取该连接的LuaActor
+            // Create or get LuaActor for this connection
             auto actor_it = m_session_actors.find(connection_id);
             if (actor_it == m_session_actors.end()) {
                 auto lua_actor = actor::create_lua_actor(m_actor_system.system(), m_lua_vm_pool, m_actor_system, "scripts/websocket_actor.lua", std::to_string(connection_id));
@@ -153,12 +153,12 @@ void GatewayComponent::setup_protocol_handlers() {
                 actor_it = m_session_actors.find(connection_id);
             }
 
-            // 发送消息字符串到LuaActor
+            // Send message string to LuaActor
             auto lua_actor_ref = actor_it->second;
             auto temp_actor = m_actor_system.system().spawn([this, connection_id, lua_actor_ref, message](caf::event_based_actor* self) -> caf::behavior {
                 self->request(lua_actor_ref, m_request_timeout, std::string("websocket_message"), message)
                 .then([this, connection_id, self](const std::string& response) {
-                    // 发送响应回WebSocket客户端
+                    // Send response back to WebSocket client
                     m_websocket_handler->send_text_frame(connection_id, response);
                     self->quit();
                 },
@@ -183,15 +183,15 @@ void GatewayComponent::setup_protocol_handlers() {
 void GatewayComponent::setup_http_routes() {
     auto& router = m_http_handler->get_router();
     
-    // 游戏API路由
+    // Game API routes
     router.add_route("POST", "/api/game/action", [this](const protocol::HttpRequest& request) {
         protocol::HttpResponse response;
         
         try {
-            // 创建临时actor处理请求
+            // Create temporary actor to handle request
             auto lua_actor = actor::create_lua_actor(m_actor_system.system(), m_lua_vm_pool, m_actor_system, "scripts/http_actor.lua", std::to_string(request.connection_id));
             
-            // 简化处理，返回成功响应
+            // Simplified handling, return success response
             response.body = R"({"status": "accepted", "message": "Request queued for processing"})";
             
         } catch (const std::exception& e) {
@@ -203,7 +203,7 @@ void GatewayComponent::setup_http_routes() {
         return response;
     });
     
-    // 玩家信息API
+    // Player info API
     router.add_route("GET", "/api/player/info", [](const protocol::HttpRequest& request) {
         protocol::HttpResponse response;
         response.body = R"({"player_id": "test_player", "level": 10, "score": 1000})";
@@ -222,7 +222,7 @@ std::shared_ptr<net::Session> GatewayComponent::get_session(uint64_t session_id)
 protocol::ProtocolType GatewayComponent::detect_protocol(uint64_t connection_id, const char* data, size_t length) {
     if (length == 0) return protocol::ProtocolType::TCP;
     
-    // 检测HTTP请求
+    // Detect HTTP request
     if (length >= 3) {
         std::string prefix(data, 3);
         if (prefix == "GET" || prefix == "POST" || prefix == "PUT" || prefix == "DEL") {
@@ -230,7 +230,7 @@ protocol::ProtocolType GatewayComponent::detect_protocol(uint64_t connection_id,
         }
     }
     
-    // 检测WebSocket握手
+    // Detect WebSocket handshake
     if (length >= 14) {
         std::string start(data, 14);
         if (start == "GET" && std::string(data, length).find("Upgrade: websocket") != std::string::npos) {

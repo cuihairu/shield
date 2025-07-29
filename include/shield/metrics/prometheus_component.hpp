@@ -64,6 +64,15 @@ public:
     void add_bytes_received(size_t bytes);
     void increment_requests();
     void record_request_duration(double seconds);
+    
+    // UDP-specific metrics
+    void increment_udp_sessions();
+    void decrement_udp_sessions();
+    void increment_udp_packets_sent();
+    void increment_udp_packets_received();
+    void add_udp_bytes_sent(size_t bytes);
+    void add_udp_bytes_received(size_t bytes);
+    void increment_udp_timeouts();
 
 private:
     std::string name_ = "network";
@@ -73,11 +82,27 @@ private:
     prometheus::Family<prometheus::Counter>* total_requests_family_;
     prometheus::Family<prometheus::Histogram>* request_duration_family_;
     
+    // UDP-specific metrics
+    prometheus::Family<prometheus::Gauge>* active_udp_sessions_family_;
+    prometheus::Family<prometheus::Counter>* udp_packets_sent_family_;
+    prometheus::Family<prometheus::Counter>* udp_packets_received_family_;
+    prometheus::Family<prometheus::Counter>* udp_bytes_sent_family_;
+    prometheus::Family<prometheus::Counter>* udp_bytes_received_family_;
+    prometheus::Family<prometheus::Counter>* udp_timeouts_family_;
+    
     prometheus::Gauge* active_connections_gauge_;
     prometheus::Counter* bytes_sent_counter_;
     prometheus::Counter* bytes_received_counter_;
     prometheus::Counter* total_requests_counter_;
     prometheus::Histogram* request_duration_histogram_;
+    
+    // UDP metrics
+    prometheus::Gauge* active_udp_sessions_gauge_;
+    prometheus::Counter* udp_packets_sent_counter_;
+    prometheus::Counter* udp_packets_received_counter_;
+    prometheus::Counter* udp_bytes_sent_counter_;
+    prometheus::Counter* udp_bytes_received_counter_;
+    prometheus::Counter* udp_timeouts_counter_;
 };
 
 // Game-specific metrics collector

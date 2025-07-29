@@ -3,6 +3,6 @@
 #include "caf/init_global_meta_objects.hpp"
 
 void initialize_caf_types() {
-    // 由于我们现在使用字符串消息而不是自定义类型，所以使用核心初始化
+    // Since we are now using string messages instead of custom types, use core initialization
     caf::core::init_global_meta_objects();
 }
