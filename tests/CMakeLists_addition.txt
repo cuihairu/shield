@@ -1,0 +1,8 @@
+# Refactor original integration tests to unit tests
+add_subdirectory(unit)
+
+# Add new integration tests
+add_subdirectory(integration)
+
+# Add end-to-end tests 
+add_subdirectory(e2e)

@@ -1,6 +1,7 @@
 #include "shield/protocol/binary_protocol.hpp"
 
 #include <arpa/inet.h>  // For htonl, ntohl
+#include <cstring>      // For memcpy
 
 namespace shield::protocol {
 

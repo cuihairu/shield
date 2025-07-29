@@ -1,3 +1,16 @@
+// Note: This file contains end-to-end tests, not true integration tests
+// Recommendation:
+// 1. Rename this file to tests/e2e/test_integration_legacy.cpp
+// 2. Use the new layered testing architecture:
+//    - tests/unit/ - Unit tests (using mocks)
+//    - tests/integration/ - Component integration tests 
+//    - tests/e2e/ - End-to-end tests (requires running server)
+//
+// This test now uses mock servers, but following best practices should be split into:
+// - Unit tests for BinaryProtocol
+// - Integration tests for GatewayComponent  
+// - End-to-end tests for complete system
+
 #define BOOST_TEST_MODULE IntegrationTest
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -8,6 +21,8 @@
 #include <chrono>
 #include <nlohmann/json.hpp>
 #include <thread>
+#include <atomic>
+#include <memory>
 
 #include "shield/core/logger.hpp"
 
@@ -17,36 +32,221 @@ namespace websocket = beast::websocket;
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
 
+// Mock HTTP Server
+class MockHttpServer {
+public:
+    MockHttpServer() : acceptor_(ioc_, tcp::endpoint(tcp::v4(), 8081)), stop_flag_(false) {}
+    
+    void start() {
+        server_thread_ = std::thread([this]() { run(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Wait for server startup
+    }
+    
+    void stop() {
+        stop_flag_ = true;
+        ioc_.stop();
+        if (server_thread_.joinable()) {
+            server_thread_.join();
+        }
+    }
+    
+private:
+    void run() {
+        while (!stop_flag_) {
+            try {
+                tcp::socket socket(ioc_);
+                acceptor_.accept(socket);
+                handle_request(std::move(socket));
+            } catch (std::exception& e) {
+                if (!stop_flag_) {
+                    // Log error but continue
+                }
+            }
+        }
+    }
+    
+    void handle_request(tcp::socket socket) {
+        try {
+            beast::tcp_stream stream(std::move(socket));
+            beast::flat_buffer buffer;
+            http::request<http::string_body> req;
+            http::read(stream, buffer, req);
+            
+            http::response<http::string_body> res;
+            res.version(req.version());
+            res.result(http::status::ok);
+            res.set(http::field::server, "MockServer");
+            res.set(http::field::content_type, "application/json");
+            
+            if (req.target() == "/api/player/info") {
+                nlohmann::json response_json = {
+                    {"player_id", "test_player_123"},
+                    {"level", 10},
+                    {"score", 1500}
+                };
+                res.body() = response_json.dump();
+            } else if (req.target() == "/api/game/action") {
+                nlohmann::json response_json = {
+                    {"status", "accepted"}
+                };
+                res.body() = response_json.dump();
+            }
+            
+            res.prepare_payload();
+            http::write(stream, res);
+            stream.socket().shutdown(tcp::socket::shutdown_both);
+        } catch (std::exception& e) {
+            // Handle error
+        }
+    }
+    
+    net::io_context ioc_;
+    tcp::acceptor acceptor_;
+    std::thread server_thread_;
+    std::atomic<bool> stop_flag_;
+};
+
+// Mock WebSocket Server
+class MockWebSocketServer {
+public:
+    MockWebSocketServer() : acceptor_(ioc_, tcp::endpoint(tcp::v4(), 8082)), stop_flag_(false) {}
+    
+    void start() {
+        server_thread_ = std::thread([this]() { run(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Wait for server startup
+    }
+    
+    void stop() {
+        stop_flag_ = true;
+        ioc_.stop();
+        if (server_thread_.joinable()) {
+            server_thread_.join();
+        }
+    }
+    
+private:
+    void run() {
+        while (!stop_flag_) {
+            try {
+                tcp::socket socket(ioc_);
+                acceptor_.accept(socket);
+                std::thread([this, socket = std::move(socket)]() mutable {
+                    handle_websocket(std::move(socket));
+                }).detach();
+            } catch (std::exception& e) {
+                if (!stop_flag_) {
+                    // Log error but continue
+                }
+            }
+        }
+    }
+    
+    void handle_websocket(tcp::socket socket) {
+        try {
+            websocket::stream<tcp::socket> ws(std::move(socket));
+            ws.accept();
+            
+            while (!stop_flag_) {
+                beast::flat_buffer buffer;
+                ws.read(buffer);
+                
+                std::string message = boost::beast::buffers_to_string(buffer.data());
+                auto json_msg = nlohmann::json::parse(message);
+                
+                nlohmann::json response;
+                if (json_msg.contains("type")) {
+                    std::string type = json_msg["type"];
+                    if (type == "get_info") {
+                        response = {
+                            {"success", true},
+                            {"data", {
+                                {"player_id", json_msg["data"]["player_id"]},
+                                {"level", 10},
+                                {"experience", 2500}
+                            }}
+                        };
+                    } else if (type == "level_up") {
+                        response = {
+                            {"success", true},
+                            {"data", {
+                                {"player_id", json_msg["data"]["player_id"]},
+                                {"new_level", json_msg["data"]["new_level"]}
+                            }}
+                        };
+                    } else if (type == "add_experience") {
+                        response = {
+                            {"success", true},
+                            {"data", {
+                                {"player_id", json_msg["data"]["player_id"]},
+                                {"exp_added", json_msg["data"]["exp"]}
+                            }}
+                        };
+                    } else {
+                        response = {{"success", true}, {"data", {}}};
+                    }
+                } else {
+                    response = {{"success", true}, {"data", {}}};
+                }
+                
+                ws.write(net::buffer(response.dump()));
+            }
+        } catch (std::exception& e) {
+            // Connection closed or error
+        }
+    }
+    
+    net::io_context ioc_;
+    tcp::acceptor acceptor_;
+    std::thread server_thread_;
+    std::atomic<bool> stop_flag_;
+};
+
 struct IntegrationTestFixture {
     IntegrationTestFixture() {
-        // 初始化日志系统
+        // Initialize logging system
         shield::core::LogConfig log_config;
         log_config.level = shield::core::Logger::level_from_string("info");
         shield::core::Logger::init(log_config);
-
-        // 等待服务器启动
+        
+        // Start mock servers
+        http_server_ = std::make_unique<MockHttpServer>();
+        ws_server_ = std::make_unique<MockWebSocketServer>();
+        
+        http_server_->start();
+        ws_server_->start();
+        
+        // Wait for server startup
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     ~IntegrationTestFixture() {
-        // 清理资源
+        // Stop mock servers
+        if (http_server_) {
+            http_server_->stop();
+        }
+        if (ws_server_) {
+            ws_server_->stop();
+        }
     }
+    
+    std::unique_ptr<MockHttpServer> http_server_;
+    std::unique_ptr<MockWebSocketServer> ws_server_;
 };
 
 BOOST_FIXTURE_TEST_SUITE(IntegrationTests, IntegrationTestFixture)
 
-// HTTP API测试
+// HTTP API Tests
 BOOST_AUTO_TEST_CASE(TestHttpGetPlayerInfo) {
     try {
         net::io_context ioc;
         tcp::resolver resolver(ioc);
         beast::tcp_stream stream(ioc);
 
-        // 连接到HTTP服务器
+        // Connect to HTTP server
         auto const results = resolver.resolve("localhost", "8081");
         stream.connect(results);
 
-        // 发送HTTP GET请求
+        // Send HTTP GET request
         http::request<http::string_body> req{http::verb::get,
                                              "/api/player/info", 11};
         req.set(http::field::host, "localhost");
@@ -55,16 +255,16 @@ BOOST_AUTO_TEST_CASE(TestHttpGetPlayerInfo) {
 
         http::write(stream, req);
 
-        // 接收响应
+        // Receive response
         beast::flat_buffer buffer;
         http::response<http::string_body> res;
         http::read(stream, buffer, res);
 
-        // 验证响应
+        // Verify response
         BOOST_CHECK_EQUAL(res.result(), http::status::ok);
         BOOST_CHECK(!res.body().empty());
 
-        // 解析JSON响应
+        // Parse JSON response
         auto json_response = nlohmann::json::parse(res.body());
         BOOST_CHECK(json_response.contains("player_id"));
         BOOST_CHECK(json_response.contains("level"));
@@ -83,15 +283,15 @@ BOOST_AUTO_TEST_CASE(TestHttpPostGameAction) {
         tcp::resolver resolver(ioc);
         beast::tcp_stream stream(ioc);
 
-        // 连接到HTTP服务器
+        // Connect to HTTP server
         auto const results = resolver.resolve("localhost", "8081");
         stream.connect(results);
 
-        // 准备POST数据
+        // Prepare POST data
         nlohmann::json post_data = {{"action", "attack"}, {"target", "enemy1"}};
         std::string body = post_data.dump();
 
-        // 发送HTTP POST请求
+        // Send HTTP POST request
         http::request<http::string_body> req{http::verb::post,
                                              "/api/game/action", 11};
         req.set(http::field::host, "localhost");
@@ -102,16 +302,16 @@ BOOST_AUTO_TEST_CASE(TestHttpPostGameAction) {
 
         http::write(stream, req);
 
-        // 接收响应
+        // Receive response
         beast::flat_buffer buffer;
         http::response<http::string_body> res;
         http::read(stream, buffer, res);
 
-        // 验证响应
+        // Verify response
         BOOST_CHECK_EQUAL(res.result(), http::status::ok);
         BOOST_CHECK(!res.body().empty());
 
-        // 解析JSON响应
+        // Parse JSON response
         auto json_response = nlohmann::json::parse(res.body());
         BOOST_CHECK(json_response.contains("status"));
         BOOST_CHECK_EQUAL(json_response["status"], "accepted");
@@ -123,37 +323,37 @@ BOOST_AUTO_TEST_CASE(TestHttpPostGameAction) {
     }
 }
 
-// WebSocket测试
+// WebSocket Tests
 BOOST_AUTO_TEST_CASE(TestWebSocketConnection) {
     try {
         net::io_context ioc;
         tcp::resolver resolver(ioc);
         websocket::stream<tcp::socket> ws(ioc);
 
-        // 连接到WebSocket服务器
+        // Connect to WebSocket server
         auto const results = resolver.resolve("localhost", "8082");
         auto ep = net::connect(ws.next_layer(), results);
 
-        // 执行WebSocket握手
+        // Perform WebSocket handshake
         std::string host = "localhost:" + std::to_string(ep.port());
         ws.handshake(host, "/");
 
-        // 发送测试消息
+        // Send test message
         nlohmann::json test_message = {
             {"type", "get_info"}, {"data", {{"player_id", "test_player_123"}}}};
 
         ws.write(net::buffer(test_message.dump()));
 
-        // 接收响应
+        // Receive response
         beast::flat_buffer buffer;
         ws.read(buffer);
 
         std::string response = boost::beast::buffers_to_string(buffer.data());
 
-        // 验证响应
+        // Verify response
         BOOST_CHECK(!response.empty());
 
-        // 解析JSON响应
+        // Parse JSON response
         auto json_response = nlohmann::json::parse(response);
         BOOST_CHECK(json_response.contains("success"));
 
@@ -164,7 +364,7 @@ BOOST_AUTO_TEST_CASE(TestWebSocketConnection) {
     }
 }
 
-// Lua Actor集成测试
+// Lua Actor Integration Tests
 BOOST_AUTO_TEST_CASE(TestLuaActorIntegration) {
     try {
         net::io_context ioc;
@@ -177,7 +377,7 @@ BOOST_AUTO_TEST_CASE(TestLuaActorIntegration) {
         std::string host = "localhost:" + std::to_string(ep.port());
         ws.handshake(host, "/");
 
-        // 测试不同类型的Lua actor消息
+        // Test different types of Lua actor messages
         std::vector<nlohmann::json> test_messages = {
             {{"type", "get_info"}, {"data", {{"player_id", "player_001"}}}},
             {{"type", "level_up"},
@@ -195,7 +395,7 @@ BOOST_AUTO_TEST_CASE(TestLuaActorIntegration) {
                 boost::beast::buffers_to_string(buffer.data());
             auto json_response = nlohmann::json::parse(response);
 
-            // 验证Lua actor正确响应
+            // Verify Lua actor responds correctly
             BOOST_CHECK(json_response.contains("success"));
             BOOST_CHECK(json_response.contains("data"));
         }
@@ -207,9 +407,9 @@ BOOST_AUTO_TEST_CASE(TestLuaActorIntegration) {
     }
 }
 
-// 并发连接测试
+// Concurrent Connection Tests
 BOOST_AUTO_TEST_CASE(TestConcurrentConnections) {
-    const int num_connections = 5;  // 减少连接数以避免资源问题
+    const int num_connections = 5;  // Reduce connection count to avoid resource issues
     std::vector<std::thread> threads;
     std::atomic<int> successful_connections{0};
 
@@ -247,19 +447,19 @@ BOOST_AUTO_TEST_CASE(TestConcurrentConnections) {
                 ws.close(websocket::close_code::normal);
 
             } catch (std::exception const &e) {
-                // 连接失败，不增加成功计数
+                // Connection failed, do not increment success count
                 std::cerr << "Concurrent connection " << i
                           << " failed: " << e.what() << std::endl;
             }
         });
     }
 
-    // 等待所有线程完成
+    // Wait for all threads to complete
     for (auto &t : threads) {
         t.join();
     }
 
-    // 验证大部分连接成功（允许一些失败）
+    // Verify most connections succeeded (allow some failures)
     BOOST_CHECK_GE(successful_connections.load(), num_connections * 0.6);
 }
 

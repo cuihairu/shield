@@ -192,8 +192,33 @@ jobs:
       with:
         cmake-version: '3.30.0'
 
-    # vcpkg 缓存
-    - name: 📦 缓存 vcpkg
+    # vcpkg binary cache for faster builds
+    - name: 📦 Cache vcpkg binaries
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ env.VCPKG_ROOT }}
+          ${{ github.workspace }}/build/vcpkg_installed
+          !${{ env.VCPKG_ROOT }}/buildtrees
+          !${{ env.VCPKG_ROOT }}/packages
+          !${{ env.VCPKG_ROOT }}/downloads
+        key: vcpkg-binaries-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}-${{ hashFiles('vcpkg-configuration.json') }}
+        restore-keys: |
+          vcpkg-binaries-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}-
+          vcpkg-binaries-${{ matrix.platform }}-
+
+    # vcpkg downloads cache for rate limiting
+    - name: 📦 Cache vcpkg downloads
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ env.VCPKG_ROOT }}/downloads
+        key: vcpkg-downloads-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+        restore-keys: |
+          vcpkg-downloads-${{ runner.os }}-
+
+    # vcpkg cache
+    - name: 📦 Cache vcpkg
       uses: actions/cache@v4
       with:
         path: |
@@ -201,48 +226,65 @@ jobs:
           !${{ env.VCPKG_ROOT }}/buildtrees
           !${{ env.VCPKG_ROOT }}/packages
           !${{ env.VCPKG_ROOT }}/downloads
-        key: vcpkg-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}
+        key: vcpkg-legacy-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}
         restore-keys: |
-          vcpkg-${{ matrix.platform }}-
+          vcpkg-legacy-${{ matrix.platform }}-
 
-    # 设置 vcpkg (使用 run-vcpkg action)
-    - name: 🛠️ 设置 vcpkg
-      uses: lukka/run-vcpkg@v11.5
-
-    # CMake 配置
-    - name: 🏗️ 配置 CMake
+    # Set vcpkg environment variables
+    - name: 🔧 Set vcpkg environment
       shell: bash
       run: |
-        echo "VCPKG_ROOT: ${VCPKG_ROOT}"
-        echo "构建类型: ${{ matrix.build_type }}"
+        echo "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite" >> $GITHUB_ENV
+        echo "VCPKG_MAX_CONCURRENCY=4" >> $GITHUB_ENV
         
-        if [ "${{ matrix.platform }}" = "windows" ]; then
-          cmake -B build \
-            -G "${{ env.VS_GENERATOR }}" -A "${{ env.VS_PLATFORM }}" \
-            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DSHIELD_BUILD_TESTS=ON \
-            -DSHIELD_BUILD_EXAMPLES=ON
-        else
-          cmake -B build \
-            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DSHIELD_BUILD_TESTS=ON \
-            -DSHIELD_BUILD_EXAMPLES=ON \
-            -G Ninja
-        fi
+    # Setup vcpkg (using run-vcpkg action)
+    - name: 🛠️ Setup vcpkg
+      uses: lukka/run-vcpkg@v11.5
+      with:
+        vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'  # Use specific commit for reproducibility
 
-    # 构建项目
-    - name: 🔨 编译项目
-      run: |
-        if [ "${{ matrix.platform }}" = "linux" ]; then
-          cmake --build build --config ${{ matrix.build_type }} --parallel $(nproc)
-        elif [ "${{ matrix.platform }}" = "macos" ]; then
-          cmake --build build --config ${{ matrix.build_type }} --parallel $(sysctl -n hw.logicalcpu)
-        else
-          cmake --build build --config ${{ matrix.build_type }} --parallel
-        fi
-      shell: bash
+    # CMake configure with retry
+    - name: 🏗️ Configure CMake
+      uses: nick-invision/retry@v2
+      with:
+        timeout_minutes: 20
+        max_attempts: 3
+        retry_on: error
+        command: |
+          echo "VCPKG_ROOT: ${VCPKG_ROOT}"
+          echo "Build type: ${{ matrix.build_type }}"
+          
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            cmake -B build \
+              -G "${{ env.VS_GENERATOR }}" -A "${{ env.VS_PLATFORM }}" \
+              -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+              -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+              -DSHIELD_BUILD_TESTS=ON \
+              -DSHIELD_BUILD_EXAMPLES=ON
+          else
+            cmake -B build \
+              -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+              -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+              -DSHIELD_BUILD_TESTS=ON \
+              -DSHIELD_BUILD_EXAMPLES=ON \
+              -G Ninja
+          fi
+
+    # Build project with retry
+    - name: 🔨 Build project
+      uses: nick-invision/retry@v2
+      with:
+        timeout_minutes: 30
+        max_attempts: 2
+        retry_on: error
+        command: |
+          if [ "${{ matrix.platform }}" = "linux" ]; then
+            cmake --build build --config ${{ matrix.build_type }} --parallel $(nproc)
+          elif [ "${{ matrix.platform }}" = "macos" ]; then
+            cmake --build build --config ${{ matrix.build_type }} --parallel $(sysctl -n hw.logicalcpu)
+          else
+            cmake --build build --config ${{ matrix.build_type }} --parallel
+          fi
 
     # 运行测试
     - name: 🧪 运行测试

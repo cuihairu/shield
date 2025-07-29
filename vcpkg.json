@@ -59,7 +59,7 @@
             "name": "msgpack"
         }
     ],
-    "builtin-baseline": "4002e3abc6d3e468c73d2d9777a7dd96af5dc224",
+    "builtin-baseline": "f7423ee180c4b7f40d43402c2feb3859161ef625",
     "supports": "!uwp",
     "overrides": [
     ]
