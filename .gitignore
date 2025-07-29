@@ -1,0 +1,89 @@
+# Build directories
+build/
+out/
+
+# vcpkg specific
+vcpkg_installed/
+.vcpkg/
+vcpkg-manifest-install.log
+
+# IDE specific
+.vs/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/c_cpp_properties.json
+!.vscode/extensions.json
+.cache/
+.idea/
+bin/
+
+# node
+node_modules/
+book/
+# AI
+.claude/
+
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# CMake
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+cmake-build-debug/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+*.swp
+*~
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Debug files
+*.dSYM/
+
+# Log and temporary files
+logs/
+*.log
+*.tmp
+*.bak

@@ -1,0 +1,63 @@
+{
+    "name": "shield",
+    "version-string": "0.1.0",
+    "dependencies": [
+        {
+            "name": "lua",
+            "version>=": "5.4.7"
+        },
+        {
+            "name": "boost-asio"
+        },
+        {
+            "name": "boost-beast"
+        },
+        {
+            "name": "yaml-cpp",
+            "version>=": "0.8.0"
+        },
+        {
+            "name": "boost-log"
+        },
+        {
+            "name": "boost-program-options"
+        },
+        {
+            "name": "boost-test"
+        },
+        {
+            "name": "caf",
+            "version>=": "1.0.2"
+        },
+        {
+            "name": "nlohmann-json"
+        },
+        {
+            "name": "redis-plus-plus"
+        },
+        {
+            "name": "boost-url"
+        },
+        {
+            "name": "sol2"
+        },
+        {
+            "name": "protobuf"
+        },
+        {
+            "name": "grpc"
+        },
+        {
+            "name": "etcd-cpp-apiv3",
+            "features": ["async"]
+        },
+        {
+            "name": "cpprestsdk",
+            "features": ["compression"]
+        }
+    ],
+    "builtin-baseline": "4002e3abc6d3e468c73d2d9777a7dd96af5dc224",
+    "supports": "!uwp",
+    "overrides": [
+    ]
+}

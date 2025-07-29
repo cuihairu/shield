@@ -1,0 +1,230 @@
+name: 📚 构建和部署文档
+
+on:
+  push:
+    branches: [ main ]
+    paths: 
+      - 'docs/**'
+      - 'book.toml'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [ main ]
+    paths: 
+      - 'docs/**'
+      - 'book.toml'
+
+# 设置权限以便部署到 GitHub Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 确保同时只有一个部署任务运行
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  # 构建文档
+  build:
+    runs-on: ubuntu-latest
+    env:
+      MDBOOK_VERSION: 0.4.36
+    steps:
+    - name: 📥 检出代码
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: 💾 安装 mdBook
+      run: |
+        curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
+        rustup update
+        cargo install --version ${MDBOOK_VERSION} mdbook
+        
+    - name: 🔧 安装 mdBook 插件
+      run: |
+        cargo install mdbook-mermaid
+        cargo install mdbook-toc
+        cargo install mdbook-linkcheck
+
+    - name: 🔧 配置 GitHub Pages
+      id: pages
+      uses: actions/configure-pages@v4
+
+    - name: 📖 构建文档
+      run: |
+        echo "构建 mdBook 文档..."
+        mdbook build
+        
+        # 检查构建结果
+        if [ ! -d "book" ] || [ ! -f "book/index.html" ]; then
+          echo "❌ 文档构建失败"
+          exit 1
+        fi
+        
+        echo "✅ 文档构建成功"
+        echo "📊 构建统计:"
+        find book -name "*.html" | wc -l | xargs echo "HTML 文件数量:"
+        du -sh book | cut -f1 | xargs echo "总大小:"
+
+    - name: 🔍 链接检查
+      run: |
+        echo "检查文档链接..."
+        mdbook test
+        
+    - name: 📤 上传构建产物
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ./book
+
+  # 部署到 GitHub Pages (仅主分支)
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - name: 🚀 部署到 GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+      
+    - name: 📝 部署结果通知
+      run: |
+        echo "🎉 文档部署成功!"
+        echo "📍 访问地址: ${{ steps.deployment.outputs.page_url }}"
+
+  # 文档质量检查
+  quality-check:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 📥 检出代码
+      uses: actions/checkout@v4
+
+    - name: 🔍 检查 Markdown 格式
+      uses: DavidAnson/markdownlint-action@v1
+      with:
+        files: 'docs/**/*.md'
+        config: '.markdownlint.json'
+        ignore: 'docs/SUMMARY.md'
+
+    - name: 📏 检查文档结构
+      run: |
+        echo "检查必要文档是否存在..."
+        
+        required_files=(
+          "docs/README.md"
+          "docs/SUMMARY.md"
+          "docs/quickstart.md"
+          "docs/architecture.md"
+          "docs/development-guide.md"
+          "docs/configuration.md"
+          "docs/roadmap.md"
+        )
+        
+        missing_files=()
+        for file in "${required_files[@]}"; do
+          if [ ! -f "$file" ]; then
+            missing_files+=("$file")
+          fi
+        done
+        
+        if [ ${#missing_files[@]} -gt 0 ]; then
+          echo "❌ 缺少以下必要文档:"
+          printf '  - %s\n' "${missing_files[@]}"
+          exit 1
+        fi
+        
+        echo "✅ 文档结构检查通过"
+
+    - name: 📊 文档统计
+      run: |
+        echo "📊 文档统计信息:"
+        echo "总文档数量: $(find docs -name "*.md" | wc -l)"
+        echo "总字数: $(find docs -name "*.md" -exec wc -w {} + | tail -1 | awk '{print $1}')"
+        echo "总行数: $(find docs -name "*.md" -exec wc -l {} + | tail -1 | awk '{print $1}')"
+        
+        echo ""
+        echo "📁 各目录文档数量:"
+        find docs -name "*.md" | xargs dirname | sort | uniq -c | sort -nr
+
+  # PR 预览 (仅 PR 时触发)
+  preview:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      MDBOOK_VERSION: 0.4.36
+    steps:
+    - name: 📥 检出代码
+      uses: actions/checkout@v4
+
+    - name: 💾 安装 mdBook
+      run: |
+        curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
+        rustup update
+        cargo install --version ${MDBOOK_VERSION} mdbook
+
+    - name: 📖 构建预览版文档
+      run: |
+        mdbook build
+        echo "📖 PR 预览版文档构建完成"
+
+    - name: 📤 上传预览产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: docs-preview
+        path: ./book
+        retention-days: 7
+
+    - name: 💬 PR 评论
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { owner, repo, number } = context.issue;
+          
+          // 查找是否已有预览评论
+          const comments = await github.rest.issues.listComments({
+            owner,
+            repo,
+            issue_number: number,
+          });
+          
+          const botComment = comments.data.find(comment => 
+            comment.user.type === 'Bot' && 
+            comment.body.includes('📖 文档预览')
+          );
+          
+          const commentBody = `## 📖 文档预览
+          
+          ✅ PR 文档预览已构建完成！
+          
+          **构建信息:**
+          - 构建时间: ${new Date().toLocaleString('zh-CN')}
+          - 提交: ${context.sha.substring(0, 7)}
+          - 分支: ${context.payload.pull_request.head.ref}
+          
+          **下载预览:**
+          可以在 [Actions](https://github.com/${owner}/${repo}/actions/runs/${context.runId}) 页面下载 \`docs-preview\` 产物查看完整文档。
+          
+          ---
+          *此评论由 GitHub Actions 自动生成*`;
+          
+          if (botComment) {
+            // 更新现有评论
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: botComment.id,
+              body: commentBody
+            });
+          } else {
+            // 创建新评论
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: number,
+              body: commentBody
+            });
+          }

@@ -1,0 +1,28 @@
+{
+    "cmake.configureOnOpen": true,
+    "cmake.configureArgs": [
+        "-DCMAKE_BUILD_TYPE=Debug"
+    ],
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "cmake.generator": "Ninja",
+    "cmake.exportCompileCommandsFile": true,
+    "cmake.parallelJobs": 8,
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "files.associations": {
+        "CMakeLists.txt": "cmake",
+        "*.cmake": "cmake"
+    },
+    "C_Cpp.intelliSenseEngine": "default",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/build/include"
+    ],
+    "C_Cpp.default.cppStandard": "c++20",
+    "C_Cpp.default.browse.path": [
+        "${workspaceFolder}",
+        "${workspaceFolder}/include"
+    ],
+    "C_Cpp.default.browse.limitSymbolsToIncludedHeaders": true,
+    "C_Cpp.errorSquiggles": "enabled"
+} 
