@@ -4,6 +4,6 @@
 
 // Forward declarations to avoid circular dependencies
 namespace shield::actor {
-    struct LuaMessage;
-    struct LuaResponse;
-}
+struct LuaMessage;
+struct LuaResponse;
+} // namespace shield::actor
