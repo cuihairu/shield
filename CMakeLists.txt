@@ -131,6 +131,34 @@ find_package(gRPC CONFIG REQUIRED)
 find_package(CAF CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 
+# Try to find prometheus-cpp, make it optional for now
+find_package(prometheus-cpp CONFIG QUIET)
+if(prometheus-cpp_FOUND)
+    message(STATUS "Found prometheus-cpp, enabling Prometheus support")
+    add_definitions(-DSHIELD_ENABLE_PROMETHEUS)
+    
+    # Check what targets are available
+    if(TARGET prometheus-cpp::core)
+        set(PROMETHEUS_CORE_TARGET "prometheus-cpp::core")
+    elseif(TARGET prometheus::core)
+        set(PROMETHEUS_CORE_TARGET "prometheus::core")
+    else()
+        message(WARNING "prometheus-cpp core target not found")
+        set(prometheus-cpp_FOUND FALSE)
+    endif()
+    
+    if(TARGET prometheus-cpp::gateway)
+        set(PROMETHEUS_GATEWAY_TARGET "prometheus-cpp::gateway")
+    elseif(TARGET prometheus::gateway)
+        set(PROMETHEUS_GATEWAY_TARGET "prometheus::gateway")
+    else()
+        message(WARNING "prometheus-cpp gateway target not found")
+        set(PROMETHEUS_GATEWAY_TARGET "")
+    endif()
+else()
+    message(STATUS "prometheus-cpp not found, Prometheus support disabled")
+endif()
+
 find_package(Boost REQUIRED COMPONENTS asio beast log log_setup program_options url unit_test_framework) # <--- ADDED
 find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp")
 
@@ -157,6 +185,7 @@ file(GLOB_RECURSE CORE_SOURCES
     "src/net/*.cpp"
     "src/protocol/*.cpp"
     "src/serialization/*.cpp"
+    "src/metrics/*.cpp"
     "src/caf_initializer.cpp"
 )
 list(REMOVE_ITEM CORE_SOURCES "${CMAKE_SOURCE_DIR}/src/main.cpp") # 明确排除 main.cpp
@@ -201,6 +230,21 @@ target_link_libraries(shield_core
         OpenSSL::SSL
         OpenSSL::Crypto
 )
+
+# Add prometheus-cpp if available
+if(prometheus-cpp_FOUND)
+    target_link_libraries(shield_core
+        PUBLIC
+            ${PROMETHEUS_CORE_TARGET}
+    )
+    if(PROMETHEUS_GATEWAY_TARGET)
+        target_link_libraries(shield_core
+            PUBLIC
+                ${PROMETHEUS_GATEWAY_TARGET}
+        )
+    endif()
+endif()
+
 add_executable(shield src/main.cpp)
 target_link_libraries(shield PRIVATE shield_core)
 

@@ -21,6 +21,7 @@
 #include "shield/script/lua_vm_pool.hpp"
 #include "shield/serialization/serializer.hpp"
 #include "shield/actor/lua_actor.hpp"
+#include "shield/metrics/prometheus_component.hpp"
 
 #include "caf/actor_system.hpp"
 #include "caf/actor_system_config.hpp"
@@ -115,7 +116,9 @@ int main(int argc, char* argv[]) {
     auto component_names = config.get<std::vector<std::string>>("components");
 
     for (const auto& name : component_names) {
-        if (name == "gateway") {
+        if (name == "prometheus") {
+            components.emplace_back(std::make_unique<shield::metrics::PrometheusComponent>());
+        } else if (name == "gateway") {
             // Find the LuaVMPool component
             shield::script::LuaVMPool* lua_vm_pool_ptr = nullptr;
             for (auto& comp : components) {

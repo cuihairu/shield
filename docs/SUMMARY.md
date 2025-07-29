@@ -16,6 +16,7 @@
     - [环境变量](configuration-environment-variables.md)
 - [部署运维](deployment.md)
 - [监控告警](monitoring.md)
+    - [Prometheus 集成](prometheus-integration.md)
 - [性能调优](performance.md)
 - [最佳实践](best-practices.md)
 
