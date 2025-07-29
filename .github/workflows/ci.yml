@@ -1,22 +1,20 @@
-name: 🔄 CI/CD Pipeline
+name: 🔄 统一CI/CD管道
 
 on:
   push:
     branches: [ main, develop ]
+    tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ main ]
 
 env:
-  # 构建配置
   BUILD_TYPE: Release
   VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-  
-  # Docker 配置
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # 代码质量检查
+  # 代码质量检查 - 所有情况都执行
   code-quality:
     runs-on: ubuntu-latest
     steps:
@@ -51,14 +49,41 @@ jobs:
         done
         echo "✅ CMake 格式检查通过"
 
-  # 构建和测试 (Linux)
-  build-linux:
-    runs-on: ubuntu-latest
+  # 多平台构建和测试 - 所有情况都执行
+  build-and-test:
+    runs-on: ${{ matrix.os }}
     needs: code-quality
     strategy:
+      fail-fast: false
       matrix:
-        compiler: [gcc-11, clang-14]
-        build_type: [Debug, Release]
+        include:
+          # Linux 构建矩阵
+          - os: ubuntu-latest
+            compiler: gcc-11
+            build_type: Debug
+            platform: linux
+          - os: ubuntu-latest
+            compiler: gcc-11
+            build_type: Release
+            platform: linux
+          - os: ubuntu-latest
+            compiler: clang-14
+            build_type: Debug
+            platform: linux
+          - os: ubuntu-latest
+            compiler: clang-14
+            build_type: Release
+            platform: linux
+          # macOS 构建
+          - os: macos-latest
+            compiler: clang
+            build_type: Release
+            platform: macos
+          # Windows 构建
+          - os: windows-latest
+            compiler: msvc
+            build_type: Release
+            platform: windows
     
     steps:
     - name: 📥 检出代码
@@ -66,20 +91,13 @@ jobs:
       with:
         submodules: recursive
 
-    - name: 🔧 安装构建依赖
+    # Linux 依赖安装
+    - name: 🔧 安装构建依赖 (Linux)
+      if: matrix.platform == 'linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          cmake \
-          ninja-build \
-          pkg-config \
-          curl \
-          zip \
-          unzip \
-          tar \
-          git
-          
+        sudo apt-get install -y build-essential cmake ninja-build pkg-config curl zip unzip tar git
+        
         # 安装特定编译器
         if [[ "${{ matrix.compiler }}" == "gcc-11" ]]; then
           sudo apt-get install -y gcc-11 g++-11
@@ -91,108 +109,107 @@ jobs:
           echo "CXX=clang++-14" >> $GITHUB_ENV
         fi
 
+    # macOS 依赖安装
+    - name: 🔧 安装构建依赖 (macOS)
+      if: matrix.platform == 'macos'
+      run: |
+        brew install cmake ninja pkg-config
+
+    # Windows 环境配置
+    - name: 🔧 配置 Windows 环境
+      if: matrix.platform == 'windows'
+      run: |
+        echo "VS_GENERATOR=Visual Studio 17 2022" >> $env:GITHUB_ENV
+        echo "VS_PLATFORM=x64" >> $env:GITHUB_ENV
+
+    # 安装 CMake 3.30+ (所有平台)
+    - name: 📦 安装 CMake 3.30+
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '3.30.0'
+
+    # vcpkg 缓存
     - name: 📦 缓存 vcpkg
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ${{ env.VCPKG_ROOT }}
           !${{ env.VCPKG_ROOT }}/buildtrees
           !${{ env.VCPKG_ROOT }}/packages
           !${{ env.VCPKG_ROOT }}/downloads
-        key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+        key: vcpkg-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}
         restore-keys: |
-          vcpkg-${{ runner.os }}-
+          vcpkg-${{ matrix.platform }}-
 
-    - name: 🛠️ 安装 vcpkg
+    # 设置 vcpkg (使用 run-vcpkg action)
+    - name: 🛠️ 设置 vcpkg
+      uses: lukka/run-vcpkg@v11.5
+
+    # CMake 配置
+    - name: 🏗️ 配置 CMake
+      shell: bash
       run: |
-        if [ ! -d "$VCPKG_ROOT" ]; then
-          git clone https://github.com/Microsoft/vcpkg.git $VCPKG_ROOT
+        echo "VCPKG_ROOT: ${VCPKG_ROOT}"
+        echo "构建类型: ${{ matrix.build_type }}"
+        
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          cmake -B build \
+            -G "${{ env.VS_GENERATOR }}" -A "${{ env.VS_PLATFORM }}" \
+            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DSHIELD_BUILD_TESTS=ON \
+            -DSHIELD_BUILD_EXAMPLES=ON
+        else
+          cmake -B build \
+            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DSHIELD_BUILD_TESTS=ON \
+            -DSHIELD_BUILD_EXAMPLES=ON \
+            -G Ninja
         fi
-        cd $VCPKG_ROOT
-        ./bootstrap-vcpkg.sh
-        ./vcpkg integrate install
 
-    - name: 🏗️ 配置构建
-      run: |
-        cmake -B build \
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-          -DSHIELD_BUILD_TESTS=ON \
-          -DSHIELD_BUILD_EXAMPLES=ON \
-          -G Ninja
-
+    # 构建项目
     - name: 🔨 编译项目
       run: |
-        cmake --build build --config ${{ matrix.build_type }} --parallel $(nproc)
+        if [ "${{ matrix.platform }}" = "linux" ]; then
+          cmake --build build --config ${{ matrix.build_type }} --parallel $(nproc)
+        elif [ "${{ matrix.platform }}" = "macos" ]; then
+          cmake --build build --config ${{ matrix.build_type }} --parallel $(sysctl -n hw.logicalcpu)
+        else
+          cmake --build build --config ${{ matrix.build_type }} --parallel
+        fi
+      shell: bash
 
+    # 运行测试
     - name: 🧪 运行测试
+      working-directory: build
       run: |
-        cd build
-        ctest --output-on-failure --parallel $(nproc)
+        if [ "${{ matrix.platform }}" = "windows" ]; then
+          ctest --build-config ${{ matrix.build_type }} --output-on-failure
+        else
+          ctest --output-on-failure --parallel
+        fi
+      shell: bash
 
-    - name: 📊 测试覆盖率 (仅 Debug + GCC)
-      if: matrix.build_type == 'Debug' && matrix.compiler == 'gcc-11'
+    # 测试覆盖率 (仅 Linux Debug + GCC)
+    - name: 📊 测试覆盖率
+      if: matrix.platform == 'linux' && matrix.build_type == 'Debug' && matrix.compiler == 'gcc-11'
       run: |
         sudo apt-get install -y gcovr
         gcovr --root . --exclude-directories build/vcpkg_installed --xml-pretty --xml coverage.xml
         
     - name: 📤 上传覆盖率报告
-      if: matrix.build_type == 'Debug' && matrix.compiler == 'gcc-11'
+      if: matrix.platform == 'linux' && matrix.build_type == 'Debug' && matrix.compiler == 'gcc-11'
       uses: codecov/codecov-action@v3
       with:
         files: coverage.xml
         fail_ci_if_error: false
 
-  # 构建和测试 (macOS)
-  build-macos:
-    runs-on: macos-latest
-    needs: code-quality
-    
-    steps:
-    - name: 📥 检出代码
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-
-    - name: 🔧 安装构建依赖
-      run: |
-        brew install cmake ninja pkg-config
-
-    - name: 📦 缓存 vcpkg
-      uses: actions/cache@v3
-      with:
-        path: |
-          ${{ env.VCPKG_ROOT }}
-          !${{ env.VCPKG_ROOT }}/buildtrees
-          !${{ env.VCPKG_ROOT }}/packages
-          !${{ env.VCPKG_ROOT }}/downloads
-        key: vcpkg-macos-${{ hashFiles('vcpkg.json') }}
-
-    - name: 🛠️ 安装 vcpkg
-      run: |
-        git clone https://github.com/Microsoft/vcpkg.git $VCPKG_ROOT
-        cd $VCPKG_ROOT
-        ./bootstrap-vcpkg.sh
-
-    - name: 🏗️ 配置和编译
-      run: |
-        cmake -B build \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-          -DSHIELD_BUILD_TESTS=ON \
-          -G Ninja
-        cmake --build build --parallel $(sysctl -n hw.logicalcpu)
-
-    - name: 🧪 运行测试
-      run: |
-        cd build
-        ctest --output-on-failure --parallel $(sysctl -n hw.logicalcpu)
-
-  # Docker 镜像构建
+  # Docker 镜像构建 - 仅 main 分支和 tag
   build-docker:
     runs-on: ubuntu-latest
-    needs: [build-linux]
-    if: github.event_name == 'push'
+    needs: [build-and-test]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     
     steps:
     - name: 📥 检出代码
@@ -202,7 +219,6 @@ jobs:
       uses: docker/setup-buildx-action@v3
 
     - name: 🔑 登录容器注册表
-      if: github.event_name != 'pull_request'
       uses: docker/login-action@v3
       with:
         registry: ${{ env.REGISTRY }}
@@ -216,7 +232,9 @@ jobs:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
           type=ref,event=branch
-          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
           type=sha
           type=raw,value=latest,enable={{is_default_branch}}
 
@@ -225,7 +243,7 @@ jobs:
       with:
         context: .
         platforms: linux/amd64,linux/arm64
-        push: ${{ github.event_name != 'pull_request' }}
+        push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
@@ -234,11 +252,11 @@ jobs:
           BUILD_TYPE=Release
           ENABLE_OPTIMIZATIONS=ON
 
-  # 安全扫描
+  # 安全扫描 - 仅 main 分支和 tag
   security-scan:
     runs-on: ubuntu-latest
     needs: [build-docker]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     
     steps:
     - name: 📥 检出代码
@@ -267,7 +285,6 @@ jobs:
       uses: github/codeql-action/analyze@v3
 
     - name: 🐳 Docker 镜像安全扫描
-      if: github.event_name == 'push'
       uses: aquasecurity/trivy-action@master
       with:
         image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -275,22 +292,21 @@ jobs:
         output: 'trivy-results.sarif'
 
     - name: 📤 上传安全扫描结果
-      if: github.event_name == 'push'
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: 'trivy-results.sarif'
 
-  # 性能基准测试
+  # 性能基准测试 - 仅 main 分支
   benchmark:
     runs-on: ubuntu-latest
-    needs: [build-linux]
+    needs: [build-and-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
     steps:
     - name: 📥 检出代码
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0  # 需要历史记录来比较性能
+        fetch-depth: 0
 
     - name: 🔧 安装依赖
       run: |
@@ -324,3 +340,247 @@ jobs:
         comment-on-alert: true
         alert-threshold: '200%'
         fail-on-alert: false
+
+  # ====== 发布相关 Jobs (仅 tag 触发) ======
+  
+  # 创建 GitHub Release
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+    if: startsWith(github.ref, 'refs/tags/')
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      tag_name: ${{ steps.get_version.outputs.tag_name }}
+    steps:
+    - name: 📥 检出代码
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: 🏷️ 获取版本信息
+      id: get_version
+      run: |
+        TAG=${GITHUB_REF#refs/tags/}
+        echo "tag_name=$TAG" >> $GITHUB_OUTPUT
+        echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+
+    - name: 📝 生成更新日志
+      id: changelog
+      run: |
+        # 获取上一个标签
+        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+        
+        if [ -n "$PREV_TAG" ]; then
+          echo "## 🎉 更新内容" > changelog.md
+          echo "" >> changelog.md
+          
+          # 获取提交记录并按类型分类
+          git log --pretty=format:"%s" ${PREV_TAG}..HEAD | while read line; do
+            if [[ $line =~ ^feat(\(.+\))?!?: ]]; then
+              echo "### ✨ 新功能" >> changelog.md
+              echo "- ${line#*: }" >> changelog.md
+            elif [[ $line =~ ^fix(\(.+\))?!?: ]]; then
+              echo "### 🐛 Bug 修复" >> changelog.md
+              echo "- ${line#*: }" >> changelog.md
+            elif [[ $line =~ ^docs(\(.+\))?!?: ]]; then
+              echo "### 📚 文档" >> changelog.md
+              echo "- ${line#*: }" >> changelog.md
+            elif [[ $line =~ ^perf(\(.+\))?!?: ]]; then
+              echo "### ⚡ 性能优化" >> changelog.md
+              echo "- ${line#*: }" >> changelog.md
+            fi
+          done
+        else
+          echo "## 🎉 首次发布" > changelog.md
+          echo "" >> changelog.md
+          echo "这是 Shield 游戏服务器框架的首个正式版本。" >> changelog.md
+        fi
+        
+        # 输出到 GitHub Actions
+        {
+          echo 'changelog<<EOF'
+          cat changelog.md
+          echo 'EOF'
+        } >> $GITHUB_OUTPUT
+
+    - name: 🎯 创建 Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.get_version.outputs.tag_name }}
+        release_name: Shield ${{ steps.get_version.outputs.tag_name }}
+        body: ${{ steps.changelog.outputs.changelog }}
+        draft: false
+        prerelease: ${{ contains(steps.get_version.outputs.tag_name, '-') }}
+
+  # 构建发布版本
+  build-release:
+    runs-on: ${{ matrix.os }}
+    needs: create-release
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+            target: linux-x64
+          - os: macos-latest
+            arch: x64
+            target: macos-x64
+          - os: windows-latest
+            arch: x64
+            target: windows-x64
+    
+    steps:
+    - name: 📥 检出代码
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: 🔧 安装构建依赖 (Linux)
+      if: matrix.os == 'ubuntu-latest'  
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake ninja-build
+
+    - name: 🔧 安装构建依赖 (macOS)
+      if: matrix.os == 'macos-latest'
+      run: |
+        brew install cmake ninja
+
+    - name: 🔧 安装构建依赖 (Windows)
+      if: matrix.os == 'windows-latest'
+      run: |
+        choco install cmake ninja
+
+    - name: 🛠️ 设置 vcpkg
+      uses: lukka/run-vcpkg@v11.5
+
+    - name: 🏗️ 构建发布版本
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" == "Windows" ]; then
+          cmake -B build \
+            -G "Visual Studio 17 2022" -A x64 \
+            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSHIELD_BUILD_EXAMPLES=ON
+        else
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+            -DSHIELD_BUILD_EXAMPLES=ON \
+            -G Ninja
+        fi
+        
+        cmake --build build --config Release --parallel
+
+    - name: 📦 打包发布文件
+      shell: bash
+      run: |
+        mkdir -p release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}
+        
+        # 复制二进制文件
+        if [ "$RUNNER_OS" == "Windows" ]; then
+          cp build/bin/shield.exe release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ 2>/dev/null || true
+          cp build/bin/*.dll release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ 2>/dev/null || true
+        else
+          cp build/bin/shield release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ 2>/dev/null || true
+        fi
+        
+        # 复制配置文件和脚本 (如果存在)
+        [ -d config ] && cp -r config release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ || true
+        [ -d scripts ] && cp -r scripts release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ || true
+        
+        # 复制文档
+        cp README.md release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/
+        cp LICENSE release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ 2>/dev/null || true
+        
+        # 创建压缩包
+        cd release
+        if [ "$RUNNER_OS" == "Windows" ]; then
+          7z a shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}.zip shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/*
+        else
+          tar -czf shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}.tar.gz shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}
+        fi
+
+    - name: 📤 上传发布文件
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ${{ runner.os == 'Windows' && format('release/shield-{0}-{1}.zip', needs.create-release.outputs.tag_name, matrix.target) || format('release/shield-{0}-{1}.tar.gz', needs.create-release.outputs.tag_name, matrix.target) }}
+        asset_name: ${{ runner.os == 'Windows' && format('shield-{0}-{1}.zip', needs.create-release.outputs.tag_name, matrix.target) || format('shield-{0}-{1}.tar.gz', needs.create-release.outputs.tag_name, matrix.target) }}
+        asset_content_type: ${{ runner.os == 'Windows' && 'application/zip' || 'application/gzip' }}
+
+  # 部署文档 - 仅 tag
+  deploy-docs:
+    runs-on: ubuntu-latest
+    needs: create-release
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    
+    steps:
+    - name: 📥 检出代码
+      uses: actions/checkout@v4
+
+    - name: 💾 安装 mdBook
+      run: |
+        curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
+        rustup update
+        cargo install mdbook
+
+    - name: 🔧 配置 GitHub Pages
+      id: pages
+      uses: actions/configure-pages@v4
+
+    - name: 📖 构建文档
+      run: |
+        # 更新版本信息 (如果存在 book.toml)
+        if [ -f book.toml ]; then
+          sed -i 's/version = ".*"/version = "${{ needs.create-release.outputs.tag_name }}"/' book.toml
+          mdbook build
+        else
+          echo "book.toml not found, skipping documentation build"
+          mkdir -p book
+          echo "<h1>Documentation not configured</h1>" > book/index.html
+        fi
+
+    - name: 📤 上传文档
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ./book
+
+    - name: 🚀 部署到 GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+
+  # 发布通知
+  notify:
+    runs-on: ubuntu-latest
+    needs: [create-release, build-release, build-docker, deploy-docs]
+    if: startsWith(github.ref, 'refs/tags/') && always()
+    steps:
+    - name: 📢 发布成功通知
+      if: needs.create-release.result == 'success' && needs.build-release.result == 'success'
+      run: |
+        echo "🎉 Shield ${{ needs.create-release.outputs.tag_name }} 发布成功！"
+        echo "📦 二进制文件已上传到 GitHub Releases"
+        echo "🐳 Docker 镜像已推送到 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+        echo "📚 文档已部署到 GitHub Pages"
+
+    - name: ❌ 发布失败通知
+      if: needs.create-release.result == 'failure' || needs.build-release.result == 'failure'
+      run: |
+        echo "❌ Shield ${{ needs.create-release.outputs.tag_name }} 发布失败！"
+        echo "请检查构建日志和错误信息。"
+        exit 1
