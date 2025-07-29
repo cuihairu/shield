@@ -1,6 +1,6 @@
 # Shield Game Server Framework
 
-[![🔄 统一CI/CD管道](https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/shield/actions/workflows/ci.yml)
+[![CI/CD](https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/shield/actions/workflows/ci.yml)
 
 Shield is a modern C++ game server framework that combines Pitaya's distributed architecture with Skynet's high-performance concurrency model, designed specifically for building large-scale multiplayer online games.
 

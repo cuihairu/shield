@@ -1,5 +1,6 @@
 #include "shield/protocol/binary_protocol.hpp"
-#include <arpa/inet.h> // For htonl, ntohl
+
+#include <arpa/inet.h>  // For htonl, ntohl
 
 namespace shield::protocol {
 
@@ -19,9 +20,10 @@ std::vector<char> BinaryProtocol::encode(const std::string& message) {
     return buffer;
 }
 
-std::pair<std::string, size_t> BinaryProtocol::decode(const char* buffer, size_t length) {
+std::pair<std::string, size_t> BinaryProtocol::decode(const char* buffer,
+                                                      size_t length) {
     if (length < HEADER_SIZE) {
-        return {"", 0}; // Not enough data for header
+        return {"", 0};  // Not enough data for header
     }
 
     uint32_t total_length;
@@ -29,11 +31,11 @@ std::pair<std::string, size_t> BinaryProtocol::decode(const char* buffer, size_t
     total_length = ntohl(total_length);
 
     if (length < total_length) {
-        return {"", 0}; // Not enough data for full message
+        return {"", 0};  // Not enough data for full message
     }
 
     std::string message(buffer + HEADER_SIZE, total_length - HEADER_SIZE);
     return {message, total_length};
 }
 
-} // namespace shield::protocol
+}  // namespace shield::protocol

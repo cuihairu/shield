@@ -2,11 +2,13 @@
 
 namespace shield::protocol {
 
-void ProtocolHandlerFactory::register_handler(ProtocolType type, HandlerCreator creator) {
+void ProtocolHandlerFactory::register_handler(ProtocolType type,
+                                              HandlerCreator creator) {
     creators_[type] = std::move(creator);
 }
 
-std::unique_ptr<IProtocolHandler> ProtocolHandlerFactory::create_handler(ProtocolType type) {
+std::unique_ptr<IProtocolHandler> ProtocolHandlerFactory::create_handler(
+    ProtocolType type) {
     auto it = creators_.find(type);
     if (it != creators_.end()) {
         return it->second();
@@ -14,4 +16,4 @@ std::unique_ptr<IProtocolHandler> ProtocolHandlerFactory::create_handler(Protoco
     return nullptr;
 }
 
-} // namespace shield::protocol
+}  // namespace shield::protocol

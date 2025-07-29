@@ -1,14 +1,15 @@
 #include "shield/net/master_reactor.hpp"
+
 #include "shield/core/logger.hpp"
 
 namespace shield::net {
 
-MasterReactor::MasterReactor(const std::string& host, uint16_t port, size_t num_slave_reactors)
-    : m_acceptor(m_io_context),
-      m_next_slave_reactor(0) {
-    
+MasterReactor::MasterReactor(const std::string& host, uint16_t port,
+                             size_t num_slave_reactors)
+    : m_acceptor(m_io_context), m_next_slave_reactor(0) {
     boost::asio::ip::tcp::resolver resolver(m_io_context);
-    boost::asio::ip::tcp::endpoint endpoint = *resolver.resolve(host, std::to_string(port)).begin();
+    boost::asio::ip::tcp::endpoint endpoint =
+        *resolver.resolve(host, std::to_string(port)).begin();
     m_acceptor.open(endpoint.protocol());
     m_acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
     m_acceptor.bind(endpoint);
@@ -16,15 +17,12 @@ MasterReactor::MasterReactor(const std::string& host, uint16_t port, size_t num_
 
     for (size_t i = 0; i < num_slave_reactors; ++i) {
         m_slave_reactors.emplace_back(std::make_unique<SlaveReactor>());
-        m_slave_threads.emplace_back([this, i]() {
-            m_slave_reactors[i]->run();
-        });
+        m_slave_threads.emplace_back(
+            [this, i]() { m_slave_reactors[i]->run(); });
     }
 }
 
-MasterReactor::~MasterReactor() {
-    stop();
-}
+MasterReactor::~MasterReactor() { stop(); }
 
 void MasterReactor::start() {
     SHIELD_LOG_INFO << "MasterReactor starting...";
@@ -49,21 +47,23 @@ void MasterReactor::stop() {
 }
 
 void MasterReactor::do_accept() {
-    m_acceptor.async_accept(
-        [this](boost::system::error_code ec, boost::asio::ip::tcp::socket socket) {
-            if (!ec) {
-                if (m_session_creator) {
-                    auto session = m_session_creator(std::move(socket));
-                    m_slave_reactors[m_next_slave_reactor]->post_session(session);
-                    m_next_slave_reactor = (m_next_slave_reactor + 1) % m_slave_reactors.size();
-                } else {
-                    SHIELD_LOG_WARN << "No session creator set, dropping connection.";
-                }
+    m_acceptor.async_accept([this](boost::system::error_code ec,
+                                   boost::asio::ip::tcp::socket socket) {
+        if (!ec) {
+            if (m_session_creator) {
+                auto session = m_session_creator(std::move(socket));
+                m_slave_reactors[m_next_slave_reactor]->post_session(session);
+                m_next_slave_reactor =
+                    (m_next_slave_reactor + 1) % m_slave_reactors.size();
             } else {
-                SHIELD_LOG_ERROR << "Accept error: " << ec.message();
+                SHIELD_LOG_WARN
+                    << "No session creator set, dropping connection.";
             }
-            do_accept();
-        });
+        } else {
+            SHIELD_LOG_ERROR << "Accept error: " << ec.message();
+        }
+        do_accept();
+    });
 }
 
-} // namespace shield::net
+}  // namespace shield::net

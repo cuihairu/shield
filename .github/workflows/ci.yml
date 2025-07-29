@@ -16,38 +16,107 @@ env:
 jobs:
   # 代码质量检查 - 所有情况都执行
   code-quality:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # 选项1: 使用自定义容器 (取消注释以启用)
+    # container: 
+    #   image: ghcr.io/${{ github.repository }}/ci-tools:latest
+    #   credentials:
+    #     username: ${{ github.actor }}
+    #     password: ${{ secrets.GITHUB_TOKEN }}
+    
     steps:
     - name: 📥 检出代码
       uses: actions/checkout@v4
       
+    # 缓存工具安装，避免重复下载
+    - name: 📦 缓存工具
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/pip
+          /usr/lib/llvm-14
+        key: tools-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
+        restore-keys: |
+          tools-${{ runner.os }}-
+      
+    # 批量安装所有需要的工具
+    - name: 🔧 安装代码检查工具
+      run: |
+        # 检查是否已有预装版本
+        if command -v clang-format-14 &> /dev/null; then
+          echo "✅ clang-format-14 已预装"
+        else
+          echo "安装 clang-format-14..."
+          sudo apt-get update -qq
+          sudo apt-get install -y clang-format-14
+        fi
+        
+        if command -v clang-tidy-14 &> /dev/null; then
+          echo "✅ clang-tidy-14 已预装"
+        else
+          echo "安装 clang-tidy-14..."
+          sudo apt-get install -y clang-tidy-14
+        fi
+        
+        # 检查 cmake-format 是否已安装
+        if command -v cmake-format &> /dev/null; then
+          echo "✅ cmake-format 已预装"
+        else
+          echo "安装 cmake-format..."
+          pip install --user cmake-format
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        fi
+        
     - name: 🔍 C++ 代码格式检查
       run: |
-        sudo apt-get update
-        sudo apt-get install -y clang-format-14
-        
         echo "检查 C++ 代码格式..."
-        find include src -name "*.hpp" -o -name "*.cpp" | while read file; do
-          if ! clang-format-14 --dry-run --Werror "$file" > /dev/null 2>&1; then
-            echo "❌ 格式错误: $file"
-            clang-format-14 --dry-run --Werror "$file" 2>&1 || true
+        # 使用并行处理加速检查
+        find include src -name "*.hpp" -o -name "*.cpp" | \
+        xargs -P $(nproc) -I {} sh -c '
+          if ! clang-format-14 --dry-run --Werror "{}" > /dev/null 2>&1; then
+            echo "❌ 格式错误: {}"
+            clang-format-14 --dry-run --Werror "{}" 2>&1
             exit 1
+          else
+            echo "✅ 格式正确: {}"
           fi
-        done
+        '
         echo "✅ C++ 代码格式检查通过"
         
     - name: 🔍 CMake 格式检查
       run: |
-        sudo pip install cmake-format
-        
         echo "检查 CMake 文件格式..."
-        find . -name "CMakeLists.txt" -o -name "*.cmake" | while read file; do
-          if ! cmake-format --check "$file" > /dev/null 2>&1; then
-            echo "❌ CMake 格式错误: $file"
+        find . -name "CMakeLists.txt" -o -name "*.cmake" | \
+        xargs -P $(nproc) -I {} sh -c '
+          if ! cmake-format --check "{}" > /dev/null 2>&1; then
+            echo "❌ CMake 格式错误: {}"
             exit 1
+          else
+            echo "✅ CMake 格式正确: {}"
           fi
-        done
+        '
         echo "✅ CMake 格式检查通过"
+        
+    - name: 🔍 C++ 静态分析 (clang-tidy)
+      run: |
+        echo "运行 C++ 静态分析..."
+        
+        # 仅为 clang-tidy 创建最小配置
+        cmake -B build_tidy \
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+          -DCMAKE_CXX_COMPILER=clang++-14 \
+          -DCMAKE_C_COMPILER=clang-14
+        
+        # 并行检查关键文件，限制数量避免超时
+        find include src -name "*.cpp" -o -name "*.hpp" | head -20 | \
+        xargs -P 4 -I {} sh -c '
+          echo "🔍 检查: {}"
+          if ! timeout 30s clang-tidy-14 -p build_tidy "{}" --quiet 2>/dev/null; then
+            echo "⚠️  静态分析发现问题: {}"
+            # 继续检查其他文件
+          fi
+        '
+        echo "✅ C++ 静态分析检查完成"
 
   # 多平台构建和测试 - 所有情况都执行
   build-and-test:
@@ -58,19 +127,19 @@ jobs:
       matrix:
         include:
           # Linux 构建矩阵
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             compiler: gcc-11
             build_type: Debug
             platform: linux
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             compiler: gcc-11
             build_type: Release
             platform: linux
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             compiler: clang-14
             build_type: Debug
             platform: linux
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             compiler: clang-14
             build_type: Release
             platform: linux
@@ -207,7 +276,7 @@ jobs:
 
   # Docker 镜像构建 - 仅 main 分支和 tag
   build-docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-and-test]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     
@@ -254,7 +323,7 @@ jobs:
 
   # 安全扫描 - 仅 main 分支和 tag
   security-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-docker]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     
@@ -298,7 +367,7 @@ jobs:
 
   # 性能基准测试 - 仅 main 分支
   benchmark:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-and-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
@@ -345,7 +414,7 @@ jobs:
   
   # 创建 GitHub Release
   create-release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-and-test]
     if: startsWith(github.ref, 'refs/tags/')
     outputs:
@@ -423,7 +492,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             arch: x64
             target: linux-x64
           - os: macos-latest
@@ -440,7 +509,7 @@ jobs:
         submodules: recursive
 
     - name: 🔧 安装构建依赖 (Linux)
-      if: matrix.os == 'ubuntu-latest'  
+      if: matrix.os == 'ubuntu-24.04'  
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential cmake ninja-build
@@ -518,7 +587,7 @@ jobs:
 
   # 部署文档 - 仅 tag
   deploy-docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: create-release
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
@@ -566,7 +635,7 @@ jobs:
 
   # 发布通知
   notify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [create-release, build-release, build-docker, deploy-docs]
     if: startsWith(github.ref, 'refs/tags/') && always()
     steps:

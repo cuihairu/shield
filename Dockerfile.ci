@@ -1,0 +1,23 @@
+# 创建专用的 Docker 镜像以进一步优化
+FROM ubuntu:24.04
+
+# 预装所有开发工具
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    ninja-build \
+    clang-14 \
+    clang-format-14 \
+    clang-tidy-14 \
+    python3-pip \
+    git \
+    curl \
+    && pip install cmake-format \
+    && rm -rf /var/lib/apt/lists/*
+
+# 设置工作目录
+WORKDIR /workspace
+
+# 设置环境变量
+ENV CC=clang-14
+ENV CXX=clang++-14

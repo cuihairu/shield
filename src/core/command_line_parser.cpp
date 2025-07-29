@@ -1,7 +1,9 @@
 #include "shield/core/command_line_parser.hpp"
-#include <iostream>
-#include "shield/version.hpp"
+
 #include <boost/program_options.hpp>
+#include <iostream>
+
+#include "shield/version.hpp"
 
 namespace po = boost::program_options;
 
@@ -11,12 +13,10 @@ CommandLineOptions CommandLineParser::parse(int argc, char* argv[]) {
     CommandLineOptions options;
     try {
         po::options_description desc("Allowed options");
-        desc.add_options()
-            ("version,v", "Print version information")
-            ("config,c", po::value<std::string>(), "Specify configuration file")
-            ("test,t", po::value<std::string>(), "Test configuration file")
-            ("help,h", "Print help information")
-        ;
+        desc.add_options()("version,v", "Print version information")(
+            "config,c", po::value<std::string>(), "Specify configuration file")(
+            "test,t", po::value<std::string>(), "Test configuration file")(
+            "help,h", "Print help information");
 
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -29,7 +29,9 @@ CommandLineOptions CommandLineParser::parse(int argc, char* argv[]) {
 
         if (vm.count("version")) {
             options.show_version = true;
-            std::cout << "Shield Game Framework v" << shield::VERSION << " (Git Commit: " << GIT_COMMIT_HASH << ")" << std::endl;
+            std::cout << "Shield Game Framework v" << shield::VERSION
+                      << " (Git Commit: " << GIT_COMMIT_HASH << ")"
+                      << std::endl;
         }
 
         if (vm.count("config")) {
@@ -39,13 +41,12 @@ CommandLineOptions CommandLineParser::parse(int argc, char* argv[]) {
             options.config_file = vm["test"].as<std::string>();
             options.test = true;
         }
-    }
-    catch (const po::error& e) {
+    } catch (const po::error& e) {
         std::cerr << "Error parsing options: " << e.what() << std::endl;
-        options.show_help = true; // Show help on error
+        options.show_help = true;  // Show help on error
     }
 
     return options;
 }
 
-} // namespace shield::core
+}  // namespace shield::core

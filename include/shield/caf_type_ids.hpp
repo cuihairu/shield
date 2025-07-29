@@ -6,4 +6,4 @@
 namespace shield::actor {
 struct LuaMessage;
 struct LuaResponse;
-} // namespace shield::actor
+}  // namespace shield::actor

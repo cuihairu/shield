@@ -1,15 +1,15 @@
 #include "shield/script/lua_engine.hpp"
-#include "shield/core/logger.hpp"
-#include <iostream>
+
 #include <fstream>
+#include <iostream>
 #include <sstream>
+
+#include "shield/core/logger.hpp"
 
 namespace shield::script {
 
 LuaEngine::LuaEngine(const std::string& name)
-    : Component(name)
-    , initialized_(false) {
-}
+    : Component(name), initialized_(false) {}
 
 LuaEngine::~LuaEngine() {
     // sol2 handles cleanup automatically
@@ -17,17 +17,10 @@ LuaEngine::~LuaEngine() {
 
 void LuaEngine::on_init() {
     try {
-        lua_state_.open_libraries(
-            sol::lib::base,
-            sol::lib::package,
-            sol::lib::string,
-            sol::lib::math,
-            sol::lib::table,
-            sol::lib::io,
-            sol::lib::os,
-            sol::lib::debug,
-            sol::lib::coroutine
-        );
+        lua_state_.open_libraries(sol::lib::base, sol::lib::package,
+                                  sol::lib::string, sol::lib::math,
+                                  sol::lib::table, sol::lib::io, sol::lib::os,
+                                  sol::lib::debug, sol::lib::coroutine);
         initialized_ = true;
         SHIELD_LOG_INFO << "LuaEngine initialized successfully";
     } catch (const sol::error& e) {
@@ -47,7 +40,7 @@ bool LuaEngine::load_script(const std::string& filename) {
         SHIELD_LOG_ERROR << "LuaEngine not initialized";
         return false;
     }
-    
+
     try {
         auto result = lua_state_.script_file(filename);
         if (result.valid()) {
@@ -55,11 +48,13 @@ bool LuaEngine::load_script(const std::string& filename) {
             return true;
         } else {
             sol::error err = result;
-            SHIELD_LOG_ERROR << "Failed to load script " << filename << ": " << err.what();
+            SHIELD_LOG_ERROR << "Failed to load script " << filename << ": "
+                             << err.what();
             return false;
         }
     } catch (const sol::error& e) {
-        SHIELD_LOG_ERROR << "Exception loading script " << filename << ": " << e.what();
+        SHIELD_LOG_ERROR << "Exception loading script " << filename << ": "
+                         << e.what();
         return false;
     }
 }
@@ -69,7 +64,7 @@ bool LuaEngine::execute_string(const std::string& code) {
         SHIELD_LOG_ERROR << "LuaEngine not initialized";
         return false;
     }
-    
+
     try {
         auto result = lua_state_.script(code);
         if (result.valid()) {
@@ -85,4 +80,4 @@ bool LuaEngine::execute_string(const std::string& code) {
     }
 }
 
-} // namespace shield::script
+}  // namespace shield::script
