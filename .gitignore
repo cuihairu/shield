@@ -74,6 +74,9 @@ _deps
 *.swp
 *~
 
+# Generated header files (CMake configured)
+include/shield/version.hpp
+
 # macOS specific
 .DS_Store
 .AppleDouble

@@ -1,0 +1,46 @@
+# Shield Game Framework - Base Configuration
+# app.yaml - 默认配置
+
+# Application settings
+app:
+  name: "Shield Game Framework"
+  version: "0.1.0"
+  show_banner: true
+
+# Logger configuration  
+logger:
+  level: "info"
+  console_output: true
+  file_output: false
+  file_path: "logs/shield.log"
+
+# Server configuration
+server:
+  host: "localhost"
+  port: 8080
+  max_connections: 1000
+
+# Database configuration
+database:
+  host: "localhost"
+  port: 5432
+  name: "shield_db"
+  username: "shield"
+  password: "password"
+  
+# Game logic configuration (for Lua scripts)
+game:
+  max_players: 100
+  world_size: 1000
+  spawn_points:
+    - [0, 0, 0]
+    - [100, 0, 100]
+  difficulty: "normal"
+  
+# Lua scripts configuration
+lua:
+  script_dir: "scripts/"
+  auto_reload: true
+  preload_scripts:
+    - "init.lua"
+    - "game_logic.lua"

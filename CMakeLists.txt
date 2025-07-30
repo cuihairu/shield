@@ -132,7 +132,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_compile_options(-Wno-deprecated-declarations)
 
 # Find required packages
-find_package(Protobuf CONFIG REQUIRED)
+find_package(Protobuf CONFIG QUIET)
 
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
@@ -140,8 +140,6 @@ find_package(Lua REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
 find_package(hiredis CONFIG REQUIRED)
 find_package(redis++ CONFIG REQUIRED)
-find_package(etcd-cpp-api CONFIG REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
 find_package(CAF CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 
@@ -236,7 +234,7 @@ add_library(shield_core STATIC ${CORE_SOURCES})
 target_include_directories(
   shield_core
   PUBLIC ${PROJECT_SOURCE_DIR}/include
-         ${CMAKE_BINARY_DIR}/include # Directory for generated headers
+         ${CMAKE_CURRENT_BINARY_DIR}/include # Directory for generated headers like version.hpp
          ${LUA_INCLUDE_DIR}
          ${SOL2_INCLUDE_DIRS})
 target_link_libraries(
@@ -252,16 +250,15 @@ target_link_libraries(
          CAF::core
          CAF::io
          nlohmann_json::nlohmann_json
-         etcd-cpp-api
          redis++::redis++_static
          Threads::Threads
-         gRPC::gpr
-         gRPC::grpc
-         gRPC::grpc++
-         gRPC::grpc++_alts
          OpenSSL::SSL
-         OpenSSL::Crypto
-         protobuf::libprotobuf)
+         OpenSSL::Crypto)
+
+# Add protobuf if available
+if(Protobuf_FOUND)
+  target_link_libraries(shield_core PUBLIC protobuf::libprotobuf)
+endif()
 
 # Add msgpack-cxx if available
 if(msgpack-cxx_FOUND)

@@ -42,19 +42,6 @@
             "name": "sol2"
         },
         {
-            "name": "protobuf"
-        },
-        {
-            "name": "grpc"
-        },
-        {
-            "name": "etcd-cpp-apiv3"
-        },
-        {
-            "name": "cpprestsdk",
-            "features": ["compression"]
-        },
-        {
             "name": "msgpack"
         }
     ],

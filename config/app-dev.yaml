@@ -1,0 +1,30 @@
+# Development Environment Configuration
+# app-dev.yaml - 开发环境配置覆盖
+
+# Override logger for development
+logger:
+  level: "debug"
+  console_output: true
+  file_output: true
+
+# Database for development
+database:
+  host: "localhost"
+  name: "shield_dev"
+  username: "dev_user"
+  password: "dev_password"
+
+# Server settings for development
+server:
+  port: 8080
+  max_connections: 10
+
+# Development game settings
+game:
+  max_players: 5
+  difficulty: "easy"
+  
+# Lua settings for development
+lua:
+  auto_reload: true
+  debug_mode: true

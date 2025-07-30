@@ -1,0 +1,32 @@
+# Production Environment Configuration  
+# app-prod.yaml - 生产环境配置覆盖
+
+# Production logger settings
+logger:
+  level: "warn"
+  console_output: false
+  file_output: true
+  file_path: "/var/log/shield/shield.log"
+
+# Production database
+database:
+  host: "prod-db.internal"
+  name: "shield_production"
+  username: "prod_user"
+  # password should be set via environment variable
+
+# Production server settings
+server:
+  host: "0.0.0.0"
+  port: 80
+  max_connections: 10000
+
+# Production game settings
+game:
+  max_players: 1000
+  difficulty: "hard"
+  
+# Lua settings for production
+lua:
+  auto_reload: false
+  debug_mode: false

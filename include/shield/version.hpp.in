@@ -1,4 +1,7 @@
 #pragma once
+#include <string>
+#include <iostream>
+
 #ifndef GIT_COMMIT_HASH
 #define GIT_COMMIT_HASH "Unknown"
 #endif
@@ -8,4 +11,22 @@ namespace shield {
     constexpr int VERSION_MAJOR = @PROJECT_VERSION_MAJOR@;
     constexpr int VERSION_MINOR = @PROJECT_VERSION_MINOR@;
     constexpr int VERSION_PATCH = @PROJECT_VERSION_PATCH@;
+
+    // Get formatted version string
+    inline std::string get_version_string() {
+        std::string version_str = "Shield Game Framework v" + std::string(VERSION);
+        
+        // Only append git commit if it's available and not "Unknown"
+        std::string git_hash = GIT_COMMIT_HASH;
+        if (!git_hash.empty() && git_hash != "Unknown") {
+            version_str += " (Git Commit: " + git_hash + ")";
+        }
+        
+        return version_str;
+    }
+
+    // Print version information to stdout
+    inline void print_version() {
+        std::cout << get_version_string() << std::endl;
+    }
 } 
