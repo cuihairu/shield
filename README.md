@@ -21,6 +21,9 @@ Shield is a modern C++ game server framework that combines Pitaya's distributed 
 git clone https://github.com/your-repo/shield.git
 cd shield
 
+# Setup development environment (including git hooks)
+./scripts/setup-hooks.sh
+
 # Build and run
 cmake -B build -S .
 cmake --build build

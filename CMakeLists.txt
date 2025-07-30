@@ -325,3 +325,7 @@ target_link_libraries(shield PRIVATE shield_core)
 # Add examples directory
 add_subdirectory(examples)
 add_subdirectory(tests)
+
+# Include development tools (Git hooks, formatting, etc.)
+# Note: Placed after main targets are defined but before any post-processing
+include(cmake/GitHooks.cmake)
