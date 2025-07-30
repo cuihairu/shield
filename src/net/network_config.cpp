@@ -47,33 +47,6 @@ void TcpConfig::from_ptree(const boost::property_tree::ptree& pt) {
     }
 }
 
-YAML::Node TcpConfig::to_yaml() const {
-    YAML::Node node;
-
-    // Server configuration
-    node["server"]["enabled"] = server.enabled;
-    node["server"]["host"] = server.host;
-    node["server"]["port"] = server.port;
-    node["server"]["backlog"] = server.backlog;
-    node["server"]["keep_alive"] = server.keep_alive;
-    node["server"]["max_connections"] = server.max_connections;
-
-    // Buffer configuration
-    node["buffer"]["receive_buffer_size"] = buffer.receive_buffer_size;
-    node["buffer"]["send_buffer_size"] = buffer.send_buffer_size;
-    node["buffer"]["no_delay"] = buffer.no_delay;
-    node["buffer"]["keep_alive_idle"] = buffer.keep_alive_idle;
-    node["buffer"]["keep_alive_interval"] = buffer.keep_alive_interval;
-    node["buffer"]["keep_alive_count"] = buffer.keep_alive_count;
-
-    // Threading configuration
-    node["threading"]["io_threads"] = threading.io_threads;
-    node["threading"]["worker_threads"] = threading.worker_threads;
-    node["threading"]["use_thread_pool"] = threading.use_thread_pool;
-
-    return node;
-}
-
 void TcpConfig::validate() const {
     if (server.enabled) {
         if (server.host.empty()) {
@@ -156,32 +129,6 @@ void UdpConfig::from_ptree(const boost::property_tree::ptree& pt) {
         threading.use_thread_pool = get_value(*threading_pt, "use_thread_pool",
                                               threading.use_thread_pool);
     }
-}
-
-YAML::Node UdpConfig::to_yaml() const {
-    YAML::Node node;
-
-    // Server configuration
-    node["server"]["enabled"] = server.enabled;
-    node["server"]["host"] = server.host;
-    node["server"]["port"] = server.port;
-    node["server"]["buffer_size"] = server.buffer_size;
-    node["server"]["max_packet_size"] = server.max_packet_size;
-
-    // Performance configuration
-    node["performance"]["reuse_address"] = performance.reuse_address;
-    node["performance"]["reuse_port"] = performance.reuse_port;
-    node["performance"]["receive_timeout"] = performance.receive_timeout;
-    node["performance"]["send_timeout"] = performance.send_timeout;
-    node["performance"]["max_concurrent_packets"] =
-        performance.max_concurrent_packets;
-
-    // Threading configuration
-    node["threading"]["io_threads"] = threading.io_threads;
-    node["threading"]["worker_threads"] = threading.worker_threads;
-    node["threading"]["use_thread_pool"] = threading.use_thread_pool;
-
-    return node;
 }
 
 void UdpConfig::validate() const {

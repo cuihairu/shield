@@ -5,7 +5,7 @@
 
 #include "shield/actor/distributed_actor_system.hpp"
 #include "shield/actor/lua_actor.hpp"
-#include "shield/core/component.hpp"
+#include "shield/core/service.hpp"
 #include "shield/gateway/gateway_config.hpp"
 #include "shield/net/master_reactor.hpp"
 #include "shield/net/session.hpp"
@@ -18,18 +18,24 @@
 
 namespace shield::gateway {
 
-class GatewayComponent : public core::Component {
+class GatewayService : public core::ReloadableService {
 public:
-    explicit GatewayComponent(const std::string &name,
-                              actor::DistributedActorSystem &actor_system,
-                              script::LuaVMPool &lua_vm_pool,
-                              std::shared_ptr<GatewayConfig> config);
-    ~GatewayComponent();
+    explicit GatewayService(const std::string &name,
+                             actor::DistributedActorSystem &actor_system,
+                             script::LuaVMPool &lua_vm_pool,
+                             std::shared_ptr<GatewayConfig> config);
+    ~GatewayService();
 
 protected:
-    void on_init() override;
+    void on_init(core::ApplicationContext& ctx) override;
     void on_start() override;
     void on_stop() override;
+    
+    // ReloadableService interface
+    void on_config_reloaded() override;
+
+public:
+    std::string name() const override { return m_name; }
 
 private:
     void setup_session(std::shared_ptr<net::Session> session);
@@ -46,6 +52,7 @@ private:
     actor::DistributedActorSystem &m_actor_system;
     script::LuaVMPool &m_lua_vm_pool;
     std::shared_ptr<GatewayConfig> m_config;
+    std::string m_name;
 
     std::unique_ptr<net::MasterReactor> m_master_reactor;
     std::unique_ptr<net::MasterReactor> m_http_reactor;  // HTTP server

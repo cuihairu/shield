@@ -8,7 +8,8 @@
 namespace shield::net {
 
 // TCP server configuration
-class TcpConfig : public shield::config::ComponentConfig {
+class TcpConfig
+    : public shield::config::ClonableConfigurationProperties<TcpConfig> {
 public:
     // TCP basic configuration
     struct ServerConfig {
@@ -44,10 +45,8 @@ public:
 
     // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
-    YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string component_name() const override { return "tcp"; }
-    CLONE_IMPL(TcpConfig)
+    std::string properties_name() const override { return "tcp"; }
 
     // Convenience methods
     int get_effective_io_threads() const;
@@ -56,7 +55,8 @@ public:
 };
 
 // UDP server configuration
-class UdpConfig : public config::ComponentConfig {
+class UdpConfig
+    : public shield::config::ReloadableConfigurationProperties<UdpConfig> {
 public:
     // UDP basic configuration
     struct ServerConfig {
@@ -90,10 +90,8 @@ public:
 
     // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
-    YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string component_name() const override { return "udp"; }
-    CLONE_IMPL(UdpConfig)
+    std::string properties_name() const override { return "udp"; }
 
     // Convenience methods
     int get_effective_io_threads() const;

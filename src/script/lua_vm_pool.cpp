@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <sstream>
 
+#include "shield/core/application_context.hpp"
 #include "shield/log/logger.hpp"
 
 namespace shield::script {
@@ -15,14 +16,17 @@ PooledLuaVM::PooledLuaVM(const std::string& vm_id)
 
 PooledLuaVM::~PooledLuaVM() {
     if (lua_engine_) {
-        lua_engine_->stop();
+        lua_engine_->on_stop();
     }
 }
 
 bool PooledLuaVM::initialize() {
     try {
-        lua_engine_->init();
-        lua_engine_->start();
+        // Create a dummy ApplicationContext for initialization
+        // In a real scenario, this should be passed from the pool
+        auto& ctx = core::ApplicationContext::instance();
+        lua_engine_->on_init(ctx);
+        lua_engine_->on_start();
         healthy_ = true;
 
         SHIELD_LOG_DEBUG << "PooledLuaVM " << vm_id_
@@ -40,10 +44,11 @@ void PooledLuaVM::reset() {
     try {
         // Create a new Lua state to reset everything
         if (lua_engine_) {
-            lua_engine_->stop();
+            lua_engine_->on_stop();
             lua_engine_ = std::make_unique<LuaEngine>(vm_id_ + "_engine");
-            lua_engine_->init();
-            lua_engine_->start();
+            auto& ctx = core::ApplicationContext::instance();
+            lua_engine_->on_init(ctx);
+            lua_engine_->on_start();
         }
 
         healthy_ = true;
@@ -59,7 +64,7 @@ void PooledLuaVM::reset() {
 
 // LuaVMPool implementation
 LuaVMPool::LuaVMPool(const std::string& name, LuaVMPoolConfig config)
-    : Component(name), config_(std::move(config)) {
+    : config_(std::move(config)), name_(name) {
     // Validate configuration
     if (config_.initial_size < config_.min_size) {
         config_.initial_size = config_.min_size;
@@ -78,12 +83,12 @@ LuaVMPool::LuaVMPool(const std::string& name, LuaVMPoolConfig config)
 }
 
 LuaVMPool::~LuaVMPool() {
-    if (state() == core::ComponentState::STARTED) {
-        stop();
+    if (running_.load()) {
+        on_stop();
     }
 }
 
-void LuaVMPool::on_init() {
+void LuaVMPool::on_init(core::ApplicationContext& ctx) {
     SHIELD_LOG_INFO << "Initializing LuaVMPool: " << name();
 }
 

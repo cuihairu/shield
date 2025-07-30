@@ -7,7 +7,7 @@
 #include <thread>
 #include <vector>
 
-#include "shield/core/component.hpp"
+#include "shield/core/service.hpp"
 
 #ifdef SHIELD_ENABLE_PROMETHEUS
 #include <prometheus/counter.h>
@@ -187,14 +187,14 @@ private:
 
 #endif
 
-// Main Prometheus component
-class PrometheusComponent : public shield::core::Component {
+// Main Prometheus service
+class PrometheusService : public shield::core::ReloadableService {
 public:
-    PrometheusComponent();
-    ~PrometheusComponent() override;
+    PrometheusService();
+    ~PrometheusService() override;
 
     // Get singleton instance
-    static PrometheusComponent &instance();
+    static PrometheusService &instance();
 
     // Get metrics collectors
     std::shared_ptr<SystemMetricsCollector> get_system_collector() const {
@@ -210,10 +210,14 @@ public:
     // Add custom metrics collector
     void add_collector(std::shared_ptr<MetricsCollector> collector);
 
-protected:
-    void on_init() override;
+    // Service interface
+    void on_init(core::ApplicationContext& ctx) override;
     void on_start() override;
     void on_stop() override;
+    std::string name() const override { return "prometheus"; }
+    
+    // ReloadableService interface
+    void on_config_reloaded() override;
 
 private:
 #ifdef SHIELD_ENABLE_PROMETHEUS

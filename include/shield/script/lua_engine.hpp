@@ -8,11 +8,11 @@
 #include <type_traits>
 #include <unordered_map>
 
-#include "shield/core/component.hpp"
+#include "shield/core/service.hpp"
 
 namespace shield::script {
 
-class LuaEngine : public core::Component {
+class LuaEngine : public core::Service {
 public:
     explicit LuaEngine(const std::string &name);
     ~LuaEngine();
@@ -45,13 +45,17 @@ public:
     template <typename T>
     std::optional<T> get_global(const std::string &name);
 
-protected:
-    void on_init() override;
+public:
+    void on_init(core::ApplicationContext &ctx) override;
+    void on_start() override {}
     void on_stop() override;
+
+    std::string name() const override { return name_; }
 
 private:
     sol::state lua_state_;
     bool initialized_;
+    std::string name_;
 };
 
 // Implementation of template methods using sol2

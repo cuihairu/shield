@@ -1,4 +1,4 @@
-#include "shield/gateway/gateway_component.hpp"
+#include "shield/gateway/gateway_service.hpp"
 
 #include "shield/actor/lua_actor.hpp"
 #include "shield/caf_type_ids.hpp"
@@ -8,19 +8,19 @@
 
 namespace shield::gateway {
 
-GatewayComponent::GatewayComponent(const std::string& name,
+GatewayService::GatewayService(const std::string& name,
                                    actor::DistributedActorSystem& actor_system,
                                    script::LuaVMPool& lua_vm_pool,
                                    std::shared_ptr<GatewayConfig> config)
-    : Component(name),
-      m_actor_system(actor_system),
+    : m_actor_system(actor_system),
       m_lua_vm_pool(lua_vm_pool),
-      m_config(config) {}
+      m_config(config),
+      m_name(name) {}
 
-GatewayComponent::~GatewayComponent() = default;
+GatewayService::~GatewayService() = default;
 
-void GatewayComponent::on_init() {
-    SHIELD_LOG_INFO << "Initializing GatewayComponent: " << name();
+void GatewayService::on_init(core::ApplicationContext& ctx) {
+    SHIELD_LOG_INFO << "Initializing GatewayService: " << name();
 
     if (!m_config) {
         throw std::runtime_error("GatewayConfig is null");
@@ -100,8 +100,8 @@ void GatewayComponent::on_init() {
     setup_protocol_handlers();
 }
 
-void GatewayComponent::on_start() {
-    SHIELD_LOG_INFO << "Starting GatewayComponent: " << name();
+void GatewayService::on_start() {
+    SHIELD_LOG_INFO << "Starting GatewayService: " << name();
 
     // Start TCP server
     m_master_reactor->start();
@@ -121,8 +121,8 @@ void GatewayComponent::on_start() {
     }
 }
 
-void GatewayComponent::on_stop() {
-    SHIELD_LOG_INFO << "Stopping GatewayComponent: " << name();
+void GatewayService::on_stop() {
+    SHIELD_LOG_INFO << "Stopping GatewayService: " << name();
 
     if (m_master_reactor) {
         m_master_reactor->stop();
@@ -137,7 +137,17 @@ void GatewayComponent::on_stop() {
     }
 }
 
-void GatewayComponent::setup_protocol_handlers() {
+void GatewayService::on_config_reloaded() {
+    SHIELD_LOG_INFO << "GatewayService config reloaded";
+    // Get the latest config
+    m_config = config::ConfigManager::instance().get_configuration_properties<GatewayConfig>();
+    // Stop the reactors to apply new settings
+    on_stop();
+    // Restart the reactors with new settings
+    on_start();
+}
+
+void GatewayService::setup_protocol_handlers() {
     // Create HTTP handler
     m_http_handler = protocol::create_http_handler();
     m_http_handler->set_session_provider(
@@ -205,7 +215,7 @@ void GatewayComponent::setup_protocol_handlers() {
     });
 }
 
-void GatewayComponent::setup_http_routes() {
+void GatewayService::setup_http_routes() {
     auto& router = m_http_handler->get_router();
 
     // Game API routes
@@ -244,8 +254,7 @@ void GatewayComponent::setup_http_routes() {
         });
 }
 
-std::shared_ptr<net::Session> GatewayComponent::get_session(
-    uint64_t session_id) {
+std::shared_ptr<net::Session> GatewayService::get_session(uint64_t session_id) {
     auto it = m_sessions.find(session_id);
     if (it != m_sessions.end()) {
         return it->second.lock();
@@ -253,7 +262,7 @@ std::shared_ptr<net::Session> GatewayComponent::get_session(
     return nullptr;
 }
 
-protocol::ProtocolType GatewayComponent::detect_protocol(uint64_t connection_id,
+protocol::ProtocolType GatewayService::detect_protocol(uint64_t connection_id,
                                                          const char* data,
                                                          size_t length) {
     if (length == 0) return protocol::ProtocolType::TCP;
@@ -280,7 +289,7 @@ protocol::ProtocolType GatewayComponent::detect_protocol(uint64_t connection_id,
     return protocol::ProtocolType::TCP;
 }
 
-void GatewayComponent::setup_session(std::shared_ptr<net::Session> session) {
+void GatewayService::setup_session(std::shared_ptr<net::Session> session) {
     // Store a receive buffer for this session
     m_session_recv_buffers[session->id()] = std::vector<char>();
 
@@ -369,7 +378,7 @@ void GatewayComponent::setup_session(std::shared_ptr<net::Session> session) {
     });
 }
 
-void GatewayComponent::handle_lua_actor_response(
+void GatewayService::handle_lua_actor_response(
     uint64_t session_id, const actor::LuaResponse& response) {
     // Find the session
     auto session_it = m_sessions.find(session_id);
@@ -408,7 +417,7 @@ void GatewayComponent::handle_lua_actor_response(
     }
 }
 
-void GatewayComponent::handle_lua_actor_response_json(
+void GatewayService::handle_lua_actor_response_json(
     uint64_t session_id, const std::string& response) {
     // Find the session
     auto session_it = m_sessions.find(session_id);

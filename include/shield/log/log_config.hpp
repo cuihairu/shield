@@ -9,7 +9,7 @@
 namespace shield::log {
 
 // Log configuration - modularized version
-class LogConfig : public config::ComponentConfig {
+class LogConfig : public config::ReloadableConfigurationProperties<LogConfig> {
 public:
     // Log level enumeration
     enum class LogLevel {
@@ -82,18 +82,13 @@ public:
 
     // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
-    YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string component_name() const override { return "log"; }
-    bool supports_hot_reload() const override {
-        return true;
-    }  // LogConfig supports hot reload
-    CLONE_IMPL(LogConfig)
+    std::string properties_name() const override { return "log"; }
 
-    // Convenience methods
+    // Helper methods for string/enum conversion
     static LogLevel level_from_string(const std::string& level_str);
     static std::string level_to_string(LogLevel level);
-    bool should_log(LogLevel level, const std::string& logger_name = "") const;
+    bool should_log(LogLevel level, const std::string& logger_name) const;
 };
 
 // Retain old simple LogConfig for backward compatibility

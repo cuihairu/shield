@@ -1,4 +1,4 @@
-#include "shield/metrics/prometheus_component.hpp"
+#include "shield/metrics/prometheus_service.hpp"
 
 #include <fstream>
 #include <iostream>
@@ -7,6 +7,7 @@
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/metrics/prometheus_config.hpp"
+#include "shield/core/application_context.hpp"
 
 #ifdef SHIELD_ENABLE_PROMETHEUS
 #ifdef __APPLE__
@@ -328,10 +329,9 @@ void GameMetricsCollector::increment_actor_destroyed() {
 
 #endif  // SHIELD_ENABLE_PROMETHEUS
 
-// PrometheusComponent implementation
-PrometheusComponent::PrometheusComponent()
-    : Component("prometheus"),
-      running_(false),
+// PrometheusService implementation
+PrometheusService::PrometheusService()
+    : running_(false),
       collection_interval_(10)  // 10 seconds default
       ,
       listen_address_("0.0.0.0"),
@@ -340,23 +340,23 @@ PrometheusComponent::PrometheusComponent()
       enable_pushgateway_(false),
       enable_exposer_(true) {}
 
-PrometheusComponent::~PrometheusComponent() {
+PrometheusService::~PrometheusService() {
     if (running_) {
-        stop();
+        on_stop();
     }
 }
 
-PrometheusComponent& PrometheusComponent::instance() {
-    static PrometheusComponent instance;
+PrometheusService& PrometheusService::instance() {
+    static PrometheusService instance;
     return instance;
 }
 
-void PrometheusComponent::on_init() {
+void PrometheusService::on_init(core::ApplicationContext& ctx) {
     try {
         auto& config_manager = shield::config::ConfigManager::instance();
         auto prometheus_config =
             config_manager
-                .get_component_config<shield::metrics::PrometheusConfig>();
+                .get_configuration_properties<shield::metrics::PrometheusConfig>();
 
         if (prometheus_config) {
             // Load configuration from PrometheusConfig
@@ -383,7 +383,7 @@ void PrometheusComponent::on_init() {
             std::make_shared<NetworkMetricsCollector>(registry_);
         game_collector_ = std::make_shared<GameMetricsCollector>(registry_);
 
-        std::cout << "Prometheus component initialized with address: "
+        std::cout << "Prometheus service initialized with address: "
                   << listen_address_ << ":" << listen_port_ << std::endl;
 #else
         // Create stub collectors
@@ -391,19 +391,19 @@ void PrometheusComponent::on_init() {
         network_collector_ = std::make_shared<NetworkMetricsCollector>();
         game_collector_ = std::make_shared<GameMetricsCollector>();
 
-        std::cout << "Prometheus component initialized (metrics disabled - "
+        std::cout << "Prometheus service initialized (metrics disabled - "
                      "prometheus-cpp not available)"
                   << std::endl;
 #endif
 
     } catch (const std::exception& e) {
-        std::cerr << "Failed to initialize Prometheus component: " << e.what()
+        std::cerr << "Failed to initialize Prometheus service: " << e.what()
                   << std::endl;
         throw;
     }
 }
 
-void PrometheusComponent::on_start() {
+void PrometheusService::on_start() {
     try {
 #ifdef SHIELD_ENABLE_PROMETHEUS
         // Start HTTP exposer if enabled
@@ -429,18 +429,18 @@ void PrometheusComponent::on_start() {
         // Start collection thread
         running_ = true;
         collection_thread_ =
-            std::thread(&PrometheusComponent::collection_loop, this);
+            std::thread(&PrometheusService::collection_loop, this);
 
-        std::cout << "Prometheus component started" << std::endl;
+        std::cout << "Prometheus service started" << std::endl;
 
     } catch (const std::exception& e) {
-        std::cerr << "Failed to start Prometheus component: " << e.what()
+        std::cerr << "Failed to start Prometheus service: " << e.what()
                   << std::endl;
         throw;
     }
 }
 
-void PrometheusComponent::on_stop() {
+void PrometheusService::on_stop() {
     running_ = false;
 
     if (collection_thread_.joinable()) {
@@ -462,15 +462,24 @@ void PrometheusComponent::on_stop() {
     exposer_.reset();
 #endif
 
-    std::cout << "Prometheus component stopped" << std::endl;
+    std::cout << "Prometheus service stopped" << std::endl;
 }
 
-void PrometheusComponent::add_collector(
+void PrometheusService::on_config_reloaded() {
+    SHIELD_LOG_INFO << "PrometheusService config reloaded";
+    // Stop the service to apply new settings
+    on_stop();
+    // Re-initialize with new config and restart
+    on_init(core::ApplicationContext::instance()); // This assumes ApplicationContext is a singleton
+    on_start();
+}
+
+void PrometheusService::add_collector(
     std::shared_ptr<MetricsCollector> collector) {
     custom_collectors_.push_back(collector);
 }
 
-void PrometheusComponent::collection_loop() {
+void PrometheusService::collection_loop() {
     while (running_) {
         try {
             collect_all_metrics();
@@ -496,7 +505,7 @@ void PrometheusComponent::collection_loop() {
     }
 }
 
-void PrometheusComponent::collect_all_metrics() {
+void PrometheusService::collect_all_metrics() {
     // Collect built-in metrics
     system_collector_->collect();
     network_collector_->collect();

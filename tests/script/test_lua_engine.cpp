@@ -2,6 +2,7 @@
 #include <cassert>
 #include <iostream>
 
+#include "shield/core/application_context.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/script/lua_engine.hpp"
 
@@ -16,9 +17,9 @@ void test_lua_engine() {
 
     // Create and initialize LuaEngine
     LuaEngine engine("test_engine");
-    engine.init();
-
-    engine.start();  // Add start() call
+    auto& ctx = shield::core::ApplicationContext::instance();
+    engine.on_init(ctx);
+    engine.on_start();
 
     // Test 1: Basic Lua execution
     std::cout << "\nTest 1: Basic Lua execution" << std::endl;
@@ -68,7 +69,7 @@ void test_lua_engine() {
     assert(!error_result && "Error handling failed");
     std::cout << "✅ Error handling: PASSED" << std::endl;
 
-    engine.stop();
+    engine.on_stop();
     std::cout
         << "\n🎉 All tests passed! LuaEngine with sol2 is working correctly."
         << std::endl;
@@ -80,7 +81,7 @@ int main() {
     try {
         shield::script::test_lua_engine();
         return 0;
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
         std::cerr << "Test failed with exception: " << e.what() << std::endl;
         return 1;
     }

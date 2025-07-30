@@ -8,7 +8,8 @@
 namespace shield::gateway {
 
 // Gateway module configuration
-class GatewayConfig : public config::ComponentConfig {
+class GatewayConfig
+    : public config::ReloadableConfigurationProperties<GatewayConfig> {
 public:
     // Listener configuration
     struct ListenerConfig {
@@ -66,10 +67,8 @@ public:
 
     // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
-    YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string component_name() const override { return "gateway"; }
-    CLONE_IMPL(GatewayConfig)
+    std::string properties_name() const override { return "gateway"; }
 
     // Convenience methods
     int get_effective_io_threads() const;

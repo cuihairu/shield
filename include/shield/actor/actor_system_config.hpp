@@ -9,7 +9,8 @@
 namespace shield::actor {
 
 // Actor system configuration
-class ActorSystemConfig : public config::ComponentConfig {
+class ActorSystemConfig
+    : public config::ReloadableConfigurationProperties<ActorSystemConfig> {
 public:
     // Node configuration
     struct NodeConfig {
@@ -61,15 +62,12 @@ public:
 
     // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
-    YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string component_name() const override { return "actor_system"; }
-    CLONE_IMPL(ActorSystemConfig)
+    std::string properties_name() const override { return "actor_system"; }
 
     // Convenience methods
     int get_effective_worker_threads() const;
     std::string get_effective_node_id() const;
-    bool is_network_enabled() const { return network.enabled; }
 };
 
 }  // namespace shield::actor

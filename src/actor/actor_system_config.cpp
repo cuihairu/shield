@@ -66,42 +66,6 @@ void ActorSystemConfig::from_ptree(const boost::property_tree::ptree& pt) {
     }
 }
 
-YAML::Node ActorSystemConfig::to_yaml() const {
-    YAML::Node node_yaml;
-
-    // Node configuration
-    node_yaml["node"]["node_id"] = node.node_id;
-    node_yaml["node"]["cluster_name"] = node.cluster_name;
-    node_yaml["node"]["auto_generate_node_id"] = node.auto_generate_node_id;
-
-    // Scheduler configuration
-    node_yaml["scheduler"]["policy"] = scheduler.policy;
-    node_yaml["scheduler"]["worker_threads"] = scheduler.worker_threads;
-    node_yaml["scheduler"]["max_throughput"] = scheduler.max_throughput;
-    node_yaml["scheduler"]["enable_profiling"] = scheduler.enable_profiling;
-
-    // Network configuration
-    node_yaml["network"]["enabled"] = network.enabled;
-    node_yaml["network"]["host"] = network.host;
-    node_yaml["network"]["port"] = network.port;
-    node_yaml["network"]["max_connections"] = network.max_connections;
-    node_yaml["network"]["connection_timeout"] = network.connection_timeout;
-
-    // Monitor configuration
-    node_yaml["monitor"]["enable_metrics"] = monitor.enable_metrics;
-    node_yaml["monitor"]["enable_tracing"] = monitor.enable_tracing;
-    node_yaml["monitor"]["metrics_interval"] = monitor.metrics_interval;
-    node_yaml["monitor"]["metrics_output"] = monitor.metrics_output;
-
-    // Memory configuration
-    node_yaml["memory"]["max_memory_per_actor"] = memory.max_memory_per_actor;
-    node_yaml["memory"]["message_buffer_size"] = memory.message_buffer_size;
-    node_yaml["memory"]["enable_gc"] = memory.enable_gc;
-    node_yaml["memory"]["gc_interval"] = memory.gc_interval;
-
-    return node_yaml;
-}
-
 void ActorSystemConfig::validate() const {
     if (node.node_id.empty() && !node.auto_generate_node_id) {
         throw std::invalid_argument(

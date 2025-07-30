@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 
+#include "shield/core/application_context.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/script/lua_vm_pool.hpp"
 
@@ -20,8 +21,9 @@ void test_vm_pool_basic() {
     config.idle_timeout = std::chrono::milliseconds{1000};
 
     shield::script::LuaVMPool pool("test_pool", config);
-    pool.init();
-    pool.start();
+    auto& ctx = shield::core::ApplicationContext::instance();
+    pool.on_init(ctx);
+    pool.on_start();
 
     // Test 1: Basic VM acquisition and return
     std::cout << "\nTest 1: Basic VM acquisition and return" << std::endl;
@@ -68,7 +70,7 @@ void test_vm_pool_basic() {
     std::cout << "✅ Pool statistics: PASSED" << std::endl;
 
     // Manual stop before destruction
-    pool.stop();
+    pool.on_stop();
     std::cout << "✅ Basic VM pool operations: ALL PASSED" << std::endl;
 }
 
@@ -81,8 +83,9 @@ void test_vm_pool_concurrency() {
     config.min_size = 2;
 
     shield::script::LuaVMPool pool("concurrent_pool", config);
-    pool.init();
-    pool.start();
+    auto& ctx = shield::core::ApplicationContext::instance();
+    pool.on_init(ctx);
+    pool.on_start();
 
     // Test concurrent access
     const int num_threads = 6;
@@ -118,7 +121,7 @@ void test_vm_pool_concurrency() {
     }
 
     // Wait for all threads
-    for (auto &thread : threads) {
+    for (auto& thread : threads) {
         thread.join();
     }
 
@@ -136,7 +139,7 @@ void test_vm_pool_concurrency() {
               << ", Total acquisitions: " << final_stats.total_acquisitions
               << std::endl;
 
-    pool.stop();
+    pool.on_stop();
     std::cout << "✅ Concurrency test: PASSED" << std::endl;
 }
 
@@ -161,8 +164,9 @@ void test_vm_pool_script_preloading() {
     // Add script content for preloading
     pool.preload_script_content("test_script", test_script_content);
 
-    pool.init();
-    pool.start();
+    auto& ctx = shield::core::ApplicationContext::instance();
+    pool.on_init(ctx);
+    pool.on_start();
 
     // Test that preloaded scripts are available
     auto vm_handle = pool.acquire_vm();
@@ -179,7 +183,7 @@ void test_vm_pool_script_preloading() {
            "Preloaded variable not found");
     std::cout << "✅ Preloaded variable test: PASSED" << std::endl;
 
-    pool.stop();
+    pool.on_stop();
     std::cout << "✅ Script preloading test: PASSED" << std::endl;
 }
 
@@ -194,8 +198,9 @@ void test_vm_pool_cleanup() {
         std::chrono::milliseconds{500};  // Short timeout for testing
 
     shield::script::LuaVMPool pool("cleanup_pool", config);
-    pool.init();
-    pool.start();
+    auto& ctx = shield::core::ApplicationContext::instance();
+    pool.on_init(ctx);
+    pool.on_start();
 
     // Acquire and return VMs quickly
     for (int i = 0; i < 4; ++i) {
@@ -222,7 +227,7 @@ void test_vm_pool_cleanup() {
     assert(stats_after.total_vms <= stats_before.total_vms &&
            "Pool didn't shrink");
 
-    pool.stop();
+    pool.on_stop();
     std::cout << "✅ Cleanup test: PASSED" << std::endl;
 }
 
@@ -245,7 +250,7 @@ int main() {
             << "\n🎉 All LuaVMPool tests passed! VM pool management is working!"
             << std::endl;
         return 0;
-    } catch (const std::exception &e) {
+    } catch (const std::exception& e) {
         std::cerr << "Test failed with exception: " << e.what() << std::endl;
         return 1;
     }

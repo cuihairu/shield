@@ -9,13 +9,13 @@
 namespace shield::script {
 
 LuaEngine::LuaEngine(const std::string& name)
-    : Component(name), initialized_(false) {}
+    : initialized_(false), name_(name) {}
 
 LuaEngine::~LuaEngine() {
     // sol2 handles cleanup automatically
 }
 
-void LuaEngine::on_init() {
+void LuaEngine::on_init(core::ApplicationContext& ctx) {
     try {
         lua_state_.open_libraries(sol::lib::base, sol::lib::package,
                                   sol::lib::string, sol::lib::math,

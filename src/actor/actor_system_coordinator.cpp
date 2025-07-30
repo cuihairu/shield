@@ -332,7 +332,8 @@ std::unique_ptr<ActorSystemCoordinator> make_coordinator_from_config() {
     // Get actor system configuration from ConfigManager
     auto& config_manager = shield::config::ConfigManager::instance();
     auto actor_config =
-        config_manager.get_component_config<shield::actor::ActorSystemConfig>();
+        config_manager
+            .get_configuration_properties<shield::actor::ActorSystemConfig>();
 
     if (actor_config) {
         config.worker_threads = actor_config->get_effective_worker_threads();

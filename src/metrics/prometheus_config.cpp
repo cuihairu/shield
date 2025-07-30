@@ -62,44 +62,6 @@ void PrometheusConfig::from_ptree(const boost::property_tree::ptree& pt) {
     }
 }
 
-YAML::Node PrometheusConfig::to_yaml() const {
-    YAML::Node node;
-
-    // Server configuration
-    node["server"]["enabled"] = server.enabled;
-    node["server"]["host"] = server.host;
-    node["server"]["port"] = server.port;
-    node["server"]["path"] = server.path;
-    node["server"]["max_connections"] = server.max_connections;
-
-    // System metrics configuration
-    node["system_metrics"]["enabled"] = system_metrics.enabled;
-    node["system_metrics"]["collection_interval"] =
-        system_metrics.collection_interval;
-    node["system_metrics"]["collect_cpu"] = system_metrics.collect_cpu;
-    node["system_metrics"]["collect_memory"] = system_metrics.collect_memory;
-    node["system_metrics"]["collect_disk"] = system_metrics.collect_disk;
-    node["system_metrics"]["collect_network"] = system_metrics.collect_network;
-
-    // App metrics configuration
-    node["app_metrics"]["enabled"] = app_metrics.enabled;
-    node["app_metrics"]["collect_http_requests"] =
-        app_metrics.collect_http_requests;
-    node["app_metrics"]["collect_actor_stats"] =
-        app_metrics.collect_actor_stats;
-    node["app_metrics"]["collect_gateway_stats"] =
-        app_metrics.collect_gateway_stats;
-    node["app_metrics"]["collect_lua_stats"] = app_metrics.collect_lua_stats;
-
-    // Export configuration
-    node["export"]["format"] = export_config.format;
-    node["export"]["include_timestamp"] = export_config.include_timestamp;
-    node["export"]["include_help_text"] = export_config.include_help_text;
-    node["export"]["namespace_prefix"] = export_config.namespace_prefix;
-
-    return node;
-}
-
 void PrometheusConfig::validate() const {
     if (server.enabled) {
         if (server.host.empty()) {

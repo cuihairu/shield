@@ -4,6 +4,7 @@
 #include <iostream>
 #include <unordered_map>
 
+#include "shield/core/application_context.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/script/lua_engine.hpp"
 
@@ -48,8 +49,9 @@ public:
         // Create and initialize Lua engine
         lua_engine_ =
             std::make_unique<shield::script::LuaEngine>("lua_actor_engine");
-        lua_engine_->init();
-        lua_engine_->start();
+        auto &ctx = shield::core::ApplicationContext::instance();
+        lua_engine_->on_init(ctx);
+        lua_engine_->on_start();
 
         // Setup Lua environment
         setup_lua_environment();

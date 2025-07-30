@@ -8,7 +8,8 @@
 namespace shield::metrics {
 
 // Prometheus module configuration
-class PrometheusConfig : public config::ComponentConfig {
+class PrometheusConfig
+    : public config::ReloadableConfigurationProperties<PrometheusConfig> {
 public:
     // Basic configuration
     struct ServerConfig {
@@ -54,10 +55,8 @@ public:
 
     // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
-    YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string component_name() const override { return "prometheus"; }
-    CLONE_IMPL(PrometheusConfig)
+    std::string properties_name() const override { return "prometheus"; }
 
     // Convenience methods
     bool is_metrics_enabled() const { return server.enabled; }

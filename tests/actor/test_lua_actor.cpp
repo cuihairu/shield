@@ -10,6 +10,7 @@
 #include "shield/actor/distributed_actor_system.hpp"
 #include "shield/actor/lua_actor.hpp"
 #include "shield/caf_type_ids.hpp"  // Include CAF type IDs
+#include "shield/core/application_context.hpp"
 #include "shield/discovery/local_discovery.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/script/lua_vm_pool.hpp"
@@ -81,8 +82,9 @@ void test_lua_actor() {
         lua_config.min_size = 1;
         lua_config.max_size = 2;
         shield::script::LuaVMPool lua_vm_pool("test_pool", lua_config);
-        lua_vm_pool.init();
-        lua_vm_pool.start();
+        auto &ctx = shield::core::ApplicationContext::instance();
+        lua_vm_pool.on_init(ctx);
+        lua_vm_pool.on_start();
 
         // Create test actor using CAF spawn
         auto actor_handle = system.spawn<TestLuaActor>(
@@ -100,7 +102,7 @@ void test_lua_actor() {
                   << std::endl;
 
         // Cleanup
-        lua_vm_pool.stop();
+        lua_vm_pool.on_stop();
 
     } catch (const std::exception &e) {
         std::cerr << "Test setup failed: " << e.what() << std::endl;

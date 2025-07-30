@@ -10,7 +10,7 @@
 #include <thread>
 #include <unordered_map>
 
-#include "shield/core/component.hpp"
+#include "shield/core/service.hpp"
 #include "shield/script/lua_engine.hpp"
 
 namespace shield::script {
@@ -111,7 +111,7 @@ private:
 };
 
 // High-performance Lua VM pool for concurrent actor processing
-class LuaVMPool : public core::Component {
+class LuaVMPool : public core::Service {
 public:
     explicit LuaVMPool(const std::string &name, LuaVMPoolConfig config = {});
     ~LuaVMPool();
@@ -142,10 +142,11 @@ public:
     void resize_pool(size_t new_size);
     void cleanup_idle_vms();
 
-protected:
-    void on_init() override;
+    // Service lifecycle - public for testing
+    void on_init(core::ApplicationContext &ctx) override;
     void on_start() override;
     void on_stop() override;
+    std::string name() const override { return name_; }
 
 private:
     // VM creation and initialization
@@ -166,6 +167,7 @@ private:
 
     // Configuration
     LuaVMPoolConfig config_;
+    std::string name_;
 
     // Preloaded scripts
     std::mutex scripts_mutex_;

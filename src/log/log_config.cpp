@@ -77,58 +77,6 @@ void LogConfig::from_ptree(const boost::property_tree::ptree& pt) {
     }
 }
 
-YAML::Node LogConfig::to_yaml() const {
-    YAML::Node node;
-
-    // Global level
-    node["global_level"] = level_to_string(global_level);
-
-    // Console configuration
-    node["console"]["enabled"] = console.enabled;
-    node["console"]["colored"] = console.colored;
-    node["console"]["pattern"] = console.pattern;
-    node["console"]["min_level"] = level_to_string(console.min_level);
-
-    // File configuration
-    node["file"]["enabled"] = file.enabled;
-    node["file"]["log_file"] = file.log_file;
-    node["file"]["max_file_size"] = file.max_file_size;
-    node["file"]["max_files"] = file.max_files;
-    node["file"]["rotate_on_open"] = file.rotate_on_open;
-    node["file"]["pattern"] = file.pattern;
-    node["file"]["min_level"] = level_to_string(file.min_level);
-
-    // Network configuration
-    node["network"]["enabled"] = network.enabled;
-    node["network"]["protocol"] = network.protocol;
-    node["network"]["host"] = network.host;
-    node["network"]["port"] = network.port;
-    node["network"]["facility"] = network.facility;
-    node["network"]["min_level"] = level_to_string(network.min_level);
-
-    // Async configuration
-    node["async"]["enabled"] = async.enabled;
-    node["async"]["queue_size"] = async.queue_size;
-    node["async"]["flush_interval"] = async.flush_interval;
-    node["async"]["overflow_policy_block"] = async.overflow_policy_block;
-    node["async"]["worker_threads"] = async.worker_threads;
-
-    // Filter configuration
-    for (const auto& pattern : filter.include_patterns) {
-        node["filter"]["include_patterns"].push_back(pattern);
-    }
-    for (const auto& pattern : filter.exclude_patterns) {
-        node["filter"]["exclude_patterns"].push_back(pattern);
-    }
-    for (const auto& pattern : filter.rate_limit_patterns) {
-        node["filter"]["rate_limit_patterns"].push_back(pattern);
-    }
-    node["filter"]["rate_limit_interval"] = filter.rate_limit_interval;
-    node["filter"]["rate_limit_burst"] = filter.rate_limit_burst;
-
-    return node;
-}
-
 void LogConfig::validate() const {
     if (file.enabled) {
         if (file.log_file.empty()) {

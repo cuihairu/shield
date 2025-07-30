@@ -205,7 +205,8 @@ file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 # Define all source files explicitly
 set(CORE_SOURCES
   # Core sources
-  src/core/component.cpp
+  src/core/service.cpp
+  src/core/application_context.cpp
 )
 
 set(LOG_SOURCES
@@ -265,7 +266,7 @@ set(OTHER_SOURCES
   src/serialization/universal_serialization_system.cpp
   
   # Metrics sources
-  src/metrics/prometheus_component.cpp
+  src/metrics/prometheus_service.cpp
   src/metrics/prometheus_config.cpp
   
   # Script sources
@@ -273,7 +274,7 @@ set(OTHER_SOURCES
   src/script/lua_vm_pool.cpp
   
   # Gateway sources
-  src/gateway/gateway_component.cpp
+  src/gateway/gateway_service.cpp
   src/gateway/gateway_config.cpp
   
   # Network sources
