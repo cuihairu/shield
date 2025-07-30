@@ -9,7 +9,7 @@
 #include "caf/io/middleman.hpp"
 #include "caf/uri.hpp"
 #include "shield/caf_type_ids.hpp"
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::actor {
 

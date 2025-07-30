@@ -12,8 +12,8 @@
 #include <sstream>  // for capturing log output
 #include <string>
 
-#include "shield/core/log_config.hpp"
-#include "shield/core/logger.hpp"
+#include "shield/log/log_config.hpp"
+#include "shield/log/logger.hpp"
 
 namespace logging = boost::log;
 namespace sinks = boost::log::sinks;
@@ -69,7 +69,7 @@ struct LogFixture {
         logging::core::get()->remove_sink(g_test_sink);
         g_test_sink.reset();
         // Restore default log settings (optional, depends on your application
-        // needs) shield::core::Logger::shutdown(); // if Logger::shutdown()
+        // needs) shield::log::Logger::shutdown(); // if Logger::shutdown()
         // restores default settings
     }
 };
@@ -128,19 +128,19 @@ BOOST_AUTO_TEST_CASE(test_logger_init_shutdown) {
     g_log_stream.clear();
 
     // Re-initialize Logger, observe its internal logs
-    shield::core::LogConfig config;
+    shield::log::LogConfig config;
     config.level = 2;                  // info
     config.console_output = true;      // ensure console output is considered
     config.log_file = "test_log.log";  // ensure file output is considered
 
-    shield::core::Logger::init(config);
+    shield::log::Logger::init(config);
     BOOST_CHECK(
         g_log_stream.str().find("info: Logger initialized successfully") !=
         std::string::npos);
 
     g_log_stream.str("");  // Clear log stream
     g_log_stream.clear();
-    shield::core::Logger::shutdown();
+    shield::log::Logger::shutdown();
     BOOST_CHECK(g_log_stream.str().find("info: Logger shutting down") !=
                 std::string::npos);
 }

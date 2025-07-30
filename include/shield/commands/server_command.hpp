@@ -1,12 +1,12 @@
 #pragma once
-#include "shield/core/command.hpp"
+#include "shield/cli/command.hpp"
 
 namespace shield::commands {
 
-class ServerCommand : public shield::core::Command {
+class ServerCommand : public shield::cli::Command {
 public:
     ServerCommand();
-    int run(shield::core::CommandContext& ctx) override;
+    int run(shield::cli::CommandContext& ctx) override;
 
 private:
     void setup_flags();

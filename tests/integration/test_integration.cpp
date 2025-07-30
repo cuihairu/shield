@@ -3,15 +3,17 @@
 // 1. Rename this file to tests/e2e/test_integration_legacy.cpp
 // 2. Use the new layered testing architecture:
 //    - tests/unit/ - Unit tests (using mocks)
-//    - tests/integration/ - Component integration tests 
+//    - tests/integration/ - Component integration tests
 //    - tests/e2e/ - End-to-end tests (requires running server)
 //
-// This test now uses mock servers, but following best practices should be split into:
+// This test now uses mock servers, but following best practices should be split
+// into:
 // - Unit tests for BinaryProtocol
-// - Integration tests for GatewayComponent  
+// - Integration tests for GatewayComponent
 // - End-to-end tests for complete system
 
 #define BOOST_TEST_MODULE IntegrationTest
+#include <atomic>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
@@ -19,12 +21,11 @@
 #include <boost/beast/websocket.hpp>
 #include <boost/test/unit_test.hpp>
 #include <chrono>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <thread>
-#include <atomic>
-#include <memory>
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -35,13 +36,15 @@ using tcp = net::ip::tcp;
 // Mock HTTP Server
 class MockHttpServer {
 public:
-    MockHttpServer() : acceptor_(ioc_, tcp::endpoint(tcp::v4(), 8081)), stop_flag_(false) {}
-    
+    MockHttpServer()
+        : acceptor_(ioc_, tcp::endpoint(tcp::v4(), 8081)), stop_flag_(false) {}
+
     void start() {
         server_thread_ = std::thread([this]() { run(); });
-        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Wait for server startup
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(50));  // Wait for server startup
     }
-    
+
     void stop() {
         stop_flag_ = true;
         ioc_.stop();
@@ -49,7 +52,7 @@ public:
             server_thread_.join();
         }
     }
-    
+
 private:
     void run() {
         while (!stop_flag_) {
@@ -57,49 +60,46 @@ private:
                 tcp::socket socket(ioc_);
                 acceptor_.accept(socket);
                 handle_request(std::move(socket));
-            } catch (std::exception& e) {
+            } catch (std::exception &e) {
                 if (!stop_flag_) {
                     // Log error but continue
                 }
             }
         }
     }
-    
+
     void handle_request(tcp::socket socket) {
         try {
             beast::tcp_stream stream(std::move(socket));
             beast::flat_buffer buffer;
             http::request<http::string_body> req;
             http::read(stream, buffer, req);
-            
+
             http::response<http::string_body> res;
             res.version(req.version());
             res.result(http::status::ok);
             res.set(http::field::server, "MockServer");
             res.set(http::field::content_type, "application/json");
-            
+
             if (req.target() == "/api/player/info") {
                 nlohmann::json response_json = {
                     {"player_id", "test_player_123"},
                     {"level", 10},
-                    {"score", 1500}
-                };
+                    {"score", 1500}};
                 res.body() = response_json.dump();
             } else if (req.target() == "/api/game/action") {
-                nlohmann::json response_json = {
-                    {"status", "accepted"}
-                };
+                nlohmann::json response_json = {{"status", "accepted"}};
                 res.body() = response_json.dump();
             }
-            
+
             res.prepare_payload();
             http::write(stream, res);
             stream.socket().shutdown(tcp::socket::shutdown_both);
-        } catch (std::exception& e) {
+        } catch (std::exception &e) {
             // Handle error
         }
     }
-    
+
     net::io_context ioc_;
     tcp::acceptor acceptor_;
     std::thread server_thread_;
@@ -109,13 +109,15 @@ private:
 // Mock WebSocket Server
 class MockWebSocketServer {
 public:
-    MockWebSocketServer() : acceptor_(ioc_, tcp::endpoint(tcp::v4(), 8082)), stop_flag_(false) {}
-    
+    MockWebSocketServer()
+        : acceptor_(ioc_, tcp::endpoint(tcp::v4(), 8082)), stop_flag_(false) {}
+
     void start() {
         server_thread_ = std::thread([this]() { run(); });
-        std::this_thread::sleep_for(std::chrono::milliseconds(50)); // Wait for server startup
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(50));  // Wait for server startup
     }
-    
+
     void stop() {
         stop_flag_ = true;
         ioc_.stop();
@@ -123,7 +125,7 @@ public:
             server_thread_.join();
         }
     }
-    
+
 private:
     void run() {
         while (!stop_flag_) {
@@ -133,68 +135,63 @@ private:
                 std::thread([this, socket = std::move(socket)]() mutable {
                     handle_websocket(std::move(socket));
                 }).detach();
-            } catch (std::exception& e) {
+            } catch (std::exception &e) {
                 if (!stop_flag_) {
                     // Log error but continue
                 }
             }
         }
     }
-    
+
     void handle_websocket(tcp::socket socket) {
         try {
             websocket::stream<tcp::socket> ws(std::move(socket));
             ws.accept();
-            
+
             while (!stop_flag_) {
                 beast::flat_buffer buffer;
                 ws.read(buffer);
-                
-                std::string message = boost::beast::buffers_to_string(buffer.data());
+
+                std::string message =
+                    boost::beast::buffers_to_string(buffer.data());
                 auto json_msg = nlohmann::json::parse(message);
-                
+
                 nlohmann::json response;
                 if (json_msg.contains("type")) {
                     std::string type = json_msg["type"];
                     if (type == "get_info") {
                         response = {
                             {"success", true},
-                            {"data", {
-                                {"player_id", json_msg["data"]["player_id"]},
-                                {"level", 10},
-                                {"experience", 2500}
-                            }}
-                        };
+                            {"data",
+                             {{"player_id", json_msg["data"]["player_id"]},
+                              {"level", 10},
+                              {"experience", 2500}}}};
                     } else if (type == "level_up") {
                         response = {
                             {"success", true},
-                            {"data", {
-                                {"player_id", json_msg["data"]["player_id"]},
-                                {"new_level", json_msg["data"]["new_level"]}
-                            }}
-                        };
+                            {"data",
+                             {{"player_id", json_msg["data"]["player_id"]},
+                              {"new_level", json_msg["data"]["new_level"]}}}};
                     } else if (type == "add_experience") {
                         response = {
                             {"success", true},
-                            {"data", {
-                                {"player_id", json_msg["data"]["player_id"]},
-                                {"exp_added", json_msg["data"]["exp"]}
-                            }}
-                        };
+                            {"data",
+                             {{"player_id", json_msg["data"]["player_id"]},
+                              {"exp_added", json_msg["data"]["exp"]}}}};
                     } else {
                         response = {{"success", true}, {"data", {}}};
                     }
                 } else {
                     response = {{"success", true}, {"data", {}}};
                 }
-                
+
                 ws.write(net::buffer(response.dump()));
             }
-        } catch (std::exception& e) {
+        } catch (std::exception &e) {
             // Connection closed or error
         }
     }
-    
+
     net::io_context ioc_;
     tcp::acceptor acceptor_;
     std::thread server_thread_;
@@ -204,17 +201,17 @@ private:
 struct IntegrationTestFixture {
     IntegrationTestFixture() {
         // Initialize logging system
-        shield::core::LogConfig log_config;
-        log_config.level = shield::core::Logger::level_from_string("info");
-        shield::core::Logger::init(log_config);
-        
+        shield::log::LogConfig log_config;
+        log_config.level = shield::log::Logger::level_from_string("info");
+        shield::log::Logger::init(log_config);
+
         // Start mock servers
         http_server_ = std::make_unique<MockHttpServer>();
         ws_server_ = std::make_unique<MockWebSocketServer>();
-        
+
         http_server_->start();
         ws_server_->start();
-        
+
         // Wait for server startup
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -228,7 +225,7 @@ struct IntegrationTestFixture {
             ws_server_->stop();
         }
     }
-    
+
     std::unique_ptr<MockHttpServer> http_server_;
     std::unique_ptr<MockWebSocketServer> ws_server_;
 };
@@ -409,7 +406,8 @@ BOOST_AUTO_TEST_CASE(TestLuaActorIntegration) {
 
 // Concurrent Connection Tests
 BOOST_AUTO_TEST_CASE(TestConcurrentConnections) {
-    const int num_connections = 5;  // Reduce connection count to avoid resource issues
+    const int num_connections =
+        5;  // Reduce connection count to avoid resource issues
     std::vector<std::thread> threads;
     std::atomic<int> successful_connections{0};
 

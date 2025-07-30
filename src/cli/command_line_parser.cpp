@@ -1,4 +1,4 @@
-#include "shield/core/command_line_parser.hpp"
+#include "shield/cli/command_line_parser.hpp"
 
 #include <boost/program_options.hpp>
 #include <iostream>
@@ -8,7 +8,7 @@
 
 namespace po = boost::program_options;
 
-namespace shield::core {
+namespace shield::cli {
 
 CommandLineOptions CommandLineParser::parse(int argc, char* argv[]) {
     CommandLineOptions options;

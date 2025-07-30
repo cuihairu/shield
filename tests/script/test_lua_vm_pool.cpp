@@ -6,7 +6,7 @@
 #include <thread>
 #include <vector>
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/script/lua_vm_pool.hpp"
 
 void test_vm_pool_basic() {
@@ -229,9 +229,9 @@ void test_vm_pool_cleanup() {
 int main() {
     try {
         // Initialize logging
-        shield::core::LogConfig log_config;
+        shield::log::LogConfig log_config;
         log_config.level = 1;  // Info level (reduce noise for tests)
-        shield::core::Logger::init(log_config);
+        shield::log::Logger::init(log_config);
 
         test_vm_pool_basic();
         // Skip other tests for now to avoid Component lifecycle issues

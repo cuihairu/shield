@@ -1,14 +1,17 @@
 #include "shield/commands/server_command.hpp"
-#include "shield/core/config.hpp"
-#include "shield/core/logger.hpp"
-#include "shield/version.hpp"
-#include <iostream>
-#include <csignal>
+
 #include <unistd.h>  // for gethostname(), getpid()
+
 #include <chrono>
+#include <csignal>
+#include <iostream>
 #include <memory>
 #include <thread>
 #include <vector>
+
+#include "shield/core/config.hpp"
+#include "shield/log/logger.hpp"
+#include "shield/version.hpp"
 
 // Initialize CAF type system BEFORE including other headers
 #include "caf/actor_system.hpp"
@@ -30,26 +33,29 @@ extern void signal_handler(int signal);
 
 namespace shield::commands {
 
-ServerCommand::ServerCommand() 
-    : Command("server", "Start the Shield game server") {
+ServerCommand::ServerCommand()
+    : shield::cli::Command("server", "Start the Shield game server") {
     setup_flags();
-    set_long_description("Start the Shield game server with the specified configuration. "
-                        "This is the main server process that handles game clients.")
+    set_long_description(
+        "Start the Shield game server with the specified configuration. "
+        "This is the main server process that handles game clients.")
         .set_usage("shield server [OPTIONS]")
-        .set_example("  shield server --config config/prod.yaml --port 8080\\n"
-                    "  shield server --daemon --host 0.0.0.0");
+        .set_example(
+            "  shield server --config config/prod.yaml --port 8080\\n"
+            "  shield server --daemon --host 0.0.0.0");
 }
 
 void ServerCommand::setup_flags() {
-    add_flag("config", "Configuration file path", shield::core::ConfigPaths::DEFAULT_CONFIG_FILE);
+    add_flag("config", "Configuration file path",
+             shield::core::ConfigPaths::DEFAULT_CONFIG_FILE);
     add_int_flag("port", "Server port", 0);
     add_flag("host", "Server host", "");
     add_bool_flag("daemon", "Run as daemon", false);
 }
 
-int ServerCommand::run(shield::core::CommandContext& ctx) {
+int ServerCommand::run(shield::cli::CommandContext& ctx) {
     std::cout << "Starting Shield Server..." << std::endl;
-    
+
     // Load configuration (simple single file approach)
     auto& config = shield::core::Config::instance();
     try {
@@ -62,15 +68,13 @@ int ServerCommand::run(shield::core::CommandContext& ctx) {
     }
 
     // Initialize logging
-    shield::core::LogConfig log_config;
+    shield::log::LogConfig log_config;
     try {
-        log_config.level = shield::core::Logger::level_from_string(
-            config.get<std::string>("logger.level"));
-        log_config.console_output = config.get<bool>("logger.console_output");
-    } catch (const std::exception& e) {
-        std::cerr << "Warning: Failed to load logger config, using defaults: " << e.what() << std::endl;
+        log_config.level = shield::log::Logger::level_from_string("info");
+    } catch (...) {
+        // Use default level if config not found
     }
-    shield::core::Logger::init(log_config);
+    shield::log::Logger::init(log_config);
 
     // Show banner if configured
     bool show_startup_banner = true;
@@ -79,7 +83,7 @@ int ServerCommand::run(shield::core::CommandContext& ctx) {
     } catch (...) {
         // Use default
     }
-    
+
     if (show_startup_banner) {
         shield::print_version();
     }
@@ -90,12 +94,14 @@ int ServerCommand::run(shield::core::CommandContext& ctx) {
 
     // Apply command line overrides
     if (ctx.has_flag("port") && ctx.get_int_flag("port") > 0) {
-        std::cout << "Overriding port to: " << ctx.get_int_flag("port") << std::endl;
+        std::cout << "Overriding port to: " << ctx.get_int_flag("port")
+                  << std::endl;
         // TODO: Override config
     }
-    
+
     if (ctx.has_flag("host") && !ctx.get_flag("host").empty()) {
-        std::cout << "Overriding host to: " << ctx.get_flag("host") << std::endl;
+        std::cout << "Overriding host to: " << ctx.get_flag("host")
+                  << std::endl;
         // TODO: Override config
     }
 
@@ -157,7 +163,8 @@ int ServerCommand::run(shield::core::CommandContext& ctx) {
 
     // Component management
     std::vector<std::unique_ptr<shield::core::Component>> components;
-    auto component_names = config.get<std::vector<std::string>>("server.components");
+    auto component_names =
+        config.get<std::vector<std::string>>("server.components");
 
     for (const auto& name : component_names) {
         if (name == "prometheus") {
@@ -241,7 +248,7 @@ int ServerCommand::run(shield::core::CommandContext& ctx) {
     }
 
     SHIELD_LOG_INFO << "Application finished.";
-    
+
     return 0;
 }
 

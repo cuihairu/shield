@@ -1,18 +1,23 @@
 #include "shield/commands/diagnose_command.hpp"
-#include "shield/core/config.hpp"
+
 #include <iostream>
+
+#include "shield/core/config.hpp"
 
 namespace shield::commands {
 
-DiagnoseCommand::DiagnoseCommand() 
-    : Command("diagnose", "Runtime diagnostics and health checks") {
+DiagnoseCommand::DiagnoseCommand()
+    : shield::cli::Command("diagnose",
+                           "Runtime diagnostics and health checks") {
     setup_flags();
-    set_long_description("Perform runtime diagnostics, health checks, and system validation.")
+    set_long_description(
+        "Perform runtime diagnostics, health checks, and system validation.")
         .set_usage("shield diagnose [OPTIONS]")
-        .set_example("  shield diagnose --health-check\\n"
-                    "  shield diagnose --connectivity\\n"
-                    "  shield diagnose --config-validation\\n"
-                    "  shield diagnose --benchmark --duration 30");
+        .set_example(
+            "  shield diagnose --health-check\\n"
+            "  shield diagnose --connectivity\\n"
+            "  shield diagnose --config-validation\\n"
+            "  shield diagnose --benchmark --duration 30");
 }
 
 void DiagnoseCommand::setup_flags() {
@@ -24,13 +29,14 @@ void DiagnoseCommand::setup_flags() {
     add_flag("target", "Target server URL for remote diagnostics", "");
 }
 
-int DiagnoseCommand::run(shield::core::CommandContext& ctx) {
+int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
     // Load minimal configuration for diagnostics
     auto& config = shield::core::Config::instance();
     try {
         config.load_for_diagnose();
     } catch (const std::exception& e) {
-        std::cerr << "Warning: Failed to load configuration: " << e.what() << std::endl;
+        std::cerr << "Warning: Failed to load configuration: " << e.what()
+                  << std::endl;
         // Continue with defaults for diagnostics
     }
 
@@ -50,9 +56,11 @@ int DiagnoseCommand::run(shield::core::CommandContext& ctx) {
         try {
             std::string redis_host = config.get<std::string>("redis.host");
             int redis_port = config.get<int>("redis.port");
-            std::cout << "Testing Redis connection: " << redis_host << ":" << redis_port << std::endl;
+            std::cout << "Testing Redis connection: " << redis_host << ":"
+                      << redis_port << std::endl;
         } catch (...) {
-            std::cout << "Redis configuration not found, skipping..." << std::endl;
+            std::cout << "Redis configuration not found, skipping..."
+                      << std::endl;
         }
         return 0;
     }
@@ -65,7 +73,8 @@ int DiagnoseCommand::run(shield::core::CommandContext& ctx) {
 
     if (ctx.get_bool_flag("benchmark")) {
         int duration = ctx.get_int_flag("duration");
-        std::cout << "Running performance benchmark for " << duration << " seconds..." << std::endl;
+        std::cout << "Running performance benchmark for " << duration
+                  << " seconds..." << std::endl;
         // TODO: Implement runtime performance testing
         return 0;
     }

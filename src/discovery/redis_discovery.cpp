@@ -12,7 +12,7 @@
 #include <thread>
 #include <vector>
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::discovery {
 

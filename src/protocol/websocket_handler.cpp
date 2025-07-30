@@ -8,7 +8,7 @@
 #include <regex>
 #include <sstream>
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 #ifdef __APPLE__
 #include <libkern/OSByteOrder.h>
 #include <machine/endian.h>

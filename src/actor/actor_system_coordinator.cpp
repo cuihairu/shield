@@ -7,9 +7,9 @@
 #include "caf/actor_system_config.hpp"
 #include "caf/io/middleman.hpp"
 #include "shield/caf_type_ids.hpp"
-#include "shield/core/logger.hpp"
 #include "shield/discovery/etcd_discovery.hpp"
 #include "shield/discovery/local_discovery.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::actor {
 

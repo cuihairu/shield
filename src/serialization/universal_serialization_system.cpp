@@ -1,6 +1,6 @@
 #include "shield/serialization/universal_serialization_system.hpp"
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::serialization {
 

@@ -1,6 +1,6 @@
 #include "shield/net/slave_reactor.hpp"
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::net {
 

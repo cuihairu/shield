@@ -3,9 +3,9 @@
 #include <memory>
 #include <string>
 
-#include "shield/core/log_config.hpp"
+#include "shield/log/log_config.hpp"
 
-namespace shield::core {
+namespace shield::log {
 
 class Logger {
 public:

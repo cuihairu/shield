@@ -1,4 +1,4 @@
-#include "shield/core/root_command.hpp"
+#include "shield/cli/root_command.hpp"
 
 #include <iostream>
 
@@ -6,7 +6,7 @@
 #include "shield/core/config.hpp"
 #include "shield/version.hpp"
 
-namespace shield::core {
+namespace shield::cli {
 
 RootCommand::RootCommand()
     : Command("shield",
@@ -19,11 +19,11 @@ RootCommand::RootCommand()
         .set_example(
             "  shield server --config config/prod.yaml\\n"
             "  shield cli --url http://localhost:8080\\n"
-            "  shield config --validate");
+            "  shield config --file config/prod.yaml --validate");
 
     // Add global flags
     add_flag_with_short("config", "c", "Global configuration file",
-                        ConfigPaths::DEFAULT_CONFIG_FILE);
+                        shield::core::ConfigPaths::DEFAULT_CONFIG_FILE);
     add_bool_flag_with_short("version", "v", "Show version information", false);
 
     register_commands();

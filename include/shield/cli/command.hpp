@@ -3,9 +3,10 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
-namespace shield::core {
+namespace shield::cli {
 
 // Forward declaration
 class CommandContext;
@@ -101,11 +102,18 @@ public:
     void set_flag(const std::string& name, const std::string& value) {
         flags_[name] = value;
     }
+    void set_user_flag(const std::string& name, const std::string& value) {
+        flags_[name] = value;
+        user_provided_flags_.insert(name);
+    }
     std::string get_flag(const std::string& name) const;
     bool get_bool_flag(const std::string& name) const;
     int get_int_flag(const std::string& name) const;
     bool has_flag(const std::string& name) const {
         return flags_.count(name) > 0;
+    }
+    bool is_user_provided(const std::string& name) const {
+        return user_provided_flags_.count(name) > 0;
     }
 
     // Positional arguments
@@ -121,6 +129,7 @@ public:
 
 private:
     std::unordered_map<std::string, std::string> flags_;
+    std::unordered_set<std::string> user_provided_flags_;
     std::vector<std::string> args_;
     std::string config_file_;
 };

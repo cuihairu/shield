@@ -3,7 +3,7 @@
 #include "shield/actor/lua_actor.hpp"
 #include "shield/caf_type_ids.hpp"
 #include "shield/core/config.hpp"
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/serialization/json_universal_serializer.hpp"
 
 namespace shield::gateway {

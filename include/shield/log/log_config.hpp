@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-namespace shield::core {
+namespace shield::log {
 
 struct LogConfig {
     // Log level

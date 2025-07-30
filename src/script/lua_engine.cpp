@@ -4,7 +4,7 @@
 #include <iostream>
 #include <sstream>
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::script {
 

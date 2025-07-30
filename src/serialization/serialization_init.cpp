@@ -1,4 +1,4 @@
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/serialization/universal_serialization_system.hpp"
 
 namespace shield::serialization {

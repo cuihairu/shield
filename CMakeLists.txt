@@ -206,11 +206,20 @@ file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 set(CORE_SOURCES
   # Core sources
   src/core/component.cpp
-  src/core/logger.cpp
-  src/core/command_line_parser.cpp
-  src/core/command.cpp
   src/core/config.cpp
-  src/core/root_command.cpp
+  src/core/config_def.cpp
+)
+
+set(LOG_SOURCES
+  # Log sources
+  src/log/logger.cpp
+)
+
+set(CLI_SOURCES
+  # CLI sources
+  src/cli/command_line_parser.cpp
+  src/cli/command.cpp
+  src/cli/root_command.cpp
   
   # Discovery sources
   src/discovery/service_instance.cpp
@@ -267,19 +276,23 @@ set(CORE_SOURCES
   
   # CAF initializer
   src/caf_initializer.cpp
+  ${LOG_SOURCES}
+  ${CLI_SOURCES}
 )
 
 # Print found source files (optional, for debugging)
 message(STATUS "Found core library source files:")
-foreach(SOURCE ${CORE_SOURCES})
+foreach(SOURCE ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES})
   message(STATUS "  ${SOURCE}")
 endforeach()
 
 # Create the core static library
-add_library(shield_core STATIC ${CORE_SOURCES})
+add_library(shield_core STATIC ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES})
 target_include_directories(
   shield_core
   PUBLIC ${PROJECT_SOURCE_DIR}/include
+         ${PROJECT_SOURCE_DIR}/include/shield/log
+         ${PROJECT_SOURCE_DIR}/include/shield/cli
          ${CMAKE_CURRENT_BINARY_DIR}/include # Directory for generated headers like version.hpp
          ${LUA_INCLUDE_DIR}
          ${SOL2_INCLUDE_DIRS})

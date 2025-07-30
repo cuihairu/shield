@@ -10,8 +10,8 @@
 #include "shield/actor/distributed_actor_system.hpp"
 #include "shield/actor/lua_actor.hpp"
 #include "shield/caf_type_ids.hpp"  // Include CAF type IDs
-#include "shield/core/logger.hpp"
 #include "shield/discovery/local_discovery.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/script/lua_vm_pool.hpp"
 
 class TestLuaActor : public shield::actor::LuaActor {
@@ -28,8 +28,8 @@ public:
 
 void test_lua_actor() {
     // Initialize logging
-    shield::core::LogConfig log_config;
-    shield::core::Logger::init(log_config);
+    shield::log::LogConfig log_config;
+    shield::log::Logger::init(log_config);
 
     // Initialize CAF global meta objects - REQUIRED before actor_system
     // creation

@@ -3,7 +3,7 @@
 #include <vector>
 #include <unordered_map>
 
-namespace shield::core {
+namespace shield::cli {
 
 // Subcommand types
 enum class SubCommand {

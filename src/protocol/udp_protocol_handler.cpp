@@ -1,6 +1,6 @@
 #include "shield/protocol/udp_protocol_handler.hpp"
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::protocol {
 

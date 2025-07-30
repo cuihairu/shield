@@ -2,15 +2,15 @@
 #include <cassert>
 #include <iostream>
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/script/lua_engine.hpp"
 
 namespace shield::script {
 
 void test_lua_engine() {
     // Initialize logging first
-    shield::core::LogConfig log_config;
-    shield::core::Logger::init(log_config);
+    shield::log::LogConfig log_config;
+    shield::log::Logger::init(log_config);
 
     std::cout << "=== Testing upgraded LuaEngine with sol2 ===" << std::endl;
 

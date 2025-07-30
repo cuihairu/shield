@@ -1,4 +1,4 @@
-#include "shield/core/command.hpp"
+#include "shield/cli/command.hpp"
 
 #include <algorithm>
 #include <boost/program_options.hpp>
@@ -7,7 +7,7 @@
 
 namespace po = boost::program_options;
 
-namespace shield::core {
+namespace shield::cli {
 
 Command::Command(const std::string& name, const std::string& description)
     : name_(name), description_(description) {}
@@ -99,10 +99,18 @@ std::shared_ptr<Command> Command::parse_and_execute(int argc, char* argv[]) {
                 po::value<int>()->default_value(std::stoi(flag.default_value)),
                 flag.description.c_str());
         } else {
-            desc.add_options()(
-                option_spec.c_str(),
-                po::value<std::string>()->default_value(flag.default_value),
-                flag.description.c_str());
+            // For string flags, check if they should have implicit values (like --init)
+            if (flag.name == "init") {
+                desc.add_options()(
+                    option_spec.c_str(),
+                    po::value<std::string>()->implicit_value(flag.default_value),
+                    flag.description.c_str());
+            } else {
+                desc.add_options()(
+                    option_spec.c_str(),
+                    po::value<std::string>()->default_value(flag.default_value),
+                    flag.description.c_str());
+            }
         }
     }
 
@@ -157,12 +165,11 @@ std::shared_ptr<Command> Command::parse_and_execute(int argc, char* argv[]) {
     for (const auto& flag : flags_) {
         if (vm.count(flag.name)) {
             if (flag.type == "bool") {
-                ctx.set_flag(flag.name, "true");
+                ctx.set_user_flag(flag.name, "true");
             } else if (flag.type == "int") {
-                ctx.set_flag(flag.name,
-                             std::to_string(vm[flag.name].as<int>()));
+                ctx.set_user_flag(flag.name, std::to_string(vm[flag.name].as<int>()));
             } else {
-                ctx.set_flag(flag.name, vm[flag.name].as<std::string>());
+                ctx.set_user_flag(flag.name, vm[flag.name].as<std::string>());
             }
         } else {
             ctx.set_flag(flag.name, flag.default_value);

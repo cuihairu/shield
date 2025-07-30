@@ -1,8 +1,8 @@
 #pragma once
-#include "shield/core/command.hpp"
+#include "shield/cli/command.hpp"
 #include <memory>
 
-namespace shield::core {
+namespace shield::cli {
 
 // Root command that manages all subcommands
 class RootCommand : public Command, public std::enable_shared_from_this<RootCommand> {

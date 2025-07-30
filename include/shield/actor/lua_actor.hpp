@@ -7,7 +7,7 @@
 
 #include "caf/event_based_actor.hpp"
 #include "shield/actor/distributed_actor_system.hpp"
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/script/lua_vm_pool.hpp"
 
 namespace shield::actor {

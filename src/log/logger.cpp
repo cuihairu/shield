@@ -1,4 +1,4 @@
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 
 #include <boost/log/attributes/current_thread_id.hpp>
 #include <boost/log/core.hpp>
@@ -17,7 +17,7 @@ namespace sinks = boost::log::sinks;
 namespace expr = boost::log::expressions;
 namespace attrs = boost::log::attributes;
 
-namespace shield::core {
+namespace shield::log {
 
 LogConfig Logger::config_;
 

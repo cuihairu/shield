@@ -1,12 +1,12 @@
 #pragma once
-#include "shield/core/command.hpp"
+#include "shield/cli/command.hpp"
 
 namespace shield::commands {
 
-class CLICommand : public shield::core::Command {
+class CLICommand : public shield::cli::Command {
 public:
     CLICommand();
-    int run(shield::core::CommandContext& ctx) override;
+    int run(shield::cli::CommandContext& ctx) override;
 
 private:
     void setup_flags();

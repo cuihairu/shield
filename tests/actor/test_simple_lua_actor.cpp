@@ -4,7 +4,7 @@
 #include <iostream>
 #include <unordered_map>
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/script/lua_engine.hpp"
 
 // Simplified LuaActor for testing (without CAF dependency)
@@ -323,8 +323,8 @@ private:
 
 void test_simple_lua_actor() {
     // Initialize logging
-    shield::core::LogConfig log_config;
-    shield::core::Logger::init(log_config);
+    shield::log::LogConfig log_config;
+    shield::log::Logger::init(log_config);
 
     std::cout << "=== Testing SimpleLuaActor with Player Script ==="
               << std::endl;
