@@ -202,26 +202,72 @@ file(MAKE_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 file(MAKE_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
 file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 
-# Find all source files
-file(
-  GLOB_RECURSE
-  CORE_SOURCES
-  "src/*.cpp"
-  "src/discovery/*.cpp"
-  "src/discovery/service_instance.cpp"
-  "src/discovery/local_discovery.cpp"
-  "src/discovery/redis_discovery.cpp"
-  "src/discovery/nacos_discovery.cpp"
-  "src/discovery/consul_discovery.cpp"
-  "src/actor/*.cpp"
-  "src/net/*.cpp"
-  "src/protocol/*.cpp"
-  "src/serialization/*.cpp"
-  "src/metrics/*.cpp"
-  "src/caf_initializer.cpp")
-list(REMOVE_ITEM CORE_SOURCES "${CMAKE_SOURCE_DIR}/src/main.cpp") # Explicitly
-                                                                  # exclude
-                                                                  # main.cpp
+# Define all source files explicitly
+set(CORE_SOURCES
+  # Core sources
+  src/core/component.cpp
+  src/core/logger.cpp
+  src/core/command_line_parser.cpp
+  src/core/command.cpp
+  src/core/config.cpp
+  src/core/root_command.cpp
+  
+  # Discovery sources
+  src/discovery/service_instance.cpp
+  src/discovery/local_discovery.cpp
+  src/discovery/redis_discovery.cpp
+  src/discovery/nacos_discovery.cpp
+  src/discovery/consul_discovery.cpp
+  src/discovery/etcd_discovery.cpp
+  
+  # Actor sources  
+  src/actor/lua_actor.cpp
+  src/actor/actor_registry.cpp
+  src/actor/distributed_actor_system.cpp
+  src/actor/actor_system_coordinator.cpp
+  
+  # Network sources
+  src/net/slave_reactor.cpp
+  src/net/master_reactor.cpp
+  src/net/udp_session.cpp
+  src/net/session.cpp
+  src/net/udp_reactor.cpp
+  
+  # Protocol sources
+  src/protocol/udp_protocol_handler.cpp
+  src/protocol/websocket_handler.cpp
+  src/protocol/protocol_handler.cpp
+  src/protocol/http_handler.cpp
+  src/protocol/binary_protocol.cpp
+  
+  # Serialization sources
+  src/serialization/messagepack_universal_serializer.cpp
+  src/serialization/protobuf_universal_serializer.cpp
+  src/serialization/serialization_init.cpp  
+  src/serialization/json_universal_serializer.cpp
+  src/serialization/universal_serialization_system.cpp
+  
+  # Metrics sources
+  src/metrics/prometheus_component.cpp
+  
+  # Script sources
+  src/script/lua_engine.cpp
+  src/script/lua_vm_pool.cpp
+  
+  # Gateway sources
+  src/gateway/gateway_component.cpp
+  
+  # Command sources
+  src/commands/server_command.cpp
+  src/commands/cli_command.cpp
+  src/commands/config_command.cpp
+  src/commands/diagnose_command.cpp
+  src/commands/migrate_command.cpp
+  src/commands/all_commands.cpp
+  
+  # CAF initializer
+  src/caf_initializer.cpp
+)
 
 # Print found source files (optional, for debugging)
 message(STATUS "Found core library source files:")
