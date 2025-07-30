@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <string>
 
-#include "shield/config/module_config.hpp"
+#include "shield/config/config.hpp"
 
 namespace shield::net {
 
 // TCP服务器配置
-class TcpConfig : public shield::config::ModuleConfig {
+class TcpConfig : public shield::config::ComponentConfig {
 public:
     // TCP基础配置
     struct ServerConfig {
@@ -42,11 +42,12 @@ public:
     BufferConfig buffer;
     ThreadingConfig threading;
 
-    // ModuleConfig接口实现
-    void from_yaml(const YAML::Node& node) override;
+    // ComponentConfig接口实现
+    void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string module_name() const override { return "tcp"; }
+    std::string component_name() const override { return "tcp"; }
+    CLONE_IMPL(TcpConfig)
 
     // 便利方法
     int get_effective_io_threads() const;
@@ -55,7 +56,7 @@ public:
 };
 
 // UDP服务器配置
-class UdpConfig : public config::ModuleConfig {
+class UdpConfig : public config::ComponentConfig {
 public:
     // UDP基础配置
     struct ServerConfig {
@@ -87,11 +88,12 @@ public:
     PerformanceConfig performance;
     ThreadingConfig threading;
 
-    // ModuleConfig接口实现
-    void from_yaml(const YAML::Node& node) override;
+    // ComponentConfig接口实现
+    void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string module_name() const override { return "udp"; }
+    std::string component_name() const override { return "udp"; }
+    CLONE_IMPL(UdpConfig)
 
     // 便利方法
     int get_effective_io_threads() const;

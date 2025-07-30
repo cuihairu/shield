@@ -3,106 +3,77 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "shield/log/logger.hpp"
+
 namespace shield::log {
 
-void LogConfig::from_yaml(const YAML::Node& node) {
+void LogConfig::from_ptree(const boost::property_tree::ptree& pt) {
     // 全局级别
-    if (node["global_level"]) {
-        global_level =
-            level_from_string(node["global_level"].as<std::string>());
+    if (auto level_str = get_optional_value<std::string>(pt, "global_level")) {
+        global_level = level_from_string(*level_str);
+        // Dynamically update logger level
+        shield::log::Logger::set_level(global_level);
     }
 
     // 控制台配置
-    if (node["console"]) {
-        auto console_node = node["console"];
-        if (console_node["enabled"])
-            console.enabled = console_node["enabled"].as<bool>();
-        if (console_node["colored"])
-            console.colored = console_node["colored"].as<bool>();
-        if (console_node["pattern"])
-            console.pattern = console_node["pattern"].as<std::string>();
-        if (console_node["min_level"])
-            console.min_level =
-                level_from_string(console_node["min_level"].as<std::string>());
+    if (auto console_pt = pt.get_child_optional("console")) {
+        console.enabled = get_value(*console_pt, "enabled", console.enabled);
+        console.colored = get_value(*console_pt, "colored", console.colored);
+        console.pattern = get_value(*console_pt, "pattern", console.pattern);
+        if (auto min_level_str =
+                get_optional_value<std::string>(*console_pt, "min_level"))
+            console.min_level = level_from_string(*min_level_str);
     }
 
     // 文件配置
-    if (node["file"]) {
-        auto file_node = node["file"];
-        if (file_node["enabled"])
-            file.enabled = file_node["enabled"].as<bool>();
-        if (file_node["log_file"])
-            file.log_file = file_node["log_file"].as<std::string>();
-        if (file_node["max_file_size"])
-            file.max_file_size = file_node["max_file_size"].as<int64_t>();
-        if (file_node["max_files"])
-            file.max_files = file_node["max_files"].as<int>();
-        if (file_node["rotate_on_open"])
-            file.rotate_on_open = file_node["rotate_on_open"].as<bool>();
-        if (file_node["pattern"])
-            file.pattern = file_node["pattern"].as<std::string>();
-        if (file_node["min_level"])
-            file.min_level =
-                level_from_string(file_node["min_level"].as<std::string>());
+    if (auto file_pt = pt.get_child_optional("file")) {
+        file.enabled = get_value(*file_pt, "enabled", file.enabled);
+        file.log_file = get_value(*file_pt, "log_file", file.log_file);
+        file.max_file_size =
+            get_value(*file_pt, "max_file_size", file.max_file_size);
+        file.max_files = get_value(*file_pt, "max_files", file.max_files);
+        file.rotate_on_open =
+            get_value(*file_pt, "rotate_on_open", file.rotate_on_open);
+        file.pattern = get_value(*file_pt, "pattern", file.pattern);
+        if (auto min_level_str =
+                get_optional_value<std::string>(*file_pt, "min_level"))
+            file.min_level = level_from_string(*min_level_str);
     }
 
     // 网络配置
-    if (node["network"]) {
-        auto network_node = node["network"];
-        if (network_node["enabled"])
-            network.enabled = network_node["enabled"].as<bool>();
-        if (network_node["protocol"])
-            network.protocol = network_node["protocol"].as<std::string>();
-        if (network_node["host"])
-            network.host = network_node["host"].as<std::string>();
-        if (network_node["port"])
-            network.port = network_node["port"].as<uint16_t>();
-        if (network_node["facility"])
-            network.facility = network_node["facility"].as<std::string>();
-        if (network_node["min_level"])
-            network.min_level =
-                level_from_string(network_node["min_level"].as<std::string>());
+    if (auto network_pt = pt.get_child_optional("network")) {
+        network.enabled = get_value(*network_pt, "enabled", network.enabled);
+        network.protocol = get_value(*network_pt, "protocol", network.protocol);
+        network.host = get_value(*network_pt, "host", network.host);
+        network.port = get_value(*network_pt, "port", network.port);
+        network.facility = get_value(*network_pt, "facility", network.facility);
+        if (auto min_level_str =
+                get_optional_value<std::string>(*network_pt, "min_level"))
+            network.min_level = level_from_string(*min_level_str);
     }
 
     // 异步配置
-    if (node["async"]) {
-        auto async_node = node["async"];
-        if (async_node["enabled"])
-            async.enabled = async_node["enabled"].as<bool>();
-        if (async_node["queue_size"])
-            async.queue_size = async_node["queue_size"].as<size_t>();
-        if (async_node["flush_interval"])
-            async.flush_interval = async_node["flush_interval"].as<int>();
-        if (async_node["overflow_policy_block"])
-            async.overflow_policy_block =
-                async_node["overflow_policy_block"].as<bool>();
-        if (async_node["worker_threads"])
-            async.worker_threads = async_node["worker_threads"].as<int>();
+    if (auto async_pt = pt.get_child_optional("async")) {
+        async.enabled = get_value(*async_pt, "enabled", async.enabled);
+        async.queue_size = get_value(*async_pt, "queue_size", async.queue_size);
+        async.flush_interval =
+            get_value(*async_pt, "flush_interval", async.flush_interval);
+        async.overflow_policy_block = get_value(
+            *async_pt, "overflow_policy_block", async.overflow_policy_block);
+        async.worker_threads =
+            get_value(*async_pt, "worker_threads", async.worker_threads);
     }
 
     // 过滤器配置
-    if (node["filter"]) {
-        auto filter_node = node["filter"];
-        if (filter_node["include_patterns"]) {
-            for (const auto& pattern : filter_node["include_patterns"]) {
-                filter.include_patterns.push_back(pattern.as<std::string>());
-            }
-        }
-        if (filter_node["exclude_patterns"]) {
-            for (const auto& pattern : filter_node["exclude_patterns"]) {
-                filter.exclude_patterns.push_back(pattern.as<std::string>());
-            }
-        }
-        if (filter_node["rate_limit_patterns"]) {
-            for (const auto& pattern : filter_node["rate_limit_patterns"]) {
-                filter.rate_limit_patterns.push_back(pattern.as<std::string>());
-            }
-        }
-        if (filter_node["rate_limit_interval"])
-            filter.rate_limit_interval =
-                filter_node["rate_limit_interval"].as<int>();
-        if (filter_node["rate_limit_burst"])
-            filter.rate_limit_burst = filter_node["rate_limit_burst"].as<int>();
+    if (auto filter_pt = pt.get_child_optional("filter")) {
+        load_vector(*filter_pt, "include_patterns", filter.include_patterns);
+        load_vector(*filter_pt, "exclude_patterns", filter.exclude_patterns);
+        load_vector(*filter_pt, "rate_limit_patterns",
+                    filter.rate_limit_patterns);
+        filter.rate_limit_interval = get_value(
+            *filter_pt, "rate_limit_interval", filter.rate_limit_interval);
+        filter.rate_limit_burst =
+            get_value(*filter_pt, "rate_limit_burst", filter.rate_limit_burst);
     }
 }
 

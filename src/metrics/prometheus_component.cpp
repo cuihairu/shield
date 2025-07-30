@@ -5,6 +5,8 @@
 #include <sstream>
 
 #include "shield/config/config.hpp"
+#include "shield/log/logger.hpp"
+#include "shield/metrics/prometheus_config.hpp"
 
 #ifdef SHIELD_ENABLE_PROMETHEUS
 #ifdef __APPLE__
@@ -351,47 +353,24 @@ PrometheusComponent& PrometheusComponent::instance() {
 
 void PrometheusComponent::on_init() {
     try {
-        auto& config = shield::config::Config::instance();
+        auto& config_manager = shield::config::ConfigManager::instance();
+        auto prometheus_config =
+            config_manager
+                .get_component_config<shield::metrics::PrometheusConfig>();
 
-        // Load configuration
-        try {
-            listen_address_ =
-                config.get<std::string>("prometheus.listen_address");
-        } catch (...) {
-            // Use default
-        }
-
-        try {
-            listen_port_ = config.get<uint16_t>("prometheus.listen_port");
-        } catch (...) {
-            // Use default
-        }
-
-        try {
+        if (prometheus_config) {
+            // Load configuration from PrometheusConfig
+            listen_address_ = prometheus_config->server.host;
+            listen_port_ = prometheus_config->server.port;
             collection_interval_ = std::chrono::seconds(
-                config.get<int>("prometheus.collection_interval"));
-        } catch (...) {
-            // Use default
-        }
-
-        try {
-            job_name_ = config.get<std::string>("prometheus.job_name");
-        } catch (...) {
-            // Use default
-        }
-
-        try {
-            pushgateway_url_ =
-                config.get<std::string>("prometheus.pushgateway_url");
-            enable_pushgateway_ = !pushgateway_url_.empty();
-        } catch (...) {
-            // Use default
-        }
-
-        try {
-            enable_exposer_ = config.get<bool>("prometheus.enable_exposer");
-        } catch (...) {
-            // Use default
+                prometheus_config->system_metrics.collection_interval);
+            job_name_ = "shield";   // Default job name
+            pushgateway_url_ = "";  // Not configured in PrometheusConfig yet
+            enable_exposer_ = prometheus_config->server.enabled;
+        } else {
+            // Use defaults if no configuration found
+            SHIELD_LOG_WARN
+                << "No Prometheus configuration found, using defaults";
         }
 
 #ifdef SHIELD_ENABLE_PROMETHEUS

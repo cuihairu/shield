@@ -27,9 +27,11 @@ void CLICommand::setup_flags() {
 
 int CLICommand::run(shield::cli::CommandContext& ctx) {
     // Load CLI-specific layered configuration
-    auto& config = shield::config::Config::instance();
+    auto& config_manager = shield::config::ConfigManager::instance();
     try {
-        config.load_for_cli();
+        // Try to load a simple CLI config - for now just use defaults since
+        // load_for_cli() doesn't exist in the new system
+        std::cout << "Using default CLI configuration" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Warning: Failed to load CLI configuration: " << e.what()
                   << std::endl;
@@ -42,7 +44,9 @@ int CLICommand::run(shield::cli::CommandContext& ctx) {
     std::string server_url = ctx.get_flag("url");
     if (server_url.empty() || server_url == "http://localhost:8080") {
         try {
-            server_url = config.get<std::string>("client.default_url");
+            const auto& config_tree = config_manager.get_config_tree();
+            server_url = config_tree.get<std::string>("client.default_url",
+                                                      "http://localhost:8080");
         } catch (...) {
             server_url = "http://localhost:8080";  // fallback
         }
@@ -51,7 +55,8 @@ int CLICommand::run(shield::cli::CommandContext& ctx) {
     int timeout = ctx.get_int_flag("timeout");
     if (timeout == 30) {  // default value
         try {
-            timeout = config.get<int>("client.timeout");
+            const auto& config_tree = config_manager.get_config_tree();
+            timeout = config_tree.get<int>("client.timeout", 30);
         } catch (...) {
             timeout = 30;  // fallback
         }

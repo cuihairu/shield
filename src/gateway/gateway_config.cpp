@@ -7,67 +7,59 @@
 
 namespace shield::gateway {
 
-void GatewayConfig::from_yaml(const YAML::Node& node) {
-    if (node["listener"]) {
-        auto listener_node = node["listener"];
-        if (listener_node["host"])
-            listener.host = listener_node["host"].as<std::string>();
-        if (listener_node["port"])
-            listener.port = listener_node["port"].as<uint16_t>();
-        if (listener_node["io_threads"])
-            listener.io_threads = listener_node["io_threads"].as<int>();
+void GatewayConfig::from_ptree(const boost::property_tree::ptree& pt) {
+    // Listener configuration
+    if (auto listener_pt = pt.get_child_optional("listener")) {
+        listener.host = get_value(*listener_pt, "host", listener.host);
+        listener.port = get_value(*listener_pt, "port", listener.port);
+        listener.io_threads =
+            get_value(*listener_pt, "io_threads", listener.io_threads);
     }
 
-    if (node["tcp"]) {
-        auto tcp_node = node["tcp"];
-        if (tcp_node["enabled"]) tcp.enabled = tcp_node["enabled"].as<bool>();
-        if (tcp_node["backlog"]) tcp.backlog = tcp_node["backlog"].as<int>();
-        if (tcp_node["keep_alive"])
-            tcp.keep_alive = tcp_node["keep_alive"].as<bool>();
-        if (tcp_node["receive_buffer_size"])
-            tcp.receive_buffer_size = tcp_node["receive_buffer_size"].as<int>();
-        if (tcp_node["send_buffer_size"])
-            tcp.send_buffer_size = tcp_node["send_buffer_size"].as<int>();
+    // TCP configuration
+    if (auto tcp_pt = pt.get_child_optional("tcp")) {
+        tcp.enabled = get_value(*tcp_pt, "enabled", tcp.enabled);
+        tcp.backlog = get_value(*tcp_pt, "backlog", tcp.backlog);
+        tcp.keep_alive = get_value(*tcp_pt, "keep_alive", tcp.keep_alive);
+        tcp.receive_buffer_size =
+            get_value(*tcp_pt, "receive_buffer_size", tcp.receive_buffer_size);
+        tcp.send_buffer_size =
+            get_value(*tcp_pt, "send_buffer_size", tcp.send_buffer_size);
     }
 
-    if (node["udp"]) {
-        auto udp_node = node["udp"];
-        if (udp_node["enabled"]) udp.enabled = udp_node["enabled"].as<bool>();
-        if (udp_node["buffer_size"])
-            udp.buffer_size = udp_node["buffer_size"].as<int>();
-        if (udp_node["port"]) udp.port = udp_node["port"].as<uint16_t>();
+    // UDP configuration
+    if (auto udp_pt = pt.get_child_optional("udp")) {
+        udp.enabled = get_value(*udp_pt, "enabled", udp.enabled);
+        udp.buffer_size = get_value(*udp_pt, "buffer_size", udp.buffer_size);
+        udp.port = get_value(*udp_pt, "port", udp.port);
     }
 
-    if (node["http"]) {
-        auto http_node = node["http"];
-        if (http_node["enabled"])
-            http.enabled = http_node["enabled"].as<bool>();
-        if (http_node["port"]) http.port = http_node["port"].as<uint16_t>();
-        if (http_node["root_path"])
-            http.root_path = http_node["root_path"].as<std::string>();
-        if (http_node["max_request_size"])
-            http.max_request_size = http_node["max_request_size"].as<int>();
+    // HTTP configuration
+    if (auto http_pt = pt.get_child_optional("http")) {
+        http.enabled = get_value(*http_pt, "enabled", http.enabled);
+        http.port = get_value(*http_pt, "port", http.port);
+        http.root_path = get_value(*http_pt, "root_path", http.root_path);
+        http.max_request_size =
+            get_value(*http_pt, "max_request_size", http.max_request_size);
     }
 
-    if (node["websocket"]) {
-        auto ws_node = node["websocket"];
-        if (ws_node["enabled"])
-            websocket.enabled = ws_node["enabled"].as<bool>();
-        if (ws_node["port"]) websocket.port = ws_node["port"].as<uint16_t>();
-        if (ws_node["path"]) websocket.path = ws_node["path"].as<std::string>();
-        if (ws_node["max_message_size"])
-            websocket.max_message_size = ws_node["max_message_size"].as<int>();
-        if (ws_node["ping_interval"])
-            websocket.ping_interval = ws_node["ping_interval"].as<int>();
+    // WebSocket configuration
+    if (auto ws_pt = pt.get_child_optional("websocket")) {
+        websocket.enabled = get_value(*ws_pt, "enabled", websocket.enabled);
+        websocket.port = get_value(*ws_pt, "port", websocket.port);
+        websocket.path = get_value(*ws_pt, "path", websocket.path);
+        websocket.max_message_size =
+            get_value(*ws_pt, "max_message_size", websocket.max_message_size);
+        websocket.ping_interval =
+            get_value(*ws_pt, "ping_interval", websocket.ping_interval);
     }
 
-    if (node["threading"]) {
-        auto threading_node = node["threading"];
-        if (threading_node["io_threads"])
-            threading.io_threads = threading_node["io_threads"].as<int>();
-        if (threading_node["worker_threads"])
-            threading.worker_threads =
-                threading_node["worker_threads"].as<int>();
+    // Threading configuration
+    if (auto threading_pt = pt.get_child_optional("threading")) {
+        threading.io_threads =
+            get_value(*threading_pt, "io_threads", threading.io_threads);
+        threading.worker_threads = get_value(*threading_pt, "worker_threads",
+                                             threading.worker_threads);
     }
 }
 

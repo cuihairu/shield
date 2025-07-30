@@ -4,12 +4,12 @@
 #include <string>
 #include <vector>
 
-#include "shield/config/module_config.hpp"
+#include "shield/config/config.hpp"
 
 namespace shield::log {
 
 // 日志配置 - 模块化版本
-class LogConfig : public config::ModuleConfig {
+class LogConfig : public config::ComponentConfig {
 public:
     // 日志级别枚举
     enum class LogLevel {
@@ -76,11 +76,15 @@ public:
     AsyncConfig async;
     FilterConfig filter;
 
-    // ModuleConfig接口实现
-    void from_yaml(const YAML::Node& node) override;
+    // ComponentConfig接口实现
+    void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string module_name() const override { return "log"; }
+    std::string component_name() const override { return "log"; }
+    bool supports_hot_reload() const override {
+        return true;
+    }  // LogConfig supports hot reload
+    CLONE_IMPL(LogConfig)
 
     // 便利方法
     static LogLevel level_from_string(const std::string& level_str);

@@ -226,8 +226,7 @@ size_t ActorSystemCoordinator::broadcast_to_type(ActorType type, T &&message) {
 }
 
 /// @brief Factory function to create coordinator from Shield config
-std::unique_ptr<ActorSystemCoordinator> make_coordinator_from_config(
-    const shield::config::Config &shield_config);
+std::unique_ptr<ActorSystemCoordinator> make_coordinator_from_config();
 
 /// @brief Factory function to create coordinator with default configuration
 std::unique_ptr<ActorSystemCoordinator> make_default_coordinator(

@@ -92,7 +92,12 @@ LogConfig::LogLevel Logger::level_from_string(const std::string& level_str) {
     return LogConfig::level_from_string(level_str);
 }
 
-// TODO: Implement get_logger, set_level, get_level for boost::log
-// For now, we'll use the default logger directly.
+void Logger::set_level(LogConfig::LogLevel level) {
+    logging::core::get()->set_filter(
+        logging::expressions::attr<logging::trivial::severity_level>(
+            "Severity") >= to_boost_level(level));
+    SHIELD_LOG_INFO << "Log level set to: "
+                    << LogConfig::level_to_string(level);
+}
 
 }  // namespace shield::log

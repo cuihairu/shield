@@ -6,7 +6,9 @@
 
 #include "caf/actor_system_config.hpp"
 #include "caf/io/middleman.hpp"
+#include "shield/actor/actor_system_config.hpp"
 #include "shield/caf_type_ids.hpp"
+#include "shield/config/config.hpp"
 #include "shield/discovery/etcd_discovery.hpp"
 #include "shield/discovery/local_discovery.hpp"
 #include "shield/log/logger.hpp"
@@ -324,20 +326,28 @@ void ActorSystemCoordinator::emit_status(const std::string& status,
     }
 }
 
-std::unique_ptr<ActorSystemCoordinator> make_coordinator_from_config(
-    const shield::config::Config& shield_config) {
+std::unique_ptr<ActorSystemCoordinator> make_coordinator_from_config() {
     CoordinatorConfig config;
 
-    // Extract configuration from Shield config
-    // Note: This assumes the Shield config has been extended with actor system
-    // settings
-    config.worker_threads = shield_config.get<int>("caf.worker_threads");
-    config.discovery_type = "in-memory";  // Default for now
+    // Get actor system configuration from ConfigManager
+    auto& config_manager = shield::config::ConfigManager::instance();
+    auto actor_config =
+        config_manager.get_component_config<shield::actor::ActorSystemConfig>();
 
-    // Generate node ID based on hostname or other unique identifier
-    std::ostringstream oss;
-    oss << "shield_node_" << std::time(nullptr);
-    config.node_id = oss.str();
+    if (actor_config) {
+        config.worker_threads = actor_config->get_effective_worker_threads();
+        config.node_id = actor_config->get_effective_node_id();
+        config.discovery_type = "in-memory";  // Default for now
+    } else {
+        // Fallback to defaults
+        config.worker_threads = 0;  // Use hardware concurrency
+        config.discovery_type = "in-memory";
+
+        // Generate node ID based on hostname or other unique identifier
+        std::ostringstream oss;
+        oss << "shield_node_" << std::time(nullptr);
+        config.node_id = oss.str();
+    }
 
     return std::make_unique<ActorSystemCoordinator>(config);
 }

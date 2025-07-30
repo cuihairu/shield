@@ -3,12 +3,12 @@
 #include <cstdint>
 #include <string>
 
-#include "shield/config/module_config.hpp"
+#include "shield/config/config.hpp"
 
 namespace shield::metrics {
 
 // Prometheus模块配置
-class PrometheusConfig : public config::ModuleConfig {
+class PrometheusConfig : public config::ComponentConfig {
 public:
     // 基础配置
     struct ServerConfig {
@@ -52,11 +52,12 @@ public:
     AppMetricsConfig app_metrics;
     ExportConfig export_config;
 
-    // ModuleConfig接口实现
-    void from_yaml(const YAML::Node& node) override;
+    // ComponentConfig接口实现
+    void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string module_name() const override { return "prometheus"; }
+    std::string component_name() const override { return "prometheus"; }
+    CLONE_IMPL(PrometheusConfig)
 
     // 便利方法
     bool is_metrics_enabled() const { return server.enabled; }

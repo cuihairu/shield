@@ -10,77 +10,59 @@
 
 namespace shield::actor {
 
-void ActorSystemConfig::from_yaml(const YAML::Node& node_yaml) {
-    if (node_yaml["node"]) {
-        auto node_config = node_yaml["node"];
-        if (node_config["node_id"])
-            node.node_id = node_config["node_id"].as<std::string>();
-        if (node_config["cluster_name"])
-            node.cluster_name = node_config["cluster_name"].as<std::string>();
-        if (node_config["auto_generate_node_id"])
-            node.auto_generate_node_id =
-                node_config["auto_generate_node_id"].as<bool>();
+void ActorSystemConfig::from_ptree(const boost::property_tree::ptree& pt) {
+    // Node configuration
+    if (auto node_pt = pt.get_child_optional("node")) {
+        node.node_id = get_value(*node_pt, "node_id", node.node_id);
+        node.cluster_name =
+            get_value(*node_pt, "cluster_name", node.cluster_name);
+        node.auto_generate_node_id = get_value(
+            *node_pt, "auto_generate_node_id", node.auto_generate_node_id);
     }
 
-    if (node_yaml["scheduler"]) {
-        auto scheduler_config = node_yaml["scheduler"];
-        if (scheduler_config["policy"])
-            scheduler.policy = scheduler_config["policy"].as<std::string>();
-        if (scheduler_config["worker_threads"])
-            scheduler.worker_threads =
-                scheduler_config["worker_threads"].as<int>();
-        if (scheduler_config["max_throughput"])
-            scheduler.max_throughput =
-                scheduler_config["max_throughput"].as<int>();
-        if (scheduler_config["enable_profiling"])
-            scheduler.enable_profiling =
-                scheduler_config["enable_profiling"].as<bool>();
+    // Scheduler configuration
+    if (auto scheduler_pt = pt.get_child_optional("scheduler")) {
+        scheduler.policy = get_value(*scheduler_pt, "policy", scheduler.policy);
+        scheduler.worker_threads = get_value(*scheduler_pt, "worker_threads",
+                                             scheduler.worker_threads);
+        scheduler.max_throughput = get_value(*scheduler_pt, "max_throughput",
+                                             scheduler.max_throughput);
+        scheduler.enable_profiling = get_value(
+            *scheduler_pt, "enable_profiling", scheduler.enable_profiling);
     }
 
-    if (node_yaml["network"]) {
-        auto network_config = node_yaml["network"];
-        if (network_config["enabled"])
-            network.enabled = network_config["enabled"].as<bool>();
-        if (network_config["host"])
-            network.host = network_config["host"].as<std::string>();
-        if (network_config["port"])
-            network.port = network_config["port"].as<uint16_t>();
-        if (network_config["max_connections"])
-            network.max_connections =
-                network_config["max_connections"].as<int>();
-        if (network_config["connection_timeout"])
-            network.connection_timeout =
-                network_config["connection_timeout"].as<int>();
+    // Network configuration
+    if (auto network_pt = pt.get_child_optional("network")) {
+        network.enabled = get_value(*network_pt, "enabled", network.enabled);
+        network.host = get_value(*network_pt, "host", network.host);
+        network.port = get_value(*network_pt, "port", network.port);
+        network.max_connections =
+            get_value(*network_pt, "max_connections", network.max_connections);
+        network.connection_timeout = get_value(
+            *network_pt, "connection_timeout", network.connection_timeout);
     }
 
-    if (node_yaml["monitor"]) {
-        auto monitor_config = node_yaml["monitor"];
-        if (monitor_config["enable_metrics"])
-            monitor.enable_metrics =
-                monitor_config["enable_metrics"].as<bool>();
-        if (monitor_config["enable_tracing"])
-            monitor.enable_tracing =
-                monitor_config["enable_tracing"].as<bool>();
-        if (monitor_config["metrics_interval"])
-            monitor.metrics_interval =
-                monitor_config["metrics_interval"].as<int>();
-        if (monitor_config["metrics_output"])
-            monitor.metrics_output =
-                monitor_config["metrics_output"].as<std::string>();
+    // Monitor configuration
+    if (auto monitor_pt = pt.get_child_optional("monitor")) {
+        monitor.enable_metrics =
+            get_value(*monitor_pt, "enable_metrics", monitor.enable_metrics);
+        monitor.enable_tracing =
+            get_value(*monitor_pt, "enable_tracing", monitor.enable_tracing);
+        monitor.metrics_interval = get_value(*monitor_pt, "metrics_interval",
+                                             monitor.metrics_interval);
+        monitor.metrics_output =
+            get_value(*monitor_pt, "metrics_output", monitor.metrics_output);
     }
 
-    if (node_yaml["memory"]) {
-        auto memory_config = node_yaml["memory"];
-        if (memory_config["max_memory_per_actor"])
-            memory.max_memory_per_actor =
-                memory_config["max_memory_per_actor"].as<size_t>();
-        if (memory_config["message_buffer_size"])
-            memory.message_buffer_size =
-                memory_config["message_buffer_size"].as<size_t>();
-        if (memory_config["enable_gc"])
-            memory.enable_gc = memory_config["enable_gc"].as<bool>();
-        if (memory_config["gc_interval"])
-            memory.gc_interval = memory_config["gc_interval"].as<int>();
+    // Memory configuration
+    if (auto memory_pt = pt.get_child_optional("memory")) {
+        memory.max_memory_per_actor = get_value(
+            *memory_pt, "max_memory_per_actor", memory.max_memory_per_actor);
+        memory.message_buffer_size = get_value(
+            *memory_pt, "message_buffer_size", memory.message_buffer_size);
+        memory.enable_gc = get_value(*memory_pt, "enable_gc", memory.enable_gc);
+        memory.gc_interval =
+            get_value(*memory_pt, "gc_interval", memory.gc_interval);
     }
 }
 

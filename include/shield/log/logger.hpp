@@ -12,6 +12,8 @@ public:
     static void init(const LogConfig &config);
     static void shutdown();
     static LogConfig::LogLevel level_from_string(const std::string &level_str);
+    static void set_level(
+        LogConfig::LogLevel level);  // Added for dynamic level change
 
 private:
     static LogConfig config_;

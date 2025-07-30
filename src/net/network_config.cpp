@@ -8,51 +8,42 @@
 namespace shield::net {
 
 // TcpConfig implementation
-void TcpConfig::from_yaml(const YAML::Node& node) {
-    if (node["server"]) {
-        auto server_node = node["server"];
-        if (server_node["enabled"])
-            server.enabled = server_node["enabled"].as<bool>();
-        if (server_node["host"])
-            server.host = server_node["host"].as<std::string>();
-        if (server_node["port"])
-            server.port = server_node["port"].as<uint16_t>();
-        if (server_node["backlog"])
-            server.backlog = server_node["backlog"].as<int>();
-        if (server_node["keep_alive"])
-            server.keep_alive = server_node["keep_alive"].as<bool>();
-        if (server_node["max_connections"])
-            server.max_connections = server_node["max_connections"].as<int>();
+void TcpConfig::from_ptree(const boost::property_tree::ptree& pt) {
+    // Server configuration
+    if (auto server_pt = pt.get_child_optional("server")) {
+        server.enabled = get_value(*server_pt, "enabled", server.enabled);
+        server.host = get_value(*server_pt, "host", server.host);
+        server.port = get_value(*server_pt, "port", server.port);
+        server.backlog = get_value(*server_pt, "backlog", server.backlog);
+        server.keep_alive =
+            get_value(*server_pt, "keep_alive", server.keep_alive);
+        server.max_connections =
+            get_value(*server_pt, "max_connections", server.max_connections);
     }
 
-    if (node["buffer"]) {
-        auto buffer_node = node["buffer"];
-        if (buffer_node["receive_buffer_size"])
-            buffer.receive_buffer_size =
-                buffer_node["receive_buffer_size"].as<int>();
-        if (buffer_node["send_buffer_size"])
-            buffer.send_buffer_size = buffer_node["send_buffer_size"].as<int>();
-        if (buffer_node["no_delay"])
-            buffer.no_delay = buffer_node["no_delay"].as<bool>();
-        if (buffer_node["keep_alive_idle"])
-            buffer.keep_alive_idle = buffer_node["keep_alive_idle"].as<int>();
-        if (buffer_node["keep_alive_interval"])
-            buffer.keep_alive_interval =
-                buffer_node["keep_alive_interval"].as<int>();
-        if (buffer_node["keep_alive_count"])
-            buffer.keep_alive_count = buffer_node["keep_alive_count"].as<int>();
+    // Buffer configuration
+    if (auto buffer_pt = pt.get_child_optional("buffer")) {
+        buffer.receive_buffer_size = get_value(
+            *buffer_pt, "receive_buffer_size", buffer.receive_buffer_size);
+        buffer.send_buffer_size =
+            get_value(*buffer_pt, "send_buffer_size", buffer.send_buffer_size);
+        buffer.no_delay = get_value(*buffer_pt, "no_delay", buffer.no_delay);
+        buffer.keep_alive_idle =
+            get_value(*buffer_pt, "keep_alive_idle", buffer.keep_alive_idle);
+        buffer.keep_alive_interval = get_value(
+            *buffer_pt, "keep_alive_interval", buffer.keep_alive_interval);
+        buffer.keep_alive_count =
+            get_value(*buffer_pt, "keep_alive_count", buffer.keep_alive_count);
     }
 
-    if (node["threading"]) {
-        auto threading_node = node["threading"];
-        if (threading_node["io_threads"])
-            threading.io_threads = threading_node["io_threads"].as<int>();
-        if (threading_node["worker_threads"])
-            threading.worker_threads =
-                threading_node["worker_threads"].as<int>();
-        if (threading_node["use_thread_pool"])
-            threading.use_thread_pool =
-                threading_node["use_thread_pool"].as<bool>();
+    // Threading configuration
+    if (auto threading_pt = pt.get_child_optional("threading")) {
+        threading.io_threads =
+            get_value(*threading_pt, "io_threads", threading.io_threads);
+        threading.worker_threads = get_value(*threading_pt, "worker_threads",
+                                             threading.worker_threads);
+        threading.use_thread_pool = get_value(*threading_pt, "use_thread_pool",
+                                              threading.use_thread_pool);
     }
 }
 
@@ -129,47 +120,41 @@ int TcpConfig::get_effective_worker_threads() const {
 }
 
 // UdpConfig implementation
-void UdpConfig::from_yaml(const YAML::Node& node) {
-    if (node["server"]) {
-        auto server_node = node["server"];
-        if (server_node["enabled"])
-            server.enabled = server_node["enabled"].as<bool>();
-        if (server_node["host"])
-            server.host = server_node["host"].as<std::string>();
-        if (server_node["port"])
-            server.port = server_node["port"].as<uint16_t>();
-        if (server_node["buffer_size"])
-            server.buffer_size = server_node["buffer_size"].as<int>();
-        if (server_node["max_packet_size"])
-            server.max_packet_size = server_node["max_packet_size"].as<int>();
+void UdpConfig::from_ptree(const boost::property_tree::ptree& pt) {
+    // Server configuration
+    if (auto server_pt = pt.get_child_optional("server")) {
+        server.enabled = get_value(*server_pt, "enabled", server.enabled);
+        server.host = get_value(*server_pt, "host", server.host);
+        server.port = get_value(*server_pt, "port", server.port);
+        server.buffer_size =
+            get_value(*server_pt, "buffer_size", server.buffer_size);
+        server.max_packet_size =
+            get_value(*server_pt, "max_packet_size", server.max_packet_size);
     }
 
-    if (node["performance"]) {
-        auto perf_node = node["performance"];
-        if (perf_node["reuse_address"])
-            performance.reuse_address = perf_node["reuse_address"].as<bool>();
-        if (perf_node["reuse_port"])
-            performance.reuse_port = perf_node["reuse_port"].as<bool>();
-        if (perf_node["receive_timeout"])
-            performance.receive_timeout =
-                perf_node["receive_timeout"].as<int>();
-        if (perf_node["send_timeout"])
-            performance.send_timeout = perf_node["send_timeout"].as<int>();
-        if (perf_node["max_concurrent_packets"])
-            performance.max_concurrent_packets =
-                perf_node["max_concurrent_packets"].as<int>();
+    // Performance configuration
+    if (auto perf_pt = pt.get_child_optional("performance")) {
+        performance.reuse_address =
+            get_value(*perf_pt, "reuse_address", performance.reuse_address);
+        performance.reuse_port =
+            get_value(*perf_pt, "reuse_port", performance.reuse_port);
+        performance.receive_timeout =
+            get_value(*perf_pt, "receive_timeout", performance.receive_timeout);
+        performance.send_timeout =
+            get_value(*perf_pt, "send_timeout", performance.send_timeout);
+        performance.max_concurrent_packets =
+            get_value(*perf_pt, "max_concurrent_packets",
+                      performance.max_concurrent_packets);
     }
 
-    if (node["threading"]) {
-        auto threading_node = node["threading"];
-        if (threading_node["io_threads"])
-            threading.io_threads = threading_node["io_threads"].as<int>();
-        if (threading_node["worker_threads"])
-            threading.worker_threads =
-                threading_node["worker_threads"].as<int>();
-        if (threading_node["use_thread_pool"])
-            threading.use_thread_pool =
-                threading_node["use_thread_pool"].as<bool>();
+    // Threading configuration
+    if (auto threading_pt = pt.get_child_optional("threading")) {
+        threading.io_threads =
+            get_value(*threading_pt, "io_threads", threading.io_threads);
+        threading.worker_threads = get_value(*threading_pt, "worker_threads",
+                                             threading.worker_threads);
+        threading.use_thread_pool = get_value(*threading_pt, "use_thread_pool",
+                                              threading.use_thread_pool);
     }
 }
 

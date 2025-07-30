@@ -4,12 +4,12 @@
 #include <string>
 #include <vector>
 
-#include "shield/config/module_config.hpp"
+#include "shield/config/config.hpp"
 
 namespace shield::actor {
 
 // Actor系统配置
-class ActorSystemConfig : public config::ModuleConfig {
+class ActorSystemConfig : public config::ComponentConfig {
 public:
     // 节点配置
     struct NodeConfig {
@@ -58,11 +58,12 @@ public:
     MonitorConfig monitor;
     MemoryConfig memory;
 
-    // ModuleConfig接口实现
-    void from_yaml(const YAML::Node& node) override;
+    // ComponentConfig接口实现
+    void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
-    std::string module_name() const override { return "actor_system"; }
+    std::string component_name() const override { return "actor_system"; }
+    CLONE_IMPL(ActorSystemConfig)
 
     // 便利方法
     int get_effective_worker_threads() const;

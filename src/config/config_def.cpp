@@ -1,9 +1,8 @@
-#include "shield/config/config_def.hpp"
+// Legacy config definitions file
+// This functionality has been moved to the new ConfigManager system
 
 namespace shield::config {
 
-config::ShieldConfig get_default_shield_config() {
-    return config::ShieldConfig{};
-}
+// Legacy functions removed - use ConfigManager instead
 
 }  // namespace shield::config

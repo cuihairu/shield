@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "shield/config/config.hpp"
-#include "shield/config/module_config.hpp"
+#include "shield/fs/file_watcher.hpp"  // Updated include path for FileWatcher
 #include "shield/gateway/gateway_config.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/metrics/prometheus_config.hpp"
@@ -59,26 +59,15 @@ void ServerCommand::setup_flags() {
 int ServerCommand::run(shield::cli::CommandContext& ctx) {
     std::cout << "Starting Shield Server..." << std::endl;
 
-    // Load configuration (simple single file approach)
-    auto& config = shield::config::Config::instance();
+    // Load configuration using new ConfigManager
+    auto& config_manager = shield::config::ConfigManager::instance();
     try {
         std::string config_file = ctx.get_flag("config");
-        config.load(config_file);
+        config_manager.load_config(config_file,
+                                   shield::config::ConfigFormat::YAML);
         std::cout << "Loaded configuration from: " << config_file << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Failed to load configuration: " << e.what() << std::endl;
-        return 1;
-    }
-
-    // Load modular configuration system
-    try {
-        std::string config_file = ctx.get_flag("config");
-        shield::config::ConfigManager::instance().load_config(config_file);
-        std::cout << "Loaded modular configuration from: " << config_file
-                  << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to load modular configuration: " << e.what()
-                  << std::endl;
         return 1;
     }
 
@@ -92,10 +81,30 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
     }
     shield::log::Logger::init(log_config);
 
+    // Start FileWatcher for dynamic config reloading
+    auto config_watcher = std::make_unique<shield::fs::FileWatcher>();
+    std::string config_file = ctx.get_flag("config");
+    config_watcher->add_file(config_file);
+    config_watcher->add_handler(
+        [&config_manager, config_file](const shield::fs::FileEvent& event) {
+            if (event.event_type == shield::fs::FileEventType::Modified) {
+                try {
+                    config_manager.reload_config(
+                        config_file, shield::config::ConfigFormat::YAML);
+                    SHIELD_LOG_INFO << "Configuration reloaded successfully";
+                } catch (const std::exception& e) {
+                    SHIELD_LOG_ERROR << "Failed to reload configuration: "
+                                     << e.what();
+                }
+            }
+        });
+    config_watcher->start();
+
     // Show banner if configured
     bool show_startup_banner = true;
     try {
-        show_startup_banner = config.get<bool>("app.show_banner");
+        const auto& config_tree = config_manager.get_config_tree();
+        show_startup_banner = config_tree.get<bool>("app.show_banner", true);
     } catch (...) {
         // Use default
     }
@@ -147,8 +156,14 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
     shield::actor::DistributedActorConfig actor_config;
 
     // Configure dynamic node ID
-    std::string node_id_config =
-        config.get<std::string>("server.actor_system.node_id");
+    std::string node_id_config = "auto";  // default value
+    try {
+        const auto& config_tree = config_manager.get_config_tree();
+        node_id_config =
+            config_tree.get<std::string>("server.actor_system.node_id", "auto");
+    } catch (...) {
+        // Use default
+    }
     if (node_id_config == "auto") {
         // Generate unique node ID based on hostname and process ID
         std::string hostname = "unknown";
@@ -179,8 +194,24 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
 
     // Component management
     std::vector<std::unique_ptr<shield::core::Component>> components;
-    auto component_names =
-        config.get<std::vector<std::string>>("server.components");
+    std::vector<std::string> component_names;
+    try {
+        const auto& config_tree = config_manager.get_config_tree();
+        // Try to get components list from config, fall back to defaults
+        if (auto components_node =
+                config_tree.get_child_optional("server.components")) {
+            for (const auto& component : *components_node) {
+                component_names.push_back(
+                    component.second.get_value<std::string>());
+            }
+        } else {
+            // Default components
+            component_names = {"gateway", "prometheus", "lua_vm_pool"};
+        }
+    } catch (...) {
+        // Use default components
+        component_names = {"gateway", "prometheus", "lua_vm_pool"};
+    }
 
     for (const auto& name : component_names) {
         if (name == "prometheus") {
@@ -205,7 +236,7 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
             // Get Gateway configuration
             auto gateway_config =
                 shield::config::ConfigManager::instance()
-                    .get_module_config<shield::gateway::GatewayConfig>();
+                    .get_component_config<shield::gateway::GatewayConfig>();
             if (!gateway_config) {
                 SHIELD_LOG_ERROR << "Gateway configuration not found";
                 return 1;
@@ -220,18 +251,20 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
 
             // Load LuaVMPoolConfig from config file
             try {
+                const auto& config_tree = config_manager.get_config_tree();
                 lua_vm_pool_config.initial_size =
-                    config.get<size_t>("lua_vm_pool.initial_size");
+                    config_tree.get<size_t>("lua_vm_pool.initial_size", 5);
                 lua_vm_pool_config.min_size =
-                    config.get<size_t>("lua_vm_pool.min_size");
+                    config_tree.get<size_t>("lua_vm_pool.min_size", 2);
                 lua_vm_pool_config.max_size =
-                    config.get<size_t>("lua_vm_pool.max_size");
+                    config_tree.get<size_t>("lua_vm_pool.max_size", 20);
                 lua_vm_pool_config.idle_timeout = std::chrono::milliseconds(
-                    config.get<int>("lua_vm_pool.idle_timeout_ms"));
-                lua_vm_pool_config.acquire_timeout = std::chrono::milliseconds(
-                    config.get<int>("lua_vm_pool.acquire_timeout_ms"));
+                    config_tree.get<int>("lua_vm_pool.idle_timeout_ms", 30000));
+                lua_vm_pool_config.acquire_timeout =
+                    std::chrono::milliseconds(config_tree.get<int>(
+                        "lua_vm_pool.acquire_timeout_ms", 5000));
                 lua_vm_pool_config.preload_scripts =
-                    config.get<bool>("lua_vm_pool.preload_scripts");
+                    config_tree.get<bool>("lua_vm_pool.preload_scripts", false);
 
                 SHIELD_LOG_INFO << "LuaVMPool configured: initial="
                                 << lua_vm_pool_config.initial_size
@@ -273,6 +306,9 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
     for (auto it = components.rbegin(); it != components.rend(); ++it) {
         (*it)->stop();
     }
+
+    // Stop FileWatcher
+    config_watcher->stop();
 
     SHIELD_LOG_INFO << "Application finished.";
 

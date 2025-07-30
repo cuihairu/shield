@@ -227,6 +227,7 @@ set(CONFIG_SOURCES
   src/config/config_def.cpp
   src/config/module_config.cpp
   src/config/config_registry.cpp
+  src/fs/file_watcher.cpp
 )
 
 set(OTHER_SOURCES
