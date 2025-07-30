@@ -1,13 +1,13 @@
-#include "shield/core/config.hpp"
+#include "shield/config/config.hpp"
 
 #include <filesystem>
 #include <stdexcept>
 
-#include "shield/core/config_def.hpp"
-#include "shield/core/config_serialization.hpp"
+#include "shield/config/config_def.hpp"
+#include "shield/config/config_serialization.hpp"
 #include "shield/log/logger.hpp"  // Include logger for debug output
 
-namespace shield::core {
+namespace shield::config {
 
 std::string to_yaml_string(const config::ShieldConfig& config) {
     YAML::Node node = YAML::convert<config::ShieldConfig>::encode(config);

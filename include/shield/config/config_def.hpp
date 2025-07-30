@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace shield::core {
+namespace shield::config {
 
 namespace config {
 

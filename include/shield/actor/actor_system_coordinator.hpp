@@ -8,7 +8,7 @@
 
 #include "caf/actor_system.hpp"
 #include "shield/actor/distributed_actor_system.hpp"
-#include "shield/core/config.hpp"
+#include "shield/config/config.hpp"
 #include "shield/discovery/service_discovery.hpp"
 
 namespace shield::actor {
@@ -227,7 +227,7 @@ size_t ActorSystemCoordinator::broadcast_to_type(ActorType type, T &&message) {
 
 /// @brief Factory function to create coordinator from Shield config
 std::unique_ptr<ActorSystemCoordinator> make_coordinator_from_config(
-    const shield::core::Config &shield_config);
+    const shield::config::Config &shield_config);
 
 /// @brief Factory function to create coordinator with default configuration
 std::unique_ptr<ActorSystemCoordinator> make_default_coordinator(

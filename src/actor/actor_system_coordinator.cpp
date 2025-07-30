@@ -325,7 +325,7 @@ void ActorSystemCoordinator::emit_status(const std::string& status,
 }
 
 std::unique_ptr<ActorSystemCoordinator> make_coordinator_from_config(
-    const shield::core::Config& shield_config) {
+    const shield::config::Config& shield_config) {
     CoordinatorConfig config;
 
     // Extract configuration from Shield config

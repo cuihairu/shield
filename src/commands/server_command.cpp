@@ -9,8 +9,11 @@
 #include <thread>
 #include <vector>
 
-#include "shield/core/config.hpp"
+#include "shield/config/config.hpp"
+#include "shield/config/module_config.hpp"
+#include "shield/gateway/gateway_config.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/metrics/prometheus_config.hpp"
 #include "shield/version.hpp"
 
 // Initialize CAF type system BEFORE including other headers
@@ -47,7 +50,7 @@ ServerCommand::ServerCommand()
 
 void ServerCommand::setup_flags() {
     add_flag("config", "Configuration file path",
-             shield::core::ConfigPaths::DEFAULT_CONFIG_FILE);
+             shield::config::ConfigPaths::DEFAULT_CONFIG_FILE);
     add_int_flag("port", "Server port", 0);
     add_flag("host", "Server host", "");
     add_bool_flag("daemon", "Run as daemon", false);
@@ -57,13 +60,25 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
     std::cout << "Starting Shield Server..." << std::endl;
 
     // Load configuration (simple single file approach)
-    auto& config = shield::core::Config::instance();
+    auto& config = shield::config::Config::instance();
     try {
         std::string config_file = ctx.get_flag("config");
         config.load(config_file);
         std::cout << "Loaded configuration from: " << config_file << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Failed to load configuration: " << e.what() << std::endl;
+        return 1;
+    }
+
+    // Load modular configuration system
+    try {
+        std::string config_file = ctx.get_flag("config");
+        shield::config::ConfigManager::instance().load_config(config_file);
+        std::cout << "Loaded modular configuration from: " << config_file
+                  << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to load modular configuration: " << e.what()
+                  << std::endl;
         return 1;
     }
 
@@ -185,9 +200,20 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
                                     "initialize GatewayComponent.";
                 return 1;  // Exit if LuaVMPool is not available
             }
+
+            // Get Gateway configuration
+            auto gateway_config =
+                shield::config::ConfigManager::instance()
+                    .get_module_config<shield::gateway::GatewayConfig>();
+            if (!gateway_config) {
+                SHIELD_LOG_ERROR << "Gateway configuration not found";
+                return 1;
+            }
+
             components.emplace_back(
                 std::make_unique<shield::gateway::GatewayComponent>(
-                    "gateway", distributed_actor_system, *lua_vm_pool_ptr));
+                    "gateway", distributed_actor_system, *lua_vm_pool_ptr,
+                    gateway_config));
         } else if (name == "lua_vm_pool") {
             shield::script::LuaVMPoolConfig lua_vm_pool_config;
 

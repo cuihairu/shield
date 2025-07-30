@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace shield::core {
+namespace shield::config {
 
 // Configuration file path constants
 namespace ConfigPaths {

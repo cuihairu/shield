@@ -4,7 +4,7 @@
 #include <iostream>
 #include <sstream>
 
-#include "shield/core/config.hpp"
+#include "shield/config/config.hpp"
 
 #ifdef SHIELD_ENABLE_PROMETHEUS
 #ifdef __APPLE__
@@ -351,7 +351,7 @@ PrometheusComponent& PrometheusComponent::instance() {
 
 void PrometheusComponent::on_init() {
     try {
-        auto& config = shield::core::Config::instance();
+        auto& config = shield::config::Config::instance();
 
         // Load configuration
         try {

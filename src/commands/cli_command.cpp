@@ -2,7 +2,7 @@
 
 #include <iostream>
 
-#include "shield/core/config.hpp"
+#include "shield/config/config.hpp"
 
 namespace shield::commands {
 
@@ -27,7 +27,7 @@ void CLICommand::setup_flags() {
 
 int CLICommand::run(shield::cli::CommandContext& ctx) {
     // Load CLI-specific layered configuration
-    auto& config = shield::core::Config::instance();
+    auto& config = shield::config::Config::instance();
     try {
         config.load_for_cli();
     } catch (const std::exception& e) {

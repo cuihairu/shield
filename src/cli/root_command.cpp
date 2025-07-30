@@ -3,7 +3,7 @@
 #include <iostream>
 
 #include "shield/commands/all_commands.hpp"
-#include "shield/core/config.hpp"
+#include "shield/config/config.hpp"
 #include "shield/version.hpp"
 
 namespace shield::cli {
@@ -23,7 +23,7 @@ RootCommand::RootCommand()
 
     // Add global flags
     add_flag_with_short("config", "c", "Global configuration file",
-                        shield::core::ConfigPaths::DEFAULT_CONFIG_FILE);
+                        shield::config::ConfigPaths::DEFAULT_CONFIG_FILE);
     add_bool_flag_with_short("version", "v", "Show version information", false);
 
     register_commands();
@@ -65,4 +65,4 @@ std::shared_ptr<RootCommand> CommandRegistry::create_root_command() {
     return RootCommand::create();
 }
 
-}  // namespace shield::core
+}  // namespace shield::cli

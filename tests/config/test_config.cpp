@@ -4,7 +4,7 @@
 #include <boost/test/unit_test.hpp>
 #include <fstream>
 
-#include "shield/core/config.hpp"  // assuming your Config class is here
+#include "shield/config/config.hpp"  // updated path
 
 namespace fs = boost::filesystem;
 
@@ -49,7 +49,7 @@ database:
     fs::path config_path =
         fixture.create_temp_yaml("nested.yaml", yaml_content);
 
-    shield::core::Config &config = shield::core::Config::instance();
+    shield::config::Config &config = shield::config::Config::instance();
     BOOST_CHECK_NO_THROW(config.load(config_path.string()));
 
     BOOST_CHECK_EQUAL(config.get<std::string>("server.host"), "localhost");
@@ -57,7 +57,7 @@ database:
 }
 
 BOOST_AUTO_TEST_CASE(test_invalid_file_path) {
-    shield::core::Config &config = shield::core::Config::instance();
+    shield::config::Config &config = shield::config::Config::instance();
     // Assume load method throws exception or returns false when file doesn't
     // exist
     BOOST_CHECK_THROW(

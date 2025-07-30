@@ -5,8 +5,8 @@
 #include <iostream>
 #include <sstream>
 
-#include "shield/core/config.hpp"
-#include "shield/core/config_def.hpp"
+#include "shield/config/config.hpp"
+#include "shield/config/config_def.hpp"
 
 namespace shield::commands {
 
@@ -125,8 +125,8 @@ int ConfigCommand::handle_init(const std::string& directory) {
 }
 
 std::string ConfigCommand::generate_default_config() {
-    shield::core::config::ShieldConfig config =
-        shield::core::get_default_shield_config();
+    shield::config::config::ShieldConfig config =
+        shield::config::get_default_shield_config();
     std::stringstream ss;
     // Get current time
     std::time_t now = std::time(nullptr);
@@ -137,7 +137,7 @@ std::string ConfigCommand::generate_default_config() {
     }
     ss << "# Shield Game Server Configuration\n";
     ss << "# This is the main configuration file for Shield framework\n\n";
-    ss << shield::core::to_yaml_string(config);
+    ss << shield::config::to_yaml_string(config);
 
     return ss.str();
 }
@@ -145,11 +145,11 @@ std::string ConfigCommand::generate_default_config() {
 int ConfigCommand::validate_config(const std::string& file_path) {
     std::cout << "Validating config file: " << file_path << std::endl;
     try {
-        shield::core::Config::instance().load(file_path);
-        std::cout << "✓ Configuration is valid." << std::endl;
+        shield::config::Config::instance().load(file_path);
+        std::cout << "Configuration is valid." << std::endl;
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "✗ Configuration validation failed: " << e.what()
+        std::cerr << "Configuration validation failed: " << e.what()
                   << std::endl;
         return 1;
     }
@@ -158,7 +158,7 @@ int ConfigCommand::validate_config(const std::string& file_path) {
 int ConfigCommand::dump_config(const std::string& file_path) {
     std::cout << "Dumping current configuration..." << std::endl;
     try {
-        shield::core::Config::instance().load(file_path);
+        shield::config::Config::instance().load(file_path);
         // Assuming Config::instance().config_ is accessible or there's a method
         // to get the YAML::Node For now, we'll just print a success message.
         std::cout << "(Dump functionality not fully implemented yet, but "
@@ -166,8 +166,7 @@ int ConfigCommand::dump_config(const std::string& file_path) {
                   << std::endl;
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "✗ Failed to dump configuration: " << e.what()
-                  << std::endl;
+        std::cerr << "Failed to dump configuration: " << e.what() << std::endl;
         return 1;
     }
 }
@@ -177,15 +176,15 @@ int ConfigCommand::get_config_value(const std::string& file_path,
     std::cout << "Getting value for key '" << key
               << "' from file: " << file_path << std::endl;
     try {
-        shield::core::Config::instance().load(file_path);
+        shield::config::Config::instance().load(file_path);
         // This will throw if the key is not found, which is handled by the
         // catch block
         std::string value =
-            shield::core::Config::instance().get<std::string>(key);
+            shield::config::Config::instance().get<std::string>(key);
         std::cout << "Value for '" << key << "': " << value << std::endl;
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "✗ Failed to get config value: " << e.what() << std::endl;
+        std::cerr << "Failed to get config value: " << e.what() << std::endl;
         return 1;
     }
 }

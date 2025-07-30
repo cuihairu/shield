@@ -206,8 +206,6 @@ file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 set(CORE_SOURCES
   # Core sources
   src/core/component.cpp
-  src/core/config.cpp
-  src/core/config_def.cpp
 )
 
 set(LOG_SOURCES
@@ -220,7 +218,17 @@ set(CLI_SOURCES
   src/cli/command_line_parser.cpp
   src/cli/command.cpp
   src/cli/root_command.cpp
-  
+)
+
+set(CONFIG_SOURCES
+  # Config sources
+  src/config/config.cpp
+  src/config/config_def.cpp
+  src/config/module_config.cpp
+  src/config/config_registry.cpp
+)
+
+set(OTHER_SOURCES
   # Discovery sources
   src/discovery/service_instance.cpp
   src/discovery/local_discovery.cpp
@@ -258,6 +266,7 @@ set(CLI_SOURCES
   
   # Metrics sources
   src/metrics/prometheus_component.cpp
+  src/metrics/prometheus_config.cpp
   
   # Script sources
   src/script/lua_engine.cpp
@@ -265,6 +274,7 @@ set(CLI_SOURCES
   
   # Gateway sources
   src/gateway/gateway_component.cpp
+  src/gateway/gateway_config.cpp
   
   # Command sources
   src/commands/server_command.cpp
@@ -276,23 +286,22 @@ set(CLI_SOURCES
   
   # CAF initializer
   src/caf_initializer.cpp
-  ${LOG_SOURCES}
-  ${CLI_SOURCES}
 )
 
 # Print found source files (optional, for debugging)
 message(STATUS "Found core library source files:")
-foreach(SOURCE ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES})
+foreach(SOURCE ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES} ${CONFIG_SOURCES} ${OTHER_SOURCES})
   message(STATUS "  ${SOURCE}")
 endforeach()
 
 # Create the core static library
-add_library(shield_core STATIC ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES})
+add_library(shield_core STATIC ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES} ${CONFIG_SOURCES} ${OTHER_SOURCES})
 target_include_directories(
   shield_core
   PUBLIC ${PROJECT_SOURCE_DIR}/include
          ${PROJECT_SOURCE_DIR}/include/shield/log
          ${PROJECT_SOURCE_DIR}/include/shield/cli
+         ${PROJECT_SOURCE_DIR}/include/shield/config
          ${CMAKE_CURRENT_BINARY_DIR}/include # Directory for generated headers like version.hpp
          ${LUA_INCLUDE_DIR}
          ${SOL2_INCLUDE_DIRS})

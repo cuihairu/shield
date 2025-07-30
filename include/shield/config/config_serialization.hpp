@@ -2,11 +2,11 @@
 
 #include <yaml-cpp/yaml.h>
 
-#include "shield/core/config_def.hpp"
+#include "shield/config/config_def.hpp"
 
 namespace YAML {
 
-using namespace shield::core::config;
+using namespace shield::config::config;
 
 // Serialization for TcpConfig
 template <>

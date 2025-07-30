@@ -6,6 +6,7 @@
 #include "shield/actor/distributed_actor_system.hpp"
 #include "shield/actor/lua_actor.hpp"
 #include "shield/core/component.hpp"
+#include "shield/gateway/gateway_config.hpp"
 #include "shield/net/master_reactor.hpp"
 #include "shield/net/session.hpp"
 #include "shield/protocol/binary_protocol.hpp"
@@ -21,7 +22,8 @@ class GatewayComponent : public core::Component {
 public:
     explicit GatewayComponent(const std::string &name,
                               actor::DistributedActorSystem &actor_system,
-                              script::LuaVMPool &lua_vm_pool);
+                              script::LuaVMPool &lua_vm_pool,
+                              std::shared_ptr<GatewayConfig> config);
     ~GatewayComponent();
 
 protected:
@@ -42,6 +44,9 @@ private:
                                            const char *data, size_t length);
 
     actor::DistributedActorSystem &m_actor_system;
+    script::LuaVMPool &m_lua_vm_pool;
+    std::shared_ptr<GatewayConfig> m_config;
+
     std::unique_ptr<net::MasterReactor> m_master_reactor;
     std::unique_ptr<net::MasterReactor> m_http_reactor;  // HTTP server
     std::unique_ptr<net::MasterReactor> m_ws_reactor;    // WebSocket server
@@ -54,13 +59,11 @@ private:
     std::unordered_map<uint64_t, protocol::ProtocolType>
         m_session_protocols;  // Track protocol per session
 
-    script::LuaVMPool &m_lua_vm_pool;
-
     // Protocol handlers
     std::unique_ptr<protocol::HttpProtocolHandler> m_http_handler;
     std::unique_ptr<protocol::WebSocketProtocolHandler> m_websocket_handler;
 
-    // Configuration for request timeout
+    // Request timeout configuration
     std::chrono::milliseconds m_request_timeout{
         5000};  // 5 seconds default timeout
 };

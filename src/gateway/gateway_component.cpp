@@ -2,7 +2,7 @@
 
 #include "shield/actor/lua_actor.hpp"
 #include "shield/caf_type_ids.hpp"
-#include "shield/core/config.hpp"
+#include "shield/gateway/gateway_config.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/serialization/json_universal_serializer.hpp"
 
@@ -10,27 +10,31 @@ namespace shield::gateway {
 
 GatewayComponent::GatewayComponent(const std::string& name,
                                    actor::DistributedActorSystem& actor_system,
-                                   script::LuaVMPool& lua_vm_pool)
+                                   script::LuaVMPool& lua_vm_pool,
+                                   std::shared_ptr<GatewayConfig> config)
     : Component(name),
       m_actor_system(actor_system),
-      m_lua_vm_pool(lua_vm_pool) {}
+      m_lua_vm_pool(lua_vm_pool),
+      m_config(config) {}
 
 GatewayComponent::~GatewayComponent() = default;
 
 void GatewayComponent::on_init() {
     SHIELD_LOG_INFO << "Initializing GatewayComponent: " << name();
-    auto& config = core::Config::instance();
 
-    // TCP server configuration
-    auto host = config.get<std::string>("gateway.listener.host");
-    auto port = config.get<uint16_t>("gateway.listener.port");
-    auto io_threads = config.get<int>("gateway.threading.io_threads");
-    if (io_threads <= 0) {
-        io_threads = std::thread::hardware_concurrency();
+    if (!m_config) {
+        throw std::runtime_error("GatewayConfig is null");
     }
 
-    m_master_reactor =
-        std::make_unique<net::MasterReactor>(host, port, io_threads);
+    // 验证配置
+    m_config->validate();
+
+    // TCP server configuration
+    const auto& listener_config = m_config->listener;
+    int io_threads = m_config->get_effective_io_threads();
+
+    m_master_reactor = std::make_unique<net::MasterReactor>(
+        listener_config.host, listener_config.port, io_threads);
     m_master_reactor->set_session_creator([this](auto socket) {
         auto session = std::make_shared<net::Session>(std::move(socket));
         setup_session(session);
@@ -38,10 +42,9 @@ void GatewayComponent::on_init() {
     });
 
     // HTTP server configuration
-    if (config.get<bool>("gateway.http.enabled")) {
-        auto http_port = config.get<uint16_t>("gateway.http.port");
-        m_http_reactor =
-            std::make_unique<net::MasterReactor>(host, http_port, io_threads);
+    if (m_config->http.enabled) {
+        m_http_reactor = std::make_unique<net::MasterReactor>(
+            listener_config.host, m_config->http.port, io_threads);
 
         m_http_reactor->set_session_creator([this](auto socket) {
             auto session = std::make_shared<net::Session>(std::move(socket));
@@ -66,10 +69,9 @@ void GatewayComponent::on_init() {
     }
 
     // WebSocket server configuration
-    if (config.get<bool>("gateway.websocket.enabled")) {
-        auto ws_port = config.get<uint16_t>("gateway.websocket.port");
-        m_ws_reactor =
-            std::make_unique<net::MasterReactor>(host, ws_port, io_threads);
+    if (m_config->websocket.enabled) {
+        m_ws_reactor = std::make_unique<net::MasterReactor>(
+            listener_config.host, m_config->websocket.port, io_threads);
 
         m_ws_reactor->set_session_creator([this](auto socket) {
             auto session = std::make_shared<net::Session>(std::move(socket));
@@ -108,16 +110,14 @@ void GatewayComponent::on_start() {
     if (m_http_reactor) {
         m_http_reactor->start();
         SHIELD_LOG_INFO << "HTTP server started on port "
-                        << core::Config::instance().get<uint16_t>(
-                               "gateway.http.port");
+                        << m_config->http.port;
     }
 
     // Start WebSocket server
     if (m_ws_reactor) {
         m_ws_reactor->start();
         SHIELD_LOG_INFO << "WebSocket server started on port "
-                        << core::Config::instance().get<uint16_t>(
-                               "gateway.websocket.port");
+                        << m_config->websocket.port;
     }
 }
 
@@ -181,7 +181,7 @@ void GatewayComponent::setup_protocol_handlers() {
                                     connection_id, response);
                                 self->quit();
                             },
-                            [this, connection_id, self](caf::error& err) {
+                            [=, this](caf::error& err) {
                                 SHIELD_LOG_ERROR
                                     << "WebSocket LuaActor request failed for "
                                        "connection "
@@ -326,7 +326,7 @@ void GatewayComponent::setup_session(std::shared_ptr<net::Session> session) {
                                                                    response);
                                     self->quit();
                                 },
-                                [this, session_id, self](caf::error& err) {
+                                [=, this](caf::error& err) {
                                     // Handle timeout or error
                                     SHIELD_LOG_ERROR << "Request to LuaActor "
                                                         "failed for session "

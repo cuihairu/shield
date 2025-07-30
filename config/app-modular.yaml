@@ -1,0 +1,125 @@
+# 新的模块化配置示例文件
+
+# Gateway模块配置
+gateway:
+  listener:
+    host: "0.0.0.0"
+    port: 8080
+    io_threads: 0  # 0表示使用硬件并发数
+  
+  tcp:
+    enabled: true
+    backlog: 128
+    keep_alive: true
+    receive_buffer_size: 65536
+    send_buffer_size: 65536
+  
+  udp:
+    enabled: true
+    buffer_size: 65536
+    port: 8081
+  
+  http:
+    enabled: false
+    port: 8082
+    root_path: "/"
+    max_request_size: 1048576  # 1MB
+  
+  websocket:
+    enabled: true
+    port: 8083
+    path: "/ws"
+    max_message_size: 1048576  # 1MB
+    ping_interval: 30  # seconds
+  
+  threading:
+    io_threads: 0      # 0表示使用硬件并发数
+    worker_threads: 0  # 0表示使用硬件并发数
+
+# Prometheus监控模块配置
+prometheus:
+  server:
+    enabled: true
+    host: "0.0.0.0"
+    port: 9090
+    path: "/metrics"
+    max_connections: 100
+  
+  system_metrics:
+    enabled: true
+    collection_interval: 5  # seconds
+    collect_cpu: true
+    collect_memory: true
+    collect_disk: true
+    collect_network: false
+  
+  app_metrics:
+    enabled: true
+    collect_http_requests: true
+    collect_actor_stats: true
+    collect_gateway_stats: true
+    collect_lua_stats: true
+  
+  export:
+    format: "prometheus"  # prometheus, json
+    include_timestamp: true
+    include_help_text: true
+    namespace_prefix: "shield"
+
+# 保留原有的全局配置结构（向后兼容）
+server:
+  host: "0.0.0.0"
+  port: 8080
+  max_connections: 1000
+  actor_system:
+    node_id: "shield-node-1"
+    worker_threads: 4
+    scheduler_policy: "sharing"
+
+logger:
+  level: "info"
+  console_output: true
+  log_file: "logs/shield.log"
+  max_file_size: 10485760  # 10MB
+  max_files: 5
+  pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+
+discovery:
+  type: "local"
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+  consul:
+    host: "127.0.0.1"
+    port: 8500
+  nacos:
+    server_addr: "127.0.0.1:8848"
+  redis:
+    host: "127.0.0.1"
+    port: 6379
+
+lua:
+  enabled: true
+  script_path: "scripts"
+  vm_pool_size: 8
+  max_memory: 67108864  # 64MB
+
+game:
+  name: "Shield Game"
+  version: "1.0.0"
+  max_players: 1000
+  tick_rate: 60
+
+database:
+  type: "none"
+  mysql:
+    host: "127.0.0.1"
+    port: 3306
+    database: "shield_game"
+    username: "shield"
+    password: "password"
+  postgresql:
+    host: "127.0.0.1"
+    port: 5432
+    database: "shield_game"
+    username: "shield"
+    password: "password"

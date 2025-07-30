@@ -2,7 +2,7 @@
 
 #include <iostream>
 
-#include "shield/core/config.hpp"
+#include "shield/config/config.hpp"
 
 namespace shield::commands {
 
@@ -31,7 +31,7 @@ void DiagnoseCommand::setup_flags() {
 
 int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
     // Load minimal configuration for diagnostics
-    auto& config = shield::core::Config::instance();
+    auto& config = shield::config::Config::instance();
     try {
         config.load_for_diagnose();
     } catch (const std::exception& e) {
