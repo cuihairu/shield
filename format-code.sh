@@ -82,7 +82,7 @@ if [ "$FORMAT_CHECK_ONLY" = true ]; then
         done
         echo ""
         echo "💡 修复建议："
-        echo "   ./scripts/format-code.sh  # 自动格式化所有文件"
+        echo "   ./format-code.sh  # 自动格式化所有文件"
         exit 1
     else
         echo ""

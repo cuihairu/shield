@@ -18,16 +18,16 @@ Shield is a modern C++ game server framework that combines Pitaya's distributed 
 
 ```bash
 # Clone the project
-git clone https://github.com/your-repo/shield.git
+git clone https://github.com/cuihairu/shield.git
 cd shield
 
 # Setup development environment (including git hooks)
-./scripts/setup-hooks.sh
+./setup-hooks.sh
 
 # Build and run
 cmake -B build -S .
 cmake --build build
-./bin/shield --config config/shield.yaml
+./build/bin/shield --config config/app.yaml
 ```
 
 ## 🌍 Protocol Support
@@ -146,9 +146,9 @@ Shield is built on a modular, component-based architecture:
 cmake --build build --target test
 
 # Run specific test suites
-./bin/test_lua_actor
-./bin/test_udp_server
-./bin/test_integration
+./build/bin/test_lua_actor
+./build/bin/test_udp_server
+./build/bin/test_integration
 ```
 
 ## 🤝 Contributing
@@ -166,4 +166,4 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 ---
 
-**Note**: Shield is under active development. APIs may change between versions. Please check the [CHANGELOG](CHANGELOG.md) for breaking changes and migration guides.
+**Note**: Shield is under active development. APIs may change between versions.
