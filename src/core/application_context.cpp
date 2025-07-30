@@ -2,6 +2,7 @@
 
 #include "shield/config/application_configuration.hpp"
 #include "shield/config/config.hpp"
+#include "shield/core/starter_manager.hpp"
 #include "shield/gateway/gateway_config.hpp"
 #include "shield/gateway/gateway_service.hpp"
 #include "shield/log/logger.hpp"
@@ -97,6 +98,19 @@ void ApplicationContext::configure_with(
     } catch (const std::exception& e) {
         SHIELD_LOG_ERROR << "Failed to configure " << configuration->name()
                          << ": " << e.what();
+        throw;
+    }
+}
+
+void ApplicationContext::configure_with_starters(
+    std::unique_ptr<StarterManager> starter_manager) {
+    try {
+        SHIELD_LOG_INFO << "Configuring ApplicationContext with Starter system";
+        starter_manager->initialize_all(*this);
+        SHIELD_LOG_INFO << "Successfully configured with Starter system";
+    } catch (const std::exception& e) {
+        SHIELD_LOG_ERROR << "Failed to configure with Starter system: "
+                         << e.what();
         throw;
     }
 }

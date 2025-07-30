@@ -207,6 +207,7 @@ set(CORE_SOURCES
   # Core sources
   src/core/service.cpp
   src/core/application_context.cpp
+  src/core/starter_manager.cpp
 )
 
 set(LOG_SOURCES
@@ -243,6 +244,7 @@ set(OTHER_SOURCES
   src/actor/distributed_actor_system.cpp
   src/actor/actor_system_coordinator.cpp
   src/actor/actor_system_config.cpp
+  src/actor/actor_starter.cpp
   
   # Network sources
   src/net/slave_reactor.cpp
@@ -268,14 +270,17 @@ set(OTHER_SOURCES
   # Metrics sources
   src/metrics/prometheus_service.cpp
   src/metrics/prometheus_config.cpp
+  src/metrics/metrics_starter.cpp
   
   # Script sources
   src/script/lua_engine.cpp
   src/script/lua_vm_pool.cpp
+  src/script/script_starter.cpp
   
   # Gateway sources
   src/gateway/gateway_service.cpp
   src/gateway/gateway_config.cpp
+  src/gateway/gateway_starter.cpp
   
   # Network sources
   src/net/network_config.cpp

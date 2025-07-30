@@ -13,9 +13,20 @@ DistributedActorSystem::DistributedActorSystem(
     caf::actor_system& actor_system,
     std::shared_ptr<discovery::IServiceDiscovery> discovery_service,
     const DistributedActorConfig& config)
-    : actor_system_(actor_system),
+    : actor_system_(&actor_system),
       discovery_service_(discovery_service),
-      config_(config) {
+      config_(config),
+      service_name_("distributed_actor_system") {
+    SHIELD_LOG_INFO << "DistributedActorSystem created for node: "
+                    << config_.node_id;
+}
+
+DistributedActorSystem::DistributedActorSystem(
+    const std::string& name, const DistributedActorConfig& config)
+    : actor_system_(nullptr),
+      discovery_service_(nullptr),
+      config_(config),
+      service_name_(name) {
     SHIELD_LOG_INFO << "DistributedActorSystem created for node: "
                     << config_.node_id;
 }
@@ -25,6 +36,29 @@ DistributedActorSystem::~DistributedActorSystem() {
     SHIELD_LOG_INFO << "DistributedActorSystem destroyed";
 }
 
+void DistributedActorSystem::on_init(core::ApplicationContext& ctx) {
+    SHIELD_LOG_INFO << "Initializing DistributedActorSystem service";
+
+    // TODO: Get actor_system and discovery_service from ApplicationContext
+    // For now, we'll use a simple setup
+    if (!actor_system_ || !discovery_service_) {
+        // This is a basic setup - in a full implementation, we would get these
+        // from the context
+        SHIELD_LOG_WARN
+            << "Actor system not properly initialized through context";
+    }
+}
+
+void DistributedActorSystem::on_start() {
+    SHIELD_LOG_INFO << "Starting DistributedActorSystem service";
+    initialize();
+}
+
+void DistributedActorSystem::on_stop() {
+    SHIELD_LOG_INFO << "Stopping DistributedActorSystem service";
+    shutdown();
+}
+
 bool DistributedActorSystem::initialize() {
     if (initialized_) {
         SHIELD_LOG_WARNING << "DistributedActorSystem already initialized";
@@ -32,26 +66,33 @@ bool DistributedActorSystem::initialize() {
     }
 
     try {
-        // Create actor registry
-        actor_registry_ = make_actor_registry(actor_system_, discovery_service_,
-                                              config_.node_id);
+        // Skip registry creation if actor_system or discovery_service are not
+        // available
+        if (actor_system_ && discovery_service_) {
+            // Create actor registry
+            actor_registry_ = make_actor_registry(
+                *actor_system_, discovery_service_, config_.node_id);
 
-        // Set up callbacks
-        actor_registry_->set_discovery_callback(
-            [this](const RegisteredActor& actor) {
-                on_actor_discovered(actor);
-            });
-        actor_registry_->set_removal_callback(
-            [this](const std::string& actor_name) {
-                on_actor_removed(actor_name);
-            });
+            // Set up callbacks
+            actor_registry_->set_discovery_callback(
+                [this](const RegisteredActor& actor) {
+                    on_actor_discovered(actor);
+                });
+            actor_registry_->set_removal_callback(
+                [this](const std::string& actor_name) {
+                    on_actor_removed(actor_name);
+                });
 
-        // Start heartbeat
-        actor_registry_->start_heartbeat(config_.heartbeat_interval);
+            // Start heartbeat
+            actor_registry_->start_heartbeat(config_.heartbeat_interval);
 
-        // Start discovery worker if auto-discovery is enabled
-        if (config_.auto_discovery) {
-            start_discovery_worker();
+            // Start discovery worker if auto-discovery is enabled
+            if (config_.auto_discovery) {
+                start_discovery_worker();
+            }
+        } else {
+            SHIELD_LOG_INFO << "Basic DistributedActorSystem initialization "
+                               "(no CAF system)";
         }
 
         initialized_ = true;

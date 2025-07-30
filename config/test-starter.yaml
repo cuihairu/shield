@@ -1,0 +1,28 @@
+# Shield Game Framework - Test Configuration for Starter system
+app:
+  name: "Shield Game Framework"
+  version: "0.1.0"
+
+# Logger configuration  
+log:
+  global_level: 2  # INFO
+  console:
+    enabled: true
+    colored: true
+    min_level: 2
+  file:
+    enabled: false
+
+# Gateway configuration (minimal)
+gateway:
+  listener:
+    host: "0.0.0.0"
+    port: 8080
+  tcp:
+    enabled: true
+  udp:
+    enabled: false
+  http:
+    enabled: false
+  websocket:
+    enabled: false

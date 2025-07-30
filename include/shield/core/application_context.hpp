@@ -9,6 +9,7 @@
 
 #include "shield/config/config.hpp"
 #include "shield/core/service.hpp"
+#include "shield/core/starter_manager.hpp"
 
 // Forward declarations
 namespace shield::config {
@@ -28,6 +29,10 @@ public:
     // Configure the application context using Configuration classes
     void configure_with(
         std::unique_ptr<shield::config::Configuration> configuration);
+
+    // Configure the application context using Starter system
+    void configure_with_starters(
+        std::unique_ptr<StarterManager> starter_manager);
 
 private:
     ApplicationContext() = default;

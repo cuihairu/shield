@@ -7,7 +7,9 @@
 
 #include "shield/config/application_configuration.hpp"
 #include "shield/config/config.hpp"
+#include "shield/core/all_starters.hpp"
 #include "shield/core/application_context.hpp"
+#include "shield/core/starter_manager.hpp"
 #include "shield/fs/file_watcher.hpp"
 #include "shield/version.hpp"
 
@@ -23,8 +25,7 @@ ServerCommand::ServerCommand()
 }
 
 void ServerCommand::setup_flags() {
-    add_flag("config", "Configuration file path",
-             shield::config::ConfigPaths::DEFAULT_CONFIG_FILE);
+    add_flag("config", "Configuration file path", "config/shield.yaml");
 }
 
 int ServerCommand::run(shield::cli::CommandContext& ctx) {
@@ -45,10 +46,22 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
     // Initialize ApplicationContext
     auto& app_context = shield::core::ApplicationContext::instance();
 
-    // Configure services using Configuration classes (Spring Boot pattern)
-    auto app_configuration =
-        std::make_unique<shield::config::ApplicationConfiguration>();
-    app_context.configure_with(std::move(app_configuration));
+    // Create and configure StarterManager with all available Starters
+    auto starter_manager = std::make_unique<shield::core::StarterManager>();
+
+    // Register all Starters in the correct order (dependencies will be resolved
+    // automatically)
+    starter_manager->register_starter(
+        std::make_unique<shield::script::ScriptStarter>());
+    starter_manager->register_starter(
+        std::make_unique<shield::actor::ActorStarter>());
+    starter_manager->register_starter(
+        std::make_unique<shield::metrics::MetricsStarter>());
+    starter_manager->register_starter(
+        std::make_unique<shield::gateway::GatewayStarter>());
+
+    // Configure ApplicationContext using the Starter system
+    app_context.configure_with_starters(std::move(starter_manager));
 
     // Initialize and start all services
     app_context.init_all();

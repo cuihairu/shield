@@ -11,6 +11,7 @@
 #include "caf/actor_system.hpp"
 #include "caf/send.hpp"
 #include "shield/actor/actor_registry.hpp"
+#include "shield/core/service.hpp"
 #include "shield/discovery/service_discovery.hpp"
 
 namespace shield::actor {
@@ -47,7 +48,7 @@ struct ActorSystemEventData {
 
 /// @brief Distributed actor system manager
 /// Provides high-level interface for managing distributed CAF actors
-class DistributedActorSystem {
+class DistributedActorSystem : public core::Service {
 public:
     /// @brief Event callback type
     using EventCallback = std::function<void(const ActorSystemEventData &)>;
@@ -61,8 +62,20 @@ public:
         std::shared_ptr<discovery::IServiceDiscovery> discovery_service,
         const DistributedActorConfig &config);
 
+    /// @brief Constructor for use with Starter system
+    /// @param name Service name
+    /// @param config Configuration for the distributed system
+    explicit DistributedActorSystem(const std::string &name,
+                                    const DistributedActorConfig &config);
+
     /// @brief Destructor
     ~DistributedActorSystem();
+
+    // Service interface implementation
+    void on_init(core::ApplicationContext &ctx) override;
+    void on_start() override;
+    void on_stop() override;
+    std::string name() const override { return service_name_; }
 
     /// @brief Initialize the distributed actor system
     /// @return True if initialization successful
@@ -162,7 +175,12 @@ public:
 
     /// @brief Get the underlying CAF actor system
     /// @return Reference to the CAF actor system
-    caf::actor_system &system() { return actor_system_; }
+    caf::actor_system &system() {
+        if (!actor_system_) {
+            throw std::runtime_error("Actor system not initialized");
+        }
+        return *actor_system_;
+    }
 
     /// @brief Get actor registry
     /// @return Reference to the actor registry
@@ -195,10 +213,11 @@ private:
     void emit_event(const ActorSystemEventData &event_data);
 
 private:
-    caf::actor_system &actor_system_;
+    caf::actor_system *actor_system_;
     std::shared_ptr<discovery::IServiceDiscovery> discovery_service_;
     DistributedActorConfig config_;
     std::unique_ptr<ActorRegistry> actor_registry_;
+    std::string service_name_;
 
     // Discovery worker
     std::atomic<bool> discovery_running_{false};
