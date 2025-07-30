@@ -11,13 +11,13 @@ class Logger {
 public:
     static void init(const LogConfig &config);
     static void shutdown();
-    static int level_from_string(const std::string &level_str);
+    static LogConfig::LogLevel level_from_string(const std::string &level_str);
 
 private:
     static LogConfig config_;
 };
 
-}  // namespace shield::core
+}  // namespace shield::log
 
 #define SHIELD_LOG_TRACE BOOST_LOG_TRIVIAL(trace)
 #define SHIELD_LOG_DEBUG BOOST_LOG_TRIVIAL(debug)

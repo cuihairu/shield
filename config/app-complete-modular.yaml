@@ -1,0 +1,247 @@
+# 完整的模块化配置示例
+
+# Gateway模块配置（保持原有结构，但现在从Gateway模块读取TCP/UDP配置）
+gateway:
+  listener:
+    host: "0.0.0.0"
+    port: 8080
+    io_threads: 0  # 0表示使用硬件并发数
+  
+  tcp:
+    enabled: true
+    backlog: 128
+    keep_alive: true
+    receive_buffer_size: 65536
+    send_buffer_size: 65536
+  
+  udp:
+    enabled: true
+    buffer_size: 65536
+    port: 8081
+  
+  http:
+    enabled: false
+    port: 8082
+    root_path: "/"
+    max_request_size: 1048576  # 1MB
+  
+  websocket:
+    enabled: true
+    port: 8083
+    path: "/ws"
+    max_message_size: 1048576  # 1MB
+    ping_interval: 30  # seconds
+  
+  threading:
+    io_threads: 0      # 0表示使用硬件并发数
+    worker_threads: 0  # 0表示使用硬件并发数
+
+# 独立的TCP模块配置（适用于需要独立TCP服务的组件）
+tcp:
+  server:
+    enabled: true
+    host: "0.0.0.0"
+    port: 9000
+    backlog: 256
+    keep_alive: true
+    max_connections: 2000
+  
+  buffer:
+    receive_buffer_size: 131072  # 128KB
+    send_buffer_size: 131072     # 128KB
+    no_delay: true
+    keep_alive_idle: 7200
+    keep_alive_interval: 75
+    keep_alive_count: 9
+  
+  threading:
+    io_threads: 0
+    worker_threads: 0
+    use_thread_pool: true
+
+# 独立的UDP模块配置（适用于需要独立UDP服务的组件）
+udp:
+  server:
+    enabled: true
+    host: "0.0.0.0"
+    port: 9001
+    buffer_size: 131072
+    max_packet_size: 1500
+  
+  performance:
+    reuse_address: true
+    reuse_port: false
+    receive_timeout: 5000
+    send_timeout: 5000
+    max_concurrent_packets: 1000
+  
+  threading:
+    io_threads: 0
+    worker_threads: 0
+    use_thread_pool: true
+
+# Actor系统配置
+actor_system:
+  node:
+    node_id: "shield-node-1"
+    cluster_name: "shield-cluster"
+    auto_generate_node_id: true
+  
+  scheduler:
+    policy: "sharing"  # sharing, stealing
+    worker_threads: 0  # 0表示使用硬件并发数
+    max_throughput: 300
+    enable_profiling: false
+  
+  network:
+    enabled: true
+    host: "0.0.0.0"
+    port: 0  # 0表示自动分配端口
+    max_connections: 100
+    connection_timeout: 10000
+  
+  monitor:
+    enable_metrics: true
+    enable_tracing: false
+    metrics_interval: 5000
+    metrics_output: "prometheus"
+  
+  memory:
+    max_memory_per_actor: 67108864  # 64MB
+    message_buffer_size: 1048576    # 1MB
+    enable_gc: true
+    gc_interval: 30000
+
+# 日志模块配置
+log:
+  global_level: "info"
+  
+  console:
+    enabled: true
+    colored: true
+    pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+    min_level: "info"
+  
+  file:
+    enabled: true
+    log_file: "logs/shield.log"
+    max_file_size: 10485760  # 10MB
+    max_files: 5
+    rotate_on_open: false
+    pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+    min_level: "debug"
+  
+  network:
+    enabled: false
+    protocol: "udp"
+    host: "localhost"
+    port: 514
+    facility: "local0"
+    min_level: "warn"
+  
+  async:
+    enabled: true
+    queue_size: 8192
+    flush_interval: 1000
+    overflow_policy_block: false
+    worker_threads: 1
+  
+  filter:
+    include_patterns: []
+    exclude_patterns: ["debug_spam"]
+    rate_limit_patterns: ["frequent_log"]
+    rate_limit_interval: 1000
+    rate_limit_burst: 10
+
+# Prometheus监控模块配置
+prometheus:
+  server:
+    enabled: true
+    host: "0.0.0.0"
+    port: 9090
+    path: "/metrics"
+    max_connections: 100
+  
+  system_metrics:
+    enabled: true
+    collection_interval: 5  # seconds
+    collect_cpu: true
+    collect_memory: true
+    collect_disk: true
+    collect_network: false
+  
+  app_metrics:
+    enabled: true
+    collect_http_requests: true
+    collect_actor_stats: true
+    collect_gateway_stats: true
+    collect_lua_stats: true
+  
+  export:
+    format: "prometheus"  # prometheus, json
+    include_timestamp: true
+    include_help_text: true
+    namespace_prefix: "shield"
+
+# 保留原有的全局配置结构（向后兼容，但逐步迁移到模块化配置）
+server:
+  host: "0.0.0.0"
+  port: 8080
+  max_connections: 1000
+  components: ["lua_vm_pool", "gateway", "prometheus"]  # 启用的组件列表
+  actor_system:
+    node_id: "auto"  # "auto"表示自动生成
+    worker_threads: 4
+    scheduler_policy: "sharing"
+
+# 应用程序全局配置
+app:
+  show_banner: true
+  environment: "development"  # development, production, testing
+  debug_mode: false
+
+# Lua VM配置（暂时保持旧格式，后续可迁移到模块化）
+lua_vm_pool:
+  initial_size: 4
+  min_size: 2
+  max_size: 16
+  idle_timeout_ms: 30000
+  acquire_timeout_ms: 5000
+  preload_scripts: true
+
+# 服务发现配置（暂时保持旧格式，后续可迁移到模块化）
+discovery:
+  type: "local"
+  etcd:
+    endpoints: ["127.0.0.1:2379"]
+  consul:
+    host: "127.0.0.1"
+    port: 8500
+  nacos:
+    server_addr: "127.0.0.1:8848"
+  redis:
+    host: "127.0.0.1"
+    port: 6379
+
+# 游戏相关配置（暂时保持旧格式，后续可迁移到模块化）
+game:
+  name: "Shield Game"
+  version: "1.0.0"
+  max_players: 1000
+  tick_rate: 60
+
+# 数据库配置（暂时保持旧格式，后续可迁移到模块化）
+database:
+  type: "none"
+  mysql:
+    host: "127.0.0.1"
+    port: 3306
+    database: "shield_game"
+    username: "shield"
+    password: "password"
+  postgresql:
+    host: "127.0.0.1"
+    port: 5432
+    database: "shield_game"
+    username: "shield"
+    password: "password"

@@ -129,9 +129,9 @@ BOOST_AUTO_TEST_CASE(test_logger_init_shutdown) {
 
     // Re-initialize Logger, observe its internal logs
     shield::log::LogConfig config;
-    config.level = 2;                  // info
-    config.console_output = true;      // ensure console output is considered
-    config.log_file = "test_log.log";  // ensure file output is considered
+    config.global_level = shield::log::LogConfig::LogLevel::INFO;  // info
+    config.console.enabled = true;  // ensure console output is considered
+    config.file.log_file = "test_log.log";  // ensure file output is considered
 
     shield::log::Logger::init(config);
     BOOST_CHECK(

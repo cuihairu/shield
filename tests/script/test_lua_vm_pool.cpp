@@ -230,7 +230,9 @@ int main() {
     try {
         // Initialize logging
         shield::log::LogConfig log_config;
-        log_config.level = 1;  // Info level (reduce noise for tests)
+        log_config.global_level =
+            shield::log::LogConfig::LogLevel::INFO;  // Info level (reduce noise
+                                                     // for tests)
         shield::log::Logger::init(log_config);
 
         test_vm_pool_basic();

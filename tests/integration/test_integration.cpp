@@ -202,7 +202,8 @@ struct IntegrationTestFixture {
     IntegrationTestFixture() {
         // Initialize logging system
         shield::log::LogConfig log_config;
-        log_config.level = shield::log::Logger::level_from_string("info");
+        log_config.global_level =
+            shield::log::Logger::level_from_string("info");
         shield::log::Logger::init(log_config);
 
         // Start mock servers

@@ -85,7 +85,8 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
     // Initialize logging
     shield::log::LogConfig log_config;
     try {
-        log_config.level = shield::log::Logger::level_from_string("info");
+        log_config.global_level =
+            shield::log::Logger::level_from_string("info");
     } catch (...) {
         // Use default level if config not found
     }

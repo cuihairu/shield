@@ -21,20 +21,20 @@ namespace shield::log {
 
 LogConfig Logger::config_;
 
-// Helper function to map int level to boost::log::trivial::severity_level
-logging::trivial::severity_level to_boost_level(int level) {
+// Helper function to map LogLevel enum to boost::log::trivial::severity_level
+logging::trivial::severity_level to_boost_level(LogConfig::LogLevel level) {
     switch (level) {
-        case 0:
+        case LogConfig::LogLevel::TRACE:
             return logging::trivial::trace;
-        case 1:
+        case LogConfig::LogLevel::DEBUG:
             return logging::trivial::debug;
-        case 2:
+        case LogConfig::LogLevel::INFO:
             return logging::trivial::info;
-        case 3:
+        case LogConfig::LogLevel::WARN:
             return logging::trivial::warning;
-        case 4:
+        case LogConfig::LogLevel::ERROR:
             return logging::trivial::error;
-        case 5:
+        case LogConfig::LogLevel::FATAL:
             return logging::trivial::fatal;
         default:
             return logging::trivial::info;
@@ -44,37 +44,40 @@ logging::trivial::severity_level to_boost_level(int level) {
 void Logger::init(const LogConfig& config) {
     config_ = config;
 
-    // Create log directory
-    std::filesystem::path log_path(config.log_file);
-    auto parent_path = log_path.parent_path();
-    if (!parent_path.empty()) {
-        std::filesystem::create_directories(parent_path);
+    // Create log directory if file logging is enabled
+    if (config.file.enabled) {
+        std::filesystem::path log_path(config.file.log_file);
+        auto parent_path = log_path.parent_path();
+        if (!parent_path.empty()) {
+            std::filesystem::create_directories(parent_path);
+        }
+
+        // Setup file sink
+        auto file_sink = logging::add_file_log(
+            logging::keywords::file_name = config.file.log_file,
+            logging::keywords::rotation_size = config.file.max_file_size,
+            logging::keywords::time_based_rotation =
+                sinks::file::rotation_at_time_point(0, 0, 0),  // Rotate daily
+            logging::keywords::max_files =
+                config.file.max_files,  // Keep max_files files
+            logging::keywords::format =
+                logging::parse_formatter(config.file.pattern));
     }
 
-    // Setup file sink
-    auto file_sink = logging::add_file_log(
-        logging::keywords::file_name = config.log_file,
-        logging::keywords::rotation_size = config.max_file_size,
-        logging::keywords::time_based_rotation =
-            sinks::file::rotation_at_time_point(0, 0, 0),  // Rotate daily
-        logging::keywords::max_files =
-            config.max_files,  // Keep max_files files
-        logging::keywords::format = logging::parse_formatter(config.pattern));
-
     // Setup console sink if enabled
-    if (config.console_output) {
-        logging::add_console_log(std::cout,
-                                 logging::keywords::format =
-                                     logging::parse_formatter(config.pattern));
+    if (config.console.enabled) {
+        logging::add_console_log(
+            std::cout, logging::keywords::format =
+                           logging::parse_formatter(config.console.pattern));
     }
 
     // Add common attributes
     logging::add_common_attributes();
 
-    // Set log level
+    // Set log level based on global level
     logging::core::get()->set_filter(
         logging::expressions::attr<logging::trivial::severity_level>(
-            "Severity") >= to_boost_level(config.level));
+            "Severity") >= to_boost_level(config.global_level));
 
     // Initialize default logger
     BOOST_LOG_TRIVIAL(info) << "Logger initialized successfully";
@@ -85,17 +88,11 @@ void Logger::shutdown() {
     logging::core::get()->remove_all_sinks();
 }
 
-int Logger::level_from_string(const std::string& level_str) {
-    if (level_str == "trace") return 0;
-    if (level_str == "debug") return 1;
-    if (level_str == "info") return 2;
-    if (level_str == "warning") return 3;
-    if (level_str == "error") return 4;
-    if (level_str == "fatal") return 5;
-    return 2;  // Default to info
+LogConfig::LogLevel Logger::level_from_string(const std::string& level_str) {
+    return LogConfig::level_from_string(level_str);
 }
 
 // TODO: Implement get_logger, set_level, get_level for boost::log
 // For now, we'll use the default logger directly.
 
-}  // namespace shield::core
+}  // namespace shield::log

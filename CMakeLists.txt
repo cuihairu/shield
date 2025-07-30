@@ -211,6 +211,7 @@ set(CORE_SOURCES
 set(LOG_SOURCES
   # Log sources
   src/log/logger.cpp
+  src/log/log_config.cpp
 )
 
 set(CLI_SOURCES
@@ -242,6 +243,7 @@ set(OTHER_SOURCES
   src/actor/actor_registry.cpp
   src/actor/distributed_actor_system.cpp
   src/actor/actor_system_coordinator.cpp
+  src/actor/actor_system_config.cpp
   
   # Network sources
   src/net/slave_reactor.cpp
@@ -275,6 +277,9 @@ set(OTHER_SOURCES
   # Gateway sources
   src/gateway/gateway_component.cpp
   src/gateway/gateway_config.cpp
+  
+  # Network sources
+  src/net/network_config.cpp
   
   # Command sources
   src/commands/server_command.cpp
