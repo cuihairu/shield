@@ -65,14 +65,14 @@ void PrometheusConfig::from_ptree(const boost::property_tree::ptree& pt) {
 YAML::Node PrometheusConfig::to_yaml() const {
     YAML::Node node;
 
-    // Server配置
+    // Server configuration
     node["server"]["enabled"] = server.enabled;
     node["server"]["host"] = server.host;
     node["server"]["port"] = server.port;
     node["server"]["path"] = server.path;
     node["server"]["max_connections"] = server.max_connections;
 
-    // 系统指标配置
+    // System metrics configuration
     node["system_metrics"]["enabled"] = system_metrics.enabled;
     node["system_metrics"]["collection_interval"] =
         system_metrics.collection_interval;
@@ -81,7 +81,7 @@ YAML::Node PrometheusConfig::to_yaml() const {
     node["system_metrics"]["collect_disk"] = system_metrics.collect_disk;
     node["system_metrics"]["collect_network"] = system_metrics.collect_network;
 
-    // 应用指标配置
+    // App metrics configuration
     node["app_metrics"]["enabled"] = app_metrics.enabled;
     node["app_metrics"]["collect_http_requests"] =
         app_metrics.collect_http_requests;
@@ -91,7 +91,7 @@ YAML::Node PrometheusConfig::to_yaml() const {
         app_metrics.collect_gateway_stats;
     node["app_metrics"]["collect_lua_stats"] = app_metrics.collect_lua_stats;
 
-    // 导出配置
+    // Export configuration
     node["export"]["format"] = export_config.format;
     node["export"]["include_timestamp"] = export_config.include_timestamp;
     node["export"]["include_help_text"] = export_config.include_help_text;

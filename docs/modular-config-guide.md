@@ -1,40 +1,40 @@
-# 模块化配置系统使用指南
+# Modular Configuration System Usage Guide
 
-## 概述
+## Overview
 
-新的模块化配置系统提供了更好的类型安全性、模块解耦和测试便利性。每个组件现在有自己的配置类，可以独立验证和管理。
+The new modular configuration system provides better type safety, module decoupling, and testing convenience. Each component now has its own configuration class that can be independently validated and managed.
 
-## 核心概念
+## Core Concepts
 
-### 1. 模块配置基类 (ModuleConfig)
+### 1. Module Configuration Base Class (ModuleConfig)
 
-所有模块配置都继承自 `ModuleConfig` 基类：
+All module configurations inherit from the `ModuleConfig` base class:
 
 ```cpp
 class ModuleConfig {
 public:
-    virtual void from_yaml(const YAML::Node& node) = 0;  // 从YAML加载配置
-    virtual YAML::Node to_yaml() const = 0;              // 转换为YAML
-    virtual void validate() const {}                      // 验证配置有效性
-    virtual std::string module_name() const = 0;         // 模块名称
+    virtual void from_yaml(const YAML::Node& node) = 0;  // Load configuration from YAML
+    virtual YAML::Node to_yaml() const = 0;              // Convert to YAML
+    virtual void validate() const {}                      // Validate configuration validity
+    virtual std::string module_name() const = 0;         // Module name
 };
 ```
 
-### 2. 配置管理器 (ConfigManager)
+### 2. Configuration Manager (ConfigManager)
 
-负责加载配置文件并管理所有模块配置：
+Responsible for loading configuration files and managing all module configurations:
 
 ```cpp
-// 加载配置文件
+// Load configuration file
 ConfigManager::instance().load_config("config/app.yaml");
 
-// 获取特定模块配置
+// Get specific module configuration
 auto gateway_config = ConfigManager::instance().get_module_config<GatewayConfig>();
 ```
 
-## 如何创建新的模块配置
+## How to Create New Module Configuration
 
-### 步骤1：定义配置类
+### Step 1: Define Configuration Class
 
 ```cpp
 // include/shield/your_module/your_module_config.hpp
@@ -45,7 +45,7 @@ namespace shield::your_module {
 
 class YourModuleConfig : public config::ModuleConfig {
 public:
-    // 配置数据结构
+    // Configuration data structure
     struct ServerConfig {
         std::string host = "localhost";
         int port = 8080;
@@ -53,7 +53,7 @@ public:
     
     ServerConfig server;
     
-    // 实现ModuleConfig接口
+    // Implement ModuleConfig interface
     void from_yaml(const YAML::Node& node) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
@@ -63,7 +63,7 @@ public:
 } // namespace shield::your_module
 ```
 
-### 步骤2：实现配置类
+### Step 2: Implement Configuration Class
 
 ```cpp
 // src/your_module/your_module_config.cpp
@@ -94,20 +94,20 @@ void YourModuleConfig::validate() const {
 }
 ```
 
-### 步骤3：注册配置
+### Step 3: Register Configuration
 
-在 `src/config/config_registry.cpp` 中添加：
+In `src/config/config_registry.cpp` add:
 
 ```cpp
 #include "shield/your_module/your_module_config.hpp"
 
 void register_all_module_configs() {
-    // ... 其他配置注册
+    // ... other configuration registrations
     ModuleConfigFactory<your_module::YourModuleConfig>::create_and_register();
 }
 ```
 
-### 步骤4：在组件中使用
+### Step 4: Use in Components
 
 ```cpp
 // include/shield/your_module/your_component.hpp
@@ -123,15 +123,15 @@ private:
 YourComponent::YourComponent(std::shared_ptr<YourModuleConfig> config)
     : m_config(config) {
     
-    // 使用配置
+    // Use configuration
     std::string host = m_config->server.host;
     int port = m_config->server.port;
 }
 ```
 
-## 配置文件结构
+## Configuration File Structure
 
-新的YAML配置文件支持模块化结构：
+The new YAML configuration files support modular structure:
 
 ```yaml
 # config/app.yaml
@@ -155,9 +155,9 @@ your_module:
     port: 8080
 ```
 
-## 从旧配置系统迁移
+## Migration from Old Configuration System
 
-### 旧系统 (不推荐)
+### Old System (Not Recommended)
 ```cpp
 void Component::init() {
     auto& config = shield::config::Config::instance();
@@ -166,18 +166,18 @@ void Component::init() {
 }
 ```
 
-### 新系统 (推荐)
+### New System (Recommended)
 ```cpp
 class Component {
 public:
     Component(std::shared_ptr<GatewayConfig> config) : m_config(config) {}
     
     void init() {
-        // 类型安全访问
+        // Type-safe access
         const auto& host = m_config->listener.host;
         const auto& port = m_config->listener.port;
         
-        // 配置自动验证
+        // Automatic configuration validation
         m_config->validate();
     }
     
@@ -186,10 +186,10 @@ private:
 };
 ```
 
-## 最佳实践
+## Best Practices
 
-### 1. 配置验证
-始终在 `validate()` 方法中检查配置的有效性：
+### 1. Configuration Validation
+Always check configuration validity in the `validate()` method:
 
 ```cpp
 void YourConfig::validate() const {
@@ -197,31 +197,31 @@ void YourConfig::validate() const {
         throw std::invalid_argument("Port must be positive");
     }
     
-    // 检查端口冲突
+    // Check for port conflicts
     if (http.enabled && http.port == server.port) {
         throw std::invalid_argument("HTTP port conflicts with server port");
     }
 }
 ```
 
-### 2. 默认值
-在配置结构中提供合理的默认值：
+### 2. Default Values
+Provide reasonable default values in configuration structures:
 
 ```cpp
 struct ServerConfig {
-    std::string host = "0.0.0.0";    // 默认监听所有接口
-    int port = 8080;                 // 默认端口
-    bool enabled = true;             // 默认启用
+    std::string host = "0.0.0.0";    // Default listen on all interfaces
+    int port = 8080;                 // Default port
+    bool enabled = true;             // Default enabled
 };
 ```
 
-### 3. 便利方法
-提供便利方法来处理复杂的配置逻辑：
+### 3. Convenience Methods
+Provide convenience methods to handle complex configuration logic:
 
 ```cpp
 class GatewayConfig : public ModuleConfig {
 public:
-    // 便利方法：获取有效的线程数
+    // Convenience method: get effective thread count
     int get_effective_io_threads() const {
         return (threading.io_threads > 0) ? 
                threading.io_threads : 
@@ -230,79 +230,79 @@ public:
 };
 ```
 
-### 4. 依赖注入
-在组件构造函数中接收配置，而不是在运行时查找：
+### 4. Dependency Injection
+Accept configuration in component constructors rather than looking it up at runtime:
 
 ```cpp
-// 好的做法
+// Good practice
 class Component {
 public:
     Component(std::shared_ptr<ComponentConfig> config);
 };
 
-// 避免这样做
+// Avoid this
 class Component {
 public:
     Component() {
-        // 在构造函数中查找配置 - 不推荐
+        // Looking up configuration in constructor - not recommended
         config_ = ConfigManager::instance().get_module_config<ComponentConfig>();
     }
 };
 ```
 
-## 测试支持
+## Testing Support
 
-模块化配置使测试变得更容易：
+Modular configuration makes testing easier:
 
 ```cpp
 TEST(ComponentTest, TestWithCustomConfig) {
-    // 创建测试专用配置
+    // Create test-specific configuration
     auto config = std::make_shared<GatewayConfig>();
     config->listener.host = "127.0.0.1";
     config->listener.port = 9999;
     config->validate();
     
-    // 使用测试配置创建组件
+    // Create component with test configuration
     GatewayComponent component("test", actor_system, lua_pool, config);
     
-    // 测试组件行为
+    // Test component behavior
     // ...
 }
 ```
 
-## 环境和Profile支持
+## Environment and Profile Support
 
-支持不同环境的配置：
+Support for different environment configurations:
 
 ```cpp
-// 加载默认配置
+// Load default configuration
 ConfigManager::instance().load_config("config/app.yaml");
 
-// 加载带profile的配置
+// Load configuration with profile
 ConfigManager::instance().load_config_with_profile("production");
-// 这会加载 app.yaml + app-production.yaml
+// This loads app.yaml + app-production.yaml
 ```
 
-## 故障排除
+## Troubleshooting
 
-### 常见错误
+### Common Errors
 
-1. **配置未注册**
+1. **Configuration not registered**
    ```
-   错误: get_module_config returned null
-   解决: 确保在 config_registry.cpp 中注册了配置类
-   ```
-
-2. **YAML键不匹配**
-   ```
-   错误: 配置加载后字段为默认值
-   解决: 检查YAML文件中的键名是否与 from_yaml() 中的键名一致
+   Error: get_module_config returned null
+   Solution: Make sure the configuration class is registered in config_registry.cpp
    ```
 
-3. **配置验证失败**
+2. **YAML key mismatch**
    ```
-   错误: Configuration validation failed
-   解决: 检查 validate() 方法中的验证逻辑和配置文件中的值
+   Error: Field has default value after configuration loading
+   Solution: Check if YAML file key names match the key names in from_yaml()
    ```
 
-通过这个模块化配置系统，你的项目将具有更好的可维护性、类型安全性和测试便利性。
+3. **Configuration validation failed**
+   ```
+   Error: Configuration validation failed
+   Solution: Check validation logic in validate() method and values in configuration file
+   ```
+
+Through this modular configuration system, your project will have better maintainability, type safety, and testing convenience.

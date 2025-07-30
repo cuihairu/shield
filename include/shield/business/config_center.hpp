@@ -10,7 +10,7 @@
 
 namespace shield::business {
 
-// 业务配置项
+// Business configuration item
 template <typename T>
 class ConfigItem {
 public:
@@ -20,10 +20,10 @@ public:
     ConfigItem(const std::string& key, const T& default_value)
         : key_(key), value_(default_value), default_value_(default_value) {}
 
-    // 获取当前值
+    // Get current value
     const T& get() const { return value_; }
 
-    // 设置新值（会触发回调）
+    // Set new value (will trigger callbacks)
     void set(const T& new_value) {
         if (new_value != value_) {
             T old_value = value_;
@@ -35,12 +35,12 @@ public:
         }
     }
 
-    // 添加变更回调
+    // Add change callback
     void add_change_callback(ChangeCallback callback) {
         callbacks_.push_back(std::move(callback));
     }
 
-    // 重置为默认值
+    // Reset to default value
     void reset() { set(default_value_); }
 
     const std::string& key() const { return key_; }
@@ -52,15 +52,15 @@ private:
     std::vector<ChangeCallback> callbacks_;
 };
 
-// 配置中心接口
+// Configuration center interface
 class ConfigCenter {
 public:
     virtual ~ConfigCenter() = default;
 
-    // 加载配置文件
+    // Load configuration file
     virtual bool load_config(const std::string& config_file) = 0;
 
-    // 获取配置值
+    // Get configuration values
     virtual std::string get_string(const std::string& key,
                                    const std::string& default_value = "") = 0;
     virtual int get_int(const std::string& key, int default_value = 0) = 0;
@@ -69,31 +69,31 @@ public:
     virtual bool get_bool(const std::string& key,
                           bool default_value = false) = 0;
 
-    // 设置配置值
+    // Set configuration values
     virtual void set_string(const std::string& key,
                             const std::string& value) = 0;
     virtual void set_int(const std::string& key, int value) = 0;
     virtual void set_double(const std::string& key, double value) = 0;
     virtual void set_bool(const std::string& key, bool value) = 0;
 
-    // 注册配置变更回调
+    // Register configuration change callbacks
     virtual void on_config_changed(const std::string& key,
                                    std::function<void()> callback) = 0;
 
-    // 开始文件监控
+    // Start file monitoring
     virtual void start_file_watching() = 0;
 
-    // 停止文件监控
+    // Stop file monitoring
     virtual void stop_file_watching() = 0;
 };
 
-// 基于文件的配置中心实现
+// File-based configuration center implementation
 class FileBasedConfigCenter : public ConfigCenter {
 public:
     explicit FileBasedConfigCenter(const std::string& config_file);
     ~FileBasedConfigCenter() override;
 
-    // ConfigCenter接口实现
+    // ConfigCenter interface implementation
     bool load_config(const std::string& config_file) override;
     std::string get_string(const std::string& key,
                            const std::string& default_value = "") override;
@@ -112,18 +112,18 @@ public:
     void start_file_watching() override;
     void stop_file_watching() override;
 
-    // 额外功能
+    // Additional features
     void add_config_file(const std::string& file_path);
     void remove_config_file(const std::string& file_path);
     std::vector<std::string> get_config_files() const;
 
-    // 创建强类型配置项
+    // Create strongly typed configuration item
     template <typename T>
     std::shared_ptr<ConfigItem<T>> create_config_item(const std::string& key,
                                                       const T& default_value) {
         auto item = std::make_shared<ConfigItem<T>>(key, default_value);
 
-        // 立即从配置中加载值
+        // Load value from configuration immediately
         if constexpr (std::is_same_v<T, std::string>) {
             item->set(get_string(key, default_value));
         } else if constexpr (std::is_same_v<T, int>) {
@@ -134,7 +134,7 @@ public:
             item->set(get_bool(key, default_value));
         }
 
-        // 注册配置变更监听
+        // Register configuration change listener
         on_config_changed(key, [this, item, key]() {
             if constexpr (std::is_same_v<T, std::string>) {
                 item->set(get_string(key, item->get()));
@@ -158,38 +158,38 @@ private:
     std::vector<std::string> config_files_;
     std::unique_ptr<shield::fs::FileWatcher> file_watcher_;
 
-    // 配置存储
+    // Configuration storage
     std::unordered_map<std::string, std::string> config_values_;
 
-    // 变更回调
+    // Change callbacks
     std::unordered_map<std::string, std::vector<std::function<void()>>>
         change_callbacks_;
 
     mutable std::mutex mutex_;
 };
 
-// 配置中心管理器
+// Configuration center manager
 class ConfigCenterManager {
 public:
     static ConfigCenterManager& instance();
 
-    // 创建配置中心
+    // Create configuration center
     std::shared_ptr<ConfigCenter> create_config_center(
         const std::string& name, const std::string& config_file);
 
-    // 获取配置中心
+    // Get configuration center
     std::shared_ptr<ConfigCenter> get_config_center(const std::string& name);
 
-    // 移除配置中心
+    // Remove configuration center
     void remove_config_center(const std::string& name);
 
-    // 获取所有配置中心名称
+    // Get all configuration center names
     std::vector<std::string> get_config_center_names() const;
 
-    // 启动所有配置中心的文件监控
+    // Start file monitoring for all configuration centers
     void start_all_file_watching();
 
-    // 停止所有配置中心的文件监控
+    // Stop file monitoring for all configuration centers
     void stop_all_file_watching();
 
 private:

@@ -8,10 +8,10 @@
 
 namespace shield::log {
 
-// 日志配置 - 模块化版本
+// Log configuration - modularized version
 class LogConfig : public config::ComponentConfig {
 public:
-    // 日志级别枚举
+    // Log level enumeration
     enum class LogLevel {
         TRACE = 0,
         DEBUG = 1,
@@ -21,7 +21,7 @@ public:
         FATAL = 5
     };
 
-    // 控制台输出配置
+    // Console output configuration
     struct ConsoleConfig {
         bool enabled = true;
         bool colored = true;
@@ -29,7 +29,7 @@ public:
         LogLevel min_level = LogLevel::INFO;
     };
 
-    // 文件输出配置
+    // File output configuration
     struct FileConfig {
         bool enabled = true;
         std::string log_file = "logs/shield.log";
@@ -40,7 +40,7 @@ public:
         LogLevel min_level = LogLevel::DEBUG;
     };
 
-    // 网络日志配置（如syslog等）
+    // Network logging configuration (e.g., syslog)
     struct NetworkConfig {
         bool enabled = false;
         std::string protocol = "udp";  // udp, tcp
@@ -50,25 +50,29 @@ public:
         LogLevel min_level = LogLevel::WARN;
     };
 
-    // 异步日志配置
+    // Asynchronous logging configuration
     struct AsyncConfig {
         bool enabled = true;
         size_t queue_size = 8192;
-        int flush_interval = 1000;           // milliseconds
-        bool overflow_policy_block = false;  // false表示丢弃，true表示阻塞
+        int flush_interval = 1000;  // milliseconds
+        bool overflow_policy_block =
+            false;  // false means drop, true means block
         int worker_threads = 1;
     };
 
-    // 过滤器配置
+    // Filter configuration
     struct FilterConfig {
-        std::vector<std::string> include_patterns;     // 包含这些模式的日志
-        std::vector<std::string> exclude_patterns;     // 排除这些模式的日志
-        std::vector<std::string> rate_limit_patterns;  // 限制频率的模式
-        int rate_limit_interval = 1000;                // milliseconds
-        int rate_limit_burst = 10;                     // 突发数量
+        std::vector<std::string>
+            include_patterns;  // Log messages matching these patterns
+        std::vector<std::string>
+            exclude_patterns;  // Log messages excluding these patterns
+        std::vector<std::string>
+            rate_limit_patterns;         // Patterns for rate limiting
+        int rate_limit_interval = 1000;  // milliseconds
+        int rate_limit_burst = 10;       // Burst count
     };
 
-    // 配置数据
+    // Configuration data
     LogLevel global_level = LogLevel::INFO;
     ConsoleConfig console;
     FileConfig file;
@@ -76,7 +80,7 @@ public:
     AsyncConfig async;
     FilterConfig filter;
 
-    // ComponentConfig接口实现
+    // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
@@ -86,13 +90,13 @@ public:
     }  // LogConfig supports hot reload
     CLONE_IMPL(LogConfig)
 
-    // 便利方法
+    // Convenience methods
     static LogLevel level_from_string(const std::string& level_str);
     static std::string level_to_string(LogLevel level);
     bool should_log(LogLevel level, const std::string& logger_name = "") const;
 };
 
-// 保留旧的简单LogConfig用于向后兼容
+// Retain old simple LogConfig for backward compatibility
 struct LegacyLogConfig {
     // Log level
     int level{0};  // corresponds to trace level

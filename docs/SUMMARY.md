@@ -1,46 +1,46 @@
-# 目录结构
+# Table of Contents
 
-[介绍](README.md)
+[Introduction](README.md)
 
-# 快速开始
+# Quick Start
 
-- [快速上手](quickstart.md)
+- [Quick Start Guide](quickstart.md)
 
-# 指南
+# Guides
 
-- [开发指南](development-guide.md)
-    - [环境搭建](development-guide-environment-setup.md)
-    - [编译构建](development-guide-build-project.md)
-    - [测试调试](development-guide-test-development.md)
-- [配置指南](configuration.md)
-    - [环境变量](configuration-environment-variables.md)
-- [部署运维](deployment.md)
-- [监控告警](monitoring.md)
+- [Development Guide](development-guide.md)
+    - [Environment Setup](development-guide-environment-setup.md)
+    - [Build Compilation](development-guide-build-project.md)
+    - [Testing & Debugging](development-guide-test-development.md)
+- [Configuration Guide](configuration.md)
+    - [Environment Variables](configuration-environment-variables.md)
+- [Deployment & Operations](deployment.md)
+- [Monitoring & Alerting](monitoring.md)
     - [Prometheus 集成](prometheus-integration.md)
-- [性能调优](performance.md)
-- [最佳实践](best-practices.md)
+- [Performance Tuning](performance.md)
+- [Best Practices](best-practices.md)
 
-# 架构
+# Architecture
 
-- [整体架构](architecture.md)
-    - [设计理念](architecture-core-concepts.md)
-    - [框架对比](architecture-framework-comparison.md)
-- [服务发现](service_discovery.md)
-- [网关](gateway.md)
+- [Overall Architecture](architecture.md)
+    - [Design Philosophy](architecture-core-concepts.md)
+    - [Framework Comparison](architecture-framework-comparison.md)
+- [Service Discovery](service_discovery.md)
+- [Gateway](gateway.md)
 
-# API 参考
+# API Reference
 
-- [核心模块](api/core.md)
+- [Core Modules](api/core.md)
 - [Actor 系统](api/actor.md)
-- [网络模块](api/network.md)
-- [协议处理](api/protocol.md)
-- [服务发现](api/discovery.md)
-- [网关组件](api/gateway.md)
-- [脚本系统](api/script.md)
-- [序列化](api/serialization.md)
+- [Network Module](api/network.md)
+- [Protocol Handling](api/protocol.md)
+- [Service Discovery](api/discovery.md)
+- [Gateway Component](api/gateway.md)
+- [Script System](api/script.md)
+- [Serialization](api/serialization.md)
 
-# 其他
+# Other
 
-- [开发路线图](roadmap.md)
-- [常见问题](faq.md)
-- [贡献指南](contributing.md)
+- [Development Roadmap](roadmap.md)
+- [FAQ](faq.md)
+- [Contributing Guide](contributing.md)

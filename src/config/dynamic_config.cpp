@@ -46,7 +46,7 @@ T DynamicConfigManager::get_config(const std::string& module_name,
 
     const std::string& value_str = field_it->second;
 
-    // 类型转换
+    // Type conversion
     if constexpr (std::is_same_v<T, std::string>) {
         return value_str;
     } else if constexpr (std::is_same_v<T, int>) {
@@ -64,7 +64,7 @@ template <typename T>
 bool DynamicConfigManager::set_config(const std::string& module_name,
                                       const std::string& field_name,
                                       const T& value) {
-    // 检查字段是否存在且为动态配置
+    // Check if field exists and is dynamic configuration
     ConfigChangePolicy policy;
     {
         std::shared_lock lock(mutex_);
@@ -87,7 +87,7 @@ bool DynamicConfigManager::set_config(const std::string& module_name,
         return false;
     }
 
-    // 转换为字符串
+    // Convert to string
     std::string value_str;
     if constexpr (std::is_same_v<T, std::string>) {
         value_str = value;
@@ -99,7 +99,7 @@ bool DynamicConfigManager::set_config(const std::string& module_name,
         static_assert(sizeof(T) == 0, "Unsupported config type");
     }
 
-    // 验证新值
+    // Validate new value
     {
         std::shared_lock lock(mutex_);
         auto& field_metadata = metadata_[module_name][field_name];
@@ -111,7 +111,7 @@ bool DynamicConfigManager::set_config(const std::string& module_name,
         }
     }
 
-    // 更新配置值
+    // Update configuration value
     std::string old_value;
     {
         std::unique_lock lock(mutex_);
@@ -120,7 +120,7 @@ bool DynamicConfigManager::set_config(const std::string& module_name,
         module_values[field_name] = value_str;
     }
 
-    // 通知监听器
+    // Notify listeners
     notify_listeners(module_name, field_name, old_value, value_str);
 
     return true;
@@ -173,7 +173,7 @@ void DynamicConfigManager::reload_dynamic_configs() {
 
         std::unique_lock lock(mutex_);
 
-        // 只重载动态配置字段
+        // Only reload dynamic configuration fields
         for (const auto& [module_name, module_metadata] : metadata_) {
             if (config[module_name]) {
                 for (const auto& [field_name, field_metadata] :
@@ -243,7 +243,7 @@ DynamicConfigManager::get_all_config_info() const {
             info.policy = field_metadata.policy;
             info.description = field_metadata.description;
 
-            // 获取当前值
+            // Get current value
             auto value_it = values_.find(module_name);
             if (value_it != values_.end()) {
                 auto field_it = value_it->second.find(field_name);
@@ -264,11 +264,11 @@ bool DynamicConfigManager::batch_update_configs(
     std::vector<std::pair<std::string, std::string>> old_values;
     old_values.reserve(updates.size());
 
-    // 验证所有更新
+    // Validate all updates
     {
         std::shared_lock lock(mutex_);
         for (const auto& update : updates) {
-            // 检查字段是否存在
+            // Check if field exists
             auto module_it = metadata_.find(update.module_name);
             if (module_it == metadata_.end()) {
                 std::cerr << "Module not found: " << update.module_name
@@ -283,7 +283,7 @@ bool DynamicConfigManager::batch_update_configs(
                 return false;
             }
 
-            // 检查是否为动态配置
+            // Check if it's dynamic configuration
             if (field_it->second.policy == ConfigChangePolicy::STATIC) {
                 std::cerr << "Cannot modify static config: "
                           << update.module_name << "." << update.field_name
@@ -291,7 +291,7 @@ bool DynamicConfigManager::batch_update_configs(
                 return false;
             }
 
-            // 验证新值
+            // Validate new value
             if (field_it->second.validator &&
                 !field_it->second.validator(update.value)) {
                 std::cerr << "Validation failed for " << update.module_name
@@ -300,7 +300,7 @@ bool DynamicConfigManager::batch_update_configs(
                 return false;
             }
 
-            // 记录旧值
+            // Record old value
             auto value_it = values_.find(update.module_name);
             if (value_it != values_.end()) {
                 auto old_value_it = value_it->second.find(update.field_name);
@@ -319,7 +319,7 @@ bool DynamicConfigManager::batch_update_configs(
         }
     }
 
-    // 应用所有更新
+    // Apply all updates
     {
         std::unique_lock lock(mutex_);
         for (size_t i = 0; i < updates.size(); ++i) {
@@ -328,7 +328,7 @@ bool DynamicConfigManager::batch_update_configs(
         }
     }
 
-    // 通知监听器
+    // Notify listeners
     for (size_t i = 0; i < updates.size(); ++i) {
         const auto& update = updates[i];
         const auto& old_value = old_values[i].second;
@@ -360,7 +360,7 @@ std::string DynamicConfigManager::make_key(
     return module_name + "." + field_name;
 }
 
-// 显式实例化模板函数
+// Explicit template instantiation
 template std::string DynamicConfigManager::get_config<std::string>(
     const std::string&, const std::string&) const;
 template int DynamicConfigManager::get_config<int>(const std::string&,

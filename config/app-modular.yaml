@@ -1,11 +1,11 @@
-# 新的模块化配置示例文件
+# New modular configuration example file
 
-# Gateway模块配置
+# Gateway module configuration
 gateway:
   listener:
     host: "0.0.0.0"
     port: 8080
-    io_threads: 0  # 0表示使用硬件并发数
+    io_threads: 0  # 0 means use hardware concurrency
   
   tcp:
     enabled: true
@@ -33,10 +33,10 @@ gateway:
     ping_interval: 30  # seconds
   
   threading:
-    io_threads: 0      # 0表示使用硬件并发数
-    worker_threads: 0  # 0表示使用硬件并发数
+    io_threads: 0      # 0 means use hardware concurrency
+    worker_threads: 0  # 0 means use hardware concurrency
 
-# Prometheus监控模块配置
+# Prometheus monitoring module configuration
 prometheus:
   server:
     enabled: true
@@ -66,7 +66,7 @@ prometheus:
     include_help_text: true
     namespace_prefix: "shield"
 
-# 保留原有的全局配置结构（向后兼容）
+# Retain original global configuration structure (backward compatible)
 server:
   host: "0.0.0.0"
   port: 8080

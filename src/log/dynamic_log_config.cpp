@@ -16,30 +16,30 @@ DynamicLogConfigManager& DynamicLogConfigManager::instance() {
 void DynamicLogConfigManager::initialize() {
     register_dynamic_fields();
 
-    // 注册为日志模块的配置变更监听器
+    // Register as configuration change listener for log module
     auto& dynamic_config = config::DynamicConfigManager::instance();
-    dynamic_config.add_listener("log",
-                                std::shared_ptr<config::ConfigChangeListener>(
-                                    this, [](config::ConfigChangeListener*) {
-                                    }));  // 使用空删除器，因为这是单例
+    dynamic_config.add_listener(
+        "log", std::shared_ptr<config::ConfigChangeListener>(
+                   this, [](config::ConfigChangeListener*) {
+                   }));  // Use empty deleter since this is a singleton
 }
 
 void DynamicLogConfigManager::register_dynamic_fields() {
     auto& dynamic_config = config::DynamicConfigManager::instance();
 
-    // 日志级别验证器
+    // Log level validator
     auto level_validator = [](const std::string& value) -> bool {
         return value == "trace" || value == "debug" || value == "info" ||
                value == "warn" || value == "error" || value == "fatal";
     };
 
-    // 布尔值验证器
+    // Boolean validator
     auto bool_validator = [](const std::string& value) -> bool {
         return value == "true" || value == "false" || value == "1" ||
                value == "0";
     };
 
-    // 注册动态配置字段
+    // Register dynamic configuration fields
     dynamic_config.register_field(
         "log", "global_level", config::ConfigChangePolicy::DYNAMIC,
         "Global log level (trace/debug/info/warn/error/fatal)",
@@ -61,7 +61,7 @@ void DynamicLogConfigManager::register_dynamic_fields() {
         "log", "file_enabled", config::ConfigChangePolicy::DYNAMIC,
         "Enable/disable file logging", bool_validator);
 
-    // 静态配置示例（不可运行时修改）
+    // Static configuration example (cannot be modified at runtime)
     dynamic_config.register_field("log", "log_file_path",
                                   config::ConfigChangePolicy::STATIC,
                                   "Log file path (requires restart to change)");
@@ -133,28 +133,28 @@ void DynamicLogConfigManager::on_config_changed(const std::string& field_name,
     } else if (field_name == "console_level") {
         LogConfig::LogLevel new_level = level_from_string(new_value);
         current_console_level_.store(new_level);
-        // TODO: 更新控制台sink的过滤器
+        // TODO: Update console sink filter
 
     } else if (field_name == "file_level") {
         LogConfig::LogLevel new_level = level_from_string(new_value);
         current_file_level_.store(new_level);
-        // TODO: 更新文件sink的过滤器
+        // TODO: Update file sink filter
 
     } else if (field_name == "console_enabled") {
         bool enabled = (new_value == "true" || new_value == "1");
         console_enabled_.store(enabled);
-        // TODO: 启用/禁用控制台sink
+        // TODO: Enable/disable console sink
 
     } else if (field_name == "file_enabled") {
         bool enabled = (new_value == "true" || new_value == "1");
         file_enabled_.store(enabled);
-        // TODO: 启用/禁用文件sink
+        // TODO: Enable/disable file sink
     }
 }
 
 void DynamicLogConfigManager::apply_level_change(
     LogConfig::LogLevel new_level) {
-    // 更新boost::log的全局过滤器
+    // Update boost::log global filter
     boost::log::core::get()->set_filter(
         boost::log::expressions::attr<boost::log::trivial::severity_level>(
             "Severity") >=

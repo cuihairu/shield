@@ -26,7 +26,7 @@ void GatewayComponent::on_init() {
         throw std::runtime_error("GatewayConfig is null");
     }
 
-    // 验证配置
+    // Validate configuration
     m_config->validate();
 
     // TCP server configuration

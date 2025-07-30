@@ -224,9 +224,6 @@ set(CLI_SOURCES
 set(CONFIG_SOURCES
   # Config sources
   src/config/config.cpp
-  src/config/config_def.cpp
-  src/config/module_config.cpp
-  src/config/config_registry.cpp
   src/fs/file_watcher.cpp
 )
 

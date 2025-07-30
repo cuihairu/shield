@@ -1,5 +1,5 @@
 # Production Environment Configuration  
-# app-prod.yaml - 生产环境配置覆盖
+# app-prod.yaml - Production environment configuration overrides
 
 # Production logger settings
 logger:

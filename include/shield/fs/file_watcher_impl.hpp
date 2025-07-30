@@ -18,7 +18,7 @@
 
 namespace shield::fs {
 
-// Linux inotify实现
+// Linux inotify implementation
 #ifdef __linux__
 class LinuxFileWatcher : public IFileWatcher {
 public:
@@ -48,7 +48,7 @@ private:
 };
 #endif
 
-// macOS kqueue实现
+// macOS kqueue implementation
 #ifdef __APPLE__
 class MacOSFileWatcher : public IFileWatcher {
 public:
@@ -76,7 +76,7 @@ private:
 };
 #endif
 
-// Windows ReadDirectoryChangesW实现
+// Windows ReadDirectoryChangesW implementation
 #ifdef _WIN32
 class WindowsFileWatcher : public IFileWatcher {
 public:
@@ -115,7 +115,7 @@ private:
 };
 #endif
 
-// 轮询实现（通用fallback）
+// Polling implementation (generic fallback)
 class PollingFileWatcher : public IFileWatcher {
 public:
     explicit PollingFileWatcher(

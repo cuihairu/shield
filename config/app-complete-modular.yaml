@@ -1,11 +1,11 @@
-# 完整的模块化配置示例
+# Complete modular configuration example
 
-# Gateway模块配置（保持原有结构，但现在从Gateway模块读取TCP/UDP配置）
+# Gateway module configuration (maintains original structure, but now reads TCP/UDP config from Gateway module)
 gateway:
   listener:
     host: "0.0.0.0"
     port: 8080
-    io_threads: 0  # 0表示使用硬件并发数
+    io_threads: 0  # 0 means use hardware concurrency
   
   tcp:
     enabled: true
@@ -33,10 +33,10 @@ gateway:
     ping_interval: 30  # seconds
   
   threading:
-    io_threads: 0      # 0表示使用硬件并发数
-    worker_threads: 0  # 0表示使用硬件并发数
+    io_threads: 0      # 0 means use hardware concurrency
+    worker_threads: 0  # 0 means use hardware concurrency
 
-# 独立的TCP模块配置（适用于需要独立TCP服务的组件）
+# Independent TCP module configuration (for components requiring independent TCP service)
 tcp:
   server:
     enabled: true
@@ -59,7 +59,7 @@ tcp:
     worker_threads: 0
     use_thread_pool: true
 
-# 独立的UDP模块配置（适用于需要独立UDP服务的组件）
+# Independent UDP module configuration (for components requiring independent UDP service)
 udp:
   server:
     enabled: true
@@ -80,7 +80,7 @@ udp:
     worker_threads: 0
     use_thread_pool: true
 
-# Actor系统配置
+# Actor system configuration
 actor_system:
   node:
     node_id: "shield-node-1"
@@ -89,14 +89,14 @@ actor_system:
   
   scheduler:
     policy: "sharing"  # sharing, stealing
-    worker_threads: 0  # 0表示使用硬件并发数
+    worker_threads: 0  # 0 means use hardware concurrency
     max_throughput: 300
     enable_profiling: false
   
   network:
     enabled: true
     host: "0.0.0.0"
-    port: 0  # 0表示自动分配端口
+    port: 0  # 0 means automatic port allocation
     max_connections: 100
     connection_timeout: 10000
   
@@ -112,7 +112,7 @@ actor_system:
     enable_gc: true
     gc_interval: 30000
 
-# 日志模块配置
+# Log module configuration
 log:
   global_level: "info"
   
@@ -153,7 +153,7 @@ log:
     rate_limit_interval: 1000
     rate_limit_burst: 10
 
-# Prometheus监控模块配置
+# Prometheus monitoring module configuration
 prometheus:
   server:
     enabled: true
@@ -183,24 +183,24 @@ prometheus:
     include_help_text: true
     namespace_prefix: "shield"
 
-# 保留原有的全局配置结构（向后兼容，但逐步迁移到模块化配置）
+# Retain original global configuration structure (backward compatible, gradually migrate to modular configuration)
 server:
   host: "0.0.0.0"
   port: 8080
   max_connections: 1000
-  components: ["lua_vm_pool", "gateway", "prometheus"]  # 启用的组件列表
+  components: ["lua_vm_pool", "gateway", "prometheus"]  # List of enabled components
   actor_system:
-    node_id: "auto"  # "auto"表示自动生成
+    node_id: "auto"  # "auto" means auto-generate
     worker_threads: 4
     scheduler_policy: "sharing"
 
-# 应用程序全局配置
+# Application global configuration
 app:
   show_banner: true
   environment: "development"  # development, production, testing
   debug_mode: false
 
-# Lua VM配置（暂时保持旧格式，后续可迁移到模块化）
+# Lua VM configuration (temporarily keep old format, can migrate to modular later)
 lua_vm_pool:
   initial_size: 4
   min_size: 2
@@ -209,7 +209,7 @@ lua_vm_pool:
   acquire_timeout_ms: 5000
   preload_scripts: true
 
-# 服务发现配置（暂时保持旧格式，后续可迁移到模块化）
+# Service discovery configuration (temporarily keep old format, can migrate to modular later)
 discovery:
   type: "local"
   etcd:
@@ -223,14 +223,14 @@ discovery:
     host: "127.0.0.1"
     port: 6379
 
-# 游戏相关配置（暂时保持旧格式，后续可迁移到模块化）
+# Game-related configuration (temporarily keep old format, can migrate to modular later)
 game:
   name: "Shield Game"
   version: "1.0.0"
   max_players: 1000
   tick_rate: 60
 
-# 数据库配置（暂时保持旧格式，后续可迁移到模块化）
+# Database configuration (temporarily keep old format, can migrate to modular later)
 database:
   type: "none"
   mysql:

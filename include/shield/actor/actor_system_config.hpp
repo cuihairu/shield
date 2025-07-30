@@ -8,34 +8,35 @@
 
 namespace shield::actor {
 
-// Actor系统配置
+// Actor system configuration
 class ActorSystemConfig : public config::ComponentConfig {
 public:
-    // 节点配置
+    // Node configuration
     struct NodeConfig {
         std::string node_id = "shield-node-1";
         std::string cluster_name = "shield-cluster";
-        bool auto_generate_node_id = true;  // 自动生成基于主机名和PID的节点ID
+        bool auto_generate_node_id =
+            true;  // Auto-generate node ID based on hostname and PID
     };
 
-    // 调度器配置
+    // Scheduler configuration
     struct SchedulerConfig {
         std::string policy = "sharing";  // sharing, stealing
-        int worker_threads = 0;          // 0表示使用硬件并发数
-        int max_throughput = 300;        // 每轮调度的最大消息数
+        int worker_threads = 0;          // 0 means use hardware concurrency
+        int max_throughput = 300;  // Maximum messages per scheduling round
         bool enable_profiling = false;
     };
 
-    // 网络配置
+    // Network configuration
     struct NetworkConfig {
         bool enabled = true;
         std::string host = "0.0.0.0";
-        uint16_t port = 0;  // 0表示自动分配端口
+        uint16_t port = 0;  // 0 means auto-assign port
         int max_connections = 100;
         int connection_timeout = 10000;  // milliseconds
     };
 
-    // 监控配置
+    // Monitoring configuration
     struct MonitorConfig {
         bool enable_metrics = true;
         bool enable_tracing = false;
@@ -43,7 +44,7 @@ public:
         std::string metrics_output = "prometheus";  // prometheus, json, console
     };
 
-    // 内存管理配置
+    // Memory management configuration
     struct MemoryConfig {
         size_t max_memory_per_actor = 67108864;  // 64MB
         size_t message_buffer_size = 1048576;    // 1MB
@@ -51,21 +52,21 @@ public:
         int gc_interval = 30000;  // milliseconds
     };
 
-    // 配置数据
+    // Configuration data
     NodeConfig node;
     SchedulerConfig scheduler;
     NetworkConfig network;
     MonitorConfig monitor;
     MemoryConfig memory;
 
-    // ComponentConfig接口实现
+    // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
     std::string component_name() const override { return "actor_system"; }
     CLONE_IMPL(ActorSystemConfig)
 
-    // 便利方法
+    // Convenience methods
     int get_effective_worker_threads() const;
     std::string get_effective_node_id() const;
     bool is_network_enabled() const { return network.enabled; }

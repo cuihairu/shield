@@ -7,10 +7,10 @@
 
 namespace shield::metrics {
 
-// Prometheus模块配置
+// Prometheus module configuration
 class PrometheusConfig : public config::ComponentConfig {
 public:
-    // 基础配置
+    // Basic configuration
     struct ServerConfig {
         bool enabled = true;
         std::string host = "0.0.0.0";
@@ -19,7 +19,7 @@ public:
         int max_connections = 100;
     };
 
-    // 系统指标配置
+    // System metrics configuration
     struct SystemMetricsConfig {
         bool enabled = true;
         int collection_interval = 5;  // seconds
@@ -29,7 +29,7 @@ public:
         bool collect_network = false;
     };
 
-    // 应用指标配置
+    // Application metrics configuration
     struct AppMetricsConfig {
         bool enabled = true;
         bool collect_http_requests = true;
@@ -38,7 +38,7 @@ public:
         bool collect_lua_stats = true;
     };
 
-    // 指标导出配置
+    // Metrics export configuration
     struct ExportConfig {
         std::string format = "prometheus";  // prometheus, json, etc.
         bool include_timestamp = true;
@@ -46,20 +46,20 @@ public:
         std::string namespace_prefix = "shield";
     };
 
-    // 配置数据
+    // Configuration data
     ServerConfig server;
     SystemMetricsConfig system_metrics;
     AppMetricsConfig app_metrics;
     ExportConfig export_config;
 
-    // ComponentConfig接口实现
+    // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
     std::string component_name() const override { return "prometheus"; }
     CLONE_IMPL(PrometheusConfig)
 
-    // 便利方法
+    // Convenience methods
     bool is_metrics_enabled() const { return server.enabled; }
     std::string get_metrics_endpoint() const;
 };

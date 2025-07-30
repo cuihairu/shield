@@ -8,14 +8,14 @@
 namespace shield::log {
 
 void LogConfig::from_ptree(const boost::property_tree::ptree& pt) {
-    // 全局级别
+    // Global level
     if (auto level_str = get_optional_value<std::string>(pt, "global_level")) {
         global_level = level_from_string(*level_str);
         // Dynamically update logger level
         shield::log::Logger::set_level(global_level);
     }
 
-    // 控制台配置
+    // Console configuration
     if (auto console_pt = pt.get_child_optional("console")) {
         console.enabled = get_value(*console_pt, "enabled", console.enabled);
         console.colored = get_value(*console_pt, "colored", console.colored);
@@ -25,7 +25,7 @@ void LogConfig::from_ptree(const boost::property_tree::ptree& pt) {
             console.min_level = level_from_string(*min_level_str);
     }
 
-    // 文件配置
+    // File configuration
     if (auto file_pt = pt.get_child_optional("file")) {
         file.enabled = get_value(*file_pt, "enabled", file.enabled);
         file.log_file = get_value(*file_pt, "log_file", file.log_file);
@@ -40,7 +40,7 @@ void LogConfig::from_ptree(const boost::property_tree::ptree& pt) {
             file.min_level = level_from_string(*min_level_str);
     }
 
-    // 网络配置
+    // Network configuration
     if (auto network_pt = pt.get_child_optional("network")) {
         network.enabled = get_value(*network_pt, "enabled", network.enabled);
         network.protocol = get_value(*network_pt, "protocol", network.protocol);
@@ -52,7 +52,7 @@ void LogConfig::from_ptree(const boost::property_tree::ptree& pt) {
             network.min_level = level_from_string(*min_level_str);
     }
 
-    // 异步配置
+    // Async configuration
     if (auto async_pt = pt.get_child_optional("async")) {
         async.enabled = get_value(*async_pt, "enabled", async.enabled);
         async.queue_size = get_value(*async_pt, "queue_size", async.queue_size);
@@ -64,7 +64,7 @@ void LogConfig::from_ptree(const boost::property_tree::ptree& pt) {
             get_value(*async_pt, "worker_threads", async.worker_threads);
     }
 
-    // 过滤器配置
+    // Filter configuration
     if (auto filter_pt = pt.get_child_optional("filter")) {
         load_vector(*filter_pt, "include_patterns", filter.include_patterns);
         load_vector(*filter_pt, "exclude_patterns", filter.exclude_patterns);
@@ -80,16 +80,16 @@ void LogConfig::from_ptree(const boost::property_tree::ptree& pt) {
 YAML::Node LogConfig::to_yaml() const {
     YAML::Node node;
 
-    // 全局级别
+    // Global level
     node["global_level"] = level_to_string(global_level);
 
-    // 控制台配置
+    // Console configuration
     node["console"]["enabled"] = console.enabled;
     node["console"]["colored"] = console.colored;
     node["console"]["pattern"] = console.pattern;
     node["console"]["min_level"] = level_to_string(console.min_level);
 
-    // 文件配置
+    // File configuration
     node["file"]["enabled"] = file.enabled;
     node["file"]["log_file"] = file.log_file;
     node["file"]["max_file_size"] = file.max_file_size;
@@ -98,7 +98,7 @@ YAML::Node LogConfig::to_yaml() const {
     node["file"]["pattern"] = file.pattern;
     node["file"]["min_level"] = level_to_string(file.min_level);
 
-    // 网络配置
+    // Network configuration
     node["network"]["enabled"] = network.enabled;
     node["network"]["protocol"] = network.protocol;
     node["network"]["host"] = network.host;
@@ -106,14 +106,14 @@ YAML::Node LogConfig::to_yaml() const {
     node["network"]["facility"] = network.facility;
     node["network"]["min_level"] = level_to_string(network.min_level);
 
-    // 异步配置
+    // Async configuration
     node["async"]["enabled"] = async.enabled;
     node["async"]["queue_size"] = async.queue_size;
     node["async"]["flush_interval"] = async.flush_interval;
     node["async"]["overflow_policy_block"] = async.overflow_policy_block;
     node["async"]["worker_threads"] = async.worker_threads;
 
-    // 过滤器配置
+    // Filter configuration
     for (const auto& pattern : filter.include_patterns) {
         node["filter"]["include_patterns"].push_back(pattern);
     }
@@ -231,12 +231,12 @@ std::string LogConfig::level_to_string(LogLevel level) {
 
 bool LogConfig::should_log(LogLevel level,
                            const std::string& logger_name) const {
-    // 检查全局级别
+    // Check global level
     if (level < global_level) {
         return false;
     }
 
-    // 检查包含和排除模式
+    // Check include and exclude patterns
     if (!filter.include_patterns.empty()) {
         bool included = false;
         for (const auto& pattern : filter.include_patterns) {

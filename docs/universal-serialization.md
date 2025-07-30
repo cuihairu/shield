@@ -1,26 +1,26 @@
 # Shield Universal Serialization System
 
-Shield框架提供了一个强大且灵活的通用序列化系统，支持多种序列化格式，包括JSON、Protobuf、MessagePack等。
+The Shield framework provides a powerful and flexible universal serialization system that supports multiple serialization formats, including JSON, Protobuf, MessagePack, and more.
 
-## 特性
+## Features
 
-- **多格式支持**: JSON、Protobuf、MessagePack (sproto 即将支持)
-- **自动格式检测**: 根据类型特性自动选择最佳序列化格式
-- **类型安全**: 基于C++20概念的编译时类型检查
-- **用户友好**: 简洁的API和自动ADL检测
-- **高性能**: 零拷贝设计和优化的序列化路径
-- **可扩展**: 易于添加新的序列化格式
+- **Multi-format support**: JSON, Protobuf, MessagePack (sproto coming soon)
+- **Automatic format detection**: Automatically selects optimal serialization format based on type traits
+- **Type safety**: Compile-time type checking based on C++20 concepts
+- **User-friendly**: Simple API and automatic ADL detection
+- **High performance**: Zero-copy design and optimized serialization paths
+- **Extensible**: Easy to add new serialization formats
 
-## 快速开始
+## Quick Start
 
-### 1. 初始化序列化系统
+### 1. Initialize Serialization System
 
 ```cpp
 #include "shield/serialization/universal_serialization_system.hpp"
 
 using namespace shield::serialization;
 
-// 配置序列化选项
+// Configure serialization options
 SerializationConfig config;
 config.enable_json = true;
 config.enable_protobuf = true;
@@ -28,13 +28,13 @@ config.enable_messagepack = true;
 config.default_format = SerializationFormat::JSON;
 config.enable_auto_format_detection = true;
 
-// 初始化系统
+// Initialize system
 initialize_universal_serialization_system(config);
 ```
 
-### 2. 定义可序列化的数据结构
+### 2. Define Serializable Data Structures
 
-#### JSON支持 (使用nlohmann::json)
+#### JSON Support (using nlohmann::json)
 
 ```cpp
 struct Player {
@@ -42,7 +42,7 @@ struct Player {
     std::string name;
     int level;
     
-    // ADL方式 (推荐)
+    // ADL method (recommended)
     friend void to_json(nlohmann::json& j, const Player& p) {
         j = nlohmann::json{{"id", p.id}, {"name", p.name}, {"level", p.level}};
     }
@@ -55,16 +55,16 @@ struct Player {
 };
 ```
 
-#### Protobuf支持
+#### Protobuf Support
 
 ```cpp
 class GameMessage : public google::protobuf::MessageLite {
-    // 继承自protobuf MessageLite即可
-    // 或者实现 SerializeToString/ParseFromString 方法
+    // Inherit from protobuf MessageLite
+    // Or implement SerializeToString/ParseFromString methods
 };
 ```
 
-#### MessagePack支持
+#### MessagePack Support
 
 ```cpp
 struct GameState {
@@ -73,25 +73,25 @@ struct GameState {
     std::vector<int> player_ids;
 };
 
-// 使用msgpack宏
+// Use msgpack macro
 MSGPACK_DEFINE_MAP(GameState, timestamp, state, player_ids);
 ```
 
-### 3. 序列化和反序列化
+### 3. Serialization and Deserialization
 
-#### 自动格式选择
+#### Automatic Format Selection
 
 ```cpp
 Player player{123, "Alice", 42};
 
-// 自动选择最佳格式
+// Automatically select optimal format
 auto data = serialize_universal(player);
 
-// 指定格式反序列化
+// Deserialize with specified format
 auto restored = deserialize_universal<Player>(data, SerializationFormat::JSON);
 ```
 
-#### 指定格式
+#### Specify Format
 
 ```cpp
 // JSON
@@ -107,56 +107,56 @@ auto msgpack_bytes = serialize_as<SerializationFormat::MESSAGEPACK>(game_state);
 auto state1 = deserialize_as<SerializationFormat::MESSAGEPACK, GameState>(msgpack_bytes);
 ```
 
-#### 便利函数
+#### Convenience Functions
 
 ```cpp
-// JSON便利函数
+// JSON convenience functions
 std::string json = to_json_string(player);
 Player p = from_json_string<Player>(json);
 
-// Protobuf便利函数
+// Protobuf convenience functions
 std::vector<uint8_t> bytes = to_protobuf_bytes(message);
 GameMessage msg = from_protobuf_bytes<GameMessage>(bytes);
 
-// MessagePack便利函数
+// MessagePack convenience functions
 std::vector<uint8_t> data = to_messagepack_bytes(state);
 GameState gs = from_messagepack_bytes<GameState>(data);
 ```
 
-## 高级用法
+## Advanced Usage
 
-### 格式检测和推荐
+### Format Detection and Recommendation
 
 ```cpp
-// 检查类型支持的格式
+// Check formats supported by type
 constexpr bool json_ok = is_json_serializable_v<Player>;
 constexpr bool proto_ok = is_protobuf_serializable_v<GameMessage>;
 constexpr bool msgpack_ok = is_messagepack_serializable_v<GameState>;
 
-// 获取推荐格式
+// Get recommended format
 constexpr auto best_format = detect_best_format<Player>();
 
-// 运行时格式推荐
+// Runtime format recommendation
 auto& system = UniversalSerializationSystem::instance();
 auto format = system.get_recommended_format<Player>();
 ```
 
-### 系统信息
+### System Information
 
 ```cpp
 auto& system = UniversalSerializationSystem::instance();
 
-// 获取系统状态
+// Get system status
 std::cout << system.get_system_info() << std::endl;
 
-// 获取支持的格式
+// Get supported formats
 auto formats = system.get_available_formats();
 for (const auto& format : formats) {
     std::cout << "Supported: " << format << std::endl;
 }
 ```
 
-### 错误处理
+### Error Handling
 
 ```cpp
 try {
@@ -167,57 +167,57 @@ try {
 }
 ```
 
-## 扩展指南
+## Extension Guide
 
-### 添加新的序列化格式
+### Adding New Serialization Formats
 
-1. 在`SerializationFormat`枚举中添加新格式
-2. 实现对应的概念检测 (如`CustomSerializable`)
-3. 创建继承自`UniversalSerializer<Format>`的序列化器
-4. 在初始化系统中注册新的序列化器
+1. Add new format to `SerializationFormat` enum
+2. Implement corresponding concept detection (like `CustomSerializable`)
+3. Create serializer inheriting from `UniversalSerializer<Format>`
+4. Register new serializer in initialization system
 
-### 自定义类型适配
+### Custom Type Adaptation
 
 ```cpp
-// 为自定义类型添加JSON支持
+// Add JSON support for custom types
 namespace nlohmann {
     template<>
     struct adl_serializer<MyCustomType> {
         static void to_json(json& j, const MyCustomType& obj) {
-            // 实现序列化逻辑
+            // Implement serialization logic
         }
         
         static void from_json(const json& j, MyCustomType& obj) {
-            // 实现反序列化逻辑
+            // Implement deserialization logic
         }
     };
 }
 ```
 
-## 性能优化建议
+## Performance Optimization Tips
 
-1. **选择合适的格式**: 
-   - JSON: 人类可读，调试友好
-   - Protobuf: 高效，向后兼容
-   - MessagePack: 紧凑，性能优秀
+1. **Choose appropriate format**: 
+   - JSON: Human-readable, debug-friendly
+   - Protobuf: Efficient, backward compatible
+   - MessagePack: Compact, excellent performance
 
-2. **避免频繁的格式转换**: 在同一模块内保持格式一致性
+2. **Avoid frequent format conversions**: Maintain format consistency within the same module
 
-3. **使用移动语义**: 大对象序列化时使用`std::move`
+3. **Use move semantics**: Use `std::move` when serializing large objects
 
-4. **批量操作**: 对于大量小对象，考虑批量序列化
+4. **Batch operations**: For many small objects, consider batch serialization
 
-## 依赖项
+## Dependencies
 
 - **nlohmann::json**: JSON支持
 - **protobuf**: Protobuf支持  
 - **msgpack-cxx**: MessagePack支持
 - **C++20**: 概念和模板特性
 
-## 编译选项
+## Compilation Options
 
 ```cmake
-# 在CMakeLists.txt中启用
+# Enable in CMakeLists.txt
 find_package(nlohmann_json REQUIRED)
 find_package(protobuf REQUIRED)
 find_package(msgpack-cxx REQUIRED)
@@ -229,10 +229,10 @@ target_link_libraries(your_target
 )
 ```
 
-## 示例项目
+## Example Project
 
-查看 `examples/serialization_demo.cpp` 了解完整的使用示例。
+See `examples/serialization_demo.cpp` for complete usage examples.
 
 ---
 
-**注意**: 该序列化系统设计为框架级别的通用工具，不包含特定的业务逻辑。用户可以自由定义任何数据结构和序列化方式。
+**Note**: This serialization system is designed as a framework-level universal tool and does not contain specific business logic. Users can freely define any data structures and serialization methods.

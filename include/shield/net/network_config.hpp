@@ -7,10 +7,10 @@
 
 namespace shield::net {
 
-// TCP服务器配置
+// TCP server configuration
 class TcpConfig : public shield::config::ComponentConfig {
 public:
-    // TCP基础配置
+    // TCP basic configuration
     struct ServerConfig {
         bool enabled = true;
         std::string host = "0.0.0.0";
@@ -20,7 +20,7 @@ public:
         int max_connections = 1000;
     };
 
-    // TCP缓冲区配置
+    // TCP buffer configuration
     struct BufferConfig {
         int receive_buffer_size = 65536;
         int send_buffer_size = 65536;
@@ -30,35 +30,35 @@ public:
         int keep_alive_count = 9;
     };
 
-    // TCP线程配置
+    // TCP threading configuration
     struct ThreadingConfig {
-        int io_threads = 0;      // 0表示使用硬件并发数
-        int worker_threads = 0;  // 0表示使用硬件并发数
+        int io_threads = 0;      // 0 means use hardware concurrency
+        int worker_threads = 0;  // 0 means use hardware concurrency
         bool use_thread_pool = true;
     };
 
-    // 配置数据
+    // Configuration data
     ServerConfig server;
     BufferConfig buffer;
     ThreadingConfig threading;
 
-    // ComponentConfig接口实现
+    // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
     std::string component_name() const override { return "tcp"; }
     CLONE_IMPL(TcpConfig)
 
-    // 便利方法
+    // Convenience methods
     int get_effective_io_threads() const;
     int get_effective_worker_threads() const;
     bool is_enabled() const { return server.enabled; }
 };
 
-// UDP服务器配置
+// UDP server configuration
 class UdpConfig : public config::ComponentConfig {
 public:
-    // UDP基础配置
+    // UDP basic configuration
     struct ServerConfig {
         bool enabled = true;
         std::string host = "0.0.0.0";
@@ -67,7 +67,7 @@ public:
         int max_packet_size = 1500;  // MTU size
     };
 
-    // UDP性能配置
+    // UDP performance configuration
     struct PerformanceConfig {
         bool reuse_address = true;
         bool reuse_port = false;
@@ -76,26 +76,26 @@ public:
         int max_concurrent_packets = 1000;
     };
 
-    // UDP线程配置
+    // UDP threading configuration
     struct ThreadingConfig {
-        int io_threads = 0;      // 0表示使用硬件并发数
-        int worker_threads = 0;  // 0表示使用硬件并发数
+        int io_threads = 0;      // 0 means use hardware concurrency
+        int worker_threads = 0;  // 0 means use hardware concurrency
         bool use_thread_pool = true;
     };
 
-    // 配置数据
+    // Configuration data
     ServerConfig server;
     PerformanceConfig performance;
     ThreadingConfig threading;
 
-    // ComponentConfig接口实现
+    // ComponentConfig interface implementation
     void from_ptree(const boost::property_tree::ptree& pt) override;
     YAML::Node to_yaml() const override;
     void validate() const override;
     std::string component_name() const override { return "udp"; }
     CLONE_IMPL(UdpConfig)
 
-    // 便利方法
+    // Convenience methods
     int get_effective_io_threads() const;
     int get_effective_worker_threads() const;
     bool is_enabled() const { return server.enabled; }

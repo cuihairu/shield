@@ -50,7 +50,7 @@ void TcpConfig::from_ptree(const boost::property_tree::ptree& pt) {
 YAML::Node TcpConfig::to_yaml() const {
     YAML::Node node;
 
-    // Server配置
+    // Server configuration
     node["server"]["enabled"] = server.enabled;
     node["server"]["host"] = server.host;
     node["server"]["port"] = server.port;
@@ -58,7 +58,7 @@ YAML::Node TcpConfig::to_yaml() const {
     node["server"]["keep_alive"] = server.keep_alive;
     node["server"]["max_connections"] = server.max_connections;
 
-    // Buffer配置
+    // Buffer configuration
     node["buffer"]["receive_buffer_size"] = buffer.receive_buffer_size;
     node["buffer"]["send_buffer_size"] = buffer.send_buffer_size;
     node["buffer"]["no_delay"] = buffer.no_delay;
@@ -66,7 +66,7 @@ YAML::Node TcpConfig::to_yaml() const {
     node["buffer"]["keep_alive_interval"] = buffer.keep_alive_interval;
     node["buffer"]["keep_alive_count"] = buffer.keep_alive_count;
 
-    // Threading配置
+    // Threading configuration
     node["threading"]["io_threads"] = threading.io_threads;
     node["threading"]["worker_threads"] = threading.worker_threads;
     node["threading"]["use_thread_pool"] = threading.use_thread_pool;
@@ -161,14 +161,14 @@ void UdpConfig::from_ptree(const boost::property_tree::ptree& pt) {
 YAML::Node UdpConfig::to_yaml() const {
     YAML::Node node;
 
-    // Server配置
+    // Server configuration
     node["server"]["enabled"] = server.enabled;
     node["server"]["host"] = server.host;
     node["server"]["port"] = server.port;
     node["server"]["buffer_size"] = server.buffer_size;
     node["server"]["max_packet_size"] = server.max_packet_size;
 
-    // Performance配置
+    // Performance configuration
     node["performance"]["reuse_address"] = performance.reuse_address;
     node["performance"]["reuse_port"] = performance.reuse_port;
     node["performance"]["receive_timeout"] = performance.receive_timeout;
@@ -176,7 +176,7 @@ YAML::Node UdpConfig::to_yaml() const {
     node["performance"]["max_concurrent_packets"] =
         performance.max_concurrent_packets;
 
-    // Threading配置
+    // Threading configuration
     node["threading"]["io_threads"] = threading.io_threads;
     node["threading"]["worker_threads"] = threading.worker_threads;
     node["threading"]["use_thread_pool"] = threading.use_thread_pool;

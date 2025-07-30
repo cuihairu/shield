@@ -69,31 +69,31 @@ void ActorSystemConfig::from_ptree(const boost::property_tree::ptree& pt) {
 YAML::Node ActorSystemConfig::to_yaml() const {
     YAML::Node node_yaml;
 
-    // Node配置
+    // Node configuration
     node_yaml["node"]["node_id"] = node.node_id;
     node_yaml["node"]["cluster_name"] = node.cluster_name;
     node_yaml["node"]["auto_generate_node_id"] = node.auto_generate_node_id;
 
-    // Scheduler配置
+    // Scheduler configuration
     node_yaml["scheduler"]["policy"] = scheduler.policy;
     node_yaml["scheduler"]["worker_threads"] = scheduler.worker_threads;
     node_yaml["scheduler"]["max_throughput"] = scheduler.max_throughput;
     node_yaml["scheduler"]["enable_profiling"] = scheduler.enable_profiling;
 
-    // Network配置
+    // Network configuration
     node_yaml["network"]["enabled"] = network.enabled;
     node_yaml["network"]["host"] = network.host;
     node_yaml["network"]["port"] = network.port;
     node_yaml["network"]["max_connections"] = network.max_connections;
     node_yaml["network"]["connection_timeout"] = network.connection_timeout;
 
-    // Monitor配置
+    // Monitor configuration
     node_yaml["monitor"]["enable_metrics"] = monitor.enable_metrics;
     node_yaml["monitor"]["enable_tracing"] = monitor.enable_tracing;
     node_yaml["monitor"]["metrics_interval"] = monitor.metrics_interval;
     node_yaml["monitor"]["metrics_output"] = monitor.metrics_output;
 
-    // Memory配置
+    // Memory configuration
     node_yaml["memory"]["max_memory_per_actor"] = memory.max_memory_per_actor;
     node_yaml["memory"]["message_buffer_size"] = memory.message_buffer_size;
     node_yaml["memory"]["enable_gc"] = memory.enable_gc;
@@ -169,7 +169,7 @@ std::string ActorSystemConfig::get_effective_node_id() const {
         return node.node_id;
     }
 
-    // 生成基于主机名和PID的唯一节点ID
+    // Generate unique node ID based on hostname and PID
     std::string hostname = "unknown";
     char hostname_buffer[256];
     if (gethostname(hostname_buffer, sizeof(hostname_buffer)) == 0) {

@@ -12,20 +12,20 @@
 
 namespace shield::fs {
 
-// 文件事件类型
+// File event type
 enum class FileEventType {
-    Modified,  // 文件被修改
-    Created,   // 文件被创建
-    Deleted,   // 文件被删除
-    Moved      // 文件被移动/重命名
+    Modified,  // File modified
+    Created,   // File created
+    Deleted,   // File deleted
+    Moved      // File moved/renamed
 };
 
-// 文件事件
+// File event
 struct FileEvent {
-    std::string file_path;                            // 事件发生的文件路径
-    FileEventType event_type;                         // 事件类型
-    std::string old_path;                             // 移动事件的原路径
-    std::chrono::system_clock::time_point timestamp;  // 事件时间戳
+    std::string file_path;     // File path where event occurred
+    FileEventType event_type;  // Event type
+    std::string old_path;      // Original path for move events
+    std::chrono::system_clock::time_point timestamp;  // Event timestamp
 
     FileEvent(const std::string& path, FileEventType type,
               const std::string& old_p = "")
@@ -35,78 +35,78 @@ struct FileEvent {
           timestamp(std::chrono::system_clock::now()) {}
 };
 
-// 文件事件处理器
+// File event handler
 
 using FileEventHandler = std::function<void(const FileEvent&)>;
 
-// 文件监控接口
+// File monitoring interface
 class IFileWatcher {
 public:
     virtual ~IFileWatcher() = default;
 
-    // 添加文件监控
+    // Add file monitoring
     virtual bool add_file(const std::string& file_path) = 0;
 
-    // 移除文件监控
+    // Remove file monitoring
     virtual bool remove_file(const std::string& file_path) = 0;
 
-    // 开始监控
+    // Start monitoring
     virtual bool start() = 0;
 
-    // 停止监控
+    // Stop monitoring
     virtual void stop() = 0;
 
-    // 设置事件处理器
+    // Set event handler
     virtual void set_event_handler(FileEventHandler handler) = 0;
 
-    // 检查是否支持当前平台
+    // Check if current platform is supported
     virtual bool is_supported() const = 0;
 
-    // 获取监控的文件列表
+    // Get list of monitored files
     virtual std::vector<std::string> get_watched_files() const = 0;
 
-    // 检查是否正在运行
+    // Check if running
     virtual bool is_running() const = 0;
 };
 
-// 文件监控器工厂
+// File watcher factory
 class FileWatcherFactory {
 public:
-    // 创建最佳的文件监控器（优先原生API）
+    // Create the best file watcher (prefer native API)
     static std::unique_ptr<IFileWatcher> create_best_watcher(
         std::chrono::milliseconds poll_interval =
             std::chrono::milliseconds(1000));
 
-    // 创建轮询监控器
+    // Create polling watcher
     static std::unique_ptr<IFileWatcher> create_polling_watcher(
         std::chrono::milliseconds poll_interval =
             std::chrono::milliseconds(1000));
 
-    // 创建原生监控器（如果支持）
+    // Create native watcher (if supported)
     static std::unique_ptr<IFileWatcher> create_native_watcher();
 
-    // 检查原生监控器是否可用
+    // Check if native watcher is available
     static bool is_native_supported();
 };
 
-// 事件分发器 - 支持多个处理器
+// Event dispatcher - supports multiple handlers
 class FileEventDispatcher {
 public:
     using HandlerId = size_t;
 
-    // 添加事件处理器
+    // Add event handler
     HandlerId add_handler(FileEventHandler handler);
 
-    // 移除事件处理器
+    // Remove event handler
     void remove_handler(HandlerId id);
 
-    // 分发事件到所有处理器
+    // Dispatch event to all handlers
     void dispatch(const FileEvent& event);
 
-    // 清空所有处理器
+    // Clear all handlers
     void clear();
 
-    // 获取处理器数量
+    // Get handler count
     size_t handler_count() const;
 
 private:
@@ -115,29 +115,29 @@ private:
     mutable std::mutex mutex_;
 };
 
-// 文件监控管理器 - 全局单例
+// File watch manager - global singleton
 class FileWatchManager {
 public:
     static FileWatchManager& instance();
 
-    // 创建新的监控器
+    // Create new watcher
     std::shared_ptr<IFileWatcher> create_watcher(
         const std::string& name, std::chrono::milliseconds poll_interval =
                                      std::chrono::milliseconds(1000));
 
-    // 获取已存在的监控器
+    // Get existing watcher
     std::shared_ptr<IFileWatcher> get_watcher(const std::string& name);
 
-    // 移除监控器
+    // Remove watcher
     void remove_watcher(const std::string& name);
 
-    // 获取所有监控器名称
+    // Get all watcher names
     std::vector<std::string> get_watcher_names() const;
 
-    // 停止所有监控器
+    // Stop all watchers
     void stop_all();
 
-    // 启动所有监控器
+    // Start all watchers
     void start_all();
 
 private:
@@ -146,7 +146,7 @@ private:
     mutable std::mutex mutex_;
 };
 
-// 便利的文件监控器包装类
+// Convenient file watcher wrapper class
 class FileWatcher {
 public:
     explicit FileWatcher(std::chrono::milliseconds poll_interval =
@@ -154,22 +154,22 @@ public:
     explicit FileWatcher(std::shared_ptr<IFileWatcher> impl);
     ~FileWatcher();
 
-    // 基本操作
+    // Basic operations
     bool add_file(const std::string& file_path);
     bool remove_file(const std::string& file_path);
     void start();
     void stop();
 
-    // 事件处理
+    // Event handling
     FileEventDispatcher::HandlerId add_handler(FileEventHandler handler);
     void remove_handler(FileEventDispatcher::HandlerId id);
 
-    // 状态查询
+    // Status queries
     bool is_running() const;
     bool is_native_supported() const;
     std::vector<std::string> get_watched_files() const;
 
-    // 获取底层实现
+    // Get underlying implementation
     std::shared_ptr<IFileWatcher> get_impl() const { return impl_; }
 
 private:

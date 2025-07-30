@@ -66,37 +66,37 @@ void GatewayConfig::from_ptree(const boost::property_tree::ptree& pt) {
 YAML::Node GatewayConfig::to_yaml() const {
     YAML::Node node;
 
-    // Listener配置
+    // Listener configuration
     node["listener"]["host"] = listener.host;
     node["listener"]["port"] = listener.port;
     node["listener"]["io_threads"] = listener.io_threads;
 
-    // TCP配置
+    // TCP configuration
     node["tcp"]["enabled"] = tcp.enabled;
     node["tcp"]["backlog"] = tcp.backlog;
     node["tcp"]["keep_alive"] = tcp.keep_alive;
     node["tcp"]["receive_buffer_size"] = tcp.receive_buffer_size;
     node["tcp"]["send_buffer_size"] = tcp.send_buffer_size;
 
-    // UDP配置
+    // UDP configuration
     node["udp"]["enabled"] = udp.enabled;
     node["udp"]["buffer_size"] = udp.buffer_size;
     node["udp"]["port"] = udp.port;
 
-    // HTTP配置
+    // HTTP configuration
     node["http"]["enabled"] = http.enabled;
     node["http"]["port"] = http.port;
     node["http"]["root_path"] = http.root_path;
     node["http"]["max_request_size"] = http.max_request_size;
 
-    // WebSocket配置
+    // WebSocket configuration
     node["websocket"]["enabled"] = websocket.enabled;
     node["websocket"]["port"] = websocket.port;
     node["websocket"]["path"] = websocket.path;
     node["websocket"]["max_message_size"] = websocket.max_message_size;
     node["websocket"]["ping_interval"] = websocket.ping_interval;
 
-    // 线程配置
+    // Threading configuration
     node["threading"]["io_threads"] = threading.io_threads;
     node["threading"]["worker_threads"] = threading.worker_threads;
 
@@ -131,7 +131,7 @@ void GatewayConfig::validate() const {
             "WebSocket ping interval must be greater than 0");
     }
 
-    // 检查端口冲突
+    // Check port conflicts
     if (http.enabled && http.port == listener.port) {
         throw std::invalid_argument(
             "HTTP port cannot be the same as listener port");

@@ -1,5 +1,5 @@
 # Development Environment Configuration
-# app-dev.yaml - 开发环境配置覆盖
+# app-dev.yaml - Development environment configuration overrides
 
 # Override logger for development
 logger:

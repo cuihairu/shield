@@ -103,13 +103,13 @@ bool LinuxFileWatcher::add_file(const std::string& file_path) {
         return false;
     }
 
-    // 检查是否已经在监控
+    // Check if already being monitored
     if (file_to_wd_.find(file_path) != file_to_wd_.end()) {
         SHIELD_LOG_DEBUG << "File already being watched: " << file_path;
         return true;
     }
 
-    // 添加监控
+    // Add monitoring
     int wd = inotify_add_watch(
         inotify_fd_, file_path.c_str(),
         IN_MODIFY | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_CLOSE_WRITE);
@@ -293,7 +293,7 @@ bool MacOSFileWatcher::add_file(const std::string& file_path) {
         return false;
     }
 
-    // 检查是否已经在监控
+    // Check if already being monitored
     if (file_descriptors_.find(file_path) != file_descriptors_.end()) {
         SHIELD_LOG_DEBUG << "File already being watched: " << file_path;
         return true;
@@ -892,14 +892,14 @@ void FileWatchManager::start_all() {
 
 std::unique_ptr<IFileWatcher> FileWatcherFactory::create_best_watcher(
     std::chrono::milliseconds poll_interval) {
-    // 尝试创建原生监控器
+    // Try to create native watcher
     auto native = create_native_watcher();
     if (native && native->is_supported()) {
         SHIELD_LOG_INFO << "Using native file watcher";
         return native;
     }
 
-    // 降级到轮询模式
+    // Fall back to polling mode
     SHIELD_LOG_INFO << "Using polling file watcher with interval: "
                     << poll_interval.count() << "ms";
     return create_polling_watcher(poll_interval);
@@ -937,7 +937,7 @@ bool FileWatcherFactory::is_native_supported() {
 FileWatcher::FileWatcher(std::chrono::milliseconds poll_interval)
     : impl_(FileWatcherFactory::create_best_watcher(poll_interval)),
       dispatcher_(std::make_unique<FileEventDispatcher>()) {
-    // 设置分发器作为事件处理器
+    // Set dispatcher as event handler
     impl_->set_event_handler(
         [this](const FileEvent& event) { dispatcher_->dispatch(event); });
 }
