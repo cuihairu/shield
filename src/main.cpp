@@ -1,6 +1,7 @@
-#include "shield/core/root_command.hpp"
-#include <iostream>
 #include <csignal>
+#include <iostream>
+
+#include "shield/core/root_command.hpp"
 
 int main(int argc, char* argv[]) {
     try {
