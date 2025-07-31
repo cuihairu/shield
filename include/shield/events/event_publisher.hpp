@@ -45,18 +45,22 @@ public:
     void publish_event(std::shared_ptr<Event> event) override {
         if (!event) return;
 
-        std::type_index event_type(typeid(*event));
+        // 使用虚函数获取类型信息避免typeid警告
+        std::string event_type_name = event->get_event_type();
+        // 先获取指针，再解引用避免副作用警告
+        Event* event_ptr = event.get();
+        std::type_index event_type = std::type_index(typeid(*event_ptr));
+
         std::lock_guard<std::mutex> lock(listeners_mutex_);
 
         auto it = listeners_.find(event_type);
         if (it == listeners_.end()) {
-            SHIELD_LOG_DEBUG << "No listeners for event: "
-                             << event->get_event_type();
+            SHIELD_LOG_DEBUG << "No listeners for event: " << event_type_name;
             return;
         }
 
-        SHIELD_LOG_DEBUG << "Publishing event: " << event->get_event_type()
-                         << " to " << it->second.size() << " listeners";
+        SHIELD_LOG_DEBUG << "Publishing event: " << event_type_name << " to "
+                         << it->second.size() << " listeners";
 
         // 按order排序执行
         auto sorted_listeners = it->second;

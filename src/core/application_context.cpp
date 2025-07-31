@@ -115,4 +115,85 @@ void ApplicationContext::configure_with_starters(
     }
 }
 
+void ApplicationContext::configure_with_plugins(
+    const std::string& plugins_directory) {
+    auto plugin_manager = std::make_unique<PluginManager>();
+    plugin_manager->add_plugin_directory(plugins_directory);
+    configure_with_plugins(std::move(plugin_manager));
+}
+
+void ApplicationContext::configure_with_plugins(
+    std::unique_ptr<PluginManager> plugin_manager) {
+    try {
+        SHIELD_LOG_INFO << "Configuring ApplicationContext with Plugin system";
+
+        // Set up event callback
+        plugin_manager->set_event_callback([](PluginManager::PluginEvent event,
+                                              const std::string& plugin_name,
+                                              const std::string& message) {
+            switch (event) {
+                case PluginManager::PluginEvent::DISCOVERED:
+                    SHIELD_LOG_DEBUG << "Plugin discovered: " << plugin_name
+                                     << " - " << message;
+                    break;
+                case PluginManager::PluginEvent::LOADING:
+                    SHIELD_LOG_INFO << "Loading plugin: " << plugin_name
+                                    << " - " << message;
+                    break;
+                case PluginManager::PluginEvent::LOADED:
+                    SHIELD_LOG_INFO << "Plugin loaded successfully: "
+                                    << plugin_name;
+                    break;
+                case PluginManager::PluginEvent::UNLOADING:
+                    SHIELD_LOG_INFO << "Unloading plugin: " << plugin_name;
+                    break;
+                case PluginManager::PluginEvent::UNLOADED:
+                    SHIELD_LOG_INFO << "Plugin unloaded: " << plugin_name;
+                    break;
+                case PluginManager::PluginEvent::ERROR:
+                    SHIELD_LOG_ERROR << "Plugin error: " << plugin_name << " - "
+                                     << message;
+                    break;
+            }
+        });
+
+        // Discover and load plugins
+        size_t discovered = plugin_manager->discover_plugins();
+        SHIELD_LOG_INFO << "Discovered " << discovered << " plugins";
+
+        size_t loaded = plugin_manager->load_all_plugins();
+        SHIELD_LOG_INFO << "Loaded " << loaded << " plugins";
+
+        // Manually initialize plugin starters
+        auto plugin_starters = plugin_manager->get_plugin_starters();
+        for (auto* starter : plugin_starters) {
+            if (starter->is_enabled()) {
+                try {
+                    SHIELD_LOG_INFO << "Initializing plugin starter: "
+                                    << starter->name();
+                    starter->pre_initialize(*this);
+                    starter->initialize(*this);
+                    starter->post_initialize(*this);
+                    SHIELD_LOG_INFO
+                        << "Successfully initialized plugin starter: "
+                        << starter->name();
+                } catch (const std::exception& e) {
+                    SHIELD_LOG_ERROR << "Failed to initialize plugin starter "
+                                     << starter->name() << ": " << e.what();
+                    throw;
+                }
+            }
+        }
+
+        // Store plugin manager
+        plugin_manager_ = std::move(plugin_manager);
+
+        SHIELD_LOG_INFO << "Successfully configured with Plugin system";
+    } catch (const std::exception& e) {
+        SHIELD_LOG_ERROR << "Failed to configure with Plugin system: "
+                         << e.what();
+        throw;
+    }
+}
+
 }  // namespace shield::core

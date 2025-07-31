@@ -26,6 +26,8 @@ ServerCommand::ServerCommand()
 
 void ServerCommand::setup_flags() {
     add_flag("config", "Configuration file path", "config/shield.yaml");
+    add_flag("plugins", "Plugins directory path", "plugins/");
+    add_flag("enable-plugins", "Enable dynamic plugin loading", "false");
 }
 
 int ServerCommand::run(shield::cli::CommandContext& ctx) {
@@ -46,22 +48,34 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
     // Initialize ApplicationContext
     auto& app_context = shield::core::ApplicationContext::instance();
 
-    // Create and configure StarterManager with all available Starters
-    auto starter_manager = std::make_unique<shield::core::StarterManager>();
+    // Check if plugins are enabled
+    std::string enable_plugins = ctx.get_flag("enable-plugins");
+    bool plugins_enabled = (enable_plugins == "true" || enable_plugins == "1");
 
-    // Register all Starters in the correct order (dependencies will be resolved
-    // automatically)
-    starter_manager->register_starter(
-        std::make_unique<shield::script::ScriptStarter>());
-    starter_manager->register_starter(
-        std::make_unique<shield::actor::ActorStarter>());
-    starter_manager->register_starter(
-        std::make_unique<shield::metrics::MetricsStarter>());
-    starter_manager->register_starter(
-        std::make_unique<shield::gateway::GatewayStarter>());
+    if (plugins_enabled) {
+        // Configure with plugins
+        std::string plugins_dir = ctx.get_flag("plugins");
+        SHIELD_LOG_INFO << "Plugin system enabled, loading from: "
+                        << plugins_dir;
+        app_context.configure_with_plugins(plugins_dir);
+    } else {
+        // Create and configure StarterManager with all available Starters
+        auto starter_manager = std::make_unique<shield::core::StarterManager>();
 
-    // Configure ApplicationContext using the Starter system
-    app_context.configure_with_starters(std::move(starter_manager));
+        // Register all Starters in the correct order (dependencies will be
+        // resolved automatically)
+        starter_manager->register_starter(
+            std::make_unique<shield::script::ScriptStarter>());
+        starter_manager->register_starter(
+            std::make_unique<shield::actor::ActorStarter>());
+        starter_manager->register_starter(
+            std::make_unique<shield::metrics::MetricsStarter>());
+        starter_manager->register_starter(
+            std::make_unique<shield::gateway::GatewayStarter>());
+
+        // Configure ApplicationContext using the Starter system
+        app_context.configure_with_starters(std::move(starter_manager));
+    }
 
     // Initialize and start all services
     app_context.init_all();

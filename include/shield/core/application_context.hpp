@@ -8,8 +8,12 @@
 #include <vector>
 
 #include "shield/config/config.hpp"
+#include "shield/core/plugin_manager.hpp"
 #include "shield/core/service.hpp"
 #include "shield/core/starter_manager.hpp"
+#include "shield/di/advanced_container.hpp"
+#include "shield/events/event_publisher.hpp"
+#include "shield/health/health_check.hpp"
 
 // Forward declarations
 namespace shield::config {
@@ -34,6 +38,34 @@ public:
     void configure_with_starters(
         std::unique_ptr<StarterManager> starter_manager);
 
+    // Configure the application context using plugins
+    void configure_with_plugins(const std::string& plugins_directory);
+    void configure_with_plugins(std::unique_ptr<PluginManager> plugin_manager);
+
+    // Configure with annotations and conditional registration
+    void configure_with_annotations();
+    void configure_with_conditional_beans();
+
+    // Get the plugin manager
+    PluginManager* get_plugin_manager() const { return plugin_manager_.get(); }
+
+    // Get the DI container
+    di::AdvancedContainer& get_di_container() { return di_container_; }
+
+    // Get the event publisher
+    events::DefaultEventPublisher& get_event_publisher() {
+        return event_publisher_;
+    }
+
+    // Get the health registry
+    health::HealthCheckRegistry& get_health_registry() {
+        return health::HealthCheckRegistry::instance();
+    }
+
+    // Publish application lifecycle events
+    void publish_application_started_event();
+    void publish_application_stopped_event();
+
 private:
     ApplicationContext() = default;
 
@@ -45,6 +77,15 @@ private:
     // Generic bean registry (name -> boost::any<shared_ptr<T>>)
     std::unordered_map<std::string, boost::any> m_beans_by_name;
     std::unordered_map<std::type_index, std::string> m_bean_type_to_name;
+
+    // Plugin manager for dynamic plugin loading
+    std::unique_ptr<PluginManager> plugin_manager_;
+
+    // Advanced DI container
+    di::AdvancedContainer di_container_;
+
+    // Event publisher for application events
+    events::DefaultEventPublisher event_publisher_;
 
     // Template implementations (moved to .hpp for simplicity)
 public:

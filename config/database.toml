@@ -1,0 +1,288 @@
+# Shield游戏服务器数据库配置
+
+# =====================================
+# 1. 数据库连接配置
+# =====================================
+
+# 游戏主数据库 (MySQL)
+[database.game]
+driver = "mysql"
+host = "localhost"
+port = 3306
+database = "shield_game"
+username = "shield_game_user"
+password = "shield_game_pass"
+charset = "utf8mb4"
+max_connections = 20
+min_connections = 5
+connection_timeout = 30
+idle_timeout = 300
+max_lifetime = 3600
+auto_reconnect = true
+
+# 日志数据库 (MySQL)
+[database.logs]
+driver = "mysql"
+host = "localhost"
+port = 3306
+database = "shield_logs"
+username = "shield_logs_user"
+password = "shield_logs_pass"
+charset = "utf8mb4"
+max_connections = 10
+min_connections = 2
+connection_timeout = 30
+idle_timeout = 300
+max_lifetime = 3600
+auto_reconnect = true
+
+# 缓存数据库 (Redis)
+[database.cache]
+driver = "redis"
+host = "localhost"
+port = 6379
+database = 0
+password = ""
+max_connections = 15
+min_connections = 3
+connection_timeout = 5
+idle_timeout = 60
+max_lifetime = 600
+
+# 分析数据库 (PostgreSQL) - 可选
+[database.analytics]
+driver = "postgresql"
+host = "localhost"
+port = 5432
+database = "shield_analytics"  
+username = "shield_analytics_user"
+password = "shield_analytics_pass"
+max_connections = 5
+min_connections = 1
+connection_timeout = 30
+auto_reconnect = true
+ssl_mode = "prefer"
+
+# =====================================
+# 2. 数据库池配置
+# =====================================
+
+[connection_pool]
+# 连接池全局配置
+max_total_connections = 100
+health_check_interval = 30
+connection_validation_query = "SELECT 1"
+validation_timeout = 3
+leak_detection_threshold = 60000
+
+# 连接重试配置
+[connection_pool.retry]
+max_retries = 3
+retry_delay_ms = 1000
+exponential_backoff = true
+max_retry_delay_ms = 10000
+
+# =====================================
+# 3. 数据库性能配置
+# =====================================
+
+[performance]
+# 查询超时配置
+default_query_timeout = 30
+slow_query_threshold = 1000  # 毫秒
+log_slow_queries = true
+
+# 事务配置
+default_transaction_timeout = 60
+max_transaction_duration = 300
+
+# 批处理配置
+batch_size = 1000
+bulk_insert_size = 500
+
+# =====================================
+# 4. 缓存策略配置
+# =====================================
+
+[cache]
+# 玩家数据缓存
+[cache.player_data]
+ttl = 3600  # 1小时
+max_size = 10000
+eviction_policy = "lru"
+
+# 公会数据缓存
+[cache.guild_data]
+ttl = 1800  # 30分钟
+max_size = 1000
+eviction_policy = "lru"
+
+# 物品数据缓存
+[cache.item_data]
+ttl = 7200  # 2小时
+max_size = 50000
+eviction_policy = "lfu"
+
+# 任务数据缓存
+[cache.quest_data]
+ttl = 3600  # 1小时
+max_size = 5000
+eviction_policy = "lru"
+
+# =====================================
+# 5. 读写分离配置
+# =====================================
+
+[replication.game]
+# 主库（写）
+master_host = "game-master.shield.local"
+master_port = 3306
+
+# 从库（读）
+[[replication.game.slaves]]
+host = "game-slave-1.shield.local"
+port = 3306
+weight = 1
+
+[[replication.game.slaves]]
+host = "game-slave-2.shield.local"
+port = 3306
+weight = 1
+
+# 读写分离策略
+read_write_split = true
+slave_lag_threshold = 5  # 秒
+force_master_tables = ["player_items", "auction_house", "pvp_matches"]
+
+# =====================================
+# 6. 分库分表配置
+# =====================================
+
+[sharding]
+# 玩家数据分片
+[sharding.players]
+strategy = "hash"
+shard_key = "player_id"
+shard_count = 4
+database_name_pattern = "shield_game_shard_{shard_id}"
+
+# 日志数据分片（按时间）
+[sharding.game_events]
+strategy = "time"
+shard_key = "timestamp"
+time_unit = "month"
+retention_months = 12
+database_name_pattern = "shield_logs_{year}_{month}"
+
+# =====================================
+# 7. 监控和告警配置
+# =====================================
+
+[monitoring]
+# 监控间隔
+health_check_interval = 30
+metrics_collection_interval = 60
+slow_query_log = true
+
+# 告警阈值
+[monitoring.alerts]
+connection_pool_usage_threshold = 80  # 百分比
+slow_query_threshold = 2000  # 毫秒
+error_rate_threshold = 5  # 百分比
+connection_timeout_threshold = 10  # 秒
+
+# =====================================
+# 8. 备份配置
+# =====================================
+
+[backup]
+# 自动备份
+auto_backup = true
+backup_interval = "daily"  # daily, weekly, monthly
+backup_time = "02:00"
+backup_retention_days = 30
+
+# 备份存储
+backup_path = "/data/shield/backups"
+compress_backups = true
+encryption_enabled = true
+
+# 增量备份
+incremental_backup = true
+incremental_interval = "hourly"
+full_backup_interval = "weekly"
+
+# =====================================
+# 9. 安全配置
+# =====================================
+
+[security]
+# SSL/TLS配置
+ssl_enabled = true
+ssl_cert_path = "/etc/shield/ssl/server.crt"
+ssl_key_path = "/etc/shield/ssl/server.key"
+ssl_ca_path = "/etc/shield/ssl/ca.crt"
+
+# 访问控制
+allowed_hosts = ["127.0.0.1", "10.0.0.0/8", "192.168.0.0/16"]
+deny_hosts = []
+
+# 密码策略
+password_min_length = 12
+password_complexity = true
+password_rotation_days = 90
+
+# =====================================
+# 10. 开发环境配置
+# =====================================
+
+[development]
+# 开发数据库
+[development.database.game]
+driver = "mysql"
+host = "localhost"
+port = 3306
+database = "shield_game_dev"
+username = "shield_dev"
+password = "shield_dev_pass"
+max_connections = 5
+log_queries = true
+log_slow_queries = true
+
+# 测试数据库
+[development.database.test]
+driver = "sqlite"
+database = ":memory:"
+max_connections = 1
+
+# =====================================
+# 11. 生产环境配置
+# =====================================
+
+[production]
+# 生产数据库配置继承基础配置并覆盖
+[production.database.game]
+host = "game-db-cluster.shield.prod"
+max_connections = 50
+ssl_mode = "require"
+
+[production.database.logs]
+host = "logs-db-cluster.shield.prod"
+max_connections = 20
+ssl_mode = "require"
+
+# 生产环境特殊配置
+connection_validation_interval = 30000
+leak_detection_threshold = 30000
+log_slow_queries = true
+slow_query_log_file = "/var/log/shield/slow_queries.log"
+
+# =====================================
+# 12. 环境变量映射
+# =====================================
+
+# 可以通过环境变量覆盖配置
+# SHIELD_DB_GAME_HOST -> database.game.host
+# SHIELD_DB_GAME_PASSWORD -> database.game.password
+# SHIELD_DB_LOGS_HOST -> database.logs.host
+# SHIELD_CACHE_HOST -> database.cache.host

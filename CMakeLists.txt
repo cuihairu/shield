@@ -175,11 +175,13 @@ find_package(
   Boost REQUIRED
   COMPONENTS asio
              beast
+             filesystem
              log
              log_setup
              program_options
              url
-             unit_test_framework) # <--- ADDED
+             unit_test_framework
+             dll) # <--- ADDED boost-dll
 
 # Try to find msgpack-cxx
 find_package(msgpack-cxx CONFIG QUIET)
@@ -208,6 +210,7 @@ set(CORE_SOURCES
   src/core/service.cpp
   src/core/application_context.cpp
   src/core/starter_manager.cpp
+  src/core/plugin_manager.cpp
 )
 
 set(LOG_SOURCES
@@ -319,6 +322,8 @@ target_link_libraries(
   PUBLIC ${LUA_LIBRARIES}
          Boost::asio
          Boost::beast
+         Boost::filesystem
+         Boost::dll
          yaml-cpp::yaml-cpp
          Boost::log
          Boost::log_setup
