@@ -2,6 +2,7 @@
   "name": "shield-docs",
   "version": "0.1.0",
   "description": "Shield Game Server Framework Documentation",
+  "type": "module",
   "scripts": {
     "docs:dev": "vuepress dev .",
     "docs:build": "vuepress build ."
@@ -11,5 +12,10 @@
     "@vuepress/cli": "^2.0.0",
     "@vuepress/theme-default": "^2.0.0",
     "vuepress": "^2.0.0"
+  },
+  "pnpm": {
+    "peerDependencyRules": {
+      "ignoreMissing": ["@types/node"]
+    }
   }
 }
