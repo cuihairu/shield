@@ -49,13 +49,15 @@ add_test(NAME test_integration COMMAND test_integration)
 # Health 模块测试
 add_executable(test_health_check health/test_health_check.cpp)
 target_link_libraries(
-  test_health_check PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+  test_health_check PRIVATE shield_core Boost::unit_test_framework
+                            Boost::headers)
 add_test(NAME test_health_check COMMAND test_health_check)
 
 # 文件系统测试
 add_executable(test_file_watcher fs/test_file_watcher.cpp)
 target_link_libraries(
-  test_file_watcher PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+  test_file_watcher PRIVATE shield_core Boost::unit_test_framework
+                            Boost::headers)
 add_test(NAME test_file_watcher COMMAND test_file_watcher)
 
 # DI 容器测试

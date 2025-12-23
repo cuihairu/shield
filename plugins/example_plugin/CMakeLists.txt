@@ -37,8 +37,11 @@ elseif(UNIX)
 endif()
 
 # Set vcpkg paths
-set(VCPKG_INSTALLED_DIR "${CMAKE_SOURCE_DIR}/../../vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
-set(CMAKE_PREFIX_PATH "${VCPKG_INSTALLED_DIR}" CACHE PATH "Path to vcpkg installed directory")
+set(VCPKG_INSTALLED_DIR
+    "${CMAKE_SOURCE_DIR}/../../vcpkg_installed/${VCPKG_TARGET_TRIPLET}")
+set(CMAKE_PREFIX_PATH
+    "${VCPKG_INSTALLED_DIR}"
+    CACHE PATH "Path to vcpkg installed directory")
 include_directories("${VCPKG_INSTALLED_DIR}/include")
 link_directories("${VCPKG_INSTALLED_DIR}/lib")
 link_directories("${VCPKG_INSTALLED_DIR}/debug/lib")
@@ -50,31 +53,26 @@ find_package(Boost REQUIRED COMPONENTS system filesystem dll)
 include_directories(${CMAKE_SOURCE_DIR}/../../include)
 
 # Create the plugin as a shared library
-add_library(shield_example_plugin SHARED
-    example_plugin.cpp
-)
+add_library(shield_example_plugin SHARED example_plugin.cpp)
 
 # Link with required libraries
-target_link_libraries(shield_example_plugin 
-    Boost::system
-    Boost::filesystem
-    Boost::dll
-)
+target_link_libraries(shield_example_plugin Boost::system Boost::filesystem
+                      Boost::dll)
 
 # Set properties for the plugin
-set_target_properties(shield_example_plugin PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
-    POSITION_INDEPENDENT_CODE ON
-)
+set_target_properties(
+  shield_example_plugin
+  PROPERTIES CXX_STANDARD 20
+             CXX_STANDARD_REQUIRED ON
+             POSITION_INDEPENDENT_CODE ON)
 
 # On Unix systems, remove the 'lib' prefix
 if(UNIX)
-    set_target_properties(shield_example_plugin PROPERTIES PREFIX "")
+  set_target_properties(shield_example_plugin PROPERTIES PREFIX "")
 endif()
 
 # Installation
-install(TARGETS shield_example_plugin
-    LIBRARY DESTINATION plugins
-    RUNTIME DESTINATION plugins
-)
+install(
+  TARGETS shield_example_plugin
+  LIBRARY DESTINATION plugins
+  RUNTIME DESTINATION plugins)

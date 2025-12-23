@@ -205,132 +205,107 @@ file(MAKE_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
 file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 
 # Define all source files explicitly
-set(CORE_SOURCES
-  # Core sources
-  src/core/service.cpp
-  src/core/application_context.cpp
-  src/core/starter_manager.cpp
-  src/core/plugin_manager.cpp
-)
+set(CORE_SOURCES # Core sources
+    src/core/service.cpp src/core/application_context.cpp
+    src/core/starter_manager.cpp src/core/plugin_manager.cpp)
 
-set(LOG_SOURCES
-  # Log sources
-  src/log/logger.cpp
-  src/log/log_config.cpp
-)
+set(LOG_SOURCES # Log sources
+    src/log/logger.cpp src/log/log_config.cpp)
 
-set(CLI_SOURCES
-  # CLI sources
-  src/cli/command_line_parser.cpp
-  src/cli/command.cpp
-  src/cli/root_command.cpp
-)
+set(CLI_SOURCES # CLI sources
+    src/cli/command_line_parser.cpp src/cli/command.cpp
+    src/cli/root_command.cpp)
 
-set(CONFIG_SOURCES
-  # Config sources
-  src/config/config.cpp
-  src/config/config_registry.cpp
-  src/fs/file_watcher.cpp
-)
+set(CONFIG_SOURCES # Config sources
+    src/config/config.cpp src/config/config_registry.cpp
+    src/fs/file_watcher.cpp)
 
 set(OTHER_SOURCES
-  # Discovery sources
-  src/discovery/service_instance.cpp
-  src/discovery/discovery_config.cpp
-  src/discovery/local_discovery.cpp
-  src/discovery/redis_discovery.cpp
-  src/discovery/nacos_discovery.cpp
-  src/discovery/consul_discovery.cpp
-  src/discovery/etcd_discovery.cpp
-
-  # Actor sources
-  src/actor/lua_actor.cpp
-  src/actor/actor_registry.cpp
-  src/actor/distributed_actor_system.cpp
-  src/actor/actor_system_coordinator.cpp
-  src/actor/actor_system_config.cpp
-  src/actor/actor_starter.cpp
-
-  # Network sources
-  src/net/slave_reactor.cpp
-  src/net/master_reactor.cpp
-  src/net/udp_session.cpp
-  src/net/session.cpp
-  src/net/udp_reactor.cpp
-
-  # Protocol sources
-  src/protocol/udp_protocol_handler.cpp
-  src/protocol/websocket_handler.cpp
-  src/protocol/protocol_handler.cpp
-  src/protocol/http_handler.cpp
-  src/protocol/binary_protocol.cpp
-
-  # Serialization sources
-  src/serialization/messagepack_universal_serializer.cpp
-  src/serialization/protobuf_universal_serializer.cpp
-  src/serialization/serialization_init.cpp
-  src/serialization/json_universal_serializer.cpp
-  src/serialization/universal_serialization_system.cpp
-
-  # Metrics sources
-  src/metrics/prometheus_service.cpp
-  src/metrics/prometheus_config.cpp
-  src/metrics/metrics_starter.cpp
-
-  # Script sources
-  src/script/lua_engine.cpp
-  src/script/lua_vm_pool.cpp
-  src/script/lua_vm_pool_config.cpp
-  src/script/script_starter.cpp
-  src/script/lua_ioc_bridge.cpp
-
-  # Gateway sources
-  src/gateway/gateway_service.cpp
-  src/gateway/gateway_config.cpp
-  src/gateway/gateway_starter.cpp
-
-  # Network sources
-  src/net/network_config.cpp
-
-  # Command sources
-  src/commands/server_command.cpp
-  src/commands/cli_command.cpp
-  src/commands/config_command.cpp
-  src/commands/diagnose_command.cpp
-  src/commands/migrate_command.cpp
-  src/commands/all_commands.cpp
-
-  # Health sources
-  src/health/health_check.cpp
-
-  # Filesystem sources
-  src/fs/file_watcher_impl.cpp
-
-  # Conditions sources
-  src/conditions/conditional_registry.cpp
-
-  # Annotations sources
-  src/annotations/component_registry.cpp
-
-  # CAF initializer
-  src/caf_initializer.cpp
-)
+    # Discovery sources
+    src/discovery/service_instance.cpp
+    src/discovery/discovery_config.cpp
+    src/discovery/local_discovery.cpp
+    src/discovery/redis_discovery.cpp
+    src/discovery/nacos_discovery.cpp
+    src/discovery/consul_discovery.cpp
+    src/discovery/etcd_discovery.cpp
+    # Actor sources
+    src/actor/lua_actor.cpp
+    src/actor/actor_registry.cpp
+    src/actor/distributed_actor_system.cpp
+    src/actor/actor_system_coordinator.cpp
+    src/actor/actor_system_config.cpp
+    src/actor/actor_starter.cpp
+    # Network sources
+    src/net/slave_reactor.cpp
+    src/net/master_reactor.cpp
+    src/net/udp_session.cpp
+    src/net/session.cpp
+    src/net/udp_reactor.cpp
+    # Protocol sources
+    src/protocol/udp_protocol_handler.cpp
+    src/protocol/websocket_handler.cpp
+    src/protocol/protocol_handler.cpp
+    src/protocol/http_handler.cpp
+    src/protocol/binary_protocol.cpp
+    # Serialization sources
+    src/serialization/messagepack_universal_serializer.cpp
+    src/serialization/protobuf_universal_serializer.cpp
+    src/serialization/serialization_init.cpp
+    src/serialization/json_universal_serializer.cpp
+    src/serialization/universal_serialization_system.cpp
+    # Metrics sources
+    src/metrics/prometheus_service.cpp
+    src/metrics/prometheus_config.cpp
+    src/metrics/metrics_starter.cpp
+    # Script sources
+    src/script/lua_engine.cpp
+    src/script/lua_vm_pool.cpp
+    src/script/lua_vm_pool_config.cpp
+    src/script/script_starter.cpp
+    src/script/lua_ioc_bridge.cpp
+    # Gateway sources
+    src/gateway/gateway_service.cpp
+    src/gateway/gateway_config.cpp
+    src/gateway/gateway_starter.cpp
+    # Network sources
+    src/net/network_config.cpp
+    # Command sources
+    src/commands/server_command.cpp
+    src/commands/cli_command.cpp
+    src/commands/config_command.cpp
+    src/commands/diagnose_command.cpp
+    src/commands/migrate_command.cpp
+    src/commands/all_commands.cpp
+    # Health sources
+    src/health/health_check.cpp
+    # Filesystem sources
+    src/fs/file_watcher_impl.cpp
+    # Conditions sources
+    src/conditions/conditional_registry.cpp
+    # Annotations sources
+    src/annotations/component_registry.cpp
+    # CAF initializer
+    src/caf_initializer.cpp)
 
 # Print found source files (optional, for debugging)
 message(STATUS "Found core library source files:")
-foreach(SOURCE ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES} ${CONFIG_SOURCES} ${OTHER_SOURCES})
+foreach(SOURCE ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES} ${CONFIG_SOURCES}
+               ${OTHER_SOURCES})
   message(STATUS "  ${SOURCE}")
 endforeach()
 
 # Create the core static library
-add_library(shield_core STATIC ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES} ${CONFIG_SOURCES} ${OTHER_SOURCES})
+add_library(shield_core STATIC ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES}
+                               ${CONFIG_SOURCES} ${OTHER_SOURCES})
 target_include_directories(
   shield_core
   PUBLIC ${PROJECT_SOURCE_DIR}/include
          ${PROJECT_SOURCE_DIR}/include/shield/log
          ${PROJECT_SOURCE_DIR}/include/shield/cli
          ${PROJECT_SOURCE_DIR}/include/shield/config
-         ${CMAKE_CURRENT_BINARY_DIR}/include # Directory for generated headers like version.hpp
+         ${CMAKE_CURRENT_BINARY_DIR}/include # Directory for generated headers
+                                             # like version.hpp
          ${LUA_INCLUDE_DIR}
          ${SOL2_INCLUDE_DIRS})
 target_link_libraries(
@@ -378,6 +353,6 @@ target_link_libraries(shield PRIVATE shield_core)
 add_subdirectory(examples)
 add_subdirectory(tests)
 
-# Include development tools (Git hooks, formatting, etc.)
-# Note: Placed after main targets are defined but before any post-processing
+# Include development tools (Git hooks, formatting, etc.) Note: Placed after
+# main targets are defined but before any post-processing
 include(cmake/GitHooks.cmake)
