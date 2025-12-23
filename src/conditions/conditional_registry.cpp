@@ -18,9 +18,8 @@ void ConditionalBeanRegistry::process_conditional_registrations(
             // 由于类型擦除的限制，我们只能打印日志
             // 实际注册需要在编译时知道具体类型
             std::cout << "[ConditionalRegistry] Would register bean: "
-                      << (bean_info.name.empty()
-                              ? bean_info.bean_type.name()
-                              : bean_info.name)
+                      << (bean_info.name.empty() ? bean_info.bean_type.name()
+                                                 : bean_info.name)
                       << " (condition: " << bean_info.condition->description()
                       << ", lifetime: "
                       << (bean_info.lifetime == di::ServiceLifetime::SINGLETON
@@ -34,12 +33,12 @@ void ConditionalBeanRegistry::process_conditional_registrations(
         } else {
             // 条件不满足
             std::cout << "[ConditionalRegistry] Skipped bean: "
-                      << (bean_info.name.empty()
-                              ? bean_info.bean_type.name()
-                              : bean_info.name)
+                      << (bean_info.name.empty() ? bean_info.bean_type.name()
+                                                 : bean_info.name)
                       << " (condition not met: "
-                      << (bean_info.condition ? bean_info.condition->description()
-                                            : "none")
+                      << (bean_info.condition
+                              ? bean_info.condition->description()
+                              : "none")
                       << ")" << std::endl;
         }
     }
@@ -50,10 +49,10 @@ void ConditionalBeanRegistry::process_conditional_registrations(
     for (const auto& bean_info : conditional_beans_) {
         if (bean_info.condition && bean_info.condition->matches()) {
             // 注册到 ApplicationContext
-            std::cout << "[ConditionalRegistry] Would register to ApplicationContext: "
-                      << (bean_info.name.empty()
-                              ? bean_info.bean_type.name()
-                              : bean_info.name)
+            std::cout << "[ConditionalRegistry] Would register to "
+                         "ApplicationContext: "
+                      << (bean_info.name.empty() ? bean_info.bean_type.name()
+                                                 : bean_info.name)
                       << " (condition: " << bean_info.condition->description()
                       << ")" << std::endl;
 

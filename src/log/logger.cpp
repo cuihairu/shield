@@ -32,8 +32,9 @@ std::string normalize_formatter_pattern(std::string pattern) {
         return pattern;
     }
 
-    // Heuristic: translate common spdlog-style patterns to Boost.Log placeholders.
-    // Typical spdlog pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+    // Heuristic: translate common spdlog-style patterns to Boost.Log
+    // placeholders. Typical spdlog pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l]
+    // %v"
     if (pattern.find("%v") != std::string::npos ||
         pattern.find("%l") != std::string::npos ||
         pattern.find("%t") != std::string::npos ||
@@ -121,9 +122,9 @@ void Logger::init(const LogConfig& config) {
     // Setup console sink if enabled
     if (config.console.enabled) {
         logging::add_console_log(
-            std::cout, logging::keywords::format =
-                           logging::parse_formatter(normalize_formatter_pattern(
-                               config.console.pattern)));
+            std::cout,
+            logging::keywords::format = logging::parse_formatter(
+                normalize_formatter_pattern(config.console.pattern)));
     }
 
     // Add common attributes

@@ -22,12 +22,14 @@ void DiscoveryConfig::from_ptree(const boost::property_tree::ptree& pt) {
     if (auto consul_pt = pt.get_child_optional("consul")) {
         consul.host = get_value(*consul_pt, "host", consul.host);
         consul.port = get_value(*consul_pt, "port", consul.port);
-        consul.check_interval_seconds = get_value(
-            *consul_pt, "check_interval_seconds", consul.check_interval_seconds);
+        consul.check_interval_seconds =
+            get_value(*consul_pt, "check_interval_seconds",
+                      consul.check_interval_seconds);
     }
 
     if (auto nacos_pt = pt.get_child_optional("nacos")) {
-        nacos.server_addr = get_value(*nacos_pt, "server_addr", nacos.server_addr);
+        nacos.server_addr =
+            get_value(*nacos_pt, "server_addr", nacos.server_addr);
         nacos.heartbeat_interval_seconds =
             get_value(*nacos_pt, "heartbeat_interval_seconds",
                       nacos.heartbeat_interval_seconds);
@@ -62,7 +64,8 @@ void DiscoveryConfig::validate() const {
         }
     } else if (type == "consul") {
         if (consul.host.empty()) {
-            throw std::invalid_argument("discovery.consul.host must not be empty");
+            throw std::invalid_argument(
+                "discovery.consul.host must not be empty");
         }
         if (consul.port <= 0) {
             throw std::invalid_argument("discovery.consul.port must be > 0");
@@ -115,4 +118,3 @@ std::chrono::seconds DiscoveryConfig::redis_heartbeat_interval() const {
 }
 
 }  // namespace shield::discovery
-

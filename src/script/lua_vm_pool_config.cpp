@@ -4,12 +4,14 @@
 
 namespace shield::script {
 
-void LuaVMPoolConfigProperties::from_ptree(const boost::property_tree::ptree& pt) {
+void LuaVMPoolConfigProperties::from_ptree(
+    const boost::property_tree::ptree& pt) {
     initial_size = get_value(pt, "initial_size", initial_size);
     min_size = get_value(pt, "min_size", min_size);
     max_size = get_value(pt, "max_size", max_size);
     idle_timeout_ms = get_value(pt, "idle_timeout_ms", idle_timeout_ms);
-    acquire_timeout_ms = get_value(pt, "acquire_timeout_ms", acquire_timeout_ms);
+    acquire_timeout_ms =
+        get_value(pt, "acquire_timeout_ms", acquire_timeout_ms);
     preload_scripts = get_value(pt, "preload_scripts", preload_scripts);
 
     load_vector(pt, "script_paths", script_paths);

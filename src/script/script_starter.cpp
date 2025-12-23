@@ -13,7 +13,8 @@ void ScriptStarter::initialize(core::ApplicationContext& context) {
 
     auto& config_manager = config::ConfigManager::instance();
     auto pool_properties =
-        config_manager.get_configuration_properties<LuaVMPoolConfigProperties>();
+        config_manager
+            .get_configuration_properties<LuaVMPoolConfigProperties>();
 
     LuaVMPoolConfig lua_config =
         pool_properties ? pool_properties->to_pool_config() : LuaVMPoolConfig{};

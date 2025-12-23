@@ -22,14 +22,14 @@ void LuaIoCBridge::initialize() {
 }
 
 void LuaIoCBridge::export_lua_service(const std::string& name,
-                                     const std::string& lua_service_name) {
+                                      const std::string& lua_service_name) {
     // 从 Lua IoC 容器获取服务并注册到 C++ 上下文
     try {
         auto lua_service = lua_state_["shield"]["container"][lua_service_name];
         if (lua_service.valid()) {
             // 创建 C++ 包装器
-            auto wrapper = std::make_shared<CppLuaServiceWrapper>(
-                name, lua_state_, *this);
+            auto wrapper =
+                std::make_shared<CppLuaServiceWrapper>(name, lua_state_, *this);
 
             // 注册到 C++ 上下文
             // cpp_context_.register_service(name, wrapper);
@@ -64,8 +64,8 @@ void LuaIoCBridge::start_lua_container() {
 
         std::cout << "[LuaIoCBridge] Lua IoC container started" << std::endl;
     } catch (const sol::error& e) {
-        std::cerr << "[LuaIoCBridge] Failed to start Lua container: " << e.what()
-                  << std::endl;
+        std::cerr << "[LuaIoCBridge] Failed to start Lua container: "
+                  << e.what() << std::endl;
     }
 }
 
@@ -130,8 +130,8 @@ void LuaIoCBridge::load_lua_ioc_script(const std::string& script_path) {
         std::cout << "[LuaIoCBridge] Loaded Lua IoC script: " << script_path
                   << std::endl;
     } catch (const sol::error& e) {
-        std::cerr << "[LuaIoCBridge] Failed to load Lua IoC script: " << e.what()
-                  << std::endl;
+        std::cerr << "[LuaIoCBridge] Failed to load Lua IoC script: "
+                  << e.what() << std::endl;
         throw std::runtime_error("Failed to load Lua IoC script: " +
                                  std::string(e.what()));
     }
@@ -143,7 +143,8 @@ sol::table LuaIoCBridge::get_lua_health_status() {
 
         // 获取 Lua 容器中所有服务的健康状态
         if (lua_state_["shield"]["container"]["get_all_services"].valid()) {
-            auto services_result = lua_state_["shield"]["container"]["get_all_services"]();
+            auto services_result =
+                lua_state_["shield"]["container"]["get_all_services"]();
 
             if (services_result.valid()) {
                 // services_result 应该是一个 table
@@ -155,9 +156,11 @@ sol::table LuaIoCBridge::get_lua_health_status() {
 
                         // 检查服务是否有健康检查方法
                         auto service_table = service.as<sol::table>();
-                        if (service_table && service_table["health_check"].valid()) {
+                        if (service_table &&
+                            service_table["health_check"].valid()) {
                             try {
-                                auto result = service_table["health_check"](service_table);
+                                auto result = service_table["health_check"](
+                                    service_table);
                                 if (result.valid()) {
                                     service_health["status"] = result;
                                 } else {
@@ -257,10 +260,9 @@ void LuaIoCBridge::setup_lua_ioc_environment() {
 
 void LuaIoCBridge::register_cpp_types() {
     // 注册 C++ 类型到 Lua
-    lua_state_.new_usertype<core::Service>("Service",
-        "name", &core::Service::name,
-        "on_start", &core::Service::on_start,
-        "on_stop", &core::Service::on_stop);
+    lua_state_.new_usertype<core::Service>(
+        "Service", "name", &core::Service::name, "on_start",
+        &core::Service::on_start, "on_stop", &core::Service::on_stop);
 }
 
 void LuaIoCBridge::setup_event_bridges() {
@@ -303,8 +305,8 @@ CppLuaServiceWrapper::CppLuaServiceWrapper(const std::string& lua_service_name,
 
 void CppLuaServiceWrapper::on_init(core::ApplicationContext& ctx) {
     try {
-        auto lua_service = lua_state_["shield"]["container"]["resolve"](
-            lua_service_name_);
+        auto lua_service =
+            lua_state_["shield"]["container"]["resolve"](lua_service_name_);
 
         if (lua_service.valid()) {
             lua_service_ = lua_service;

@@ -9,9 +9,9 @@
 namespace shield::gateway {
 
 GatewayService::GatewayService(const std::string& name,
-                                   actor::DistributedActorSystem& actor_system,
-                                   script::LuaVMPool& lua_vm_pool,
-                                   std::shared_ptr<GatewayConfig> config)
+                               actor::DistributedActorSystem& actor_system,
+                               script::LuaVMPool& lua_vm_pool,
+                               std::shared_ptr<GatewayConfig> config)
     : m_actor_system(actor_system),
       m_lua_vm_pool(lua_vm_pool),
       m_config(config),
@@ -140,7 +140,8 @@ void GatewayService::on_stop() {
 void GatewayService::on_config_reloaded() {
     SHIELD_LOG_INFO << "GatewayService config reloaded";
     // Get the latest config
-    m_config = config::ConfigManager::instance().get_configuration_properties<GatewayConfig>();
+    m_config = config::ConfigManager::instance()
+                   .get_configuration_properties<GatewayConfig>();
     // Stop the reactors to apply new settings
     on_stop();
     // Restart the reactors with new settings
@@ -263,8 +264,8 @@ std::shared_ptr<net::Session> GatewayService::get_session(uint64_t session_id) {
 }
 
 protocol::ProtocolType GatewayService::detect_protocol(uint64_t connection_id,
-                                                         const char* data,
-                                                         size_t length) {
+                                                       const char* data,
+                                                       size_t length) {
     if (length == 0) return protocol::ProtocolType::TCP;
 
     // Detect HTTP request
