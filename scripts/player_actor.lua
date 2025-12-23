@@ -4,6 +4,7 @@
 -- Player state
 local player_state = {
     player_id = nil,
+    player_name = "",
     level = 1,
     experience = 0,
     gold = 100,
@@ -22,9 +23,13 @@ end
 
 -- Handle incoming messages
 function on_message(msg)
-    log_info("Received message type: " .. msg.type .. " from " .. msg.sender_id)
-    
-    if msg.type == "get_info" then
+    log_info("Received message type: " .. msg.type .. " from " .. (msg.sender_id or "unknown"))
+
+    if msg.type == "login" then
+        return handle_login(msg)
+    elseif msg.type == "get_status" then
+        return handle_get_status(msg)
+    elseif msg.type == "get_info" then
         return handle_get_info(msg)
     elseif msg.type == "move" then
         return handle_move(msg)
@@ -40,6 +45,39 @@ function on_message(msg)
         log_error("Unknown message type: " .. msg.type)
         return create_response(false, {}, "Unknown message type")
     end
+end
+
+-- Player login (test-friendly API)
+function handle_login(msg)
+    player_state.player_id = player_state.player_id or get_actor_id()
+    player_state.player_name = msg.data.player_name or player_state.player_name
+    player_state.level = tonumber(msg.data.level or tostring(player_state.level)) or player_state.level
+    player_state.health = tonumber(msg.data.health or tostring(player_state.health)) or player_state.health
+    player_state.max_health = math.max(player_state.max_health, player_state.health)
+
+    local response_data = {
+        player_id = tostring(player_state.player_id),
+        player_name = tostring(player_state.player_name),
+        level = tostring(player_state.level),
+        health = tostring(player_state.health)
+    }
+
+    return create_response(true, response_data)
+end
+
+-- Player status (test-friendly API)
+function handle_get_status(msg)
+    local response_data = {
+        player_id = tostring(player_state.player_id or get_actor_id()),
+        player_name = tostring(player_state.player_name),
+        level = tostring(player_state.level),
+        health = tostring(player_state.health),
+        max_health = tostring(player_state.max_health),
+        x = tostring(player_state.position.x),
+        y = tostring(player_state.position.y)
+    }
+
+    return create_response(true, response_data)
 end
 
 -- Get player information
@@ -79,9 +117,9 @@ function handle_move(msg)
     log_info("Player moved to position: " .. x .. ", " .. y .. ", " .. z)
     
     local response_data = {
-        new_x = tostring(x),
-        new_y = tostring(y),
-        new_z = tostring(z),
+        x = tostring(x),
+        y = tostring(y),
+        z = tostring(z),
         timestamp = tostring(get_current_time())
     }
     
@@ -202,4 +240,3 @@ function handle_heal(msg)
     
     return create_response(true, response_data, "Healing successful")
 end
-EOF < /dev/null

@@ -229,65 +229,69 @@ set(CLI_SOURCES
 set(CONFIG_SOURCES
   # Config sources
   src/config/config.cpp
+  src/config/config_registry.cpp
   src/fs/file_watcher.cpp
 )
 
 set(OTHER_SOURCES
   # Discovery sources
   src/discovery/service_instance.cpp
+  src/discovery/discovery_config.cpp
   src/discovery/local_discovery.cpp
   src/discovery/redis_discovery.cpp
   src/discovery/nacos_discovery.cpp
   src/discovery/consul_discovery.cpp
   src/discovery/etcd_discovery.cpp
-  
-  # Actor sources  
+
+  # Actor sources
   src/actor/lua_actor.cpp
   src/actor/actor_registry.cpp
   src/actor/distributed_actor_system.cpp
   src/actor/actor_system_coordinator.cpp
   src/actor/actor_system_config.cpp
   src/actor/actor_starter.cpp
-  
+
   # Network sources
   src/net/slave_reactor.cpp
   src/net/master_reactor.cpp
   src/net/udp_session.cpp
   src/net/session.cpp
   src/net/udp_reactor.cpp
-  
+
   # Protocol sources
   src/protocol/udp_protocol_handler.cpp
   src/protocol/websocket_handler.cpp
   src/protocol/protocol_handler.cpp
   src/protocol/http_handler.cpp
   src/protocol/binary_protocol.cpp
-  
+
   # Serialization sources
   src/serialization/messagepack_universal_serializer.cpp
   src/serialization/protobuf_universal_serializer.cpp
-  src/serialization/serialization_init.cpp  
+  src/serialization/serialization_init.cpp
   src/serialization/json_universal_serializer.cpp
   src/serialization/universal_serialization_system.cpp
-  
+
   # Metrics sources
   src/metrics/prometheus_service.cpp
   src/metrics/prometheus_config.cpp
   src/metrics/metrics_starter.cpp
-  
+
   # Script sources
   src/script/lua_engine.cpp
   src/script/lua_vm_pool.cpp
+  src/script/lua_vm_pool_config.cpp
   src/script/script_starter.cpp
-  
+  src/script/lua_ioc_bridge.cpp
+
   # Gateway sources
   src/gateway/gateway_service.cpp
   src/gateway/gateway_config.cpp
   src/gateway/gateway_starter.cpp
-  
+
   # Network sources
   src/net/network_config.cpp
-  
+
   # Command sources
   src/commands/server_command.cpp
   src/commands/cli_command.cpp
@@ -295,7 +299,19 @@ set(OTHER_SOURCES
   src/commands/diagnose_command.cpp
   src/commands/migrate_command.cpp
   src/commands/all_commands.cpp
-  
+
+  # Health sources
+  src/health/health_check.cpp
+
+  # Filesystem sources
+  src/fs/file_watcher_impl.cpp
+
+  # Conditions sources
+  src/conditions/conditional_registry.cpp
+
+  # Annotations sources
+  src/annotations/component_registry.cpp
+
   # CAF initializer
   src/caf_initializer.cpp
 )

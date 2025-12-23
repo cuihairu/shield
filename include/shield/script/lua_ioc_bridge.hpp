@@ -162,7 +162,7 @@ private:
     std::string lua_service_name_;
     sol::state& lua_state_;
     LuaIoCBridge& bridge_;
-    sol::object lua_service_;
+    sol::table lua_service_;
 };
 
 /**

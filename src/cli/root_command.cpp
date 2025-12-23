@@ -4,6 +4,7 @@
 
 #include "shield/commands/all_commands.hpp"
 #include "shield/config/config.hpp"
+#include "shield/config/config_registry.hpp"
 #include "shield/version.hpp"
 
 namespace shield::cli {
@@ -11,6 +12,8 @@ namespace shield::cli {
 RootCommand::RootCommand()
     : Command("shield",
               "Shield Game Framework - A high-performance game server") {
+    shield::config::register_all_configuration_properties();
+
     set_long_description(
         "Shield is a modern game server framework built with C++20. "
         "It provides high-performance networking, scripting, and "

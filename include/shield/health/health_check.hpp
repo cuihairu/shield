@@ -3,8 +3,10 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <ostream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -20,6 +22,22 @@ enum class HealthStatus {
     OUT_OF_SERVICE,  // Service is temporarily out of service
     UNKNOWN          // Health status cannot be determined
 };
+
+// 输出流操作符
+inline std::ostream& operator<<(std::ostream& os, HealthStatus status) {
+    switch (status) {
+        case HealthStatus::UP:
+            return os << "UP";
+        case HealthStatus::DOWN:
+            return os << "DOWN";
+        case HealthStatus::OUT_OF_SERVICE:
+            return os << "OUT_OF_SERVICE";
+        case HealthStatus::UNKNOWN:
+            return os << "UNKNOWN";
+        default:
+            return os << "UNKNOWN";
+    }
+}
 
 /**
  * @brief Health check result

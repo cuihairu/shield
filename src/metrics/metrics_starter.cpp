@@ -30,6 +30,7 @@ void MetricsStarter::initialize(core::ApplicationContext& context) {
 
     // Register the service
     context.register_service("prometheus", prometheus_service);
+    context.bind_config_reload<PrometheusConfig>(prometheus_service);
 
     SHIELD_LOG_INFO << "Metrics Starter initialized successfully";
 }

@@ -42,6 +42,7 @@ void GatewayStarter::initialize(core::ApplicationContext& context) {
 
     // Register the service
     context.register_service("gateway", gateway_service);
+    context.bind_config_reload<GatewayConfig>(gateway_service);
 
     SHIELD_LOG_INFO << "Gateway Starter initialized successfully";
 }

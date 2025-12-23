@@ -21,6 +21,60 @@ namespace shield::log {
 
 LogConfig Logger::config_;
 
+namespace {
+
+std::string normalize_formatter_pattern(std::string pattern) {
+    // Heuristic: accept Boost.Log named placeholders by default.
+    if (pattern.find("%TimeStamp%") != std::string::npos ||
+        pattern.find("%Message%") != std::string::npos ||
+        pattern.find("%Severity%") != std::string::npos ||
+        pattern.find("%ThreadID%") != std::string::npos) {
+        return pattern;
+    }
+
+    // Heuristic: translate common spdlog-style patterns to Boost.Log placeholders.
+    // Typical spdlog pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+    if (pattern.find("%v") != std::string::npos ||
+        pattern.find("%l") != std::string::npos ||
+        pattern.find("%t") != std::string::npos ||
+        pattern.find("%Y") != std::string::npos) {
+        // Replace the first bracketed time-format segment if it looks like a
+        // strftime-like pattern (starts with "[%" and contains "%Y").
+        auto left = pattern.find("[%");
+        if (left != std::string::npos) {
+            auto right = pattern.find("]", left);
+            if (right != std::string::npos &&
+                pattern.substr(left, right - left).find("%Y") !=
+                    std::string::npos) {
+                pattern.replace(left, right - left + 1, "[%TimeStamp%]");
+            }
+        }
+
+        // Replace the common short placeholders.
+        for (size_t pos = 0;
+             (pos = pattern.find("%t", pos)) != std::string::npos;) {
+            pattern.replace(pos, 2, "%ThreadID%");
+            pos += std::string("%ThreadID%").size();
+        }
+        for (size_t pos = 0;
+             (pos = pattern.find("%l", pos)) != std::string::npos;) {
+            pattern.replace(pos, 2, "%Severity%");
+            pos += std::string("%Severity%").size();
+        }
+        for (size_t pos = 0;
+             (pos = pattern.find("%v", pos)) != std::string::npos;) {
+            pattern.replace(pos, 2, "%Message%");
+            pos += std::string("%Message%").size();
+        }
+
+        return pattern;
+    }
+
+    return pattern;
+}
+
+}  // namespace
+
 // Helper function to map LogLevel enum to boost::log::trivial::severity_level
 logging::trivial::severity_level to_boost_level(LogConfig::LogLevel level) {
     switch (level) {
@@ -60,15 +114,16 @@ void Logger::init(const LogConfig& config) {
                 sinks::file::rotation_at_time_point(0, 0, 0),  // Rotate daily
             logging::keywords::max_files =
                 config.file.max_files,  // Keep max_files files
-            logging::keywords::format =
-                logging::parse_formatter(config.file.pattern));
+            logging::keywords::format = logging::parse_formatter(
+                normalize_formatter_pattern(config.file.pattern)));
     }
 
     // Setup console sink if enabled
     if (config.console.enabled) {
         logging::add_console_log(
             std::cout, logging::keywords::format =
-                           logging::parse_formatter(config.console.pattern));
+                           logging::parse_formatter(normalize_formatter_pattern(
+                               config.console.pattern)));
     }
 
     // Add common attributes

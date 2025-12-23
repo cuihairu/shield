@@ -20,6 +20,22 @@ enum class FileEventType {
     Moved      // File moved/renamed
 };
 
+// 输出流操作符
+inline std::ostream& operator<<(std::ostream& os, FileEventType type) {
+    switch (type) {
+        case FileEventType::Modified:
+            return os << "Modified";
+        case FileEventType::Created:
+            return os << "Created";
+        case FileEventType::Deleted:
+            return os << "Deleted";
+        case FileEventType::Moved:
+            return os << "Moved";
+        default:
+            return os << "Unknown";
+    }
+}
+
 // File event
 struct FileEvent {
     std::string file_path;     // File path where event occurred

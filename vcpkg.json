@@ -2,65 +2,37 @@
     "name": "shield",
     "version-string": "0.1.0",
     "dependencies": [
-        {
-            "name": "lua",
-            "version>=": "5.4.7"
-        },
-        {
-            "name": "boost-asio"
-        },
-        {
-            "name": "boost-beast"
-        },
-        {
-            "name": "yaml-cpp",
-            "version>=": "0.8.0"
-        },
-        {
-            "name": "boost-log"
-        },
-        {
-            "name": "boost-program-options"
-        },
-        {
-            "name": "boost-test"
-        },
-        {
-            "name": "caf",
-            "version>=": "1.0.2"
-        },
-        {
-            "name": "nlohmann-json"
-        },
-        {
-            "name": "redis-plus-plus"
-        },
-        {
-            "name": "boost-url"
-        },
-        {
-            "name": "sol2"
-        },
-        {
-            "name": "msgpack"
-        },
-        {
-            "name": "boost-dll"
-        },
-        {
-            "name": "libpq",
-            "version>=": "15.0"
-        },
-        {
-            "name": "mongo-cxx-driver",
-            "version>=": "3.8.0"
-        },
-        {
-            "name": "mysql-connector-cpp",
-            "version>=": "8.0.0"
-        }
+        "lua",
+        "yaml-cpp",
+        "nlohmann-json",
+        "sol2",
+
+        "boost-asio",
+        "boost-beast",
+        "boost-filesystem",
+        "boost-log",
+        "boost-program-options",
+        "boost-test",
+        "boost-url",
+        "boost-dll",
+
+        "openssl",
+        "hiredis",
+        "redis-plus-plus",
+
+        "caf",
+        "msgpack"
     ],
     "supports": "!uwp",
-    "overrides": [
-    ]
+    "features": {
+        "database": {
+            "description": "Database drivers (optional)",
+            "dependencies": [
+                "libpq",
+                "mongo-cxx-driver",
+                "mysql-connector-cpp"
+            ]
+        }
+    },
+    "overrides": []
 }

@@ -37,7 +37,24 @@ using tcp = net::ip::tcp;
 class MockHttpServer {
 public:
     MockHttpServer()
-        : acceptor_(ioc_, tcp::endpoint(tcp::v4(), 8081)), stop_flag_(false) {}
+        : ioc_(),
+          acceptor_(ioc_),
+          stop_flag_(false) {
+        // Open the acceptor with the option to reuse the address
+        boost::system::error_code ec;
+        tcp::endpoint endpoint(tcp::v4(), 8081);
+        acceptor_.open(endpoint.protocol(), ec);
+        if (!ec) {
+            acceptor_.set_option(boost::asio::socket_base::reuse_address(true), ec);
+        }
+        if (!ec) {
+            acceptor_.bind(endpoint, ec);
+        }
+        if (!ec) {
+            acceptor_.listen(boost::asio::socket_base::max_listen_connections, ec);
+        }
+        // If bind fails, it's likely port already in use - we'll handle it in run()
+    }
 
     void start() {
         server_thread_ = std::thread([this]() { run(); });
@@ -51,20 +68,38 @@ public:
         if (server_thread_.joinable()) {
             server_thread_.join();
         }
+        // Close acceptor
+        boost::system::error_code ec;
+        acceptor_.close(ec);
     }
 
 private:
     void run() {
+        // Set acceptor to non-blocking mode
+        boost::system::error_code ec;
+        acceptor_.non_blocking(true, ec);
+
         while (!stop_flag_) {
             try {
                 tcp::socket socket(ioc_);
-                acceptor_.accept(socket);
-                handle_request(std::move(socket));
+                boost::system::error_code accept_ec;
+                acceptor_.accept(socket, accept_ec);
+
+                if (!accept_ec) {
+                    handle_request(std::move(socket));
+                } else if (accept_ec != boost::asio::error::would_block) {
+                    // Real error, not just "no connection pending"
+                    if (!stop_flag_) {
+                        // Log error but continue
+                    }
+                }
             } catch (std::exception &e) {
                 if (!stop_flag_) {
                     // Log error but continue
                 }
             }
+            // Small sleep to avoid busy-waiting
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
@@ -80,6 +115,7 @@ private:
             res.result(http::status::ok);
             res.set(http::field::server, "MockServer");
             res.set(http::field::content_type, "application/json");
+            res.set(http::field::connection, "close");
 
             if (req.target() == "/api/player/info") {
                 nlohmann::json response_json = {
@@ -94,7 +130,9 @@ private:
 
             res.prepare_payload();
             http::write(stream, res);
-            stream.socket().shutdown(tcp::socket::shutdown_both);
+            // Gracefully close the connection
+            boost::system::error_code ec;
+            stream.socket().shutdown(tcp::socket::shutdown_send, ec);
         } catch (std::exception &e) {
             // Handle error
         }
@@ -110,7 +148,23 @@ private:
 class MockWebSocketServer {
 public:
     MockWebSocketServer()
-        : acceptor_(ioc_, tcp::endpoint(tcp::v4(), 8082)), stop_flag_(false) {}
+        : ioc_(),
+          acceptor_(ioc_),
+          stop_flag_(false) {
+        // Open the acceptor with the option to reuse the address
+        boost::system::error_code ec;
+        tcp::endpoint endpoint(tcp::v4(), 8082);
+        acceptor_.open(endpoint.protocol(), ec);
+        if (!ec) {
+            acceptor_.set_option(boost::asio::socket_base::reuse_address(true), ec);
+        }
+        if (!ec) {
+            acceptor_.bind(endpoint, ec);
+        }
+        if (!ec) {
+            acceptor_.listen(boost::asio::socket_base::max_listen_connections, ec);
+        }
+    }
 
     void start() {
         server_thread_ = std::thread([this]() { run(); });
@@ -124,22 +178,40 @@ public:
         if (server_thread_.joinable()) {
             server_thread_.join();
         }
+        // Close acceptor
+        boost::system::error_code ec;
+        acceptor_.close(ec);
     }
 
 private:
     void run() {
+        // Set acceptor to non-blocking mode
+        boost::system::error_code ec;
+        acceptor_.non_blocking(true, ec);
+
         while (!stop_flag_) {
             try {
                 tcp::socket socket(ioc_);
-                acceptor_.accept(socket);
-                std::thread([this, socket = std::move(socket)]() mutable {
-                    handle_websocket(std::move(socket));
-                }).detach();
+                boost::system::error_code accept_ec;
+                acceptor_.accept(socket, accept_ec);
+
+                if (!accept_ec) {
+                    std::thread([this, socket = std::move(socket)]() mutable {
+                        handle_websocket(std::move(socket));
+                    }).detach();
+                } else if (accept_ec != boost::asio::error::would_block) {
+                    // Real error, not just "no connection pending"
+                    if (!stop_flag_) {
+                        // Log error but continue
+                    }
+                }
             } catch (std::exception &e) {
                 if (!stop_flag_) {
                     // Log error but continue
                 }
             }
+            // Small sleep to avoid busy-waiting
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
@@ -150,7 +222,13 @@ private:
 
             while (!stop_flag_) {
                 beast::flat_buffer buffer;
-                ws.read(buffer);
+                boost::system::error_code ec;
+                ws.read(buffer, ec);
+
+                if (ec) {
+                    // Connection closed or timeout
+                    break;
+                }
 
                 std::string message =
                     boost::beast::buffers_to_string(buffer.data());
@@ -268,7 +346,9 @@ BOOST_AUTO_TEST_CASE(TestHttpGetPlayerInfo) {
         BOOST_CHECK(json_response.contains("level"));
         BOOST_CHECK(json_response.contains("score"));
 
-        stream.socket().shutdown(tcp::socket::shutdown_both);
+        // Gracefully close connection, ignore errors
+        boost::system::error_code ec;
+        stream.socket().shutdown(tcp::socket::shutdown_both, ec);
 
     } catch (std::exception const &e) {
         BOOST_FAIL("HTTP GET test failed: " << e.what());
@@ -314,7 +394,9 @@ BOOST_AUTO_TEST_CASE(TestHttpPostGameAction) {
         BOOST_CHECK(json_response.contains("status"));
         BOOST_CHECK_EQUAL(json_response["status"], "accepted");
 
-        stream.socket().shutdown(tcp::socket::shutdown_both);
+        // Gracefully close connection, ignore errors
+        boost::system::error_code ec;
+        stream.socket().shutdown(tcp::socket::shutdown_both, ec);
 
     } catch (std::exception const &e) {
         BOOST_FAIL("HTTP POST test failed: " << e.what());

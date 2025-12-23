@@ -1,7 +1,5 @@
 #pragma once
 
-#include "shield/config/config.hpp"
-
 namespace shield::config {
 
 /**

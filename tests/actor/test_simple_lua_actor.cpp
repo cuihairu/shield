@@ -137,77 +137,89 @@ public:
 
                 // Extract data fields manually
                 std::unordered_map<std::string, std::string> response_data;
+
                 if (success && *success) {
                     // For login response, extract known fields
                     if (msg.type == "login") {
-                        auto player_id =
-                            lua_engine_->execute_string(
-                                "return response.data.player_id")
-                                ? lua_engine_->get_global<std::string>(
-                                      "player_id")
-                                : std::nullopt;
-                        auto player_name =
-                            lua_engine_->execute_string(
-                                "return response.data.player_name")
-                                ? lua_engine_->get_global<std::string>(
-                                      "player_name")
-                                : std::nullopt;
-                        auto level =
-                            lua_engine_->execute_string(
-                                "return response.data.level")
-                                ? lua_engine_->get_global<std::string>("level")
-                                : std::nullopt;
-                        auto health =
-                            lua_engine_->execute_string(
-                                "return response.data.health")
-                                ? lua_engine_->get_global<std::string>("health")
-                                : std::nullopt;
-
                         // Extract data by executing Lua code to set globals
                         lua_engine_->execute_string(R"(
                             if response and response.data then
-                                temp_player_id = response.data.player_id or ""
-                                temp_player_name = response.data.player_name or ""
-                                temp_level = response.data.level or ""
-                                temp_health = response.data.health or ""
+                                has_player_id = response.data.player_id ~= nil
+                                has_player_name = response.data.player_name ~= nil
+                                has_level = response.data.level ~= nil
+                                has_health = response.data.health ~= nil
+
+                                temp_player_id = tostring(response.data.player_id or "")
+                                temp_player_name = tostring(response.data.player_name or "")
+                                temp_level = tostring(response.data.level or "")
+                                temp_health = tostring(response.data.health or "")
+                            else
+                                has_player_id = false
+                                has_player_name = false
+                                has_level = false
+                                has_health = false
+                                temp_player_id = ""
+                                temp_player_name = ""
+                                temp_level = ""
+                                temp_health = ""
                             end
                         )");
 
+                        auto has_player_id = lua_engine_->get_global<bool>("has_player_id");
+                        auto has_player_name = lua_engine_->get_global<bool>("has_player_name");
+                        auto has_level = lua_engine_->get_global<bool>("has_level");
+                        auto has_health = lua_engine_->get_global<bool>("has_health");
+
                         auto temp_player_id =
-                            lua_engine_->get_global<std::string>(
-                                "temp_player_id");
+                            lua_engine_->get_global<std::string>("temp_player_id");
                         auto temp_player_name =
-                            lua_engine_->get_global<std::string>(
-                                "temp_player_name");
+                            lua_engine_->get_global<std::string>("temp_player_name");
                         auto temp_level =
                             lua_engine_->get_global<std::string>("temp_level");
                         auto temp_health =
                             lua_engine_->get_global<std::string>("temp_health");
 
-                        if (temp_player_id)
+                        if (has_player_id && *has_player_id && temp_player_id && !temp_player_id->empty())
                             response_data["player_id"] = *temp_player_id;
-                        if (temp_player_name)
+                        if (has_player_name && *has_player_name && temp_player_name && !temp_player_name->empty())
                             response_data["player_name"] = *temp_player_name;
-                        if (temp_level) response_data["level"] = *temp_level;
-                        if (temp_health) response_data["health"] = *temp_health;
+                        if (has_level && *has_level && temp_level && !temp_level->empty())
+                            response_data["level"] = *temp_level;
+                        if (has_health && *has_health && temp_health && !temp_health->empty())
+                            response_data["health"] = *temp_health;
                     }
                     // Handle other message types similarly
                     else if (msg.type == "move") {
                         lua_engine_->execute_string(R"(
                             if response and response.data then
+                                has_x = response.data.x ~= nil
+                                has_y = response.data.y ~= nil
                                 temp_x = response.data.x or ""
                                 temp_y = response.data.y or ""
+                            else
+                                has_x = false
+                                has_y = false
                             end
                         )");
-                        auto temp_x =
-                            lua_engine_->get_global<std::string>("temp_x");
-                        auto temp_y =
-                            lua_engine_->get_global<std::string>("temp_y");
-                        if (temp_x) response_data["x"] = *temp_x;
-                        if (temp_y) response_data["y"] = *temp_y;
+                        auto has_x = lua_engine_->get_global<bool>("has_x");
+                        auto has_y = lua_engine_->get_global<bool>("has_y");
+                        auto temp_x = lua_engine_->get_global<std::string>("temp_x");
+                        auto temp_y = lua_engine_->get_global<std::string>("temp_y");
+                        if (has_x && *has_x && temp_x && !temp_x->empty())
+                            response_data["x"] = *temp_x;
+                        if (has_y && *has_y && temp_y && !temp_y->empty())
+                            response_data["y"] = *temp_y;
                     } else if (msg.type == "get_status") {
                         lua_engine_->execute_string(R"(
                             if response and response.data then
+                                has_player_id = response.data.player_id ~= nil
+                                has_player_name = response.data.player_name ~= nil
+                                has_level = response.data.level ~= nil
+                                has_health = response.data.health ~= nil
+                                has_max_health = response.data.max_health ~= nil
+                                has_x = response.data.x ~= nil
+                                has_y = response.data.y ~= nil
+
                                 temp_player_id = response.data.player_id or ""
                                 temp_player_name = response.data.player_name or ""
                                 temp_level = response.data.level or ""
@@ -215,36 +227,53 @@ public:
                                 temp_max_health = response.data.max_health or ""
                                 temp_x = response.data.x or ""
                                 temp_y = response.data.y or ""
+                            else
+                                has_player_id = false
+                                has_player_name = false
+                                has_level = false
+                                has_health = false
+                                has_max_health = false
+                                has_x = false
+                                has_y = false
                             end
                         )");
+                        auto has_player_id = lua_engine_->get_global<bool>("has_player_id");
+                        auto has_player_name = lua_engine_->get_global<bool>("has_player_name");
+                        auto has_level = lua_engine_->get_global<bool>("has_level");
+                        auto has_health = lua_engine_->get_global<bool>("has_health");
+                        auto has_max_health = lua_engine_->get_global<bool>("has_max_health");
+                        auto has_x = lua_engine_->get_global<bool>("has_x");
+                        auto has_y = lua_engine_->get_global<bool>("has_y");
+
                         auto temp_player_id =
-                            lua_engine_->get_global<std::string>(
-                                "temp_player_id");
+                            lua_engine_->get_global<std::string>("temp_player_id");
                         auto temp_player_name =
-                            lua_engine_->get_global<std::string>(
-                                "temp_player_name");
+                            lua_engine_->get_global<std::string>("temp_player_name");
                         auto temp_level =
                             lua_engine_->get_global<std::string>("temp_level");
                         auto temp_health =
                             lua_engine_->get_global<std::string>("temp_health");
                         auto temp_max_health =
-                            lua_engine_->get_global<std::string>(
-                                "temp_max_health");
+                            lua_engine_->get_global<std::string>("temp_max_health");
                         auto temp_x =
                             lua_engine_->get_global<std::string>("temp_x");
                         auto temp_y =
                             lua_engine_->get_global<std::string>("temp_y");
 
-                        if (temp_player_id)
+                        if (has_player_id && *has_player_id && temp_player_id && !temp_player_id->empty())
                             response_data["player_id"] = *temp_player_id;
-                        if (temp_player_name)
+                        if (has_player_name && *has_player_name && temp_player_name && !temp_player_name->empty())
                             response_data["player_name"] = *temp_player_name;
-                        if (temp_level) response_data["level"] = *temp_level;
-                        if (temp_health) response_data["health"] = *temp_health;
-                        if (temp_max_health)
+                        if (has_level && *has_level && temp_level && !temp_level->empty())
+                            response_data["level"] = *temp_level;
+                        if (has_health && *has_health && temp_health && !temp_health->empty())
+                            response_data["health"] = *temp_health;
+                        if (has_max_health && *has_max_health && temp_max_health && !temp_max_health->empty())
                             response_data["max_health"] = *temp_max_health;
-                        if (temp_x) response_data["x"] = *temp_x;
-                        if (temp_y) response_data["y"] = *temp_y;
+                        if (has_x && *has_x && temp_x && !temp_x->empty())
+                            response_data["x"] = *temp_x;
+                        if (has_y && *has_y && temp_y && !temp_y->empty())
+                            response_data["y"] = *temp_y;
                     }
                 }
 
@@ -332,7 +361,7 @@ void test_simple_lua_actor() {
               << std::endl;
 
     // Create test actor
-    std::string script_path = "scripts/player_actor.lua";
+    std::string script_path = "../../scripts/player_actor.lua";
     if (!std::filesystem::exists(script_path)) {
         std::cerr << "Script file not found: " << script_path << std::endl;
         return;

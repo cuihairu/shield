@@ -4,6 +4,7 @@
 #include <boost/type_index.hpp>
 #include <memory>
 #include <typeindex>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -69,8 +70,6 @@ public:
 private:
     ApplicationContext() = default;
 
-    void subscribe_to_config_reloads(const std::shared_ptr<Service>& service);
-
     // Service registry (ordered for lifecycle management)
     std::vector<std::shared_ptr<Service>> m_services_by_order;
 
@@ -89,6 +88,24 @@ private:
 
     // Template implementations (moved to .hpp for simplicity)
 public:
+    template <typename ConfigType>
+    void bind_config_reload(const std::shared_ptr<Service>& service) {
+        auto reloadable = std::dynamic_pointer_cast<IReloadableService>(service);
+        if (!reloadable) {
+            throw std::runtime_error(
+                "bind_config_reload requires an IReloadableService");
+        }
+
+        auto& config_manager = config::ConfigManager::instance();
+        config_manager.subscribe_to_reloads<ConfigType>(
+            [weak = std::weak_ptr<IReloadableService>(reloadable)](
+                const ConfigType&) {
+                if (auto locked = weak.lock()) {
+                    locked->on_config_reloaded();
+                }
+            });
+    }
+
     template <typename T, typename... Args>
     std::shared_ptr<T> register_service(Args&&... args) {
         static_assert(std::is_base_of_v<Service, T>,
@@ -98,8 +115,6 @@ public:
         m_beans_by_name[service->name()] =
             service;  // Store service as a named bean
         m_bean_type_to_name[std::type_index(typeid(T))] = service->name();
-
-        subscribe_to_config_reloads(service);
 
         return service;
     }
@@ -112,8 +127,6 @@ public:
         m_services_by_order.push_back(service);
         m_beans_by_name[name] = service;
         m_bean_type_to_name[std::type_index(typeid(T))] = name;
-
-        subscribe_to_config_reloads(service);
     }
 
     template <typename T>
