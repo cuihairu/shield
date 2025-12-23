@@ -1,14 +1,16 @@
 #pragma once
-#include "shield/cli/command.hpp"
 #include <memory>
+
+#include "shield/cli/command.hpp"
 
 namespace shield::cli {
 
 // Root command that manages all subcommands
-class RootCommand : public Command, public std::enable_shared_from_this<RootCommand> {
+class RootCommand : public Command,
+                    public std::enable_shared_from_this<RootCommand> {
 public:
     static std::shared_ptr<RootCommand> create();
-    
+
     int run(CommandContext& ctx) override;
 
 private:
@@ -22,4 +24,4 @@ public:
     static std::shared_ptr<RootCommand> create_root_command();
 };
 
-}  // namespace shield::core
+}  // namespace shield::cli

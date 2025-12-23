@@ -3,8 +3,8 @@
 #include <boost/any.hpp>
 #include <boost/type_index.hpp>
 #include <memory>
-#include <typeindex>
 #include <type_traits>
+#include <typeindex>
 #include <unordered_map>
 #include <vector>
 
@@ -90,7 +90,8 @@ private:
 public:
     template <typename ConfigType>
     void bind_config_reload(const std::shared_ptr<Service>& service) {
-        auto reloadable = std::dynamic_pointer_cast<IReloadableService>(service);
+        auto reloadable =
+            std::dynamic_pointer_cast<IReloadableService>(service);
         if (!reloadable) {
             throw std::runtime_error(
                 "bind_config_reload requires an IReloadableService");

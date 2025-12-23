@@ -134,8 +134,9 @@ public:
 
     std::string description() const override {
         std::string type_name = bean_type_.name();
-        return expect_exists_ ? std::string("Bean of type exists: ") + type_name
-                              : std::string("Bean of type missing: ") + type_name;
+        return expect_exists_
+                   ? std::string("Bean of type exists: ") + type_name
+                   : std::string("Bean of type missing: ") + type_name;
     }
 
 private:

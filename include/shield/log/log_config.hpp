@@ -25,7 +25,8 @@ public:
     struct ConsoleConfig {
         bool enabled = true;
         bool colored = true;
-        std::string pattern = "[%TimeStamp%] [%ThreadID%] [%Severity%] %Message%";
+        std::string pattern =
+            "[%TimeStamp%] [%ThreadID%] [%Severity%] %Message%";
         LogLevel min_level = LogLevel::INFO;
     };
 
@@ -36,7 +37,8 @@ public:
         int64_t max_file_size = 10485760;  // 10MB
         int max_files = 5;
         bool rotate_on_open = false;
-        std::string pattern = "[%TimeStamp%] [%ThreadID%] [%Severity%] %Message%";
+        std::string pattern =
+            "[%TimeStamp%] [%ThreadID%] [%Severity%] %Message%";
         LogLevel min_level = LogLevel::DEBUG;
     };
 

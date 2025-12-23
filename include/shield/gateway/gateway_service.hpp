@@ -21,16 +21,16 @@ namespace shield::gateway {
 class GatewayService : public core::ReloadableService {
 public:
     explicit GatewayService(const std::string &name,
-                             actor::DistributedActorSystem &actor_system,
-                             script::LuaVMPool &lua_vm_pool,
-                             std::shared_ptr<GatewayConfig> config);
+                            actor::DistributedActorSystem &actor_system,
+                            script::LuaVMPool &lua_vm_pool,
+                            std::shared_ptr<GatewayConfig> config);
     ~GatewayService();
 
 protected:
-    void on_init(core::ApplicationContext& ctx) override;
+    void on_init(core::ApplicationContext &ctx) override;
     void on_start() override;
     void on_stop() override;
-    
+
     // ReloadableService interface
     void on_config_reloaded() override;
 

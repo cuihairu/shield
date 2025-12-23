@@ -64,8 +64,8 @@ private:
     std::atomic<uint64_t> session_id_counter_{0};
 
     // 配置参数
-    std::chrono::milliseconds write_timeout_{5000};    // 写入超时时间
-    std::chrono::milliseconds settle_delay_{100};      // 文件稳定等待时间
+    std::chrono::milliseconds write_timeout_{5000};  // 写入超时时间
+    std::chrono::milliseconds settle_delay_{100};    // 文件稳定等待时间
     std::chrono::milliseconds debounce_interval_{50};  // 防抖间隔
 
 public:

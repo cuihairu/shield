@@ -1,11 +1,12 @@
 // shield/src/health/health_check.cpp
 #include "shield/health/health_check.hpp"
 
+#include <sys/statvfs.h>
+#include <unistd.h>
+
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
-#include <sys/statvfs.h>
-#include <unistd.h>
 
 namespace shield::health {
 
@@ -32,12 +33,13 @@ Health DiskSpaceHealthIndicator::check() {
         std::ostringstream details;
         details << std::fixed << std::setprecision(2);
         details << "Total: " << (total / (1024.0 * 1024 * 1024)) << " GB, ";
-        details << "Available: " << (available / (1024.0 * 1024 * 1024)) << " GB (";
+        details << "Available: " << (available / (1024.0 * 1024 * 1024))
+                << " GB (";
         details << available_percent << "%)";
 
         HealthStatus status = (available >= min_free_bytes_)
-                                 ? HealthStatus::UP
-                                 : HealthStatus::DOWN;
+                                  ? HealthStatus::UP
+                                  : HealthStatus::DOWN;
 
         return Health(status, "Disk space check")
             .add_detail("path", path_)
@@ -143,15 +145,16 @@ Health HealthCheckRegistry::get_overall_health() {
                 auto health = indicator->check();
                 auto health_end = std::chrono::steady_clock::now();
 
-                auto check_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    health_end - health_start);
+                auto check_time =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        health_end - health_start);
                 update_stats(health, check_time);
 
                 healths.push_back(health);
             } catch (const std::exception& e) {
-                healths.push_back(Health(HealthStatus::DOWN,
-                                        "Health check threw exception")
-                                     .add_detail("error", e.what()));
+                healths.push_back(
+                    Health(HealthStatus::DOWN, "Health check threw exception")
+                        .add_detail("error", e.what()));
             }
         }
     }
@@ -172,7 +175,7 @@ Health HealthCheckRegistry::get_health(const std::string& indicator_name) {
     auto it = indicators_.find(indicator_name);
     if (it == indicators_.end()) {
         return Health(HealthStatus::UNKNOWN,
-                     "Health indicator not found: " + indicator_name);
+                      "Health indicator not found: " + indicator_name);
     }
 
     try {
@@ -180,8 +183,8 @@ Health HealthCheckRegistry::get_health(const std::string& indicator_name) {
         auto health = it->second->check();
         auto end = std::chrono::steady_clock::now();
 
-        auto check_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-            end - start);
+        auto check_time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
         update_stats(health, check_time);
 
         return health;
@@ -203,8 +206,9 @@ std::unordered_map<std::string, Health> HealthCheckRegistry::get_all_health() {
                 auto health = indicator->check();
                 auto end = std::chrono::steady_clock::now();
 
-                auto check_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    end - start);
+                auto check_time =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        end - start);
                 update_stats(health, check_time);
 
                 results[name] = health;
@@ -275,8 +279,8 @@ Health HealthCheckRegistry::default_health_aggregator(
     return Health(overall, desc.str());
 }
 
-void HealthCheckRegistry::update_stats(
-    const Health& health, std::chrono::milliseconds check_time) {
+void HealthCheckRegistry::update_stats(const Health& health,
+                                       std::chrono::milliseconds check_time) {
     std::lock_guard<std::mutex> lock(stats_mutex_);
 
     stats_.total_checks++;
@@ -326,8 +330,8 @@ std::string HealthEndpointBuilder::build_health_response(
             }
         }
 
-        oss << "\nTimestamp: "
-            << format_timestamp(overall_health.timestamp) << "\n";
+        oss << "\nTimestamp: " << format_timestamp(overall_health.timestamp)
+            << "\n";
     }
 
     return oss.str();
@@ -340,8 +344,8 @@ std::string HealthEndpointBuilder::build_json_response(
     std::ostringstream oss;
 
     oss << "{\n";
-    oss << "  \"status\": \""
-        << health_status_to_string(overall_health.status) << "\",\n";
+    oss << "  \"status\": \"" << health_status_to_string(overall_health.status)
+        << "\",\n";
     oss << "  \"description\": \"" << overall_health.description << "\",\n";
 
     if (show_details) {
@@ -394,7 +398,8 @@ std::string HealthEndpointBuilder::build_json_response(
     return oss.str();
 }
 
-std::string HealthEndpointBuilder::health_status_to_string(HealthStatus status) {
+std::string HealthEndpointBuilder::health_status_to_string(
+    HealthStatus status) {
     switch (status) {
         case HealthStatus::UP:
             return "UP";

@@ -211,11 +211,11 @@ public:
     void add_collector(std::shared_ptr<MetricsCollector> collector);
 
     // Service interface
-    void on_init(core::ApplicationContext& ctx) override;
+    void on_init(core::ApplicationContext &ctx) override;
     void on_start() override;
     void on_stop() override;
     std::string name() const override { return "prometheus"; }
-    
+
     // ReloadableService interface
     void on_config_reloaded() override;
 

@@ -21,9 +21,8 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
         auto it = component_metadata_.find(type_id);
         if (it != component_metadata_.end()) {
             const auto& metadata = it->second;
-            std::string name = metadata.name.empty()
-                                   ? type_id.name()
-                                   : metadata.name;
+            std::string name =
+                metadata.name.empty() ? type_id.name() : metadata.name;
 
             std::cout << "[ComponentRegistry] Registering component: " << name
                       << " (primary: " << (metadata.primary ? "yes" : "no")
@@ -39,9 +38,8 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
         auto it = service_metadata_.find(type_id);
         if (it != service_metadata_.end()) {
             const auto& metadata = it->second;
-            std::string name = metadata.value.empty()
-                                   ? type_id.name()
-                                   : metadata.value;
+            std::string name =
+                metadata.value.empty() ? type_id.name() : metadata.value;
 
             std::cout << "[ComponentRegistry] Registering service: " << name
                       << std::endl;
@@ -56,12 +54,11 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
         auto it = configuration_metadata_.find(type_id);
         if (it != configuration_metadata_.end()) {
             const auto& metadata = it->second;
-            std::string name = metadata.name.empty()
-                                   ? type_id.name()
-                                   : metadata.name;
+            std::string name =
+                metadata.name.empty() ? type_id.name() : metadata.name;
 
-            std::cout << "[ComponentRegistry] Registering configuration: " << name
-                      << " (proxy_bean_methods: "
+            std::cout << "[ComponentRegistry] Registering configuration: "
+                      << name << " (proxy_bean_methods: "
                       << (metadata.proxy_bean_methods ? "yes" : "no") << ")"
                       << std::endl;
 
@@ -76,8 +73,7 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
 void ComponentRegistry::auto_configure(di::AdvancedContainer& container) {
     std::cout << "[ComponentRegistry] Auto-configuring AdvancedContainer with "
               << component_factories_.size() << " components, "
-              << service_factories_.size() << " services"
-              << std::endl;
+              << service_factories_.size() << " services" << std::endl;
 
     // 由于类型擦除的限制，简化实现仅打印日志
     // 实际注册需要使用类型安全的方法
@@ -88,8 +84,8 @@ void ComponentRegistry::auto_configure(di::AdvancedContainer& container) {
             const auto& metadata = it->second;
             std::cout << "[ComponentRegistry] Would register component: "
                       << type_id.name()
-                      << " (primary: " << (metadata.primary ? "yes" : "no") << ")"
-                      << std::endl;
+                      << " (primary: " << (metadata.primary ? "yes" : "no")
+                      << ")" << std::endl;
         }
     }
 
@@ -103,8 +99,9 @@ void ComponentRegistry::auto_configure(di::AdvancedContainer& container) {
                   << type_id.name() << std::endl;
     }
 
-    std::cout << "[ComponentRegistry] AdvancedContainer auto-configuration complete"
-              << std::endl;
+    std::cout
+        << "[ComponentRegistry] AdvancedContainer auto-configuration complete"
+        << std::endl;
 }
 
 }  // namespace shield::annotations

@@ -1,8 +1,9 @@
 // shield/src/fs/file_watcher_impl.cpp
 #include "shield/fs/file_watcher_impl.hpp"
 
-#include <iostream>
 #include <sys/stat.h>
+
+#include <iostream>
 
 namespace shield::fs {
 
@@ -156,9 +157,8 @@ FileWatcher::FileWatcher(std::chrono::milliseconds poll_interval)
     : impl_(FileWatcherFactory::create_best_watcher(poll_interval)),
       dispatcher_(std::make_unique<FileEventDispatcher>()) {
     if (impl_) {
-        impl_->set_event_handler([this](const FileEvent& event) {
-            dispatcher_->dispatch(event);
-        });
+        impl_->set_event_handler(
+            [this](const FileEvent& event) { dispatcher_->dispatch(event); });
     }
 }
 
@@ -166,9 +166,8 @@ FileWatcher::FileWatcher(std::shared_ptr<IFileWatcher> impl)
     : impl_(std::move(impl)),
       dispatcher_(std::make_unique<FileEventDispatcher>()) {
     if (impl_) {
-        impl_->set_event_handler([this](const FileEvent& event) {
-            dispatcher_->dispatch(event);
-        });
+        impl_->set_event_handler(
+            [this](const FileEvent& event) { dispatcher_->dispatch(event); });
     }
 }
 
@@ -226,9 +225,7 @@ std::vector<std::string> FileWatcher::get_watched_files() const {
 PollingFileWatcher::PollingFileWatcher(std::chrono::milliseconds interval)
     : poll_interval_(interval), running_(false) {}
 
-PollingFileWatcher::~PollingFileWatcher() {
-    stop();
-}
+PollingFileWatcher::~PollingFileWatcher() { stop(); }
 
 bool PollingFileWatcher::add_file(const std::string& file_path) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -302,9 +299,7 @@ std::vector<std::string> PollingFileWatcher::get_watched_files() const {
     return files;
 }
 
-bool PollingFileWatcher::is_running() const {
-    return running_;
-}
+bool PollingFileWatcher::is_running() const { return running_; }
 
 void PollingFileWatcher::watch_loop() {
     std::cout << "[PollingFileWatcher] Watch loop started" << std::endl;
@@ -313,8 +308,8 @@ void PollingFileWatcher::watch_loop() {
         try {
             check_file_changes();
         } catch (const std::exception& e) {
-            std::cerr << "[PollingFileWatcher] Error in watch loop: " << e.what()
-                      << std::endl;
+            std::cerr << "[PollingFileWatcher] Error in watch loop: "
+                      << e.what() << std::endl;
         }
 
         std::this_thread::sleep_for(poll_interval_);
@@ -345,8 +340,9 @@ void PollingFileWatcher::check_file_changes() {
                 try {
                     handler_(event);
                 } catch (const std::exception& e) {
-                    std::cerr << "[PollingFileWatcher] Handler error: " << e.what()
-                              << std::endl;
+                    std::cerr
+                        << "[PollingFileWatcher] Handler error: " << e.what()
+                        << std::endl;
                 }
             }
         }
@@ -365,8 +361,7 @@ void PollingFileWatcher::check_file_changes() {
 #include <sys/time.h>
 #include <unistd.h>
 
-MacOSFileWatcher::MacOSFileWatcher()
-    : kqueue_fd_(-1), running_(false) {}
+MacOSFileWatcher::MacOSFileWatcher() : kqueue_fd_(-1), running_(false) {}
 
 MacOSFileWatcher::~MacOSFileWatcher() {
     stop();
@@ -470,9 +465,7 @@ void MacOSFileWatcher::set_event_handler(FileEventHandler handler) {
     handler_ = std::move(handler);
 }
 
-bool MacOSFileWatcher::is_supported() const {
-    return true;
-}
+bool MacOSFileWatcher::is_supported() const { return true; }
 
 std::vector<std::string> MacOSFileWatcher::get_watched_files() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -485,9 +478,7 @@ std::vector<std::string> MacOSFileWatcher::get_watched_files() const {
     return files;
 }
 
-bool MacOSFileWatcher::is_running() const {
-    return running_;
-}
+bool MacOSFileWatcher::is_running() const { return running_; }
 
 void MacOSFileWatcher::watch_loop() {
     std::cout << "[MacOSFileWatcher] Watch loop started" << std::endl;
@@ -518,13 +509,13 @@ void MacOSFileWatcher::watch_loop() {
             continue;
         }
 
-        int nev = kevent(kqueue_fd_, changes.data(), changes.size(), events.data(),
-                         events.size(), nullptr);
+        int nev = kevent(kqueue_fd_, changes.data(), changes.size(),
+                         events.data(), events.size(), nullptr);
 
         if (nev < 0) {
             if (errno != EINTR) {
-                std::cerr << "[MacOSFileWatcher] kevent error: " << strerror(errno)
-                          << std::endl;
+                std::cerr << "[MacOSFileWatcher] kevent error: "
+                          << strerror(errno) << std::endl;
             }
             continue;
         }
@@ -561,8 +552,9 @@ void MacOSFileWatcher::watch_loop() {
                     try {
                         handler_(event);
                     } catch (const std::exception& e) {
-                        std::cerr << "[MacOSFileWatcher] Handler error: "
-                                  << e.what() << std::endl;
+                        std::cerr
+                            << "[MacOSFileWatcher] Handler error: " << e.what()
+                            << std::endl;
                     }
                 }
             }
@@ -578,8 +570,7 @@ void MacOSFileWatcher::watch_loop() {
 
 #include <unistd.h>
 
-LinuxFileWatcher::LinuxFileWatcher()
-    : inotify_fd_(-1), running_(false) {}
+LinuxFileWatcher::LinuxFileWatcher() : inotify_fd_(-1), running_(false) {}
 
 LinuxFileWatcher::~LinuxFileWatcher() {
     stop();
@@ -605,13 +596,13 @@ bool LinuxFileWatcher::add_file(const std::string& file_path) {
     }
 
     // 添加新监听
-    int wd = inotify_add_watch(inotify_fd_, file_path.c_str(),
-                               IN_MODIFY | IN_DELETE | IN_CREATE | IN_MOVED_FROM |
-                                   IN_MOVED_TO);
+    int wd = inotify_add_watch(
+        inotify_fd_, file_path.c_str(),
+        IN_MODIFY | IN_DELETE | IN_CREATE | IN_MOVED_FROM | IN_MOVED_TO);
 
     if (wd < 0) {
-        std::cerr << "[LinuxFileWatcher] Failed to add watch for: "
-                  << file_path << std::endl;
+        std::cerr << "[LinuxFileWatcher] Failed to add watch for: " << file_path
+                  << std::endl;
         return false;
     }
 
@@ -680,9 +671,7 @@ void LinuxFileWatcher::set_event_handler(FileEventHandler handler) {
     handler_ = std::move(handler);
 }
 
-bool LinuxFileWatcher::is_supported() const {
-    return true;
-}
+bool LinuxFileWatcher::is_supported() const { return true; }
 
 std::vector<std::string> LinuxFileWatcher::get_watched_files() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -695,9 +684,7 @@ std::vector<std::string> LinuxFileWatcher::get_watched_files() const {
     return files;
 }
 
-bool LinuxFileWatcher::is_running() const {
-    return running_;
-}
+bool LinuxFileWatcher::is_running() const { return running_; }
 
 void LinuxFileWatcher::watch_loop() {
     std::cout << "[LinuxFileWatcher] Watch loop started" << std::endl;
@@ -706,13 +693,12 @@ void LinuxFileWatcher::watch_loop() {
     char buffer[BUFFER_SIZE];
 
     while (running_) {
-        ssize_t length =
-            read(inotify_fd_, buffer, BUFFER_SIZE);
+        ssize_t length = read(inotify_fd_, buffer, BUFFER_SIZE);
 
         if (length < 0) {
             if (errno != EINTR) {
-                std::cerr << "[LinuxFileWatcher] read error: " << strerror(errno)
-                          << std::endl;
+                std::cerr << "[LinuxFileWatcher] read error: "
+                          << strerror(errno) << std::endl;
             }
             continue;
         }
@@ -726,8 +712,8 @@ void LinuxFileWatcher::watch_loop() {
 void LinuxFileWatcher::process_events(const char* buffer, ssize_t length) {
     size_t i = 0;
     while (i < static_cast<size_t>(length)) {
-        struct inotify_event* event =
-            reinterpret_cast<struct inotify_event*>(const_cast<char*>(buffer + i));
+        struct inotify_event* event = reinterpret_cast<struct inotify_event*>(
+            const_cast<char*>(buffer + i));
 
         std::string file_path;
         {

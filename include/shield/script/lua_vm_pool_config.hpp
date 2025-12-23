@@ -11,7 +11,8 @@
 namespace shield::script {
 
 class LuaVMPoolConfigProperties
-    : public config::ReloadableConfigurationProperties<LuaVMPoolConfigProperties> {
+    : public config::ReloadableConfigurationProperties<
+          LuaVMPoolConfigProperties> {
 public:
     size_t initial_size = 4;
     size_t max_size = 16;
@@ -29,4 +30,3 @@ public:
 };
 
 }  // namespace shield::script
-

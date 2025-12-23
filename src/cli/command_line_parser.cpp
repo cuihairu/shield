@@ -1,8 +1,8 @@
 #include "shield/cli/command_line_parser.hpp"
 
+#include <algorithm>
 #include <boost/program_options.hpp>
 #include <iostream>
-#include <algorithm>
 
 #include "shield/version.hpp"
 
@@ -12,13 +12,13 @@ namespace shield::cli {
 
 CommandLineOptions CommandLineParser::parse(int argc, char* argv[]) {
     CommandLineOptions options;
-    
+
     if (argc < 2) {
         // No subcommand, default behavior (server mode)
         options.subcommand = SubCommand::Server;
         return options;
     }
-    
+
     try {
         // Check for global options first
         for (int i = 1; i < argc; ++i) {
@@ -36,26 +36,31 @@ CommandLineOptions CommandLineParser::parse(int argc, char* argv[]) {
             } else if (arg[0] != '-') {
                 // This is likely a subcommand
                 options.subcommand = parse_subcommand(arg);
-                
+
                 // Parse subcommand-specific options
                 int remaining_argc = argc - i;
                 char** remaining_argv = argv + i;
-                
+
                 switch (options.subcommand) {
                     case SubCommand::Server:
-                        parse_server_options(options, remaining_argc, remaining_argv, 1);
+                        parse_server_options(options, remaining_argc,
+                                             remaining_argv, 1);
                         break;
                     case SubCommand::CLI:
-                        parse_cli_options(options, remaining_argc, remaining_argv, 1);
+                        parse_cli_options(options, remaining_argc,
+                                          remaining_argv, 1);
                         break;
                     case SubCommand::Migrate:
-                        parse_migrate_options(options, remaining_argc, remaining_argv, 1);
+                        parse_migrate_options(options, remaining_argc,
+                                              remaining_argv, 1);
                         break;
                     case SubCommand::Test:
-                        parse_test_options(options, remaining_argc, remaining_argv, 1);
+                        parse_test_options(options, remaining_argc,
+                                           remaining_argv, 1);
                         break;
                     case SubCommand::Config:
-                        parse_config_options(options, remaining_argc, remaining_argv, 1);
+                        parse_config_options(options, remaining_argc,
+                                             remaining_argv, 1);
                         break;
                     default:
                         std::cerr << "Unknown subcommand: " << arg << std::endl;
@@ -65,12 +70,12 @@ CommandLineOptions CommandLineParser::parse(int argc, char* argv[]) {
                 break;
             }
         }
-        
+
         // If no subcommand found, default to server
         if (options.subcommand == SubCommand::None) {
             options.subcommand = SubCommand::Server;
         }
-        
+
     } catch (const po::error& e) {
         std::cerr << "Error parsing options: " << e.what() << std::endl;
         options.show_help = true;
@@ -88,22 +93,26 @@ SubCommand CommandLineParser::parse_subcommand(const std::string& cmd) {
     return SubCommand::None;
 }
 
-void CommandLineParser::parse_server_options(CommandLineOptions& options, int argc, char* argv[], int start_idx) {
+void CommandLineParser::parse_server_options(CommandLineOptions& options,
+                                             int argc, char* argv[],
+                                             int start_idx) {
     try {
         po::options_description desc("Server options");
-        desc.add_options()
-            ("config,c", po::value<std::string>(), "Configuration file")
-            ("port,p", po::value<int>(), "Server port")
-            ("host", po::value<std::string>(), "Server host")
-            ("daemon,d", "Run as daemon")
-            ("help,h", "Show server help");
+        desc.add_options()("config,c", po::value<std::string>(),
+                           "Configuration file")("port,p", po::value<int>(),
+                                                 "Server port")(
+            "host", po::value<std::string>(), "Server host")(
+            "daemon,d", "Run as daemon")("help,h", "Show server help");
 
         po::variables_map vm;
-        po::store(po::parse_command_line(argc - start_idx, argv + start_idx, desc), vm);
+        po::store(
+            po::parse_command_line(argc - start_idx, argv + start_idx, desc),
+            vm);
         po::notify(vm);
 
         if (vm.count("help")) {
-            std::cout << "Shield Server - Game server daemon\n\n" << desc << std::endl;
+            std::cout << "Shield Server - Game server daemon\n\n"
+                      << desc << std::endl;
             options.show_help = true;
             return;
         }
@@ -112,7 +121,8 @@ void CommandLineParser::parse_server_options(CommandLineOptions& options, int ar
             options.config_file = vm["config"].as<std::string>();
         }
         if (vm.count("port")) {
-            options.subcommand_args["port"] = std::to_string(vm["port"].as<int>());
+            options.subcommand_args["port"] =
+                std::to_string(vm["port"].as<int>());
         }
         if (vm.count("host")) {
             options.subcommand_args["host"] = vm["host"].as<std::string>();
@@ -126,22 +136,26 @@ void CommandLineParser::parse_server_options(CommandLineOptions& options, int ar
     }
 }
 
-void CommandLineParser::parse_cli_options(CommandLineOptions& options, int argc, char* argv[], int start_idx) {
+void CommandLineParser::parse_cli_options(CommandLineOptions& options, int argc,
+                                          char* argv[], int start_idx) {
     try {
         po::options_description desc("CLI options");
-        desc.add_options()
-            ("url,u", po::value<std::string>(), "Server URL")
-            ("timeout,t", po::value<int>(), "Request timeout in seconds")
-            ("format,f", po::value<std::string>(), "Output format (json, yaml, table)")
-            ("verbose,v", "Verbose output")
-            ("help,h", "Show CLI help");
+        desc.add_options()("url,u", po::value<std::string>(), "Server URL")(
+            "timeout,t", po::value<int>(), "Request timeout in seconds")(
+            "format,f", po::value<std::string>(),
+            "Output format (json, yaml, table)")("verbose,v", "Verbose output")(
+            "help,h", "Show CLI help");
 
         po::variables_map vm;
-        po::store(po::parse_command_line(argc - start_idx, argv + start_idx, desc), vm);
+        po::store(
+            po::parse_command_line(argc - start_idx, argv + start_idx, desc),
+            vm);
         po::notify(vm);
 
         if (vm.count("help")) {
-            std::cout << "Shield CLI - Command line interface for Shield server\n\n" << desc << std::endl;
+            std::cout
+                << "Shield CLI - Command line interface for Shield server\n\n"
+                << desc << std::endl;
             options.show_help = true;
             return;
         }
@@ -150,7 +164,8 @@ void CommandLineParser::parse_cli_options(CommandLineOptions& options, int argc,
             options.subcommand_args["url"] = vm["url"].as<std::string>();
         }
         if (vm.count("timeout")) {
-            options.subcommand_args["timeout"] = std::to_string(vm["timeout"].as<int>());
+            options.subcommand_args["timeout"] =
+                std::to_string(vm["timeout"].as<int>());
         }
         if (vm.count("format")) {
             options.subcommand_args["format"] = vm["format"].as<std::string>();
@@ -164,22 +179,27 @@ void CommandLineParser::parse_cli_options(CommandLineOptions& options, int argc,
     }
 }
 
-void CommandLineParser::parse_migrate_options(CommandLineOptions& options, int argc, char* argv[], int start_idx) {
+void CommandLineParser::parse_migrate_options(CommandLineOptions& options,
+                                              int argc, char* argv[],
+                                              int start_idx) {
     try {
         po::options_description desc("Migration options");
-        desc.add_options()
-            ("from", po::value<std::string>(), "Source version")
-            ("to", po::value<std::string>(), "Target version")
-            ("dry-run", "Show what would be migrated without making changes")
-            ("backup", "Create backup before migration")
-            ("help,h", "Show migration help");
+        desc.add_options()("from", po::value<std::string>(), "Source version")(
+            "to", po::value<std::string>(), "Target version")(
+            "dry-run", "Show what would be migrated without making changes")(
+            "backup", "Create backup before migration")("help,h",
+                                                        "Show migration help");
 
         po::variables_map vm;
-        po::store(po::parse_command_line(argc - start_idx, argv + start_idx, desc), vm);
+        po::store(
+            po::parse_command_line(argc - start_idx, argv + start_idx, desc),
+            vm);
         po::notify(vm);
 
         if (vm.count("help")) {
-            std::cout << "Shield Migrate - Database and configuration migration tool\n\n" << desc << std::endl;
+            std::cout << "Shield Migrate - Database and configuration "
+                         "migration tool\n\n"
+                      << desc << std::endl;
             options.show_help = true;
             return;
         }
@@ -197,27 +217,33 @@ void CommandLineParser::parse_migrate_options(CommandLineOptions& options, int a
             options.subcommand_args["backup"] = "true";
         }
     } catch (const po::error& e) {
-        std::cerr << "Error parsing migration options: " << e.what() << std::endl;
+        std::cerr << "Error parsing migration options: " << e.what()
+                  << std::endl;
         options.show_help = true;
     }
 }
 
-void CommandLineParser::parse_test_options(CommandLineOptions& options, int argc, char* argv[], int start_idx) {
+void CommandLineParser::parse_test_options(CommandLineOptions& options,
+                                           int argc, char* argv[],
+                                           int start_idx) {
     try {
         po::options_description desc("Test options");
-        desc.add_options()
-            ("suite,s", po::value<std::string>(), "Test suite to run (unit, integration, e2e)")
-            ("filter,f", po::value<std::string>(), "Test filter pattern")
-            ("config,c", po::value<std::string>(), "Test configuration file")
-            ("parallel,j", po::value<int>(), "Number of parallel test threads")
-            ("help,h", "Show test help");
+        desc.add_options()("suite,s", po::value<std::string>(),
+                           "Test suite to run (unit, integration, e2e)")(
+            "filter,f", po::value<std::string>(), "Test filter pattern")(
+            "config,c", po::value<std::string>(), "Test configuration file")(
+            "parallel,j", po::value<int>(), "Number of parallel test threads")(
+            "help,h", "Show test help");
 
         po::variables_map vm;
-        po::store(po::parse_command_line(argc - start_idx, argv + start_idx, desc), vm);
+        po::store(
+            po::parse_command_line(argc - start_idx, argv + start_idx, desc),
+            vm);
         po::notify(vm);
 
         if (vm.count("help")) {
-            std::cout << "Shield Test - Test runner for Shield framework\n\n" << desc << std::endl;
+            std::cout << "Shield Test - Test runner for Shield framework\n\n"
+                      << desc << std::endl;
             options.show_help = true;
             return;
         }
@@ -229,10 +255,12 @@ void CommandLineParser::parse_test_options(CommandLineOptions& options, int argc
             options.subcommand_args["filter"] = vm["filter"].as<std::string>();
         }
         if (vm.count("config")) {
-            options.subcommand_args["test-config"] = vm["config"].as<std::string>();
+            options.subcommand_args["test-config"] =
+                vm["config"].as<std::string>();
         }
         if (vm.count("parallel")) {
-            options.subcommand_args["parallel"] = std::to_string(vm["parallel"].as<int>());
+            options.subcommand_args["parallel"] =
+                std::to_string(vm["parallel"].as<int>());
         }
     } catch (const po::error& e) {
         std::cerr << "Error parsing test options: " << e.what() << std::endl;
@@ -240,22 +268,27 @@ void CommandLineParser::parse_test_options(CommandLineOptions& options, int argc
     }
 }
 
-void CommandLineParser::parse_config_options(CommandLineOptions& options, int argc, char* argv[], int start_idx) {
+void CommandLineParser::parse_config_options(CommandLineOptions& options,
+                                             int argc, char* argv[],
+                                             int start_idx) {
     try {
         po::options_description desc("Configuration options");
-        desc.add_options()
-            ("validate", "Validate configuration file")
-            ("dump", "Dump current configuration")
-            ("set", po::value<std::string>(), "Set configuration value (key=value)")
-            ("get", po::value<std::string>(), "Get configuration value")
-            ("help,h", "Show config help");
+        desc.add_options()("validate", "Validate configuration file")(
+            "dump", "Dump current configuration")(
+            "set", po::value<std::string>(),
+            "Set configuration value (key=value)")(
+            "get", po::value<std::string>(), "Get configuration value")(
+            "help,h", "Show config help");
 
         po::variables_map vm;
-        po::store(po::parse_command_line(argc - start_idx, argv + start_idx, desc), vm);
+        po::store(
+            po::parse_command_line(argc - start_idx, argv + start_idx, desc),
+            vm);
         po::notify(vm);
 
         if (vm.count("help")) {
-            std::cout << "Shield Config - Configuration management tool\n\n" << desc << std::endl;
+            std::cout << "Shield Config - Configuration management tool\n\n"
+                      << desc << std::endl;
             options.show_help = true;
             return;
         }
@@ -280,12 +313,14 @@ void CommandLineParser::parse_config_options(CommandLineOptions& options, int ar
 
 void CommandLineParser::show_help(SubCommand cmd) {
     std::cout << "Shield Game Framework v" << shield::VERSION << "\n\n";
-    
+
     if (cmd == SubCommand::None) {
-        std::cout << "Usage: shield [GLOBAL_OPTIONS] <SUBCOMMAND> [SUBCOMMAND_OPTIONS]\n\n";
+        std::cout << "Usage: shield [GLOBAL_OPTIONS] <SUBCOMMAND> "
+                     "[SUBCOMMAND_OPTIONS]\n\n";
         std::cout << "Available subcommands:\n";
         std::cout << "  server    Start the Shield game server\n";
-        std::cout << "  cli       Command line interface for server management\n";
+        std::cout
+            << "  cli       Command line interface for server management\n";
         std::cout << "  migrate   Database and configuration migration tools\n";
         std::cout << "  test      Run tests\n";
         std::cout << "  config    Configuration management\n\n";
@@ -293,8 +328,9 @@ void CommandLineParser::show_help(SubCommand cmd) {
         std::cout << "  --version, -v     Show version information\n";
         std::cout << "  --help, -h        Show this help message\n";
         std::cout << "  --config, -c      Specify configuration file\n\n";
-        std::cout << "Use 'shield <subcommand> --help' for subcommand-specific help.\n";
+        std::cout << "Use 'shield <subcommand> --help' for subcommand-specific "
+                     "help.\n";
     }
 }
 
-}  // namespace shield::core
+}  // namespace shield::cli

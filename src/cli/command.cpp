@@ -99,12 +99,13 @@ std::shared_ptr<Command> Command::parse_and_execute(int argc, char* argv[]) {
                 po::value<int>()->default_value(std::stoi(flag.default_value)),
                 flag.description.c_str());
         } else {
-            // For string flags, check if they should have implicit values (like --init)
+            // For string flags, check if they should have implicit values (like
+            // --init)
             if (flag.name == "init") {
-                desc.add_options()(
-                    option_spec.c_str(),
-                    po::value<std::string>()->implicit_value(flag.default_value),
-                    flag.description.c_str());
+                desc.add_options()(option_spec.c_str(),
+                                   po::value<std::string>()->implicit_value(
+                                       flag.default_value),
+                                   flag.description.c_str());
             } else {
                 desc.add_options()(
                     option_spec.c_str(),
@@ -167,7 +168,8 @@ std::shared_ptr<Command> Command::parse_and_execute(int argc, char* argv[]) {
             if (flag.type == "bool") {
                 ctx.set_user_flag(flag.name, "true");
             } else if (flag.type == "int") {
-                ctx.set_user_flag(flag.name, std::to_string(vm[flag.name].as<int>()));
+                ctx.set_user_flag(flag.name,
+                                  std::to_string(vm[flag.name].as<int>()));
             } else {
                 ctx.set_user_flag(flag.name, vm[flag.name].as<std::string>());
             }
@@ -292,4 +294,4 @@ int CommandContext::get_int_flag(const std::string& name) const {
     }
 }
 
-}  // namespace shield::core
+}  // namespace shield::cli

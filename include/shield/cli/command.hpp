@@ -134,4 +134,4 @@ private:
     std::string config_file_;
 };
 
-}  // namespace shield::core
+}  // namespace shield::cli

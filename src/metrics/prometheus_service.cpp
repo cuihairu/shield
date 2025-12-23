@@ -5,9 +5,9 @@
 #include <sstream>
 
 #include "shield/config/config.hpp"
+#include "shield/core/application_context.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/metrics/prometheus_config.hpp"
-#include "shield/core/application_context.hpp"
 
 #ifdef SHIELD_ENABLE_PROMETHEUS
 #ifdef __APPLE__
@@ -354,9 +354,8 @@ PrometheusService& PrometheusService::instance() {
 void PrometheusService::on_init(core::ApplicationContext& ctx) {
     try {
         auto& config_manager = shield::config::ConfigManager::instance();
-        auto prometheus_config =
-            config_manager
-                .get_configuration_properties<shield::metrics::PrometheusConfig>();
+        auto prometheus_config = config_manager.get_configuration_properties<
+            shield::metrics::PrometheusConfig>();
 
         if (prometheus_config) {
             // Load configuration from PrometheusConfig
@@ -470,7 +469,8 @@ void PrometheusService::on_config_reloaded() {
     // Stop the service to apply new settings
     on_stop();
     // Re-initialize with new config and restart
-    on_init(core::ApplicationContext::instance()); // This assumes ApplicationContext is a singleton
+    on_init(core::ApplicationContext::
+                instance());  // This assumes ApplicationContext is a singleton
     on_start();
 }
 
