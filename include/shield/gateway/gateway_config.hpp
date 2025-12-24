@@ -40,6 +40,7 @@ public:
         uint16_t port = 8082;
         std::string root_path = "/";
         int max_request_size = 1048576;  // 1MB
+        std::string backend = "beast";   // beast | legacy
     };
 
     // WebSocket configuration

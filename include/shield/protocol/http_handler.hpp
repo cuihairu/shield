@@ -1,8 +1,10 @@
 #pragma once
 
+#include <boost/beast/http.hpp>
 #include <functional>
 #include <regex>
 #include <unordered_map>
+#include <vector>
 
 #include "shield/net/session.hpp"
 #include "shield/protocol/protocol_handler.hpp"
@@ -32,6 +34,11 @@ private:
 // HTTP protocol handler implementation
 class HttpProtocolHandler : public IProtocolHandler {
 public:
+    using BeastRequest =
+        boost::beast::http::request<boost::beast::http::string_body>;
+    using BeastResponse =
+        boost::beast::http::response<boost::beast::http::string_body>;
+
     HttpProtocolHandler();
     ~HttpProtocolHandler() override = default;
 
@@ -48,6 +55,11 @@ public:
     void set_session_provider(
         std::function<std::shared_ptr<net::Session>(uint64_t)> provider);
     HttpRouter &get_router() { return router_; }
+
+protected:
+    BeastRequest parse_request(const std::string &raw_request);
+    BeastResponse build_response(boost::beast::http::status status,
+                                const std::string &body);
 
 private:
     HttpRequest parse_http_request(const std::string &raw_request,

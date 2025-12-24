@@ -41,6 +41,7 @@ void GatewayConfig::from_ptree(const boost::property_tree::ptree& pt) {
         http.root_path = get_value(*http_pt, "root_path", http.root_path);
         http.max_request_size =
             get_value(*http_pt, "max_request_size", http.max_request_size);
+        http.backend = get_value(*http_pt, "backend", http.backend);
     }
 
     // WebSocket configuration
@@ -86,6 +87,11 @@ void GatewayConfig::validate() const {
             "HTTP port must be greater than 0 when HTTP is enabled");
     }
 
+    if (http.enabled && !(http.backend == "beast" || http.backend == "legacy")) {
+        throw std::invalid_argument(
+            "HTTP backend must be 'beast' or 'legacy' when HTTP is enabled");
+    }
+
     if (websocket.enabled && websocket.ping_interval <= 0) {
         throw std::invalid_argument(
             "WebSocket ping interval must be greater than 0");
@@ -100,6 +106,16 @@ void GatewayConfig::validate() const {
     if (udp.enabled && udp.port == listener.port) {
         throw std::invalid_argument(
             "UDP port cannot be the same as listener port");
+    }
+
+    if (websocket.enabled && websocket.port == listener.port) {
+        throw std::invalid_argument(
+            "WebSocket port cannot be the same as listener port");
+    }
+
+    if (http.enabled && websocket.enabled && http.port == websocket.port) {
+        throw std::invalid_argument(
+            "HTTP port cannot be the same as WebSocket port");
     }
 }
 

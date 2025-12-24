@@ -241,6 +241,7 @@ gateway:
 gateway:
   http:
     enabled: true              # 启用 HTTP 服务
+    backend: "beast"           # HTTP 后端实现: beast | legacy (至少支持 HTTP/1.1)
     port: 8081                # HTTP 端口
     max_connections: 10000     # 最大连接数
     request_timeout: 30000     # 请求超时 (毫秒)

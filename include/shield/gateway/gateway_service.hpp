@@ -7,6 +7,7 @@
 #include "shield/actor/lua_actor.hpp"
 #include "shield/core/service.hpp"
 #include "shield/gateway/gateway_config.hpp"
+#include "shield/http/beast_http_server.hpp"
 #include "shield/net/master_reactor.hpp"
 #include "shield/net/session.hpp"
 #include "shield/protocol/binary_protocol.hpp"
@@ -57,6 +58,7 @@ private:
     std::unique_ptr<net::MasterReactor> m_master_reactor;
     std::unique_ptr<net::MasterReactor> m_http_reactor;  // HTTP server
     std::unique_ptr<net::MasterReactor> m_ws_reactor;    // WebSocket server
+    std::unique_ptr<http::BeastHttpServer> m_beast_http_server;
 
     std::unordered_map<uint64_t, std::vector<char>> m_session_recv_buffers;
     std::unordered_map<uint64_t, caf::actor>

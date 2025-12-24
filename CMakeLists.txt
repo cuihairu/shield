@@ -268,6 +268,8 @@ set(OTHER_SOURCES
     src/gateway/gateway_service.cpp
     src/gateway/gateway_config.cpp
     src/gateway/gateway_starter.cpp
+    # HTTP sources
+    src/http/beast_http_server.cpp
     # Network sources
     src/net/network_config.cpp
     # Command sources

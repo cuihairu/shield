@@ -51,7 +51,6 @@ struct HttpResponse {
 
     HttpResponse() {
         headers["Content-Type"] = "application/json";
-        headers["Connection"] = "close";
     }
 };
 

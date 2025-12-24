@@ -42,7 +42,7 @@ void GatewayService::on_init(core::ApplicationContext& ctx) {
     });
 
     // HTTP server configuration
-    if (m_config->http.enabled) {
+    if (m_config->http.enabled && m_config->http.backend == "legacy") {
         m_http_reactor = std::make_unique<net::MasterReactor>(
             listener_config.host, m_config->http.port, io_threads);
 
@@ -98,6 +98,22 @@ void GatewayService::on_init(core::ApplicationContext& ctx) {
     }
 
     setup_protocol_handlers();
+
+    // Beast HTTP server configuration
+    if (m_config->http.enabled && m_config->http.backend == "beast") {
+        http::BeastHttpServerConfig http_cfg;
+        http_cfg.host = listener_config.host;
+        http_cfg.port = m_config->http.port;
+        http_cfg.threads = io_threads;
+        http_cfg.root_path = m_config->http.root_path;
+        http_cfg.max_request_size =
+            static_cast<std::size_t>(m_config->http.max_request_size);
+
+        m_beast_http_server = std::make_unique<http::BeastHttpServer>(
+            std::move(http_cfg), [this](const protocol::HttpRequest& req) {
+                return m_http_handler->get_router().route_request(req);
+            });
+    }
 }
 
 void GatewayService::on_start() {
@@ -111,6 +127,9 @@ void GatewayService::on_start() {
         m_http_reactor->start();
         SHIELD_LOG_INFO << "HTTP server started on port "
                         << m_config->http.port;
+    }
+    if (m_beast_http_server) {
+        m_beast_http_server->start();
     }
 
     // Start WebSocket server
@@ -130,6 +149,9 @@ void GatewayService::on_stop() {
 
     if (m_http_reactor) {
         m_http_reactor->stop();
+    }
+    if (m_beast_http_server) {
+        m_beast_http_server->stop();
     }
 
     if (m_ws_reactor) {

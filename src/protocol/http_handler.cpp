@@ -3,9 +3,12 @@
 #include <algorithm>
 #include <sstream>
 
+#include <boost/asio/buffer.hpp>
+
 #include "shield/log/logger.hpp"
 
 namespace shield::protocol {
+namespace http = boost::beast::http;
 
 // HttpRouter implementation
 void HttpRouter::add_route(const std::string& method,
@@ -115,6 +118,33 @@ bool HttpProtocolHandler::send_data(uint64_t connection_id,
 void HttpProtocolHandler::set_session_provider(
     std::function<std::shared_ptr<net::Session>(uint64_t)> provider) {
     session_provider_ = std::move(provider);
+}
+
+HttpProtocolHandler::BeastRequest HttpProtocolHandler::parse_request(
+    const std::string& raw_request) {
+    http::request_parser<http::string_body> parser;
+    parser.eager(true);
+
+    boost::system::error_code ec;
+    parser.put(boost::asio::buffer(raw_request), ec);
+    if (ec) {
+        throw std::runtime_error("HTTP parse error: " + ec.message());
+    }
+    if (!parser.is_done()) {
+        throw std::runtime_error("HTTP parse error: incomplete request");
+    }
+    return parser.release();
+}
+
+HttpProtocolHandler::BeastResponse HttpProtocolHandler::build_response(
+    http::status status, const std::string& body) {
+    BeastResponse res;
+    res.version(11);
+    res.result(status);
+    res.set(http::field::content_type, "application/json");
+    res.body() = body;
+    res.prepare_payload();
+    return res;
 }
 
 HttpRequest HttpProtocolHandler::parse_http_request(

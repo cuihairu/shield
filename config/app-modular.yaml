@@ -22,6 +22,7 @@ gateway:
   http:
     enabled: false
     port: 8082
+    backend: "beast"  # beast | legacy
     root_path: "/"
     max_request_size: 1048576  # 1MB
   
