@@ -92,7 +92,7 @@ protected:
     Command* parent_ = nullptr;
 
 private:
-    std::shared_ptr<Command> parse_and_execute(int argc, char* argv[]);
+    int parse_and_execute(int argc, char* argv[]);
 };
 
 // Command context for passing data between commands

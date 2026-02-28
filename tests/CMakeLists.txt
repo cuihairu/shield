@@ -123,3 +123,10 @@ add_executable(test_event_system util/test_event_system.cpp)
 target_link_libraries(
   test_event_system PRIVATE shield_core Boost::unit_test_framework Boost::headers)
 add_test(NAME test_event_system COMMAND test_event_system)
+
+# CLI 命令执行测试
+add_executable(test_command_execution unit/cli/test_command_execution.cpp)
+target_link_libraries(
+  test_command_execution PRIVATE shield_core Boost::unit_test_framework
+                                 Boost::headers)
+add_test(NAME test_command_execution COMMAND test_command_execution)

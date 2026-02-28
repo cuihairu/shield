@@ -68,16 +68,14 @@ void Command::add_int_flag_with_short(const std::string& name,
 
 int Command::execute(int argc, char* argv[]) {
     try {
-        auto cmd = parse_and_execute(argc, argv);
-        // Don't check cmd pointer, just return success if no exception
-        return 0;
+        return parse_and_execute(argc, argv);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }
 }
 
-std::shared_ptr<Command> Command::parse_and_execute(int argc, char* argv[]) {
+int Command::parse_and_execute(int argc, char* argv[]) {
     CommandContext ctx;
 
     // Build program options description
@@ -159,7 +157,7 @@ std::shared_ptr<Command> Command::parse_and_execute(int argc, char* argv[]) {
     // Check for help (only for current command if no subcommand found)
     if (vm.count("help")) {
         print_help();
-        return nullptr;  // Don't use shared_from_this() here
+        return 0;
     }
 
     // Extract flag values
@@ -184,12 +182,7 @@ std::shared_ptr<Command> Command::parse_and_execute(int argc, char* argv[]) {
     }
 
     // Execute this command
-    int result = run(ctx);
-    if (result != 0) {
-        return nullptr;
-    }
-
-    return nullptr;  // Don't return shared_from_this()
+    return run(ctx);
 }
 
 void Command::print_help() const {
