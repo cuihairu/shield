@@ -234,16 +234,22 @@ public:
     struct ConditionalBeanInfo {
         std::type_index bean_type;
         std::function<std::shared_ptr<void>()> factory;
+        std::function<void(di::AdvancedContainer&)> container_registrar;
+        std::function<void(core::ApplicationContext&)> context_registrar;
         std::unique_ptr<Condition> condition;
         std::string name;
         di::ServiceLifetime lifetime;
 
         ConditionalBeanInfo(
             std::type_index type, std::function<std::shared_ptr<void>()> fact,
+            std::function<void(di::AdvancedContainer&)> container_reg,
+            std::function<void(core::ApplicationContext&)> context_reg,
             std::unique_ptr<Condition> cond, const std::string& bean_name = "",
             di::ServiceLifetime life = di::ServiceLifetime::SINGLETON)
             : bean_type(type),
               factory(std::move(fact)),
+              container_registrar(std::move(container_reg)),
+              context_registrar(std::move(context_reg)),
               condition(std::move(cond)),
               name(bean_name),
               lifetime(life) {}
@@ -271,8 +277,23 @@ public:
             return std::static_pointer_cast<void>(factory());
         };
 
+        auto container_registrar = [factory, lifetime](
+                                      di::AdvancedContainer& container) {
+            container.register_factory_advanced<T>(
+                [factory](di::AdvancedContainer&) { return factory(); },
+                lifetime);
+        };
+
+        auto context_registrar = [factory, name](core::ApplicationContext& ctx) {
+            const std::string bean_name =
+                name.empty() ? typeid(T).name() : name;
+            ctx.register_bean<T>(bean_name, factory());
+        };
+
         conditional_beans_.emplace_back(std::type_index(typeid(T)),
                                         std::move(wrapper_factory),
+                                        std::move(container_registrar),
+                                        std::move(context_registrar),
                                         std::move(condition), name, lifetime);
     }
 

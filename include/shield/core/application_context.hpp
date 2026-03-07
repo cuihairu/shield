@@ -151,6 +151,20 @@ public:
         return bean;
     }
 
+    // Register an already created bean instance.
+    template <typename T>
+    void register_bean(const std::string& name, std::shared_ptr<T> bean) {
+        if (!bean) {
+            throw std::invalid_argument("Cannot register null bean: " + name);
+        }
+        if (m_beans_by_name.count(name)) {
+            throw std::runtime_error("Bean with name '" + name +
+                                     "' already exists.");
+        }
+        m_beans_by_name[name] = std::move(bean);
+        m_bean_type_to_name[std::type_index(typeid(T))] = name;
+    }
+
     template <typename T>
     std::shared_ptr<T> get_bean(const std::string& name) const {
         auto it = m_beans_by_name.find(name);

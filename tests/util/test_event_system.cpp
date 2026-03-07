@@ -6,11 +6,14 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+#include <condition_variable>
 
 #include "shield/events/event_system.hpp"
+#include "shield/events/event_publisher.hpp"
 
 namespace shield::events {
 
@@ -230,7 +233,7 @@ BOOST_AUTO_TEST_SUITE_END()
 class MockEventPublisher : public EventPublisher {
 public:
     std::vector<std::shared_ptr<Event>> published_events;
-    std::unordered_map<std::type_index, std::vector<std::shared_ptr<void>>>
+    std::unordered_map<std::type_index, std::vector<ListenerRegistration>>
         listeners_map;
 
     void publish_event(std::shared_ptr<Event> event) override {
@@ -240,22 +243,16 @@ public:
         std::type_index type_idx(typeid(*event));
         auto it = listeners_map.find(type_idx);
         if (it != listeners_map.end()) {
-            for (auto& listener_ptr : it->second) {
-                auto listener =
-                    std::static_pointer_cast<EventListener<TestEvent>>(
-                        listener_ptr);
-                auto test_event = std::dynamic_pointer_cast<TestEvent>(event);
-                if (listener && test_event) {
-                    listener->on_event(*test_event);
-                }
+            for (const auto& registration : it->second) {
+                registration.invoke(*event);
             }
         }
     }
 
 protected:
     void register_listener(std::type_index event_type,
-                          std::shared_ptr<void> listener) override {
-        listeners_map[event_type].push_back(listener);
+                           ListenerRegistration registration) override {
+        listeners_map[event_type].push_back(std::move(registration));
     }
 };
 
@@ -384,6 +381,55 @@ BOOST_AUTO_TEST_CASE(test_config_change_event) {
     BOOST_CHECK_EQUAL(event.get_new_config()->value, 200);
     BOOST_CHECK_EQUAL(event.get_old_config()->name, "old");
     BOOST_CHECK_EQUAL(event.get_new_config()->name, "new");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(DefaultEventPublisherTests)
+
+BOOST_AUTO_TEST_CASE(test_default_publisher_sync_listener) {
+    DefaultEventPublisher publisher;
+    int received_value = 0;
+    int receive_count = 0;
+
+    publisher.on<TestEvent>([&](const TestEvent& event) {
+        received_value = event.get_value();
+        receive_count++;
+    });
+
+    publisher.emit_event<TestEvent>(77);
+
+    BOOST_CHECK_EQUAL(receive_count, 1);
+    BOOST_CHECK_EQUAL(received_value, 77);
+}
+
+BOOST_AUTO_TEST_CASE(test_default_publisher_async_listener) {
+    DefaultEventPublisher publisher;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+    int received_value = 0;
+
+    publisher.on<TestEvent>(
+        [&](const TestEvent& event) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                received_value = event.get_value();
+                done = true;
+            }
+            cv.notify_one();
+        },
+        true);
+
+    publisher.emit_event<TestEvent>(88);
+
+    std::unique_lock<std::mutex> lock(mutex);
+    const bool completed =
+        cv.wait_for(lock, std::chrono::milliseconds(500),
+                    [&] { return done; });
+
+    BOOST_CHECK(completed);
+    BOOST_CHECK_EQUAL(received_value, 88);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

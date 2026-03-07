@@ -12,12 +12,10 @@ namespace shield::events {
 class DefaultEventPublisher : public EventPublisher {
 private:
     struct ListenerInfo {
-        std::shared_ptr<void> listener;
-        bool async;
-        int order;
+        ListenerRegistration registration;
 
         bool operator<(const ListenerInfo& other) const {
-            return order < other.order;  // 按order排序
+            return registration.order < other.registration.order;
         }
     };
 
@@ -51,23 +49,26 @@ public:
         Event* event_ptr = event.get();
         std::type_index event_type = std::type_index(typeid(*event_ptr));
 
-        std::lock_guard<std::mutex> lock(listeners_mutex_);
-
-        auto it = listeners_.find(event_type);
-        if (it == listeners_.end()) {
-            SHIELD_LOG_DEBUG << "No listeners for event: " << event_type_name;
-            return;
+        std::vector<ListenerInfo> sorted_listeners;
+        {
+            std::lock_guard<std::mutex> lock(listeners_mutex_);
+            auto it = listeners_.find(event_type);
+            if (it == listeners_.end()) {
+                SHIELD_LOG_DEBUG << "No listeners for event: "
+                                 << event_type_name;
+                return;
+            }
+            sorted_listeners = it->second;
         }
 
         SHIELD_LOG_DEBUG << "Publishing event: " << event_type_name << " to "
-                         << it->second.size() << " listeners";
+                         << sorted_listeners.size() << " listeners";
 
         // 按order排序执行
-        auto sorted_listeners = it->second;
         std::sort(sorted_listeners.begin(), sorted_listeners.end());
 
         for (const auto& listener_info : sorted_listeners) {
-            if (listener_info.async) {
+            if (listener_info.registration.async) {
                 // 异步执行
                 enqueue_async_task([event, listener_info]() {
                     invoke_listener(event, listener_info);
@@ -81,39 +82,24 @@ public:
 
 protected:
     void register_listener(std::type_index event_type,
-                           std::shared_ptr<void> listener) override {
+                           ListenerRegistration registration) override {
         std::lock_guard<std::mutex> lock(listeners_mutex_);
-
-        // 获取监听器的元信息
-        bool async = false;
-        int order = 0;
-
-        // 这里使用类型擦除的方式获取监听器信息
-        // 实际实现中可能需要更复杂的类型推导
-        if (auto base_listener =
-                std::static_pointer_cast<EventListener<Event>>(listener)) {
-            async = base_listener->supports_async();
-            order = base_listener->get_order();
-        }
-
-        listeners_[event_type].push_back({listener, async, order});
+        listeners_[event_type].push_back({std::move(registration)});
+        const auto& info = listeners_[event_type].back();
 
         SHIELD_LOG_DEBUG << "Registered listener for event type: "
-                         << event_type.name() << " (async: " << async
-                         << ", order: " << order << ")";
+                         << event_type.name()
+                         << " (async: " << info.registration.async
+                         << ", order: " << info.registration.order << ")";
     }
 
 private:
     static void invoke_listener(std::shared_ptr<Event> event,
                                 const ListenerInfo& listener_info) {
         try {
-            // 这里需要类型安全的调用，实际实现可能需要更复杂的类型系统
-            // 简化版本：直接调用
             SHIELD_LOG_DEBUG << "Invoking listener for event: "
                              << event->get_event_type();
-
-            // 实际的监听器调用需要基于具体的事件类型进行类型转换
-            // 这里展示概念，实际实现需要使用模板特化或其他类型安全机制
+            listener_info.registration.invoke(*event);
 
         } catch (const std::exception& e) {
             SHIELD_LOG_ERROR << "Exception in event listener: " << e.what();

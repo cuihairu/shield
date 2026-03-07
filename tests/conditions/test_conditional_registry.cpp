@@ -6,9 +6,11 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <atomic>
 
 #include "shield/conditions/conditional_registry.hpp"
 #include "shield/config/config.hpp"
+#include "shield/core/application_context.hpp"
 #include "shield/di/advanced_container.hpp"
 
 namespace shield::conditions {
@@ -385,6 +387,56 @@ BOOST_AUTO_TEST_CASE(test_macro_on_property) {
     // The macro should compile and create a static initializer
     // We can't directly test the registration, but we can verify compilation
     BOOST_CHECK(true);  // If this compiles, the macro is valid
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(ConditionalRegistryProcessingTests,
+                      *boost::unit_test::fixture<ConditionFixture>())
+
+BOOST_AUTO_TEST_CASE(test_process_container_registration_match) {
+    auto& registry = ConditionalBeanRegistry::instance();
+    di::AdvancedContainer container;
+
+    registry.register_conditional_bean<TestService>(
+        std::make_unique<ClassCondition>("TestService"),
+        []() { return std::make_shared<TestService>(321); });
+
+    registry.process_conditional_registrations(container);
+
+    auto resolved = container.resolve<TestService>();
+    BOOST_REQUIRE(resolved != nullptr);
+    BOOST_CHECK_EQUAL(resolved->get_value(), 321);
+}
+
+BOOST_AUTO_TEST_CASE(test_process_container_registration_skip) {
+    auto& registry = ConditionalBeanRegistry::instance();
+    di::AdvancedContainer container;
+
+    registry.register_conditional_bean<TestService>(
+        std::make_unique<ProfileCondition>("__never_match_profile__"));
+
+    registry.process_conditional_registrations(container);
+
+    BOOST_CHECK(!container.can_resolve<TestService>());
+}
+
+BOOST_AUTO_TEST_CASE(test_process_app_context_registration_match) {
+    auto& registry = ConditionalBeanRegistry::instance();
+    auto& context = core::ApplicationContext::instance();
+    static std::atomic<int> counter{0};
+    const std::string unique_name =
+        "conditional_ctx_test_" + std::to_string(counter.fetch_add(1));
+
+    registry.register_conditional_bean<TestService>(
+        std::make_unique<ClassCondition>("TestService"),
+        []() { return std::make_shared<TestService>(654); }, unique_name);
+
+    registry.process_conditional_registrations(context);
+
+    auto bean = context.get_bean<TestService>(unique_name);
+    BOOST_REQUIRE(bean != nullptr);
+    BOOST_CHECK_EQUAL(bean->get_value(), 654);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

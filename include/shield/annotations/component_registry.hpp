@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <typeindex>
@@ -85,6 +86,21 @@ public:
         registry.component_factories_[type_id] = []() -> std::shared_ptr<void> {
             return std::static_pointer_cast<void>(std::make_shared<T>());
         };
+        registry.component_app_context_registrars_[type_id] =
+            [metadata](core::ApplicationContext& context) {
+                const std::string name =
+                    metadata.value.empty()
+                        ? (metadata.name.empty() ? typeid(T).name()
+                                                 : metadata.name)
+                        : metadata.value;
+                context.register_bean<T>(name, std::make_shared<T>());
+            };
+        registry.component_container_registrars_[type_id] =
+            [](di::AdvancedContainer& container) {
+                container.register_factory_advanced<T>(
+                    [](di::AdvancedContainer&) { return std::make_shared<T>(); },
+                    di::ServiceLifetime::SINGLETON);
+            };
     }
 
     /**
@@ -99,6 +115,27 @@ public:
         registry.service_factories_[type_id] = []() -> std::shared_ptr<void> {
             return std::static_pointer_cast<void>(std::make_shared<T>());
         };
+        registry.service_app_context_registrars_[type_id] =
+            [metadata](core::ApplicationContext& context) {
+                const std::string name =
+                    metadata.value.empty()
+                        ? (metadata.name.empty() ? typeid(T).name()
+                                                 : metadata.name)
+                        : metadata.value;
+
+                auto instance = std::make_shared<T>();
+                if constexpr (std::is_base_of_v<core::Service, T>) {
+                    context.register_service<T>(name, std::move(instance));
+                } else {
+                    context.register_bean<T>(name, std::move(instance));
+                }
+            };
+        registry.service_container_registrars_[type_id] =
+            [](di::AdvancedContainer& container) {
+                container.register_factory_advanced<T>(
+                    [](di::AdvancedContainer&) { return std::make_shared<T>(); },
+                    di::ServiceLifetime::SINGLETON);
+            };
     }
 
     /**
@@ -115,6 +152,18 @@ public:
             []() -> std::shared_ptr<void> {
             return std::static_pointer_cast<void>(std::make_shared<T>());
         };
+        registry.configuration_app_context_registrars_[type_id] =
+            [metadata](core::ApplicationContext& context) {
+                const std::string name =
+                    metadata.name.empty() ? typeid(T).name() : metadata.name;
+                context.register_bean<T>(name, std::make_shared<T>());
+            };
+        registry.configuration_container_registrars_[type_id] =
+            [](di::AdvancedContainer& container) {
+                container.register_factory_advanced<T>(
+                    [](di::AdvancedContainer&) { return std::make_shared<T>(); },
+                    di::ServiceLifetime::SINGLETON);
+            };
     }
 
     /**
@@ -178,6 +227,23 @@ private:
         service_factories_;
     std::unordered_map<std::type_index, std::function<std::shared_ptr<void>()>>
         configuration_factories_;
+
+    std::unordered_map<std::type_index,
+                       std::function<void(core::ApplicationContext&)>>
+        component_app_context_registrars_;
+    std::unordered_map<std::type_index,
+                       std::function<void(core::ApplicationContext&)>>
+        service_app_context_registrars_;
+    std::unordered_map<std::type_index,
+                       std::function<void(core::ApplicationContext&)>>
+        configuration_app_context_registrars_;
+
+    std::unordered_map<std::type_index, std::function<void(di::AdvancedContainer&)>>
+        component_container_registrars_;
+    std::unordered_map<std::type_index, std::function<void(di::AdvancedContainer&)>>
+        service_container_registrars_;
+    std::unordered_map<std::type_index, std::function<void(di::AdvancedContainer&)>>
+        configuration_container_registrars_;
 };
 
 }  // namespace shield::annotations

@@ -2,6 +2,7 @@
 #include "shield/annotations/component_registry.hpp"
 
 #include <iostream>
+#include <stdexcept>
 
 namespace shield::annotations {
 
@@ -17,24 +18,29 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
               << std::endl;
 
     // 注册所有组件
-    for (const auto& [type_id, factory] : component_factories_) {
+    for (const auto& [type_id, registrar] : component_app_context_registrars_) {
         auto it = component_metadata_.find(type_id);
         if (it != component_metadata_.end()) {
             const auto& metadata = it->second;
             std::string name =
-                metadata.name.empty() ? type_id.name() : metadata.name;
+                metadata.value.empty()
+                    ? (metadata.name.empty() ? type_id.name() : metadata.name)
+                    : metadata.value;
 
             std::cout << "[ComponentRegistry] Registering component: " << name
                       << " (primary: " << (metadata.primary ? "yes" : "no")
                       << ")" << std::endl;
-
-            // 注册到 ApplicationContext
-            // context.register_component_factory(name, factory, metadata);
+            try {
+                registrar(context);
+            } catch (const std::exception& e) {
+                std::cout << "[ComponentRegistry] Failed to register component: "
+                          << name << " error: " << e.what() << std::endl;
+            }
         }
     }
 
     // 注册所有服务
-    for (const auto& [type_id, factory] : service_factories_) {
+    for (const auto& [type_id, registrar] : service_app_context_registrars_) {
         auto it = service_metadata_.find(type_id);
         if (it != service_metadata_.end()) {
             const auto& metadata = it->second;
@@ -43,14 +49,18 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
 
             std::cout << "[ComponentRegistry] Registering service: " << name
                       << std::endl;
-
-            // 注册到 ApplicationContext
-            // context.register_service_factory(name, factory);
+            try {
+                registrar(context);
+            } catch (const std::exception& e) {
+                std::cout << "[ComponentRegistry] Failed to register service: "
+                          << name << " error: " << e.what() << std::endl;
+            }
         }
     }
 
     // 注册所有配置类
-    for (const auto& [type_id, factory] : configuration_factories_) {
+    for (const auto& [type_id, registrar] :
+         configuration_app_context_registrars_) {
         auto it = configuration_metadata_.find(type_id);
         if (it != configuration_metadata_.end()) {
             const auto& metadata = it->second;
@@ -61,9 +71,13 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
                       << name << " (proxy_bean_methods: "
                       << (metadata.proxy_bean_methods ? "yes" : "no") << ")"
                       << std::endl;
-
-            // 注册到 ApplicationContext
-            // context.register_configuration_factory(name, factory, metadata);
+            try {
+                registrar(context);
+            } catch (const std::exception& e) {
+                std::cout
+                    << "[ComponentRegistry] Failed to register configuration: "
+                    << name << " error: " << e.what() << std::endl;
+            }
         }
     }
 
@@ -75,28 +89,28 @@ void ComponentRegistry::auto_configure(di::AdvancedContainer& container) {
               << component_factories_.size() << " components, "
               << service_factories_.size() << " services" << std::endl;
 
-    // 由于类型擦除的限制，简化实现仅打印日志
-    // 实际注册需要使用类型安全的方法
-
-    for (const auto& [type_id, factory] : component_factories_) {
+    for (const auto& [type_id, registrar] : component_container_registrars_) {
         auto it = component_metadata_.find(type_id);
         if (it != component_metadata_.end()) {
             const auto& metadata = it->second;
-            std::cout << "[ComponentRegistry] Would register component: "
+            std::cout << "[ComponentRegistry] Registering component: "
                       << type_id.name()
                       << " (primary: " << (metadata.primary ? "yes" : "no")
                       << ")" << std::endl;
+            registrar(container);
         }
     }
 
-    for (const auto& [type_id, factory] : service_factories_) {
-        std::cout << "[ComponentRegistry] Would register service: "
+    for (const auto& [type_id, registrar] : service_container_registrars_) {
+        std::cout << "[ComponentRegistry] Registering service: "
                   << type_id.name() << std::endl;
+        registrar(container);
     }
 
-    for (const auto& [type_id, factory] : configuration_factories_) {
-        std::cout << "[ComponentRegistry] Would register configuration: "
+    for (const auto& [type_id, registrar] : configuration_container_registrars_) {
+        std::cout << "[ComponentRegistry] Registering configuration: "
                   << type_id.name() << std::endl;
+        registrar(container);
     }
 
     std::cout

@@ -99,6 +99,13 @@ target_link_libraries(
                                       Boost::headers yaml-cpp::yaml-cpp)
 add_test(NAME test_conditional_registry COMMAND test_conditional_registry)
 
+# 注解组件注册测试
+add_executable(test_component_registry annotations/test_component_registry.cpp)
+target_link_libraries(
+  test_component_registry PRIVATE shield_core Boost::unit_test_framework
+                                  Boost::headers yaml-cpp::yaml-cpp)
+add_test(NAME test_component_registry COMMAND test_component_registry)
+
 # UDP 会话管理测试
 add_executable(test_udp_session net/test_udp_session.cpp)
 target_link_libraries(

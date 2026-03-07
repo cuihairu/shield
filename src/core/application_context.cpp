@@ -2,7 +2,10 @@
 
 #include "shield/config/application_configuration.hpp"
 #include "shield/config/config.hpp"
+#include "shield/conditions/conditional_registry.hpp"
 #include "shield/core/starter_manager.hpp"
+#include "shield/events/event_system.hpp"
+#include "shield/annotations/component_registry.hpp"
 #include "shield/log/logger.hpp"
 
 namespace shield::core {
@@ -137,6 +140,29 @@ void ApplicationContext::configure_with_plugins(
                          << e.what();
         throw;
     }
+}
+
+void ApplicationContext::configure_with_annotations() {
+    SHIELD_LOG_INFO
+        << "Configuring ApplicationContext with annotation registry";
+    annotations::ComponentRegistry::instance().auto_configure(*this);
+}
+
+void ApplicationContext::configure_with_conditional_beans() {
+    SHIELD_LOG_INFO
+        << "Configuring ApplicationContext with conditional bean registry";
+    conditions::ConditionalBeanRegistry::instance()
+        .process_conditional_registrations(*this);
+}
+
+void ApplicationContext::publish_application_started_event() {
+    event_publisher_.emit_event<events::lifecycle::ApplicationStartedEvent>(
+        std::string("ApplicationContext"));
+}
+
+void ApplicationContext::publish_application_stopped_event() {
+    event_publisher_.emit_event<events::lifecycle::ApplicationStoppingEvent>(
+        std::string("ApplicationContext"));
 }
 
 }  // namespace shield::core
