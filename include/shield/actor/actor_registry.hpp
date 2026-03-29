@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -177,6 +178,8 @@ private:
     std::atomic<bool> heartbeat_running_{false};
     std::thread heartbeat_thread_;
     std::chrono::seconds heartbeat_interval_;
+    std::condition_variable heartbeat_condition_;
+    std::mutex heartbeat_mutex_;
 };
 
 /// @brief Factory function to create actor registry

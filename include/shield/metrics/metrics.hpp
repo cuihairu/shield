@@ -3,12 +3,12 @@
 #include <chrono>
 #include <memory>
 
-#include "shield/metrics/prometheus_component.hpp"
+#include "shield/metrics/prometheus_service.hpp"
 
 namespace shield::metrics {
 
 // Convenience macros for metrics collection
-#define SHIELD_METRICS() PrometheusComponent::instance()
+#define SHIELD_METRICS() PrometheusService::instance()
 
 #define SHIELD_METRIC_INC_CONNECTIONS()                            \
     do {                                                           \

@@ -18,7 +18,7 @@ cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
 
 ### Q: 启动时找不到配置文件
 
-**A**: 使用 `--config` 参数指定配置文件路径，或确保 `config/shield.yaml` 存在。
+**A**: 使用 `--config` 参数指定配置文件路径，或确保默认配置 `config/app.yaml` 存在（旧版本常用的 `config/shield.yaml` 也可通过 `shield migrate` 迁移到新格式）。
 
 ### Q: Lua 脚本加载失败
 

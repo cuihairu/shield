@@ -43,13 +43,42 @@ public:
     auto serialize(const T &object) -> serialization_result_t<Format>
         requires Serializable<T, Format>
     {
-        // Call the virtual function with type info
-        if constexpr (std::is_same_v<serialization_result_t<Format>,
-                                     std::string>) {
-            auto bytes = serialize_bytes(&object, typeid(T));
-            return std::string(bytes.begin(), bytes.end());
+        if constexpr (Format == SerializationFormat::JSON) {
+            try {
+                nlohmann::json j = object;
+                return j.dump();
+            } catch (const std::exception &e) {
+                throw SerializationException(std::string("JSON serialize failed: ") +
+                                             e.what());
+            }
+        } else if constexpr (Format == SerializationFormat::MESSAGEPACK) {
+            try {
+                msgpack::sbuffer buffer;
+                msgpack::pack(buffer, object);
+                return std::vector<uint8_t>(
+                    reinterpret_cast<const uint8_t *>(buffer.data()),
+                    reinterpret_cast<const uint8_t *>(buffer.data()) +
+                        buffer.size());
+            } catch (const std::exception &e) {
+                throw SerializationException(
+                    std::string("MessagePack serialize failed: ") + e.what());
+            }
+        } else if constexpr (Format == SerializationFormat::PROTOBUF) {
+            try {
+                std::string out;
+                if (!object.SerializeToString(&out)) {
+                    throw SerializationException("Protobuf SerializeToString failed");
+                }
+                return std::vector<uint8_t>(out.begin(), out.end());
+            } catch (const std::exception &e) {
+                throw SerializationException(std::string("Protobuf serialize failed: ") +
+                                             e.what());
+            }
         } else {
-            return serialize_bytes(&object, typeid(T));
+            static_assert(Format == SerializationFormat::JSON ||
+                              Format == SerializationFormat::MESSAGEPACK ||
+                              Format == SerializationFormat::PROTOBUF,
+                          "Unsupported serialization format");
         }
     }
 
@@ -57,15 +86,43 @@ public:
     T deserialize(const serialization_result_t<Format> &data)
         requires Serializable<T, Format>
     {
-        T result;
-        if constexpr (std::is_same_v<serialization_result_t<Format>,
-                                     std::string>) {
-            std::vector<uint8_t> bytes(data.begin(), data.end());
-            deserialize_bytes(bytes, &result, typeid(T));
+        if constexpr (Format == SerializationFormat::JSON) {
+            try {
+                nlohmann::json j = nlohmann::json::parse(data);
+                return j.template get<T>();
+            } catch (const std::exception &e) {
+                throw SerializationException(
+                    std::string("JSON deserialize failed: ") + e.what());
+            }
+        } else if constexpr (Format == SerializationFormat::MESSAGEPACK) {
+            try {
+                auto handle = msgpack::unpack(
+                    reinterpret_cast<const char *>(data.data()), data.size());
+                T result{};
+                handle.get().convert(result);
+                return result;
+            } catch (const std::exception &e) {
+                throw SerializationException(
+                    std::string("MessagePack deserialize failed: ") + e.what());
+            }
+        } else if constexpr (Format == SerializationFormat::PROTOBUF) {
+            try {
+                T result{};
+                const std::string s(data.begin(), data.end());
+                if (!result.ParseFromString(s)) {
+                    throw SerializationException("Protobuf ParseFromString failed");
+                }
+                return result;
+            } catch (const std::exception &e) {
+                throw SerializationException(std::string("Protobuf deserialize failed: ") +
+                                             e.what());
+            }
         } else {
-            deserialize_bytes(data, &result, typeid(T));
+            static_assert(Format == SerializationFormat::JSON ||
+                              Format == SerializationFormat::MESSAGEPACK ||
+                              Format == SerializationFormat::PROTOBUF,
+                          "Unsupported serialization format");
         }
-        return result;
     }
 
     // Convenience method: auto-detect and use best format

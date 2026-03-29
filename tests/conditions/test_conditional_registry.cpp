@@ -107,7 +107,7 @@ BOOST_AUTO_TEST_CASE(test_profile_condition_description) {
     auto desc_single = single.description();
     BOOST_CHECK_EQUAL(desc_single, "Active profile matches one of: [production]");
 
-    ProfileCondition multiple({"dev", "test"});
+    ProfileCondition multiple(std::vector<std::string>{"dev", "test"});
     auto desc_multiple = multiple.description();
     BOOST_CHECK(desc_multiple.find("dev") != std::string::npos);
     BOOST_CHECK(desc_multiple.find("test") != std::string::npos);
@@ -186,8 +186,8 @@ BOOST_AUTO_TEST_SUITE(CompositeConditionTests)
 
 BOOST_AUTO_TEST_CASE(test_and_condition_all_match) {
     CompositeCondition condition(CompositeCondition::LogicalOperator::AND);
-    condition.add_condition(std::make_unique<ClassCondition("Class1"));
-    condition.add_condition(std::make_unique<ClassCondition("Class2"));
+    condition.add_condition(std::make_unique<ClassCondition>("Class1"));
+    condition.add_condition(std::make_unique<ClassCondition>("Class2"));
 
     BOOST_CHECK(condition.matches());
 }
@@ -268,7 +268,7 @@ BOOST_AUTO_TEST_CASE(test_nested_composite_condition) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // ConditionalBeanRegistry tests
-BOOST_AUTO_TEST_SUITE(ConditionalBeanRegistryTests, *boost::unit_test::fixture<ConditionFixture>())
+BOOST_FIXTURE_TEST_SUITE(ConditionalBeanRegistryTests, ConditionFixture)
 
 BOOST_AUTO_TEST_CASE(test_register_conditional_bean) {
     auto& registry = ConditionalBeanRegistry::instance();
@@ -277,7 +277,7 @@ BOOST_AUTO_TEST_CASE(test_register_conditional_bean) {
     registry.register_conditional_bean<TestService>(
         std::move(condition), []() { return std::make_shared<TestService>(42); });
 
-    auto beans = registry.get_conditional_beans();
+    const auto& beans = registry.get_conditional_beans();
     BOOST_CHECK_EQUAL(beans.size(), 1);
     BOOST_CHECK(beans[0].bean_type == std::type_index(typeid(TestService)));
 }
@@ -291,7 +291,7 @@ BOOST_AUTO_TEST_CASE(test_register_multiple_conditional_beans) {
     registry.register_conditional_bean<AnotherService>(
         std::make_unique<ClassCondition>("AnotherService"));
 
-    auto beans = registry.get_conditional_beans();
+    const auto& beans = registry.get_conditional_beans();
     BOOST_CHECK_EQUAL(beans.size(), 2);
 }
 
@@ -305,7 +305,7 @@ BOOST_AUTO_TEST_CASE(test_conditional_bean_info) {
         std::move(condition), factory, "ProductionTestService",
         di::ServiceLifetime::SINGLETON);
 
-    auto beans = registry.get_conditional_beans();
+    const auto& beans = registry.get_conditional_beans();
     BOOST_REQUIRE_EQUAL(beans.size(), 1);
 
     const auto& bean_info = beans[0];
@@ -323,7 +323,7 @@ BOOST_AUTO_TEST_CASE(test_conditional_bean_with_transient_lifetime) {
         []() { return std::make_shared<TestService>(); }, "TransientService",
         di::ServiceLifetime::TRANSIENT);
 
-    auto beans = registry.get_conditional_beans();
+    const auto& beans = registry.get_conditional_beans();
     BOOST_REQUIRE_EQUAL(beans.size(), 1);
     BOOST_CHECK(beans[0].lifetime == di::ServiceLifetime::TRANSIENT);
 }
@@ -350,7 +350,7 @@ BOOST_AUTO_TEST_CASE(test_default_factory) {
     registry.register_conditional_bean<TestService>(
         std::make_unique<ClassCondition>("TestService"));
 
-    auto beans = registry.get_conditional_beans();
+    const auto& beans = registry.get_conditional_beans();
     BOOST_REQUIRE_EQUAL(beans.size(), 1);
 
     // The factory should create a default instance
@@ -367,7 +367,7 @@ BOOST_AUTO_TEST_CASE(test_custom_factory) {
     registry.register_conditional_bean<TestService>(
         std::make_unique<ClassCondition>("TestService"), custom_factory);
 
-    auto beans = registry.get_conditional_beans();
+    const auto& beans = registry.get_conditional_beans();
     BOOST_REQUIRE_EQUAL(beans.size(), 1);
 
     auto service = std::static_pointer_cast<TestService>(beans[0].factory());
@@ -377,7 +377,7 @@ BOOST_AUTO_TEST_CASE(test_custom_factory) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Conditional registration macros tests
-BOOST_AUTO_TEST_SUITE(ConditionalMacroTests, *boost::unit_test::fixture<ConditionFixture>())
+BOOST_FIXTURE_TEST_SUITE(ConditionalMacroTests, ConditionFixture)
 
 BOOST_AUTO_TEST_CASE(test_macro_on_property) {
     // Note: These macros are designed to be used at global/namespace scope

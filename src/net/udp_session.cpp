@@ -149,7 +149,7 @@ void UdpSession::do_receive() {
     m_socket.async_receive_from(
         boost::asio::buffer(m_receive_buffer, max_length), m_sender_endpoint,
         [this](boost::system::error_code ec, std::size_t bytes_received) {
-            if (!ec && bytes_received > 0) {
+            if (!ec) {
                 uint64_t session_id =
                     get_or_create_session_id(m_sender_endpoint);
 

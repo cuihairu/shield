@@ -24,10 +24,15 @@ void UniversalSerializationSystem::initialize(
 
         // Register Protobuf serializer
         if (config.enable_protobuf) {
+#if SHIELD_HAS_PROTOBUF
             registry.register_serializer(
                 SerializationFormat::PROTOBUF,
                 create_protobuf_universal_serializer());
             SHIELD_LOG_INFO << "Protobuf serializer registered";
+#else
+            SHIELD_LOG_WARN
+                << "Protobuf requested but not compiled into this build";
+#endif
         }
 
         // Register MessagePack serializer

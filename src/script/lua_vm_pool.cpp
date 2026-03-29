@@ -388,13 +388,18 @@ void LuaVMPool::cleanup_idle_vms() {
 void LuaVMPool::cleanup_thread_func() {
     SHIELD_LOG_DEBUG << "LuaVMPool cleanup thread started";
 
+    std::unique_lock<std::mutex> lock(pool_mutex_);
     while (running_) {
-        std::this_thread::sleep_for(
-            std::chrono::seconds(30));  // Check every 30 seconds
-
-        if (running_) {
-            cleanup_idle_vms();
+        const bool stopping = pool_condition_.wait_for(
+            lock, std::chrono::seconds(30),
+            [this] { return !running_.load(); });
+        if (stopping) {
+            break;
         }
+
+        lock.unlock();
+        cleanup_idle_vms();
+        lock.lock();
     }
 
     SHIELD_LOG_DEBUG << "LuaVMPool cleanup thread stopped";

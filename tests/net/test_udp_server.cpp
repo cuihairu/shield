@@ -1,18 +1,22 @@
-#include <chrono>
-#include <iostream>
-#include <thread>
+#define BOOST_TEST_MODULE UdpServerTests
+#include <boost/test/unit_test.hpp>
 
-#include "shield/core/logger.hpp"
+#include <array>
+#include <chrono>
+#include <string>
+
+#include "shield/log/logger.hpp"
+#include "shield/log/log_config.hpp"
 #include "shield/net/udp_reactor.hpp"
 #include "shield/protocol/udp_protocol_handler.hpp"
 
 class SimpleUdpHandler : public shield::protocol::UdpProtocolHandler {
 public:
-    SimpleUdpHandler(boost::asio::io_context &io_context, uint16_t port)
+    SimpleUdpHandler(boost::asio::io_context& io_context, uint16_t port)
         : UdpProtocolHandler(io_context, port) {
         // Set up message handling
         set_message_callback(
-            [this](const shield::protocol::UdpMessage &message) {
+            [this](const shield::protocol::UdpMessage& message) {
                 handle_udp_message(message);
             });
 
@@ -22,7 +26,7 @@ public:
     }
 
 private:
-    void handle_udp_message(const shield::protocol::UdpMessage &message) {
+    void handle_udp_message(const shield::protocol::UdpMessage& message) {
         SHIELD_LOG_INFO << "Received UDP message from session "
                         << message.session_id << ": " << message.data;
 
@@ -36,50 +40,59 @@ private:
     }
 };
 
-void test_udp_server() {
-    try {
-        // Initialize logging
-        shield::core::LogConfig log_config;
-        shield::core::Logger::init(log_config);
+BOOST_AUTO_TEST_CASE(test_udp_echo) {
+    using boost::asio::ip::udp;
+    using namespace std::chrono_literals;
 
-        std::cout << "=== Testing UDP Server ===\n";
+    shield::log::LogConfig log_config;
+    shield::log::Logger::init(log_config);
 
-        // Create UDP reactor
-        shield::net::UdpReactor reactor(12345, 2);
+    shield::net::UdpReactor reactor(/*port=*/0, /*num_worker_threads=*/1);
+    reactor.set_handler_creator(
+        [](boost::asio::io_context& io_context, uint16_t port) {
+            return std::make_unique<SimpleUdpHandler>(io_context, port);
+        });
+    reactor.start();
 
-        // Set custom handler creator
-        reactor.set_handler_creator(
-            [](boost::asio::io_context &io_context, uint16_t port) {
-                return std::make_unique<SimpleUdpHandler>(io_context, port);
-            });
+    auto* handler = reactor.get_handler();
+    BOOST_REQUIRE(handler != nullptr);
+    const uint16_t server_port = handler->local_port();
+    BOOST_REQUIRE(server_port != 0);
 
-        // Start the reactor
-        reactor.start();
+    boost::asio::io_context ioc;
+    udp::socket socket(ioc);
+    socket.open(udp::v4());
 
-        std::cout << "UDP server started on port " << reactor.port() << "\n";
-        std::cout << "Send UDP packets to localhost:12345 to test\n";
-        std::cout << "Press Enter to stop...\n";
+    const udp::endpoint server_ep(boost::asio::ip::make_address("127.0.0.1"),
+                                  server_port);
 
-        // Wait for user input
-        std::cin.get();
+    std::string received;
+    std::array<char, 2048> recv_buf{};
+    udp::endpoint from;
 
-        // Stop the reactor
-        reactor.stop();
+    boost::asio::steady_timer timer(ioc);
+    timer.expires_after(1500ms);
+    timer.async_wait([&](const boost::system::error_code& ec) {
+        if (!ec) {
+            socket.cancel();
+        }
+    });
 
-        std::cout << "UDP server stopped\n";
+    socket.async_receive_from(
+        boost::asio::buffer(recv_buf), from,
+        [&](const boost::system::error_code& ec, std::size_t n) {
+            if (!ec) {
+                received.assign(recv_buf.data(), n);
+            }
+            timer.cancel();
+        });
 
-    } catch (const std::exception &e) {
-        std::cerr << "UDP server test failed: " << e.what() << std::endl;
-        throw;
-    }
-}
+    const std::string payload = "hello";
+    socket.send_to(boost::asio::buffer(payload), server_ep);
 
-int main() {
-    try {
-        test_udp_server();
-        return 0;
-    } catch (const std::exception &e) {
-        std::cerr << "Test failed with exception: " << e.what() << std::endl;
-        return 1;
-    }
+    ioc.run();
+
+    reactor.stop();
+
+    BOOST_CHECK_EQUAL(received, "Echo: " + payload);
 }

@@ -6,7 +6,9 @@
 
 #include "caf/actor_system.hpp"
 #include "caf/actor_system_config.hpp"
+#include "caf/exit_reason.hpp"
 #include "caf/init_global_meta_objects.hpp"  // CAF initialization
+#include "caf/send.hpp"
 #include "shield/actor/distributed_actor_system.hpp"
 #include "shield/actor/lua_actor.hpp"
 #include "shield/caf_type_ids.hpp"  // Include CAF type IDs
@@ -101,8 +103,12 @@ void test_lua_actor() {
         std::cout << "Note: Full message testing requires CAF message passing"
                   << std::endl;
 
-        // Cleanup
+        // Cleanup in dependency order: actor -> VM pool -> distributed system.
+        caf::anon_send_exit(actor_handle, caf::exit_reason::user_shutdown);
+        actor_handle = {};
+        system.await_all_actors_done();
         lua_vm_pool.on_stop();
+        distributed_actor_system.shutdown();
 
     } catch (const std::exception &e) {
         std::cerr << "Test setup failed: " << e.what() << std::endl;

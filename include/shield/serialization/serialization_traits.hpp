@@ -1,13 +1,19 @@
 #pragma once
 
-#include <google/protobuf/message_lite.h>
-
 #include <concepts>
 #include <msgpack.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <type_traits>
 #include <vector>
+
+#ifndef SHIELD_HAS_PROTOBUF
+#define SHIELD_HAS_PROTOBUF 0
+#endif
+
+#if SHIELD_HAS_PROTOBUF
+#include <google/protobuf/message_lite.h>
+#endif
 
 namespace shield::serialization {
 
@@ -26,36 +32,32 @@ struct has_deserialize_method;
 // Core concept definitions
 template <typename T>
 concept JsonSerializable =
-    requires(const T &t, T &obj, const std::string &json_str) {
-        // Support to_json/from_json ADL
-        to_json(std::declval<nlohmann::json &>(), t);
-        from_json(std::declval<const nlohmann::json &>(), obj);
-    } || requires(const T &t, const std::string &json_str) {
-        // Or support member functions
-        { t.to_json() } -> std::convertible_to<std::string>;
-        { T::from_json(json_str) } -> std::convertible_to<T>;
+    requires(const T &t, const nlohmann::json &j) {
+        // nlohmann::json conversion (covers built-ins + ADL serializers)
+        { nlohmann::json(t) } -> std::same_as<nlohmann::json>;
+        { j.template get<std::remove_cvref_t<T>>() }
+            -> std::same_as<std::remove_cvref_t<T>>;
     };
 
 template <typename T>
+#if SHIELD_HAS_PROTOBUF
 concept ProtobufSerializable =
-    requires(const T &t, T &obj, const std::string &data) {
-        // Protobuf MessageLite interface
-        { t.SerializeToString() } -> std::convertible_to<std::string>;
-        { obj.ParseFromString(data) } -> std::convertible_to<bool>;
-    } || requires(const T &t) {
-        // Or check if inherits from google::protobuf::Message
-        std::is_base_of_v<google::protobuf::MessageLite, T>;
+    std::is_base_of_v<google::protobuf::MessageLite, std::remove_cvref_t<T>> ||
+    requires(const T &t, std::remove_cvref_t<T> &obj, std::string &out,
+             const std::string &data) {
+        { t.SerializeToString(&out) } -> std::same_as<bool>;
+        { obj.ParseFromString(data) } -> std::same_as<bool>;
     };
+#else
+concept ProtobufSerializable = false;
+#endif
 
 template <typename T>
 concept MessagePackSerializable =
-    requires(const T &t, T &obj, const std::vector<char> &data) {
-        // MessagePack support
-        msgpack::pack(t);
+    requires(const T &t, std::remove_cvref_t<T> &obj,
+             const std::vector<char> &data) {
+        msgpack::pack(std::declval<msgpack::sbuffer &>(), t);
         msgpack::unpack(data.data(), data.size()).get().convert(obj);
-    } || requires(const T &t) {
-        // Or has custom msgpack adapter
-        typename msgpack::adaptor::convert<T>;
     };
 
 template <typename T>
@@ -105,7 +107,15 @@ constexpr bool is_sproto_serializable_v = SprotoSerializable<T>;
 // Auto-detect best serialization format
 template <typename T>
 constexpr SerializationFormat detect_best_format() {
-    if constexpr (ProtobufSerializable<T>) {
+    if constexpr (std::same_as<std::remove_cvref_t<T>, nlohmann::json>) {
+        return SerializationFormat::JSON;
+    } else if constexpr (std::is_class_v<std::remove_cvref_t<T>> &&
+                         !std::same_as<std::remove_cvref_t<T>, std::string> &&
+                         JsonSerializable<T>) {
+        // Prefer JSON for user-defined/class types when available, unless the
+        // type is already "data-like" (e.g., std::string).
+        return SerializationFormat::JSON;
+    } else if constexpr (ProtobufSerializable<T>) {
         return SerializationFormat::PROTOBUF;
     } else if constexpr (MessagePackSerializable<T>) {
         return SerializationFormat::MESSAGEPACK;

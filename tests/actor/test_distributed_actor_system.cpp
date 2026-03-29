@@ -7,7 +7,7 @@
 #include "shield/actor/actor_registry.hpp"
 #include "shield/actor/actor_system_coordinator.hpp"
 #include "shield/actor/distributed_actor_system.hpp"
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/discovery/local_discovery.hpp"
 
 using namespace shield::actor;

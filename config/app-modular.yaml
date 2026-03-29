@@ -77,13 +77,21 @@ server:
     worker_threads: 4
     scheduler_policy: "sharing"
 
-logger:
-  level: "info"
-  console_output: true
-  log_file: "logs/shield.log"
-  max_file_size: 10485760  # 10MB
-  max_files: 5
-  pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+log:
+  global_level: "info"
+  console:
+    enabled: true
+    colored: true
+    pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+    min_level: "info"
+  file:
+    enabled: true
+    log_file: "logs/shield.log"
+    max_file_size: 10485760  # 10MB
+    max_files: 5
+    rotate_on_open: false
+    pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+    min_level: "debug"
 
 discovery:
   type: "local"

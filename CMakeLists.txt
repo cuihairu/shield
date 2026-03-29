@@ -3,6 +3,22 @@ if(POLICY CMP0167)
   cmake_policy(SET CMP0167 NEW)
 endif()
 
+# Help vcpkg resolve the active macOS architecture deterministically when the
+# repository already contains a single prepared triplet directory.
+if(APPLE AND NOT DEFINED CMAKE_OSX_ARCHITECTURES)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-osx" AND
+     NOT EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/arm64-osx")
+    set(CMAKE_OSX_ARCHITECTURES
+        "x86_64"
+        CACHE STRING "macOS architectures to build for" FORCE)
+  elseif(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/arm64-osx" AND
+         NOT EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-osx")
+    set(CMAKE_OSX_ARCHITECTURES
+        "arm64"
+        CACHE STRING "macOS architectures to build for" FORCE)
+  endif()
+endif()
+
 # Set default compilers based on platform if not specified
 if(NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
   if(APPLE)
@@ -52,13 +68,22 @@ project(
 
 enable_testing()
 
-# Ensure config directory exists and create a dummy shield.yaml with valid YAML
-# content
+# Build toggles (kept ON by default to match current behavior)
+option(SHIELD_BUILD_TESTS "Build Shield tests" ON)
+option(SHIELD_BUILD_EXAMPLES "Build Shield examples" ON)
+option(
+  SHIELD_ENABLE_PROTOBUF
+  "Enable Protobuf serialization support when protobuf is available in project-managed dependencies"
+  ON)
+
+# Ensure config directory exists and create a minimal default config if missing.
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/config")
-file(WRITE "${CMAKE_SOURCE_DIR}/config/shield.yaml" "---\n")
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/config/app.yaml")
+  file(WRITE "${CMAKE_SOURCE_DIR}/config/app.yaml" "---\n")
+endif()
 message(
   STATUS
-    "Ensured dummy config file exists and is valid: ${CMAKE_SOURCE_DIR}/config/shield.yaml"
+    "Ensured default config file exists: ${CMAKE_SOURCE_DIR}/config/app.yaml"
 )
 
 # Detect vcpkg triplet based on platform
@@ -128,12 +153,22 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Coverage instrumentation (for CI/local reports)
+option(SHIELD_ENABLE_COVERAGE "Enable coverage instrumentation" OFF)
+if(SHIELD_ENABLE_COVERAGE)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_library(shield_coverage INTERFACE)
+    target_compile_options(shield_coverage INTERFACE -O0 -g --coverage)
+    target_link_options(shield_coverage INTERFACE --coverage)
+  else()
+    message(WARNING "SHIELD_ENABLE_COVERAGE is only supported on GCC/Clang")
+  endif()
+endif()
+
 # Suppress deprecated-declarations warning for CAF
 add_compile_options(-Wno-deprecated-declarations)
 
 # Find required packages
-find_package(Protobuf CONFIG QUIET)
-
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Lua REQUIRED)
@@ -194,6 +229,25 @@ endif()
 
 find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp")
 
+set(SHIELD_HAS_PROTOBUF FALSE)
+if(SHIELD_ENABLE_PROTOBUF AND EXISTS "${VCPKG_INSTALLED_DIR}/share/protobuf")
+  find_package(Protobuf CONFIG QUIET)
+  if(Protobuf_FOUND)
+    set(SHIELD_HAS_PROTOBUF TRUE)
+    message(STATUS "Found protobuf in project-managed dependencies")
+  else()
+    message(
+      WARNING
+        "SHIELD_ENABLE_PROTOBUF=ON but protobuf was not found in project-managed dependencies; disabling Protobuf support"
+    )
+  endif()
+elseif(SHIELD_ENABLE_PROTOBUF)
+  message(
+    STATUS
+      "Project-managed protobuf package not found under ${VCPKG_INSTALLED_DIR}; Protobuf support disabled"
+  )
+endif()
+
 # Set output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -218,6 +272,7 @@ set(CLI_SOURCES # CLI sources
 
 set(CONFIG_SOURCES # Config sources
     src/config/config.cpp src/config/config_registry.cpp
+    src/config/ptree_yaml.cpp
     src/fs/file_watcher.cpp)
 
 set(OTHER_SOURCES
@@ -250,7 +305,6 @@ set(OTHER_SOURCES
     src/protocol/binary_protocol.cpp
     # Serialization sources
     src/serialization/messagepack_universal_serializer.cpp
-    src/serialization/protobuf_universal_serializer.cpp
     src/serialization/serialization_init.cpp
     src/serialization/json_universal_serializer.cpp
     src/serialization/universal_serialization_system.cpp
@@ -290,6 +344,10 @@ set(OTHER_SOURCES
     # CAF initializer
     src/caf_initializer.cpp)
 
+if(SHIELD_HAS_PROTOBUF)
+  list(APPEND OTHER_SOURCES src/serialization/protobuf_universal_serializer.cpp)
+endif()
+
 # Print found source files (optional, for debugging)
 message(STATUS "Found core library source files:")
 foreach(SOURCE ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES} ${CONFIG_SOURCES}
@@ -300,6 +358,9 @@ endforeach()
 # Create the core static library
 add_library(shield_core STATIC ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES}
                                ${CONFIG_SOURCES} ${OTHER_SOURCES})
+if(TARGET shield_coverage)
+  target_link_libraries(shield_core PUBLIC shield_coverage)
+endif()
 target_include_directories(
   shield_core
   PUBLIC ${PROJECT_SOURCE_DIR}/include
@@ -329,9 +390,11 @@ target_link_libraries(
          Threads::Threads
          OpenSSL::SSL
          OpenSSL::Crypto)
+target_compile_definitions(
+  shield_core PUBLIC SHIELD_HAS_PROTOBUF=$<BOOL:${SHIELD_HAS_PROTOBUF}>)
 
 # Add protobuf if available
-if(Protobuf_FOUND)
+if(SHIELD_HAS_PROTOBUF)
   target_link_libraries(shield_core PUBLIC protobuf::libprotobuf)
 endif()
 
@@ -351,9 +414,13 @@ endif()
 add_executable(shield src/main.cpp)
 target_link_libraries(shield PRIVATE shield_core)
 
-# Add examples directory
-add_subdirectory(examples)
-add_subdirectory(tests)
+# Add examples/tests
+if(SHIELD_BUILD_EXAMPLES)
+  add_subdirectory(examples)
+endif()
+if(SHIELD_BUILD_TESTS)
+  add_subdirectory(tests)
+endif()
 
 # Include development tools (Git hooks, formatting, etc.) Note: Placed after
 # main targets are defined but before any post-processing

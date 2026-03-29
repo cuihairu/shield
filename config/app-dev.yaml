@@ -2,10 +2,12 @@
 # app-dev.yaml - Development environment configuration overrides
 
 # Override logger for development
-logger:
-  level: "debug"
-  console_output: true
-  file_output: true
+log:
+  global_level: "debug"
+  console:
+    enabled: true
+  file:
+    enabled: true
 
 # Database for development
 database:

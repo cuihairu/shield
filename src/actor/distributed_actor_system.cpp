@@ -346,6 +346,7 @@ void DistributedActorSystem::start_discovery_worker() {
 void DistributedActorSystem::stop_discovery_worker() {
     if (discovery_running_) {
         discovery_running_ = false;
+        discovery_condition_.notify_all();
         if (discovery_thread_.joinable()) {
             discovery_thread_.join();
         }
@@ -402,7 +403,10 @@ void DistributedActorSystem::discovery_worker() {
             SHIELD_LOG_ERROR << "Exception in discovery worker: " << e.what();
         }
 
-        std::this_thread::sleep_for(config_.discovery_interval);
+        std::unique_lock<std::mutex> lock(discovery_mutex_);
+        discovery_condition_.wait_for(
+            lock, config_.discovery_interval,
+            [this] { return !discovery_running_.load(); });
     }
 }
 

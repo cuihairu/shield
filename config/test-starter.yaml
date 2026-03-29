@@ -5,11 +5,11 @@ app:
 
 # Logger configuration  
 log:
-  global_level: 2  # INFO
+  global_level: "info"
   console:
     enabled: true
     colored: true
-    min_level: 2
+    min_level: "info"
   file:
     enabled: false
 

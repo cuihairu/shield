@@ -4,6 +4,7 @@
 #include <boost/program_options.hpp>
 #include <iomanip>
 #include <iostream>
+#include <unordered_map>
 
 namespace po = boost::program_options;
 
@@ -78,12 +79,58 @@ int Command::execute(int argc, char* argv[]) {
 int Command::parse_and_execute(int argc, char* argv[]) {
     CommandContext ctx;
 
+    // Build effective flags list: parent flags first, then this command's flags
+    // (child overrides parent on name collisions).
+    std::vector<Flag> effective_flags;
+    effective_flags.reserve(flags_.size());
+    std::unordered_map<std::string, size_t> flag_index_by_name;
+
+    std::vector<const Command*> chain;
+    for (auto* cmd = this; cmd != nullptr; cmd = cmd->parent_) {
+        chain.push_back(cmd);
+    }
+    std::reverse(chain.begin(), chain.end());  // root -> leaf
+
+    for (const auto* cmd : chain) {
+        for (const auto& flag : cmd->flags_) {
+            auto it = flag_index_by_name.find(flag.name);
+            if (it == flag_index_by_name.end()) {
+                flag_index_by_name.emplace(flag.name, effective_flags.size());
+                effective_flags.push_back(flag);
+            } else {
+                effective_flags[it->second] = flag;
+            }
+        }
+    }
+
+    // Resolve short flag collisions by dropping the earlier short name.
+    std::unordered_map<std::string, std::string> short_to_name;
+    for (auto& flag : effective_flags) {
+        if (flag.short_name.empty()) {
+            continue;
+        }
+        auto it = short_to_name.find(flag.short_name);
+        if (it == short_to_name.end()) {
+            short_to_name.emplace(flag.short_name, flag.name);
+            continue;
+        }
+        if (it->second != flag.name) {
+            // Prefer the later (more specific) flag; drop short name for the
+            // earlier one.
+            auto earlier = flag_index_by_name.find(it->second);
+            if (earlier != flag_index_by_name.end()) {
+                effective_flags[earlier->second].short_name.clear();
+            }
+            it->second = flag.name;
+        }
+    }
+
     // Build program options description
     po::options_description desc("Options");
     desc.add_options()("help,h", "Show help message");
 
     // Add command-specific flags
-    for (const auto& flag : flags_) {
+    for (const auto& flag : effective_flags) {
         std::string option_spec = flag.name;
         if (!flag.short_name.empty()) {
             option_spec += "," + flag.short_name;
@@ -128,29 +175,31 @@ int Command::parse_and_execute(int argc, char* argv[]) {
     std::vector<std::string> unrecognized =
         po::collect_unrecognized(parsed.options, po::include_positional);
 
-    // Check for subcommands BEFORE processing help
+    // Strip command path tokens from positional args so nested subcommands can
+    // be detected when this function is called with the full argv.
+    std::vector<std::string> command_path;
+    for (auto* cmd = this; cmd != nullptr; cmd = cmd->parent_) {
+        command_path.push_back(cmd->name_);
+    }
+    std::reverse(command_path.begin(), command_path.end());
+    if (!command_path.empty()) {
+        command_path.erase(command_path.begin());  // root name isn't positional
+    }
+    for (const auto& name : command_path) {
+        if (!unrecognized.empty() && unrecognized.front() == name) {
+            unrecognized.erase(unrecognized.begin());
+        } else {
+            break;
+        }
+    }
+
+    // Check for subcommands BEFORE processing help/version.
     if (!unrecognized.empty() && !subcommands_.empty()) {
-        auto subcmd = find_command(unrecognized[0]);
+        auto subcmd = find_command(unrecognized.front());
         if (subcmd) {
-            // Prepare args for subcommand - include the help flag if present
-            std::vector<char*> subcmd_argv;
-            subcmd_argv.push_back(argv[0]);  // Program name
-            subcmd_argv.push_back(
-                const_cast<char*>(unrecognized[0].c_str()));  // Subcommand name
-
-            // Add remaining unrecognized args
-            for (size_t i = 1; i < unrecognized.size(); ++i) {
-                subcmd_argv.push_back(
-                    const_cast<char*>(unrecognized[i].c_str()));
-            }
-
-            // Add help flag if it was present in original command
-            if (vm.count("help")) {
-                subcmd_argv.push_back(const_cast<char*>("-h"));
-            }
-
-            return subcmd->parse_and_execute(subcmd_argv.size(),
-                                             subcmd_argv.data());
+            // Delegate parsing/execution to the subcommand using full argv so
+            // global flags are preserved.
+            return subcmd->parse_and_execute(argc, argv);
         }
     }
 
@@ -161,19 +210,33 @@ int Command::parse_and_execute(int argc, char* argv[]) {
     }
 
     // Extract flag values
-    for (const auto& flag : flags_) {
+    for (const auto& flag : effective_flags) {
         if (vm.count(flag.name)) {
             if (flag.type == "bool") {
                 ctx.set_user_flag(flag.name, "true");
             } else if (flag.type == "int") {
-                ctx.set_user_flag(flag.name,
-                                  std::to_string(vm[flag.name].as<int>()));
+                const auto value =
+                    std::to_string(vm[flag.name].as<int>());
+                if (vm[flag.name].defaulted()) {
+                    ctx.set_flag(flag.name, value);
+                } else {
+                    ctx.set_user_flag(flag.name, value);
+                }
             } else {
-                ctx.set_user_flag(flag.name, vm[flag.name].as<std::string>());
+                const auto value = vm[flag.name].as<std::string>();
+                if (vm[flag.name].defaulted()) {
+                    ctx.set_flag(flag.name, value);
+                } else {
+                    ctx.set_user_flag(flag.name, value);
+                }
             }
         } else {
             ctx.set_flag(flag.name, flag.default_value);
         }
+    }
+
+    if (ctx.has_flag("config")) {
+        ctx.set_config_file(ctx.get_flag("config"));
     }
 
     // Add positional arguments to context
@@ -217,6 +280,24 @@ void Command::print_help() const {
     if (!flags_.empty()) {
         std::cout << "Flags:" << std::endl;
         for (const auto& flag : flags_) {
+            std::cout << "  --" << std::left << std::setw(12) << flag.name;
+            if (!flag.short_name.empty()) {
+                std::cout << "-" << flag.short_name << ", ";
+            } else {
+                std::cout << "    ";
+            }
+            std::cout << flag.description;
+            if (!flag.default_value.empty()) {
+                std::cout << " (default: " << flag.default_value << ")";
+            }
+            std::cout << std::endl;
+        }
+        std::cout << std::endl;
+    }
+
+    if (parent_ != nullptr && !parent_->flags_.empty()) {
+        std::cout << "Global Flags:" << std::endl;
+        for (const auto& flag : parent_->flags_) {
             std::cout << "  --" << std::left << std::setw(12) << flag.name;
             if (!flag.short_name.empty()) {
                 std::cout << "-" << flag.short_name << ", ";

@@ -5,10 +5,39 @@
 #include <boost/property_tree/ptree.hpp>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 
 #include "shield/log/logger.hpp"
 
 namespace shield::config {
+
+namespace {
+
+std::optional<std::string> legacy_alias_for_properties(
+    const std::string& properties_name) {
+    if (properties_name == "log") return std::string("logger");
+    return std::nullopt;
+}
+
+const boost::property_tree::ptree* find_config_subtree(
+    const boost::property_tree::ptree& root,
+    const std::string& properties_name, std::string& used_name) {
+    if (auto direct = root.get_child_optional(properties_name)) {
+        used_name = properties_name;
+        return &direct.get();
+    }
+
+    if (auto alias = legacy_alias_for_properties(properties_name)) {
+        if (auto legacy = root.get_child_optional(*alias)) {
+            used_name = *alias;
+            return &legacy.get();
+        }
+    }
+
+    return nullptr;
+}
+
+}  // namespace
 
 // Helper to convert YAML::Node to boost::property_tree::ptree
 boost::property_tree::ptree ConfigManager::yaml_to_ptree(
@@ -170,15 +199,26 @@ void ConfigManager::load_component_configs(bool is_reload) {
         const std::string& properties_name = config->properties_name();
 
         try {
-            // Pass the relevant subtree to the configuration properties
-            config->from_ptree(config_tree_.get_child(properties_name));
+            std::string used_name;
+            const auto* subtree =
+                find_config_subtree(config_tree_, properties_name, used_name);
+            if (!subtree) {
+                SHIELD_LOG_WARN
+                    << "No configuration found for properties: "
+                    << properties_name << ", using defaults.";
+                continue;
+            }
+
+            if (used_name != properties_name) {
+                SHIELD_LOG_INFO << "Using legacy config section '" << used_name
+                                << "' for properties '" << properties_name
+                                << "'";
+            }
+
+            config->from_ptree(*subtree);
             config->validate();
             SHIELD_LOG_DEBUG << "Loaded configuration for properties: "
                              << properties_name;
-        } catch (const boost::property_tree::ptree_bad_path& e) {
-            SHIELD_LOG_WARN
-                << "No configuration found for properties: " << properties_name
-                << ", using defaults. Error: " << e.what();
         } catch (const std::exception& e) {
             SHIELD_LOG_ERROR << "Failed to load configuration for properties "
                              << properties_name << ": " << e.what();
@@ -232,9 +272,14 @@ void ConfigManager::reload_config(const std::string& config_file,
             auto new_config_clone = current_config->clone();
             const auto& properties_name = new_config_clone->properties_name();
 
-            // Populate from the new ptree
-            new_config_clone->from_ptree(
-                new_config_tree.get_child(properties_name));
+            // Populate from the new ptree (fallback to defaults if missing).
+            std::string used_name;
+            if (const auto* subtree = find_config_subtree(
+                    new_config_tree, properties_name, used_name)) {
+                new_config_clone->from_ptree(*subtree);
+            } else {
+                new_config_clone->from_ptree(boost::property_tree::ptree{});
+            }
 
             // Validate the new data
             new_config_clone->validate();

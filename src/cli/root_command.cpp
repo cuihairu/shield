@@ -20,9 +20,9 @@ RootCommand::RootCommand()
         "distributed system capabilities for multiplayer games.")
         .set_usage("shield [GLOBAL_OPTIONS] <COMMAND> [COMMAND_OPTIONS]")
         .set_example(
-            "  shield server --config config/prod.yaml\\n"
+            "  shield server --config config/app-prod.yaml\\n"
             "  shield cli --url http://localhost:8080\\n"
-            "  shield config --file config/prod.yaml --validate");
+            "  shield config --file config/app-prod.yaml --validate");
 
     // Add global flags
     add_flag_with_short("config", "c", "Global configuration file",

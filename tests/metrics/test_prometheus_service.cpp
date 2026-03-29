@@ -56,7 +56,7 @@ BOOST_AUTO_TEST_CASE(test_default_config) {
     BOOST_CHECK_EQUAL(config.export_config.namespace_prefix, "shield");
 }
 
-BOOST_AUTO_TEST_CASE test_custom_config) {
+BOOST_AUTO_TEST_CASE(test_custom_config) {
     PrometheusConfig config;
     config.server.host = "127.0.0.1";
     config.server.port = 8080;
@@ -110,40 +110,40 @@ BOOST_AUTO_TEST_CASE(test_network_collector_creation) {
     BOOST_CHECK_EQUAL(collector.name(), "network");
 }
 
-BOOST_AUTO_TEST_CASE test_network_collector_increment_connections) {
+BOOST_AUTO_TEST_CASE(test_network_collector_increment_connections) {
     NetworkMetricsCollector collector(nullptr);
     // Should not throw
     collector.increment_connections();
     collector.increment_connections();
 }
 
-BOOST_AUTO_TEST_CASE test_network_collector_decrement_connections) {
+BOOST_AUTO_TEST_CASE(test_network_collector_decrement_connections) {
     NetworkMetricsCollector collector(nullptr);
     collector.increment_connections();
     collector.increment_connections();
     collector.decrement_connections();
 }
 
-BOOST_AUTO_TEST_CASE test_network_collector_add_bytes_sent) {
+BOOST_AUTO_TEST_CASE(test_network_collector_add_bytes_sent) {
     NetworkMetricsCollector collector(nullptr);
     collector.add_bytes_sent(1024);
     collector.add_bytes_sent(2048);
 }
 
-BOOST_AUTO_TEST_CASE test_network_collector_add_bytes_received) {
+BOOST_AUTO_TEST_CASE(test_network_collector_add_bytes_received) {
     NetworkMetricsCollector collector(nullptr);
     collector.add_bytes_received(512);
     collector.add_bytes_received(1024);
 }
 
-BOOST_AUTO_TEST_CASE test_network_collector_increment_requests) {
+BOOST_AUTO_TEST_CASE(test_network_collector_increment_requests) {
     NetworkMetricsCollector collector(nullptr);
     collector.increment_requests();
     collector.increment_requests();
     collector.increment_requests();
 }
 
-BOOST_AUTO_TEST_CASE test_network_collector_record_duration) {
+BOOST_AUTO_TEST_CASE(test_network_collector_record_duration) {
     NetworkMetricsCollector collector(nullptr);
     collector.record_request_duration(0.1);
     collector.record_request_duration(0.5);
@@ -243,7 +243,7 @@ BOOST_AUTO_TEST_SUITE_END()
 // RequestTimer tests
 BOOST_AUTO_TEST_SUITE(RequestTimerTests)
 
-BOOST_AUTO_TEST_CASE test_request_timer_basic) {
+BOOST_AUTO_TEST_CASE(test_request_timer_basic) {
     // Timer should record duration on destruction
     {
         RequestTimer timer;
@@ -252,7 +252,7 @@ BOOST_AUTO_TEST_CASE test_request_timer_basic) {
     // After scope, timer destructor is called
 }
 
-BOOST_AUTO_TEST_CASE test_request_timer_macro) {
+BOOST_AUTO_TEST_CASE(test_request_timer_macro) {
     {
         SHIELD_METRIC_TIME_REQUEST();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -311,7 +311,7 @@ BOOST_AUTO_TEST_SUITE_END()
 // Integration-style tests
 BOOST_AUTO_TEST_SUITE(MetricsIntegrationTests)
 
-BOOST_AUTO_TEST_CASE test_complete_network_metrics_flow) {
+BOOST_AUTO_TEST_CASE(test_complete_network_metrics_flow) {
     NetworkMetricsCollector collector(nullptr);
 
     // Simulate network activity

@@ -1,10 +1,15 @@
 // shield/src/health/health_check.cpp
 #include "shield/health/health_check.hpp"
 
-#include <sys/statvfs.h>
-#include <unistd.h>
+#include <cerrno>
+#include <cstring>
 
-#include <filesystem>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/statvfs.h>
+#endif
+
 #include <iomanip>
 #include <sstream>
 
@@ -15,13 +20,35 @@ namespace shield::health {
 // =====================================
 
 Health DiskSpaceHealthIndicator::check() {
-    namespace fs = std::filesystem;
-
     try {
-        struct statvfs stat;
-        if (statvfs(path_.c_str(), &stat) != 0) {
+        std::string path;
+#ifdef _WIN32
+        ULARGE_INTEGER free_bytes_available{};
+        ULARGE_INTEGER total_bytes{};
+        ULARGE_INTEGER total_free_bytes{};
+
+        path = path_.empty() ? "C:\\" : path_;
+        if (!GetDiskFreeSpaceExA(path.c_str(), &free_bytes_available,
+                                 &total_bytes, &total_free_bytes)) {
+            const auto err = GetLastError();
             return Health(HealthStatus::DOWN, "Failed to get disk space info")
-                .add_detail("path", path_)
+                .add_detail("path", path)
+                .add_detail("error", std::to_string(err));
+        }
+
+        const unsigned long long total = total_bytes.QuadPart;
+        const unsigned long long available = free_bytes_available.QuadPart;
+        const unsigned long long free = total_free_bytes.QuadPart;
+        const double available_percent =
+            (total > 0) ? (static_cast<double>(available) /
+                           static_cast<double>(total) * 100.0)
+                        : 0.0;
+#else
+        path = path_.empty() ? "/" : path_;
+        struct statvfs stat;
+        if (statvfs(path.c_str(), &stat) != 0) {
+            return Health(HealthStatus::DOWN, "Failed to get disk space info")
+                .add_detail("path", path)
                 .add_detail("error", strerror(errno));
         }
 
@@ -29,6 +56,7 @@ Health DiskSpaceHealthIndicator::check() {
         unsigned long long available = stat.f_bavail * stat.f_frsize;
         unsigned long long free = stat.f_bfree * stat.f_frsize;
         double available_percent = (double)available / total * 100.0;
+#endif
 
         std::ostringstream details;
         details << std::fixed << std::setprecision(2);
@@ -42,7 +70,7 @@ Health DiskSpaceHealthIndicator::check() {
                                   : HealthStatus::DOWN;
 
         return Health(status, "Disk space check")
-            .add_detail("path", path_)
+            .add_detail("path", path)
             .add_detail("total_bytes", std::to_string(total))
             .add_detail("free_bytes", std::to_string(free))
             .add_detail("available_bytes", std::to_string(available))
@@ -89,7 +117,10 @@ std::future<Health> DatabaseHealthIndicator::check_async() {
 long ApplicationHealthIndicator::get_uptime_seconds() const {
     // 简化实现，返回进程运行时间
     // 实际应该记录启动时间
-    return 0;
+    static const auto start = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::seconds>(now - start)
+        .count();
 }
 
 std::string ApplicationHealthIndicator::get_application_version() const {
@@ -416,16 +447,16 @@ std::string HealthEndpointBuilder::health_status_to_string(
 
 std::string HealthEndpointBuilder::format_timestamp(
     std::chrono::steady_clock::time_point timestamp) {
-    // 使用 steady_clock 的 duration 转换为可显示的时间
-    auto now = std::chrono::steady_clock::now();
-    auto diff = timestamp - now;
-
     // 简化实现：直接使用当前时间
     auto system_now = std::chrono::system_clock::now();
     auto time_t_value = std::chrono::system_clock::to_time_t(system_now);
 
-    std::tm tm_value;
+    std::tm tm_value{};
+#ifdef _WIN32
+    localtime_s(&tm_value, &time_t_value);
+#else
     localtime_r(&time_t_value, &tm_value);
+#endif
 
     std::ostringstream oss;
     oss << std::put_time(&tm_value, "%Y-%m-%d %H:%M:%S");

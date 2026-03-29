@@ -350,6 +350,7 @@ void ActorRegistry::start_heartbeat(std::chrono::seconds interval) {
 void ActorRegistry::stop_heartbeat() {
     if (heartbeat_running_) {
         heartbeat_running_ = false;
+        heartbeat_condition_.notify_all();
         if (heartbeat_thread_.joinable()) {
             heartbeat_thread_.join();
         }
@@ -480,8 +481,10 @@ void ActorRegistry::heartbeat_worker() {
             SHIELD_LOG_ERROR << "Exception in heartbeat worker: " << e.what();
         }
 
-        // Sleep for the heartbeat interval
-        std::this_thread::sleep_for(heartbeat_interval_);
+        std::unique_lock<std::mutex> lock(heartbeat_mutex_);
+        heartbeat_condition_.wait_for(
+            lock, heartbeat_interval_,
+            [this] { return !heartbeat_running_.load(); });
     }
 }
 

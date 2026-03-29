@@ -23,7 +23,7 @@ public:
     static constexpr const char* DEFAULT_CONFIG_DIR = "config/";
 
     static std::string get_profile_config_file(const std::string& profile) {
-        return std::string(DEFAULT_CONFIG_DIR) + "shield-" + profile + ".yaml";
+        return std::string(DEFAULT_CONFIG_DIR) + "app-" + profile + ".yaml";
     }
 
     static std::string get_config_dir() { return DEFAULT_CONFIG_DIR; }

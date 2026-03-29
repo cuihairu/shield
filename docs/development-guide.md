@@ -174,6 +174,9 @@ cmake -DSHIELD_BUILD_TESTS=OFF
 # 启用示例构建
 cmake -DSHIELD_BUILD_EXAMPLES=ON
 
+# 启用覆盖率 (GCC/Clang)
+cmake -DSHIELD_ENABLE_COVERAGE=ON
+
 # 启用性能分析
 cmake -DSHIELD_ENABLE_PROFILING=ON
 
@@ -190,7 +193,7 @@ shield/
 ├── CMakeLists.txt            # 主构建文件
 ├── vcpkg.json               # 依赖配置
 ├── config/                  # 配置文件
-│   └── shield.yaml         # 默认配置
+│   └── app.yaml           # 默认配置
 ├── docs/                    # 文档目录
 │   ├── api/                # API 文档
 │   ├── architecture.md     # 架构设计
@@ -272,7 +275,7 @@ git push origin feature/your-feature-name
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/bin/shield",
-            "args": ["--config", "config/shield.yaml"],
+            "args": ["--config", "config/app.yaml"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [],
@@ -374,10 +377,10 @@ cmake --build .
 ```bash
 # 确保在正确目录运行
 cd /path/to/shield
-./bin/shield --config config/shield.yaml
+./bin/shield --config config/app.yaml
 
 # 或使用绝对路径
-./bin/shield --config /absolute/path/to/config/shield.yaml
+./bin/shield --config /absolute/path/to/config/app.yaml
 ```
 
 **Q: Lua 脚本加载失败**
@@ -404,7 +407,7 @@ cmake -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
 
 ### 运行时调优
 ```yaml
-# config/shield.yaml 性能配置
+# config/app.yaml 性能配置
 gateway:
   threading:
     io_threads: 8  # 根据 CPU 核心数调整

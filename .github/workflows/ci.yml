@@ -117,6 +117,9 @@ jobs:
   build-and-test:
     runs-on: ${{ matrix.os }}
     needs: code-quality
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -126,28 +129,34 @@ jobs:
             compiler: gcc-11
             build_type: Debug
             platform: linux
+            coverage: true
           - os: ubuntu-24.04
             compiler: gcc-11
             build_type: Release
             platform: linux
+            coverage: false
           - os: ubuntu-24.04
             compiler: clang-14
             build_type: Debug
             platform: linux
+            coverage: false
           - os: ubuntu-24.04
             compiler: clang-14
             build_type: Release
             platform: linux
+            coverage: false
           # macOS 构建
           - os: macos-latest
             compiler: clang
             build_type: Release
             platform: macos
+            coverage: false
           # Windows 构建
           - os: windows-latest
             compiler: msvc
             build_type: Release
             platform: windows
+            coverage: false
     
     steps:
     - name: 📥 检出代码
@@ -263,6 +272,15 @@ jobs:
       run: |
         echo "VCPKG_ROOT: ${VCPKG_ROOT}"
         echo "Build type: ${{ matrix.build_type }}"
+        echo "Coverage: ${{ matrix.coverage }}"
+        
+        EXTRA_CMAKE_ARGS=()
+        if [ "${{ matrix.coverage }}" = "true" ]; then
+          EXTRA_CMAKE_ARGS+=("-DSHIELD_ENABLE_COVERAGE=ON")
+        fi
+        if [ "${{ matrix.platform }}" = "macos" ]; then
+          EXTRA_CMAKE_ARGS+=("-DCMAKE_OSX_ARCHITECTURES=$(uname -m)")
+        fi
         
         # Retry logic with exponential backoff
         for attempt in 1 2 3; do
@@ -274,7 +292,8 @@ jobs:
               -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
               -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
               -DSHIELD_BUILD_TESTS=ON \
-              -DSHIELD_BUILD_EXAMPLES=ON; then
+              -DSHIELD_BUILD_EXAMPLES=ON \
+              "${EXTRA_CMAKE_ARGS[@]}"; then
               echo "✅ Configuration successful on attempt $attempt"
               break
             fi
@@ -284,7 +303,8 @@ jobs:
               -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
               -DSHIELD_BUILD_TESTS=ON \
               -DSHIELD_BUILD_EXAMPLES=ON \
-              -G Ninja; then
+              -G Ninja \
+              "${EXTRA_CMAKE_ARGS[@]}"; then
               echo "✅ Configuration successful on attempt $attempt"
               break
             fi
@@ -342,14 +362,16 @@ jobs:
 
     # 测试覆盖率 (仅 Linux Debug + GCC)
     - name: 📊 测试覆盖率
-      if: matrix.platform == 'linux' && matrix.build_type == 'Debug' && matrix.compiler == 'gcc-11'
+      if: matrix.coverage == true
       run: |
         sudo apt-get install -y gcovr
-        gcovr --root . --exclude-directories build/vcpkg_installed --xml-pretty --xml coverage.xml
+        gcovr --gcov-executable gcov-11 --root . --object-directory build \
+          --exclude-directories "build|vcpkg|vcpkg_installed|examples|tests" \
+          --xml-pretty --xml coverage.xml
         
     - name: 📤 上传覆盖率报告
-      if: matrix.platform == 'linux' && matrix.build_type == 'Debug' && matrix.compiler == 'gcc-11'
-      uses: codecov/codecov-action@v3
+      if: matrix.coverage == true
+      uses: codecov/codecov-action@v4
       with:
         files: coverage.xml
         fail_ci_if_error: false

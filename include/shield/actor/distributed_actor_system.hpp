@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <string>
@@ -222,6 +223,8 @@ private:
     // Discovery worker
     std::atomic<bool> discovery_running_{false};
     std::thread discovery_thread_;
+    std::condition_variable discovery_condition_;
+    std::mutex discovery_mutex_;
 
     // Event handling
     EventCallback event_callback_;

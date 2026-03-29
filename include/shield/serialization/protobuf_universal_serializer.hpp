@@ -1,5 +1,9 @@
 #pragma once
 
+#if !SHIELD_HAS_PROTOBUF
+#error "protobuf_universal_serializer.hpp requires SHIELD_HAS_PROTOBUF=1"
+#endif
+
 #include <google/protobuf/message.h>
 #include <google/protobuf/message_lite.h>
 

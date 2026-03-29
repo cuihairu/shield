@@ -11,7 +11,7 @@
 #include <memory>
 #include <fstream>
 
-#include "shield/core/logger.hpp"
+#include "shield/log/logger.hpp"
 
 namespace beast = boost::beast;
 namespace http = beast::http;

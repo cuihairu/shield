@@ -161,14 +161,13 @@ private:
 // 6. 事件发布器接口 (equivalent to Spring's ApplicationEventPublisher)
 class EventPublisher {
 public:
+    virtual ~EventPublisher() = default;
+
     struct ListenerRegistration {
-        std::shared_ptr<void> listener;
-        std::function<void(const Event&)> invoke;
+        std::function<void(std::shared_ptr<Event> event)> invoke;
         bool async = false;
         int order = 0;
     };
-
-    virtual ~EventPublisher() = default;
 
     // 发布事件
     virtual void publish_event(std::shared_ptr<Event> event) = 0;
@@ -183,20 +182,22 @@ public:
     // 注册监听器
     template <typename EventType>
     void add_listener(std::shared_ptr<EventListener<EventType>> listener) {
-        ListenerRegistration registration;
-        registration.listener = std::static_pointer_cast<void>(listener);
-        registration.async = listener->supports_async();
-        registration.order = listener->get_order();
-        registration.invoke = [captured_listener = std::move(listener)](
-                                  const Event& event) {
-            const auto* typed_event = dynamic_cast<const EventType*>(&event);
-            if (typed_event) {
-                captured_listener->on_event(*typed_event);
+        ListenerRegistration reg;
+        reg.async = listener->supports_async();
+        reg.order = listener->get_order();
+        reg.invoke = [listener = std::move(listener)](
+                         std::shared_ptr<Event> event) {
+            if (!event) {
+                return;
             }
+            auto typed = std::dynamic_pointer_cast<EventType>(event);
+            if (!typed) {
+                return;
+            }
+            listener->on_event(*typed);
         };
 
-        register_listener(std::type_index(typeid(EventType)),
-                          std::move(registration));
+        register_listener(std::type_index(typeid(EventType)), std::move(reg));
     }
 
     // 函数式监听器注册

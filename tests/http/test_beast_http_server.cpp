@@ -10,6 +10,7 @@
 
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/version.hpp>
 
 #include "shield/http/beast_http_server.hpp"
 #include "shield/protocol/protocol_handler.hpp"
@@ -89,7 +90,8 @@ public:
     uint16_t get_port() const { return port_; }
 
     // Helper method to make HTTP requests
-    template <http::verb method, class Body, class Allocator>
+    template <http::verb method, class Body,
+              class Allocator = std::allocator<char>>
     auto make_request(const std::string& target,
                       const Body& body,
                       const Allocator& allocator = std::allocator<char>())
@@ -101,7 +103,8 @@ public:
         auto const results = resolver.resolve("127.0.0.1", std::to_string(port_));
         stream.connect(results);
 
-        http::request<http::string_body> req(method, target, 11);
+        const std::string normalized_target = target.empty() ? "/" : target;
+        http::request<http::string_body> req(method, normalized_target, 11);
         req.set(http::field::host, "127.0.0.1:" + std::to_string(port_));
         req.set(http::field::user_agent, BOOST_BEAST_VERSION_STRING);
         req.set(http::field::content_type, "application/json");
@@ -157,7 +160,7 @@ BOOST_AUTO_TEST_CASE(test_custom_config) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Server lifecycle tests
-BOOST_AUTO_TEST_SUITE(BeastHttpServerLifecycleTests, *boost::unit_test::fixture<HttpServerFixture>())
+BOOST_FIXTURE_TEST_SUITE(BeastHttpServerLifecycleTests, HttpServerFixture)
 
 BOOST_AUTO_TEST_CASE(test_server_start_stop) {
     BOOST_CHECK(!is_server_running());
@@ -202,7 +205,7 @@ BOOST_AUTO_TEST_CASE(test_restart_server) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // HTTP request tests
-BOOST_AUTO_TEST_SUITE(BeastHttpRequestTests, *boost::unit_test::fixture<HttpServerFixture>())
+BOOST_FIXTURE_TEST_SUITE(BeastHttpRequestTests, HttpServerFixture)
 
 BOOST_AUTO_TEST_CASE(test_get_request) {
     start_server();
@@ -261,8 +264,8 @@ BOOST_AUTO_TEST_CASE(test_custom_headers) {
 
     BOOST_CHECK_EQUAL(response.result_int(), 200);
     // Response should contain headers in JSON format
-    BOOST_CHECK(response.body().find("\"host\"") != std::string::npos);
-    BOOST_CHECK(response.body().find("\"user-agent\"") != std::string::npos);
+    BOOST_CHECK(response.body().find("\"Host\"") != std::string::npos);
+    BOOST_CHECK(response.body().find("\"User-Agent\"") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(test_request_with_body) {
@@ -278,7 +281,7 @@ BOOST_AUTO_TEST_CASE(test_request_with_body) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // HTTP response tests
-BOOST_AUTO_TEST_SUITE(BeastHttpResponseTests, *boost::unit_test::fixture<HttpServerFixture>())
+BOOST_FIXTURE_TEST_SUITE(BeastHttpResponseTests, HttpServerFixture)
 
 BOOST_AUTO_TEST_CASE(test_ok_response) {
     start_server();
@@ -376,7 +379,7 @@ BOOST_AUTO_TEST_CASE(test_http_response_custom_status) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Concurrent request tests
-BOOST_AUTO_TEST_SUITE(ConcurrentRequestTests, *boost::unit_test::fixture<HttpServerFixture>())
+BOOST_FIXTURE_TEST_SUITE(ConcurrentRequestTests, HttpServerFixture)
 
 BOOST_AUTO_TEST_CASE(test_multiple_sequential_requests) {
     start_server();
@@ -409,7 +412,7 @@ BOOST_AUTO_TEST_CASE(test_multiple_concurrent_requests) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Edge case tests
-BOOST_AUTO_TEST_SUITE(EdgeCaseTests, *boost::unit_test::fixture<HttpServerFixture>())
+BOOST_FIXTURE_TEST_SUITE(EdgeCaseTests, HttpServerFixture)
 
 BOOST_AUTO_TEST_CASE(test_empty_path) {
     start_server();

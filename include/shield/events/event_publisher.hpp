@@ -15,7 +15,7 @@ private:
         ListenerRegistration registration;
 
         bool operator<(const ListenerInfo& other) const {
-            return registration.order < other.registration.order;
+            return registration.order < other.registration.order;  // 按order排序
         }
     };
 
@@ -52,13 +52,25 @@ public:
         std::vector<ListenerInfo> sorted_listeners;
         {
             std::lock_guard<std::mutex> lock(listeners_mutex_);
-            auto it = listeners_.find(event_type);
-            if (it == listeners_.end()) {
-                SHIELD_LOG_DEBUG << "No listeners for event: "
-                                 << event_type_name;
-                return;
+
+            auto add_listeners = [&](const std::type_index& key) {
+                auto it = listeners_.find(key);
+                if (it == listeners_.end()) {
+                    return;
+                }
+                sorted_listeners.insert(sorted_listeners.end(), it->second.begin(),
+                                        it->second.end());
+            };
+
+            add_listeners(event_type);
+            if (event_type != std::type_index(typeid(Event))) {
+                add_listeners(std::type_index(typeid(Event)));
             }
-            sorted_listeners = it->second;
+        }
+
+        if (sorted_listeners.empty()) {
+            SHIELD_LOG_DEBUG << "No listeners for event: " << event_type_name;
+            return;
         }
 
         SHIELD_LOG_DEBUG << "Publishing event: " << event_type_name << " to "
@@ -84,13 +96,13 @@ protected:
     void register_listener(std::type_index event_type,
                            ListenerRegistration registration) override {
         std::lock_guard<std::mutex> lock(listeners_mutex_);
-        listeners_[event_type].push_back({std::move(registration)});
-        const auto& info = listeners_[event_type].back();
 
+        listeners_[event_type].push_back({std::move(registration)});
+
+        const auto& reg = listeners_[event_type].back().registration;
         SHIELD_LOG_DEBUG << "Registered listener for event type: "
-                         << event_type.name()
-                         << " (async: " << info.registration.async
-                         << ", order: " << info.registration.order << ")";
+                         << event_type.name() << " (async: " << reg.async
+                         << ", order: " << reg.order << ")";
     }
 
 private:
@@ -99,8 +111,7 @@ private:
         try {
             SHIELD_LOG_DEBUG << "Invoking listener for event: "
                              << event->get_event_type();
-            listener_info.registration.invoke(*event);
-
+            listener_info.registration.invoke(std::move(event));
         } catch (const std::exception& e) {
             SHIELD_LOG_ERROR << "Exception in event listener: " << e.what();
         }

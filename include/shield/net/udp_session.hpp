@@ -22,7 +22,7 @@ struct UdpEndpoint {
 
     void update_activity() { last_activity = std::chrono::steady_clock::now(); }
 
-    bool is_expired(std::chrono::seconds timeout) const {
+    bool is_expired(std::chrono::steady_clock::duration timeout) const {
         auto now = std::chrono::steady_clock::now();
         return (now - last_activity) > timeout;
     }
@@ -61,16 +61,24 @@ public:
     void cleanup_expired_sessions();
 
     // Configuration
-    void set_session_timeout(std::chrono::seconds timeout) {
+    void set_session_timeout(std::chrono::steady_clock::duration timeout) {
         m_session_timeout = timeout;
     }
-    void set_cleanup_interval(std::chrono::seconds interval) {
+    void set_cleanup_interval(std::chrono::steady_clock::duration interval) {
         m_cleanup_interval = interval;
+        if (m_running) {
+            m_cleanup_timer.cancel();
+            schedule_cleanup();
+        }
     }
 
     // Statistics
     size_t active_sessions() const { return m_endpoint_sessions.size(); }
-    uint16_t local_port() const { return m_socket.local_endpoint().port(); }
+    uint16_t local_port() const {
+        boost::system::error_code ec;
+        auto endpoint = m_socket.local_endpoint(ec);
+        return ec ? 0 : endpoint.port();
+    }
 
 private:
     void do_receive();
@@ -94,8 +102,10 @@ private:
     TimeoutCallback m_timeout_callback;
 
     // Configuration
-    std::chrono::seconds m_session_timeout{300};  // 5 minutes default
-    std::chrono::seconds m_cleanup_interval{60};  // 1 minute default
+    std::chrono::steady_clock::duration m_session_timeout{
+        std::chrono::seconds(300)};  // 5 minutes default
+    std::chrono::steady_clock::duration m_cleanup_interval{
+        std::chrono::seconds(60)};  // 1 minute default
 
     // ID generation
     static std::atomic<uint64_t> s_next_session_id;

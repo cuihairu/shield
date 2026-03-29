@@ -2,7 +2,9 @@
 
 #include "json_universal_serializer.hpp"
 #include "messagepack_universal_serializer.hpp"
+#if SHIELD_HAS_PROTOBUF
 #include "protobuf_universal_serializer.hpp"
+#endif
 #include "universal_serializer.hpp"
 
 namespace shield::serialization {
@@ -10,7 +12,7 @@ namespace shield::serialization {
 // Serialization system configuration
 struct SerializationConfig {
     bool enable_json = true;
-    bool enable_protobuf = true;
+    bool enable_protobuf = SHIELD_HAS_PROTOBUF;
     bool enable_messagepack = true;
     bool enable_sproto = false;  // Not yet implemented
 
@@ -92,12 +94,17 @@ private:
                 }
                 break;
             case SerializationFormat::PROTOBUF:
+#if SHIELD_HAS_PROTOBUF
                 if constexpr (ProtobufSerializable<T>) {
                     return serialize_as<SerializationFormat::PROTOBUF>(object);
                 } else {
                     throw SerializationException(
                         "Type not compatible with Protobuf format");
                 }
+#else
+                throw SerializationException(
+                    "Protobuf support is not compiled into this build");
+#endif
                 break;
             case SerializationFormat::MESSAGEPACK:
                 if constexpr (MessagePackSerializable<T>) {
@@ -126,6 +133,7 @@ private:
                 }
                 break;
             case SerializationFormat::PROTOBUF:
+#if SHIELD_HAS_PROTOBUF
                 if constexpr (ProtobufSerializable<T>) {
                     return deserialize_as<SerializationFormat::PROTOBUF, T>(
                         data);
@@ -133,6 +141,10 @@ private:
                     throw SerializationException(
                         "Type not compatible with Protobuf format");
                 }
+#else
+                throw SerializationException(
+                    "Protobuf support is not compiled into this build");
+#endif
                 break;
             case SerializationFormat::MESSAGEPACK:
                 if constexpr (MessagePackSerializable<T>) {

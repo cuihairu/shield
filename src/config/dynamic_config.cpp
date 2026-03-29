@@ -7,6 +7,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "shield/config/config.hpp"
+
 namespace shield::config {
 
 DynamicConfigManager& DynamicConfigManager::instance() {
@@ -169,7 +171,7 @@ std::vector<std::string> DynamicConfigManager::get_dynamic_fields(
 
 void DynamicConfigManager::reload_dynamic_configs() {
     try {
-        YAML::Node config = YAML::LoadFile("config/shield.yaml");
+        YAML::Node config = YAML::LoadFile(ConfigPaths::DEFAULT_CONFIG_FILE);
 
         std::unique_lock lock(mutex_);
 

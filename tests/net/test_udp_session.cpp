@@ -26,6 +26,8 @@ public:
           receive_count_(0),
           timeout_count_(0),
           last_session_id_(0) {
+        client_socket_.open(boost::asio::ip::udp::v4());
+
         // Setup server callbacks
         server_session_.on_receive(
             [this](uint64_t session_id, const char* data, size_t length,
@@ -47,9 +49,7 @@ public:
     }
 
     ~UdpSessionFixture() {
-        if (server_session_.local_port() != 0) {
-            server_session_.stop();
-        }
+        server_session_.stop();
     }
 
     void start_server() {
@@ -65,24 +65,22 @@ public:
                           const std::string& host = "127.0.0.1",
                           uint16_t port = 0) {
         boost::asio::ip::udp::endpoint sender_endpoint(
-            boost::asio::ip::make_address(host), server_port_);
+            boost::asio::ip::make_address(host),
+            port == 0 ? server_port_ : port);
 
-        client_socket_.async_send_to(
-            boost::asio::buffer(data), sender_endpoint,
-            [](boost::system::error_code ec, std::size_t /*bytes_sent*/) {
-                BOOST_REQUIRE(!ec);
-            });
-
-        io_context_.run_one();
-        io_context_.restart();
+        boost::system::error_code ec;
+        client_socket_.send_to(boost::asio::buffer(data), sender_endpoint, 0,
+                               ec);
+        BOOST_REQUIRE(!ec);
     }
 
     // Run IO context for a specified duration
     void run_for(std::chrono::milliseconds duration) {
-        auto start = std::chrono::steady_clock::now();
-        while (std::chrono::steady_clock::now() - start < duration) {
-            io_context_.run_one();
+        auto deadline = std::chrono::steady_clock::now() + duration;
+        while (std::chrono::steady_clock::now() < deadline) {
+            io_context_.poll();
             io_context_.restart();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 
@@ -148,7 +146,7 @@ BOOST_AUTO_TEST_CASE(test_udp_endpoint_is_expired) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // UdpSession lifecycle tests
-BOOST_AUTO_TEST_SUITE(UdpSessionLifecycleTests, *boost::unit_test::fixture<UdpSessionFixture>())
+BOOST_FIXTURE_TEST_SUITE(UdpSessionLifecycleTests, UdpSessionFixture)
 
 BOOST_AUTO_TEST_CASE(test_session_start_stop) {
     BOOST_CHECK_EQUAL(server_session_.active_sessions(), 0);
@@ -178,7 +176,7 @@ BOOST_AUTO_TEST_CASE(test_session_initial_state) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Send and receive tests
-BOOST_AUTO_TEST_SUITE(UdpSessionSendReceiveTests, *boost::unit_test::fixture<UdpSessionFixture>())
+BOOST_FIXTURE_TEST_SUITE(UdpSessionSendReceiveTests, UdpSessionFixture)
 
 BOOST_AUTO_TEST_CASE(test_send_and_receive_single_message) {
     start_server();
@@ -209,24 +207,21 @@ BOOST_AUTO_TEST_CASE(test_multiple_clients_create_different_sessions) {
 
     // Open another client socket with different port
     boost::asio::ip::udp::socket client2(io_context_);
+    client2.open(boost::asio::ip::udp::v4());
     boost::asio::ip::udp::endpoint server_endpoint(
         boost::asio::ip::make_address("127.0.0.1"), server_port_);
 
-    client2.async_send_to(
-        boost::asio::buffer("Client 1"), server_endpoint,
-        [](boost::system::error_code ec, std::size_t) { BOOST_REQUIRE(!ec); });
-
-    io_context_.run_one();
-    io_context_.restart();
+    boost::system::error_code ec;
+    client2.send_to(boost::asio::buffer("Client 1"), server_endpoint, 0, ec);
+    BOOST_REQUIRE(!ec);
+    run_for(std::chrono::milliseconds(50));
 
     uint64_t first_session = last_session_id_;
 
-    client_socket_.async_send_to(
-        boost::asio::buffer("Client 2"), server_endpoint,
-        [](boost::system::error_code ec, std::size_t) { BOOST_REQUIRE(!ec); });
-
-    io_context_.run_one();
-    io_context_.restart();
+    client_socket_.send_to(boost::asio::buffer("Client 2"), server_endpoint, 0,
+                           ec);
+    BOOST_REQUIRE(!ec);
+    run_for(std::chrono::milliseconds(50));
 
     uint64_t second_session = last_session_id_;
 
@@ -237,7 +232,7 @@ BOOST_AUTO_TEST_CASE(test_multiple_clients_create_different_sessions) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Session management tests
-BOOST_AUTO_TEST_SUITE(UdpSessionManagementTests, *boost::unit_test::fixture<UdpSessionFixture>())
+BOOST_FIXTURE_TEST_SUITE(UdpSessionManagementTests, UdpSessionFixture)
 
 BOOST_AUTO_TEST_CASE(test_session_creation_on_receive) {
     start_server();
@@ -305,7 +300,7 @@ BOOST_AUTO_TEST_CASE(test_cleanup_expired_sessions) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Send to session tests
-BOOST_AUTO_TEST_SUITE(SendToSessionTests, *boost::unit_test::fixture<UdpSessionFixture>())
+BOOST_FIXTURE_TEST_SUITE(SendToSessionTests, UdpSessionFixture)
 
 BOOST_AUTO_TEST_CASE(test_send_to_endpoint) {
     start_server();
@@ -350,7 +345,7 @@ BOOST_AUTO_TEST_CASE(test_send_to_invalid_session_id) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Configuration tests
-BOOST_AUTO_TEST_SUITE(UdpSessionConfigurationTests, *boost::unit_test::fixture<UdpSessionFixture>())
+BOOST_FIXTURE_TEST_SUITE(UdpSessionConfigurationTests, UdpSessionFixture)
 
 BOOST_AUTO_TEST_CASE(test_set_session_timeout) {
     server_session_.set_session_timeout(std::chrono::seconds(100));
@@ -377,7 +372,7 @@ BOOST_AUTO_TEST_CASE(test_default_configuration) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Statistics tests
-BOOST_AUTO_TEST_SUITE(UdpSessionStatisticsTests, *boost::unit_test::fixture<UdpSessionFixture>())
+BOOST_FIXTURE_TEST_SUITE(UdpSessionStatisticsTests, UdpSessionFixture)
 
 BOOST_AUTO_TEST_CASE(test_active_sessions_count) {
     start_server();
@@ -400,7 +395,7 @@ BOOST_AUTO_TEST_CASE(test_local_port) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Callback tests
-BOOST_AUTO_TEST_SUITE(UdpSessionCallbackTests, *boost::unit_test::fixture<UdpSessionFixture>())
+BOOST_FIXTURE_TEST_SUITE(UdpSessionCallbackTests, UdpSessionFixture)
 
 BOOST_AUTO_TEST_CASE(test_receive_callback_invoked) {
     start_server();
@@ -439,7 +434,7 @@ BOOST_AUTO_TEST_CASE(test_timeout_callback_invoked) {
 BOOST_AUTO_TEST_SUITE_END()
 
 // Edge case tests
-BOOST_AUTO_TEST_SUITE(UdpSessionEdgeCaseTests, *boost::unit_test::fixture<UdpSessionFixture>())
+BOOST_FIXTURE_TEST_SUITE(UdpSessionEdgeCaseTests, UdpSessionFixture)
 
 BOOST_AUTO_TEST_CASE(test_empty_message) {
     start_server();

@@ -7,12 +7,22 @@ app:
   version: "0.1.0"
   show_banner: true
 
-# Logger configuration  
-logger:
-  level: "info"
-  console_output: true
-  file_output: false
-  file_path: "logs/shield.log"
+# Log module configuration
+log:
+  global_level: "info"
+  console:
+    enabled: true
+    colored: true
+    pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+    min_level: "info"
+  file:
+    enabled: false
+    log_file: "logs/shield.log"
+    max_file_size: 10485760  # 10MB
+    max_files: 5
+    rotate_on_open: false
+    pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v"
+    min_level: "debug"
 
 # Server configuration
 server:

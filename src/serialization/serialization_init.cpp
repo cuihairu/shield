@@ -10,7 +10,7 @@ void initialize_serialization_system() {
     // Configure serialization options
     SerializationConfig config;
     config.enable_json = true;
-    config.enable_protobuf = true;
+    config.enable_protobuf = SHIELD_HAS_PROTOBUF;
     config.enable_messagepack = true;
     config.enable_sproto = false;  // Not implemented yet
     config.default_format = SerializationFormat::JSON;

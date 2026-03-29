@@ -247,7 +247,7 @@ BOOST_AUTO_TEST_CASE(test_unregister_indicator) {
     BOOST_CHECK_EQUAL(health.status, HealthStatus::UNKNOWN);
 }
 
-BOOST_AUTO_TEST_CASE test_get_all_health) {
+BOOST_AUTO_TEST_CASE(test_get_all_health) {
     auto& registry = HealthCheckRegistry::instance();
 
     auto indicator1 = std::make_unique<TestHealthIndicator>(HealthStatus::UP);

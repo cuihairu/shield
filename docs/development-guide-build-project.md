@@ -31,6 +31,9 @@ cmake -DSHIELD_BUILD_TESTS=OFF
 # 启用示例构建
 cmake -DSHIELD_BUILD_EXAMPLES=ON
 
+# 启用覆盖率 (GCC/Clang)
+cmake -DSHIELD_ENABLE_COVERAGE=ON
+
 # 启用性能分析
 cmake -DSHIELD_ENABLE_PROFILING=ON
 

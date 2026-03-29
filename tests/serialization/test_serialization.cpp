@@ -205,8 +205,10 @@ BOOST_AUTO_TEST_CASE(test_serialize_simple_type) {
         serializer)->serialize(data);
 
     BOOST_CHECK(!json_str.empty());
-    BOOST_CHECK(json_str.find("\"id\": 42") != std::string::npos);
-    BOOST_CHECK(json_str.find("\"name\": \"test\"") != std::string::npos);
+    BOOST_CHECK(json_str.find("\"id\":42") != std::string::npos ||
+                json_str.find("\"id\": 42") != std::string::npos);
+    BOOST_CHECK(json_str.find("\"name\":\"test\"") != std::string::npos ||
+                json_str.find("\"name\": \"test\"") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(test_deserialize_simple_type) {
@@ -380,7 +382,8 @@ BOOST_AUTO_TEST_CASE(test_serialize_as_json) {
     auto json_str = serialize_as<SerializationFormat::JSON>(data);
 
     BOOST_CHECK(!json_str.empty());
-    BOOST_CHECK(json_str.find("\"id\": 1") != std::string::npos);
+    BOOST_CHECK(json_str.find("\"id\":1") != std::string::npos ||
+                json_str.find("\"id\": 1") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(test_deserialize_as_json) {
@@ -443,7 +446,7 @@ BOOST_AUTO_TEST_CASE(test_default_config) {
     SerializationConfig config;
 
     BOOST_CHECK(config.enable_json == true);
-    BOOST_CHECK(config.enable_protobuf == true);
+    BOOST_CHECK(config.enable_protobuf == static_cast<bool>(SHIELD_HAS_PROTOBUF));
     BOOST_CHECK(config.enable_messagepack == true);
     BOOST_CHECK(config.enable_sproto == false);
     BOOST_CHECK(config.default_format == SerializationFormat::JSON);

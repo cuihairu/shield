@@ -1,23 +1,25 @@
-// tests/util/test_event_system.cpp
 #define BOOST_TEST_MODULE EventSystemTests
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <any>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <typeindex>
+#include <unordered_map>
 #include <vector>
-#include <condition_variable>
 
-#include "shield/events/event_system.hpp"
 #include "shield/events/event_publisher.hpp"
+#include "shield/events/event_system.hpp"
 
 namespace shield::events {
 
-// Test event
 class TestEvent : public Event {
 public:
     explicit TestEvent(int value = 0) : Event(), value_(value) {}
@@ -30,7 +32,6 @@ private:
     int value_;
 };
 
-// Test counter for event handler verification
 class EventCounter {
 public:
     int count = 0;
@@ -44,7 +45,6 @@ public:
     }
 };
 
-// Event tests
 BOOST_AUTO_TEST_SUITE(EventTests)
 
 BOOST_AUTO_TEST_CASE(test_event_creation) {
@@ -80,7 +80,6 @@ BOOST_AUTO_TEST_CASE(test_event_value_modification) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
-// ConfigRefreshEvent tests
 BOOST_AUTO_TEST_SUITE(ConfigEventTests)
 
 BOOST_AUTO_TEST_CASE(test_config_refresh_event) {
@@ -91,14 +90,13 @@ BOOST_AUTO_TEST_CASE(test_config_refresh_event) {
 
 BOOST_AUTO_TEST_CASE(test_config_refresh_event_with_source) {
     std::string source = "config_manager";
-    config::ConfigRefreshEvent event(std::any(source));
+    config::ConfigRefreshEvent event(std::any{source});
 
     BOOST_CHECK_EQUAL(event.get_event_type(), "ConfigRefreshEvent");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
 
-// Lifecycle events tests
 BOOST_AUTO_TEST_SUITE(LifecycleEventTests)
 
 BOOST_AUTO_TEST_CASE(test_application_started_event) {
@@ -122,7 +120,6 @@ BOOST_AUTO_TEST_CASE(test_service_ready_event) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
-// EventListener tests
 BOOST_AUTO_TEST_SUITE(EventListenerTests)
 
 BOOST_AUTO_TEST_CASE(test_functional_event_listener) {
@@ -189,7 +186,6 @@ BOOST_AUTO_TEST_CASE(test_multiple_events_to_same_listener) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
-// Custom event listener
 class CounterEventListener : public EventListener<TestEvent> {
 public:
     int count = 0;
@@ -229,30 +225,54 @@ BOOST_AUTO_TEST_CASE(test_custom_listener_multiple_events) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
-// EventPublisher interface tests (using mock implementation)
 class MockEventPublisher : public EventPublisher {
 public:
+    struct ListenerInfo {
+        ListenerRegistration registration;
+    };
+
     std::vector<std::shared_ptr<Event>> published_events;
-    std::unordered_map<std::type_index, std::vector<ListenerRegistration>>
+    std::unordered_map<std::type_index, std::vector<ListenerInfo>>
         listeners_map;
 
     void publish_event(std::shared_ptr<Event> event) override {
+        if (!event) {
+            return;
+        }
         published_events.push_back(event);
 
-        // Notify listeners for this event type
-        std::type_index type_idx(typeid(*event));
-        auto it = listeners_map.find(type_idx);
-        if (it != listeners_map.end()) {
-            for (const auto& registration : it->second) {
-                registration.invoke(*event);
+        Event* event_ptr = event.get();
+        const std::type_index type_idx(typeid(*event_ptr));
+
+        std::vector<ListenerInfo> listeners;
+        auto add = [&](const std::type_index& key) {
+            auto it = listeners_map.find(key);
+            if (it == listeners_map.end()) {
+                return;
             }
+            listeners.insert(listeners.end(), it->second.begin(),
+                             it->second.end());
+        };
+
+        add(type_idx);
+        if (type_idx != std::type_index(typeid(Event))) {
+            add(std::type_index(typeid(Event)));
+        }
+
+        std::sort(listeners.begin(), listeners.end(),
+                  [](const ListenerInfo& a, const ListenerInfo& b) {
+                      return a.registration.order < b.registration.order;
+                  });
+
+        for (auto& info : listeners) {
+            info.registration.invoke(event);
         }
     }
 
 protected:
     void register_listener(std::type_index event_type,
                            ListenerRegistration registration) override {
-        listeners_map[event_type].push_back(std::move(registration));
+        listeners_map[event_type].push_back({std::move(registration)});
     }
 };
 
@@ -347,7 +367,6 @@ BOOST_AUTO_TEST_CASE(test_listener_order) {
 
     publisher.emit_event<TestEvent>(0);
 
-    // Listeners should execute in order: 1, 2, 3
     BOOST_CHECK_EQUAL(execution_order.size(), 3);
     BOOST_CHECK_EQUAL(execution_order[0], 1);
     BOOST_CHECK_EQUAL(execution_order[1], 2);
@@ -356,7 +375,6 @@ BOOST_AUTO_TEST_CASE(test_listener_order) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
-// Config change event tests
 BOOST_AUTO_TEST_SUITE(ConfigChangeEventTests)
 
 struct TestConfig {
@@ -430,6 +448,91 @@ BOOST_AUTO_TEST_CASE(test_default_publisher_async_listener) {
 
     BOOST_CHECK(completed);
     BOOST_CHECK_EQUAL(received_value, 88);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(GlobalEventPublisherTests)
+
+class DispatchEvent : public Event {
+public:
+    explicit DispatchEvent(int value) : Event(), value_(value) {}
+    std::string get_event_type() const override { return "DispatchEvent"; }
+    int value() const { return value_; }
+
+private:
+    int value_;
+};
+
+BOOST_AUTO_TEST_CASE(test_sync_listener_dispatch) {
+    std::atomic<int> received{0};
+
+    GlobalEventPublisher::listen<DispatchEvent>(
+        [&received](const DispatchEvent& event) { received = event.value(); });
+
+    GlobalEventPublisher::emit<DispatchEvent>(123);
+    BOOST_CHECK_EQUAL(received.load(), 123);
+}
+
+class OrderEvent : public Event {
+public:
+    OrderEvent() : Event() {}
+    std::string get_event_type() const override { return "OrderEvent"; }
+};
+
+BOOST_AUTO_TEST_CASE(test_listener_ordering) {
+    std::mutex mutex;
+    std::vector<int> order;
+
+    GlobalEventPublisher::listen<OrderEvent>(
+        [&mutex, &order](const OrderEvent&) {
+            std::lock_guard<std::mutex> lock(mutex);
+            order.push_back(2);
+        },
+        false, 2);
+
+    GlobalEventPublisher::listen<OrderEvent>(
+        [&mutex, &order](const OrderEvent&) {
+            std::lock_guard<std::mutex> lock(mutex);
+            order.push_back(1);
+        },
+        false, 1);
+
+    GlobalEventPublisher::emit<OrderEvent>();
+
+    std::lock_guard<std::mutex> lock(mutex);
+    BOOST_REQUIRE_EQUAL(order.size(), 2U);
+    BOOST_CHECK_EQUAL(order[0], 1);
+    BOOST_CHECK_EQUAL(order[1], 2);
+}
+
+class AsyncEvent : public Event {
+public:
+    AsyncEvent() : Event() {}
+    std::string get_event_type() const override { return "AsyncEvent"; }
+};
+
+BOOST_AUTO_TEST_CASE(test_async_listener_dispatch) {
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool done = false;
+
+    GlobalEventPublisher::listen<AsyncEvent>(
+        [&mutex, &cv, &done](const AsyncEvent&) {
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                done = true;
+            }
+            cv.notify_one();
+        },
+        true, 0);
+
+    GlobalEventPublisher::emit<AsyncEvent>();
+
+    std::unique_lock<std::mutex> lock(mutex);
+    const auto ok = cv.wait_for(lock, std::chrono::seconds(2),
+                                [&done] { return done; });
+    BOOST_CHECK(ok);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

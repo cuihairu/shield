@@ -12,6 +12,12 @@ target_link_libraries(
                       yaml-cpp::yaml-cpp Boost::headers)
 add_test(NAME test_config COMMAND test_config)
 
+add_executable(test_ptree_yaml config/test_ptree_yaml.cpp)
+target_link_libraries(
+  test_ptree_yaml PRIVATE shield_core Boost::unit_test_framework
+                          yaml-cpp::yaml-cpp Boost::headers)
+add_test(NAME test_ptree_yaml COMMAND test_ptree_yaml)
+
 add_executable(test_lua_vm_pool script/test_lua_vm_pool.cpp)
 target_link_libraries(
   test_lua_vm_pool PRIVATE shield_core Boost::unit_test_framework
@@ -137,3 +143,10 @@ target_link_libraries(
   test_command_execution PRIVATE shield_core Boost::unit_test_framework
                                  Boost::headers)
 add_test(NAME test_command_execution COMMAND test_command_execution)
+
+# CLI 命令行解析测试
+add_executable(test_cli_command_parsing cli/test_command_parsing.cpp)
+target_link_libraries(
+  test_cli_command_parsing PRIVATE shield_core Boost::unit_test_framework
+                                   Boost::headers)
+add_test(NAME test_cli_command_parsing COMMAND test_cli_command_parsing)

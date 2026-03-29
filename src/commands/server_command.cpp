@@ -25,7 +25,6 @@ ServerCommand::ServerCommand()
 }
 
 void ServerCommand::setup_flags() {
-    add_flag("config", "Configuration file path", "config/shield.yaml");
     add_flag("plugins", "Plugins directory path", "plugins/");
     add_flag("enable-plugins", "Enable dynamic plugin loading", "false");
 }
@@ -49,12 +48,15 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
     auto& app_context = shield::core::ApplicationContext::instance();
 
     // Check if plugins are enabled
-    std::string enable_plugins = ctx.get_flag("enable-plugins");
+    std::string enable_plugins =
+        ctx.has_flag("enable-plugins") ? ctx.get_flag("enable-plugins")
+                                       : "false";
     bool plugins_enabled = (enable_plugins == "true" || enable_plugins == "1");
 
     if (plugins_enabled) {
         // Configure with plugins
-        std::string plugins_dir = ctx.get_flag("plugins");
+        std::string plugins_dir =
+            ctx.has_flag("plugins") ? ctx.get_flag("plugins") : "plugins/";
         SHIELD_LOG_INFO << "Plugin system enabled, loading from: "
                         << plugins_dir;
         app_context.configure_with_plugins(plugins_dir);

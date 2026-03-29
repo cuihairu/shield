@@ -1,6 +1,7 @@
 // shield/src/script/lua_ioc_bridge.cpp
 #include "shield/script/lua_ioc_bridge.hpp"
 
+#include <iostream>
 #include <stdexcept>
 
 namespace shield::lua {

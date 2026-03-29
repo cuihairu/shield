@@ -5,6 +5,8 @@
 #include <iostream>
 #include <sstream>
 
+#include <yaml-cpp/yaml.h>
+
 #include "shield/config/config.hpp"
 
 namespace shield::commands {
@@ -24,12 +26,14 @@ void ConfigCommand::setup_flags() {
     add_bool_flag("validate", "Validate configuration file", false);
     add_bool_flag("dump", "Dump current configuration", false);
     add_bool_flag("generate", "Generate default configuration", false);
-    add_flag("config", "Configuration file path", "config/shield.yaml");
+    add_flag_with_short("file", "f", "Configuration file path", "");
     add_flag("get", "Get specific configuration value", "");
 }
 
 int ConfigCommand::run(shield::cli::CommandContext& ctx) {
-    std::string config_file = ctx.get_flag("config");
+    std::string config_file = ctx.is_user_provided("file")
+                                  ? ctx.get_flag("file")
+                                  : ctx.get_flag("config");
 
     if (ctx.get_bool_flag("generate")) {
         std::cout << generate_default_config() << std::endl;
@@ -69,8 +73,20 @@ std::string ConfigCommand::generate_default_config() {
     ss << "app:\\n";
     ss << "  show_banner: true\\n\\n";
     ss << "log:\\n";
-    ss << "  level: info\\n";
-    ss << "  file: logs/shield.log\\n\\n";
+    ss << "  global_level: \\\"info\\\"\\n";
+    ss << "  console:\\n";
+    ss << "    enabled: true\\n";
+    ss << "    colored: true\\n";
+    ss << "    pattern: \\\"[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v\\\"\\n";
+    ss << "    min_level: \\\"info\\\"\\n";
+    ss << "  file:\\n";
+    ss << "    enabled: true\\n";
+    ss << "    log_file: \\\"logs/shield.log\\\"\\n";
+    ss << "    max_file_size: 10485760\\n";
+    ss << "    max_files: 5\\n";
+    ss << "    rotate_on_open: false\\n";
+    ss << "    pattern: \\\"[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v\\\"\\n";
+    ss << "    min_level: \\\"debug\\\"\\n\\n";
     ss << "gateway:\\n";
     ss << "  listener:\\n";
     ss << "    host: 0.0.0.0\\n";
@@ -104,19 +120,17 @@ int ConfigCommand::validate_config(const std::string& file_path) {
 }
 
 int ConfigCommand::dump_config(const std::string& file_path) {
-    std::cout << "Dumping current configuration..." << std::endl;
     try {
-        auto& config_manager = shield::config::ConfigManager::instance();
-        config_manager.load_config(file_path,
-                                   shield::config::ConfigFormat::YAML);
-
-        // For now just indicate success - full dump would require YAML
-        // serialization
-        std::cout << "Configuration loaded successfully from: " << file_path
-                  << std::endl;
-        std::cout << "(Full dump functionality requires YAML serialization - "
-                     "not implemented yet)"
-                  << std::endl;
+        // Dump should be pipe-friendly: only output the YAML to stdout.
+        auto root = YAML::LoadFile(file_path);
+        YAML::Emitter out;
+        out.SetIndent(2);
+        out << root;
+        if (!out.good()) {
+            throw std::runtime_error(std::string("YAML emit failed: ") +
+                                     out.GetLastError());
+        }
+        std::cout << out.c_str() << std::endl;
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Failed to load configuration: " << e.what() << std::endl;

@@ -2,11 +2,13 @@
 # app-prod.yaml - Production environment configuration overrides
 
 # Production logger settings
-logger:
-  level: "warn"
-  console_output: false
-  file_output: true
-  file_path: "/var/log/shield/shield.log"
+log:
+  global_level: "warn"
+  console:
+    enabled: false
+  file:
+    enabled: true
+    log_file: "/var/log/shield/shield.log"
 
 # Production database
 database:
