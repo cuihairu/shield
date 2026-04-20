@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "shield/core/starter.hpp"
@@ -211,6 +212,15 @@ private:
      * @return Vector of plugin names in load order
      */
     std::vector<std::string> resolve_plugin_load_order() const;
+    void visit_plugin_dependency(
+        const std::string& plugin_name,
+        const std::unordered_map<std::string, std::vector<std::string>>&
+            dependency_graph,
+        std::unordered_set<std::string>& visiting,
+        std::unordered_set<std::string>& visited,
+        std::vector<std::string>& order) const;
+    PluginInfo read_plugin_info(
+        const boost::filesystem::path& library_path) const;
 
 private:
     std::vector<boost::filesystem::path> plugin_directories_;

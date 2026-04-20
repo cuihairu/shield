@@ -4,9 +4,9 @@
 #include <memory>
 
 #include "shield/actor/distributed_actor_system.hpp"
-#include "shield/actor/lua_actor.hpp"
 #include "shield/core/service.hpp"
 #include "shield/gateway/gateway_config.hpp"
+#include "shield/gateway/gateway_request_dispatcher.hpp"
 #include "shield/http/beast_http_server.hpp"
 #include "shield/net/master_reactor.hpp"
 #include "shield/net/session.hpp"
@@ -40,12 +40,9 @@ public:
 
 private:
     void setup_session(std::shared_ptr<net::Session> session);
-    void handle_lua_actor_response(uint64_t session_id,
-                                   const actor::LuaResponse &response);
-    void handle_lua_actor_response_json(uint64_t session_id,
-                                        const std::string &response);
+    void send_binary_json_response(uint64_t session_id,
+                                   const std::string& response);
     void setup_protocol_handlers();
-    void setup_http_routes();
     std::shared_ptr<net::Session> get_session(uint64_t session_id);
     protocol::ProtocolType detect_protocol(uint64_t connection_id,
                                            const char *data, size_t length);
@@ -59,10 +56,9 @@ private:
     std::unique_ptr<net::MasterReactor> m_http_reactor;  // HTTP server
     std::unique_ptr<net::MasterReactor> m_ws_reactor;    // WebSocket server
     std::unique_ptr<http::BeastHttpServer> m_beast_http_server;
+    std::unique_ptr<GatewayRequestDispatcher> m_request_dispatcher;
 
     std::unordered_map<uint64_t, std::vector<char>> m_session_recv_buffers;
-    std::unordered_map<uint64_t, caf::actor>
-        m_session_actors;  // Map session ID to LuaActor
     std::unordered_map<uint64_t, std::weak_ptr<net::Session>>
         m_sessions;  // Map session ID to Session
     std::unordered_map<uint64_t, protocol::ProtocolType>

@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "shield/config/config.hpp"
+#include "shield/core/config_reload_binder.hpp"
+#include "shield/core/plugin_host.hpp"
 #include "shield/core/plugin_manager.hpp"
 #include "shield/core/service.hpp"
 #include "shield/core/starter_manager.hpp"
@@ -48,7 +50,9 @@ public:
     void configure_with_conditional_beans();
 
     // Get the plugin manager
-    PluginManager* get_plugin_manager() const { return plugin_manager_.get(); }
+    PluginManager* get_plugin_manager() const {
+        return plugin_host_ ? plugin_host_->get_plugin_manager() : nullptr;
+    }
 
     // Get the DI container
     di::AdvancedContainer& get_di_container() { return di_container_; }
@@ -66,6 +70,9 @@ public:
     // Publish application lifecycle events
     void publish_application_started_event();
     void publish_application_stopped_event();
+    ConfigReloadBinder& get_config_reload_binder() {
+        return config_reload_binder_;
+    }
 
 private:
     ApplicationContext() = default;
@@ -78,33 +85,20 @@ private:
     std::unordered_map<std::type_index, std::string> m_bean_type_to_name;
 
     // Plugin manager for dynamic plugin loading
-    std::unique_ptr<PluginManager> plugin_manager_;
+    std::unique_ptr<PluginHost> plugin_host_;
 
     // Advanced DI container
     di::AdvancedContainer di_container_;
 
     // Event publisher for application events
     events::DefaultEventPublisher event_publisher_;
+    ConfigReloadBinder config_reload_binder_;
 
     // Template implementations (moved to .hpp for simplicity)
 public:
     template <typename ConfigType>
     void bind_config_reload(const std::shared_ptr<Service>& service) {
-        auto reloadable =
-            std::dynamic_pointer_cast<IReloadableService>(service);
-        if (!reloadable) {
-            throw std::runtime_error(
-                "bind_config_reload requires an IReloadableService");
-        }
-
-        auto& config_manager = config::ConfigManager::instance();
-        config_manager.subscribe_to_reloads<ConfigType>(
-            [weak = std::weak_ptr<IReloadableService>(reloadable)](
-                const ConfigType&) {
-                if (auto locked = weak.lock()) {
-                    locked->on_config_reloaded();
-                }
-            });
+        config_reload_binder_.bind<ConfigType>(service);
     }
 
     template <typename T, typename... Args>

@@ -261,7 +261,8 @@ file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 # Define all source files explicitly
 set(CORE_SOURCES # Core sources
     src/core/service.cpp src/core/application_context.cpp
-    src/core/starter_manager.cpp src/core/plugin_manager.cpp)
+    src/core/starter_manager.cpp src/core/plugin_manager.cpp
+    src/core/plugin_host.cpp src/core/config_reload_binder.cpp)
 
 set(LOG_SOURCES # Log sources
     src/log/logger.cpp src/log/log_config.cpp)
@@ -279,6 +280,7 @@ set(OTHER_SOURCES
     # Discovery sources
     src/discovery/service_instance.cpp
     src/discovery/discovery_config.cpp
+    src/discovery/discovery_service_factory.cpp
     src/discovery/local_discovery.cpp
     src/discovery/redis_discovery.cpp
     src/discovery/nacos_discovery.cpp
@@ -319,6 +321,7 @@ set(OTHER_SOURCES
     src/script/script_starter.cpp
     src/script/lua_ioc_bridge.cpp
     # Gateway sources
+    src/gateway/gateway_request_dispatcher.cpp
     src/gateway/gateway_service.cpp
     src/gateway/gateway_config.cpp
     src/gateway/gateway_starter.cpp

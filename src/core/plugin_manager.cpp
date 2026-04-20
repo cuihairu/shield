@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "shield/log/logger.hpp"
 
@@ -301,19 +302,86 @@ std::string PluginManager::get_library_extension() const {
 }
 
 std::vector<std::string> PluginManager::resolve_plugin_load_order() const {
-    // For now, return simple order. In the future, we could implement
-    // topological sorting based on plugin dependencies
-    std::vector<std::string> order;
-    order.reserve(discovered_plugins_.size());
-
-    for (const auto& pair : discovered_plugins_) {
-        order.push_back(pair.first);
+    std::unordered_map<std::string, std::vector<std::string>> dependency_graph;
+    for (const auto& [plugin_name, library_path] : discovered_plugins_) {
+        auto info = read_plugin_info(library_path);
+        std::vector<std::string> dependencies;
+        if (info.dependencies) {
+            for (const char** dep = info.dependencies; *dep != nullptr; ++dep) {
+                dependencies.emplace_back(*dep);
+            }
+        }
+        dependency_graph.emplace(plugin_name, std::move(dependencies));
     }
 
-    // Sort alphabetically for consistent ordering
-    std::sort(order.begin(), order.end());
+    std::vector<std::string> order;
+    order.reserve(dependency_graph.size());
+    std::unordered_set<std::string> visiting;
+    std::unordered_set<std::string> visited;
+
+    std::vector<std::string> plugin_names;
+    plugin_names.reserve(dependency_graph.size());
+    for (const auto& [plugin_name, _] : dependency_graph) {
+        plugin_names.push_back(plugin_name);
+    }
+    std::sort(plugin_names.begin(), plugin_names.end());
+
+    for (const auto& plugin_name : plugin_names) {
+        if (visited.find(plugin_name) == visited.end()) {
+            visit_plugin_dependency(plugin_name, dependency_graph, visiting,
+                                    visited, order);
+        }
+    }
 
     return order;
+}
+
+void PluginManager::visit_plugin_dependency(
+    const std::string& plugin_name,
+    const std::unordered_map<std::string, std::vector<std::string>>&
+        dependency_graph,
+    std::unordered_set<std::string>& visiting,
+    std::unordered_set<std::string>& visited,
+    std::vector<std::string>& order) const {
+    if (visited.find(plugin_name) != visited.end()) {
+        return;
+    }
+    if (visiting.find(plugin_name) != visiting.end()) {
+        throw std::runtime_error("Circular plugin dependency detected: " +
+                                 plugin_name);
+    }
+
+    auto graph_it = dependency_graph.find(plugin_name);
+    if (graph_it == dependency_graph.end()) {
+        throw std::runtime_error("Unknown discovered plugin: " + plugin_name);
+    }
+
+    visiting.insert(plugin_name);
+    for (const auto& dependency : graph_it->second) {
+        if (dependency_graph.find(dependency) == dependency_graph.end()) {
+            throw std::runtime_error("Plugin '" + plugin_name +
+                                     "' depends on undiscovered plugin '" +
+                                     dependency + "'");
+        }
+        visit_plugin_dependency(dependency, dependency_graph, visiting, visited,
+                                order);
+    }
+    visiting.erase(plugin_name);
+    visited.insert(plugin_name);
+    order.push_back(plugin_name);
+}
+
+PluginInfo PluginManager::read_plugin_info(
+    const boost::filesystem::path& library_path) const {
+    PluginLibrary library;
+    library.load(library_path);
+
+    if (!validate_plugin_library(library)) {
+        throw std::runtime_error("Invalid plugin library: " +
+                                 library_path.string());
+    }
+
+    return extract_plugin_info(library);
 }
 
 }  // namespace shield::core

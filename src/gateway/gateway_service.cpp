@@ -1,10 +1,9 @@
 #include "shield/gateway/gateway_service.hpp"
 
-#include "shield/actor/lua_actor.hpp"
 #include "shield/caf_type_ids.hpp"
 #include "shield/gateway/gateway_config.hpp"
 #include "shield/log/logger.hpp"
-#include "shield/serialization/json_universal_serializer.hpp"
+#include "shield/protocol/binary_protocol.hpp"
 
 namespace shield::gateway {
 
@@ -28,6 +27,8 @@ void GatewayService::on_init(core::ApplicationContext& ctx) {
 
     // Validate configuration
     m_config->validate();
+    m_request_dispatcher = std::make_unique<GatewayRequestDispatcher>(
+        m_actor_system, m_lua_vm_pool, m_request_timeout);
 
     // TCP server configuration
     const auto& listener_config = m_config->listener;
@@ -62,6 +63,7 @@ void GatewayService::on_init(core::ApplicationContext& ctx) {
                 m_http_handler->handle_disconnection(session->id());
                 m_sessions.erase(session->id());
                 m_session_protocols.erase(session->id());
+                m_request_dispatcher->on_session_closed(session->id());
             });
 
             return session;
@@ -90,7 +92,7 @@ void GatewayService::on_init(core::ApplicationContext& ctx) {
                 m_websocket_handler->handle_disconnection(session->id());
                 m_sessions.erase(session->id());
                 m_session_protocols.erase(session->id());
-                m_session_actors.erase(session->id());
+                m_request_dispatcher->on_session_closed(session->id());
             });
 
             return session;
@@ -176,7 +178,7 @@ void GatewayService::setup_protocol_handlers() {
     m_http_handler->set_session_provider(
         [this](uint64_t session_id) { return get_session(session_id); });
 
-    setup_http_routes();
+    m_request_dispatcher->configure_http_routes(m_http_handler->get_router());
 
     // Create WebSocket handler
     m_websocket_handler = protocol::create_websocket_handler();
@@ -184,96 +186,10 @@ void GatewayService::setup_protocol_handlers() {
         [this](uint64_t session_id) { return get_session(session_id); });
 
     // Set WebSocket message handler
-    m_websocket_handler->set_message_handler([this](
-                                                 uint64_t connection_id,
-                                                 const std::string& message) {
-        try {
-            // Create or get LuaActor for this connection
-            auto actor_it = m_session_actors.find(connection_id);
-            if (actor_it == m_session_actors.end()) {
-                auto lua_actor = actor::create_lua_actor(
-                    m_actor_system.system(), m_lua_vm_pool, m_actor_system,
-                    "scripts/websocket_actor.lua",
-                    std::to_string(connection_id));
-                m_session_actors[connection_id] = lua_actor;
-                actor_it = m_session_actors.find(connection_id);
-            }
-
-            // Send message string to LuaActor
-            auto lua_actor_ref = actor_it->second;
-            auto temp_actor = m_actor_system.system().spawn(
-                [this, connection_id, lua_actor_ref,
-                 message](caf::event_based_actor* self) -> caf::behavior {
-                    self->request(lua_actor_ref, m_request_timeout,
-                                  std::string("websocket_message"), message)
-                        .then(
-                            [this, connection_id,
-                             self](const std::string& response) {
-                                // Send response back to WebSocket client
-                                m_websocket_handler->send_text_frame(
-                                    connection_id, response);
-                                self->quit();
-                            },
-                            [=, this](caf::error& err) {
-                                SHIELD_LOG_ERROR
-                                    << "WebSocket LuaActor request failed for "
-                                       "connection "
-                                    << connection_id << ": "
-                                    << caf::to_string(err);
-
-                                std::string error_response =
-                                    R"({"success": false, "error_message": "Request timeout or actor error"})";
-                                m_websocket_handler->send_text_frame(
-                                    connection_id, error_response);
-                                self->quit();
-                            });
-
-                    return caf::behavior{};
-                });
-
-        } catch (const std::exception& e) {
-            SHIELD_LOG_ERROR << "WebSocket message processing error: "
-                             << e.what();
-        }
-    });
-}
-
-void GatewayService::setup_http_routes() {
-    auto& router = m_http_handler->get_router();
-
-    // Game API routes
-    router.add_route(
-        "POST", "/api/game/action",
-        [this](const protocol::HttpRequest& request) {
-            protocol::HttpResponse response;
-
-            try {
-                // Create temporary actor to handle request
-                auto lua_actor = actor::create_lua_actor(
-                    m_actor_system.system(), m_lua_vm_pool, m_actor_system,
-                    "scripts/http_actor.lua",
-                    std::to_string(request.connection_id));
-
-                // Simplified handling, return success response
-                response.body =
-                    R"({"status": "accepted", "message": "Request queued for processing"})";
-
-            } catch (const std::exception& e) {
-                response.status_code = 400;
-                response.status_text = "Bad Request";
-                response.body = R"({"error": "Invalid request format"})";
-            }
-
-            return response;
-        });
-
-    // Player info API
-    router.add_route(
-        "GET", "/api/player/info", [](const protocol::HttpRequest& request) {
-            protocol::HttpResponse response;
-            response.body =
-                R"({"player_id": "test_player", "level": 10, "score": 1000})";
-            return response;
+    m_websocket_handler->set_message_handler(
+        [this](uint64_t connection_id, const std::string& message) {
+            m_request_dispatcher->handle_websocket_message(
+                connection_id, message, *m_websocket_handler);
         });
 }
 
@@ -319,12 +235,6 @@ void GatewayService::setup_session(std::shared_ptr<net::Session> session) {
     // Store weak reference to session for later access
     m_sessions[session->id()] = std::weak_ptr<net::Session>(session);
 
-    // Spawn a LuaActor for this session
-    auto lua_actor = actor::create_lua_actor(
-        m_actor_system.system(), m_lua_vm_pool, m_actor_system,
-        "scripts/player_actor.lua", std::to_string(session->id()));
-    m_session_actors[session->id()] = lua_actor;
-
     session->on_read([this, session](const char* data, size_t length) {
         // Append received data to the session's buffer
         auto& recv_buffer = m_session_recv_buffers[session->id()];
@@ -337,45 +247,11 @@ void GatewayService::setup_session(std::shared_ptr<net::Session> session) {
                 recv_buffer.data() + bytes_processed,
                 recv_buffer.size() - bytes_processed);
             if (consumed > 0) {
-                // Send message to the associated LuaActor using
-                // request-response pattern
                 auto session_id = session->id();
-                auto lua_actor_ref = m_session_actors[session_id];
-
-                // Create a temporary actor to handle the request-response
-                // communication
-                auto temp_actor = m_actor_system.system().spawn(
-                    [this, session_id, lua_actor_ref, message_str](
-                        caf::event_based_actor* self) -> caf::behavior {
-                        // Send request to LuaActor and handle response
-                        self->request(lua_actor_ref, m_request_timeout,
-                                      std::string("tcp_message"), message_str)
-                            .then(
-                                [this, session_id,
-                                 self](const std::string& response) {
-                                    // Handle the response from LuaActor
-                                    handle_lua_actor_response_json(session_id,
-                                                                   response);
-                                    self->quit();
-                                },
-                                [=, this](caf::error& err) {
-                                    // Handle timeout or error
-                                    SHIELD_LOG_ERROR << "Request to LuaActor "
-                                                        "failed for session "
-                                                     << session_id << ": "
-                                                     << caf::to_string(err);
-
-                                    // Send error response back to client
-                                    std::string error_response =
-                                        R"({"success": false, "error_message": "Request timeout or actor error"})";
-                                    handle_lua_actor_response_json(
-                                        session_id, error_response);
-                                    self->quit();
-                                });
-
-                        // Return empty behavior as the actor will quit after
-                        // handling the request
-                        return caf::behavior{};
+                m_request_dispatcher->handle_tcp_message(
+                    session_id, message_str,
+                    [this, session_id](const std::string& response) {
+                        send_binary_json_response(session_id, response);
                     });
 
                 bytes_processed += consumed;
@@ -395,53 +271,14 @@ void GatewayService::setup_session(std::shared_ptr<net::Session> session) {
         SHIELD_LOG_INFO << "Session " << session->id() << " closed.";
         // Remove the session's receive buffer and actor when the session closes
         m_session_recv_buffers.erase(session->id());
-        m_session_actors.erase(session->id());
+        m_request_dispatcher->on_session_closed(session->id());
         m_sessions.erase(session->id());
         m_session_protocols.erase(session->id());
     });
 }
 
-void GatewayService::handle_lua_actor_response(
-    uint64_t session_id, const actor::LuaResponse& response) {
-    // Find the session
-    auto session_it = m_sessions.find(session_id);
-    if (session_it == m_sessions.end()) {
-        SHIELD_LOG_WARN << "Cannot find session " << session_id
-                        << " to send response";
-        return;
-    }
-
-    // Check if session is still alive
-    auto session_ptr = session_it->second.lock();
-    if (!session_ptr) {
-        SHIELD_LOG_WARN << "Session " << session_id
-                        << " is no longer alive, discarding response";
-        m_sessions.erase(session_it);  // Clean up dead weak_ptr
-        return;
-    }
-
-    try {
-        // Serialize LuaResponse to JSON using convenience function
-        std::string json_response =
-            shield::serialization::to_json_string(response);
-
-        // Encode the JSON response using binary protocol
-        auto encoded_response = protocol::BinaryProtocol::encode(json_response);
-
-        // Send response back to client
-        session_ptr->send(encoded_response.data(), encoded_response.size());
-
-        SHIELD_LOG_DEBUG << "Sent response to session " << session_id
-                         << ", success: " << response.success
-                         << ", data size: " << response.data.size();
-    } catch (const std::exception& e) {
-        SHIELD_LOG_ERROR << "Failed to serialize/send response to session "
-                         << session_id << ": " << e.what();
-    }
-}
-
-void GatewayService::handle_lua_actor_response_json(
-    uint64_t session_id, const std::string& response) {
+void GatewayService::send_binary_json_response(uint64_t session_id,
+                                               const std::string& response) {
     // Find the session
     auto session_it = m_sessions.find(session_id);
     if (session_it == m_sessions.end()) {

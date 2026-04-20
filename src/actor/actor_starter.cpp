@@ -1,6 +1,5 @@
 #include "shield/actor/actor_starter.hpp"
 
-#include <chrono>
 #include <random>
 
 #include "caf/actor_system.hpp"
@@ -11,12 +10,8 @@
 #include "shield/caf_initializer.hpp"
 #include "shield/config/config.hpp"
 #include "shield/core/application_context.hpp"
-#include "shield/discovery/consul_discovery.hpp"
 #include "shield/discovery/discovery_config.hpp"
-#include "shield/discovery/etcd_discovery.hpp"
-#include "shield/discovery/local_discovery.hpp"
-#include "shield/discovery/nacos_discovery.hpp"
-#include "shield/discovery/redis_discovery.hpp"
+#include "shield/discovery/discovery_service_factory.hpp"
 #include "shield/log/logger.hpp"
 
 namespace shield::actor {
@@ -57,52 +52,8 @@ void ActorStarter::initialize(core::ApplicationContext& context) {
     auto caf_system = context.register_bean<caf::actor_system>(
         "caf_actor_system", caf_config);
 
-    std::shared_ptr<discovery::IServiceDiscovery> discovery_service;
-    if (discovery_config) {
-        if (discovery_config->type == "redis") {
-            auto instance = discovery::make_redis_discovery(
-                discovery_config->build_redis_uri(),
-                discovery_config->redis_heartbeat_interval());
-            discovery_service = std::shared_ptr<discovery::IServiceDiscovery>(
-                std::move(instance));
-        } else if (discovery_config->type == "nacos") {
-            auto instance = discovery::make_nacos_discovery(
-                discovery_config->nacos.server_addr,
-                std::chrono::seconds(
-                    discovery_config->nacos.heartbeat_interval_seconds));
-            discovery_service = std::shared_ptr<discovery::IServiceDiscovery>(
-                std::move(instance));
-        } else if (discovery_config->type == "consul") {
-            auto instance = discovery::make_consul_discovery(
-                discovery_config->consul.host + ":" +
-                    std::to_string(discovery_config->consul.port),
-                std::chrono::seconds(
-                    discovery_config->consul.check_interval_seconds));
-            discovery_service = std::shared_ptr<discovery::IServiceDiscovery>(
-                std::move(instance));
-        } else if (discovery_config->type == "etcd") {
-            std::string endpoints;
-            for (size_t i = 0; i < discovery_config->etcd.endpoints.size();
-                 ++i) {
-                if (i > 0) endpoints += ",";
-                endpoints += discovery_config->etcd.endpoints[i];
-            }
-            auto instance = discovery::make_etcd_discovery(endpoints);
-            discovery_service = std::shared_ptr<discovery::IServiceDiscovery>(
-                std::move(instance));
-        } else {
-            auto instance = discovery::make_local_discovery(
-                std::chrono::seconds(
-                    discovery_config->local.cleanup_interval_seconds),
-                discovery_config->local.persistence_file_path);
-            discovery_service = std::shared_ptr<discovery::IServiceDiscovery>(
-                std::move(instance));
-        }
-    } else {
-        auto instance = discovery::make_local_discovery();
-        discovery_service =
-            std::shared_ptr<discovery::IServiceDiscovery>(std::move(instance));
-    }
+    auto discovery_service =
+        discovery::create_discovery_service(discovery_config.get());
 
     DistributedActorConfig dist_config;
     dist_config.node_id = node_id;
