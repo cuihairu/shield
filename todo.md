@@ -1,72 +1,114 @@
-# Shield Boundary Refactor TODO
+# Shield Refactor TODO
 
-This file tracks the boundary-focused refactor work for the current codebase.
-It is intentionally execution-oriented and narrower than the long-form
-architecture notes under `docs/`.
+This file tracks the current refactor plan for Shield.
+It replaces the old boundary note and focuses on one goal:
 
-## Goals
+Build a Skynet-inspired, actor-based, Lua-first game server runtime that is
+more out-of-the-box than Skynet, while keeping CAF as the actor transport
+foundation.
 
-- Shrink `core::ApplicationContext` back toward a lifecycle-oriented kernel.
-- Separate gateway transport concerns from request dispatch and actor/script
-  orchestration.
-- Keep `actor` depending on discovery abstractions, not concrete provider
-  selection logic.
-- Make plugin dependency declarations enforceable at runtime.
-- Preserve current behavior while tightening module seams.
+## Target Positioning
 
-## Boundary Rules
+- Use Skynet as the design reference for service runtime semantics.
+- Use CAF to cover actor communication and distribution semantics.
+- Keep Lua as the primary business scripting language.
+- Make HTTP, WebSocket, TCP, UDP, discovery, metrics, and tooling available
+  by default.
+- Keep the framework cross-platform: Windows, macOS, Linux.
+- Reduce framework drift by separating core runtime from optional extensions.
 
-- `core` defines lifecycle and startup orchestration, not business policy.
-- `gateway` accepts connections and hands requests to application-level
-  dispatchers; it should not contain embedded business routes long-term.
-- `actor` provides orchestration and routing for actors; it should not choose
-  infra implementations directly.
-- `script` is a runtime boundary for Lua execution, not a backdoor into the
-  whole application container.
-- `discovery` is accessed via `IServiceDiscovery`; concrete backends stay in
-  infra and composition code.
+## Core Principles
 
-## Phase 1: Immediate Fixes
+- `core` owns lifecycle, composition, service startup, and shutdown.
+- `actor` owns service semantics, actor routing, and distributed actor access.
+- `script` owns Lua runtime and Lua service adapters.
+- `protocol` owns transport adaptation, not business policy.
+- `gateway` owns connection acceptance and session orchestration.
+- `discovery` stays behind an abstraction layer.
+- `database`, `metrics`, `plugin`, and similar features remain optional unless
+  required for the runtime bootstrap path.
 
-- [x] Record the boundary plan in a repo-root task file.
-- [x] Enforce plugin dependency order in `PluginManager`.
-- [x] Extract gateway request dispatch logic out of `GatewayService`.
-- [ ] Add focused tests for plugin dependency ordering.
-- [ ] Add focused tests for gateway dispatcher behavior.
+## Phase 1: Boundary Reset
 
-## Phase 2: Kernel and Composition
+- [ ] Define the Shield core boundary in docs and keep it stable.
+- [ ] Split core runtime from optional infrastructure modules.
+- [ ] Reduce `ApplicationContext` responsibilities to lifecycle and lookup.
+- [ ] Remove framework policy from service startup code.
+- [ ] Identify and tag modules that belong to core, starter, or plugin.
+- [ ] Decide which existing modules are outside the runtime boundary and mark
+      them optional.
 
-- [ ] Split `ApplicationContext` responsibilities into:
-  - lifecycle registry
-  - bean/service lookup facade
-  - [x] config reload binder
-  - [x] plugin host
-- [ ] Introduce a dedicated composition root for infrastructure assembly.
-- [x] Move discovery backend selection out of `ActorStarter`.
-- [ ] Replace direct `ConfigManager::instance()` calls inside services with
-  injected config access where practical.
+## Phase 2: Skynet Semantics Layer
 
-## Phase 3: Gateway Boundary
+- [ ] Define a Shield service model aligned with Skynet concepts.
+- [ ] Provide `send` and `call` semantics over CAF.
+- [ ] Add timer and timeout primitives for services.
+- [ ] Add `sleep`, `fork`, and deferred execution primitives.
+- [ ] Add service naming, lookup, and lifecycle helpers.
+- [ ] Add a minimal debug/console path for runtime inspection.
+- [ ] Define cluster call and proxy semantics for remote service access.
 
-- [ ] Introduce a gateway application port for request/message dispatch.
-- [ ] Move hard-coded HTTP routes out of `GatewayService`.
-- [ ] Move Lua actor creation strategy behind an explicit adapter/factory.
-- [ ] Isolate session lifecycle storage from protocol handlers.
+## Phase 3: Lua Runtime
 
-## Phase 4: Actor and Script Runtime
+- [ ] Provide a default Lua service base class.
+- [ ] Standardize Lua service entry points and message dispatch.
+- [ ] Expose runtime helpers to Lua in a Skynet-like shape where practical.
+- [ ] Keep Lua API stable for business logic authors.
+- [ ] Separate Lua business logic from framework internals.
+- [ ] Improve hot reload behavior and define its supported scope.
 
-- [ ] Make `DistributedActorSystem` fully self-consistent as a service.
-- [ ] Remove dual-mode initialization paths that silently run without required
-  dependencies.
-- [ ] Define a stable script runtime API that does not expose the full
-  application container.
-- [ ] Reduce `lua_ioc_bridge` reach into unrelated framework concerns.
+## Phase 4: Network Runtime
+
+- [ ] Keep the high-performance HTTP server as a default capability.
+- [ ] Expose WebSocket as a first-class protocol path.
+- [ ] Keep TCP and UDP as standard transport adapters.
+- [ ] Unify protocol request and response models.
+- [ ] Add request routing and middleware-style hooks where needed.
+- [ ] Add gateway templates for game login, session, and message dispatch.
+
+## Phase 5: Out-of-the-Box Packaging
+
+- [ ] Provide ready-to-run templates for single-node and multi-node servers.
+- [ ] Provide a default game server template with Lua business scripts.
+- [ ] Provide a gateway + logic + storage reference layout.
+- [ ] Provide a minimal deployment path with one command build/run guidance.
+- [ ] Make Windows, macOS, and Linux build instructions explicit and current.
+- [ ] Reduce the amount of manual wiring required to start a new project.
+
+## Phase 6: Observability and Operations
+
+- [ ] Keep health checks available by default.
+- [ ] Keep Prometheus metrics as a standard operational feature.
+- [ ] Add runtime diagnostics for actors, services, and network status.
+- [ ] Add configuration reload rules and document their scope.
+- [ ] Add logging conventions for service, protocol, and runtime layers.
+
+## Phase 7: Optional Extensions
+
+- [ ] Keep database access abstractions optional unless required by a template.
+- [ ] Keep plugin support isolated from the core runtime path.
+- [ ] Keep advanced DI/IoC features from expanding the runtime surface.
+- [ ] Keep advanced data access features out of the minimal bootstrap path.
+
+## Documentation Plan
+
+- [ ] Migrate docs to VitePress.
+- [ ] Create a docs structure centered on runtime, Lua, network, and cluster.
+- [ ] Add a Skynet comparison page.
+- [ ] Add a CAF mapping page explaining what CAF covers and what Shield adds.
+- [ ] Add a quickstart that boots a real server in the smallest possible steps.
+- [ ] Add a template-based tutorial for a small multiplayer game backend.
+- [ ] Add API pages for actor, script, protocol, discovery, gateway, and core.
 
 ## Acceptance Criteria
 
-- `GatewayService` no longer owns route policy and actor message dispatch
-  details directly.
-- Plugin load order respects declared dependencies and fails fast on cycles or
-  missing dependencies.
-- New modules can be added without expanding `ApplicationContext` further.
-- Infra implementation choice is localized to composition code.
+- Shield has a clear runtime boundary and does not drift into a generic
+  enterprise framework.
+- CAF is the actor transport foundation, but Shield exposes a higher-level
+  service model for game server authors.
+- Lua business scripts can be written with minimal framework ceremony.
+- HTTP, WebSocket, TCP, UDP, discovery, and metrics work out of the box.
+- Windows, macOS, and Linux are all documented and supported.
+- The docs explain how Shield differs from Skynet instead of hiding the
+  relationship.
+
