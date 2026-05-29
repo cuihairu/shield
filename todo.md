@@ -40,13 +40,13 @@ foundation.
 
 ## Phase 2: Skynet Semantics Layer
 
-- [ ] Define a Shield service model aligned with Skynet concepts.
-- [ ] Provide `send` and `call` semantics over CAF.
-- [ ] Add timer and timeout primitives for services.
-- [ ] Add `sleep`, `fork`, and deferred execution primitives.
-- [ ] Add service naming, lookup, and lifecycle helpers.
-- [ ] Add a minimal debug/console path for runtime inspection.
-- [ ] Define cluster call and proxy semantics for remote service access.
+- [x] Define a Shield service model aligned with Skynet concepts.
+- [x] Provide `send` and `call` semantics over CAF.
+- [x] Add timer and timeout primitives for services.
+- [x] Add `sleep`, `fork`, and deferred execution primitives.
+- [x] Add service naming, lookup, and lifecycle helpers.
+- [x] Add a minimal debug/console path for runtime inspection.
+- [x] Define cluster call and proxy semantics for remote service access.
 
 ## Phase 3: Lua Runtime
 

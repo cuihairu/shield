@@ -289,6 +289,12 @@ set(SHIELD_CORE_SOURCES
     src/actor/actor_system_coordinator.cpp
     src/actor/actor_system_config.cpp
     src/actor/actor_starter.cpp
+    # Service (Skynet semantics)
+    src/service/service_handle.cpp
+    src/service/service_context.cpp
+    src/service/service_api.cpp
+    src/service/console.cpp
+    src/service/service_starter.cpp
     # Network
     src/net/slave_reactor.cpp
     src/net/master_reactor.cpp

@@ -60,6 +60,8 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
         std::make_unique<shield::actor::ActorStarter>());
     starter_manager->register_starter(
         std::make_unique<shield::gateway::GatewayStarter>());
+    starter_manager->register_starter(
+        std::make_unique<shield::service::ServiceStarter>());
 
     // Optional: metrics
     std::string enable_metrics =
