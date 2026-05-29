@@ -1,3 +1,4 @@
+// [CORE]
 // shield/include/shield/discovery/redis_discovery.hpp
 #pragma once
 

@@ -1,3 +1,4 @@
+// [CORE]
 // shield/include/shield/discovery/etcd_discovery.hpp
 #pragma once
 

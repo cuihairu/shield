@@ -28,7 +28,6 @@ if(NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
     set(CMAKE_C_COMPILER "/usr/bin/gcc")
     set(CMAKE_CXX_COMPILER "/usr/bin/g++")
   elseif(WIN32)
-    # Windows default compiler is Visual Studio
     set(CMAKE_C_COMPILER "cl")
     set(CMAKE_CXX_COMPILER "cl")
   endif()
@@ -68,7 +67,7 @@ project(
 
 enable_testing()
 
-# Build toggles (kept ON by default to match current behavior)
+# Build toggles
 option(SHIELD_BUILD_TESTS "Build Shield tests" ON)
 option(SHIELD_BUILD_EXAMPLES "Build Shield examples" ON)
 option(
@@ -127,10 +126,6 @@ link_directories("${VCPKG_INSTALLED_DIR}/debug/lib") # For debug libraries
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 
-# Enforce vcpkg-only search for includes and libraries
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-
 # Configure version header
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/include/shield/version.hpp.in
                ${CMAKE_CURRENT_BINARY_DIR}/include/shield/version.hpp)
@@ -178,13 +173,12 @@ find_package(redis++ CONFIG REQUIRED)
 find_package(CAF CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 
-# Try to find prometheus-cpp, make it optional for now
+# Try to find prometheus-cpp, make it optional
 find_package(prometheus-cpp CONFIG QUIET)
 if(prometheus-cpp_FOUND)
   message(STATUS "Found prometheus-cpp, enabling Prometheus support")
   add_definitions(-DSHIELD_ENABLE_PROMETHEUS)
 
-  # Check what targets are available
   if(TARGET prometheus-cpp::core)
     set(PROMETHEUS_CORE_TARGET "prometheus-cpp::core")
   elseif(TARGET prometheus::core)
@@ -216,7 +210,7 @@ find_package(
              program_options
              url
              unit_test_framework
-             dll) # <--- ADDED boost-dll
+             dll)
 
 # Try to find msgpack-cxx
 find_package(msgpack-cxx CONFIG QUIET)
@@ -253,31 +247,33 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
-# Create output directories if they don't exist
 file(MAKE_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 file(MAKE_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
 file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 
-# Define all source files explicitly
-set(CORE_SOURCES # Core sources
-    src/core/service.cpp src/core/application_context.cpp
-    src/core/starter_manager.cpp src/core/plugin_manager.cpp
-    src/core/plugin_host.cpp src/core/config_reload_binder.cpp)
-
-set(LOG_SOURCES # Log sources
-    src/log/logger.cpp src/log/log_config.cpp)
-
-set(CLI_SOURCES # CLI sources
-    src/cli/command_line_parser.cpp src/cli/command.cpp
-    src/cli/root_command.cpp)
-
-set(CONFIG_SOURCES # Config sources
-    src/config/config.cpp src/config/config_registry.cpp
+# ===========================================================================
+# Source files: CORE runtime (lifecycle, actor, script, gateway, protocol,
+#               net, discovery, config, log, cli, commands, serialization,
+#               http, fs, caf_initializer)
+# ===========================================================================
+set(SHIELD_CORE_SOURCES
+    # Core lifecycle
+    src/core/service.cpp
+    src/core/application_context.cpp
+    src/core/starter_manager.cpp
+    # Log
+    src/log/logger.cpp
+    src/log/log_config.cpp
+    # CLI
+    src/cli/command_line_parser.cpp
+    src/cli/command.cpp
+    src/cli/root_command.cpp
+    # Config
+    src/config/config.cpp
+    src/config/config_registry.cpp
     src/config/ptree_yaml.cpp
-    src/fs/file_watcher.cpp)
-
-set(OTHER_SOURCES
-    # Discovery sources
+    src/fs/file_watcher.cpp
+    # Discovery
     src/discovery/service_instance.cpp
     src/discovery/discovery_config.cpp
     src/discovery/discovery_service_factory.cpp
@@ -286,81 +282,92 @@ set(OTHER_SOURCES
     src/discovery/nacos_discovery.cpp
     src/discovery/consul_discovery.cpp
     src/discovery/etcd_discovery.cpp
-    # Actor sources
+    # Actor
     src/actor/lua_actor.cpp
     src/actor/actor_registry.cpp
     src/actor/distributed_actor_system.cpp
     src/actor/actor_system_coordinator.cpp
     src/actor/actor_system_config.cpp
     src/actor/actor_starter.cpp
-    # Network sources
+    # Network
     src/net/slave_reactor.cpp
     src/net/master_reactor.cpp
     src/net/udp_session.cpp
     src/net/session.cpp
     src/net/udp_reactor.cpp
-    # Protocol sources
+    src/net/network_config.cpp
+    # Protocol
     src/protocol/udp_protocol_handler.cpp
     src/protocol/websocket_handler.cpp
     src/protocol/protocol_handler.cpp
     src/protocol/http_handler.cpp
     src/protocol/binary_protocol.cpp
-    # Serialization sources
+    # Serialization
     src/serialization/messagepack_universal_serializer.cpp
     src/serialization/serialization_init.cpp
     src/serialization/json_universal_serializer.cpp
     src/serialization/universal_serialization_system.cpp
-    # Metrics sources
-    src/metrics/prometheus_service.cpp
-    src/metrics/prometheus_config.cpp
-    src/metrics/metrics_starter.cpp
-    # Script sources
+    # Script
     src/script/lua_engine.cpp
     src/script/lua_vm_pool.cpp
     src/script/lua_vm_pool_config.cpp
     src/script/script_starter.cpp
     src/script/lua_ioc_bridge.cpp
-    # Gateway sources
+    # Gateway
     src/gateway/gateway_request_dispatcher.cpp
     src/gateway/gateway_service.cpp
     src/gateway/gateway_config.cpp
     src/gateway/gateway_starter.cpp
-    # HTTP sources
+    # HTTP
     src/http/beast_http_server.cpp
-    # Network sources
-    src/net/network_config.cpp
-    # Command sources
+    # Commands
     src/commands/server_command.cpp
     src/commands/cli_command.cpp
     src/commands/config_command.cpp
     src/commands/diagnose_command.cpp
     src/commands/migrate_command.cpp
     src/commands/all_commands.cpp
-    # Health sources
-    src/health/health_check.cpp
-    # Filesystem sources
+    # Filesystem
     src/fs/file_watcher_impl.cpp
-    # Conditions sources
-    src/conditions/conditional_registry.cpp
-    # Annotations sources
-    src/annotations/component_registry.cpp
     # CAF initializer
     src/caf_initializer.cpp)
 
 if(SHIELD_HAS_PROTOBUF)
-  list(APPEND OTHER_SOURCES src/serialization/protobuf_universal_serializer.cpp)
+  list(APPEND SHIELD_CORE_SOURCES
+       src/serialization/protobuf_universal_serializer.cpp)
 endif()
 
-# Print found source files (optional, for debugging)
-message(STATUS "Found core library source files:")
-foreach(SOURCE ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES} ${CONFIG_SOURCES}
-               ${OTHER_SOURCES})
-  message(STATUS "  ${SOURCE}")
-endforeach()
+# ===========================================================================
+# Source files: EXTENSIONS (optional: di, metrics, health, annotations,
+#              conditions, plugins, config_reload_binder)
+# ===========================================================================
+set(SHIELD_EXT_SOURCES
+    # DI
+    src/di/advanced_container.cpp
+    # Plugin system
+    src/core/plugin_manager.cpp
+    src/core/plugin_host.cpp
+    src/core/config_reload_binder.cpp
+    # Metrics
+    src/metrics/prometheus_service.cpp
+    src/metrics/prometheus_config.cpp
+    src/metrics/metrics_starter.cpp
+    # Health
+    src/health/health_check.cpp
+    # Annotations
+    src/annotations/component_registry.cpp
+    # Conditions
+    src/conditions/conditional_registry.cpp
+    # Extension context
+    src/extensions/extension_context.cpp)
 
-# Create the core static library
-add_library(shield_core STATIC ${CORE_SOURCES} ${LOG_SOURCES} ${CLI_SOURCES}
-                               ${CONFIG_SOURCES} ${OTHER_SOURCES})
+message(STATUS "Shield core sources: ${SHIELD_CORE_SOURCES}")
+message(STATUS "Shield extension sources: ${SHIELD_EXT_SOURCES}")
+
+# ===========================================================================
+# shield_core: Core runtime library
+# ===========================================================================
+add_library(shield_core STATIC ${SHIELD_CORE_SOURCES})
 if(TARGET shield_coverage)
   target_link_libraries(shield_core PUBLIC shield_coverage)
 endif()
@@ -370,8 +377,7 @@ target_include_directories(
          ${PROJECT_SOURCE_DIR}/include/shield/log
          ${PROJECT_SOURCE_DIR}/include/shield/cli
          ${PROJECT_SOURCE_DIR}/include/shield/config
-         ${CMAKE_CURRENT_BINARY_DIR}/include # Directory for generated headers
-                                             # like version.hpp
+         ${CMAKE_CURRENT_BINARY_DIR}/include
          ${LUA_INCLUDE_DIR}
          ${SOL2_INCLUDE_DIRS})
 target_link_libraries(
@@ -396,26 +402,38 @@ target_link_libraries(
 target_compile_definitions(
   shield_core PUBLIC SHIELD_HAS_PROTOBUF=$<BOOL:${SHIELD_HAS_PROTOBUF}>)
 
-# Add protobuf if available
 if(SHIELD_HAS_PROTOBUF)
   target_link_libraries(shield_core PUBLIC protobuf::libprotobuf)
 endif()
 
-# Add msgpack-cxx if available
 if(msgpack-cxx_FOUND)
   target_link_libraries(shield_core PUBLIC msgpack-cxx)
 endif()
 
-# Add prometheus-cpp if available
+# ===========================================================================
+# shield_extensions: Optional extension library
+# ===========================================================================
+add_library(shield_extensions STATIC ${SHIELD_EXT_SOURCES})
+target_include_directories(
+  shield_extensions
+  PUBLIC ${PROJECT_SOURCE_DIR}/include
+         ${CMAKE_CURRENT_BINARY_DIR}/include
+         ${LUA_INCLUDE_DIR}
+         ${SOL2_INCLUDE_DIRS})
+target_link_libraries(shield_extensions PUBLIC shield_core)
+
 if(prometheus-cpp_FOUND)
-  target_link_libraries(shield_core PUBLIC ${PROMETHEUS_CORE_TARGET})
+  target_link_libraries(shield_extensions PUBLIC ${PROMETHEUS_CORE_TARGET})
   if(PROMETHEUS_GATEWAY_TARGET)
-    target_link_libraries(shield_core PUBLIC ${PROMETHEUS_GATEWAY_TARGET})
+    target_link_libraries(shield_extensions PUBLIC ${PROMETHEUS_GATEWAY_TARGET})
   endif()
 endif()
 
+# ===========================================================================
+# Main executable
+# ===========================================================================
 add_executable(shield src/main.cpp)
-target_link_libraries(shield PRIVATE shield_core)
+target_link_libraries(shield PRIVATE shield_core shield_extensions)
 
 # Add examples/tests
 if(SHIELD_BUILD_EXAMPLES)
@@ -425,6 +443,5 @@ if(SHIELD_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
 
-# Include development tools (Git hooks, formatting, etc.) Note: Placed after
-# main targets are defined but before any post-processing
+# Include development tools (Git hooks, formatting, etc.)
 include(cmake/GitHooks.cmake)

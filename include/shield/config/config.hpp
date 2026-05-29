@@ -1,3 +1,4 @@
+// [CORE]
 #pragma once
 
 #include <yaml-cpp/yaml.h>  // Keep for YAML parsing utility

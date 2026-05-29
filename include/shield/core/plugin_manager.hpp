@@ -1,3 +1,4 @@
+// [OPTIONAL]
 #pragma once
 
 #include <boost/dll/shared_library.hpp>

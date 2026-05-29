@@ -7,10 +7,12 @@
 
 #include "shield/config/application_configuration.hpp"
 #include "shield/config/config.hpp"
-#include "shield/core/all_starters.hpp"
 #include "shield/core/application_context.hpp"
+#include "shield/core/core_starters.hpp"
 #include "shield/core/starter_manager.hpp"
+#include "shield/extensions/extension_context.hpp"
 #include "shield/fs/file_watcher.hpp"
+#include "shield/metrics/metrics_starter.hpp"
 #include "shield/version.hpp"
 
 // Global flag for signal handling
@@ -27,6 +29,8 @@ ServerCommand::ServerCommand()
 void ServerCommand::setup_flags() {
     add_flag("plugins", "Plugins directory path", "plugins/");
     add_flag("enable-plugins", "Enable dynamic plugin loading", "false");
+    add_flag("enable-metrics",
+             "Enable Prometheus metrics collection", "false");
 }
 
 int ServerCommand::run(shield::cli::CommandContext& ctx) {
@@ -47,36 +51,40 @@ int ServerCommand::run(shield::cli::CommandContext& ctx) {
     // Initialize ApplicationContext
     auto& app_context = shield::core::ApplicationContext::instance();
 
-    // Check if plugins are enabled
+    // Create StarterManager with core starters
+    auto starter_manager = std::make_unique<shield::core::StarterManager>();
+
+    starter_manager->register_starter(
+        std::make_unique<shield::script::ScriptStarter>());
+    starter_manager->register_starter(
+        std::make_unique<shield::actor::ActorStarter>());
+    starter_manager->register_starter(
+        std::make_unique<shield::gateway::GatewayStarter>());
+
+    // Optional: metrics
+    std::string enable_metrics =
+        ctx.has_flag("enable-metrics") ? ctx.get_flag("enable-metrics")
+                                       : "false";
+    if (enable_metrics == "true" || enable_metrics == "1") {
+        starter_manager->register_starter(
+            std::make_unique<shield::metrics::MetricsStarter>());
+        SHIELD_LOG_INFO << "Metrics starter enabled";
+    }
+
+    // Configure ApplicationContext using the Starter system
+    app_context.configure_with_starters(std::move(starter_manager));
+
+    // Optional: plugins via ExtensionContext
     std::string enable_plugins =
         ctx.has_flag("enable-plugins") ? ctx.get_flag("enable-plugins")
                                        : "false";
-    bool plugins_enabled = (enable_plugins == "true" || enable_plugins == "1");
-
-    if (plugins_enabled) {
-        // Configure with plugins
+    if (enable_plugins == "true" || enable_plugins == "1") {
         std::string plugins_dir =
             ctx.has_flag("plugins") ? ctx.get_flag("plugins") : "plugins/";
         SHIELD_LOG_INFO << "Plugin system enabled, loading from: "
                         << plugins_dir;
-        app_context.configure_with_plugins(plugins_dir);
-    } else {
-        // Create and configure StarterManager with all available Starters
-        auto starter_manager = std::make_unique<shield::core::StarterManager>();
-
-        // Register all Starters in the correct order (dependencies will be
-        // resolved automatically)
-        starter_manager->register_starter(
-            std::make_unique<shield::script::ScriptStarter>());
-        starter_manager->register_starter(
-            std::make_unique<shield::actor::ActorStarter>());
-        starter_manager->register_starter(
-            std::make_unique<shield::metrics::MetricsStarter>());
-        starter_manager->register_starter(
-            std::make_unique<shield::gateway::GatewayStarter>());
-
-        // Configure ApplicationContext using the Starter system
-        app_context.configure_with_starters(std::move(starter_manager));
+        auto& ext_ctx = shield::extensions::ExtensionContext::instance();
+        ext_ctx.configure_with_plugins(app_context, plugins_dir);
     }
 
     // Initialize and start all services

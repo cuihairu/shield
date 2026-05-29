@@ -1,3 +1,4 @@
+// [OPTIONAL]
 #pragma once
 
 #include "shield/core/starter.hpp"

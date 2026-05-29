@@ -1,3 +1,4 @@
+// [CORE]
 // shield/include/shield/discovery/consul_discovery.hpp
 #pragma once
 

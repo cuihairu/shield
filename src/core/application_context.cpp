@@ -1,10 +1,7 @@
 #include "shield/core/application_context.hpp"
 
-#include "shield/conditions/conditional_registry.hpp"
-#include "shield/annotations/component_registry.hpp"
 #include "shield/config/application_configuration.hpp"
 #include "shield/core/starter_manager.hpp"
-#include "shield/events/event_system.hpp"
 #include "shield/log/logger.hpp"
 
 namespace shield::core {
@@ -58,51 +55,6 @@ void ApplicationContext::configure_with_starters(
                          << e.what();
         throw;
     }
-}
-
-void ApplicationContext::configure_with_plugins(
-    const std::string& plugins_directory) {
-    if (!plugin_host_) {
-        plugin_host_ = std::make_unique<PluginHost>();
-    }
-    plugin_host_->configure(*this, plugins_directory);
-}
-
-void ApplicationContext::configure_with_plugins(
-    std::unique_ptr<PluginManager> plugin_manager) {
-    try {
-        if (!plugin_host_) {
-            plugin_host_ = std::make_unique<PluginHost>();
-        }
-        plugin_host_->configure(*this, std::move(plugin_manager));
-    } catch (const std::exception& e) {
-        SHIELD_LOG_ERROR << "Failed to configure with Plugin system: "
-                         << e.what();
-        throw;
-    }
-}
-
-void ApplicationContext::configure_with_annotations() {
-    SHIELD_LOG_INFO
-        << "Configuring ApplicationContext with annotation registry";
-    annotations::ComponentRegistry::instance().auto_configure(*this);
-}
-
-void ApplicationContext::configure_with_conditional_beans() {
-    SHIELD_LOG_INFO
-        << "Configuring ApplicationContext with conditional bean registry";
-    conditions::ConditionalBeanRegistry::instance()
-        .process_conditional_registrations(*this);
-}
-
-void ApplicationContext::publish_application_started_event() {
-    event_publisher_.emit_event<events::lifecycle::ApplicationStartedEvent>(
-        std::string("ApplicationContext"));
-}
-
-void ApplicationContext::publish_application_stopped_event() {
-    event_publisher_.emit_event<events::lifecycle::ApplicationStoppingEvent>(
-        std::string("ApplicationContext"));
 }
 
 }  // namespace shield::core

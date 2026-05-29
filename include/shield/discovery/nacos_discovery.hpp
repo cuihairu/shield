@@ -1,3 +1,4 @@
+// [CORE]
 // shield/include/shield/discovery/nacos_discovery.hpp
 #pragma once
 

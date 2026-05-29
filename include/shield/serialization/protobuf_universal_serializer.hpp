@@ -1,3 +1,4 @@
+// [CORE]
 #pragma once
 
 #if !SHIELD_HAS_PROTOBUF

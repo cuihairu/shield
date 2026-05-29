@@ -1,3 +1,4 @@
+// [CORE]
 #pragma once
 
 #include <caf/all.hpp>

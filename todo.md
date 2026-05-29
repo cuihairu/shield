@@ -30,12 +30,12 @@ foundation.
 
 ## Phase 1: Boundary Reset
 
-- [ ] Define the Shield core boundary in docs and keep it stable.
-- [ ] Split core runtime from optional infrastructure modules.
-- [ ] Reduce `ApplicationContext` responsibilities to lifecycle and lookup.
-- [ ] Remove framework policy from service startup code.
-- [ ] Identify and tag modules that belong to core, starter, or plugin.
-- [ ] Decide which existing modules are outside the runtime boundary and mark
+- [x] Define the Shield core boundary in docs and keep it stable.
+- [x] Split core runtime from optional infrastructure modules.
+- [x] Reduce `ApplicationContext` responsibilities to lifecycle and lookup.
+- [x] Remove framework policy from service startup code.
+- [x] Identify and tag modules that belong to core, starter, or plugin.
+- [x] Decide which existing modules are outside the runtime boundary and mark
       them optional.
 
 ## Phase 2: Skynet Semantics Layer

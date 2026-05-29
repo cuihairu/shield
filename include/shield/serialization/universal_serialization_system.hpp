@@ -1,3 +1,4 @@
+// [CORE]
 #pragma once
 
 #include "json_universal_serializer.hpp"

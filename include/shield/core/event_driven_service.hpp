@@ -1,3 +1,4 @@
+// [CORE]
 #pragma once
 
 #include "shield/config/event_driven_config_manager.hpp"
