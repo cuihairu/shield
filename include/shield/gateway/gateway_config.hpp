@@ -51,6 +51,7 @@ public:
         std::string path = "/ws";
         int max_message_size = 1048576;  // 1MB
         int ping_interval = 30;          // seconds
+        std::string lua_script = "scripts/websocket_actor.lua";
     };
 
     // Threading configuration

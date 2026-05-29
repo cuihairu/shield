@@ -59,12 +59,12 @@ foundation.
 
 ## Phase 4: Network Runtime
 
-- [ ] Keep the high-performance HTTP server as a default capability.
-- [ ] Expose WebSocket as a first-class protocol path.
-- [ ] Keep TCP and UDP as standard transport adapters.
-- [ ] Unify protocol request and response models.
-- [ ] Add request routing and middleware-style hooks where needed.
-- [ ] Add gateway templates for game login, session, and message dispatch.
+- [x] Keep the high-performance HTTP server as a default capability.
+- [x] Expose WebSocket as a first-class protocol path.
+- [x] Keep TCP and UDP as standard transport adapters.
+- [x] Unify protocol request and response models.
+- [x] Add request routing and middleware-style hooks where needed.
+- [x] Add gateway templates for game login, session, and message dispatch.
 
 ## Phase 5: Out-of-the-Box Packaging
 

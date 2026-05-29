@@ -1,5 +1,7 @@
 #include "shield/gateway/gateway_request_dispatcher.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include "shield/actor/lua_actor.hpp"
 #include "shield/log/logger.hpp"
 
@@ -15,25 +17,83 @@ GatewayRequestDispatcher::GatewayRequestDispatcher(
       svc_ctx_(svc_ctx),
       request_timeout_(request_timeout) {}
 
-void GatewayRequestDispatcher::configure_http_routes(protocol::HttpRouter& router) {
+void GatewayRequestDispatcher::dispatch(GatewayRequest& gw_req,
+                                        GatewayResponse& gw_resp) {
+    // Resolve the script path based on protocol
+    std::string script;
+    switch (gw_req.protocol) {
+        case protocol::ProtocolType::HTTP:
+            script = http_script;
+            break;
+        case protocol::ProtocolType::WEBSOCKET:
+            script = ws_script;
+            break;
+        default:
+            script = tcp_script;
+            break;
+    }
+
+    try {
+        auto lua_actor_ref =
+            get_or_create_session_actor(gw_req.session_id, script);
+
+        // Use CAF request-response with a temporary actor
+        // Synchronous wait via scoped_actor for simplicity in dispatch
+        caf::scoped_actor scoped(actor_system_.system());
+        std::string msg_type = gw_req.method + ":" + gw_req.path;
+        auto result = scoped->request(
+            lua_actor_ref, request_timeout_, msg_type, gw_req.body);
+        result.receive(
+            [&](const std::string& response) {
+                gw_resp.body = response;
+                gw_resp.success = true;
+                gw_resp.status_code = 200;
+            },
+            [&](caf::error& err) {
+                SHIELD_LOG_ERROR << "dispatch request failed for session "
+                                 << gw_req.session_id << ": "
+                                 << caf::to_string(err);
+                gw_resp.success = false;
+                gw_resp.status_code = 504;
+                gw_resp.body =
+                    R"({"success":false,"error_message":"Request timeout or actor error"})";
+            });
+    } catch (const std::exception& e) {
+        SHIELD_LOG_ERROR << "dispatch error: " << e.what();
+        gw_resp.success = false;
+        gw_resp.status_code = 500;
+        gw_resp.body =
+            R"({"success":false,"error_message":"Internal dispatch error"})";
+    }
+}
+
+void GatewayRequestDispatcher::configure_http_routes(
+    protocol::HttpRouter& router) {
     router.add_route(
         "POST", "/api/game/action",
         [this](const protocol::HttpRequest& request) {
             protocol::HttpResponse response;
 
-            try {
-                auto lua_actor = get_or_create_session_actor(
-                    request.connection_id, "scripts/http_actor.lua");
-                (void)lua_actor;
+            GatewayRequest gw_req;
+            gw_req.session_id = request.connection_id;
+            gw_req.path = request.path;
+            gw_req.method = request.method;
+            gw_req.body = request.body;
+            gw_req.headers = request.headers;
+            gw_req.protocol = protocol::ProtocolType::HTTP;
 
-                response.body =
-                    R"({"status": "accepted", "message": "Request queued for processing"})";
-            } catch (const std::exception&) {
-                response.status_code = 400;
-                response.status_text = "Bad Request";
-                response.body = R"({"error": "Invalid request format"})";
+            GatewayResponse gw_resp;
+            middleware_chain_.execute(
+                gw_req, gw_resp,
+                [this](GatewayRequest& r, GatewayResponse& s) {
+                    dispatch(r, s);
+                });
+
+            response.status_code = gw_resp.status_code;
+            response.body = gw_resp.body;
+            for (auto& [k, v] : gw_resp.headers) {
+                response.headers[k] = v;
             }
-
             return response;
         });
 
@@ -49,86 +109,47 @@ void GatewayRequestDispatcher::configure_http_routes(protocol::HttpRouter& route
 void GatewayRequestDispatcher::handle_tcp_message(
     uint64_t connection_id, const std::string& message,
     std::function<void(const std::string&)> send_response) {
-    try {
-        auto lua_actor_ref =
-            get_or_create_session_actor(connection_id, "scripts/player_actor.lua");
+    GatewayRequest gw_req;
+    gw_req.session_id = connection_id;
+    gw_req.path = "/tcp";
+    gw_req.method = "TCP";
+    gw_req.body = message;
+    gw_req.protocol = protocol::ProtocolType::TCP;
 
-        auto temp_actor = actor_system_.system().spawn(
-            [this, connection_id, lua_actor_ref, message,
-             send_response = std::move(send_response)](
-                caf::event_based_actor* self) mutable -> caf::behavior {
-                self->request(lua_actor_ref, request_timeout_,
-                              std::string("tcp_message"), message)
-                    .then(
-                        [send_response = std::move(send_response),
-                         self](const std::string& response) mutable {
-                            send_response(response);
-                            self->quit();
-                        },
-                        [connection_id,
-                         send_response = std::move(send_response),
-                         self](caf::error& err) mutable {
-                            SHIELD_LOG_ERROR
-                                << "TCP LuaActor request failed for connection "
-                                << connection_id << ": "
-                                << caf::to_string(err);
+    GatewayResponse gw_resp;
+    middleware_chain_.execute(
+        gw_req, gw_resp,
+        [this](GatewayRequest& r, GatewayResponse& s) { dispatch(r, s); });
 
-                            send_response(
-                                R"({"success": false, "error_message": "Request timeout or actor error"})");
-                            self->quit();
-                        });
-
-                return caf::behavior{};
-            });
-
-        (void)temp_actor;
-    } catch (const std::exception& e) {
-        SHIELD_LOG_ERROR << "TCP message processing error: " << e.what();
-        send_response(
-            R"({"success": false, "error_message": "Message processing error"})");
-    }
+    send_response(gw_resp.body);
 }
 
 void GatewayRequestDispatcher::handle_websocket_message(
     uint64_t connection_id, const std::string& message,
     protocol::WebSocketProtocolHandler& handler) {
+    GatewayRequest gw_req;
+    gw_req.session_id = connection_id;
+    gw_req.path = "/ws";
+    gw_req.method = "WS";
+
+    // Try to extract "type" from the message for routing
     try {
-        auto lua_actor_ref = get_or_create_session_actor(
-            connection_id, "scripts/websocket_actor.lua");
-
-        auto temp_actor = actor_system_.system().spawn(
-            [this, connection_id, lua_actor_ref, message,
-             &handler](caf::event_based_actor* self) -> caf::behavior {
-                self->request(lua_actor_ref, request_timeout_,
-                              std::string("websocket_message"), message)
-                    .then(
-                        [&handler, connection_id,
-                         self](const std::string& response) {
-                            handler.send_text_frame(connection_id, response);
-                            self->quit();
-                        },
-                        [&handler, connection_id, self](caf::error& err) {
-                            SHIELD_LOG_ERROR
-                                << "WebSocket LuaActor request failed for "
-                                   "connection "
-                                << connection_id << ": "
-                                << caf::to_string(err);
-
-                            std::string error_response =
-                                R"({"success": false, "error_message": "Request timeout or actor error"})";
-                            handler.send_text_frame(connection_id,
-                                                    error_response);
-                            self->quit();
-                        });
-
-                return caf::behavior{};
-            });
-
-        (void)temp_actor;
-    } catch (const std::exception& e) {
-        SHIELD_LOG_ERROR << "WebSocket message processing error: "
-                         << e.what();
+        auto j = nlohmann::json::parse(message);
+        if (j.contains("type") && j["type"].is_string()) {
+            gw_req.path = std::string("/ws/") + j["type"].get<std::string>();
+        }
+    } catch (...) {
     }
+
+    gw_req.body = message;
+    gw_req.protocol = protocol::ProtocolType::WEBSOCKET;
+
+    GatewayResponse gw_resp;
+    middleware_chain_.execute(
+        gw_req, gw_resp,
+        [this](GatewayRequest& r, GatewayResponse& s) { dispatch(r, s); });
+
+    handler.send_text_frame(connection_id, gw_resp.body);
 }
 
 void GatewayRequestDispatcher::on_session_closed(uint64_t connection_id) {

@@ -1,6 +1,7 @@
 #include "shield/gateway/gateway_service.hpp"
 
 #include "shield/caf_type_ids.hpp"
+#include "shield/gateway/game_gateway.hpp"
 #include "shield/gateway/gateway_config.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/protocol/binary_protocol.hpp"
@@ -180,14 +181,48 @@ void GatewayService::setup_protocol_handlers() {
     m_http_handler->set_session_provider(
         [this](uint64_t session_id) { return get_session(session_id); });
 
-    m_request_dispatcher->configure_http_routes(m_http_handler->get_router());
+    // Register default routes before application routes
+    auto& router = m_http_handler->get_router();
+
+    // Built-in routes
+    router.add_route("GET", "/health",
+                     [](const protocol::HttpRequest&) {
+                         protocol::HttpResponse resp;
+                         resp.body = R"({"status":"ok"})";
+                         return resp;
+                     });
+    router.add_route("GET", "/status",
+                     [](const protocol::HttpRequest&) {
+                         protocol::HttpResponse resp;
+                         resp.body = R"({"status":"running","protocols":["tcp","ws"]})";
+                         return resp;
+                     });
+
+    // Application routes (via dispatcher)
+    m_request_dispatcher->configure_http_routes(router);
+
+    // Game gateway templates
+    GameGateway::setup_login_route(router, "scripts/gateway_login.lua");
+    GameGateway::setup_message_dispatch(*m_request_dispatcher,
+                                         "scripts/player_actor.lua");
+
+    // Install logging middleware
+    m_request_dispatcher->middleware_chain().use(logging_middleware());
+    m_request_dispatcher->middleware_chain().use(cors_middleware());
 
     // Create WebSocket handler
     m_websocket_handler = protocol::create_websocket_handler();
     m_websocket_handler->set_session_provider(
         [this](uint64_t session_id) { return get_session(session_id); });
 
-    // Set WebSocket message handler
+    // WebSocket: use configured lua_script or default
+    std::string ws_script = m_config->websocket.lua_script.empty()
+                                ? "scripts/gateway_session.lua"
+                                : m_config->websocket.lua_script;
+    m_request_dispatcher->ws_script = ws_script;
+    GameGateway::setup_session_handler(*m_websocket_handler, ws_script);
+
+    // Set WebSocket message handler — override with dispatcher
     m_websocket_handler->set_message_handler(
         [this](uint64_t connection_id, const std::string& message) {
             m_request_dispatcher->handle_websocket_message(
