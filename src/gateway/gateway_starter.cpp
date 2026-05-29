@@ -7,6 +7,7 @@
 #include "shield/gateway/gateway_service.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/script/lua_vm_pool.hpp"
+#include "shield/service/service_context.hpp"
 
 namespace shield::gateway {
 
@@ -36,9 +37,16 @@ void GatewayStarter::initialize(core::ApplicationContext& context) {
             "DistributedActorSystem not found. ActorStarter must run first.");
     }
 
+    // Get ServiceContext
+    auto svc_ctx = context.get_bean<service::ServiceContext>("service_context");
+    if (!svc_ctx) {
+        throw std::runtime_error(
+            "ServiceContext not found. ServiceStarter must run first.");
+    }
+
     // Create GatewayService
     auto gateway_service = std::make_shared<GatewayService>(
-        "gateway", *actor_system, *lua_vm_pool, gateway_config);
+        "gateway", *actor_system, *lua_vm_pool, *svc_ctx, gateway_config);
 
     // Register the service
     context.register_service("gateway", gateway_service);

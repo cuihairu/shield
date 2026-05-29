@@ -10,9 +10,11 @@ namespace shield::gateway {
 GatewayService::GatewayService(const std::string& name,
                                actor::DistributedActorSystem& actor_system,
                                script::LuaVMPool& lua_vm_pool,
+                               service::ServiceContext& svc_ctx,
                                std::shared_ptr<GatewayConfig> config)
     : m_actor_system(actor_system),
       m_lua_vm_pool(lua_vm_pool),
+      m_svc_ctx(svc_ctx),
       m_config(config),
       m_name(name) {}
 
@@ -28,7 +30,7 @@ void GatewayService::on_init(core::ApplicationContext& ctx) {
     // Validate configuration
     m_config->validate();
     m_request_dispatcher = std::make_unique<GatewayRequestDispatcher>(
-        m_actor_system, m_lua_vm_pool, m_request_timeout);
+        m_actor_system, m_lua_vm_pool, m_svc_ctx, m_request_timeout);
 
     // TCP server configuration
     const auto& listener_config = m_config->listener;

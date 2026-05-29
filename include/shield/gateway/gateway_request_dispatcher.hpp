@@ -12,6 +12,7 @@
 #include "shield/protocol/http_handler.hpp"
 #include "shield/protocol/websocket_handler.hpp"
 #include "shield/script/lua_vm_pool.hpp"
+#include "shield/service/service_context.hpp"
 
 namespace shield::gateway {
 
@@ -19,6 +20,7 @@ class GatewayRequestDispatcher {
 public:
     GatewayRequestDispatcher(actor::DistributedActorSystem& actor_system,
                              script::LuaVMPool& lua_vm_pool,
+                             service::ServiceContext& svc_ctx,
                              std::chrono::milliseconds request_timeout =
                                  std::chrono::milliseconds{5000});
 
@@ -37,6 +39,7 @@ private:
 
     actor::DistributedActorSystem& actor_system_;
     script::LuaVMPool& lua_vm_pool_;
+    service::ServiceContext& svc_ctx_;
     std::chrono::milliseconds request_timeout_;
     std::unordered_map<uint64_t, caf::actor> session_actors_;
 };

@@ -8,9 +8,11 @@ namespace shield::gateway {
 GatewayRequestDispatcher::GatewayRequestDispatcher(
     actor::DistributedActorSystem& actor_system,
     script::LuaVMPool& lua_vm_pool,
+    service::ServiceContext& svc_ctx,
     std::chrono::milliseconds request_timeout)
     : actor_system_(actor_system),
       lua_vm_pool_(lua_vm_pool),
+      svc_ctx_(svc_ctx),
       request_timeout_(request_timeout) {}
 
 void GatewayRequestDispatcher::configure_http_routes(protocol::HttpRouter& router) {
@@ -141,8 +143,8 @@ caf::actor GatewayRequestDispatcher::get_or_create_session_actor(
     }
 
     auto lua_actor = actor::create_lua_actor(
-        actor_system_.system(), lua_vm_pool_, actor_system_, script_path,
-        std::to_string(connection_id));
+        actor_system_.system(), lua_vm_pool_, actor_system_, svc_ctx_,
+        script_path, std::to_string(connection_id));
     session_actors_[connection_id] = lua_actor;
     return lua_actor;
 }

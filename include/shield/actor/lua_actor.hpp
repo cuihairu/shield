@@ -10,6 +10,7 @@
 #include "shield/actor/distributed_actor_system.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/script/lua_vm_pool.hpp"
+#include "shield/service/service_context.hpp"
 
 namespace shield::actor {
 
@@ -75,6 +76,7 @@ class LuaActor : public caf::event_based_actor {
 public:
     LuaActor(caf::actor_config &cfg, script::LuaVMPool &lua_vm_pool,
              DistributedActorSystem &actor_system,
+             service::ServiceContext &svc_ctx,
              const std::string &script_path, const std::string &actor_id = "");
     virtual ~LuaActor() = default;
 
@@ -105,6 +107,7 @@ protected:
     // Actor state
     script::VMHandle m_lua_vm_handle;
     DistributedActorSystem &m_actor_system;
+    service::ServiceContext &m_svc_ctx;
     script::LuaVMPool &m_lua_vm_pool;
     std::string script_path_;
     std::string actor_id_;
@@ -115,6 +118,7 @@ protected:
 caf::actor create_lua_actor(caf::actor_system &system,
                             script::LuaVMPool &lua_vm_pool,
                             DistributedActorSystem &actor_system,
+                            service::ServiceContext &svc_ctx,
                             const std::string &script_path,
                             const std::string &actor_id = "");
 

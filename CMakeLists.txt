@@ -319,6 +319,8 @@ set(SHIELD_CORE_SOURCES
     src/script/lua_vm_pool_config.cpp
     src/script/script_starter.cpp
     src/script/lua_ioc_bridge.cpp
+    src/script/lua_service_api.cpp
+    src/script/lua_service_base.cpp
     # Gateway
     src/gateway/gateway_request_dispatcher.cpp
     src/gateway/gateway_service.cpp

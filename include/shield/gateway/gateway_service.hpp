@@ -17,6 +17,7 @@
 #include "shield/protocol/websocket_handler.hpp"
 #include "shield/script/lua_vm_pool.hpp"
 #include "shield/serialization/universal_serializer.hpp"
+#include "shield/service/service_context.hpp"
 
 namespace shield::gateway {
 
@@ -25,6 +26,7 @@ public:
     explicit GatewayService(const std::string &name,
                             actor::DistributedActorSystem &actor_system,
                             script::LuaVMPool &lua_vm_pool,
+                            service::ServiceContext &svc_ctx,
                             std::shared_ptr<GatewayConfig> config);
     ~GatewayService();
 
@@ -50,6 +52,7 @@ private:
 
     actor::DistributedActorSystem &m_actor_system;
     script::LuaVMPool &m_lua_vm_pool;
+    service::ServiceContext &m_svc_ctx;
     std::shared_ptr<GatewayConfig> m_config;
     std::string m_name;
 

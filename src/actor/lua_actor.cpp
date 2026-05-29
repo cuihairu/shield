@@ -5,15 +5,18 @@
 #include <nlohmann/json.hpp>
 
 #include "shield/caf_type_ids.hpp"
+#include "shield/script/lua_service_api.hpp"
 
 namespace shield::actor {
 
 LuaActor::LuaActor(caf::actor_config& cfg, script::LuaVMPool& lua_vm_pool,
                    DistributedActorSystem& actor_system,
+                   service::ServiceContext& svc_ctx,
                    const std::string& script_path, const std::string& actor_id)
     : event_based_actor(cfg),
       m_lua_vm_pool(lua_vm_pool),
       m_actor_system(actor_system),
+      m_svc_ctx(svc_ctx),
       script_path_(script_path),
       actor_id_(
           actor_id.empty()
@@ -47,12 +50,16 @@ caf::behavior LuaActor::make_behavior() {
                          << script_path_;
         return {[this](const std::string& msg_type,
                        const std::string& data_json) -> std::string {
+            service::ServiceContext::Guard guard(m_svc_ctx);
+            m_svc_ctx.set_self(this);
             return R"({"success": false, "error_message": "Script not loaded"})";
         }};
     }
 
     return {[this](const std::string& msg_type,
                    const std::string& data_json) -> std::string {
+        service::ServiceContext::Guard guard(m_svc_ctx);
+        m_svc_ctx.set_self(this);
         return handle_lua_message_json(msg_type, data_json);
     }};
 }
@@ -70,7 +77,10 @@ bool LuaActor::load_script() {
             SHIELD_LOG_INFO << "Successfully loaded Lua script: "
                             << script_path_;
 
-            // Call initialization function if it exists
+            // Set ServiceContext for on_init
+            service::ServiceContext::Guard guard(m_svc_ctx);
+            m_svc_ctx.set_self(this);
+
             auto init_result = m_lua_vm_handle->call_function<void>("on_init");
             if (!init_result) {
                 SHIELD_LOG_INFO
@@ -86,13 +96,10 @@ bool LuaActor::load_script() {
 }
 
 void LuaActor::setup_lua_environment() {
-    // Set global variables accessible to Lua scripts
     m_lua_vm_handle->set_global("actor_id", actor_id_);
     m_lua_vm_handle->set_global("script_path", script_path_);
 
-    // Create a message table type for Lua
     m_lua_vm_handle->execute_string(R"(
-        -- Helper function to create message objects
         function create_message(msg_type, data, sender)
             return {
                 type = msg_type or "",
@@ -100,17 +107,15 @@ void LuaActor::setup_lua_environment() {
                 sender_id = sender or ""
             }
         end
-        
-        -- Helper function to create response objects  
+
         function create_response(success, data, error_msg)
             return {
-                success = success ~= false,  -- default to true
+                success = success ~= false,
                 data = data or {},
                 error_message = error_msg or ""
             }
         end
-        
-        -- Default message handler (can be overridden)
+
         function on_message(msg)
             log_info("Received message: " .. msg.type)
             return create_response(true, {reply = "message received"})
@@ -119,14 +124,14 @@ void LuaActor::setup_lua_environment() {
 }
 
 void LuaActor::register_cpp_functions() {
-    // Register logging functions
+    // Legacy logging functions
     m_lua_vm_handle->register_function(
         "log_info", [this](const std::string& msg) { lua_log_info(msg); });
 
     m_lua_vm_handle->register_function(
         "log_error", [this](const std::string& msg) { lua_log_error(msg); });
 
-    // Register message sending function
+    // Legacy send_message — now backed by service::send()
     m_lua_vm_handle->register_function(
         "send_message",
         [this](const std::string& target, const std::string& msg_type,
@@ -134,7 +139,7 @@ void LuaActor::register_cpp_functions() {
             lua_send_message(target, msg_type, data);
         });
 
-    // Register utility functions
+    // Utility functions
     m_lua_vm_handle->register_function("get_current_time", []() -> int64_t {
         auto now = std::chrono::system_clock::now();
         return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -144,6 +149,9 @@ void LuaActor::register_cpp_functions() {
 
     m_lua_vm_handle->register_function(
         "get_actor_id", [this]() -> std::string { return actor_id_; });
+
+    // Register Skynet-style shield.* API
+    script::LuaServiceApi::register_api(m_lua_vm_handle->lua());
 }
 
 LuaResponse LuaActor::handle_lua_message(const LuaMessage& msg) {
@@ -152,7 +160,6 @@ LuaResponse LuaActor::handle_lua_message(const LuaMessage& msg) {
     }
 
     try {
-        // Create a sol::table from LuaMessage data
         sol::table lua_msg_table = m_lua_vm_handle->lua().create_table();
         lua_msg_table["type"] = msg.type;
         lua_msg_table["sender_id"] = msg.sender_id;
@@ -162,7 +169,6 @@ LuaResponse LuaActor::handle_lua_message(const LuaMessage& msg) {
         }
         lua_msg_table["data"] = lua_data_table;
 
-        // Call Lua message handler with the table as argument
         sol::protected_function on_message_func =
             m_lua_vm_handle->lua()["on_message"];
         if (!on_message_func.valid()) {
@@ -214,16 +220,14 @@ std::string LuaActor::handle_lua_message_json(const std::string& msg_type,
     }
 
     try {
-        // Parse JSON data
         nlohmann::json data_obj;
         if (!data_json.empty()) {
             data_obj = nlohmann::json::parse(data_json);
         }
 
-        // Create Lua message table
         sol::table lua_msg_table = m_lua_vm_handle->lua().create_table();
         lua_msg_table["type"] = msg_type;
-        lua_msg_table["sender_id"] = "gateway";  // From gateway
+        lua_msg_table["sender_id"] = "gateway";
 
         sol::table lua_data_table = m_lua_vm_handle->lua().create_table();
         for (auto& [key, value] : data_obj.items()) {
@@ -235,7 +239,6 @@ std::string LuaActor::handle_lua_message_json(const std::string& msg_type,
         }
         lua_msg_table["data"] = lua_data_table;
 
-        // Call Lua message handler
         sol::protected_function on_message_func =
             m_lua_vm_handle->lua()["on_message"];
         if (!on_message_func.valid()) {
@@ -246,16 +249,15 @@ std::string LuaActor::handle_lua_message_json(const std::string& msg_type,
         if (result.valid()) {
             sol::table response_table = result;
 
-            // Convert response to JSON
             nlohmann::json response_json;
             response_json["success"] = response_table["success"].get_or(true);
             response_json["error_message"] =
                 response_table["error_message"].get_or(std::string());
 
             nlohmann::json data_response;
-            sol::object data_obj = response_table["data"];
-            if (data_obj.valid() && data_obj.is<sol::table>()) {
-                sol::table data_table = data_obj.as<sol::table>();
+            sol::object data_obj_resp = response_table["data"];
+            if (data_obj_resp.valid() && data_obj_resp.is<sol::table>()) {
+                sol::table data_table = data_obj_resp.as<sol::table>();
                 for (auto pair : data_table) {
                     std::string key = pair.first.as<std::string>();
                     if (pair.second.is<std::string>()) {
@@ -303,25 +305,26 @@ void LuaActor::lua_log_error(const std::string& message) {
 void LuaActor::lua_send_message(
     const std::string& target_actor, const std::string& msg_type,
     const std::unordered_map<std::string, std::string>& data) {
-    // For now, just log the message sending attempt
-    // In a full implementation, this would send to the distributed actor system
-    SHIELD_LOG_INFO << "Lua actor " << actor_id_
-                    << " attempting to send message '" << msg_type
-                    << "' to actor: " << target_actor;
-
-    // Convert data to JSON for logging
+    // Now backed by service::send() instead of being a stub
     nlohmann::json data_json(data);
-    SHIELD_LOG_DEBUG << "Message data: " << data_json.dump();
+    std::string payload = data_json.dump();
+
+    SHIELD_LOG_INFO << "Lua actor " << actor_id_
+                    << " sending message '" << msg_type
+                    << "' to: " << target_actor;
+
+    service::send(target_actor, msg_type, payload);
 }
 
 caf::actor create_lua_actor(caf::actor_system& system,
                             script::LuaVMPool& lua_vm_pool,
                             DistributedActorSystem& actor_system,
+                            service::ServiceContext& svc_ctx,
                             const std::string& script_path,
                             const std::string& actor_id) {
     SHIELD_LOG_INFO << "Spawning LuaActor with script: " << script_path;
-    return system.spawn<LuaActor>(lua_vm_pool, actor_system, script_path,
-                                  actor_id);
+    return system.spawn<LuaActor>(lua_vm_pool, actor_system, svc_ctx,
+                                  script_path, actor_id);
 }
 
 }  // namespace shield::actor

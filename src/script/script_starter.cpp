@@ -1,5 +1,7 @@
 #include "shield/script/script_starter.hpp"
 
+#include <filesystem>
+
 #include "shield/config/config.hpp"
 #include "shield/core/application_context.hpp"
 #include "shield/log/logger.hpp"
@@ -29,6 +31,17 @@ void ScriptStarter::initialize(core::ApplicationContext& context) {
 
     // Register the LuaVMPool service
     context.register_service("lua_vm_pool", lua_vm_pool);
+
+    // Auto-preload the standard service base script
+    const char* builtin_scripts[] = {
+        "scripts/shield_service.lua",
+    };
+    for (const auto* path : builtin_scripts) {
+        if (std::filesystem::exists(path)) {
+            lua_vm_pool->preload_script(path);
+            SHIELD_LOG_INFO << "Preloaded builtin script: " << path;
+        }
+    }
 
     SHIELD_LOG_INFO << "Script Starter initialized successfully";
 }

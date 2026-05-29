@@ -50,12 +50,12 @@ foundation.
 
 ## Phase 3: Lua Runtime
 
-- [ ] Provide a default Lua service base class.
-- [ ] Standardize Lua service entry points and message dispatch.
-- [ ] Expose runtime helpers to Lua in a Skynet-like shape where practical.
-- [ ] Keep Lua API stable for business logic authors.
-- [ ] Separate Lua business logic from framework internals.
-- [ ] Improve hot reload behavior and define its supported scope.
+- [x] Provide a default Lua service base class.
+- [x] Standardize Lua service entry points and message dispatch.
+- [x] Expose runtime helpers to Lua in a Skynet-like shape where practical.
+- [x] Keep Lua API stable for business logic authors.
+- [x] Separate Lua business logic from framework internals.
+- [x] Improve hot reload behavior and define its supported scope.
 
 ## Phase 4: Network Runtime
 
