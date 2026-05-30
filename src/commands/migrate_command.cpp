@@ -124,14 +124,19 @@ void migrate_log_config(YAML::Node& root, std::vector<std::string>& actions,
                  legacy_logger["log_file"])) {
                 YAML::Node file;
                 const bool enabled = legacy_logger["file_output"]
-                                         ? legacy_logger["file_output"].as<bool>()
+                                         ? legacy_logger["file_output"]
+                                               .as<bool>()
                                          : true;
+
                 file["enabled"] = enabled;
                 if (legacy_logger["log_file"]) {
-                    file["log_file"] = legacy_logger["log_file"].as<std::string>();
+                    file["log_file"] =
+                        legacy_logger["log_file"].as<std::string>();
                 } else if (legacy_logger["file_path"]) {
-                    file["log_file"] = legacy_logger["file_path"].as<std::string>();
+                    file["log_file"] =
+                        legacy_logger["file_path"].as<std::string>();
                 }
+
                 if (legacy_logger["max_file_size"]) {
                     file["max_file_size"] =
                         legacy_logger["max_file_size"].as<std::int64_t>();
@@ -193,8 +198,10 @@ void migrate_log_config(YAML::Node& root, std::vector<std::string>& actions,
         YAML::Node console;
         console["enabled"] = log["console_output"].as<bool>();
         console["colored"] = true;
-        console["pattern"] = log["pattern"] ? log["pattern"].as<std::string>()
-                                            : "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v";
+        console["pattern"] =
+            log["pattern"] ? log["pattern"].as<std::string>()
+                           : "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v";
+
         console["min_level"] = log["global_level"]
                                    ? log["global_level"].as<std::string>()
                                    : "info";
@@ -202,7 +209,9 @@ void migrate_log_config(YAML::Node& root, std::vector<std::string>& actions,
         if (drop_legacy) {
             log.remove("console_output");
             actions.push_back(
-                "Converted `log.console_output` to `log.console.enabled` (dropped legacy key)");
+                "Converted `log.console_output` to `log.console.enabled` "
+                "(dropped legacy key)");
+
         } else {
             actions.push_back(
                 "Converted `log.console_output` to `log.console.enabled`");

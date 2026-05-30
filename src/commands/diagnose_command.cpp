@@ -13,6 +13,7 @@
 #include "shield/config/config.hpp"
 #include "shield/health/health_check.hpp"
 
+
 namespace shield::commands {
 
 namespace {
@@ -179,6 +180,7 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
             const std::string user =
                 tree.get<std::string>("database.username", "");
 
+
             if (!host.empty() && port > 0) {
                 std::string conn;
                 if (!name.empty() && !user.empty()) {
@@ -201,13 +203,14 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
         const std::string format = ctx.get_flag("format");
         if (format == "json") {
             std::cout << shield::health::HealthEndpointBuilder::
-                             build_json_response(overall, components, true)
+                              build_json_response(overall, components, true)
                       << std::endl;
         } else {
             std::cout << shield::health::HealthEndpointBuilder::
-                             build_health_response(overall, components, true)
+                              build_health_response(overall, components, true)
                       << std::endl;
         }
+
 
         return overall.is_healthy() ? 0 : 1;
     }
@@ -228,8 +231,8 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
                           << "': " << parse_error << std::endl;
                 return 1;
             }
-            endpoints.push_back(
-                {"target", parsed.host, parsed.port});
+            endpoints.push_back({"target", parsed.host, parsed.port});
+
         }
 
         try {
@@ -249,6 +252,7 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
                     {"database", db_host, std::to_string(db_port)});
             }
 
+
             const auto redis_host =
                 tree.get<std::string>("redis.host", "");
             const int redis_port = tree.get<int>("redis.port", 0);
@@ -257,8 +261,10 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
                     {"redis", redis_host, std::to_string(redis_port)});
             }
         } catch (...) {
-            // Ignore: config might be absent; we'll just probe what's available.
+            // Ignore: config might be absent; we'll just probe what's
+            // available.
         }
+
 
         if (endpoints.empty()) {
             std::cout << "No endpoints found to test." << std::endl;
@@ -271,8 +277,9 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
         for (const auto& ep : endpoints) {
             std::string err;
             const bool ok = tcp_probe(ep.host, ep.port, timeout, err);
-            std::cout << ep.name << ": " << ep.host << ":" << ep.port
-                      << " -> " << (ok ? "OK" : "FAIL") << std::endl;
+            std::cout << ep.name << ": " << ep.host << ":" << ep.port << " -> "
+                      << (ok ? "OK" : "FAIL") << std::endl;
+
             if (!ok) {
                 all_ok = false;
                 if (!err.empty()) {
@@ -324,12 +331,12 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
 
         const double secs = static_cast<double>(duration);
         const double iters_per_sec = iterations / secs;
-        const double mb_per_sec =
-            (bytes_processed / (1024.0 * 1024.0)) / secs;
+        const double mb_per_sec = (bytes_processed / (1024.0 * 1024.0)) / secs;
 
         std::cout << "Iterations: " << iterations << std::endl;
         std::cout << "Throughput: " << iters_per_sec << " ops/s, "
                   << mb_per_sec << " MB/s" << std::endl;
+
         return 0;
     }
 

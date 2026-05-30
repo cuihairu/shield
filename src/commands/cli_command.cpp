@@ -199,10 +199,11 @@ int CLICommand::run(shield::cli::CommandContext& ctx) {
     ParsedHttpUrl parsed;
     std::string parse_error;
     if (!parse_http_url(server_url, parsed, parse_error)) {
-        std::cerr << "Invalid url '" << server_url
-                  << "': " << parse_error << std::endl;
+        std::cerr << "Invalid url '" << server_url << "': " << parse_error
+                  << std::endl;
         return 1;
     }
+
 
     if (parsed.target == "/" && !override_target.empty()) {
         parsed.target = override_target;
