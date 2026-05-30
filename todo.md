@@ -77,18 +77,18 @@ foundation.
 
 ## Phase 6: Observability and Operations
 
-- [ ] Keep health checks available by default.
-- [ ] Keep Prometheus metrics as a standard operational feature.
-- [ ] Add runtime diagnostics for actors, services, and network status.
-- [ ] Add configuration reload rules and document their scope.
-- [ ] Add logging conventions for service, protocol, and runtime layers.
+- [x] Keep health checks available by default.
+- [x] Keep Prometheus metrics as a standard operational feature.
+- [x] Add runtime diagnostics for actors, services, and network status.
+- [x] Add configuration reload rules and document their scope.
+- [x] Add logging conventions for service, protocol, and runtime layers.
 
 ## Phase 7: Optional Extensions
 
-- [ ] Keep database access abstractions optional unless required by a template.
-- [ ] Keep plugin support isolated from the core runtime path.
-- [ ] Keep advanced DI/IoC features from expanding the runtime surface.
-- [ ] Keep advanced data access features out of the minimal bootstrap path.
+- [x] Keep database access abstractions optional unless required by a template.
+- [x] Keep plugin support isolated from the core runtime path.
+- [x] Keep advanced DI/IoC features from expanding the runtime surface.
+- [x] Keep advanced data access features out of the minimal bootstrap path.
 
 ## Documentation Plan
 

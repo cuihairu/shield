@@ -328,6 +328,7 @@ set(SHIELD_CORE_SOURCES
     src/gateway/gateway_starter.cpp
     src/gateway/middleware.cpp
     src/gateway/game_gateway.cpp
+    src/gateway/runtime_diagnostics.cpp
     # HTTP
     src/http/beast_http_server.cpp
     # Commands

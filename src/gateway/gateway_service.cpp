@@ -3,6 +3,7 @@
 #include "shield/caf_type_ids.hpp"
 #include "shield/gateway/game_gateway.hpp"
 #include "shield/gateway/gateway_config.hpp"
+#include "shield/gateway/runtime_diagnostics.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/protocol/binary_protocol.hpp"
 
@@ -184,17 +185,30 @@ void GatewayService::setup_protocol_handlers() {
     // Register default routes before application routes
     auto& router = m_http_handler->get_router();
 
-    // Built-in routes
+    // Built-in routes — observability
     router.add_route("GET", "/health",
                      [](const protocol::HttpRequest&) {
                          protocol::HttpResponse resp;
-                         resp.body = R"({"status":"ok"})";
+                         resp.body = RuntimeDiagnostics::health_json();
+                         return resp;
+                     });
+    router.add_route("GET", "/health/detailed",
+                     [](const protocol::HttpRequest&) {
+                         protocol::HttpResponse resp;
+                         resp.body = RuntimeDiagnostics::health_detailed_json();
                          return resp;
                      });
     router.add_route("GET", "/status",
+                     [this](const protocol::HttpRequest&) {
+                         protocol::HttpResponse resp;
+                         resp.body = RuntimeDiagnostics::runtime_status_json(
+                             m_actor_system);
+                         return resp;
+                     });
+    router.add_route("GET", "/status/config",
                      [](const protocol::HttpRequest&) {
                          protocol::HttpResponse resp;
-                         resp.body = R"({"status":"running","protocols":["tcp","ws"]})";
+                         resp.body = RuntimeDiagnostics::config_reload_info_json();
                          return resp;
                      });
 
