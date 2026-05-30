@@ -36,8 +36,8 @@ std::future<std::string> call(
 caf::disposable timeout(std::chrono::milliseconds ms,
                         std::function<void()> callback);
 
-inline caf::disposable timeout(uint32_t ms,
-                               std::function<void()> callback) {
+inline caf::disposable timeout(
+    uint32_t ms, std::function<void()> callback) {
     return timeout(std::chrono::milliseconds(ms), std::move(callback));
 }
 
