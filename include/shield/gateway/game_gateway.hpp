@@ -26,8 +26,9 @@ public:
         const std::string& lua_script);
 
     // TCP/WS message dispatch: route {"type":"xxx"} to the correct Lua actor.
-    static void setup_message_dispatch(GatewayRequestDispatcher& dispatcher,
-                                       const std::string& default_script);
+    static void setup_message_dispatch(
+        GatewayRequestDispatcher& dispatcher,
+        const std::string& default_script);
 
 };
 

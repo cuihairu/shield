@@ -50,7 +50,7 @@ public:
                 return j.dump();
             } catch (const std::exception& e) {
                 throw SerializationException(
-                    std::string("JSON serialize failed: ") + e.what());
+                    "JSON serialize failed: " + std::string(e.what()));
             }
         } else if constexpr (Format == SerializationFormat::MESSAGEPACK) {
             try {
@@ -60,9 +60,9 @@ public:
                     reinterpret_cast<const uint8_t *>(buffer.data()),
                     reinterpret_cast<const uint8_t *>(buffer.data()) +
                         buffer.size());
-            } catch (const std::exception &e) {
+            } catch (const std::exception& e) {
                 throw SerializationException(
-                    std::string("MessagePack serialize failed: ") + e.what());
+                    "MessagePack serialize failed: " + std::string(e.what()));
             }
         } else if constexpr (Format == SerializationFormat::PROTOBUF) {
             try {

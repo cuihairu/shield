@@ -29,12 +29,12 @@ public:
     void configure_http_routes(protocol::HttpRouter& router);
 
     // Per-protocol entry points (called by GatewayService)
-    void handle_tcp_message(uint64_t connection_id,
-                           const std::string& message,
-                           std::function<void(const std::string&)> send_response);
-    void handle_websocket_message(uint64_t connection_id,
-                                 const std::string& message,
-                                 protocol::WebSocketProtocolHandler& handler);
+    void handle_tcp_message(
+        uint64_t connection_id, const std::string& message,
+        std::function<void(const std::string&)> send_response);
+    void handle_websocket_message(
+        uint64_t connection_id, const std::string& message,
+        protocol::WebSocketProtocolHandler& handler);
 
     void on_session_closed(uint64_t connection_id);
 

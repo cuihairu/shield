@@ -38,7 +38,7 @@ concept JsonSerializable =
         // serializers)
         { nlohmann::json(t) } -> std::same_as<nlohmann::json>;
         { j.template get<std::remove_cvref_t<T>>() }
-            -> std::same_as<std::remove_cvref_t<T>>;
+            ->std::same_as<std::remove_cvref_t<T>>;
     };
 
 
@@ -46,8 +46,8 @@ template <typename T>
 #if SHIELD_HAS_PROTOBUF
 concept ProtobufSerializable =
     std::is_base_of_v<google::protobuf::MessageLite, std::remove_cvref_t<T>> ||
-    requires(const T &t, std::remove_cvref_t<T> &obj, std::string &out,
-             const std::string &data) {
+    requires(const T& t, std::remove_cvref_t<T>& obj, std::string& out,
+             const std::string& data) {
         { t.SerializeToString(&out) } -> std::same_as<bool>;
         { obj.ParseFromString(data) } -> std::same_as<bool>;
     };

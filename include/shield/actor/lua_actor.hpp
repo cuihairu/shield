@@ -74,7 +74,8 @@ struct LuaResponse {
 // Base class for Lua-powered actors
 class LuaActor : public caf::event_based_actor {
 public:
-    LuaActor(caf::actor_config& cfg, script::LuaVMPool& lua_vm_pool,
+    LuaActor(caf::actor_config& cfg,
+             script::LuaVMPool& lua_vm_pool,
              DistributedActorSystem& actor_system,
              service::ServiceContext& svc_ctx,
              const std::string& script_path,
