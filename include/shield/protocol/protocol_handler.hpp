@@ -50,9 +50,7 @@ struct HttpResponse {
     std::unordered_map<std::string, std::string> headers;
     std::string body;
 
-    HttpResponse() {
-        headers["Content-Type"] = "application/json";
-    }
+    HttpResponse() { headers["Content-Type"] = "application/json"; }
 };
 
 // WebSocket frame types

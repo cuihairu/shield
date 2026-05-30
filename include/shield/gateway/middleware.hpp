@@ -12,8 +12,8 @@ namespace shield::gateway {
 // A middleware receives the request, response, and a `next` callback.
 // Call `next()` to continue the chain, or skip it to short-circuit.
 using Middleware = std::function<void(GatewayRequest& req,
-                                     GatewayResponse& resp,
-                                     std::function<void()>& next)>;
+                                     GatewayResponse& resp, std::function<void()>& next)>;
+
 
 // Ordered chain of middleware.  execute() walks the list, calling each
 // middleware in order and then invoking the final handler.
@@ -24,9 +24,9 @@ public:
 
     // Run every middleware in order, then call `final_handler`.
     // If any middleware skips `next`, the chain stops early.
-    void execute(GatewayRequest& req,
-                 GatewayResponse& resp,
-                 std::function<void(GatewayRequest&, GatewayResponse&)> final_handler);
+    void execute(GatewayRequest& req, GatewayResponse& resp,
+                std::function<void(GatewayRequest&, GatewayResponse&)> final_handler);
+
 
 private:
     std::vector<Middleware> middlewares_;
@@ -39,8 +39,10 @@ Middleware logging_middleware();
 
 // Add CORS headers to every HTTP response.
 Middleware cors_middleware(const std::string& allow_origin = "*",
-                           const std::string& allow_methods = "GET,POST,PUT,DELETE,OPTIONS",
+                           const std::string& allow_methods =
+                               "GET,POST,PUT,DELETE,OPTIONS",
                            const std::string& allow_headers = "Content-Type,Authorization");
+
 
 // Reject requests that fail `validator`.  Returns 401 on failure.
 Middleware auth_middleware(

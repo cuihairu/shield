@@ -15,8 +15,8 @@ namespace shield::script {
 // Owns the script path, handles reload.
 class LuaServiceBase : public core::Service {
 public:
-    LuaServiceBase(const std::string& name,
-                   const std::string& script_path);
+    LuaServiceBase(const std::string& name, const std::string& script_path);
+
 
     void on_init(core::ApplicationContext& ctx) override;
     void on_start() override;

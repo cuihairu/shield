@@ -1,9 +1,8 @@
 // [CORE]
 #pragma once
 
-#include <string>
-
 #include <boost/property_tree/ptree.hpp>
+#include <string>
 #include <yaml-cpp/yaml.h>
 
 namespace shield::config {

@@ -44,7 +44,8 @@ public:
 private:
     void setup_session(std::shared_ptr<net::Session> session);
     void send_binary_json_response(uint64_t session_id,
-                                   const std::string& response);
+                                  const std::string& response);
+
     void setup_protocol_handlers();
     std::shared_ptr<net::Session> get_session(uint64_t session_id);
     protocol::ProtocolType detect_protocol(uint64_t connection_id,

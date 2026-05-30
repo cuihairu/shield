@@ -33,12 +33,14 @@ struct has_deserialize_method;
 // Core concept definitions
 template <typename T>
 concept JsonSerializable =
-    requires(const T &t, const nlohmann::json &j) {
-        // nlohmann::json conversion (covers built-ins + ADL serializers)
+    requires(const T& t, const nlohmann::json& j) {
+        // nlohmann::json conversion (covers built-ins + ADL
+        // serializers)
         { nlohmann::json(t) } -> std::same_as<nlohmann::json>;
         { j.template get<std::remove_cvref_t<T>>() }
             -> std::same_as<std::remove_cvref_t<T>>;
     };
+
 
 template <typename T>
 #if SHIELD_HAS_PROTOBUF
@@ -55,11 +57,12 @@ concept ProtobufSerializable = false;
 
 template <typename T>
 concept MessagePackSerializable =
-    requires(const T &t, std::remove_cvref_t<T> &obj,
-             const std::vector<char> &data) {
-        msgpack::pack(std::declval<msgpack::sbuffer &>(), t);
+    requires(const T& t, std::remove_cvref_t<T>& obj,
+             const std::vector<char>& data) {
+        msgpack::pack(std::declval<msgpack::sbuffer&>(), t);
         msgpack::unpack(data.data(), data.size()).get().convert(obj);
     };
+
 
 template <typename T>
 concept SprotoSerializable =

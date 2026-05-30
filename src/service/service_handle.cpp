@@ -5,10 +5,11 @@
 namespace shield::service {
 
 ServiceHandle::ServiceHandle(caf::actor handle, std::string name,
-                             bool is_local)
+                              bool is_local)
     : handle_(std::move(handle)),
       name_(std::move(name)),
       is_local_(is_local) {}
+
 
 ServiceHandle::operator bool() const { return static_cast<bool>(handle_); }
 

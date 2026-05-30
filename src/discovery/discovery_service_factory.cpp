@@ -19,8 +19,8 @@ std::shared_ptr<IServiceDiscovery> create_discovery_service(
     }
 
     if (config->type == "redis") {
-        auto instance = make_redis_discovery(config->build_redis_uri(),
-                                             config->redis_heartbeat_interval());
+        auto instance = make_redis_discovery(
+            config->build_redis_uri(), config->redis_heartbeat_interval());
         return std::shared_ptr<IServiceDiscovery>(std::move(instance));
     }
 

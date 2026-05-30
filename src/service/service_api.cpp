@@ -37,9 +37,10 @@ void send(const std::string& target_name, const std::string& type,
 }
 
 std::future<std::string> call(const ServiceHandle& target,
-                               const std::string& type,
-                               const std::string& payload,
-                               std::chrono::milliseconds timeout_ms) {
+                              const std::string& type,
+                              const std::string& payload,
+                              std::chrono::milliseconds timeout_ms) {
+
     auto promise = std::make_shared<std::promise<std::string>>();
     auto future = promise->get_future();
 
@@ -63,9 +64,12 @@ std::future<std::string> call(const ServiceHandle& target,
                         std::runtime_error("Call failed: " +
                                            caf::to_string(err))));
                 });
+
     } else {
-        std::thread([&sys = ctx.caf_system(), h = target.caf_handle(), type,
-                      payload, timeout_ms, promise]() {
+        std::thread(
+            [&sys = ctx.caf_system(), h = target.caf_handle(), type, payload,
+             timeout_ms, promise]() {
+
             try {
                 caf::scoped_actor scoped(sys);
                 scoped
@@ -89,9 +93,10 @@ std::future<std::string> call(const ServiceHandle& target,
 }
 
 std::future<std::string> call(const std::string& target_name,
-                               const std::string& type,
-                               const std::string& payload,
-                               std::chrono::milliseconds timeout_ms) {
+                              const std::string& type,
+                              const std::string& payload,
+                              std::chrono::milliseconds timeout_ms) {
+
     auto handle = query(target_name);
     if (!handle.valid()) {
         auto promise = std::make_shared<std::promise<std::string>>();

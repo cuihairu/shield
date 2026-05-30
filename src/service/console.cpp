@@ -42,8 +42,9 @@ void DebugConsole::on_start() {
     WSAStartup(MAKEWORD(2, 2), &wsa);
 #endif
 
-    listen_fd_ = static_cast<int>(
-        ::socket(AF_INET, SOCK_STREAM, 0));
+    listen_fd_ =
+        static_cast<int>(::socket(AF_INET, SOCK_STREAM, 0));
+
     if (listen_fd_ == SOCKET_INVALID) {
         SHIELD_LOG_ERROR << "DebugConsole: failed to create socket";
         return;
@@ -87,9 +88,11 @@ void DebugConsole::accept_loop() {
     while (running_) {
         struct sockaddr_in client_addr {};
         socklen_t len = sizeof(client_addr);
-        int client_fd = static_cast<int>(
-            ::accept(listen_fd_, reinterpret_cast<struct sockaddr*>(&client_addr),
-                     &len));
+        int client_fd =
+            static_cast<int>(::accept(
+                listen_fd_, reinterpret_cast<struct sockaddr*>(&client_addr),
+                &len));
+
         if (client_fd == SOCKET_INVALID) continue;
         handle_client(client_fd);
     }
@@ -177,14 +180,15 @@ std::string DebugConsole::cmd_info(const std::string& service_name) {
 }
 
 std::string DebugConsole::cmd_send(const std::string& target,
-                                    const std::string& msg) {
+                                   const std::string& msg) {
     if (!ServiceContext::has_current()) return "ServiceContext not available";
     send(target, "debug", msg);
     return "Sent to " + target;
 }
 
 std::string DebugConsole::cmd_call(const std::string& target,
-                                    const std::string& msg) {
+                                   const std::string& msg) {
+
     if (!ServiceContext::has_current()) return "ServiceContext not available";
     auto future = call(target, "debug", msg);
     if (future.wait_for(std::chrono::milliseconds(5500)) ==

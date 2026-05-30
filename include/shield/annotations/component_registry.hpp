@@ -100,6 +100,7 @@ public:
             [](di::AdvancedContainer& container) {
                 container.register_factory_advanced<T>(
                     [](di::AdvancedContainer&) { return std::make_shared<T>(); },
+
                     di::ServiceLifetime::SINGLETON);
             };
     }
@@ -135,6 +136,7 @@ public:
             [](di::AdvancedContainer& container) {
                 container.register_factory_advanced<T>(
                     [](di::AdvancedContainer&) { return std::make_shared<T>(); },
+
                     di::ServiceLifetime::SINGLETON);
             };
     }
@@ -163,6 +165,7 @@ public:
             [](di::AdvancedContainer& container) {
                 container.register_factory_advanced<T>(
                     [](di::AdvancedContainer&) { return std::make_shared<T>(); },
+
                     di::ServiceLifetime::SINGLETON);
             };
     }

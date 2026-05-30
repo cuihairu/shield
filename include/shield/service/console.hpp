@@ -5,8 +5,8 @@
 #include <string>
 #include <thread>
 
-#include "shield/core/service.hpp"
 #include "shield/actor/distributed_actor_system.hpp"
+#include "shield/core/service.hpp"
 
 namespace shield::service {
 

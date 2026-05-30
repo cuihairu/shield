@@ -37,7 +37,7 @@ caf::disposable timeout(std::chrono::milliseconds ms,
                         std::function<void()> callback);
 
 inline caf::disposable timeout(uint32_t ms,
-                               std::function<void()> callback) {
+                                std::function<void()> callback) {
     return timeout(std::chrono::milliseconds(ms), std::move(callback));
 }
 
@@ -50,13 +50,12 @@ void name(const ServiceHandle& handle, const std::string& service_name);
 ServiceHandle query(const std::string& service_name);
 
 ServiceHandle uniqueservice(const std::string& service_name,
-                             actor::ActorType type = actor::ActorType::CUSTOM);
+                            actor::ActorType type = actor::ActorType::CUSTOM);
 
 // --- Fork ---
 
-ServiceHandle fork(
-    std::function<void(caf::event_based_actor*)> func,
-    const std::string& fork_name = "");
+ServiceHandle fork(std::function<void(caf::event_based_actor*)> func,
+                    const std::string& fork_name = "");
 
 // --- Info ---
 

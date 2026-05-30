@@ -14,9 +14,9 @@ namespace shield::gateway {
 // before being routed to actors or Lua services.
 struct GatewayRequest {
     uint64_t session_id = 0;
-    std::string path;                                    // e.g. /api/game/action
-    std::string method;                                  // GET/POST/TCP/WS
-    std::string body;                                    // raw JSON payload
+    std::string path;               // e.g. /api/game/action
+    std::string method;             // GET/POST/TCP/WS
+    std::string body;               // raw JSON payload
     std::unordered_map<std::string, std::string> headers;
     protocol::ProtocolType protocol = protocol::ProtocolType::TCP;
 };
@@ -25,7 +25,7 @@ struct GatewayRequest {
 struct GatewayResponse {
     bool success = true;
     int status_code = 200;
-    std::string body;                                    // JSON response body
+    std::string body;                  // JSON response body
     std::unordered_map<std::string, std::string> headers;
 
     static GatewayResponse ok(std::string body) {

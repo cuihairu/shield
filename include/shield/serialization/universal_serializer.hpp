@@ -48,9 +48,9 @@ public:
             try {
                 nlohmann::json j = object;
                 return j.dump();
-            } catch (const std::exception &e) {
-                throw SerializationException(std::string("JSON serialize failed: ") +
-                                             e.what());
+            } catch (const std::exception& e) {
+                throw SerializationException(
+                    std::string("JSON serialize failed: ") + e.what());
             }
         } else if constexpr (Format == SerializationFormat::MESSAGEPACK) {
             try {
@@ -68,12 +68,13 @@ public:
             try {
                 std::string out;
                 if (!object.SerializeToString(&out)) {
-                    throw SerializationException("Protobuf SerializeToString failed");
+                    throw SerializationException(
+                        "Protobuf SerializeToString failed");
                 }
                 return std::vector<uint8_t>(out.begin(), out.end());
-            } catch (const std::exception &e) {
-                throw SerializationException(std::string("Protobuf serialize failed: ") +
-                                             e.what());
+            } catch (const std::exception& e) {
+                throw SerializationException(
+                    std::string("Protobuf serialize failed: ") + e.what());
             }
         } else {
             static_assert(Format == SerializationFormat::JSON ||
@@ -111,12 +112,13 @@ public:
                 T result{};
                 const std::string s(data.begin(), data.end());
                 if (!result.ParseFromString(s)) {
-                    throw SerializationException("Protobuf ParseFromString failed");
+                    throw SerializationException(
+                        "Protobuf ParseFromString failed");
                 }
                 return result;
-            } catch (const std::exception &e) {
-                throw SerializationException(std::string("Protobuf deserialize failed: ") +
-                                             e.what());
+            } catch (const std::exception& e) {
+                throw SerializationException(
+                    std::string("Protobuf deserialize failed: ") + e.what());
             }
         } else {
             static_assert(Format == SerializationFormat::JSON ||

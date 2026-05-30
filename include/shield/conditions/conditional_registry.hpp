@@ -278,12 +278,12 @@ public:
             return std::static_pointer_cast<void>(factory());
         };
 
-        auto container_registrar = [factory, lifetime](
-                                      di::AdvancedContainer& container) {
-            container.register_factory_advanced<T>(
-                [factory](di::AdvancedContainer&) { return factory(); },
-                lifetime);
-        };
+        auto container_registrar =
+            [factory, lifetime](di::AdvancedContainer& container) {
+                container.register_factory_advanced<T>(
+                    [factory](di::AdvancedContainer&) { return factory(); },
+                    lifetime);
+            };
 
         auto context_registrar = [factory, name](core::ApplicationContext& ctx) {
             const std::string bean_name =
@@ -292,10 +292,10 @@ public:
         };
 
         conditional_beans_.emplace_back(std::type_index(typeid(T)),
-                                        std::move(wrapper_factory),
-                                        std::move(container_registrar),
-                                        std::move(context_registrar),
-                                        std::move(condition), name, lifetime);
+                                       std::move(wrapper_factory),
+                                       std::move(container_registrar),
+                                       std::move(context_registrar),
+                                       std::move(condition), name, lifetime);
     }
 
     /**

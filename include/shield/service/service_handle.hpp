@@ -11,7 +11,7 @@ class ServiceHandle {
 public:
     ServiceHandle() = default;
     explicit ServiceHandle(caf::actor handle, std::string name = "",
-                          bool is_local = true);
+                           bool is_local = true);
 
     explicit operator bool() const;
     bool valid() const;

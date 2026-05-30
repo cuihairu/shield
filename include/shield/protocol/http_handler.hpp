@@ -60,7 +60,7 @@ public:
 protected:
     BeastRequest parse_request(const std::string &raw_request);
     BeastResponse build_response(boost::beast::http::status status,
-                                const std::string &body);
+                                 const std::string& body);
 
 private:
     HttpRequest parse_http_request(const std::string &raw_request,

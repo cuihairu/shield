@@ -16,7 +16,8 @@ private:
         ListenerRegistration registration;
 
         bool operator<(const ListenerInfo& other) const {
-            return registration.order < other.registration.order;  // 按order排序
+            return registration.order <
+                   other.registration.order;  // 按order排序
         }
     };
 
@@ -59,8 +60,8 @@ public:
                 if (it == listeners_.end()) {
                     return;
                 }
-                sorted_listeners.insert(sorted_listeners.end(), it->second.begin(),
-                                        it->second.end());
+                sorted_listeners.insert(sorted_listeners.end(),
+                                       it->second.begin(), it->second.end());
             };
 
             add_listeners(event_type);

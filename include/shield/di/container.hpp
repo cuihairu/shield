@@ -177,7 +177,8 @@ public:
         // Handle singleton lifetime
         if (descriptor->lifetime == ServiceLifetime::SINGLETON) {
             if (descriptor->singleton_instance) {
-                return std::static_pointer_cast<T>(descriptor->singleton_instance);
+                return std::static_pointer_cast<T>(
+                    descriptor->singleton_instance);
             }
 
             std::lock_guard<std::mutex> lock(descriptor->singleton_mutex);
