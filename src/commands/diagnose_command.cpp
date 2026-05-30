@@ -184,6 +184,7 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
 
 
 
+
             if (!host.empty() && port > 0) {
                 std::string conn;
                 if (!name.empty() && !user.empty()) {
@@ -210,9 +211,11 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
                       << std::endl;
         } else {
             std::cout << shield::health::HealthEndpointBuilder::
-                               build_health_response(overall, components, true)
+                               build_health_response(overall, components,
+                                                    true)
                       << std::endl;
         }
+
 
 
 
@@ -231,8 +234,9 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
             ParsedHttpUrl parsed;
             std::string parse_error;
             if (!parse_http_authority(target, parsed, parse_error)) {
-                std::cerr << "Invalid target '" << target
-                          << "': " << parse_error << std::endl;
+                std::cerr << "Invalid target '" << target << "': "
+                          << parse_error << std::endl;
+
                 return 1;
             }
             endpoints.push_back(
@@ -260,7 +264,6 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
 
             const auto redis_host =
                 tree.get<std::string>("redis.host", "");
-
             const int redis_port = tree.get<int>("redis.port", 0);
             if (!redis_host.empty() && redis_port > 0) {
                 endpoints.push_back(
@@ -270,6 +273,7 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
             // Ignore: config might be absent; we'll just probe what's
             // available.
         }
+
 
 
         if (endpoints.empty()) {
@@ -343,6 +347,7 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
         std::cout << "Iterations: " << iterations << std::endl;
         std::cout << "Throughput: " << iters_per_sec << " ops/s, "
                   << mb_per_sec << " MB/s" << std::endl;
+
 
 
         return 0;
