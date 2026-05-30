@@ -3,33 +3,31 @@
 ## 构建发布版本
 
 ```bash
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+./build.sh release           # Linux/macOS
+# build.bat release           # Windows
+```
+
+## 运行
+
+```bash
+./build/bin/shield server --config config/app.yaml
 ```
 
 ## 目录结构
 
 ```
 shield/
-├── bin/              # 可执行文件
-│   └── shield
-├── lib/              # 库文件
-│   └── libshield_core.a
-├── config/           # 配置文件
-│   └── shield.yaml
-├── scripts/          # Lua 脚本
-│   └── player_actor.lua
-└── logs/             # 日志目录
+├── build/bin/         # 可执行文件 (shield)
+├── config/            # 配置文件 (app.yaml)
+├── scripts/           # Lua 脚本
+├── logs/              # 日志目录
+└── templates/         # 项目模板
 ```
 
 ## 环境变量
 
 ```bash
-export SHIELD_CONFIG_PATH=/etc/shield/config.yaml
-export SHIELD_LOG_PATH=/var/log/shield
-export SHIELD_SCRIPT_PATH=/opt/shield/scripts
-export SHIELD_PLUGIN_PATH=/opt/shield/plugins
+export VCPKG_ROOT=/path/to/vcpkg
 ```
 
 ## Systemd 服务
@@ -44,9 +42,8 @@ After=network.target
 [Service]
 Type=simple
 User=shield
-Group=shield
 WorkingDirectory=/opt/shield
-ExecStart=/opt/shield/bin/shield --config /etc/shield/shield.yaml
+ExecStart=/opt/shield/bin/shield server --config /etc/shield/app.yaml
 Restart=always
 RestartSec=5
 
@@ -54,106 +51,70 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-启动服务：
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable shield
-sudo systemctl start shield
-sudo systemctl status shield
-```
-
 ## Docker
 
-### Dockerfile
+项目内置多阶段 `Dockerfile`：
 
-```dockerfile
-FROM ubuntu:22.04
-
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    liblua5.4-dev \
-    libssl-dev
-
-WORKDIR /opt/shield
-COPY . /opt/shield
-
-RUN mkdir build && cd build && \
-    cmake .. && \
-    make -j$(nproc)
-
-EXPOSE 8080 8081
-
-CMD ["./bin/shield", "--config", "config/shield.yaml"]
+```bash
+docker build -t shield:latest .
+docker run -d -p 8080:8080 -p 8082:8082 -p 8083:8083 shield:latest
 ```
 
-### docker-compose.yml
+### Docker Compose
 
 ```yaml
 version: '3.8'
 
 services:
-  shield:
+  shield-gateway:
     build: .
+    command: shield server --config /etc/shield/gateway.yaml
     ports:
-      - "8080:8080"
-      - "8081:8081"
+      - "8080:8080"   # TCP
+      - "8082:8082"   # HTTP
+      - "8083:8083"   # WebSocket
     volumes:
-      - ./config:/opt/shield/config
-      - ./scripts:/opt/shield/scripts
-      - ./logs:/opt/shield/logs
+      - ./config:/etc/shield
+      - ./scripts:/app/scripts
 
-  nacos:
-    image: nacos/nacos-server:latest
-    ports:
-      - "8848:8848"
-    environment:
-      MODE: standalone
+  shield-logic:
+    build: .
+    command: shield server --config /etc/shield/logic.yaml
+    volumes:
+      - ./config:/etc/shield
+      - ./scripts:/app/scripts
+```
+
+## 端口
+
+| 端口 | 协议 | 用途 |
+|------|------|------|
+| 8080 | TCP | 游戏客户端 TCP 连接 |
+| 8082 | HTTP | HTTP API + 健康检查 |
+| 8083 | WebSocket | WebSocket 连接 |
+| 8084 | UDP | UDP 连接 |
+| 13000 | TCP | 调试控制台 |
+
+## 健康检查
+
+```bash
+curl http://localhost:8082/health
+```
+
+## 日志
+
+```bash
+tail -f logs/shield.log
 ```
 
 ## 监控
 
-### 健康检查
-
-```cpp
-#include <shield/health/health_check.hpp>
-
-auto& registry = shield::health::HealthCheckRegistry::instance();
-auto status = registry.get_status("gateway");
-```
-
-### Prometheus 指标
-
-```cpp
-#include <shield/metrics/prometheus_service.hpp>
-
-shield::metrics::PrometheusConfig config;
-config.endpoint = "/metrics";
-config.port = 9090;
-
-shield::metrics::PrometheusService service(config);
-service.start();
-```
-
-访问 `http://localhost:9090/metrics` 获取指标。
-
-## 日志
-
-日志配置示例：
+启用 Prometheus 指标：
 
 ```yaml
-log:
-  global_level: info
-  file: logs/shield.log
-  max_size: 100M
-  max_files: 10
-  pattern: "[%Y-%m-%d %H:%M:%S.%e] [%l] [%t] %v"
+metrics:
+  enabled: true
+  port: 9090
 ```
 
-查看日志：
-
-```bash
-tail -f logs/shield.log
-grep ERROR logs/shield.log
-```
+访问 `http://localhost:9090/metrics`。

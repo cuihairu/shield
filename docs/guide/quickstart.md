@@ -1,104 +1,99 @@
 # 快速开始
 
-## Hello World
+## 创建 Lua 服务
 
-创建一个简单的 Shield 服务器：
-
-```cpp
-#include <shield/core/application_context.hpp>
-#include <shield/log/logger.hpp>
-
-int main() {
-    // 初始化日志
-    shield::log::LogConfig log_config;
-    shield::log::Logger::init(log_config);
-
-    // 获取应用上下文
-    auto& ctx = shield::core::ApplicationContext::instance();
-
-    SHIELD_LOG_INFO << "Shield server started";
-
-    // 启动服务
-    ctx.start();
-
-    return 0;
-}
-```
-
-## 配置文件
-
-创建 `config/shield.yaml`:
-
-```yaml
-log:
-  level: info
-  file: logs/shield.log
-
-actor:
-  worker_threads: 4
-
-network:
-  gateways:
-    - port: 8080
-      protocol: tcp
-```
-
-## Lua Actor
-
-创建 `scripts/player.lua`:
+创建 `scripts/my_service.lua`：
 
 ```lua
-local player = {
-    id = nil,
-    name = "",
-    level = 1,
-    x = 0,
-    y = 0
-}
+local state = { count = 0 }
 
 function on_init()
-    player.id = actor_id
-    log_info("Player initialized: " .. player.id)
+    log_info("My service initialized")
 end
 
 function on_message(msg)
-    if msg.type == "login" then
-        player.name = msg.data.player_name
-        player.level = tonumber(msg.data.level) or 1
-        return create_response(true, {
-            player_id = player.id,
-            player_name = player.name,
-            level = player.level
-        })
-    elseif msg.type == "move" then
-        player.x = tonumber(msg.data.x) or player.x
-        player.y = tonumber(msg.data.y) or player.y
-        return create_response(true, {
-            x = player.x,
-            y = player.y
-        })
+    if msg.type == "ping" then
+        state.count = state.count + 1
+        return {
+            success = true,
+            data = {
+                message = "pong",
+                count = tostring(state.count)
+            }
+        }
     end
+
+    -- 调用其他服务
+    if msg.type == "get_player" then
+        local result = shield.call("player_manager", "get_info", {
+            player_id = msg.data.player_id or ""
+        })
+        return result
+    end
+
+    return { success = false, error_message = "Unknown: " .. msg.type }
 end
+```
+
+## 配置
+
+创建 `config/app.yaml`：
+
+```yaml
+app:
+  name: "My Game"
+
+log:
+  global_level: "info"
+  console:
+    enabled: true
+
+lua:
+  script_dir: "scripts/"
+  auto_reload: true
+  preload_scripts:
+    - "init.lua"
+
+gateway:
+  listener:
+    host: "0.0.0.0"
+    port: 8080
+  http:
+    enabled: true
+    port: 8082
+  websocket:
+    enabled: true
+    port: 8083
 ```
 
 ## 运行
 
 ```bash
-# 构建项目
-cd build
-make -j$(nproc)
-
-# 启动服务器
-./bin/shield --config ../config/shield.yaml
+./build/bin/shield server --config config/app.yaml
 ```
 
 ## 测试
 
 ```bash
-# 运行所有测试
-ctest --output-on-failure
+# 健康检查
+curl http://localhost:8082/health
 
-# 运行特定测试
-./tests/unit/test_logger
-./tests/actor/test_lua_actor
+# 发送游戏动作
+curl -X POST http://localhost:8082/api/game/action \
+  -H "Content-Type: application/json" \
+  -d '{"type":"ping"}'
 ```
+
+## WebSocket 连接
+
+```javascript
+const ws = new WebSocket("ws://localhost:8083/ws");
+ws.onopen = () => ws.send(JSON.stringify({ type: "ping" }));
+ws.onmessage = (e) => console.log(JSON.parse(e.data));
+```
+
+## 下一步
+
+- [游戏后端教程](../tutorial-game-backend.md) — 登录/房间/聊天完整示例
+- [架构设计](../architecture.md) — 整体架构
+- [API 参考](../api/README.md) — 模块 API

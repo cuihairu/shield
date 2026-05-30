@@ -2,98 +2,76 @@
 
 Shield 使用 YAML 配置文件，支持热更新。
 
+## 配置文件
+
+默认路径 `config/app.yaml`，通过 `--config` 参数指定：
+
+```bash
+./build/bin/shield server --config config/app.yaml
+```
+
 ## 配置结构
 
 ```yaml
-# 日志配置
+app:
+  name: "Shield Server"
+
 log:
-  global_level: info
-  file: logs/shield.log
-  max_size: 100M
-  max_files: 10
+  global_level: "info"
+  console:
+    enabled: true
 
-# Actor 配置
-actor:
-  worker_threads: 4
-  middleman_network_backend: asio
+server:
+  host: "0.0.0.0"
+  port: 8080
 
-# 网络配置
-network:
-  master_reactor_threads: 1
-  slave_reactor_threads: 4
+lua:
+  script_dir: "scripts/"
+  auto_reload: true
+  preload_scripts:
+    - "init.lua"
 
-# 脚本配置
-script:
-  lua_vm_pool:
-    min_size: 2
-    max_size: 10
-    script_path: scripts/
-
-# 服务发现
-discovery:
-  backend: local
-  server_addr: ""
-
-# 网关
-gateways:
-  - name: tcp_gateway
+gateway:
+  listener:
+    host: "0.0.0.0"
     port: 8080
-    protocol: tcp
-  - name: ws_gateway
-    port: 8081
-    protocol: websocket
-```
+  http:
+    enabled: true
+    port: 8082
+    backend: "beast"
+  websocket:
+    enabled: true
+    port: 8083
+    path: "/ws"
+  udp:
+    enabled: true
+    port: 8084
 
-## Config 基类
+discovery:
+  type: "static"
+  static:
+    nodes:
+      - "127.0.0.1:8080"
 
-```cpp
-#include <shield/config/config.hpp>
-
-class MyConfig : public shield::config::Config {
-public:
-    void from_yaml(const YAML::Node& node) override {
-        // 解析 YAML
-    }
-
-    void to_yaml(YAML::Node& node) const override {
-        // 生成 YAML
-    }
-};
-```
-
-## ConfigRegistry
-
-```cpp
-#include <shield/config/config_registry.hpp>
-
-auto& registry = shield::config::ConfigRegistry::instance();
-
-// 注册配置
-registry.register_config("my_config", std::make_shared<MyConfig>());
-
-// 获取配置
-auto config = registry.get_config<MyConfig>("my_config");
-```
-
-## DynamicConfig
-
-```cpp
-#include <shield/config/dynamic_config.hpp>
-
-shield::config::DynamicConfig dynamic_config;
-dynamic_config.watch("config/shield.yaml", [](const std::string& path) {
-    // 配置变更回调
-});
+metrics:
+  enabled: true
+  port: 9090
 ```
 
 ## 热更新
 
-```cpp
-#include <shield/fs/file_watcher.hpp>
+`FileWatcher` 监控配置文件变更，支持运行时重载部分配置项（如日志级别）。通过 `GET /status/config` 查看可重载范围。
 
-auto watcher = shield::fs::FileWatcher::create();
-watcher->watch("config/shield.yaml", [](const std::string& path) {
-    SHIELD_LOG_INFO << "Config changed: " << path;
-    // 重新加载配置
-});
-```
+## 配置优先级
+
+1. 命令行参数（最高）
+2. 环境变量
+3. 配置文件
+4. 默认值（最低）
+
+## 多环境
+
+参考模板配置：
+- `templates/single-node/config/app.yaml`
+- `templates/multi-node/config/gateway.yaml`
+- `templates/multi-node/config/logic.yaml`

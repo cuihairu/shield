@@ -1,28 +1,27 @@
 # Shield 指南
 
-Shield 是一个基于 C++17 的游戏服务器框架，采用 Actor 模型设计，支持多协议网络通信和 Lua 脚本扩展。
+Shield 是一个基于 C++20 的 Skynet 启发的、Actor 模型的、Lua 优先的游戏服务器运行时，使用 CAF 作为 Actor 传输基础。
 
 ## 技术栈
 
-- **C++17**: 现代C++标准
-- **CAF**: C++ Actor Framework
-- **Boost.Asio**: 异步网络IO
-- **Boost.Beast**: HTTP/WebSocket
-- **Lua 5.4+**: 脚本引擎
+- **C++20**: 现代 C++ 标准
+- **CAF**: C++ Actor Framework（Actor 传输层）
+- **Boost.Asio / Boost.Beast**: 异步网络 I/O + HTTP/WebSocket
+- **Lua 5.4+ / sol2**: 业务脚本引擎
 - **CMake 3.30+**: 构建系统
-- **平台**: Linux, macOS
+- **vcpkg**: 依赖管理
+- **平台**: Windows, macOS, Linux
 
 ## 核心模块
 
 | 模块 | 说明 |
 |------|------|
-| Actor 系统 | 基于 CAF 的分布式 Actor 模型 |
-| 网络层 | TCP/UDP/HTTP/WebSocket 支持 |
-| 脚本引擎 | Lua 集成，支持热重载 |
-| 服务发现 | Nacos/Consul/Etcd/Redis 支持 |
+| 服务层 | Skynet 风格 API（send/call/query/timeout/fork） |
+| 网关 | TCP/HTTP/WebSocket/UDP 统一中间件管道分发 |
+| 脚本引擎 | Lua VM 池 + shield.* 全局 API |
+| 服务发现 | Static/Redis/Nacos/Consul/Etcd 多后端 |
 | 配置管理 | YAML 配置，支持热更新 |
-| 健康检查 | 多维度指标监控 |
-| 依赖注入 | IoC 容器支持 |
+| 可观测性 | 健康检查、Prometheus 指标、调试控制台 |
 
 ## 下一步
 

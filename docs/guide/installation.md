@@ -2,63 +2,66 @@
 
 ## 系统要求
 
-- **操作系统**: Linux (Ubuntu 20.04+, CentOS 8+) 或 macOS 11+
-- **编译器**: GCC 10+ / Clang 12+ / MSVC 2019+
-- **CMake**: 3.30 或更高版本
-- **vcpkg**: 包管理器
+- **操作系统**: Windows 10+ / macOS 11+ / Linux (Ubuntu 20.04+)
+- **编译器**: GCC 11+ / Clang 14+ / MSVC 2019 16.8+（C++20 支持）
+- **CMake**: 3.30+
+- **vcpkg**: 最新版本
 
 ## 依赖安装
 
-### 使用 vcpkg
+### 安装 vcpkg
 
 ```bash
-# 安装 vcpkg
 git clone https://github.com/microsoft/vcpkg.git
 cd vcpkg
-./bootstrap-vcpkg.sh
+./bootstrap-vcpkg.sh        # Linux/macOS
+# bootstrap-vcpkg.bat       # Windows
 
-# 设置环境变量
 export VCPKG_ROOT=/path/to/vcpkg
 ```
 
-### 主要依赖
+### 核心依赖
 
-Shield 依赖以下库：
+所有依赖通过 vcpkg 自动安装（定义在 `vcpkg.json` 中）：
 
 - **CAF**: C++ Actor Framework
-- **Boost**: ASIO, Beast, Serialization, Filesystem, Log, ProgramOptions
-- **Sol2**: Lua 绑定
-- **yaml-cpp**: YAML 配置解析
+- **Boost**: ASIO, Beast, Log, ProgramOptions
+- **sol2**: Lua 绑定
+- **Lua 5.4+**: 脚本引擎
+- **yaml-cpp**: YAML 配置
 - **nlohmann/json**: JSON 处理
-- **hiredis/redis++**: Redis 客户端
-- **OpenSSL**: TLS 支持
 
-### 可选依赖
-
-- **prometheus-cpp**: Prometheus 指标导出
-- **protobuf**: Protocol Buffers 序列化
-- **msgpack-cxx**: MessagePack 序列化
-
-## 编译
+## 构建
 
 ```bash
 # 克隆项目
 git clone https://github.com/cuihairu/shield.git
 cd shield
 
-# 构建
-mkdir build && cd build
-cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
-make -j$(nproc)
-
-# 运行测试
-ctest --output-on-failure
+# 一键构建
+./build.sh release           # Linux/macOS
+# build.bat release           # Windows
 ```
 
-## 安装目录
+或手动 CMake 构建：
 
-编译后的文件位于 `build/` 目录：
+```bash
+cmake -B build -S . \
+  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+  -DCMAKE_BUILD_TYPE=Release
 
-- `bin/`: 可执行文件
-- `lib/`: 库文件
-- `include/shield/version.hpp`: 生成的版本头文件
+cmake --build build --parallel $(nproc)
+```
+
+## 验证
+
+```bash
+./build/bin/shield server --config config/app.yaml
+```
+
+访问 `http://localhost:8082/health` 确认服务运行。
+
+## 下一步
+
+- [快速开始](./quickstart.md)
+- [开发指南](../development-guide.md)
