@@ -205,6 +205,7 @@ int CLICommand::run(shield::cli::CommandContext& ctx) {
     }
 
 
+
     if (parsed.target == "/" && !override_target.empty()) {
         parsed.target = override_target;
     }

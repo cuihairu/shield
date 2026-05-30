@@ -123,10 +123,11 @@ void migrate_log_config(YAML::Node& root, std::vector<std::string>& actions,
                 (legacy_logger["file_output"] || legacy_logger["file_path"] ||
                  legacy_logger["log_file"])) {
                 YAML::Node file;
-                const bool enabled = legacy_logger["file_output"]
-                                         ? legacy_logger["file_output"]
-                                               .as<bool>()
-                                         : true;
+                const bool enabled =
+                    legacy_logger["file_output"]
+                        ? legacy_logger["file_output"].as<bool>()
+                        : true;
+
 
                 file["enabled"] = enabled;
                 if (legacy_logger["log_file"]) {
@@ -201,6 +202,7 @@ void migrate_log_config(YAML::Node& root, std::vector<std::string>& actions,
         console["pattern"] =
             log["pattern"] ? log["pattern"].as<std::string>()
                            : "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l] %v";
+
 
         console["min_level"] = log["global_level"]
                                    ? log["global_level"].as<std::string>()
