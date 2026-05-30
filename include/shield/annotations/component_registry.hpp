@@ -137,7 +137,9 @@ public:
         registry.service_container_registrars_[type_id] =
             [](di::AdvancedContainer& container) {
                 container.register_factory_advanced<T>(
-                    [](di::AdvancedContainer&) { return std::make_shared<T>(); },
+                    [](di::AdvancedContainer&) {
+                        return std::make_shared<T>();
+                    },
 
                     di::ServiceLifetime::SINGLETON);
             };

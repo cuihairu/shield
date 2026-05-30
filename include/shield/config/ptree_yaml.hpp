@@ -3,8 +3,9 @@
 
 #include <string>
 
-#include <boost/property_tree/ptree.hpp>
 #include <yaml-cpp/yaml.h>
+
+#include <boost/property_tree/ptree.hpp>
 
 namespace shield::config {
 
