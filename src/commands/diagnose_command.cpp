@@ -132,7 +132,8 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
             return true;
         } catch (const std::exception& e) {
             std::cerr << "Warning: Failed to load configuration from '"
-                      << config_file << "': " << e.what() << std::endl;
+                      << config_file << "': " << e.what()
+                      << std::endl;
             return false;
         }
     };
@@ -287,8 +288,9 @@ int DiagnoseCommand::run(shield::cli::CommandContext& ctx) {
         for (const auto& ep : endpoints) {
             std::string err;
             const bool ok = tcp_probe(ep.host, ep.port, timeout, err);
-            std::cout << ep.name << ": " << ep.host << ":" << ep.port << " -> "
-                      << (ok ? "OK" : "FAIL") << std::endl;
+            std::cout << ep.name << ": " << ep.host << ":" << ep.port
+                      << " -> " << (ok ? "OK" : "FAIL")
+                      << std::endl;
 
             if (!ok) {
                 all_ok = false;

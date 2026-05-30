@@ -142,8 +142,8 @@ int CLICommand::run(shield::cli::CommandContext& ctx) {
         config_manager.load_config(ctx.get_flag("config"),
                                    shield::config::ConfigFormat::YAML);
     } catch (const std::exception& e) {
-        std::cerr << "Warning: Failed to load CLI configuration: " << e.what()
-                  << std::endl;
+        std::cerr << "Warning: Failed to load CLI configuration: "
+                  << e.what() << std::endl;
         // Continue with defaults
     }
 
@@ -199,8 +199,8 @@ int CLICommand::run(shield::cli::CommandContext& ctx) {
     ParsedHttpUrl parsed;
     std::string parse_error;
     if (!parse_http_url(server_url, parsed, parse_error)) {
-        std::cerr << "Invalid url '" << server_url << "': " << parse_error
-                  << std::endl;
+        std::cerr << "Invalid url '" << server_url << "': "
+                  << parse_error << std::endl;
         return 1;
     }
 

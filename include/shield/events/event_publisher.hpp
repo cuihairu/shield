@@ -61,7 +61,7 @@ public:
                     return;
                 }
                 sorted_listeners.insert(sorted_listeners.end(),
-                                       it->second.begin(), it->second.end());
+                                         it->second.begin(), it->second.end());
             };
 
             add_listeners(event_type);

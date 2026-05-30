@@ -186,8 +186,8 @@ public:
         ListenerRegistration reg;
         reg.async = listener->supports_async();
         reg.order = listener->get_order();
-        reg.invoke =
-            [listener = std::move(listener)](std::shared_ptr<Event> event) {
+        reg.invoke = [listener = std::move(listener)](
+                         std::shared_ptr<Event> event) {
 
             if (!event) {
                 return;

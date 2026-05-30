@@ -99,7 +99,9 @@ public:
         registry.component_container_registrars_[type_id] =
             [](di::AdvancedContainer& container) {
                 container.register_factory_advanced<T>(
-                    [](di::AdvancedContainer&) { return std::make_shared<T>(); },
+                    [](di::AdvancedContainer&) {
+                        return std::make_shared<T>();
+                    },
 
                     di::ServiceLifetime::SINGLETON);
             };
@@ -232,21 +234,27 @@ private:
     std::unordered_map<std::type_index, std::function<std::shared_ptr<void>()>>
         configuration_factories_;
 
-    std::unordered_map<std::type_index,
-                       std::function<void(core::ApplicationContext&)>>
+    std::unordered_map<
+        std::type_index,
+        std::function<void(core::ApplicationContext&)>>
         component_app_context_registrars_;
-    std::unordered_map<std::type_index,
-                       std::function<void(core::ApplicationContext&)>>
+    std::unordered_map<
+        std::type_index,
+        std::function<void(core::ApplicationContext&)>>
         service_app_context_registrars_;
-    std::unordered_map<std::type_index,
-                       std::function<void(core::ApplicationContext&)>>
+    std::unordered_map<
+        std::type_index,
+        std::function<void(core::ApplicationContext&)>>
         configuration_app_context_registrars_;
 
-    std::unordered_map<std::type_index, std::function<void(di::AdvancedContainer&)>>
+    std::unordered_map<
+        std::type_index, std::function<void(di::AdvancedContainer&)>>
         component_container_registrars_;
-    std::unordered_map<std::type_index, std::function<void(di::AdvancedContainer&)>>
+    std::unordered_map<
+        std::type_index, std::function<void(di::AdvancedContainer&)>>
         service_container_registrars_;
-    std::unordered_map<std::type_index, std::function<void(di::AdvancedContainer&)>>
+    std::unordered_map<
+        std::type_index, std::function<void(di::AdvancedContainer&)>>
         configuration_container_registrars_;
 };
 

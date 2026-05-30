@@ -12,7 +12,8 @@ class ConfigReloadBinder {
 public:
     template <typename ConfigType>
     void bind(const std::shared_ptr<Service>& service) {
-        auto reloadable = std::dynamic_pointer_cast<IReloadableService>(service);
+        auto reloadable =
+            std::dynamic_pointer_cast<IReloadableService>(service);
 
         if (!reloadable) {
             throw std::runtime_error(

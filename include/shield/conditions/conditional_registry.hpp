@@ -285,17 +285,19 @@ public:
                     lifetime);
             };
 
-        auto context_registrar = [factory, name](core::ApplicationContext& ctx) {
-            const std::string bean_name =
-                name.empty() ? typeid(T).name() : name;
-            ctx.register_bean<T>(bean_name, factory());
-        };
+        auto context_registrar =
+            [factory, name](core::ApplicationContext& ctx) {
+                const std::string bean_name =
+                    name.empty() ? typeid(T).name() : name;
+                ctx.register_bean<T>(bean_name, factory());
+            };
 
         conditional_beans_.emplace_back(std::type_index(typeid(T)),
-                                       std::move(wrapper_factory),
-                                       std::move(container_registrar),
-                                       std::move(context_registrar),
-                                       std::move(condition), name, lifetime);
+                                         std::move(wrapper_factory),
+                                         std::move(container_registrar),
+                                         std::move(context_registrar),
+                                         std::move(condition), name,
+                                         lifetime);
     }
 
     /**

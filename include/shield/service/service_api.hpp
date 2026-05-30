@@ -37,7 +37,7 @@ caf::disposable timeout(std::chrono::milliseconds ms,
                         std::function<void()> callback);
 
 inline caf::disposable timeout(uint32_t ms,
-                                std::function<void()> callback) {
+                               std::function<void()> callback) {
     return timeout(std::chrono::milliseconds(ms), std::move(callback));
 }
 
@@ -55,7 +55,7 @@ ServiceHandle uniqueservice(const std::string& service_name,
 // --- Fork ---
 
 ServiceHandle fork(std::function<void(caf::event_based_actor*)> func,
-                    const std::string& fork_name = "");
+                   const std::string& fork_name = "");
 
 // --- Info ---
 
