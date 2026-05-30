@@ -1,0 +1,47 @@
+# Multi-node game server template — Gateway node
+# Run: shield server --config templates/multi-node/config/gateway.yaml
+# This node handles TCP/HTTP/WS connections and forwards to logic nodes.
+
+app:
+  name: "Shield Gateway Node"
+  version: "1.0.0"
+
+log:
+  global_level: "info"
+  console:
+    enabled: true
+    colored: true
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+lua:
+  script_dir: "templates/multi-node/scripts/"
+  auto_reload: true
+  preload_scripts:
+    - "gateway_init.lua"
+
+gateway:
+  listener:
+    host: "0.0.0.0"
+    port: 8080
+  tcp:
+    enabled: true
+  http:
+    enabled: true
+    port: 8082
+    backend: "beast"
+  websocket:
+    enabled: true
+    port: 8083
+    path: "/ws"
+    lua_script: "templates/multi-node/scripts/session_handler.lua"
+
+# Discovery: find logic nodes via Redis or static list
+discovery:
+  type: "static"
+  nodes:
+    - id: "logic-1"
+      host: "127.0.0.1"
+      port: 9090

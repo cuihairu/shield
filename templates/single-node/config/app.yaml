@@ -1,0 +1,43 @@
+# Single-node game server template
+# All services (gateway, logic, storage) in one process.
+# Usage: shield server --config templates/single-node/config/app.yaml
+
+app:
+  name: "Shield Single-Node Game Server"
+  version: "1.0.0"
+
+log:
+  global_level: "info"
+  console:
+    enabled: true
+    colored: true
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  max_connections: 1000
+
+lua:
+  script_dir: "templates/single-node/scripts/"
+  auto_reload: true
+  preload_scripts:
+    - "init.lua"
+
+gateway:
+  listener:
+    host: "0.0.0.0"
+    port: 8080
+  tcp:
+    enabled: true
+  udp:
+    enabled: true
+    port: 8081
+  http:
+    enabled: true
+    port: 8082
+    backend: "beast"
+  websocket:
+    enabled: true
+    port: 8083
+    path: "/ws"
+    lua_script: "templates/single-node/scripts/session_handler.lua"

@@ -68,12 +68,12 @@ foundation.
 
 ## Phase 5: Out-of-the-Box Packaging
 
-- [ ] Provide ready-to-run templates for single-node and multi-node servers.
-- [ ] Provide a default game server template with Lua business scripts.
-- [ ] Provide a gateway + logic + storage reference layout.
-- [ ] Provide a minimal deployment path with one command build/run guidance.
-- [ ] Make Windows, macOS, and Linux build instructions explicit and current.
-- [ ] Reduce the amount of manual wiring required to start a new project.
+- [x] Provide ready-to-run templates for single-node and multi-node servers.
+- [x] Provide a default game server template with Lua business scripts.
+- [x] Provide a gateway + logic + storage reference layout.
+- [x] Provide a minimal deployment path with one command build/run guidance.
+- [x] Make Windows, macOS, and Linux build instructions explicit and current.
+- [x] Reduce the amount of manual wiring required to start a new project.
 
 ## Phase 6: Observability and Operations
 
