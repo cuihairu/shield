@@ -92,13 +92,13 @@ foundation.
 
 ## Documentation Plan
 
-- [ ] Migrate docs to VitePress.
-- [ ] Create a docs structure centered on runtime, Lua, network, and cluster.
-- [ ] Add a Skynet comparison page.
-- [ ] Add a CAF mapping page explaining what CAF covers and what Shield adds.
-- [ ] Add a quickstart that boots a real server in the smallest possible steps.
-- [ ] Add a template-based tutorial for a small multiplayer game backend.
-- [ ] Add API pages for actor, script, protocol, discovery, gateway, and core.
+- [x] Migrate docs to VitePress.
+- [x] Create a docs structure centered on runtime, Lua, network, and cluster.
+- [x] Add a Skynet comparison page.
+- [x] Add a CAF mapping page explaining what CAF covers and what Shield adds.
+- [x] Add a quickstart that boots a real server in the smallest possible steps.
+- [x] Add a template-based tutorial for a small multiplayer game backend.
+- [x] Add API pages for actor, script, protocol, discovery, gateway, and core.
 
 ## Acceptance Criteria
 
