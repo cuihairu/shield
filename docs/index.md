@@ -2,28 +2,27 @@
 home: true
 title: Shield
 titleTemplate: false
-heroImage: /logo.png
 heroText: Shield 游戏服务器框架
-tagline: 基于 C++17 的 Actor 模型游戏服务器框架
+tagline: Skynet 启发的、Actor 模型的、Lua 优先的游戏服务器运行时
 actions:
   - text: 快速开始
     link: /guide/quickstart.html
     type: primary
-  - text: API 参考
-    link: /api/
+  - text: 架构设计
+    link: /architecture.html
     type: secondary
 features:
   - title: Actor 模型
-    details: 基于 CAF 的分布式 Actor 模型，支持并发消息传递
-  - title: 多协议网络
-    details: 支持 TCP/UDP/HTTP/WebSocket 协议
-  - title: Lua 脚本
-    details: 集成 Lua 5.4+，支持热重载
-  - title: 服务发现
-    details: 支持 Nacos/Consul/Etcd/Redis
-  - title: 配置管理
-    details: YAML 配置，支持热更新
-  - title: 健康检查
-    details: 多维度指标监控
-footer: MIT License | Copyright © 2024
+    details: CAF 传输基础 + Skynet 风格服务语义（send/call/query）
+  - title: Lua 优先
+    details: 业务逻辑全部 Lua 编写，shield.* API 零 CAF 知识
+  - title: 多协议网关
+    details: TCP/HTTP/WebSocket/UDP 统一中间件管道分发
+  - title: 开箱即用
+    details: 内置服务发现、健康检查、指标、调试控制台、模板
+  - title: 跨平台
+    details: Windows / macOS / Linux 全平台构建和运行
+  - title: 热重载
+    details: Lua 脚本运行时热重载，快速迭代业务逻辑
+footer: MIT License | Copyright © 2024-2026
 ---

@@ -1,239 +1,123 @@
 # 快速上手
 
-本指南将帮助您快速开始使用 Shield 游戏服务器框架。
+5 分钟启动一个 Shield 游戏服务器。
 
-## 📋 前置要求
+## 前置要求
 
-在开始之前，请确保您的系统满足以下要求：
+- C++20 编译器（MSVC / GCC 11+ / Clang 14+）
+- CMake 3.30+
+- [vcpkg](https://vcpkg.io/)（依赖管理）
+- Lua 5.4+（通过 vcpkg 安装）
 
-- **操作系统**: Linux/macOS/Windows (推荐 Linux)
-- **编译器**: 支持 C++20 的编译器 (GCC 10+, Clang 12+, MSVC 2019+)
-- **CMake**: 3.20 或更高版本
-- **vcpkg**: 包管理器
-
-## 🚀 5 分钟快速体验
-
-### 1. 获取源码
+## 1. 获取并构建
 
 ```bash
-git clone https://github.com/your-repo/shield.git
+git clone https://github.com/cuihairu/shield.git
 cd shield
+
+# 设置 vcpkg 路径
+export VCPKG_ROOT=/path/to/vcpkg
+
+# 一键构建
+./build.sh release
 ```
 
-### 2. 安装依赖
+Windows：
+
+```cmd
+set VCPKG_ROOT=C:\path\to\vcpkg
+build.bat release
+```
+
+## 2. 启动服务器
 
 ```bash
-# 安装 vcpkg (如果尚未安装)
-git clone https://github.com/Microsoft/vcpkg.git
-cd vcpkg && ./bootstrap-vcpkg.sh
-export VCPKG_ROOT=$(pwd)
-cd ..
+./build/bin/shield server --config config/app.yaml
 ```
 
-### 3. 编译项目
+启动日志：
+
+```
+[INFO] Shield Server starting...
+[INFO] Script Starter initialized successfully
+[INFO] Actor Starter initialized successfully
+[INFO] Service Starter initialized successfully
+[INFO] Gateway Starter initialized successfully
+[INFO] HTTP server started on port 8082
+[INFO] WebSocket server started on port 8083
+[INFO] Application running. Press Ctrl+C to exit.
+```
+
+## 3. 验证
 
 ```bash
-# 配置和编译
-cmake -B build -S . \
-  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-  -DCMAKE_BUILD_TYPE=Release
+# 健康检查
+curl http://localhost:8082/health
 
-cmake --build build --parallel $(nproc)
+# 运行时状态
+curl http://localhost:8082/status
+
+# 游戏动作
+curl -X POST http://localhost:8082/api/game/action \
+  -H "Content-Type: application/json" \
+  -d '{"action":"ping"}'
 ```
 
-### 4. 运行服务器
+## 4. 编写 Lua 服务
 
-```bash
-# 启动服务器
-./bin/shield --config config/shield.yaml
-```
-
-如果看到类似输出，说明服务器启动成功：
-
-```
-[INFO] Shield 游戏服务器框架 v1.0.0
-[INFO] 网关服务启动: 0.0.0.0:8080 (TCP)
-[INFO] HTTP 服务启动: 0.0.0.0:8081 (HTTP)  
-[INFO] WebSocket 服务启动: 0.0.0.0:8082 (WebSocket)
-[INFO] 服务器启动完成，等待连接...
-```
-
-### 5. 测试连接
-
-**HTTP 测试:**
-```bash
-curl http://localhost:8081/api/health
-# 应该返回: {"status":"ok","timestamp":1234567890}
-```
-
-**WebSocket 测试:**
-```bash
-# 使用 wscat 或其他 WebSocket 客户端
-wscat -c ws://localhost:8082
-> {"type":"ping"}
-< {"type":"pong","timestamp":1234567890}
-```
-
-## 🎮 第一个游戏逻辑
-
-创建一个简单的玩家 Actor 来处理游戏逻辑：
-
-### 1. 创建 Lua 脚本
-
-创建文件 `scripts/hello_player.lua`:
+创建 `scripts/my_service.lua`：
 
 ```lua
--- 玩家状态
-local player_state = {
-    name = "新玩家",
-    level = 1,
-    exp = 0,
-    gold = 100
-}
+local state = { count = 0 }
 
--- 初始化函数
 function on_init()
-    log_info("玩家 Actor 初始化完成")
+    log_info("My service initialized")
 end
 
--- 消息处理函数
 function on_message(msg)
-    log_info("收到消息: " .. msg.type)
-    
-    if msg.type == "get_info" then
+    if msg.type == "ping" then
+        state.count = state.count + 1
         return {
             success = true,
             data = {
-                name = player_state.name,
-                level = tostring(player_state.level),
-                exp = tostring(player_state.exp),
-                gold = tostring(player_state.gold)
-            }
-        }
-    elseif msg.type == "add_exp" then
-        local exp_gain = tonumber(msg.data.exp) or 0
-        player_state.exp = player_state.exp + exp_gain
-        
-        -- 检查升级
-        if player_state.exp >= player_state.level * 100 then
-            player_state.level = player_state.level + 1
-            player_state.exp = 0
-            log_info("玩家升级到 " .. player_state.level .. " 级！")
-        end
-        
-        return {
-            success = true,
-            data = {
-                level = tostring(player_state.level),
-                exp = tostring(player_state.exp)
+                message = "pong",
+                count = tostring(state.count)
             }
         }
     end
-    
-    return {success = false, error = "未知消息类型"}
+
+    -- 调用其他服务
+    if msg.type == "get_player" then
+        local result = shield.call("player_manager", "get_info", {
+            player_id = msg.data.player_id or ""
+        })
+        return result
+    end
+
+    return { success = false, error_message = "Unknown: " .. msg.type }
 end
 ```
 
-### 2. 测试脚本
+## 5. WebSocket 连接
 
-重启服务器后，使用 HTTP API 测试：
+```javascript
+const ws = new WebSocket("ws://localhost:8083/ws");
+ws.onopen = () => ws.send(JSON.stringify({ type: "ping" }));
+ws.onmessage = (e) => console.log(JSON.parse(e.data));
+```
+
+## 6. 调试控制台
 
 ```bash
-# 获取玩家信息
-curl -X POST http://localhost:8081/api/actor \
-  -H "Content-Type: application/json" \
-  -d '{
-    "actor_id": "player_001",
-    "script": "hello_player.lua",
-    "message": {
-      "type": "get_info"
-    }
-  }'
-
-# 添加经验值
-curl -X POST http://localhost:8081/api/actor \
-  -H "Content-Type: application/json" \
-  -d '{
-    "actor_id": "player_001", 
-    "message": {
-      "type": "add_exp",
-      "data": {"exp": "150"}
-    }
-  }'
+telnet localhost 13000
+# list          — 列出服务
+# info <name>   — 服务详情
+# call <name> <json>  — 同步调用
 ```
 
-## 🛠️ 常用配置
+## 下一步
 
-### 修改端口
-
-编辑 `config/shield.yaml`:
-
-```yaml
-gateway:
-  listener:
-    tcp_port: 9090    # 修改 TCP 端口
-    http_port: 9091   # 修改 HTTP 端口  
-    ws_port: 9092     # 修改 WebSocket 端口
-```
-
-### 调整线程数
-
-```yaml
-gateway:
-  threading:
-    io_threads: 8     # I/O 线程数 (建议设为 CPU 核心数)
-```
-
-### 启用调试日志
-
-```yaml
-logger:
-  level: debug        # 设置为 debug 级别
-  console: true       # 启用控制台输出
-```
-
-## 🔍 故障排除
-
-### 编译失败
-
-**问题**: 找不到依赖库
-```bash
-# 解决方案：确保 vcpkg 路径正确
-export VCPKG_ROOT=/path/to/vcpkg
-cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
-```
-
-**问题**: C++20 支持问题
-```bash
-# 解决方案：检查编译器版本
-gcc --version  # 确保 GCC 10+
-clang --version  # 确保 Clang 12+
-```
-
-### 运行时问题
-
-**问题**: 端口被占用
-```bash
-# 检查端口占用
-netstat -tlnp | grep :8080
-
-# 修改配置文件中的端口号
-```
-
-**问题**: 配置文件找不到
-```bash
-# 确保从项目根目录运行
-cd /path/to/shield
-./bin/shield --config config/shield.yaml
-```
-
-## 📚 下一步
-
-现在您已经成功运行了 Shield 服务器，可以继续探索：
-
-- **[架构设计](architecture.md)** - 了解框架的整体设计
-- **[API 参考](api/core.md)** - 深入学习各个模块
-- **[配置指南](configuration.md)** - 详细的配置选项
-- **[开发指南](development-guide.md)** - 完整的开发环境搭建
-
-开始构建您的游戏服务器吧！🎉
+- [架构设计](architecture.md) — 整体架构和核心概念
+- [Skynet 对比](skynet-comparison.md) — 与 Skynet 的区别
+- [CAF 映射](caf-mapping.md) — CAF 提供什么，Shield 添加什么
+- [游戏后端教程](tutorial-game-backend.md) — 登录/房间/聊天完整示例

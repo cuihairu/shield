@@ -1,481 +1,182 @@
 # Shield 架构设计
 
-本文档详细介绍 Shield 游戏服务器框架的架构设计，包括整体架构、核心组件、与其他框架的对比分析，以及完整的架构图。
+Shield 是一个 Skynet 启发的、Actor 模型的、Lua 优先的游戏服务器运行时，使用 CAF 作为 Actor 传输基础。
 
-## 🏗️ 整体架构
+## 架构核心理念
 
-Shield 采用**分层微服务架构**，结合了 Pitaya 的分布式理念和 Skynet 的高性能并发模型，形成了独特的混合架构。
+1. **core / extensions 分离**: 核心运行时（shield_core）与可选扩展（shield_extensions）严格分离
+2. **CAF 传输 + Shield 语义**: CAF 处理 Actor 机制，Shield 提供游戏服务器语义
+3. **Lua 优先**: 业务逻辑全部用 Lua 编写，C++ 负责运行时和传输
+4. **协议无关**: TCP/HTTP/WebSocket/UDP 统一通过中间件管道分发
+5. **开箱即用**: 内置网关、服务发现、指标、健康检查
 
-### 架构核心理念
+## 架构层次图
 
-1. **分布式优先**: 天然支持水平扩展的微服务架构
-2. **Actor 模型**: 基于消息传递的并发编程模型
-3. **语言分层**: C++ 负责系统层，Lua 负责业务逻辑层
-4. **协议无关**: 支持多种网络协议的统一处理
-5. **插件化设计**: 核心组件可插拔，易于扩展
-
-## 📊 架构层次图
-
-```mermaid
-graph TD
-    subgraph 应用层 (Lua)
-        A1[游戏逻辑]
-        A2[业务规则]
-        A3[Lua Actor 脚本]
-        A4[状态管理]
-        A5[事件处理]
-        A6[player_actor.lua]
-    end
-
-    subgraph 业务逻辑层 (C++)
-        B1[Actor 系统]
-        B2[Lua 集成]
-        B3[消息路由]
-        B4[生命周期]
-        B5[VM 池管理]
-        B6[序列化/反序列化]
-    end
-
-    subgraph 服务层 (C++)
-        C1[网关服务]
-        C2[逻辑服务]
-        C3[注册中心]
-        C4[协议处理]
-        C5[分布式Actor]
-        C6[服务发现]
-    end
-
-    subgraph 网络层 (C++)
-        D1[Reactor 池]
-        D2[连接管理]
-        D3[协议适配器]
-        D4[I/O 多路复用]
-        D5[会话管理]
-        D6[TCP/HTTP/WebSocket]
-    end
-
-    subgraph 基础设施层 (C++)
-        E1[配置管理]
-        E2[日志系统]
-        E3[监控和指标]
-        E4[内存管理]
-        E5[错误处理]
-        E6[性能分析]
-    end
-
-    A1 --> B1
-    A2 --> B2
-    A3 --> B3
-    B1 --> C1
-    B2 --> C2
-    B3 --> C3
-    C1 --> D1
-    C2 --> D2
-    C3 --> D3
-    D1 --> E1
-    D2 --> E2
-    D3 --> E3
+```
+┌──────────────────────────────────────────────┐
+│              Lua 业务脚本                     │
+│  on_init() / on_message() / shield.* API     │
+├──────────────────────────────────────────────┤
+│           服务层 (shield/service/)            │
+│  send / call / query / timeout / fork         │
+├──────────────────────────────────────────────┤
+│         ServiceContext (thread-local)         │
+├──────────────────────────────────────────────┤
+│            CAF Actor System                  │
+│  spawn / send / request / schedule           │
+├──────────────────────────────────────────────┤
+│       DistributedActorSystem                 │
+│  registry / discovery / routing              │
+├──────────────────────────────────────────────┤
+│     Gateway / Middleware / Protocol          │
+│  TCP / UDP / HTTP / WebSocket                │
+│  MiddlewareChain (logging / cors / auth)      │
+├──────────────────────────────────────────────┤
+│     RuntimeDiagnostics / Metrics / Health    │
+│  /health / /status / /metrics                │
+└──────────────────────────────────────────────┘
 ```
 
-## 🌐 分布式架构图
+## 库分离
 
-```mermaid
-graph TB
-    subgraph "客户端层"
-        C1[游戏客户端 1]
-        C2[游戏客户端 2]
-        CN[游戏客户端 N]
-        WEB[Web 客户端]
-    end
-
-    subgraph "负载均衡层"
-        LB[负载均衡器]
-        DNS[DNS 解析]
-    end
-
-    subgraph "网关集群"
-        GW1[网关节点 1<br/>Gateway Node]
-        GW2[网关节点 2<br/>Gateway Node]
-        GWN[网关节点 N<br/>Gateway Node]
-    end
-
-    subgraph "业务逻辑集群"
-        L1[逻辑节点 1<br/>Logic Node<br/>Actor System + Lua]
-        L2[逻辑节点 2<br/>Logic Node<br/>Actor System + Lua]
-        LN[逻辑节点 N<br/>Logic Node<br/>Actor System + Lua]
-    end
-
-    subgraph "服务注册中心"
-        REG[注册中心<br/>Registry Center]
-        ETCD[etcd 集群]
-        CONSUL[Consul 集群]
-    end
-
-    subgraph "数据存储层"
-        REDIS[Redis 集群]
-        DB[数据库集群]
-        MQ[消息队列]
-    end
-
-    subgraph "监控运维"
-        MON[监控系统]
-        LOG[日志聚合]
-        ALERT[告警系统]
-    end
-
-    C1 --> LB
-    C2 --> LB
-    CN --> LB
-    WEB --> LB
-
-    LB --> GW1
-    LB --> GW2
-    LB --> GWN
-
-    GW1 -.->|RPC| L1
-    GW1 -.->|RPC| L2
-    GW2 -.->|RPC| L2
-    GW2 -.->|RPC| LN
-    GWN -.->|RPC| L1
-    GWN -.->|RPC| LN
-
-    GW1 --> REG
-    GW2 --> REG
-    GWN --> REG
-    L1 --> REG
-    L2 --> REG
-    LN --> REG
-
-    REG --> ETCD
-    REG --> CONSUL
-
-    L1 --> REDIS
-    L2 --> REDIS
-    LN --> REDIS
-    L1 --> DB
-    L2 --> DB
-    LN --> DB
-    L1 --> MQ
-    L2 --> MQ
-    LN --> MQ
-
-    GW1 --> MON
-    GW2 --> MON
-    GWN --> MON
-    L1 --> MON
-    L2 --> MON
-    LN --> MON
-
-    MON --> LOG
-    MON --> ALERT
+```
+shield_core (静态库)        shield_extensions (静态库)
+├── core/  (生命周期)       ├── di/  (依赖注入)
+├── actor/ (CAF Actor)      ├── metrics/  (Prometheus)
+├── script/ (Lua VM 池)     ├── health/  (健康检查)
+├── service/ (Skynet 语义)  ├── annotations/
+├── gateway/ (网关/中间件)   ├── conditions/
+├── protocol/ (协议适配)     ├── plugin/
+├── net/ (网络 I/O)          └── extension_context
+├── discovery/ (服务发现)
+├── config/ (配置管理)
+├── log/ (日志)
+├── serialization/
+└── cli/ / commands/
 ```
 
-## 🔧 核心组件详解
+shield 可执行文件链接 `shield_core` + `shield_extensions`。核心启动路径不依赖扩展。
 
-### 1. 网关节点 (Gateway Node)
+## 启动流程
 
-**职责**: 客户端接入、协议转换、消息路由
-
-```cpp
-class GatewayComponent : public core::Component {
-private:
-    // 网络层组件
-    std::unique_ptr<net::MasterReactor> m_master_reactor;    // 主 Reactor
-    std::unique_ptr<net::MasterReactor> m_http_reactor;      // HTTP 服务
-    std::unique_ptr<net::MasterReactor> m_ws_reactor;        // WebSocket 服务
-    
-    // 协议处理器
-    std::unique_ptr<protocol::HttpProtocolHandler> m_http_handler;
-    std::unique_ptr<protocol::WebSocketProtocolHandler> m_websocket_handler;
-    
-    // 会话管理
-    std::unordered_map<uint64_t, std::weak_ptr<net::Session>> m_sessions;
-    std::unordered_map<uint64_t, caf::actor> m_session_actors;
-    
-    // 分布式系统
-    actor::DistributedActorSystem& m_actor_system;
-    script::LuaVMPool& m_lua_vm_pool;
-};
+```
+ServerCommand::run()
+  → ConfigManager.load_config()
+  → StarterManager
+      1. ScriptStarter     — 创建 LuaVMPool，预加载脚本
+      2. ActorStarter      — 创建 CAF actor_system, DistributedActorSystem
+      3. ServiceStarter    — 创建 ServiceContext, DebugConsole
+      4. GatewayStarter    — 创建 GatewayService（TCP/HTTP/WS/UDP）
+      [可选] MetricsStarter — Prometheus 指标
+  → ApplicationContext.init_all() / start_all()
+  → FileWatcher 监控配置变更
+  → 等待 Ctrl+C
+  → stop_all()
 ```
 
-**关键特性**:
-- 支持 TCP/HTTP/WebSocket 多协议
-- Main-Sub Reactor 网络架构
-- 会话生命周期管理
-- 消息路由和负载均衡
-- 协议无关的统一接口
+## 服务层 (shield/service/)
 
-### 2. 逻辑节点 (Logic Node)
+在 CAF 之上提供 Skynet 风格的服务 API：
 
-**职责**: 业务逻辑处理、Actor 管理、Lua 脚本执行
+| API | 用途 | CAF 底层 |
+|-----|------|----------|
+| `service::send(name, type, payload)` | 异步消息 | `caf::anon_send()` |
+| `service::call(name, type, payload, timeout)` | 同步调用 | `self->request()` |
+| `service::query(name)` | 服务查找 | `DistributedActorSystem::find_actor()` |
+| `service::uniqueservice(name)` | 单例服务 | `query()` + spawn |
+| `service::timeout(ms, callback)` | 定时器 | `self->schedule()` |
+| `service::fork(func, name)` | 创建 Actor | `caf_system.spawn()` |
 
-```cpp
-class DistributedActorSystem {
-private:
-    caf::actor_system& m_system;                    // CAF Actor 系统
-    std::shared_ptr<IServiceDiscovery> m_discovery; // 服务发现
-    std::unique_ptr<ActorRegistry> m_registry;      // Actor 注册表
-    DistributedActorConfig m_config;                // 配置信息
-    
-public:
-    // Actor 创建和管理
-    caf::actor create_actor(const std::string& script_path);
-    void register_actor(const std::string& name, caf::actor actor);
-    caf::actor find_actor(const std::string& name);
-};
-```
+ServiceContext 通过 thread-local + RAII Guard 在消息处理时自动设置/清除。
 
-**核心机制**:
-- CAF 分布式 Actor 系统
-- Lua VM 池化管理
-- 消息驱动的异步处理
-- 跨节点 RPC 通信
-- 热重载脚本支持
+## Lua 集成 (shield/script/)
 
-### 3. Lua 集成层
+Lua 业务脚本通过 `shield.*` 全局表访问运行时 API：
 
-**职责**: Lua 虚拟机管理、C++/Lua 绑定、脚本生命周期
-
-```cpp
-class LuaVMPool : public core::Component {
-private:
-    std::queue<std::unique_ptr<LuaEngine>> m_available_vms;  // 可用 VM 队列
-    std::unordered_set<std::unique_ptr<LuaEngine>> m_in_use_vms; // 使用中 VM
-    std::mutex m_pool_mutex;
-    std::condition_variable m_cv;
-    LuaVMPoolConfig m_config;
-    
-public:
-    VMHandle acquire_vm();           // 获取 VM
-    void release_vm(VMHandle handle); // 释放 VM
-    void reload_script(const std::string& script_path); // 热重载
-};
-```
-
-**Lua Actor 示例**:
 ```lua
--- scripts/player_actor.lua
-local player_state = {
-    player_id = "",
-    level = 1,
-    experience = 0,
-    gold = 1000
-}
+-- 消息传递
+shield.send("player_manager", "get_info", { player_id = "123" })
+local result = shield.call("player_manager", "get_info", { id = "123" }, 3000)
 
-function on_message(msg)
-    if msg.type == "get_info" then
-        return handle_get_info(msg)
-    elseif msg.type == "level_up" then
-        return handle_level_up(msg)
-    end
-end
+-- 定时器
+shield.timeout(1000, function() log_info("1s elapsed") end)
 
-function handle_get_info(msg)
-    return create_response(true, {
-        player_id = player_state.player_id,
-        level = tostring(player_state.level),
-        experience = tostring(player_state.experience),
-        gold = tostring(player_state.gold)
-    })
-end
+-- 服务发现
+local handle = shield.query("room_manager")
+local services = shield.list_services()
+
+-- 节点信息
+local info = shield.self()
+local node = shield.node_id()
 ```
 
-### 4. 网络层架构
+脚本入口点：`on_init()` + `on_message(msg)`，使用 `shield_service.lua` 基类可简化模板编写。
 
-**Main-Sub Reactor 模式**:
+## 网关层 (shield/gateway/)
 
-```cpp
-class MasterReactor {
-private:
-    boost::asio::io_context m_io_context;           // I/O 上下文
-    boost::asio::ip::tcp::acceptor m_acceptor;      // 连接接受器
-    std::vector<std::unique_ptr<SlaveReactor>> m_slaves; // 从 Reactor 池
-    
-public:
-    void start();  // 启动主 Reactor
-    void add_slave(std::unique_ptr<SlaveReactor> slave);
-    std::shared_ptr<Session> create_session(tcp::socket socket);
-};
+### 中间件管道
 
-class SlaveReactor {
-private:
-    boost::asio::io_context m_io_context;
-    std::thread m_worker_thread;
-    
-public:
-    void run();    // 在独立线程中运行
-    void handle_session(std::shared_ptr<Session> session);
-};
-```
-
-**连接处理流程**:
-1. MasterReactor 接受连接
-2. 创建 Session 对象
-3. 分发给 SlaveReactor 处理
-4. 异步 I/O 处理数据
-5. 协议解析和消息路由
-
-### 5. 服务发现系统
-
-**多后端支持架构**:
-
-```cpp
-class IServiceDiscovery {
-public:
-    virtual void register_service(const ServiceInstance& instance) = 0;
-    virtual void unregister_service(const std::string& service_id) = 0;
-    virtual std::vector<ServiceInstance> discover_services(const std::string& service_name) = 0;
-    virtual void start_heartbeat(const std::string& service_id) = 0;
-};
-
-// 具体实现
-class EtcdDiscovery : public IServiceDiscovery { /* etcd 实现 */ };
-class ConsulDiscovery : public IServiceDiscovery { /* consul 实现 */ };
-class RedisDiscovery : public IServiceDiscovery { /* redis 实现 */ };
-class LocalDiscovery : public IServiceDiscovery { /* 内存实现 */ };
-```
-
-
-
-## 📈 性能特性
-
-### 并发性能
+所有协议的请求都经过 `MiddlewareChain`：
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     并发连接处理能力                      │
-├─────────────────────────────────────────────────────────┤
-│  单网关节点: 50,000+ 并发连接                            │
-│  单逻辑节点: 10,000+ Actor 实例                         │
-│  集群总计:   1,000,000+ 并发用户                        │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│                     消息处理性能                        │
-├─────────────────────────────────────────────────────────┤
-│  网关节点:   100,000+ 消息/秒                           │
-│  逻辑节点:   50,000+ 消息/秒/核心                       │
-│  平均延迟:   < 5ms (局域网)                             │
-│  P99 延迟:   < 20ms                                    │
-└─────────────────────────────────────────────────────────┘
+请求 → logging_middleware → cors_middleware → [auth_middleware] → 最终处理
 ```
 
-### 内存使用
+### 统一分发
+
+`GatewayRequestDispatcher` 将三种协议统一到同一管道：
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     内存使用统计                        │
-├─────────────────────────────────────────────────────────┤
-│  基础框架:     ~100MB                                   │
-│  每个连接:     ~4KB                                     │
-│  每个 Actor:   ~8KB                                     │
-│  Lua VM:       ~2MB (池化复用)                          │
-└─────────────────────────────────────────────────────────┘
+TCP message ──┐
+HTTP request ─┼→ GatewayRequest → MiddlewareChain → dispatch() → LuaActor
+WS message  ──┘
 ```
 
-## 🔄 消息流转图
+### 内置 HTTP 端点
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Gateway
-    participant LogicNode
-    participant LuaActor
-    participant Database
+| 路径 | 用途 |
+|------|------|
+| `GET /health` | 基础健康检查 |
+| `GET /health/detailed` | 详细状态（服务列表） |
+| `GET /status` | 运行时状态（actor 数量/详情） |
+| `GET /status/config` | 配置重载范围 |
+| `POST /login` | 登录模板 |
+| `POST /api/game/action` | 游戏动作路由 |
 
-    Client->>Gateway: TCP/HTTP/WS 连接
-    Gateway->>Gateway: 协议解析
-    Gateway->>LogicNode: RPC 调用
-    LogicNode->>LuaActor: 消息分发
-    LuaActor->>LuaActor: 业务逻辑处理
-    LuaActor->>Database: 数据持久化
-    Database-->>LuaActor: 返回结果
-    LuaActor-->>LogicNode: 处理结果
-    LogicNode-->>Gateway: RPC 响应
-    Gateway-->>Client: 协议响应
+### 网络架构
 
-    Note over Client,Database: 完整的请求-响应周期
-```
+- **TCP**: MasterReactor → SlaveReactor 池 → Session → BinaryProtocol (4字节长度前缀)
+- **HTTP**: BeastHttpServer (Boost.Beast) → HttpRouter → LuaActor
+- **WebSocket**: WebSocketProtocolHandler (RFC 6455) → LuaActor
+- **UDP**: UdpReactor → UdpSession → UdpProtocolHandler
 
-## 🛡️ 容错和高可用
+## 服务发现 (shield/discovery/)
 
-### 故障恢复机制
+统一接口 `IServiceDiscovery`，多后端实现：
 
-1. **网关层故障**: 负载均衡器自动切换
-2. **逻辑节点故障**: Actor 迁移到其他节点
-3. **注册中心故障**: 多副本保证服务发现
-4. **网络分区**: 优雅降级和自动恢复
+- **Static**: 开发用，配置文件静态列表
+- **Redis**: 基于 Redis 的注册/发现
+- **Nacos / Consul / Etcd**: 生产级服务发现
 
-### 监控和告警
+## 可观测性
 
-```yaml
-# 监控指标
-metrics:
-  - connection_count      # 连接数
-  - message_rate         # 消息速率
-  - actor_count          # Actor 数量
-  - memory_usage         # 内存使用
-  - cpu_usage           # CPU 使用率
-  - network_io          # 网络 I/O
+- **Metrics**: Prometheus 集成（可选，通过 `--enable-metrics` 启用）
+- **Health**: HealthCheckRegistry + 内置指标（磁盘、数据库、应用）
+- **Diagnostics**: RuntimeDiagnostics 提供 HTTP 端点查询运行时状态
+- **Console**: TCP 13000 端口的调试控制台（`list`/`info`/`send`/`call`/`nodes`）
+- **Logging**: Boost.Log 多目标（控制台/文件），支持动态级别调整
 
-# 告警规则
-alerts:
-  - high_memory_usage: >80%
-  - high_cpu_usage: >90%
-  - connection_spike: >threshold
-  - message_queue_backlog: >1000
-```
+## 模板系统
 
-## 🚀 扩展性设计
+- `templates/single-node/` — 单节点全功能服务器模板
+- `templates/multi-node/` — 多节点模板（gateway.yaml + logic.yaml）
+- `templates/REFERENCE_LAYOUT.md` — gateway + logic + storage 三层参考布局
+- `build.sh` / `build.bat` — 一键构建脚本
+- `Dockerfile` — 多阶段生产构建
 
-### 水平扩展策略
+## 适用场景
 
-1. **无状态网关**: 可任意添加网关节点
-2. **有状态逻辑**: 基于一致性哈希的 Actor 分片
-3. **数据分区**: 按业务逻辑进行数据分片
-4. **缓存层**: Redis 集群提供分布式缓存
-
-### 插件化架构
-
-```cpp
-// 协议插件接口
-class IProtocolPlugin {
-public:
-    virtual void handle_message(const Message& msg) = 0;
-    virtual std::string get_protocol_name() const = 0;
-};
-
-// 序列化插件接口
-class ISerializerPlugin {
-public:
-    virtual std::string serialize(const Object& obj) = 0;
-    virtual Object deserialize(const std::string& data) = 0;
-};
-
-// 服务发现插件接口
-class IDiscoveryPlugin {
-public:
-    virtual void register_service(const ServiceInfo& info) = 0;
-    virtual std::vector<ServiceInfo> discover_services(const std::string& name) = 0;
-};
-```
-
----
-
-## 📋 总结
-
-Shield 架构设计的核心优势：
-
-1. **高性能**: C++ 底层 + Lua 业务层的最佳组合
-2. **高可用**: 分布式架构 + 故障自动恢复
-3. **高扩展**: 微服务架构 + 插件化设计
-4. **开发友好**: 热重载 + 丰富的开发工具
-5. **生产就绪**: 完整的监控 + 运维支持
-
-这种架构特别适合：
-- **大型 MMO 游戏**: 需要支持大量并发用户
-- **实时竞技游戏**: 对延迟和性能要求极高
-- **社交游戏**: 需要复杂的业务逻辑和频繁更新
-- **企业级应用**: 对稳定性和可维护性要求高
-
-通过合理的架构设计和技术选型，Shield 在性能、可扩展性和开发效率之间找到了最佳平衡点。
+- **MMO 游戏后端**: Actor 模型天然适合玩家/房间/场景管理
+- **实时竞技**: CAF 高性能消息传递 + Lua 快速迭代
+- **社交游戏**: Lua 热重载支持频繁业务更新
+- **跨平台**: Windows/macOS/Linux 全平台构建和运行

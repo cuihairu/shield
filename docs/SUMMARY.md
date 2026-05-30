@@ -1,37 +1,42 @@
 # Table of Contents
 
-[Introduction](README.md)
+[Introduction](index.md)
 
 # Quick Start
 
 - [Quick Start Guide](quickstart.md)
-
-# Guides
-
-- [Development Guide](development-guide.md)
-    - [Environment Setup](development-guide-environment-setup.md)
-    - [Build Compilation](development-guide-build-project.md)
-    - [Testing & Debugging](development-guide-test-development.md)
-- [Configuration Guide](configuration.md)
-    - [Environment Variables](configuration-environment-variables.md)
-- [Deployment & Operations](deployment.md)
-- [Monitoring & Alerting](monitoring.md)
-    - [Prometheus 集成](prometheus-integration.md)
-- [Performance Tuning](performance.md)
-- [Best Practices](best-practices.md)
+- [Quick Start (New)](quickstart-new.md)
 
 # Architecture
 
-- [Overall Architecture](architecture.md)
-    - [Design Philosophy](architecture-core-concepts.md)
+- [Architecture Overview](architecture.md)
+    - [Core Concepts](architecture-core-concepts.md)
     - [Framework Comparison](architecture-framework-comparison.md)
+- [Skynet Comparison](skynet-comparison.md)
+- [CAF Mapping](caf-mapping.md)
+
+# Guides
+
+- [Gateway Design](gateway.md)
+- [Monitoring & Observability](monitoring.md)
 - [Service Discovery](service_discovery.md)
-- [Gateway](gateway.md)
+- [Configuration](configuration.md)
+- [Deployment](deployment.md)
+- [Development Guide](development-guide.md)
+    - [Environment Setup](development-guide-environment-setup.md)
+    - [Build Project](development-guide-build-project.md)
+    - [Testing](development-guide-test-development.md)
+- [Performance Tuning](performance.md)
+- [Best Practices](best-practices.md)
+
+# Tutorial
+
+- [Multiplayer Game Backend](tutorial-game-backend.md)
 
 # API Reference
 
 - [Core Modules](api/core.md)
-- [Actor 系统](api/actor.md)
+- [Actor System](api/actor.md)
 - [Network Module](api/network.md)
 - [Protocol Handling](api/protocol.md)
 - [Service Discovery](api/discovery.md)
@@ -41,6 +46,6 @@
 
 # Other
 
-- [Development Roadmap](roadmap.md)
+- [Roadmap](roadmap.md)
 - [FAQ](faq.md)
-- [Contributing Guide](contributing.md)
+- [Contributing](contributing.md)
