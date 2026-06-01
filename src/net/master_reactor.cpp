@@ -52,9 +52,11 @@ void MasterReactor::do_accept() {
         if (!ec) {
             if (m_session_creator) {
                 auto session = m_session_creator(std::move(socket));
-                m_slave_reactors[m_next_slave_reactor]->post_session(session);
-                m_next_slave_reactor =
-                    (m_next_slave_reactor + 1) % m_slave_reactors.size();
+                // Atomic round-robin: fetch_add guarantees each reactor
+                // is selected exactly once per cycle without TOCTOU.
+                size_t idx =
+                    m_next_slave_reactor.fetch_add(1) % m_slave_reactors.size();
+                m_slave_reactors[idx]->post_session(session);
             } else {
                 SHIELD_LOG_WARN
                     << "No session creator set, dropping connection.";

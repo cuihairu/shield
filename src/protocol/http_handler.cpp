@@ -10,9 +10,50 @@
 namespace shield::protocol {
 namespace http = boost::beast::http;
 
+namespace {
+// Maximum size for HTTP request header + body per connection (64 KB).
+static constexpr size_t MAX_REQUEST_SIZE = 64 * 1024;
+
+// Escape a string for safe embedding in a JSON value.
+std::string json_escape(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x",
+                                  static_cast<unsigned>(static_cast<uint8_t>(c)));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+}  // namespace
+
 // HttpRouter implementation
-void HttpRouter::add_route(const std::string& method,
-                           const std::string& path_pattern,
+void HttpRouter::add_route(const std::string &method,
+                           const std::string &path_pattern,
                            RouteHandler handler) {
     Route route;
     route.method = method;
@@ -21,44 +62,58 @@ void HttpRouter::add_route(const std::string& method,
     routes_.push_back(std::move(route));
 }
 
-HttpResponse HttpRouter::route_request(const HttpRequest& request) {
+HttpResponse HttpRouter::route_request(const HttpRequest &request) {
     // Try to match routes
-    for (const auto& route : routes_) {
+    for (const auto &route : routes_) {
         if (route.method == request.method &&
             std::regex_match(request.path, route.path_regex)) {
             return route.handler(request);
         }
     }
 
-    // Default 404 response
+    // Default 404 response (safe JSON construction)
     HttpResponse response;
     response.status_code = 404;
     response.status_text = "Not Found";
-    response.body =
-        R"({"error": "Not Found", "path": ")" + request.path + R"("})";
+    response.body = "{\"error\":\"Not Found\",\"path\":\"" +
+                    json_escape(request.path) + "\"}";
     return response;
 }
 
 // HttpProtocolHandler implementation
 HttpProtocolHandler::HttpProtocolHandler() {
     // Set up default routes
-    get_router().add_route("GET", "/health", [](const HttpRequest& req) {
+    get_router().add_route("GET", "/health", [](const HttpRequest &req) {
         HttpResponse response;
         response.body = R"({"status": "healthy", "service": "shield"})";
         return response;
     });
 
-    get_router().add_route("GET", "/status", [](const HttpRequest& req) {
+    get_router().add_route("GET", "/status", [](const HttpRequest &req) {
         HttpResponse response;
         response.body = R"({"status": "running", "protocol": "http"})";
         return response;
     });
 }
 
-void HttpProtocolHandler::handle_data(uint64_t connection_id, const char* data,
+void HttpProtocolHandler::handle_data(uint64_t connection_id, const char *data,
                                       size_t length) {
     // Append data to connection buffer
-    auto& buffer = connection_buffers_[connection_id];
+    auto &buffer = connection_buffers_[connection_id];
+
+    // Reject oversized requests to prevent memory exhaustion
+    if (buffer.size() + length > MAX_REQUEST_SIZE) {
+        SHIELD_LOG_WARN << "HTTP request too large from connection "
+                        << connection_id << ", closing";
+        HttpResponse error_response;
+        error_response.status_code = 413;
+        error_response.status_text = "Payload Too Large";
+        error_response.body = "{\"error\":\"Payload Too Large\"}";
+        send_data(connection_id, format_http_response(error_response));
+        connection_buffers_.erase(connection_id);
+        return;
+    }
+
     buffer.append(data, length);
 
     // Check if we have a complete HTTP request
@@ -74,17 +129,18 @@ void HttpProtocolHandler::handle_data(uint64_t connection_id, const char* data,
             std::string response_str = format_http_response(response);
             send_data(connection_id, response_str);
 
-            SHIELD_LOG_DEBUG << "HTTP " << request.method << " " << request.path
-                             << " -> " << response.status_code;
+            SHIELD_LOG_DEBUG << "HTTP " << request.method << " "
+                             << request.path << " -> "
+                             << response.status_code;
 
-        } catch (const std::exception& e) {
+        } catch (const std::exception &e) {
             SHIELD_LOG_ERROR << "HTTP request parsing error: " << e.what();
 
             // Send 400 Bad Request
             HttpResponse error_response;
             error_response.status_code = 400;
             error_response.status_text = "Bad Request";
-            error_response.body = R"({"error": "Bad Request"})";
+            error_response.body = "{\"error\":\"Bad Request\"}";
             send_data(connection_id, format_http_response(error_response));
         }
 
@@ -104,7 +160,7 @@ void HttpProtocolHandler::handle_disconnection(uint64_t connection_id) {
 }
 
 bool HttpProtocolHandler::send_data(uint64_t connection_id,
-                                    const std::string& data) {
+                                    const std::string &data) {
     if (session_provider_) {
         auto session = session_provider_(connection_id);
         if (session) {
@@ -121,7 +177,7 @@ void HttpProtocolHandler::set_session_provider(
 }
 
 HttpProtocolHandler::BeastRequest HttpProtocolHandler::parse_request(
-    const std::string& raw_request) {
+    const std::string &raw_request) {
     http::request_parser<http::string_body> parser;
     parser.eager(true);
 
@@ -137,7 +193,7 @@ HttpProtocolHandler::BeastRequest HttpProtocolHandler::parse_request(
 }
 
 HttpProtocolHandler::BeastResponse HttpProtocolHandler::build_response(
-    http::status status, const std::string& body) {
+    http::status status, const std::string &body) {
     BeastResponse res;
     res.version(11);
     res.result(status);
@@ -148,7 +204,7 @@ HttpProtocolHandler::BeastResponse HttpProtocolHandler::build_response(
 }
 
 HttpRequest HttpProtocolHandler::parse_http_request(
-    const std::string& raw_request, uint64_t connection_id) {
+    const std::string &raw_request, uint64_t connection_id) {
     HttpRequest request;
     request.connection_id = connection_id;
 
@@ -192,7 +248,8 @@ HttpRequest HttpProtocolHandler::parse_http_request(
         size_t content_length = std::stoul(content_length_it->second);
         if (content_length > 0) {
             request.body.resize(content_length);
-            stream.read(&request.body[0], content_length);
+            stream.read(&request.body[0],
+                        static_cast<std::streamsize>(content_length));
         }
     }
 
@@ -200,18 +257,18 @@ HttpRequest HttpProtocolHandler::parse_http_request(
 }
 
 std::string HttpProtocolHandler::format_http_response(
-    const HttpResponse& response) {
+    const HttpResponse &response) {
     std::ostringstream stream;
 
     // Status line
-    stream << "HTTP/1.1 " << response.status_code << " " << response.status_text
-           << "\r\n";
+    stream << "HTTP/1.1 " << response.status_code << " "
+           << response.status_text << "\r\n";
 
     // Headers
     auto headers = response.headers;
     headers["Content-Length"] = std::to_string(response.body.size());
 
-    for (const auto& [key, value] : headers) {
+    for (const auto &[key, value] : headers) {
         stream << key << ": " << value << "\r\n";
     }
 
@@ -224,7 +281,7 @@ std::string HttpProtocolHandler::format_http_response(
     return stream.str();
 }
 
-bool HttpProtocolHandler::is_complete_request(const std::string& data) {
+bool HttpProtocolHandler::is_complete_request(const std::string &data) {
     // Look for the end of headers (double CRLF)
     size_t header_end = data.find("\r\n\r\n");
     if (header_end == std::string::npos) {

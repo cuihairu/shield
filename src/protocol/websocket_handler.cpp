@@ -266,8 +266,12 @@ bool WebSocketProtocolHandler::handle_handshake(uint64_t connection_id,
     }
 
     // Validate WebSocket headers
+    // Connection header value is case-insensitive per RFC 6455
+    std::string connection_val = headers["connection"];
+    std::transform(connection_val.begin(), connection_val.end(),
+                   connection_val.begin(), ::tolower);
     if (headers["upgrade"] != "websocket" ||
-        headers["connection"].find("Upgrade") == std::string::npos ||
+        connection_val.find("upgrade") == std::string::npos ||
         headers["sec-websocket-version"] != "13") {
         return false;
     }
@@ -467,7 +471,17 @@ void WebSocketProtocolHandler::handle_frame(uint64_t connection_id,
         case WebSocketFrameType::CLOSE: {
             auto it = connections_.find(connection_id);
             if (it != connections_.end()) {
-                it->second.state = WebSocketState::CLOSED;
+                // If we already sent a close (CLOSING), this is the
+                // echoing reply — transition to CLOSED without sending
+                // another close frame to avoid an infinite echo loop.
+                if (it->second.state == WebSocketState::CLOSING) {
+                    it->second.state = WebSocketState::CLOSED;
+                    SHIELD_LOG_DEBUG
+                        << "WebSocket close acknowledged for connection "
+                        << connection_id;
+                    break;
+                }
+                it->second.state = WebSocketState::CLOSING;
             }
 
             uint16_t close_code = 1000;

@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <boost/asio.hpp>
+#include <deque>
 #include <functional>
 #include <memory>
 
@@ -36,7 +37,8 @@ private:
     boost::asio::ip::tcp::socket m_socket;
     enum { max_length = 8192 };
     char m_read_buffer[max_length];
-    std::vector<char> m_write_buffer;
+    std::deque<std::vector<char>> m_write_queue;
+    bool m_writing = false;
 
     ReadCallback m_read_callback;
     CloseCallback m_close_callback;

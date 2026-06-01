@@ -24,17 +24,17 @@ void Session::close() {
     }
 }
 
-void Session::send(const char* data, size_t length) {
+void Session::send(const char *data, size_t length) {
     auto self(shared_from_this());
-    boost::asio::async_write(
-        m_socket, boost::asio::buffer(data, length),
-        [this, self](boost::system::error_code ec, std::size_t /*length*/) {
-            if (ec) {
-                SHIELD_LOG_ERROR << "Session " << m_id
-                                 << " write error: " << ec.message();
-                close();
-            }
-        });
+    auto buffer = std::vector<char>(data, data + length);
+
+    boost::asio::post(m_socket.get_executor(),
+                      [this, self, buf = std::move(buffer)]() mutable {
+                          m_write_queue.push_back(std::move(buf));
+                          if (!m_writing) {
+                              do_write();
+                          }
+                      });
 }
 
 void Session::do_read() {
@@ -54,6 +54,31 @@ void Session::do_read() {
                 }
                 close();
             }
+        });
+}
+
+void Session::do_write() {
+    if (m_write_queue.empty()) {
+        m_writing = false;
+        return;
+    }
+
+    m_writing = true;
+    auto self(shared_from_this());
+    auto &buf = m_write_queue.front();
+
+    boost::asio::async_write(
+        m_socket, boost::asio::buffer(buf.data(), buf.size()),
+        [this, self](boost::system::error_code ec, std::size_t /*length*/) {
+            if (ec) {
+                SHIELD_LOG_ERROR << "Session " << m_id
+                                 << " write error: " << ec.message();
+                m_writing = false;
+                close();
+                return;
+            }
+            m_write_queue.pop_front();
+            do_write();
         });
 }
 
