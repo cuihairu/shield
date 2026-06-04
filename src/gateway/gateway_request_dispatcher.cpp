@@ -138,7 +138,8 @@ void GatewayRequestDispatcher::handle_websocket_message(
         if (j.contains("type") && j["type"].is_string()) {
             gw_req.path = std::string("/ws/") + j["type"].get<std::string>();
         }
-    } catch (...) {
+    } catch (const nlohmann::json::parse_error&) {
+        // Non-JSON message, use default WebSocket path
     }
 
     gw_req.body = message;

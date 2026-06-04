@@ -150,7 +150,7 @@ int ConfigCommand::get_config_value(const std::string& file_path,
             std::string value = config_tree.get<std::string>(key);
             std::cout << value << std::endl;
             return 0;
-        } catch (...) {
+        } catch (const boost::property_tree::ptree_bad_path&) {
             std::cerr << "Key not found: " << key << std::endl;
             return 1;
         }

@@ -156,7 +156,7 @@ int CLICommand::run(shield::cli::CommandContext& ctx) {
             const auto& config_tree = config_manager.get_config_tree();
             server_url = config_tree.get<std::string>("client.default_url",
                                                       "http://localhost:8080");
-        } catch (...) {
+        } catch (const std::exception&) {
             server_url = "http://localhost:8080";  // fallback
         }
     }
@@ -166,7 +166,7 @@ int CLICommand::run(shield::cli::CommandContext& ctx) {
         try {
             const auto& config_tree = config_manager.get_config_tree();
             timeout = config_tree.get<int>("client.timeout", 30);
-        } catch (...) {
+        } catch (const std::exception&) {
             timeout = 30;  // fallback
         }
     }
