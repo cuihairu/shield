@@ -5,6 +5,8 @@
 #include <sstream>
 #include <thread>
 
+#include "shield/log/logger.hpp"
+
 // 包含各种数据库驱动
 #ifdef SHIELD_USE_MYSQL
 #include <mysql/mysql.h>
@@ -423,17 +425,21 @@ private:
         std::ostringstream conn_str;
         conn_str << "host=" << config_.host << " port=" << config_.port
                  << " dbname=" << config_.database
-                 << " user=" << config_.username
-                 << " password=" << config_.password;
+                 << " user=" << config_.username;
+
+        // 安全处理密码：仅在连接字符串中包含密码，不记录到日志
+        if (!config_.password.empty()) {
+            conn_str << " password=" << config_.password;
+        }
 
         // 这里应该创建连接池，简化实现
         connection_pool_ = reinterpret_cast<void*>(1);  // Mock
 
-        std::cout << "[PostgreSQL] Connection pool initialized for "
-                  << config_.database << std::endl;
+        SHIELD_LOG_INFO << "[PostgreSQL] Connection pool initialized for "
+                        << config_.database << " (host=" << config_.host
+                        << ", port=" << config_.port << ")";
 #else
-        std::cout << "[PostgreSQL] Mock connection pool initialized"
-                  << std::endl;
+        SHIELD_LOG_INFO << "[PostgreSQL] Mock connection pool initialized";
         connection_pool_ = reinterpret_cast<void*>(1);
 #endif
     }
@@ -519,8 +525,21 @@ private:
         std::ostringstream conn_str;
         conn_str << "host=" << config_.host << " port=" << config_.port
                  << " dbname=" << config_.database
-                 << " user=" << config_.username
-                 << " password=" << config_.password;
+                 << " user=" << config_.username;
+
+        // 安全处理密码：仅在连接字符串中包含密码
+        if (!config_.password.empty()) {
+            conn_str << " password=" << config_.password;
+        }
+        return conn_str.str();
+    }
+
+    // 安全日志版本：不包含密码
+    std::string build_safe_connection_info() const {
+        std::ostringstream conn_str;
+        conn_str << "host=" << config_.host << " port=" << config_.port
+                 << " dbname=" << config_.database
+                 << " user=" << config_.username;
         return conn_str.str();
     }
 
@@ -923,8 +942,7 @@ private:
         es_client_ = reinterpret_cast<void*>(1);  // Mock
 #endif
 
-        std::cout << "[Elasticsearch] Client initialized for " << endpoint.str()
-                  << std::endl;
+        SHIELD_LOG_INFO << "[Elasticsearch] Client initialized for " << endpoint.str();
     }
 
     std::string build_elasticsearch_query(const QueryBuilder& query) {
@@ -1256,9 +1274,8 @@ void DataSourceFactory::register_built_in_creators() {
         return std::make_unique<ElasticsearchDataSource>(config);
     });
 
-    std::cout << "[DataSourceFactory] Registered built-in data sources: "
-              << "mysql, postgresql, mongodb, redis, elasticsearch"
-              << std::endl;
+    SHIELD_LOG_INFO << "[DataSourceFactory] Registered built-in data sources: "
+                    << "mysql, postgresql, mongodb, redis, elasticsearch";
 }
 
 // =====================================

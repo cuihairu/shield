@@ -3,11 +3,11 @@
 #include <yaml-cpp/yaml.h>
 
 #include <fstream>
-#include <iostream>
 #include <sstream>
 #include <stdexcept>
 
 #include "shield/config/config.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::config {
 
@@ -84,8 +84,8 @@ bool DynamicConfigManager::set_config(const std::string& module_name,
     }
 
     if (policy == ConfigChangePolicy::STATIC) {
-        std::cerr << "Cannot modify static config: " << module_name << "."
-                  << field_name << std::endl;
+        SHIELD_LOG_ERROR << "Cannot modify static config: " << module_name << "."
+                         << field_name;
         return false;
     }
 
@@ -106,9 +106,8 @@ bool DynamicConfigManager::set_config(const std::string& module_name,
         std::shared_lock lock(mutex_);
         auto& field_metadata = metadata_[module_name][field_name];
         if (field_metadata.validator && !field_metadata.validator(value_str)) {
-            std::cerr << "Config validation failed for " << module_name << "."
-                      << field_name << " with value: " << value_str
-                      << std::endl;
+            SHIELD_LOG_ERROR << "Config validation failed for " << module_name << "."
+                             << field_name << " with value: " << value_str;
             return false;
         }
     }
@@ -201,10 +200,9 @@ void DynamicConfigManager::reload_dynamic_configs() {
             }
         }
 
-        std::cout << "Dynamic configs reloaded successfully" << std::endl;
+        SHIELD_LOG_INFO << "Dynamic configs reloaded successfully";
     } catch (const std::exception& e) {
-        std::cerr << "Failed to reload dynamic configs: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "Failed to reload dynamic configs: " << e.what();
     }
 }
 
@@ -273,32 +271,30 @@ bool DynamicConfigManager::batch_update_configs(
             // Check if field exists
             auto module_it = metadata_.find(update.module_name);
             if (module_it == metadata_.end()) {
-                std::cerr << "Module not found: " << update.module_name
-                          << std::endl;
+                SHIELD_LOG_ERROR << "Module not found: " << update.module_name;
                 return false;
             }
 
             auto field_it = module_it->second.find(update.field_name);
             if (field_it == module_it->second.end()) {
-                std::cerr << "Field not found: " << update.module_name << "."
-                          << update.field_name << std::endl;
+                SHIELD_LOG_ERROR << "Field not found: " << update.module_name << "."
+                                 << update.field_name;
                 return false;
             }
 
             // Check if it's dynamic configuration
             if (field_it->second.policy == ConfigChangePolicy::STATIC) {
-                std::cerr << "Cannot modify static config: "
-                          << update.module_name << "." << update.field_name
-                          << std::endl;
+                SHIELD_LOG_ERROR << "Cannot modify static config: "
+                                 << update.module_name << "." << update.field_name;
                 return false;
             }
 
             // Validate new value
             if (field_it->second.validator &&
                 !field_it->second.validator(update.value)) {
-                std::cerr << "Validation failed for " << update.module_name
-                          << "." << update.field_name
-                          << " with value: " << update.value << std::endl;
+                SHIELD_LOG_ERROR << "Validation failed for " << update.module_name
+                                 << "." << update.field_name
+                                 << " with value: " << update.value;
                 return false;
             }
 

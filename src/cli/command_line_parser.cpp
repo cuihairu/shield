@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <boost/program_options.hpp>
-#include <iostream>
 
+#include "shield/log/logger.hpp"
 #include "shield/version.hpp"
 
 namespace po = boost::program_options;
@@ -63,7 +63,7 @@ CommandLineOptions CommandLineParser::parse(int argc, char* argv[]) {
                                              remaining_argv, 1);
                         break;
                     default:
-                        std::cerr << "Unknown subcommand: " << arg << std::endl;
+                        SHIELD_LOG_ERROR << "Unknown subcommand: " << arg;
                         options.show_help = true;
                         break;
                 }
@@ -77,7 +77,7 @@ CommandLineOptions CommandLineParser::parse(int argc, char* argv[]) {
         }
 
     } catch (const po::error& e) {
-        std::cerr << "Error parsing options: " << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "Error parsing options: " << e.what();
         options.show_help = true;
     }
 
@@ -131,7 +131,7 @@ void CommandLineParser::parse_server_options(CommandLineOptions& options,
             options.subcommand_args["daemon"] = "true";
         }
     } catch (const po::error& e) {
-        std::cerr << "Error parsing server options: " << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "Error parsing server options: " << e.what();
         options.show_help = true;
     }
 }
@@ -174,7 +174,7 @@ void CommandLineParser::parse_cli_options(CommandLineOptions& options, int argc,
             options.subcommand_args["verbose"] = "true";
         }
     } catch (const po::error& e) {
-        std::cerr << "Error parsing CLI options: " << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "Error parsing CLI options: " << e.what();
         options.show_help = true;
     }
 }
@@ -217,8 +217,7 @@ void CommandLineParser::parse_migrate_options(CommandLineOptions& options,
             options.subcommand_args["backup"] = "true";
         }
     } catch (const po::error& e) {
-        std::cerr << "Error parsing migration options: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "Error parsing migration options: " << e.what();
         options.show_help = true;
     }
 }
@@ -263,7 +262,7 @@ void CommandLineParser::parse_test_options(CommandLineOptions& options,
                 std::to_string(vm["parallel"].as<int>());
         }
     } catch (const po::error& e) {
-        std::cerr << "Error parsing test options: " << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "Error parsing test options: " << e.what();
         options.show_help = true;
     }
 }
@@ -306,7 +305,7 @@ void CommandLineParser::parse_config_options(CommandLineOptions& options,
             options.subcommand_args["get"] = vm["get"].as<std::string>();
         }
     } catch (const po::error& e) {
-        std::cerr << "Error parsing config options: " << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "Error parsing config options: " << e.what();
         options.show_help = true;
     }
 }

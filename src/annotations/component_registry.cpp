@@ -1,8 +1,9 @@
 // shield/src/annotations/component_registry.cpp
 #include "shield/annotations/component_registry.hpp"
 
-#include <iostream>
 #include <stdexcept>
+
+#include "shield/log/logger.hpp"
 
 namespace shield::annotations {
 
@@ -11,11 +12,10 @@ namespace shield::annotations {
 // =====================================
 
 void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
-    std::cout << "[ComponentRegistry] Auto-configuring ApplicationContext with "
-              << component_factories_.size() << " components, "
-              << service_factories_.size() << " services, "
-              << configuration_factories_.size() << " configurations"
-              << std::endl;
+    SHIELD_LOG_INFO << "[ComponentRegistry] Auto-configuring ApplicationContext with "
+                    << component_factories_.size() << " components, "
+                    << service_factories_.size() << " services, "
+                    << configuration_factories_.size() << " configurations";
 
     // 注册所有组件
     for (const auto& [type_id, registrar] : component_app_context_registrars_) {
@@ -27,14 +27,14 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
                     ? (metadata.name.empty() ? type_id.name() : metadata.name)
                     : metadata.value;
 
-            std::cout << "[ComponentRegistry] Registering component: " << name
-                      << " (primary: " << (metadata.primary ? "yes" : "no")
-                      << ")" << std::endl;
+            SHIELD_LOG_INFO << "[ComponentRegistry] Registering component: " << name
+                            << " (primary: " << (metadata.primary ? "yes" : "no")
+                            << ")";
             try {
                 registrar(context);
             } catch (const std::exception& e) {
-                std::cout << "[ComponentRegistry] Failed to register component: "
-                          << name << " error: " << e.what() << std::endl;
+                SHIELD_LOG_ERROR << "[ComponentRegistry] Failed to register component: "
+                                 << name << " error: " << e.what();
             }
         }
     }
@@ -47,13 +47,12 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
             std::string name =
                 metadata.value.empty() ? type_id.name() : metadata.value;
 
-            std::cout << "[ComponentRegistry] Registering service: " << name
-                      << std::endl;
+            SHIELD_LOG_INFO << "[ComponentRegistry] Registering service: " << name;
             try {
                 registrar(context);
             } catch (const std::exception& e) {
-                std::cout << "[ComponentRegistry] Failed to register service: "
-                          << name << " error: " << e.what() << std::endl;
+                SHIELD_LOG_ERROR << "[ComponentRegistry] Failed to register service: "
+                                 << name << " error: " << e.what();
             }
         }
     }
@@ -67,55 +66,53 @@ void ComponentRegistry::auto_configure(core::ApplicationContext& context) {
             std::string name =
                 metadata.name.empty() ? type_id.name() : metadata.name;
 
-            std::cout << "[ComponentRegistry] Registering configuration: "
-                      << name << " (proxy_bean_methods: "
-                      << (metadata.proxy_bean_methods ? "yes" : "no") << ")"
-                      << std::endl;
+            SHIELD_LOG_INFO << "[ComponentRegistry] Registering configuration: "
+                            << name << " (proxy_bean_methods: "
+                            << (metadata.proxy_bean_methods ? "yes" : "no") << ")";
             try {
                 registrar(context);
             } catch (const std::exception& e) {
-                std::cout
+                SHIELD_LOG_ERROR
                     << "[ComponentRegistry] Failed to register configuration: "
-                    << name << " error: " << e.what() << std::endl;
+                    << name << " error: " << e.what();
             }
         }
     }
 
-    std::cout << "[ComponentRegistry] Auto-configuration complete" << std::endl;
+    SHIELD_LOG_INFO << "[ComponentRegistry] Auto-configuration complete";
 }
 
 void ComponentRegistry::auto_configure(di::AdvancedContainer& container) {
-    std::cout << "[ComponentRegistry] Auto-configuring AdvancedContainer with "
-              << component_factories_.size() << " components, "
-              << service_factories_.size() << " services" << std::endl;
+    SHIELD_LOG_INFO << "[ComponentRegistry] Auto-configuring AdvancedContainer with "
+                    << component_factories_.size() << " components, "
+                    << service_factories_.size() << " services";
 
     for (const auto& [type_id, registrar] : component_container_registrars_) {
         auto it = component_metadata_.find(type_id);
         if (it != component_metadata_.end()) {
             const auto& metadata = it->second;
-            std::cout << "[ComponentRegistry] Registering component: "
-                      << type_id.name()
-                      << " (primary: " << (metadata.primary ? "yes" : "no")
-                      << ")" << std::endl;
+            SHIELD_LOG_INFO << "[ComponentRegistry] Registering component: "
+                            << type_id.name()
+                            << " (primary: " << (metadata.primary ? "yes" : "no")
+                            << ")";
             registrar(container);
         }
     }
 
     for (const auto& [type_id, registrar] : service_container_registrars_) {
-        std::cout << "[ComponentRegistry] Registering service: "
-                  << type_id.name() << std::endl;
+        SHIELD_LOG_INFO << "[ComponentRegistry] Registering service: "
+                        << type_id.name();
         registrar(container);
     }
 
     for (const auto& [type_id, registrar] : configuration_container_registrars_) {
-        std::cout << "[ComponentRegistry] Registering configuration: "
-                  << type_id.name() << std::endl;
+        SHIELD_LOG_INFO << "[ComponentRegistry] Registering configuration: "
+                        << type_id.name();
         registrar(container);
     }
 
-    std::cout
-        << "[ComponentRegistry] AdvancedContainer auto-configuration complete"
-        << std::endl;
+    SHIELD_LOG_INFO
+        << "[ComponentRegistry] AdvancedContainer auto-configuration complete";
 }
 
 }  // namespace shield::annotations

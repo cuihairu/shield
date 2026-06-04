@@ -3,8 +3,9 @@
 #include <algorithm>
 #include <boost/program_options.hpp>
 #include <iomanip>
-#include <iostream>
 #include <unordered_map>
+
+#include "shield/log/logger.hpp"
 
 namespace po = boost::program_options;
 
@@ -71,7 +72,7 @@ int Command::execute(int argc, char* argv[]) {
     try {
         return parse_and_execute(argc, argv);
     } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "Error: " << e.what();
         return 1;
     }
 }
