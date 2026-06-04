@@ -37,7 +37,7 @@ public:
 
 namespace shield::config {
 
-class GatewayConfiguration : public Configuration {
+class GatewayConfiguration final : public Configuration {
 public:
     void configure(shield::core::ApplicationContext& context) override {
         auto& config_manager = ConfigManager::instance();
@@ -72,7 +72,7 @@ public:
     }
 };
 
-class ScriptConfiguration : public Configuration {
+class ScriptConfiguration final : public Configuration {
 public:
     void configure(shield::core::ApplicationContext& context) override {
         script::LuaVMPoolConfig lua_config;
@@ -119,7 +119,7 @@ public:
 };
 
 #ifdef SHIELD_ENABLE_PROMETHEUS
-class MetricsConfiguration : public Configuration {
+class MetricsConfiguration final : public Configuration {
 public:
     void configure(shield::core::ApplicationContext& context) override {
         auto& config_manager = ConfigManager::instance();

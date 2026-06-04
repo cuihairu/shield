@@ -4,7 +4,7 @@
 
 namespace shield::commands {
 
-class ConfigCommand : public shield::cli::Command {
+class ConfigCommand final : public shield::cli::Command {
 public:
     ConfigCommand();
     int run(shield::cli::CommandContext& ctx) override;

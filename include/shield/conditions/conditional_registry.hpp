@@ -36,7 +36,7 @@ public:
 /**
  * @brief Property-based condition
  */
-class PropertyCondition : public Condition {
+class PropertyCondition final : public Condition {
 public:
     PropertyCondition(const std::string& property_name,
                       const std::string& expected_value = "true",
@@ -71,7 +71,7 @@ private:
 /**
  * @brief Profile-based condition
  */
-class ProfileCondition : public Condition {
+class ProfileCondition final : public Condition {
 public:
     explicit ProfileCondition(const std::vector<std::string>& required_profiles)
         : required_profiles_(required_profiles) {}
@@ -115,7 +115,7 @@ private:
 /**
  * @brief Bean existence condition
  */
-class BeanCondition : public Condition {
+class BeanCondition final : public Condition {
 public:
     template <typename T>
     static BeanCondition on_bean() {
@@ -151,7 +151,7 @@ private:
 /**
  * @brief Class presence condition
  */
-class ClassCondition : public Condition {
+class ClassCondition final : public Condition {
 public:
     explicit ClassCondition(const std::string& class_name)
         : class_name_(class_name) {}

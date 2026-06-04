@@ -4,7 +4,7 @@
 
 namespace shield::commands {
 
-class ServerCommand : public shield::cli::Command {
+class ServerCommand final : public shield::cli::Command {
 public:
     ServerCommand();
     int run(shield::cli::CommandContext& ctx) override;

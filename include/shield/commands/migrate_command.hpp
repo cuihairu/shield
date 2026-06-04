@@ -4,7 +4,7 @@
 
 namespace shield::commands {
 
-class MigrateCommand : public shield::cli::Command {
+class MigrateCommand final : public shield::cli::Command {
 public:
     MigrateCommand();
     int run(shield::cli::CommandContext& ctx) override;

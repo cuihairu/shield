@@ -1,7 +1,7 @@
 // [CORE]
 #pragma once
 
-#include <boost/any.hpp>
+#include <any>
 #include <memory>
 #include <stdexcept>
 #include <type_traits>
@@ -95,8 +95,8 @@ public:
                                      "' not found.");
         }
         try {
-            return boost::any_cast<std::shared_ptr<T>>(it->second);
-        } catch (const boost::bad_any_cast&) {
+            return std::any_cast<std::shared_ptr<T>>(it->second);
+        } catch (const std::bad_any_cast&) {
             throw std::runtime_error("Failed to cast bean '" + name +
                                      "' to requested type.");
         }
@@ -115,7 +115,7 @@ private:
     ApplicationContext() = default;
 
     std::vector<std::shared_ptr<Service>> m_services_by_order;
-    std::unordered_map<std::string, boost::any> m_beans_by_name;
+    std::unordered_map<std::string, std::any> m_beans_by_name;
     std::unordered_map<std::type_index, std::string> m_bean_type_to_name;
 };
 
