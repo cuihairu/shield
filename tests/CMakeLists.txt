@@ -184,3 +184,72 @@ target_link_libraries(
   PRIVATE shield_core shield_extensions Boost::unit_test_framework Boost::headers
           yaml-cpp::yaml-cpp)
 add_test(NAME test_gateway_component COMMAND test_gateway_component)
+
+# --- New coverage tests ---
+
+add_executable(test_middleware gateway/test_middleware.cpp)
+target_link_libraries(
+  test_middleware PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+add_test(NAME test_middleware COMMAND test_middleware)
+
+add_executable(test_runtime_diagnostics gateway/test_runtime_diagnostics.cpp)
+target_link_libraries(
+  test_runtime_diagnostics
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers
+          nlohmann_json::nlohmann_json)
+add_test(NAME test_runtime_diagnostics COMMAND test_runtime_diagnostics)
+
+add_executable(test_gateway_config gateway/test_gateway_config.cpp)
+target_link_libraries(
+  test_gateway_config PRIVATE shield_core Boost::unit_test_framework
+                              Boost::headers)
+add_test(NAME test_gateway_config COMMAND test_gateway_config)
+
+add_executable(test_application_context core/test_application_context.cpp)
+target_link_libraries(
+  test_application_context PRIVATE shield_core Boost::unit_test_framework
+                                   Boost::headers)
+add_test(NAME test_application_context COMMAND test_application_context)
+
+add_executable(test_starter_manager core/test_starter_manager.cpp)
+target_link_libraries(
+  test_starter_manager PRIVATE shield_core Boost::unit_test_framework
+                               Boost::headers)
+add_test(NAME test_starter_manager COMMAND test_starter_manager)
+
+add_executable(test_service_instance discovery/test_service_instance.cpp)
+target_link_libraries(
+  test_service_instance
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers
+          nlohmann_json::nlohmann_json)
+add_test(NAME test_service_instance COMMAND test_service_instance)
+
+add_executable(test_discovery_config discovery/test_discovery_config.cpp)
+target_link_libraries(
+  test_discovery_config PRIVATE shield_core Boost::unit_test_framework
+                                Boost::headers)
+add_test(NAME test_discovery_config COMMAND test_discovery_config)
+
+add_executable(test_dynamic_config config/test_dynamic_config.cpp)
+target_link_libraries(
+  test_dynamic_config PRIVATE shield_core Boost::unit_test_framework
+                              Boost::headers)
+add_test(NAME test_dynamic_config COMMAND test_dynamic_config)
+
+add_executable(test_network_config net/test_network_config.cpp)
+target_link_libraries(
+  test_network_config PRIVATE shield_core Boost::unit_test_framework
+                              Boost::headers)
+add_test(NAME test_network_config COMMAND test_network_config)
+
+add_executable(test_log_config log/test_log_config.cpp)
+target_link_libraries(
+  test_log_config PRIVATE shield_core Boost::unit_test_framework Boost::log
+                          Boost::log_setup Boost::headers)
+add_test(NAME test_log_config COMMAND test_log_config)
+
+add_executable(test_protocol_handler protocol/test_protocol_handler.cpp)
+target_link_libraries(
+  test_protocol_handler PRIVATE shield_core Boost::unit_test_framework
+                                Boost::headers)
+add_test(NAME test_protocol_handler COMMAND test_protocol_handler)
