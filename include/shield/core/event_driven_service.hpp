@@ -82,7 +82,7 @@ protected:
 // 使用示例：更新GatewayService使用事件系统
 namespace shield::gateway {
 
-class EventDrivenGatewayService : public core::EventDrivenReloadableService {
+class EventDrivenGatewayService final : public core::EventDrivenReloadableService {
 public:
     EventDrivenGatewayService(const std::string& name,
                               actor::DistributedActorSystem& actor_system,

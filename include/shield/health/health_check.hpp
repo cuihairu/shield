@@ -120,7 +120,7 @@ public:
  */
 
 // Disk space health indicator
-class DiskSpaceHealthIndicator : public HealthIndicator {
+class DiskSpaceHealthIndicator final : public HealthIndicator {
 public:
     explicit DiskSpaceHealthIndicator(
         const std::string& path = "/",
@@ -136,7 +136,7 @@ private:
 };
 
 // Database health indicator
-class DatabaseHealthIndicator : public ReactiveHealthIndicator {
+class DatabaseHealthIndicator final : public ReactiveHealthIndicator {
 public:
     explicit DatabaseHealthIndicator(const std::string& connection_string)
         : connection_string_(connection_string) {}
@@ -149,7 +149,7 @@ private:
 };
 
 // Application health indicator
-class ApplicationHealthIndicator : public HealthIndicator {
+class ApplicationHealthIndicator final : public HealthIndicator {
 public:
     Health check() override {
         return Health(HealthStatus::UP, "Application is running")

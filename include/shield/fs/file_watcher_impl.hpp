@@ -21,7 +21,7 @@ namespace shield::fs {
 
 // Linux inotify implementation
 #ifdef __linux__
-class LinuxFileWatcher : public IFileWatcher {
+class LinuxFileWatcher final : public IFileWatcher {
 public:
     LinuxFileWatcher();
     ~LinuxFileWatcher() override;
@@ -51,7 +51,7 @@ private:
 
 // macOS kqueue implementation
 #ifdef __APPLE__
-class MacOSFileWatcher : public IFileWatcher {
+class MacOSFileWatcher final : public IFileWatcher {
 public:
     MacOSFileWatcher();
     ~MacOSFileWatcher() override;
@@ -79,7 +79,7 @@ private:
 
 // Windows ReadDirectoryChangesW implementation
 #ifdef _WIN32
-class WindowsFileWatcher : public IFileWatcher {
+class WindowsFileWatcher final : public IFileWatcher {
 public:
     WindowsFileWatcher();
     ~WindowsFileWatcher() override;
@@ -117,7 +117,7 @@ private:
 #endif
 
 // Polling implementation (generic fallback)
-class PollingFileWatcher : public IFileWatcher {
+class PollingFileWatcher final : public IFileWatcher {
 public:
     explicit PollingFileWatcher(
         std::chrono::milliseconds interval = std::chrono::milliseconds(1000));

@@ -1,7 +1,6 @@
 #include "shield/core/plugin_manager.hpp"
 
 #include <algorithm>
-#include <iostream>
 #include <stdexcept>
 #include <unordered_set>
 

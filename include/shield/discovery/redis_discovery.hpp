@@ -24,7 +24,7 @@ namespace shield::discovery {
 /// @brief An implementation of IServiceDiscovery using Redis as a backend.
 /// This implementation supports TTL-based service expiration and provides
 /// a basic heartbeating mechanism for registered services.
-class RedisServiceDiscovery : public IServiceDiscovery {
+class RedisServiceDiscovery final : public IServiceDiscovery {
 public:
     /// @brief Constructs a RedisServiceDiscovery instance.
     /// @param redis_uri The Redis connection URI, e.g., "tcp://127.0.0.1:6379".

@@ -11,7 +11,7 @@
 namespace shield::serialization {
 
 // Serialization exception
-class SerializationException : public std::runtime_error {
+class SerializationException final : public std::runtime_error {
 public:
     explicit SerializationException(const std::string &message)
         : std::runtime_error("Serialization error: " + message) {}

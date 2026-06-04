@@ -39,7 +39,7 @@ private:
 namespace config {
 
 // 配置刷新事件 (equivalent to Spring's RefreshEvent)
-class ConfigRefreshEvent : public Event {
+class ConfigRefreshEvent final : public Event {
 public:
     explicit ConfigRefreshEvent(std::any source = {})
         : Event(std::move(source)) {}
@@ -48,7 +48,7 @@ public:
 
 // 配置变更事件 (equivalent to Spring's EnvironmentChangeEvent)
 template <typename ConfigType>
-class ConfigChangeEvent : public Event {
+class ConfigChangeEvent final : public Event {
 public:
     ConfigChangeEvent(std::shared_ptr<ConfigType> old_config,
                       std::shared_ptr<ConfigType> new_config,
@@ -72,7 +72,7 @@ private:
 
 // 配置属性绑定事件
 template <typename PropertiesType>
-class ConfigPropertiesBindEvent : public Event {
+class ConfigPropertiesBindEvent final : public Event {
 public:
     explicit ConfigPropertiesBindEvent(
         std::shared_ptr<PropertiesType> properties, std::any source = {})
@@ -96,7 +96,7 @@ private:
 // 3. 应用生命周期事件
 namespace lifecycle {
 
-class ApplicationStartedEvent : public Event {
+class ApplicationStartedEvent final : public Event {
 public:
     explicit ApplicationStartedEvent(std::any source = {})
         : Event(std::move(source)) {}
@@ -105,7 +105,7 @@ public:
     }
 };
 
-class ApplicationStoppingEvent : public Event {
+class ApplicationStoppingEvent final : public Event {
 public:
     explicit ApplicationStoppingEvent(std::any source = {})
         : Event(std::move(source)) {}
@@ -114,7 +114,7 @@ public:
     }
 };
 
-class ServiceReadyEvent : public Event {
+class ServiceReadyEvent final : public Event {
 public:
     explicit ServiceReadyEvent(const std::string& service_name, std::any source = {})
         : Event(std::move(source)), service_name_(service_name) {}

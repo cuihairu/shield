@@ -11,6 +11,8 @@
 #include <thread>
 #include <unordered_map>
 
+#include "shield/log/logger.hpp"
+
 namespace shield::data {
 
 // =====================================
@@ -177,8 +179,8 @@ public:
         maintenance_thread_ =
             std::thread(&GenericConnectionPool::maintenance_loop, this);
 
-        std::cout << "[ConnectionPool] Started with " << all_connections_.size()
-                  << " initial connections" << std::endl;
+        SHIELD_LOG_INFO << "[ConnectionPool] Started with "
+                        << all_connections_.size() << " initial connections";
     }
 
     void stop() override {
@@ -201,10 +203,10 @@ public:
         all_connections_.clear();
         active_count_ = 0;
 
-        std::cout << "[ConnectionPool] Stopped. Stats - Created: "
-                  << total_created_ << ", Destroyed: " << total_destroyed_
-                  << ", Acquired: " << total_acquired_
-                  << ", Released: " << total_released_ << std::endl;
+        SHIELD_LOG_INFO << "[ConnectionPool] Stopped. Stats - Created: "
+                        << total_created_ << ", Destroyed: " << total_destroyed_
+                        << ", Acquired: " << total_acquired_
+                        << ", Released: " << total_released_;
     }
 
     std::shared_ptr<ConnectionType> acquire_connection(
@@ -389,14 +391,16 @@ private:
 
             total_created_++;
 
-            std::cout << "[ConnectionPool] Created new connection (total: "
-                      << all_connections_.size() << ")" << std::endl;
+            SHIELD_LOG_INFO
+                << "[ConnectionPool] Created new connection (total: "
+                << all_connections_.size() << ")";
 
             return pooled_conn;
 
         } catch (const std::exception& e) {
-            std::cerr << "[ConnectionPool] Failed to create connection: "
-                      << e.what() << std::endl;
+            SHIELD_LOG_ERROR
+                << "[ConnectionPool] Failed to create connection: "
+                << e.what();
             return nullptr;
         }
     }
@@ -409,8 +413,9 @@ private:
         all_connections_.erase(raw_ptr);
         total_destroyed_++;
 
-        std::cout << "[ConnectionPool] Destroyed connection (remaining: "
-                  << all_connections_.size() << ")" << std::endl;
+        SHIELD_LOG_INFO
+            << "[ConnectionPool] Destroyed connection (remaining: "
+            << all_connections_.size() << ")";
     }
 
     bool is_connection_valid(
@@ -440,8 +445,9 @@ private:
                     return false;
                 }
             } catch (const std::exception& e) {
-                std::cerr << "[ConnectionPool] Connection validation failed: "
-                          << e.what() << std::endl;
+                SHIELD_LOG_ERROR
+                    << "[ConnectionPool] Connection validation failed: "
+                    << e.what();
                 conn->mark_invalid();
                 validation_failures_++;
                 return false;
@@ -452,7 +458,7 @@ private:
     }
 
     void maintenance_loop() {
-        std::cout << "[ConnectionPool] Maintenance thread started" << std::endl;
+        SHIELD_LOG_INFO << "[ConnectionPool] Maintenance thread started";
 
         while (running_) {
             std::this_thread::sleep_for(config_.validation_interval);
@@ -462,12 +468,12 @@ private:
             try {
                 validate_connections();
             } catch (const std::exception& e) {
-                std::cerr << "[ConnectionPool] Maintenance error: " << e.what()
-                          << std::endl;
+                SHIELD_LOG_ERROR
+                    << "[ConnectionPool] Maintenance error: " << e.what();
             }
         }
 
-        std::cout << "[ConnectionPool] Maintenance thread stopped" << std::endl;
+        SHIELD_LOG_INFO << "[ConnectionPool] Maintenance thread stopped";
     }
 };
 
@@ -488,8 +494,7 @@ public:
         pools_[name] = std::static_pointer_cast<void>(pool);
         pool->start();
 
-        std::cout << "[PoolManager] Registered connection pool: " << name
-                  << std::endl;
+        SHIELD_LOG_INFO << "[PoolManager] Registered connection pool: " << name;
     }
 
     template <typename ConnectionType>
@@ -512,8 +517,7 @@ public:
         auto it = pools_.find(name);
         if (it != pools_.end()) {
             pools_.erase(it);
-            std::cout << "[PoolManager] Removed connection pool: " << name
-                      << std::endl;
+            SHIELD_LOG_INFO << "[PoolManager] Removed connection pool: " << name;
         }
     }
 
@@ -530,8 +534,8 @@ public:
     void shutdown_all() {
         std::lock_guard<std::mutex> lock(pools_mutex_);
 
-        std::cout << "[PoolManager] Shutting down " << pools_.size()
-                  << " connection pools" << std::endl;
+        SHIELD_LOG_INFO << "[PoolManager] Shutting down " << pools_.size()
+                        << " connection pools";
 
         pools_.clear();
     }
@@ -615,7 +619,7 @@ private:
     std::shared_ptr<IConnectionPool<ConnectionType>> pool_;
 
 public:
-    ConnectionGuard(std::shared_ptr<IConnectionPool<ConnectionType>> pool,
+    explicit ConnectionGuard(std::shared_ptr<IConnectionPool<ConnectionType>> pool,
                     int timeout_ms = 5000)
         : pool_(pool) {
         if (!pool_) {
@@ -701,8 +705,8 @@ public:
         monitor_thread_ =
             std::thread(&ConnectionPoolMonitor::monitor_loop, this);
 
-        std::cout << "[PoolMonitor] Started monitoring with "
-                  << interval.count() << "s interval" << std::endl;
+        SHIELD_LOG_INFO << "[PoolMonitor] Started monitoring with "
+                        << interval.count() << "s interval";
     }
 
     void stop() {
@@ -712,7 +716,7 @@ public:
             monitor_thread_.join();
         }
 
-        std::cout << "[PoolMonitor] Stopped monitoring" << std::endl;
+        SHIELD_LOG_INFO << "[PoolMonitor] Stopped monitoring";
     }
 
     void set_interval(std::chrono::seconds interval) {
@@ -726,16 +730,17 @@ private:
                 auto reports = pool_manager_->health_check();
 
                 for (const auto& report : reports) {
-                    std::cout
+                    SHIELD_LOG_INFO
                         << "[PoolMonitor] Pool '" << report.name
-                        << "': " << (report.healthy ? "HEALTHY" : "UNHEALTHY")
-                        << " (Active: " << report.active_connections << "/"
-                        << report.total_connections << ")" << std::endl;
+                        << "': "
+                        << (report.healthy ? "HEALTHY" : "UNHEALTHY")
+                        << " (Active: " << report.active_connections
+                        << "/" << report.total_connections << ")";
                 }
 
             } catch (const std::exception& e) {
-                std::cerr << "[PoolMonitor] Monitoring error: " << e.what()
-                          << std::endl;
+                SHIELD_LOG_ERROR
+                    << "[PoolMonitor] Monitoring error: " << e.what();
             }
 
             std::this_thread::sleep_for(monitor_interval_);

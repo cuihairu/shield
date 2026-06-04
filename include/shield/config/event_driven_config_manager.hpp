@@ -8,7 +8,7 @@
 namespace shield::config {
 
 // 事件驱动的配置管理器
-class EventDrivenConfigManager : public ConfigManager {
+class EventDrivenConfigManager final : public ConfigManager {
 public:
     static EventDrivenConfigManager& instance() {
         static EventDrivenConfigManager instance;

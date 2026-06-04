@@ -4,10 +4,11 @@
 #include <algorithm>
 #include <boost/url/parse.hpp>
 #include <boost/url/url.hpp>
-#include <iostream>
 #include <map>
 #include <random>
 #include <sstream>
+
+#include "shield/log/logger.hpp"
 
 namespace shield::discovery {
 
@@ -62,7 +63,7 @@ std::string ConsulServiceDiscovery::_send_http_request(
         ec = {};
     }
     if (ec) {
-        std::cerr << "HTTP Request Error: " << ec.message() << std::endl;
+        SHIELD_LOG_ERROR << "HTTP Request Error: " << ec.message();
         return "";
     }
 
@@ -125,7 +126,7 @@ bool ConsulServiceDiscovery::register_service(
         return true;
     }
 
-    std::cerr << "Consul register_service failed: " << response << std::endl;
+    SHIELD_LOG_ERROR << "Consul register_service failed: " << response;
     return false;
 }
 
@@ -145,7 +146,7 @@ bool ConsulServiceDiscovery::deregister_service(
         return true;
     }
 
-    std::cerr << "Consul deregister_service failed: " << response << std::endl;
+    SHIELD_LOG_ERROR << "Consul deregister_service failed: " << response;
     return false;
 }
 
@@ -202,11 +203,10 @@ std::optional<ServiceInstance> ConsulServiceDiscovery::query_service(
             return available_instances[distrib(gen)];
         }
     } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "Consul query_service JSON parse error: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "Consul query_service JSON parse error: "
+                         << e.what();
     } catch (const nlohmann::json::exception& e) {
-        std::cerr << "Consul query_service JSON exception: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "Consul query_service JSON exception: " << e.what();
     }
 
     return std::nullopt;
@@ -253,11 +253,11 @@ std::vector<ServiceInstance> ConsulServiceDiscovery::query_all_services(
             }
         }
     } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "Consul query_all_services JSON parse error: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR
+            << "Consul query_all_services JSON parse error: " << e.what();
     } catch (const nlohmann::json::exception& e) {
-        std::cerr << "Consul query_all_services JSON exception: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR
+            << "Consul query_all_services JSON exception: " << e.what();
     }
 
     return instances;
@@ -276,7 +276,7 @@ std::vector<ServiceInstance> ConsulServiceDiscovery::query_services_by_metadata(
     if (service_name_it == metadata_filters.end()) {
         // Or, we could query all services and filter client-side, but that's
         // inefficient. For now, we require a service_name for a targeted query.
-        std::cerr << "Consul query_services_by_metadata requires a "
+        SHIELD_LOG_ERROR << "Consul query_services_by_metadata requires a "
                      "'service_name' in filters."
                   << std::endl;
         return matching_instances;
@@ -333,11 +333,13 @@ std::vector<ServiceInstance> ConsulServiceDiscovery::query_services_by_metadata(
             }
         }
     } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "Consul query_services_by_metadata JSON parse error: "
-                  << e.what() << std::endl;
+        SHIELD_LOG_ERROR
+            << "Consul query_services_by_metadata JSON parse error: "
+            << e.what();
     } catch (const nlohmann::json::exception& e) {
-        std::cerr << "Consul query_services_by_metadata JSON exception: "
-                  << e.what() << std::endl;
+        SHIELD_LOG_ERROR
+            << "Consul query_services_by_metadata JSON exception: "
+            << e.what();
     }
 
     return matching_instances;
@@ -407,8 +409,8 @@ void ConsulServiceDiscovery::_check_loop() {
                 http::verb::put, target, "",
                 "text/plain");  // Content-Type can be anything, or omitted
             if (!response.empty()) {
-                std::cerr << "Consul heartbeat failed for check " << check_id
-                          << ": " << response << std::endl;
+                SHIELD_LOG_ERROR << "Consul heartbeat failed for check "
+                                 << check_id << ": " << response;
             }
         }
     }

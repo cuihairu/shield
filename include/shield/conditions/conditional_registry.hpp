@@ -38,7 +38,7 @@ public:
  */
 class PropertyCondition final : public Condition {
 public:
-    PropertyCondition(const std::string& property_name,
+    explicit PropertyCondition(const std::string& property_name,
                       const std::string& expected_value = "true",
                       bool match_if_missing = false)
         : property_name_(property_name),

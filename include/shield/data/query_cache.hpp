@@ -65,7 +65,7 @@ class CacheEntry {
 private:
     QueryResult result_;
     std::chrono::steady_clock::time_point created_at_;
-    std::chrono::steady_clock::time_point last_accessed_;
+    mutable std::chrono::steady_clock::time_point last_accessed_;
     std::chrono::seconds ttl_;
     std::atomic<size_t> access_count_{0};
     mutable std::mutex access_mutex_;
@@ -308,7 +308,7 @@ private:
 // 缓存装饰器数据源
 // =====================================
 
-class CachedDataSource : public IDataSource {
+class CachedDataSource final : public IDataSource {
 private:
     std::shared_ptr<IDataSource> underlying_datasource_;
     std::shared_ptr<QueryCacheManager> cache_manager_;
@@ -379,7 +379,7 @@ public:
         const std::string& pattern) = 0;
 };
 
-class RedisDistributedCache : public DistributedCacheProvider {
+class RedisDistributedCache final : public DistributedCacheProvider {
 private:
     std::shared_ptr<RedisDataSource> redis_client_;
 

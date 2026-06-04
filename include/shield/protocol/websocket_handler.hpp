@@ -22,7 +22,7 @@ struct WebSocketConnection {
 };
 
 // WebSocket protocol handler implementation
-class WebSocketProtocolHandler : public IProtocolHandler {
+class WebSocketProtocolHandler final : public IProtocolHandler {
 public:
     using MessageHandler =
         std::function<void(uint64_t connection_id, const std::string &message)>;

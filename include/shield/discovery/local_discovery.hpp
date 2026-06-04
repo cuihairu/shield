@@ -19,7 +19,7 @@ namespace shield::discovery {
 /// interface. Ideal for local development, unit/integration testing, and
 /// simple deployments. This implementation is thread-safe, supports TTL-based
 /// service expiration, and persists data to a local file.
-class LocalServiceDiscovery : public IServiceDiscovery {
+class LocalServiceDiscovery final : public IServiceDiscovery {
 public:
     LocalServiceDiscovery(
         std::chrono::seconds cleanup_interval = std::chrono::seconds(300),

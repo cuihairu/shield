@@ -1,7 +1,7 @@
-#include <iostream>
 #include <lua.hpp>
 
 #include "shield/database/database_actor_service.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::database::lua_bindings {
 
@@ -202,8 +202,8 @@ int lua_execute_query_async(lua_State* L) {
         push_query_result(L, result);
 
         if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
-            std::cerr << "[DatabaseLua] Callback error: " << lua_tostring(L, -1)
-                      << std::endl;
+            SHIELD_LOG_ERROR << "[DatabaseLua] Callback error: "
+                             << lua_tostring(L, -1);
             lua_pop(L, 1);
         }
 
@@ -316,8 +316,8 @@ void register_database_service(lua_State* L, DatabaseActorService& service) {
 
     lua_pop(L, 2);  // 清理栈
 
-    std::cout << "[DatabaseLua] Registered database functions to Lua"
-              << std::endl;
+    SHIELD_LOG_INFO
+        << "[DatabaseLua] Registered database functions to Lua";
 }
 
 // =====================================
@@ -356,9 +356,9 @@ int lua_actor_query_database(lua_State* L) {
                  query_id = std::string(query_id)]() mutable {
         QueryResult result = future.get();
 
-        std::cout << "[DatabaseLua] Query completed for " << callback_actor
-                  << " (ID: " << query_id << "), success: " << result.success
-                  << std::endl;
+        SHIELD_LOG_DEBUG << "[DatabaseLua] Query completed for "
+                         << callback_actor << " (ID: " << query_id
+                         << "), success: " << result.success;
 
         // 这里应该调用Actor消息系统发送结果
         // send_message_to_actor(callback_actor, "database_result", {query_id,

@@ -89,7 +89,7 @@ public:
     std::string name() const override { return "ScriptConfiguration"; }
 };
 
-class ApplicationConfiguration : public Configuration {
+class ApplicationConfiguration final : public Configuration {
 private:
     std::vector<std::unique_ptr<Configuration>> configurations_;
 

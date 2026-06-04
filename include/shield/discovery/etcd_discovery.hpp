@@ -15,7 +15,7 @@ class Client;
 namespace shield::discovery {
 
 /// @brief An implementation of IServiceDiscovery using an etcd v3 backend.
-class EtcdServiceDiscovery : public IServiceDiscovery {
+class EtcdServiceDiscovery final : public IServiceDiscovery {
 public:
     /// @param etcd_endpoints A comma-separated list of etcd server endpoints,
     /// e.g., "http://127.0.0.1:2379".

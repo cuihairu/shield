@@ -88,7 +88,7 @@ public:
  * @brief Template factory for automatic constructor injection
  */
 template <typename T>
-class AutoInjectFactory : public IServiceFactory {
+class AutoInjectFactory final : public IServiceFactory {
 public:
     std::shared_ptr<void> create(Container& container,
                                  ResolutionContext& context) override {
@@ -127,7 +127,7 @@ private:
 /**
  * @brief Advanced dependency injection container with constructor injection
  */
-class AdvancedContainer : public Container {
+class AdvancedContainer final : public Container {
 public:
     AdvancedContainer() = default;
     ~AdvancedContainer() = default;
@@ -220,7 +220,7 @@ private:
     }
 
     template <typename T>
-    class CustomFactory : public IServiceFactory {
+    class CustomFactory final : public IServiceFactory {
     public:
         CustomFactory(
             std::function<std::shared_ptr<T>(AdvancedContainer&)> factory,

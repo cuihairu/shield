@@ -24,7 +24,7 @@ struct ComponentMetadata {
     bool primary = false;
     std::vector<std::string> profiles;
 
-    ComponentMetadata(const std::string& comp_name = "",
+    explicit ComponentMetadata(const std::string& comp_name = "",
                       const std::string& comp_value = "",
                       bool is_primary = false)
         : name(comp_name), value(comp_value), primary(is_primary) {}
@@ -37,7 +37,7 @@ struct ServiceMetadata {
     std::string name;
     std::string value;
 
-    ServiceMetadata(const std::string& svc_name = "",
+    explicit ServiceMetadata(const std::string& svc_name = "",
                     const std::string& svc_value = "")
         : name(svc_name), value(svc_value) {}
 };
@@ -49,7 +49,7 @@ struct ConfigurationMetadata {
     std::string name;
     bool proxy_bean_methods = true;
 
-    ConfigurationMetadata(const std::string& config_name = "",
+    explicit ConfigurationMetadata(const std::string& config_name = "",
                           bool proxy = true)
         : name(config_name), proxy_bean_methods(proxy) {}
 };

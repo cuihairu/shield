@@ -33,7 +33,7 @@ private:
 };
 
 // HTTP protocol handler implementation
-class HttpProtocolHandler : public IProtocolHandler {
+class HttpProtocolHandler final : public IProtocolHandler {
 public:
     using BeastRequest =
         boost::beast::http::request<boost::beast::http::string_body>;

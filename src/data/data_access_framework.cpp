@@ -231,7 +231,7 @@ public:
     std::future<QueryResult> find_one(const QueryBuilder& query) override {
         return std::async(std::launch::async, [this, query]() {
             auto modified_query = query;
-            const_cast<QueryBuilder&>(modified_query).limit(1);
+            modified_query.limit(1);
             std::string sql = build_postgresql_select(modified_query);
             auto params = extract_parameters(modified_query);
             auto result = execute_postgresql_query(sql, params);
@@ -346,8 +346,7 @@ public:
     std::future<size_t> count(const QueryBuilder& query) override {
         return std::async(std::launch::async, [this, query]() -> size_t {
             auto modified_query = query;
-            const_cast<QueryBuilder&>(modified_query)
-                .select({"COUNT(*) as count"});
+            modified_query.select({"COUNT(*) as count"});
 
             std::string sql = build_postgresql_select(modified_query);
             auto params = extract_parameters(modified_query);
@@ -782,7 +781,7 @@ public:
     std::future<QueryResult> find_one(const QueryBuilder& query) override {
         return std::async(std::launch::async, [this, query]() {
             auto modified_query = query;
-            const_cast<QueryBuilder&>(modified_query).limit(1);
+            modified_query.limit(1);
             std::string es_query = build_elasticsearch_query(modified_query);
             auto result =
                 execute_search(modified_query.get_collection(), es_query);

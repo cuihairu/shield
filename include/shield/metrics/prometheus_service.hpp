@@ -33,7 +33,7 @@ public:
 #ifdef SHIELD_ENABLE_PROMETHEUS
 
 // System metrics collector
-class SystemMetricsCollector : public MetricsCollector {
+class SystemMetricsCollector final : public MetricsCollector {
 public:
     SystemMetricsCollector(std::shared_ptr<prometheus::Registry> registry);
     void collect() override;
@@ -53,7 +53,7 @@ private:
 };
 
 // Network metrics collector
-class NetworkMetricsCollector : public MetricsCollector {
+class NetworkMetricsCollector final : public MetricsCollector {
 public:
     NetworkMetricsCollector(std::shared_ptr<prometheus::Registry> registry);
     void collect() override;
@@ -108,7 +108,7 @@ private:
 };
 
 // Game-specific metrics collector
-class GameMetricsCollector : public MetricsCollector {
+class GameMetricsCollector final : public MetricsCollector {
 public:
     GameMetricsCollector(std::shared_ptr<prometheus::Registry> registry);
     void collect() override;
@@ -141,7 +141,7 @@ private:
 #else
 
 // Stub implementations when Prometheus is not available
-class SystemMetricsCollector : public MetricsCollector {
+class SystemMetricsCollector final : public MetricsCollector {
 public:
     SystemMetricsCollector(std::shared_ptr<void> registry = nullptr) {}
     void collect() override {}
@@ -151,7 +151,7 @@ private:
     std::string name_ = "system";
 };
 
-class NetworkMetricsCollector : public MetricsCollector {
+class NetworkMetricsCollector final : public MetricsCollector {
 public:
     NetworkMetricsCollector(std::shared_ptr<void> registry = nullptr) {}
     void collect() override {}
@@ -168,7 +168,7 @@ private:
     std::string name_ = "network";
 };
 
-class GameMetricsCollector : public MetricsCollector {
+class GameMetricsCollector final : public MetricsCollector {
 public:
     GameMetricsCollector(std::shared_ptr<void> registry = nullptr) {}
     void collect() override {}

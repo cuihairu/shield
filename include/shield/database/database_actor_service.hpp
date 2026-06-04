@@ -52,7 +52,7 @@ public:
 };
 
 // MySQL连接实现
-class MySQLConnection : public IDatabaseConnection {
+class MySQLConnection final : public IDatabaseConnection {
 private:
     DatabaseConfig config_;
     void* mysql_conn_ = nullptr;  // MYSQL* 连接句柄

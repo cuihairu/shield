@@ -282,7 +282,7 @@ public:
 // =====================================
 
 // MySQL数据源
-class MySQLDataSource : public IDataSource {
+class MySQLDataSource final : public IDataSource {
 private:
     DataSourceConfig config_;
     void* connection_pool_;  // 连接池实现
@@ -323,7 +323,7 @@ private:
 };
 
 // PostgreSQL数据源
-class PostgreSQLDataSource : public IDataSource {
+class PostgreSQLDataSource final : public IDataSource {
     // 类似MySQL实现，但使用PostgreSQL特定的API
 public:
     explicit PostgreSQLDataSource(const DataSourceConfig& config);
@@ -336,7 +336,7 @@ public:
 // =====================================
 
 // MongoDB数据源
-class MongoDataSource : public IDataSource {
+class MongoDataSource final : public IDataSource {
 private:
     DataSourceConfig config_;
     void* mongo_client_;  // MongoDB C++ driver客户端
@@ -377,7 +377,7 @@ private:
 };
 
 // Redis数据源（键值存储）
-class RedisDataSource : public IDataSource {
+class RedisDataSource final : public IDataSource {
 private:
     DataSourceConfig config_;
     void* redis_client_;
@@ -421,7 +421,7 @@ public:
 };
 
 // Elasticsearch数据源
-class ElasticsearchDataSource : public IDataSource {
+class ElasticsearchDataSource final : public IDataSource {
 private:
     DataSourceConfig config_;
     void* es_client_;
@@ -459,7 +459,7 @@ public:
                                  CreateFunction creator);
 
     // 创建数据源
-    stati std::unique_ptr<IDataSource> create(const DataSourceConfig& config);
+    static std::unique_ptr<IDataSource> create(const DataSourceConfig& config);
 
     // 获取支持的数据源类型
     static std::vector<std::string> get_supported_types();

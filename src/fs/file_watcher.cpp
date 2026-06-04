@@ -28,8 +28,6 @@
 #ifdef _WIN32
 #include <fileapi.h>
 #include <windows.h>
-
-#include <iostream>
 #endif
 
 namespace shield::fs {
@@ -643,52 +641,54 @@ void WindowsFileWatcher::process_directory_changes(WatchInfo* watch_info) {
         return;
     }
 
-    if (bytes_transferred == 0) {
-        goto restart_watch;
-    }
+    if (bytes_transferred != 0) {
+        FILE_NOTIFY_INFORMATION* fni =
+            reinterpret_cast<FILE_NOTIFY_INFORMATION*>(watch_info->buffer);
 
-    FILE_NOTIFY_INFORMATION* fni =
-        reinterpret_cast<FILE_NOTIFY_INFORMATION*>(watch_info->buffer);
+        while (true) {
+            std::wstring wide_filename(fni->FileName,
+                                       fni->FileNameLength / sizeof(WCHAR));
+            std::string filename(wide_filename.begin(), wide_filename.end());
 
-    while (true) {
-        std::wstring wide_filename(fni->FileName,
-                                   fni->FileNameLength / sizeof(WCHAR));
-        std::string filename(wide_filename.begin(), wide_filename.end());
+            // Check if this file is in our watch list
+            if (std::find(watch_info->files.begin(), watch_info->files.end(),
+                          filename) != watch_info->files.end()) {
+                FileEvent event(watch_info->directory + "\\" + filename,
+                                FileEventType::Modified);
 
-        // Check if this file is in our watch list
-        if (std::find(watch_info->files.begin(), watch_info->files.end(),
-                      filename) != watch_info->files.end()) {
-            FileEvent event(watch_info->directory + "\\" + filename,
-                            FileEventType::Modified);
+                switch (fni->Action) {
+                    case FILE_ACTION_MODIFIED:
+                        event.event_type = FileEventType::Modified;
+                        break;
+                    case FILE_ACTION_ADDED:
+                    case FILE_ACTION_RENAMED_NEW_NAME:
+                        event.event_type = FileEventType::Created;
+                        break;
+                    case FILE_ACTION_REMOVED:
+                    case FILE_ACTION_RENAMED_OLD_NAME:
+                        event.event_type = FileEventType::Deleted;
+                        break;
+                    default:
+                        break;  // Skip unknown actions
+                }
 
-            switch (fni->Action) {
-                case FILE_ACTION_MODIFIED:
-                    event.event_type = FileEventType::Modified;
-                    break;
-                case FILE_ACTION_ADDED:
-                case FILE_ACTION_RENAMED_NEW_NAME:
-                    event.event_type = FileEventType::Created;
-                    break;
-                case FILE_ACTION_REMOVED:
-                case FILE_ACTION_RENAMED_OLD_NAME:
-                    event.event_type = FileEventType::Deleted;
-                    break;
-                default:
-                    goto next_entry;
+                if (fni->Action == FILE_ACTION_MODIFIED ||
+                    fni->Action == FILE_ACTION_ADDED ||
+                    fni->Action == FILE_ACTION_RENAMED_NEW_NAME ||
+                    fni->Action == FILE_ACTION_REMOVED ||
+                    fni->Action == FILE_ACTION_RENAMED_OLD_NAME) {
+                    SHIELD_LOG_DEBUG << "Windows file event: " << event.file_path
+                                     << " (action=" << fni->Action << ")";
+                    handler_(event);
+                }
             }
 
-            SHIELD_LOG_DEBUG << "Windows file event: " << event.file_path
-                             << " (action=" << fni->Action << ")";
-            handler_(event);
+            if (fni->NextEntryOffset == 0) break;
+            fni = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(
+                reinterpret_cast<char*>(fni) + fni->NextEntryOffset);
         }
-
-    next_entry:
-        if (fni->NextEntryOffset == 0) break;
-        fni = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(
-            reinterpret_cast<char*>(fni) + fni->NextEntryOffset);
     }
 
-restart_watch:
     // Restart the watch
     ResetEvent(watch_info->overlapped.hEvent);
     ReadDirectoryChangesW(

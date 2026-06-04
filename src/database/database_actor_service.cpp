@@ -1,8 +1,9 @@
 #include "shield/database/database_actor_service.hpp"
 
 #include <chrono>
-#include <iostream>
 #include <thread>
+
+#include "shield/log/logger.hpp"
 
 // 这里需要包含MySQL C API
 #ifdef SHIELD_USE_MYSQL
@@ -45,18 +46,18 @@ bool MySQLConnection::connect() {
                            config_.password.c_str(), config_.database.c_str(),
                            config_.port, nullptr, CLIENT_MULTI_STATEMENTS)) {
         connected_ = true;
-        std::cout << "[MySQL] Connected to " << config_.host << ":"
-                  << config_.port << "/" << config_.database << std::endl;
+        SHIELD_LOG_INFO << "[MySQL] Connected to " << config_.host << ":"
+                        << config_.port << "/" << config_.database;
         return true;
     } else {
         connected_ = false;
-        std::cerr << "[MySQL] Connection failed: "
-                  << mysql_error(static_cast<MYSQL*>(mysql_conn_)) << std::endl;
+        SHIELD_LOG_ERROR << "[MySQL] Connection failed: "
+                         << mysql_error(static_cast<MYSQL*>(mysql_conn_));
         return false;
     }
 #else
-    std::cout << "[MySQL] Mock connection to " << config_.host << ":"
-              << config_.port << "/" << config_.database << std::endl;
+    SHIELD_LOG_INFO << "[MySQL] Mock connection to " << config_.host << ":"
+                    << config_.port << "/" << config_.database;
     connected_ = true;
     return true;
 #endif
@@ -202,8 +203,7 @@ std::string MySQLConnection::escape_string(const std::string& str) {
 void MySQLConnection::check_connection() {
 #ifdef SHIELD_USE_MYSQL
     if (mysql_ping(static_cast<MYSQL*>(mysql_conn_)) != 0) {
-        std::cerr << "[MySQL] Connection lost, attempting to reconnect..."
-                  << std::endl;
+        SHIELD_LOG_WARN << "[MySQL] Connection lost, attempting to reconnect...";
         connect();
     }
 #endif
@@ -214,8 +214,8 @@ QueryResult MySQLConnection::handle_mysql_error() {
     std::string error_msg = mysql_error(static_cast<MYSQL*>(mysql_conn_));
     int error_no = mysql_errno(static_cast<MYSQL*>(mysql_conn_));
 
-    std::cerr << "[MySQL] Query failed (" << error_no << "): " << error_msg
-              << std::endl;
+    SHIELD_LOG_ERROR << "[MySQL] Query failed (" << error_no << "): "
+                     << error_msg;
 
     return {false, error_msg, {}, 0, 0};
 #else
@@ -256,9 +256,9 @@ void DatabaseConnectionPool::initialize_pool() {
             *dynamic_cast<MySQLConnection*>(conn.get())));
     }
 
-    std::cout << "[ConnectionPool] Initialized pool with "
-              << available_connections_.size() << " connections for "
-              << config_.database << std::endl;
+    SHIELD_LOG_INFO << "[ConnectionPool] Initialized pool with "
+                    << available_connections_.size() << " connections for "
+                    << config_.database;
 }
 
 std::unique_ptr<IDatabaseConnection>
@@ -321,8 +321,8 @@ bool DatabaseActorService::register_database(const std::string& name,
     std::lock_guard<std::mutex> lock(service_mutex_);
 
     if (connection_pools_.find(name) != connection_pools_.end()) {
-        std::cerr << "[DatabaseService] Database '" << name
-                  << "' already registered" << std::endl;
+        SHIELD_LOG_ERROR << "[DatabaseService] Database '" << name
+                         << "' already registered";
         return false;
     }
 
@@ -330,12 +330,11 @@ bool DatabaseActorService::register_database(const std::string& name,
         auto pool = std::make_unique<DatabaseConnectionPool>(config);
         connection_pools_[name] = std::move(pool);
 
-        std::cout << "[DatabaseService] Registered database: " << name
-                  << std::endl;
+        SHIELD_LOG_INFO << "[DatabaseService] Registered database: " << name;
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "[DatabaseService] Failed to register database '" << name
-                  << "': " << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "[DatabaseService] Failed to register database '"
+                         << name << "': " << e.what();
         return false;
     }
 }
@@ -346,8 +345,7 @@ void DatabaseActorService::unregister_database(const std::string& name) {
     auto it = connection_pools_.find(name);
     if (it != connection_pools_.end()) {
         connection_pools_.erase(it);
-        std::cout << "[DatabaseService] Unregistered database: " << name
-                  << std::endl;
+        SHIELD_LOG_INFO << "[DatabaseService] Unregistered database: " << name;
     }
 }
 

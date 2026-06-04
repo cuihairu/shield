@@ -1,7 +1,6 @@
 #include "shield/metrics/prometheus_service.hpp"
 
 #include <fstream>
-#include <iostream>
 #include <sstream>
 
 #include "shield/config/config.hpp"
@@ -382,22 +381,22 @@ void PrometheusService::on_init(core::ApplicationContext& ctx) {
             std::make_shared<NetworkMetricsCollector>(registry_);
         game_collector_ = std::make_shared<GameMetricsCollector>(registry_);
 
-        std::cout << "Prometheus service initialized with address: "
-                  << listen_address_ << ":" << listen_port_ << std::endl;
+        SHIELD_LOG_INFO << "Prometheus service initialized with address: "
+                        << listen_address_ << ":" << listen_port_;
 #else
         // Create stub collectors
         system_collector_ = std::make_shared<SystemMetricsCollector>();
         network_collector_ = std::make_shared<NetworkMetricsCollector>();
         game_collector_ = std::make_shared<GameMetricsCollector>();
 
-        std::cout << "Prometheus service initialized (metrics disabled - "
-                     "prometheus-cpp not available)"
-                  << std::endl;
+        SHIELD_LOG_INFO
+            << "Prometheus service initialized (metrics disabled - "
+               "prometheus-cpp not available)";
 #endif
 
     } catch (const std::exception& e) {
-        std::cerr << "Failed to initialize Prometheus service: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "Failed to initialize Prometheus service: "
+                         << e.what();
         throw;
     }
 }
@@ -410,9 +409,9 @@ void PrometheusService::on_start() {
             exposer_ = std::make_unique<prometheus::Exposer>(
                 listen_address_ + ":" + std::to_string(listen_port_));
             exposer_->RegisterCollectable(registry_);
-            std::cout << "Prometheus metrics exposed on http://"
-                      << listen_address_ << ":" << listen_port_ << "/metrics"
-                      << std::endl;
+            SHIELD_LOG_INFO << "Prometheus metrics exposed on http://"
+                            << listen_address_ << ":" << listen_port_
+                            << "/metrics";
         }
 
         // Setup push gateway if enabled
@@ -420,8 +419,8 @@ void PrometheusService::on_start() {
             gateway_ = std::make_unique<prometheus::Gateway>(pushgateway_url_,
                                                              job_name_);
             gateway_->RegisterCollectable(registry_);
-            std::cout << "Prometheus push gateway configured: "
-                      << pushgateway_url_ << std::endl;
+            SHIELD_LOG_INFO << "Prometheus push gateway configured: "
+                            << pushgateway_url_;
         }
 #endif
 
@@ -430,11 +429,10 @@ void PrometheusService::on_start() {
         collection_thread_ =
             std::thread(&PrometheusService::collection_loop, this);
 
-        std::cout << "Prometheus service started" << std::endl;
+        SHIELD_LOG_INFO << "Prometheus service started";
 
     } catch (const std::exception& e) {
-        std::cerr << "Failed to start Prometheus service: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "Failed to start Prometheus service: " << e.what();
         throw;
     }
 }
@@ -452,8 +450,7 @@ void PrometheusService::on_stop() {
             // Push final metrics
             gateway_->Push();
         } catch (const std::exception& e) {
-            std::cerr << "Failed to push final metrics: " << e.what()
-                      << std::endl;
+            SHIELD_LOG_ERROR << "Failed to push final metrics: " << e.what();
         }
         gateway_.reset();
     }
@@ -461,7 +458,7 @@ void PrometheusService::on_stop() {
     exposer_.reset();
 #endif
 
-    std::cout << "Prometheus service stopped" << std::endl;
+    SHIELD_LOG_INFO << "Prometheus service stopped";
 }
 
 void PrometheusService::on_config_reloaded() {
@@ -492,8 +489,8 @@ void PrometheusService::collection_loop() {
 #endif
 
         } catch (const std::exception& e) {
-            std::cerr << "Error during metrics collection: " << e.what()
-                      << std::endl;
+            SHIELD_LOG_ERROR << "Error during metrics collection: "
+                             << e.what();
         }
 
         // Sleep for collection interval
@@ -516,8 +513,8 @@ void PrometheusService::collect_all_metrics() {
         try {
             collector->collect();
         } catch (const std::exception& e) {
-            std::cerr << "Error collecting metrics from " << collector->name()
-                      << ": " << e.what() << std::endl;
+            SHIELD_LOG_ERROR << "Error collecting metrics from "
+                             << collector->name() << ": " << e.what();
         }
     }
 }

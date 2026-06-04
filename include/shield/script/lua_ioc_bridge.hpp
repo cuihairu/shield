@@ -116,7 +116,7 @@ private:
 template <typename T>
 class LuaServiceWrapper {
 public:
-    LuaServiceWrapper(std::shared_ptr<T> cpp_service) : service_(cpp_service) {}
+    explicit LuaServiceWrapper(std::shared_ptr<T> cpp_service) : service_(cpp_service) {}
 
     // Expose C++ service methods to Lua
     void bind_to_lua(sol::state& lua, const std::string& name) {

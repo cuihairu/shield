@@ -67,7 +67,7 @@ private:
 /**
  * @brief Extended container with automatic constructor injection
  */
-class ServiceContainer : public Container {
+class ServiceContainer final : public Container {
 public:
     /**
      * @brief Register service with automatic constructor injection

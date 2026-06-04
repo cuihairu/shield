@@ -2,7 +2,6 @@
 
 #include <boost/log/core.hpp>
 #include <boost/log/expressions.hpp>
-#include <iostream>
 
 #include "shield/log/logger.hpp"
 
@@ -122,8 +121,8 @@ bool DynamicLogConfigManager::is_file_enabled() const {
 void DynamicLogConfigManager::on_config_changed(const std::string& field_name,
                                                 const std::string& old_value,
                                                 const std::string& new_value) {
-    std::cout << "Log config changed: " << field_name << " from '" << old_value
-              << "' to '" << new_value << "'" << std::endl;
+    SHIELD_LOG_INFO << "Log config changed: " << field_name << " from '"
+                    << old_value << "' to '" << new_value << "'";
 
     if (field_name == "global_level") {
         LogConfig::LogLevel new_level = level_from_string(new_value);
@@ -177,8 +176,8 @@ void DynamicLogConfigManager::apply_level_change(
             }
         }());
 
-    std::cout << "Applied new global log level: " << level_to_string(new_level)
-              << std::endl;
+    SHIELD_LOG_INFO << "Applied new global log level: "
+                    << level_to_string(new_level);
 }
 
 LogConfig::LogLevel DynamicLogConfigManager::level_from_string(

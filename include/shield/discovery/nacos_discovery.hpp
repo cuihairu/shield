@@ -28,7 +28,7 @@ using tcp = boost::asio::ip::tcp;  // from <boost/asio/ip/tcp.hpp>
 
 /// @brief An implementation of IServiceDiscovery using Nacos as a backend.
 /// This implementation interacts with Nacos via its HTTP REST API.
-class NacosServiceDiscovery : public IServiceDiscovery {
+class NacosServiceDiscovery final : public IServiceDiscovery {
 public:
     /// @brief Constructs a NacosServiceDiscovery instance.
     /// @param nacos_server_address The Nacos server address (host:port), e.g.,

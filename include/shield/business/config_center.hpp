@@ -89,7 +89,7 @@ public:
 };
 
 // File-based configuration center implementation
-class FileBasedConfigCenter : public ConfigCenter {
+class FileBasedConfigCenter final : public ConfigCenter {
 public:
     explicit FileBasedConfigCenter(const std::string& config_file);
     ~FileBasedConfigCenter() override;

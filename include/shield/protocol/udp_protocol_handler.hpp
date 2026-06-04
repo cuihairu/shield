@@ -26,14 +26,14 @@ struct UdpMessage {
           timestamp(std::chrono::steady_clock::now()) {}
 };
 
-class UdpProtocolHandler : public IProtocolHandler {
+class UdpProtocolHandler final : public IProtocolHandler {
 public:
     using UdpMessageCallback = std::function<void(const UdpMessage &message)>;
     using UdpSessionTimeoutCallback = std::function<void(uint64_t session_id)>;
 
     explicit UdpProtocolHandler(boost::asio::io_context &io_context,
                                 uint16_t port);
-    virtual ~UdpProtocolHandler();
+    ~UdpProtocolHandler() override;
 
     // IProtocolHandler interface
     void handle_data(uint64_t connection_id, const char *data,

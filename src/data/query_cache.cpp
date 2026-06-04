@@ -7,6 +7,8 @@
 #include <iomanip>
 #include <sstream>
 
+#include "shield/log/logger.hpp"
+
 namespace shield::data::cache {
 
 // =====================================
@@ -115,8 +117,7 @@ CacheEntry::CacheEntry(const QueryResult& result, std::chrono::seconds ttl)
 const QueryResult& CacheEntry::get_result() const {
     std::lock_guard<std::mutex> lock(access_mutex_);
     access_count_++;
-    const_cast<CacheEntry*>(this)->last_accessed_ =
-        std::chrono::steady_clock::now();
+    last_accessed_ = std::chrono::steady_clock::now();
     return result_;
 }
 
@@ -199,8 +200,9 @@ void QueryCacheManager::start() {
         refresh_thread_ = std::thread(&QueryCacheManager::refresh_loop, this);
     }
 
-    std::cout << "[QueryCache] Started with max_entries=" << config_.max_entries
-              << ", ttl=" << config_.default_ttl.count() << "s" << std::endl;
+    SHIELD_LOG_INFO << "[QueryCache] Started with max_entries="
+                    << config_.max_entries
+                    << ", ttl=" << config_.default_ttl.count() << "s";
 }
 
 void QueryCacheManager::stop() {
@@ -214,11 +216,12 @@ void QueryCacheManager::stop() {
         refresh_thread_.join();
     }
 
-    std::cout << "[QueryCache] Stopped. Final statistics - Hits: "
-              << statistics_.cache_hits.load()
-              << ", Misses: " << statistics_.cache_misses.load()
-              << ", Hit ratio: " << std::fixed << std::setprecision(2)
-              << (statistics_.get_hit_ratio() * 100) << "%" << std::endl;
+    SHIELD_LOG_INFO
+        << "[QueryCache] Stopped. Final statistics - Hits: "
+        << statistics_.cache_hits.load()
+        << ", Misses: " << statistics_.cache_misses.load()
+        << ", Hit ratio: " << std::fixed << std::setprecision(2)
+        << (statistics_.get_hit_ratio() * 100) << "%";
 }
 
 void QueryCacheManager::cleanup_loop() {
@@ -230,8 +233,7 @@ void QueryCacheManager::cleanup_loop() {
         try {
             cleanup_expired_entries();
         } catch (const std::exception& e) {
-            std::cerr << "[QueryCache] Cleanup error: " << e.what()
-                      << std::endl;
+            SHIELD_LOG_ERROR << "[QueryCache] Cleanup error: " << e.what();
         }
     }
 }
@@ -245,8 +247,7 @@ void QueryCacheManager::refresh_loop() {
         try {
             refresh_expired_entries_async();
         } catch (const std::exception& e) {
-            std::cerr << "[QueryCache] Refresh error: " << e.what()
-                      << std::endl;
+            SHIELD_LOG_ERROR << "[QueryCache] Refresh error: " << e.what();
         }
     }
 }
@@ -267,8 +268,8 @@ void QueryCacheManager::cleanup_expired_entries() {
     statistics_.cache_size = cache_.size();
 
     if (cleaned_count > 0) {
-        std::cout << "[QueryCache] Cleaned up " << cleaned_count
-                  << " expired entries" << std::endl;
+        SHIELD_LOG_INFO << "[QueryCache] Cleaned up " << cleaned_count
+                        << " expired entries";
     }
 }
 
@@ -299,8 +300,9 @@ void QueryCacheManager::refresh_expired_entries_async() {
                 std::this_thread::sleep_for(std::chrono::milliseconds{10});
 
                 // 实际的刷新逻辑需要访问原始数据源，这里只是模拟
-                std::cout << "[QueryCache] Async refresh for key: "
-                          << key.to_string() << std::endl;
+                SHIELD_LOG_DEBUG
+                    << "[QueryCache] Async refresh for key: "
+                    << key.to_string();
 
                 {
                     std::lock_guard<std::mutex> lock(refresh_mutex_);
@@ -317,8 +319,8 @@ void QueryCacheManager::preload_cache(
         put(entry.first, entry.second);
     }
 
-    std::cout << "[QueryCache] Preloaded " << entries.size() << " cache entries"
-              << std::endl;
+    SHIELD_LOG_INFO << "[QueryCache] Preloaded " << entries.size()
+                    << " cache entries";
 }
 
 void QueryCacheManager::update_statistics_on_hit() {
@@ -695,8 +697,8 @@ void QueryPerformanceMonitor::export_metrics_to_json(
     file << "\n  ]\n}\n";
     file.close();
 
-    std::cout << "[PerformanceMonitor] Exported " << metrics_.size()
-              << " query metrics to " << filename << std::endl;
+    SHIELD_LOG_INFO << "[PerformanceMonitor] Exported " << metrics_.size()
+                    << " query metrics to " << filename;
 }
 
 }  // namespace shield::data::cache

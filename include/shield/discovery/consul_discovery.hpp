@@ -29,7 +29,7 @@ using tcp = boost::asio::ip::tcp;  // from <boost/asio/ip/tcp.hpp>
 
 /// @brief An implementation of IServiceDiscovery using Consul as a backend.
 /// This implementation interacts with Consul via its HTTP REST API.
-class ConsulServiceDiscovery : public IServiceDiscovery {
+class ConsulServiceDiscovery final : public IServiceDiscovery {
 public:
     /// @brief Constructs a ConsulServiceDiscovery instance.
     /// @param consul_server_address The Consul agent address (host:port), e.g.,

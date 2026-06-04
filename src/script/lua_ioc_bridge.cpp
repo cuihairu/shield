@@ -1,8 +1,9 @@
 // shield/src/script/lua_ioc_bridge.cpp
 #include "shield/script/lua_ioc_bridge.hpp"
 
-#include <iostream>
 #include <stdexcept>
+
+#include "shield/log/logger.hpp"
 
 namespace shield::lua {
 
@@ -35,13 +36,13 @@ void LuaIoCBridge::export_lua_service(const std::string& name,
             // 注册到 C++ 上下文
             // cpp_context_.register_service(name, wrapper);
 
-            std::cout << "[LuaIoCBridge] Exported Lua service '"
-                      << lua_service_name << "' as '" << name << "' to C++"
-                      << std::endl;
+            SHIELD_LOG_INFO << "[LuaIoCBridge] Exported Lua service '"
+                            << lua_service_name << "' as '" << name
+                            << "' to C++";
         }
     } catch (const sol::error& e) {
-        std::cerr << "[LuaIoCBridge] Failed to export Lua service: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "[LuaIoCBridge] Failed to export Lua service: "
+                         << e.what();
     }
 }
 
@@ -49,8 +50,8 @@ sol::object LuaIoCBridge::resolve_lua_service(const std::string& name) {
     try {
         return lua_state_["shield"]["container"]["resolve"](name);
     } catch (const sol::error& e) {
-        std::cerr << "[LuaIoCBridge] Failed to resolve Lua service '" << name
-                  << "': " << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "[LuaIoCBridge] Failed to resolve Lua service '"
+                         << name << "': " << e.what();
         return sol::lua_nil;
     }
 }
@@ -63,10 +64,10 @@ void LuaIoCBridge::start_lua_container() {
             end
         )");
 
-        std::cout << "[LuaIoCBridge] Lua IoC container started" << std::endl;
+        SHIELD_LOG_INFO << "[LuaIoCBridge] Lua IoC container started";
     } catch (const sol::error& e) {
-        std::cerr << "[LuaIoCBridge] Failed to start Lua container: "
-                  << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "[LuaIoCBridge] Failed to start Lua container: "
+                         << e.what();
     }
 }
 
@@ -78,10 +79,10 @@ void LuaIoCBridge::stop_lua_container() {
             end
         )");
 
-        std::cout << "[LuaIoCBridge] Lua IoC container stopped" << std::endl;
+        SHIELD_LOG_INFO << "[LuaIoCBridge] Lua IoC container stopped";
     } catch (const sol::error& e) {
-        std::cerr << "[LuaIoCBridge] Failed to stop Lua container: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "[LuaIoCBridge] Failed to stop Lua container: "
+                         << e.what();
     }
 }
 
@@ -94,8 +95,9 @@ void LuaIoCBridge::forward_cpp_event_to_lua(const std::string& event_type,
             handler(event_type, event_data);
         }
     } catch (const sol::error& e) {
-        std::cerr << "[LuaIoCBridge] Failed to forward C++ event to Lua: "
-                  << e.what() << std::endl;
+        SHIELD_LOG_ERROR
+            << "[LuaIoCBridge] Failed to forward C++ event to Lua: "
+            << e.what();
     }
 }
 
@@ -107,8 +109,9 @@ void LuaIoCBridge::forward_lua_event_to_cpp(const std::string& event_type,
         try {
             it->second(event_data);
         } catch (const std::exception& e) {
-            std::cerr << "[LuaIoCBridge] Error in Lua->CPP event handler: "
-                      << e.what() << std::endl;
+            SHIELD_LOG_ERROR
+                << "[LuaIoCBridge] Error in Lua->CPP event handler: "
+                << e.what();
         }
     }
 }
@@ -128,11 +131,11 @@ void LuaIoCBridge::setup_event_forwarding() {
 void LuaIoCBridge::load_lua_ioc_script(const std::string& script_path) {
     try {
         lua_state_.script_file(script_path);
-        std::cout << "[LuaIoCBridge] Loaded Lua IoC script: " << script_path
-                  << std::endl;
+        SHIELD_LOG_INFO << "[LuaIoCBridge] Loaded Lua IoC script: "
+                        << script_path;
     } catch (const sol::error& e) {
-        std::cerr << "[LuaIoCBridge] Failed to load Lua IoC script: "
-                  << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "[LuaIoCBridge] Failed to load Lua IoC script: "
+                         << e.what();
         throw std::runtime_error("Failed to load Lua IoC script: " +
                                  std::string(e.what()));
     }
@@ -183,8 +186,9 @@ sol::table LuaIoCBridge::get_lua_health_status() {
         return health;
 
     } catch (const sol::error& e) {
-        std::cerr << "[LuaIoCBridge] Failed to get Lua health status: "
-                  << e.what() << std::endl;
+        SHIELD_LOG_ERROR
+            << "[LuaIoCBridge] Failed to get Lua health status: "
+            << e.what();
 
         sol::table error_table = lua_state_.create_table();
         error_table["error"] = e.what();
@@ -318,8 +322,8 @@ void CppLuaServiceWrapper::on_init(core::ApplicationContext& ctx) {
             }
         }
     } catch (const sol::error& e) {
-        std::cerr << "[CppLuaServiceWrapper] Failed to initialize: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "[CppLuaServiceWrapper] Failed to initialize: "
+                         << e.what();
     }
 }
 
@@ -329,8 +333,8 @@ void CppLuaServiceWrapper::on_start() {
             lua_service_["on_start"](lua_service_);
         }
     } catch (const sol::error& e) {
-        std::cerr << "[CppLuaServiceWrapper] Failed to start: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "[CppLuaServiceWrapper] Failed to start: "
+                         << e.what();
     }
 }
 
@@ -340,8 +344,8 @@ void CppLuaServiceWrapper::on_stop() {
             lua_service_["on_stop"](lua_service_);
         }
     } catch (const sol::error& e) {
-        std::cerr << "[CppLuaServiceWrapper] Failed to stop: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "[CppLuaServiceWrapper] Failed to stop: "
+                         << e.what();
     }
 }
 
@@ -358,8 +362,8 @@ sol::object CppLuaServiceWrapper::call_lua_method(
         }
         return sol::lua_nil;
     } catch (const sol::error& e) {
-        std::cerr << "[CppLuaServiceWrapper] Failed to call method '"
-                  << method_name << "': " << e.what() << std::endl;
+        SHIELD_LOG_ERROR << "[CppLuaServiceWrapper] Failed to call method '"
+                         << method_name << "': " << e.what();
         return sol::lua_nil;
     }
 }

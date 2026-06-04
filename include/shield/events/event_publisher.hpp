@@ -10,7 +10,7 @@
 namespace shield::events {
 
 // 默认事件发布器实现
-class DefaultEventPublisher : public EventPublisher {
+class DefaultEventPublisher final : public EventPublisher {
 private:
     struct ListenerInfo {
         ListenerRegistration registration;

@@ -1,7 +1,6 @@
 #include "shield/script/lua_engine.hpp"
 
 #include <fstream>
-#include <iostream>
 #include <sstream>
 
 #include "shield/log/logger.hpp"

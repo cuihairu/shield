@@ -1,7 +1,5 @@
 #include "shield/net/udp_session.hpp"
 
-#include <iostream>
-
 #include "shield/log/logger.hpp"
 
 namespace shield::net {

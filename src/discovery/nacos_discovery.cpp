@@ -3,7 +3,6 @@
 
 #include <boost/url/parse.hpp>
 #include <boost/url/url.hpp>
-#include <iostream>
 #include <random>
 #include <sstream>
 
@@ -65,7 +64,7 @@ std::string NacosServiceDiscovery::_send_http_request(
         ec = {};
     }
     if (ec) {
-        std::cerr << "HTTP Request Error: " << ec.message() << std::endl;
+        SHIELD_LOG_ERROR << "HTTP Request Error: " << ec.message();
         return "";
     }
 
@@ -111,7 +110,7 @@ bool NacosServiceDiscovery::register_service(
         return true;
     }
 
-    std::cerr << "Nacos register_service failed: " << response << std::endl;
+    SHIELD_LOG_ERROR << "Nacos register_service failed: " << response;
     return false;
 }
 
@@ -137,7 +136,7 @@ bool NacosServiceDiscovery::deregister_service(const std::string& service_name,
         return true;
     }
 
-    std::cerr << "Nacos deregister_service failed: " << response << std::endl;
+    SHIELD_LOG_ERROR << "Nacos deregister_service failed: " << response;
     return false;
 }
 
@@ -193,11 +192,10 @@ std::optional<ServiceInstance> NacosServiceDiscovery::query_service(
             return available_instances[distrib(gen)];
         }
     } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "Nacos query_service JSON parse error: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "Nacos query_service JSON parse error: "
+                         << e.what();
     } catch (const nlohmann::json::exception& e) {
-        std::cerr << "Nacos query_service JSON exception: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR << "Nacos query_service JSON exception: " << e.what();
     }
 
     return std::nullopt;
@@ -241,11 +239,11 @@ std::vector<ServiceInstance> NacosServiceDiscovery::query_all_services(
             }
         }
     } catch (const nlohmann::json::parse_error& e) {
-        std::cerr << "Nacos query_all_services JSON parse error: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR
+            << "Nacos query_all_services JSON parse error: " << e.what();
     } catch (const nlohmann::json::exception& e) {
-        std::cerr << "Nacos query_all_services JSON exception: " << e.what()
-                  << std::endl;
+        SHIELD_LOG_ERROR
+            << "Nacos query_all_services JSON exception: " << e.what();
     }
 
     return instances;
@@ -368,9 +366,9 @@ void NacosServiceDiscovery::_heartbeat_loop() {
             std::string beat_response =
                 _send_http_request(http::verb::put, target, body);
             if (beat_response.find("ok") == std::string::npos) {
-                std::cerr << "Nacos heartbeat failed for instance "
-                          << instance.instance_id << ": " << beat_response
-                          << std::endl;
+                SHIELD_LOG_ERROR
+                    << "Nacos heartbeat failed for instance "
+                    << instance.instance_id << ": " << beat_response;
             }
         }
     }
