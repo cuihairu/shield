@@ -253,3 +253,31 @@ target_link_libraries(
   test_protocol_handler PRIVATE shield_core Boost::unit_test_framework
                                 Boost::headers)
 add_test(NAME test_protocol_handler COMMAND test_protocol_handler)
+
+add_executable(test_actor_system_config actor/test_actor_system_config.cpp)
+target_link_libraries(
+  test_actor_system_config PRIVATE shield_core Boost::unit_test_framework
+                                   Boost::headers)
+add_test(NAME test_actor_system_config COMMAND test_actor_system_config)
+
+add_executable(test_prometheus_config metrics/test_prometheus_config.cpp)
+target_link_libraries(
+  test_prometheus_config PRIVATE shield_core Boost::unit_test_framework
+                                 Boost::headers)
+add_test(NAME test_prometheus_config COMMAND test_prometheus_config)
+
+add_executable(test_lua_vm_pool_config_properties
+               script/test_lua_vm_pool_config.cpp)
+target_link_libraries(
+  test_lua_vm_pool_config_properties
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+add_test(NAME test_lua_vm_pool_config_properties
+         COMMAND test_lua_vm_pool_config_properties)
+
+add_executable(test_discovery_service_factory
+               discovery/test_discovery_service_factory.cpp)
+target_link_libraries(
+  test_discovery_service_factory
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+add_test(NAME test_discovery_service_factory
+         COMMAND test_discovery_service_factory)
