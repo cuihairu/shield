@@ -147,7 +147,7 @@ struct Sort {
     std::string field;
     Direction direction = ASC;
 
-    Sort(const std::string& f, Direction d = ASC) : field(f), direction(d) {}
+    explicit Sort(const std::string& f, Direction d = ASC) : field(f), direction(d) {}
 
     static Sort asc(const std::string& field) { return Sort{field, ASC}; }
     static Sort desc(const std::string& field) { return Sort{field, DESC}; }

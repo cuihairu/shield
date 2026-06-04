@@ -62,7 +62,7 @@ struct BeanMetadata {
     std::vector<std::string> init_methods;
     std::vector<std::string> destroy_methods;
 
-    BeanMetadata(const std::string& bean_name = "") : name(bean_name) {}
+    explicit BeanMetadata(const std::string& bean_name = "") : name(bean_name) {}
 };
 
 /**

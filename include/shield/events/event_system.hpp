@@ -116,7 +116,7 @@ public:
 
 class ServiceReadyEvent : public Event {
 public:
-    ServiceReadyEvent(const std::string& service_name, std::any source = {})
+    explicit ServiceReadyEvent(const std::string& service_name, std::any source = {})
         : Event(std::move(source)), service_name_(service_name) {}
 
     std::string get_event_type() const override { return "ServiceReadyEvent"; }
