@@ -144,3 +144,43 @@ target_link_libraries(
   test_event_system PRIVATE shield_core shield_extensions
                             Boost::unit_test_framework Boost::headers)
 add_test(NAME test_event_system COMMAND test_event_system)
+
+# --- Previously unregistered tests ---
+
+add_executable(test_binary_protocol unit/protocol/test_binary_protocol.cpp)
+target_link_libraries(
+  test_binary_protocol PRIVATE shield_core Boost::unit_test_framework
+                               Boost::headers)
+add_test(NAME test_binary_protocol COMMAND test_binary_protocol)
+
+add_executable(test_http_handler unit/protocol/test_http_handler.cpp)
+target_link_libraries(
+  test_http_handler PRIVATE shield_core Boost::unit_test_framework Boost::beast
+                            Boost::headers)
+add_test(NAME test_http_handler COMMAND test_http_handler)
+
+add_executable(test_local_discovery discovery/test_local_discovery.cpp)
+target_link_libraries(
+  test_local_discovery PRIVATE shield_core Boost::unit_test_framework
+                               Boost::headers)
+add_test(NAME test_local_discovery COMMAND test_local_discovery)
+
+add_executable(test_config_constants unit/config/test_config_constants.cpp)
+target_link_libraries(
+  test_config_constants PRIVATE shield_core Boost::unit_test_framework
+                                Boost::headers)
+add_test(NAME test_config_constants COMMAND test_config_constants)
+
+add_executable(test_full_system e2e/test_full_system.cpp)
+target_link_libraries(
+  test_full_system PRIVATE shield_core Boost::unit_test_framework Boost::beast
+                           Boost::headers nlohmann_json::nlohmann_json)
+add_test(NAME test_full_system COMMAND test_full_system)
+
+add_executable(test_gateway_component
+               integration/components/test_gateway_component.cpp)
+target_link_libraries(
+  test_gateway_component
+  PRIVATE shield_core shield_extensions Boost::unit_test_framework Boost::headers
+          yaml-cpp::yaml-cpp)
+add_test(NAME test_gateway_component COMMAND test_gateway_component)

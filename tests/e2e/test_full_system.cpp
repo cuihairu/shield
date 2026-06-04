@@ -22,9 +22,9 @@ using tcp = net::ip::tcp;
 struct EndToEndTestFixture {
     EndToEndTestFixture() {
         // Initialize logger
-        shield::core::LogConfig log_config;
-        log_config.level = shield::core::Logger::level_from_string("info");
-        shield::core::Logger::init(log_config);
+        shield::log::LogConfig log_config;
+        log_config.global_level = shield::log::Logger::level_from_string("info");
+        shield::log::Logger::init(log_config);
         
         // Check if server is running (this requires manual setup)
         server_running = check_server_availability();
