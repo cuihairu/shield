@@ -281,3 +281,176 @@ target_link_libraries(
   PRIVATE shield_core Boost::unit_test_framework Boost::headers)
 add_test(NAME test_discovery_service_factory
          COMMAND test_discovery_service_factory)
+
+# --- More coverage tests ---
+
+add_executable(test_service_handle service/test_service_handle.cpp)
+target_link_libraries(
+  test_service_handle PRIVATE shield_core Boost::unit_test_framework
+                              Boost::headers)
+add_test(NAME test_service_handle COMMAND test_service_handle)
+
+add_executable(test_universal_serialization_system
+               serialization/test_universal_serialization_system.cpp)
+target_link_libraries(
+  test_universal_serialization_system
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers
+          nlohmann_json::nlohmann_json)
+add_test(NAME test_universal_serialization_system
+         COMMAND test_universal_serialization_system)
+
+add_executable(test_data_access_framework
+               data/test_data_access_framework.cpp)
+target_link_libraries(
+  test_data_access_framework
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+add_test(NAME test_data_access_framework COMMAND test_data_access_framework)
+
+add_executable(test_plugin_manager core/test_plugin_manager.cpp)
+target_link_libraries(
+  test_plugin_manager PRIVATE shield_core Boost::unit_test_framework
+                              Boost::headers)
+add_test(NAME test_plugin_manager COMMAND test_plugin_manager)
+
+add_executable(test_config_reload_binder core/test_config_reload_binder.cpp)
+target_link_libraries(
+  test_config_reload_binder
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+add_test(NAME test_config_reload_binder COMMAND test_config_reload_binder)
+
+add_executable(test_service_context service/test_service_context.cpp)
+target_link_libraries(
+  test_service_context PRIVATE shield_core Boost::unit_test_framework
+                               Boost::headers)
+add_test(NAME test_service_context COMMAND test_service_context)
+
+add_executable(test_command_context cli/test_command_context.cpp)
+target_link_libraries(
+  test_command_context PRIVATE shield_core Boost::unit_test_framework
+                               Boost::headers)
+add_test(NAME test_command_context COMMAND test_command_context)
+
+add_executable(test_command_class cli/test_command_class.cpp)
+target_link_libraries(
+  test_command_class PRIVATE shield_core Boost::unit_test_framework
+                             Boost::headers)
+add_test(NAME test_command_class COMMAND test_command_class)
+
+add_executable(test_messagepack_serializer
+               serialization/test_messagepack_serializer.cpp)
+target_link_libraries(
+  test_messagepack_serializer
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers
+          nlohmann_json::nlohmann_json)
+add_test(NAME test_messagepack_serializer COMMAND test_messagepack_serializer)
+
+add_executable(test_config_registry config/test_config_registry.cpp)
+target_link_libraries(
+  test_config_registry PRIVATE shield_core Boost::unit_test_framework
+                               Boost::headers yaml-cpp::yaml-cpp)
+add_test(NAME test_config_registry COMMAND test_config_registry)
+
+add_executable(test_actor_registry actor/test_actor_registry.cpp)
+target_link_libraries(
+  test_actor_registry PRIVATE shield_core Boost::unit_test_framework
+                              Boost::headers)
+add_test(NAME test_actor_registry COMMAND test_actor_registry)
+
+add_executable(test_command_line_parser cli/test_command_line_parser.cpp)
+target_link_libraries(
+  test_command_line_parser PRIVATE shield_core Boost::unit_test_framework
+                                   Boost::headers)
+add_test(NAME test_command_line_parser COMMAND test_command_line_parser)
+
+add_executable(test_query_cache data/test_query_cache.cpp)
+target_link_libraries(
+  test_query_cache PRIVATE shield_core Boost::unit_test_framework
+                           Boost::headers)
+add_test(NAME test_query_cache COMMAND test_query_cache)
+
+add_executable(test_plugin_host core/test_plugin_host.cpp)
+target_link_libraries(
+  test_plugin_host PRIVATE shield_core Boost::unit_test_framework
+                           Boost::headers)
+add_test(NAME test_plugin_host COMMAND test_plugin_host)
+
+add_executable(test_commands commands/test_commands.cpp)
+target_link_libraries(
+  test_commands PRIVATE shield_core Boost::unit_test_framework
+                        Boost::headers yaml-cpp::yaml-cpp)
+add_test(NAME test_commands COMMAND test_commands)
+
+add_executable(test_command_base cli/test_command_base.cpp)
+target_link_libraries(
+  test_command_base PRIVATE shield_core Boost::unit_test_framework
+                            Boost::headers)
+add_test(NAME test_command_base COMMAND test_command_base)
+
+add_executable(test_root_command cli/test_root_command.cpp)
+target_link_libraries(
+  test_root_command PRIVATE shield_core Boost::unit_test_framework
+                            Boost::headers)
+add_test(NAME test_root_command COMMAND test_root_command)
+
+add_executable(test_protocol_handler_factory
+               protocol/test_protocol_handler_factory.cpp)
+target_link_libraries(
+  test_protocol_handler_factory PRIVATE shield_core
+                                        Boost::unit_test_framework Boost::headers)
+add_test(NAME test_protocol_handler_factory
+         COMMAND test_protocol_handler_factory)
+
+add_executable(test_websocket_handler protocol/test_websocket_handler.cpp)
+target_link_libraries(
+  test_websocket_handler PRIVATE shield_core Boost::unit_test_framework
+                                 Boost::headers OpenSSL::SSL OpenSSL::Crypto)
+add_test(NAME test_websocket_handler COMMAND test_websocket_handler)
+
+add_executable(test_advanced_container di/test_advanced_container.cpp)
+target_link_libraries(
+  test_advanced_container PRIVATE shield_core Boost::unit_test_framework
+                                  Boost::headers)
+add_test(NAME test_advanced_container COMMAND test_advanced_container)
+
+add_executable(test_server_command commands/test_server_command.cpp)
+target_link_libraries(
+  test_server_command PRIVATE shield_core Boost::unit_test_framework
+                              Boost::headers)
+add_test(NAME test_server_command COMMAND test_server_command)
+
+add_executable(test_actor_system_coordinator
+               actor/test_actor_system_coordinator.cpp)
+target_link_libraries(
+  test_actor_system_coordinator PRIVATE shield_core
+                                        Boost::unit_test_framework Boost::headers)
+add_test(NAME test_actor_system_coordinator
+         COMMAND test_actor_system_coordinator)
+
+add_executable(test_database_actor_service
+               database/test_database_actor_service.cpp)
+target_link_libraries(
+  test_database_actor_service
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+add_test(NAME test_database_actor_service COMMAND test_database_actor_service)
+
+add_executable(test_beast_http_server_config
+               http/test_beast_http_server_config.cpp)
+target_link_libraries(
+  test_beast_http_server_config
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+add_test(NAME test_beast_http_server_config
+         COMMAND test_beast_http_server_config)
+
+add_executable(test_distributed_actor_config
+               actor/test_distributed_actor_config.cpp)
+target_link_libraries(
+  test_distributed_actor_config
+  PRIVATE shield_core Boost::unit_test_framework Boost::headers)
+add_test(NAME test_distributed_actor_config
+         COMMAND test_distributed_actor_config)
+
+add_executable(test_service_container di/test_service_container.cpp)
+target_link_libraries(
+  test_service_container PRIVATE shield_core Boost::unit_test_framework
+                                 Boost::headers)
+add_test(NAME test_service_container COMMAND test_service_container)
