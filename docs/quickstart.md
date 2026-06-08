@@ -121,3 +121,4 @@ telnet localhost 13000
 - [Skynet 对比](skynet-comparison.md) — 与 Skynet 的区别
 - [CAF 映射](caf-mapping.md) — CAF 提供什么，Shield 添加什么
 - [游戏后端教程](tutorial-game-backend.md) — 登录/房间/聊天完整示例
+- [API 说明](api.md) — 当前 API 文档维护策略

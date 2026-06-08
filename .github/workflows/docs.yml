@@ -39,7 +39,7 @@ jobs:
         working-directory: ./docs
         run: pnpm install --frozen-lockfile=false
 
-      - name: Build VuePress
+      - name: Build VitePress
         working-directory: ./docs
         run: pnpm run docs:build
 
@@ -49,7 +49,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: 'docs/.vuepress/dist'
+          path: 'docs/.vitepress/dist'
 
   deploy:
     environment:

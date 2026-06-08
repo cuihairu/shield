@@ -704,32 +704,32 @@ jobs:
     - name: 📥 检出代码
       uses: actions/checkout@v4
 
-    - name: 💾 安装 mdBook
-      run: |
-        curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
-        rustup update
-        cargo install mdbook
+    - name: 🧰 安装 pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 9
+
+    - name: 🟢 安装 Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
 
     - name: 🔧 配置 GitHub Pages
       id: pages
       uses: actions/configure-pages@v4
 
+    - name: 📦 安装文档依赖
+      working-directory: ./docs
+      run: pnpm install --frozen-lockfile=false
+
     - name: 📖 构建文档
-      run: |
-        # 更新版本信息 (如果存在 book.toml)
-        if [ -f book.toml ]; then
-          sed -i 's/version = ".*"/version = "${{ needs.create-release.outputs.tag_name }}"/' book.toml
-          mdbook build
-        else
-          echo "book.toml not found, skipping documentation build"
-          mkdir -p book
-          echo "<h1>Documentation not configured</h1>" > book/index.html
-        fi
+      working-directory: ./docs
+      run: pnpm run docs:build
 
     - name: 📤 上传文档
       uses: actions/upload-pages-artifact@v3
       with:
-        path: ./book
+        path: ./docs/.vitepress/dist
 
     - name: 🚀 部署到 GitHub Pages
       id: deployment

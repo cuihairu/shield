@@ -6,7 +6,7 @@ heroText: Shield 游戏服务器框架
 tagline: Skynet 启发的、Actor 模型的、Lua 优先的游戏服务器运行时
 actions:
   - text: 快速开始
-    link: /guide/quickstart.html
+    link: /quickstart.html
     type: primary
   - text: 架构设计
     link: /architecture.html
