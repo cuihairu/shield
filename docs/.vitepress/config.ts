@@ -51,6 +51,10 @@ export default defineConfig({
           { text: '服务发现', link: '/service_discovery' },
           { text: '可观测性', link: '/monitoring' },
           { text: 'Schema Protocol', link: '/schema-protocol' },
+          { text: 'Schema Types', link: '/schema-types' },
+          { text: 'Schema Descriptor', link: '/schema-descriptor' },
+          { text: 'Schema Mapper', link: '/schema-mapper' },
+          { text: 'Schema Implementation', link: '/schema-implementation' },
         ],
       },
       {
