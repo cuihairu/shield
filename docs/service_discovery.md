@@ -24,14 +24,13 @@ Shield 的新目标是单节点运行时。core 不负责：
 
 这些方案不进入当前 core 文档和启动主路径。
 
-## 未来 shield_ipc / shield_cluster
+## 未来 shield_cluster
 
 如果后续实现多进程或多机器能力，应作为独立模块：
 
 | 模块 | 范围 |
 | --- | --- |
-| `shield_ipc` | 同机多进程通信、进程心跳、远端进程状态 |
-| `shield_cluster` | 跨机器通信、节点心跳、远端路由 cache |
+| `shield_cluster` | 跨进程/跨机器通信、节点心跳、远端路由 cache |
 
 共同约束：
 

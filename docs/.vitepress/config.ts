@@ -46,6 +46,23 @@ export default defineConfig({
         ],
       },
       {
+        text: '运行时语义',
+        items: [
+          { text: '服务语义', link: '/runtime-service' },
+          { text: '消息语义', link: '/runtime-messaging' },
+          { text: '定时器语义', link: '/runtime-timer' },
+          { text: 'Lua VM 语义', link: '/runtime-lua-vm' },
+          { text: '网络语义', link: '/runtime-network' },
+          { text: '数据语义', link: '/runtime-data' },
+          { text: '日志语义', link: '/runtime-log' },
+          { text: '配置语义', link: '/runtime-config' },
+          { text: '启动流程', link: '/runtime-bootstrap' },
+          { text: '运维语义', link: '/runtime-ops' },
+          { text: '安全语义', link: '/runtime-security' },
+          { text: '集群语义', link: '/runtime-cluster' },
+        ],
+      },
+      {
         text: '运行时专题',
         items: [
           { text: '网关设计', link: '/gateway' },

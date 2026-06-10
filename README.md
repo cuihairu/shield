@@ -52,8 +52,8 @@ core semantics:
 | --- | --- |
 | `shield_base` | Shared value types such as Result, Error, ByteBuffer, time, and IDs |
 | `shield_lua` | Lua VM management and `shield.*` bindings |
-| `shield_net` | TCP / UDP / WebSocket I/O and connection management |
-| `shield_ipc` | Same-host process communication and heartbeat state, outside core |
+| `shield_net` | Client connections (TCP/UDP/KCP/WebSocket), Session management |
+| `shield_cluster` | Cross-process/machine communication, service discovery, node heartbeat |
 | `shield_transport` | Optional byte-stream adaptation such as framing or encryption |
 | `shield_data` | Raw DB / Redis access, without ORM policy |
 | `shield_config` | YAML configuration loading |
@@ -84,7 +84,7 @@ that no longer belong to `shield_core` or first-party runtime modules.
 
 ## Documentation
 
-- [Architecture Definition](ARCHITECTURE.md)
+- [Architecture Definition](docs/architecture.md)
 - [Docs Home](docs/index.md)
 - [Architecture Design](docs/architecture.md)
 - [Core Concepts](docs/architecture-core-concepts.md)

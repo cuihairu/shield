@@ -4,7 +4,7 @@
 
 ## 开发原则
 
-- 先读 `ARCHITECTURE.md`。
+- 先读 `docs/architecture.md`。
 - 不把旧模块继续视为 core 事实。
 - 新代码应围绕 `actor`、`net`、`transport`、`script`、`timer`、`data`、`config`、`log`。
 - 不新增 DI/IoC、插件、服务发现、Prometheus、健康检查、中间件链依赖。

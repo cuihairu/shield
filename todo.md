@@ -10,7 +10,7 @@ Shield service API to Lua users.
 
 ## Design Source of Truth
 
-- `ARCHITECTURE.md` defines the target runtime boundary.
+- `docs/architecture.md` defines the target runtime boundary.
 - `examples/hello_world/` sketches the final user-facing API.
 - `docs/` must describe the refactor target and clearly mark unfinished areas.
 - Source headers, examples, and tests remain useful references, but the current
