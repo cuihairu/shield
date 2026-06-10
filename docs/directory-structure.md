@@ -1,0 +1,616 @@
+# Shield 重构后的目录结构设计
+
+本文档描述 Shield 重构后的目标目录结构。
+
+## 设计原则
+
+1. **模块边界清晰**：每个模块有独立的 include/ 和 src/ 目录
+2. **依赖关系单向**：基础设施模块在上层，业务模块在下层
+3. **便于编译**：CMake 可以按模块独立配置
+4. **符合 C++ 惯例**：include/ 放头文件，src/ 放实现，tests/ 放测试
+
+## 当前目录结构（需要重构的部分）
+
+```
+shield/
+├── include/shield/
+│   ├── annotations/      ❌ 移除（不需要注解系统）
+│   ├── conditions/       ❌ 移除（不需要条件装配）
+│   ├── di/              ❌ 移除（不需要 DI 容器）
+│   ├── discovery/       ❌ 移除（不需要服务发现）
+│   ├── events/          ❌ 移除（事件由 lifecycle 负责）
+│   ├── health/          ❌ 移除（不需要内置健康检查）
+│   ├── metrics/         ❌ 移除（不需要内置 metrics）
+│   ├── gateway/         ⚠️  重新定位（改为 Lua 模板）
+│   ├── actor/           ✅ 保留（内部 CAF 封装）
+│   ├── cli/             ✅ 保留
+│   ├── commands/        ✅ 保留
+│   ├── config/          ✅ 保留
+│   ├── core/            ✅ 保留
+│   ├── data/            ✅ 保留
+│   ├── database/        ⚠️  合入 data/
+│   ├── extensions/      ⚠️  重新定位
+│   ├── fs/              ✅ 保留
+│   ├── http/            ⚠️  合入 net/
+│   ├── log/             ✅ 保留
+│   ├── net/             ✅ 保留
+│   ├── protocol/        ✅ 保留
+│   ├── script/          ✅ 保留
+│   ├── serialization/   ✅ 保留
+│   └── service/         ⚠️  合入 core/
+└── src/
+    ├── annotations/     ❌ 移除
+    ├── conditions/      ❌ 移除
+    ├── di/             ❌ 移除
+    ├── discovery/      ❌ 移除
+    ├── events/         ❌ 移除
+    ├── health/         ❌ 移除
+    ├── metrics/        ❌ 移除
+    ├── database/       ⚠️  合入 data/
+    ├── gateway/        ⚠️  改为 Lua 模板
+    └── ...（其他同上）
+```
+
+## 目标目录结构
+
+### 顶层结构
+
+```
+shield/
+├── CMakeLists.txt              # 根 CMake 配置
+├── README.md                   # 项目说明
+├── LICENSE                     # 许可证
+├── vcpkg.json                  # 依赖管理
+├── 
+├── cmake/                      # CMake 模块
+│   ├── ShieldConfig.cmake
+│   └── ...
+│
+├── config/                     # 配置文件示例
+│   ├── app.yaml.example
+│   └── logging.yaml.example
+│
+├── docs/                       # 文档
+│   ├── architecture.md         # 架构文档
+│   ├── runtime-semantics.md    # 运行时语义索引
+│   ├── runtime-*.md            # 各专题运行时文档
+│   ├── starter-system.md       # Starter 系统文档
+│   └── directory-structure.md  # 本文档
+│
+├── examples/                   # 示例代码
+│   ├── hello_world/            # 最小示例
+│   ├── echo_server/            # Echo 服务示例
+│   ├── chat_room/              # 聊天室示例
+│   └── templates/              # Lua 服务模板
+│       ├── gateway_service.lua
+│       ├── player_service.lua
+│       └── ...
+│
+├── include/                    # 公共头文件（用户可见 API）
+│   └── shield/
+│       ├── version.hpp         # 版本信息
+│       ├── types.hpp           # 公共类型定义
+│       ├── result.hpp          # Result<T>, Error
+│       └── api.hpp             # 统一的 public API 头文件
+│
+├── src/                        # 源代码（按模块组织）
+│   ├── shield_base/            # 基础类型和工具
+│   ├── shield_core/            # 核心 Actor/Service 系统
+│   ├── shield_config/          # 配置管理
+│   ├── shield_log/             # 日志系统
+│   ├── shield_bootstrap/       # 启动器
+│   ├── shield_script/          # Lua VM 管理
+│   ├── shield_lua/             # Lua API 绑定
+│   ├── shield_data/            # 数据访问（DB + Redis）
+│   ├── shield_net/             # 网络层
+│   ├── shield_transport/       # 协议适配
+│   ├── shield_protocol/        # 协议实现
+│   ├── shield_cluster/         # 集群通信（预留）
+│   └── shield_ops/             # 运维端点（预留）
+│
+├── tests/                      # 测试代码
+│   ├── unit/                   # 单元测试
+│   │   ├── base/
+│   │   ├── core/
+│   │   ├── config/
+│   │   └── ...
+│   ├── integration/           # 集成测试
+│   └── e2e/                   # 端到端测试
+│
+├── scripts/                    # 构建和部署脚本
+│   ├── build.sh
+│   ├── build.bat
+│   ├── setup.sh
+│   └── ...
+│
+└── templates/                  # Lua 模板（给用户复制）
+    ├── services/
+    │   ├── gateway.lua
+    │   ├── player.lua
+    │   └── ...
+    └── plugins/
+        ├── auth.lua
+        └── metrics.lua
+```
+
+### 模块内部结构
+
+每个模块（如 `shield_core`）内部结构：
+
+```
+src/shield_core/
+├── include/                   # 模块私有头文件
+│   ├── service_registry.hpp
+│   ├── service_handle.hpp
+│   └── ...
+├── src/                       # 实现代码
+│   ├── service_registry.cpp
+│   ├── service_handle.cpp
+│   └── ...
+├── tests/                     # 模块单元测试
+│   ├── test_service_registry.cpp
+│   └── ...
+└── CMakeLists.txt             # 模块 CMake 配置
+```
+
+### 模块详细说明
+
+#### shield_base
+
+```
+src/shield_base/
+├── include/
+│   ├── result.hpp              # Result<T>, Error
+│   ├── byte_buffer.hpp         # ByteBuffer
+│   ├── time_point.hpp          # TimePoint
+│   └── uuid.hpp                # UUID 生成器
+├── src/
+│   ├── result.cpp
+│   ├── byte_buffer.cpp
+│   └── ...
+└── CMakeLists.txt
+```
+
+职责：提供跨模块的基础类型，不依赖其他 shield 模块。
+
+#### shield_core
+
+```
+src/shield_core/
+├── include/
+│   ├── service_handle.hpp     # ServiceHandle（opaque）
+│   ├── service_registry.hpp    # 服务注册表
+│   ├── message_envelope.hpp   # MessageEnvelope
+│   ├── message_dispatcher.hpp # 消息分发
+│   ├── timer_manager.hpp      # 定时器管理
+│   ├── coroutine_manager.hpp  # 协程管理
+│   └── core.hpp               # ShieldCore 入口
+├── src/
+│   ├── service_registry.cpp
+│   ├── message_dispatcher.cpp
+│   └── ...
+├── tests/
+│   ├── test_service_handle.cpp
+│   ├── test_service_registry.cpp
+│   └── ...
+└── CMakeLists.txt
+```
+
+职责：Actor/Service 核心，隐藏 CAF 实现，只暴露 opaque handle。
+
+**禁止依赖**：Lua、网络、数据、配置、日志。
+
+#### shield_config
+
+```
+src/shield_config/
+├── include/
+│   ├── configuration.hpp      # Configuration 主类
+│   ├── config_loader.hpp      # YAML 加载
+│   └── config_validator.hpp   # 配置验证
+├── src/
+│   ├── configuration.cpp
+│   ├── config_loader.cpp
+│   └── ...
+├── tests/
+│   └── test_configuration.cpp
+└── CMakeLists.txt
+```
+
+职责：加载和管理配置，支持环境变量展开、运行时修改。
+
+**依赖**：shield_base, shield_log
+
+#### shield_log
+
+```
+src/shield_log/
+├── include/
+│   ├── logger.hpp             # Logger 主类
+│   ├── log_level.hpp          # 日志级别
+│   ├── log_sink.hpp           # 日志输出接口
+│   └── sinks/
+│       ├── console_sink.hpp
+│       └── file_sink.hpp
+├── src/
+│   ├── logger.cpp
+│   └── sinks/
+│       └── file_sink.cpp
+├── tests/
+│   └── test_logger.cpp
+└── CMakeLists.txt
+```
+
+职责：日志系统，支持结构化日志、日志轮转。
+
+**依赖**：shield_base
+
+#### shield_bootstrap
+
+```
+src/shield_bootstrap/
+├── include/
+│   ├── bootstrap.hpp          # Bootstrap 入口
+│   ├── starter.hpp            # IStarter 接口
+│   ├── starter_manager.hpp    # Starter 管理器
+│   ├── application_context.hpp # ApplicationContext
+│   ├── environment.hpp        # Environment
+│   └── lifecycle.hpp          # 生命周期事件
+├── src/
+│   ├── bootstrap.cpp
+│   ├── starter_manager.cpp
+│   ├── application_context.cpp
+│   ├── environment.cpp
+│   └── ...
+├── tests/
+│   ├── test_starter_manager.cpp
+│   └── ...
+└── CMakeLists.txt
+```
+
+职责：启动流程、Starter 管理、生命周期事件。
+
+**依赖**：shield_base, shield_log, shield_config
+
+#### shield_script
+
+```
+src/shield_script/
+├── include/
+│   ├── lua_vm_pool.hpp        # Lua VM 池
+│   ├── script_starter.hpp     # ScriptStarter
+│   └── lua_api.hpp            # Lua API 注册
+├── src/
+│   ├── lua_vm_pool.cpp
+│   ├── script_starter.cpp
+│   └── ...
+├── tests/
+│   └── test_lua_vm_pool.cpp
+└── CMakeLists.txt
+```
+
+职责：Lua VM 池管理、ScriptStarter。
+
+**依赖**：shield_base, shield_log, shield_config, shield_bootstrap
+
+#### shield_lua
+
+```
+src/shield_lua/
+├── include/
+│   └── lua_bindings.hpp       # Lua API 声明
+├── src/
+│   ├── api_core.cpp           # shield.spawn/call/send
+│   ├── api_timer.cpp          # shield.timer/sleep/fork
+│   ├── api_config.cpp         # shield.config.*
+│   ├── api_env.cpp            # shield.env.*
+│   ├── api_log.cpp            # shield.log.*
+│   ├── api_data.cpp           # shield.data.*
+│   ├── api_net.cpp            # shield.net.*
+│   ├── api_plugin.cpp         # shield.plugin.on()
+│   └── ...
+├── tests/
+│   └── test_lua_bindings.cpp
+└── CMakeLists.txt
+```
+
+职责：Lua API 绑定实现。
+
+**依赖**：shield_base, shield_script, shield_core, shield_data, shield_net
+
+#### shield_data
+
+```
+src/shield_data/
+├── include/
+│   ├── db_connection.hpp      # DB 连接接口
+│   ├── db_connection_pool.hpp # DB 连接池
+│   ├── redis_connection.hpp    # Redis 连接
+│   ├── redis_connection_pool.hpp # Redis 连接池
+│   └── data_starter.hpp       # DataStarter
+├── src/
+│   ├── db_connection_pool.cpp
+│   ├── redis_connection_pool.cpp
+│   └── ...
+├── tests/
+│   └── test_connection_pool.cpp
+└── CMakeLists.txt
+```
+
+职责：数据库和 Redis 访问，提供连接池。
+
+**依赖**：shield_base, shield_log, shield_config
+
+#### shield_net
+
+```
+src/shield_net/
+├── include/
+│   ├── tcp_server.hpp         # TCP 服务端
+│   ├── tcp_client.hpp         # TCP 客户端
+│   ├── udp_socket.hpp         # UDP Socket
+│   ├── ws_server.hpp          # WebSocket 服务端
+│   ├── connection.hpp         # 连接抽象
+│   ├── connection_manager.hpp # 连接管理
+│   └── net_starter.hpp       # NetStarter
+├── src/
+│   ├── tcp_server.cpp
+│   ├── tcp_client.cpp
+│   └── ...
+├── tests/
+│   └── test_tcp_server.cpp
+└── CMakeLists.txt
+```
+
+职责：网络层，TCP/UDP/WebSocket I/O。
+
+**依赖**：shield_base, shield_log, shield_config
+
+#### shield_transport
+
+```
+src/shield_transport/
+├── include/
+│   ├── packet_reader.hpp      # 数据包读取
+│   ├── packet_writer.hpp      # 数据包写入
+│   ├── protocol_adapter.hpp   # 协议适配器
+│   └── transport_starter.hpp  # TransportStarter
+├── src/
+│   ├── packet_reader.cpp
+│   └── ...
+├── tests/
+│   └── test_packet_reader.cpp
+└── CMakeLists.txt
+```
+
+职责：协议适配层，在字节流和消息之间转换。
+
+**依赖**：shield_base, shield_log, shield_net
+
+#### shield_protocol
+
+```
+src/shield_protocol/
+├── include/
+│   ├── schema_protocol.hpp    # Schema 协议
+│   ├── http_protocol.hpp      # HTTP 协议
+│   └── binary_protocol.hpp    # 二进制协议
+├── src/
+│   ├── schema_protocol.cpp
+│   ├── http_protocol.cpp
+│   └── ...
+├── tests/
+│   └── test_schema_protocol.cpp
+└── CMakeLists.txt
+```
+
+职责：具体协议实现。
+
+**依赖**：shield_base
+
+#### shield_cluster（预留）
+
+```
+src/shield_cluster/
+├── include/
+│   ├── node_discovery.hpp     # 节点发现
+│   ├── cluster_rpc.hpp        # 集群 RPC
+│   └── cluster_starter.hpp    # ClusterStarter
+├── src/
+│   └── ...
+├── tests/
+│   └── ...
+└── CMakeLists.txt
+```
+
+职责：集群通信，node-to-node 消息传递。
+
+**依赖**：shield_base, shield_log, shield_config, shield_net
+
+#### shield_ops（预留）
+
+```
+src/shield_ops/
+├── include/
+│   ├── ops_server.hpp         # 运维 HTTP 服务
+│   ├── metrics_collector.hpp  # 指标收集
+│   └── health_checker.hpp     # 健康检查
+├── src/
+│   └── ...
+├── tests/
+│   └── ...
+└── CMakeLists.txt
+```
+
+职责：运维端点，提供 HTTP 接口查看状态。
+
+**依赖**：shield_base, shield_log, shield_net
+
+## 依赖层次
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    shield_lua (用户 API)                      │
+├─────────────────────────────────────────────────────────────┤
+│  shield_cluster  │  shield_ops  │  shield_transport          │
+├─────────────────────────────────────────────────────────────┤
+│                    shield_data  │  shield_net                 │
+├─────────────────────────────────────────────────────────────┤
+│                    shield_script                             │
+├─────────────────────────────────────────────────────────────┤
+│                    shield_core                                │
+├─────────────────────────────────────────────────────────────┤
+│  shield_bootstrap  │  shield_config  │  shield_log            │
+├─────────────────────────────────────────────────────────────┤
+│                    shield_base                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## 迁移计划
+
+### Phase 1: 创建目标结构
+
+```bash
+# 1. 创建新的模块目录
+mkdir -p src/shield_{base,core,config,log,bootstrap,script,lua,data,net,transport,protocol}
+
+# 2. 每个模块创建标准子目录
+for module in shield_*; do
+    mkdir -p src/$module/{include,src,tests}
+    touch src/$module/CMakeLists.txt
+done
+```
+
+### Phase 2: 迁移现有代码
+
+| 源目录 | 目标模块 |
+|--------|----------|
+| `src/core/*` | `shield_core` |
+| `src/config/*` | `shield_config` |
+| `src/log/*` | `shield_log` |
+| `src/script/*` | `shield_script` |
+| `src/data/*`, `src/database/*` | `shield_data` |
+| `src/net/*`, `src/http/*` | `shield_net` |
+| `src/protocol/*` | `shield_protocol` |
+
+### Phase 3: 删除废弃模块
+
+```bash
+# 删除不需要的模块
+rm -rf src/{di,annotations,conditions,events,discovery,health,metrics}
+rm -rf include/shield/{di,annotations,conditions,events,discovery,health,metrics}
+```
+
+### Phase 4: 重新组织 gateway
+
+```
+# gateway 改为 Lua 模板
+mv src/gateway/* examples/templates/services/
+rm -rf src/gateway
+```
+
+### Phase 5: 更新 CMake
+
+更新根 `CMakeLists.txt`：
+
+```cmake
+# 添加子目录
+add_subdirectory(src/shield_base)
+add_subdirectory(src/shield_log)
+add_subdirectory(src/shield_config)
+add_subdirectory(src/shield_bootstrap)
+add_subdirectory(src/shield_core)
+add_subdirectory(src/shield_script)
+add_subdirectory(src/shield_data)
+add_subdirectory(src/shield_net)
+add_subdirectory(src/shield_transport)
+add_subdirectory(src/shield_protocol)
+add_subdirectory(src/shield_lua)
+```
+
+## 公共 API 头文件
+
+创建统一的公共 API：
+
+```cpp
+// include/shield/api.hpp
+#pragma once
+
+// 基础类型
+#include "shield/types.hpp"
+#include "shield/result.hpp"
+
+// 运行时 API（供 C++ 用户直接使用）
+namespace shield {
+
+/**
+ * Shield 运行时入口
+ * 
+ * @param argc 参数计数
+ * @param argv 参数向量
+ * @return 返回码
+ */
+int run(int argc, char** argv);
+
+/**
+ * 获取 ApplicationContext
+ */
+ApplicationContext& context();
+
+/**
+ * 获取 Logger
+ */
+Logger& logger();
+
+/**
+ * 获取 Configuration
+ */
+Configuration& config();
+
+} // namespace shield
+```
+
+## 头文件可见性
+
+### 完全公开（用户可见）
+
+- `include/shield/*.hpp`：公共 API
+- `include/shield/lua_*.hpp`：Lua 扩展接口
+
+### 模块私有（用户不可见）
+
+- `src/shield_*/include/*.hpp`：只在模块内部使用
+- 通过 CMake 的 `target_include_directories()` 控制
+
+## 命名规范
+
+### 目录命名
+
+- 模块目录：`shield_*`（全小写，下划线分隔）
+- 测试目录：`tests/`
+- 头文件目录：`include/`, `src/`
+
+### 文件命名
+
+- C++ 头文件：`snake_case.hpp`
+- C++ 源文件：`snake_case.cpp`
+- 测试文件：`test_*.cpp`
+
+### 类命名
+
+- C++ 类：`PascalCase`
+- 接口类：`IPascalCase`
+- 异常：`PascalCaseError`
+
+## 总结
+
+| 方面 | 变更 |
+|------|------|
+| 模块组织 | 从平面结构改为分层模块结构 |
+| 目录命名 | 统一使用 `shield_*` 前缀 |
+| 头文件可见性 | 区分公共 API 和模块私有 |
+| 依赖管理 | 通过目录层次强制单向依赖 |
+| 测试组织 | 每个模块包含自己的 tests/ |
+| 移除模块 | di, annotations, conditions, events, discovery, health, metrics |
+| 合并模块 | database → data, http → net |
+| 改为模板 | gateway → examples/templates/services |
