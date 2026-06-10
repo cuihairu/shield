@@ -1,5 +1,11 @@
 # Schema Descriptor
 
+> Status: deferred extension design.
+>
+> Runtime descriptors and descriptor packages are future schema tooling. They do
+> not belong to the current single-node core unless the refactor roadmap is
+> explicitly changed.
+
 本文定义 Shield schema protocol 的运行时 descriptor 设计。`descriptor.bin` 是服务器和客户端共同加载的协议元数据包，用于动态编码、解码、校验、分发和兼容判断。
 
 ## 设计边界

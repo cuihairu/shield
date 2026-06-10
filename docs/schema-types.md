@@ -1,5 +1,11 @@
 # Schema Types
 
+> Status: deferred extension design.
+>
+> Schema types are not part of the current refactor core. Treat this document as
+> future protocol/tooling design, separate from the initial `shield.*` Lua
+> runtime contract.
+
 `types.xml` 是 Shield schema protocol 的公共类型定义层。它为 RPC、客户端 SDK、mapper、错误模型和文档生成提供统一的数据模型来源。
 
 ## 设计目标

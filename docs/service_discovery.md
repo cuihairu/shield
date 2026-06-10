@@ -1,91 +1,48 @@
 # 服务发现
 
-Shield 提供统一的服务发现抽象接口 `IServiceDiscovery`，支持多种后端实现。
+服务发现不属于当前重构后的 Shield core。
 
-## 接口定义
+## 决策
 
-```cpp
-// include/shield/discovery/service_discovery.hpp
+Shield 的新目标是单节点运行时。core 不负责：
 
-class IServiceDiscovery {
-public:
-    virtual ~IServiceDiscovery() = default;
+- 节点注册。
+- 服务发现后端。
+- Redis / Nacos / Consul / Etcd 集成。
+- 集群路由或负载均衡。
 
-    virtual bool register_service(const ServiceInstance& instance) = 0;
-    virtual bool deregister_service(const std::string& instance_id) = 0;
-    virtual std::optional<ServiceInstance> query_service(const std::string& service_name) = 0;
-    virtual std::vector<ServiceInstance> query_all_services(const std::string& service_name) = 0;
-};
-```
+`shield_core` 只维护本地 `ServiceRegistry`。服务名是本地 alias，不是全局服务发现记录。
 
-## 后端实现
+## 替代方案
 
-| 后端 | 用途 | 说明 |
-|------|------|------|
-| **Static** | 开发 | 配置文件静态节点列表，零外部依赖 |
-| **Redis** | 轻量生产 | 基于 Redis 的注册/发现 |
-| **Nacos** | 生产 | 阿里云 Nacos 服务发现 |
-| **Consul** | 生产 | HashiCorp Consul 服务发现 |
-| **Etcd** | 生产 | CoreOS etcd 服务发现 |
+需要多节点时，用户可以在业务层或外部基础设施中实现：
 
-## 配置
+- 静态配置。
+- Kubernetes Service。
+- 自定义 Redis / Etcd 注册。
+- 独立网关或 sidecar。
 
-### 开发环境：Static
+这些方案不进入当前 core 文档和启动主路径。
 
-```yaml
-discovery:
-  type: "static"
-  static:
-    nodes:
-      - "127.0.0.1:8080"
-```
+## 未来 shield_ipc / shield_cluster
 
-无需安装任何外部服务，适合本地开发和测试。
+如果后续实现多进程或多机器能力，应作为独立模块：
 
-### 生产环境：Etcd
+| 模块 | 范围 |
+| --- | --- |
+| `shield_ipc` | 同机多进程通信、进程心跳、远端进程状态 |
+| `shield_cluster` | 跨机器通信、节点心跳、远端路由 cache |
 
-```yaml
-discovery:
-  type: "etcd"
-  etcd:
-    endpoints:
-      - "http://etcd1:2379"
-      - "http://etcd2:2379"
-      - "http://etcd3:2379"
-```
+共同约束：
 
-### 生产环境：Consul
+- `NodeId` 在同一部署内必须唯一。
+- handshake 必须携带 `node_id` 和 `node_epoch`。
+- 重复 `NodeId` 必须拒绝连接。
+- heartbeat 驱动 `online/suspect/offline/removed`。
+- remote name 是 cache，不进入 `shield_core` 的本地 registry。
 
-```yaml
-discovery:
-  type: "consul"
-  consul:
-    host: "consul.cluster"
-    port: 8500
-```
+完整 ID、heartbeat 和 cluster 预留规则见 [运行时语义决策稿](./runtime-semantics.md)。
 
-### 生产环境：Nacos
+## 旧代码状态
 
-```yaml
-discovery:
-  type: "nacos"
-  nacos:
-    server_addr: "nacos:8848"
-    namespace: "public"
-```
-
-### 生产环境：Redis
-
-```yaml
-discovery:
-  type: "redis"
-  redis:
-    host: "redis.cluster"
-    port: 6379
-```
-
-## 设计原则
-
-- **接口与实现分离**：业务逻辑不依赖具体后端，切换后端只需改配置
-- **内置负载均衡**：`query_service()` 内部随机选择一个可用实例
-- **零外部依赖启动**：使用 `static` 后端时无需安装任何外部服务
+仓库中仍可能存在 `include/shield/discovery/` 和 `src/discovery/`。这些属于旧架构遗留代码，后续需要删除、归档或移到明确的非核心实验区。

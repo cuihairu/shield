@@ -1,106 +1,78 @@
-# CAF Mapping
+# CAF 映射
 
-Shield uses [CAF](https://github.com/actor-framework/actor-framework) (C++ Actor Framework) as its actor transport foundation. This page explains what CAF provides and what Shield adds on top.
+CAF 是 Shield 的内部 Actor 传输基础。重构后的原则是：**CAF 处理 Actor 机制，Shield 暴露游戏服务器语义**。
 
-## What CAF Provides
+本文描述目标设计，不代表当前源码已经完成边界收敛。
 
-CAF is a modern C++ actor framework handling:
+具体 API 返回值、payload、coroutine 和 registry 语义见 [运行时语义决策稿](./runtime-semantics.md)。
 
-| Layer | CAF Feature |
-|-------|-------------|
-| **Actor lifecycle** | `caf::event_based_actor`, spawn, quit |
-| **Message passing** | `send()`, `request()`, `anon_send()` |
-| **Type system** | Typed actors, inspectable messages |
-| **Serialization** | Built-in message inspection for networking |
-| **Distribution** | `caf::io::middleman` for remote actors |
-| **Scheduling** | Work-stealing scheduler |
-| **Timeouts** | `after()` delays, `request()` timeouts |
+## CAF 提供什么
 
-## What Shield Adds
+| CAF 能力 | Shield 使用方式 |
+| --- | --- |
+| actor spawn / quit | 创建和停止内部 actor |
+| send / request | 支撑 `shield.send` / `shield.call` |
+| schedule / timeout | 支撑 timer API |
+| scheduler | 支撑运行时调度 |
+| serialization hooks | 仅作为内部实现细节 |
 
-Shield wraps CAF with game-server-specific semantics:
+## CAF 覆盖 Skynet 的哪些机制
 
-### Service Layer (`shield/service/`)
+| Skynet actor 机制 | CAF 对应能力 | Shield 决策 |
+| --- | --- | --- |
+| 服务是运行单元 | `caf::event_based_actor` | 用 CAF actor 承载 Shield service |
+| 异步消息 | `send` / `anon_send` | 封装成 `shield.send` |
+| 请求-响应 | `request(...).then/await` | 封装成 `shield.call` |
+| 创建服务 | `actor_system.spawn` | 封装成 `shield.spawn` |
+| 服务退出 | actor quit / exit | 封装成 `shield.exit` |
+| 定时器 | `schedule` / delayed message | 封装成 `shield.timer` / `shield.timer_once` |
+| 远程 actor 通信 | `middleman` publish/connect | 不进 core，未来 cluster 模块内部使用 |
 
-| Shield API | CAF Equivalent | Purpose |
-|------------|----------------|---------|
-| `service::send(name, type, payload)` | `caf::anon_send(actor, type, payload)` | Fire-and-forget messaging by service name |
-| `service::call(name, type, payload, timeout)` | `self->request(actor, timeout, type, payload)` | Sync request-response by service name |
-| `service::query(name)` | `DistributedActorSystem::find_actor()` | Named service lookup |
-| `service::uniqueservice(name)` | `query()` + spawn if missing | Singleton service guarantee |
-| `service::name(handle, name)` | `register_actor()` | Service registration |
-| `service::timeout(ms, cb)` | `self->schedule()` | Timer primitive |
-| `service::fork(func, name)` | `caf_system.spawn()` | Create new actor |
+结论：CAF 足够覆盖 Actor 机制层，不需要 Shield 自己重写 actor 调度、mailbox、request、timer 或远程 actor transport。
 
-### Service Context (`service::ServiceContext`)
+## Shield 必须补的语义
 
-CAF actors are anonymous — you need `self` and `actor_system` references. Shield provides a thread-local `ServiceContext` with RAII `Guard`:
+CAF 不提供 Skynet 风格的 Lua runtime 语义。Shield 需要补：
 
-```cpp
-// Inside any message handler:
-service::ServiceContext::Guard guard(svc_ctx);
-svc_ctx.set_self(this);  // CAF actor pointer
+| Shield 语义 | 为什么 CAF 不直接提供 |
+| --- | --- |
+| service name registry | CAF 主要操作 actor handle，不是游戏服务名 |
+| Lua coroutine pending/resume | CAF request 不知道 Lua coroutine |
+| `shield.call` 同步写法 | CAF 是 C++ continuation/request 机制 |
+| `shield.service` 生命周期 | CAF 不知道 Lua 脚本和 `on_init/on_message/on_exit` |
+| Lua table payload | CAF 倾向 C++ 类型系统 |
+| `uniqueservice` / `queryservice` 类语义 | 这是 Skynet/Shield 的服务模型，不是 CAF 机制 |
 
-// Now all shield::service::* free functions work
-service::send("player_manager", "get_info", R"({"id":"123"})");
-```
+## Shield 添加什么
 
-### Lua Integration (`shield/script/`)
+| Shield 语义 | CAF 机制 |
+| --- | --- |
+| `shield.send(name, type, data)` | 查找命名服务后发送 actor message |
+| `shield.call(name, type, data)` | 查找命名服务后 request / response |
+| `shield.call_timeout(timeout_ms, name, type, data)` | 带显式超时的 request / response |
+| `shield.spawn(module, opts)` | 创建 Lua 服务实例，init 成功后返回 ready handle |
+| `shield.exit()` | 停止当前服务 |
+| `shield.timer(...)` | 调度延迟或周期任务 |
 
-Shield exposes the service API to Lua via `shield.*` global table, so game logic authors never touch CAF:
+## 不暴露 CAF
+
+Lua 和用户侧 C++ 扩展不应该 include CAF 头文件，也不应该直接操作 CAF actor handle。
+
+目标 Lua 代码：
 
 ```lua
--- Lua script — no CAF knowledge required
-local result = shield.call("player_manager", "get_info", { player_id = "123" })
-shield.send("room_manager", "player_joined", { room_id = "lobby_1" })
+shield.send("room", "join", { player_id = "1001" })
+local ok, result = shield.call_timeout(3000, "player", "get_info", { id = "1001" })
 ```
 
-### Gateway Layer (`shield/gateway/`)
+## 分布式能力
 
-Shield adds multi-protocol networking on top of CAF's actor system:
+CAF 自身有远程 actor 能力，但 Shield 当前重构目标是单节点 runtime。服务发现、集群路由和节点编排不进入 core。
 
-- TCP: `MasterReactor` → `SlaveReactor` → `Session` → `BinaryProtocol`
-- HTTP: `BeastHttpServer` → `HttpRouter` → Lua actor
-- WebSocket: `WebSocketProtocolHandler` → Lua actor
-- UDP: `UdpReactor` → `UdpSession` → Lua actor
+如果未来需要多节点，应作为独立设计重新进入路线图，而不是通过 CAF 细节泄漏到用户 API。
 
-All protocols converge at `GatewayRequestDispatcher` → `MiddlewareChain` → Lua actor.
+## 参考
 
-### Discovery (`shield/discovery/`)
-
-CAF has `io::middleman` for remote actor connections. Shield adds service discovery backends:
-
-- Static (development)
-- Redis
-- Nacos
-- Consul
-- Etcd
-
-## Architecture Diagram
-
-```
-┌─────────────────────────────────────────────┐
-│                 Lua Scripts                  │
-│  (on_init / on_message / shield.* API)      │
-├─────────────────────────────────────────────┤
-│              Service Layer                   │
-│  send / call / query / timeout / fork        │
-├─────────────────────────────────────────────┤
-│           ServiceContext (thread-local)       │
-├─────────────────────────────────────────────┤
-│              CAF Actor System                │
-│  (spawn, send, request, schedule, inspect)   │
-├─────────────────────────────────────────────┤
-│         DistributedActorSystem              │
-│  (registry, discovery, routing)              │
-├─────────────────────────────────────────────┤
-│           Gateway / Protocol                 │
-│  TCP / UDP / HTTP / WebSocket                │
-└─────────────────────────────────────────────┘
-```
-
-## Key Principle
-
-> CAF handles actor mechanics. Shield handles game-server semantics.
->
-> Lua scripts never see CAF. They see `shield.send`, `shield.call`, `shield.query`.
+- CAF `event_based_actor`: https://www.actor-framework.org/static/doxygen/0.18.7/classcaf_1_1event__based__actor
+- CAF requester/request: https://www.actor-framework.org/static/doxygen/0.18.7/classcaf_1_1mixin_1_1requester
+- CAF middleman: https://www.actor-framework.org/static/doxygen/1.0.0/namespacecaf_1_1io

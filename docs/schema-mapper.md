@@ -1,10 +1,16 @@
 # Schema Mapper
 
+> Status: deferred extension design.
+>
+> The current Shield refactor keeps only raw DB / Redis access in core. Schema
+> mapper is not part of the runtime core contract and must be treated as a later
+> optional extension unless the roadmap explicitly changes.
+
 Schema mapper 是 Shield 契约系统中的数据访问定义层。它参考 MyBatis 的显式 mapper 思路，用 XML 描述 SQL、参数绑定、结果映射和事务边界，但不把 Shield 变成重 ORM。
 
 ## 设计目标
 
-1. 让数据库访问成为开箱即用能力。
+1. 探索数据库访问的可选扩展形态，不进入当前 runtime core。
 2. 通过 XML 契约生成服务端 mapper 接口和运行时元数据。
 3. 显式 SQL 优先，避免隐式查询和对象图级联。
 4. 共享 schema 类型系统，但不把 RPC DTO 等同于数据库 entity。
@@ -516,4 +522,4 @@ descriptor.client.bin
 
 - Lua mapper facade 不能阻塞 actor 线程，表面同步 API 应基于 coroutine/yield，另提供 async 回调 API。
 - SQL 第一版不允许多语句。
-- mapper 作为开箱即用但可关闭的 bundled extension，不进入最小启动路径。
+- mapper 只能作为后续可选扩展讨论，不进入当前最小启动路径。

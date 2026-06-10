@@ -1,158 +1,82 @@
-# 配置指南
+# 配置设计
 
-Shield 使用 YAML 格式配置文件，默认路径 `config/app.yaml`。
+本文描述重构后的目标配置模型。当前配置文件仍包含旧架构字段，不能视为稳定契约。
 
-## 最小配置
+## 原则
 
-```yaml
-app:
-  name: "My Game"
+- YAML 只做声明式绑定，不承载业务逻辑。
+- 配置驱动 Lua 服务、C++ service、网络监听、数据源和日志。
+- 不在 core 中提供服务发现、插件、Prometheus、健康检查等配置。
+- 不通过配置引入 DI/IoC 或注解装配。
 
-log:
-  global_level: "info"
-  console:
-    enabled: true
-
-server:
-  host: "0.0.0.0"
-  port: 8080
-
-lua:
-  script_dir: "scripts/"
-  auto_reload: true
-  preload_scripts:
-    - "init.lua"
-
-gateway:
-  listener:
-    host: "0.0.0.0"
-    port: 8080
-  http:
-    enabled: true
-    port: 8082
-    backend: "beast"
-  websocket:
-    enabled: true
-    port: 8083
-    path: "/ws"
-  udp:
-    enabled: true
-    port: 8084
-```
-
-## 完整配置参考
-
-### 应用配置
+## 最小结构
 
 ```yaml
 app:
-  name: "Shield Server"
-```
+  name: hello_world
 
-### 日志配置
-
-```yaml
 log:
-  global_level: "info"       # trace/debug/info/warning/error/fatal
-  console:
-    enabled: true
-  file:
-    enabled: true
-    path: "logs/shield.log"
-    rotation_size_mb: 100
+  level: info
+  console: true
+
+actors:
+  - name: gateway
+    script: scripts/gateway.lua
+    network:
+      tcp: "0.0.0.0:8001"
+
+  - name: echo
+    script: scripts/echo.lua
+    instances: 1
+
+database:
+  driver: mysql
+  host: localhost
+  port: 3306
+  database: game
+  username: root
+  password: ""
+  pool_size: 5
+
+redis:
+  host: localhost
+  port: 6379
+  db: 0
 ```
 
-### Lua 脚本配置
+## Actors
+
+`actors` 是核心配置。
 
 ```yaml
-lua:
-  script_dir: "scripts/"
-  auto_reload: true           # 热重载
-  preload_scripts:
-    - "init.lua"
+actors:
+  - name: player
+    script: scripts/player.lua
+    instances: 0
 ```
 
-### 网关配置
+- `name`: 服务名。
+- `script`: Lua 脚本路径。
+- `instances`: 启动时创建的实例数量；`0` 表示动态创建。
+- `network`: 可选，仅网关类服务需要。
+- `transport`: 可选 C++ transport 名称。
 
-```yaml
-gateway:
-  listener:
-    host: "0.0.0.0"
-    port: 8080                # TCP 端口
-  http:
-    enabled: true
-    port: 8082                # HTTP 端口
-    backend: "beast"          # beast（推荐）
-  websocket:
-    enabled: true
-    port: 8083                # WebSocket 端口
-    path: "/ws"
-    lua_script: "scripts/session_handler.lua"
-  udp:
-    enabled: true
-    port: 8084                # UDP 端口
-```
+## Data
 
-### 服务发现配置
+`database` 和 `redis` 是原始访问能力，不代表 ORM 或 mapper 框架。
 
-```yaml
-discovery:
-  type: "static"              # static/redis/nacos/consul/etcd
+高级数据访问、schema mapper、迁移系统都不属于当前 core 配置契约。
 
-  # 静态列表（开发用）
-  static:
-    nodes:
-      - "127.0.0.1:8080"
+## Deprecated For Core
 
-  # Redis
-  redis:
-    host: "localhost"
-    port: 6379
+以下旧配置在当前重构 core 中不再作为目标：
 
-  # Nacos
-  nacos:
-    server_addr: "localhost:8848"
-    namespace: "public"
+- `discovery`
+- `metrics`
+- `health`
+- `plugins`
+- `middleware`
+- `conditions`
+- `annotations`
 
-  # Consul
-  consul:
-    host: "localhost"
-    port: 8500
-
-  # Etcd
-  etcd:
-    endpoints:
-      - "http://localhost:2379"
-```
-
-### 指标配置（可选）
-
-```yaml
-metrics:
-  enabled: true
-  port: 9090
-```
-
-## 配置优先级
-
-1. 命令行参数（最高）
-2. 环境变量
-3. 配置文件
-4. 默认值（最低）
-
-```bash
-# 指定配置文件
-./build/bin/shield server --config config/app.yaml
-```
-
-## 配置重载
-
-`FileWatcher` 监控配置文件变更，支持运行时重载部分配置项（如日志级别）。通过 `GET /status/config` 查看可重载范围。
-
-## 多环境配置
-
-参考项目模板：
-
-- `templates/single-node/config/app.yaml` — 单节点配置
-- `templates/multi-node/config/gateway.yaml` — 网关节点配置
-- `templates/multi-node/config/logic.yaml` — 逻辑节点配置
+如果后续需要保留，必须在非核心扩展文档中重新定义。

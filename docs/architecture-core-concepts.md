@@ -1,76 +1,99 @@
 # 核心设计理念
 
-Shield 是一个受 [Skynet](https://github.com/cloudwu/skynet) 启发的、Actor 模型的、Lua 优先的游戏服务器运行时，使用 [CAF](https://github.com/actor-framework/actor-framework) 作为 Actor 传输基础。
+本文解释重构后的设计原则。当前仍是设计阶段，不代表源码已经全部调整到位。
 
-## 设计原则
+具体运行时语义、API 返回值、ID、registry、payload、timer、Lua VM、ops 和 cluster 预留规则见 [运行时语义决策稿](./runtime-semantics.md)。
 
-### 1. core / extensions 严格分离
+## 1. 单节点优先
 
-`shield_core`（静态库）包含运行时启动路径上的所有模块：生命周期管理、Actor 系统、Lua VM、服务语义、网关、协议、服务发现、配置、日志。`shield_extensions`（静态库）包含可选功能：DI 容器、Prometheus 指标、健康检查、注解/条件注册、插件系统。
+Shield 首先是单节点游戏服务运行时。多节点部署、服务发现、集群路由、节点编排不进入 core。用户可以在业务层或外部基础设施中实现这些能力。
 
-核心启动路径不依赖扩展库。`shield` 可执行文件链接两者。
+这个取舍的原因很直接：Shield 要先把服务、消息、网络、定时器、Lua 热迭代这些核心路径做薄、做稳，而不是继续扩张成通用分布式框架。
 
-### 2. CAF 传输 + Shield 语义
+## 2. Lua 优先
 
-CAF 处理 Actor 的底层机制：spawn、send、request、schedule、序列化、分布式连接。Shield 在 CAF 之上提供游戏服务器语义：
-
-- **命名服务**: 通过字符串名称查找和调用 Actor，而非 CAF 的 typed actor handle
-- **send / call 双模式**: 异步消息 + 同步请求-响应
-- **uniqueservice**: 单例服务保证
-- **ServiceContext**: thread-local 上下文，让自由函数 API 无需全局状态
-
-### 3. Lua 优先
-
-业务逻辑全部用 Lua 编写。C++ 负责运行时和传输层。Lua 脚本通过 `shield.*` 全局表访问运行时 API，无需了解 CAF 细节：
+游戏逻辑默认写在 Lua 中。C++ 用于运行时、网络、Lua 绑定、底层数据访问和少量性能敏感扩展。
 
 ```lua
-shield.send("player_manager", "get_info", { player_id = "123" })
-local result = shield.call("room_manager", "create", { max = "4" }, 3000)
+shield.send("room", "join", { player_id = "1001" })
+local ok, result = shield.call("player", "get_info", { id = "1001" })
 ```
 
-脚本入口点为 `on_init()` + `on_message(msg)`。
+Lua 业务代码不应该感知 CAF、线程模型、连接对象或 C++ 容器细节。
 
-### 4. 协议无关
+## 3. CAF 是实现细节
 
-TCP、HTTP、WebSocket、UDP 四种协议统一通过 `GatewayRequest` → `MiddlewareChain` → `GatewayRequestDispatcher` 管道分发到 Lua Actor。业务脚本不感知传输协议差异。
+CAF 处理 Actor 机制：spawn、send、request、schedule、调度等。Shield 在其上提供游戏服务器语义：
 
-### 5. 开箱即用
+- 命名服务，而不是直接暴露 CAF actor handle。
+- `send` / `call` 双模式。
+- 服务生命周期钩子。
+- 定时器和延迟任务。
+- Lua 友好的 table 数据结构。
 
-内置网关、服务发现（Static/Redis/Nacos/Consul/Etcd）、健康检查、运行时诊断、调试控制台、模板系统。提供单节点和多节点配置模板，一键构建脚本（`build.sh` / `build.bat`），多阶段 Dockerfile。
+用户侧 API 不暴露 CAF 头文件。
 
-## 关键抽象
+一句话原则：
 
-### ApplicationContext
+```text
+CAF 覆盖机制，Shield 补服务语义。
+```
 
-全局单例，管理所有 Bean 的生命周期（`init_all()` → `start_all()` → `stop_all()`）。只负责生命周期和查找，不包含业务逻辑。
+CAF 可以承接 actor 调度、mailbox、spawn、send、request、timer 和远程 actor transport。Shield 仍然必须实现 service name registry、Lua coroutine pending/resume、Lua service 生命周期和 `shield.*` API。
 
-### StarterManager
+## 4. 小核心
 
-按顺序执行 Starter：ScriptStarter → ActorStarter → ServiceStarter → GatewayStarter → [MetricsStarter]。每个 Starter 负责注册自己的 Bean 到 ApplicationContext。
+`shield_core` 只包含 Actor/Service 语义：
 
-### ServiceContext
+- 服务生命周期。
+- 服务命名和查找。
+- `send` / `call`。
+- `spawn` / `exit`。
+- timer / timeout。
+- coroutine pending/resume。
+- CAF adapter。
 
-thread-local 上下文，通过 RAII `Guard` 在消息处理时自动设置/清除。保存当前 Actor 的 `self` 指针和 `ServiceContext` 引用，让 `shield::service::*` 自由函数无需显式传参。
+Lua、网络、transport、data、config、log、bootstrap 都是围绕 `shield_core` 的官方运行时模块，不是 core 语义本身。
 
-### GatewayRequest / GatewayResponse
+旧架构中的 DI、注解、条件装配、插件、Prometheus、健康检查、服务发现、事件总线、独立协议层等都不是 core。需要保留时必须有明确的非核心归属，不能进入 core 或默认启动主路径。
 
-跨协议统一消息模型。所有协议（TCP/HTTP/WS）的请求都转换为 `GatewayRequest`，经过中间件链处理后分发给 Lua Actor。
+## 5. 消息就是事件
 
-### MiddlewareChain
+Actor 消息是唯一跨服务通信模型。不再额外设计事件总线来表达相同概念。
 
-闭包链式执行，从后向前构建。内置 `logging_middleware`、`cors_middleware`、`auth_middleware`，支持自定义扩展。
+推荐模式：
 
-## 架构对比
+```lua
+shield.send("chat", "broadcast", {
+    channel = "world",
+    text = "hello"
+})
+```
 
-| 维度 | Skynet | Shield |
-|------|--------|--------|
-| 语言 | C + Lua | C++20 + Lua |
-| Actor 传输 | 自研 | CAF |
-| 网络协议 | TCP | TCP + HTTP + WebSocket + UDP |
-| 配置 | .config 文件 | YAML |
-| 服务发现 | 手动 | 多后端（Static/Redis/Nacos/Consul/Etcd） |
-| 指标 | 无 | Prometheus（可选） |
-| 热重载 | Lua 热重载 | Lua 热重载 |
-| 跨平台 | Linux only | Windows + macOS + Linux |
+只有需要返回值时才使用 `shield.call`。
 
-Shield 不覆盖 Skynet 的以下能力：harbor 集群、snax 框架、sharedata 机制。详见 [Skynet 对比](skynet-comparison.md)。
+## 6. 网关是 Lua 服务模式
+
+网络层负责连接和字节流。业务网关应该是 Lua 服务，通过 `on_connect`、`on_disconnect`、`on_message(session, payload)` 等回调组织登录、会话和路由。
+
+重构后不把 middleware chain 作为核心设计。鉴权、限流、CORS 等策略可以在 Lua gateway 服务或用户自己的 C++ transport 中实现。
+
+## 7. 数据访问保持原始
+
+`data` 模块可以提供 DB / Redis 原始能力，但不提供 ORM、不生成复杂 mapper、不管理跨服务事务。
+
+```lua
+local rows = shield.db.query("SELECT * FROM users WHERE id = ?", { id })
+shield.redis.publish("chat:world", { text = "hello" })
+```
+
+如果将来需要更高级的数据访问，应作为可选扩展独立讨论。
+
+## 8. 运维与调试分离
+
+`shield_ops` 是官方运维与调试层，不属于 `shield_core`。
+
+- `shield_core` 负责语义。
+- `shield_ops` 负责 metrics、health、profile、diagnostics、console。
+- `shield_ops` 可以读取内部状态，但不能反向依赖 core 语义。
+- 业务代码不应该直接调用 `shield_ops`，只能通过管理端点或控制台使用它。

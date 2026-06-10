@@ -1,5 +1,12 @@
 # Schema Protocol
 
+> Status: deferred extension design.
+>
+> The current refactor focuses on the Lua-first single-node runtime. Schema
+> protocol, descriptor packages, client SDK plugins, and generated tooling are
+> not part of the core runtime boundary unless reintroduced by a future roadmap
+> decision.
+
 Shield 的 schema protocol 是一套定义驱动的协议契约系统。目标是让游戏服务器和客户端共享同一份 XML 契约，运行时加载编译后的 descriptor，不要求业务开发者在协议变更后重新编译 C++ 协议桩。
 
 本文描述目标设计。当前仓库中的 `include/shield/protocol/schema_protocol.hpp`、`src/protocol/schema_protocol.cpp` 和 `tests/unit/protocol/test_schema_protocol.cpp` 是早期实验实现，尚未完整覆盖本文的目录化 XML、descriptor package、Merkle 增量和客户端插件模型。

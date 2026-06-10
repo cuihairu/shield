@@ -2,27 +2,32 @@
 home: true
 title: Shield
 titleTemplate: false
-heroText: Shield 游戏服务器框架
-tagline: Skynet 启发的、Actor 模型的、Lua 优先的游戏服务器运行时
+heroText: Shield
+tagline: Skynet 启发的、Actor 模型的、Lua 优先的单节点游戏服务器运行时
 actions:
-  - text: 快速开始
-    link: /quickstart.html
-    type: primary
   - text: 架构设计
     link: /architecture.html
+    type: primary
+  - text: 运行时语义
+    link: /runtime-semantics.html
+    type: secondary
+  - text: API 说明
+    link: /api.html
     type: secondary
 features:
-  - title: Actor 模型
-    details: CAF 传输基础 + Skynet 风格服务语义（send/call/query）
+  - title: 单节点运行时
+    details: 当前重构目标聚焦单进程/单节点游戏服务，不内置分布式编排。
   - title: Lua 优先
-    details: 业务逻辑全部 Lua 编写，shield.* API 零 CAF 知识
-  - title: 多协议网关
-    details: TCP/HTTP/WebSocket/UDP 统一中间件管道分发
-  - title: 开箱即用
-    details: 内置服务发现、健康检查、指标、调试控制台、模板
-  - title: 跨平台
-    details: Windows / macOS / Linux 全平台构建和运行
-  - title: 热重载
-    details: Lua 脚本运行时热重载，快速迭代业务逻辑
-footer: MIT License | Copyright © 2024-2026
+    details: 游戏逻辑通过 Lua 服务编写，C++ 只承载运行时基础设施。
+  - title: Skynet 风格语义
+    details: 目标 API 聚焦 service、send、call、timer、spawn、exit 等核心能力。
+  - title: CAF 内部传输
+    details: CAF 是实现细节，不暴露给 Lua 业务代码和用户侧 C++ 扩展。
+  - title: 小核心
+    details: shield_core 只封装服务、消息、timer 和 coroutine 语义，其他能力由官方模块组合。
+  - title: 设计阶段
+    details: 文档描述重构目标；旧实现中的 discovery、metrics、plugin、DI 等不再视为核心。
+  - title: 运维分层
+    details: shield_ops 独立承载 metrics、health、console、profile，与 shield_core 解耦。
+footer: Apache License 2.0 | Refactor design stage
 ---

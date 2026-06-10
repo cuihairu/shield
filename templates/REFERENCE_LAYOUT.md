@@ -1,158 +1,83 @@
-# Shield Reference Layout: Gateway + Logic + Storage
+# Shield Reference Layout
 
-Recommended project structure for a production game server built on Shield.
+This layout reflects the refactor target: a single-node Lua-first game server
+runtime.
 
-```
+```text
 my-game-server/
 ├── config/
-│   ├── app.yaml              # Main configuration
-│   ├── app-dev.yaml           # Development overrides
-│   └── app-prod.yaml          # Production overrides
+│   └── app.yaml
 ├── scripts/
-│   ├── init.lua               # Global initialization (loaded by all VMs)
-│   ├── gateway/
-│   │   ├── login.lua          # HTTP POST /login handler
-│   │   ├── session.lua        # WebSocket session lifecycle
-│   │   └── router.lua         # Message type routing table
-│   ├── logic/
-│   │   ├── player.lua         # Player state & actions
-│   │   ├── room.lua           # Room/match management
-│   │   ├── chat.lua           # Chat system
-│   │   └── inventory.lua      # Inventory/economy
-│   └── storage/
-│       └── persistence.lua    # Database read/write adapter
-├── build/                     # CMake build output
-├── logs/                      # Runtime logs
+│   ├── gateway.lua
+│   ├── player.lua
+│   ├── room.lua
+│   └── chat.lua
+├── logs/
 └── README.md
 ```
 
-## Configuration (config/app.yaml)
+## Configuration
 
 ```yaml
 app:
-  name: "My Game Server"
+  name: my_game
 
 log:
-  global_level: "info"
-  console:
-    enabled: true
+  level: info
+  console: true
 
-server:
-  host: "0.0.0.0"
-  port: 8080
+actors:
+  - name: gateway
+    script: scripts/gateway.lua
+    network:
+      tcp: "0.0.0.0:8001"
 
-lua:
-  script_dir: "scripts/"
-  auto_reload: true
-  preload_scripts:
-    - "init.lua"
+  - name: room
+    script: scripts/room.lua
+    instances: 1
 
-gateway:
-  listener:
-    host: "0.0.0.0"
-    port: 8080
-  tcp:
-    enabled: true
-  http:
-    enabled: true
-    port: 8082
-    backend: "beast"
-  websocket:
-    enabled: true
-    port: 8083
-    lua_script: "scripts/gateway/session.lua"
+  - name: player
+    script: scripts/player.lua
+    instances: 0
 ```
 
-## Gateway Layer (scripts/gateway/)
+## Gateway
 
-Handles client connections. No game state.
-
-**login.lua** — HTTP POST /login
-- Validates credentials
-- Creates session token
-- Returns player_id + token
-
-**session.lua** — WebSocket lifecycle
-- Authenticates connection via token
-- Binds connection to player actor
-- Handles heartbeat / disconnect
-
-**router.lua** — Message dispatch
-- Reads `type` field from incoming messages
-- Routes to the appropriate logic actor via `shield.send()` / `shield.call()`
-
-## Logic Layer (scripts/logic/)
-
-Pure game logic. No network code.
-
-Each script is a Shield Lua actor with `on_init()` + `on_message()`:
+`gateway.lua` handles client sessions and routes messages to logic services.
 
 ```lua
--- player.lua
-local player = {}
+local gateway = shield.service("gateway")
 
-function on_init()
-    player.level = 1
-    player.exp = 0
-end
-
-function on_message(msg)
-    if msg.type == "get_info" then
-        return { success = true, data = { level = tostring(player.level) } }
-    elseif msg.type == "gain_exp" then
-        player.exp = player.exp + tonumber(msg.data.amount or "0")
-        return { success = true }
+function gateway.on_session_message(session_id, msg_type, data)
+    if msg_type == "join_room" then
+        shield.send("room", "join", {
+            session = session_id,
+            player_id = data.player_id
+        })
     end
 end
 ```
 
-## Storage Layer (scripts/storage/)
-
-Abstracts database access behind service calls.
+## Logic Services
 
 ```lua
--- persistence.lua
-function on_message(msg)
-    if msg.type == "save_player" then
-        -- shield.call("database", "execute", ...)
-        return { success = true }
-    elseif msg.type == "load_player" then
-        return { success = true, data = { level = "1" } }
+local room = shield.service("room")
+
+function room.on_message(src, msg_type, data)
+    if msg_type == "join" then
+        shield.send(src, "joined", { ok = true })
     end
 end
 ```
 
-## Running
+## Out Of Core
 
-```bash
-# Build
-cmake -B build -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-cmake --build build
+The following old reference-layout ideas are no longer core defaults:
 
-# Run
-./build/bin/shield server --config config/app.yaml
+- Multi-node gateway / logic / storage deployment.
+- Built-in service discovery through Redis / Etcd / Consul / Nacos.
+- Prometheus and health-check endpoints.
+- Middleware chains.
 
-# Development (with auto-reload)
-./build/bin/shield server --config config/app-dev.yaml
-
-# Production
-./build/bin/shield server --config config/app-prod.yaml
-```
-
-## Multi-Node Deployment
-
-For multi-node, run separate Shield processes:
-
-```bash
-# Node 1: Gateway (handles clients)
-shield server --config config/gateway.yaml
-
-# Node 2: Logic (game state)
-shield server --config config/logic.yaml
-
-# Node 3: Storage (database access)
-shield server --config config/storage.yaml
-```
-
-Nodes discover each other via the configured discovery mechanism
-(static list, Redis, etcd, consul, or nacos).
+Users can still build these patterns externally, but they are not part of the
+current Shield core contract.

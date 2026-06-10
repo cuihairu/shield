@@ -40,6 +40,7 @@ export default defineConfig({
         items: [
           { text: '架构设计', link: '/architecture' },
           { text: '核心设计理念', link: '/architecture-core-concepts' },
+          { text: '运行时语义决策', link: '/runtime-semantics' },
           { text: 'Skynet 对比', link: '/skynet-comparison' },
           { text: 'CAF 映射', link: '/caf-mapping' },
         ],
@@ -48,6 +49,7 @@ export default defineConfig({
         text: '运行时专题',
         items: [
           { text: '网关设计', link: '/gateway' },
+          { text: '运维与调试', link: '/ops' },
           { text: '服务发现', link: '/service_discovery' },
           { text: '可观测性', link: '/monitoring' },
           { text: 'Schema Protocol', link: '/schema-protocol' },

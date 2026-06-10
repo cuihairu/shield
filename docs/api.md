@@ -1,24 +1,79 @@
 # API 说明
 
-Shield 当前不再维护按模块展开的独立 API 手册。
+Shield 的 API 仍处于重构设计阶段。本文只说明目标方向和当前约束，不承诺源码已经完整实现。
 
-原因很简单：旧版 API 文档和代码已经出现明显漂移，继续保留只会制造误导。后续以头文件、示例和测试作为一手来源，等接口边界稳定后再补回精简版 API 文档。
+## 文档口径
 
-## 以这些位置为准
+- `ARCHITECTURE.md` 是当前重构设计稿。
+- `docs/runtime-semantics.md` 是运行时语义和 A1-A35 决策稿。
+- `examples/hello_world/` 是目标 API 草图。
+- `include/`、`src/` 和 `tests/` 反映当前实现状态，但其中仍包含旧架构遗留模块。
+- API 稳定前，不维护按模块展开的完整 API 手册。
 
-- `include/shield/core/` - 生命周期、`ApplicationContext`、`StarterManager`
-- `include/shield/actor/` - Actor 系统、Lua Actor、分布式能力
-- `include/shield/service/` - `send`、`call`、`query`、`timeout` 等服务语义
-- `include/shield/script/` - Lua 运行时、VM 池、Lua API 绑定
-- `include/shield/gateway/` - 网关、分发器、中间件、诊断
-- `include/shield/protocol/` - TCP/HTTP/WebSocket/UDP/Schema 协议支持
-- `include/shield/discovery/` - 服务发现抽象与后端实现
-- `include/shield/config/` - 配置对象与配置管理
+## 目标 Lua API
 
-## 推荐阅读顺序
+最终希望 Lua 用户主要看到：
 
-1. [快速开始](./quickstart.md)
-2. [架构设计](./architecture.md)
-3. [核心设计理念](./architecture-core-concepts.md)
-4. [Skynet 对比](./skynet-comparison.md)
-5. `include/` 与 `tests/`
+```lua
+local handle, err = shield.spawn("gateway", {
+  name = "gateway.main",
+  args = { port = 8888 },
+})
+
+shield.exit()
+shield.self()
+shield.names()
+
+local ok, err = shield.send(target, "kick", uid)
+local ok, value = shield.call(target, "get_profile", uid)
+local ok, value = shield.call_timeout(30000, target, "get_profile", uid)
+
+local timer = shield.timer(interval_ms, callback)
+local timer = shield.timer_once(delay_ms, callback)
+shield.cancel_timer(timer)
+shield.sleep(delay_ms)
+shield.fork(function() ... end)
+shield.now()
+
+local ok, rows = shield.db.query(sql, params)
+local ok, result = shield.db.execute(sql, params)
+local ok, value = shield.redis.get(key)
+local ok = shield.redis.set(key, value, ttl)
+local ok = shield.redis.publish(channel, data)
+local ok = shield.redis.subscribe(channel, callback)
+
+shield.config(path)
+shield.log.info(msg)
+shield.log.warn(msg)
+shield.log.error(msg)
+shield.log.debug(msg)
+```
+
+关键约定：
+
+- `shield.spawn` 返回 ready 后的 `ServiceHandle`，失败返回 `nil, Error`。
+- `shield.send` 非阻塞、无 ACK，返回成功只表示 runtime 接受投递。
+- `shield.call` 返回 `ok, ...`，`ok=false` 只表示 runtime/transport/callee exception 级错误。
+- `shield.call_timeout` 用于覆盖默认 call timeout，避免最后一个业务参数和 options table 歧义。
+- payload 使用 `method + argc + args` 编码，保留多返回值和 trailing nil。
+- `ServiceHandle` 不包含 name 身份，name 只是 registry alias。
+
+完整语义见 [运行时语义决策稿](./runtime-semantics.md)。
+
+## 当前实现提示
+
+当前 `LuaServiceApi` 只实现了部分服务 API 绑定，例如 `send`、`call`、`timeout`、`query`、`uniqueservice`、`list_services`、`self`、`node_id`。`examples/hello_world/` 中使用的 `shield.service`、`shield.spawn`、`shield.exit`、`shield.db`、`shield.redis`、`shield.log` 等仍应视为目标契约。
+
+## C++ API 目标
+
+目标是提供一个单一入口：
+
+```cpp
+#include "shield/shield.hpp"
+
+int main(int argc, char** argv) {
+    return shield::run(argc, argv);
+}
+```
+
+该入口尚未稳定。当前源码仍使用 CLI command 入口。

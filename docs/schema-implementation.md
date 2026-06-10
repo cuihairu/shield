@@ -1,5 +1,13 @@
 # Schema Implementation Layout
 
+> Status: deferred extension design.
+>
+> This document predates the current single-node runtime boundary. Mentions of
+> `shield_core`, `shield_extensions`, plugin integration, mapper runtime, or
+> protocol runtime should be read as historical design vocabulary. Schema work
+> must not enter the current core unless it is explicitly re-approved in the
+> refactor roadmap.
+
 本文定义 schema protocol 的源码组织、namespace、库边界、工具链位置和生成物目录。它补齐协议设计从“概念可行”到“可以开始实现”的工程约束。
 
 ## 完整性判断
@@ -20,9 +28,9 @@
 - runtime 源码放在哪里
 - compiler 工具放在哪里
 - namespace 如何拆
-- 哪些内容进 `shield_core`
-- 哪些内容是 optional extension
-- client SDK 与服务端插件系统如何隔离
+- 哪些内容属于未来 schema runtime
+- 哪些内容必须留在 optional extension
+- client SDK 如何与服务端运行时隔离
 - generated 文件落到哪里
 
 ## 库边界
@@ -30,15 +38,15 @@
 Schema protocol 拆成四类组件：
 
 ```text
-shield_core
-  protocol schema runtime
+future schema runtime
+  descriptor runtime
   wire codec
   rpc pending/stream runtime
   descriptor loader
 
-shield_extensions
-  optional metrics/health integration
+future schema extensions
   optional mapper runtime integration if it depends on database stack
+  optional tooling integrations
 
 shield_protoc
   XML parser
@@ -56,10 +64,10 @@ client SDKs
 
 规则：
 
-- 运行时解码、descriptor registry、`send/call/stream` 分发属于 `shield_core`。
-- XML 编译器不进入 `shield_core` 热路径。
-- mapper descriptor 可以在 `shield_core` 中定义，但 mapper runtime 如果依赖数据库连接池，应放在 `shield_extensions` 或 `shield_data` 相关模块。
-- 客户端 SDK 不依赖服务端 plugin 系统。
+- 运行时解码、descriptor registry、`send/call/stream` 分发属于未来 schema runtime，不属于当前 refactor core。
+- XML 编译器不进入当前 runtime 热路径。
+- mapper descriptor 和 mapper runtime 均按后续扩展处理，不能进入当前最小启动路径。
+- 客户端 SDK 不依赖服务端运行时或插件系统。
 - `shield_protoc` 默认随开发构建启用，并通过 `SHIELD_BUILD_TOOLS=OFF` 关闭。
 - Merkle root、module hash 和 node hash 第一版使用 SHA-256；CRC32 只用于快速损坏检测。
 

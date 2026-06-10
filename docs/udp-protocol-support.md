@@ -1,76 +1,36 @@
-# UDP Protocol Support
+# UDP 支持
 
-Shield framework now supports UDP protocol alongside the existing TCP, HTTP, and WebSocket protocols.
+UDP 属于重构后 `net` 模块的目标能力之一，但本文不再描述旧架构中的 metrics、monitoring 或独立 protocol 层设计。
 
-## Overview
+## 目标边界
 
-The UDP integration provides:
-- **UDP Session Management**: Automatic session creation and timeout handling for connectionless UDP
-- **Reactor Pattern Integration**: UDP server using the same reactor pattern as TCP components  
-- **Protocol Handler**: Consistent interface with other protocol handlers
-- **Prometheus Metrics**: Built-in monitoring for UDP connections, packets, and performance
+`net` 负责：
 
-## Architecture
+- UDP socket 生命周期。
+- 数据包收发。
+- session 识别策略。
+- 超时和清理。
+- 将原始数据交给 transport 或 Lua gateway。
 
-### Core Components
+`net` 不负责：
 
-- `UdpSession`: Manages UDP endpoints and session lifecycle
-- `UdpProtocolHandler`: Implements the protocol handler interface for UDP
-- `UdpReactor`: Multi-threaded UDP server using Boost.Asio
-- `NetworkMetricsCollector`: Extended with UDP-specific metrics
+- Prometheus 指标。
+- 服务发现。
+- 业务可靠传输策略。
+- 框架级中间件。
 
-### Key Features
+## Transport
 
-1. **Session Management**: UDP endpoints are tracked as sessions with configurable timeouts
-2. **Thread Safety**: Multi-threaded reactor pattern with worker threads
-3. **Metrics Integration**: Automatic collection of UDP-specific metrics
-4. **Error Handling**: Robust error handling and connection lifecycle management
+如果项目需要可靠 UDP、加密、压缩或私有包格式，应通过 C++ `transport` 扩展点实现。
 
-## Usage Example
-
-```cpp
-#include "shield/net/udp_reactor.hpp"
-#include "shield/protocol/udp_protocol_handler.hpp"
-
-// Create UDP reactor
-shield::net::UdpReactor reactor(12345, 2); // port 12345, 2 worker threads
-
-// Set custom handler 
-reactor.set_handler_creator([](boost::asio::io_context& io_context, uint16_t port) {
-    return std::make_unique<MyUdpHandler>(io_context, port);
-});
-
-// Start the reactor
-reactor.start();
-
-// ... server runs until stop() is called
-reactor.stop();
+```text
+UDP packet → net → transport → Lua gateway
 ```
 
-## Configuration
+## 后续需要补充
 
-UDP sessions support the following configuration options:
-
-- **Session Timeout**: How long to keep inactive UDP sessions (default: 5 minutes)
-- **Cleanup Interval**: How often to check for expired sessions (default: 1 minute)
-- **Worker Threads**: Number of threads for processing UDP packets
-
-## Prometheus Metrics
-
-The following UDP-specific metrics are automatically collected:
-
-- `shield_active_udp_sessions`: Number of active UDP sessions  
-- `shield_udp_packets_sent_total`: Total UDP packets sent
-- `shield_udp_packets_received_total`: Total UDP packets received
-- `shield_udp_bytes_sent_total`: Total UDP bytes sent
-- `shield_udp_bytes_received_total`: Total UDP bytes received
-- `shield_udp_timeouts_total`: Total UDP session timeouts
-
-## Integration with Existing Systems
-
-UDP protocol handlers integrate seamlessly with:
-- CAF actor system for message processing
-- Lua scripting engine for business logic
-- Service discovery mechanisms
-- Configuration management system
-- Logging framework
+- session key 设计。
+- 包大小限制。
+- 丢包和重放策略。
+- transport 与 Lua gateway 的消息格式。
+- 对应单元测试和压力测试。

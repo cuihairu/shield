@@ -1,73 +1,29 @@
-# 常见问题
+# FAQ
 
-## 编译相关
+## Shield 当前是什么状态？
 
-### Q: vcpkg 依赖安装失败
+处于重构设计阶段。文档描述目标边界和 API 方向，源码仍包含旧架构遗留模块。
 
-```bash
-cd $VCPKG_ROOT && git pull && ./bootstrap-vcpkg.sh
-```
+## Shield 是分布式框架吗？
 
-### Q: CMake 找不到 C++20 编译器
+不是当前目标。重构后的 Shield core 聚焦单节点游戏服务运行时。多节点部署、服务发现、集群路由由用户或外部基础设施处理。
 
-确保编译器版本足够：
-- GCC 11+
-- Clang 14+
-- MSVC 2019 16.8+
+## 为什么移出 DI/IoC、插件、Prometheus、健康检查？
 
-### Q: Windows 上编译报错
+这些能力会扩大 core 面积，让项目偏离 Skynet 风格的轻量运行时。当前优先把服务、消息、网络、定时器和 Lua API 做稳定。
 
-确保设置了 `VCPKG_ROOT` 环境变量，并使用 `build.bat` 脚本构建。
+## 还会支持 HTTP 吗？
 
-## 运行相关
+当前 core 明确保留 TCP / UDP / WebSocket。HTTP 是否作为 core、transport 扩展或独立 ops 能力，需要后续单独决策，文档不再默认承诺。
 
-### Q: 端口被占用
+## `examples/hello_world/` 可以直接运行吗？
 
-修改 `config/app.yaml` 中的端口号：
+目前应视为目标 API 草图。`include/shield/shield.hpp`、`shield::run(argc, argv)`、完整 `shield.*` Lua 绑定仍需要实现。
 
-```yaml
-gateway:
-  listener:
-    port: 9090
-  http:
-    port: 9092
-  websocket:
-    port: 9093
-```
+## 和 Skynet 的关系是什么？
 
-### Q: Lua 脚本加载失败
+Shield 参考 Skynet 的服务、消息和 Lua-first 思路，但使用 C++20 和 CAF 作为内部实现基础。Shield 不复制 Skynet harbor、snax、sharedata 等机制。
 
-检查 `lua.script_dir` 配置路径是否正确，脚本文件是否存在。
+## 旧文档里的 `/health`、`/status`、Prometheus 怎么办？
 
-### Q: 健康检查返回错误
-
-```bash
-curl http://localhost:8082/health
-curl http://localhost:8082/status
-```
-
-查看日志输出确认服务是否启动成功。
-
-## 架构相关
-
-### Q: Shield 和 Skynet 的关系
-
-Shield 以 Skynet 为设计参考，提供 Skynet 风格的服务 API（send/call/query），但使用 CAF 作为 Actor 传输层，并内置了 HTTP/WebSocket/UDP、服务发现、可观测性等 Skynet 没有内置的功能。详见 [Skynet 对比](skynet-comparison.md)。
-
-### Q: CAF 提供了什么
-
-CAF 处理 Actor 的底层机制：spawn、send、request、schedule、序列化、分布式连接。Shield 在 CAF 之上添加了游戏服务器语义。详见 [CAF 映射](caf-mapping.md)。
-
-### Q: 如何创建一个 Lua 服务
-
-创建 `.lua` 文件，实现 `on_init()` 和 `on_message(msg)` 函数，使用 `shield.*` API 访问运行时。详见 [快速开始](quickstart.md) 和 [游戏后端教程](tutorial-game-backend.md)。
-
-### Q: 如何启用 Prometheus 指标
-
-```yaml
-metrics:
-  enabled: true
-  port: 9090
-```
-
-或启动参数 `--enable-metrics`。
+这些不属于当前 core。需要时可以作为外部 sidecar 或后续独立扩展重新设计。

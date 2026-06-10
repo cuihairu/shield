@@ -1,158 +1,100 @@
-# Shield Game Server Framework
+# Shield
 
-[![CI/CD Pipeline](https://img.shields.io/github/actions/workflow/status/cuihairu/shield/ci.yml?branch=main&label=CI/CD)](https://github.com/cuihairu/shield/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/github/actions/workflow/status/cuihairu/shield/docs.yml?branch=main&label=Docs)](https://github.com/cuihairu/shield/actions/workflows/docs.yml)
-[![codecov](https://codecov.io/gh/cuihairu/shield/graph/badge.svg)](https://codecov.io/gh/cuihairu/shield)
-![C++20](https://img.shields.io/badge/C%2B%2B-20-blue)
+Shield is being redesigned as a **single-node, Skynet-inspired, actor-based,
+Lua-first game server runtime**.
 
-Shield is a modern C++ game server framework that combines Pitaya's distributed architecture with Skynet's high-performance concurrency model, designed specifically for building large-scale multiplayer online games.
+This repository is currently in the **refactor design stage**. The documents in
+this repository describe the target architecture and API direction, not a stable
+released implementation.
 
-## ✨ Core Features
+## Target Positioning
 
-- **🌐 Distributed Architecture**: Microservices architecture with horizontal scaling support
-- **🚀 High-Performance Concurrency**: Multi-threaded processing based on Actor model
-- **🔧 Lua Script Integration**: C++ engine + Lua business logic with hot reload support
-- **🌍 Multi-Protocol Support**: Unified handling of TCP/UDP/HTTP/WebSocket protocols
-- **🔄 Service Discovery**: Support for multiple registries: etcd/consul/nacos/redis
-- **📊 Monitoring & Metrics**: Built-in Prometheus metrics collection and monitoring
-- **⚡ Performance Optimized**: Reactor pattern with multi-threaded I/O processing
+- C++ owns runtime infrastructure: actor scheduling, networking, Lua binding,
+  timers, configuration, logging, and low-level data access.
+- Lua owns game logic: each service is a Lua script using the `shield.*` API.
+- CAF remains an internal actor transport foundation.
+- Shield exposes game-server semantics instead of CAF details.
+- The first refactor target is a single-node runtime. Multi-node orchestration is
+  outside the core boundary.
 
-## 🚀 Quick Start
+## Non-Goals
 
-```bash
-# Clone the project
-git clone https://github.com/cuihairu/shield.git
-cd shield
+Shield core does not provide:
 
-# Setup development environment (including git hooks)
-./setup-hooks.sh
+- Distributed orchestration or cluster management.
+- DI/IoC containers or annotation-based assembly.
+- ORM or enterprise data frameworks.
+- Event bus abstractions separate from actor messages.
+- Middleware chains as a framework policy layer.
+- Prometheus, health-check registries, or plugin systems as core runtime
+  features.
 
-# Build and run
-cmake -B build -S .
-cmake --build build
-./build/bin/shield --config config/app.yaml
+These capabilities may be built by users or evaluated later as optional
+extensions, but they are not part of the current refactor contract.
+
+## Core Boundary
+
+`shield_core` is intentionally narrow. It only owns the actor/service semantics
+wrapped around CAF:
+
+| Core piece | Responsibility |
+| --- | --- |
+| service lifecycle | create, name, stop, and inspect services |
+| message semantics | `send` / `call` routing and timeout behavior |
+| coroutine scheduling | suspend and resume Lua-facing calls without blocking runtime threads |
+| timer semantics | timeout primitives attached to service execution |
+| CAF adapter | keep CAF hidden behind Shield service handles |
+
+First-party runtime modules are built around that core, but are not part of the
+core semantics:
+
+| Module | Responsibility |
+| --- | --- |
+| `shield_base` | Shared value types such as Result, Error, ByteBuffer, time, and IDs |
+| `shield_lua` | Lua VM management and `shield.*` bindings |
+| `shield_net` | TCP / UDP / WebSocket I/O and connection management |
+| `shield_ipc` | Same-host process communication and heartbeat state, outside core |
+| `shield_transport` | Optional byte-stream adaptation such as framing or encryption |
+| `shield_data` | Raw DB / Redis access, without ORM policy |
+| `shield_config` | YAML configuration loading |
+| `shield_log` | Runtime logging |
+| `shield_bootstrap` | Compose selected modules into a runnable server |
+
+## Target Lua Shape
+
+```lua
+local M = {}
+
+function M.on_init()
+    shield.log.info("echo started")
+end
+
+function M.ping()
+    local src = shield.sender()
+    shield.send(src, "pong", { time = shield.now() })
+end
+
+return M
 ```
 
-## 🌍 Protocol Support
+The current source tree still contains modules from the previous broader
+architecture. During the refactor, documentation should describe the target
+boundary first; implementation work should then remove, merge, or demote modules
+that no longer belong to `shield_core` or first-party runtime modules.
 
-Shield supports multiple network protocols out of the box:
+## Documentation
 
-### TCP Protocol
-- Persistent connections with session management
-- High-throughput binary protocol support
-- Connection pooling and load balancing
+- [Architecture Definition](ARCHITECTURE.md)
+- [Docs Home](docs/index.md)
+- [Architecture Design](docs/architecture.md)
+- [Core Concepts](docs/architecture-core-concepts.md)
+- [Runtime Semantics](docs/runtime-semantics.md)
+- [Ops Design](docs/ops.md)
+- [Roadmap](docs/roadmap.md)
+- [API Notes](docs/api.md)
 
-### UDP Protocol
-- Connectionless packet processing with session tracking
-- Automatic session timeout and cleanup
-- Multi-threaded packet handling
-- Real-time metrics collection
+## Current Status
 
-### HTTP/WebSocket
-- RESTful API endpoints
-- WebSocket for real-time communication
-- HTTP/2 support for modern web clients
-
-## 📊 Monitoring & Metrics
-
-Built-in Prometheus integration provides comprehensive metrics:
-
-**System Metrics**:
-- CPU and memory usage
-- Network I/O statistics
-- Thread pool utilization
-
-**Protocol-Specific Metrics**:
-- Active connections/sessions (TCP/UDP)
-- Packet/request throughput
-- Response times and error rates
-- Protocol-specific counters
-
-**Game Metrics**:
-- Active players and rooms
-- Message processing rates
-- Actor lifecycle events
-
-## 📚 Documentation
-
-- **[Development Guide](docs/development-guide.md)** - Environment setup, dependencies, development configuration
-- **[Architecture Design](docs/architecture.md)** - System architecture, framework comparison, design philosophy
-- **[API Notes](docs/api.md)** - Current API documentation policy and source-of-truth pointers
-- **[Configuration Guide](docs/configuration.md)** - Configuration file reference and best practices
-- **[UDP Protocol Support](docs/udp-protocol-support.md)** - UDP implementation details and usage
-- **[Monitoring](docs/monitoring.md)** - Runtime diagnostics, health checks, metrics and logging
-- **[Roadmap](docs/roadmap.md)** - Feature planning and version roadmap
-
-### 📖 Building Documentation Locally
-
-This project uses [VitePress](https://vitepress.dev/) for documentation.
-
-#### Install dependencies
-
-```bash
-cd docs
-pnpm install
-```
-
-#### Build and preview
-
-```bash
-# Start the local docs server
-pnpm run docs:dev
-
-# Build static documentation
-pnpm run docs:build
-
-# Preview the built site
-pnpm run docs:preview
-```
-
-After building, static documentation will be generated in `docs/.vitepress/dist/`.
-
-## 🏗️ Architecture
-
-Shield is built on a modular, component-based architecture:
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Gateway       │    │  Game Logic     │    │  Data Layer     │
-│                 │    │                 │    │                 │
-│ ┌─────────────┐ │    │ ┌─────────────┐ │    │ ┌─────────────┐ │
-│ │TCP/UDP/HTTP │ │    │ │ Lua Scripts │ │    │ │  Database   │ │
-│ │ Handlers    │ │    │ │             │ │    │ │  Cache      │ │
-│ └─────────────┘ │    │ └─────────────┘ │    │ └─────────────┘ │
-│ ┌─────────────┐ │    │ ┌─────────────┐ │    │ ┌─────────────┐ │
-│ │ Load        │ │    │ │ Actor       │ │    │ │ Service     │ │
-│ │ Balancer    │ │    │ │ System      │ │    │ │ Discovery   │ │
-│ └─────────────┘ │    │ └─────────────┘ │    │ └─────────────┘ │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
-
-## 🧪 Testing
-
-```bash
-# Run all tests
-cmake --build build --target test
-
-# Run specific test suites
-./build/bin/test_lua_actor
-./build/bin/test_udp_server
-./build/bin/test_integration
-```
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guide](docs/contributing.md) for details on:
-
-- Code style and standards
-- Pull request process
-- Issue reporting
-- Development workflow
-
-## 📄 License
-
-This project is licensed under the [Apache License 2.0](LICENSE).
-
----
-
-**Note**: Shield is under active development. APIs may change between versions.
+Design is not finalized. Treat examples under `examples/hello_world/` as target
+API sketches until the corresponding runtime entrypoint and Lua bindings are
+implemented.
