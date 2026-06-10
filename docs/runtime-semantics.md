@@ -28,11 +28,13 @@
 | [网络语义](runtime-network.md) | shield_net、shield_transport、gateway、SessionHandle、KCP 支持 |
 | [数据语义](runtime-data.md) | shield_data、连接池、DB/Redis API、事务、错误处理 |
 | [日志语义](runtime-log.md) | 日志级别、结构化格式、上下文注入、轮转、审计日志 |
-| [配置语义](runtime-config.md) | YAML 配置 schema、配置验证、环境差异 |
+| [配置语义](runtime-config.md) | YAML 配置 schema（**权威来源**）、配置验证、环境差异 |
 | [启动流程](runtime-bootstrap.md) | 启动顺序、关闭顺序、超时、信号处理、优雅重启 |
+| [错误码参考](runtime-errors.md) | 所有运行时错误码汇总：消息、服务、资源、数据库、Redis、网络 |
 | [运维语义](runtime-ops.md) | shield_ops、运维端点、metrics、健康检查 |
 | [安全语义](runtime-security.md) | Lua 沙箱、服务间权限、网络安全、敏感数据保护 |
 | [集群语义](runtime-cluster.md) | shield_cluster、节点发现、负载均衡、旧代码处理 |
+| [实体与组件](runtime-entity.md) | 游戏实体抽象、组件化设计、Entity/Component/Room 模式 |
 
 ## 实现顺序建议
 

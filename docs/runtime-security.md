@@ -81,14 +81,7 @@ end
 
 ### 连接限制
 
-```yaml
-network:
-  tcp: "0.0.0.0:8001"
-  max_connections: 10000           # 最大连接数
-  max_connections_per_ip: 100      # 单 IP 最大连接数
-  connection_timeout: 30000        # 连接超时
-  idle_timeout: 300000             # 空闲超时
-```
+连接限制参数见 [网络语义](runtime-network.md#网络背压与限制)。
 
 ### TLS/DTLS 支持
 
@@ -102,7 +95,14 @@ network:
     ca: "certs/ca.crt"             # 客户端证书验证（可选）
 ```
 
-### 速率限制
+### 速率限制（网关层）
+
+网关层限流是连接级防护，在消息进入业务逻辑前拦截。与业务级分布式限流（`shield.rate_limiter()`，见 [全局数据](runtime-global.md#五限流器)）不同：
+
+| 层级 | 作用 | 存储 | 适用场景 |
+|------|------|------|----------|
+| 网关层 `rate_limit` | 按客户端 IP/连接限流 | 内存 | 防刷、防 DDoS |
+| 业务层 `shield.rate_limiter()` | 按业务 key 限流 | Redis | 全服限流、API 限流 |
 
 ```yaml
 actors:
@@ -118,8 +118,8 @@ Lua 层实现：
 
 ```lua
 function M.on_message(session, payload)
-    -- 检查速率限制
-    if not rate_limiter:check(session:remote_addr()) then
+    -- 网关层限流：按客户端 IP 检查
+    if not check_rate_limit(session:remote_addr()) then
         session:send({ error = "rate_limited" })
         return
     end

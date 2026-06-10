@@ -97,29 +97,14 @@ Lua 中不需要手动传入这些字段。
 
 ## 日志配置
 
+完整配置 schema 见 [配置语义](runtime-config.md#完整配置-schema) 中 `log` 部分。
+
+### 输出目标
+
+支持多输出目标，每个目标可独立配置级别和格式：
+
 ```yaml
 log:
-  level: info                    # 全局日志级别
-  format: json                   # json | text
-  console: true                  # 输出到控制台
-
-  # 文件输出
-  file:
-    enabled: true
-    path: "logs/shield.log"
-    max_size: 100                # 单个文件最大 MB
-    max_files: 10                # 最大保留文件数
-    rotation: daily              # daily | size | none
-    compress: true               # 轮转后压缩
-
-  # 服务级别覆盖
-  services:
-    gateway:
-      level: debug               # gateway 服务单独设置 debug
-    payment:
-      level: warn                # payment 服务只记录 warn 以上
-
-  # 输出目标（可选）
   targets:
     - type: stdout
       format: text

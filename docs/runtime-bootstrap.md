@@ -95,17 +95,7 @@ Windows 下使用 `SetConsoleCtrlHandler` 替代信号。
 
 ## 启动超时
 
-每个阶段有独立超时：
-
-```yaml
-bootstrap:
-  timeout:
-    config_load: 5000        # 配置加载超时（ms）
-    data_init: 30000         # 数据层初始化超时（ms）
-    network_init: 10000      # 网络层初始化超时（ms）
-    cluster_init: 30000      # 集群层初始化超时（ms）
-    service_spawn: 60000     # 服务启动超时（ms）
-```
+每个阶段有独立超时，配置见 [配置语义](runtime-config.md#完整配置-schema) 中 `bootstrap.timeout` 部分。
 
 超时后：
 
@@ -182,14 +172,7 @@ bootstrap:
 
 ## 关闭超时
 
-```yaml
-shutdown:
-  timeout:
-    service_drain: 30000     # 服务 draining 超时（ms）
-    service_stop: 10000      # 单个服务停止超时（ms）
-    data_close: 10000        # 数据层关闭超时（ms）
-    total: 60000             # 总关闭超时（ms）
-```
+配置见 [配置语义](runtime-config.md#完整配置-schema) 中 `shutdown.timeout` 部分。
 
 超时后强制退出，输出未释放资源的警告。
 

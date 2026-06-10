@@ -171,7 +171,7 @@ end
 
 -- 玩家断线
 function M.on_disconnect(player, reason)
-    -- reason: "client_close", "network_error", "timeout", "kicked"
+    -- reason 枚举见下方表格
     -- 进入重连窗口，不立即清理
 
     shield.log.info("player disconnect: " .. player.uid .. " reason: " .. reason)
@@ -187,7 +187,7 @@ end
 
 -- 玩家离线（重连窗口超时或主动登出）
 function M.on_logout(player, reason)
-    -- reason: "normal", "timeout", "kicked", "replaced"
+    -- reason 枚举见下方表格
     -- 保存玩家数据
     save_player_data(player.uid, player:get_data())
 
@@ -217,6 +217,28 @@ return M
 | `on_reconnect` | 重连成功 | 是 | 是 |
 | `on_logout` | 玩家离线 | 否 | 否 |
 | `on_save` | 定时保存 | 否 | 是 |
+
+### reason 枚举
+
+玩家级钩子的 reason 与服务级 `on_exit` 的 reason 独立（服务级 reason 见 [服务语义](runtime-service.md#on_exitreason)）。
+
+**on_disconnect reason：**
+
+| reason | 说明 |
+|--------|------|
+| `"client_close"` | 客户端主动断开 |
+| `"network_error"` | 网络错误导致断开 |
+| `"timeout"` | 读写超时 |
+| `"kicked"` | 被服务端踢下线 |
+
+**on_logout reason：**
+
+| reason | 说明 |
+|--------|------|
+| `"normal"` | 正常登出（客户端主动退出） |
+| `"timeout"` | 重连窗口超时 |
+| `"kicked"` | 被管理员踢出 |
+| `"replaced"` | 被新设备登录替换 |
 
 ## PlayerSession 对象
 

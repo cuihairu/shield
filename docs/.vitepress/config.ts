@@ -60,9 +60,11 @@ export default defineConfig({
           { text: '日志语义', link: '/runtime-log' },
           { text: '配置语义', link: '/runtime-config' },
           { text: '启动流程', link: '/runtime-bootstrap' },
+          { text: '错误码参考', link: '/runtime-errors' },
           { text: '运维语义', link: '/runtime-ops' },
           { text: '安全语义', link: '/runtime-security' },
           { text: '集群语义', link: '/runtime-cluster' },
+          { text: '实体与组件', link: '/runtime-entity' },
         ],
       },
       {

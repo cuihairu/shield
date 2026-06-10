@@ -201,17 +201,7 @@ validate opts
 
 默认 `spawn_timeout` 为 10s，可由配置和 opts 覆盖。
 
-错误码：
-
-```txt
-invalid_module
-invalid_name
-name_conflict
-init_failed
-spawn_timeout
-runtime_stopping
-permission_denied
-```
+spawn 相关错误码见 [错误码参考](runtime-errors.md#一消息与服务错误)。
 
 ## shield.self
 
@@ -298,15 +288,19 @@ end
 
 服务退出时调用，用于清理资源。
 
+`reason` 枚举：
+
+| reason | 说明 |
+|--------|------|
+| `"normal"` | 正常退出（调用 `shield.exit("normal")`） |
+| `"panic"` | 致命错误（on_panic 触发） |
+| `"timeout"` | 初始化超时 |
+| `"stopping"` | 运行时正在停止 |
+| `"kicked"` | 被其他服务踢出 |
+| `"upgraded"` | 热更新替换 |
+
 ```lua
 function M.on_exit(reason)
-    -- reason 值：
-    -- "normal"      - 正常退出（调用 shield.exit）
-    -- "error"       - 未捕获错误导致退出
-    -- "timeout"     - 初始化超时
-    -- "stopping"    - 运行时正在停止
-    -- "kicked"      - 被其他服务踢出
-
     -- 清理资源
     if M.db_connection then
         M.db_connection:close()
@@ -319,7 +313,7 @@ end
 
 **on_error(err, context)**
 
-未捕获错误时调用，用于错误上报。
+错误上报钩子，仅用于记录和监控，**不影响服务运行状态**。
 
 ```lua
 function M.on_error(err, context)
@@ -334,10 +328,82 @@ function M.on_error(err, context)
         M.name, context.method or "unknown", err
     ))
 
-    -- 返回 true 表示已处理，服务继续运行
-    -- 返回 false 或 nil 表示未处理，服务退出
-    return true
+    -- 无返回值要求，服务继续运行
 end
+```
+
+触发条件：
+
+| 来源 | 触发时机 | 服务行为 | 出错单元行为 |
+|------|----------|----------|-------------|
+| handler | 方法抛出异常 | 继续运行 | 返回错误给 caller |
+| timer | callback 抛出异常 | 继续运行 | timer_once 结束，timer 停止 |
+| fork | 协程抛出异常 | 继续运行 | fork 协程结束 |
+
+**on_panic(reason, context)**
+
+致命错误钩子，触发后**服务退出**并进入重启流程。
+
+```lua
+function M.on_panic(reason, context)
+    -- reason: panic 原因
+    -- context: {
+    --   type = "init" | "vm" | "threshold" | "explicit",
+    --   error = err,  -- 原始错误（如有）
+    -- }
+
+    shield.log.error(string.format(
+        "PANIC in %s: %s (type=%s)",
+        M.name, reason, context.type
+    ))
+
+    -- 尝试紧急保存（best-effort，不允许挂起调用）
+    if M.data then
+        emergency_save(M.data)
+    end
+end
+```
+
+触发条件：
+
+| context.type | 触发时机 | 说明 |
+|-------------|----------|------|
+| `"init"` | `on_init` 返回失败或抛异常 | 服务无法启动 |
+| `"vm"` | Lua VM 内部错误 | 不可恢复 |
+| `"threshold"` | 连续未捕获错误达到阈值 | 防止错误循环 |
+| `"explicit"` | 业务调用 `shield.panic("reason")` | 主动触发 |
+
+**连续错误阈值：**
+
+```yaml
+actors:
+  - name: gateway
+    script: scripts/gateway.lua
+    panic_threshold:
+      consecutive_errors: 10      # 连续 10 次 on_error 后触发 on_panic
+      window: 60000               # 统计窗口 60 秒
+```
+
+**完整错误处理流程：**
+
+```
+错误发生
+  │
+  ├─ handler/timer/fork 异常
+  │   ├─ 调用 on_error（仅上报）
+  │   ├─ 检查连续错误计数
+  │   │   ├─ 未达阈值 → 继续运行
+  │   │   └─ 达到阈值 → 触发 on_panic → 服务退出
+  │   └─ 出错单元独立处理（timer 停止、fork 结束）
+  │
+  ├─ on_init 失败
+  │   └─ 直接触发 on_panic → 服务退出
+  │
+  └─ 服务退出后
+      └─ 重启策略决定是否重启
+          ├─ on-failure → 重启
+          ├─ always → 重启
+          └─ never → 不重启
 ```
 
 ### 业务 method
@@ -387,11 +453,19 @@ function M.on_exit(reason)
 end
 
 function M.on_error(err, context)
+    -- 仅上报，不影响服务运行
     shield.log.error(string.format(
         "%s error in %s: %s",
         M.name, context.method or "unknown", err
     ))
-    return true  -- 继续运行
+end
+
+function M.on_panic(reason, context)
+    -- 致命错误，服务即将退出
+    shield.log.error(string.format(
+        "%s PANIC: %s (type=%s)",
+        M.name, reason, context.type
+    ))
 end
 
 -- 业务方法
@@ -521,7 +595,7 @@ retry 5: 30s (达到 max_delay)
     "policy": "on-failure",
     "retry_count": 2,
     "last_restart": "2026-06-10T12:00:00Z",
-    "last_reason": "error"
+    "last_reason": "panic"
   }
 }
 ```
@@ -618,4 +692,32 @@ actors:
   "depended_by": [],
   "startup_order": 5
 }
+```
+
+## 服务资源限制
+
+每个 service 有独立的资源上限，防止无限增长。
+
+| 资源 | 默认值 | 说明 |
+|------|--------|------|
+| `max_mailbox_size` | 10000 | 单个 service 的 mailbox 消息数上限 |
+| `max_coroutines_per_service` | 1000 | 单个 service 的最大 coroutine 数 |
+| `max_pending_calls_per_service` | 1000 | 单个 service 的待响应 call 数 |
+| `max_timers_per_service` | 10000 | 单个 service 的 timer 数 |
+| `max_message_size` | 1MB | 单条消息最大体积 |
+| `max_fork_tasks_per_service` | 1000 | 单个 service 的 fork task 数 |
+
+超过限制时返回结构化错误，不允许无限增长。错误码见 [错误码参考](runtime-errors.md#二资源限制错误)。
+
+配置示例：
+
+```yaml
+actors:
+  - name: gateway
+    script: scripts/gateway.lua
+    limits:                          # 可选覆盖默认值
+      max_mailbox_size: 50000
+      max_coroutines: 2000
+      max_pending_calls: 2000
+      max_timers: 20000
 ```

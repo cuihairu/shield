@@ -255,6 +255,89 @@ l:auto_extend(false)         -- 关闭自动续期
 }
 ```
 
+### 实现机制
+
+所有锁操作使用 Lua 脚本保证原子性，避免竞态条件。
+
+**Redis 数据结构：**
+
+```
+Hash: shield:lock:{name}
+  field: owner   → "node_id:service_id:coroutine_id"
+  field: count   → 重入计数（整数）
+
+Sorted Set: shield:lock:queue:{name}  （仅公平锁）
+  member → owner_id
+  score  → 等待时间戳
+```
+
+**获取锁（Lua 脚本，原子）：**
+
+```lua
+-- KEYS[1] = shield:lock:{name}
+-- ARGV[1] = owner_id, ARGV[2] = ttl_ms
+local owner = redis.call('HGET', KEYS[1], 'owner')
+if owner == false then
+    -- 无主，直接获取
+    redis.call('HSET', KEYS[1], 'owner', ARGV[1], 'count', 1)
+    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+    return 1
+elseif owner == ARGV[1] then
+    -- 同一 owner，可重入，count +1
+    redis.call('HINCRBY', KEYS[1], 'count', 1)
+    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+    return 1
+else
+    -- 其他 owner 持有，获取失败
+    return 0
+end
+```
+
+**释放锁（Lua 脚本，原子）：**
+
+```lua
+-- KEYS[1] = shield:lock:{name}
+-- ARGV[1] = owner_id
+local owner = redis.call('HGET', KEYS[1], 'owner')
+if owner ~= ARGV[1] then
+    -- 非持有者，释放失败
+    return 0
+end
+local count = redis.call('HINCRBY', KEYS[1], 'count', -1)
+if count <= 0 then
+    -- 重入归零，删除锁
+    redis.call('DEL', KEYS[1])
+    return 1
+else
+    return count
+end
+```
+
+**续期锁（Lua 脚本，原子）：**
+
+```lua
+-- KEYS[1] = shield:lock:{name}
+-- ARGV[1] = owner_id, ARGV[2] = ttl_ms
+local owner = redis.call('HGET', KEYS[1], 'owner')
+if owner ~= ARGV[1] then
+    return 0
+end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
+return 1
+```
+
+**进程崩溃释放：**
+
+锁带 TTL（默认 30s），进程崩溃后锁自动过期释放。正常退出时主动释放（不等 TTL）。
+
+**自动续期：**
+
+`auto_extend(true, interval)` 启动后台协程，每 interval 毫秒执行续期 Lua 脚本。续期前已通过 Lua 脚本验证 owner，不会续期已释放的锁。
+
+**公平锁：**
+
+使用 Sorted Set 做等待队列，acquire 时入队，按 score（时间戳）顺序获取锁。release 时从队列移除，唤醒下一个等待者。队列操作也使用 Lua 脚本保证原子性。
+
 ### 配置
 
 ```yaml
@@ -324,13 +407,50 @@ rank:clear()
 
 ### 定时重置
 
+声明式配置，内部自动注册 scheduler 任务：
+
 ```lua
 local daily_rank = shield.rank("daily_score", {
     reset = "daily",          -- daily | weekly | monthly
-    reset_time = "00:00",
+    reset_time = "00:00",     -- 重置时间（UTC）
     archive = true,           -- 归档旧数据
+    distributed = true,       -- 分布式调度（只在一个进程执行）
 })
 ```
+
+等价于手动 scheduler：
+
+```lua
+local scheduler = shield.scheduler()
+local rank = shield.rank("daily_score")
+
+scheduler:cron("rank:daily_score:reset", "0 0 * * *", function()
+    if rank_config.archive then
+        -- 归档到 Redis Hash: shield:rank:archive:daily_score:{date}
+        local data = rank:top(rank_config.max_members or 10000)
+        local date = os.date("%Y%m%d")
+        redis.hset("shield:rank:archive:daily_score:" .. date, "data", json.encode(data))
+        redis.expire("shield:rank:archive:daily_score:" .. date, 2592000) -- 30天
+    end
+    rank:clear()
+end, { distributed = true })
+```
+
+**归档存储：**
+
+```
+Redis Hash: shield:rank:archive:{rank_name}:{YYYYMMDD}
+  field: "data" → JSON 序列化的 top N 数据
+  TTL: 30 天（可配置）
+```
+
+**重置触发方式：**
+
+| 方式 | 说明 | 适用场景 |
+|------|------|----------|
+| 声明式 `reset` 配置 | 自动注册 scheduler 任务 | 标准周期重置 |
+| 手动 scheduler | 业务自行注册 cron 任务 | 自定义归档逻辑 |
+| 手动 `rank:clear()` | 立即清空 | 运维手动重置 |
 
 ### 配置
 
@@ -341,6 +461,7 @@ rank:
   reset:
     enabled: true
     archive_table: "rank_archive"
+    archive_ttl: 2592000       # 归档保留天数（秒），默认 30 天
 ```
 
 ---
@@ -446,6 +567,42 @@ end)
 q:push({ type = "boss_killed", uid = "player_1" })
 ```
 
+### 实现机制
+
+各队列类型使用不同的 Redis 数据结构：
+
+| 队列类型 | Redis 结构 | 说明 |
+|----------|-----------|------|
+| 普通队列 | List | `LPUSH` 生产，`RPOP`/`BRPOP` 消费 |
+| 延迟队列 | Sorted Set | score 为到期时间戳，`ZRANGEBYSCORE` 取到期消息 |
+| 优先级队列 | Sorted Set | score 为优先级值（越小越优先），`ZPOPMIN` 消费 |
+| 可靠队列 | Stream | 使用 `XADD`/`XREADGROUP`/`XACK`，原生消费者组 |
+| 广播队列 | Pub/Sub + Stream | Pub/Sub 实时广播，Stream 做离线消息补发 |
+
+**可靠队列 ACK/NACK 机制：**
+
+基于 Redis Stream 的消费者组（Consumer Group）：
+
+```
+生产: XADD shield:queue:reliable_task * data "{...}"
+消费: XREADGROUP GROUP worker consumer-1 COUNT 1 BLOCK 5000 STREAMS shield:queue:reliable_task >
+确认: XACK shield:queue:reliable_task worker <message-id>
+```
+
+NACK（失败重试）将消息重新分配：
+
+```
+NACK: XCLAIM shield:queue:reliable_task worker consumer-1 <retry_after_ms> <message-id>
+```
+
+超过 `max_retries` 的消息移入死信队列（独立 Stream）。
+
+**消费者组协调：**
+
+- 每个进程启动时注册为独立 consumer
+- Stream 的消费者组保证每条消息只被一个 consumer 处理
+- 进程退出后，其 pending 消息超过 idle 时间后可被其他 consumer 认领（`XCLAIM`）
+
 ### 配置
 
 ```yaml
@@ -466,29 +623,83 @@ queue:
 
 ## 五、限流器
 
+业务级分布式限流，支持全服统一配额。与网关层连接级限流（`rate_limit`，见 [安全语义](runtime-security.md#速率限制网关层)）不同：
+
+| 层级 | 作用 | 存储 | 适用场景 |
+|------|------|------|----------|
+| 网关层 `rate_limit` | 按客户端 IP/连接限流 | 内存 | 防刷、防 DDoS |
+| 业务层 `shield.rate_limiter()` | 按业务 key 限流 | 本地+Redis | 全服限流、API 限流 |
+
+### 实现策略：本地令牌桶 + Redis 周期同步
+
+每次 `allow()` 不请求 Redis，使用本地令牌桶纳秒级判断。周期性与 Redis 同步全局配额。
+
+```
+请求到达
+  │
+  ├─ 本地令牌桶判断（纳秒级）
+  │   ├─ 有令牌 → 放行，消耗令牌
+  │   └─ 无令牌 → 拒绝
+  │
+  └─ 每 sync_interval 同步到 Redis
+      ├─ 上报本进程消费量
+      ├─ 拉取全局已消耗总量
+      ├─ 按进程数分配本地配额
+      └─ 调整本地桶容量
+```
+
+**配额分配：**
+
+```
+全局速率 = 100/s，3 个进程
+  → 每进程分配 ~33/s
+  → 本地令牌桶按 33/s 速率补充令牌
+  → 周期同步时按实际消耗重新分配
+```
+
+**精度特性：**
+
+| 指标 | 值 |
+|------|------|
+| 判断延迟 | < 1μs（本地内存） |
+| 同步延迟 | 1-5ms（Redis round-trip） |
+| 精度误差 | < sync_interval（默认 1s，误差 < 1 秒内请求量） |
+| 最终一致性 | 同步后全局配额精确 |
+
+### Lua API
+
 ```lua
 local limiter = shield.rate_limiter("api_limit", {
-    rate = 100,                 -- 每秒100请求
-    burst = 200,                -- 突发200
+    rate = 100,                 -- 全局每秒 100 请求
+    burst = 200,                -- 突发容量 200
 })
 
--- 检查
+-- 检查（本地判断，不请求 Redis）
 local allowed = limiter:allow("client_ip")
 local remaining = limiter:remaining("client_ip")
 
--- 等待
+-- 阻塞等待（本地等待，不请求 Redis）
 limiter:wait("client_ip", 5000)
 ```
 
 ### 滑动窗口
 
+滑动窗口模式使用 Redis 计数，每次 `allow()` 需要 1 次 Redis 调用。适合低频精确限流场景：
+
 ```lua
-local limiter = shield.rate_limiter("sliding", {
-    window = 60000,             -- 1分钟窗口
-    max_requests = 100,
-    sliding = true,
+local limiter = shield.rate_limiter("api_strict", {
+    window = 60000,             -- 1 分钟窗口
+    max_requests = 100,         -- 窗口内最多 100 次
+    sliding = true,             -- 滑动窗口（需要 Redis）
 })
 ```
+
+### 算法对比
+
+| 算法 | 每次请求 Redis | 精度 | 适用场景 |
+|------|---------------|------|----------|
+| `token_bucket` | 否（周期同步） | 近似 | 高频业务限流（默认） |
+| `sliding_window` | 是（1 次 EVAL） | 精确 | 低频精确限流 |
 
 ### 配置
 
@@ -496,8 +707,19 @@ local limiter = shield.rate_limiter("sliding", {
 rate_limiter:
   enabled: true
   algorithm: "token_bucket"    # token_bucket | sliding_window
-  cleanup_interval: 60000
+  sync_interval: 1000          # 本地与 Redis 同步间隔（ms），仅 token_bucket
+  cleanup_interval: 60000      # 过期 key 清理间隔（ms）
 ```
+
+### 降级策略
+
+| 场景 | token_bucket 行为 | sliding_window 行为 |
+|------|-------------------|---------------------|
+| Redis 不可用 | 继续使用本地配额，日志告警 | 拒绝所有请求（无法计数） |
+| Redis 恢复 | 下次同步自动恢复全局配额 | 自动恢复 |
+| 网络延迟高 | 同步延迟，本地配额可能偏大/偏小 | 请求延迟增加 |
+
+token_bucket 模式下 Redis 故障不影响业务可用性，只影响全局配额精度。
 
 ---
 

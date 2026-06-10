@@ -1,6 +1,6 @@
 # 配置运行时语义
 
-本文档包含 Shield 配置模型相关的运行时语义决策。
+本文档是 Shield 配置 schema 的**权威来源**。其他专题文档（runtime-network、runtime-log 等）只描述各自领域的配置语义和行为，不重复完整 schema。需要查看完整配置结构时以本文档为准。
 
 ## 配置原则
 
@@ -16,14 +16,6 @@
 app:
   name: my_game              # 应用名称
   version: "1.0.0"           # 版本号（可选）
-
-# 日志配置
-log:
-  level: info                # 日志级别：debug | info | warn | error
-  console: true              # 是否输出到控制台
-  file: "logs/app.log"       # 日志文件路径（可选）
-  max_size: 100              # 单个日志文件最大大小 MB（可选）
-  max_files: 10              # 最大保留日志文件数（可选）
 
 # Actor 服务配置
 actors:

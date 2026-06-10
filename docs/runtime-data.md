@@ -231,53 +231,26 @@ local ok, result = shield.redis.eval(
 
 ## 错误处理
 
-### 数据库错误
+数据库和 Redis 错误码见 [错误码参考](runtime-errors.md)。
 
 ```lua
 local ok, result = shield.db.query("SELECT * FROM non_existent")
 if not ok then
-    -- result 是 Error 对象
     shield.log.error("db error: " .. result.code .. " - " .. result.message)
 
     if result.code == "connection_lost" then
         -- 连接丢失，下次查询会自动重连
     elseif result.code == "query_timeout" then
         -- 查询超时
-    elseif result.code == "syntax_error" then
-        -- SQL 语法错误
     end
 end
 ```
-
-数据库错误码：
-
-```txt
-connection_lost      # 连接丢失
-connection_timeout   # 建立连接超时
-query_timeout        # 查询超时
-syntax_error         # SQL 语法错误
-constraint_violation # 约束违反
-transaction_aborted  # 事务中止
-pool_exhausted       # 连接池耗尽
-```
-
-### Redis 错误
 
 ```lua
 local ok, result = shield.redis.get("key")
 if not ok then
     shield.log.error("redis error: " .. result.code .. " - " .. result.message)
 end
-```
-
-Redis 错误码：
-
-```txt
-connection_lost      # 连接丢失
-connection_timeout   # 建立连接超时
-command_timeout      # 命令超时
-wrong_type           # 类型错误
-pool_exhausted       # 连接池耗尽
 ```
 
 ## data ownership
