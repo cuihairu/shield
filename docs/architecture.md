@@ -101,6 +101,8 @@ Shield 是 **单节点游戏服务运行时**。
 | `shield_transport` | 协议解析（解帧、编解码、加密）、KCP 实现 | 不直接暴露给 Lua |
 | `shield_player` | 玩家生命周期、PlayerSession、断线重连、离线消息缓存 | `shield.player.*` |
 | `shield_player_manager` | 全局玩家管理、查询、统计、广播 | `shield.player.manager()` |
+| `shield_server` | 服务器状态、全局计数器、运行时信息 | `shield.server()` |
+| `shield_global_data` | 跨进程共享数据、热更新配置、全服活动状态、分布式锁 | `shield.global_data()` |
 | `shield_cluster` | 跨进程/跨机器通信、服务发现、节点心跳 | 内置静态配置/广播发现，可选集成 Etcd/K8s |
 | `shield_data` | 原始 DB / Redis 访问 | `shield.db.*`、`shield.redis.*` |
 | `shield_config` | YAML 配置加载 | `shield.config` |

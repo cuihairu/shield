@@ -20,7 +20,8 @@
 | --- | --- |
 | [服务语义](runtime-service.md) | ServiceHandle、ServiceId、Service Registry、spawn、self、Lua service module、handler 上下文、exit |
 | [消息语义](runtime-messaging.md) | MessageEnvelope、MessagePayload、send、call、背压、QoS、超时、nested call、coroutine 调度、错误处理 |
-| [玩家生命周期](runtime-player.md) | PlayerSession、认证、断线重连、离线消息缓存、多设备策略 |
+| [玩家生命周期](runtime-player.md) | PlayerSession、PlayerManager、认证、断线重连、离线消息缓存、多设备策略 |
+| [服务器状态](runtime-server.md) | ServerManager、GlobalData、全局计数器、跨进程共享数据、热更新配置、全服活动状态、分布式锁 |
 | [定时器语义](runtime-timer.md) | timer API、时间语义、错误语义、sleep、fork、TaskHandle |
 | [Lua VM 语义](runtime-lua-vm.md) | Lua VM 模型、热更新策略、Blue-Green 替换 |
 | [网络语义](runtime-network.md) | shield_net、shield_transport、gateway、SessionHandle、KCP 支持 |
