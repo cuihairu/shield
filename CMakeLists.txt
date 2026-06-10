@@ -308,6 +308,7 @@ set(SHIELD_CORE_SOURCES
     src/protocol/protocol_handler.cpp
     src/protocol/http_handler.cpp
     src/protocol/binary_protocol.cpp
+    src/protocol/schema_protocol.cpp
     # Serialization
     src/serialization/messagepack_universal_serializer.cpp
     src/serialization/serialization_init.cpp
