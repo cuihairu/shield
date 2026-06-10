@@ -10,6 +10,7 @@ vcpkg-manifest-install.log
 # IDE specific
 .vs/
 .vscode/*
+.obsidian/
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json

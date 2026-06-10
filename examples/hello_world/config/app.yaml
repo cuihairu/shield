@@ -1,0 +1,52 @@
+# Shield Hello World - 最终 API 形态 (spec)
+# 所有服务（Lua 和 C++）统一在 YAML 中声明
+
+app:
+  name: "hello_world"
+  version: "1.0.0"
+
+log:
+  level: "info"
+  console: true
+
+# Actor 定义 - 声明式绑定
+actors:
+  # Lua 网关 + 可选 C++ 传输层
+  - name: "gateway"
+    script: "scripts/gateway.lua"
+    transport: MyTransport       # 可选：自定义传输层（解帧/解密）
+    network:
+      tcp: "0.0.0.0:8001"
+    instances: 1
+
+  # Lua 服务
+  - name: "echo"
+    script: "scripts/echo.lua"
+    instances: 4
+
+  # Lua 服务（动态创建）
+  - name: "player"
+    script: "scripts/player.lua"
+    instances: 0
+
+  # C++ 服务（配置驱动，不用宏）
+  # - name: "combat"
+  #   cpp: true
+  #   class: CombatService
+  #   config:
+  #     damage_multiplier: 1.5
+
+# 数据源 (Lua 可访问，原始查询，无 ORM)
+database:
+  driver: "mysql"
+  host: "localhost"
+  port: 3306
+  database: "hello_world"
+  username: "root"
+  password: ""
+  pool_size: 5
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
