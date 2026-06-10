@@ -436,62 +436,150 @@ private:
 | Starter | 职责 | 依赖 |
 |---------|------|------|
 | `EnvStarter` | 初始化环境变量（第一步） | 无 |
-| `ConfigStarter` | 加载和管理配置 | EnvStarter |
+| `ConfigStarter` | 加载本地配置文件 | EnvStarter |
 | `LogStarter` | 初始化日志系统 | ConfigStarter |
-| `EarlyScriptStarter` | 创建最小化 Lua VM，支持插件加载和事件订阅 | LogStarter |
+| `ScriptStarter` | 创建 Lua VM，注册基础 API，加载插件 | LogStarter |
 | `CoreStarter` | 初始化 shield_core | LogStarter |
-| `ScriptStarter` | 补全 shield.* API，发布 ScriptReady 事件 | EarlyScriptStarter, CoreStarter |
 | `DataStarter` | 初始化数据库/Redis 连接池 | ConfigStarter |
 | `NetStarter` | 初始化网络层和监听器 | ConfigStarter |
 | `TransportStarter` | 初始化协议适配层 | NetStarter |
 | `ClusterStarter` | 初始化集群通信 | ConfigStarter |
 
-### 启动顺序（支持 Lua 插件全生命周期）
+### 启动顺序（Lua 覆盖配置后的所有阶段）
 
 ```
 EnvStarter（第一步）
-    └─ ConfigStarter
-        ├─ LogStarter
-        │   ├─ EarlyScriptStarter  ← 提前加载 Lua VM，支持插件订阅所有事件
-        │   │   └─ ScriptStarter    ← 补全 shield.* API
-        │   └─ CoreStarter
-        │
-        ├─ DataStarter
-        ├─ NetStarter
-        │   └─ TransportStarter
-        └─ ClusterStarter
+    └─ ConfigStarter（加载本地配置文件）
+        └─ LogStarter
+            ├─ ScriptStarter（创建 Lua VM，发布 ConfigReady）
+            │   ├─ DataStarter  ← Lua 可参与
+            │   ├─ NetStarter   ← Lua 可参与
+            │   ├─ TransportStarter  ← Lua 可参与
+            │   └─ ClusterStarter  ← Lua 可参与
+            └─ CoreStarter  ← 发布 CoreReady，Lua 可使用完整 API
 ```
 
-### 两阶段 Lua 初始化
+### 设计原则：配置是持续加载的过程
 
-为了支持 Lua 插件参与整个启动生命周期，Lua VM 的初始化分为两个阶段：
+**配置加载不是一次性完成的**，而是一个持续的过程：
 
-**EarlyScriptStarter（第一阶段）**：
-- 在 `LogStarter` 之后立即创建最小化 Lua VM
-- 只加载 Lua 基础库和 `shield.plugin.on()` API
-- 提前加载所有插件脚本（插件可以订阅所有生命周期事件）
-- 使用简单的 print 输出（等 ScriptStarter 完成后替换为日志系统）
+1. **ConfigStarter**：加载本地配置文件（YAML）
+2. **ScriptStarter**：发布 `ConfigReady` 事件，Lua 代码可以：
+   - 从远程配置中心（etcd、Consul）拉取配置
+   - 验证和修改配置
+   - 合并远程配置到本地配置
+3. **后续 Starter**：使用最终确定的配置
 
-**ScriptStarter（第二阶段）**：
-- 在 `CoreStarter` 之后补全完整的 `shield.*` API
-- 将 print 替换为正式的日志系统
-- 发布 `ScriptReady` 事件，通知所有 API 已就绪
+### ScriptStarter：Lua VM 生命周期起点
 
-### Lua 插件可用性矩阵
+**ScriptStarter 在配置加载完成后立即启动**，只依赖 LogStarter。
 
-| 生命周期事件 | 插件可订阅 | 可用 API |
-|-------------|-----------|---------|
-| `PreConfigLoad` | ✅ | `shield.plugin.on()` |
-| `PostConfigLoad` | ✅ | `shield.plugin.on()`, `shield.env.*` |
-| `PreDataInit` | ✅ | `shield.plugin.on()`, `shield.env.*` |
-| `PostDataInit` | ✅ | + `shield.data.*`, `shield.redis.*` |
-| `PreNetInit` | ✅ | `shield.plugin.on()`, `shield.env.*` |
-| `PostNetInit` | ✅ | + `shield.net.*` |
-| `PreTransportInit` | ✅ | 同上 |
-| `PostTransportInit` | ✅ | + `shield.transport.*` |
-| `PreClusterInit` | ✅ | 同上 |
-| `PostClusterInit` | ✅ | + `shield.cluster.*` |
-| `ScriptReady` | ✅ | 所有 API 完全可用 |
+职责：
+- 创建 Lua VM 池
+- 注册**基础 API**（见下文 API 可用性矩阵）
+- 加载所有插件脚本
+- 发布 `ConfigReady` 事件，触发 Lua 配置处理
+- 发布 `ScriptReady` 事件
+
+注意：此时 `shield.call`/`shield.send` 等 Actor API 还不可用（CoreStarter 未完成）。
+
+### Lua API 可用性矩阵
+
+| 阶段 | 可用 API | 说明 |
+|-----|---------|------|
+| **ConfigReady** | `shield.plugin.on()`<br>`shield.config.*`<br>`shield.env.*`<br>`shield.log.*` | Lua VM 创建完成，可以访问和修改配置 |
+| **CoreReady** | + `shield.spawn()`<br>`shield.call()`<br>`shield.send()`<br>`shield.fork()`<br>`shield.sleep()`<br>`shield.timer*()` | Actor 系统就绪，可以创建服务 |
+| **PostDataInit** | + `shield.data.*`<br>`shield.redis.*` | 数据层就绪 |
+| **PostNetInit** | + `shield.net.*` | 网络层就绪 |
+| **PostTransportInit** | + `shield.transport.*` | 协议适配层就绪 |
+| **PostClusterInit** | + `shield.cluster.*` | 集群通信就绪 |
+| **RuntimeStart** | 所有 API 完全可用 | 进入事件循环 |
+
+### 配置系统设计：支持运行时修改
+
+Configuration 需要支持 Lua 代码的运行时修改：
+
+```cpp
+// include/shield/config/configuration.hpp
+namespace shield::config {
+
+class Configuration {
+public:
+    // ... 现有的 get 方法 ...
+    
+    /**
+     * 运行时修改配置（供 Lua 使用）
+     * 
+     * @param key 配置键（支持点号分隔的路径）
+     * @param value 配置值
+     * 
+     * 示例：
+     * config->set("database.host", "remote.db.example.com");
+     * config->set("database.port", 5432);
+     */
+    void set(const std::string& key, const sol::object& value);
+    
+    /**
+     * 合并远程配置
+     * 
+     * @param remote_config 远程配置表
+     * 
+     * 示例：
+     * local remote = { database = { host = "10.0.0.1", port = 3306 } }
+     * config:merge(remote)
+     */
+    void merge(const sol::table& remote_config);
+    
+    /**
+     * 验证配置完整性
+     * 
+     * @param schema 验证模式
+     * @return 验证结果
+     */
+    ValidationResult validate(const ValidationSchema& schema) const;
+    
+private:
+    // 配置存储（支持运行时修改）
+    std::unordered_map<std::string, ConfigValue> values_;
+    mutable std::shared_mutex mutex_;  // 支持并发读写
+};
+
+} // namespace shield::config
+```
+
+### Lua 配置 API
+
+```lua
+-- shield.config 模块（由 ScriptStarter 注册）
+
+-- 获取配置
+local db_host = shield.config.get("database.host", "localhost")
+local db_port = shield.config.get_int("database.port", 3306)
+
+-- 修改配置（运行时）
+shield.config.set("database.host", "remote.db.example.com")
+shield.config.set("database.pool_size", 50)
+
+-- 合并远程配置
+local remote_config = {
+    database = {
+        host = "10.0.0.1",
+        port = 3306,
+        pool_size = 100
+    },
+    redis = {
+        host = "10.0.0.2",
+        port = 6379
+    }
+}
+shield.config.merge(remote_config)
+
+-- 验证配置
+local ok, err = shield.config.validate(validation_schema)
+if not ok then
+    error("Configuration validation failed: " .. err)
+end
+```
 
 ## 具体实现示例
 
@@ -611,200 +699,118 @@ private:
 } // namespace shield::log
 ```
 
-### EarlyScriptStarter（新增：提前加载 Lua 插件）
-
-```cpp
-// include/shield/script/early_script_starter.hpp
-namespace shield::script {
-
-/**
- * 提前创建最小化 Lua VM
- * 
- * 职责：
- * - 在 LogStarter 之后立即创建 Lua VM
- * - 只加载基础库和 shield.plugin.on() API
- * - 提前加载所有插件，让插件可以订阅所有生命周期事件
- * - 使用简单的 print 输出（后续由 ScriptStarter 替换）
- */
-class EarlyScriptStarter : public IStarter {
-public:
-    void initialize() override {
-        auto& app = ApplicationContext::instance();
-        auto logger = app.get<Logger>();
-        auto config = app.get<Configuration>();
-        
-        if (!config) {
-            throw std::runtime_error("Configuration not available");
-        }
-        
-        // 创建最小化 Lua VM（只用于事件订阅）
-        early_vm_ = std::make_shared<sol::state>();
-        early_vm_->open_libraries(sol::lib::base);
-        
-        // 设置简单的 print（临时，等 ScriptStarter 完成后替换为日志系统）
-        early_vm_->set_function("print", [logger](const std::string& msg) {
-            if (logger) {
-                logger->info("[Early Lua] " + msg);
-            } else {
-                std::cout << "[Early Lua] " << msg << std::endl;
-            }
-        });
-        
-        // 创建 shield.plugin 表
-        sol::table plugin = early_vm_->create_named("shield.plugin");
-        
-        // 只注册 plugin.on() API（其他 API 由 ScriptStarter 补全）
-        plugin.set_function("on", [this](const std::string& event, sol::function handler) {
-            LifecyclePublisher::instance().subscribe_lua(event, handler);
-        });
-        
-        // 提前加载插件
-        if (config->get_bool("plugins.enabled", false)) {
-            load_early_plugins(config);
-        }
-        
-        // 注册到 ApplicationContext（供 ScriptStarter 使用）
-        app.register_component<sol::state>(early_vm_, "early_lua_vm");
-        
-        // 连接到生命周期发布器
-        LifecyclePublisher::instance().set_early_vm(early_vm_.get());
-        
-        SHIELD_LOG_INFO << "EarlyScriptStarter: Lua VM created, plugins loaded";
-    }
-    
-    std::string name() const override { return "EarlyScriptStarter"; }
-    
-    std::vector<std::string> depends_on() const override {
-        return {"LogStarter"};
-    }
-    
-    bool is_enabled() const override {
-        auto& app = ApplicationContext::instance();
-        auto config = app.get<Configuration>();
-        return config && config->get_bool("script.enabled", true);
-    }
-    
-    void shutdown() override {
-        early_vm_.reset();
-    }
-    
-private:
-    std::shared_ptr<sol::state> early_vm_;
-    
-    void load_early_plugins(std::shared_ptr<Configuration> config) {
-        std::string plugin_dir = config->get_string("plugins.directory", "plugins");
-        auto plugin_names = config->get_string_list("plugins.load", {});
-        
-        for (const auto& plugin_name : plugin_names) {
-            std::string plugin_path = plugin_dir + "/" + plugin_name + ".lua";
-            
-            try {
-                early_vm_->script_file(plugin_path);
-                
-                // 调用插件的 on_load 函数（如果有）
-                sol::optional<sol::function> on_load = (*early_vm_)["on_load"];
-                if (on_load) {
-                    auto plugin_config = config->get_subconfig("plugins.config." + plugin_name);
-                    on_load.value()(plugin_config.to_lua_table());
-                }
-                
-                SHIELD_LOG_INFO << "Loaded early plugin: " << plugin_name;
-            } catch (const std::exception& e) {
-                SHIELD_LOG_ERROR << "Failed to load early plugin '" << plugin_name 
-                                 << "': " << e.what();
-            }
-        }
-    }
-};
-
-} // namespace shield::script
-```
-
-### ScriptStarter（更新：补全 shield.* API）
+### ScriptStarter（配置后的 Lua VM 生命周期起点）
 
 ```cpp
 // include/shield/script/script_starter.hpp
 namespace shield::script {
 
+/**
+ * Lua VM 初始化器
+ *
+ * 职责：
+ * - 在 LogStarter 之后创建 Lua VM 池
+ * - 注册基础 API（plugin, config, env, log）
+ * - 加载所有插件脚本
+ * - 发布 ConfigReady 事件，让 Lua 代码可以处理配置
+ * - 发布 ScriptReady 事件
+ */
 class ScriptStarter : public IStarter {
 public:
     void initialize() override {
         auto& app = ApplicationContext::instance();
         auto config = app.get<Configuration>();
-        auto core = app.get<ShieldCore>();
-        
+        auto logger = app.get<Logger>();
+
         if (!config) {
             throw std::runtime_error("Configuration not available");
         }
-        
-        // 尝试获取 EarlyScriptStarter 创建的早期 Lua VM
-        auto early_vm = app.get_by_name<sol::state>("early_lua_vm");
-        
-        if (early_vm) {
-            // ===== 补全早期 Lua VM 的 API =====
-            
-            // 替换 print 为正式的日志系统
-            auto logger = app.get<Logger>();
-            early_vm_->set_function("print", [logger](const std::string& msg) {
-                if (logger) {
-                    logger->info(msg);
-                }
-            });
-            
-            // 注册完整的 shield.* API
-            register_full_shield_api(early_vm, config, core);
-            
-            // 创建 Lua VM 池（用于服务）
-            lua_pool_ = std::make_shared<LuaVMPool>(
-                config->get_int("script.vm_pool_size", 10)
-            );
-            register_full_shield_api(lua_pool_, config, core);
-            
-            // 注册到 ApplicationContext
-            app.register_component<LuaVMPool>(lua_pool_, "lua_pool");
-            
-            // 连接到 LifecyclePublisher
-            LifecyclePublisher::instance().set_lua_pool(lua_pool_.get());
-            
-            SHIELD_LOG_INFO << "ScriptStarter: Completed early Lua VM with full shield.* API";
-        } else {
-            // ===== 回退：创建新的 Lua VM 池（如果没有 EarlyScriptStarter）=====
-            SHIELD_LOG_WARN << "EarlyScriptStarter not found, creating new Lua VM pool";
-            
-            lua_pool_ = std::make_shared<LuaVMPool>(
-                config->get_int("script.vm_pool_size", 10)
-            );
-            register_full_shield_api(lua_pool_, config, core);
-            
-            app.register_component<LuaVMPool>(lua_pool_, "lua_pool");
-            LifecyclePublisher::instance().set_lua_pool(lua_pool_.get());
-        }
-        
-        // 发布生命周期事件：Lua 完全就绪
-        LifecyclePublisher::instance().publish(
-            LifecyclePhase::ScriptReady,
-            R"({"vm_pool_size": )" + std::to_string(lua_pool_->size()) + "}"
+
+        // 创建 Lua VM 池
+        lua_pool_ = std::make_shared<LuaVMPool>(
+            config->get_int("script.vm_pool_size", 10)
         );
+
+        // 注册基础 API（此时 CoreStarter 可能还未完成）
+        register_basic_api(lua_pool_, config, logger);
+
+        // 加载插件脚本
+        if (config->get_bool("plugins.enabled", false)) {
+            load_plugins(config);
+        }
+
+        // 注册到 ApplicationContext
+        app.register_component<LuaVMPool>(lua_pool_, "lua_pool");
+
+        // 连接到生命周期发布器
+        LifecyclePublisher::instance().set_lua_pool(lua_pool_.get());
+
+        // 发布 ConfigReady 事件，触发 Lua 配置处理
+        LifecyclePublisher::instance().publish(
+            LifecyclePhase::ConfigReady,
+            config->to_json()
+        );
+
+        // 注册完整 API 的钩子（等 CoreStarter 完成后）
+        LifecyclePublisher::instance().subscribe(LifecyclePhase::CoreReady, [this, &app]() {
+            auto core = app.get<ShieldCore>();
+            if (core) {
+                register_full_api(lua_pool_, core);
+            }
+        });
+
+        SHIELD_LOG_INFO << "ScriptStarter: Lua VM created, ConfigReady published";
     }
-    
+
     std::string name() const override { return "ScriptStarter"; }
-    
+
     std::vector<std::string> depends_on() const override {
-        return {"EarlyScriptStarter", "CoreStarter"};
+        return {"LogStarter"};  // 只依赖日志，不依赖 CoreStarter
     }
-    
+
     bool is_enabled() const override {
         auto& app = ApplicationContext::instance();
         auto config = app.get<Configuration>();
         return config && config->get_bool("script.enabled", true);
     }
-    
+
     void shutdown() override {
         lua_pool_.reset();
     }
-    
+
 private:
     std::shared_ptr<LuaVMPool> lua_pool_;
+
+    /**
+     * 注册基础 API（ConfigStarter 完成后可用）
+     */
+    void register_basic_api(std::shared_ptr<LuaVMPool> pool,
+                            std::shared_ptr<Configuration> config,
+                            std::shared_ptr<Logger> logger) {
+        // shield.plugin.on() - 事件订阅
+        // shield.config.* - 配置访问（支持运行时修改）
+        // shield.env.* - 环境变量
+        // shield.log.* - 日志
+    }
+
+    /**
+     * 注册完整 API（CoreStarter 完成后调用）
+     */
+    void register_full_api(std::shared_ptr<LuaVMPool> pool,
+                           std::shared_ptr<ShieldCore> core) {
+        // shield.spawn() - 创建服务
+        // shield.call() - 同步调用
+        // shield.send() - 异步发送
+        // shield.fork() - 创建协程
+        // shield.sleep() - 挂起协程
+        // shield.timer*() - 定时器
+        // ...
+
+        // 发布 ScriptReady 事件
+        LifecyclePublisher::instance().publish(LifecyclePhase::ScriptReady);
+    }
+
+    void load_plugins(std::shared_ptr<Configuration> config);
 };
 
 } // namespace shield::script
@@ -916,7 +922,7 @@ void Bootstrap::run(int argc, char** argv) {
 
     // ========== 2. 初始化 C++ 模块 ==========
     initialize_cpp_modules();
-    // 注意：Lua 插件已在 EarlyScriptStarter 阶段加载
+    // 注意：Lua 插件已在 ScriptStarter 阶段加载
 
     // ========== 3. 启动 Lua Services ==========
     spawn_lua_services();
@@ -930,9 +936,8 @@ void Bootstrap::register_starters() {
     starters_->register_starter(std::make_unique<EnvStarter>());
     starters_->register_starter(std::make_unique<ConfigStarter>());
     starters_->register_starter(std::make_unique<LogStarter>());
-    starters_->register_starter(std::make_unique<EarlyScriptStarter>());  // 新增：提前加载 Lua 插件
+    starters_->register_starter(std::make_unique<ScriptStarter>());  // 创建 Lua VM
     starters_->register_starter(std::make_unique<CoreStarter>());
-    starters_->register_starter(std::make_unique<ScriptStarter>());      // 补全 shield.* API
     starters_->register_starter(std::make_unique<DataStarter>());
     starters_->register_starter(std::make_unique<NetStarter>());
     starters_->register_starter(std::make_unique<TransportStarter>());
@@ -945,11 +950,11 @@ void Bootstrap::initialize_cpp_modules() {
         LifecyclePhase::PreModuleInit,
         "Starting C++ module initialization"
     );
-    
+
     // 初始化所有 Starters
     // StarterManager 会自动按依赖顺序初始化
     starters_->initialize_all();
-    
+
     // 发布生命周期事件：模块初始化完成
     LifecyclePublisher::instance().publish(
         LifecyclePhase::PostModuleInit,
@@ -958,16 +963,9 @@ void Bootstrap::initialize_cpp_modules() {
 }
 
 void Bootstrap::load_lua_plugins() {
-    // 注意：Lua 插件已在 EarlyScriptStarter 阶段加载
+    // 注意：Lua 插件已在 ScriptStarter 阶段加载
     // 此函数保留仅为兼容性，实际执行为空操作
-    SHIELD_LOG_INFO << "Plugins already loaded in EarlyScriptStarter phase";
-
-    // 如需在此阶段加载额外插件，可以添加：
-    // auto& app = ApplicationContext::instance();
-    // auto early_vm = app.get_by_name<sol::state>("early_lua_vm");
-    // if (early_vm) {
-    //     // 加载额外插件...
-    // }
+    SHIELD_LOG_INFO << "Plugins already loaded in ScriptStarter phase";
 }
 
 void Bootstrap::spawn_lua_services() {
@@ -1156,6 +1154,131 @@ function M:collect_metrics()
         services = shield.ops.services(),
         memory = collectgc("count"),
     }
+end
+
+return M
+```
+
+### Lua 参与配置加载示例
+
+```lua
+-- plugins/remote_config.lua
+local M = {}
+
+-- HTTP 客户端（用于从远程配置中心拉取配置）
+local http = require("shield.http")
+
+function M.on_load(config)
+    -- 订阅 ConfigReady 事件，从远程配置中心拉取配置
+    shield.plugin.on("ConfigReady", function(local_config)
+        shield.log.info("Fetching remote configuration...")
+        
+        -- 从 etcd/Consul 拉取远程配置
+        local remote_config = M:fetch_from_etcd()
+        
+        if remote_config then
+            -- 合并远程配置到本地配置
+            shield.config.merge(remote_config)
+            shield.log.info("Remote configuration merged successfully")
+        else
+            shield.log.warn("Failed to fetch remote configuration, using local config")
+        end
+        
+        -- 验证最终配置
+        M:validate_config()
+    end)
+    
+    -- 订阅 DataInit 之前的事件，动态调整数据库连接池配置
+    shield.plugin.on("PreDataInit", function()
+        local pool_size = shield.config.get_int("database.pool_size", 10)
+        
+        -- 根据服务器规格动态调整连接池大小
+        local cpu_count = os.getenv("CPU_COUNT") or 4
+        pool_size = math.max(pool_size, cpu_count * 2)
+        
+        shield.config.set("database.pool_size", pool_size)
+        shield.log.info("Database pool size adjusted to " .. pool_size)
+    end)
+end
+
+function M:fetch_from_etcd()
+    -- 连接到 etcd
+    local etcd_host = shield.env.get("ETCD_HOST", "localhost")
+    local etcd_port = shield.env.get_int("ETCD_PORT", 2379)
+    
+    local url = string.format("http://%s:%d/v2/keys/game/config", etcd_host, etcd_port)
+    
+    -- 发起 HTTP GET 请求
+    local response, err = http.get(url)
+    if err then
+        shield.log.error("Failed to fetch from etcd: " .. err)
+        return nil
+    end
+    
+    -- 解析响应
+    local data = json.decode(response.body)
+    
+    -- etcd v2 返回格式: { node: { value: "..." } }
+    if data.node and data.node.value then
+        return json.decode(data.node.value)
+    end
+    
+    return nil
+end
+
+function M:validate_config()
+    -- 验证必需的配置项
+    local required_keys = {
+        "database.host",
+        "database.port",
+        "database.name",
+        "redis.host",
+        "redis.port"
+    }
+    
+    for _, key in ipairs(required_keys) do
+        local value = shield.config.get(key)
+        if not value then
+            error("Missing required configuration: " .. key)
+        end
+    end
+    
+    shield.log.info("Configuration validation passed")
+end
+
+return M
+```
+
+### 多环境配置示例
+
+```lua
+-- plugins/environment_config.lua
+local M = {}
+
+function M.on_load(config)
+    -- 根据环境变量加载不同环境的配置
+    shield.plugin.on("ConfigReady", function()
+        local env = shield.env.get("RUNTIME_ENV", "development")
+        
+        -- 从不同路径加载环境特定配置
+        local env_config_file = string.format("config/%s.yaml", env)
+        
+        -- 合并环境特定配置
+        local env_config = load_yaml_file(env_config_file)
+        if env_config then
+            shield.config.merge(env_config)
+            shield.log.info(string.format("Loaded %s environment config", env))
+        end
+        
+        -- 覆盖特定配置项
+        if env == "production" then
+            shield.config.set("log.level", "warn")
+            shield.config.set("database.pool_size", 100)
+        elseif env == "development" then
+            shield.config.set("log.level", "debug")
+            shield.config.set("database.pool_size", 10)
+        end
+    end)
 end
 
 return M
@@ -1373,11 +1496,13 @@ void StarterManager::initialize_all() {
 2. 在 Bootstrap 各阶段发布事件
 3. 支持 C++ 和 Lua 监听器
 
-### Phase 4: 添加两阶段 Lua 初始化
+### Phase 4: 添加 ScriptStarter
 
-1. 实现 `EarlyScriptStarter`：在 LogStarter 之后创建最小化 Lua VM
-2. 提前加载插件，让插件可以订阅所有生命周期事件
-3. 修改 `ScriptStarter`：补全 shield.* API，复用早期 Lua VM
+1. 实现 `ScriptStarter`：在 LogStarter 之后创建 Lua VM
+2. 注册基础 API（plugin, config, env, log）
+3. 加载所有插件脚本
+4. 发布 `ConfigReady` 事件，让 Lua 代码可以处理配置
+5. 订阅 `CoreReady` 事件，补全完整 API
 
 ### Phase 5: 添加生命周期事件系统
 
@@ -1394,8 +1519,8 @@ void StarterManager::initialize_all() {
 | 条件启用 | ✅ 保留 |
 | ApplicationContext 统一访问 | ✅ 新设计 |
 | Environment 环境变量 | ✅ 新增 |
-| 两阶段 Lua 初始化 | ✅ 新增 |
-| 提前插件加载 | ✅ 新增 |
+| Lua 覆盖配置后的所有阶段 | ✅ 新设计 |
+| 配置系统支持运行时修改 | ✅ 新增 |
 | 生命周期事件系统 | ✅ 新增 |
 | Lua 插件全生命周期参与 | ✅ 新增 |
 | DI 能力 | ❌ 移除 |
@@ -1405,6 +1530,7 @@ void StarterManager::initialize_all() {
 - **ApplicationContext**：统一的应用上下文访问入口
 - **Starter**：C++ 模块初始化器，负责运行时模块的启动顺序和生命周期管理
 - **Environment**：环境变量管理器，支持 get/set 和变量展开
-- **两阶段 Lua 初始化**：EarlyScriptStarter 提前创建最小化 VM，ScriptStarter 补全 API
-- **生命周期事件**：框架级事件通知，支持 Lua 插件参与整个启动流程
-- **Lua 插件**：通过 `shield.plugin.on()` 订阅所有生命周期事件
+- **ScriptStarter**：Lua VM 生命周期起点，只依赖 LogStarter
+- **配置是持续的过程**：本地配置 → ConfigReady → Lua 拉取远程配置 → 最终配置
+- **生命周期事件**：框架级事件通知，支持 Lua 代码参与整个启动流程
+- **插件系统**：通过 `shield.plugin.on()` 订阅生命周期事件，只是 Lua 能力的一部分
