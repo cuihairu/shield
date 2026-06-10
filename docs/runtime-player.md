@@ -530,12 +530,167 @@ GET /ops/players
 }
 ```
 
+## PlayerManager
+
+PlayerManager 是全局单例 Service，负责管理所有在线玩家。
+
+### 职责
+
+| 职责 | 说明 |
+|------|------|
+| 玩家注册/注销 | Player 上下线时向 PlayerManager 注册/注销 |
+| 全局查询 | 按 UID、状态、条件查询玩家 |
+| 在线统计 | 统计在线人数、状态分布 |
+| 批量操作 | 踢人、广播消息、批量通知 |
+| 索引维护 | 维护 UID → PlayerSession 的索引 |
+
+### 架构
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  PlayerManager (单例)                    │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │  索引                                               │ │
+│  │  - uid_index: Map<UID, PlayerSession>              │ │
+│  │  - state_index: Map<State, Set<PlayerSession>>     │ │
+│  └────────────────────────────────────────────────────┘ │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │  能力                                               │ │
+│  │  - register(player) / unregister(uid)              │ │
+│  │  - get(uid) / query(filter)                        │ │
+│  │  - count() / online_list()                         │ │
+│  │  - kick(uid, reason) / broadcast(msg)              │ │
+│  └────────────────────────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────┤
+│  Player 1 (Service) │ Player 2 (Service) │ ...         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Lua API
+
+```lua
+-- 获取 PlayerManager
+local pm = shield.player.manager()
+
+-- 查询玩家
+local player = pm:get(uid)
+local players = pm:query({ state = "online", level_min = 10 })
+
+-- 统计
+local count = pm:count()
+local stats = pm:stats()
+-- stats: { online = 5000, reconnecting = 10, total_today = 12345 }
+
+-- 踢人
+local ok, err = pm:kick(uid, "maintenance")
+
+-- 广播
+pm:broadcast("system_notice", { text = "Server maintenance in 5 minutes" })
+pm:broadcast_to(filter, "system_notice", { text = "VIP bonus!" })
+
+-- 遍历
+pm:for_each(function(player)
+    if player.level >= 100 then
+        player:send("achievement", { type = "level_100" })
+    end
+end)
+```
+
+### PlayerSession 注册流程
+
+```lua
+-- Player Service 的 on_login 中自动注册
+function M.on_login(player)
+    -- 框架自动调用 PlayerManager.register(player)
+    -- 业务层无需手动注册
+
+    -- 业务逻辑
+    load_player_data(player.uid)
+end
+
+-- Player Service 的 on_logout 中自动注销
+function M.on_logout(player, reason)
+    -- 框架自动调用 PlayerManager.unregister(player.uid)
+    -- 业务层无需手动注销
+
+    -- 业务逻辑
+    save_player_data(player.uid)
+end
+```
+
+### 配置
+
+```yaml
+# PlayerManager 配置
+player_manager:
+  enabled: true
+  name: "player_manager"           # 服务名称
+  max_players: 50000               # 最大在线玩家数
+  index_cleanup_interval: 60000    # 索引清理间隔（ms）
+
+# Player Service 配置（关联 PlayerManager）
+actors:
+  - name: player
+    script: scripts/player.lua
+    player:
+      manager: "player_manager"    # 关联的 PlayerManager
+      auth:
+        timeout: 10000
+      reconnect:
+        enabled: true
+        window: 300000
+```
+
+### 与其他 Service 的交互
+
+```lua
+-- 其他 Service 查询玩家信息
+local player = shield.call("player_manager", "get", uid)
+if player then
+    shield.log.info("player online: " .. player.uid)
+end
+
+-- 其他 Service 踢人
+shield.call("player_manager", "kick", uid, "violation")
+
+-- 其他 Service 广播
+shield.send("player_manager", "broadcast", {
+    type = "system_notice",
+    text = "Welcome to the game!"
+})
+```
+
+### ops 暴露
+
+```json
+GET /ops/players
+
+{
+  "manager": {
+    "name": "player_manager",
+    "status": "running"
+  },
+  "stats": {
+    "online": 5000,
+    "authenticating": 5,
+    "reconnecting": 10,
+    "total_today": 12345,
+    "peak_today": 8000
+  },
+  "top_regions": [
+    { "region": "us-east", "count": 2000 },
+    { "region": "eu-west", "count": 1500 }
+  ]
+}
+```
+
 ## 实现优先级
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
 | 基础钩子 (on_auth, on_login, on_logout) | P0 | 核心功能 |
 | 断线重连 | P0 | 游戏必备 |
+| PlayerManager | P0 | 全局玩家管理 |
 | 离线消息缓存 | P1 | 提升体验 |
 | 多设备策略 | P2 | 按需实现 |
 | 定时保存 | P1 | 数据安全 |
