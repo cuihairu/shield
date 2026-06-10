@@ -50,6 +50,7 @@ export default defineConfig({
         items: [
           { text: '服务语义', link: '/runtime-service' },
           { text: '消息语义', link: '/runtime-messaging' },
+          { text: '玩家生命周期', link: '/runtime-player' },
           { text: '定时器语义', link: '/runtime-timer' },
           { text: 'Lua VM 语义', link: '/runtime-lua-vm' },
           { text: '网络语义', link: '/runtime-network' },

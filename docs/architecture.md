@@ -99,6 +99,7 @@ Shield 是 **单节点游戏服务运行时**。
 | `shield_lua` | Lua VM 管理、Lua-C++ 绑定 | `shield.*` API |
 | `shield_net` | 客户端连接管理（TCP/UDP/KCP/WebSocket）、Session 生命周期 | gateway 服务回调、session 发送 |
 | `shield_transport` | 协议解析（解帧、编解码、加密）、KCP 实现 | 不直接暴露给 Lua |
+| `shield_player` | 玩家生命周期、断线重连、离线消息缓存 | `shield.player.*` |
 | `shield_cluster` | 跨进程/跨机器通信、服务发现、节点心跳 | 内置静态配置/广播发现，可选集成 Etcd/K8s |
 | `shield_data` | 原始 DB / Redis 访问 | `shield.db.*`、`shield.redis.*` |
 | `shield_config` | YAML 配置加载 | `shield.config` |

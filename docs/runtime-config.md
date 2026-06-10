@@ -43,6 +43,17 @@ actors:
     transport: MyTransport   # 自定义 C++ transport（可选）
     options:                 # 服务自定义配置（可选）
       max_connections: 10000
+    player:                  # 玩家配置（可选）
+      auth:
+        timeout: 10000       # 认证超时（ms）
+      reconnect:
+        enabled: true
+        window: 300000       # 重连窗口（ms）
+      offline_messages:
+        enabled: true
+        max_messages: 100
+        max_age: 3600000
+      max_online: 10000
 
   - name: player
     script: scripts/player.lua
