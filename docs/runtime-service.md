@@ -525,3 +525,97 @@ retry 5: 30s (达到 max_delay)
   }
 }
 ```
+
+## 服务依赖管理
+
+服务启动时可以声明依赖关系，确保被依赖的服务先启动。
+
+### 配置
+
+```yaml
+actors:
+  - name: gateway
+    script: scripts/gateway.lua
+    depends_on:                # 依赖的服务
+      - player_manager
+      - server_manager
+
+  - name: player_manager
+    script: scripts/player_manager.lua
+    depends_on:
+      - database
+      - redis
+
+  - name: database
+    script: scripts/database.lua
+    depends_on: []             # 无依赖，最先启动
+```
+
+### 启动顺序
+
+```
+启动顺序（拓扑排序）：
+  1. database (无依赖)
+  2. redis (无依赖)
+  3. server_manager (无依赖)
+  4. player_manager (依赖 database, redis)
+  5. gateway (依赖 player_manager, server_manager)
+```
+
+### 依赖检查
+
+启动时检查：
+
+1. 循环依赖检测 → 启动失败
+2. 依赖服务不存在 → 启动失败
+3. 依赖服务启动失败 → 当前服务也失败
+
+```yaml
+# 循环依赖示例（启动失败）
+actors:
+  - name: service_a
+    depends_on: [service_b]
+  - name: service_b
+    depends_on: [service_a]    # 错误：循环依赖
+```
+
+### 运行时依赖
+
+运行时依赖（非启动依赖）通过 `shield.call` 处理：
+
+```lua
+-- 运行时调用，服务不存在时返回 service_not_found
+local ok, result = shield.call("player_manager", "get", uid)
+if not ok and result.code == "service_not_found" then
+    -- 处理服务不存在的情况
+end
+```
+
+### 健康检查依赖
+
+服务可以声明健康检查依赖：
+
+```yaml
+actors:
+  - name: gateway
+    script: scripts/gateway.lua
+    health_check:
+      dependencies:
+        - service: player_manager
+          timeout: 5000
+        - service: database
+          timeout: 5000
+```
+
+健康检查时会检查依赖服务的状态。
+
+### ops 暴露
+
+```json
+{
+  "name": "gateway",
+  "depends_on": ["player_manager", "server_manager"],
+  "depended_by": [],
+  "startup_order": 5
+}
+```

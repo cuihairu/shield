@@ -21,6 +21,7 @@ shield.distributed_rwlock()   -- 分布式读写锁
 shield.rank()                 -- 排行榜
 shield.queue()                -- 消息队列
 shield.rate_limiter()         -- 限流器
+shield.scheduler()            -- 定时任务调度
 ```
 
 ### 锁类型总览
@@ -671,6 +672,212 @@ GET /ops/global
 
 ---
 
+## 七、定时任务调度
+
+支持 cron 表达式的定时任务调度，用于每日重置、定时活动等。
+
+### 基础用法
+
+```lua
+local scheduler = shield.scheduler()
+
+-- 添加定时任务
+scheduler:cron("daily_reset", "0 0 * * *", function()
+    -- 每天 00:00 执行
+    reset_daily_data()
+end)
+
+-- 添加间隔任务
+scheduler:interval("heartbeat", 60000, function()
+    -- 每 60 秒执行
+    send_heartbeat()
+end)
+
+-- 添加一次性任务
+scheduler:once("delayed_task", 3600000, function()
+    -- 1 小时后执行
+    send_reward()
+end)
+```
+
+### Cron 表达式
+
+```lua
+-- 标准 cron 格式：分 时 日 月 周
+scheduler:cron("task", "0 0 * * *", fn)      -- 每天 00:00
+scheduler:cron("task", "*/5 * * * *", fn)    -- 每 5 分钟
+scheduler:cron("task", "0 * * * *", fn)      -- 每小时整点
+scheduler:cron("task", "0 0 * * 1", fn)      -- 每周一 00:00
+scheduler:cron("task", "0 0 1 * *", fn)      -- 每月 1 号 00:00
+scheduler:cron("task", "0 12 * * 1-5", fn)   -- 工作日 12:00
+
+-- 带时区
+scheduler:cron("task", "0 0 * * *", fn, {
+    timezone = "Asia/Shanghai",
+})
+```
+
+### 任务管理
+
+```lua
+-- 获取任务
+local task = scheduler:get("daily_reset")
+
+-- 任务信息
+task:name()                   -- 任务名
+task:schedule()               -- cron 表达式或间隔
+task:next_run()               -- 下次执行时间
+task:last_run()               -- 上次执行时间
+task:run_count()              -- 执行次数
+task:status()                 -- "active" | "paused" | "error"
+
+-- 暂停/恢复
+scheduler:pause("daily_reset")
+scheduler:resume("daily_reset")
+
+-- 删除任务
+scheduler:remove("daily_reset")
+
+-- 手动触发
+scheduler:trigger("daily_reset")
+```
+
+### 分布式调度
+
+多进程部署时，确保同一任务只在一个进程执行：
+
+```lua
+-- 分布式任务（自动分布式锁）
+scheduler:cron("daily_reset", "0 0 * * *", function()
+    reset_daily_data()
+end, {
+    distributed = true,       -- 启用分布式调度
+    lock_ttl = 30000,         -- 锁超时
+})
+```
+
+### 任务失败处理
+
+```lua
+scheduler:cron("risky_task", "0 * * * *", function()
+    risky_operation()
+end, {
+    max_retries = 3,          -- 最大重试次数
+    retry_delay = 60000,      -- 重试延迟
+    on_error = function(err)
+        shield.log.error("task failed: " .. err)
+    end,
+})
+```
+
+### 配置
+
+```yaml
+scheduler:
+  enabled: true
+
+  # 分布式调度
+  distributed:
+    enabled: true
+    lock_ttl: 30000
+
+  # 任务失败重试
+  retry:
+    max_retries: 3
+    retry_delay: 60000
+
+  # 任务持久化
+  persistence:
+    enabled: true
+    storage: redis
+```
+
+### 使用示例
+
+**每日重置排行榜：**
+
+```lua
+local scheduler = shield.scheduler()
+local rank = shield.rank("daily_score")
+
+scheduler:cron("daily_rank_reset", "0 0 * * *", function()
+    -- 归档昨日数据
+    local yesterday = rank:top(100)
+    archive_rank("daily_score", yesterday)
+
+    -- 清空排行榜
+    rank:clear()
+
+    shield.log.info("daily rank reset completed")
+end, { distributed = true })
+```
+
+**定时活动：**
+
+```lua
+local scheduler = shield.scheduler()
+local g = shield.global()
+
+-- 每周六 20:00 开启双倍经验活动
+scheduler:cron("double_exp_event", "0 20 * * 6", function()
+    g:set("activity.double_exp", {
+        status = "active",
+        start_time = os.time(),
+        end_time = os.time() + 7200,  -- 2小时
+        multiplier = 2,
+    })
+    g:publish("activity_started", { name = "double_exp" })
+end, { distributed = true })
+
+-- 每周六 22:00 关闭活动
+scheduler:cron("double_exp_end", "0 22 * * 6", function()
+    g:set("activity.double_exp", { status = "inactive" })
+    g:publish("activity_ended", { name = "double_exp" })
+end, { distributed = true })
+```
+
+**数据备份：**
+
+```lua
+local scheduler = shield.scheduler()
+
+-- 每天凌晨 3 点备份数据
+scheduler:cron("data_backup", "0 3 * * *", function()
+    backup_player_data()
+    backup_global_data()
+    shield.log.info("data backup completed")
+end, { distributed = true })
+```
+
+### ops 暴露
+
+```json
+GET /ops/scheduler
+
+{
+  "tasks": [
+    {
+      "name": "daily_reset",
+      "schedule": "0 0 * * *",
+      "status": "active",
+      "next_run": "2026-06-11T00:00:00Z",
+      "last_run": "2026-06-10T00:00:00Z",
+      "run_count": 30,
+      "distributed": true
+    },
+    {
+      "name": "heartbeat",
+      "schedule": "60000",
+      "status": "active",
+      "next_run": "2026-06-10T12:01:00Z",
+      "last_run": "2026-06-10T12:00:00Z",
+      "run_count": 1440,
+      "distributed": false
+    }
+  ]
+}
+```
+
 ## 实现优先级
 
 | 功能 | 优先级 | 说明 |
@@ -681,6 +888,7 @@ GET /ops/global
 | 普通队列 | P0 | 异步任务 |
 | 延迟队列 | P0 | 延迟奖励、定时任务 |
 | 可靠队列 | P0 | 关键业务 |
+| 定时任务调度 | P0 | 每日重置、定时活动 |
 | 限流器 | P1 | 防刷、防滥用 |
 | Pub/Sub | P1 | 跨进程通知 |
 | 优先级队列 | P1 | 紧急任务 |

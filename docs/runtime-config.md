@@ -203,17 +203,44 @@ shutdown:
 
 ## 配置热更新
 
-第一版不支持配置热更新。
+配置热更新分为两种方式：
 
-未来支持的热更新范围：
+### 1. 本地配置热更新
+
+通过文件监听实现，支持有限配置项：
 
 | 配置项 | 热更新 | 说明 |
 |--------|--------|------|
 | log.level | ✅ | 立即生效 |
+| ops.metrics | ✅ | 立即生效 |
 | database.pool_size | ⚠️ | 需要重启连接池 |
 | actors[].instances | ⚠️ | 需要 spawn/stop 服务 |
 | actors[].script | ❌ | 需要重启服务 |
 | cluster.node_id | ❌ | 不允许变更 |
+
+### 2. 全局配置热更新
+
+通过 `shield.global()` 推送配置，所有进程实时生效：
+
+```lua
+-- 运维推送配置更新
+local g = shield.global()
+g:set("config.hotfix", {
+    drop_rate = 2.0,
+    exp_bonus = 1.5,
+}, 3600000)
+
+-- 业务服务读取热更新配置
+function M.get_drop_rate()
+    local hotfix = g:get("config.hotfix")
+    if hotfix and hotfix.drop_rate then
+        return hotfix.drop_rate
+    end
+    return config.default_drop_rate
+end
+```
+
+详见 [全局数据](runtime-global.md) 文档。
 
 ## 环境差异
 
