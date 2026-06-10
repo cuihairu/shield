@@ -13,11 +13,35 @@
 
 ```lua
 shield.global()           -- 全局数据（KV、缓存）
-shield.lock()             -- 分布式锁
+shield.lock()             -- 锁（本地 + 分布式）
 shield.rank()             -- 排行榜
 shield.queue()            -- 消息队列
 shield.rate_limiter()     -- 限流器
 ```
+
+### 锁的作用域
+
+```lua
+-- 分布式锁（默认，跨进程，基于 Redis）
+local l = shield.lock("my_lock", {
+    ttl = 30000,
+    distributed = true,     -- 默认 true
+})
+
+-- 本地锁（进程内，不访问 Redis）
+local l = shield.lock("my_lock", {
+    local = true,           -- 显式指定本地锁
+})
+
+-- 或使用显式命名空间
+local l = shield.distributed_lock("my_lock")  -- 分布式锁
+local l = shield.local_lock("my_lock")        -- 本地锁
+```
+
+| 锁类型 | 作用域 | 存储 | 延迟 | 适用场景 |
+|--------|--------|------|------|----------|
+| 本地锁 | 单进程 | 内存 | 纳秒 | 进程内并发控制 |
+| 分布式锁 | 跨进程 | Redis | 毫秒 | 全局唯一操作 |
 
 ## 架构
 
