@@ -12,36 +12,143 @@
 ## 命名空间
 
 ```lua
-shield.global()           -- 全局数据（KV、缓存）
-shield.lock()             -- 锁（本地 + 分布式）
-shield.rank()             -- 排行榜
-shield.queue()            -- 消息队列
-shield.rate_limiter()     -- 限流器
+shield.global()               -- 全局数据（KV、缓存）
+shield.mutex()                -- 本地互斥锁
+shield.rwlock()               -- 本地读写锁
+shield.spinlock()             -- 本地自旋锁
+shield.distributed_mutex()    -- 分布式互斥锁
+shield.distributed_rwlock()   -- 分布式读写锁
+shield.rank()                 -- 排行榜
+shield.queue()                -- 消息队列
+shield.rate_limiter()         -- 限流器
 ```
 
-### 锁的作用域
+### 锁类型总览
+
+| 创建方式 | 作用域 | 类型 | 存储 | 延迟 |
+|----------|--------|------|------|------|
+| `shield.mutex()` | 本地 | 互斥锁 | 内存 | 纳秒 |
+| `shield.rwlock()` | 本地 | 读写锁 | 内存 | 纳秒 |
+| `shield.spinlock()` | 本地 | 自旋锁 | 内存 | 纳秒 |
+| `shield.distributed_mutex()` | 分布式 | 互斥锁 | Redis | 毫秒 |
+| `shield.distributed_rwlock()` | 分布式 | 读写锁 | Redis | 毫秒 |
+
+### 通用锁接口
+
+所有锁类型共享统一接口：
 
 ```lua
--- 分布式锁（默认，跨进程，基于 Redis）
-local l = shield.lock("my_lock", {
-    ttl = 30000,
-    distributed = true,     -- 默认 true
+local l = shield.mutex("my_lock", {
+    ttl = 30000,              -- 锁超时（ms）
+    retry = 100,              -- 重试间隔（ms）
+    max_retries = 0,          -- 最大重试次数，0=无限
+    reentrant = true,         -- 可重入
 })
 
--- 本地锁（进程内，不访问 Redis）
-local l = shield.lock("my_lock", {
-    local = true,           -- 显式指定本地锁
-})
+-- 获取锁（阻塞，自动重试）
+l:acquire()
 
--- 或使用显式命名空间
-local l = shield.distributed_lock("my_lock")  -- 分布式锁
-local l = shield.local_lock("my_lock")        -- 本地锁
+-- 获取锁（带超时）
+l:acquire(5000)
+
+-- 非阻塞获取
+local ok = l:try_acquire()
+
+-- 释放锁
+l:release()
+
+-- 自动获取释放
+l:with(function()
+    -- 临界区代码
+end)
+
+-- 续期（分布式锁）
+l:extend(30000)
+
+-- 自动续期
+l:auto_extend(true, 10000)
 ```
 
-| 锁类型 | 作用域 | 存储 | 延迟 | 适用场景 |
-|--------|--------|------|------|----------|
-| 本地锁 | 单进程 | 内存 | 纳秒 | 进程内并发控制 |
-| 分布式锁 | 跨进程 | Redis | 毫秒 | 全局唯一操作 |
+### 互斥锁
+
+```lua
+-- 本地互斥锁
+local l = shield.mutex("my_lock", { ttl = 30000 })
+
+l:acquire()
+-- 临界区
+l:release()
+
+-- 或使用 with 自动管理
+l:with(function()
+    -- 临界区
+end)
+```
+
+### 读写锁
+
+```lua
+-- 本地读写锁
+local l = shield.rwlock("my_lock")
+
+-- 读锁（共享，可并发）
+local rl = l:read_lock()
+rl:acquire()
+-- 读操作...
+rl:release()
+
+-- 写锁（独占）
+local wl = l:write_lock()
+wl:acquire()
+-- 写操作...
+wl:release()
+
+-- 自动管理
+l:read_lock():with(function()
+    -- 读操作
+end)
+
+l:write_lock():with(function()
+    -- 写操作
+end)
+```
+
+### 自旋锁
+
+```lua
+-- 自旋锁（忙等待，适合短临界区）
+local l = shield.spinlock("my_lock")
+
+l:acquire()
+-- 极短的临界区
+l:release()
+```
+
+### 分布式锁
+
+```lua
+-- 分布式互斥锁
+local l = shield.distributed_mutex("my_lock", {
+    ttl = 30000,
+    retry = 100,
+    reentrant = true,
+})
+
+l:acquire()
+-- 跨进程临界区
+l:release()
+
+-- 分布式读写锁
+local l = shield.distributed_rwlock("my_lock")
+
+l:read_lock():with(function()
+    -- 读操作
+end)
+
+l:write_lock():with(function()
+    -- 写操作
+end)
+```
 
 ## 架构
 
