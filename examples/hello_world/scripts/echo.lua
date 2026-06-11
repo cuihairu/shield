@@ -1,21 +1,24 @@
--- echo.lua - 最终 Lua API 形态 (spec)
--- 这个文件定义了 Shield 用户看到的 Lua API 契约
+-- echo.lua - 用户参考示例
 
-local echo = shield.service("echo")
+local M = {}
 
-function echo.on_init()
-    shield.log.info("echo service started, id=" .. shield.self())
+function M.on_init(args)
+    M.name = args.name or "echo"
+    shield.log.info(M.name .. " started")
 end
 
-function echo.on_message(src, msg_type, data)
-    if msg_type == "echo" then
-        -- 原样返回
-        shield.send(src, "echo_reply", data)
-    elseif msg_type == "ping" then
-        shield.send(src, "pong", { time = shield.now() })
-    end
+function M.echo(data)
+    local src = shield.sender()
+    shield.send(src, "echo_reply", data)
 end
 
-function echo.on_exit()
-    shield.log.info("echo service stopping")
+function M.ping()
+    local src = shield.sender()
+    shield.send(src, "pong", { time = shield.now() })
 end
+
+function M.on_exit(reason)
+    shield.log.info("echo stopping: " .. reason)
+end
+
+return M

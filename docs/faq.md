@@ -8,7 +8,7 @@
 
 `shield_core` 不是分布式框架。重构后的 core 聚焦服务、消息、定时器和 Lua coroutine 语义。
 
-Shield 可以有官方 `shield_cluster` 可选模块，用于多进程/多机器通信、节点心跳、远端路由 cache 和可选服务发现。但它不进入 core，也不是第一阶段最小运行路径。
+Shield 可以有官方 `shield_cluster` 可选模块，用于多进程/多机器通信、节点心跳、远端路由 cache 和可选服务发现。但它不进入 core，也不是最小运行路径。
 
 ## 为什么移出 DI/IoC、插件、Prometheus、健康检查？
 

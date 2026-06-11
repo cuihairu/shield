@@ -22,7 +22,7 @@ Shield 有两层网络：
 - 监听客户端连接（TCP/UDP/KCP/WebSocket）
 - 管理连接生命周期（accept、close、reconnect）
 - 管理 Session 对象
-- 调用 gateway 回调（on_connect、on_disconnect、on_message）
+- 调用 gateway 回调（on_connect、on_disconnect、on_client_message）
 
 **shield_transport 职责：**
 - 字节流解帧（framing）
@@ -75,7 +75,7 @@ Lua API：
 
 ```lua
 -- KCP session 与 TCP session 接口一致
-function M.on_message(session, payload)
+function M.on_client_message(session, payload)
     session:send(response)
     session:close()
 end
@@ -96,7 +96,7 @@ end
 function M.on_disconnect(session, reason)
 end
 
-function M.on_message(session, payload)
+function M.on_client_message(session, payload)
 end
 
 return M
@@ -128,6 +128,7 @@ session:remote_addr()
 - session send 是 non-blocking。
 - backpressure 超限返回错误。
 - session 断开后 handle stale，调用返回 `session_closed`。
+- `SessionHandle` 不应跨 service 通过 `shield.send/call` 传递；跨服务只传 `session_id`，由 gateway 维护映射。
 
 ## 网络背压与限制
 

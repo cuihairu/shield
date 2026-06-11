@@ -102,4 +102,4 @@ task:status()
 task:valid()
 ```
 
-第一版不提供 `join`，避免引入额外等待图和死锁语义。需要结果时应使用 service `call` 或业务 channel。
+当前契约不提供 `join`，避免引入额外等待图和死锁语义。需要结果时应使用 service `call` 或业务 channel。

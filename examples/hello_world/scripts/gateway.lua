@@ -1,49 +1,82 @@
--- gateway.lua - 网关服务 (最终 API 形态)
--- Gateway 的业务路由层是 Lua 脚本，不是框架代码
+-- gateway.lua - 用户参考示例
 
-local gateway = shield.service("gateway")
+local M = {
+    sessions = {},
+}
 
-function gateway.on_init()
-    shield.log.info("gateway listening on tcp://0.0.0.0:8001")
+function M.on_init(args)
+    M.name = args.name or "gateway"
+    shield.log.info(M.name .. " started")
 end
 
--- 新连接接入
-function gateway.on_connect(session_id)
-    shield.log.info("session connected: " .. session_id)
-    -- 为新连接创建 player actor
-    shield.spawn("player", { session = session_id })
+function M.on_connect(session)
+    local sid = session:id()
+    local player, err = shield.spawn("player", {
+        args = { session_id = sid },
+    })
+
+    if not player then
+        shield.log.error("spawn player failed: " .. err.message)
+        session:close("spawn_failed")
+        return
+    end
+
+    M.sessions[sid] = {
+        session = session,
+        player = player,
+    }
 end
 
--- 收到客户端消息
-function gateway.on_session_message(session_id, msg_type, data)
-    if msg_type == "echo" then
-        -- 路由到 echo 服务
+function M.on_client_message(session, payload)
+    local sid = session:id()
+    local entry = M.sessions[sid]
+    if not entry then
+        session:close("player_missing")
+        return
+    end
+
+    if payload.type == "echo" then
         shield.send("echo", "echo", {
-            session = session_id,
-            payload = data
+            session_id = sid,
+            payload = payload.data,
         })
-    elseif msg_type == "login" then
-        -- 路由到对应 player
-        local player = gateway.sessions[session_id]
-        if player then
-            shield.send(player, "login", data)
-        end
+        return
+    end
+
+    if payload.type == "login" then
+        shield.send(entry.player, "login", payload.data)
+        return
+    end
+
+    if payload.type == "chat" then
+        shield.send(entry.player, "chat", payload.data)
     end
 end
 
--- 连接断开
-function gateway.on_disconnect(session_id)
-    shield.log.info("session disconnected: " .. session_id)
-    local player = gateway.sessions[session_id]
-    if player then
-        shield.send(player, "logout", {})
-        gateway.sessions[session_id] = nil
+function M.on_disconnect(session, reason)
+    local sid = session:id()
+    local entry = M.sessions[sid]
+    if not entry then
+        return
+    end
+
+    shield.send(entry.player, "logout", { reason = reason })
+    M.sessions[sid] = nil
+end
+
+function M.echo_reply(data)
+    local entry = M.sessions[data.session_id]
+    if entry then
+        entry.session:send({
+            type = "echo_reply",
+            data = data.payload,
+        })
     end
 end
 
--- echo 服务的回复，转发回客户端
-function gateway.on_message(src, msg_type, data)
-    if msg_type == "echo_reply" then
-        gateway.send_to_session(data.session, "echo_reply", data.payload)
-    end
+function M.pong(data)
+    local src = shield.sender()
+    shield.log.debug("pong from " .. tostring(src) .. " at " .. tostring(data.time))
 end
+
+return M

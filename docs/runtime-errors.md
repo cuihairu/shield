@@ -1,10 +1,10 @@
 # 错误码参考
 
-本文档汇总 Shield 运行时所有错误码，是错误码的权威来源。其他文档引用本文档，不重复列出。
+本文档汇总 Shield runtime error 的稳定错误码，是错误码的权威来源。业务错误不由本文档统一分配。
 
 ## 错误对象结构
 
-所有 Runtime 错误通过 `ok == false` 返回，第二个返回值是 Error 对象：
+所有 runtime 错误通过 `ok == false` 返回，第二个返回值是 `Error` 对象：
 
 ```lua
 {
@@ -12,8 +12,15 @@
   message = "call timeout",   -- 人类可读描述
   source = "runtime",         -- 来源：runtime | data | network
   retryable = false,          -- 是否建议重试
+  detail = nil,               -- 可选调试信息
 }
 ```
+
+规则：
+
+- 本文档只定义 runtime/framework 错误。
+- `shield.call` 成功返回时，后续返回值全部属于 callee 的业务契约，不由 runtime 解释。
+- 旧 API 删除后的报错也使用本文档中的稳定错误码。
 
 ## 一、消息与服务错误
 
@@ -23,7 +30,8 @@
 |--------|------|------|-----------|
 | `invalid_target` | send/call | 目标格式错误（非 handle 且非合法 name） | 否 |
 | `invalid_method` | send/call | 方法名非法（空、过长、含非法字符） | 否 |
-| `invalid_module` | spawn | Lua 脚本路径无效或加载失败 | 否 |
+| `invalid_service_module` | spawn | Lua 文件未返回合法 service module table | 否 |
+| `script_load_failed` | spawn | Lua 文件语法错误、load 失败或顶层代码抛错 | 否 |
 | `invalid_name` | spawn | 服务名不合法（格式、长度、保留前缀） | 否 |
 | `name_conflict` | spawn | 服务名已被占用 | 否 |
 | `encode_failed` | send/call | 消息编码失败（类型不支持、嵌套过深、循环引用） | 否 |
@@ -38,6 +46,10 @@
 | `permission_denied` | send/call/spawn | 权限不足 | 否 |
 | `timeout` | call | 调用超时（默认 5s） | 是 |
 | `method_not_found` | call | 目标服务没有该方法 | 否 |
+| `handler_error` | call | 目标服务 method 抛出未捕获异常 | 否 |
+| `context_expired` | context | handler 已返回，`shield.sender/trace/deadline` 上下文失效 | 否 |
+| `api_not_allowed_in_exit` | exit hook | 在 `on_exit` 中调用了会挂起的 API | 否 |
+| `legacy_api_removed` | legacy API | 调用了已删除的旧 API | 否 |
 
 ## 二、资源限制错误
 
@@ -57,6 +69,8 @@
 
 | 错误码 | 说明 | retryable |
 |--------|------|-----------|
+| `module_unavailable` | database 模块未启用 | 否 |
+| `db_query_failed` | 未分类的数据库执行失败 | 视具体驱动 |
 | `connection_lost` | 数据库连接丢失 | 是 |
 | `connection_timeout` | 建立连接超时 | 是 |
 | `query_timeout` | 查询超时 | 是 |
@@ -71,6 +85,8 @@
 
 | 错误码 | 说明 | retryable |
 |--------|------|-----------|
+| `module_unavailable` | redis 模块未启用 | 否 |
+| `redis_command_failed` | 未分类的 Redis 命令失败 | 视具体驱动 |
 | `connection_lost` | Redis 连接丢失 | 是 |
 | `connection_timeout` | 建立连接超时 | 是 |
 | `command_timeout` | 命令执行超时 | 是 |
@@ -102,7 +118,7 @@ function M.call_with_retry(target, method, data, max_retries)
     while retries < max_retries do
         local ok, result = shield.call(target, method, data)
         if ok then
-            return result
+            return true, result
         end
 
         if result.retryable then
@@ -111,11 +127,16 @@ function M.call_with_retry(target, method, data, max_retries)
                 shield.sleep(100 * retries)  -- 指数退避
             end
         else
-            return nil, result
+            return false, result
         end
     end
 
-    return nil, { code = "max_retries_exceeded", message = "Max retries exceeded" }
+    return false, {
+        code = "max_retries_exceeded",
+        message = "Max retries exceeded",
+        source = "runtime",
+        retryable = false,
+    }
 end
 ```
 
@@ -137,29 +158,35 @@ shield.log.warn(string.format(
 
 ### 业务错误
 
-业务错误由 callee 业务代码定义，通过 `call` 返回值传递，不使用本文档定义的错误码：
+业务错误属于 callee 自己的返回契约，不使用 `ok == false` 传递：
 
 ```lua
 -- Callee
 function M.get_player(uid)
     local player = find_player(uid)
     if not player then
-        return nil, { code = "PLAYER_NOT_FOUND", message = "Player not found" }
+        return {
+            ok = false,
+            code = "PLAYER_NOT_FOUND",
+            message = "Player not found",
+        }
     end
-    return player
+
+    return {
+        ok = true,
+        player = player,
+    }
 end
 
 -- Caller
-local ok, result, err = shield.call("player", "get_player", uid)
-if ok then
-    if result == nil then
-        -- 业务错误
-        shield.log.warn("business error: " .. err.code)
-    else
-        process_player(result)
-    end
-else
+local ok, result = shield.call("player", "get_player", uid)
+if not ok then
     -- Runtime 错误（本文档定义的错误码）
     shield.log.error("runtime error: " .. result.code)
+elseif not result.ok then
+    -- 业务错误，由业务自己定义
+    shield.log.warn("business error: " .. result.code)
+else
+    process_player(result.player)
 end
 ```

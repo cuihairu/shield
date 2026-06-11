@@ -2,12 +2,17 @@
 
 Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的描述不再作为当前口径。
 
+说明：以下勾选只表示**文档边界和目标契约**已经冻结，不表示源码实现已经完成。
+
 ## Phase 0: 文档和边界冻结
 
-- [ ] 统一所有文档为单节点优先、Lua-first 运行时口径。
-- [ ] 明确 core 非目标：discovery、metrics、health、plugin、DI/IoC、annotations、conditions、events、middleware chain、ORM。
-- [ ] 明确 `shield_cluster` 是官方可选模块和后续阶段，不进入 `shield_core`，但保留地址、超时和错误语义。
-- [ ] 区分目标 API、当前实现、旧架构遗留模块。
+- [x] 统一所有文档为单节点优先、Lua-first 运行时口径。
+- [x] 明确 core 非目标：discovery、metrics、health、plugin、DI/IoC、annotations、conditions、events、middleware chain、ORM。
+- [x] 明确 `shield_cluster` 是官方可选模块，不进入 `shield_core`，但保留地址、超时和错误语义。
+- [x] 区分目标 API、当前实现、旧架构遗留模块。
+- [x] 以 `docs/lua-api.md` 冻结 Lua API 契约。
+- [x] 以 `docs/lua-api-tests.md` 冻结 Lua API 测试矩阵。
+- [x] 以 `docs/cmake-refactor.md` 冻结 CMake target 拆分方向。
 
 ## Phase 1: 运行时目录重排
 
@@ -18,30 +23,32 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 ## Phase 2: Lua API 契约
 
-- [ ] 实现 `shield.service`。
+- [ ] 实现 Lua service module table loader。
 - [ ] 实现 `shield.spawn` / `shield.exit`。
 - [ ] 统一 `shield.timer` / `shield.timer_once` / `shield.now`。
 - [ ] 提供 `shield.log.*`。
 - [ ] 提供原始 `shield.db.*` / `shield.redis.*`。
 - [ ] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 runtime 线程的语义，并补齐默认超时和 `shield.call_timeout`。
+- [ ] 删除旧 `shield.service("name")`、冒号式 DB/Redis API 和 legacy `on_message(src, type, data)` 入口。
 
 ## Phase 3: C++ 入口和配置
 
 - [ ] 增加 `include/shield/shield.hpp`。
 - [ ] 实现 `shield::run(argc, argv)`。
-- [ ] 明确 YAML `actors`、`network`、`database`、`redis`、`log` 的最小 schema。
+- [x] 明确 YAML `actors`、`network`、`database`、`redis`、`log` 的最小 schema。
 - [ ] 移除旧 CLI 文档与新入口冲突。
 
 ## Phase 4: 示例和测试
 
 - [ ] 让 `examples/hello_world/` 成为可运行验收示例。
 - [ ] 为 Lua API 增加绑定测试。
+- [ ] 按 `docs/lua-api-tests.md` 补齐独立 API 用例，示例不替代测试。
 - [ ] 为模块边界增加 CI 检查。
 - [ ] 为 forbidden module include 增加静态检查。
 
 ## Phase 5: 官方可选模块
 
-以下内容不属于当前 refactor core，但属于官方可选模块或后续阶段，可以在最小 runtime 稳定后推进：
+以下内容不属于当前 refactor core，但属于官方可选模块或扩展方向，可以在最小 runtime 稳定后推进：
 
 - `shield_cluster`：多进程/多机器通信、节点心跳、远端路由 cache、可选服务发现。
 - `shield_global`：跨进程数据、分布式锁、排行榜、队列、限流器。

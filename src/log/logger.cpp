@@ -1,159 +1,322 @@
-#include "shield/log/logger.hpp"
+// [SHIELD_LOG] Logger implementation
+#include "shield/log_new/logger.hpp"
+#include "shield/log_new/sinks.hpp"
 
-#include <boost/log/attributes/current_thread_id.hpp>
-#include <boost/log/core.hpp>
-#include <boost/log/expressions.hpp>
-#include <boost/log/sinks/text_file_backend.hpp>
-#include <boost/log/sources/logger.hpp>
-#include <boost/log/support/date_time.hpp>
-#include <boost/log/utility/setup/common_attributes.hpp>
-#include <boost/log/utility/setup/console.hpp>
-#include <boost/log/utility/setup/file.hpp>
-#include <filesystem>
+#include "shield/base/time.hpp"
+
 #include <iostream>
-
-namespace logging = boost::log;
-namespace sinks = boost::log::sinks;
-namespace expr = boost::log::expressions;
-namespace attrs = boost::log::attributes;
+#include <shared_mutex>
+#include <unordered_map>
 
 namespace shield::log {
 
-LogConfig Logger::config_;
+// Global logger state
+struct GlobalState {
+    std::vector<std::unique_ptr<LogSink>> sinks;
+    Level global_level = Level::Info;
+    std::shared_mutex mutex;
+    bool initialized = false;
+};
 
-namespace {
+static GlobalState* g_state = nullptr;
+static std::unique_ptr<GlobalState> g_state_owner;
 
-std::string normalize_formatter_pattern(std::string pattern) {
-    // Heuristic: accept Boost.Log named placeholders by default.
-    if (pattern.find("%TimeStamp%") != std::string::npos ||
-        pattern.find("%Message%") != std::string::npos ||
-        pattern.find("%Severity%") != std::string::npos ||
-        pattern.find("%ThreadID%") != std::string::npos) {
-        return pattern;
-    }
+// Thread-local service context
+thread_local LogRecord g_service_context{};
 
-    // Heuristic: translate common spdlog-style patterns to Boost.Log
-    // placeholders. Typical spdlog pattern: "[%Y-%m-%d %H:%M:%S.%f] [%t] [%l]
-    // %v"
-    if (pattern.find("%v") != std::string::npos ||
-        pattern.find("%l") != std::string::npos ||
-        pattern.find("%t") != std::string::npos ||
-        pattern.find("%Y") != std::string::npos) {
-        // Replace the first bracketed time-format segment if it looks like a
-        // strftime-like pattern (starts with "[%" and contains "%Y").
-        auto left = pattern.find("[%");
-        if (left != std::string::npos) {
-            auto right = pattern.find("]", left);
-            if (right != std::string::npos &&
-                pattern.substr(left, right - left).find("%Y") !=
-                    std::string::npos) {
-                pattern.replace(left, right - left + 1, "[%TimeStamp%]");
-            }
-        }
-
-        // Replace the common short placeholders.
-        for (size_t pos = 0;
-             (pos = pattern.find("%t", pos)) != std::string::npos;) {
-            pattern.replace(pos, 2, "%ThreadID%");
-            pos += std::string("%ThreadID%").size();
-        }
-        for (size_t pos = 0;
-             (pos = pattern.find("%l", pos)) != std::string::npos;) {
-            pattern.replace(pos, 2, "%Severity%");
-            pos += std::string("%Severity%").size();
-        }
-        for (size_t pos = 0;
-             (pos = pattern.find("%v", pos)) != std::string::npos;) {
-            pattern.replace(pos, 2, "%Message%");
-            pos += std::string("%Message%").size();
-        }
-
-        return pattern;
-    }
-
-    return pattern;
-}
-
-}  // namespace
-
-// Helper function to map LogLevel enum to boost::log::trivial::severity_level
-logging::trivial::severity_level to_boost_level(LogConfig::LogLevel level) {
+// Level helpers
+const char* level_to_string(Level level) {
     switch (level) {
-        case LogConfig::LogLevel::TRACE:
-            return logging::trivial::trace;
-        case LogConfig::LogLevel::DEBUG:
-            return logging::trivial::debug;
-        case LogConfig::LogLevel::INFO:
-            return logging::trivial::info;
-        case LogConfig::LogLevel::WARN:
-            return logging::trivial::warning;
-        case LogConfig::LogLevel::ERROR:
-            return logging::trivial::error;
-        case LogConfig::LogLevel::FATAL:
-            return logging::trivial::fatal;
-        default:
-            return logging::trivial::info;
+        case Level::Debug:   return "DEBUG";
+        case Level::Info:    return "INFO";
+        case Level::Warning: return "WARN";
+        case Level::Error:   return "ERROR";
+        case Level::Fatal:   return "FATAL";
+        default:            return "UNKNOWN";
     }
 }
 
-void Logger::init(const LogConfig& config) {
-    config_ = config;
+// ConsoleSink implementation
+ConsoleSink::ConsoleSink(bool use_stderr)
+    : use_stderr_(use_stderr) {}
 
-    // Create log directory if file logging is enabled
-    if (config.file.enabled) {
-        std::filesystem::path log_path(config.file.log_file);
-        auto parent_path = log_path.parent_path();
-        if (!parent_path.empty()) {
-            std::filesystem::create_directories(parent_path);
+void ConsoleSink::write(const LogRecord& record) {
+    std::lock_guard lock(mutex_);
+
+    auto& stream = use_stderr_ ? std::cerr : std::cout;
+
+    // Format: [timestamp] [level] [service] message
+    stream << "[" << record.timestamp_ms << "] "
+           << "[" << level_to_string(record.level) << "]";
+
+    if (!record.service_name.empty()) {
+        stream << " [" << record.service_name << "]";
+    }
+
+    stream << " " << record.message;
+
+    if (!record.file.empty()) {
+        stream << " (" << record.file << ":" << record.line << ")";
+    }
+
+    stream << std::endl;
+}
+
+void ConsoleSink::flush() {
+    (use_stderr_ ? std::cerr : std::cout).flush();
+}
+
+// FileSink implementation
+FileSink::FileSink(std::string path)
+    : path_(std::move(path)) {
+    file_.open(path_, std::ios::out | std::ios::app);
+}
+
+FileSink::~FileSink() {
+    if (file_.is_open()) {
+        file_.close();
+    }
+}
+
+void FileSink::write(const LogRecord& record) {
+    std::lock_guard lock(mutex_);
+
+    if (!file_.is_open()) return;
+
+    // Format: [timestamp] [level] [service] message
+    file_ << "[" << record.timestamp_ms << "] "
+          << "[" << level_to_string(record.level) << "]";
+
+    if (!record.service_name.empty()) {
+        file_ << " [" << record.service_name << "]";
+    }
+
+    file_ << " " << record.message << std::endl;
+}
+
+void FileSink::flush() {
+    std::lock_guard lock(mutex_);
+    if (file_.is_open()) {
+        file_.flush();
+    }
+}
+
+// RotatingFileSink implementation
+RotatingFileSink::RotatingFileSink(std::string base_path,
+                                  size_t max_size,
+                                  int max_files)
+    : base_path_(std::move(base_path)),
+      max_size_(max_size),
+      max_files_(max_files) {
+    // Open the current file
+    std::string path = base_path_;
+    file_.open(path, std::ios::out | std::ios::app);
+
+    // Get current size
+    if (file_.is_open()) {
+        file_.seekp(0, std::ios::end);
+        current_size_ = file_.tellp();
+    }
+}
+
+RotatingFileSink::~RotatingFileSink() {
+    if (file_.is_open()) {
+        file_.close();
+    }
+}
+
+void RotatingFileSink::rotate_if_needed() {
+    if (current_size_ < max_size_) return;
+
+    file_.close();
+
+    // Rotate files
+    for (int i = max_files_ - 1; i >= 1; --i) {
+        std::string old_name = base_path_ + "." + std::to_string(i);
+        std::string new_name = base_path_ + "." + std::to_string(i + 1);
+
+        if (i == max_files_ - 1) {
+            // Delete the oldest file
+            std::remove(old_name.c_str());
+        } else {
+            std::rename(old_name.c_str(), new_name.c_str());
         }
-
-        // Setup file sink
-        auto file_sink = logging::add_file_log(
-            logging::keywords::file_name = config.file.log_file,
-            logging::keywords::rotation_size = config.file.max_file_size,
-            logging::keywords::time_based_rotation =
-                sinks::file::rotation_at_time_point(0, 0, 0),  // Rotate daily
-            logging::keywords::max_files =
-                config.file.max_files,  // Keep max_files files
-            logging::keywords::format = logging::parse_formatter(
-                normalize_formatter_pattern(config.file.pattern)));
     }
 
-    // Setup console sink if enabled
-    if (config.console.enabled) {
-        logging::add_console_log(
-            std::cout,
-            logging::keywords::format = logging::parse_formatter(
-                normalize_formatter_pattern(config.console.pattern)));
+    // Move current to .1
+    std::rename(base_path_.c_str(), (base_path_ + ".1").c_str());
+
+    // Open new file
+    file_.open(base_path_, std::ios::out | std::ios::app);
+    current_size_ = 0;
+}
+
+void RotatingFileSink::write(const LogRecord& record) {
+    std::lock_guard lock(mutex_);
+
+    rotate_if_needed();
+
+    if (!file_.is_open()) return;
+
+    std::string log_line = "[" + std::to_string(record.timestamp_ms) + "] " +
+                          "[" + level_to_string(record.level) + "] " +
+                          record.message + "\n";
+
+    file_ << log_line;
+    current_size_ += log_line.length();
+}
+
+void RotatingFileSink::flush() {
+    std::lock_guard lock(mutex_);
+    if (file_.is_open()) {
+        file_.flush();
     }
+}
 
-    // Add common attributes
-    logging::add_common_attributes();
+// Factory functions
+std::unique_ptr<ConsoleSink> make_console_sink() {
+    return std::make_unique<ConsoleSink>();
+}
 
-    // Set log level based on global level
-    logging::core::get()->set_filter(
-        logging::expressions::attr<logging::trivial::severity_level>(
-            "Severity") >= to_boost_level(config.global_level));
+std::unique_ptr<FileSink> make_file_sink(std::string path) {
+    return std::make_unique<FileSink>(std::move(path));
+}
 
-    // Initialize default logger
-    BOOST_LOG_TRIVIAL(info) << "Logger initialized successfully";
+std::unique_ptr<RotatingFileSink> make_rotating_sink(
+    std::string path,
+    size_t max_size,
+    int max_files) {
+    return std::make_unique<RotatingFileSink>(
+        std::move(path), max_size, max_files);
+}
+
+// Logger implementation
+struct Logger::Impl {
+    std::string name;
+    Level level = Level::Info;  // Per-logger level (not implemented yet)
+};
+
+Logger::Logger(std::string name)
+    : name_(std::move(name)),
+      impl_(std::make_unique<Impl>()) {
+    impl_->name = name_;
+}
+
+Logger::~Logger() = default;
+
+void Logger::debug(std::string_view msg) {
+    log(Level::Debug, msg);
+}
+
+void Logger::info(std::string_view msg) {
+    log(Level::Info, msg);
+}
+
+void Logger::warning(std::string_view msg) {
+    log(Level::Warning, msg);
+}
+
+void Logger::error(std::string_view msg) {
+    log(Level::Error, msg);
+}
+
+void Logger::fatal(std::string_view msg) {
+    log(Level::Fatal, msg);
+}
+
+void Logger::log(Level level, std::string_view msg,
+                 const char* file, int line, const char* function) {
+    if (!g_state) return;
+
+    // Check global level
+    std::shared_lock lock(g_state->mutex);
+    if (level < g_state->global_level) return;
+
+    // Create log record
+    LogRecord record;
+    record.level = level;
+    record.message = std::string(msg);
+    record.logger_name = name_;
+    record.file = file ? file : "";
+    record.line = line;
+    record.function = function ? function : "";
+    record.timestamp_ms = base::now_ms();
+
+    // Add service context if available
+    record.service_id = g_service_context.service_id;
+    record.service_name = g_service_context.service_name;
+    record.trace_id = g_service_context.trace_id;
+
+    // Write to all sinks
+    for (auto& sink : g_state->sinks) {
+        sink->write(record);
+    }
+}
+
+void Logger::set_level(Level level) {
+    impl_->level = level;
+}
+
+// Global functions
+void Logger::initialize() {
+    if (g_state) return;
+
+    g_state_owner = std::make_unique<GlobalState>();
+    g_state = g_state_owner.get();
+    g_state->initialized = true;
+
+    // Add default console sink
+    g_state->sinks.push_back(make_console_sink());
 }
 
 void Logger::shutdown() {
-    BOOST_LOG_TRIVIAL(info) << "Logger shutting down";
-    logging::core::get()->remove_all_sinks();
+    if (!g_state) return;
+
+    std::unique_lock lock(g_state->mutex);
+    g_state->sinks.clear();
+    g_state->initialized = false;
 }
 
-LogConfig::LogLevel Logger::level_from_string(const std::string& level_str) {
-    return LogConfig::level_from_string(level_str);
+void Logger::add_sink(std::unique_ptr<LogSink> sink) {
+    if (!g_state) initialize();
+
+    std::unique_lock lock(g_state->mutex);
+    g_state->sinks.push_back(std::move(sink));
 }
 
-void Logger::set_level(LogConfig::LogLevel level) {
-    logging::core::get()->set_filter(
-        logging::expressions::attr<logging::trivial::severity_level>(
-            "Severity") >= to_boost_level(level));
-    SHIELD_LOG_INFO << "Log level set to: "
-                    << LogConfig::level_to_string(level);
+void Logger::set_global_level(Level level) {
+    if (!g_state) initialize();
+
+    std::unique_lock lock(g_state->mutex);
+    g_state->global_level = level;
+}
+
+Logger& get_logger(std::string_view name) {
+    // Simple logger cache (could be improved with a proper registry)
+    static std::unordered_map<std::string, std::unique_ptr<Logger>> cache;
+    static std::mutex cache_mutex;
+
+    std::string key(name);
+    std::lock_guard lock(cache_mutex);
+
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        it = cache.emplace(key, std::make_unique<Logger>(key)).first;
+    }
+
+    return *it->second;
+}
+
+// Service context
+void set_service_context(std::string service_id, std::string service_name,
+                        std::string trace_id) {
+    g_service_context.service_id = std::move(service_id);
+    g_service_context.service_name = std::move(service_name);
+    g_service_context.trace_id = std::move(trace_id);
+}
+
+void clear_service_context() {
+    g_service_context = LogRecord{};
 }
 
 }  // namespace shield::log

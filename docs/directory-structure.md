@@ -18,7 +18,7 @@ shield/
 │   ├── conditions/       ❌ 移除（不需要条件装配）
 │   ├── di/              ❌ 移除（不需要 DI 容器）
 │   ├── discovery/       ❌ 移除（不需要服务发现）
-│   ├── events/          ❌ 移除（事件由 lifecycle 负责）
+│   ├── events/          ❌ 移除（跨 service 事件由 actor 消息语义表达）
 │   ├── health/          ❌ 移除（不需要内置健康检查）
 │   ├── metrics/         ❌ 移除（不需要内置 metrics）
 │   ├── gateway/         ⚠️  重新定位（改为 Lua 模板）
@@ -72,9 +72,14 @@ shield/
 │
 ├── docs/                       # 文档
 │   ├── architecture.md         # 架构文档
+│   ├── optional-modules.md     # 官方可选模块契约
+│   ├── lua-api.md              # Lua API 契约
+│   ├── lua-api-tests.md        # Lua API 测试矩阵
+│   ├── optional-module-tests.md # 官方可选模块验收矩阵
 │   ├── runtime-semantics.md    # 运行时语义索引
 │   ├── runtime-*.md            # 各专题运行时文档
 │   ├── starter-system.md       # Starter 系统文档
+│   ├── cmake-refactor.md       # CMake target 拆分策略
 │   └── directory-structure.md  # 本文档
 │
 ├── examples/                   # 示例代码
@@ -104,7 +109,7 @@ shield/
 │   ├── shield_data/            # 数据访问（DB + Redis）
 │   ├── shield_net/             # 网络层
 │   ├── shield_transport/       # 协议适配
-│   └── optional/               # 官方可选模块（非第一阶段主路径）
+│   └── optional/               # 官方可选模块（非最小主路径）
 │       ├── shield_cluster/     # 集群通信（可选）
 │       ├── shield_global/      # 全局能力（可选）
 │       └── shield_ops/         # 运维端点（可选）
@@ -129,9 +134,6 @@ shield/
     │   ├── gateway.lua
     │   ├── player.lua
     │   └── ...
-    └── plugins/
-        ├── auth.lua
-        └── metrics.lua
 ```
 
 ### 模块内部结构
@@ -252,16 +254,17 @@ src/shield_log/
 src/shield_bootstrap/
 ├── include/
 │   ├── bootstrap.hpp          # Bootstrap 入口
+│   ├── bootstrap_context.hpp  # BootstrapContext 显式上下文
 │   ├── starter.hpp            # IStarter 接口
 │   ├── starter_manager.hpp    # Starter 管理器
-│   ├── application_context.hpp # ApplicationContext
-│   ├── environment.hpp        # Environment
-│   └── lifecycle.hpp          # 生命周期事件
+│   └── runtime_options.hpp    # CLI/启动选项
 ├── src/
 │   ├── bootstrap.cpp
 │   ├── starter_manager.cpp
-│   ├── application_context.cpp
-│   ├── environment.cpp
+│   ├── config_starter.cpp
+│   ├── log_starter.cpp
+│   ├── core_starter.cpp
+│   ├── script_starter.cpp
 │   └── ...
 ├── tests/
 │   ├── test_starter_manager.cpp
@@ -269,54 +272,35 @@ src/shield_bootstrap/
 └── CMakeLists.txt
 ```
 
-职责：启动流程、Starter 管理、生命周期事件。
+职责：启动流程、Starter 管理、`shield::run(argc, argv)`，不提供 DI、插件或生命周期事件总线。
 
 **依赖**：shield_base, shield_log, shield_config
-
-#### shield_script
-
-```
-src/shield_script/
-├── include/
-│   ├── lua_vm_pool.hpp        # Lua VM 池
-│   ├── script_starter.hpp     # ScriptStarter
-│   └── lua_api.hpp            # Lua API 注册
-├── src/
-│   ├── lua_vm_pool.cpp
-│   ├── script_starter.cpp
-│   └── ...
-├── tests/
-│   └── test_lua_vm_pool.cpp
-└── CMakeLists.txt
-```
-
-职责：Lua VM 池管理、ScriptStarter。
-
-**依赖**：shield_base, shield_log, shield_config, shield_bootstrap
 
 #### shield_lua
 
 ```
 src/shield_lua/
 ├── include/
-│   └── lua_bindings.hpp       # Lua API 声明
+│   ├── lua_vm_pool.hpp        # Lua VM 池
+│   ├── script_starter.hpp     # ScriptStarter
+│   ├── lua_service_loader.hpp # Lua service module loader
+│   └── lua_bindings.hpp       # Lua API 注册
 ├── src/
-│   ├── api_core.cpp           # shield.spawn/call/send
-│   ├── api_timer.cpp          # shield.timer/sleep/fork
-│   ├── api_config.cpp         # shield.config.*
-│   ├── api_env.cpp            # shield.env.*
-│   ├── api_log.cpp            # shield.log.*
-│   ├── api_data.cpp           # shield.data.*
-│   ├── api_net.cpp            # shield.net.*
+│   ├── lua_vm_pool.cpp
+│   ├── script_starter.cpp
+│   ├── api_core.cpp
+│   ├── api_timer.cpp
+│   ├── api_data.cpp
 │   └── ...
 ├── tests/
+│   ├── test_lua_vm_pool.cpp
 │   └── test_lua_bindings.cpp
 └── CMakeLists.txt
 ```
 
-职责：Lua API 绑定实现。
+职责：Lua VM 管理、ScriptStarter、Lua service loader、`shield.*` API 绑定。
 
-**依赖**：shield_base, shield_script, shield_core, shield_data, shield_net
+**依赖**：shield_base, shield_log, shield_config, shield_core, shield_data, shield_net
 
 #### shield_data
 
@@ -404,7 +388,7 @@ src/optional/shield_cluster/
 └── CMakeLists.txt
 ```
 
-职责：集群通信，node-to-node 消息传递，远端 route cache 和节点心跳。该模块是官方可选模块，不属于第一阶段最小主路径。
+职责：集群通信，node-to-node 消息传递，远端 route cache 和节点心跳。该模块是官方可选模块，不属于最小主路径。
 
 **依赖**：shield_base, shield_log, shield_config, shield_net
 
@@ -559,21 +543,6 @@ namespace shield {
  */
 int run(int argc, char** argv);
 
-/**
- * 获取 ApplicationContext
- */
-ApplicationContext& context();
-
-/**
- * 获取 Logger
- */
-Logger& logger();
-
-/**
- * 获取 Configuration
- */
-Configuration& config();
-
 } // namespace shield
 ```
 
@@ -618,6 +587,6 @@ Configuration& config();
 | 头文件可见性 | 区分公共 API 和模块私有 |
 | 依赖管理 | 通过目录层次强制单向依赖 |
 | 测试组织 | 每个模块包含自己的 tests/ |
-| 移除模块 | di, annotations, conditions, events, discovery, health, metrics |
+| 移除模块 | di, annotations, conditions, events, discovery, health, metrics, plugin, middleware |
 | 合并模块 | database → data, http → net, protocol → transport |
 | 改为模板 | gateway → examples/templates/services |

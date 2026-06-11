@@ -14,9 +14,9 @@ released implementation.
 - Lua owns game logic: each service is a Lua script using the `shield.*` API.
 - CAF remains an internal actor transport foundation.
 - Shield exposes game-server semantics instead of CAF details.
-- The first refactor target is a single-node runtime.
-- Cluster support is an official optional extension and a later-stage module,
-  but it is outside the `shield_core` boundary.
+- The minimal deployment path is a single-node runtime.
+- Cluster support is an official optional extension outside the
+  `shield_core` boundary.
 
 ## Non-Goals
 
@@ -60,7 +60,7 @@ core semantics:
 | `shield_log` | Runtime logging |
 | `shield_bootstrap` | Compose selected modules into a runnable server |
 
-Optional official extensions live outside the first-phase main path:
+Optional official extensions live outside the minimal main path:
 
 | Module | Responsibility |
 | --- | --- |
@@ -93,10 +93,16 @@ that no longer belong to `shield_core` or first-party runtime modules.
 ## Documentation
 
 - [Architecture Definition](docs/architecture.md)
+- [Optional Module Contracts](docs/optional-modules.md)
 - [Docs Home](docs/index.md)
 - [Architecture Design](docs/architecture.md)
 - [Core Concepts](docs/architecture-core-concepts.md)
+- [Lua API Contract](docs/lua-api.md)
+- [Lua API Test Cases](docs/lua-api-tests.md)
+- [Optional Module Test Matrix](docs/optional-module-tests.md)
 - [Runtime Semantics](docs/runtime-semantics.md)
+- [Starter System](docs/starter-system.md)
+- [CMake Refactor](docs/cmake-refactor.md)
 - [Ops Design](docs/ops.md)
 - [Roadmap](docs/roadmap.md)
 - [API Notes](docs/api.md)

@@ -43,22 +43,45 @@ actors:
 
 ```lua
 local M = {}
+local sessions = {}
 
-function M.on_message(session, payload)
+function M.on_connect(session)
+    sessions[session:id()] = session
+end
+
+function M.on_client_message(session, payload)
     if payload.type == "join_room" then
         shield.send("room", "join", {
-            session = session,
+            session_id = session:id(),
             player_id = payload.player_id,
             room_id = payload.room_id
         })
     elseif payload.type == "chat" then
         shield.send("chat", "send", {
-            session = session,
+            session_id = session:id(),
             player_id = payload.player_id,
             room_id = payload.room_id,
             text = payload.text
         })
     end
+end
+
+function M.room_joined(data)
+    local session = sessions[data.session_id]
+    if session then
+        session:send({ type = "room_joined", room_id = data.room_id })
+    end
+end
+
+function M.chat_ok(data)
+    local session = sessions[data.session_id]
+    if session then
+        session:send({ type = "chat_ok", room_id = data.room_id })
+    end
+end
+
+function M.on_disconnect(session)
+    sessions[session:id()] = nil
 end
 
 return M
@@ -75,7 +98,10 @@ function M.join(data)
     local id = data.room_id
     rooms[id] = rooms[id] or { players = {} }
     table.insert(rooms[id].players, data.player_id)
-    shield.send(src, "room_joined", { room_id = id })
+    shield.send(src, "room_joined", {
+        session_id = data.session_id,
+        room_id = id,
+    })
 end
 
 return M
@@ -89,7 +115,10 @@ local M = {}
 function M.send(data)
     local src = shield.sender()
     shield.log.info("chat " .. data.room_id .. ": " .. data.text)
-    shield.send(src, "chat_ok", { room_id = data.room_id })
+    shield.send(src, "chat_ok", {
+        session_id = data.session_id,
+        room_id = data.room_id,
+    })
 end
 
 return M

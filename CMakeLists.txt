@@ -12,7 +12,7 @@ if(APPLE AND NOT DEFINED CMAKE_OSX_ARCHITECTURES)
         "x86_64"
         CACHE STRING "macOS architectures to build for" FORCE)
   elseif(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/arm64-osx" AND
-         NOT EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-osx")
+        NOT EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-osx")
     set(CMAKE_OSX_ARCHITECTURES
         "arm64"
         CACHE STRING "macOS architectures to build for" FORCE)
@@ -29,16 +29,16 @@ if(NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
     set(CMAKE_CXX_COMPILER "/usr/bin/g++")
   elseif(WIN32)
     set(CMAKE_C_COMPILER "cl")
-    set(CMAKE_CXX_COMPILER "cl")
+    set(CMAKE_CXX_COMPILER "/cl")
   endif()
   message(
     STATUS
-      "Using default compilers: C=${CMAKE_C_COMPILER}, CXX=${CMAKE_CXX_COMPILER}"
+    "Using default compilers: C=${CMAKE_C_COMPILER}, CXX=${CMAKE_CXX_COMPILER}"
   )
 else()
   message(
     STATUS
-      "Using user-specified compilers: C=${CMAKE_C_COMPILER}, CXX=${CMAKE_CXX_COMPILER}"
+    "Using user-specified compilers: C=${CMAKE_C_COMPILER}, CXX=${CMAKE_CXX_COMPILER}"
   )
 endif()
 
@@ -70,20 +70,15 @@ enable_testing()
 # Build toggles
 option(SHIELD_BUILD_TESTS "Build Shield tests" ON)
 option(SHIELD_BUILD_EXAMPLES "Build Shield examples" ON)
-option(
-  SHIELD_ENABLE_PROTOBUF
-  "Enable Protobuf serialization support when protobuf is available in project-managed dependencies"
-  ON)
+option(SHIELD_ENABLE_CLUSTER "Enable cluster support (optional)" OFF)
+option(SHIELD_ENABLE_GLOBAL "Enable global helpers (optional)" OFF)
+option(SHIELD_ENABLE_OPS "Enable ops/diagnostics (optional)" OFF)
 
 # Ensure config directory exists and create a minimal default config if missing.
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/config")
 if(NOT EXISTS "${CMAKE_SOURCE_DIR}/config/app.yaml")
   file(WRITE "${CMAKE_SOURCE_DIR}/config/app.yaml" "---\n")
 endif()
-message(
-  STATUS
-    "Ensured default config file exists: ${CMAKE_SOURCE_DIR}/config/app.yaml"
-)
 
 # Detect vcpkg triplet based on platform
 if(WIN32)
@@ -104,11 +99,7 @@ elseif(UNIX)
   else()
     set(VCPKG_TARGET_TRIPLET "x64-linux")
   endif()
-else()
-  message(FATAL_ERROR "Unsupported platform")
 endif()
-
-message(STATUS "Detected vcpkg triplet: ${VCPKG_TARGET_TRIPLET}")
 
 # Explicitly set CMAKE_PREFIX_PATH to vcpkg's installed directory
 set(VCPKG_INSTALLED_DIR
@@ -120,7 +111,7 @@ set(CMAKE_PREFIX_PATH
 # Explicitly add vcpkg's include and lib directories to compiler search paths
 include_directories("${VCPKG_INSTALLED_DIR}/include")
 link_directories("${VCPKG_INSTALLED_DIR}/lib")
-link_directories("${VCPKG_INSTALLED_DIR}/debug/lib") # For debug libraries
+link_directories("${VCPKG_INSTALLED_DIR}/debug/lib")
 
 # Enforce vcpkg-only search for includes and libraries
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
@@ -148,18 +139,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Coverage instrumentation (for CI/local reports)
-option(SHIELD_ENABLE_COVERAGE "Enable coverage instrumentation" OFF)
-if(SHIELD_ENABLE_COVERAGE)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_library(shield_coverage INTERFACE)
-    target_compile_options(shield_coverage INTERFACE -O0 -g --coverage)
-    target_link_options(shield_coverage INTERFACE --coverage)
-  else()
-    message(WARNING "SHIELD_ENABLE_COVERAGE is only supported on GCC/Clang")
-  endif()
-endif()
-
 # Suppress deprecated-declarations warning for CAF
 add_compile_options(-Wno-deprecated-declarations)
 
@@ -173,32 +152,7 @@ find_package(redis++ CONFIG REQUIRED)
 find_package(CAF CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 
-# Try to find prometheus-cpp, make it optional
-find_package(prometheus-cpp CONFIG QUIET)
-if(prometheus-cpp_FOUND)
-  message(STATUS "Found prometheus-cpp, enabling Prometheus support")
-  add_definitions(-DSHIELD_ENABLE_PROMETHEUS)
-
-  if(TARGET prometheus-cpp::core)
-    set(PROMETHEUS_CORE_TARGET "prometheus-cpp::core")
-  elseif(TARGET prometheus::core)
-    set(PROMETHEUS_CORE_TARGET "prometheus::core")
-  else()
-    message(WARNING "prometheus-cpp core target not found")
-    set(prometheus-cpp_FOUND FALSE)
-  endif()
-
-  if(TARGET prometheus-cpp::gateway)
-    set(PROMETHEUS_GATEWAY_TARGET "prometheus-cpp::gateway")
-  elseif(TARGET prometheus::gateway)
-    set(PROMETHEUS_GATEWAY_TARGET "prometheus::gateway")
-  else()
-    message(WARNING "prometheus-cpp gateway target not found")
-    set(PROMETHEUS_GATEWAY_TARGET "")
-  endif()
-else()
-  message(STATUS "prometheus-cpp not found, Prometheus support disabled")
-endif()
+find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp")
 
 find_package(
   Boost REQUIRED
@@ -217,29 +171,14 @@ find_package(msgpack-cxx CONFIG QUIET)
 if(msgpack-cxx_FOUND)
   message(STATUS "Found msgpack-cxx, enabling MessagePack support")
   add_definitions(-DSHIELD_ENABLE_MESSAGEPACK)
-else()
-  message(STATUS "msgpack-cxx not found, MessagePack support disabled")
 endif()
 
-find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp")
-
-set(SHIELD_HAS_PROTOBUF FALSE)
-if(SHIELD_ENABLE_PROTOBUF AND EXISTS "${VCPKG_INSTALLED_DIR}/share/protobuf")
-  find_package(Protobuf CONFIG QUIET)
-  if(Protobuf_FOUND)
-    set(SHIELD_HAS_PROTOBUF TRUE)
-    message(STATUS "Found protobuf in project-managed dependencies")
-  else()
-    message(
-      WARNING
-        "SHIELD_ENABLE_PROTOBUF=ON but protobuf was not found in project-managed dependencies; disabling Protobuf support"
-    )
-  endif()
-elseif(SHIELD_ENABLE_PROTOBUF)
-  message(
-    STATUS
-      "Project-managed protobuf package not found under ${VCPKG_INSTALLED_DIR}; Protobuf support disabled"
-  )
+# Try to find protobuf
+find_package(Protobuf CONFIG QUIET)
+if(Protobuf_FOUND)
+  message(STATUS "Found protobuf, enabling Protobuf support")
+  add_definitions(-DSHIELD_HAS_PROTOBUF)
+  set(SHIELD_HAS_PROTOBUF TRUE)
 endif()
 
 # Set output directories
@@ -251,209 +190,293 @@ file(MAKE_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 file(MAKE_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
 file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 
-# ===========================================================================
-# Source files: CORE runtime (lifecycle, actor, script, gateway, protocol,
-#               net, discovery, config, log, cli, commands, serialization,
-#               http, fs, caf_initializer)
-# ===========================================================================
-set(SHIELD_CORE_SOURCES
-    # Core lifecycle
-    src/core/service.cpp
-    src/core/application_context.cpp
-    src/core/starter_manager.cpp
-    # Log
+# =============================================================================
+# REFACTORED MODULE STRUCTURE
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# shield_base - Base types (Result, Error, ByteBuffer, time, id)
+# -----------------------------------------------------------------------------
+add_library(shield_base STATIC
+    src/shield_base/id.cpp
+)
+
+target_include_directories(shield_base
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+# shield_base has no external dependencies
+message(STATUS "shield_base: base types module configured")
+
+# -----------------------------------------------------------------------------
+# shield_log - Logging facade and sinks
+# -----------------------------------------------------------------------------
+add_library(shield_log STATIC
     src/log/logger.cpp
-    src/log/log_config.cpp
-    # CLI
-    src/cli/command_line_parser.cpp
-    src/cli/command.cpp
-    src/cli/root_command.cpp
-    # Config
-    src/config/config.cpp
-    src/config/config_registry.cpp
-    src/config/ptree_yaml.cpp
-    src/fs/file_watcher.cpp
-    # Discovery
-    src/discovery/service_instance.cpp
-    src/discovery/discovery_config.cpp
-    src/discovery/discovery_service_factory.cpp
-    src/discovery/local_discovery.cpp
-    src/discovery/redis_discovery.cpp
-    src/discovery/nacos_discovery.cpp
-    src/discovery/consul_discovery.cpp
-    src/discovery/etcd_discovery.cpp
-    # Actor
-    src/actor/lua_actor.cpp
-    src/actor/actor_registry.cpp
-    src/actor/distributed_actor_system.cpp
-    src/actor/actor_system_coordinator.cpp
-    src/actor/actor_system_config.cpp
-    src/actor/actor_starter.cpp
-    # Service (Skynet semantics)
-    src/service/service_handle.cpp
-    src/service/service_context.cpp
-    src/service/service_api.cpp
-    src/service/console.cpp
-    src/service/service_starter.cpp
-    # Network
-    src/net/slave_reactor.cpp
-    src/net/master_reactor.cpp
-    src/net/udp_session.cpp
-    src/net/session.cpp
-    src/net/udp_reactor.cpp
-    src/net/network_config.cpp
-    # Protocol
-    src/protocol/udp_protocol_handler.cpp
-    src/protocol/websocket_handler.cpp
-    src/protocol/protocol_handler.cpp
-    src/protocol/http_handler.cpp
-    src/protocol/binary_protocol.cpp
-    src/protocol/schema_protocol.cpp
-    # Serialization
-    src/serialization/messagepack_universal_serializer.cpp
-    src/serialization/serialization_init.cpp
-    src/serialization/json_universal_serializer.cpp
-    src/serialization/universal_serialization_system.cpp
-    # Script
-    src/script/lua_engine.cpp
-    src/script/lua_vm_pool.cpp
-    src/script/lua_vm_pool_config.cpp
-    src/script/script_starter.cpp
-    src/script/lua_ioc_bridge.cpp
-    src/script/lua_service_api.cpp
-    src/script/lua_service_base.cpp
-    # Gateway
-    src/gateway/gateway_request_dispatcher.cpp
-    src/gateway/gateway_service.cpp
-    src/gateway/gateway_config.cpp
-    src/gateway/gateway_starter.cpp
-    src/gateway/middleware.cpp
-    src/gateway/game_gateway.cpp
-    src/gateway/runtime_diagnostics.cpp
-    # HTTP
-    src/http/beast_http_server.cpp
-    # Commands
-    src/commands/server_command.cpp
-    src/commands/cli_command.cpp
-    src/commands/config_command.cpp
-    src/commands/diagnose_command.cpp
-    src/commands/migrate_command.cpp
-    src/commands/all_commands.cpp
-    # Filesystem
-    src/fs/file_watcher_impl.cpp
-    # CAF initializer
-    src/caf_initializer.cpp)
+)
 
-if(SHIELD_HAS_PROTOBUF)
-  list(APPEND SHIELD_CORE_SOURCES
-       src/serialization/protobuf_universal_serializer.cpp)
+target_include_directories(shield_log
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+target_link_libraries(shield_log
+    PUBLIC shield_base
+    PRIVATE Boost::log Boost::log_setup
+)
+
+# -----------------------------------------------------------------------------
+# shield_config - YAML loading and schema validation
+# -----------------------------------------------------------------------------
+add_library(shield_config STATIC
+    src/config_new/config.cpp
+)
+
+target_include_directories(shield_config
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+target_link_libraries(shield_config
+    PUBLIC shield_base shield_log
+    PRIVATE yaml-cpp::yaml-cpp
+)
+
+# -----------------------------------------------------------------------------
+# shield_core - Pure core (service registry, message, timer, CAF adapter)
+# DEPENDENCY CHECK: Must NOT link Lua, Asio/Beast, DB/Redis, log implementation
+# -----------------------------------------------------------------------------
+add_library(shield_core STATIC
+    src/core_new/service_handle.cpp
+    src/core_new/service_registry.cpp
+    src/core_new/message.cpp
+    src/core_new/caf_adapter.cpp
+)
+
+target_include_directories(shield_core
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+        ${LUA_INCLUDE_DIR}
+        ${SOL2_INCLUDE_DIRS}
+)
+
+target_link_libraries(shield_core
+    PUBLIC shield_base
+    PRIVATE CAF::core CAF::io
+)
+
+# Dependency check - shield_core should NOT link these
+if(TARGET shield_core)
+    get_target_property(core_links shield_core LINK_LIBRARIES)
+    message(STATUS "shield_core linked libraries: ${core_links}")
 endif()
 
-# ===========================================================================
-# Source files: EXTENSIONS (optional: di, metrics, health, annotations,
-#              conditions, plugins, config_reload_binder)
-# ===========================================================================
-set(SHIELD_EXT_SOURCES
-    # DI
-    src/di/advanced_container.cpp
-    # Plugin system
-    src/core/plugin_manager.cpp
-    src/core/plugin_host.cpp
-    src/core/config_reload_binder.cpp
-    # Metrics
-    src/metrics/prometheus_service.cpp
-    src/metrics/prometheus_config.cpp
-    src/metrics/metrics_starter.cpp
-    # Health
-    src/health/health_check.cpp
-    # Annotations
-    src/annotations/component_registry.cpp
-    # Conditions
-    src/conditions/conditional_registry.cpp
-    # Extension context
-    src/extensions/extension_context.cpp)
+# -----------------------------------------------------------------------------
+# shield_data - Raw DB/Redis access
+# -----------------------------------------------------------------------------
+add_library(shield_data STATIC
+    src/data_new/data.cpp
+)
 
-message(STATUS "Shield core sources: ${SHIELD_CORE_SOURCES}")
-message(STATUS "Shield extension sources: ${SHIELD_EXT_SOURCES}")
+target_include_directories(shield_data
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+)
 
-# ===========================================================================
-# shield_core: Core runtime library
-# ===========================================================================
-add_library(shield_core STATIC ${SHIELD_CORE_SOURCES})
-if(TARGET shield_coverage)
-  target_link_libraries(shield_core PUBLIC shield_coverage)
+target_link_libraries(shield_data
+    PUBLIC shield_base shield_log shield_config
+    PRIVATE redis++::redis++_static hiredis::hiredis
+)
+
+# -----------------------------------------------------------------------------
+# shield_transport - Frame/codec/encryption adapter
+# -----------------------------------------------------------------------------
+add_library(shield_transport STATIC
+    src/transport/frame.cpp
+    src/transport/codec.cpp
+    src/transport/encryption.cpp
+)
+
+target_include_directories(shield_transport
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+target_link_libraries(shield_transport
+    PUBLIC shield_base shield_log
+    PRIVATE OpenSSL::SSL OpenSSL::Crypto
+)
+
+# -----------------------------------------------------------------------------
+# shield_net - Listener, session, connection management
+# -----------------------------------------------------------------------------
+add_library(shield_net STATIC
+    src/net_new/session.cpp
+    src/net_new/listener.cpp
+)
+
+target_include_directories(shield_net
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+target_link_libraries(shield_net
+    PUBLIC shield_base shield_log shield_config shield_transport
+    PRIVATE Boost::asio Boost::beast
+)
+
+# -----------------------------------------------------------------------------
+# shield_lua - Lua VM, API bindings, service loader
+# -----------------------------------------------------------------------------
+add_library(shield_lua STATIC
+    src/lua/lua_service.cpp
+    src/lua/lua_api.cpp
+    src/lua/lua_runtime.cpp
+)
+
+target_include_directories(shield_lua
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+        ${LUA_INCLUDE_DIR}
+        ${SOL2_INCLUDE_DIRS}
+)
+
+target_link_libraries(shield_lua
+    PUBLIC shield_base shield_core
+    PRIVATE shield_log shield_config shield_data
+    PRIVATE ${LUA_LIBRARIES} sol2::sol2
+)
+
+target_include_directories(shield_lua
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+        ${LUA_INCLUDE_DIR}
+        ${SOL2_INCLUDE_DIRS}
+)
+
+target_link_libraries(shield_lua
+    PUBLIC shield_base shield_core
+    PRIVATE shield_log shield_config shield_data shield_net
+    PRIVATE ${LUA_LIBRARIES}
+)
+
+# -----------------------------------------------------------------------------
+# shield_bootstrap - Starter, shield::run
+# -----------------------------------------------------------------------------
+add_library(shield_bootstrap STATIC
+    src/bootstrap/bootstrap.cpp
+    src/bootstrap/starter.cpp
+)
+
+target_include_directories(shield_bootstrap
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+target_link_libraries(shield_bootstrap
+    PUBLIC shield_base
+    PRIVATE shield_log shield_config shield_core shield_lua shield_data shield_net
+)
+
+# -----------------------------------------------------------------------------
+# shield - Main executable
+# -----------------------------------------------------------------------------
+add_executable(shield src/main.cpp)
+target_link_libraries(shield PRIVATE shield_bootstrap)
+
+# =============================================================================
+# OPTIONAL MODULES
+# =============================================================================
+
+# shield_cluster (OFF by default)
+if(SHIELD_ENABLE_CLUSTER)
+    add_library(shield_cluster STATIC
+        # TODO: Add cluster implementation
+    )
+    message(STATUS "shield_cluster: enabled")
 endif()
-target_include_directories(
-  shield_core
-  PUBLIC ${PROJECT_SOURCE_DIR}/include
-         ${PROJECT_SOURCE_DIR}/include/shield/log
-         ${PROJECT_SOURCE_DIR}/include/shield/cli
-         ${PROJECT_SOURCE_DIR}/include/shield/config
-         ${CMAKE_CURRENT_BINARY_DIR}/include
-         ${LUA_INCLUDE_DIR}
-         ${SOL2_INCLUDE_DIRS})
-target_link_libraries(
-  shield_core
-  PUBLIC ${LUA_LIBRARIES}
-         Boost::asio
-         Boost::beast
-         Boost::filesystem
-         Boost::dll
-         yaml-cpp::yaml-cpp
-         Boost::log
-         Boost::log_setup
-         Boost::program_options
-         Boost::url
-         CAF::core
-         CAF::io
-         nlohmann_json::nlohmann_json
-         redis++::redis++_static
-         Threads::Threads
-         OpenSSL::SSL
-         OpenSSL::Crypto)
-target_compile_definitions(
-  shield_core PUBLIC SHIELD_HAS_PROTOBUF=$<BOOL:${SHIELD_HAS_PROTOBUF}>)
 
-if(SHIELD_HAS_PROTOBUF)
-  target_link_libraries(shield_core PUBLIC protobuf::libprotobuf)
+# shield_global (OFF by default)
+if(SHIELD_ENABLE_GLOBAL)
+    add_library(shield_global STATIC
+        # TODO: Add global helpers implementation
+    )
+    message(STATUS "shield_global: enabled")
 endif()
+
+# shield_ops (OFF by default)
+if(SHIELD_ENABLE_OPS)
+    add_library(shield_ops STATIC
+        # TODO: Add ops implementation
+    )
+    message(STATUS "shield_ops: enabled")
+endif()
+
+# =============================================================================
+# OPTIONAL SERIALIZATION SUPPORT
+# =============================================================================
 
 if(msgpack-cxx_FOUND)
-  target_link_libraries(shield_core PUBLIC msgpack-cxx)
+    target_link_libraries(shield_transport PUBLIC msgpack-cxx)
+    message(STATUS "MessagePack support enabled for shield_transport")
 endif()
 
-# ===========================================================================
-# shield_extensions: Optional extension library
-# ===========================================================================
-add_library(shield_extensions STATIC ${SHIELD_EXT_SOURCES})
-target_include_directories(
-  shield_extensions
-  PUBLIC ${PROJECT_SOURCE_DIR}/include
-         ${CMAKE_CURRENT_BINARY_DIR}/include
-         ${LUA_INCLUDE_DIR}
-         ${SOL2_INCLUDE_DIRS})
-target_link_libraries(shield_extensions PUBLIC shield_core)
-
-if(prometheus-cpp_FOUND)
-  target_link_libraries(shield_extensions PUBLIC ${PROMETHEUS_CORE_TARGET})
-  if(PROMETHEUS_GATEWAY_TARGET)
-    target_link_libraries(shield_extensions PUBLIC ${PROMETHEUS_GATEWAY_TARGET})
-  endif()
+if(SHIELD_HAS_PROTOBUF)
+    target_link_libraries(shield_transport PUBLIC protobuf::libprotobuf)
+    message(STATUS "Protobuf support enabled for shield_transport")
 endif()
 
-# ===========================================================================
-# Main executable
-# ===========================================================================
-add_executable(shield src/main.cpp)
-target_link_libraries(shield PRIVATE shield_core shield_extensions)
+# =============================================================================
+# LEGACY MODULES (To be removed after migration)
+# =============================================================================
 
-# Add examples/tests
+# Temporarily keep legacy targets for backward compatibility
+# These will be removed once migration is complete
+
+# =============================================================================
+# TESTS AND EXAMPLES
+# =============================================================================
+
 if(SHIELD_BUILD_EXAMPLES)
-  add_subdirectory(examples)
+    add_subdirectory(examples)
 endif()
+
 if(SHIELD_BUILD_TESTS)
-  add_subdirectory(tests)
+    add_subdirectory(tests)
 endif()
 
 # Include development tools (Git hooks, formatting, etc.)
 include(cmake/GitHooks.cmake)
+
+# =============================================================================
+# BUILD SUMMARY
+# =============================================================================
+
+message(STATUS "")
+message(STATUS "=== Shield Build Configuration ===")
+message(STATUS "shield_base:         ENABLED")
+message(STATUS "shield_log:          ENABLED")
+message(STATUS "shield_config:       ENABLED")
+message(STATUS "shield_core:         ENABLED (PURE)")
+message(STATUS "shield_data:         ENABLED")
+message(STATUS "shield_transport:    ENABLED")
+message(STATUS "shield_net:           ENABLED")
+message(STATUS "shield_lua:          ENABLED")
+message(STATUS "shield_bootstrap:    ENABLED")
+message(STATUS "")
+message(STATUS "Optional modules:")
+message(STATUS "  shield_cluster:    ${SHIELD_ENABLE_CLUSTER}")
+message(STATUS "  shield_global:     ${SHIELD_ENABLE_GLOBAL}")
+message(STATUS "  shield_ops:        ${SHIELD_ENABLE_OPS}")
+message(STATUS "")

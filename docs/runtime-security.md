@@ -117,7 +117,7 @@ actors:
 Lua 层实现：
 
 ```lua
-function M.on_message(session, payload)
+function M.on_client_message(session, payload)
     -- 网关层限流：按客户端 IP 检查
     if not check_rate_limit(session:remote_addr()) then
         session:send({ error = "rate_limited" })
@@ -183,24 +183,36 @@ end
 Gateway 服务负责客户端认证：
 
 ```lua
+local pending_auth = {}
+local authenticated = {}
+
 function M.on_connect(session)
-    -- 等待认证消息
-    local auth_msg = session:recv(5000)  -- 5秒超时
-    if not auth_msg then
-        session:close("auth_timeout")
+    pending_auth[session:id()] = true
+    session:send({ status = "auth_required" })
+end
+
+function M.on_client_message(session, payload)
+    local sid = session:id()
+
+    if pending_auth[sid] then
+        if payload.type ~= "auth" then
+            session:close("auth_required")
+            return
+        end
+
+        local user = verify_token(payload.token)
+        if not user then
+            session:close("auth_failed")
+            return
+        end
+
+        pending_auth[sid] = nil
+        authenticated[sid] = user.id
+        session:send({ status = "authenticated" })
         return
     end
 
-    -- 验证 token
-    local user = verify_token(auth_msg.token)
-    if not user then
-        session:close("auth_failed")
-        return
-    end
-
-    -- 绑定用户到 session
-    session:set_user(user)
-    session:send({ status = "authenticated" })
+    dispatch_authenticated_message(session, payload, authenticated[sid])
 end
 ```
 

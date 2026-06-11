@@ -2,7 +2,13 @@
 
 本文档包含 Shield 跨进程/跨机器通信（cluster）和旧代码处理相关的运行时语义决策。
 
-`shield_cluster` 是官方可选模块和后续阶段，不属于 `shield_core`，也不是第一阶段最小运行路径。本文用于提前冻结多节点语义，保证未来实现不会把服务发现、节点编排或 CAF 远程细节泄漏进用户 API。
+`shield_cluster` 是官方可选模块，不属于 `shield_core`，也不是最小运行路径。本文用于提前冻结多节点语义，保证未来实现不会把服务发现、节点编排或 CAF 远程细节泄漏进用户 API。
+
+当前状态：
+
+- 本文 API 和 discovery 策略仍是 optional module 设计稿。
+- 本地 `shield.query(name)` 继续只查询本地 registry。
+- optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 
 ## shield_cluster 定位
 
@@ -40,6 +46,22 @@ CAF 底层已支持远程 Actor 通信（通过 middleman），`shield_cluster` 
 - 静态配置（开发环境）
 - Kubernetes Service（云原生部署）
 - Etcd/Consul/Zookeeper（自建集群）
+
+## Public Surface
+
+`shield_cluster` 只定义两类 public surface：
+
+```lua
+local h, err = shield.cluster.query("node-2", "room.public")
+local nodes = shield.cluster.nodes()
+```
+
+规则：
+
+- `shield.cluster.query(node, name)` 负责远端 name 解析。
+- `shield.cluster.nodes()` 返回当前已知节点及状态摘要。
+- 普通业务消息仍走统一 `shield.send/call`，不定义 `shield.cluster.send/call`。
+- 节点 connect/disconnect、peer 管理属于配置和运维职责，不作为业务 Lua API 暴露。
 
 ## Cluster 语义
 
@@ -246,7 +268,7 @@ cluster:
 - 跨节点消息路由（服务名 -> 远程 Actor）。
 - 远端路由 cache。
 
-**建议第一版 cluster 范围：**
+**建议最小 cluster 实现范围：**
 - 静态配置（零依赖）
 - 基本心跳和状态管理
 - 远端 route cache

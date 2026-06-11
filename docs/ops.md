@@ -1,6 +1,6 @@
 # 运维与调试设计
 
-`shield_ops` 是 Shield 的官方可选运维与调试层，不属于 `shield_core`，也不是第一阶段最小运行路径。
+`shield_ops` 是 Shield 的官方可选运维与调试层，不属于 `shield_core`，也不是最小运行路径。
 
 它的目标不是给游戏业务提供新 API，而是让运行时在不侵入核心语义的前提下，可被观察、诊断、采样和控制。
 
@@ -65,7 +65,7 @@ sampling profiler
 
 ## 节点状态与心跳
 
-本地 service 清理由 service 生命周期事件驱动，不使用 per-service heartbeat。
+本地 service 不做 per-service heartbeat。其存活与清理由 runtime 的 service stop/exit、registry 注销和 handle 失效流程维护。
 
 IPC / cluster 节点状态由链路 heartbeat 驱动：
 

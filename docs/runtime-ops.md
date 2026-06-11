@@ -2,6 +2,12 @@
 
 本文档包含 Shield 运维和调试相关的运行时语义决策。
 
+当前状态：
+
+- `shield_ops` 是 official optional module 设计稿。
+- 它不提供业务 Lua API，也不属于最小运行路径。
+- 横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
+
 ## shield_ops 默认策略
 
 `shield_ops` 不属于 core，但作为官方可选模块保留。
@@ -15,6 +21,20 @@
 - console 必须显式启用。
 
 core 只提供可读取的 runtime snapshot 和 counters，不反向依赖 `shield_ops`。
+
+## Public Surface
+
+`shield_ops` 的 public surface 只有管理入口：
+
+```text
+HTTP debug endpoints
+local admin socket
+console
+metrics exporter
+profile controls
+```
+
+它不定义 `shield.ops.*` 业务 Lua API。
 
 ## 运维端点
 

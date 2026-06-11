@@ -36,7 +36,7 @@ local ok, result = shield.call_timeout(3000, "player", "get_info", { id = "1001"
 把网关当作 Lua 服务，而不是依赖框架中间件链。
 
 ```lua
-function gateway.on_message(session, payload)
+function gateway.on_client_message(session, payload)
     if payload.type == "login" then
         -- authenticate here
     else

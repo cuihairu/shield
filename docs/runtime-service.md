@@ -131,7 +131,7 @@ round-robin、hash、按房间路由等能力应由显式 pool service 实现，
 
 ## 心跳与离线清理
 
-本地 service 不需要 heartbeat。本地清理由 service 生命周期事件驱动。
+本地 service 不需要 heartbeat。本地存活状态由 actor 自身 exit、registry 注销和 handle 失效来界定，清理发生在 service stop/exit 流程中。
 
 远端 IPC/cluster 节点需要 heartbeat 和 lease。
 
@@ -256,7 +256,7 @@ return M
 
 **on_init(args)**
 
-服务初始化时调用，必须返回 `true` 表示成功，或 `nil, error` 表示失败。
+服务初始化时调用。无返回值或返回 `true` 表示成功；返回 `false/nil, error` 或抛出异常表示失败。
 
 ```lua
 function M.on_init(args)
@@ -275,7 +275,6 @@ function M.on_init(args)
     end
 
     -- 初始化成功
-    return true
 end
 ```
 
@@ -485,6 +484,8 @@ end
 return M
 ```
 
+更完整的 Lua API 入口见 [Lua API 契约](./lua-api.md)。
+
 ## Lua handler 上下文
 
 handler 默认只接收业务参数，不额外塞入 `src`。
@@ -663,35 +664,6 @@ local ok, result = shield.call("player_manager", "get", uid)
 if not ok and result.code == "service_not_found" then
     -- 处理服务不存在的情况
 end
-```
-
-### 健康检查依赖
-
-服务可以声明健康检查依赖：
-
-```yaml
-actors:
-  - name: gateway
-    script: scripts/gateway.lua
-    health_check:
-      dependencies:
-        - service: player_manager
-          timeout: 5000
-        - service: database
-          timeout: 5000
-```
-
-健康检查时会检查依赖服务的状态。
-
-### ops 暴露
-
-```json
-{
-  "name": "gateway",
-  "depends_on": ["player_manager", "server_manager"],
-  "depended_by": [],
-  "startup_order": 5
-}
 ```
 
 ## 服务资源限制

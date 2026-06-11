@@ -38,7 +38,8 @@ export default defineConfig({
       {
         text: '架构',
         items: [
-          { text: '架构设计', link: '/architecture' },
+          { text: '最终架构总设计稿', link: '/architecture' },
+          { text: '官方可选模块契约', link: '/optional-modules' },
           { text: '核心设计理念', link: '/architecture-core-concepts' },
           { text: '运行时语义决策', link: '/runtime-semantics' },
           { text: 'Skynet 对比', link: '/skynet-comparison' },
@@ -48,6 +49,9 @@ export default defineConfig({
       {
         text: '运行时语义',
         items: [
+          { text: 'Lua API 契约', link: '/lua-api' },
+          { text: 'Lua API 测试用例', link: '/lua-api-tests' },
+          { text: '官方可选模块验收矩阵', link: '/optional-module-tests' },
           { text: '服务语义', link: '/runtime-service' },
           { text: '消息语义', link: '/runtime-messaging' },
           { text: '玩家生命周期', link: '/runtime-player' },
@@ -59,6 +63,7 @@ export default defineConfig({
           { text: '数据语义', link: '/runtime-data' },
           { text: '日志语义', link: '/runtime-log' },
           { text: '配置语义', link: '/runtime-config' },
+          { text: 'Starter 系统', link: '/starter-system' },
           { text: '启动流程', link: '/runtime-bootstrap' },
           { text: '错误码参考', link: '/runtime-errors' },
           { text: '运维语义', link: '/runtime-ops' },
@@ -79,6 +84,7 @@ export default defineConfig({
           { text: 'Schema Descriptor', link: '/schema-descriptor' },
           { text: 'Schema Mapper', link: '/schema-mapper' },
           { text: 'Schema Implementation', link: '/schema-implementation' },
+          { text: 'CMake 重构', link: '/cmake-refactor' },
         ],
       },
       {

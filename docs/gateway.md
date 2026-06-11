@@ -24,7 +24,7 @@ end
 function M.on_disconnect(session, reason)
 end
 
-function M.on_message(session, payload)
+function M.on_client_message(session, payload)
 end
 
 return M
@@ -36,7 +36,7 @@ return M
 client socket
   → net
   → optional transport
-  → Lua gateway service
+  → Lua gateway service (`on_client_message`)
   → shield.send / shield.call
   → Lua business service
 ```

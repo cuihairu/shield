@@ -10,7 +10,7 @@
 - CAF 是内部机制，不出现在 Lua API 和 public C++ API。
 - Lua 是默认业务语言，C++ 负责运行时和少量性能敏感扩展。
 - 本地、IPC、cluster 的消息语义必须尽量一致。
-- 第一版优先单节点稳定；`shield_cluster` 是官方可选模块和后续阶段，不进入 `shield_core`，但需要提前冻结地址、超时和错误语义。
+- 最小部署路径优先单节点稳定；`shield_cluster` 是官方可选模块，不进入 `shield_core`，但需要提前冻结地址、超时和错误语义。
 
 ## 语义文档索引
 
@@ -18,6 +18,10 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [Lua API 契约](lua-api.md) | `shield.*` 用户 API、service module 形态、旧 API 删除清单 |
+| [Lua API 测试用例](lua-api-tests.md) | API 测试矩阵，示例不替代测试 |
+| [官方可选模块契约](optional-modules.md) | cluster/global/player/server/ops 的边界、owner、依赖方向 |
+| [官方可选模块验收矩阵](optional-module-tests.md) | optional module 测试矩阵，防止反向污染 core |
 | [服务语义](runtime-service.md) | ServiceHandle、ServiceId、Service Registry、spawn、self、Lua service module、handler 上下文、exit |
 | [消息语义](runtime-messaging.md) | MessageEnvelope、MessagePayload、send、call、背压、QoS、超时、nested call、coroutine 调度、错误处理 |
 | [玩家生命周期](runtime-player.md) | PlayerSession、PlayerManager、认证、断线重连、离线消息缓存、多设备策略 |
@@ -29,6 +33,7 @@
 | [数据语义](runtime-data.md) | shield_data、连接池、DB/Redis API、事务、错误处理 |
 | [日志语义](runtime-log.md) | 日志级别、结构化格式、上下文注入、轮转、审计日志 |
 | [配置语义](runtime-config.md) | YAML 配置 schema（**权威来源**）、配置验证、环境差异 |
+| [Starter 系统](starter-system.md) | BootstrapContext、Starter 顺序、ScriptStarter、旧 DI/插件设计删除 |
 | [启动流程](runtime-bootstrap.md) | 启动顺序、关闭顺序、超时、信号处理、优雅重启 |
 | [错误码参考](runtime-errors.md) | 所有运行时错误码汇总：消息、服务、资源、数据库、Redis、网络 |
 | [运维语义](runtime-ops.md) | 可选 `shield_ops`：运维端点、metrics、健康检查 |
@@ -43,6 +48,7 @@
 ### M1. 基础类型与 target
 
 - 建立 `shield_base`。
+- 按 [CMake 重构策略](cmake-refactor.md) 拆分 target。
 - 定义 `Result<T>`、`Error`、`ByteBuffer`、`TimePoint`。
 - 定义 `ServiceId`、`NodeId`、`ServiceAddress`。
 - 增加 public header forbidden CAF 检查。
@@ -76,6 +82,7 @@
 - 实现 module table loader。
 - 实现 `on_init` / method dispatch / `on_exit`。
 - 实现 `shield.self`、`shield.sender`、`shield.names`。
+- 按 [Lua API 契约](lua-api.md) 删除 legacy API。
 - 增加 init failure rollback、method_not_found、handler_error 测试。
 
 ### M6. timer、sleep、fork

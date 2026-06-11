@@ -20,6 +20,22 @@ local ok, result = shield.redis.get("player:" .. uid)
 - 支持连接池。
 - 不做分布式事务。
 - 不跨 service 自动共享 transaction。
+- 未启用 database/redis 时返回 `false, module_unavailable`。
+
+当前最小契约只冻结以下 core 能力：
+
+- `shield.db.query`
+- `shield.db.query_one`
+- `shield.db.execute`
+- `shield.redis.get/set/del/exists`
+- `shield.redis.publish/subscribe`
+
+以下内容属于扩展设计或驱动相关能力，可以在文档中先行收敛语义，但不作为当前最小实现必达项，也不进入 `lua-api-tests.md` 的最小验收：
+
+- 事务
+- 预编译语句
+- Redis pipeline
+- Redis sentinel/cluster 配置
 
 ## 连接池配置
 

@@ -1,15 +1,39 @@
 # 配置设计
 
-本文描述重构后的目标配置模型。当前配置文件仍包含旧架构字段，不能视为稳定契约。
+本文只做配置分层说明，不再重复定义 schema。Shield 当前 **core runtime 配置** 的权威来源是 [配置运行时语义](runtime-config.md)。
 
-## 原则
+当前源码和历史配置里仍可能存在旧字段；这些字段不能视为当前重构契约。
 
-- YAML 只做声明式绑定，不承载业务逻辑。
-- 配置驱动 Lua 服务、C++ service、网络监听、数据源和日志。
-- 不在 core 中提供服务发现、插件、Prometheus、健康检查等配置。
-- 不通过配置引入 DI/IoC 或注解装配。
+## 配置分层
 
-## 最小结构
+### Core Schema
+
+core 只定义单节点 runtime 必需配置：
+
+- `app`
+- `log`
+- `lua`
+- `actors`
+- `database`
+- `redis`
+- `bootstrap`
+- `shutdown`
+
+字段级规则、校验、热更新边界和合并策略统一以 [runtime-config.md](runtime-config.md) 为准。
+
+### Optional Module Schema
+
+以下配置段不属于 core schema，由对应官方可选模块单独解释：
+
+- `cluster` -> [集群语义](runtime-cluster.md)
+- `global` -> [全局能力](runtime-global.md)
+- `ops` -> [运维与调试](runtime-ops.md)
+- `player` -> [玩家生命周期](runtime-player.md)
+- `server_manager` -> [服务器状态](runtime-server.md)
+
+core bootstrap 只负责把这些配置快照传给已启用模块，不在 core 中做字段解释和校验。
+
+## 最小示例
 
 ```yaml
 app:
@@ -22,6 +46,7 @@ log:
 actors:
   - name: gateway
     script: scripts/gateway.lua
+    instances: 1
     network:
       tcp: "0.0.0.0:8001"
 
@@ -30,46 +55,25 @@ actors:
     instances: 1
 
 database:
+  enabled: true
   driver: mysql
   host: localhost
   port: 3306
   database: game
   username: root
-  password: ""
-  pool_size: 5
+  password: ${DB_PASSWORD:}
 
 redis:
+  enabled: true
   host: localhost
   port: 6379
   db: 0
+  password: ${REDIS_PASSWORD:}
 ```
 
-## Actors
+## 已删除的旧方向
 
-`actors` 是核心配置。
-
-```yaml
-actors:
-  - name: player
-    script: scripts/player.lua
-    instances: 0
-```
-
-- `name`: 服务名。
-- `script`: Lua 脚本路径。
-- `instances`: 启动时创建的实例数量；`0` 表示动态创建。
-- `network`: 可选，仅网关类服务需要。
-- `transport`: 可选 C++ transport 名称。
-
-## Data
-
-`database` 和 `redis` 是原始访问能力，不代表 ORM 或 mapper 框架。
-
-高级数据访问、schema mapper、迁移系统都不属于当前 core 配置契约。
-
-## Deprecated For Core
-
-以下旧配置在当前重构 core 中不再作为目标：
+以下字段和方向不再进入当前 core 配置设计：
 
 - `discovery`
 - `metrics`
@@ -78,5 +82,6 @@ actors:
 - `middleware`
 - `conditions`
 - `annotations`
+- DI/IoC 装配配置
 
-如果后续需要保留，必须在非核心扩展文档中重新定义。
+如果未来确实需要，只能在非 core 扩展文档中重新定义，不能再反向塞回 `runtime-config.md`。

@@ -1,160 +1,113 @@
 # 配置运行时语义
 
-本文档是 Shield 配置 schema 的**权威来源**。其他专题文档（runtime-network、runtime-log 等）只描述各自领域的配置语义和行为，不重复完整 schema。需要查看完整配置结构时以本文档为准。
+本文档是 Shield **core runtime 配置 schema** 的权威来源。官方可选模块可以定义自己的配置段，但不能把配置项反向塞进 core schema。
+
+当前状态：设计阶段，源码配置仍包含旧字段。
 
 ## 配置原则
 
 - YAML 只做声明式绑定，不承载业务逻辑。
-- 配置驱动 Lua 服务、网络监听、数据源和日志。
-- 不在 core 中提供服务发现、插件、Prometheus、健康检查等配置。
-- `cluster`、`global`、`ops` 配置只在对应官方可选模块启用时生效，不属于 `shield_core` schema。
-- 不通过配置引入 DI/IoC 或注解装配。
+- core schema 只覆盖单节点 runtime 必需能力。
+- 配置驱动 Lua service、网络监听、data source、日志和 bootstrap timeout。
+- 不在 core 中提供服务发现、插件、Prometheus、健康检查、DI、注解或条件装配配置。
+- optional module 的配置由对应模块自己验证；未启用模块时 core 不解释这些配置。
 
-## 完整配置 Schema
+## Core Schema
 
 ```yaml
-# 应用信息
 app:
-  name: my_game              # 应用名称
-  version: "1.0.0"           # 版本号（可选）
+  name: my_game
+  version: "1.0.0"
 
-# Actor 服务配置
+log:
+  level: info                  # debug | info | warn | error
+  format: text                 # text | json
+  console: true
+  file:
+    enabled: false
+    path: logs/shield.log
+    max_size_mb: 100
+    max_files: 10
+    rotation: size             # size | daily | none
+
+lua:
+  vm:
+    mode: per_service          # per_service
+    max_vms: 10000
+    max_memory_mb: 64
+  sandbox:
+    allow_os: false
+    allow_io: false
+
 actors:
-  - name: gateway            # 服务名称（唯一）
-    script: scripts/gateway.lua  # Lua 脚本路径
-    instances: 1             # 启动实例数，0 表示动态创建
-    network:                 # 网络配置（仅 gateway 类服务需要）
-      tcp: "0.0.0.0:8001"   # TCP 监听地址
-      # udp: "0.0.0.0:8002" # UDP 监听地址（可选）
-      # kcp: "0.0.0.0:8003" # KCP 监听地址（可选）
-      # websocket: "0.0.0.0:8004"  # WebSocket 监听地址（可选）
-      kcp_options:           # KCP 专属配置（可选）
-        nodelay: 1
-        interval: 10
-        resend: 2
-        nc: 1
-    transport: MyTransport   # 自定义 C++ transport（可选）
-    options:                 # 服务自定义配置（可选）
+  - name: gateway
+    script: scripts/gateway.lua
+    instances: 1
+    required: true
+    network:
+      tcp: "0.0.0.0:8001"
+      # udp: "0.0.0.0:8002"
+      # kcp: "0.0.0.0:8003"
+      # websocket: "0.0.0.0:8004"
       max_connections: 10000
-    player:                  # 玩家配置（可选）
-      auth:
-        timeout: 10000       # 认证超时（ms）
-      reconnect:
-        enabled: true
-        window: 300000       # 重连窗口（ms）
-      offline_messages:
-        enabled: true
-        max_messages: 100
-        max_age: 3600000
-      max_online: 10000
+      max_frame_size: 65536
+    transport: default
+    options:
+      route_table: login_routes
+    restart:
+      policy: on-failure       # always | on-failure | never
+      max_retries: 5
+      initial_delay: 1000
+      max_delay: 30000
+      multiplier: 2
+    limits:
+      max_mailbox_size: 10000
+      max_coroutines: 1000
+      max_pending_calls: 1000
+      max_timers: 10000
 
   - name: player
     script: scripts/player.lua
-    instances: 0             # 动态创建
+    instances: 0               # dynamic only
 
-  - name: room
-    script: scripts/room.lua
-    instances: 1
-
-# 数据库配置
 database:
-  driver: mysql              # 数据库驱动：mysql | postgresql | sqlite
+  enabled: true
+  driver: mysql                # mysql | postgresql | sqlite
   host: localhost
   port: 3306
   database: game
   username: root
-  password: ""               # 生产环境建议使用环境变量
-  pool_size: 10              # 最小连接池大小
-  max_pool_size: 50          # 最大连接池大小
-  connect_timeout: 5000      # 连接超时（ms）
-  query_timeout: 30000       # 查询超时（ms）
-  idle_timeout: 300000       # 空闲连接超时（ms）
-  max_lifetime: 3600000      # 连接最大生命周期（ms）
-  options:                   # 驱动专属配置（可选）
+  password: ${DB_PASSWORD:}
+  pool_size: 10
+  max_pool_size: 50
+  connect_timeout: 5000
+  query_timeout: 30000
+  idle_timeout: 300000
+  max_lifetime: 3600000
+  options:
     charset: utf8mb4
 
-# Redis 配置
 redis:
+  enabled: true
   host: localhost
   port: 6379
   db: 0
-  password: ""               # 生产环境建议使用环境变量
+  password: ${REDIS_PASSWORD:}
   pool_size: 10
   max_pool_size: 50
   connect_timeout: 5000
   command_timeout: 5000
   idle_timeout: 300000
 
-# 日志配置
-log:
-  level: info                # 日志级别：debug | info | warn | error
-  format: json               # json | text
-  console: true              # 输出到控制台
-  file:
-    enabled: true
-    path: "logs/shield.log"
-    max_size: 100            # 单个文件最大 MB
-    max_files: 10            # 最大保留文件数
-    rotation: daily          # daily | size | none
-    compress: true           # 轮转后压缩
-  # 服务级别覆盖
-  services:
-    gateway:
-      level: debug
-    payment:
-      level: warn
-
-# 集群配置（可选）
-cluster:
-  enabled: false              # 是否启用 shield_cluster
-  node_id: "node-1"          # 节点 ID（唯一）
-  listen: "0.0.0.0:9000"    # 集群通信端口
-  heartbeat_interval: 2000   # 心跳间隔（ms）
-
-  # 节点发现方式（三选一）
-  # 方式 1：静态配置（默认，零依赖）
-  peers:
-    - "node-2:9000"
-    - "node-3:9000"
-
-  # 方式 2：局域网广播发现（零依赖）
-  # discovery:
-  #   type: broadcast
-  #   broadcast_port: 9001
-  #   interval: 5000
-
-  # 方式 3：Redis 服务发现（推荐小型游戏）
-  # discovery:
-  #   type: redis
-  #   redis:
-  #     host: "localhost"
-  #     port: 6379
-  #     prefix: "shield:nodes"
-  #     ttl: 10
-
-  # 方式 4：外部服务发现（大型部署）
-  # discovery:
-  #   type: kubernetes    # 或 etcd / consul
-  #   namespace: "game"
-  #   service_name: "shield-cluster"
-
-# 运维配置（可选）
-ops:
-  enabled: false             # 是否启用 shield_ops
-  bind: "127.0.0.1:9090"   # 运维端点绑定地址
-  metrics: true              # 是否启用 metrics
-  health: true               # 是否启用健康检查
-  profile: false             # 是否启用 profile（生产环境默认关闭）
-  console: false             # 是否启用交互式控制台（生产环境默认关闭）
-
-# 启动配置（可选）
 bootstrap:
   timeout:
-    config_load: 5000        # 配置加载超时（ms）
-    data_init: 30000         # 数据层初始化超时（ms）
-    network_init: 10000      # 网络层初始化超时（ms）
-    cluster_init: 30000      # 集群层初始化超时（ms）
-    service_spawn: 60000     # 服务启动超时（ms）
+    config_load: 5000
+    log_init: 5000
+    core_init: 10000
+    data_init: 30000
+    net_init: 10000
+    script_init: 10000
+    service_spawn: 60000
   retry:
     database:
       max_retries: 3
@@ -163,107 +116,136 @@ bootstrap:
       max_retries: 3
       delay: 5000
 
-# 关闭配置（可选）
 shutdown:
   timeout:
-    service_drain: 30000     # 服务 draining 超时（ms）
-    service_stop: 10000      # 单个服务停止超时（ms）
-    data_close: 10000        # 数据层关闭超时（ms）
-    total: 60000             # 总关闭超时（ms）
+    service_drain: 30000
+    service_stop: 10000
+    data_close: 10000
+    total: 60000
 ```
 
-## 配置验证
+## Actor 配置
 
-配置加载时进行验证：
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `name` | 是 | actor 类型和默认 service name 前缀 |
+| `script` | 是 | Lua module 文件 |
+| `instances` | 否 | 启动实例数；`0` 表示只允许动态 spawn |
+| `required` | 否 | 启动失败是否导致 runtime 启动失败，默认 true |
+| `network` | 否 | gateway 类 service 的 listener 配置 |
+| `transport` | 否 | C++ transport 名称 |
+| `options` | 否 | 传给 `on_init(args).config` 的业务配置 |
+| `restart` | 否 | 服务异常退出后的重启策略 |
+| `limits` | 否 | 单 service 资源限制 |
 
-| 验证项 | 规则 |
-|--------|------|
-| app.name | 必填，1-64 字符 |
-| actors | 至少一个 actor |
-| actors[].name | 必填，全局唯一 |
-| actors[].script | 必填，文件必须存在 |
-| actors[].instances | >= 0 |
-| actors[].restart.policy | always / on-failure / never |
-| database.port | 1-65535 |
-| database.pool_size | >= 1 |
-| database.max_pool_size | >= pool_size |
-| redis.port | 1-65535 |
-| redis.pool_size | >= 1 |
-| redis.max_pool_size | >= pool_size |
-| log.level | debug / info / warn / error |
-| cluster.node_id | 必填（启用集群时） |
+`actors[].network` 只声明该 service 是 gateway service。网络回调仍由 Lua module 上的 `on_connect`、`on_disconnect`、`on_client_message` 实现。
 
-验证失败时拒绝启动，输出明确的错误信息。
+## Data 配置
 
-## 配置热更新
+`database.enabled=false` 或缺省 database 段时：
 
-配置热更新分为两种方式：
+- `shield.db.*` 返回 `false, module_unavailable`。
+- runtime 不创建 DB 连接池。
 
-### 1. 本地配置热更新
+`redis.enabled=false` 或缺省 redis 段时：
 
-通过文件监听实现，支持有限配置项：
+- `shield.redis.*` 返回 `false, module_unavailable`。
+- runtime 不创建 Redis 连接池。
 
-| 配置项 | 热更新 | 说明 |
-|--------|--------|------|
-| log.level | ✅ | 立即生效 |
-| ops.metrics | ✅ | 立即生效 |
-| database.pool_size | ⚠️ | 需要重启连接池 |
-| actors[].instances | ⚠️ | 需要 spawn/stop 服务 |
-| actors[].script | ❌ | 需要重启服务 |
-| cluster.node_id | ❌ | 不允许变更 |
+`shield_data` 只提供原始访问能力，不配置 ORM、mapper、migration 或跨服务事务。
 
-### 2. 全局配置热更新
+## 验证规则
 
-通过 `shield.global()` 推送配置，所有进程实时生效：
+| 字段 | 规则 |
+| --- | --- |
+| `app.name` | 必填，1-64 字符 |
+| `log.level` | `debug`、`info`、`warn`、`error` |
+| `lua.vm.mode` | 当前只允许 `per_service` |
+| `actors` | 至少一个 actor |
+| `actors[].name` | 必填，本配置内唯一 |
+| `actors[].script` | 必填，文件必须存在 |
+| `actors[].instances` | `>= 0` |
+| `actors[].restart.policy` | `always`、`on-failure`、`never` |
+| `actors[].network.*` | 监听地址必须是 `host:port` |
+| `database.port` | 1-65535 |
+| `database.pool_size` | `>= 1`，且 `<= max_pool_size` |
+| `redis.port` | 1-65535 |
+| `redis.pool_size` | `>= 1`，且 `<= max_pool_size` |
+| `shutdown.timeout.total` | 必须大于各分段 timeout |
 
-```lua
--- 运维推送配置更新
-local g = shield.global()
-g:set("config.hotfix", {
-    drop_rate = 2.0,
-    exp_bonus = 1.5,
-}, 3600000)
+验证失败时拒绝启动，输出字段路径和原因。
 
--- 业务服务读取热更新配置
-function M.get_drop_rate()
-    local hotfix = g:get("config.hotfix")
-    if hotfix and hotfix.drop_rate then
-        return hotfix.drop_rate
-    end
-    return config.default_drop_rate
-end
-```
+## 环境变量展开
 
-详见 [全局数据](runtime-global.md) 文档。
-
-## 环境差异
-
-通过环境变量覆盖配置：
+支持 `${VAR}` 和 `${VAR:default}`：
 
 ```yaml
 database:
-  host: ${DB_HOST:localhost}      # 环境变量，默认值
-  port: ${DB_PORT:3306}
-  password: ${DB_PASSWORD}
+  host: ${DB_HOST:localhost}
+  password: ${DB_PASSWORD:}
 ```
 
-或使用多配置文件：
+规则：
+
+- 未设置且无 default 时，值为空字符串。
+- 环境变量展开发生在 schema 验证前。
+- 敏感字段不应在日志中输出明文。
+
+## 多配置文件合并
+
+启动可以指定多个配置文件：
 
 ```bash
-# 启动时指定配置文件
-./server --config config/app.yaml --config config/production.yaml
+shield --config config/app.yaml --config config/production.yaml
 ```
 
-## 敏感配置
+合并规则：
 
-生产环境敏感配置建议：
+- 后面的文件覆盖前面的 scalar 和 map 字段。
+- `actors` 按 `name` 合并；同名 actor 后者覆盖字段。
+- 不允许两个文件定义同名 actor 且 script 不同，除非后者显式设置 `override: true`。
 
-- 使用环境变量
-- 使用密钥管理服务（Vault、AWS Secrets Manager）
-- 配置文件不提交到版本控制
+## 热更新
 
-```yaml
-# .gitignore
-config/production.yaml
-config/secrets.yaml
-```
+core 只承诺有限热更新：
+
+| 配置项 | 热更新 | 行为 |
+| --- | --- | --- |
+| `log.level` | 是 | 立即生效 |
+| `log.console` | 是 | 重建 log sink |
+| `database.pool_size` | 有条件 | data module 自行 resize |
+| `redis.pool_size` | 有条件 | data module 自行 resize |
+| `actors[].instances` | 有条件 | 通过 service spawn/stop 实现 |
+| `actors[].script` | 否 | 需要 service 重启或未来 hot reload 机制 |
+| `actors[].network` | 否 | 需要 listener 重建 |
+
+全局配置推送、运维热更新、cluster-wide 配置同步属于 `shield_global` 或 `shield_ops` 后续设计，不进入 core schema。
+
+## Optional Module Schema
+
+以下配置段不属于 core schema：
+
+| 配置段 | 所属模块 | 文档 |
+| --- | --- | --- |
+| `cluster` | `shield_cluster` | [集群语义](runtime-cluster.md) |
+| `global` | `shield_global` | [全局数据](runtime-global.md) |
+| `ops` | `shield_ops` | [运维语义](runtime-ops.md) |
+| `player` | `shield_player` | [玩家生命周期](runtime-player.md) |
+| `server_manager` | `shield_server` | [服务器状态](runtime-server.md) |
+
+optional module 启用后，由该模块读取并验证自己的配置段。core bootstrap 只负责把未消费的 optional 配置快照传给已启用模块。
+
+## 删除的旧配置
+
+以下旧配置直接删除，不保留兼容：
+
+- `plugins`
+- `middleware`
+- `discovery`
+- `metrics`
+- `health`
+- `conditions`
+- `annotations`
+- `di`
+- `ioc`
+- `event_bus`

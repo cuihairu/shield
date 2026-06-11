@@ -22,7 +22,7 @@ Shield 的 core 目标是单节点优先运行时。core 不负责：
 - 自定义 Redis / Etcd 注册。
 - 独立网关或 sidecar。
 
-这些方案不进入 core 和第一阶段最小启动主路径。
+这些方案不进入 core 和最小启动主路径。
 
 ## shield_cluster
 

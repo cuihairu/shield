@@ -2,6 +2,17 @@
 
 本文档包含 Shield 玩家生命周期管理、断线重连、离线消息缓存相关的运行时语义决策。
 
+`shield_player` 是官方可选模块，不属于 `shield_core`，也不是当前 Lua API 最小契约。本文用于冻结未来边界，避免把玩家管理反向塞进 core。
+
+当前状态：
+
+- 本文 API 仍是 optional module 设计稿。
+- `shield.player.*`、`PlayerSession`、重连窗口和离线消息缓存都不属于当前最小单节点 runtime。
+- `SessionHandle` 仍只留在 gateway / `shield_net` 内部；`shield_player` 的公开语义只暴露 `session_id` 和 `PlayerSession`，不把 `SessionHandle` 作为跨 service 对象传递。
+- 即使启用 `shield_player`，普通 Lua service 仍保持 module-table + named method 语义；本模块不恢复 legacy `on_message(src, type, data)` 统一入口。
+- optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
+- 如与 [Lua API 契约](lua-api.md) 冲突，以 `lua-api.md` 为当前最小契约。
+
 ## 设计原则
 
 - 玩家生命周期与连接生命周期分离。
@@ -58,9 +69,9 @@ function M.on_init(args) end
 function M.on_exit(reason) end
 
 -- 以下为 Player 特有的生命周期钩子
-function M.on_auth(session, auth_data) end
+function M.on_auth(session_id, auth_data) end
 function M.on_login(player) end
-function M.on_message(player, msg_type, payload) end
+function M.on_client_message(player, payload) end
 function M.on_disconnect(player, reason) end
 function M.on_reconnect(player) end
 function M.on_logout(player, reason) end
@@ -130,7 +141,7 @@ return M
 local M = {}
 
 -- 玩家认证（连接后第一个钩子）
-function M.on_auth(session, auth_data)
+function M.on_auth(session_id, auth_data)
     -- auth_data: 客户端发送的认证信息（token、uid 等）
     -- 返回: true, player_data 或 false, error_reason
 
@@ -160,11 +171,11 @@ function M.on_login(player)
 end
 
 -- 玩家消息处理
-function M.on_message(player, msg_type, payload)
-    -- 业务消息路由
-    if msg_type == "move" then
+function M.on_client_message(player, payload)
+    -- payload 为协议层解码后的应用消息；示例中用 table 表示
+    if payload.kind == "move" then
         handle_move(player, payload)
-    elseif msg_type == "chat" then
+    elseif payload.kind == "chat" then
         handle_chat(player, payload)
     end
 end
@@ -212,7 +223,7 @@ return M
 |------|----------|------|------|
 | `on_auth` | 连接建立后 | 是 | 否 |
 | `on_login` | 认证成功后 | 是 | 否 |
-| `on_message` | 收到业务消息 | 是 | 否 |
+| `on_client_message` | 收到客户端业务 payload | 是 | 否 |
 | `on_disconnect` | 连接断开 | 否 | 否 |
 | `on_reconnect` | 重连成功 | 是 | 是 |
 | `on_logout` | 玩家离线 | 否 | 否 |
@@ -261,9 +272,9 @@ player:set_data(data)   -- 设置玩家数据
 player:get(key)         -- 获取单个字段
 player:set(key, value)  -- 设置单个字段
 
--- 消息发送
-player:send(msg_type, payload)  -- 发送消息
-player:send_batch(messages)     -- 批量发送
+-- 网络发送（不暴露 SessionHandle）
+player:send(payload)            -- 发送单条 payload
+player:send_batch(payloads)     -- 批量发送
 
 -- 会话控制
 player:kick(reason)     -- 踢下线
@@ -379,7 +390,8 @@ player:
 
 ```lua
 -- 发送消息给离线玩家
-shield.player.send(uid, "mail", {
+shield.player.send(uid, {
+    kind = "mail",
     from = "system",
     title = "Welcome back!",
     content = "You have been away for 3 hours.",
@@ -389,8 +401,10 @@ shield.player.send(uid, "mail", {
 -- 消息结构
 {
     id = "msg_12345",
-    type = "mail",
-    payload = { ... },
+    payload = {
+        kind = "mail",
+        content = "Welcome back!",
+    },
     created_at = 1234567890,
     expires_at = 1234571490,
     delivered = false,
@@ -404,7 +418,8 @@ shield.player.send(uid, "mail", {
 function M.on_reconnect(player)
     local messages = player:get_offline_messages()
     if #messages > 0 then
-        player:send("offline_messages", {
+        player:send({
+            kind = "offline_messages",
             count = #messages,
             messages = messages,
         })
@@ -417,13 +432,19 @@ end
 
 ```lua
 -- 高优先级消息（如系统通知、紧急邮件）
-shield.player.send(uid, "system_alert", data, {
+shield.player.send(uid, {
+    kind = "system_alert",
+    data = data,
+}, {
     priority = "high",
     persist = true,  -- 即使超过最大数量也保留
 })
 
 -- 低优先级消息（如世界聊天）
-shield.player.send(uid, "world_chat", data, {
+shield.player.send(uid, {
+    kind = "world_chat",
+    data = data,
+}, {
     priority = "low",
     max_age = 300000,  -- 5 分钟过期
 })
@@ -480,7 +501,7 @@ player:
 
 ```lua
 -- 单设备登录实现
-function M.on_auth(session, auth_data)
+function M.on_auth(session_id, auth_data)
     local uid = auth_data.uid
     local existing = shield.player.get(uid)
 
@@ -509,15 +530,15 @@ end
 │                     gateway 服务                         │
 │  ┌────────────────────────────────────────────────────┐ │
 │  │  连接管理                                            │ │
-│  │  on_connect → 认证 → 绑定 PlayerSession             │ │
-│  │  on_message → 路由到 PlayerSession                  │ │
+│  │  on_connect → 认证 → 绑定 session_id                │ │
+│  │  on_client_message → 路由到 PlayerSession           │ │
 │  │  on_disconnect → 触发断线处理                        │ │
 │  └────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────┤
 │                   player_manager 服务                    │
 │  ┌────────────────────────────────────────────────────┐ │
 │  │  玩家生命周期                                        │ │
-│  │  on_auth → on_login → on_message → on_logout       │ │
+│  │  on_auth → on_login → on_client_message → on_logout│ │
 │  │                   ↓                                 │ │
 │  │              on_disconnect → on_reconnect           │ │
 │  └────────────────────────────────────────────────────┘ │
@@ -529,6 +550,12 @@ end
 │  └────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
 ```
+
+约束：
+
+- `SessionHandle` 只保留在 gateway / 网络层内部映射中。
+- `player_manager`、业务 service 和离线消息队列都只通过 `session_id` 或 `PlayerSession` 协作。
+- 跨 service payload 不传 `SessionHandle`。
 
 ## ops 暴露
 
@@ -581,7 +608,7 @@ PlayerManager 是全局单例 Service，负责管理所有在线玩家。
 │  │  - register(player) / unregister(uid)              │ │
 │  │  - get(uid) / query(filter)                        │ │
 │  │  - count() / online_list()                         │ │
-│  │  - kick(uid, reason) / broadcast(msg)              │ │
+│  │  - kick(uid, reason) / broadcast(payload)          │ │
 │  └────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────┤
 │  Player 1 (Service) │ Player 2 (Service) │ ...         │
@@ -607,13 +634,13 @@ local stats = pm:stats()
 local ok, err = pm:kick(uid, "maintenance")
 
 -- 广播
-pm:broadcast("system_notice", { text = "Server maintenance in 5 minutes" })
-pm:broadcast_to(filter, "system_notice", { text = "VIP bonus!" })
+pm:broadcast({ kind = "system_notice", text = "Server maintenance in 5 minutes" })
+pm:broadcast_to(filter, { kind = "system_notice", text = "VIP bonus!" })
 
 -- 遍历
 pm:for_each(function(player)
     if player.level >= 100 then
-        player:send("achievement", { type = "level_100" })
+        player:send({ kind = "achievement", type = "level_100" })
     end
 end)
 ```
