@@ -232,7 +232,7 @@ target_link_libraries(shield_log
 # shield_config - YAML loading and schema validation
 # -----------------------------------------------------------------------------
 add_library(shield_config STATIC
-    src/config_new/config.cpp
+    src/config/config.cpp
 )
 
 target_include_directories(shield_config
@@ -251,10 +251,10 @@ target_link_libraries(shield_config
 # DEPENDENCY CHECK: Must NOT link Lua, Asio/Beast, DB/Redis, log implementation
 # -----------------------------------------------------------------------------
 add_library(shield_core STATIC
-    src/core_new/service_handle.cpp
-    src/core_new/service_registry.cpp
-    src/core_new/message.cpp
-    src/core_new/caf_adapter.cpp
+    src/core/service_handle.cpp
+    src/core/service_registry.cpp
+    src/core/message.cpp
+    src/core/caf_adapter.cpp
 )
 
 target_include_directories(shield_core
@@ -280,7 +280,7 @@ endif()
 # shield_data - Raw DB/Redis access
 # -----------------------------------------------------------------------------
 add_library(shield_data STATIC
-    src/data_new/data.cpp
+    src/data/data.cpp
 )
 
 target_include_directories(shield_data
@@ -318,8 +318,8 @@ target_link_libraries(shield_transport
 # shield_net - Listener, session, connection management
 # -----------------------------------------------------------------------------
 add_library(shield_net STATIC
-    src/net_new/session.cpp
-    src/net_new/listener.cpp
+    src/net/session.cpp
+    src/net/listener.cpp
 )
 
 target_include_directories(shield_net

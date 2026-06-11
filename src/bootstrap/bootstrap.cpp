@@ -3,9 +3,9 @@
 #include "shield/bootstrap/starter.hpp"
 
 #include "shield/base/error.hpp"
-#include "shield/log_new/logger.hpp"
-#include "shield/config_new/config.hpp"
-#include "shield/core_new/caf_adapter.hpp"
+#include "shield/log/logger.hpp"
+#include "shield/config/config.hpp"
+#include "shield/core/caf_adapter.hpp"
 
 #include <caf/actor_system.hpp>
 #include <caf/io/all.hpp>

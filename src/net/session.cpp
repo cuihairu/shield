@@ -1,85 +1,102 @@
-#include "shield/net/session.hpp"
+// [SHIELD_NET] Session implementation
+#include "shield/net_new/session.hpp"
 
-#include "shield/log/logger.hpp"
+#include "shield/log_new/logger.hpp"
+#include "shield/transport/frame.hpp"
+
+#include <boost/asio/buffer.hpp>
+#include <boost/asio/read.hpp>
+#include <boost/asio/write.hpp>
+
+#include <shared_mutex>
+#include <unordered_map>
 
 namespace shield::net {
 
-std::atomic<uint64_t> Session::s_next_id(1);
+// Forward declaration
+std::atomic<SessionId> TcpListener::g_next_session_id{1};
 
-Session::Session(boost::asio::ip::tcp::socket socket)
-    : m_socket(std::move(socket)), m_id(s_next_id++) {}
+TcpSession::TcpSession(SessionId id,
+                       boost::asio::ip::tcp::socket socket,
+                       SessionCallbacks callbacks)
+    : id_(id),
+      socket_(std::move(socket)),
+      callbacks_(std::move(callbacks)) {
 
-void Session::start() {
-    SHIELD_LOG_INFO << "Session " << m_id << " started for "
-                    << m_socket.remote_endpoint();
-    do_read();
+    auto endpoint = socket_.remote_endpoint();
+    remote_addr_.ip = endpoint.address().to_string();
+    remote_addr_.port = endpoint.port();
 }
 
-void Session::close() {
+void TcpSession::start() {
+    if (callbacks_.on_connect) {
+        callbacks_.on_connect(shared_from_this());
+    }
+    do_receive();
+}
+
+bool TcpSession::send(const std::vector<uint8_t>& data) {
+    if (!alive_) return false;
+
     boost::system::error_code ec;
-    m_socket.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
-    m_socket.close(ec);
-    if (m_close_callback) {
-        m_close_callback();
+    boost::asio::write(socket_, boost::asio::buffer(data), ec);
+
+    if (ec) {
+        handle_error("send error: " + ec.message());
+        return false;
+    }
+
+    return true;
+}
+
+void TcpSession::close(std::string reason) {
+    if (!alive_) return;
+
+    alive_ = false;
+    boost::system::error_code ec;
+    socket_.close(ec);
+
+    if (callbacks_.on_disconnect) {
+        callbacks_.on_disconnect(shared_from_this(), reason);
     }
 }
 
-void Session::send(const char *data, size_t length) {
-    auto self(shared_from_this());
-    auto buffer = std::vector<char>(data, data + length);
+void TcpSession::do_receive() {
+    if (!alive_) return;
 
-    boost::asio::post(m_socket.get_executor(),
-                      [this, self, buf = std::move(buffer)]() mutable {
-                          m_write_queue.push_back(std::move(buf));
-                          if (!m_writing) {
-                              do_write();
-                          }
-                      });
-}
+    // Read into buffer (resize to max frame size)
+    receive_buffer_.resize(64 * 1024);
 
-void Session::do_read() {
-    auto self(shared_from_this());
-    m_socket.async_read_some(
-        boost::asio::buffer(m_read_buffer, max_length),
-        [this, self](boost::system::error_code ec, std::size_t length) {
-            if (!ec) {
-                if (m_read_callback) {
-                    m_read_callback(m_read_buffer, length);
-                }
-                do_read();
-            } else {
-                if (ec != boost::asio::error::eof) {
-                    SHIELD_LOG_ERROR << "Session " << m_id
-                                     << " read error: " << ec.message();
-                }
-                close();
-            }
-        });
-}
-
-void Session::do_write() {
-    if (m_write_queue.empty()) {
-        m_writing = false;
-        return;
-    }
-
-    m_writing = true;
-    auto self(shared_from_this());
-    auto &buf = m_write_queue.front();
-
-    boost::asio::async_write(
-        m_socket, boost::asio::buffer(buf.data(), buf.size()),
-        [this, self](boost::system::error_code ec, std::size_t /*length*/) {
+    socket_.async_read_some(
+        boost::asio::buffer(receive_buffer_),
+        [this, self = shared_from_this()](auto ec, auto bytes_read) {
             if (ec) {
-                SHIELD_LOG_ERROR << "Session " << m_id
-                                 << " write error: " << ec.message();
-                m_writing = false;
-                close();
+                handle_error("receive error: " + ec.message());
                 return;
             }
-            m_write_queue.pop_front();
-            do_write();
-        });
+
+            receive_buffer_.resize(bytes_read);
+
+            // Process through frame decoder
+            auto frames = frame_decoder_.feed(receive_buffer_.data(),
+                                             receive_buffer_.size());
+
+            for (const auto& frame : frames) {
+                if (callbacks_.on_message) {
+                    callbacks_.on_message(shared_from_this(), frame.payload());
+                }
+            }
+
+            // Continue receiving
+            do_receive();
+        }
+    );
+}
+
+void TcpSession::handle_error(std::string reason) {
+    auto& log = shield::log::get_logger("net");
+    SHIELD_LOG_ERROR(log, "Session " + std::to_string(id_) + " error: " + reason);
+    close(reason);
 }
 
 }  // namespace shield::net

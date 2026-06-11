@@ -1,7 +1,7 @@
 // [SHIELD_BOOTSTRAP] Starter implementation
 #include "shield/bootstrap/starter.hpp"
 
-#include "shield/log_new/logger.hpp"
+#include "shield/log/logger.hpp"
 
 #include <algorithm>
 #include <vector>

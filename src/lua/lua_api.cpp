@@ -5,11 +5,11 @@
 #include "shield/base/error.hpp"
 #include "shield/base/id.hpp"
 #include "shield/base/time.hpp"
-#include "shield/log_new/logger.hpp"
-#include "shield/config_new/config.hpp"
-#include "shield/data_new/data.hpp"
-#include "shield/core_new/service_registry.hpp"
-#include "shield/core_new/caf_adapter.hpp"
+#include "shield/log/logger.hpp"
+#include "shield/config/config.hpp"
+#include "shield/data/data.hpp"
+#include "shield/core/service_registry.hpp"
+#include "shield/core/caf_adapter.hpp"
 #include "shield/bootstrap/bootstrap.hpp"
 
 #include <sol/sol.hpp>

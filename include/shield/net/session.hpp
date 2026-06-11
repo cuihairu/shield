@@ -1,50 +1,119 @@
-// [CORE]
+// [SHIELD_NET] Session types
 #pragma once
 
-#include <atomic>
-#include <boost/asio.hpp>
-#include <deque>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
-namespace shield::net {
+#include "shield/transport/frame.hpp"
 
-class Session : public std::enable_shared_from_this<Session> {
+// Forward declarations
+namespace boost::asio {
+class io_context;
+namespace ip {
+class tcp;
+}
+}
+
+/// @brief Session ID
+using SessionId = uint64_t;
+
+/// @brief Remote address
+struct RemoteAddress {
+    std::string ip;
+    uint16_t port;
+
+    std::string to_string() const {
+        return ip + ":" + std::to_string(port);
+    }
+};
+
+/// @brief Session close reasons
+namespace CloseReason {
+    constexpr const char* NORMAL = "normal";
+    constexpr const char* TIMEOUT = "timeout";
+    constexpr const char* ERROR = "error";
+    constexpr const char* KICKED = "kicked";
+    constexpr const char* SHUTDOWN = "shutdown";
+}
+
+/// @brief Session interface
+class Session {
 public:
-    using ReadCallback = std::function<void(const char *, size_t)>;
-    using CloseCallback = std::function<void()>;
+    virtual ~Session() = default;
 
-    explicit Session(boost::asio::ip::tcp::socket socket);
+    /// @brief Get session ID
+    virtual SessionId id() const = 0;
 
+    /// @brief Get remote address
+    virtual RemoteAddress remote_addr() const = 0;
+
+    /// @brief Send data to client
+    virtual bool send(const std::vector<uint8_t>& data) = 0;
+
+    /// @brief Close session
+    virtual void close(std::string reason) = 0;
+
+    /// @brief Check if session is alive
+    virtual bool is_alive() const = 0;
+
+    /// @brief Set user data
+    virtual void set_user_data(std::string key, std::string value) = 0;
+
+    /// @brief Get user data
+    virtual std::string get_user_data(std::string_view key) const = 0;
+};
+
+/// @brief Session callbacks
+struct SessionCallbacks {
+    std::function<void(std::shared_ptr<Session>)> on_connect;
+    std::function<void(std::shared_ptr<Session>, std::string_view)> on_disconnect;
+    std::function<void(std::shared_ptr<Session>, const std::vector<uint8_t>&)> on_message;
+};
+
+/// @brief TCP Session
+class TcpSession : public Session, public std::enable_shared_from_this<TcpSession> {
+public:
+    TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
+              SessionCallbacks callbacks);
+
+    SessionId id() const override { return id_; }
+    RemoteAddress remote_addr() const override { return remote_addr_; }
+
+    bool send(const std::vector<uint8_t>& data) override;
+    void close(std::string reason) override;
+    bool is_alive() const override { return alive_; }
+
+    void set_user_data(std::string key, std::string value) override {
+        user_data_[std::move(key)] = std::move(value);
+    }
+
+    std::string get_user_data(std::string_view key) const override {
+        auto it = user_data_.find(std::string(key));
+        return it != user_data_.end() ? it->second : "";
+    }
+
+    /// @brief Start receiving
     void start();
-    void close();
-
-    void on_read(ReadCallback callback) {
-        m_read_callback = std::move(callback);
-    }
-    void on_close(CloseCallback callback) {
-        m_close_callback = std::move(callback);
-    }
-
-    uint64_t id() const { return m_id; }
-
-    void send(const char *data, size_t length);
 
 private:
-    void do_read();
-    void do_write();
+    void do_receive();
+    void handle_error(std::string reason);
 
-    boost::asio::ip::tcp::socket m_socket;
-    enum { max_length = 8192 };
-    char m_read_buffer[max_length];
-    std::deque<std::vector<char>> m_write_queue;
-    bool m_writing = false;
+    SessionId id_;
+    boost::asio::ip::tcp::socket socket_;
+    RemoteAddress remote_addr_;
+    SessionCallbacks callbacks_;
+    bool alive_ = true;
 
-    ReadCallback m_read_callback;
-    CloseCallback m_close_callback;
-
-    uint64_t m_id;
-    static std::atomic<uint64_t> s_next_id;
+    std::unordered_map<std::string, std::string> user_data_;
+    std::vector<uint8_t> receive_buffer_;
+    shield::transport::FrameDecoder frame_decoder_;
 };
 
 }  // namespace shield::net
