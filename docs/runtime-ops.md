@@ -4,7 +4,7 @@
 
 ## shield_ops 默认策略
 
-`shield_ops` 不属于 core，但作为官方模块保留。
+`shield_ops` 不属于 core，但作为官方可选模块保留。
 
 默认策略：
 

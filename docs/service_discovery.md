@@ -1,10 +1,10 @@
 # 服务发现
 
-服务发现不属于当前重构后的 Shield core。
+服务发现不属于当前重构后的 `shield_core`。多节点场景由 `shield_cluster` 官方可选模块承接。
 
 ## 决策
 
-Shield 的新目标是单节点运行时。core 不负责：
+Shield 的 core 目标是单节点优先运行时。core 不负责：
 
 - 节点注册。
 - 服务发现后端。
@@ -13,20 +13,20 @@ Shield 的新目标是单节点运行时。core 不负责：
 
 `shield_core` 只维护本地 `ServiceRegistry`。服务名是本地 alias，不是全局服务发现记录。
 
-## 替代方案
+## 模块归属
 
-需要多节点时，用户可以在业务层或外部基础设施中实现：
+需要多节点时，优先归入 `shield_cluster`。在该模块稳定前，用户仍可以在业务层或外部基础设施中实现：
 
 - 静态配置。
 - Kubernetes Service。
 - 自定义 Redis / Etcd 注册。
 - 独立网关或 sidecar。
 
-这些方案不进入当前 core 文档和启动主路径。
+这些方案不进入 core 和第一阶段最小启动主路径。
 
-## 未来 shield_cluster
+## shield_cluster
 
-如果后续实现多进程或多机器能力，应作为独立模块：
+多进程或多机器能力应作为独立模块：
 
 | 模块 | 范围 |
 | --- | --- |

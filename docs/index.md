@@ -3,7 +3,7 @@ home: true
 title: Shield
 titleTemplate: false
 heroText: Shield
-tagline: Skynet 启发的、Actor 模型的、Lua 优先的单节点游戏服务器运行时
+tagline: Skynet 启发的、Actor 模型的、Lua 优先的单节点优先游戏服务器运行时
 actions:
   - text: 架构设计
     link: /architecture.html
@@ -15,8 +15,8 @@ actions:
     link: /api.html
     type: secondary
 features:
-  - title: 单节点运行时
-    details: 当前重构目标聚焦单进程/单节点游戏服务，不内置分布式编排。
+  - title: 单节点优先
+    details: 第一阶段聚焦单进程/单节点游戏服务；集群能力作为官方可选模块推进。
   - title: Lua 优先
     details: 游戏逻辑通过 Lua 服务编写，C++ 只承载运行时基础设施。
   - title: Skynet 风格语义
@@ -26,7 +26,7 @@ features:
   - title: 小核心
     details: shield_core 只封装服务、消息、timer 和 coroutine 语义，其他能力由官方模块组合。
   - title: 设计阶段
-    details: 文档描述重构目标；旧实现中的 discovery、metrics、plugin、DI 等不再视为核心。
+    details: 文档描述重构目标；旧实现中的 discovery、metrics、plugin、DI 等不再视为 core。
   - title: 运维分层
     details: shield_ops 独立承载 metrics、health、console、profile，与 shield_core 解耦。
 footer: Apache License 2.0 | Refactor design stage

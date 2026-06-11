@@ -6,8 +6,9 @@
 
 - 先读 `docs/architecture.md`。
 - 不把旧模块继续视为 core 事实。
-- 新代码应围绕 `actor`、`net`、`transport`、`script`、`timer`、`data`、`config`、`log`。
-- 不新增 DI/IoC、插件、服务发现、Prometheus、健康检查、中间件链依赖。
+- 第一阶段新代码应围绕 `actor`、`net`、`transport`、`script`、`timer`、`data`、`config`、`log`。
+- 不在 `shield_core` 或第一阶段主路径新增 DI/IoC、插件、服务发现、Prometheus、健康检查、中间件链依赖。
+- 多进程/多机器能力归入 `shield_cluster` 官方可选模块，不能反向污染 core。
 - Lua API 必须有绑定测试。
 - 用户侧 API 不暴露 CAF。
 
@@ -43,6 +44,8 @@ include/shield/
 └── log/
 ```
 
+官方可选模块放在独立路径，例如 `src/optional/shield_cluster/`、`src/optional/shield_global/`、`src/optional/shield_ops/`。
+
 ## 构建
 
 构建流程仍以当前 CMake 为准，但 CMake 目标也需要随重构调整。
@@ -59,4 +62,5 @@ cmake --build build
 - 文档是否仍声称旧 Phase 1-7 已完成。
 - 是否把非 core 能力描述成默认能力。
 - 是否新增了 core 对旧模块的依赖。
+- 是否把 cluster/global/ops 误写成第一阶段主路径依赖。
 - 示例是否使用尚未实现的 API 且没有标注目标状态。

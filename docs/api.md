@@ -53,10 +53,11 @@ shield.log.debug(msg)
 
 - `shield.spawn` 返回 ready 后的 `ServiceHandle`，失败返回 `nil, Error`。
 - `shield.send` 非阻塞、无 ACK，返回成功只表示 runtime 接受投递。
-- `shield.call` 返回 `ok, ...`，`ok=false` 只表示 runtime/transport/callee exception 级错误。
+- `shield.call` 挂起当前 Lua coroutine，但不阻塞 runtime 线程；返回 `ok, ...`，`ok=false` 只表示 runtime/transport/callee exception 级错误。
 - `shield.call_timeout` 用于覆盖默认 call timeout，避免最后一个业务参数和 options table 歧义。
 - payload 使用 `method + argc + args` 编码，保留多返回值和 trailing nil。
 - `ServiceHandle` 不包含 name 身份，name 只是 registry alias。
+- `shield_cluster`、`shield_global`、`shield_ops` 属于官方可选模块，不属于第一阶段最小 API 契约。
 
 完整语义见 [运行时语义决策稿](./runtime-semantics.md)。
 

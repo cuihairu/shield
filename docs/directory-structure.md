@@ -34,9 +34,9 @@ shield/
 │   ├── http/            ⚠️  合入 net/
 │   ├── log/             ✅ 保留
 │   ├── net/             ✅ 保留
-│   ├── protocol/        ✅ 保留
+│   ├── protocol/        ⚠️  合入 transport/
 │   ├── script/          ✅ 保留
-│   ├── serialization/   ✅ 保留
+│   ├── serialization/   ⚠️  仅保留最小消息编码能力
 │   └── service/         ⚠️  合入 core/
 └── src/
     ├── annotations/     ❌ 移除
@@ -104,9 +104,10 @@ shield/
 │   ├── shield_data/            # 数据访问（DB + Redis）
 │   ├── shield_net/             # 网络层
 │   ├── shield_transport/       # 协议适配
-│   ├── shield_protocol/        # 协议实现
-│   ├── shield_cluster/         # 集群通信（预留）
-│   └── shield_ops/             # 运维端点（预留）
+│   └── optional/               # 官方可选模块（非第一阶段主路径）
+│       ├── shield_cluster/     # 集群通信（可选）
+│       ├── shield_global/      # 全局能力（可选）
+│       └── shield_ops/         # 运维端点（可选）
 │
 ├── tests/                      # 测试代码
 │   ├── unit/                   # 单元测试
@@ -307,7 +308,6 @@ src/shield_lua/
 │   ├── api_log.cpp            # shield.log.*
 │   ├── api_data.cpp           # shield.data.*
 │   ├── api_net.cpp            # shield.net.*
-│   ├── api_plugin.cpp         # shield.plugin.on()
 │   └── ...
 ├── tests/
 │   └── test_lua_bindings.cpp
@@ -387,31 +387,12 @@ src/shield_transport/
 
 **依赖**：shield_base, shield_log, shield_net
 
-#### shield_protocol
+具体协议实现放在 `shield_transport` 内部或其子目录中。独立 `shield_protocol` 不进入当前目标结构；schema 工具链属于 deferred extension。
+
+#### shield_cluster（可选）
 
 ```
-src/shield_protocol/
-├── include/
-│   ├── schema_protocol.hpp    # Schema 协议
-│   ├── http_protocol.hpp      # HTTP 协议
-│   └── binary_protocol.hpp    # 二进制协议
-├── src/
-│   ├── schema_protocol.cpp
-│   ├── http_protocol.cpp
-│   └── ...
-├── tests/
-│   └── test_schema_protocol.cpp
-└── CMakeLists.txt
-```
-
-职责：具体协议实现。
-
-**依赖**：shield_base
-
-#### shield_cluster（预留）
-
-```
-src/shield_cluster/
+src/optional/shield_cluster/
 ├── include/
 │   ├── node_discovery.hpp     # 节点发现
 │   ├── cluster_rpc.hpp        # 集群 RPC
@@ -423,14 +404,33 @@ src/shield_cluster/
 └── CMakeLists.txt
 ```
 
-职责：集群通信，node-to-node 消息传递。
+职责：集群通信，node-to-node 消息传递，远端 route cache 和节点心跳。该模块是官方可选模块，不属于第一阶段最小主路径。
 
 **依赖**：shield_base, shield_log, shield_config, shield_net
 
-#### shield_ops（预留）
+#### shield_global（可选）
 
 ```
-src/shield_ops/
+src/optional/shield_global/
+├── include/
+│   ├── global_data.hpp        # 全局数据
+│   ├── distributed_lock.hpp   # 分布式锁
+│   └── global_starter.hpp     # GlobalStarter
+├── src/
+│   └── ...
+├── tests/
+│   └── ...
+└── CMakeLists.txt
+```
+
+职责：基于 Redis 等后端提供全局数据、分布式锁、排行榜、队列、限流器。该模块是官方可选模块。
+
+**依赖**：shield_base, shield_log, shield_config, shield_data
+
+#### shield_ops（可选）
+
+```
+src/optional/shield_ops/
 ├── include/
 │   ├── ops_server.hpp         # 运维 HTTP 服务
 │   ├── metrics_collector.hpp  # 指标收集
@@ -442,7 +442,7 @@ src/shield_ops/
 └── CMakeLists.txt
 ```
 
-职责：运维端点，提供 HTTP 接口查看状态。
+职责：运维端点，提供 HTTP/console 接口查看状态。该模块是官方可选模块，不属于 `shield_core`。
 
 **依赖**：shield_base, shield_log, shield_net
 
@@ -452,7 +452,9 @@ src/shield_ops/
 ┌─────────────────────────────────────────────────────────────┐
 │                    shield_lua (用户 API)                      │
 ├─────────────────────────────────────────────────────────────┤
-│  shield_cluster  │  shield_ops  │  shield_transport          │
+│ optional: shield_cluster / shield_global / shield_ops          │
+├─────────────────────────────────────────────────────────────┤
+│                    shield_transport                          │
 ├─────────────────────────────────────────────────────────────┤
 │                    shield_data  │  shield_net                 │
 ├─────────────────────────────────────────────────────────────┤
@@ -472,12 +474,13 @@ src/shield_ops/
 
 ```bash
 # 1. 创建新的模块目录
-mkdir -p src/shield_{base,core,config,log,bootstrap,script,lua,data,net,transport,protocol}
+mkdir -p src/shield_{base,core,config,log,bootstrap,script,lua,data,net,transport}
+mkdir -p src/optional/shield_{cluster,global,ops}
 
 # 2. 每个模块创建标准子目录
-for module in shield_*; do
-    mkdir -p src/$module/{include,src,tests}
-    touch src/$module/CMakeLists.txt
+for module in src/shield_* src/optional/shield_*; do
+    mkdir -p "$module"/{include,src,tests}
+    touch "$module/CMakeLists.txt"
 done
 ```
 
@@ -491,7 +494,7 @@ done
 | `src/script/*` | `shield_script` |
 | `src/data/*`, `src/database/*` | `shield_data` |
 | `src/net/*`, `src/http/*` | `shield_net` |
-| `src/protocol/*` | `shield_protocol` |
+| `src/protocol/*` | `shield_transport` |
 
 ### Phase 3: 删除废弃模块
 
@@ -524,8 +527,12 @@ add_subdirectory(src/shield_script)
 add_subdirectory(src/shield_data)
 add_subdirectory(src/shield_net)
 add_subdirectory(src/shield_transport)
-add_subdirectory(src/shield_protocol)
 add_subdirectory(src/shield_lua)
+
+# Optional modules are added only when enabled.
+# add_subdirectory(src/optional/shield_cluster)
+# add_subdirectory(src/optional/shield_global)
+# add_subdirectory(src/optional/shield_ops)
 ```
 
 ## 公共 API 头文件
@@ -612,5 +619,5 @@ Configuration& config();
 | 依赖管理 | 通过目录层次强制单向依赖 |
 | 测试组织 | 每个模块包含自己的 tests/ |
 | 移除模块 | di, annotations, conditions, events, discovery, health, metrics |
-| 合并模块 | database → data, http → net |
+| 合并模块 | database → data, http → net, protocol → transport |
 | 改为模板 | gateway → examples/templates/services |

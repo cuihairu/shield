@@ -1,6 +1,6 @@
 # 可观测性
 
-Prometheus、HealthCheckRegistry 和内置管理端点不属于当前重构 core。
+Prometheus、HealthCheckRegistry 和内置管理端点不属于当前重构 core。它们可以归入 `shield_ops` 官方可选模块。
 
 ## 当前保留
 
@@ -20,7 +20,7 @@ Prometheus、HealthCheckRegistry 和内置管理端点不属于当前重构 core
 
 ## 后续可选方向
 
-如果需要运维能力，建议作为独立扩展重新设计：
+如果需要运维能力，建议作为官方可选模块或独立扩展实现：
 
 - `shield_ops`：健康检查、诊断、控制台。
 - `shield_metrics`：Prometheus 或其他指标后端。

@@ -55,12 +55,12 @@ shield::run(argc, argv)
   │     - 绑定 TCP/UDP/KCP/WebSocket 监听
   │     - 失败：输出错误，exit(1)
   │
-  ├─ 8. 初始化集群层（如配置）
+  ├─ 8. 初始化集群层（仅启用 shield_cluster 时）
   │     - 创建 shield_cluster
   │     - 连接 peers 或启动发现
   │     - 失败：警告但不阻止启动
   │
-  ├─ 9. 初始化运维层（如配置）
+  ├─ 9. 初始化运维层（仅启用 shield_ops 时）
   │     - 创建 shield_ops
   │     - 启动 HTTP 端点
   │     - 失败：警告但不阻止启动
@@ -211,7 +211,7 @@ bootstrap:
 
 ### 降级运行
 
-集群连接失败时：
+启用 `shield_cluster` 后，集群连接失败时：
 
 - 输出警告。
 - 以单节点模式运行。

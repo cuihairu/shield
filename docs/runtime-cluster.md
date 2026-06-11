@@ -2,9 +2,19 @@
 
 本文档包含 Shield 跨进程/跨机器通信（cluster）和旧代码处理相关的运行时语义决策。
 
+`shield_cluster` 是官方可选模块和后续阶段，不属于 `shield_core`，也不是第一阶段最小运行路径。本文用于提前冻结多节点语义，保证未来实现不会把服务发现、节点编排或 CAF 远程细节泄漏进用户 API。
+
 ## shield_cluster 定位
 
-`shield_cluster` 负责跨进程和跨机器通信，不属于第一版 `shield_core`。
+`shield_cluster` 负责跨进程和跨机器通信，不属于 `shield_core`。
+
+边界约束：
+
+- 复用 `ServiceHandle`、`ServiceAddress`、`send/call`、timeout 和错误码语义。
+- 不改变本地 `ServiceRegistry` 的规则。
+- remote name 只作为 cluster route cache，不进入 core registry。
+- 业务 Lua 默认不感知 CAF middleman。
+- 节点发现和负载均衡策略不反向成为 core 依赖。
 
 ### 与 CAF 的关系
 
@@ -44,13 +54,13 @@ CAF 底层已支持远程 Actor 通信（通过 middleman），`shield_cluster` 
 
 ## 节点发现
 
-节点发现提供多种方案，内置默认实现无需外部依赖：
+节点发现属于 `shield_cluster`，不属于 `shield_core`。目标方案可以分层实现：
 
 | 方案 | 适用场景 | 外部依赖 | 配置方式 |
 |------|----------|----------|----------|
-| **内置静态配置** | 开发/测试/小型部署 | 无 | `cluster.peers` |
-| 内置广播发现 | 局域网自动发现 | 无 | `cluster.discovery: broadcast` |
-| **Redis** | 小型游戏/已有 Redis | Redis | `cluster.discovery: redis` |
+| **静态配置** | 开发/测试/小型部署 | 无 | `cluster.peers` |
+| 广播发现 | 局域网自动发现 | 无 | `cluster.discovery: broadcast` |
+| Redis | 小型游戏/已有 Redis | Redis | `cluster.discovery: redis` |
 | Kubernetes | 云原生部署 | K8s API | `cluster.discovery: kubernetes` |
 | Etcd/Consul | 大型自建集群 | Etcd/Consul | `cluster.discovery: etcd` |
 
@@ -236,11 +246,11 @@ cluster:
 - 跨节点消息路由（服务名 -> 远程 Actor）。
 - 远端路由 cache。
 
-**第一版实现范围：**
-- 内置静态配置（零依赖）
-- 内置广播发现（局域网）
-- Redis 服务发现（推荐小型游戏）
+**建议第一版 cluster 范围：**
+- 静态配置（零依赖）
 - 基本心跳和状态管理
+- 远端 route cache
+- `send/call` 跨节点错误语义
 
 **后续扩展：**
 - Kubernetes 集成

@@ -10,7 +10,7 @@
 - CAF 是内部机制，不出现在 Lua API 和 public C++ API。
 - Lua 是默认业务语言，C++ 负责运行时和少量性能敏感扩展。
 - 本地、IPC、cluster 的消息语义必须尽量一致。
-- 第一版优先单节点稳定，cluster 和 hot reload 先定边界，不强行实现。
+- 第一版优先单节点稳定；`shield_cluster` 是官方可选模块和后续阶段，不进入 `shield_core`，但需要提前冻结地址、超时和错误语义。
 
 ## 语义文档索引
 
@@ -22,7 +22,7 @@
 | [消息语义](runtime-messaging.md) | MessageEnvelope、MessagePayload、send、call、背压、QoS、超时、nested call、coroutine 调度、错误处理 |
 | [玩家生命周期](runtime-player.md) | PlayerSession、PlayerManager、认证、断线重连、离线消息缓存、多设备策略 |
 | [服务器状态](runtime-server.md) | ServerManager、服务器状态、运行时信息、状态变更通知 |
-| [全局数据](runtime-global.md) | GlobalData、跨进程共享数据、分布式锁（重入、续期）、排行榜、限流器、Pub/Sub |
+| [全局数据](runtime-global.md) | 可选 `shield_global`：GlobalData、跨进程共享数据、分布式锁（重入、续期）、排行榜、限流器、Pub/Sub |
 | [定时器语义](runtime-timer.md) | timer API、时间语义、错误语义、sleep、fork、TaskHandle |
 | [Lua VM 语义](runtime-lua-vm.md) | Lua VM 模型、热更新策略、Blue-Green 替换 |
 | [网络语义](runtime-network.md) | shield_net、shield_transport、gateway、SessionHandle、KCP 支持 |
@@ -31,9 +31,9 @@
 | [配置语义](runtime-config.md) | YAML 配置 schema（**权威来源**）、配置验证、环境差异 |
 | [启动流程](runtime-bootstrap.md) | 启动顺序、关闭顺序、超时、信号处理、优雅重启 |
 | [错误码参考](runtime-errors.md) | 所有运行时错误码汇总：消息、服务、资源、数据库、Redis、网络 |
-| [运维语义](runtime-ops.md) | shield_ops、运维端点、metrics、健康检查 |
+| [运维语义](runtime-ops.md) | 可选 `shield_ops`：运维端点、metrics、健康检查 |
 | [安全语义](runtime-security.md) | Lua 沙箱、服务间权限、网络安全、敏感数据保护 |
-| [集群语义](runtime-cluster.md) | shield_cluster、节点发现、负载均衡、旧代码处理 |
+| [集群语义](runtime-cluster.md) | 可选 `shield_cluster`：节点发现、远端路由、节点心跳、旧代码处理 |
 | [实体与组件](runtime-entity.md) | 游戏实体抽象、组件化设计、Entity/Component/Room 模式 |
 
 ## 实现顺序建议
@@ -93,9 +93,9 @@
 - 保留 data 原始 DB/Redis API。
 - 实现 ops snapshot 和本地 diagnostics。
 
-### M8. IPC/cluster 预留
+### M8. 可选 cluster/global/ops
 
 - 不把 cluster 放进 core。
 - 为 route key 保留 `node_epoch`。
 - 为 ops 增加 node heartbeat 状态模型。
-- 后续独立实现 `shield_cluster`。
+- 后续独立实现 `shield_cluster`，并让 `shield_global`、`shield_ops` 只依赖公开 snapshot/handle 语义。

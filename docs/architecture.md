@@ -4,12 +4,13 @@
 
 ## 定位
 
-Shield 是 **单节点游戏服务运行时**。
+Shield 是 **单节点优先的游戏服务运行时**。
 
 - C++ 负责运行时基础设施；其中 `shield_core` 只封装 Actor/Service 语义，其他能力通过官方模块组合。
 - Lua 负责游戏逻辑：每个服务是一个 Lua 脚本，通过 `shield.*` API 与运行时交互。
 - CAF 是内部 Actor 传输基础，不暴露给用户业务代码。
 - 设计参考 Skynet 的极简哲学：服务、消息、网络、定时器。
+- 第一阶段先把单节点 runtime 做稳定；多进程/多机器集群作为 `shield_cluster` 官方可选模块推进，但不进入 `shield_core`。
 
 运行时细节以 [运行时语义决策稿](./runtime-semantics.md) 为准。本文只描述架构边界。
 
@@ -44,9 +45,12 @@ Shield 是 **单节点游戏服务运行时**。
 │          YAML 声明式配置          │
 │  actors / network / data / log   │
 ├─────────────────────────────────┤
+│      Optional Official Modules   │
+│ cluster · global · ops           │
+├─────────────────────────────────┤
 │       Shield Runtime Modules     │
-│ lua · net · transport · cluster  │
-│ data · config · log · bootstrap  │
+│ lua · net · transport · data     │
+│ config · log · bootstrap         │
 ├─────────────────────────────────┤
 │          shield_core             │
 │ service · message · timer        │
@@ -99,15 +103,22 @@ Shield 是 **单节点游戏服务运行时**。
 | `shield_lua` | Lua VM 管理、Lua-C++ 绑定 | `shield.*` API |
 | `shield_net` | 客户端连接管理（TCP/UDP/KCP/WebSocket）、Session 生命周期 | gateway 服务回调、session 发送 |
 | `shield_transport` | 协议解析（解帧、编解码、加密）、KCP 实现 | 不直接暴露给 Lua |
-| `shield_player` | 玩家生命周期、PlayerSession、断线重连、离线消息缓存 | `shield.player.*` |
-| `shield_player_manager` | 全局玩家管理、查询、统计、广播 | `shield.player.manager()` |
-| `shield_server` | 服务器状态、运行时信息、状态变更通知 | `shield.server()` |
-| `shield_global` | 跨进程共享数据、分布式锁、排行榜、限流器、Pub/Sub、队列 | `shield.global/lock/rank/queue/rate_limiter/scheduler` |
-| `shield_cluster` | 跨进程/跨机器通信、服务发现、节点心跳 | 内置静态配置/广播发现，可选集成 Etcd/K8s |
 | `shield_data` | 原始 DB / Redis 访问 | `shield.db.*`、`shield.redis.*` |
 | `shield_config` | YAML 配置加载 | `shield.config` |
 | `shield_log` | 日志 | `shield.log.*` |
 | `shield_bootstrap` | 读取配置并组合模块 | `shield::run` |
+
+## 官方可选模块
+
+这些模块属于 Shield 的官方演进方向，但不属于第一阶段 `shield_core` 和最小运行主路径。
+
+| 模块 | 职责 | Lua 可见能力 |
+| --- | --- | --- |
+| `shield_cluster` | 多进程/多机器通信、节点心跳、远端路由 cache、可选服务发现 | `shield.cluster.*` 或透明远端 handle 路由 |
+| `shield_global` | 基于 Redis 等后端的跨进程数据、分布式锁、排行榜、队列、限流器 | `shield.global/lock/rank/queue/rate_limiter/scheduler` |
+| `shield_ops` | diagnostics、metrics、health、console、profile | 不作为业务 Lua API |
+| `shield_player` | 玩家生命周期、PlayerSession、断线重连、离线消息缓存 | `shield.player.*` |
+| `shield_server` | 服务器状态、运行时信息、状态变更通知 | `shield.server()` |
 
 ## shield_ops
 
@@ -249,13 +260,23 @@ include/shield/
 ├── lua/
 ├── net/
 ├── transport/
-├── cluster/
 ├── data/
 ├── config/
 ├── log/
-├── ops/
 └── bootstrap/
 ```
+
+官方可选模块可以提供独立 public header，例如：
+
+```
+include/shield/optional/
+├── cluster/
+├── global/
+├── ops/
+└── player/
+```
+
+这些模块不能反向污染 `shield_core`，也不能成为第一阶段最小启动路径的隐式依赖。
 
 旧目录中的 `discovery/`、`metrics/`、`health/`、`di/`、`annotations/`、`conditions/`、`events/`、`plugin/`、独立 `protocol/` 等不属于新 core 边界。后续可以删除、合并到目标模块，或移到明确的非核心实验区。
 

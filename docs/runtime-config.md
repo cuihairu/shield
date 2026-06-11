@@ -7,6 +7,7 @@
 - YAML 只做声明式绑定，不承载业务逻辑。
 - 配置驱动 Lua 服务、网络监听、数据源和日志。
 - 不在 core 中提供服务发现、插件、Prometheus、健康检查等配置。
+- `cluster`、`global`、`ops` 配置只在对应官方可选模块启用时生效，不属于 `shield_core` schema。
 - 不通过配置引入 DI/IoC 或注解装配。
 
 ## 完整配置 Schema
@@ -105,6 +106,7 @@ log:
 
 # 集群配置（可选）
 cluster:
+  enabled: false              # 是否启用 shield_cluster
   node_id: "node-1"          # 节点 ID（唯一）
   listen: "0.0.0.0:9000"    # 集群通信端口
   heartbeat_interval: 2000   # 心跳间隔（ms）
@@ -138,7 +140,7 @@ cluster:
 
 # 运维配置（可选）
 ops:
-  enabled: true              # 是否启用运维模块
+  enabled: false             # 是否启用 shield_ops
   bind: "127.0.0.1:9090"   # 运维端点绑定地址
   metrics: true              # 是否启用 metrics
   health: true               # 是否启用健康检查
