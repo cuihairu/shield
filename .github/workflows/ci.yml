@@ -13,7 +13,7 @@ jobs:
   # 代码质量检查
   code-quality:
     name: Code Quality
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
@@ -22,11 +22,8 @@ jobs:
 
       - name: Setup clang-format
         run: |
-          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
-          sudo apt-get install -y clang-format-18
-          sudo ln -sf /usr/bin/clang-format-18 /usr/local/bin/clang-format
+          sudo apt-get install -y clang-format
 
       - name: Check C++ formatting
         run: |
@@ -42,10 +39,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             compiler: gcc
-          - os: ubuntu-22.04
-            compiler: clang
           - os: macos-latest
             compiler: clang
           - os: windows-latest
@@ -118,7 +113,7 @@ jobs:
   # Docker 构建 (仅 main 分支)
   docker:
     name: Docker Build
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     permissions:
