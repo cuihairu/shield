@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitepress'
 
 export default defineConfig({
+  base: '/shield/',
   lang: 'zh-CN',
   title: 'Shield',
   description: 'Skynet 启发的 Lua 优先游戏服务器运行时',
