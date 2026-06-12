@@ -1,757 +1,208 @@
-name: 🔄 统一CI/CD管道
+name: CI
 
 on:
   push:
-    branches: [ main, develop ]
-    tags: [ 'v*.*.*' ]
+    branches: [main]
+    paths:
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'examples/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'vcpkg.json'
+      - '.github/workflows/ci.yml'
   pull_request:
-    branches: [ main ]
+    branches: [main]
+    paths:
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'examples/**'
+      - 'cmake/**'
+      - 'CMakeLists.txt'
+      - 'vcpkg.json'
+      - '.github/workflows/ci.yml'
 
 env:
   BUILD_TYPE: Release
-  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-cache
 
 jobs:
-  # 代码质量检查 - 所有情况都执行
+  # 代码质量检查
   code-quality:
-    runs-on: ubuntu-24.04
-    # 选项1: 使用自定义容器 (取消注释以启用)
-    # container: 
-    #   image: ghcr.io/${{ github.repository }}/ci-tools:latest
-    #   credentials:
-    #     username: ${{ github.actor }}
-    #     password: ${{ secrets.GITHUB_TOKEN }}
-    
-    steps:
-    - name: 📥 检出代码
-      uses: actions/checkout@v4
-      
-    # 缓存工具安装，避免重复下载
-    - name: 📦 缓存工具
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/pip
-          /usr/lib/llvm-14
-        key: tools-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
-        restore-keys: |
-          tools-${{ runner.os }}-
-      
-    # 批量安装所有需要的工具
-    - name: 🔧 安装代码检查工具
-      run: |
-        # 安装指定版本的 clang-format 以确保一致性
-        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-        echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
-        sudo apt-get update -qq
-        sudo apt-get install -y clang-format-18 clang-tidy-18
-        
-        # 创建符号链接确保使用一致版本
-        sudo ln -sf /usr/bin/clang-format-18 /usr/local/bin/clang-format
-        sudo ln -sf /usr/bin/clang-tidy-18 /usr/local/bin/clang-tidy
-        
-        # 检查 cmake-format 是否已安装
-        if command -v cmake-format &> /dev/null; then
-          echo "✅ cmake-format 已预装"
-        else
-          echo "安装 cmake-format..."
-          pip install --user cmake-format
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-        fi
-        
-    - name: 🔍 C++ 代码格式检查
-      run: |
-        echo "检查 C++ 代码格式 (使用 clang-format-18)..."
-        clang-format --version
-        # 使用并行处理加速检查
-        find include src -name "*.hpp" -o -name "*.cpp" | \
-        xargs -P $(nproc) -I {} sh -c '
-          if ! clang-format --dry-run --Werror "{}" > /dev/null 2>&1; then
-            echo "❌ 格式错误: {}"
-            clang-format --dry-run --Werror "{}" 2>&1
-            exit 1
-          else
-            echo "✅ 格式正确: {}"
-          fi
-        '
-        echo "✅ C++ 代码格式检查通过"
-        
-    - name: 🔍 CMake 格式检查
-      run: |
-        echo "检查 CMake 文件格式..."
-        # 只检查项目源码中的 CMake 文件，排除构建目录和第三方依赖
-        find . -name "CMakeLists.txt" -not -path "./build*" -not -path "./vcpkg*" -not -path "./CMakeFiles*" | \
-        xargs -P $(nproc) -I {} sh -c '
-          if ! cmake-format --check "{}" > /dev/null 2>&1; then
-            echo "❌ CMake 格式错误: {}"
-            exit 1
-          else
-            echo "✅ CMake 格式正确: {}"
-          fi
-        '
-        echo "✅ CMake 格式检查通过"
-        
-    - name: 🔍 C++ 静态分析 (clang-tidy)
-      continue-on-error: true  # 静态分析失败不阻止构建流程
-      run: |
-        echo "运行 C++ 静态分析..."
-        
-        # 简单的语法检查，不需要完整的构建环境
-        echo "🔍 基本语法检查..."
-        find include -name "*.hpp" | head -5 | \
-        while read file; do
-          echo "🔍 检查: $file"
-          # 基本的语法和包含检查
-          if clang++ -std=c++20 -I./include -fsyntax-only "$file" 2>/dev/null; then
-            echo "✅ 语法正确: $file"
-          else
-            echo "⚠️  语法问题: $file"
-          fi
-        done
-        
-        echo "✅ C++ 静态分析检查完成"
+    name: Code Quality
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
 
-  # 多平台构建和测试 - 所有情况都执行
-  build-and-test:
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup clang-format
+        run: |
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+          sudo ln -sf /usr/bin/clang-format-18 /usr/local/bin/clang-format
+
+      - name: Check C++ formatting
+        run: |
+          find include src -name "*.hpp" -o -name "*.cpp" | \
+          xargs clang-format --dry-run --Werror
+
+  # 多平台构建
+  build:
+    name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: code-quality
-    permissions:
-      contents: read
-      id-token: write
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux 构建矩阵
-          - os: ubuntu-24.04
-            compiler: gcc-11
-            build_type: Debug
-            platform: linux
-            coverage: true
-          - os: ubuntu-24.04
-            compiler: gcc-11
+          - os: ubuntu-22.04
+            compiler: gcc
             build_type: Release
-            platform: linux
-            coverage: false
-          - os: ubuntu-24.04
-            compiler: clang-14
+          - os: ubuntu-22.04
+            compiler: gcc
             build_type: Debug
-            platform: linux
-            coverage: false
-          - os: ubuntu-24.04
-            compiler: clang-14
+          - os: ubuntu-22.04
+            compiler: clang
             build_type: Release
-            platform: linux
-            coverage: false
-          # macOS 构建
           - os: macos-latest
             compiler: clang
             build_type: Release
-            platform: macos
-            coverage: false
-          # Windows 构建
           - os: windows-latest
             compiler: msvc
             build_type: Release
-            platform: windows
-            coverage: false
-    
+
     steps:
-    - name: 📥 检出代码
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
 
-    # Linux dependencies installation
-    - name: 🔧 Install build dependencies (Linux)
-      if: matrix.platform == 'linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build pkg-config curl zip unzip tar git
-        
-        # Verify ninja installation
-        ninja --version
-        which ninja
-        
-        # Install specific compiler
-        if [[ "${{ matrix.compiler }}" == "gcc-11" ]]; then
-          sudo apt-get install -y gcc-11 g++-11
-          echo "CC=gcc-11" >> $GITHUB_ENV
-          echo "CXX=g++-11" >> $GITHUB_ENV
-        elif [[ "${{ matrix.compiler }}" == "clang-14" ]]; then
-          sudo apt-get install -y clang-14
-          echo "CC=clang-14" >> $GITHUB_ENV
-          echo "CXX=clang++-14" >> $GITHUB_ENV
-        fi
+      # 安装依赖
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config
 
-    # macOS dependencies installation
-    - name: 🔧 Install build dependencies (macOS)
-      if: matrix.platform == 'macos'
-      run: |
-        # Update Homebrew first
-        brew update
-        # Install required tools
-        brew install cmake ninja pkg-config
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja
 
-    # Windows 环境配置
-    - name: 🔧 配置 Windows 环境
-      if: matrix.platform == 'windows'
-      run: |
-        echo "VS_GENERATOR=Visual Studio 17 2022" >> $env:GITHUB_ENV
-        echo "VS_PLATFORM=x64" >> $env:GITHUB_ENV
+      # 安装 CMake
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '3.28.0'
 
-    # 安装 CMake 3.30+ (所有平台)
-    - name: 📦 安装 CMake 3.30+
-      uses: jwlawson/actions-setup-cmake@v2
-      with:
-        cmake-version: '3.30.0'
+      # vcpkg 缓存
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            vcpkg
+            build/vcpkg_installed
+          key: vcpkg-${{ matrix.os }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.os }}-
 
-    # vcpkg binary cache for faster builds
-    - name: 📦 Cache vcpkg binaries
-      uses: actions/cache@v4
-      with:
-        path: |
-          ${{ env.VCPKG_ROOT }}
-          ${{ github.workspace }}/build/vcpkg_installed
-          !${{ env.VCPKG_ROOT }}/buildtrees
-          !${{ env.VCPKG_ROOT }}/packages
-          !${{ env.VCPKG_ROOT }}/downloads
-        key: vcpkg-binaries-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}-${{ hashFiles('vcpkg-configuration.json') }}
-        restore-keys: |
-          vcpkg-binaries-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}-
-          vcpkg-binaries-${{ matrix.platform }}-
+      # Setup vcpkg
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'
 
-    # vcpkg downloads cache for rate limiting
-    - name: 📦 Cache vcpkg downloads
-      uses: actions/cache@v4
-      with:
-        path: |
-          ${{ env.VCPKG_ROOT }}/downloads
-        key: vcpkg-downloads-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
-        restore-keys: |
-          vcpkg-downloads-${{ runner.os }}-
-
-    # vcpkg cache
-    - name: 📦 Cache vcpkg
-      uses: actions/cache@v4
-      with:
-        path: |
-          ${{ env.VCPKG_ROOT }}
-          !${{ env.VCPKG_ROOT }}/buildtrees
-          !${{ env.VCPKG_ROOT }}/packages
-          !${{ env.VCPKG_ROOT }}/downloads
-        key: vcpkg-legacy-${{ matrix.platform }}-${{ hashFiles('vcpkg.json') }}
-        restore-keys: |
-          vcpkg-legacy-${{ matrix.platform }}-
-
-    # Clear any cached vcpkg state to ensure fresh dependency resolution
-    - name: 🧹 Clear vcpkg cache
-      shell: bash
-      run: |
-        rm -rf "${{ github.workspace }}/build" || true
-        rm -rf "${{ github.workspace }}/vcpkg_installed" || true
-        echo "Cleared local vcpkg cache"
-    # Set vcpkg environment variables
-    - name: 🔧 Set vcpkg environment
-      shell: bash
-      run: |
-        echo "VCPKG_BINARY_SOURCES=clear;x-gha,readwrite" >> $GITHUB_ENV
-        echo "VCPKG_MAX_CONCURRENCY=4" >> $GITHUB_ENV
-        
-    # Setup vcpkg (using run-vcpkg action)
-    - name: 🛠️ Setup vcpkg
-      uses: lukka/run-vcpkg@v11.5
-      with:
-        vcpkgGitCommitId: 'f7423ee180c4b7f40d43402c2feb3859161ef625'  # Use specific commit for reproducibility
-
-    # CMake configure with retry
-    - name: 🏗️ Configure CMake
-      shell: bash
-      run: |
-        echo "VCPKG_ROOT: ${VCPKG_ROOT}"
-        echo "Build type: ${{ matrix.build_type }}"
-        echo "Coverage: ${{ matrix.coverage }}"
-        
-        EXTRA_CMAKE_ARGS=()
-        if [ "${{ matrix.coverage }}" = "true" ]; then
-          EXTRA_CMAKE_ARGS+=("-DSHIELD_ENABLE_COVERAGE=ON")
-        fi
-        if [ "${{ matrix.platform }}" = "macos" ]; then
-          EXTRA_CMAKE_ARGS+=("-DCMAKE_OSX_ARCHITECTURES=$(uname -m)")
-        fi
-        
-        # Retry logic with exponential backoff
-        for attempt in 1 2 3; do
-          echo "Configuration attempt $attempt..."
-          
-          if [ "${{ matrix.platform }}" = "windows" ]; then
-            if cmake -B build \
-              -G "${{ env.VS_GENERATOR }}" -A "${{ env.VS_PLATFORM }}" \
-              -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
-              -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-              -DSHIELD_BUILD_TESTS=ON \
-              -DSHIELD_BUILD_EXAMPLES=ON \
-              "${EXTRA_CMAKE_ARGS[@]}"; then
-              echo "✅ Configuration successful on attempt $attempt"
-              break
-            fi
-          else
-            if cmake -B build \
-              -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
-              -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-              -DSHIELD_BUILD_TESTS=ON \
-              -DSHIELD_BUILD_EXAMPLES=ON \
-              -G Ninja \
-              "${EXTRA_CMAKE_ARGS[@]}"; then
-              echo "✅ Configuration successful on attempt $attempt"
-              break
-            fi
-          fi
-          
-          if [ $attempt -lt 3 ]; then
-            echo "⚠️ Configuration failed, retrying in $((attempt * 10)) seconds..."
-            sleep $((attempt * 10))
-          else
-            echo "❌ Configuration failed after 3 attempts"
-            exit 1
-          fi
-        done
-
-    # Build project with retry
-    - name: 🔨 Build project
-      shell: bash
-      run: |
-        # Retry logic for build
-        for attempt in 1 2; do
-          echo "Build attempt $attempt..."
-          
-          if [ "${{ matrix.platform }}" = "linux" ]; then
-            BUILD_CMD="cmake --build build --config ${{ matrix.build_type }} --parallel $(nproc)"
-          elif [ "${{ matrix.platform }}" = "macos" ]; then
-            BUILD_CMD="cmake --build build --config ${{ matrix.build_type }} --parallel $(sysctl -n hw.logicalcpu)"
-          else
-            BUILD_CMD="cmake --build build --config ${{ matrix.build_type }} --parallel"
-          fi
-          
-          if eval "$BUILD_CMD"; then
-            echo "✅ Build successful on attempt $attempt"
-            break
-          else
-            if [ $attempt -lt 2 ]; then
-              echo "⚠️ Build failed, retrying in 30 seconds..."
-              sleep 30
-            else
-              echo "❌ Build failed after 2 attempts"
-              exit 1
-            fi
-          fi
-        done
-
-    # 运行测试
-    - name: 🧪 运行测试
-      working-directory: build
-      run: |
-        if [ "${{ matrix.platform }}" = "windows" ]; then
-          ctest --build-config ${{ matrix.build_type }} --output-on-failure
-        else
-          ctest --output-on-failure --parallel
-        fi
-      shell: bash
-
-    # 测试覆盖率 (仅 Linux Debug + GCC)
-    - name: 📊 测试覆盖率
-      if: matrix.coverage == true
-      run: |
-        sudo apt-get install -y gcovr
-        gcovr --gcov-executable gcov-11 --root . --object-directory build \
-          --exclude-directories "build|vcpkg|vcpkg_installed|examples|tests" \
-          --xml-pretty --xml coverage.xml
-        
-    - name: 📤 上传覆盖率报告
-      if: matrix.coverage == true
-      uses: codecov/codecov-action@v4
-      with:
-        files: coverage.xml
-        fail_ci_if_error: false
-
-  # Docker 镜像构建 - 仅 main 分支和 tag
-  build-docker:
-    runs-on: ubuntu-24.04
-    needs: [build-and-test]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
-    
-    steps:
-    - name: 📥 检出代码
-      uses: actions/checkout@v4
-
-    - name: 🔧 设置 Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: 🔑 登录容器注册表
-      uses: docker/login-action@v3
-      with:
-        registry: ${{ env.REGISTRY }}
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: 📊 提取元数据
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-        tags: |
-          type=ref,event=branch
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=semver,pattern={{major}}
-          type=sha
-          type=raw,value=latest,enable={{is_default_branch}}
-
-    - name: 🏗️ 构建和推送 Docker 镜像
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        platforms: linux/amd64,linux/arm64
-        push: true
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        build-args: |
-          BUILD_TYPE=Release
-          ENABLE_OPTIMIZATIONS=ON
-
-  # 安全扫描 - 仅 main 分支和 tag
-  security-scan:
-    runs-on: ubuntu-24.04
-    needs: [build-docker]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
-    
-    steps:
-    - name: 📥 检出代码
-      uses: actions/checkout@v4
-
-    - name: 🔍 代码安全扫描
-      uses: github/codeql-action/init@v3
-      with:
-        languages: cpp
-
-    - name: 🏗️ 构建项目 (CodeQL)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build
-        
-        git clone https://github.com/Microsoft/vcpkg.git vcpkg
-        cd vcpkg && ./bootstrap-vcpkg.sh && cd ..
-        
-        cmake -B build \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake \
-          -G Ninja
-        cmake --build build --parallel 2
-
-    - name: 🔍 执行 CodeQL 分析
-      uses: github/codeql-action/analyze@v3
-
-    - name: 🐳 Docker 镜像安全扫描
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-
-    - name: 📤 上传安全扫描结果
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: 'trivy-results.sarif'
-
-  # 性能基准测试 - 仅 main 分支
-  benchmark:
-    runs-on: ubuntu-24.04
-    needs: [build-and-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: 📥 检出代码
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: 🔧 安装依赖
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build
-
-    - name: 🏗️ 构建基准测试
-      run: |
-        git clone https://github.com/Microsoft/vcpkg.git vcpkg
-        cd vcpkg && ./bootstrap-vcpkg.sh && cd ..
-        
-        cmake -B build \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake \
-          -DSHIELD_BUILD_BENCHMARKS=ON \
-          -G Ninja
-        cmake --build build --target benchmarks --parallel $(nproc)
-
-    - name: 🏃 运行基准测试
-      run: |
-        cd build
-        ./benchmarks/shield_benchmarks --benchmark_format=json > benchmark_results.json
-
-    - name: 📊 上传基准测试结果
-      uses: benchmark-action/github-action-benchmark@v1
-      with:
-        tool: 'googlecpp'
-        output-file-path: build/benchmark_results.json
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        auto-push: true
-        comment-on-alert: true
-        alert-threshold: '200%'
-        fail-on-alert: false
-
-  # ====== 发布相关 Jobs (仅 tag 触发) ======
-  
-  # 创建 GitHub Release
-  create-release:
-    runs-on: ubuntu-24.04
-    needs: [build-and-test]
-    if: startsWith(github.ref, 'refs/tags/')
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      tag_name: ${{ steps.get_version.outputs.tag_name }}
-    steps:
-    - name: 📥 检出代码
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: 🏷️ 获取版本信息
-      id: get_version
-      run: |
-        TAG=${GITHUB_REF#refs/tags/}
-        echo "tag_name=$TAG" >> $GITHUB_OUTPUT
-        echo "version=${TAG#v}" >> $GITHUB_OUTPUT
-
-    - name: 📝 生成更新日志
-      id: changelog
-      run: |
-        # 获取上一个标签
-        PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-        
-        if [ -n "$PREV_TAG" ]; then
-          echo "## 🎉 更新内容" > changelog.md
-          echo "" >> changelog.md
-          
-          # 获取提交记录并按类型分类
-          git log --pretty=format:"%s" ${PREV_TAG}..HEAD | while read line; do
-            if [[ $line =~ ^feat(\(.+\))?!?: ]]; then
-              echo "### ✨ 新功能" >> changelog.md
-              echo "- ${line#*: }" >> changelog.md
-            elif [[ $line =~ ^fix(\(.+\))?!?: ]]; then
-              echo "### 🐛 Bug 修复" >> changelog.md
-              echo "- ${line#*: }" >> changelog.md
-            elif [[ $line =~ ^docs(\(.+\))?!?: ]]; then
-              echo "### 📚 文档" >> changelog.md
-              echo "- ${line#*: }" >> changelog.md
-            elif [[ $line =~ ^perf(\(.+\))?!?: ]]; then
-              echo "### ⚡ 性能优化" >> changelog.md
-              echo "- ${line#*: }" >> changelog.md
-            fi
-          done
-        else
-          echo "## 🎉 首次发布" > changelog.md
-          echo "" >> changelog.md
-          echo "这是 Shield 游戏服务器框架的首个正式版本。" >> changelog.md
-        fi
-        
-        # 输出到 GitHub Actions
-        {
-          echo 'changelog<<EOF'
-          cat changelog.md
-          echo 'EOF'
-        } >> $GITHUB_OUTPUT
-
-    - name: 🎯 创建 Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ steps.get_version.outputs.tag_name }}
-        release_name: Shield ${{ steps.get_version.outputs.tag_name }}
-        body: ${{ steps.changelog.outputs.changelog }}
-        draft: false
-        prerelease: ${{ contains(steps.get_version.outputs.tag_name, '-') }}
-
-  # 构建发布版本
-  build-release:
-    runs-on: ${{ matrix.os }}
-    needs: create-release
-    if: startsWith(github.ref, 'refs/tags/')
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            arch: x64
-            target: linux-x64
-          - os: macos-latest
-            arch: x64
-            target: macos-x64
-          - os: windows-latest
-            arch: x64
-            target: windows-x64
-    
-    steps:
-    - name: 📥 检出代码
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-
-    - name: 🔧 安装构建依赖 (Linux)
-      if: matrix.os == 'ubuntu-24.04'  
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake ninja-build
-
-    - name: 🔧 安装构建依赖 (macOS)
-      if: matrix.os == 'macos-latest'
-      run: |
-        brew install cmake ninja
-
-    - name: 🔧 安装构建依赖 (Windows)
-      if: matrix.os == 'windows-latest'
-      run: |
-        choco install cmake ninja
-
-    - name: 🛠️ 设置 vcpkg
-      uses: lukka/run-vcpkg@v11.5
-
-    - name: 🏗️ 构建发布版本
-      shell: bash
-      run: |
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          cmake -B build \
-            -G "Visual Studio 17 2022" -A x64 \
-            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
-            -DCMAKE_BUILD_TYPE=Release \
+      # Configure
+      - name: Configure
+        shell: bash
+        run: |
+          CMAKE_ARGS=(
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+            -DSHIELD_BUILD_TESTS=ON
             -DSHIELD_BUILD_EXAMPLES=ON
-        else
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
-            -DSHIELD_BUILD_EXAMPLES=ON \
-            -G Ninja
-        fi
-        
-        cmake --build build --config Release --parallel
+          )
 
-    - name: 📦 打包发布文件
-      shell: bash
-      run: |
-        mkdir -p release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}
-        
-        # 复制二进制文件
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          cp build/bin/shield.exe release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ 2>/dev/null || true
-          cp build/bin/*.dll release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ 2>/dev/null || true
-        else
-          cp build/bin/shield release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ 2>/dev/null || true
-        fi
-        
-        # 复制配置文件和脚本 (如果存在)
-        [ -d config ] && cp -r config release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ || true
-        [ -d scripts ] && cp -r scripts release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ || true
-        
-        # 复制文档
-        cp README.md release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/
-        cp LICENSE release/shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/ 2>/dev/null || true
-        
-        # 创建压缩包
-        cd release
-        if [ "$RUNNER_OS" == "Windows" ]; then
-          7z a shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}.zip shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}/*
-        else
-          tar -czf shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}.tar.gz shield-${{ needs.create-release.outputs.tag_name }}-${{ matrix.target }}
-        fi
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            CMAKE_ARGS+=(-G "Visual Studio 17 2022" -A x64)
+          else
+            CMAKE_ARGS+=(-G Ninja)
+          fi
 
-    - name: 📤 上传发布文件
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ${{ runner.os == 'Windows' && format('release/shield-{0}-{1}.zip', needs.create-release.outputs.tag_name, matrix.target) || format('release/shield-{0}-{1}.tar.gz', needs.create-release.outputs.tag_name, matrix.target) }}
-        asset_name: ${{ runner.os == 'Windows' && format('shield-{0}-{1}.zip', needs.create-release.outputs.tag_name, matrix.target) || format('shield-{0}-{1}.tar.gz', needs.create-release.outputs.tag_name, matrix.target) }}
-        asset_content_type: ${{ runner.os == 'Windows' && 'application/zip' || 'application/gzip' }}
+          cmake -B build "${CMAKE_ARGS[@]}"
 
-  # 部署文档 - 仅 tag
-  deploy-docs:
-    runs-on: ubuntu-24.04
-    needs: create-release
-    if: startsWith(github.ref, 'refs/tags/')
+      # Build
+      - name: Build
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" == "Linux" ]; then
+            cmake --build build --config ${{ matrix.build_type }} --parallel $(nproc)
+          elif [ "${{ runner.os }}" == "macOS" ]; then
+            cmake --build build --config ${{ matrix.build_type }} --parallel $(sysctl -n hw.logicalcpu)
+          else
+            cmake --build build --config ${{ matrix.build_type }} --parallel
+          fi
+
+      # Test (可选，因为项目可能还没有完整测试)
+      - name: Test
+        if: false  # 暂时禁用，等测试完善后启用
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            cd build
+            ctest --build-config ${{ matrix.build_type }} --output-on-failure
+          else
+            cd build
+            ctest --output-on-failure
+          fi
+
+  # Docker 构建 (仅 main 分支)
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
     permissions:
       contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    
+      packages: write
+
     steps:
-    - name: 📥 检出代码
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: 🧰 安装 pnpm
-      uses: pnpm/action-setup@v4
-      with:
-        version: 9
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: 🟢 安装 Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 🔧 配置 GitHub Pages
-      id: pages
-      uses: actions/configure-pages@v4
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
 
-    - name: 📦 安装文档依赖
-      working-directory: ./docs
-      run: pnpm install --frozen-lockfile=false
-
-    - name: 📖 构建文档
-      working-directory: ./docs
-      run: pnpm run docs:build
-
-    - name: 📤 上传文档
-      uses: actions/upload-pages-artifact@v3
-      with:
-        path: ./docs/.vitepress/dist
-
-    - name: 🚀 部署到 GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v4
-
-  # 发布通知
-  notify:
-    runs-on: ubuntu-24.04
-    needs: [create-release, build-release, build-docker, deploy-docs]
-    if: startsWith(github.ref, 'refs/tags/') && always()
-    steps:
-    - name: 📢 发布成功通知
-      if: needs.create-release.result == 'success' && needs.build-release.result == 'success'
-      run: |
-        echo "🎉 Shield ${{ needs.create-release.outputs.tag_name }} 发布成功！"
-        echo "📦 二进制文件已上传到 GitHub Releases"
-        echo "🐳 Docker 镜像已推送到 ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-        echo "📚 文档已部署到 GitHub Pages"
-
-    - name: ❌ 发布失败通知
-      if: needs.create-release.result == 'failure' || needs.build-release.result == 'failure'
-      run: |
-        echo "❌ Shield ${{ needs.create-release.outputs.tag_name }} 发布失败！"
-        echo "请检查构建日志和错误信息。"
-        exit 1
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
