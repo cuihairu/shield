@@ -7,7 +7,7 @@ export default defineConfig({
   description: 'Skynet 启发的 Lua 优先游戏服务器运行时',
   cleanUrls: true,
   themeConfig: {
-    logo: '/logo.png',
+    logo: '/shield-logo.svg',
     nav: [
       {
         text: '快速开始',
