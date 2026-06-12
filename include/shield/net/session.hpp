@@ -1,24 +1,22 @@
 // [SHIELD_NET] Session types
 #pragma once
 
+#include <boost/asio/ip/tcp.hpp>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "shield/transport/frame.hpp"
 
-// Forward declarations
-namespace boost::asio {
-class io_context;
-namespace ip {
-class tcp;
-}
-}
+namespace shield::net {
 
 /// @brief Session ID
 using SessionId = uint64_t;

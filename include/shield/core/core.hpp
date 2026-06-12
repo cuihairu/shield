@@ -2,17 +2,18 @@
 #pragma once
 
 // Public types
-#include "shield/core_new/service_handle.hpp"
-#include "shield/core_new/message.hpp"
-#include "shield/core_new/service_registry.hpp"
+#include "shield/core/service_handle.hpp"
+#include "shield/core/message.hpp"
+#include "shield/core/service_registry.hpp"
+
+#include <memory>
 
 // Forward declaration
 namespace shield::core {
 
 class CafAdapter;
-
-/// @brief Initialize the Shield core runtime
-/// @return Unique pointer to the CAF adapter (owned by caller)
-std::unique_ptr<CafAdapter> initialize_core();
+namespace caf_detail {
+class ActorSystemHolder;
+}
 
 }  // namespace shield::core

@@ -14,6 +14,15 @@
 
 #include <sol/sol.hpp>
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <exception>
+#include <functional>
+#include <string>
+#include <thread>
+#include <vector>
+
 namespace shield::lua {
 
 // Get current service context (from TLS or Lua state)
@@ -83,14 +92,16 @@ void register_service_api(sol::table& shield) {
     });
 
     // shield.register(name) -> ok, err
-    shield.set_function("register", [](std::string name) -> sol::object {
-        sol::state_view lua = sol::state_view(sol::lua_state());
+    shield.set_function("register", [](sol::this_state s,
+                                       std::string name) -> sol::object {
+        sol::state_view lua(s);
         return lua.create_table_with("ok", true);
     });
 
     // shield.unregister(name) -> ok, err
-    shield.set_function("unregister", [](std::string name) -> sol::object {
-        sol::state_view lua = sol::state_view(sol::lua_state());
+    shield.set_function("unregister", [](sol::this_state s,
+                                         std::string name) -> sol::object {
+        sol::state_view lua(s);
         return lua.create_table_with("ok", true);
     });
 }
@@ -277,9 +288,10 @@ void register_config_api(sol::table& shield) {
 
 void register_log_api(sol::table& shield) {
     auto& log = shield::log::get_logger("lua");
+    sol::state_view lua(shield.lua_state());
 
     // Create shield.log table
-    auto log_table = sol::table(sol::lua_state(), sol::create);
+    auto log_table = lua.create_table();
 
     log_table.set_function("debug", [&log](std::string msg) {
         SHIELD_LOG_DEBUG(log, msg);
@@ -305,7 +317,8 @@ void register_log_api(sol::table& shield) {
 // ============================================================================
 
 void register_data_api(sol::table& shield) {
-    auto db_table = sol::table(sol::lua_state(), sol::create);
+    sol::state_view lua(shield.lua_state());
+    auto db_table = lua.create_table();
 
     // shield.db.query(sql, params) -> ok, rows
     db_table.set_function("query", [](sol::this_state s,
@@ -376,7 +389,7 @@ void register_data_api(sol::table& shield) {
     shield["db"] = db_table;
 
     // Redis API
-    auto redis_table = sol::table(sol::lua_state(), sol::create);
+    auto redis_table = lua.create_table();
 
     redis_table.set_function("get", [](sol::this_state s,
                                         std::string key) -> sol::object {

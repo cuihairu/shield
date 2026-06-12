@@ -2,7 +2,7 @@
 
 本文是 Shield 重构后的 Lua 用户 API 契约。运行时语义细节仍由各 `runtime-*.md` 文档展开；当示例或旧源码与本文冲突时，以本文为准。
 
-当前状态：设计冻结中，源码尚未完整实现。
+当前状态：本文冻结 Phase 1 Lua API 契约；源码需要按本文补齐实现和测试。
 
 ## 设计原则
 
@@ -12,7 +12,7 @@
 - 当前消息上下文通过 `shield.sender()`、`shield.trace()`、`shield.deadline()` 显式读取。
 - `shield.send` 非阻塞、无 ACK。
 - `shield.call` 挂起当前 Lua coroutine，但不阻塞 runtime 线程。
-- API 返回值优先使用 `ok, result_or_error`，业务返回的 `nil` 和 `false` 不应和 runtime 错误混淆。
+- Runtime API 返回值统一使用 `ok, result_or_error`，业务返回的 `nil` 和 `false` 不应和 runtime 错误混淆。
 - DB/Redis API 使用点号调用：`shield.db.query(...)`，不使用冒号调用。
 
 ## Service Module
@@ -44,7 +44,7 @@ return M
 
 - 脚本必须返回 table。
 - table 上的普通函数就是可被 `send/call` 分发的 method。
-- `on_*` 名称为运行时 hook 或模块 hook 保留，业务 method 不建议使用 `on_` 前缀。
+- `on_*` 名称为运行时 hook 或模块 hook 保留，业务 method 禁止使用 `on_` 前缀。
 - module 顶层代码只做轻量声明，不执行阻塞 I/O。
 - 每个 service 实例有独立 Lua state 或隔离上下文，不能共享可变 Lua 全局业务状态。
 
@@ -113,7 +113,7 @@ end
 | `method` | handler method 名称，非 handler 时为空 |
 | `trace_id` | 可选 trace id |
 
-`on_error` 不改变服务状态。是否进入 panic 由运行时错误阈值决定。
+`on_error` 不改变服务状态。Phase 1 的 panic 策略固定为：同一 service 连续 handler/timer/fork 未捕获错误达到 `limits.max_errors_before_panic` 时进入 panic；未配置时默认 10。
 
 ### on_panic(reason, context)
 
@@ -428,7 +428,7 @@ session:remote_addr()
 
 ## Error Object
 
-运行时错误统一返回 `Error` userdata/table：
+运行时错误统一返回只读 table：
 
 ```lua
 if not ok then

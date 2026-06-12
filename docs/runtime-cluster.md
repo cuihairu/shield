@@ -6,7 +6,7 @@
 
 当前状态：
 
-- 本文 API 和 discovery 策略仍是 optional module 设计稿。
+- 本文冻结 `shield_cluster` optional module 的第一版契约。
 - 本地 `shield.query(name)` 继续只查询本地 registry。
 - optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 
@@ -24,28 +24,28 @@
 
 ### 与 CAF 的关系
 
-CAF 底层已支持远程 Actor 通信（通过 middleman），`shield_cluster` 在此基础上提供：
+CAF 底层已支持远程 Actor 通信（通过 middleman），`shield_cluster` 在此基础上封装 Shield 服务语义：
 
 | 能力 | CAF 提供 | shield_cluster 补充 |
 |------|----------|---------------------|
 | 远程 Actor 通信 | ✅ | 封装为 Shield 服务语义 |
 | 连接管理 | ✅ | 节点生命周期管理 |
 | 消息路由 | ✅ | 服务名路由、路由 cache |
-| 节点发现 | ❌ | 可选集成外部系统 |
-| 负载均衡 | ❌ | 自定义策略 |
+| 节点发现 | ❌ | Phase 1 仅支持静态配置 |
+| 负载均衡 | ❌ | 不进入 Phase 1 |
 | 心跳状态 | ❌ | online/suspect/offline/removed |
 
-### 实现策略
+### Phase 1 实现策略
 
 **基于 CAF middleman：**
 - 使用 CAF 的远程 Actor 能力
 - 不重新实现网络传输层
 - 在 CAF 之上封装 Shield 服务语义
 
-**可选集成外部服务发现：**
-- 静态配置（开发环境）
-- Kubernetes Service（云原生部署）
-- Etcd/Consul/Zookeeper（自建集群）
+**静态配置：**
+- Phase 1 只支持静态 peers。
+- 不集成 Kubernetes、Etcd、Consul、Zookeeper 或广播发现。
+- 不提供透明负载均衡、自动 sharding 或 leader election。
 
 ## Public Surface
 
@@ -62,6 +62,7 @@ local nodes = shield.cluster.nodes()
 - `shield.cluster.nodes()` 返回当前已知节点及状态摘要。
 - 普通业务消息仍走统一 `shield.send/call`，不定义 `shield.cluster.send/call`。
 - 节点 connect/disconnect、peer 管理属于配置和运维职责，不作为业务 Lua API 暴露。
+- Phase 1 只支持显式 `(node_id, service_name)` 寻址。
 
 ## Cluster 语义
 
@@ -76,15 +77,15 @@ local nodes = shield.cluster.nodes()
 
 ## 节点发现
 
-节点发现属于 `shield_cluster`，不属于 `shield_core`。目标方案可以分层实现：
+节点发现属于 `shield_cluster`，不属于 `shield_core`。Phase 1 只实现静态配置：
 
 | 方案 | 适用场景 | 外部依赖 | 配置方式 |
 |------|----------|----------|----------|
 | **静态配置** | 开发/测试/小型部署 | 无 | `cluster.peers` |
-| 广播发现 | 局域网自动发现 | 无 | `cluster.discovery: broadcast` |
-| Redis | 小型游戏/已有 Redis | Redis | `cluster.discovery: redis` |
-| Kubernetes | 云原生部署 | K8s API | `cluster.discovery: kubernetes` |
-| Etcd/Consul | 大型自建集群 | Etcd/Consul | `cluster.discovery: etcd` |
+| 广播发现 | Phase 2+ | 无 | `cluster.discovery: broadcast` |
+| Redis | Phase 2+ | Redis | `cluster.discovery: redis` |
+| Kubernetes | Phase 2+ | K8s API | `cluster.discovery: kubernetes` |
+| Etcd/Consul | Phase 2+ | Etcd/Consul | `cluster.discovery: etcd` |
 
 ### 默认实现：静态配置
 
@@ -99,7 +100,7 @@ cluster:
     - "node-3:9000"
 ```
 
-### 内置广播发现
+### 广播发现（Phase 2+）
 
 局域网自动发现，无需配置 peers 列表：
 
@@ -118,7 +119,7 @@ cluster:
 - 收到广播的节点自动建立连接
 - 节点离开时通过心跳超时检测
 
-### Redis 服务发现
+### Redis 服务发现（Phase 2+）
 
 基于 Redis 的服务发现，适合小型游戏和已有 Redis 的项目。成本低、实现简单、可靠性足够。
 
@@ -189,7 +190,7 @@ GET shield:nodes:count  # "3"
 - 已有 Redis 基础设施
 - 不想引入 Etcd/Consul 等重型中间件
 
-### 外部服务发现
+### 外部服务发现（Phase 2+）
 
 大型部署可选集成外部系统：
 
@@ -216,7 +217,7 @@ cluster:
 
 ## 负载均衡
 
-服务发现后的负载均衡策略：
+负载均衡不进入 Phase 1。后续可选策略：
 
 | 策略 | 说明 |
 |------|------|
@@ -225,7 +226,7 @@ cluster:
 | consistent-hash | 一致性哈希（按 key） |
 | weighted | 加权轮询 |
 
-负载均衡由业务层或 pool service 实现，不进入 core。
+Phase 1 中，负载均衡由业务层或 pool service 自行实现，不进入 core 或 `shield_cluster` public API。
 
 ## 单机多进程模式
 
@@ -259,22 +260,26 @@ cluster:
 - 故障隔离（一个进程崩溃不影响其他）
 - 热更新（逐个进程重启）
 
-## 实现状态
+## Phase 1 实现范围
 
-`shield_cluster` 目前只是预留模块，尚未实现。完整实现需要：
+`shield_cluster` 第一版实现范围：
 
-- 节点发现和连接管理（基于 CAF middleman）。
+- 静态 peers 配置。
+- 节点连接管理（基于 CAF middleman）。
 - 节点心跳和状态管理。
-- 跨节点消息路由（服务名 -> 远程 Actor）。
 - 远端路由 cache。
+- 显式 `(node_id, service_name)` 查询。
+- `send/call` 跨节点错误语义。
 
-**建议最小 cluster 实现范围：**
-- 静态配置（零依赖）
-- 基本心跳和状态管理
-- 远端 route cache
-- `send/call` 跨节点错误语义
+**Phase 1 不做：**
+- 动态服务发现。
+- 透明负载均衡。
+- 全局唯一服务名竞争。
+- 分布式一致性、leader election、自动 sharding。
+- 玩家迁移、全局锁、排行榜、跨节点配置推送。
 
 **后续扩展：**
+- Redis discovery。
 - Kubernetes 集成
 - Etcd/Consul 集成
 - 高级路由策略

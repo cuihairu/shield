@@ -1,18 +1,30 @@
 # 配置运行时语义
 
-本文档是 Shield **core runtime 配置 schema** 的权威来源。官方可选模块可以定义自己的配置段，但不能把配置项反向塞进 core schema。
+本文档是 Shield **最小 runtime 配置入口** 的权威来源。官方可选模块可以定义自己的配置段，但不能把配置项反向塞进最小 runtime schema。
 
-当前状态：设计阶段，源码配置仍包含旧字段。
+当前状态：本文冻结 Phase 1 配置契约；源码中的旧字段需要按本文逐步清理。
 
 ## 配置原则
 
 - YAML 只做声明式绑定，不承载业务逻辑。
-- core schema 只覆盖单节点 runtime 必需能力。
-- 配置驱动 Lua service、网络监听、data source、日志和 bootstrap timeout。
+- 最小 runtime schema 只覆盖单节点 runtime 必需能力。
+- 配置驱动 Lua service、网络监听、data source、日志和 bootstrap timeout；每个配置段必须有明确 owner。
 - 不在 core 中提供服务发现、插件、Prometheus、健康检查、DI、注解或条件装配配置。
 - optional module 的配置由对应模块自己验证；未启用模块时 core 不解释这些配置。
 
-## Core Schema
+## Phase 1 Schema
+
+配置段 owner：
+
+| 配置段 | owner |
+| --- | --- |
+| `app` | `shield_bootstrap` |
+| `log` | `shield_log` |
+| `lua` | `shield_lua` |
+| `actors` | `shield_bootstrap` + `shield_core` + `shield_lua` |
+| `actors[].network` | `shield_net` |
+| `database` / `redis` | `shield_data` |
+| `bootstrap` / `shutdown` | `shield_bootstrap` |
 
 ```yaml
 app:
@@ -207,17 +219,19 @@ shield --config config/app.yaml --config config/production.yaml
 
 ## 热更新
 
-core 只承诺有限热更新：
+Phase 1 只承诺极少量本地热更新：
 
 | 配置项 | 热更新 | 行为 |
 | --- | --- | --- |
 | `log.level` | 是 | 立即生效 |
-| `log.console` | 是 | 重建 log sink |
-| `database.pool_size` | 有条件 | data module 自行 resize |
-| `redis.pool_size` | 有条件 | data module 自行 resize |
-| `actors[].instances` | 有条件 | 通过 service spawn/stop 实现 |
+| `log.console` / `log.file` | 否 | Phase 1 需要重启 |
+| `database.pool_size` | 否 | Phase 1 需要重启 |
+| `redis.pool_size` | 否 | Phase 1 需要重启 |
+| `actors[].instances` | 否 | Phase 1 需要重启 |
 | `actors[].script` | 否 | 需要 service 重启或未来 hot reload 机制 |
 | `actors[].network` | 否 | 需要 listener 重建 |
+| `lua.vm.*` | 否 | 需要重启 |
+| `bootstrap.*` / `shutdown.*` | 否 | 需要重启 |
 
 全局配置推送、运维热更新、cluster-wide 配置同步属于 `shield_global` 或 `shield_ops` 后续设计，不进入 core schema。
 
@@ -234,6 +248,8 @@ core 只承诺有限热更新：
 | `server_manager` | `shield_server` | [服务器状态](runtime-server.md) |
 
 optional module 启用后，由该模块读取并验证自己的配置段。core bootstrap 只负责把未消费的 optional 配置快照传给已启用模块。
+
+如果配置文件包含 optional module 配置段，但对应模块未构建或未启用，启动必须失败并输出明确错误；不能静默忽略。
 
 ## 删除的旧配置
 

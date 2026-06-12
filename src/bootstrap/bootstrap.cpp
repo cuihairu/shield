@@ -17,6 +17,8 @@
 #include <unordered_map>
 
 namespace shield::bootstrap {
+using shield::core::CafAdapter;
+using shield::core::initialize_core;
 
 // Global state
 struct GlobalState {
@@ -111,11 +113,11 @@ void shutdown() {
     // Run POST_SHUTDOWN starters
     run_starters(Phase::POST_SHUTDOWN);
 
-    // Shutdown logging
-    shield::log::Logger::shutdown();
-
     g_state->initialized = false;
     SHIELD_LOG_INFO(log, "Shield runtime shutdown complete");
+
+    // Shutdown logging after the final runtime log has been emitted.
+    shield::log::Logger::shutdown();
 
     g_state_owner.reset();
     g_state = nullptr;

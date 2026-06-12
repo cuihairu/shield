@@ -6,7 +6,7 @@
 
 当前状态：
 
-- 本文命名空间和 API 仍是 optional module 设计稿。
+- 本文冻结 `shield_global` optional module 的边界契约；具体 Lua API 进入 Phase 2+。
 - `shield.global()`、锁、排行榜、队列、限流器都不属于当前最小 Lua API 契约。
 - optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 - 如与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。

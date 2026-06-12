@@ -1,7 +1,7 @@
 // [SHIELD_NET] Session implementation
-#include "shield/net_new/session.hpp"
+#include "shield/net/session.hpp"
 
-#include "shield/log_new/logger.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/transport/frame.hpp"
 
 #include <boost/asio/buffer.hpp>
@@ -12,9 +12,6 @@
 #include <unordered_map>
 
 namespace shield::net {
-
-// Forward declaration
-std::atomic<SessionId> TcpListener::g_next_session_id{1};
 
 TcpSession::TcpSession(SessionId id,
                        boost::asio::ip::tcp::socket socket,

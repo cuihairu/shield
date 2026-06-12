@@ -3,6 +3,8 @@
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+#include <algorithm>
+#include <cstring>
 #include <stdexcept>
 
 namespace shield::transport {
@@ -36,12 +38,9 @@ std::vector<uint8_t> AesGcmEncryption::encrypt(std::string_view data) {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     EVP_EncryptInit_ex(ctx, cipher, nullptr, key_.data(), iv.data());
 
-    // Allocate output: IV + plaintext + tag
-    std::vector<uint8_t> output;
-    output.reserve(iv.size() + data.size() + 16);
-
-    // Add IV to output
-    output.insert(output.end(), iv.begin(), iv.end());
+    // Allocate output: IV + ciphertext + tag
+    std::vector<uint8_t> output(iv.size() + data.size() + 16);
+    std::copy(iv.begin(), iv.end(), output.begin());
 
     // Encrypt
     int len;
@@ -52,12 +51,10 @@ std::vector<uint8_t> AesGcmEncryption::encrypt(std::string_view data) {
     int final_len;
     EVP_EncryptFinal_ex(ctx, output.data() + iv.size() + len, &final_len);
 
-    // Get tag
-    std::vector<uint8_t> tag(16);
-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag.data());
-
-    // Add tag to output
-    output.insert(output.end(), tag.begin(), tag.end());
+    size_t tag_offset = iv.size() + static_cast<size_t>(len + final_len);
+    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16,
+                        output.data() + tag_offset);
+    output.resize(tag_offset + 16);
 
     EVP_CIPHER_CTX_free(ctx);
 

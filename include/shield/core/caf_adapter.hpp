@@ -4,13 +4,14 @@
 // Note: This header is INTERNAL to shield_core implementation
 // Public headers should NOT include this
 
-#include "shield/core_new/service_handle.hpp"
-#include "shield/core_new/message.hpp"
+#include "shield/core/service_handle.hpp"
+#include "shield/core/message.hpp"
 
 #include <caf/actor.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/event_based_actor.hpp>
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -25,6 +26,7 @@ public:
 
     bool is_valid() const { return static_cast<bool>(actor_); }
     const caf::actor& get() const { return actor_; }
+    caf::actor& get() { return actor_; }
 
 private:
     caf::actor actor_;

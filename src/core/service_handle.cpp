@@ -1,35 +1,18 @@
 // [SHIELD_CORE] Service handle implementation
-#include "shield/core_new/service_handle.hpp"
-#include "shield/core_new/caf_adapter.hpp"
+#include "shield/core/service_handle.hpp"
+#include "shield/core/caf_adapter.hpp"
 
 #include <caf/actor.hpp>
+
+#include <utility>
 
 namespace shield::core {
 
 namespace detail {
 
-class ActorHolder {
-public:
-    ActorHolder() = default;
+ActorHolder::ActorHolder() = default;
 
-    explicit ActorHolder(caf::actor actor)
-        : actor_(std::move(actor)) {}
-
-    bool is_valid() const {
-        return static_cast<bool>(actor_);
-    }
-
-    const caf::actor& get() const {
-        return actor_;
-    }
-
-    caf::actor& get() {
-        return actor_;
-    }
-
-private:
-    caf::actor actor_;
-};
+ActorHolder::ActorHolder(caf::actor actor) : actor_(std::move(actor)) {}
 
 }  // namespace detail
 

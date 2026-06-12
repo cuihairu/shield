@@ -30,7 +30,7 @@
 
 ## Package Layout
 
-建议将 descriptor package 分为三段：
+descriptor package 分为三段：
 
 ```text
 DescriptorPackage
@@ -64,7 +64,7 @@ PackageHeader
 
 第一版使用 little-endian。跨语言客户端必须显式按 little-endian 读取，不依赖平台字节序。
 
-`package_crc32` 只用于快速发现文件损坏。安全校验和生产环境完整性应使用签名机制，放在后续阶段。
+`package_crc32` 只用于快速发现文件损坏。生产环境完整性第一版使用 `schema_root_hash` 和发布流程校验；外部签名机制推迟到 Phase 2。
 
 ### MetaBlock
 
@@ -340,7 +340,7 @@ Hash 输入不能包含：
 
 兼容检查基于两个 canonical descriptors，而不是文本 diff。
 
-建议输出：
+输出格式：
 
 ```text
 CompatibilityReport
@@ -456,12 +456,11 @@ DescriptorManager
 
 Profile 不应改变协议语义 hash。对于 client/server 差异，应分别计算 profile package hash，同时保留共同的 schema root hash。
 
-## Open Decisions
+## 已定规则
 
-这些问题需要在实现前定死：
-
-- Hash 算法使用 SHA-256、BLAKE3 还是 xxHash + 签名组合。
-- `module_id` 是否强制显式声明。
-- `descriptor.bin` 内部编码是否直接复用 protobuf message 编码。
-- `ValidationRule` 第一版支持哪些规则。
-- mapper 是否进入 Phase 1，还是推迟到 descriptor 基础稳定之后。
+- Hash 算法使用 SHA-256；CRC32 只用于快速损坏检测，不参与语义兼容判断。
+- `module_id` 由 `protocol.lock` 分配并长期稳定；manifest 可以显式声明，但不强制。
+- `service_id`、`method_id`、`field_id` 必须显式声明。
+- `descriptor.bin` 内部编码第一版使用项目自定义 canonical binary encoding，不直接复用 protobuf message encoding。
+- `ValidationRule` 第一版只支持 `required`、`min`、`max`、`minLength`、`maxLength`、`minItems`、`maxItems`。
+- mapper descriptor 不进入 descriptor Phase 1；等 descriptor、type、service 基础稳定后作为 server-only profile 扩展。

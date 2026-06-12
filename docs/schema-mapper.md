@@ -150,13 +150,13 @@ RPC 返回结构应该使用 DTO 或 view：
 WHERE player_id = #{player_id}
 ```
 
-可选支持 `${name}` 作为原样替换，但第一版不建议开放。如果必须支持，只能用于经过白名单校验的标识符场景，例如排序字段：
+`${name}` 原样替换不进入 Phase 1。后续如需支持，只能用于经过白名单校验的标识符场景，例如排序字段：
 
 ```xml
 <bind name="order_by" source="order_by" mode="identifier" allow="level,nickname,created_at"/>
 ```
 
-建议第一版只实现 `#{}`，不实现 `${}`。
+Phase 1 只实现 `#{}`，不实现 `${}`。
 
 ## 嵌套参数
 
@@ -184,7 +184,7 @@ WHERE guild_id = #{filter.guild_id}
 </select>
 ```
 
-字段名默认按 column name 匹配 struct field name。建议允许 `snake_case` 到 `camelCase` 映射，但必须可配置。
+字段名默认按 column name 匹配 struct field name。Phase 1 允许 `snake_case` 到 `camelCase` 映射，但必须通过 mapper 配置显式开启。
 
 ## Result Map
 
@@ -256,7 +256,7 @@ WHERE guild_id = #{filter.guild_id}
 - `required`: 没有事务则开启，有则复用。
 - `requires_new`: 总是开启新事务。
 
-不建议第一版做跨 mapper 自动事务编排。跨多步业务事务应该由 service 层显式控制：
+Phase 1 不做跨 mapper 自动事务编排。跨多步业务事务由 service 层显式控制：
 
 ```lua
 shield.db.transaction(function(tx)
@@ -269,7 +269,7 @@ end)
 
 ## 动态 SQL
 
-动态 SQL 很实用，但也是复杂度来源。第一版只建议支持最小集合：
+动态 SQL 很实用，但也是复杂度来源。Phase 1 只支持最小集合：
 
 ```xml
 <select name="SearchPlayers"
@@ -290,14 +290,14 @@ end)
 </select>
 ```
 
-建议第一版支持：
+Phase 1 支持：
 
 - `if`
 - `where`
 - `set`
 - `foreach` 用于 `IN` 列表
 
-暂不支持：
+Phase 1 不支持：
 
 - 任意表达式语言
 - include fragment
@@ -324,7 +324,7 @@ end)
 </select>
 ```
 
-后续可支持 cursor paging：
+cursor paging 推迟到 Phase 2：
 
 ```xml
 <select name="ListPlayersByCursor"
@@ -358,13 +358,13 @@ end)
 </select>
 ```
 
-缓存策略建议：
+缓存策略取值：
 
 - `none`
 - `local`
 - `redis`
 
-第一版可以只生成元数据，不实现复杂一致性策略。写操作后的缓存失效必须显式声明：
+Phase 1 只生成缓存元数据，不实现复杂一致性策略。写操作后的缓存失效必须显式声明：
 
 ```xml
 <update name="UpdateNickname"
@@ -391,7 +391,7 @@ SQL 方言需要显式声明：
 - `postgres`
 - `sqlite`
 
-第一版可以先支持 `mysql` 和 `sqlite`，因为本地开发和生产路径都容易覆盖。
+Phase 1 支持 `mysql` 和 `sqlite`。`postgres` 保留为 schema 可声明方言，但 runtime 支持推迟到 Phase 2。
 
 同一个 statement 可以提供多个方言版本：
 
@@ -490,7 +490,7 @@ descriptor.client.bin
 
 ## Phase 1 范围
 
-建议第一版 mapper 只做：
+Phase 1 mapper 只做：
 
 - `select/insert/update/delete`
 - `#{}` 参数绑定
@@ -513,13 +513,10 @@ descriptor.client.bin
 - 二级缓存一致性
 - schema migration
 
-## Open Decisions
-
-- mapper runtime 第一版绑定哪个数据库抽象：现有 database 模块，还是新增 lightweight DB runtime。
-- `entity` 是否生成 schema migration 草案。
-
-已定规则：
+## 已定规则
 
 - Lua mapper facade 不能阻塞 actor 线程，表面同步 API 应基于 coroutine/yield，另提供 async 回调 API。
 - SQL 第一版不允许多语句。
 - mapper 只能作为后续可选扩展讨论，不进入当前最小启动路径。
+- mapper runtime 绑定 `shield_data` 提供的现有 DB 抽象，不新增 lightweight DB runtime。
+- `entity` 不生成 schema migration 草案；migration 属于独立工具链或应用层责任。

@@ -1,16 +1,16 @@
 // [SHIELD_BASE] Result type for error handling without exceptions
 #pragma once
 
+#include "shield/base/error.hpp"
+
 #include <functional>
 #include <memory>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <variant>
 
 namespace shield::base {
-
-// Forward declaration
-class Error;
 
 /// @brief Result type for functions that can fail without throwing exceptions
 /// @tparam T The success value type

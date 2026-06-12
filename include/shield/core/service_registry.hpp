@@ -1,6 +1,7 @@
 // [SHIELD_CORE] Service registry for local naming
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>

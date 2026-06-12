@@ -225,7 +225,6 @@ target_include_directories(shield_log
 
 target_link_libraries(shield_log
     PUBLIC shield_base
-    PRIVATE Boost::log Boost::log_setup
 )
 
 # -----------------------------------------------------------------------------
@@ -261,14 +260,14 @@ target_include_directories(shield_core
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_BINARY_DIR}/include
-        ${LUA_INCLUDE_DIR}
-        ${SOL2_INCLUDE_DIRS}
 )
 
 target_link_libraries(shield_core
     PUBLIC shield_base
     PRIVATE CAF::core CAF::io
 )
+
+include(cmake/CheckDeps.cmake)
 
 # Dependency check - shield_core should NOT link these
 if(TARGET shield_core)
@@ -352,22 +351,8 @@ target_include_directories(shield_lua
 
 target_link_libraries(shield_lua
     PUBLIC shield_base shield_core
-    PRIVATE shield_log shield_config shield_data
-    PRIVATE ${LUA_LIBRARIES} sol2::sol2
-)
-
-target_include_directories(shield_lua
-    PUBLIC
-        ${PROJECT_SOURCE_DIR}/include
-        ${CMAKE_CURRENT_BINARY_DIR}/include
-        ${LUA_INCLUDE_DIR}
-        ${SOL2_INCLUDE_DIRS}
-)
-
-target_link_libraries(shield_lua
-    PUBLIC shield_base shield_core
     PRIVATE shield_log shield_config shield_data shield_net
-    PRIVATE ${LUA_LIBRARIES}
+    PRIVATE ${LUA_LIBRARIES} sol2::sol2
 )
 
 # -----------------------------------------------------------------------------

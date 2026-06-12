@@ -1,8 +1,8 @@
 // [SHIELD_DATA] Data access implementation
-#include "shield/data_new/data.hpp"
+#include "shield/data/data.hpp"
 
-#include "shield/config_new/config.hpp"
-#include "shield/log_new/logger.hpp"
+#include "shield/config/config.hpp"
+#include "shield/log/logger.hpp"
 
 #include <condition_variable>
 #include <mutex>
@@ -39,7 +39,10 @@ public:
     QueryResult execute(std::string_view sql,
                        const std::vector<std::string>& params) override {
         // Mock implementation
-        return QueryResult::ok({}, 1, 1);
+        auto result = QueryResult::ok();
+        result.affected_rows = 1;
+        result.last_insert_id = 1;
+        return result;
     }
 
     bool ping() override {
@@ -71,20 +74,15 @@ bool DatabasePool::initialize(std::string_view config_key) {
     // Read from config
     auto& cfg = shield::config::global_config();
 
-    std::string host = cfg.get_string(config_key,
-                                     std::string(config_key) + ".host",
+    std::string prefix(config_key);
+    std::string host = cfg.get_string(prefix + ".host",
                                      "localhost");
-    int port = static_cast<int>(cfg.get_int(config_key,
-                                              std::string(config_key) + ".port",
-                                              3306));
-    std::string database = cfg.get_string(config_key,
-                                           std::string(config_key) + ".database",
+    int port = static_cast<int>(cfg.get_int(prefix + ".port", 3306));
+    std::string database = cfg.get_string(prefix + ".database",
                                            "shield");
-    std::string user = cfg.get_string(config_key,
-                                       std::string(config_key) + ".user",
+    std::string user = cfg.get_string(prefix + ".user",
                                        "root");
-    std::string password = cfg.get_string(config_key,
-                                           std::string(config_key) + ".password",
+    std::string password = cfg.get_string(prefix + ".password",
                                            "");
 
     auto& log = shield::log::get_logger("database");
@@ -217,15 +215,11 @@ bool RedisPool::initialize(std::string_view config_key) {
     // Read from config
     auto& cfg = shield::config::global_config();
 
-    std::string host = cfg.get_string(config_key,
-                                     std::string(config_key) + ".host",
+    std::string prefix(config_key);
+    std::string host = cfg.get_string(prefix + ".host",
                                      "localhost");
-    int port = static_cast<int>(cfg.get_int(config_key,
-                                              std::string(config_key) + ".port",
-                                              6379));
-    int db = static_cast<int>(cfg.get_int(config_key,
-                                          std::string(config_key) + ".db",
-                                          0));
+    int port = static_cast<int>(cfg.get_int(prefix + ".port", 6379));
+    int db = static_cast<int>(cfg.get_int(prefix + ".db", 0));
 
     auto& log = shield::log::get_logger("redis");
     SHIELD_LOG_INFO(log, "Redis config: " + host + ":" + std::to_string(port) +

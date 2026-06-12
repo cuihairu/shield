@@ -2,11 +2,11 @@
 
 本文档包含 Shield 服务器级别状态管理的运行时语义决策。
 
-`shield_server` / `ServerManager` 属于官方可选模块，不属于 `shield_core`，也不是当前最小运行路径。本文是 optional module 设计稿。
+`shield_server` / `ServerManager` 属于官方可选模块，不属于 `shield_core`，也不是当前最小运行路径。本文冻结该 optional module 的边界契约。
 
 当前状态：
 
-- 本文命名空间、API 和 `server_manager` 配置仍是 optional module 设计稿。
+- 本文命名空间、API 和 `server_manager` 配置进入 Phase 2+。
 - `shield.server()` 不属于当前最小 Lua API 契约。
 - optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 - 如与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。

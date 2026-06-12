@@ -4,7 +4,7 @@
 
 当前状态：
 
-- `shield_ops` 是 official optional module 设计稿。
+- `shield_ops` 是 official optional module 契约。
 - 它不提供业务 Lua API，也不属于最小运行路径。
 - 横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 
@@ -19,6 +19,7 @@
 - metrics 可以独立启用。
 - profile 必须显式启用。
 - console 必须显式启用。
+- HTTP 只用于管理入口，不作为业务 HTTP server。
 
 core 只提供可读取的 runtime snapshot 和 counters，不反向依赖 `shield_ops`。
 
@@ -35,10 +36,11 @@ profile controls
 ```
 
 它不定义 `shield.ops.*` 业务 Lua API。
+它也不提供业务 REST router、middleware chain 或 Web framework 集成。
 
 ## 运维端点
 
-`shield_ops` 通过 HTTP 端点暴露运维能力：
+`shield_ops` 在显式启用 HTTP 管理入口时暴露以下端点：
 
 | 端点 | 方法 | 说明 |
 |------|------|------|

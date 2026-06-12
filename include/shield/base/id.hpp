@@ -1,7 +1,9 @@
 // [SHIELD_BASE] ID types for Shield runtime
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <string_view>
 

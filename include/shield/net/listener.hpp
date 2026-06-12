@@ -1,13 +1,18 @@
 // [SHIELD_NET] Listener types
 #pragma once
 
-#include "shield/net_new/session.hpp"
+#include "shield/net/session.hpp"
 
 #include <boost/asio.hpp>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace shield::net {
 
@@ -28,7 +33,10 @@ public:
     uint16_t port() const { return port_; }
 
     /// @brief Get number of active sessions
-    size_t session_count() const { return sessions_.size(); }
+    size_t session_count() const {
+        std::shared_lock lock(sessions_mutex_);
+        return sessions_.size();
+    }
 
     /// @brief Find session by ID
     std::shared_ptr<Session> find_session(SessionId id) const;
@@ -52,7 +60,7 @@ private:
 
     boost::asio::ip::tcp::socket socket_;
     std::unordered_map<SessionId, std::shared_ptr<Session>> sessions_;
-    std::shared_mutex sessions_mutex_;
+    mutable std::shared_mutex sessions_mutex_;
 
     static std::atomic<SessionId> g_next_session_id;
 };

@@ -1,10 +1,13 @@
 // [SHIELD_CONFIG] Configuration module
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
+#include <vector>
 
 namespace shield::config {
 
@@ -14,8 +17,7 @@ using ConfigValue = std::variant<
     int64_t,
     double,
     bool,
-    std::vector<std::string>,
-    std::unordered_map<std::string, ConfigValue>
+    std::vector<std::string>
 >;
 
 /// @brief Configuration interface

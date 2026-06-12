@@ -1,6 +1,10 @@
 // [SHIELD] Main entry point
+#include <atomic>
+#include <chrono>
 #include <csignal>
 #include <iostream>
+#include <string>
+#include <thread>
 
 #include "shield/bootstrap/bootstrap.hpp"
 

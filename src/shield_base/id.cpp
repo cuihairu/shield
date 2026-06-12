@@ -1,5 +1,6 @@
 // [SHIELD_BASE] ID type implementations
 #include "shield/base/id.hpp"
+#include "shield/base/time.hpp"
 
 #include <atomic>
 #include <cstring>

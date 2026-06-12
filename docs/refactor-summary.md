@@ -17,7 +17,7 @@
 **依赖**: 仅标准库
 
 ### 2. shield_core - 纯净核心模块 ✓
-**位置**: `src/core_new/`, `include/shield/core_new/`
+**位置**: `src/core/`, `include/shield/core/`
 
 **包含内容**:
 - `service_handle.hpp` - ServiceHandle（隐藏 caf::actor）
@@ -29,7 +29,45 @@
 
 **禁止依赖**: Lua, Asio/Beast, DB/Redis, yaml-cpp, log implementation
 
-### 3. shield_lua - Lua 模块 ✓
+### 3. shield_log - 日志模块 ✓
+**位置**: `src/log/`, `include/shield/log/`
+
+**职责**:
+- 提供运行时日志 facade 和 sink。
+- 作为 `shield_config`、`shield_data`、`shield_net`、`shield_transport` 等模块的基础设施依赖。
+
+**禁止事项**: 不反向依赖 `shield_core`、Lua、网络或数据访问。
+
+### 4. shield_config - 配置模块 ✓
+**位置**: `src/config/`, `include/shield/config/`
+
+**职责**:
+- YAML 配置加载。
+- 运行时配置查询。
+- 只承载 core 最小运行路径需要的配置；cluster/global/ops 配置由各自可选模块拥有。
+
+### 5. shield_data - 数据访问模块 ✓
+**位置**: `src/data/`, `include/shield/data/`
+
+**职责**:
+- 提供 raw DB/Redis access。
+- 不提供 ORM、mapper、跨服务事务或业务缓存策略。
+
+### 6. shield_transport - 传输适配模块 ✓
+**位置**: `src/transport/`, `include/shield/transport/`
+
+**职责**:
+- frame、codec、encryption 等字节流适配。
+- 不拥有连接生命周期。
+
+### 7. shield_net - 网络模块 ✓
+**位置**: `src/net/`, `include/shield/net/`
+
+**职责**:
+- listener、session、connection 管理。
+- 依赖 `shield_transport` 处理字节流，不直接承载业务消息语义。
+
+### 8. shield_lua - Lua 模块 ✓
 **位置**: `src/lua/`, `include/shield/lua/`
 
 **包含内容**:
@@ -39,7 +77,14 @@
 
 **依赖**: shield_base, shield_core, shield_log, shield_config, shield_data, shield_net, Lua
 
-### 4. CMake 重构 ✓
+### 9. shield_bootstrap - 启动模块 ✓
+**位置**: `src/bootstrap/`, `include/shield/bootstrap/`
+
+**职责**:
+- 组合选定 runtime modules。
+- 提供 `shield::bootstrap::initialize` 和 `shield::bootstrap::run`。
+
+### 10. CMake 重构 ✓
 **位置**: `CMakeLists.txt`
 
 **模块依赖图**:
@@ -60,9 +105,12 @@ shield_lua → shield_base, shield_core, shield_log, shield_config, shield_data,
 shield_bootstrap → 以上所有模块
     ↓
 shield (可执行文件)
+
+optional:
+shield_cluster / shield_global / shield_ops 默认 OFF
 ```
 
-### 5. Lua API 设计 ✓
+### 11. Lua API 设计 ✓
 **位置**: `examples/new_api_example.lua`
 
 **新 API 语法**:
@@ -96,8 +144,18 @@ return M
 | CAF 暴露 | 公开暴露 caf::actor | 隐藏在 CafAdapter 后 |
 | Lua API | shield.service("name") | 返回 table 的 module |
 | 消息入口 | on_message(msg) | 普通函数 method |
-| 集群耦合 | actor_registry 依赖 discovery | 单节点优先，集群可选 |
+| 集群耦合 | actor_registry 依赖 discovery | 单节点优先，`shield_cluster` 作为官方可选模块 |
 | 依赖关系 | 复杂循环依赖 | 清晰单向依赖 |
+
+## 单节点与多节点边界
+
+“单节点优先”不是“只能单节点”。当前主路径先保证本地 service、message、timer、Lua VM、net/data/config/log/bootstrap 稳定；多进程/多机器能力由 `shield_cluster` 承接。
+
+`shield_cluster` 的边界：
+- 负责节点身份、节点心跳、远端路由 cache 和可选服务发现。
+- 复用 `ServiceHandle`、`send/call`、timeout 和错误语义。
+- 不改变本地 `ServiceRegistry`，不把 global registry 或 discovery 塞进 `shield_core`。
+- 默认不启用；通过 `SHIELD_ENABLE_CLUSTER` 和独立模块显式进入构建/启动路径。
 
 ## 待迁移内容
 
@@ -112,14 +170,11 @@ return M
 
 ## 下一步
 
-1. **完成 shield_log 实现**
-2. **完成 shield_config 实现**
-3. **完成 shield_data 实现**
-4. **完成 shield_net 实现**
-5. **完成 shield_bootstrap 实现**
-6. **删除旧模块**
-7. **更新示例和文档**
-8. **添加单元测试**
+1. **修复实现与文档偏差** - 清理旧 `_new` include、修正命名空间和明显编译错误。
+2. **补齐依赖检查** - 确保 `shield_core` 不暴露 Lua/sol2、Asio/Beast、DB/Redis、yaml-cpp 或 log 实现。
+3. **删除或迁移旧模块** - DI、annotations、conditions、plugin、metrics、health、discovery。
+4. **更新示例和文档** - 示例只描述当前已实现或明确标注为目标 API。
+5. **添加单元测试** - 覆盖模块边界、Lua API、net/session、transport frame、config 读取。
 
 ## 编译验证
 

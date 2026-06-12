@@ -6,7 +6,7 @@
 
 当前状态：
 
-- 本文 API 仍是 optional module 设计稿。
+- 本文冻结 `shield_player` optional module 的边界契约；具体 Lua API 进入 Phase 2+。
 - `shield.player.*`、`PlayerSession`、重连窗口和离线消息缓存都不属于当前最小单节点 runtime。
 - `SessionHandle` 仍只留在 gateway / `shield_net` 内部；`shield_player` 的公开语义只暴露 `session_id` 和 `PlayerSession`，不把 `SessionHandle` 作为跨 service 对象传递。
 - 即使启用 `shield_player`，普通 Lua service 仍保持 module-table + named method 语义；本模块不恢复 legacy `on_message(src, type, data)` 统一入口。

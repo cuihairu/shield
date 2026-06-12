@@ -1,9 +1,10 @@
 // [SHIELD_NET] Listener implementation
-#include "shield/net_new/listener.hpp"
+#include "shield/net/listener.hpp"
 
-#include "shield/log_new/logger.hpp"
+#include "shield/log/logger.hpp"
 
 #include <boost/asio/buffer.hpp>
+#include <mutex>
 #include <shared_mutex>
 
 namespace shield::net {
@@ -116,7 +117,7 @@ void TcpListener::broadcast(const std::vector<uint8_t>& data) {
 }
 
 bool TcpListener::kick_session(SessionId id, std::string reason) {
-    std::shared_lock lock(sessions_mutex_);
+    std::unique_lock lock(sessions_mutex_);
     auto it = sessions_.find(id);
     if (it != sessions_.end()) {
         it->second->close(std::move(reason));

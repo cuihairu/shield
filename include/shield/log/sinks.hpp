@@ -1,7 +1,7 @@
 // [SHIELD_LOG] Log sinks
 #pragma once
 
-#include "shield/log_new/logger.hpp"
+#include "shield/log/logger.hpp"
 
 #include <fstream>
 #include <memory>

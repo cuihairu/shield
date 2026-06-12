@@ -9,7 +9,7 @@
 
 Shield 的 schema protocol 是一套定义驱动的协议契约系统。目标是让游戏服务器和客户端共享同一份 XML 契约，运行时加载编译后的 descriptor，不要求业务开发者在协议变更后重新编译 C++ 协议桩。
 
-本文描述目标设计。当前仓库中的 `include/shield/protocol/schema_protocol.hpp`、`src/protocol/schema_protocol.cpp` 和 `tests/unit/protocol/test_schema_protocol.cpp` 是早期实验实现，尚未完整覆盖本文的目录化 XML、descriptor package、Merkle 增量和客户端插件模型。
+本文描述目标设计。当前仓库中的 `include/shield/protocol/schema_protocol.hpp`、`src/protocol/schema_protocol.cpp` 和 `tests/unit/protocol/test_schema_protocol.cpp` 是早期实验实现，与本文定义的目录化 XML、descriptor package、Merkle 增量和客户端插件模型存在差距。
 
 源码目录、C++ namespace、工具链 target、生成物目录和实现迁移规则见 [Schema Implementation Layout](schema-implementation.md)。
 
@@ -104,7 +104,7 @@ protocol/
 </types>
 ```
 
-第一版建议支持：
+Phase 1 支持：
 
 - scalar: `bool`、`int32`、`int64`、`uint32`、`uint64`、`sint32`、`sint64`、`float`、`double`、`string`、`bytes`
 - `enum`
@@ -358,7 +358,7 @@ Payload 编码尽量遵循 Protobuf wire format 规则：
 
 Shield 自己定义的是 envelope 和服务语义，不重新发明字段编码纪律。
 
-Envelope 第一版建议保留可扩展头：
+Envelope Phase 1 保留可扩展头：
 
 ```text
 Frame
@@ -454,7 +454,7 @@ public sealed class PlayerServiceClient {
 
 ## Client Plugins
 
-客户端插件独立于服务端插件系统。第一批建议聚焦：
+客户端插件独立于服务端插件系统。第一批聚焦：
 
 - TypeScript/Web package
 - Unity C# package

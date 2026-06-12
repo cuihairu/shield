@@ -1,6 +1,6 @@
 // [SHIELD_CORE] CAF adapter implementation
-#include "shield/core_new/caf_adapter.hpp"
-#include "shield/core_new/service_registry.hpp"
+#include "shield/core/caf_adapter.hpp"
+#include "shield/core/service_registry.hpp"
 
 #include "shield/base/error.hpp"
 #include "shield/base/id.hpp"
@@ -142,7 +142,7 @@ MessageResponse CafAdapter::call(const ServiceHandle& target,
 
     // This would use scoped_actor and request/response
     // For now, return a dummy response
-    return MessageResponse::ok(base::Payload());
+    return MessageResponse::ok(Payload{});
 }
 
 // Timer actor
@@ -155,18 +155,18 @@ caf::behavior timer_actor_impl(caf::event_based_actor* self,
 
     if (repeat) {
         // Repeating timer
-        self->delayed_send(timeout, self, atom::tick_v);
+        self->delayed_send(timeout, self, atom::tick);
         return caf::behavior{
-            [=](atom_value) {
+            [=](caf::atom_value) {
                 callback();
-                self->delayed_send(timeout, self, atom::tick_v);
+                self->delayed_send(timeout, self, atom::tick);
             }
         };
     } else {
         // One-shot timer
-        self->delayed_send(timeout, self, atom::tick_v);
+        self->delayed_send(timeout, self, atom::tick);
         return caf::behavior{
-            [=](atom_value) {
+            [=](caf::atom_value) {
                 callback();
                 self->quit();
             }

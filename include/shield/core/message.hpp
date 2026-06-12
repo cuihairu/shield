@@ -9,15 +9,16 @@
 #include <variant>
 #include <vector>
 
-namespace shield::core {
+#include "shield/base/error.hpp"
+#include "shield/base/id.hpp"
+#include "shield/core/service_handle.hpp"
 
-// Forward declarations
-class ServiceHandle;
-struct TraceId;
-class Error;
+namespace shield::core {
 
 /// @brief Payload type for message data
 using Payload = std::vector<uint8_t>;
+using TraceId = shield::base::TraceId;
+using Error = shield::base::Error;
 
 /// @brief Method name type
 using MethodName = std::string;

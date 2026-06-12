@@ -1,6 +1,7 @@
 // [SHIELD_LOG] Logger facade
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -53,7 +54,7 @@ public:
 
     // Non-copyable
     Logger(const Logger&) = delete;
-    Logger& operator=(const Logger&) = default;
+    Logger& operator=(const Logger&) = delete;
 
     // Logging methods
     void debug(std::string_view msg);

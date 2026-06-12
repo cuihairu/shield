@@ -1,15 +1,11 @@
 // [SHIELD_CORE] Message implementation
-#include "shield/core_new/message.hpp"
+#include "shield/core/message.hpp"
 #include "shield/base/error.hpp"
 #include "shield/base/id.hpp"
 
-namespace shield::core {
+#include <utility>
 
-// Dummy TraceId for now (will be replaced with real one from base)
-struct TraceId {
-    uint64_t value_ = 0;
-    bool is_valid() const { return value_ != 0; }
-};
+namespace shield::core {
 
 // MessageEnvelope implementation
 MessageEnvelope::MessageEnvelope(ServiceHandle sender, MethodName method,

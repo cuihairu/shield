@@ -2,6 +2,8 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
+#include <utility>
 #include <vector>
 #include "shield/base/byte_buffer.hpp"
 
@@ -51,6 +53,8 @@ public:
 private:
     FrameHeader header_;
     std::vector<uint8_t> payload_;
+
+    friend class FrameDecoder;
 };
 
 /// @brief Frame decoder (accumulates bytes and produces frames)
@@ -67,6 +71,7 @@ public:
 
 private:
     std::vector<uint8_t> buffer_;
+    FrameHeader header_{};
     size_t needed_ = FrameHeader::HEADER_SIZE;
     bool have_header_ = false;
 };

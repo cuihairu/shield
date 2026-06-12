@@ -1,12 +1,15 @@
 // [SHIELD_DATA] Data access module
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <vector>
+#include <unordered_map>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace shield::data {
 

@@ -1,12 +1,14 @@
 // [SHIELD_CONFIG] Configuration implementation
-#include "shield/config_new/config.hpp"
+#include "shield/config/config.hpp"
 
-#include "shield/log_new/logger.hpp"
+#include "shield/log/logger.hpp"
 
 #include <yaml-cpp/yaml.h>
 #include <nlohmann/json.hpp>
 
 #include <fstream>
+#include <functional>
+#include <mutex>
 #include <shared_mutex>
 #include <sstream>
 #include <unordered_map>
@@ -245,19 +247,38 @@ bool Config::has(std::string_view key) const {
 void Config::set(std::string_view key, ConfigValue value) {
     std::unique_lock lock(impl_->mutex);
 
-    std::string key_str(key);
-    // Store variant value
-    // (simplified - real impl would handle all types properly)
+    std::visit(
+        [&](auto&& v) {
+            impl_->storage[std::string(key)] = std::forward<decltype(v)>(v);
+        },
+        std::move(value));
 }
 
 const ConfigValue* Config::get_value(std::string_view key) const {
     std::shared_lock lock(impl_->mutex);
 
+    static thread_local ConfigValue value;
+
     auto it = impl_->storage.find(std::string(key));
-    if (it != impl_->storage.end()) {
-        return reinterpret_cast<const ConfigValue*>(&it->second);
+    if (it == impl_->storage.end()) {
+        return nullptr;
     }
-    return nullptr;
+
+    if (std::holds_alternative<std::string>(it->second)) {
+        value = std::get<std::string>(it->second);
+    } else if (std::holds_alternative<int64_t>(it->second)) {
+        value = std::get<int64_t>(it->second);
+    } else if (std::holds_alternative<double>(it->second)) {
+        value = std::get<double>(it->second);
+    } else if (std::holds_alternative<bool>(it->second)) {
+        value = std::get<bool>(it->second);
+    } else if (std::holds_alternative<std::vector<std::string>>(it->second)) {
+        value = std::get<std::vector<std::string>>(it->second);
+    } else {
+        return nullptr;
+    }
+
+    return &value;
 }
 
 void Config::merge(const Config& other) {

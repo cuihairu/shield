@@ -1,7 +1,8 @@
 // [SHIELD_CORE] Service registry implementation
-#include "shield/core_new/service_registry.hpp"
-#include "shield/core_new/service_handle.hpp"
+#include "shield/core/service_registry.hpp"
+#include "shield/core/service_handle.hpp"
 
+#include <mutex>
 #include <shared_mutex>
 
 namespace shield::core {

@@ -351,7 +351,7 @@ ServerCommand::run()
 
 ## Config
 
-建议配置：
+配置：
 
 ```yaml
 schema:
@@ -380,7 +380,7 @@ mapper:
 
 ## CMake Structure
 
-建议分阶段接入：
+分阶段接入：
 
 Phase 1:
 
@@ -395,7 +395,7 @@ Phase 2:
 - client cpp core 独立 target。
 - TS/C# SDK 不进入主 CMake 构建。
 
-建议 targets：
+targets：
 
 ```text
 shield_core
@@ -458,7 +458,7 @@ include/shield/protocol/schema_protocol.hpp
 src/protocol/schema_protocol.cpp
 ```
 
-建议迁移步骤：
+迁移步骤：
 
 1. 保留 `schema_protocol.hpp` 作为 facade。
 2. 抽出 `ProtocolValue` 到 `schema/value.hpp` 或 `wire/value.hpp`。
@@ -477,15 +477,12 @@ src/protocol/schema_protocol.cpp
 - 不要让 generated code 成为 runtime 必需依赖。
 - 不要让数据库 entity 自动暴露为 client DTO。
 
-## Open Decisions
-
-- `schema_protocol.hpp` facade 兼容期保留多久。
-- C++ generated namespace 是否默认使用 manifest `name`，还是必须显式 `codeNamespace`。
-
-已定规则：
+## 已定规则
 
 - `SchemaStarter` 独立存在，并在 `GatewayStarter` 前启动。
 - mapper runtime 不进入 `shield_core` 最小启动路径，作为 bundled extension 或 data 模块能力提供。
 - `shield_protoc` 作为主仓库 target 默认构建。
 - hash 使用 SHA-256；`compiled_at`、`source_revision` 不参与 schema content hash。
 - `service_id`、`method_id`、`field_id` 必须显式；`module_id` 由 `protocol.lock` 管理，也允许 manifest 显式指定。
+- `schema_protocol.hpp` facade 只保留一个 minor release 兼容期；新代码必须迁移到目录化 schema runtime/tooling 入口。
+- C++ generated namespace 必须由 manifest `codeNamespace` 显式声明；不从 manifest `name` 自动推导。
