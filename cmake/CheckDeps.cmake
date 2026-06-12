@@ -21,7 +21,8 @@ function(check_shield_core_deps target)
 
     foreach(lib ${link_libs})
         foreach(bad ${forbidden})
-            if("${lib}" MATCHES "${bad}")
+            string(FIND "${lib}" "${bad}" bad_pos)
+            if(NOT bad_pos EQUAL -1)
                 message(FATAL_ERROR
                     "shield_core MUST NOT link ${bad}. "
                     "This violates the clean architecture principle.")

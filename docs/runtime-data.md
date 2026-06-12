@@ -1,5 +1,10 @@
 # 数据访问运行时语义
 
+当前实现状态：Phase 1 已支持 `database.enabled` / `redis.enabled` 控制 mock
+pool 初始化；未启用时 Lua API 返回 `false, module_unavailable`；启用时 CTest
+覆盖 `shield.db.query/execute` 与 `shield.redis.set/exists/del` 的返回形态。
+真实 MySQL/PostgreSQL/SQLite/Redis 驱动连接、连接错误传播和订阅生命周期仍未完成。
+
 本文档包含 Shield 数据访问相关的运行时语义决策。
 
 ## shield_data
@@ -30,12 +35,15 @@ local ok, result = shield.redis.get("player:" .. uid)
 - `shield.redis.get/set/del/exists`
 - `shield.redis.publish/subscribe`
 
-以下内容属于扩展设计或驱动相关能力，可以在文档中先行收敛语义，但不作为当前最小实现必达项，也不进入 `lua-api-tests.md` 的最小验收：
+以下内容属于 Phase 2+ 或驱动内部优化，可以在文档中先行收敛语义，但不作为 Phase 1 最小实现必达项，也不进入 `lua-api-tests.md` 的最小验收：
 
 - 事务
-- 预编译语句
+- 显式预编译语句 handle
 - Redis pipeline
+- Redis eval
 - Redis sentinel/cluster 配置
+
+prepared statement 可以作为 driver 内部优化存在，但不能在 Phase 1 暴露为 Lua public API。
 
 ## 连接池配置
 
@@ -132,6 +140,8 @@ local ok, result = shield.db.execute(
 
 ### 事务
 
+事务属于 Phase 2+。Phase 1 不提供 `shield.db.transaction` Lua API；以下语义仅用于后续实现时保持边界一致。
+
 ```lua
 local ok, err = shield.db.transaction(function(tx)
     -- tx 对象提供 query/execute 方法
@@ -167,6 +177,8 @@ end
 - 不跨 service 共享事务。
 
 ### 预编译语句
+
+显式预编译语句 handle 属于 Phase 2+。Phase 1 允许底层 driver 使用 prepared statement 优化 `query/query_one/execute`，但不向 Lua 暴露 `shield.db.prepare`。
 
 ```lua
 -- 预编译语句（可选，驱动支持时）
@@ -225,6 +237,8 @@ local ok, receivers = shield.redis.publish("channel", "hello")
 
 ### Pipeline
 
+Pipeline 属于 Phase 2+。Phase 1 不提供 `shield.redis.pipeline`。
+
 ```lua
 local results = shield.redis.pipeline(function(pipe)
     pipe:set("key1", "value1")
@@ -236,6 +250,8 @@ end)
 ```
 
 ### Lua 脚本
+
+Redis Lua 脚本属于 Phase 2+。Phase 1 不提供 `shield.redis.eval`。
 
 ```lua
 local ok, result = shield.redis.eval(

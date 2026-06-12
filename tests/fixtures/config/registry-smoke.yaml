@@ -1,0 +1,19 @@
+app:
+  name: registry_smoke
+
+actors:
+  - name: registry_root
+    script: registry_root.lua
+    instances: 1
+    required: true
+
+  - name: registry_child
+    script: registry_child.lua
+    instances: 0
+    required: true
+
+database:
+  enabled: false
+
+redis:
+  enabled: false

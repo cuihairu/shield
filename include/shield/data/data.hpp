@@ -87,6 +87,8 @@ public:
     bool is_initialized() const;
 
 private:
+    void release(std::shared_ptr<DatabaseConnection> conn);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -105,6 +107,9 @@ public:
 
     /// @brief Delete keys
     virtual int del(std::string_view key) = 0;
+
+    /// @brief Check whether a key exists
+    virtual bool exists(std::string_view key) = 0;
 
     /// @brief Publish to a channel
     virtual int publish(std::string_view channel, std::string_view message) = 0;
@@ -145,6 +150,7 @@ public:
     std::pair<bool, std::string> get(std::string_view key);
     bool set(std::string_view key, std::string_view value, int ttl_seconds = 0);
     int del(std::string_view key);
+    bool exists(std::string_view key);
     int publish(std::string_view channel, std::string_view message);
     bool subscribe(std::string_view channel,
                   RedisConnection::SubscribeCallback callback);
@@ -154,6 +160,8 @@ public:
     bool is_initialized() const;
 
 private:
+    void release(std::shared_ptr<RedisConnection> conn);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

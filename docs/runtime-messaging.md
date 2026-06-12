@@ -257,6 +257,11 @@ local ok, err = shield.send(target, "event", data, {
 
 可靠处理必须用 `shield.call` 或业务 ACK。
 
+当前实现状态：Phase 1 smoke test 已支持单节点本地 service name 字符串路由，
+并同步调用目标 Lua method。它用于验证 Lua API、参数传递、`sender()` 和错误
+返回形态；最终 mailbox、future scheduling、背压、dead letter、ServiceHandle
+路由和非 reentrant self-send 语义仍未完成。
+
 ## shield.call 返回格式
 
 `shield.call` 返回 `ok, ...`。
@@ -300,6 +305,11 @@ local ok, allowed, reason = shield.call("auth", "check", uid)
 ```
 
 response payload 需要保存 `argc`，以保留 trailing nil。
+
+当前实现状态：本地 `shield.call` 已返回 `true, ...callee_returns` 或
+`false, Error`，支持业务返回 `false` 与 runtime 错误区分。当前仍是同步
+method dispatch，不会挂起 Lua coroutine；timeout、late response、pending
+registry 和 trailing nil 保留仍是后续实现项。
 
 ## call 超时
 

@@ -9,13 +9,15 @@
 namespace shield::lua {
 
 class LuaRuntime;
+class LuaServiceManager;
 
 /// @brief Register the shield.* API into Lua
 /// This is called during Lua VM initialization
 void register_shield_api(LuaRuntime& runtime);
 
 /// @brief Full API registration (internal use)
-void register_full_shield_api(sol::state& lua);
+void register_full_shield_api(sol::state& lua,
+                              LuaServiceManager* manager = nullptr);
 
 /// @brief API categories organized by domain
 namespace api {

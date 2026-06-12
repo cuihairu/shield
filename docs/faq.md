@@ -16,13 +16,13 @@ Shield 可以有官方 `shield_cluster` 可选模块，用于多进程/多机器
 
 ## 还会支持 HTTP 吗？
 
-当前 core 明确保留 TCP / UDP / WebSocket。
+Phase 1 只冻结 TCP session、`SessionHandle` 和 basic transport framing。UDP、KCP、WebSocket 是后续扩展目标，不作为第一版最小验收阻塞项。
 
 HTTP 不进入 `shield_core` 第一版，也不作为业务 gateway 的默认 transport。第一版只允许 `shield_ops` 在显式启用时提供 HTTP 管理端点，例如 `/ops/health`、`/ops/status`、`/ops/metrics`。业务 HTTP server、REST router、middleware chain 和 Web framework 集成均推迟到独立 transport 扩展或应用层自行实现。
 
 ## `examples/hello_world/` 可以直接运行吗？
 
-目前应视为目标 API 草图。`include/shield/shield.hpp`、`shield::run(argc, argv)`、完整 `shield.*` Lua 绑定仍需要实现。
+目前入口层已可验证：`include/shield/shield.hpp`、`shield::run(argc, argv)`、CLI/config smoke tests、默认 Phase 1 配置和 `examples/hello_world` 可构建启动路径已落地。完整 `shield.*` Lua 绑定和 hello world 业务消息验收仍需要补齐。
 
 ## 和 Skynet 的关系是什么？
 

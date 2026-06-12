@@ -1,8 +1,14 @@
-# Shield 重构实施总结
+# Shield 重构实施总结（历史快照）
+
+> 状态：历史材料，非当前权威口径。
+>
+> 本文记录的是一次中间重构尝试的实施笔记，不能作为“当前源码已经完成重构”的证明。当前权威口径以 [最终架构总纲](architecture.md)、[Lua API 契约](lua-api.md)、[运行时语义决策稿](runtime-semantics.md)、[配置运行时语义](runtime-config.md)、[官方可选模块契约](optional-modules.md) 和 [重构路线图](roadmap.md) 为准。
+>
+> 若本文中的“已完成”“✓”“编译验证”等表述与权威契约或当前源码冲突，以权威契约和当前源码为准。
 
 ## 完成日期：2026/06/12
 
-## 已完成的模块
+## 历史记录中的已完成模块
 
 ### 1. shield_base - 基础类型模块 ✓
 **位置**: `src/shield_base/`, `include/shield/base/`

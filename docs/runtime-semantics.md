@@ -14,32 +14,49 @@
 
 ## 语义文档索引
 
-运行时语义已按专题拆分为独立文档：
+运行时语义已按专题拆分为独立文档。当前阅读和实现时按以下优先级处理。
+
+### 权威契约
 
 | 文档 | 内容 |
 | --- | --- |
 | [Lua API 契约](lua-api.md) | `shield.*` 用户 API、service module 形态、旧 API 删除清单 |
 | [Lua API 测试用例](lua-api-tests.md) | API 测试矩阵，示例不替代测试 |
+| [配置语义](runtime-config.md) | YAML 配置 schema（**权威来源**）、配置验证、环境差异 |
 | [官方可选模块契约](optional-modules.md) | cluster/global/player/server/ops 的边界、owner、依赖方向 |
 | [官方可选模块验收矩阵](optional-module-tests.md) | optional module 测试矩阵，防止反向污染 core |
+
+### Core 与第一方运行时模块
+
+| 文档 | 内容 |
+| --- | --- |
 | [服务语义](runtime-service.md) | ServiceHandle、ServiceId、Service Registry、spawn、self、Lua service module、handler 上下文、exit |
 | [消息语义](runtime-messaging.md) | MessageEnvelope、MessagePayload、send、call、背压、QoS、超时、nested call、coroutine 调度、错误处理 |
-| [玩家生命周期](runtime-player.md) | PlayerSession、PlayerManager、认证、断线重连、离线消息缓存、多设备策略 |
-| [服务器状态](runtime-server.md) | ServerManager、服务器状态、运行时信息、状态变更通知 |
-| [全局数据](runtime-global.md) | 可选 `shield_global`：GlobalData、跨进程共享数据、分布式锁（重入、续期）、排行榜、限流器、Pub/Sub |
 | [定时器语义](runtime-timer.md) | timer API、时间语义、错误语义、sleep、fork、TaskHandle |
 | [Lua VM 语义](runtime-lua-vm.md) | Lua VM 模型、热更新策略、Blue-Green 替换 |
-| [网络语义](runtime-network.md) | shield_net、shield_transport、gateway、SessionHandle、KCP 支持 |
-| [数据语义](runtime-data.md) | shield_data、连接池、DB/Redis API、事务、错误处理 |
+| [网络语义](runtime-network.md) | shield_net、shield_transport、gateway、SessionHandle、Phase 1 TCP 范围、deferred UDP/KCP/WebSocket |
+| [数据语义](runtime-data.md) | shield_data、连接池、Phase 1 DB/Redis API、Phase 2+ data 扩展、错误处理 |
 | [日志语义](runtime-log.md) | 日志级别、结构化格式、上下文注入、轮转、审计日志 |
-| [配置语义](runtime-config.md) | YAML 配置 schema（**权威来源**）、配置验证、环境差异 |
 | [Starter 系统](starter-system.md) | BootstrapContext、Starter 顺序、ScriptStarter、旧 DI/插件设计删除 |
 | [启动流程](runtime-bootstrap.md) | 启动顺序、关闭顺序、超时、信号处理、优雅重启 |
 | [错误码参考](runtime-errors.md) | 所有运行时错误码汇总：消息、服务、资源、数据库、Redis、网络 |
-| [运维语义](runtime-ops.md) | 可选 `shield_ops`：运维端点、metrics、健康检查 |
 | [安全语义](runtime-security.md) | Lua 沙箱、服务间权限、网络安全、敏感数据保护 |
+
+### 官方可选模块
+
+| 文档 | 内容 |
+| --- | --- |
 | [集群语义](runtime-cluster.md) | 可选 `shield_cluster`：节点发现、远端路由、节点心跳、旧代码处理 |
-| [实体与组件](runtime-entity.md) | 游戏实体抽象、组件化设计、Entity/Component/Room 模式 |
+| [全局数据](runtime-global.md) | 可选 `shield_global`：GlobalData、跨进程共享数据、分布式锁（重入、续期）、排行榜、限流器、Pub/Sub |
+| [玩家生命周期](runtime-player.md) | 可选 `shield_player`：PlayerSession、PlayerManager、认证、断线重连、离线消息缓存、多设备策略 |
+| [服务器状态](runtime-server.md) | 可选 `shield_server`：ServerManager、服务器状态、运行时信息、状态变更通知 |
+| [运维语义](runtime-ops.md) | 可选 `shield_ops`：运维端点、metrics、健康检查 |
+
+### 草案与业务模式
+
+| 文档 | 内容 |
+| --- | --- |
+| [实体与组件](runtime-entity.md) | 游戏实体抽象、组件化设计、Entity/Component/Room 模式；不属于当前 core 或 Phase 1 最小运行时契约 |
 
 ## 实现顺序建议
 

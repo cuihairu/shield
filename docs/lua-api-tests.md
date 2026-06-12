@@ -144,6 +144,11 @@ Harness 要求：
 
 ## 验收要求
 
+- 当前 CTest 已有 `shield_runtime_lua_smoke` 覆盖 YAML actors 启动、
+  `shield.self/now/spawn/send/call/sender/names/exit/on_exit` 的单节点同步路径；
+  `shield_runtime_registry_smoke` 覆盖 `query/register/unregister/names` 的本地 registry 路径；
+  `shield_runtime_data_smoke` 覆盖启用 DB/Redis mock pool 后的 Lua data API 返回形态。
+  它们不是完整 LAPI 矩阵的替代品。
 - Lua API 契约变更必须先更新本文。
 - 每个新增 API 至少补充一个成功用例和一个失败用例。
 - 每个错误码必须在测试中至少出现一次。

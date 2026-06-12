@@ -35,7 +35,7 @@ struct RemoteAddress {
 namespace CloseReason {
     constexpr const char* NORMAL = "normal";
     constexpr const char* TIMEOUT = "timeout";
-    constexpr const char* ERROR = "error";
+    constexpr const char* ERROR_REASON = "error";
     constexpr const char* KICKED = "kicked";
     constexpr const char* SHUTDOWN = "shutdown";
 }

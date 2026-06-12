@@ -2,7 +2,7 @@
 
 本文档是 Shield **最小 runtime 配置入口** 的权威来源。官方可选模块可以定义自己的配置段，但不能把配置项反向塞进最小 runtime schema。
 
-当前状态：本文冻结 Phase 1 配置契约；源码中的旧字段需要按本文逐步清理。
+当前状态：本文冻结 Phase 1 配置契约；源码已实现启动期最小验证，旧字段仍需要按本文逐步清理。
 
 ## 配置原则
 
@@ -10,7 +10,7 @@
 - 最小 runtime schema 只覆盖单节点 runtime 必需能力。
 - 配置驱动 Lua service、网络监听、data source、日志和 bootstrap timeout；每个配置段必须有明确 owner。
 - 不在 core 中提供服务发现、插件、Prometheus、健康检查、DI、注解或条件装配配置。
-- optional module 的配置由对应模块自己验证；未启用模块时 core 不解释这些配置。
+- optional module 的配置由对应模块自己验证；未启用模块时，出现对应 optional 配置段必须启动失败，不能由 core 静默忽略。
 
 ## Phase 1 Schema
 
@@ -152,6 +152,12 @@ shutdown:
 
 `actors[].network` 只声明该 service 是 gateway service。网络回调仍由 Lua module 上的 `on_connect`、`on_disconnect`、`on_client_message` 实现。
 
+`actors[].script` 可以是绝对路径，也可以是相对路径。相对路径解析规则：
+
+- 优先按进程当前工作目录解析。
+- 若不存在，再按声明该 actor 的配置文件所在目录解析。
+- 仍不存在时启动失败；`required=false` 的 actor 失败只记录错误并继续启动其他 actor。
+
 ## Data 配置
 
 `database.enabled=false` 或缺省 database 段时：
@@ -179,6 +185,7 @@ shutdown:
 | `actors[].instances` | `>= 0` |
 | `actors[].restart.policy` | `always`、`on-failure`、`never` |
 | `actors[].network.*` | 监听地址必须是 `host:port` |
+| `actors[].network.udp/kcp/websocket` | Phase 1 拒绝启动；这些 transport 属于 deferred extension |
 | `database.port` | 1-65535 |
 | `database.pool_size` | `>= 1`，且 `<= max_pool_size` |
 | `redis.port` | 1-65535 |
@@ -216,6 +223,8 @@ shield --config config/app.yaml --config config/production.yaml
 - 后面的文件覆盖前面的 scalar 和 map 字段。
 - `actors` 按 `name` 合并；同名 actor 后者覆盖字段。
 - 不允许两个文件定义同名 actor 且 script 不同，除非后者显式设置 `override: true`。
+
+当前实现状态：源码已实现 map/scalar 的后者覆盖前者以及启动期验证；`actors` 按 `name` 智能合并仍是目标规则，当前同名 actor 会在合并后的配置验证中被拒绝。
 
 ## 热更新
 

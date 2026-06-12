@@ -4,6 +4,13 @@
 
 当前状态：本文冻结 Phase 1 Lua API 契约；源码需要按本文补齐实现和测试。
 
+实现快照：当前源码已跑通单节点最小 Lua service 路径，包括 YAML actors
+启动、`on_init/on_exit`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
+本地同步 `shield.send/call/call_timeout`、`shield.log.*`、DB/Redis 未启用时的
+`module_unavailable` 返回，以及启用配置后的 mock data pool smoke test。
+最终 coroutine-aware `call/sleep`、mailbox
+调度、timer 取消、opaque ServiceHandle userdata 和完整 LuaPack 编码仍是待实现项。
+
 ## 设计原则
 
 - Lua service 是普通 Lua module，返回一个 table。

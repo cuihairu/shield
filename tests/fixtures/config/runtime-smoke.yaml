@@ -1,0 +1,19 @@
+app:
+  name: runtime_smoke
+
+actors:
+  - name: smoke_root
+    script: smoke_root.lua
+    instances: 1
+    required: true
+
+  - name: smoke_child
+    script: smoke_child.lua
+    instances: 0
+    required: true
+
+database:
+  enabled: false
+
+redis:
+  enabled: false

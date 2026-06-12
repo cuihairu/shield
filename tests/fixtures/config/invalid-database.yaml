@@ -1,0 +1,11 @@
+app:
+  name: invalid_database
+
+actors:
+  - name: worker
+    script: scripts/game_logic.lua
+    instances: 1
+
+database:
+  enabled: true
+  port: 70000

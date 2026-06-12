@@ -66,8 +66,8 @@ bool MessagePackCodec::decode(const std::vector<uint8_t>& data,
             return false;
         }
 
-        method = obj.via.array[0].as<std::string>();
-        payload = obj.via.array[1].as<std::string>();
+        method = obj.via.array.ptr[0].as<std::string>();
+        payload = obj.via.array.ptr[1].as<std::string>();
 
         return true;
     } catch (...) {

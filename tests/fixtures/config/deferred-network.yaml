@@ -1,0 +1,9 @@
+app:
+  name: deferred_network
+
+actors:
+  - name: gateway
+    script: scripts/gateway_session.lua
+    instances: 1
+    network:
+      udp: "0.0.0.0:8002"

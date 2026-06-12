@@ -15,10 +15,11 @@
 | ID | 场景 | 操作 | 期望 |
 | --- | --- | --- | --- |
 | OMOD-000-01 | 不启用任何 optional module | 启动最小 runtime | core path 正常工作 |
-| OMOD-000-02 | 配置中存在 optional 段但模块未注册 | bootstrap | core 不解释这些字段 |
+| OMOD-000-02 | 配置中存在 optional 段但模块未注册或未启用 | bootstrap | 启动失败，错误包含模块名和配置路径 |
 | OMOD-000-03 | optional module 初始化失败 | 启动 runtime | 错误定位到对应模块，不改写 core 错误语义 |
 | OMOD-000-04 | optional module 关闭 | 调用最小 API | `shield.send/call/query`、gateway、DB/Redis 原始能力保持既有语义 |
 | OMOD-000-05 | public header / Lua API 检查 | 构建/绑定测试 | optional module 不把 CAF 或旧架构 API 泄漏给用户 |
+| OMOD-000-06 | optional module 被显式启用但配置非法 | bootstrap | 默认 fail fast；只有模块文档声明的 degrade 场景才允许继续启动并暴露 unhealthy |
 
 ## OMOD-CL `shield_cluster`
 
@@ -34,6 +35,7 @@
 | OMOD-CL-008 | 节点离线后恢复 | route cache 存在 | stale route 被清理并重新解析 |
 | OMOD-CL-009 | cluster 关闭 | 远端发现接口 | 返回 `module_unavailable` 或同等级明确错误；不允许 silent success |
 | OMOD-CL-010 | discovery 切换 | static / redis / k8s | 只影响节点发现，不改本地 service registry 规则 |
+| OMOD-CL-011 | 远端连接失败但本地配置合法 | 启动 cluster | 可退化到单节点，本地服务继续运行，cluster 状态为 unhealthy |
 
 ## OMOD-GL `shield_global`
 
@@ -89,6 +91,7 @@
 | OMOD-OP-006 | 模块内部失败 | metrics/exporter 错误 | 不影响 core 运行和业务消息路径 |
 | OMOD-OP-007 | 服务详情 | `/ops/services/:name` | 不暴露 CAF actor handle 或完整业务 payload |
 | OMOD-OP-008 | 管理平面错误 | 非法 profile/control 请求 | 错误留在 HTTP/admin 平面，不回流为业务 Lua runtime error |
+| OMOD-OP-009 | ops 管理端口绑定失败 | 启动 ops | fail fast，避免用户误以为观测入口已启用 |
 
 ## 与现有专题文档的关系
 

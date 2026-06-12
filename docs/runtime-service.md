@@ -129,6 +129,12 @@ shield.spawn("worker_pool", { name = "worker.pool" })
 
 round-robin、hash、按房间路由等能力应由显式 pool service 实现，不放进 core registry。
 
+当前实现状态：Phase 1 最小路径已在单节点 `LuaServiceManager` 中实现
+published name 表，支持默认 service name、`shield.query`、`shield.register`、
+`shield.unregister`、`shield.names` 和 service exit 自动清理 owned names。
+返回值暂时仍是本地 service name 字符串；完整 reserve/publish 状态机、
+opaque `ServiceHandle` userdata、ServiceId 单调分配和 stale handle 语义仍是目标实现。
+
 ## 心跳与离线清理
 
 本地 service 不需要 heartbeat。本地存活状态由 actor 自身 exit、registry 注销和 handle 失效来界定，清理发生在 service stop/exit 流程中。
@@ -167,6 +173,12 @@ heartbeat 放在 `shield_cluster`，不进入 `shield_core`。
 `shield.spawn` 是同步语义、异步实现。
 
 Lua coroutine 会挂起直到目标 service init 成功或失败，但 runtime 线程不阻塞。
+
+当前实现状态：Phase 1 最小路径已经支持在单节点 `LuaServiceManager`
+中按 YAML `actors[].name` 解析脚本别名，创建独立 Lua VM，调用
+`on_init(args)`，成功后发布 service name，失败则返回 `nil, Error`。完整
+ServiceId/ServiceHandle userdata、name reserve 状态和 coroutine-aware
+异步 spawn 仍是目标语义。
 
 ```lua
 local h, err = shield.spawn("gateway", {
@@ -504,6 +516,10 @@ local deadline = shield.deadline()
 ```
 
 这些 API 只在 message handler coroutine 中有效。handler 返回后上下文失效。
+
+当前实现状态：`shield.self()`、`shield.sender()` 和 `shield.names()` 已在
+单节点 Lua service smoke test 中覆盖。返回值暂时是本地 service name 字符串，
+不是最终 opaque `ServiceHandle` userdata。
 
 ## exit 与 shutdown
 

@@ -29,7 +29,7 @@ if(NOT CMAKE_C_COMPILER AND NOT CMAKE_CXX_COMPILER)
     set(CMAKE_CXX_COMPILER "/usr/bin/g++")
   elseif(WIN32)
     set(CMAKE_C_COMPILER "cl")
-    set(CMAKE_CXX_COMPILER "/cl")
+    set(CMAKE_CXX_COMPILER "cl")
   endif()
   message(
     STATUS
@@ -42,20 +42,17 @@ else()
   )
 endif()
 
-if(MSVC)
-  add_compile_options(/utf-8)
-  add_compile_definitions(_WIN32_WINNT=0x0A00) # Windows 10
-endif()
-
 # build directory
 if(NOT CMAKE_BINARY_DIR)
   set(CMAKE_BINARY_DIR ${CMAKE_SOURCE_DIR}/build)
 endif()
 
 # vcpkg integration
-if(DEFINED ENV{VCPKG_ROOT} AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+set(SHIELD_ENV_VCPKG_ROOT "$ENV{VCPKG_ROOT}")
+string(STRIP "${SHIELD_ENV_VCPKG_ROOT}" SHIELD_ENV_VCPKG_ROOT)
+if(SHIELD_ENV_VCPKG_ROOT AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   set(CMAKE_TOOLCHAIN_FILE
-      "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      "${SHIELD_ENV_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       CACHE STRING "")
   message(STATUS "Using vcpkg toolchain file: ${CMAKE_TOOLCHAIN_FILE}")
 endif()
@@ -64,6 +61,11 @@ project(
   shield
   VERSION 0.1.0
   LANGUAGES CXX)
+
+if(MSVC)
+  add_compile_options(/utf-8)
+  add_compile_definitions(_WIN32_WINNT=0x0A00) # Windows 10
+endif()
 
 enable_testing()
 
@@ -140,7 +142,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Suppress deprecated-declarations warning for CAF
-add_compile_options(-Wno-deprecated-declarations)
+if(MSVC)
+  add_compile_options(/wd4996)
+else()
+  add_compile_options(-Wno-deprecated-declarations)
+endif()
 
 # Find required packages
 find_package(yaml-cpp CONFIG REQUIRED)
@@ -151,6 +157,14 @@ find_package(hiredis CONFIG REQUIRED)
 find_package(redis++ CONFIG REQUIRED)
 find_package(CAF CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+
+if(NOT MSVC)
+  foreach(caf_target CAF::internal CAF::core)
+    if(TARGET ${caf_target})
+      set_property(TARGET ${caf_target} PROPERTY INTERFACE_COMPILE_OPTIONS "")
+    endif()
+  endforeach()
+endif()
 
 find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp")
 
@@ -189,6 +203,20 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 file(MAKE_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 file(MAKE_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
 file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
+
+function(shield_copy_runtime_dlls target)
+    if(WIN32)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${VCPKG_INSTALLED_DIR}/bin"
+                "$<TARGET_FILE_DIR:${target}>"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/debug/bin,${VCPKG_INSTALLED_DIR}/bin>"
+                "$<TARGET_FILE_DIR:${target}>"
+            COMMAND_EXPAND_LISTS
+        )
+    endif()
+endfunction()
 
 # =============================================================================
 # REFACTORED MODULE STRUCTURE
@@ -250,6 +278,7 @@ target_link_libraries(shield_config
 # DEPENDENCY CHECK: Must NOT link Lua, Asio/Beast, DB/Redis, log implementation
 # -----------------------------------------------------------------------------
 add_library(shield_core STATIC
+    src/caf_initializer.cpp
     src/core/service_handle.cpp
     src/core/service_registry.cpp
     src/core/message.cpp
@@ -290,7 +319,7 @@ target_include_directories(shield_data
 
 target_link_libraries(shield_data
     PUBLIC shield_base shield_log shield_config
-    PRIVATE redis++::redis++_static hiredis::hiredis
+    PRIVATE redis++::redis++ hiredis::hiredis
 )
 
 # -----------------------------------------------------------------------------
@@ -359,6 +388,7 @@ target_link_libraries(shield_lua
 # shield_bootstrap - Starter, shield::run
 # -----------------------------------------------------------------------------
 add_library(shield_bootstrap STATIC
+    src/shield.cpp
     src/bootstrap/bootstrap.cpp
     src/bootstrap/starter.cpp
 )
@@ -379,6 +409,123 @@ target_link_libraries(shield_bootstrap
 # -----------------------------------------------------------------------------
 add_executable(shield src/main.cpp)
 target_link_libraries(shield PRIVATE shield_bootstrap)
+shield_copy_runtime_dlls(shield)
+
+add_test(NAME shield_cli_help COMMAND shield --help)
+add_test(NAME shield_cli_version COMMAND shield --version)
+if(NOT SHIELD_ENABLE_CLUSTER)
+    add_test(NAME shield_cli_node_id_requires_cluster
+        COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--node-id;test-node"
+            -DEXPECTED_EXIT_CODE=1
+            -DEXPECTED_OUTPUT_REGEX=shield_cluster
+            -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+    )
+endif()
+
+add_test(NAME shield_cli_missing_config_value
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=missing
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_cli_invalid_workers
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--workers;-1"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=workers
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_cli_unknown_argument
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--unknown"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=unknown
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_default_check
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/config/app.yaml"
+        -DEXPECTED_EXIT_CODE=0
+        -DEXPECTED_OUTPUT_REGEX=initialized
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_overlay_check
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/overlay-base.yaml;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/overlay-override.yaml"
+        -DEXPECTED_EXIT_CODE=0
+        -DEXPECTED_OUTPUT_REGEX=initialized
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_runtime_lua_smoke
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/runtime-smoke.yaml"
+        -DEXPECTED_EXIT_CODE=0
+        -DEXPECTED_OUTPUT_REGEX=initialized
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_runtime_data_smoke
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/data-enabled.yaml"
+        -DEXPECTED_EXIT_CODE=0
+        -DEXPECTED_OUTPUT_REGEX=Database pool initialized
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_runtime_registry_smoke
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/registry-smoke.yaml"
+        -DEXPECTED_EXIT_CODE=0
+        -DEXPECTED_OUTPUT_REGEX=registry_smoke_done
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_optional_requires_module
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-cluster-disabled.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=shield_cluster
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_deferred_network_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/deferred-network.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=tcp
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_duplicate_actor_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/duplicate-actors.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=unique
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_invalid_database_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/invalid-database.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=database
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_missing_actor_script_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/missing-actor-script.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=does_not_exist
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_actor_on_init_failure_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/failing-on-init.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=intentional
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_source_boundary_check
+    COMMAND ${CMAKE_COMMAND}
+        -DPROJECT_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_SOURCE_DIR}/cmake/CheckSourceBoundary.cmake
+)
 
 # =============================================================================
 # OPTIONAL MODULES

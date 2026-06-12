@@ -30,6 +30,7 @@ optional module 只有在以下条件同时满足时才可用：
 - 不能 silently no-op。
 - 不能让 core 误以为该模块已存在。
 - 如果 runtime 暴露了该模块的入口，调用失败必须返回 `module_unavailable` 或同等级明确错误。
+- 如果配置文件包含该模块配置段，但二进制未构建或 bootstrap 未启用该模块，启动必须失败并输出明确模块名和配置路径。
 
 ### 2. 不改写 core 契约
 
@@ -61,7 +62,21 @@ optional module 不可以改写以下内容：
 
 不能把这些责任留给“之后再看”或散落在多个 runtime 文档里。
 
-### 4. 只沿公开依赖方向扩展
+### 4. 初始化失败策略
+
+optional module 初始化失败默认 fail fast。例外必须由模块自己的运行时文档显式说明，并且不能改变 core 成功启动语义。
+
+当前冻结策略：
+
+| 模块 | 配置段存在但模块未启用 | 显式启用后初始化失败 | 可 degrade 的场景 |
+| --- | --- | --- | --- |
+| `shield_cluster` | 启动失败 | 默认 fail fast | 远端连接失败可退化到单节点，但必须持续暴露 unhealthy 状态 |
+| `shield_global` | 启动失败 | fail fast | 无 |
+| `shield_player` | 启动失败 | fail fast | 无 |
+| `shield_server` | 启动失败 | fail fast | 无 |
+| `shield_ops` | 启动失败 | fail fast；管理端口绑定失败也 fail fast | metrics exporter 后端短暂失败可保持 unhealthy |
+
+### 5. 只沿公开依赖方向扩展
 
 ```text
 shield_core

@@ -1,0 +1,10 @@
+app:
+  name: duplicate_actors
+
+actors:
+  - name: worker
+    script: scripts/game_logic.lua
+    instances: 1
+  - name: worker
+    script: scripts/game_logic.lua
+    instances: 1

@@ -92,20 +92,23 @@ that no longer belong to `shield_core` or first-party runtime modules.
 
 ## Documentation
 
-- [Architecture Definition](docs/architecture.md)
-- [Optional Module Contracts](docs/optional-modules.md)
-- [Docs Home](docs/index.md)
-- [Architecture Design](docs/architecture.md)
-- [Core Concepts](docs/architecture-core-concepts.md)
-- [Lua API Contract](docs/lua-api.md)
-- [Lua API Test Cases](docs/lua-api-tests.md)
-- [Optional Module Test Matrix](docs/optional-module-tests.md)
-- [Runtime Semantics](docs/runtime-semantics.md)
-- [Starter System](docs/starter-system.md)
-- [CMake Refactor](docs/cmake-refactor.md)
-- [Ops Design](docs/ops.md)
-- [Roadmap](docs/roadmap.md)
-- [API Notes](docs/api.md)
+Authoritative design contracts:
+
+- [Architecture](docs/architecture.md): module boundary, dependency direction,
+  object ownership, and removed legacy directions.
+- [Lua API Contract](docs/lua-api.md): target `shield.*` user API.
+- [Runtime Semantics](docs/runtime-semantics.md): topic index and implementation
+  order.
+- [Configuration Semantics](docs/runtime-config.md): core configuration schema.
+- [Optional Module Contracts](docs/optional-modules.md): official optional module
+  boundaries.
+- [Roadmap](docs/roadmap.md): staged refactor plan and current scope.
+- [Decision Log](docs/open-decisions.md): closed design decisions and any newly
+  discovered open questions that must be synchronized with authority docs.
+
+Supplemental documents such as CMake refactor notes, ops design, schema drafts,
+and historical refactor summaries are under `docs/`. If they conflict with the
+authoritative contracts above, the authoritative contracts win.
 
 ## Current Status
 

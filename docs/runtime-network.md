@@ -2,6 +2,10 @@
 
 本文档包含 Shield 网络、transport 和 gateway 相关的运行时语义决策。
 
+当前 Phase 1 只冻结 TCP session、`SessionHandle` 和 basic transport framing。
+UDP、KCP、WebSocket 是目标能力和后续扩展方向，不作为 Phase 1 最小验收阻塞项。
+HTTP 业务 gateway 不进入 core；HTTP 管理端点只在 `shield_ops` 显式启用时存在。
+
 ## 网络层职责划分
 
 Shield 有两层网络：
@@ -39,16 +43,20 @@ Shield 有两层网络：
 
 ## 传输协议支持
 
-`shield_net` 支持以下客户端传输协议：
+`shield_net` 的长期目标支持以下客户端传输协议：
 
-| 协议 | 说明 | 适用场景 |
-|------|------|----------|
-| TCP | 可靠、有序、流式 | 默认选择，适合大多数场景 |
-| UDP | 不可靠、无序、数据报 | 实时性要求高，允许丢包 |
-| KCP | 快速可靠 ARQ 协议 | 游戏服务器，低延迟需求 |
-| WebSocket | 基于 TCP 的全双工 | Web 客户端、浏览器 |
+| 协议 | Phase 1 状态 | 说明 | 适用场景 |
+|------|------|------|----------|
+| TCP | required | 可靠、有序、流式 | 默认选择，适合大多数场景 |
+| UDP | deferred | 不可靠、无序、数据报 | 实时性要求高，允许丢包 |
+| KCP | deferred | 快速可靠 ARQ 协议 | 游戏服务器，低延迟需求 |
+| WebSocket | deferred | 基于 TCP 的全双工 | Web 客户端、浏览器 |
+
+Phase 1 验收不得要求 UDP、KCP 或 WebSocket listener 可用。相关配置可以保留在文档示例中，但实现未启用时必须给出明确的配置错误或能力不可用错误，不能静默降级成 TCP。
 
 ### KCP 支持
+
+KCP 属于 deferred transport extension；以下语义用于后续实现时保持与 TCP session API 一致。
 
 KCP 是一个快速可靠的 ARQ 协议，相比 TCP：
 

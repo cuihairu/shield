@@ -1,0 +1,8 @@
+app:
+  name: missing_actor_script
+
+actors:
+  - name: missing
+    script: scripts/does_not_exist.lua
+    instances: 1
+    required: true

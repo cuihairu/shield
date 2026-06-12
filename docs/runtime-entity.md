@@ -1,5 +1,9 @@
 # 实体与组件化运行时语义
 
+> 状态：游戏业务模式草案，非当前 `shield_core` 或 Phase 1 最小运行时契约。
+>
+> 本文描述的是在 Shield service 之上组织怪物、NPC、场景对象等游戏实体的一种推荐方向。它不定义 core API、配置 schema 或必须实现的 runtime module。若本文与 [最终架构总纲](architecture.md)、[Lua API 契约](lua-api.md) 或 [运行时语义决策稿](runtime-semantics.md) 冲突，以那些权威契约为准。
+
 本文档包含 Shield 游戏实体（怪物、NPC、场景对象等）的抽象方式和组件化设计决策。
 
 ## 设计原则

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -19,6 +20,26 @@ using ConfigValue = std::variant<
     bool,
     std::vector<std::string>
 >;
+
+/// @brief Compile-time/module availability used by runtime config validation.
+struct RuntimeValidationOptions {
+    bool cluster_enabled = false;
+    bool global_enabled = false;
+    bool player_enabled = false;
+    bool server_enabled = false;
+    bool ops_enabled = false;
+    bool require_actors = true;
+};
+
+/// @brief Actor declaration from the merged runtime config.
+struct RuntimeActorConfig {
+    std::string name;
+    std::string script;
+    std::string source_dir;
+    int instances = 1;
+    bool required = true;
+    std::string options_json = "{}";
+};
 
 /// @brief Configuration interface
 class Config {
@@ -65,6 +86,10 @@ public:
     std::string to_json() const;
 
 private:
+    friend bool validate_runtime_config(const RuntimeValidationOptions& options,
+                                        std::string* error);
+    friend std::vector<RuntimeActorConfig> runtime_actors();
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -77,6 +102,17 @@ bool initialize_config(std::string_view config_path);
 
 /// @brief Reload config from file
 bool reload_config();
+
+/// @brief Validate the loaded global runtime config against the Phase 1 schema.
+bool validate_runtime_config(
+    const RuntimeValidationOptions& options = RuntimeValidationOptions(),
+    std::string* error = nullptr);
+
+/// @brief Reset the global config snapshot.
+void reset_config();
+
+/// @brief Return actor declarations from the merged global config.
+std::vector<RuntimeActorConfig> runtime_actors();
 
 /// @brief Get a config value (convenience function)
 /// Example: shield::config::get("database.host", "localhost")

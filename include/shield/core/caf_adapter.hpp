@@ -89,11 +89,6 @@ private:
     caf::actor_system& system_;
 };
 
-// CAF atoms
-namespace atom {
-inline constexpr auto tick = caf::atom("tick");
-}
-
 // Initialize core with actor system
 std::unique_ptr<CafAdapter> initialize_core(caf::actor_system& system);
 

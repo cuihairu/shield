@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace caf {
 class actor_system;
@@ -26,6 +27,7 @@ struct RuntimeConfig {
 
     // Config
     std::string config_file = "config/app.yaml";
+    std::vector<std::string> config_files;
 
     // Lua
     std::string lua_script_dir = "scripts";

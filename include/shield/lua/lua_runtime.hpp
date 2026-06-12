@@ -6,10 +6,13 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json_fwd.hpp>
+
 namespace shield::lua {
 
 // Opaque handle to a Lua VM state
 class LuaVM;
+class LuaServiceManager;
 
 /// @brief Lua runtime manager
 /// Manages a pool of Lua VMs and provides API registration
@@ -31,6 +34,25 @@ public:
     /// @return true if successful
     bool load_script(std::shared_ptr<LuaVM> vm, std::string_view script_path);
 
+    // Load a Lua service module that returns a table.
+    bool load_service_module(std::shared_ptr<LuaVM> vm,
+                             std::string_view script_path,
+                             std::string* error = nullptr);
+
+    // Call a function on the loaded service module table.
+    bool call_service_function(std::shared_ptr<LuaVM> vm,
+                               std::string_view func_name,
+                               const nlohmann::json& args,
+                               std::string* error = nullptr);
+
+    // Dispatch a service method with JSON-array arguments and collect all
+    // return values as a JSON array. Missing or non-function methods are errors.
+    bool call_service_method(std::shared_ptr<LuaVM> vm,
+                             std::string_view method_name,
+                             const nlohmann::json& args,
+                             nlohmann::json* returns = nullptr,
+                             std::string* error = nullptr);
+
     // Call a function in a VM
     /// @param vm The VM to call in
     /// @param func_name Function name
@@ -42,6 +64,9 @@ public:
 
     // Register API functions
     void register_api(std::shared_ptr<LuaVM> vm);
+
+    // Bind service-management APIs for VMs created by this runtime.
+    void set_service_manager(LuaServiceManager* manager);
 
     // Get global variable
     std::string get_global(std::shared_ptr<LuaVM> vm,

@@ -118,8 +118,17 @@ std::shared_ptr<DatabaseConnection> DatabasePool::acquire() {
     return conn;
 }
 
-void release_connection(std::shared_ptr<DatabaseConnection> conn) {
-    // Would return to pool - simplified for now
+void DatabasePool::release(std::shared_ptr<DatabaseConnection> conn) {
+    if (!conn) {
+        return;
+    }
+    {
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->initialized) {
+            impl_->available.push(std::move(conn));
+        }
+    }
+    impl_->cv.notify_one();
 }
 
 QueryResult DatabasePool::query(std::string_view sql,
@@ -128,7 +137,9 @@ QueryResult DatabasePool::query(std::string_view sql,
     if (!conn) {
         return QueryResult::error("No database connection available");
     }
-    return conn->query(sql, params);
+    auto result = conn->query(sql, params);
+    release(std::move(conn));
+    return result;
 }
 
 QueryResult DatabasePool::query_one(std::string_view sql,
@@ -137,7 +148,9 @@ QueryResult DatabasePool::query_one(std::string_view sql,
     if (!conn) {
         return QueryResult::error("No database connection available");
     }
-    return conn->query_one(sql, params);
+    auto result = conn->query_one(sql, params);
+    release(std::move(conn));
+    return result;
 }
 
 QueryResult DatabasePool::execute(std::string_view sql,
@@ -146,7 +159,9 @@ QueryResult DatabasePool::execute(std::string_view sql,
     if (!conn) {
         return QueryResult::error("No database connection available");
     }
-    return conn->execute(sql, params);
+    auto result = conn->execute(sql, params);
+    release(std::move(conn));
+    return result;
 }
 
 bool DatabasePool::is_initialized() const {
@@ -172,6 +187,11 @@ public:
 
     int del(std::string_view key) override {
         return 0;
+    }
+
+    bool exists(std::string_view key) override {
+        (void)key;
+        return false;
     }
 
     int publish(std::string_view channel, std::string_view message) override {
@@ -257,7 +277,9 @@ std::pair<bool, std::string> RedisPool::get(std::string_view key) {
     if (!conn) {
         return {false, ""};
     }
-    return conn->get(key);
+    auto result = conn->get(key);
+    release(std::move(conn));
+    return result;
 }
 
 bool RedisPool::set(std::string_view key, std::string_view value,
@@ -266,7 +288,9 @@ bool RedisPool::set(std::string_view key, std::string_view value,
     if (!conn) {
         return false;
     }
-    return conn->set(key, value, ttl_seconds);
+    const bool result = conn->set(key, value, ttl_seconds);
+    release(std::move(conn));
+    return result;
 }
 
 int RedisPool::del(std::string_view key) {
@@ -274,7 +298,19 @@ int RedisPool::del(std::string_view key) {
     if (!conn) {
         return 0;
     }
-    return conn->del(key);
+    const int result = conn->del(key);
+    release(std::move(conn));
+    return result;
+}
+
+bool RedisPool::exists(std::string_view key) {
+    auto conn = acquire();
+    if (!conn) {
+        return false;
+    }
+    const bool result = conn->exists(key);
+    release(std::move(conn));
+    return result;
 }
 
 int RedisPool::publish(std::string_view channel, std::string_view message) {
@@ -282,16 +318,20 @@ int RedisPool::publish(std::string_view channel, std::string_view message) {
     if (!conn) {
         return 0;
     }
-    return conn->publish(channel, message);
+    const int result = conn->publish(channel, message);
+    release(std::move(conn));
+    return result;
 }
 
 bool RedisPool::subscribe(std::string_view channel,
-                          SubscribeCallback callback) {
+                          RedisConnection::SubscribeCallback callback) {
     auto conn = acquire();
     if (!conn) {
         return false;
     }
-    return conn->subscribe(channel, callback);
+    const bool result = conn->subscribe(channel, callback);
+    release(std::move(conn));
+    return result;
 }
 
 bool RedisPool::unsubscribe(std::string_view channel) {
@@ -299,7 +339,22 @@ bool RedisPool::unsubscribe(std::string_view channel) {
     if (!conn) {
         return false;
     }
-    return conn->unsubscribe(channel);
+    const bool result = conn->unsubscribe(channel);
+    release(std::move(conn));
+    return result;
+}
+
+void RedisPool::release(std::shared_ptr<RedisConnection> conn) {
+    if (!conn) {
+        return;
+    }
+    {
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->initialized) {
+            impl_->available.push(std::move(conn));
+        }
+    }
+    impl_->cv.notify_one();
 }
 
 bool RedisPool::is_initialized() const {

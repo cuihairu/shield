@@ -1,0 +1,11 @@
+app:
+  name: overlay_base
+
+actors:
+  - name: worker
+    script: ../../../scripts/bootstrap.lua
+    instances: 1
+
+redis:
+  enabled: false
+  port: 6379

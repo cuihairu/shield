@@ -8,15 +8,9 @@
 
 #include <caf/actor_system.hpp>
 #include <caf/event_based_actor.hpp>
-#include <caf/scheduled_actor/traits.hpp>
-#include <caf/stateful_actor.hpp>
-#include <caf/io/all.hpp>
 
 #include <atomic>
-#include <condition_variable>
 #include <mutex>
-#include <queue>
-#include <thread>
 #include <unordered_map>
 
 namespace shield::core {
@@ -28,19 +22,6 @@ std::atomic<uint64_t> g_next_id{1};
 
 // Thread-local current service handle
 thread_local ServiceHandle g_current_service;
-
-// Message types for CAF
-struct ShieldMessage {
-    std::string sender;
-    std::string method;
-    std::string payload;  // JSON
-    base::TraceId trace;
-    bool expects_response = false;
-    caf::response_promise promise;
-};
-
-// CAF type ID for ShieldMessage
-CAF_TYPE_ID(shield::core, ShieldMessage, "shield::core::ShieldMessage");
 
 }  // namespace
 
@@ -90,19 +71,11 @@ ServiceHandle CafAdapter::spawn_service(
         // Call user behavior
         behavior(self);
 
-        // Default behavior: handle ShieldMessage
-        return self->behavior().or_else(
-            caf::behavior{
-                [](const ShieldMessage& msg) {
-                    // Handle shield messages
-                    if (msg.expects_response && msg.promise) {
-                        // Send response
-                        msg.promise.deliver(
-                            R"({"ok": true, "result": null})");
-                    }
-                }
+        return caf::behavior{
+            [](const std::string&) {
+                // Message dispatch will be replaced by Shield envelope routing.
             }
-        );
+        };
     });
 
     auto holder = new detail::ActorHolder(std::move(actor));
@@ -120,14 +93,8 @@ void CafAdapter::send(const ServiceHandle& target,
 
     auto& actor = target.internal()->get();
 
-    // Create CAF message
-    ShieldMessage msg;
-    msg.method = envelope.method();
-    msg.payload = std::string(envelope.payload().begin(),
-                             envelope.payload().end());
-    msg.expects_response = false;
-
-    caf::anon_send(actor, std::move(msg));
+    std::string payload(envelope.payload().begin(), envelope.payload().end());
+    caf::anon_send(actor, std::move(payload));
 }
 
 MessageResponse CafAdapter::call(const ServiceHandle& target,
@@ -155,18 +122,18 @@ caf::behavior timer_actor_impl(caf::event_based_actor* self,
 
     if (repeat) {
         // Repeating timer
-        self->delayed_send(timeout, self, atom::tick);
+        self->delayed_send(self, timeout, caf::tick_atom_v);
         return caf::behavior{
-            [=](caf::atom_value) {
+            [=](caf::tick_atom) {
                 callback();
-                self->delayed_send(timeout, self, atom::tick);
+                self->delayed_send(self, timeout, caf::tick_atom_v);
             }
         };
     } else {
         // One-shot timer
-        self->delayed_send(timeout, self, atom::tick);
+        self->delayed_send(self, timeout, caf::tick_atom_v);
         return caf::behavior{
-            [=](caf::atom_value) {
+            [=](caf::tick_atom) {
                 callback();
                 self->quit();
             }

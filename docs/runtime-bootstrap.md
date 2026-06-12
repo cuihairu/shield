@@ -15,9 +15,12 @@
 shield::run(argc, argv)
   │
   ├─ 1. 解析命令行参数
-  │     - --config <path>     配置文件路径（必填）
-  │     - --node-id <id>      覆盖 node_id（可选）
+  │     - --config <path>     配置文件路径；可重复；默认 config/app.yaml
+  │     - --node-id <id>      仅启用 shield_cluster 时允许
   │     - --log-level <level> 覆盖日志级别（可选）
+  │     - --workers <n>       覆盖 runtime worker 数（可选）
+  │     - --check-config      初始化、验证、启动配置 actors 后立即关闭
+  │     - --version           显示版本
   │     - --help              显示帮助
   │
   ├─ 2. 加载配置
@@ -52,18 +55,20 @@ shield::run(argc, argv)
   ├─ 7. 初始化网络层（如配置）
   │     - 创建 shield_transport
   │     - 创建 shield_net
-  │     - 绑定 TCP/UDP/KCP/WebSocket 监听
+  │     - Phase 1 绑定 TCP 监听；UDP/KCP/WebSocket 属于 deferred transport
   │     - 失败：输出错误，exit(1)
   │
   ├─ 8. 初始化集群层（仅启用 shield_cluster 时）
   │     - 创建 shield_cluster
   │     - 连接 peers 或启动发现
-  │     - 失败：警告但不阻止启动
+  │     - 配置非法、本地监听失败、节点身份冲突：exit(1)
+  │     - 远端连接失败：可退化为单节点，但必须标记 unhealthy
   │
   ├─ 9. 初始化运维层（仅启用 shield_ops 时）
   │     - 创建 shield_ops
   │     - 启动 HTTP 端点
-  │     - 失败：警告但不阻止启动
+  │     - 管理端口绑定失败或配置非法：exit(1)
+  │     - metrics exporter 后端短暂失败：可标记 unhealthy
   │
   ├─ 10. 启动系统服务
   │      - 启动 bootstrap 服务（如有）
@@ -92,6 +97,29 @@ shield::run(argc, argv)
 | shield.shutdown() | Lua API 主动关闭 |
 
 Windows 下使用 `SetConsoleCtrlHandler` 替代信号。
+
+## CLI 契约
+
+`shield::run(argc, argv)` 是用户侧 C++ 稳定入口。`shield` 可执行文件和示例程序都应直接调用它，因此共享同一套参数集合。
+
+Phase 1 参数：
+
+| 参数 | 行为 |
+| --- | --- |
+| `--config <path>` / `-c <path>` | 添加一个配置文件；可重复；未传入时默认 `config/app.yaml` |
+| `--log-level <level>` | 覆盖配置中的日志级别 |
+| `--workers <n>` | 覆盖 runtime worker 数；`0` 表示自动 |
+| `--node-id <id>` | 仅 `shield_cluster` 启用时有效；未启用时返回 CLI 错误 |
+| `--check-config` | 初始化 runtime、加载配置、启动配置 actors，随后立即关闭并返回；用于 CI/smoke test |
+| `--version` / `-v` | 输出版本并返回 0，不初始化 runtime |
+| `--help` / `-h` | 输出帮助并返回 0，不初始化 runtime |
+
+规则：
+
+- 多个 `--config` 按命令行顺序加载并合并，合并规则见 [配置语义](runtime-config.md#多配置文件合并)。
+- 默认 `config/app.yaml` 不存在时，启动失败并返回 1。
+- legacy subcommand（如旧 `server`、`config`、`migrate`）不进入新的 `shield::run` 公共契约；保留期间只能作为 legacy CLI 代码存在。
+- `shield::bootstrap::initialize` / `shutdown` 是 lower-level API，不负责命令行解析、信号处理或 help/version 输出。
 
 ## 启动超时
 
@@ -126,7 +154,7 @@ Windows 下使用 `SetConsoleCtrlHandler` 替代信号。
 ```txt
 [ERROR] Failed to load config: config/app.yaml not found
 [ERROR] Database connection failed: Connection refused
-[WARN]  Cluster connection failed, running standalone
+[WARN]  Cluster peer connection failed, running standalone unhealthy
 ```
 
 ## 关闭流程
