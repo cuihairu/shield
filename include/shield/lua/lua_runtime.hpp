@@ -218,6 +218,80 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+/// @brief LuaPack binary encoder for message serialization
+class LuaPackEncoder {
+public:
+    // Type tags as per LuaPack specification
+    enum class TypeTag : uint8_t {
+        Nil = 0x00,
+        False = 0x01,
+        True = 0x02,
+        Integer = 0x03,
+        Number = 0x04,
+        ShortString = 0x05,
+        String = 0x06,
+        Array = 0x07,
+        Map = 0x08,
+        ServiceHandle = 0x10,
+        Extension = 0xFF,
+    };
+
+    static constexpr uint8_t VERSION = 1;
+    static constexpr uint8_t MAGIC_HIGH = 0x4C;  // 'L'
+    static constexpr uint8_t MAGIC_LOW = 0x50;   // 'P'
+
+    // Configuration
+    struct Config {
+        size_t max_nesting_depth = 64;
+        size_t max_string_length = 1048576;  // 1MB
+        size_t max_array_length = 1000000;
+        size_t max_map_entries = 100000;
+    };
+
+    explicit LuaPackEncoder(const Config& config = Config());
+
+    // Encode a Lua value to LuaPack format
+    /// @param lua Lua state
+    /// @param value Value to encode
+    /// @param out_bytes Output buffer
+    /// @return true if encoding succeeded
+    bool encode(sol::state_view lua, const sol::object& value,
+               std::vector<uint8_t>& out_bytes);
+
+    // Get last error message
+    std::string error() const { return error_; }
+
+private:
+    bool encode_value(sol::state_view lua, const sol::object& value,
+                     std::vector<uint8_t>& out, size_t depth);
+
+    Config config_;
+    std::string error_;
+};
+
+/// @brief LuaPack binary decoder for message deserialization
+class LuaPackDecoder {
+public:
+    explicit LuaPackDecoder();
+
+    // Decode LuaPack bytes to Lua value
+    /// @param lua Lua state
+    /// @param bytes Input bytes
+    /// @param out_bytes_consumed Number of bytes consumed
+    /// @return Decoded Lua value or nil on error
+    sol::object decode(sol::state_view lua, const std::vector<uint8_t>& bytes,
+                       size_t& out_bytes_consumed);
+
+    // Get last error message
+    std::string error() const { return error_; }
+
+private:
+    sol::object decode_value(sol::state_view lua, const uint8_t* data,
+                              size_t size, size_t& out_consumed);
+
+    std::string error_;
+};
+
 /// @brief Lua runtime manager
 /// Manages a pool of Lua VMs and provides API registration
 class LuaRuntime {

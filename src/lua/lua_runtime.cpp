@@ -12,6 +12,8 @@
 #include <deque>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
+#include <cstring>
 
 namespace shield::lua {
 
@@ -952,6 +954,360 @@ void LuaRuntime::set_global(std::shared_ptr<LuaVM> vm,
                            std::string_view value) {
     sol::state& lua = *vm->state();
     lua[name] = std::string(value);
+}
+
+// ============================================================================
+// LuaPack Encoder Implementation
+// ============================================================================
+
+LuaPackEncoder::LuaPackEncoder(const Config& config)
+    : config_(config) {}
+
+bool LuaPackEncoder::encode(sol::state_view lua, const sol::object& value,
+                            std::vector<uint8_t>& out_bytes) {
+    out_bytes.clear();
+    error_.clear();
+
+    // Write header: magic (2 bytes) + version (1 byte) + flags (1 byte)
+    out_bytes.push_back(MAGIC_HIGH);
+    out_bytes.push_back(MAGIC_LOW);
+    out_bytes.push_back(VERSION);
+    out_bytes.push_back(0);  // flags
+
+    return encode_value(lua, value, out_bytes, 0);
+}
+
+bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
+                                   std::vector<uint8_t>& out, size_t depth) {
+    if (depth > config_.max_nesting_depth) {
+        error_ = "max nesting depth exceeded";
+        return false;
+    }
+
+    if (!value.valid() || value == sol::nil) {
+        out.push_back(static_cast<uint8_t>(TypeTag::Nil));
+        return true;
+    }
+
+    if (value.is<bool>()) {
+        out.push_back(value.as<bool>() ?
+                     static_cast<uint8_t>(TypeTag::True) :
+                     static_cast<uint8_t>(TypeTag::False));
+        return true;
+    }
+
+    if (value.is<int>() || value.is<std::int64_t>()) {
+        out.push_back(static_cast<uint8_t>(TypeTag::Integer));
+        int64_t val = value.is<int>() ? value.as<int>() : value.as<std::int64_t>();
+        // Write int64 in little-endian
+        for (int i = 0; i < 8; ++i) {
+            out.push_back(static_cast<uint8_t>(val & 0xFF));
+            val >>= 8;
+        }
+        return true;
+    }
+
+    if (value.is<double>()) {
+        out.push_back(static_cast<uint8_t>(TypeTag::Number));
+        double val = value.as<double>();
+        // Write double in little-endian
+        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&val);
+        out.insert(out.end(), bytes, bytes + sizeof(double));
+        return true;
+    }
+
+    if (value.is<std::string>()) {
+        std::string str = value.as<std::string>();
+        if (str.size() >= 256) {
+            if (str.size() > config_.max_string_length) {
+                error_ = "string too long";
+                return false;
+            }
+            // Long string
+            out.push_back(static_cast<uint8_t>(TypeTag::String));
+            uint32_t len = static_cast<uint32_t>(str.size());
+            for (int i = 0; i < 4; ++i) {
+                out.push_back(static_cast<uint8_t>(len & 0xFF));
+                len >>= 8;
+            }
+        } else {
+            // Short string
+            out.push_back(static_cast<uint8_t>(TypeTag::ShortString));
+            out.push_back(static_cast<uint8_t>(str.size()));
+        }
+        out.insert(out.end(), str.begin(), str.end());
+        return true;
+    }
+
+    if (value.is<sol::table>()) {
+        sol::table table = value.as<sol::table>();
+
+        // Check if it's an array-like table
+        bool array_like = true;
+        size_t max_index = 0;
+        size_t entry_count = 0;
+
+        for (const auto& [key, _] : table) {
+            ++entry_count;
+            sol::object key_obj = key;
+            if (!key_obj.is<int>()) {
+                array_like = false;
+                break;
+            }
+            int index = key_obj.as<int>();
+            if (index <= 0) {
+                array_like = false;
+                break;
+            }
+            max_index = std::max(max_index, static_cast<size_t>(index));
+        }
+
+        if (array_like && max_index == entry_count && max_index <= config_.max_array_length) {
+            // Encode as array
+            out.push_back(static_cast<uint8_t>(TypeTag::Array));
+            uint32_t count = static_cast<uint32_t>(max_index);
+            for (int i = 0; i < 4; ++i) {
+                out.push_back(static_cast<uint8_t>(count & 0xFF));
+                count >>= 8;
+            }
+            // Encode elements
+            for (size_t i = 1; i <= max_index; ++i) {
+                if (!encode_value(lua, table[static_cast<int>(i)], out, depth + 1)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Encode as map
+        if (entry_count > config_.max_map_entries) {
+            error_ = "map has too many entries";
+            return false;
+        }
+
+        out.push_back(static_cast<uint8_t>(TypeTag::Map));
+        uint32_t count = static_cast<uint32_t>(entry_count);
+        for (int i = 0; i < 4; ++i) {
+            out.push_back(static_cast<uint8_t>(count & 0xFF));
+            count >>= 8;
+        }
+
+        for (const auto& [key, val] : table) {
+            sol::object key_obj = key;
+            if (key_obj.is<std::string>() || key_obj.is<int>()) {
+                if (!encode_value(lua, key_obj, out, depth + 1)) {
+                    return false;
+                }
+                if (!encode_value(lua, val, out, depth + 1)) {
+                    return false;
+                }
+            } else {
+                error_ = "map keys must be string or integer";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    if (value.is<ServiceHandle>()) {
+        out.push_back(static_cast<uint8_t>(TypeTag::ServiceHandle));
+        const auto& handle = value.as<ServiceHandle>();
+        std::string id = handle.id();
+        // For Phase 1, encode service ID as string (deferred: proper node+id encoding)
+        return encode_value(lua, sol::make_object(lua, id), out, depth + 1);
+    }
+
+    error_ = "unsupported type for LuaPack encoding";
+    return false;
+}
+
+// ============================================================================
+// LuaPack Decoder Implementation
+// ============================================================================
+
+LuaPackDecoder::LuaPackDecoder()
+    : error_("") {}
+
+sol::object LuaPackDecoder::decode(sol::state_view lua, const std::vector<uint8_t>& bytes,
+                                   size_t& out_bytes_consumed) {
+    out_bytes_consumed = 0;
+    error_.clear();
+
+    if (bytes.size() < 4) {
+        error_ = "invalid LuaPack header: too short";
+        return sol::make_object(lua, sol::nil);
+    }
+
+    // Check magic
+    if (bytes[0] != LuaPackEncoder::MAGIC_HIGH ||
+        bytes[1] != LuaPackEncoder::MAGIC_LOW) {
+        error_ = "invalid LuaPack magic bytes";
+        return sol::make_object(lua, sol::nil);
+    }
+
+    // Check version
+    if (bytes[2] != LuaPackEncoder::VERSION) {
+        error_ = "unsupported LuaPack version";
+        return sol::make_object(lua, sol::nil);
+    }
+
+    out_bytes_consumed = 4;  // Skip header
+    return decode_value(lua, bytes.data() + 4, bytes.size() - 4, out_bytes_consumed);
+}
+
+sol::object LuaPackDecoder::decode_value(sol::state_view lua, const uint8_t* data,
+                                         size_t size, size_t& out_consumed) {
+    out_consumed = 0;
+
+    if (size == 0) {
+        error_ = "unexpected end of data";
+        return sol::make_object(lua, sol::nil);
+    }
+
+    uint8_t tag = data[0];
+    out_consumed = 1;
+
+    switch (tag) {
+        case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Nil):
+            return sol::make_object(lua, sol::nil);
+
+        case static_cast<uint8_t>(LuaPackEncoder::TypeTag::False):
+            return sol::make_object(lua, false);
+
+        case static_cast<uint8_t>(LuaPackEncoder::TypeTag::True):
+            return sol::make_object(lua, true);
+
+        case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Integer):
+            if (size < 9) {
+                error_ = "truncated integer";
+                return sol::make_object(lua, sol::nil);
+            }
+            {
+                int64_t val = 0;
+                for (int i = 0; i < 8; ++i) {
+                    val |= static_cast<int64_t>(data[1 + i]) << (i * 8);
+                }
+                out_consumed = 9;
+                return sol::make_object(lua, val);
+            }
+
+        case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Number):
+            if (size < 9) {
+                error_ = "truncated number";
+                return sol::make_object(lua, sol::nil);
+            }
+            {
+                double val;
+                std::memcpy(&val, data + 1, sizeof(double));
+                out_consumed = 9;
+                return sol::make_object(lua, val);
+            }
+
+        case static_cast<uint8_t>(LuaPackEncoder::TypeTag::ShortString):
+            if (size < 2) {
+                error_ = "truncated short string";
+                return sol::make_object(lua, sol::nil);
+            }
+            {
+                uint8_t len = data[1];
+                if (size < 2 + len) {
+                    error_ = "truncated short string data";
+                    return sol::make_object(lua, sol::nil);
+                }
+                std::string str(reinterpret_cast<const char*>(data + 2), len);
+                out_consumed = 2 + len;
+                return sol::make_object(lua, str);
+            }
+
+        case static_cast<uint8_t>(LuaPackEncoder::TypeTag::String):
+            if (size < 5) {
+                error_ = "truncated string length";
+                return sol::make_object(lua, sol::nil);
+            }
+            {
+                uint32_t len = 0;
+                for (int i = 0; i < 4; ++i) {
+                    len |= static_cast<uint32_t>(data[1 + i]) << (i * 8);
+                }
+                if (size < 5 + len) {
+                    error_ = "truncated string data";
+                    return sol::make_object(lua, sol::nil);
+                }
+                std::string str(reinterpret_cast<const char*>(data + 5), len);
+                out_consumed = 5 + len;
+                return sol::make_object(lua, str);
+            }
+
+        case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Array):
+            if (size < 5) {
+                error_ = "truncated array length";
+                return sol::make_object(lua, sol::nil);
+            }
+            {
+                uint32_t count = 0;
+                for (int i = 0; i < 4; ++i) {
+                    count |= static_cast<uint32_t>(data[1 + i]) << (i * 8);
+                }
+                sol::table arr = lua.create_table();
+                out_consumed = 5;
+                const uint8_t* elem_data = data + 5;
+                size_t elem_size = size - 5;
+                for (uint32_t i = 0; i < count; ++i) {
+                    size_t elem_consumed = 0;
+                    sol::object elem = decode_value(lua, elem_data, elem_size, elem_consumed);
+                    if (!error_.empty()) {
+                        return sol::make_object(lua, sol::nil);
+                    }
+                    arr[i + 1] = elem;  // Lua arrays are 1-based
+                    elem_data += elem_consumed;
+                    elem_size -= elem_consumed;
+                    out_consumed += elem_consumed;
+                }
+                return arr;
+            }
+
+        case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Map):
+            if (size < 5) {
+                error_ = "truncated map count";
+                return sol::make_object(lua, sol::nil);
+            }
+            {
+                uint32_t count = 0;
+                for (int i = 0; i < 4; ++i) {
+                    count |= static_cast<uint32_t>(data[1 + i]) << (i * 8);
+                }
+                sol::table map = lua.create_table();
+                out_consumed = 5;
+                const uint8_t* entry_data = data + 5;
+                size_t entry_size = size - 5;
+                for (uint32_t i = 0; i < count; ++i) {
+                    size_t key_consumed = 0;
+                    sol::object key = decode_value(lua, entry_data, entry_size, key_consumed);
+                    if (!error_.empty()) {
+                        return sol::make_object(lua, sol::nil);
+                    }
+                    entry_data += key_consumed;
+                    entry_size -= key_consumed;
+                    out_consumed += key_consumed;
+
+                    size_t val_consumed = 0;
+                    sol::object val = decode_value(lua, entry_data, entry_size, val_consumed);
+                    if (!error_.empty()) {
+                        return sol::make_object(lua, sol::nil);
+                    }
+                    entry_data += val_consumed;
+                    entry_size -= val_consumed;
+                    out_consumed += val_consumed;
+
+                    map[key] = val;
+                }
+                return map;
+            }
+
+        default:
+            error_ = "unknown type tag: " + std::to_string(tag);
+            return sol::make_object(lua, sol::nil);
+    }
 }
 
 }  // namespace shield::lua
