@@ -31,7 +31,7 @@ jobs:
       - name: Check C++ formatting
         run: |
           find include src -name "*.hpp" -o -name "*.cpp" 2>/dev/null | \
-          xargs -r clang-format --dry-run --Werror || echo "No C++ files or formatting OK"
+          xargs -r clang-format --dry-run --Werror || { echo "::warning::C++ formatting issues detected - run clang-format to fix"; exit 0; }
 
   # 多平台构建
   build:
