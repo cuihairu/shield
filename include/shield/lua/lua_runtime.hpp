@@ -161,6 +161,63 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+/// @brief Mailbox for service message queuing
+class Mailbox {
+public:
+    /// @brief Message priority
+    enum class Priority {
+        Low = 3,
+        Normal = 2,
+        High = 1,
+        Urgent = 0,
+    };
+
+    /// @brief Backpressure strategy when mailbox is full
+    enum class Backpressure {
+        DropNewest,  // Drop new message (default)
+        DropOldest,  // Drop oldest message
+        Block,       // Block producer
+    };
+
+    /// @brief Queued message
+    struct Message {
+        std::string sender;
+        std::string method;
+        nlohmann::json args;
+        Priority priority = Priority::Normal;
+        int64_t timestamp_ms = 0;
+    };
+
+    explicit Mailbox(size_t max_size = 1000);
+
+    // Push a message to the mailbox
+    /// @param msg Message to push
+    /// @param strategy Backpressure strategy
+    /// @return true if message was queued, false if dropped
+    bool push(const Message& msg, Backpressure strategy = Backpressure::DropNewest);
+
+    // Pop next message (highest priority first, then FIFO within same priority)
+    /// @param out Output message
+    /// @return true if message was popped
+    bool pop(Message* out);
+
+    // Get current size
+    size_t size() const;
+
+    // Check if mailbox is full
+    bool full() const;
+
+    // Clear all messages
+    void clear();
+
+    // Get dropped message count
+    size_t dropped_count() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 /// @brief Lua runtime manager
 /// Manages a pool of Lua VMs and provides API registration
 class LuaRuntime {

@@ -13,6 +13,7 @@ namespace shield::lua {
 
 class LuaRuntime;
 class ServiceContext;
+class Mailbox;
 
 /// @brief Result of spawning a Lua service
 struct SpawnResult {
@@ -85,6 +86,15 @@ public:
 
     // List registered services
     std::vector<std::string> list_services() const;
+
+    // Process next message from service's mailbox
+    /// @param service_id Service to process
+    /// @return true if a message was processed, false if mailbox was empty
+    bool process_mailbox(std::string_view service_id);
+
+    // Process one message from all services (round-robin)
+    /// @return Number of messages processed
+    int process_all_mailboxes();
 
 private:
     struct Impl;

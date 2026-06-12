@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
 #include <mutex>
 #include <unordered_map>
 
@@ -397,6 +398,118 @@ int TimerManager::check_and_fire(int64_t now_ms) {
 
 size_t TimerManager::active_count() const {
     return impl_->size();
+}
+
+// ============================================================================
+// Mailbox Implementation
+// ============================================================================
+
+struct Mailbox::Impl {
+    std::deque<Message> queues[4];  // One queue per priority (Urgent=0, High=1, Normal=2, Low=3)
+    size_t max_size;
+    std::atomic<size_t> dropped_count{0};
+    mutable std::mutex mutex;
+
+    explicit Impl(size_t max_sz) : max_size(max_sz) {}
+
+    size_t total_size() const {
+        size_t total = 0;
+        for (const auto& q : queues) {
+            total += q.size();
+        }
+        return total;
+    }
+
+    bool is_full() const {
+        return total_size() >= max_size;
+    }
+
+    void push_oldest(const Message& msg) {
+        queues[static_cast<int>(msg.priority)].push_back(msg);
+    }
+
+    void push_newest(const Message& msg) {
+        queues[static_cast<int>(msg.priority)].push_front(msg);
+    }
+
+    bool pop_next(Message* out) {
+        // Check queues in priority order (Urgent -> High -> Normal -> Low)
+        for (auto& q : queues) {
+            if (!q.empty()) {
+                *out = std::move(q.front());
+                q.pop_front();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool drop_oldest() {
+        for (int i = 3; i >= 0; --i) {  // Start from lowest priority
+            if (!queues[i].empty()) {
+                queues[i].pop_back();
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+Mailbox::Mailbox(size_t max_size)
+    : impl_(std::make_unique<Impl>(max_size)) {}
+
+bool Mailbox::push(const Message& msg, Backpressure strategy) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+
+    if (!impl_->is_full()) {
+        impl_->push_oldest(msg);
+        return true;
+    }
+
+    // Handle backpressure
+    switch (strategy) {
+        case Backpressure::DropNewest:
+            impl_->droled_count.fetch_add(1);
+            return false;
+
+        case Backpressure::DropOldest:
+            impl_->drop_oldest();
+            impl_->push_oldest(msg);
+            return true;
+
+        case Backpressure::Block:
+            // For Phase 1, we still drop; full blocking requires coroutine support
+            impl_->dropped_count.fetch_add(1);
+            return false;
+    }
+
+    return false;
+}
+
+bool Mailbox::pop(Message* out) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->pop_next(out);
+}
+
+size_t Mailbox::size() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->total_size();
+}
+
+bool Mailbox::full() const {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->is_full();
+}
+
+void Mailbox::clear() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    for (auto& q : impl_->queues) {
+        q.clear();
+    }
+}
+
+size_t Mailbox::dropped_count() const {
+    return impl_->dropped_count.load();
 }
 
 // ============================================================================

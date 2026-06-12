@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
+
 #include <algorithm>
 #include <filesystem>
 #include <memory>
@@ -31,6 +33,7 @@ struct LuaServiceManager::Impl {
     std::unordered_map<std::string, std::string> published_names;
     std::unordered_map<std::string, std::unordered_set<std::string>> owned_names;
     std::unordered_map<std::string, std::string> module_scripts;
+    std::unordered_map<std::string, std::shared_ptr<Mailbox>> mailboxes;
     std::vector<std::string> service_order;
 
     struct DispatchFrame {
@@ -217,6 +220,10 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         impl_->published_names[service_name] = service_name;
         impl_->owned_names[service_name].insert(service_name);
         impl_->service_order.push_back(service_name);
+
+        // Create mailbox for the service
+        impl_->mailboxes[service_name] = std::make_shared<Mailbox>(1000);
+
         if (exit_after_init) {
             exit(service_name, exit_reason);
         }
@@ -231,11 +238,37 @@ bool LuaServiceManager::send(std::string_view target,
                              std::string_view method,
                              const nlohmann::json& args,
                              std::string* error) {
-    CallResult result = call(target, method, args, 0);
-    if (!result.success && error) {
-        *error = result.error_message;
+    const std::string service_id = query_service(target);
+
+    auto mailbox_it = impl_->mailboxes.find(service_id);
+    if (mailbox_it == impl_->mailboxes.end()) {
+        if (error) {
+            *error = "service not found: " + std::string(target);
+        }
+        return false;
     }
-    return result.success;
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+
+    const std::string sender = current_service_id();
+
+    Mailbox::Message msg;
+    msg.sender = sender;
+    msg.method = std::string(method);
+    msg.args = args;
+    msg.priority = Mailbox::Priority::Normal;
+    msg.timestamp_ms = now_ms;
+
+    if (!mailbox_it->second->push(msg, Mailbox::Backpressure::DropNewest)) {
+        if (error) {
+            *error = "mailbox full";
+        }
+        return false;
+    }
+
+    return true;
 }
 
 CallResult LuaServiceManager::call(std::string_view target,
@@ -293,6 +326,9 @@ void LuaServiceManager::exit(std::string_view service_id,
         std::remove(impl_->service_order.begin(), impl_->service_order.end(),
                     std::string(service_id)),
         impl_->service_order.end());
+
+    // Clean up mailbox
+    impl_->mailboxes.erase(std::string(service_id));
 }
 
 void LuaServiceManager::shutdown_all(std::string_view reason) {
@@ -407,6 +443,52 @@ std::vector<std::string> LuaServiceManager::list_services() const {
     }
     std::sort(services.begin(), services.end());
     return services;
+}
+
+bool LuaServiceManager::process_mailbox(std::string_view service_id) {
+    auto mailbox_it = impl_->mailboxes.find(std::string(service_id));
+    if (mailbox_it == impl_->mailboxes.end()) {
+        return false;
+    }
+
+    Mailbox::Message msg;
+    if (!mailbox_it->second->pop(&msg)) {
+        return false;  // No messages to process
+    }
+
+    auto service_it = impl_->services.find(std::string(service_id));
+    if (service_it == impl_->services.end()) {
+        return false;  // Service no longer exists
+    }
+
+    // Process the message
+    Impl::DispatchScope scope(*impl_, std::string(service_id), msg.sender, false);
+
+    nlohmann::json values = nlohmann::json::array();
+    std::string error;
+    if (!impl_->runtime.call_service_method(service_it->second, msg.method, msg.args,
+                                            &values, &error)) {
+        // Method failed - log error but continue processing other messages
+    }
+
+    std::string exit_service_id;
+    std::string exit_reason;
+    if (impl_->is_exit_requested(&exit_service_id, &exit_reason) &&
+        exit_service_id == service_id) {
+        exit(exit_service_id, exit_reason);
+    }
+
+    return true;
+}
+
+int LuaServiceManager::process_all_mailboxes() {
+    int processed = 0;
+    for (const auto& [service_id, _] : impl_->services) {
+        if (process_mailbox(service_id)) {
+            ++processed;
+        }
+    }
+    return processed;
 }
 
 }  // namespace shield::lua
