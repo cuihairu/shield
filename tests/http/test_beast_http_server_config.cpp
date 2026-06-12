@@ -1,7 +1,7 @@
 #define BOOST_TEST_MODULE BeastHttpServerConfigTest
 #include <boost/test/unit_test.hpp>
 
-#include "shield/http/beast_http_server.hpp"
+#include "shield/net/http/beast_http_server.hpp"
 
 using namespace shield::http;
 

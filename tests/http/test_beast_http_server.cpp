@@ -12,7 +12,7 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 
-#include "shield/http/beast_http_server.hpp"
+#include "shield/net/http/beast_http_server.hpp"
 #include "shield/protocol/protocol_handler.hpp"
 
 namespace shield::http {
