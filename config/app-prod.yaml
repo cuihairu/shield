@@ -32,3 +32,9 @@ game:
 lua:
   auto_reload: false
   debug_mode: false
+  script_path: "/opt/shield/scripts"
+  module_path: "/opt/shield/scripts/?.lua;/opt/shield/scripts/?/init.lua"
+  cache:
+    enabled: true   # 生产环境启用缓存提升性能
+    max_size: 200
+    ttl_seconds: 0  # 永不过期

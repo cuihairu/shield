@@ -3,6 +3,7 @@
 
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_service.hpp"
+#include "shield/config/config.hpp"
 
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
@@ -15,6 +16,9 @@
 #include <unordered_map>
 #include <vector>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace shield::lua {
 
@@ -549,6 +553,11 @@ public:
         state_->open_libraries(sol::lib::base, sol::lib::string,
                                sol::lib::table, sol::lib::math,
                                sol::lib::io, sol::lib::os);
+
+        // Set Lua module search path from configuration
+        std::string module_path = shield::config::get("lua.module_path",
+            "scripts/?.lua;scripts/?/init.lua");
+        (*state_)["package"]["path"] = module_path;
     }
 
     std::shared_ptr<sol::state> state() { return state_; }
@@ -560,13 +569,89 @@ private:
     sol::table service_table_ = sol::nil;
 };
 
+// Script cache entry
+struct ScriptCacheEntry {
+    std::string bytecode;      // Compiled bytecode
+    int64_t mtime = 0;        // File modification time
+    int64_t last_used = 0;    // Last access time for LRU
+};
+
 struct LuaRuntime::Impl {
     std::shared_ptr<sol::state> default_state;
     LuaServiceManager* service_manager = nullptr;
 
+    // Script cache
+    LuaCacheConfig cache_config;
+    std::unordered_map<std::string, ScriptCacheEntry> script_cache;
+    mutable std::mutex cache_mutex;
+
     Impl() : default_state(std::make_shared<sol::state>()) {
         default_state->open_libraries(sol::lib::base, sol::lib::string,
                                      sol::lib::table, sol::lib::math);
+
+        // Load cache configuration
+        cache_config.enabled = shield::config::get_bool("lua.cache.enabled", true);
+        cache_config.max_size = static_cast<size_t>(
+            shield::config::get_int("lua.cache.max_size", 100));
+        cache_config.ttl_seconds = shield::config::get_int("lua.cache.ttl_seconds", 0);
+    }
+
+    // Get current time in milliseconds
+    int64_t current_time_ms() const {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    // Get file modification time
+    int64_t get_file_mtime(const std::string& path) const {
+        try {
+            auto ftime = std::filesystem::last_write_time(path);
+            auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                ftime - std::filesystem::file_time_type::clock::now()
+                + std::chrono::system_clock::now());
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                sctp.time_since_epoch()).count();
+        } catch (...) {
+            return 0;
+        }
+    }
+
+    // Check if cache entry is valid
+    bool is_cache_valid(const ScriptCacheEntry& entry, int64_t current_mtime) const {
+        // Check if file was modified
+        if (entry.mtime != current_mtime) {
+            return false;
+        }
+        // Check TTL
+        if (cache_config.ttl_seconds > 0) {
+            const int64_t ttl_ms = cache_config.ttl_seconds * 1000;
+            if (current_time_ms() - entry.last_used > ttl_ms) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Evict oldest entries if cache is full
+    void evict_if_needed() {
+        if (script_cache.size() <= cache_config.max_size) {
+            return;
+        }
+
+        // Find the oldest entry (LRU)
+        auto oldest_it = script_cache.begin();
+        int64_t oldest_time = oldest_it->second.last_used;
+
+        for (auto it = script_cache.begin(); it != script_cache.end(); ++it) {
+            if (it->second.last_used < oldest_time) {
+                oldest_it = it;
+                oldest_time = it->second.last_used;
+            }
+        }
+
+        if (oldest_it != script_cache.end()) {
+            script_cache.erase(oldest_it);
+        }
     }
 };
 
@@ -725,7 +810,64 @@ bool LuaRuntime::load_service_module(std::shared_ptr<LuaVM> vm,
                                      std::string* error) {
     try {
         sol::state& lua = *vm->state();
-        sol::load_result loaded = lua.load_file(std::string(script_path));
+        const std::string path_str(script_path);
+
+        // Try to load from cache
+        std::string source_code;
+        bool use_cache = false;
+
+        if (impl_->cache_config.enabled) {
+            std::lock_guard<std::mutex> lock(impl_->cache_mutex);
+
+            const int64_t current_mtime = impl_->get_file_mtime(path_str);
+            auto it = impl_->script_cache.find(path_str);
+
+            if (it != impl_->script_cache.end() &&
+                impl_->is_cache_valid(it->second, current_mtime)) {
+                // Cache hit
+                source_code = it->second.bytecode;
+                it->second.last_used = impl_->current_time_ms();
+                use_cache = true;
+            }
+        }
+
+        // Load from file if cache miss or disabled
+        if (!use_cache) {
+            // Read file content
+            try {
+                std::ifstream file(path_str);
+                if (!file.is_open()) {
+                    if (error) {
+                        *error = "Failed to open file: " + path_str;
+                    }
+                    return false;
+                }
+                std::stringstream buffer;
+                buffer << file.rdbuf();
+                source_code = buffer.str();
+            } catch (const std::exception& e) {
+                if (error) {
+                    *error = "Failed to read file: " + std::string(e.what());
+                }
+                return false;
+            }
+
+            // Update cache if enabled
+            if (impl_->cache_config.enabled) {
+                std::lock_guard<std::mutex> lock(impl_->cache_mutex);
+
+                ScriptCacheEntry entry;
+                entry.bytecode = source_code;
+                entry.mtime = impl_->get_file_mtime(path_str);
+                entry.last_used = impl_->current_time_ms();
+
+                impl_->evict_if_needed();
+                impl_->script_cache[path_str] = std::move(entry);
+            }
+        }
+
+        // Load and execute the source code
+        sol::load_result loaded = lua.load(source_code, path_str);
         if (!loaded.valid()) {
             sol::error err = loaded;
             if (error) {
@@ -1310,6 +1452,21 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua, const uint8_t* dat
             error_ = "unknown type tag: " + std::to_string(tag);
             return sol::make_object(lua, sol::nil);
     }
+}
+
+// LuaRuntime cache management methods
+void LuaRuntime::clear_cache() {
+    std::lock_guard<std::mutex> lock(impl_->cache_mutex);
+    impl_->script_cache.clear();
+}
+
+size_t LuaRuntime::cache_size() const {
+    std::lock_guard<std::mutex> lock(impl_->cache_mutex);
+    return impl_->script_cache.size();
+}
+
+LuaCacheConfig LuaRuntime::cache_config() const {
+    return impl_->cache_config;
 }
 
 }  // namespace shield::lua

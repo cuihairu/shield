@@ -111,6 +111,10 @@ lua:
   script_path: "scripts"
   vm_pool_size: 8
   max_memory: 67108864  # 64MB
+  cache:
+    enabled: true
+    max_size: 100
+    ttl_seconds: 0
 
 game:
   name: "Shield Game"

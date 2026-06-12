@@ -30,3 +30,9 @@ game:
 lua:
   auto_reload: true
   debug_mode: true
+  script_path: "scripts"
+  module_path: "scripts/?.lua;scripts/?/init.lua"
+  cache:
+    enabled: false  # 开发环境禁用缓存以便热重载
+    max_size: 50
+    ttl_seconds: 300

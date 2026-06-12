@@ -16,6 +16,12 @@ lua:
   sandbox:
     allow_os: false
     allow_io: false
+  script_path: "scripts"
+  module_path: "scripts/?.lua;scripts/?/init.lua"
+  cache:
+    enabled: true
+    max_size: 100
+    ttl_seconds: 0
 
 actors:
   - name: bootstrap

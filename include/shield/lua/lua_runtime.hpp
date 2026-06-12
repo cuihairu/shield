@@ -292,6 +292,13 @@ private:
     std::string error_;
 };
 
+/// @brief Lua script cache configuration
+struct LuaCacheConfig {
+    bool enabled = true;
+    size_t max_size = 100;
+    int64_t ttl_seconds = 0;  // 0 = never expire
+};
+
 /// @brief Lua runtime manager
 /// Manages a pool of Lua VMs and provides API registration
 class LuaRuntime {
@@ -363,6 +370,13 @@ public:
     void set_global(std::shared_ptr<LuaVM> vm,
                    std::string_view name,
                    std::string_view value);
+
+    // Clear script cache
+    void clear_cache();
+
+    // Get cache statistics
+    size_t cache_size() const;
+    LuaCacheConfig cache_config() const;
 
 private:
     struct Impl;

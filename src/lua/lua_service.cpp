@@ -66,6 +66,13 @@ struct LuaServiceManager::Impl {
             }
         }
 
+        // Try global lua.script_path from config
+        std::string global_script_path = shield::config::get("lua.script_path", "scripts");
+        auto from_global = std::filesystem::path(global_script_path) / script;
+        if (std::filesystem::exists(from_global)) {
+            return from_global.string();
+        }
+
         return script.string();
     }
 

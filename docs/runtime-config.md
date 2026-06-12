@@ -50,6 +50,12 @@ lua:
   sandbox:
     allow_os: false
     allow_io: false
+  script_path: "scripts"     # Lua 脚本查找路径（默认: scripts）
+  module_path: "scripts/?.lua;scripts/?/init.lua"  # Lua require() 模块搜索路径
+  cache:
+    enabled: true             # 是否启用脚本缓存（默认: true）
+    max_size: 100            # 最大缓存文件数（默认: 100）
+    ttl_seconds: 0            # 缓存过期时间，0 表示永不过期（默认: 0）
 
 actors:
   - name: gateway
@@ -154,9 +160,51 @@ shutdown:
 
 `actors[].script` 可以是绝对路径，也可以是相对路径。相对路径解析规则：
 
-- 优先按进程当前工作目录解析。
-- 若不存在，再按声明该 actor 的配置文件所在目录解析。
-- 仍不存在时启动失败；`required=false` 的 actor 失败只记录错误并继续启动其他 actor。
+1. 如果是绝对路径，直接使用
+2. 如果路径相对于当前工作目录存在文件，直接使用
+3. 如果 actor 配置指定了 `source_dir`，尝试从该目录解析
+4. 如果全局配置指定了 `lua.script_path`，尝试从该路径解析
+5. 如果以上都不存在，使用原始路径（可能导致启动失败）
+
+**Lua 模块加载路径**
+
+`lua.module_path` 配置项用于设置 Lua 的 `package.path`，控制 `require()` 函数的模块搜索路径：
+
+- 默认值：`"scripts/?.lua;scripts/?/init.lua"`
+- 支持多个路径，用分号分隔
+- `?` 会被替换为模块名
+
+示例：
+```yaml
+lua:
+  script_path: "scripts"
+  module_path: "scripts/?.lua;scripts/?/init.lua;libs/?.lua"
+```
+
+这样 `require("utils.helper")` 会依次尝试：
+- `scripts/utils/helper.lua`
+- `scripts/utils/helper/init.lua`
+- `libs/utils/helper.lua`
+
+**Lua 脚本缓存**
+
+`lua.cache` 配置项控制 Lua 脚本的缓存行为，可以显著提升重复加载相同脚本的性能：
+
+| 字段 | 默认值 | 说明 |
+| --- | --- | --- |
+| `enabled` | `true` | 是否启用缓存 |
+| `max_size` | `100` | 最大缓存文件数 |
+| `ttl_seconds` | `0` | 缓存过期时间（秒），0 表示永不过期 |
+
+缓存机制：
+- 缓存基于文件路径和修改时间
+- 文件修改后缓存自动失效
+- 使用 LRU 策略淘汰旧缓存
+- 缓存存储源代码，每次使用时重新编译
+
+环境差异：
+- **开发环境**：建议 `enabled: false` 以支持热重载
+- **生产环境**：建议 `enabled: true` 以提升性能
 
 ## Data 配置
 
@@ -179,6 +227,11 @@ shutdown:
 | `app.name` | 必填，1-64 字符 |
 | `log.level` | `debug`、`info`、`warn`、`error` |
 | `lua.vm.mode` | 当前只允许 `per_service` |
+| `lua.script_path` | 可选，默认 `"scripts"` |
+| `lua.module_path` | 可选，默认 `"scripts/?.lua;scripts/?/init.lua"` |
+| `lua.cache.enabled` | 可选，默认 `true` |
+| `lua.cache.max_size` | 可选，默认 `100`，范围 `1-10000` |
+| `lua.cache.ttl_seconds` | 可选，默认 `0`，范围 `0-86400` |
 | `actors` | 至少一个 actor |
 | `actors[].name` | 必填，本配置内唯一 |
 | `actors[].script` | 必填，文件必须存在 |
@@ -240,6 +293,11 @@ Phase 1 只承诺极少量本地热更新：
 | `actors[].script` | 否 | 需要 service 重启或未来 hot reload 机制 |
 | `actors[].network` | 否 | 需要 listener 重建 |
 | `lua.vm.*` | 否 | 需要重启 |
+| `lua.script_path` | 否 | 需要重启 |
+| `lua.module_path` | 否 | 需要重启 |
+| `lua.cache.enabled` | 否 | 需要重启 |
+| `lua.cache.max_size` | 否 | 需要重启 |
+| `lua.cache.ttl_seconds` | 否 | 需要重启 |
 | `bootstrap.*` / `shutdown.*` | 否 | 需要重启 |
 
 全局配置推送、运维热更新、cluster-wide 配置同步属于 `shield_global` 或 `shield_ops` 后续设计，不进入 core schema。
