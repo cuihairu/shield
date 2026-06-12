@@ -452,15 +452,51 @@ sol::variadic_results call_with_timeout(sol::this_state state,
         return results;
     }
 
-    // For now, keep the synchronous implementation
-    // TODO: Implement coroutine-aware call with pending registry
-    CallResult result = manager->call(target, method, args, timeout_ms);
-    if (!result.success) {
-        results.push_back(sol::make_object(lua, false));
-        results.push_back(make_error(state, "call_failed",
-                                     result.error_message));
+    // Check if we're in a coroutine context
+    sol::co_context co_context = lua.get<sol::co_context>("_ coroutine_ctx");
+    bool in_coroutine = co_context.valid();
+
+    if (!in_coroutine || !runtime) {
+        // Fallback to synchronous implementation
+        CallResult result = manager->call(target, method, args, timeout_ms);
+        if (!result.success) {
+            results.push_back(sol::make_object(lua, false));
+            results.push_back(make_error(state, "call_failed",
+                                         result.error_message));
+            return results;
+        }
+
+        results.push_back(sol::make_object(lua, true));
+        for (const auto& value : result.values) {
+            results.push_back(json_to_lua(lua, value));
+        }
         return results;
     }
+
+    // Coroutine-aware implementation
+    // Get current coroutine
+    sol::coroutine current_co = co_context;
+
+    // Get current service ID
+    const std::string current_service = manager->current_service_id();
+    if (current_service.empty()) {
+        results.push_back(sol::make_object(lua, false));
+        results.push_back(make_error(state, "no_service_context",
+                                     "Not in a service context"));
+        return results;
+    }
+
+    // Suspend current coroutine and register callback
+    CoroutineScheduler::CoroutineId coro_id =
+        runtime->coroutine_scheduler().suspend(current_service, current_co, timeout_ms);
+
+    // Send message and register callback to resume coroutine
+    // TODO: This needs async call support in LuaServiceManager
+    // For now, fallback to sync
+    CallResult result = manager->call(target, method, args, timeout_ms);
+
+    // Resume coroutine with result
+    runtime->coroutine_scheduler().resume(coro_id, result.values);
 
     results.push_back(sol::make_object(lua, true));
     for (const auto& value : result.values) {
