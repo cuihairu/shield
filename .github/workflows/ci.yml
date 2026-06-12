@@ -13,7 +13,7 @@ jobs:
   # 代码质量检查
   code-quality:
     name: Code Quality
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -39,7 +39,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
+          - os: ubuntu-26.04
             compiler: gcc
           - os: macos-latest
             compiler: clang
@@ -113,7 +113,7 @@ jobs:
   # Docker 构建 (仅 main 分支)
   docker:
     name: Docker Build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     permissions:
