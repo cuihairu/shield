@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 
 namespace shield::lua {
@@ -34,7 +34,6 @@ public:
         CoroutineId id;
         std::string service_id;
         sol::coroutine coroutine;
-        sol::state_view state;
         int64_t deadline_ms;
         Status status = Status::Pending;
         nlohmann::json result;  // For call responses
@@ -189,6 +188,7 @@ public:
     };
 
     explicit Mailbox(size_t max_size = 1000);
+    ~Mailbox();
 
     // Push a message to the mailbox
     /// @param msg Message to push
@@ -248,7 +248,7 @@ public:
         size_t max_map_entries = 100000;
     };
 
-    explicit LuaPackEncoder(const Config& config = Config());
+    explicit LuaPackEncoder(const Config& config);
 
     // Encode a Lua value to LuaPack format
     /// @param lua Lua state
@@ -345,6 +345,9 @@ public:
 
     // Bind service-management APIs for VMs created by this runtime.
     void set_service_manager(LuaServiceManager* manager);
+
+    // Get service manager for this runtime
+    LuaServiceManager* service_manager() const;
 
     // Get coroutine scheduler for this runtime
     CoroutineScheduler& coroutine_scheduler() { return *coroutine_scheduler_; }

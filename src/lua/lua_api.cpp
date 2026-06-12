@@ -20,7 +20,6 @@
 #include <vector>
 
 namespace shield::lua {
-namespace {
 
 nlohmann::json lua_to_json(const sol::object& value);
 sol::variadic_results call_with_timeout(sol::this_state state,
@@ -219,8 +218,8 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
             }
 
             // Return ServiceHandle userdata instead of string
-            results.push_back(sol::make_object(lua, sol::make_object<ServiceHandle>(
-                result.service_id)));
+            ServiceHandle handle(result.service_id);
+            results.push_back(sol::make_object(lua, handle));
             results.push_back(sol::make_object(lua, sol::nil));
             return results;
         });
@@ -242,15 +241,8 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
             if (service_id.empty()) {
                 return sol::make_object(lua, sol::nil);
             }
-            return sol::make_object(lua, sol::make_object<ServiceHandle>(service_id));
-        });
-                return sol::nullopt;
-            }
-            const auto service_id = manager->current_service_id();
-            if (service_id.empty()) {
-                return sol::nullopt;
-            }
-            return service_id;
+            ServiceHandle handle(service_id);
+            return sol::make_object(lua, handle);
         });
 
     shield.set_function("names",
@@ -282,8 +274,8 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
 
             const auto service = manager->query_service(name);
             if (!service.empty()) {
-                results.push_back(sol::make_object(lua, sol::make_object<ServiceHandle>(
-                    service)));
+                ServiceHandle handle(service);
+                results.push_back(sol::make_object(lua, handle));
                 results.push_back(sol::make_object(lua, sol::nil));
                 return results;
             }
@@ -452,11 +444,9 @@ sol::variadic_results call_with_timeout(sol::this_state state,
         return results;
     }
 
-    // Check if we're in a coroutine context
-    sol::co_context co_context = lua.get<sol::co_context>("_ coroutine_ctx");
-    bool in_coroutine = co_context.valid();
-
-    if (!in_coroutine || !runtime) {
+    // For now, we use synchronous implementation
+    // TODO: Implement coroutine-aware call using CoroutineScheduler
+    if (!runtime) {
         // Fallback to synchronous implementation
         CallResult result = manager->call(target, method, args, timeout_ms);
         if (!result.success) {
@@ -473,46 +463,26 @@ sol::variadic_results call_with_timeout(sol::this_state state,
         return results;
     }
 
-    // Coroutine-aware implementation
-    // Get current coroutine
-    sol::coroutine current_co = co_context;
-
-    // Get current service ID
-    const std::string current_service = manager->current_service_id();
-    if (current_service.empty()) {
-        results.push_back(sol::make_object(lua, false));
-        results.push_back(make_error(state, "no_service_context",
-                                     "Not in a service context"));
-        return results;
-    }
-
-    // Suspend current coroutine and register callback
-    CoroutineScheduler::CoroutineId coro_id =
-        runtime->coroutine_scheduler().suspend(current_service, current_co, timeout_ms);
-
-    // Send message and register callback to resume coroutine
-    // TODO: This needs async call support in LuaServiceManager
-    // For now, fallback to sync
-    CallResult result = manager->call(target, method, args, timeout_ms);
-
-    // Resume coroutine with result
-    runtime->coroutine_scheduler().resume(coro_id, result.values);
-
-    results.push_back(sol::make_object(lua, true));
-    for (const auto& value : result.values) {
-        results.push_back(json_to_lua(lua, value));
-    }
+    // TODO: Implement coroutine-aware call
+    // For now, return error
+    results.push_back(sol::make_object(lua, false));
+    results.push_back(make_error(state, "not_implemented",
+                                 "Coroutine-aware call not yet implemented"));
     return results;
 }
 
-void register_timer_api(sol::table& shield, LuaRuntime* runtime) {
+void register_timer_api(sol::table& shield, LuaServiceManager* manager,
+                         LuaRuntime* runtime) {
     shield.set_function("now", []() -> int64_t {
         const auto now = std::chrono::steady_clock::now().time_since_epoch();
         return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
     });
 
     shield.set_function("timer_once",
-        [runtime](int delay_ms, sol::function callback) -> uint64_t {
+        [manager, runtime](int delay_ms, sol::function callback) -> sol::variadic_results {
+            sol::variadic_results results;
+            sol::state_view lua(callback.lua_state());
+
             if (!runtime) {
                 // Fallback to thread-based implementation
                 static std::atomic<uint64_t> timer_id{1};
@@ -521,17 +491,27 @@ void register_timer_api(sol::table& shield, LuaRuntime* runtime) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
                     callback();
                 }).detach();
-                return id;
+                results.push_back(sol::make_object(lua, id));
+                return results;
             }
 
             // Get current service ID
-            auto& manager = runtime->coroutine_scheduler();  // Access to service context needed
-            // For now, use empty service_id; proper implementation needs service context
-            return runtime->timer_manager().schedule_once(delay_ms, callback, "");
+            std::string service_id;
+            if (manager) {
+                service_id = manager->current_service_id();
+            }
+
+            const uint64_t id = runtime->timer_manager().schedule_once(
+                delay_ms, callback, service_id);
+            results.push_back(sol::make_object(lua, id));
+            return results;
         });
 
     shield.set_function("timer",
-        [runtime](int interval_ms, sol::function callback) -> uint64_t {
+        [manager, runtime](int interval_ms, sol::function callback) -> sol::variadic_results {
+            sol::variadic_results results;
+            sol::state_view lua(callback.lua_state());
+
             if (!runtime) {
                 // Fallback to thread-based implementation
                 static std::atomic<uint64_t> timer_id{1};
@@ -543,10 +523,20 @@ void register_timer_api(sol::table& shield, LuaRuntime* runtime) {
                         callback();
                     }
                 }).detach();
-                return id;
+                results.push_back(sol::make_object(lua, id));
+                return results;
             }
 
-            return runtime->timer_manager().schedule_fixed_delay(interval_ms, callback, "");
+            // Get current service ID
+            std::string service_id;
+            if (manager) {
+                service_id = manager->current_service_id();
+            }
+
+            const uint64_t id = runtime->timer_manager().schedule_fixed_delay(
+                interval_ms, callback, service_id);
+            results.push_back(sol::make_object(lua, id));
+            return results;
         });
 
     shield.set_function("cancel_timer",
@@ -572,17 +562,21 @@ void register_timer_api(sol::table& shield, LuaRuntime* runtime) {
             return results;
         });
 
-    shield.set_function("sleep", [runtime](int delay_ms) {
+    shield.set_function("sleep", [manager, runtime](int delay_ms) {
         if (!runtime) {
             std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
             return;
         }
 
-        // Get the current coroutine
-        sol::state_view lua = sol::state_view(runtime->coroutine_scheduler());
-        // Note: This is a simplified implementation that still blocks
-        // A full implementation would need to access the current coroutine
-        // from the Lua state and suspend it
+        // Get current service ID
+        std::string service_id;
+        if (manager) {
+            service_id = manager->current_service_id();
+        }
+
+        // For now, this is a blocking implementation
+        // TODO: Implement coroutine-aware sleep using CoroutineScheduler
+        (void)service_id;
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     });
 }
@@ -864,13 +858,14 @@ void register_data_api(sol::table& shield) {
     shield["redis"] = redis_table;
 }
 
-}  // namespace
-
 void register_shield_api(LuaRuntime& runtime) {
     (void)runtime;
 }
 
 namespace api {
+
+using LuaRuntime = shield::lua::LuaRuntime;
+using LuaServiceManager = shield::lua::LuaServiceManager;
 
 void register_service_api(LuaRuntime& runtime) {
     (void)runtime;
@@ -881,6 +876,13 @@ void register_message_api(LuaRuntime& runtime) {
 }
 
 void register_timer_api(LuaRuntime& runtime) {
+    (void)runtime;
+}
+
+void register_timer_api(sol::table& shield, LuaServiceManager* manager,
+                         LuaRuntime* runtime) {
+    (void)shield;
+    (void)manager;
     (void)runtime;
 }
 
@@ -915,7 +917,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
 
     register_service_api(shield, manager);
     register_message_api(shield, manager, runtime);
-    register_timer_api(shield, runtime);
+    register_timer_api(shield, manager, runtime);
     register_task_api(shield, runtime);
     register_config_api(shield);
     register_log_api(shield);

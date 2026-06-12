@@ -8,6 +8,7 @@
 #include <sol/sol.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <mutex>
@@ -24,8 +25,8 @@ namespace shield::lua {
 struct CoroutineScheduler::Impl {
     std::unordered_map<CoroutineId, SuspendedCoroutine> suspended;
     std::unordered_map<std::string, std::vector<CoroutineId>> by_service;
-    CoroutineId next_id{1};
-    std::mutex mutex;
+    std::atomic<CoroutineId> next_id{1};
+    mutable std::mutex mutex;
 
     CoroutineId generate_id() {
         return next_id.fetch_add(1);
@@ -37,14 +38,13 @@ struct CoroutineScheduler::Impl {
         by_service[sc.service_id].push_back(sc.id);
     }
 
-    bool find(CoroutineId id, SuspendedCoroutine* out) {
+    SuspendedCoroutine* find_ptr(CoroutineId id) {
         std::lock_guard<std::mutex> lock(mutex);
         auto it = suspended.find(id);
         if (it != suspended.end()) {
-            if (out) *out = it->second;
-            return true;
+            return &it->second;
         }
-        return false;
+        return nullptr;
     }
 
     bool erase(CoroutineId id) {
@@ -101,13 +101,15 @@ CoroutineScheduler::CoroutineId CoroutineScheduler::suspend(
         now.time_since_epoch()).count();
     const int64_t deadline_ms = now_ms + timeout_ms;
 
-    SuspendedCoroutine sc;
-    sc.id = id;
-    sc.service_id = service_id;
-    sc.coroutine = co;
-    sc.state = co.lua_state();
-    sc.deadline_ms = deadline_ms;
-    sc.status = Status::Pending;
+    SuspendedCoroutine sc = {
+        id,
+        service_id,
+        co,
+        deadline_ms,
+        Status::Pending,
+        {},
+        ""
+    };
 
     impl_->insert(sc);
 
@@ -115,35 +117,25 @@ CoroutineScheduler::CoroutineId CoroutineScheduler::suspend(
 }
 
 bool CoroutineScheduler::resume(CoroutineId id, const nlohmann::json& result) {
-    SuspendedCoroutine sc;
-    if (!impl_->find(id, &sc)) {
-        return false;  // Already completed or not found
+    SuspendedCoroutine* sc_ptr = impl_->find_ptr(id);
+    if (!sc_ptr) {
+        return false;  // Not found
     }
 
-    if (sc.status != Status::Pending) {
+    if (sc_ptr->status != Status::Pending) {
         return false;  // Not in pending state
     }
+
+    // Copy the coroutine before erasing
+    sol::coroutine coroutine = sc_ptr->coroutine;
 
     // Remove from suspended list before resuming
     impl_->erase(id);
 
-    // Set result and resume
-    sc.status = Status::Ready;
-    sc.result = result;
-
     // Resume the coroutine with the result
-    // We'll convert the JSON array back to Lua values
-    auto result_fn = [&](sol::variadic_args args) {
-        // Return the result values
-        if (result.is_array()) {
-            for (const auto& value : result) {
-                args.push_back(json_to_lua(sc.state, value));
-            }
-        }
-    };
-
-    // Resume the coroutine
-    auto resume_result = sc.coroutine(result_fn);
+    // For now, we pass the JSON string as a single value
+    // TODO: Convert JSON array to multiple Lua values
+    auto resume_result = coroutine(result.dump());
     if (!resume_result.valid()) {
         sol::error err = resume_result;
         // Log error but still return true as we attempted resume
@@ -153,22 +145,22 @@ bool CoroutineScheduler::resume(CoroutineId id, const nlohmann::json& result) {
 }
 
 bool CoroutineScheduler::resume_with_error(CoroutineId id, const std::string& error) {
-    SuspendedCoroutine sc;
-    if (!impl_->find(id, &sc)) {
-        return false;
+    SuspendedCoroutine* sc_ptr = impl_->find_ptr(id);
+    if (!sc_ptr) {
+        return false;  // Not found
     }
 
-    if (sc.status != Status::Pending) {
-        return false;
+    if (sc_ptr->status != Status::Pending) {
+        return false;  // Not in pending state
     }
+
+    // Copy the coroutine before erasing
+    sol::coroutine coroutine = sc_ptr->coroutine;
 
     impl_->erase(id);
 
-    sc.status = Status::Failed;
-    sc.error = error;
-
     // Resume with false, error
-    auto resume_result = sc.coroutine(false, error);
+    auto resume_result = coroutine(false, error);
     if (!resume_result.valid()) {
         sol::error err = resume_result;
     }
@@ -231,8 +223,8 @@ struct TimerManager::Impl {
 
     std::unordered_map<TimerId, Timer> timers;
     std::unordered_map<std::string, std::vector<TimerId>> by_service;
-    TimerId next_id{1};
-    std::mutex mutex;
+    std::atomic<TimerId> next_id{1};
+    mutable std::mutex mutex;
 
     TimerId generate_id() {
         return next_id.fetch_add(1);
@@ -240,7 +232,7 @@ struct TimerManager::Impl {
 
     void insert(const Timer& timer) {
         std::lock_guard<std::mutex> lock(mutex);
-        timers[timer.id] = timer;
+        timers.insert(std::make_pair(timer.id, timer));
         by_service[timer.callback.service_id].push_back(timer.id);
     }
 
@@ -317,12 +309,14 @@ TimerManager::TimerId TimerManager::schedule_once(
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         now.time_since_epoch()).count();
 
-    TimerManager::Impl::Timer timer;
-    timer.id = id;
-    timer.type = TimerType::Once;
-    timer.deadline_ms = now_ms + delay_ms;
-    timer.interval_ms = delay_ms;
-    timer.callback = {callback, sol::state_view(callback.lua_state()), service_id};
+    TimerManager::Impl::Timer timer = {
+        id,
+        TimerType::Once,
+        now_ms + delay_ms,
+        delay_ms,
+        {callback, sol::state_view(callback.lua_state()), service_id},
+        true
+    };
 
     impl_->insert(timer);
 
@@ -340,12 +334,14 @@ TimerManager::TimerId TimerManager::schedule_fixed_delay(
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         now.time_since_epoch()).count();
 
-    TimerManager::Impl::Timer timer;
-    timer.id = id;
-    timer.type = TimerType::FixedDelay;
-    timer.deadline_ms = now_ms + interval_ms;
-    timer.interval_ms = interval_ms;
-    timer.callback = {callback, sol::state_view(callback.lua_state()), service_id};
+    TimerManager::Impl::Timer timer = {
+        id,
+        TimerType::FixedDelay,
+        now_ms + interval_ms,
+        interval_ms,
+        {callback, sol::state_view(callback.lua_state()), service_id},
+        true
+    };
 
     impl_->insert(timer);
 
@@ -460,6 +456,8 @@ struct Mailbox::Impl {
 Mailbox::Mailbox(size_t max_size)
     : impl_(std::make_unique<Impl>(max_size)) {}
 
+Mailbox::~Mailbox() = default;
+
 bool Mailbox::push(const Message& msg, Backpressure strategy) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
 
@@ -471,7 +469,7 @@ bool Mailbox::push(const Message& msg, Backpressure strategy) {
     // Handle backpressure
     switch (strategy) {
         case Backpressure::DropNewest:
-            impl_->droled_count.fetch_add(1);
+            impl_->dropped_count.fetch_add(1);
             return false;
 
         case Backpressure::DropOldest:
@@ -932,6 +930,10 @@ void LuaRuntime::register_api(std::shared_ptr<LuaVM> vm) {
 
 void LuaRuntime::set_service_manager(LuaServiceManager* manager) {
     impl_->service_manager = manager;
+}
+
+LuaServiceManager* LuaRuntime::service_manager() const {
+    return impl_->service_manager;
 }
 
 std::string LuaRuntime::get_global(std::shared_ptr<LuaVM> vm,
