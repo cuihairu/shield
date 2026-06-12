@@ -8,8 +8,426 @@
 #include <sol/sol.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <mutex>
+#include <unordered_map>
 
 namespace shield::lua {
+
+// ============================================================================
+// CoroutineScheduler Implementation
+// ============================================================================
+
+struct CoroutineScheduler::Impl {
+    std::unordered_map<CoroutineId, SuspendedCoroutine> suspended;
+    std::unordered_map<std::string, std::vector<CoroutineId>> by_service;
+    CoroutineId next_id{1};
+    std::mutex mutex;
+
+    CoroutineId generate_id() {
+        return next_id.fetch_add(1);
+    }
+
+    void insert(const SuspendedCoroutine& sc) {
+        std::lock_guard<std::mutex> lock(mutex);
+        suspended[sc.id] = sc;
+        by_service[sc.service_id].push_back(sc.id);
+    }
+
+    bool find(CoroutineId id, SuspendedCoroutine* out) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = suspended.find(id);
+        if (it != suspended.end()) {
+            if (out) *out = it->second;
+            return true;
+        }
+        return false;
+    }
+
+    bool erase(CoroutineId id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = suspended.find(id);
+        if (it == suspended.end()) {
+            return false;
+        }
+
+        const std::string service_id = it->second.service_id;
+        suspended.erase(it);
+
+        // Remove from by_service index
+        auto service_it = by_service.find(service_id);
+        if (service_it != by_service.end()) {
+            auto& ids = service_it->second;
+            ids.erase(std::remove(ids.begin(), ids.end(), id), ids.end());
+            if (ids.empty()) {
+                by_service.erase(service_it);
+            }
+        }
+
+        return true;
+    }
+
+    std::vector<CoroutineId> get_for_service(const std::string& service_id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = by_service.find(service_id);
+        if (it == by_service.end()) {
+            return {};
+        }
+        return it->second;
+    }
+
+    size_t size() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return suspended.size();
+    }
+};
+
+CoroutineScheduler::CoroutineScheduler()
+    : impl_(std::make_unique<Impl>()) {}
+
+CoroutineScheduler::CoroutineId CoroutineScheduler::suspend(
+    const std::string& service_id,
+    sol::coroutine co,
+    int32_t timeout_ms) {
+
+    const CoroutineId id = impl_->generate_id();
+
+    // Calculate deadline
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+    const int64_t deadline_ms = now_ms + timeout_ms;
+
+    SuspendedCoroutine sc;
+    sc.id = id;
+    sc.service_id = service_id;
+    sc.coroutine = co;
+    sc.state = co.lua_state();
+    sc.deadline_ms = deadline_ms;
+    sc.status = Status::Pending;
+
+    impl_->insert(sc);
+
+    return id;
+}
+
+bool CoroutineScheduler::resume(CoroutineId id, const nlohmann::json& result) {
+    SuspendedCoroutine sc;
+    if (!impl_->find(id, &sc)) {
+        return false;  // Already completed or not found
+    }
+
+    if (sc.status != Status::Pending) {
+        return false;  // Not in pending state
+    }
+
+    // Remove from suspended list before resuming
+    impl_->erase(id);
+
+    // Set result and resume
+    sc.status = Status::Ready;
+    sc.result = result;
+
+    // Resume the coroutine with the result
+    // We'll convert the JSON array back to Lua values
+    auto result_fn = [&](sol::variadic_args args) {
+        // Return the result values
+        if (result.is_array()) {
+            for (const auto& value : result) {
+                args.push_back(json_to_lua(sc.state, value));
+            }
+        }
+    };
+
+    // Resume the coroutine
+    auto resume_result = sc.coroutine(result_fn);
+    if (!resume_result.valid()) {
+        sol::error err = resume_result;
+        // Log error but still return true as we attempted resume
+    }
+
+    return true;
+}
+
+bool CoroutineScheduler::resume_with_error(CoroutineId id, const std::string& error) {
+    SuspendedCoroutine sc;
+    if (!impl_->find(id, &sc)) {
+        return false;
+    }
+
+    if (sc.status != Status::Pending) {
+        return false;
+    }
+
+    impl_->erase(id);
+
+    sc.status = Status::Failed;
+    sc.error = error;
+
+    // Resume with false, error
+    auto resume_result = sc.coroutine(false, error);
+    if (!resume_result.valid()) {
+        sol::error err = resume_result;
+    }
+
+    return true;
+}
+
+bool CoroutineScheduler::cancel(CoroutineId id) {
+    return impl_->erase(id);
+}
+
+void CoroutineScheduler::cancel_all_for_service(const std::string& service_id) {
+    auto ids = impl_->get_for_service(service_id);
+    for (auto id : ids) {
+        cancel(id);
+    }
+}
+
+int CoroutineScheduler::check_timeouts(int64_t now_ms) {
+    int timed_out = 0;
+    std::vector<CoroutineId> to_timeout;
+
+    // Collect timed out coroutines
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        for (const auto& [id, sc] : impl_->suspended) {
+            if (sc.status == Status::Pending && sc.deadline_ms < now_ms) {
+                to_timeout.push_back(id);
+            }
+        }
+    }
+
+    // Resume them with timeout error
+    for (auto id : to_timeout) {
+        if (resume_with_error(id, "timeout")) {
+            ++timed_out;
+        }
+    }
+
+    return timed_out;
+}
+
+size_t CoroutineScheduler::active_count() const {
+    return impl_->size();
+}
+
+// ============================================================================
+// TimerManager Implementation
+// ============================================================================
+
+struct TimerManager::Impl {
+    struct Timer {
+        TimerId id;
+        TimerType type;
+        int64_t deadline_ms;
+        int64_t interval_ms;
+        TimerCallback callback;
+        bool active = true;
+    };
+
+    std::unordered_map<TimerId, Timer> timers;
+    std::unordered_map<std::string, std::vector<TimerId>> by_service;
+    TimerId next_id{1};
+    std::mutex mutex;
+
+    TimerId generate_id() {
+        return next_id.fetch_add(1);
+    }
+
+    void insert(const Timer& timer) {
+        std::lock_guard<std::mutex> lock(mutex);
+        timers[timer.id] = timer;
+        by_service[timer.callback.service_id].push_back(timer.id);
+    }
+
+    bool find(TimerId id, Timer* out) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = timers.find(id);
+        if (it != timers.end()) {
+            if (out) *out = it->second;
+            return true;
+        }
+        return false;
+    }
+
+    bool erase(TimerId id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = timers.find(id);
+        if (it == timers.end()) {
+            return false;
+        }
+
+        const std::string service_id = it->second.callback.service_id;
+        timers.erase(it);
+
+        // Remove from by_service index
+        auto service_it = by_service.find(service_id);
+        if (service_it != by_service.end()) {
+            auto& ids = service_it->second;
+            ids.erase(std::remove(ids.begin(), ids.end(), id), ids.end());
+            if (ids.empty()) {
+                by_service.erase(service_it);
+            }
+        }
+
+        return true;
+    }
+
+    std::vector<TimerId> get_for_service(const std::string& service_id) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = by_service.find(service_id);
+        if (it == by_service.end()) {
+            return {};
+        }
+        return it->second;
+    }
+
+    std::vector<Timer> get_expired(int64_t now_ms) {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<Timer> expired;
+        for (auto& [id, timer] : timers) {
+            if (timer.active && timer.deadline_ms <= now_ms) {
+                expired.push_back(timer);
+            }
+        }
+        return expired;
+    }
+
+    size_t size() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return timers.size();
+    }
+};
+
+TimerManager::TimerManager()
+    : impl_(std::make_unique<Impl>()) {}
+
+TimerManager::TimerId TimerManager::schedule_once(
+    int64_t delay_ms,
+    sol::function callback,
+    const std::string& service_id) {
+
+    const TimerId id = impl_->generate_id();
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+
+    TimerManager::Impl::Timer timer;
+    timer.id = id;
+    timer.type = TimerType::Once;
+    timer.deadline_ms = now_ms + delay_ms;
+    timer.interval_ms = delay_ms;
+    timer.callback = {callback, sol::state_view(callback.lua_state()), service_id};
+
+    impl_->insert(timer);
+
+    return id;
+}
+
+TimerManager::TimerId TimerManager::schedule_fixed_delay(
+    int64_t interval_ms,
+    sol::function callback,
+    const std::string& service_id) {
+
+    const TimerId id = impl_->generate_id();
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+
+    TimerManager::Impl::Timer timer;
+    timer.id = id;
+    timer.type = TimerType::FixedDelay;
+    timer.deadline_ms = now_ms + interval_ms;
+    timer.interval_ms = interval_ms;
+    timer.callback = {callback, sol::state_view(callback.lua_state()), service_id};
+
+    impl_->insert(timer);
+
+    return id;
+}
+
+bool TimerManager::cancel(TimerId id) {
+    return impl_->erase(id);
+}
+
+void TimerManager::cancel_all_for_service(const std::string& service_id) {
+    auto ids = impl_->get_for_service(service_id);
+    for (auto id : ids) {
+        cancel(id);
+    }
+}
+
+int TimerManager::check_and_fire(int64_t now_ms) {
+    int fired = 0;
+
+    // Get expired timers
+    auto expired = impl_->get_expired(now_ms);
+
+    // Fire them
+    for (const auto& timer : expired) {
+        if (!timer.active) continue;
+
+        // Mark as inactive to prevent double-firing
+        impl_->erase(timer.id);
+
+        // Fire the callback
+        try {
+            timer.callback.callback();
+        } catch (const std::exception& e) {
+            // Log error
+        }
+
+        ++fired;
+
+        // If it's a repeating timer, reschedule
+        if (timer.type == TimerType::FixedDelay) {
+            const TimerId new_id = schedule_fixed_delay(
+                timer.interval_ms,
+                timer.callback.callback,
+                timer.callback.service_id);
+            (void)new_id;
+        }
+    }
+
+    return fired;
+}
+
+size_t TimerManager::active_count() const {
+    return impl_->size();
+}
+
+// ============================================================================
+// ServiceHandle Implementation
+// ============================================================================
+
+void ServiceHandle::register_usertype(sol::state& lua) {
+    lua.new_usertype<ServiceHandle>("ServiceHandle",
+        // Prevent direct construction from Lua
+        "new", sol::no_constructor,
+
+        // Methods
+        "id", &ServiceHandle::id,
+        "valid", &ServiceHandle::valid,
+
+        // Metamethods
+        sol::meta_function::to_string, [](const ServiceHandle& h) {
+            return "<ServiceHandle: " + h.id() + ">";
+        },
+
+        // Equality by service ID
+        sol::meta_function::equal_to, [](const ServiceHandle& a,
+                                          const ServiceHandle& b) {
+            return a.id() == b.id();
+        }
+    );
+}
+
+// ============================================================================
+// LuaVM Implementation
+// ============================================================================
 
 // Opaque Lua VM handle
 class LuaVM {
@@ -39,7 +457,10 @@ struct LuaRuntime::Impl {
     }
 };
 
-LuaRuntime::LuaRuntime() : impl_(std::make_unique<Impl>()) {}
+LuaRuntime::LuaRuntime()
+    : impl_(std::make_unique<Impl>()),
+      coroutine_scheduler_(std::make_unique<CoroutineScheduler>()),
+      timer_manager_(std::make_unique<TimerManager>()) {}
 
 LuaRuntime::~LuaRuntime() = default;
 
@@ -391,7 +812,7 @@ std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
 
 void LuaRuntime::register_api(std::shared_ptr<LuaVM> vm) {
     // Register all shield.* API functions
-    register_full_shield_api(*vm->state(), impl_->service_manager);
+    register_full_shield_api(*vm->state(), impl_->service_manager, this);
 }
 
 void LuaRuntime::set_service_manager(LuaServiceManager* manager) {

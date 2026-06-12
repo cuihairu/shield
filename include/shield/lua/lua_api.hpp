@@ -17,7 +17,8 @@ void register_shield_api(LuaRuntime& runtime);
 
 /// @brief Full API registration (internal use)
 void register_full_shield_api(sol::state& lua,
-                              LuaServiceManager* manager = nullptr);
+                              LuaServiceManager* manager = nullptr,
+                              LuaRuntime* runtime = nullptr);
 
 /// @brief API categories organized by domain
 namespace api {
