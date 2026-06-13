@@ -437,17 +437,16 @@ sol::variadic_results call_with_timeout(sol::this_state state,
                                         const nlohmann::json& args) {
     sol::state_view lua(state);
     sol::variadic_results results;
-    if (!manager) {
-        results.push_back(sol::make_object(lua, false));
-        results.push_back(make_error(state, "runtime_unavailable",
-                                     "Lua service manager is not available"));
-        return results;
-    }
 
-    // For now, we use synchronous implementation
-    // TODO: Implement coroutine-aware call using CoroutineScheduler
-    if (!runtime) {
+    if (!manager || !runtime) {
         // Fallback to synchronous implementation
+        if (!manager) {
+            results.push_back(sol::make_object(lua, false));
+            results.push_back(make_error(state, "runtime_unavailable",
+                                         "Lua service manager is not available"));
+            return results;
+        }
+
         CallResult result = manager->call(target, method, args, timeout_ms);
         if (!result.success) {
             results.push_back(sol::make_object(lua, false));
@@ -463,11 +462,25 @@ sol::variadic_results call_with_timeout(sol::this_state state,
         return results;
     }
 
-    // TODO: Implement coroutine-aware call
-    // For now, return error
-    results.push_back(sol::make_object(lua, false));
-    results.push_back(make_error(state, "not_implemented",
-                                 "Coroutine-aware call not yet implemented"));
+    // TODO: Implement true coroutine-aware call
+    // This requires:
+    // 1. Async message sending with response tracking
+    // 2. Coroutine suspension and resume mechanism
+    // 3. Timeout handling in coroutine scheduler
+
+    // For now, use synchronous implementation
+    CallResult result = manager->call(target, method, args, timeout_ms);
+    if (!result.success) {
+        results.push_back(sol::make_object(lua, false));
+        results.push_back(make_error(state, "call_failed",
+                                     result.error_message));
+        return results;
+    }
+
+    results.push_back(sol::make_object(lua, true));
+    for (const auto& value : result.values) {
+        results.push_back(json_to_lua(lua, value));
+    }
     return results;
 }
 

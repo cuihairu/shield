@@ -331,3 +331,6 @@ target_link_libraries(
   test_service_container PRIVATE shield_core Boost::unit_test_framework
                                  Boost::headers)
 add_test(NAME test_service_container COMMAND test_service_container)
+
+# Lua API Tests
+add_subdirectory(lua_api)
