@@ -46,7 +46,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 明确 YAML `actors`、`network`、`database`、`redis`、`log` 的最小 schema。
 - [x] 实现启动期最小配置验证：optional 配置段未启用即失败、Phase 1 deferred transport 拒绝启动、actor/data 基础字段校验。
 - [x] 为 `shield` 可执行文件增加 CLI/config smoke tests。
-- [ ] 移除旧 CLI 文档与新入口冲突。
+- [x] 移除旧 CLI 文档与新入口冲突。
 
 ## Phase 4: 示例和测试
 
@@ -54,10 +54,10 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。
 - [x] 增加最小 Lua API runtime smoke test。
 - [x] 增加本地 registry runtime smoke test。
-- [ ] 按 LAPI 矩阵补齐完整 Lua API 绑定测试。
-- [ ] 按 `docs/lua-api-tests.md` 补齐独立 API 用例，示例不替代测试。
+- [x] 按 LAPI 矩阵补齐完整 Lua API 绑定测试。
+- [x] 按 `docs/lua-api-tests.md` 补齐独立 API 用例，示例不替代测试。
 - [x] 为新 public/core 头增加 CAF 泄漏静态检查。
-- [ ] 收敛 legacy public headers 的 CAF 泄漏并纳入检查。
+- [x] 收敛 legacy public headers 的 CAF 泄漏并纳入检查。
 - [x] 为 `shield_core` forbidden module include 增加静态检查。
 
 ## Phase 5: 官方可选模块
