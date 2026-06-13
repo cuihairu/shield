@@ -1,0 +1,2 @@
+-- Negative fixture: returns nil instead of a table.
+-- Used by LAPI-001-02 to verify the loader rejects non-table modules.

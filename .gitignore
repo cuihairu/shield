@@ -33,6 +33,9 @@ docs/.vitepress/cache/
 # AI
 .claude/
 
+# Spec workflow MCP tool metadata
+.spec-workflow/
+
 # Prerequisites
 *.d
 
