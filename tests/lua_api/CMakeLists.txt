@@ -164,3 +164,81 @@ set_tests_properties(test_lua_api_legacy PROPERTIES
     LABELS "lua_api"
     TIMEOUT 60
 )
+
+# Test executable: Timers and Tasks Tests (LAPI-007)
+add_executable(test_lua_api_timers
+    test_lua_api_timers.cpp
+)
+
+target_link_libraries(test_lua_api_timers
+    PRIVATE
+    shield_lua
+    shield_core
+    Boost::unit_test_framework
+    Boost::headers
+)
+
+target_include_directories(test_lua_api_timers
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tests/lua_api
+)
+
+add_test(NAME test_lua_api_timers COMMAND test_lua_api_timers)
+
+set_tests_properties(test_lua_api_timers PROPERTIES
+    LABELS "lua_api"
+    TIMEOUT 60
+)
+
+# Test executable: Data API Tests (LAPI-008)
+add_executable(test_lua_api_data
+    test_lua_api_data.cpp
+)
+
+target_link_libraries(test_lua_api_data
+    PRIVATE
+    shield_lua
+    shield_core
+    Boost::unit_test_framework
+    Boost::headers
+)
+
+target_include_directories(test_lua_api_data
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tests/lua_api
+)
+
+add_test(NAME test_lua_api_data COMMAND test_lua_api_data)
+
+set_tests_properties(test_lua_api_data PROPERTIES
+    LABELS "lua_api"
+    TIMEOUT 60
+)
+
+# Test executable: Gateway API Tests (LAPI-009)
+add_executable(test_lua_api_gateway
+    test_lua_api_gateway.cpp
+)
+
+target_link_libraries(test_lua_api_gateway
+    PRIVATE
+    shield_lua
+    shield_core
+    Boost::unit_test_framework
+    Boost::headers
+)
+
+target_include_directories(test_lua_api_gateway
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/tests/lua_api
+)
+
+add_test(NAME test_lua_api_gateway COMMAND test_lua_api_gateway)
+
+set_tests_properties(test_lua_api_gateway PROPERTIES
+    LABELS "lua_api"
+    TIMEOUT 60
+)
