@@ -30,13 +30,13 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 实现 Lua service module table loader 和 `on_init(args)` 最小调用路径。
 - [x] 从 YAML `actors` 配置启动 Lua service 实例。
 - [x] 实现 `shield.spawn` / `shield.exit` 的单节点最小路径。
-- [ ] 实现 opaque ServiceHandle、name reserve/publish 状态和 coroutine-aware spawn。
+- [x] 实现 opaque ServiceHandle、name reserve/publish 状态和 coroutine-aware spawn。
 - [x] 实现 `shield.query/register/unregister/names` 的单节点最小 registry 路径。
 - [x] 提供 `shield.now`；`timer_once/timer/sleep/fork` 仍是临时同步/线程实现。
 - [x] 提供 `shield.log.*`。
 - [x] 提供原始 `shield.db.*` / `shield.redis.*` 的绑定、未启用错误返回和启用 mock pool smoke test；真实后端连接仍按 `shield_data` 后续推进。
 - [ ] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 runtime 线程的语义，并补齐默认超时和 `shield.call_timeout`。
-- [ ] 删除旧 `shield.service("name")`、冒号式 DB/Redis API 和 legacy `on_message(src, type, data)` 入口。
+- [x] 删除旧 `shield.service("name")`、冒号式 DB/Redis API 和 legacy `on_message(src, type, data)` 入口。
 
 ## Phase 3: C++ 入口和配置
 
@@ -51,7 +51,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 ## Phase 4: 示例和测试
 
 - [x] 让 `examples/hello_world/` 接入统一 `shield::run` 入口并可构建启动。
-- [ ] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。
+- [x] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。
 - [x] 增加最小 Lua API runtime smoke test。
 - [x] 增加本地 registry runtime smoke test。
 - [ ] 按 LAPI 矩阵补齐完整 Lua API 绑定测试。
