@@ -265,14 +265,4 @@ int run(int argc, char** argv) {
     return shield::run(argc, argv);
 }
 
-// Get global actor system
-caf::actor_system* actor_system() {
-    return g_state ? g_state->actor_system.get() : nullptr;
-}
-
-// Get global CAF adapter
-CafAdapter* caf_adapter() {
-    return g_state ? g_state->caf_adapter.get() : nullptr;
-}
-
 }  // namespace shield::bootstrap

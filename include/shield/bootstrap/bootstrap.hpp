@@ -6,14 +6,6 @@
 #include <string_view>
 #include <vector>
 
-namespace caf {
-class actor_system;
-}
-
-namespace shield::core {
-class CafAdapter;
-}
-
 namespace shield::bootstrap {
 
 /// @brief Runtime configuration
@@ -49,11 +41,5 @@ bool is_initialized();
 /// @param argv Argument values
 /// @return Exit code
 int run(int argc, char** argv);
-
-/// @brief Get global CAF actor system (for advanced use)
-caf::actor_system* actor_system();
-
-/// @brief Get global CAF adapter (for advanced use)
-shield::core::CafAdapter* caf_adapter();
 
 }  // namespace shield::bootstrap

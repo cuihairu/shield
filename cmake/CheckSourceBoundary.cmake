@@ -10,8 +10,6 @@ set(public_header_paths
 
 set(public_caf_allowed_files
   "${PROJECT_SOURCE_DIR}/include/shield/core/caf_adapter.hpp"
-  "${PROJECT_SOURCE_DIR}/include/shield/bootstrap/bootstrap.hpp"
-  "${PROJECT_SOURCE_DIR}/include/shield/caf_type_ids.hpp"
   "${PROJECT_SOURCE_DIR}/include/shield/caf_initializer.hpp"
 )
 
