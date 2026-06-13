@@ -1,5 +1,10 @@
 # Shield
 
+[![C++17](https://img.shields.io/badge/C++-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
+[![Lua 5.4](https://img.shields.io/badge/Lua-5.4-blue.svg)](https://www.lua.org/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Standard](https://img.shields.io/badge/C++-Standard-17/20/23-blue.svg)](https://en.cppreference.com/w/cpp/17)
+
 Shield is being redesigned as a **single-node-first, Skynet-inspired,
 actor-based, Lua-first game server runtime**.
 
