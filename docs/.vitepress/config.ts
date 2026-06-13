@@ -6,6 +6,17 @@ export default defineConfig({
   title: 'Shield',
   description: 'Skynet 启发的 Lua 优先游戏服务器运行时',
   cleanUrls: true,
+  vite: {
+    build: {
+      // esbuild 0.25+ 对旧 target 的解构语法转换过于保守，目标浏览器其实都支持
+      target: 'esnext',
+    },
+    optimizeDeps: {
+      esbuildOptions: {
+        target: 'esnext',
+      },
+    },
+  },
   themeConfig: {
     logo: '/shield-logo.svg',
     nav: [

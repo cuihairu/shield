@@ -24,6 +24,12 @@ bin/
 # node
 node_modules/
 book/
+.pnpm-store/
+
+# vitepress build output
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
 # AI
 .claude/
 
