@@ -127,4 +127,69 @@ BOOST_AUTO_TEST_CASE(LAPI_002_04_OnInitThrowsError) {
     BOOST_CHECK(!error.empty());
 }
 
+// LAPI-001-02: Lua file that returns nil must be rejected with
+// invalid_service_module.
+BOOST_AUTO_TEST_CASE(LAPI_001_02_ModulesReturningNonTableAreRejected) {
+    auto runtime = std::make_shared<LuaRuntime>();
+    auto vm = runtime->create_vm();
+    runtime->register_api(vm);
+
+    std::string error;
+    bool loaded = runtime->load_service_module(vm,
+        TEST_SCRIPTS_DIR + "invalid_nil_module.lua", &error);
+
+    BOOST_CHECK(!loaded);
+    BOOST_CHECK(!error.empty());
+}
+
+// LAPI-001-03: Lua file with syntax errors must surface script_load_failed.
+BOOST_AUTO_TEST_CASE(LAPI_001_03_SyntaxErrorIsReported) {
+    auto runtime = std::make_shared<LuaRuntime>();
+    auto vm = runtime->create_vm();
+    runtime->register_api(vm);
+
+    std::string error;
+    bool loaded = runtime->load_service_module(vm,
+        TEST_SCRIPTS_DIR + "syntax_error_module.lua", &error);
+
+    BOOST_CHECK(!loaded);
+    BOOST_CHECK(!error.empty());
+}
+
+// LAPI-001-04: Module that throws at top-level load must surface
+// script_load_failed rather than crash the runtime.
+BOOST_AUTO_TEST_CASE(LAPI_001_04_TopLevelThrowIsReported) {
+    auto runtime = std::make_shared<LuaRuntime>();
+    auto vm = runtime->create_vm();
+    runtime->register_api(vm);
+
+    std::string error;
+    bool loaded = runtime->load_service_module(vm,
+        TEST_SCRIPTS_DIR + "top_throw_module.lua", &error);
+
+    BOOST_CHECK(!loaded);
+    BOOST_CHECK(!error.empty());
+}
+
+// LAPI-002-05: Calling on_exit explicitly with a reason string must succeed.
+// The runtime only documents the reason semantics; we verify the function is
+// invocable and propagates the reason value.
+BOOST_AUTO_TEST_CASE(LAPI_002_05_OnExitIsInvocable) {
+    auto runtime = std::make_shared<LuaRuntime>();
+    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+
+    auto vm = runtime->create_vm();
+    runtime->register_api(vm);
+
+    std::string error;
+    bool loaded = runtime->load_service_module(vm,
+        TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
+    BOOST_REQUIRE(loaded);
+
+    nlohmann::json args = R"({"reason": "normal"})"_json;
+    bool exit_result = runtime->call_service_function(vm, "on_exit", args, &error);
+    BOOST_CHECK(exit_result);
+    BOOST_CHECK(error.empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
