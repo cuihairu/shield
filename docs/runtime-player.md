@@ -134,6 +134,45 @@ return M
 └─────────┘ └──────────┘
 ```
 
+### anonymous / spectator 扩展状态
+
+匿名和旁观不是默认状态机的一部分，必须由 `player.session` 显式开启。默认配置下，连接仍必须经过 `authenticating` 并进入 `online`，否则拒绝。
+
+```yaml
+player:
+  session:
+    allow_anonymous: false
+    allow_spectator: false
+```
+
+开启后仍不改变 P0 的 `shield.player.setup` 规则：`auth` 钩子仍然必填。业务通过 `auth` 返回值声明连接进入哪种玩家态：
+
+```lua
+-- 匿名游客
+return true, {
+    uid = "guest:" .. session_id,
+    anonymous = true,
+}
+
+-- 旁观连接
+return true, {
+    uid = "spectator:" .. session_id,
+    spectator = true,
+    match_id = auth_data.match_id,
+}
+```
+
+状态含义：
+
+| 状态 | 进入条件 | 能力限制 |
+|---|---|---|
+| `anonymous` | `allow_anonymous=true` 且 auth 返回 `anonymous=true` | 可收发业务消息；默认不持久化；不能进入排行榜/队列等 uid 强绑定能力 |
+| `spectator` | `allow_spectator=true` 且 auth 返回 `spectator=true` | 只读玩家态；框架禁止 `player:set_data`、`player:save` 等会修改 PlayerSession 的 API |
+
+若配置未开启但 auth 返回对应标记，框架必须拒绝连接并返回 `Error{code="anonymous_disabled"}` 或 `Error{code="spectator_disabled"}`。匿名玩家升级为正式账号时必须重新走认证流程，成功后生成新的 `PlayerRef`；旧匿名 `PlayerRef` 立即失效。
+
+业务层会改变世界状态的消息，必须在 `client_message` 中显式检查 `player.state == "spectator"` 并拒绝；框架不通过方法名推断业务写语义。
+
 ## shield.player.setup 主入口
 
 业务 Player Service 应当通过 `shield.player.setup` 注册到框架，作为唯一推荐入口。
@@ -390,10 +429,20 @@ end
 |---|---|
 | 本地且玩家在线 | 返回 `PlayerSession` |
 | 本地但玩家已下线 | 返回 `nil, Error{code="player_not_found"}` |
-| ref 来自远端节点（P0 不冻结） | 返回 `nil, Error{code="remote_resolve_unimplemented"}`，业务层走 cluster RPC 自行处理 |
+| ref 来自远端节点且 remote resolve 未启用 | 返回 `nil, Error{code="remote_resolve_unimplemented"}`，业务层走 cluster RPC 自行处理 |
 | ref 字段非法或 epoch 不匹配 | 返回 `nil, Error{code="invalid_player_ref"}` |
 
-P0 仅冻结本地 resolve 与数据结构；远端 resolve 由 `shield_cluster` + `shield_player` 协作定义，进入 Phase 2+。
+P0 仅冻结本地 resolve 与数据结构。
+
+### 远端 resolve 边界
+
+远端 `PlayerRef` resolve 进入 P2，但接口边界现在冻结，避免后续重新设计：
+
+- `shield.player.resolve(ref)` 只负责本地解析；远端 ref 默认返回 `remote_resolve_unimplemented`。
+- P2 若启用 `player.remote_resolve=true`，`resolve` 可以通过 `shield_cluster` 访问远端 `PlayerManager`，但返回值仍必须是 `PlayerRef` 或业务快照，不能把远端 `PlayerSession` 伪装成本地对象。
+- 远端操作应优先通过 `shield.player.call_ref(ref, method, ...)` 或业务 service RPC 完成；该 API 属于 `shield_player`，底层仍复用 `shield.call` 的超时和错误语义。
+- node epoch 不匹配时必须返回 `invalid_player_ref`，不能自动重试到新节点，避免旧引用误命中新玩家。
+- `shield_cluster` 关闭时，所有远端 resolve/operate 返回 `module_unavailable`，本地 resolve 不受影响。
 
 ## 持久化 adapter
 
@@ -447,6 +496,34 @@ shield.player.setup(M, {
 - `SessionHandle` 或完整 `PlayerSession`
 
 业务需要持久化这些类型时，必须自行序列化为 string/binary 并放入白名单字段。
+
+## shield.player.Base 高级风格
+
+`shield.player.Base` 属于 P2 语法糖，不是第二套生命周期模型。它必须基于 `shield.player.setup` 实现，不能绕过 setup 的校验、默认实现和错误语义。
+
+```lua
+local PlayerBase = shield.player.Base
+
+local M = PlayerBase.extend({
+    auth = function(self, session_id, auth_data)
+        return verify_token(auth_data.token)
+    end,
+
+    login = function(self, player)
+        player:set_data(load_player_data(player.uid))
+    end,
+})
+
+return M
+```
+
+约束：
+
+- `Base.extend(opts)` 等价于 `shield.player.setup(M, opts)` 后返回 `M`。
+- hook 字段仍使用 `auth/login/client_message/disconnect/reconnect/logout/save`，不恢复 `on_*` 作为 setup 字段。
+- 业务覆盖可选 hook 时默认实现不自动执行；仍通过 `shield.player.defaults.*` 显式调用。
+- 不支持多继承；需要组合能力时应在业务模块内组合普通 Lua table/function。
+- P0/P1 文档和测试只以 `setup` 为准，Base 测试只验证它没有引入额外语义。
 
 ## 断线重连
 
@@ -654,11 +731,25 @@ actors:
 ```yaml
 player:
   multi_device:
-    policy: single           # single | multi | kick_old
+    policy: single           # single | multi | kick_old，默认 single
+    max_devices: 1           # policy=multi 时生效，默认 1
+    device_key: device_id    # device_id | platform | custom，默认 device_id
     # single: 同一 UID 只允许一个设备在线
     # multi: 允许多设备同时在线
     # kick_old: 新设备登录时踢掉旧设备
 ```
+
+策略语义：
+
+| policy | 行为 | PlayerManager 索引 |
+|---|---|---|
+| `single` | 同一 UID 已在线时拒绝新连接；重连窗口内允许同设备恢复 | `uid -> PlayerSession` |
+| `kick_old` | 新连接认证成功后踢掉旧连接，旧连接 `logout` reason 为 `"replaced"` | `uid -> PlayerSession` |
+| `multi` | 同一 UID 允许多个设备同时在线，超过 `max_devices` 拒绝新连接 | `(uid, device_id) -> PlayerSession` |
+
+`single` 是默认策略。未提供 `device_id` 时，框架使用 `session_id` 作为临时设备标识，但该连接不能参与同设备重连；业务需要稳定重连必须在 auth 数据中提供 `device_id`。
+
+多设备不改变 `PlayerRef` 结构。`multi` 模式下，同一 UID 的不同设备必须生成不同 `service_id`，`shield.player.get(uid)` 返回主会话；需要枚举设备时使用 `shield.player.manager():get_devices(uid)`。
 
 ```lua
 -- 单设备登录实现
@@ -683,6 +774,44 @@ function M.on_auth(session_id, auth_data)
     return true, { uid = uid }
 end
 ```
+
+## 容量模型与 player_pool
+
+默认模型是 one-player-one-service：每个在线玩家对应一个 Player Service 和一个 Lua VM。它语义最清晰，隔离性最好，也是 P0/P1 的默认实现模型。
+
+`player_pool` 是大规模在线的可选实现策略，不改变 public API：
+
+```yaml
+player:
+  runtime_model: service_per_player   # service_per_player | player_pool
+  pool:
+    shard_count: 64
+    max_players_per_service: 512
+    mailbox_limit: 8192
+```
+
+模型约束：
+
+| 模型 | 适用场景 | 约束 |
+|---|---|---|
+| `service_per_player` | 默认；中小规模、强隔离、调试友好 | 每个玩家独立 mailbox 和 Lua VM；容量必须通过基准确认 |
+| `player_pool` | 10K+ 在线、内存敏感场景 | 一个 service 管理多个 `PlayerSession`；玩家之间必须按 uid 分片；单玩家 handler 仍串行 |
+
+`player_pool` 不允许改变以下语义：
+
+- `PlayerRef` 仍包含 `uid/node_id/service_id/epoch`，其中 `service_id` 指向 pool shard。
+- 同一 uid 的消息必须稳定路由到同一个 shard，除非玩家离线后重新登录。
+- `shield.send/call` 仍以 service 为目标；玩家级路由由 `shield_player` 在 shard 内完成。
+- `PlayerManager` 仍按 uid 维护索引，但索引值可以是 `PlayerRef`，不能暴露 pool 内部 table 指针。
+
+容量基准必须在实现前补齐，至少记录：
+
+| 指标 | 要求 |
+|---|---|
+| 单 Player Service 常驻内存 | 统计 Lua VM、mailbox、PlayerSession、离线队列基础开销 |
+| 单 pool shard 常驻内存 | 统计 shard Lua VM、玩家表、索引和队列开销 |
+| 10K 在线压测 | 记录 RSS、P50/P95/P99 消息延迟、GC 时间和 mailbox backlog |
+| 断线重连压测 | 记录 reconnect window 内缓存消息数量、过期清理成本 |
 
 ## 与 gateway 的关系
 
@@ -906,8 +1035,8 @@ GET /ops/players
 | PlayerManager | P0 | 全局玩家管理 |
 | 离线消息缓存 | P1 | 提升体验 |
 | 定时保存（`on_save` 默认实现触发） | P1 | 数据安全，依赖 persistence adapter |
-| anonymous/spectator 状态（opt-in） | P1 | 默认状态机不变，配置显式开启 |
-| 一玩家一 service 容量基准 + 可选 player_pool 模式 | P1 | 大规模场景验证 |
-| 多设备策略 | P2 | 按需实现 |
-| `shield.player.Base` 高级风格 | P2 | setup 之上的 OOP 语法糖 |
-| 远端 `PlayerRef` resolve | P2 | shield_cluster + shield_player 协作 |
+| anonymous/spectator 状态（opt-in） | P1 | 契约已冻结；默认状态机不变，配置显式开启 |
+| 一玩家一 service 容量基准 + 可选 player_pool 模式 | P1 | 契约已冻结；实现前必须补容量基准 |
+| 多设备策略 | P2 | 契约已冻结；默认 single |
+| `shield.player.Base` 高级风格 | P2 | 契约已冻结；setup 之上的语法糖 |
+| 远端 `PlayerRef` resolve | P2 | 契约已冻结；shield_cluster + shield_player 协作 |

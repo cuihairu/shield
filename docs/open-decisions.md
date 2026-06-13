@@ -99,7 +99,7 @@
 决策：
 
 - P0 只冻结 `shield.player.setup(M, opts)` 作为业务 Player Service 唯一推荐入口。
-- `shield.player.Base` 作为高级风格留待 Phase 2+；P0 不冻结。
+- `shield.player.Base` 作为高级风格留待 Phase 2+；P0 不实现，P2 边界见 OD-014。
 - setup 的 opts 字段去 `on_` 前缀（`auth`/`login`/`client_message`/`disconnect`/`reconnect`/`logout`/`save`），与 module-level `on_init/on_exit` 隔离命名空间。
 - 必填钩子（`auth`/`login`/`client_message`/`disconnect`/`logout`）缺失即返回 `nil, Error{code="setup_invalid"}`，service 不进入 running 状态。
 - 未在 setup 中提供的可选钩子由框架按文档明列的默认实现执行，不允许"未提供即 noop"的隐式行为。
@@ -130,6 +130,49 @@
 - 跨 service payload **只能**传 `PlayerRef`，禁止传 `SessionHandle` 或完整 `PlayerSession`。
 - `shield.player.resolve(ref)` P0 仅冻结本地 resolve；远端 resolve 留 Phase 2+，由 `shield_cluster` + `shield_player` 协作定义。
 - ref 失效返回 `nil, Error{code="player_not_found"}`，不抛错。
+
+### OD-011 Player Extended States
+
+状态：closed。权威文档见 [玩家生命周期运行时语义](runtime-player.md)。
+
+决策：
+
+- `anonymous` 和 `spectator` 都是 opt-in 状态，默认状态机仍是 `connecting -> authenticating -> online`。
+- `auth` hook 仍为必填；业务通过 auth 返回值声明匿名或旁观连接。
+- 未显式开启时返回 `anonymous_disabled` 或 `spectator_disabled`。
+- 匿名升级为正式账号必须重新认证，并生成新的 `PlayerRef`。
+
+### OD-012 Player Scale Model
+
+状态：closed。权威文档见 [玩家生命周期运行时语义](runtime-player.md)。
+
+决策：
+
+- 默认模型是 `service_per_player`。
+- `player_pool` 是大规模场景的可选运行策略，不改变 `shield.player.*` public API。
+- `player_pool` 下 `PlayerRef.service_id` 指向 pool shard；玩家级路由由 `shield_player` 在 shard 内完成。
+- 实现前必须补齐内存、延迟、GC、mailbox backlog 和重连窗口缓存基准。
+
+### OD-013 Player Multi-Device Policy
+
+状态：closed。权威文档见 [玩家生命周期运行时语义](runtime-player.md)。
+
+决策：
+
+- 默认策略为 `single`。
+- `kick_old` 会让旧会话以 `logout` reason `"replaced"` 退出。
+- `multi` 使用 `(uid, device_id)` 索引，`shield.player.get(uid)` 返回主会话，设备枚举走 `PlayerManager.get_devices(uid)`。
+- 未提供稳定 `device_id` 时只允许临时会话，不参与同设备重连。
+
+### OD-014 Player Base API Boundary
+
+状态：closed。权威文档见 [玩家生命周期运行时语义](runtime-player.md)。
+
+决策：
+
+- `shield.player.Base` 是 P2 语法糖，必须基于 `shield.player.setup`。
+- Base 不引入第二套 lifecycle，不支持多继承，不恢复 setup 字段的 `on_*` 前缀。
+- P0/P1 测试以 setup 为准；Base 测试只验证无额外语义。
 
 ## Open Decisions
 

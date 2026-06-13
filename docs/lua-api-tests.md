@@ -163,11 +163,21 @@ Harness 要求：
 | LAPI-011-13 | `PlayerRef` LuaPack 编码 | encode | 独立 type tag，字段完整 |
 | LAPI-011-14 | `shield.player.resolve` 本地在线玩家 | 解析 ref | 返回 `PlayerSession` |
 | LAPI-011-15 | `shield.player.resolve` 本地已下线玩家 | 解析 ref | `nil, player_not_found` |
-| LAPI-011-16 | `shield.player.resolve` 远端 ref（P0） | 解析 ref | `nil, remote_resolve_unimplemented` |
+| LAPI-011-16 | `shield.player.resolve` 远端 ref（remote resolve 未启用） | 解析 ref | `nil, remote_resolve_unimplemented` |
 | LAPI-011-17 | `shield.player.resolve` 字段非法 | 解析 ref | `nil, invalid_player_ref` |
 | LAPI-011-18 | cross-service 传 `PlayerRef` | send payload | receiver 拿到等价 ref |
 | LAPI-011-19 | cross-service 传 `SessionHandle` | send payload | runtime 拒绝并返回错误 |
 | LAPI-011-20 | cross-service 传完整 `PlayerSession` | send payload | runtime 拒绝并返回错误 |
+| LAPI-011-21 | auth 返回 `anonymous=true` 且未开启 anonymous | 认证 | `nil, anonymous_disabled` |
+| LAPI-011-22 | anonymous 已开启且 auth 返回 `anonymous=true` | 认证 | 状态进入 `anonymous`，默认不触发 persistence |
+| LAPI-011-23 | auth 返回 `spectator=true` 且未开启 spectator | 认证 | `nil, spectator_disabled` |
+| LAPI-011-24 | spectator 已开启 | 调用 `player:set_data` 或 `player:save` | 拒绝并返回 `spectator_readonly` |
+| LAPI-011-25 | multi_device `single` 且 UID 已在线 | 新连接认证 | `false, already_online` |
+| LAPI-011-26 | multi_device `kick_old` 且 UID 已在线 | 新连接认证 | 旧会话 `logout` reason 为 `replaced` |
+| LAPI-011-27 | multi_device `multi` 且超过 `max_devices` | 新连接认证 | `false, too_many_devices` |
+| LAPI-011-28 | `player_pool` 模式 | 同一 uid 多条消息 | 路由到同一 shard 且单玩家 handler 串行 |
+| LAPI-011-29 | `shield.player.Base.extend(opts)` | spawn player service | 行为等价于 `shield.player.setup(M, opts)` |
+| LAPI-011-30 | Base 覆盖可选 hook | 触发 hook | 默认实现不自动执行 |
 
 ## 验收要求
 

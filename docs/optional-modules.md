@@ -211,6 +211,7 @@ shield.scheduler()
 - `shield_player` 跨 service 传递**只能**使用 `PlayerRef`；不传 `SessionHandle`，也不传完整 `PlayerSession`。
 - `PlayerRef` 不是 `ServiceHandle` 的替代品，只是 player 模块内部引用。
 - persistence adapter 是 `shield_player` 可选能力，复用 `shield_data` 的 raw DB/Redis API，不引入 ORM 或 mapper；不拥有连接池。
+- anonymous/spectator、多设备、player_pool 和远端 `PlayerRef` resolve 都必须显式启用；默认 player 状态机和普通 service 语义不变。
 - gateway 可以不启用 `shield_player` 也独立工作。
 
 ### 配置 owner
@@ -225,6 +226,8 @@ shield.scheduler()
 - 重连窗口
 - 离线消息
 - 多设备策略
+- anonymous/spectator 扩展状态
+- player_pool 运行模型
 - PlayerManager 索引
 - persistence adapter 契约（不包含 SQL/Redis 语义）
 

@@ -18,11 +18,11 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 ## Phase 1: 运行时目录重排
 
-- [ ] 保留 `actor`、`net`、`transport`、`script`、`timer`、`data`、`config`、`log`。
-- [ ] 将当前 `protocol/` 逐文件分类：字节流 framing/codec/encryption 进入 `shield_transport`，客户端 session 相关能力进入 `shield_net`，schema protocol 进入 deferred tooling。
-- [ ] 处理 `gateway/`：gateway 是 Lua service pattern；当前 C++ gateway 代码只能迁移到 `shield_net`、模板示例或 legacy 删除路径。
-- [ ] 将当前 `database/` 和 `data/` 收敛为一个 raw `shield_data` 模块。
-- [ ] 删除或移出 `discovery`、`metrics`、`health`、`di`、`annotations`、`conditions`、`events`、`plugin`。
+- [x] 保留 `actor`、`net`、`transport`、`script`、`timer`、`data`、`config`、`log`。语义归属：actor 由 `shield_core` 承载，script/timer 由 `shield_lua` + `shield_core` 协作，其余按 target 边界落入对应模块。
+- [x] 将当前 `protocol/` 逐文件分类：字节流 framing/codec/encryption 进入 `shield_transport`，客户端 session 相关能力进入 `shield_net`，schema protocol 进入 deferred tooling。`shield/protocol/*` 与 `shield/transport/protocol/*` 残留 header 与对应源文件、测试已在本次清理中删除。
+- [x] 处理 `gateway/`：gateway 收敛为 Lua service pattern；C++ gateway 残留代码与对应测试已删除。
+- [x] 将当前 `database/` 和 `data/` 收敛为一个 raw `shield_data` 模块。
+- [x] 删除或移出 `discovery`、`metrics`、`health`、`di`、`annotations`、`conditions`、`events`、`plugin`。对应源码、headers 与测试已一并清除；`shield_extensions` target 不再存在。
 - [x] 决定物理目录策略：短期保留当前目录，用 CMake target 和 include 边界先收敛；不在 Phase 1 做大规模机械搬迁。
 
 ## Phase 2: Lua API 契约
@@ -33,11 +33,11 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 实现 opaque ServiceHandle、name reserve/publish 状态和 coroutine-aware spawn。
 - [x] 实现 `shield.query/register/unregister/names` 的单节点最小 registry 路径。
 - [x] 提供 `shield.now`。
-- [ ] 实现 `timer_once/timer/sleep/fork` 的 coroutine-aware 语义；当前仍是临时同步/线程实现。
+- [ ] 实现 `timer_once/timer/sleep/fork` 的 coroutine-aware 语义；当前 `timer_once/timer/cancel_timer` 已走 `TimerManager`，但 `sleep`/`fork` 仍是阻塞/线程实现，callback 也不在协程中执行。
 - [x] 提供 `shield.log.*`。
 - [x] 提供原始 `shield.db.*` / `shield.redis.*` 的绑定和未启用错误返回。
-- [ ] 补齐 data API 的真实 mock pool 验收和后端连接验证。
-- [ ] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 runtime 线程的语义，并补齐默认超时和 `shield.call_timeout`。
+- [ ] 补齐 data API 的真实 mock pool 验收和后端连接验证。`shield_runtime_data_smoke` 已覆盖 mock pool smoke；真实 MySQL/Redis 后端连接与连接池压力验证仍待补齐。
+- [ ] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 runtime 线程的语义。`shield.call` / `shield.call_timeout` API 表面已注册并具备默认超时，但内部仍走同步 `LuaServiceManager::call` 路径，未挂起 Lua 协程。
 - [x] 删除旧 `shield.service("name")`、冒号式 DB/Redis API 和 legacy `on_message(src, type, data)` 入口。
 
 ## Phase 3: C++ 入口和配置
@@ -53,12 +53,12 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 ## Phase 4: 示例和测试
 
 - [x] 让 `examples/hello_world/` 接入统一 `shield::run` 入口。
-- [ ] 验证 `examples/hello_world/` 可构建启动。
-- [ ] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。
+- [x] 验证 `examples/hello_world/` 可构建启动。构建由 `examples/CMakeLists.txt` 注册；启动验收由 `test_hello_world_acceptance` 在构建产物上检查 `shield::run` 入口、配置文件与 Lua 脚本契约。运行时端到端 smoke 由 `shield_runtime_lua_smoke` / `shield_runtime_registry_smoke` / `shield_runtime_data_smoke` 在 `shield --check-config` 路径上覆盖。
+- [x] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。acceptance test 已覆盖 `echo.lua` 的 sender/send/log/now、`gateway.lua` 的 connect/disconnect/client_message、`player.lua` 的 login/chat/logout/self/exit/db/redis API 模式。
 - [x] 增加最小 Lua API runtime smoke test。
 - [x] 增加本地 registry runtime smoke test。
-- [ ] 按 LAPI 矩阵补齐完整 Lua API 绑定测试；当前 `call`、timer/task、data、gateway、context、legacy negative tests 仍有 TODO 或旧 API 调用。
-- [ ] 按 `docs/lua-api-tests.md` 补齐独立 API 用例，示例不替代测试。
+- [ ] 按 LAPI 矩阵补齐完整 Lua API 绑定测试；LAPI-001~010 已在 `tests/lua_api/` 覆盖正负向 case，但 `shield.call` / `timer` / `sleep` / `fork` 的 coroutine-aware 路径仍依赖 Phase 2 实现落地后再补完。
+- [x] 按 `docs/lua-api-tests.md` 补齐独立 API 用例，示例不替代测试。
 - [x] 为新 public/core 头增加 CAF 泄漏静态检查。
 - [x] 收敛 legacy public headers 的 CAF 泄漏并纳入检查。
 - [x] 为 `shield_core` forbidden module include 增加静态检查。
@@ -86,7 +86,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - `shield_global`：跨进程数据、分布式锁、排行榜、队列、限流器。
 - `shield_ops`：Prometheus 指标、健康检查、HTTP/console 管理端点、profile。
 - [x] 冻结每个 optional module 的初始化失败策略：默认 fail fast；`shield_cluster` 允许远端连接失败时退化为单节点 unhealthy；未启用却配置 optional 段必须启动失败。
-- [x] 冻结 `shield_player` P0 文档契约：`shield.player.setup` 主 API 与默认 hook 实现表、persistence adapter 边界（复用 `shield_data`、不引入 ORM/mapper）、`PlayerRef` 跨 service 引用与本地 resolve。远端 resolve、anonymous/spectator 状态、`shield.player.Base` 高级风格、一玩家一 service 容量基准进入 P1+。
+- [x] 冻结 `shield_player` 文档契约：`shield.player.setup` 主 API 与默认 hook 实现表、persistence adapter 边界、`PlayerRef` 本地/远端边界、anonymous/spectator opt-in 状态、多设备策略、`player_pool` 容量模型和 `shield.player.Base` 语法糖边界。实现仍按 P0/P1/P2 分阶段推进。
 
 ## Later
 
