@@ -92,6 +92,45 @@
 - legacy C++ target 删除以 examples/tests 不再引用为门槛。
 - 旧 CLI subcommand 可以作为 legacy CLI 代码短期存在，但不进入新的 `shield::run` 公共契约。
 
+### OD-008 Player Setup API Form
+
+状态：closed。权威文档见 [玩家生命周期运行时语义](runtime-player.md) 和 [官方可选模块契约](optional-modules.md)。
+
+决策：
+
+- P0 只冻结 `shield.player.setup(M, opts)` 作为业务 Player Service 唯一推荐入口。
+- `shield.player.Base` 作为高级风格留待 Phase 2+；P0 不冻结。
+- setup 的 opts 字段去 `on_` 前缀（`auth`/`login`/`client_message`/`disconnect`/`reconnect`/`logout`/`save`），与 module-level `on_init/on_exit` 隔离命名空间。
+- 必填钩子（`auth`/`login`/`client_message`/`disconnect`/`logout`）缺失即返回 `nil, Error{code="setup_invalid"}`，service 不进入 running 状态。
+- 未在 setup 中提供的可选钩子由框架按文档明列的默认实现执行，不允许"未提供即 noop"的隐式行为。
+- 业务覆盖可选钩子时，默认实现不自动执行；保留默认行为需显式调用 `shield.player.defaults.*` helper。
+
+### OD-009 Player Persistence Adapter Boundary
+
+状态：closed。权威文档见 [玩家生命周期运行时语义](runtime-player.md) 和 [官方可选模块契约](optional-modules.md)。
+
+决策：
+
+- persistence adapter 是 `shield_player` 拥有的轻量契约，不属于 `shield_data`。
+- adapter 底层必须通过 `shield.db.*` 或 `shield.redis.*` 调用，不重新定义 SQL/Redis 语义。
+- adapter 不拥有连接池；连接池归属 `shield_data`。
+- adapter 不引入 ORM、mapper、schema 工具链；只接受可 LuaPack 编码的 table 白名单字段。
+- adapter 失败复用 `shield_data` 错误码；player 域只新增 `persistence_save_failed` 等明确属于本模块的错误。
+- 未配置 persistence 时，`on_save` 默认实现为 no-op。
+
+### OD-010 Player Cross-Service Reference
+
+状态：closed。权威文档见 [玩家生命周期运行时语义](runtime-player.md) 和 [官方可选模块契约](optional-modules.md)。
+
+决策：
+
+- 跨 service 玩家引用命名为 `PlayerRef`，不命名为 `PlayerHandle`，避免与 `ServiceHandle` 混淆。
+- `PlayerRef` 是 player 模块内部引用，**不是** `ServiceHandle` 的替代品。
+- `PlayerRef` 结构为 `{ uid, node_id, service_id, epoch }`；`epoch` 来自 shield_cluster 的 `node_epoch`，单节点为 0。
+- 跨 service payload **只能**传 `PlayerRef`，禁止传 `SessionHandle` 或完整 `PlayerSession`。
+- `shield.player.resolve(ref)` P0 仅冻结本地 resolve；远端 resolve 留 Phase 2+，由 `shield_cluster` + `shield_player` 协作定义。
+- ref 失效返回 `nil, Error{code="player_not_found"}`，不抛错。
+
 ## Open Decisions
 
 当前没有仍需设计拍板的基础语义项。后续若发现新的未决问题，先在本节记录，再同步更新对应权威文档。

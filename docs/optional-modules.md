@@ -194,17 +194,23 @@ shield.scheduler()
 
 `shield_player` 拥有：
 
-- `shield.player.*`
-- `PlayerSession`
-- `PlayerManager`
-- player lifecycle hooks
+- `shield.player.setup`：业务 Player Service 唯一推荐入口
+- `shield.player.resolve`：`PlayerRef` 解析为本地 `PlayerSession`
+- `shield.player.defaults`：可选钩子的默认实现 helper（业务覆盖时如需保留默认行为可显式调用）
+- `shield.player.manager`：获取 `PlayerManager`
+- `PlayerSession`：本地玩家会话对象
+- `PlayerRef`：跨 service 轻量引用
+- `PlayerManager`：全局玩家索引与批量操作
+- player lifecycle hooks（通过 setup opts 注册）
 
 最终规则：
 
 - `shield_player` 是玩家态扩展，不改变普通 Lua service 的 module-table + named method 基础模型。
 - player hooks 只在 player module 场景内生效，不替代普通 service method dispatch。
 - `SessionHandle` 只留在 gateway / `shield_net` 内部映射中。
-- `shield_player` 跨 service 只传 `session_id`、uid、PlayerSession 自己的业务状态，不传 `SessionHandle`。
+- `shield_player` 跨 service 传递**只能**使用 `PlayerRef`；不传 `SessionHandle`，也不传完整 `PlayerSession`。
+- `PlayerRef` 不是 `ServiceHandle` 的替代品，只是 player 模块内部引用。
+- persistence adapter 是 `shield_player` 可选能力，复用 `shield_data` 的 raw DB/Redis API，不引入 ORM 或 mapper；不拥有连接池。
 - gateway 可以不启用 `shield_player` 也独立工作。
 
 ### 配置 owner
@@ -220,12 +226,15 @@ shield.scheduler()
 - 离线消息
 - 多设备策略
 - PlayerManager 索引
+- persistence adapter 契约（不包含 SQL/Redis 语义）
 
 ### 不允许的能力
 
 - 把玩家生命周期做成 core 必需能力
 - 让 player hooks 污染普通 service 的 method 语义
-- 用 `PlayerSession` 取代 `ServiceHandle`
+- 用 `PlayerSession` 或 `PlayerRef` 取代 `ServiceHandle`
+- 把 ORM、mapper 或 schema 工具链塞进 persistence adapter
+- persistence adapter 自己拥有 DB/Redis 连接池
 
 ## `shield_server`
 

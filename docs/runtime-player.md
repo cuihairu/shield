@@ -7,8 +7,9 @@
 当前状态：
 
 - 本文冻结 `shield_player` optional module 的边界契约；具体 Lua API 进入 Phase 2+。
-- `shield.player.*`、`PlayerSession`、重连窗口和离线消息缓存都不属于当前最小单节点 runtime。
-- `SessionHandle` 仍只留在 gateway / `shield_net` 内部；`shield_player` 的公开语义只暴露 `session_id` 和 `PlayerSession`，不把 `SessionHandle` 作为跨 service 对象传递。
+- `shield.player.setup` 主入口、`PlayerRef` 跨 service 引用、persistence adapter 为 P0 文档冻结项；实现顺序见文末"实现优先级"。
+- `shield.player.*`、`PlayerSession`、`PlayerRef`、重连窗口和离线消息缓存都不属于当前最小单节点 runtime。
+- `SessionHandle` 仍只留在 gateway / `shield_net` 内部；`shield_player` 的公开语义只暴露 `session_id`、`PlayerSession`（本地）和 `PlayerRef`（跨 service），不把 `SessionHandle` 作为跨 service 对象传递。
 - 即使启用 `shield_player`，普通 Lua service 仍保持 module-table + named method 语义；本模块不恢复 legacy `on_message(src, type, data)` 统一入口。
 - optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 - 如与 [Lua API 契约](lua-api.md) 冲突，以 `lua-api.md` 为当前最小契约。
@@ -133,9 +134,59 @@ return M
 └─────────┘ └──────────┘
 ```
 
+## shield.player.setup 主入口
+
+业务 Player Service 应当通过 `shield.player.setup` 注册到框架，作为唯一推荐入口。
+
+### 基本形态
+
+```lua
+local M = {}
+
+shield.player.setup(M, {
+    -- 必填钩子：业务必须实现
+    auth = function(self, session_id, auth_data) ... end,
+    login = function(self, player) ... end,
+    client_message = function(self, player, payload) ... end,
+
+    -- 可选钩子：未提供时走框架默认实现（默认行为见下方"钩子调用时机"表）
+    disconnect = function(self, player, reason) ... end,
+    reconnect  = function(self, player) ... end,
+    logout     = function(self, player, reason) ... end,
+    save       = function(self, player) ... end,
+
+    -- 可选：持久化 adapter（详见"持久化 adapter"章节）
+    persistence = {
+        backend = "redis",
+        key = function(uid) return "player:" .. uid end,
+        fields = { "profile", "inventory", "quests" },
+        auto_save_interval = 300000,
+        on_save_error = "log",
+    },
+
+    -- 可选：关联的 PlayerManager 名称
+    manager = "player_manager",
+})
+
+-- 业务方法独立命名空间，与 setup opts 字段隔离
+function M.get_profile(player, uid)
+    return player.data.profile
+end
+
+return M
+```
+
+### 设计约束
+
+- `setup` 是 Player Service 唯一推荐入口；`shield.player.Base` 等高级风格留 Phase 2+，不在 P0 冻结。
+- opts 字段一律去掉 `on_` 前缀（`auth`/`login`/`client_message`/`disconnect`/`reconnect`/`logout`/`save`），与 module-level `on_init/on_exit` 隔离命名空间；service-level hook 仍可保留 `M.on_init/on_exit`。
+- 必填钩子缺失即返回 `nil, Error{code="setup_invalid"}`，service 不进入 running 状态。
+- 未在 setup 中提供的可选钩子由框架按明列的默认实现执行，**不允许**"未提供即 noop"的隐式行为。
+- 业务方法（与 setup opts 同级的 `M.xxx`）保留普通 service method dispatch 语义，setup 不改写。
+
 ## 玩家生命周期钩子
 
-### Lua API
+### 钩子定义（setup opts 字段对应）
 
 ```lua
 local M = {}
@@ -217,17 +268,19 @@ end
 return M
 ```
 
-### 钩子调用时机
+### 钩子调用时机与默认实现
 
-| 钩子 | 触发时机 | 阻塞 | 可选 |
-|------|----------|------|------|
-| `on_auth` | 连接建立后 | 是 | 否 |
-| `on_login` | 认证成功后 | 是 | 否 |
-| `on_client_message` | 收到客户端业务 payload | 是 | 否 |
-| `on_disconnect` | 连接断开 | 否 | 否 |
-| `on_reconnect` | 重连成功 | 是 | 是 |
-| `on_logout` | 玩家离线 | 否 | 否 |
-| `on_save` | 定时保存 | 否 | 是 |
+| 钩子 | setup 字段 | 触发时机 | 阻塞 | 可选 | 默认实现（业务未提供时由框架执行） |
+|------|-----------|----------|------|------|-----------------------------------|
+| `on_auth` | `auth` | 连接建立后 | 是 | 否 | 无；业务必须提供，否则 `setup_invalid` |
+| `on_login` | `login` | 认证成功后 | 是 | 否 | `PlayerManager.register(player)`；若配置 persistence 则触发首次 load |
+| `on_client_message` | `client_message` | 收到客户端业务 payload | 是 | 否 | 路由到业务方法 dispatch（与普通 service method 一致） |
+| `on_disconnect` | `disconnect` | 连接断开 | 否 | 否 | 进入重连窗口 + 启动离线消息缓存 |
+| `on_reconnect` | `reconnect` | 重连成功 | 是 | 是 | 推送离线期间缓存消息 |
+| `on_logout` | `logout` | 玩家离线 | 否 | 否 | 调用 `persistence.save`（若配置） + `PlayerManager.unregister(uid)` |
+| `on_save` | `save` | 定时或手动触发 | 否 | 是 | 若配置 persistence 则调用 `persistence.save`；否则 no-op |
+
+业务覆盖可选钩子时，**默认实现不执行**；如需保留默认行为，业务实现中应显式调用对应 helper（如 `shield.player.defaults.reconnect(player)`）。
 
 ### reason 枚举
 
@@ -286,6 +339,114 @@ player:is_online()      -- 是否在线
 player:is_reconnecting() -- 是否在重连窗口
 player:reconnect_token() -- 获取重连 token
 ```
+
+## PlayerRef 跨 service 引用
+
+`PlayerRef` 是 `PlayerSession` 的轻量引用，用于跨 service 传递。
+
+### 设计约束
+
+- `PlayerRef` **不是** `ServiceHandle` 的替代品，只是 player 模块内部引用。
+- 跨 service payload **只能**传 `PlayerRef`，**不能**传 `SessionHandle`，也**不能**传完整 `PlayerSession`。
+- `PlayerRef` 可被 LuaPack 编码（独立 type tag），跨 service 通过 `shield.send/call` payload 传递。
+- 接收方通过 `shield.player.resolve(ref)` 解析为本地 `PlayerSession`。
+
+### 数据结构
+
+```lua
+-- PlayerRef {
+--   uid: uint64,
+--   node_id: uint32,
+--   service_id: uint64,
+--   epoch: uint64,
+-- }
+```
+
+`epoch` 来自 shield_cluster 的 `node_epoch`；单节点部署时为 0。
+
+### Lua API
+
+```lua
+-- 从 PlayerSession 取轻量引用
+local ref = player:ref()
+
+-- 跨 service 传递
+shield.send("combat.1", "kick", ref)
+
+-- 接收方解析
+function M.kick(ref)
+    local player, err = shield.player.resolve(ref)
+    if not player then
+        shield.log.warn("resolve failed: " .. err.code)
+        return
+    end
+    player:kick("combat_request")
+end
+```
+
+### resolve 行为
+
+| 场景 | 行为 |
+|---|---|
+| 本地且玩家在线 | 返回 `PlayerSession` |
+| 本地但玩家已下线 | 返回 `nil, Error{code="player_not_found"}` |
+| ref 来自远端节点（P0 不冻结） | 返回 `nil, Error{code="remote_resolve_unimplemented"}`，业务层走 cluster RPC 自行处理 |
+| ref 字段非法或 epoch 不匹配 | 返回 `nil, Error{code="invalid_player_ref"}` |
+
+P0 仅冻结本地 resolve 与数据结构；远端 resolve 由 `shield_cluster` + `shield_player` 协作定义，进入 Phase 2+。
+
+## 持久化 adapter
+
+persistence adapter 是 `shield_player` 拥有的轻量持久化契约，**不属于** `shield_data`，但底层必须通过 `shield_data` 调用。
+
+### 设计约束
+
+- adapter 复用 `shield.db.*` 或 `shield.redis.*`，**不重新定义** SQL/Redis 语义。
+- adapter **不拥有**连接池；连接池归属 `shield_data`。
+- adapter **不引入** ORM、mapper、schema 工具链；只接受可 LuaPack 编码的 table 白名单字段。
+- adapter 失败复用 `shield_data` 错误码；player 域只新增 `persistence_save_failed` 等明确属于本模块的错误。
+- 未配置 persistence 时，`on_save` 默认实现为 no-op。
+
+### 配置形态
+
+persistence 在 `shield.player.setup` 的 opts 中声明：
+
+```lua
+shield.player.setup(M, {
+    -- ... 其他钩子 ...
+
+    persistence = {
+        backend = "redis",                  -- "redis" | "database"，必须已启用
+        key = function(uid)                 -- 业务定义 key 模板
+            return "player:" .. uid
+        end,
+        fields = { "profile", "inventory", "quests" },  -- 显式白名单
+        auto_save_interval = 300000,        -- ms；0 = 关闭自动保存
+        on_save_error = "log",              -- "log" | "panic"，失败策略
+    },
+})
+```
+
+### 行为契约
+
+| 时机 | 行为 |
+|---|---|
+| `on_login` 默认实现 | 调用 `persistence.load(uid)`，把字段填充到 `player.data` |
+| `on_save` 默认实现（自动触发） | 每 `auto_save_interval` 调用 `persistence.save(uid, fields)` |
+| `on_save` 默认实现（手动触发） | 业务调用 `player:save()` 立即触发 |
+| `on_logout` 默认实现 | 调用 `persistence.save(uid, fields)` 后再 `PlayerManager.unregister` |
+| `persistence.save` 失败 | 按 `on_save_error` 配置：`log` 仅记录 + 计数；`panic` 触发 `on_panic` |
+
+### 字段白名单
+
+只接受 LuaPack 支持的类型（见 [消息语义](runtime-messaging.md#messagepayload)）。下列类型**禁止**作为 persistence 字段：
+
+- `function`、`thread/coroutine`
+- 普通 userdata
+- 循环引用 table
+- `SessionHandle` 或完整 `PlayerSession`
+
+业务需要持久化这些类型时，必须自行序列化为 string/binary 并放入白名单字段。
 
 ## 断线重连
 
@@ -737,9 +898,16 @@ GET /ops/players
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| 基础钩子 (on_auth, on_login, on_logout) | P0 | 核心功能 |
+| `shield.player.setup` 主 API + 默认实现表 | P0 | 业务唯一推荐入口，默认行为必须明列 |
+| 基础钩子（auth/login/logout/client_message/disconnect） | P0 | setup 必填钩子，对应 runtime-service 的最小生命周期 |
+| `PlayerRef` + 本地 `shield.player.resolve` | P0 | 跨 service 轻量引用；远端 resolve 留 P2+ |
+| persistence adapter 契约 | P0 | shield_player 拥有的轻量 adapter，底层走 shield_data |
 | 断线重连 | P0 | 游戏必备 |
 | PlayerManager | P0 | 全局玩家管理 |
 | 离线消息缓存 | P1 | 提升体验 |
+| 定时保存（`on_save` 默认实现触发） | P1 | 数据安全，依赖 persistence adapter |
+| anonymous/spectator 状态（opt-in） | P1 | 默认状态机不变，配置显式开启 |
+| 一玩家一 service 容量基准 + 可选 player_pool 模式 | P1 | 大规模场景验证 |
 | 多设备策略 | P2 | 按需实现 |
-| 定时保存 | P1 | 数据安全 |
+| `shield.player.Base` 高级风格 | P2 | setup 之上的 OOP 语法糖 |
+| 远端 `PlayerRef` resolve | P2 | shield_cluster + shield_player 协作 |

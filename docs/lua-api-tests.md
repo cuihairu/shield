@@ -142,6 +142,33 @@ Harness 要求：
 | LAPI-010-04 | service only defines `on_message(src, type, data)` | send method does not dispatch through legacy entrypoint |
 | LAPI-010-05 | DI injection API | unavailable |
 
+## LAPI-011 Player Lifecycle
+
+适用前提：`shield_player` 已启用。未启用时整个 LAPI-011 矩阵跳过，且 `shield.player.*` 调用应返回 `module_unavailable`。
+
+| Case | 设置 | 操作 | 断言 |
+| --- | --- | --- | --- |
+| LAPI-011-01 | setup 缺 `auth` 字段 | spawn player service | `nil, setup_invalid` |
+| LAPI-011-02 | setup 缺 `login` 字段 | spawn player service | `nil, setup_invalid` |
+| LAPI-011-03 | setup 缺 `client_message` 字段 | spawn player service | `nil, setup_invalid` |
+| LAPI-011-04 | setup 缺 `disconnect` 字段 | 触发断线 | 进入重连窗口，默认实现被调用 |
+| LAPI-011-05 | setup 缺 `logout` 字段 | 玩家离线 | `PlayerManager.unregister` 被调用 |
+| LAPI-011-06 | setup 缺 `save` 字段且未配置 persistence | 触发定时保存 | no-op，无 `shield_data` 调用 |
+| LAPI-011-07 | setup 覆盖 `disconnect` | 触发断线 | 业务实现被调用，默认实现不执行 |
+| LAPI-011-08 | setup 完整 + persistence 启用 | 触发 `on_save` 默认实现 | adapter 调用 `shield_data` 持久化白名单字段 |
+| LAPI-011-09 | setup 完整 + persistence 未启用 | 触发 `on_save` 默认实现 | no-op，无 `shield_data` 调用 |
+| LAPI-011-10 | persistence `save` 失败（`on_save_error="log"`） | adapter 返回错误 | 错误码 `persistence_save_failed`，service 继续运行 |
+| LAPI-011-11 | persistence `save` 失败（`on_save_error="panic"`） | adapter 返回错误 | 触发 `on_panic` |
+| LAPI-011-12 | persistence 字段含 function | setup | `nil, setup_invalid` |
+| LAPI-011-13 | `PlayerRef` LuaPack 编码 | encode | 独立 type tag，字段完整 |
+| LAPI-011-14 | `shield.player.resolve` 本地在线玩家 | 解析 ref | 返回 `PlayerSession` |
+| LAPI-011-15 | `shield.player.resolve` 本地已下线玩家 | 解析 ref | `nil, player_not_found` |
+| LAPI-011-16 | `shield.player.resolve` 远端 ref（P0） | 解析 ref | `nil, remote_resolve_unimplemented` |
+| LAPI-011-17 | `shield.player.resolve` 字段非法 | 解析 ref | `nil, invalid_player_ref` |
+| LAPI-011-18 | cross-service 传 `PlayerRef` | send payload | receiver 拿到等价 ref |
+| LAPI-011-19 | cross-service 传 `SessionHandle` | send payload | runtime 拒绝并返回错误 |
+| LAPI-011-20 | cross-service 传完整 `PlayerSession` | send payload | runtime 拒绝并返回错误 |
+
 ## 验收要求
 
 - 当前 CTest 已有 `shield_runtime_lua_smoke` 覆盖 YAML actors 启动、
