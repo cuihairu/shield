@@ -2,8 +2,9 @@
 
 当前实现状态：Phase 1 已支持 `database.enabled` / `redis.enabled` 控制 mock
 pool 初始化；未启用时 Lua API 返回 `false, module_unavailable`；启用时 CTest
-覆盖 `shield.db.query/execute` 与 `shield.redis.set/exists/del` 的返回形态。
-真实 MySQL/PostgreSQL/SQLite/Redis 驱动连接、连接错误传播和订阅生命周期仍未完成。
+覆盖部分 mock 返回形态，包括 `shield.db.query/execute` 与
+`shield.redis.set/exists/del`。`query_one`、Redis `get/publish/subscribe` 的完整
+验收、真实 MySQL/PostgreSQL/SQLite/Redis 驱动连接、连接错误传播和订阅生命周期仍未完成。
 
 本文档包含 Shield 数据访问相关的运行时语义决策。
 
@@ -95,12 +96,7 @@ redis:
   command_timeout: 5000      # 命令超时（ms）
   idle_timeout: 300000       # 空闲连接超时（ms）
 
-  # 哨兵/集群配置（可选）
-  sentinel:
-    master_name: "mymaster"
-    addresses:
-      - "127.0.0.1:26379"
-      - "127.0.0.1:26380"
+  # sentinel / cluster 配置属于 Phase 2+，不进入 Phase 1 schema
 ```
 
 ### 连接池行为
@@ -189,7 +185,7 @@ stmt:close()
 
 ## Redis API
 
-### 基础命令
+### Phase 1 基础命令
 
 ```lua
 -- String
@@ -197,6 +193,12 @@ local ok, value = shield.redis.get("key")
 local ok, result = shield.redis.set("key", "value", 3600)  -- TTL 可选
 local ok, result = shield.redis.del("key")
 local ok, result = shield.redis.exists("key")
+```
+
+Phase 1 只冻结 `get/set/del/exists` 与 `publish/subscribe`。Hash、List、Set、Sorted Set、`expire`、`ttl` 等命令属于 Phase 2+，不进入当前 `lua-api-tests.md` 最小验收。
+
+```lua
+-- Phase 2+ examples only
 
 -- Hash
 local ok, value = shield.redis.hget("hash", "field")

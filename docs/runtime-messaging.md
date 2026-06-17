@@ -207,9 +207,23 @@ local ok, err = shield.send(target, "kick", uid)
 
 返回成功只表示 runtime 接受消息进入投递流程，不表示 receiver 已收到或处理成功。
 
-### 高级选项
+### Phase 1 规则
 
-`send` 支持可选的第四个参数 `opts`，用于控制背压和 QoS：
+Phase 1 的 `send` 只冻结最小投递语义，不暴露 QoS、可靠投递或可配置背压策略：
+
+- `send` 不挂起 coroutine。
+- 不自动重试。
+- self-send 允许，但不是 reentrant call，而是入队到未来调度点。
+- target 可以是 handle 或 name。
+- target 是 name 时，每次发送动态 query registry。
+- target 是 handle 时，直接按 handle 路由。
+- mailbox 满时返回 `mailbox_full` 或同等级明确错误，不阻塞调用方。
+
+可靠处理必须用 `shield.call` 或业务 ACK。
+
+### Deferred 高级选项
+
+以下选项是后续 mailbox/QoS 设计草案，不属于 Phase 1 Lua API，也不进入当前验收矩阵。引入前必须先更新 [Lua API 契约](lua-api.md) 和 [Lua API 测试用例](lua-api-tests.md)。
 
 ```lua
 local ok, err = shield.send(target, "event", data, {
@@ -244,18 +258,6 @@ local ok, err = shield.send(target, "event", data, {
 | `low` | 3 | 低优先级 |
 
 优先级影响 mailbox 内的消息排序，高优先级消息优先被取出处理。
-
-### 规则
-
-- `send` 不挂起 coroutine。
-- 不自动重试。
-- self-send 允许，但不是 reentrant call，而是入队到未来调度点。
-- target 可以是 handle 或 name。
-- target 是 name 时，每次发送动态 query registry。
-- target 是 handle 时，直接按 handle 路由。
-- `backpressure = "block"` 会使当前 coroutine 挂起，直到 mailbox 有空间。
-
-可靠处理必须用 `shield.call` 或业务 ACK。
 
 当前实现状态：Phase 1 smoke test 已支持单节点本地 service name 字符串路由，
 并同步调用目标 Lua method。它用于验证 Lua API、参数传递、`sender()` 和错误

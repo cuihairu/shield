@@ -2,6 +2,11 @@
 
 本文档包含 Shield 定时器、sleep 和 fork 相关的运行时语义决策。
 
+当前实现状态：Phase 1 已登记 `timer_once/timer/cancel_timer` 的 API 面，
+但 coroutine-aware callback、`sleep` 和 `fork` 仍是后续实现项。本文描述的是目标
+语义；当前验收以 [重构路线图](roadmap.md) 和 [Lua API 测试用例](lua-api-tests.md)
+标注的实现状态为准。
+
 ## timer API
 
 ```lua
@@ -17,7 +22,7 @@ local ok = shield.cancel_timer(id)
 规则：
 
 - timer callback 在当前 service 的 Lua VM 中执行。
-- callback 是 coroutine，可以 `call` / `sleep`。
+- 最终目标中 callback 是 coroutine，可以 `call` / `sleep`；Phase 1 不把这一点作为已完成实现。
 - timer 归属当前 service。
 - service exit 时自动取消 owned timers。
 - `TimerId` 是 opaque userdata，不暴露 CAF。
@@ -63,6 +68,7 @@ shield.sleep(1000)
 
 语义：
 
+- 最终目标是只挂起当前 coroutine；Phase 1 尚未承诺完成该语义。
 - 只挂起当前 coroutine。
 - 不阻塞 runtime 线程。
 - 基于 timer 实现。
@@ -86,7 +92,7 @@ end, uid)
 
 - fork coroutine 与当前 service 共享 Lua VM 和 Lua 状态。
 - fork 没有 service id，没有 mailbox，没有 name。
-- fork 可以 `call` / `sleep`。
+- 最终目标中 fork 可以 `call` / `sleep`；Phase 1 尚未承诺完成该语义。
 - fork unhandled error 记录日志和 ops 指标，不杀死 service。
 - service exit 时自动取消 owned fork tasks。
 

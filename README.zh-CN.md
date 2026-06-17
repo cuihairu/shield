@@ -48,7 +48,7 @@ Shield 核心不提供：
 | --- | --- |
 | `shield_base` | 共享值类型，如 Result、Error、ByteBuffer、时间和 ID |
 | `shield_lua` | Lua VM 管理和 `shield.*` 绑定 |
-| `shield_net` | 客户端连接（TCP/UDP/KCP/WebSocket）、会话管理 |
+| `shield_net` | 客户端连接（Phase 1 仅 TCP；UDP/KCP/WebSocket 延后）、会话管理 |
 | `shield_transport` | 可选的字节流适配，如帧或加密 |
 | `shield_data` | 原始 DB/Redis 访问，无 ORM 策略 |
 | `shield_config` | YAML 配置加载 |

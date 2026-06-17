@@ -57,7 +57,7 @@ core semantics:
 | --- | --- |
 | `shield_base` | Shared value types such as Result, Error, ByteBuffer, time, and IDs |
 | `shield_lua` | Lua VM management and `shield.*` bindings |
-| `shield_net` | Client connections (TCP/UDP/KCP/WebSocket), Session management |
+| `shield_net` | Client connections (TCP in Phase 1; UDP/KCP/WebSocket deferred), Session management |
 | `shield_transport` | Optional byte-stream adaptation such as framing or encryption |
 | `shield_data` | Raw DB / Redis access, without ORM policy |
 | `shield_config` | YAML configuration loading |

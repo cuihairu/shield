@@ -16,6 +16,12 @@
 
 运行时语义已按专题拆分为独立文档。当前阅读和实现时按以下优先级处理。
 
+当前收敛顺序：
+
+- Phase 1 最小闭环只覆盖单节点 Lua service、registry、基础 `send/call` 返回形态、TCP gateway、raw data API 的 mock/未启用语义、配置验证和 `shield::run` 入口。
+- coroutine-aware `call/sleep/fork`、完整 mailbox/future scheduling、真实 DB/Redis 驱动连接、UDP/KCP/WebSocket、ops snapshot 和官方可选模块都不作为当前最小验收阻塞项。
+- schema/tooling、mapper、entity/component 等文档是后续草案；除非路线图重新纳入，否则不能反向扩大当前 runtime 范围。
+
 ### 权威契约
 
 | 文档 | 内容 |
@@ -110,12 +116,14 @@
 - 实现 `fork` 和 `TaskHandle`。
 - 增加 fixed-delay、timer error stop、service exit auto-cancel 测试。
 
-### M7. net/gateway/data/ops
+### M7. net/gateway/data
 
 - 整理 `shield_transport` 和 `shield_net` 边界。
 - 实现 gateway Lua callback 草图。
-- 保留 data 原始 DB/Redis API。
-- 实现 ops snapshot 和本地 diagnostics。
+- 保留 data 原始 DB/Redis API；Phase 1 先覆盖未启用错误和 mock pool 返回形态。
+- 真实 MySQL/Redis 连接、订阅生命周期和压力验证独立推进，不阻塞最小 Lua runtime。
+
+ops snapshot 和本地 diagnostics 属于 `shield_ops` 可选模块，除非显式启用 `shield_ops`，不得进入最小 runtime 验收。
 
 ### M8. 可选 cluster/global/ops
 

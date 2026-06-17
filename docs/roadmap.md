@@ -4,6 +4,8 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 说明：以下勾选表示对应源码路径已经进入当前 refactor 验证范围；文档边界冻结但源码仍未完成的事项保持未勾选。
 
+当前收敛目标是先关闭一个可验证的单节点最小闭环：`shield::run`、Phase 1 配置验证、Lua module-table service、local registry、基础 `send/call` 返回形态、TCP gateway 边界、DB/Redis 未启用错误和 mock data smoke。任何需要多节点、真实后端、完整 coroutine 调度、UDP/KCP/WebSocket 或官方可选模块的能力都不能作为当前 Phase 1 阻塞项。
+
 设计决策记录集中在 [Decision Log](open-decisions.md)。如果后续新增开放问题，需要先记录，再同步更新对应权威文档和本路线图。
 
 ## Phase 0: 文档和边界冻结
@@ -84,6 +86,8 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 - `shield_cluster`：多进程/多机器通信、节点心跳、远端路由 cache、可选服务发现。
 - `shield_global`：跨进程数据、分布式锁、排行榜、队列、限流器。
+- `shield_player`：玩家 setup、PlayerRef、PlayerManager、重连、持久化 adapter。
+- `shield_server`：服务器状态、维护模式、关闭广播、运行时信息。
 - `shield_ops`：Prometheus 指标、健康检查、HTTP/console 管理端点、profile。
 - [x] 冻结每个 optional module 的初始化失败策略：默认 fail fast；`shield_cluster` 允许远端连接失败时退化为单节点 unhealthy；未启用却配置 optional 段必须启动失败。
 - [x] 冻结 `shield_player` 文档契约：`shield.player.setup` 主 API 与默认 hook 实现表、persistence adapter 边界、`PlayerRef` 本地/远端边界、anonymous/spectator opt-in 状态、多设备策略、`player_pool` 容量模型和 `shield.player.Base` 语法糖边界。实现仍按 P0/P1/P2 分阶段推进。

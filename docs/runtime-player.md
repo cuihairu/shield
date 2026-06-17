@@ -8,7 +8,7 @@
 
 - 本文冻结 `shield_player` optional module 的边界契约；具体 Lua API 进入 Phase 2+。
 - `shield.player.setup` 主入口、`PlayerRef` 跨 service 引用、persistence adapter 为 P0 文档冻结项；实现顺序见文末"实现优先级"。
-- `shield.player.*`、`PlayerSession`、`PlayerRef`、重连窗口和离线消息缓存都不属于当前最小单节点 runtime。
+- 当前实现只承诺文档中的最小 player 契约冻结，不把 `PlayerSession`、重连窗口、离线消息缓存、`player_pool` 或多设备策略当作 Phase 1 已完成能力。
 - `SessionHandle` 仍只留在 gateway / `shield_net` 内部；`shield_player` 的公开语义只暴露 `session_id`、`PlayerSession`（本地）和 `PlayerRef`（跨 service），不把 `SessionHandle` 作为跨 service 对象传递。
 - 即使启用 `shield_player`，普通 Lua service 仍保持 module-table + named method 语义；本模块不恢复 legacy `on_message(src, type, data)` 统一入口。
 - optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
@@ -31,7 +31,7 @@
 | Actor | Service 的同义词，强调消息驱动模型 |
 | Player | 绑定网络连接的 Service，有额外的生命周期管理 |
 
-**Player Service = 普通 Service + PlayerSession 管理**
+**Player Service = 普通 Service + 可选玩家态扩展**
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -45,11 +45,10 @@
 │  └────────────────────────────────────────────────────┘ │
 │  ┌────────────────────────────────────────────────────┐ │
 │  │  Player 增强能力                                    │ │
-│  │  - PlayerSession (连接绑定)                         │ │
-│  │  - 生命周期钩子 (on_auth/on_login/on_logout)        │ │
-│  │  - 断线重连                                         │ │
-│  │  - 离线消息缓存                                     │ │
-│  │  - 数据持久化                                       │ │
+│  │  - setup 钩子与 PlayerRef                           │ │
+│  │  - 断线重连（P0 文档冻结）                         │ │
+│  │  - 离线消息缓存（后续）                             │ │
+│  │  - 数据持久化契约                                   │ │
 │  └────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -176,6 +175,8 @@ return true, {
 ## shield.player.setup 主入口
 
 业务 Player Service 应当通过 `shield.player.setup` 注册到框架，作为唯一推荐入口。
+
+这部分定义 P0 冻结契约，不等同于当前源码已经覆盖全部分支。
 
 ### 基本形态
 
@@ -345,6 +346,8 @@ return M
 
 ## PlayerSession 对象
 
+`PlayerSession` 是目标语义对象，不代表 Phase 1 已完整实现。
+
 ```lua
 -- PlayerSession 是玩家会话的运行时表示
 local player = shield.player.get(uid)
@@ -382,6 +385,8 @@ player:reconnect_token() -- 获取重连 token
 ## PlayerRef 跨 service 引用
 
 `PlayerRef` 是 `PlayerSession` 的轻量引用，用于跨 service 传递。
+
+当前只冻结结构和本地解析边界；远端 resolve/operate 仍按路线图推进。
 
 ### 设计约束
 
@@ -777,6 +782,8 @@ end
 
 ## 容量模型与 player_pool
 
+`player_pool` 是目标扩展模型，不属于当前最小 runtime。
+
 默认模型是 one-player-one-service：每个在线玩家对应一个 Player Service 和一个 Lua VM。它语义最清晰，隔离性最好，也是 P0/P1 的默认实现模型。
 
 `player_pool` 是大规模在线的可选实现策略，不改变 public API：
@@ -815,6 +822,8 @@ player:
 
 ## 与 gateway 的关系
 
+以下图示描述目标协作，不代表 Phase 1 已把所有玩家态能力实现完毕。
+
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     gateway 服务                         │
@@ -848,6 +857,8 @@ player:
 - 跨 service payload 不传 `SessionHandle`。
 
 ## ops 暴露
+
+ops 暴露是可选观测面，不属于最小运行时。
 
 ```json
 GET /ops/players
@@ -937,6 +948,8 @@ end)
 
 ### PlayerSession 注册流程
 
+以下注册流程描述的是目标框架行为。
+
 ```lua
 -- Player Service 的 on_login 中自动注册
 function M.on_login(player)
@@ -958,6 +971,8 @@ end
 ```
 
 ### 配置
+
+该配置属于 player 模块配置，不进入 core schema。
 
 ```yaml
 # PlayerManager 配置
@@ -982,6 +997,8 @@ actors:
 
 ### 与其他 Service 的交互
 
+这些交互是模块协作边界，不代表当前实现已经提供完整 player 业务 API。
+
 ```lua
 -- 其他 Service 查询玩家信息
 local player = shield.call("player_manager", "get", uid)
@@ -999,7 +1016,9 @@ shield.send("player_manager", "broadcast", {
 })
 ```
 
-### ops 暴露
+### PlayerManager ops 暴露
+
+该端点属于 `shield_ops` 观测面，不属于最小运行时。
 
 ```json
 GET /ops/players
@@ -1027,12 +1046,12 @@ GET /ops/players
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| `shield.player.setup` 主 API + 默认实现表 | P0 | 业务唯一推荐入口，默认行为必须明列 |
-| 基础钩子（auth/login/logout/client_message/disconnect） | P0 | setup 必填钩子，对应 runtime-service 的最小生命周期 |
-| `PlayerRef` + 本地 `shield.player.resolve` | P0 | 跨 service 轻量引用；远端 resolve 留 P2+ |
-| persistence adapter 契约 | P0 | shield_player 拥有的轻量 adapter，底层走 shield_data |
-| 断线重连 | P0 | 游戏必备 |
-| PlayerManager | P0 | 全局玩家管理 |
+| `shield.player.setup` 主 API + 默认实现表 | P0 | 业务唯一推荐入口，默认行为必须明列；文档冻结，不代表当前 runtime 已实现 |
+| 基础钩子（auth/login/logout/client_message/disconnect） | P0 | setup 必填钩子，对应 runtime-service 的最小生命周期；文档冻结 |
+| `PlayerRef` + 本地 `shield.player.resolve` | P0 | 跨 service 轻量引用；远端 resolve 留 P2+；文档冻结 |
+| persistence adapter 契约 | P0 | shield_player 拥有的轻量 adapter，底层走 shield_data；文档冻结 |
+| 断线重连 | P1 | 游戏必备，但不计入当前最小 runtime 已完成项 |
+| PlayerManager | P1 | 全局玩家管理，和 `setup` 同步收敛 |
 | 离线消息缓存 | P1 | 提升体验 |
 | 定时保存（`on_save` 默认实现触发） | P1 | 数据安全，依赖 persistence adapter |
 | anonymous/spectator 状态（opt-in） | P1 | 契约已冻结；默认状态机不变，配置显式开启 |

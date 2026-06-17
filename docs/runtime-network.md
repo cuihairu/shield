@@ -13,17 +13,17 @@ Shield 有两层网络：
 | 层 | 职责 | 使用者 |
 | --- | --- | --- |
 | `shield_net` | 客户端连接管理、Session 生命周期 | Gateway 服务 |
-| `shield_transport` | 协议解析（解帧、编解码、加密）、KCP 实现 | shield_net 内部 |
+| `shield_transport` | 协议解析（Phase 1: 解帧、编解码、加密；后续: KCP/UDP/WebSocket 适配） | shield_net 内部 |
 | CAF middleman | 服务间通信、节点间通信 | 内部 Actor |
 
 ```
-客户端 ──TCP/UDP/KCP/WebSocket──→ shield_net ──shield_transport──→ gateway
+客户端 ──TCP──→ shield_net ──shield_transport──→ gateway
                                                               ↓
 内部服务 ←────────────────────── CAF ←─────────────────── 业务路由
 ```
 
 **shield_net 职责：**
-- 监听客户端连接（TCP/UDP/KCP/WebSocket）
+- 监听客户端连接（Phase 1: TCP）
 - 管理连接生命周期（accept、close、reconnect）
 - 管理 Session 对象
 - 调用 gateway 回调（on_connect、on_disconnect、on_client_message）
@@ -33,7 +33,7 @@ Shield 有两层网络：
 - 协议编解码（codec）
 - 数据压缩（compression）
 - 数据加密（encryption）
-- KCP 协议实现
+- KCP 协议实现（后续）
 - 包校验（packet validation）
 
 **职责边界：**
