@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -95,6 +96,32 @@ public:
     // Process one message from all services (round-robin)
     /// @return Number of messages processed
     int process_all_mailboxes();
+
+    // Execute a single runtime pump: drain mailboxes, fire expired timers,
+    // and timeout expired coroutines. Must be called from the worker thread
+    // or from a test harness that owns the runtime.
+    /// @return Number of events processed (messages + timers + timeouts)
+    int pump_once();
+
+    // Start the background worker thread that drives mailboxes, timers, and
+    // coroutine timeouts. After this call, all Lua code (except shield.call
+    // reentry from inside a handler on the worker thread) runs on the worker.
+    void start_worker();
+
+    // Stop the background worker thread. Joins the thread and clears pending
+    // forked tasks. Safe to call multiple times; safe to call without start.
+    void stop_worker();
+
+    // Enqueue a forked task to be executed by the worker thread. The task
+    // captures the owning service ID so it can be cancelled on service exit.
+    /// @param service_id Owner service ID
+    /// @param task Function to execute on the worker thread
+    /// @return Task ID for cancellation/tracking
+    uint64_t enqueue_forked_task(std::string service_id,
+                                 std::function<void()> task);
+
+    // Cancel all forked tasks owned by a service. Called during service exit.
+    void cancel_forked_tasks_for_service(const std::string& service_id);
 
 private:
     struct Impl;

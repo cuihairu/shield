@@ -594,23 +594,28 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
     });
 }
 
-void register_task_api(sol::table& shield, LuaRuntime* runtime) {
-    static std::atomic<uint64_t> task_id{1};
-    (void)runtime;  // Will be used for coroutine-aware fork
+void register_task_api(sol::table& shield, LuaServiceManager* manager,
+                        LuaRuntime* runtime) {
+    (void)runtime;
 
     shield.set_function("fork",
-        [](sol::function fn) -> uint64_t {
-            const uint64_t id = task_id.fetch_add(1);
-            std::thread([fn, id]() {
+        [manager](sol::this_state state, sol::function fn) -> uint64_t {
+            sol::state_view lua(state);
+            if (!manager) {
+                return 0;
+            }
+            const std::string service_id = manager->current_service_id();
+            // Capture the Lua function with its owning state_view. Execution
+            // happens on the worker thread; since the worker is the only thread
+            // touching Lua VMs once running, this is race-free.
+            return manager->enqueue_forked_task(service_id, [fn]() {
                 try {
                     fn();
                 } catch (const std::exception& e) {
                     auto& log = shield::log::get_logger("lua");
-                    SHIELD_LOG_ERROR(log, "task " + std::to_string(id) +
-                                     " error: " + e.what());
+                    SHIELD_LOG_ERROR(log, std::string("task error: ") + e.what());
                 }
-            }).detach();
-            return id;
+            });
         });
 }
 
@@ -931,7 +936,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_service_api(shield, manager);
     register_message_api(shield, manager, runtime);
     register_timer_api(shield, manager, runtime);
-    register_task_api(shield, runtime);
+    register_task_api(shield, manager, runtime);
     register_config_api(shield);
     register_log_api(shield);
     register_data_api(shield);

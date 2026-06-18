@@ -217,6 +217,12 @@ bool initialize(const RuntimeConfig& config) {
     // Run POST_START starters
     run_starters(Phase::POST_START);
 
+    // Start the Lua worker thread. After this point, all mailbox drains,
+    // timer fires, coroutine timeouts, and forked tasks happen on the worker.
+    if (g_state->lua_services) {
+        g_state->lua_services->start_worker();
+    }
+
     g_state->initialized = true;
     SHIELD_LOG_INFO(log, "Shield runtime initialized");
     return true;
@@ -233,6 +239,11 @@ void shutdown() {
 
     // Run PRE_SHUTDOWN starters
     run_starters(Phase::PRE_SHUTDOWN);
+
+    // Stop the Lua worker first so no new Lua code runs while we tear down.
+    if (g_state->lua_services) {
+        g_state->lua_services->stop_worker();
+    }
 
     // Shutdown actor system (which stops all actors)
     if (g_state->lua_services) {

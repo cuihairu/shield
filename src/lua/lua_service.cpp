@@ -5,14 +5,19 @@
 #include "shield/base/error.hpp"
 #include "shield/base/result.hpp"
 #include "shield/config/config.hpp"
+#include "shield/log/logger.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 
 #include <algorithm>
 #include <filesystem>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -45,6 +50,33 @@ struct LuaServiceManager::Impl {
     };
 
     std::vector<DispatchFrame> dispatch_stack;
+
+    // Forked task queue. Drained only by the worker thread (or pump_once on
+    // the caller's thread when no worker is running).
+    struct ForkedTask {
+        uint64_t id;
+        std::string service_id;
+        std::function<void()> fn;
+    };
+    std::atomic<uint64_t> next_task_id{1};
+    std::vector<ForkedTask> pending_tasks;
+    std::unordered_map<std::string, std::unordered_set<uint64_t>> tasks_by_service;
+
+    // Worker thread lifecycle. The worker drives mailboxes, timers, forked
+    // tasks, and coroutine timeouts. While the worker is running, all Lua
+    // execution happens on the worker thread (modulo shield.call reentry,
+    // which stays inline because it's already on the worker).
+    std::atomic<bool> worker_running{false};
+    std::atomic<bool> worker_stop_requested{false};
+    std::thread worker_thread;
+    std::mutex worker_mutex;
+    std::condition_variable worker_cv;
+
+    static int64_t now_ms() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
 
     Impl(LuaRuntime& rt) : runtime(rt) {
         for (const auto& actor : shield::config::runtime_actors()) {
@@ -336,6 +368,15 @@ void LuaServiceManager::exit(std::string_view service_id,
 
     // Clean up mailbox
     impl_->mailboxes.erase(std::string(service_id));
+
+    // Cancel forked tasks owned by this service.
+    cancel_forked_tasks_for_service(std::string(service_id));
+
+    // Cancel timers owned by this service so they don't fire on a dead VM.
+    impl_->runtime.timer_manager().cancel_all_for_service(std::string(service_id));
+
+    // Cancel coroutines owned by this service.
+    impl_->runtime.coroutine_scheduler().cancel_all_for_service(std::string(service_id));
 }
 
 void LuaServiceManager::shutdown_all(std::string_view reason) {
@@ -490,12 +531,132 @@ bool LuaServiceManager::process_mailbox(std::string_view service_id) {
 
 int LuaServiceManager::process_all_mailboxes() {
     int processed = 0;
-    for (const auto& [service_id, _] : impl_->services) {
+    // Take a snapshot because process_mailbox may call exit(), which erases
+    // from impl_->services and invalidates iterators.
+    const auto snapshot = impl_->service_order;
+    for (const auto& service_id : snapshot) {
+        if (!impl_->services.contains(service_id)) {
+            continue;
+        }
         if (process_mailbox(service_id)) {
             ++processed;
         }
     }
     return processed;
+}
+
+int LuaServiceManager::pump_once() {
+    int events = 0;
+    events += process_all_mailboxes();
+
+    // Drain forked tasks scheduled by shield.fork. Copy them out first so the
+    // task body can itself enqueue new tasks without invalidating iteration.
+    std::vector<Impl::ForkedTask> tasks_to_run;
+    {
+        std::lock_guard<std::mutex> lock(impl_->worker_mutex);
+        tasks_to_run.swap(impl_->pending_tasks);
+    }
+    for (const auto& task : tasks_to_run) {
+        Impl::DispatchScope scope(*impl_, task.service_id, "", false);
+        try {
+            task.fn();
+        } catch (const std::exception& e) {
+            auto& log = shield::log::get_logger("lua");
+            SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
+                                  " error: " + e.what());
+        }
+        {
+            std::lock_guard<std::mutex> lock(impl_->worker_mutex);
+            auto it = impl_->tasks_by_service.find(task.service_id);
+            if (it != impl_->tasks_by_service.end()) {
+                it->second.erase(task.id);
+                if (it->second.empty()) {
+                    impl_->tasks_by_service.erase(it);
+                }
+            }
+        }
+    }
+    events += static_cast<int>(tasks_to_run.size());
+
+    const int64_t now = Impl::now_ms();
+    events += impl_->runtime.timer_manager().check_and_fire(now);
+    events += impl_->runtime.coroutine_scheduler().check_timeouts(now);
+    return events;
+}
+
+void LuaServiceManager::start_worker() {
+    if (impl_->worker_running.load()) {
+        return;
+    }
+    impl_->worker_stop_requested.store(false);
+    impl_->worker_thread = std::thread([this]() {
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_INFO(log, "Lua worker thread started");
+        while (!impl_->worker_stop_requested.load()) {
+            try {
+                (void)pump_once();
+            } catch (const std::exception& e) {
+                SHIELD_LOG_ERROR(log, std::string("worker pump error: ") + e.what());
+            }
+            std::unique_lock<std::mutex> lock(impl_->worker_mutex);
+            impl_->worker_cv.wait_for(lock, std::chrono::milliseconds(10),
+                [this]() {
+                    return impl_->worker_stop_requested.load() ||
+                           !impl_->pending_tasks.empty();
+                });
+        }
+        SHIELD_LOG_INFO(log, "Lua worker thread stopped");
+    });
+    impl_->worker_running.store(true);
+}
+
+void LuaServiceManager::stop_worker() {
+    if (!impl_->worker_running.load()) {
+        return;
+    }
+    impl_->worker_stop_requested.store(true);
+    {
+        std::lock_guard<std::mutex> lock(impl_->worker_mutex);
+        impl_->pending_tasks.clear();
+    }
+    impl_->worker_cv.notify_all();
+    if (impl_->worker_thread.joinable()) {
+        impl_->worker_thread.join();
+    }
+    impl_->worker_running.store(false);
+}
+
+uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
+                                                std::function<void()> task) {
+    const uint64_t id = impl_->next_task_id.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lock(impl_->worker_mutex);
+        impl_->pending_tasks.push_back({id, service_id, std::move(task)});
+        impl_->tasks_by_service[service_id].insert(id);
+    }
+    impl_->worker_cv.notify_one();
+    return id;
+}
+
+void LuaServiceManager::cancel_forked_tasks_for_service(
+    const std::string& service_id) {
+    std::unordered_set<uint64_t> ids;
+    {
+        std::lock_guard<std::mutex> lock(impl_->worker_mutex);
+        auto it = impl_->tasks_by_service.find(service_id);
+        if (it == impl_->tasks_by_service.end()) {
+            return;
+        }
+        ids = it->second;
+        impl_->tasks_by_service.erase(it);
+        impl_->pending_tasks.erase(
+            std::remove_if(impl_->pending_tasks.begin(),
+                           impl_->pending_tasks.end(),
+                           [&ids](const Impl::ForkedTask& t) {
+                               return ids.count(t.id) > 0;
+                           }),
+            impl_->pending_tasks.end());
+    }
 }
 
 }  // namespace shield::lua
