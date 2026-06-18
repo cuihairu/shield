@@ -101,3 +101,9 @@ logs/
 *.log
 *.tmp
 *.bak
+
+# Scratch / unnamed drafts
+未命名*.md
+未命名*.txt
+scratch_*
+draft_*
