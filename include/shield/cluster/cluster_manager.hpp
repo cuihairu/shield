@@ -109,6 +109,10 @@ public:
                      const std::string& method,
                      const std::string& args_json);
 
+    /// @brief Check if a node is reachable (online or connecting)
+    /// @return empty string if reachable, error code if not
+    std::string check_node_reachable(const std::string& node_id) const;
+
     /// @brief Process cluster tick (heartbeat, timeout checks)
     /// @return Number of state changes
     int tick();

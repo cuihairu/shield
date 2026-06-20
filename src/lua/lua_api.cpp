@@ -390,6 +390,12 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                     code = "encode_failed";
                 } else if (error.find("permission denied") != std::string::npos) {
                     code = "permission_denied";
+                } else if (error.find("invalid method") != std::string::npos) {
+                    code = "invalid_method";
+                } else if (error.find("service dead") != std::string::npos) {
+                    code = "service_dead";
+                } else if (error.find("coroutine limit") != std::string::npos) {
+                    code = "coroutine_limit";
                 }
                 results.push_back(sol::make_object(lua, false));
                 results.push_back(make_error(state, std::move(code), error,
@@ -568,8 +574,11 @@ sol::variadic_results call_with_timeout(sol::this_state state,
     // Helper to map call error message to stable error code.
     auto call_error_code = [](const std::string& msg) -> std::string {
         if (msg.find("service not found") != std::string::npos) return "service_not_found";
+        if (msg.find("service dead") != std::string::npos) return "service_dead";
         if (msg.find("method not found") != std::string::npos) return "method_not_found";
         if (msg.find("runtime is stopping") != std::string::npos) return "runtime_stopping";
+        if (msg.find("invalid method") != std::string::npos) return "invalid_method";
+        if (msg.find("coroutine limit") != std::string::npos) return "coroutine_limit";
         return "handler_error";
     };
 

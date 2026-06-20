@@ -89,6 +89,13 @@ struct LuaServiceManager::Impl {
     // Per-service Redis subscription tracking for auto-cancel on exit.
     std::unordered_map<std::string, std::unordered_set<std::string>> redis_subscriptions;
 
+    // Track recently exited services for service_dead error distinction.
+    // Cleared periodically to avoid unbounded growth.
+    std::unordered_set<std::string> recently_exited;
+
+    // Track last sender per service for context_expired detection.
+    std::unordered_map<std::string, std::string> last_sender_per_service;
+
     // Permission check hook (Phase 2). When set, called before send/call.
     // Returns empty string if allowed, error code if denied.
     std::function<std::string(const std::string& sender,
@@ -214,7 +221,7 @@ struct LuaServiceManager::Impl {
                       bool in_exit,
                       std::string trace_id = "",
                       int64_t deadline_ms = 0)
-            : impl_(impl) {
+            : impl_(impl), service_id_(service_id) {
             impl_.dispatch_stack.push_back({
                 std::move(service_id),
                 std::move(sender_id),
@@ -227,6 +234,13 @@ struct LuaServiceManager::Impl {
         }
 
         ~DispatchScope() {
+            // Save last sender for context_expired detection.
+            if (!impl_.dispatch_stack.empty()) {
+                const auto& frame = impl_.dispatch_stack.back();
+                if (!frame.sender_id.empty()) {
+                    impl_.last_sender_per_service[frame.service_id] = frame.sender_id;
+                }
+            }
             impl_.dispatch_stack.pop_back();
         }
 
@@ -235,6 +249,7 @@ struct LuaServiceManager::Impl {
 
     private:
         Impl& impl_;
+        std::string service_id_;
     };
 };
 
@@ -369,6 +384,16 @@ bool LuaServiceManager::send(std::string_view target,
         return false;
     }
 
+    // Validate method name.
+    if (method.empty() || method.size() > 128) {
+        if (error) *error = "invalid method name: length must be 1-128";
+        return false;
+    }
+    if (method.rfind("on_", 0) == 0) {
+        if (error) *error = "invalid method name: 'on_' prefix is reserved";
+        return false;
+    }
+
     // Permission check.
     if (impl_->permission_check) {
         const std::string sender = current_service_id();
@@ -404,7 +429,13 @@ bool LuaServiceManager::send(std::string_view target,
     auto mailbox_it = impl_->mailboxes.find(service_id);
     if (mailbox_it == impl_->mailboxes.end()) {
         if (error) {
-            *error = "service not found: " + std::string(target);
+            // Distinguish between "never existed" and "exited".
+            if (impl_->recently_exited.count(service_id) > 0 ||
+                impl_->recently_exited.count(std::string(target)) > 0) {
+                *error = "service dead: " + std::string(target);
+            } else {
+                *error = "service not found: " + std::string(target);
+            }
         }
         return false;
     }
@@ -541,6 +572,9 @@ void LuaServiceManager::exit(std::string_view service_id,
 
     // Clean up mailbox
     impl_->mailboxes.erase(std::string(service_id));
+
+    // Track for service_dead error distinction.
+    impl_->recently_exited.insert(std::string(service_id));
 }
 
 void LuaServiceManager::shutdown_all(std::string_view reason) {

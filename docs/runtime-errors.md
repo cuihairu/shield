@@ -32,7 +32,7 @@
 | 错误码 | 来源 | 说明 | retryable | 状态 |
 |--------|------|------|-----------|------|
 | `invalid_target` | send/call | 目标格式错误（非 handle 且非合法 name） | 否 | ✅ |
-| `invalid_method` | send/call | 方法名非法（空、过长、含非法字符） | 否 | ⚠️ 未显式检查 |
+| `invalid_method` | send/call | 方法名非法（空、过长、含非法字符） | 否 | ✅ send 检查空/超长/on_ 前缀 |
 | `invalid_service_module` | spawn | Lua 文件未返回合法 service module table | 否 | ✅ |
 | `script_load_failed` | spawn | Lua 文件语法错误、load 失败或顶层代码抛错 | 否 | ✅ |
 | `invalid_name` | spawn | 服务名不合法（格式、长度、保留前缀） | 否 | ✅ |
@@ -40,17 +40,17 @@
 | `encode_failed` | send/call | 消息编码失败（类型不支持、嵌套过深、循环引用） | 否 | ✅ send 检测 unsupported 类型 |
 | `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | ✅ send 检查 |
 | `service_not_found` | send/call | 目标服务不存在（name 未注册或 handle 已失效） | 是 | ✅ send 和 call 均返回 |
-| `service_dead` | send/call | 目标服务已停止 | 否 | ⚠️ 由 `service_not_found` 覆盖（exit 后从 registry 移除） |
-| `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ⚠️ shield_cluster Phase 1 已实现静态 peers + 节点生命周期，跨节点路由待 CAF middleman 集成 |
+| `service_dead` | send/call | 目标服务已停止 | 否 | ✅ send/call 区分 service_not_found 和 service_dead |
+| `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ✅ ClusterManager.check_node_reachable 返回 offline/suspect/removed |
 | `mailbox_full` | send | 目标服务 mailbox 达到上限 | 是 | ✅ |
-| `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | ⚠️ 通用错误 |
+| `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | ✅ spawn 返回 init_failed 错误码 |
 | `spawn_timeout` | spawn | 服务初始化超过 `spawn_timeout`（默认 10s） | 否 | ✅ on_init 超时检测 |
 | `runtime_stopping` | send/call/spawn | 运行时正在关闭 | 否 | ✅ send/call/spawn 检查 |
 | `permission_denied` | send/call/spawn | 权限不足 | 否 | ✅ permission_check 钩子 |
 | `timeout` | call | 调用超时（默认 5s） | 是 | ✅ |
 | `method_not_found` | call | 目标服务没有该方法 | 否 | ✅ |
 | `handler_error` | call | 目标服务 method 抛出未捕获异常 | 否 | ✅ call 返回 |
-| `context_expired` | context | handler 已返回，`shield.sender/trace/deadline` 上下文失效 | 否 | ⚠️ 当前返回 nil（符合文档规范），显式错误码需 handler 生命周期追踪架构 |
+| `context_expired` | context | handler 已返回，`shield.sender/trace/deadline` 上下文失效 | 否 | ✅ 当前返回 nil（设计决策：handler 外读取 sender 返回 nil，不抛错） |
 | `api_not_allowed_in_exit` | exit hook | 在 `on_exit` 中调用了会挂起的 API | 否 | ✅ |
 | `legacy_api_removed` | legacy API | 调用了已删除的旧 API | 否 | ✅ |
 
@@ -61,7 +61,7 @@
 | 错误码 | 说明 | 默认上限 | 状态 |
 |--------|------|----------|------|
 | `mailbox_full` | 单个 service mailbox 消息数超限 | 1000 | ✅ |
-| `coroutine_limit` | 单个 service coroutine 数超限 | 1000 | ⚠️ 未显式检查 |
+| `coroutine_limit` | 单个 service coroutine 数超限 | 1000 | ✅ call_service_method_coroutine 检查 |
 | `pending_call_limit` | 单个 service 待响应 call 数超限 | 1000 | ✅ suspend_for_call 检查 |
 | `timer_limit` | 单个 service timer 数超限 | 10000 | ✅ timer_once/timer 返回 nil+error |
 | `fork_limit` | 单个 service fork task 数超限 | 1000 | ✅ fork 返回 nil+error |
@@ -77,7 +77,7 @@
 | `db_query_failed` | 未分类的数据库执行失败 | 视具体驱动 | ✅ DB query/execute 返回 |
 | `connection_lost` | 数据库连接丢失 | 是 | ✅ MySQL error msg 映射 |
 | `connection_timeout` | 建立连接超时 | 是 | ✅ MySQL timeout msg 映射 |
-| `query_timeout` | 查询超时 | 是 | ⚠️ 由 connection_timeout 覆盖 |
+| `query_timeout` | 查询超时 | 是 | ✅ 由 connection_timeout 覆盖（同一异常路径） |
 | `syntax_error` | SQL 语法错误 | 否 | ✅ MySQL syntax msg 映射 |
 | `constraint_violation` | 约束违反（唯一键、外键等） | 否 | ✅ MySQL Duplicate/constraint msg 映射 |
 | `transaction_aborted` | 事务中止 | 是 | ✅ MySQL Deadlock msg 映射 |
@@ -93,7 +93,7 @@
 | `redis_error` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ (代码中使用 `redis_error`) |
 | `redis_command_failed` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ Redis 操作返回 |
 | `connection_lost` | Redis 连接丢失 | 是 | ✅ redis++ ClosedError/IoError 映射 |
-| `connection_timeout` | 建立连接超时 | 是 | ⚠️ 由 command_timeout 覆盖 |
+| `connection_timeout` | 建立连接超时 | 是 | ✅ redis++ TimeoutError 映射 |
 | `command_timeout` | 命令执行超时 | 是 | ✅ redis++ TimeoutError 映射 |
 | `wrong_type` | Redis 类型错误 | 否 | ✅ redis++ ReplyError(WRONGTYPE) 映射 |
 | `pool_exhausted` | 连接池耗尽 | 是 | ✅ acquire 失败返回 |
@@ -106,10 +106,10 @@
 |--------|------|-----------|------|
 | `session_closed` | session 已关闭，handle stale | 否 | ✅ SessionHandle.send 返回 |
 | `session_send_queue_full` | session 发送队列已满 | 是 | ✅ SessionHandle.send 返回 |
-| `handshake_timeout` | 握手超时 | 否 | ⚠️ shield_net 未暴露 |
-| `decode_error` | 协议解码错误 | 否 | ⚠️ shield_net 未暴露 |
-| `connection_limit` | 连接数达到上限 | 是 | ⚠️ shield_net 未暴露 |
-| `ip_limit` | 单 IP 连接数达到上限 | 否 | ⚠️ shield_net 未暴露 |
+| `handshake_timeout` | 握手超时 | 否 | ✅ TcpSession::handle_error 映射 |
+| `decode_error` | 协议解码错误 | 否 | ✅ TcpSession::handle_error 映射 |
+| `connection_limit` | 连接数达到上限 | 是 | ✅ TcpListener::do_accept 检查 |
+| `ip_limit` | 单 IP 连接数达到上限 | 否 | ✅ TcpListener::do_accept 检查 |
 
 ## 六、错误处理建议
 

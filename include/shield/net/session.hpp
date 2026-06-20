@@ -60,6 +60,9 @@ public:
     /// @brief Check if session is alive
     virtual bool is_alive() const = 0;
 
+    /// @brief Get the last error code (for Lua API error mapping)
+    virtual std::string error_code() const = 0;
+
     /// @brief Set user data
     virtual void set_user_data(std::string key, std::string value) = 0;
 
@@ -86,6 +89,7 @@ public:
     bool send(const std::vector<uint8_t>& data) override;
     void close(std::string reason) override;
     bool is_alive() const override { return alive_; }
+    std::string error_code() const override { return error_code_; }
 
     void set_user_data(std::string key, std::string value) override {
         user_data_[std::move(key)] = std::move(value);
@@ -108,6 +112,7 @@ private:
     RemoteAddress remote_addr_;
     SessionCallbacks callbacks_;
     bool alive_ = true;
+    std::string error_code_;
 
     std::unordered_map<std::string, std::string> user_data_;
     std::vector<uint8_t> receive_buffer_;

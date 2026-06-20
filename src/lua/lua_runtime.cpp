@@ -1170,6 +1170,13 @@ bool LuaRuntime::call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
             return false;
         }
 
+        // Check coroutine limit.
+        constexpr size_t kCoroutineLimit = 1000;
+        if (coroutine_scheduler_ && coroutine_scheduler_->active_count() >= kCoroutineLimit) {
+            if (error) *error = "coroutine limit reached";
+            return false;
+        }
+
         sol::state_view lua(*vm->state());
         lua_State* L = lua.lua_state();
 

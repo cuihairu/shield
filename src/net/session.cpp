@@ -93,6 +93,15 @@ void TcpSession::do_receive() {
 void TcpSession::handle_error(std::string reason) {
     auto& log = shield::log::get_logger("net");
     SHIELD_LOG_ERROR(log, "Session " + std::to_string(id_) + " error: " + reason);
+    // Map error reason to stable error code.
+    if (reason.find("decode") != std::string::npos ||
+        reason.find("frame") != std::string::npos) {
+        error_code_ = "decode_error";
+    } else if (reason.find("timeout") != std::string::npos) {
+        error_code_ = "handshake_timeout";
+    } else {
+        error_code_ = "session_closed";
+    }
     close(reason);
 }
 

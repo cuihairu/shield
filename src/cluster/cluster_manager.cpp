@@ -167,6 +167,26 @@ bool ClusterManager::send_remote(const std::string& target_node,
     return false;
 }
 
+std::string ClusterManager::check_node_reachable(const std::string& node_id) const {
+    std::shared_lock lock(impl_->mutex);
+    auto it = impl_->nodes.find(node_id);
+    if (it == impl_->nodes.end()) {
+        return "node_not_found";
+    }
+    switch (it->second.state) {
+        case NodeState::Online:
+        case NodeState::Connecting:
+            return "";  // reachable
+        case NodeState::Suspect:
+            return "node_suspect";
+        case NodeState::Offline:
+            return "node_offline";
+        case NodeState::Removed:
+            return "node_removed";
+    }
+    return "node_offline";
+}
+
 int ClusterManager::tick() {
     if (!impl_->running) return 0;
 

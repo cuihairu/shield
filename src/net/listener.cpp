@@ -79,6 +79,41 @@ void TcpListener::do_accept() {
             return;
         }
 
+        // Check connection limit.
+        {
+            std::shared_lock lock(sessions_mutex_);
+            if (max_connections_ > 0 && sessions_.size() >= max_connections_) {
+                last_rejection_ = "connection_limit";
+                auto& log = shield::log::get_logger("net");
+                SHIELD_LOG_WARNING(log, "Connection rejected: limit reached (" +
+                                  std::to_string(max_connections_) + ")");
+                boost::system::error_code close_ec;
+                socket_.close(close_ec);
+                do_accept();
+                return;
+            }
+        }
+
+        // Check per-IP limit.
+        auto remote_ep = socket_.remote_endpoint();
+        std::string remote_ip = remote_ep.address().to_string();
+        {
+            std::shared_lock lock(sessions_mutex_);
+            if (max_per_ip_ > 0) {
+                auto it = ip_counts_.find(remote_ip);
+                if (it != ip_counts_.end() && it->second >= max_per_ip_) {
+                    last_rejection_ = "ip_limit";
+                    auto& log = shield::log::get_logger("net");
+                    SHIELD_LOG_WARNING(log, "Connection rejected: IP limit for " +
+                                      remote_ip + " (" + std::to_string(max_per_ip_) + ")");
+                    boost::system::error_code close_ec;
+                    socket_.close(close_ec);
+                    do_accept();
+                    return;
+                }
+            }
+        }
+
         // Create session
         SessionId id = g_next_session_id.fetch_add(1);
         auto session = std::make_shared<TcpSession>(
@@ -88,9 +123,7 @@ void TcpListener::do_accept() {
         {
             std::unique_lock lock(sessions_mutex_);
             sessions_[id] = session;
-
-            // Set close callback to remove from map
-            // (simplified - would need proper callback setup)
+            ++ip_counts_[remote_ip];
         }
 
         // Start session
@@ -130,7 +163,20 @@ bool TcpListener::kick_session(SessionId id, std::string reason) {
 void TcpListener::on_session_close(std::shared_ptr<Session> session,
                                    std::string reason) {
     std::unique_lock lock(sessions_mutex_);
-    sessions_.erase(session->id());
+    auto it = sessions_.find(session->id());
+    if (it != sessions_.end()) {
+        // Decrement IP count.
+        std::string ip = session->remote_addr().ip;
+        auto ip_it = ip_counts_.find(ip);
+        if (ip_it != ip_counts_.end()) {
+            if (ip_it->second > 1) {
+                --ip_it->second;
+            } else {
+                ip_counts_.erase(ip_it);
+            }
+        }
+        sessions_.erase(it);
+    }
 }
 
 }  // namespace shield::net

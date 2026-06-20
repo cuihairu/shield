@@ -32,6 +32,15 @@ public:
     /// @brief Get listen port
     uint16_t port() const { return port_; }
 
+    /// @brief Set max connections (0 = unlimited)
+    void set_max_connections(size_t max) { max_connections_ = max; }
+
+    /// @brief Set max connections per IP (0 = unlimited)
+    void set_max_per_ip(size_t max) { max_per_ip_ = max; }
+
+    /// @brief Get last rejection reason
+    std::string last_rejection_reason() const { return last_rejection_; }
+
     /// @brief Get number of active sessions
     size_t session_count() const {
         std::shared_lock lock(sessions_mutex_);
@@ -61,6 +70,10 @@ private:
     boost::asio::ip::tcp::socket socket_;
     std::unordered_map<SessionId, std::shared_ptr<Session>> sessions_;
     mutable std::shared_mutex sessions_mutex_;
+    size_t max_connections_ = 0;  // 0 = unlimited
+    size_t max_per_ip_ = 0;       // 0 = unlimited
+    std::unordered_map<std::string, size_t> ip_counts_;
+    std::string last_rejection_;
 
     static std::atomic<SessionId> g_next_session_id;
 };
