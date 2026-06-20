@@ -404,6 +404,11 @@ target_link_libraries(shield_lua
     PRIVATE ${LUA_LIBRARIES} sol2::sol2
 )
 
+if(SHIELD_ENABLE_CLUSTER)
+    target_link_libraries(shield_lua PRIVATE shield_cluster)
+    target_compile_definitions(shield_lua PRIVATE SHIELD_ENABLE_CLUSTER)
+endif()
+
 # -----------------------------------------------------------------------------
 # shield_bootstrap - Starter, shield::run
 # -----------------------------------------------------------------------------
@@ -554,7 +559,15 @@ add_test(NAME shield_source_boundary_check
 # shield_cluster (OFF by default)
 if(SHIELD_ENABLE_CLUSTER)
     add_library(shield_cluster STATIC
-        # TODO: Add cluster implementation
+        src/cluster/cluster_manager.cpp
+    )
+    target_include_directories(shield_cluster
+        PUBLIC
+            ${PROJECT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(shield_cluster
+        PUBLIC shield_base shield_log shield_config
     )
     message(STATUS "shield_cluster: enabled")
 endif()

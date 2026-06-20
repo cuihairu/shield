@@ -41,7 +41,7 @@
 | `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | ✅ send 检查 |
 | `service_not_found` | send/call | 目标服务不存在（name 未注册或 handle 已失效） | 是 | ✅ send 和 call 均返回 |
 | `service_dead` | send/call | 目标服务已停止 | 否 | ⚠️ 由 `service_not_found` 覆盖（exit 后从 registry 移除） |
-| `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ❌ shield_cluster 可选模块（Phase 5） |
+| `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ⚠️ shield_cluster Phase 1 已实现静态 peers + 节点生命周期，跨节点路由待 CAF middleman 集成 |
 | `mailbox_full` | send | 目标服务 mailbox 达到上限 | 是 | ✅ |
 | `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | ⚠️ 通用错误 |
 | `spawn_timeout` | spawn | 服务初始化超过 `spawn_timeout`（默认 10s） | 否 | ✅ on_init 超时检测 |

@@ -1234,6 +1234,48 @@ static void register_session_handle(sol::state& lua) {
     );
 }
 
+#ifdef SHIELD_ENABLE_CLUSTER
+void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
+    sol::state_view lua(shield.lua_state());
+    auto cluster = lua.create_table();
+
+    // shield.cluster.query(node_id, service_name) -> service_id or nil, error
+    cluster.set_function("query",
+        [manager](sol::this_state state, std::string node_id,
+                  std::string service_name) -> sol::variadic_results {
+            sol::state_view lua(state);
+            sol::variadic_results results;
+
+            // For Phase 1, return the service_name as-is (local resolution).
+            // Full remote resolution requires CAF middleman integration.
+            results.push_back(sol::make_object(lua, service_name));
+            results.push_back(sol::make_object(lua, sol::nil));
+            return results;
+        });
+
+    // shield.cluster.nodes() -> table of node info
+    cluster.set_function("nodes",
+        [](sol::this_state state) -> sol::table {
+            sol::state_view lua(state);
+            sol::table nodes = lua.create_table();
+            // Phase 1: return empty table (no real cluster connections yet).
+            return nodes;
+        });
+
+    // shield.cluster.node_id() -> this node's ID
+    cluster.set_function("node_id",
+        [](sol::this_state state) -> sol::optional<std::string> {
+            sol::state_view lua(state);
+            auto& cfg = shield::config::global_config();
+            std::string id = cfg.get_string("cluster.node_id", "");
+            if (id.empty()) return sol::nullopt;
+            return id;
+        });
+
+    shield["cluster"] = cluster;
+}
+#endif
+
 void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
                                LuaRuntime* runtime) {
     // Register usertypes
@@ -1249,6 +1291,10 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_config_api(shield);
     register_log_api(shield, manager);
     register_data_api(shield, manager);
+
+#ifdef SHIELD_ENABLE_CLUSTER
+    register_cluster_api(shield, manager);
+#endif
 
     lua["shield"] = shield;
 
