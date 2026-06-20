@@ -7,10 +7,13 @@
 实现快照：当前源码已跑通单节点完整 Lua service 路径，包括 YAML actors
 启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
 coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer/cancel_timer/fork`、
-`shield.config`、`shield.log.*`、DB/Redis API（含 mock pool 和错误注入测试）、
+`shield.config`、`shield.log.*`、DB/Redis API（含真实 redis++ 驱动 + MySQL X DevAPI + mock 降级 + 错误注入测试）、
 `on_exit` call guard、call timeout（`check_call_timeouts`）、
-timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）。
-实现快照：`LuaGatewayBridge` 已实现，将 `shield_net::Session` 事件路由到 Lua gateway service handler（`on_connect`/`on_client_message`/`on_disconnect`）。`SessionHandle` 已注册为 Lua userdata。Redis 连接已集成 redis++ 驱动，真实连接优先、mock 降级。
+timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、
+`LuaGatewayBridge`（Session → Lua handler 路由）、`SessionHandle` userdata、
+HTTP 客户端（`shield.http.get/post/put/delete/request`）、HTTP 服务端路由注册（`shield.httpd.get/post/put/delete/patch`）、
+`shield_cluster`（静态 peers + 节点生命周期 + `shield.cluster.query/nodes`）。
+所有 52 个错误码均已实现。
 
 ## 设计原则
 
@@ -449,6 +452,83 @@ session:remote_addr()
 - framework 不提供 HTTP middleware chain。
 
 实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用（LAPI-009-01~05 测试覆盖）。`SessionHandle` 已注册为 Lua userdata（`register_session_handle`），绑定 `id()`、`remote_addr()`、`send(payload)`、`close(reason)` 方法，`send` 返回 `session_closed` / `session_send_queue_full` 错误。当前测试通过 table 模拟 session；C++ `shield_net` 层创建真实 `SessionHandle` userdata 并传入 gateway handler 属于后续集成。
+
+## HTTP API
+
+### HTTP 客户端 (shield.http)
+
+用于发起出站 HTTP 请求（webhook、REST API 调用、健康检查等）。
+
+```lua
+-- GET 请求
+local res = shield.http.get("http://api.example.com/health")
+-- res = { status=200, body="...", ok=true, error="" }
+
+-- POST JSON
+local res = shield.http.post("http://api.example.com/data", '{"key":"value"}')
+
+-- PUT JSON
+local res = shield.http.put("http://api.example.com/users/1", '{"name":"test"}')
+
+-- DELETE
+local res = shield.http.delete("http://api.example.com/users/1")
+
+-- 完整请求（自定义 headers、timeout）
+local res = shield.http.request("http://api.example.com/users", {
+    method = "PUT",
+    body = '{"name":"test"}',
+    headers = {["Authorization"] = "Bearer token"},
+    timeout = 5
+})
+```
+
+返回值字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | number | HTTP 状态码 |
+| `body` | string | 响应体 |
+| `ok` | boolean | `status >= 200 && status < 400` |
+| `error` | string | 错误信息（成功时为空） |
+| `headers` | table | 响应头（仅 `request` 方法返回） |
+
+规则：
+
+- 同步阻塞当前 coroutine，不阻塞 runtime worker thread（Phase 2 改为异步）。
+- 不支持 HTTPS（Phase 2 通过 OpenSSL 集成）。
+- 适合低频管理请求，不适合高吞吐数据传输。
+
+实现快照：基于 Boost.Beast 实现 `HttpClient`，支持 HTTP/1.1 keep-alive。Lua API 通过 `shield.http.*` 注册。
+
+### HTTP 服务端 (shield.httpd)
+
+用于注册路由处理入站 HTTP 请求（管理端点、健康检查、webhook 接收等）。
+
+```lua
+-- 注册 GET 路由
+shield.httpd.get("/api/health", function(req)
+    return { status = "ok" }
+end)
+
+-- 注册 POST 路由
+shield.httpd.post("/api/data", function(req)
+    return { created = true }
+end)
+
+-- 注册 PUT / DELETE / PATCH 路由
+shield.httpd.put("/api/users/:id", function(req) end)
+shield.httpd.delete("/api/users/:id", function(req) end)
+shield.httpd.patch("/api/users/:id", function(req) end)
+```
+
+规则：
+
+- handler 接收 request table，返回 response table。
+- 路由在 bootstrap 阶段注册，运行时不变。
+- 不提供 middleware chain。
+- 适合管理/运维端点，不适合高并发业务流量。
+
+实现快照：基于 Boost.Beast 实现 `HttpServer`，支持 HTTP/1.1 keep-alive、路由匹配、JSON 响应。Lua 路由注册通过 `shield.httpd.*` 存储，C++ `HttpServer` 实例集成属于后续 bootstrap 阶段。
 
 ## Error Object
 
