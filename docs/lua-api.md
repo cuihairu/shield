@@ -10,7 +10,7 @@ coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer
 `shield.config`、`shield.log.*`、DB/Redis API（含 mock pool 和错误注入测试）、
 `on_exit` call guard、call timeout（`check_call_timeouts`）、
 timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）。
-仍待实现：`SessionHandle` C++ 集成层（需 `shield_net` 与 `shield_lua` 集成）、
+仍待实现：`shield_net` 层创建 `SessionHandle` userdata 并传入 gateway handler、
 LuaPack 编码、service exit 时自动取消 Redis subscription。
 
 ## 设计原则
@@ -449,7 +449,7 @@ session:remote_addr()
 - `SessionHandle` 只在 gateway callback 和 gateway 自身状态中使用，不作为 `shield.send/call` payload 跨服务传递。
 - framework 不提供 HTTP middleware chain。
 
-实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用（LAPI-009-01~05 测试覆盖）。`SessionHandle` 的 C++ 集成层（将 TCP session 注册为 Lua userdata 并绑定 `id/send/close/remote_addr` 方法）尚未实现，当前测试通过 table 模拟 session。完整的 `SessionHandle` userdata 需要 `shield_net` 层与 `shield_lua` 层集成。
+实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用（LAPI-009-01~05 测试覆盖）。`SessionHandle` 已注册为 Lua userdata（`register_session_handle`），绑定 `id()`、`remote_addr()`、`send(payload)`、`close(reason)` 方法，`send` 返回 `session_closed` / `session_send_queue_full` 错误。当前测试通过 table 模拟 session；C++ `shield_net` 层创建真实 `SessionHandle` userdata 并传入 gateway handler 属于后续集成。
 
 ## Error Object
 

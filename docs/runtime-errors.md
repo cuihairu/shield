@@ -38,14 +38,14 @@
 | `invalid_name` | spawn | 服务名不合法（格式、长度、保留前缀） | 否 | ✅ |
 | `name_conflict` | spawn | 服务名已被占用 | 否 | ✅ |
 | `encode_failed` | send/call | 消息编码失败（类型不支持、嵌套过深、循环引用） | 否 | ❌ Phase 2 |
-| `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | ❌ Phase 2 |
+| `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | ✅ send 检查 |
 | `service_not_found` | send/call | 目标服务不存在（name 未注册或 handle 已失效） | 是 | ✅ send 和 call 均返回 |
 | `service_dead` | send/call | 目标服务已停止 | 否 | ❌ Phase 2 |
 | `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ❌ Cluster |
 | `mailbox_full` | send | 目标服务 mailbox 达到上限 | 是 | ✅ |
 | `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | ⚠️ 通用错误 |
 | `spawn_timeout` | spawn | 服务初始化超过 `spawn_timeout`（默认 10s） | 否 | ❌ Phase 2 |
-| `runtime_stopping` | send/call/spawn | 运行时正在关闭 | 否 | ❌ Phase 2 |
+| `runtime_stopping` | send/call/spawn | 运行时正在关闭 | 否 | ✅ send/call/spawn 检查 |
 | `permission_denied` | send/call/spawn | 权限不足 | 否 | ❌ Phase 2 |
 | `timeout` | call | 调用超时（默认 5s） | 是 | ✅ |
 | `method_not_found` | call | 目标服务没有该方法 | 否 | ✅ |
@@ -64,7 +64,7 @@
 | `coroutine_limit` | 单个 service coroutine 数超限 | 1000 | ❌ Phase 2 |
 | `pending_call_limit` | 单个 service 待响应 call 数超限 | 1000 | ❌ Phase 2 |
 | `timer_limit` | 单个 service timer 数超限 | 10000 | ✅ timer_once/timer 返回 nil+error |
-| `fork_limit` | 单个 service fork task 数超限 | 1000 | ❌ Phase 2 |
+| `fork_limit` | 单个 service fork task 数超限 | 1000 | ✅ fork 返回 nil+error |
 
 ## 三、数据库错误
 

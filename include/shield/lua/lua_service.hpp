@@ -144,6 +144,9 @@ public:
                                  std::function<void()> task,
                                  sol::function raw_fn);
 
+    // Get the number of pending forked tasks for a service.
+    size_t pending_task_count(const std::string& service_id) const;
+
     // Cancel all forked tasks owned by a service. Called during service exit.
     void cancel_forked_tasks_for_service(const std::string& service_id);
 

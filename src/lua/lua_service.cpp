@@ -40,6 +40,7 @@ struct LuaServiceManager::Impl {
     std::unordered_map<std::string, std::string> module_scripts;
     std::unordered_map<std::string, std::shared_ptr<Mailbox>> mailboxes;
     std::vector<std::string> service_order;
+    bool stopping = false;  // set by shutdown_all, checked by send/call/spawn
 
     struct DispatchFrame {
         std::string service_id;
@@ -249,6 +250,9 @@ LuaServiceManager::~LuaServiceManager() {
 
 SpawnResult LuaServiceManager::spawn(std::string_view module,
                                      std::string_view opts_json) {
+    if (impl_->stopping) {
+        return SpawnResult::error("runtime is stopping");
+    }
     try {
         // Parse options
         nlohmann::json opts = nlohmann::json::parse(opts_json);
@@ -335,6 +339,20 @@ bool LuaServiceManager::send(std::string_view target,
                              std::string_view method,
                              const nlohmann::json& args,
                              std::string* error) {
+    if (impl_->stopping) {
+        if (error) *error = "runtime is stopping";
+        return false;
+    }
+
+    // Check message size limit (1MB default).
+    constexpr size_t kMaxMessageSize = 1024 * 1024;
+    const size_t msg_size = args.dump().size();
+    if (msg_size > kMaxMessageSize) {
+        if (error) *error = "message too large: " + std::to_string(msg_size) +
+                            " bytes (max " + std::to_string(kMaxMessageSize) + ")";
+        return false;
+    }
+
     const std::string service_id = query_service(target);
 
     auto mailbox_it = impl_->mailboxes.find(service_id);
@@ -410,6 +428,9 @@ CallResult LuaServiceManager::call(std::string_view target,
                                    std::string_view method,
                                    const nlohmann::json& args,
                                    int32_t timeout_ms) {
+    if (impl_->stopping) {
+        return CallResult::error("runtime is stopping");
+    }
     (void)timeout_ms;
 
     const std::string service_id = query_service(target);
@@ -476,6 +497,7 @@ void LuaServiceManager::exit(std::string_view service_id,
 }
 
 void LuaServiceManager::shutdown_all(std::string_view reason) {
+    impl_->stopping = true;
     std::unordered_set<std::string> seen;
     const auto order = impl_->service_order;
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
@@ -819,6 +841,15 @@ void LuaServiceManager::cancel_forked_tasks_for_service(
                            }),
             impl_->pending_tasks.end());
     }
+}
+
+size_t LuaServiceManager::pending_task_count(const std::string& service_id) const {
+    std::lock_guard<std::mutex> lock(impl_->worker_mutex);
+    auto it = impl_->tasks_by_service.find(service_id);
+    if (it == impl_->tasks_by_service.end()) {
+        return 0;
+    }
+    return it->second.size();
 }
 
 // Push a JSON value onto a raw lua_State using the C API (avoids sol2

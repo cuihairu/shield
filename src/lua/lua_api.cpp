@@ -372,12 +372,18 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                                &error)) {
                 // Map error message to stable error code.
                 std::string code = "service_not_found";
+                bool retryable = false;
                 if (error.find("mailbox full") != std::string::npos) {
                     code = "mailbox_full";
+                    retryable = true;
+                } else if (error.find("runtime is stopping") != std::string::npos) {
+                    code = "runtime_stopping";
+                } else if (error.find("message too large") != std::string::npos) {
+                    code = "message_too_large";
                 }
                 results.push_back(sol::make_object(lua, false));
                 results.push_back(make_error(state, std::move(code), error,
-                                             code == "mailbox_full"));
+                                             retryable));
                 return results;
             }
 
@@ -548,6 +554,7 @@ sol::variadic_results call_with_timeout(sol::this_state state,
     auto call_error_code = [](const std::string& msg) -> std::string {
         if (msg.find("service not found") != std::string::npos) return "service_not_found";
         if (msg.find("method not found") != std::string::npos) return "method_not_found";
+        if (msg.find("runtime is stopping") != std::string::npos) return "runtime_stopping";
         return "handler_error";
     };
 
@@ -747,16 +754,27 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
     (void)runtime;
 
     shield.set_function("fork",
-        [manager](sol::this_state state, sol::function fn) -> uint64_t {
+        [manager](sol::this_state state, sol::function fn) -> sol::variadic_results {
             sol::state_view lua(state);
+            sol::variadic_results results;
             if (!manager) {
-                return 0;
+                results.push_back(sol::make_object(lua, sol::nil));
+                return results;
             }
             const std::string service_id = manager->current_service_id();
+
+            // Check fork limit.
+            if (manager->pending_task_count(service_id) >= kForkLimit) {
+                results.push_back(sol::make_object(lua, sol::nil));
+                sol::this_state ts(fn.lua_state());
+                results.push_back(make_error(ts, "fork_limit",
+                                             "fork limit reached"));
+                return results;
+            }
             // Capture the Lua function with its owning state_view. Execution
             // happens on the worker thread; since the worker is the only thread
             // touching Lua VMs once running, this is race-free.
-            return manager->enqueue_forked_task(
+            uint64_t task_id = manager->enqueue_forked_task(
                 service_id,
                 [fn]() {
                     try {
@@ -767,6 +785,8 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
                     }
                 },
                 fn);  // raw_fn for coroutine wrapping
+            results.push_back(sol::make_object(lua, task_id));
+            return results;
         });
 }
 
@@ -1134,10 +1154,62 @@ void register_gateway_api(LuaRuntime& runtime) {
 
 }  // namespace api
 
+// SessionHandle: a Lua userdata representing a network session.
+// This is the base registration; actual session objects are created by
+// shield_net and passed to gateway handlers.
+struct SessionHandle {
+    std::string id;
+    std::string remote_address;
+    bool is_closed = false;
+    std::vector<std::string> send_queue;
+    size_t max_queue_size = 10000;
+
+    SessionHandle() = default;
+    SessionHandle(std::string sid, std::string addr)
+        : id(std::move(sid)), remote_address(std::move(addr)) {}
+};
+
+static void register_session_handle(sol::state& lua) {
+    lua.new_usertype<SessionHandle>("SessionHandle",
+        sol::no_constructor,
+        "id", [](const SessionHandle& s) { return s.id; },
+        "remote_addr", [](const SessionHandle& s) { return s.remote_address; },
+        "send", [](SessionHandle& s, sol::object payload) -> sol::variadic_results {
+            sol::variadic_results results;
+            sol::state_view sv(payload.lua_state());
+            if (s.is_closed) {
+                results.push_back(sol::make_object(sv, false));
+                sol::table err = sv.create_table();
+                err["code"] = "session_closed";
+                err["message"] = "session is closed";
+                results.push_back(sol::make_object(sv, err));
+                return results;
+            }
+            if (s.send_queue.size() >= s.max_queue_size) {
+                results.push_back(sol::make_object(sv, false));
+                sol::table err = sv.create_table();
+                err["code"] = "session_send_queue_full";
+                err["message"] = "send queue full";
+                results.push_back(sol::make_object(sv, err));
+                return results;
+            }
+            if (payload.is<std::string>()) {
+                s.send_queue.push_back(payload.as<std::string>());
+            }
+            results.push_back(sol::make_object(sv, true));
+            return results;
+        },
+        "close", [](SessionHandle& s, sol::optional<std::string> reason) {
+            s.is_closed = true;
+        }
+    );
+}
+
 void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
                                LuaRuntime* runtime) {
-    // Register ServiceHandle usertype first
+    // Register usertypes
     ServiceHandle::register_usertype(lua);
+    register_session_handle(lua);
 
     auto shield = lua.create_table();
 
