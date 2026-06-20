@@ -332,6 +332,15 @@ target_link_libraries(shield_data
     PRIVATE redis++::redis++ hiredis::hiredis
 )
 
+# MySQL connector (optional)
+find_package(unofficial-mysql-connector-cpp CONFIG QUIET)
+if(unofficial-mysql-connector-cpp_FOUND)
+    target_link_libraries(shield_data PRIVATE unofficial::mysql-connector-cpp::connector)
+    message(STATUS "MySQL connector enabled for shield_data")
+else()
+    message(STATUS "MySQL connector not found, shield_data will use mock DB pool")
+endif()
+
 # -----------------------------------------------------------------------------
 # shield_transport - Frame/codec/encryption adapter
 # -----------------------------------------------------------------------------

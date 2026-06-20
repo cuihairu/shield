@@ -21,7 +21,9 @@
         "redis-plus-plus",
 
         "caf",
-        "msgpack"
+        "msgpack",
+
+        "mysql-connector-cpp"
     ],
     "supports": "!uwp",
     "features": {

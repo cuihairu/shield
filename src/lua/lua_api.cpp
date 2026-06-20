@@ -723,7 +723,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             }
             auto& timer_mgr = runtime->timer_manager();
             timer_mgr.schedule_once_fn(delay_ms,
-                [co, ref]() {
+                [co, ref, manager]() {
                     int nres = 0;
                     const int status = lua_resume(co, nullptr, 0, &nres);
                     if (status == LUA_YIELD) {
@@ -731,6 +731,17 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                         // _resume_after has re-anchored it. Keep this ref so
                         // the next resume stays covered until final completion.
                         return;
+                    }
+                    // If this coroutine was servicing a call request that
+                    // yielded (e.g. the callee slept), route the response now
+                    // that it has completed. No-op for plain handlers.
+                    if (status == LUA_OK && manager) {
+                        nlohmann::json returns = nlohmann::json::array();
+                        for (int i = 0; i < nres; ++i) {
+                            sol::stack_object so(sol::state_view(co), i + 1);
+                            returns.push_back(lua_to_json(so));
+                        }
+                        manager->on_handler_completed(co, returns);
                     }
                     // LUA_OK (completed) or an error: release the anchor.
                     luaL_unref(co, LUA_REGISTRYINDEX, ref);

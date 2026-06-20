@@ -16,8 +16,22 @@ function M.call_and_record(target, method, ...)
     return ok
 end
 
+function M.call_timeout_and_record(timeout_ms, target, method, ...)
+    local ok, result = shield.call_timeout(timeout_ms, target, method, ...)
+    last_call_ok = ok
+    last_call_result = result
+    return ok
+end
+
 function M.greet(name)
     return "hello:" .. tostring(name)
+end
+
+function M.greet_slow(name)
+    -- Yields the callee coroutine via shield.sleep; the caller stays suspended
+    -- until this sleeps-and-resumes, then returns its value.
+    shield.sleep(40)
+    return "slow:" .. tostring(name)
 end
 
 function M.get_last_call_ok()

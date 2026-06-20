@@ -5,6 +5,7 @@
 #include "shield/log/logger.hpp"
 
 #include <sw/redis++/redis++.h>
+#include <mysqlx/xdevapi.h>
 
 #include <condition_variable>
 #include <mutex>
@@ -64,6 +65,113 @@ public:
     void close() override {}
 };
 
+// Real DatabaseConnection implementation using MySQL X DevAPI.
+class RealDatabaseConnection : public DatabaseConnection {
+public:
+    RealDatabaseConnection(const std::string& host, int port,
+                           const std::string& user, const std::string& password,
+                           const std::string& database)
+        : session_(host, port, user, password, database) {}
+
+    QueryResult query(std::string_view sql,
+                      const std::vector<std::string>& params) override {
+        try {
+            auto stmt = session_.sql(std::string(sql));
+            for (size_t i = 0; i < params.size(); ++i) {
+                stmt.bind(params[i]);
+            }
+            auto result = stmt.execute();
+            std::vector<Row> rows;
+            for (auto row : result) {
+                Row r;
+                // Use column count from fetch to build generic column names.
+                for (size_t i = 0; i < row.colCount(); ++i) {
+                    std::string val = row[i].isNull() ? "" : row[i].get<std::string>();
+                    r["col_" + std::to_string(i)] = std::move(val);
+                }
+                rows.push_back(std::move(r));
+            }
+            last_error_code_.clear();
+            return QueryResult::ok(std::move(rows));
+        } catch (const mysqlx::Error& e) {
+            last_error_code_ = map_error_code(e.what());
+            return QueryResult::error(e.what(), last_error_code_);
+        } catch (const std::exception& e) {
+            last_error_code_ = "db_query_failed";
+            return QueryResult::error(e.what(), "db_query_failed");
+        }
+    }
+
+    QueryResult query_one(std::string_view sql,
+                          const std::vector<std::string>& params) override {
+        auto result = query(sql, params);
+        if (result.success && result.rows.size() > 1) {
+            result.rows.resize(1);
+        }
+        return result;
+    }
+
+    QueryResult execute(std::string_view sql,
+                        const std::vector<std::string>& params) override {
+        try {
+            auto stmt = session_.sql(std::string(sql));
+            for (size_t i = 0; i < params.size(); ++i) {
+                stmt.bind(params[i]);
+            }
+            auto result = stmt.execute();
+            last_error_code_.clear();
+            auto qr = QueryResult::ok();
+            qr.affected_rows = result.getAffectedItemsCount();
+            qr.last_insert_id = static_cast<int64_t>(result.getAutoIncrementValue());
+            return qr;
+        } catch (const mysqlx::Error& e) {
+            last_error_code_ = map_error_code(e.what());
+            return QueryResult::error(e.what(), last_error_code_);
+        } catch (const std::exception& e) {
+            last_error_code_ = "db_query_failed";
+            return QueryResult::error(e.what(), "db_query_failed");
+        }
+    }
+
+    bool ping() override {
+        try {
+            session_.sql("SELECT 1").execute();
+            last_error_code_.clear();
+            return true;
+        } catch (...) {
+            last_error_code_ = "connection_lost";
+            return false;
+        }
+    }
+
+    void close() override {
+        try {
+            session_.close();
+        } catch (...) {}
+    }
+
+    std::string last_error_code() const { return last_error_code_; }
+
+private:
+    static std::string map_error_code(const char* msg) {
+        std::string m(msg);
+        if (m.find("Lost connection") != std::string::npos ||
+            m.find("server has gone away") != std::string::npos) return "connection_lost";
+        if (m.find("timeout") != std::string::npos ||
+            m.find("timed out") != std::string::npos) return "connection_timeout";
+        if (m.find("syntax") != std::string::npos ||
+            m.find("SQL syntax") != std::string::npos) return "syntax_error";
+        if (m.find("Duplicate") != std::string::npos ||
+            m.find("foreign key") != std::string::npos ||
+            m.find("constraint") != std::string::npos) return "constraint_violation";
+        if (m.find("Deadlock") != std::string::npos) return "transaction_aborted";
+        return "db_query_failed";
+    }
+
+    mysqlx::Session session_;
+    std::string last_error_code_;
+};
+
 struct DatabasePool::Impl {
     std::vector<std::shared_ptr<DatabaseConnection>> connections;
     std::queue<std::shared_ptr<DatabaseConnection>> available;
@@ -101,11 +209,34 @@ bool DatabasePool::initialize(std::string_view config_key) {
     SHIELD_LOG_INFO(log, "Database config: " + host + ":" + std::to_string(port) +
                     "/" + database);
 
-    // Create mock connections for now
-    for (size_t i = 0; i < impl_->max_size; ++i) {
-        auto conn = std::make_shared<MockDatabaseConnection>();
-        impl_->connections.push_back(conn);
-        impl_->available.push(conn);
+    // Try to connect to real MySQL.
+    try {
+        auto test_conn = std::make_shared<RealDatabaseConnection>(
+            host, port, user, password, database);
+        // Test with a simple query.
+        auto test_result = test_conn->query("SELECT 1", {});
+        if (!test_result.success) {
+            throw std::runtime_error(test_result.error_message);
+        }
+
+        // Connection successful; create real connections.
+        for (size_t i = 0; i < impl_->max_size; ++i) {
+            auto conn = std::make_shared<RealDatabaseConnection>(
+                host, port, user, password, database);
+            impl_->connections.push_back(conn);
+            impl_->available.push(conn);
+        }
+        SHIELD_LOG_INFO(log, "MySQL connected to " + host + ":" +
+                        std::to_string(port) + "/" + database);
+    } catch (const std::exception& e) {
+        // Fall back to mock connections.
+        SHIELD_LOG_WARNING(log, "MySQL connection failed (" + std::string(e.what()) +
+                           "), using mock pool");
+        for (size_t i = 0; i < impl_->max_size; ++i) {
+            auto conn = std::make_shared<MockDatabaseConnection>();
+            impl_->connections.push_back(conn);
+            impl_->available.push(conn);
+        }
     }
 
     impl_->current_size = impl_->max_size;

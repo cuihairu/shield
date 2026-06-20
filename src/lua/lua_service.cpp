@@ -955,17 +955,6 @@ static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
 
 uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
                                              int32_t timeout_ms) {
-    // Check pending call limit per service.
-    constexpr size_t kPendingCallLimit = 1000;
-    const std::string service_id = current_service_id();
-    size_t pending_count = 0;
-    for (const auto& [_, pc] : impl_->pending_calls) {
-        if (pc.caller_service == service_id) ++pending_count;
-    }
-    if (pending_count >= kPendingCallLimit) {
-        return 0;  // caller will fall back to sync path
-    }
-
     const uint64_t session = impl_->next_call_session.fetch_add(1);
     Impl::PendingCall pc;
     pc.session = session;
