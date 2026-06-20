@@ -1295,6 +1295,7 @@ void register_http_api(sol::table& shield) {
     auto http = lua.create_table();
 
     // Helper: convert HttpClientResponse to Lua table.
+    // Auto-parses JSON body into `data` field when Content-Type is JSON.
     auto to_table = [](sol::state_view lua,
                        const shield::net::HttpClientResponse& res) -> sol::table {
         sol::table result = lua.create_table();
@@ -1307,6 +1308,29 @@ void register_http_api(sol::table& shield) {
             headers[k] = v;
         }
         result["headers"] = headers;
+
+        // Auto-parse JSON response body into `data` field.
+        if (!res.body.empty()) {
+            auto ct_it = res.headers.find("Content-Type");
+            if (ct_it == res.headers.end()) ct_it = res.headers.find("content-type");
+            bool is_json = false;
+            if (ct_it != res.headers.end()) {
+                is_json = ct_it->second.find("application/json") != std::string::npos;
+            }
+            // Also try parsing if body starts with { or [
+            if (!is_json && !res.body.empty() &&
+                (res.body[0] == '{' || res.body[0] == '[')) {
+                is_json = true;
+            }
+            if (is_json) {
+                try {
+                    auto json = nlohmann::json::parse(res.body);
+                    result["data"] = json_to_lua(lua, json);
+                } catch (...) {
+                    // Not valid JSON, leave data as nil.
+                }
+            }
+        }
         return result;
     };
 
@@ -1448,6 +1472,73 @@ void register_http_api(sol::table& shield) {
             options.url = url;
             options.body = body.value_or("");
             options.headers["Content-Type"] = "application/json";
+            if (opts) parse_opts(*opts, options);
+            return to_table(lua, shield::net::HttpClient::request(options));
+        });
+
+    // =========================================================================
+    // JSON 便捷方法：自动将 Lua table 序列化为 JSON，自动设置 Content-Type
+    // 响应自动解析 JSON 到 result.data 字段
+    // =========================================================================
+
+    // shield.http.json(url, data [, options]) -> response_table
+    // 通用 JSON POST（最常用场景）
+    http.set_function("json",
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
+           sol::object data, sol::optional<sol::table> opts) -> sol::table {
+            sol::state_view lua(state);
+            shield::net::HttpClientOptions options;
+            options.method = "POST";
+            options.url = url;
+            options.headers["Content-Type"] = "application/json";
+            options.headers["Accept"] = "application/json";
+            // Serialize Lua table/object to JSON string.
+            options.body = lua_table_to_json(data.as<sol::table>()).dump();
+            if (opts) parse_opts(*opts, options);
+            return to_table(lua, shield::net::HttpClient::request(options));
+        });
+
+    // shield.http.json_post(url, data [, options]) -> response_table
+    http.set_function("json_post",
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
+           sol::object data, sol::optional<sol::table> opts) -> sol::table {
+            sol::state_view lua(state);
+            shield::net::HttpClientOptions options;
+            options.method = "POST";
+            options.url = url;
+            options.headers["Content-Type"] = "application/json";
+            options.headers["Accept"] = "application/json";
+            options.body = lua_table_to_json(data.as<sol::table>()).dump();
+            if (opts) parse_opts(*opts, options);
+            return to_table(lua, shield::net::HttpClient::request(options));
+        });
+
+    // shield.http.json_put(url, data [, options]) -> response_table
+    http.set_function("json_put",
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
+           sol::object data, sol::optional<sol::table> opts) -> sol::table {
+            sol::state_view lua(state);
+            shield::net::HttpClientOptions options;
+            options.method = "PUT";
+            options.url = url;
+            options.headers["Content-Type"] = "application/json";
+            options.headers["Accept"] = "application/json";
+            options.body = lua_table_to_json(data.as<sol::table>()).dump();
+            if (opts) parse_opts(*opts, options);
+            return to_table(lua, shield::net::HttpClient::request(options));
+        });
+
+    // shield.http.json_patch(url, data [, options]) -> response_table
+    http.set_function("json_patch",
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
+           sol::object data, sol::optional<sol::table> opts) -> sol::table {
+            sol::state_view lua(state);
+            shield::net::HttpClientOptions options;
+            options.method = "PATCH";
+            options.url = url;
+            options.headers["Content-Type"] = "application/json";
+            options.headers["Accept"] = "application/json";
+            options.body = lua_table_to_json(data.as<sol::table>()).dump();
             if (opts) parse_opts(*opts, options);
             return to_table(lua, shield::net::HttpClient::request(options));
         });

@@ -498,6 +498,45 @@ local res = shield.http.request("https://api.example.com/users", {
 })
 ```
 
+#### JSON 便捷方法（自动序列化/反序列化）
+
+大部分 HTTP 请求都是 JSON，以下方法自动将 Lua table 序列化为请求体，响应自动解析 `data` 字段：
+
+```lua
+-- 最常用：POST JSON（等价于 json_post）
+local res = shield.http.json("https://api.example.com/users", {
+    name = "test",
+    age = 25,
+})
+-- res.data 自动解析为 Lua table
+print(res.data.name)  -- "test"
+
+-- PUT JSON
+local res = shield.http.json_put("https://api.example.com/users/1", {
+    name = "updated",
+})
+
+-- PATCH JSON
+local res = shield.http.json_patch("https://api.example.com/users/1", {
+    name = "patched",
+})
+
+-- 带认证的 JSON 请求
+local res = shield.http.json("https://api.example.com/pay", {
+    amount = 100,
+    currency = "CNY",
+}, {
+    auth_bearer = "eyJ...",
+    timeout = 5,
+})
+```
+
+返回值额外字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `data` | table | 自动解析的 JSON 响应体（Content-Type 为 JSON 或 body 以 `{`/`[` 开头时） |
+
 #### 文件上传（multipart/form-data）
 
 ```lua
