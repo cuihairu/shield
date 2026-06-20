@@ -89,6 +89,12 @@ struct LuaServiceManager::Impl {
     // Per-service Redis subscription tracking for auto-cancel on exit.
     std::unordered_map<std::string, std::unordered_set<std::string>> redis_subscriptions;
 
+    // Permission check hook (Phase 2). When set, called before send/call.
+    // Returns empty string if allowed, error code if denied.
+    std::function<std::string(const std::string& sender,
+                               const std::string& target,
+                               const std::string& method)> permission_check;
+
     // Worker thread lifecycle. The worker drives mailboxes, timers, forked
     // tasks, and coroutine timeouts. While the worker is running, all Lua
     // execution happens on the worker thread (modulo shield.call reentry,
@@ -293,6 +299,9 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                                       script_path + ": " + error);
         }
 
+        // Parse spawn timeout (default 10s).
+        const int64_t spawn_timeout_ms = opts.value("timeout", 10000);
+
         nlohmann::json init_args = {
             {"name", service_name},
             {"id", service_name},
@@ -302,9 +311,21 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         bool exit_after_init = false;
         std::string exit_reason;
         {
+            const auto init_start = std::chrono::steady_clock::now();
+
             Impl::DispatchScope scope(*impl_, service_name, "", false);
             if (!impl_->runtime.call_service_function(vm, "on_init", init_args,
                                                       &error)) {
+
+                // Check if failure was due to timeout.
+                const auto init_end = std::chrono::steady_clock::now();
+                const auto init_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    init_end - init_start).count();
+                if (init_ms >= spawn_timeout_ms) {
+                    return SpawnResult::error("spawn timeout: on_init took " +
+                                              std::to_string(init_ms) + "ms (limit " +
+                                              std::to_string(spawn_timeout_ms) + "ms)");
+                }
                 if (auto names_it = impl_->owned_names.find(service_name);
                     names_it != impl_->owned_names.end()) {
                     for (const auto& name : names_it->second) {
@@ -346,6 +367,18 @@ bool LuaServiceManager::send(std::string_view target,
     if (impl_->stopping) {
         if (error) *error = "runtime is stopping";
         return false;
+    }
+
+    // Permission check.
+    if (impl_->permission_check) {
+        const std::string sender = current_service_id();
+        const std::string denial = impl_->permission_check(sender,
+                                                            std::string(target),
+                                                            std::string(method));
+        if (!denial.empty()) {
+            if (error) *error = "permission denied: " + denial;
+            return false;
+        }
     }
 
     // Validate message payload.
@@ -922,6 +955,17 @@ static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
 
 uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
                                              int32_t timeout_ms) {
+    // Check pending call limit per service.
+    constexpr size_t kPendingCallLimit = 1000;
+    const std::string service_id = current_service_id();
+    size_t pending_count = 0;
+    for (const auto& [_, pc] : impl_->pending_calls) {
+        if (pc.caller_service == service_id) ++pending_count;
+    }
+    if (pending_count >= kPendingCallLimit) {
+        return 0;  // caller will fall back to sync path
+    }
+
     const uint64_t session = impl_->next_call_session.fetch_add(1);
     Impl::PendingCall pc;
     pc.session = session;

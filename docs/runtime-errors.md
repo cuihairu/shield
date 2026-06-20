@@ -44,9 +44,9 @@
 | `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ❌ Cluster |
 | `mailbox_full` | send | 目标服务 mailbox 达到上限 | 是 | ✅ |
 | `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | ⚠️ 通用错误 |
-| `spawn_timeout` | spawn | 服务初始化超过 `spawn_timeout`（默认 10s） | 否 | ❌ Phase 2 |
+| `spawn_timeout` | spawn | 服务初始化超过 `spawn_timeout`（默认 10s） | 否 | ✅ on_init 超时检测 |
 | `runtime_stopping` | send/call/spawn | 运行时正在关闭 | 否 | ✅ send/call/spawn 检查 |
-| `permission_denied` | send/call/spawn | 权限不足 | 否 | ❌ Phase 2 |
+| `permission_denied` | send/call/spawn | 权限不足 | 否 | ✅ permission_check 钩子 |
 | `timeout` | call | 调用超时（默认 5s） | 是 | ✅ |
 | `method_not_found` | call | 目标服务没有该方法 | 否 | ✅ |
 | `handler_error` | call | 目标服务 method 抛出未捕获异常 | 否 | ✅ call 返回 |
@@ -61,8 +61,8 @@
 | 错误码 | 说明 | 默认上限 | 状态 |
 |--------|------|----------|------|
 | `mailbox_full` | 单个 service mailbox 消息数超限 | 1000 | ✅ |
-| `coroutine_limit` | 单个 service coroutine 数超限 | 1000 | ❌ Phase 2 |
-| `pending_call_limit` | 单个 service 待响应 call 数超限 | 1000 | ❌ Phase 2 |
+| `coroutine_limit` | 单个 service coroutine 数超限 | 1000 | ⚠️ 未显式检查 |
+| `pending_call_limit` | 单个 service 待响应 call 数超限 | 1000 | ✅ suspend_for_call 检查 |
 | `timer_limit` | 单个 service timer 数超限 | 10000 | ✅ timer_once/timer 返回 nil+error |
 | `fork_limit` | 单个 service fork task 数超限 | 1000 | ✅ fork 返回 nil+error |
 

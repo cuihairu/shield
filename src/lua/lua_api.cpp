@@ -388,6 +388,8 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                     code = "message_too_large";
                 } else if (error.find("unsupported") != std::string::npos) {
                     code = "encode_failed";
+                } else if (error.find("permission denied") != std::string::npos) {
+                    code = "permission_denied";
                 }
                 results.push_back(sol::make_object(lua, false));
                 results.push_back(make_error(state, std::move(code), error,
