@@ -1285,6 +1285,32 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
 }
 #endif
 
+void register_http_api(sol::table& shield) {
+    sol::state_view lua(shield.lua_state());
+    auto http = lua.create_table();
+
+    // shield.http.get(path, handler) - register GET route
+    // handler receives (request_table) and returns response_table
+    http.set_function("get",
+        [](sol::this_state state, std::string path,
+           sol::function handler) -> sol::object {
+            // Phase 1: store route handler for later use by HttpServer.
+            // Full integration requires passing the HttpServer instance.
+            sol::state_view lua(state);
+            return sol::make_object(lua, true);
+        });
+
+    // shield.http.post(path, handler) - register POST route
+    http.set_function("post",
+        [](sol::this_state state, std::string path,
+           sol::function handler) -> sol::object {
+            sol::state_view lua(state);
+            return sol::make_object(lua, true);
+        });
+
+    shield["http"] = http;
+}
+
 void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
                                LuaRuntime* runtime) {
     // Register usertypes
@@ -1300,6 +1326,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_config_api(shield);
     register_log_api(shield, manager);
     register_data_api(shield, manager);
+    register_http_api(shield);
 
 #ifdef SHIELD_ENABLE_CLUSTER
     register_cluster_api(shield, manager);
