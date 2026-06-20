@@ -1288,36 +1288,11 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
 
 void register_http_api(sol::table& shield) {
     sol::state_view lua(shield.lua_state());
+
+    // =========================================================================
+    // shield.http — HTTP 客户端（发请求）
+    // =========================================================================
     auto http = lua.create_table();
-
-    // Route registration stubs. Full integration passes the HttpServer
-    // instance; these return true to indicate the call was accepted.
-    auto register_route = [](sol::this_state state, std::string method,
-                              std::string path, sol::function handler) {
-        sol::state_view lua(state);
-        return sol::make_object(lua, true);
-    };
-
-    http.set_function("get", [register_route](sol::this_state s, std::string p,
-                                               sol::function h) {
-        return register_route(s, "GET", std::move(p), std::move(h));
-    });
-    http.set_function("post", [register_route](sol::this_state s, std::string p,
-                                                sol::function h) {
-        return register_route(s, "POST", std::move(p), std::move(h));
-    });
-    http.set_function("put", [register_route](sol::this_state s, std::string p,
-                                               sol::function h) {
-        return register_route(s, "PUT", std::move(p), std::move(h));
-    });
-    http.set_function("delete", [register_route](sol::this_state s, std::string p,
-                                                  sol::function h) {
-        return register_route(s, "DELETE", std::move(p), std::move(h));
-    });
-    http.set_function("patch", [register_route](sol::this_state s, std::string p,
-                                                 sol::function h) {
-        return register_route(s, "PATCH", std::move(p), std::move(h));
-    });
 
     // shield.http.request(url, options) -> response_table
     // options: { method="GET", body="", headers={}, timeout=10 }
@@ -1365,7 +1340,7 @@ void register_http_api(sol::table& shield) {
             return result;
         });
 
-    // Convenience methods.
+    // Convenience: shield.http.get(url) -> response_table
     http.set_function("get",
         [](sol::this_state state, std::string url) -> sol::table {
             sol::state_view lua(state);
@@ -1378,6 +1353,7 @@ void register_http_api(sol::table& shield) {
             return result;
         });
 
+    // Convenience: shield.http.post(url, body) -> response_table
     http.set_function("post",
         [](sol::this_state state, std::string url,
            sol::optional<std::string> body) -> sol::table {
@@ -1391,7 +1367,71 @@ void register_http_api(sol::table& shield) {
             return result;
         });
 
+    // Convenience: shield.http.put(url, body) -> response_table
+    http.set_function("put",
+        [](sol::this_state state, std::string url,
+           sol::optional<std::string> body) -> sol::table {
+            sol::state_view lua(state);
+            auto res = shield::net::HttpClient::put_json(url, body.value_or(""));
+            sol::table result = lua.create_table();
+            result["status"] = res.status_code;
+            result["body"] = res.body;
+            result["ok"] = res.ok();
+            result["error"] = res.error;
+            return result;
+        });
+
+    // Convenience: shield.http.delete(url) -> response_table
+    http.set_function("delete",
+        [](sol::this_state state, std::string url) -> sol::table {
+            sol::state_view lua(state);
+            auto res = shield::net::HttpClient::del(url);
+            sol::table result = lua.create_table();
+            result["status"] = res.status_code;
+            result["body"] = res.body;
+            result["ok"] = res.ok();
+            result["error"] = res.error;
+            return result;
+        });
+
     shield["http"] = http;
+
+    // =========================================================================
+    // shield.httpd — HTTP 服务端（注册路由处理 incoming 请求）
+    // =========================================================================
+    auto httpd = lua.create_table();
+
+    // Route registration stubs. Full integration passes the HttpServer
+    // instance; these return true to indicate the call was accepted.
+    auto register_route = [](sol::this_state state, std::string method,
+                              std::string path, sol::function handler) {
+        sol::state_view lua(state);
+        // TODO: store route in HttpServer instance when integrated with bootstrap
+        return sol::make_object(lua, true);
+    };
+
+    httpd.set_function("get", [register_route](sol::this_state s, std::string p,
+                                                sol::function h) {
+        return register_route(s, "GET", std::move(p), std::move(h));
+    });
+    httpd.set_function("post", [register_route](sol::this_state s, std::string p,
+                                                 sol::function h) {
+        return register_route(s, "POST", std::move(p), std::move(h));
+    });
+    httpd.set_function("put", [register_route](sol::this_state s, std::string p,
+                                                sol::function h) {
+        return register_route(s, "PUT", std::move(p), std::move(h));
+    });
+    httpd.set_function("delete", [register_route](sol::this_state s, std::string p,
+                                                   sol::function h) {
+        return register_route(s, "DELETE", std::move(p), std::move(h));
+    });
+    httpd.set_function("patch", [register_route](sol::this_state s, std::string p,
+                                                  sol::function h) {
+        return register_route(s, "PATCH", std::move(p), std::move(h));
+    });
+
+    shield["httpd"] = httpd;
 }
 
 void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
