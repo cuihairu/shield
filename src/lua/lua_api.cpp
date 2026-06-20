@@ -575,23 +575,64 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             return results;
         });
 
-    shield.set_function("sleep", [manager, runtime](int delay_ms) {
-        if (!runtime) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-            return;
-        }
+    // shield.sleep is implemented as a Lua wrapper that schedules a native
+    // timer to resume the current coroutine and then yields. The C primitive
+    // _resume_after anchors the running coroutine against GC and arms the
+    // timer; coroutine.yield suspends until the timer fires and resumes us.
+    shield.set_function("_resume_after",
+        [manager, runtime](sol::this_state state, int delay_ms) {
+            if (!runtime || delay_ms <= 0) {
+                return;
+            }
+            lua_State* co = state;  // current coroutine thread
+            // Anchor the thread so it survives GC while suspended.
+            lua_pushthread(co);
+            const int ref = luaL_ref(co, LUA_REGISTRYINDEX);
+            std::string service_id;
+            if (manager) {
+                service_id = manager->current_service_id();
+            }
+            auto& timer_mgr = runtime->timer_manager();
+            timer_mgr.schedule_once_fn(delay_ms,
+                [co, ref]() {
+                    int nres = 0;
+                    const int status = lua_resume(co, nullptr, 0, &nres);
+                    if (status == LUA_YIELD) {
+                        // Yielded again (e.g. another sleep): another
+                        // _resume_after has re-anchored it. Keep this ref so
+                        // the next resume stays covered until final completion.
+                        return;
+                    }
+                    // LUA_OK (completed) or an error: release the anchor.
+                    luaL_unref(co, LUA_REGISTRYINDEX, ref);
+                },
+                service_id);
+        });
 
-        // Get current service ID
-        std::string service_id;
-        if (manager) {
-            service_id = manager->current_service_id();
-        }
-
-        // For now, this is a blocking implementation
-        // TODO: Implement coroutine-aware sleep using CoroutineScheduler
-        (void)service_id;
+    // Blocking fallback used when shield.sleep is invoked outside any
+    // coroutine (e.g. from the synchronous manager.call path). The
+    // coroutine-aware branch below handles the yieldable case.
+    shield.set_function("_block_sleep", [](int delay_ms) {
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     });
+
+    sol::state_view lua(shield.lua_state());
+    lua["shield"] = shield;
+    // Define shield.sleep in Lua so it can use coroutine.yield natively. When
+    // not running inside a coroutine (synchronous dispatch) fall back to a
+    // blocking sleep so the call still completes.
+    lua.safe_script(
+        "shield.sleep = function(ms)\n"
+        "  local _, ismain = coroutine.running()\n"
+        "  if ismain then\n"
+        "    shield._block_sleep(ms)\n"
+        "  else\n"
+        "    shield._resume_after(ms); coroutine.yield()\n"
+        "  end\n"
+        "end",
+        [](lua_State*, sol::protected_function_result pfr) -> sol::protected_function_result {
+            return pfr;
+        });
 }
 
 void register_task_api(sol::table& shield, LuaServiceManager* manager,
@@ -953,6 +994,23 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_data_api(shield);
 
     lua["shield"] = shield;
+
+    // Coroutine dispatch helper used by LuaRuntime::call_service_method_coroutine.
+    // It wraps a handler + args table into a coroutine whose body returns the
+    // handler's results, so a yield inside the handler (e.g. shield.sleep)
+    // suspends the whole coroutine and a later resume continues transparently.
+    // Defined as a global function directly so a script error can't take down
+    // register_api (call_service_method_coroutine falls back to sync dispatch
+    // if the helper is absent).
+    lua.safe_script(
+        "function __shield_run_handler(handler, args)\n"
+        "  return coroutine.create(function()\n"
+        "    return handler(table.unpack(args))\n"
+        "  end)\n"
+        "end",
+        [](lua_State*, sol::protected_function_result pfr) -> sol::protected_function_result {
+            return pfr;
+        });
 }
 
 }  // namespace shield::lua

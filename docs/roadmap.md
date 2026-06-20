@@ -35,7 +35,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 实现 opaque ServiceHandle、name reserve/publish 状态和 coroutine-aware spawn。
 - [x] 实现 `shield.query/register/unregister/names` 的单节点最小 registry 路径。
 - [x] 提供 `shield.now`。
-- [ ] 实现 `timer_once/timer/sleep/fork` 的 coroutine-aware 语义；当前 `timer_once/timer/cancel_timer` 已走 `TimerManager`，`fork` 已走 worker 线程调度，但 `sleep` 仍是阻塞实现，callback 也不在协程中执行。coroutine-aware `call` 同样待实现（当前走同步 `LuaServiceManager::call` 路径）。
+- [ ] 实现 `timer_once/timer/sleep/fork` 的 coroutine-aware 语义；当前 `timer_once/timer/cancel_timer` 已走 `TimerManager`，`fork` 已走 worker 线程调度。`shield.sleep` 已改为非阻塞协程语义（async handler 中 yield + 由 sleep 定时器 resume；sync 调用路径仍走阻塞降级），但 `timer`/`fork` 的 callback 仍不在协程中执行。coroutine-aware `call` 同样待实现（当前走同步 `LuaServiceManager::call` 路径）。
 - [x] 提供 `shield.log.*`。
 - [x] 提供原始 `shield.db.*` / `shield.redis.*` 的绑定和未启用错误返回。
 - [ ] 补齐 data API 的真实 mock pool 验收和后端连接验证。`shield_runtime_data_smoke` 已覆盖 mock pool smoke；`tests/lua_api/test_lua_api_data.cpp` 已覆盖 mock pool 下的 DB query/execute、Redis get/set/del/subscribe 和 dot-notation 负向测试；真实 MySQL/Redis 后端连接与连接池压力验证仍待补齐。
@@ -119,7 +119,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | 编号 | 问题 | 阻塞原因 |
 | --- | --- | --- |
 | GAP-010 | `shield.call` 走同步路径，不挂起 Lua 协程 | 需要 CoroutineScheduler 与 Mailbox 联动 |
-| GAP-011 | `shield.sleep` 是阻塞实现 | 需要 coroutine yield/resume |
+| GAP-011 | ~~`shield.sleep` 是阻塞实现~~ 已改为协程 yield/resume（async 派发路径非阻塞，sync 调用保留阻塞降级），LAPI-007-08 覆盖 | 已完成 |
 | GAP-012 | `shield.fork` 的 callback 不在协程中执行 | 需要 coroutine scheduler |
 | GAP-013 | timer callback 不在协程中执行 | 需要 coroutine scheduler |
 | GAP-014 | LAPI-005-06 (call timeout) 测试标记为 Phase 1 同步忽略 timeout | 需要 coroutine-aware call |

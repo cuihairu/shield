@@ -232,4 +232,48 @@ BOOST_AUTO_TEST_CASE(NowApiIsMonotonic) {
     BOOST_CHECK_EQUAL(cr.values[0].get<int>(), 0);
 }
 
+// LAPI-007-08: shield.sleep yields the running handler coroutine instead of
+// blocking the worker/pump. The handler suspends immediately and is resumed by
+// the runtime's sleep timer once the deadline elapses, after which its
+// continuation runs.
+BOOST_AUTO_TEST_CASE(LAPI_007_08_CoroutineSleepIsNonBlocking) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "coro_sleep_service.lua",
+                                opts_for("sleep").dump());
+    BOOST_REQUIRE(result.success);
+
+    // Queue a handler that sleeps; pump_once starts it and it must yield while
+    // sleeping, so no event is recorded before the deadline.
+    BOOST_REQUIRE(manager.send(result.service_id, "sleep_and_mark",
+                               nlohmann::json::array({1, 60})));
+    (void)manager.pump_once();
+    {
+        CallResult cr = manager.call(result.service_id, "event_count",
+                                     nlohmann::json::array(), 1000);
+        BOOST_REQUIRE(cr.success);
+        BOOST_CHECK_EQUAL(cr.values[0].get<int>(), 0);
+    }
+
+    // After the deadline, pumping fires the sleep timer which resumes the
+    // suspended handler; its continuation records the event.
+    BOOST_CHECK(pump_until(manager,
+                           [&]() {
+                               CallResult cr = manager.call(
+                                   result.service_id, "event_count",
+                                   nlohmann::json::array(), 1000);
+                               return cr.success && cr.values.size() == 1u &&
+                                      cr.values[0].get<int>() >= 1;
+                           },
+                           std::chrono::seconds(2)));
+    {
+        CallResult cr = manager.call(result.service_id, "last_index",
+                                     nlohmann::json::array(), 1000);
+        BOOST_REQUIRE(cr.success);
+        BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
+        BOOST_CHECK_EQUAL(cr.values[0].get<int>(), 1);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

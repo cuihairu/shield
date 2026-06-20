@@ -530,13 +530,15 @@ bool LuaServiceManager::process_mailbox(std::string_view service_id) {
         return false;  // Service no longer exists
     }
 
-    // Process the message
+    // Process the message. Handlers run inside a Lua coroutine so they can
+    // yield via shield.sleep / coroutine-aware call without blocking the
+    // worker; a handler that does not yield completes synchronously here.
     Impl::DispatchScope scope(*impl_, std::string(service_id), msg.sender, false);
 
-    nlohmann::json values = nlohmann::json::array();
     std::string error;
-    if (!impl_->runtime.call_service_method(service_it->second, msg.method, msg.args,
-                                            &values, &error)) {
+    if (!impl_->runtime.call_service_method_coroutine(service_it->second,
+                                                      msg.method, msg.args,
+                                                      &error)) {
         // Method failed - log error but continue processing other messages
     }
 

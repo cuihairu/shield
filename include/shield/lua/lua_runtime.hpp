@@ -114,8 +114,7 @@ public:
     };
 
     struct TimerCallback {
-        sol::function callback;
-        sol::state_view state;
+        std::function<void()> callback;
         std::string service_id;
     };
 
@@ -129,6 +128,13 @@ public:
     TimerId schedule_once(int64_t delay_ms,
                           sol::function callback,
                           const std::string& service_id);
+
+    // Schedule a one-shot timer with a native (C++) callback. Used by runtime
+    // internals such as coroutine sleep that need to resume a suspended Lua
+    // coroutine without going through a sol::function.
+    TimerId schedule_once_fn(int64_t delay_ms,
+                             std::function<void()> callback,
+                             const std::string& service_id);
 
     // Schedule a repeating timer
     /// @param interval_ms Interval in milliseconds
@@ -158,6 +164,12 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+
+    // Core repeating-timer scheduler taking a native callback. Used by the
+    // public sol::function overload and by internal rescheduling.
+    TimerId schedule_fixed_delay_fn(int64_t interval_ms,
+                                    std::function<void()> callback,
+                                    const std::string& service_id);
 };
 
 /// @brief Mailbox for service message queuing
@@ -337,6 +349,18 @@ public:
                              const nlohmann::json& args,
                              nlohmann::json* returns = nullptr,
                              std::string* error = nullptr);
+
+    // Invoke a service method inside a Lua coroutine so it may yield via
+    // shield.sleep / (future) coroutine-aware call. Used by the async message
+    // dispatch path (process_mailbox). If the handler completes without
+    // yielding it behaves like call_service_method; if it yields, this returns
+    // true (no error) and the suspended coroutine is resumed later by the
+    // runtime (e.g. a sleep timer). Return values are not collected on the
+    // async path (returns is ignored).
+    bool call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
+                                       std::string_view method_name,
+                                       const nlohmann::json& args,
+                                       std::string* error = nullptr);
 
     // Call a function in a VM
     /// @param vm The VM to call in

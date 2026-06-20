@@ -307,6 +307,21 @@ TimerManager::TimerId TimerManager::schedule_once(
     sol::function callback,
     const std::string& service_id) {
 
+    return schedule_once_fn(delay_ms,
+        [cb = std::move(callback)]() {
+            if (cb.valid()) {
+                auto r = cb();
+                (void)r;
+            }
+        },
+        service_id);
+}
+
+TimerManager::TimerId TimerManager::schedule_once_fn(
+    int64_t delay_ms,
+    std::function<void()> callback,
+    const std::string& service_id) {
+
     const TimerId id = impl_->generate_id();
 
     const auto now = std::chrono::steady_clock::now();
@@ -318,7 +333,7 @@ TimerManager::TimerId TimerManager::schedule_once(
         TimerType::Once,
         now_ms + delay_ms,
         delay_ms,
-        {callback, sol::state_view(callback.lua_state()), service_id},
+        {std::move(callback), service_id},
         true
     };
 
@@ -332,6 +347,21 @@ TimerManager::TimerId TimerManager::schedule_fixed_delay(
     sol::function callback,
     const std::string& service_id) {
 
+    return schedule_fixed_delay_fn(interval_ms,
+        [cb = std::move(callback)]() {
+            if (cb.valid()) {
+                auto r = cb();
+                (void)r;
+            }
+        },
+        service_id);
+}
+
+TimerManager::TimerId TimerManager::schedule_fixed_delay_fn(
+    int64_t interval_ms,
+    std::function<void()> callback,
+    const std::string& service_id) {
+
     const TimerId id = impl_->generate_id();
 
     const auto now = std::chrono::steady_clock::now();
@@ -343,7 +373,7 @@ TimerManager::TimerId TimerManager::schedule_fixed_delay(
         TimerType::FixedDelay,
         now_ms + interval_ms,
         interval_ms,
-        {callback, sol::state_view(callback.lua_state()), service_id},
+        {std::move(callback), service_id},
         true
     };
 
@@ -387,7 +417,7 @@ int TimerManager::check_and_fire(int64_t now_ms) {
 
         // If it's a repeating timer, reschedule
         if (timer.type == TimerType::FixedDelay) {
-            const TimerId new_id = schedule_fixed_delay(
+            const TimerId new_id = schedule_fixed_delay_fn(
                 timer.interval_ms,
                 timer.callback.callback,
                 timer.callback.service_id);
@@ -552,7 +582,8 @@ public:
     LuaVM() : state_(std::make_shared<sol::state>()) {
         state_->open_libraries(sol::lib::base, sol::lib::package,
                                sol::lib::string, sol::lib::table,
-                               sol::lib::math, sol::lib::io, sol::lib::os);
+                               sol::lib::math, sol::lib::io, sol::lib::os,
+                               sol::lib::coroutine);
 
         // Set Lua module search path from configuration
         std::string module_path = shield::config::get("lua.module_path",
@@ -1035,7 +1066,7 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
             }
         }
 
-        return true;
+         return true;
     } catch (const std::exception& e) {
         if (error) {
             *error = e.what();
@@ -1044,6 +1075,94 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
     }
 }
 
+bool LuaRuntime::call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
+                                               std::string_view method_name,
+                                               const nlohmann::json& args,
+                                               std::string* error) {
+    try {
+        sol::table& service = vm->service_table();
+        if (!service.valid()) {
+            if (error) *error = "service module not loaded";
+            return false;
+        }
+        sol::object value = service[std::string(method_name)];
+        if (!value.valid() || value == sol::nil) {
+            if (error) *error = "method not found: " + std::string(method_name);
+            return false;
+        }
+        if (!value.is<sol::protected_function>()) {
+            if (error) *error = std::string(method_name) + " is not a function";
+            return false;
+        }
+        if (!args.is_array()) {
+            if (error) *error = "method args must be a JSON array";
+            return false;
+        }
+
+        sol::state_view lua(*vm->state());
+        lua_State* L = lua.lua_state();
+
+        sol::function factory = lua["__shield_run_handler"];
+        if (!factory.valid()) {
+            // No coroutine factory registered (e.g. a VM without the full
+            // shield API). Fall back to a plain synchronous dispatch.
+            nlohmann::json unused;
+            return call_service_method(vm, method_name, args, &unused, error);
+        }
+
+        sol::protected_function handler = value.as<sol::protected_function>();
+        sol::table args_table = lua.create_table();
+        for (const auto& arg : args) {
+            args_table.add(json_to_lua(lua, arg));
+        }
+
+        // Call the factory to build a handler coroutine. Use a protected call
+        // so a factory failure degrades to synchronous dispatch instead of
+        // throwing through the runtime. The result `fr` is kept alive across
+        // lua_resume so the thread stays anchored on the main stack; if the
+        // handler yields, shield.sleep has already re-anchored it via its own
+        // registry ref before yielding.
+        sol::protected_function factory_pf = lua["__shield_run_handler"];
+        sol::protected_function_result fr = factory_pf(handler, args_table);
+        if (!fr.valid()) {
+            sol::error err = fr;
+            return call_service_method(vm, method_name, args, nullptr, error);
+        }
+        // The factory returns the coroutine thread at the top of the stack.
+        // Grab its lua_State* via the C API (sol::thread's type check is
+        // stricter than necessary here). fr stays alive across lua_resume so
+        // the thread remains anchored on the main stack; if the handler
+        // yields, shield.sleep has re-anchored it via its own registry ref.
+        lua_State* co = lua_tothread(L, -1);
+        if (co == nullptr) {
+            return call_service_method(vm, method_name, args, nullptr, error);
+        }
+
+        int nres = 0;
+        const int status = lua_resume(co, L, 0, &nres);
+        if (status == LUA_OK) {
+            // Handler completed synchronously. Return values are intentionally
+            // not collected on the async dispatch path.
+            return true;
+        }
+        if (status == LUA_YIELD) {
+            // Handler suspended (e.g. shield.sleep). It is anchored against GC
+            // by whatever caused the yield and will be resumed by the runtime.
+            return true;
+        }
+        // Error: the error object is on the coroutine's stack.
+        std::string msg = std::string(method_name) + " raised an error";
+        if (lua_type(co, -1) == LUA_TSTRING) {
+            msg = lua_tostring(co, -1);
+        }
+        lua_settop(co, 0);
+        if (error) *error = msg;
+        return false;
+    } catch (const std::exception& e) {
+        if (error) *error = e.what();
+        return false;
+    }
+}
 std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
                                      std::string_view func_name,
                                      std::string_view args) {
