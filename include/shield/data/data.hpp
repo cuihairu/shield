@@ -172,4 +172,8 @@ DatabasePool& database();
 /// @brief Get global Redis pool
 RedisPool& redis();
 
+/// @brief Test hook: set mock DB error string. Non-empty makes all mock
+/// queries return QueryResult::error(msg). Empty restores normal behavior.
+void set_mock_db_error(std::string error);
+
 }  // namespace shield::data

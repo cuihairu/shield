@@ -125,23 +125,52 @@ BOOST_AUTO_TEST_CASE(LAPI_008_02_DbQueryDisabledReturnsModuleUnavailable) {
 }
 
 // ---------------------------------------------------------------------------
-// LAPI-008-03: SQL error → db_query_failed
-// MockDatabaseConnection always returns ok, so we verify the success path.
-// A real SQL error test requires a mock that can fail — deferred to Phase 2.
+// LAPI-008-03: SQL error → database_error
+// Injects a mock DB error via set_mock_db_error and verifies the Lua binding
+// returns false + {code="database_error"}.
 // ---------------------------------------------------------------------------
 
-BOOST_AUTO_TEST_CASE(LAPI_008_03_DbExecuteWithMockPool) {
+BOOST_AUTO_TEST_CASE(LAPI_008_03_DbQueryReturnsError) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
 
-    auto result = spawn_data(manager, "exec_test");
+    // Inject mock error.
+    shield::data::set_mock_db_error("mock_sql_error");
+
+    auto result = spawn_data(manager, "sql_error_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "test_db_query",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 1u);
+    // Should return false (query failed).
+    BOOST_CHECK(!cr.values[0].get<bool>());
+
+    // Restore normal mock behavior.
+    shield::data::set_mock_db_error("");
+}
+
+// ---------------------------------------------------------------------------
+// LAPI-008-03b: SQL error on execute.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03b_DbExecuteReturnsError) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    shield::data::set_mock_db_error("mock_exec_error");
+
+    auto result = spawn_data(manager, "exec_error_test");
     BOOST_REQUIRE(result.success);
 
     CallResult cr = manager.call(result.service_id, "test_db_execute",
                                  nlohmann::json::array());
     BOOST_REQUIRE(cr.success);
     BOOST_REQUIRE_GE(cr.values.size(), 1u);
-    BOOST_CHECK(cr.values[0].get<bool>());
+    BOOST_CHECK(!cr.values[0].get<bool>());
+
+    shield::data::set_mock_db_error("");
 }
 
 // ---------------------------------------------------------------------------

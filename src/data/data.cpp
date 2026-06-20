@@ -21,24 +21,34 @@ namespace shield::data {
 // Database Implementation
 // =============================================================================
 
-// Placeholder DatabaseConnection implementation
+// Mock DatabaseConnection implementation.
+// When `force_error` is set, all operations return the configured error.
 class MockDatabaseConnection : public DatabaseConnection {
 public:
+    // Test hook: set to non-empty to make all queries return an error.
+    static inline std::string force_error;
+
     QueryResult query(std::string_view sql,
                      const std::vector<std::string>& params) override {
-        // Mock implementation
+        if (!force_error.empty()) {
+            return QueryResult::error(force_error);
+        }
         return QueryResult::ok();
     }
 
     QueryResult query_one(std::string_view sql,
                          const std::vector<std::string>& params) override {
-        // Mock implementation
+        if (!force_error.empty()) {
+            return QueryResult::error(force_error);
+        }
         return QueryResult::ok();
     }
 
     QueryResult execute(std::string_view sql,
                        const std::vector<std::string>& params) override {
-        // Mock implementation
+        if (!force_error.empty()) {
+            return QueryResult::error(force_error);
+        }
         auto result = QueryResult::ok();
         result.affected_rows = 1;
         result.last_insert_id = 1;
@@ -386,6 +396,10 @@ RedisPool& redis() {
         g_redis = g_redis_owner.get();
     }
     return *g_redis;
+}
+
+void set_mock_db_error(std::string error) {
+    MockDatabaseConnection::force_error = std::move(error);
 }
 
 }  // namespace shield::data

@@ -643,13 +643,31 @@ int LuaServiceManager::pump_once() {
     }
     for (const auto& task : tasks_to_run) {
         Impl::DispatchScope scope(*impl_, task.service_id, "", false);
-        try {
-            task.fn();
-        } catch (const std::exception& e) {
-            auto& log = shield::log::get_logger("lua");
-            SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
-                                  " error: " + e.what());
-            invoke_error_hook(task.service_id, "fork", "", e.what());
+        if (task.raw_fn.valid()) {
+            // Run in a protected call so thrown Lua errors route to on_error.
+            lua_State* L = task.raw_fn.lua_state();
+            task.raw_fn.push(L);
+            int status = lua_pcall(L, 0, 0, 0);
+            if (status != LUA_OK) {
+                std::string err = "fork error";
+                if (lua_type(L, -1) == LUA_TSTRING) {
+                    err = lua_tostring(L, -1);
+                }
+                lua_settop(L, 0);
+                auto& log = shield::log::get_logger("lua");
+                SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
+                                      " error: " + err);
+                invoke_error_hook(task.service_id, "fork", "", err);
+            }
+        } else {
+            try {
+                task.fn();
+            } catch (const std::exception& e) {
+                auto& log = shield::log::get_logger("lua");
+                SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
+                                      " error: " + e.what());
+                invoke_error_hook(task.service_id, "fork", "", e.what());
+            }
         }
         {
             std::lock_guard<std::mutex> lock(impl_->worker_mutex);
