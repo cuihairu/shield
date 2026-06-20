@@ -191,14 +191,18 @@ public:
     explicit RealRedisConnection(const sw::redis::ConnectionOptions& opts)
         : redis_(opts) {}
 
+    std::string last_error_code() const override { return last_error_code_; }
+
     std::pair<bool, std::string> get(std::string_view key) override {
         try {
+            last_error_code_.clear();
             auto val = redis_.get(std::string(key));
             if (val) {
                 return {true, *val};
             }
             return {false, ""};
         } catch (const std::exception& e) {
+            last_error_code_ = map_error_code(e);
             return {false, ""};
         }
     }
@@ -206,37 +210,45 @@ public:
     bool set(std::string_view key, std::string_view value,
              int ttl_seconds) override {
         try {
+            last_error_code_.clear();
             if (ttl_seconds > 0) {
                 return redis_.set(std::string(key), std::string(value),
                                   std::chrono::milliseconds(ttl_seconds * 1000));
             }
             return redis_.set(std::string(key), std::string(value));
         } catch (const std::exception& e) {
+            last_error_code_ = map_error_code(e);
             return false;
         }
     }
 
     int del(std::string_view key) override {
         try {
+            last_error_code_.clear();
             return static_cast<int>(redis_.del(std::string(key)));
         } catch (const std::exception& e) {
+            last_error_code_ = map_error_code(e);
             return 0;
         }
     }
 
     bool exists(std::string_view key) override {
         try {
+            last_error_code_.clear();
             return redis_.exists(std::string(key)) > 0;
         } catch (const std::exception& e) {
+            last_error_code_ = map_error_code(e);
             return false;
         }
     }
 
     int publish(std::string_view channel, std::string_view message) override {
         try {
+            last_error_code_.clear();
             return static_cast<int>(
                 redis_.publish(std::string(channel), std::string(message)));
         } catch (const std::exception& e) {
+            last_error_code_ = map_error_code(e);
             return 0;
         }
     }
@@ -244,46 +256,45 @@ public:
     bool subscribe(std::string_view channel,
                    SubscribeCallback callback) override {
         try {
+            last_error_code_.clear();
             auto sub = redis_.subscriber();
             sub.on_message([callback](std::string ch, std::string msg) {
                 callback(ch, msg);
             });
             sub.subscribe(std::string(channel));
-            // Run subscriber in a background thread.
             subscriber_thread_ = std::thread([sub = std::move(sub)]() mutable {
                 try {
                     while (true) {
                         sub.consume();
                     }
-                } catch (...) {
-                    // Subscription cancelled or connection lost.
-                }
+                } catch (...) {}
             });
             return true;
         } catch (const std::exception& e) {
+            last_error_code_ = map_error_code(e);
             return false;
         }
     }
 
     bool unsubscribe(std::string_view channel) override {
         try {
-            // The subscriber thread will exit on next consume() failure.
-            // For a clean unsubscribe, we'd need to store the subscriber
-            // object and call sub.unsubscribe(). For now, detach the thread.
             if (subscriber_thread_.joinable()) {
                 subscriber_thread_.detach();
             }
             return true;
         } catch (const std::exception& e) {
+            last_error_code_ = map_error_code(e);
             return false;
         }
     }
 
     bool ping() override {
         try {
-            redis_.ping();  // returns "PONG" string; throws on failure
+            last_error_code_.clear();
+            redis_.ping();
             return true;
         } catch (const std::exception& e) {
+            last_error_code_ = map_error_code(e);
             return false;
         }
     }
@@ -295,8 +306,24 @@ public:
     }
 
 private:
+    // Map redis++ exception to stable error code.
+    static std::string map_error_code(const std::exception& e) {
+        if (dynamic_cast<const sw::redis::TimeoutError*>(&e)) return "command_timeout";
+        if (dynamic_cast<const sw::redis::ClosedError*>(&e)) return "connection_lost";
+        if (dynamic_cast<const sw::redis::IoError*>(&e)) return "connection_lost";
+        if (dynamic_cast<const sw::redis::OomError*>(&e)) return "pool_exhausted";
+        if (dynamic_cast<const sw::redis::ReplyError*>(&e)) {
+            // Check for WRONGTYPE errors.
+            std::string msg = e.what();
+            if (msg.find("WRONGTYPE") != std::string::npos) return "wrong_type";
+            return "redis_command_failed";
+        }
+        return "redis_command_failed";
+    }
+
     sw::redis::Redis redis_;
     std::thread subscriber_thread_;
+    std::string last_error_code_ = "redis_command_failed";
 };
 
 // Placeholder RedisConnection implementation
@@ -348,6 +375,7 @@ struct RedisPool::Impl {
     size_t max_size = 10;
     bool initialized = false;
     std::string config_key;
+    std::string last_error_code;  // track last operation's error code
 };
 
 RedisPool::RedisPool() : impl_(std::make_unique<Impl>()) {}
@@ -424,9 +452,11 @@ std::shared_ptr<RedisConnection> RedisPool::acquire() {
 std::pair<bool, std::string> RedisPool::get(std::string_view key) {
     auto conn = acquire();
     if (!conn) {
+        impl_->last_error_code = "pool_exhausted";
         return {false, ""};
     }
     auto result = conn->get(key);
+    impl_->last_error_code = conn->last_error_code();
     release(std::move(conn));
     return result;
 }
@@ -435,9 +465,11 @@ bool RedisPool::set(std::string_view key, std::string_view value,
                     int ttl_seconds) {
     auto conn = acquire();
     if (!conn) {
+        impl_->last_error_code = "pool_exhausted";
         return false;
     }
     const bool result = conn->set(key, value, ttl_seconds);
+    impl_->last_error_code = conn->last_error_code();
     release(std::move(conn));
     return result;
 }
@@ -445,9 +477,11 @@ bool RedisPool::set(std::string_view key, std::string_view value,
 int RedisPool::del(std::string_view key) {
     auto conn = acquire();
     if (!conn) {
+        impl_->last_error_code = "pool_exhausted";
         return 0;
     }
     const int result = conn->del(key);
+    impl_->last_error_code = conn->last_error_code();
     release(std::move(conn));
     return result;
 }
@@ -455,9 +489,11 @@ int RedisPool::del(std::string_view key) {
 bool RedisPool::exists(std::string_view key) {
     auto conn = acquire();
     if (!conn) {
+        impl_->last_error_code = "pool_exhausted";
         return false;
     }
     const bool result = conn->exists(key);
+    impl_->last_error_code = conn->last_error_code();
     release(std::move(conn));
     return result;
 }
@@ -465,9 +501,11 @@ bool RedisPool::exists(std::string_view key) {
 int RedisPool::publish(std::string_view channel, std::string_view message) {
     auto conn = acquire();
     if (!conn) {
+        impl_->last_error_code = "pool_exhausted";
         return 0;
     }
     const int result = conn->publish(channel, message);
+    impl_->last_error_code = conn->last_error_code();
     release(std::move(conn));
     return result;
 }
@@ -476,9 +514,11 @@ bool RedisPool::subscribe(std::string_view channel,
                           RedisConnection::SubscribeCallback callback) {
     auto conn = acquire();
     if (!conn) {
+        impl_->last_error_code = "pool_exhausted";
         return false;
     }
     const bool result = conn->subscribe(channel, callback);
+    impl_->last_error_code = conn->last_error_code();
     release(std::move(conn));
     return result;
 }
@@ -509,6 +549,11 @@ void RedisPool::release(std::shared_ptr<RedisConnection> conn) {
 bool RedisPool::is_initialized() const {
     std::lock_guard lock(impl_->mutex);
     return impl_->initialized;
+}
+
+std::string RedisPool::last_error_code() const {
+    std::lock_guard lock(impl_->mutex);
+    return impl_->last_error_code;
 }
 
 // =============================================================================

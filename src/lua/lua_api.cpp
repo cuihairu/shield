@@ -1018,7 +1018,7 @@ void register_data_api(sol::table& shield, LuaServiceManager* manager) {
             const bool ok = redis.set(key, value, ttl.value_or(0));
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? sol::make_object(lua, sol::nil)
-                                 : make_error(state, "redis_command_failed",
+                                 : make_error(state, redis.last_error_code(),
                                               "redis set failed"));
             return results;
         });

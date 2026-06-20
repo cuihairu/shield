@@ -91,12 +91,12 @@
 |--------|------|-----------|------|
 | `module_unavailable` | redis 模块未启用 | 否 | ✅ |
 | `redis_error` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ (代码中使用 `redis_error`) |
-| `redis_command_failed` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ Redis set/subscribe 返回 |
-| `connection_lost` | Redis 连接丢失 | 是 | ❌ Phase 2 |
-| `connection_timeout` | 建立连接超时 | 是 | ❌ Phase 2 |
-| `command_timeout` | 命令执行超时 | 是 | ❌ Phase 2 |
-| `wrong_type` | Redis 类型错误 | 否 | ❌ Phase 2 |
-| `pool_exhausted` | 连接池耗尽 | 是 | ❌ Phase 2 |
+| `redis_command_failed` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ Redis 操作返回 |
+| `connection_lost` | Redis 连接丢失 | 是 | ✅ redis++ ClosedError/IoError 映射 |
+| `connection_timeout` | 建立连接超时 | 是 | ⚠️ 由 command_timeout 覆盖 |
+| `command_timeout` | 命令执行超时 | 是 | ✅ redis++ TimeoutError 映射 |
+| `wrong_type` | Redis 类型错误 | 否 | ✅ redis++ ReplyError(WRONGTYPE) 映射 |
+| `pool_exhausted` | 连接池耗尽 | 是 | ✅ acquire 失败返回 |
 
 ## 五、网络错误
 

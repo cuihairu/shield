@@ -20,16 +20,17 @@ using Row = std::unordered_map<std::string, std::string>;
 struct QueryResult {
     bool success = false;
     std::string error_message;
+    std::string error_code;  // stable error code for Lua API (e.g. "db_query_failed")
     std::vector<Row> rows;
     int64_t affected_rows = 0;
     int64_t last_insert_id = 0;
 
     static QueryResult ok(std::vector<Row> rows = {}) {
-        return {true, "", std::move(rows), 0, 0};
+        return {true, "", "", std::move(rows), 0, 0};
     }
 
-    static QueryResult error(std::string msg) {
-        return {false, std::move(msg), {}, 0, 0};
+    static QueryResult error(std::string msg, std::string code = "db_query_failed") {
+        return {false, std::move(msg), std::move(code), {}, 0, 0};
     }
 };
 
@@ -98,6 +99,9 @@ class RedisConnection {
 public:
     virtual ~RedisConnection() = default;
 
+    /// @brief Get the last error code (for Lua API error mapping)
+    virtual std::string last_error_code() const { return "redis_command_failed"; }
+
     /// @brief Get a value
     virtual std::pair<bool, std::string> get(std::string_view key) = 0;
 
@@ -158,6 +162,9 @@ public:
 
     /// @brief Check if pool is initialized
     bool is_initialized() const;
+
+    /// @brief Get the last error code from the most recent operation
+    std::string last_error_code() const;
 
 private:
     void release(std::shared_ptr<RedisConnection> conn);
