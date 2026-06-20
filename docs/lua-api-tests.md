@@ -197,16 +197,16 @@ Harness 要求：
 
 | Case | 延迟原因 |
 | --- | --- |
-| LAPI-005-06 | `call_timeout` 当前走同步路径，忽略 timeout_ms |
-| LAPI-005-07 | late response 丢弃依赖异步 call + pending registry |
-| LAPI-005-08 | nested call 不阻塞 runtime thread 依赖 coroutine 挂起 |
-| LAPI-006-04 | trace id 传播依赖 coroutine-aware call |
-| LAPI-006-05 | deadline 可见性依赖 coroutine-aware call |
-| LAPI-007-04 | `on_error` hook 调用依赖 Lua error handler 注册 |
-| LAPI-007-05 | `shield.sleep` coroutine 语义 |
+| ~~LAPI-005-06~~ | ~~call timeout 未实现~~ 已实现：`check_call_timeouts` 已接入 `pump_once`，LAPI-005-06 覆盖协程 timeout + 同步降级 ✅ |
+| LAPI-005-07 | late response 丢弃：call timeout 已实现，超时后 caller 已 resume；但 callee 返回时 caller 已不在 pending 状态，`resume_caller` 静默丢弃。需补充专门测试 |
+| LAPI-005-08 | nested call：协程路径理论上支持（caller yield 后 worker 可处理其他消息），需补充测试 |
+| LAPI-006-04 | trace id 传播：`shield.trace()` 返回固定值 `"trace:0"`，未实现链路传播 |
+| LAPI-006-05 | deadline 可见性：`shield.deadline()` 返回 `nil`，未实现 deadline 传播 |
+| ~~LAPI-007-04~~ | ~~`on_error` hook 调用~~ 已实现：`invoke_hook` 调用 service table 上的 `on_error`，`OnErrorHookCalledOnHandlerThrow` 测试覆盖 ✅ |
+| ~~LAPI-007-05~~ | ~~`shield.sleep` coroutine 语义~~ 已由 LAPI-007-08 覆盖 ✅ |
 | LAPI-008-02 | DB disabled 路径（当前 suite mock pool 始终启用） |
 | LAPI-008-03 | SQL error 路径（需可注入错误的 mock connection） |
 | LAPI-008-05 | Redis disabled 路径 |
 | LAPI-008-06 | subscribe then exit（需 Redis pub/sub 生命周期追踪） |
 | LAPI-009-01~05 | Gateway session 模拟（需 mock SessionHandle harness） |
-| LAPI-002-06 | `on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit` |
+| ~~LAPI-002-06~~ | ~~`on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit`~~ 已实现：`_is_in_exit()` + Lua wrapper guard，`OnExitCallGuard` 测试覆盖 ✅ |

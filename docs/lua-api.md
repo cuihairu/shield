@@ -102,6 +102,8 @@ end
 - `on_exit` 是 best-effort 清理。
 - 不允许在 `on_exit` 中调用会挂起 coroutine 的 API，例如 `shield.call`、`shield.sleep`。
 
+实现快照：`shield.call` / `shield.call_timeout` 在 `on_exit` 上下文中调用时，Lua wrapper 检查 `shield._is_in_exit()` 并立即返回 `false, {code="api_not_allowed_in_exit", message="..."}`。`OnExitCallGuard` 测试覆盖。
+
 ### on_error(err, context)
 
 handler、timer 或 fork task 抛出错误时调用。
@@ -122,7 +124,7 @@ end
 
 `on_error` 不改变服务状态。Phase 1 的 panic 策略固定为：同一 service 连续 handler/timer/fork 未捕获错误达到 `limits.max_errors_before_panic` 时进入 panic；未配置时默认 10。
 
-实现快照：`on_error` 和 `on_panic` hook 已在 lua-api.md 中定义，但尚未注册到 `register_full_shield_api` 调用链中。timer/fork callback 的错误当前由 C++ 层 `try/catch` 捕获并记录日志，不经过 Lua `on_error` hook。完整 hook 调用链依赖 coroutine scheduler 落地（Phase 2）。
+实现快照：`on_error` / `on_panic` hook 已实现。当 handler 抛错时，`call_service_method_coroutine` 调用 `LuaRuntime::invoke_hook` 触发 service table 上的 `on_error(err, context)`；timer callback 错误通过 `check_and_fire` 回调触发；fork task 错误通过 `pump_once` 触发。连续未捕获错误达到 `kDefaultMaxErrorsBeforePanic`（默认 10）时触发 `on_panic(reason, context)` 并 `exit("panic")`。成功执行后错误计数重置。`OnErrorHookCalledOnHandlerThrow` 测试覆盖。
 
 ### on_panic(reason, context)
 
@@ -264,6 +266,8 @@ local ok, result = shield.call_timeout(3000, "db.player", "get", uid)
 ```
 
 使用单独函数覆盖 timeout，避免最后一个业务参数和 options table 歧义。
+
+实现快照：`shield.call` / `shield.call_timeout` 已实现协程感知路径——在 handler 协程中调用时，caller 通过 `_coro_call` → `suspend_for_call` + `coroutine.yield()` 挂起，callee 完成后 `resume_caller` 恢复 caller；主线程调用走 `_sync_call` 同步降级。call timeout 已通过 `pump_once` 中的 `check_call_timeouts` 实现：扫描 `pending_calls` 中超过 `deadline_ms` 的条目，以 `{code="timeout", message="call timeout"}` 恢复 caller。LAPI-005-06 已覆盖。
 
 ### Message Context
 

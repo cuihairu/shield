@@ -62,6 +62,25 @@ struct LuaServiceManager::Impl {
     std::vector<ForkedTask> pending_tasks;
     std::unordered_map<std::string, std::unordered_set<uint64_t>> tasks_by_service;
 
+    // Coroutine call correlation. A call from a handler yields the caller's
+    // coroutine; the callee runs and, on completion, resumes the caller with
+    // the callee's return values.
+    struct PendingCall {
+        uint64_t session = 0;
+        lua_State* caller_co = nullptr;
+        int caller_anchor = LUA_NOREF;   // registry ref keeping caller_co alive
+        int64_t deadline_ms = 0;
+        std::string caller_service;
+    };
+    std::atomic<uint64_t> next_call_session{1};
+    std::unordered_map<uint64_t, PendingCall> pending_calls;      // session -> caller wait
+    std::unordered_map<lua_State*, uint64_t> handler_call_session; // callee co -> session
+
+    // Per-service consecutive error counter for panic detection.
+    // Reset on successful handler completion; incremented on uncaught error.
+    std::unordered_map<std::string, int> error_counts;
+    static constexpr int kDefaultMaxErrorsBeforePanic = 10;
+
     // Worker thread lifecycle. The worker drives mailboxes, timers, forked
     // tasks, and coroutine timeouts. While the worker is running, all Lua
     // execution happens on the worker thread (modulo shield.call reentry,
@@ -328,6 +347,40 @@ bool LuaServiceManager::send(std::string_view target,
     return true;
 }
 
+bool LuaServiceManager::send_call_request(std::string_view target,
+                                          std::string_view method,
+                                          const nlohmann::json& args,
+                                          uint64_t session,
+                                          std::string* error) {
+    const std::string service_id = query_service(target);
+    auto mailbox_it = impl_->mailboxes.find(service_id);
+    if (mailbox_it == impl_->mailboxes.end()) {
+        if (error) {
+            *error = "service not found: " + std::string(target);
+        }
+        return false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+
+    Mailbox::Message msg;
+    msg.sender = current_service_id();
+    msg.method = std::string(method);
+    msg.args = args;
+    msg.priority = Mailbox::Priority::Normal;
+    msg.timestamp_ms = now_ms;
+    msg.call_session = session;
+    msg.call_reply_to = current_service_id();
+    if (!mailbox_it->second->push(msg, Mailbox::Backpressure::DropNewest)) {
+        if (error) {
+            *error = "mailbox full";
+        }
+        return false;
+    }
+    return true;
+}
+
 CallResult LuaServiceManager::call(std::string_view target,
                                    std::string_view method,
                                    const nlohmann::json& args,
@@ -426,6 +479,13 @@ void LuaServiceManager::request_current_exit(std::string_view reason) {
     }
     frame.exit_requested = true;
     frame.exit_reason = reason.empty() ? "normal" : std::string(reason);
+}
+
+bool LuaServiceManager::is_in_exit() const {
+    if (impl_->dispatch_stack.empty()) {
+        return false;
+    }
+    return impl_->dispatch_stack.back().in_exit;
 }
 
 std::string LuaServiceManager::query_service(std::string_view name) const {
@@ -538,7 +598,8 @@ bool LuaServiceManager::process_mailbox(std::string_view service_id) {
     std::string error;
     if (!impl_->runtime.call_service_method_coroutine(service_it->second,
                                                       msg.method, msg.args,
-                                                      &error)) {
+                                                      &error, msg.call_session,
+                                                      this, service_id)) {
         // Method failed - log error but continue processing other messages
     }
 
@@ -587,6 +648,7 @@ int LuaServiceManager::pump_once() {
             auto& log = shield::log::get_logger("lua");
             SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
                                   " error: " + e.what());
+            invoke_error_hook(task.service_id, "fork", "", e.what());
         }
         {
             std::lock_guard<std::mutex> lock(impl_->worker_mutex);
@@ -602,8 +664,12 @@ int LuaServiceManager::pump_once() {
     events += static_cast<int>(tasks_to_run.size());
 
     const int64_t now = Impl::now_ms();
-    events += impl_->runtime.timer_manager().check_and_fire(now);
+    events += impl_->runtime.timer_manager().check_and_fire(
+        now, [this](const std::string& service_id, const std::string& err) {
+            invoke_error_hook(service_id, "timer", "", err);
+        });
     events += impl_->runtime.coroutine_scheduler().check_timeouts(now);
+    events += check_call_timeouts(now);
     return events;
 }
 
@@ -680,6 +746,170 @@ void LuaServiceManager::cancel_forked_tasks_for_service(
                            }),
             impl_->pending_tasks.end());
     }
+}
+
+// Push a JSON value onto a raw lua_State using the C API (avoids sol2
+// stack-residue quirks when targeting a specific coroutine thread).
+static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
+    if (v.is_null()) {
+        lua_pushnil(L);
+    } else if (v.is_boolean()) {
+        lua_pushboolean(L, v.get<bool>() ? 1 : 0);
+    } else if (v.is_number_integer()) {
+        lua_pushinteger(L, static_cast<lua_Integer>(v.get<std::int64_t>()));
+    } else if (v.is_number_unsigned()) {
+        lua_pushinteger(L, static_cast<lua_Integer>(v.get<std::uint64_t>()));
+    } else if (v.is_number_float()) {
+        lua_pushnumber(L, v.get<double>());
+    } else if (v.is_string()) {
+        const auto& s = v.get_ref<const std::string&>();
+        lua_pushlstring(L, s.data(), s.size());
+    } else if (v.is_array()) {
+        lua_createtable(L, static_cast<int>(v.size()), 0);
+        int i = 1;
+        for (const auto& el : v) {
+            push_json_to_stack(L, el);
+            lua_rawseti(L, -2, i++);
+        }
+    } else if (v.is_object()) {
+        lua_createtable(L, 0, static_cast<int>(v.size()));
+        for (auto it = v.begin(); it != v.end(); ++it) {
+            lua_pushlstring(L, it.key().data(), it.key().size());
+            push_json_to_stack(L, it.value());
+            lua_rawset(L, -3);
+        }
+    } else {
+        lua_pushnil(L);
+    }
+}
+
+uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
+                                             int32_t timeout_ms) {
+    const uint64_t session = impl_->next_call_session.fetch_add(1);
+    Impl::PendingCall pc;
+    pc.session = session;
+    pc.caller_co = caller_co;
+    // Anchor the caller coroutine against GC while it is suspended.
+    lua_pushthread(caller_co);
+    pc.caller_anchor = luaL_ref(caller_co, LUA_REGISTRYINDEX);
+    const auto now = std::chrono::steady_clock::now();
+    pc.deadline_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         now.time_since_epoch()).count() +
+                     (timeout_ms > 0 ? timeout_ms : 5000);
+    pc.caller_service = current_service_id();
+    impl_->pending_calls.emplace(session, std::move(pc));
+    return session;
+}
+
+void LuaServiceManager::set_handler_call_session(lua_State* co, uint64_t session) {
+    if (session != 0 && co != nullptr) {
+        impl_->handler_call_session[co] = session;
+    }
+}
+
+void LuaServiceManager::on_handler_completed(lua_State* co,
+                                             const nlohmann::json& return_values) {
+    if (co == nullptr) {
+        return;
+    }
+    auto it = impl_->handler_call_session.find(co);
+    if (it == impl_->handler_call_session.end()) {
+        return;
+    }
+    const uint64_t session = it->second;
+    impl_->handler_call_session.erase(it);
+    resume_caller(session, true, return_values);
+}
+
+void LuaServiceManager::resume_caller(uint64_t session, bool ok,
+                                      const nlohmann::json& values) {
+    auto it = impl_->pending_calls.find(session);
+    if (it == impl_->pending_calls.end()) {
+        return;
+    }
+    Impl::PendingCall pc = std::move(it->second);
+    impl_->pending_calls.erase(it);
+
+    lua_State* caller_co = pc.caller_co;
+    if (caller_co == nullptr) {
+        return;
+    }
+
+    // Build the resume payload: (ok, values...). The caller's shield.call
+    // wrapper unpacks these via coroutine.yield()'s return values.
+    lua_pushboolean(caller_co, ok ? 1 : 0);
+    int nargs = 1;
+    if (values.is_array()) {
+        for (const auto& v : values) {
+            push_json_to_stack(caller_co, v);
+            ++nargs;
+        }
+    } else if (!values.is_null()) {
+        push_json_to_stack(caller_co, values);
+        ++nargs;
+    }
+    int nres = 0;
+    const int status = lua_resume(caller_co, nullptr, nargs, &nres);
+    if (status != LUA_OK && status != LUA_YIELD) {
+        // Caller errored resuming; drop it silently (logged elsewhere).
+        lua_settop(caller_co, 0);
+    }
+    // Release the anchor; the coroutine either completed or re-yielded (in
+    // which case a subsequent suspend re-anchored it).
+    if (pc.caller_anchor != LUA_NOREF) {
+        luaL_unref(caller_co, LUA_REGISTRYINDEX, pc.caller_anchor);
+    }
+}
+
+int LuaServiceManager::check_call_timeouts(int64_t now_ms) {
+    // Collect expired sessions first; we must not modify pending_calls while
+    // iterating, and resume_caller erases from it.
+    std::vector<uint64_t> expired;
+    for (const auto& [session, pc] : impl_->pending_calls) {
+        if (pc.deadline_ms <= now_ms) {
+            expired.push_back(session);
+        }
+    }
+
+    nlohmann::json timeout_err = nlohmann::json::array(
+        {nlohmann::json::object({{"code", "timeout"},
+                                 {"message", "call timeout"}})});
+
+    for (uint64_t session : expired) {
+        resume_caller(session, false, timeout_err);
+    }
+    return static_cast<int>(expired.size());
+}
+
+void LuaServiceManager::invoke_error_hook(const std::string& service_id,
+                                           const std::string& error_type,
+                                           const std::string& method_name,
+                                           const std::string& error_message) {
+    auto it = impl_->services.find(service_id);
+    if (it == impl_->services.end()) {
+        return;
+    }
+
+    // Increment error counter.
+    int& count = impl_->error_counts[service_id];
+    ++count;
+
+    // Call on_error(err, context) if defined on the service table.
+    impl_->runtime.invoke_hook(it->second, "on_error", error_message,
+                               error_type, method_name);
+
+    // Check panic threshold.
+    if (count >= Impl::kDefaultMaxErrorsBeforePanic) {
+        impl_->runtime.invoke_hook(it->second, "on_panic",
+                                   "consecutive errors reached limit",
+                                   error_type, method_name);
+        // Exit the service after panic.
+        exit(service_id, "panic");
+    }
+}
+
+void LuaServiceManager::reset_error_count(const std::string& service_id) {
+    impl_->error_counts.erase(service_id);
 }
 
 }  // namespace shield::lua

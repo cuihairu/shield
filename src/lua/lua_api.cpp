@@ -370,11 +370,11 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             return results;
         });
 
-    shield.set_function("call",
+    shield.set_function("_sync_call",
         [manager, runtime](sol::this_state state,
-                  sol::object target,
-                  std::string method,
-                  sol::variadic_args args) -> sol::variadic_results {
+                   sol::object target,
+                   std::string method,
+                   sol::variadic_args args) -> sol::variadic_results {
             std::string target_id = extract_service_id(target);
             if (target_id.empty()) {
                 sol::state_view lua(state);
@@ -388,12 +388,12 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                                      variadic_to_json_array(args));
         });
 
-    shield.set_function("call_timeout",
+    shield.set_function("_sync_call_timeout",
         [manager, runtime](sol::this_state state,
-                  int timeout_ms,
-                  sol::object target,
-                  std::string method,
-                  sol::variadic_args args) -> sol::variadic_results {
+                   int timeout_ms,
+                   sol::object target,
+                   std::string method,
+                   sol::variadic_args args) -> sol::variadic_results {
             std::string target_id = extract_service_id(target);
             if (target_id.empty()) {
                 sol::state_view lua(state);
@@ -405,6 +405,55 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             }
             return call_with_timeout(state, manager, runtime, timeout_ms, target_id, method,
                                      variadic_to_json_array(args));
+        });
+
+    // Coroutine-aware call primitive. Suspends the caller's coroutine and
+    // sends a call-request message to the target; the caller is resumed with
+    // [ok, values...] when the callee completes (or on timeout). Returns the
+    // session id (0 if the request could not be queued).
+    shield.set_function("_coro_call",
+        [manager](sol::this_state state,
+                  sol::object target,
+                  std::string method,
+                  sol::table args,
+                  int timeout_ms) -> uint64_t {
+            if (!manager) {
+                return 0;
+            }
+            const std::string target_id = extract_service_id(target);
+            if (target_id.empty()) {
+                return 0;
+            }
+            const std::string service_id = manager->query_service(target_id);
+            if (service_id.empty()) {
+                return 0;
+            }
+            lua_State* co = state;
+            const uint64_t session = manager->suspend_for_call(co, timeout_ms);
+
+            // Build and queue the call-request message.
+            nlohmann::json json_args = nlohmann::json::array();
+            for (std::size_t i = 1; i <= args.size(); ++i) {
+                json_args.push_back(lua_to_json(args[static_cast<int>(i)]));
+            }
+            std::string send_error;
+            // Send carries call_session so the callee's dispatch can route the
+            // response back. call_reply_to is the caller's service id.
+            if (!manager->send_call_request(service_id, method, json_args,
+                                            session, &send_error)) {
+                // Could not queue: cancel the pending wait with an error so
+                // the caller resumes immediately instead of hanging.
+                nlohmann::json err;
+                err = send_error;
+                manager->resume_caller(session, false, nlohmann::json::array({err}));
+                return 0;
+            }
+            return session;
+        });
+
+    shield.set_function("_is_in_exit",
+        [manager]() -> bool {
+            return manager && manager->is_in_exit();
         });
 
     shield.set_function("sender",
@@ -426,6 +475,41 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     shield.set_function("deadline", []() -> sol::optional<int64_t> {
         return sol::nullopt;
     });
+
+    // Override shield.call / shield.call_timeout with Lua wrappers that pick
+    // the coroutine-aware path when running inside a handler coroutine (so the
+    // caller yields instead of blocking the worker) and fall back to the
+    // synchronous path on the main thread.
+    sol::state_view lua(shield.lua_state());
+    lua["shield"] = shield;
+    lua.safe_script(
+        "shield.call = function(target, method, ...)\n"
+        "  if shield._is_in_exit() then\n"
+        "    return false, {code='api_not_allowed_in_exit', message='shield.call is not allowed in on_exit'}\n"
+        "  end\n"
+        "  local _, ismain = coroutine.running()\n"
+        "  if ismain then return shield._sync_call(target, method, ...) end\n"
+        "  local session = shield._coro_call(target, method, table.pack(...), 5000)\n"
+        "  if session == 0 then return shield._sync_call(target, method, ...) end\n"
+        "  local r = table.pack(coroutine.yield())\n"
+        "  if not r[1] then return false, r[2] end\n"
+        "  return true, table.unpack(r, 2, r.n)\n"
+        "end\n"
+        "shield.call_timeout = function(timeout_ms, target, method, ...)\n"
+        "  if shield._is_in_exit() then\n"
+        "    return false, {code='api_not_allowed_in_exit', message='shield.call_timeout is not allowed in on_exit'}\n"
+        "  end\n"
+        "  local _, ismain = coroutine.running()\n"
+        "  if ismain then return shield._sync_call_timeout(timeout_ms, target, method, ...) end\n"
+        "  local session = shield._coro_call(target, method, table.pack(...), timeout_ms)\n"
+        "  if session == 0 then return shield._sync_call_timeout(timeout_ms, target, method, ...) end\n"
+        "  local r = table.pack(coroutine.yield())\n"
+        "  if not r[1] then return false, r[2] end\n"
+        "  return true, table.unpack(r, 2, r.n)\n"
+        "end",
+        [](lua_State*, sol::protected_function_result pfr) -> sol::protected_function_result {
+            return pfr;
+        });
 }
 
 sol::variadic_results call_with_timeout(sol::this_state state,

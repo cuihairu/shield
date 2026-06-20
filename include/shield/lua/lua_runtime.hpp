@@ -158,6 +158,14 @@ public:
     /// @return Number of timers fired
     int check_and_fire(int64_t now_ms);
 
+    // Check and fire expired timers with error reporting.
+    /// @param now_ms Current monotonic time in milliseconds
+    /// @param on_error Callback invoked with (service_id, error_message) when a timer throws
+    /// @return Number of timers fired
+    int check_and_fire(int64_t now_ms,
+                       std::function<void(const std::string& service_id,
+                                          const std::string& error)> on_error);
+
     // Get active timer count
     size_t active_count() const;
 
@@ -197,6 +205,13 @@ public:
         nlohmann::json args;
         Priority priority = Priority::Normal;
         int64_t timestamp_ms = 0;
+        // Coroutine call correlation. Defaults describe a plain send.
+        // Call-request: call_session != 0, call_reply_to = caller service id.
+        // Call-response: is_call_response = true, call_session matches the
+        // request, args = JSON array [ok, values...].
+        uint64_t call_session = 0;
+        std::string call_reply_to;
+        bool is_call_response = false;
     };
 
     explicit Mailbox(size_t max_size = 1000);
@@ -360,7 +375,20 @@ public:
     bool call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
                                        std::string_view method_name,
                                        const nlohmann::json& args,
-                                       std::string* error = nullptr);
+                                       std::string* error = nullptr,
+                                       uint64_t call_session = 0,
+                                       LuaServiceManager* manager = nullptr,
+                                       std::string_view service_id = "");
+
+    // Invoke a named hook function on a service's module table.
+    // The hook is called as hook(err, context_table) where context_table
+    // has fields {type, method}. Returns true if the hook existed and was
+    // called without error; false otherwise.
+    bool invoke_hook(std::shared_ptr<LuaVM> vm,
+                     const char* hook_name,
+                     const std::string& err_or_reason,
+                     const std::string& error_type,
+                     const std::string& method_name);
 
     // Call a function in a VM
     /// @param vm The VM to call in

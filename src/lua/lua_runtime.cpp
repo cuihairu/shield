@@ -4,6 +4,7 @@
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/config/config.hpp"
+#include "shield/log/logger.hpp"
 
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
@@ -394,6 +395,12 @@ void TimerManager::cancel_all_for_service(const std::string& service_id) {
 }
 
 int TimerManager::check_and_fire(int64_t now_ms) {
+    return check_and_fire(now_ms, nullptr);
+}
+
+int TimerManager::check_and_fire(int64_t now_ms,
+                                  std::function<void(const std::string& service_id,
+                                                     const std::string& error)> on_error) {
     int fired = 0;
 
     // Get expired timers
@@ -410,7 +417,9 @@ int TimerManager::check_and_fire(int64_t now_ms) {
         try {
             timer.callback.callback();
         } catch (const std::exception& e) {
-            // Log error
+            if (on_error) {
+                on_error(timer.callback.service_id, e.what());
+            }
         }
 
         ++fired;
@@ -1078,7 +1087,10 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
 bool LuaRuntime::call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
                                                std::string_view method_name,
                                                const nlohmann::json& args,
-                                               std::string* error) {
+                                               std::string* error,
+                                               uint64_t call_session,
+                                               LuaServiceManager* manager,
+                                               std::string_view service_id) {
     try {
         sol::table& service = vm->service_table();
         if (!service.valid()) {
@@ -1137,12 +1149,30 @@ bool LuaRuntime::call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
         if (co == nullptr) {
             return call_service_method(vm, method_name, args, nullptr, error);
         }
+        // If this dispatch services a coroutine call request, tag the handler
+        // coroutine so its completion can route the response back to the caller.
+        if (call_session != 0 && manager != nullptr) {
+            manager->set_handler_call_session(co, call_session);
+        }
 
         int nres = 0;
         const int status = lua_resume(co, L, 0, &nres);
         if (status == LUA_OK) {
-            // Handler completed synchronously. Return values are intentionally
-            // not collected on the async dispatch path.
+            // Handler completed synchronously. Collect its return values and,
+            // if this was a call request, resume the suspended caller.
+            if (call_session != 0 && manager != nullptr) {
+                nlohmann::json returns = nlohmann::json::array();
+                for (int i = 0; i < nres; ++i) {
+                    nlohmann::json item;
+                    sol::stack_object so(sol::state_view(co), i + 1);
+                    lua_to_json(so, &item);
+                    returns.push_back(std::move(item));
+                }
+                manager->on_handler_completed(co, returns);
+            }
+            if (manager && !service_id.empty()) {
+                manager->reset_error_count(std::string(service_id));
+            }
             return true;
         }
         if (status == LUA_YIELD) {
@@ -1157,12 +1187,48 @@ bool LuaRuntime::call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
         }
         lua_settop(co, 0);
         if (error) *error = msg;
+        if (manager && !service_id.empty()) {
+            manager->invoke_error_hook(std::string(service_id), "handler",
+                                       std::string(method_name), msg);
+        }
         return false;
     } catch (const std::exception& e) {
         if (error) *error = e.what();
         return false;
     }
 }
+
+bool LuaRuntime::invoke_hook(std::shared_ptr<LuaVM> vm,
+                              const char* hook_name,
+                              const std::string& err_or_reason,
+                              const std::string& error_type,
+                              const std::string& method_name) {
+    if (!vm) {
+        return false;
+    }
+    sol::table& service = vm->service_table();
+    if (!service.valid()) {
+        return false;
+    }
+    sol::object hook_fn = service[hook_name];
+    if (!hook_fn.is<sol::protected_function>()) {
+        return false;
+    }
+    sol::state_view lua(vm->state()->lua_state());
+    sol::table ctx = lua.create_table();
+    ctx["type"] = error_type;
+    ctx["method"] = method_name;
+    sol::protected_function fn = hook_fn.as<sol::protected_function>();
+    auto result = fn(err_or_reason, ctx);
+    if (!result.valid()) {
+        sol::error err = result;
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_ERROR(log, std::string(hook_name) + " hook failed: " + err.what());
+        return false;
+    }
+    return true;
+}
+
 std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
                                      std::string_view func_name,
                                      std::string_view args) {
