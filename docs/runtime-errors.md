@@ -41,7 +41,7 @@
 | `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | ✅ send 检查 |
 | `service_not_found` | send/call | 目标服务不存在（name 未注册或 handle 已失效） | 是 | ✅ send 和 call 均返回 |
 | `service_dead` | send/call | 目标服务已停止 | 否 | ⚠️ 由 `service_not_found` 覆盖（exit 后从 registry 移除） |
-| `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ❌ Cluster |
+| `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ❌ shield_cluster 可选模块（Phase 5） |
 | `mailbox_full` | send | 目标服务 mailbox 达到上限 | 是 | ✅ |
 | `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | ⚠️ 通用错误 |
 | `spawn_timeout` | spawn | 服务初始化超过 `spawn_timeout`（默认 10s） | 否 | ✅ on_init 超时检测 |
@@ -50,7 +50,7 @@
 | `timeout` | call | 调用超时（默认 5s） | 是 | ✅ |
 | `method_not_found` | call | 目标服务没有该方法 | 否 | ✅ |
 | `handler_error` | call | 目标服务 method 抛出未捕获异常 | 否 | ✅ call 返回 |
-| `context_expired` | context | handler 已返回，`shield.sender/trace/deadline` 上下文失效 | 否 | ❌ Phase 2 |
+| `context_expired` | context | handler 已返回，`shield.sender/trace/deadline` 上下文失效 | 否 | ⚠️ 当前返回 nil（符合文档规范），显式错误码需 handler 生命周期追踪架构 |
 | `api_not_allowed_in_exit` | exit hook | 在 `on_exit` 中调用了会挂起的 API | 否 | ✅ |
 | `legacy_api_removed` | legacy API | 调用了已删除的旧 API | 否 | ✅ |
 
