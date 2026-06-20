@@ -4,6 +4,7 @@
 #include "shield/shield.hpp"
 
 #include <filesystem>
+#include <fstream>
 #include <thread>
 #include <chrono>
 

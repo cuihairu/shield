@@ -35,10 +35,10 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 实现 opaque ServiceHandle、name reserve/publish 状态和 coroutine-aware spawn。
 - [x] 实现 `shield.query/register/unregister/names` 的单节点最小 registry 路径。
 - [x] 提供 `shield.now`。
-- [ ] 实现 `timer_once/timer/sleep/fork` 的 coroutine-aware 语义；当前 `timer_once/timer/cancel_timer` 已走 `TimerManager`，但 `sleep`/`fork` 仍是阻塞/线程实现，callback 也不在协程中执行。
+- [ ] 实现 `timer_once/timer/sleep/fork` 的 coroutine-aware 语义；当前 `timer_once/timer/cancel_timer` 已走 `TimerManager`，`fork` 已走 worker 线程调度，但 `sleep` 仍是阻塞实现，callback 也不在协程中执行。coroutine-aware `call` 同样待实现（当前走同步 `LuaServiceManager::call` 路径）。
 - [x] 提供 `shield.log.*`。
 - [x] 提供原始 `shield.db.*` / `shield.redis.*` 的绑定和未启用错误返回。
-- [ ] 补齐 data API 的真实 mock pool 验收和后端连接验证。`shield_runtime_data_smoke` 已覆盖 mock pool smoke；真实 MySQL/Redis 后端连接与连接池压力验证仍待补齐。
+- [ ] 补齐 data API 的真实 mock pool 验收和后端连接验证。`shield_runtime_data_smoke` 已覆盖 mock pool smoke；`tests/lua_api/test_lua_api_data.cpp` 已覆盖 mock pool 下的 DB query/execute、Redis get/set/del/subscribe 和 dot-notation 负向测试；真实 MySQL/Redis 后端连接与连接池压力验证仍待补齐。
 - [ ] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 runtime 线程的语义。`shield.call` / `shield.call_timeout` API 表面已注册并具备默认超时，但内部仍走同步 `LuaServiceManager::call` 路径，未挂起 Lua 协程。
 - [x] 删除旧 `shield.service("name")`、冒号式 DB/Redis API 和 legacy `on_message(src, type, data)` 入口。
 
@@ -59,7 +59,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。acceptance test 已覆盖 `echo.lua` 的 sender/send/log/now、`gateway.lua` 的 connect/disconnect/client_message、`player.lua` 的 login/chat/logout/self/exit/db/redis API 模式。
 - [x] 增加最小 Lua API runtime smoke test。
 - [x] 增加本地 registry runtime smoke test。
-- [ ] 按 LAPI 矩阵补齐完整 Lua API 绑定测试；LAPI-001~010 已在 `tests/lua_api/` 覆盖正负向 case，但 `shield.call` / `timer` / `sleep` / `fork` 的 coroutine-aware 路径仍依赖 Phase 2 实现落地后再补完。
+- [ ] 按 LAPI 矩阵补齐完整 Lua API 绑定测试；当前 `tests/lua_api/` 已启用 lifecycle、timers、registry、messaging、call、context、legacy、data、gateway 套件并对接现行 `spawn/send/call/pump_once` 接口。`data` 套件已覆盖 mock pool 下的 DB/Redis API 表面和 dot-notation 负向测试；`gateway` 套件已覆盖模块加载和 handler 函数存在性检查，完整 session 模拟测试（LAPI-009-01~05）仍待 mock harness 实现后补完。`shield.call` / `timer` / `sleep` / `fork` 的 coroutine-aware 路径仍依赖 Phase 2 实现落地后再补完。
 - [x] 按 `docs/lua-api-tests.md` 补齐独立 API 用例，示例不替代测试。
 - [x] 为新 public/core 头增加 CAF 泄漏静态检查。
 - [x] 收敛 legacy public headers 的 CAF 泄漏并纳入检查。
@@ -99,3 +99,47 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - 插件系统。
 - 高级数据 mapper。
 - Schema 工具链。
+
+## 审计发现与待处理项
+
+以下为 2026-06-20 文档-代码对齐审计中发现的问题。
+
+### 已修复
+
+| 编号 | 问题 | 修复 |
+| --- | --- | --- |
+| GAP-001 | `test_lua_api_data.cpp` 使用不存在的 `manager->spawn_service()` API | 按当前 `manager.spawn()` 接口重写，覆盖 mock pool 下 DB/Redis API |
+| GAP-002 | `test_lua_api_gateway.cpp` 使用不存在的 `manager->spawn_service()` API | 按当前接口重写，覆盖模块加载和 handler 存在性检查 |
+| GAP-003 | `test_lua_api_data.cpp` / `test_lua_api_gateway.cpp` 在 CMakeLists.txt 中被注释 | 已启用；data 测试链接 `shield_data` |
+| GAP-004 | `test_lua_api_lifecycle.cpp` LAPI-002-03 断言与注释矛盾 | 修正断言：`on_init` 返回 `false` 时 `call_service_function` 应返回 `false` |
+| GAP-005 | `data_service.lua` 缺少 dot-notation 负向测试方法 | 新增 `test_colon_db_fails` |
+
+### 待实现（需 Phase 2 coroutine 支持）
+
+| 编号 | 问题 | 阻塞原因 |
+| --- | --- | --- |
+| GAP-010 | `shield.call` 走同步路径，不挂起 Lua 协程 | 需要 CoroutineScheduler 与 Mailbox 联动 |
+| GAP-011 | `shield.sleep` 是阻塞实现 | 需要 coroutine yield/resume |
+| GAP-012 | `shield.fork` 的 callback 不在协程中执行 | 需要 coroutine scheduler |
+| GAP-013 | timer callback 不在协程中执行 | 需要 coroutine scheduler |
+| GAP-014 | LAPI-005-06 (call timeout) 测试标记为 Phase 1 同步忽略 timeout | 需要 coroutine-aware call |
+| GAP-015 | LAPI-002-06 (`on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit`) | 需要 exit 上下文检查 |
+
+### 待实现（需专用 mock harness）
+
+| 编号 | 问题 | 阻塞原因 |
+| --- | --- | --- |
+| GAP-020 | LAPI-009-01~05 (Gateway session 模拟测试) | 需要 mock SessionHandle harness |
+| GAP-021 | LAPI-008-03 (SQL error → `db_query_failed`) | 需要可注入错误的 mock DB connection |
+| GAP-022 | `on_error` / `on_panic` hook 注册与调用 | 文档已定义，代码未注册到 `register_full_shield_api` |
+| GAP-023 | `shield.config` API 缺少独立测试 | 实现已存在，需补充 LAPI 测试用例 |
+
+### 文档不合理项
+
+| 编号 | 文档 | 问题 | 建议 |
+| --- | --- | --- | --- |
+| DOC-001 | lua-api.md | `shield.config("database.host", "localhost")` 示例暗示嵌套 key 访问，但实现只做扁平 key 匹配 | 补充说明 config key 是扁平字符串，不支持嵌套路径遍历 |
+| DOC-002 | lua-api.md | `on_error` / `on_panic` 定义了 `context.type` 可取 `handler`/`timer`/`fork`，但 timer/fork callback 当前不走协程，无法自然产生 error context | 标注为 Phase 2 语义 |
+| DOC-003 | lua-api.md | `shield.trace()` 和 `shield.deadline()` 当前返回固定值 `"trace:0"` 和 `nil` | 标注为 Phase 2 实现 |
+| DOC-004 | lua-api-tests.md | LAPI-005-07 (late response after timeout) 和 LAPI-005-08 (nested call) 依赖 coroutine-aware call | 标注为 Phase 2 |
+| DOC-005 | roadmap.md Phase 2 | `fork` 描述为"仍是线程实现"，实际已走 worker 线程调度（`enqueue_forked_task`），非 `std::thread::detach` | 已更新描述 |

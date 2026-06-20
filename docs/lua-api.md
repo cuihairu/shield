@@ -122,6 +122,8 @@ end
 
 `on_error` 不改变服务状态。Phase 1 的 panic 策略固定为：同一 service 连续 handler/timer/fork 未捕获错误达到 `limits.max_errors_before_panic` 时进入 panic；未配置时默认 10。
 
+实现快照：`on_error` 和 `on_panic` hook 已在 lua-api.md 中定义，但尚未注册到 `register_full_shield_api` 调用链中。timer/fork callback 的错误当前由 C++ 层 `try/catch` 捕获并记录日志，不经过 Lua `on_error` hook。完整 hook 调用链依赖 coroutine scheduler 落地（Phase 2）。
+
 ### on_panic(reason, context)
 
 服务进入不可恢复状态前调用。
@@ -277,6 +279,8 @@ local deadline = shield.deadline()
 - handler 返回后上下文失效。
 - timer/fork coroutine 中 `shield.sender()` 返回 `nil`。
 
+实现快照：`shield.sender()` 已实现；`shield.trace()` 当前返回固定值 `"trace:0"`；`shield.deadline()` 当前返回 `nil`。完整 trace 传播和 deadline 可见性依赖 coroutine-aware call 落地（Phase 2）。
+
 ## Timer API
 
 ### shield.timer_once(delay_ms, callback)
@@ -346,6 +350,8 @@ local host = shield.config("database.host", "localhost")
 - 默认只读。
 - 找不到 key 时返回第二个参数作为默认值；没有默认值则返回 `nil`。
 - 配置加载和合并由 C++ bootstrap 完成，Lua 不负责加载 YAML 文件。
+
+实现快照：`shield.config` 已实现，key 为扁平字符串匹配（如 `"database.host"`），不支持嵌套路径遍历。返回值自动尝试转换为 boolean/integer/number/string。
 
 ## Log API
 

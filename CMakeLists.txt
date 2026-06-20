@@ -110,10 +110,20 @@ set(CMAKE_PREFIX_PATH
     "${VCPKG_INSTALLED_DIR}"
     CACHE PATH "Path to vcpkg installed directory")
 
-# Explicitly add vcpkg's include and lib directories to compiler search paths
-include_directories("${VCPKG_INSTALLED_DIR}/include")
+# Explicitly add vcpkg's include and lib directories to compiler search paths.
+# Use NO_SYSTEM_FROM_IMPORTED to prevent VS generators from placing the path
+# under /external:I (which can interfere with __has_include / macro detection
+# in header-only libraries like sol2).
+include_directories(SYSTEM "${VCPKG_INSTALLED_DIR}/include")
 link_directories("${VCPKG_INSTALLED_DIR}/lib")
 link_directories("${VCPKG_INSTALLED_DIR}/debug/lib")
+
+# Ensure vcpkg include is a normal (non-external) search path for all targets.
+# This is needed because VS 2026's /external:I can break sol2's
+# __has_include(<lua.hpp>) detection.
+if(MSVC)
+    add_compile_options("/I${VCPKG_INSTALLED_DIR}/include")
+endif()
 
 # Enforce vcpkg-only search for includes and libraries
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
@@ -400,7 +410,7 @@ target_include_directories(shield_bootstrap
 )
 
 target_link_libraries(shield_bootstrap
-    PUBLIC shield_base
+    PUBLIC shield_base CAF::core CAF::io
     PRIVATE shield_log shield_config shield_core shield_lua shield_data shield_net
 )
 

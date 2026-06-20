@@ -21,7 +21,7 @@ function M.on_init(args)
     local queried_child = shield.query("registry_child.1")
     assert(queried_child == child, "default child name should query")
 
-    local ok_alias, alias_err = shield.send(child, "publish_alias", "registry.alias")
+    local ok_alias, alias_err = shield.call(child, "publish_alias", "registry.alias")
     assert(ok_alias == true, alias_err and alias_err.message or "alias publish failed")
 
     local alias = shield.query("registry.alias")
@@ -37,7 +37,7 @@ function M.on_init(args)
     local ok_duplicate, duplicate_err = shield.register("registry.alias")
     assert(ok_duplicate == false and duplicate_err.code == "register_failed", "duplicate register should fail")
 
-    local ok_unpublish = shield.send(child, "unpublish_alias", "registry.alias")
+    local ok_unpublish = shield.call(child, "unpublish_alias", "registry.alias")
     assert(ok_unpublish == true, "alias unpublish failed")
     local missing = shield.query("registry.alias")
     assert(missing == nil, "alias should be gone after unregister")

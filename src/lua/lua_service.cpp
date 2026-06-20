@@ -193,6 +193,17 @@ LuaServiceManager::LuaServiceManager(LuaRuntime& runtime)
 }
 
 LuaServiceManager::~LuaServiceManager() {
+    // Cancel pending timer/fork/coroutine callbacks for every owned service
+    // before this manager's state (and the service VMs it owns) is destroyed.
+    // TimerManager and CoroutineScheduler live in LuaRuntime, which outlives
+    // this manager; without this cleanup their sol::function/std::function
+    // callbacks would be released after the owning lua_State is already closed.
+    const auto service_ids = impl_->service_order;
+    for (const auto& service_id : service_ids) {
+        cancel_forked_tasks_for_service(service_id);
+        impl_->runtime.timer_manager().cancel_all_for_service(service_id);
+        impl_->runtime.coroutine_scheduler().cancel_all_for_service(service_id);
+    }
     impl_->runtime.set_service_manager(nullptr);
 }
 
@@ -246,6 +257,13 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             Impl::DispatchScope scope(*impl_, service_name, "", false);
             if (!impl_->runtime.call_service_function(vm, "on_init", init_args,
                                                       &error)) {
+                if (auto names_it = impl_->owned_names.find(service_name);
+                    names_it != impl_->owned_names.end()) {
+                    for (const auto& name : names_it->second) {
+                        impl_->published_names.erase(name);
+                    }
+                    impl_->owned_names.erase(names_it);
+                }
                 return SpawnResult::error("on_init failed for " + service_name +
                                           ": " + error);
             }
@@ -353,6 +371,15 @@ void LuaServiceManager::exit(std::string_view service_id,
     nlohmann::json args = std::string(reason);
     Impl::DispatchScope scope(*impl_, std::string(service_id), "", true);
     (void)impl_->runtime.call_service_function(it->second, "on_exit", args, &error);
+
+    // Cancel forked tasks / timers / coroutines BEFORE erasing the service VM.
+    // These hold sol::function / std::function callbacks that reference the
+    // service's lua_State; releasing them after the VM is destroyed would
+    // luaL_unref on a closed state.
+    cancel_forked_tasks_for_service(std::string(service_id));
+    impl_->runtime.timer_manager().cancel_all_for_service(std::string(service_id));
+    impl_->runtime.coroutine_scheduler().cancel_all_for_service(std::string(service_id));
+
     if (auto names_it = impl_->owned_names.find(std::string(service_id));
         names_it != impl_->owned_names.end()) {
         for (const auto& name : names_it->second) {
@@ -368,15 +395,6 @@ void LuaServiceManager::exit(std::string_view service_id,
 
     // Clean up mailbox
     impl_->mailboxes.erase(std::string(service_id));
-
-    // Cancel forked tasks owned by this service.
-    cancel_forked_tasks_for_service(std::string(service_id));
-
-    // Cancel timers owned by this service so they don't fire on a dead VM.
-    impl_->runtime.timer_manager().cancel_all_for_service(std::string(service_id));
-
-    // Cancel coroutines owned by this service.
-    impl_->runtime.coroutine_scheduler().cancel_all_for_service(std::string(service_id));
 }
 
 void LuaServiceManager::shutdown_all(std::string_view reason) {
@@ -426,7 +444,10 @@ bool LuaServiceManager::register_name(std::string_view name, std::string* error)
         }
         return false;
     }
-    if (!impl_->services.contains(owner)) {
+    const bool in_current_dispatch = !impl_->dispatch_stack.empty() &&
+                                     impl_->dispatch_stack.back().service_id ==
+                                         owner;
+    if (!impl_->services.contains(owner) && !in_current_dispatch) {
         if (error) {
             *error = "current service is not running: " + owner;
         }

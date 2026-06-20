@@ -24,27 +24,49 @@ function(shield_lua_api_test name)
     set_tests_properties(${name} PROPERTIES
         LABELS "lua_api"
         TIMEOUT 60
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
+    shield_copy_runtime_dlls(${name})
 endfunction()
 
 # Active suites: aligned with the current public Lua API surface in
 # include/shield/lua/lua_*.hpp.
 shield_lua_api_test(test_lua_api_lifecycle)
 shield_lua_api_test(test_lua_api_timers)
+shield_lua_api_test(test_lua_api_registry)
+shield_lua_api_test(test_lua_api_messaging)
+shield_lua_api_test(test_lua_api_call)
+shield_lua_api_test(test_lua_api_context)
+shield_lua_api_test(test_lua_api_legacy)
+shield_lua_api_test(test_lua_api_config)
 
-# Deferred suites: these files were committed against a speculative API
-# (`LuaServiceManager::spawn_service`, `send_message`, `query_service`
-# returning raw pointers, `LuaRuntime::eval_int64`, etc.) that does not
-# exist in the current implementation. They are tracked as Phase 4 work in
-# docs/roadmap.md ("LAPI-001~010 已在 `tests/lua_api/` 覆盖正负向 case"
-# needs to be reconciled with the actual API). Re-enable one suite at a
-# time as it is rewritten to call spawn() / send() / call() and inspect
-# state through call_service_method instead of returning raw VM pointers.
-#
-# shield_lua_api_test(test_lua_api_registry)
-# shield_lua_api_test(test_lua_api_messaging)
-# shield_lua_api_test(test_lua_api_call)
-# shield_lua_api_test(test_lua_api_context)
-# shield_lua_api_test(test_lua_api_legacy)
-# shield_lua_api_test(test_lua_api_data)
-# shield_lua_api_test(test_lua_api_gateway)
+# Data API suite: needs shield_data for direct pool initialisation.
+# shield_config uses yaml-cpp as PRIVATE, so downstream link targets
+# must also pull in yaml-cpp explicitly.
+function(shield_lua_api_data_test name)
+    add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name}
+        PRIVATE
+            shield_lua
+            shield_core
+            shield_data
+            yaml-cpp::yaml-cpp
+            Boost::unit_test_framework
+            Boost::headers
+    )
+    target_include_directories(${name}
+        PRIVATE
+            ${CMAKE_SOURCE_DIR}/include
+            ${CMAKE_SOURCE_DIR}/tests/lua_api
+    )
+    add_test(NAME ${name} COMMAND ${name})
+    set_tests_properties(${name} PROPERTIES
+        LABELS "lua_api;data"
+        TIMEOUT 60
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    shield_copy_runtime_dlls(${name})
+endfunction()
+
+shield_lua_api_data_test(test_lua_api_data)
+shield_lua_api_test(test_lua_api_gateway)

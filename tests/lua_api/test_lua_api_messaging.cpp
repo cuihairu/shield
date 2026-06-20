@@ -4,273 +4,163 @@
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 
-#include <filesystem>
-#include <thread>
-#include <chrono>
+#include <nlohmann/json.hpp>
+#include <string>
 
 using namespace shield::lua;
 
 namespace {
 const std::string TEST_SCRIPTS_DIR = "../tests/lua_api/scripts/";
+
+nlohmann::json opts_for(const std::string& name) {
+    return {
+        {"name", name},
+        {"args", nlohmann::json::object()},
+        {"config", nlohmann::json::object()},
+    };
 }
+
+SpawnResult spawn_messaging(LuaServiceManager& manager, const std::string& name) {
+    return manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
+                         opts_for(name).dump());
+}
+}  // namespace
 
 BOOST_AUTO_TEST_SUITE(MessagingTests)
 
 BOOST_AUTO_TEST_CASE(LAPI_004_01_SendByName) {
-    // Test sending message to service by name
-    auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
 
-    std::string error;
-    std::string service_name = "receiver_service";
+    auto receiver = spawn_messaging(manager, "receiver_service");
+    auto sender = spawn_messaging(manager, "sender_service");
+    BOOST_REQUIRE(receiver.success);
+    BOOST_REQUIRE(sender.success);
 
-    // Spawn receiver service
-    auto receiver = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "messaging_service.lua",
-        service_name,
-        nlohmann::json{{"test_case", "default"}}, &error);
+    CallResult send_result = manager.call(
+        sender.service_id, "send_to",
+        nlohmann::json::array({"receiver_service", "record", "test_message"}));
+    BOOST_REQUIRE(send_result.success);
+    BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), true);
 
-    BOOST_REQUIRE(receiver != nullptr);
-    BOOST_CHECK(error.empty());
+    BOOST_REQUIRE(manager.process_mailbox(receiver.service_id));
 
-    // Create a sender service (could be the test harness itself)
-    auto sender = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua",
-        "sender_service",
-        nlohmann::json{{"test_case", "default"}}, &error);
-
-    BOOST_REQUIRE(sender != nullptr);
-
-    // Send message from sender to receiver by name
-    nlohmann::json message = {
-        {"method", "echo"},
-        {"args", {"test_message"}}
-    };
-
-    bool sent = manager->send_message(sender, service_name, message, &error);
-    BOOST_CHECK(sent);
-    BOOST_CHECK(error.empty());
-
-    // Give time for message to be processed
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // TODO: Verify receiver received the message by checking its state
-    // This requires the messaging_service.lua to expose received message state
+    CallResult last = manager.call(receiver.service_id, "get_last_args",
+                                   nlohmann::json::array());
+    BOOST_REQUIRE(last.success);
+    BOOST_REQUIRE_EQUAL(last.values.size(), 1u);
+    BOOST_CHECK_EQUAL(last.values[0][0].get<std::string>(), "test_message");
 }
 
-BOOST_AUTO_TEST_CASE(LAPI_004_02_SendByHandle) {
-    // Test sending message to service by opaque handle
-    auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+BOOST_AUTO_TEST_CASE(LAPI_004_02_SendByHandleFromQuery) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
 
-    std::string error;
+    auto receiver = spawn_messaging(manager, "handle_receiver");
+    auto sender = spawn_messaging(manager, "handle_sender");
+    BOOST_REQUIRE(receiver.success);
+    BOOST_REQUIRE(sender.success);
 
-    // Spawn receiver and sender
-    auto receiver = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "messaging_service.lua",
-        "handle_receiver",
-        nlohmann::json{{"test_case", "default"}}, &error);
+    CallResult send_result = manager.call(
+        sender.service_id, "send_to_query",
+        nlohmann::json::array({"handle_receiver", "record", "handle_test"}));
+    BOOST_REQUIRE(send_result.success);
+    BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), true);
 
-    auto sender = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua",
-        "handle_sender",
-        nlohmann::json{{"test_case", "default"}}, &error);
+    BOOST_REQUIRE(manager.process_mailbox(receiver.service_id));
 
-    BOOST_REQUIRE(receiver != nullptr);
-    BOOST_REQUIRE(sender != nullptr);
-
-    // Send by handle
-    nlohmann::json message = {
-        {"method", "echo"},
-        {"args", {"handle_test"}}
-    };
-
-    bool sent = manager->send_message(sender, receiver, message, &error);
-    BOOST_CHECK(sent);
-    BOOST_CHECK(error.empty());
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CallResult last = manager.call(receiver.service_id, "get_last_args",
+                                   nlohmann::json::array());
+    BOOST_REQUIRE(last.success);
+    BOOST_CHECK_EQUAL(last.values[0][0].get<std::string>(), "handle_test");
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_004_03_SendToMissingService) {
-    // Test that sending to non-existent service returns service_not_found
-    auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
 
-    std::string error;
+    auto sender = spawn_messaging(manager, "sender_test");
+    BOOST_REQUIRE(sender.success);
 
-    auto sender = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua",
-        "sender_test",
-        nlohmann::json{{"test_case", "default"}}, &error);
-
-    BOOST_REQUIRE(sender != nullptr);
-
-    // Try to send to non-existent service
-    nlohmann::json message = {
-        {"method", "echo"},
-        {"args", {"test"}}
-    };
-
-    bool sent = manager->send_message(sender, "nonexistent_service", message, &error);
-    BOOST_CHECK(!sent);
-    BOOST_CHECK(!error.empty());
-    BOOST_CHECK(error.find("not_found") != std::string::npos ||
-                error.find("unknown") != std::string::npos);
+    CallResult send_result = manager.call(
+        sender.service_id, "send_to",
+        nlohmann::json::array({"missing_service", "record", "test"}));
+    BOOST_REQUIRE(send_result.success);
+    BOOST_REQUIRE_EQUAL(send_result.values.size(), 2u);
+    BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(send_result.values[1]["code"].get<std::string>(),
+                      "send_failed");
 }
 
-BOOST_AUTO_TEST_CASE(LAPI_004_04_SendMissingMethod) {
-    // Test that sending to non-existent method results in dead letter
-    auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+BOOST_AUTO_TEST_CASE(LAPI_004_04_SendMissingMethodIsAcceptedButNotDispatched) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
 
-    std::string error;
+    auto receiver = spawn_messaging(manager, "method_receiver");
+    auto sender = spawn_messaging(manager, "method_sender");
+    BOOST_REQUIRE(receiver.success);
+    BOOST_REQUIRE(sender.success);
 
-    auto receiver = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "messaging_service.lua",
-        "method_receiver",
-        nlohmann::json{{"test_case", "default"}}, &error);
+    CallResult send_result = manager.call(
+        sender.service_id, "send_to",
+        nlohmann::json::array({"method_receiver", "missing_method"}));
+    BOOST_REQUIRE(send_result.success);
+    BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), true);
 
-    auto sender = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua",
-        "method_sender",
-        nlohmann::json{{"test_case", "default"}}, &error);
+    BOOST_REQUIRE(manager.process_mailbox(receiver.service_id));
 
-    BOOST_REQUIRE(receiver != nullptr);
-    BOOST_REQUIRE(sender != nullptr);
-
-    // Send to non-existent method
-    nlohmann::json message = {
-        {"method", "nonexistent_method"},
-        {"args", nlohmann::json::array()}
-    };
-
-    bool sent = manager->send_message(sender, receiver, message, &error);
-
-    // Send itself might succeed (message sent), but delivery should fail
-    // or be recorded in dead letter
-    BOOST_CHECK((sent && error.empty()) || (!sent && !error.empty()));
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // TODO: Check dead letter queue for undelivered message
+    CallResult last = manager.call(receiver.service_id, "get_last_method",
+                                   nlohmann::json::array());
+    BOOST_REQUIRE(last.success);
+    BOOST_REQUIRE_EQUAL(last.values.size(), 1u);
+    BOOST_CHECK(last.values[0].is_null());
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_004_05_MailboxFull) {
-    // Test that sending to full mailbox returns mailbox_full
-    auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto receiver = spawn_messaging(manager, "slow_receiver");
+    BOOST_REQUIRE(receiver.success);
 
     std::string error;
-
-    // Create a slow receiver that doesn't process messages quickly
-    auto slow_receiver = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "messaging_service.lua",
-        "slow_receiver",
-        nlohmann::json{{"test_case", "slow"}}, &error);
-
-    auto sender = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua",
-        "fast_sender",
-        nlohmann::json{{"test_case", "default"}}, &error);
-
-    BOOST_REQUIRE(slow_receiver != nullptr);
-    BOOST_REQUIRE(sender != nullptr);
-
-    // Send many messages rapidly to fill mailbox
-    nlohmann::json message = {
-        {"method", "echo"},
-        {"args", {"spam"}}
-    };
-
-    bool mailbox_full_encountered = false;
-    for (int i = 0; i < 10000; ++i) {
-        std::string send_error;
-        bool sent = manager->send_message(sender, slow_receiver, message, &send_error);
-        if (!sent && send_error.find("full") != std::string::npos) {
-            mailbox_full_encountered = true;
+    bool mailbox_full = false;
+    for (int i = 0; i < 1001; ++i) {
+        if (!manager.send(receiver.service_id, "record",
+                          nlohmann::json::array({i}), &error)) {
+            mailbox_full = true;
             break;
         }
     }
 
-    // TODO: Implement mailbox size limits and test properly
-    // BOOST_CHECK(mailbox_full_encountered);
+    BOOST_CHECK(mailbox_full);
+    BOOST_CHECK(error.find("mailbox full") != std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(LAPI_004_06_SelfSend) {
-    // Test that self-send doesn't cause reentrant execution
-    auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+BOOST_AUTO_TEST_CASE(LAPI_004_06_SelfSendIsQueued) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
 
-    std::string error;
+    auto self_sender = spawn_messaging(manager, "self_sender");
+    BOOST_REQUIRE(self_sender.success);
 
-    auto self_sender = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "messaging_service.lua",
-        "self_sender",
-        nlohmann::json{{"test_case", "self_send"}}, &error);
+    CallResult send_result = manager.call(
+        self_sender.service_id, "send_to",
+        nlohmann::json::array({"self_sender", "record", "self_message"}));
+    BOOST_REQUIRE(send_result.success);
+    BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), true);
 
-    BOOST_REQUIRE(self_sender != nullptr);
+    CallResult before = manager.call(self_sender.service_id, "get_last_method",
+                                     nlohmann::json::array());
+    BOOST_REQUIRE(before.success);
+    BOOST_CHECK(before.values[0].is_null());
 
-    // Service sends message to itself
-    nlohmann::json message = {
-        {"method", "echo"},
-        {"args", {"self_message"}}
-    };
+    BOOST_REQUIRE(manager.process_mailbox(self_sender.service_id));
 
-    bool sent = manager->send_message(self_sender, self_sender, message, &error);
-    BOOST_CHECK(sent);
-    BOOST_CHECK(error.empty());
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    // Verify no reentrant execution occurred
-    // (message should be queued for next scheduler cycle)
-    // TODO: Add non-reentrancy verification
+    CallResult after = manager.call(self_sender.service_id, "get_last_method",
+                                    nlohmann::json::array());
+    BOOST_REQUIRE(after.success);
+    BOOST_CHECK_EQUAL(after.values[0].get<std::string>(), "record");
 }
-
-BOOST_AUTO_TEST_SUITE(LApi004Tests)
-
-BOOST_AUTO_TEST_CASE(SendMessageVariations) {
-    // Test various message sending scenarios
-    auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
-
-    std::string error;
-
-    // Test 1: Send with no args
-    auto receiver = manager->spawn_service(
-        TEST_SCRIPTS_DIR + "messaging_service.lua",
-        "receiver_1",
-        nlohmann::json{{"test_case", "default"}}, &error);
-
-    BOOST_REQUIRE(receiver != nullptr);
-
-    nlohmann::json msg_no_args = {
-        {"method", "get_sender"},
-        {"args", nlohmann::json::array()}
-    };
-
-    BOOST_CHECK(manager->send_message(receiver, receiver, msg_no_args, &error));
-
-    // Test 2: Send with single arg
-    nlohmann::json msg_single_arg = {
-        {"method", "echo"},
-        {"args", {"single_arg"}}
-    };
-
-    BOOST_CHECK(manager->send_message(receiver, receiver, msg_single_arg, &error));
-
-    // Test 3: Send with multiple args
-    nlohmann::json msg_multi_args = {
-        {"method", "multi_return"},
-        {"args", {"arg1", "arg2", "arg3"}}
-    };
-
-    BOOST_CHECK(manager->send_message(receiver, receiver, msg_multi_args, &error));
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-}
-
-BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE_END()

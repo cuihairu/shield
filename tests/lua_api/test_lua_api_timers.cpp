@@ -91,7 +91,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_01_TimerOnce) {
         CallResult cr = manager.call(result.service_id, "get_timer_count",
                                      nlohmann::json::array(), 1000);
         return cr.success ? cr.values[0].get<int>() : -1;
-    }();
+    };
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     (void)manager.pump_once();
     BOOST_CHECK_EQUAL(second_count(), 1);

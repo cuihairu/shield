@@ -641,12 +641,23 @@ void register_config_api(sol::table& shield) {
                 return sol::make_object(lua, false);
             }
 
+            // Require the whole string to be consumed so that values like
+            // "3.14" don't get truncated to integer 3 and "12abc" doesn't get
+            // partially parsed as 12 by std::stoll / std::stod.
             try {
-                return sol::make_object(lua, std::stoll(value));
+                size_t pos = 0;
+                const long long parsed = std::stoll(value, &pos);
+                if (pos == value.size()) {
+                    return sol::make_object(lua, parsed);
+                }
             } catch (const std::exception&) {}
 
             try {
-                return sol::make_object(lua, std::stod(value));
+                size_t pos = 0;
+                const double parsed = std::stod(value, &pos);
+                if (pos == value.size()) {
+                    return sol::make_object(lua, parsed);
+                }
             } catch (const std::exception&) {}
 
             return sol::make_object(lua, value);

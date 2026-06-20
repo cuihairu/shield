@@ -99,8 +99,10 @@ BOOST_AUTO_TEST_CASE(LAPI_002_03_OnInitReturnsFalse) {
     })"_json;
 
     bool init_result = runtime->call_service_function(vm, "on_init", args, &error);
-    // on_init returning false should still succeed the call, but the return value indicates failure
-    BOOST_CHECK(init_result);
+    // Per lua-api.md: on_init returning false, "reason" indicates failure.
+    // call_service_function returns false and sets error in this case.
+    BOOST_CHECK(!init_result);
+    BOOST_CHECK(error.find("init_failed_intentionally") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_002_04_OnInitThrowsError) {

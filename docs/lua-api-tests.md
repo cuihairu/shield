@@ -190,3 +190,23 @@ Harness 要求：
 - 每个新增 API 至少补充一个成功用例和一个失败用例。
 - 每个错误码必须在测试中至少出现一次。
 - `examples/hello_world/` 可以更贴近用户体验，但不能替代上述测试。
+
+## Phase 2 延迟用例
+
+以下用例依赖 Phase 2 coroutine-aware 实现或专用 mock harness，在当前 Phase 1 中无法完整验证。
+
+| Case | 延迟原因 |
+| --- | --- |
+| LAPI-005-06 | `call_timeout` 当前走同步路径，忽略 timeout_ms |
+| LAPI-005-07 | late response 丢弃依赖异步 call + pending registry |
+| LAPI-005-08 | nested call 不阻塞 runtime thread 依赖 coroutine 挂起 |
+| LAPI-006-04 | trace id 传播依赖 coroutine-aware call |
+| LAPI-006-05 | deadline 可见性依赖 coroutine-aware call |
+| LAPI-007-04 | `on_error` hook 调用依赖 Lua error handler 注册 |
+| LAPI-007-05 | `shield.sleep` coroutine 语义 |
+| LAPI-008-02 | DB disabled 路径（当前 suite mock pool 始终启用） |
+| LAPI-008-03 | SQL error 路径（需可注入错误的 mock connection） |
+| LAPI-008-05 | Redis disabled 路径 |
+| LAPI-008-06 | subscribe then exit（需 Redis pub/sub 生命周期追踪） |
+| LAPI-009-01~05 | Gateway session 模拟（需 mock SessionHandle harness） |
+| LAPI-002-06 | `on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit` |

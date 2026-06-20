@@ -23,7 +23,9 @@ add_test(NAME test_hello_world_acceptance COMMAND test_hello_world_acceptance)
 set_tests_properties(test_hello_world_acceptance PROPERTIES
     LABELS "acceptance"
     TIMEOUT 60
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+shield_copy_runtime_dlls(test_hello_world_acceptance)
 
 # Lua API test matrix (LAPI-001 ~ LAPI-010).
 add_subdirectory(lua_api)

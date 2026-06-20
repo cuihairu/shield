@@ -550,9 +550,9 @@ void ServiceHandle::register_usertype(sol::state& lua) {
 class LuaVM {
 public:
     LuaVM() : state_(std::make_shared<sol::state>()) {
-        state_->open_libraries(sol::lib::base, sol::lib::string,
-                               sol::lib::table, sol::lib::math,
-                               sol::lib::io, sol::lib::os);
+        state_->open_libraries(sol::lib::base, sol::lib::package,
+                               sol::lib::string, sol::lib::table,
+                               sol::lib::math, sol::lib::io, sol::lib::os);
 
         // Set Lua module search path from configuration
         std::string module_path = shield::config::get("lua.module_path",
