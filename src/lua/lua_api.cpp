@@ -6,6 +6,7 @@
 #include "shield/log/logger.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
+#include "shield/net/http_client.hpp"
 
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
@@ -1289,23 +1290,105 @@ void register_http_api(sol::table& shield) {
     sol::state_view lua(shield.lua_state());
     auto http = lua.create_table();
 
-    // shield.http.get(path, handler) - register GET route
-    // handler receives (request_table) and returns response_table
-    http.set_function("get",
-        [](sol::this_state state, std::string path,
-           sol::function handler) -> sol::object {
-            // Phase 1: store route handler for later use by HttpServer.
-            // Full integration requires passing the HttpServer instance.
+    // Route registration stubs. Full integration passes the HttpServer
+    // instance; these return true to indicate the call was accepted.
+    auto register_route = [](sol::this_state state, std::string method,
+                              std::string path, sol::function handler) {
+        sol::state_view lua(state);
+        return sol::make_object(lua, true);
+    };
+
+    http.set_function("get", [register_route](sol::this_state s, std::string p,
+                                               sol::function h) {
+        return register_route(s, "GET", std::move(p), std::move(h));
+    });
+    http.set_function("post", [register_route](sol::this_state s, std::string p,
+                                                sol::function h) {
+        return register_route(s, "POST", std::move(p), std::move(h));
+    });
+    http.set_function("put", [register_route](sol::this_state s, std::string p,
+                                               sol::function h) {
+        return register_route(s, "PUT", std::move(p), std::move(h));
+    });
+    http.set_function("delete", [register_route](sol::this_state s, std::string p,
+                                                  sol::function h) {
+        return register_route(s, "DELETE", std::move(p), std::move(h));
+    });
+    http.set_function("patch", [register_route](sol::this_state s, std::string p,
+                                                 sol::function h) {
+        return register_route(s, "PATCH", std::move(p), std::move(h));
+    });
+
+    // shield.http.request(url, options) -> response_table
+    // options: { method="GET", body="", headers={}, timeout=10 }
+    // Returns: { status=200, body="...", headers={}, ok=true, error="" }
+    http.set_function("request",
+        [](sol::this_state state, std::string url,
+           sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
-            return sol::make_object(lua, true);
+
+            shield::net::HttpClientOptions options;
+            options.url = url;
+
+            if (opts) {
+                if ((*opts)["method"].valid()) {
+                    options.method = (*opts)["method"].get<std::string>();
+                }
+                if ((*opts)["body"].valid()) {
+                    options.body = (*opts)["body"].get<std::string>();
+                }
+                if ((*opts)["timeout"].valid()) {
+                    options.timeout_seconds = (*opts)["timeout"].get<int>();
+                }
+                if ((*opts)["headers"].valid()) {
+                    sol::table hdrs = (*opts)["headers"];
+                    for (auto& [k, v] : hdrs) {
+                        if (k.is<std::string>() && v.is<std::string>()) {
+                            options.headers[k.as<std::string>()] = v.as<std::string>();
+                        }
+                    }
+                }
+            }
+
+            auto res = shield::net::HttpClient::request(options);
+
+            sol::table result = lua.create_table();
+            result["status"] = res.status_code;
+            result["body"] = res.body;
+            result["ok"] = res.ok();
+            result["error"] = res.error;
+            sol::table headers = lua.create_table();
+            for (const auto& [k, v] : res.headers) {
+                headers[k] = v;
+            }
+            result["headers"] = headers;
+            return result;
         });
 
-    // shield.http.post(path, handler) - register POST route
-    http.set_function("post",
-        [](sol::this_state state, std::string path,
-           sol::function handler) -> sol::object {
+    // Convenience methods.
+    http.set_function("get",
+        [](sol::this_state state, std::string url) -> sol::table {
             sol::state_view lua(state);
-            return sol::make_object(lua, true);
+            auto res = shield::net::HttpClient::get(url);
+            sol::table result = lua.create_table();
+            result["status"] = res.status_code;
+            result["body"] = res.body;
+            result["ok"] = res.ok();
+            result["error"] = res.error;
+            return result;
+        });
+
+    http.set_function("post",
+        [](sol::this_state state, std::string url,
+           sol::optional<std::string> body) -> sol::table {
+            sol::state_view lua(state);
+            auto res = shield::net::HttpClient::post_json(url, body.value_or(""));
+            sol::table result = lua.create_table();
+            result["status"] = res.status_code;
+            result["body"] = res.body;
+            result["ok"] = res.ok();
+            result["error"] = res.error;
+            return result;
         });
 
     shield["http"] = http;

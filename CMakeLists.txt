@@ -368,6 +368,7 @@ add_library(shield_net STATIC
     src/net/session.cpp
     src/net/listener.cpp
     src/net/http_server.cpp
+    src/net/http_client.cpp
 )
 
 target_include_directories(shield_net
