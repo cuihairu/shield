@@ -113,6 +113,7 @@ export default defineConfig({
         text: '草案与归档',
         items: [
           { text: '实体与组件草案', link: '/runtime-entity' },
+          { text: '游戏状态持久化与回档', link: '/runtime-persistence' },
           { text: 'Schema Protocol', link: '/schema-protocol' },
           { text: 'Schema Types', link: '/schema-types' },
           { text: 'Schema Descriptor', link: '/schema-descriptor' },

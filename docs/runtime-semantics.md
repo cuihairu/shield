@@ -63,6 +63,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [实体与组件](runtime-entity.md) | 游戏实体抽象、组件化设计、Entity/Component/Room 模式；不属于当前 core 或 Phase 1 最小运行时契约 |
+| [游戏状态持久化与回档](runtime-persistence.md) | 游戏业务存储模式、内存快照、增量日志、回档、事务和灾备设计；不属于当前 core 或 Phase 1 最小运行时契约 |
 
 ## 实现顺序建议
 
