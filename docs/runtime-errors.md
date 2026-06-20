@@ -40,7 +40,7 @@
 | `encode_failed` | send/call | 消息编码失败（类型不支持、嵌套过深、循环引用） | 否 | ❌ Phase 2 |
 | `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | ✅ send 检查 |
 | `service_not_found` | send/call | 目标服务不存在（name 未注册或 handle 已失效） | 是 | ✅ send 和 call 均返回 |
-| `service_dead` | send/call | 目标服务已停止 | 否 | ❌ Phase 2 |
+| `service_dead` | send/call | 目标服务已停止 | 否 | ⚠️ 由 `service_not_found` 覆盖（exit 后从 registry 移除） |
 | `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ❌ Cluster |
 | `mailbox_full` | send | 目标服务 mailbox 达到上限 | 是 | ✅ |
 | `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | ⚠️ 通用错误 |
@@ -104,8 +104,8 @@
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|
-| `session_closed` | session 已关闭，handle stale | 否 | ❌ SessionHandle 未实现 |
-| `session_send_queue_full` | session 发送队列已满 | 是 | ❌ SessionHandle 未实现 |
+| `session_closed` | session 已关闭，handle stale | 否 | ✅ SessionHandle.send 返回 |
+| `session_send_queue_full` | session 发送队列已满 | 是 | ✅ SessionHandle.send 返回 |
 | `handshake_timeout` | 握手超时 | 否 | ❌ Phase 2 |
 | `decode_error` | 协议解码错误 | 否 | ❌ Phase 2 |
 | `connection_limit` | 连接数达到上限 | 是 | ❌ Phase 2 |

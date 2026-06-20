@@ -467,8 +467,8 @@ end
 | --- | --- |
 | `code` | 稳定错误码字符串 |
 | `message` | 面向日志的错误说明 |
-| `retryable` | 是否适合业务重试（Phase 2） |
-| `detail` | 可选调试信息（Phase 2） |
+| `retryable` | 是否适合业务重试（已实现：timeout=true，其他=false） |
+| `detail` | 可选调试信息（Phase 2，当前未填充） |
 
 错误码清单见 [错误码参考](./runtime-errors.md)。
 

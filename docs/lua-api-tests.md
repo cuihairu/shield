@@ -201,7 +201,7 @@ Harness 要求：
 | ~~LAPI-005-07~~ | ~~late response 丢弃~~ call timeout 已实现，超时后 caller 已 resume；callee 返回时 `resume_caller` 在 `pending_calls` 中找不到 session，静默丢弃。行为正确 ✅ |
 | ~~LAPI-005-08~~ | ~~nested call~~ 协程路径支持：caller yield 后 worker 处理 callee mailbox，`CallApiFromLuaWrapsRuntimeResult` 测试覆盖嵌套 call ✅ |
 | LAPI-006-04 | trace id 传播：`shield.trace()` 返回固定值 `"trace:0"`，完整链路传播属于 Phase 2+。当前返回值可被调用，不会报错 |
-| LAPI-006-05 | deadline 可见性：`shield.deadline()` 返回 `nil`，未实现 deadline 传播 |
+| ~~LAPI-006-05~~ | ~~deadline 可见性~~ 已实现：`shield.deadline()` 从 dispatch context 读取，通过消息传播 ✅ |
 | ~~LAPI-007-04~~ | ~~`on_error` hook 调用~~ 已实现：`invoke_hook` 调用 service table 上的 `on_error`，`OnErrorHookCalledOnHandlerThrow` 测试覆盖 ✅ |
 | ~~LAPI-007-05~~ | ~~`shield.sleep` coroutine 语义~~ 已由 LAPI-007-08 覆盖 ✅ |
 | LAPI-008-02 | DB disabled 路径：`module_unavailable` 返回由 `shield_runtime_data_smoke` CTest 覆盖（未启用配置场景） |
