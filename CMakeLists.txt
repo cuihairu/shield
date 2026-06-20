@@ -378,6 +378,7 @@ add_library(shield_lua STATIC
     src/lua/lua_service.cpp
     src/lua/lua_api.cpp
     src/lua/lua_runtime.cpp
+    src/lua/lua_gateway_bridge.cpp
 )
 
 target_include_directories(shield_lua

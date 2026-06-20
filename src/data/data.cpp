@@ -4,6 +4,8 @@
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
 
+#include <sw/redis++/redis++.h>
+
 #include <condition_variable>
 #include <mutex>
 #include <queue>
@@ -183,6 +185,120 @@ bool DatabasePool::is_initialized() const {
 // Redis Implementation
 // =============================================================================
 
+// Real RedisConnection implementation using redis++.
+class RealRedisConnection : public RedisConnection {
+public:
+    explicit RealRedisConnection(const sw::redis::ConnectionOptions& opts)
+        : redis_(opts) {}
+
+    std::pair<bool, std::string> get(std::string_view key) override {
+        try {
+            auto val = redis_.get(std::string(key));
+            if (val) {
+                return {true, *val};
+            }
+            return {false, ""};
+        } catch (const std::exception& e) {
+            return {false, ""};
+        }
+    }
+
+    bool set(std::string_view key, std::string_view value,
+             int ttl_seconds) override {
+        try {
+            if (ttl_seconds > 0) {
+                return redis_.set(std::string(key), std::string(value),
+                                  std::chrono::milliseconds(ttl_seconds * 1000));
+            }
+            return redis_.set(std::string(key), std::string(value));
+        } catch (const std::exception& e) {
+            return false;
+        }
+    }
+
+    int del(std::string_view key) override {
+        try {
+            return static_cast<int>(redis_.del(std::string(key)));
+        } catch (const std::exception& e) {
+            return 0;
+        }
+    }
+
+    bool exists(std::string_view key) override {
+        try {
+            return redis_.exists(std::string(key)) > 0;
+        } catch (const std::exception& e) {
+            return false;
+        }
+    }
+
+    int publish(std::string_view channel, std::string_view message) override {
+        try {
+            return static_cast<int>(
+                redis_.publish(std::string(channel), std::string(message)));
+        } catch (const std::exception& e) {
+            return 0;
+        }
+    }
+
+    bool subscribe(std::string_view channel,
+                   SubscribeCallback callback) override {
+        try {
+            auto sub = redis_.subscriber();
+            sub.on_message([callback](std::string ch, std::string msg) {
+                callback(ch, msg);
+            });
+            sub.subscribe(std::string(channel));
+            // Run subscriber in a background thread.
+            subscriber_thread_ = std::thread([sub = std::move(sub)]() mutable {
+                try {
+                    while (true) {
+                        sub.consume();
+                    }
+                } catch (...) {
+                    // Subscription cancelled or connection lost.
+                }
+            });
+            return true;
+        } catch (const std::exception& e) {
+            return false;
+        }
+    }
+
+    bool unsubscribe(std::string_view channel) override {
+        try {
+            // The subscriber thread will exit on next consume() failure.
+            // For a clean unsubscribe, we'd need to store the subscriber
+            // object and call sub.unsubscribe(). For now, detach the thread.
+            if (subscriber_thread_.joinable()) {
+                subscriber_thread_.detach();
+            }
+            return true;
+        } catch (const std::exception& e) {
+            return false;
+        }
+    }
+
+    bool ping() override {
+        try {
+            redis_.ping();  // returns "PONG" string; throws on failure
+            return true;
+        } catch (const std::exception& e) {
+            return false;
+        }
+    }
+
+    void close() override {
+        if (subscriber_thread_.joinable()) {
+            subscriber_thread_.detach();
+        }
+    }
+
+private:
+    sw::redis::Redis redis_;
+    std::thread subscriber_thread_;
+};
+
 // Placeholder RedisConnection implementation
 class MockRedisConnection : public RedisConnection {
 public:
@@ -255,11 +371,34 @@ bool RedisPool::initialize(std::string_view config_key) {
     SHIELD_LOG_INFO(log, "Redis config: " + host + ":" + std::to_string(port) +
                     "/" + std::to_string(db));
 
-    // Create mock connections for now
-    for (size_t i = 0; i < impl_->max_size; ++i) {
-        auto conn = std::make_shared<MockRedisConnection>();
-        impl_->connections.push_back(conn);
-        impl_->available.push(conn);
+    // Try to connect to real Redis.
+    try {
+        sw::redis::ConnectionOptions opts;
+        opts.host = host;
+        opts.port = port;
+        opts.db = db;
+
+        // Test connection with a ping.
+        sw::redis::Redis test_redis(opts);
+        test_redis.ping();
+
+        // Connection successful; create real connections.
+        for (size_t i = 0; i < impl_->max_size; ++i) {
+            auto conn = std::make_shared<RealRedisConnection>(opts);
+            impl_->connections.push_back(conn);
+            impl_->available.push(conn);
+        }
+        SHIELD_LOG_INFO(log, "Redis connected to " + host + ":" +
+                        std::to_string(port));
+    } catch (const std::exception& e) {
+        // Fall back to mock connections.
+        SHIELD_LOG_WARNING(log, "Redis connection failed (" + std::string(e.what()) +
+                           "), using mock pool");
+        for (size_t i = 0; i < impl_->max_size; ++i) {
+            auto conn = std::make_shared<MockRedisConnection>();
+            impl_->connections.push_back(conn);
+            impl_->available.push(conn);
+        }
     }
 
     impl_->initialized = true;

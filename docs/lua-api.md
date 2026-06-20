@@ -10,7 +10,7 @@ coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer
 `shield.config`、`shield.log.*`、DB/Redis API（含 mock pool 和错误注入测试）、
 `on_exit` call guard、call timeout（`check_call_timeouts`）、
 timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）。
-仍待实现：`shield_net` 层创建 `SessionHandle` userdata 并传入 gateway handler。
+实现快照：`LuaGatewayBridge` 已实现，将 `shield_net::Session` 事件路由到 Lua gateway service handler（`on_connect`/`on_client_message`/`on_disconnect`）。`SessionHandle` 已注册为 Lua userdata。Redis 连接已集成 redis++ 驱动，真实连接优先、mock 降级。
 
 ## 设计原则
 
