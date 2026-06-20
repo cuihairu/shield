@@ -36,14 +36,14 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 实现 `shield.query/register/unregister/names` 的单节点最小 registry 路径。
 - [x] 提供 `shield.now`。
 - [ ] 实现 `timer_once/timer/sleep/fork` 的 coroutine-aware 语义。当前状态：
-  - `timer_once/timer/cancel_timer` 已走 `TimerManager`，callback 不在协程中执行。
+  - `timer_once/timer/cancel_timer` 已走 `TimerManager`，callback 通过 `check_and_fire_each` + visitor 中 `lua_pcall` 包裹执行，错误路由到 `on_error` hook。
   - `fork` 已走 worker 线程调度（`enqueue_forked_task`），callback 不在协程中执行。
   - `shield.sleep` 已实现协程感知：async handler 中 yield + 由 `_resume_after` 定时器 resume；sync 调用路径走 `_block_sleep` 阻塞降级。LAPI-007-08 已覆盖。
   - `shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` + `coroutine.yield()` → mailbox → `call_service_method_coroutine` → `resume_caller`），主线程走 `_sync_call` 同步降级。call timeout 已通过 `pump_once` 中的 `check_call_timeouts` 实现。LAPI-005-06 已覆盖。
 - [x] 提供 `shield.log.*`。
 - [x] 提供原始 `shield.db.*` / `shield.redis.*` 的绑定和未启用错误返回。
 - [ ] 补齐 data API 的真实 mock pool 验收和后端连接验证。`shield_runtime_data_smoke` 已覆盖 mock pool smoke；`tests/lua_api/test_lua_api_data.cpp` 已覆盖 mock pool 下的 DB query/execute、Redis get/set/del/subscribe 和 dot-notation 负向测试；真实 MySQL/Redis 后端连接与连接池压力验证仍待补齐。
-- [ ] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 runtime 线程的语义。`shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` → `coroutine.yield()` → `resume_caller`），call timeout 已通过 `check_call_timeouts` 实现。LAPI-005-06 已覆盖协程 timeout 和同步降级两条路径。
+- [x] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 runtime 线程的语义。`shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` → `coroutine.yield()` → `resume_caller`），call timeout 已通过 `check_call_timeouts` 实现。LAPI-005-06 已覆盖协程 timeout 和同步降级两条路径。
 - [x] 删除旧 `shield.service("name")`、冒号式 DB/Redis API 和 legacy `on_message(src, type, data)` 入口。
 
 ## Phase 3: C++ 入口和配置
@@ -80,7 +80,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | `shield_transport` | 当前 CMake target 已存在 | frame/codec/encryption 在 target 内；旧 protocol handler/schema protocol 测试不属于当前验证路径 |
 | `shield_net` | 当前 CMake target 已存在 | TCP listener/session 在 target 内；HTTP/UDP/WebSocket 源码属于 deferred/legacy，不进入 Phase 1 config |
 | `shield_data` | 当前 CMake target 已存在 | raw DB/Redis facade 已接入；真实后端和 mock pool 验收仍待补齐 |
-| `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep 已实现（LAPI-007-08）；coroutine-aware call 已实现但 timeout 未实现；timer/fork callback 不在协程中；gateway/data 完整测试仍待完成 |
+| `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout 已实现；timer callback 已通过 pcall 包裹执行；fork callback raw_fn 已存储；on_error/on_panic/on_exit guard 已实现；gateway session 测试仍待 mock harness |
 | `shield_bootstrap` | 当前 CMake target 已存在 | `shield::run` 和 CLI/config smoke tests 已登记在主 CMake |
 | optional modules | CMake 开关存在，默认关闭 | `shield_cluster/global/ops` 只有占位 target，未进入实现完成范围 |
 
@@ -124,9 +124,9 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | --- | --- | --- |
 | GAP-010 | ~~`shield.call` 协程路径已实现，但 call timeout 未实现~~ 已实现：`check_call_timeouts` 已接入 `pump_once`，LAPI-005-06 覆盖 | 已完成 |
 | GAP-011 | ~~`shield.sleep` 是阻塞实现~~ 已改为协程 yield/resume（async 派发路径非阻塞，sync 调用保留阻塞降级），LAPI-007-08 覆盖 | 已完成 |
-| GAP-012 | `shield.fork` 的 callback 不在协程中执行 | 需要 coroutine scheduler |
-| GAP-013 | timer callback 不在协程中执行 | 需要 coroutine scheduler |
-| GAP-014 | LAPI-005-06 (call timeout) 测试标记为 Phase 1 同步忽略 timeout | 需要 coroutine-aware call |
+| GAP-012 | `shield.fork` 的 callback 不在协程中执行（`raw_fn` 已存储，`lua_pcall` 包裹待接入） | 需要 pcall 包裹接入 pump_once |
+| GAP-013 | ~~timer callback 不在协程中执行~~ 已实现：`check_and_fire_each` + visitor 中 `lua_pcall` 包裹，错误路由到 `on_error` hook | 已完成 |
+| GAP-014 | ~~LAPI-005-06 (call timeout) 测试~~ 已更新为 `CoroutineCallTimeout` + `SyncCallIgnoresTimeout`，覆盖两条路径 | 已完成 |
 | GAP-015 | ~~`on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit`~~ 已实现：`_is_in_exit()` 检查 + Lua wrapper 返回 `{code="api_not_allowed_in_exit"}`，`OnExitCallGuard` 测试覆盖 | 已完成 |
 
 ### 待实现（需专用 mock harness）
@@ -136,7 +136,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | GAP-020 | LAPI-009-01~05 (Gateway session 模拟测试) | 需要 mock SessionHandle harness |
 | GAP-021 | LAPI-008-03 (SQL error → `db_query_failed`) | 需要可注入错误的 mock DB connection |
 | GAP-022 | ~~`on_error` / `on_panic` hook 注册与调用~~ 已实现：`LuaRuntime::invoke_hook` 调用 service table 上的 `on_error`/`on_panic`；handler 错误通过 `call_service_method_coroutine` 触发，timer 错误通过 `check_and_fire` 回调触发，fork 错误通过 `pump_once` 触发；连续错误达阈值（默认 10）触发 `on_panic` + `exit("panic")`。`OnErrorHookCalledOnHandlerThrow` 测试覆盖 | 已完成 |
-| GAP-023 | `shield.config` API 缺少独立测试 | 实现已存在，需补充 LAPI 测试用例 |
+| GAP-023 | ~~`shield.config` API 缺少独立测试~~ 已补充：`ConfigReadExistingKey`、`ConfigReadMissingKeyReturnsNil`、`ConfigReadMissingKeyWithDefault` 3 个测试覆盖 | 已完成 |
 
 ### 文档不合理项
 

@@ -308,14 +308,23 @@ TimerManager::TimerId TimerManager::schedule_once(
     sol::function callback,
     const std::string& service_id) {
 
-    return schedule_once_fn(delay_ms,
-        [cb = std::move(callback)]() {
-            if (cb.valid()) {
-                auto r = cb();
-                (void)r;
-            }
-        },
-        service_id);
+    const TimerId id = impl_->generate_id();
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+
+    TimerManager::Impl::Timer timer = {
+        id,
+        TimerType::Once,
+        now_ms + delay_ms,
+        delay_ms,
+        {[cb = callback]() { if (cb.valid()) { auto r = cb(); (void)r; } },
+         callback,  // raw_callback for coroutine wrapping
+         service_id},
+        true
+    };
+    impl_->insert(timer);
+    return id;
 }
 
 TimerManager::TimerId TimerManager::schedule_once_fn(
@@ -334,7 +343,7 @@ TimerManager::TimerId TimerManager::schedule_once_fn(
         TimerType::Once,
         now_ms + delay_ms,
         delay_ms,
-        {std::move(callback), service_id},
+        {std::move(callback), sol::function{}, service_id},
         true
     };
 
@@ -348,14 +357,23 @@ TimerManager::TimerId TimerManager::schedule_fixed_delay(
     sol::function callback,
     const std::string& service_id) {
 
-    return schedule_fixed_delay_fn(interval_ms,
-        [cb = std::move(callback)]() {
-            if (cb.valid()) {
-                auto r = cb();
-                (void)r;
-            }
-        },
-        service_id);
+    const TimerId id = impl_->generate_id();
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+
+    TimerManager::Impl::Timer timer = {
+        id,
+        TimerType::FixedDelay,
+        now_ms + interval_ms,
+        interval_ms,
+        {[cb = callback]() { if (cb.valid()) { auto r = cb(); (void)r; } },
+         callback,  // raw_callback for coroutine wrapping
+         service_id},
+        true
+    };
+    impl_->insert(timer);
+    return id;
 }
 
 TimerManager::TimerId TimerManager::schedule_fixed_delay_fn(
@@ -374,7 +392,7 @@ TimerManager::TimerId TimerManager::schedule_fixed_delay_fn(
         TimerType::FixedDelay,
         now_ms + interval_ms,
         interval_ms,
-        {std::move(callback), service_id},
+        {std::move(callback), sol::function{}, service_id},
         true
     };
 
@@ -434,6 +452,47 @@ int TimerManager::check_and_fire(int64_t now_ms,
         }
     }
 
+    return fired;
+}
+
+int TimerManager::check_and_fire_each(
+    int64_t now_ms,
+    std::function<void(const std::string& service_id,
+                       sol::function callback)> visitor) {
+    int fired = 0;
+    auto expired = impl_->get_expired(now_ms);
+
+    for (const auto& timer : expired) {
+        if (!timer.active) continue;
+        impl_->erase(timer.id);
+
+        // Invoke the visitor with the raw sol::function callback.
+        if (timer.callback.raw_callback.valid()) {
+            visitor(timer.callback.service_id, timer.callback.raw_callback);
+        } else {
+            // Fallback: no raw callback (e.g. schedule_once_fn); run directly.
+            try {
+                timer.callback.callback();
+            } catch (const std::exception& e) {
+                (void)e;
+            }
+        }
+
+        ++fired;
+
+        // Repeating timers: reschedule with the same raw callback.
+        if (timer.type == TimerType::FixedDelay) {
+            if (timer.callback.raw_callback.valid()) {
+                schedule_fixed_delay(timer.interval_ms,
+                                     timer.callback.raw_callback,
+                                     timer.callback.service_id);
+            } else {
+                schedule_fixed_delay_fn(timer.interval_ms,
+                                        timer.callback.callback,
+                                        timer.callback.service_id);
+            }
+        }
+    }
     return fired;
 }
 

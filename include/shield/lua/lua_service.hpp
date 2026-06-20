@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <sol/forward.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -131,6 +132,11 @@ public:
     /// @return Task ID for cancellation/tracking
     uint64_t enqueue_forked_task(std::string service_id,
                                  std::function<void()> task);
+
+    // Overload that also stores the raw Lua function for coroutine wrapping.
+    uint64_t enqueue_forked_task(std::string service_id,
+                                 std::function<void()> task,
+                                 sol::function raw_fn);
 
     // Cancel all forked tasks owned by a service. Called during service exit.
     void cancel_forked_tasks_for_service(const std::string& service_id);

@@ -57,6 +57,7 @@ struct LuaServiceManager::Impl {
         uint64_t id;
         std::string service_id;
         std::function<void()> fn;
+        sol::function raw_fn;  // original Lua function, for coroutine wrapping
     };
     std::atomic<uint64_t> next_task_id{1};
     std::vector<ForkedTask> pending_tasks;
@@ -664,9 +665,22 @@ int LuaServiceManager::pump_once() {
     events += static_cast<int>(tasks_to_run.size());
 
     const int64_t now = Impl::now_ms();
-    events += impl_->runtime.timer_manager().check_and_fire(
-        now, [this](const std::string& service_id, const std::string& err) {
-            invoke_error_hook(service_id, "timer", "", err);
+    // Fire timer callbacks inside a protected call so thrown errors route
+    // to the service's on_error hook instead of crashing the pump.
+    events += impl_->runtime.timer_manager().check_and_fire_each(
+        now, [this](const std::string& service_id, sol::function cb) {
+            if (!cb.valid()) return;
+            lua_State* L = cb.lua_state();
+            cb.push(L);
+            int status = lua_pcall(L, 0, 0, 0);
+            if (status != LUA_OK) {
+                std::string err = "timer error";
+                if (lua_type(L, -1) == LUA_TSTRING) {
+                    err = lua_tostring(L, -1);
+                }
+                lua_settop(L, 0);
+                invoke_error_hook(service_id, "timer", "", err);
+            }
         });
     events += impl_->runtime.coroutine_scheduler().check_timeouts(now);
     events += check_call_timeouts(now);
@@ -717,10 +731,18 @@ void LuaServiceManager::stop_worker() {
 
 uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
                                                 std::function<void()> task) {
+    return enqueue_forked_task(std::move(service_id), std::move(task),
+                               sol::function{});
+}
+
+uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
+                                                std::function<void()> task,
+                                                sol::function raw_fn) {
     const uint64_t id = impl_->next_task_id.fetch_add(1);
     {
         std::lock_guard<std::mutex> lock(impl_->worker_mutex);
-        impl_->pending_tasks.push_back({id, service_id, std::move(task)});
+        impl_->pending_tasks.push_back(
+            {id, service_id, std::move(task), std::move(raw_fn)});
         impl_->tasks_by_service[service_id].insert(id);
     }
     impl_->worker_cv.notify_one();

@@ -115,6 +115,7 @@ public:
 
     struct TimerCallback {
         std::function<void()> callback;
+        sol::function raw_callback;   // original Lua function, for coroutine wrapping
         std::string service_id;
     };
 
@@ -165,6 +166,17 @@ public:
     int check_and_fire(int64_t now_ms,
                        std::function<void(const std::string& service_id,
                                           const std::string& error)> on_error);
+
+    // Visitor-based fire: calls `visitor(service_id, raw_callback)` for each
+    // expired timer instead of invoking the callback directly.  The visitor
+    // can wrap the callback in a coroutine, run it synchronously, etc.
+    // Repeating timers are rescheduled after the visitor returns.
+    /// @param now_ms Current monotonic time in milliseconds
+    /// @param visitor Called with (service_id, raw sol::function) for each expired timer
+    /// @return Number of timers processed
+    int check_and_fire_each(int64_t now_ms,
+                            std::function<void(const std::string& service_id,
+                                               sol::function callback)> visitor);
 
     // Get active timer count
     size_t active_count() const;

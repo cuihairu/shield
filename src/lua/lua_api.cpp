@@ -733,14 +733,17 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
             // Capture the Lua function with its owning state_view. Execution
             // happens on the worker thread; since the worker is the only thread
             // touching Lua VMs once running, this is race-free.
-            return manager->enqueue_forked_task(service_id, [fn]() {
-                try {
-                    fn();
-                } catch (const std::exception& e) {
-                    auto& log = shield::log::get_logger("lua");
-                    SHIELD_LOG_ERROR(log, std::string("task error: ") + e.what());
-                }
-            });
+            return manager->enqueue_forked_task(
+                service_id,
+                [fn]() {
+                    try {
+                        fn();
+                    } catch (const std::exception& e) {
+                        auto& log = shield::log::get_logger("lua");
+                        SHIELD_LOG_ERROR(log, std::string("task error: ") + e.what());
+                    }
+                },
+                fn);  // raw_fn for coroutine wrapping
         });
 }
 

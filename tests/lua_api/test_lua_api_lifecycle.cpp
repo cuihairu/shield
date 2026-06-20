@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE LuaApiLifecycleTests
 #include <boost/test/unit_test.hpp>
 
+#include "shield/config/config.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 
@@ -284,6 +285,59 @@ BOOST_AUTO_TEST_CASE(OnExitCallGuard) {
     // Since the service is gone, we can't query it. But the fact that exit()
     // completed without throwing is itself a valid assertion — if shield.call
     // had blocked or crashed, exit() would not return cleanly.
+}
+
+// ---------------------------------------------------------------------------
+// shield.config API
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(ConfigReadExistingKey) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    // Pre-set a config value so shield.config can read it.
+    shield::config::global_config().set("test.key", "hello");
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "config_service.lua",
+                                opts_for("config_test").dump());
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "read",
+                                 nlohmann::json::array({"test.key"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
+    BOOST_CHECK_EQUAL(cr.values[0].get<std::string>(), "hello");
+}
+
+BOOST_AUTO_TEST_CASE(ConfigReadMissingKeyReturnsNil) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "config_service.lua",
+                                opts_for("config_nil_test").dump());
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "read",
+                                 nlohmann::json::array({"nonexistent.key.12345"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
+    BOOST_CHECK(cr.values[0].is_null());
+}
+
+BOOST_AUTO_TEST_CASE(ConfigReadMissingKeyWithDefault) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "config_service.lua",
+                                opts_for("config_default_test").dump());
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "read_default",
+                                 nlohmann::json::array({"nonexistent.key.12345",
+                                                        "fallback"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
+    BOOST_CHECK_EQUAL(cr.values[0].get<std::string>(), "fallback");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
