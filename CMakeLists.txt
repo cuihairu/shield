@@ -382,6 +382,16 @@ target_link_libraries(shield_net
     PRIVATE Boost::asio Boost::beast
 )
 
+# HTTP client via libcurl (HTTPS, HTTP/2, connection pooling, redirects)
+find_package(CURL CONFIG QUIET)
+if(CURL_FOUND)
+    target_link_libraries(shield_net PRIVATE CURL::libcurl)
+    target_compile_definitions(shield_net PRIVATE SHIELD_HAS_CURL)
+    message(STATUS "libcurl enabled for shield_net HTTP client")
+else()
+    message(STATUS "libcurl not found, HTTP client will use Boost.Beast fallback")
+endif()
+
 # -----------------------------------------------------------------------------
 # shield_lua - Lua VM, API bindings, service loader
 # -----------------------------------------------------------------------------

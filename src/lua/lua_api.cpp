@@ -1394,6 +1394,20 @@ void register_http_api(sol::table& shield) {
             return result;
         });
 
+    // Convenience: shield.http.patch(url, body) -> response_table
+    http.set_function("patch",
+        [](sol::this_state state, std::string url,
+           sol::optional<std::string> body) -> sol::table {
+            sol::state_view lua(state);
+            auto res = shield::net::HttpClient::patch_json(url, body.value_or(""));
+            sol::table result = lua.create_table();
+            result["status"] = res.status_code;
+            result["body"] = res.body;
+            result["ok"] = res.ok();
+            result["error"] = res.error;
+            return result;
+        });
+
     shield["http"] = http;
 
     // =========================================================================
@@ -1436,6 +1450,9 @@ void register_http_api(sol::table& shield) {
 
 void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
                                LuaRuntime* runtime) {
+    // Initialize HTTP client (libcurl global state).
+    shield::net::HttpClient::initialize();
+
     // Register usertypes
     ServiceHandle::register_usertype(lua);
     register_session_handle(lua);

@@ -495,10 +495,11 @@ local res = shield.http.request("http://api.example.com/users", {
 规则：
 
 - 同步阻塞当前 coroutine，不阻塞 runtime worker thread（Phase 2 改为异步）。
-- 不支持 HTTPS（Phase 2 通过 OpenSSL 集成）。
-- 适合低频管理请求，不适合高吞吐数据传输。
+- 支持 HTTP/1.1、HTTP/2、HTTPS（通过 libcurl + OpenSSL/Schannel）。
+- 支持连接池、重定向、Cookie、代理。
+- 适合支付 API、webhook、REST API 调用等场景。
 
-实现快照：基于 Boost.Beast 实现 `HttpClient`，支持 HTTP/1.1 keep-alive。Lua API 通过 `shield.http.*` 注册。
+实现快照：基于 libcurl 实现 `HttpClient`，支持 HTTPS/HTTP2/连接池/重定向。Lua API 通过 `shield.http.*` 注册。`HttpClient::initialize()` 在 `register_full_shield_api` 时自动调用。
 
 ### HTTP 服务端 (shield.httpd)
 

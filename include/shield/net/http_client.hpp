@@ -1,18 +1,10 @@
-// [SHIELD_NET] HTTP client using Boost.Beast
+// [SHIELD_NET] HTTP client using libcurl
 #pragma once
 
-#include <boost/beast/http.hpp>
-#include <boost/asio/ip/tcp.hpp>
-
-#include <functional>
 #include <string>
 #include <unordered_map>
 
 namespace shield::net {
-
-namespace beast = boost::beast;
-namespace http = beast::http;
-namespace net = boost::asio;
 
 /// @brief HTTP client response
 struct HttpClientResponse {
@@ -30,24 +22,34 @@ struct HttpClientOptions {
     std::string body;
     std::unordered_map<std::string, std::string> headers;
     int timeout_seconds = 10;
+    bool follow_redirects = true;
+    int max_redirects = 5;
 };
 
-/// @brief Synchronous HTTP client for making outgoing requests.
+/// @brief HTTP client using libcurl.
 ///
-/// Uses Boost.Beast + Boost.Asio (already integrated, no curl dependency).
+/// Supports:
+/// - HTTP/1.1 and HTTP/2 (via nghttp2)
+/// - HTTPS (via OpenSSL/Schannel)
+/// - Connection pooling
+/// - Redirects
+/// - Cookies
+/// - Proxy
+///
 /// Designed for:
+/// - Payment API calls (HTTPS mandatory)
 /// - Webhook calls
 /// - REST API consumption
-/// - Health check probes
 /// - Service-to-service HTTP calls
-///
-/// NOT designed for:
-/// - High-throughput data transfer (use TCP/WebSocket)
-/// - File uploads (use multipart library)
-/// - Connection pooling (Phase 2)
 class HttpClient {
 public:
-    /// @brief Make an HTTP request (synchronous, blocks until response)
+    /// @brief Initialize the curl global state (call once at startup)
+    static void initialize();
+
+    /// @brief Cleanup curl global state (call at shutdown)
+    static void cleanup();
+
+    /// @brief Make an HTTP request
     static HttpClientResponse request(const HttpClientOptions& options);
 
     /// @brief Convenience: GET request
@@ -68,11 +70,10 @@ public:
     static HttpClientResponse del(const std::string& url,
                                   int timeout_seconds = 10);
 
-private:
-    /// @brief Parse URL into host, port, path
-    static bool parse_url(const std::string& url,
-                          std::string& host, uint16_t& port,
-                          std::string& path, bool& is_https);
+    /// @brief Convenience: PATCH request with JSON body
+    static HttpClientResponse patch_json(const std::string& url,
+                                         const std::string& json_body,
+                                         int timeout_seconds = 10);
 };
 
 }  // namespace shield::net

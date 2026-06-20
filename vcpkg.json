@@ -23,6 +23,8 @@
         "caf",
         "msgpack",
 
+        "curl",
+
         "mysql-connector-cpp"
     ],
     "supports": "!uwp",
