@@ -75,13 +75,13 @@
 | `module_unavailable` | database 模块未启用 | 否 | ✅ |
 | `database_error` | 未分类的数据库执行失败 | 视具体驱动 | ✅ (代码中使用 `database_error`) |
 | `db_query_failed` | 未分类的数据库执行失败 | 视具体驱动 | ✅ DB query/execute 返回 |
-| `connection_lost` | 数据库连接丢失 | 是 | ❌ Phase 2 |
-| `connection_timeout` | 建立连接超时 | 是 | ❌ Phase 2 |
-| `query_timeout` | 查询超时 | 是 | ❌ Phase 2 |
-| `syntax_error` | SQL 语法错误 | 否 | ❌ Phase 2 |
-| `constraint_violation` | 约束违反（唯一键、外键等） | 否 | ❌ Phase 2 |
-| `transaction_aborted` | 事务中止 | 是 | ❌ Phase 2 |
-| `pool_exhausted` | 连接池耗尽 | 是 | ❌ Phase 2 |
+| `connection_lost` | 数据库连接丢失 | 是 | ✅ MySQL error msg 映射 |
+| `connection_timeout` | 建立连接超时 | 是 | ✅ MySQL timeout msg 映射 |
+| `query_timeout` | 查询超时 | 是 | ⚠️ 由 connection_timeout 覆盖 |
+| `syntax_error` | SQL 语法错误 | 否 | ✅ MySQL syntax msg 映射 |
+| `constraint_violation` | 约束违反（唯一键、外键等） | 否 | ✅ MySQL Duplicate/constraint msg 映射 |
+| `transaction_aborted` | 事务中止 | 是 | ✅ MySQL Deadlock msg 映射 |
+| `pool_exhausted` | 连接池耗尽 | 是 | ✅ acquire 失败返回 |
 
 ## 四、Redis 错误
 
@@ -106,10 +106,10 @@
 |--------|------|-----------|------|
 | `session_closed` | session 已关闭，handle stale | 否 | ✅ SessionHandle.send 返回 |
 | `session_send_queue_full` | session 发送队列已满 | 是 | ✅ SessionHandle.send 返回 |
-| `handshake_timeout` | 握手超时 | 否 | ❌ Phase 2 |
-| `decode_error` | 协议解码错误 | 否 | ❌ Phase 2 |
-| `connection_limit` | 连接数达到上限 | 是 | ❌ Phase 2 |
-| `ip_limit` | 单 IP 连接数达到上限 | 否 | ❌ Phase 2 |
+| `handshake_timeout` | 握手超时 | 否 | ⚠️ shield_net 未暴露 |
+| `decode_error` | 协议解码错误 | 否 | ⚠️ shield_net 未暴露 |
+| `connection_limit` | 连接数达到上限 | 是 | ⚠️ shield_net 未暴露 |
+| `ip_limit` | 单 IP 连接数达到上限 | 否 | ⚠️ shield_net 未暴露 |
 
 ## 六、错误处理建议
 
