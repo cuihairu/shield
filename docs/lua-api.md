@@ -4,12 +4,14 @@
 
 当前状态：本文冻结 Phase 1 Lua API 契约；源码需要按本文补齐实现和测试。
 
-实现快照：当前源码已跑通单节点最小 Lua service 路径，包括 YAML actors
-启动、`on_init/on_exit`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
-本地同步 `shield.send/call/call_timeout`、`shield.log.*`、DB/Redis 未启用时的
-`module_unavailable` 返回，以及启用配置后的 mock data pool smoke test。
-最终 coroutine-aware `call/sleep`、mailbox
-调度、timer 取消、opaque ServiceHandle userdata 和完整 LuaPack 编码仍是待实现项。
+实现快照：当前源码已跑通单节点完整 Lua service 路径，包括 YAML actors
+启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
+coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer/cancel_timer/fork`、
+`shield.config`、`shield.log.*`、DB/Redis API（含 mock pool 和错误注入测试）、
+`on_exit` call guard、call timeout（`check_call_timeouts`）、
+timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）。
+仍待实现：`shield.redis.subscribe` Lua callback 绑定、
+`SessionHandle` C++ 集成层、`shield.trace/deadline` 完整语义、LuaPack 编码。
 
 ## 设计原则
 
@@ -368,9 +370,11 @@ shield.log.error("message")
 
 规则：
 
-- 日志自动注入 service id、service name、trace id。
+- 日志自动注入 service id、service name、trace id（Phase 2）。
 - 参数必须是 string 或可安全 tostring 的值。
 - 不允许在日志 API 中执行阻塞 I/O。
+
+实现快照：当前 `shield.log.*` 直接输出用户传入的字符串，未自动注入 service id/name/trace id。自动注入属于 Phase 2 扩展。
 
 ## Data API
 
@@ -406,6 +410,8 @@ end)
 - 未启用 Redis 时返回 `false, module_unavailable`。
 - subscribe callback 属于当前 service。
 - service exit 时自动取消 owned subscriptions。
+
+实现快照：`get/set/del/exists/publish` 已实现。`subscribe` 的 C++ 绑定当前不接受 Lua callback 参数（只接受 channel 字符串），callback 绑定和 subscription 生命周期追踪属于 Phase 2。
 
 ## Gateway API
 
@@ -443,6 +449,8 @@ session:remote_addr()
 - `SessionHandle` 只在 gateway callback 和 gateway 自身状态中使用，不作为 `shield.send/call` payload 跨服务传递。
 - framework 不提供 HTTP middleware chain。
 
+实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用（LAPI-009-01~05 测试覆盖）。`SessionHandle` 的 C++ 集成层（将 TCP session 注册为 Lua userdata 并绑定 `id/send/close/remote_addr` 方法）尚未实现，当前测试通过 table 模拟 session。完整的 `SessionHandle` userdata 需要 `shield_net` 层与 `shield_lua` 层集成。
+
 ## Error Object
 
 运行时错误统一返回只读 table：
@@ -459,10 +467,12 @@ end
 | --- | --- |
 | `code` | 稳定错误码字符串 |
 | `message` | 面向日志的错误说明 |
-| `retryable` | 是否适合业务重试 |
-| `detail` | 可选调试信息 |
+| `retryable` | 是否适合业务重试（Phase 2） |
+| `detail` | 可选调试信息（Phase 2） |
 
 错误码清单见 [错误码参考](./runtime-errors.md)。
+
+实现快照：当前 Error Object 只返回 `code` 和 `message` 两个字段。`retryable` 和 `detail` 属于 Phase 2 扩展，当前未填充。
 
 ## 删除的旧 API
 

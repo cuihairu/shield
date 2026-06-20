@@ -2,10 +2,7 @@
 
 本文档包含 Shield 定时器、sleep 和 fork 相关的运行时语义决策。
 
-当前实现状态：Phase 1 已登记 `timer_once/timer/cancel_timer` 的 API 面，
-但 coroutine-aware callback、`sleep` 和 `fork` 仍是后续实现项。本文描述的是目标
-语义；当前验收以 [重构路线图](roadmap.md) 和 [Lua API 测试用例](lua-api-tests.md)
-标注的实现状态为准。
+当前实现状态：`timer_once/timer/cancel_timer` 已实现，callback 通过 `check_and_fire_each` + `lua_pcall` 包裹执行，错误路由到 `on_error` hook。`shield.sleep` 已实现协程感知（yield + `_resume_after` 定时器 resume）。`shield.fork` 已实现，callback 通过 `lua_pcall` 包裹执行。`shield.call/call_timeout` 已实现协程感知调用 + timeout。详细实现状态以 [重构路线图](roadmap.md) 和 [Lua API 测试用例](lua-api-tests.md) 为准。
 
 ## timer API
 
@@ -21,8 +18,8 @@ local ok = shield.cancel_timer(id)
 
 规则：
 
-- timer callback 在当前 service 的 Lua VM 中执行。
-- 最终目标中 callback 是 coroutine，可以 `call` / `sleep`；Phase 1 不把这一点作为已完成实现。
+- timer callback 在当前 service 的 Lua VM 中执行，通过 `lua_pcall` 包裹，错误路由到 `on_error` hook。
+- callback 当前在 pcall 中执行（非协程），可以调用同步 API；`shield.sleep`/`shield.call` 在 callback 中走同步降级路径。
 - timer 归属当前 service。
 - service exit 时自动取消 owned timers。
 - `TimerId` 是 opaque userdata，不暴露 CAF。
@@ -56,7 +53,9 @@ timer callback 抛错：
 - `timer_once` 记录错误后结束。
 - `timer` 记录错误并停止该周期 timer。
 - 不让未捕获异常反复刷屏。
-- 错误进入 `shield_ops` 统计。
+- 错误通过 `invoke_error_hook` 路由到 service 的 `on_error(err, context)` hook，`context.type = "timer"`。
+- 连续错误达到阈值时触发 `on_panic` 并 `exit("panic")`。
+- 错误进入 `shield_ops` 统计（Phase 2）。
 
 如业务希望周期 timer 永不停止，需要自己 `pcall`。
 
