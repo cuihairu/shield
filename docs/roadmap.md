@@ -63,7 +63,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。acceptance test 已覆盖 `echo.lua` 的 sender/send/log/now、`gateway.lua` 的 connect/disconnect/client_message、`player.lua` 的 login/chat/logout/self/exit/db/redis API 模式。
 - [x] 增加最小 Lua API runtime smoke test。
 - [x] 增加本地 registry runtime smoke test。
-- [ ] 按 LAPI 矩阵补齐完整 Lua API 绑定测试；当前 `tests/lua_api/` 已启用 lifecycle、timers、registry、messaging、call、context、legacy、data、gateway 套件并对接现行 `spawn/send/call/pump_once` 接口。`data` 套件已覆盖 mock pool 下的 DB/Redis API 表面和 dot-notation 负向测试；`gateway` 套件已覆盖模块加载和 handler 函数存在性检查，完整 session 模拟测试（LAPI-009-01~05）仍待 mock harness 实现后补完。`shield.call` / `timer` / `sleep` / `fork` 的 coroutine-aware 路径仍依赖 Phase 2 实现落地后再补完。
+- [ ] 按 LAPI 矩阵补齐完整 Lua API 绑定测试；当前 `tests/lua_api/` 已启用 lifecycle、timers、registry、messaging、call、context、legacy、data、gateway 套件并对接现行 `spawn/send/call/pump_once` 接口。`data` 套件已覆盖 mock pool 下的 DB/Redis API 表面和 dot-notation 负向测试；`gateway` 套件已覆盖模块加载、handler 函数存在性、connect/message/disconnect 模拟测试（LAPI-009-01~03）；LAPI-009-04 (queue full)、009-05 (stale send) 仍待 C++ MockSessionHandle userdata 集成。`shield.call` / `timer` / `sleep` / `fork` 的 coroutine-aware 路径仍依赖 Phase 2 实现落地后再补完。
 - [x] 按 `docs/lua-api-tests.md` 补齐独立 API 用例，示例不替代测试。
 - [x] 为新 public/core 头增加 CAF 泄漏静态检查。
 - [x] 收敛 legacy public headers 的 CAF 泄漏并纳入检查。
@@ -133,7 +133,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 | 编号 | 问题 | 阻塞原因 |
 | --- | --- | --- |
-| GAP-020 | LAPI-009-01~05 (Gateway session 模拟测试) | 需要 mock SessionHandle harness |
+| GAP-020 | ~~LAPI-009-01~05 (Gateway session 模拟测试)~~ 部分完成：LAPI-009-01 (connect)、009-02 (message)、009-03 (disconnect) 已覆盖；009-04 (queue full)、009-05 (stale send) 需 C++ MockSessionHandle userdata 集成 | 部分完成 |
 | GAP-021 | LAPI-008-03 (SQL error → `db_query_failed`) | 需要可注入错误的 mock DB connection |
 | GAP-022 | ~~`on_error` / `on_panic` hook 注册与调用~~ 已实现：`LuaRuntime::invoke_hook` 调用 service table 上的 `on_error`/`on_panic`；handler 错误通过 `call_service_method_coroutine` 触发，timer 错误通过 `check_and_fire` 回调触发，fork 错误通过 `pump_once` 触发；连续错误达阈值（默认 10）触发 `on_panic` + `exit("panic")`。`OnErrorHookCalledOnHandlerThrow` 测试覆盖 | 已完成 |
 | GAP-023 | ~~`shield.config` API 缺少独立测试~~ 已补充：`ConfigReadExistingKey`、`ConfigReadMissingKeyReturnsNil`、`ConfigReadMissingKeyWithDefault` 3 个测试覆盖 | 已完成 |
