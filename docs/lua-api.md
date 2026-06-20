@@ -457,32 +457,78 @@ session:remote_addr()
 
 ### HTTP 客户端 (shield.http)
 
-用于发起出站 HTTP 请求（webhook、REST API 调用、健康检查等）。
+基于 libcurl，支持 HTTPS、HTTP/2、连接池、重定向、Cookie、代理、文件上传/下载。
+
+#### 基础请求
 
 ```lua
--- GET 请求
-local res = shield.http.get("http://api.example.com/health")
--- res = { status=200, body="...", ok=true, error="" }
+-- GET
+local res = shield.http.get("https://api.example.com/health")
 
 -- POST JSON
-local res = shield.http.post("http://api.example.com/data", '{"key":"value"}')
+local res = shield.http.post("https://api.example.com/data", '{"key":"value"}')
 
--- PUT JSON
-local res = shield.http.put("http://api.example.com/users/1", '{"name":"test"}')
+-- PUT / DELETE / PATCH
+local res = shield.http.put("https://api.example.com/users/1", '{"name":"test"}')
+local res = shield.http.delete("https://api.example.com/users/1")
+local res = shield.http.patch("https://api.example.com/users/1", '{"name":"new"}')
+```
 
--- DELETE
-local res = shield.http.delete("http://api.example.com/users/1")
+#### 完整请求（所有选项）
 
--- 完整请求（自定义 headers、timeout）
-local res = shield.http.request("http://api.example.com/users", {
-    method = "PUT",
+```lua
+local res = shield.http.request("https://api.example.com/users", {
+    method = "POST",
     body = '{"name":"test"}',
-    headers = {["Authorization"] = "Bearer token"},
-    timeout = 5
+    headers = {["X-Custom"] = "value"},
+    timeout = 10,
+    -- 认证
+    auth_bearer = "eyJhbGciOi...",           -- Bearer token
+    auth_basic = {user="admin", password="secret"},  -- Basic auth
+    -- 代理
+    proxy = "http://proxy:8080",
+    -- SSL
+    verify_ssl = true,
+    -- 重试
+    retry = 3,
+    retry_delay = 1000,
+    -- 重定向
+    follow_redirects = true,
+    max_redirects = 5,
 })
 ```
 
-返回值字段：
+#### 文件上传（multipart/form-data）
+
+```lua
+local res = shield.http.upload("https://api.example.com/upload", {
+    {field_name = "avatar", file_path = "/tmp/photo.png", content_type = "image/png"},
+    {field_name = "doc", file_path = "/tmp/report.pdf"},
+}, {
+    user_id = "12345",
+    description = "Profile photo",
+}, 60)
+```
+
+#### 文件下载
+
+```lua
+local res = shield.http.download("https://example.com/data.zip", "/tmp/data.zip", 60)
+if res.ok then
+    print("Downloaded: " .. res.status)
+end
+```
+
+#### 表单提交（application/x-www-form-urlencoded）
+
+```lua
+local res = shield.http.post_form("https://api.example.com/login", {
+    username = "admin",
+    password = "secret",
+})
+```
+
+#### 返回值字段
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -490,16 +536,16 @@ local res = shield.http.request("http://api.example.com/users", {
 | `body` | string | 响应体 |
 | `ok` | boolean | `status >= 200 && status < 400` |
 | `error` | string | 错误信息（成功时为空） |
-| `headers` | table | 响应头（仅 `request` 方法返回） |
+| `headers` | table | 响应头 |
 
 规则：
 
 - 同步阻塞当前 coroutine，不阻塞 runtime worker thread（Phase 2 改为异步）。
-- 支持 HTTP/1.1、HTTP/2、HTTPS（通过 libcurl + OpenSSL/Schannel）。
+- 支持 HTTP/1.1、HTTP/2、HTTPS（libcurl + OpenSSL/Schannel）。
 - 支持连接池、重定向、Cookie、代理。
-- 适合支付 API、webhook、REST API 调用等场景。
+- 适合支付 API、webhook、REST API、文件传输等场景。
 
-实现快照：基于 libcurl 实现 `HttpClient`，支持 HTTPS/HTTP2/连接池/重定向。Lua API 通过 `shield.http.*` 注册。`HttpClient::initialize()` 在 `register_full_shield_api` 时自动调用。
+实现快照：基于 libcurl 实现 `HttpClient`。`HttpClient::initialize()` 在 `register_full_shield_api` 时自动调用。
 
 ### HTTP 服务端 (shield.httpd)
 

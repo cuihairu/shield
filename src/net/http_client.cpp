@@ -203,4 +203,145 @@ HttpClientResponse HttpClient::patch_json(const std::string& url,
     return request(opts);
 }
 
+HttpClientResponse HttpClient::upload(const std::string& url,
+                                       const std::vector<HttpFileField>& files,
+                                       const std::unordered_map<std::string, std::string>& fields,
+                                       int timeout_seconds) {
+    HttpClientResponse response;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        response.error = "Failed to initialize curl handle";
+        return response;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(timeout_seconds));
+
+    // Build multipart form.
+    curl_mime* mime = curl_mime_init(curl);
+
+    // Add form fields.
+    for (const auto& [key, value] : fields) {
+        curl_mimepart* part = curl_mime_addpart(mime);
+        curl_mime_name(part, key.c_str());
+        curl_mime_data(part, value.c_str(), CURL_ZERO_TERMINATED);
+    }
+
+    // Add file uploads.
+    for (const auto& file : files) {
+        curl_mimepart* part = curl_mime_addpart(mime);
+        curl_mime_name(part, file.field_name.c_str());
+        curl_mime_filedata(part, file.file_path.c_str());
+        if (!file.content_type.empty()) {
+            curl_mime_type(part, file.content_type.c_str());
+        }
+    }
+
+    curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
+
+    // Response callbacks.
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response.headers);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Shield/1.0");
+
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res != CURLE_OK) {
+        response.error = curl_easy_strerror(res);
+    } else {
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        response.status_code = static_cast<int>(status);
+    }
+
+    curl_mime_free(mime);
+    curl_easy_cleanup(curl);
+
+    return response;
+}
+
+HttpClientResponse HttpClient::download(const std::string& url,
+                                         const std::string& output_path,
+                                         int timeout_seconds) {
+    HttpClientResponse response;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        response.error = "Failed to initialize curl handle";
+        return response;
+    }
+
+    FILE* fp = fopen(output_path.c_str(), "wb");
+    if (!fp) {
+        response.error = "Failed to open output file: " + output_path;
+        curl_easy_cleanup(curl);
+        return response;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(timeout_seconds));
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Shield/1.0");
+
+    // Track headers for status code.
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response.headers);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    if (res != CURLE_OK) {
+        response.error = curl_easy_strerror(res);
+    } else {
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        response.status_code = static_cast<int>(status);
+    }
+
+    fclose(fp);
+    curl_easy_cleanup(curl);
+
+    // If download failed, remove the file.
+    if (!response.ok()) {
+        remove(output_path.c_str());
+    }
+
+    return response;
+}
+
+HttpClientResponse HttpClient::post_form(const std::string& url,
+                                          const std::unordered_map<std::string, std::string>& fields,
+                                          int timeout_seconds) {
+    HttpClientOptions opts;
+    opts.method = "POST";
+    opts.url = url;
+    opts.form_fields = fields;
+    opts.headers["Content-Type"] = "application/x-www-form-urlencoded";
+    opts.timeout_seconds = timeout_seconds;
+
+    // Build URL-encoded form body.
+    std::string form_body;
+    for (const auto& [key, value] : fields) {
+        if (!form_body.empty()) form_body += "&";
+        // URL-encode key and value.
+        CURL* curl = curl_easy_init();
+        char* encoded_key = curl_easy_escape(curl, key.c_str(),
+                                              static_cast<int>(key.size()));
+        char* encoded_val = curl_easy_escape(curl, value.c_str(),
+                                              static_cast<int>(value.size()));
+        form_body += std::string(encoded_key) + "=" + std::string(encoded_val);
+        curl_free(encoded_key);
+        curl_free(encoded_val);
+        curl_easy_cleanup(curl);
+    }
+    opts.body = form_body;
+
+    return request(opts);
+}
+
 }  // namespace shield::net

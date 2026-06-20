@@ -1294,11 +1294,81 @@ void register_http_api(sol::table& shield) {
     // =========================================================================
     auto http = lua.create_table();
 
+    // Helper: convert HttpClientResponse to Lua table.
+    auto to_table = [](sol::state_view lua,
+                       const shield::net::HttpClientResponse& res) -> sol::table {
+        sol::table result = lua.create_table();
+        result["status"] = res.status_code;
+        result["body"] = res.body;
+        result["ok"] = res.ok();
+        result["error"] = res.error;
+        sol::table headers = lua.create_table();
+        for (const auto& [k, v] : res.headers) {
+            headers[k] = v;
+        }
+        result["headers"] = headers;
+        return result;
+    };
+
+    // Helper: parse options table into HttpClientOptions.
+    auto parse_opts = [](sol::table opts,
+                         shield::net::HttpClientOptions& options) {
+        if (opts["method"].valid()) {
+            options.method = opts["method"].get<std::string>();
+        }
+        if (opts["body"].valid()) {
+            options.body = opts["body"].get<std::string>();
+        }
+        if (opts["timeout"].valid()) {
+            options.timeout_seconds = opts["timeout"].get<int>();
+        }
+        if (opts["headers"].valid()) {
+            sol::table hdrs = opts["headers"];
+            for (auto& [k, v] : hdrs) {
+                if (k.is<std::string>() && v.is<std::string>()) {
+                    options.headers[k.as<std::string>()] = v.as<std::string>();
+                }
+            }
+        }
+        if (opts["auth_bearer"].valid()) {
+            options.auth_bearer = opts["auth_bearer"].get<std::string>();
+            options.headers["Authorization"] = "Bearer " + options.auth_bearer;
+        }
+        if (opts["auth_basic"].valid()) {
+            sol::table basic = opts["auth_basic"];
+            if (basic["user"].valid()) {
+                options.auth_basic_user = basic["user"].get<std::string>();
+            }
+            if (basic["password"].valid()) {
+                options.auth_basic_password = basic["password"].get<std::string>();
+            }
+        }
+        if (opts["proxy"].valid()) {
+            options.proxy = opts["proxy"].get<std::string>();
+        }
+        if (opts["verify_ssl"].valid()) {
+            options.verify_ssl = opts["verify_ssl"].get<bool>();
+        }
+        if (opts["retry"].valid()) {
+            options.retry_count = opts["retry"].get<int>();
+        }
+        if (opts["retry_delay"].valid()) {
+            options.retry_delay_ms = opts["retry_delay"].get<int>();
+        }
+        if (opts["follow_redirects"].valid()) {
+            options.follow_redirects = opts["follow_redirects"].get<bool>();
+        }
+        if (opts["max_redirects"].valid()) {
+            options.max_redirects = opts["max_redirects"].get<int>();
+        }
+    };
+
     // shield.http.request(url, options) -> response_table
-    // options: { method="GET", body="", headers={}, timeout=10 }
-    // Returns: { status=200, body="...", headers={}, ok=true, error="" }
+    // Full options: method, body, headers, timeout, auth_bearer,
+    //   auth_basic={user,password}, proxy, verify_ssl, retry, retry_delay,
+    //   follow_redirects, max_redirects
     http.set_function("request",
-        [](sol::this_state state, std::string url,
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
            sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
 
@@ -1306,106 +1376,144 @@ void register_http_api(sol::table& shield) {
             options.url = url;
 
             if (opts) {
-                if ((*opts)["method"].valid()) {
-                    options.method = (*opts)["method"].get<std::string>();
+                parse_opts(*opts, options);
+            }
+
+            auto res = shield::net::HttpClient::request(options);
+            return to_table(lua, res);
+        });
+
+    // Convenience: shield.http.get(url [, options]) -> response_table
+    http.set_function("get",
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
+           sol::optional<sol::table> opts) -> sol::table {
+            sol::state_view lua(state);
+            shield::net::HttpClientOptions options;
+            options.method = "GET";
+            options.url = url;
+            if (opts) parse_opts(*opts, options);
+            return to_table(lua, shield::net::HttpClient::request(options));
+        });
+
+    // Convenience: shield.http.post(url [, body] [, options]) -> response_table
+    http.set_function("post",
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
+           sol::optional<std::string> body,
+           sol::optional<sol::table> opts) -> sol::table {
+            sol::state_view lua(state);
+            shield::net::HttpClientOptions options;
+            options.method = "POST";
+            options.url = url;
+            options.body = body.value_or("");
+            options.headers["Content-Type"] = "application/json";
+            if (opts) parse_opts(*opts, options);
+            return to_table(lua, shield::net::HttpClient::request(options));
+        });
+
+    // Convenience: shield.http.put(url [, body] [, options]) -> response_table
+    http.set_function("put",
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
+           sol::optional<std::string> body,
+           sol::optional<sol::table> opts) -> sol::table {
+            sol::state_view lua(state);
+            shield::net::HttpClientOptions options;
+            options.method = "PUT";
+            options.url = url;
+            options.body = body.value_or("");
+            options.headers["Content-Type"] = "application/json";
+            if (opts) parse_opts(*opts, options);
+            return to_table(lua, shield::net::HttpClient::request(options));
+        });
+
+    // Convenience: shield.http.delete(url [, options]) -> response_table
+    http.set_function("delete",
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
+           sol::optional<sol::table> opts) -> sol::table {
+            sol::state_view lua(state);
+            shield::net::HttpClientOptions options;
+            options.method = "DELETE";
+            options.url = url;
+            if (opts) parse_opts(*opts, options);
+            return to_table(lua, shield::net::HttpClient::request(options));
+        });
+
+    // Convenience: shield.http.patch(url [, body] [, options]) -> response_table
+    http.set_function("patch",
+        [&to_table, &parse_opts](sol::this_state state, std::string url,
+           sol::optional<std::string> body,
+           sol::optional<sol::table> opts) -> sol::table {
+            sol::state_view lua(state);
+            shield::net::HttpClientOptions options;
+            options.method = "PATCH";
+            options.url = url;
+            options.body = body.value_or("");
+            options.headers["Content-Type"] = "application/json";
+            if (opts) parse_opts(*opts, options);
+            return to_table(lua, shield::net::HttpClient::request(options));
+        });
+
+    // shield.http.upload(url, files [, fields] [, timeout]) -> response_table
+    // files: array of {field_name, file_path, content_type}
+    // fields: table of form field key-value pairs
+    http.set_function("upload",
+        [&to_table](sol::this_state state, std::string url,
+           sol::table files, sol::optional<sol::table> fields,
+           sol::optional<int> timeout) -> sol::table {
+            sol::state_view lua(state);
+
+            std::vector<shield::net::HttpFileField> file_list;
+            for (auto& [i, entry] : files) {
+                if (entry.is<sol::table>()) {
+                    sol::table f = entry.as<sol::table>();
+                    shield::net::HttpFileField field;
+                    field.field_name = f.get_or<std::string>("field_name", "file");
+                    field.file_path = f.get_or<std::string>("file_path", "");
+                    field.content_type = f.get_or<std::string>("content_type", "");
+                    file_list.push_back(std::move(field));
                 }
-                if ((*opts)["body"].valid()) {
-                    options.body = (*opts)["body"].get<std::string>();
-                }
-                if ((*opts)["timeout"].valid()) {
-                    options.timeout_seconds = (*opts)["timeout"].get<int>();
-                }
-                if ((*opts)["headers"].valid()) {
-                    sol::table hdrs = (*opts)["headers"];
-                    for (auto& [k, v] : hdrs) {
-                        if (k.is<std::string>() && v.is<std::string>()) {
-                            options.headers[k.as<std::string>()] = v.as<std::string>();
-                        }
+            }
+
+            std::unordered_map<std::string, std::string> field_map;
+            if (fields) {
+                for (auto& [k, v] : *fields) {
+                    if (k.is<std::string>() && v.is<std::string>()) {
+                        field_map[k.as<std::string>()] = v.as<std::string>();
                     }
                 }
             }
 
-            auto res = shield::net::HttpClient::request(options);
+            auto res = shield::net::HttpClient::upload(
+                url, file_list, field_map, timeout.value_or(60));
+            return to_table(lua, res);
+        });
 
-            sol::table result = lua.create_table();
-            result["status"] = res.status_code;
-            result["body"] = res.body;
-            result["ok"] = res.ok();
-            result["error"] = res.error;
-            sol::table headers = lua.create_table();
-            for (const auto& [k, v] : res.headers) {
-                headers[k] = v;
+    // shield.http.download(url, output_path [, timeout]) -> response_table
+    http.set_function("download",
+        [&to_table](sol::this_state state, std::string url,
+           std::string output_path, sol::optional<int> timeout) -> sol::table {
+            sol::state_view lua(state);
+            auto res = shield::net::HttpClient::download(
+                url, output_path, timeout.value_or(60));
+            return to_table(lua, res);
+        });
+
+    // shield.http.post_form(url, fields [, timeout]) -> response_table
+    // fields: table of key-value pairs for application/x-www-form-urlencoded
+    http.set_function("post_form",
+        [&to_table](sol::this_state state, std::string url,
+           sol::table fields, sol::optional<int> timeout) -> sol::table {
+            sol::state_view lua(state);
+
+            std::unordered_map<std::string, std::string> field_map;
+            for (auto& [k, v] : fields) {
+                if (k.is<std::string>() && v.is<std::string>()) {
+                    field_map[k.as<std::string>()] = v.as<std::string>();
+                }
             }
-            result["headers"] = headers;
-            return result;
-        });
 
-    // Convenience: shield.http.get(url) -> response_table
-    http.set_function("get",
-        [](sol::this_state state, std::string url) -> sol::table {
-            sol::state_view lua(state);
-            auto res = shield::net::HttpClient::get(url);
-            sol::table result = lua.create_table();
-            result["status"] = res.status_code;
-            result["body"] = res.body;
-            result["ok"] = res.ok();
-            result["error"] = res.error;
-            return result;
-        });
-
-    // Convenience: shield.http.post(url, body) -> response_table
-    http.set_function("post",
-        [](sol::this_state state, std::string url,
-           sol::optional<std::string> body) -> sol::table {
-            sol::state_view lua(state);
-            auto res = shield::net::HttpClient::post_json(url, body.value_or(""));
-            sol::table result = lua.create_table();
-            result["status"] = res.status_code;
-            result["body"] = res.body;
-            result["ok"] = res.ok();
-            result["error"] = res.error;
-            return result;
-        });
-
-    // Convenience: shield.http.put(url, body) -> response_table
-    http.set_function("put",
-        [](sol::this_state state, std::string url,
-           sol::optional<std::string> body) -> sol::table {
-            sol::state_view lua(state);
-            auto res = shield::net::HttpClient::put_json(url, body.value_or(""));
-            sol::table result = lua.create_table();
-            result["status"] = res.status_code;
-            result["body"] = res.body;
-            result["ok"] = res.ok();
-            result["error"] = res.error;
-            return result;
-        });
-
-    // Convenience: shield.http.delete(url) -> response_table
-    http.set_function("delete",
-        [](sol::this_state state, std::string url) -> sol::table {
-            sol::state_view lua(state);
-            auto res = shield::net::HttpClient::del(url);
-            sol::table result = lua.create_table();
-            result["status"] = res.status_code;
-            result["body"] = res.body;
-            result["ok"] = res.ok();
-            result["error"] = res.error;
-            return result;
-        });
-
-    // Convenience: shield.http.patch(url, body) -> response_table
-    http.set_function("patch",
-        [](sol::this_state state, std::string url,
-           sol::optional<std::string> body) -> sol::table {
-            sol::state_view lua(state);
-            auto res = shield::net::HttpClient::patch_json(url, body.value_or(""));
-            sol::table result = lua.create_table();
-            result["status"] = res.status_code;
-            result["body"] = res.body;
-            result["ok"] = res.ok();
-            result["error"] = res.error;
-            return result;
+            auto res = shield::net::HttpClient::post_form(
+                url, field_map, timeout.value_or(10));
+            return to_table(lua, res);
         });
 
     shield["http"] = http;
