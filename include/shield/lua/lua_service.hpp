@@ -88,6 +88,12 @@ public:
     // Get current sender ID
     std::string current_sender_id() const;
 
+    // Get current trace ID (empty if not in a message handler)
+    std::string current_trace_id() const;
+
+    // Get current call deadline in ms (0 if not set)
+    int64_t current_deadline_ms() const;
+
     // Request that the currently running service exits after its handler returns.
     void request_current_exit(std::string_view reason = "normal");
 

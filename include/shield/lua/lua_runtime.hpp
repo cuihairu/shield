@@ -215,6 +215,8 @@ public:
         std::string sender;
         std::string method;
         nlohmann::json args;
+        std::string trace_id;
+        int64_t deadline_ms = 0;
         Priority priority = Priority::Normal;
         int64_t timestamp_ms = 0;
         // Coroutine call correlation. Defaults describe a plain send.

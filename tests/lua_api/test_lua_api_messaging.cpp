@@ -89,7 +89,7 @@ BOOST_AUTO_TEST_CASE(LAPI_004_03_SendToMissingService) {
     BOOST_REQUIRE_EQUAL(send_result.values.size(), 2u);
     BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), false);
     BOOST_CHECK_EQUAL(send_result.values[1]["code"].get<std::string>(),
-                      "send_failed");
+                      "service_not_found");
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_004_04_SendMissingMethodIsAcceptedButNotDispatched) {

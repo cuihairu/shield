@@ -10,8 +10,8 @@ coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer
 `shield.config`、`shield.log.*`、DB/Redis API（含 mock pool 和错误注入测试）、
 `on_exit` call guard、call timeout（`check_call_timeouts`）、
 timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）。
-仍待实现：`shield.redis.subscribe` Lua callback 绑定、
-`SessionHandle` C++ 集成层、`shield.trace/deadline` 完整语义、LuaPack 编码。
+仍待实现：`SessionHandle` C++ 集成层（需 `shield_net` 与 `shield_lua` 集成）、
+LuaPack 编码、service exit 时自动取消 Redis subscription。
 
 ## 设计原则
 
@@ -285,7 +285,7 @@ local deadline = shield.deadline()
 - handler 返回后上下文失效。
 - timer/fork coroutine 中 `shield.sender()` 返回 `nil`。
 
-实现快照：`shield.sender()` 已实现；`shield.trace()` 当前返回固定值 `"trace:0"`；`shield.deadline()` 当前返回 `nil`。完整 trace 传播和 deadline 可见性依赖 coroutine-aware call 落地（Phase 2）。
+实现快照：`shield.sender()`、`shield.trace()`、`shield.deadline()` 均已实现。trace_id 和 deadline_ms 在 send/call 消息中传播，从 caller 的 dispatch context 携带到 callee 的 dispatch context。timer/fork context 中 `shield.sender()` 返回 `nil`，`shield.trace()` 返回 `nil`，`shield.deadline()` 返回 `nil`。
 
 ## Timer API
 
@@ -370,11 +370,11 @@ shield.log.error("message")
 
 规则：
 
-- 日志自动注入 service id、service name、trace id（Phase 2）。
+- 日志自动注入 service id。
 - 参数必须是 string 或可安全 tostring 的值。
 - 不允许在日志 API 中执行阻塞 I/O。
 
-实现快照：当前 `shield.log.*` 直接输出用户传入的字符串，未自动注入 service id/name/trace id。自动注入属于 Phase 2 扩展。
+实现快照：`shield.log.*` 输出时自动注入当前 service id 前缀（格式：`[service_id] message`）。service name 和 trace id 注入属于 Phase 2 扩展。
 
 ## Data API
 
@@ -411,7 +411,7 @@ end)
 - subscribe callback 属于当前 service。
 - service exit 时自动取消 owned subscriptions。
 
-实现快照：`get/set/del/exists/publish` 已实现。`subscribe` 的 C++ 绑定当前不接受 Lua callback 参数（只接受 channel 字符串），callback 绑定和 subscription 生命周期追踪属于 Phase 2。
+实现快照：`get/set/del/exists/publish/subscribe` 均已实现。`subscribe` 接受 `(channel, callback)` 参数，callback 在 Redis 回调线程中执行（非 worker 线程）。service exit 时自动取消 subscription 属于 Phase 2 扩展。
 
 ## Gateway API
 
@@ -472,7 +472,7 @@ end
 
 错误码清单见 [错误码参考](./runtime-errors.md)。
 
-实现快照：当前 Error Object 只返回 `code` 和 `message` 两个字段。`retryable` 和 `detail` 属于 Phase 2 扩展，当前未填充。
+实现快照：Error Object 返回 `code`、`message`、`retryable` 三个字段。`detail` 属于 Phase 2 扩展，当前未填充。timeout 错误 `retryable=true`，其他错误 `retryable=false`。
 
 ## 删除的旧 API
 

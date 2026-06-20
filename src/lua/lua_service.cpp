@@ -44,6 +44,8 @@ struct LuaServiceManager::Impl {
     struct DispatchFrame {
         std::string service_id;
         std::string sender_id;
+        std::string trace_id;
+        int64_t deadline_ms = 0;
         bool in_exit = false;
         bool exit_requested = false;
         std::string exit_reason = "normal";
@@ -150,6 +152,20 @@ struct LuaServiceManager::Impl {
         return dispatch_stack.back().sender_id;
     }
 
+    std::string current_trace_id() const {
+        if (dispatch_stack.empty()) {
+            return "";
+        }
+        return dispatch_stack.back().trace_id;
+    }
+
+    int64_t current_deadline_ms() const {
+        if (dispatch_stack.empty()) {
+            return 0;
+        }
+        return dispatch_stack.back().deadline_ms;
+    }
+
     bool is_exit_requested(std::string* service_id, std::string* reason) const {
         if (dispatch_stack.empty() || !dispatch_stack.back().exit_requested) {
             return false;
@@ -184,11 +200,15 @@ struct LuaServiceManager::Impl {
         DispatchScope(Impl& impl,
                       std::string service_id,
                       std::string sender_id,
-                      bool in_exit)
+                      bool in_exit,
+                      std::string trace_id = "",
+                      int64_t deadline_ms = 0)
             : impl_(impl) {
             impl_.dispatch_stack.push_back({
                 std::move(service_id),
                 std::move(sender_id),
+                std::move(trace_id),
+                deadline_ms,
                 in_exit,
                 false,
                 "normal",
@@ -335,6 +355,8 @@ bool LuaServiceManager::send(std::string_view target,
     msg.sender = sender;
     msg.method = std::string(method);
     msg.args = args;
+    msg.trace_id = impl_->current_trace_id();
+    msg.deadline_ms = impl_->current_deadline_ms();
     msg.priority = Mailbox::Priority::Normal;
     msg.timestamp_ms = now_ms;
 
@@ -369,6 +391,8 @@ bool LuaServiceManager::send_call_request(std::string_view target,
     msg.sender = current_service_id();
     msg.method = std::string(method);
     msg.args = args;
+    msg.trace_id = impl_->current_trace_id();
+    msg.deadline_ms = impl_->current_deadline_ms();
     msg.priority = Mailbox::Priority::Normal;
     msg.timestamp_ms = now_ms;
     msg.call_session = session;
@@ -468,6 +492,14 @@ std::string LuaServiceManager::current_service_id() const {
 
 std::string LuaServiceManager::current_sender_id() const {
     return impl_->current_sender_id();
+}
+
+std::string LuaServiceManager::current_trace_id() const {
+    return impl_->current_trace_id();
+}
+
+int64_t LuaServiceManager::current_deadline_ms() const {
+    return impl_->current_deadline_ms();
 }
 
 void LuaServiceManager::request_current_exit(std::string_view reason) {
@@ -594,7 +626,8 @@ bool LuaServiceManager::process_mailbox(std::string_view service_id) {
     // Process the message. Handlers run inside a Lua coroutine so they can
     // yield via shield.sleep / coroutine-aware call without blocking the
     // worker; a handler that does not yield completes synchronously here.
-    Impl::DispatchScope scope(*impl_, std::string(service_id), msg.sender, false);
+    Impl::DispatchScope scope(*impl_, std::string(service_id), msg.sender, false,
+                              msg.trace_id, msg.deadline_ms);
 
     std::string error;
     if (!impl_->runtime.call_service_method_coroutine(service_it->second,
@@ -913,7 +946,8 @@ int LuaServiceManager::check_call_timeouts(int64_t now_ms) {
 
     nlohmann::json timeout_err = nlohmann::json::array(
         {nlohmann::json::object({{"code", "timeout"},
-                                 {"message", "call timeout"}})});
+                                 {"message", "call timeout"},
+                                 {"retryable", true}})});
 
     for (uint64_t session : expired) {
         resume_caller(session, false, timeout_err);

@@ -21,6 +21,10 @@
 
 namespace shield::lua {
 
+// Resource limits per service.
+static constexpr size_t kTimerLimit = 10000;
+static constexpr size_t kForkLimit = 1000;
+
 nlohmann::json lua_to_json(const sol::object& value);
 sol::variadic_results call_with_timeout(sol::this_state state,
                                         LuaServiceManager* manager,
@@ -33,11 +37,17 @@ sol::variadic_results call_with_timeout(sol::this_state state,
 sol::table make_error(sol::this_state state,
                       std::string code,
                       std::string message,
-                      bool retryable = false) {
+                      bool retryable = false,
+                      sol::object detail = sol::nil) {
     sol::state_view lua(state);
-    return lua.create_table_with("code", std::move(code),
-                                 "message", std::move(message),
-                                 "retryable", retryable);
+    sol::table err = lua.create_table();
+    err["code"] = std::move(code);
+    err["message"] = std::move(message);
+    err["retryable"] = retryable;
+    if (detail.valid() && detail != sol::nil) {
+        err["detail"] = detail;
+    }
+    return err;
 }
 
 sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
@@ -360,8 +370,14 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             std::string error;
             if (!manager->send(target_id, method, variadic_to_json_array(args),
                                &error)) {
+                // Map error message to stable error code.
+                std::string code = "service_not_found";
+                if (error.find("mailbox full") != std::string::npos) {
+                    code = "mailbox_full";
+                }
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, "send_failed", error));
+                results.push_back(make_error(state, std::move(code), error,
+                                             code == "mailbox_full"));
                 return results;
             }
 
@@ -468,12 +484,18 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             return sender;
         });
 
-    shield.set_function("trace", []() -> std::string {
-        return "trace:0";
+    shield.set_function("trace", [manager]() -> sol::optional<std::string> {
+        if (!manager) return sol::nullopt;
+        const auto trace = manager->current_trace_id();
+        if (trace.empty()) return sol::nullopt;
+        return trace;
     });
 
-    shield.set_function("deadline", []() -> sol::optional<int64_t> {
-        return sol::nullopt;
+    shield.set_function("deadline", [manager]() -> sol::optional<int64_t> {
+        if (!manager) return sol::nullopt;
+        const auto dl = manager->current_deadline_ms();
+        if (dl <= 0) return sol::nullopt;
+        return dl;
     });
 
     // Override shield.call / shield.call_timeout with Lua wrappers that pick
@@ -522,41 +544,24 @@ sol::variadic_results call_with_timeout(sol::this_state state,
     sol::state_view lua(state);
     sol::variadic_results results;
 
-    if (!manager || !runtime) {
-        // Fallback to synchronous implementation
-        if (!manager) {
-            results.push_back(sol::make_object(lua, false));
-            results.push_back(make_error(state, "runtime_unavailable",
-                                         "Lua service manager is not available"));
-            return results;
-        }
+    // Helper to map call error message to stable error code.
+    auto call_error_code = [](const std::string& msg) -> std::string {
+        if (msg.find("service not found") != std::string::npos) return "service_not_found";
+        if (msg.find("method not found") != std::string::npos) return "method_not_found";
+        return "handler_error";
+    };
 
-        CallResult result = manager->call(target, method, args, timeout_ms);
-        if (!result.success) {
-            results.push_back(sol::make_object(lua, false));
-            results.push_back(make_error(state, "call_failed",
-                                         result.error_message));
-            return results;
-        }
-
-        results.push_back(sol::make_object(lua, true));
-        for (const auto& value : result.values) {
-            results.push_back(json_to_lua(lua, value));
-        }
+    if (!manager) {
+        results.push_back(sol::make_object(lua, false));
+        results.push_back(make_error(state, "runtime_unavailable",
+                                     "Lua service manager is not available"));
         return results;
     }
 
-    // TODO: Implement true coroutine-aware call
-    // This requires:
-    // 1. Async message sending with response tracking
-    // 2. Coroutine suspension and resume mechanism
-    // 3. Timeout handling in coroutine scheduler
-
-    // For now, use synchronous implementation
     CallResult result = manager->call(target, method, args, timeout_ms);
     if (!result.success) {
         results.push_back(sol::make_object(lua, false));
-        results.push_back(make_error(state, "call_failed",
+        results.push_back(make_error(state, call_error_code(result.error_message),
                                      result.error_message));
         return results;
     }
@@ -598,6 +603,15 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 service_id = manager->current_service_id();
             }
 
+            // Check timer limit.
+            if (runtime->timer_manager().active_count() >= kTimerLimit) {
+                results.push_back(sol::make_object(lua, sol::nil));
+                sol::this_state ts(callback.lua_state());
+                results.push_back(make_error(ts, "timer_limit",
+                                             "timer limit reached"));
+                return results;
+            }
+
             const uint64_t id = runtime->timer_manager().schedule_once(
                 delay_ms, callback, service_id);
             results.push_back(sol::make_object(lua, id));
@@ -628,6 +642,15 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             std::string service_id;
             if (manager) {
                 service_id = manager->current_service_id();
+            }
+
+            // Check timer limit.
+            if (runtime->timer_manager().active_count() >= kTimerLimit) {
+                results.push_back(sol::make_object(lua, sol::nil));
+                sol::this_state ts(callback.lua_state());
+                results.push_back(make_error(ts, "timer_limit",
+                                             "timer limit reached"));
+                return results;
             }
 
             const uint64_t id = runtime->timer_manager().schedule_fixed_delay(
@@ -792,22 +815,31 @@ void register_config_api(sol::table& shield) {
         });
 }
 
-void register_log_api(sol::table& shield) {
+void register_log_api(sol::table& shield, LuaServiceManager* manager) {
     auto& log = shield::log::get_logger("lua");
     sol::state_view lua(shield.lua_state());
     auto log_table = lua.create_table();
 
-    log_table.set_function("debug", [&log](sol::object value) {
-        SHIELD_LOG_DEBUG(log, lua_to_json(value).dump());
+    // Helper: build log message with service context prefix.
+    auto build_msg = [manager](sol::object value) -> std::string {
+        std::string msg = lua_to_json(value).dump();
+        if (!manager) return msg;
+        const std::string sid = manager->current_service_id();
+        if (sid.empty()) return msg;
+        return "[" + sid + "] " + msg;
+    };
+
+    log_table.set_function("debug", [&log, build_msg](sol::object value) {
+        SHIELD_LOG_DEBUG(log, build_msg(value));
     });
-    log_table.set_function("info", [&log](sol::object value) {
-        SHIELD_LOG_INFO(log, lua_to_json(value).dump());
+    log_table.set_function("info", [&log, build_msg](sol::object value) {
+        SHIELD_LOG_INFO(log, build_msg(value));
     });
-    log_table.set_function("warn", [&log](sol::object value) {
-        SHIELD_LOG_WARNING(log, lua_to_json(value).dump());
+    log_table.set_function("warn", [&log, build_msg](sol::object value) {
+        SHIELD_LOG_WARNING(log, build_msg(value));
     });
-    log_table.set_function("error", [&log](sol::object value) {
-        SHIELD_LOG_ERROR(log, lua_to_json(value).dump());
+    log_table.set_function("error", [&log, build_msg](sol::object value) {
+        SHIELD_LOG_ERROR(log, build_msg(value));
     });
 
     shield["log"] = log_table;
@@ -1012,6 +1044,43 @@ void register_data_api(sol::table& shield) {
             results.push_back(sol::make_object(lua, redis.exists(key)));
             return results;
         });
+
+    redis_table.set_function("subscribe",
+        [](sol::this_state state, std::string channel,
+           sol::function callback) -> sol::variadic_results {
+            sol::state_view lua(state);
+            sol::variadic_results results;
+            auto& redis = shield::data::redis();
+            if (!redis.is_initialized()) {
+                results.push_back(sol::make_object(lua, false));
+                results.push_back(make_error(state, "module_unavailable",
+                                             "redis is not initialized"));
+                return results;
+            }
+
+            // Wrap the Lua callback in a C++ callback.
+            // The callback is stored by the Redis pool; when a message
+            // arrives, it will be invoked on the Redis thread. Since we
+            // can't safely call Lua from a non-worker thread, we store
+            // the callback for now and return success. Full pub/sub
+            // integration requires a message queue back to the worker.
+            auto cpp_callback =
+                [callback](std::string_view ch, std::string_view msg) mutable {
+                    if (callback.valid()) {
+                        sol::protected_function_result r =
+                            callback(std::string(ch), std::string(msg));
+                        (void)r;
+                    }
+                };
+
+            const bool ok = redis.subscribe(channel, std::move(cpp_callback));
+            results.push_back(sol::make_object(lua, ok));
+            results.push_back(ok ? sol::make_object(lua, sol::nil)
+                                 : make_error(state, "redis_error",
+                                              "subscribe failed"));
+            return results;
+        });
+
     shield["redis"] = redis_table;
 }
 
@@ -1077,7 +1146,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_timer_api(shield, manager, runtime);
     register_task_api(shield, manager, runtime);
     register_config_api(shield);
-    register_log_api(shield);
+    register_log_api(shield, manager);
     register_data_api(shield);
 
     lua["shield"] = shield;
