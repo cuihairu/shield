@@ -174,6 +174,12 @@ public:
     // Used by shield.call / shield.call_timeout to reject calls during exit.
     bool is_in_exit() const;
 
+    // Register a Redis subscription for the current service (auto-cancel on exit).
+    void register_redis_subscription(const std::string& channel);
+
+    // Cancel all Redis subscriptions owned by a service.
+    void cancel_redis_subscriptions(const std::string& service_id);
+
     // Scan pending_calls for expired deadlines and resume each timed-out
     // caller with (false, {code="timeout", message="call timeout"}).
     /// @param now_ms Current monotonic time in milliseconds

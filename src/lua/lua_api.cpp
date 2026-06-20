@@ -221,8 +221,14 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
 
             SpawnResult result = manager->spawn(module, options.dump());
             if (!result.success) {
+                std::string code = "spawn_failed";
+                if (result.error_message.find("timeout") != std::string::npos) {
+                    code = "spawn_timeout";
+                } else if (result.error_message.find("on_init failed") != std::string::npos) {
+                    code = "init_failed";
+                }
                 results.push_back(sol::make_object(lua, sol::nil));
-                results.push_back(make_error(state, "spawn_failed",
+                results.push_back(make_error(state, std::move(code),
                                              result.error_message));
                 return results;
             }
@@ -380,6 +386,8 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                     code = "runtime_stopping";
                 } else if (error.find("message too large") != std::string::npos) {
                     code = "message_too_large";
+                } else if (error.find("unsupported") != std::string::npos) {
+                    code = "encode_failed";
                 }
                 results.push_back(sol::make_object(lua, false));
                 results.push_back(make_error(state, std::move(code), error,
@@ -483,6 +491,11 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             if (!manager) {
                 return sol::nullopt;
             }
+            // Returns nil in timer/fork context (no sender).
+            // Returns nil outside any dispatch (module-level code).
+            // The distinction between "no sender" and "context_expired" is
+            // that in timer/fork context we ARE inside a dispatch scope but
+            // the sender is empty; outside any scope the context is expired.
             const auto sender = manager->current_sender_id();
             if (sender.empty()) {
                 return sol::nullopt;
@@ -865,7 +878,7 @@ void register_log_api(sol::table& shield, LuaServiceManager* manager) {
     shield["log"] = log_table;
 }
 
-void register_data_api(sol::table& shield) {
+void register_data_api(sol::table& shield, LuaServiceManager* manager) {
     sol::state_view lua(shield.lua_state());
 
     auto db_table = lua.create_table();
@@ -887,7 +900,7 @@ void register_data_api(sol::table& shield) {
                                                      : std::vector<std::string>{});
             results.push_back(sol::make_object(lua, query_result.success));
             if (!query_result.success) {
-                results.push_back(make_error(state, "database_error",
+                results.push_back(make_error(state, "db_query_failed",
                                              query_result.error_message));
                 return results;
             }
@@ -1005,7 +1018,7 @@ void register_data_api(sol::table& shield) {
             const bool ok = redis.set(key, value, ttl.value_or(0));
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? sol::make_object(lua, sol::nil)
-                                 : make_error(state, "redis_error",
+                                 : make_error(state, "redis_command_failed",
                                               "redis set failed"));
             return results;
         });
@@ -1066,7 +1079,7 @@ void register_data_api(sol::table& shield) {
         });
 
     redis_table.set_function("subscribe",
-        [](sol::this_state state, std::string channel,
+        [manager](sol::this_state state, std::string channel,
            sol::function callback) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
@@ -1094,9 +1107,12 @@ void register_data_api(sol::table& shield) {
                 };
 
             const bool ok = redis.subscribe(channel, std::move(cpp_callback));
+            if (ok && manager) {
+                manager->register_redis_subscription(channel);
+            }
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? sol::make_object(lua, sol::nil)
-                                 : make_error(state, "redis_error",
+                                 : make_error(state, "redis_command_failed",
                                               "subscribe failed"));
             return results;
         });
@@ -1219,7 +1235,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_task_api(shield, manager, runtime);
     register_config_api(shield);
     register_log_api(shield, manager);
-    register_data_api(shield);
+    register_data_api(shield, manager);
 
     lua["shield"] = shield;
 

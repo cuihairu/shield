@@ -37,7 +37,7 @@
 | `script_load_failed` | spawn | Lua 文件语法错误、load 失败或顶层代码抛错 | 否 | ✅ |
 | `invalid_name` | spawn | 服务名不合法（格式、长度、保留前缀） | 否 | ✅ |
 | `name_conflict` | spawn | 服务名已被占用 | 否 | ✅ |
-| `encode_failed` | send/call | 消息编码失败（类型不支持、嵌套过深、循环引用） | 否 | ❌ Phase 2 |
+| `encode_failed` | send/call | 消息编码失败（类型不支持、嵌套过深、循环引用） | 否 | ✅ send 检测 unsupported 类型 |
 | `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | ✅ send 检查 |
 | `service_not_found` | send/call | 目标服务不存在（name 未注册或 handle 已失效） | 是 | ✅ send 和 call 均返回 |
 | `service_dead` | send/call | 目标服务已停止 | 否 | ⚠️ 由 `service_not_found` 覆盖（exit 后从 registry 移除） |
@@ -74,7 +74,7 @@
 |--------|------|-----------|------|
 | `module_unavailable` | database 模块未启用 | 否 | ✅ |
 | `database_error` | 未分类的数据库执行失败 | 视具体驱动 | ✅ (代码中使用 `database_error`) |
-| `db_query_failed` | 未分类的数据库执行失败 | 视具体驱动 | ❌ Phase 2 (代码使用 `database_error`) |
+| `db_query_failed` | 未分类的数据库执行失败 | 视具体驱动 | ✅ DB query/execute 返回 |
 | `connection_lost` | 数据库连接丢失 | 是 | ❌ Phase 2 |
 | `connection_timeout` | 建立连接超时 | 是 | ❌ Phase 2 |
 | `query_timeout` | 查询超时 | 是 | ❌ Phase 2 |
@@ -91,7 +91,7 @@
 |--------|------|-----------|------|
 | `module_unavailable` | redis 模块未启用 | 否 | ✅ |
 | `redis_error` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ (代码中使用 `redis_error`) |
-| `redis_command_failed` | 未分类的 Redis 命令失败 | 视具体驱动 | ❌ Phase 2 (代码使用 `redis_error`) |
+| `redis_command_failed` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ Redis set/subscribe 返回 |
 | `connection_lost` | Redis 连接丢失 | 是 | ❌ Phase 2 |
 | `connection_timeout` | 建立连接超时 | 是 | ❌ Phase 2 |
 | `command_timeout` | 命令执行超时 | 是 | ❌ Phase 2 |

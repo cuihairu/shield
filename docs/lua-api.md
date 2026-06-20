@@ -10,8 +10,7 @@ coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer
 `shield.config`、`shield.log.*`、DB/Redis API（含 mock pool 和错误注入测试）、
 `on_exit` call guard、call timeout（`check_call_timeouts`）、
 timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）。
-仍待实现：`shield_net` 层创建 `SessionHandle` userdata 并传入 gateway handler、
-LuaPack 编码、service exit 时自动取消 Redis subscription。
+仍待实现：`shield_net` 层创建 `SessionHandle` userdata 并传入 gateway handler。
 
 ## 设计原则
 
@@ -411,7 +410,7 @@ end)
 - subscribe callback 属于当前 service。
 - service exit 时自动取消 owned subscriptions。
 
-实现快照：`get/set/del/exists/publish/subscribe` 均已实现。`subscribe` 接受 `(channel, callback)` 参数，callback 在 Redis 回调线程中执行（非 worker 线程）。service exit 时自动取消 subscription 属于 Phase 2 扩展。
+实现快照：`get/set/del/exists/publish/subscribe` 均已实现。`subscribe` 接受 `(channel, callback)` 参数，callback 在 Redis 回调线程中执行（非 worker 线程）。service exit 时自动取消 owned subscriptions（通过 `cancel_redis_subscriptions`）。
 
 ## Gateway API
 
