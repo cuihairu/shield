@@ -9,6 +9,7 @@
 #include <fstream>
 #include <functional>
 #include <filesystem>
+#include <cstdlib>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
@@ -213,6 +214,74 @@ bool validate_pool_sizes(const YAML::Node& node,
     return true;
 }
 
+bool validate_int_range(const YAML::Node& node,
+                        const char* key,
+                        const char* path,
+                        int min_value,
+                        int max_value,
+                        std::string* error);
+
+bool validate_data_pool_config(const YAML::Node& node,
+                               const char* path,
+                               std::string* error) {
+    if (!node) {
+        return true;
+    }
+
+    if (!validate_port_range(node, path, error) ||
+        !validate_pool_sizes(node, path, error)) {
+        return false;
+    }
+
+    if (!validate_int_range(node, "connect_timeout", path, 1, 3600000, error) ||
+        !validate_int_range(node, "acquire_timeout", path, 1, 3600000, error) ||
+        !validate_int_range(node, "idle_timeout", path, 1, 86400000, error) ||
+        !validate_int_range(node, "max_lifetime", path, 1, 86400000, error)) {
+        return false;
+    }
+
+    if (std::string(path) == "database") {
+        if (!validate_int_range(node, "query_timeout", path, 1, 3600000, error)) {
+            return false;
+        }
+        if (node["driver"]) {
+            const auto driver = node["driver"].as<std::string>();
+            if (driver != "mysql") {
+                if (error) {
+                    *error = "database.driver currently supports mysql";
+                }
+                return false;
+            }
+        }
+    } else if (std::string(path) == "redis") {
+        if (!validate_int_range(node, "command_timeout", path, 1, 3600000, error)) {
+            return false;
+        }
+    }
+
+    if (node["mock"]) {
+        try {
+            (void)node["mock"].as<bool>();
+        } catch (const std::exception&) {
+            if (error) {
+                *error = std::string(path) + ".mock must be boolean";
+            }
+            return false;
+        }
+    }
+    if (node["allow_mock_fallback"]) {
+        try {
+            (void)node["allow_mock_fallback"].as<bool>();
+        } catch (const std::exception&) {
+            if (error) {
+                *error = std::string(path) + ".allow_mock_fallback must be boolean";
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 bool validate_listener_address(const YAML::Node& node,
                                const char* key,
                                const std::string& actor_name,
@@ -257,6 +326,69 @@ bool validate_listener_address(const YAML::Node& node,
     return true;
 }
 
+std::optional<std::filesystem::path> existing_script_path(
+    const YAML::Node& actor,
+    const std::string& source_dir,
+    const YAML::Node& root) {
+    if (!actor["script"]) {
+        return std::nullopt;
+    }
+
+    std::filesystem::path script(actor["script"].as<std::string>());
+    if (script.is_absolute() && std::filesystem::exists(script)) {
+        return script;
+    }
+    if (std::filesystem::exists(script)) {
+        return script;
+    }
+
+    if (!source_dir.empty()) {
+        auto from_source = std::filesystem::path(source_dir) / script;
+        if (std::filesystem::exists(from_source)) {
+            return from_source;
+        }
+    }
+
+    if (root["lua"] && root["lua"]["script_path"]) {
+        auto from_lua_path = std::filesystem::path(
+            root["lua"]["script_path"].as<std::string>()) / script;
+        if (std::filesystem::exists(from_lua_path)) {
+            return from_lua_path;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool validate_int_range(const YAML::Node& node,
+                        const char* key,
+                        const char* path,
+                        int min_value,
+                        int max_value,
+                        std::string* error) {
+    if (!node || !node[key]) {
+        return true;
+    }
+
+    try {
+        const int value = node[key].as<int>();
+        if (value < min_value || value > max_value) {
+            if (error) {
+                *error = std::string(path) + "." + key + " must be between " +
+                         std::to_string(min_value) + " and " +
+                         std::to_string(max_value);
+            }
+            return false;
+        }
+    } catch (const std::exception&) {
+        if (error) {
+            *error = std::string(path) + "." + key + " must be an integer";
+        }
+        return false;
+    }
+    return true;
+}
+
 nlohmann::json yaml_to_json(const YAML::Node& node) {
     if (!node || node.IsNull()) {
         return nullptr;
@@ -294,7 +426,8 @@ nlohmann::json yaml_to_json(const YAML::Node& node) {
 
 bool Config::load_yaml(std::string_view path) {
     try {
-        std::ifstream file{std::string(path)};
+        const std::filesystem::path config_path{std::string(path)};
+        std::ifstream file(config_path);
         if (!file.is_open()) {
             auto& log = shield::log::get_logger("config");
             SHIELD_LOG_ERROR(log, "Failed to open config file: " + std::string(path));
@@ -304,7 +437,7 @@ bool Config::load_yaml(std::string_view path) {
         std::unique_lock lock(impl_->mutex);
         YAML::Node loaded = YAML::Load(file);
         impl_->root = merge_yaml_nodes(impl_->root, loaded);
-        auto parent = std::filesystem::path(std::string(path)).parent_path();
+        auto parent = config_path.parent_path();
         impl_->source_dir = parent.empty() ? "." : parent.string();
         flatten_yaml_node(impl_->root, impl_->storage);
 
@@ -538,6 +671,42 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
         }
         return false;
     }
+    const auto app_name = root["app"]["name"].as<std::string>();
+    if (app_name.size() > 64) {
+        if (error) {
+            *error = "app.name must be 1-64 characters";
+        }
+        return false;
+    }
+
+    if (const YAML::Node log = root["log"]; log && log["level"]) {
+        const auto level = log["level"].as<std::string>();
+        if (level != "debug" && level != "info" && level != "warn" &&
+            level != "error") {
+            if (error) {
+                *error = "log.level must be debug, info, warn, or error";
+            }
+            return false;
+        }
+    }
+
+    if (const YAML::Node lua = root["lua"]) {
+        if (lua["vm"] && lua["vm"]["mode"] &&
+            lua["vm"]["mode"].as<std::string>() != "per_service") {
+            if (error) {
+                *error = "lua.vm.mode must be per_service";
+            }
+            return false;
+        }
+        if (lua["cache"]) {
+            if (!validate_int_range(lua["cache"], "max_size", "lua.cache", 1,
+                                    10000, error) ||
+                !validate_int_range(lua["cache"], "ttl_seconds", "lua.cache",
+                                    0, 86400, error)) {
+                return false;
+            }
+        }
+    }
 
     if (options.require_actors) {
         const YAML::Node actors = root["actors"];
@@ -549,6 +718,8 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
         }
 
         std::unordered_set<std::string> names;
+        std::vector<std::pair<std::string, YAML::Node>> actors_to_resolve;
+        actors_to_resolve.reserve(actors.size());
         for (std::size_t i = 0; i < actors.size(); ++i) {
             const YAML::Node actor = actors[i];
             if (!actor.IsMap()) {
@@ -594,6 +765,7 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                 }
                 return false;
             }
+            const int actor_instances = scalar_int(actor, "instances").value_or(1);
 
             if (const YAML::Node restart = actor["restart"];
                 restart && restart["policy"]) {
@@ -627,6 +799,37 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                 if (!validate_listener_address(network, "tcp", name, error)) {
                     return false;
                 }
+                if (network["tcp"] && actor_instances != 1) {
+                    if (error) {
+                        *error = "actors[" + name +
+                                 "].network.tcp requires instances to be 1";
+                    }
+                    return false;
+                }
+                const std::string network_path = "actors[" + name + "].network";
+                if (!validate_int_range(network, "max_connections",
+                                        network_path.c_str(), 1, 10000000,
+                                        error) ||
+                    !validate_int_range(network, "max_connections_per_ip",
+                                        network_path.c_str(), 1, 10000000,
+                                        error) ||
+                    !validate_int_range(network, "max_frame_size",
+                                        network_path.c_str(), 1,
+                                        16 * 1024 * 1024, error)) {
+                    return false;
+                }
+            }
+
+            actors_to_resolve.emplace_back(name, actor);
+        }
+
+        for (const auto& [name, actor] : actors_to_resolve) {
+            if (!existing_script_path(actor, config.impl_->source_dir, root)) {
+                if (error) {
+                    *error = "actors[" + name + "].script does not exist: " +
+                             actor["script"].as<std::string>();
+                }
+                return false;
             }
         }
     }
@@ -634,8 +837,7 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
     if (const YAML::Node database = root["database"]) {
         if (database.IsMap() &&
             scalar_bool_default(database, "enabled", true)) {
-            if (!validate_port_range(database, "database", error) ||
-                !validate_pool_sizes(database, "database", error)) {
+            if (!validate_data_pool_config(database, "database", error)) {
                 return false;
             }
         }
@@ -643,9 +845,26 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
 
     if (const YAML::Node redis = root["redis"]) {
         if (redis.IsMap() && scalar_bool_default(redis, "enabled", true)) {
-            if (!validate_port_range(redis, "redis", error) ||
-                !validate_pool_sizes(redis, "redis", error)) {
+            if (!validate_data_pool_config(redis, "redis", error)) {
                 return false;
+            }
+        }
+    }
+
+    if (const YAML::Node shutdown = root["shutdown"];
+        shutdown && shutdown["timeout"] && shutdown["timeout"].IsMap()) {
+        const YAML::Node timeout = shutdown["timeout"];
+        const auto total = scalar_int(timeout, "total");
+        if (total) {
+            for (const char* key : {"service_drain", "service_stop", "data_close"}) {
+                const auto part = scalar_int(timeout, key);
+                if (part && *total <= *part) {
+                    if (error) {
+                        *error = "shutdown.timeout.total must be greater than " +
+                                 std::string(key);
+                    }
+                    return false;
+                }
             }
         }
     }
@@ -678,6 +897,17 @@ std::vector<RuntimeActorConfig> runtime_actors() {
 
         if (actor["options"]) {
             item.options_json = yaml_to_json(actor["options"]).dump();
+        }
+        if (const YAML::Node network = actor["network"]) {
+            if (network["tcp"]) {
+                item.network_tcp = network["tcp"].as<std::string>();
+            }
+            item.max_connections =
+                static_cast<size_t>(scalar_int(network, "max_connections").value_or(0));
+            item.max_connections_per_ip = static_cast<size_t>(
+                scalar_int(network, "max_connections_per_ip").value_or(0));
+            item.max_frame_size =
+                static_cast<size_t>(scalar_int(network, "max_frame_size").value_or(0));
         }
 
         result.push_back(std::move(item));

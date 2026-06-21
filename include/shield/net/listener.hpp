@@ -38,8 +38,14 @@ public:
     /// @brief Set max connections per IP (0 = unlimited)
     void set_max_per_ip(size_t max) { max_per_ip_ = max; }
 
+    /// @brief Set max frame payload size in bytes (0 = unlimited)
+    void set_max_frame_size(size_t max) { max_frame_size_ = max; }
+
     /// @brief Get last rejection reason
     std::string last_rejection_reason() const { return last_rejection_; }
+
+    /// @brief True when the underlying acceptor was opened, bound and listening.
+    bool is_open() const { return acceptor_.is_open(); }
 
     /// @brief Get number of active sessions
     size_t session_count() const {
@@ -59,6 +65,8 @@ public:
 private:
     void do_accept();
 
+    void remove_session_locked(const std::shared_ptr<Session>& session);
+
     void on_session_close(std::shared_ptr<Session> session,
                          std::string reason);
 
@@ -72,6 +80,7 @@ private:
     mutable std::shared_mutex sessions_mutex_;
     size_t max_connections_ = 0;  // 0 = unlimited
     size_t max_per_ip_ = 0;       // 0 = unlimited
+    size_t max_frame_size_ = 0;   // 0 = unlimited
     std::unordered_map<std::string, size_t> ip_counts_;
     std::string last_rejection_;
 

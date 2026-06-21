@@ -5,12 +5,19 @@
 #include "shield/base/error.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/config/config.hpp"
+#ifdef SHIELD_ENABLE_CLUSTER
+#include "shield/cluster/cluster_manager.hpp"
+#endif
 #include "shield/core/caf_adapter.hpp"
 #include "shield/caf_initializer.hpp"
 #include "shield/data/data.hpp"
+#include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
+#include "shield/net/listener.hpp"
 #include "shield/shield.hpp"
+
+#include <boost/asio/io_context.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -21,6 +28,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -31,7 +39,15 @@ using shield::core::initialize_core;
 
 namespace {
 
-std::string resolve_script_path(const shield::config::RuntimeActorConfig& actor) {
+shield::log::Level parse_log_level(const std::string& value) {
+    if (value == "debug") return shield::log::Level::Debug;
+    if (value == "warn") return shield::log::Level::Warning;
+    if (value == "error") return shield::log::Level::Error;
+    return shield::log::Level::Info;
+}
+
+std::string resolve_script_path_with_lua_path(
+    const shield::config::RuntimeActorConfig& actor) {
     std::filesystem::path script(actor.script);
     if (script.is_absolute() || std::filesystem::exists(script)) {
         return script.string();
@@ -44,7 +60,41 @@ std::string resolve_script_path(const shield::config::RuntimeActorConfig& actor)
         }
     }
 
+    auto lua_script_path = shield::config::get("lua.script_path", "scripts");
+    auto from_lua_path = std::filesystem::path(lua_script_path) / script;
+    if (std::filesystem::exists(from_lua_path)) {
+        return from_lua_path.string();
+    }
+
     return script.string();
+}
+
+std::string resolve_script_path(const shield::config::RuntimeActorConfig& actor) {
+    return resolve_script_path_with_lua_path(actor);
+}
+
+struct Endpoint {
+    std::string host;
+    uint16_t port = 0;
+};
+
+std::optional<Endpoint> parse_endpoint(const std::string& value) {
+    const auto colon = value.rfind(':');
+    if (colon == std::string::npos || colon + 1 >= value.size()) {
+        return std::nullopt;
+    }
+    Endpoint endpoint;
+    endpoint.host = value.substr(0, colon);
+    try {
+        const int port = std::stoi(value.substr(colon + 1));
+        if (port < 1 || port > 65535) {
+            return std::nullopt;
+        }
+        endpoint.port = static_cast<uint16_t>(port);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+    return endpoint;
 }
 
 }  // namespace
@@ -56,6 +106,13 @@ struct GlobalState {
     std::unique_ptr<CafAdapter> caf_adapter;
     std::unique_ptr<shield::lua::LuaRuntime> lua_runtime;
     std::unique_ptr<shield::lua::LuaServiceManager> lua_services;
+    boost::asio::io_context net_io;
+    std::thread net_thread;
+    std::vector<std::unique_ptr<shield::lua::LuaGatewayBridge>> gateway_bridges;
+    std::vector<std::unique_ptr<shield::net::TcpListener>> tcp_listeners;
+#ifdef SHIELD_ENABLE_CLUSTER
+    std::unique_ptr<shield::cluster::ClusterManager> cluster_manager;
+#endif
     bool initialized = false;
 };
 
@@ -64,11 +121,29 @@ static std::unique_ptr<GlobalState> g_state_owner;
 
 void cleanup_failed_initialize() {
     if (g_state) {
+        for (auto& listener : g_state->tcp_listeners) {
+            if (listener) {
+                listener->stop();
+            }
+        }
+        g_state->net_io.stop();
+        if (g_state->net_thread.joinable()) {
+            g_state->net_thread.join();
+        }
+        g_state->tcp_listeners.clear();
+        g_state->gateway_bridges.clear();
         if (g_state->lua_services) {
             g_state->lua_services->shutdown_all("startup_failed");
         }
         g_state->lua_services.reset();
         g_state->lua_runtime.reset();
+#ifdef SHIELD_ENABLE_CLUSTER
+        if (g_state->cluster_manager) {
+            g_state->cluster_manager->stop();
+        }
+        shield::cluster::set_global_cluster_manager(nullptr);
+        g_state->cluster_manager.reset();
+#endif
         g_state->caf_adapter.reset();
         g_state->actor_system.reset();
         g_state->initialized = false;
@@ -90,8 +165,7 @@ bool initialize(const RuntimeConfig& config) {
 
     // Initialize logging
     shield::log::Logger::initialize();
-    shield::log::Logger::set_global_level(
-        shield::log::Level::Info);  // Would parse config.log_level
+    shield::log::Logger::set_global_level(parse_log_level(config.log_level));
 
     auto& log = shield::log::get_logger("bootstrap");
     SHIELD_LOG_INFO(log, "Shield runtime initializing...");
@@ -117,9 +191,19 @@ bool initialize(const RuntimeConfig& config) {
             return false;
         }
     }
+    if (!config.node_id.empty()) {
+        shield::config::global_config().set("cluster.node_id", config.node_id);
+    }
+    const auto configured_log_level =
+        shield::config::get("log.level", config.log_level);
+    shield::log::Logger::set_global_level(parse_log_level(configured_log_level));
 
     shield::config::RuntimeValidationOptions validation_options;
+#ifdef SHIELD_ENABLE_CLUSTER
+    validation_options.cluster_enabled = true;
+#else
     validation_options.cluster_enabled = false;
+#endif
     validation_options.global_enabled = false;
     validation_options.player_enabled = false;
     validation_options.server_enabled = false;
@@ -153,6 +237,21 @@ bool initialize(const RuntimeConfig& config) {
         }
         SHIELD_LOG_INFO(log, "Redis pool initialized");
     }
+
+#ifdef SHIELD_ENABLE_CLUSTER
+    auto cluster_config = shield::cluster::parse_cluster_config();
+    if (cluster_config.enabled) {
+        if (cluster_config.node_id.empty()) {
+            SHIELD_LOG_ERROR(log, "Invalid cluster config: cluster.node_id is required");
+            cleanup_failed_initialize();
+            return false;
+        }
+        g_state->cluster_manager =
+            std::make_unique<shield::cluster::ClusterManager>(cluster_config);
+        g_state->cluster_manager->start();
+        shield::cluster::set_global_cluster_manager(g_state->cluster_manager.get());
+    }
+#endif
 
     // Initialize CAF actor system
     initialize_caf_types();
@@ -214,6 +313,75 @@ bool initialize(const RuntimeConfig& config) {
         }
     }
 
+    for (const auto& actor : shield::config::runtime_actors()) {
+        if (actor.network_tcp.empty() || actor.instances == 0) {
+            continue;
+        }
+        auto endpoint = parse_endpoint(actor.network_tcp);
+        if (!endpoint) {
+            SHIELD_LOG_ERROR(log, "Invalid TCP endpoint for actor '" + actor.name +
+                                  "': " + actor.network_tcp);
+            cleanup_failed_initialize();
+            return false;
+        }
+        if (endpoint->host != "0.0.0.0" && endpoint->host != "*" &&
+            endpoint->host != "::" && endpoint->host != "localhost" &&
+            endpoint->host != "127.0.0.1") {
+            SHIELD_LOG_WARNING(log, "TcpListener currently binds all IPv4 interfaces; "
+                                    "configured host is " + endpoint->host);
+        }
+
+        auto bridge =
+            std::make_unique<shield::lua::LuaGatewayBridge>(*g_state->lua_services,
+                                                            actor.name);
+        shield::net::SessionCallbacks callbacks;
+        callbacks.on_connect = [bridge_ptr = bridge.get()](
+                                   std::shared_ptr<shield::net::Session> session) {
+            bridge_ptr->on_connect(std::move(session));
+        };
+        callbacks.on_message = [bridge_ptr = bridge.get()](
+                                   std::shared_ptr<shield::net::Session> session,
+                                   const std::vector<uint8_t>& payload) {
+            bridge_ptr->on_message(
+                std::move(session),
+                std::string(payload.begin(), payload.end()));
+        };
+        callbacks.on_disconnect = [bridge_ptr = bridge.get()](
+                                      std::shared_ptr<shield::net::Session> session,
+                                      std::string_view reason) {
+            bridge_ptr->on_disconnect(std::move(session), std::string(reason));
+        };
+
+        auto listener = std::make_unique<shield::net::TcpListener>(
+            g_state->net_io, endpoint->port, std::move(callbacks));
+        if (!listener->is_open()) {
+            SHIELD_LOG_ERROR(log, "Failed to start TCP listener for actor '" +
+                                  actor.name + "' on " + actor.network_tcp);
+            cleanup_failed_initialize();
+            return false;
+        }
+        if (actor.max_connections > 0) {
+            listener->set_max_connections(actor.max_connections);
+        }
+        if (actor.max_connections_per_ip > 0) {
+            listener->set_max_per_ip(actor.max_connections_per_ip);
+        }
+        if (actor.max_frame_size > 0) {
+            listener->set_max_frame_size(actor.max_frame_size);
+        }
+        listener->start();
+        SHIELD_LOG_INFO(log, "TCP gateway listener started for actor '" +
+                              actor.name + "' on " + actor.network_tcp);
+        g_state->gateway_bridges.push_back(std::move(bridge));
+        g_state->tcp_listeners.push_back(std::move(listener));
+    }
+
+    if (!g_state->tcp_listeners.empty()) {
+        g_state->net_thread = std::thread([]() {
+            g_state->net_io.run();
+        });
+    }
+
     // Run POST_START starters
     run_starters(Phase::POST_START);
 
@@ -241,6 +409,18 @@ void shutdown() {
     run_starters(Phase::PRE_SHUTDOWN);
 
     // Stop the Lua worker first so no new Lua code runs while we tear down.
+    for (auto& listener : g_state->tcp_listeners) {
+        if (listener) {
+            listener->stop();
+        }
+    }
+    g_state->net_io.stop();
+    if (g_state->net_thread.joinable()) {
+        g_state->net_thread.join();
+    }
+    g_state->tcp_listeners.clear();
+    g_state->gateway_bridges.clear();
+
     if (g_state->lua_services) {
         g_state->lua_services->stop_worker();
     }
@@ -253,6 +433,13 @@ void shutdown() {
     g_state->lua_runtime.reset();
     g_state->caf_adapter.reset();
     g_state->actor_system.reset();
+#ifdef SHIELD_ENABLE_CLUSTER
+    if (g_state->cluster_manager) {
+        g_state->cluster_manager->stop();
+    }
+    shield::cluster::set_global_cluster_manager(nullptr);
+    g_state->cluster_manager.reset();
+#endif
 
     // Run POST_SHUTDOWN starters
     run_starters(Phase::POST_SHUTDOWN);

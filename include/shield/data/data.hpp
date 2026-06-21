@@ -51,6 +51,15 @@ public:
     virtual QueryResult execute(std::string_view sql,
                                const std::vector<std::string>& params) = 0;
 
+    /// @brief Begin a local database transaction on this connection.
+    virtual QueryResult begin_transaction() = 0;
+
+    /// @brief Commit the active local transaction.
+    virtual QueryResult commit_transaction() = 0;
+
+    /// @brief Roll back the active local transaction.
+    virtual QueryResult rollback_transaction() = 0;
+
     /// @brief Check if connection is alive
     virtual bool ping() = 0;
 
@@ -86,6 +95,9 @@ public:
 
     /// @brief Check if pool is initialized
     bool is_initialized() const;
+
+    /// @brief Last pool-level error code, e.g. pool_exhausted.
+    std::string last_error_code() const;
 
 private:
     void release(std::shared_ptr<DatabaseConnection> conn);
@@ -182,5 +194,18 @@ RedisPool& redis();
 /// @brief Test hook: set mock DB error string. Non-empty makes all mock
 /// queries return QueryResult::error(msg). Empty restores normal behavior.
 void set_mock_db_error(std::string error);
+
+/// @brief Test hook: last SQL operation observed by the mock DB.
+struct MockDbOperation {
+    std::string method;
+    std::string sql;
+    std::vector<std::string> params;
+};
+
+/// @brief Test hook: inspect the last mock DB operation.
+MockDbOperation mock_db_last_operation();
+
+/// @brief Test hook: clear the last mock DB operation.
+void clear_mock_db_last_operation();
 
 }  // namespace shield::data

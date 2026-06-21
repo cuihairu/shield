@@ -121,6 +121,10 @@ Harness 要求：
 | LAPI-008-04 | fake Redis enabled | `shield.redis.get` | `true, value` |
 | LAPI-008-05 | Redis disabled | `shield.redis.get` | `false, module_unavailable` |
 | LAPI-008-06 | subscribe then exit | service exit | subscription canceled |
+| LAPI-008-07 | DB transaction | commit / rollback / closed tx | commit forwards payload; rollback returns reason; closed tx rejected |
+| LAPI-008-08 | Lua mapper | `#{}` named params / `transaction=required` | SQL uses `?`, params ordered, tx reused |
+| LAPI-008-09 | Lua mapper safety | `${}` raw substitution | `false, mapper_unsafe_sql` |
+| LAPI-008-10 | Lua entity helper | insert / update / find | generated SQL and params match fields / primary key |
 
 ## LAPI-009 Gateway API
 
@@ -185,6 +189,7 @@ Harness 要求：
   `shield.self/now/spawn/send/call/sender/names/exit/on_exit` 的单节点同步路径；
   `shield_runtime_registry_smoke` 覆盖 `query/register/unregister/names` 的本地 registry 路径；
   `shield_runtime_data_smoke` 覆盖启用 DB/Redis mock pool 后的 Lua data API 返回形态。
+  `test_data_pool` 覆盖 pool size、动态扩容、acquire timeout 和非 mock 初始化失败策略。
   它们不是完整 LAPI 矩阵的替代品。
 - Lua API 契约变更必须先更新本文。
 - 每个新增 API 至少补充一个成功用例和一个失败用例。
@@ -206,7 +211,10 @@ Harness 要求：
 | ~~LAPI-007-05~~ | ~~`shield.sleep` coroutine 语义~~ 已由 LAPI-007-08 覆盖 ✅ |
 | LAPI-008-02 | DB disabled 路径：`module_unavailable` 返回由 `shield_runtime_data_smoke` CTest 覆盖（未启用配置场景） |
 | ~~LAPI-008-03~~ | ~~SQL error 路径~~ 已实现：`set_mock_db_error` + `LAPI_008_03_DbQueryReturnsError` / `LAPI_008_03b_DbExecuteReturnsError` ✅ |
+| ~~LAPI-008-transaction~~ | ~~本地事务路径~~ 已实现：commit、rollback、closed handle 均由 `test_lua_api_data` 覆盖 ✅ |
+| ~~LAPI-008-mapper~~ | ~~Lua mapper/entity helper~~ 已实现：命名参数绑定、`transaction=required`、显式 tx 复用、`${}` 拒绝、entity insert/update/find 均由 `test_lua_api_data` 覆盖 ✅ |
 | LAPI-008-05 | Redis disabled 路径：同 LAPI-008-02，由 CTest 覆盖 |
-| LAPI-008-06 | subscribe then exit：`shield.redis.subscribe` 不接受 Lua callback 参数，属于 Phase 2+ |
+| LAPI-008-06 | subscribe then exit：`shield.redis.subscribe(channel, callback)` 已接入 owned subscription 记录；真实回调回投 worker 仍属于 Phase 2+ |
 | ~~LAPI-009-01~05~~ | ~~Gateway session 模拟~~ 已覆盖：connect/message/disconnect/queue_full/stale_send 共 6 个测试 ✅ |
+| LAPI-009-real-session | 真实 TCP session 到 Lua `SessionHandle` userdata 的封装仍未覆盖；当前 bootstrap 已接入 TCP listener 与 LuaGatewayBridge，但测试仍使用 table 模拟 |
 | ~~LAPI-002-06~~ | ~~`on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit`~~ 已实现：`_is_in_exit()` + Lua wrapper guard，`OnExitCallGuard` 测试覆盖 ✅ |

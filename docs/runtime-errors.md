@@ -81,7 +81,11 @@
 | `syntax_error` | SQL 语法错误 | 否 | ✅ MySQL syntax msg 映射 |
 | `constraint_violation` | 约束违反（唯一键、外键等） | 否 | ✅ MySQL Duplicate/constraint msg 映射 |
 | `transaction_aborted` | 事务中止 | 是 | ✅ MySQL Deadlock msg 映射 |
+| `transaction_closed` | 事务 callback 结束后继续使用 tx 句柄 | 否 | ✅ Lua transaction guard |
 | `pool_exhausted` | 连接池耗尽 | 是 | ✅ acquire 失败返回 |
+| `mapper_unsafe_sql` | Lua mapper 使用 `${}` 原样替换或多语句 SQL | 否 | ✅ Lua mapper guard |
+| `mapper_invalid_statement` | Lua mapper statement 类型不支持 | 否 | ✅ Lua mapper guard |
+| `entity_invalid_row` | Lua entity helper 缺少可写字段 | 否 | ✅ Lua entity guard |
 
 ## 四、Redis 错误
 

@@ -39,6 +39,10 @@ struct RuntimeActorConfig {
     int instances = 1;
     bool required = true;
     std::string options_json = "{}";
+    std::string network_tcp;
+    size_t max_connections = 0;
+    size_t max_connections_per_ip = 0;
+    size_t max_frame_size = 0;
 };
 
 /// @brief Configuration interface

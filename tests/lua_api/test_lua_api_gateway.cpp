@@ -9,11 +9,15 @@
 #include <boost/test/unit_test.hpp>
 
 #include "shield/lua/lua_runtime.hpp"
+#include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_service.hpp"
+#include "shield/net/session.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 using namespace shield::lua;
 
@@ -34,6 +38,40 @@ SpawnResult spawn_gateway(LuaServiceManager& manager, const std::string& name,
     return manager.spawn(TEST_SCRIPTS_DIR + "gateway_service.lua",
                          opts_for(name, std::move(config)).dump());
 }
+
+class MockSession final : public shield::net::Session {
+public:
+    MockSession(shield::net::SessionId id, shield::net::RemoteAddress remote)
+        : id_(id), remote_(std::move(remote)) {}
+
+    shield::net::SessionId id() const override { return id_; }
+    shield::net::RemoteAddress remote_addr() const override { return remote_; }
+    bool send(const std::vector<uint8_t>& data) override {
+        sent_.push_back(data);
+        return alive_;
+    }
+    void close(std::string reason) override {
+        alive_ = false;
+        close_reason_ = std::move(reason);
+    }
+    bool is_alive() const override { return alive_; }
+    std::string error_code() const override { return alive_ ? "" : "session_closed"; }
+    void set_user_data(std::string key, std::string value) override {
+        user_data_[std::move(key)] = std::move(value);
+    }
+    std::string get_user_data(std::string_view key) const override {
+        auto it = user_data_.find(std::string(key));
+        return it == user_data_.end() ? "" : it->second;
+    }
+
+private:
+    shield::net::SessionId id_;
+    shield::net::RemoteAddress remote_;
+    bool alive_ = true;
+    std::string close_reason_;
+    std::vector<std::vector<uint8_t>> sent_;
+    std::unordered_map<std::string, std::string> user_data_;
+};
 }  // namespace
 
 BOOST_AUTO_TEST_SUITE(Lapi009GatewayApi)
@@ -206,6 +244,47 @@ BOOST_AUTO_TEST_CASE(GatewayServiceLoadsAndHandlersExist) {
     CallResult sessions = manager.call(result.service_id, "get_sessions",
                                        nlohmann::json::array());
     BOOST_CHECK(sessions.success);
+}
+
+// ---------------------------------------------------------------------------
+// Real bridge path queues reserved gateway events through the Lua worker path.
+// This catches regressions where LuaGatewayBridge accidentally uses public
+// send(), which rejects on_* lifecycle method names.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_gateway(manager, "gw_bridge");
+    BOOST_REQUIRE(result.success);
+
+    LuaGatewayBridge bridge(manager, result.service_id);
+    auto session = std::make_shared<MockSession>(
+        42, shield::net::RemoteAddress{"127.0.0.1", 34567});
+
+    bridge.on_connect(session);
+    manager.pump_once();  // run bridge task
+    manager.pump_once();  // dispatch queued on_connect message
+
+    CallResult sessions = manager.call(result.service_id, "get_sessions",
+                                       nlohmann::json::array());
+    BOOST_REQUIRE(sessions.success);
+    BOOST_REQUIRE(sessions.values.is_array());
+    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
+    BOOST_REQUIRE(sessions.values[0].is_object());
+    BOOST_CHECK(sessions.values[0].contains("42"));
+
+    bridge.on_message(session, "hello");
+    manager.pump_once();
+    manager.pump_once();
+
+    sessions = manager.call(result.service_id, "get_sessions",
+                            nlohmann::json::array());
+    BOOST_REQUIRE(sessions.success);
+    BOOST_REQUIRE(sessions.values[0].contains("42"));
+    BOOST_CHECK_EQUAL(
+        sessions.values[0]["42"]["last_message"]["payload"].get<std::string>(),
+        "hello");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

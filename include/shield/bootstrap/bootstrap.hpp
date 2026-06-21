@@ -20,6 +20,7 @@ struct RuntimeConfig {
     // Config
     std::string config_file = "config/app.yaml";
     std::vector<std::string> config_files;
+    std::string node_id;
 
     // Lua
     std::string lua_script_dir = "scripts";

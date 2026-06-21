@@ -4,16 +4,15 @@
 
 当前状态：本文冻结 Phase 1 Lua API 契约；源码需要按本文补齐实现和测试。
 
-实现快照：当前源码已跑通单节点完整 Lua service 路径，包括 YAML actors
+实现快照：当前源码已跑通单节点 Lua service 路径，包括 YAML actors
 启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
 coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer/cancel_timer/fork`、
-`shield.config`、`shield.log.*`、DB/Redis API（含真实 redis++ 驱动 + MySQL X DevAPI + mock 降级 + 错误注入测试）、
+`shield.config`、`shield.log.*`、DB/Redis API（真实驱动入口、mock 降级与错误注入测试）、
 `on_exit` call guard、call timeout（`check_call_timeouts`）、
 timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、
-`LuaGatewayBridge`（Session → Lua handler 路由）、`SessionHandle` userdata、
-HTTP 客户端（`shield.http.get/post/put/delete/request`）、HTTP 服务端路由注册（`shield.httpd.get/post/put/delete/patch`）、
-`shield_cluster`（静态 peers + 节点生命周期 + `shield.cluster.query/nodes`）。
-所有 52 个错误码均已实现。
+TCP gateway listener 到 Lua handler 的 bootstrap 桥接、
+HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
+HTTP 服务端 Lua 路由注册仍是占位入口，尚未接入 bootstrap。
 
 ## 设计原则
 
@@ -380,7 +379,10 @@ shield.log.error("message")
 
 ## Data API
 
-`shield_data` 提供原始 DB/Redis 能力，不提供 ORM、mapper 或跨服务事务。
+`shield_data` 提供原始 DB/Redis 能力；`shield_lua` 在其上提供轻量
+`shield.db.mapper/register_mapper/entity` helper。它们只做显式 SQL 模板、
+命名参数绑定和简单实体 CRUD SQL 生成，不是重 ORM，不提供对象图加载、
+migration 或跨服务事务。
 
 ### DB
 
@@ -388,14 +390,57 @@ shield.log.error("message")
 local ok, rows = shield.db.query("SELECT * FROM users WHERE id = ?", { uid })
 local ok, row = shield.db.query_one("SELECT * FROM users WHERE id = ?", { uid })
 local ok, result = shield.db.execute("UPDATE users SET name = ? WHERE id = ?", { name, uid })
+local ok, result = shield.db.transaction(function(tx)
+    local ok, updated = tx.execute("UPDATE users SET gold = gold - ? WHERE id = ?", { 10, uid })
+    if not ok then return false, updated end
+    return true, updated
+end)
 ```
 
 规则：
 
 - API coroutine-friendly。
-- 查询不阻塞 runtime worker thread。
+- 返回形态保持 coroutine-friendly；当前实现仍同步执行，data worker pool 属于后续项。
 - SQL 参数必须使用 params 数组传递。
 - 未启用 database 时返回 `false, module_unavailable`。
+- 连接池耗尽返回 `false, { code = "pool_exhausted", ... }`。
+- `shield.db.transaction` 只支持本地单连接事务；callback 返回 `false, reason` 或抛错时 rollback。
+
+### DB Mapper / Entity
+
+```lua
+local PlayerMapper = shield.db.mapper({
+    SelectProfile = {
+        type = "select",
+        one = true,
+        sql = "SELECT player_id, nickname FROM player WHERE player_id = #{player_id}"
+    },
+    UpdateNickname = {
+        type = "update",
+        transaction = "required",
+        sql = "UPDATE player SET nickname = #{nickname} WHERE player_id = #{player_id}"
+    }
+})
+
+local ok, profile = PlayerMapper:SelectProfile({ player_id = uid })
+local ok, result = PlayerMapper:UpdateNickname({ player_id = uid, nickname = name })
+
+local Player = shield.db.entity({
+    table = "player",
+    fields = { "player_id", "nickname", "level" },
+    primary_key = "player_id"
+})
+
+local ok, inserted = Player:insert({ player_id = uid, nickname = name, level = 1 })
+local ok, row = Player:find(uid)
+```
+
+规则：
+
+- mapper SQL 只支持 `#{name}` / `#{nested.path}` 参数绑定，编译成 `?` 和 params 数组。
+- `${name}` 原样替换和多语句 SQL 会返回 `mapper_unsafe_sql`。
+- `transaction="required"` 没有显式 tx 时自动开启本地事务；传入 `tx` 时复用当前事务。
+- entity helper 只生成 `insert/update/delete/find`，不做 migration、脏跟踪或关联加载。
 
 ### Redis
 
@@ -451,7 +496,7 @@ session:remote_addr()
 - `SessionHandle` 只在 gateway callback 和 gateway 自身状态中使用，不作为 `shield.send/call` payload 跨服务传递。
 - framework 不提供 HTTP middleware chain。
 
-实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用（LAPI-009-01~05 测试覆盖）。`SessionHandle` 已注册为 Lua userdata（`register_session_handle`），绑定 `id()`、`remote_addr()`、`send(payload)`、`close(reason)` 方法，`send` 返回 `session_closed` / `session_send_queue_full` 错误。当前测试通过 table 模拟 session；C++ `shield_net` 层创建真实 `SessionHandle` userdata 并传入 gateway handler 属于后续集成。
+实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用（LAPI-009-01~05 测试覆盖）。bootstrap 会为单实例 `actors[].network.tcp` 创建 `TcpListener`，并通过 `LuaGatewayBridge` 将真实 session 事件路由到同名 Lua gateway service。当前桥接传入的是 session 信息 table；`SessionHandle` userdata 已注册并可被 Lua 使用，但真实 `shield_net::Session` 到 userdata 的封装仍属后续集成。
 
 ## HTTP API
 
@@ -579,12 +624,12 @@ local res = shield.http.post_form("https://api.example.com/login", {
 
 规则：
 
-- 同步阻塞当前 coroutine，不阻塞 runtime worker thread（Phase 2 改为异步）。
+- 当前实现同步执行 libcurl 请求；如果在 handler 内调用，会阻塞 Lua worker。异步 HTTP 属于后续工作。
 - 支持 HTTP/1.1、HTTP/2、HTTPS（libcurl + OpenSSL/Schannel）。
-- 支持连接池、重定向、Cookie、代理。
+- 支持重定向、代理、Bearer/Basic auth、自定义 CA、SSL 校验开关、简单重试。连接复用依赖 libcurl easy handle 生命周期，当前未实现显式连接池。
 - 适合支付 API、webhook、REST API、文件传输等场景。
 
-实现快照：基于 libcurl 实现 `HttpClient`。`HttpClient::initialize()` 在 `register_full_shield_api` 时自动调用。
+实现快照：基于 libcurl 实现 `HttpClient`。`HttpClient::initialize()` 在 `register_full_shield_api` 时自动调用；`proxy`、`auth_basic`、`verify_ssl`、`ca_cert_path`、`retry` 与 `retry_delay` 会传递到 libcurl。
 
 ### HTTP 服务端 (shield.httpd)
 
@@ -614,7 +659,7 @@ shield.httpd.patch("/api/users/:id", function(req) end)
 - 不提供 middleware chain。
 - 适合管理/运维端点，不适合高并发业务流量。
 
-实现快照：基于 Boost.Beast 实现 `HttpServer`，支持 HTTP/1.1 keep-alive、路由匹配、JSON 响应。Lua 路由注册通过 `shield.httpd.*` 存储，C++ `HttpServer` 实例集成属于后续 bootstrap 阶段。
+实现快照：基于 Boost.Beast 的 C++ `HttpServer` 已存在，支持基础路由匹配和 JSON 响应。Lua `shield.httpd.*` 目前只接受注册调用并返回成功，尚未保存 handler 或接入 bootstrap；不要把它视为可用入站 HTTP 服务。
 
 ## Error Object
 

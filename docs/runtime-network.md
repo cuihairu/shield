@@ -2,7 +2,7 @@
 
 本文档包含 Shield 网络、transport 和 gateway 相关的运行时语义决策。
 
-当前 Phase 1 只冻结 TCP session、`SessionHandle` 和 basic transport framing。
+当前 Phase 1 只冻结 TCP session、gateway handler 桥接、`SessionHandle` 目标语义和 basic transport framing。
 UDP、KCP、WebSocket 是目标能力和后续扩展方向，不作为 Phase 1 最小验收阻塞项。
 HTTP 业务 gateway 不进入 core；HTTP 管理端点只在 `shield_ops` 显式启用时存在。
 
@@ -91,7 +91,7 @@ end
 
 ## shield_net 与 gateway
 
-`shield_net` 管理 listener、connection、session。
+`shield_net` 管理 listener、connection、session。配置了 `actors[].network.tcp` 的单实例 Lua service 会在 bootstrap 中启动 TCP listener，并将 session 事件转发到同名 service 的 gateway 回调；Phase 1 拒绝 `network.tcp` 与 `instances != 1` 的组合。
 
 业务 gateway 是 Lua service：
 
@@ -121,7 +121,7 @@ core 不提供 middleware framework。
 
 ## SessionHandle
 
-Lua 只看到 opaque `SessionHandle`。
+目标语义中 Lua 只看到 opaque `SessionHandle`。当前真实 TCP bridge 传入 session 信息 table；`SessionHandle` userdata 已注册，但 `shield_net::Session` 到 userdata 的封装仍待补齐。
 
 ```lua
 session:id()

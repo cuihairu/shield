@@ -27,5 +27,48 @@ set_tests_properties(test_hello_world_acceptance PROPERTIES
 )
 shield_copy_runtime_dlls(test_hello_world_acceptance)
 
+# Transport frame tests - verifies length-prefixed framing boundaries used by
+# TCP sessions and gateway listeners.
+add_executable(test_transport_frame transport/test_transport_frame.cpp)
+target_link_libraries(test_transport_frame
+    PRIVATE
+        shield_transport
+        Boost::unit_test_framework
+        Boost::headers
+)
+target_include_directories(test_transport_frame
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME test_transport_frame COMMAND test_transport_frame)
+set_tests_properties(test_transport_frame PROPERTIES
+    LABELS "transport"
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+shield_copy_runtime_dlls(test_transport_frame)
+
+# Data pool tests - verifies configured pool sizing, acquisition timeout, and
+# explicit mock behaviour independent of Lua bindings.
+add_executable(test_data_pool data/test_data_pool.cpp)
+target_link_libraries(test_data_pool
+    PRIVATE
+        shield_data
+        yaml-cpp::yaml-cpp
+        Boost::unit_test_framework
+        Boost::headers
+)
+target_include_directories(test_data_pool
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME test_data_pool COMMAND test_data_pool)
+set_tests_properties(test_data_pool PROPERTIES
+    LABELS "data"
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+shield_copy_runtime_dlls(test_data_pool)
+
 # Lua API test matrix (LAPI-001 ~ LAPI-010).
 add_subdirectory(lua_api)

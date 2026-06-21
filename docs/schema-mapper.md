@@ -1,16 +1,18 @@
 # Schema Mapper
 
-> Status: deferred extension design.
+> Status: partial runtime helper implemented; XML descriptor/generator deferred.
 >
-> The current Shield refactor keeps only raw DB / Redis access in core. Schema
-> mapper is not part of the runtime core contract and must be treated as a later
-> optional extension unless the roadmap explicitly changes.
+> The current Shield refactor keeps raw DB / Redis access in `shield_data` core.
+> `shield_lua` now provides lightweight `shield.db.mapper/register_mapper/entity`
+> helpers for explicit SQL templates and simple entity CRUD. XML mapper parsing,
+> descriptor generation, typed codegen, dynamic SQL nodes and server-only
+> descriptor profiles remain deferred tooling.
 
 Schema mapper 是 Shield 契约系统中的数据访问定义层。它参考 MyBatis 的显式 mapper 思路，用 XML 描述 SQL、参数绑定、结果映射和事务边界，但不把 Shield 变成重 ORM。
 
 ## 设计目标
 
-1. 探索数据库访问的可选扩展形态，不进入当前 runtime core。
+1. 探索数据库访问的可选扩展形态，不进入 `shield_data` core。
 2. 通过 XML 契约生成服务端 mapper 接口和运行时元数据。
 3. 显式 SQL 优先，避免隐式查询和对象图级联。
 4. 共享 schema 类型系统，但不把 RPC DTO 等同于数据库 entity。
@@ -490,7 +492,21 @@ descriptor.client.bin
 
 ## Phase 1 范围
 
-Phase 1 mapper 只做：
+当前已实现的 Lua runtime helper：
+
+- `shield.db.mapper(def)`
+- `shield.db.register_mapper(name, def)`
+- `shield.db.entity(def)`
+- `select/insert/update/delete/execute`
+- `#{}` 命名参数绑定和嵌套路径
+- `one=true` / `result="one"` 单行查询
+- `transaction=required`
+- 显式 tx 复用：`Mapper:Statement(tx, params)`
+- `${}` 原样替换拒绝
+- 多语句 SQL 拒绝
+- entity `insert/update/delete/find`
+
+XML schema-mapper Phase 1 设计仍只做：
 
 - `select/insert/update/delete`
 - `#{}` 参数绑定
@@ -515,8 +531,8 @@ Phase 1 mapper 只做：
 
 ## 已定规则
 
-- Lua mapper facade 不能阻塞 actor 线程，表面同步 API 应基于 coroutine/yield，另提供 async 回调 API。
+- 当前 Lua mapper facade 复用同步 `shield.db.*` 绑定；data worker pool / coroutine-yield 执行仍是后续项。
 - SQL 第一版不允许多语句。
-- mapper 只能作为后续可选扩展讨论，不进入当前最小启动路径。
+- XML mapper / descriptor / typed codegen 只能作为后续可选扩展讨论，不进入当前最小启动路径。
 - mapper runtime 绑定 `shield_data` 提供的现有 DB 抽象，不新增 lightweight DB runtime。
 - `entity` 不生成 schema migration 草案；migration 属于独立工具链或应用层责任。

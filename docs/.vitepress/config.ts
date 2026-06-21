@@ -32,10 +32,6 @@ export default defineConfig({
         text: '文档',
         link: '/architecture',
       },
-      {
-        text: 'GitHub',
-        link: 'https://github.com/cuihairu/shield',
-      },
     ],
     sidebar: [
       {

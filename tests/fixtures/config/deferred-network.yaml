@@ -3,7 +3,7 @@ app:
 
 actors:
   - name: gateway
-    script: scripts/gateway_session.lua
+    script: smoke_root.lua
     instances: 1
     network:
       udp: "0.0.0.0:8002"

@@ -1,0 +1,10 @@
+app:
+  name: invalid_log_level
+
+log:
+  level: verbose
+
+actors:
+  - name: smoke
+    script: smoke_root.lua
+    instances: 1

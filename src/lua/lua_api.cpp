@@ -2,6 +2,9 @@
 #include "shield/lua/lua_api.hpp"
 
 #include "shield/config/config.hpp"
+#ifdef SHIELD_ENABLE_CLUSTER
+#include "shield/cluster/cluster_manager.hpp"
+#endif
 #include "shield/data/data.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -168,8 +171,10 @@ nlohmann::json variadic_to_json_array(sol::variadic_args args) {
 
 std::vector<std::string> table_to_string_vector(const sol::table& table) {
     std::vector<std::string> params;
-    for (const auto& [_, value] : table) {
-        sol::object item = value;
+    const auto size = table.size();
+    params.reserve(size);
+    for (std::size_t i = 1; i <= size; ++i) {
+        sol::object item = table[static_cast<int>(i)];
         if (item == sol::nil) {
             params.emplace_back("");
         } else if (item.is<std::string>()) {
@@ -187,6 +192,301 @@ std::vector<std::string> table_to_string_vector(const sol::table& table) {
         }
     }
     return params;
+}
+
+constexpr const char* kDbMapperRuntimeScript = R"lua(
+do
+  local db = shield.db
+
+  local function err(code, message)
+    return { code = code, message = message }
+  end
+
+  local function is_array(t)
+    if type(t) ~= "table" then return false end
+    local count = 0
+    for k, _ in pairs(t) do
+      if type(k) ~= "number" or k < 1 or k % 1 ~= 0 then
+        return false
+      end
+      count = count + 1
+    end
+    return count == #t
+  end
+
+  local function table_keys(t)
+    local keys = {}
+    for k, _ in pairs(t or {}) do
+      keys[#keys + 1] = k
+    end
+    table.sort(keys)
+    return keys
+  end
+
+  local function push_value(values, value)
+    if value == nil then value = "" end
+    values[#values + 1] = value
+  end
+
+  local function identifier(name)
+    if type(name) ~= "string" or not name:match("^[A-Za-z_][A-Za-z0-9_]*$") then
+      error("invalid SQL identifier: " .. tostring(name))
+    end
+    return name
+  end
+
+  local function resolve_path(params, path)
+    local current = params
+    for part in tostring(path):gmatch("[^.]+") do
+      if type(current) ~= "table" then
+        return nil
+      end
+      current = current[part]
+    end
+    return current
+  end
+
+  local function compile_sql(sql, params)
+    params = params or {}
+    local values = {}
+    local compiled = tostring(sql):gsub("#%{([%w_%.]+)%}", function(path)
+      push_value(values, resolve_path(params, path))
+      return "?"
+    end)
+    if compiled:find("%$%{", 1, false) then
+      return nil, err("mapper_unsafe_sql", "raw SQL substitution is not supported")
+    end
+    if compiled:find(";", 1, true) then
+      return nil, err("mapper_unsafe_sql", "mapper statement must contain one SQL statement")
+    end
+    return compiled, values
+  end
+
+  local function normalize_statement(name, statement)
+    if type(statement) == "string" then
+      return { type = "select", sql = statement }
+    end
+    if type(statement) ~= "table" then
+      error("mapper statement " .. tostring(name) .. " must be table or string")
+    end
+    local normalized = {}
+    for k, v in pairs(statement) do
+      normalized[k] = v
+    end
+    normalized.type = normalized.type or normalized.kind or "select"
+    if type(normalized.sql) ~= "string" then
+      error("mapper statement " .. tostring(name) .. " requires sql")
+    end
+    return normalized
+  end
+
+  local function execute_statement(statement, params, tx)
+    local sql, values_or_err = compile_sql(statement.sql, params)
+    if not sql then return false, values_or_err end
+
+    local executor = tx or db
+    local kind = statement.type or "select"
+    if kind == "select" then
+      if statement.one or statement.result == "one" then
+        return executor.query_one(sql, values_or_err)
+      end
+      return executor.query(sql, values_or_err)
+    elseif kind == "insert" or kind == "update" or kind == "delete" or kind == "execute" then
+      return executor.execute(sql, values_or_err)
+    end
+    return false, err("mapper_invalid_statement", "unsupported mapper statement type: " .. tostring(kind))
+  end
+
+  local function mapper_call(statement, first, second)
+    local tx = nil
+    local params = first
+    if type(first) == "table" and type(first.query) == "function" and
+       type(first.execute) == "function" then
+      tx = first
+      params = second
+    end
+
+    if statement.transaction == "required" and not tx then
+      return db.transaction(function(inner_tx)
+        return execute_statement(statement, params, inner_tx)
+      end)
+    end
+
+    return execute_statement(statement, params, tx)
+  end
+
+  local function build_mapper(definition)
+    if type(definition) ~= "table" then
+      error("mapper definition must be table")
+    end
+    local mapper = {}
+    for name, statement in pairs(definition) do
+      if name ~= "name" and name ~= "namespace" then
+        local normalized = normalize_statement(name, statement)
+        mapper[name] = function(self_or_first, first, second)
+          if self_or_first == mapper then
+            return mapper_call(normalized, first, second)
+          end
+          return mapper_call(normalized, self_or_first, first)
+        end
+      end
+    end
+    return mapper
+  end
+
+  function db.mapper(definition)
+    return build_mapper(definition)
+  end
+
+  function db.register_mapper(name, definition)
+    identifier(name)
+    local mapper = build_mapper(definition)
+    db[name] = mapper
+    return mapper
+  end
+
+  local function build_where_by_pk(def, row, values)
+      local clauses = {}
+      for _, field in ipairs(def.primary_key) do
+        local column = identifier(def.columns[field] or field)
+        clauses[#clauses + 1] = column .. " = ?"
+        push_value(values, row[field])
+      end
+    return table.concat(clauses, " AND ")
+  end
+
+  function db.entity(def)
+    if type(def) ~= "table" then
+      error("entity definition must be table")
+    end
+    local table_name = identifier(def.table or def.name)
+    local fields = def.fields
+    if type(fields) ~= "table" or #fields == 0 then
+      error("entity requires ordered fields")
+    end
+
+    local columns = {}
+      if is_array(fields) then
+        for _, field in ipairs(fields) do
+          columns[field] = field
+        end
+      else
+      for field, column in pairs(fields) do
+        columns[field] = column
+      end
+    end
+
+    local primary_key = def.primary_key or def.id or fields[1]
+    if type(primary_key) ~= "table" then
+      primary_key = { primary_key }
+    end
+
+    local entity = {
+      table = table_name,
+      fields = fields,
+      columns = columns,
+      primary_key = primary_key
+    }
+
+    function entity:ordered_fields()
+      if is_array(self.fields) then
+        return self.fields
+      end
+      return table_keys(self.columns)
+    end
+
+    function entity:insert(row, tx)
+      local keys = {}
+      for _, field in ipairs(self:ordered_fields()) do
+        if row[field] ~= nil then keys[#keys + 1] = field end
+      end
+      if #keys == 0 then
+        return false, err("entity_invalid_row", "insert requires at least one field")
+      end
+
+      local cols, marks, values = {}, {}, {}
+      for _, field in ipairs(keys) do
+        cols[#cols + 1] = identifier(self.columns[field] or field)
+        marks[#marks + 1] = "?"
+        push_value(values, row[field])
+      end
+      local sql = "INSERT INTO " .. self.table .. " (" .. table.concat(cols, ", ") ..
+                  ") VALUES (" .. table.concat(marks, ", ") .. ")"
+      return (tx or db).execute(sql, values)
+    end
+
+    function entity:update(row, tx)
+      local set_parts, values = {}, {}
+      local pk_lookup = {}
+      for _, field in ipairs(self.primary_key) do pk_lookup[field] = true end
+      for _, field in ipairs(self:ordered_fields()) do
+        if not pk_lookup[field] and row[field] ~= nil then
+          set_parts[#set_parts + 1] = identifier(self.columns[field] or field) .. " = ?"
+          push_value(values, row[field])
+        end
+      end
+      if #set_parts == 0 then
+        return false, err("entity_invalid_row", "update requires non-primary-key fields")
+      end
+      local where = build_where_by_pk(self, row, values)
+      local sql = "UPDATE " .. self.table .. " SET " .. table.concat(set_parts, ", ") ..
+                  " WHERE " .. where
+      return (tx or db).execute(sql, values)
+    end
+
+    function entity:delete(key, tx)
+      local row = type(key) == "table" and key or { [self.primary_key[1]] = key }
+      local values = {}
+      local where = build_where_by_pk(self, row, values)
+      local sql = "DELETE FROM " .. self.table .. " WHERE " .. where
+      return (tx or db).execute(sql, values)
+    end
+
+    function entity:find(key, tx)
+      local row = type(key) == "table" and key or { [self.primary_key[1]] = key }
+      local values = {}
+      local where = build_where_by_pk(self, row, values)
+      local sql = "SELECT * FROM " .. self.table .. " WHERE " .. where
+      return (tx or db).query_one(sql, values)
+    end
+
+    return entity
+  end
+end
+)lua";
+
+std::string db_error_code(const shield::data::QueryResult& result,
+                          std::string_view fallback) {
+    return result.error_code.empty() ? std::string(fallback) : result.error_code;
+}
+
+sol::table db_error(sol::this_state state,
+                    const shield::data::QueryResult& result,
+                    std::string_view fallback = "db_query_failed") {
+    return make_error(state, db_error_code(result, fallback),
+                      result.error_message);
+}
+
+sol::table db_row_to_lua(sol::state_view lua, const shield::data::Row& row) {
+    sol::table row_table = lua.create_table();
+    for (const auto& [column, value] : row) {
+        row_table[column] = value;
+    }
+    return row_table;
+}
+
+sol::table db_rows_to_lua(sol::state_view lua,
+                          const std::vector<shield::data::Row>& rows) {
+    sol::table result = lua.create_table();
+    int row_index = 1;
+    for (const auto& row : rows) {
+        result[row_index++] = db_row_to_lua(lua, row);
+    }
+    return result;
+}
+
+sol::object copy_lua_object(sol::state_view lua, const sol::object& object) {
+    return json_to_lua(lua, lua_to_json(object));
 }
 
 // Helper to extract service ID from ServiceHandle or string
@@ -923,21 +1223,15 @@ void register_data_api(sol::table& shield, LuaServiceManager* manager) {
                                                      : std::vector<std::string>{});
             results.push_back(sol::make_object(lua, query_result.success));
             if (!query_result.success) {
-                results.push_back(make_error(state, "db_query_failed",
-                                             query_result.error_message));
+                results.push_back(make_error(
+                    state,
+                    query_result.error_code.empty() ? "db_query_failed"
+                                                    : query_result.error_code,
+                    query_result.error_message));
                 return results;
             }
 
-            sol::table rows = lua.create_table();
-            int row_index = 1;
-            for (const auto& row : query_result.rows) {
-                sol::table row_table = lua.create_table();
-                for (const auto& [column, value] : row) {
-                    row_table[column] = value;
-                }
-                rows[row_index++] = row_table;
-            }
-            results.push_back(rows);
+            results.push_back(db_rows_to_lua(lua, query_result.rows));
             return results;
         });
 
@@ -959,16 +1253,20 @@ void register_data_api(sol::table& shield, LuaServiceManager* manager) {
                 db.query_one(sql, params ? table_to_string_vector(*params)
                                          : std::vector<std::string>{});
             results.push_back(sol::make_object(lua, query_result.success));
-            if (!query_result.success || query_result.rows.empty()) {
+            if (!query_result.success) {
+                results.push_back(make_error(
+                    state,
+                    query_result.error_code.empty() ? "db_query_failed"
+                                                    : query_result.error_code,
+                    query_result.error_message));
+                return results;
+            }
+            if (query_result.rows.empty()) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 return results;
             }
 
-            sol::table row_table = lua.create_table();
-            for (const auto& [column, value] : query_result.rows.front()) {
-                row_table[column] = value;
-            }
-            results.push_back(row_table);
+            results.push_back(db_row_to_lua(lua, query_result.rows.front()));
             return results;
         });
 
@@ -991,8 +1289,11 @@ void register_data_api(sol::table& shield, LuaServiceManager* manager) {
                                        : std::vector<std::string>{});
             results.push_back(sol::make_object(lua, exec_result.success));
             if (!exec_result.success) {
-                results.push_back(make_error(state, "database_error",
-                                             exec_result.error_message));
+                results.push_back(make_error(
+                    state,
+                    exec_result.error_code.empty() ? "db_query_failed"
+                                                   : exec_result.error_code,
+                    exec_result.error_message));
                 return results;
             }
             sol::table result_table = lua.create_table_with(
@@ -1001,7 +1302,195 @@ void register_data_api(sol::table& shield, LuaServiceManager* manager) {
             results.push_back(result_table);
             return results;
         });
+
+    db_table.set_function("transaction",
+        [](sol::this_state state,
+           sol::protected_function callback) -> sol::variadic_results {
+            sol::state_view lua(state);
+            sol::variadic_results results;
+            auto& db = shield::data::database();
+            if (!db.is_initialized()) {
+                results.push_back(sol::make_object(lua, false));
+                results.push_back(make_error(state, "module_unavailable",
+                                             "database is not initialized"));
+                return results;
+            }
+
+            auto conn = db.acquire();
+            if (!conn) {
+                const auto code = db.last_error_code().empty()
+                                      ? "pool_exhausted"
+                                      : db.last_error_code();
+                results.push_back(sol::make_object(lua, false));
+                results.push_back(make_error(state, code,
+                                             "No database connection available"));
+                return results;
+            }
+
+            auto begin = conn->begin_transaction();
+            if (!begin.success) {
+                results.push_back(sol::make_object(lua, false));
+                results.push_back(db_error(state, begin, "transaction_aborted"));
+                return results;
+            }
+
+            auto active = std::make_shared<bool>(true);
+            auto tx = lua.create_table();
+
+            tx.set_function("query",
+                [conn, active](sol::this_state tx_state,
+                               std::string sql,
+                               sol::optional<sol::table> params)
+                    -> sol::variadic_results {
+                    sol::state_view tx_lua(tx_state);
+                    sol::variadic_results tx_results;
+                    if (!*active) {
+                        tx_results.push_back(sol::make_object(tx_lua, false));
+                        tx_results.push_back(make_error(
+                            tx_state, "transaction_closed",
+                            "transaction handle is closed"));
+                        return tx_results;
+                    }
+                    auto query_result = conn->query(
+                        sql, params ? table_to_string_vector(*params)
+                                    : std::vector<std::string>{});
+                    tx_results.push_back(sol::make_object(tx_lua,
+                                                          query_result.success));
+                    if (!query_result.success) {
+                        tx_results.push_back(db_error(tx_state, query_result));
+                        return tx_results;
+                    }
+                    tx_results.push_back(db_rows_to_lua(tx_lua, query_result.rows));
+                    return tx_results;
+                });
+
+            tx.set_function("query_one",
+                [conn, active](sol::this_state tx_state,
+                               std::string sql,
+                               sol::optional<sol::table> params)
+                    -> sol::variadic_results {
+                    sol::state_view tx_lua(tx_state);
+                    sol::variadic_results tx_results;
+                    if (!*active) {
+                        tx_results.push_back(sol::make_object(tx_lua, false));
+                        tx_results.push_back(make_error(
+                            tx_state, "transaction_closed",
+                            "transaction handle is closed"));
+                        return tx_results;
+                    }
+                    auto query_result = conn->query_one(
+                        sql, params ? table_to_string_vector(*params)
+                                    : std::vector<std::string>{});
+                    tx_results.push_back(sol::make_object(tx_lua,
+                                                          query_result.success));
+                    if (!query_result.success) {
+                        tx_results.push_back(db_error(tx_state, query_result));
+                        return tx_results;
+                    }
+                    if (query_result.rows.empty()) {
+                        tx_results.push_back(sol::make_object(tx_lua, sol::nil));
+                        return tx_results;
+                    }
+                    tx_results.push_back(db_row_to_lua(tx_lua,
+                                                       query_result.rows.front()));
+                    return tx_results;
+                });
+
+            tx.set_function("execute",
+                [conn, active](sol::this_state tx_state,
+                               std::string sql,
+                               sol::optional<sol::table> params)
+                    -> sol::variadic_results {
+                    sol::state_view tx_lua(tx_state);
+                    sol::variadic_results tx_results;
+                    if (!*active) {
+                        tx_results.push_back(sol::make_object(tx_lua, false));
+                        tx_results.push_back(make_error(
+                            tx_state, "transaction_closed",
+                            "transaction handle is closed"));
+                        return tx_results;
+                    }
+                    auto exec_result = conn->execute(
+                        sql, params ? table_to_string_vector(*params)
+                                    : std::vector<std::string>{});
+                    tx_results.push_back(sol::make_object(tx_lua,
+                                                          exec_result.success));
+                    if (!exec_result.success) {
+                        tx_results.push_back(db_error(tx_state, exec_result));
+                        return tx_results;
+                    }
+                    sol::table result_table = tx_lua.create_table_with(
+                        "affected", exec_result.affected_rows,
+                        "last_insert_id", exec_result.last_insert_id);
+                    tx_results.push_back(result_table);
+                    return tx_results;
+                });
+
+            sol::protected_function_result callback_result = callback(tx);
+            *active = false;
+            if (!callback_result.valid()) {
+                auto rollback = conn->rollback_transaction();
+                (void)rollback;
+                sol::error err = callback_result;
+                results.push_back(sol::make_object(lua, false));
+                results.push_back(make_error(state, "transaction_aborted",
+                                             err.what()));
+                return results;
+            }
+
+            const int return_count = callback_result.return_count();
+            sol::object ok_object =
+                return_count > 0 ? callback_result.get<sol::object>(0)
+                                 : sol::make_object(lua, sol::nil);
+            if (ok_object.is<bool>() && !ok_object.as<bool>()) {
+                auto rollback = conn->rollback_transaction();
+                if (!rollback.success) {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(db_error(state, rollback,
+                                               "transaction_aborted"));
+                    return results;
+                }
+                results.push_back(sol::make_object(lua, false));
+                if (callback_result.return_count() > 1) {
+                    auto reason = callback_result.get<sol::object>(1);
+                    results.push_back(copy_lua_object(lua, reason));
+                } else {
+                    results.push_back(make_error(state, "transaction_aborted",
+                                                 "transaction callback returned false"));
+                }
+                return results;
+            }
+
+            auto commit = conn->commit_transaction();
+            if (!commit.success) {
+                auto rollback = conn->rollback_transaction();
+                (void)rollback;
+                results.push_back(sol::make_object(lua, false));
+                results.push_back(db_error(state, commit, "transaction_aborted"));
+                return results;
+            }
+
+            results.push_back(sol::make_object(lua, true));
+            const int first_payload_index =
+                ok_object.is<bool>() && ok_object.as<bool>() ? 1 : 0;
+            if (return_count == 0 || first_payload_index >= return_count) {
+                results.push_back(sol::make_object(lua, sol::nil));
+                return results;
+            }
+            for (int i = first_payload_index; i < return_count; ++i) {
+                results.push_back(copy_lua_object(
+                    lua, callback_result.get<sol::object>(i)));
+            }
+            return results;
+        });
     shield["db"] = db_table;
+    lua["shield"] = shield;
+    lua.safe_script(
+        kDbMapperRuntimeScript,
+        [](lua_State*, sol::protected_function_result pfr)
+            -> sol::protected_function_result {
+            return pfr;
+        });
 
     auto redis_table = lua.create_table();
     redis_table.set_function("get",
@@ -1251,14 +1740,38 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
 
     // shield.cluster.query(node_id, service_name) -> service_id or nil, error
     cluster.set_function("query",
-        [manager](sol::this_state state, std::string node_id,
+        [](sol::this_state state, std::string node_id,
                   std::string service_name) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
 
-            // For Phase 1, return the service_name as-is (local resolution).
-            // Full remote resolution requires CAF middleman integration.
-            results.push_back(sol::make_object(lua, service_name));
+            auto* cluster_manager = shield::cluster::global_cluster_manager();
+            if (!cluster_manager) {
+                results.push_back(sol::make_object(lua, sol::nil));
+                results.push_back(make_error(state, "module_unavailable",
+                                             "shield_cluster is not enabled"));
+                return results;
+            }
+
+            const auto reachable = cluster_manager->check_node_reachable(node_id);
+            if (!reachable.empty()) {
+                results.push_back(sol::make_object(lua, sol::nil));
+                results.push_back(make_error(state, reachable,
+                                             "cluster node is not reachable: " +
+                                                 node_id));
+                return results;
+            }
+
+            auto service_id = cluster_manager->query_remote(node_id, service_name);
+            if (service_id.empty()) {
+                results.push_back(sol::make_object(lua, sol::nil));
+                results.push_back(make_error(state, "service_not_found",
+                                             "remote service not found: " +
+                                                 service_name));
+                return results;
+            }
+
+            results.push_back(sol::make_object(lua, service_id));
             results.push_back(sol::make_object(lua, sol::nil));
             return results;
         });
@@ -1268,19 +1781,38 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
         [](sol::this_state state) -> sol::table {
             sol::state_view lua(state);
             sol::table nodes = lua.create_table();
-            // Phase 1: return empty table (no real cluster connections yet).
+            auto* cluster_manager = shield::cluster::global_cluster_manager();
+            if (!cluster_manager) {
+                return nodes;
+            }
+            int index = 1;
+            for (const auto& node : cluster_manager->nodes()) {
+                sol::table entry = lua.create_table();
+                entry["node_id"] = node.node_id;
+                entry["address"] = node.address;
+                entry["state"] = shield::cluster::node_state_name(node.state);
+                entry["last_heartbeat_ms"] = node.last_heartbeat_ms;
+                entry["connected_at_ms"] = node.connected_at_ms;
+                entry["epoch"] = node.epoch;
+                nodes[index++] = entry;
+            }
             return nodes;
         });
 
     // shield.cluster.node_id() -> this node's ID
     cluster.set_function("node_id",
         [](sol::this_state state) -> sol::optional<std::string> {
-            sol::state_view lua(state);
-            auto& cfg = shield::config::global_config();
-            std::string id = cfg.get_string("cluster.node_id", "");
-            if (id.empty()) return sol::nullopt;
-            return id;
+            auto* cluster_manager = shield::cluster::global_cluster_manager();
+            if (!cluster_manager || cluster_manager->node_id().empty()) {
+                return sol::nullopt;
+            }
+            return cluster_manager->node_id();
         });
+
+    cluster.set_function("node_epoch", []() -> uint64_t {
+        auto* cluster_manager = shield::cluster::global_cluster_manager();
+        return cluster_manager ? cluster_manager->node_epoch() : 0;
+    });
 
     shield["cluster"] = cluster;
 }
@@ -1372,6 +1904,9 @@ void register_http_api(sol::table& shield) {
         }
         if (opts["verify_ssl"].valid()) {
             options.verify_ssl = opts["verify_ssl"].get<bool>();
+        }
+        if (opts["ca_cert_path"].valid()) {
+            options.ca_cert_path = opts["ca_cert_path"].get<std::string>();
         }
         if (opts["retry"].valid()) {
             options.retry_count = opts["retry"].get<int>();

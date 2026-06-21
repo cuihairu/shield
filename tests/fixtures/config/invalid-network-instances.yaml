@@ -1,0 +1,9 @@
+app:
+  name: invalid_network_instances
+
+actors:
+  - name: gateway
+    script: smoke_root.lua
+    instances: 2
+    network:
+      tcp: "127.0.0.1:18001"

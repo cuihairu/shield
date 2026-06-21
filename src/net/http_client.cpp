@@ -5,7 +5,10 @@
 
 #include <curl/curl.h>
 
+#include <algorithm>
+#include <chrono>
 #include <mutex>
+#include <thread>
 
 namespace shield::net {
 
@@ -78,8 +81,19 @@ HttpClientResponse HttpClient::request(const HttpClientOptions& options) {
         curl_easy_setopt(curl, CURLOPT_MAXREDIRS, static_cast<long>(options.max_redirects));
     }
 
+    if (!options.proxy.empty()) {
+        curl_easy_setopt(curl, CURLOPT_PROXY, options.proxy.c_str());
+    }
+
     // Enable HTTP/2 if available.
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+
+    if (!options.auth_basic_user.empty()) {
+        curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+        curl_easy_setopt(curl, CURLOPT_USERNAME, options.auth_basic_user.c_str());
+        curl_easy_setopt(curl, CURLOPT_PASSWORD,
+                         options.auth_basic_password.c_str());
+    }
 
     // Set method and body.
     if (options.method == "POST") {
@@ -124,22 +138,43 @@ HttpClientResponse HttpClient::request(const HttpClientOptions& options) {
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response.headers);
 
-    // SSL verification (enabled by default for security).
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER,
+                     options.verify_ssl ? 1L : 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST,
+                     options.verify_ssl ? 2L : 0L);
+    if (!options.ca_cert_path.empty()) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, options.ca_cert_path.c_str());
+    }
 
     // User agent.
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Shield/1.0");
 
-    // Perform request.
-    CURLcode res = curl_easy_perform(curl);
+    CURLcode res = CURLE_OK;
+    const int attempts = (std::max)(1, options.retry_count + 1);
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        response.body.clear();
+        response.headers.clear();
+        response.status_code = 0;
+        response.error.clear();
+
+        res = curl_easy_perform(curl);
+        if (res == CURLE_OK) {
+            long status = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+            response.status_code = static_cast<int>(status);
+            if (response.status_code < 500) {
+                break;
+            }
+        }
+
+        if (attempt + 1 < attempts) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(options.retry_delay_ms));
+        }
+    }
 
     if (res != CURLE_OK) {
         response.error = curl_easy_strerror(res);
-    } else {
-        long status = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-        response.status_code = static_cast<int>(status);
     }
 
     // Cleanup.
@@ -326,19 +361,23 @@ HttpClientResponse HttpClient::post_form(const std::string& url,
 
     // Build URL-encoded form body.
     std::string form_body;
+    CURL* encoder = curl_easy_init();
+    if (!encoder) {
+        return request(opts);
+    }
     for (const auto& [key, value] : fields) {
         if (!form_body.empty()) form_body += "&";
-        // URL-encode key and value.
-        CURL* curl = curl_easy_init();
-        char* encoded_key = curl_easy_escape(curl, key.c_str(),
-                                              static_cast<int>(key.size()));
-        char* encoded_val = curl_easy_escape(curl, value.c_str(),
-                                              static_cast<int>(value.size()));
-        form_body += std::string(encoded_key) + "=" + std::string(encoded_val);
-        curl_free(encoded_key);
-        curl_free(encoded_val);
-        curl_easy_cleanup(curl);
+        char* encoded_key = curl_easy_escape(encoder, key.c_str(),
+                                               static_cast<int>(key.size()));
+        char* encoded_val = curl_easy_escape(encoder, value.c_str(),
+                                               static_cast<int>(value.size()));
+        if (encoded_key && encoded_val) {
+            form_body += std::string(encoded_key) + "=" + std::string(encoded_val);
+        }
+        if (encoded_key) curl_free(encoded_key);
+        if (encoded_val) curl_free(encoded_val);
     }
+    curl_easy_cleanup(encoder);
     opts.body = form_body;
 
     return request(opts);

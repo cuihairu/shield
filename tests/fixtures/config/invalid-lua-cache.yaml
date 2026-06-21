@@ -1,0 +1,11 @@
+app:
+  name: invalid_lua_cache
+
+lua:
+  cache:
+    max_size: 0
+
+actors:
+  - name: smoke
+    script: smoke_root.lua
+    instances: 1

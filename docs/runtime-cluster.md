@@ -58,7 +58,7 @@ local nodes = shield.cluster.nodes()
 
 规则：
 
-- `shield.cluster.query(node, name)` 负责远端 name 解析。
+- `shield.cluster.query(node, name)` 从 cluster route cache 读取远端 name 解析结果；cache 未命中时返回明确错误，不伪造成功。
 - `shield.cluster.nodes()` 返回当前已知节点及状态摘要。
 - 普通业务消息仍走统一 `shield.send/call`，不定义 `shield.cluster.send/call`。
 - 节点 connect/disconnect、peer 管理属于配置和运维职责，不作为业务 Lua API 暴露。
@@ -265,11 +265,12 @@ cluster:
 `shield_cluster` 第一版实现范围：
 
 - 静态 peers 配置。
-- 节点连接管理（基于 CAF middleman）。
-- 节点心跳和状态管理。
-- 远端路由 cache。
-- 显式 `(node_id, service_name)` 查询。
-- `send/call` 跨节点错误语义。
+- 静态 peers 配置解析。
+- 节点状态快照和 `online/suspect/offline/removed` 状态模型。
+- 远端路由 cache 结构。
+- 显式 `(node_id, service_name)` route cache 查询。
+
+当前源码实现只覆盖静态配置、节点状态快照和 route cache 查询骨架；CAF middleman transport、真实心跳交换、远端 route 学习以及跨节点 `send/call` 投递仍属后续实现。
 
 **Phase 1 不做：**
 - 动态服务发现。

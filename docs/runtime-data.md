@@ -1,16 +1,22 @@
 # 数据访问运行时语义
 
-当前实现状态：Phase 1 已支持 `database.enabled` / `redis.enabled` 控制 mock
-pool 初始化；未启用时 Lua API 返回 `false, module_unavailable`；启用时 CTest
-覆盖部分 mock 返回形态，包括 `shield.db.query/execute` 与
-`shield.redis.set/exists/del`。`query_one`、Redis `get/publish/subscribe` 的完整
-验收、真实 MySQL/PostgreSQL/SQLite/Redis 驱动连接、连接错误传播和订阅生命周期仍未完成。
+当前实现状态：Phase 1 已支持 `database.enabled` / `redis.enabled` 控制是否创建
+DB/Redis pool；`database.mock=true` / `redis.mock=true` 显式启用 mock pool；
+未启用时 Lua API 返回 `false, module_unavailable`。CTest 已覆盖 mock pool 下
+`shield.db.query/query_one/execute`、`shield.redis.get/set/del/exists/publish/subscribe`
+的基础返回形态，以及 pool size、动态扩容、acquire timeout 和非 mock 连接失败
+不静默降级。`shield.db.transaction` 已提供本地单连接事务最小实现；
+`shield.db.mapper/register_mapper/entity` 已提供 Lua 层轻量 mapper/entity helper。
+真实 MySQL/Redis 连接依赖线上环境验证；PostgreSQL/SQLite、数据 worker
+线程池、订阅回调回投 worker、XML schema-mapper 生成器仍未完成。
 
 本文档包含 Shield 数据访问相关的运行时语义决策。
 
 ## shield_data
 
-`shield_data` 提供原始 DB/Redis 能力，不做 ORM。
+`shield_data` 提供原始 DB/Redis 能力，不做重 ORM。`shield_lua` 在原始 API 上提供
+轻量 Lua mapper/entity helper，用于显式 SQL 模板、命名参数绑定和简单实体 CRUD SQL
+生成；它不是 ActiveRecord，不做对象图加载、migration 或跨 service 事务。
 
 ```lua
 local ok, rows = shield.db.query("SELECT * FROM users WHERE id = ?", { uid })
@@ -19,8 +25,7 @@ local ok, result = shield.redis.get("player:" .. uid)
 
 规则：
 
-- API coroutine-friendly。
-- query 不阻塞 runtime 线程。
+- API 返回形态保持 coroutine-friendly；当前实现仍同步执行，data worker pool 属于后续项。
 - 返回 `ok, result_or_error`。
 - 支持超时。
 - 支持连接池。
@@ -33,16 +38,20 @@ local ok, result = shield.redis.get("player:" .. uid)
 - `shield.db.query`
 - `shield.db.query_one`
 - `shield.db.execute`
+- `shield.db.transaction`
+- `shield.db.mapper`
+- `shield.db.register_mapper`
+- `shield.db.entity`
 - `shield.redis.get/set/del/exists`
 - `shield.redis.publish/subscribe`
 
 以下内容属于 Phase 2+ 或驱动内部优化，可以在文档中先行收敛语义，但不作为 Phase 1 最小实现必达项，也不进入 `lua-api-tests.md` 的最小验收：
 
-- 事务
 - 显式预编译语句 handle
 - Redis pipeline
 - Redis eval
 - Redis sentinel/cluster 配置
+- XML schema-mapper parser / descriptor generator
 
 prepared statement 可以作为 driver 内部优化存在，但不能在 Phase 1 暴露为 Lua public API。
 
@@ -63,9 +72,14 @@ database:
   pool_size: 10              # 最小连接数
   max_pool_size: 50          # 最大连接数
   connect_timeout: 5000      # 建立连接超时（ms）
+  acquire_timeout: 5000      # 等待可用连接超时（ms）
   query_timeout: 30000       # 查询超时（ms）
   idle_timeout: 300000       # 空闲连接超时（ms）
   max_lifetime: 3600000      # 连接最大生命周期（ms）
+
+  # 测试/开发专用。生产环境不要开启 mock；连接失败默认 fail fast。
+  mock: false
+  allow_mock_fallback: false
 
   # 重连策略
   reconnect:
@@ -93,8 +107,13 @@ redis:
   pool_size: 10              # 最小连接数
   max_pool_size: 50          # 最大连接数
   connect_timeout: 5000      # 建立连接超时（ms）
+  acquire_timeout: 5000      # 等待可用连接超时（ms）
   command_timeout: 5000      # 命令超时（ms）
   idle_timeout: 300000       # 空闲连接超时（ms）
+
+  # 测试/开发专用。生产环境不要开启 mock；连接失败默认 fail fast。
+  mock: false
+  allow_mock_fallback: false
 
   # sentinel / cluster 配置属于 Phase 2+，不进入 Phase 1 schema
 ```
@@ -106,7 +125,7 @@ redis:
 │  连接请求                                                │
 │  - 优先使用空闲连接                                       │
 │  - 无空闲且 < max_pool_size: 创建新连接                   │
-│  - 达到 max_pool_size: 等待（带超时）                      │
+│  - 达到 max_pool_size: 等待 acquire_timeout，失败返回 pool_exhausted │
 ├─────────────────────────────────────────────────────────┤
 │  连接回收                                                │
 │  - 空闲超过 idle_timeout: 关闭                           │
@@ -136,22 +155,22 @@ local ok, result = shield.db.execute(
 
 ### 事务
 
-事务属于 Phase 2+。Phase 1 不提供 `shield.db.transaction` Lua API；以下语义仅用于后续实现时保持边界一致。
+`shield.db.transaction(fn)` 已提供本地单连接事务最小实现。callback 接收 `tx`
+对象，`tx.query/query_one/execute` 均在同一连接上执行。
 
 ```lua
 local ok, err = shield.db.transaction(function(tx)
-    -- tx 对象提供 query/execute 方法
-    local ok, user = tx:query_one("SELECT * FROM users WHERE id = ? FOR UPDATE", { uid })
+    local ok, user = tx.query_one("SELECT * FROM users WHERE id = ? FOR UPDATE", { uid })
     if not user then
         return false, "user not found"
     end
 
-    local ok, err = tx:execute("UPDATE users SET balance = balance - ? WHERE id = ?", { amount, uid })
+    local ok, err = tx.execute("UPDATE users SET balance = balance - ? WHERE id = ?", { amount, uid })
     if not ok then
         return false, err
     end
 
-    local ok, err = tx:execute("INSERT INTO logs (uid, action, amount) VALUES (?, ?, ?)", { uid, "deduct", amount })
+    local ok, err = tx.execute("INSERT INTO logs (uid, action, amount) VALUES (?, ?, ?)", { uid, "deduct", amount })
     if not ok then
         return false, err
     end
@@ -167,10 +186,68 @@ end
 事务规则：
 
 - 事务内所有操作在同一连接上执行。
-- 事务超时使用 `query_timeout`。
-- 事务失败自动回滚。
-- 不支持嵌套事务（savepoint 由驱动决定）。
+- callback 抛错或返回 `false, reason` 时自动 rollback。
+- callback 返回非 false 时 commit，并把 callback 返回值转发给调用方。
+- callback 返回后 `tx` 句柄关闭，继续使用返回 `transaction_closed`。
+- 当前不支持嵌套事务或 savepoint。
 - 不跨 service 共享事务。
+
+### Lua Mapper
+
+`shield.db.mapper(def)` 创建轻量 mapper facade。SQL 模板只支持 `#{name}` 或
+`#{nested.path}` 命名参数，运行时会编译成 `?` 占位符和有序 params 数组。
+`${name}` 原样替换和多语句 SQL 会被拒绝。
+
+```lua
+local PlayerMapper = shield.db.mapper({
+    SelectProfile = {
+        type = "select",
+        one = true,
+        sql = "SELECT player_id, nickname FROM player WHERE player_id = #{player_id}"
+    },
+    DebitGold = {
+        type = "update",
+        transaction = "required",
+        sql = "UPDATE wallet SET gold = gold - #{amount} WHERE player_id = #{player_id}"
+    }
+})
+
+local ok, profile = PlayerMapper:SelectProfile({ player_id = uid })
+local ok, result = PlayerMapper:DebitGold({ player_id = uid, amount = 10 })
+```
+
+规则：
+
+- statement `type` 支持 `select`、`insert`、`update`、`delete`、`execute`。
+- `select` 默认返回多行；设置 `one=true` 或 `result="one"` 时走 `query_one`。
+- `transaction="required"` 在没有显式 tx 时自动用 `shield.db.transaction` 包一层。
+- 传入事务句柄时复用当前连接：`PlayerMapper:DebitGold(tx, params)`。
+- `shield.db.register_mapper("PlayerMapper", def)` 会把 mapper 挂到 `shield.db.PlayerMapper`。
+
+### Lua Entity Helper
+
+`shield.db.entity(def)` 是很薄的实体 SQL helper，只按白名单字段生成
+`insert/update/delete/find` SQL，不跟踪对象生命周期。
+
+```lua
+local Player = shield.db.entity({
+    table = "player",
+    fields = { "player_id", "nickname", "level" },
+    primary_key = "player_id"
+})
+
+local ok, inserted = Player:insert({ player_id = uid, nickname = name, level = 1 })
+local ok, updated = Player:update({ player_id = uid, nickname = "neo" })
+local ok, row = Player:find(uid)
+local ok, removed = Player:delete(uid)
+```
+
+规则：
+
+- `table`、字段名和 column 名必须是安全 SQL identifier。
+- `fields` 是字段白名单；数组形式保留 SQL 字段顺序。
+- `primary_key` 支持字符串或字符串数组。
+- 不做 schema migration、脏字段跟踪、关联加载或级联保存。
 
 ### 预编译语句
 

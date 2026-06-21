@@ -1,10 +1,10 @@
 app:
-  name: optional_cluster_disabled
+  name: optional_global_disabled
 
 actors:
   - name: worker
     script: smoke_root.lua
     instances: 1
 
-cluster:
+global:
   enabled: true

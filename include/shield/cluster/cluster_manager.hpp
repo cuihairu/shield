@@ -125,4 +125,11 @@ private:
 /// @brief Parse cluster config from YAML
 ClusterConfig parse_cluster_config();
 
+/// @brief Runtime-owned cluster manager access for Lua bindings.
+ClusterManager* global_cluster_manager();
+void set_global_cluster_manager(ClusterManager* manager);
+
+/// @brief Stable string name for Lua/admin snapshots.
+std::string node_state_name(NodeState state);
+
 }  // namespace shield::cluster

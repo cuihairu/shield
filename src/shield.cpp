@@ -31,6 +31,7 @@ struct CliOptions {
     bool show_version = false;
     bool check_config = false;
     bool has_node_id = false;
+    std::string node_id;
     bool parse_error = false;
     std::string error;
 };
@@ -158,7 +159,7 @@ CliOptions parse_cli(int argc, char** argv) {
             if (options.parse_error) {
                 return options;
             }
-            (void)value;
+            options.node_id = value;
             options.has_node_id = true;
             continue;
         }
@@ -172,10 +173,12 @@ CliOptions parse_cli(int argc, char** argv) {
         return options;
     }
 
+#ifndef SHIELD_ENABLE_CLUSTER
     if (options.has_node_id) {
         options.parse_error = true;
         options.error = "--node-id requires shield_cluster, which is not enabled";
     }
+#endif
 
     return options;
 }
@@ -211,6 +214,7 @@ int run(int argc, char** argv) {
         config.config_file = options.config_files.empty() ? "" : options.config_files.front();
         config.log_level = options.log_level;
         config.num_workers = options.workers;
+        config.node_id = options.node_id;
 
         install_signal_handlers();
 

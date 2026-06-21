@@ -15,10 +15,12 @@ namespace shield::net {
 
 TcpSession::TcpSession(SessionId id,
                        boost::asio::ip::tcp::socket socket,
-                       SessionCallbacks callbacks)
+                       SessionCallbacks callbacks,
+                       size_t max_frame_size)
     : id_(id),
       socket_(std::move(socket)),
-      callbacks_(std::move(callbacks)) {
+      callbacks_(std::move(callbacks)),
+      frame_decoder_(max_frame_size) {
 
     auto endpoint = socket_.remote_endpoint();
     remote_addr_.ip = endpoint.address().to_string();
@@ -33,7 +35,7 @@ void TcpSession::start() {
 }
 
 bool TcpSession::send(const std::vector<uint8_t>& data) {
-    if (!alive_) return false;
+    if (!alive_.load()) return false;
 
     boost::system::error_code ec;
     boost::asio::write(socket_, boost::asio::buffer(data), ec);
@@ -47,9 +49,9 @@ bool TcpSession::send(const std::vector<uint8_t>& data) {
 }
 
 void TcpSession::close(std::string reason) {
-    if (!alive_) return;
+    bool expected = true;
+    if (!alive_.compare_exchange_strong(expected, false)) return;
 
-    alive_ = false;
     boost::system::error_code ec;
     socket_.close(ec);
 
@@ -59,7 +61,7 @@ void TcpSession::close(std::string reason) {
 }
 
 void TcpSession::do_receive() {
-    if (!alive_) return;
+    if (!alive_.load()) return;
 
     // Read into buffer (resize to max frame size)
     receive_buffer_.resize(64 * 1024);
@@ -77,6 +79,10 @@ void TcpSession::do_receive() {
             // Process through frame decoder
             auto frames = frame_decoder_.feed(receive_buffer_.data(),
                                              receive_buffer_.size());
+            if (!frame_decoder_.error().empty()) {
+                handle_error("frame decode error: " + frame_decoder_.error());
+                return;
+            }
 
             for (const auto& frame : frames) {
                 if (callbacks_.on_message) {

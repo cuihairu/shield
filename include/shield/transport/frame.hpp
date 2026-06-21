@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <string>
 #include <utility>
 #include <vector>
 #include "shield/base/byte_buffer.hpp"
@@ -61,10 +62,17 @@ private:
 class FrameDecoder {
 public:
     FrameDecoder();
+    explicit FrameDecoder(size_t max_frame_size);
 
     /// @brief Feed data to decoder
     /// @return Vector of complete frames
     std::vector<Frame> feed(const uint8_t* data, size_t size);
+
+    /// @brief Set maximum accepted payload size in bytes (0 = unlimited).
+    void set_max_frame_size(size_t max_frame_size);
+
+    /// @brief Last decode error. Empty when the last feed completed normally.
+    const std::string& error() const { return error_; }
 
     /// @brief Reset decoder state
     void reset();
@@ -74,6 +82,8 @@ private:
     FrameHeader header_{};
     size_t needed_ = FrameHeader::HEADER_SIZE;
     bool have_header_ = false;
+    size_t max_frame_size_ = 0;
+    std::string error_;
 };
 
 /// @brief Frame encoder (converts frames to bytes)

@@ -81,14 +81,15 @@ struct SessionCallbacks {
 class TcpSession : public Session, public std::enable_shared_from_this<TcpSession> {
 public:
     TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
-              SessionCallbacks callbacks);
+              SessionCallbacks callbacks,
+              size_t max_frame_size = 0);
 
     SessionId id() const override { return id_; }
     RemoteAddress remote_addr() const override { return remote_addr_; }
 
     bool send(const std::vector<uint8_t>& data) override;
     void close(std::string reason) override;
-    bool is_alive() const override { return alive_; }
+    bool is_alive() const override { return alive_.load(); }
     std::string error_code() const override { return error_code_; }
 
     void set_user_data(std::string key, std::string value) override {
@@ -111,7 +112,7 @@ private:
     boost::asio::ip::tcp::socket socket_;
     RemoteAddress remote_addr_;
     SessionCallbacks callbacks_;
-    bool alive_ = true;
+    std::atomic<bool> alive_{true};
     std::string error_code_;
 
     std::unordered_map<std::string, std::string> user_data_;

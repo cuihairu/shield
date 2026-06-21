@@ -99,9 +99,12 @@ database:
   pool_size: 10
   max_pool_size: 50
   connect_timeout: 5000
+  acquire_timeout: 5000
   query_timeout: 30000
   idle_timeout: 300000
   max_lifetime: 3600000
+  mock: false                 # 测试/开发专用；生产不要开启
+  allow_mock_fallback: false  # 生产默认连接失败即启动失败
   options:
     charset: utf8mb4
 
@@ -114,8 +117,11 @@ redis:
   pool_size: 10
   max_pool_size: 50
   connect_timeout: 5000
+  acquire_timeout: 5000
   command_timeout: 5000
   idle_timeout: 300000
+  mock: false                 # 测试/开发专用；生产不要开启
+  allow_mock_fallback: false  # 生产默认连接失败即启动失败
 
 bootstrap:
   timeout:
@@ -156,7 +162,7 @@ shutdown:
 | `restart` | 否 | 服务异常退出后的重启策略 |
 | `limits` | 否 | 单 service 资源限制 |
 
-`actors[].network` 只声明该 service 是 gateway service。网络回调仍由 Lua module 上的 `on_connect`、`on_disconnect`、`on_client_message` 实现。
+`actors[].network` 只声明该 service 是 gateway service。网络回调仍由 Lua module 上的 `on_connect`、`on_disconnect`、`on_client_message` 实现。Phase 1 的 `network.tcp` 只支持 `instances: 1`，避免 listener 事件没有确定接收者。
 
 `actors[].script` 可以是绝对路径，也可以是相对路径。相对路径解析规则：
 
@@ -218,7 +224,12 @@ lua:
 - `shield.redis.*` 返回 `false, module_unavailable`。
 - runtime 不创建 Redis 连接池。
 
-`shield_data` 只提供原始访问能力，不配置 ORM、mapper、migration 或跨服务事务。
+`shield_data` 只配置原始 DB/Redis 连接池。Lua mapper/entity helper 是运行时 API，
+不需要独立配置；XML schema-mapper、migration 和跨服务事务不在当前配置范围。
+
+测试和本地开发可以显式设置 `database.mock=true` / `redis.mock=true` 使用 mock
+pool；生产环境默认不自动降级到 mock。若确实需要兼容旧 smoke 流程，可显式设置
+`allow_mock_fallback=true`，但这不应出现在生产配置中。
 
 ## 验证规则
 
@@ -238,11 +249,16 @@ lua:
 | `actors[].instances` | `>= 0` |
 | `actors[].restart.policy` | `always`、`on-failure`、`never` |
 | `actors[].network.*` | 监听地址必须是 `host:port` |
+| `actors[].network.tcp` | Phase 1 要求 `instances == 1` |
 | `actors[].network.udp/kcp/websocket` | Phase 1 拒绝启动；这些 transport 属于 deferred extension |
 | `database.port` | 1-65535 |
 | `database.pool_size` | `>= 1`，且 `<= max_pool_size` |
+| `database.acquire_timeout` / `connect_timeout` / `query_timeout` | 1-3600000 ms |
+| `database.mock` / `allow_mock_fallback` | boolean |
 | `redis.port` | 1-65535 |
 | `redis.pool_size` | `>= 1`，且 `<= max_pool_size` |
+| `redis.acquire_timeout` / `connect_timeout` / `command_timeout` | 1-3600000 ms |
+| `redis.mock` / `allow_mock_fallback` | boolean |
 | `shutdown.timeout.total` | 必须大于各分段 timeout |
 
 验证失败时拒绝启动，输出字段路径和原因。

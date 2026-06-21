@@ -12,6 +12,10 @@
 
 namespace shield::cluster {
 
+namespace {
+ClusterManager* g_cluster_manager = nullptr;
+}
+
 struct ClusterManager::Impl {
     ClusterConfig config;
     uint64_t node_epoch = 0;
@@ -127,8 +131,7 @@ std::string ClusterManager::query_remote(const std::string& node_id,
     if (it != impl_->route_cache.end()) {
         return it->second;
     }
-    // In Phase 1, return the service_name as-is (assumes remote uses same naming).
-    return service_name;
+    return "";
 }
 
 void ClusterManager::register_route(const std::string& node_id,
@@ -231,11 +234,10 @@ ClusterConfig parse_cluster_config() {
     cc.offline_timeout_ms = static_cast<int>(
         cfg.get_int("cluster.offline_timeout_ms", 30000));
 
-    // Parse peers list.
-    if (cfg.has("cluster.peers")) {
+    // Parse peers list. Accept YAML sequences and comma/newline-separated scalars.
+    cc.peers = cfg.get_string_array("cluster.peers");
+    if (cc.peers.empty() && cfg.has("cluster.peers")) {
         auto peers_str = cfg.get_string("cluster.peers", "");
-        // Peers can be comma-separated or YAML list.
-        // For simplicity, support comma-separated in Phase 1.
         std::string current;
         for (char c : peers_str) {
             if (c == ',' || c == '\n') {
@@ -262,6 +264,25 @@ ClusterConfig parse_cluster_config() {
     }
 
     return cc;
+}
+
+ClusterManager* global_cluster_manager() {
+    return g_cluster_manager;
+}
+
+void set_global_cluster_manager(ClusterManager* manager) {
+    g_cluster_manager = manager;
+}
+
+std::string node_state_name(NodeState state) {
+    switch (state) {
+        case NodeState::Connecting: return "connecting";
+        case NodeState::Online: return "online";
+        case NodeState::Suspect: return "suspect";
+        case NodeState::Offline: return "offline";
+        case NodeState::Removed: return "removed";
+    }
+    return "unknown";
 }
 
 }  // namespace shield::cluster

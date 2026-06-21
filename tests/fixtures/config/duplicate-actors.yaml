@@ -3,8 +3,8 @@ app:
 
 actors:
   - name: worker
-    script: scripts/game_logic.lua
+    script: smoke_root.lua
     instances: 1
   - name: worker
-    script: scripts/game_logic.lua
+    script: smoke_root.lua
     instances: 1

@@ -14,12 +14,14 @@
 #include <boost/test/unit_test.hpp>
 
 #include "shield/data/data.hpp"
+#include "shield/config/config.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <vector>
 
 using namespace shield::lua;
 
@@ -44,6 +46,15 @@ SpawnResult spawn_data(LuaServiceManager& manager, const std::string& name,
 // Initialise the global mock pools once for the entire suite.
 struct DataPoolFixture {
     DataPoolFixture() {
+        auto& cfg = shield::config::global_config();
+        cfg.set("database.mock", true);
+        cfg.set("database.pool_size", int64_t{2});
+        cfg.set("database.max_pool_size", int64_t{2});
+        cfg.set("database.acquire_timeout", int64_t{50});
+        cfg.set("redis.mock", true);
+        cfg.set("redis.pool_size", int64_t{2});
+        cfg.set("redis.max_pool_size", int64_t{2});
+        cfg.set("redis.acquire_timeout", int64_t{50});
         shield::data::database().initialize("database");
         shield::data::redis().initialize("redis");
     }
@@ -125,9 +136,9 @@ BOOST_AUTO_TEST_CASE(LAPI_008_02_DbQueryDisabledReturnsModuleUnavailable) {
 }
 
 // ---------------------------------------------------------------------------
-// LAPI-008-03: SQL error → database_error
+// LAPI-008-03: SQL error → db_query_failed
 // Injects a mock DB error via set_mock_db_error and verifies the Lua binding
-// returns false + {code="database_error"}.
+// returns false + {code="db_query_failed"}.
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(LAPI_008_03_DbQueryReturnsError) {
@@ -171,6 +182,211 @@ BOOST_AUTO_TEST_CASE(LAPI_008_03b_DbExecuteReturnsError) {
     BOOST_CHECK(!cr.values[0].get<bool>());
 
     shield::data::set_mock_db_error("");
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03c_DbTransactionCommit) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_data(manager, "tx_commit_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "test_db_transaction_commit",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 2u);
+    BOOST_CHECK(cr.values[0].get<bool>());
+    BOOST_CHECK_EQUAL(cr.values[1].get<int>(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03d_DbTransactionRollback) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_data(manager, "tx_rollback_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "test_db_transaction_rollback",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 2u);
+    BOOST_CHECK(!cr.values[0].get<bool>());
+    BOOST_CHECK_EQUAL(cr.values[1].get<std::string>(), "rollback_requested");
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03e_DbTransactionClosedHandleRejected) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_data(manager, "tx_closed_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id,
+                                 "test_db_transaction_closed_handle",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 1u);
+    BOOST_CHECK(cr.values[0].get<bool>());
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03f_DbMapperSelectBindsNamedParamsInOrder) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    shield::data::clear_mock_db_last_operation();
+
+    auto result = spawn_data(manager, "mapper_select_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "test_db_mapper_select",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 1u);
+    BOOST_CHECK(cr.values[0].get<bool>());
+
+    auto op = shield::data::mock_db_last_operation();
+    BOOST_CHECK_EQUAL(op.method, "query_one");
+    BOOST_CHECK_EQUAL(op.sql,
+                      "SELECT player_id, nickname FROM player WHERE player_id = ? AND shard = ?");
+    BOOST_REQUIRE_EQUAL(op.params.size(), 2u);
+    BOOST_CHECK_EQUAL(op.params[0], "p1");
+    BOOST_CHECK_EQUAL(op.params[1], "7");
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03g_DbMapperTransactionRequiredOpensTransaction) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    shield::data::clear_mock_db_last_operation();
+
+    auto result = spawn_data(manager, "mapper_tx_required_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id,
+                                 "test_db_mapper_transaction_required",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 2u);
+    BOOST_CHECK(cr.values[0].get<bool>());
+    BOOST_CHECK_EQUAL(cr.values[1].get<int>(), 1);
+
+    auto op = shield::data::mock_db_last_operation();
+    BOOST_CHECK_EQUAL(op.method, "execute");
+    BOOST_CHECK_EQUAL(op.sql,
+                      "UPDATE wallet SET gold = gold - ? WHERE player_id = ? AND gold >= ?");
+    BOOST_REQUIRE_EQUAL(op.params.size(), 3u);
+    BOOST_CHECK_EQUAL(op.params[0], "10");
+    BOOST_CHECK_EQUAL(op.params[1], "p1");
+    BOOST_CHECK_EQUAL(op.params[2], "10");
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03h_DbMapperReusesExplicitTransaction) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    shield::data::clear_mock_db_last_operation();
+
+    auto result = spawn_data(manager, "mapper_tx_reuse_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id,
+                                 "test_db_mapper_reuses_transaction",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 2u);
+    BOOST_CHECK(cr.values[0].get<bool>());
+    BOOST_CHECK_EQUAL(cr.values[1].get<int>(), 1);
+
+    auto op = shield::data::mock_db_last_operation();
+    BOOST_CHECK_EQUAL(op.method, "execute");
+    BOOST_CHECK_EQUAL(op.sql,
+                      "UPDATE player SET nickname = ? WHERE player_id = ?");
+    BOOST_REQUIRE_EQUAL(op.params.size(), 2u);
+    BOOST_CHECK_EQUAL(op.params[0], "neo");
+    BOOST_CHECK_EQUAL(op.params[1], "p1");
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03i_DbMapperRejectsRawSqlSubstitution) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_data(manager, "mapper_unsafe_sql_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id,
+                                 "test_db_mapper_rejects_raw_substitution",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 1u);
+    BOOST_CHECK(cr.values[0].get<bool>());
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03j_DbEntityInsertBuildsSql) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    shield::data::clear_mock_db_last_operation();
+
+    auto result = spawn_data(manager, "entity_insert_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "test_db_entity_insert",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 2u);
+    BOOST_CHECK(cr.values[0].get<bool>());
+    BOOST_CHECK_EQUAL(cr.values[1].get<int>(), 1);
+
+    auto op = shield::data::mock_db_last_operation();
+    BOOST_CHECK_EQUAL(op.method, "execute");
+    BOOST_CHECK_EQUAL(op.sql,
+                      "INSERT INTO player (player_id, nickname, level) VALUES (?, ?, ?)");
+    BOOST_REQUIRE_EQUAL(op.params.size(), 3u);
+    BOOST_CHECK_EQUAL(op.params[0], "p1");
+    BOOST_CHECK_EQUAL(op.params[1], "neo");
+    BOOST_CHECK_EQUAL(op.params[2], "9");
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03k_DbEntityUpdateBuildsSql) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    shield::data::clear_mock_db_last_operation();
+
+    auto result = spawn_data(manager, "entity_update_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "test_db_entity_update",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 2u);
+    BOOST_CHECK(cr.values[0].get<bool>());
+    BOOST_CHECK_EQUAL(cr.values[1].get<int>(), 1);
+
+    auto op = shield::data::mock_db_last_operation();
+    BOOST_CHECK_EQUAL(op.method, "execute");
+    BOOST_CHECK_EQUAL(op.sql,
+                      "UPDATE player SET nickname = ?, level = ? WHERE player_id = ?");
+    BOOST_REQUIRE_EQUAL(op.params.size(), 3u);
+    BOOST_CHECK_EQUAL(op.params[0], "trinity");
+    BOOST_CHECK_EQUAL(op.params[1], "10");
+    BOOST_CHECK_EQUAL(op.params[2], "p1");
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_008_03l_DbEntityFindBuildsSql) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    shield::data::clear_mock_db_last_operation();
+
+    auto result = spawn_data(manager, "entity_find_test");
+    BOOST_REQUIRE(result.success);
+
+    CallResult cr = manager.call(result.service_id, "test_db_entity_find",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_GE(cr.values.size(), 1u);
+    BOOST_CHECK(cr.values[0].get<bool>());
+
+    auto op = shield::data::mock_db_last_operation();
+    BOOST_CHECK_EQUAL(op.method, "query_one");
+    BOOST_CHECK_EQUAL(op.sql, "SELECT * FROM player WHERE player_id = ?");
+    BOOST_REQUIRE_EQUAL(op.params.size(), 1u);
+    BOOST_CHECK_EQUAL(op.params[0], "p1");
 }
 
 // ---------------------------------------------------------------------------

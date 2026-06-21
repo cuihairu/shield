@@ -64,6 +64,13 @@ public:
     bool send(std::string_view target, std::string_view method,
               const nlohmann::json& args, std::string* error = nullptr);
 
+    // Queue a runtime-owned event to a service. This is for internal bridges
+    // such as shield_net -> Lua gateway callbacks, so it permits reserved
+    // lifecycle method names like on_connect while preserving mailbox dispatch.
+    bool send_system(std::string_view target, std::string_view method,
+                     const nlohmann::json& args,
+                     std::string* error = nullptr);
+
     // Send a coroutine call-request message to a service. Like send() but tags
     // the message with a call session so the callee's dispatch can route the
     // response back to the suspended caller.

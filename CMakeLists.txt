@@ -393,6 +393,24 @@ else()
 endif()
 
 # -----------------------------------------------------------------------------
+# shield_cluster (optional, OFF by default)
+# -----------------------------------------------------------------------------
+if(SHIELD_ENABLE_CLUSTER)
+    add_library(shield_cluster STATIC
+        src/cluster/cluster_manager.cpp
+    )
+    target_include_directories(shield_cluster
+        PUBLIC
+            ${PROJECT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(shield_cluster
+        PUBLIC shield_base shield_log shield_config
+    )
+    message(STATUS "shield_cluster: enabled")
+endif()
+
+# -----------------------------------------------------------------------------
 # shield_lua - Lua VM, API bindings, service loader
 # -----------------------------------------------------------------------------
 add_library(shield_lua STATIC
@@ -441,11 +459,19 @@ target_link_libraries(shield_bootstrap
     PRIVATE shield_log shield_config shield_core shield_lua shield_data shield_net
 )
 
+if(SHIELD_ENABLE_CLUSTER)
+    target_link_libraries(shield_bootstrap PRIVATE shield_cluster)
+    target_compile_definitions(shield_bootstrap PRIVATE SHIELD_ENABLE_CLUSTER)
+endif()
+
 # -----------------------------------------------------------------------------
 # shield - Main executable
 # -----------------------------------------------------------------------------
 add_executable(shield src/main.cpp)
 target_link_libraries(shield PRIVATE shield_bootstrap)
+if(SHIELD_ENABLE_CLUSTER)
+    target_compile_definitions(shield PRIVATE SHIELD_ENABLE_CLUSTER)
+endif()
 shield_copy_runtime_dlls(shield)
 
 add_test(NAME shield_cli_help COMMAND shield --help)
@@ -456,6 +482,14 @@ if(NOT SHIELD_ENABLE_CLUSTER)
             "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--node-id;test-node"
             -DEXPECTED_EXIT_CODE=1
             -DEXPECTED_OUTPUT_REGEX=shield_cluster
+            -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+    )
+else()
+    add_test(NAME shield_cli_node_id_with_cluster
+        COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--node-id;test-node;--check-config;--config;${CMAKE_SOURCE_DIR}/config/app.yaml"
+            -DEXPECTED_EXIT_CODE=0
+            -DEXPECTED_OUTPUT_REGEX=initialized
             -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
     )
 endif()
@@ -516,13 +550,23 @@ add_test(NAME shield_runtime_registry_smoke
         -DEXPECTED_OUTPUT_REGEX=registry_smoke_done
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
-add_test(NAME shield_config_optional_requires_module
-    COMMAND ${CMAKE_COMMAND}
-        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-cluster-disabled.yaml"
-        -DEXPECTED_EXIT_CODE=1
-        -DEXPECTED_OUTPUT_REGEX=shield_cluster
-        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
-)
+if(SHIELD_ENABLE_CLUSTER)
+    add_test(NAME shield_config_optional_requires_module
+        COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-global-disabled.yaml"
+            -DEXPECTED_EXIT_CODE=1
+            -DEXPECTED_OUTPUT_REGEX=shield_global
+            -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+    )
+else()
+    add_test(NAME shield_config_optional_requires_module
+        COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-cluster-disabled.yaml"
+            -DEXPECTED_EXIT_CODE=1
+            -DEXPECTED_OUTPUT_REGEX=shield_cluster
+            -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+    )
+endif()
 add_test(NAME shield_config_deferred_network_rejected
     COMMAND ${CMAKE_COMMAND}
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/deferred-network.yaml"
@@ -542,6 +586,34 @@ add_test(NAME shield_config_invalid_database_rejected
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/invalid-database.yaml"
         -DEXPECTED_EXIT_CODE=1
         -DEXPECTED_OUTPUT_REGEX=database
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_invalid_log_level_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/invalid-log-level.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=log.level
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_invalid_lua_cache_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/invalid-lua-cache.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=lua.cache
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_invalid_shutdown_timeout_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/invalid-shutdown-timeout.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=shutdown.timeout.total
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_invalid_network_instances_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/invalid-network-instances.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=instances
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
 add_test(NAME shield_config_missing_actor_script_rejected
@@ -567,22 +639,6 @@ add_test(NAME shield_source_boundary_check
 # =============================================================================
 # OPTIONAL MODULES
 # =============================================================================
-
-# shield_cluster (OFF by default)
-if(SHIELD_ENABLE_CLUSTER)
-    add_library(shield_cluster STATIC
-        src/cluster/cluster_manager.cpp
-    )
-    target_include_directories(shield_cluster
-        PUBLIC
-            ${PROJECT_SOURCE_DIR}/include
-            ${CMAKE_CURRENT_BINARY_DIR}/include
-    )
-    target_link_libraries(shield_cluster
-        PUBLIC shield_base shield_log shield_config
-    )
-    message(STATUS "shield_cluster: enabled")
-endif()
 
 # shield_global (OFF by default)
 if(SHIELD_ENABLE_GLOBAL)

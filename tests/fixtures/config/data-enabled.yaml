@@ -9,12 +9,14 @@ actors:
 
 database:
   enabled: true
+  mock: true
   port: 3306
   pool_size: 2
   max_pool_size: 2
 
 redis:
   enabled: true
+  mock: true
   port: 6379
   pool_size: 2
   max_pool_size: 2

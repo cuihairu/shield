@@ -63,10 +63,20 @@ bool Frame::parse(const uint8_t* data, size_t size) {
 
 // FrameDecoder implementation
 FrameDecoder::FrameDecoder()
-    : needed_(FrameHeader::HEADER_SIZE), have_header_(false) {}
+    : FrameDecoder(0) {}
+
+FrameDecoder::FrameDecoder(size_t max_frame_size)
+    : needed_(FrameHeader::HEADER_SIZE),
+      have_header_(false),
+      max_frame_size_(max_frame_size) {}
+
+void FrameDecoder::set_max_frame_size(size_t max_frame_size) {
+    max_frame_size_ = max_frame_size;
+}
 
 std::vector<Frame> FrameDecoder::feed(const uint8_t* data, size_t size) {
     std::vector<Frame> frames;
+    error_.clear();
 
     buffer_.insert(buffer_.end(), data, data + size);
 
@@ -78,6 +88,12 @@ std::vector<Frame> FrameDecoder::feed(const uint8_t* data, size_t size) {
             }
 
             header_ = FrameHeader::from_network(buffer_.data());
+            if (max_frame_size_ > 0 && header_.length > max_frame_size_) {
+                error_ = "frame too large: " + std::to_string(header_.length) +
+                         " bytes (max " + std::to_string(max_frame_size_) + ")";
+                reset();
+                break;
+            }
             needed_ = header_.length;
             have_header_ = true;
         }

@@ -7,9 +7,13 @@
 #include <sw/redis++/redis++.h>
 #include <mysqlx/xdevapi.h>
 
+#include <algorithm>
+#include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <queue>
+#include <stdexcept>
 #include <thread>
 
 // Forward declarations for hiredis/redis++
@@ -30,9 +34,12 @@ class MockDatabaseConnection : public DatabaseConnection {
 public:
     // Test hook: set to non-empty to make all queries return an error.
     static inline std::string force_error;
+    static inline MockDbOperation last_operation;
+    static inline std::mutex operation_mutex;
 
     QueryResult query(std::string_view sql,
                      const std::vector<std::string>& params) override {
+        record_operation("query", sql, params);
         if (!force_error.empty()) {
             return QueryResult::error(force_error);
         }
@@ -41,6 +48,7 @@ public:
 
     QueryResult query_one(std::string_view sql,
                          const std::vector<std::string>& params) override {
+        record_operation("query_one", sql, params);
         if (!force_error.empty()) {
             return QueryResult::error(force_error);
         }
@@ -49,6 +57,7 @@ public:
 
     QueryResult execute(std::string_view sql,
                        const std::vector<std::string>& params) override {
+        record_operation("execute", sql, params);
         if (!force_error.empty()) {
             return QueryResult::error(force_error);
         }
@@ -58,11 +67,51 @@ public:
         return result;
     }
 
+    QueryResult begin_transaction() override {
+        if (!force_error.empty()) {
+            return QueryResult::error(force_error);
+        }
+        in_transaction_ = true;
+        return QueryResult::ok();
+    }
+
+    QueryResult commit_transaction() override {
+        if (!force_error.empty()) {
+            return QueryResult::error(force_error);
+        }
+        if (!in_transaction_) {
+            return QueryResult::error("no active transaction",
+                                      "transaction_aborted");
+        }
+        in_transaction_ = false;
+        return QueryResult::ok();
+    }
+
+    QueryResult rollback_transaction() override {
+        if (!force_error.empty()) {
+            return QueryResult::error(force_error);
+        }
+        in_transaction_ = false;
+        return QueryResult::ok();
+    }
+
     bool ping() override {
         return true;
     }
 
     void close() override {}
+
+private:
+    static void record_operation(std::string method,
+                                 std::string_view sql,
+                                 const std::vector<std::string>& params) {
+        std::lock_guard lock(operation_mutex);
+        last_operation.method = std::move(method);
+        last_operation.sql = std::string(sql);
+        last_operation.params = params;
+    }
+
+    bool in_transaction_ = false;
 };
 
 // Real DatabaseConnection implementation using MySQL X DevAPI.
@@ -133,6 +182,18 @@ public:
         }
     }
 
+    QueryResult begin_transaction() override {
+        return execute_transaction_control("START TRANSACTION");
+    }
+
+    QueryResult commit_transaction() override {
+        return execute_transaction_control("COMMIT");
+    }
+
+    QueryResult rollback_transaction() override {
+        return execute_transaction_control("ROLLBACK");
+    }
+
     bool ping() override {
         try {
             session_.sql("SELECT 1").execute();
@@ -153,6 +214,20 @@ public:
     std::string last_error_code() const { return last_error_code_; }
 
 private:
+    QueryResult execute_transaction_control(const char* sql) {
+        try {
+            session_.sql(sql).execute();
+            last_error_code_.clear();
+            return QueryResult::ok();
+        } catch (const mysqlx::Error& e) {
+            last_error_code_ = map_error_code(e.what());
+            return QueryResult::error(e.what(), last_error_code_);
+        } catch (const std::exception& e) {
+            last_error_code_ = "db_query_failed";
+            return QueryResult::error(e.what(), "db_query_failed");
+        }
+    }
+
     static std::string map_error_code(const char* msg) {
         std::string m(msg);
         if (m.find("Lost connection") != std::string::npos ||
@@ -177,88 +252,216 @@ struct DatabasePool::Impl {
     std::queue<std::shared_ptr<DatabaseConnection>> available;
     std::mutex mutex;
     std::condition_variable cv;
+    std::function<std::shared_ptr<DatabaseConnection>()> factory;
+    std::chrono::milliseconds acquire_timeout{5000};
     size_t max_size = 10;
     size_t current_size = 0;
     bool initialized = false;
+    bool mock = false;
     std::string config_key;
+    std::string last_error_code;
 };
 
 DatabasePool::DatabasePool() : impl_(std::make_unique<Impl>()) {}
 
-DatabasePool::~DatabasePool() = default;
+DatabasePool::~DatabasePool() {
+    std::vector<std::shared_ptr<DatabaseConnection>> connections;
+    {
+        std::lock_guard lock(impl_->mutex);
+        impl_->initialized = false;
+        std::swap(connections, impl_->connections);
+        while (!impl_->available.empty()) {
+            impl_->available.pop();
+        }
+        impl_->current_size = 0;
+    }
+    impl_->cv.notify_all();
+    for (auto& conn : connections) {
+        if (conn) {
+            conn->close();
+        }
+    }
+}
 
 bool DatabasePool::initialize(std::string_view config_key) {
     std::lock_guard lock(impl_->mutex);
     impl_->config_key = std::string(config_key);
+    impl_->initialized = false;
+    impl_->last_error_code.clear();
+    for (auto& conn : impl_->connections) {
+        if (conn) {
+            conn->close();
+        }
+    }
+    impl_->connections.clear();
+    while (!impl_->available.empty()) {
+        impl_->available.pop();
+    }
+    impl_->current_size = 0;
 
     // Read from config
     auto& cfg = shield::config::global_config();
 
     std::string prefix(config_key);
-    std::string host = cfg.get_string(prefix + ".host",
-                                     "localhost");
+    std::string host = cfg.get_string(prefix + ".host", "localhost");
     int port = static_cast<int>(cfg.get_int(prefix + ".port", 3306));
-    std::string database = cfg.get_string(prefix + ".database",
-                                           "shield");
-    std::string user = cfg.get_string(prefix + ".user",
-                                       "root");
-    std::string password = cfg.get_string(prefix + ".password",
-                                           "");
+    std::string database = cfg.get_string(prefix + ".database", "shield");
+    std::string user = cfg.get_string(prefix + ".username",
+                                      cfg.get_string(prefix + ".user", "root"));
+    std::string password = cfg.get_string(prefix + ".password", "");
+    std::string driver = cfg.get_string(prefix + ".driver", "mysql");
+    const bool has_enabled = cfg.has(prefix + ".enabled");
+    const bool mock = cfg.get_bool(prefix + ".mock", !has_enabled);
+    const bool allow_mock_fallback =
+        cfg.get_bool(prefix + ".allow_mock_fallback", false);
+    const size_t pool_size = static_cast<size_t>(
+        std::max<int64_t>(1, cfg.get_int(prefix + ".pool_size", 1)));
+    const size_t max_pool_size = static_cast<size_t>(
+        std::max<int64_t>(static_cast<int64_t>(pool_size),
+                          cfg.get_int(prefix + ".max_pool_size",
+                                      static_cast<int64_t>(pool_size))));
+    const auto acquire_timeout_ms = std::max<int64_t>(
+        1, cfg.get_int(prefix + ".acquire_timeout", 5000));
 
     auto& log = shield::log::get_logger("database");
-    SHIELD_LOG_INFO(log, "Database config: " + host + ":" + std::to_string(port) +
-                    "/" + database);
+    SHIELD_LOG_INFO(log, "Database config: " + host + ":" +
+                             std::to_string(port) + "/" + database +
+                             " pool=" + std::to_string(pool_size) + "/" +
+                             std::to_string(max_pool_size) +
+                             (mock ? " mock=true" : ""));
 
-    // Try to connect to real MySQL.
-    try {
-        auto test_conn = std::make_shared<RealDatabaseConnection>(
+    impl_->max_size = max_pool_size;
+    impl_->acquire_timeout = std::chrono::milliseconds(acquire_timeout_ms);
+    impl_->mock = mock;
+
+    if (mock) {
+        impl_->factory = []() {
+            return std::make_shared<MockDatabaseConnection>();
+        };
+        for (size_t i = 0; i < pool_size; ++i) {
+            auto conn = impl_->factory();
+            impl_->connections.push_back(conn);
+            impl_->available.push(conn);
+        }
+        impl_->current_size = pool_size;
+        impl_->initialized = true;
+        impl_->cv.notify_all();
+        SHIELD_LOG_INFO(log, "Database mock pool initialized");
+        return true;
+    }
+
+    if (driver != "mysql") {
+        impl_->last_error_code = "unsupported_driver";
+        SHIELD_LOG_ERROR(log, "Unsupported database.driver: " + driver);
+        return false;
+    }
+
+    auto real_factory = [host, port, user, password, database]() {
+        return std::make_shared<RealDatabaseConnection>(
             host, port, user, password, database);
+    };
+
+    try {
+        auto test_conn = real_factory();
         // Test with a simple query.
         auto test_result = test_conn->query("SELECT 1", {});
         if (!test_result.success) {
             throw std::runtime_error(test_result.error_message);
         }
 
-        // Connection successful; create real connections.
-        for (size_t i = 0; i < impl_->max_size; ++i) {
-            auto conn = std::make_shared<RealDatabaseConnection>(
-                host, port, user, password, database);
+        impl_->factory = std::move(real_factory);
+        for (size_t i = 0; i < pool_size; ++i) {
+            auto conn = impl_->factory();
             impl_->connections.push_back(conn);
             impl_->available.push(conn);
         }
+        impl_->current_size = pool_size;
+        impl_->initialized = true;
+        impl_->cv.notify_all();
         SHIELD_LOG_INFO(log, "MySQL connected to " + host + ":" +
                         std::to_string(port) + "/" + database);
+        return true;
     } catch (const std::exception& e) {
-        // Fall back to mock connections.
-        SHIELD_LOG_WARNING(log, "MySQL connection failed (" + std::string(e.what()) +
-                           "), using mock pool");
-        for (size_t i = 0; i < impl_->max_size; ++i) {
-            auto conn = std::make_shared<MockDatabaseConnection>();
+        impl_->last_error_code = "connection_lost";
+        if (!allow_mock_fallback) {
+            SHIELD_LOG_ERROR(log, "MySQL connection failed: " +
+                                      std::string(e.what()));
+            return false;
+        }
+
+        SHIELD_LOG_WARNING(log, "MySQL connection failed (" +
+                                    std::string(e.what()) +
+                                    "), using mock pool because " + prefix +
+                                    ".allow_mock_fallback=true");
+        impl_->mock = true;
+        impl_->factory = []() {
+            return std::make_shared<MockDatabaseConnection>();
+        };
+        for (size_t i = 0; i < pool_size; ++i) {
+            auto conn = impl_->factory();
             impl_->connections.push_back(conn);
             impl_->available.push(conn);
         }
+        impl_->current_size = pool_size;
+        impl_->initialized = true;
+        impl_->cv.notify_all();
+        return true;
     }
-
-    impl_->current_size = impl_->max_size;
-    impl_->initialized = true;
-    return true;
 }
 
 std::shared_ptr<DatabaseConnection> DatabasePool::acquire() {
     std::unique_lock lock(impl_->mutex);
 
-    // Wait for available connection
-    impl_->cv.wait(lock, [this]() {
+    if (!impl_->initialized) {
+        impl_->last_error_code = "module_unavailable";
+        return nullptr;
+    }
+
+    if (impl_->available.empty() && impl_->current_size < impl_->max_size) {
+        auto factory = impl_->factory;
+        ++impl_->current_size;
+        lock.unlock();
+        try {
+            auto conn = factory();
+            lock.lock();
+            impl_->connections.push_back(conn);
+            lock.unlock();
+            auto* raw = conn.get();
+            return std::shared_ptr<DatabaseConnection>(
+                raw,
+                [this, conn = std::move(conn)](DatabaseConnection*) mutable {
+                    release(std::move(conn));
+                });
+        } catch (const std::exception& e) {
+            lock.lock();
+            --impl_->current_size;
+            impl_->last_error_code = "connection_lost";
+            lock.unlock();
+            impl_->cv.notify_one();
+            auto& log = shield::log::get_logger("database");
+            SHIELD_LOG_ERROR(log, "Failed to create database connection: " +
+                                      std::string(e.what()));
+            return nullptr;
+        }
+    }
+
+    const bool ready = impl_->cv.wait_for(lock, impl_->acquire_timeout, [this]() {
         return !impl_->available.empty() || !impl_->initialized;
     });
 
-    if (!impl_->initialized || impl_->available.empty()) {
+    if (!ready || !impl_->initialized || impl_->available.empty()) {
+        impl_->last_error_code = ready ? "module_unavailable" : "pool_exhausted";
         return nullptr;
     }
 
     auto conn = impl_->available.front();
     impl_->available.pop();
-    return conn;
+    auto* raw = conn.get();
+    return std::shared_ptr<DatabaseConnection>(
+        raw,
+        [this, conn = std::move(conn)](DatabaseConnection*) mutable {
+            release(std::move(conn));
+        });
 }
 
 void DatabasePool::release(std::shared_ptr<DatabaseConnection> conn) {
@@ -278,10 +481,11 @@ QueryResult DatabasePool::query(std::string_view sql,
                                 const std::vector<std::string>& params) {
     auto conn = acquire();
     if (!conn) {
-        return QueryResult::error("No database connection available");
+        return QueryResult::error("No database connection available",
+                                  last_error_code().empty() ? "pool_exhausted"
+                                                            : last_error_code());
     }
     auto result = conn->query(sql, params);
-    release(std::move(conn));
     return result;
 }
 
@@ -289,10 +493,11 @@ QueryResult DatabasePool::query_one(std::string_view sql,
                                     const std::vector<std::string>& params) {
     auto conn = acquire();
     if (!conn) {
-        return QueryResult::error("No database connection available");
+        return QueryResult::error("No database connection available",
+                                  last_error_code().empty() ? "pool_exhausted"
+                                                            : last_error_code());
     }
     auto result = conn->query_one(sql, params);
-    release(std::move(conn));
     return result;
 }
 
@@ -300,16 +505,22 @@ QueryResult DatabasePool::execute(std::string_view sql,
                                   const std::vector<std::string>& params) {
     auto conn = acquire();
     if (!conn) {
-        return QueryResult::error("No database connection available");
+        return QueryResult::error("No database connection available",
+                                  last_error_code().empty() ? "pool_exhausted"
+                                                            : last_error_code());
     }
     auto result = conn->execute(sql, params);
-    release(std::move(conn));
     return result;
 }
 
 bool DatabasePool::is_initialized() const {
     std::lock_guard lock(impl_->mutex);
     return impl_->initialized;
+}
+
+std::string DatabasePool::last_error_code() const {
+    std::lock_guard lock(impl_->mutex);
+    return impl_->last_error_code;
 }
 
 // =============================================================================
@@ -503,19 +714,52 @@ struct RedisPool::Impl {
     std::queue<std::shared_ptr<RedisConnection>> available;
     std::mutex mutex;
     std::condition_variable cv;
+    std::function<std::shared_ptr<RedisConnection>()> factory;
+    std::chrono::milliseconds acquire_timeout{5000};
     size_t max_size = 10;
+    size_t current_size = 0;
     bool initialized = false;
+    bool mock = false;
     std::string config_key;
     std::string last_error_code;  // track last operation's error code
 };
 
 RedisPool::RedisPool() : impl_(std::make_unique<Impl>()) {}
 
-RedisPool::~RedisPool() = default;
+RedisPool::~RedisPool() {
+    std::vector<std::shared_ptr<RedisConnection>> connections;
+    {
+        std::lock_guard lock(impl_->mutex);
+        impl_->initialized = false;
+        std::swap(connections, impl_->connections);
+        while (!impl_->available.empty()) {
+            impl_->available.pop();
+        }
+        impl_->current_size = 0;
+    }
+    impl_->cv.notify_all();
+    for (auto& conn : connections) {
+        if (conn) {
+            conn->close();
+        }
+    }
+}
 
 bool RedisPool::initialize(std::string_view config_key) {
     std::lock_guard lock(impl_->mutex);
     impl_->config_key = std::string(config_key);
+    impl_->initialized = false;
+    impl_->last_error_code.clear();
+    for (auto& conn : impl_->connections) {
+        if (conn) {
+            conn->close();
+        }
+    }
+    impl_->connections.clear();
+    while (!impl_->available.empty()) {
+        impl_->available.pop();
+    }
+    impl_->current_size = 0;
 
     // Read from config
     auto& cfg = shield::config::global_config();
@@ -525,70 +769,178 @@ bool RedisPool::initialize(std::string_view config_key) {
                                      "localhost");
     int port = static_cast<int>(cfg.get_int(prefix + ".port", 6379));
     int db = static_cast<int>(cfg.get_int(prefix + ".db", 0));
+    std::string password = cfg.get_string(prefix + ".password", "");
+    const bool has_enabled = cfg.has(prefix + ".enabled");
+    const bool mock = cfg.get_bool(prefix + ".mock", !has_enabled);
+    const bool allow_mock_fallback =
+        cfg.get_bool(prefix + ".allow_mock_fallback", false);
+    const size_t pool_size = static_cast<size_t>(
+        std::max<int64_t>(1, cfg.get_int(prefix + ".pool_size", 1)));
+    const size_t max_pool_size = static_cast<size_t>(
+        std::max<int64_t>(static_cast<int64_t>(pool_size),
+                          cfg.get_int(prefix + ".max_pool_size",
+                                      static_cast<int64_t>(pool_size))));
+    const auto acquire_timeout_ms = std::max<int64_t>(
+        1, cfg.get_int(prefix + ".acquire_timeout", 5000));
+    const auto command_timeout_ms = std::max<int64_t>(
+        1, cfg.get_int(prefix + ".command_timeout", 5000));
+    const auto connect_timeout_ms = std::max<int64_t>(
+        1, cfg.get_int(prefix + ".connect_timeout", 5000));
 
     auto& log = shield::log::get_logger("redis");
     SHIELD_LOG_INFO(log, "Redis config: " + host + ":" + std::to_string(port) +
-                    "/" + std::to_string(db));
+                             "/" + std::to_string(db) +
+                             " pool=" + std::to_string(pool_size) + "/" +
+                             std::to_string(max_pool_size) +
+                             (mock ? " mock=true" : ""));
 
-    // Try to connect to real Redis.
+    impl_->max_size = max_pool_size;
+    impl_->acquire_timeout = std::chrono::milliseconds(acquire_timeout_ms);
+    impl_->mock = mock;
+
+    if (mock) {
+        impl_->factory = []() {
+            return std::make_shared<MockRedisConnection>();
+        };
+        for (size_t i = 0; i < pool_size; ++i) {
+            auto conn = impl_->factory();
+            impl_->connections.push_back(conn);
+            impl_->available.push(conn);
+        }
+        impl_->current_size = pool_size;
+        impl_->initialized = true;
+        impl_->cv.notify_all();
+        SHIELD_LOG_INFO(log, "Redis mock pool initialized");
+        return true;
+    }
+
+    sw::redis::ConnectionOptions opts;
+    opts.host = host;
+    opts.port = port;
+    opts.db = db;
+    opts.connect_timeout = std::chrono::milliseconds(connect_timeout_ms);
+    opts.socket_timeout = std::chrono::milliseconds(command_timeout_ms);
+    if (!password.empty()) {
+        opts.password = password;
+    }
+    auto real_factory = [opts]() {
+        return std::make_shared<RealRedisConnection>(opts);
+    };
+
     try {
-        sw::redis::ConnectionOptions opts;
-        opts.host = host;
-        opts.port = port;
-        opts.db = db;
-
         // Test connection with a ping.
         sw::redis::Redis test_redis(opts);
         test_redis.ping();
 
-        // Connection successful; create real connections.
-        for (size_t i = 0; i < impl_->max_size; ++i) {
-            auto conn = std::make_shared<RealRedisConnection>(opts);
+        impl_->factory = std::move(real_factory);
+        for (size_t i = 0; i < pool_size; ++i) {
+            auto conn = impl_->factory();
             impl_->connections.push_back(conn);
             impl_->available.push(conn);
         }
+        impl_->current_size = pool_size;
+        impl_->initialized = true;
+        impl_->cv.notify_all();
         SHIELD_LOG_INFO(log, "Redis connected to " + host + ":" +
                         std::to_string(port));
+        return true;
     } catch (const std::exception& e) {
-        // Fall back to mock connections.
-        SHIELD_LOG_WARNING(log, "Redis connection failed (" + std::string(e.what()) +
-                           "), using mock pool");
-        for (size_t i = 0; i < impl_->max_size; ++i) {
-            auto conn = std::make_shared<MockRedisConnection>();
+        impl_->last_error_code = "connection_lost";
+        if (!allow_mock_fallback) {
+            SHIELD_LOG_ERROR(log, "Redis connection failed: " +
+                                      std::string(e.what()));
+            return false;
+        }
+
+        SHIELD_LOG_WARNING(log, "Redis connection failed (" +
+                                    std::string(e.what()) +
+                                    "), using mock pool because " + prefix +
+                                    ".allow_mock_fallback=true");
+        impl_->mock = true;
+        impl_->factory = []() {
+            return std::make_shared<MockRedisConnection>();
+        };
+        for (size_t i = 0; i < pool_size; ++i) {
+            auto conn = impl_->factory();
             impl_->connections.push_back(conn);
             impl_->available.push(conn);
         }
+        impl_->current_size = pool_size;
+        impl_->initialized = true;
+        impl_->cv.notify_all();
+        return true;
     }
-
-    impl_->initialized = true;
-    return true;
 }
 
 std::shared_ptr<RedisConnection> RedisPool::acquire() {
     std::unique_lock lock(impl_->mutex);
 
-    impl_->cv.wait(lock, [this]() {
+    if (!impl_->initialized) {
+        impl_->last_error_code = "module_unavailable";
+        return nullptr;
+    }
+
+    if (impl_->available.empty() && impl_->current_size < impl_->max_size) {
+        auto factory = impl_->factory;
+        ++impl_->current_size;
+        lock.unlock();
+        try {
+            auto conn = factory();
+            lock.lock();
+            impl_->connections.push_back(conn);
+            lock.unlock();
+            auto* raw = conn.get();
+            return std::shared_ptr<RedisConnection>(
+                raw,
+                [this, conn = std::move(conn)](RedisConnection*) mutable {
+                    release(std::move(conn));
+                });
+        } catch (const std::exception& e) {
+            lock.lock();
+            --impl_->current_size;
+            impl_->last_error_code = "connection_lost";
+            lock.unlock();
+            impl_->cv.notify_one();
+            auto& log = shield::log::get_logger("redis");
+            SHIELD_LOG_ERROR(log, "Failed to create Redis connection: " +
+                                      std::string(e.what()));
+            return nullptr;
+        }
+    }
+
+    const bool ready = impl_->cv.wait_for(lock, impl_->acquire_timeout, [this]() {
         return !impl_->available.empty() || !impl_->initialized;
     });
 
-    if (!impl_->initialized || impl_->available.empty()) {
+    if (!ready || !impl_->initialized || impl_->available.empty()) {
+        impl_->last_error_code = ready ? "module_unavailable" : "pool_exhausted";
         return nullptr;
     }
 
     auto conn = impl_->available.front();
     impl_->available.pop();
-    return conn;
+    auto* raw = conn.get();
+    return std::shared_ptr<RedisConnection>(
+        raw,
+        [this, conn = std::move(conn)](RedisConnection*) mutable {
+            release(std::move(conn));
+        });
 }
 
 std::pair<bool, std::string> RedisPool::get(std::string_view key) {
     auto conn = acquire();
     if (!conn) {
-        impl_->last_error_code = "pool_exhausted";
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->last_error_code.empty()) {
+            impl_->last_error_code = "pool_exhausted";
+        }
         return {false, ""};
     }
     auto result = conn->get(key);
-    impl_->last_error_code = conn->last_error_code();
-    release(std::move(conn));
+    {
+        std::lock_guard lock(impl_->mutex);
+        impl_->last_error_code = conn->last_error_code();
+    }
     return result;
 }
 
@@ -596,48 +948,68 @@ bool RedisPool::set(std::string_view key, std::string_view value,
                     int ttl_seconds) {
     auto conn = acquire();
     if (!conn) {
-        impl_->last_error_code = "pool_exhausted";
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->last_error_code.empty()) {
+            impl_->last_error_code = "pool_exhausted";
+        }
         return false;
     }
     const bool result = conn->set(key, value, ttl_seconds);
-    impl_->last_error_code = conn->last_error_code();
-    release(std::move(conn));
+    {
+        std::lock_guard lock(impl_->mutex);
+        impl_->last_error_code = conn->last_error_code();
+    }
     return result;
 }
 
 int RedisPool::del(std::string_view key) {
     auto conn = acquire();
     if (!conn) {
-        impl_->last_error_code = "pool_exhausted";
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->last_error_code.empty()) {
+            impl_->last_error_code = "pool_exhausted";
+        }
         return 0;
     }
     const int result = conn->del(key);
-    impl_->last_error_code = conn->last_error_code();
-    release(std::move(conn));
+    {
+        std::lock_guard lock(impl_->mutex);
+        impl_->last_error_code = conn->last_error_code();
+    }
     return result;
 }
 
 bool RedisPool::exists(std::string_view key) {
     auto conn = acquire();
     if (!conn) {
-        impl_->last_error_code = "pool_exhausted";
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->last_error_code.empty()) {
+            impl_->last_error_code = "pool_exhausted";
+        }
         return false;
     }
     const bool result = conn->exists(key);
-    impl_->last_error_code = conn->last_error_code();
-    release(std::move(conn));
+    {
+        std::lock_guard lock(impl_->mutex);
+        impl_->last_error_code = conn->last_error_code();
+    }
     return result;
 }
 
 int RedisPool::publish(std::string_view channel, std::string_view message) {
     auto conn = acquire();
     if (!conn) {
-        impl_->last_error_code = "pool_exhausted";
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->last_error_code.empty()) {
+            impl_->last_error_code = "pool_exhausted";
+        }
         return 0;
     }
     const int result = conn->publish(channel, message);
-    impl_->last_error_code = conn->last_error_code();
-    release(std::move(conn));
+    {
+        std::lock_guard lock(impl_->mutex);
+        impl_->last_error_code = conn->last_error_code();
+    }
     return result;
 }
 
@@ -645,12 +1017,17 @@ bool RedisPool::subscribe(std::string_view channel,
                           RedisConnection::SubscribeCallback callback) {
     auto conn = acquire();
     if (!conn) {
-        impl_->last_error_code = "pool_exhausted";
+        std::lock_guard lock(impl_->mutex);
+        if (impl_->last_error_code.empty()) {
+            impl_->last_error_code = "pool_exhausted";
+        }
         return false;
     }
     const bool result = conn->subscribe(channel, callback);
-    impl_->last_error_code = conn->last_error_code();
-    release(std::move(conn));
+    {
+        std::lock_guard lock(impl_->mutex);
+        impl_->last_error_code = conn->last_error_code();
+    }
     return result;
 }
 
@@ -660,7 +1037,6 @@ bool RedisPool::unsubscribe(std::string_view channel) {
         return false;
     }
     const bool result = conn->unsubscribe(channel);
-    release(std::move(conn));
     return result;
 }
 
@@ -715,6 +1091,16 @@ RedisPool& redis() {
 
 void set_mock_db_error(std::string error) {
     MockDatabaseConnection::force_error = std::move(error);
+}
+
+MockDbOperation mock_db_last_operation() {
+    std::lock_guard lock(MockDatabaseConnection::operation_mutex);
+    return MockDatabaseConnection::last_operation;
+}
+
+void clear_mock_db_last_operation() {
+    std::lock_guard lock(MockDatabaseConnection::operation_mutex);
+    MockDatabaseConnection::last_operation = {};
 }
 
 }  // namespace shield::data

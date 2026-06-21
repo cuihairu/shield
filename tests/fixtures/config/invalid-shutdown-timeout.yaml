@@ -1,0 +1,12 @@
+app:
+  name: invalid_shutdown_timeout
+
+actors:
+  - name: smoke
+    script: smoke_root.lua
+    instances: 1
+
+shutdown:
+  timeout:
+    service_drain: 30000
+    total: 1000

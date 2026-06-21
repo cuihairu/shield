@@ -375,6 +375,43 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
     }
 }
 
+namespace {
+
+bool validate_message_method(std::string_view method,
+                             bool allow_reserved,
+                             std::string* error) {
+    if (method.empty() || method.size() > 128) {
+        if (error) *error = "invalid method name: length must be 1-128";
+        return false;
+    }
+    if (!allow_reserved && method.rfind("on_", 0) == 0) {
+        if (error) *error = "invalid method name: 'on_' prefix is reserved";
+        return false;
+    }
+    return true;
+}
+
+bool validate_message_payload(const nlohmann::json& args, std::string* error) {
+    const std::string serialized = args.dump();
+    constexpr size_t kMaxMessageSize = 1024 * 1024;
+    if (serialized.size() > kMaxMessageSize) {
+        if (error) {
+            *error = "message too large: " + std::to_string(serialized.size()) +
+                     " bytes (max " + std::to_string(kMaxMessageSize) + ")";
+        }
+        return false;
+    }
+    // Check for unsupported JSON values, e.g. from lua_to_json returning the
+    // sentinel string for userdata/functions.
+    if (serialized.find("\"<unsupported>\"") != std::string::npos) {
+        if (error) *error = "message contains unsupported value type";
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
 bool LuaServiceManager::send(std::string_view target,
                              std::string_view method,
                              const nlohmann::json& args,
@@ -384,13 +421,7 @@ bool LuaServiceManager::send(std::string_view target,
         return false;
     }
 
-    // Validate method name.
-    if (method.empty() || method.size() > 128) {
-        if (error) *error = "invalid method name: length must be 1-128";
-        return false;
-    }
-    if (method.rfind("on_", 0) == 0) {
-        if (error) *error = "invalid method name: 'on_' prefix is reserved";
+    if (!validate_message_method(method, false, error)) {
         return false;
     }
 
@@ -406,22 +437,8 @@ bool LuaServiceManager::send(std::string_view target,
         }
     }
 
-    // Validate message payload.
-    {
-        const std::string serialized = args.dump();
-        constexpr size_t kMaxMessageSize = 1024 * 1024;
-        if (serialized.size() > kMaxMessageSize) {
-            if (error) *error = "message too large: " +
-                                std::to_string(serialized.size()) +
-                                " bytes (max " + std::to_string(kMaxMessageSize) + ")";
-            return false;
-        }
-        // Check for unsupported JSON values (e.g. from lua_to_json returning
-        // "<unsupported>" for userdata/functions).
-        if (serialized.find("\"<unsupported>\"") != std::string::npos) {
-            if (error) *error = "message contains unsupported value type";
-            return false;
-        }
+    if (!validate_message_payload(args, error)) {
+        return false;
     }
 
     const std::string service_id = query_service(target);
@@ -462,6 +479,43 @@ bool LuaServiceManager::send(std::string_view target,
         return false;
     }
 
+    return true;
+}
+
+bool LuaServiceManager::send_system(std::string_view target,
+                                    std::string_view method,
+                                    const nlohmann::json& args,
+                                    std::string* error) {
+    if (impl_->stopping) {
+        if (error) *error = "runtime is stopping";
+        return false;
+    }
+    if (!validate_message_method(method, true, error) ||
+        !validate_message_payload(args, error)) {
+        return false;
+    }
+
+    const std::string service_id = query_service(target);
+    auto mailbox_it = impl_->mailboxes.find(service_id);
+    if (mailbox_it == impl_->mailboxes.end()) {
+        if (error) *error = "service not found: " + std::string(target);
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+
+    Mailbox::Message msg;
+    msg.method = std::string(method);
+    msg.args = args;
+    msg.priority = Mailbox::Priority::High;
+    msg.timestamp_ms = now_ms;
+
+    if (!mailbox_it->second->push(msg, Mailbox::Backpressure::DropNewest)) {
+        if (error) *error = "mailbox full";
+        return false;
+    }
     return true;
 }
 

@@ -62,11 +62,19 @@ void TcpListener::stop() {
     boost::system::error_code ec;
     acceptor_.close(ec);
 
-    std::unique_lock lock(sessions_mutex_);
-    for (auto& [id, session] : sessions_) {
+    std::vector<std::shared_ptr<Session>> sessions;
+    {
+        std::unique_lock lock(sessions_mutex_);
+        for (auto& [id, session] : sessions_) {
+            sessions.push_back(session);
+        }
+        sessions_.clear();
+        ip_counts_.clear();
+    }
+
+    for (auto& session : sessions) {
         session->close("listener shutdown");
     }
-    sessions_.clear();
 }
 
 void TcpListener::do_accept() {
@@ -81,7 +89,7 @@ void TcpListener::do_accept() {
 
         // Check connection limit.
         {
-            std::shared_lock lock(sessions_mutex_);
+            std::unique_lock lock(sessions_mutex_);
             if (max_connections_ > 0 && sessions_.size() >= max_connections_) {
                 last_rejection_ = "connection_limit";
                 auto& log = shield::log::get_logger("net");
@@ -98,7 +106,7 @@ void TcpListener::do_accept() {
         auto remote_ep = socket_.remote_endpoint();
         std::string remote_ip = remote_ep.address().to_string();
         {
-            std::shared_lock lock(sessions_mutex_);
+            std::unique_lock lock(sessions_mutex_);
             if (max_per_ip_ > 0) {
                 auto it = ip_counts_.find(remote_ip);
                 if (it != ip_counts_.end() && it->second >= max_per_ip_) {
@@ -116,8 +124,18 @@ void TcpListener::do_accept() {
 
         // Create session
         SessionId id = g_next_session_id.fetch_add(1);
+        SessionCallbacks callbacks = callbacks_;
+        auto user_disconnect = callbacks.on_disconnect;
+        callbacks.on_disconnect =
+            [this, user_disconnect](std::shared_ptr<Session> session,
+                                    std::string_view reason) {
+                on_session_close(session, std::string(reason));
+                if (user_disconnect) {
+                    user_disconnect(std::move(session), reason);
+                }
+        };
         auto session = std::make_shared<TcpSession>(
-            id, std::move(socket_), callbacks_);
+            id, std::move(socket_), std::move(callbacks), max_frame_size_);
 
         // Store session
         {
@@ -141,8 +159,15 @@ std::shared_ptr<Session> TcpListener::find_session(SessionId id) const {
 }
 
 void TcpListener::broadcast(const std::vector<uint8_t>& data) {
-    std::shared_lock lock(sessions_mutex_);
-    for (auto& [id, session] : sessions_) {
+    std::vector<std::shared_ptr<Session>> sessions;
+    {
+        std::shared_lock lock(sessions_mutex_);
+        for (auto& [id, session] : sessions_) {
+            sessions.push_back(session);
+        }
+    }
+
+    for (auto& session : sessions) {
         if (session->is_alive()) {
             session->send(data);
         }
@@ -150,19 +175,22 @@ void TcpListener::broadcast(const std::vector<uint8_t>& data) {
 }
 
 bool TcpListener::kick_session(SessionId id, std::string reason) {
-    std::unique_lock lock(sessions_mutex_);
-    auto it = sessions_.find(id);
-    if (it != sessions_.end()) {
-        it->second->close(std::move(reason));
-        sessions_.erase(it);
-        return true;
+    std::shared_ptr<Session> session;
+    {
+        std::unique_lock lock(sessions_mutex_);
+        auto it = sessions_.find(id);
+        if (it == sessions_.end()) {
+            return false;
+        }
+        session = it->second;
+        remove_session_locked(session);
     }
-    return false;
+
+    session->close(std::move(reason));
+    return true;
 }
 
-void TcpListener::on_session_close(std::shared_ptr<Session> session,
-                                   std::string reason) {
-    std::unique_lock lock(sessions_mutex_);
+void TcpListener::remove_session_locked(const std::shared_ptr<Session>& session) {
     auto it = sessions_.find(session->id());
     if (it != sessions_.end()) {
         // Decrement IP count.
@@ -177,6 +205,12 @@ void TcpListener::on_session_close(std::shared_ptr<Session> session,
         }
         sessions_.erase(it);
     }
+}
+
+void TcpListener::on_session_close(std::shared_ptr<Session> session,
+                                   std::string reason) {
+    std::unique_lock lock(sessions_mutex_);
+    remove_session_locked(session);
 }
 
 }  // namespace shield::net
