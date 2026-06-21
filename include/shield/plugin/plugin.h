@@ -51,10 +51,12 @@ enum shield_plugin_type {
     SHIELD_PLUGIN_TYPE_TRANSPORT   = 0x02,  // Network transport (TCP/UDP/WebSocket)
     SHIELD_PLUGIN_TYPE_AUTH        = 0x03,  // Authentication provider
     SHIELD_PLUGIN_TYPE_CACHE       = 0x04,  // Cache backend (Redis/Memcached)
-    SHIELD_PLUGIN_TYPE_STORAGE     = 0x05,  // Object storage (S3/GCS/local)
-    SHIELD_PLUGIN_TYPE_METRIC      = 0x06,  // Metrics exporter (Prometheus/StatsD)
-    SHIELD_PLUGIN_TYPE_LOG         = 0x07,  // Log sink (stdout/file/remote)
-    SHIELD_PLUGIN_TYPE_GATEWAY     = 0x08,  // Gateway protocol (HTTP/WebSocket)
+    SHIELD_PLUGIN_TYPE_QUEUE       = 0x05,  // Message queue (Redis pub/sub/RabbitMQ/NATS)
+    SHIELD_PLUGIN_TYPE_STORAGE     = 0x06,  // Object storage (S3/GCS/local)
+    SHIELD_PLUGIN_TYPE_METRIC      = 0x07,  // Metrics exporter (Prometheus/StatsD)
+    SHIELD_PLUGIN_TYPE_HEALTH      = 0x08,  // Health check endpoint
+    SHIELD_PLUGIN_TYPE_LOG         = 0x09,  // Log sink (stdout/file/remote)
+    SHIELD_PLUGIN_TYPE_GATEWAY     = 0x0A,  // Gateway protocol (HTTP/WebSocket)
     SHIELD_PLUGIN_TYPE_GAME        = 0x10,  // Game logic plugin (custom)
     SHIELD_PLUGIN_TYPE_USER        = 0xFF,  // User-defined plugin type
 };
