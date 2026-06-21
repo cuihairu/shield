@@ -1,7 +1,7 @@
 // [SHIELD_CORE] Plugin manager for loading and managing plugins
 #pragma once
 
-#include "shield/core/plugin.h"
+#include "shield/plugin/plugin.h"
 
 #include <functional>
 #include <memory>

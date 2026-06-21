@@ -3,7 +3,7 @@
 
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
-#include "shield/data/db_plugin.h"
+#include "shield/plugin/db_plugin.h"
 
 #include "dynamic_library.hpp"
 

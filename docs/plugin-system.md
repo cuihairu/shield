@@ -79,6 +79,25 @@ int my_plugin_init(shield_host_t host,
 | `register_shutdown_hook(host, fn, data)` | 注册关闭钩子 |
 | `report_error(host, plugin, code, msg)` | 报告插件错误 |
 
+## 目录结构
+
+```
+include/shield/plugin/           ← 插件接口（独立，不耦合任何模块）
+├── plugin.h                     ← 通用插件基接口 + Host Context
+├── db_plugin.h                  ← 数据库插件接口
+├── cache_plugin.h               ← 缓存插件接口（Redis/Memcached/内存）
+├── queue_plugin.h               ← 队列插件接口（Redis pub/sub/RabbitMQ/NATS）
+└── auth_plugin.h                ← 认证插件接口（JWT/OAuth/Steam/微信）
+
+plugins/                         ← 插件实现（每个子目录是一个 DLL）
+├── mysql/shield_db_mysql.cpp
+├── postgresql/shield_db_pgsql.cpp
+├── sqlite/shield_db_sqlite.cpp
+└── redis/shield_cache_redis.cpp ← Redis 同时实现 CACHE + QUEUE
+```
+
+**设计原则：插件接口是独立契约，`shield_data`、`shield_lua`、`shield_net` 都是消费者。**
+
 ## 核心接口 (plugin.h)
 
 ```c

@@ -1,4 +1,4 @@
-// [SHIELD_CORE] Generic plugin C ABI
+// [SHIELD_PLUGIN] Generic plugin C ABI
 //
 // Stable C interface for all Shield plugins. Each plugin is a shared library
 // (.dll/.so/.dylib) that exports `shield_plugin_api()` returning a pointer
