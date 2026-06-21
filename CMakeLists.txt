@@ -345,6 +345,23 @@ target_link_libraries(shield_core
     PRIVATE CAF::core CAF::io
 )
 
+# -----------------------------------------------------------------------------
+# shield_plugin - Generic plugin manager
+# -----------------------------------------------------------------------------
+add_library(shield_plugin STATIC
+    src/core/plugin_manager.cpp
+)
+
+target_include_directories(shield_plugin
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/include
+)
+
+target_link_libraries(shield_plugin
+    PUBLIC shield_base shield_log shield_data
+)
+
 include(cmake/CheckDeps.cmake)
 
 # Dependency check - shield_core should NOT link these
@@ -469,7 +486,7 @@ target_include_directories(shield_lua
 
 target_link_libraries(shield_lua
     PUBLIC shield_base shield_core
-    PRIVATE shield_log shield_config shield_data shield_net
+    PRIVATE shield_log shield_config shield_data shield_net shield_plugin
     PRIVATE ${LUA_LIBRARIES} sol2::sol2
 )
 
@@ -756,6 +773,7 @@ message(STATUS "shield_base:         ENABLED")
 message(STATUS "shield_log:          ENABLED")
 message(STATUS "shield_config:       ENABLED")
 message(STATUS "shield_core:         ENABLED (PURE)")
+message(STATUS "shield_plugin:       ENABLED")
 message(STATUS "shield_data:         ENABLED")
 message(STATUS "shield_transport:    ENABLED")
 message(STATUS "shield_net:           ENABLED")

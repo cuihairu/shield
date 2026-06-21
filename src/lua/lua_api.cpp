@@ -2182,6 +2182,47 @@ void register_http_api(sol::table& shield) {
     shield["httpd"] = httpd;
 }
 
+void register_plugin_api(sol::table& shield) {
+    sol::state_view lua(shield.lua_state());
+    auto plugin = lua.create_table();
+
+    // shield.plugin.list() -> array of plugin info tables
+    plugin.set_function("list",
+        [](sol::this_state state) -> sol::table {
+            sol::state_view lua(state);
+            // TODO: integrate with PluginManager instance
+            // For now, return empty table.
+            return lua.create_table();
+        });
+
+    // shield.plugin.by_type(type_name) -> array of plugin names
+    plugin.set_function("by_type",
+        [](sol::this_state state, std::string type_name) -> sol::table {
+            sol::state_view lua(state);
+            // TODO: integrate with PluginManager instance
+            return lua.create_table();
+        });
+
+    // shield.plugin.loaded(name) -> boolean
+    plugin.set_function("loaded",
+        [](sol::this_state state, std::string name) -> bool {
+            // TODO: integrate with PluginManager instance
+            (void)name;
+            return false;
+        });
+
+    // shield.plugin.capabilities(name) -> array of capability tables
+    plugin.set_function("capabilities",
+        [](sol::this_state state, std::string name) -> sol::table {
+            sol::state_view lua(state);
+            // TODO: integrate with PluginManager instance
+            (void)name;
+            return lua.create_table();
+        });
+
+    shield["plugin"] = plugin;
+}
+
 void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
                                LuaRuntime* runtime) {
     // Initialize HTTP client (libcurl global state).
@@ -2201,6 +2242,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_log_api(shield, manager);
     register_data_api(shield, manager);
     register_http_api(shield);
+    register_plugin_api(shield);
 
 #ifdef SHIELD_ENABLE_CLUSTER
     register_cluster_api(shield, manager);

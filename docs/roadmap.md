@@ -97,11 +97,24 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 冻结每个 optional module 的初始化失败策略：默认 fail fast；`shield_cluster` 允许远端连接失败时退化为单节点 unhealthy；未启用却配置 optional 段必须启动失败。
 - [x] 冻结 `shield_player` 文档契约：`shield.player.setup` 主 API 与默认 hook 实现表、persistence adapter 边界、`PlayerRef` 本地/远端边界、anonymous/spectator opt-in 状态、多设备策略、`player_pool` 容量模型和 `shield.player.Base` 语法糖边界。实现仍按 P0/P1/P2 分阶段推进。
 
+## 插件系统
+
+详见 [插件系统设计文档](plugin-system.md)。
+
+- [x] `plugin.h` C ABI 接口设计：版本化、类型安全 vtable、零依赖。
+- [x] `PluginManager`：插件发现、加载、初始化、关闭、查询。
+- [x] `DynamicLibrary` 泛化：从 `shield_data` 提取为通用插件加载器。
+- [x] DATABASE 插件类型：复用 `db_plugin.h`，MySQL/PostgreSQL/SQLite 插件。
+- [x] `shield.plugin.*` Lua API：`list`、`by_type`、`loaded`、`capabilities`。
+- [ ] AUTH 插件类型：认证提供者接口（Phase 2）。
+- [ ] CACHE 插件类型：缓存后端接口（Phase 2）。
+- [ ] GAME 插件类型：用户自定义游戏逻辑（Phase 2）。
+- [ ] 插件热加载、依赖管理、沙箱（Phase 3）。
+
 ## Later
 
 以下内容不属于当前 refactor core，也不属于已冻结的官方模块契约：
 
-- 插件系统。
 - 高级数据 mapper。
 - Schema 工具链。
 
