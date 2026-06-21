@@ -23,18 +23,34 @@
         "caf",
         "msgpack",
 
-        "curl",
-
-        "mysql-connector-cpp"
+        "curl"
     ],
     "supports": "!uwp",
     "features": {
         "database": {
             "description": "Database drivers (optional)",
             "dependencies": [
+                "mysql-connector-cpp",
                 "libpq",
-                "mongo-cxx-driver",
+                "sqlite3"
+            ]
+        },
+        "database-mysql": {
+            "description": "MySQL backend plugin dependency",
+            "dependencies": [
                 "mysql-connector-cpp"
+            ]
+        },
+        "database-postgresql": {
+            "description": "PostgreSQL backend plugin dependency",
+            "dependencies": [
+                "libpq"
+            ]
+        },
+        "database-sqlite": {
+            "description": "SQLite backend plugin dependency",
+            "dependencies": [
+                "sqlite3"
             ]
         }
     },

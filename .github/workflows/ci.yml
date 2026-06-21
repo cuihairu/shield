@@ -93,7 +93,7 @@ jobs:
           )
 
           if [ "$RUNNER_OS" == "Windows" ]; then
-            CMAKE_ARGS+=(-G "Visual Studio 17 2022" -A x64)
+            CMAKE_ARGS+=(-G "Visual Studio 18 2026" -A x64)
           else
             CMAKE_ARGS+=(-G Ninja)
           fi

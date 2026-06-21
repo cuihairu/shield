@@ -3,9 +3,11 @@
 
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/data/db_plugin.h"
+
+#include "dynamic_library.hpp"
 
 #include <sw/redis++/redis++.h>
-#include <mysqlx/xdevapi.h>
 
 #include <algorithm>
 #include <chrono>
@@ -114,41 +116,94 @@ private:
     bool in_transaction_ = false;
 };
 
-// Real DatabaseConnection implementation using MySQL X DevAPI.
-class RealDatabaseConnection : public DatabaseConnection {
+// =============================================================================
+// Plugin-backed DatabaseConnection
+// =============================================================================
+//
+// Wraps a shield_db_plugin_t handle (returned by a backend DLL) and adapts
+// the C ABI to the C++ DatabaseConnection interface. All plugin memory
+// ownership is handled here: result structs are freed via the plugin's
+// free_result callback, and the underlying DynamicLibrary is kept alive
+// via shared_ptr so the plugin code stays mapped until every connection
+// is destroyed.
+
+namespace {
+
+// Translate a plugin result struct into the C++ QueryResult used by the
+// rest of shield_data. Does NOT call free_result - caller must.
+QueryResult translate_plugin_result(const shield_db_result& r) {
+    QueryResult qr;
+    qr.success = (r.success == 1);
+    qr.error_message = r.error_msg ? r.error_msg : "";
+    qr.error_code = r.error_code ? r.error_code : (qr.success ? "" : "db_query_failed");
+    qr.affected_rows = r.affected_rows;
+    qr.last_insert_id = r.last_insert_id;
+    if (r.cells && r.row_count > 0 && r.col_count > 0) {
+        qr.rows.reserve(static_cast<size_t>(r.row_count));
+        for (int i = 0; i < r.row_count; ++i) {
+            Row row;
+            for (int j = 0; j < r.col_count; ++j) {
+                const char* cell = r.cells[static_cast<size_t>(i) * r.col_count + j];
+                std::string col = "col_" + std::to_string(j);
+                row[col] = cell ? cell : "";
+            }
+            qr.rows.push_back(std::move(row));
+        }
+    }
+    return qr;
+}
+
+// Map a hard plugin return code (non-zero) into a stable error string.
+// Plugins are expected to fill out_result->error_code for SQL-level
+// failures; this is only for transport/protocol level disasters.
+const char* plugin_rc_to_code(int rc) {
+    return rc == 0 ? "" : "connection_lost";
+}
+
+}  // namespace
+
+class PluginDatabaseConnection : public DatabaseConnection {
 public:
-    RealDatabaseConnection(const std::string& host, int port,
-                           const std::string& user, const std::string& password,
-                           const std::string& database)
-        : session_(host, port, user, password, database) {}
+    PluginDatabaseConnection(const shield_db_plugin* plugin,
+                             shield_db_conn* handle,
+                             std::shared_ptr<detail::DynamicLibrary> lib)
+        : plugin_(plugin)
+        , handle_(handle)
+        , lib_(std::move(lib)) {}
+
+    ~PluginDatabaseConnection() override {
+        if (handle_ && plugin_ && plugin_->disconnect) {
+            plugin_->disconnect(handle_);
+        }
+    }
+
+    PluginDatabaseConnection(const PluginDatabaseConnection&) = delete;
+    PluginDatabaseConnection& operator=(const PluginDatabaseConnection&) = delete;
 
     QueryResult query(std::string_view sql,
                       const std::vector<std::string>& params) override {
-        try {
-            auto stmt = session_.sql(std::string(sql));
-            for (size_t i = 0; i < params.size(); ++i) {
-                stmt.bind(params[i]);
-            }
-            auto result = stmt.execute();
-            std::vector<Row> rows;
-            for (auto row : result) {
-                Row r;
-                // Use column count from fetch to build generic column names.
-                for (size_t i = 0; i < row.colCount(); ++i) {
-                    std::string val = row[i].isNull() ? "" : row[i].get<std::string>();
-                    r["col_" + std::to_string(i)] = std::move(val);
-                }
-                rows.push_back(std::move(r));
-            }
-            last_error_code_.clear();
-            return QueryResult::ok(std::move(rows));
-        } catch (const mysqlx::Error& e) {
-            last_error_code_ = map_error_code(e.what());
-            return QueryResult::error(e.what(), last_error_code_);
-        } catch (const std::exception& e) {
-            last_error_code_ = "db_query_failed";
-            return QueryResult::error(e.what(), "db_query_failed");
+        std::vector<const char*> p;
+        p.reserve(params.size());
+        for (const auto& s : params) p.push_back(s.c_str());
+
+        shield_db_result r{};
+        std::string sql_str(sql);
+        int rc = plugin_->query(handle_, sql_str.c_str(),
+                                p.empty() ? nullptr : p.data(),
+                                static_cast<int>(p.size()), &r);
+        QueryResult qr;
+        if (rc != 0) {
+            qr = QueryResult::error("plugin transport error",
+                                    plugin_rc_to_code(rc));
+            last_error_code_ = qr.error_code;
+        } else {
+            qr = translate_plugin_result(r);
+            last_error_code_ = qr.success ? std::string{}
+                                          : (r.error_code ? r.error_code
+                                                          : "db_query_failed");
         }
+        if (plugin_->free_result) plugin_->free_result(&r);
+        return qr;
     }
 
     QueryResult query_one(std::string_view sql,
@@ -162,88 +217,79 @@ public:
 
     QueryResult execute(std::string_view sql,
                         const std::vector<std::string>& params) override {
-        try {
-            auto stmt = session_.sql(std::string(sql));
-            for (size_t i = 0; i < params.size(); ++i) {
-                stmt.bind(params[i]);
-            }
-            auto result = stmt.execute();
-            last_error_code_.clear();
-            auto qr = QueryResult::ok();
-            qr.affected_rows = result.getAffectedItemsCount();
-            qr.last_insert_id = static_cast<int64_t>(result.getAutoIncrementValue());
-            return qr;
-        } catch (const mysqlx::Error& e) {
-            last_error_code_ = map_error_code(e.what());
-            return QueryResult::error(e.what(), last_error_code_);
-        } catch (const std::exception& e) {
-            last_error_code_ = "db_query_failed";
-            return QueryResult::error(e.what(), "db_query_failed");
+        std::vector<const char*> p;
+        p.reserve(params.size());
+        for (const auto& s : params) p.push_back(s.c_str());
+
+        shield_db_result r{};
+        std::string sql_str(sql);
+        int rc = plugin_->execute(handle_, sql_str.c_str(),
+                                  p.empty() ? nullptr : p.data(),
+                                  static_cast<int>(p.size()), &r);
+        QueryResult qr;
+        if (rc != 0) {
+            qr = QueryResult::error("plugin transport error",
+                                    plugin_rc_to_code(rc));
+            last_error_code_ = qr.error_code;
+        } else {
+            qr = translate_plugin_result(r);
+            last_error_code_ = qr.success ? std::string{}
+                                          : (r.error_code ? r.error_code
+                                                          : "db_query_failed");
         }
+        if (plugin_->free_result) plugin_->free_result(&r);
+        return qr;
     }
 
     QueryResult begin_transaction() override {
-        return execute_transaction_control("START TRANSACTION");
+        return run_txn("begin", plugin_->begin);
     }
-
     QueryResult commit_transaction() override {
-        return execute_transaction_control("COMMIT");
+        return run_txn("commit", plugin_->commit);
     }
-
     QueryResult rollback_transaction() override {
-        return execute_transaction_control("ROLLBACK");
+        return run_txn("rollback", plugin_->rollback);
     }
 
     bool ping() override {
-        try {
-            session_.sql("SELECT 1").execute();
-            last_error_code_.clear();
-            return true;
-        } catch (...) {
-            last_error_code_ = "connection_lost";
-            return false;
-        }
+        if (!plugin_->ping) return true;
+        int rc = plugin_->ping(handle_);
+        if (rc != 1) last_error_code_ = "connection_lost";
+        return rc == 1;
     }
 
     void close() override {
-        try {
-            session_.close();
-        } catch (...) {}
+        if (handle_ && plugin_->disconnect) {
+            plugin_->disconnect(handle_);
+            handle_ = nullptr;
+        }
     }
 
     std::string last_error_code() const { return last_error_code_; }
 
 private:
-    QueryResult execute_transaction_control(const char* sql) {
-        try {
-            session_.sql(sql).execute();
-            last_error_code_.clear();
-            return QueryResult::ok();
-        } catch (const mysqlx::Error& e) {
-            last_error_code_ = map_error_code(e.what());
-            return QueryResult::error(e.what(), last_error_code_);
-        } catch (const std::exception& e) {
-            last_error_code_ = "db_query_failed";
-            return QueryResult::error(e.what(), "db_query_failed");
+    using txn_fn = int (*)(shield_db_conn*, shield_db_result*);
+    QueryResult run_txn(const char* /*op*/, txn_fn fn) {
+        shield_db_result r{};
+        int rc = fn(handle_, &r);
+        QueryResult qr;
+        if (rc != 0) {
+            qr = QueryResult::error("plugin transport error",
+                                    plugin_rc_to_code(rc));
+            last_error_code_ = qr.error_code;
+        } else {
+            qr = translate_plugin_result(r);
+            last_error_code_ = qr.success ? std::string{}
+                                          : (r.error_code ? r.error_code
+                                                          : "transaction_aborted");
         }
+        if (plugin_->free_result) plugin_->free_result(&r);
+        return qr;
     }
 
-    static std::string map_error_code(const char* msg) {
-        std::string m(msg);
-        if (m.find("Lost connection") != std::string::npos ||
-            m.find("server has gone away") != std::string::npos) return "connection_lost";
-        if (m.find("timeout") != std::string::npos ||
-            m.find("timed out") != std::string::npos) return "connection_timeout";
-        if (m.find("syntax") != std::string::npos ||
-            m.find("SQL syntax") != std::string::npos) return "syntax_error";
-        if (m.find("Duplicate") != std::string::npos ||
-            m.find("foreign key") != std::string::npos ||
-            m.find("constraint") != std::string::npos) return "constraint_violation";
-        if (m.find("Deadlock") != std::string::npos) return "transaction_aborted";
-        return "db_query_failed";
-    }
-
-    mysqlx::Session session_;
+    const shield_db_plugin* plugin_;
+    shield_db_conn* handle_;
+    std::shared_ptr<detail::DynamicLibrary> lib_;  // keep DLL mapped
     std::string last_error_code_;
 };
 
@@ -260,6 +306,13 @@ struct DatabasePool::Impl {
     bool mock = false;
     std::string config_key;
     std::string last_error_code;
+
+    // Plugin state. lib_ stays alive for the lifetime of the pool (and is
+    // also held by every PluginDatabaseConnection created from it, so it
+    // cannot be unloaded underneath an in-flight connection).
+    std::shared_ptr<detail::DynamicLibrary> lib;
+    const shield_db_plugin* plugin = nullptr;
+    std::string driver_name;
 };
 
 DatabasePool::DatabasePool() : impl_(std::make_unique<Impl>()) {}
@@ -310,6 +363,7 @@ bool DatabasePool::initialize(std::string_view config_key) {
                                       cfg.get_string(prefix + ".user", "root"));
     std::string password = cfg.get_string(prefix + ".password", "");
     std::string driver = cfg.get_string(prefix + ".driver", "mysql");
+    std::string plugin_path = cfg.get_string(prefix + ".plugin_path", "");
     const bool has_enabled = cfg.has(prefix + ".enabled");
     const bool mock = cfg.get_bool(prefix + ".mock", !has_enabled);
     const bool allow_mock_fallback =
@@ -322,10 +376,14 @@ bool DatabasePool::initialize(std::string_view config_key) {
                                       static_cast<int64_t>(pool_size))));
     const auto acquire_timeout_ms = std::max<int64_t>(
         1, cfg.get_int(prefix + ".acquire_timeout", 5000));
+    const auto connect_timeout_ms = std::max<int64_t>(
+        1, cfg.get_int(prefix + ".connect_timeout", 5000));
+    const auto query_timeout_ms = std::max<int64_t>(
+        1, cfg.get_int(prefix + ".query_timeout", 30000));
 
     auto& log = shield::log::get_logger("database");
-    SHIELD_LOG_INFO(log, "Database config: " + host + ":" +
-                             std::to_string(port) + "/" + database +
+    SHIELD_LOG_INFO(log, "Database config: driver=" + driver + " " +
+                             host + ":" + std::to_string(port) + "/" + database +
                              " pool=" + std::to_string(pool_size) + "/" +
                              std::to_string(max_pool_size) +
                              (mock ? " mock=true" : ""));
@@ -333,6 +391,7 @@ bool DatabasePool::initialize(std::string_view config_key) {
     impl_->max_size = max_pool_size;
     impl_->acquire_timeout = std::chrono::milliseconds(acquire_timeout_ms);
     impl_->mock = mock;
+    impl_->driver_name = driver;
 
     if (mock) {
         impl_->factory = []() {
@@ -350,26 +409,108 @@ bool DatabasePool::initialize(std::string_view config_key) {
         return true;
     }
 
-    if (driver != "mysql") {
-        impl_->last_error_code = "unsupported_driver";
-        SHIELD_LOG_ERROR(log, "Unsupported database.driver: " + driver);
-        return false;
-    }
+    // -------------------------------------------------------------------------
+    // Plugin discovery. We look for shield_db_<driver>.(dll|so|dylib):
+    //   1. Explicit plugin_path (directory or full file path)
+    //   2. Same directory as the host executable (typical deploy layout)
+    //   3. Platform default search path (LoadLibrary/dlopen defaults)
+    // -------------------------------------------------------------------------
+    const std::string plugin_name = "shield_db_" + driver;
 
-    auto real_factory = [host, port, user, password, database]() {
-        return std::make_shared<RealDatabaseConnection>(
-            host, port, user, password, database);
-    };
-
-    try {
-        auto test_conn = real_factory();
-        // Test with a simple query.
-        auto test_result = test_conn->query("SELECT 1", {});
-        if (!test_result.success) {
-            throw std::runtime_error(test_result.error_message);
+    auto try_load = [&](const std::string& where) -> bool {
+        std::string full_path = where;
+        if (!full_path.empty()) {
+            // Treat `where` as a directory and append the plugin name.
+#ifdef _WIN32
+            char sep = '\\';
+            const char* ext = ".dll";
+#elif defined(__APPLE__)
+            char sep = '/';
+            const char* ext = ".dylib";
+            full_path += "lib";
+#else
+            char sep = '/';
+            const char* ext = ".so";
+            full_path += "lib";
+#endif
+            if (!full_path.empty() && full_path.back() != sep &&
+                full_path.back() != '/') {
+                full_path += sep;
+            }
+            full_path += plugin_name + ext;
+        } else {
+            full_path = plugin_name;  // let the loader apply platform rules
         }
 
-        impl_->factory = std::move(real_factory);
+        std::string err;
+        auto lib = detail::DynamicLibrary::load(full_path, err);
+        if (!lib.is_loaded()) {
+            SHIELD_LOG_INFO(log, "Plugin probe '" + full_path + "': " + err);
+            return false;
+        }
+        using api_fn_t = const shield_db_plugin* (*)();
+        auto fn = reinterpret_cast<api_fn_t>(
+            lib.resolve("shield_db_plugin_api"));
+        if (!fn) {
+            SHIELD_LOG_INFO(log, "Plugin '" + full_path +
+                                     "' missing shield_db_plugin_api export");
+            return false;
+        }
+        const shield_db_plugin* api = fn();
+        if (!api) {
+            SHIELD_LOG_INFO(log, "Plugin '" + full_path +
+                                     "' returned NULL api (init failed)");
+            return false;
+        }
+        if (api->abi_version != SHIELD_DB_ABI_VERSION) {
+            SHIELD_LOG_ERROR(log, "Plugin '" + full_path +
+                                      "' ABI mismatch: got version " +
+                                      std::to_string(api->abi_version) +
+                                      ", expected " +
+                                      std::to_string(SHIELD_DB_ABI_VERSION));
+            impl_->last_error_code = "module_unavailable";
+            return true;  // loaded but unusable; stop searching
+        }
+
+        impl_->lib = std::make_shared<detail::DynamicLibrary>(std::move(lib));
+        impl_->plugin = api;
+        SHIELD_LOG_INFO(log, "Loaded DB plugin '" + plugin_name + "' v" +
+                                 (api->version ? api->version : "?") +
+                                 " (abi=" + std::to_string(api->abi_version) + ")");
+        return true;
+    };
+
+    bool loaded = false;
+    if (!plugin_path.empty()) {
+        loaded = try_load(plugin_path);
+    }
+    if (!loaded && !impl_->lib) {
+        // Try alongside the host executable.
+        loaded = try_load(detail::host_executable_directory());
+    }
+    if (!loaded && !impl_->lib) {
+        // Last resort: platform default search.
+        loaded = try_load("");
+    }
+
+    if (!impl_->plugin) {
+        // Either no DLL found, or ABI mismatch.
+        if (impl_->last_error_code.empty()) {
+            impl_->last_error_code = "module_unavailable";
+        }
+        if (!allow_mock_fallback) {
+            SHIELD_LOG_ERROR(log, "No DB plugin available for driver '" +
+                                      driver + "' (looked for " + plugin_name +
+                                      ".dll/.so/.dylib)");
+            return false;
+        }
+        SHIELD_LOG_WARNING(log, "DB plugin '" + plugin_name +
+                                    "' not found; falling back to mock because " +
+                                    prefix + ".allow_mock_fallback=true");
+        impl_->mock = true;
+        impl_->factory = []() {
+            return std::make_shared<MockDatabaseConnection>();
+        };
         for (size_t i = 0; i < pool_size; ++i) {
             auto conn = impl_->factory();
             impl_->connections.push_back(conn);
@@ -378,19 +519,70 @@ bool DatabasePool::initialize(std::string_view config_key) {
         impl_->current_size = pool_size;
         impl_->initialized = true;
         impl_->cv.notify_all();
-        SHIELD_LOG_INFO(log, "MySQL connected to " + host + ":" +
-                        std::to_string(port) + "/" + database);
+        return true;
+    }
+
+    // Build the connect args once and reuse for every pooled connection.
+    auto connect_args = std::make_shared<shield_db_connect_args>();
+    connect_args->host = host.c_str();
+    connect_args->port = port;
+    connect_args->user = user.c_str();
+    connect_args->password = password.c_str();
+    connect_args->database = database.c_str();
+    connect_args->extra_json = nullptr;
+    connect_args->connect_timeout_ms = static_cast<int>(connect_timeout_ms);
+    connect_args->query_timeout_ms = static_cast<int>(query_timeout_ms);
+
+    auto* plugin_ptr = impl_->plugin;
+    auto lib_ptr = impl_->lib;
+
+    auto real_factory = [plugin_ptr, lib_ptr, connect_args,
+                         host, port, database]() {
+        char err_buf[512] = {};
+        shield_db_conn* h = plugin_ptr->connect(connect_args.get(),
+                                                err_buf, sizeof(err_buf));
+        if (!h) {
+            throw std::runtime_error(err_buf[0] ? err_buf
+                                                : "plugin connect returned NULL");
+        }
+        return std::make_shared<PluginDatabaseConnection>(plugin_ptr, h,
+                                                           lib_ptr);
+    };
+
+    try {
+        auto test_conn = real_factory();
+        // Probe with a SELECT 1 (most engines support this; SQLite, MySQL,
+        // PostgreSQL all do). If it fails we treat the plugin as broken.
+        auto test_result = test_conn->query("SELECT 1", {});
+        if (!test_result.success) {
+            throw std::runtime_error(test_result.error_message);
+        }
+
+        impl_->factory = std::move(real_factory);
+        impl_->connections.push_back(test_conn);
+        impl_->available.push(test_conn);
+        for (size_t i = 1; i < pool_size; ++i) {
+            auto conn = impl_->factory();
+            impl_->connections.push_back(conn);
+            impl_->available.push(conn);
+        }
+        impl_->current_size = pool_size;
+        impl_->initialized = true;
+        impl_->cv.notify_all();
+        SHIELD_LOG_INFO(log, "DB pool connected via plugin '" +
+                                 plugin_name + "' to " + host + ":" +
+                                 std::to_string(port) + "/" + database);
         return true;
     } catch (const std::exception& e) {
         impl_->last_error_code = "connection_lost";
         if (!allow_mock_fallback) {
-            SHIELD_LOG_ERROR(log, "MySQL connection failed: " +
-                                      std::string(e.what()));
+            SHIELD_LOG_ERROR(log, "DB connect via plugin '" + plugin_name +
+                                      "' failed: " + std::string(e.what()));
             return false;
         }
 
-        SHIELD_LOG_WARNING(log, "MySQL connection failed (" +
-                                    std::string(e.what()) +
+        SHIELD_LOG_WARNING(log, "DB connect via plugin '" + plugin_name +
+                                    "' failed (" + std::string(e.what()) +
                                     "), using mock pool because " + prefix +
                                     ".allow_mock_fallback=true");
         impl_->mock = true;

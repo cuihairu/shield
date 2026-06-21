@@ -80,7 +80,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | `shield_log` | 当前 CMake target 已存在 | logger facade 已接入；旧 Boost log config 测试已从当前构建入口移出 |
 | `shield_transport` | 当前 CMake target 已存在 | frame/codec/encryption 在 target 内；旧 protocol handler/schema protocol 测试不属于当前验证路径 |
 | `shield_net` | 当前 CMake target 已存在 | 单实例 TCP listener/session 已接入 bootstrap 的 `actors[].network.tcp`；UDP/WebSocket 仍为 deferred |
-| `shield_data` | 当前 CMake target 已存在 | raw DB/Redis facade 已接入；真实后端和 mock pool 验收仍待补齐 |
+| `shield_data` | 当前 CMake target 已存在 | 插件架构：核心提供 DatabaseConnection 接口 + DatabasePool 连接池 + MockDatabaseConnection；MySQL/PostgreSQL/SQLite 后端通过 `shield_db_*.dll` 插件动态加载（C ABI `db_plugin.h`）；Redis 通过 redis++ 直连（真实连接优先，mock 降级） |
 | `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout 已实现；timer callback 已通过 pcall 包裹执行；fork callback raw_fn 已存储；on_error/on_panic/on_exit guard 已实现；gateway handler 测试使用 table 模拟，真实 Session userdata 封装仍待补齐 |
 | `shield_bootstrap` | 当前 CMake target 已存在 | `shield::run` 和 CLI/config smoke tests 已登记在主 CMake |
 | optional modules | CMake 开关存在，默认关闭 | `shield_cluster` 已有静态 peers、节点状态快照和 route cache 查询骨架；跨节点 transport/route 学习仍未实现。`shield_global/ops` 仍未进入实现完成范围 |

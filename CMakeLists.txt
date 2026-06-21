@@ -57,6 +57,28 @@ if(SHIELD_ENV_VCPKG_ROOT AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   message(STATUS "Using vcpkg toolchain file: ${CMAKE_TOOLCHAIN_FILE}")
 endif()
 
+# Translate SHIELD_BUILD_DB_PLUGIN_* options into vcpkg manifest features.
+# Must happen before project() so vcpkg installs the requested deps.
+# Users can also pass -DVCPKG_MANIFEST_FEATURES manually to override.
+set(_shield_db_features "")
+if(SHIELD_BUILD_DB_PLUGIN_MYSQL)
+  list(APPEND _shield_db_features "database-mysql")
+endif()
+if(SHIELD_BUILD_DB_PLUGIN_POSTGRESQL)
+  list(APPEND _shield_db_features "database-postgresql")
+endif()
+if(SHIELD_BUILD_DB_PLUGIN_SQLITE)
+  list(APPEND _shield_db_features "database-sqlite")
+endif()
+if(_shield_db_features AND NOT DEFINED VCPKG_MANIFEST_FEATURES)
+  set(VCPKG_MANIFEST_FEATURES ${_shield_db_features})
+elseif(_shield_db_features)
+  foreach(_f IN LISTS _shield_db_features)
+    list(APPEND VCPKG_MANIFEST_FEATURES "${_f}")
+  endforeach()
+  list(REMOVE_DUPLICATES VCPKG_MANIFEST_FEATURES)
+endif()
+
 project(
   shield
   VERSION 0.1.0
@@ -75,6 +97,13 @@ option(SHIELD_BUILD_EXAMPLES "Build Shield examples" ON)
 option(SHIELD_ENABLE_CLUSTER "Enable cluster support (optional)" OFF)
 option(SHIELD_ENABLE_GLOBAL "Enable global helpers (optional)" OFF)
 option(SHIELD_ENABLE_OPS "Enable ops/diagnostics (optional)" OFF)
+# DB backend plugins are discovered at runtime; see plugins/*/CMakeLists.txt.
+# Each plugin is a separate shared library so users only ship the DLLs they
+# actually need. SHIELD_BUILD_DB_PLUGINS selects which plugins to build
+# from source; the host (shield_data) never links any DB library.
+option(SHIELD_BUILD_DB_PLUGIN_MYSQL "Build the MySQL X DevAPI DB plugin" OFF)
+option(SHIELD_BUILD_DB_PLUGIN_POSTGRESQL "Build the PostgreSQL (libpq) DB plugin" OFF)
+option(SHIELD_BUILD_DB_PLUGIN_SQLITE "Build the SQLite DB plugin" OFF)
 
 # Ensure config directory exists and create a minimal default config if missing.
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/config")
@@ -216,12 +245,22 @@ file(MAKE_DIRECTORY ${CMAKE_ARCHIVE_OUTPUT_DIRECTORY})
 
 function(shield_copy_runtime_dlls target)
     if(WIN32)
+        # _VCPKG_INSTALLED_DIR is set by the vcpkg toolchain to the actual
+        # install root (without triplet suffix). The user-facing
+        # VCPKG_INSTALLED_DIR can point to a stale source-tree path, so we
+        # prefer the underscore-prefixed internal variable and append the
+        # triplet explicitly.
+        if(DEFINED _VCPKG_INSTALLED_DIR)
+            set(_dll_root "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+        else()
+            set(_dll_root "${VCPKG_INSTALLED_DIR}")
+        endif()
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${VCPKG_INSTALLED_DIR}/bin"
+                "${_dll_root}/bin"
                 "$<TARGET_FILE_DIR:${target}>"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "$<IF:$<CONFIG:Debug>,${VCPKG_INSTALLED_DIR}/debug/bin,${VCPKG_INSTALLED_DIR}/bin>"
+                "$<IF:$<CONFIG:Debug>,${_dll_root}/debug/bin,${_dll_root}/bin>"
                 "$<TARGET_FILE_DIR:${target}>"
             COMMAND_EXPAND_LISTS
         )
@@ -316,15 +355,22 @@ endif()
 
 # -----------------------------------------------------------------------------
 # shield_data - Raw DB/Redis access
+#
+# NOTE: shield_data does NOT link any database client library. Real database
+# backends are loaded at runtime as DLLs from the plugins/ subdirectory.
+# See include/shield/data/db_plugin.h for the C ABI every plugin implements.
 # -----------------------------------------------------------------------------
 add_library(shield_data STATIC
     src/data/data.cpp
+    src/data/dynamic_library.cpp
 )
 
 target_include_directories(shield_data
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_BINARY_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/data
 )
 
 target_link_libraries(shield_data
@@ -332,14 +378,7 @@ target_link_libraries(shield_data
     PRIVATE redis++::redis++ hiredis::hiredis
 )
 
-# MySQL connector (optional)
-find_package(unofficial-mysql-connector-cpp CONFIG QUIET)
-if(unofficial-mysql-connector-cpp_FOUND)
-    target_link_libraries(shield_data PRIVATE unofficial::mysql-connector-cpp::connector)
-    message(STATUS "MySQL connector enabled for shield_data")
-else()
-    message(STATUS "MySQL connector not found, shield_data will use mock DB pool")
-endif()
+message(STATUS "shield_data: DB backends are runtime plugins (no link-time DB deps)")
 
 # -----------------------------------------------------------------------------
 # shield_transport - Frame/codec/encryption adapter
@@ -671,6 +710,21 @@ if(SHIELD_HAS_PROTOBUF)
 endif()
 
 # =============================================================================
+# DATABASE BACKEND PLUGINS
+# =============================================================================
+#
+# Each plugin is a separate shared library implementing the C ABI declared
+# in include/shield/data/db_plugin.h. At runtime shield_data loads
+# shield_db_<driver>.dll/.so next to the host executable. Building a plugin
+# here does not pull its dependency into shield_data - the link boundary is
+# the plugin DLL itself.
+if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
+   SHIELD_BUILD_DB_PLUGIN_POSTGRESQL OR
+   SHIELD_BUILD_DB_PLUGIN_SQLITE)
+    add_subdirectory(plugins)
+endif()
+
+# =============================================================================
 # LEGACY MODULES (To be removed after migration)
 # =============================================================================
 
@@ -712,4 +766,7 @@ message(STATUS "Optional modules:")
 message(STATUS "  shield_cluster:    ${SHIELD_ENABLE_CLUSTER}")
 message(STATUS "  shield_global:     ${SHIELD_ENABLE_GLOBAL}")
 message(STATUS "  shield_ops:        ${SHIELD_ENABLE_OPS}")
+message(STATUS "  db plugin mysql:   ${SHIELD_BUILD_DB_PLUGIN_MYSQL}")
+message(STATUS "  db plugin pgsql:   ${SHIELD_BUILD_DB_PLUGIN_POSTGRESQL}")
+message(STATUS "  db plugin sqlite:  ${SHIELD_BUILD_DB_PLUGIN_SQLITE}")
 message(STATUS "")

@@ -244,15 +244,11 @@ bool validate_data_pool_config(const YAML::Node& node,
         if (!validate_int_range(node, "query_timeout", path, 1, 3600000, error)) {
             return false;
         }
-        if (node["driver"]) {
-            const auto driver = node["driver"].as<std::string>();
-            if (driver != "mysql") {
-                if (error) {
-                    *error = "database.driver currently supports mysql";
-                }
-                return false;
-            }
-        }
+        // database.driver is any string. Backend resolution happens at
+        // runtime via the DB plugin loader (shield_db_<driver>.dll). A
+        // missing plugin surfaces as last_error_code="module_unavailable"
+        // from DatabasePool::initialize, so we don't second-guess the
+        // driver name here.
     } else if (std::string(path) == "redis") {
         if (!validate_int_range(node, "command_timeout", path, 1, 3600000, error)) {
             return false;

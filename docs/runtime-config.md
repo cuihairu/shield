@@ -214,15 +214,35 @@ lua:
 
 ## Data 配置
 
+### 数据库（插件架构）
+
+数据库后端采用**插件架构**。核心 `shield_data` 不直接链接任何数据库驱动；
+具体后端通过动态库插件在运行时加载：
+
+| 后端 | 插件 DLL | vcpkg feature | 依赖 |
+|------|----------|---------------|------|
+| MySQL | `shield_db_mysql.dll` | `database-mysql` | mysql-connector-cpp |
+| PostgreSQL | `shield_db_pgsql.dll` | `database-postgresql` | libpq |
+| SQLite | `shield_db_sqlite.dll` | `database-sqlite` | sqlite3 |
+
+插件实现 `db_plugin.h` 定义的 C ABI 接口，核心通过 `DynamicLibrary` 在运行时加载。
+
 `database.enabled=false` 或缺省 database 段时：
 
 - `shield.db.*` 返回 `false, module_unavailable`。
 - runtime 不创建 DB 连接池。
 
+### Redis
+
+Redis 通过 redis++ 直连（非插件）。`RedisPool::initialize()` 先尝试真实连接，
+失败自动降级为 mock pool。
+
 `redis.enabled=false` 或缺省 redis 段时：
 
 - `shield.redis.*` 返回 `false, module_unavailable`。
 - runtime 不创建 Redis 连接池。
+
+### 通用规则
 
 `shield_data` 只配置原始 DB/Redis 连接池。Lua mapper/entity helper 是运行时 API，
 不需要独立配置；XML schema-mapper、migration 和跨服务事务不在当前配置范围。

@@ -84,7 +84,10 @@ BOOST_AUTO_TEST_CASE(DatabasePoolDoesNotFallbackToMockUnlessConfigured) {
     shield::data::DatabasePool pool;
     BOOST_CHECK(!pool.initialize("bad_database"));
     BOOST_CHECK(!pool.is_initialized());
-    BOOST_CHECK_EQUAL(pool.last_error_code(), "unsupported_driver");
+    // With the plugin-based loader, an unknown driver surfaces as
+    // "module_unavailable" (no shield_db_<driver> DLL found), not the
+    // legacy "unsupported_driver" code from compile-time #ifdef.
+    BOOST_CHECK_EQUAL(pool.last_error_code(), "module_unavailable");
 }
 
 BOOST_AUTO_TEST_CASE(RedisPoolAcquireTimesOutWhenExhausted) {

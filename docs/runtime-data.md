@@ -1,14 +1,21 @@
 # 数据访问运行时语义
 
-当前实现状态：Phase 1 已支持 `database.enabled` / `redis.enabled` 控制是否创建
-DB/Redis pool；`database.mock=true` / `redis.mock=true` 显式启用 mock pool；
+当前实现状态：数据库已改为**插件架构**。核心 `shield_data` 提供 `DatabaseConnection`
+接口和 `DatabasePool` 连接池；具体后端（MySQL/PostgreSQL/SQLite）通过动态库插件
+（`shield_db_mysql.dll` / `shield_db_pgsql.dll` / `shield_db_sqlite.dll`）在运行时加载。
+插件实现 `db_plugin.h` 定义的 C ABI 接口，核心不直接链接任何数据库驱动。
+
+配置通过 vcpkg features 控制：
+- `database-mysql` — 安装 mysql-connector-cpp，构建 `shield_db_mysql` 插件
+- `database-postgresql` — 安装 libpq，构建 `shield_db_pgsql` 插件
+- `database-sqlite` — 安装 sqlite3，构建 `shield_db_sqlite` 插件
+
 未启用时 Lua API 返回 `false, module_unavailable`。CTest 已覆盖 mock pool 下
 `shield.db.query/query_one/execute`、`shield.redis.get/set/del/exists/publish/subscribe`
 的基础返回形态，以及 pool size、动态扩容、acquire timeout 和非 mock 连接失败
 不静默降级。`shield.db.transaction` 已提供本地单连接事务最小实现；
 `shield.db.mapper/register_mapper/entity` 已提供 Lua 层轻量 mapper/entity helper。
-真实 MySQL/Redis 连接依赖线上环境验证；PostgreSQL/SQLite、数据 worker
-线程池、订阅回调回投 worker、XML schema-mapper 生成器仍未完成。
+数据 worker 线程池、订阅回调回投 worker、XML schema-mapper 生成器仍未完成。
 
 本文档包含 Shield 数据访问相关的运行时语义决策。
 
