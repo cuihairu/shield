@@ -84,20 +84,50 @@ int my_plugin_init(shield_host_t host,
 ```
 include/shield/plugin/           ← 插件接口（独立，不耦合任何模块）
 ├── plugin.h                     ← 通用插件基接口 + Host Context
+│
+│  基础设施插件（共享依赖）
 ├── db_plugin.h                  ← 数据库插件接口
-├── cache_plugin.h               ← 缓存插件接口（Redis/Memcached/内存）
-├── queue_plugin.h               ← 队列插件接口（Redis pub/sub/RabbitMQ/NATS）
-├── auth_plugin.h                ← 认证插件接口（JWT/OAuth/Steam/微信）
-├── metric_plugin.h              ← 指标导出插件接口（Prometheus/StatsD/Datadog）
-├── health_plugin.h              ← 健康检查插件接口（HTTP/TCP 端点）
-├── leaderboard_plugin.h         ← 排行榜插件接口（Redis ZSET/DB/内存）
-└── matchmaking_plugin.h         ← 匹配插件接口（ELO/MMR/技能匹配）
+├── redis_plugin.h               ← Redis 插件接口（CACHE/QUEUE/LEADERBOARD 共享）
+│
+│  业务插件（依赖基础设施插件）
+├── cache_plugin.h               ← 缓存插件（依赖 Redis）
+├── queue_plugin.h               ← 队列插件（依赖 Redis）
+├── leaderboard_plugin.h         ← 排行榜插件（依赖 Redis ZSET）
+├── auth_plugin.h                ← 认证插件（JWT/OAuth/Steam/微信）
+├── matchmaking_plugin.h         ← 匹配插件（ELO/MMR/技能匹配）
+├── metric_plugin.h              ← 指标导出（Prometheus/StatsD/Datadog）
+└── health_plugin.h              ← 健康检查（HTTP/TCP 端点）
 
 plugins/                         ← 插件实现（每个子目录是一个 DLL）
 ├── mysql/shield_db_mysql.cpp
 ├── postgresql/shield_db_pgsql.cpp
 ├── sqlite/shield_db_sqlite.cpp
-└── redis/shield_cache_redis.cpp ← Redis 同时实现 CACHE + QUEUE
+└── redis/shield_redis.cpp       ← Redis 基础设施插件
+```
+
+## 插件依赖关系
+
+```
+shield_redis (基础设施)
+├── shield_cache    (依赖 Redis 做存储)
+├── shield_queue    (依赖 Redis 做 pub/sub)
+└── shield_leaderboard (依赖 Redis ZSET 做排序)
+
+shield_db_mysql     (独立)
+shield_auth_jwt     (独立)
+shield_matchmaking  (独立)
+shield_metric       (独立)
+shield_health       (独立)
+```
+
+**通过 Host Context 获取依赖：**
+```c
+// CACHE 插件 init 时获取 Redis 插件
+int cache_init(shield_host_t host, const shield_host_api* api, ...) {
+    const shield_plugin* redis_p = api->find_plugin(host, "shield_redis");
+    const shield_redis_plugin* redis = redis_p->vtable;
+    // 用 redis->get/set 做缓存操作
+}
 ```
 
 **设计原则：插件接口是独立契约，`shield_data`、`shield_lua`、`shield_net` 都是消费者。**
@@ -107,18 +137,21 @@ plugins/                         ← 插件实现（每个子目录是一个 DLL
 ```c
 // 每个插件类型有独立的 vtable（类型安全，不是 void*）
 enum shield_plugin_type {
-    DATABASE  = 0x01,   // vtable → shield_db_plugin
-    TRANSPORT = 0x02,   // vtable → shield_transport_plugin (Phase 2)
-    AUTH      = 0x03,   // vtable → shield_auth_plugin
-    CACHE     = 0x04,   // vtable → shield_cache_plugin
-    QUEUE     = 0x05,   // vtable → shield_queue_plugin
-    STORAGE   = 0x06,   // vtable → shield_storage_plugin (Phase 2)
-    METRIC    = 0x07,   // vtable → shield_metric_plugin
-    HEALTH    = 0x08,   // vtable → shield_health_plugin
-    LOG       = 0x09,   // vtable → shield_log_plugin (Phase 2)
-    GATEWAY   = 0x0A,   // vtable → shield_gateway_plugin (Phase 2)
-    GAME      = 0x10,   // vtable → 用户自定义
-    USER      = 0xFF,   // vtable → 用户自定义
+    DATABASE    = 0x01,   // vtable → shield_db_plugin
+    TRANSPORT   = 0x02,   // vtable → shield_transport_plugin (Phase 2)
+    AUTH        = 0x03,   // vtable → shield_auth_plugin
+    CACHE       = 0x04,   // vtable → shield_cache_plugin (依赖 Redis)
+    QUEUE       = 0x05,   // vtable → shield_queue_plugin (依赖 Redis)
+    STORAGE     = 0x06,   // vtable → shield_storage_plugin (Phase 2)
+    METRIC      = 0x07,   // vtable → shield_metric_plugin
+    HEALTH      = 0x08,   // vtable → shield_health_plugin
+    LOG         = 0x09,   // vtable → shield_log_plugin (Phase 2)
+    GATEWAY     = 0x0A,   // vtable → shield_gateway_plugin (Phase 2)
+    LEADERBOARD = 0x0B,   // vtable → shield_leaderboard_plugin (依赖 Redis)
+    MATCHMAKING = 0x0C,   // vtable → shield_matchmaking_plugin
+    REDIS       = 0x0D,   // vtable → shield_redis_plugin (基础设施)
+    GAME        = 0x10,   // vtable → 用户自定义
+    USER        = 0xFF,   // vtable → 用户自定义
 };
 
 struct shield_plugin_t {

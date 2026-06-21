@@ -1,13 +1,13 @@
 // [SHIELD_PLUGIN] Leaderboard plugin C ABI
 //
-// Stable C interface for leaderboard backends (Redis ZSET, database,
-// in-memory sorted set, etc.).
+// High-level leaderboard abstraction. Depends on a Redis plugin for
+// sorted set operations.
 //
-// A leaderboard is a ranked list of players by score. Common in games
-// for player rankings, event leaderboards, speedrun boards, etc.
-//
-// Integration with shield_plugin system:
-//   type = SHIELD_PLUGIN_TYPE_LEADERBOARD, vtable → shield_leaderboard_plugin*
+// Usage:
+//   const shield_plugin* p = host_api->find_plugin(host, "shield_leaderboard");
+//   const shield_leaderboard_plugin* lb = p->vtable;
+//   lb->add_score("global", "player:123", 1500.0);
+//   lb->get_top("global", 10, &result);
 
 #pragma once
 
@@ -19,24 +19,12 @@ extern "C" {
 
 #define SHIELD_LEADERBOARD_ABI_VERSION 1
 
-struct shield_leaderboard_conn;
-
-struct shield_leaderboard_config {
-    const char* host;
-    int port;
-    const char* password;
-    int connect_timeout_ms;
-    const char* extra_json;        // driver-specific options
-};
-
-// A single leaderboard entry.
 struct shield_leaderboard_entry {
     const char* player_id;
     double score;
-    int64_t rank;                  // 1-based rank, 0 = not ranked
+    int64_t rank;                  // 1-based, 0 = not ranked
 };
 
-// Result of a leaderboard query.
 struct shield_leaderboard_result {
     int success;
     const char* error_code;
@@ -47,90 +35,46 @@ struct shield_leaderboard_result {
 
 struct shield_leaderboard_plugin {
     uint32_t abi_version;
-    const char* name;              // "redis", "database", "memory"
+    const char* name;
     const char* version;
 
-    // Connection
-    struct shield_leaderboard_conn* (*connect)(
-        const struct shield_leaderboard_config* config,
-        char* err_buf, int err_buf_size);
-    void (*disconnect)(struct shield_leaderboard_conn* conn);
+    // Initialize with a reference to the Redis plugin.
+    int (*init)(const void* redis_plugin, char* err_buf, int err_buf_size);
+    void (*shutdown)(void);
 
-    // --- Core Operations ------------------------------------------------
+    // Add or update a player's score on a named leaderboard.
+    int (*add_score)(const char* board_name, const char* player_id, double score);
 
-    // Add or update a player's score. If player already exists, update
-    // the score (higher is better by default).
-    // Returns 0 on success, non-zero on error.
-    int (*add_score)(struct shield_leaderboard_conn* conn,
-                     const char* board_name,
-                     const char* player_id,
-                     double score);
+    // Remove a player from a leaderboard.
+    int (*remove)(const char* board_name, const char* player_id);
 
-    // Remove a player from the leaderboard.
-    int (*remove)(struct shield_leaderboard_conn* conn,
-                  const char* board_name,
-                  const char* player_id);
+    // Get a player's score.
+    int (*get_score)(const char* board_name, const char* player_id, double* out);
 
-    // Get a player's current score. Returns 0 if player not found.
-    int (*get_score)(struct shield_leaderboard_conn* conn,
-                     const char* board_name,
-                     const char* player_id,
-                     double* out_score);
-
-    // --- Ranking Queries ------------------------------------------------
-
-    // Get a player's rank (1-based). Returns 0 if not ranked.
-    int (*get_rank)(struct shield_leaderboard_conn* conn,
-                    const char* board_name,
-                    const char* player_id,
-                    int64_t* out_rank);
+    // Get a player's rank (1-based, 0 = not ranked).
+    int (*get_rank)(const char* board_name, const char* player_id, int64_t* out);
 
     // Get top N entries (rank 1..limit).
-    // Returns entries in the result struct.
-    int (*get_top)(struct shield_leaderboard_conn* conn,
-                   const char* board_name,
-                   int limit,
+    int (*get_top)(const char* board_name, int limit,
                    struct shield_leaderboard_result* out);
 
     // Get entries around a player (player_rank ± range).
-    // Useful for "players near you" display.
-    int (*get_around)(struct shield_leaderboard_conn* conn,
-                      const char* board_name,
-                      const char* player_id,
-                      int range,
-                      struct shield_leaderboard_result* out);
+    int (*get_around)(const char* board_name, const char* player_id,
+                      int range, struct shield_leaderboard_result* out);
 
-    // Get a specific range of entries (rank start..end, 1-based).
-    int (*get_range)(struct shield_leaderboard_conn* conn,
-                     const char* board_name,
-                     int64_t start_rank,
-                     int64_t end_rank,
+    // Get a range of entries (rank start..end, 1-based).
+    int (*get_range)(const char* board_name, int64_t start, int64_t end,
                      struct shield_leaderboard_result* out);
 
-    // --- Board Management -----------------------------------------------
-
     // Delete an entire leaderboard.
-    int (*delete_board)(struct shield_leaderboard_conn* conn,
-                        const char* board_name);
+    int (*delete_board)(const char* board_name);
 
-    // Get the total number of players on a leaderboard.
-    int (*count)(struct shield_leaderboard_conn* conn,
-                 const char* board_name,
-                 int64_t* out_count);
+    // Get total player count on a leaderboard.
+    int (*count)(const char* board_name, int64_t* out);
 
     // Memory
     void (*free_result)(struct shield_leaderboard_result* result);
 };
-
-// Entry point exported by every leaderboard plugin DLL.
-#ifdef _WIN32
-#define SHIELD_LEADERBOARD_EXPORT __declspec(dllexport)
-#else
-#define SHIELD_LEADERBOARD_EXPORT __attribute__((visibility("default")))
-#endif
-
-SHIELD_LEADERBOARD_EXPORT
-const struct shield_leaderboard_plugin* shield_leaderboard_plugin_api(void);
 
 #ifdef __cplusplus
 }

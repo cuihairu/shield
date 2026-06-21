@@ -59,6 +59,7 @@ enum shield_plugin_type {
     SHIELD_PLUGIN_TYPE_GATEWAY     = 0x0A,  // Gateway protocol (HTTP/WebSocket)
     SHIELD_PLUGIN_TYPE_LEADERBOARD = 0x0B,  // Leaderboard (Redis ZSET/DB/memory)
     SHIELD_PLUGIN_TYPE_MATCHMAKING = 0x0C,  // Matchmaking (ELO/MMR/skill-based)
+    SHIELD_PLUGIN_TYPE_REDIS       = 0x0D,  // Redis infrastructure (shared by CACHE/QUEUE/LEADERBOARD)
     SHIELD_PLUGIN_TYPE_GAME        = 0x10,  // Game logic plugin (custom)
     SHIELD_PLUGIN_TYPE_USER        = 0xFF,  // User-defined plugin type
 };
