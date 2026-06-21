@@ -1,7 +1,14 @@
-// [SHIELD_PLUGIN] JWT authentication plugin
+// [SHIELD_PLUGIN] JWT authentication plugin — PLACEHOLDER
 //
-// Implements shield_auth_plugin for JWT token-based authentication.
-// Uses OpenSSL for HMAC-SHA256 signing (already linked by shield_transport).
+// WARNING: This is a placeholder implementation for testing/development only.
+// DO NOT use in production. It does NOT:
+//   - Validate JWT signatures
+//   - Check token expiry
+//   - Use proper HMAC-SHA256
+//   - Implement token blacklisting
+//
+// A production implementation MUST use a proper JWT library (e.g. jwt-cpp)
+// and validate signatures cryptographically.
 
 #include "shield/plugin/plugin.h"
 #include "shield/plugin/auth_plugin.h"
@@ -109,10 +116,10 @@ int auth_authenticate(const shield_auth_request* req,
     std::string user_id, error;
     if (validate_jwt(req->token, g_config, user_id, error)) {
         out->success = 1;
-        out->error_code = "";
-        out->error_msg = "";
+        out->error_code = nullptr;   // NULL = no error, safe to free
+        out->error_msg = nullptr;
         out->user_id = strdup(user_id.c_str());
-        out->token = nullptr;  // No refresh needed
+        out->token = nullptr;
         out->token_expiry_ms = 0;
         out->roles_json = nullptr;
         out->extra_json = nullptr;
@@ -122,6 +129,10 @@ int auth_authenticate(const shield_auth_request* req,
         out->error_code = strdup(error.c_str());
         out->error_msg = strdup(error.c_str());
         out->user_id = nullptr;
+        out->token = nullptr;
+        out->token_expiry_ms = 0;
+        out->roles_json = nullptr;
+        out->extra_json = nullptr;
         return -1;
     }
 }
@@ -218,7 +229,7 @@ const shield_plugin g_plugin = {
 
 }  // namespace
 
-extern "C" __declspec(dllexport)
+extern "C" SHIELD_PLUGIN_EXPORT
 const struct shield_plugin* shield_plugin_api(void) {
     return &g_plugin;
 }

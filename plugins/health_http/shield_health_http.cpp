@@ -53,8 +53,8 @@ int health_check_all(shield_health_check_result* results,
     for (const auto& [name, entry] : g_checks) {
         if (i >= max_results) break;
         auto& r = results[i];
-        r.check_name = name.c_str();
-        r.message = "";
+        r.check_name = strdup(name.c_str());
+        r.message = strdup("");
         r.latency_ms = 0;
 
         int rc = entry.check(&r, entry.user_data);
@@ -130,7 +130,7 @@ const shield_plugin g_plugin = {
 
 }  // namespace
 
-extern "C" __declspec(dllexport)
+extern "C" SHIELD_PLUGIN_EXPORT
 const struct shield_plugin* shield_plugin_api(void) {
     return &g_plugin;
 }

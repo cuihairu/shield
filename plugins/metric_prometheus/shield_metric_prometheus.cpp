@@ -149,7 +149,7 @@ const shield_plugin g_plugin = {
 
 }  // namespace
 
-extern "C" __declspec(dllexport)
+extern "C" SHIELD_PLUGIN_EXPORT
 const struct shield_plugin* shield_plugin_api(void) {
     return &g_plugin;
 }

@@ -23,12 +23,24 @@ int cache_init(const void* redis_plugin, char* err_buf, int err_buf_size) {
         return -1;
     }
     g_redis = static_cast<const shield_redis_plugin*>(redis_plugin);
-    // Use the global connection from the Redis plugin.
-    // In production, this would get a connection from the pool.
+
+    // Connect to Redis using the plugin's connect function.
+    shield_redis_config config = {};
+    config.host = "localhost";
+    config.port = 6379;
+    config.pool_size = 10;
+    g_conn = g_redis->connect(&config, err_buf, err_buf_size);
+    if (!g_conn) {
+        g_redis = nullptr;
+        return -1;
+    }
     return 0;
 }
 
 void cache_shutdown() {
+    if (g_redis && g_conn) {
+        g_redis->disconnect(g_conn);
+    }
     g_redis = nullptr;
     g_conn = nullptr;
 }
@@ -159,7 +171,7 @@ const shield_plugin g_plugin = {
 
 }  // namespace
 
-extern "C" __declspec(dllexport)
+extern "C" SHIELD_PLUGIN_EXPORT
 const struct shield_plugin* shield_plugin_api(void) {
     return &g_plugin;
 }

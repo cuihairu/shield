@@ -3,6 +3,7 @@
 
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/plugin/db_plugin.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -95,6 +96,7 @@ struct PluginEntry {
     const shield_plugin* original;  // pointer into the DLL
     PluginLibrary lib;
     std::string path;
+    bool initialized = false;       // true after successful init
 };
 
 struct PluginManager::Impl {
@@ -133,9 +135,9 @@ struct PluginManager::Impl {
         host_api.find_plugin = [](shield_host_t host,
                                    const char* name) -> const shield_plugin* {
             if (!host || !name) return nullptr;
-            // Recover the PluginManager from the opaque host handle.
             auto* self = reinterpret_cast<PluginManager::Impl*>(
                 reinterpret_cast<char*>(host) - offsetof(PluginManager::Impl, opaque_host));
+            std::lock_guard<std::mutex> lock(self->mutex);
             auto it = self->plugins.find(name);
             return it != self->plugins.end() ? &it->second.plugin : nullptr;
         };
@@ -270,18 +272,50 @@ bool PluginManager::load(const std::string& path, std::string& error) {
         return false;
     }
 
-    // Resolve the entry point.
+    // Try shield_plugin_api() first (new generic entry point).
     using PluginApiFn = const shield_plugin* (*)();
     auto api_fn = reinterpret_cast<PluginApiFn>(
         lib.resolve("shield_plugin_api"));
-    if (!api_fn) {
-        error = "Plugin missing shield_plugin_api entry point: " + path;
+
+    // Fallback: try shield_db_plugin_api() for legacy database plugins.
+    // If found, wrap it in a shield_plugin struct.
+    const shield_plugin* plugin = nullptr;
+    shield_plugin db_wrapper{};
+
+    if (api_fn) {
+        plugin = api_fn();
+    } else {
+        // Try legacy DB entry point.
+        using DbApiFn = const shield_db_plugin* (*)();
+        auto db_api_fn = reinterpret_cast<DbApiFn>(
+            lib.resolve("shield_db_plugin_api"));
+        if (db_api_fn) {
+            const shield_db_plugin* db_plugin = db_api_fn();
+            if (db_plugin) {
+                // Wrap in a shield_plugin struct.
+                db_wrapper.abi_version = SHIELD_PLUGIN_ABI_VERSION;
+                db_wrapper.type = SHIELD_PLUGIN_TYPE_DATABASE;
+                db_wrapper.name = db_plugin->name ? db_plugin->name : "unknown_db";
+                db_wrapper.version = db_plugin->version ? db_plugin->version : "";
+                db_wrapper.description = "Database plugin (legacy DB ABI)";
+                db_wrapper.author = "";
+                db_wrapper.init = nullptr;
+                db_wrapper.shutdown = nullptr;
+                db_wrapper.capability_count = nullptr;
+                db_wrapper.get_capability = nullptr;
+                db_wrapper.vtable = db_plugin;
+                plugin = &db_wrapper;
+                SHIELD_LOG_INFO(log, "Loaded legacy DB plugin via shield_db_plugin_api: " +
+                                path);
+            }
+        }
+    }
+
+    if (!plugin) {
+        error = "Plugin missing shield_plugin_api or shield_db_plugin_api entry point: " + path;
         SHIELD_LOG_ERROR(log, error);
         return false;
     }
-
-    // Get the plugin struct.
-    const shield_plugin* plugin = api_fn();
     if (!plugin) {
         error = "Plugin returned NULL from shield_plugin_api: " + path;
         SHIELD_LOG_ERROR(log, error);
@@ -375,6 +409,7 @@ bool PluginManager::init_all(
             return false;
         }
 
+        entry.initialized = true;
         SHIELD_LOG_INFO(log, "Initialized plugin: " + name);
     }
 
@@ -431,7 +466,7 @@ std::vector<PluginInfo> PluginManager::list() const {
         info.description = entry.plugin.description ? entry.plugin.description : "";
         info.path = entry.path;
         info.type = entry.plugin.type;
-        info.initialized = true;
+        info.initialized = entry.initialized;
         result.push_back(std::move(info));
     }
     return result;
