@@ -41,17 +41,18 @@ BOOST_AUTO_TEST_CASE(LAPI_010_01_OldServiceApiUnavailable) {
     BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), false);
 }
 
-BOOST_AUTO_TEST_CASE(LAPI_010_02_OldPluginApiUnavailable) {
+BOOST_AUTO_TEST_CASE(LAPI_010_02_PluginApiAvailable) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
 
     auto service = spawn_legacy(manager, "legacy_plugin_test");
     BOOST_REQUIRE(service.success);
 
+    // shield.plugin is now a valid API (not legacy).
     CallResult cr = manager.call(service.service_id, "has_plugin_api",
                                  nlohmann::json::array());
     BOOST_REQUIRE(cr.success);
-    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), true);
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_010_03_OldColonDbApiFails) {

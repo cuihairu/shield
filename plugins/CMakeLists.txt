@@ -22,3 +22,21 @@ endif()
 if(SHIELD_BUILD_PLUGIN_REDIS)
     add_subdirectory(redis)
 endif()
+
+# --- Business plugins ---
+
+if(SHIELD_BUILD_PLUGIN_AUTH)
+    add_subdirectory(auth_jwt)
+endif()
+
+if(SHIELD_BUILD_PLUGIN_METRIC)
+    add_subdirectory(metric_prometheus)
+endif()
+
+if(SHIELD_BUILD_PLUGIN_HEALTH)
+    add_subdirectory(health_http)
+endif()
+
+if(SHIELD_BUILD_PLUGIN_MATCHMAKING)
+    add_subdirectory(matchmaking_elo)
+endif()

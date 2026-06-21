@@ -221,20 +221,32 @@ void PluginManager::discover(const std::string& plugin_dir) {
         std::string filename = entry.path().filename().string();
         std::string ext = entry.path().extension().string();
 
-        // Match plugin DLLs: shield_db_*.dll, shield_auth_*.dll, etc.
+        // Match plugin shared libraries.
+        // Windows: LoadLibraryA loads any PE file regardless of extension.
+        // Linux/macOS: dlopen uses the extension to identify shared libraries.
         bool is_plugin = false;
-#ifdef _WIN32
-        is_plugin = (ext == ".dll");
-#elif __APPLE__
-        is_plugin = (ext == ".dylib");
-#else
-        is_plugin = (ext == ".so");
+        if (ext == ".dll" || ext == ".so" || ext == ".dylib") {
+            is_plugin = true;
+        }
+        // Also accept extensionless files on Linux/macOS (some build systems
+        // strip the extension).
+        if (!is_plugin && ext.empty()) {
+#ifndef _WIN32
+            // Try dlopen to check if it's a valid shared library.
+            // Skip for now - require an extension.
 #endif
+        }
 
         if (!is_plugin) continue;
 
         // Extract plugin name from filename (remove extension).
         std::string name = entry.path().stem().string();
+        // Strip "lib" prefix on Linux/macOS (libshield_redis.so → shield_redis).
+#ifndef _WIN32
+        if (name.substr(0, 3) == "lib") {
+            name = name.substr(3);
+        }
+#endif
         impl_->discovered_paths[name] = entry.path().string();
         ++found;
 
