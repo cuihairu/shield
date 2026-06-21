@@ -43,7 +43,6 @@ export default defineConfig({
           { text: '开放决策', link: '/open-decisions' },
           { text: '部署指南', link: '/deployment' },
           { text: '开发指南', link: '/development-guide' },
-          { text: '贡献指南', link: '/contributing' },
         ],
       },
       {
@@ -51,6 +50,7 @@ export default defineConfig({
         items: [
           { text: '最终架构总设计稿', link: '/architecture' },
           { text: 'Lua API 契约', link: '/lua-api' },
+          { text: '插件系统', link: '/plugin-system' },
           { text: '配置语义', link: '/runtime-config' },
           { text: '核心设计理念', link: '/architecture-core-concepts' },
           { text: '运行时语义决策', link: '/runtime-semantics' },
