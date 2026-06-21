@@ -6,6 +6,7 @@
 #include "shield/cluster/cluster_manager.hpp"
 #endif
 #include "shield/data/data.hpp"
+#include "shield/plugin/plugin_host.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -2186,39 +2187,64 @@ void register_plugin_api(sol::table& shield) {
     sol::state_view lua(shield.lua_state());
     auto plugin = lua.create_table();
 
-    // shield.plugin.list() -> array of plugin info tables
-    plugin.set_function("list",
-        [](sol::this_state state) -> sol::table {
-            sol::state_view lua(state);
-            // TODO: integrate with PluginManager instance
-            // For now, return empty table.
-            return lua.create_table();
-        });
+    // shield.plugin.packages() -> array of {id, version, kind, provides}
+    plugin.set_function("packages", [](sol::this_state state) -> sol::table {
+        sol::state_view lua(state);
+        auto t = lua.create_table();
+        for (const auto& p : shield::plugin::global_host().list_packages()) {
+            sol::table row = lua.create_table();
+            row["id"] = p.id;
+            row["version"] = p.version;
+            row["kind"] = p.kind;
+            sol::table prov = lua.create_table();
+            for (size_t i = 0; i < p.provides.size(); ++i) prov[i + 1] = p.provides[i];
+            row["provides"] = prov;
+            t[t.size() + 1] = row;
+        }
+        return t;
+    });
 
-    // shield.plugin.by_type(type_name) -> array of plugin names
-    plugin.set_function("by_type",
-        [](sol::this_state state, std::string type_name) -> sol::table {
-            sol::state_view lua(state);
-            // TODO: integrate with PluginManager instance
-            return lua.create_table();
-        });
+    // shield.plugin.instances() -> array of {id, package, state, required}
+    plugin.set_function("instances", [](sol::this_state state) -> sol::table {
+        sol::state_view lua(state);
+        auto t = lua.create_table();
+        for (const auto& in : shield::plugin::global_host().list_instances()) {
+            sol::table row = lua.create_table();
+            row["id"] = in.id;
+            row["package"] = in.package;
+            row["state"] = in.state;
+            row["required"] = in.required;
+            t[t.size() + 1] = row;
+        }
+        return t;
+    });
 
-    // shield.plugin.loaded(name) -> boolean
-    plugin.set_function("loaded",
-        [](sol::this_state state, std::string name) -> bool {
-            // TODO: integrate with PluginManager instance
-            (void)name;
-            return false;
-        });
+    // shield.plugin.instance(id) -> table or nil
+    plugin.set_function("instance", [](sol::this_state state, std::string id) -> sol::object {
+        sol::state_view lua(state);
+        for (const auto& in : shield::plugin::global_host().list_instances()) {
+            if (in.id == id) {
+                sol::table row = lua.create_table();
+                row["id"] = in.id;
+                row["package"] = in.package;
+                row["state"] = in.state;
+                row["required"] = in.required;
+                return row;
+            }
+        }
+        return sol::nil;
+    });
 
-    // shield.plugin.capabilities(name) -> array of capability tables
-    plugin.set_function("capabilities",
-        [](sol::this_state state, std::string name) -> sol::table {
-            sol::state_view lua(state);
-            // TODO: integrate with PluginManager instance
-            (void)name;
-            return lua.create_table();
-        });
+    // shield.plugin.binding(name) -> {instance_id, interface} or nil
+    plugin.set_function("binding", [](sol::this_state state, std::string name) -> sol::object {
+        sol::state_view lua(state);
+        auto b = shield::plugin::global_host().get_binding(name);
+        if (!b) return sol::nil;
+        sol::table row = lua.create_table();
+        row["instance_id"] = b->instance_id;
+        row["interface"] = b->interface;
+        return row;
+    });
 
     shield["plugin"] = plugin;
 }

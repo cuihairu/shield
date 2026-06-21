@@ -35,6 +35,21 @@ database:
 redis:
   enabled: false
 
+# Plugin system v1 (see docs/plugin-system.md).
+# `required: false` so configs without a built plugin still boot (DatabasePool
+# falls back to mock). To enable, build the database.sqlite plugin and flip
+# database.enabled above to true.
+plugins:
+  directory: "./plugins"
+  instances:
+    - id: db.main
+      package: database.sqlite
+      required: false
+      config:
+        database: ":memory:"
+  bindings:
+    database.default: db.main
+
 bootstrap:
   timeout:
     config_load: 5000

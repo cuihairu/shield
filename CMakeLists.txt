@@ -197,7 +197,6 @@ find_package(yaml-cpp CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Lua REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
-find_package(hiredis CONFIG REQUIRED)
 find_package(redis++ CONFIG REQUIRED)
 find_package(CAF CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -351,10 +350,19 @@ target_link_libraries(shield_core
 )
 
 # -----------------------------------------------------------------------------
-# shield_plugin - Generic plugin manager
+# shield_plugin - Plugin system v1 (manifest/catalog/pipeline/host API).
+#
+# Dependency direction is INVERTED from the legacy layout: this library is
+# leaf-level (base/log/config only) and shield_data depends ON it, so that
+# shield::data::DatabasePool can call PluginHost::get_by_binding<>() to reach
+# a shield.database.v1 provider without dlopen'ing the plugin itself.
 # -----------------------------------------------------------------------------
 add_library(shield_plugin STATIC
-    src/core/plugin_manager.cpp
+    src/plugin/plugin_library.cpp
+    src/plugin/manifest.cpp
+    src/plugin/schema_validator.cpp
+    src/plugin/plugin_config.cpp
+    src/plugin/plugin_host.cpp
 )
 
 target_include_directories(shield_plugin
@@ -364,7 +372,8 @@ target_include_directories(shield_plugin
 )
 
 target_link_libraries(shield_plugin
-    PUBLIC shield_base shield_log shield_data
+    PUBLIC shield_base shield_log shield_config
+    PRIVATE nlohmann_json::nlohmann_json
 )
 
 include(cmake/CheckDeps.cmake)
@@ -396,8 +405,8 @@ target_include_directories(shield_data
 )
 
 target_link_libraries(shield_data
-    PUBLIC shield_base shield_log shield_config
-    PRIVATE redis++::redis++ hiredis::hiredis
+    PUBLIC shield_base shield_log shield_config shield_plugin
+    PRIVATE redis++::redis++
 )
 
 message(STATUS "shield_data: DB backends are runtime plugins (no link-time DB deps)")

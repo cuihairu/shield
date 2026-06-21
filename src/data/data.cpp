@@ -3,7 +3,8 @@
 
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
-#include "shield/plugin/db_plugin.h"
+#include "shield/plugin/database.h"
+#include "shield/plugin/plugin_host.hpp"
 
 #include "dynamic_library.hpp"
 
@@ -120,7 +121,7 @@ private:
 // Plugin-backed DatabaseConnection
 // =============================================================================
 //
-// Wraps a shield_db_plugin_t handle (returned by a backend DLL) and adapts
+// Wraps a shield_database_v1 handle (resolved by PluginHost) and adapts
 // the C ABI to the C++ DatabaseConnection interface. All plugin memory
 // ownership is handled here: result structs are freed via the plugin's
 // free_result callback, and the underlying DynamicLibrary is kept alive
@@ -164,12 +165,10 @@ const char* plugin_rc_to_code(int rc) {
 
 class PluginDatabaseConnection : public DatabaseConnection {
 public:
-    PluginDatabaseConnection(const shield_db_plugin* plugin,
-                             shield_db_conn* handle,
-                             std::shared_ptr<detail::DynamicLibrary> lib)
+    PluginDatabaseConnection(const shield_database_v1* plugin,
+                             shield_db_conn* handle)
         : plugin_(plugin)
-        , handle_(handle)
-        , lib_(std::move(lib)) {}
+        , handle_(handle) {}
 
     ~PluginDatabaseConnection() override {
         if (handle_ && plugin_ && plugin_->disconnect) {
@@ -287,9 +286,8 @@ private:
         return qr;
     }
 
-    const shield_db_plugin* plugin_;
+    const shield_database_v1* plugin_;  // vtable; PluginHost owns the library
     shield_db_conn* handle_;
-    std::shared_ptr<detail::DynamicLibrary> lib_;  // keep DLL mapped
     std::string last_error_code_;
 };
 
@@ -307,11 +305,10 @@ struct DatabasePool::Impl {
     std::string config_key;
     std::string last_error_code;
 
-    // Plugin state. lib_ stays alive for the lifetime of the pool (and is
-    // also held by every PluginDatabaseConnection created from it, so it
-    // cannot be unloaded underneath an in-flight connection).
-    std::shared_ptr<detail::DynamicLibrary> lib;
-    const shield_db_plugin* plugin = nullptr;
+    // Database provider vtable, resolved from PluginHost binding
+    // "database.default". The host owns the underlying shared library, so
+    // it stays mapped as long as PluginHost is alive (whole process).
+    const shield_database_v1* plugin = nullptr;
     std::string driver_name;
 };
 
@@ -362,8 +359,9 @@ bool DatabasePool::initialize(std::string_view config_key) {
     std::string user = cfg.get_string(prefix + ".username",
                                       cfg.get_string(prefix + ".user", "root"));
     std::string password = cfg.get_string(prefix + ".password", "");
-    std::string driver = cfg.get_string(prefix + ".driver", "mysql");
-    std::string plugin_path = cfg.get_string(prefix + ".plugin_path", "");
+    // Driver is now determined by which package the "database.default"
+    // binding points at; this config value is only used for log labels.
+    std::string driver = cfg.get_string(prefix + ".driver", "plugin");
     const bool has_enabled = cfg.has(prefix + ".enabled");
     const bool mock = cfg.get_bool(prefix + ".mock", !has_enabled);
     const bool allow_mock_fallback =
@@ -410,87 +408,22 @@ bool DatabasePool::initialize(std::string_view config_key) {
     }
 
     // -------------------------------------------------------------------------
-    // Plugin discovery. We look for shield_db_<driver>.(dll|so|dylib):
-    //   1. Explicit plugin_path (directory or full file path)
-    //   2. Same directory as the host executable (typical deploy layout)
-    //   3. Platform default search path (LoadLibrary/dlopen defaults)
+    // Plugin source: the shield.database.v1 provider resolved by PluginHost
+    // under the "database.default" binding (configured in the app.yaml
+    // `plugins` section). The host owns the shared library lifecycle; the
+    // pool only holds the vtable pointer. If no binding is configured,
+    // impl_->plugin stays null and the fallback below (mock, when allowed)
+    // applies — so configs without a database plugin still boot.
     // -------------------------------------------------------------------------
-    const std::string plugin_name = "shield_db_" + driver;
-
-    auto try_load = [&](const std::string& where) -> bool {
-        std::string full_path = where;
-        if (!full_path.empty()) {
-            // Treat `where` as a directory and append the plugin name.
-#ifdef _WIN32
-            char sep = '\\';
-            const char* ext = ".dll";
-#elif defined(__APPLE__)
-            char sep = '/';
-            const char* ext = ".dylib";
-            full_path += "lib";
-#else
-            char sep = '/';
-            const char* ext = ".so";
-            full_path += "lib";
-#endif
-            if (!full_path.empty() && full_path.back() != sep &&
-                full_path.back() != '/') {
-                full_path += sep;
-            }
-            full_path += plugin_name + ext;
-        } else {
-            full_path = plugin_name;  // let the loader apply platform rules
-        }
-
-        std::string err;
-        auto lib = detail::DynamicLibrary::load(full_path, err);
-        if (!lib.is_loaded()) {
-            SHIELD_LOG_INFO(log, "Plugin probe '" + full_path + "': " + err);
-            return false;
-        }
-        using api_fn_t = const shield_db_plugin* (*)();
-        auto fn = reinterpret_cast<api_fn_t>(
-            lib.resolve("shield_db_plugin_api"));
-        if (!fn) {
-            SHIELD_LOG_INFO(log, "Plugin '" + full_path +
-                                     "' missing shield_db_plugin_api export");
-            return false;
-        }
-        const shield_db_plugin* api = fn();
-        if (!api) {
-            SHIELD_LOG_INFO(log, "Plugin '" + full_path +
-                                     "' returned NULL api (init failed)");
-            return false;
-        }
-        if (api->abi_version != SHIELD_DB_ABI_VERSION) {
-            SHIELD_LOG_ERROR(log, "Plugin '" + full_path +
-                                      "' ABI mismatch: got version " +
-                                      std::to_string(api->abi_version) +
-                                      ", expected " +
-                                      std::to_string(SHIELD_DB_ABI_VERSION));
-            impl_->last_error_code = "module_unavailable";
-            return true;  // loaded but unusable; stop searching
-        }
-
-        impl_->lib = std::make_shared<detail::DynamicLibrary>(std::move(lib));
-        impl_->plugin = api;
-        SHIELD_LOG_INFO(log, "Loaded DB plugin '" + plugin_name + "' v" +
-                                 (api->version ? api->version : "?") +
-                                 " (abi=" + std::to_string(api->abi_version) + ")");
-        return true;
-    };
-
-    bool loaded = false;
-    if (!plugin_path.empty()) {
-        loaded = try_load(plugin_path);
-    }
-    if (!loaded && !impl_->lib) {
-        // Try alongside the host executable.
-        loaded = try_load(detail::host_executable_directory());
-    }
-    if (!loaded && !impl_->lib) {
-        // Last resort: platform default search.
-        loaded = try_load("");
+    const std::string plugin_name = "database.default";
+    impl_->plugin = shield::plugin::global_host()
+                        .get_by_binding<shield_database_v1>("database.default");
+    if (impl_->plugin) {
+        impl_->driver_name =
+            impl_->plugin->name ? impl_->plugin->name : "plugin";
+        SHIELD_LOG_INFO(log, "Database provider resolved via binding '" +
+                                 plugin_name + "' v" +
+                                 (impl_->plugin->version ? impl_->plugin->version : "?"));
     }
 
     if (!impl_->plugin) {
@@ -534,9 +467,8 @@ bool DatabasePool::initialize(std::string_view config_key) {
     connect_args->query_timeout_ms = static_cast<int>(query_timeout_ms);
 
     auto* plugin_ptr = impl_->plugin;
-    auto lib_ptr = impl_->lib;
 
-    auto real_factory = [plugin_ptr, lib_ptr, connect_args,
+    auto real_factory = [plugin_ptr, connect_args,
                          host, port, database]() {
         char err_buf[512] = {};
         shield_db_conn* h = plugin_ptr->connect(connect_args.get(),
@@ -545,8 +477,7 @@ bool DatabasePool::initialize(std::string_view config_key) {
             throw std::runtime_error(err_buf[0] ? err_buf
                                                 : "plugin connect returned NULL");
         }
-        return std::make_shared<PluginDatabaseConnection>(plugin_ptr, h,
-                                                           lib_ptr);
+        return std::make_shared<PluginDatabaseConnection>(plugin_ptr, h);
     };
 
     try {

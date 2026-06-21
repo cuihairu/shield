@@ -5,6 +5,7 @@
 #include "shield/base/error.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/config/config.hpp"
+#include "shield/plugin/plugin_host.hpp"
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
 #endif
@@ -219,6 +220,20 @@ bool initialize(const RuntimeConfig& config) {
 
     // Run POST_CONFIG starters before runtime systems consume config.
     run_starters(Phase::POST_CONFIG);
+
+    // Start the plugin system before any subsystem that consumes a binding
+    // (e.g. DatabasePool resolves "database.default" here). Constructed before
+    // database() so teardown order keeps libraries valid past pool teardown.
+    {
+        auto plugin_cfg = shield::plugin::load_plugin_config();
+        std::string plugin_err;
+        if (!shield::plugin::global_host().startup(plugin_cfg, plugin_err)) {
+            SHIELD_LOG_ERROR(log, "Plugin startup failed: " + plugin_err);
+            cleanup_failed_initialize();
+            return false;
+        }
+        SHIELD_LOG_INFO(log, "Plugin system started");
+    }
 
     if (shield::config::get_bool("database.enabled", false)) {
         if (!shield::data::database().initialize()) {
@@ -443,6 +458,11 @@ void shutdown() {
 
     // Run POST_SHUTDOWN starters
     run_starters(Phase::POST_SHUTDOWN);
+
+    // Tear down the plugin system (invokes each instance's shutdown
+    // callback). Libraries stay mapped until process exit so any holder of a
+    // resolved vtable (e.g. DatabasePool) remains valid.
+    shield::plugin::global_host().shutdown();
 
     g_state->initialized = false;
     SHIELD_LOG_INFO(log, "Shield runtime shutdown complete");
