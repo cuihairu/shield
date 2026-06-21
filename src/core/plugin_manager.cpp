@@ -335,6 +335,22 @@ bool PluginManager::load_by_name(const std::string& name, std::string& error) {
     return load(it->second, error);
 }
 
+bool PluginManager::load_all(std::string& error) {
+    auto& log = shield::log::get_logger("plugin");
+
+    for (const auto& [name, path] : impl_->discovered_paths) {
+        if (impl_->plugins.find(name) != impl_->plugins.end()) {
+            continue;  // already loaded
+        }
+        if (!load(path, error)) {
+            // Fail fast: stop on first load error.
+            SHIELD_LOG_ERROR(log, "load_all aborted: " + error);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool PluginManager::init_all(
     const std::unordered_map<std::string,
         std::unordered_map<std::string, std::string>>& config_map,

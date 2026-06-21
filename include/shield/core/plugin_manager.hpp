@@ -41,11 +41,15 @@ public:
     /// @brief Discover plugins in a directory (scan for .dll/.so/.dylib)
     void discover(const std::string& plugin_dir);
 
-    /// @brief Load a single plugin by path
+    /// @brief Load a single plugin by path. Fails fast on error.
     bool load(const std::string& path, std::string& error);
 
     /// @brief Load a plugin by name (searches in discovered paths)
     bool load_by_name(const std::string& name, std::string& error);
+
+    /// @brief Load all discovered plugins. Fails fast on first error.
+    /// Stops immediately if any plugin fails to load.
+    bool load_all(std::string& error);
 
     /// @brief Initialize all loaded plugins
     /// @param config_map map of plugin_name -> config items
