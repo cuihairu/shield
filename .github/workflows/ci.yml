@@ -35,6 +35,12 @@ jobs:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      # CMake 4.x made cmake_minimum_required(VERSION < 3.5) fatal (CMP0174).
+      # yaml-cpp 0.8.0 (and other older ports) still declare < 3.5; the runner
+      # ships CMake 4.3 so vcpkg fails at configure. Pin the policy version so
+      # CMake treats them as 3.5 (allowed).
+      VCPKG_CMAKE_CONFIGURE_OPTIONS: "-DCMAKE_POLICY_VERSION_CMP0174=3.5"
     strategy:
       fail-fast: false
       matrix:
