@@ -4,7 +4,7 @@
 
 当前状态：本文冻结 Phase 1 Lua API 契约；源码需要按本文补齐实现和测试。
 
-实现快照：当前源码已跑通单节点 Lua service 路径，包括 YAML actors
+实现快照：当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置
 启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
 coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer/cancel_timer/fork`、
 `shield.config`、`shield.log.*`、DB/Redis API（真实驱动入口、mock 降级与错误注入测试）、
@@ -68,7 +68,7 @@ return M
 function M.on_init(args)
     -- args.name: configured or spawned service name, may be nil
     -- args.id: local service id
-    -- args.config: YAML actor options/config
+    -- args.config: actor options/config
     -- args.args: shield.spawn(..., { args = ... }) payload
 end
 ```
@@ -161,7 +161,7 @@ local h, err = shield.spawn("player", {
 
 | 参数 | 说明 |
 | --- | --- |
-| `module` | actor 类型或脚本别名，由 YAML `actors[].name` 映射 |
+| `module` | actor 类型或脚本别名，由 `actors[].name` 映射 |
 | `opts.name` | 可选 service name，本 runtime 内唯一 |
 | `opts.args` | 传给 `on_init(args).args` 的业务参数 |
 | `opts.timeout` | 覆盖 spawn timeout，单位 ms |
@@ -356,7 +356,7 @@ local host = shield.config("database.host", "localhost")
 - 读取 bootstrap 后的配置快照。
 - 默认只读。
 - 找不到 key 时返回第二个参数作为默认值；没有默认值则返回 `nil`。
-- 配置加载和合并由 C++ bootstrap 完成，Lua 不负责加载 YAML 文件。
+- 配置加载和合并由 C++ bootstrap 完成，Lua 不负责加载 JSON 文件。
 
 实现快照：`shield.config` 已实现，key 为扁平字符串匹配（如 `"database.host"`），不支持嵌套路径遍历。返回值自动尝试转换为 boolean/integer/number/string。
 
@@ -689,9 +689,11 @@ end
 以下旧 API 不进入重构目标，不保留兼容层：
 
 - `shield.service("name")`
-- `shield.plugin.*`
+- 旧 Lua 插件执行模型和旧 `shield.plugin.list/by_type/loaded/capabilities`
 - DI/IoC 注入 API
 - annotation / condition API
 - gateway middleware chain API
 - `shield.db:query(...)`、`shield.redis:get(...)` 等冒号形式
 - handler 形如 `on_message(src, msg_type, data)` 的统一入口
+
+说明：插件系统 v1 会重新引入只读 introspection API：`shield.plugin.packages()`、`shield.plugin.instances()`、`shield.plugin.instance(id)`、`shield.plugin.binding(name)`。这些 API 只查询插件 catalog/runtime state，不提供 Lua 插件执行能力，也不暴露 native vtable。

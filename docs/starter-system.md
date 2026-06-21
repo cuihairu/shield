@@ -78,14 +78,14 @@ public:
 
 | Starter | 产物 | 依赖 | 说明 |
 | --- | --- | --- | --- |
-| `ConfigStarter` | `Config` | 无 | 解析 CLI、加载 YAML、环境变量展开、校验 core schema |
+| `ConfigStarter` | `Config` | 无 | 解析 CLI、加载 JSON、环境变量展开、校验 core schema |
 | `LogStarter` | `LogRuntime` | `ConfigStarter` | 初始化日志 sink 和日志级别 |
 | `CoreStarter` | `ShieldCore` | `ConfigStarter`, `LogStarter` | 创建 service registry、message router、timer scheduler、CAF adapter |
 | `DataStarter` | `DataRuntime` | `ConfigStarter`, `LogStarter` | 按配置创建 DB/Redis 原始访问能力，可未启用 |
 | `TransportStarter` | `TransportRegistry` | `ConfigStarter`, `LogStarter` | 注册内置 transport 和用户显式链接的 C++ transport |
 | `NetStarter` | `NetRuntime` | `ConfigStarter`, `LogStarter`, `TransportStarter` | 创建 listener/session 管理，但默认不开始 accept |
 | `ScriptStarter` | `LuaRuntime` | `ConfigStarter`, `LogStarter`, `CoreStarter`, `DataStarter`, `NetStarter` | 创建 Lua VM 策略，注册 `shield.*` API |
-| `ServiceStarter` | configured services | `CoreStarter`, `ScriptStarter` | spawn YAML 声明的 Lua/C++ services |
+| `ServiceStarter` | configured services | `CoreStarter`, `ScriptStarter` | spawn JSON 声明的 Lua/C++ services |
 | `AcceptStarter` | active listeners | `NetStarter`, `ServiceStarter` | 服务已 ready 后开启网络 accept |
 
 可选模块如 `ClusterStarter`、`OpsStarter`、`GlobalStarter` 必须在独立官方模块中声明，不能进入 `shield_core` 或默认 Starter 列表。
@@ -110,7 +110,7 @@ parse command line
 
 - 网络 listener 可以提前创建，但必须等 `ServiceStarter` 完成后再 accept。
 - Lua API 绑定只在 `ScriptStarter` 中发生。
-- YAML 声明的 Lua 服务只在 `ServiceStarter` 中 spawn。
+- JSON 声明的 Lua 服务只在 `ServiceStarter` 中 spawn。
 - 启动失败时按已成功启动 Starter 的反向顺序 stop。
 
 ## ScriptStarter
@@ -147,15 +147,20 @@ parse command line
 
 配置示例：
 
-```yaml
-lua:
-  vm:
-    mode: per_service
-    max_vms: 10000
-    max_memory_mb: 64
-  sandbox:
-    allow_os: false
-    allow_io: false
+```json
+{
+  "lua": {
+    "vm": {
+      "mode": "per_service",
+      "max_vms": 10000,
+      "max_memory_mb": 64
+    },
+    "sandbox": {
+      "allow_os": false,
+      "allow_io": false
+    }
+  }
+}
 ```
 
 ## 错误处理
@@ -207,9 +212,11 @@ stop accepting network connections
 - `ApplicationContext` 作为全局组件注册中心。
 - DI/IoC 容器。
 - 注解、条件装配。
-- Lua 插件系统和 `shield.plugin.*`。
+- 旧 Lua 插件执行模型和旧 `shield.plugin.list/by_type/loaded/capabilities`。
 - C++/Lua 生命周期事件总线。
 - 通过配置动态发现 Starter。
+
+插件系统 v1 的 `shield.plugin.*` 仅用于只读 introspection，不属于 Starter 动态发现机制。
 
 需要扩展 runtime 时，只允许两种方式：
 

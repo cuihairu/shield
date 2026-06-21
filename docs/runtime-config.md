@@ -6,7 +6,7 @@
 
 ## 配置原则
 
-- YAML 只做声明式绑定，不承载业务逻辑。
+- JSON 只做声明式绑定，不承载业务逻辑。
 - 最小 runtime schema 只覆盖单节点 runtime 必需能力。
 - 配置驱动 Lua service、网络监听、data source、日志和 bootstrap timeout；每个配置段必须有明确 owner。
 - 不在 core 中提供服务发现、插件、Prometheus、健康检查、DI、注解或条件装配配置。
@@ -26,126 +26,143 @@
 | `database` / `redis` | `shield_data` |
 | `bootstrap` / `shutdown` | `shield_bootstrap` |
 
-```yaml
-app:
-  name: my_game
-  version: "1.0.0"
-
-log:
-  level: info                  # debug | info | warn | error
-  format: text                 # text | json
-  console: true
-  file:
-    enabled: false
-    path: logs/shield.log
-    max_size_mb: 100
-    max_files: 10
-    rotation: size             # size | daily | none
-
-lua:
-  vm:
-    mode: per_service          # per_service
-    max_vms: 10000
-    max_memory_mb: 64
-  sandbox:
-    allow_os: false
-    allow_io: false
-  script_path: "scripts"     # Lua 脚本查找路径（默认: scripts）
-  module_path: "scripts/?.lua;scripts/?/init.lua"  # Lua require() 模块搜索路径
-  cache:
-    enabled: true             # 是否启用脚本缓存（默认: true）
-    max_size: 100            # 最大缓存文件数（默认: 100）
-    ttl_seconds: 0            # 缓存过期时间，0 表示永不过期（默认: 0）
-
-actors:
-  - name: gateway
-    script: scripts/gateway.lua
-    instances: 1
-    required: true
-    network:
-      tcp: "0.0.0.0:8001"
-      # udp: "0.0.0.0:8002"
-      # kcp: "0.0.0.0:8003"
-      # websocket: "0.0.0.0:8004"
-      max_connections: 10000
-      max_frame_size: 65536
-    transport: default
-    options:
-      route_table: login_routes
-    restart:
-      policy: on-failure       # always | on-failure | never
-      max_retries: 5
-      initial_delay: 1000
-      max_delay: 30000
-      multiplier: 2
-    limits:
-      max_mailbox_size: 10000
-      max_coroutines: 1000
-      max_pending_calls: 1000
-      max_timers: 10000
-
-  - name: player
-    script: scripts/player.lua
-    instances: 0               # dynamic only
-
-database:
-  enabled: true
-  driver: mysql                # mysql | postgresql | sqlite
-  host: localhost
-  port: 3306
-  database: game
-  username: root
-  password: ${DB_PASSWORD:}
-  pool_size: 10
-  max_pool_size: 50
-  connect_timeout: 5000
-  acquire_timeout: 5000
-  query_timeout: 30000
-  idle_timeout: 300000
-  max_lifetime: 3600000
-  mock: false                 # 测试/开发专用；生产不要开启
-  allow_mock_fallback: false  # 生产默认连接失败即启动失败
-  options:
-    charset: utf8mb4
-
-redis:
-  enabled: true
-  host: localhost
-  port: 6379
-  db: 0
-  password: ${REDIS_PASSWORD:}
-  pool_size: 10
-  max_pool_size: 50
-  connect_timeout: 5000
-  acquire_timeout: 5000
-  command_timeout: 5000
-  idle_timeout: 300000
-  mock: false                 # 测试/开发专用；生产不要开启
-  allow_mock_fallback: false  # 生产默认连接失败即启动失败
-
-bootstrap:
-  timeout:
-    config_load: 5000
-    log_init: 5000
-    core_init: 10000
-    data_init: 30000
-    net_init: 10000
-    script_init: 10000
-    service_spawn: 60000
-  retry:
-    database:
-      max_retries: 3
-      delay: 5000
-    redis:
-      max_retries: 3
-      delay: 5000
-
-shutdown:
-  timeout:
-    service_drain: 30000
-    service_stop: 10000
-    data_close: 10000
-    total: 60000
+```json
+{
+  "app": {
+    "name": "my_game",
+    "version": "1.0.0"
+  },
+  "log": {
+    "level": "info",
+    "format": "text",
+    "console": true,
+    "file": {
+      "enabled": false,
+      "path": "logs/shield.log",
+      "max_size_mb": 100,
+      "max_files": 10,
+      "rotation": "size"
+    }
+  },
+  "lua": {
+    "vm": {
+      "mode": "per_service",
+      "max_vms": 10000,
+      "max_memory_mb": 64
+    },
+    "sandbox": {
+      "allow_os": false,
+      "allow_io": false
+    },
+    "script_path": "scripts",
+    "module_path": "scripts/?.lua;scripts/?/init.lua",
+    "cache": {
+      "enabled": true,
+      "max_size": 100,
+      "ttl_seconds": 0
+    }
+  },
+  "actors": [
+    {
+      "name": "gateway",
+      "script": "scripts/gateway.lua",
+      "instances": 1,
+      "required": true,
+      "network": {
+        "tcp": "0.0.0.0:8001",
+        "max_connections": 10000,
+        "max_frame_size": 65536
+      },
+      "transport": "default",
+      "options": {
+        "route_table": "login_routes"
+      },
+      "restart": {
+        "policy": "on-failure",
+        "max_retries": 5,
+        "initial_delay": 1000,
+        "max_delay": 30000,
+        "multiplier": 2
+      },
+      "limits": {
+        "max_mailbox_size": 10000,
+        "max_coroutines": 1000,
+        "max_pending_calls": 1000,
+        "max_timers": 10000
+      }
+    },
+    {
+      "name": "player",
+      "script": "scripts/player.lua",
+      "instances": 0
+    }
+  ],
+  "database": {
+    "enabled": true,
+    "driver": "mysql",
+    "host": "localhost",
+    "port": 3306,
+    "database": "game",
+    "username": "root",
+    "password": "${DB_PASSWORD:}",
+    "pool_size": 10,
+    "max_pool_size": 50,
+    "connect_timeout": 5000,
+    "acquire_timeout": 5000,
+    "query_timeout": 30000,
+    "idle_timeout": 300000,
+    "max_lifetime": 3600000,
+    "mock": false,
+    "allow_mock_fallback": false,
+    "options": {
+      "charset": "utf8mb4"
+    }
+  },
+  "redis": {
+    "enabled": true,
+    "host": "localhost",
+    "port": 6379,
+    "db": 0,
+    "password": "${REDIS_PASSWORD:}",
+    "pool_size": 10,
+    "max_pool_size": 50,
+    "connect_timeout": 5000,
+    "acquire_timeout": 5000,
+    "command_timeout": 5000,
+    "idle_timeout": 300000,
+    "mock": false,
+    "allow_mock_fallback": false
+  },
+  "bootstrap": {
+    "timeout": {
+      "config_load": 5000,
+      "log_init": 5000,
+      "core_init": 10000,
+      "data_init": 30000,
+      "net_init": 10000,
+      "script_init": 10000,
+      "service_spawn": 60000
+    },
+    "retry": {
+      "database": {
+        "max_retries": 3,
+        "delay": 5000
+      },
+      "redis": {
+        "max_retries": 3,
+        "delay": 5000
+      }
+    }
+  },
+  "shutdown": {
+    "timeout": {
+      "service_drain": 30000,
+      "service_stop": 10000,
+      "data_close": 10000,
+      "total": 60000
+    }
+  }
+}
 ```
 
 ## Actor 配置
@@ -181,10 +198,13 @@ shutdown:
 - `?` 会被替换为模块名
 
 示例：
-```yaml
-lua:
-  script_path: "scripts"
-  module_path: "scripts/?.lua;scripts/?/init.lua;libs/?.lua"
+```json
+{
+  "lua": {
+    "script_path": "scripts",
+    "module_path": "scripts/?.lua;scripts/?/init.lua;libs/?.lua"
+  }
+}
 ```
 
 这样 `require("utils.helper")` 会依次尝试：
@@ -287,10 +307,13 @@ pool；生产环境默认不自动降级到 mock。若确实需要兼容旧 smok
 
 支持 `${VAR}` 和 `${VAR:default}`：
 
-```yaml
-database:
-  host: ${DB_HOST:localhost}
-  password: ${DB_PASSWORD:}
+```json
+{
+  "database": {
+    "host": "${DB_HOST:localhost}",
+    "password": "${DB_PASSWORD:}"
+  }
+}
 ```
 
 规则：
@@ -304,7 +327,7 @@ database:
 启动可以指定多个配置文件：
 
 ```bash
-shield --config config/app.yaml --config config/production.yaml
+shield --config config/app.json --config config/production.json
 ```
 
 合并规则：

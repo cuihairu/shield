@@ -15,7 +15,7 @@
 shield::run(argc, argv)
   │
   ├─ 1. 解析命令行参数
-  │     - --config <path>     配置文件路径；可重复；默认 config/app.yaml
+  │     - --config <path>     配置文件路径；可重复；默认 config/app.json
   │     - --node-id <id>      仅启用 shield_cluster 时允许
   │     - --log-level <level> 覆盖日志级别（可选）
   │     - --workers <n>       覆盖 runtime worker 数（可选）
@@ -24,7 +24,7 @@ shield::run(argc, argv)
   │     - --help              显示帮助
   │
   ├─ 2. 加载配置
-  │     - 读取 YAML 配置文件
+  │     - 读取 JSON 配置文件
   │     - 环境变量替换 ${VAR:default}
   │     - 多配置文件合并（--config 可多次指定）
   │     - 配置验证（必填项、类型、范围）
@@ -106,7 +106,7 @@ Phase 1 参数：
 
 | 参数 | 行为 |
 | --- | --- |
-| `--config <path>` / `-c <path>` | 添加一个配置文件；可重复；未传入时默认 `config/app.yaml` |
+| `--config <path>` / `-c <path>` | 添加一个配置文件；可重复；未传入时默认 `config/app.json` |
 | `--log-level <level>` | 覆盖配置中的日志级别 |
 | `--workers <n>` | 覆盖 runtime worker 数；`0` 表示自动 |
 | `--node-id <id>` | 仅 `shield_cluster` 启用时有效；未启用时返回 CLI 错误 |
@@ -117,7 +117,7 @@ Phase 1 参数：
 规则：
 
 - 多个 `--config` 按命令行顺序加载并合并，合并规则见 [配置语义](runtime-config.md#多配置文件合并)。
-- 默认 `config/app.yaml` 不存在时，启动失败并返回 1。
+- 默认 `config/app.json` 不存在时，启动失败并返回 1。
 - legacy subcommand（如旧 `server`、`config`、`migrate`）不进入新的 `shield::run` 公共契约；保留期间只能作为 legacy CLI 代码存在。
 - `shield::bootstrap::initialize` / `shutdown` 是 lower-level API，不负责命令行解析、信号处理或 help/version 输出。
 
@@ -137,7 +137,7 @@ Phase 1 参数：
 
 ```txt
 [INFO] Shield starting...
-[INFO] Config loaded: config/app.yaml
+[INFO] Config loaded: config/app.json
 [INFO] Log level: info
 [INFO] Database connected: localhost:3306/game
 [INFO] Redis connected: localhost:6379
@@ -152,7 +152,7 @@ Phase 1 参数：
 启动失败日志：
 
 ```txt
-[ERROR] Failed to load config: config/app.yaml not found
+[ERROR] Failed to load config: config/app.json not found
 [ERROR] Database connection failed: Connection refused
 [WARN]  Cluster peer connection failed, running standalone unhealthy
 ```
@@ -224,17 +224,24 @@ Phase 1 参数：
 
 部分初始化失败可配置重试：
 
-```yaml
-bootstrap:
-  retry:
-    database:
-      max_retries: 3
-      delay: 5000            # 重试间隔（ms）
-    redis:
-      max_retries: 3
-      delay: 5000
-    cluster:
-      max_retries: 0         # 不重试，降级运行
+```json
+{
+  "bootstrap": {
+    "retry": {
+      "database": {
+        "max_retries": 3,
+        "delay": 5000
+      },
+      "redis": {
+        "max_retries": 3,
+        "delay": 5000
+      },
+      "cluster": {
+        "max_retries": 0
+      }
+    }
+  }
+}
 ```
 
 ### 降级运行

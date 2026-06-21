@@ -30,7 +30,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 ## Phase 2: Lua API 契约
 
 - [x] 实现 Lua service module table loader 和 `on_init(args)` 最小调用路径。
-- [x] 从 YAML `actors` 配置启动 Lua service 实例。
+- [x] 从 `actors` 配置启动 Lua service 实例。
 - [x] 实现 `shield.spawn` / `shield.exit` 的单节点最小路径。
 - [x] 实现 opaque ServiceHandle、name reserve/publish 状态和 coroutine-aware spawn。
 - [x] 实现 `shield.query/register/unregister/names` 的单节点最小 registry 路径。
@@ -52,7 +52,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 增加 `include/shield/shield.hpp`。
 - [x] 实现顶层 `shield::run(argc, argv)`，包装或替代当前 `shield::bootstrap::run(argc, argv)`。
 - [x] 冻结 CLI 细节：`--config` 默认值/必填、多配置文件、`--node-id` 归属、legacy subcommand 去留、退出码。
-- [x] 明确 YAML `actors`、`network`、`database`、`redis`、`log` 的最小 schema。
+- [x] 明确 `actors`、`network`、`database`、`redis`、`log` 的最小 schema。
 - [x] 实现启动期最小配置验证：optional 配置段未启用即失败、Phase 1 deferred transport 拒绝启动、actor/data 基础字段校验。
 - [x] 为 `shield` 可执行文件增加 CLI/config smoke tests。
 - [x] 移除旧 CLI 文档与新入口冲突。
@@ -101,15 +101,18 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 详见 [插件系统设计文档](plugin-system.md)。
 
-- [x] `plugin.h` C ABI 接口设计：版本化、类型安全 vtable、零依赖。
-- [x] `PluginManager`：插件发现、加载、初始化、关闭、查询。
-- [x] `DynamicLibrary` 泛化：从 `shield_data` 提取为通用插件加载器。
-- [x] DATABASE 插件类型：复用 `db_plugin.h`，MySQL/PostgreSQL/SQLite 插件。
-- [x] `shield.plugin.*` Lua API：`list`、`by_type`、`loaded`、`capabilities`。
-- [ ] AUTH 插件类型：认证提供者接口（Phase 2）。
-- [ ] CACHE 插件类型：缓存后端接口（Phase 2）。
-- [ ] GAME 插件类型：用户自定义游戏逻辑（Phase 2）。
-- [ ] 插件热加载、依赖管理、沙箱（Phase 3）。
+当前插件系统按 v1 重新设计，不兼容旧实验实现。旧的 `PluginManager`、`plugins.enabled`、`shield_plugin_api()`、`shield_plugin_type`、全局 `find_plugin` 和 `shield_redis` 基础设施插件口径不再作为完成状态。
+
+- [x] 冻结 v1 文档方向：metadata-first、外部 JSON manifest、发现/加载/启动分离、package/instance/binding 模型。
+- [ ] 实现 `plugin.json` 扫描和 catalog 构建。
+- [ ] 实现 `plugins.instances`、`plugins.bindings` 和依赖解析。
+- [ ] 实现 `shield_plugin_get_v1()` ABI 入口和二进制 guard。
+- [ ] 实现配置 schema 校验和默认值合并。
+- [ ] 实现结构化错误对象和加载阶段错误报告。
+- [ ] 实现 Lua introspection：`packages`、`instances`、`instance`、`binding`。
+- [ ] 迁移 DATABASE/CACHE/QUEUE/LEADERBOARD/AUTH 等 provider 到 interface-based v1。
+  当前已开始切数据库 provider；Redis/Auth/Metric/Health/Matchmaking 仍待迁移。
+- [ ] 评估热加载、沙箱和请求级生命周期是否进入后续版本。
 
 ## Later
 
