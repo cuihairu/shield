@@ -1,9 +1,11 @@
 // [SHIELD_CORE] Plugin manager implementation
 #include "shield/core/plugin_manager.hpp"
 
+#include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <filesystem>
 #include <mutex>
 #include <unordered_map>
@@ -100,6 +102,69 @@ struct PluginManager::Impl {
     std::vector<std::string> load_order;  // init order = shutdown reverse
     std::unordered_map<std::string, std::string> discovered_paths;
     mutable std::mutex mutex;
+
+    // Host API function table (passed to plugins during init).
+    shield_host_api host_api;
+    // Opaque host handle (pointer to self, used by plugins to identify the host).
+    struct shield_host opaque_host;
+
+    Impl() {
+        // Fill the host API function table.
+        host_api.log = [](enum shield_log_level level, const char* plugin_name,
+                          const char* message) {
+            auto& log = shield::log::get_logger(plugin_name ? plugin_name : "plugin");
+            std::string msg = message ? message : "";
+            switch (level) {
+                case SHIELD_LOG_DEBUG: SHIELD_LOG_DEBUG(log, msg); break;
+                case SHIELD_LOG_INFO:  SHIELD_LOG_INFO(log, msg); break;
+                case SHIELD_LOG_WARN:  SHIELD_LOG_WARNING(log, msg); break;
+                case SHIELD_LOG_ERROR: SHIELD_LOG_ERROR(log, msg); break;
+            }
+        };
+
+        host_api.get_config = [](shield_host_t, const char* key) -> const char* {
+            if (!key) return nullptr;
+            auto& cfg = shield::config::global_config();
+            static thread_local std::string value;
+            value = cfg.get_string(key, "");
+            return value.empty() ? nullptr : value.c_str();
+        };
+
+        host_api.find_plugin = [](shield_host_t host,
+                                   const char* name) -> const shield_plugin* {
+            if (!host || !name) return nullptr;
+            // Recover the PluginManager from the opaque host handle.
+            auto* self = reinterpret_cast<PluginManager::Impl*>(
+                reinterpret_cast<char*>(host) - offsetof(PluginManager::Impl, opaque_host));
+            auto it = self->plugins.find(name);
+            return it != self->plugins.end() ? &it->second.plugin : nullptr;
+        };
+
+        host_api.get_plugin_vtable = [](shield_host_t host,
+                                         const char* name) -> const void* {
+            if (!host || !name) return nullptr;
+            auto* self = reinterpret_cast<PluginManager::Impl*>(
+                reinterpret_cast<char*>(host) - offsetof(PluginManager::Impl, opaque_host));
+            auto it = self->plugins.find(name);
+            if (it == self->plugins.end()) return nullptr;
+            return it->second.plugin.vtable;
+        };
+
+        host_api.register_shutdown_hook = [](shield_host_t,
+                                              void (*)(void*),
+                                              void*) {
+            // Phase 2: store hooks and call them during shutdown.
+        };
+
+        host_api.report_error = [](shield_host_t,
+                                    const char* plugin_name,
+                                    const char* error_code,
+                                    const char* message) {
+            auto& log = shield::log::get_logger(plugin_name ? plugin_name : "plugin");
+            SHIELD_LOG_ERROR(log, std::string("[") + (error_code ? error_code : "unknown") +
+                            "] " + (message ? message : ""));
+        };
+    }
 
     static shield_plugin_type name_to_type(const std::string& name) {
         if (name.find("db") != std::string::npos ||
@@ -289,7 +354,8 @@ bool PluginManager::init_all(
         config.count = static_cast<int>(items.size());
 
         char err_buf[512] = {0};
-        int rc = entry.plugin.init(&config, err_buf, sizeof(err_buf));
+        int rc = entry.plugin.init(&impl_->opaque_host, &impl_->host_api,
+                                   &config, err_buf, sizeof(err_buf));
         if (rc != 0) {
             error = "Plugin init failed: " + name + " (" +
                     std::string(err_buf) + ")";

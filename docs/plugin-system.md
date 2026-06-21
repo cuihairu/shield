@@ -39,6 +39,46 @@
 └───────────────┘  └─────────────────┘  └───────────────┘
 ```
 
+## 插件如何感知 Shield 上下文
+
+插件通过 **Host Context** 机制访问 Shield 运行时，无需链接 Shield 库：
+
+```c
+// init 时接收 host 和 host_api
+int my_plugin_init(shield_host_t host,
+                   const shield_host_api* host_api,
+                   const shield_plugin_config* config,
+                   char* err_buf, int err_buf_size) {
+    // 写日志
+    host_api->log(SHIELD_LOG_INFO, "my_plugin", "initialized");
+
+    // 读配置
+    const char* host_str = host_api->get_config(host, "database.host");
+
+    // 查找其他插件
+    const shield_plugin* db = host_api->find_plugin(host, "shield_db_mysql");
+    if (db) {
+        // 获取其他插件的 vtable
+        const shield_db_plugin* db_api = db->vtable;
+        auto* conn = db_api->connect(...);
+    }
+
+    // 报告错误
+    host_api->report_error(host, "my_plugin", "connection_lost", "DB unreachable");
+
+    return 0;
+}
+```
+
+| Host API 方法 | 功能 |
+|--------------|------|
+| `log(level, name, msg)` | 写入 Shield 日志系统 |
+| `get_config(host, key)` | 读取配置值 |
+| `find_plugin(host, name)` | 查找已加载插件 |
+| `get_plugin_vtable(host, name)` | 获取其他插件的 vtable |
+| `register_shutdown_hook(host, fn, data)` | 注册关闭钩子 |
+| `report_error(host, plugin, code, msg)` | 报告插件错误 |
+
 ## 核心接口 (plugin.h)
 
 ```c

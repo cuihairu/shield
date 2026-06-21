@@ -87,6 +87,62 @@ struct shield_plugin_capability {
 };
 
 // ============================================================================
+// Host Context — how plugins call back into Shield
+// ============================================================================
+
+// Opaque handle to the Shield host runtime. Passed to plugin init().
+// Plugins use this to access Shield services (logging, config, other plugins).
+// The actual struct is defined by the host; plugins only use the pointer.
+struct shield_host {
+    int _reserved;  // ensures non-zero size
+};
+typedef struct shield_host* shield_host_t;
+
+// Log levels matching Shield's logger.
+enum shield_log_level {
+    SHIELD_LOG_DEBUG = 0,
+    SHIELD_LOG_INFO  = 1,
+    SHIELD_LOG_WARN  = 2,
+    SHIELD_LOG_ERROR = 3,
+};
+
+// Host function table. The host fills this struct and passes it to
+// plugin init(). Plugins use these function pointers to call back
+// into Shield without linking against it.
+struct shield_host_api {
+    // --- Logging ------------------------------------------------------------
+    void (*log)(enum shield_log_level level,
+                const char* plugin_name,
+                const char* message);
+
+    // --- Configuration ------------------------------------------------------
+    // Get a config value by key. Returns NULL if not found.
+    // The returned string is valid until next call.
+    const char* (*get_config)(shield_host_t host, const char* key);
+
+    // --- Plugin Registry ----------------------------------------------------
+    // Find another plugin by name. Returns NULL if not loaded.
+    const struct shield_plugin* (*find_plugin)(shield_host_t host,
+                                               const char* name);
+
+    // Get the vtable of another plugin (type-unsafe, caller must know the type).
+    const void* (*get_plugin_vtable)(shield_host_t host, const char* name);
+
+    // --- Lifecycle Hooks ----------------------------------------------------
+    // Register a shutdown hook (called when Shield is shutting down).
+    void (*register_shutdown_hook)(shield_host_t host,
+                                   void (*hook)(void* user_data),
+                                   void* user_data);
+
+    // --- Error Reporting ----------------------------------------------------
+    // Report a fatal plugin error. Shield will log and may initiate shutdown.
+    void (*report_error)(shield_host_t host,
+                         const char* plugin_name,
+                         const char* error_code,
+                         const char* message);
+};
+
+// ============================================================================
 // Plugin Function Table
 // ============================================================================
 
@@ -104,10 +160,14 @@ struct shield_plugin {
     // --- Lifecycle ----------------------------------------------------------
 
     // Initialize the plugin. Called once at startup.
+    // host: handle to the Shield runtime (for calling back into Shield).
+    // host_api: function table for host services (logging, config, etc.).
     // config: plugin-specific configuration from YAML.
     // Returns 0 on success, non-zero on failure.
     // err_buf: optional buffer for error message (NULL-terminated).
-    int (*init)(const struct shield_plugin_config* config,
+    int (*init)(shield_host_t host,
+                const struct shield_host_api* host_api,
+                const struct shield_plugin_config* config,
                 char* err_buf, int err_buf_size);
 
     // Shutdown the plugin. Called once at exit.

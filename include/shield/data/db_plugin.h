@@ -5,6 +5,14 @@
 // loads the appropriate plugin at runtime via shield::data::DatabasePool
 // and dispatches calls through this function table.
 //
+// Integration with shield_plugin system:
+//   A database plugin DLL can export BOTH:
+//   - shield_plugin_api() → returns shield_plugin with type=DATABASE,
+//     vtable pointing to a shield_db_plugin struct.
+//   - shield_db_plugin_api() → returns shield_db_plugin directly (legacy).
+//   The PluginManager loads via shield_plugin_api(); the DatabasePool
+//   can load via either path for backward compatibility.
+//
 // ABI stability rules:
 //   - Appending new function pointers to the END of shield_db_plugin_t
 //     is allowed (callers must check abi_version before invoking).
