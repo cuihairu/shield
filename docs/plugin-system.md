@@ -105,6 +105,30 @@ plugins/                         ← 插件实现（每个子目录是一个 DLL
 └── redis/shield_redis.cpp       ← Redis 基础设施插件
 ```
 
+## Redis ZSET 多字段编码
+
+Redis ZSET 的 score 是 `double`（53 位有效整数），可以打包多个字段：
+
+```c
+// 编码：score(20位) + level(10位) + time_rank(20位)
+double fields[] = {1500, 45, 12345};
+int bits[] = {20, 10, 20};
+double composite = redis->encode_composite(fields, bits, 3);
+redis->zadd("leaderboard", composite, "player:123");
+
+// 查询时自动按 composite 排序 = score DESC + level DESC + time ASC
+// 解码获取原始字段
+double decoded[3];
+redis->decode_composite(composite, bits, 3, decoded);
+// decoded[0] = 1500, decoded[1] = 45, decoded[2] = 12345
+```
+
+**排序方向控制：**
+- DESC 字段：直接用原值
+- ASC 字段：用 `max_value - value` 反转（如时间戳：`max_time - timestamp`）
+
+这样 Redis ZSET 也能支持多字段排序，和内存 Skip List 一样灵活。
+
 ## 插件依赖关系
 
 ```
@@ -130,7 +154,7 @@ shield_health       (独立)
 | 后端 | 插入 | 排名查询 | Top N | 多字段 | 持久化 | 适合场景 |
 |------|------|---------|-------|--------|--------|---------|
 | **memory (Skip List)** | O(log N) | O(log N) | O(log N+M) | ✅ | 可选 JSON | 小型单机游戏 |
-| **Redis ZSET** | O(log N) | O(log N) | O(log N+M) | ❌ | Redis 持久化 | 大型分布式 |
+| **Redis ZSET** | O(log N) | O(log N) | O(log N+M) | ✅ 编码 | Redis 持久化 | 大型分布式 |
 | **SQLite** | O(log N) | O(log N) | O(log N+M) | ✅ | ✅ 原生 | 需要持久化查询 |
 | **JSON 文件** | O(N log N) | O(N) | O(M) | ✅ | ✅ 文件 | 开发/测试 |
 

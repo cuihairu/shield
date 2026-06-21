@@ -125,6 +125,24 @@ struct shield_redis_plugin {
                      shield_redis_on_message callback, void* user_data);
     int (*unsubscribe)(struct shield_redis_conn* conn, const char* channel);
 
+    // --- Composite Score Encoding (for multi-field leaderboard) ----------
+    //
+    // Encode multiple fields into a single double for ZSET storage.
+    // fields: array of field values (must be non-negative integers).
+    // bits: array of bit widths for each field.
+    // Returns the composite score.
+    //
+    // Example: score(0-999999) + level(0-999) + time_rank(0-999999)
+    //   double fields[] = {1500, 45, 12345};
+    //   int bits[] = {20, 10, 20};
+    //   double composite = encode_composite(fields, bits, 3);
+    //   // composite naturally sorts: score DESC, level DESC, time ASC
+    double (*encode_composite)(const double* fields, const int* bits, int count);
+
+    // Decode a composite score back into individual fields.
+    int (*decode_composite)(double composite, const int* bits, int count,
+                            double* out_fields);
+
     // --- Memory ---------------------------------------------------------
     void (*free_value)(struct shield_redis_value* value);
     void (*free_zentries)(struct shield_redis_zentry* entries, int count);
