@@ -1,8 +1,9 @@
-# Database backend plugins.
+# Shield plugins.
 #
 # Each subdirectory builds a runtime-loadable shared library implementing
-# the C ABI declared in include/shield/data/db_plugin.h. The plugins are
-# mutually independent - users can build any subset.
+# a plugin C ABI interface. The plugins are mutually independent.
+
+# --- Database plugins ---
 
 if(SHIELD_BUILD_DB_PLUGIN_MYSQL)
     add_subdirectory(mysql)
@@ -14,4 +15,10 @@ endif()
 
 if(SHIELD_BUILD_DB_PLUGIN_SQLITE)
     add_subdirectory(sqlite)
+endif()
+
+# --- Infrastructure plugins ---
+
+if(SHIELD_BUILD_PLUGIN_REDIS)
+    add_subdirectory(redis)
 endif()

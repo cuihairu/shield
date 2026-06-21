@@ -104,6 +104,7 @@ option(SHIELD_ENABLE_OPS "Enable ops/diagnostics (optional)" OFF)
 option(SHIELD_BUILD_DB_PLUGIN_MYSQL "Build the MySQL X DevAPI DB plugin" OFF)
 option(SHIELD_BUILD_DB_PLUGIN_POSTGRESQL "Build the PostgreSQL (libpq) DB plugin" OFF)
 option(SHIELD_BUILD_DB_PLUGIN_SQLITE "Build the SQLite DB plugin" OFF)
+option(SHIELD_BUILD_PLUGIN_REDIS "Build the Redis infrastructure plugin" OFF)
 
 # Ensure config directory exists and create a minimal default config if missing.
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/config")
@@ -737,7 +738,8 @@ endif()
 # the plugin DLL itself.
 if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
    SHIELD_BUILD_DB_PLUGIN_POSTGRESQL OR
-   SHIELD_BUILD_DB_PLUGIN_SQLITE)
+   SHIELD_BUILD_DB_PLUGIN_SQLITE OR
+   SHIELD_BUILD_PLUGIN_REDIS)
     add_subdirectory(plugins)
 endif()
 
@@ -787,4 +789,5 @@ message(STATUS "  shield_ops:        ${SHIELD_ENABLE_OPS}")
 message(STATUS "  db plugin mysql:   ${SHIELD_BUILD_DB_PLUGIN_MYSQL}")
 message(STATUS "  db plugin pgsql:   ${SHIELD_BUILD_DB_PLUGIN_POSTGRESQL}")
 message(STATUS "  db plugin sqlite:  ${SHIELD_BUILD_DB_PLUGIN_SQLITE}")
+message(STATUS "  plugin redis:      ${SHIELD_BUILD_PLUGIN_REDIS}")
 message(STATUS "")
