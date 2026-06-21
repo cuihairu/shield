@@ -19,6 +19,7 @@
 //    is the caller's responsibility.
 
 #include "shield/data/db_plugin.h"
+#include "shield/plugin/plugin.h"
 
 #include <libpq-fe.h>
 
@@ -356,3 +357,23 @@ const shield_db_plugin* shield_db_plugin_api(void) {
 }
 
 }  // extern "C"
+
+// Generic plugin entry point — wraps the DB plugin for PluginManager.
+namespace {
+const shield_plugin g_plugin = {
+    SHIELD_PLUGIN_ABI_VERSION,
+    SHIELD_PLUGIN_TYPE_DATABASE,
+    "shield_db_plugin",
+    "1.0.0",
+    "Database plugin",
+    "Shield",
+    nullptr, nullptr, nullptr, nullptr,
+    nullptr,
+};
+}
+
+extern "C" SHIELD_DB_EXPORT
+const struct shield_plugin* shield_plugin_api(void) {
+    const_cast<shield_plugin&>(g_plugin).vtable = shield_db_plugin_api();
+    return &g_plugin;
+}

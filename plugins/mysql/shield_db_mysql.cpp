@@ -1,6 +1,6 @@
 // [SHIELD_DB_PLUGIN_MYSQL] MySQL backend plugin for shield_data.
 //
-// Implements the C ABI from shield/data/db_plugin.h on top of the
+// Implements the C ABI from shield/plugin/db_plugin.h on top of the
 // MySQL Connector/C++ X DevAPI. All exceptions raised by mysqlx are
 // caught at the boundary so they never cross the DLL edge; we surface
 // them as soft failures via shield_db_result.error_msg / error_code.
@@ -14,6 +14,7 @@
 //   "db_query_failed"      Catch-all for other mysqlx::Error
 
 #include "shield/data/db_plugin.h"
+#include "shield/plugin/plugin.h"
 
 #include <mysqlx/xdevapi.h>
 
@@ -257,3 +258,24 @@ const shield_db_plugin* shield_db_plugin_api(void) {
 }
 
 }  // extern "C"
+
+// Generic plugin entry point — wraps the DB plugin for PluginManager.
+namespace {
+const shield_plugin g_plugin = {
+    SHIELD_PLUGIN_ABI_VERSION,
+    SHIELD_PLUGIN_TYPE_DATABASE,
+    "shield_db_mysql",
+    "1.0.0",
+    "MySQL X DevAPI database plugin",
+    "Shield",
+    nullptr, nullptr, nullptr, nullptr,
+    nullptr,  // vtable set at runtime
+};
+}
+
+extern "C" SHIELD_DB_EXPORT
+const struct shield_plugin* shield_plugin_api(void) {
+    // Lazily set vtable to point to the DB plugin.
+    const_cast<shield_plugin&>(g_plugin).vtable = shield_db_plugin_api();
+    return &g_plugin;
+}

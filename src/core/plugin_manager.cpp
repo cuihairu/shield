@@ -3,7 +3,6 @@
 
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
-#include "shield/plugin/db_plugin.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -272,50 +271,18 @@ bool PluginManager::load(const std::string& path, std::string& error) {
         return false;
     }
 
-    // Try shield_plugin_api() first (new generic entry point).
+    // Every plugin must export shield_plugin_api().
     using PluginApiFn = const shield_plugin* (*)();
     auto api_fn = reinterpret_cast<PluginApiFn>(
         lib.resolve("shield_plugin_api"));
 
-    // Fallback: try shield_db_plugin_api() for legacy database plugins.
-    // If found, wrap it in a shield_plugin struct.
-    const shield_plugin* plugin = nullptr;
-    shield_plugin db_wrapper{};
-
-    if (api_fn) {
-        plugin = api_fn();
-    } else {
-        // Try legacy DB entry point.
-        using DbApiFn = const shield_db_plugin* (*)();
-        auto db_api_fn = reinterpret_cast<DbApiFn>(
-            lib.resolve("shield_db_plugin_api"));
-        if (db_api_fn) {
-            const shield_db_plugin* db_plugin = db_api_fn();
-            if (db_plugin) {
-                // Wrap in a shield_plugin struct.
-                db_wrapper.abi_version = SHIELD_PLUGIN_ABI_VERSION;
-                db_wrapper.type = SHIELD_PLUGIN_TYPE_DATABASE;
-                db_wrapper.name = db_plugin->name ? db_plugin->name : "unknown_db";
-                db_wrapper.version = db_plugin->version ? db_plugin->version : "";
-                db_wrapper.description = "Database plugin (legacy DB ABI)";
-                db_wrapper.author = "";
-                db_wrapper.init = nullptr;
-                db_wrapper.shutdown = nullptr;
-                db_wrapper.capability_count = nullptr;
-                db_wrapper.get_capability = nullptr;
-                db_wrapper.vtable = db_plugin;
-                plugin = &db_wrapper;
-                SHIELD_LOG_INFO(log, "Loaded legacy DB plugin via shield_db_plugin_api: " +
-                                path);
-            }
-        }
-    }
-
-    if (!plugin) {
-        error = "Plugin missing shield_plugin_api or shield_db_plugin_api entry point: " + path;
+    if (!api_fn) {
+        error = "Plugin missing shield_plugin_api() entry point: " + path;
         SHIELD_LOG_ERROR(log, error);
         return false;
     }
+
+    const shield_plugin* plugin = api_fn();
     if (!plugin) {
         error = "Plugin returned NULL from shield_plugin_api: " + path;
         SHIELD_LOG_ERROR(log, error);
