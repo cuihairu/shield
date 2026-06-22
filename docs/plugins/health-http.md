@@ -354,7 +354,7 @@ HTTP 端的错误语义：
 
 ```
 plugins/health.http/
-├── plugin.json
+├── manifest.yaml
 └── bin/
     ├── libshield_health_http.dll
     ├── libshield_health_http.so

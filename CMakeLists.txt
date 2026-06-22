@@ -381,7 +381,7 @@ target_include_directories(shield_plugin
 
 target_link_libraries(shield_plugin
     PUBLIC shield_base shield_log shield_config
-    PRIVATE nlohmann_json::nlohmann_json ${LUA_LIBRARIES}
+    PRIVATE nlohmann_json::nlohmann_json yaml-cpp::yaml-cpp ${LUA_LIBRARIES}
 )
 
 include(cmake/CheckDeps.cmake)

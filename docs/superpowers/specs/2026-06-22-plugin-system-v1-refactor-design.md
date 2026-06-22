@@ -4,6 +4,7 @@
 - **目标**：按 `docs/plugin-system.md`（Shield Plugin System v1）完全重构现有插件系统。
 - **状态**：设计已定稿，待实现。
 - **权威文档**：`docs/plugin-system.md`（本文档是其实现落地说明，冲突时以 `plugin-system.md` 为准）。
+- **现行实现说明**：当前运行时已支持 `manifest.yaml` 与 `plugin.json` 双格式 manifest；若同目录同时存在两者，则以 `manifest.yaml` 为优先，`plugin.json` 仅作兼容输入。
 
 ---
 

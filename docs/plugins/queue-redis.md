@@ -223,7 +223,7 @@ Redis 订阅连接断开会抛 `ClosedError`，消费线程退出。当前实现
 <shield-runtime>/
 └── plugins/
     └── queue.redis/
-        ├── plugin.json
+        ├── manifest.yaml
         └── bin/
             ├── libshield_queue_redis.dll      # Windows
             ├── libshield_queue_redis.so       # Linux

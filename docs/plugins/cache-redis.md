@@ -20,7 +20,7 @@
 cmake -B build -DSHIELD_BUILD_PLUGIN_CACHE_REDIS=ON
 ```
 
-构建产物输出到 `<build>/plugins/cache.redis/`，包含 `plugin.json` 和 `bin/` 下的共享库。运行时由 host 扫描 `plugins.directory` 自动发现。
+构建产物输出到 `<build>/plugins/cache.redis/`，包含 `manifest.yaml` 和 `bin/` 下的共享库。运行时由 host 扫描 `plugins.directory` 自动发现。
 
 ## 配置 Schema
 
@@ -245,7 +245,7 @@ cache 层对 `value` 完全透明，按字节存取。推荐使用 JSON 或 Mess
 <shield-runtime>/
 └── plugins/
     └── cache.redis/
-        ├── plugin.json
+        ├── manifest.yaml
         └── bin/
             ├── libshield_cache_redis.dll      # Windows
             ├── libshield_cache_redis.so       # Linux

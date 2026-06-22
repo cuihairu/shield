@@ -342,7 +342,7 @@ struct shield_leaderboard_result {
 <shield-runtime>/
 └── plugins/
     └── leaderboard.redis/
-        ├── plugin.json
+        ├── manifest.yaml
         └── bin/
             ├── libshield_leaderboard_redis.dll      # Windows
             ├── libshield_leaderboard_redis.so       # Linux

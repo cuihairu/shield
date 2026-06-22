@@ -12,7 +12,7 @@
 // is small (~6KB) and the cost of duplication is dwarfed by avoiding
 // a cross-DLL singleton / shared Lua state.
 //
-// Why a C++ header instead of a .lua file shipped next to plugin.json?
+// Why a C++ header instead of a .lua file shipped next to manifest.yaml?
 //   - Plugin autonomy: each plugin must work with *only* its own
 //     directory present. A shared `lua/` directory would need to be
 //     installed separately and tracked at deploy time.
@@ -21,7 +21,7 @@
 //     shared locations.
 //   - Single source of truth: the Lua source lives next to the C++
 //     call site that uses it, which is easier to review than a Lua
-//     file referenced from three different plugin.json manifests.
+//     file referenced from three different plugin manifests.
 #pragma once
 
 #include <sol/sol.hpp>

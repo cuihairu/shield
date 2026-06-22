@@ -104,7 +104,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 当前插件系统按 v1 重新设计，不兼容旧实验实现。旧的 `PluginManager`、`plugins.enabled`、`shield_plugin_api()`、`shield_plugin_type`、全局 `find_plugin` 和 `shield_redis` 基础设施插件口径不再作为完成状态。
 
 - [x] 冻结 v1 文档方向：metadata-first、外部 JSON manifest、发现/加载/启动分离、package/instance/binding 模型。
-- [ ] 实现 `plugin.json` 扫描和 catalog 构建。
+- [ ] 实现 manifest 扫描和 catalog 构建。
 - [ ] 实现 `plugins.instances`、`plugins.bindings` 和依赖解析。
 - [ ] 实现 `shield_plugin_get_v1()` ABI 入口和二进制 guard。
 - [ ] 实现配置 schema 校验和默认值合并。

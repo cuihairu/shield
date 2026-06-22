@@ -1,7 +1,7 @@
 # cache.redis — Redis provider for shield.cache.v1 (plugin system v1).
 #
 # Builds a runtime-loadable MODULE library implementing shield_plugin_get_v1.
-# Deployed to <runtime>/plugins/cache.redis/{plugin.json,bin/...} so
+# Deployed to <runtime>/plugins/cache.redis/{manifest.yaml,bin/...} so
 # PluginHost's scan() finds the manifest and load() maps the library.
 #
 # This plugin owns its Lua autonomy: register_lua() builds the callable
@@ -33,7 +33,7 @@ set_target_properties(shield_cache_redis PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/cache.redis/bin"
 )
 
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/cache.redis")
 
 message(STATUS "  + cache.redis: Redis-backed cache (v1 ABI, Lua-autonomous)")

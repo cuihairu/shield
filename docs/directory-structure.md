@@ -120,7 +120,7 @@ shield/
 │   │   ├── lua_bindings.cpp            # register_lua 钩子实现
 │   │   ├── lua/                        # 可选：插件自带 Lua 业务封装
 │   │   │   └── shield_sqlite.lua
-│   │   ├── plugin.json                 # manifest（含 lua 字段）
+│   │   ├── manifest.yaml               # manifest（含 lua 字段，兼容 plugin.json）
 │   │   └── CMakeLists.txt
 │   ├── mysql/
 │   ├── postgresql/

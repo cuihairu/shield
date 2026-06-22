@@ -32,7 +32,7 @@ cmake --build build
 
 ## 配置 Schema
 
-`plugin.json` 中声明的 `config_schema` 只暴露两个字段，SQLite 不需要 host/port/user/password。
+`manifest.yaml` 中声明的 `config_schema` 只暴露两个字段，SQLite 不需要 host/port/user/password。
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -272,7 +272,7 @@ db->free_result(&r);
 
 ```
 plugins/database.sqlite/
-├── plugin.json
+├── manifest.yaml
 └── bin/
     ├── libshield_database_sqlite.dll     # Windows
     ├── libshield_database_sqlite.so      # Linux

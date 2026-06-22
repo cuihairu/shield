@@ -283,7 +283,7 @@ struct mysql_instance {
     shield_plugin_instance_v1 shell;
     std::string instance_id;
 
-    // Parsed config (from args->config_json). Defaults match plugin.json.
+    // Parsed config (from args->config_json). Defaults match manifest.yaml.
     std::string host = "127.0.0.1";
     int port = 33060;             // X Protocol port (NOT 3306)
     std::string database;

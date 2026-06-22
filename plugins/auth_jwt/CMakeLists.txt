@@ -18,7 +18,7 @@ set_target_properties(shield_auth_jwt PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/auth.jwt/bin"
 )
 
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/auth.jwt")
 
 message(STATUS "  + auth.jwt: HS256 JWT provider (v1 ABI, OpenSSL)")

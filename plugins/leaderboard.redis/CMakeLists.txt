@@ -1,7 +1,7 @@
 # leaderboard.redis — Redis ZSET provider for shield.leaderboard.v1 (plugin system v1).
 #
 # Builds a runtime-loadable MODULE library implementing shield_plugin_get_v1.
-# Deployed to <runtime>/plugins/leaderboard.redis/{plugin.json,bin/...} so
+# Deployed to <runtime>/plugins/leaderboard.redis/{manifest.yaml,bin/...} so
 # PluginHost's scan() finds the manifest and load() maps the library.
 #
 # This plugin owns its Lua autonomy: register_lua() builds the callable
@@ -35,7 +35,7 @@ set_target_properties(shield_leaderboard_redis PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/leaderboard.redis/bin"
 )
 
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/leaderboard.redis")
 
 message(STATUS "  + leaderboard.redis: Redis ZSET leaderboard (v1 ABI, Lua-autonomous)")

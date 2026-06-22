@@ -29,7 +29,7 @@ set_target_properties(shield_queue_redis PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/queue.redis/bin"
 )
 
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/queue.redis")
 
 message(STATUS "  + queue.redis: Redis pub/sub queue (v1 ABI, Lua-autonomous)")

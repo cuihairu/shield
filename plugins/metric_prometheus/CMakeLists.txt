@@ -17,7 +17,7 @@ set_target_properties(shield_metric_prometheus PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/metrics.prometheus/bin"
 )
 
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/metrics.prometheus")
 
 message(STATUS "  + metrics.prometheus: Prometheus text exporter (v1 ABI, boost::beast)")

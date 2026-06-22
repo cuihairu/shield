@@ -121,16 +121,57 @@ BOOST_AUTO_TEST_CASE(scan_finds_package) {
     fs::remove_all(root);
 }
 
-BOOST_AUTO_TEST_CASE(scan_ignores_manifest_yaml_only_directory) {
+BOOST_AUTO_TEST_CASE(scan_accepts_manifest_yaml_only_directory) {
     auto root = unique_root("shield_plugin_yaml_only_test");
     fs::create_directories(root / "yaml.only");
     std::ofstream(root / "yaml.only" / "manifest.yaml")
-        << "schema_version: 1\nid: yaml.only\n";
+        << "schema_version: 1\n"
+           "id: yaml.only\n"
+           "entry: shield_plugin_get_v1\n"
+           "library:\n"
+           "  linux: bin/x.so\n"
+           "  macos: bin/x.dylib\n"
+           "  windows: bin/x.dll\n"
+           "provides: []\n"
+           "requires: []\n"
+           "config_schema:\n"
+           "  type: object\n";
 
     PluginHost host;
     host.scan(root.string());
     auto ids = host.package_ids();
-    BOOST_CHECK(ids.empty());
+    BOOST_REQUIRE_EQUAL(ids.size(), 1u);
+    BOOST_CHECK_EQUAL(ids[0], "yaml.only");
+    fs::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(scan_prefers_manifest_yaml_over_plugin_json) {
+    auto root = unique_root("shield_plugin_manifest_precedence_test");
+    fs::create_directories(root / "minimal.test" / "bin");
+    std::ofstream(root / "minimal.test" / "plugin.json")
+        << make_manifest("json.choice");
+    std::ofstream(root / "minimal.test" / "manifest.yaml")
+        << "schema_version: 1\n"
+           "id: yaml.choice\n"
+           "name: yaml.choice\n"
+           "version: 1.0.0\n"
+           "kind: test\n"
+           "entry: shield_plugin_get_v1\n"
+           "library:\n"
+           "  linux: bin/" << minimal_library_name() << "\n"
+           "  macos: bin/" << minimal_library_name() << "\n"
+           "  windows: bin/" << minimal_library_name() << "\n"
+           "provides:\n"
+           "  - interface: minimal.test.iface\n"
+           "requires: []\n"
+           "config_schema:\n"
+           "  type: object\n";
+
+    PluginHost host;
+    host.scan(root.string());
+    auto ids = host.package_ids();
+    BOOST_REQUIRE_EQUAL(ids.size(), 1u);
+    BOOST_CHECK_EQUAL(ids[0], "yaml.choice");
     fs::remove_all(root);
 }
 

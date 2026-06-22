@@ -20,7 +20,7 @@ set_target_properties(shield_health_http PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/health.http/bin"
 )
 
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/health.http")
 
 message(STATUS "  + health.http: HTTP health endpoint (v1 ABI, boost::beast)")

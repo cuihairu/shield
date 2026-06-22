@@ -30,10 +30,11 @@ namespace shield::config { class Config; }
 namespace shield::plugin {
 
 // ---------------------------------------------------------------------------
-// Declarative model (from JSON manifest + YAML config subtree)
+// Declarative model (from manifest + YAML config subtree)
 // ---------------------------------------------------------------------------
 
-// Parsed plugin.json. One per package directory.
+// Parsed manifest (`manifest.yaml` or `plugin.json`). One per package
+// directory.
 struct Manifest {
     int schema_version = 1;
     std::string id;
@@ -157,7 +158,7 @@ struct BindingInfo {
 // ---------------------------------------------------------------------------
 
 Manifest parse_manifest(const nlohmann::json& j);
-Manifest load_manifest_file(const std::filesystem::path& plugin_json);
+Manifest load_manifest_file(const std::filesystem::path& manifest_path);
 
 // Platform-specific relative library path declared in the manifest.
 std::string platform_library_path(const Manifest& m);

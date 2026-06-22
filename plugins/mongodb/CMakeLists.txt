@@ -1,7 +1,7 @@
 # database.mongodb — mongocxx provider for shield.document.v1 (plugin system v1).
 #
 # Builds a runtime-loadable MODULE library implementing shield_plugin_get_v1.
-# Deployed to <runtime>/plugins/database.mongodb/{plugin.json,bin/...} so
+# Deployed to <runtime>/plugins/database.mongodb/{manifest.yaml,bin/...} so
 # PluginHost's scan() finds the manifest and load() maps the library.
 #
 # This plugin is fully Lua-autonomous: register_lua() installs the callable
@@ -40,7 +40,7 @@ set_target_properties(shield_doc_mongodb PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.mongodb/bin"
 )
 
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.mongodb")
 file(COPY lua/
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.mongodb/lua")

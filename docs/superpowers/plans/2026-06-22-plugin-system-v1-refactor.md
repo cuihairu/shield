@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **现行实现说明：** 当前运行时已支持 `manifest.yaml` 与 `plugin.json` 双格式 manifest；若同目录同时存在两者，则以 `manifest.yaml` 为优先，`plugin.json` 仅作兼容输入。本文其余内容保留当时计划表述。
+
 **Goal:** 按 `docs/plugin-system.md` 完全重构 Shield 插件系统：新 metadata-first JSON manifest + catalog/pipeline + 稳定 C ABI（`shield_plugin_get_v1`）+ interface name 类型系统 + instance/binding 依赖注入 + 结构化错误，并迁移现有 8 个插件、改造 DatabasePool、实现 Lua introspection。
 
 **Architecture:** 纵切端到端 + TDD。先建 ABI 头文件族与 `src/plugin/` 核心（manifest 解析 / schema 校验 / PluginHost pipeline），再打通 sqlite → DatabasePool → bootstrap 这条最小垂直链路验证 ABI，最后横向铺开其余插件与 Lua。`shield_plugin` 库重定义为插件系统核心，依赖方向反转为 `shield_data → shield_plugin`。

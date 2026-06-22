@@ -334,7 +334,7 @@ for (auto& [id, entry] : queue_snapshot) {
 
 ```
 plugins/matchmaking.elo/
-├── plugin.json
+├── manifest.yaml
 └── bin/
     ├── libshield_matchmaking_elo.dll
     ├── libshield_matchmaking_elo.so

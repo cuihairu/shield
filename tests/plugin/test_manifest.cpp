@@ -1,13 +1,16 @@
-// Tests for plugin.json manifest parsing + validation.
+// Tests for plugin manifest parsing + validation.
 #define BOOST_TEST_MODULE shield_plugin_manifest
 #include <boost/test/included/unit_test.hpp>
 
 #include "shield/plugin/plugin_host.hpp"
 
+#include <filesystem>
+#include <fstream>
 #include <nlohmann/json.hpp>
 
 using namespace shield::plugin;
 using json = nlohmann::json;
+namespace fs = std::filesystem;
 
 BOOST_AUTO_TEST_CASE(parse_minimal_manifest) {
     json j = {
@@ -56,4 +59,34 @@ BOOST_AUTO_TEST_CASE(parse_requires) {
     BOOST_CHECK_EQUAL(m.requires_[0].name, "db");
     BOOST_CHECK_EQUAL(m.requires_[0].interface_name, "shield.database.v1");
     BOOST_CHECK_EQUAL(m.requires_[0].optional, false);
+}
+
+BOOST_AUTO_TEST_CASE(load_yaml_manifest_file) {
+    auto root = fs::temp_directory_path() / "shield_plugin_manifest_yaml_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    auto path = root / "manifest.yaml";
+    std::ofstream(path) <<
+        "schema_version: 1\n"
+        "id: database.sqlite\n"
+        "name: SQLite\n"
+        "version: 1.0.0\n"
+        "kind: database\n"
+        "entry: shield_plugin_get_v1\n"
+        "library:\n"
+        "  linux: bin/libshield_database_sqlite.so\n"
+        "  macos: bin/libshield_database_sqlite.dylib\n"
+        "  windows: bin/libshield_database_sqlite.dll\n"
+        "provides:\n"
+        "  - interface: shield.database.v1\n"
+        "    capabilities: [sql]\n"
+        "requires: []\n"
+        "config_schema:\n"
+        "  type: object\n";
+
+    auto m = load_manifest_file(path);
+    BOOST_CHECK_EQUAL(m.id, "database.sqlite");
+    BOOST_REQUIRE_EQUAL(m.provides.size(), 1u);
+    BOOST_CHECK_EQUAL(m.provides[0].interface_name, "shield.database.v1");
+    fs::remove_all(root);
 }

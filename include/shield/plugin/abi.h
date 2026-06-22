@@ -114,7 +114,7 @@ struct shield_plugin_create_args_v1 {
 struct shield_plugin_abi_v1 {
     uint32_t abi_version;          // must == SHIELD_PLUGIN_ABI_VERSION
     uint32_t struct_size;          // host checks >= minimum it knows
-    const char* package_id;        // must match plugin.json "id"
+    const char* package_id;        // must match manifest "id"
     const char* package_version;   // human-readable, e.g. "1.0.0"
 
     // Construct an instance. On success returns 0 and writes *out. On failure

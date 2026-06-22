@@ -1,13 +1,14 @@
 # Shield Plugin System v1
 
-本文是 Shield 插件系统的权威设计。`v1` 不兼容旧实验实现。插件系统采用 metadata-first 发现模型：磁盘包用 `plugin.json` 描述，运行时实例和 binding 通过 Shield 主配置的 `plugins` 子树声明。
+本文是 Shield 插件系统的权威设计。`v1` 不兼容旧实验实现。插件系统采用 metadata-first 发现模型：磁盘包用 manifest 描述，运行时实例和 binding 通过 Shield 主配置的 `plugins` 子树声明。
 
 配置口径：
 
-- `plugin.json` 必须是真 JSON 文件。
+- 插件包 manifest 支持 `manifest.yaml` 和 `plugin.json` 两种文件名。
+- 同一插件目录如果两者同时存在，优先读取 `manifest.yaml`，`plugin.json` 视为兼容副本。
 - `config_schema` 使用 JSON Schema 子集表达。
 - `plugins.instances[].config` 是 JSON-compatible 值模型；在当前主程序中它作为 YAML 子树写入 `app.yaml`，由 `Config` 子系统转换为 JSON 值后交给插件系统。
-- 插件系统不再引入独立的 TOML/INI/YAML 解析器，也不维护第二套配置入口。
+- manifest 的语义模型保持单一：无论来自 YAML 还是 JSON，字段结构都必须与本文档定义的 JSON-compatible manifest 一致。
 
 ## Goals
 
@@ -15,7 +16,7 @@
 | --- | --- |
 | Metadata-first | 先扫描 manifest 建立 catalog，不加载插件代码即可知道有哪些包可用。 |
 | Discovery / load / start 分离 | 发现、解析依赖、加载共享库、创建实例、启动实例是不同阶段。 |
-| JSON-compatible config model | manifest 和 schema 使用 JSON；运行时实例配置使用 Shield Config 子树承载，进入插件系统后按 JSON 值模型处理。 |
+| JSON-compatible config model | manifest 字段模型与 schema 保持 JSON-compatible；运行时实例配置使用 Shield Config 子树承载，进入插件系统后按 JSON 值模型处理。 |
 | Stable C ABI | 插件共享库只暴露 C ABI 入口，不依赖 Shield 内部 C++ 类型。 |
 | Explicit wiring | 用户在主配置中声明实例和绑定关系，host 负责解析依赖和注入。 |
 | Provider-oriented | 插件提供明确接口，例如 `shield.database.v1`、`shield.cache.v1`。 |
@@ -35,8 +36,8 @@
 
 | 名词 | 含义 |
 | --- | --- |
-| Package | 磁盘上的一个插件包目录，包含 `plugin.json` 和共享库。 |
-| Manifest | `plugin.json`，描述包元数据、库路径、接口、依赖和配置 schema。 |
+| Package | 磁盘上的一个插件包目录，包含 manifest 文件和共享库。 |
+| Manifest | `manifest.yaml` 或 `plugin.json`，描述包元数据、库路径、接口、依赖和配置 schema。 |
 | Catalog | 扫描 manifest 后得到的可用包索引，不要求加载共享库。 |
 | Instance | 主配置里创建的一个插件实例。同一个 package 可以有多个 instance。 |
 | Binding | 主配置里把一个接口名或逻辑名字绑定到某个 instance，例如 `database.default -> db.main`。 |
@@ -45,26 +46,26 @@
 
 ## Disk Layout
 
-插件目录只扫描 `plugin.json`，不扫描所有 DLL/SO。这样可以在不执行第三方代码的情况下建立 catalog。
+插件目录只扫描 manifest 文件，不扫描所有 DLL/SO。这样可以在不执行第三方代码的情况下建立 catalog。
 
 ```text
 plugins/
   database.mysql/
-    plugin.json
+    manifest.yaml
     bin/
       shield_database_mysql.dll
       libshield_database_mysql.so
     lua/                      # 可选：插件自带的 Lua 搜索路径
       shield_mysql.lua
   database.mongodb/
-    plugin.json
+    manifest.yaml
     bin/
       shield_doc_mongodb.dll
       libshield_doc_mongodb.so
     lua/
       shield_mongodb.lua
   cache.redis/
-    plugin.json
+    manifest.yaml
     bin/
       shield_cache_redis.dll
       libshield_cache_redis.so
@@ -81,64 +82,49 @@ plugins:
 
 ## Manifest
 
-每个插件包必须有一个 `plugin.json`：
+每个插件包必须有一个 manifest。推荐主文件名为 `manifest.yaml`；也接受 `plugin.json`。如果同目录两者同时存在，host 优先读取 `manifest.yaml`。
 
-```json
-{
-  "schema_version": 1,
-  "id": "database.mysql",
-  "name": "MySQL Database",
-  "version": "1.0.0",
-  "kind": "database",
-  "description": "MySQL provider for shield.database.v1",
-  "entry": "shield_plugin_get_v1",
-  "library": {
-    "windows": "bin/shield_database_mysql.dll",
-    "linux": "bin/libshield_database_mysql.so",
-    "macos": "bin/libshield_database_mysql.dylib"
-  },
-  "provides": [
-    {
-      "interface": "shield.database.v1",
-      "capabilities": ["sql", "transactions"]
-    }
-  ],
-  "requires": [],
-  "lua": {
-    "namespace": "database.mysql",
-    "search_paths": ["lua/?.lua"]
-  },
-  "documentation": {
-    "url": "https://cuihairu.github.io/shield/plugins/database-mysql",
-    "description": "MySQL provider for the shield.database.v1 interface via the X DevAPI"
-  },
-  "config_schema": {
-    "type": "object",
-    "required": ["host", "database", "username"],
-    "properties": {
-      "host": {
-        "type": "string",
-        "default": "127.0.0.1"
-      },
-      "port": {
-        "type": "integer",
-        "default": 3306,
-        "minimum": 1,
-        "maximum": 65535
-      },
-      "database": {
-        "type": "string"
-      },
-      "username": {
-        "type": "string"
-      },
-      "password": {
-        "type": "string",
-        "secret": true
-      }
-    }
-  }
-}
+```yaml
+schema_version: 1
+id: database.mysql
+name: MySQL Database
+version: 1.0.0
+kind: database
+description: MySQL provider for shield.database.v1
+entry: shield_plugin_get_v1
+library:
+  windows: bin/shield_database_mysql.dll
+  linux: bin/libshield_database_mysql.so
+  macos: bin/libshield_database_mysql.dylib
+provides:
+  - interface: shield.database.v1
+    capabilities: [sql, transactions]
+requires: []
+lua:
+  namespace: database.mysql
+  search_paths: [lua/?.lua]
+documentation:
+  url: https://cuihairu.github.io/shield/plugins/database-mysql
+  description: MySQL provider for the shield.database.v1 interface via the X DevAPI
+config_schema:
+  type: object
+  required: [host, database, username]
+  properties:
+    host:
+      type: string
+      default: 127.0.0.1
+    port:
+      type: integer
+      default: 3306
+      minimum: 1
+      maximum: 65535
+    database:
+      type: string
+    username:
+      type: string
+    password:
+      type: string
+      secret: true
 ```
 
 Manifest 字段规则：
@@ -208,7 +194,7 @@ scan -> catalog -> plan -> resolve -> load -> create -> start -> lua_init -> lua
 
 | 阶段 | 说明 |
 | --- | --- |
-| `scan` | 遍历 `plugins.directory/*/plugin.json`。只读 JSON，不加载共享库。 |
+| `scan` | 遍历 `plugins.directory/*/manifest.yaml` 与 `plugin.json`。同目录并存时优先 `manifest.yaml`。只读 manifest，不加载共享库。 |
 | `catalog` | 校验 manifest schema、package id、平台库路径和 interface 声明。 |
 | `plan` | 从主配置的 `plugins.instances` 建立启动计划。 |
 | `resolve` | 校验 package 存在、实例 id 唯一、依赖可满足、拓扑无环，并在这一阶段应用 config 默认值、执行 schema 校验、校验 binding 名唯一且目标 instance 存在。 |
@@ -521,7 +507,7 @@ plugins/mongodb/
 ├── lua/                          # 可选：纯 Lua 业务封装
 │   ├── init.lua
 │   └── shield_mongodb.lua
-├── plugin.json
+├── manifest.yaml
 └── CMakeLists.txt
 ```
 
@@ -585,7 +571,7 @@ v1 的强约束：
 
 | 规则 | 说明 |
 | --- | --- |
-| 发现来源 | 只扫描 `plugin.json`。 |
+| 发现来源 | 扫描 `manifest.yaml` 与 `plugin.json`，并在并存时优先 `manifest.yaml`。 |
 | 运行时启用 | 只看 `plugins.instances` 和 `plugins.bindings`。 |
 | 二进制入口 | 统一为 `shield_plugin_get_v1()`。 |
 | 类型系统 | 以 interface name 为主，例如 `shield.database.v1`、`shield.document.v1`。 |
@@ -597,7 +583,9 @@ v1 的强约束：
 
 ## Implementation Status
 
-当前实现已经具备插件系统主路径：`plugin.json` 扫描、catalog、依赖拓扑、动态库加载、ABI 校验、实例创建、启动、C++ binding 访问、Lua path 注入、`register_lua` 分发和只读 introspection。
+当前实现已经具备插件系统主路径：manifest 扫描、catalog、依赖拓扑、动态库加载、ABI 校验、实例创建、启动、C++ binding 访问、Lua path 注入、`register_lua` 分发和只读 introspection。
+
+第三方插件不需要一次性迁移所有历史包；host 会继续兼容只提供 `plugin.json` 的旧包。
 
 以下条目是 v1 收敛项，文档中按目标语义描述，但实现仍需补齐：
 

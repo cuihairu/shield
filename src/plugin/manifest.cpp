@@ -1,5 +1,7 @@
-// [SHIELD_PLUGIN] Manifest (plugin.json) parsing + validation.
+// [SHIELD_PLUGIN] Manifest parsing + validation.
 #include "shield/plugin/plugin_host.hpp"
+
+#include <yaml-cpp/yaml.h>
 
 #include <fstream>
 #include <sstream>
@@ -14,6 +16,39 @@ void require_field(const nlohmann::json& j, const char* key) {
         throw std::runtime_error(
             std::string("plugin.manifest.invalid: missing '") + key + "'");
     }
+}
+
+nlohmann::json yaml_to_json(const YAML::Node& node) {
+    if (!node || node.IsNull()) {
+        return nullptr;
+    }
+    if (node.IsScalar()) {
+        try {
+            return node.as<bool>();
+        } catch (const std::exception&) {}
+        try {
+            return node.as<std::int64_t>();
+        } catch (const std::exception&) {}
+        try {
+            return node.as<double>();
+        } catch (const std::exception&) {}
+        return node.as<std::string>();
+    }
+    if (node.IsSequence()) {
+        nlohmann::json array = nlohmann::json::array();
+        for (const auto& item : node) {
+            array.push_back(yaml_to_json(item));
+        }
+        return array;
+    }
+    if (node.IsMap()) {
+        nlohmann::json object = nlohmann::json::object();
+        for (const auto& item : node) {
+            object[item.first.as<std::string>()] = yaml_to_json(item.second);
+        }
+        return object;
+    }
+    return nullptr;
 }
 }  // namespace
 
@@ -99,20 +134,36 @@ Manifest parse_manifest(const nlohmann::json& j) {
     return m;
 }
 
-Manifest load_manifest_file(const std::filesystem::path& plugin_json) {
-    std::ifstream f(plugin_json);
+Manifest load_manifest_file(const std::filesystem::path& manifest_path) {
+    std::ifstream f(manifest_path);
     if (!f) {
         throw std::runtime_error("plugin.manifest.invalid: cannot open " +
-                                 plugin_json.string());
+                                 manifest_path.string());
     }
     std::stringstream ss;
     ss << f.rdbuf();
+
+    if (manifest_path.extension() == ".yaml" ||
+        manifest_path.extension() == ".yml") {
+        try {
+            return parse_manifest(yaml_to_json(YAML::Load(ss.str())));
+        } catch (const YAML::ParserException& e) {
+            throw std::runtime_error(
+                std::string("plugin.manifest.invalid: YAML parse error in ") +
+                manifest_path.string() + ": " + e.what());
+        } catch (const YAML::BadConversion& e) {
+            throw std::runtime_error(
+                std::string("plugin.manifest.invalid: YAML conversion error in ") +
+                manifest_path.string() + ": " + e.what());
+        }
+    }
+
     try {
         return parse_manifest(nlohmann::json::parse(ss.str()));
     } catch (const nlohmann::json::parse_error& e) {
         throw std::runtime_error(
             std::string("plugin.manifest.invalid: JSON parse error in ") +
-            plugin_json.string() + ": " + e.what());
+            manifest_path.string() + ": " + e.what());
     }
 }
 

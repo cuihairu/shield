@@ -1,7 +1,7 @@
 # database.sqlite — SQLite provider for shield.database.v1 (plugin system v1).
 #
 # Builds a runtime-loadable MODULE library implementing shield_plugin_get_v1.
-# Deployed to <runtime>/plugins/database.sqlite/{plugin.json,bin/...} so
+# Deployed to <runtime>/plugins/database.sqlite/{manifest.yaml,bin/...} so
 # PluginHost's scan() finds the manifest and load() maps the library.
 #
 # This plugin owns its Lua autonomy: register_lua() builds the callable
@@ -27,7 +27,7 @@ target_link_libraries(shield_database_sqlite
         ${LUA_LIBRARIES}
 )
 
-# Package layout: plugins/database.sqlite/{plugin.json, bin/lib...}
+# Package layout: plugins/database.sqlite/{manifest.yaml, bin/lib...}
 set_target_properties(shield_database_sqlite PROPERTIES
     PREFIX ""
     OUTPUT_NAME "libshield_database_sqlite"
@@ -35,7 +35,7 @@ set_target_properties(shield_database_sqlite PROPERTIES
 )
 
 # Copy the manifest next to the binary so scan() finds it.
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.sqlite")
 
 message(STATUS "  + database.sqlite: SQLite provider (v1 ABI, Lua-autonomous)")

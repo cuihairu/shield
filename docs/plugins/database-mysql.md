@@ -32,7 +32,7 @@ cmake --build build
 
 ## 配置 Schema
 
-`plugin.json` 的 `config_schema` 字段如下。
+`manifest.yaml` 的 `config_schema` 字段如下。
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
@@ -273,7 +273,7 @@ collation-server = utf8mb4_unicode_ci
 
 ```
 plugins/database.mysql/
-├── plugin.json
+├── manifest.yaml
 └── bin/
     ├── libshield_db_mysql.dll        # Windows
     ├── libshield_db_mysql.so         # Linux

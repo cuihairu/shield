@@ -1,7 +1,7 @@
 # database.mysql — MySQL X DevAPI provider for shield.database.v1 (plugin system v1).
 #
 # Builds a runtime-loadable MODULE library implementing shield_plugin_get_v1.
-# Deployed to <runtime>/plugins/database.mysql/{plugin.json,bin/...} so
+# Deployed to <runtime>/plugins/database.mysql/{manifest.yaml,bin/...} so
 # PluginHost's scan() finds the manifest and load() maps the library.
 #
 # This plugin owns its Lua autonomy: register_lua() builds the callable
@@ -34,7 +34,7 @@ set_target_properties(shield_db_mysql PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.mysql/bin"
 )
 
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.mysql")
 
 message(STATUS "  + database.mysql: MySQL X DevAPI provider (v1 ABI, Lua-autonomous, per-instance pool)")

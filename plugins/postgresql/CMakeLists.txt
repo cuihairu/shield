@@ -1,7 +1,7 @@
 # database.postgresql — libpq provider for shield.database.v1 (plugin system v1).
 #
 # Builds a runtime-loadable MODULE library implementing shield_plugin_get_v1.
-# Deployed to <runtime>/plugins/database.postgresql/{plugin.json,bin/...} so
+# Deployed to <runtime>/plugins/database.postgresql/{manifest.yaml,bin/...} so
 # PluginHost's scan() finds the manifest and load() maps the library.
 #
 # This plugin owns its Lua autonomy: register_lua() builds the callable
@@ -34,7 +34,7 @@ set_target_properties(shield_db_pgsql PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.postgresql/bin"
 )
 
-file(COPY plugin.json
+file(COPY manifest.yaml
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.postgresql")
 
 message(STATUS "  + database.postgresql: PostgreSQL (libpq) provider (v1 ABI, Lua-autonomous)")
