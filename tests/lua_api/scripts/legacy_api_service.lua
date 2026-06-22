@@ -10,6 +10,14 @@ function M.has_plugin_api()
     return shield.plugin ~= nil
 end
 
+function M.has_new_plugin_introspection()
+    return shield.plugin ~= nil
+        and shield.plugin.packages ~= nil
+        and shield.plugin.instances ~= nil
+        and shield.plugin.instance ~= nil
+        and shield.plugin.binding ~= nil
+end
+
 function M.colon_db_call_fails()
     local ok = pcall(function()
         shield.db:query("SELECT 1", {})

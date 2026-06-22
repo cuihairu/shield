@@ -55,6 +55,20 @@ BOOST_AUTO_TEST_CASE(LAPI_010_02_PluginApiAvailable) {
     BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), true);
 }
 
+BOOST_AUTO_TEST_CASE(LAPI_010_02A_NewPluginIntrospectionAvailable) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto service = spawn_legacy(manager, "legacy_plugin_v1_test");
+    BOOST_REQUIRE(service.success);
+
+    CallResult cr = manager.call(service.service_id,
+                                 "has_new_plugin_introspection",
+                                 nlohmann::json::array());
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), true);
+}
+
 BOOST_AUTO_TEST_CASE(LAPI_010_03_OldColonDbApiFails) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);

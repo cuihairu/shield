@@ -121,6 +121,19 @@ BOOST_AUTO_TEST_CASE(scan_finds_package) {
     fs::remove_all(root);
 }
 
+BOOST_AUTO_TEST_CASE(scan_ignores_manifest_yaml_only_directory) {
+    auto root = unique_root("shield_plugin_yaml_only_test");
+    fs::create_directories(root / "yaml.only");
+    std::ofstream(root / "yaml.only" / "manifest.yaml")
+        << "schema_version: 1\nid: yaml.only\n";
+
+    PluginHost host;
+    host.scan(root.string());
+    auto ids = host.package_ids();
+    BOOST_CHECK(ids.empty());
+    fs::remove_all(root);
+}
+
 BOOST_AUTO_TEST_CASE(catalog_rejects_duplicate_id) {
     auto root = make_minimal_package();
     fs::create_directories(root / "minimal.test.dup");

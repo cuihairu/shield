@@ -83,7 +83,17 @@ void PluginHost::scan(const std::string& directory) {
     for (auto& entry : fs::directory_iterator(dir, ec)) {
         if (ec || !entry.is_directory()) continue;
         fs::path json_path = entry.path() / "plugin.json";
-        if (!fs::exists(json_path)) continue;
+        if (!fs::exists(json_path)) {
+            fs::path yaml_path = entry.path() / "manifest.yaml";
+            if (fs::exists(yaml_path)) {
+                SHIELD_LOG_WARNING(
+                    shield::log::get_logger("plugin"),
+                    std::string("scan: ignoring unsupported manifest format ") +
+                        yaml_path.string() +
+                        " (expected plugin.json)");
+            }
+            continue;
+        }
         try {
             Package pkg;
             pkg.manifest = load_manifest_file(json_path);
