@@ -2,9 +2,9 @@
 //
 // The host fills a shield_host_api_v1 table and hands it to each plugin via
 // create(). Plugins use these callbacks to log, read their config, fetch
-// resolved dependencies, and report errors — without linking against the
-// host. There is NO global plugin lookup: a plugin can only reach the
-// dependencies it declared in its manifest requires[].
+// resolved dependencies, register Lua paths, and report errors — without
+// linking against the host. There is NO global plugin lookup: a plugin can
+// only reach the dependencies it declared in its manifest requires[].
 
 #pragma once
 
@@ -33,12 +33,12 @@ struct shield_error_v1 {
     const char* hint;          // optional remediation hint
     const char* package_id;    // package involved, may be NULL
     const char* instance_id;   // instance involved, may be NULL
-    const char* phase;         // scan|catalog|plan|resolve|load|create|start
+    const char* phase;         // scan|catalog|plan|resolve|load|create|start|lua_register
 };
 
 // Opaque per-instance context. The host allocates one per instance and the
-// plugin treats it as a black token passed back to config_get / dependency.
-// Layout is host-private; plugins must not inspect its contents.
+// plugin treats it as a black token passed back to config_get / dependency /
+// lua_add_path. Layout is host-private; plugins must not inspect its contents.
 struct shield_plugin_context_v1;
 
 // Host function table. The host populates every slot before calling create().
@@ -68,6 +68,18 @@ struct shield_host_api_v1 {
     const void* (*dependency)(struct shield_plugin_context_v1* ctx,
                               const char* name,
                               const char* interface_name);
+
+    // Return the host's lua_State*. NULL if the host is running without a
+    // Lua runtime (pure C++ mode). During register_lua this is non-NULL.
+    struct lua_State* (*lua_state)(struct shield_plugin_context_v1* ctx);
+
+    // Append a path to Lua's package.path (is_cpath == 0) or package.cpath
+    // (is_cpath == 1). Relative paths resolve against the plugin package
+    // root directory. Multiple calls accumulate. Returns 0 on success.
+    // Typical use: ctx->host_api->lua_add_path(ctx, "lua/?.lua", 0).
+    int (*lua_add_path)(struct shield_plugin_context_v1* ctx,
+                        const char* path,
+                        int is_cpath);
 };
 
 #ifdef __cplusplus

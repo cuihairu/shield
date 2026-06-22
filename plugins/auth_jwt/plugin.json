@@ -5,6 +5,10 @@
   "version": "1.0.0",
   "kind": "auth",
   "description": "HS256 JWT provider for shield.auth.v1 (OpenSSL HMAC-SHA256)",
+  "documentation": {
+    "url": "https://cuihairu.github.io/shield/plugins/auth-jwt",
+    "description": "HS256 JWT provider for the shield.auth.v1 interface (OpenSSL HMAC-SHA256)"
+  },
   "entry": "shield_plugin_get_v1",
   "library": {
     "windows": "bin/libshield_auth_jwt.dll",

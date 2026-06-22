@@ -70,6 +70,9 @@ endif()
 if(SHIELD_BUILD_DB_PLUGIN_SQLITE)
   list(APPEND _shield_db_features "database-sqlite")
 endif()
+if(SHIELD_BUILD_PLUGIN_MONGODB)
+  list(APPEND _shield_db_features "database-mongodb")
+endif()
 if(_shield_db_features AND NOT DEFINED VCPKG_MANIFEST_FEATURES)
   set(VCPKG_MANIFEST_FEATURES ${_shield_db_features})
 elseif(_shield_db_features)
@@ -100,10 +103,11 @@ option(SHIELD_ENABLE_OPS "Enable ops/diagnostics (optional)" OFF)
 # DB backend plugins are discovered at runtime; see plugins/*/CMakeLists.txt.
 # Each plugin is a separate shared library so users only ship the DLLs they
 # actually need. SHIELD_BUILD_DB_PLUGINS selects which plugins to build
-# from source; the host (shield_data) never links any DB library.
+# from source; the host never links any DB library.
 option(SHIELD_BUILD_DB_PLUGIN_MYSQL "Build the MySQL X DevAPI DB plugin" OFF)
 option(SHIELD_BUILD_DB_PLUGIN_POSTGRESQL "Build the PostgreSQL (libpq) DB plugin" OFF)
 option(SHIELD_BUILD_DB_PLUGIN_SQLITE "Build the SQLite DB plugin" OFF)
+option(SHIELD_BUILD_PLUGIN_MONGODB "Build the MongoDB document DB plugin" OFF)
 option(SHIELD_BUILD_PLUGIN_AUTH "Build the JWT auth plugin" OFF)
 option(SHIELD_BUILD_PLUGIN_METRIC "Build the Prometheus metrics plugin" OFF)
 option(SHIELD_BUILD_PLUGIN_HEALTH "Build the HTTP health check plugin" OFF)
@@ -355,9 +359,9 @@ target_link_libraries(shield_core
 # shield_plugin - Plugin system v1 (manifest/catalog/pipeline/host API).
 #
 # Dependency direction is INVERTED from the legacy layout: this library is
-# leaf-level (base/log/config only) and shield_data depends ON it, so that
-# shield::data::DatabasePool can call PluginHost::get_by_binding<>() to reach
-# a shield.database.v1 provider without dlopen'ing the plugin itself.
+# leaf-level (base/log/config only), and host subsystems call into it to
+# reach shield.database.v1 / shield.cache.v1 / ... providers via
+# PluginHost::get_by_binding<T>() without dlopen'ing plugins themselves.
 # -----------------------------------------------------------------------------
 add_library(shield_plugin STATIC
     src/plugin/plugin_library.cpp
@@ -385,33 +389,6 @@ if(TARGET shield_core)
     get_target_property(core_links shield_core LINK_LIBRARIES)
     message(STATUS "shield_core linked libraries: ${core_links}")
 endif()
-
-# -----------------------------------------------------------------------------
-# shield_data - Raw DB/Redis access
-#
-# NOTE: shield_data does NOT link any database client library. Real database
-# backends are loaded at runtime as DLLs from the plugins/ subdirectory.
-# See include/shield/data/db_plugin.h for the C ABI every plugin implements.
-# -----------------------------------------------------------------------------
-add_library(shield_data STATIC
-    src/data/data.cpp
-    src/data/dynamic_library.cpp
-)
-
-target_include_directories(shield_data
-    PUBLIC
-        ${PROJECT_SOURCE_DIR}/include
-        ${CMAKE_CURRENT_BINARY_DIR}/include
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/src/data
-)
-
-target_link_libraries(shield_data
-    PUBLIC shield_base shield_log shield_config shield_plugin
-    PRIVATE redis++::redis++
-)
-
-message(STATUS "shield_data: DB backends are runtime plugins (no link-time DB deps)")
 
 # -----------------------------------------------------------------------------
 # shield_transport - Frame/codec/encryption adapter
@@ -502,7 +479,7 @@ target_include_directories(shield_lua
 
 target_link_libraries(shield_lua
     PUBLIC shield_base shield_core
-    PRIVATE shield_log shield_config shield_data shield_net shield_plugin
+    PRIVATE shield_log shield_config shield_net shield_plugin
     PRIVATE ${LUA_LIBRARIES} sol2::sol2
 )
 
@@ -528,7 +505,7 @@ target_include_directories(shield_bootstrap
 
 target_link_libraries(shield_bootstrap
     PUBLIC shield_base CAF::core CAF::io
-    PRIVATE shield_log shield_config shield_core shield_lua shield_data shield_net
+    PRIVATE shield_log shield_config shield_core shield_lua shield_net
 )
 
 if(SHIELD_ENABLE_CLUSTER)
@@ -608,13 +585,6 @@ add_test(NAME shield_runtime_lua_smoke
         -DEXPECTED_OUTPUT_REGEX=initialized
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
-add_test(NAME shield_runtime_data_smoke
-    COMMAND ${CMAKE_COMMAND}
-        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/data-enabled.yaml"
-        -DEXPECTED_EXIT_CODE=0
-        -DEXPECTED_OUTPUT_REGEX=Database pool initialized
-        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
-)
 add_test(NAME shield_runtime_registry_smoke
     COMMAND ${CMAKE_COMMAND}
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/registry-smoke.yaml"
@@ -651,13 +621,6 @@ add_test(NAME shield_config_duplicate_actor_rejected
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/duplicate-actors.yaml"
         -DEXPECTED_EXIT_CODE=1
         -DEXPECTED_OUTPUT_REGEX=unique
-        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
-)
-add_test(NAME shield_config_invalid_database_rejected
-    COMMAND ${CMAKE_COMMAND}
-        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/invalid-database.yaml"
-        -DEXPECTED_EXIT_CODE=1
-        -DEXPECTED_OUTPUT_REGEX=database
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
 add_test(NAME shield_config_invalid_log_level_rejected
@@ -747,13 +710,14 @@ endif()
 # =============================================================================
 #
 # Each plugin is a separate shared library implementing the C ABI declared
-# in include/shield/data/db_plugin.h. At runtime shield_data loads
+# in include/shield/plugin/database.h. At runtime PluginHost loads
 # shield_db_<driver>.dll/.so next to the host executable. Building a plugin
-# here does not pull its dependency into shield_data - the link boundary is
+# here does not pull its dependency into the host - the link boundary is
 # the plugin DLL itself.
 if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
    SHIELD_BUILD_DB_PLUGIN_POSTGRESQL OR
    SHIELD_BUILD_DB_PLUGIN_SQLITE OR
+   SHIELD_BUILD_PLUGIN_MONGODB OR
    SHIELD_BUILD_PLUGIN_AUTH OR
    SHIELD_BUILD_PLUGIN_METRIC OR
    SHIELD_BUILD_PLUGIN_HEALTH OR
@@ -797,7 +761,6 @@ message(STATUS "shield_log:          ENABLED")
 message(STATUS "shield_config:       ENABLED")
 message(STATUS "shield_core:         ENABLED (PURE)")
 message(STATUS "shield_plugin:       ENABLED")
-message(STATUS "shield_data:         ENABLED")
 message(STATUS "shield_transport:    ENABLED")
 message(STATUS "shield_net:           ENABLED")
 message(STATUS "shield_lua:          ENABLED")
@@ -810,6 +773,7 @@ message(STATUS "  shield_ops:        ${SHIELD_ENABLE_OPS}")
 message(STATUS "  db plugin mysql:   ${SHIELD_BUILD_DB_PLUGIN_MYSQL}")
 message(STATUS "  db plugin pgsql:   ${SHIELD_BUILD_DB_PLUGIN_POSTGRESQL}")
 message(STATUS "  db plugin sqlite:  ${SHIELD_BUILD_DB_PLUGIN_SQLITE}")
+message(STATUS "  db plugin mongodb: ${SHIELD_BUILD_PLUGIN_MONGODB}")
 message(STATUS "  plugin auth:       ${SHIELD_BUILD_PLUGIN_AUTH}")
 message(STATUS "  plugin metric:     ${SHIELD_BUILD_PLUGIN_METRIC}")
 message(STATUS "  plugin health:     ${SHIELD_BUILD_PLUGIN_HEALTH}")

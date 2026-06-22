@@ -5,6 +5,10 @@
   "version": "1.0.0",
   "kind": "matchmaking",
   "description": "Greedy rating-tolerance ELO provider for shield.matchmaking.v1",
+  "documentation": {
+    "url": "https://cuihairu.github.io/shield/plugins/matchmaking-elo",
+    "description": "Greedy rating-tolerance ELO provider for the shield.matchmaking.v1 interface (solo + party)"
+  },
   "entry": "shield_plugin_get_v1",
   "library": {
     "windows": "bin/libshield_matchmaking_elo.dll",

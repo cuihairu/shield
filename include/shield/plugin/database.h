@@ -1,14 +1,13 @@
 // [SHIELD_PLUGIN] shield.database.v1 interface.
 //
 // SQL database provider interface. Function signatures are inherited
-// verbatim from the legacy shield_db_plugin (include/shield/plugin/db_plugin.h)
-// so that shield::data::DatabasePool migrates by renaming the type only —
-// no call-site changes are needed.
+// verbatim from the legacy shield_db_plugin so plugins written against
+// the pre-v1 ABI migrate by renaming the type only.
 //
 // A package providing "shield.database.v1" returns a shield_database_v1*
-// from instance->get_interface("shield.database.v1"). The host owns the
-// connection pool; this vtable is the per-driver connection factory + SQL
-// surface.
+// from instance->get_interface("shield.database.v1"). The plugin owns
+// its own connection pool (per-instance); this vtable is the per-driver
+// connection factory + SQL surface.
 
 #pragma once
 

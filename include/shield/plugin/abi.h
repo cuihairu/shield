@@ -8,6 +8,11 @@
 // Interface-name based: there is no global plugin-type enum. Each instance
 // exposes its interfaces by name via get_interface().
 //
+// Lua autonomy: every instance MUST implement register_lua(). The host calls
+// it once after the Lua runtime is up, passing the host's lua_State* so the
+// plugin can register its own Lua API (typically shield.<namespace>). Plugins
+// with no Lua surface provide an empty implementation (return 0).
+//
 // ABI stability rules:
 //   - Appending fields to the END of these structs (and bumping handling) is
 //     allowed; host uses struct_size to detect support.
@@ -15,7 +20,8 @@
 //   - All strings crossing the boundary are NULL-terminated UTF-8.
 //
 // Threading:
-//   - create/start/shutdown are called from the host bootstrap thread.
+//   - create/start/register_lua/shutdown are called from the host bootstrap
+//     thread.
 //   - Interface vtable methods may be called concurrently from worker
 //     threads; the plugin must document its own synchronization needs.
 
@@ -43,8 +49,13 @@ struct shield_host_api_v1;
 struct shield_error_v1;
 struct shield_plugin_context_v1;
 
+// Opaque forward declaration of Lua's C state type. abi.h does NOT include
+// lua.h (plugins that need the full definition include it themselves or use
+// sol2). Registering Lua bindings requires only passing the pointer through.
+struct lua_State;
+
 // Unified instance shell. The host only ever interacts with a plugin
-// instance through these three function pointers — it never inspects the
+// instance through these four function pointers — it never inspects the
 // plugin's internal state. The concrete struct embedded behind this shell
 // is plugin-defined.
 struct shield_plugin_instance_v1 {
@@ -65,18 +76,30 @@ struct shield_plugin_instance_v1 {
 
     // Stop the instance and release all resources. Safe to call once.
     void (*shutdown)(struct shield_plugin_instance_v1* self);
+
+    // Register Lua bindings for this instance. Called exactly once by the
+    // host, AFTER start() succeeds AND the Lua runtime is initialized.
+    // Plugins use sol2 (sol::state_view(L)) to register methods/tables under
+    // shield.<namespace>. L is guaranteed non-NULL when called; if the host
+    // runs without a Lua runtime, this callback is skipped entirely (so the
+    // plugin may still assume L is valid if invoked).
+    // Returns 0 on success; non-zero reports a structured error via `err`.
+    int (*register_lua)(struct shield_plugin_instance_v1* self,
+                        struct lua_State* L,
+                        struct shield_error_v1* err);
 };
 
 // Arguments passed to the plugin's create() entry. The host fills these in
 // after resolving config and dependencies.
 struct shield_plugin_create_args_v1 {
     // Host function table — logging, error reporting, config lookup,
-    // dependency access. Valid for the lifetime of the instance.
+    // dependency access, Lua state. Valid for the lifetime of the instance.
     const struct shield_host_api_v1* host_api;
 
     // Opaque per-instance context. The plugin stores this pointer and passes
-    // it back to host_api callbacks (config_get / dependency) so the host can
-    // identify which instance is calling. Host-owned, host-allocated.
+    // it back to host_api callbacks (config_get / dependency / lua_add_path)
+    // so the host can identify which instance is calling. Host-owned,
+    // host-allocated.
     struct shield_plugin_context_v1* ctx;
 
     // Instance id from plugins.instances[].config (NOT the package id).

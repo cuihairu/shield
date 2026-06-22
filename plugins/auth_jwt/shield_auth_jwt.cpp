@@ -454,6 +454,9 @@ int auth_create(const struct shield_plugin_create_args_v1* args,
     inst->shell.shutdown = [](struct shield_plugin_instance_v1* self) {
         delete reinterpret_cast<auth_instance*>(self);
     };
+    // No Lua surface yet — empty register_lua satisfies the v1 ABI.
+    inst->shell.register_lua = [](shield_plugin_instance_v1*, struct lua_State*,
+                                  shield_error_v1*) { return 0; };
     *out = &inst->shell;
     return 0;
 }

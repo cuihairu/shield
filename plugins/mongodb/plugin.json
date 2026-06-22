@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "database.mongodb",
+  "name": "MongoDB",
+  "version": "1.0.0",
+  "kind": "document",
+  "description": "mongocxx-based document provider for shield.document.v1",
+  "documentation": {
+    "url": "https://cuihairu.github.io/shield/plugins/database-mongodb",
+    "description": "MongoDB provider for the shield.document.v1 interface via mongo-cxx-driver"
+  },
+  "entry": "shield_plugin_get_v1",
+  "library": {
+    "windows": "bin/libshield_doc_mongodb.dll",
+    "linux": "bin/libshield_doc_mongodb.so",
+    "macos": "bin/libshield_doc_mongodb.dylib"
+  },
+  "provides": [
+    { "interface": "shield.document.v1", "capabilities": ["crud", "aggregation", "transactions"] }
+  ],
+  "requires": [],
+  "lua": {
+    "namespace": "database.mongodb",
+    "search_paths": ["lua/?.lua"]
+  },
+  "config_schema": {
+    "type": "object",
+    "required": ["uri"],
+    "properties": {
+      "uri": { "type": "string", "secret": true, "description": "mongodb://[user:pass@]host[:port]/database?[options]" },
+      "database": { "type": "string", "description": "Logical database name; defaults to the one in the URI" },
+      "connect_timeout_ms": { "type": "integer", "default": 5000, "minimum": 100, "maximum": 60000 },
+      "socket_timeout_ms": { "type": "integer", "default": 30000, "minimum": 100, "maximum": 300000 },
+      "pool_size": { "type": "integer", "default": 4, "minimum": 1, "maximum": 256 }
+    }
+  }
+}

@@ -5,7 +5,6 @@
 #include "shield/base/error.hpp"
 #include "shield/base/result.hpp"
 #include "shield/config/config.hpp"
-#include "shield/data/data.hpp"
 #include "shield/log/logger.hpp"
 
 #include <nlohmann/json.hpp>
@@ -85,9 +84,6 @@ struct LuaServiceManager::Impl {
     // Reset on successful handler completion; incremented on uncaught error.
     std::unordered_map<std::string, int> error_counts;
     static constexpr int kDefaultMaxErrorsBeforePanic = 10;
-
-    // Per-service Redis subscription tracking for auto-cancel on exit.
-    std::unordered_map<std::string, std::unordered_set<std::string>> redis_subscriptions;
 
     // Track recently exited services for service_dead error distinction.
     // Cleared periodically to avoid unbounded growth.
@@ -602,14 +598,13 @@ void LuaServiceManager::exit(std::string_view service_id,
     Impl::DispatchScope scope(*impl_, std::string(service_id), "", true);
     (void)impl_->runtime.call_service_function(it->second, "on_exit", args, &error);
 
-    // Cancel forked tasks / timers / coroutines / Redis subscriptions BEFORE
-    // erasing the service VM. These hold sol::function / std::function callbacks
-    // that reference the service's lua_State; releasing them after the VM is
-    // destroyed would luaL_unref on a closed state.
+    // Cancel forked tasks / timers / coroutines BEFORE erasing the service
+    // VM. These hold sol::function / std::function callbacks that reference
+    // the service's lua_State; releasing them after the VM is destroyed
+    // would luaL_unref on a closed state.
     cancel_forked_tasks_for_service(std::string(service_id));
     impl_->runtime.timer_manager().cancel_all_for_service(std::string(service_id));
     impl_->runtime.coroutine_scheduler().cancel_all_for_service(std::string(service_id));
-    cancel_redis_subscriptions(std::string(service_id));
 
     if (auto names_it = impl_->owned_names.find(std::string(service_id));
         names_it != impl_->owned_names.end()) {
@@ -678,24 +673,6 @@ bool LuaServiceManager::is_in_exit() const {
     return impl_->dispatch_stack.back().in_exit;
 }
 
-void LuaServiceManager::register_redis_subscription(const std::string& channel) {
-    const std::string owner = current_service_id();
-    if (!owner.empty()) {
-        impl_->redis_subscriptions[owner].insert(channel);
-    }
-}
-
-void LuaServiceManager::cancel_redis_subscriptions(const std::string& service_id) {
-    auto it = impl_->redis_subscriptions.find(service_id);
-    if (it == impl_->redis_subscriptions.end()) {
-        return;
-    }
-    auto& redis = shield::data::redis();
-    for (const auto& channel : it->second) {
-        redis.unsubscribe(channel);
-    }
-    impl_->redis_subscriptions.erase(it);
-}
 
 std::string LuaServiceManager::query_service(std::string_view name) const {
     auto it = impl_->published_names.find(std::string(name));

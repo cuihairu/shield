@@ -1,9 +1,9 @@
 // [SHIELD_PLUGIN] Cross-platform shared-library loader.
 //
 // Self-contained dlopen/LoadLibrary wrapper used by PluginHost to map plugin
-// .so/.dll/.dylib files and resolve their entry symbol. Kept independent of
-// shield_data::detail::DynamicLibrary so the shield_plugin library stays
-// leaf-level (no dependency back into shield_data).
+// .so/.dll/.dylib files and resolve their entry symbol. Kept self-contained
+// so the shield_plugin library stays leaf-level (no dependency back into
+// any host runtime module).
 //
 // Public header: Instance holds a PluginLibrary member, so the type must be
 // visible to consumers of PluginHost.

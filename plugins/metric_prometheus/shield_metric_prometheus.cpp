@@ -374,6 +374,9 @@ int metric_create(const struct shield_plugin_create_args_v1* args,
         }
         return 0;
     };
+    // No Lua surface yet — empty register_lua satisfies the v1 ABI.
+    inst->shell.register_lua = [](shield_plugin_instance_v1*, struct lua_State*,
+                                  shield_error_v1*) { return 0; };
     inst->shell.shutdown = [](struct shield_plugin_instance_v1* self) {
         auto* inst = reinterpret_cast<metric_instance*>(self);
         if (!inst) return;

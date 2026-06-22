@@ -1,8 +1,9 @@
 // [SHIELD_PLUGIN] Plugin system v1 — host (C++ side).
 //
 // C++ data model + PluginHost orchestrator for the scan → catalog → plan →
-// resolve → load → create → start pipeline. Business code (e.g. shield::data
-// DatabasePool) reaches providers via PluginHost::get_by_binding<T>().
+// resolve → load → create → start pipeline. Business code reaches providers
+// via the per-plugin Lua callable namespaces (e.g. shield.database.sqlite),
+// or — for C-ABI consumers — via PluginHost::get_by_binding<T>().
 //
 // See docs/plugin-system.md for the authoritative design and
 // docs/superpowers/specs/2026-06-22-plugin-system-v1-refactor-design.md for
@@ -60,6 +61,23 @@ struct Manifest {
         bool optional = false;
     };
     std::vector<Require> requires_;
+
+    // Optional Lua metadata. When present, the host injects the search paths
+    // into Lua's package.path before register_lua_all runs.
+    struct LuaMeta {
+        std::string namespace_;          // e.g. "database.mongodb"
+        std::vector<std::string> search_paths;  // e.g. ["lua/?.lua"]
+        bool enabled = false;
+    } lua;
+
+    // Optional documentation pointer. Surfaced via PluginHost::list_packages()
+    // so dashboards / introspection APIs can link to the per-plugin online
+    // docs. Third-party plugins SHOULD set this so users can discover usage.
+    struct DocumentationMeta {
+        std::string url;          // absolute URL to online docs
+        std::string description;  // one-line summary (optional)
+        bool enabled = false;
+    } documentation;
 
     nlohmann::json config_schema;  // JSON-Schema subset for instance config
 };
@@ -123,6 +141,8 @@ struct Instance {
 struct PackageInfo {
     std::string id, version, kind;
     std::vector<std::string> provides;
+    std::string docs_url;         // manifest documentation.url (may be empty)
+    std::string docs_description; // manifest documentation.description (may be empty)
 };
 struct InstanceInfo {
     std::string id, package, state;
@@ -171,6 +191,17 @@ public:
     bool load_all(std::string& error);
     bool create_all(std::string& error);
     bool start_all(std::string& error);
+
+    // Inject every started instance's manifest lua.search_paths into the
+    // given Lua state's package.path. Called by bootstrap after the Lua
+    // runtime is up, BEFORE register_lua_all. Relative paths resolve
+    // against each plugin's package root.
+    void inject_lua_paths(struct lua_State* L);
+
+    // Call register_lua(L) on every started instance, in start order.
+    // Returns false and sets `error` if any REQUIRED instance's register_lua
+    // fails; non-required failures are logged and skipped.
+    bool register_lua_all(struct lua_State* L, std::string& error);
 
     // --- business access: binding name -> typed interface vtable ---
     // T must expose `static constexpr const char* interface_name`.

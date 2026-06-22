@@ -5,6 +5,10 @@
   "version": "1.0.0",
   "kind": "health",
   "description": "HTTP health/readiness provider for shield.health.v1 (boost::beast)",
+  "documentation": {
+    "url": "https://cuihairu.github.io/shield/plugins/health-http",
+    "description": "HTTP health/readiness provider for the shield.health.v1 interface (Kubernetes-compatible probes)"
+  },
   "entry": "shield_plugin_get_v1",
   "library": {
     "windows": "bin/libshield_health_http.dll",

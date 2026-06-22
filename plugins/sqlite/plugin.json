@@ -5,6 +5,10 @@
   "version": "1.0.0",
   "kind": "database",
   "description": "SQLite provider for shield.database.v1",
+  "documentation": {
+    "url": "https://cuihairu.github.io/shield/plugins/database-sqlite",
+    "description": "SQLite provider for the shield.database.v1 interface - SQL queries, transactions, embedded deployment"
+  },
   "entry": "shield_plugin_get_v1",
   "library": {
     "windows": "bin/shield_database_sqlite.dll",
@@ -15,6 +19,10 @@
     { "interface": "shield.database.v1", "capabilities": ["sql", "transactions"] }
   ],
   "requires": [],
+  "lua": {
+    "namespace": "database.sqlite",
+    "search_paths": []
+  },
   "config_schema": {
     "type": "object",
     "properties": {

@@ -30,6 +30,7 @@ core 只定义单节点 runtime 必需配置：
 - `ops` -> [运维与调试](runtime-ops.md)
 - `player` -> [玩家生命周期](runtime-player.md)
 - `server_manager` -> [服务器状态](runtime-server.md)
+- `plugins` -> [插件系统](plugin-system.md)
 
 core bootstrap 只负责把这些配置快照传给已启用模块，不在 core 中做字段解释和校验。
 
@@ -78,7 +79,6 @@ redis:
 - `discovery`
 - `metrics`
 - `health`
-- `plugins`
 - `middleware`
 - `conditions`
 - `annotations`

@@ -41,9 +41,6 @@ void register_config_api(LuaRuntime& runtime);
 /// @brief Register log API (log.debug, log.info, log.warn, log.error)
 void register_log_api(LuaRuntime& runtime);
 
-/// @brief Register data API (db.query, redis.get, etc.)
-void register_data_api(LuaRuntime& runtime);
-
 /// @brief Register gateway API (session operations)
 void register_gateway_api(LuaRuntime& runtime);
 

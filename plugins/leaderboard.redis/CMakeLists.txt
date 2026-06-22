@@ -1,14 +1,33 @@
 # leaderboard.redis — Redis ZSET provider for shield.leaderboard.v1 (plugin system v1).
+#
+# Builds a runtime-loadable MODULE library implementing shield_plugin_get_v1.
+# Deployed to <runtime>/plugins/leaderboard.redis/{plugin.json,bin/...} so
+# PluginHost's scan() finds the manifest and load() maps the library.
+#
+# This plugin owns its Lua autonomy: register_lua() builds the callable
+# shield.leaderboard.redis namespace from this DLL, not from the host. sol2
+# and Lua are therefore PRIVATE dependencies — their symbols must NOT leak
+# into the host process (sol2 is header-only but needs Lua's headers at
+# compile time and lua52/53/luajit import library at link time).
 add_library(shield_leaderboard_redis MODULE shield_leaderboard_redis.cpp)
 
 target_include_directories(shield_leaderboard_redis
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/plugins/leaderboard.redis
+        ${LUA_INCLUDE_DIR}
+        ${SOL2_INCLUDE_DIRS}
 )
 
 find_package(redis++ CONFIG REQUIRED)
-target_link_libraries(shield_leaderboard_redis PRIVATE redis++::redis++)
+find_package(nlohmann_json CONFIG REQUIRED)
+target_link_libraries(shield_leaderboard_redis
+    PRIVATE
+        redis++::redis++
+        nlohmann_json::nlohmann_json
+        sol2::sol2
+        ${LUA_LIBRARIES}
+)
 
 set_target_properties(shield_leaderboard_redis PROPERTIES
     PREFIX ""
@@ -19,4 +38,4 @@ set_target_properties(shield_leaderboard_redis PROPERTIES
 file(COPY plugin.json
      DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/leaderboard.redis")
 
-message(STATUS "  + leaderboard.redis: Redis ZSET leaderboard (v1 ABI)")
+message(STATUS "  + leaderboard.redis: Redis ZSET leaderboard (v1 ABI, Lua-autonomous)")

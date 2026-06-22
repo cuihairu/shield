@@ -42,34 +42,4 @@ shield_lua_api_test(test_lua_api_call)
 shield_lua_api_test(test_lua_api_context)
 shield_lua_api_test(test_lua_api_legacy)
 shield_lua_api_test(test_lua_api_config)
-
-# Data API suite: needs shield_data for direct pool initialisation.
-# shield_config uses yaml-cpp as PRIVATE, so downstream link targets
-# must also pull in yaml-cpp explicitly.
-function(shield_lua_api_data_test name)
-    add_executable(${name} ${name}.cpp)
-    target_link_libraries(${name}
-        PRIVATE
-            shield_lua
-            shield_core
-            shield_data
-            yaml-cpp::yaml-cpp
-            Boost::unit_test_framework
-            Boost::headers
-    )
-    target_include_directories(${name}
-        PRIVATE
-            ${CMAKE_SOURCE_DIR}/include
-            ${CMAKE_SOURCE_DIR}/tests/lua_api
-    )
-    add_test(NAME ${name} COMMAND ${name})
-    set_tests_properties(${name} PROPERTIES
-        LABELS "lua_api;data"
-        TIMEOUT 60
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
-    shield_copy_runtime_dlls(${name})
-endfunction()
-
-shield_lua_api_data_test(test_lua_api_data)
 shield_lua_api_test(test_lua_api_gateway)

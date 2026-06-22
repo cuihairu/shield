@@ -17,6 +17,10 @@ if(SHIELD_BUILD_DB_PLUGIN_SQLITE)
     add_subdirectory(sqlite)
 endif()
 
+if(SHIELD_BUILD_PLUGIN_MONGODB)
+    add_subdirectory(mongodb)
+endif()
+
 # --- Business plugins ---
 
 if(SHIELD_BUILD_PLUGIN_AUTH)

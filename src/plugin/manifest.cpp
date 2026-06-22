@@ -67,6 +67,34 @@ Manifest parse_manifest(const nlohmann::json& j) {
         }
     }
 
+    // Optional Lua metadata. When present, the host injects the declared
+    // search_paths into Lua's package.path before register_lua_all runs.
+    if (j.contains("lua") && j["lua"].is_object()) {
+        const auto& l = j.at("lua");
+        if (l.contains("namespace") && !l["namespace"].is_null()) {
+            m.lua.namespace_ = l.at("namespace").get<std::string>();
+        }
+        if (l.contains("search_paths") && l["search_paths"].is_array()) {
+            for (const auto& p : l.at("search_paths")) {
+                if (p.is_string()) m.lua.search_paths.push_back(p.get<std::string>());
+            }
+        }
+        m.lua.enabled = !m.lua.namespace_.empty() || !m.lua.search_paths.empty();
+    }
+
+    // Optional documentation pointer. Surfaced via list_packages() so
+    // dashboards / introspection APIs can deep-link to per-plugin docs.
+    if (j.contains("documentation") && j["documentation"].is_object()) {
+        const auto& d = j.at("documentation");
+        if (d.contains("url") && d["url"].is_string()) {
+            m.documentation.url = d.at("url").get<std::string>();
+        }
+        if (d.contains("description") && d["description"].is_string()) {
+            m.documentation.description = d.at("description").get<std::string>();
+        }
+        m.documentation.enabled = !m.documentation.url.empty();
+    }
+
     m.config_schema = j.value("config_schema", nlohmann::json::object());
     return m;
 }

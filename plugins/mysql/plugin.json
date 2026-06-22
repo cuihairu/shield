@@ -5,6 +5,10 @@
   "version": "1.0.0",
   "kind": "database",
   "description": "MySQL X DevAPI provider for shield.database.v1",
+  "documentation": {
+    "url": "https://cuihairu.github.io/shield/plugins/database-mysql",
+    "description": "MySQL provider for the shield.database.v1 interface via the X DevAPI"
+  },
   "entry": "shield_plugin_get_v1",
   "library": {
     "windows": "bin/libshield_db_mysql.dll",
@@ -15,17 +19,24 @@
     { "interface": "shield.database.v1", "capabilities": ["sql", "transactions"] }
   ],
   "requires": [],
+  "lua": {
+    "namespace": "database.mysql",
+    "search_paths": []
+  },
   "config_schema": {
     "type": "object",
     "required": ["host", "database", "username"],
     "properties": {
       "host": { "type": "string", "default": "127.0.0.1" },
-      "port": { "type": "integer", "default": 3306, "minimum": 1, "maximum": 65535 },
+      "port": { "type": "integer", "default": 33060, "minimum": 1, "maximum": 65535 },
       "database": { "type": "string" },
       "username": { "type": "string" },
+      "user": { "type": "string", "description": "Alias of username" },
       "password": { "type": "string", "secret": true },
       "connect_timeout_ms": { "type": "integer", "default": 5000, "minimum": 100, "maximum": 60000 },
-      "query_timeout_ms": { "type": "integer", "default": 5000, "minimum": 100, "maximum": 300000 }
+      "query_timeout_ms": { "type": "integer", "default": 5000, "minimum": 100, "maximum": 300000 },
+      "pool_size": { "type": "integer", "default": 4, "minimum": 1, "maximum": 64 },
+      "acquire_timeout_ms": { "type": "integer", "default": 10000, "minimum": 100, "maximum": 120000 }
     }
   }
 }

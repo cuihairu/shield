@@ -52,6 +52,12 @@
             "dependencies": [
                 "sqlite3"
             ]
+        },
+        "database-mongodb": {
+            "description": "MongoDB document backend plugin dependency",
+            "dependencies": [
+                "mongo-cxx-driver"
+            ]
         }
     },
     "overrides": []

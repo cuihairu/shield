@@ -5,6 +5,10 @@
   "version": "1.0.0",
   "kind": "queue",
   "description": "Redis pub/sub provider for shield.queue.v1",
+  "documentation": {
+    "url": "https://cuihairu.github.io/shield/plugins/queue-redis",
+    "description": "Redis pub/sub provider for the shield.queue.v1 interface"
+  },
   "entry": "shield_plugin_get_v1",
   "library": {
     "windows": "bin/libshield_queue_redis.dll",
@@ -15,6 +19,10 @@
     { "interface": "shield.queue.v1", "capabilities": ["pubsub"] }
   ],
   "requires": [],
+  "lua": {
+    "namespace": "queue.redis",
+    "search_paths": []
+  },
   "config_schema": {
     "type": "object",
     "required": ["host"],

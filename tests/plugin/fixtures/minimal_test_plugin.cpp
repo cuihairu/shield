@@ -14,6 +14,8 @@ static int minimal_create(const struct shield_plugin_create_args_v1* args,
                             struct shield_error_v1*) -> const void* { return nullptr; };
     inst.start = [](struct shield_plugin_instance_v1*, struct shield_error_v1*) { return 0; };
     inst.shutdown = [](struct shield_plugin_instance_v1*) {};
+    inst.register_lua = [](struct shield_plugin_instance_v1*, struct lua_State*,
+                           struct shield_error_v1*) { return 0; };
     *out = &inst;
     return 0;
 }

@@ -5,6 +5,7 @@
 #include "shield/lua/lua_service.hpp"
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/plugin/plugin_host.hpp"
 
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
@@ -1319,6 +1320,19 @@ std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
 void LuaRuntime::register_api(std::shared_ptr<LuaVM> vm) {
     // Register all shield.* API functions
     register_full_shield_api(*vm->state(), impl_->service_manager, this);
+
+    // Inject plugin Lua search paths and dispatch register_lua on every
+    // started plugin instance. Each VM gets its own bindings; the host uses
+    // a thread-local pointer to expose the active L to plugins that query
+    // host_api.lua_state() / lua_add_path() during register_lua.
+    lua_State* L = vm->state()->lua_state();
+    auto& host = shield::plugin::global_host();
+    host.inject_lua_paths(L);
+    std::string lua_err;
+    if (!host.register_lua_all(L, lua_err)) {
+        SHIELD_LOG_WARNING(shield::log::get_logger("lua"),
+                           std::string("plugin register_lua failed: ") + lua_err);
+    }
 }
 
 void LuaRuntime::set_service_manager(LuaServiceManager* manager) {

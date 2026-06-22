@@ -221,63 +221,6 @@ bool validate_int_range(const YAML::Node& node,
                         int max_value,
                         std::string* error);
 
-bool validate_data_pool_config(const YAML::Node& node,
-                               const char* path,
-                               std::string* error) {
-    if (!node) {
-        return true;
-    }
-
-    if (!validate_port_range(node, path, error) ||
-        !validate_pool_sizes(node, path, error)) {
-        return false;
-    }
-
-    if (!validate_int_range(node, "connect_timeout", path, 1, 3600000, error) ||
-        !validate_int_range(node, "acquire_timeout", path, 1, 3600000, error) ||
-        !validate_int_range(node, "idle_timeout", path, 1, 86400000, error) ||
-        !validate_int_range(node, "max_lifetime", path, 1, 86400000, error)) {
-        return false;
-    }
-
-    if (std::string(path) == "database") {
-        if (!validate_int_range(node, "query_timeout", path, 1, 3600000, error)) {
-            return false;
-        }
-        // database.driver is any string. Backend resolution happens at
-        // runtime via the DB plugin loader (shield_db_<driver>.dll). A
-        // missing plugin surfaces as last_error_code="module_unavailable"
-        // from DatabasePool::initialize, so we don't second-guess the
-        // driver name here.
-    } else if (std::string(path) == "redis") {
-        if (!validate_int_range(node, "command_timeout", path, 1, 3600000, error)) {
-            return false;
-        }
-    }
-
-    if (node["mock"]) {
-        try {
-            (void)node["mock"].as<bool>();
-        } catch (const std::exception&) {
-            if (error) {
-                *error = std::string(path) + ".mock must be boolean";
-            }
-            return false;
-        }
-    }
-    if (node["allow_mock_fallback"]) {
-        try {
-            (void)node["allow_mock_fallback"].as<bool>();
-        } catch (const std::exception&) {
-            if (error) {
-                *error = std::string(path) + ".allow_mock_fallback must be boolean";
-            }
-            return false;
-        }
-    }
-    return true;
-}
-
 bool validate_listener_address(const YAML::Node& node,
                                const char* key,
                                const std::string& actor_name,
@@ -825,23 +768,6 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                     *error = "actors[" + name + "].script does not exist: " +
                              actor["script"].as<std::string>();
                 }
-                return false;
-            }
-        }
-    }
-
-    if (const YAML::Node database = root["database"]) {
-        if (database.IsMap() &&
-            scalar_bool_default(database, "enabled", true)) {
-            if (!validate_data_pool_config(database, "database", error)) {
-                return false;
-            }
-        }
-    }
-
-    if (const YAML::Node redis = root["redis"]) {
-        if (redis.IsMap() && scalar_bool_default(redis, "enabled", true)) {
-            if (!validate_data_pool_config(redis, "redis", error)) {
                 return false;
             }
         }

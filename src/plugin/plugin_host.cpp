@@ -5,6 +5,8 @@
 #include "schema_validator.hpp"
 #include "shield/log/logger.hpp"
 
+#include <lua.hpp>
+
 #include <algorithm>
 #include <deque>
 #include <map>
@@ -233,6 +235,11 @@ bool PluginHost::load_all(std::string& error) {
 // ---------------------------------------------------------------------------
 // host_api_v1 table (stateless lambdas; per-instance state via CtxBundle*)
 // ---------------------------------------------------------------------------
+// Current Lua state for the thread doing inject/register_lua. Used by the
+// lua_state host callback so plugins can fetch L from inside create/start
+// (though typical use is to take L from the register_lua argument).
+thread_local lua_State* g_current_lua_state = nullptr;
+
 const shield_host_api_v1& PluginHost::host_api_table() {
     static shield_host_api_v1 api{};
     static bool inited = false;
@@ -295,6 +302,40 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         if (!dep || !dep->handle || dep->state != State::started) return nullptr;
         shield_error_v1 e{};
         return dep->handle->get_interface(dep->handle, iface, &e);
+    };
+    api.lua_state = [](shield_plugin_context_v1*) -> lua_State* {
+        // Return the Lua state currently being injected/registered on this
+        // thread. Outside of inject_lua_paths/register_lua_all this is NULL.
+        return g_current_lua_state;
+    };
+    api.lua_add_path = [](shield_plugin_context_v1* ctx, const char* path,
+                          int is_cpath) -> int {
+        if (!ctx || !path) return -1;
+        auto* c = reinterpret_cast<CtxBundle*>(ctx);
+        if (!c || !c->instance || !c->instance->package) return -1;
+        lua_State* L = g_current_lua_state;
+        if (!L) return -1;
+
+        // Resolve relative paths against the package root.
+        fs::path resolved = c->instance->package->root;
+        resolved /= path;
+        // Convert "lua/?.lua" pattern-style paths to absolute.
+        std::string s = resolved.string();
+#ifdef _WIN32
+        std::replace(s.begin(), s.end(), '\\', '/');
+#endif
+        lua_getglobal(L, "package");
+        if (!lua_istable(L, -1)) { lua_pop(L, 1); return -1; }
+        const char* field = is_cpath ? "cpath" : "path";
+        lua_getfield(L, -1, field);
+        std::string cur = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+        lua_pop(L, 1);
+        if (!cur.empty() && cur.back() != ';') cur.push_back(';');
+        cur += s;
+        lua_pushlstring(L, cur.c_str(), cur.size());
+        lua_setfield(L, -2, field);
+        lua_pop(L, 1);
+        return 0;
     };
     return api;
 }
@@ -363,6 +404,77 @@ bool PluginHost::start_all(std::string& error) {
 }
 
 // ---------------------------------------------------------------------------
+// Lua integration: path injection + register_lua dispatch.
+//
+// Both run per Lua VM (services each get their own state). For each VM, the
+// host sets g_current_lua_state so the host_api.lua_state / lua_add_path
+// callbacks can reach the active state when a plugin queries them during
+// register_lua.
+// ---------------------------------------------------------------------------
+void PluginHost::inject_lua_paths(lua_State* L) {
+    if (!L) return;
+    lua_State* prev = g_current_lua_state;
+    g_current_lua_state = L;
+    for (const auto& id : impl_->start_order) {
+        const Instance* inst = find_instance(id);
+        if (!inst || !inst->package || inst->state != State::started) continue;
+        if (!inst->package->manifest.lua.enabled) continue;
+        for (const auto& rel : inst->package->manifest.lua.search_paths) {
+            if (rel.empty()) continue;
+            // Resolve relative to the package root.
+            fs::path resolved = inst->package->root / rel;
+            std::string s = resolved.string();
+#ifdef _WIN32
+            std::replace(s.begin(), s.end(), '\\', '/');
+#endif
+            lua_getglobal(L, "package");
+            if (!lua_istable(L, -1)) { lua_pop(L, 1); continue; }
+            lua_getfield(L, -1, "path");
+            std::string cur = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
+            lua_pop(L, 1);
+            if (!cur.empty() && cur.back() != ';') cur.push_back(';');
+            cur += s;
+            lua_pushlstring(L, cur.c_str(), cur.size());
+            lua_setfield(L, -2, "path");
+            lua_pop(L, 1);
+        }
+    }
+    g_current_lua_state = prev;
+}
+
+bool PluginHost::register_lua_all(lua_State* L, std::string& error) {
+    if (!L) return true;
+    lua_State* prev = g_current_lua_state;
+    g_current_lua_state = L;
+    bool ok = true;
+    for (const auto& id : impl_->start_order) {
+        Instance* inst = find_instance_mut(id);
+        if (!inst || !inst->handle || inst->state != State::started) continue;
+        // Transitional: plugins built before register_lua existed have a NULL
+        // slot. Treat as "no Lua surface" and skip silently.
+        if (!inst->handle->register_lua) continue;
+        shield_error_v1 e{};
+        if (inst->handle->register_lua(inst->handle, L, &e) != 0) {
+            std::string msg = std::string("plugin.lua_register.failed: ") + inst->id +
+                              (e.code ? " [" + std::string(e.code) + "]" : "") +
+                              (e.message ? " " + std::string(e.message) : "");
+            if (inst->decl.required) {
+                inst->last_error = msg;
+                inst->state = State::failed;
+                error = msg;
+                ok = false;
+                break;
+            }
+            SHIELD_LOG_WARNING(shield::log::get_logger("plugin"),
+                               "non-required register_lua failed: " + msg);
+            inst->last_error = msg;
+        }
+    }
+    g_current_lua_state = prev;
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
 // startup: full pipeline.
 // ---------------------------------------------------------------------------
 bool PluginHost::startup(const PluginConfig& cfg, std::string& error) {
@@ -388,8 +500,8 @@ bool PluginHost::startup(const PluginConfig& cfg, std::string& error) {
 void PluginHost::shutdown() {
     // Stop in reverse topological order (dependents first). We invoke each
     // instance's shutdown callback but DO NOT dlclose the libraries or clear
-    // instances_ here: other host subsystems (e.g. shield::data::DatabasePool)
-    // may still hold raw vtable pointers resolved from these libraries, and
+    // instances_ here: other host subsystems may still hold raw vtable
+    // pointers resolved from these libraries, and
     // those must remain valid until process exit. Libraries are released when
     // the PluginHost itself is destroyed (process teardown — by then every
     // data pool that resolved a vtable has already been torn down, because
@@ -463,6 +575,8 @@ std::vector<PackageInfo> PluginHost::list_packages() const {
         info.version = p.manifest.version;
         info.kind = p.manifest.kind;
         for (const auto& pr : p.manifest.provides) info.provides.push_back(pr.interface);
+        info.docs_url = p.manifest.documentation.url;
+        info.docs_description = p.manifest.documentation.description;
         v.push_back(std::move(info));
     }
     return v;

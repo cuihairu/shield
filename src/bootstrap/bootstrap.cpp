@@ -11,7 +11,6 @@
 #endif
 #include "shield/core/caf_adapter.hpp"
 #include "shield/caf_initializer.hpp"
-#include "shield/data/data.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -221,9 +220,10 @@ bool initialize(const RuntimeConfig& config) {
     // Run POST_CONFIG starters before runtime systems consume config.
     run_starters(Phase::POST_CONFIG);
 
-    // Start the plugin system before any subsystem that consumes a binding
-    // (e.g. DatabasePool resolves "database.default" here). Constructed before
-    // database() so teardown order keeps libraries valid past pool teardown.
+    // Start the plugin system. All runtime subsystems that used to resolve
+    // bindings through host-side singletons (database/redis/etc.) now go
+    // through PluginHost directly; the plugin pipeline owns startup ordering
+    // and library lifetime.
     {
         auto plugin_cfg = shield::plugin::load_plugin_config();
         std::string plugin_err;
@@ -233,24 +233,6 @@ bool initialize(const RuntimeConfig& config) {
             return false;
         }
         SHIELD_LOG_INFO(log, "Plugin system started");
-    }
-
-    if (shield::config::get_bool("database.enabled", false)) {
-        if (!shield::data::database().initialize()) {
-            SHIELD_LOG_ERROR(log, "Failed to initialize database pool");
-            cleanup_failed_initialize();
-            return false;
-        }
-        SHIELD_LOG_INFO(log, "Database pool initialized");
-    }
-
-    if (shield::config::get_bool("redis.enabled", false)) {
-        if (!shield::data::redis().initialize()) {
-            SHIELD_LOG_ERROR(log, "Failed to initialize Redis pool");
-            cleanup_failed_initialize();
-            return false;
-        }
-        SHIELD_LOG_INFO(log, "Redis pool initialized");
     }
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -461,7 +443,7 @@ void shutdown() {
 
     // Tear down the plugin system (invokes each instance's shutdown
     // callback). Libraries stay mapped until process exit so any holder of a
-    // resolved vtable (e.g. DatabasePool) remains valid.
+    // resolved vtable remains valid.
     shield::plugin::global_host().shutdown();
 
     g_state->initialized = false;

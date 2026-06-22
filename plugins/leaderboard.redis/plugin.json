@@ -5,6 +5,10 @@
   "version": "1.0.0",
   "kind": "leaderboard",
   "description": "Redis ZSET provider for shield.leaderboard.v1 (multi-field composite score)",
+  "documentation": {
+    "url": "https://cuihairu.github.io/shield/plugins/leaderboard-redis",
+    "description": "Redis ZSET provider for the shield.leaderboard.v1 interface with composite multi-field scores"
+  },
   "entry": "shield_plugin_get_v1",
   "library": {
     "windows": "bin/libshield_leaderboard_redis.dll",
@@ -15,6 +19,10 @@
     { "interface": "shield.leaderboard.v1", "capabilities": ["sorted-set", "multi-field"] }
   ],
   "requires": [],
+  "lua": {
+    "namespace": "leaderboard.redis",
+    "search_paths": []
+  },
   "config_schema": {
     "type": "object",
     "required": ["host"],

@@ -5,6 +5,10 @@
   "version": "1.0.0",
   "kind": "metrics",
   "description": "Prometheus text-format exporter for shield.metrics.v1 (boost::beast)",
+  "documentation": {
+    "url": "https://cuihairu.github.io/shield/plugins/metrics-prometheus",
+    "description": "Prometheus text-format exporter for the shield.metrics.v1 interface (counter / gauge / histogram)"
+  },
   "entry": "shield_plugin_get_v1",
   "library": {
     "windows": "bin/libshield_metric_prometheus.dll",

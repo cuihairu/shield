@@ -1,6 +1,23 @@
 -- player.lua - 用户参考示例
+--
+-- 演示新版插件自治 Lua API：
+--   shield.database.<driver>(instance_id) 返回绑定到该实例的 proxy
+--   shield.cache.redis(instance_id)       同理
+-- 实例由 app.yaml 的 plugins.instances 段声明；未声明时 proxy 为 nil。
 
 local M = {}
+
+-- 通过实例 ID 拿到数据库 / 缓存 proxy。
+-- app.yaml 中需要声明：
+--   plugins:
+--     instances:
+--       - { id: "db.main",    package: "database.sqlite", required: true,
+--           config: { database: "data/game.db" } }
+--       - { id: "cache.chat", package: "cache.redis",     required: true,
+--           config: { host: "127.0.0.1", port: 6379 } }
+-- 未配置时 shield.database.sqlite / shield.cache.redis 返回 nil，业务自行降级。
+local DB    = shield.database.sqlite("db.main")
+local Cache = shield.cache.redis("cache.chat")
 
 function M.on_init(args)
     M.session_id = args.args and args.args.session_id
@@ -10,11 +27,16 @@ end
 
 function M.login(data)
     local src = shield.sender()
-    local ok, rows = shield.db.query(
+
+    if not DB then
+        shield.send(src, "login_failed", { message = "db_unavailable" })
+        return
+    end
+
+    local ok, rows = DB:query(
         "SELECT * FROM users WHERE id = ?",
         { data.user_id }
     )
-
     if not ok then
         shield.send(src, "login_failed", { message = "db_error" })
         return
@@ -30,20 +52,21 @@ function M.login(data)
 end
 
 function M.chat(data)
-    if not M.user then
+    if not M.user or not Cache then
         return
     end
 
-    shield.redis.publish("chat:" .. data.channel, {
+    -- cache.redis 插件的 publish 对应 Redis PUBLISH，返回订阅者数。
+    Cache:publish("chat:" .. data.channel, {
         from = M.user.name,
         text = data.text,
     })
 end
 
 function M.logout()
-    if M.user then
-        shield.db.execute(
-            "UPDATE users SET last_login = NOW() WHERE id = ?",
+    if M.user and DB then
+        DB:execute(
+            "UPDATE users SET last_login = datetime('now') WHERE id = ?",
             { M.user.id }
         )
     end
