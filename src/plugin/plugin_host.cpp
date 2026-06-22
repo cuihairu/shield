@@ -29,6 +29,42 @@ const char* state_name(State s) {
     }
     return "unknown";
 }
+
+bool provides_interface(const Package* pkg, const std::string& interface_name) {
+    if (!pkg) return false;
+    for (const auto& p : pkg->manifest.provides) {
+        if (p.interface_name == interface_name) return true;
+    }
+    return false;
+}
+
+const Manifest::Require* find_require(const Manifest& manifest,
+                                      std::string_view name) {
+    for (const auto& req : manifest.requires_) {
+        if (req.name == name) return &req;
+    }
+    return nullptr;
+}
+
+bool fail_or_unavailable(Instance& inst,
+                         std::string message,
+                         std::string& error) {
+    inst.last_error = std::move(message);
+    if (inst.decl.required) {
+        inst.state = State::failed;
+        error = inst.last_error;
+        return false;
+    }
+    inst.state = State::unavailable;
+    return true;
+}
+
+void release_unstarted_handle(Instance& inst) {
+    if (inst.handle && inst.handle->shutdown) {
+        inst.handle->shutdown(inst.handle);
+    }
+    inst.handle = nullptr;
+}
 }  // namespace
 
 // CtxBundle and Impl are defined in plugin_host.hpp (they hold a unique_ptr
@@ -89,12 +125,31 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
     impl_->bindings = cfg.bindings;
 
     // plan: attach each declared instance to its package
+    std::set<std::string> instance_ids;
     for (const auto& d : cfg.instances) {
+        if (d.id.empty()) {
+            error = "plugin.config.invalid: instance id is required";
+            return false;
+        }
+        if (!instance_ids.insert(d.id).second) {
+            error = "plugin.config.invalid: duplicate instance id '" + d.id + "'";
+            return false;
+        }
+
         const Package* pkg = find_package(d.package);
         if (!pkg) {
-            error = "plugin.package.not_found: package '" + d.package +
-                    "' for instance '" + d.id + "'";
-            return false;
+            Instance inst;
+            inst.id = d.id;
+            inst.decl = d;
+            inst.state = State::unavailable;
+            inst.last_error = "plugin.package.not_found: package '" + d.package +
+                              "' for instance '" + d.id + "'";
+            if (d.required) {
+                error = inst.last_error;
+                return false;
+            }
+            instances_.push_back(std::move(inst));
+            continue;
         }
         Instance inst;
         inst.id = d.id;
@@ -103,34 +158,115 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
         instances_.push_back(std::move(inst));
     }
 
-    // resolve: each declared dependency must exist + provide the interface
+    // Apply config defaults and validate before loading native code.
     for (auto& inst : instances_) {
+        if (!inst.package || inst.state == State::unavailable) continue;
+        nlohmann::json cfg_json = inst.decl.config;
+        if (cfg_json.is_null()) cfg_json = nlohmann::json::object();
+        try {
+            apply_defaults(inst.package->manifest.config_schema, cfg_json);
+        } catch (const std::exception& e) {
+            if (!fail_or_unavailable(
+                    inst,
+                    "plugin.config.invalid: instance '" + inst.id +
+                        "' default application failed: " + e.what(),
+                    error)) {
+                return false;
+            }
+            continue;
+        }
+        auto cfg_err = validate_config(inst.package->manifest.config_schema,
+                                       cfg_json);
+        if (!cfg_err.empty()) {
+            if (!fail_or_unavailable(
+                    inst,
+                    "plugin.config.invalid: instance '" + inst.id + "': " +
+                        cfg_err,
+                    error)) {
+                return false;
+            }
+            continue;
+        }
+        inst.decl.config = std::move(cfg_json);
+    }
+
+    // resolve: each declared dependency must exist + provide the interface.
+    for (auto& inst : instances_) {
+        if (!inst.package || inst.state == State::unavailable) continue;
+
+        for (const auto& [dep_name, _] : inst.decl.dependencies) {
+            if (!find_require(inst.package->manifest, dep_name)) {
+                if (!fail_or_unavailable(
+                        inst,
+                        "plugin.dependency.undeclared: instance '" + inst.id +
+                            "' configured undeclared dependency '" + dep_name + "'",
+                        error)) {
+                    return false;
+                }
+                inst.dep_ids.clear();
+                break;
+            }
+        }
+        if (inst.state == State::unavailable) continue;
+
         for (const auto& req : inst.package->manifest.requires_) {
             auto it = inst.decl.dependencies.find(req.name);
             if (it == inst.decl.dependencies.end()) {
                 if (req.optional) continue;
-                error = "plugin.dependency.missing: instance '" + inst.id +
-                        "' missing required dependency '" + req.name + "'";
-                return false;
+                if (!fail_or_unavailable(
+                        inst,
+                        "plugin.dependency.missing: instance '" + inst.id +
+                            "' missing required dependency '" + req.name + "'",
+                        error)) {
+                    return false;
+                }
+                inst.dep_ids.clear();
+                break;
             }
             const Instance* dep = find_instance(it->second);
             if (!dep) {
-                error = "plugin.dependency.missing: instance '" + inst.id +
-                        "' dependency '" + req.name + "' -> '" + it->second +
-                        "' not found";
-                return false;
-            }
-            bool iface_ok = false;
-            for (const auto& p : dep->package->manifest.provides) {
-                if (p.interface == req.interface) { iface_ok = true; break; }
-            }
-            if (!iface_ok) {
                 if (req.optional) continue;
-                error = "plugin.dependency.missing: instance '" + dep->id +
-                        "' does not provide '" + req.interface + "'";
-                return false;
+                if (!fail_or_unavailable(
+                        inst,
+                        "plugin.dependency.missing: instance '" + inst.id +
+                            "' dependency '" + req.name + "' -> '" +
+                            it->second + "' not found",
+                        error)) {
+                    return false;
+                }
+                inst.dep_ids.clear();
+                break;
+            }
+            if (!provides_interface(dep->package, req.interface_name)) {
+                if (req.optional) continue;
+                if (!fail_or_unavailable(
+                        inst,
+                        "plugin.dependency.missing: instance '" + dep->id +
+                            "' does not provide '" + req.interface_name + "'",
+                        error)) {
+                    return false;
+                }
+                inst.dep_ids.clear();
+                break;
             }
             inst.dep_ids.push_back(dep->id);
+        }
+    }
+
+    std::set<std::string> binding_names;
+    for (const auto& b : cfg.bindings) {
+        if (b.logical.empty()) {
+            error = "plugin.binding.invalid: binding name is required";
+            return false;
+        }
+        if (!binding_names.insert(b.logical).second) {
+            error = "plugin.binding.invalid: duplicate binding '" + b.logical + "'";
+            return false;
+        }
+        if (!find_instance(b.instance_id)) {
+            error = "plugin.binding.invalid: binding '" + b.logical +
+                    "' targets missing instance '" + b.instance_id + "'";
+            return false;
         }
     }
 
@@ -193,39 +329,58 @@ bool PluginHost::load_all(std::string& error) {
         std::string err;
         inst.lib = PluginLibrary::load(libpath.string(), err);
         if (!inst.lib.is_loaded()) {
-            inst.last_error = "plugin.entry.missing: " + libpath.string() + ": " + err;
-            error = inst.last_error;
-            return false;
+            if (!fail_or_unavailable(
+                    inst,
+                    "plugin.entry.missing: " + libpath.string() + ": " + err,
+                    error)) {
+                return false;
+            }
+            continue;
         }
         using get_fn = const shield_plugin_abi_v1* (*)();
         auto get = reinterpret_cast<get_fn>(
             inst.lib.resolve(inst.package->manifest.entry.c_str()));
         if (!get) {
-            inst.last_error = "plugin.entry.missing: symbol '" +
-                              inst.package->manifest.entry + "' not found in " +
-                              libpath.string();
-            error = inst.last_error;
-            return false;
+            if (!fail_or_unavailable(
+                    inst,
+                    "plugin.entry.missing: symbol '" +
+                        inst.package->manifest.entry + "' not found in " +
+                        libpath.string(),
+                    error)) {
+                return false;
+            }
+            continue;
         }
         inst.abi = get();
         if (!inst.abi || inst.abi->abi_version != SHIELD_PLUGIN_ABI_VERSION) {
-            inst.last_error = "plugin.abi.mismatch: " + inst.id + " (abi_version)";
-            error = inst.last_error;
-            return false;
+            if (!fail_or_unavailable(
+                    inst,
+                    "plugin.abi.mismatch: " + inst.id + " (abi_version)",
+                    error)) {
+                return false;
+            }
+            continue;
         }
         if (inst.abi->struct_size < sizeof(shield_plugin_abi_v1)) {
-            inst.last_error = "plugin.abi.mismatch: " + inst.id + " (struct_size)";
-            error = inst.last_error;
-            return false;
+            if (!fail_or_unavailable(
+                    inst,
+                    "plugin.abi.mismatch: " + inst.id + " (struct_size)",
+                    error)) {
+                return false;
+            }
+            continue;
         }
         if (!inst.abi->package_id ||
             std::string(inst.abi->package_id) != inst.package->manifest.id) {
-            inst.last_error = "plugin.abi.mismatch: " + inst.id +
-                              " (package_id '" +
-                              (inst.abi->package_id ? inst.abi->package_id : "") +
-                              "' != manifest '" + inst.package->manifest.id + "')";
-            error = inst.last_error;
-            return false;
+            if (!fail_or_unavailable(
+                    inst,
+                    "plugin.abi.mismatch: " + inst.id + " (package_id '" +
+                        (inst.abi->package_id ? inst.abi->package_id : "") +
+                        "' != manifest '" + inst.package->manifest.id + "')",
+                    error)) {
+                return false;
+            }
+            continue;
         }
         inst.state = State::loaded;
     }
@@ -298,6 +453,9 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         if (!c || !c->host || !c->instance) return nullptr;
         auto it = c->instance->decl.dependencies.find(name);
         if (it == c->instance->decl.dependencies.end()) return nullptr;
+        if (!c->instance->package) return nullptr;
+        const auto* req = find_require(c->instance->package->manifest, name);
+        if (!req || req->interface_name != iface) return nullptr;
         const Instance* dep = c->host->find_instance(it->second);
         if (!dep || !dep->handle || dep->state != State::started) return nullptr;
         shield_error_v1 e{};
@@ -352,9 +510,7 @@ bool PluginHost::create_all(std::string& error) {
         bundle->host = this;
         bundle->instance = &inst;
 
-        nlohmann::json cfg = inst.decl.config;
-        try { apply_defaults(inst.package->manifest.config_schema, cfg); } catch (...) {}
-        std::string cfg_str = cfg.dump();
+        std::string cfg_str = inst.decl.config.dump();
 
         shield_plugin_create_args_v1 args{};
         args.host_api = &host_api_table();
@@ -365,11 +521,57 @@ bool PluginHost::create_all(std::string& error) {
         shield_error_v1 e{};
         if (!inst.abi->create ||
             inst.abi->create(&args, &inst.handle, &e) != 0 || !inst.handle) {
-            inst.last_error = std::string("plugin.create.failed: ") + inst.id +
-                              (e.code ? " [" + std::string(e.code) + "]" : "") +
-                              (e.message ? " " + std::string(e.message) : "");
-            error = inst.last_error;
-            return false;
+            release_unstarted_handle(inst);
+            if (!fail_or_unavailable(
+                    inst,
+                    std::string("plugin.create.failed: ") + inst.id +
+                        (e.code ? " [" + std::string(e.code) + "]" : "") +
+                        (e.message ? " " + std::string(e.message) : ""),
+                    error)) {
+                return false;
+            }
+            continue;
+        }
+        if (inst.handle->struct_size < sizeof(shield_plugin_instance_v1)) {
+            release_unstarted_handle(inst);
+            if (!fail_or_unavailable(
+                    inst,
+                    "plugin.abi.mismatch: " + inst.id +
+                        " (instance struct_size)",
+                    error)) {
+                return false;
+            }
+            continue;
+        }
+        if (!inst.handle->get_interface) {
+            release_unstarted_handle(inst);
+            if (!fail_or_unavailable(
+                    inst,
+                    "plugin.create.failed: " + inst.id +
+                        " missing get_interface",
+                    error)) {
+                return false;
+            }
+            continue;
+        }
+        for (const auto& provide : inst.package->manifest.provides) {
+            shield_error_v1 iface_err{};
+            if (!inst.handle->get_interface(
+                    inst.handle, provide.interface_name.c_str(), &iface_err)) {
+                release_unstarted_handle(inst);
+                if (!fail_or_unavailable(
+                        inst,
+                        "plugin.create.failed: " + inst.id +
+                            " does not provide declared interface '" +
+                            provide.interface_name + "'",
+                        error)) {
+                    return false;
+                }
+                break;
+            }
+        }
+        if (inst.state == State::unavailable || inst.state == State::failed) {
+            continue;
         }
         impl_->contexts.push_back(std::move(bundle));
     }
@@ -384,18 +586,41 @@ bool PluginHost::start_all(std::string& error) {
     // to an already-started instance.
     for (const auto& id : impl_->start_order) {
         Instance* inst = find_instance_mut(id);
-        if (!inst || !inst->handle) continue;
+        if (!inst || inst->state == State::unavailable) continue;
+        if (!inst->handle) continue;
+        bool blocked_by_dependency = false;
+        if (inst->package) {
+            for (const auto& req : inst->package->manifest.requires_) {
+                if (req.optional) continue;
+                auto it = inst->decl.dependencies.find(req.name);
+                if (it == inst->decl.dependencies.end()) continue;
+                const Instance* dep = find_instance(it->second);
+                if (!dep || dep->state != State::started) {
+                    blocked_by_dependency = true;
+                    release_unstarted_handle(*inst);
+                    if (!fail_or_unavailable(
+                            *inst,
+                            "plugin.dependency.unavailable: instance '" +
+                                inst->id + "' dependency '" + req.name +
+                                "' is not started",
+                            error)) {
+                        return false;
+                    }
+                    break;
+                }
+            }
+        }
+        if (blocked_by_dependency) continue;
         shield_error_v1 e{};
         if (inst->handle->start && inst->handle->start(inst->handle, &e) != 0) {
-            if (inst->decl.required) {
-                inst->last_error = std::string("plugin.init.failed: ") + inst->id +
-                                   (e.message ? " " + std::string(e.message) : "");
-                inst->state = State::failed;
-                error = inst->last_error;
+            release_unstarted_handle(*inst);
+            if (!fail_or_unavailable(
+                    *inst,
+                    std::string("plugin.init.failed: ") + inst->id +
+                        (e.message ? " " + std::string(e.message) : ""),
+                    error)) {
                 return false;
             }
-            inst->last_error = "unavailable: " + inst->id;
-            inst->state = State::unavailable;
         } else {
             inst->state = State::started;
         }
@@ -460,7 +685,6 @@ bool PluginHost::register_lua_all(lua_State* L, std::string& error) {
                               (e.message ? " " + std::string(e.message) : "");
             if (inst->decl.required) {
                 inst->last_error = msg;
-                inst->state = State::failed;
                 error = msg;
                 ok = false;
                 break;
@@ -478,16 +702,39 @@ bool PluginHost::register_lua_all(lua_State* L, std::string& error) {
 // startup: full pipeline.
 // ---------------------------------------------------------------------------
 bool PluginHost::startup(const PluginConfig& cfg, std::string& error) {
+    shutdown();
+    packages_.clear();
+    instances_.clear();
+    impl_->bindings.clear();
+    impl_->contexts.clear();
+    impl_->start_order.clear();
+
     scan(cfg.directory);
-    if (!catalog(error)) return false;
-    if (!plan_and_resolve(cfg, error)) return false;
-    if (!load_all(error)) return false;
-    if (!create_all(error)) return false;
-    if (!start_all(error)) return false;
+    if (!catalog(error)) {
+        shutdown();
+        return false;
+    }
+    if (!plan_and_resolve(cfg, error)) {
+        shutdown();
+        return false;
+    }
+    if (!load_all(error)) {
+        shutdown();
+        return false;
+    }
+    if (!create_all(error)) {
+        shutdown();
+        return false;
+    }
+    if (!start_all(error)) {
+        shutdown();
+        return false;
+    }
     for (const auto& i : instances_) {
         if (i.decl.required && i.state != State::started) {
             error = "plugin.init.failed: required instance '" + i.id +
                     "' not started (" + state_name(i.state) + ")";
+            shutdown();
             return false;
         }
     }
@@ -511,6 +758,7 @@ void PluginHost::shutdown() {
         if (!inst) continue;
         if (inst->handle && inst->state == State::started) {
             if (inst->handle->shutdown) inst->handle->shutdown(inst->handle);
+            inst->handle = nullptr;
             inst->state = State::stopped;
         }
     }
@@ -574,7 +822,7 @@ std::vector<PackageInfo> PluginHost::list_packages() const {
         info.id = p.manifest.id;
         info.version = p.manifest.version;
         info.kind = p.manifest.kind;
-        for (const auto& pr : p.manifest.provides) info.provides.push_back(pr.interface);
+        for (const auto& pr : p.manifest.provides) info.provides.push_back(pr.interface_name);
         info.docs_url = p.manifest.documentation.url;
         info.docs_description = p.manifest.documentation.description;
         v.push_back(std::move(info));
@@ -602,8 +850,8 @@ std::optional<BindingInfo> PluginHost::get_binding(std::string_view name) const 
             info.logical = b.logical;
             info.instance_id = b.instance_id;
             const Instance* inst = find_instance(b.instance_id);
-            if (inst && !inst->package->manifest.provides.empty())
-                info.interface = inst->package->manifest.provides.front().interface;
+            if (inst && inst->package && !inst->package->manifest.provides.empty())
+                info.interface_name = inst->package->manifest.provides.front().interface_name;
             return info;
         }
     }

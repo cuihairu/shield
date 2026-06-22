@@ -182,9 +182,9 @@ db->free_result(&result);
 db->disconnect(conn);
 ```
 
-### Lua 侧（规划中）
+### Lua 侧
 
-SQLite 插件的 Lua 绑定在 Lua 自治迁移完成前不暴露。规划中的调用约定：
+SQLite 插件通过 `register_lua` 暴露 `shield.database.sqlite` callable namespace：
 
 ```lua
 local db = shield.database.sqlite("db.main")   -- 通过实例 ID
@@ -193,7 +193,7 @@ local ok, row = db:query_one(
     { player_id })
 ```
 
-具体 API 契约见 [Lua API](/lua-api)。在 Lua 绑定就绪前，业务代码可以通过 host 内置的 `shield.db.*` 访问（详见 [数据语义](/runtime-data)）。
+具体 API 契约见 [Lua API](/lua-api)。插件 Lua proxy 支持 `query`、`query_one`、`execute`、`transaction`。
 
 ## 平台特性
 
@@ -274,7 +274,7 @@ db->free_result(&r);
 plugins/database.sqlite/
 ├── plugin.json
 └── bin/
-    ├── shield_database_sqlite.dll        # Windows
+    ├── libshield_database_sqlite.dll     # Windows
     ├── libshield_database_sqlite.so      # Linux
     └── libshield_database_sqlite.dylib   # macOS
 ```

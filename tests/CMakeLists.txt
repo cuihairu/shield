@@ -79,18 +79,42 @@ set_tests_properties(test_plugin_schema PROPERTIES LABELS "plugin" TIMEOUT 10)
 # load/create/start pipeline tests.
 add_library(shield_minimal_test_plugin MODULE plugin/fixtures/minimal_test_plugin.cpp)
 target_include_directories(shield_minimal_test_plugin PRIVATE ${CMAKE_SOURCE_DIR}/include)
+set(_shield_minimal_plugin_output_dir "${CMAKE_BINARY_DIR}/test_plugins/minimal.test/bin")
 set_target_properties(shield_minimal_test_plugin PROPERTIES
     PREFIX ""
     OUTPUT_NAME "libshield_minimal_test_plugin"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test_plugins/minimal.test/bin")
-file(COPY plugin/fixtures/minimal.plugin.json
-     DESTINATION "${CMAKE_BINARY_DIR}/test_plugins/minimal.test")
+    LIBRARY_OUTPUT_DIRECTORY "${_shield_minimal_plugin_output_dir}"
+    RUNTIME_OUTPUT_DIRECTORY "${_shield_minimal_plugin_output_dir}"
+    ARCHIVE_OUTPUT_DIRECTORY "${_shield_minimal_plugin_output_dir}")
+if(CMAKE_CONFIGURATION_TYPES)
+    foreach(_shield_cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
+        string(TOUPPER "${_shield_cfg}" _shield_cfg_upper)
+        set_target_properties(shield_minimal_test_plugin PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY_${_shield_cfg_upper} "${_shield_minimal_plugin_output_dir}"
+            RUNTIME_OUTPUT_DIRECTORY_${_shield_cfg_upper} "${_shield_minimal_plugin_output_dir}"
+            ARCHIVE_OUTPUT_DIRECTORY_${_shield_cfg_upper} "${_shield_minimal_plugin_output_dir}")
+    endforeach()
+endif()
+configure_file(plugin/fixtures/minimal.plugin.json
+               "${CMAKE_BINARY_DIR}/test_plugins/minimal.test/plugin.json"
+               COPYONLY)
 
 # PluginHost pipeline: scan / catalog / plan / resolve / cycle detection
 add_executable(test_plugin_host plugin/test_plugin_host.cpp)
 target_link_libraries(test_plugin_host
     PRIVATE shield_plugin Boost::unit_test_framework Boost::headers)
 target_include_directories(test_plugin_host PRIVATE ${CMAKE_SOURCE_DIR}/include)
+if(WIN32)
+    set(_shield_minimal_plugin_filename "libshield_minimal_test_plugin.dll")
+elseif(APPLE)
+    set(_shield_minimal_plugin_filename "libshield_minimal_test_plugin.dylib")
+else()
+    set(_shield_minimal_plugin_filename "libshield_minimal_test_plugin.so")
+endif()
+target_compile_definitions(test_plugin_host PRIVATE
+    SHIELD_TEST_PLUGINS_DIR="${CMAKE_BINARY_DIR}/test_plugins"
+    SHIELD_MINIMAL_TEST_PLUGIN_LIBRARY="${_shield_minimal_plugin_filename}")
+add_dependencies(test_plugin_host shield_minimal_test_plugin)
 add_test(NAME test_plugin_host COMMAND test_plugin_host)
 set_tests_properties(test_plugin_host PROPERTIES LABELS "plugin" TIMEOUT 15)
 shield_copy_runtime_dlls(test_plugin_host)

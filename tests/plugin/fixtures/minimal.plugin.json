@@ -8,9 +8,11 @@
   "library": {
     "linux": "bin/libshield_minimal_test_plugin.so",
     "macos": "bin/libshield_minimal_test_plugin.dylib",
-    "windows": "bin/shield_minimal_test_plugin.dll"
+    "windows": "bin/libshield_minimal_test_plugin.dll"
   },
-  "provides": [],
+  "provides": [
+    { "interface": "minimal.test.iface" }
+  ],
   "requires": [],
   "config_schema": { "type": "object" }
 }

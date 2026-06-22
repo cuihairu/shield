@@ -1467,6 +1467,8 @@ void register_plugin_api(sol::table& shield) {
             row["id"] = p.id;
             row["version"] = p.version;
             row["kind"] = p.kind;
+            row["docs_url"] = p.docs_url;
+            row["docs_description"] = p.docs_description;
             sol::table prov = lua.create_table();
             for (size_t i = 0; i < p.provides.size(); ++i) prov[i + 1] = p.provides[i];
             row["provides"] = prov;
@@ -1513,7 +1515,7 @@ void register_plugin_api(sol::table& shield) {
         if (!b) return sol::nil;
         sol::table row = lua.create_table();
         row["instance_id"] = b->instance_id;
-        row["interface"] = b->interface;
+        row["interface"] = b->interface_name;
         return row;
     });
 

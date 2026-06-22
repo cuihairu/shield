@@ -375,11 +375,13 @@ target_include_directories(shield_plugin
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_BINARY_DIR}/include
+    PRIVATE
+        ${LUA_INCLUDE_DIR}
 )
 
 target_link_libraries(shield_plugin
     PUBLIC shield_base shield_log shield_config
-    PRIVATE nlohmann_json::nlohmann_json
+    PRIVATE nlohmann_json::nlohmann_json ${LUA_LIBRARIES}
 )
 
 include(cmake/CheckDeps.cmake)

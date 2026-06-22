@@ -1317,7 +1317,7 @@ std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
     }
 }
 
-void LuaRuntime::register_api(std::shared_ptr<LuaVM> vm) {
+bool LuaRuntime::register_api(std::shared_ptr<LuaVM> vm, std::string* error) {
     // Register all shield.* API functions
     register_full_shield_api(*vm->state(), impl_->service_manager, this);
 
@@ -1332,7 +1332,10 @@ void LuaRuntime::register_api(std::shared_ptr<LuaVM> vm) {
     if (!host.register_lua_all(L, lua_err)) {
         SHIELD_LOG_WARNING(shield::log::get_logger("lua"),
                            std::string("plugin register_lua failed: ") + lua_err);
+        if (error) *error = lua_err;
+        return false;
     }
+    return true;
 }
 
 void LuaRuntime::set_service_manager(LuaServiceManager* manager) {

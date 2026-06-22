@@ -137,6 +137,7 @@ void cleanup_failed_initialize() {
         }
         g_state->lua_services.reset();
         g_state->lua_runtime.reset();
+        shield::plugin::global_host().shutdown();
 #ifdef SHIELD_ENABLE_CLUSTER
         if (g_state->cluster_manager) {
             g_state->cluster_manager->stop();

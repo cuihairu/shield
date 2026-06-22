@@ -136,7 +136,7 @@ my-shield-plugin/
 }
 ```
 
-`documentation` 字段可选但**强烈推荐**：host 通过 `PluginHost::list_packages()` 把它暴露给 dashboard、`shield.plugin.list()` Lua API、`--check-config` 诊断输出，用户能直接点击跳转到你的在线文档。
+`documentation` 字段可选但**强烈推荐**：host 通过 `PluginHost::list_packages()` 暴露这份元数据；当前 `shield.plugin.packages()` Lua API 会直接返回 `docs_url` 和 `docs_description`，用户可以直接跳到你的在线文档。
 
 ### CMakeLists.txt
 

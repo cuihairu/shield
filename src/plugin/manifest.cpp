@@ -47,7 +47,7 @@ Manifest parse_manifest(const nlohmann::json& j) {
     for (const auto& p : j.at("provides")) {
         Manifest::Provide pr;
         require_field(p, "interface");
-        pr.interface = p.at("interface").get<std::string>();
+        pr.interface_name = p.at("interface").get<std::string>();
         if (p.contains("capabilities") && p["capabilities"].is_array()) {
             pr.capabilities =
                 p.at("capabilities").get<std::vector<std::string>>();
@@ -61,7 +61,7 @@ Manifest parse_manifest(const nlohmann::json& j) {
             require_field(r, "name");
             rq.name = r.at("name").get<std::string>();
             require_field(r, "interface");
-            rq.interface = r.at("interface").get<std::string>();
+            rq.interface_name = r.at("interface").get<std::string>();
             rq.optional = r.value("optional", false);
             m.requires_.push_back(std::move(rq));
         }

@@ -153,7 +153,7 @@ Manifest 字段规则：
 | `provides` | 声明 package 提供的 interface 和 capability。 |
 | `requires` | 声明 instance 创建时需要 host 注入的依赖接口。 |
 | `lua` | 可选。声明插件的 Lua 元数据：`namespace`（Lua 侧注册到 `shield.<namespace>`）、`search_paths`（相对 package 根的 Lua 搜索路径，host 启动时自动注入 `package.path`）。 |
-| `documentation` | 可选。声明插件的在线文档 URL 和一句话描述。host 通过 `PluginHost::list_packages()` 把它暴露给 dashboard、`shield.plugin.list()` Lua API、`--check-config` 诊断输出，用户能直接点击跳转。第三方插件**强烈推荐**设置此字段。 |
+| `documentation` | 可选。声明插件的在线文档 URL 和一句话描述。host 通过 `PluginHost::list_packages()` 暴露这份元数据，当前 `shield.plugin.packages()` Lua API 会直接返回 `docs_url` 和 `docs_description`。第三方插件**强烈推荐**设置此字段。 |
 | `config_schema` | 插件配置 schema，直接使用 JSON Schema 可实现子集表达。 |
 
 ## Runtime Config
@@ -211,7 +211,7 @@ scan -> catalog -> plan -> resolve -> load -> create -> start -> lua_init -> lua
 | `scan` | 遍历 `plugins.directory/*/plugin.json`。只读 JSON，不加载共享库。 |
 | `catalog` | 校验 manifest schema、package id、平台库路径和 interface 声明。 |
 | `plan` | 从主配置的 `plugins.instances` 建立启动计划。 |
-| `resolve` | 校验 package 存在、实例 id 唯一、依赖可满足、拓扑无环。配置 schema 和 binding 严格校验属于 v1 收敛项，见本文末尾“实现状态”。 |
+| `resolve` | 校验 package 存在、实例 id 唯一、依赖可满足、拓扑无环，并在这一阶段应用 config 默认值、执行 schema 校验、校验 binding 名唯一且目标 instance 存在。 |
 | `load` | `dlopen` / `LoadLibrary` 共享库，解析 `entry`。 |
 | `create` | 调用入口函数，校验 ABI guard，创建 instance handle。 |
 | `start` | 调用实例 `start`，插件初始化后端连接、后台线程等资源。 |
@@ -456,7 +456,7 @@ local binding = shield.plugin.binding("database.default")
 
 | API | 说明 |
 | --- | --- |
-| `shield.plugin.packages()` | 返回可用 package 列表，包括 id、version、kind、provides。 |
+| `shield.plugin.packages()` | 返回可用 package 列表，包括 id、version、kind、provides、docs_url、docs_description。 |
 | `shield.plugin.instances()` | 返回实例列表，包括 id、package、state、required。 |
 | `shield.plugin.instance(id)` | 返回单个实例状态。 |
 | `shield.plugin.binding(name)` | 返回 binding 指向的 instance id 和 interface。 |
@@ -574,10 +574,10 @@ int my_register_lua(shield_plugin_instance_v1* self,
 | `cache.redis` | `shield.cache.redis` | get / set / del / incr / hget / hset |
 | `queue.redis` | `shield.queue.redis` | publish / subscribe / unsubscribe |
 | `leaderboard.redis` | `shield.leaderboard.redis` | set_entry / get_rank / top_n / remove_entry |
-| `auth.jwt` | `shield.auth.jwt` | sign / verify / refresh |
-| `metrics.prometheus` | `shield.metrics.prometheus` | inc / observe / set / render |
-| `health.http` | `shield.health.http` | register_check / get_state |
-| `matchmaking.elo` | `shield.matchmaking.elo` | enqueue / dequeue / get_queue |
+| `auth.jwt` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
+| `metrics.prometheus` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
+| `health.http` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
+| `matchmaking.elo` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 
 ## Current Rules
 
@@ -603,9 +603,9 @@ v1 的强约束：
 
 | 项目 | 当前状态 | 目标 |
 | --- | --- | --- |
-| `config_schema` 校验 | 已有最小 validator；启动路径目前主要应用默认值，尚未把严格校验作为 resolve 阶段硬门槛。 | resolve 阶段应用默认值、执行类型/必填/范围/enum 校验，并把最终 config 传给插件。 |
-| `required: false` | `start` 失败可进入 `unavailable`；更早阶段的加载/创建失败仍可能中断启动。 | optional 实例在 load/create/start 失败时进入 `unavailable`，required 实例失败才中断启动。 |
-| binding 校验 | 当前 binding 为逻辑名到 instance id，访问时由 `get_by_binding<T>()` 请求 interface。 | resolve 阶段至少校验目标 instance 存在；必要时增加显式 interface binding 格式。 |
+| `config_schema` 校验 | resolve 阶段已应用默认值，并执行类型/必填/范围/enum 校验。 | 继续扩展 JSON Schema 子集和 secret 脱敏输出。 |
+| `required: false` | optional 实例在 package/load/create/start 失败时进入 `unavailable`；required 实例失败会中断启动。 | 后续可增加 binding fallback 候选列表。 |
+| binding 校验 | resolve 阶段校验 binding 名唯一且目标 instance 存在；访问时仍由 `get_by_binding<T>()` 请求 interface。 | 必要时增加显式 interface binding 格式。 |
 | 结构化错误 | C ABI 有 `shield_error_v1`；host 侧错误字符串仍有部分路径是拼接文本。 | 所有阶段统一携带 `code/message/hint/package/instance/phase`。 |
 
 ## Open Decisions

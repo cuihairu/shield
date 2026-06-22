@@ -16,7 +16,7 @@ BOOST_AUTO_TEST_CASE(parse_minimal_manifest) {
         {"entry", "shield_plugin_get_v1"},
         {"library", {{"linux", "bin/libshield_database_sqlite.so"},
                      {"macos", "bin/libshield_database_sqlite.dylib"},
-                     {"windows", "bin/shield_database_sqlite.dll"}}},
+                     {"windows", "bin/libshield_database_sqlite.dll"}}},
         {"provides", json::array({{{"interface", "shield.database.v1"},
                                    {"capabilities", json::array({"sql"})}}})},
         {"requires", json::array()},
@@ -26,7 +26,7 @@ BOOST_AUTO_TEST_CASE(parse_minimal_manifest) {
     BOOST_CHECK_EQUAL(m.id, "database.sqlite");
     BOOST_CHECK_EQUAL(m.entry, "shield_plugin_get_v1");
     BOOST_REQUIRE_EQUAL(m.provides.size(), 1u);
-    BOOST_CHECK_EQUAL(m.provides[0].interface, "shield.database.v1");
+    BOOST_CHECK_EQUAL(m.provides[0].interface_name, "shield.database.v1");
     BOOST_REQUIRE_EQUAL(m.provides[0].capabilities.size(), 1u);
     BOOST_CHECK_EQUAL(m.provides[0].capabilities[0], "sql");
 }
@@ -54,6 +54,6 @@ BOOST_AUTO_TEST_CASE(parse_requires) {
     auto m = parse_manifest(j);
     BOOST_REQUIRE_EQUAL(m.requires_.size(), 1u);
     BOOST_CHECK_EQUAL(m.requires_[0].name, "db");
-    BOOST_CHECK_EQUAL(m.requires_[0].interface, "shield.database.v1");
+    BOOST_CHECK_EQUAL(m.requires_[0].interface_name, "shield.database.v1");
     BOOST_CHECK_EQUAL(m.requires_[0].optional, false);
 }

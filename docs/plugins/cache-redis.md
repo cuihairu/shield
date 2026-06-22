@@ -187,21 +187,24 @@ cache->incr_by(conn, "player:1234:rank", 5, &new_rank);
 cache->disconnect(conn);
 ```
 
-### Lua（规划中）
+### Lua
 
-v1 计划将 cache.redis 暴露到 `shield.cache.redis`，并提供 callable table 形式的多实例 proxy：
+`cache.redis` 通过 `register_lua` 暴露 callable table 形式的多实例 proxy：
 
 ```lua
 local cache = shield.cache.redis("cache.session")
-cache:set("player:1234", json.encode({level = 7}), 3600)
+local ok, err = cache:set("player:1234", json.encode({level = 7}), 3600)
+if not ok then
+  -- 处理 err.message
+end
 
-local v = cache:get("player:1234")
-if v.found then
-  local data = json.decode(v.data)
+local ok, value_or_err = cache:get("player:1234")
+if ok and value_or_err then
+  local data = json.decode(value_or_err)
 end
 ```
 
-当前实现尚未提供 Lua 绑定（`register_lua` 为空实现），业务代码请走 C++ 侧。
+可用方法包括 `get`、`set`、`del`、`exists`、`incr`、`incr_by`、`hget`、`hset`、`hdel`。Lua 方法通常返回 `ok, result_or_error`；`get` / `hget` 未命中时返回 `true, nil`。
 
 ## 特殊语义
 

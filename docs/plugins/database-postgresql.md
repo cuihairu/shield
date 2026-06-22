@@ -196,9 +196,9 @@ db->free_result(&r);
 db->disconnect(conn);
 ```
 
-### Lua 侧（规划中）
+### Lua 侧
 
-PostgreSQL 插件的 Lua 绑定在 Lua 自治迁移完成前不暴露。规划中的调用约定：
+PostgreSQL 插件通过 `register_lua` 暴露 `shield.database.postgresql` callable namespace：
 
 ```lua
 local db = shield.database.postgresql("db.main")

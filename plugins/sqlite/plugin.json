@@ -11,7 +11,7 @@
   },
   "entry": "shield_plugin_get_v1",
   "library": {
-    "windows": "bin/shield_database_sqlite.dll",
+    "windows": "bin/libshield_database_sqlite.dll",
     "linux": "bin/libshield_database_sqlite.so",
     "macos": "bin/libshield_database_sqlite.dylib"
   },

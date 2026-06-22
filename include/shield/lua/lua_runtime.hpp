@@ -414,7 +414,7 @@ public:
                              std::string_view args = "{}");
 
     // Register API functions
-    void register_api(std::shared_ptr<LuaVM> vm);
+    bool register_api(std::shared_ptr<LuaVM> vm, std::string* error = nullptr);
 
     // Bind service-management APIs for VMs created by this runtime.
     void set_service_manager(LuaServiceManager* manager);

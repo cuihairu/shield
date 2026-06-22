@@ -210,18 +210,33 @@ lb->free_result(&res);
 lb->disconnect(conn);
 ```
 
-### Lua（规划中）
+### Lua
 
-v1 计划将 leaderboard.redis 暴露到 `shield.leaderboard.redis`：
+`leaderboard.redis` 通过 `register_lua` 暴露 callable table 形式的多实例 proxy：
 
 ```lua
 local lb = shield.leaderboard.redis("leaderboard.default")
-lb:set_entry("lb:global", "player:1", {score = 12500, level = 47})
-local rank = lb:get_rank("lb:global", "player:1")
-local top = lb:top_n("lb:global", 10)
+
+lb:create_board("lb:global", {
+  fields = {
+    { name = "score", order = "desc" },
+    { name = "level", order = "desc" },
+  },
+})
+
+local ok, err = lb:set_entry("lb:global", "player:1", {
+  score = 12500,
+  level = 47,
+})
+if not ok then
+  -- 处理 err.message
+end
+
+local ok, rank_or_err = lb:get_rank("lb:global", "player:1")
+local ok, top_or_err = lb:top_n("lb:global", 10)
 ```
 
-当前实现尚未提供 Lua 绑定（`register_lua` 为空实现）。
+可用方法包括 `create_board`、`delete_board`、`set_entry`、`remove_entry`、`get_entry`、`get_rank`、`top_n`。Lua 方法通常返回 `ok, result_or_error`；`get_entry` 未命中时返回 `true, nil`，`get_rank` 未上榜时返回 `true, 0`。
 
 ## 特殊语义
 

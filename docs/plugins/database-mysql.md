@@ -189,9 +189,9 @@ db->free_result(&cr);
 db->disconnect(conn);
 ```
 
-### Lua 侧（规划中）
+### Lua 侧
 
-MySQL 插件的 Lua 绑定在 Lua 自治迁移完成前不暴露。规划中的调用约定：
+MySQL 插件通过 `register_lua` 暴露 `shield.database.mysql` callable namespace：
 
 ```lua
 local db = shield.database.mysql("db.main")

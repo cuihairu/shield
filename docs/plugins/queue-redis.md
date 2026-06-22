@@ -146,19 +146,24 @@ queue->unsubscribe(conn, "player.login");
 queue->disconnect(conn);
 ```
 
-### Lua（规划中）
+### Lua
 
-v1 计划将 queue.redis 暴露到 `shield.queue.redis`：
+`queue.redis` 通过 `register_lua` 暴露 callable table 形式的多实例 proxy：
 
 ```lua
 local q = shield.queue.redis("queue.events")
-q:subscribe("player.login", function(channel, data)
+local ok, err = q:subscribe("player.login", function(channel, data)
   -- 处理消息
 end)
-q:publish("player.login", json.encode({uid = 1234}))
+if not ok then
+  -- 处理 err.message
+end
+
+local ok, receivers_or_err = q:publish("player.login", json.encode({uid = 1234}))
+q:unsubscribe("player.login")
 ```
 
-当前实现尚未提供 Lua 绑定（`register_lua` 为空实现）。
+可用方法包括 `publish`、`subscribe`、`unsubscribe`。`publish` 成功时返回 `true, receivers`；`subscribe` / `unsubscribe` 成功时返回 `true`。
 
 ## 特殊语义
 

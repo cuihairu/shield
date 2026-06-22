@@ -50,14 +50,14 @@ struct Manifest {
     } library;
 
     struct Provide {
-        std::string interface;                  // e.g. "shield.database.v1"
+        std::string interface_name;             // e.g. "shield.database.v1"
         std::vector<std::string> capabilities;  // e.g. ["sql","transactions"]
     };
     std::vector<Provide> provides;
 
     struct Require {
         std::string name;        // local alias used in instance.dependencies
-        std::string interface;   // required interface
+        std::string interface_name;  // required interface
         bool optional = false;
     };
     std::vector<Require> requires_;
@@ -149,7 +149,7 @@ struct InstanceInfo {
     bool required = false;
 };
 struct BindingInfo {
-    std::string logical, instance_id, interface;
+    std::string logical, instance_id, interface_name;
 };
 
 // ---------------------------------------------------------------------------

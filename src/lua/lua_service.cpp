@@ -302,9 +302,11 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
 
         // Create VM and load module
         auto vm = impl_->runtime.create_vm();
-        impl_->runtime.register_api(vm);
 
         std::string error;
+        if (!impl_->runtime.register_api(vm, &error)) {
+            return SpawnResult::error("Failed to register Lua API: " + error);
+        }
         if (!impl_->runtime.load_service_module(vm, script_path, &error)) {
             return SpawnResult::error("Failed to load module: " +
                                       script_path + ": " + error);
