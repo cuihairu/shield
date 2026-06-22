@@ -47,12 +47,23 @@ plugins/
     bin/
       shield_database_mysql.dll
       libshield_database_mysql.so
+    lua/                      # 可选：插件自带的 Lua 搜索路径
+      shield_mysql.lua
+  database.mongodb/
+    plugin.json
+    bin/
+      shield_doc_mongodb.dll
+      libshield_doc_mongodb.so
+    lua/
+      shield_mongodb.lua
   cache.redis/
     plugin.json
     bin/
       shield_cache_redis.dll
       libshield_cache_redis.so
 ```
+
+带 `lua/` 子目录的插件，host 会在 Lua runtime 初始化后把 `lua/?.lua` 注入 `package.path`，并通过插件的 `register_lua` 钩子把 `shield.<package>.*` 注册到 Lua 侧。
 
 主配置指定插件根目录：
 
@@ -89,6 +100,10 @@ plugins/
     }
   ],
   "requires": [],
+  "lua": {
+    "namespace": "database.mysql",
+    "search_paths": ["lua/?.lua"]
+  },
   "config_schema": {
     "type": "object",
     "required": ["host", "database", "username"],
@@ -129,6 +144,7 @@ Manifest 字段规则：
 | `library` | 按平台声明相对 package 根目录的库路径。 |
 | `provides` | 声明 package 提供的 interface 和 capability。 |
 | `requires` | 声明 instance 创建时需要 host 注入的依赖接口。 |
+| `lua` | 可选。声明插件的 Lua 元数据：`namespace`（Lua 侧注册到 `shield.<namespace>`）、`search_paths`（相对 package 根的 Lua 搜索路径，host 启动时自动注入 `package.path`）。 |
 | `config_schema` | 插件配置 schema，直接使用 JSON Schema 可实现子集表达。 |
 
 ## Runtime Config
@@ -184,8 +200,8 @@ Manifest 字段规则：
 启动流程固定为：
 
 ```text
-scan -> catalog -> plan -> resolve -> load -> create -> start
-                                            stop <- shutdown
+scan -> catalog -> plan -> resolve -> load -> create -> start -> lua_init -> lua_register
+                                                              stop <- shutdown
 ```
 
 | 阶段 | 说明 |
@@ -196,8 +212,12 @@ scan -> catalog -> plan -> resolve -> load -> create -> start
 | `resolve` | 校验 package 存在、配置合法、依赖可满足、binding 指向合法。 |
 | `load` | `dlopen` / `LoadLibrary` 共享库，解析 `entry`。 |
 | `create` | 调用入口函数，校验 ABI guard，创建 instance handle。 |
-| `start` | 调用实例 `init`，传入 host API、配置和依赖。 |
+| `start` | 调用实例 `start`，插件初始化后端连接、后台线程等资源。 |
+| `lua_init` | host 初始化 Lua runtime（包括把所有声明了 `lua.search_paths` 的插件路径注入 `package.path`）。 |
+| `lua_register` | host 拿到 Lua state 后，遍历所有已 `started` 的实例，依次调用 `register_lua(self, L, err)`，插件把自身 API 注册到 `shield.<namespace>`。 |
 | `stop` | 进程退出时按依赖反序调用 `shutdown`。 |
+
+`lua_init` 和 `lua_register` 只在 host 配置了 Lua runtime 时触发；纯 C++ 运行模式下这两个阶段跳过，`register_lua` 钩子不会被调用。
 
 ## Binary ABI
 
@@ -205,6 +225,8 @@ Manifest 解决发现问题，二进制入口解决真实加载和 ABI 守门问
 
 ```c
 #define SHIELD_PLUGIN_ABI_VERSION 1
+
+struct lua_State;  // 前向声明，abi.h 不直接 include lua.h
 
 typedef struct shield_plugin_abi_v1 {
     uint32_t abi_version;
@@ -215,6 +237,27 @@ typedef struct shield_plugin_abi_v1 {
                   shield_plugin_instance_v1** out,
                   shield_error_v1* err);
 } shield_plugin_abi_v1;
+
+typedef struct shield_plugin_instance_v1 {
+    uint32_t struct_size;
+    const char* instance_id;
+
+    const void* (*get_interface)(shield_plugin_instance_v1* self,
+                                 const char* interface_name,
+                                 shield_error_v1* err);
+
+    int (*start)(shield_plugin_instance_v1* self,
+                 shield_error_v1* err);
+
+    void (*shutdown)(shield_plugin_instance_v1* self);
+
+    // host 在 Lua runtime 起来后调用一次，插件用 sol2 把自身 API 注册到
+    // shield.<namespace>。没有 Lua 绑定的插件也必须提供此字段
+    // （直接 return 0 即可）。L 可能为 NULL（纯 C++ 运行模式）。
+    int (*register_lua)(shield_plugin_instance_v1* self,
+                        struct lua_State* L,
+                        shield_error_v1* err);
+} shield_plugin_instance_v1;
 
 SHIELD_PLUGIN_EXPORT
 const shield_plugin_abi_v1* shield_plugin_get_v1(void);
@@ -249,6 +292,17 @@ typedef struct shield_host_api_v1 {
     const void* (*dependency)(shield_plugin_context_v1* ctx,
                               const char* name,
                               const char* interface_name);
+
+    // 返回 host 的 lua_State*。如果 host 以纯 C++ 模式运行（未启 Lua
+    // runtime），返回 NULL。插件 register_lua 被调用时此值保证非 NULL。
+    struct lua_State* (*lua_state)(shield_plugin_context_v1* ctx);
+
+    // 把一个路径加入 Lua package.path（is_cpath=0）或 package.cpath
+    // （is_cpath=1）。相对路径以插件 package 根目录为基准解析为绝对路径。
+    // 多次调用累加。返回 0 成功，非 0 失败。
+    int (*lua_add_path)(shield_plugin_context_v1* ctx,
+                        const char* path,
+                        int is_cpath);
 } shield_host_api_v1;
 ```
 
@@ -259,6 +313,7 @@ typedef struct shield_host_api_v1 {
 | dependency by name | 插件只能访问自己 manifest `requires` 中声明的依赖名。 |
 | interface checked | host 校验依赖实例确实提供请求的 interface。 |
 | no global registry | 插件不能枚举或任意获取其他插件。 |
+| lua access | 插件通过 `lua_state` 拿到 host 的 Lua state；通过 `lua_add_path` 动态扩展 Lua 搜索路径（manifest `lua.search_paths` 是声明式快捷方式）。 |
 
 ## Dependency Model
 
@@ -321,12 +376,15 @@ typedef struct shield_host_api_v1 {
 | Interface | 用途 |
 | --- | --- |
 | `shield.database.v1` | SQL database provider。 |
+| `shield.document.v1` | 文档数据库 provider（MongoDB 等），collection 级 CRUD + 聚合管道 + 事务。 |
 | `shield.cache.v1` | cache provider，Redis 只是实现之一。 |
 | `shield.queue.v1` | queue/pubsub provider。 |
 | `shield.leaderboard.v1` | leaderboard provider。 |
 | `shield.auth.v1` | authentication provider。 |
 | `shield.metrics.v1` | metrics exporter。 |
 | `shield.health.v1` | health contributor。 |
+
+`shield.document.v1` 与 `shield.database.v1` 并列而非继承：文档库的 filter / aggregation / _id 语义与 SQL 差距过大，强行套用 SQL 接口（query/execute/last_insert_id）会丢掉文档库的核心价值。两个接口可以由不同 package 各自提供。
 
 Redis 不作为公共基础设施插件类型暴露。需要 Redis 的能力应落到具体 provider：`cache.redis`、`queue.redis`、`leaderboard.redis`。
 
@@ -378,7 +436,12 @@ typedef struct shield_error_v1 {
 
 ## Lua Introspection
 
-Lua 只暴露查询和状态，不暴露裸 vtable 或跨插件调用。
+Lua 侧有两类 API：
+
+1. **Host 内置 API**：由 host 的 `src/lua/lua_api.cpp` 注册，提供运行时核心能力（`shield.spawn` / `shield.send` / `shield.timer` / `shield.log` / `shield.config` / `shield.plugin.*` 等）。
+2. **插件自治 API**：由每个插件的 `register_lua` 钩子注册到 `shield.<namespace>`，提供该插件的业务能力（如 `shield.database.mongodb("doc.main"):find(...)`）。详见下一节 "Plugin Lua Bindings"。
+
+Host 内置 API 只暴露查询和状态，不暴露裸 vtable 或跨插件调用：
 
 ```lua
 local packages = shield.plugin.packages()
@@ -407,6 +470,113 @@ local binding = shield.plugin.binding("database.default")
 | `failed` | required 实例失败，启动流程会失败。 |
 | `stopped` | 已调用 `shutdown`。 |
 
+## Plugin Lua Bindings
+
+插件不只是 C ABI 的载体，还要自带 Lua 绑定和业务封装 Lua 文件。这让每个插件目录真正自包含——host 端代码零修改即可引入新插件。
+
+### 设计原则
+
+| 原则 | 说明 |
+| --- | --- |
+| 插件自治 | C ABI + Lua 绑定 + Lua 业务文件，全在 `plugins/<package>/` 下，不污染 host。 |
+| namespace 统一 | 插件 package id 直接映射 Lua namespace：`database.mongodb` → `shield.database.mongodb`。 |
+| 显式 register_lua | 每个 instance 必须实现 `register_lua` 钩子，即使空实现。host 不猜测插件是否需要 Lua。 |
+| 双层路径注入 | manifest `lua.search_paths` 是声明式快捷方式；`host_api.lua_add_path` 是命令式兜底，用于运行时动态决策。 |
+| 多实例 proxy | 同一 package 多个 instance 时，namespace 是 callable table：`shield.database.mongodb("doc.main")` 返回绑定到该实例的 proxy。 |
+
+### ABI 接入点
+
+`shield_plugin_instance_v1.register_lua(self, L, err)` 是唯一接入点：
+
+- host 在 `lua_register` 阶段遍历所有已 `started` 的实例，按 instance 创建顺序调用。
+- `L` 是 host 的 Lua state，保证非 NULL（除非 host 跳过 Lua runtime，此时整个阶段跳过，`register_lua` 不被调用）。
+- 插件用 sol2（`sol::state_view(L)`）创建 namespace、注册方法。
+- 返回 0 成功；非 0 视为 `register_lua` 失败，host 上报结构化错误。
+
+### namespace 与多实例
+
+namespace 直接来自 manifest 的 `lua.namespace` 字段（或省略时从 `id` 派生）。注册时插件创建一个 callable table：
+
+```lua
+-- 业务 Lua 代码
+local mongo_default = shield.database.mongodb()            -- 默认实例（binding "document.default"）
+local mongo_audit   = shield.database.mongodb("doc.audit") -- 指定实例
+
+-- 返回的 proxy 绑定到该 instance，调用时直接路由到 C ABI
+mongo_audit:insert_one("events", { type = "login", user = "alice" })
+
+local cursor = mongo_default:find("users", { age = { ["$gt"] = 18 } })
+```
+
+C 侧实现：`register_lua` 创建 `shield.database.mongodb` 这个 table，metatable 的 `__call` 接收 instance_id，查 PluginHost 拿到对应实例的 `shield_document_v1*` 和 `shield_doc_conn*`，构造 proxy。
+
+### Lua 文件位置
+
+```
+plugins/mongodb/
+├── shield_doc_mongodb.cpp        # C ABI 实现
+├── lua_bindings.cpp              # register_lua：创建 namespace + 方法
+├── lua/                          # 可选：纯 Lua 业务封装
+│   ├── init.lua
+│   └── shield_mongodb.lua
+├── plugin.json
+└── CMakeLists.txt
+```
+
+带 `lua/` 目录的插件，host 启动时：
+
+1. 扫描 manifest 的 `lua.search_paths` 字段，把 `<plugin_dir>/lua/?.lua` 注入 `package.path`（在 `lua_init` 阶段）。
+2. 调用 `register_lua`，插件自行决定是否 `require "shield_mongodb"` 加载业务封装。
+
+### register_lua 示例（插件侧）
+
+```cpp
+int my_register_lua(shield_plugin_instance_v1* self,
+                    lua_State* L,
+                    shield_error_v1* err) {
+    sol::state_view lua(L);
+    sol::table shield = lua["shield"].get_or_create<sol::table>();
+    sol::table mongodb = shield["database"].get_or_create<sol::table>()
+                              ["mongodb"].get_or_create<sol::table>();
+
+    // callable table: mongo(id) -> proxy
+    mongodb.set_function(sol::call,
+        [](std::string instance_id) -> sol::table {
+            // 查 host 拿到该实例的 shield_document_v1* + shield_doc_conn*
+            // 构造 proxy table，注册 find/insert_one/... 方法
+            return make_proxy(instance_id);
+        });
+
+    return 0;
+}
+```
+
+### host 端实现要点
+
+| 实现 | 文件 |
+| --- | --- |
+| `register_lua_all(L)` | `src/plugin/plugin_host.cpp` — 遍历 started 实例，调用 `register_lua` |
+| `lua_state` host_api 回调 | `src/plugin/plugin_host.cpp` — 返回 `LuaRuntime::raw_state()` |
+| `lua_add_path` host_api 回调 | `src/plugin/plugin_host.cpp` — 改写 `package.path` |
+| Manifest 解析 `lua` 字段 | `src/plugin/manifest.cpp` — 加 `PluginLuaMeta` |
+| Bootstrap 时序 | `src/bootstrap/bootstrap.cpp` — `start_all` → `lua_init` → `register_lua_all` |
+
+### 当前 namespace 列表
+
+| Package | Lua namespace | 主要方法 |
+| --- | --- | --- |
+| `database.sqlite` | `shield.database.sqlite` | query / execute / transaction |
+| `database.mysql` | `shield.database.mysql` | query / execute / transaction |
+| `database.postgresql` | `shield.database.postgresql` | query / execute / transaction |
+| `database.mongodb` | `shield.database.mongodb` | find / insert_one / update_one / delete_one / aggregate / count / transaction |
+| `cache.redis` | `shield.cache.redis` | get / set / del / incr / hget / hset |
+| `queue.redis` | `shield.queue.redis` | publish / subscribe / unsubscribe |
+| `leaderboard.redis` | `shield.leaderboard.redis` | set_entry / get_rank / top_n / remove_entry |
+| `auth.jwt` | `shield.auth.jwt` | sign / verify / refresh |
+| `metrics.prometheus` | `shield.metrics.prometheus` | inc / observe / set / render |
+| `health.http` | `shield.health.http` | register_check / get_state |
+| `matchmaking.elo` | `shield.matchmaking.elo` | enqueue / dequeue / get_queue |
+
 ## Current Rules
 
 v1 的强约束：
@@ -416,9 +586,11 @@ v1 的强约束：
 | 发现来源 | 只扫描 `plugin.json`。 |
 | 运行时启用 | 只看 `plugins.instances` 和 `plugins.bindings`。 |
 | 二进制入口 | 统一为 `shield_plugin_get_v1()`。 |
-| 类型系统 | 以 interface name 为主，例如 `shield.database.v1`。 |
+| 类型系统 | 以 interface name 为主，例如 `shield.database.v1`、`shield.document.v1`。 |
 | 依赖注入 | 通过 manifest `requires` 和实例 `dependencies` 解析。 |
 | Redis 能力 | 通过具体 provider 暴露，不提供公共基础设施插件类型。 |
+| Lua 自治 | 插件必须实现 `register_lua` 钩子。业务 Lua 绑定跟随插件目录，host 端 `src/lua/lua_api.cpp` 不感知具体插件。 |
+| namespace 派生 | Lua namespace 直接来自 manifest `lua.namespace`（或从 `id` 派生）。多实例用 `shield.<ns>(instance_id)` proxy。 |
 | 文档口径 | 当前文档只描述有效设计，不声明历史完成阶段。 |
 
 ## Open Decisions

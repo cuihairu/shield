@@ -105,14 +105,33 @@ shield/
 │   ├── shield_log/             # 日志系统
 │   ├── shield_bootstrap/       # 启动器
 │   ├── shield_script/          # Lua VM 管理
-│   ├── shield_lua/             # Lua API 绑定
-│   ├── shield_data/            # 数据访问（DB + Redis）
+│   ├── shield_lua/             # host 内置 Lua API 绑定（spawn/send/timer/log/config/plugin introspection）
+│   ├── shield_data/            # 数据访问层（连接池，通过 PluginHost 拿到插件 vtable）
 │   ├── shield_net/             # 网络层
 │   ├── shield_transport/       # 协议适配
 │   └── optional/               # 官方可选模块（非最小主路径）
 │       ├── shield_cluster/     # 集群通信（可选）
 │       ├── shield_global/      # 全局能力（可选）
 │       └── shield_ops/         # 运维端点（可选）
+│
+├── plugins/                    # 运行时加载的插件包（每个插件一个目录）
+│   ├── sqlite/                 # 每个插件自包含
+│   │   ├── shield_db_sqlite.cpp        # C ABI 实现
+│   │   ├── lua_bindings.cpp            # register_lua 钩子实现
+│   │   ├── lua/                        # 可选：插件自带 Lua 业务封装
+│   │   │   └── shield_sqlite.lua
+│   │   ├── plugin.json                 # manifest（含 lua 字段）
+│   │   └── CMakeLists.txt
+│   ├── mysql/
+│   ├── postgresql/
+│   ├── mongodb/                # 同构，但实现 shield.document.v1
+│   ├── cache.redis/
+│   ├── queue.redis/
+│   ├── leaderboard.redis/
+│   ├── auth.jwt/
+│   ├── metrics.prometheus/
+│   ├── health.http/
+│   └── matchmaking.elo/
 │
 ├── tests/                      # 测试代码
 │   ├── unit/                   # 单元测试
@@ -284,23 +303,20 @@ src/shield_lua/
 │   ├── lua_vm_pool.hpp        # Lua VM 池
 │   ├── script_starter.hpp     # ScriptStarter
 │   ├── lua_service_loader.hpp # Lua service module loader
-│   └── lua_bindings.hpp       # Lua API 注册
+│   └── lua_bindings.hpp       # host 内置 API 注册入口
 ├── src/
 │   ├── lua_vm_pool.cpp
 │   ├── script_starter.cpp
-│   ├── api_core.cpp
-│   ├── api_timer.cpp
-│   ├── api_data.cpp
+│   ├── lua_api.cpp            # host 内置 shield.spawn/send/timer/log/config/plugin
 │   └── ...
-├── tests/
-│   ├── test_lua_vm_pool.cpp
-│   └── test_lua_bindings.cpp
 └── CMakeLists.txt
 ```
 
-职责：Lua VM 管理、ScriptStarter、Lua service loader、`shield.*` API 绑定。
+职责：Lua VM 管理、ScriptStarter、Lua service loader、**host 内置** `shield.*` API 绑定。
 
-**依赖**：shield_base, shield_log, shield_config, shield_core, shield_data, shield_net
+注意：业务 Lua API（`shield.database.*` / `shield.cache.redis` / `shield.queue.redis` 等）由各插件通过 `register_lua` 钩子自行注册，不在 `shield_lua` 里。`shield_lua` 只负责 host 自身能力（service / message / timer / config / log / plugin introspection）。
+
+**依赖**：shield_base, shield_log, shield_config, shield_core, shield_data, shield_net, shield_plugin
 
 #### shield_data
 

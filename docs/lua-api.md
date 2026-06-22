@@ -7,7 +7,7 @@
 实现快照：当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置
 启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
 coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer/cancel_timer/fork`、
-`shield.config`、`shield.log.*`、DB/Redis API（真实驱动入口、mock 降级与错误注入测试）、
+`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、
 `on_exit` call guard、call timeout（`check_call_timeouts`）、
 timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、
 TCP gateway listener 到 Lua handler 的 bootstrap 桥接、
@@ -23,7 +23,7 @@ HTTP 服务端 Lua 路由注册仍是占位入口，尚未接入 bootstrap。
 - `shield.send` 非阻塞、无 ACK。
 - `shield.call` 挂起当前 Lua coroutine，但不阻塞 runtime 线程。
 - Runtime API 返回值统一使用 `ok, result_or_error`，业务返回的 `nil` 和 `false` 不应和 runtime 错误混淆。
-- DB/Redis API 使用点号调用：`shield.db.query(...)`，不使用冒号调用。
+- DB/Redis API 使用插件 namespace 调用：`shield.database.mysql("db.main"):query(...)`，不使用冒号调用全局函数。具体 namespace 与方法见下文 "Plugin-provided APIs"。
 
 ## Service Module
 
@@ -377,88 +377,147 @@ shield.log.error("message")
 
 实现快照：`shield.log.*` 输出时自动注入当前 service id 前缀（格式：`[service_id] message`）。service name 和 trace id 注入属于 Phase 2 扩展。
 
-## Data API
+## Plugin-provided APIs
 
-`shield_data` 提供原始 DB/Redis 能力；`shield_lua` 在其上提供轻量
-`shield.db.mapper/register_mapper/entity` helper。它们只做显式 SQL 模板、
-命名参数绑定和简单实体 CRUD SQL 生成，不是重 ORM，不提供对象图加载、
-migration 或跨服务事务。
+数据库、缓存、消息队列、认证、监控、健康检查、匹配等业务能力都由插件提供。插件的 Lua 绑定跟随插件目录，通过 `register_lua` 钩子注册到 `shield.<namespace>`。host 端 `src/lua/lua_api.cpp` 不感知任何具体插件 API。
 
-### DB
+### 调用形态
+
+每个插件 namespace 是一个 **callable table**：传 `instance_id` 返回绑定到该实例的 proxy。
 
 ```lua
-local ok, rows = shield.db.query("SELECT * FROM users WHERE id = ?", { uid })
-local ok, row = shield.db.query_one("SELECT * FROM users WHERE id = ?", { uid })
-local ok, result = shield.db.execute("UPDATE users SET name = ? WHERE id = ?", { name, uid })
-local ok, result = shield.db.transaction(function(tx)
-    local ok, updated = tx.execute("UPDATE users SET gold = gold - ? WHERE id = ?", { 10, uid })
-    if not ok then return false, updated end
-    return true, updated
-end)
+-- 默认实例（binding 指定的）
+local db = shield.database.mongodb()
+
+-- 指定实例
+local db_audit = shield.database.mongodb("doc.audit")
+local db_game  = shield.database.mysql("db.game")
+
+-- 在 proxy 上调用方法
+db:insert_one("users", { name = "alice", age = 30 })
+db_game:query("SELECT * FROM players WHERE id = ?", { pid })
 ```
 
 规则：
 
 - API coroutine-friendly。
-- 返回形态保持 coroutine-friendly；当前实现仍同步执行，data worker pool 属于后续项。
-- SQL 参数必须使用 params 数组传递。
-- 未启用 database 时返回 `false, module_unavailable`。
-- 连接池耗尽返回 `false, { code = "pool_exhausted", ... }`。
-- `shield.db.transaction` 只支持本地单连接事务；callback 返回 `false, reason` 或抛错时 rollback。
+- 未启用对应插件或实例不存在时返回 `nil, { code = "module_unavailable" }`。
+- 同一 package 多实例互不影响；每个 proxy 独立持有连接句柄。
+- `proxy` 的生命周期由 Lua GC 管理；连接本身属于 host 连接池，proxy 只持有引用。
 
-### DB Mapper / Entity
+### Database（SQL）— `shield.database.<driver>`
 
 ```lua
-local PlayerMapper = shield.db.mapper({
-    SelectProfile = {
-        type = "select",
-        one = true,
-        sql = "SELECT player_id, nickname FROM player WHERE player_id = #{player_id}"
-    },
-    UpdateNickname = {
-        type = "update",
-        transaction = "required",
-        sql = "UPDATE player SET nickname = #{nickname} WHERE player_id = #{player_id}"
-    }
-})
+local db = shield.database.mysql("db.main")
 
-local ok, profile = PlayerMapper:SelectProfile({ player_id = uid })
-local ok, result = PlayerMapper:UpdateNickname({ player_id = uid, nickname = name })
+-- SQL CRUD
+local ok, rows   = db:query("SELECT * FROM users WHERE id = ?", { uid })
+local ok, row    = db:query_one("SELECT * FROM users WHERE id = ?", { uid })
+local ok, result = db:execute("UPDATE users SET name = ? WHERE id = ?", { name, uid })
 
-local Player = shield.db.entity({
-    table = "player",
-    fields = { "player_id", "nickname", "level" },
-    primary_key = "player_id"
-})
-
-local ok, inserted = Player:insert({ player_id = uid, nickname = name, level = 1 })
-local ok, row = Player:find(uid)
-```
-
-规则：
-
-- mapper SQL 只支持 `#{name}` / `#{nested.path}` 参数绑定，编译成 `?` 和 params 数组。
-- `${name}` 原样替换和多语句 SQL 会返回 `mapper_unsafe_sql`。
-- `transaction="required"` 没有显式 tx 时自动开启本地事务；传入 `tx` 时复用当前事务。
-- entity helper 只生成 `insert/update/delete/find`，不做 migration、脏跟踪或关联加载。
-
-### Redis
-
-```lua
-local ok, value = shield.redis.get("player:" .. uid)
-local ok, err = shield.redis.set("player:" .. uid, value, 3600)
-local ok, receivers = shield.redis.publish("chat.world", payload)
-local ok, sub = shield.redis.subscribe("chat.world", function(channel, payload)
+-- 事务
+local ok, result = db:transaction(function(tx)
+    local ok, updated = tx:execute("UPDATE users SET gold = gold - ? WHERE id = ?", { 10, uid })
+    if not ok then return false, updated end
+    return true, updated
 end)
 ```
 
-规则：
+可用 namespace：
 
-- 未启用 Redis 时返回 `false, module_unavailable`。
-- subscribe callback 属于当前 service。
-- service exit 时自动取消 owned subscriptions。
+| Namespace | 接口 | 说明 |
+| --- | --- | --- |
+| `shield.database.sqlite` | `shield.database.v1` | 嵌入式 SQLite |
+| `shield.database.mysql` | `shield.database.v1` | MySQL X DevAPI |
+| `shield.database.postgresql` | `shield.database.v1` | libpq |
 
-实现快照：`get/set/del/exists/publish/subscribe` 均已实现。`subscribe` 接受 `(channel, callback)` 参数，callback 在 Redis 回调线程中执行（非 worker 线程）。service exit 时自动取消 owned subscriptions（通过 `cancel_redis_subscriptions`）。
+### Database（文档）— `shield.database.mongodb`
+
+```lua
+local mongo = shield.database.mongodb("doc.main")
+
+-- CRUD
+mongo:insert_one("users", { _id = "alice", age = 30 })
+mongo:insert_many("logs", { { ts = 1 }, { ts = 2 } })
+
+local ok, cursor = mongo:find("users", { age = { ["$gt"] = 18 } })
+for _, doc in ipairs(cursor:to_table()) do
+    shield.log.info(doc._id)
+end
+
+local ok, updated = mongo:update_one("users",
+    { _id = "alice" },
+    { ["$set"] = { age = 31 } })
+
+local ok, deleted = mongo:delete_one("users", { _id = "alice" })
+local ok, count = mongo:count("users", { active = true })
+
+-- 聚合管道
+local ok, cursor = mongo:aggregate("users", {
+    { ["$match"] = { active = true } },
+    { ["$group"] = { _id = "$country", total = { ["$sum"] = 1 } } },
+})
+
+-- 索引
+mongo:create_index("users", { email = 1 }, { unique = true })
+
+-- 事务（需 MongoDB 4.0+ replica set）
+mongo:transaction(function(tx)
+    tx:insert_one("orders", { ... })
+    tx:update_one("inventory", { sku = "X" }, { ["$inc"] = { qty = -1 } })
+end)
+```
+
+Lua table 会被 `nlohmann::json` 转为 BSON；查询操作符（`$gt` / `$set` / `$sum` 等）保持 Mongo 原生语义。ObjectId 作为 24 字符十六进制字符串传输。
+
+### Cache — `shield.cache.redis`
+
+```lua
+local cache = shield.cache.redis("cache.main")
+
+cache:set("player:" .. uid, json, 3600)
+local ok, value = cache:get("player:" .. uid)
+cache:del("player:" .. uid)
+cache:incr("counter:" .. key)
+cache:hset("session:" .. sid, "uid", uid)
+local ok, uid = cache:hget("session:" .. sid, "uid")
+```
+
+### Queue — `shield.queue.redis`
+
+```lua
+local q = shield.queue.redis("queue.main")
+
+q:publish("chat.world", payload)
+q:subscribe("chat.world", function(channel, data)
+    -- 处理消息
+end)
+q:unsubscribe("chat.world")
+```
+
+### Leaderboard — `shield.leaderboard.redis`
+
+```lua
+local lb = shield.leaderboard.redis("lb.main")
+
+lb:create_board("arena_1v1", {
+    fields = { { name = "score", dir = "desc" } }
+})
+lb:set_entry("arena_1v1", "alice", { score = 1500 })
+local ok, rank = lb:get_rank("arena_1v1", "alice")
+local ok, top = lb:top_n("arena_1v1", 10)
+```
+
+### 其他插件
+
+| Namespace | 说明 |
+| --- | --- |
+| `shield.auth.jwt` | JWT 签发 / 校验 / 刷新 |
+| `shield.metrics.prometheus` | counter / gauge / histogram |
+| `shield.health.http` | 注册健康检查、查询状态 |
+| `shield.matchmaking.elo` | 匹配队列、ELO 评分 |
+
+具体方法签名参考各插件的 `lua/` 封装文件或 `plugins/<package>/lua_bindings.cpp`。
 
 ## Gateway API
 
