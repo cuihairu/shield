@@ -1,11 +1,9 @@
-// [SHIELD_DB_PLUGIN_MYSQL] MySQL backend plugin for shield_data.
+// [SHIELD_PLUGIN] database.mysql — MySQL provider for shield.database.v1.
 //
-// Implements the C ABI from shield/plugin/db_plugin.h on top of the
-// MySQL Connector/C++ X DevAPI. All exceptions raised by mysqlx are
-// caught at the boundary so they never cross the DLL edge; we surface
-// them as soft failures via shield_db_result.error_msg / error_code.
-//
-// Error code mapping follows the conventions used elsewhere in shield:
+// v1 ABI (shield_plugin_get_v1). The X DevAPI session lifecycle and SQL
+// execution are inherited from the legacy implementation unchanged; only
+// the ABI shell is new. Error code mapping follows the conventions used
+// elsewhere in shield:
 //   "connection_lost"      Lost connection / server gone
 //   "connection_timeout"   query timed out
 //   "syntax_error"         SQL parse / grammar error
@@ -13,11 +11,12 @@
 //   "transaction_aborted"  Deadlock
 //   "db_query_failed"      Catch-all for other mysqlx::Error
 
-#include "shield/data/db_plugin.h"
-#include "shield/plugin/plugin.h"
+#include "shield/plugin/abi.h"
+#include "shield/plugin/database.h"
 
 #include <mysqlx/xdevapi.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -50,7 +49,6 @@ void clear_result(shield_db_result* r) {
     r->col_count = 0;
 }
 
-// Translate a mysqlx error message into a stable shield error code.
 const char* map_mysqlx_error(const char* msg) {
     if (!msg) return "db_query_failed";
     std::string m(msg);
@@ -72,7 +70,6 @@ const char* map_mysqlx_error(const char* msg) {
     return "db_query_failed";
 }
 
-// Fill `out` from a mysqlx exception. Always returns 0 (soft failure).
 int fill_exception(std::exception_ptr ep, shield_db_result* out) {
     out->success = 0;
     std::string msg;
@@ -92,9 +89,6 @@ int fill_exception(std::exception_ptr ep, shield_db_result* out) {
     return 0;
 }
 
-// Execute a SQL statement via a session. Selects whether to materialise
-// rows (read path) or just affected counts (write path) via the
-// `collect_rows` flag.
 int run_stmt(mysqlx::Session& session, const char* sql,
              const char* const* params, int n_params,
              bool collect_rows, shield_db_result* out) {
@@ -156,18 +150,18 @@ int run_simple(mysqlx::Session& session, const char* sql,
     return run_stmt(session, sql, nullptr, 0, false, out);
 }
 
-}  // namespace
-
+// shield_db_conn is forward-declared opaque in database.h; concrete layout
+// defined here.
 struct shield_db_conn {
     std::unique_ptr<mysqlx::Session> session;
 };
 
-extern "C" {
-
-SHIELD_DB_EXPORT
-const shield_db_plugin* shield_db_plugin_api(void) {
-    static const shield_db_plugin plugin = {
-        SHIELD_DB_ABI_VERSION,
+// ---------------------------------------------------------------------------
+// v1 database vtable
+// ---------------------------------------------------------------------------
+const shield_database_v1& db_vtable() {
+    static const shield_database_v1 v = {
+        sizeof(shield_database_v1),
         "mysql",
         "1.0.0",
         // connect
@@ -183,23 +177,19 @@ const shield_db_plugin* shield_db_plugin_api(void) {
                     args->database ? args->database : "shield");
                 return new shield_db_conn{std::move(s)};
             } catch (const mysqlx::Error& e) {
-                if (err_buf && err_buf_size > 0) {
+                if (err_buf && err_buf_size > 0)
                     std::snprintf(err_buf, err_buf_size, "%s", e.what());
-                }
                 return nullptr;
             } catch (const std::exception& e) {
-                if (err_buf && err_buf_size > 0) {
+                if (err_buf && err_buf_size > 0)
                     std::snprintf(err_buf, err_buf_size, "%s", e.what());
-                }
                 return nullptr;
             }
         },
         // disconnect
         [](shield_db_conn* c) {
             if (!c) return;
-            if (c->session) {
-                try { c->session->close(); } catch (...) {}
-            }
+            if (c->session) { try { c->session->close(); } catch (...) {} }
             delete c;
         },
         // ping
@@ -208,9 +198,7 @@ const shield_db_plugin* shield_db_plugin_api(void) {
             try {
                 c->session->sql("SELECT 1").execute();
                 return 1;
-            } catch (...) {
-                return 0;
-            }
+            } catch (...) { return 0; }
         },
         // query
         [](shield_db_conn* c, const char* sql,
@@ -254,28 +242,56 @@ const shield_db_plugin* shield_db_plugin_api(void) {
         // free_result
         [](shield_db_result* r) { clear_result(r); },
     };
-    return &plugin;
+    return v;
 }
 
-}  // extern "C"
+}  // namespace
 
-// Generic plugin entry point — wraps the DB plugin for PluginManager.
+// ---------------------------------------------------------------------------
+// v1 ABI entry. The instance is a thin shell — get_interface returns the
+// shared static db_vtable(); start/shutdown are trivial because MySQL
+// connections are created per-connect.
+// ---------------------------------------------------------------------------
 namespace {
-const shield_plugin g_plugin = {
-    SHIELD_PLUGIN_ABI_VERSION,
-    SHIELD_PLUGIN_TYPE_DATABASE,
-    "shield_db_mysql",
-    "1.0.0",
-    "MySQL X DevAPI database plugin",
-    "Shield",
-    nullptr, nullptr, nullptr, nullptr,
-    nullptr,  // vtable set at runtime
+
+struct mysql_instance {
+    shield_plugin_instance_v1 shell;
+    std::string instance_id;
 };
+
+int mysql_create(const struct shield_plugin_create_args_v1* args,
+                 struct shield_plugin_instance_v1** out,
+                 struct shield_error_v1* err) {
+    (void)err;
+    auto* inst = new mysql_instance;
+    inst->instance_id = args->instance_id ? args->instance_id : "";
+    inst->shell.struct_size = sizeof(shield_plugin_instance_v1);
+    inst->shell.instance_id = inst->instance_id.c_str();
+    inst->shell.get_interface = [](struct shield_plugin_instance_v1*,
+                                   const char* iface,
+                                   struct shield_error_v1*) -> const void* {
+        if (iface && std::strcmp(iface, SHIELD_DATABASE_INTERFACE) == 0)
+            return &db_vtable();
+        return nullptr;
+    };
+    inst->shell.start = [](struct shield_plugin_instance_v1*, struct shield_error_v1*) { return 0; };
+    inst->shell.shutdown = [](struct shield_plugin_instance_v1* self) {
+        delete reinterpret_cast<mysql_instance*>(self);
+    };
+    *out = &inst->shell;
+    return 0;
 }
 
-extern "C" SHIELD_DB_EXPORT
-const struct shield_plugin* shield_plugin_api(void) {
-    // Lazily set vtable to point to the DB plugin.
-    const_cast<shield_plugin&>(g_plugin).vtable = shield_db_plugin_api();
-    return &g_plugin;
+}  // namespace
+
+extern "C" SHIELD_PLUGIN_EXPORT
+const struct shield_plugin_abi_v1* shield_plugin_get_v1(void) {
+    static const struct shield_plugin_abi_v1 abi = {
+        SHIELD_PLUGIN_ABI_VERSION,
+        sizeof(shield_plugin_abi_v1),
+        "database.mysql",
+        "1.0.0",
+        mysql_create,
+    };
+    return &abi;
 }

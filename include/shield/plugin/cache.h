@@ -37,6 +37,8 @@ struct shield_cache_value {
 };
 
 struct shield_cache_v1 {
+    static constexpr const char* interface_name = SHIELD_CACHE_INTERFACE;
+
     uint32_t struct_size;
     const char* name;          // "redis" | "memory" | ...
     const char* version;

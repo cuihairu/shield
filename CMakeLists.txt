@@ -104,11 +104,13 @@ option(SHIELD_ENABLE_OPS "Enable ops/diagnostics (optional)" OFF)
 option(SHIELD_BUILD_DB_PLUGIN_MYSQL "Build the MySQL X DevAPI DB plugin" OFF)
 option(SHIELD_BUILD_DB_PLUGIN_POSTGRESQL "Build the PostgreSQL (libpq) DB plugin" OFF)
 option(SHIELD_BUILD_DB_PLUGIN_SQLITE "Build the SQLite DB plugin" OFF)
-option(SHIELD_BUILD_PLUGIN_REDIS "Build the Redis infrastructure plugin" OFF)
 option(SHIELD_BUILD_PLUGIN_AUTH "Build the JWT auth plugin" OFF)
 option(SHIELD_BUILD_PLUGIN_METRIC "Build the Prometheus metrics plugin" OFF)
 option(SHIELD_BUILD_PLUGIN_HEALTH "Build the HTTP health check plugin" OFF)
 option(SHIELD_BUILD_PLUGIN_MATCHMAKING "Build the ELO matchmaking plugin" OFF)
+option(SHIELD_BUILD_PLUGIN_CACHE_REDIS "Build the Redis cache plugin (shield.cache.v1)" OFF)
+option(SHIELD_BUILD_PLUGIN_QUEUE_REDIS "Build the Redis pub/sub queue plugin (shield.queue.v1)" OFF)
+option(SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS "Build the Redis ZSET leaderboard plugin (shield.leaderboard.v1)" OFF)
 
 # Ensure config directory exists and create a minimal default config if missing.
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/config")
@@ -752,11 +754,13 @@ endif()
 if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
    SHIELD_BUILD_DB_PLUGIN_POSTGRESQL OR
    SHIELD_BUILD_DB_PLUGIN_SQLITE OR
-   SHIELD_BUILD_PLUGIN_REDIS OR
    SHIELD_BUILD_PLUGIN_AUTH OR
    SHIELD_BUILD_PLUGIN_METRIC OR
    SHIELD_BUILD_PLUGIN_HEALTH OR
-   SHIELD_BUILD_PLUGIN_MATCHMAKING)
+   SHIELD_BUILD_PLUGIN_MATCHMAKING OR
+   SHIELD_BUILD_PLUGIN_CACHE_REDIS OR
+   SHIELD_BUILD_PLUGIN_QUEUE_REDIS OR
+   SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS)
     add_subdirectory(plugins)
 endif()
 
@@ -806,9 +810,11 @@ message(STATUS "  shield_ops:        ${SHIELD_ENABLE_OPS}")
 message(STATUS "  db plugin mysql:   ${SHIELD_BUILD_DB_PLUGIN_MYSQL}")
 message(STATUS "  db plugin pgsql:   ${SHIELD_BUILD_DB_PLUGIN_POSTGRESQL}")
 message(STATUS "  db plugin sqlite:  ${SHIELD_BUILD_DB_PLUGIN_SQLITE}")
-message(STATUS "  plugin redis:      ${SHIELD_BUILD_PLUGIN_REDIS}")
 message(STATUS "  plugin auth:       ${SHIELD_BUILD_PLUGIN_AUTH}")
 message(STATUS "  plugin metric:     ${SHIELD_BUILD_PLUGIN_METRIC}")
 message(STATUS "  plugin health:     ${SHIELD_BUILD_PLUGIN_HEALTH}")
 message(STATUS "  plugin matchmaking:${SHIELD_BUILD_PLUGIN_MATCHMAKING}")
+message(STATUS "  plugin cache.redis:${SHIELD_BUILD_PLUGIN_CACHE_REDIS}")
+message(STATUS "  plugin queue.redis:${SHIELD_BUILD_PLUGIN_QUEUE_REDIS}")
+message(STATUS "  plugin lb.redis:   ${SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS}")
 message(STATUS "")

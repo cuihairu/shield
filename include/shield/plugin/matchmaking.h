@@ -47,6 +47,8 @@ struct shield_matchmaking_result {
 };
 
 struct shield_matchmaking_v1 {
+    static constexpr const char* interface_name = SHIELD_MATCHMAKING_INTERFACE;
+
     uint32_t struct_size;
     const char* name;
     const char* version;

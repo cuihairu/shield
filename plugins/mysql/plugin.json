@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "database.mysql",
+  "name": "MySQL",
+  "version": "1.0.0",
+  "kind": "database",
+  "description": "MySQL X DevAPI provider for shield.database.v1",
+  "entry": "shield_plugin_get_v1",
+  "library": {
+    "windows": "bin/libshield_db_mysql.dll",
+    "linux": "bin/libshield_db_mysql.so",
+    "macos": "bin/libshield_db_mysql.dylib"
+  },
+  "provides": [
+    { "interface": "shield.database.v1", "capabilities": ["sql", "transactions"] }
+  ],
+  "requires": [],
+  "config_schema": {
+    "type": "object",
+    "required": ["host", "database", "username"],
+    "properties": {
+      "host": { "type": "string", "default": "127.0.0.1" },
+      "port": { "type": "integer", "default": 3306, "minimum": 1, "maximum": 65535 },
+      "database": { "type": "string" },
+      "username": { "type": "string" },
+      "password": { "type": "string", "secret": true },
+      "connect_timeout_ms": { "type": "integer", "default": 5000, "minimum": 100, "maximum": 60000 },
+      "query_timeout_ms": { "type": "integer", "default": 5000, "minimum": 100, "maximum": 300000 }
+    }
+  }
+}

@@ -277,10 +277,12 @@ const shield_host_api_v1& PluginHost::host_api_table() {
             if (dot == std::string::npos) break;
             start = dot + 1;
         }
-        static thread_local std::string v;
-        if (cur->is_string()) v = cur->get<std::string>();
-        else v = cur->dump();
-        return v.c_str();
+        // Write into per-instance scratch (NOT thread_local): concurrent
+        // config_get from two instances must not clobber each other's return.
+        // Contract: valid until next config_get on THIS context.
+        if (cur->is_string()) c->config_get_scratch = cur->get<std::string>();
+        else c->config_get_scratch = cur->dump();
+        return c->config_get_scratch.c_str();
     };
     api.dependency = [](shield_plugin_context_v1* ctx, const char* name,
                         const char* iface) -> const void* {

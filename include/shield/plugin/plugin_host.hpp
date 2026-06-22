@@ -204,6 +204,12 @@ private:
     struct CtxBundle {
         PluginHost* host;
         const Instance* instance;
+        // Per-instance scratch buffer for config_get() return value. Documented
+        // contract: "valid until the next config_get call on this context".
+        // Using a per-instance member (NOT thread_local) avoids cross-instance
+        // and cross-thread interference when multiple instances call config_get
+        // concurrently.
+        std::string config_get_scratch;
     };
 
     const shield_host_api_v1& host_api_table();

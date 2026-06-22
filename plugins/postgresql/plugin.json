@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "database.postgresql",
+  "name": "PostgreSQL",
+  "version": "1.0.0",
+  "kind": "database",
+  "description": "libpq-based PostgreSQL provider for shield.database.v1",
+  "entry": "shield_plugin_get_v1",
+  "library": {
+    "windows": "bin/libshield_db_pgsql.dll",
+    "linux": "bin/libshield_db_pgsql.so",
+    "macos": "bin/libshield_db_pgsql.dylib"
+  },
+  "provides": [
+    { "interface": "shield.database.v1", "capabilities": ["sql", "transactions"] }
+  ],
+  "requires": [],
+  "config_schema": {
+    "type": "object",
+    "required": ["host", "database", "username"],
+    "properties": {
+      "host": { "type": "string", "default": "127.0.0.1" },
+      "port": { "type": "integer", "default": 5432, "minimum": 1, "maximum": 65535 },
+      "database": { "type": "string" },
+      "username": { "type": "string" },
+      "password": { "type": "string", "secret": true },
+      "connect_timeout_ms": { "type": "integer", "default": 5000, "minimum": 100, "maximum": 60000 },
+      "query_timeout_ms": { "type": "integer", "default": 5000, "minimum": 100, "maximum": 300000 }
+    }
+  }
+}

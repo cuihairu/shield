@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "matchmaking.elo",
+  "name": "ELO Matchmaking",
+  "version": "1.0.0",
+  "kind": "matchmaking",
+  "description": "Greedy rating-tolerance ELO provider for shield.matchmaking.v1",
+  "entry": "shield_plugin_get_v1",
+  "library": {
+    "windows": "bin/libshield_matchmaking_elo.dll",
+    "linux": "bin/libshield_matchmaking_elo.so",
+    "macos": "bin/libshield_matchmaking_elo.dylib"
+  },
+  "provides": [
+    { "interface": "shield.matchmaking.v1", "capabilities": ["solo", "party"] }
+  ],
+  "requires": [],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "max_players_per_match": { "type": "integer", "default": 2, "minimum": 2, "maximum": 64 },
+      "match_timeout_seconds": { "type": "integer", "default": 30, "minimum": 1, "maximum": 3600 },
+      "rating_tolerance": { "type": "number", "default": 200.0, "minimum": 0, "maximum": 10000 }
+    }
+  }
+}

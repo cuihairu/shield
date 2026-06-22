@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "metrics.prometheus",
+  "name": "Prometheus Metrics",
+  "version": "1.0.0",
+  "kind": "metrics",
+  "description": "Prometheus text-format exporter for shield.metrics.v1 (boost::beast)",
+  "entry": "shield_plugin_get_v1",
+  "library": {
+    "windows": "bin/libshield_metric_prometheus.dll",
+    "linux": "bin/libshield_metric_prometheus.so",
+    "macos": "bin/libshield_metric_prometheus.dylib"
+  },
+  "provides": [
+    { "interface": "shield.metrics.v1", "capabilities": ["counter", "gauge", "histogram"] }
+  ],
+  "requires": [],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "bind_address": { "type": "string", "default": "0.0.0.0" },
+      "port": { "type": "integer", "default": 8087, "minimum": 1, "maximum": 65535 },
+      "path": { "type": "string", "default": "/metrics" }
+    }
+  }
+}

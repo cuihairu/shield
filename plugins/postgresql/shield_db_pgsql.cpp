@@ -1,28 +1,29 @@
-// [SHIELD_DB_PLUGIN_POSTGRESQL] PostgreSQL backend plugin for shield_data.
+// [SHIELD_PLUGIN] database.postgresql — PostgreSQL provider for
+// shield.database.v1.
 //
-// Implements the C ABI from shield/data/db_plugin.h on top of libpq
-// (the official PostgreSQL C client). libpq is a fairly thin layer
-// over the wire protocol, so this plugin is small.
+// v1 ABI (shield_plugin_get_v1). libpq is a fairly thin layer over the wire
+// protocol, so this plugin is small.
 //
 // Two implementation notes worth calling out:
 //
 // 1. Placeholder syntax. shield's other plugins use ? for parameters
 //    (MySQL/SQLite style). libpq expects $1, $2, ... so we rewrite
 //    the SQL on the fly. The translator is naive about string literals
-//    and comments - it counts ? anywhere. Production queries that put
+//    and comments — it counts ? anywhere. Production queries that put
 //    ? inside SQL string literals will break. The shield::data SQL
 //    helpers never emit such SQL, so this is acceptable for v1.
 //
 // 2. Transactions. PostgreSQL supports SAVEPOINT, but we only expose
-//    BEGIN/COMMIT/ROLLBACK to match the shield_db_plugin ABI. The
+//    BEGIN/COMMIT/ROLLBACK to match the shield_database_v1 ABI. The
 //    pool serialises connection handoff so nested transactional use
 //    is the caller's responsibility.
 
-#include "shield/data/db_plugin.h"
-#include "shield/plugin/plugin.h"
+#include "shield/plugin/abi.h"
+#include "shield/plugin/database.h"
 
 #include <libpq-fe.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -59,39 +60,25 @@ void clear_result(shield_db_result* r) {
 // Reference: https://www.postgresql.org/docs/current/errcodes-appendix.html
 const char* map_sqlstate(const char* sqlstate) {
     if (!sqlstate || sqlstate[0] == '\0') return "db_query_failed";
-    // Class 08: connection exception
     if (sqlstate[0] == '0' && sqlstate[1] == '8') return "connection_lost";
-    // Class 53: insufficient resources
     if (sqlstate[0] == '5' && sqlstate[1] == '3') return "pool_exhausted";
-    // Class 40: transaction rollback (deadlock, etc.)
     if (sqlstate[0] == '4' && sqlstate[1] == '0') return "transaction_aborted";
-    // Class 23: integrity constraint violation
     if (sqlstate[0] == '2' && sqlstate[1] == '3') return "constraint_violation";
-    // Class 42: syntax error
     if (sqlstate[0] == '4' && sqlstate[1] == '2') return "syntax_error";
-    // Class 28: invalid authorization
     if (sqlstate[0] == '2' && sqlstate[1] == '8') return "auth_failed";
-    // Class 57: operator intervention
     if (sqlstate[0] == '5' && sqlstate[1] == '7') return "connection_lost";
     return "db_query_failed";
 }
 
-// Fill `out` from the current PGresult. Returns 0 on soft SQL failure
-// (result present but error), 0 on success. Caller must PQclear(result).
-// The `is_select` flag controls whether we materialise rows.
 int fill_from_pgresult(PGresult* res, bool is_select, shield_db_result* out) {
     ExecStatusType status = PQresultStatus(res);
 
     if (status == PGRES_COMMAND_OK) {
-        // COMMAND_OK = INSERT/UPDATE/DELETE/etc. that don't return rows.
         out->success = 1;
         char* affected = PQcmdTuples(res);
         out->affected_rows = affected && affected[0]
                                  ? std::strtoll(affected, nullptr, 10)
                                  : 0;
-        // PostgreSQL doesn't expose last_insert_id directly - it uses
-        // RETURNING clauses. OIDs are essentially deprecated for this.
-        // We expose Oid if present but most tables won't have one.
         out->last_insert_id = 0;
         out->row_count = 0;
         out->col_count = 0;
@@ -137,7 +124,6 @@ int fill_from_pgresult(PGresult* res, bool is_select, shield_db_result* out) {
     }
 
     if (status == PGRES_TUPLES_OK && !is_select) {
-        // Some DDL returns TUPLES_OK with zero rows. Treat as success.
         out->success = 1;
         out->row_count = 0;
         out->col_count = 0;
@@ -149,7 +135,6 @@ int fill_from_pgresult(PGresult* res, bool is_select, shield_db_result* out) {
         return 0;
     }
 
-    // Anything else (PGRES_FATAL_ERROR, PGRES_EMPTY_QUERY, etc.) is a failure.
     out->success = 0;
     out->affected_rows = 0;
     out->last_insert_id = 0;
@@ -164,9 +149,6 @@ int fill_from_pgresult(PGresult* res, bool is_select, shield_db_result* out) {
     return 0;
 }
 
-// Rewrite "WHERE a = ? AND b = ?" into "WHERE a = $1 AND b = $2".
-// Naive: counts every ? regardless of context. Acceptable for the
-// shield SQL helpers; see file header for the limitation.
 std::string rewrite_placeholders(const char* sql) {
     std::string out;
     out.reserve(std::strlen(sql) + 8);
@@ -198,19 +180,14 @@ int run_pg_query(PGconn* conn, const char* sql,
 
     PGresult* res;
     if (n_params > 0) {
-        // PQexecParams signature:
-        //   const char* paramValues[] - text params, NULL pointer = SQL NULL
-        //   const int paramLengths[]  - NULL ok for text
-        //   const int paramFormats[]  - NULL ok (all text)
-        // We pass everything as text; libpq infers type conversion.
         res = PQexecParams(conn,
                            rewritten.c_str(),
                            n_params,
-                           nullptr,                  // paramTypes (infer)
+                           nullptr,
                            const_cast<const char**>(params),
-                           nullptr,                  // paramLengths
-                           nullptr,                  // paramFormats
-                           0);                       // resultFormat = text
+                           nullptr,
+                           nullptr,
+                           0);
     } else {
         res = PQexec(conn, rewritten.c_str());
     }
@@ -218,35 +195,30 @@ int run_pg_query(PGconn* conn, const char* sql,
     int rc = fill_from_pgresult(res, is_select, out);
     PQclear(res);
 
-    // If the connection dropped, surface as hard error (rc=1) so the
-    // pool can evict this connection.
     if (PQstatus(conn) == CONNECTION_BAD) {
         return 1;
     }
     return rc;
 }
 
-}  // namespace
-
+// shield_db_conn is forward-declared opaque in database.h; concrete layout
+// defined here.
 struct shield_db_conn {
     PGconn* pg;
 };
 
-extern "C" {
-
-SHIELD_DB_EXPORT
-const shield_db_plugin* shield_db_plugin_api(void) {
-    static const shield_db_plugin plugin = {
-        SHIELD_DB_ABI_VERSION,
+// ---------------------------------------------------------------------------
+// v1 database vtable
+// ---------------------------------------------------------------------------
+const shield_database_v1& db_vtable() {
+    static const shield_database_v1 v = {
+        sizeof(shield_database_v1),
         "postgresql",
         "1.0.0",
         // connect
         [](const shield_db_connect_args* args,
            char* err_buf, int err_buf_size) -> shield_db_conn* {
             if (!args) return nullptr;
-
-            // Build a connection string "key=value key=value ..." for
-            // PQconnectdb. Only set keys we actually have values for.
             std::string conninfo;
             auto append = [&](const char* key, const char* val) {
                 if (val && val[0]) {
@@ -267,9 +239,6 @@ const shield_db_plugin* shield_db_plugin_api(void) {
             append("password", args->password);
             append("dbname", args->database);
 
-            // Connect with a non-blocking start so we can honour
-            // connect_timeout_ms. PQconnectdb is synchronous but
-            // accepts connect_timeout in conninfo.
             if (args->connect_timeout_ms > 0) {
                 char buf[16];
                 double secs = args->connect_timeout_ms / 1000.0;
@@ -281,17 +250,15 @@ const shield_db_plugin* shield_db_plugin_api(void) {
 
             PGconn* pg = PQconnectdb(conninfo.c_str());
             if (!pg) {
-                if (err_buf && err_buf_size > 0) {
+                if (err_buf && err_buf_size > 0)
                     std::snprintf(err_buf, err_buf_size,
                                   "PQconnectdb returned NULL (out of memory)");
-                }
                 return nullptr;
             }
             if (PQstatus(pg) != CONNECTION_OK) {
                 const char* msg = PQerrorMessage(pg);
-                if (err_buf && err_buf_size > 0) {
+                if (err_buf && err_buf_size > 0)
                     std::snprintf(err_buf, err_buf_size, "%s", msg);
-                }
                 PQfinish(pg);
                 return nullptr;
             }
@@ -306,8 +273,6 @@ const shield_db_plugin* shield_db_plugin_api(void) {
         // ping
         [](shield_db_conn* c) -> int {
             if (!c || !c->pg) return 0;
-            // PQping avoids an actual round-trip but still validates reach.
-            // We use a SELECT 1 to ensure the session is still usable.
             PGresult* res = PQexec(c->pg, "SELECT 1");
             int ok = (PQresultStatus(res) == PGRES_TUPLES_OK) ? 1 : 0;
             PQclear(res);
@@ -337,15 +302,17 @@ const shield_db_plugin* shield_db_plugin_api(void) {
             }
             return run_pg_query(c->pg, sql, params, n_params, false, out);
         },
-        // begin / commit / rollback
+        // begin
         [](shield_db_conn* c, shield_db_result* out) -> int {
             if (!c || !c->pg) return 1;
             return run_pg_query(c->pg, "BEGIN", nullptr, 0, false, out);
         },
+        // commit
         [](shield_db_conn* c, shield_db_result* out) -> int {
             if (!c || !c->pg) return 1;
             return run_pg_query(c->pg, "COMMIT", nullptr, 0, false, out);
         },
+        // rollback
         [](shield_db_conn* c, shield_db_result* out) -> int {
             if (!c || !c->pg) return 1;
             return run_pg_query(c->pg, "ROLLBACK", nullptr, 0, false, out);
@@ -353,27 +320,54 @@ const shield_db_plugin* shield_db_plugin_api(void) {
         // free_result
         [](shield_db_result* r) { clear_result(r); },
     };
-    return &plugin;
+    return v;
 }
 
-}  // extern "C"
+}  // namespace
 
-// Generic plugin entry point — wraps the DB plugin for PluginManager.
+// ---------------------------------------------------------------------------
+// v1 ABI entry
+// ---------------------------------------------------------------------------
 namespace {
-const shield_plugin g_plugin = {
-    SHIELD_PLUGIN_ABI_VERSION,
-    SHIELD_PLUGIN_TYPE_DATABASE,
-    "shield_db_plugin",
-    "1.0.0",
-    "Database plugin",
-    "Shield",
-    nullptr, nullptr, nullptr, nullptr,
-    nullptr,
+
+struct pg_instance {
+    shield_plugin_instance_v1 shell;
+    std::string instance_id;
 };
+
+int pg_create(const struct shield_plugin_create_args_v1* args,
+              struct shield_plugin_instance_v1** out,
+              struct shield_error_v1* err) {
+    (void)err;
+    auto* inst = new pg_instance;
+    inst->instance_id = args->instance_id ? args->instance_id : "";
+    inst->shell.struct_size = sizeof(shield_plugin_instance_v1);
+    inst->shell.instance_id = inst->instance_id.c_str();
+    inst->shell.get_interface = [](struct shield_plugin_instance_v1*,
+                                   const char* iface,
+                                   struct shield_error_v1*) -> const void* {
+        if (iface && std::strcmp(iface, SHIELD_DATABASE_INTERFACE) == 0)
+            return &db_vtable();
+        return nullptr;
+    };
+    inst->shell.start = [](struct shield_plugin_instance_v1*, struct shield_error_v1*) { return 0; };
+    inst->shell.shutdown = [](struct shield_plugin_instance_v1* self) {
+        delete reinterpret_cast<pg_instance*>(self);
+    };
+    *out = &inst->shell;
+    return 0;
 }
 
-extern "C" SHIELD_DB_EXPORT
-const struct shield_plugin* shield_plugin_api(void) {
-    const_cast<shield_plugin&>(g_plugin).vtable = shield_db_plugin_api();
-    return &g_plugin;
+}  // namespace
+
+extern "C" SHIELD_PLUGIN_EXPORT
+const struct shield_plugin_abi_v1* shield_plugin_get_v1(void) {
+    static const struct shield_plugin_abi_v1 abi = {
+        SHIELD_PLUGIN_ABI_VERSION,
+        sizeof(shield_plugin_abi_v1),
+        "database.postgresql",
+        "1.0.0",
+        pg_create,
+    };
+    return &abi;
 }
