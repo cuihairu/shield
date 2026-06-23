@@ -4,11 +4,10 @@
 
 配置口径：
 
-- 插件包 manifest 支持 `manifest.yaml` 和 `plugin.json` 两种文件名。
-- 同一插件目录如果两者同时存在，优先读取 `manifest.yaml`，`plugin.json` 视为兼容副本。
+- 插件包 manifest 只支持 `manifest.yaml`。
 - `config_schema` 使用 JSON Schema 子集表达。
 - `plugins.instances[].config` 是 JSON-compatible 值模型；在当前主程序中它作为 YAML 子树写入 `app.yaml`，由 `Config` 子系统转换为 JSON 值后交给插件系统。
-- manifest 的语义模型保持单一：无论来自 YAML 还是 JSON，字段结构都必须与本文档定义的 JSON-compatible manifest 一致。
+- manifest 的语义模型保持单一：YAML 是唯一磁盘来源，字段结构与本文档定义的 JSON-compatible manifest 一致（YAML 是 JSON 的超集，所有 manifest 字段都能用 JSON-compatible 值模型表达）。
 
 ## Goals
 
@@ -37,7 +36,7 @@
 | 名词 | 含义 |
 | --- | --- |
 | Package | 磁盘上的一个插件包目录，包含 manifest 文件和共享库。 |
-| Manifest | `manifest.yaml` 或 `plugin.json`，描述包元数据、库路径、接口、依赖和配置 schema。 |
+| Manifest | `manifest.yaml`，描述包元数据、库路径、接口、依赖和配置 schema。 |
 | Catalog | 扫描 manifest 后得到的可用包索引，不要求加载共享库。 |
 | Instance | 主配置里创建的一个插件实例。同一个 package 可以有多个 instance。 |
 | Binding | 主配置里把一个接口名或逻辑名字绑定到某个 instance，例如 `database.default -> db.main`。 |
@@ -82,7 +81,7 @@ plugins:
 
 ## Manifest
 
-每个插件包必须有一个 manifest。推荐主文件名为 `manifest.yaml`；也接受 `plugin.json`。如果同目录两者同时存在，host 优先读取 `manifest.yaml`。
+每个插件包必须有一个 manifest，文件名固定为 `manifest.yaml`。
 
 ```yaml
 schema_version: 1
@@ -194,7 +193,7 @@ scan -> catalog -> plan -> resolve -> load -> create -> start -> lua_init -> lua
 
 | 阶段 | 说明 |
 | --- | --- |
-| `scan` | 遍历 `plugins.directory/*/manifest.yaml` 与 `plugin.json`。同目录并存时优先 `manifest.yaml`。只读 manifest，不加载共享库。 |
+| `scan` | 遍历 `plugins.directory/*/manifest.yaml`。只读 manifest，不加载共享库。 |
 | `catalog` | 校验 manifest schema、package id、平台库路径和 interface 声明。 |
 | `plan` | 从主配置的 `plugins.instances` 建立启动计划。 |
 | `resolve` | 校验 package 存在、实例 id 唯一、依赖可满足、拓扑无环，并在这一阶段应用 config 默认值、执行 schema 校验、校验 binding 名唯一且目标 instance 存在。 |
@@ -305,45 +304,30 @@ typedef struct shield_host_api_v1 {
 
 ## Dependency Model
 
-插件 package 在 manifest 中声明需要哪些依赖：
+插件 package 在 `manifest.yaml` 中声明需要哪些依赖：
 
-```json
-{
-  "requires": [
-    {
-      "name": "cache",
-      "interface": "shield.cache.v1",
-      "optional": true
-    },
-    {
-      "name": "database",
-      "interface": "shield.database.v1",
-      "optional": false
-    }
-  ]
-}
+```yaml
+requires:
+  - name: cache
+    interface: shield.cache.v1
+    optional: true
+  - name: database
+    interface: shield.database.v1
+    optional: false
 ```
 
-主配置在 instance 上绑定依赖：
+主配置在 instance 上绑定依赖（`app.yaml` 的 `plugins` 子树）：
 
-```json
-{
-  "plugins": {
-    "instances": [
-      {
-        "id": "leaderboard.main",
-        "package": "leaderboard.redis",
-        "dependencies": {
-          "cache": "cache.main",
-          "database": "db.main"
-        },
-        "config": {
-          "key_prefix": "lb:"
-        }
-      }
-    ]
-  }
-}
+```yaml
+plugins:
+  instances:
+    - id: leaderboard.main
+      package: leaderboard.redis
+      dependencies:
+        cache: cache.main
+        database: db.main
+      config:
+        key_prefix: "lb:"
 ```
 
 规则：
@@ -571,7 +555,7 @@ v1 的强约束：
 
 | 规则 | 说明 |
 | --- | --- |
-| 发现来源 | 扫描 `manifest.yaml` 与 `plugin.json`，并在并存时优先 `manifest.yaml`。 |
+| 发现来源 | 仅扫描 `manifest.yaml`。 |
 | 运行时启用 | 只看 `plugins.instances` 和 `plugins.bindings`。 |
 | 二进制入口 | 统一为 `shield_plugin_get_v1()`。 |
 | 类型系统 | 以 interface name 为主，例如 `shield.database.v1`、`shield.document.v1`。 |
@@ -585,7 +569,7 @@ v1 的强约束：
 
 当前实现已经具备插件系统主路径：manifest 扫描、catalog、依赖拓扑、动态库加载、ABI 校验、实例创建、启动、C++ binding 访问、Lua path 注入、`register_lua` 分发和只读 introspection。
 
-第三方插件不需要一次性迁移所有历史包；host 会继续兼容只提供 `plugin.json` 的旧包。
+旧插件包需要迁移到 `manifest.yaml` 后才能被 host 发现。
 
 以下条目是 v1 收敛项，文档中按目标语义描述，但实现仍需补齐：
 

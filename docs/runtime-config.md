@@ -327,7 +327,7 @@ pool；生产环境默认不自动降级到 mock。若确实需要兼容旧 smok
 启动可以指定多个配置文件：
 
 ```bash
-shield --config config/app.json --config config/production.json
+shield --config config/app.yaml --config config/production.yaml
 ```
 
 合并规则：

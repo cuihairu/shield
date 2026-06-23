@@ -74,7 +74,7 @@ PluginHost::PluginHost() : impl_(std::unique_ptr<Impl>(new Impl)) {}
 PluginHost::~PluginHost() { shutdown(); }
 
 // ---------------------------------------------------------------------------
-// scan: read every <dir>/<pkg>/{manifest.yaml|plugin.json}, no code loaded.
+// scan: read every <dir>/<pkg>/manifest.yaml, no code loaded.
 // ---------------------------------------------------------------------------
 void PluginHost::scan(const std::string& directory) {
     fs::path dir(directory);
@@ -83,31 +83,18 @@ void PluginHost::scan(const std::string& directory) {
     for (auto& entry : fs::directory_iterator(dir, ec)) {
         if (ec || !entry.is_directory()) continue;
         fs::path yaml_path = entry.path() / "manifest.yaml";
-        fs::path json_path = entry.path() / "plugin.json";
-        fs::path manifest_path;
-        if (fs::exists(yaml_path)) {
-            if (fs::exists(json_path)) {
-                SHIELD_LOG_WARNING(
-                    shield::log::get_logger("plugin"),
-                    std::string("scan: both manifest.yaml and plugin.json exist under ") +
-                        entry.path().string() +
-                        "; using manifest.yaml");
-            }
-            manifest_path = yaml_path;
-        } else if (fs::exists(json_path)) {
-            manifest_path = json_path;
-        } else {
+        if (!fs::exists(yaml_path)) {
             continue;
         }
         try {
             Package pkg;
-            pkg.manifest = load_manifest_file(manifest_path);
+            pkg.manifest = load_manifest_file(yaml_path);
             pkg.root = entry.path();
             packages_.push_back(std::move(pkg));
         } catch (const std::exception& e) {
             SHIELD_LOG_WARNING(shield::log::get_logger("plugin"),
                                std::string("scan: skipping bad manifest ") +
-                                   manifest_path.string() + ": " + e.what());
+                                   yaml_path.string() + ": " + e.what());
         }
     }
 }

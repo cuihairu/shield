@@ -55,7 +55,7 @@ add_subdirectory(lua_api)
 # Plugin system v1 tests
 # ---------------------------------------------------------------------------
 
-# Manifest (`manifest.yaml` / `plugin.json`) parsing + validation
+# Manifest (`manifest.yaml`) parsing + validation
 add_executable(test_plugin_manifest plugin/test_manifest.cpp)
 target_link_libraries(test_plugin_manifest
     PRIVATE shield_plugin nlohmann_json::nlohmann_json
@@ -95,8 +95,8 @@ if(CMAKE_CONFIGURATION_TYPES)
             ARCHIVE_OUTPUT_DIRECTORY_${_shield_cfg_upper} "${_shield_minimal_plugin_output_dir}")
     endforeach()
 endif()
-configure_file(plugin/fixtures/minimal.plugin.json
-               "${CMAKE_BINARY_DIR}/test_plugins/minimal.test/plugin.json"
+configure_file(plugin/fixtures/minimal.manifest.yaml
+               "${CMAKE_BINARY_DIR}/test_plugins/minimal.test/manifest.yaml"
                COPYONLY)
 
 # PluginHost pipeline: scan / catalog / plan / resolve / cycle detection

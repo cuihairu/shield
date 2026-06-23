@@ -266,7 +266,7 @@ plugins/auth.jwt/
     └── libshield_auth_jwt.dylib      # macOS
 ```
 
-host 优先扫描 `plugins/auth.jwt/manifest.yaml`，不存在时回退到 `plugin.json`，然后按平台加载 `bin/` 下对应共享库。
+host 扫描 `plugins/auth.jwt/manifest.yaml`，然后按平台加载 `bin/` 下对应共享库。
 
 ### 运行时依赖
 

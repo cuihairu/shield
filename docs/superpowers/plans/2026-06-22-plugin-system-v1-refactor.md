@@ -2,7 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **现行实现说明：** 当前运行时已支持 `manifest.yaml` 与 `plugin.json` 双格式 manifest；若同目录同时存在两者，则以 `manifest.yaml` 为优先，`plugin.json` 仅作兼容输入。本文其余内容保留当时计划表述。
+> **现行实现说明：** 当前运行时与正式文档已收敛到单一 manifest 来源，只支持 `manifest.yaml`。本文其余内容保留当时计划表述；下文若仍出现旧 manifest 文件名或旧表述，应按历史语境理解，不再代表当前契约。
+
 
 **Goal:** 按 `docs/plugin-system.md` 完全重构 Shield 插件系统：新 metadata-first JSON manifest + catalog/pipeline + 稳定 C ABI（`shield_plugin_get_v1`）+ interface name 类型系统 + instance/binding 依赖注入 + 结构化错误，并迁移现有 8 个插件、改造 DatabasePool、实现 Lua introspection。
 
@@ -21,7 +22,7 @@
 1. **不执行 git 提交/分支操作**（用户指令）。每个任务以「验证检查点」收尾，不写 commit 步骤。
 2. **测试框架是 Boost.Test**。测试注册模式见 `tests/CMakeLists.txt`：`add_executable` + `target_link_libraries(... PRIVATE <lib> Boost::unit_test_framework Boost::headers)` + `add_test` + `shield_copy_runtime_dlls`。
 3. **CMake 依赖反转**（M0 关键）：现状 `shield_plugin → shield_data` 形成隐患；新设计 DatabasePool（shield_data）要调 PluginHost（shield_plugin）。M0 把 `shield_plugin` 重定义为只依赖 `shield_base/log/config`，`shield_data` 改为依赖 `shield_plugin`。
-4. **配置格式**：`plugin.json` 与 `config_schema` 用真 JSON 文件；`plugins.instances/bindings/config` 作为 YAML 子树嵌在 `config/app.yaml`（YAML 是 JSON 超集）。不动 `Config` 子系统、不迁 8 个 profile。
+4. **配置格式**：外部配置统一用 YAML；插件 manifest 固定为 `manifest.yaml`；`plugins.instances/bindings/config` 作为 YAML 子树嵌在 `config/app.yaml`，进入插件系统后按 JSON-compatible 值模型处理。不动 `Config` 子系统、不迁 8 个 profile。
 5. **redis**：废除 `plugins/redis/shield_redis.cpp` 公共插件；cache/queue/leaderboard 三件套各自内嵌 redis 连接（hiredis，shield_data 已有该依赖可参考）。
 
 ---
@@ -43,7 +44,7 @@
 | `include/shield/plugin/health.h` | `shield_health_v1` |
 | `include/shield/plugin/plugin_host.hpp` | C++ 数据模型 + `PluginHost` 类 + `global_host()` |
 | `src/plugin/plugin_library.hpp/.cpp` | 跨平台 dlopen 封装（从旧 plugin_manager.cpp 搬） |
-| `src/plugin/manifest.cpp` | plugin.json → `Manifest` 反序列化 + 校验 |
+| `src/plugin/manifest.cpp` | manifest.yaml → `Manifest` 反序列化 + 校验 |
 | `src/plugin/schema_validator.hpp/.cpp` | JSON Schema 最小子集校验 |
 | `src/plugin/plugin_config.cpp` | app.yaml `plugins` 子树 → `PluginConfig` |
 | `src/plugin/plugin_host.cpp` | scan/catalog/plan/resolve/load/create/start pipeline |
@@ -51,15 +52,15 @@
 | `tests/plugin/test_schema_validator.cpp` | schema 校验单测 |
 | `tests/plugin/test_plugin_host.cpp` | pipeline 各阶段单测 |
 | `tests/plugin/test_lua_plugin_api.cpp` | Lua introspection 单测 |
-| `plugins/sqlite/plugin.json` | sqlite manifest |
-| 其余插件各加 `plugin.json` | M5 |
+| `plugins/sqlite/manifest.yaml` | sqlite manifest |
+| 其余插件各加 `manifest.yaml` | M5 |
 
 ### 修改
 
 | 文件 | 改动 |
 |---|---|
 | `plugins/sqlite/shield_db_sqlite.cpp` | 迁移到 `shield_plugin_get_v1` + `shield_database_v1` |
-| `plugins/sqlite/CMakeLists.txt` | 产物布局 + 部署 plugin.json |
+| `plugins/sqlite/CMakeLists.txt` | 产物布局 + 部署 manifest.yaml |
 | `src/data/data.cpp` | DatabasePool 改走 `get_by_binding<shield_database_v1>` |
 | `src/bootstrap/bootstrap.cpp` | 集成 PluginHost startup/shutdown |
 | `src/lua/lua_api.cpp` | 重写 `register_plugin_api`（:2185） |
@@ -156,7 +157,7 @@ struct shield_plugin_create_args_v1 {
 struct shield_plugin_abi_v1 {
     uint32_t abi_version;     // == SHIELD_PLUGIN_ABI_VERSION
     uint32_t struct_size;     // host checks >= minimum
-    const char* package_id;   // must match plugin.json id
+    const char* package_id;   // must match manifest.yaml id
     const char* package_version;
     int (*create)(const struct shield_plugin_create_args_v1* args,
                   struct shield_plugin_instance_v1** out,
@@ -543,7 +544,7 @@ Expected: PASS。
 
 **验证检查点：** PluginLibrary 可用；测试注册并通过。
 
-## Task 1.2：Manifest 解析（plugin.json → Manifest）
+## Task 1.2：Manifest 解析（manifest.yaml → Manifest）
 
 **Files:**
 - Create: `include/shield/plugin/plugin_host.hpp`（数据模型部分，先放 Manifest/InstanceDecl/BindingDecl/State）
@@ -1130,7 +1131,7 @@ struct CatalogFixture {
     CatalogFixture() {
         root = fs::temp_directory_path() / "shield_plugin_test";
         fs::remove_all(root); fs::create_directories(root / "database.sqlite" / "bin");
-        std::ofstream(root / "database.sqlite" / "plugin.json") << R"({
+        std::ofstream(root / "database.sqlite" / "manifest.yaml") << R"({
           "schema_version":1,"id":"database.sqlite","name":"SQLite","version":"1.0.0",
           "kind":"database","entry":"shield_plugin_get_v1",
           "library":{"linux":"bin/libshield_database_sqlite.so","macos":"bin/libshield_database_sqlite.dylib","windows":"bin/shield_database_sqlite.dll"},
@@ -1151,7 +1152,7 @@ BOOST_FIXTURE_TEST_CASE(scan_finds_package, CatalogFixture) {
 
 BOOST_FIXTURE_TEST_CASE(catalog_rejects_duplicate_id, CatalogFixture) {
     fs::create_directories(root / "database.sqlite.dup");
-    std::ofstream(root / "database.sqlite.dup" / "plugin.json") << R"({"schema_version":1,"id":"database.sqlite","entry":"shield_plugin_get_v1","library":{"linux":"x.so"},"provides":[],"requires":[]})";
+    std::ofstream(root / "database.sqlite.dup" / "manifest.yaml") << R"({"schema_version":1,"id":"database.sqlite","entry":"shield_plugin_get_v1","library":{"linux":"x.so"},"provides":[],"requires":[]})";
     shield::plugin::PluginHost host;
     host.scan(root.string());
     std::string err;
@@ -1182,7 +1183,7 @@ void PluginHost::scan(const std::string& directory) {
     if (!fs::exists(dir) || !fs::is_directory(dir)) return;
     for (auto& entry : fs::directory_iterator(dir, ec)) {
         if (!entry.is_directory()) continue;
-        fs::path json_path = entry.path() / "plugin.json";
+        fs::path json_path = entry.path() / "manifest.yaml";
         if (!fs::exists(json_path)) continue;
         try {
             Package pkg;
@@ -1262,7 +1263,7 @@ BOOST_FIXTURE_TEST_CASE(resolve_missing_package_fails, CatalogFixture) {
 BOOST_FIXTURE_TEST_CASE(resolve_missing_required_dependency_fails, CatalogFixture) {
     // 额外建一个声明 requires database 的包
     fs::create_directories(root / "leaderboard.redis" / "bin");
-    std::ofstream(root / "leaderboard.redis" / "plugin.json") << R"({"schema_version":1,"id":"leaderboard.redis","entry":"shield_plugin_get_v1","library":{"linux":"bin/x.so"},"provides":[{"interface":"shield.leaderboard.v1"}],"requires":[{"name":"db","interface":"shield.database.v1","optional":false}],"config_schema":{"type":"object"}})";
+    std::ofstream(root / "leaderboard.redis" / "manifest.yaml") << R"({"schema_version":1,"id":"leaderboard.redis","entry":"shield_plugin_get_v1","library":{"linux":"bin/x.so"},"provides":[{"interface":"shield.leaderboard.v1"}],"requires":[{"name":"db","interface":"shield.database.v1","optional":false}],"config_schema":{"type":"object"}})";
     shield::plugin::PluginHost host; host.scan(root.string()); std::string e; host.catalog(e);
     shield::plugin::PluginConfig cfg; cfg.directory = root.string();
     shield::plugin::InstanceDecl lb; lb.id = "lb.main"; lb.package = "leaderboard.redis";
@@ -1408,10 +1409,10 @@ target_include_directories(shield_minimal_test_plugin PRIVATE ${CMAKE_SOURCE_DIR
 set_target_properties(shield_minimal_test_plugin PROPERTIES
     PREFIX "" OUTPUT_NAME "libshield_minimal_test_plugin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test_plugins/minimal.test/bin")
-file(COPY fixtures/minimal.plugin.json DESTINATION "${CMAKE_BINARY_DIR}/test_plugins/minimal.test")
+file(COPY fixtures/minimal.manifest.yaml DESTINATION "${CMAKE_BINARY_DIR}/test_plugins/minimal.test")
 ```
 
-`fixtures/minimal.plugin.json`：
+`fixtures/minimal.manifest.yaml`：
 ```json
 {"schema_version":1,"id":"minimal.test","name":"Minimal","version":"1.0.0","kind":"test","entry":"shield_plugin_get_v1","library":{"linux":"bin/libshield_minimal_test_plugin.so","macos":"bin/libshield_minimal_test_plugin.dylib","windows":"bin/shield_minimal_test_plugin.dll"},"provides":[],"requires":[],"config_schema":{"type":"object"}}
 ```
@@ -1687,12 +1688,12 @@ Expected: PASS。
 
 **Files:**
 - Modify: `plugins/sqlite/shield_db_sqlite.cpp`
-- Create: `plugins/sqlite/plugin.json`
+- Create: `plugins/sqlite/manifest.yaml`
 - Modify: `plugins/sqlite/CMakeLists.txt`
 
-- [ ] **Step 1：写 plugin.json**
+- [ ] **Step 1：写 manifest.yaml**
 
-`plugins/sqlite/plugin.json`：
+`plugins/sqlite/manifest.yaml`：
 ```json
 {
   "schema_version": 1,
@@ -1793,7 +1794,7 @@ target_link_libraries(shield_database_sqlite PRIVATE unofficial::sqlite3::sqlite
 set_target_properties(shield_database_sqlite PROPERTIES
     PREFIX "" OUTPUT_NAME "libshield_database_sqlite"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.sqlite/bin")
-file(COPY plugin.json DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.sqlite")
+file(COPY manifest.yaml DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/database.sqlite")
 message(STATUS "  + database.sqlite: SQLite provider (v1 ABI)")
 ```
 
@@ -2077,13 +2078,13 @@ Expected: PASS。
 ## Task 5.1：迁移 recipe（基于 M3 sqlite 模式）
 
 每个插件迁移遵循统一步骤：
-1. 写 `<plugin>/plugin.json`（id/kind/library/provides/config_schema）。
+1. 写 `<plugin>/manifest.yaml`（id/kind/library/provides/config_schema）。
 2. 改 `.cpp`：
    - `#include` 换为新 interface 头（database.h/auth.h/metrics.h/health.h）+ abi.h。
    - 旧静态 vtable 类型 → 新 interface v1 类型，`abi_version` → `struct_size`。
    - 删除旧 `shield_plugin` + `shield_plugin_api()`。
    - 加 `shield_plugin_abi_v1` + `create()`（装 instance shell，get_interface 返回静态 vtable）。
-3. 改 `CMakeLists.txt`：target 名 → `shield_<package>`，MODULE，输出到 `plugins/<id>/bin/`，`file(COPY plugin.json ...)`。
+3. 改 `CMakeLists.txt`：target 名 → `shield_<package>`，MODULE，输出到 `plugins/<id>/bin/`，`file(COPY manifest.yaml ...)`。
 4. 删除对应旧 `include/shield/plugin/<x>_plugin.h`（被新 interface 头取代）。
 
 ## Task 5.2-5.7：各插件差异表
@@ -2120,7 +2121,7 @@ Expected: PASS。
 
 - [ ] **Step 1：cache_redis.cpp** 改为：include redis_client.hpp；start() 内读 config（host/port/password）建连；废除 `find_plugin("shield_redis")`。导出 shield_cache_v1。
 - [ ] **Step 2：queue_redis.cpp / leaderboard_redis.cpp** 同理。
-- [ ] **Step 3：** 各写 plugin.json（id=cache.redis/queue.redis/leaderboard.redis，requires=[]，config_schema 含 host/port/password）。
+- [ ] **Step 3：** 各写 manifest.yaml（id=cache.redis/queue.redis/leaderboard.redis，requires=[]，config_schema 含 host/port/password）。
 
 ## Task 6.4：删除 shield_redis.cpp
 

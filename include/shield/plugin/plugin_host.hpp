@@ -33,8 +33,7 @@ namespace shield::plugin {
 // Declarative model (from manifest + YAML config subtree)
 // ---------------------------------------------------------------------------
 
-// Parsed manifest (`manifest.yaml` or `plugin.json`). One per package
-// directory.
+// Parsed manifest (`manifest.yaml`). One per package directory.
 struct Manifest {
     int schema_version = 1;
     std::string id;

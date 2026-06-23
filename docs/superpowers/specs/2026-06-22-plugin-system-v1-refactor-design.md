@@ -4,7 +4,7 @@
 - **目标**：按 `docs/plugin-system.md`（Shield Plugin System v1）完全重构现有插件系统。
 - **状态**：设计已定稿，待实现。
 - **权威文档**：`docs/plugin-system.md`（本文档是其实现落地说明，冲突时以 `plugin-system.md` 为准）。
-- **现行实现说明**：当前运行时已支持 `manifest.yaml` 与 `plugin.json` 双格式 manifest；若同目录同时存在两者，则以 `manifest.yaml` 为优先，`plugin.json` 仅作兼容输入。
+- **现行实现说明**：当前运行时与正式文档已收敛到单一 manifest 来源，只支持 `manifest.yaml`。下文若仍出现旧 manifest 文件名或旧表述，均属于历史设计语境，应以当前 `docs/plugin-system.md` 为准。
 
 ---
 
@@ -26,7 +26,7 @@
 | 决策 | 结论 |
 |---|---|
 | 重构范围 | **完全替换**：新 v1 骨架 + 迁移 8 插件 + 废除旧 ABI + DatabasePool 改走 binding + Lua 全实现 + redis 三件套改依赖注入。 |
-| 配置格式 | **插件层 JSON，主配置不动**。`plugin.json` 与 `config_schema` 为真 JSON 文件；`plugins.instances/bindings/config` 作为 YAML 子树嵌在 `app.yaml`（YAML 是 JSON 超集，结构与文档示例对齐）。不迁移 8 个 profile，不动 `Config` 子系统，不动 `database.toml`。 |
+| 配置格式 | **外部 YAML，内部 JSON-compatible 值模型，主配置不动**。插件 manifest 固定为 `manifest.yaml`；`plugins.instances/bindings/config` 作为 YAML 子树嵌在 `app.yaml`，进入插件系统后按 JSON-compatible 值模型处理。不迁移 8 个 profile，不动 `Config` 子系统，不动 `database.toml`。 |
 | 实施编排 | **方案 A：纵切端到端 + TDD**。先打通 database.v1 最小垂直链路验证 ABI，再横向铺开。 |
 | 接口集合 | 文档列的 7 个：`shield.database/cache/queue/leaderboard/auth/metrics/health.v1`。 |
 | schema 校验 | 自研最小子集，不引新依赖（已有 nlohmann-json）。 |
@@ -35,7 +35,7 @@
 | C++ typed 访问 | host 提供 `PluginHost::get_by_binding<T>(binding)` C++ wrapper。 |
 | 旧符号处置 | 删除 `PluginManager`、`shield_plugin_api`、`shield_db_plugin_api`、`enum shield_plugin_type`，不留兼容层。 |
 | 测试 | 沿用 CTest + 手写可执行，不引框架。 |
-| 构建 | 每 plugin 目录产出 `plugins/<id>/{plugin.json, bin/libshield_<id>.so}`。 |
+| 构建 | 每 plugin 目录产出 `plugins/<id>/{manifest.yaml, bin/libshield_<id>.so}`。 |
 
 ---
 
@@ -99,7 +99,7 @@ typedef struct shield_plugin_create_args_v1 {
 typedef struct shield_plugin_abi_v1 {
     uint32_t abi_version;      // == 1
     uint32_t struct_size;      // host 校验 >= sizeof(最小)
-    const char* package_id;    // 必须与 plugin.json id 一致
+    const char* package_id;    // 必须与 manifest.yaml id 一致
     const char* package_version;
     int (*create)(const shield_plugin_create_args_v1* args,
                   shield_plugin_instance_v1** out,
@@ -140,7 +140,7 @@ typedef struct shield_database_v1 {
 ```cpp
 namespace shield::plugin {
 
-struct Manifest {              // ← plugin.json 反序列化
+struct Manifest {              // ← manifest.yaml 反序列化
     int schema_version = 1;
     std::string id, name, version, kind, description, entry;
     struct Lib { std::string windows, linux, macos; } library;
@@ -196,7 +196,7 @@ scan → catalog → plan → resolve → load → create → start
 
 | 阶段 | 输入 | 动作 | 失败 code |
 |---|---|---|---|
-| `scan` | `plugins.directory` | 遍历 `*/plugin.json`，只读 JSON 不加载代码 | `plugin.scan.failed` |
+| `scan` | `plugins.directory` | 遍历 `*/manifest.yaml`，只读 YAML manifest 不加载代码 | `plugin.scan.failed` |
 | `catalog` | scan 结果 | 校验 manifest schema、id 唯一、平台库路径存在、interface 声明合法 | `plugin.manifest.invalid` |
 | `plan` | catalog + instances | 按 `plugins.instances` 建启动计划，关联 package | `plugin.package.not_found` |
 | `resolve` | plan | 校验配置合法（config_schema）、依赖可满足、binding 指向合法、拓扑排序查循环 | `plugin.config.invalid` / `plugin.dependency.missing` / `plugin.dependency.cycle` |
@@ -389,8 +389,8 @@ shield.plugin.binding("database.default")  -- {instance_id, interface}
 
 ### 4.5 构建系统（CMake）
 
-- **目录布局**：每插件 `plugins/<id>/{plugin.json, CMakeLists.txt, *.cpp}`，产出 `bin/libshield_<id>.so`。
-- **plugin.json 安装**：CMake `configure_file`/`file(COPY)` 将 `plugin.json` 与 `.so` 一同部署到 `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/<id>/`。
+- **目录布局**：每插件 `plugins/<id>/{manifest.yaml, CMakeLists.txt, *.cpp}`，产出 `bin/libshield_<id>.so`。
+- **manifest.yaml 安装**：CMake `configure_file`/`file(COPY)` 将 `manifest.yaml` 与 `.so` 一同部署到 `${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/plugins/<id>/`。
 - **option 保留**：`SHIELD_BUILD_DB_PLUGIN_SQLITE` 等沿用，仅改 target 名与产物布局。
 - **新源文件入 build**：`src/plugin/*` 加入 `shield_core`（或新建 `shield_plugin` 静态库，`shield_data` 依赖它以拿 `shield_database_v1` 头与 `global_host`）。
 - 删除 `src/core/plugin_manager.cpp` 与 `include/shield/core/plugin_manager.hpp`。

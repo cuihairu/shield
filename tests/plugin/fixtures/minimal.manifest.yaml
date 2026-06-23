@@ -1,0 +1,15 @@
+schema_version: 1
+id: minimal.test
+name: Minimal
+version: 1.0.0
+kind: test
+entry: shield_plugin_get_v1
+library:
+  linux: bin/libshield_minimal_test_plugin.so
+  macos: bin/libshield_minimal_test_plugin.dylib
+  windows: bin/libshield_minimal_test_plugin.dll
+provides:
+  - interface: minimal.test.iface
+requires: []
+config_schema:
+  type: object

@@ -19,7 +19,7 @@
 
 决策：
 
-- `--config <path>` 可缺省，默认 `config/app.json`。
+- `--config <path>` 可缺省，默认 `config/app.yaml`。
 - `--config` 可重复传入；多个文件按传入顺序合并，合并规则以 [配置运行时语义](runtime-config.md) 为准。
 - `--node-id` 属于 `shield_cluster` optional module。未启用 cluster 时传入必须返回 CLI 错误。
 - 旧 subcommand 只作为 legacy CLI 存在，不进入新的 `shield::run` 公共契约。

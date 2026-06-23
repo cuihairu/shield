@@ -135,6 +135,10 @@ Manifest parse_manifest(const nlohmann::json& j) {
 }
 
 Manifest load_manifest_file(const std::filesystem::path& manifest_path) {
+    if (manifest_path.filename() != "manifest.yaml") {
+        throw std::runtime_error(
+            "plugin.manifest.invalid: manifest file must be named manifest.yaml");
+    }
     std::ifstream f(manifest_path);
     if (!f) {
         throw std::runtime_error("plugin.manifest.invalid: cannot open " +
@@ -143,26 +147,15 @@ Manifest load_manifest_file(const std::filesystem::path& manifest_path) {
     std::stringstream ss;
     ss << f.rdbuf();
 
-    if (manifest_path.extension() == ".yaml" ||
-        manifest_path.extension() == ".yml") {
-        try {
-            return parse_manifest(yaml_to_json(YAML::Load(ss.str())));
-        } catch (const YAML::ParserException& e) {
-            throw std::runtime_error(
-                std::string("plugin.manifest.invalid: YAML parse error in ") +
-                manifest_path.string() + ": " + e.what());
-        } catch (const YAML::BadConversion& e) {
-            throw std::runtime_error(
-                std::string("plugin.manifest.invalid: YAML conversion error in ") +
-                manifest_path.string() + ": " + e.what());
-        }
-    }
-
     try {
-        return parse_manifest(nlohmann::json::parse(ss.str()));
-    } catch (const nlohmann::json::parse_error& e) {
+        return parse_manifest(yaml_to_json(YAML::Load(ss.str())));
+    } catch (const YAML::ParserException& e) {
         throw std::runtime_error(
-            std::string("plugin.manifest.invalid: JSON parse error in ") +
+            std::string("plugin.manifest.invalid: YAML parse error in ") +
+            manifest_path.string() + ": " + e.what());
+    } catch (const YAML::BadConversion& e) {
+        throw std::runtime_error(
+            std::string("plugin.manifest.invalid: YAML conversion error in ") +
             manifest_path.string() + ": " + e.what());
     }
 }

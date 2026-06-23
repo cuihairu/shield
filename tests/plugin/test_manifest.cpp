@@ -90,3 +90,26 @@ BOOST_AUTO_TEST_CASE(load_yaml_manifest_file) {
     BOOST_CHECK_EQUAL(m.provides[0].interface_name, "shield.database.v1");
     fs::remove_all(root);
 }
+
+BOOST_AUTO_TEST_CASE(rejects_non_manifest_yaml_filename) {
+    auto root = fs::temp_directory_path() / "shield_plugin_manifest_name_test";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    auto path = root / "plugin.yaml";
+    std::ofstream(path) <<
+        "schema_version: 1\n"
+        "id: database.sqlite\n"
+        "entry: shield_plugin_get_v1\n"
+        "library:\n"
+        "  linux: bin/libshield_database_sqlite.so\n"
+        "  macos: bin/libshield_database_sqlite.dylib\n"
+        "  windows: bin/libshield_database_sqlite.dll\n"
+        "provides:\n"
+        "  - interface: shield.database.v1\n"
+        "requires: []\n"
+        "config_schema:\n"
+        "  type: object\n";
+
+    BOOST_CHECK_THROW(load_manifest_file(path), std::runtime_error);
+    fs::remove_all(root);
+}

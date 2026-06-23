@@ -29,34 +29,85 @@ std::string minimal_library_name() {
 }
 
 const char* kMinimalManifest =
-    R"({"schema_version":1,"id":"minimal.test","name":"Minimal","version":"1.0.0",)"
-    R"("kind":"test","entry":"shield_plugin_get_v1",)"
-    R"("library":{"linux":"bin/libshield_minimal_test_plugin.so",)"
-    R"("macos":"bin/libshield_minimal_test_plugin.dylib","windows":"bin/libshield_minimal_test_plugin.dll"},)"
-    R"("provides":[{"interface":"minimal.test.iface"}],"requires":[],)"
-    R"("config_schema":{"type":"object","properties":{)"
-    R"("start_fail":{"type":"boolean"},"register_lua_fail":{"type":"boolean"},)"
-    R"("require_dependency":{"type":"boolean"},)"
-    R"("wrong_interface_must_be_blocked":{"type":"boolean"},)"
-    R"("port":{"type":"integer","minimum":1,"maximum":10,"default":7}}}})";
+    R"(schema_version: 1
+id: minimal.test
+name: Minimal
+version: 1.0.0
+kind: test
+entry: shield_plugin_get_v1
+library:
+  linux: bin/libshield_minimal_test_plugin.so
+  macos: bin/libshield_minimal_test_plugin.dylib
+  windows: bin/libshield_minimal_test_plugin.dll
+provides:
+  - interface: minimal.test.iface
+requires: []
+config_schema:
+  type: object
+  properties:
+    start_fail:
+      type: boolean
+    register_lua_fail:
+      type: boolean
+    require_dependency:
+      type: boolean
+    wrong_interface_must_be_blocked:
+      type: boolean
+    port:
+      type: integer
+      minimum: 1
+      maximum: 10
+      default: 7
+)";
+
+const char* kDefaultConfigSchema =
+    R"(config_schema:
+  type: object
+  properties:
+    port:
+      type: integer
+      minimum: 1
+      maximum: 10
+      default: 7
+    start_fail:
+      type: boolean
+    register_lua_fail:
+      type: boolean
+    require_dependency:
+      type: boolean
+    wrong_interface_must_be_blocked:
+      type: boolean
+)";
 
 std::string make_manifest(std::string id,
                           std::string provides = "minimal.test.iface",
                           std::string requirements = "[]",
-                          std::string config_schema =
-                              R"({"type":"object","properties":{"port":{"type":"integer","minimum":1,"maximum":10,"default":7},"start_fail":{"type":"boolean"},"register_lua_fail":{"type":"boolean"},"require_dependency":{"type":"boolean"},"wrong_interface_must_be_blocked":{"type":"boolean"}}})") {
-    std::string provides_json = provides.empty()
-                                    ? "[]"
-                                    : "[{\"interface\":\"" + provides + "\"}]";
-    return std::string(R"({"schema_version":1,"id":")") + id +
-           R"(","name":")" + id +
-           R"(","version":"1.0.0","kind":"test","entry":"shield_plugin_get_v1",)" +
-           R"("library":{"linux":"bin/)" + minimal_library_name() +
-           R"(","macos":"bin/)" + minimal_library_name() +
-           R"(","windows":"bin/)" + minimal_library_name() +
-           R"("},"provides":)" + provides_json +
-           R"(,"requires":)" + requirements +
-           R"(,"config_schema":)" + config_schema + "}";
+                          std::string config_schema = kDefaultConfigSchema) {
+    std::string manifest =
+        "schema_version: 1\n"
+        "id: " + id + "\n"
+        "name: " + id + "\n"
+        "version: 1.0.0\n"
+        "kind: test\n"
+        "entry: shield_plugin_get_v1\n"
+        "library:\n"
+        "  linux: bin/" + minimal_library_name() + "\n"
+        "  macos: bin/" + minimal_library_name() + "\n"
+        "  windows: bin/" + minimal_library_name() + "\n";
+    if (provides.empty()) {
+        manifest += "provides: []\n";
+    } else {
+        manifest += "provides:\n  - interface: " + provides + "\n";
+    }
+    if (requirements == "[]") {
+        manifest += "requires: []\n";
+    } else {
+        manifest += "requires:\n" + requirements;
+        if (requirements.back() != '\n') manifest.push_back('\n');
+    }
+    manifest += config_schema;
+    if (!manifest.empty() && manifest.back() != '\n') manifest.push_back('\n');
+    return manifest;
 }
 
 fs::path unique_root(const std::string& name) {
@@ -70,14 +121,14 @@ fs::path make_minimal_package() {
     fs::path root = unique_root("shield_plugin_host_test");
     fs::remove_all(root);
     fs::create_directories(root / "minimal.test" / "bin");
-    std::ofstream(root / "minimal.test" / "plugin.json") << kMinimalManifest;
+    std::ofstream(root / "minimal.test" / "manifest.yaml") << kMinimalManifest;
     return root;
 }
 
 fs::path make_runtime_package(const std::string& root_name = "shield_plugin_runtime_test") {
     fs::path root = unique_root(root_name);
     fs::create_directories(root / "minimal.test" / "bin");
-    std::ofstream(root / "minimal.test" / "plugin.json")
+    std::ofstream(root / "minimal.test" / "manifest.yaml")
         << make_manifest("minimal.test");
     fs::copy_file(fs::path(SHIELD_TEST_PLUGINS_DIR) / "minimal.test" / "bin" /
                       minimal_library_name(),
@@ -145,40 +196,22 @@ BOOST_AUTO_TEST_CASE(scan_accepts_manifest_yaml_only_directory) {
     fs::remove_all(root);
 }
 
-BOOST_AUTO_TEST_CASE(scan_prefers_manifest_yaml_over_plugin_json) {
-    auto root = unique_root("shield_plugin_manifest_precedence_test");
+BOOST_AUTO_TEST_CASE(scan_ignores_directories_without_manifest_yaml) {
+    auto root = unique_root("shield_plugin_missing_manifest_test");
     fs::create_directories(root / "minimal.test" / "bin");
-    std::ofstream(root / "minimal.test" / "plugin.json")
-        << make_manifest("json.choice");
-    std::ofstream(root / "minimal.test" / "manifest.yaml")
-        << "schema_version: 1\n"
-           "id: yaml.choice\n"
-           "name: yaml.choice\n"
-           "version: 1.0.0\n"
-           "kind: test\n"
-           "entry: shield_plugin_get_v1\n"
-           "library:\n"
-           "  linux: bin/" << minimal_library_name() << "\n"
-           "  macos: bin/" << minimal_library_name() << "\n"
-           "  windows: bin/" << minimal_library_name() << "\n"
-           "provides:\n"
-           "  - interface: minimal.test.iface\n"
-           "requires: []\n"
-           "config_schema:\n"
-           "  type: object\n";
+    std::ofstream(root / "minimal.test" / "README.md") << "no manifest";
 
     PluginHost host;
     host.scan(root.string());
     auto ids = host.package_ids();
-    BOOST_REQUIRE_EQUAL(ids.size(), 1u);
-    BOOST_CHECK_EQUAL(ids[0], "yaml.choice");
+    BOOST_CHECK(ids.empty());
     fs::remove_all(root);
 }
 
 BOOST_AUTO_TEST_CASE(catalog_rejects_duplicate_id) {
     auto root = make_minimal_package();
     fs::create_directories(root / "minimal.test.dup");
-    std::ofstream(root / "minimal.test.dup" / "plugin.json") << kMinimalManifest;
+    std::ofstream(root / "minimal.test.dup" / "manifest.yaml") << kMinimalManifest;
     PluginHost host;
     host.scan(root.string());
     std::string err;
@@ -283,18 +316,24 @@ BOOST_AUTO_TEST_CASE(resolve_detects_cycle) {
     fs::remove_all(root);
     fs::create_directories(root / "a" / "bin");
     fs::create_directories(root / "b" / "bin");
-    std::ofstream(root / "a" / "plugin.json") <<
-        R"({"schema_version":1,"id":"a","entry":"shield_plugin_get_v1",)"
-        R"("library":{"linux":"bin/a.so","macos":"bin/a.dylib","windows":"bin/a.dll"},)"
-        R"("provides":[{"interface":"iface.a"}],)"
-        R"("requires":[{"name":"b","interface":"iface.b","optional":false}],)"
-        R"("config_schema":{"type":"object"}})";
-    std::ofstream(root / "b" / "plugin.json") <<
-        R"({"schema_version":1,"id":"b","entry":"shield_plugin_get_v1",)"
-        R"("library":{"linux":"bin/b.so","macos":"bin/b.dylib","windows":"bin/b.dll"},)"
-        R"("provides":[{"interface":"iface.b"}],)"
-        R"("requires":[{"name":"a","interface":"iface.a","optional":false}],)"
-        R"("config_schema":{"type":"object"}})";
+    std::ofstream(root / "a" / "manifest.yaml")
+        << make_manifest(
+               "a",
+               "iface.a",
+               "  - name: b\n"
+               "    interface: iface.b\n"
+               "    optional: false\n",
+               "config_schema:\n"
+               "  type: object\n");
+    std::ofstream(root / "b" / "manifest.yaml")
+        << make_manifest(
+               "b",
+               "iface.b",
+               "  - name: a\n"
+               "    interface: iface.a\n"
+               "    optional: false\n",
+               "config_schema:\n"
+               "  type: object\n");
 
     PluginHost host;
     host.scan(root.string());
@@ -343,7 +382,7 @@ BOOST_AUTO_TEST_CASE(load_create_start_pipeline_and_binding_access) {
 BOOST_AUTO_TEST_CASE(optional_missing_library_does_not_abort_startup) {
     auto root = unique_root("shield_plugin_missing_library_test");
     fs::create_directories(root / "minimal.test" / "bin");
-    std::ofstream(root / "minimal.test" / "plugin.json")
+    std::ofstream(root / "minimal.test" / "manifest.yaml")
         << make_manifest("minimal.test");
 
     PluginHost host;
@@ -388,10 +427,12 @@ BOOST_AUTO_TEST_CASE(optional_start_failure_becomes_unavailable) {
 BOOST_AUTO_TEST_CASE(required_start_failure_rolls_back_started_dependencies) {
     auto root = unique_root("shield_plugin_required_start_failure_test");
     fs::create_directories(root / "minimal.test" / "bin");
-    std::ofstream(root / "minimal.test" / "plugin.json")
+    std::ofstream(root / "minimal.test" / "manifest.yaml")
         << make_manifest("minimal.test",
                          "minimal.test.iface",
-                         R"([{"name":"dep","interface":"minimal.test.iface","optional":true}])");
+                         "  - name: dep\n"
+                         "    interface: minimal.test.iface\n"
+                         "    optional: true\n");
     fs::copy_file(fs::path(SHIELD_TEST_PLUGINS_DIR) / "minimal.test" / "bin" /
                       minimal_library_name(),
                   root / "minimal.test" / "bin" / minimal_library_name(),
@@ -434,10 +475,12 @@ BOOST_AUTO_TEST_CASE(required_start_failure_rolls_back_started_dependencies) {
 BOOST_AUTO_TEST_CASE(declared_dependency_is_injected_and_wrong_interface_is_blocked) {
     auto root = unique_root("shield_plugin_dependency_test");
     fs::create_directories(root / "minimal.test" / "bin");
-    std::ofstream(root / "minimal.test" / "plugin.json")
+    std::ofstream(root / "minimal.test" / "manifest.yaml")
         << make_manifest("minimal.test",
                          "minimal.test.iface",
-                         R"([{"name":"dep","interface":"minimal.test.iface","optional":true}])");
+                         "  - name: dep\n"
+                         "    interface: minimal.test.iface\n"
+                         "    optional: true\n");
     fs::copy_file(fs::path(SHIELD_TEST_PLUGINS_DIR) / "minimal.test" / "bin" /
                       minimal_library_name(),
                   root / "minimal.test" / "bin" / minimal_library_name(),

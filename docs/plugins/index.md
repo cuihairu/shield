@@ -33,7 +33,7 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 
 host 启动时按以下顺序处理插件：
 
-1. **scan** — 优先读取 `<plugins_dir>/<package_id>/manifest.yaml`，不存在时回退到 `plugin.json`
+1. **scan** — 读取 `<plugins_dir>/<package_id>/manifest.yaml`
 2. **catalog** — 检查包 ID 唯一性、平台库路径存在
 3. **plan + resolve** — 解析实例间依赖、拓扑排序
 4. **load** — `dlopen` + ABI 版本/大小/包 ID 校验
@@ -104,7 +104,7 @@ my-shield-plugin/
 
 ### manifest.yaml
 
-推荐使用 `manifest.yaml` 作为主 manifest 文件名；`plugin.json` 仍被 host 接受以兼容旧包。如果同目录同时存在两者，host 总是优先读取 `manifest.yaml`。
+插件 manifest 文件名固定为 `manifest.yaml`。
 
 ```yaml
 schema_version: 1
