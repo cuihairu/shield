@@ -1,4 +1,10 @@
 {
   "name": "shield-workspace",
-  "private": true
+  "private": true,
+  "pnpm": {
+    "overrides": {
+      "vite": "6.4.3",
+      "esbuild": "^0.25.0"
+    }
+  }
 }
