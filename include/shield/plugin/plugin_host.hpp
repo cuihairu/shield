@@ -5,9 +5,7 @@
 // via the per-plugin Lua callable namespaces (e.g. shield.database.sqlite),
 // or — for C-ABI consumers — via PluginHost::get_by_binding<T>().
 //
-// See docs/plugin-system.md for the authoritative design and
-// docs/superpowers/specs/2026-06-22-plugin-system-v1-refactor-design.md for
-// the refactor spec.
+// See docs/plugin-system.md for the authoritative design.
 #pragma once
 
 #include "shield/plugin/abi.h"

@@ -17,7 +17,7 @@
 | Discovery / load / start 分离 | 发现、解析依赖、加载共享库、创建实例、启动实例是不同阶段。 |
 | JSON-compatible config model | manifest 字段模型与 schema 保持 JSON-compatible；运行时实例配置使用 Shield Config 子树承载，进入插件系统后按 JSON 值模型处理。 |
 | Stable C ABI | 插件共享库只暴露 C ABI 入口，不依赖 Shield 内部 C++ 类型。 |
-| Explicit wiring | 用户在主配置中声明实例和绑定关系，host 负责解析依赖和注入。 |
+| Explicit wiring | **核心架构决策**：用户在主配置中显式声明每个 instance、binding 和 dependency；host 不做隐式实例创建、不做能力自动发现、不做 starter 模板编排。详见 [Design Rationale](#design-rationale)。 |
 | Provider-oriented | 插件提供明确接口，例如 `shield.database.v1`、`shield.cache.v1`。 |
 | Structured errors | 加载、配置、依赖和运行期错误都带 `code/message/hint/package/instance/phase`。 |
 
@@ -25,11 +25,122 @@
 
 | 非目标 | 说明 |
 | --- | --- |
-| 热加载 | v1 不承诺运行期替换共享库。 |
+| 热加载 | v1 不承诺运行期替换共享库。基础设施热加载与插件系统本质冲突（连接池/TCP 句柄无法搬家、vtable 指针稳定性、并发调用屏障），业界无成功先例。业务代码热重载走 Lua runtime（`require` 重载），与插件热加载是两个层面的问题。详见 [Design Rationale](#design-rationale)。 |
 | 请求级生命周期 | v1 只定义进程级 `init` / `shutdown`。worker/request 生命周期后续再加。 |
 | 插件间任意互调 | v1 不提供全局 `find_plugin` 或裸 vtable 强转。插件通过声明依赖拿到 host 注入的接口。 |
+| 自动配置 / Starter 编排 | v1 不引入 Spring Boot Starter 式的"声明聚合 + 自动配置"层。starter 模式适合标准化 Web 业务（CRUD/REST），不适合游戏后端的异构部署、多实例与高事故代价场景。详见 [Design Rationale](#design-rationale)。 |
+| Auto-discovery | v1 不扫描 plugin 目录自动创建实例。隐式实例违背 Explicit Wiring，破坏可审计性。需要快速起步时用 `examples/` 模板项目 copy。 |
 | 沙箱 | v1 不隔离 native 插件的内存、线程或系统调用权限。 |
 | 多套插件配置入口 | 不为插件系统引入额外 TOML/INI/专用 YAML 文件。运行时配置只来自 Shield 主配置的 `plugins` 子树。 |
+
+## Design Rationale
+
+本节解释 Shield 插件系统为什么以 Explicit Wiring 为核心架构决策，以及为什么不支持热加载、starter 编排和 auto-discovery。这些不是 v1 的临时取舍，而是基于游戏后端固有特征和业界对比得出的长期决策。
+
+### Explicit Wiring 是核心架构决策
+
+**定义**：用户在 `app.yaml` 的 `plugins` 子树中显式声明：
+
+- 每个 instance 的 `id` / `package` / `required` / `dependencies` / `config`
+- 每个 binding 的 `logical name` → `instance id`
+
+host 的职责仅限于解析这些声明、注入依赖、调度生命周期。**host 不做的事**：
+
+- 隐式创建实例（"看到 sqlite 包就自动起一个 `db.default`"）
+- 能力自动发现（"扫描目录猜你需要哪些插件"）
+- Starter 模板编排（"声明 matchmaking 能力，自动拉起完整 stack"）
+- 默认 binding（"instance 提供 `shield.database.v1` 就自动绑到 `database.default`"）
+
+所有"自动行为"都被 Explicit Wiring 拒绝——这不是 v1 的能力限制，是基于游戏后端特征的长期架构选择。
+
+### 为什么适合游戏行业
+
+游戏后端有 7 个固有特征，每个都把配置模型推向 Explicit Wiring：
+
+| 固有特征 | 对配置模型的影响 |
+| --- | --- |
+| 部署异构性极高 | 不同游戏类型用完全不同栈（MMO=MySQL+Redis、SLG=MongoDB+Redis Cluster、FPS=Redis-only）；starter 默认值经常被覆盖，自动配置无收益 |
+| 多实例是常态 | `db.main + db.audit + db.shard0..N + db.log`、`cache.session + cache.rank + cache.pubsub`；starter 默认实例根本不够用，最终还是 escape hatch 写 explicit |
+| 生产事故代价极高 | 玩家在线=流失+口碑+收入；事故定位每分钟都在烧钱；必须"一眼看配置就知道拓扑"，不允许 starter → override → 展开三层反查 |
+| 运维团队规模不大 | 不像互联网大厂有专职 SRE；主程/技术总监常兼任运维；配置可读性 > 简洁性 |
+| 复杂依赖需精确控制 | leaderboard 依赖 cache + database；matchmaking 依赖 leaderboard + database + cache；auth 依赖 cache（黑名单）；必须精确指定"哪个实例连哪个实例" |
+| 环境差异大 | 开发用 sqlite 内存库，生产用 MySQL cluster；业务代码不变，差异全在配置层 |
+| 运营活动 + 紧急 hotfix 频繁 | 配置变更要快速、可逆、可审计；隐式行为阻断紧急回滚 |
+
+Explicit Wiring 在这 7 项里**全部占优**。Starter / Auto-discovery 只在"新项目快速原型"这一边缘场景有收益，且该收益可通过 `examples/` 模板项目满足。
+
+### 业界对比
+
+| 系统 | 类型 | 配置模型 |
+| --- | --- | --- |
+| Skynet | 游戏服框架（C+Lua） | Explicit |
+| Kbengine | 游戏服引擎（C++） | Explicit |
+| Photon Server | 游戏服（C#） | Explicit |
+| Colyseus | 游戏服（Node） | Explicit |
+| Kubernetes | 基础设施 | Explicit（Helm chart 是配置期模板，运行时仍 explicit） |
+| Terraform | 基础设施 | Explicit（module 是配置期模板，运行时仍 explicit） |
+| Spring Boot | 业务 Web | Starter 主导 |
+
+**关键观察**：所有游戏服框架都用 Explicit Wiring。基础设施系统（K8s/Terraform）即使提供模板层（Helm/Module），运行时模型仍然是 Explicit。Starter 主导只出现在标准化程度高的业务 Web 场景。
+
+Shield 定位是通用游戏后端框架，配置模型与游戏服框架对齐是必然选择。
+
+### 为什么不采用 Starter / Auto-discovery
+
+Starter 模式（Spring Boot 风格的"声明聚合 + 自动配置"）在游戏后端场景下的核心问题：
+
+| 问题 | 表现 |
+| --- | --- |
+| 多实例场景失效 | 中等规模游戏有 15+ 实例（多分片 db、多用途 cache、多通道 queue），starter 默认的"db + cache + mm"三件套完全不够 |
+| 事故定位链变长 | Explicit 一行 grep 3 秒定位；Starter 要查 starter.yaml + override + 展开结果三份，3 秒变 3 分钟 |
+| 部署异构性击穿默认值 | 不同游戏 auth 方案（Steam/微信/Firebase/JWT）完全不同，starter 默认值必然被覆盖 |
+| 团队维护成本不支撑 | starter 库需要版本管理、profile 测试、兼容性矩阵、文档；中小游戏团队没这个人力 |
+| 隐式行为阻断紧急回滚 | starter 升级会隐式改变所有引用方的实际配置，生产环境不可接受 |
+
+Auto-discovery（扫描目录自动创建实例）的问题更严重：隐式实例违背 Explicit Wiring 核心原则，"哪些实例在跑"变成不可预测的状态，调试时无法从配置反推运行态，还有安全风险（恶意放置的 plugin 目录被自动加载）。
+
+需要快速起步时，正确做法是提供 `examples/` 模板项目（含完整 explicit yaml），用户 copy 后修改，而不是引入配置自动展开层。
+
+### 为什么不支持基础设施热加载
+
+"插件热加载"经常与"业务热加载"混淆，但两者是完全不同的问题：
+
+| 维度 | 业务代码热加载 | 基础设施热加载 |
+| --- | --- | --- |
+| 加载对象 | Lua 脚本 | C ABI 共享库 |
+| 变更频率 | 日频甚至小时频 | 季度甚至年级别 |
+| 状态依赖 | 无状态或可序列化 | 重状态（连接池、TCP 句柄、事务上下文） |
+| 业界先例 | Erlang BEAM / Lua require / JVM JRebel | 无主流系统支持 |
+| Shield 支持方式 | 已支持（Lua `require` 重载） | 不支持（架构层面排除） |
+
+基础设施热加载的真实障碍：
+
+- **连接池无法搬家**：TCP 连接是进程级资源，不能在 .so 之间迁移
+- **vtable 指针稳定性**：worker 线程刚解引用 vtable，旧 .so 被 dlclose 触发 use-after-free
+- **ABI 兼容**：新 .so 的 struct 布局变了，旧 instance 的内存布局失效
+- **并发屏障**：vtable 切换瞬间所有 worker 必须进 barrier，实现复杂度爆炸
+
+业界所有"热加载成功"的系统热的都是业务层（字节码/脚本），不是基础设施层。Nginx / PostgreSQL / Redis 升级扩展都走 restart，不走热加载。
+
+**结论**：基础设施热加载的成本远超收益。Shield 业务热重载走 Lua runtime（已有路径），插件层不支持热加载。
+
+### Spring Boot 模式的适用边界
+
+文档对比时常引用 Spring Boot Starter 作为参考。需要明确边界：
+
+| 场景 | Spring Boot Starter 适用 | Shield Explicit Wiring 适用 |
+| --- | --- | --- |
+| 标准 CRUD 业务 | ✅ | — |
+| REST API 服务 | ✅ | — |
+| 内部管理后端 | ✅ | — |
+| 游戏后端 | — | ✅ |
+| 高异构性部署 | — | ✅ |
+| 多实例精细控制 | — | ✅ |
+| 高事故代价生产环境 | — | ✅ |
+
+Spring Boot Starter 的"约定优于配置"哲学建立在"大部分项目都用同一套"的前提上。游戏后端不满足这个前提——每个游戏的栈都不一样。
+
+借鉴 Spring Boot 可以借鉴的点：接口/实现分离、依赖注入、配置绑定（这些 Shield 都已有）。不应借鉴的点：starter 自动配置、auto-discovery、隐式默认值。
 
 ## Terminology
 
@@ -184,7 +295,7 @@ plugins:
 
 ## Bootstrap Pipeline
 
-启动流程固定为：
+启动流程固定为 9 个语义阶段：
 
 ```text
 scan -> catalog -> plan -> resolve -> load -> create -> start -> lua_init -> lua_register
@@ -203,6 +314,8 @@ scan -> catalog -> plan -> resolve -> load -> create -> start -> lua_init -> lua
 | `lua_init` | host 初始化 Lua runtime（包括把所有声明了 `lua.search_paths` 的插件路径注入 `package.path`）。 |
 | `lua_register` | host 拿到 Lua state 后，遍历所有已 `started` 的实例，依次调用 `register_lua(self, L, err)`，插件把自身 API 注册到 `shield.<namespace>`。 |
 | `stop` | 进程退出时按依赖反序调用 `shutdown`。 |
+
+> 实现说明：上表是语义阶段，与代码方法的对应关系是 `scan / catalog / plan_and_resolve（plan + resolve 合并）/ load_all / create_all / start_all`；`lua_init` 和 `lua_register` 是独立方法而非 `start_all` 的延续，仅在 host 配置了 Lua runtime 时调用，纯 C++ 运行模式下跳过。
 
 `lua_init` 和 `lua_register` 只在 host 配置了 Lua runtime 时触发；纯 C++ 运行模式下这两个阶段跳过，`register_lua` 钩子不会被调用。
 

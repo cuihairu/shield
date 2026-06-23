@@ -356,7 +356,7 @@ local host = shield.config("database.host", "localhost")
 - 读取 bootstrap 后的配置快照。
 - 默认只读。
 - 找不到 key 时返回第二个参数作为默认值；没有默认值则返回 `nil`。
-- 配置加载和合并由 C++ bootstrap 完成，Lua 不负责加载 JSON 文件。
+- 配置加载和合并由 C++ bootstrap 完成，Lua 不负责加载 YAML 文件。
 
 实现快照：`shield.config` 已实现，key 为扁平字符串匹配（如 `"database.host"`），不支持嵌套路径遍历。返回值自动尝试转换为 boolean/integer/number/string。
 

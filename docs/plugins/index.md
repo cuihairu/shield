@@ -12,6 +12,14 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 | [database.mysql](/plugins/database-mysql) | `shield.database.v1` | MySQL X DevAPI |
 | [database.postgresql](/plugins/database-postgresql) | `shield.database.v1` | PostgreSQL (libpq) |
 
+### 文档数据库
+
+| 包 ID | 接口 | 说明 |
+|-------|------|------|
+| [database.mongodb](/plugins/database-mongodb) | `shield.document.v1` | MongoDB（mongocxx）文档型数据库，CRUD / 聚合 / 事务 |
+
+`shield.document.v1` 与 SQL 系的 `shield.database.v1` 是并列接口：前者面向文档、嵌套对象和聚合管道，后者面向固定表结构。同一个业务可以同时部署 SQL 数据库和 MongoDB，分别配置 binding。
+
 ### 缓存与队列
 
 | 包 ID | 接口 | 说明 |

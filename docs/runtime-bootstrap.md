@@ -24,7 +24,7 @@ shield::run(argc, argv)
   │     - --help              显示帮助
   │
   ├─ 2. 加载配置
-  │     - 读取 JSON 配置文件
+  │     - 读取 YAML 配置文件
   │     - 环境变量替换 ${VAR:default}
   │     - 多配置文件合并（--config 可多次指定）
   │     - 配置验证（必填项、类型、范围）

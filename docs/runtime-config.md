@@ -6,7 +6,7 @@
 
 ## 配置原则
 
-- JSON 只做声明式绑定，不承载业务逻辑。
+- YAML 只做声明式绑定，不承载业务逻辑。
 - 最小 runtime schema 只覆盖单节点 runtime 必需能力。
 - 配置驱动 Lua service、网络监听、data source、日志和 bootstrap timeout；每个配置段必须有明确 owner。
 - 不在 core 中提供服务发现、插件、Prometheus、健康检查、DI、注解或条件装配配置。

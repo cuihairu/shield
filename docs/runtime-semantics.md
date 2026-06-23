@@ -28,7 +28,7 @@
 | --- | --- |
 | [Lua API 契约](lua-api.md) | `shield.*` 用户 API、service module 形态、旧 API 删除清单 |
 | [Lua API 测试用例](lua-api-tests.md) | API 测试矩阵，示例不替代测试 |
-| [配置语义](runtime-config.md) | JSON 配置 schema（**权威来源**）、配置验证、环境差异 |
+| [配置语义](runtime-config.md) | YAML 配置 schema（**权威来源**）、配置验证、环境差异 |
 | [官方可选模块契约](optional-modules.md) | cluster/global/player/server/ops 的边界、owner、依赖方向 |
 | [官方可选模块验收矩阵](optional-module-tests.md) | optional module 测试矩阵，防止反向污染 core |
 
