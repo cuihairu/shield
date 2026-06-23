@@ -245,8 +245,8 @@ Manifest 字段规则：
 | `id` | 全局唯一 package id，建议使用 `<domain>.<provider>`，如 `database.mysql`。 |
 | `version` | package 版本，使用 semver 字符串。 |
 | `entry` | 共享库导出的 C 符号，v1 固定建议为 `shield_plugin_get_v1`。 |
-| `library` | 按平台声明相对 package 根目录的库路径。 |
-| `provides` | 声明 package 提供的 interface 和 capability。 |
+| `library` | 按平台声明相对 package 根目录的库路径；必须是相对路径，不能用 `..` 逃逸 package root。 |
+| `provides` | 声明 package 提供的 interface 和 capability；至少声明一个 interface，同一 package 内不能重复。 |
 | `requires` | 声明 instance 创建时需要 host 注入的依赖接口。 |
 | `lua` | 可选。声明插件的 Lua 元数据：`namespace`（Lua 侧注册到 `shield.<namespace>`）、`search_paths`（相对 package 根的 Lua 搜索路径，host 启动时自动注入 `package.path`）。 |
 | `documentation` | 可选。声明插件的在线文档 URL 和一句话描述。host 通过 `PluginHost::list_packages()` 暴露这份元数据，当前 `shield.plugin.packages()` Lua API 会直接返回 `docs_url` 和 `docs_description`。第三方插件**强烈推荐**设置此字段。 |
@@ -305,14 +305,14 @@ scan -> catalog -> plan -> resolve -> load -> create -> start -> lua_init -> lua
 | 阶段 | 说明 |
 | --- | --- |
 | `scan` | 遍历 `plugins.directory/*/manifest.yaml`。只读 manifest，不加载共享库。 |
-| `catalog` | 校验 manifest schema、package id、平台库路径和 interface 声明。 |
+| `catalog` | 校验 manifest schema、package id 唯一性、平台库路径安全性和 interface/dependency 声明。 |
 | `plan` | 从主配置的 `plugins.instances` 建立启动计划。 |
 | `resolve` | 校验 package 存在、实例 id 唯一、依赖可满足、拓扑无环，并在这一阶段应用 config 默认值、执行 schema 校验、校验 binding 名唯一且目标 instance 存在。 |
 | `load` | `dlopen` / `LoadLibrary` 共享库，解析 `entry`。 |
 | `create` | 调用入口函数，校验 ABI guard，创建 instance handle。 |
 | `start` | 调用实例 `start`，插件初始化后端连接、后台线程等资源。 |
 | `lua_init` | host 初始化 Lua runtime（包括把所有声明了 `lua.search_paths` 的插件路径注入 `package.path`）。 |
-| `lua_register` | host 拿到 Lua state 后，遍历所有已 `started` 的实例，依次调用 `register_lua(self, L, err)`，插件把自身 API 注册到 `shield.<namespace>`。 |
+| `lua_register` | host 拿到一个 Lua state 后，遍历所有已 `started` 的实例，依次调用 `register_lua(self, L, err)`，插件把自身 API 注册到该 VM 的 `shield.<namespace>`。多 VM 场景下每个 VM 都会执行一次。 |
 | `stop` | 进程退出时按依赖反序调用 `shutdown`。 |
 
 > 实现说明：上表是语义阶段，与代码方法的对应关系是 `scan / catalog / plan_and_resolve（plan + resolve 合并）/ load_all / create_all / start_all`；`lua_init` 和 `lua_register` 是独立方法而非 `start_all` 的延续，仅在 host 配置了 Lua runtime 时调用，纯 C++ 运行模式下跳过。
@@ -351,9 +351,9 @@ typedef struct shield_plugin_instance_v1 {
 
     void (*shutdown)(shield_plugin_instance_v1* self);
 
-    // host 在 Lua runtime 起来后调用一次，插件用 sol2 把自身 API 注册到
+    // host 在每个 Lua VM 初始化后调用一次，插件用 sol2 把自身 API 注册到
     // shield.<namespace>。没有 Lua 绑定的插件也必须提供此字段
-    // （直接 return 0 即可）。L 可能为 NULL（纯 C++ 运行模式）。
+    // （直接 return 0 即可）。纯 C++ 运行模式会跳过此回调；被调用时 L 非 NULL。
     int (*register_lua)(shield_plugin_instance_v1* self,
                         struct lua_State* L,
                         shield_error_v1* err);
@@ -386,8 +386,10 @@ typedef struct shield_host_api_v1 {
 
     void (*report_error)(const shield_error_v1* err);
 
-    const shield_config_value_v1* (*config_get)(shield_plugin_context_v1* ctx,
-                                                const char* path);
+    // 返回字符串值；object/array 返回 JSON fragment。返回指针有效期到同一
+    // 线程下一次 config_get 调用。
+    const char* (*config_get)(shield_plugin_context_v1* ctx,
+                              const char* path);
 
     const void* (*dependency)(shield_plugin_context_v1* ctx,
                               const char* name,
@@ -573,7 +575,7 @@ local binding = shield.plugin.binding("database.default")
 
 `shield_plugin_instance_v1.register_lua(self, L, err)` 是唯一接入点：
 
-- host 在 `lua_register` 阶段遍历所有已 `started` 的实例，按 instance 创建顺序调用。
+- host 在 `lua_register` 阶段遍历所有已 `started` 的实例，按依赖拓扑启动顺序调用。
 - `L` 是 host 的 Lua state，保证非 NULL（除非 host 跳过 Lua runtime，此时整个阶段跳过，`register_lua` 不被调用）。
 - 插件用 sol2（`sol::state_view(L)`）创建 namespace、注册方法。
 - 返回 0 成功；非 0 视为 `register_lua` 失败，host 上报结构化错误。

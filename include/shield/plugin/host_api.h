@@ -56,7 +56,7 @@ struct shield_host_api_v1 {
     // Look up a config value by dot-path within THIS instance's validated
     // config (e.g. "host" or "pool.size"). Returns a host-owned string
     // (JSON fragment for objects/arrays, scalar text otherwise) valid until
-    // the next config_get call on this context, or NULL if absent.
+    // the next config_get call on the same thread, or NULL if absent.
     const char* (*config_get)(struct shield_plugin_context_v1* ctx,
                               const char* path);
 

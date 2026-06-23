@@ -183,7 +183,8 @@ BOOST_AUTO_TEST_CASE(scan_accepts_manifest_yaml_only_directory) {
            "  linux: bin/x.so\n"
            "  macos: bin/x.dylib\n"
            "  windows: bin/x.dll\n"
-           "provides: []\n"
+           "provides:\n"
+           "  - interface: yaml.only.iface\n"
            "requires: []\n"
            "config_schema:\n"
            "  type: object\n";
@@ -217,6 +218,71 @@ BOOST_AUTO_TEST_CASE(catalog_rejects_duplicate_id) {
     std::string err;
     BOOST_CHECK(!host.catalog(err));
     BOOST_TEST(err.find("duplicate") != std::string::npos);
+    fs::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(catalog_rejects_empty_provides) {
+    auto root = unique_root("shield_plugin_empty_provides_test");
+    fs::create_directories(root / "minimal.test" / "bin");
+    std::ofstream(root / "minimal.test" / "manifest.yaml")
+        << make_manifest("minimal.test", "");
+
+    PluginHost host;
+    host.scan(root.string());
+    std::string err;
+    BOOST_CHECK(!host.catalog(err));
+    BOOST_TEST(err.find("must declare at least one") != std::string::npos);
+    fs::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(catalog_rejects_duplicate_interface) {
+    auto root = unique_root("shield_plugin_duplicate_interface_test");
+    fs::create_directories(root / "minimal.test" / "bin");
+    std::ofstream(root / "minimal.test" / "manifest.yaml")
+        << "schema_version: 1\n"
+           "id: minimal.test\n"
+           "entry: shield_plugin_get_v1\n"
+           "library:\n"
+           "  linux: bin/libshield_minimal_test_plugin.so\n"
+           "  macos: bin/libshield_minimal_test_plugin.dylib\n"
+           "  windows: bin/libshield_minimal_test_plugin.dll\n"
+           "provides:\n"
+           "  - interface: minimal.test.iface\n"
+           "  - interface: minimal.test.iface\n"
+           "requires: []\n"
+           "config_schema:\n"
+           "  type: object\n";
+
+    PluginHost host;
+    host.scan(root.string());
+    std::string err;
+    BOOST_CHECK(!host.catalog(err));
+    BOOST_TEST(err.find("duplicate interface") != std::string::npos);
+    fs::remove_all(root);
+}
+
+BOOST_AUTO_TEST_CASE(catalog_rejects_library_path_escape) {
+    auto root = unique_root("shield_plugin_library_escape_test");
+    fs::create_directories(root / "minimal.test" / "bin");
+    std::ofstream(root / "minimal.test" / "manifest.yaml")
+        << "schema_version: 1\n"
+           "id: minimal.test\n"
+           "entry: shield_plugin_get_v1\n"
+           "library:\n"
+           "  linux: ../outside/libshield_minimal_test_plugin.so\n"
+           "  macos: ../outside/libshield_minimal_test_plugin.dylib\n"
+           "  windows: ..\\outside\\libshield_minimal_test_plugin.dll\n"
+           "provides:\n"
+           "  - interface: minimal.test.iface\n"
+           "requires: []\n"
+           "config_schema:\n"
+           "  type: object\n";
+
+    PluginHost host;
+    host.scan(root.string());
+    std::string err;
+    BOOST_CHECK(!host.catalog(err));
+    BOOST_TEST(err.find("package root") != std::string::npos);
     fs::remove_all(root);
 }
 

@@ -9,9 +9,9 @@
 // exposes its interfaces by name via get_interface().
 //
 // Lua autonomy: every instance MUST implement register_lua(). The host calls
-// it once after the Lua runtime is up, passing the host's lua_State* so the
-// plugin can register its own Lua API (typically shield.<namespace>). Plugins
-// with no Lua surface provide an empty implementation (return 0).
+// it once for each Lua VM after that VM is initialized, passing its lua_State*
+// so the plugin can register per-state Lua API (typically shield.<namespace>).
+// Plugins with no Lua surface provide an empty implementation (return 0).
 //
 // ABI stability rules:
 //   - Appending fields to the END of these structs (and bumping handling) is
@@ -20,8 +20,8 @@
 //   - All strings crossing the boundary are NULL-terminated UTF-8.
 //
 // Threading:
-//   - create/start/register_lua/shutdown are called from the host bootstrap
-//     thread.
+//   - create/start/shutdown are called from the host bootstrap thread.
+//   - register_lua is called from the thread initializing each Lua VM.
 //   - Interface vtable methods may be called concurrently from worker
 //     threads; the plugin must document its own synchronization needs.
 
@@ -77,8 +77,8 @@ struct shield_plugin_instance_v1 {
     // Stop the instance and release all resources. Safe to call once.
     void (*shutdown)(struct shield_plugin_instance_v1* self);
 
-    // Register Lua bindings for this instance. Called exactly once by the
-    // host, AFTER start() succeeds AND the Lua runtime is initialized.
+    // Register Lua bindings for this instance in the given Lua VM. Called once
+    // per Lua VM, AFTER start() succeeds AND that VM is initialized.
     // Plugins use sol2 (sol::state_view(L)) to register methods/tables under
     // shield.<namespace>. L is guaranteed non-NULL when called; if the host
     // runs without a Lua runtime, this callback is skipped entirely (so the

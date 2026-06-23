@@ -11,6 +11,7 @@
 #include <deque>
 #include <map>
 #include <set>
+#include <string_view>
 #include <utility>
 
 namespace shield::plugin {
@@ -44,6 +45,59 @@ const Manifest::Require* find_require(const Manifest& manifest,
         if (req.name == name) return &req;
     }
     return nullptr;
+}
+
+bool has_parent_reference(const fs::path& path) {
+    for (const auto& part : path) {
+        if (part == "..") return true;
+    }
+    return false;
+}
+
+std::string validate_library_path(const Package& package) {
+    const auto lib = platform_library_path(package.manifest);
+    if (lib.empty()) {
+        return "plugin.manifest.invalid: package '" + package.manifest.id +
+               "' missing library path for current platform";
+    }
+    fs::path lib_path(lib);
+    if (lib_path.is_absolute() || has_parent_reference(lib_path)) {
+        return "plugin.manifest.invalid: package '" + package.manifest.id +
+               "' library path must stay under package root";
+    }
+    return {};
+}
+
+std::string validate_interface_declarations(const Manifest& manifest) {
+    if (manifest.provides.empty()) {
+        return "plugin.manifest.invalid: package '" + manifest.id +
+               "' must declare at least one provided interface";
+    }
+
+    std::set<std::string> provided;
+    for (const auto& provide : manifest.provides) {
+        if (provide.interface_name.empty()) {
+            return "plugin.manifest.invalid: package '" + manifest.id +
+                   "' declares an empty provided interface";
+        }
+        if (!provided.insert(provide.interface_name).second) {
+            return "plugin.manifest.invalid: package '" + manifest.id +
+                   "' declares duplicate interface '" + provide.interface_name + "'";
+        }
+    }
+
+    std::set<std::string> required_names;
+    for (const auto& req : manifest.requires_) {
+        if (req.name.empty() || req.interface_name.empty()) {
+            return "plugin.manifest.invalid: package '" + manifest.id +
+                   "' declares an invalid dependency";
+        }
+        if (!required_names.insert(req.name).second) {
+            return "plugin.manifest.invalid: package '" + manifest.id +
+                   "' declares duplicate dependency '" + req.name + "'";
+        }
+    }
+    return {};
 }
 
 bool fail_or_unavailable(Instance& inst,
@@ -100,7 +154,7 @@ void PluginHost::scan(const std::string& directory) {
 }
 
 // ---------------------------------------------------------------------------
-// catalog: validate package ids are unique + platform library path present.
+// catalog: validate package ids, interface declarations, and safe library path.
 // ---------------------------------------------------------------------------
 bool PluginHost::catalog(std::string& error) {
     std::set<std::string> seen;
@@ -110,11 +164,12 @@ bool PluginHost::catalog(std::string& error) {
                     p.manifest.id + "'";
             return false;
         }
-        if (platform_library_path(p.manifest).empty()) {
-            error = "plugin.manifest.invalid: package '" + p.manifest.id +
-                    "' missing library path for current platform";
+        error = validate_interface_declarations(p.manifest);
+        if (!error.empty()) {
             return false;
         }
+        error = validate_library_path(p);
+        if (!error.empty()) return false;
     }
     return true;
 }
@@ -441,12 +496,11 @@ const shield_host_api_v1& PluginHost::host_api_table() {
             if (dot == std::string::npos) break;
             start = dot + 1;
         }
-        // Write into per-instance scratch (NOT thread_local): concurrent
-        // config_get from two instances must not clobber each other's return.
-        // Contract: valid until next config_get on THIS context.
-        if (cur->is_string()) c->config_get_scratch = cur->get<std::string>();
-        else c->config_get_scratch = cur->dump();
-        return c->config_get_scratch.c_str();
+        // Contract: valid until next config_get on the same thread.
+        thread_local std::string scratch;
+        if (cur->is_string()) scratch = cur->get<std::string>();
+        else scratch = cur->dump();
+        return scratch.c_str();
     };
     api.dependency = [](shield_plugin_context_v1* ctx, const char* name,
                         const char* iface) -> const void* {

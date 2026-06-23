@@ -95,6 +95,14 @@ if(CMAKE_CONFIGURATION_TYPES)
             ARCHIVE_OUTPUT_DIRECTORY_${_shield_cfg_upper} "${_shield_minimal_plugin_output_dir}")
     endforeach()
 endif()
+if(WIN32)
+    set(_shield_minimal_plugin_filename "libshield_minimal_test_plugin.dll")
+elseif(APPLE)
+    set(_shield_minimal_plugin_filename "libshield_minimal_test_plugin.dylib")
+    set_target_properties(shield_minimal_test_plugin PROPERTIES SUFFIX ".dylib")
+else()
+    set(_shield_minimal_plugin_filename "libshield_minimal_test_plugin.so")
+endif()
 configure_file(plugin/fixtures/minimal.manifest.yaml
                "${CMAKE_BINARY_DIR}/test_plugins/minimal.test/manifest.yaml"
                COPYONLY)
@@ -104,13 +112,6 @@ add_executable(test_plugin_host plugin/test_plugin_host.cpp)
 target_link_libraries(test_plugin_host
     PRIVATE shield_plugin Boost::unit_test_framework Boost::headers)
 target_include_directories(test_plugin_host PRIVATE ${CMAKE_SOURCE_DIR}/include)
-if(WIN32)
-    set(_shield_minimal_plugin_filename "libshield_minimal_test_plugin.dll")
-elseif(APPLE)
-    set(_shield_minimal_plugin_filename "libshield_minimal_test_plugin.dylib")
-else()
-    set(_shield_minimal_plugin_filename "libshield_minimal_test_plugin.so")
-endif()
 target_compile_definitions(test_plugin_host PRIVATE
     SHIELD_TEST_PLUGINS_DIR="${CMAKE_BINARY_DIR}/test_plugins"
     SHIELD_MINIMAL_TEST_PLUGIN_LIBRARY="${_shield_minimal_plugin_filename}")

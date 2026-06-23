@@ -196,7 +196,9 @@ public:
     // against each plugin's package root.
     void inject_lua_paths(struct lua_State* L);
 
-    // Call register_lua(L) on every started instance, in start order.
+    // Call register_lua(L) on every started instance for one Lua VM, in start
+    // order. LuaRuntime invokes this once per VM, so plugins must register
+    // per-state bindings without assuming process-wide one-shot semantics.
     // Returns false and sets `error` if any REQUIRED instance's register_lua
     // fails; non-required failures are logged and skipped.
     bool register_lua_all(struct lua_State* L, std::string& error);
@@ -233,12 +235,6 @@ private:
     struct CtxBundle {
         PluginHost* host;
         const Instance* instance;
-        // Per-instance scratch buffer for config_get() return value. Documented
-        // contract: "valid until the next config_get call on this context".
-        // Using a per-instance member (NOT thread_local) avoids cross-instance
-        // and cross-thread interference when multiple instances call config_get
-        // concurrently.
-        std::string config_get_scratch;
     };
 
     const shield_host_api_v1& host_api_table();
