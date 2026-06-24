@@ -6,7 +6,7 @@
 
 实现快照：当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置
 启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
-coroutine-aware `shield.send/call/call_timeout/sleep`、`shield.timer_once/timer/cancel_timer/fork`、
+coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、
 `shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、
 `on_exit` call guard、call timeout（`check_call_timeouts`）、
 timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、
@@ -284,9 +284,9 @@ local deadline = shield.deadline()
 
 - 只在 message handler coroutine 中有效。
 - handler 返回后上下文失效。
-- timer/fork coroutine 中 `shield.sender()` 返回 `nil`。
+- timer callback / fork task 中 `shield.sender()` 返回 `nil`。
 
-实现快照：`shield.sender()`、`shield.trace()`、`shield.deadline()` 均已实现。trace_id 和 deadline_ms 在 send/call 消息中传播，从 caller 的 dispatch context 携带到 callee 的 dispatch context。timer/fork context 中 `shield.sender()` 返回 `nil`，`shield.trace()` 返回 `nil`，`shield.deadline()` 返回 `nil`。
+实现快照：`shield.sender()`、`shield.trace()`、`shield.deadline()` 均已实现。trace_id 和 deadline_ms 在 send/call 消息中传播，从 caller 的 dispatch context 携带到 callee 的 dispatch context。timer callback / fork task context 中 `shield.sender()` 返回 `nil`，`shield.trace()` 返回 `nil`，`shield.deadline()` 返回 `nil`。
 
 ## Timer API
 
@@ -309,6 +309,7 @@ end)
 规则：
 
 - fixed-delay：callback 结束后再安排下一次。
+- callback 当前通过 `lua_pcall` 执行，不是 coroutine；`shield.sleep` / `shield.call` 在 callback 中走同步降级路径。
 - callback 抛错时触发 `on_error`。
 - service exit 自动取消 owned timers。
 
@@ -324,18 +325,17 @@ local ok, err = shield.cancel_timer(id)
 shield.sleep(100)
 ```
 
-挂起当前 coroutine，不阻塞 runtime thread。
+在 message handler coroutine 中挂起当前 coroutine，不阻塞 runtime thread；在同步调用、timer callback 或 fork task 中走阻塞降级路径。
 
 ### shield.fork(fn)
 
 ```lua
 local task = shield.fork(function()
-    shield.sleep(100)
     shield.send("worker", "done")
 end)
 ```
 
-返回 `TaskHandle`。fork task 属于当前 service，service exit 时自动取消。
+返回 numeric task id。fork task 属于当前 service，当前通过 `lua_pcall` 执行，不是 coroutine；service exit 时自动取消尚未执行的 task。
 
 ## Time API
 

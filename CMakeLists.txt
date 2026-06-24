@@ -228,6 +228,7 @@ find_package(
              url
              unit_test_framework
              dll)
+find_package(CURL REQUIRED)
 
 # Try to find msgpack-cxx
 find_package(msgpack-cxx CONFIG QUIET)
@@ -433,15 +434,8 @@ target_link_libraries(shield_net
     PRIVATE Boost::asio Boost::beast
 )
 
-# HTTP client via libcurl (HTTPS, HTTP/2, connection pooling, redirects)
-find_package(CURL CONFIG QUIET)
-if(CURL_FOUND)
-    target_link_libraries(shield_net PRIVATE CURL::libcurl)
-    target_compile_definitions(shield_net PRIVATE SHIELD_HAS_CURL)
-    message(STATUS "libcurl enabled for shield_net HTTP client")
-else()
-    message(STATUS "libcurl not found, HTTP client will use Boost.Beast fallback")
-endif()
+target_link_libraries(shield_net PUBLIC CURL::libcurl)
+target_compile_definitions(shield_net PUBLIC SHIELD_HAS_CURL)
 
 # -----------------------------------------------------------------------------
 # shield_cluster (optional, OFF by default)
@@ -477,6 +471,12 @@ target_include_directories(shield_lua
         ${CMAKE_CURRENT_BINARY_DIR}/include
         ${LUA_INCLUDE_DIR}
         ${SOL2_INCLUDE_DIRS}
+)
+
+target_compile_definitions(shield_lua
+    PUBLIC
+        SOL_NO_LUA_HPP=0
+        SOL_NO_NIL=0
 )
 
 target_link_libraries(shield_lua

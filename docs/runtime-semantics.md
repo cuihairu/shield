@@ -18,8 +18,8 @@
 
 当前收敛顺序：
 
-- Phase 1 最小闭环只覆盖单节点 Lua service、registry、基础 `send/call` 返回形态、TCP gateway、raw data API 的 mock/未启用语义、配置验证和 `shield::run` 入口。
-- coroutine-aware `call/sleep/fork`、完整 mailbox/future scheduling、真实 DB/Redis 驱动连接、UDP/KCP/WebSocket、ops snapshot 和官方可选模块都不作为当前最小验收阻塞项。
+- Phase 1 最小闭环覆盖单节点 Lua service、registry、基础 `send/call` 返回形态、TCP gateway、raw data API 的 mock/未启用语义、配置验证和 `shield::run` 入口。
+- handler 内 coroutine-aware `call/sleep` 已进入当前实现路径；timer callback 和 fork task 当前仍是受保护的非协程调用。真实 DB/Redis 驱动连接、UDP/KCP/WebSocket、ops snapshot 和官方可选模块不作为当前最小验收阻塞项。
 - schema/tooling、mapper、entity/component 等文档是后续草案；除非路线图重新纳入，否则不能反向扩大当前 runtime 范围。
 
 ### 权威契约
@@ -38,7 +38,7 @@
 | --- | --- |
 | [服务语义](runtime-service.md) | ServiceHandle、ServiceId、Service Registry、spawn、self、Lua service module、handler 上下文、exit |
 | [消息语义](runtime-messaging.md) | MessageEnvelope、MessagePayload、send、call、背压、QoS、超时、nested call、coroutine 调度、错误处理 |
-| [定时器语义](runtime-timer.md) | timer API、时间语义、错误语义、sleep、fork、TaskHandle |
+| [定时器语义](runtime-timer.md) | timer API、时间语义、错误语义、sleep、fork、Task ID |
 | [Lua VM 语义](runtime-lua-vm.md) | Lua VM 模型、热更新策略、Blue-Green 替换 |
 | [网络语义](runtime-network.md) | shield_net、shield_transport、gateway、SessionHandle、Phase 1 TCP 范围、deferred UDP/KCP/WebSocket |
 | [数据语义](runtime-data.md) | shield_data、连接池、Phase 1 DB/Redis API、Phase 2+ data 扩展、错误处理 |
@@ -95,7 +95,7 @@
 
 ### M4. spawn/send/call
 
-- 实现 coroutine-aware `spawn`。
+- 实现 `spawn` ready/rollback 语义。
 - 实现 non-blocking `send`。
 - 实现 `call` pending registry。
 - 实现 timeout 和 late response 丢弃。
@@ -113,8 +113,8 @@
 
 - 实现 `TimerId`。
 - 实现 `timer_once`、`timer`、`cancel_timer`。
-- 实现 `sleep`。
-- 实现 `fork` 和 `TaskHandle`。
+- 实现 handler coroutine-aware `sleep`。
+- 实现 `fork` 和 task id；当前 task body 通过受保护的非协程调用执行。
 - 增加 fixed-delay、timer error stop、service exit auto-cancel 测试。
 
 ### M7. net/gateway/data

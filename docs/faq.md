@@ -22,7 +22,7 @@ HTTP 不进入 `shield_core` 第一版，也不作为业务 gateway 的默认 tr
 
 ## `examples/hello_world/` 可以直接运行吗？
 
-目前入口层已可验证：`include/shield/shield.hpp`、`shield::run(argc, argv)`、CLI/config smoke tests、默认 Phase 1 配置和 `examples/hello_world` 可构建启动路径已落地。完整 `shield.*` Lua 绑定和 hello world 业务消息验收仍需要补齐。
+目前最小路径已可验证：`include/shield/shield.hpp`、`shield::run(argc, argv)`、CLI/config smoke tests、默认 Phase 1 配置、`examples/hello_world` 构建启动路径和 Lua 业务消息验收均已落地。真实多节点、UDP/KCP/WebSocket、官方可选模块和真实后端压力验证仍按路线图推进。
 
 ## 和 Skynet 的关系是什么？
 

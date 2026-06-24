@@ -106,11 +106,11 @@ BOOST_AUTO_TEST_CASE(HW_007_DataAccessCoverage) {
     std::string player_content((std::istreambuf_iterator<char>(player_file)),
                               std::istreambuf_iterator<char>());
 
-    // Check for database API (commented out in default config but shown in example)
-    BOOST_CHECK(player_content.find("shield.db") != std::string::npos);
+    // Check for plugin v1 database API (configured via plugin instances).
+    BOOST_CHECK(player_content.find("shield.database") != std::string::npos);
 
-    // Check for Redis API
-    BOOST_CHECK(player_content.find("shield.redis") != std::string::npos);
+    // Check for plugin v1 Redis cache API.
+    BOOST_CHECK(player_content.find("shield.cache.redis") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(HW_008_MainEntryPoint) {

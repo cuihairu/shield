@@ -726,8 +726,11 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
     // timer; coroutine.yield suspends until the timer fires and resumes us.
     shield.set_function("_resume_after",
         [manager, runtime](sol::this_state state, int delay_ms) {
-            if (!runtime || delay_ms <= 0) {
+            if (!runtime) {
                 return;
+            }
+            if (delay_ms < 0) {
+                delay_ms = 0;
             }
             lua_State* co = state;  // current coroutine thread
             // Anchor the thread so it survives GC while suspended.
@@ -743,9 +746,10 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                     int nres = 0;
                     const int status = lua_resume(co, nullptr, 0, &nres);
                     if (status == LUA_YIELD) {
-                        // Yielded again (e.g. another sleep): another
-                        // _resume_after has re-anchored it. Keep this ref so
-                        // the next resume stays covered until final completion.
+                        // Yielded again (e.g. another sleep/call): the API
+                        // that yielded has already anchored the coroutine for
+                        // its own resume source, so release this sleep anchor.
+                        luaL_unref(co, LUA_REGISTRYINDEX, ref);
                         return;
                     }
                     // If this coroutine was servicing a call request that

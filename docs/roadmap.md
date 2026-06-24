@@ -4,7 +4,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 说明：以下勾选表示对应源码路径已经进入当前 refactor 验证范围；文档边界冻结但源码仍未完成的事项保持未勾选。
 
-当前收敛目标是先关闭一个可验证的单节点最小闭环：`shield::run`、Phase 1 配置验证、Lua module-table service、local registry、基础 `send/call` 返回形态、TCP gateway 边界、DB/Redis 未启用错误和 mock data smoke。任何需要多节点、真实后端、完整 coroutine 调度、UDP/KCP/WebSocket 或官方可选模块的能力都不能作为当前 Phase 1 阻塞项。
+当前收敛目标是先关闭一个可验证的单节点最小闭环：`shield::run`、Phase 1 配置验证、Lua module-table service、local registry、基础 `send/call` 返回形态、TCP gateway 边界、DB/Redis 未启用错误和 mock data smoke。handler 内 coroutine-aware `call/sleep` 已进入当前实现路径；任何需要多节点、真实后端、timer/fork coroutine 化、UDP/KCP/WebSocket 或官方可选模块的能力都不能作为当前 Phase 1 阻塞项。
 
 设计决策记录集中在 [Decision Log](open-decisions.md)。如果后续新增开放问题，需要先记录，再同步更新对应权威文档和本路线图。
 
@@ -35,10 +35,10 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 实现 opaque ServiceHandle、name reserve/publish 状态和 coroutine-aware spawn。
 - [x] 实现 `shield.query/register/unregister/names` 的单节点最小 registry 路径。
 - [x] 提供 `shield.now`。
-- [x] 实现 `timer_once/timer/sleep/fork` 的 coroutine-aware 语义。
+- [x] 实现 `timer_once/timer/cancel_timer`、handler 内 coroutine-aware `sleep`、`fork` task id。
   - `timer_once/timer/cancel_timer` 已走 `TimerManager`，callback 通过 `check_and_fire_each` + visitor 中 `lua_pcall` 包裹执行，错误路由到 `on_error` hook。
   - `fork` 已走 worker 线程调度（`enqueue_forked_task`），callback 通过 `lua_pcall` 包裹执行（`raw_fn` 有效时），错误路由到 `on_error` hook。
-  - `shield.sleep` 已实现协程感知：async handler 中 yield + 由 `_resume_after` 定时器 resume；sync 调用路径走 `_block_sleep` 阻塞降级。LAPI-007-08 已覆盖。
+  - `shield.sleep` 已实现 handler 协程感知：async handler 中 yield + 由 `_resume_after` 定时器 resume；sync 调用、timer callback 和 fork task 路径走 `_block_sleep` 阻塞降级。LAPI-007-08/09/10 已覆盖。
   - `shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` + `coroutine.yield()` → mailbox → `call_service_method_coroutine` → `resume_caller`），主线程走 `_sync_call` 同步降级。call timeout 已通过 `pump_once` 中的 `check_call_timeouts` 实现。LAPI-005-06 已覆盖。
 - [x] 提供 `shield.log.*`。
 - [x] 提供原始 `shield.db.*` / `shield.redis.*` 的绑定和未启用错误返回。
@@ -64,7 +64,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。acceptance test 已覆盖 `echo.lua` 的 sender/send/log/now、`gateway.lua` 的 connect/disconnect/client_message、`player.lua` 的 login/chat/logout/self/exit/db/redis API 模式。
 - [x] 增加最小 Lua API runtime smoke test。
 - [x] 增加本地 registry runtime smoke test。
-- [x] 按 LAPI 矩阵补齐当前 Lua API 绑定测试；当前 `tests/lua_api/` 已启用 lifecycle、timers、registry、messaging、call、context、legacy、config、data、gateway 共 10 个测试可执行文件。data 套件覆盖 mock pool 下 DB/Redis API；gateway 套件覆盖 Lua handler 的 connect/message/disconnect/queue_full/stale_send 模拟；coroutine-aware call/sleep/timer/fork 均已实现并有测试覆盖。
+- [x] 按 LAPI 矩阵补齐当前 Lua API 绑定测试；当前 `tests/lua_api/` 已启用 lifecycle、timers、registry、messaging、call、context、legacy、config、data、gateway 共 10 个测试可执行文件。data 套件覆盖 mock pool 下 DB/Redis API；gateway 套件覆盖 Lua handler 的 connect/message/disconnect/queue_full/stale_send 模拟；coroutine-aware call/sleep、timer protected callback 和 fork task 均有测试覆盖。
 - [x] 按 `docs/lua-api-tests.md` 补齐独立 API 用例，示例不替代测试。
 - [x] 为新 public/core 头增加 CAF 泄漏静态检查。
 - [x] 收敛 legacy public headers 的 CAF 泄漏并纳入检查。
@@ -119,4 +119,3 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 - 高级数据 mapper。
 - Schema 工具链。
-

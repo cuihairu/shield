@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 
 namespace shield::net {

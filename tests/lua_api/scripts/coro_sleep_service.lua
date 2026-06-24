@@ -14,6 +14,13 @@ function M.sleep_and_mark(index, ms)
     return true
 end
 
+function M.sleep_twice_and_mark(index, first_ms, second_ms)
+    shield.sleep(first_ms)
+    shield.sleep(second_ms)
+    table.insert(events, {index = index, at = shield.now()})
+    return true
+end
+
 function M.event_count()
     return #events
 end

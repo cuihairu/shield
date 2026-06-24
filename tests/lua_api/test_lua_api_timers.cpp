@@ -5,9 +5,8 @@
 // worker (or an explicit pump_once) drives the runtime. shield.fork is also
 // covered here because it shares the same worker pump path.
 //
-// Tests that depend on the Phase 2 coroutine-aware implementation of
-// shield.sleep and self-canceling timers are still marked TODO so this file
-// compiles and runs against the current API surface.
+// shield.sleep is covered for handler coroutine yield/resume semantics. Timer
+// callbacks and fork tasks are currently protected non-coroutine calls.
 #define BOOST_TEST_MODULE LuaApiTimersTests
 #include <boost/test/unit_test.hpp>
 
@@ -274,6 +273,52 @@ BOOST_AUTO_TEST_CASE(LAPI_007_08_CoroutineSleepIsNonBlocking) {
         BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
         BOOST_CHECK_EQUAL(cr.values[0].get<int>(), 1);
     }
+}
+
+// LAPI-007-09: shield.sleep(0) yields and is resumed by the runtime on the
+// same pump tick via a zero-delay timer. This prevents a yielded handler from
+// getting stranded with no resume source.
+BOOST_AUTO_TEST_CASE(LAPI_007_09_CoroutineSleepZeroYieldsAndResumes) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "coro_sleep_service.lua",
+                                opts_for("sleep_zero").dump());
+    BOOST_REQUIRE(result.success);
+
+    BOOST_REQUIRE(manager.send(result.service_id, "sleep_and_mark",
+                               nlohmann::json::array({1, 0})));
+    (void)manager.pump_once();
+
+    CallResult cr = manager.call(result.service_id, "event_count",
+                                 nlohmann::json::array(), 1000);
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
+    BOOST_CHECK_EQUAL(cr.values[0].get<int>(), 1);
+}
+
+// LAPI-007-10: a handler can yield through shield.sleep more than once. Each
+// sleep owns only its current resume anchor; the first zero-delay resume must
+// not leak a timer or leave the coroutine stranded before the second resume.
+BOOST_AUTO_TEST_CASE(LAPI_007_10_CoroutineSleepCanYieldRepeatedly) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "coro_sleep_service.lua",
+                                opts_for("sleep_twice").dump());
+    BOOST_REQUIRE(result.success);
+
+    BOOST_REQUIRE(manager.send(result.service_id, "sleep_twice_and_mark",
+                               nlohmann::json::array({2, 0, 0})));
+    (void)manager.pump_once();
+    (void)manager.pump_once();
+
+    CallResult cr = manager.call(result.service_id, "event_count",
+                                 nlohmann::json::array(), 1000);
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
+    BOOST_CHECK_EQUAL(cr.values[0].get<int>(), 1);
+    BOOST_CHECK_EQUAL(runtime.timer_manager().active_count(), 0u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

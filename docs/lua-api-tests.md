@@ -196,9 +196,9 @@ Harness 要求：
 - 每个错误码必须在测试中至少出现一次。
 - `examples/hello_world/` 可以更贴近用户体验，但不能替代上述测试。
 
-## Phase 2 延迟用例
+## 剩余延迟用例
 
-以下用例依赖 Phase 2 coroutine-aware 实现或专用 mock harness，在当前 Phase 1 中无法完整验证。
+以下用例仍依赖后续实现或专用 mock harness，当前尚未完整验证。已完成的历史延迟项保留删除线，作为状态记录。
 
 | Case | 延迟原因 |
 | --- | --- |

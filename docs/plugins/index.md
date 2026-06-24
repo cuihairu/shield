@@ -42,13 +42,13 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 host 启动时按以下顺序处理插件：
 
 1. **scan** — 读取 `<plugins_dir>/<package_id>/manifest.yaml`
-2. **catalog** — 检查包 ID 唯一性、平台库路径存在
+2. **catalog** — 检查包 ID 唯一性、平台库路径安全性、interface/dependency 声明
 3. **plan + resolve** — 解析实例间依赖、拓扑排序
 4. **load** — `dlopen` + ABI 版本/大小/包 ID 校验
 5. **create** — 调用 `shield_plugin_get_v1()->create()`，传入实例 config
 6. **start** — 按拓扑顺序调用 `instance->start()`
 7. **lua_init** — 初始化 Lua 运行时
-8. **lua_register** — 按相同顺序调用每个实例的 `register_lua(L)`
+8. **lua_register** — 对每个 Lua VM 按拓扑启动顺序调用已启动实例的 `register_lua(L)`
 
 完整 pipeline 见 [插件系统](/plugin-system#bootstrap-pipeline)。
 

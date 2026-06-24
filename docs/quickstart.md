@@ -1,6 +1,6 @@
 # 快速上手
 
-本文是重构后的目标体验说明。当前 `shield::run`、CLI 解析、Phase 1 配置验证、Lua service module-table loader、按 `actors` 配置启动服务和最小单节点 Lua API 已经落地；完整 coroutine/mailbox 语义仍在实现中。
+本文说明当前推荐的最小启动路径。`shield::run`、CLI 解析、Phase 1 配置验证、Lua service module-table loader、按 `actors` 配置启动服务、基础消息/定时器/coroutine 语义和插件系统 v1 已进入当前实现路径。
 
 ## 目标体验
 
@@ -42,8 +42,8 @@ return M
 - `include/shield/shield.hpp` 和 `shield::run(argc, argv)` 已落地，并有 CLI smoke tests。
 - `config/app.yaml` 已收敛为 Phase 1 最小配置；配置错误会在启动期 fail fast。
 - Lua service 文件必须返回 table，当前已支持 `on_init(args)`、`on_exit(reason)`、最小 `spawn/send/call/self/sender/names/now/log` 路径。
-- 当前源码仍保留旧 CLI、gateway、discovery、metrics 等 legacy 模块。
-- 完整 coroutine-aware `shield.*` 语义和 `examples/hello_world/` 业务消息验收仍需要补齐。
+- `shield.call` / `shield.call_timeout` 和 handler 内的 `shield.sleep` 已走 coroutine-aware 路径；timer callback 和 fork task 当前通过受保护的非协程调用执行。
+- 后端能力通过插件系统 v1 提供；没有声明实例或 binding 时，业务代码必须按不可用能力处理。
 
 ## 后续验收标准
 
@@ -65,4 +65,4 @@ cmake --build build-msvc-examples --target hello_world
 ./build-msvc-examples/bin/hello_world --check-config --config examples/hello_world/config/app.yaml
 ```
 
-完整业务示例完成前，请以 [架构设计](architecture.md)、[Lua API 契约](lua-api.md) 和 [运行时语义决策稿](runtime-semantics.md) 为准。
+进一步的 API 细节以 [架构设计](architecture.md)、[Lua API 契约](lua-api.md)、[配置运行时语义](runtime-config.md) 和 [插件参考](plugins/index.md) 为准。
