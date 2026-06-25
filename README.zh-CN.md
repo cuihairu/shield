@@ -99,3 +99,18 @@ return M
 ## 当前状态
 
 设计尚未最终确定。在实现相应的运行时入口点和 Lua 绑定之前，应将 `examples/hello_world/` 下的示例视为目标 API 草图。
+
+## Docker 构建
+
+仓库提供了一个用于生产镜像构建的多阶段 [Dockerfile](Dockerfile)。从
+git 工作区构建时，建议显式传入当前 commit hash，这样镜像内的
+`shield --version` 仍然能显示源码修订号：
+
+```bash
+docker build \
+  --build-arg SHIELD_GIT_COMMIT_HASH="$(git rev-parse HEAD)" \
+  -t shield:latest .
+```
+
+如果构建发生在不包含 git 元数据的上下文里，镜像会回退为 `Unknown`
+作为嵌入的 commit hash。

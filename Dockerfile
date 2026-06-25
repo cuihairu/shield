@@ -4,6 +4,7 @@
 
 # === Build Stage ===
 FROM ubuntu:24.04 AS builder
+ARG SHIELD_GIT_COMMIT_HASH=Unknown
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -41,6 +42,7 @@ RUN cmake -B build \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+    -DSHIELD_GIT_COMMIT_HASH="${SHIELD_GIT_COMMIT_HASH}" \
     -DSHIELD_BUILD_TESTS=OFF \
     -DSHIELD_BUILD_EXAMPLES=OFF \
     && cmake --build build --config Release

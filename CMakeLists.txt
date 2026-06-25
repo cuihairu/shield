@@ -173,14 +173,22 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/include/shield/version.hpp.in
                ${CMAKE_CURRENT_BINARY_DIR}/include/shield/version.hpp)
 
-find_package(Git QUIET)
-if(GIT_FOUND)
+set(SHIELD_GIT_COMMIT_HASH
+    ""
+    CACHE STRING "Git commit hash embedded in the Shield version output")
+if(SHIELD_GIT_COMMIT_HASH)
+  set(GIT_COMMIT_HASH "${SHIELD_GIT_COMMIT_HASH}")
+else()
+  find_package(Git QUIET)
+endif()
+if(NOT GIT_COMMIT_HASH AND GIT_FOUND)
   execute_process(
     COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     OUTPUT_VARIABLE GIT_COMMIT_HASH
     OUTPUT_STRIP_TRAILING_WHITESPACE)
-else()
+endif()
+if(NOT GIT_COMMIT_HASH)
   set(GIT_COMMIT_HASH "Unknown")
 endif()
 

@@ -1,0 +1,46 @@
+# Repository metadata not needed by the image build
+.git/
+.github/
+
+# Local build outputs
+build/
+build-*/
+out/
+bin/
+Testing/
+
+# vcpkg local state
+.vcpkg/
+vcpkg_installed/
+vcpkg-manifest-install.log
+
+# Node/package-manager state
+node_modules/
+docs/node_modules/
+.pnpm-store/
+
+# Documentation build cache/output
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+book/
+
+# IDE/editor metadata
+.vs/
+.vscode/
+.idea/
+.cache/
+.obsidian/
+.spec-workflow/
+
+# Logs and temporary files
+logs/
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# OS metadata
+.DS_Store
+.AppleDouble
+.LSOverride

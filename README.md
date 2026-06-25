@@ -119,3 +119,19 @@ authoritative contracts above, the authoritative contracts win.
 Design is not finalized. Treat examples under `examples/hello_world/` as target
 API sketches until the corresponding runtime entrypoint and Lua bindings are
 implemented.
+
+## Docker Build
+
+The repository includes a multi-stage [Dockerfile](Dockerfile) for production
+image builds. When building from a git checkout, pass the current commit hash as
+a build argument so `shield --version` inside the image keeps the source
+revision:
+
+```bash
+docker build \
+  --build-arg SHIELD_GIT_COMMIT_HASH="$(git rev-parse HEAD)" \
+  -t shield:latest .
+```
+
+If the build runs outside a git checkout, the image falls back to `Unknown` for
+the embedded commit hash.
