@@ -12,6 +12,10 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     ca-certificates \
+    zip \
+    unzip \
+    tar \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Install vcpkg
