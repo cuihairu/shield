@@ -64,7 +64,7 @@ jobs:
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install cmake ninja
+          brew install cmake ninja clang-format
 
       # Export GitHub Actions cache credentials so vcpkg can use the native
       # `x-gha` binary source (caches compiled packages across runs instead
