@@ -24,6 +24,12 @@
 
 namespace shield::lua {
 
+namespace {
+
+sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value);
+
+}  // namespace
+
 // ============================================================================
 // CoroutineScheduler Implementation
 // ============================================================================
@@ -94,6 +100,8 @@ struct CoroutineScheduler::Impl {
 CoroutineScheduler::CoroutineScheduler()
     : impl_(std::make_unique<Impl>()) {}
 
+CoroutineScheduler::~CoroutineScheduler() = default;
+
 CoroutineScheduler::CoroutineId CoroutineScheduler::suspend(
     const std::string& service_id,
     sol::coroutine co,
@@ -138,10 +146,18 @@ bool CoroutineScheduler::resume(CoroutineId id, const nlohmann::json& result) {
     // Remove from suspended list before resuming
     impl_->erase(id);
 
-    // Resume the coroutine with the result
-    // For now, we pass the JSON string as a single value
-    // TODO: Convert JSON array to multiple Lua values
-    auto resume_result = coroutine(result.dump());
+    sol::state_view lua(coroutine.lua_state());
+    sol::variadic_results resume_args;
+    if (result.is_array()) {
+        resume_args.reserve(result.size());
+        for (const auto& item : result) {
+            resume_args.push_back(json_to_lua(lua, item));
+        }
+    } else {
+        resume_args.push_back(json_to_lua(lua, result));
+    }
+
+    auto resume_result = coroutine(sol::as_args(resume_args));
     if (!resume_result.valid()) {
         sol::error err = resume_result;
         // Log error but still return true as we attempted resume

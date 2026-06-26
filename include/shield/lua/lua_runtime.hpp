@@ -41,6 +41,7 @@ public:
     };
 
     explicit CoroutineScheduler();
+    ~CoroutineScheduler();
 
     // Suspend current coroutine with a deadline
     /// @param service_id Owner service ID

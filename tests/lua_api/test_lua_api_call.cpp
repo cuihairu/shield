@@ -5,6 +5,7 @@
 #include "shield/lua/lua_service.hpp"
 
 #include <chrono>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
@@ -25,6 +26,20 @@ nlohmann::json opts_for(const std::string& name) {
 SpawnResult spawn_messaging(LuaServiceManager& manager, const std::string& name) {
     return manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                          opts_for(name).dump());
+}
+
+bool pump_until(LuaServiceManager& manager,
+                std::function<bool()> predicate,
+                std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        (void)manager.pump_once();
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return predicate();
 }
 }  // namespace
 
@@ -199,11 +214,7 @@ BOOST_AUTO_TEST_CASE(CallToExitedServiceFails) {
                 std::string::npos);
 }
 
-// LAPI-005-09: shield.call from a handler coroutine does not crash and the
-// service remains callable after the coroutine call completes.
-// Full coroutine resume verification requires a dedicated async test harness;
-// here we verify the infrastructure does not tear down the service.
-BOOST_AUTO_TEST_CASE(LAPI_005_09_CoroutineCallDoesNotCrash) {
+BOOST_AUTO_TEST_CASE(LAPI_005_09_CoroutineCallReturnsCalleeValues) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
 
@@ -216,22 +227,32 @@ BOOST_AUTO_TEST_CASE(LAPI_005_09_CoroutineCallDoesNotCrash) {
     // Dispatch call_and_record via mailbox (runs in coroutine).
     BOOST_REQUIRE(manager.send(caller.service_id, "call_and_record",
                                nlohmann::json::array(
-                                   {callee.service_id, "greet", "world"})));
+                                   {callee.service_id, "greet_multi", "world"})));
 
-    // Pump several times to let the coroutine call flow complete.
-    for (int i = 0; i < 10; ++i) {
-        (void)manager.pump_once();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    BOOST_REQUIRE(pump_until(
+        manager,
+        [&]() {
+            CallResult ok = manager.call(caller.service_id, "get_last_call_ok",
+                                         nlohmann::json::array(), 1000);
+            return ok.success && ok.values.size() == 1u &&
+                   ok.values[0].is_boolean() && ok.values[0].get<bool>();
+        },
+        std::chrono::seconds(1)));
 
-    // The caller service must still be alive and callable.
-    CallResult alive = manager.call(caller.service_id, "get_last_call_ok",
+    CallResult result = manager.call(caller.service_id, "get_last_call_result",
+                                     nlohmann::json::array(), 1000);
+    BOOST_REQUIRE(result.success);
+    BOOST_REQUIRE_EQUAL(result.values.size(), 1u);
+    BOOST_CHECK_EQUAL(result.values[0].get<std::string>(), "hello:world");
+
+    CallResult extra = manager.call(caller.service_id, "get_last_call_extra",
                                     nlohmann::json::array(), 1000);
-    BOOST_CHECK(alive.success);
+    BOOST_REQUIRE(extra.success);
+    BOOST_REQUIRE_EQUAL(extra.values.size(), 1u);
+    BOOST_CHECK_EQUAL(extra.values[0].get<std::string>(), "extra:world");
 }
 
-// LAPI-005-10: shield.call to a slow callee does not crash the runtime.
-BOOST_AUTO_TEST_CASE(LAPI_005_10_SlowCalleeDoesNotCrash) {
+BOOST_AUTO_TEST_CASE(LAPI_005_10_CoroutineCallWaitsForSleepingCallee) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
 
@@ -245,20 +266,24 @@ BOOST_AUTO_TEST_CASE(LAPI_005_10_SlowCalleeDoesNotCrash) {
                                nlohmann::json::array(
                                    {callee.service_id, "greet_slow", "world"})));
 
-    // Pump and sleep to let the slow callee complete.
-    for (int i = 0; i < 20; ++i) {
-        (void)manager.pump_once();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    BOOST_REQUIRE(pump_until(
+        manager,
+        [&]() {
+            CallResult ok = manager.call(caller.service_id, "get_last_call_ok",
+                                         nlohmann::json::array(), 1000);
+            return ok.success && ok.values.size() == 1u &&
+                   ok.values[0].is_boolean() && ok.values[0].get<bool>();
+        },
+        std::chrono::seconds(2)));
 
-    // Service must still be alive.
-    CallResult alive = manager.call(caller.service_id, "get_last_call_ok",
-                                    nlohmann::json::array(), 1000);
-    BOOST_CHECK(alive.success);
+    CallResult result = manager.call(caller.service_id, "get_last_call_result",
+                                     nlohmann::json::array(), 1000);
+    BOOST_REQUIRE(result.success);
+    BOOST_REQUIRE_EQUAL(result.values.size(), 1u);
+    BOOST_CHECK_EQUAL(result.values[0].get<std::string>(), "slow:world");
 }
 
-// LAPI-005-11: shield.call_timeout infrastructure does not crash.
-BOOST_AUTO_TEST_CASE(LAPI_005_11_CallTimeoutDoesNotCrash) {
+BOOST_AUTO_TEST_CASE(LAPI_005_11_CoroutineCallTimeoutReturnsErrorCode) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
 
@@ -272,14 +297,59 @@ BOOST_AUTO_TEST_CASE(LAPI_005_11_CallTimeoutDoesNotCrash) {
                                nlohmann::json::array(
                                    {10, callee.service_id, "greet_slow", "x"})));
 
-    for (int i = 0; i < 20; ++i) {
-        (void)manager.pump_once();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    BOOST_REQUIRE(pump_until(
+        manager,
+        [&]() {
+            CallResult ok = manager.call(caller.service_id, "get_last_call_ok",
+                                         nlohmann::json::array(), 1000);
+            return ok.success && ok.values.size() == 1u &&
+                   ok.values[0].is_boolean() && !ok.values[0].get<bool>();
+        },
+        std::chrono::seconds(1)));
 
-    CallResult alive = manager.call(caller.service_id, "get_last_call_ok",
+    CallResult error = manager.call(caller.service_id, "get_last_call_result",
                                     nlohmann::json::array(), 1000);
-    BOOST_CHECK(alive.success);
+    BOOST_REQUIRE(error.success);
+    BOOST_REQUIRE_EQUAL(error.values.size(), 1u);
+    BOOST_REQUIRE(error.values[0].is_object());
+    BOOST_CHECK_EQUAL(error.values[0].value("code", ""), "timeout");
+    BOOST_CHECK_EQUAL(error.values[0].value("retryable", false), true);
+}
+
+BOOST_AUTO_TEST_CASE(CoroutineSchedulerResumeExpandsJsonArray) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table);
+
+    sol::protected_function_result script = lua.safe_script(R"(
+        captured = {}
+
+        function make_test_coroutine()
+            return function()
+                local first, second, third = coroutine.yield("ready")
+                captured = { first, second, third }
+            end
+        end
+
+        return make_test_coroutine()
+    )");
+    BOOST_REQUIRE(script.valid());
+
+    sol::coroutine co = script.get<sol::coroutine>();
+    sol::protected_function_result initial = co();
+    BOOST_REQUIRE(initial.valid());
+    BOOST_REQUIRE_EQUAL(initial.return_count(), 1);
+    BOOST_CHECK_EQUAL(initial.get<std::string>(0), "ready");
+
+    CoroutineScheduler scheduler;
+    auto id = scheduler.suspend("scheduler_test", co, 1000);
+    BOOST_REQUIRE(scheduler.resume(
+        id, nlohmann::json::array({"alpha", 42, false})));
+
+    sol::table captured = lua["captured"];
+    BOOST_CHECK_EQUAL(captured[1].get<std::string>(), "alpha");
+    BOOST_CHECK_EQUAL(captured[2].get<int>(), 42);
+    BOOST_CHECK_EQUAL(captured[3].get<bool>(), false);
+    BOOST_CHECK_EQUAL(scheduler.active_count(), 0u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

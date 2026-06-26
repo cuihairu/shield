@@ -34,17 +34,21 @@ jobs:
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-26.04
             compiler: gcc
+            timeout_minutes: 30
           - os: macos-latest
             compiler: clang
+            timeout_minutes: 30
           - os: windows-latest
             compiler: msvc
+            timeout_minutes: 60
+            build_parallel: 2
 
     steps:
       - name: Checkout
@@ -66,7 +70,7 @@ jobs:
       # `x-gha` binary source (caches compiled packages across runs instead
       # of rebuilding yaml-cpp etc. from source every time).
       - name: Export GHA cache credentials
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -98,6 +102,7 @@ jobs:
           CMAKE_ARGS=(
             -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
             -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
             -DSHIELD_BUILD_TESTS=ON
             -DSHIELD_BUILD_EXAMPLES=ON
           )
@@ -119,7 +124,7 @@ jobs:
           elif [ "$RUNNER_OS" == "macOS" ]; then
             cmake --build build --config Release --parallel $(sysctl -n hw.logicalcpu)
           else
-            cmake --build build --config Release --parallel
+            cmake --build build --config Release --parallel ${{ matrix.build_parallel }}
           fi
 
   # Docker 构建 (仅 main 分支)
