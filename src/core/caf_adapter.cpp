@@ -1,17 +1,16 @@
 // [SHIELD_CORE] CAF adapter implementation
 #include "shield/core/caf_adapter.hpp"
-#include "shield/core/service_registry.hpp"
+
+#include <atomic>
+#include <caf/actor_system.hpp>
+#include <caf/event_based_actor.hpp>
+#include <mutex>
+#include <unordered_map>
 
 #include "shield/base/error.hpp"
 #include "shield/base/id.hpp"
 #include "shield/base/time.hpp"
-
-#include <caf/actor_system.hpp>
-#include <caf/event_based_actor.hpp>
-
-#include <atomic>
-#include <mutex>
-#include <unordered_map>
+#include "shield/core/service_registry.hpp"
 
 namespace shield::core {
 
@@ -57,26 +56,21 @@ CafAdapter::~CafAdapter() {
 }
 
 ServiceHandle CafAdapter::spawn_service(
-    std::string name,
-    std::function<void(caf::event_based_actor*)> behavior) {
+    std::string name, std::function<void(caf::event_based_actor*)> behavior) {
+    caf::actor actor =
+        system_.spawn([behavior = std::move(behavior),
+                       name](caf::event_based_actor* self) -> caf::behavior {
+            // Set current service
+            g_current_service.internal_set(
+                reinterpret_cast<detail::ActorHolder*>(self->id()));
 
-    caf::actor actor = system_.spawn([
-        behavior = std::move(behavior),
-        name
-    ](caf::event_based_actor* self) -> caf::behavior {
-        // Set current service
-        g_current_service.internal_set(
-            reinterpret_cast<detail::ActorHolder*>(self->id()));
+            // Call user behavior
+            behavior(self);
 
-        // Call user behavior
-        behavior(self);
-
-        return caf::behavior{
-            [](const std::string&) {
+            return caf::behavior{[](const std::string&) {
                 // Message dispatch will be replaced by Shield envelope routing.
-            }
-        };
-    });
+            }};
+        });
 
     auto holder = new detail::ActorHolder(std::move(actor));
     ServiceHandle handle(holder, std::move(name), true);
@@ -98,11 +92,10 @@ void CafAdapter::send(const ServiceHandle& target,
 }
 
 MessageResponse CafAdapter::call(const ServiceHandle& target,
-                                const MessageEnvelope& envelope) {
+                                 const MessageEnvelope& envelope) {
     if (!target.is_valid()) {
-        return MessageResponse::error(
-            base::Error(base::errors::INVALID_ARGUMENT,
-                       "Invalid service handle"));
+        return MessageResponse::error(base::Error(
+            base::errors::INVALID_ARGUMENT, "Invalid service handle"));
     }
 
     auto& actor = target.internal()->get();
@@ -113,40 +106,34 @@ MessageResponse CafAdapter::call(const ServiceHandle& target,
 }
 
 // Timer actor
-caf::behavior timer_actor_impl(caf::event_based_actor* self,
-                              uint64_t timer_id,
-                              int32_t delay_ms,
-                              bool repeat,
-                              std::function<void()> callback) {
+caf::behavior timer_actor_impl(caf::event_based_actor* self, uint64_t timer_id,
+                               int32_t delay_ms, bool repeat,
+                               std::function<void()> callback) {
     auto timeout = base::from_millis(delay_ms);
 
     if (repeat) {
         // Repeating timer
         self->delayed_send(self, timeout, caf::tick_atom_v);
-        return caf::behavior{
-            [=](caf::tick_atom) {
-                callback();
-                self->delayed_send(self, timeout, caf::tick_atom_v);
-            }
-        };
+        return caf::behavior{[=](caf::tick_atom) {
+            callback();
+            self->delayed_send(self, timeout, caf::tick_atom_v);
+        }};
     } else {
         // One-shot timer
         self->delayed_send(self, timeout, caf::tick_atom_v);
-        return caf::behavior{
-            [=](caf::tick_atom) {
-                callback();
-                self->quit();
-            }
-        };
+        return caf::behavior{[=](caf::tick_atom) {
+            callback();
+            self->quit();
+        }};
     }
 }
 
 TimerHandle CafAdapter::timeout_once(int32_t delay_ms,
-                                    std::function<void()> callback) {
+                                     std::function<void()> callback) {
     uint64_t id = g_next_id.fetch_add(1);
 
     auto actor = system_.spawn(timer_actor_impl, id, delay_ms, false,
-                              std::move(callback));
+                               std::move(callback));
 
     std::lock_guard lock(impl_->timer_mutex);
     impl_->timer_actors[id] = std::move(actor);
@@ -157,11 +144,11 @@ TimerHandle CafAdapter::timeout_once(int32_t delay_ms,
 }
 
 TimerHandle CafAdapter::timer_repeat(int32_t interval_ms,
-                                    std::function<void()> callback) {
+                                     std::function<void()> callback) {
     uint64_t id = g_next_id.fetch_add(1);
 
     auto actor = system_.spawn(timer_actor_impl, id, interval_ms, true,
-                              std::move(callback));
+                               std::move(callback));
 
     std::lock_guard lock(impl_->timer_mutex);
     impl_->timer_actors[id] = std::move(actor);
@@ -183,9 +170,8 @@ void CafAdapter::cancel_timer(const TimerHandle& timer) {
 }
 
 // Task actor
-caf::behavior task_actor_impl(caf::event_based_actor* self,
-                             uint64_t task_id,
-                             std::function<void()> task) {
+caf::behavior task_actor_impl(caf::event_based_actor* self, uint64_t task_id,
+                              std::function<void()> task) {
     task();
     self->quit();
     return caf::behavior{};
@@ -204,14 +190,10 @@ TaskHandle CafAdapter::fork(std::function<void()> task) {
     return handle;
 }
 
-ServiceHandle CafAdapter::current_service() {
-    return g_current_service;
-}
+ServiceHandle CafAdapter::current_service() { return g_current_service; }
 
 // Registry access
-ServiceRegistry& CafAdapter::registry() {
-    return *impl_->registry;
-}
+ServiceRegistry& CafAdapter::registry() { return *impl_->registry; }
 
 // Initialize core function
 std::unique_ptr<CafAdapter> initialize_core(caf::actor_system& system) {

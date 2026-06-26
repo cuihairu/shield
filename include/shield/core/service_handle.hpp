@@ -49,7 +49,7 @@ private:
 
     // Private constructor for internal use
     explicit ServiceHandle(detail::ActorHolder* holder, std::string name = "",
-                          bool is_local = true);
+                           bool is_local = true);
 
     friend class ServiceRegistry;
     friend class CafAdapter;

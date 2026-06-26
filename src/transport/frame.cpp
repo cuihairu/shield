@@ -13,10 +13,10 @@ FrameHeader FrameHeader::from_network(const uint8_t* data) {
                (static_cast<uint32_t>(data[1]) << 16) |
                (static_cast<uint32_t>(data[2]) << 8) |
                static_cast<uint32_t>(data[3]);
-    h.flags = (static_cast<uint16_t>(data[4]) << 8) |
-              static_cast<uint16_t>(data[5]);
-    h.type = (static_cast<uint16_t>(data[6]) << 8) |
-             static_cast<uint16_t>(data[7]);
+    h.flags =
+        (static_cast<uint16_t>(data[4]) << 8) | static_cast<uint16_t>(data[5]);
+    h.type =
+        (static_cast<uint16_t>(data[6]) << 8) | static_cast<uint16_t>(data[7]);
     return h;
 }
 
@@ -62,8 +62,7 @@ bool Frame::parse(const uint8_t* data, size_t size) {
 }
 
 // FrameDecoder implementation
-FrameDecoder::FrameDecoder()
-    : FrameDecoder(0) {}
+FrameDecoder::FrameDecoder() : FrameDecoder(0) {}
 
 FrameDecoder::FrameDecoder(size_t max_frame_size)
     : needed_(FrameHeader::HEADER_SIZE),
@@ -110,8 +109,9 @@ std::vector<Frame> FrameDecoder::feed(const uint8_t* data, size_t size) {
 
         frames.push_back(std::move(frame));
 
-        buffer_.erase(buffer_.begin(),
-                     buffer_.begin() + FrameHeader::HEADER_SIZE + header_.length);
+        buffer_.erase(
+            buffer_.begin(),
+            buffer_.begin() + FrameHeader::HEADER_SIZE + header_.length);
 
         have_header_ = false;
         needed_ = FrameHeader::HEADER_SIZE;

@@ -13,13 +13,8 @@
 namespace shield::config {
 
 /// @brief Config value type (can hold string, int, bool, double, array, object)
-using ConfigValue = std::variant<
-    std::string,
-    int64_t,
-    double,
-    bool,
-    std::vector<std::string>
->;
+using ConfigValue =
+    std::variant<std::string, int64_t, double, bool, std::vector<std::string> >;
 
 /// @brief Compile-time/module availability used by runtime config validation.
 struct RuntimeValidationOptions {
@@ -60,19 +55,15 @@ public:
     // Get a value by key (supports dot notation: "database.host")
     // Returns default value if key not found
     std::string get_string(std::string_view key,
-                          std::string_view default_value = "") const;
+                           std::string_view default_value = "") const;
 
-    int64_t get_int(std::string_view key,
-                   int64_t default_value = 0) const;
+    int64_t get_int(std::string_view key, int64_t default_value = 0) const;
 
-    double get_double(std::string_view key,
-                     double default_value = 0.0) const;
+    double get_double(std::string_view key, double default_value = 0.0) const;
 
-    bool get_bool(std::string_view key,
-                 bool default_value = false) const;
+    bool get_bool(std::string_view key, bool default_value = false) const;
 
-    std::vector<std::string> get_string_array(
-        std::string_view key) const;
+    std::vector<std::string> get_string_array(std::string_view key) const;
 
     // Check if key exists
     bool has(std::string_view key) const;

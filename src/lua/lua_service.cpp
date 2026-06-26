@@ -1,26 +1,24 @@
 // [SHIELD_LUA] Lua service implementation
 #include "shield/lua/lua_service.hpp"
-#include "shield/lua/lua_runtime.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <filesystem>
+#include <memory>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "shield/base/error.hpp"
 #include "shield/base/result.hpp"
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
-
-#include <nlohmann/json.hpp>
-
-#include <atomic>
-#include <chrono>
-#include <condition_variable>
-
-#include <algorithm>
-#include <filesystem>
-#include <memory>
-#include <mutex>
-#include <thread>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
+#include "shield/lua/lua_runtime.hpp"
 
 namespace shield::lua {
 
@@ -36,7 +34,8 @@ struct LuaServiceManager::Impl {
     LuaRuntime& runtime;
     std::unordered_map<std::string, std::shared_ptr<LuaVM>> services;
     std::unordered_map<std::string, std::string> published_names;
-    std::unordered_map<std::string, std::unordered_set<std::string>> owned_names;
+    std::unordered_map<std::string, std::unordered_set<std::string>>
+        owned_names;
     std::unordered_map<std::string, std::string> module_scripts;
     std::unordered_map<std::string, std::shared_ptr<Mailbox>> mailboxes;
     std::vector<std::string> service_order;
@@ -64,7 +63,8 @@ struct LuaServiceManager::Impl {
     };
     std::atomic<uint64_t> next_task_id{1};
     std::vector<ForkedTask> pending_tasks;
-    std::unordered_map<std::string, std::unordered_set<uint64_t>> tasks_by_service;
+    std::unordered_map<std::string, std::unordered_set<uint64_t>>
+        tasks_by_service;
 
     // Coroutine call correlation. A call from a handler yields the caller's
     // coroutine; the callee runs and, on completion, resumes the caller with
@@ -72,13 +72,15 @@ struct LuaServiceManager::Impl {
     struct PendingCall {
         uint64_t session = 0;
         lua_State* caller_co = nullptr;
-        int caller_anchor = LUA_NOREF;   // registry ref keeping caller_co alive
+        int caller_anchor = LUA_NOREF;  // registry ref keeping caller_co alive
         int64_t deadline_ms = 0;
         std::string caller_service;
     };
     std::atomic<uint64_t> next_call_session{1};
-    std::unordered_map<uint64_t, PendingCall> pending_calls;      // session -> caller wait
-    std::unordered_map<lua_State*, uint64_t> handler_call_session; // callee co -> session
+    std::unordered_map<uint64_t, PendingCall>
+        pending_calls;  // session -> caller wait
+    std::unordered_map<lua_State*, uint64_t>
+        handler_call_session;  // callee co -> session
 
     // Per-service consecutive error counter for panic detection.
     // Reset on successful handler completion; incremented on uncaught error.
@@ -95,8 +97,9 @@ struct LuaServiceManager::Impl {
     // Permission check hook (Phase 2). When set, called before send/call.
     // Returns empty string if allowed, error code if denied.
     std::function<std::string(const std::string& sender,
-                               const std::string& target,
-                               const std::string& method)> permission_check;
+                              const std::string& target,
+                              const std::string& method)>
+        permission_check;
 
     // Worker thread lifecycle. The worker drives mailboxes, timers, forked
     // tasks, and coroutine timeouts. While the worker is running, all Lua
@@ -135,7 +138,8 @@ struct LuaServiceManager::Impl {
         }
 
         // Try global lua.script_path from config
-        std::string global_script_path = shield::config::get("lua.script_path", "scripts");
+        std::string global_script_path =
+            shield::config::get("lua.script_path", "scripts");
         auto from_global = std::filesystem::path(global_script_path) / script;
         if (std::filesystem::exists(from_global)) {
             return from_global.string();
@@ -198,10 +202,9 @@ struct LuaServiceManager::Impl {
             return false;
         }
         for (char ch : name) {
-            const bool ok = (ch >= 'a' && ch <= 'z') ||
-                            (ch >= 'A' && ch <= 'Z') ||
-                            (ch >= '0' && ch <= '9') ||
-                            ch == '_' || ch == '.' || ch == '-';
+            const bool ok =
+                (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                (ch >= '0' && ch <= '9') || ch == '_' || ch == '.' || ch == '-';
             if (!ok) {
                 return false;
             }
@@ -211,11 +214,8 @@ struct LuaServiceManager::Impl {
 
     class DispatchScope {
     public:
-        DispatchScope(Impl& impl,
-                      std::string service_id,
-                      std::string sender_id,
-                      bool in_exit,
-                      std::string trace_id = "",
+        DispatchScope(Impl& impl, std::string service_id, std::string sender_id,
+                      bool in_exit, std::string trace_id = "",
                       int64_t deadline_ms = 0)
             : impl_(impl), service_id_(service_id) {
             impl_.dispatch_stack.push_back({
@@ -234,7 +234,8 @@ struct LuaServiceManager::Impl {
             if (!impl_.dispatch_stack.empty()) {
                 const auto& frame = impl_.dispatch_stack.back();
                 if (!frame.sender_id.empty()) {
-                    impl_.last_sender_per_service[frame.service_id] = frame.sender_id;
+                    impl_.last_sender_per_service[frame.service_id] =
+                        frame.sender_id;
                 }
             }
             impl_.dispatch_stack.pop_back();
@@ -286,13 +287,16 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         if (service_name.empty()) {
             service_name = module;
             service_name += ":";
-            service_name += std::to_string(std::hash<std::string_view>{}(module));
+            service_name +=
+                std::to_string(std::hash<std::string_view>{}(module));
         }
         if (impl_->services.contains(service_name)) {
-            return SpawnResult::error("service already exists: " + service_name);
+            return SpawnResult::error("service already exists: " +
+                                      service_name);
         }
         if (impl_->published_names.contains(service_name)) {
-            return SpawnResult::error("service name already exists: " + service_name);
+            return SpawnResult::error("service name already exists: " +
+                                      service_name);
         }
         if (!Impl::valid_name(service_name)) {
             return SpawnResult::error("invalid service name: " + service_name);
@@ -308,8 +312,8 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             return SpawnResult::error("Failed to register Lua API: " + error);
         }
         if (!impl_->runtime.load_service_module(vm, script_path, &error)) {
-            return SpawnResult::error("Failed to load module: " +
-                                      script_path + ": " + error);
+            return SpawnResult::error("Failed to load module: " + script_path +
+                                      ": " + error);
         }
 
         // Parse spawn timeout (default 10s).
@@ -329,15 +333,17 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             Impl::DispatchScope scope(*impl_, service_name, "", false);
             if (!impl_->runtime.call_service_function(vm, "on_init", init_args,
                                                       &error)) {
-
                 // Check if failure was due to timeout.
                 const auto init_end = std::chrono::steady_clock::now();
-                const auto init_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    init_end - init_start).count();
+                const auto init_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        init_end - init_start)
+                        .count();
                 if (init_ms >= spawn_timeout_ms) {
-                    return SpawnResult::error("spawn timeout: on_init took " +
-                                              std::to_string(init_ms) + "ms (limit " +
-                                              std::to_string(spawn_timeout_ms) + "ms)");
+                    return SpawnResult::error(
+                        "spawn timeout: on_init took " +
+                        std::to_string(init_ms) + "ms (limit " +
+                        std::to_string(spawn_timeout_ms) + "ms)");
                 }
                 if (auto names_it = impl_->owned_names.find(service_name);
                     names_it != impl_->owned_names.end()) {
@@ -375,8 +381,7 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
 
 namespace {
 
-bool validate_message_method(std::string_view method,
-                             bool allow_reserved,
+bool validate_message_method(std::string_view method, bool allow_reserved,
                              std::string* error) {
     if (method.empty() || method.size() > 128) {
         if (error) *error = "invalid method name: length must be 1-128";
@@ -410,10 +415,8 @@ bool validate_message_payload(const nlohmann::json& args, std::string* error) {
 
 }  // namespace
 
-bool LuaServiceManager::send(std::string_view target,
-                             std::string_view method,
-                             const nlohmann::json& args,
-                             std::string* error) {
+bool LuaServiceManager::send(std::string_view target, std::string_view method,
+                             const nlohmann::json& args, std::string* error) {
     if (impl_->stopping) {
         if (error) *error = "runtime is stopping";
         return false;
@@ -426,9 +429,8 @@ bool LuaServiceManager::send(std::string_view target,
     // Permission check.
     if (impl_->permission_check) {
         const std::string sender = current_service_id();
-        const std::string denial = impl_->permission_check(sender,
-                                                            std::string(target),
-                                                            std::string(method));
+        const std::string denial = impl_->permission_check(
+            sender, std::string(target), std::string(method));
         if (!denial.empty()) {
             if (error) *error = "permission denied: " + denial;
             return false;
@@ -457,7 +459,8 @@ bool LuaServiceManager::send(std::string_view target,
 
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
+                            now.time_since_epoch())
+                            .count();
 
     const std::string sender = current_service_id();
 
@@ -502,7 +505,8 @@ bool LuaServiceManager::send_system(std::string_view target,
 
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
+                            now.time_since_epoch())
+                            .count();
 
     Mailbox::Message msg;
     msg.method = std::string(method);
@@ -532,7 +536,8 @@ bool LuaServiceManager::send_call_request(std::string_view target,
     }
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
+                            now.time_since_epoch())
+                            .count();
 
     Mailbox::Message msg;
     msg.sender = current_service_id();
@@ -589,7 +594,7 @@ CallResult LuaServiceManager::call(std::string_view target,
 }
 
 void LuaServiceManager::exit(std::string_view service_id,
-                            std::string_view reason) {
+                             std::string_view reason) {
     auto it = impl_->services.find(std::string(service_id));
     if (it == impl_->services.end()) {
         return;
@@ -598,15 +603,18 @@ void LuaServiceManager::exit(std::string_view service_id,
     std::string error;
     nlohmann::json args = std::string(reason);
     Impl::DispatchScope scope(*impl_, std::string(service_id), "", true);
-    (void)impl_->runtime.call_service_function(it->second, "on_exit", args, &error);
+    (void)impl_->runtime.call_service_function(it->second, "on_exit", args,
+                                               &error);
 
     // Cancel forked tasks / timers / coroutines BEFORE erasing the service
     // VM. These hold sol::function / std::function callbacks that reference
     // the service's lua_State; releasing them after the VM is destroyed
     // would luaL_unref on a closed state.
     cancel_forked_tasks_for_service(std::string(service_id));
-    impl_->runtime.timer_manager().cancel_all_for_service(std::string(service_id));
-    impl_->runtime.coroutine_scheduler().cancel_all_for_service(std::string(service_id));
+    impl_->runtime.timer_manager().cancel_all_for_service(
+        std::string(service_id));
+    impl_->runtime.coroutine_scheduler().cancel_all_for_service(
+        std::string(service_id));
 
     if (auto names_it = impl_->owned_names.find(std::string(service_id));
         names_it != impl_->owned_names.end()) {
@@ -675,7 +683,6 @@ bool LuaServiceManager::is_in_exit() const {
     return impl_->dispatch_stack.back().in_exit;
 }
 
-
 std::string LuaServiceManager::query_service(std::string_view name) const {
     auto it = impl_->published_names.find(std::string(name));
     if (it == impl_->published_names.end()) {
@@ -684,7 +691,8 @@ std::string LuaServiceManager::query_service(std::string_view name) const {
     return it->second;
 }
 
-bool LuaServiceManager::register_name(std::string_view name, std::string* error) {
+bool LuaServiceManager::register_name(std::string_view name,
+                                      std::string* error) {
     const std::string owner = current_service_id();
     if (owner.empty()) {
         if (error) {
@@ -692,9 +700,9 @@ bool LuaServiceManager::register_name(std::string_view name, std::string* error)
         }
         return false;
     }
-    const bool in_current_dispatch = !impl_->dispatch_stack.empty() &&
-                                     impl_->dispatch_stack.back().service_id ==
-                                         owner;
+    const bool in_current_dispatch =
+        !impl_->dispatch_stack.empty() &&
+        impl_->dispatch_stack.back().service_id == owner;
     if (!impl_->services.contains(owner) && !in_current_dispatch) {
         if (error) {
             *error = "current service is not running: " + owner;
@@ -720,7 +728,8 @@ bool LuaServiceManager::register_name(std::string_view name, std::string* error)
     return true;
 }
 
-bool LuaServiceManager::unregister_name(std::string_view name, std::string* error) {
+bool LuaServiceManager::unregister_name(std::string_view name,
+                                        std::string* error) {
     const std::string owner = current_service_id();
     if (owner.empty()) {
         if (error) {
@@ -781,14 +790,13 @@ bool LuaServiceManager::process_mailbox(std::string_view service_id) {
     // Process the message. Handlers run inside a Lua coroutine so they can
     // yield via shield.sleep / coroutine-aware call without blocking the
     // worker; a handler that does not yield completes synchronously here.
-    Impl::DispatchScope scope(*impl_, std::string(service_id), msg.sender, false,
-                              msg.trace_id, msg.deadline_ms);
+    Impl::DispatchScope scope(*impl_, std::string(service_id), msg.sender,
+                              false, msg.trace_id, msg.deadline_ms);
 
     std::string error;
-    if (!impl_->runtime.call_service_method_coroutine(service_it->second,
-                                                      msg.method, msg.args,
-                                                      &error, msg.call_session,
-                                                      this, service_id)) {
+    if (!impl_->runtime.call_service_method_coroutine(
+            service_it->second, msg.method, msg.args, &error, msg.call_session,
+            this, service_id)) {
         // Method failed - log error but continue processing other messages
     }
 
@@ -844,7 +852,7 @@ int LuaServiceManager::pump_once() {
                 lua_settop(L, 0);
                 auto& log = shield::log::get_logger("lua");
                 SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
-                                      " error: " + err);
+                                          " error: " + err);
                 invoke_error_hook(task.service_id, "fork", "", err);
             }
         } else {
@@ -853,7 +861,7 @@ int LuaServiceManager::pump_once() {
             } catch (const std::exception& e) {
                 auto& log = shield::log::get_logger("lua");
                 SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
-                                      " error: " + e.what());
+                                          " error: " + e.what());
                 invoke_error_hook(task.service_id, "fork", "", e.what());
             }
         }
@@ -905,11 +913,12 @@ void LuaServiceManager::start_worker() {
             try {
                 (void)pump_once();
             } catch (const std::exception& e) {
-                SHIELD_LOG_ERROR(log, std::string("worker pump error: ") + e.what());
+                SHIELD_LOG_ERROR(log,
+                                 std::string("worker pump error: ") + e.what());
             }
             std::unique_lock<std::mutex> lock(impl_->worker_mutex);
-            impl_->worker_cv.wait_for(lock, std::chrono::milliseconds(10),
-                [this]() {
+            impl_->worker_cv.wait_for(
+                lock, std::chrono::milliseconds(10), [this]() {
                     return impl_->worker_stop_requested.load() ||
                            !impl_->pending_tasks.empty();
                 });
@@ -976,7 +985,8 @@ void LuaServiceManager::cancel_forked_tasks_for_service(
     }
 }
 
-size_t LuaServiceManager::pending_task_count(const std::string& service_id) const {
+size_t LuaServiceManager::pending_task_count(
+    const std::string& service_id) const {
     std::lock_guard<std::mutex> lock(impl_->worker_mutex);
     auto it = impl_->tasks_by_service.find(service_id);
     if (it == impl_->tasks_by_service.end()) {
@@ -1031,21 +1041,23 @@ uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
     pc.caller_anchor = luaL_ref(caller_co, LUA_REGISTRYINDEX);
     const auto now = std::chrono::steady_clock::now();
     pc.deadline_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         now.time_since_epoch()).count() +
+                         now.time_since_epoch())
+                         .count() +
                      (timeout_ms > 0 ? timeout_ms : 5000);
     pc.caller_service = current_service_id();
     impl_->pending_calls.emplace(session, std::move(pc));
     return session;
 }
 
-void LuaServiceManager::set_handler_call_session(lua_State* co, uint64_t session) {
+void LuaServiceManager::set_handler_call_session(lua_State* co,
+                                                 uint64_t session) {
     if (session != 0 && co != nullptr) {
         impl_->handler_call_session[co] = session;
     }
 }
 
-void LuaServiceManager::on_handler_completed(lua_State* co,
-                                             const nlohmann::json& return_values) {
+void LuaServiceManager::on_handler_completed(
+    lua_State* co, const nlohmann::json& return_values) {
     if (co == nullptr) {
         return;
     }
@@ -1120,9 +1132,9 @@ int LuaServiceManager::check_call_timeouts(int64_t now_ms) {
 }
 
 void LuaServiceManager::invoke_error_hook(const std::string& service_id,
-                                           const std::string& error_type,
-                                           const std::string& method_name,
-                                           const std::string& error_message) {
+                                          const std::string& error_type,
+                                          const std::string& method_name,
+                                          const std::string& error_message) {
     auto it = impl_->services.find(service_id);
     if (it == impl_->services.end()) {
         return;

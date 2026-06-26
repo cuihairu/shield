@@ -8,7 +8,6 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
-
 #include <string>
 
 namespace shield::plugin {
@@ -25,8 +24,7 @@ void apply_defaults(const nlohmann::json& schema, nlohmann::json& value);
 
 // Collect the set of "secret": true leaf paths (dot-paths) for masking.
 // Returns them in `out`.
-void collect_secret_paths(const nlohmann::json& schema,
-                          const std::string& path,
+void collect_secret_paths(const nlohmann::json& schema, const std::string& path,
                           std::vector<std::string>& out);
 
 }  // namespace shield::plugin

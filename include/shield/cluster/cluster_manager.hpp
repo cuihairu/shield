@@ -13,28 +13,28 @@ namespace shield::cluster {
 
 /// @brief Node state in the cluster
 enum class NodeState {
-    Connecting,   // TCP handshake in progress
-    Online,       // Connected and heartbeating
-    Suspect,      // Missed heartbeat, waiting for timeout
-    Offline,      // Confirmed unreachable
-    Removed,      // Removed from cluster
+    Connecting,  // TCP handshake in progress
+    Online,      // Connected and heartbeating
+    Suspect,     // Missed heartbeat, waiting for timeout
+    Offline,     // Confirmed unreachable
+    Removed,     // Removed from cluster
 };
 
 /// @brief Information about a cluster node
 struct NodeInfo {
     std::string node_id;
-    std::string address;       // host:port
+    std::string address;  // host:port
     NodeState state = NodeState::Connecting;
     int64_t last_heartbeat_ms = 0;
     int64_t connected_at_ms = 0;
-    uint64_t epoch = 0;        // node epoch for stale handle detection
+    uint64_t epoch = 0;  // node epoch for stale handle detection
 };
 
 /// @brief Cluster configuration parsed from YAML
 struct ClusterConfig {
     bool enabled = false;
     std::string node_id;
-    std::string listen_address;  // host:port
+    std::string listen_address;      // host:port
     std::vector<std::string> peers;  // list of host:port
     int heartbeat_interval_ms = 5000;
     int suspect_timeout_ms = 15000;
@@ -42,10 +42,9 @@ struct ClusterConfig {
 };
 
 /// @brief Callback for cross-node message delivery
-using RemoteSendFn = std::function<bool(const std::string& target_node,
-                                         const std::string& service_id,
-                                         const std::string& method,
-                                         const std::string& args_json)>;
+using RemoteSendFn = std::function<bool(
+    const std::string& target_node, const std::string& service_id,
+    const std::string& method, const std::string& args_json)>;
 
 /// @brief Cluster manager: manages node connections, heartbeat, and routing.
 ///
@@ -105,8 +104,7 @@ public:
 
     /// @brief Send a message to a remote node
     bool send_remote(const std::string& target_node,
-                     const std::string& service_id,
-                     const std::string& method,
+                     const std::string& service_id, const std::string& method,
                      const std::string& args_json);
 
     /// @brief Check if a node is reachable (online or connecting)

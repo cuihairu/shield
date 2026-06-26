@@ -1,10 +1,8 @@
 // [SHIELD_NET] Listener types
 #pragma once
 
-#include "shield/net/session.hpp"
-
-#include <boost/asio.hpp>
 #include <atomic>
+#include <boost/asio.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -14,14 +12,15 @@
 #include <unordered_map>
 #include <vector>
 
+#include "shield/net/session.hpp"
+
 namespace shield::net {
 
 /// @brief TCP Listener
 class TcpListener {
 public:
-    TcpListener(boost::asio::io_context& io_context,
-               uint16_t port,
-               SessionCallbacks callbacks);
+    TcpListener(boost::asio::io_context& io_context, uint16_t port,
+                SessionCallbacks callbacks);
 
     /// @brief Start accepting connections
     void start();
@@ -44,7 +43,8 @@ public:
     /// @brief Get last rejection reason
     std::string last_rejection_reason() const { return last_rejection_; }
 
-    /// @brief True when the underlying acceptor was opened, bound and listening.
+    /// @brief True when the underlying acceptor was opened, bound and
+    /// listening.
     bool is_open() const { return acceptor_.is_open(); }
 
     /// @brief Get number of active sessions
@@ -67,8 +67,7 @@ private:
 
     void remove_session_locked(const std::shared_ptr<Session>& session);
 
-    void on_session_close(std::shared_ptr<Session> session,
-                         std::string reason);
+    void on_session_close(std::shared_ptr<Session> session, std::string reason);
 
     boost::asio::io_context& io_context_;
     boost::asio::ip::tcp::acceptor acceptor_;

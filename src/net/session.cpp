@@ -1,27 +1,23 @@
 // [SHIELD_NET] Session implementation
 #include "shield/net/session.hpp"
 
-#include "shield/log/logger.hpp"
-#include "shield/transport/frame.hpp"
-
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/read.hpp>
 #include <boost/asio/write.hpp>
-
 #include <shared_mutex>
 #include <unordered_map>
 
+#include "shield/log/logger.hpp"
+#include "shield/transport/frame.hpp"
+
 namespace shield::net {
 
-TcpSession::TcpSession(SessionId id,
-                       boost::asio::ip::tcp::socket socket,
-                       SessionCallbacks callbacks,
-                       size_t max_frame_size)
+TcpSession::TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
+                       SessionCallbacks callbacks, size_t max_frame_size)
     : id_(id),
       socket_(std::move(socket)),
       callbacks_(std::move(callbacks)),
       frame_decoder_(max_frame_size) {
-
     auto endpoint = socket_.remote_endpoint();
     remote_addr_.ip = endpoint.address().to_string();
     remote_addr_.port = endpoint.port();
@@ -78,7 +74,7 @@ void TcpSession::do_receive() {
 
             // Process through frame decoder
             auto frames = frame_decoder_.feed(receive_buffer_.data(),
-                                             receive_buffer_.size());
+                                              receive_buffer_.size());
             if (!frame_decoder_.error().empty()) {
                 handle_error("frame decode error: " + frame_decoder_.error());
                 return;
@@ -92,13 +88,13 @@ void TcpSession::do_receive() {
 
             // Continue receiving
             do_receive();
-        }
-    );
+        });
 }
 
 void TcpSession::handle_error(std::string reason) {
     auto& log = shield::log::get_logger("net");
-    SHIELD_LOG_ERROR(log, "Session " + std::to_string(id_) + " error: " + reason);
+    SHIELD_LOG_ERROR(log,
+                     "Session " + std::to_string(id_) + " error: " + reason);
     // Map error reason to stable error code.
     if (reason.find("decode") != std::string::npos ||
         reason.find("frame") != std::string::npos) {

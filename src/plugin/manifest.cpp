@@ -1,11 +1,11 @@
 // [SHIELD_PLUGIN] Manifest parsing + validation.
-#include "shield/plugin/plugin_host.hpp"
-
 #include <yaml-cpp/yaml.h>
 
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+
+#include "shield/plugin/plugin_host.hpp"
 
 namespace shield::plugin {
 
@@ -25,13 +25,16 @@ nlohmann::json yaml_to_json(const YAML::Node& node) {
     if (node.IsScalar()) {
         try {
             return node.as<bool>();
-        } catch (const std::exception&) {}
+        } catch (const std::exception&) {
+        }
         try {
             return node.as<std::int64_t>();
-        } catch (const std::exception&) {}
+        } catch (const std::exception&) {
+        }
         try {
             return node.as<double>();
-        } catch (const std::exception&) {}
+        } catch (const std::exception&) {
+        }
         return node.as<std::string>();
     }
     if (node.IsSequence()) {
@@ -111,10 +114,12 @@ Manifest parse_manifest(const nlohmann::json& j) {
         }
         if (l.contains("search_paths") && l["search_paths"].is_array()) {
             for (const auto& p : l.at("search_paths")) {
-                if (p.is_string()) m.lua.search_paths.push_back(p.get<std::string>());
+                if (p.is_string())
+                    m.lua.search_paths.push_back(p.get<std::string>());
             }
         }
-        m.lua.enabled = !m.lua.namespace_.empty() || !m.lua.search_paths.empty();
+        m.lua.enabled =
+            !m.lua.namespace_.empty() || !m.lua.search_paths.empty();
     }
 
     // Optional documentation pointer. Surfaced via list_packages() so
@@ -125,7 +130,8 @@ Manifest parse_manifest(const nlohmann::json& j) {
             m.documentation.url = d.at("url").get<std::string>();
         }
         if (d.contains("description") && d["description"].is_string()) {
-            m.documentation.description = d.at("description").get<std::string>();
+            m.documentation.description =
+                d.at("description").get<std::string>();
         }
         m.documentation.enabled = !m.documentation.url.empty();
     }
@@ -137,7 +143,8 @@ Manifest parse_manifest(const nlohmann::json& j) {
 Manifest load_manifest_file(const std::filesystem::path& manifest_path) {
     if (manifest_path.filename() != "manifest.yaml") {
         throw std::runtime_error(
-            "plugin.manifest.invalid: manifest file must be named manifest.yaml");
+            "plugin.manifest.invalid: manifest file must be named "
+            "manifest.yaml");
     }
     std::ifstream f(manifest_path);
     if (!f) {

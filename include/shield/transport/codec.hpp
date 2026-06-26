@@ -16,12 +16,11 @@ public:
 
     /// @brief Encode a message to bytes
     virtual std::vector<uint8_t> encode(std::string_view method,
-                                       std::string_view payload) = 0;
+                                        std::string_view payload) = 0;
 
     /// @brief Decode bytes to method and payload
-    virtual bool decode(const std::vector<uint8_t>& data,
-                       std::string& method,
-                       std::string& payload) = 0;
+    virtual bool decode(const std::vector<uint8_t>& data, std::string& method,
+                        std::string& payload) = 0;
 
     /// @brief Get codec name
     virtual std::string name() const = 0;
@@ -31,11 +30,10 @@ public:
 class JsonCodec : public Codec {
 public:
     std::vector<uint8_t> encode(std::string_view method,
-                               std::string_view payload) override;
+                                std::string_view payload) override;
 
-    bool decode(const std::vector<uint8_t>& data,
-               std::string& method,
-               std::string& payload) override;
+    bool decode(const std::vector<uint8_t>& data, std::string& method,
+                std::string& payload) override;
 
     std::string name() const override { return "json"; }
 };
@@ -44,11 +42,10 @@ public:
 class MessagePackCodec : public Codec {
 public:
     std::vector<uint8_t> encode(std::string_view method,
-                               std::string_view payload) override;
+                                std::string_view payload) override;
 
-    bool decode(const std::vector<uint8_t>& data,
-               std::string& method,
-               std::string& payload) override;
+    bool decode(const std::vector<uint8_t>& data, std::string& method,
+                std::string& payload) override;
 
     std::string name() const override { return "msgpack"; }
 };
@@ -58,11 +55,10 @@ public:
 class ProtobufCodec : public Codec {
 public:
     std::vector<uint8_t> encode(std::string_view method,
-                               std::string_view payload) override;
+                                std::string_view payload) override;
 
-    bool decode(const std::vector<uint8_t>& data,
-               std::string& method,
-               std::string& payload) override;
+    bool decode(const std::vector<uint8_t>& data, std::string& method,
+                std::string& payload) override;
 
     std::string name() const override { return "protobuf"; }
 };

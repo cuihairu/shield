@@ -1,12 +1,12 @@
 // [SHIELD_LOG] Log sinks
 #pragma once
 
-#include "shield/log/logger.hpp"
-
 #include <fstream>
 #include <memory>
-#include <string>
 #include <mutex>
+#include <string>
+
+#include "shield/log/logger.hpp"
 
 namespace shield::log {
 
@@ -43,8 +43,8 @@ private:
 class RotatingFileSink : public LogSink {
 public:
     RotatingFileSink(std::string base_path,
-                    size_t max_size = 10 * 1024 * 1024,  // 10 MB
-                    int max_files = 10);
+                     size_t max_size = 10 * 1024 * 1024,  // 10 MB
+                     int max_files = 10);
     ~RotatingFileSink() override;
 
     void write(const LogRecord& record) override;
@@ -70,8 +70,6 @@ std::unique_ptr<FileSink> make_file_sink(std::string path);
 
 /// @brief Create rotating file sink
 std::unique_ptr<RotatingFileSink> make_rotating_sink(
-    std::string path,
-    size_t max_size = 10 * 1024 * 1024,
-    int max_files = 10);
+    std::string path, size_t max_size = 10 * 1024 * 1024, int max_files = 10);
 
 }  // namespace shield::log

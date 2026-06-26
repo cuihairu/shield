@@ -1,9 +1,10 @@
 // [SHIELD_CORE] Service registry implementation
 #include "shield/core/service_registry.hpp"
-#include "shield/core/service_handle.hpp"
 
 #include <mutex>
 #include <shared_mutex>
+
+#include "shield/core/service_handle.hpp"
 
 namespace shield::core {
 
@@ -21,8 +22,8 @@ bool ServiceRegistry::register_service(std::string_view service_name,
     std::unique_lock lock(impl_->mutex);
 
     std::string name(service_name);
-    auto [it, inserted] = impl_->services.emplace(std::move(name),
-                                                   std::move(handle));
+    auto [it, inserted] =
+        impl_->services.emplace(std::move(name), std::move(handle));
     return inserted;
 }
 
@@ -38,7 +39,8 @@ bool ServiceRegistry::unregister_service(std::string_view service_name) {
     return true;
 }
 
-ServiceHandle ServiceRegistry::find_service(std::string_view service_name) const {
+ServiceHandle ServiceRegistry::find_service(
+    std::string_view service_name) const {
     std::shared_lock lock(impl_->mutex);
 
     auto it = impl_->services.find(std::string(service_name));

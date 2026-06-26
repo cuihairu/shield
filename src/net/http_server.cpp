@@ -1,22 +1,19 @@
 // [SHIELD_NET] HTTP server implementation using Boost.Beast
 #include "shield/net/http_server.hpp"
 
-#include "shield/log/logger.hpp"
-
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 
+#include "shield/log/logger.hpp"
+
 namespace shield::net {
 
-HttpServer::HttpServer(const HttpServerConfig& config)
-    : config_(config) {}
+HttpServer::HttpServer(const HttpServerConfig& config) : config_(config) {}
 
-HttpServer::~HttpServer() {
-    stop();
-}
+HttpServer::~HttpServer() { stop(); }
 
 void HttpServer::route(HttpMethod method, const std::string& path,
                        HttpHandler handler) {
@@ -50,15 +47,13 @@ void HttpServer::start() {
         running_ = true;
         do_accept();
 
-        io_thread_ = std::thread([this]() {
-            io_context_.run();
-        });
+        io_thread_ = std::thread([this]() { io_context_.run(); });
 
-        SHIELD_LOG_INFO(log, "HTTP server started on " + config_.host +
-                        ":" + std::to_string(config_.port));
+        SHIELD_LOG_INFO(log, "HTTP server started on " + config_.host + ":" +
+                                 std::to_string(config_.port));
     } catch (const std::exception& e) {
-        SHIELD_LOG_ERROR(log, "HTTP server failed to start: " +
-                        std::string(e.what()));
+        SHIELD_LOG_ERROR(
+            log, "HTTP server failed to start: " + std::string(e.what()));
         running_ = false;
     }
 }
@@ -81,9 +76,7 @@ void HttpServer::stop() {
     SHIELD_LOG_INFO(log, "HTTP server stopped");
 }
 
-bool HttpServer::is_running() const {
-    return running_;
-}
+bool HttpServer::is_running() const { return running_; }
 
 void HttpServer::do_accept() {
     acceptor_->async_accept(
@@ -98,8 +91,8 @@ void HttpServer::do_accept() {
             }
 
             // Handle the session in a strand for thread safety.
-            auto socket_ptr = std::make_shared<net::ip::tcp::socket>(
-                std::move(socket));
+            auto socket_ptr =
+                std::make_shared<net::ip::tcp::socket>(std::move(socket));
             handle_session(socket_ptr);
 
             if (running_) {
@@ -119,7 +112,8 @@ void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
     read_request = [this, socket, buffer, &read_request, weak_socket]() {
         auto req = std::make_shared<http::request<http::string_body>>();
 
-        http::async_read(*socket, *buffer, *req,
+        http::async_read(
+            *socket, *buffer, *req,
             [this, socket, buffer, req, weak_socket](
                 boost::beast::error_code ec, std::size_t bytes_transferred) {
                 (void)bytes_transferred;
@@ -128,7 +122,7 @@ void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
                     // Client closed connection gracefully.
                     boost::system::error_code shutdown_ec;
                     socket->shutdown(net::ip::tcp::socket::shutdown_send,
-                                    shutdown_ec);
+                                     shutdown_ec);
                     return;
                 }
 
@@ -144,12 +138,24 @@ void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
                 // Find matching route.
                 HttpMethod method = HttpMethod::ANY;
                 switch (req->method()) {
-                    case http::verb::get:    method = HttpMethod::GET; break;
-                    case http::verb::post:   method = HttpMethod::POST; break;
-                    case http::verb::put:    method = HttpMethod::PUT; break;
-                    case http::verb::delete_: method = HttpMethod::DELETE_; break;
-                    case http::verb::patch:  method = HttpMethod::PATCH; break;
-                    default:                 method = HttpMethod::ANY; break;
+                    case http::verb::get:
+                        method = HttpMethod::GET;
+                        break;
+                    case http::verb::post:
+                        method = HttpMethod::POST;
+                        break;
+                    case http::verb::put:
+                        method = HttpMethod::PUT;
+                        break;
+                    case http::verb::delete_:
+                        method = HttpMethod::DELETE_;
+                        break;
+                    case http::verb::patch:
+                        method = HttpMethod::PATCH;
+                        break;
+                    default:
+                        method = HttpMethod::ANY;
+                        break;
                 }
 
                 std::string path(req->target());
@@ -172,24 +178,27 @@ void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
                         response = default_handler_(*req);
                     } else {
                         response.result(http::status::not_found);
-                        response.set(http::field::content_type, "application/json");
-                        response.body() = R"({"error":"not_found","message":"route not found"})";
+                        response.set(http::field::content_type,
+                                     "application/json");
+                        response.body() =
+                            R"({"error":"not_found","message":"route not found"})";
                     }
                 }
 
                 // Set common headers.
                 response.set(http::field::content_type,
-                            response.base().find(http::field::content_type) !=
-                                    response.base().end()
-                                ? response.base()[http::field::content_type]
-                                : "application/json");
+                             response.base().find(http::field::content_type) !=
+                                     response.base().end()
+                                 ? response.base()[http::field::content_type]
+                                 : "application/json");
                 response.prepare_payload();
 
                 // Write response.
-                auto shared_response = std::make_shared<HttpResponse>(
-                    std::move(response));
+                auto shared_response =
+                    std::make_shared<HttpResponse>(std::move(response));
 
-                http::async_write(*socket, *shared_response,
+                http::async_write(
+                    *socket, *shared_response,
                     [this, socket, buffer, shared_response, weak_socket](
                         boost::beast::error_code ec, std::size_t) {
                         if (ec) {
@@ -208,13 +217,12 @@ void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
                         // Read next request on the same connection.
                         // Note: recursive async chain, not stack recursion.
                         buffer->clear();
-                        auto new_req =
-                            std::make_shared<http::request<http::string_body>>();
+                        auto new_req = std::make_shared<
+                            http::request<http::string_body>>();
                         http::async_read(
                             *socket, *buffer, *new_req,
                             [this, socket, buffer, new_req, weak_socket](
-                                boost::beast::error_code ec2,
-                                std::size_t) {
+                                boost::beast::error_code ec2, std::size_t) {
                                 if (ec2) {
                                     return;
                                 }
@@ -228,9 +236,9 @@ void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
 
     // Start reading.
     auto req = std::make_shared<http::request<http::string_body>>();
-    http::async_read(*socket, *buffer, *req,
-        [this, socket, buffer, req](
-            boost::beast::error_code ec, std::size_t) {
+    http::async_read(
+        *socket, *buffer, *req,
+        [this, socket, buffer, req](boost::beast::error_code ec, std::size_t) {
             if (ec) return;
 
             HttpResponse response;
@@ -239,12 +247,24 @@ void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
 
             HttpMethod method = HttpMethod::ANY;
             switch (req->method()) {
-                case http::verb::get:    method = HttpMethod::GET; break;
-                case http::verb::post:   method = HttpMethod::POST; break;
-                case http::verb::put:    method = HttpMethod::PUT; break;
-                case http::verb::delete_: method = HttpMethod::DELETE_; break;
-                case http::verb::patch:  method = HttpMethod::PATCH; break;
-                default:                 method = HttpMethod::ANY; break;
+                case http::verb::get:
+                    method = HttpMethod::GET;
+                    break;
+                case http::verb::post:
+                    method = HttpMethod::POST;
+                    break;
+                case http::verb::put:
+                    method = HttpMethod::PUT;
+                    break;
+                case http::verb::delete_:
+                    method = HttpMethod::DELETE_;
+                    break;
+                case http::verb::patch:
+                    method = HttpMethod::PATCH;
+                    break;
+                default:
+                    method = HttpMethod::ANY;
+                    break;
             }
 
             std::string path(req->target());
@@ -279,16 +299,16 @@ void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
             auto shared_response =
                 std::make_shared<HttpResponse>(std::move(response));
             http::async_write(*socket, *shared_response,
-                [socket, shared_response](boost::beast::error_code ec2,
-                                          std::size_t) {
-                    if (ec2) return;
-                    if (shared_response->need_eof()) {
-                        boost::system::error_code shutdown_ec;
-                        socket->shutdown(
-                            net::ip::tcp::socket::shutdown_send,
-                            shutdown_ec);
-                    }
-                });
+                              [socket, shared_response](
+                                  boost::beast::error_code ec2, std::size_t) {
+                                  if (ec2) return;
+                                  if (shared_response->need_eof()) {
+                                      boost::system::error_code shutdown_ec;
+                                      socket->shutdown(
+                                          net::ip::tcp::socket::shutdown_send,
+                                          shutdown_ec);
+                                  }
+                              });
         });
 }
 

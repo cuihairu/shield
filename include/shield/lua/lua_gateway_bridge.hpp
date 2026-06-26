@@ -14,11 +14,13 @@ namespace shield::lua {
 
 class LuaServiceManager;
 
-/// @brief Bridge that routes TCP session events to Lua gateway service handlers.
+/// @brief Bridge that routes TCP session events to Lua gateway service
+/// handlers.
 ///
 /// When a gateway service is configured, the bridge:
 /// - On connect: calls gateway_service.on_connect(session_handle)
-/// - On message: calls gateway_service.on_client_message(session_handle, payload)
+/// - On message: calls gateway_service.on_client_message(session_handle,
+/// payload)
 /// - On disconnect: calls gateway_service.on_disconnect(session_handle, reason)
 class LuaGatewayBridge {
 public:

@@ -1,37 +1,34 @@
 // [SHIELD_BOOTSTRAP] Bootstrap implementation
 #include "shield/bootstrap/bootstrap.hpp"
-#include "shield/bootstrap/starter.hpp"
 
 #include "shield/base/error.hpp"
-#include "shield/log/logger.hpp"
+#include "shield/bootstrap/starter.hpp"
 #include "shield/config/config.hpp"
+#include "shield/log/logger.hpp"
 #include "shield/plugin/plugin_host.hpp"
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
 #endif
-#include "shield/core/caf_adapter.hpp"
+#include <boost/asio/io_context.hpp>
+#include <caf/actor_system.hpp>
+#include <caf/io/all.hpp>
+#include <chrono>
+#include <filesystem>
+#include <iostream>
+#include <memory>
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
 #include "shield/caf_initializer.hpp"
+#include "shield/core/caf_adapter.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/listener.hpp"
 #include "shield/shield.hpp"
-
-#include <boost/asio/io_context.hpp>
-
-#include <nlohmann/json.hpp>
-
-#include <caf/actor_system.hpp>
-#include <caf/io/all.hpp>
-
-#include <chrono>
-#include <filesystem>
-#include <iostream>
-#include <memory>
-#include <optional>
-#include <thread>
-#include <unordered_map>
-#include <vector>
 
 namespace shield::bootstrap {
 using shield::core::CafAdapter;
@@ -69,7 +66,8 @@ std::string resolve_script_path_with_lua_path(
     return script.string();
 }
 
-std::string resolve_script_path(const shield::config::RuntimeActorConfig& actor) {
+std::string resolve_script_path(
+    const shield::config::RuntimeActorConfig& actor) {
     return resolve_script_path_with_lua_path(actor);
 }
 
@@ -197,7 +195,8 @@ bool initialize(const RuntimeConfig& config) {
     }
     const auto configured_log_level =
         shield::config::get("log.level", config.log_level);
-    shield::log::Logger::set_global_level(parse_log_level(configured_log_level));
+    shield::log::Logger::set_global_level(
+        parse_log_level(configured_log_level));
 
     shield::config::RuntimeValidationOptions validation_options;
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -240,14 +239,16 @@ bool initialize(const RuntimeConfig& config) {
     auto cluster_config = shield::cluster::parse_cluster_config();
     if (cluster_config.enabled) {
         if (cluster_config.node_id.empty()) {
-            SHIELD_LOG_ERROR(log, "Invalid cluster config: cluster.node_id is required");
+            SHIELD_LOG_ERROR(
+                log, "Invalid cluster config: cluster.node_id is required");
             cleanup_failed_initialize();
             return false;
         }
         g_state->cluster_manager =
             std::make_unique<shield::cluster::ClusterManager>(cluster_config);
         g_state->cluster_manager->start();
-        shield::cluster::set_global_cluster_manager(g_state->cluster_manager.get());
+        shield::cluster::set_global_cluster_manager(
+            g_state->cluster_manager.get());
     }
 #endif
 
@@ -290,17 +291,18 @@ bool initialize(const RuntimeConfig& config) {
             nlohmann::json opts = {
                 {"name", service_name},
                 {"args", nlohmann::json::object()},
-                {"config", nlohmann::json::parse(actor.options_json, nullptr, false)},
+                {"config",
+                 nlohmann::json::parse(actor.options_json, nullptr, false)},
             };
             if (opts["config"].is_discarded()) {
                 opts["config"] = nlohmann::json::object();
             }
 
-            auto result = g_state->lua_services->spawn(resolve_script_path(actor),
-                                                       opts.dump());
+            auto result = g_state->lua_services->spawn(
+                resolve_script_path(actor), opts.dump());
             if (!result.success) {
                 SHIELD_LOG_ERROR(log, "Failed to spawn actor '" + service_name +
-                                      "': " + result.error_message);
+                                          "': " + result.error_message);
                 if (actor.required) {
                     cleanup_failed_initialize();
                     return false;
@@ -317,44 +319,50 @@ bool initialize(const RuntimeConfig& config) {
         }
         auto endpoint = parse_endpoint(actor.network_tcp);
         if (!endpoint) {
-            SHIELD_LOG_ERROR(log, "Invalid TCP endpoint for actor '" + actor.name +
-                                  "': " + actor.network_tcp);
+            SHIELD_LOG_ERROR(log, "Invalid TCP endpoint for actor '" +
+                                      actor.name + "': " + actor.network_tcp);
             cleanup_failed_initialize();
             return false;
         }
         if (endpoint->host != "0.0.0.0" && endpoint->host != "*" &&
             endpoint->host != "::" && endpoint->host != "localhost" &&
             endpoint->host != "127.0.0.1") {
-            SHIELD_LOG_WARNING(log, "TcpListener currently binds all IPv4 interfaces; "
-                                    "configured host is " + endpoint->host);
+            SHIELD_LOG_WARNING(
+                log,
+                "TcpListener currently binds all IPv4 interfaces; "
+                "configured host is " +
+                    endpoint->host);
         }
 
-        auto bridge =
-            std::make_unique<shield::lua::LuaGatewayBridge>(*g_state->lua_services,
-                                                            actor.name);
+        auto bridge = std::make_unique<shield::lua::LuaGatewayBridge>(
+            *g_state->lua_services, actor.name);
         shield::net::SessionCallbacks callbacks;
-        callbacks.on_connect = [bridge_ptr = bridge.get()](
-                                   std::shared_ptr<shield::net::Session> session) {
-            bridge_ptr->on_connect(std::move(session));
-        };
-        callbacks.on_message = [bridge_ptr = bridge.get()](
-                                   std::shared_ptr<shield::net::Session> session,
-                                   const std::vector<uint8_t>& payload) {
-            bridge_ptr->on_message(
-                std::move(session),
-                std::string(payload.begin(), payload.end()));
-        };
-        callbacks.on_disconnect = [bridge_ptr = bridge.get()](
-                                      std::shared_ptr<shield::net::Session> session,
-                                      std::string_view reason) {
-            bridge_ptr->on_disconnect(std::move(session), std::string(reason));
-        };
+        callbacks.on_connect =
+            [bridge_ptr =
+                 bridge.get()](std::shared_ptr<shield::net::Session> session) {
+                bridge_ptr->on_connect(std::move(session));
+            };
+        callbacks.on_message =
+            [bridge_ptr = bridge.get()](
+                std::shared_ptr<shield::net::Session> session,
+                const std::vector<uint8_t>& payload) {
+                bridge_ptr->on_message(
+                    std::move(session),
+                    std::string(payload.begin(), payload.end()));
+            };
+        callbacks.on_disconnect =
+            [bridge_ptr = bridge.get()](
+                std::shared_ptr<shield::net::Session> session,
+                std::string_view reason) {
+                bridge_ptr->on_disconnect(std::move(session),
+                                          std::string(reason));
+            };
 
         auto listener = std::make_unique<shield::net::TcpListener>(
             g_state->net_io, endpoint->port, std::move(callbacks));
         if (!listener->is_open()) {
             SHIELD_LOG_ERROR(log, "Failed to start TCP listener for actor '" +
-                                  actor.name + "' on " + actor.network_tcp);
+                                      actor.name + "' on " + actor.network_tcp);
             cleanup_failed_initialize();
             return false;
         }
@@ -369,15 +377,13 @@ bool initialize(const RuntimeConfig& config) {
         }
         listener->start();
         SHIELD_LOG_INFO(log, "TCP gateway listener started for actor '" +
-                              actor.name + "' on " + actor.network_tcp);
+                                 actor.name + "' on " + actor.network_tcp);
         g_state->gateway_bridges.push_back(std::move(bridge));
         g_state->tcp_listeners.push_back(std::move(listener));
     }
 
     if (!g_state->tcp_listeners.empty()) {
-        g_state->net_thread = std::thread([]() {
-            g_state->net_io.run();
-        });
+        g_state->net_thread = std::thread([]() { g_state->net_io.run(); });
     }
 
     // Run POST_START starters
@@ -458,12 +464,8 @@ void shutdown() {
 }
 
 // Check if initialized
-bool is_initialized() {
-    return g_state && g_state->initialized;
-}
+bool is_initialized() { return g_state && g_state->initialized; }
 
-int run(int argc, char** argv) {
-    return shield::run(argc, argv);
-}
+int run(int argc, char** argv) { return shield::run(argc, argv); }
 
 }  // namespace shield::bootstrap

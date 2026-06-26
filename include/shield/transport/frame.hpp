@@ -1,20 +1,21 @@
 // [SHIELD_TRANSPORT] Frame types
 #pragma once
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
+
 #include "shield/base/byte_buffer.hpp"
 
 namespace shield::transport {
 
 /// @brief Frame header for length-prefixed framing
 struct FrameHeader {
-    uint32_t length;        // Payload length (big-endian)
-    uint16_t flags;         // Frame flags
-    uint16_t type;          // Frame type (message, control, etc.)
+    uint32_t length;  // Payload length (big-endian)
+    uint16_t flags;   // Frame flags
+    uint16_t type;    // Frame type (message, control, etc.)
 
     static constexpr uint32_t HEADER_SIZE = 8;
 

@@ -1,14 +1,14 @@
 // [SHIELD_BASE] Result type for error handling without exceptions
 #pragma once
 
-#include "shield/base/error.hpp"
-
 #include <functional>
 #include <memory>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <variant>
+
+#include "shield/base/error.hpp"
 
 namespace shield::base {
 

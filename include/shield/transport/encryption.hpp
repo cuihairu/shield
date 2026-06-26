@@ -9,12 +9,7 @@
 namespace shield::transport {
 
 /// @brief Encryption cipher
-enum class Cipher {
-    NONE,
-    AES_128_GCM,
-    AES_256_GCM,
-    CHACHA20_POLY1305
-};
+enum class Cipher { NONE, AES_128_GCM, AES_256_GCM, CHACHA20_POLY1305 };
 
 /// @brief Encryption interface
 class Encryption {
@@ -63,8 +58,7 @@ private:
 };
 
 /// @brief Create encryption by cipher type
-std::unique_ptr<Encryption> create_encryption(
-    Cipher cipher,
-    std::string_view key);
+std::unique_ptr<Encryption> create_encryption(Cipher cipher,
+                                              std::string_view key);
 
 }  // namespace shield::transport

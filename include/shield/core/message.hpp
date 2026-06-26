@@ -29,8 +29,8 @@ public:
     // Constructors
     MessageEnvelope() = default;
 
-    MessageEnvelope(ServiceHandle sender, MethodName method,
-                    Payload payload, TraceId trace = TraceId{});
+    MessageEnvelope(ServiceHandle sender, MethodName method, Payload payload,
+                    TraceId trace = TraceId{});
 
     // Accessors
     const ServiceHandle& sender() const { return sender_; }

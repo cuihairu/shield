@@ -1,9 +1,10 @@
 // [SHIELD_CORE] Message implementation
 #include "shield/core/message.hpp"
-#include "shield/base/error.hpp"
-#include "shield/base/id.hpp"
 
 #include <utility>
+
+#include "shield/base/error.hpp"
+#include "shield/base/id.hpp"
 
 namespace shield::core {
 

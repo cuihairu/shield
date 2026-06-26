@@ -3,6 +3,7 @@
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
+
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -12,7 +13,6 @@ namespace shield::transport {
 // AesGcmEncryption implementation
 AesGcmEncryption::AesGcmEncryption(std::string_view key)
     : key_(key.begin(), key.end()) {
-
     if (key_.size() == 16) {
         cipher_ = Cipher::AES_128_GCM;
     } else if (key_.size() == 32) {
@@ -45,8 +45,8 @@ std::vector<uint8_t> AesGcmEncryption::encrypt(std::string_view data) {
     // Encrypt
     int len;
     EVP_EncryptUpdate(ctx, output.data() + iv.size(), &len,
-                     reinterpret_cast<const uint8_t*>(data.data()),
-                     data.size());
+                      reinterpret_cast<const uint8_t*>(data.data()),
+                      data.size());
 
     int final_len;
     EVP_EncryptFinal_ex(ctx, output.data() + iv.size() + len, &final_len);
@@ -63,7 +63,6 @@ std::vector<uint8_t> AesGcmEncryption::encrypt(std::string_view data) {
 
 std::vector<uint8_t> AesGcmEncryption::decrypt(
     const std::vector<uint8_t>& data) {
-
     if (data.size() < 12 + 16) {  // IV (12) + tag (16) minimum
         throw std::runtime_error("Invalid encrypted data");
     }
@@ -87,7 +86,7 @@ std::vector<uint8_t> AesGcmEncryption::decrypt(
 
     // Set expected tag
     EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, 16,
-                       const_cast<uint8_t*>(tag));
+                        const_cast<uint8_t*>(tag));
 
     // Decrypt
     std::vector<uint8_t> output(ciphertext_len);
@@ -116,10 +115,8 @@ std::string AesGcmEncryption::cipher_name() const {
 }
 
 // Factory function
-std::unique_ptr<Encryption> create_encryption(
-    Cipher cipher,
-    std::string_view key) {
-
+std::unique_ptr<Encryption> create_encryption(Cipher cipher,
+                                              std::string_view key) {
     if (cipher == Cipher::NONE) {
         return std::make_unique<NoEncryption>();
     }

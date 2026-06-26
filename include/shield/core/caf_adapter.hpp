@@ -4,16 +4,15 @@
 // Note: This header is INTERNAL to shield_core implementation
 // Public headers should NOT include this
 
-#include "shield/core/service_handle.hpp"
-#include "shield/core/message.hpp"
-
 #include <caf/actor.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/event_based_actor.hpp>
-
 #include <functional>
 #include <memory>
 #include <string>
+
+#include "shield/core/message.hpp"
+#include "shield/core/service_handle.hpp"
 
 namespace shield::core::detail {
 
@@ -63,11 +62,10 @@ public:
 
     // Message calling (request-response)
     MessageResponse call(const ServiceHandle& target,
-                       const MessageEnvelope& envelope);
+                         const MessageEnvelope& envelope);
 
     // Timer operations
-    TimerHandle timeout_once(int32_t delay_ms,
-                             std::function<void()> callback);
+    TimerHandle timeout_once(int32_t delay_ms, std::function<void()> callback);
 
     TimerHandle timer_repeat(int32_t interval_ms,
                              std::function<void()> callback);

@@ -3,11 +3,10 @@
 
 #include <functional>
 #include <memory>
-#include <string>
-#include <string_view>
-
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
+#include <string>
+#include <string_view>
 
 namespace shield::lua {
 
@@ -48,9 +47,8 @@ public:
     /// @param co The coroutine to suspend
     /// @param timeout_ms Timeout in milliseconds
     /// @return Coroutine ID for resuming
-    CoroutineId suspend(const std::string& service_id,
-                       sol::coroutine co,
-                       int32_t timeout_ms);
+    CoroutineId suspend(const std::string& service_id, sol::coroutine co,
+                        int32_t timeout_ms);
 
     // Resume a coroutine with result
     /// @param id Coroutine ID
@@ -110,13 +108,14 @@ public:
     using TimerId = uint64_t;
 
     enum class TimerType {
-        Once,   // One-shot timer
+        Once,        // One-shot timer
         FixedDelay,  // Repeating timer with fixed delay
     };
 
     struct TimerCallback {
         std::function<void()> callback;
-        sol::function raw_callback;   // original Lua function, for coroutine wrapping
+        sol::function
+            raw_callback;  // original Lua function, for coroutine wrapping
         std::string service_id;
     };
 
@@ -127,15 +126,13 @@ public:
     /// @param callback Function to call when timer fires
     /// @param service_id Owner service ID
     /// @return Timer ID for cancellation
-    TimerId schedule_once(int64_t delay_ms,
-                          sol::function callback,
+    TimerId schedule_once(int64_t delay_ms, sol::function callback,
                           const std::string& service_id);
 
     // Schedule a one-shot timer with a native (C++) callback. Used by runtime
     // internals such as coroutine sleep that need to resume a suspended Lua
     // coroutine without going through a sol::function.
-    TimerId schedule_once_fn(int64_t delay_ms,
-                             std::function<void()> callback,
+    TimerId schedule_once_fn(int64_t delay_ms, std::function<void()> callback,
                              const std::string& service_id);
 
     // Schedule a repeating timer
@@ -143,9 +140,8 @@ public:
     /// @param callback Function to call when timer fires
     /// @param service_id Owner service ID
     /// @return Timer ID for cancellation
-    TimerId schedule_fixed_delay(int64_t interval_ms,
-                                sol::function callback,
-                                const std::string& service_id);
+    TimerId schedule_fixed_delay(int64_t interval_ms, sol::function callback,
+                                 const std::string& service_id);
 
     // Cancel a timer
     /// @param id Timer ID
@@ -162,22 +158,26 @@ public:
 
     // Check and fire expired timers with error reporting.
     /// @param now_ms Current monotonic time in milliseconds
-    /// @param on_error Callback invoked with (service_id, error_message) when a timer throws
+    /// @param on_error Callback invoked with (service_id, error_message) when a
+    /// timer throws
     /// @return Number of timers fired
     int check_and_fire(int64_t now_ms,
                        std::function<void(const std::string& service_id,
-                                          const std::string& error)> on_error);
+                                          const std::string& error)>
+                           on_error);
 
     // Visitor-based fire: calls `visitor(service_id, raw_callback)` for each
     // expired timer instead of invoking the callback directly.  The visitor
     // can wrap the callback in a coroutine, run it synchronously, etc.
     // Repeating timers are rescheduled after the visitor returns.
     /// @param now_ms Current monotonic time in milliseconds
-    /// @param visitor Called with (service_id, raw sol::function) for each expired timer
+    /// @param visitor Called with (service_id, raw sol::function) for each
+    /// expired timer
     /// @return Number of timers processed
     int check_and_fire_each(int64_t now_ms,
                             std::function<void(const std::string& service_id,
-                                               sol::function callback)> visitor);
+                                               sol::function callback)>
+                                visitor);
 
     // Get active timer count
     size_t active_count() const;
@@ -236,7 +236,8 @@ public:
     /// @param msg Message to push
     /// @param strategy Backpressure strategy
     /// @return true if message was queued, false if dropped
-    bool push(const Message& msg, Backpressure strategy = Backpressure::DropNewest);
+    bool push(const Message& msg,
+              Backpressure strategy = Backpressure::DropNewest);
 
     // Pop next message (highest priority first, then FIFO within same priority)
     /// @param out Output message
@@ -298,14 +299,14 @@ public:
     /// @param out_bytes Output buffer
     /// @return true if encoding succeeded
     bool encode(sol::state_view lua, const sol::object& value,
-               std::vector<uint8_t>& out_bytes);
+                std::vector<uint8_t>& out_bytes);
 
     // Get last error message
     std::string error() const { return error_; }
 
 private:
     bool encode_value(sol::state_view lua, const sol::object& value,
-                     std::vector<uint8_t>& out, size_t depth);
+                      std::vector<uint8_t>& out, size_t depth);
 
     Config config_;
     std::string error_;
@@ -329,7 +330,7 @@ public:
 
 private:
     sol::object decode_value(sol::state_view lua, const uint8_t* data,
-                              size_t size, size_t& out_consumed);
+                             size_t size, size_t& out_consumed);
 
     std::string error_;
 };
@@ -373,7 +374,8 @@ public:
                                std::string* error = nullptr);
 
     // Dispatch a service method with JSON-array arguments and collect all
-    // return values as a JSON array. Missing or non-function methods are errors.
+    // return values as a JSON array. Missing or non-function methods are
+    // errors.
     bool call_service_method(std::shared_ptr<LuaVM> vm,
                              std::string_view method_name,
                              const nlohmann::json& args,
@@ -399,8 +401,7 @@ public:
     // The hook is called as hook(err, context_table) where context_table
     // has fields {type, method}. Returns true if the hook existed and was
     // called without error; false otherwise.
-    bool invoke_hook(std::shared_ptr<LuaVM> vm,
-                     const char* hook_name,
+    bool invoke_hook(std::shared_ptr<LuaVM> vm, const char* hook_name,
                      const std::string& err_or_reason,
                      const std::string& error_type,
                      const std::string& method_name);
@@ -411,8 +412,8 @@ public:
     /// @param args Arguments (as JSON string)
     /// @return Result as JSON string
     std::string call_function(std::shared_ptr<LuaVM> vm,
-                             std::string_view func_name,
-                             std::string_view args = "{}");
+                              std::string_view func_name,
+                              std::string_view args = "{}");
 
     // Register API functions
     bool register_api(std::shared_ptr<LuaVM> vm, std::string* error = nullptr);
@@ -430,13 +431,11 @@ public:
     TimerManager& timer_manager() { return *timer_manager_; }
 
     // Get global variable
-    std::string get_global(std::shared_ptr<LuaVM> vm,
-                          std::string_view name);
+    std::string get_global(std::shared_ptr<LuaVM> vm, std::string_view name);
 
     // Set global variable
-    void set_global(std::shared_ptr<LuaVM> vm,
-                   std::string_view name,
-                   std::string_view value);
+    void set_global(std::shared_ptr<LuaVM> vm, std::string_view name,
+                    std::string_view value);
 
     // Clear script cache
     void clear_cache();

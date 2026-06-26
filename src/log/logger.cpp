@@ -1,8 +1,5 @@
 // [SHIELD_LOG] Logger implementation
 #include "shield/log/logger.hpp"
-#include "shield/log/sinks.hpp"
-
-#include "shield/base/time.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -11,6 +8,9 @@
 #include <sstream>
 #include <unordered_map>
 #include <vector>
+
+#include "shield/base/time.hpp"
+#include "shield/log/sinks.hpp"
 
 namespace shield::log {
 
@@ -30,11 +30,16 @@ thread_local ServiceContext g_service_context;
 
 const char* level_name(Level level) {
     switch (level) {
-        case Level::Debug: return "DEBUG";
-        case Level::Info: return "INFO";
-        case Level::Warning: return "WARN";
-        case Level::Error: return "ERROR";
-        case Level::Fatal: return "FATAL";
+        case Level::Debug:
+            return "DEBUG";
+        case Level::Info:
+            return "INFO";
+        case Level::Warning:
+            return "WARN";
+        case Level::Error:
+            return "ERROR";
+        case Level::Fatal:
+            return "FATAL";
     }
     return "INFO";
 }
@@ -68,28 +73,18 @@ Logger::Logger(std::string name) : name_(std::move(name)) {}
 
 Logger::~Logger() = default;
 
-void Logger::debug(std::string_view msg) {
-    log(Level::Debug, msg);
-}
+void Logger::debug(std::string_view msg) { log(Level::Debug, msg); }
 
-void Logger::info(std::string_view msg) {
-    log(Level::Info, msg);
-}
+void Logger::info(std::string_view msg) { log(Level::Info, msg); }
 
-void Logger::warning(std::string_view msg) {
-    log(Level::Warning, msg);
-}
+void Logger::warning(std::string_view msg) { log(Level::Warning, msg); }
 
-void Logger::error(std::string_view msg) {
-    log(Level::Error, msg);
-}
+void Logger::error(std::string_view msg) { log(Level::Error, msg); }
 
-void Logger::fatal(std::string_view msg) {
-    log(Level::Fatal, msg);
-}
+void Logger::fatal(std::string_view msg) { log(Level::Fatal, msg); }
 
-void Logger::log(Level level, std::string_view msg,
-                 const char* file, int line, const char* function) {
+void Logger::log(Level level, std::string_view msg, const char* file, int line,
+                 const char* function) {
     std::lock_guard lock(g_mutex);
 
     if (level < g_global_level) {
@@ -113,9 +108,7 @@ void Logger::log(Level level, std::string_view msg,
     }
 }
 
-void Logger::set_level(Level level) {
-    set_global_level(level);
-}
+void Logger::set_level(Level level) { set_global_level(level); }
 
 void Logger::initialize() {
     std::lock_guard lock(g_mutex);
@@ -169,9 +162,7 @@ void set_service_context(std::string service_id, std::string service_name,
     g_service_context.trace_id = std::move(trace_id);
 }
 
-void clear_service_context() {
-    g_service_context = {};
-}
+void clear_service_context() { g_service_context = {}; }
 
 ConsoleSink::ConsoleSink(bool use_stderr) : use_stderr_(use_stderr) {}
 
@@ -190,9 +181,7 @@ FileSink::FileSink(std::string path) : path_(std::move(path)) {
     file_.open(path_, std::ios::app);
 }
 
-FileSink::~FileSink() {
-    flush();
-}
+FileSink::~FileSink() { flush(); }
 
 void FileSink::write(const LogRecord& record) {
     std::lock_guard lock(mutex_);
@@ -208,21 +197,19 @@ void FileSink::flush() {
     }
 }
 
-RotatingFileSink::RotatingFileSink(std::string base_path,
-                                   size_t max_size,
+RotatingFileSink::RotatingFileSink(std::string base_path, size_t max_size,
                                    int max_files)
     : base_path_(std::move(base_path)),
       max_size_(max_size),
       max_files_(std::max(1, max_files)) {
     file_.open(base_path_, std::ios::app);
     if (std::filesystem::exists(base_path_)) {
-        current_size_ = static_cast<size_t>(std::filesystem::file_size(base_path_));
+        current_size_ =
+            static_cast<size_t>(std::filesystem::file_size(base_path_));
     }
 }
 
-RotatingFileSink::~RotatingFileSink() {
-    flush();
-}
+RotatingFileSink::~RotatingFileSink() { flush(); }
 
 void RotatingFileSink::write(const LogRecord& record) {
     std::lock_guard lock(mutex_);
@@ -264,12 +251,11 @@ std::unique_ptr<FileSink> make_file_sink(std::string path) {
     return std::make_unique<FileSink>(std::move(path));
 }
 
-std::unique_ptr<RotatingFileSink> make_rotating_sink(
-    std::string path,
-    size_t max_size,
-    int max_files) {
-    return std::make_unique<RotatingFileSink>(
-        std::move(path), max_size, max_files);
+std::unique_ptr<RotatingFileSink> make_rotating_sink(std::string path,
+                                                     size_t max_size,
+                                                     int max_files) {
+    return std::make_unique<RotatingFileSink>(std::move(path), max_size,
+                                              max_files);
 }
 
 }  // namespace shield::log

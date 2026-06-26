@@ -4,8 +4,8 @@
 // `plugins` subtree via Config::to_json() (YAML→JSON), then parse
 // instances/bindings with nlohmann. Instance `config` values are JSON
 // structures (YAML is a JSON superset, so the on-disk YAML is compatible).
-#include "shield/plugin/plugin_host.hpp"
 #include "shield/config/config.hpp"
+#include "shield/plugin/plugin_host.hpp"
 
 namespace shield::plugin {
 

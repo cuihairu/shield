@@ -20,8 +20,7 @@ std::vector<uint8_t> JsonCodec::encode(std::string_view method,
     return std::vector<uint8_t>(str.begin(), str.end());
 }
 
-bool JsonCodec::decode(const std::vector<uint8_t>& data,
-                       std::string& method,
+bool JsonCodec::decode(const std::vector<uint8_t>& data, std::string& method,
                        std::string& payload) {
     try {
         nlohmann::json j = nlohmann::json::parse(data);
@@ -43,20 +42,16 @@ bool JsonCodec::decode(const std::vector<uint8_t>& data,
 // MessagePackCodec implementation
 #ifdef SHIELD_ENABLE_MESSAGEPACK
 std::vector<uint8_t> MessagePackCodec::encode(std::string_view method,
-                                             std::string_view payload) {
+                                              std::string_view payload) {
     msgpack::sbuffer sbuf;
-    std::vector<std::string> values{
-        std::string(method),
-        std::string(payload)
-    };
+    std::vector<std::string> values{std::string(method), std::string(payload)};
     msgpack::pack(sbuf, values);
 
     return std::vector<uint8_t>(sbuf.data(), sbuf.data() + sbuf.size());
 }
 
 bool MessagePackCodec::decode(const std::vector<uint8_t>& data,
-                             std::string& method,
-                             std::string& payload) {
+                              std::string& method, std::string& payload) {
     try {
         msgpack::object_handle oh = msgpack::unpack(
             reinterpret_cast<const char*>(data.data()), data.size());
@@ -83,8 +78,7 @@ std::vector<uint8_t> ProtobufCodec::encode(std::string_view method,
 }
 
 bool ProtobufCodec::decode(const std::vector<uint8_t>& data,
-                           std::string& method,
-                           std::string& payload) {
+                           std::string& method, std::string& payload) {
     return JsonCodec{}.decode(data, method, payload);
 }
 #endif

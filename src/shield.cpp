@@ -1,9 +1,6 @@
 // [SHIELD] Public top-level runtime entry point
 #include "shield/shield.hpp"
 
-#include "shield/bootstrap/bootstrap.hpp"
-#include "shield/version.hpp"
-
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -12,6 +9,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "shield/bootstrap/bootstrap.hpp"
+#include "shield/version.hpp"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -38,9 +38,7 @@ struct CliOptions {
 
 std::atomic<bool> g_stop_requested{false};
 
-void request_stop() {
-    g_stop_requested.store(true);
-}
+void request_stop() { g_stop_requested.store(true); }
 
 #ifdef _WIN32
 BOOL WINAPI console_handler(DWORD signal) {
@@ -52,9 +50,7 @@ BOOL WINAPI console_handler(DWORD signal) {
     return FALSE;
 }
 #else
-void signal_handler(int) {
-    request_stop();
-}
+void signal_handler(int) { request_stop(); }
 #endif
 
 void install_signal_handlers() {
@@ -77,13 +73,15 @@ void uninstall_signal_handlers() {
 }
 
 void print_help(const char* executable) {
-    const char* name = (executable && executable[0] != '\0') ? executable : "shield";
+    const char* name =
+        (executable && executable[0] != '\0') ? executable : "shield";
     std::cout
         << "Shield Game Server Runtime\n\n"
         << "Usage: " << name << " [options]\n\n"
         << "Options:\n"
         << "  --config, -c <file>    Config file path; may be repeated\n"
-        << "  --log-level <level>    Log level override (debug, info, warn, error)\n"
+        << "  --log-level <level>    Log level override (debug, info, warn, "
+           "error)\n"
         << "  --workers <n>          Worker thread count; 0 means auto\n"
         << "  --node-id <id>         Cluster node id; requires shield_cluster\n"
         << "  --check-config         Initialize, validate, then shut down\n"
@@ -176,7 +174,8 @@ CliOptions parse_cli(int argc, char** argv) {
 #ifndef SHIELD_ENABLE_CLUSTER
     if (options.has_node_id) {
         options.parse_error = true;
-        options.error = "--node-id requires shield_cluster, which is not enabled";
+        options.error =
+            "--node-id requires shield_cluster, which is not enabled";
     }
 #endif
 
@@ -211,7 +210,8 @@ int run(int argc, char** argv) {
 
         bootstrap::RuntimeConfig config;
         config.config_files = options.config_files;
-        config.config_file = options.config_files.empty() ? "" : options.config_files.front();
+        config.config_file =
+            options.config_files.empty() ? "" : options.config_files.front();
         config.log_level = options.log_level;
         config.num_workers = options.workers;
         config.node_id = options.node_id;
@@ -229,7 +229,8 @@ int run(int argc, char** argv) {
             return 0;
         }
 
-        std::cout << "Shield runtime running (press Ctrl+C to stop)" << std::endl;
+        std::cout << "Shield runtime running (press Ctrl+C to stop)"
+                  << std::endl;
         wait_for_stop();
         bootstrap::shutdown();
         uninstall_signal_handlers();

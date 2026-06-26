@@ -1,10 +1,11 @@
 // [SHIELD_BASE] ID type implementations
 #include "shield/base/id.hpp"
-#include "shield/base/time.hpp"
 
 #include <atomic>
 #include <cstring>
 #include <random>
+
+#include "shield/base/time.hpp"
 
 namespace shield::base {
 
@@ -50,8 +51,6 @@ NodeId NodeId::local() {
     return NodeId("node-local");
 }
 
-NodeId NodeId::from_string(std::string_view str) {
-    return NodeId(str);
-}
+NodeId NodeId::from_string(std::string_view str) { return NodeId(str); }
 
 }  // namespace shield::base

@@ -10,13 +10,7 @@
 namespace shield::log {
 
 /// @brief Log level
-enum class Level {
-    Debug = 0,
-    Info = 1,
-    Warning = 2,
-    Error = 3,
-    Fatal = 4
-};
+enum class Level { Debug = 0, Info = 1, Warning = 2, Error = 3, Fatal = 4 };
 
 /// @brief Log record
 struct LogRecord {
@@ -64,9 +58,8 @@ public:
     void fatal(std::string_view msg);
 
     // With location
-    void log(Level level, std::string_view msg,
-             const char* file = nullptr, int line = 0,
-             const char* function = nullptr);
+    void log(Level level, std::string_view msg, const char* file = nullptr,
+             int line = 0, const char* function = nullptr);
 
     // Set minimum level for this logger
     void set_level(Level level);
@@ -93,7 +86,7 @@ Logger& get_logger(std::string_view name);
 
 /// @brief Set service context for current thread
 void set_service_context(std::string service_id, std::string service_name,
-                        std::string trace_id);
+                         std::string trace_id);
 
 /// @brief Clear service context
 void clear_service_context();

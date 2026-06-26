@@ -60,17 +60,13 @@ bool run_starters(Phase phase);
 /// @brief Convenience: function-based starter
 class FunctionStarter : public Starter {
 public:
-    FunctionStarter(std::string name,
-                  int order,
-                  std::function<bool(Phase)> fn)
+    FunctionStarter(std::string name, int order, std::function<bool(Phase)> fn)
         : name_(std::move(name)), order_(order), fn_(std::move(fn)) {}
 
     std::string name() const override { return name_; }
     int order() const override { return order_; }
 
-    bool execute(Phase phase) override {
-        return fn_(phase);
-    }
+    bool execute(Phase phase) override { return fn_(phase); }
 
 private:
     std::string name_;

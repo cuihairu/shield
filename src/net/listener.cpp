@@ -1,25 +1,23 @@
 // [SHIELD_NET] Listener implementation
 #include "shield/net/listener.hpp"
 
-#include "shield/log/logger.hpp"
-
 #include <boost/asio/buffer.hpp>
 #include <mutex>
 #include <shared_mutex>
+
+#include "shield/log/logger.hpp"
 
 namespace shield::net {
 
 std::atomic<SessionId> TcpListener::g_next_session_id{1};
 
-TcpListener::TcpListener(boost::asio::io_context& io_context,
-                         uint16_t port,
+TcpListener::TcpListener(boost::asio::io_context& io_context, uint16_t port,
                          SessionCallbacks callbacks)
     : io_context_(io_context),
       acceptor_(io_context),
       port_(port),
       callbacks_(std::move(callbacks)),
       socket_(io_context) {
-
     boost::system::error_code ec;
 
     // Open acceptor
@@ -34,13 +32,13 @@ TcpListener::TcpListener(boost::asio::io_context& io_context,
     acceptor_.set_option(boost::asio::socket_base::reuse_address(true), ec);
 
     // Bind to port
-    acceptor_.bind(boost::asio::ip::tcp::endpoint(
-        boost::asio::ip::tcp::v4(), port), ec);
+    acceptor_.bind(
+        boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), port), ec);
 
     if (ec) {
         auto& log = shield::log::get_logger("net");
         SHIELD_LOG_ERROR(log, "Failed to bind to port " + std::to_string(port) +
-                        ": " + ec.message());
+                                  ": " + ec.message());
         return;
     }
 
@@ -54,9 +52,7 @@ TcpListener::TcpListener(boost::asio::io_context& io_context,
     }
 }
 
-void TcpListener::start() {
-    do_accept();
-}
+void TcpListener::start() { do_accept(); }
 
 void TcpListener::stop() {
     boost::system::error_code ec;
@@ -94,7 +90,8 @@ void TcpListener::do_accept() {
                 last_rejection_ = "connection_limit";
                 auto& log = shield::log::get_logger("net");
                 SHIELD_LOG_WARNING(log, "Connection rejected: limit reached (" +
-                                  std::to_string(max_connections_) + ")");
+                                            std::to_string(max_connections_) +
+                                            ")");
                 boost::system::error_code close_ec;
                 socket_.close(close_ec);
                 do_accept();
@@ -112,8 +109,9 @@ void TcpListener::do_accept() {
                 if (it != ip_counts_.end() && it->second >= max_per_ip_) {
                     last_rejection_ = "ip_limit";
                     auto& log = shield::log::get_logger("net");
-                    SHIELD_LOG_WARNING(log, "Connection rejected: IP limit for " +
-                                      remote_ip + " (" + std::to_string(max_per_ip_) + ")");
+                    SHIELD_LOG_WARNING(
+                        log, "Connection rejected: IP limit for " + remote_ip +
+                                 " (" + std::to_string(max_per_ip_) + ")");
                     boost::system::error_code close_ec;
                     socket_.close(close_ec);
                     do_accept();
@@ -126,13 +124,13 @@ void TcpListener::do_accept() {
         SessionId id = g_next_session_id.fetch_add(1);
         SessionCallbacks callbacks = callbacks_;
         auto user_disconnect = callbacks.on_disconnect;
-        callbacks.on_disconnect =
-            [this, user_disconnect](std::shared_ptr<Session> session,
-                                    std::string_view reason) {
-                on_session_close(session, std::string(reason));
-                if (user_disconnect) {
-                    user_disconnect(std::move(session), reason);
-                }
+        callbacks.on_disconnect = [this, user_disconnect](
+                                      std::shared_ptr<Session> session,
+                                      std::string_view reason) {
+            on_session_close(session, std::string(reason));
+            if (user_disconnect) {
+                user_disconnect(std::move(session), reason);
+            }
         };
         auto session = std::make_shared<TcpSession>(
             id, std::move(socket_), std::move(callbacks), max_frame_size_);
@@ -190,7 +188,8 @@ bool TcpListener::kick_session(SessionId id, std::string reason) {
     return true;
 }
 
-void TcpListener::remove_session_locked(const std::shared_ptr<Session>& session) {
+void TcpListener::remove_session_locked(
+    const std::shared_ptr<Session>& session) {
     auto it = sessions_.find(session->id());
     if (it != sessions_.end()) {
         // Decrement IP count.

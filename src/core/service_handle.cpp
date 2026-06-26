@@ -1,10 +1,10 @@
 // [SHIELD_CORE] Service handle implementation
 #include "shield/core/service_handle.hpp"
-#include "shield/core/caf_adapter.hpp"
 
 #include <caf/actor.hpp>
-
 #include <utility>
+
+#include "shield/core/caf_adapter.hpp"
 
 namespace shield::core {
 
@@ -28,11 +28,11 @@ ServiceHandle::~ServiceHandle() {
 }
 
 ServiceHandle::ServiceHandle(const ServiceHandle& other)
-    : holder_(other.holder_), name_(other.name_),
-      is_local_(other.is_local_) {}
+    : holder_(other.holder_), name_(other.name_), is_local_(other.is_local_) {}
 
 ServiceHandle::ServiceHandle(ServiceHandle&& other) noexcept
-    : holder_(other.holder_), name_(std::move(other.name_)),
+    : holder_(other.holder_),
+      name_(std::move(other.name_)),
       is_local_(other.is_local_) {
     other.holder_ = nullptr;
 }
@@ -56,9 +56,7 @@ ServiceHandle& ServiceHandle::operator=(ServiceHandle&& other) noexcept {
     return *this;
 }
 
-bool ServiceHandle::is_valid() const {
-    return holder_ && holder_->is_valid();
-}
+bool ServiceHandle::is_valid() const { return holder_ && holder_->is_valid(); }
 
 std::string ServiceHandle::to_string() const {
     if (!is_valid()) return "shield://invalid";
@@ -76,8 +74,7 @@ TimerHandle::~TimerHandle() = default;
 
 TimerHandle::TimerHandle(const TimerHandle& other) : id_(other.id_) {}
 
-TimerHandle::TimerHandle(TimerHandle&& other) noexcept
-    : id_(other.id_) {
+TimerHandle::TimerHandle(TimerHandle&& other) noexcept : id_(other.id_) {
     other.id_ = 0;
 }
 
@@ -96,13 +93,9 @@ TimerHandle& TimerHandle::operator=(TimerHandle&& other) noexcept {
     return *this;
 }
 
-bool TimerHandle::is_valid() const {
-    return id_ != 0;
-}
+bool TimerHandle::is_valid() const { return id_ != 0; }
 
-void TimerHandle::cancel() {
-    id_ = 0;
-}
+void TimerHandle::cancel() { id_ = 0; }
 
 // TaskHandle implementation
 TaskHandle::TaskHandle() : id_(0) {}
@@ -111,8 +104,7 @@ TaskHandle::~TaskHandle() = default;
 
 TaskHandle::TaskHandle(const TaskHandle& other) : id_(other.id_) {}
 
-TaskHandle::TaskHandle(TaskHandle&& other) noexcept
-    : id_(other.id_) {
+TaskHandle::TaskHandle(TaskHandle&& other) noexcept : id_(other.id_) {
     other.id_ = 0;
 }
 
@@ -131,12 +123,8 @@ TaskHandle& TaskHandle::operator=(TaskHandle&& other) noexcept {
     return *this;
 }
 
-bool TaskHandle::is_valid() const {
-    return id_ != 0;
-}
+bool TaskHandle::is_valid() const { return id_ != 0; }
 
-void TaskHandle::cancel() {
-    id_ = 0;
-}
+void TaskHandle::cancel() { id_ = 0; }
 
 }  // namespace shield::core

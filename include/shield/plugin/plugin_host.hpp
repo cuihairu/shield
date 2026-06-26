@@ -8,22 +8,23 @@
 // See docs/plugin-system.md for the authoritative design.
 #pragma once
 
-#include "shield/plugin/abi.h"
-#include "shield/plugin/host_api.h"
-#include "shield/plugin/plugin_library.hpp"
-
-#include <nlohmann/json.hpp>
-
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
-namespace shield::config { class Config; }
+#include "shield/plugin/abi.h"
+#include "shield/plugin/host_api.h"
+#include "shield/plugin/plugin_library.hpp"
+
+namespace shield::config {
+class Config;
+}
 
 namespace shield::plugin {
 
@@ -54,7 +55,7 @@ struct Manifest {
     std::vector<Provide> provides;
 
     struct Require {
-        std::string name;        // local alias used in instance.dependencies
+        std::string name;  // local alias used in instance.dependencies
         std::string interface_name;  // required interface
         bool optional = false;
     };
@@ -63,7 +64,7 @@ struct Manifest {
     // Optional Lua metadata. When present, the host injects the search paths
     // into Lua's package.path before register_lua_all runs.
     struct LuaMeta {
-        std::string namespace_;          // e.g. "database.mongodb"
+        std::string namespace_;                 // e.g. "database.mongodb"
         std::vector<std::string> search_paths;  // e.g. ["lua/?.lua"]
         bool enabled = false;
     } lua;
@@ -85,14 +86,15 @@ struct InstanceDecl {
     std::string id;
     std::string package;
     bool required = true;
-    std::map<std::string, std::string> dependencies;  // require name -> instance id
+    std::map<std::string, std::string>
+        dependencies;  // require name -> instance id
     nlohmann::json config;
 };
 
 // One entry from plugins.bindings{} (logical name -> instance id).
 struct BindingDecl {
-    std::string logical;       // e.g. "database.default"
-    std::string instance_id;   // e.g. "db.main"
+    std::string logical;      // e.g. "database.default"
+    std::string instance_id;  // e.g. "db.main"
 };
 
 // Parsed plugins: subtree of app.yaml.
@@ -113,14 +115,7 @@ struct Package {
 };
 
 // Instance lifecycle state (matches docs/plugin-system.md state enum).
-enum class State {
-    planned,
-    loaded,
-    started,
-    unavailable,
-    failed,
-    stopped
-};
+enum class State { planned, loaded, started, unavailable, failed, stopped };
 
 // A live instance under the host's management.
 struct Instance {
@@ -131,16 +126,18 @@ struct Instance {
     const shield_plugin_abi_v1* abi = nullptr;
     shield_plugin_instance_v1* handle = nullptr;
     PluginLibrary lib;
-    std::vector<std::string> dep_ids;  // resolved dependency instance ids (topo)
-    std::string last_error;            // structured error for failed/unavailable
+    std::vector<std::string>
+        dep_ids;             // resolved dependency instance ids (topo)
+    std::string last_error;  // structured error for failed/unavailable
 };
 
 // Introspection views (used by Lua + diagnostics).
 struct PackageInfo {
     std::string id, version, kind;
     std::vector<std::string> provides;
-    std::string docs_url;         // manifest documentation.url (may be empty)
-    std::string docs_description; // manifest documentation.description (may be empty)
+    std::string docs_url;  // manifest documentation.url (may be empty)
+    std::string
+        docs_description;  // manifest documentation.description (may be empty)
 };
 struct InstanceInfo {
     std::string id, package, state;
@@ -244,7 +241,8 @@ private:
         // owned PluginHost-side contexts (one per created instance), stable
         // pointers handed to plugins as shield_plugin_context_v1*.
         std::vector<std::unique_ptr<CtxBundle>> contexts;
-        std::vector<std::string> start_order;  // topo-ordered instance ids (deps first)
+        std::vector<std::string>
+            start_order;  // topo-ordered instance ids (deps first)
     };
     std::unique_ptr<Impl> impl_;
 
@@ -260,7 +258,8 @@ PluginHost& global_host();
 // ---------------------------------------------------------------------------
 
 template <typename Interface>
-const Interface* PluginHost::get_by_binding(std::string_view binding_name) const {
+const Interface* PluginHost::get_by_binding(
+    std::string_view binding_name) const {
     return static_cast<const Interface*>(
         get_binding_vtable(binding_name, Interface::interface_name));
 }

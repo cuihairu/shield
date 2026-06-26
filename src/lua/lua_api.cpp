@@ -5,23 +5,22 @@
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
 #endif
-#include "shield/plugin/plugin_host.hpp"
-#include "shield/log/logger.hpp"
-#include "shield/lua/lua_runtime.hpp"
-#include "shield/lua/lua_service.hpp"
-#include "shield/net/http_client.hpp"
-
-#include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <nlohmann/json.hpp>
+#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "shield/log/logger.hpp"
+#include "shield/lua/lua_runtime.hpp"
+#include "shield/lua/lua_service.hpp"
+#include "shield/net/http_client.hpp"
+#include "shield/plugin/plugin_host.hpp"
 
 namespace shield::lua {
 
@@ -32,16 +31,13 @@ static constexpr size_t kForkLimit = 1000;
 nlohmann::json lua_to_json(const sol::object& value);
 sol::variadic_results call_with_timeout(sol::this_state state,
                                         LuaServiceManager* manager,
-                                        LuaRuntime* runtime,
-                                        int timeout_ms,
+                                        LuaRuntime* runtime, int timeout_ms,
                                         const std::string& target,
                                         const std::string& method,
                                         const nlohmann::json& args);
 
-sol::table make_error(sol::this_state state,
-                      std::string code,
-                      std::string message,
-                      bool retryable = false,
+sol::table make_error(sol::this_state state, std::string code,
+                      std::string message, bool retryable = false,
                       sol::object detail = sol::nil) {
     sol::state_view lua(state);
     sol::table err = lua.create_table();
@@ -194,7 +190,6 @@ std::vector<std::string> table_to_string_vector(const sol::table& table) {
     return params;
 }
 
-
 // Helper to extract service ID from ServiceHandle or string
 std::string extract_service_id(const sol::object& target) {
     if (target.is<ServiceHandle>()) {
@@ -207,21 +202,22 @@ std::string extract_service_id(const sol::object& target) {
 }
 
 void register_service_api(sol::table& shield, LuaServiceManager* manager) {
-    shield.set_function("spawn",
-        [manager](sol::this_state state,
-                  std::string module,
+    shield.set_function(
+        "spawn",
+        [manager](sol::this_state state, std::string module,
                   sol::optional<sol::table> opts) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
             if (!manager) {
                 results.push_back(sol::make_object(lua, sol::nil));
-                results.push_back(make_error(state, "runtime_unavailable",
-                                             "Lua service manager is not available"));
+                results.push_back(
+                    make_error(state, "runtime_unavailable",
+                               "Lua service manager is not available"));
                 return results;
             }
 
-            nlohmann::json options = opts ? lua_table_to_json(*opts)
-                                          : nlohmann::json::object();
+            nlohmann::json options =
+                opts ? lua_table_to_json(*opts) : nlohmann::json::object();
             if (!options.is_object()) {
                 options = nlohmann::json::object();
             }
@@ -231,12 +227,13 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                 std::string code = "spawn_failed";
                 if (result.error_message.find("timeout") != std::string::npos) {
                     code = "spawn_timeout";
-                } else if (result.error_message.find("on_init failed") != std::string::npos) {
+                } else if (result.error_message.find("on_init failed") !=
+                           std::string::npos) {
                     code = "init_failed";
                 }
                 results.push_back(sol::make_object(lua, sol::nil));
-                results.push_back(make_error(state, std::move(code),
-                                             result.error_message));
+                results.push_back(
+                    make_error(state, std::move(code), result.error_message));
                 return results;
             }
 
@@ -247,15 +244,14 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
             return results;
         });
 
-    shield.set_function("exit",
-        [manager](sol::optional<std::string> reason) {
-            if (manager) {
-                manager->request_current_exit(reason.value_or("normal"));
-            }
-        });
+    shield.set_function("exit", [manager](sol::optional<std::string> reason) {
+        if (manager) {
+            manager->request_current_exit(reason.value_or("normal"));
+        }
+    });
 
-    shield.set_function("self",
-        [manager](sol::this_state state) -> sol::object {
+    shield.set_function(
+        "self", [manager](sol::this_state state) -> sol::object {
             sol::state_view lua(state);
             if (!manager) {
                 return sol::make_object(lua, sol::nil);
@@ -269,29 +265,31 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
         });
 
     shield.set_function("names",
-        [manager](sol::this_state state) -> sol::table {
-            sol::state_view lua(state);
-            sol::table names = lua.create_table();
-            if (!manager) {
-                return names;
-            }
+                        [manager](sol::this_state state) -> sol::table {
+                            sol::state_view lua(state);
+                            sol::table names = lua.create_table();
+                            if (!manager) {
+                                return names;
+                            }
 
-            int index = 1;
-            for (const auto& name : manager->list_services()) {
-                names[index++] = name;
-            }
-            return names;
-        });
+                            int index = 1;
+                            for (const auto& name : manager->list_services()) {
+                                names[index++] = name;
+                            }
+                            return names;
+                        });
 
-    shield.set_function("query",
+    shield.set_function(
+        "query",
         [manager](sol::this_state state,
                   std::string name) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
             if (!manager) {
                 results.push_back(sol::make_object(lua, sol::nil));
-                results.push_back(make_error(state, "runtime_unavailable",
-                                             "Lua service manager is not available"));
+                results.push_back(
+                    make_error(state, "runtime_unavailable",
+                               "Lua service manager is not available"));
                 return results;
             }
 
@@ -309,14 +307,17 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
             return results;
         });
 
-    shield.set_function("register",
-        [manager](sol::this_state state, std::string name) -> sol::variadic_results {
+    shield.set_function(
+        "register",
+        [manager](sol::this_state state,
+                  std::string name) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
             if (!manager) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, "runtime_unavailable",
-                                             "Lua service manager is not available"));
+                results.push_back(
+                    make_error(state, "runtime_unavailable",
+                               "Lua service manager is not available"));
                 return results;
             }
 
@@ -333,50 +334,54 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
         });
 
     shield.set_function("unregister",
-        [manager](sol::this_state state, std::string name) -> sol::variadic_results {
-            sol::state_view lua(state);
-            sol::variadic_results results;
-            if (!manager) {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, "runtime_unavailable",
-                                             "Lua service manager is not available"));
-                return results;
-            }
+                        [manager](sol::this_state state,
+                                  std::string name) -> sol::variadic_results {
+                            sol::state_view lua(state);
+                            sol::variadic_results results;
+                            if (!manager) {
+                                results.push_back(sol::make_object(lua, false));
+                                results.push_back(make_error(
+                                    state, "runtime_unavailable",
+                                    "Lua service manager is not available"));
+                                return results;
+                            }
 
-            std::string error;
-            if (!manager->unregister_name(name, &error)) {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, "unregister_failed", error));
-                return results;
-            }
+                            std::string error;
+                            if (!manager->unregister_name(name, &error)) {
+                                results.push_back(sol::make_object(lua, false));
+                                results.push_back(make_error(
+                                    state, "unregister_failed", error));
+                                return results;
+                            }
 
-            results.push_back(sol::make_object(lua, true));
-            results.push_back(sol::make_object(lua, sol::nil));
-            return results;
-        });
+                            results.push_back(sol::make_object(lua, true));
+                            results.push_back(sol::make_object(lua, sol::nil));
+                            return results;
+                        });
 }
 
 void register_message_api(sol::table& shield, LuaServiceManager* manager,
                           LuaRuntime* runtime) {
-    shield.set_function("send",
-        [manager](sol::this_state state,
-                  sol::object target,
-                  std::string method,
+    shield.set_function(
+        "send",
+        [manager](sol::this_state state, sol::object target, std::string method,
                   sol::variadic_args args) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
             if (!manager) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, "runtime_unavailable",
-                                             "Lua service manager is not available"));
+                results.push_back(
+                    make_error(state, "runtime_unavailable",
+                               "Lua service manager is not available"));
                 return results;
             }
 
             std::string target_id = extract_service_id(target);
             if (target_id.empty()) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, "invalid_target",
-                                             "target must be ServiceHandle or string"));
+                results.push_back(
+                    make_error(state, "invalid_target",
+                               "target must be ServiceHandle or string"));
                 return results;
             }
 
@@ -389,13 +394,16 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                 if (error.find("mailbox full") != std::string::npos) {
                     code = "mailbox_full";
                     retryable = true;
-                } else if (error.find("runtime is stopping") != std::string::npos) {
+                } else if (error.find("runtime is stopping") !=
+                           std::string::npos) {
                     code = "runtime_stopping";
-                } else if (error.find("message too large") != std::string::npos) {
+                } else if (error.find("message too large") !=
+                           std::string::npos) {
                     code = "message_too_large";
                 } else if (error.find("unsupported") != std::string::npos) {
                     code = "encode_failed";
-                } else if (error.find("permission denied") != std::string::npos) {
+                } else if (error.find("permission denied") !=
+                           std::string::npos) {
                     code = "permission_denied";
                 } else if (error.find("invalid method") != std::string::npos) {
                     code = "invalid_method";
@@ -405,8 +413,8 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                     code = "coroutine_limit";
                 }
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, std::move(code), error,
-                                             retryable));
+                results.push_back(
+                    make_error(state, std::move(code), error, retryable));
                 return results;
             }
 
@@ -415,40 +423,42 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             return results;
         });
 
-    shield.set_function("_sync_call",
-        [manager, runtime](sol::this_state state,
-                   sol::object target,
-                   std::string method,
-                   sol::variadic_args args) -> sol::variadic_results {
+    shield.set_function(
+        "_sync_call",
+        [manager, runtime](sol::this_state state, sol::object target,
+                           std::string method,
+                           sol::variadic_args args) -> sol::variadic_results {
             std::string target_id = extract_service_id(target);
             if (target_id.empty()) {
                 sol::state_view lua(state);
                 sol::variadic_results results;
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, "invalid_target",
-                                             "target must be ServiceHandle or string"));
+                results.push_back(
+                    make_error(state, "invalid_target",
+                               "target must be ServiceHandle or string"));
                 return results;
             }
-            return call_with_timeout(state, manager, runtime, 5000, target_id, method,
-                                     variadic_to_json_array(args));
+            return call_with_timeout(state, manager, runtime, 5000, target_id,
+                                     method, variadic_to_json_array(args));
         });
 
-    shield.set_function("_sync_call_timeout",
-        [manager, runtime](sol::this_state state,
-                   int timeout_ms,
-                   sol::object target,
-                   std::string method,
-                   sol::variadic_args args) -> sol::variadic_results {
+    shield.set_function(
+        "_sync_call_timeout",
+        [manager, runtime](sol::this_state state, int timeout_ms,
+                           sol::object target, std::string method,
+                           sol::variadic_args args) -> sol::variadic_results {
             std::string target_id = extract_service_id(target);
             if (target_id.empty()) {
                 sol::state_view lua(state);
                 sol::variadic_results results;
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, "invalid_target",
-                                             "target must be ServiceHandle or string"));
+                results.push_back(
+                    make_error(state, "invalid_target",
+                               "target must be ServiceHandle or string"));
                 return results;
             }
-            return call_with_timeout(state, manager, runtime, timeout_ms, target_id, method,
+            return call_with_timeout(state, manager, runtime, timeout_ms,
+                                     target_id, method,
                                      variadic_to_json_array(args));
         });
 
@@ -456,12 +466,10 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     // sends a call-request message to the target; the caller is resumed with
     // [ok, values...] when the callee completes (or on timeout). Returns the
     // session id (0 if the request could not be queued).
-    shield.set_function("_coro_call",
-        [manager](sol::this_state state,
-                  sol::object target,
-                  std::string method,
-                  sol::table args,
-                  int timeout_ms) -> uint64_t {
+    shield.set_function(
+        "_coro_call",
+        [manager](sol::this_state state, sol::object target, std::string method,
+                  sol::table args, int timeout_ms) -> uint64_t {
             if (!manager) {
                 return 0;
             }
@@ -490,33 +498,32 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                 // the caller resumes immediately instead of hanging.
                 nlohmann::json err;
                 err = send_error;
-                manager->resume_caller(session, false, nlohmann::json::array({err}));
+                manager->resume_caller(session, false,
+                                       nlohmann::json::array({err}));
                 return 0;
             }
             return session;
         });
 
-    shield.set_function("_is_in_exit",
-        [manager]() -> bool {
-            return manager && manager->is_in_exit();
-        });
+    shield.set_function("_is_in_exit", [manager]() -> bool {
+        return manager && manager->is_in_exit();
+    });
 
-    shield.set_function("sender",
-        [manager]() -> sol::optional<std::string> {
-            if (!manager) {
-                return sol::nullopt;
-            }
-            // Returns nil in timer/fork context (no sender).
-            // Returns nil outside any dispatch (module-level code).
-            // The distinction between "no sender" and "context_expired" is
-            // that in timer/fork context we ARE inside a dispatch scope but
-            // the sender is empty; outside any scope the context is expired.
-            const auto sender = manager->current_sender_id();
-            if (sender.empty()) {
-                return sol::nullopt;
-            }
-            return sender;
-        });
+    shield.set_function("sender", [manager]() -> sol::optional<std::string> {
+        if (!manager) {
+            return sol::nullopt;
+        }
+        // Returns nil in timer/fork context (no sender).
+        // Returns nil outside any dispatch (module-level code).
+        // The distinction between "no sender" and "context_expired" is
+        // that in timer/fork context we ARE inside a dispatch scope but
+        // the sender is empty; outside any scope the context is expired.
+        const auto sender = manager->current_sender_id();
+        if (sender.empty()) {
+            return sol::nullopt;
+        }
+        return sender;
+    });
 
     shield.set_function("trace", [manager]() -> sol::optional<std::string> {
         if (!manager) return sol::nullopt;
@@ -541,37 +548,42 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     lua.safe_script(
         "shield.call = function(target, method, ...)\n"
         "  if shield._is_in_exit() then\n"
-        "    return false, {code='api_not_allowed_in_exit', message='shield.call is not allowed in on_exit'}\n"
+        "    return false, {code='api_not_allowed_in_exit', "
+        "message='shield.call is not allowed in on_exit'}\n"
         "  end\n"
         "  local _, ismain = coroutine.running()\n"
         "  if ismain then return shield._sync_call(target, method, ...) end\n"
-        "  local session = shield._coro_call(target, method, table.pack(...), 5000)\n"
-        "  if session == 0 then return shield._sync_call(target, method, ...) end\n"
+        "  local session = shield._coro_call(target, method, table.pack(...), "
+        "5000)\n"
+        "  if session == 0 then return shield._sync_call(target, method, ...) "
+        "end\n"
         "  local r = table.pack(coroutine.yield())\n"
         "  if not r[1] then return false, r[2] end\n"
         "  return true, table.unpack(r, 2, r.n)\n"
         "end\n"
         "shield.call_timeout = function(timeout_ms, target, method, ...)\n"
         "  if shield._is_in_exit() then\n"
-        "    return false, {code='api_not_allowed_in_exit', message='shield.call_timeout is not allowed in on_exit'}\n"
+        "    return false, {code='api_not_allowed_in_exit', "
+        "message='shield.call_timeout is not allowed in on_exit'}\n"
         "  end\n"
         "  local _, ismain = coroutine.running()\n"
-        "  if ismain then return shield._sync_call_timeout(timeout_ms, target, method, ...) end\n"
-        "  local session = shield._coro_call(target, method, table.pack(...), timeout_ms)\n"
-        "  if session == 0 then return shield._sync_call_timeout(timeout_ms, target, method, ...) end\n"
+        "  if ismain then return shield._sync_call_timeout(timeout_ms, target, "
+        "method, ...) end\n"
+        "  local session = shield._coro_call(target, method, table.pack(...), "
+        "timeout_ms)\n"
+        "  if session == 0 then return shield._sync_call_timeout(timeout_ms, "
+        "target, method, ...) end\n"
         "  local r = table.pack(coroutine.yield())\n"
         "  if not r[1] then return false, r[2] end\n"
         "  return true, table.unpack(r, 2, r.n)\n"
         "end",
-        [](lua_State*, sol::protected_function_result pfr) -> sol::protected_function_result {
-            return pfr;
-        });
+        [](lua_State*, sol::protected_function_result pfr)
+            -> sol::protected_function_result { return pfr; });
 }
 
 sol::variadic_results call_with_timeout(sol::this_state state,
                                         LuaServiceManager* manager,
-                                        LuaRuntime* runtime,
-                                        int timeout_ms,
+                                        LuaRuntime* runtime, int timeout_ms,
                                         const std::string& target,
                                         const std::string& method,
                                         const nlohmann::json& args) {
@@ -580,12 +592,18 @@ sol::variadic_results call_with_timeout(sol::this_state state,
 
     // Helper to map call error message to stable error code.
     auto call_error_code = [](const std::string& msg) -> std::string {
-        if (msg.find("service not found") != std::string::npos) return "service_not_found";
-        if (msg.find("service dead") != std::string::npos) return "service_dead";
-        if (msg.find("method not found") != std::string::npos) return "method_not_found";
-        if (msg.find("runtime is stopping") != std::string::npos) return "runtime_stopping";
-        if (msg.find("invalid method") != std::string::npos) return "invalid_method";
-        if (msg.find("coroutine limit") != std::string::npos) return "coroutine_limit";
+        if (msg.find("service not found") != std::string::npos)
+            return "service_not_found";
+        if (msg.find("service dead") != std::string::npos)
+            return "service_dead";
+        if (msg.find("method not found") != std::string::npos)
+            return "method_not_found";
+        if (msg.find("runtime is stopping") != std::string::npos)
+            return "runtime_stopping";
+        if (msg.find("invalid method") != std::string::npos)
+            return "invalid_method";
+        if (msg.find("coroutine limit") != std::string::npos)
+            return "coroutine_limit";
         return "handler_error";
     };
 
@@ -599,7 +617,8 @@ sol::variadic_results call_with_timeout(sol::this_state state,
     CallResult result = manager->call(target, method, args, timeout_ms);
     if (!result.success) {
         results.push_back(sol::make_object(lua, false));
-        results.push_back(make_error(state, call_error_code(result.error_message),
+        results.push_back(make_error(state,
+                                     call_error_code(result.error_message),
                                      result.error_message));
         return results;
     }
@@ -612,14 +631,17 @@ sol::variadic_results call_with_timeout(sol::this_state state,
 }
 
 void register_timer_api(sol::table& shield, LuaServiceManager* manager,
-                         LuaRuntime* runtime) {
+                        LuaRuntime* runtime) {
     shield.set_function("now", []() -> int64_t {
         const auto now = std::chrono::steady_clock::now().time_since_epoch();
-        return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(now)
+            .count();
     });
 
-    shield.set_function("timer_once",
-        [manager, runtime](int delay_ms, sol::function callback) -> sol::variadic_results {
+    shield.set_function(
+        "timer_once",
+        [manager, runtime](int delay_ms,
+                           sol::function callback) -> sol::variadic_results {
             sol::variadic_results results;
             sol::state_view lua(callback.lua_state());
 
@@ -628,7 +650,8 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 static std::atomic<uint64_t> timer_id{1};
                 const uint64_t id = timer_id.fetch_add(1);
                 std::thread([delay_ms, callback]() {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(delay_ms));
                     callback();
                 }).detach();
                 results.push_back(sol::make_object(lua, id));
@@ -645,8 +668,8 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             if (runtime->timer_manager().active_count() >= kTimerLimit) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 sol::this_state ts(callback.lua_state());
-                results.push_back(make_error(ts, "timer_limit",
-                                             "timer limit reached"));
+                results.push_back(
+                    make_error(ts, "timer_limit", "timer limit reached"));
                 return results;
             }
 
@@ -656,8 +679,10 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             return results;
         });
 
-    shield.set_function("timer",
-        [manager, runtime](int interval_ms, sol::function callback) -> sol::variadic_results {
+    shield.set_function(
+        "timer",
+        [manager, runtime](int interval_ms,
+                           sol::function callback) -> sol::variadic_results {
             sol::variadic_results results;
             sol::state_view lua(callback.lua_state());
 
@@ -686,8 +711,8 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             if (runtime->timer_manager().active_count() >= kTimerLimit) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 sol::this_state ts(callback.lua_state());
-                results.push_back(make_error(ts, "timer_limit",
-                                             "timer limit reached"));
+                results.push_back(
+                    make_error(ts, "timer_limit", "timer limit reached"));
                 return results;
             }
 
@@ -697,7 +722,8 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             return results;
         });
 
-    shield.set_function("cancel_timer",
+    shield.set_function(
+        "cancel_timer",
         [runtime](sol::this_state state, uint64_t id) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
@@ -712,8 +738,9 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             const bool cancelled = runtime->timer_manager().cancel(id);
             results.push_back(sol::make_object(lua, cancelled));
             if (!cancelled) {
-                results.push_back(make_error(state, "timer_not_found",
-                                             "Timer not found or already completed"));
+                results.push_back(
+                    make_error(state, "timer_not_found",
+                               "Timer not found or already completed"));
             } else {
                 results.push_back(sol::make_object(lua, sol::nil));
             }
@@ -724,7 +751,8 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
     // timer to resume the current coroutine and then yields. The C primitive
     // _resume_after anchors the running coroutine against GC and arms the
     // timer; coroutine.yield suspends until the timer fires and resumes us.
-    shield.set_function("_resume_after",
+    shield.set_function(
+        "_resume_after",
         [manager, runtime](sol::this_state state, int delay_ms) {
             if (!runtime) {
                 return;
@@ -741,7 +769,8 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 service_id = manager->current_service_id();
             }
             auto& timer_mgr = runtime->timer_manager();
-            timer_mgr.schedule_once_fn(delay_ms,
+            timer_mgr.schedule_once_fn(
+                delay_ms,
                 [co, ref, manager]() {
                     int nres = 0;
                     const int status = lua_resume(co, nullptr, 0, &nres);
@@ -790,17 +819,18 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
         "    shield._resume_after(ms); coroutine.yield()\n"
         "  end\n"
         "end",
-        [](lua_State*, sol::protected_function_result pfr) -> sol::protected_function_result {
-            return pfr;
-        });
+        [](lua_State*, sol::protected_function_result pfr)
+            -> sol::protected_function_result { return pfr; });
 }
 
 void register_task_api(sol::table& shield, LuaServiceManager* manager,
-                        LuaRuntime* runtime) {
+                       LuaRuntime* runtime) {
     (void)runtime;
 
-    shield.set_function("fork",
-        [manager](sol::this_state state, sol::function fn) -> sol::variadic_results {
+    shield.set_function(
+        "fork",
+        [manager](sol::this_state state,
+                  sol::function fn) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
             if (!manager) {
@@ -813,8 +843,8 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
             if (manager->pending_task_count(service_id) >= kForkLimit) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 sol::this_state ts(fn.lua_state());
-                results.push_back(make_error(ts, "fork_limit",
-                                             "fork limit reached"));
+                results.push_back(
+                    make_error(ts, "fork_limit", "fork limit reached"));
                 return results;
             }
             // Capture the Lua function with its owning state_view. Execution
@@ -827,7 +857,8 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
                         fn();
                     } catch (const std::exception& e) {
                         auto& log = shield::log::get_logger("lua");
-                        SHIELD_LOG_ERROR(log, std::string("task error: ") + e.what());
+                        SHIELD_LOG_ERROR(
+                            log, std::string("task error: ") + e.what());
                     }
                 },
                 fn);  // raw_fn for coroutine wrapping
@@ -837,9 +868,9 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
 }
 
 void register_config_api(sol::table& shield) {
-    shield.set_function("config",
-        [](sol::this_state state,
-           std::string key,
+    shield.set_function(
+        "config",
+        [](sol::this_state state, std::string key,
            sol::optional<sol::object> default_value) -> sol::object {
             sol::state_view lua(state);
             auto& config = shield::config::global_config();
@@ -867,7 +898,8 @@ void register_config_api(sol::table& shield) {
                 if (pos == value.size()) {
                     return sol::make_object(lua, parsed);
                 }
-            } catch (const std::exception&) {}
+            } catch (const std::exception&) {
+            }
 
             try {
                 size_t pos = 0;
@@ -875,7 +907,8 @@ void register_config_api(sol::table& shield) {
                 if (pos == value.size()) {
                     return sol::make_object(lua, parsed);
                 }
-            } catch (const std::exception&) {}
+            } catch (const std::exception&) {
+            }
 
             return sol::make_object(lua, value);
         });
@@ -911,50 +944,33 @@ void register_log_api(sol::table& shield, LuaServiceManager* manager) {
     shield["log"] = log_table;
 }
 
-
-void register_shield_api(LuaRuntime& runtime) {
-    (void)runtime;
-}
+void register_shield_api(LuaRuntime& runtime) { (void)runtime; }
 
 namespace api {
 
 using LuaRuntime = shield::lua::LuaRuntime;
 using LuaServiceManager = shield::lua::LuaServiceManager;
 
-void register_service_api(LuaRuntime& runtime) {
-    (void)runtime;
-}
+void register_service_api(LuaRuntime& runtime) { (void)runtime; }
 
-void register_message_api(LuaRuntime& runtime) {
-    (void)runtime;
-}
+void register_message_api(LuaRuntime& runtime) { (void)runtime; }
 
-void register_timer_api(LuaRuntime& runtime) {
-    (void)runtime;
-}
+void register_timer_api(LuaRuntime& runtime) { (void)runtime; }
 
 void register_timer_api(sol::table& shield, LuaServiceManager* manager,
-                         LuaRuntime* runtime) {
+                        LuaRuntime* runtime) {
     (void)shield;
     (void)manager;
     (void)runtime;
 }
 
-void register_task_api(LuaRuntime& runtime) {
-    (void)runtime;
-}
+void register_task_api(LuaRuntime& runtime) { (void)runtime; }
 
-void register_config_api(LuaRuntime& runtime) {
-    (void)runtime;
-}
+void register_config_api(LuaRuntime& runtime) { (void)runtime; }
 
-void register_log_api(LuaRuntime& runtime) {
-    (void)runtime;
-}
+void register_log_api(LuaRuntime& runtime) { (void)runtime; }
 
-void register_gateway_api(LuaRuntime& runtime) {
-    (void)runtime;
-}
+void register_gateway_api(LuaRuntime& runtime) { (void)runtime; }
 
 }  // namespace api
 
@@ -974,11 +990,11 @@ struct SessionHandle {
 };
 
 static void register_session_handle(sol::state& lua) {
-    lua.new_usertype<SessionHandle>("SessionHandle",
-        sol::no_constructor,
-        "id", [](const SessionHandle& s) { return s.id; },
-        "remote_addr", [](const SessionHandle& s) { return s.remote_address; },
-        "send", [](SessionHandle& s, sol::object payload) -> sol::variadic_results {
+    lua.new_usertype<SessionHandle>(
+        "SessionHandle", sol::no_constructor, "id",
+        [](const SessionHandle& s) { return s.id; }, "remote_addr",
+        [](const SessionHandle& s) { return s.remote_address; }, "send",
+        [](SessionHandle& s, sol::object payload) -> sol::variadic_results {
             sol::variadic_results results;
             sol::state_view sv(payload.lua_state());
             if (s.is_closed) {
@@ -1003,10 +1019,10 @@ static void register_session_handle(sol::state& lua) {
             results.push_back(sol::make_object(sv, true));
             return results;
         },
-        "close", [](SessionHandle& s, sol::optional<std::string> reason) {
+        "close",
+        [](SessionHandle& s, sol::optional<std::string> reason) {
             s.is_closed = true;
-        }
-    );
+        });
 }
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -1015,9 +1031,10 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
     auto cluster = lua.create_table();
 
     // shield.cluster.query(node_id, service_name) -> service_id or nil, error
-    cluster.set_function("query",
+    cluster.set_function(
+        "query",
         [](sol::this_state state, std::string node_id,
-                  std::string service_name) -> sol::variadic_results {
+           std::string service_name) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
 
@@ -1029,21 +1046,23 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
                 return results;
             }
 
-            const auto reachable = cluster_manager->check_node_reachable(node_id);
+            const auto reachable =
+                cluster_manager->check_node_reachable(node_id);
             if (!reachable.empty()) {
                 results.push_back(sol::make_object(lua, sol::nil));
-                results.push_back(make_error(state, reachable,
-                                             "cluster node is not reachable: " +
-                                                 node_id));
+                results.push_back(
+                    make_error(state, reachable,
+                               "cluster node is not reachable: " + node_id));
                 return results;
             }
 
-            auto service_id = cluster_manager->query_remote(node_id, service_name);
+            auto service_id =
+                cluster_manager->query_remote(node_id, service_name);
             if (service_id.empty()) {
                 results.push_back(sol::make_object(lua, sol::nil));
-                results.push_back(make_error(state, "service_not_found",
-                                             "remote service not found: " +
-                                                 service_name));
+                results.push_back(
+                    make_error(state, "service_not_found",
+                               "remote service not found: " + service_name));
                 return results;
             }
 
@@ -1053,31 +1072,30 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
         });
 
     // shield.cluster.nodes() -> table of node info
-    cluster.set_function("nodes",
-        [](sol::this_state state) -> sol::table {
-            sol::state_view lua(state);
-            sol::table nodes = lua.create_table();
-            auto* cluster_manager = shield::cluster::global_cluster_manager();
-            if (!cluster_manager) {
-                return nodes;
-            }
-            int index = 1;
-            for (const auto& node : cluster_manager->nodes()) {
-                sol::table entry = lua.create_table();
-                entry["node_id"] = node.node_id;
-                entry["address"] = node.address;
-                entry["state"] = shield::cluster::node_state_name(node.state);
-                entry["last_heartbeat_ms"] = node.last_heartbeat_ms;
-                entry["connected_at_ms"] = node.connected_at_ms;
-                entry["epoch"] = node.epoch;
-                nodes[index++] = entry;
-            }
+    cluster.set_function("nodes", [](sol::this_state state) -> sol::table {
+        sol::state_view lua(state);
+        sol::table nodes = lua.create_table();
+        auto* cluster_manager = shield::cluster::global_cluster_manager();
+        if (!cluster_manager) {
             return nodes;
-        });
+        }
+        int index = 1;
+        for (const auto& node : cluster_manager->nodes()) {
+            sol::table entry = lua.create_table();
+            entry["node_id"] = node.node_id;
+            entry["address"] = node.address;
+            entry["state"] = shield::cluster::node_state_name(node.state);
+            entry["last_heartbeat_ms"] = node.last_heartbeat_ms;
+            entry["connected_at_ms"] = node.connected_at_ms;
+            entry["epoch"] = node.epoch;
+            nodes[index++] = entry;
+        }
+        return nodes;
+    });
 
     // shield.cluster.node_id() -> this node's ID
-    cluster.set_function("node_id",
-        [](sol::this_state state) -> sol::optional<std::string> {
+    cluster.set_function(
+        "node_id", [](sol::this_state state) -> sol::optional<std::string> {
             auto* cluster_manager = shield::cluster::global_cluster_manager();
             if (!cluster_manager || cluster_manager->node_id().empty()) {
                 return sol::nullopt;
@@ -1104,8 +1122,9 @@ void register_http_api(sol::table& shield) {
 
     // Helper: convert HttpClientResponse to Lua table.
     // Auto-parses JSON body into `data` field when Content-Type is JSON.
-    auto to_table = [](sol::state_view lua,
-                       const shield::net::HttpClientResponse& res) -> sol::table {
+    auto to_table =
+        [](sol::state_view lua,
+           const shield::net::HttpClientResponse& res) -> sol::table {
         sol::table result = lua.create_table();
         result["status"] = res.status_code;
         result["body"] = res.body;
@@ -1120,10 +1139,12 @@ void register_http_api(sol::table& shield) {
         // Auto-parse JSON response body into `data` field.
         if (!res.body.empty()) {
             auto ct_it = res.headers.find("Content-Type");
-            if (ct_it == res.headers.end()) ct_it = res.headers.find("content-type");
+            if (ct_it == res.headers.end())
+                ct_it = res.headers.find("content-type");
             bool is_json = false;
             if (ct_it != res.headers.end()) {
-                is_json = ct_it->second.find("application/json") != std::string::npos;
+                is_json =
+                    ct_it->second.find("application/json") != std::string::npos;
             }
             // Also try parsing if body starts with { or [
             if (!is_json && !res.body.empty() &&
@@ -1172,7 +1193,8 @@ void register_http_api(sol::table& shield) {
                 options.auth_basic_user = basic["user"].get<std::string>();
             }
             if (basic["password"].valid()) {
-                options.auth_basic_password = basic["password"].get<std::string>();
+                options.auth_basic_password =
+                    basic["password"].get<std::string>();
             }
         }
         if (opts["proxy"].valid()) {
@@ -1202,9 +1224,10 @@ void register_http_api(sol::table& shield) {
     // Full options: method, body, headers, timeout, auth_bearer,
     //   auth_basic={user,password}, proxy, verify_ssl, retry, retry_delay,
     //   follow_redirects, max_redirects
-    http.set_function("request",
+    http.set_function(
+        "request",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::optional<sol::table> opts) -> sol::table {
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
 
             shield::net::HttpClientOptions options;
@@ -1219,9 +1242,10 @@ void register_http_api(sol::table& shield) {
         });
 
     // Convenience: shield.http.get(url [, options]) -> response_table
-    http.set_function("get",
+    http.set_function(
+        "get",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::optional<sol::table> opts) -> sol::table {
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "GET";
@@ -1231,10 +1255,11 @@ void register_http_api(sol::table& shield) {
         });
 
     // Convenience: shield.http.post(url [, body] [, options]) -> response_table
-    http.set_function("post",
+    http.set_function(
+        "post",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::optional<std::string> body,
-           sol::optional<sol::table> opts) -> sol::table {
+                                 sol::optional<std::string> body,
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "POST";
@@ -1246,10 +1271,11 @@ void register_http_api(sol::table& shield) {
         });
 
     // Convenience: shield.http.put(url [, body] [, options]) -> response_table
-    http.set_function("put",
+    http.set_function(
+        "put",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::optional<std::string> body,
-           sol::optional<sol::table> opts) -> sol::table {
+                                 sol::optional<std::string> body,
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PUT";
@@ -1261,9 +1287,10 @@ void register_http_api(sol::table& shield) {
         });
 
     // Convenience: shield.http.delete(url [, options]) -> response_table
-    http.set_function("delete",
+    http.set_function(
+        "delete",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::optional<sol::table> opts) -> sol::table {
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "DELETE";
@@ -1272,11 +1299,13 @@ void register_http_api(sol::table& shield) {
             return to_table(lua, shield::net::HttpClient::request(options));
         });
 
-    // Convenience: shield.http.patch(url [, body] [, options]) -> response_table
-    http.set_function("patch",
+    // Convenience: shield.http.patch(url [, body] [, options]) ->
+    // response_table
+    http.set_function(
+        "patch",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::optional<std::string> body,
-           sol::optional<sol::table> opts) -> sol::table {
+                                 sol::optional<std::string> body,
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PATCH";
@@ -1294,9 +1323,11 @@ void register_http_api(sol::table& shield) {
 
     // shield.http.json(url, data [, options]) -> response_table
     // 通用 JSON POST（最常用场景）
-    http.set_function("json",
+    http.set_function(
+        "json",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::object data, sol::optional<sol::table> opts) -> sol::table {
+                                 sol::object data,
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "POST";
@@ -1310,9 +1341,11 @@ void register_http_api(sol::table& shield) {
         });
 
     // shield.http.json_post(url, data [, options]) -> response_table
-    http.set_function("json_post",
+    http.set_function(
+        "json_post",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::object data, sol::optional<sol::table> opts) -> sol::table {
+                                 sol::object data,
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "POST";
@@ -1325,9 +1358,11 @@ void register_http_api(sol::table& shield) {
         });
 
     // shield.http.json_put(url, data [, options]) -> response_table
-    http.set_function("json_put",
+    http.set_function(
+        "json_put",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::object data, sol::optional<sol::table> opts) -> sol::table {
+                                 sol::object data,
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PUT";
@@ -1340,9 +1375,11 @@ void register_http_api(sol::table& shield) {
         });
 
     // shield.http.json_patch(url, data [, options]) -> response_table
-    http.set_function("json_patch",
+    http.set_function(
+        "json_patch",
         [&to_table, &parse_opts](sol::this_state state, std::string url,
-           sol::object data, sol::optional<sol::table> opts) -> sol::table {
+                                 sol::object data,
+                                 sol::optional<sol::table> opts) -> sol::table {
             sol::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PATCH";
@@ -1357,10 +1394,11 @@ void register_http_api(sol::table& shield) {
     // shield.http.upload(url, files [, fields] [, timeout]) -> response_table
     // files: array of {field_name, file_path, content_type}
     // fields: table of form field key-value pairs
-    http.set_function("upload",
-        [&to_table](sol::this_state state, std::string url,
-           sol::table files, sol::optional<sol::table> fields,
-           sol::optional<int> timeout) -> sol::table {
+    http.set_function(
+        "upload",
+        [&to_table](sol::this_state state, std::string url, sol::table files,
+                    sol::optional<sol::table> fields,
+                    sol::optional<int> timeout) -> sol::table {
             sol::state_view lua(state);
 
             std::vector<shield::net::HttpFileField> file_list;
@@ -1368,9 +1406,11 @@ void register_http_api(sol::table& shield) {
                 if (entry.is<sol::table>()) {
                     sol::table f = entry.as<sol::table>();
                     shield::net::HttpFileField field;
-                    field.field_name = f.get_or<std::string>("field_name", "file");
+                    field.field_name =
+                        f.get_or<std::string>("field_name", "file");
                     field.file_path = f.get_or<std::string>("file_path", "");
-                    field.content_type = f.get_or<std::string>("content_type", "");
+                    field.content_type =
+                        f.get_or<std::string>("content_type", "");
                     file_list.push_back(std::move(field));
                 }
             }
@@ -1391,19 +1431,21 @@ void register_http_api(sol::table& shield) {
 
     // shield.http.download(url, output_path [, timeout]) -> response_table
     http.set_function("download",
-        [&to_table](sol::this_state state, std::string url,
-           std::string output_path, sol::optional<int> timeout) -> sol::table {
-            sol::state_view lua(state);
-            auto res = shield::net::HttpClient::download(
-                url, output_path, timeout.value_or(60));
-            return to_table(lua, res);
-        });
+                      [&to_table](sol::this_state state, std::string url,
+                                  std::string output_path,
+                                  sol::optional<int> timeout) -> sol::table {
+                          sol::state_view lua(state);
+                          auto res = shield::net::HttpClient::download(
+                              url, output_path, timeout.value_or(60));
+                          return to_table(lua, res);
+                      });
 
     // shield.http.post_form(url, fields [, timeout]) -> response_table
     // fields: table of key-value pairs for application/x-www-form-urlencoded
-    http.set_function("post_form",
-        [&to_table](sol::this_state state, std::string url,
-           sol::table fields, sol::optional<int> timeout) -> sol::table {
+    http.set_function(
+        "post_form",
+        [&to_table](sol::this_state state, std::string url, sol::table fields,
+                    sol::optional<int> timeout) -> sol::table {
             sol::state_view lua(state);
 
             std::unordered_map<std::string, std::string> field_map;
@@ -1413,8 +1455,8 @@ void register_http_api(sol::table& shield) {
                 }
             }
 
-            auto res = shield::net::HttpClient::post_form(
-                url, field_map, timeout.value_or(10));
+            auto res = shield::net::HttpClient::post_form(url, field_map,
+                                                          timeout.value_or(10));
             return to_table(lua, res);
         });
 
@@ -1428,32 +1470,36 @@ void register_http_api(sol::table& shield) {
     // Route registration stubs. Full integration passes the HttpServer
     // instance; these return true to indicate the call was accepted.
     auto register_route = [](sol::this_state state, std::string method,
-                              std::string path, sol::function handler) {
+                             std::string path, sol::function handler) {
         sol::state_view lua(state);
-        // TODO: store route in HttpServer instance when integrated with bootstrap
+        // TODO: store route in HttpServer instance when integrated with
+        // bootstrap
         return sol::make_object(lua, true);
     };
 
     httpd.set_function("get", [register_route](sol::this_state s, std::string p,
-                                                sol::function h) {
+                                               sol::function h) {
         return register_route(s, "GET", std::move(p), std::move(h));
     });
-    httpd.set_function("post", [register_route](sol::this_state s, std::string p,
-                                                 sol::function h) {
-        return register_route(s, "POST", std::move(p), std::move(h));
-    });
+    httpd.set_function(
+        "post",
+        [register_route](sol::this_state s, std::string p, sol::function h) {
+            return register_route(s, "POST", std::move(p), std::move(h));
+        });
     httpd.set_function("put", [register_route](sol::this_state s, std::string p,
-                                                sol::function h) {
+                                               sol::function h) {
         return register_route(s, "PUT", std::move(p), std::move(h));
     });
-    httpd.set_function("delete", [register_route](sol::this_state s, std::string p,
-                                                   sol::function h) {
-        return register_route(s, "DELETE", std::move(p), std::move(h));
-    });
-    httpd.set_function("patch", [register_route](sol::this_state s, std::string p,
-                                                  sol::function h) {
-        return register_route(s, "PATCH", std::move(p), std::move(h));
-    });
+    httpd.set_function(
+        "delete",
+        [register_route](sol::this_state s, std::string p, sol::function h) {
+            return register_route(s, "DELETE", std::move(p), std::move(h));
+        });
+    httpd.set_function(
+        "patch",
+        [register_route](sol::this_state s, std::string p, sol::function h) {
+            return register_route(s, "PATCH", std::move(p), std::move(h));
+        });
 
     shield["httpd"] = httpd;
 }
@@ -1474,7 +1520,8 @@ void register_plugin_api(sol::table& shield) {
             row["docs_url"] = p.docs_url;
             row["docs_description"] = p.docs_description;
             sol::table prov = lua.create_table();
-            for (size_t i = 0; i < p.provides.size(); ++i) prov[i + 1] = p.provides[i];
+            for (size_t i = 0; i < p.provides.size(); ++i)
+                prov[i + 1] = p.provides[i];
             row["provides"] = prov;
             t[t.size() + 1] = row;
         }
@@ -1497,37 +1544,40 @@ void register_plugin_api(sol::table& shield) {
     });
 
     // shield.plugin.instance(id) -> table or nil
-    plugin.set_function("instance", [](sol::this_state state, std::string id) -> sol::object {
-        sol::state_view lua(state);
-        for (const auto& in : shield::plugin::global_host().list_instances()) {
-            if (in.id == id) {
-                sol::table row = lua.create_table();
-                row["id"] = in.id;
-                row["package"] = in.package;
-                row["state"] = in.state;
-                row["required"] = in.required;
-                return row;
+    plugin.set_function(
+        "instance", [](sol::this_state state, std::string id) -> sol::object {
+            sol::state_view lua(state);
+            for (const auto& in :
+                 shield::plugin::global_host().list_instances()) {
+                if (in.id == id) {
+                    sol::table row = lua.create_table();
+                    row["id"] = in.id;
+                    row["package"] = in.package;
+                    row["state"] = in.state;
+                    row["required"] = in.required;
+                    return row;
+                }
             }
-        }
-        return sol::nil;
-    });
+            return sol::nil;
+        });
 
     // shield.plugin.binding(name) -> {instance_id, interface} or nil
-    plugin.set_function("binding", [](sol::this_state state, std::string name) -> sol::object {
-        sol::state_view lua(state);
-        auto b = shield::plugin::global_host().get_binding(name);
-        if (!b) return sol::nil;
-        sol::table row = lua.create_table();
-        row["instance_id"] = b->instance_id;
-        row["interface"] = b->interface_name;
-        return row;
-    });
+    plugin.set_function(
+        "binding", [](sol::this_state state, std::string name) -> sol::object {
+            sol::state_view lua(state);
+            auto b = shield::plugin::global_host().get_binding(name);
+            if (!b) return sol::nil;
+            sol::table row = lua.create_table();
+            row["instance_id"] = b->instance_id;
+            row["interface"] = b->interface_name;
+            return row;
+        });
 
     shield["plugin"] = plugin;
 }
 
 void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
-                               LuaRuntime* runtime) {
+                              LuaRuntime* runtime) {
     // Initialize HTTP client (libcurl global state).
     shield::net::HttpClient::initialize();
 
@@ -1552,22 +1602,22 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
 
     lua["shield"] = shield;
 
-    // Coroutine dispatch helper used by LuaRuntime::call_service_method_coroutine.
-    // It wraps a handler + args table into a coroutine whose body returns the
-    // handler's results, so a yield inside the handler (e.g. shield.sleep)
-    // suspends the whole coroutine and a later resume continues transparently.
-    // Defined as a global function directly so a script error can't take down
-    // register_api (call_service_method_coroutine falls back to sync dispatch
-    // if the helper is absent).
+    // Coroutine dispatch helper used by
+    // LuaRuntime::call_service_method_coroutine. It wraps a handler + args
+    // table into a coroutine whose body returns the handler's results, so a
+    // yield inside the handler (e.g. shield.sleep) suspends the whole coroutine
+    // and a later resume continues transparently. Defined as a global function
+    // directly so a script error can't take down register_api
+    // (call_service_method_coroutine falls back to sync dispatch if the helper
+    // is absent).
     lua.safe_script(
         "function __shield_run_handler(handler, args)\n"
         "  return coroutine.create(function()\n"
         "    return handler(table.unpack(args))\n"
         "  end)\n"
         "end",
-        [](lua_State*, sol::protected_function_result pfr) -> sol::protected_function_result {
-            return pfr;
-        });
+        [](lua_State*, sol::protected_function_result pfr)
+            -> sol::protected_function_result { return pfr; });
 }
 
 }  // namespace shield::lua

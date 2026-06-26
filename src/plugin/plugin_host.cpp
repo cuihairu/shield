@@ -2,17 +2,16 @@
 // pipeline orchestrator + host_api_v1 implementation.
 #include "shield/plugin/plugin_host.hpp"
 
-#include "schema_validator.hpp"
-#include "shield/log/logger.hpp"
-
-#include <lua.hpp>
-
 #include <algorithm>
 #include <deque>
+#include <lua.hpp>
 #include <map>
 #include <set>
 #include <string_view>
 #include <utility>
+
+#include "schema_validator.hpp"
+#include "shield/log/logger.hpp"
 
 namespace shield::plugin {
 
@@ -21,12 +20,18 @@ namespace fs = std::filesystem;
 namespace {
 const char* state_name(State s) {
     switch (s) {
-        case State::planned:     return "planned";
-        case State::loaded:      return "loaded";
-        case State::started:     return "started";
-        case State::unavailable: return "unavailable";
-        case State::failed:      return "failed";
-        case State::stopped:     return "stopped";
+        case State::planned:
+            return "planned";
+        case State::loaded:
+            return "loaded";
+        case State::started:
+            return "started";
+        case State::unavailable:
+            return "unavailable";
+        case State::failed:
+            return "failed";
+        case State::stopped:
+            return "stopped";
     }
     return "unknown";
 }
@@ -82,7 +87,8 @@ std::string validate_interface_declarations(const Manifest& manifest) {
         }
         if (!provided.insert(provide.interface_name).second) {
             return "plugin.manifest.invalid: package '" + manifest.id +
-                   "' declares duplicate interface '" + provide.interface_name + "'";
+                   "' declares duplicate interface '" + provide.interface_name +
+                   "'";
         }
     }
 
@@ -100,8 +106,7 @@ std::string validate_interface_declarations(const Manifest& manifest) {
     return {};
 }
 
-bool fail_or_unavailable(Instance& inst,
-                         std::string message,
+bool fail_or_unavailable(Instance& inst, std::string message,
                          std::string& error) {
     inst.last_error = std::move(message);
     if (inst.decl.required) {
@@ -189,7 +194,8 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
             return false;
         }
         if (!instance_ids.insert(d.id).second) {
-            error = "plugin.config.invalid: duplicate instance id '" + d.id + "'";
+            error =
+                "plugin.config.invalid: duplicate instance id '" + d.id + "'";
             return false;
         }
 
@@ -199,8 +205,8 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
             inst.id = d.id;
             inst.decl = d;
             inst.state = State::unavailable;
-            inst.last_error = "plugin.package.not_found: package '" + d.package +
-                              "' for instance '" + d.id + "'";
+            inst.last_error = "plugin.package.not_found: package '" +
+                              d.package + "' for instance '" + d.id + "'";
             if (d.required) {
                 error = inst.last_error;
                 return false;
@@ -232,14 +238,13 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
             }
             continue;
         }
-        auto cfg_err = validate_config(inst.package->manifest.config_schema,
-                                       cfg_json);
+        auto cfg_err =
+            validate_config(inst.package->manifest.config_schema, cfg_json);
         if (!cfg_err.empty()) {
-            if (!fail_or_unavailable(
-                    inst,
-                    "plugin.config.invalid: instance '" + inst.id + "': " +
-                        cfg_err,
-                    error)) {
+            if (!fail_or_unavailable(inst,
+                                     "plugin.config.invalid: instance '" +
+                                         inst.id + "': " + cfg_err,
+                                     error)) {
                 return false;
             }
             continue;
@@ -256,7 +261,8 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
                 if (!fail_or_unavailable(
                         inst,
                         "plugin.dependency.undeclared: instance '" + inst.id +
-                            "' configured undeclared dependency '" + dep_name + "'",
+                            "' configured undeclared dependency '" + dep_name +
+                            "'",
                         error)) {
                     return false;
                 }
@@ -317,7 +323,8 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
             return false;
         }
         if (!binding_names.insert(b.logical).second) {
-            error = "plugin.binding.invalid: duplicate binding '" + b.logical + "'";
+            error =
+                "plugin.binding.invalid: duplicate binding '" + b.logical + "'";
             return false;
         }
         if (!find_instance(b.instance_id)) {
@@ -340,17 +347,21 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
     {
         std::deque<std::string> q;
         auto work = indeg;
-        for (const auto& [k, v] : work) if (v == 0) q.push_back(k);
+        for (const auto& [k, v] : work)
+            if (v == 0) q.push_back(k);
         size_t visited = 0;
         while (!q.empty()) {
-            auto n = q.front(); q.pop_front(); ++visited;
+            auto n = q.front();
+            q.pop_front();
+            ++visited;
             auto it = adj.find(n);
             if (it != adj.end())
                 for (const auto& m : it->second)
                     if (--work[m] == 0) q.push_back(m);
         }
         if (visited != instances_.size()) {
-            error = "plugin.dependency.cycle: circular dependency among instances";
+            error =
+                "plugin.dependency.cycle: circular dependency among instances";
             return false;
         }
     }
@@ -361,10 +372,12 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
     impl_->start_order.reserve(instances_.size());
     {
         std::deque<std::string> q;
-        for (const auto& [k, v] : indeg) if (v == 0) q.push_back(k);
+        for (const auto& [k, v] : indeg)
+            if (v == 0) q.push_back(k);
         auto remaining = indeg;
         while (!q.empty()) {
-            auto n = q.front(); q.pop_front();
+            auto n = q.front();
+            q.pop_front();
             impl_->start_order.push_back(n);
             auto it = adj.find(n);
             if (it != adj.end())
@@ -398,12 +411,11 @@ bool PluginHost::load_all(std::string& error) {
         auto get = reinterpret_cast<get_fn>(
             inst.lib.resolve(inst.package->manifest.entry.c_str()));
         if (!get) {
-            if (!fail_or_unavailable(
-                    inst,
-                    "plugin.entry.missing: symbol '" +
-                        inst.package->manifest.entry + "' not found in " +
-                        libpath.string(),
-                    error)) {
+            if (!fail_or_unavailable(inst,
+                                     "plugin.entry.missing: symbol '" +
+                                         inst.package->manifest.entry +
+                                         "' not found in " + libpath.string(),
+                                     error)) {
                 return false;
             }
             continue;
@@ -411,8 +423,7 @@ bool PluginHost::load_all(std::string& error) {
         inst.abi = get();
         if (!inst.abi || inst.abi->abi_version != SHIELD_PLUGIN_ABI_VERSION) {
             if (!fail_or_unavailable(
-                    inst,
-                    "plugin.abi.mismatch: " + inst.id + " (abi_version)",
+                    inst, "plugin.abi.mismatch: " + inst.id + " (abi_version)",
                     error)) {
                 return false;
             }
@@ -420,8 +431,7 @@ bool PluginHost::load_all(std::string& error) {
         }
         if (inst.abi->struct_size < sizeof(shield_plugin_abi_v1)) {
             if (!fail_or_unavailable(
-                    inst,
-                    "plugin.abi.mismatch: " + inst.id + " (struct_size)",
+                    inst, "plugin.abi.mismatch: " + inst.id + " (struct_size)",
                     error)) {
                 return false;
             }
@@ -461,25 +471,38 @@ const shield_host_api_v1& PluginHost::host_api_table() {
     api.log = [](shield_log_level lv, const char* pkg, const char* inst,
                  const char* msg) {
         auto& log = shield::log::get_logger(pkg ? pkg : "plugin");
-        std::string m = (inst ? std::string("[") + inst + "] " : std::string()) +
-                        (msg ? msg : "");
+        std::string m =
+            (inst ? std::string("[") + inst + "] " : std::string()) +
+            (msg ? msg : "");
         switch (lv) {
-            case SHIELD_LOG_DEBUG: SHIELD_LOG_DEBUG(log, m); break;
-            case SHIELD_LOG_INFO:  SHIELD_LOG_INFO(log, m); break;
-            case SHIELD_LOG_WARN:  SHIELD_LOG_WARNING(log, m); break;
-            case SHIELD_LOG_ERROR: SHIELD_LOG_ERROR(log, m); break;
+            case SHIELD_LOG_DEBUG:
+                SHIELD_LOG_DEBUG(log, m);
+                break;
+            case SHIELD_LOG_INFO:
+                SHIELD_LOG_INFO(log, m);
+                break;
+            case SHIELD_LOG_WARN:
+                SHIELD_LOG_WARNING(log, m);
+                break;
+            case SHIELD_LOG_ERROR:
+                SHIELD_LOG_ERROR(log, m);
+                break;
         }
     };
     api.report_error = [](const shield_error_v1* err) {
         if (!err) return;
-        auto& log = shield::log::get_logger(err->package_id ? err->package_id : "plugin");
-        SHIELD_LOG_ERROR(log, std::string("plugin error [") +
-                                 (err->code ? err->code : "?") + "] " +
-                                 (err->message ? err->message : "") +
-                                 (err->instance_id ? " instance=" + std::string(err->instance_id) : "") +
-                                 (err->phase ? " phase=" + std::string(err->phase) : ""));
+        auto& log = shield::log::get_logger(err->package_id ? err->package_id
+                                                            : "plugin");
+        SHIELD_LOG_ERROR(
+            log,
+            std::string("plugin error [") + (err->code ? err->code : "?") +
+                "] " + (err->message ? err->message : "") +
+                (err->instance_id ? " instance=" + std::string(err->instance_id)
+                                  : "") +
+                (err->phase ? " phase=" + std::string(err->phase) : ""));
     };
-    api.config_get = [](shield_plugin_context_v1* ctx, const char* path) -> const char* {
+    api.config_get = [](shield_plugin_context_v1* ctx,
+                        const char* path) -> const char* {
         if (!ctx || !path) return nullptr;
         auto* c = reinterpret_cast<CtxBundle*>(ctx);
         if (!c || !c->instance) return nullptr;
@@ -489,8 +512,9 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         size_t start = 0;
         while (start < p.size() && cur->is_object()) {
             size_t dot = p.find('.', start);
-            std::string seg = (dot == std::string::npos) ? p.substr(start)
-                                                         : p.substr(start, dot - start);
+            std::string seg = (dot == std::string::npos)
+                                  ? p.substr(start)
+                                  : p.substr(start, dot - start);
             if (!cur->contains(seg)) return nullptr;
             cur = &(*cur)[seg];
             if (dot == std::string::npos) break;
@@ -498,8 +522,10 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         }
         // Contract: valid until next config_get on the same thread.
         thread_local std::string scratch;
-        if (cur->is_string()) scratch = cur->get<std::string>();
-        else scratch = cur->dump();
+        if (cur->is_string())
+            scratch = cur->get<std::string>();
+        else
+            scratch = cur->dump();
         return scratch.c_str();
     };
     api.dependency = [](shield_plugin_context_v1* ctx, const char* name,
@@ -513,7 +539,8 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         const auto* req = find_require(c->instance->package->manifest, name);
         if (!req || req->interface_name != iface) return nullptr;
         const Instance* dep = c->host->find_instance(it->second);
-        if (!dep || !dep->handle || dep->state != State::started) return nullptr;
+        if (!dep || !dep->handle || dep->state != State::started)
+            return nullptr;
         shield_error_v1 e{};
         return dep->handle->get_interface(dep->handle, iface, &e);
     };
@@ -539,7 +566,10 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         std::replace(s.begin(), s.end(), '\\', '/');
 #endif
         lua_getglobal(L, "package");
-        if (!lua_istable(L, -1)) { lua_pop(L, 1); return -1; }
+        if (!lua_istable(L, -1)) {
+            lua_pop(L, 1);
+            return -1;
+        }
         const char* field = is_cpath ? "cpath" : "path";
         lua_getfield(L, -1, field);
         std::string cur = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
@@ -590,22 +620,20 @@ bool PluginHost::create_all(std::string& error) {
         }
         if (inst.handle->struct_size < sizeof(shield_plugin_instance_v1)) {
             release_unstarted_handle(inst);
-            if (!fail_or_unavailable(
-                    inst,
-                    "plugin.abi.mismatch: " + inst.id +
-                        " (instance struct_size)",
-                    error)) {
+            if (!fail_or_unavailable(inst,
+                                     "plugin.abi.mismatch: " + inst.id +
+                                         " (instance struct_size)",
+                                     error)) {
                 return false;
             }
             continue;
         }
         if (!inst.handle->get_interface) {
             release_unstarted_handle(inst);
-            if (!fail_or_unavailable(
-                    inst,
-                    "plugin.create.failed: " + inst.id +
-                        " missing get_interface",
-                    error)) {
+            if (!fail_or_unavailable(inst,
+                                     "plugin.create.failed: " + inst.id +
+                                         " missing get_interface",
+                                     error)) {
                 return false;
             }
             continue;
@@ -709,7 +737,10 @@ void PluginHost::inject_lua_paths(lua_State* L) {
             std::replace(s.begin(), s.end(), '\\', '/');
 #endif
             lua_getglobal(L, "package");
-            if (!lua_istable(L, -1)) { lua_pop(L, 1); continue; }
+            if (!lua_istable(L, -1)) {
+                lua_pop(L, 1);
+                continue;
+            }
             lua_getfield(L, -1, "path");
             std::string cur = lua_isstring(L, -1) ? lua_tostring(L, -1) : "";
             lua_pop(L, 1);
@@ -736,7 +767,8 @@ bool PluginHost::register_lua_all(lua_State* L, std::string& error) {
         if (!inst->handle->register_lua) continue;
         shield_error_v1 e{};
         if (inst->handle->register_lua(inst->handle, L, &e) != 0) {
-            std::string msg = std::string("plugin.lua_register.failed: ") + inst->id +
+            std::string msg = std::string("plugin.lua_register.failed: ") +
+                              inst->id +
                               (e.code ? " [" + std::string(e.code) + "]" : "") +
                               (e.message ? " " + std::string(e.message) : "");
             if (inst->decl.required) {
@@ -809,7 +841,8 @@ void PluginHost::shutdown() {
     // the PluginHost itself is destroyed (process teardown — by then every
     // data pool that resolved a vtable has already been torn down, because
     // global_host() is constructed before database() in bootstrap).
-    for (auto it = impl_->start_order.rbegin(); it != impl_->start_order.rend(); ++it) {
+    for (auto it = impl_->start_order.rbegin(); it != impl_->start_order.rend();
+         ++it) {
         Instance* inst = find_instance_mut(*it);
         if (!inst) continue;
         if (inst->handle && inst->state == State::started) {
@@ -829,9 +862,11 @@ const void* PluginHost::get_binding_vtable(std::string_view binding,
     for (const auto& b : impl_->bindings) {
         if (b.logical == binding) {
             const Instance* inst = find_instance(b.instance_id);
-            if (!inst || !inst->handle || inst->state != State::started) return nullptr;
+            if (!inst || !inst->handle || inst->state != State::started)
+                return nullptr;
             shield_error_v1 e{};
-            return inst->handle->get_interface(inst->handle, interface_name, &e);
+            return inst->handle->get_interface(inst->handle, interface_name,
+                                               &e);
         }
     }
     return nullptr;
@@ -878,7 +913,8 @@ std::vector<PackageInfo> PluginHost::list_packages() const {
         info.id = p.manifest.id;
         info.version = p.manifest.version;
         info.kind = p.manifest.kind;
-        for (const auto& pr : p.manifest.provides) info.provides.push_back(pr.interface_name);
+        for (const auto& pr : p.manifest.provides)
+            info.provides.push_back(pr.interface_name);
         info.docs_url = p.manifest.documentation.url;
         info.docs_description = p.manifest.documentation.description;
         v.push_back(std::move(info));
@@ -899,15 +935,18 @@ std::vector<InstanceInfo> PluginHost::list_instances() const {
     return v;
 }
 
-std::optional<BindingInfo> PluginHost::get_binding(std::string_view name) const {
+std::optional<BindingInfo> PluginHost::get_binding(
+    std::string_view name) const {
     for (const auto& b : impl_->bindings) {
         if (b.logical == name) {
             BindingInfo info;
             info.logical = b.logical;
             info.instance_id = b.instance_id;
             const Instance* inst = find_instance(b.instance_id);
-            if (inst && inst->package && !inst->package->manifest.provides.empty())
-                info.interface_name = inst->package->manifest.provides.front().interface_name;
+            if (inst && inst->package &&
+                !inst->package->manifest.provides.empty())
+                info.interface_name =
+                    inst->package->manifest.provides.front().interface_name;
             return info;
         }
     }

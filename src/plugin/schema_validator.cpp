@@ -7,11 +7,11 @@ namespace shield::plugin {
 
 namespace {
 bool check_type(const std::string& want, const nlohmann::json& v) {
-    if (want == "object")  return v.is_object();
-    if (want == "array")   return v.is_array();
-    if (want == "string")  return v.is_string();
+    if (want == "object") return v.is_object();
+    if (want == "array") return v.is_array();
+    if (want == "string") return v.is_string();
     if (want == "integer") return v.is_number_integer();
-    if (want == "number")  return v.is_number();
+    if (want == "number") return v.is_number();
     if (want == "boolean") return v.is_boolean();
     return true;  // unknown types: lenient (forward-compat)
 }
@@ -45,9 +45,9 @@ std::string validate_config(const nlohmann::json& schema,
             schema.at("properties").is_object()) {
             for (auto it = value.begin(); it != value.end(); ++it) {
                 if (schema.at("properties").contains(it.key())) {
-                    auto err = validate_config(
-                        schema.at("properties").at(it.key()), it.value(),
-                        join_path(path, it.key()));
+                    auto err =
+                        validate_config(schema.at("properties").at(it.key()),
+                                        it.value(), join_path(path, it.key()));
                     if (!err.empty()) return err;
                 }
             }
@@ -68,7 +68,10 @@ std::string validate_config(const nlohmann::json& schema,
     if (schema.contains("enum") && schema.at("enum").is_array()) {
         bool ok = false;
         for (const auto& e : schema.at("enum")) {
-            if (e == value) { ok = true; break; }
+            if (e == value) {
+                ok = true;
+                break;
+            }
         }
         if (!ok) return path + ": value not in enum";
     }
@@ -102,8 +105,7 @@ void apply_defaults(const nlohmann::json& schema, nlohmann::json& value) {
     }
 }
 
-void collect_secret_paths(const nlohmann::json& schema,
-                          const std::string& path,
+void collect_secret_paths(const nlohmann::json& schema, const std::string& path,
                           std::vector<std::string>& out) {
     if (!schema.is_object()) return;
     if (schema.value("secret", false)) {

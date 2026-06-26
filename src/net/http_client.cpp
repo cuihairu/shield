@@ -1,14 +1,14 @@
 // [SHIELD_NET] HTTP client implementation using libcurl
 #include "shield/net/http_client.hpp"
 
-#include "shield/log/logger.hpp"
-
 #include <curl/curl.h>
 
 #include <algorithm>
 #include <chrono>
 #include <mutex>
 #include <thread>
+
+#include "shield/log/logger.hpp"
 
 namespace shield::net {
 
@@ -17,14 +17,11 @@ std::once_flag g_curl_init;
 }  // namespace
 
 void HttpClient::initialize() {
-    std::call_once(g_curl_init, []() {
-        curl_global_init(CURL_GLOBAL_DEFAULT);
-    });
+    std::call_once(g_curl_init,
+                   []() { curl_global_init(CURL_GLOBAL_DEFAULT); });
 }
 
-void HttpClient::cleanup() {
-    curl_global_cleanup();
-}
+void HttpClient::cleanup() { curl_global_cleanup(); }
 
 namespace {
 
@@ -36,8 +33,10 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
 }
 
 // Callback for reading response headers.
-size_t header_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
-    auto* headers = static_cast<std::unordered_map<std::string, std::string>*>(userdata);
+size_t header_callback(char* buffer, size_t size, size_t nitems,
+                       void* userdata) {
+    auto* headers =
+        static_cast<std::unordered_map<std::string, std::string>*>(userdata);
     std::string line(buffer, size * nitems);
 
     // Parse "Key: Value\r\n"
@@ -72,13 +71,16 @@ HttpClientResponse HttpClient::request(const HttpClientOptions& options) {
     curl_easy_setopt(curl, CURLOPT_URL, options.url.c_str());
 
     // Set timeout.
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(options.timeout_seconds));
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(options.timeout_seconds));
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT,
+                     static_cast<long>(options.timeout_seconds));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
+                     static_cast<long>(options.timeout_seconds));
 
     // Follow redirects.
     if (options.follow_redirects) {
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_MAXREDIRS, static_cast<long>(options.max_redirects));
+        curl_easy_setopt(curl, CURLOPT_MAXREDIRS,
+                         static_cast<long>(options.max_redirects));
     }
 
     if (!options.proxy.empty()) {
@@ -90,7 +92,8 @@ HttpClientResponse HttpClient::request(const HttpClientOptions& options) {
 
     if (!options.auth_basic_user.empty()) {
         curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
-        curl_easy_setopt(curl, CURLOPT_USERNAME, options.auth_basic_user.c_str());
+        curl_easy_setopt(curl, CURLOPT_USERNAME,
+                         options.auth_basic_user.c_str());
         curl_easy_setopt(curl, CURLOPT_PASSWORD,
                          options.auth_basic_password.c_str());
     }
@@ -186,7 +189,8 @@ HttpClientResponse HttpClient::request(const HttpClientOptions& options) {
     return response;
 }
 
-HttpClientResponse HttpClient::get(const std::string& url, int timeout_seconds) {
+HttpClientResponse HttpClient::get(const std::string& url,
+                                   int timeout_seconds) {
     HttpClientOptions opts;
     opts.method = "GET";
     opts.url = url;
@@ -195,8 +199,8 @@ HttpClientResponse HttpClient::get(const std::string& url, int timeout_seconds) 
 }
 
 HttpClientResponse HttpClient::post_json(const std::string& url,
-                                          const std::string& json_body,
-                                          int timeout_seconds) {
+                                         const std::string& json_body,
+                                         int timeout_seconds) {
     HttpClientOptions opts;
     opts.method = "POST";
     opts.url = url;
@@ -207,8 +211,8 @@ HttpClientResponse HttpClient::post_json(const std::string& url,
 }
 
 HttpClientResponse HttpClient::put_json(const std::string& url,
-                                         const std::string& json_body,
-                                         int timeout_seconds) {
+                                        const std::string& json_body,
+                                        int timeout_seconds) {
     HttpClientOptions opts;
     opts.method = "PUT";
     opts.url = url;
@@ -218,7 +222,8 @@ HttpClientResponse HttpClient::put_json(const std::string& url,
     return request(opts);
 }
 
-HttpClientResponse HttpClient::del(const std::string& url, int timeout_seconds) {
+HttpClientResponse HttpClient::del(const std::string& url,
+                                   int timeout_seconds) {
     HttpClientOptions opts;
     opts.method = "DELETE";
     opts.url = url;
@@ -227,8 +232,8 @@ HttpClientResponse HttpClient::del(const std::string& url, int timeout_seconds) 
 }
 
 HttpClientResponse HttpClient::patch_json(const std::string& url,
-                                           const std::string& json_body,
-                                           int timeout_seconds) {
+                                          const std::string& json_body,
+                                          int timeout_seconds) {
     HttpClientOptions opts;
     opts.method = "PATCH";
     opts.url = url;
@@ -238,10 +243,10 @@ HttpClientResponse HttpClient::patch_json(const std::string& url,
     return request(opts);
 }
 
-HttpClientResponse HttpClient::upload(const std::string& url,
-                                       const std::vector<HttpFileField>& files,
-                                       const std::unordered_map<std::string, std::string>& fields,
-                                       int timeout_seconds) {
+HttpClientResponse HttpClient::upload(
+    const std::string& url, const std::vector<HttpFileField>& files,
+    const std::unordered_map<std::string, std::string>& fields,
+    int timeout_seconds) {
     HttpClientResponse response;
 
     CURL* curl = curl_easy_init();
@@ -252,7 +257,8 @@ HttpClientResponse HttpClient::upload(const std::string& url,
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(timeout_seconds));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
+                     static_cast<long>(timeout_seconds));
 
     // Build multipart form.
     curl_mime* mime = curl_mime_init(curl);
@@ -300,8 +306,8 @@ HttpClientResponse HttpClient::upload(const std::string& url,
 }
 
 HttpClientResponse HttpClient::download(const std::string& url,
-                                         const std::string& output_path,
-                                         int timeout_seconds) {
+                                        const std::string& output_path,
+                                        int timeout_seconds) {
     HttpClientResponse response;
 
     CURL* curl = curl_easy_init();
@@ -319,7 +325,8 @@ HttpClientResponse HttpClient::download(const std::string& url,
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, static_cast<long>(timeout_seconds));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
+                     static_cast<long>(timeout_seconds));
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Shield/1.0");
@@ -349,9 +356,10 @@ HttpClientResponse HttpClient::download(const std::string& url,
     return response;
 }
 
-HttpClientResponse HttpClient::post_form(const std::string& url,
-                                          const std::unordered_map<std::string, std::string>& fields,
-                                          int timeout_seconds) {
+HttpClientResponse HttpClient::post_form(
+    const std::string& url,
+    const std::unordered_map<std::string, std::string>& fields,
+    int timeout_seconds) {
     HttpClientOptions opts;
     opts.method = "POST";
     opts.url = url;
@@ -368,11 +376,12 @@ HttpClientResponse HttpClient::post_form(const std::string& url,
     for (const auto& [key, value] : fields) {
         if (!form_body.empty()) form_body += "&";
         char* encoded_key = curl_easy_escape(encoder, key.c_str(),
-                                               static_cast<int>(key.size()));
+                                             static_cast<int>(key.size()));
         char* encoded_val = curl_easy_escape(encoder, value.c_str(),
-                                               static_cast<int>(value.size()));
+                                             static_cast<int>(value.size()));
         if (encoded_key && encoded_val) {
-            form_body += std::string(encoded_key) + "=" + std::string(encoded_val);
+            form_body +=
+                std::string(encoded_key) + "=" + std::string(encoded_val);
         }
         if (encoded_key) curl_free(encoded_key);
         if (encoded_val) curl_free(encoded_val);

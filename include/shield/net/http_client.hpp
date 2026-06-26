@@ -30,22 +30,22 @@ struct HttpClientOptions {
     std::string body;
     std::unordered_map<std::string, std::string> headers;
     std::unordered_map<std::string, std::string> form_fields;  // form data
-    std::vector<HttpFileField> files;                           // multipart uploads
+    std::vector<HttpFileField> files;  // multipart uploads
     int timeout_seconds = 10;
     bool follow_redirects = true;
     int max_redirects = 5;
     // Auth
-    std::string auth_bearer;           // Bearer token
-    std::string auth_basic_user;       // Basic auth username
-    std::string auth_basic_password;   // Basic auth password
+    std::string auth_bearer;          // Bearer token
+    std::string auth_basic_user;      // Basic auth username
+    std::string auth_basic_password;  // Basic auth password
     // Proxy
-    std::string proxy;                 // proxy URL (e.g. "http://proxy:8080")
+    std::string proxy;  // proxy URL (e.g. "http://proxy:8080")
     // SSL
     bool verify_ssl = true;
-    std::string ca_cert_path;          // custom CA cert file
+    std::string ca_cert_path;  // custom CA cert file
     // Retry
-    int retry_count = 0;               // number of retries on failure
-    int retry_delay_ms = 1000;         // delay between retries
+    int retry_count = 0;        // number of retries on failure
+    int retry_delay_ms = 1000;  // delay between retries
 };
 
 /// @brief HTTP client using libcurl.
@@ -97,10 +97,10 @@ public:
                                          int timeout_seconds = 10);
 
     /// @brief Upload files via multipart/form-data POST
-    static HttpClientResponse upload(const std::string& url,
-                                     const std::vector<HttpFileField>& files,
-                                     const std::unordered_map<std::string, std::string>& fields = {},
-                                     int timeout_seconds = 60);
+    static HttpClientResponse upload(
+        const std::string& url, const std::vector<HttpFileField>& files,
+        const std::unordered_map<std::string, std::string>& fields = {},
+        int timeout_seconds = 60);
 
     /// @brief Download a file to disk
     static HttpClientResponse download(const std::string& url,
@@ -108,9 +108,10 @@ public:
                                        int timeout_seconds = 60);
 
     /// @brief POST form data (application/x-www-form-urlencoded)
-    static HttpClientResponse post_form(const std::string& url,
-                                        const std::unordered_map<std::string, std::string>& fields,
-                                        int timeout_seconds = 10);
+    static HttpClientResponse post_form(
+        const std::string& url,
+        const std::unordered_map<std::string, std::string>& fields,
+        int timeout_seconds = 10);
 };
 
 }  // namespace shield::net

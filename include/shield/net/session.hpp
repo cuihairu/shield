@@ -1,8 +1,8 @@
 // [SHIELD_NET] Session types
 #pragma once
 
-#include <boost/asio/ip/tcp.hpp>
 #include <atomic>
+#include <boost/asio/ip/tcp.hpp>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -26,19 +26,17 @@ struct RemoteAddress {
     std::string ip;
     uint16_t port;
 
-    std::string to_string() const {
-        return ip + ":" + std::to_string(port);
-    }
+    std::string to_string() const { return ip + ":" + std::to_string(port); }
 };
 
 /// @brief Session close reasons
 namespace CloseReason {
-    constexpr const char* NORMAL = "normal";
-    constexpr const char* TIMEOUT = "timeout";
-    constexpr const char* ERROR_REASON = "error";
-    constexpr const char* KICKED = "kicked";
-    constexpr const char* SHUTDOWN = "shutdown";
-}
+constexpr const char* NORMAL = "normal";
+constexpr const char* TIMEOUT = "timeout";
+constexpr const char* ERROR_REASON = "error";
+constexpr const char* KICKED = "kicked";
+constexpr const char* SHUTDOWN = "shutdown";
+}  // namespace CloseReason
 
 /// @brief Session interface
 class Session {
@@ -73,16 +71,18 @@ public:
 /// @brief Session callbacks
 struct SessionCallbacks {
     std::function<void(std::shared_ptr<Session>)> on_connect;
-    std::function<void(std::shared_ptr<Session>, std::string_view)> on_disconnect;
-    std::function<void(std::shared_ptr<Session>, const std::vector<uint8_t>&)> on_message;
+    std::function<void(std::shared_ptr<Session>, std::string_view)>
+        on_disconnect;
+    std::function<void(std::shared_ptr<Session>, const std::vector<uint8_t>&)>
+        on_message;
 };
 
 /// @brief TCP Session
-class TcpSession : public Session, public std::enable_shared_from_this<TcpSession> {
+class TcpSession : public Session,
+                   public std::enable_shared_from_this<TcpSession> {
 public:
     TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
-              SessionCallbacks callbacks,
-              size_t max_frame_size = 0);
+               SessionCallbacks callbacks, size_t max_frame_size = 0);
 
     SessionId id() const override { return id_; }
     RemoteAddress remote_addr() const override { return remote_addr_; }

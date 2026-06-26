@@ -13,8 +13,7 @@ class Error {
 public:
     Error() = default;
 
-    Error(std::string code, std::string message,
-          bool retryable = false,
+    Error(std::string code, std::string message, bool retryable = false,
           std::optional<std::string> detail = std::nullopt)
         : code_(std::move(code)),
           message_(std::move(message)),
@@ -70,21 +69,21 @@ private:
 
 // Common error codes
 namespace errors {
-    constexpr const char* TIMEOUT = "timeout";
-    constexpr const char* NOT_FOUND = "not_found";
-    constexpr const char* ALREADY_EXISTS = "already_exists";
-    constexpr const char* INVALID_ARGUMENT = "invalid_argument";
-    constexpr const char* PERMISSION_DENIED = "permission_denied";
-    constexpr const char* UNAVAILABLE = "unavailable";
-    constexpr const char* INTERNAL = "internal";
-    constexpr const char* SERVICE_NOT_FOUND = "service_not_found";
-    constexpr const char* SERVICE_EXITING = "service_exiting";
-    constexpr const char* MAILBOX_FULL = "mailbox_full";
-    constexpr const char* MESSAGE_TOO_LARGE = "message_too_large";
-    constexpr const char* SERIALIZATION_FAILED = "serialization_failed";
-    constexpr const char* LUA_SCRIPT_ERROR = "lua_script_error";
-    constexpr const char* LUA_TIMEOUT = "lua_timeout";
-    constexpr const char* MODULE_UNAVAILABLE = "module_unavailable";
+constexpr const char* TIMEOUT = "timeout";
+constexpr const char* NOT_FOUND = "not_found";
+constexpr const char* ALREADY_EXISTS = "already_exists";
+constexpr const char* INVALID_ARGUMENT = "invalid_argument";
+constexpr const char* PERMISSION_DENIED = "permission_denied";
+constexpr const char* UNAVAILABLE = "unavailable";
+constexpr const char* INTERNAL = "internal";
+constexpr const char* SERVICE_NOT_FOUND = "service_not_found";
+constexpr const char* SERVICE_EXITING = "service_exiting";
+constexpr const char* MAILBOX_FULL = "mailbox_full";
+constexpr const char* MESSAGE_TOO_LARGE = "message_too_large";
+constexpr const char* SERIALIZATION_FAILED = "serialization_failed";
+constexpr const char* LUA_SCRIPT_ERROR = "lua_script_error";
+constexpr const char* LUA_TIMEOUT = "lua_timeout";
+constexpr const char* MODULE_UNAVAILABLE = "module_unavailable";
 }  // namespace errors
 
 }  // namespace shield::base

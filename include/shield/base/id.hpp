@@ -20,9 +20,7 @@ public:
     bool is_valid() const { return value_ != 0; }
     explicit operator bool() const { return is_valid(); }
 
-    std::string to_string() const {
-        return "svc:" + std::to_string(value_);
-    }
+    std::string to_string() const { return "svc:" + std::to_string(value_); }
 
     static ServiceId generate();
 

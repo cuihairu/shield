@@ -17,30 +17,23 @@ using TimePoint = std::chrono::steady_clock::time_point;
 using Clock = std::chrono::steady_clock;
 
 /// @brief Get current monotonic time
-inline TimePoint now() {
-    return Clock::now();
-}
+inline TimePoint now() { return Clock::now(); }
 
 /// @brief Get current time in milliseconds since epoch
 inline int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
 }
 
 /// @brief Convert duration to milliseconds
-inline int64_t to_millis(Duration d) {
-    return d.count();
-}
+inline int64_t to_millis(Duration d) { return d.count(); }
 
 /// @brief Convert milliseconds to duration
-inline Duration from_millis(int64_t ms) {
-    return Duration(ms);
-}
+inline Duration from_millis(int64_t ms) { return Duration(ms); }
 
 /// @brief Check if a timeout has expired
-inline bool is_expired(TimePoint deadline) {
-    return now() >= deadline;
-}
+inline bool is_expired(TimePoint deadline) { return now() >= deadline; }
 
 /// @brief Calculate remaining time until deadline
 inline Duration remaining(TimePoint deadline) {

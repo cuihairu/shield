@@ -1,26 +1,25 @@
 // [SHIELD_LUA] Lua Runtime implementation
 #include "shield/lua/lua_runtime.hpp"
 
-#include "shield/lua/lua_api.hpp"
-#include "shield/lua/lua_service.hpp"
-#include "shield/config/config.hpp"
-#include "shield/log/logger.hpp"
-#include "shield/plugin/plugin_host.hpp"
-
-#include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <deque>
-#include <mutex>
-#include <unordered_map>
-#include <vector>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <sol/sol.hpp>
 #include <sstream>
+#include <unordered_map>
+#include <vector>
+
+#include "shield/config/config.hpp"
+#include "shield/log/logger.hpp"
+#include "shield/lua/lua_api.hpp"
+#include "shield/lua/lua_service.hpp"
+#include "shield/plugin/plugin_host.hpp"
 
 namespace shield::lua {
 
@@ -40,9 +39,7 @@ struct CoroutineScheduler::Impl {
     std::atomic<CoroutineId> next_id{1};
     mutable std::mutex mutex;
 
-    CoroutineId generate_id() {
-        return next_id.fetch_add(1);
-    }
+    CoroutineId generate_id() { return next_id.fetch_add(1); }
 
     void insert(const SuspendedCoroutine& sc) {
         std::lock_guard<std::mutex> lock(mutex);
@@ -97,33 +94,23 @@ struct CoroutineScheduler::Impl {
     }
 };
 
-CoroutineScheduler::CoroutineScheduler()
-    : impl_(std::make_unique<Impl>()) {}
+CoroutineScheduler::CoroutineScheduler() : impl_(std::make_unique<Impl>()) {}
 
 CoroutineScheduler::~CoroutineScheduler() = default;
 
 CoroutineScheduler::CoroutineId CoroutineScheduler::suspend(
-    const std::string& service_id,
-    sol::coroutine co,
-    int32_t timeout_ms) {
-
+    const std::string& service_id, sol::coroutine co, int32_t timeout_ms) {
     const CoroutineId id = impl_->generate_id();
 
     // Calculate deadline
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
+                            now.time_since_epoch())
+                            .count();
     const int64_t deadline_ms = now_ms + timeout_ms;
 
-    SuspendedCoroutine sc = {
-        id,
-        service_id,
-        co,
-        deadline_ms,
-        Status::Pending,
-        {},
-        ""
-    };
+    SuspendedCoroutine sc = {id, service_id, co, deadline_ms, Status::Pending,
+                             {}, ""};
 
     impl_->insert(sc);
 
@@ -166,7 +153,8 @@ bool CoroutineScheduler::resume(CoroutineId id, const nlohmann::json& result) {
     return true;
 }
 
-bool CoroutineScheduler::resume_with_error(CoroutineId id, const std::string& error) {
+bool CoroutineScheduler::resume_with_error(CoroutineId id,
+                                           const std::string& error) {
     SuspendedCoroutine* sc_ptr = impl_->find_ptr(id);
     if (!sc_ptr) {
         return false;  // Not found
@@ -190,9 +178,7 @@ bool CoroutineScheduler::resume_with_error(CoroutineId id, const std::string& er
     return true;
 }
 
-bool CoroutineScheduler::cancel(CoroutineId id) {
-    return impl_->erase(id);
-}
+bool CoroutineScheduler::cancel(CoroutineId id) { return impl_->erase(id); }
 
 void CoroutineScheduler::cancel_all_for_service(const std::string& service_id) {
     auto ids = impl_->get_for_service(service_id);
@@ -225,9 +211,7 @@ int CoroutineScheduler::check_timeouts(int64_t now_ms) {
     return timed_out;
 }
 
-size_t CoroutineScheduler::active_count() const {
-    return impl_->size();
-}
+size_t CoroutineScheduler::active_count() const { return impl_->size(); }
 
 // ============================================================================
 // TimerManager Implementation
@@ -248,9 +232,7 @@ struct TimerManager::Impl {
     std::atomic<TimerId> next_id{1};
     mutable std::mutex mutex;
 
-    TimerId generate_id() {
-        return next_id.fetch_add(1);
-    }
+    TimerId generate_id() { return next_id.fetch_add(1); }
 
     void insert(const Timer& timer) {
         std::lock_guard<std::mutex> lock(mutex);
@@ -317,43 +299,43 @@ struct TimerManager::Impl {
     }
 };
 
-TimerManager::TimerManager()
-    : impl_(std::make_unique<Impl>()) {}
+TimerManager::TimerManager() : impl_(std::make_unique<Impl>()) {}
 
 TimerManager::TimerId TimerManager::schedule_once(
-    int64_t delay_ms,
-    sol::function callback,
-    const std::string& service_id) {
-
+    int64_t delay_ms, sol::function callback, const std::string& service_id) {
     const TimerId id = impl_->generate_id();
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
+                            now.time_since_epoch())
+                            .count();
 
     TimerManager::Impl::Timer timer = {
         id,
         TimerType::Once,
         now_ms + delay_ms,
         delay_ms,
-        {[cb = callback]() { if (cb.valid()) { auto r = cb(); (void)r; } },
+        {[cb = callback]() {
+             if (cb.valid()) {
+                 auto r = cb();
+                 (void)r;
+             }
+         },
          callback,  // raw_callback for coroutine wrapping
          service_id},
-        true
-    };
+        true};
     impl_->insert(timer);
     return id;
 }
 
 TimerManager::TimerId TimerManager::schedule_once_fn(
-    int64_t delay_ms,
-    std::function<void()> callback,
+    int64_t delay_ms, std::function<void()> callback,
     const std::string& service_id) {
-
     const TimerId id = impl_->generate_id();
 
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
+                            now.time_since_epoch())
+                            .count();
 
     TimerManager::Impl::Timer timer = {
         id,
@@ -361,8 +343,7 @@ TimerManager::TimerId TimerManager::schedule_once_fn(
         now_ms + delay_ms,
         delay_ms,
         {std::move(callback), sol::function{}, service_id},
-        true
-    };
+        true};
 
     impl_->insert(timer);
 
@@ -370,39 +351,41 @@ TimerManager::TimerId TimerManager::schedule_once_fn(
 }
 
 TimerManager::TimerId TimerManager::schedule_fixed_delay(
-    int64_t interval_ms,
-    sol::function callback,
+    int64_t interval_ms, sol::function callback,
     const std::string& service_id) {
-
     const TimerId id = impl_->generate_id();
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
+                            now.time_since_epoch())
+                            .count();
 
     TimerManager::Impl::Timer timer = {
         id,
         TimerType::FixedDelay,
         now_ms + interval_ms,
         interval_ms,
-        {[cb = callback]() { if (cb.valid()) { auto r = cb(); (void)r; } },
+        {[cb = callback]() {
+             if (cb.valid()) {
+                 auto r = cb();
+                 (void)r;
+             }
+         },
          callback,  // raw_callback for coroutine wrapping
          service_id},
-        true
-    };
+        true};
     impl_->insert(timer);
     return id;
 }
 
 TimerManager::TimerId TimerManager::schedule_fixed_delay_fn(
-    int64_t interval_ms,
-    std::function<void()> callback,
+    int64_t interval_ms, std::function<void()> callback,
     const std::string& service_id) {
-
     const TimerId id = impl_->generate_id();
 
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now.time_since_epoch()).count();
+                            now.time_since_epoch())
+                            .count();
 
     TimerManager::Impl::Timer timer = {
         id,
@@ -410,17 +393,14 @@ TimerManager::TimerId TimerManager::schedule_fixed_delay_fn(
         now_ms + interval_ms,
         interval_ms,
         {std::move(callback), sol::function{}, service_id},
-        true
-    };
+        true};
 
     impl_->insert(timer);
 
     return id;
 }
 
-bool TimerManager::cancel(TimerId id) {
-    return impl_->erase(id);
-}
+bool TimerManager::cancel(TimerId id) { return impl_->erase(id); }
 
 void TimerManager::cancel_all_for_service(const std::string& service_id) {
     auto ids = impl_->get_for_service(service_id);
@@ -433,9 +413,10 @@ int TimerManager::check_and_fire(int64_t now_ms) {
     return check_and_fire(now_ms, nullptr);
 }
 
-int TimerManager::check_and_fire(int64_t now_ms,
-                                  std::function<void(const std::string& service_id,
-                                                     const std::string& error)> on_error) {
+int TimerManager::check_and_fire(
+    int64_t now_ms,
+    std::function<void(const std::string& service_id, const std::string& error)>
+        on_error) {
     int fired = 0;
 
     // Get expired timers
@@ -462,8 +443,7 @@ int TimerManager::check_and_fire(int64_t now_ms,
         // If it's a repeating timer, reschedule
         if (timer.type == TimerType::FixedDelay) {
             const TimerId new_id = schedule_fixed_delay_fn(
-                timer.interval_ms,
-                timer.callback.callback,
+                timer.interval_ms, timer.callback.callback,
                 timer.callback.service_id);
             (void)new_id;
         }
@@ -474,8 +454,8 @@ int TimerManager::check_and_fire(int64_t now_ms,
 
 int TimerManager::check_and_fire_each(
     int64_t now_ms,
-    std::function<void(const std::string& service_id,
-                       sol::function callback)> visitor) {
+    std::function<void(const std::string& service_id, sol::function callback)>
+        visitor) {
     int fired = 0;
     auto expired = impl_->get_expired(now_ms);
 
@@ -513,16 +493,15 @@ int TimerManager::check_and_fire_each(
     return fired;
 }
 
-size_t TimerManager::active_count() const {
-    return impl_->size();
-}
+size_t TimerManager::active_count() const { return impl_->size(); }
 
 // ============================================================================
 // Mailbox Implementation
 // ============================================================================
 
 struct Mailbox::Impl {
-    std::deque<Message> queues[4];  // One queue per priority (Urgent=0, High=1, Normal=2, Low=3)
+    std::deque<Message> queues[4];  // One queue per priority (Urgent=0, High=1,
+                                    // Normal=2, Low=3)
     size_t max_size;
     std::atomic<size_t> dropped_count{0};
     mutable std::mutex mutex;
@@ -537,9 +516,7 @@ struct Mailbox::Impl {
         return total;
     }
 
-    bool is_full() const {
-        return total_size() >= max_size;
-    }
+    bool is_full() const { return total_size() >= max_size; }
 
     void push_oldest(const Message& msg) {
         queues[static_cast<int>(msg.priority)].push_back(msg);
@@ -572,8 +549,7 @@ struct Mailbox::Impl {
     }
 };
 
-Mailbox::Mailbox(size_t max_size)
-    : impl_(std::make_unique<Impl>(max_size)) {}
+Mailbox::Mailbox(size_t max_size) : impl_(std::make_unique<Impl>(max_size)) {}
 
 Mailbox::~Mailbox() = default;
 
@@ -597,7 +573,8 @@ bool Mailbox::push(const Message& msg, Backpressure strategy) {
             return true;
 
         case Backpressure::Block:
-            // For Phase 1, we still drop; full blocking requires coroutine support
+            // For Phase 1, we still drop; full blocking requires coroutine
+            // support
             impl_->dropped_count.fetch_add(1);
             return false;
     }
@@ -627,34 +604,32 @@ void Mailbox::clear() {
     }
 }
 
-size_t Mailbox::dropped_count() const {
-    return impl_->dropped_count.load();
-}
+size_t Mailbox::dropped_count() const { return impl_->dropped_count.load(); }
 
 // ============================================================================
 // ServiceHandle Implementation
 // ============================================================================
 
 void ServiceHandle::register_usertype(sol::state& lua) {
-    lua.new_usertype<ServiceHandle>("ServiceHandle",
+    lua.new_usertype<ServiceHandle>(
+        "ServiceHandle",
         // Prevent direct construction from Lua
         "new", sol::no_constructor,
 
         // Methods
-        "id", &ServiceHandle::id,
-        "valid", &ServiceHandle::valid,
+        "id", &ServiceHandle::id, "valid", &ServiceHandle::valid,
 
         // Metamethods
-        sol::meta_function::to_string, [](const ServiceHandle& h) {
+        sol::meta_function::to_string,
+        [](const ServiceHandle& h) {
             return "<ServiceHandle: " + h.id() + ">";
         },
 
         // Equality by service ID
-        sol::meta_function::equal_to, [](const ServiceHandle& a,
-                                          const ServiceHandle& b) {
+        sol::meta_function::equal_to,
+        [](const ServiceHandle& a, const ServiceHandle& b) {
             return a.id() == b.id();
-        }
-    );
+        });
 }
 
 // ============================================================================
@@ -671,8 +646,8 @@ public:
                                sol::lib::coroutine);
 
         // Set Lua module search path from configuration
-        std::string module_path = shield::config::get("lua.module_path",
-            "scripts/?.lua;scripts/?/init.lua");
+        std::string module_path = shield::config::get(
+            "lua.module_path", "scripts/?.lua;scripts/?/init.lua");
         (*state_)["package"]["path"] = module_path;
     }
 
@@ -687,9 +662,9 @@ private:
 
 // Script cache entry
 struct ScriptCacheEntry {
-    std::string bytecode;      // Compiled bytecode
-    int64_t mtime = 0;        // File modification time
-    int64_t last_used = 0;    // Last access time for LRU
+    std::string bytecode;   // Compiled bytecode
+    int64_t mtime = 0;      // File modification time
+    int64_t last_used = 0;  // Last access time for LRU
 };
 
 struct LuaRuntime::Impl {
@@ -703,37 +678,43 @@ struct LuaRuntime::Impl {
 
     Impl() : default_state(std::make_shared<sol::state>()) {
         default_state->open_libraries(sol::lib::base, sol::lib::string,
-                                     sol::lib::table, sol::lib::math);
+                                      sol::lib::table, sol::lib::math);
 
         // Load cache configuration
-        cache_config.enabled = shield::config::get_bool("lua.cache.enabled", true);
+        cache_config.enabled =
+            shield::config::get_bool("lua.cache.enabled", true);
         cache_config.max_size = static_cast<size_t>(
             shield::config::get_int("lua.cache.max_size", 100));
-        cache_config.ttl_seconds = shield::config::get_int("lua.cache.ttl_seconds", 0);
+        cache_config.ttl_seconds =
+            shield::config::get_int("lua.cache.ttl_seconds", 0);
     }
 
     // Get current time in milliseconds
     int64_t current_time_ms() const {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
     }
 
     // Get file modification time
     int64_t get_file_mtime(const std::string& path) const {
         try {
             auto ftime = std::filesystem::last_write_time(path);
-            auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                ftime - std::filesystem::file_time_type::clock::now()
-                + std::chrono::system_clock::now());
+            auto sctp = std::chrono::time_point_cast<
+                std::chrono::system_clock::duration>(
+                ftime - std::filesystem::file_time_type::clock::now() +
+                std::chrono::system_clock::now());
             return std::chrono::duration_cast<std::chrono::milliseconds>(
-                sctp.time_since_epoch()).count();
+                       sctp.time_since_epoch())
+                .count();
         } catch (...) {
             return 0;
         }
     }
 
     // Check if cache entry is valid
-    bool is_cache_valid(const ScriptCacheEntry& entry, int64_t current_mtime) const {
+    bool is_cache_valid(const ScriptCacheEntry& entry,
+                        int64_t current_mtime) const {
         // Check if file was modified
         if (entry.mtime != current_mtime) {
             return false;
@@ -783,7 +764,7 @@ std::shared_ptr<LuaVM> LuaRuntime::create_vm() {
 }
 
 bool LuaRuntime::load_script(std::shared_ptr<LuaVM> vm,
-                            std::string_view script_path) {
+                             std::string_view script_path) {
     try {
         auto result = vm->state()->script_file(std::string(script_path));
         return result.valid();
@@ -1151,7 +1132,7 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
             }
         }
 
-         return true;
+        return true;
     } catch (const std::exception& e) {
         if (error) {
             *error = e.what();
@@ -1160,13 +1141,10 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
     }
 }
 
-bool LuaRuntime::call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
-                                               std::string_view method_name,
-                                               const nlohmann::json& args,
-                                               std::string* error,
-                                               uint64_t call_session,
-                                               LuaServiceManager* manager,
-                                               std::string_view service_id) {
+bool LuaRuntime::call_service_method_coroutine(
+    std::shared_ptr<LuaVM> vm, std::string_view method_name,
+    const nlohmann::json& args, std::string* error, uint64_t call_session,
+    LuaServiceManager* manager, std::string_view service_id) {
     try {
         sol::table& service = vm->service_table();
         if (!service.valid()) {
@@ -1189,7 +1167,8 @@ bool LuaRuntime::call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
 
         // Check coroutine limit.
         constexpr size_t kCoroutineLimit = 1000;
-        if (coroutine_scheduler_ && coroutine_scheduler_->active_count() >= kCoroutineLimit) {
+        if (coroutine_scheduler_ &&
+            coroutine_scheduler_->active_count() >= kCoroutineLimit) {
             if (error) *error = "coroutine limit reached";
             return false;
         }
@@ -1233,7 +1212,8 @@ bool LuaRuntime::call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
             return call_service_method(vm, method_name, args, nullptr, error);
         }
         // If this dispatch services a coroutine call request, tag the handler
-        // coroutine so its completion can route the response back to the caller.
+        // coroutine so its completion can route the response back to the
+        // caller.
         if (call_session != 0 && manager != nullptr) {
             manager->set_handler_call_session(co, call_session);
         }
@@ -1281,11 +1261,10 @@ bool LuaRuntime::call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
     }
 }
 
-bool LuaRuntime::invoke_hook(std::shared_ptr<LuaVM> vm,
-                              const char* hook_name,
-                              const std::string& err_or_reason,
-                              const std::string& error_type,
-                              const std::string& method_name) {
+bool LuaRuntime::invoke_hook(std::shared_ptr<LuaVM> vm, const char* hook_name,
+                             const std::string& err_or_reason,
+                             const std::string& error_type,
+                             const std::string& method_name) {
     if (!vm) {
         return false;
     }
@@ -1306,15 +1285,16 @@ bool LuaRuntime::invoke_hook(std::shared_ptr<LuaVM> vm,
     if (!result.valid()) {
         sol::error err = result;
         auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_ERROR(log, std::string(hook_name) + " hook failed: " + err.what());
+        SHIELD_LOG_ERROR(
+            log, std::string(hook_name) + " hook failed: " + err.what());
         return false;
     }
     return true;
 }
 
 std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
-                                     std::string_view func_name,
-                                     std::string_view args) {
+                                      std::string_view func_name,
+                                      std::string_view args) {
     try {
         sol::protected_function func = (*vm->state())[std::string(func_name)];
         if (!func.valid()) {
@@ -1346,8 +1326,9 @@ bool LuaRuntime::register_api(std::shared_ptr<LuaVM> vm, std::string* error) {
     host.inject_lua_paths(L);
     std::string lua_err;
     if (!host.register_lua_all(L, lua_err)) {
-        SHIELD_LOG_WARNING(shield::log::get_logger("lua"),
-                           std::string("plugin register_lua failed: ") + lua_err);
+        SHIELD_LOG_WARNING(
+            shield::log::get_logger("lua"),
+            std::string("plugin register_lua failed: ") + lua_err);
         if (error) *error = lua_err;
         return false;
     }
@@ -1363,7 +1344,7 @@ LuaServiceManager* LuaRuntime::service_manager() const {
 }
 
 std::string LuaRuntime::get_global(std::shared_ptr<LuaVM> vm,
-                                 std::string_view name) {
+                                   std::string_view name) {
     sol::state& lua = *vm->state();
     sol::object value = lua[name];
 
@@ -1377,9 +1358,8 @@ std::string LuaRuntime::get_global(std::shared_ptr<LuaVM> vm,
     return "";
 }
 
-void LuaRuntime::set_global(std::shared_ptr<LuaVM> vm,
-                           std::string_view name,
-                           std::string_view value) {
+void LuaRuntime::set_global(std::shared_ptr<LuaVM> vm, std::string_view name,
+                            std::string_view value) {
     sol::state& lua = *vm->state();
     lua[name] = std::string(value);
 }
@@ -1388,8 +1368,7 @@ void LuaRuntime::set_global(std::shared_ptr<LuaVM> vm,
 // LuaPack Encoder Implementation
 // ============================================================================
 
-LuaPackEncoder::LuaPackEncoder(const Config& config)
-    : config_(config) {}
+LuaPackEncoder::LuaPackEncoder(const Config& config) : config_(config) {}
 
 bool LuaPackEncoder::encode(sol::state_view lua, const sol::object& value,
                             std::vector<uint8_t>& out_bytes) {
@@ -1406,7 +1385,7 @@ bool LuaPackEncoder::encode(sol::state_view lua, const sol::object& value,
 }
 
 bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
-                                   std::vector<uint8_t>& out, size_t depth) {
+                                  std::vector<uint8_t>& out, size_t depth) {
     if (depth > config_.max_nesting_depth) {
         error_ = "max nesting depth exceeded";
         return false;
@@ -1418,15 +1397,15 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
     }
 
     if (value.is<bool>()) {
-        out.push_back(value.as<bool>() ?
-                     static_cast<uint8_t>(TypeTag::True) :
-                     static_cast<uint8_t>(TypeTag::False));
+        out.push_back(value.as<bool>() ? static_cast<uint8_t>(TypeTag::True)
+                                       : static_cast<uint8_t>(TypeTag::False));
         return true;
     }
 
     if (value.is<int>() || value.is<std::int64_t>()) {
         out.push_back(static_cast<uint8_t>(TypeTag::Integer));
-        int64_t val = value.is<int>() ? value.as<int>() : value.as<std::int64_t>();
+        int64_t val =
+            value.is<int>() ? value.as<int>() : value.as<std::int64_t>();
         // Write int64 in little-endian
         for (int i = 0; i < 8; ++i) {
             out.push_back(static_cast<uint8_t>(val & 0xFF));
@@ -1490,7 +1469,8 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
             max_index = std::max(max_index, static_cast<size_t>(index));
         }
 
-        if (array_like && max_index == entry_count && max_index <= config_.max_array_length) {
+        if (array_like && max_index == entry_count &&
+            max_index <= config_.max_array_length) {
             // Encode as array
             out.push_back(static_cast<uint8_t>(TypeTag::Array));
             uint32_t count = static_cast<uint32_t>(max_index);
@@ -1500,7 +1480,8 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
             }
             // Encode elements
             for (size_t i = 1; i <= max_index; ++i) {
-                if (!encode_value(lua, table[static_cast<int>(i)], out, depth + 1)) {
+                if (!encode_value(lua, table[static_cast<int>(i)], out,
+                                  depth + 1)) {
                     return false;
                 }
             }
@@ -1541,7 +1522,8 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
         out.push_back(static_cast<uint8_t>(TypeTag::ServiceHandle));
         const auto& handle = value.as<ServiceHandle>();
         std::string id = handle.id();
-        // For Phase 1, encode service ID as string (deferred: proper node+id encoding)
+        // For Phase 1, encode service ID as string (deferred: proper node+id
+        // encoding)
         return encode_value(lua, sol::make_object(lua, id), out, depth + 1);
     }
 
@@ -1553,10 +1535,10 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
 // LuaPack Decoder Implementation
 // ============================================================================
 
-LuaPackDecoder::LuaPackDecoder()
-    : error_("") {}
+LuaPackDecoder::LuaPackDecoder() : error_("") {}
 
-sol::object LuaPackDecoder::decode(sol::state_view lua, const std::vector<uint8_t>& bytes,
+sol::object LuaPackDecoder::decode(sol::state_view lua,
+                                   const std::vector<uint8_t>& bytes,
                                    size_t& out_bytes_consumed) {
     out_bytes_consumed = 0;
     error_.clear();
@@ -1580,11 +1562,13 @@ sol::object LuaPackDecoder::decode(sol::state_view lua, const std::vector<uint8_
     }
 
     out_bytes_consumed = 4;  // Skip header
-    return decode_value(lua, bytes.data() + 4, bytes.size() - 4, out_bytes_consumed);
+    return decode_value(lua, bytes.data() + 4, bytes.size() - 4,
+                        out_bytes_consumed);
 }
 
-sol::object LuaPackDecoder::decode_value(sol::state_view lua, const uint8_t* data,
-                                         size_t size, size_t& out_consumed) {
+sol::object LuaPackDecoder::decode_value(sol::state_view lua,
+                                         const uint8_t* data, size_t size,
+                                         size_t& out_consumed) {
     out_consumed = 0;
 
     if (size == 0) {
@@ -1682,7 +1666,8 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua, const uint8_t* dat
                 size_t elem_size = size - 5;
                 for (uint32_t i = 0; i < count; ++i) {
                     size_t elem_consumed = 0;
-                    sol::object elem = decode_value(lua, elem_data, elem_size, elem_consumed);
+                    sol::object elem =
+                        decode_value(lua, elem_data, elem_size, elem_consumed);
                     if (!error_.empty()) {
                         return sol::make_object(lua, sol::nil);
                     }
@@ -1710,7 +1695,8 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua, const uint8_t* dat
                 size_t entry_size = size - 5;
                 for (uint32_t i = 0; i < count; ++i) {
                     size_t key_consumed = 0;
-                    sol::object key = decode_value(lua, entry_data, entry_size, key_consumed);
+                    sol::object key =
+                        decode_value(lua, entry_data, entry_size, key_consumed);
                     if (!error_.empty()) {
                         return sol::make_object(lua, sol::nil);
                     }
@@ -1719,7 +1705,8 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua, const uint8_t* dat
                     out_consumed += key_consumed;
 
                     size_t val_consumed = 0;
-                    sol::object val = decode_value(lua, entry_data, entry_size, val_consumed);
+                    sol::object val =
+                        decode_value(lua, entry_data, entry_size, val_consumed);
                     if (!error_.empty()) {
                         return sol::make_object(lua, sol::nil);
                     }
@@ -1749,8 +1736,6 @@ size_t LuaRuntime::cache_size() const {
     return impl_->script_cache.size();
 }
 
-LuaCacheConfig LuaRuntime::cache_config() const {
-    return impl_->cache_config;
-}
+LuaCacheConfig LuaRuntime::cache_config() const { return impl_->cache_config; }
 
 }  // namespace shield::lua

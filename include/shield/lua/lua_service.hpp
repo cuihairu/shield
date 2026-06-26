@@ -28,9 +28,7 @@ struct SpawnResult {
     std::string service_id;
     std::string error_message;
 
-    static SpawnResult ok(std::string id) {
-        return {true, std::move(id), ""};
-    }
+    static SpawnResult ok(std::string id) { return {true, std::move(id), ""}; }
 
     static SpawnResult error(std::string msg) {
         return {false, "", std::move(msg)};
@@ -58,7 +56,7 @@ public:
     /// @param module Module name (e.g., "services.player")
     /// @param opts Optional spawn options (name, args, timeout)
     SpawnResult spawn(std::string_view module,
-                     std::string_view opts_json = "{}");
+                      std::string_view opts_json = "{}");
 
     // Send a message to a service
     bool send(std::string_view target, std::string_view method,
@@ -68,8 +66,7 @@ public:
     // such as shield_net -> Lua gateway callbacks, so it permits reserved
     // lifecycle method names like on_connect while preserving mailbox dispatch.
     bool send_system(std::string_view target, std::string_view method,
-                     const nlohmann::json& args,
-                     std::string* error = nullptr);
+                     const nlohmann::json& args, std::string* error = nullptr);
 
     // Send a coroutine call-request message to a service. Like send() but tags
     // the message with a call session so the callee's dispatch can route the
@@ -101,7 +98,8 @@ public:
     // Get current call deadline in ms (0 if not set)
     int64_t current_deadline_ms() const;
 
-    // Request that the currently running service exits after its handler returns.
+    // Request that the currently running service exits after its handler
+    // returns.
     void request_current_exit(std::string_view reason = "normal");
 
     // Query a published local service name.
@@ -171,7 +169,8 @@ public:
 
     // Called when a handler coroutine finishes. If it was servicing a call
     // request, resume the suspended caller with the callee's return values.
-    void on_handler_completed(lua_State* co, const nlohmann::json& return_values);
+    void on_handler_completed(lua_State* co,
+                              const nlohmann::json& return_values);
 
     // Resume a suspended caller (looked up by session) with the given result
     // values (or an error). Used by the response path and timeouts.

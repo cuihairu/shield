@@ -1,21 +1,21 @@
 // [SHIELD_CONFIG] Configuration implementation
 #include "shield/config/config.hpp"
 
-#include "shield/log/logger.hpp"
-
 #include <yaml-cpp/yaml.h>
-#include <nlohmann/json.hpp>
 
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
-#include <filesystem>
-#include <cstdlib>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <shared_mutex>
 #include <sstream>
-#include <unordered_set>
 #include <unordered_map>
+#include <unordered_set>
+
+#include "shield/log/logger.hpp"
 
 namespace shield::log {
 class Logger;
@@ -24,14 +24,8 @@ class Logger;
 namespace shield::config {
 
 // Internal storage type
-using StorageValue = std::variant<
-    std::string,
-    int64_t,
-    double,
-    bool,
-    std::vector<std::string>,
-    YAML::Node
->;
+using StorageValue = std::variant<std::string, int64_t, double, bool,
+                                  std::vector<std::string>, YAML::Node>;
 
 struct Config::Impl {
     std::unordered_map<std::string, StorageValue> storage;
@@ -157,7 +151,8 @@ std::optional<int> scalar_int(const YAML::Node& node, const char* key) {
     }
 }
 
-bool scalar_bool_default(const YAML::Node& node, const char* key, bool fallback) {
+bool scalar_bool_default(const YAML::Node& node, const char* key,
+                         bool fallback) {
     if (!node || !node[key]) {
         return fallback;
     }
@@ -168,8 +163,7 @@ bool scalar_bool_default(const YAML::Node& node, const char* key, bool fallback)
     }
 }
 
-bool validate_port_range(const YAML::Node& node,
-                         const char* path,
+bool validate_port_range(const YAML::Node& node, const char* path,
                          std::string* error) {
     if (!node) {
         return true;
@@ -184,8 +178,7 @@ bool validate_port_range(const YAML::Node& node,
     return true;
 }
 
-bool validate_pool_sizes(const YAML::Node& node,
-                         const char* path,
+bool validate_pool_sizes(const YAML::Node& node, const char* path,
                          std::string* error) {
     if (!node) {
         return true;
@@ -214,15 +207,11 @@ bool validate_pool_sizes(const YAML::Node& node,
     return true;
 }
 
-bool validate_int_range(const YAML::Node& node,
-                        const char* key,
-                        const char* path,
-                        int min_value,
-                        int max_value,
+bool validate_int_range(const YAML::Node& node, const char* key,
+                        const char* path, int min_value, int max_value,
                         std::string* error);
 
-bool validate_listener_address(const YAML::Node& node,
-                               const char* key,
+bool validate_listener_address(const YAML::Node& node, const char* key,
                                const std::string& actor_name,
                                std::string* error) {
     if (!node[key]) {
@@ -266,8 +255,7 @@ bool validate_listener_address(const YAML::Node& node,
 }
 
 std::optional<std::filesystem::path> existing_script_path(
-    const YAML::Node& actor,
-    const std::string& source_dir,
+    const YAML::Node& actor, const std::string& source_dir,
     const YAML::Node& root) {
     if (!actor["script"]) {
         return std::nullopt;
@@ -290,7 +278,8 @@ std::optional<std::filesystem::path> existing_script_path(
 
     if (root["lua"] && root["lua"]["script_path"]) {
         auto from_lua_path = std::filesystem::path(
-            root["lua"]["script_path"].as<std::string>()) / script;
+                                 root["lua"]["script_path"].as<std::string>()) /
+                             script;
         if (std::filesystem::exists(from_lua_path)) {
             return from_lua_path;
         }
@@ -299,11 +288,8 @@ std::optional<std::filesystem::path> existing_script_path(
     return std::nullopt;
 }
 
-bool validate_int_range(const YAML::Node& node,
-                        const char* key,
-                        const char* path,
-                        int min_value,
-                        int max_value,
+bool validate_int_range(const YAML::Node& node, const char* key,
+                        const char* path, int min_value, int max_value,
                         std::string* error) {
     if (!node || !node[key]) {
         return true;
@@ -335,13 +321,16 @@ nlohmann::json yaml_to_json(const YAML::Node& node) {
     if (node.IsScalar()) {
         try {
             return node.as<bool>();
-        } catch (const std::exception&) {}
+        } catch (const std::exception&) {
+        }
         try {
             return node.as<std::int64_t>();
-        } catch (const std::exception&) {}
+        } catch (const std::exception&) {
+        }
         try {
             return node.as<double>();
-        } catch (const std::exception&) {}
+        } catch (const std::exception&) {
+        }
         return node.as<std::string>();
     }
     if (node.IsSequence()) {
@@ -369,7 +358,8 @@ bool Config::load_yaml(std::string_view path) {
         std::ifstream file(config_path);
         if (!file.is_open()) {
             auto& log = shield::log::get_logger("config");
-            SHIELD_LOG_ERROR(log, "Failed to open config file: " + std::string(path));
+            SHIELD_LOG_ERROR(
+                log, "Failed to open config file: " + std::string(path));
             return false;
         }
 
@@ -386,7 +376,8 @@ bool Config::load_yaml(std::string_view path) {
 
     } catch (const std::exception& e) {
         auto& log = shield::log::get_logger("config");
-        SHIELD_LOG_ERROR(log, std::string("Failed to parse config: ") + e.what());
+        SHIELD_LOG_ERROR(log,
+                         std::string("Failed to parse config: ") + e.what());
         return false;
     }
 }
@@ -436,7 +427,8 @@ int64_t Config::get_int(std::string_view key, int64_t default_value) const {
         } else if (std::holds_alternative<std::string>(it->second)) {
             try {
                 return std::stoll(std::get<std::string>(it->second));
-            } catch (...) {}
+            } catch (...) {
+            }
         }
     }
 
@@ -455,7 +447,8 @@ double Config::get_double(std::string_view key, double default_value) const {
         } else if (std::holds_alternative<std::string>(it->second)) {
             try {
                 return std::stod(std::get<std::string>(it->second));
-            } catch (...) {}
+            } catch (...) {
+            }
         }
     }
 
@@ -640,8 +633,8 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
         if (lua["cache"]) {
             if (!validate_int_range(lua["cache"], "max_size", "lua.cache", 1,
                                     10000, error) ||
-                !validate_int_range(lua["cache"], "ttl_seconds", "lua.cache",
-                                    0, 86400, error)) {
+                !validate_int_range(lua["cache"], "ttl_seconds", "lua.cache", 0,
+                                    86400, error)) {
                 return false;
             }
         }
@@ -673,13 +666,15 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                 name = actor["name"].as<std::string>();
             } catch (const std::exception&) {
                 if (error) {
-                    *error = "actors[" + std::to_string(i) + "].name is required";
+                    *error =
+                        "actors[" + std::to_string(i) + "].name is required";
                 }
                 return false;
             }
             if (name.empty()) {
                 if (error) {
-                    *error = "actors[" + std::to_string(i) + "].name is required";
+                    *error =
+                        "actors[" + std::to_string(i) + "].name is required";
                 }
                 return false;
             }
@@ -704,7 +699,8 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                 }
                 return false;
             }
-            const int actor_instances = scalar_int(actor, "instances").value_or(1);
+            const int actor_instances =
+                scalar_int(actor, "instances").value_or(1);
 
             if (const YAML::Node restart = actor["restart"];
                 restart && restart["policy"]) {
@@ -713,7 +709,8 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                     policy != "never") {
                     if (error) {
                         *error = "actors[" + name +
-                                 "].restart.policy must be always, on-failure, or never";
+                                 "].restart.policy must be always, on-failure, "
+                                 "or never";
                     }
                     return false;
                 }
@@ -778,12 +775,14 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
         const YAML::Node timeout = shutdown["timeout"];
         const auto total = scalar_int(timeout, "total");
         if (total) {
-            for (const char* key : {"service_drain", "service_stop", "data_close"}) {
+            for (const char* key :
+                 {"service_drain", "service_stop", "data_close"}) {
                 const auto part = scalar_int(timeout, key);
                 if (part && *total <= *part) {
                     if (error) {
-                        *error = "shutdown.timeout.total must be greater than " +
-                                 std::string(key);
+                        *error =
+                            "shutdown.timeout.total must be greater than " +
+                            std::string(key);
                     }
                     return false;
                 }
@@ -824,12 +823,12 @@ std::vector<RuntimeActorConfig> runtime_actors() {
             if (network["tcp"]) {
                 item.network_tcp = network["tcp"].as<std::string>();
             }
-            item.max_connections =
-                static_cast<size_t>(scalar_int(network, "max_connections").value_or(0));
+            item.max_connections = static_cast<size_t>(
+                scalar_int(network, "max_connections").value_or(0));
             item.max_connections_per_ip = static_cast<size_t>(
                 scalar_int(network, "max_connections_per_ip").value_or(0));
-            item.max_frame_size =
-                static_cast<size_t>(scalar_int(network, "max_frame_size").value_or(0));
+            item.max_frame_size = static_cast<size_t>(
+                scalar_int(network, "max_frame_size").value_or(0));
         }
 
         result.push_back(std::move(item));

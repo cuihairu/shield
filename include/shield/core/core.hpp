@@ -2,11 +2,11 @@
 #pragma once
 
 // Public types
-#include "shield/core/service_handle.hpp"
-#include "shield/core/message.hpp"
-#include "shield/core/service_registry.hpp"
-
 #include <memory>
+
+#include "shield/core/message.hpp"
+#include "shield/core/service_handle.hpp"
+#include "shield/core/service_registry.hpp"
 
 // Forward declaration
 namespace shield::core {
