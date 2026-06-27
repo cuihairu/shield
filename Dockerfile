@@ -3,7 +3,7 @@
 # Stage 2: Minimal runtime image
 
 # === Build Stage ===
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:26.04 AS builder
 ARG SHIELD_GIT_COMMIT_HASH=Unknown
 
 RUN apt-get update && apt-get install -y \
@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y \
     unzip \
     tar \
     pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && cmake --version  # surface CMake version; project requires >= 3.30
 
 # Install vcpkg
 RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
@@ -48,7 +49,7 @@ RUN cmake -B build \
     && cmake --build build --config Release
 
 # === Runtime Stage ===
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 RUN apt-get update && apt-get install -y \
     libstdc++6 \
