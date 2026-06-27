@@ -111,20 +111,20 @@ Harness 要求：
 | LAPI-007-06 | fork | task runs | owner service tracked |
 | LAPI-007-07 | service exit | owned timers/tasks | canceled |
 
-## LAPI-008 Data API
+## LAPI-008 Plugin Data API
 
 | Case | 设置 | 操作 | 断言 |
 | --- | --- | --- | --- |
-| LAPI-008-01 | fake DB enabled | `shield.db.query` | `true, rows` |
-| LAPI-008-02 | DB disabled | `shield.db.query` | `false, module_unavailable` |
-| LAPI-008-03 | SQL error | query | `false, db_query_failed` |
-| LAPI-008-04 | fake Redis enabled | `shield.redis.get` | `true, value` |
-| LAPI-008-05 | Redis disabled | `shield.redis.get` | `false, module_unavailable` |
-| LAPI-008-06 | subscribe then exit | service exit | subscription canceled |
-| LAPI-008-07 | DB transaction | commit / rollback / closed tx | commit forwards payload; rollback returns reason; closed tx rejected |
-| LAPI-008-08 | Lua mapper | `#{}` named params / `transaction=required` | SQL uses `?`, params ordered, tx reused |
-| LAPI-008-09 | Lua mapper safety | `${}` raw substitution | `false, mapper_unsafe_sql` |
-| LAPI-008-10 | Lua entity helper | insert / update / find | generated SQL and params match fields / primary key |
+| LAPI-008-01 | `database.default -> db.main` binding configured | `shield.database.mysql("database.default"):query(...)` | `true, rows` or plugin-specific SQL result |
+| LAPI-008-02 | binding missing | `shield.database.mysql("database.default")` | `nil, module_unavailable` |
+| LAPI-008-03 | target instance failed/unavailable | data plugin namespace call | `nil, module_unavailable` |
+| LAPI-008-04 | SQL plugin returns query error | `db:query(...)` | `false, db_query_failed` or plugin-mapped database error |
+| LAPI-008-05 | `cache.session -> cache.redis` binding configured | `shield.cache.redis("cache.session"):get(key)` | `true, value` or `true, nil` for miss |
+| LAPI-008-06 | cache binding missing | `shield.cache.redis("cache.session")` | `nil, module_unavailable` |
+| LAPI-008-07 | queue binding configured | `shield.queue.redis("queue.events"):subscribe(...)`; service exit | subscription canceled |
+| LAPI-008-08 | SQL transaction supported | `db:transaction(fn)` | commit forwards payload; rollback returns reason; closed tx rejected |
+| LAPI-008-09 | document binding configured | `shield.database.mongodb("document.default"):find(...)` | `true, cursor/docs` |
+| LAPI-008-10 | leaderboard binding configured | `shield.leaderboard.redis("leaderboard.default"):top_n(...)` | `true, entries` |
 
 ## LAPI-009 Gateway API
 
@@ -142,9 +142,10 @@ Harness 要求：
 | --- | --- | --- |
 | LAPI-010-01 | `shield.service("x")` | `nil` or `legacy_api_removed` |
 | LAPI-010-02 | `shield.plugin.on(...)` | `nil` or `legacy_api_removed` |
-| LAPI-010-03 | `shield.db:query(...)` | fails; dot API required |
-| LAPI-010-04 | service only defines `on_message(src, type, data)` | send method does not dispatch through legacy entrypoint |
-| LAPI-010-05 | DI injection API | unavailable |
+| LAPI-010-03 | `shield.db.query(...)` / `shield.redis.get(...)` | unavailable or `legacy_api_removed`; use plugin namespace |
+| LAPI-010-04 | `shield.db:query(...)` / `shield.redis:get(...)` | unavailable or `legacy_api_removed`; use plugin namespace |
+| LAPI-010-05 | service only defines `on_message(src, type, data)` | send method does not dispatch through legacy entrypoint |
+| LAPI-010-06 | DI injection API | unavailable |
 
 ## LAPI-011 Player Lifecycle
 
@@ -157,10 +158,10 @@ Harness 要求：
 | LAPI-011-03 | setup 缺 `client_message` 字段 | spawn player service | `nil, setup_invalid` |
 | LAPI-011-04 | setup 缺 `disconnect` 字段 | 触发断线 | 进入重连窗口，默认实现被调用 |
 | LAPI-011-05 | setup 缺 `logout` 字段 | 玩家离线 | `PlayerManager.unregister` 被调用 |
-| LAPI-011-06 | setup 缺 `save` 字段且未配置 persistence | 触发定时保存 | no-op，无 `shield_data` 调用 |
+| LAPI-011-06 | setup 缺 `save` 字段且未配置 persistence | 触发定时保存 | no-op，无数据插件调用 |
 | LAPI-011-07 | setup 覆盖 `disconnect` | 触发断线 | 业务实现被调用，默认实现不执行 |
-| LAPI-011-08 | setup 完整 + persistence 启用 | 触发 `on_save` 默认实现 | adapter 调用 `shield_data` 持久化白名单字段 |
-| LAPI-011-09 | setup 完整 + persistence 未启用 | 触发 `on_save` 默认实现 | no-op，无 `shield_data` 调用 |
+| LAPI-011-08 | setup 完整 + persistence 启用 | 触发 `on_save` 默认实现 | adapter 通过配置的插件 binding 持久化白名单字段 |
+| LAPI-011-09 | setup 完整 + persistence 未启用 | 触发 `on_save` 默认实现 | no-op，无数据插件调用 |
 | LAPI-011-10 | persistence `save` 失败（`on_save_error="log"`） | adapter 返回错误 | 错误码 `persistence_save_failed`，service 继续运行 |
 | LAPI-011-11 | persistence `save` 失败（`on_save_error="panic"`） | adapter 返回错误 | 触发 `on_panic` |
 | LAPI-011-12 | persistence 字段含 function | setup | `nil, setup_invalid` |
@@ -188,8 +189,7 @@ Harness 要求：
 - 当前 CTest 已有 `shield_runtime_lua_smoke` 覆盖 YAML actors 启动、
   `shield.self/now/spawn/send/call/sender/names/exit/on_exit` 的单节点同步路径；
   `shield_runtime_registry_smoke` 覆盖 `query/register/unregister/names` 的本地 registry 路径；
-  `shield_runtime_data_smoke` 覆盖启用 DB/Redis mock pool 后的 Lua data API 返回形态。
-  `test_data_pool` 覆盖 pool size、动态扩容、acquire timeout 和非 mock 初始化失败策略。
+  插件系统相关 smoke 覆盖 manifest scan、instance、binding、`register_lua` 分发和缺失 binding 的 `module_unavailable` 返回形态。
   它们不是完整 LAPI 矩阵的替代品。
 - Lua API 契约变更必须先更新本文。
 - 每个新增 API 至少补充一个成功用例和一个失败用例。
@@ -209,12 +209,9 @@ Harness 要求：
 | ~~LAPI-006-05~~ | ~~deadline 可见性~~ 已实现：`shield.deadline()` 从 dispatch context 读取，通过消息传播 ✅ |
 | ~~LAPI-007-04~~ | ~~`on_error` hook 调用~~ 已实现：`invoke_hook` 调用 service table 上的 `on_error`，`OnErrorHookCalledOnHandlerThrow` 测试覆盖 ✅ |
 | ~~LAPI-007-05~~ | ~~`shield.sleep` coroutine 语义~~ 已由 LAPI-007-08 覆盖 ✅ |
-| LAPI-008-02 | DB disabled 路径：`module_unavailable` 返回由 `shield_runtime_data_smoke` CTest 覆盖（未启用配置场景） |
-| ~~LAPI-008-03~~ | ~~SQL error 路径~~ 已实现：`set_mock_db_error` + `LAPI_008_03_DbQueryReturnsError` / `LAPI_008_03b_DbExecuteReturnsError` ✅ |
-| ~~LAPI-008-transaction~~ | ~~本地事务路径~~ 已实现：commit、rollback、closed handle 均由 `test_lua_api_data` 覆盖 ✅ |
-| ~~LAPI-008-mapper~~ | ~~Lua mapper/entity helper~~ 已实现：命名参数绑定、`transaction=required`、显式 tx 复用、`${}` 拒绝、entity insert/update/find 均由 `test_lua_api_data` 覆盖 ✅ |
-| LAPI-008-05 | Redis disabled 路径：同 LAPI-008-02，由 CTest 覆盖 |
-| LAPI-008-06 | subscribe then exit：`shield.redis.subscribe(channel, callback)` 已接入 owned subscription 记录；真实回调回投 worker 仍属于 Phase 2+ |
+| LAPI-008-02/03/06 | 缺失 binding / 目标 instance unavailable 的 `module_unavailable` 需要插件 mock harness 覆盖 |
+| LAPI-008-04 | SQL error 路径需要由 SQL 插件测试或统一 mock 插件覆盖 |
+| LAPI-008-07 | subscribe then exit：需要 queue plugin mock/集成测试覆盖订阅生命周期 |
 | ~~LAPI-009-01~05~~ | ~~Gateway session 模拟~~ 已覆盖：connect/message/disconnect/queue_full/stale_send 共 6 个测试 ✅ |
 | LAPI-009-real-session | 真实 TCP session 到 Lua `SessionHandle` userdata 的封装仍未覆盖；当前 bootstrap 已接入 TCP listener 与 LuaGatewayBridge，但测试仍使用 table 模拟 |
 | ~~LAPI-002-06~~ | ~~`on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit`~~ 已实现：`_is_in_exit()` + Lua wrapper guard，`OnExitCallGuard` 测试覆盖 ✅ |

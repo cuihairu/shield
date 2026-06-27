@@ -23,7 +23,7 @@ HTTP 服务端 Lua 路由注册仍是占位入口，尚未接入 bootstrap。
 - `shield.send` 非阻塞、无 ACK。
 - `shield.call` 挂起当前 Lua coroutine，但不阻塞 runtime 线程。
 - Runtime API 返回值统一使用 `ok, result_or_error`，业务返回的 `nil` 和 `false` 不应和 runtime 错误混淆。
-- DB/Redis API 使用插件 namespace 调用：`shield.database.mysql("db.main"):query(...)`，不使用冒号调用全局函数。具体 namespace 与方法见下文 "Plugin-provided APIs"。
+- DB/Redis API 使用插件 namespace + binding 逻辑名调用：`shield.database.mysql("database.default"):query(...)`，不再提供 `shield.db.*` / `shield.redis.*` 全局函数。具体 namespace 与方法见下文 "Plugin-provided APIs"。
 
 ## Service Module
 
@@ -383,15 +383,15 @@ shield.log.error("message")
 
 ### 调用形态
 
-每个插件 namespace 是一个 **callable table**：传 `instance_id` 返回绑定到该实例的 proxy。
+每个插件 namespace 是一个 **callable table**：传 `binding` 逻辑名返回绑定到目标 instance 的 proxy。binding 来自主配置 `plugins.bindings`，host 通过 binding 解析到 instance，再向该 instance 取得对应 interface。插件可以为无参调用提供自己的默认 binding 策略，但推荐业务显式传 binding 名。
 
 ```lua
--- 默认实例（binding 指定的）
+-- 默认实例（插件定义的默认 binding，若未配置则返回 module_unavailable）
 local db = shield.database.mongodb()
 
--- 指定实例
-local db_audit = shield.database.mongodb("doc.audit")
-local db_game  = shield.database.mysql("db.game")
+-- 指定 binding 逻辑名
+local db_audit = shield.database.mongodb("document.audit")
+local db_game  = shield.database.mysql("database.default")
 
 -- 在 proxy 上调用方法
 db:insert_one("users", { name = "alice", age = 30 })
@@ -401,14 +401,14 @@ db_game:query("SELECT * FROM players WHERE id = ?", { pid })
 规则：
 
 - API coroutine-friendly。
-- 未启用对应插件或实例不存在时返回 `nil, { code = "module_unavailable" }`。
+- 未启用对应插件、binding 不存在或目标实例未启动时返回 `nil, { code = "module_unavailable" }`。
 - 同一 package 多实例互不影响；每个 proxy 独立持有连接句柄。
-- `proxy` 的生命周期由 Lua GC 管理；连接本身属于 host 连接池，proxy 只持有引用。
+- `proxy` 的生命周期由 Lua GC 管理；连接池归插件 instance 自治，proxy 只持有插件定义的轻量引用或临时连接句柄。
 
 ### Database（SQL）— `shield.database.<driver>`
 
 ```lua
-local db = shield.database.mysql("db.main")
+local db = shield.database.mysql("database.default")
 
 -- SQL CRUD
 local ok, rows   = db:query("SELECT * FROM users WHERE id = ?", { uid })
@@ -434,7 +434,7 @@ end)
 ### Database（文档）— `shield.database.mongodb`
 
 ```lua
-local mongo = shield.database.mongodb("doc.main")
+local mongo = shield.database.mongodb("document.default")
 
 -- CRUD
 mongo:insert_one("users", { _id = "alice", age = 30 })
@@ -473,7 +473,7 @@ Lua table 会被 `nlohmann::json` 转为 BSON；查询操作符（`$gt` / `$set`
 ### Cache — `shield.cache.redis`
 
 ```lua
-local cache = shield.cache.redis("cache.main")
+local cache = shield.cache.redis("cache.session")
 
 cache:set("player:" .. uid, json, 3600)
 local ok, value = cache:get("player:" .. uid)
@@ -486,7 +486,7 @@ local ok, uid = cache:hget("session:" .. sid, "uid")
 ### Queue — `shield.queue.redis`
 
 ```lua
-local q = shield.queue.redis("queue.main")
+local q = shield.queue.redis("queue.events")
 
 q:publish("chat.world", payload)
 q:subscribe("chat.world", function(channel, data)
@@ -498,7 +498,7 @@ q:unsubscribe("chat.world")
 ### Leaderboard — `shield.leaderboard.redis`
 
 ```lua
-local lb = shield.leaderboard.redis("lb.main")
+local lb = shield.leaderboard.redis("leaderboard.default")
 
 lb:create_board("arena_1v1", {
     fields = { { name = "score", dir = "desc" } }
@@ -752,7 +752,8 @@ end
 - DI/IoC 注入 API
 - annotation / condition API
 - gateway middleware chain API
-- `shield.db:query(...)`、`shield.redis:get(...)` 等冒号形式
+- `shield.db.*`、`shield.redis.*` 全局数据 API（包括 `shield.db.query(...)`、`shield.redis.get(...)`）
+- `shield.db:query(...)`、`shield.redis:get(...)` 等旧冒号形式
 - handler 形如 `on_message(src, msg_type, data)` 的统一入口
 
 说明：插件系统 v1 会重新引入只读 introspection API：`shield.plugin.packages()`、`shield.plugin.instances()`、`shield.plugin.instance(id)`、`shield.plugin.binding(name)`。这些 API 只查询插件 catalog/runtime state，不提供 Lua 插件执行能力，也不暴露 native vtable。

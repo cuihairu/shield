@@ -526,7 +526,7 @@ typedef struct shield_error_v1 {
 Lua 侧有两类 API：
 
 1. **Host 内置 API**：由 host 的 `src/lua/lua_api.cpp` 注册，提供运行时核心能力（`shield.spawn` / `shield.send` / `shield.timer` / `shield.log` / `shield.config` / `shield.plugin.*` 等）。
-2. **插件自治 API**：由每个插件的 `register_lua` 钩子注册到 `shield.<namespace>`，提供该插件的业务能力（如 `shield.database.mongodb("doc.main"):find(...)`）。详见下一节 "Plugin Lua Bindings"。
+2. **插件自治 API**：由每个插件的 `register_lua` 钩子注册到 `shield.<namespace>`，提供该插件的业务能力（如 `shield.database.mongodb("document.default"):find(...)`）。详见下一节 "Plugin Lua Bindings"。
 
 Host 内置 API 只暴露查询和状态，不暴露裸 vtable 或跨插件调用：
 
@@ -569,7 +569,7 @@ local binding = shield.plugin.binding("database.default")
 | namespace 统一 | 插件 package id 直接映射 Lua namespace：`database.mongodb` → `shield.database.mongodb`。 |
 | 显式 register_lua | 每个 instance 必须实现 `register_lua` 钩子，即使空实现。host 不猜测插件是否需要 Lua。 |
 | 双层路径注入 | manifest `lua.search_paths` 是声明式快捷方式；`host_api.lua_add_path` 是命令式兜底，用于运行时动态决策。 |
-| 多实例 proxy | 同一 package 多个 instance 时，namespace 是 callable table：`shield.database.mongodb("doc.main")` 返回绑定到该实例的 proxy。 |
+| 多实例 proxy | 同一 package 多个 instance 时，namespace 是 callable table：`shield.database.mongodb("document.default")` 通过 binding 逻辑名返回绑定到目标 instance 的 proxy。 |
 
 ### ABI 接入点
 
@@ -586,16 +586,16 @@ namespace 直接来自 manifest 的 `lua.namespace` 字段（或省略时从 `id
 
 ```lua
 -- 业务 Lua 代码
-local mongo_default = shield.database.mongodb()            -- 默认实例（binding "document.default"）
-local mongo_audit   = shield.database.mongodb("doc.audit") -- 指定实例
+local mongo_default = shield.database.mongodb()                  -- 插件定义的默认 binding
+local mongo_audit   = shield.database.mongodb("document.audit")  -- 指定 binding 逻辑名
 
--- 返回的 proxy 绑定到该 instance，调用时直接路由到 C ABI
+-- 返回的 proxy 绑定到 binding 解析出的 instance，调用时直接路由到 C ABI
 mongo_audit:insert_one("events", { type = "login", user = "alice" })
 
 local cursor = mongo_default:find("users", { age = { ["$gt"] = 18 } })
 ```
 
-C 侧实现：`register_lua` 创建 `shield.database.mongodb` 这个 table，metatable 的 `__call` 接收 instance_id，查 PluginHost 拿到对应实例的 `shield_document_v1*` 和 `shield_doc_conn*`，构造 proxy。
+C 侧实现：`register_lua` 创建 `shield.database.mongodb` 这个 table，metatable 的 `__call` 接收 binding 逻辑名，查 PluginHost 解析到对应实例并取得 `shield_document_v1*` 和插件连接句柄，构造 proxy。
 
 ### Lua 文件位置
 
@@ -677,7 +677,7 @@ v1 的强约束：
 | 依赖注入 | 通过 manifest `requires` 和实例 `dependencies` 解析。 |
 | Redis 能力 | 通过具体 provider 暴露，不提供公共基础设施插件类型。 |
 | Lua 自治 | 插件必须实现 `register_lua` 钩子。业务 Lua 绑定跟随插件目录，host 端 `src/lua/lua_api.cpp` 不感知具体插件。 |
-| namespace 派生 | Lua namespace 直接来自 manifest `lua.namespace`（或从 `id` 派生）。多实例用 `shield.<ns>(instance_id)` proxy。 |
+| namespace 派生 | Lua namespace 直接来自 manifest `lua.namespace`（或从 `id` 派生）。多实例用 `shield.<ns>(binding)` proxy。 |
 | 文档口径 | 当前文档只描述有效设计，不声明历史完成阶段。 |
 
 ## Implementation Status

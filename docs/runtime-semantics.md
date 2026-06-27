@@ -18,7 +18,7 @@
 
 当前收敛顺序：
 
-- Phase 1 最小闭环覆盖单节点 Lua service、registry、基础 `send/call` 返回形态、TCP gateway、raw data API 的 mock/未启用语义、配置验证和 `shield::run` 入口。
+- Phase 1 最小闭环覆盖单节点 Lua service、registry、基础 `send/call` 返回形态、TCP gateway、插件系统 v1 的显式实例/binding、配置验证和 `shield::run` 入口。
 - handler 内 coroutine-aware `call/sleep` 已进入当前实现路径；timer callback 和 fork task 当前仍是受保护的非协程调用。真实 DB/Redis 驱动连接、UDP/KCP/WebSocket、ops snapshot 和官方可选模块不作为当前最小验收阻塞项。
 - schema/tooling、mapper、entity/component 等文档是后续草案；除非路线图重新纳入，否则不能反向扩大当前 runtime 范围。
 
@@ -41,7 +41,7 @@
 | [定时器语义](runtime-timer.md) | timer API、时间语义、错误语义、sleep、fork、Task ID |
 | [Lua VM 语义](runtime-lua-vm.md) | Lua VM 模型、热更新策略、Blue-Green 替换 |
 | [网络语义](runtime-network.md) | shield_net、shield_transport、gateway、SessionHandle、Phase 1 TCP 范围、deferred UDP/KCP/WebSocket |
-| [数据语义](runtime-data.md) | shield_data、连接池、Phase 1 DB/Redis API、Phase 2+ data 扩展、错误处理 |
+| [数据访问架构](runtime-data.md) | core 零数据、插件数据接口、binding 调用形态、连接池归插件自治 |
 | [日志语义](runtime-log.md) | 日志级别、结构化格式、上下文注入、轮转、审计日志 |
 | [Starter 系统](starter-system.md) | BootstrapContext、Starter 顺序、ScriptStarter、旧 DI/插件设计删除 |
 | [启动流程](runtime-bootstrap.md) | 启动顺序、关闭顺序、超时、信号处理、优雅重启 |
@@ -117,12 +117,12 @@
 - 实现 `fork` 和 task id；当前 task body 通过受保护的非协程调用执行。
 - 增加 fixed-delay、timer error stop、service exit auto-cancel 测试。
 
-### M7. net/gateway/data
+### M7. net/gateway/plugins
 
 - 整理 `shield_transport` 和 `shield_net` 边界。
 - 实现 gateway Lua callback 草图。
-- 保留 data 原始 DB/Redis API；Phase 1 先覆盖未启用错误和 mock pool 返回形态。
-- 真实 MySQL/Redis 连接、订阅生命周期和压力验证独立推进，不阻塞最小 Lua runtime。
+- 接入插件系统 v1 的 manifest scan、instance、binding 和 `register_lua` 分发。
+- 数据访问通过插件 namespace 暴露；真实 MySQL/Redis 连接、订阅生命周期和压力验证独立推进，不阻塞最小 Lua runtime。
 
 ops snapshot 和本地 diagnostics 属于 `shield_ops` 可选模块，除非显式启用 `shield_ops`，不得进入最小 runtime 验收。
 

@@ -8,8 +8,8 @@
 
 - YAML 只做声明式绑定，不承载业务逻辑。
 - 最小 runtime schema 只覆盖单节点 runtime 必需能力。
-- 配置驱动 Lua service、网络监听、data source、日志和 bootstrap timeout；每个配置段必须有明确 owner。
-- 不在 core 中提供服务发现、插件、Prometheus、健康检查、DI、注解或条件装配配置。
+- 配置驱动 Lua service、网络监听、插件实例/binding、日志和 bootstrap timeout；每个配置段必须有明确 owner。
+- 不在 core 中提供服务发现、Prometheus、健康检查、DI、注解或条件装配配置；插件系统使用独立 `plugins` 子树。
 - optional module 的配置由对应模块自己验证；未启用模块时，出现对应 optional 配置段必须启动失败，不能由 core 静默忽略。
 
 ## Phase 1 Schema
@@ -23,7 +23,7 @@
 | `lua` | `shield_lua` |
 | `actors` | `shield_bootstrap` + `shield_core` + `shield_lua` |
 | `actors[].network` | `shield_net` |
-| `database` / `redis` | `shield_data` |
+| `plugins` | `shield_plugin` |
 | `bootstrap` / `shutdown` | `shield_bootstrap` |
 
 ```json
@@ -97,58 +97,56 @@
       "instances": 0
     }
   ],
-  "database": {
-    "enabled": true,
-    "driver": "mysql",
-    "host": "localhost",
-    "port": 3306,
-    "database": "game",
-    "username": "root",
-    "password": "${DB_PASSWORD:}",
-    "pool_size": 10,
-    "max_pool_size": 50,
-    "connect_timeout": 5000,
-    "acquire_timeout": 5000,
-    "query_timeout": 30000,
-    "idle_timeout": 300000,
-    "max_lifetime": 3600000,
-    "mock": false,
-    "allow_mock_fallback": false,
-    "options": {
-      "charset": "utf8mb4"
+  "plugins": {
+    "directory": "./plugins",
+    "instances": [
+      {
+        "id": "db.main",
+        "package": "database.mysql",
+        "required": true,
+        "config": {
+          "host": "127.0.0.1",
+          "port": 33060,
+          "database": "game",
+          "user": "root",
+          "password": "${DB_PASSWORD:}",
+          "pool_size": 8,
+          "connect_timeout_ms": 5000,
+          "query_timeout_ms": 30000
+        }
+      },
+      {
+        "id": "cache.session",
+        "package": "cache.redis",
+        "required": true,
+        "config": {
+          "host": "127.0.0.1",
+          "port": 6379,
+          "db": 0,
+          "password": "${REDIS_PASSWORD:}",
+          "pool_size": 8,
+          "connect_timeout_ms": 5000,
+          "command_timeout_ms": 5000
+        }
+      }
+    ],
+    "bindings": {
+      "database.default": "db.main",
+      "cache.session": "cache.session"
     }
-  },
-  "redis": {
-    "enabled": true,
-    "host": "localhost",
-    "port": 6379,
-    "db": 0,
-    "password": "${REDIS_PASSWORD:}",
-    "pool_size": 10,
-    "max_pool_size": 50,
-    "connect_timeout": 5000,
-    "acquire_timeout": 5000,
-    "command_timeout": 5000,
-    "idle_timeout": 300000,
-    "mock": false,
-    "allow_mock_fallback": false
   },
   "bootstrap": {
     "timeout": {
       "config_load": 5000,
       "log_init": 5000,
       "core_init": 10000,
-      "data_init": 30000,
+      "plugin_init": 30000,
       "net_init": 10000,
       "script_init": 10000,
       "service_spawn": 60000
     },
     "retry": {
-      "database": {
-        "max_retries": 3,
-        "delay": 5000
-      },
-      "redis": {
+      "plugins": {
         "max_retries": 3,
         "delay": 5000
       }
@@ -158,7 +156,7 @@
     "timeout": {
       "service_drain": 30000,
       "service_stop": 10000,
-      "data_close": 10000,
+      "plugin_shutdown": 10000,
       "total": 60000
     }
   }
@@ -232,44 +230,27 @@
 - **开发环境**：建议 `enabled: false` 以支持热重载
 - **生产环境**：建议 `enabled: true` 以提升性能
 
-## Data 配置
+## Plugins 配置
 
-### 数据库（插件架构）
+后端能力（SQL、文档、缓存、队列、排行榜、认证、监控等）统一走插件系统 v1。最小 runtime 配置层只识别 `plugins` 子树并把它交给 `PluginHost`；各实例的 `config` 由对应插件 `manifest.yaml` 的 `config_schema` 校验。
 
-数据库后端采用**插件架构**。核心 `shield_data` 不直接链接任何数据库驱动；
-具体后端通过动态库插件在运行时加载：
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `plugins.directory` | 否 | 插件包目录，默认由 bootstrap 决定 |
+| `plugins.instances` | 否 | 显式声明要启动的 plugin instance |
+| `plugins.instances[].id` | 是 | instance id，本配置内唯一 |
+| `plugins.instances[].package` | 是 | package id，必须能在 catalog 中找到 |
+| `plugins.instances[].required` | 否 | 默认 true；required 失败会中断启动 |
+| `plugins.instances[].config` | 否 | 传给插件的实例配置，由插件 manifest schema 拥有 |
+| `plugins.bindings` | 否 | `logical_name: instance_id` 显式 binding 表 |
 
-| 后端 | 插件 DLL | vcpkg feature | 依赖 |
-|------|----------|---------------|------|
-| MySQL | `shield_db_mysql.dll` | `database-mysql` | mysql-connector-cpp |
-| PostgreSQL | `shield_db_pgsql.dll` | `database-postgresql` | libpq |
-| SQLite | `shield_db_sqlite.dll` | `database-sqlite` | sqlite3 |
+规则：
 
-插件实现 `db_plugin.h` 定义的 C ABI 接口，核心通过 `DynamicLibrary` 在运行时加载。
-
-`database.enabled=false` 或缺省 database 段时：
-
-- `shield.db.*` 返回 `false, module_unavailable`。
-- runtime 不创建 DB 连接池。
-
-### Redis
-
-Redis 通过 redis++ 直连（非插件）。`RedisPool::initialize()` 先尝试真实连接，
-失败自动降级为 mock pool。
-
-`redis.enabled=false` 或缺省 redis 段时：
-
-- `shield.redis.*` 返回 `false, module_unavailable`。
-- runtime 不创建 Redis 连接池。
-
-### 通用规则
-
-`shield_data` 只配置原始 DB/Redis 连接池。Lua mapper/entity helper 是运行时 API，
-不需要独立配置；XML schema-mapper、migration 和跨服务事务不在当前配置范围。
-
-测试和本地开发可以显式设置 `database.mock=true` / `redis.mock=true` 使用 mock
-pool；生产环境默认不自动降级到 mock。若确实需要兼容旧 smoke 流程，可显式设置
-`allow_mock_fallback=true`，但这不应出现在生产配置中。
+- core 不解释数据库、Redis 或其他后端的字段；例如 `pool_size`、`host`、`database` 都属于具体插件实例配置。
+- 数据访问 Lua API 使用插件 namespace 和 binding 逻辑名，例如 `shield.database.mysql("database.default")`。
+- 缺少对应 binding、目标实例未启动或插件未启用时，插件 Lua API 返回 `nil, { code = "module_unavailable" }` 或等价错误对象。
+- 连接池归插件 instance 自治，host 不创建全局 DB/Redis 连接池。
+- 旧顶层 `database` / `redis` 配置段已废弃，不属于 Phase 1 schema。
 
 ## 验证规则
 
@@ -291,14 +272,11 @@ pool；生产环境默认不自动降级到 mock。若确实需要兼容旧 smok
 | `actors[].network.*` | 监听地址必须是 `host:port` |
 | `actors[].network.tcp` | Phase 1 要求 `instances == 1` |
 | `actors[].network.udp/kcp/websocket` | Phase 1 拒绝启动；这些 transport 属于 deferred extension |
-| `database.port` | 1-65535 |
-| `database.pool_size` | `>= 1`，且 `<= max_pool_size` |
-| `database.acquire_timeout` / `connect_timeout` / `query_timeout` | 1-3600000 ms |
-| `database.mock` / `allow_mock_fallback` | boolean |
-| `redis.port` | 1-65535 |
-| `redis.pool_size` | `>= 1`，且 `<= max_pool_size` |
-| `redis.acquire_timeout` / `connect_timeout` / `command_timeout` | 1-3600000 ms |
-| `redis.mock` / `allow_mock_fallback` | boolean |
+| `plugins.directory` | 可选；路径必须是字符串 |
+| `plugins.instances[].id` | 必填，本配置内唯一 |
+| `plugins.instances[].package` | 必填，必须存在于插件 catalog |
+| `plugins.instances[].config` | JSON-compatible map；按插件 manifest schema 校验 |
+| `plugins.bindings` | binding 名唯一，目标 instance 必须存在 |
 | `shutdown.timeout.total` | 必须大于各分段 timeout |
 
 验证失败时拒绝启动，输出字段路径和原因。
@@ -309,9 +287,15 @@ pool；生产环境默认不自动降级到 mock。若确实需要兼容旧 smok
 
 ```json
 {
-  "database": {
-    "host": "${DB_HOST:localhost}",
-    "password": "${DB_PASSWORD:}"
+  "plugins": {
+    "instances": [{
+      "id": "db.main",
+      "package": "database.mysql",
+      "config": {
+        "host": "${DB_HOST:localhost}",
+        "password": "${DB_PASSWORD:}"
+      }
+    }]
   }
 }
 ```
@@ -346,8 +330,7 @@ Phase 1 只承诺极少量本地热更新：
 | --- | --- | --- |
 | `log.level` | 是 | 立即生效 |
 | `log.console` / `log.file` | 否 | Phase 1 需要重启 |
-| `database.pool_size` | 否 | Phase 1 需要重启 |
-| `redis.pool_size` | 否 | Phase 1 需要重启 |
+| `plugins.*` | 否 | Phase 1 需要重启；不支持热加载/热卸载插件 |
 | `actors[].instances` | 否 | Phase 1 需要重启 |
 | `actors[].script` | 否 | 需要 service 重启或未来 hot reload 机制 |
 | `actors[].network` | 否 | 需要 listener 重建 |
