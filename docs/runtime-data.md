@@ -13,17 +13,19 @@ Shield 的数据访问（SQL、文档、KV、队列、排行榜）采用**纯插
 数据访问的真实形态见下文。如与 [Lua API 契约](lua-api.md) 冲突，以 lua-api.md 为准——它已把 `shield.db:*` / `shield.redis:*` 列入"删除的旧 API"。数据访问按插件 namespace 调用，形态是 `shield.<plugin-namespace>(binding)`：`binding` 是配置（`plugins.bindings`）中声明的**逻辑名**，host 内部经它解析到 plugin instance；同一 binding 名在配置与 Lua 调用中须一致。具体方法名以 [Lua API 契约](lua-api.md) 为准。下为伪代码示意（`<method>` 代表各插件的方法，非可执行 Lua）：
 
 ```text
-shield.database.mysql("primary_db"):<method>(...)    -- SQL（mysql/postgresql/sqlite 同形）
-shield.database.mongodb("doc_store"):<method>(...)   -- 文档
-shield.cache.redis("session_cache"):<method>(...)    -- KV 缓存
-shield.queue.redis("job_queue"):<method>(...)        -- 队列
-shield.leaderboard.redis("ranking"):<method>(...)    -- 排行榜
+shield.database.mysql("database.default"):<method>(...)      -- SQL（mysql/postgresql 同形）
+shield.database.mongodb("document.default"):<method>(...)    -- 文档
+shield.cache.redis("cache.session"):<method>(...)            -- KV 缓存
+shield.queue.redis("queue.events"):<method>(...)             -- 队列
+shield.leaderboard.redis("leaderboard.arena"):<method>(...)  -- 排行榜
 ```
+
+binding 而非 instance_id 的设计理由与命名规则见 [插件系统 · 为什么用 binding](plugin-system.md#为什么-lua-访问用-binding-而非-instance-id)。
 
 ## 架构：core 零数据 + 插件自治
 
 ```text
-Lua 业务 ──shield.database.mysql("primary_db"):<method>(...)──┐
+Lua 业务 ──shield.database.mysql("database.default"):<method>(...)──┐
                                                          │ 插件自注册的 Lua namespace
                                                          ▼
                               每个 Lua VM 初始化时 PluginHost::register_lua_all

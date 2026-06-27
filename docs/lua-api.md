@@ -400,6 +400,7 @@ db_game:query("SELECT * FROM players WHERE id = ?", { pid })
 
 规则：
 
+- **业务代码必须传 binding 逻辑名，不得传 instance_id**（禁止 `shield.database.mysql("db.main")` 这类直接传实例 id 的写法）。binding 是部署可变的逻辑引用，instance_id 是部署细节；设计理由与命名规则见 [插件系统 · 为什么用 binding](plugin-system.md#为什么-lua-访问用-binding-而非-instance-id)。
 - API coroutine-friendly。
 - 未启用对应插件、binding 不存在或目标实例未启动时返回 `nil, { code = "module_unavailable" }`。
 - 同一 package 多实例互不影响；每个 proxy 独立持有连接句柄。

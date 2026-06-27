@@ -597,6 +597,28 @@ local cursor = mongo_default:find("users", { age = { ["$gt"] = 18 } })
 
 C 侧实现：`register_lua` 创建 `shield.database.mongodb` 这个 table，metatable 的 `__call` 接收 binding 逻辑名，查 PluginHost 解析到对应实例并取得 `shield_document_v1*` 和插件连接句柄，构造 proxy。
 
+### 为什么 Lua 访问用 binding 而非 instance_id
+
+业务代码访问插件时**必须用 binding 逻辑名，不得用 instance_id**（诊断 API 除外）。这是"间接引用"设计——业务依赖角色/语义，不依赖部署实例。理由：
+
+- **部署与代码解耦**：`database.default` 指向哪个 instance 由 `plugins.bindings` 决定，运维迁移、重命名、拆分实例不改业务代码。instance_id 是部署细节，binding 是业务契约。
+- **多环境一致**：dev / staging / prod 的 instance_id 必然不同，业务代码恒用 `database.default`。
+- **游戏服务器刚需场景**：读写分离（`database.read` → replica）、分片（`database.shard1`）、灰度（`database.canary`）、故障切换——用 binding 都是改配置，用 instance_id 都要改业务代码。
+- **测试**：binding 指向 mock instance，业务代码零改动。
+- **与 C++ 路径统一**：C++ 消费者经 `PluginHost::get_by_binding<T>(binding)` 访问，Lua 走同一套 `plugins.bindings`，两侧语义一致，避免"C++ 用 binding、Lua 用 instance_id"的割裂。
+- **业界先例**：DNS（域名→IP）、Kubernetes Service（service name→pod）、Spring `@Qualifier`、Envoy cluster——长期维护的资源访问都采用逻辑引用而非物理标识。直接用 instance_id 等于让业务代码写 IP 而非域名。
+
+#### 使用规则
+
+1. 业务 Lua 只传 binding：`shield.database.mysql("database.default")` ✓；`shield.database.mysql("db.main")` ✗（`db.main` 是 instance_id）。
+2. binding 命名约定 `<interface-type>.<purpose>`：`database.default` / `database.read` / `cache.session` / `queue.events` / `leaderboard.arena`。
+3. binding 在主配置 `plugins.bindings` 声明（`logical: instance_id`），**运维拥有**，不在业务代码硬编码。
+4. instance_id 只出现在配置 `plugins.instances[].id` 与只读诊断 API（`shield.plugin.instances()`）；业务代码不直接用。
+5. 缺失/未配置 binding → `nil, { code = "module_unavailable" }`（软失败，不 panic）。
+6. 诊断/调试可直接指定 instance_id，但只能经专门诊断入口，非常规业务路径。
+
+> **实现要求**：插件 `register_lua` 创建的 callable table，其 `__call` **必须接收 binding 逻辑名并经 PluginHost 解析到 instance，不得直接用 instance_id 查插件内部表**。当前 mysql / cache.redis 等数据插件的 `__call` 仍按 instance_id 查内部 registry（`find_instance(instance_id)`），属于待修正的实现偏差，与本文设计不符。
+
 ### Lua 文件位置
 
 ```
