@@ -201,7 +201,7 @@ db->disconnect(conn);
 PostgreSQL 插件通过 `register_lua` 暴露 `shield.database.postgresql` callable namespace：
 
 ```lua
-local db = shield.database.postgresql("db.main")
+local db = shield.database.postgresql("database.default")
 local ok, row = db:query_one(
     "SELECT player_id, nickname FROM players WHERE player_id = ?",
     { player_id })

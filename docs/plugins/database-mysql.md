@@ -194,7 +194,7 @@ db->disconnect(conn);
 MySQL 插件通过 `register_lua` 暴露 `shield.database.mysql` callable namespace：
 
 ```lua
-local db = shield.database.mysql("db.main")
+local db = shield.database.mysql("database.default")
 local ok, rows = db:query(
     "SELECT player_id, nickname FROM players WHERE level > ?",
     { 10 })

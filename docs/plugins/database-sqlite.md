@@ -187,7 +187,7 @@ db->disconnect(conn);
 SQLite 插件通过 `register_lua` 暴露 `shield.database.sqlite` callable namespace：
 
 ```lua
-local db = shield.database.sqlite("db.main")   -- 通过实例 ID
+local db = shield.database.sqlite("database.default")   -- 通过 binding 逻辑名
 local ok, row = db:query_one(
     "SELECT player_id, nickname FROM players WHERE player_id = ?",
     { player_id })

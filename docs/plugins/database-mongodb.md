@@ -215,7 +215,7 @@ doc->disconnect(conn);
 插件通过 `register_lua` 暴露 `shield.database.mongodb` callable namespace。业务代码按实例 ID 取得 proxy，proxy 持有一个 pool entry 直到 GC：
 
 ```lua
-local mongo = shield.database.mongodb("db.player")
+local mongo = shield.database.mongodb("document.default")
 
 -- 插入一份文档
 local ok, err = mongo:insert_one("inventory", {
@@ -248,7 +248,7 @@ end)
 Lua 端附带 `oid` / `is_oid` / `oid_hex` 工具函数（由 `plugins/mongodb/lua/init.lua` 提供）：
 
 ```lua
-local mongo = shield.database.mongodb("db.player")
+local mongo = shield.database.mongodb("document.default")
 
 -- 把 24 字符 hex 转 {"$oid": "..."} 形态
 local filter = { _id = mongo.oid("507f1f77bcf86cd799439011") }
