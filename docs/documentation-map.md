@@ -46,7 +46,7 @@
 - [部署](deployment.md)
 - [配置运行时语义](runtime-config.md)
 - [日志运行时语义](runtime-log.md)
-- [运维与调试](ops.md)
+- [运维语义](runtime-ops.md)
 
 ## 当前口径
 

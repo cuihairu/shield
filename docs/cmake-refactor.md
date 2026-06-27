@@ -1,6 +1,10 @@
 # CMake 重构策略
 
-本文定义重构后的 CMake target 拆分方向。当前 `CMakeLists.txt` 仍把旧模块混入 `shield_core`，后续代码重构时必须按本文收敛。
+> 状态：**历史记录——重构已完成，不再是待执行计划。**
+>
+> 本文原描述的是 target 拆分方向。该重构已 100% 落地：当前 `CMakeLists.txt` 已按本文拆分为 `shield_base`/`shield_log`/`shield_config`/`shield_core`/`shield_data`/`shield_transport`/`shield_net`/`shield_lua`/`shield_bootstrap`/`shield` 等 target，旧 discovery/metrics/health/DI 等模块已删除（见 [路线图](roadmap.md)）。本文保留作为 target 结构与依赖约束的参考。
+
+本文定义重构后的 CMake target 拆分方向。
 
 ## 目标
 

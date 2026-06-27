@@ -1,5 +1,9 @@
 # 数据访问运行时语义
 
+> ⚠️ 状态：**本文档已严重过时，与当前代码不符，待重写。**
+>
+> 下文所述 `shield_data` / `DatabaseConnection` / `DatabasePool`、`shield.db.*` / `shield.redis.*` Lua API、"CTest 已覆盖"等实现描述，**在当前源码中均不存在**——核心 Lua 绑定未注册 db/redis 模块。数据访问已重构为**插件 namespace**，权威契约以 [Lua API 契约](lua-api.md) 为准（`shield.database.<driver>("name"):query(...)`；lua-api.md 的"删除的旧 API"已明确移除 `shield.db:*` / `shield.redis:*`）。阅读请以 lua-api.md 为唯一事实来源，本文保留仅为重写参考。
+
 当前实现状态：数据库已改为**插件架构**。核心 `shield_data` 提供 `DatabaseConnection`
 接口和 `DatabasePool` 连接池；具体后端（MySQL/PostgreSQL/SQLite）通过动态库插件
 （`shield_db_mysql.dll` / `shield_db_pgsql.dll` / `shield_db_sqlite.dll`）在运行时加载。

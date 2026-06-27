@@ -96,6 +96,23 @@ Shield call:
 
 因此 `shield.call` 不能直接暴露 CAF request，也不能在 Lua 里做线程阻塞式等待。正确设计是挂起当前 Lua coroutine，同时保持 actor runtime 可继续调度其他消息。
 
+## CAF 覆盖与 Shield 补齐的语义
+
+CAF 处理 Actor 机制（spawn/quit、send/request、schedule、scheduler），Shield 在其上暴露游戏服务器语义。CAF 不直接提供 Skynet 风格的 Lua runtime 语义，Shield 必须补：
+
+| Shield 语义 | 为什么 CAF 不直接提供 |
+| --- | --- |
+| service name registry | CAF 主要操作 actor handle，不是游戏服务名 |
+| Lua coroutine pending/resume | CAF request 不知道 Lua coroutine |
+| `shield.call` 同步写法 | CAF 是 C++ continuation/request 机制 |
+| Lua service 生命周期 | CAF 不知道 Lua 脚本和 init/message/exit |
+| Lua table payload | CAF 倾向 C++ 类型系统 |
+| `uniqueservice`/`queryservice` 类语义 | 这是 Shield 的服务模型，不是 CAF 机制 |
+
+不暴露 CAF：Lua 和用户侧 C++ 扩展不应 include CAF 头文件或直接操作 CAF actor handle。CAF 是实现细节的进一步论述见 [核心设计理念](architecture-core-concepts.md)。
+
+> 本节合并自原 `caf-mapping.md`（已删除）。
+
 ## Shield 不覆盖
 
 - Skynet harbor 集群模型不直接进入 core；多节点能力归入 `shield_cluster`。

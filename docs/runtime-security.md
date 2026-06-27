@@ -1,5 +1,9 @@
 # 安全运行时语义
 
+> 状态：设计草案，非当前实现契约。
+>
+> 本文描述的 sandbox 资源限制、permissions 权限矩阵、`network.tls`、`rate_limit` 等配置项**在当前 `RuntimeActorConfig` 中均未实现**（见 `include/shield/config/config.hpp`），属于 Phase 2+ 安全加固方向。若与 [配置语义](runtime-config.md) 或 [Lua API 契约](lua-api.md) 冲突，以那两份文档为准。
+
 本文档包含 Shield 安全机制相关的运行时语义决策。
 
 ## 安全原则

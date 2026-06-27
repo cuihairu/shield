@@ -6,6 +6,8 @@
 
 `MessageEnvelope` 是 runtime 内部信封，Lua 用户不直接构造。
 
+> 注：下面的 C++ 结构是**概念模型**，用于说明字段语义；实际实现见 `include/shield/core/message.hpp`，其字段与消息类型区分方式与此处描述不同（无 `MessageKind` 枚举）。
+
 ```cpp
 enum class MessageKind {
   Send,
