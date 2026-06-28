@@ -14,7 +14,7 @@ released implementation.
 ## Target Positioning
 
 - C++ owns runtime infrastructure: actor scheduling, networking, Lua binding,
-  timers, configuration, logging, and low-level data access.
+  timers, configuration, logging, and the plugin host.
 - Lua owns game logic: each service is a Lua script using the `shield.*` API.
 - CAF remains an internal actor transport foundation.
 - Shield exposes game-server semantics instead of CAF details.
@@ -29,13 +29,18 @@ Shield core does not provide:
 - Distributed orchestration or cluster management in the core path.
 - DI/IoC containers or annotation-based assembly.
 - ORM or enterprise data frameworks.
-- Event bus abstractions separate from actor messages.
+- Cross-service or lifecycle event bus abstractions separate from actor
+  messages.
 - Middleware chains as a framework policy layer.
 - Prometheus, health-check registries, or plugin systems as core runtime
   features.
 
 These capabilities may be built by users or evaluated later as optional
 extensions. They are not part of the current core contract.
+
+`shield.event` is a deliberately small Lua helper for decoupling modules inside
+one service VM. It is not a mailbox, not serialized, not visible across
+services or VMs, and not used for application lifecycle events.
 
 ## Core Boundary
 
@@ -59,7 +64,7 @@ core semantics:
 | `shield_lua` | Lua VM management and `shield.*` bindings |
 | `shield_net` | Client connections (TCP in Phase 1; UDP/KCP/WebSocket deferred), Session management |
 | `shield_transport` | Optional byte-stream adaptation such as framing or encryption |
-| `shield_data` | Raw DB / Redis access, without ORM policy |
+| `shield_plugin` | Plugin manifest/catalog, instances, bindings, C ABI, and plugin Lua registration |
 | `shield_config` | YAML configuration loading |
 | `shield_log` | Runtime logging |
 | `shield_bootstrap` | Compose selected modules into a runnable server |
@@ -70,6 +75,8 @@ Optional official extensions live outside the minimal main path:
 | --- | --- |
 | `shield_cluster` | Cross-process/machine communication, service discovery, node heartbeat |
 | `shield_global` | Distributed data, locks, queue/rank/rate limiting |
+| `shield_player` | PlayerSession, PlayerRef, login/logout, reconnect, player-ready lifecycle |
+| `shield_server` | Server state, maintenance mode, shutdown coordination |
 | `shield_ops` | Diagnostics, metrics, console, profile |
 
 ## Target Lua Shape
@@ -81,6 +88,10 @@ function M.on_init()
     shield.log.info("echo started")
 end
 
+function M.on_shutdown(ctx)
+    shield.log.info("echo draining: " .. ctx.reason)
+end
+
 function M.ping()
     local src = shield.sender()
     shield.send(src, "pong", { time = shield.now() })
@@ -88,6 +99,11 @@ end
 
 return M
 ```
+
+Player/avatar/client lifecycle is not a core service hook. When enabled,
+`shield_player` owns `PlayerSession`, `PlayerRef`, player-ready state, login,
+disconnect, reconnect, logout, and save hooks. `avatar` or `character` remains
+game data attached to a player session, not a Shield core object.
 
 The current source tree still contains modules from the previous broader
 architecture. During the refactor, documentation should describe the target
@@ -116,9 +132,10 @@ authoritative contracts above, the authoritative contracts win.
 
 ## Current Status
 
-Design is not finalized. Treat examples under `examples/hello_world/` as target
-API sketches until the corresponding runtime entrypoint and Lua bindings are
-implemented.
+The runtime is still converging toward the authoritative contracts above. Some
+documented APIs are target contracts rather than implemented features; for
+example, service `on_shutdown(ctx)` and local `shield.event` still require
+runtime work before they are usable.
 
 ## Docker Build
 

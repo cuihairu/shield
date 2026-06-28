@@ -163,6 +163,15 @@
 }
 ```
 
+`shutdown.timeout` 语义：
+
+| 字段 | 说明 |
+| --- | --- |
+| `service_drain` | runtime shutdown drain 阶段预算；用于调用 service `on_shutdown(ctx)` |
+| `service_stop` | final stop 阶段预算；用于调用 service `on_exit(reason)` 并释放 VM |
+| `plugin_shutdown` | 插件 instance shutdown 预算；插件关闭在 service drain/stop 之后 |
+| `total` | 整体 shutdown 最大预算，必须覆盖所有分段 |
+
 ## Actor 配置
 
 | 字段 | 必填 | 说明 |
@@ -364,7 +373,8 @@ optional module 启用后，由该模块读取并验证自己的配置段。core
 
 以下旧配置直接删除，不保留兼容：
 
-- `plugins`
+- `plugins.enabled`
+- 旧插件 v0 配置
 - `middleware`
 - `discovery`
 - `metrics`

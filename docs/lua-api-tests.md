@@ -53,6 +53,9 @@ Harness 要求：
 | LAPI-002-04 | `on_init` 抛错 | spawn | `init_failed`，触发 panic 记录 |
 | LAPI-002-05 | service exit | `shield.exit("normal")` | 调用 `on_exit("normal")` |
 | LAPI-002-06 | `on_exit` 调用 `shield.call` | exit | 返回/记录 `api_not_allowed_in_exit` |
+| LAPI-002-07 | runtime shutdown | shutdown | 先调用 `on_shutdown(ctx)`，再调用 `on_exit("stopping")` |
+| LAPI-002-08 | `on_shutdown` 超时 | shutdown | 记录 timeout，继续调用 `on_exit` 并释放服务 |
+| LAPI-002-09 | `on_shutdown` 调用 `shield.call` | shutdown drain | deadline 内允许挂起并恢复 |
 
 ## LAPI-003 Registry
 
@@ -147,6 +150,16 @@ Harness 要求：
 | LAPI-010-05 | service only defines `on_message(src, type, data)` | send method does not dispatch through legacy entrypoint |
 | LAPI-010-06 | DI injection API | unavailable |
 
+## LAPI-010A Local Event API
+
+| Case | 设置 | 操作 | 断言 |
+| --- | --- | --- | --- |
+| LAPI-010A-01 | 当前 service 注册 listener | `shield.event.emit(name, payload)` | listener 在同一 VM 内同步收到 payload |
+| LAPI-010A-02 | listener unsubscribe | 调用返回的 `off()` 后 emit | listener 不再触发 |
+| LAPI-010A-03 | listener 抛错 | emit | 触发 `on_error(err, {type="event"})`，其他 listener 继续 |
+| LAPI-010A-04 | 另一个 service 注册同名 listener | 从当前 service emit | 另一个 service 不收到，证明不跨 VM |
+| LAPI-010A-05 | lifecycle event name | emit `application_ready` / `shutdown` | 只作为普通本地事件名处理，不触发 runtime lifecycle |
+
 ## LAPI-011 Player Lifecycle
 
 适用前提：`shield_player` 已启用。未启用时整个 LAPI-011 矩阵跳过，且 `shield.player.*` 调用应返回 `module_unavailable`。
@@ -156,33 +169,36 @@ Harness 要求：
 | LAPI-011-01 | setup 缺 `auth` 字段 | spawn player service | `nil, setup_invalid` |
 | LAPI-011-02 | setup 缺 `login` 字段 | spawn player service | `nil, setup_invalid` |
 | LAPI-011-03 | setup 缺 `client_message` 字段 | spawn player service | `nil, setup_invalid` |
-| LAPI-011-04 | setup 缺 `disconnect` 字段 | 触发断线 | 进入重连窗口，默认实现被调用 |
-| LAPI-011-05 | setup 缺 `logout` 字段 | 玩家离线 | `PlayerManager.unregister` 被调用 |
-| LAPI-011-06 | setup 缺 `save` 字段且未配置 persistence | 触发定时保存 | no-op，无数据插件调用 |
-| LAPI-011-07 | setup 覆盖 `disconnect` | 触发断线 | 业务实现被调用，默认实现不执行 |
-| LAPI-011-08 | setup 完整 + persistence 启用 | 触发 `on_save` 默认实现 | adapter 通过配置的插件 binding 持久化白名单字段 |
-| LAPI-011-09 | setup 完整 + persistence 未启用 | 触发 `on_save` 默认实现 | no-op，无数据插件调用 |
-| LAPI-011-10 | persistence `save` 失败（`on_save_error="log"`） | adapter 返回错误 | 错误码 `persistence_save_failed`，service 继续运行 |
-| LAPI-011-11 | persistence `save` 失败（`on_save_error="panic"`） | adapter 返回错误 | 触发 `on_panic` |
-| LAPI-011-12 | persistence 字段含 function | setup | `nil, setup_invalid` |
-| LAPI-011-13 | `PlayerRef` LuaPack 编码 | encode | 独立 type tag，字段完整 |
-| LAPI-011-14 | `shield.player.resolve` 本地在线玩家 | 解析 ref | 返回 `PlayerSession` |
-| LAPI-011-15 | `shield.player.resolve` 本地已下线玩家 | 解析 ref | `nil, player_not_found` |
-| LAPI-011-16 | `shield.player.resolve` 远端 ref（remote resolve 未启用） | 解析 ref | `nil, remote_resolve_unimplemented` |
-| LAPI-011-17 | `shield.player.resolve` 字段非法 | 解析 ref | `nil, invalid_player_ref` |
-| LAPI-011-18 | cross-service 传 `PlayerRef` | send payload | receiver 拿到等价 ref |
-| LAPI-011-19 | cross-service 传 `SessionHandle` | send payload | runtime 拒绝并返回错误 |
-| LAPI-011-20 | cross-service 传完整 `PlayerSession` | send payload | runtime 拒绝并返回错误 |
-| LAPI-011-21 | auth 返回 `anonymous=true` 且未开启 anonymous | 认证 | `nil, anonymous_disabled` |
-| LAPI-011-22 | anonymous 已开启且 auth 返回 `anonymous=true` | 认证 | 状态进入 `anonymous`，默认不触发 persistence |
-| LAPI-011-23 | auth 返回 `spectator=true` 且未开启 spectator | 认证 | `nil, spectator_disabled` |
-| LAPI-011-24 | spectator 已开启 | 调用 `player:set_data` 或 `player:save` | 拒绝并返回 `spectator_readonly` |
-| LAPI-011-25 | multi_device `single` 且 UID 已在线 | 新连接认证 | `false, already_online` |
-| LAPI-011-26 | multi_device `kick_old` 且 UID 已在线 | 新连接认证 | 旧会话 `logout` reason 为 `replaced` |
-| LAPI-011-27 | multi_device `multi` 且超过 `max_devices` | 新连接认证 | `false, too_many_devices` |
-| LAPI-011-28 | `player_pool` 模式 | 同一 uid 多条消息 | 路由到同一 shard 且单玩家 handler 串行 |
-| LAPI-011-29 | `shield.player.Base.extend(opts)` | spawn player service | 行为等价于 `shield.player.setup(M, opts)` |
-| LAPI-011-30 | Base 覆盖可选 hook | 触发 hook | 默认实现不自动执行 |
+| LAPI-011-04 | setup 完整且 `ready` 缺省 | 登录成功 | 默认 ready 标记 `player.state="ready"`，开始分发 `client_message` |
+| LAPI-011-05 | setup 提供 `ready` 字段 | 登录成功 | 调用业务 ready 后进入 ready；不是 service/application `on_ready` |
+| LAPI-011-06 | ready 前收到客户端业务消息 | deliver payload | 排队或拒绝，但不得调用 `client_message` |
+| LAPI-011-07 | setup 缺 `disconnect` 字段 | 触发断线 | 进入重连窗口，默认实现被调用 |
+| LAPI-011-08 | setup 缺 `logout` 字段 | 玩家离线 | `PlayerManager.unregister` 被调用 |
+| LAPI-011-09 | setup 缺 `save` 字段且未配置 persistence | 触发定时保存 | no-op，无数据插件调用 |
+| LAPI-011-10 | setup 覆盖 `disconnect` | 触发断线 | 业务实现被调用，默认实现不执行 |
+| LAPI-011-11 | setup 完整 + persistence 启用 | 触发 `on_save` 默认实现 | adapter 通过配置的插件 binding 持久化白名单字段 |
+| LAPI-011-12 | setup 完整 + persistence 未启用 | 触发 `on_save` 默认实现 | no-op，无数据插件调用 |
+| LAPI-011-13 | persistence `save` 失败（`on_save_error="log"`） | adapter 返回错误 | 错误码 `persistence_save_failed`，service 继续运行 |
+| LAPI-011-14 | persistence `save` 失败（`on_save_error="panic"`） | adapter 返回错误 | 触发 `on_panic` |
+| LAPI-011-15 | persistence 字段含 function | setup | `nil, setup_invalid` |
+| LAPI-011-16 | `PlayerRef` LuaPack 编码 | encode | 独立 type tag，字段完整 |
+| LAPI-011-17 | `shield.player.resolve` 本地 ready 玩家 | 解析 ref | 返回 `PlayerSession` |
+| LAPI-011-18 | `shield.player.resolve` 本地已下线玩家 | 解析 ref | `nil, player_not_found` |
+| LAPI-011-19 | `shield.player.resolve` 远端 ref（remote resolve 未启用） | 解析 ref | `nil, remote_resolve_unimplemented` |
+| LAPI-011-20 | `shield.player.resolve` 字段非法 | 解析 ref | `nil, invalid_player_ref` |
+| LAPI-011-21 | cross-service 传 `PlayerRef` | send payload | receiver 拿到等价 ref |
+| LAPI-011-22 | cross-service 传 `SessionHandle` | send payload | runtime 拒绝并返回错误 |
+| LAPI-011-23 | cross-service 传完整 `PlayerSession` | send payload | runtime 拒绝并返回错误 |
+| LAPI-011-24 | auth 返回 `anonymous=true` 且未开启 anonymous | 认证 | `nil, anonymous_disabled` |
+| LAPI-011-25 | anonymous 已开启且 auth 返回 `anonymous=true` | 认证 | 状态进入 `anonymous`，默认不触发 persistence |
+| LAPI-011-26 | auth 返回 `spectator=true` 且未开启 spectator | 认证 | `nil, spectator_disabled` |
+| LAPI-011-27 | spectator 已开启 | 调用 `player:set_data` 或 `player:save` | 拒绝并返回 `spectator_readonly` |
+| LAPI-011-28 | multi_device `single` 且 UID 已在线 | 新连接认证 | `false, already_online` |
+| LAPI-011-29 | multi_device `kick_old` 且 UID 已在线 | 新连接认证 | 旧会话 `logout` reason 为 `replaced` |
+| LAPI-011-30 | multi_device `multi` 且超过 `max_devices` | 新连接认证 | `false, too_many_devices` |
+| LAPI-011-31 | `player_pool` 模式 | 同一 uid 多条消息 | 路由到同一 shard 且单玩家 handler 串行 |
+| LAPI-011-32 | `shield.player.Base.extend(opts)` | spawn player service | 行为等价于 `shield.player.setup(M, opts)` |
+| LAPI-011-33 | Base 覆盖可选 hook | 触发 hook | 默认实现不自动执行 |
 
 ## 验收要求
 

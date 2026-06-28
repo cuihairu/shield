@@ -13,6 +13,7 @@ timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、
 TCP gateway listener 到 Lua handler 的 bootstrap 桥接、
 HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
 HTTP 服务端 Lua 路由注册仍是占位入口，尚未接入 bootstrap。
+`on_shutdown(ctx)` 和单 VM 内部 `shield.event` 已定义为目标契约，但当前源码尚未实现。
 
 ## 设计原则
 
@@ -23,6 +24,7 @@ HTTP 服务端 Lua 路由注册仍是占位入口，尚未接入 bootstrap。
 - `shield.send` 非阻塞、无 ACK。
 - `shield.call` 挂起当前 Lua coroutine，但不阻塞 runtime 线程。
 - Runtime API 返回值统一使用 `ok, result_or_error`，业务返回的 `nil` 和 `false` 不应和 runtime 错误混淆。
+- `shield.event` 只用于当前 Lua VM 内部解耦，不跨 service、不跨 VM、不参与 bootstrap lifecycle 编排。
 - DB/Redis API 使用插件 namespace + binding 逻辑名调用：`shield.database.mysql("database.default"):query(...)`，不再提供 `shield.db.*` / `shield.redis.*` 全局函数。具体 namespace 与方法见下文 "Plugin-provided APIs"。
 
 ## Service Module
@@ -43,6 +45,10 @@ function M.ping(value)
     shield.send(src, "pong", value)
 end
 
+function M.on_shutdown(ctx)
+    shield.log.info(M.name .. " draining: " .. ctx.reason)
+end
+
 function M.on_exit(reason)
     shield.log.info(M.name .. " exiting: " .. reason)
 end
@@ -57,6 +63,7 @@ return M
 - `on_*` 名称为运行时 hook 或模块 hook 保留，业务 method 禁止使用 `on_` 前缀。
 - module 顶层代码只做轻量声明，不执行阻塞 I/O。
 - 每个 service 实例有独立 Lua state 或隔离上下文，不能共享可变 Lua 全局业务状态。
+- `shield.event` 的 listener 表属于当前 service 的 Lua VM；service 退出后随 VM 一起释放。
 
 ## Lifecycle Hooks
 
@@ -90,6 +97,29 @@ end
 - 已 reserve 的 name rollback。
 - service 不进入 running 状态。
 
+### on_shutdown(ctx)
+
+运行时进入 graceful shutdown drain 阶段时调用。它是服务级 hook，不是全局事件，也不会通过 `shield.event` 广播。
+
+```lua
+function M.on_shutdown(ctx)
+    -- ctx.reason: "stopping" | "signal" | "check_config" | ...
+    -- ctx.deadline_ms: runtime monotonic deadline
+    -- ctx.timeout_ms: 本 service drain 预算
+end
+```
+
+规则：
+
+- `on_shutdown` 用于停止接收业务入口、flush 内存状态、通知本服务拥有的外部资源进入 drain。
+- 运行时先停止 accept/readiness，再按依赖反向顺序调用 `on_shutdown`；依赖图未实现时按 spawn 逆序。
+- `on_shutdown` 可以是 coroutine-aware hook，可在 deadline 内使用 `shield.call`、`shield.sleep` 等会挂起的 API。
+- 超时或抛错只记录错误并继续关闭流程；随后仍会调用 `on_exit(reason)`。
+- 缺失 `on_shutdown` 视为 no-op。
+- 不提供 `on_ready` 广播；service ready 定义为 `on_init` 成功并 publish name，application ready 由 bootstrap 在 required actors 启动完且 accept 开启前后判定。
+
+实现状态：目标契约，当前源码尚未实现 `on_shutdown` 调度；当前 `shutdown.timeout.service_drain` 只是配置契约预留。
+
 ### on_exit(reason)
 
 服务停止前调用。
@@ -102,14 +132,15 @@ end
 规则：
 
 - `reason` 是字符串，如 `normal`、`stopping`、`panic`、`timeout`。
-- `on_exit` 是 best-effort 清理。
+- `on_exit` 是 final best-effort 清理，不承担异步 drain。
 - 不允许在 `on_exit` 中调用会挂起 coroutine 的 API，例如 `shield.call`、`shield.sleep`。
+- 如果需要跨服务 flush 或等待外部 I/O，应放在 `on_shutdown(ctx)`，不要放在 `on_exit(reason)`。
 
 实现快照：`shield.call` / `shield.call_timeout` 在 `on_exit` 上下文中调用时，Lua wrapper 检查 `shield._is_in_exit()` 并立即返回 `false, {code="api_not_allowed_in_exit", message="..."}`。`OnExitCallGuard` 测试覆盖。
 
 ### on_error(err, context)
 
-handler、timer 或 fork task 抛出错误时调用。
+handler、timer、fork task 或本地 `shield.event` listener 抛出错误时调用。
 
 ```lua
 function M.on_error(err, context)
@@ -121,8 +152,9 @@ end
 
 | 字段 | 说明 |
 | --- | --- |
-| `type` | `handler`、`timer`、`fork` |
+| `type` | `handler`、`timer`、`fork`、`event` |
 | `method` | handler method 名称，非 handler 时为空 |
+| `event` | `shield.event` 事件名，仅 `type="event"` 时存在 |
 | `trace_id` | 可选 trace id |
 
 `on_error` 不改变服务状态。Phase 1 的 panic 策略固定为：同一 service 连续 handler/timer/fork 未捕获错误达到 `limits.max_errors_before_panic` 时进入 panic；未配置时默认 10。
@@ -376,6 +408,37 @@ shield.log.error("message")
 - 不允许在日志 API 中执行阻塞 I/O。
 
 实现快照：`shield.log.*` 输出时自动注入当前 service id 前缀（格式：`[service_id] message`）。service name 和 trace id 注入属于 Phase 2 扩展。
+
+## Local Event API
+
+`shield.event` 是单个 Lua service / 单个 Lua VM 内部的同步 observer 工具，用于拆分本 service 内部模块。它不是 runtime event bus，不进入 mailbox，不序列化 payload，不跨 service，不跨 VM，不跨 node，也不承载 lifecycle 编排。
+
+```lua
+local off = shield.event.on("inventory.changed", function(payload)
+    shield.log.info("changed: " .. payload.item_id)
+end)
+
+shield.event.emit("inventory.changed", { item_id = "sword_01" })
+off()
+```
+
+API：
+
+| API | 说明 |
+| --- | --- |
+| `shield.event.on(name, fn)` | 注册当前 VM 内 listener，返回 unsubscribe 函数 |
+| `shield.event.off(name, fn)` | 移除当前 VM 内 listener |
+| `shield.event.emit(name, payload)` | 同步调用当前 VM 内 listener，返回被调用数量 |
+| `shield.event.clear(name?)` | 清空指定事件或全部本地 listener |
+
+规则：
+
+- listener 在 `emit` 调用栈内同步执行，顺序为注册顺序。
+- listener 抛错时由当前 service 的 `on_error(err, {type="event", event=name})` 处理；其他 listener 继续执行。
+- listener 不能用于接收 `application_ready`、`shutdown`、`service_started` 等 runtime lifecycle 事件；这些不是 `shield.event` 的职责。
+- 跨 service 解耦使用 `shield.send/call` 或插件队列；跨 node 发布订阅属于可选模块或插件能力。
+
+实现状态：目标契约，当前源码尚未实现 `shield.event`。
 
 ## Plugin-provided APIs
 

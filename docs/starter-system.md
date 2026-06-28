@@ -124,7 +124,9 @@ parse command line
 - 注册基础 API：`shield.log.*`、`shield.config`、`shield.now`。
 - 注册 core API：`shield.spawn`、`shield.exit`、`shield.self`、`shield.names`、`shield.query`、`shield.register`、`shield.unregister`、`shield.send`、`shield.call`、`shield.call_timeout`。
 - 注册 timer API：`shield.timer`、`shield.timer_once`、`shield.cancel_timer`、`shield.sleep`、`shield.fork`。
-- 注册已启用模块 API：`shield.db.*`、`shield.redis.*`、gateway session API。
+- 注册单 VM 内部工具 API：`shield.event`。它只在当前 Lua state 内同步分发，不跨 service/VM/node，不承载 lifecycle。
+- 注册 gateway session API。
+- 插件 API 不由 `ScriptStarter` 硬编码；已启动插件通过 `register_lua` 注册自己的 `shield.<namespace>`。
 - 为未启用模块注册明确的 `module_unavailable` 错误，而不是静默 nil。
 
 非职责：
@@ -184,7 +186,8 @@ struct StarterError {
 
 ```txt
 stop accepting network connections
--> stop configured services
+-> drain configured services through on_shutdown(ctx)
+-> stop configured services through on_exit(reason)
 -> stop Lua runtime
 -> stop net runtime
 -> stop transport registry
@@ -196,9 +199,11 @@ stop accepting network connections
 规则：
 
 - 停止网络 accept 后，已有 session 进入 draining。
-- 服务停止时先发送 `on_exit(reason)`，超时后强制释放。
+- 服务 drain 阶段调用 `on_shutdown(ctx)`，受 `shutdown.timeout.service_drain` 约束；该 hook 可以在 deadline 内执行 coroutine-aware `shield.call`。
+- drain 完成、失败或超时后，服务停止阶段调用 `on_exit(reason)`，受 `shutdown.timeout.service_stop` 约束。
 - `on_exit` 中不能执行会挂起的 `shield.call`。
 - `ScriptStarter.stop()` 只能释放 VM，不承担业务保存。
+- 不发布 lifecycle event；`on_shutdown` 是 runtime 直接调用的 service hook，不是事件总线。
 
 ## 与旧系统的取舍
 

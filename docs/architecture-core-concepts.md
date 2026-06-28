@@ -63,6 +63,8 @@ Lua、网络、transport、data、config、log、bootstrap 都是围绕 `shield_
 
 Actor 消息是唯一跨服务通信模型。不再额外设计事件总线来表达相同概念。
 
+`shield.event` 如果存在，只能是当前 Lua service / 当前 Lua VM 内部的同步 observer 工具。它不进入 mailbox，不序列化 payload，不跨 service/VM/node，也不用于 application ready、shutdown 或 service lifecycle 编排。
+
 推荐模式：
 
 ```lua
@@ -80,16 +82,19 @@ shield.send("chat", "broadcast", {
 
 重构后不把 middleware chain 作为核心设计。鉴权、限流、CORS 等策略可以在 Lua gateway 服务或用户自己的 C++ transport 中实现。
 
-## 7. 数据访问保持原始
+## 7. 数据访问由插件提供
 
-`data` 模块可以提供 DB / Redis 原始能力，但不提供 ORM、不生成复杂 mapper、不管理跨服务事务。
+数据访问不进入 `shield_core`，也不再由独立 `shield_data` 模块承载。SQL、文档库、缓存、队列和排行榜等后端能力由插件系统 v1 提供；业务 Lua 通过插件 namespace 和 binding 逻辑名访问。
 
 ```lua
-local rows = shield.db.query("SELECT * FROM users WHERE id = ?", { id })
-shield.redis.publish("chat:world", { text = "hello" })
+local db = shield.database.mysql("database.default")
+local ok, rows = db:query("SELECT * FROM users WHERE id = ?", { id })
+
+local q = shield.queue.redis("queue.events")
+q:publish("chat.world", { text = "hello" })
 ```
 
-如果将来需要更高级的数据访问，应作为可选扩展独立讨论。
+插件负责连接池和驱动集成；core 不提供 ORM、不生成复杂 mapper、不管理跨服务事务。
 
 ## 8. 运维与调试分离
 

@@ -164,39 +164,47 @@ Phase 1 参数：
 ```
 收到停止信号
   │
-  ├─ 1. 设置全局 stopping 标志
-  │     - 新的 spawn/send/call 返回 runtime_stopping
+  ├─ 1. 设置全局 draining 标志
+  │     - readiness 变为 not ready
+  │     - 新的 spawn 和外部入口返回 runtime_stopping
+  │     - runtime 内部已有 service 可在 deadline 内继续 `shield.call`
   │
   ├─ 2. 停止接受新连接
   │     - 关闭网络监听
   │     - 不再接受新客户端连接
   │
-  ├─ 3. 停止服务（逆序）
+  ├─ 3. 服务 drain（逆序）
   │     - 按 spawn 逆序停止服务
-  │     - 向每个 service 发送停止通知
-  │     - 等待 service 完成或超时
-  │     - 强制停止超时的 service
+  │     - 调用每个 service 的 `on_shutdown(ctx)`
+  │     - 等待 drain 完成或 `shutdown.timeout.service_drain` 超时
+  │     - 超时或失败只记录并继续关闭
   │
-  ├─ 4. 清理集群
+  ├─ 4. 设置全局 stopping 标志并停止服务（逆序）
+  │     - 新的 send/call 返回 runtime_stopping
+  │     - 调用每个 service 的 `on_exit("stopping")`
+  │     - 超过 `shutdown.timeout.service_stop` 后强制释放
+  │
+  ├─ 5. 清理集群
   │     - 通知其他节点本节点离开
   │     - 断开集群连接
   │
-  ├─ 5. 关闭数据层
-  │     - 等待进行中的查询完成或超时
-  │     - 关闭数据库连接池
-  │     - 关闭 Redis 连接池
+  ├─ 6. 关闭插件实例
+  │     - 等待进行中的插件调用完成或超时
+  │     - 关闭插件拥有的连接池和外部资源
   │
-  ├─ 6. 关闭运维层
+  ├─ 7. 关闭运维层
   │     - 停止 HTTP 端点
   │
-  ├─ 7. 清理核心
+  ├─ 8. 清理核心
   │     - 释放 ServiceRegistry
   │     - 释放 MessageRouter
   │     - 释放 TimerScheduler
   │     - 释放所有 Lua VM
   │
-  └─ 8. 输出关闭日志，exit(0)
+  └─ 9. 输出关闭日志，exit(0)
 ```
+
+`on_shutdown(ctx)` 是服务级 drain hook，不是 lifecycle event bus，也不通过 `shield.event` 广播。普通 service 没有 `on_ready`；application ready 由 bootstrap 在 required actors 启动成功并准备 accept 时判定。玩家 ready 是 `shield_player` 的 `PlayerSession` 状态，见 [玩家生命周期](runtime-player.md)。
 
 ## 关闭超时
 
@@ -213,8 +221,7 @@ Phase 1 参数：
 [INFO] Service stopped: player (reason=stopping)
 [WARN]  Service stop timeout: room, forcing...
 [INFO] Cluster: disconnected
-[INFO] Database: connection pool closed
-[INFO] Redis: connection pool closed
+[INFO] PluginHost: plugin instances stopped
 [INFO] Shield stopped (uptime=3600s)
 ```
 
@@ -227,10 +234,7 @@ Phase 1 参数：
 ```yaml
 bootstrap:
   retry:
-    database:
-      max_retries: 3
-      delay: 5000
-    redis:
+    plugins:
       max_retries: 3
       delay: 5000
     cluster:

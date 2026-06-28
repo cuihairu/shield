@@ -20,6 +20,7 @@
 - 断线不等于离线，支持短暂断线重连。
 - 离线期间的消息不丢失。
 - 状态管理由框架提供，业务逻辑由 Lua 实现。
+- 玩家 ready 是 `shield_player` 的玩家级状态，不是 service/application 的全局 `on_ready` 事件。
 
 ## Player 与 Service 的关系
 
@@ -69,13 +70,16 @@ function M.on_init(args) end
 function M.on_exit(reason) end
 
 -- 以下为 Player 特有的生命周期钩子
-function M.on_auth(session_id, auth_data) end
-function M.on_login(player) end
-function M.on_client_message(player, payload) end
-function M.on_disconnect(player, reason) end
-function M.on_reconnect(player) end
-function M.on_logout(player, reason) end
-function M.on_save(player) end
+shield.player.setup(M, {
+    auth = function(self, session_id, auth_data) end,
+    login = function(self, player) end,
+    ready = function(self, player) end,
+    client_message = function(self, player, payload) end,
+    disconnect = function(self, player, reason) end,
+    reconnect = function(self, player) end,
+    logout = function(self, player, reason) end,
+    save = function(self, player) end,
+})
 
 return M
 ```
@@ -90,7 +94,8 @@ return M
 │                    玩家层 (shield_player)                │
 │  Session ←→ PlayerSession                               │
 │            ├── 状态: connecting → authenticating         │
-│            │              → online → disconnecting       │
+│            │              → loading → ready              │
+│            │              → disconnecting                │
 │            │              → offline                      │
 │            ├── 断线重连窗口                              │
 │            └── 离线消息队列                              │
@@ -114,8 +119,13 @@ return M
           │               │ auth_ok        │ auth_fail
           ▼               ▼                ▼
     ┌──────────┐   ┌──────────┐    ┌──────────┐
-    │ rejected │   │  online  │    │ rejected │
+    │ rejected │   │ loading  │    │ rejected │
     └──────────┘   └────┬─────┘    └──────────┘
+                        │ login_done
+                        ▼
+                   ┌──────────┐
+                   │  ready   │
+                   └────┬─────┘
                         │
            ┌────────────┼────────────┐
            │            │            │
@@ -128,14 +138,14 @@ return M
      ┌─────┴─────┐
      ▼           ▼
 ┌─────────┐ ┌──────────┐
-│ online  │ │  offline │
+│ ready   │ │  offline │
 │(resume) │ │          │
 └─────────┘ └──────────┘
 ```
 
 ### anonymous / spectator 扩展状态
 
-匿名和旁观不是默认状态机的一部分，必须由 `player.session` 显式开启。默认配置下，连接仍必须经过 `authenticating` 并进入 `online`，否则拒绝。
+匿名和旁观不是默认状态机的一部分，必须由 `player.session` 显式开启。默认配置下，连接仍必须经过 `authenticating`、`loading` 并进入 `ready`，否则拒绝。
 
 ```yaml
 player:
@@ -190,6 +200,7 @@ shield.player.setup(M, {
     client_message = function(self, player, payload) ... end,
 
     -- 可选钩子：未提供时走框架默认实现（默认行为见下方"钩子调用时机"表）
+    ready = function(self, player) ... end,
     disconnect = function(self, player, reason) ... end,
     reconnect  = function(self, player) ... end,
     logout     = function(self, player, reason) ... end,
@@ -219,7 +230,7 @@ return M
 ### 设计约束
 
 - `setup` 是 Player Service 唯一推荐入口；`shield.player.Base` 等高级风格留 Phase 2+，不在 P0 冻结。
-- opts 字段一律去掉 `on_` 前缀（`auth`/`login`/`client_message`/`disconnect`/`reconnect`/`logout`/`save`），与 module-level `on_init/on_exit` 隔离命名空间；service-level hook 仍可保留 `M.on_init/on_exit`。
+- opts 字段一律去掉 `on_` 前缀（`auth`/`login`/`ready`/`client_message`/`disconnect`/`reconnect`/`logout`/`save`），与 module-level `on_init/on_shutdown/on_exit` 隔离命名空间；service-level hook 仍可保留 `M.on_init/on_shutdown/on_exit`。
 - 必填钩子缺失即返回 `nil, Error{code="setup_invalid"}`，service 不进入 running 状态。
 - 未在 setup 中提供的可选钩子由框架按明列的默认实现执行，**不允许**"未提供即 noop"的隐式行为。
 - 业务方法（与 setup opts 同级的 `M.xxx`）保留普通 service method dispatch 语义，setup 不改写。
@@ -231,79 +242,74 @@ return M
 ```lua
 local M = {}
 
--- 玩家认证（连接后第一个钩子）
-function M.on_auth(session_id, auth_data)
-    -- auth_data: 客户端发送的认证信息（token、uid 等）
-    -- 返回: true, player_data 或 false, error_reason
+shield.player.setup(M, {
+    -- 玩家认证（连接后第一个钩子）
+    auth = function(self, session_id, auth_data)
+        -- auth_data: 客户端发送的认证信息（token、uid 等）
+        -- 返回: true, player_data 或 false, error_reason
+        local ok, player = verify_token(auth_data.token)
+        if not ok then
+            return false, "invalid_token"
+        end
 
-    local ok, player = verify_token(auth_data.token)
-    if not ok then
-        return false, "invalid_token"
-    end
+        -- 检查是否重复登录
+        local existing = shield.player.query(player.uid)
+        if existing then
+            existing:kick("duplicate_login")
+        end
 
-    -- 检查是否重复登录
-    local existing = shield.player.query(player.uid)
-    if existing then
-        -- 踢掉旧连接
-        existing:kick("duplicate_login")
-    end
+        return true, player
+    end,
 
-    return true, player
-end
+    -- 玩家上线准备（认证成功后）
+    login = function(self, player)
+        -- player: PlayerSession 对象
+        local data = load_player_data(player.uid)
+        player:set_data(data)
 
--- 玩家上线（认证成功后）
-function M.on_login(player)
-    -- player: PlayerSession 对象
-    -- 加载玩家数据
-    local data = load_player_data(player.uid)
-    player:set_data(data)
+        shield.log.info("player login: " .. player.uid)
+    end,
 
-    shield.log.info("player login: " .. player.uid)
-end
+    -- 玩家就绪（login 和默认注册/load 完成后）
+    ready = function(self, player)
+        shield.log.info("player ready: " .. player.uid)
+    end,
 
--- 玩家消息处理
-function M.on_client_message(player, payload)
-    -- payload 为协议层解码后的应用消息；示例中用 table 表示
-    if payload.kind == "move" then
-        handle_move(player, payload)
-    elseif payload.kind == "chat" then
-        handle_chat(player, payload)
-    end
-end
+    -- 玩家消息处理
+    client_message = function(self, player, payload)
+        -- payload 为协议层解码后的应用消息；示例中用 table 表示
+        if payload.kind == "move" then
+            handle_move(player, payload)
+        elseif payload.kind == "chat" then
+            handle_chat(player, payload)
+        end
+    end,
 
--- 玩家断线
-function M.on_disconnect(player, reason)
-    -- reason 枚举见下方表格
-    -- 进入重连窗口，不立即清理
+    -- 玩家断线
+    disconnect = function(self, player, reason)
+        -- reason 枚举见下方表格
+        -- 进入重连窗口，不立即清理
+        shield.log.info("player disconnect: " .. player.uid .. " reason: " .. reason)
+    end,
 
-    shield.log.info("player disconnect: " .. player.uid .. " reason: " .. reason)
-end
+    -- 玩家重连
+    reconnect = function(self, player)
+        -- 恢复会话状态，推送离线期间的消息
+        shield.log.info("player reconnect: " .. player.uid)
+    end,
 
--- 玩家重连
-function M.on_reconnect(player)
-    -- 恢复会话状态
-    -- 推送离线期间的消息
+    -- 玩家离线（重连窗口超时或主动登出）
+    logout = function(self, player, reason)
+        -- reason 枚举见下方表格
+        save_player_data(player.uid, player:get_data())
+        shield.log.info("player logout: " .. player.uid .. " reason: " .. reason)
+    end,
 
-    shield.log.info("player reconnect: " .. player.uid)
-end
-
--- 玩家离线（重连窗口超时或主动登出）
-function M.on_logout(player, reason)
-    -- reason 枚举见下方表格
-    -- 保存玩家数据
-    save_player_data(player.uid, player:get_data())
-
-    -- 清理资源
-    -- 通知其他服务
-
-    shield.log.info("player logout: " .. player.uid .. " reason: " .. reason)
-end
-
--- 玩家数据保存（定时或手动触发）
-function M.on_save(player)
-    -- 增量保存或全量保存
-    save_player_data(player.uid, player:get_data())
-end
+    -- 玩家数据保存（定时或手动触发）
+    save = function(self, player)
+        save_player_data(player.uid, player:get_data())
+    end,
+})
 
 return M
 ```
@@ -314,6 +320,7 @@ return M
 |------|-----------|----------|------|------|-----------------------------------|
 | `on_auth` | `auth` | 连接建立后 | 是 | 否 | 无；业务必须提供，否则 `setup_invalid` |
 | `on_login` | `login` | 认证成功后 | 是 | 否 | `PlayerManager.register(player)`；若配置 persistence 则触发首次 load |
+| `on_ready` | `ready` | `login` 和默认注册/load 完成后，玩家进入 ready 前 | 是 | 是 | 标记 `player.state = "ready"`，允许接收客户端业务消息 |
 | `on_client_message` | `client_message` | 收到客户端业务 payload | 是 | 否 | 路由到业务方法 dispatch（与普通 service method 一致） |
 | `on_disconnect` | `disconnect` | 连接断开 | 否 | 否 | 进入重连窗口 + 启动离线消息缓存 |
 | `on_reconnect` | `reconnect` | 重连成功 | 是 | 是 | 推送离线期间缓存消息 |
@@ -321,6 +328,8 @@ return M
 | `on_save` | `save` | 定时或手动触发 | 否 | 是 | 若配置 persistence 则调用 `persistence.save`；否则 no-op |
 
 业务覆盖可选钩子时，**默认实现不执行**；如需保留默认行为，业务实现中应显式调用对应 helper（如 `shield.player.defaults.reconnect(player)`）。
+
+`on_ready` 是玩家级 ready，不是 application ready，也不是 service-level `on_ready`。普通 service 不提供 `on_ready` hook；Player Service 只有在启用 `shield_player` 且通过 `shield.player.setup` 注册后才有玩家 ready 语义。`on_client_message` 只在 player 进入 ready 后分发，除认证/重连握手外的客户端业务消息在 loading 阶段必须排队或拒绝。
 
 ### reason 枚举
 
@@ -355,7 +364,7 @@ local player = shield.player.get(uid)
 -- 基础属性
 player.uid              -- 玩家 UID
 player.session_id       -- 会话 ID
-player.state            -- 状态: online, disconnecting, offline
+player.state            -- 状态: authenticating, loading, ready, disconnecting, offline
 player.connect_time     -- 连接时间
 player.last_active      -- 最后活跃时间
 player.remote_addr      -- 客户端地址
@@ -378,9 +387,17 @@ player:save()           -- 触发保存
 
 -- 重连相关
 player:is_online()      -- 是否在线
+player:is_ready()       -- 是否已完成玩家级 ready
 player:is_reconnecting() -- 是否在重连窗口
 player:reconnect_token() -- 获取重连 token
 ```
+
+`avatar` / `character` / `client` 的归属：
+
+- `SessionHandle` 表示网络连接，只由 gateway / `shield_net` 持有。
+- `PlayerSession` 表示本地玩家运行时对象，包含 uid、session_id、state、数据快照和发送能力。
+- `PlayerRef` 是跨 service 轻量引用，只用于定位玩家，不携带完整玩家数据。
+- `avatar`、`character`、`client` 这类业务对象应作为 `PlayerSession` 的数据字段或业务 Entity，由游戏自己定义；Shield 不把它们做成核心类型。
 
 ## PlayerRef 跨 service 引用
 
@@ -451,14 +468,14 @@ P0 仅冻结本地 resolve 与数据结构。
 
 ## 持久化 adapter
 
-persistence adapter 是 `shield_player` 拥有的轻量持久化契约，**不属于** `shield_data`，但底层必须通过 `shield_data` 调用。
+persistence adapter 是 `shield_player` 拥有的轻量持久化契约，**不属于**插件 host 或具体数据插件，但底层必须通过已配置的数据插件 binding 调用。
 
 ### 设计约束
 
-- adapter 复用 `shield.db.*` 或 `shield.redis.*`，**不重新定义** SQL/Redis 语义。
-- adapter **不拥有**连接池；连接池归属 `shield_data`。
+- adapter 复用数据插件 namespace，**不重新定义** SQL、Redis 或文档库语义。
+- adapter **不拥有**连接池；连接池归属对应插件 instance。
 - adapter **不引入** ORM、mapper、schema 工具链；只接受可 LuaPack 编码的 table 白名单字段。
-- adapter 失败复用 `shield_data` 错误码；player 域只新增 `persistence_save_failed` 等明确属于本模块的错误。
+- adapter 失败复用对应数据插件错误码；player 域只新增 `persistence_save_failed` 等明确属于本模块的错误。
 - 未配置 persistence 时，`on_save` 默认实现为 no-op。
 
 ### 配置形态
@@ -525,7 +542,7 @@ return M
 约束：
 
 - `Base.extend(opts)` 等价于 `shield.player.setup(M, opts)` 后返回 `M`。
-- hook 字段仍使用 `auth/login/client_message/disconnect/reconnect/logout/save`，不恢复 `on_*` 作为 setup 字段。
+- hook 字段仍使用 `auth/login/ready/client_message/disconnect/reconnect/logout/save`，不恢复 `on_*` 作为 setup 字段。
 - 业务覆盖可选 hook 时默认实现不自动执行；仍通过 `shield.player.defaults.*` 显式调用。
 - 不支持多继承；需要组合能力时应在业务模块内组合普通 Lua table/function。
 - P0/P1 文档和测试只以 `setup` 为准，Base 测试只验证它没有引入额外语义。
@@ -564,7 +581,8 @@ player:
    ├── 恢复 PlayerSession 绑定到新 Connection
    ├── 推送离线期间缓存的消息
    ├── 调用 on_reconnect 钩子
-   └── 恢复消息接收
+   ├── 标记玩家回到 ready
+   └── 恢复业务消息接收
 
 4. 重连窗口超时
    ├── 标记玩家为 offline
@@ -758,26 +776,28 @@ player:
 
 ```lua
 -- 单设备登录实现
-function M.on_auth(session_id, auth_data)
-    local uid = auth_data.uid
-    local existing = shield.player.get(uid)
+shield.player.setup(M, {
+    auth = function(self, session_id, auth_data)
+        local uid = auth_data.uid
+        local existing = shield.player.get(uid)
 
-    if existing then
-        if existing:is_reconnecting() then
-            -- 在重连窗口内，允许重连
-            return true, { reconnect = true }
-        else
-            -- 在线状态，根据策略处理
+        if existing then
+            if existing:is_reconnecting() then
+                -- 在重连窗口内，允许重连
+                return true, { reconnect = true }
+            end
+
+            -- ready/loading 等活跃状态，根据策略处理
             if config.multi_device.policy == "kick_old" then
                 existing:kick("replaced_by_new_device")
             else
                 return false, "already_online"
             end
         end
-    end
 
-    return true, { uid = uid }
-end
+        return true, { uid = uid }
+    end,
+})
 ```
 
 ## 容量模型与 player_pool
@@ -837,7 +857,8 @@ player:
 │                   player_manager 服务                    │
 │  ┌────────────────────────────────────────────────────┐ │
 │  │  玩家生命周期                                        │ │
-│  │  on_auth → on_login → on_client_message → on_logout│ │
+│  │  on_auth → on_login → on_ready → on_client_message │ │
+│  │                         ↓           → on_logout    │ │
 │  │                   ↓                                 │ │
 │  │              on_disconnect → on_reconnect           │ │
 │  └────────────────────────────────────────────────────┘ │
@@ -924,7 +945,7 @@ local pm = shield.player.manager()
 
 -- 查询玩家
 local player = pm:get(uid)
-local players = pm:query({ state = "online", level_min = 10 })
+local players = pm:query({ state = "ready", level_min = 10 })
 
 -- 统计
 local count = pm:count()
@@ -951,23 +972,19 @@ end)
 以下注册流程描述的是目标框架行为。
 
 ```lua
--- Player Service 的 on_login 中自动注册
-function M.on_login(player)
-    -- 框架自动调用 PlayerManager.register(player)
-    -- 业务层无需手动注册
+shield.player.setup(M, {
+    login = function(self, player)
+        -- 框架自动调用 PlayerManager.register(player)
+        -- 业务层无需手动注册
+        load_player_data(player.uid)
+    end,
 
-    -- 业务逻辑
-    load_player_data(player.uid)
-end
-
--- Player Service 的 on_logout 中自动注销
-function M.on_logout(player, reason)
-    -- 框架自动调用 PlayerManager.unregister(player.uid)
-    -- 业务层无需手动注销
-
-    -- 业务逻辑
-    save_player_data(player.uid)
-end
+    logout = function(self, player, reason)
+        -- 框架自动调用 PlayerManager.unregister(player.uid)
+        -- 业务层无需手动注销
+        save_player_data(player.uid)
+    end,
+})
 ```
 
 ### 配置
@@ -1047,9 +1064,9 @@ GET /ops/players
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
 | `shield.player.setup` 主 API + 默认实现表 | P0 | 业务唯一推荐入口，默认行为必须明列；文档冻结，不代表当前 runtime 已实现 |
-| 基础钩子（auth/login/logout/client_message/disconnect） | P0 | setup 必填钩子，对应 runtime-service 的最小生命周期；文档冻结 |
+| 基础钩子（auth/login/ready/client_message/disconnect/logout） | P0 | setup 钩子，对应 player 级生命周期；文档冻结 |
 | `PlayerRef` + 本地 `shield.player.resolve` | P0 | 跨 service 轻量引用；远端 resolve 留 P2+；文档冻结 |
-| persistence adapter 契约 | P0 | shield_player 拥有的轻量 adapter，底层走 shield_data；文档冻结 |
+| persistence adapter 契约 | P0 | shield_player 拥有的轻量 adapter，底层走数据插件 binding；文档冻结 |
 | 断线重连 | P1 | 游戏必备，但不计入当前最小 runtime 已完成项 |
 | PlayerManager | P1 | 全局玩家管理，和 `setup` 同步收敛 |
 | 离线消息缓存 | P1 | 提升体验 |

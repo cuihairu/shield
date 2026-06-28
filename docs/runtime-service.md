@@ -256,6 +256,10 @@ function M.ping(value)
     return value
 end
 
+function M.on_shutdown(ctx)
+    -- 优雅关闭 drain，允许在 deadline 内做异步 flush
+end
+
 function M.on_exit(reason)
     -- 清理逻辑
     shield.log.info("service exiting: " .. reason)
@@ -295,9 +299,52 @@ end
 - 服务不会启动
 - 已 reserve 的 name 会 rollback
 
+**on_shutdown(ctx)**
+
+运行时 graceful shutdown drain 阶段调用，用于服务主动停止业务入口并完成有界收尾。
+
+```lua
+function M.on_shutdown(ctx)
+    -- ctx.reason: 关闭原因，如 "stopping"、"signal"、"check_config"
+    -- ctx.deadline_ms: runtime monotonic deadline
+    -- ctx.timeout_ms: 本 service 的 drain 预算
+
+    M.draining = true
+
+    -- 可以在 deadline 内等待其他服务或 I/O
+    local ok, err = shield.call_timeout(
+        math.max(1, ctx.deadline_ms - shield.now()),
+        "player_store",
+        "flush"
+    )
+    if not ok then
+        shield.log.warn("flush failed: " .. err.code)
+    end
+end
+```
+
+规则：
+
+- 缺失 `on_shutdown` 视为 no-op。
+- `on_shutdown` 由 runtime 调用，不通过 `shield.event` 广播。
+- 调用顺序是依赖反向顺序；当前未实现 actor dependency 图时，按 spawn 逆序。
+- 运行时已经停止 accept/readiness，不再接收新的外部入口。
+- hook 必须受 `shutdown.timeout.service_drain` 和 `ctx.deadline_ms` 约束。
+- 超时、返回失败或抛错只记录并继续关闭；随后仍调用 `on_exit(reason)`。
+- shutdown drain 期间不允许 spawn 新 service；是否允许处理已有 mailbox 由 runtime drain 策略控制。
+
+`on_shutdown` 与 `prepare_shutdown` 的边界：
+
+- `on_shutdown` 是 runtime hook，由 bootstrap shutdown 流程统一触发。
+- `prepare_shutdown` 如果业务需要，可以作为普通 method 显式 `shield.call`，不属于保留 hook。
+
+实现状态：目标契约，当前源码尚未实现该 hook 调度。
+
 **on_exit(reason)**
 
-服务退出时调用，用于清理资源。
+服务退出前的 final cleanup hook。它在 graceful drain 完成、超时或被跳过之后调用。
+
+如需异步 flush、跨服务通知或等待外部 I/O，使用 `on_shutdown(ctx)`；`on_exit(reason)` 只做不可挂起的 best-effort 清理。
 
 `reason` 枚举：
 
@@ -318,9 +365,11 @@ function M.on_exit(reason)
     end
 
     -- 注意：on_exit 中不能调用 shield.call（会挂起）
-    -- 如需异步收尾，应在业务层提前进入 draining 状态
+    -- 如需异步收尾，应放在 on_shutdown(ctx)
 end
 ```
+
+普通 service 不提供 `on_ready` hook。service ready 定义为 `on_init` 成功并发布 name；application ready 由 bootstrap 在 required actors 启动完成、网络 accept 开启前后判定。玩家级 ready 属于 `shield_player` 的 `PlayerSession` 状态，见 [玩家生命周期](runtime-player.md)。
 
 **on_error(err, context)**
 
@@ -463,6 +512,14 @@ function M.on_exit(reason)
     ))
 end
 
+function M.on_shutdown(ctx)
+    M.draining = true
+    shield.log.info(string.format(
+        "%s draining (reason: %s, timeout_ms: %d)",
+        M.name, ctx.reason, ctx.timeout_ms
+    ))
+end
+
 function M.on_error(err, context)
     -- 仅上报，不影响服务运行
     shield.log.error(string.format(
@@ -527,7 +584,7 @@ local deadline = shield.deadline()
 shield.exit("normal")
 ```
 
-语义：
+单服务主动退出语义：
 
 - 标记当前 service 为 stopping。
 - 停止接收新的业务消息。
@@ -537,7 +594,16 @@ shield.exit("normal")
 - 调用 `on_exit(reason)`。
 - 释放 Lua VM。
 
-`on_exit` 是 best-effort 清理 hook，不允许执行会挂起的 `shield.call`。如需异步收尾，应在业务层提前进入 draining 状态。
+runtime 关闭语义：
+
+```txt
+stop accept / readiness
+-> call on_shutdown(ctx) with bounded service_drain timeout
+-> call on_exit(reason)
+-> cancel timers/tasks/coroutines and release VM
+```
+
+`on_shutdown` 是 graceful drain hook，允许在 deadline 内挂起和等待；`on_exit` 是 final best-effort 清理 hook，不允许执行会挂起的 `shield.call` 或 `shield.sleep`。
 
 ## 服务重启策略
 

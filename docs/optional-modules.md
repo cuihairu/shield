@@ -95,8 +95,8 @@ shield_core
 | 模块 | 最终职责 | public surface | owner config | 主要依赖 | disabled 时要求 |
 | --- | --- | --- | --- | --- | --- |
 | `shield_cluster` | 多节点地址语义、远端路由 cache、节点心跳、可选发现 | `shield.cluster.*` + remote `ServiceHandle` routing | `cluster` | `shield_core`，必要 runtime snapshot | 本地 `send/call/query` 行为完全不变 |
-| `shield_global` | 跨进程共享数据、分布式锁、排行榜、队列、限流器、调度 | `shield.global()`、`shield.mutex()`、`shield.rank()` 等 | `global` | `shield_data`，可选 `shield_cluster` | raw `shield.db.*` / `shield.redis.*` 仍独立可用 |
-| `shield_player` | 认证、重连、离线消息、PlayerSession、PlayerManager | `shield.player.*`、`PlayerSession`、player hooks | `player`、`player_manager` | `shield_net`、`shield_lua`、`shield_data`，可选 `shield_global` | gateway 回调和普通 service 语义仍可独立工作 |
+| `shield_global` | 跨进程共享数据、分布式锁、排行榜、队列、限流器、调度 | `shield.global()`、`shield.mutex()`、`shield.rank()` 等 | `global` | 数据插件 binding，可选 `shield_cluster` | 插件 namespace 仍可独立使用 |
+| `shield_player` | 认证、重连、离线消息、PlayerSession、PlayerManager | `shield.player.*`、`PlayerSession`、player hooks | `player`、`player_manager` | `shield_net`、`shield_lua`、数据插件 binding，可选 `shield_global` | gateway 回调和普通 service 语义仍可独立工作 |
 | `shield_server` | 服务器状态、维护模式、关闭广播、运行时信息 | `shield.server()`、`server_manager` service | `server_manager` | `shield_core`，可读 `shield_player` / `shield_global` 状态 | bootstrap 和 service 运行路径不依赖它 |
 | `shield_ops` | metrics、health、console、profile、diagnostics | HTTP/admin endpoints；不提供业务 Lua API | `ops` | runtime snapshot、module status | runtime 正常运行不依赖任何 ops 入口 |
 
@@ -105,7 +105,7 @@ shield_core
 | from | to | 允许 | 不允许 |
 | --- | --- | --- | --- |
 | `shield_cluster` | `shield_core` | 复用 handle、timeout、错误语义 | 改写本地 registry、把发现逻辑塞进 core |
-| `shield_global` | `shield_data` | 复用 raw Redis/DB 能力 | 直接拥有连接池或底层驱动 |
+| `shield_global` | 数据插件 | 复用 cache/queue/leaderboard/database 等插件 binding | 直接拥有连接池或底层驱动 |
 | `shield_player` | `shield_net` | 消费 `session_id`、gateway 回调、session 状态 | 跨 service 传 `SessionHandle` |
 | `shield_server` | `shield_player` / `shield_global` | 读取状态、广播维护流程 | 成为这些模块的 owner |
 | `shield_ops` | all | 只读观测、导出状态 | 反向控制语义、成为业务依赖 |
@@ -165,7 +165,7 @@ shield.scheduler()
 
 最终规则：
 
-- `shield_global` 封装“常用跨进程模式”，不替代 `shield.db.*` / `shield.redis.*`。
+- `shield_global` 封装“常用跨进程模式”，不替代底层插件 namespace。
 - `shield_global` 不能暴露原始 Redis 连接、事务句柄或底层驱动对象。
 - 分布式能力优先复用 Redis 语义；若未来支持其他后端，也属于模块内部实现细节。
 
@@ -184,7 +184,7 @@ shield.scheduler()
 
 ### 不允许的能力
 
-- 反向修改 `shield_data` 的 raw API 契约
+- 反向修改数据插件 API 契约
 - 把 queue/rank/lock 语义写回 core
 - 直接要求 cluster 必须存在
 
@@ -201,7 +201,7 @@ shield.scheduler()
 - `PlayerSession`：本地玩家会话对象
 - `PlayerRef`：跨 service 轻量引用
 - `PlayerManager`：全局玩家索引与批量操作
-- player lifecycle hooks（通过 setup opts 注册）
+- player lifecycle hooks（通过 `auth/login/ready/client_message/disconnect/reconnect/logout/save` setup opts 注册）
 
 最终规则：
 
@@ -210,7 +210,9 @@ shield.scheduler()
 - `SessionHandle` 只留在 gateway / `shield_net` 内部映射中。
 - `shield_player` 跨 service 传递**只能**使用 `PlayerRef`；不传 `SessionHandle`，也不传完整 `PlayerSession`。
 - `PlayerRef` 不是 `ServiceHandle` 的替代品，只是 player 模块内部引用。
-- persistence adapter 是 `shield_player` 可选能力，复用 `shield_data` 的 raw DB/Redis API，不引入 ORM 或 mapper；不拥有连接池。
+- 玩家 ready 是 `shield_player` 的 `PlayerSession` 状态，不是普通 service `on_ready`，也不是 application lifecycle event。
+- `avatar`、`character`、`client` 属于业务数据或业务 Entity，应挂在 `PlayerSession` 或用户 service 内；它们不是 Shield core object。
+- persistence adapter 是 `shield_player` 可选能力，复用已配置的数据插件 binding，不引入 ORM 或 mapper；不拥有连接池。
 - anonymous/spectator、多设备、player_pool 和远端 `PlayerRef` resolve 都必须显式启用；默认 player 状态机和普通 service 语义不变。
 - gateway 可以不启用 `shield_player` 也独立工作。
 
@@ -222,7 +224,7 @@ shield.scheduler()
 ### 语义 owner
 
 - 认证
-- 登录/登出
+- 登录/ready/登出
 - 重连窗口
 - 离线消息
 - 多设备策略
@@ -310,7 +312,7 @@ shield.scheduler()
 各 optional module 关闭后必须满足：
 
 - `shield_cluster` 关闭：本地 registry、local `send/call`、gateway、DB/Redis 都不受影响。
-- `shield_global` 关闭：raw `shield.db.*`、`shield.redis.*` 仍可直接使用。
+- `shield_global` 关闭：底层数据插件 namespace 仍可直接使用。
 - `shield_player` 关闭：gateway 与普通 service 语义不受影响，只是没有玩家态框架能力。
 - `shield_server` 关闭：runtime 仍可启动、运行、优雅关闭。
 - `shield_ops` 关闭：runtime 仍可运行，只失去观测/管理入口。
