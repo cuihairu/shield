@@ -29,7 +29,7 @@ cmake -B build -DSHIELD_BUILD_PLUGIN_REDIS_DRIVER=ON
 | 上层插件 | 依赖接口 | 暴露接口 |
 | --- | --- | --- |
 | `cache.redis` | `shield.redis.v1` | `shield.cache.v1` |
-| `queue.redis` | `shield.redis.v1` | `shield.queue.v1` |
+| `queue.redis` | `shield.redis.v1` | `shield.queue.v1` (Streams) |
 | `leaderboard.redis` | `shield.redis.v1` | `shield.leaderboard.v1` |
 
 这些插件不再各自创建 Redis 连接，而是通过插件依赖注入拿到 `shield.redis_v1*` vtable，直接调用 typed Redis 方法。
@@ -515,7 +515,7 @@ host 的拓扑排序保证 `redis.driver` 先于依赖它的插件启动：
 | Lua 脚本 | `command("EVAL", ...)` | 通过 raw command |
 | Stream | `command("XADD"/"XREADGROUP"/...)` | 通过 raw command |
 | 事务 | `pipeline({"MULTI"}, ..., {"EXEC"})` | 通过 pipeline |
-| Pub/Sub | 建议独立接口 `shield.redis.pubsub.v1` | 避免阻塞命令池 |
+| Streams / Pub/Sub | `command("XADD"/"XREADGROUP"/...)` 或 `command("PUBLISH"/...)` | 通过 raw command |
 | Cluster | 插件内部 redis++ cluster client | 配置 `mode: cluster` |
 
 ## 迁移路径

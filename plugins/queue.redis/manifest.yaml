@@ -1,12 +1,12 @@
 schema_version: 1
 id: queue.redis
-name: Redis Pub/Sub
+name: Redis Streams Queue
 version: 1.0.0
 kind: queue
-description: Redis pub/sub provider for shield.queue.v1
+description: Redis Streams provider for shield.queue.v1 (consumer group, ack, persistent delivery)
 documentation:
   url: https://cuihairu.github.io/shield/plugins/queue-redis
-  description: Redis pub/sub provider for the shield.queue.v1 interface
+  description: Redis Streams provider for the shield.queue.v1 interface with consumer groups and at-least-once delivery
 entry: shield_plugin_get_v1
 library:
   windows: bin/libshield_queue_redis.dll
@@ -15,7 +15,8 @@ library:
 provides:
   - interface: shield.queue.v1
     capabilities:
-      - pubsub
+      - streams
+      - consumer-group
 requires:
   - name: redis
     interface: shield.redis.v1
