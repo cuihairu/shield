@@ -409,6 +409,7 @@ add_library(shield_transport STATIC
     src/transport/frame.cpp
     src/transport/codec.cpp
     src/transport/encryption.cpp
+    src/transport/protocol.cpp
 )
 
 target_include_directories(shield_transport

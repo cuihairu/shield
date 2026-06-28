@@ -38,6 +38,7 @@ struct RuntimeActorConfig {
     size_t max_connections = 0;
     size_t max_connections_per_ip = 0;
     size_t max_frame_size = 0;
+    std::string network_protocol_json = "{}";
 };
 
 /// @brief Configuration interface

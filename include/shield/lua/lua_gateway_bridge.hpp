@@ -6,6 +6,10 @@
 #include <memory>
 #include <string>
 
+namespace shield::transport {
+struct DispatchResult;
+}
+
 namespace shield::net {
 class Session;
 }
@@ -36,6 +40,10 @@ public:
     /// @brief Handle a message from a TCP session.
     void on_message(std::shared_ptr<shield::net::Session> session,
                     const std::string& payload);
+
+    /// @brief Handle a routed packet from a TCP session.
+    void on_packet(std::shared_ptr<shield::net::Session> session,
+                   const shield::transport::DispatchResult& packet);
 
     /// @brief Handle a TCP session disconnection.
     void on_disconnect(std::shared_ptr<shield::net::Session> session,

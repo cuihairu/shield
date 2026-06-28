@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "shield/transport/frame.hpp"
+#include "shield/transport/protocol.hpp"
 
 namespace shield::net {
 
@@ -75,6 +76,11 @@ struct SessionCallbacks {
         on_disconnect;
     std::function<void(std::shared_ptr<Session>, const std::vector<uint8_t>&)>
         on_message;
+    std::function<void(std::shared_ptr<Session>,
+                       const shield::transport::DispatchResult&)>
+        on_packet;
+    std::function<std::unique_ptr<shield::transport::ProtocolPipeline>()>
+        create_protocol_pipeline;
 };
 
 /// @brief TCP Session
@@ -118,6 +124,7 @@ private:
     std::unordered_map<std::string, std::string> user_data_;
     std::vector<uint8_t> receive_buffer_;
     shield::transport::FrameDecoder frame_decoder_;
+    std::unique_ptr<shield::transport::ProtocolPipeline> protocol_pipeline_;
 };
 
 }  // namespace shield::net

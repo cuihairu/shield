@@ -21,6 +21,9 @@ TcpSession::TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
     auto endpoint = socket_.remote_endpoint();
     remote_addr_.ip = endpoint.address().to_string();
     remote_addr_.port = endpoint.port();
+    if (callbacks_.create_protocol_pipeline) {
+        protocol_pipeline_ = callbacks_.create_protocol_pipeline();
+    }
 }
 
 void TcpSession::start() {
@@ -72,17 +75,43 @@ void TcpSession::do_receive() {
 
             receive_buffer_.resize(bytes_read);
 
-            // Process through frame decoder
-            auto frames = frame_decoder_.feed(receive_buffer_.data(),
-                                              receive_buffer_.size());
-            if (!frame_decoder_.error().empty()) {
-                handle_error("frame decode error: " + frame_decoder_.error());
-                return;
-            }
+            if (protocol_pipeline_) {
+                auto results = protocol_pipeline_->feed(receive_buffer_.data(),
+                                                        receive_buffer_.size());
+                if (!protocol_pipeline_->error().empty()) {
+                    handle_error("protocol decode error: " +
+                                 protocol_pipeline_->error());
+                    return;
+                }
 
-            for (const auto& frame : frames) {
-                if (callbacks_.on_message) {
-                    callbacks_.on_message(shared_from_this(), frame.payload());
+                for (const auto& result : results) {
+                    if (!result.ok()) {
+                        handle_error("protocol dispatch error: " +
+                                     result.error);
+                        return;
+                    }
+                    if (callbacks_.on_packet) {
+                        callbacks_.on_packet(shared_from_this(), result);
+                    } else if (callbacks_.on_message) {
+                        callbacks_.on_message(shared_from_this(),
+                                              result.packet.body);
+                    }
+                }
+            } else {
+                // Process through legacy frame decoder.
+                auto frames = frame_decoder_.feed(receive_buffer_.data(),
+                                                  receive_buffer_.size());
+                if (!frame_decoder_.error().empty()) {
+                    handle_error("frame decode error: " +
+                                 frame_decoder_.error());
+                    return;
+                }
+
+                for (const auto& frame : frames) {
+                    if (callbacks_.on_message) {
+                        callbacks_.on_message(shared_from_this(),
+                                              frame.payload());
+                    }
                 }
             }
 

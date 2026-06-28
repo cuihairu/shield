@@ -48,6 +48,27 @@ set_tests_properties(test_transport_frame PROPERTIES
 )
 shield_copy_runtime_dlls(test_transport_frame)
 
+# Header-first protocol routing tests - verifies route-id based forwarding and
+# lazy body decode primitives used by protocol profiles.
+add_executable(test_protocol_routing transport/test_protocol_routing.cpp)
+target_link_libraries(test_protocol_routing
+    PRIVATE
+        shield_transport
+        Boost::unit_test_framework
+        Boost::headers
+)
+target_include_directories(test_protocol_routing
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME test_protocol_routing COMMAND test_protocol_routing)
+set_tests_properties(test_protocol_routing PROPERTIES
+    LABELS "transport"
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+shield_copy_runtime_dlls(test_protocol_routing)
+
 # Lua API test matrix (LAPI-001 ~ LAPI-010).
 add_subdirectory(lua_api)
 

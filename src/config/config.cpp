@@ -735,6 +735,13 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                 if (!validate_listener_address(network, "tcp", name, error)) {
                     return false;
                 }
+                if (network["protocol"] && !network["protocol"].IsMap()) {
+                    if (error) {
+                        *error = "actors[" + name +
+                                 "].network.protocol must be a map";
+                    }
+                    return false;
+                }
                 if (network["tcp"] && actor_instances != 1) {
                     if (error) {
                         *error = "actors[" + name +
@@ -829,6 +836,10 @@ std::vector<RuntimeActorConfig> runtime_actors() {
                 scalar_int(network, "max_connections_per_ip").value_or(0));
             item.max_frame_size = static_cast<size_t>(
                 scalar_int(network, "max_frame_size").value_or(0));
+            if (network["protocol"]) {
+                item.network_protocol_json =
+                    yaml_to_json(network["protocol"]).dump();
+            }
         }
 
         result.push_back(std::move(item));
