@@ -42,9 +42,8 @@ struct shield_metrics_config {
 };
 
 struct shield_metrics_v1 {
-    static constexpr const char* interface_name = SHIELD_METRICS_INTERFACE;
-
     uint32_t struct_size;
+    const char* interface_name;  // "shield.metrics.v1"
     const char* name;            // "prometheus" | "statsd" | ...
     const char* version;
 

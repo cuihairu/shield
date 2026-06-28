@@ -38,9 +38,8 @@ struct shield_health_config {
 };
 
 struct shield_health_v1 {
-    static constexpr const char* interface_name = SHIELD_HEALTH_INTERFACE;
-
     uint32_t struct_size;
+    const char* interface_name;  // "shield.health.v1"
     const char* name;            // "http" | "tcp" | ...
     const char* version;
 

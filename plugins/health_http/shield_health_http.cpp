@@ -10,6 +10,7 @@
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/health.h"
+#include "shield/plugin/host_api.h"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -263,6 +264,7 @@ void accept_loop_sync(health_instance* inst) {
 const shield_health_v1& health_vtable() {
     static const shield_health_v1 v = {
         sizeof(shield_health_v1),
+        SHIELD_HEALTH_INTERFACE,
         "http",
         "1.0.0",
         // connect — starts the HTTP listener. Returns the instance as the

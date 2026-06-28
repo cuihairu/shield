@@ -9,6 +9,7 @@
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/matchmaking.h"
+#include "shield/plugin/host_api.h"
 
 #include <algorithm>
 #include <atomic>
@@ -20,6 +21,14 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+// shield_matchmaking_conn is forward-declared opaque in matchmaking.h.
+// Defined at global scope so lambda-to-function-pointer conversion sees the
+// same type as the vtable declared in matchmaking.h.
+struct shield_matchmaking_conn {
+    // Must match matchmaking_instance layout: shell-first. We cast between
+    // them via reinterpret_cast, so the layout here is for documentation.
+};
 
 namespace {
 
@@ -34,14 +43,6 @@ struct MatchConfig {
     int max_players_per_match = 2;
     int match_timeout_seconds = 30;
     double rating_tolerance = 200.0;
-};
-
-// shield_matchmaking_conn is forward-declared opaque in matchmaking.h. The
-// concrete layout IS the instance (we expose the instance shell as the conn
-// handle to vtable methods, then cast back).
-struct shield_matchmaking_conn {
-    // Must match matchmaking_instance layout: shell-first. We cast between
-    // them via reinterpret_cast, so the layout here is for documentation.
 };
 
 struct matchmaking_instance {
@@ -103,6 +104,7 @@ MatchConfig parse_config(const char* config_json) {
 const shield_matchmaking_v1& mm_vtable() {
     static const shield_matchmaking_v1 v = {
         sizeof(shield_matchmaking_v1),
+        SHIELD_MATCHMAKING_INTERFACE,
         "elo",
         "1.0.0",
         // connect (returns instance as conn handle; instance already created)
@@ -207,7 +209,7 @@ const shield_matchmaking_v1& mm_vtable() {
                     auto& pl = match.players[p];
                     pl.player_id = dup_cstr(matches[m][p]->player_id.c_str());
                     pl.rating = matches[m][p]->rating;
-                    pl.party_id = dup_cstr(matches[m][p]->party_id);
+                    pl.party_id = dup_cstr(matches[m][p]->party_id.c_str());
                     pl.region = dup_cstr(matches[m][p]->region.c_str());
                     pl.metadata_json = nullptr;
                 }

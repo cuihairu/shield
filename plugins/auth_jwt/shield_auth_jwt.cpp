@@ -10,6 +10,7 @@
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/auth.h"
+#include "shield/plugin/host_api.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -303,6 +304,7 @@ bool verify_jwt(const auth_config& cfg, const std::string& token,
 const shield_auth_v1& auth_vtable() {
     static const shield_auth_v1 v = {
         sizeof(shield_auth_v1),
+        SHIELD_AUTH_INTERFACE,
         "jwt",
         "1.0.0",
         // connect — returns the instance cast as the session handle.

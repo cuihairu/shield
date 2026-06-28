@@ -10,6 +10,7 @@
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/metrics.h"
+#include "shield/plugin/host_api.h"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -231,6 +232,7 @@ void accept_loop(metric_instance* inst) {
 const shield_metrics_v1& metric_vtable() {
     static const shield_metrics_v1 v = {
         sizeof(shield_metrics_v1),
+        SHIELD_METRICS_INTERFACE,
         "prometheus",
         "1.0.0",
         // connect — no-op (listener started on instance->start())
