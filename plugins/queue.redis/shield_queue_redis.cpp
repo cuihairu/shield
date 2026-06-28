@@ -1,21 +1,15 @@
-// [SHIELD_PLUGIN] queue.redis — Redis pub/sub provider for shield.queue.v1.
+// [SHIELD_PLUGIN] queue.redis — Redis Streams provider for shield.queue.v1.
 //
-// v1 ABI. The v1 queue interface is intentionally narrow: publish/subscribe/
-// unsubscribe only. Legacy shield_redis exposed consumer groups and acks;
-// those are NOT in v1 (see docs/plugin-system.md: queue.v1 = pub/sub), and
-// the dead code has been removed.
+// v1 ABI. Uses Redis Streams (XADD / XREADGROUP / XACK) for persistent,
+// consumer-group-based message delivery with at-least-once guarantees.
 //
-// subscribe() semantics: the v1 API expects messages to start flowing to the
-// callback after subscribe returns. We spawn a dedicated subscriber thread
-// per shield_queue_conn that owns a sw::redis::Subscriber. Unsubscribe stops
-// the channel; disconnect stops the thread and joins.
+// publish() calls XADD to append a message to a Stream (keyed by channel).
+// subscribe() creates a consumer group (XGROUP CREATE) and spawns a
+// consumer thread that loops XREADGROUP. Messages are dispatched to the
+// registered callback; on callback return, XACK is called automatically.
+// If the callback throws, the message stays pending (at-least-once).
 //
-// Lua autonomy: the plugin owns its own Lua surface — shield.queue.redis.
-// register_lua() installs a callable namespace; __call resolves an instance
-// by id and returns a proxy. Per-instance state lives in queue_instance,
-// registered process-wide so the Lua proxy can find it. The proxy publishes
-// by opening a pooled sw::redis::Redis command connection, and subscribes by
-// spinning up a dedicated subscriber connection + consumer thread.
+// Lua autonomy: shield.queue.redis(binding) callable namespace.
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
@@ -37,9 +31,10 @@
 #include <thread>
 #include <unordered_map>
 
-// shield_queue_conn is opaque in queue.h; concrete layout lives here.
-// Defined at global scope so lambda-to-function-pointer conversion sees the
-// same type as the vtable declared in queue.h.
+// ---------------------------------------------------------------------------
+// Opaque connection handle (global scope for lambda-to-fnptr conversion)
+// ---------------------------------------------------------------------------
+
 struct SubEntry {
     shield_queue_on_message cb;
     void* user_data;
@@ -47,17 +42,20 @@ struct SubEntry {
 
 struct shield_queue_conn {
     std::shared_ptr<sw::redis::Redis> redis;
-    sw::redis::Subscriber subscriber;
     std::unordered_map<std::string, SubEntry> subs;
     std::mutex subs_mu;
-    std::thread worker;
+    std::unordered_map<std::string, std::thread> workers;
     std::atomic<bool> running{false};
 
     explicit shield_queue_conn(std::shared_ptr<sw::redis::Redis> r)
-        : redis(std::move(r)), subscriber(redis->subscriber()) {}
+        : redis(std::move(r)) {}
 };
 
 namespace {
+
+constexpr const char* kGroupName = "shield";
+constexpr int kReadCount = 10;
+constexpr int kBlockMs = 2000;
 
 char* dup_string(const char* s) {
     if (!s) return nullptr;
@@ -67,33 +65,82 @@ char* dup_string(const char* s) {
     return out;
 }
 
-void dispatch_message(shield_queue_conn* c, const std::string& channel,
-                      const std::string& msg) {
-    SubEntry entry;
-    {
-        std::lock_guard<std::mutex> lock(c->subs_mu);
-        auto it = c->subs.find(channel);
-        if (it == c->subs.end()) return;
-        entry = it->second;
-    }
-    if (entry.cb) {
-        entry.cb(channel.c_str(), msg.c_str(),
-                 static_cast<int>(msg.size()), entry.user_data);
+// Ensure the consumer group exists. Idempotent — ignores "BUSYGROUP" error.
+void ensure_group(sw::redis::Redis& redis, const std::string& stream,
+                  const std::string& group) {
+    try {
+        redis.command("XGROUP", "CREATE", stream, group, "0", "MKSTREAM");
+    } catch (const sw::redis::Error& e) {
+        // BUSYGROUP = group already exists; ignore.
+        if (std::string(e.what()).find("BUSYGROUP") == std::string::npos) {
+            throw;
+        }
     }
 }
 
-void subscriber_loop(shield_queue_conn* c) {
-    using namespace std::chrono;
+// Consumer thread: XREADGROUP loop for one channel/stream.
+void consumer_loop(shield_queue_conn* c, const std::string& channel,
+                   const std::string& consumer_name) {
     while (c->running.load()) {
         try {
-            c->subscriber.consume();
-        } catch (const sw::redis::TimeoutError&) {
-            // Normal: no messages within the socket timeout; loop.
-        } catch (const sw::redis::ClosedError&) {
-            break;
-        } catch (const std::exception&) {
-            // Transient errors — back off briefly and retry.
-            std::this_thread::sleep_for(milliseconds(100));
+            // XREADGROUP GROUP <group> <consumer> COUNT <n> BLOCK <ms> STREAMS <stream> >
+            auto result = c->redis->command(
+                "XREADGROUP", "GROUP", kGroupName, consumer_name,
+                "COUNT", std::to_string(kReadCount),
+                "BLOCK", std::to_string(kBlockMs),
+                "STREAMS", channel, ">");
+            // result is an array of streams; each stream is [stream_name, [[id, fields], ...]]
+            if (!result || result->type == REDIS_REPLY_NIL) continue;
+            if (result->type != REDIS_REPLY_ARRAY) continue;
+            for (size_t si = 0; si < result->elements; ++si) {
+                auto* stream_reply = result->element[si];
+                if (!stream_reply || stream_reply->elements < 2) continue;
+                auto* entries = stream_reply->element[1];
+                if (!entries || entries->type != REDIS_REPLY_ARRAY) continue;
+                for (size_t ei = 0; ei < entries->elements; ++ei) {
+                    auto* entry = entries->element[ei];
+                    if (!entry || entry->elements < 2) continue;
+                    // entry->element[0] = message id, entry->element[1] = fields array
+                    auto* id_reply = entry->element[0];
+                    auto* fields = entry->element[1];
+                    if (!id_reply || !fields) continue;
+                    std::string msg_id(id_reply->str, id_reply->len);
+                    // Extract "payload" field from the fields array.
+                    // Fields are [key, value, key, value, ...]
+                    std::string payload;
+                    for (size_t fi = 0; fi + 1 < fields->elements; fi += 2) {
+                        auto* key = fields->element[fi];
+                        auto* val = fields->element[fi + 1];
+                        if (key && val && key->str &&
+                            std::string(key->str, key->len) == "payload") {
+                            payload.assign(val->str, val->len);
+                            break;
+                        }
+                    }
+                    // Dispatch to callback
+                    SubEntry entry_cb;
+                    {
+                        std::lock_guard<std::mutex> lock(c->subs_mu);
+                        auto it = c->subs.find(channel);
+                        if (it == c->subs.end()) continue;
+                        entry_cb = it->second;
+                    }
+                    if (entry_cb.cb) {
+                        entry_cb.cb(channel.c_str(), payload.c_str(),
+                                    static_cast<int>(payload.size()),
+                                    entry_cb.user_data);
+                    }
+                    // XACK after successful dispatch
+                    try {
+                        c->redis->command("XACK", channel, kGroupName, msg_id);
+                    } catch (...) {}
+                }
+            }
+        } catch (const sw::redis::Error&) {
+            // Transient errors — back off and retry.
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        } catch (...) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
 }
@@ -121,22 +168,14 @@ const shield_queue_v1& queue_vtable() {
                 opts.connect_timeout = std::chrono::milliseconds(
                     cfg->connect_timeout_ms > 0 ? cfg->connect_timeout_ms : 5000);
                 opts.socket_timeout = std::chrono::milliseconds(
-                    cfg->command_timeout_ms > 0 ? cfg->command_timeout_ms : 1000);
-
+                    cfg->command_timeout_ms > 0 ? cfg->command_timeout_ms : 2000);
                 auto redis = std::make_shared<sw::redis::Redis>(opts);
-
                 auto* conn = new shield_queue_conn(redis);
-                conn->subscriber.on_message(
-                    [conn](const std::string& channel, const std::string& msg) {
-                        dispatch_message(conn, channel, msg);
-                    });
                 conn->running.store(true);
-                conn->worker = std::thread(subscriber_loop, conn);
                 return conn;
             } catch (const std::exception& e) {
-                if (err_buf && err_buf_size > 0) {
+                if (err_buf && err_buf_size > 0)
                     std::snprintf(err_buf, err_buf_size, "%s", e.what());
-                }
                 return nullptr;
             }
         },
@@ -144,74 +183,82 @@ const shield_queue_v1& queue_vtable() {
         [](shield_queue_conn* c) {
             if (!c) return;
             c->running.store(false);
-            // Force the consumer out of consume(): closing the subscriber is
-            // the cleanest cross-platform way to interrupt its blocking read.
-            try { c->subscriber.unsubscribe(); } catch (...) {}
-            if (c->worker.joinable()) c->worker.join();
+            for (auto& [ch, t] : c->workers) {
+                if (t.joinable()) t.join();
+            }
             delete c;
         },
-        // publish
+        // publish — XADD channel * payload <data>
         [](shield_queue_conn* c, const char* channel,
            const char* data, int data_len) -> int {
             if (!c || !c->redis || !channel || !data) return -1;
             try {
                 std::string msg(data, data_len > 0 ? data_len : std::strlen(data));
-                return static_cast<int>(
-                    c->redis->publish(std::string(channel), msg));
+                c->redis->command("XADD", channel, "*", "payload", msg);
+                return 0;
             } catch (...) { return -1; }
         },
-        // subscribe
+        // subscribe — XGROUP CREATE + spawn consumer thread
         [](shield_queue_conn* c, const char* channel,
            shield_queue_on_message callback, void* user_data) -> int {
-            if (!c || !channel) return -1;
+            if (!c || !c->redis || !channel) return -1;
             try {
+                std::string ch(channel);
+                ensure_group(*c->redis, ch, kGroupName);
                 {
                     std::lock_guard<std::mutex> lock(c->subs_mu);
-                    c->subs[std::string(channel)] = {callback, user_data};
+                    c->subs[ch] = {callback, user_data};
                 }
-                c->subscriber.subscribe(std::string(channel));
+                // Consumer name: shield-<pointer>-<channel>
+                std::string consumer = "shield-" + ch;
+                // Stop existing worker for this channel if any
+                {
+                    auto it = c->workers.find(ch);
+                    if (it != c->workers.end()) {
+                        // Worker will exit on next BLOCK timeout
+                        c->workers.erase(it);
+                    }
+                }
+                c->workers[ch] = std::thread(consumer_loop, c, ch, consumer);
                 return 0;
             } catch (...) { return -1; }
         },
-        // unsubscribe
+        // unsubscribe — remove callback; worker exits on next loop iteration
         [](shield_queue_conn* c, const char* channel) -> int {
             if (!c || !channel) return -1;
-            try {
-                c->subscriber.unsubscribe(std::string(channel));
-                {
-                    std::lock_guard<std::mutex> lock(c->subs_mu);
-                    c->subs.erase(std::string(channel));
-                }
-                return 0;
-            } catch (...) { return -1; }
+            std::string ch(channel);
+            {
+                std::lock_guard<std::mutex> lock(c->subs_mu);
+                c->subs.erase(ch);
+            }
+            auto it = c->workers.find(ch);
+            if (it != c->workers.end()) {
+                if (it->second.joinable()) it->second.join();
+                c->workers.erase(it);
+            }
+            return 0;
         },
     };
     return v;
 }
 
 // ---------------------------------------------------------------------------
-// v1 ABI entry. The instance carries its own config (parsed from
-// config_json) and registers itself in a process-wide map so the Lua
-// callable namespace `shield.queue.redis(binding)` can resolve it.
+// Lua subscription (Streams-based)
 // ---------------------------------------------------------------------------
-
-// A live Lua-driven subscription. The consumer thread owns the Subscriber
-// and pumps messages; the callback is invoked from that thread (documented
-// cross-thread limitation — see make_instance_proxy).
 struct lua_subscription {
-    std::shared_ptr<sw::redis::Redis> redis;  // keeps the connection alive
-    sw::redis::Subscriber subscriber;
-    sol::protected_function callback;  // copied in; called from worker thread
+    std::shared_ptr<sw::redis::Redis> redis;
+    sol::protected_function callback;
     std::thread worker;
     std::atomic<bool> running{false};
-    std::mutex stop_mu;
-    bool stopped{false};
+    std::string channel;
+    std::string consumer_name;
 
     lua_subscription(std::shared_ptr<sw::redis::Redis> r,
-                     sol::protected_function cb)
+                     sol::protected_function cb, const std::string& ch)
         : redis(std::move(r)),
-          subscriber(redis->subscriber()),
-          callback(std::move(cb)) {}
+          callback(std::move(cb)),
+          channel(ch),
+          consumer_name("shield-lua-" + ch) {}
 };
 
 struct queue_instance {
@@ -224,18 +271,13 @@ struct queue_instance {
     int db = 0;
     std::string password;
     int connect_timeout_ms = 5000;
-    int command_timeout_ms = 1000;
-    // Optional redis.driver dependency.
+    int command_timeout_ms = 2000;
     const shield_redis_v1* redis_driver = nullptr;
     void* redis_handle = nullptr;
 
-    // Active Lua subscriptions keyed by channel. One consumer thread per
-    // channel. stop_all() joins them during shutdown.
     std::mutex subs_mu;
     std::unordered_map<std::string, std::shared_ptr<lua_subscription>> subs;
 
-    // Build a fresh command connection from this instance's settings. Returns
-    // nullptr on failure (err, if given, receives the message).
     std::shared_ptr<sw::redis::Redis> make_redis(std::string* err) const {
         try {
             sw::redis::ConnectionOptions opts;
@@ -258,10 +300,8 @@ struct queue_instance {
             std::lock_guard<std::mutex> lk(subs_mu);
             snapshot.swap(subs);
         }
-        for (auto& kv : snapshot) {
-            auto& s = kv.second;
+        for (auto& [ch, s] : snapshot) {
             s->running.store(false);
-            try { s->subscriber.unsubscribe(); } catch (...) {}
             if (s->worker.joinable()) s->worker.join();
         }
     }
@@ -276,15 +316,11 @@ struct queue_instance {
             subs.erase(it);
         }
         s->running.store(false);
-        try { s->subscriber.unsubscribe(); } catch (...) {}
         if (s->worker.joinable()) s->worker.join();
     }
 };
 
-// Process-wide registry: instance_id -> queue_instance*. The callable Lua
-// table's __call metamethod resolves binding -> instance_id, then looks up
-// instances by id here. Map is read on every proxy creation, so it must be
-// thread-safe.
+// Process-wide registry
 std::mutex& instances_mu() {
     static std::mutex m;
     return m;
@@ -293,53 +329,39 @@ std::map<std::string, queue_instance*>& instances_map() {
     static std::map<std::string, queue_instance*> m;
     return m;
 }
-
 void register_instance(queue_instance* inst) {
-    std::lock_guard<std::mutex> lk(instances_mu());
+    std::lock_guard lk(instances_mu());
     instances_map()[inst->instance_id] = inst;
 }
 void unregister_instance(const std::string& id) {
-    std::lock_guard<std::mutex> lk(instances_mu());
+    std::lock_guard lk(instances_mu());
     instances_map().erase(id);
 }
 queue_instance* find_instance(const std::string& id) {
-    std::lock_guard<std::mutex> lk(instances_mu());
+    std::lock_guard lk(instances_mu());
     auto it = instances_map().find(id);
     return it == instances_map().end() ? nullptr : it->second;
 }
 
-// Parse the validated instance config_json. Tolerant — the host already
-// checked against config_schema, so we only extract the known keys and fall
-// back to defaults for anything missing.
 void parse_instance_config(queue_instance* inst, const char* config_json) {
     if (!config_json || !config_json[0]) return;
     try {
         auto j = nlohmann::json::parse(config_json);
-        if (j.contains("host") && j["host"].is_string()) {
+        if (j.contains("host") && j["host"].is_string())
             inst->host = j["host"].get<std::string>();
-        }
-        if (j.contains("port") && j["port"].is_number_integer()) {
+        if (j.contains("port") && j["port"].is_number_integer())
             inst->port = j["port"].get<int>();
-        }
-        if (j.contains("db") && j["db"].is_number_integer()) {
+        if (j.contains("db") && j["db"].is_number_integer())
             inst->db = j["db"].get<int>();
-        }
-        if (j.contains("password") && j["password"].is_string()) {
+        if (j.contains("password") && j["password"].is_string())
             inst->password = j["password"].get<std::string>();
-        }
-        if (j.contains("connect_timeout_ms") && j["connect_timeout_ms"].is_number_integer()) {
+        if (j.contains("connect_timeout_ms") && j["connect_timeout_ms"].is_number_integer())
             inst->connect_timeout_ms = j["connect_timeout_ms"].get<int>();
-        }
-        if (j.contains("command_timeout_ms") && j["command_timeout_ms"].is_number_integer()) {
+        if (j.contains("command_timeout_ms") && j["command_timeout_ms"].is_number_integer())
             inst->command_timeout_ms = j["command_timeout_ms"].get<int>();
-        }
-    } catch (...) {
-        // Malformed JSON shouldn't happen (host validated), ignore quietly.
-    }
+    } catch (...) {}
 }
 
-// Build a Lua error table {code=..., message=...} matching the shape used by
-// the host's shield.queue.* facade.
 sol::table make_error_table(sol::state_view lua, const char* code,
                             const std::string& msg) {
     auto t = lua.create_table();
@@ -348,28 +370,18 @@ sol::table make_error_table(sol::state_view lua, const char* code,
     return t;
 }
 
-// Serialize a Lua value to a JSON string for transport over Redis. Strings are
-// passed through verbatim; tables/numbers/bools are json-encoded. Returns
-// false on unsupported types (functions, userdata, nil message).
 bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
     if (!v.valid() || v == sol::nil) {
         if (err) *err = "message is nil";
         return false;
     }
-    if (v.is<std::string>()) {
-        *out = v.as<std::string>();
-        return true;
-    }
+    if (v.is<std::string>()) { *out = v.as<std::string>(); return true; }
     if (v.is<bool>() || v.is<double>() || v.is<lua_Integer>()) {
         try {
             nlohmann::json j;
-            if (v.is<bool>()) {
-                j = v.as<bool>();
-            } else if (v.is<lua_Integer>()) {
-                j = v.as<lua_Integer>();
-            } else {
-                j = v.as<double>();
-            }
+            if (v.is<bool>()) j = v.as<bool>();
+            else if (v.is<lua_Integer>()) j = v.as<lua_Integer>();
+            else j = v.as<double>();
             *out = j.dump();
             return true;
         } catch (const std::exception& e) {
@@ -379,9 +391,6 @@ bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
     }
     if (v.is<sol::table>()) {
         try {
-            // sol -> nlohmann is not wired here; encode the common case
-            // (string/number/bool values, sequence or map) by hand. Keeps
-            // the plugin free of a heavy binding dependency.
             std::function<nlohmann::json(sol::object)> encode;
             encode = [&encode](sol::object o) -> nlohmann::json {
                 if (!o.valid() || o == sol::nil) return nullptr;
@@ -391,21 +400,16 @@ bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
                 if (o.is<std::string>()) return o.as<std::string>();
                 if (o.is<sol::table>()) {
                     sol::table t = o.as<sol::table>();
-                    // Decide sequence vs map by scanning keys.
                     bool sequence = true;
                     int max_index = 0;
                     for (auto& kv : t) {
-                        if (kv.first.get_type() != sol::type::number) {
-                            sequence = false;
-                            break;
-                        }
+                        if (kv.first.get_type() != sol::type::number) { sequence = false; break; }
                         lua_Integer idx = kv.first.as<lua_Integer>();
                         if (idx < 1) { sequence = false; break; }
                         if (idx > max_index) max_index = static_cast<int>(idx);
                     }
                     if (sequence && max_index > 0) {
                         nlohmann::json arr = nlohmann::json::array();
-                        // Place each element at its Lua index; gaps become null.
                         std::vector<nlohmann::json> tmp(static_cast<size_t>(max_index), nullptr);
                         for (auto& kv : t) {
                             int idx = static_cast<int>(kv.first.as<lua_Integer>());
@@ -417,13 +421,11 @@ bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
                     nlohmann::json obj = nlohmann::json::object();
                     for (auto& kv : t) {
                         std::string key;
-                        if (kv.first.get_type() == sol::type::string) {
+                        if (kv.first.get_type() == sol::type::string)
                             key = kv.first.as<std::string>();
-                        } else if (kv.first.get_type() == sol::type::number) {
+                        else if (kv.first.get_type() == sol::type::number)
                             key = std::to_string(kv.first.as<lua_Integer>());
-                        } else {
-                            continue;  // skip non-stringifiable keys
-                        }
+                        else continue;
                         obj[key] = encode(kv.second);
                     }
                     return obj;
@@ -441,21 +443,7 @@ bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
     return false;
 }
 
-// Build a per-instance proxy table bound to queue_instance.
-//
-// publish() opens a fresh command connection per call (redis++ pools
-// internally if configured, but a per-call shared_ptr is the simplest
-// lifetime model here). subscribe() spins up a dedicated subscriber
-// connection + consumer thread, registered on the instance so
-// unsubscribe/shutdown can stop it.
-//
-// THREAD SAFETY (subscribe callback):
-//   Lua states are not thread-safe. The subscriber's consumer thread calls
-//   the captured sol::protected_function directly. This is the documented
-//   v1 limitation (matches the legacy host facade's subscribe pattern).
-//   Callers must not re-enter shield.queue.redis from inside the callback on
-//   a different thread; marshal back to the Lua worker thread if that is
-//   needed.
+// Lua proxy — Streams-based publish/subscribe
 sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
     auto proxy = lua.create_table();
 
@@ -464,35 +452,27 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                sol::object message) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
-
             std::string msg, msg_err;
             if (!lua_to_message(message, &msg, &msg_err)) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "invalid_message", msg_err));
+                results.push_back(make_error_table(lua, "invalid_message", msg_err));
                 return results;
             }
-
             std::string conn_err;
             auto redis = inst->make_redis(&conn_err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", conn_err));
+                results.push_back(make_error_table(lua, "connection_failed", conn_err));
                 return results;
             }
             try {
-                long long receivers = redis->publish(channel, msg);
+                redis->command("XADD", channel, "*", "payload", msg);
                 results.push_back(sol::make_object(lua, true));
-                results.push_back(sol::make_object(
-                    lua, static_cast<lua_Integer>(receivers)));
-                return results;
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "redis_command_failed", e.what()));
-                return results;
+                results.push_back(make_error_table(lua, "redis_command_failed", e.what()));
             }
+            return results;
         });
 
     proxy.set_function("subscribe",
@@ -500,76 +480,87 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                sol::protected_function callback) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
-
-            // Reject re-subscribe on a channel that already has a consumer —
-            // we can only track one callback per channel per instance.
             {
                 std::lock_guard<std::mutex> lk(inst->subs_mu);
                 if (inst->subs.find(channel) != inst->subs.end()) {
                     results.push_back(sol::make_object(lua, false));
-                    results.push_back(make_error_table(
-                        lua, "already_subscribed",
+                    results.push_back(make_error_table(lua, "already_subscribed",
                         "channel already has a subscriber; unsubscribe first"));
                     return results;
                 }
             }
-
             std::string conn_err;
             auto redis = inst->make_redis(&conn_err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", conn_err));
+                results.push_back(make_error_table(lua, "connection_failed", conn_err));
                 return results;
             }
-
-            auto sub = std::make_shared<lua_subscription>(redis, callback);
+            // Ensure consumer group
             try {
-                sub->subscriber.on_message(
-                    [cb = sub->callback](
-                        const std::string& ch, const std::string& msg) {
-                        // Invoked on the consumer thread — see THREAD SAFETY
-                        // note above the function. sol::protected_function
-                        // is reentrant across threads only if no other thread
-                        // is using the same lua_State simultaneously.
-                        try {
-                            sol::protected_function_result r = cb(ch, msg);
-                            (void)r.valid();
-                        } catch (...) {
-                            // Swallow — a failing user callback must not kill
-                            // the consumer thread.
-                        }
-                    });
-                sub->subscriber.subscribe(channel);
+                ensure_group(*redis, channel, kGroupName);
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "redis_command_failed", e.what()));
+                results.push_back(make_error_table(lua, "redis_command_failed", e.what()));
                 return results;
             }
-
+            auto sub = std::make_shared<lua_subscription>(redis, callback, channel);
             sub->running.store(true);
-            auto sub_ptr = sub;  // copy for the thread
+            auto sub_ptr = sub;
             sub->worker = std::thread([sub_ptr]() {
-                using namespace std::chrono;
                 while (sub_ptr->running.load()) {
                     try {
-                        sub_ptr->subscriber.consume();
-                    } catch (const sw::redis::TimeoutError&) {
-                        // No messages within socket timeout — loop.
-                    } catch (const sw::redis::ClosedError&) {
-                        break;
-                    } catch (const std::exception&) {
-                        std::this_thread::sleep_for(milliseconds(100));
+                        auto result = sub_ptr->redis->command(
+                            "XREADGROUP", "GROUP", kGroupName, sub_ptr->consumer_name,
+                            "COUNT", std::to_string(kReadCount),
+                            "BLOCK", std::to_string(kBlockMs),
+                            "STREAMS", sub_ptr->channel, ">");
+                        if (!result || result->type == REDIS_REPLY_NIL) continue;
+                        if (result->type != REDIS_REPLY_ARRAY) continue;
+                        for (size_t si = 0; si < result->elements; ++si) {
+                            auto* stream_reply = result->element[si];
+                            if (!stream_reply || stream_reply->elements < 2) continue;
+                            auto* entries = stream_reply->element[1];
+                            if (!entries || entries->type != REDIS_REPLY_ARRAY) continue;
+                            for (size_t ei = 0; ei < entries->elements; ++ei) {
+                                auto* entry = entries->element[ei];
+                                if (!entry || entry->elements < 2) continue;
+                                auto* id_reply = entry->element[0];
+                                auto* fields = entry->element[1];
+                                if (!id_reply || !fields) continue;
+                                std::string msg_id(id_reply->str, id_reply->len);
+                                std::string payload;
+                                for (size_t fi = 0; fi + 1 < fields->elements; fi += 2) {
+                                    auto* key = fields->element[fi];
+                                    auto* val = fields->element[fi + 1];
+                                    if (key && val && key->str &&
+                                        std::string(key->str, key->len) == "payload") {
+                                        payload.assign(val->str, val->len);
+                                        break;
+                                    }
+                                }
+                                try {
+                                    sol::protected_function_result r =
+                                        sub_ptr->callback(sub_ptr->channel, payload);
+                                    (void)r.valid();
+                                } catch (...) {}
+                                try {
+                                    sub_ptr->redis->command("XACK", sub_ptr->channel,
+                                                            kGroupName, msg_id);
+                                } catch (...) {}
+                            }
+                        }
+                    } catch (const sw::redis::Error&) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    } catch (...) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     }
                 }
             });
-
             {
                 std::lock_guard<std::mutex> lk(inst->subs_mu);
                 inst->subs[channel] = std::move(sub);
             }
-
             results.push_back(sol::make_object(lua, true));
             return results;
         });
@@ -589,31 +580,18 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
 int register_lua_impl(shield_plugin_instance_v1* self,
                       struct lua_State* L,
                       shield_error_v1* err) {
-    // register_lua installs the shared, idempotent callable namespace
-    // shield.queue.redis. Lua passes a binding logical name; host config
-    // resolves that binding to the deployment instance id.
     if (!L) {
-        if (err) {
-            err->code = "plugin.lua_register.failed";
-            err->message = "queue.redis: lua_State is null";
-        }
+        if (err) { err->code = "plugin.lua_register.failed"; err->message = "queue.redis: lua_State is null"; }
         return 1;
     }
     auto* current = reinterpret_cast<queue_instance*>(self);
-    if (!current || !current->host_api ||
-        !current->host_api->binding_instance_id) {
-        if (err) {
-            err->code = "plugin.lua_register.failed";
-            err->message = "queue.redis: host binding resolver is null";
-        }
+    if (!current || !current->host_api || !current->host_api->binding_instance_id) {
+        if (err) { err->code = "plugin.lua_register.failed"; err->message = "queue.redis: host binding resolver is null"; }
         return 1;
     }
     sol::state_view lua(L);
-
-    // Build the callable namespace shield.queue.redis.
     auto shield = lua["shield"].get_or_create<sol::table>();
     auto queue = shield["queue"].get_or_create<sol::table>();
-
     sol::object existing = queue["redis"];
     if (!existing.is<sol::table>()) {
         auto ns = lua.create_table();
@@ -621,11 +599,9 @@ int register_lua_impl(shield_plugin_instance_v1* self,
         const shield_host_api_v1* host_api = current->host_api;
         shield_plugin_context_v1* ctx = current->ctx;
         mt.set_function("__call",
-            [host_api, ctx](sol::this_state s, sol::table /*self*/,
-               std::string binding) -> sol::object {
+            [host_api, ctx](sol::this_state s, sol::table, std::string binding) -> sol::object {
                 sol::state_view lua(s);
-                const char* instance_id =
-                    host_api->binding_instance_id(ctx, binding.c_str());
+                const char* instance_id = host_api->binding_instance_id(ctx, binding.c_str());
                 if (!instance_id) return sol::nil;
                 auto* inst = find_instance(instance_id);
                 if (!inst) return sol::nil;
@@ -634,7 +610,6 @@ int register_lua_impl(shield_plugin_instance_v1* self,
         ns[sol::metatable_key] = mt;
         queue["redis"] = ns;
     }
-
     return 0;
 }
 
@@ -651,27 +626,19 @@ int queue_create(const shield_plugin_create_args_v1* args,
 
     inst->shell.struct_size = sizeof(shield_plugin_instance_v1);
     inst->shell.instance_id = inst->instance_id.c_str();
-    inst->shell.get_interface = [](shield_plugin_instance_v1*,
-                                   const char* iface,
-                                   shield_error_v1*) -> const void* {
-        if (iface && std::strcmp(iface, SHIELD_QUEUE_INTERFACE) == 0)
-            return &queue_vtable();
+    inst->shell.get_interface = [](shield_plugin_instance_v1*, const char* iface, shield_error_v1*) -> const void* {
+        if (iface && std::strcmp(iface, SHIELD_QUEUE_INTERFACE) == 0) return &queue_vtable();
         return nullptr;
     };
-    inst->shell.start = [](shield_plugin_instance_v1* self,
-                           shield_error_v1*) -> int {
+    inst->shell.start = [](shield_plugin_instance_v1* self, shield_error_v1*) -> int {
         auto* qi = reinterpret_cast<queue_instance*>(self);
-        // Try to get redis.driver dependency (optional).
         if (qi->host_api && qi->host_api->dependency) {
             auto* drv = static_cast<const shield_redis_v1*>(
                 qi->host_api->dependency(qi->ctx, "redis", SHIELD_REDIS_V1));
             if (drv && drv->connect) {
                 char err_buf[256] = {};
                 void* handle = drv->connect(nullptr, err_buf, sizeof(err_buf));
-                if (handle) {
-                    qi->redis_driver = drv;
-                    qi->redis_handle = handle;
-                }
+                if (handle) { qi->redis_driver = drv; qi->redis_handle = handle; }
             }
         }
         return 0;

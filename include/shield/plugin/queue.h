@@ -1,7 +1,7 @@
 // [SHIELD_PLUGIN] shield.queue.v1 interface.
 //
-// Message queue / pub-sub provider. connect() yields a handle bound to the
-// configured transport (e.g. redis pub/sub).
+// Message queue provider. connect() yields a handle bound to the configured
+// transport (e.g. Redis Streams with consumer groups, or other backends).
 #pragma once
 
 #include "shield/plugin/abi.h"
