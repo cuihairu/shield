@@ -115,6 +115,7 @@ option(SHIELD_BUILD_PLUGIN_MATCHMAKING "Build the ELO matchmaking plugin" OFF)
 option(SHIELD_BUILD_PLUGIN_CACHE_REDIS "Build the Redis cache plugin (shield.cache.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_QUEUE_REDIS "Build the Redis pub/sub queue plugin (shield.queue.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS "Build the Redis ZSET leaderboard plugin (shield.leaderboard.v1)" OFF)
+option(SHIELD_BUILD_PLUGIN_REDIS_DRIVER "Build the unified Redis driver plugin (shield.redis.v1)" OFF)
 
 # Ensure config directory exists and create a minimal default config if missing.
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/config")
@@ -734,7 +735,8 @@ if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
    SHIELD_BUILD_PLUGIN_MATCHMAKING OR
    SHIELD_BUILD_PLUGIN_CACHE_REDIS OR
    SHIELD_BUILD_PLUGIN_QUEUE_REDIS OR
-   SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS)
+   SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS OR
+   SHIELD_BUILD_PLUGIN_REDIS_DRIVER)
     add_subdirectory(plugins)
 endif()
 
@@ -791,4 +793,5 @@ message(STATUS "  plugin matchmaking:${SHIELD_BUILD_PLUGIN_MATCHMAKING}")
 message(STATUS "  plugin cache.redis:${SHIELD_BUILD_PLUGIN_CACHE_REDIS}")
 message(STATUS "  plugin queue.redis:${SHIELD_BUILD_PLUGIN_QUEUE_REDIS}")
 message(STATUS "  plugin lb.redis:   ${SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS}")
+message(STATUS "  plugin redis.drv:  ${SHIELD_BUILD_PLUGIN_REDIS_DRIVER}")
 message(STATUS "")

@@ -581,6 +581,18 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         lua_pop(L, 1);
         return 0;
     };
+    api.binding_instance_id = [](shield_plugin_context_v1* ctx,
+                                 const char* binding_name) -> const char* {
+        if (!ctx || !binding_name) return nullptr;
+        auto* c = reinterpret_cast<CtxBundle*>(ctx);
+        if (!c || !c->host) return nullptr;
+        for (const auto& b : c->host->impl_->bindings) {
+            if (b.logical == binding_name) {
+                return b.instance_id.c_str();
+            }
+        }
+        return nullptr;
+    };
     return api;
 }
 

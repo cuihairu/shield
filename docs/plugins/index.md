@@ -20,10 +20,11 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 
 `shield.document.v1` 与 SQL 系的 `shield.database.v1` 是并列接口：前者面向文档、嵌套对象和聚合管道，后者面向固定表结构。同一个业务可以同时部署 SQL 数据库和 MongoDB，分别配置 binding。
 
-### 缓存与队列
+### Redis
 
 | 包 ID | 接口 | 说明 |
 |-------|------|------|
+| [redis.driver](/plugins/redis-driver) | `shield.redis.v1` | Redis 底层驱动，统一连接池与 typed 命令，被其他 Redis 插件依赖 |
 | [cache.redis](/plugins/cache-redis) | `shield.cache.v1` | Redis key-value、hash、TTL、counter |
 | [queue.redis](/plugins/queue-redis) | `shield.queue.v1` | Redis pub/sub |
 | [leaderboard.redis](/plugins/leaderboard-redis) | `shield.leaderboard.v1` | Redis ZSET 排行榜，支持复合评分 |
@@ -66,15 +67,21 @@ plugins:
       config:
         database: "game.db"
         query_timeout_ms: 5000
-    - id: cache.session
-      package: cache.redis
+    - id: redis.main
+      package: redis.driver
       required: true
       config:
         host: "127.0.0.1"
         port: 6379
-        pool_size: 8
+        pool_size: 16
+    - id: cache.session
+      package: cache.redis
+      required: true
+      dependencies:
+        redis: redis.main
   bindings:
     database.default: db.main
+    redis.default: redis.main
     cache.default: cache.session
 ```
 
@@ -89,6 +96,8 @@ auto db = shield::plugin::global_host().get_by_binding<shield_database_v1>(
 ```lua
 -- Lua（v1 ABI Lua 自治模式下）
 local db = shield.database.sqlite("database.default")
+local redis = shield.redis("redis.default")
+local cache = shield.cache.redis("cache.default")
 ```
 
 当前 binding 配置格式保持最小化：`logical_name: instance_id`。C++ 侧调用 `get_by_binding<T>()` 时由 `T::interface_name` 决定要获取的 ABI interface；Lua 侧插件 API 通常直接使用实例 ID 或插件自己定义的默认实例策略。

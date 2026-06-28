@@ -17,7 +17,10 @@ provides:
     capabilities:
       - sorted-set
       - multi-field
-requires: []
+requires:
+  - name: redis
+    interface: shield.redis.v1
+    optional: true
 lua:
   namespace: leaderboard.redis
   search_paths: []

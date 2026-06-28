@@ -1,36 +1,35 @@
 schema_version: 1
-id: cache.redis
-name: Redis Cache
+id: redis.driver
+name: Redis Driver
 version: 1.0.0
-kind: cache
-description: Redis-backed provider for shield.cache.v1 (key/value + hash)
+kind: redis
+description: Unified Redis driver providing shield.redis.v1 typed interface, pipeline, and raw command
 documentation:
-  url: https://cuihairu.github.io/shield/plugins/cache-redis
-  description: Redis-backed provider for the shield.cache.v1 interface (key-value, hash, TTL, counters)
+  url: https://cuihairu.github.io/shield/plugins/redis-driver
+  description: Unified Redis driver with connection pool, typed commands, pipeline, and raw command fallback
 entry: shield_plugin_get_v1
 library:
-  windows: bin/libshield_cache_redis.dll
-  linux: bin/libshield_cache_redis.so
-  macos: bin/libshield_cache_redis.dylib
+  windows: bin/libshield_redis_driver.dll
+  linux: bin/libshield_redis_driver.so
+  macos: bin/libshield_redis_driver.dylib
 provides:
-  - interface: shield.cache.v1
+  - interface: shield.redis.v1
     capabilities:
-      - kv
-      - hash
-      - ttl
-      - counter
-requires:
-  - name: redis
-    interface: shield.redis.v1
-    optional: true
+      - typed-command
+      - pipeline
+      - raw-command
+requires: []
 lua:
-  namespace: cache.redis
+  namespace: redis
   search_paths: []
 config_schema:
   type: object
   required:
     - host
   properties:
+    mode:
+      type: string
+      default: single
     host:
       type: string
       default: 127.0.0.1
@@ -59,6 +58,6 @@ config_schema:
       maximum: 60000
     command_timeout_ms:
       type: integer
-      default: 5000
+      default: 3000
       minimum: 100
       maximum: 60000

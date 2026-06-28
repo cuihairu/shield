@@ -14,8 +14,6 @@ core 只定义单节点 runtime 必需配置：
 - `log`
 - `lua`
 - `actors`
-- `database`
-- `redis`
 - `bootstrap`
 - `shutdown`
 
@@ -58,21 +56,29 @@ actors:
     script: scripts/echo.lua
     instances: 1
 
-database:
-  enabled: true
-  driver: mysql
-  host: localhost
-  port: 3306
-  database: game
-  username: root
-  password: ${DB_PASSWORD:}
-
-redis:
-  enabled: true
-  host: localhost
-  port: 6379
-  db: 0
-  password: ${REDIS_PASSWORD:}
+plugins:
+  directory: "./plugins"
+  instances:
+    - id: db.main
+      package: database.mysql
+      required: true
+      config:
+        host: localhost
+        port: 33060
+        database: game
+        username: root
+        password: ${DB_PASSWORD:}
+    - id: cache.session
+      package: cache.redis
+      required: true
+      config:
+        host: localhost
+        port: 6379
+        db: 0
+        password: ${REDIS_PASSWORD:}
+  bindings:
+    database.default: db.main
+    cache.session: cache.session
 ```
 
 ## 已删除的旧方向

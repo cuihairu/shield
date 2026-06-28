@@ -32,9 +32,8 @@ typedef void (*shield_queue_on_message)(const char* channel,
                                         void* user_data);
 
 struct shield_queue_v1 {
-    static constexpr const char* interface_name = SHIELD_QUEUE_INTERFACE;
-
     uint32_t struct_size;
+    const char* interface_name;  // "shield.queue.v1"
     const char* name;
     const char* version;
 

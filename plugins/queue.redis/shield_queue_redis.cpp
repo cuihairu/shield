@@ -18,7 +18,9 @@
 // spinning up a dedicated subscriber connection + consumer thread.
 
 #include "shield/plugin/abi.h"
+#include "shield/plugin/host_api.h"
 #include "shield/plugin/queue.h"
+#include "shield/plugin/redis.h"
 
 #include <sw/redis++/redis++.h>
 #include <nlohmann/json.hpp>
@@ -35,24 +37,14 @@
 #include <thread>
 #include <unordered_map>
 
-namespace {
-
-char* dup_string(const char* s) {
-    if (!s) return nullptr;
-    auto len = std::strlen(s);
-    char* out = static_cast<char*>(std::malloc(len + 1));
-    if (out) std::memcpy(out, s, len + 1);
-    return out;
-}
-
+// shield_queue_conn is opaque in queue.h; concrete layout lives here.
+// Defined at global scope so lambda-to-function-pointer conversion sees the
+// same type as the vtable declared in queue.h.
 struct SubEntry {
     shield_queue_on_message cb;
     void* user_data;
 };
 
-// shield_queue_conn is opaque in queue.h; concrete layout lives here.
-// A single Subscriber thread consumes messages and dispatches to the
-// per-channel callback registered via subscribe().
 struct shield_queue_conn {
     std::shared_ptr<sw::redis::Redis> redis;
     sw::redis::Subscriber subscriber;
@@ -64,6 +56,16 @@ struct shield_queue_conn {
     explicit shield_queue_conn(std::shared_ptr<sw::redis::Redis> r)
         : redis(std::move(r)), subscriber(redis->subscriber()) {}
 };
+
+namespace {
+
+char* dup_string(const char* s) {
+    if (!s) return nullptr;
+    auto len = std::strlen(s);
+    char* out = static_cast<char*>(std::malloc(len + 1));
+    if (out) std::memcpy(out, s, len + 1);
+    return out;
+}
 
 void dispatch_message(shield_queue_conn* c, const std::string& channel,
                       const std::string& msg) {
@@ -102,6 +104,7 @@ void subscriber_loop(shield_queue_conn* c) {
 const shield_queue_v1& queue_vtable() {
     static const shield_queue_v1 v = {
         sizeof(shield_queue_v1),
+        SHIELD_QUEUE_INTERFACE,
         "redis",
         "1.0.0",
         // connect
@@ -143,7 +146,7 @@ const shield_queue_v1& queue_vtable() {
             c->running.store(false);
             // Force the consumer out of consume(): closing the subscriber is
             // the cleanest cross-platform way to interrupt its blocking read.
-            try { c->subscriber.close(); } catch (...) {}
+            try { c->subscriber.unsubscribe(); } catch (...) {}
             if (c->worker.joinable()) c->worker.join();
             delete c;
         },
@@ -189,7 +192,7 @@ const shield_queue_v1& queue_vtable() {
 // ---------------------------------------------------------------------------
 // v1 ABI entry. The instance carries its own config (parsed from
 // config_json) and registers itself in a process-wide map so the Lua
-// callable namespace `shield.queue.redis(instance_id)` can resolve it.
+// callable namespace `shield.queue.redis(binding)` can resolve it.
 // ---------------------------------------------------------------------------
 
 // A live Lua-driven subscription. The consumer thread owns the Subscriber
@@ -214,12 +217,17 @@ struct lua_subscription {
 struct queue_instance {
     shield_plugin_instance_v1 shell;
     std::string instance_id;
+    const shield_host_api_v1* host_api = nullptr;
+    shield_plugin_context_v1* ctx = nullptr;
     std::string host = "127.0.0.1";
     int port = 6379;
     int db = 0;
     std::string password;
     int connect_timeout_ms = 5000;
     int command_timeout_ms = 1000;
+    // Optional redis.driver dependency.
+    const shield_redis_v1* redis_driver = nullptr;
+    void* redis_handle = nullptr;
 
     // Active Lua subscriptions keyed by channel. One consumer thread per
     // channel. stop_all() joins them during shutdown.
@@ -253,7 +261,7 @@ struct queue_instance {
         for (auto& kv : snapshot) {
             auto& s = kv.second;
             s->running.store(false);
-            try { s->subscriber.close(); } catch (...) {}
+            try { s->subscriber.unsubscribe(); } catch (...) {}
             if (s->worker.joinable()) s->worker.join();
         }
     }
@@ -268,14 +276,15 @@ struct queue_instance {
             subs.erase(it);
         }
         s->running.store(false);
-        try { s->subscriber.close(); } catch (...) {}
+        try { s->subscriber.unsubscribe(); } catch (...) {}
         if (s->worker.joinable()) s->worker.join();
     }
 };
 
 // Process-wide registry: instance_id -> queue_instance*. The callable Lua
-// table's __call metamethod looks up instances by id here. Map is read on
-// every proxy creation, so it must be thread-safe.
+// table's __call metamethod resolves binding -> instance_id, then looks up
+// instances by id here. Map is read on every proxy creation, so it must be
+// thread-safe.
 std::mutex& instances_mu() {
     static std::mutex m;
     return m;
@@ -581,13 +590,21 @@ int register_lua_impl(shield_plugin_instance_v1* self,
                       struct lua_State* L,
                       shield_error_v1* err) {
     // register_lua installs the shared, idempotent callable namespace
-    // shield.queue.redis. The per-instance config is already reachable
-    // through the global registry (find_instance), so we do not need `self`.
-    (void)self;
+    // shield.queue.redis. Lua passes a binding logical name; host config
+    // resolves that binding to the deployment instance id.
     if (!L) {
         if (err) {
             err->code = "plugin.lua_register.failed";
             err->message = "queue.redis: lua_State is null";
+        }
+        return 1;
+    }
+    auto* current = reinterpret_cast<queue_instance*>(self);
+    if (!current || !current->host_api ||
+        !current->host_api->binding_instance_id) {
+        if (err) {
+            err->code = "plugin.lua_register.failed";
+            err->message = "queue.redis: host binding resolver is null";
         }
         return 1;
     }
@@ -601,10 +618,15 @@ int register_lua_impl(shield_plugin_instance_v1* self,
     if (!existing.is<sol::table>()) {
         auto ns = lua.create_table();
         auto mt = lua.create_table();
+        const shield_host_api_v1* host_api = current->host_api;
+        shield_plugin_context_v1* ctx = current->ctx;
         mt.set_function("__call",
-            [](sol::this_state s, sol::table /*self*/,
-               std::string instance_id) -> sol::object {
+            [host_api, ctx](sol::this_state s, sol::table /*self*/,
+               std::string binding) -> sol::object {
                 sol::state_view lua(s);
+                const char* instance_id =
+                    host_api->binding_instance_id(ctx, binding.c_str());
+                if (!instance_id) return sol::nil;
                 auto* inst = find_instance(instance_id);
                 if (!inst) return sol::nil;
                 return sol::make_object(lua, make_instance_proxy(lua, inst));
@@ -622,6 +644,8 @@ int queue_create(const shield_plugin_create_args_v1* args,
     (void)err;
     auto* inst = new queue_instance;
     inst->instance_id = args->instance_id ? args->instance_id : "";
+    inst->host_api = args->host_api;
+    inst->ctx = args->ctx;
     parse_instance_config(inst, args->config_json);
     register_instance(inst);
 
@@ -634,17 +658,34 @@ int queue_create(const shield_plugin_create_args_v1* args,
             return &queue_vtable();
         return nullptr;
     };
-    inst->shell.start = [](shield_plugin_instance_v1*, shield_error_v1*) { return 0; };
+    inst->shell.start = [](shield_plugin_instance_v1* self,
+                           shield_error_v1*) -> int {
+        auto* qi = reinterpret_cast<queue_instance*>(self);
+        // Try to get redis.driver dependency (optional).
+        if (qi->host_api && qi->host_api->dependency) {
+            auto* drv = static_cast<const shield_redis_v1*>(
+                qi->host_api->dependency(qi->ctx, "redis", SHIELD_REDIS_V1));
+            if (drv && drv->connect) {
+                char err_buf[256] = {};
+                void* handle = drv->connect(nullptr, err_buf, sizeof(err_buf));
+                if (handle) {
+                    qi->redis_driver = drv;
+                    qi->redis_handle = handle;
+                }
+            }
+        }
+        return 0;
+    };
     inst->shell.shutdown = [](shield_plugin_instance_v1* self) {
-        // shell is the first member of queue_instance (offset 0), so self
-        // points at the enclosing queue_instance. Standard C-ABI pattern.
-        auto* inst = reinterpret_cast<queue_instance*>(self);
-        // Stop all Lua-driven consumer threads BEFORE tearing down state —
-        // they hold raw pointers into inst. Once they're joined, no worker
-        // will touch inst's members again.
-        inst->stop_all();
-        unregister_instance(inst->instance_id);
-        delete inst;
+        auto* qi = reinterpret_cast<queue_instance*>(self);
+        qi->stop_all();
+        if (qi->redis_driver && qi->redis_handle) {
+            qi->redis_driver->disconnect(qi->redis_handle);
+            qi->redis_handle = nullptr;
+            qi->redis_driver = nullptr;
+        }
+        unregister_instance(qi->instance_id);
+        delete qi;
     };
     inst->shell.register_lua = &register_lua_impl;
     *out = &inst->shell;

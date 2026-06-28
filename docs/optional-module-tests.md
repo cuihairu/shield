@@ -17,7 +17,7 @@
 | OMOD-000-01 | 不启用任何 optional module | 启动最小 runtime | core path 正常工作 |
 | OMOD-000-02 | 配置中存在 optional 段但模块未注册或未启用 | bootstrap | 启动失败，错误包含模块名和配置路径 |
 | OMOD-000-03 | optional module 初始化失败 | 启动 runtime | 错误定位到对应模块，不改写 core 错误语义 |
-| OMOD-000-04 | optional module 关闭 | 调用最小 API | `shield.send/call/query`、gateway、DB/Redis 原始能力保持既有语义 |
+| OMOD-000-04 | optional module 关闭 | 调用最小 API | `shield.send/call/query`、gateway、插件 namespace 数据能力保持既有语义 |
 | OMOD-000-05 | public header / Lua API 检查 | 构建/绑定测试 | optional module 不把 CAF 或旧架构 API 泄漏给用户 |
 | OMOD-000-06 | optional module 被显式启用但配置非法 | bootstrap | 默认 fail fast；只有模块文档声明的 degrade 场景才允许继续启动并暴露 unhealthy |
 
@@ -42,7 +42,7 @@
 | ID | 场景 | 操作 | 期望 |
 | --- | --- | --- | --- |
 | OMOD-GL-001 | global 未启用 | 调用全局命名空间 | 返回 `module_unavailable` 或模块不可用错误 |
-| OMOD-GL-002 | raw Redis 已启用、global 未启用 | `shield.redis.get` | 仍可正常使用 |
+| OMOD-GL-002 | cache.redis 已启用、global 未启用 | `shield.cache.redis("cache.session"):get(key)` | 仍可正常使用 |
 | OMOD-GL-003 | 分布式锁 | acquire/release | 基于模块契约完成，不暴露底层 Redis handle |
 | OMOD-GL-004 | Redis 不可用 | distributed lock / rank / queue | 返回 Redis 相关错误，不回写 core 语义 |
 | OMOD-GL-005 | rank reset | 到达重置周期 | 只影响 rank 数据，不修改 core scheduler 语义 |

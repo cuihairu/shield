@@ -776,7 +776,7 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
         const auto total = scalar_int(timeout, "total");
         if (total) {
             for (const char* key :
-                 {"service_drain", "service_stop", "data_close"}) {
+                 {"service_drain", "service_stop", "plugin_shutdown"}) {
                 const auto part = scalar_int(timeout, key);
                 if (part && *total <= *part) {
                     if (error) {

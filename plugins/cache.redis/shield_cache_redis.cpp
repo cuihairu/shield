@@ -12,11 +12,13 @@
 // `set(key, value, ttl_seconds)` signature.
 //
 // Lua autonomy: register_lua installs the shared callable namespace
-// shield.cache.redis(instance_id), returning a per-instance proxy whose
+// shield.cache.redis(binding), returning a per-instance proxy whose
 // methods reuse the same connect path as the C vtable.
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/cache.h"
+#include "shield/plugin/host_api.h"
+#include "shield/plugin/redis.h"
 
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
@@ -31,6 +33,18 @@
 #include <mutex>
 #include <string>
 
+// shield_cache_conn is opaque in cache.h; concrete layout lives here.
+// When redis_driver is set, all operations go through redis.driver's vtable.
+// Otherwise, the conn uses its own sw::redis::Redis connection pool.
+// NOTE: defined at global scope (not inside anonymous namespace) so that
+// lambda-to-function-pointer conversion sees the same type as the vtable
+// declared in cache.h.
+struct shield_cache_conn {
+    std::shared_ptr<sw::redis::Redis> redis;  // fallback: own connection
+    const shield_redis_v1* redis_driver = nullptr;  // preferred: redis.driver
+    void* redis_handle = nullptr;                    // opaque handle from driver
+};
+
 namespace {
 
 char* dup_string(const char* s) {
@@ -41,12 +55,7 @@ char* dup_string(const char* s) {
     return out;
 }
 
-// shield_cache_conn is opaque in cache.h; concrete layout lives here.
-struct shield_cache_conn {
-    std::shared_ptr<sw::redis::Redis> redis;
-};
-
-void fill_value(shield_cache_value* out, const std::optional<std::string>& v) {
+void fill_value(shield_cache_value* out, const sw::redis::OptionalString& v) {
     if (v) {
         out->found = 1;
         out->data = dup_string(v->c_str());
@@ -100,11 +109,18 @@ std::shared_ptr<sw::redis::Redis> open_redis(
 const shield_cache_v1& cache_vtable() {
     static const shield_cache_v1 v = {
         sizeof(shield_cache_v1),
+        SHIELD_CACHE_INTERFACE,
         "redis",
         "1.0.0",
         // connect
         [](const shield_cache_config* cfg,
            char* err_buf, int err_buf_size) -> shield_cache_conn* {
+            // NOTE: This vtable is process-wide (static). The redis_driver
+            // pointer is injected per-instance, so we cannot access it here.
+            // The per-instance connect path (used by Lua and C++ callers)
+            // goes through cache_instance::connect_instance() instead.
+            // This legacy path is kept for direct C vtable callers who pass
+            // their own config.
             if (!cfg) return nullptr;
             std::string err;
             std::string password = cfg->password ? cfg->password : "";
@@ -118,7 +134,7 @@ const shield_cache_v1& cache_vtable() {
                 }
                 return nullptr;
             }
-            return new shield_cache_conn{redis};
+            return new shield_cache_conn{redis, nullptr, nullptr};
         },
         // disconnect
         [](shield_cache_conn* c) {
@@ -236,7 +252,7 @@ const shield_cache_v1& cache_vtable() {
 // ---------------------------------------------------------------------------
 // v1 ABI entry. The instance carries its own config (parsed from config_json)
 // and registers itself in a process-wide map so the Lua callable namespace
-// `shield.cache.redis(instance_id)` can resolve it. The C++ vtable is still
+// `shield.cache.redis(binding)` can resolve it. The C++ vtable is still
 // served through get_interface() for host code that goes through the cache
 // pool / get_by_binding<shield_cache_v1>.
 // ---------------------------------------------------------------------------
@@ -245,6 +261,8 @@ namespace {
 struct cache_instance {
     shield_plugin_instance_v1 shell;
     std::string instance_id;
+    const shield_host_api_v1* host_api = nullptr;
+    shield_plugin_context_v1* ctx = nullptr;
     // Parsed config (mirrors shield_cache_config keys).
     std::string host = "127.0.0.1";
     int port = 6379;
@@ -253,11 +271,15 @@ struct cache_instance {
     int pool_size = 8;
     int connect_timeout_ms = 5000;
     int command_timeout_ms = 5000;
+    // Optional redis.driver dependency (Phase 2 migration).
+    const shield_redis_v1* redis_driver = nullptr;
+    void* redis_handle = nullptr;  // opaque handle from redis_driver->connect()
 };
 
 // Process-wide registry: instance_id -> cache_instance*. The callable Lua
-// table's __call metamethod looks up instances by id here. Map is read on
-// every proxy creation, so it must be thread-safe.
+// table's __call metamethod resolves binding -> instance_id, then looks up
+// instances by id here. Map is read on every proxy creation, so it must be
+// thread-safe.
 std::mutex& instances_mu() {
     static std::mutex m;
     return m;
@@ -343,6 +365,18 @@ sol::table make_error_table(sol::state_view lua, const char* code,
     return t;
 }
 
+// Extract a Lua string from a shield_redis_value_v1 (STRING or NIL -> nil).
+// Returns sol::nil for NIL/NULL, or a Lua string for STRING type.
+static sol::object redis_value_to_lua_string(sol::state_view lua,
+                                              const shield_redis_value_v1* v) {
+    if (!v || v->type == SHIELD_REDIS_NIL) return sol::nil;
+    if (v->type == SHIELD_REDIS_STRING && v->str) {
+        return sol::make_object(lua,
+            std::string(v->str, static_cast<size_t>(v->str_len)));
+    }
+    return sol::nil;
+}
+
 // Build a per-instance proxy table. Each method opens a redis handle, runs
 // the command, then drops the shared_ptr. Return shape:
 //   success: (true, ...payload...)
@@ -354,6 +388,25 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
         [inst](sol::this_state s, std::string key) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            // redis.driver path
+            if (inst->redis_driver && inst->redis_handle) {
+                shield_redis_value_v1* out = nullptr;
+                shield_error_v1 err{};
+                int rc = inst->redis_driver->get(
+                    inst->redis_handle, key.c_str(), &out, &err);
+                if (rc == 0) {
+                    results.push_back(sol::make_object(lua, true));
+                    results.push_back(redis_value_to_lua_string(lua, out));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua,
+                        err.code ? err.code : "cache_query_failed",
+                        err.message ? err.message : "get failed"));
+                }
+                if (out) inst->redis_driver->free_value(out);
+                return results;
+            }
+            // Fallback: internal redis++ connection
             std::string err;
             auto redis = open_redis(inst, &err);
             if (!redis) {
@@ -383,25 +436,36 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
                sol::optional<lua_Integer> ttl) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            if (inst->redis_driver && inst->redis_handle) {
+                shield_error_v1 err{};
+                int ttl_sec = ttl ? static_cast<int>(*ttl) : 0;
+                int rc = inst->redis_driver->set(
+                    inst->redis_handle, key.c_str(), value.c_str(),
+                    ttl_sec, &err);
+                if (rc == 0) {
+                    results.push_back(sol::make_object(lua, true));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua,
+                        err.code ? err.code : "cache_query_failed",
+                        err.message ? err.message : "set failed"));
+                }
+                return results;
+            }
             std::string err;
             auto redis = open_redis(inst, &err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(make_error_table(lua, "connection_failed", err));
                 return results;
             }
             try {
-                if (ttl && *ttl > 0) {
-                    redis->set(key, value, std::chrono::seconds(*ttl));
-                } else {
-                    redis->set(key, value);
-                }
+                if (ttl && *ttl > 0) redis->set(key, value, std::chrono::seconds(*ttl));
+                else redis->set(key, value);
                 results.push_back(sol::make_object(lua, true));
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "cache_query_failed", e.what()));
+                results.push_back(make_error_table(lua, "cache_query_failed", e.what()));
             }
             return results;
         });
@@ -410,37 +474,71 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
         [inst](sol::this_state s, std::string key) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            if (inst->redis_driver && inst->redis_handle) {
+                shield_error_v1 err{};
+                int rc = inst->redis_driver->del(
+                    inst->redis_handle, key.c_str(), &err);
+                if (rc == 0) {
+                    results.push_back(sol::make_object(lua, true));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua,
+                        err.code ? err.code : "cache_query_failed",
+                        err.message ? err.message : "del failed"));
+                }
+                return results;
+            }
             std::string err;
             auto redis = open_redis(inst, &err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(make_error_table(lua, "connection_failed", err));
                 return results;
             }
             try {
                 auto removed = redis->del(key);
                 results.push_back(sol::make_object(lua, true));
-                results.push_back(sol::make_object(
-                    lua, static_cast<lua_Integer>(removed)));
+                results.push_back(sol::make_object(lua, static_cast<lua_Integer>(removed)));
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "cache_query_failed", e.what()));
+                results.push_back(make_error_table(lua, "cache_query_failed", e.what()));
             }
             return results;
         });
+
+    // exists, incr, incr_by, hdel: use redis.driver raw command for operations
+    // not in the typed shield.redis.v1 API.
 
     proxy.set_function("exists",
         [inst](sol::this_state s, std::string key) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            if (inst->redis_driver && inst->redis_handle) {
+                std::string k = key;
+                shield_redis_arg_v1 args[] = {
+                    {"EXISTS", 6}, {k.data(), k.size()}};
+                shield_redis_value_v1* out = nullptr;
+                shield_error_v1 err{};
+                int rc = inst->redis_driver->command(
+                    inst->redis_handle, args, 2, &out, &err);
+                if (rc == 0 && out) {
+                    results.push_back(sol::make_object(lua, true));
+                    bool exists = (out->type == SHIELD_REDIS_INTEGER && out->integer > 0);
+                    results.push_back(sol::make_object(lua, exists));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua,
+                        err.code ? err.code : "cache_query_failed",
+                        err.message ? err.message : "exists failed"));
+                }
+                if (out) inst->redis_driver->free_value(out);
+                return results;
+            }
             std::string err;
             auto redis = open_redis(inst, &err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(make_error_table(lua, "connection_failed", err));
                 return results;
             }
             try {
@@ -449,8 +547,7 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
                 results.push_back(sol::make_object(lua, n > 0));
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "cache_query_failed", e.what()));
+                results.push_back(make_error_table(lua, "cache_query_failed", e.what()));
             }
             return results;
         });
@@ -459,23 +556,41 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
         [inst](sol::this_state s, std::string key) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            if (inst->redis_driver && inst->redis_handle) {
+                std::string k = key;
+                shield_redis_arg_v1 args[] = {
+                    {"INCR", 4}, {k.data(), k.size()}};
+                shield_redis_value_v1* out = nullptr;
+                shield_error_v1 err{};
+                int rc = inst->redis_driver->command(
+                    inst->redis_handle, args, 2, &out, &err);
+                if (rc == 0 && out) {
+                    results.push_back(sol::make_object(lua, true));
+                    results.push_back(sol::make_object(lua,
+                        static_cast<lua_Integer>(out->integer)));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua,
+                        err.code ? err.code : "cache_query_failed",
+                        err.message ? err.message : "incr failed"));
+                }
+                if (out) inst->redis_driver->free_value(out);
+                return results;
+            }
             std::string err;
             auto redis = open_redis(inst, &err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(make_error_table(lua, "connection_failed", err));
                 return results;
             }
             try {
                 auto v = redis->incr(key);
                 results.push_back(sol::make_object(lua, true));
-                results.push_back(sol::make_object(
-                    lua, static_cast<lua_Integer>(v)));
+                results.push_back(sol::make_object(lua, static_cast<lua_Integer>(v)));
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "cache_query_failed", e.what()));
+                results.push_back(make_error_table(lua, "cache_query_failed", e.what()));
             }
             return results;
         });
@@ -485,23 +600,43 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
                lua_Integer amount) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            if (inst->redis_driver && inst->redis_handle) {
+                std::string k = key;
+                std::string amt = std::to_string(static_cast<long long>(amount));
+                shield_redis_arg_v1 args[] = {
+                    {"INCRBY", 6}, {k.data(), k.size()},
+                    {amt.data(), amt.size()}};
+                shield_redis_value_v1* out = nullptr;
+                shield_error_v1 err{};
+                int rc = inst->redis_driver->command(
+                    inst->redis_handle, args, 3, &out, &err);
+                if (rc == 0 && out) {
+                    results.push_back(sol::make_object(lua, true));
+                    results.push_back(sol::make_object(lua,
+                        static_cast<lua_Integer>(out->integer)));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua,
+                        err.code ? err.code : "cache_query_failed",
+                        err.message ? err.message : "incr_by failed"));
+                }
+                if (out) inst->redis_driver->free_value(out);
+                return results;
+            }
             std::string err;
             auto redis = open_redis(inst, &err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(make_error_table(lua, "connection_failed", err));
                 return results;
             }
             try {
                 auto v = redis->incrby(key, static_cast<long long>(amount));
                 results.push_back(sol::make_object(lua, true));
-                results.push_back(sol::make_object(
-                    lua, static_cast<lua_Integer>(v)));
+                results.push_back(sol::make_object(lua, static_cast<lua_Integer>(v)));
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "cache_query_failed", e.what()));
+                results.push_back(make_error_table(lua, "cache_query_failed", e.what()));
             }
             return results;
         });
@@ -511,26 +646,38 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
                std::string field) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            if (inst->redis_driver && inst->redis_handle) {
+                shield_redis_value_v1* out = nullptr;
+                shield_error_v1 err{};
+                int rc = inst->redis_driver->hget(
+                    inst->redis_handle, key.c_str(), field.c_str(), &out, &err);
+                if (rc == 0) {
+                    results.push_back(sol::make_object(lua, true));
+                    results.push_back(redis_value_to_lua_string(lua, out));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua,
+                        err.code ? err.code : "cache_query_failed",
+                        err.message ? err.message : "hget failed"));
+                }
+                if (out) inst->redis_driver->free_value(out);
+                return results;
+            }
             std::string err;
             auto redis = open_redis(inst, &err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(make_error_table(lua, "connection_failed", err));
                 return results;
             }
             try {
                 auto v = redis->hget(key, field);
                 results.push_back(sol::make_object(lua, true));
-                if (v) {
-                    results.push_back(sol::make_object(lua, *v));
-                } else {
-                    results.push_back(sol::nil);
-                }
+                if (v) results.push_back(sol::make_object(lua, *v));
+                else results.push_back(sol::nil);
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "cache_query_failed", e.what()));
+                results.push_back(make_error_table(lua, "cache_query_failed", e.what()));
             }
             return results;
         });
@@ -540,12 +687,26 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
                std::string value) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            if (inst->redis_driver && inst->redis_handle) {
+                shield_error_v1 err{};
+                int rc = inst->redis_driver->hset(
+                    inst->redis_handle, key.c_str(), field.c_str(),
+                    value.c_str(), &err);
+                if (rc == 0) {
+                    results.push_back(sol::make_object(lua, true));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua,
+                        err.code ? err.code : "cache_query_failed",
+                        err.message ? err.message : "hset failed"));
+                }
+                return results;
+            }
             std::string err;
             auto redis = open_redis(inst, &err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(make_error_table(lua, "connection_failed", err));
                 return results;
             }
             try {
@@ -553,8 +714,7 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
                 results.push_back(sol::make_object(lua, true));
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "cache_query_failed", e.what()));
+                results.push_back(make_error_table(lua, "cache_query_failed", e.what()));
             }
             return results;
         });
@@ -564,23 +724,42 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
                std::string field) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            if (inst->redis_driver && inst->redis_handle) {
+                std::string k = key, f = field;
+                shield_redis_arg_v1 args[] = {
+                    {"HDEL", 4}, {k.data(), k.size()}, {f.data(), f.size()}};
+                shield_redis_value_v1* out = nullptr;
+                shield_error_v1 err{};
+                int rc = inst->redis_driver->command(
+                    inst->redis_handle, args, 3, &out, &err);
+                if (rc == 0) {
+                    results.push_back(sol::make_object(lua, true));
+                    if (out && out->type == SHIELD_REDIS_INTEGER)
+                        results.push_back(sol::make_object(lua,
+                            static_cast<lua_Integer>(out->integer)));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua,
+                        err.code ? err.code : "cache_query_failed",
+                        err.message ? err.message : "hdel failed"));
+                }
+                if (out) inst->redis_driver->free_value(out);
+                return results;
+            }
             std::string err;
             auto redis = open_redis(inst, &err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(make_error_table(lua, "connection_failed", err));
                 return results;
             }
             try {
                 auto removed = redis->hdel(key, field);
                 results.push_back(sol::make_object(lua, true));
-                results.push_back(sol::make_object(
-                    lua, static_cast<lua_Integer>(removed)));
+                results.push_back(sol::make_object(lua, static_cast<lua_Integer>(removed)));
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "cache_query_failed", e.what()));
+                results.push_back(make_error_table(lua, "cache_query_failed", e.what()));
             }
             return results;
         });
@@ -592,13 +771,21 @@ int register_lua_impl(shield_plugin_instance_v1* self,
                       struct lua_State* L,
                       shield_error_v1* err) {
     // register_lua installs the shared, idempotent callable namespace
-    // shield.cache.redis. The per-instance config is already reachable
-    // through the global registry (find_instance), so we do not need `self`.
-    (void)self;
+    // shield.cache.redis. Lua passes a binding logical name; host config
+    // resolves that binding to the deployment instance id.
     if (!L) {
         if (err) {
             err->code = "plugin.lua_register.failed";
             err->message = "cache.redis: lua_State is null";
+        }
+        return 1;
+    }
+    auto* current = reinterpret_cast<cache_instance*>(self);
+    if (!current || !current->host_api ||
+        !current->host_api->binding_instance_id) {
+        if (err) {
+            err->code = "plugin.lua_register.failed";
+            err->message = "cache.redis: host binding resolver is null";
         }
         return 1;
     }
@@ -612,10 +799,15 @@ int register_lua_impl(shield_plugin_instance_v1* self,
     if (!existing.is<sol::table>()) {
         auto ns = lua.create_table();
         auto mt = lua.create_table();
+        const shield_host_api_v1* host_api = current->host_api;
+        shield_plugin_context_v1* ctx = current->ctx;
         mt.set_function("__call",
-            [](sol::this_state s, sol::table /*self*/,
-               std::string instance_id) -> sol::object {
+            [host_api, ctx](sol::this_state s, sol::table /*self*/,
+               std::string binding) -> sol::object {
                 sol::state_view lua(s);
+                const char* instance_id =
+                    host_api->binding_instance_id(ctx, binding.c_str());
+                if (!instance_id) return sol::nil;
                 auto* inst = find_instance(instance_id);
                 if (!inst) return sol::nil;
                 return sol::make_object(lua, make_instance_proxy(lua, inst));
@@ -633,6 +825,8 @@ int cache_create(const shield_plugin_create_args_v1* args,
     (void)err;
     auto* inst = new cache_instance;
     inst->instance_id = args->instance_id ? args->instance_id : "";
+    inst->host_api = args->host_api;
+    inst->ctx = args->ctx;
     parse_instance_config(inst, args->config_json);
     register_instance(inst);
 
@@ -645,13 +839,34 @@ int cache_create(const shield_plugin_create_args_v1* args,
             return &cache_vtable();
         return nullptr;
     };
-    inst->shell.start = [](shield_plugin_instance_v1*, shield_error_v1*) { return 0; };
+    inst->shell.start = [](shield_plugin_instance_v1* self,
+                           shield_error_v1*) -> int {
+        auto* ci = reinterpret_cast<cache_instance*>(self);
+        // Try to get redis.driver dependency (optional — Phase 2 migration).
+        if (ci->host_api && ci->host_api->dependency) {
+            auto* drv = static_cast<const shield_redis_v1*>(
+                ci->host_api->dependency(ci->ctx, "redis", SHIELD_REDIS_V1));
+            if (drv && drv->connect) {
+                char err_buf[256] = {};
+                void* handle = drv->connect(nullptr, err_buf, sizeof(err_buf));
+                if (handle) {
+                    ci->redis_driver = drv;
+                    ci->redis_handle = handle;
+                }
+                // If connect fails, fall through to internal redis path.
+            }
+        }
+        return 0;
+    };
     inst->shell.shutdown = [](shield_plugin_instance_v1* self) {
-        // shell is the first member of cache_instance (offset 0), so self
-        // points at the enclosing cache_instance. Standard C-ABI pattern.
-        auto* inst = reinterpret_cast<cache_instance*>(self);
-        unregister_instance(inst->instance_id);
-        delete inst;
+        auto* ci = reinterpret_cast<cache_instance*>(self);
+        if (ci->redis_driver && ci->redis_handle) {
+            ci->redis_driver->disconnect(ci->redis_handle);
+            ci->redis_handle = nullptr;
+            ci->redis_driver = nullptr;
+        }
+        unregister_instance(ci->instance_id);
+        delete ci;
     };
     inst->shell.register_lua = &register_lua_impl;
     *out = &inst->shell;

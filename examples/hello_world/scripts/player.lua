@@ -1,13 +1,13 @@
 -- player.lua - 用户参考示例
 --
 -- 演示新版插件自治 Lua API：
---   shield.database.<driver>(instance_id) 返回绑定到该实例的 proxy
---   shield.cache.redis(instance_id)       同理
--- 实例由 app.yaml 的 plugins.instances 段声明；未声明时 proxy 为 nil。
+--   shield.database.<driver>(binding) 返回绑定到该逻辑名的 proxy
+--   shield.cache.redis(binding)       同理
+-- binding 由 app.yaml 的 plugins.bindings 声明；未声明时 proxy 为 nil。
 
 local M = {}
 
--- 通过实例 ID 拿到数据库 / 缓存 proxy。
+-- 通过 binding 逻辑名拿到数据库 / 缓存 proxy。
 -- app.yaml 中需要声明：
 --   plugins:
 --     instances:
@@ -15,8 +15,11 @@ local M = {}
 --           config: { database: "data/game.db" } }
 --       - { id: "cache.chat", package: "cache.redis",     required: true,
 --           config: { host: "127.0.0.1", port: 6379 } }
+--     bindings:
+--       database.default: "db.main"
+--       cache.chat: "cache.chat"
 -- 未配置时 shield.database.sqlite / shield.cache.redis 返回 nil，业务自行降级。
-local DB    = shield.database.sqlite("db.main")
+local DB    = shield.database.sqlite("database.default")
 local Cache = shield.cache.redis("cache.chat")
 
 function M.on_init(args)

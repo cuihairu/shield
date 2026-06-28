@@ -29,16 +29,26 @@ actors:
     instances: 1
     required: true
 
-database:
-  enabled: false
-
-redis:
-  enabled: false
-
 # Plugin system v1 (see docs/plugin-system.md).
-# `required: false` so configs without a built plugin still boot (DatabasePool
-# falls back to mock). To enable, build the database.sqlite plugin and flip
-# database.enabled above to true.
+# `required: false` so configs without a built plugin still boot. Business Lua
+# accesses plugins through binding names such as database.default.
+#
+# Redis driver example (uncomment when redis.driver is built):
+#   - id: redis.main
+#     package: redis.driver
+#     required: true
+#     config:
+#       host: 127.0.0.1
+#       port: 6379
+#       pool_size: 16
+#   - id: cache.session
+#     package: cache.redis
+#     required: false
+#     dependencies:
+#       redis: redis.main
+#   bindings:
+#     redis.default: redis.main
+#     cache.default: cache.session
 plugins:
   directory: "./plugins"
   instances:
@@ -55,7 +65,7 @@ bootstrap:
     config_load: 5000
     log_init: 5000
     core_init: 10000
-    data_init: 30000
+    plugin_init: 30000
     net_init: 10000
     script_init: 10000
     service_spawn: 60000
@@ -64,5 +74,5 @@ shutdown:
   timeout:
     service_drain: 30000
     service_stop: 10000
-    data_close: 10000
+    plugin_shutdown: 10000
     total: 60000

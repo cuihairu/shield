@@ -47,11 +47,14 @@ end
 
 ## 数据访问
 
-使用原始 DB / Redis 能力，不把业务模型绑定到 ORM。
+使用插件 namespace 和 binding 逻辑名访问后端能力，不把业务模型绑定到 ORM。
 
 ```lua
-local rows = shield.db.query("SELECT * FROM users WHERE id = ?", { id })
-shield.redis.publish("chat:world", { from = id, text = "hello" })
+local db = shield.database.mysql("database.default")
+local ok, rows = db:query("SELECT * FROM users WHERE id = ?", { id })
+
+local q = shield.queue.redis("queue.events")
+q:publish("chat:world", { from = id, text = "hello" })
 ```
 
 ## 配置

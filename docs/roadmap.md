@@ -20,10 +20,10 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 ## Phase 1: 运行时目录重排
 
-- [x] 保留 `actor`、`net`、`transport`、`script`、`timer`、`data`、`config`、`log`。语义归属：actor 由 `shield_core` 承载，script/timer 由 `shield_lua` + `shield_core` 协作，其余按 target 边界落入对应模块。
+- [x] 保留 `actor`、`net`、`transport`、`script`、`timer`、`config`、`log`。语义归属：actor 由 `shield_core` 承载，script/timer 由 `shield_lua` + `shield_core` 协作，其余按 target 边界落入对应模块。
 - [x] 将当前 `protocol/` 逐文件分类：字节流 framing/codec/encryption 进入 `shield_transport`，客户端 session 相关能力进入 `shield_net`，schema protocol 进入 deferred tooling。`shield/protocol/*` 与 `shield/transport/protocol/*` 残留 header 与对应源文件、测试已在本次清理中删除。
 - [x] 处理 `gateway/`：gateway 收敛为 Lua service pattern；C++ gateway 残留代码与对应测试已删除。
-- [x] 将当前 `database/` 和 `data/` 收敛为一个 raw `shield_data` 模块。
+- [x] 废弃 raw `shield_data` 模块规划；数据库、文档库、缓存、队列和排行榜能力统一收敛到插件系统 v1。
 - [x] 删除或移出 `discovery`、`metrics`、`health`、`di`、`annotations`、`conditions`、`events`、`plugin`。对应源码、headers 与测试已一并清除；`shield_extensions` target 不再存在。
 - [x] 决定物理目录策略：短期保留当前目录，用 CMake target 和 include 边界先收敛；不在 Phase 1 做大规模机械搬迁。
 
@@ -41,9 +41,9 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
   - `shield.sleep` 已实现 handler 协程感知：async handler 中 yield + 由 `_resume_after` 定时器 resume；sync 调用、timer callback 和 fork task 路径走 `_block_sleep` 阻塞降级。LAPI-007-08/09/10 已覆盖。
   - `shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` + `coroutine.yield()` → mailbox → `call_service_method_coroutine` → `resume_caller`），主线程走 `_sync_call` 同步降级。call timeout 已通过 `pump_once` 中的 `check_call_timeouts` 实现。LAPI-005-06 已覆盖。
 - [x] 提供 `shield.log.*`。
-- [x] 提供原始 `shield.db.*` / `shield.redis.*` 的绑定和未启用错误返回。
-- [x] 提供 Lua 层轻量 `shield.db.mapper/register_mapper/entity` helper。当前覆盖显式 SQL 模板、`#{}` 命名参数绑定、`transaction=required`、显式 tx 复用、`${}` 拒绝和基础 entity CRUD SQL 生成；XML schema-mapper parser / descriptor / codegen 仍属 Phase 2+。
-- [x] 补齐 data API 的 mock pool 验收和连接池基础验证。`shield_runtime_data_smoke` 已覆盖显式 mock pool smoke；`tests/lua_api/test_lua_api_data.cpp` 已覆盖 mock pool 下的 DB query/execute/transaction/mapper/entity、Redis get/set/del/subscribe/exists 和 dot-notation 负向测试；`test_data_pool` 已覆盖 pool size、动态扩容、acquire timeout 和非 mock 初始化失败策略。真实 MySQL/Redis 后端连接、数据 worker pool 和连接池压力验证属于 Phase 2+。
+- [x] 删除旧 `shield.db.*` / `shield.redis.*` 全局数据 API，数据访问统一走插件 namespace + binding 逻辑名。
+- [x] 迁移官方数据插件的 Lua callable namespace：`shield.database.*` / `shield.cache.redis` / `shield.queue.redis` / `shield.leaderboard.redis` 均接收 binding 而非 instance_id。
+- [x] Lua 层 mapper/helper 只能作为插件 proxy 上的辅助能力存在；XML schema-mapper parser / descriptor / codegen 仍属 deferred 设计，不进入当前最小 runtime。
 - [x] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 runtime 线程的语义。`shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` → `coroutine.yield()` → `resume_caller`），call timeout 已通过 `check_call_timeouts` 实现。LAPI-005-06 已覆盖协程 timeout 和同步降级两条路径。
 - [x] 删除旧 `shield.service("name")`、冒号式 DB/Redis API 和 legacy `on_message(src, type, data)` 入口。
 
@@ -52,8 +52,8 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 增加 `include/shield/shield.hpp`。
 - [x] 实现顶层 `shield::run(argc, argv)`，包装或替代当前 `shield::bootstrap::run(argc, argv)`。
 - [x] 冻结 CLI 细节：`--config` 默认值/必填、多配置文件、`--node-id` 归属、legacy subcommand 去留、退出码。
-- [x] 明确 `actors`、`network`、`database`、`redis`、`log` 的最小 schema。
-- [x] 实现启动期最小配置验证：optional 配置段未启用即失败、Phase 1 deferred transport 拒绝启动、actor/data 基础字段校验。
+- [x] 明确 `actors`、`network`、`plugins`、`log` 的最小 schema。
+- [x] 实现启动期最小配置验证：optional 配置段未启用即失败、Phase 1 deferred transport 拒绝启动、actor/plugin 基础字段校验。
 - [x] 为 `shield` 可执行文件增加 CLI/config smoke tests。
 - [x] 移除旧 CLI 文档与新入口冲突。
 
@@ -61,10 +61,10 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 - [x] 让 `examples/hello_world/` 接入统一 `shield::run` 入口。
 - [x] 验证 `examples/hello_world/` 可构建启动。构建由 `examples/CMakeLists.txt` 注册；启动验收由 `test_hello_world_acceptance` 在构建产物上检查 `shield::run` 入口、配置文件与 Lua 脚本契约。运行时端到端 smoke 由 `shield_runtime_lua_smoke` / `shield_runtime_registry_smoke` / `shield_runtime_data_smoke` 在 `shield --check-config` 路径上覆盖。
-- [x] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。acceptance test 已覆盖 `echo.lua` 的 sender/send/log/now、`gateway.lua` 的 connect/disconnect/client_message、`player.lua` 的 login/chat/logout/self/exit/db/redis API 模式。
+- [x] 补齐 `examples/hello_world/` 的 Lua 业务消息验收。acceptance test 已覆盖 `echo.lua` 的 sender/send/log/now、`gateway.lua` 的 connect/disconnect/client_message、`player.lua` 的 login/chat/logout/self/exit 和插件 namespace API 模式。
 - [x] 增加最小 Lua API runtime smoke test。
 - [x] 增加本地 registry runtime smoke test。
-- [x] 按 LAPI 矩阵补齐当前 Lua API 绑定测试；当前 `tests/lua_api/` 已启用 lifecycle、timers、registry、messaging、call、context、legacy、config、data、gateway 共 10 个测试可执行文件。data 套件覆盖 mock pool 下 DB/Redis API；gateway 套件覆盖 Lua handler 的 connect/message/disconnect/queue_full/stale_send 模拟；coroutine-aware call/sleep、timer protected callback 和 fork task 均有测试覆盖。
+- [x] 按 LAPI 矩阵补齐当前 Lua API 绑定测试；当前 `tests/lua_api/` 已启用 lifecycle、timers、registry、messaging、call、context、legacy、config、gateway 等测试可执行文件。gateway 套件覆盖 Lua handler 的 connect/message/disconnect/queue_full/stale_send 模拟；coroutine-aware call/sleep、timer protected callback 和 fork task 均有测试覆盖。
 - [x] 按 `docs/lua-api-tests.md` 补齐独立 API 用例，示例不替代测试。
 - [x] 为新 public/core 头增加 CAF 泄漏静态检查。
 - [x] 收敛 legacy public headers 的 CAF 泄漏并纳入检查。
@@ -80,7 +80,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | `shield_log` | 当前 CMake target 已存在 | logger facade 已接入；旧 Boost log config 测试已从当前构建入口移出 |
 | `shield_transport` | 当前 CMake target 已存在 | frame/codec/encryption 在 target 内；旧 protocol handler/schema protocol 测试不属于当前验证路径 |
 | `shield_net` | 当前 CMake target 已存在 | 单实例 TCP listener/session 已接入 bootstrap 的 `actors[].network.tcp`；UDP/WebSocket 仍为 deferred |
-| `shield_data` | 当前 CMake target 已存在 | 插件架构：核心提供 DatabaseConnection 接口 + DatabasePool 连接池 + MockDatabaseConnection；MySQL/PostgreSQL/SQLite 后端通过 `shield_db_*.dll` 插件动态加载（C ABI `db_plugin.h`）；Redis 通过 redis++ 直连（真实连接优先，mock 降级） |
+| `shield_plugin` | 当前 CMake target 已存在 | 插件系统 v1 已接入 manifest、instance、binding、C ABI、Lua register_lua 和官方数据插件；不存在 `shield_data` target |
 | `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout 已实现；timer callback 已通过 pcall 包裹执行；fork callback raw_fn 已存储；on_error/on_panic/on_exit guard 已实现；gateway handler 测试使用 table 模拟，真实 Session userdata 封装仍待补齐 |
 | `shield_bootstrap` | 当前 CMake target 已存在 | `shield::run` 和 CLI/config smoke tests 已登记在主 CMake |
 | optional modules | CMake 开关存在，默认关闭 | `shield_cluster` 已有静态 peers、节点状态快照和 route cache 查询骨架；跨节点 transport/route 学习仍未实现。`shield_global/ops` 仍未进入实现完成范围 |

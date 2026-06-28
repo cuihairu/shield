@@ -3,7 +3,7 @@
 // Implements the v1 ABI (shield_plugin_get_v1) on top of mongo-cxx-driver.
 // The plugin owns its own mongocxx::pool — one per instance — sized by the
 // `pool_size` config knob. Lua callers reach the pool via the callable
-// namespace `shield.database.mongodb(instance_id)`.
+// namespace `shield.database.mongodb(binding)`.
 //
 // JSON over the C ABI: every filter / doc / update / pipeline is a UTF-8
 // JSON string. We parse it to nlohmann::json first for tolerant validation,
@@ -13,6 +13,7 @@
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/document.h"
+#include "shield/plugin/host_api.h"
 
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
@@ -68,6 +69,8 @@ void ensure_mongo_instance() {
 struct mongo_instance {
     shield_plugin_instance_v1 shell;
     std::string instance_id;
+    const shield_host_api_v1* host_api = nullptr;
+    shield_plugin_context_v1* ctx = nullptr;
     std::string uri_string;       // e.g. "mongodb://localhost:27017"
     std::string database_name;    // logical db; may be empty (use URI default)
     int connect_timeout_ms = 5000;
@@ -794,7 +797,7 @@ const shield_document_v1& doc_vtable() {
 // ---------------------------------------------------------------------------
 // Lua bindings.
 //
-// The proxy returned by shield.database.mongodb(instance_id) exposes the
+// The proxy returned by shield.database.mongodb(binding) exposes the
 // full document surface. All methods return (ok, result|err) pairs to match
 // the SQL plugin convention.
 //
@@ -1715,13 +1718,22 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
     return proxy;
 }
 
-int register_lua_impl(shield_plugin_instance_v1* /*self*/,
+int register_lua_impl(shield_plugin_instance_v1* self,
                       struct lua_State* L,
                       shield_error_v1* err) {
     if (!L) {
         if (err) {
             err->code = "plugin.lua_register.failed";
             err->message = "database.mongodb: lua_State is null";
+        }
+        return 1;
+    }
+    auto* current = reinterpret_cast<mongo_instance*>(self);
+    if (!current || !current->host_api ||
+        !current->host_api->binding_instance_id) {
+        if (err) {
+            err->code = "plugin.lua_register.failed";
+            err->message = "database.mongodb: host binding resolver is null";
         }
         return 1;
     }
@@ -1734,10 +1746,15 @@ int register_lua_impl(shield_plugin_instance_v1* /*self*/,
     if (!existing.is<sol::table>()) {
         auto ns = lua.create_table();
         auto mt = lua.create_table();
+        const shield_host_api_v1* host_api = current->host_api;
+        shield_plugin_context_v1* ctx = current->ctx;
         mt.set_function("__call",
-            [](sol::this_state s, sol::table /*self*/,
-               std::string instance_id) -> sol::object {
+            [host_api, ctx](sol::this_state s, sol::table /*self*/,
+               std::string binding) -> sol::object {
                 sol::state_view lua(s);
+                const char* instance_id =
+                    host_api->binding_instance_id(ctx, binding.c_str());
+                if (!instance_id) return sol::nil;
                 auto* inst = find_instance(instance_id);
                 if (!inst) return sol::nil;
                 return sol::make_object(lua, make_instance_proxy(lua, inst));
@@ -1760,6 +1777,8 @@ int mongo_create(const shield_plugin_create_args_v1* args,
 
     auto* inst = new mongo_instance;
     inst->instance_id = args->instance_id ? args->instance_id : "";
+    inst->host_api = args->host_api;
+    inst->ctx = args->ctx;
     parse_instance_config(inst, args->config_json);
     if (inst->uri_string.empty()) {
         inst->uri_string = "mongodb://localhost:27017";

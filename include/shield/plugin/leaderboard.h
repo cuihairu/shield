@@ -63,9 +63,8 @@ struct shield_leaderboard_connect_args {
 };
 
 struct shield_leaderboard_v1 {
-    static constexpr const char* interface_name = SHIELD_LEADERBOARD_INTERFACE;
-
     uint32_t struct_size;
+    const char* interface_name;  // "shield.leaderboard.v1"
     const char* name;
     const char* version;
 

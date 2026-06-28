@@ -617,7 +617,7 @@ C 侧实现：`register_lua` 创建 `shield.database.mongodb` 这个 table，met
 5. 缺失/未配置 binding → `nil, { code = "module_unavailable" }`（软失败，不 panic）。
 6. 诊断/调试可直接指定 instance_id，但只能经专门诊断入口，非常规业务路径。
 
-> **实现要求**：插件 `register_lua` 创建的 callable table，其 `__call` **必须接收 binding 逻辑名并经 PluginHost 解析到 instance，不得直接用 instance_id 查插件内部表**。当前 mysql / cache.redis 等数据插件的 `__call` 仍按 instance_id 查内部 registry（`find_instance(instance_id)`），属于待修正的实现偏差，与本文设计不符。
+> **实现要求**：插件 `register_lua` 创建的 callable table，其 `__call` **必须接收 binding 逻辑名并经 PluginHost 解析到 instance，不得直接用 instance_id 查插件内部表**。当前 mysql / postgresql / sqlite / mongodb / cache.redis / queue.redis / leaderboard.redis 已按此规则接入；后续新增插件也必须遵守。
 
 ### Lua 文件位置
 
@@ -650,10 +650,11 @@ int my_register_lua(shield_plugin_instance_v1* self,
 
     // callable table: mongo(id) -> proxy
     mongodb.set_function(sol::call,
-        [](std::string instance_id) -> sol::table {
-            // 查 host 拿到该实例的 shield_document_v1* + shield_doc_conn*
+        [](std::string binding) -> sol::table {
+            // 查 host 将 binding 解析为 instance，再取得 shield_document_v1*
+            // + shield_doc_conn*
             // 构造 proxy table，注册 find/insert_one/... 方法
-            return make_proxy(instance_id);
+            return make_proxy(binding);
         });
 
     return 0;

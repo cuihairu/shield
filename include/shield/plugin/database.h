@@ -59,9 +59,8 @@ struct shield_db_result {
 
 // Database provider vtable. Pointers are REQUIRED (non-NULL).
 struct shield_database_v1 {
-    static constexpr const char* interface_name = SHIELD_DATABASE_INTERFACE;
-
     uint32_t    struct_size;    // == sizeof(shield_database_v1)
+    const char* interface_name; // "shield.database.v1"
     const char* name;           // "sqlite" | "mysql" | "postgresql" | ...
     const char* version;        // human-readable plugin version
 

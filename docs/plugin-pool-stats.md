@@ -192,6 +192,6 @@ bool PluginHost::collect_pool_stats(std::vector<PoolStatsResult>& out);
 
 ## 参考
 
-- [数据访问架构](runtime-data.md) —— shield_data 现状与插件数据架构总览。
+- [数据访问架构](runtime-data.md) —— 插件化数据访问架构总览。
 - [插件系统 v1](plugin-system.md) —— 插件 ABI、instance、get_interface 机制。
 - Envoy [Connection Pooling](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/connection_pooling) —— per-protocol 池抽象的工业参考。

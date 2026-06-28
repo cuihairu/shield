@@ -298,7 +298,7 @@ host 启动时会 `dlopen` / `LoadLibrary` 加载插件 shared library；sqlite3
 ## 相关链接
 
 - [插件系统](/plugin-system) — Shield 插件 v1 设计、ABI 契约、bootstrap pipeline
-- [Shield 数据语义](/runtime-data) — `shield.db.*` Lua API、连接池配置、事务规则
+- [Shield 数据语义](/runtime-data) — 插件 namespace、binding、连接池归属和事务规则
 - [SQLite 官方文档](https://www.sqlite.org/docs.html)
 - [SQLite WAL 模式](https://www.sqlite.org/wal.html)
 - [SQLite URI 语法](https://www.sqlite.org/uri.html)

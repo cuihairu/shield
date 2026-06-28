@@ -16,7 +16,10 @@ provides:
   - interface: shield.queue.v1
     capabilities:
       - pubsub
-requires: []
+requires:
+  - name: redis
+    interface: shield.redis.v1
+    optional: true
 lua:
   namespace: queue.redis
   search_paths: []

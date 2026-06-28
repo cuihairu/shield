@@ -41,10 +41,13 @@ endif()
 
 # --- Redis-backed infrastructure plugins ---
 #
-# v1 deliberately does NOT expose "redis" as a public plugin interface
-# (see docs/plugin-system.md). Each of cache/queue/leaderboard connects to
-# Redis independently via redis++; they share data through Redis itself,
-# not through a shared plugin dependency.
+# redis.driver is the unified Redis driver that owns the redis++ connection
+# pool and exposes shield.redis.v1. Other Redis plugins (cache, queue,
+# leaderboard) depend on it instead of connecting to Redis independently.
+
+if(SHIELD_BUILD_PLUGIN_REDIS_DRIVER)
+    add_subdirectory(redis.driver)
+endif()
 
 if(SHIELD_BUILD_PLUGIN_CACHE_REDIS)
     add_subdirectory(cache.redis)
