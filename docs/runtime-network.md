@@ -2,7 +2,7 @@
 
 本文档包含 Shield 网络、transport 和 gateway 相关的运行时语义决策。
 
-当前 Phase 1 只冻结 TCP session、gateway handler 桥接、`SessionHandle` 目标语义和 basic transport framing。
+当前 Phase 1 只冻结 TCP session、gateway handler 桥接、`SessionHandle` 目标语义和 basic transport framing/protocol pipeline。
 UDP、KCP、WebSocket 是目标能力和后续扩展方向，不作为 Phase 1 最小验收阻塞项。
 HTTP 业务 gateway 不进入 core；HTTP 管理端点只在 `shield_ops` 显式启用时存在。
 
@@ -26,7 +26,7 @@ Shield 有两层网络：
 - 监听客户端连接（Phase 1: TCP）
 - 管理连接生命周期（accept、close、reconnect）
 - 管理 Session 对象
-- 调用 gateway 回调（on_connect、on_disconnect、on_client_message）
+- 调用 gateway 回调（on_connect、on_disconnect、on_client_message / on_client_packet）
 
 **shield_transport 职责：**
 - 字节流解帧（framing）
@@ -39,7 +39,7 @@ Shield 有两层网络：
 **职责边界：**
 - shield_net 不关心协议细节，只管理连接和 session
 - shield_transport 不关心连接管理，只处理字节流
-- gateway 收到的是已解码的消息，不直接操作字节流
+- gateway 收到的是 transport 切出的 body 字节串；启用 `network.protocol` 时还会收到 packet 路由元数据。body 是否已解码由 `BodyCodec` 和 lazy decode 策略决定。
 
 ## 传输协议支持
 
@@ -93,6 +93,8 @@ end
 
 `shield_net` 管理 listener、connection、session。配置了 `actors[].network.tcp` 的单实例 Lua service 会在 bootstrap 中启动 TCP listener，并将 session 事件转发到同名 service 的 gateway 回调；Phase 1 拒绝 `network.tcp` 与 `instances != 1` 的组合。
 
+如果未配置 `actors[].network.protocol`，TCP session 使用 legacy frame path 并调用 `on_client_message(session, payload)`。如果配置了 `network.protocol`，TCP session 使用 `ProtocolPipeline`，调用 `on_client_packet(session, packet, payload)`。
+
 业务 gateway 是 Lua service：
 
 ```lua
@@ -105,6 +107,9 @@ function M.on_disconnect(session, reason)
 end
 
 function M.on_client_message(session, payload)
+end
+
+function M.on_client_packet(session, packet, payload)
 end
 
 return M

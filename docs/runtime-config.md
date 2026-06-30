@@ -186,7 +186,38 @@
 | `restart` | 否 | 服务异常退出后的重启策略 |
 | `limits` | 否 | 单 service 资源限制 |
 
-`actors[].network` 只声明该 service 是 gateway service。网络回调仍由 Lua module 上的 `on_connect`、`on_disconnect`、`on_client_message` 实现。Phase 1 的 `network.tcp` 只支持 `instances: 1`，避免 listener 事件没有确定接收者。
+`actors[].network` 只声明该 service 是 gateway service。网络回调由 Lua module 上的 `on_connect`、`on_disconnect`、`on_client_message` 或 `on_client_packet` 实现。Phase 1 的 `network.tcp` 只支持 `instances: 1`，避免 listener 事件没有确定接收者。
+
+`actors[].network.protocol` 是当前网关协议配置入口。未配置时使用 legacy frame path，并调用 `on_client_message(session, payload)`；配置后使用 `ProtocolPipeline`，并调用 `on_client_packet(session, packet, payload)`。
+
+```yaml
+actors:
+  - name: gateway
+    script: scripts/gateway.lua
+    instances: 1
+    network:
+      tcp: "0.0.0.0:8001"
+      protocol:
+        name: json.simple
+        envelope:
+          type: lenprefix
+          length_bytes: 4
+          endian: big
+          max_frame_size: 65536
+        body:
+          codec: json
+        routing:
+          source: body.route
+          decode_body_route: true
+          decode_before_dispatch: false
+          unknown_route_action: drop
+        routes:
+          - id: 1001
+            name: login
+            target_service: 1
+            action: decode
+            lazy_decode: false
+```
 
 `actors[].script` 可以是绝对路径，也可以是相对路径。相对路径解析规则：
 

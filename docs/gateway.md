@@ -5,7 +5,7 @@
 ## 目标
 
 - `net` 负责连接监听、session 管理和原始收发。
-- `transport` 负责可选解帧、解密、私有协议适配。
+- `transport` 负责可选解帧、路由元数据提取和私有协议适配。
 - Lua gateway 服务负责登录、会话绑定、消息路由和业务策略。
 - 鉴权、限流、踢线、心跳等逻辑优先放在 Lua gateway 中。
 
@@ -27,16 +27,22 @@ end
 function M.on_client_message(session, payload)
 end
 
+-- 仅在 actors[].network.protocol 启用时调用。
+function M.on_client_packet(session, packet, payload)
+end
+
 return M
 ```
+
+`on_client_message` 是 legacy frame path。`on_client_packet` 是 protocol path，`packet` 是普通 Lua table，包含 `route_id`、`kind`、`flags`、`seq`、`action`、`target_service`、`codec_id`、`schema_id`、`route` 等路由元数据；`payload` 是 envelope 切出的 body 字节串。
 
 ## 消息流
 
 ```
 client socket
   → net
-  → optional transport
-  → Lua gateway service (`on_client_message`)
+  → optional transport protocol
+  → Lua gateway service (`on_client_message` 或 `on_client_packet`)
   → shield.send / shield.call
   → Lua business service
 ```
