@@ -95,6 +95,22 @@ BOOST_AUTO_TEST_CASE(RouteTableMapsIntegerRouteToForwardPolicy) {
     BOOST_CHECK(found->policy.lazy_decode);
 }
 
+BOOST_AUTO_TEST_CASE(RouteTableRejectsDuplicateRouteNameOnAdd) {
+    RouteTable routes;
+    BOOST_REQUIRE(routes.add(RouteEntry{
+        .route_id = 1,
+        .debug_name = "login",
+    }));
+
+    BOOST_CHECK(!routes.add(RouteEntry{
+        .route_id = 2,
+        .debug_name = "login",
+    }));
+    BOOST_CHECK_EQUAL(routes.size(), 1u);
+    BOOST_REQUIRE(routes.find_by_name("login") != nullptr);
+    BOOST_CHECK_EQUAL(routes.find_by_name("login")->route_id, 1u);
+}
+
 BOOST_AUTO_TEST_CASE(HeaderRoutedPacketCanBeForwardedWithoutBodyDecode) {
     EnvelopeConfig config;
     config.endian = Endian::Little;

@@ -663,6 +663,20 @@ add_test(NAME shield_config_invalid_network_instances_rejected
         -DEXPECTED_OUTPUT_REGEX=instances
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
+add_test(NAME shield_config_invalid_network_protocol_type_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/invalid-network-protocol-type.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=network.protocol.envelope.type
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_duplicate_protocol_route_names_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/duplicate-protocol-route-names.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=duplicate name
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
 add_test(NAME shield_config_missing_actor_script_rejected
     COMMAND ${CMAKE_COMMAND}
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/missing-actor-script.yaml"

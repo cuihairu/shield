@@ -211,6 +211,287 @@ bool validate_int_range(const YAML::Node& node, const char* key,
                         const char* path, int min_value, int max_value,
                         std::string* error);
 
+bool validate_protocol_string_enum(const YAML::Node& node, const char* key,
+                                   const std::string& path,
+                                   std::initializer_list<const char*> allowed,
+                                   std::string* error) {
+    if (!node || !node[key]) {
+        return true;
+    }
+
+    try {
+        const auto value = node[key].as<std::string>();
+        for (const auto* option : allowed) {
+            if (value == option) {
+                return true;
+            }
+        }
+        if (error) {
+            *error = path + "." + key + " has an unsupported value";
+        }
+        return false;
+    } catch (const std::exception&) {
+        if (error) {
+            *error = path + "." + key + " must be a string";
+        }
+        return false;
+    }
+}
+
+bool validate_protocol_route_action(const YAML::Node& node, const char* key,
+                                    const std::string& path,
+                                    std::string* error) {
+    return validate_protocol_string_enum(
+        node, key, path,
+        {"decode", "decode_local", "forward", "forward_raw", "drop"}, error);
+}
+
+bool validate_protocol_envelope(const YAML::Node& envelope,
+                                const std::string& path, std::string* error) {
+    if (!envelope) {
+        return true;
+    }
+    if (!envelope.IsMap()) {
+        if (error) {
+            *error = path + ".envelope must be a map";
+        }
+        return false;
+    }
+
+    if (!validate_protocol_string_enum(
+            envelope, "type", path + ".envelope",
+            {"lenprefix", "len-prefix", "len_prefix", "idlen", "id-len",
+             "id_len", "typed_len", "type_len", "typed-len", "typelen",
+             "delimiter", "line"},
+            error) ||
+        !validate_protocol_string_enum(envelope, "endian", path + ".envelope",
+                                       {"big", "be", "little", "le"}, error) ||
+        !validate_int_range(envelope, "length_bytes",
+                            (path + ".envelope").c_str(), 0, 255, error) ||
+        !validate_int_range(envelope, "route_id_bytes",
+                            (path + ".envelope").c_str(), 0, 255, error) ||
+        !validate_int_range(envelope, "max_frame_size",
+                            (path + ".envelope").c_str(), 0,
+                            16 * 1024 * 1024, error)) {
+        return false;
+    }
+
+    if (envelope["length_includes_header"]) {
+        try {
+            (void)envelope["length_includes_header"].as<bool>();
+        } catch (const std::exception&) {
+            if (error) {
+                *error = path + ".envelope.length_includes_header must be a bool";
+            }
+            return false;
+        }
+    }
+
+    if (envelope["delimiter"]) {
+        try {
+            const auto delimiter = envelope["delimiter"].as<std::string>();
+            if (delimiter.empty()) {
+                if (error) {
+                    *error = path + ".envelope.delimiter must not be empty";
+                }
+                return false;
+            }
+        } catch (const std::exception&) {
+            if (error) {
+                *error = path + ".envelope.delimiter must be a string";
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool validate_protocol_routing(const YAML::Node& routing,
+                               const std::string& path, std::string* error) {
+    if (!routing) {
+        return true;
+    }
+    if (!routing.IsMap()) {
+        if (error) {
+            *error = path + ".routing must be a map";
+        }
+        return false;
+    }
+
+    if (!validate_protocol_string_enum(
+            routing, "source", path + ".routing",
+            {"header", "header.route_id", "header.msg_id", "body",
+             "body.route", "body.route_id", "none"},
+            error) ||
+        !validate_protocol_route_action(routing, "unknown_route_action",
+                                        path + ".routing", error) ||
+        !validate_protocol_route_action(routing, "default_action",
+                                        path + ".routing", error)) {
+        return false;
+    }
+
+    for (const char* key : {"decode_body_route", "decode_before_dispatch",
+                            "lazy_decode"}) {
+        if (!routing[key]) {
+            continue;
+        }
+        try {
+            (void)routing[key].as<bool>();
+        } catch (const std::exception&) {
+            if (error) {
+                *error = path + ".routing." + key + " must be a bool";
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool validate_protocol_routes(const YAML::Node& routes, const std::string& path,
+                              std::string* error) {
+    if (!routes) {
+        return true;
+    }
+    if (!routes.IsSequence()) {
+        if (error) {
+            *error = path + ".routes must be an array";
+        }
+        return false;
+    }
+
+    std::unordered_set<std::uint32_t> ids;
+    std::unordered_set<std::string> names;
+    for (std::size_t i = 0; i < routes.size(); ++i) {
+        const auto route = routes[i];
+        const auto item_path = path + ".routes[" + std::to_string(i) + "]";
+        if (!route.IsMap()) {
+            if (error) {
+                *error = item_path + " must be a map";
+            }
+            return false;
+        }
+
+        int route_id = 0;
+        try {
+            route_id = route["id"].as<int>();
+        } catch (const std::exception&) {
+            if (error) {
+                *error = item_path + ".id is required and must be an integer";
+            }
+            return false;
+        }
+        if (route_id <= 0) {
+            if (error) {
+                *error = item_path + ".id must be >= 1";
+            }
+            return false;
+        }
+        if (!ids.insert(static_cast<std::uint32_t>(route_id)).second) {
+            if (error) {
+                *error = path + ".routes contains duplicate id";
+            }
+            return false;
+        }
+
+        if (!validate_int_range(route, "target_service", item_path.c_str(), 0,
+                                std::numeric_limits<int>::max(), error) ||
+            !validate_int_range(route, "codec_id", item_path.c_str(), 0, 65535,
+                                error) ||
+            !validate_int_range(route, "schema_id", item_path.c_str(), 0, 65535,
+                                error) ||
+            !validate_protocol_route_action(route, "action", item_path, error)) {
+            return false;
+        }
+
+        if (route["lazy_decode"]) {
+            try {
+                (void)route["lazy_decode"].as<bool>();
+            } catch (const std::exception&) {
+                if (error) {
+                    *error = item_path + ".lazy_decode must be a bool";
+                }
+                return false;
+            }
+        }
+
+        if (route["name"]) {
+            try {
+                const auto name = route["name"].as<std::string>();
+                if (!name.empty() && !names.insert(name).second) {
+                    if (error) {
+                        *error = path + ".routes contains duplicate name";
+                    }
+                    return false;
+                }
+            } catch (const std::exception&) {
+                if (error) {
+                    *error = item_path + ".name must be a string";
+                }
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool validate_network_protocol(const YAML::Node& protocol,
+                               const std::string& path, std::string* error) {
+    if (!protocol) {
+        return true;
+    }
+    if (!protocol.IsMap()) {
+        if (error) {
+            *error = path + " must be a map";
+        }
+        return false;
+    }
+
+    if (protocol["name"]) {
+        try {
+            (void)protocol["name"].as<std::string>();
+        } catch (const std::exception&) {
+            if (error) {
+                *error = path + ".name must be a string";
+            }
+            return false;
+        }
+    }
+
+    if (protocol["body"]) {
+        const auto body = protocol["body"];
+        if (!body.IsMap()) {
+            if (error) {
+                *error = path + ".body must be a map";
+            }
+            return false;
+        }
+        if (!validate_protocol_string_enum(
+                body, "codec", path + ".body",
+                {"raw", "json", "msgpack", "protobuf", "fbs",
+                 "flatbuffers", "sproto", "xmldef", "xml_def"},
+                error)) {
+            return false;
+        }
+        if (body["catalog"]) {
+            try {
+                (void)body["catalog"].as<std::string>();
+            } catch (const std::exception&) {
+                if (error) {
+                    *error = path + ".body.catalog must be a string";
+                }
+                return false;
+            }
+        }
+    }
+
+    return validate_protocol_envelope(protocol["envelope"], path, error) &&
+           validate_protocol_routing(protocol["routing"], path, error) &&
+           validate_protocol_routes(protocol["routes"], path, error);
+}
+
 bool validate_listener_address(const YAML::Node& node, const char* key,
                                const std::string& actor_name,
                                std::string* error) {
@@ -740,6 +1021,12 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                         *error = "actors[" + name +
                                  "].network.protocol must be a map";
                     }
+                    return false;
+                }
+                if (network["protocol"] &&
+                    !validate_network_protocol(
+                        network["protocol"],
+                        "actors[" + name + "].network.protocol", error)) {
                     return false;
                 }
                 if (network["tcp"] && actor_instances != 1) {

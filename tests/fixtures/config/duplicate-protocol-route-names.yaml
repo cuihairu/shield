@@ -1,0 +1,28 @@
+app:
+  name: duplicate_protocol_route_names
+
+actors:
+  - name: lifecycle_gateway
+    script: tests/lua_api/scripts/lifecycle_service.lua
+    instances: 1
+    required: true
+    network:
+      tcp: "127.0.0.1:65534"
+      protocol:
+        envelope:
+          type: lenprefix
+        body:
+          codec: json
+        routing:
+          source: body.route
+        routes:
+          - id: 1001
+            name: login
+          - id: 1002
+            name: login
+
+database:
+  enabled: false
+
+redis:
+  enabled: false
