@@ -45,7 +45,7 @@ public:
 
     /// @brief True when the underlying acceptor was opened, bound and
     /// listening.
-    bool is_open() const { return acceptor_.is_open(); }
+    bool is_open() const { return listening_; }
 
     /// @brief Get number of active sessions
     size_t session_count() const {
@@ -82,6 +82,7 @@ private:
     size_t max_frame_size_ = 0;   // 0 = unlimited
     std::unordered_map<std::string, size_t> ip_counts_;
     std::string last_rejection_;
+    bool listening_ = false;
 
     static std::atomic<SessionId> g_next_session_id;
 };

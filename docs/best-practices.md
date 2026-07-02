@@ -54,7 +54,7 @@ local db = shield.database.mysql("database.default")
 local ok, rows = db:query("SELECT * FROM users WHERE id = ?", { id })
 
 local q = shield.queue.redis("queue.events")
-q:publish("chat:world", { from = id, text = "hello" })
+q:publish("chat.world", { from = id, text = "hello" })
 ```
 
 ## 配置

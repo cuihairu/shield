@@ -66,13 +66,13 @@
 | `timer_limit` | 单个 service timer 数超限 | 10000 | ✅ timer_once/timer 返回 nil+error |
 | `fork_limit` | 单个 service fork task 数超限 | 1000 | ✅ fork 返回 nil+error |
 
-## 三、数据库插件错误
+## 三、数据插件错误
 
-`shield.database.*` / `shield.database.mongodb` 等插件 namespace 产生的错误。
+数据插件 namespace（如 `shield.database.mysql(...)`、`shield.database.mongodb(...)`）产生的错误。连接池和驱动归插件 instance 自治。
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|
-| `module_unavailable` | 对应数据库插件或 binding 未启用 | 否 | ✅ |
+| `module_unavailable` | 对应插件、binding 或 instance 不可用 | 否 | ✅ |
 | `database_error` | 未分类的数据库执行失败 | 视具体驱动 | ✅ (代码中使用 `database_error`) |
 | `db_query_failed` | 未分类的数据库执行失败 | 视具体驱动 | ✅ DB query/execute 返回 |
 | `connection_lost` | 数据库连接丢失 | 是 | ✅ MySQL error msg 映射 |
@@ -87,13 +87,13 @@
 | `mapper_invalid_statement` | Lua mapper statement 类型不支持 | 否 | ✅ Lua mapper guard |
 | `entity_invalid_row` | Lua entity helper 缺少可写字段 | 否 | ✅ Lua entity guard |
 
-## 四、Redis 系插件错误
+## 四、缓存 / 队列 / Redis provider 错误
 
-`shield.cache.redis` / `shield.queue.redis` / `shield.leaderboard.redis` / `shield.global()` 等 Redis 相关 API 产生的错误。
+Redis 系插件 namespace（如 `shield.cache.redis(...)`、`shield.queue.redis(...)`、`shield.leaderboard.redis(...)`）或依赖 Redis 的 optional module 产生的错误。
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|
-| `module_unavailable` | 对应 Redis 系插件或 binding 未启用 | 否 | ✅ |
+| `module_unavailable` | 对应插件、binding 或 instance 不可用 | 否 | ✅ |
 | `redis_error` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ (代码中使用 `redis_error`) |
 | `redis_command_failed` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ Redis 操作返回 |
 | `connection_lost` | Redis 连接丢失 | 是 | ✅ redis++ ClosedError/IoError 映射 |

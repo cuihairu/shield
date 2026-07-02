@@ -139,16 +139,28 @@ end
 
 ```yaml
 # 不推荐：明文密码
-database:
-  password: "my_password"
+plugins:
+  instances:
+    - id: db.main
+      package: database.mysql
+      config:
+        password: "my_password"
 
 # 推荐：环境变量
-database:
-  password: ${DB_PASSWORD}
+plugins:
+  instances:
+    - id: db.main
+      package: database.mysql
+      config:
+        password: ${DB_PASSWORD}
 
 # 推荐：密钥管理服务
-database:
-  password_secret: "vault://secret/data/database"
+plugins:
+  instances:
+    - id: db.main
+      package: database.mysql
+      config:
+        password_secret: "vault://secret/data/database"
 ```
 
 ### 日志中的敏感数据

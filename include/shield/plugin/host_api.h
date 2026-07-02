@@ -81,12 +81,13 @@ struct shield_host_api_v1 {
                         const char* path,
                         int is_cpath);
 
-    // Resolve a configured plugins.bindings logical name to its target
-    // instance id. Lua-facing plugin namespaces must accept binding names
-    // rather than deployment instance ids. Returns a host-owned string valid
-    // for the process lifetime, or NULL if the binding is not configured.
+    // Resolve a logical name from plugins.bindings to the target instance id.
+    // Plugins use this for Lua callable namespaces so business code passes
+    // binding names (e.g. "database.default") instead of deployment instance
+    // ids (e.g. "db.main"). Returns a host-owned string valid until the next
+    // binding_instance_id call on the same thread, or NULL if absent.
     const char* (*binding_instance_id)(struct shield_plugin_context_v1* ctx,
-                                       const char* binding_name);
+                                       const char* binding);
 };
 
 #ifdef __cplusplus

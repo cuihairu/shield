@@ -3,7 +3,7 @@
 -- 演示新版插件自治 Lua API：
 --   shield.database.<driver>(binding) 返回绑定到该逻辑名的 proxy
 --   shield.cache.redis(binding)       同理
--- binding 由 app.yaml 的 plugins.bindings 声明；未声明时 proxy 为 nil。
+-- binding 由 app.yaml 的 plugins.bindings 声明；未声明时返回 nil, err。
 
 local M = {}
 
@@ -13,13 +13,13 @@ local M = {}
 --     instances:
 --       - { id: "db.main",    package: "database.sqlite", required: true,
 --           config: { database: "data/game.db" } }
---       - { id: "cache.chat", package: "cache.redis",     required: true,
+--       - { id: "cache.main", package: "cache.redis",     required: true,
 --           config: { host: "127.0.0.1", port: 6379 } }
 --     bindings:
 --       database.default: "db.main"
---       cache.chat: "cache.chat"
--- 未配置时 shield.database.sqlite / shield.cache.redis 返回 nil，业务自行降级。
-local DB    = shield.database.sqlite("database.default")
+--       cache.chat: "cache.main"
+-- 未配置时 shield.database.sqlite / shield.cache.redis 返回 nil, err，业务自行降级。
+local DB = shield.database.sqlite("database.default")
 local Cache = shield.cache.redis("cache.chat")
 
 function M.on_init(args)

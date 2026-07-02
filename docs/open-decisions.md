@@ -77,7 +77,8 @@
 决策：
 
 - 数据访问不进入 `shield_core`，也不再通过独立 `shield_data` 模块暴露。
-- SQL、文档库、缓存、队列和排行榜能力统一由插件系统 v1 提供。
+- Phase 1 当前契约是插件系统 v1：manifest scan、显式 instance、显式 binding、C ABI interface 和插件自注册 Lua namespace。
+- SQL、文档库、缓存、队列和排行榜能力分别由 provider 插件提供。
 - 业务 Lua 使用插件 namespace + binding 逻辑名，例如 `shield.database.mysql("database.default")`。
 - `shield.db.*` / `shield.redis.*` 是 legacy API，已删除且不提供 public compatibility shim。
 - prepared statement、pipeline、eval、sentinel/cluster 等能力由具体插件或后续插件接口独立演进，不反向扩大 core API。
@@ -113,10 +114,10 @@
 决策：
 
 - persistence adapter 是 `shield_player` 拥有的轻量契约，不属于 `shield_data`。
-- adapter 底层必须通过插件 namespace + binding 逻辑名访问数据能力，不重新定义 SQL/Redis 语义。
+- adapter 底层必须通过插件 namespace + binding 逻辑名访问数据能力，不重新定义 SQL/Redis/文档库语义。
 - adapter 不拥有连接池；连接池归属对应插件 instance。
 - adapter 不引入 ORM、mapper、schema 工具链；只接受可 LuaPack 编码的 table 白名单字段。
-- adapter 失败复用数据插件错误码；player 域只新增 `persistence_save_failed` 等明确属于本模块的错误。
+- adapter 失败复用对应数据插件错误码；player 域只新增 `persistence_save_failed` 等明确属于本模块的错误。
 - 未配置 persistence 时，`on_save` 默认实现为 no-op。
 
 ### OD-010 Player Cross-Service Reference

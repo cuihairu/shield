@@ -6,7 +6,7 @@
 
 本文档包含 Shield 跨进程共享数据、分布式锁、排行榜、消息队列等全局能力的运行时语义决策。
 
-`shield_global` 是官方可选模块，不属于 `shield_core`，也不是最小运行路径。最小部署路径只要求 `shield_data` 提供原始 DB / Redis 能力；本模块在此基础上封装常见游戏全局能力。optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
+`shield_global` 是官方可选模块，不属于 `shield_core`，也不是最小运行路径。最小部署路径通过数据插件 namespace 直接使用后端能力；本模块在显式配置的数据插件 binding 之上封装常见游戏全局能力。optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 
 ## 设计原则
 
@@ -174,7 +174,7 @@ end)
 │  │ 限流器   │ │   Sub    │                              │
 │  └──────────┘ └──────────┘                              │
 ├─────────────────────────────────────────────────────────┤
-│                  shield_data (Redis)                     │
+│          数据插件 binding（cache/queue/leaderboard）      │
 └─────────────────────────────────────────────────────────┘
 ```
 

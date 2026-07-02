@@ -43,10 +43,12 @@ RUN cmake -B build \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+    -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     -DSHIELD_GIT_COMMIT_HASH="${SHIELD_GIT_COMMIT_HASH}" \
     -DSHIELD_BUILD_TESTS=OFF \
     -DSHIELD_BUILD_EXAMPLES=OFF \
-    && cmake --build build --config Release
+    && cmake --build build --config Release \
+    && ./build/bin/shield --check-config --config config/app.yaml
 
 # === Runtime Stage ===
 FROM ubuntu:26.04
@@ -73,4 +75,4 @@ USER shield
 EXPOSE 8080 8081 8082 8083
 
 ENTRYPOINT ["/app/shield"]
-CMD ["server", "--config", "/app/config/app.yaml"]
+CMD ["--config", "/app/config/app.yaml"]

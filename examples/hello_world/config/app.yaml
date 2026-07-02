@@ -36,22 +36,24 @@ actors:
   #   config:
   #     damage_multiplier: 1.5
 
-# 插件系统 v1。Lua 业务代码使用 binding 逻辑名访问后端能力；
-# 例如 shield.database.sqlite("database.default")。
-plugins:
-  directory: "./plugins"
-  instances:
-    - id: "db.main"
-      package: "database.sqlite"
-      required: false
-      config:
-        database: ":memory:"
-    - id: "cache.chat"
-      package: "cache.redis"
-      required: false
-      config:
-        host: "127.0.0.1"
-        port: 6379
-  bindings:
-    database.default: "db.main"
-    cache.chat: "cache.chat"
+# 后端能力通过插件系统 v1 显式启用。
+# Lua 业务代码使用 binding 逻辑名访问后端能力，例如
+# shield.database.sqlite("database.default")。
+# hello_world 默认不依赖外部 DB/Redis；需要时取消注释并提供对应插件包。
+# plugins:
+#   directory: "../../plugins"
+#   instances:
+#     - id: "db.main"
+#       package: "database.sqlite"
+#       required: false
+#       config:
+#         database: "data/game.db"
+#     - id: "cache.main"
+#       package: "cache.redis"
+#       required: false
+#       config:
+#         host: "127.0.0.1"
+#         port: 6379
+#   bindings:
+#     database.default: "db.main"
+#     cache.chat: "cache.main"

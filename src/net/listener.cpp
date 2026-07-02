@@ -50,13 +50,21 @@ TcpListener::TcpListener(boost::asio::io_context& io_context, uint16_t port,
         SHIELD_LOG_ERROR(log, "Failed to listen: " + ec.message());
         return;
     }
+
+    listening_ = true;
 }
 
-void TcpListener::start() { do_accept(); }
+void TcpListener::start() {
+    if (!listening_) {
+        return;
+    }
+    do_accept();
+}
 
 void TcpListener::stop() {
     boost::system::error_code ec;
     acceptor_.close(ec);
+    listening_ = false;
 
     std::vector<std::shared_ptr<Session>> sessions;
     {

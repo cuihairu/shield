@@ -4,12 +4,61 @@
 [![Lua 5.4](https://img.shields.io/badge/Lua-5.4-blue.svg)](https://www.lua.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Shield is being redesigned as a **single-node-first, Skynet-inspired,
+Shield is an actively refactored **single-node-first, Skynet-inspired,
 actor-based, Lua-first game server runtime**.
 
-This repository is currently in the **refactor design stage**. The documents in
-this repository describe the target architecture and API direction, not a stable
-released implementation.
+This repository is not a stable release yet, but the minimal single-node runtime
+path is runnable: configuration loading, Lua service startup, local service
+registry, `send` / `call`, timers, TCP listener startup validation, and plugin
+host discovery are covered by smoke tests.
+
+## Quick Start
+
+Prerequisites:
+
+- CMake 3.30 or newer.
+- A C++23 compiler.
+- vcpkg with the repository manifest dependencies installed through the CMake
+  toolchain.
+- Ninja is recommended on Linux and macOS.
+
+Configure, build, and run the test suite:
+
+```bash
+cmake -S . -B build \
+  -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
+  -DSHIELD_BUILD_TESTS=ON \
+  -DSHIELD_BUILD_EXAMPLES=ON
+
+cmake --build build --config Release
+ctest --test-dir build --build-config Release --output-on-failure
+```
+
+Check the default no-plugin runtime config:
+
+```bash
+./build/bin/shield --check-config --config config/app.yaml
+```
+
+Check the bundled hello-world startup config:
+
+```bash
+./build/bin/shield --check-config --config examples/hello_world/config/app.yaml
+```
+
+Run the default runtime until interrupted:
+
+```bash
+./build/bin/shield --config config/app.yaml
+```
+
+The default `config/app.yaml` intentionally declares no plugin instances, so a
+fresh checkout can boot without provider DLLs. For an optional SQLite-backed
+example, build with `-DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON` and use
+`config/app-with-sqlite.yaml`.
 
 ## Target Positioning
 
@@ -132,10 +181,15 @@ authoritative contracts above, the authoritative contracts win.
 
 ## Current Status
 
-The runtime is still converging toward the authoritative contracts above. Some
-documented APIs are target contracts rather than implemented features; for
-example, service `on_shutdown(ctx)` and local `shield.event` still require
-runtime work before they are usable.
+The Phase 1 single-node path is the current implementation focus. The runtime
+can load config, start Lua module-table services, validate TCP listener startup,
+run local registry and messaging smoke tests, and initialize the plugin host
+without linking provider libraries into the core executable.
+
+Some documented APIs remain target contracts or partial implementations. In
+particular, the hello-world TCP gateway currently verifies listener startup and
+gateway event routing, but full Lua `SessionHandle` userdata integration for a
+manual interactive client is still deferred.
 
 ## Docker Build
 

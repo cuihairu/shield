@@ -1,4 +1,10 @@
-# Shield default Phase 1 runtime configuration.
+# Shield Phase 1 runtime configuration with the optional SQLite plugin enabled.
+#
+# Build with:
+#   cmake -S . -B build -DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON
+#
+# Business Lua accesses the database through the binding name:
+#   shield.database.sqlite("database.default")
 
 app:
   name: shield
@@ -29,9 +35,16 @@ actors:
     instances: 1
     required: true
 
-# Plugin system v1 is enabled by the runtime, but the default config declares no
-# plugin instances so a fresh checkout boots without external provider DLLs.
-# See config/app-with-sqlite.yaml for an optional SQLite-backed example.
+plugins:
+  directory: "./plugins"
+  instances:
+    - id: db.main
+      package: database.sqlite
+      required: true
+      config:
+        database: ":memory:"
+  bindings:
+    database.default: db.main
 
 bootstrap:
   timeout:

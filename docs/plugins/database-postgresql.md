@@ -239,7 +239,7 @@ libpq 原生支持 SSL，但当前 v1 ABI 不暴露 SSL 选项字段。默认行
 
 ### 错误状态机
 
-PostgreSQL 的事务错误状态机比 MySQL/SQLite 严格：事务中任意一条 SQL 失败，整个事务进入 aborted 状态，后续所有 SQL 直接返回错误，必须 `ROLLBACK` 才能恢复。业务侧使用 `shield.db.transaction` 时，helper 会自动在 callback 返回 `false` 时 rollback，但显式事务场景需要业务方自己注意。
+PostgreSQL 的事务错误状态机比 MySQL/SQLite 严格：事务中任意一条 SQL 失败，整个事务进入 aborted 状态，后续所有 SQL 直接返回错误，必须 `ROLLBACK` 才能恢复。业务侧使用插件 proxy 的事务 helper 时，应在 callback 返回失败时 rollback；显式事务场景需要业务方自己注意。
 
 ## 错误处理
 

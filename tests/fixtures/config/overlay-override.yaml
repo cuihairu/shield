@@ -1,2 +1,2 @@
-redis:
-  port: 6380
+log:
+  level: debug

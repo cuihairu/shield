@@ -1,6 +1,6 @@
 # 游戏状态持久化与回档模式
 
-> 状态：游戏业务模式草案，非当前 `shield_core`、`shield_data` 或 Phase 1 最小运行时契约。
+> 状态：游戏业务模式草案，非当前 `shield_core`、数据插件或 Phase 1 最小运行时契约。
 >
 > 本文整理网络游戏常见的数据存储、内存快照、增量日志、独立状态进程、回档和事务设计。它用于指导业务层和后续 optional module 设计，不定义新的 core API、Lua API 或配置 schema。
 >
@@ -16,7 +16,7 @@
 - 需要支持个人玩家回档、分服回档还是全服回档。
 - 事务边界是单玩家、单房间、单公会，还是跨服务、跨分片。
 
-Shield 当前的 `shield_data` 只提供原始 DB/Redis 访问和连接池，不提供 ORM、业务 mapper、跨 service 事务或回档语义。游戏状态持久化应由业务 service、`shield_player` persistence adapter 或未来独立模块在 `shield_data` 之上实现。
+Shield 当前的数据访问由插件系统 v1 和各数据插件提供；连接池与驱动由插件 instance 自治，不提供 ORM、业务 mapper、跨 service 事务或回档语义。游戏状态持久化应由业务 service、`shield_player` persistence adapter 或未来独立模块在数据插件 binding 之上实现。
 
 不要把本文里的“游戏状态快照”和 `RuntimeSnapshot` 混淆。`RuntimeSnapshot` 是 ops/diagnostics 的只读运行时观测数据，不参与业务存档、恢复或回档。
 
@@ -459,7 +459,7 @@ logic service
   -> MySQL snapshot/history
 ```
 
-对 Shield 的启发是：保持 `shield_core` 小而稳定，`shield_data` 只提供底层 DB/Redis 能力，玩家存档、快照、回档和事务策略由业务层或 optional module 自己定义。
+对 Shield 的启发是：保持 `shield_core` 小而稳定，底层 DB/Redis/文档库能力由插件提供，玩家存档、快照、回档和事务策略由业务层或 optional module 自己定义。
 
 参考资料：
 
@@ -477,7 +477,7 @@ logic service
 | Actor 框架不内置存档 | Skynet、Akka、Orleans 风格框架 | 框架提供 actor/service 和基础 DB 客户端，业务自己定义状态和持久化 |
 | 实时房间/后端服务分层 | Colyseus、Photon、Nakama | 房间或实时态与长期账号/存储能力分开，长期数据走外部 DB 或内置 storage API |
 
-Shield 当前更应该靠近第二类：先把 service/message/timer/net/data 边界做好，不在 core 中引入 DBMgr。未来如果要做官方存档能力，更适合新增 `shield_persistence` 或扩展 `shield_player`，而不是扩大 `shield_data`。
+Shield 当前更应该靠近第二类：先把 service/message/timer/net/plugin 边界做好，不在 core 中引入 DBMgr。未来如果要做官方存档能力，更适合新增 `shield_persistence` 或扩展 `shield_player`，而不是扩大 core 或插件 host。
 
 ## 推荐混合模型
 
@@ -792,7 +792,7 @@ reserve asset
 
 | Shield 层 | 建议职责 |
 | --- | --- |
-| `shield_data` | 继续只提供 raw DB/Redis、连接池、超时和错误码 |
+| 数据插件 | 提供 SQL、文档、cache、queue、leaderboard 等底层后端能力；连接池、超时和驱动错误归插件 instance |
 | `shield_player` | 拥有玩家 persistence adapter、自动保存、玩家回档 hook 的未来扩展 |
 | 业务 Lua service | 定义状态结构、dirty 标记、快照序列化和业务 op log |
 | `shield_global` | 提供排行榜、队列、锁等派生能力，不作为存档真相源 |
@@ -801,7 +801,7 @@ reserve asset
 
 建议边界：
 
-- 不把 ORM、复杂 mapper、回档系统塞进 `shield_data`。
+- 不把 ORM、复杂 mapper、回档系统塞进 `shield_core` 或插件 host。
 - 不让 `shield_core` 感知玩家存档、房间存档或全服 checkpoint。
 - 玩家持久化是 `shield_player` 或业务 service 的职责。
 - 全服灾备是部署和运维能力，不是普通 Lua API。

@@ -14,6 +14,7 @@ core 只定义单节点 runtime 必需配置：
 - `log`
 - `lua`
 - `actors`
+- `plugins`
 - `bootstrap`
 - `shutdown`
 
@@ -46,40 +47,13 @@ log:
   console: true
 
 actors:
-  - name: gateway
-    script: scripts/gateway.lua
+  - name: bootstrap
+    script: scripts/bootstrap.lua
     instances: 1
-    network:
-      tcp: "0.0.0.0:8001"
-
-  - name: echo
-    script: scripts/echo.lua
-    instances: 1
-
-plugins:
-  directory: "./plugins"
-  instances:
-    - id: db.main
-      package: database.mysql
-      required: true
-      config:
-        host: localhost
-        port: 33060
-        database: game
-        username: root
-        password: ${DB_PASSWORD:}
-    - id: cache.session
-      package: cache.redis
-      required: true
-      config:
-        host: localhost
-        port: 6379
-        db: 0
-        password: ${REDIS_PASSWORD:}
-  bindings:
-    database.default: db.main
-    cache.session: cache.session
+    required: true
 ```
+
+默认最小配置不声明 `plugins.instances`，因此不需要任何 provider 动态库即可启动。需要数据后端时再按 [插件系统 v1](plugin-system.md) 增加 `plugins.directory`、`plugins.instances` 和 `plugins.bindings`。
 
 ## 已删除的旧方向
 
@@ -88,6 +62,7 @@ plugins:
 - `discovery`
 - `metrics`
 - `health`
+- 旧顶层 `database` / `redis`
 - `middleware`
 - `conditions`
 - `annotations`

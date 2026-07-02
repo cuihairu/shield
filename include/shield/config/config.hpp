@@ -53,7 +53,7 @@ public:
     // Load from YAML string
     bool load_yaml_string(std::string_view yaml);
 
-    // Get a value by key (supports dot notation: "database.host")
+    // Get a value by key (supports dot notation: "plugins.directory")
     // Returns default value if key not found
     std::string get_string(std::string_view key,
                            std::string_view default_value = "") const;
@@ -111,7 +111,7 @@ void reset_config();
 std::vector<RuntimeActorConfig> runtime_actors();
 
 /// @brief Get a config value (convenience function)
-/// Example: shield::config::get("database.host", "localhost")
+/// Example: shield::config::get("plugins.directory", "./plugins")
 std::string get(std::string_view key, std::string_view default_value = "");
 int64_t get_int(std::string_view key, int64_t default_value = 0);
 double get_double(std::string_view key, double default_value = 0.0);

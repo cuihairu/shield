@@ -477,7 +477,7 @@ bool initialize(const RuntimeConfig& config) {
     run_starters(Phase::POST_CONFIG);
 
     // Start the plugin system. All runtime subsystems that used to resolve
-    // bindings through host-side singletons (database/redis/etc.) now go
+    // bindings through host-side singletons (database/cache/etc.) now go
     // through PluginHost directly; the plugin pipeline owns startup ordering
     // and library lifetime.
     {

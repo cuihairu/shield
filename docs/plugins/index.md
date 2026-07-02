@@ -100,7 +100,7 @@ local redis = shield.redis("redis.default")
 local cache = shield.cache.redis("cache.default")
 ```
 
-当前 binding 配置格式保持最小化：`logical_name: instance_id`。C++ 侧调用 `get_by_binding<T>()` 时由 `T::interface_name` 决定要获取的 ABI interface；Lua 侧插件 API 通常直接使用实例 ID 或插件自己定义的默认实例策略。
+当前 binding 配置格式保持最小化：`logical_name: instance_id`。C++ 侧调用 `get_by_binding<T>()` 时由 `T::interface_name` 决定要获取的 ABI interface；Lua 侧业务代码也应传 binding 逻辑名，由插件 namespace 解析到目标 instance。
 
 ## 第三方插件开发指南
 

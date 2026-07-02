@@ -22,6 +22,7 @@
 #include "shield/plugin/database.h"
 #include "shield/plugin/host_api.h"
 #include "shield_db_mapper.hpp"
+#include "shield_lua_plugin_binding.hpp"
 
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
@@ -274,18 +275,18 @@ const shield_database_v1& db_vtable() {
 // ---------------------------------------------------------------------------
 // v1 ABI entry. The instance carries its own config (parsed from
 // config_json) and a per-instance Session pool. It registers itself in a
-// process-wide map so the Lua callable namespace
-//   shield.database.mysql(binding)
-// can resolve it. The C++ vtable is also served through get_interface() for
-// any C-ABI consumer that prefers the raw connect/query surface.
+// process-wide map so the Lua callable namespace can resolve plugins.bindings
+// logical names to instances. The C++ vtable is also served through
+// get_interface() for any C-ABI consumer that prefers the raw connect/query
+// surface.
 // ---------------------------------------------------------------------------
 namespace {
 
 struct mysql_instance {
     shield_plugin_instance_v1 shell;
-    std::string instance_id;
     const shield_host_api_v1* host_api = nullptr;
     shield_plugin_context_v1* ctx = nullptr;
+    std::string instance_id;
 
     // Parsed config (from args->config_json). Defaults match manifest.yaml.
     std::string host = "127.0.0.1";
@@ -1024,21 +1025,12 @@ int register_lua_impl(shield_plugin_instance_v1* self,
                       struct lua_State* L,
                       shield_error_v1* err) {
     // register_lua installs the shared, idempotent callable namespace
-    // shield.database.mysql. Lua passes a binding logical name; host config
+    // shield.database.mysql. Lua passes a binding logical name; PluginHost
     // resolves that binding to the deployment instance id.
     if (!L) {
         if (err) {
             err->code = "plugin.lua_register.failed";
             err->message = "database.mysql: lua_State is null";
-        }
-        return 1;
-    }
-    auto* current = reinterpret_cast<mysql_instance*>(self);
-    if (!current || !current->host_api ||
-        !current->host_api->binding_instance_id) {
-        if (err) {
-            err->code = "plugin.lua_register.failed";
-            err->message = "database.mysql: host binding resolver is null";
         }
         return 1;
     }
@@ -1050,22 +1042,28 @@ int register_lua_impl(shield_plugin_instance_v1* self,
 
     sol::object existing = database["mysql"];
     if (!existing.is<sol::table>()) {
+        auto* owner = reinterpret_cast<mysql_instance*>(self);
         auto ns = lua.create_table();
         auto mt = lua.create_table();
-        const shield_host_api_v1* host_api = current->host_api;
-        shield_plugin_context_v1* ctx = current->ctx;
         mt.set_function("__call",
-            [host_api, ctx](sol::this_state s, sol::table /*self*/,
-               std::string binding) -> sol::object {
+            [host_api = owner ? owner->host_api : nullptr,
+             ctx = owner ? owner->ctx : nullptr](
+               sol::this_state s, sol::table /*self*/,
+               sol::optional<std::string> binding) -> sol::variadic_results {
                 sol::state_view lua(s);
-                const char* instance_id =
-                    host_api->binding_instance_id(ctx, binding.c_str());
-                if (!instance_id) return sol::nil;
-                auto* inst = find_instance(instance_id);
-                if (!inst) return sol::nil;
+                sol::variadic_results results;
+                std::string logical = binding.value_or("");
+                auto* inst = shield::plugins::resolve_lua_binding(
+                    host_api, ctx, logical, find_instance);
+                if (!inst) {
+                    shield::plugins::push_module_unavailable(results, lua,
+                                                             logical);
+                    return results;
+                }
                 sol::table proxy = make_instance_proxy(lua, inst);
                 shield::plugins::apply_db_mapper_api(lua, proxy);
-                return sol::make_object(lua, proxy);
+                results.push_back(sol::make_object(lua, proxy));
+                return results;
             });
         ns[sol::metatable_key] = mt;
         database["mysql"] = ns;
@@ -1079,10 +1077,10 @@ int mysql_create(const shield_plugin_create_args_v1* args,
                  shield_error_v1* err) {
     (void)err;
     auto* inst = new mysql_instance;
-    inst->instance_id = args->instance_id ? args->instance_id : "";
-    inst->host_api = args->host_api;
-    inst->ctx = args->ctx;
-    parse_instance_config(inst, args->config_json);
+    inst->host_api = args ? args->host_api : nullptr;
+    inst->ctx = args ? args->ctx : nullptr;
+    inst->instance_id = (args && args->instance_id) ? args->instance_id : "";
+    parse_instance_config(inst, args ? args->config_json : nullptr);
     register_instance(inst);
 
     inst->shell.struct_size = sizeof(shield_plugin_instance_v1);

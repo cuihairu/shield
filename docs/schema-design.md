@@ -443,9 +443,10 @@ Phase 1 动态 SQL 只支持最小集合：`if`、`where`、`set`、`foreach`（
 一个 mapper statement 只能包含一条 SQL。多步事务由 service 层显式编排：
 
 ```lua
-shield.db.transaction(function(tx)
-  shield.db.PlayerMapper:DebitGold(tx, { player_id = from_id, amount = amount })
-  shield.db.PlayerMapper:CreditGold(tx, { player_id = to_id, amount = amount })
+local db = shield.database.mysql("database.default")
+db:transaction(function(tx)
+  PlayerMapper:DebitGold(tx, { player_id = from_id, amount = amount })
+  PlayerMapper:CreditGold(tx, { player_id = to_id, amount = amount })
 end)
 ```
 
@@ -483,7 +484,7 @@ public:
 ```
 
 ```lua
-local profile = shield.db.PlayerMapper:SelectProfile({ player_id = player_id })
+local profile = PlayerMapper:SelectProfile({ player_id = player_id })
 ```
 
 运行时流程：
@@ -524,7 +525,7 @@ descriptor.client.bin
 
 运行期限制：statement timeout、最大返回行数、最大参数数量、最大 SQL 长度、连接池资源。
 
-当前 Lua runtime 已实现的 mapper helper 能力（`shield.db.mapper` / `register_mapper` / `entity`、`#{}` 命名参数绑定与嵌套路径、`one=true` 单行查询、`transaction=required`、显式 tx 复用、`${}` 拒绝、多语句拒绝、entity `insert/update/delete/find` 等）复用同步 `shield.db.*` 绑定；data worker pool / coroutine-yield 执行仍是后续项。XML mapper / descriptor / typed codegen 只能作为后续可选扩展，不进入当前最小启动路径，且 runtime 绑定 `shield_data` 提供的现有 DB 抽象，不新增 lightweight DB runtime。`entity` 不生成 schema migration 草案；migration 属于独立工具链或应用层责任。
+当前文档属于 schema/tooling 草案，不进入当前最小启动路径。若后续恢复 mapper runtime，应基于数据插件 binding 和 `shield.database.v1` / `shield.document.v1` 等接口实现，不恢复 `shield.db.*` 全局 API，也不新增 core 内置 lightweight DB runtime。`entity` 不生成 schema migration 草案；migration 属于独立工具链或应用层责任。
 
 ## Descriptor Package
 
@@ -1499,5 +1500,5 @@ Phase 4:
 - `descriptor.bin` 内部编码第一版使用项目自定义 canonical binary encoding，不直接复用 protobuf message encoding。
 - 第一版禁止 recursive struct；`expose` 默认按引用自动推导，显式 `expose="server"` 被 client-visible service 引用时编译失败。
 - 通用 `pattern` 不进入 Phase 1；persistence-specific `entity` 优先放在 `mappers.xml`；JSON Schema 生成不进入 Phase 1，调试和工具生态先使用 `descriptor.debug.json`。
-- mapper runtime 绑定 `shield_data` 提供的现有 DB 抽象，不新增 lightweight DB runtime；SQL 第一版不允许多语句。
-- 当前 Lua mapper facade 复用同步 `shield.db.*` 绑定；data worker pool / coroutine-yield 执行仍是后续项。
+- mapper runtime 若恢复，应绑定数据插件接口，不新增 core 内置 lightweight DB runtime；SQL 第一版不允许多语句。
+- 不恢复 `shield.db.*` 全局 mapper facade；data worker pool / coroutine-yield 执行仍是后续项。

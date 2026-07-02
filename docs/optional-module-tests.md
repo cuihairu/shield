@@ -42,7 +42,7 @@
 | ID | 场景 | 操作 | 期望 |
 | --- | --- | --- | --- |
 | OMOD-GL-001 | global 未启用 | 调用全局命名空间 | 返回 `module_unavailable` 或模块不可用错误 |
-| OMOD-GL-002 | cache.redis 已启用、global 未启用 | `shield.cache.redis("cache.session"):get(key)` | 仍可正常使用 |
+| OMOD-GL-002 | cache/queue/leaderboard 插件已启用、global 未启用 | 调用对应插件 namespace | 仍可正常使用 |
 | OMOD-GL-003 | 分布式锁 | acquire/release | 基于模块契约完成，不暴露底层 Redis handle |
 | OMOD-GL-004 | Redis 不可用 | distributed lock / rank / queue | 返回 Redis 相关错误，不回写 core 语义 |
 | OMOD-GL-005 | rank reset | 到达重置周期 | 只影响 rank 数据，不修改 core scheduler 语义 |

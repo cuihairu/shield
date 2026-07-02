@@ -27,8 +27,8 @@ shield/
 │   ├── commands/        ✅ 保留
 │   ├── config/          ✅ 保留
 │   ├── core/            ✅ 保留
-│   ├── data/            ✅ 保留
-│   ├── database/        ⚠️  合入 data/
+│   ├── data/            ❌ 移除（数据访问由插件系统 v1 提供）
+│   ├── database/        ❌ 移除（迁移为 plugins/* provider）
 │   ├── extensions/      ⚠️  重新定位
 │   ├── fs/              ✅ 保留
 │   ├── http/            ⚠️  合入 net/
@@ -46,7 +46,7 @@ shield/
     ├── events/         ❌ 移除
     ├── health/         ❌ 移除
     ├── metrics/        ❌ 移除
-    ├── database/       ⚠️  合入 data/
+    ├── database/       ❌ 移除（迁移为 plugins/* provider）
     ├── gateway/        ⚠️  改为 Lua 模板
     └── ...（其他同上）
 ```
@@ -106,7 +106,7 @@ shield/
 │   ├── shield_bootstrap/       # 启动器
 │   ├── shield_script/          # Lua VM 管理
 │   ├── shield_lua/             # host 内置 Lua API 绑定（spawn/send/timer/log/config/plugin introspection）
-│   ├── shield_data/            # 数据访问层（连接池，通过 PluginHost 拿到插件 vtable）
+│   ├── shield_plugin/          # 插件系统 v1 host（manifest/catalog/instance/binding/C ABI）
 │   ├── shield_net/             # 网络层
 │   ├── shield_transport/       # 协议适配
 │   └── optional/               # 官方可选模块（非最小主路径）
@@ -316,28 +316,27 @@ src/shield_lua/
 
 注意：业务 Lua API（`shield.database.*` / `shield.cache.redis` / `shield.queue.redis` 等）由各插件通过 `register_lua` 钩子自行注册，不在 `shield_lua` 里。`shield_lua` 只负责 host 自身能力（service / message / timer / config / log / plugin introspection）。
 
-**依赖**：shield_base, shield_log, shield_config, shield_core, shield_data, shield_net, shield_plugin
+**依赖**：shield_base, shield_log, shield_config, shield_core, shield_net, shield_plugin
 
-#### shield_data
+#### shield_plugin
 
 ```
-src/shield_data/
+src/shield_plugin/
 ├── include/
-│   ├── db_connection.hpp      # DB 连接接口
-│   ├── db_connection_pool.hpp # DB 连接池
-│   ├── redis_connection.hpp    # Redis 连接
-│   ├── redis_connection_pool.hpp # Redis 连接池
-│   └── data_starter.hpp       # DataStarter
+│   ├── manifest.hpp           # manifest/catalog model
+│   ├── plugin_host.hpp        # PluginHost
+│   └── plugin_library.hpp     # dlopen/LoadLibrary wrapper
 ├── src/
-│   ├── db_connection_pool.cpp
-│   ├── redis_connection_pool.cpp
+│   ├── manifest.cpp
+│   ├── plugin_host.cpp
+│   ├── plugin_library.cpp
 │   └── ...
 ├── tests/
-│   └── test_connection_pool.cpp
+│   └── test_plugin_host.cpp
 └── CMakeLists.txt
 ```
 
-职责：数据库和 Redis 访问，提供连接池。
+职责：插件 manifest/catalog、实例生命周期、binding、C ABI host、`register_lua` 分发和只读 introspection。数据库、Redis、队列、排行榜等后端能力由 `plugins/*` 独立共享库提供，连接池归插件 instance。
 
 **依赖**：shield_base, shield_log, shield_config
 
@@ -425,7 +424,7 @@ src/optional/shield_global/
 
 职责：基于 Redis 等后端提供全局数据、分布式锁、排行榜、队列、限流器。该模块是官方可选模块。
 
-**依赖**：shield_base, shield_log, shield_config, shield_data
+**依赖**：shield_base, shield_log, shield_config, shield_plugin
 
 #### shield_ops（可选）
 
@@ -456,7 +455,7 @@ src/optional/shield_ops/
 ├─────────────────────────────────────────────────────────────┤
 │                    shield_transport                          │
 ├─────────────────────────────────────────────────────────────┤
-│                    shield_data  │  shield_net                 │
+│                    shield_plugin │ shield_net                 │
 ├─────────────────────────────────────────────────────────────┤
 │                    shield_script                             │
 ├─────────────────────────────────────────────────────────────┤
@@ -492,7 +491,7 @@ done
 | `src/config/*` | `shield_config` |
 | `src/log/*` | `shield_log` |
 | `src/script/*` | `shield_script` |
-| `src/data/*`, `src/database/*` | `shield_data` |
+| `src/data/*`, `src/database/*` | 删除或迁移为 `plugins/*` provider |
 | `src/net/*`, `src/http/*` | `shield_net` |
 | `src/protocol/*` | `shield_transport` |
 
@@ -524,7 +523,7 @@ add_subdirectory(src/shield_config)
 add_subdirectory(src/shield_bootstrap)
 add_subdirectory(src/shield_core)
 add_subdirectory(src/shield_script)
-add_subdirectory(src/shield_data)
+add_subdirectory(src/shield_plugin)
 add_subdirectory(src/shield_net)
 add_subdirectory(src/shield_transport)
 add_subdirectory(src/shield_lua)

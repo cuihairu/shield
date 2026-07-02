@@ -648,13 +648,13 @@ int my_register_lua(shield_plugin_instance_v1* self,
     sol::table mongodb = shield["database"].get_or_create<sol::table>()
                               ["mongodb"].get_or_create<sol::table>();
 
-    // callable table: mongo(id) -> proxy
+    // callable table: mongo(binding) -> proxy
     mongodb.set_function(sol::call,
         [](std::string binding) -> sol::table {
-            // 查 host 将 binding 解析为 instance，再取得 shield_document_v1*
-            // + shield_doc_conn*
+            // 经 PluginHost 解析 binding，拿到目标 instance 的
+            // shield_document_v1* + shield_doc_conn*
             // 构造 proxy table，注册 find/insert_one/... 方法
-            return make_proxy(binding);
+            return make_proxy(resolve_binding(binding));
         });
 
     return 0;

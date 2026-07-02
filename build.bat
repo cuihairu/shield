@@ -37,7 +37,7 @@ echo Build type: %BUILD_TYPE%
 echo Build dir:  %BUILD_DIR%
 echo.
 
-cmake -B "%BUILD_DIR%" %TOOLCHAIN% -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DSHIELD_BUILD_TESTS=ON -DSHIELD_BUILD_EXAMPLES=ON
+cmake -B "%BUILD_DIR%" %TOOLCHAIN% -DCMAKE_BUILD_TYPE=%BUILD_TYPE% -DCMAKE_CXX_SCAN_FOR_MODULES=OFF -DSHIELD_BUILD_TESTS=ON -DSHIELD_BUILD_EXAMPLES=ON
 if %errorlevel% neq 0 exit /b %errorlevel%
 
 cmake --build "%BUILD_DIR%" --config %BUILD_TYPE%
@@ -50,5 +50,5 @@ echo.
 
 if %RUN_AFTER%==1 (
     echo === Starting Shield Server ===
-    "%BUILD_DIR%\bin\shield.exe" server --config config\app.yaml
+    "%BUILD_DIR%\bin\shield.exe" --config config\app.yaml
 )

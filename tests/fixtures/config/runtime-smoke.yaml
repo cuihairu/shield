@@ -11,9 +11,3 @@ actors:
     script: smoke_child.lua
     instances: 0
     required: true
-
-database:
-  enabled: false
-
-redis:
-  enabled: false

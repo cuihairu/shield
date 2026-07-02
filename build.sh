@@ -44,6 +44,7 @@ echo ""
 cmake -B "$BUILD_DIR" \
     $TOOLCHAIN \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     -DSHIELD_BUILD_TESTS=ON \
     -DSHIELD_BUILD_EXAMPLES=ON
 
@@ -58,5 +59,5 @@ echo ""
 # Run
 if $RUN_AFTER; then
     echo "=== Starting Shield Server ==="
-    "$BUILD_DIR/bin/shield" server --config config/app.yaml
+    "$BUILD_DIR/bin/shield" --config config/app.yaml
 fi

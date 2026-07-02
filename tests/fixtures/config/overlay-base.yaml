@@ -6,6 +6,5 @@ actors:
     script: ../../../scripts/bootstrap.lua
     instances: 1
 
-redis:
-  enabled: false
-  port: 6379
+log:
+  level: info

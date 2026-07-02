@@ -4,9 +4,53 @@
 [![Lua 5.4](https://img.shields.io/badge/Lua-5.4-blue.svg)](https://www.lua.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Shield 是一个**单节点优先、受 Skynet 启发、基于 Actor、Lua 优先的游戏服务器运行时**。
+Shield 是一个正在重构中的**单节点优先、受 Skynet 启发、基于 Actor、Lua 优先的游戏服务器运行时**。
 
-本仓库目前处于**重构设计阶段**。仓库中的文档描述的是目标架构和 API 方向，而非稳定发布的实现。
+本仓库还不是稳定发布版本，但最小单节点运行路径已经可以启动：配置加载、Lua service 启动、本地 service registry、`send` / `call`、定时器、TCP listener 启动校验和插件宿主发现都有 smoke test 覆盖。
+
+## 快速开始
+
+前置要求：
+
+- CMake 3.30 或更新版本。
+- 支持 C++23 的编译器。
+- vcpkg，并通过 CMake toolchain 使用仓库 manifest 依赖。
+- Linux 和 macOS 推荐使用 Ninja。
+
+配置、构建并运行测试：
+
+```bash
+cmake -S . -B build \
+  -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
+  -DSHIELD_BUILD_TESTS=ON \
+  -DSHIELD_BUILD_EXAMPLES=ON
+
+cmake --build build --config Release
+ctest --test-dir build --build-config Release --output-on-failure
+```
+
+检查默认的无插件运行时配置：
+
+```bash
+./build/bin/shield --check-config --config config/app.yaml
+```
+
+检查仓库内置 hello-world 启动配置：
+
+```bash
+./build/bin/shield --check-config --config examples/hello_world/config/app.yaml
+```
+
+运行默认 runtime，直到手动中断：
+
+```bash
+./build/bin/shield --config config/app.yaml
+```
+
+默认 `config/app.yaml` 不声明任何插件实例，因此 fresh checkout 不需要 provider DLL 也能启动。需要 SQLite 插件示例时，用 `-DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON` 构建，并使用 `config/app-with-sqlite.yaml`。
 
 ## 目标定位
 
@@ -108,7 +152,9 @@ return M
 
 ## 当前状态
 
-runtime 仍在向上述权威契约收敛。部分文档 API 是目标契约而非已实现功能，例如 service `on_shutdown(ctx)` 和单 VM 内部的 `shield.event` 仍需要后续 runtime 实现后才能使用。
+当前实现重点是 Phase 1 单节点路径。runtime 已能加载配置、启动 Lua module-table service、校验 TCP listener 启动、本地 registry 和消息 smoke test，并在 core executable 不链接 provider 库的前提下初始化插件宿主。
+
+部分文档 API 仍是目标契约或部分实现。尤其是 hello-world TCP gateway 目前验证的是 listener 启动和 gateway event routing；面向手动交互客户端的 Lua `SessionHandle` userdata 完整接入仍是后续事项。
 
 ## Docker 构建
 
