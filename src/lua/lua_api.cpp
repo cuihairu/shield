@@ -889,25 +889,42 @@ void register_config_api(sol::table& shield) {
                 return sol::make_object(lua, false);
             }
 
-            // Require the whole string to be consumed so that values like
-            // "3.14" don't get truncated to integer 3 and "12abc" doesn't get
-            // partially parsed as 12 by std::stoll / std::stod.
-            try {
-                size_t pos = 0;
-                const long long parsed = std::stoll(value, &pos);
-                if (pos == value.size()) {
-                    return sol::make_object(lua, parsed);
-                }
-            } catch (const std::exception&) {
-            }
+            // Require the whole string to be consumed so that "12abc"
+            // doesn't get partially parsed as 12.  When the string
+            // contains a decimal point or exponent marker, always parse
+            // as double first to avoid truncation (e.g. "3.14" → 3).
+            const bool looks_like_float =
+                value.find('.') != std::string::npos ||
+                value.find('e') != std::string::npos ||
+                value.find('E') != std::string::npos;
 
-            try {
-                size_t pos = 0;
-                const double parsed = std::stod(value, &pos);
-                if (pos == value.size()) {
-                    return sol::make_object(lua, parsed);
+            if (looks_like_float) {
+                try {
+                    size_t pos = 0;
+                    const double parsed = std::stod(value, &pos);
+                    if (pos == value.size()) {
+                        return sol::make_object(lua, parsed);
+                    }
+                } catch (const std::exception&) {
                 }
-            } catch (const std::exception&) {
+            } else {
+                try {
+                    size_t pos = 0;
+                    const long long parsed = std::stoll(value, &pos);
+                    if (pos == value.size()) {
+                        return sol::make_object(lua, parsed);
+                    }
+                } catch (const std::exception&) {
+                }
+
+                try {
+                    size_t pos = 0;
+                    const double parsed = std::stod(value, &pos);
+                    if (pos == value.size()) {
+                        return sol::make_object(lua, parsed);
+                    }
+                } catch (const std::exception&) {
+                }
             }
 
             return sol::make_object(lua, value);

@@ -28,8 +28,15 @@ TcpListener::TcpListener(boost::asio::io_context& io_context, uint16_t port,
         return;
     }
 
-    // Allow address reuse
+// On Windows, SO_REUSEADDR allows hijacking an already-bound port. Use
+// SO_EXCLUSIVEADDRUSE instead, which gives Linux-like behaviour: the
+// bind will fail if another socket is already listening on the same port.
+#ifdef _WIN32
+    acceptor_.set_option(boost::asio::socket_base::exclusive_address_use(true),
+                         ec);
+#else
     acceptor_.set_option(boost::asio::socket_base::reuse_address(true), ec);
+#endif
 
     // Bind to port
     acceptor_.bind(
