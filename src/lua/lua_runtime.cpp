@@ -780,16 +780,19 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
         *out = value.as<bool>();
         return true;
     }
-    if (value.is<std::int64_t>()) {
-        *out = value.as<std::int64_t>();
-        return true;
-    }
-    if (value.is<int>()) {
-        *out = value.as<int>();
-        return true;
-    }
     if (value.is<double>()) {
-        *out = value.as<double>();
+        // sol2's is<int64_t>() accepts any Lua number when
+        // SOL_NUMBER_PRECISION_CHECKS is off (the default), so checking it
+        // first would let as<int64_t>() truncate floats (e.g. 3.14 -> 3).
+        // Read as double, then only round-trip through int64_t when the
+        // value is a whole number so the JSON keeps its original type.
+        const double d = value.as<double>();
+        const auto as_int = static_cast<std::int64_t>(d);
+        if (static_cast<double>(as_int) == d) {
+            *out = as_int;
+        } else {
+            *out = d;
+        }
         return true;
     }
     if (value.is<std::string>()) {
@@ -1303,10 +1306,14 @@ std::string LuaRuntime::get_global(std::shared_ptr<LuaVM> vm,
 
     if (value.is<std::string>()) {
         return value.as<std::string>();
-    } else if (value.is<int>()) {
-        return std::to_string(value.as<int>());
-    } else if (value.is<double>()) {
-        return std::to_string(value.as<double>());
+    }
+    if (value.is<double>()) {
+        const double d = value.as<double>();
+        const auto as_int = static_cast<int64_t>(d);
+        if (static_cast<double>(as_int) == d) {
+            return std::to_string(as_int);
+        }
+        return std::to_string(d);
     }
     return "";
 }
@@ -1355,21 +1362,22 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
         return true;
     }
 
-    if (value.is<int>() || value.is<std::int64_t>()) {
-        out.push_back(static_cast<uint8_t>(TypeTag::Integer));
-        int64_t val =
-            value.is<int>() ? value.as<int>() : value.as<std::int64_t>();
-        // Write int64 in little-endian
-        for (int i = 0; i < 8; ++i) {
-            out.push_back(static_cast<uint8_t>(val & 0xFF));
-            val >>= 8;
-        }
-        return true;
-    }
-
     if (value.is<double>()) {
+        const double d = value.as<double>();
+        const auto as_int = static_cast<int64_t>(d);
+        if (static_cast<double>(as_int) == d) {
+            // Whole number: encode as a compact integer.
+            out.push_back(static_cast<uint8_t>(TypeTag::Integer));
+            int64_t val = as_int;
+            // Write int64 in little-endian
+            for (int i = 0; i < 8; ++i) {
+                out.push_back(static_cast<uint8_t>(val & 0xFF));
+                val >>= 8;
+            }
+            return true;
+        }
         out.push_back(static_cast<uint8_t>(TypeTag::Number));
-        double val = value.as<double>();
+        double val = d;
         // Write double in little-endian
         const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&val);
         out.insert(out.end(), bytes, bytes + sizeof(double));

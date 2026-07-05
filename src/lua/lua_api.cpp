@@ -203,14 +203,18 @@ nlohmann::json lua_to_json(const sol::object& value) {
     if (value.is<bool>()) {
         return value.as<bool>();
     }
-    if (value.is<std::int64_t>()) {
-        return value.as<std::int64_t>();
-    }
-    if (value.is<int>()) {
-        return value.as<int>();
-    }
     if (value.is<double>()) {
-        return value.as<double>();
+        // sol2's is<int64_t>() accepts any Lua number when
+        // SOL_NUMBER_PRECISION_CHECKS is off (the default), so checking it
+        // first would let as<int64_t>() truncate floats (e.g. 3.14 -> 3).
+        // Read as double, then only round-trip through int64_t when the
+        // value is a whole number so the JSON keeps its original type.
+        const double d = value.as<double>();
+        const auto as_int = static_cast<std::int64_t>(d);
+        if (static_cast<double>(as_int) == d) {
+            return as_int;
+        }
+        return d;
     }
     if (value.is<std::string>()) {
         return value.as<std::string>();
@@ -239,10 +243,6 @@ std::vector<std::string> table_to_string_vector(const sol::table& table) {
             params.emplace_back("");
         } else if (item.is<std::string>()) {
             params.push_back(item.as<std::string>());
-        } else if (item.is<int>()) {
-            params.push_back(std::to_string(item.as<int>()));
-        } else if (item.is<std::int64_t>()) {
-            params.push_back(std::to_string(item.as<std::int64_t>()));
         } else if (item.is<double>()) {
             params.push_back(std::to_string(item.as<double>()));
         } else if (item.is<bool>()) {
