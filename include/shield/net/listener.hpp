@@ -40,6 +40,12 @@ public:
     /// @brief Set max frame payload size in bytes (0 = unlimited)
     void set_max_frame_size(size_t max) { max_frame_size_ = max; }
 
+    /// @brief Set max queued send messages per session (0 = unlimited)
+    void set_max_send_queue(size_t max) { max_send_queue_ = max; }
+
+    /// @brief Set per-session read idle timeout in ms (0 = disabled)
+    void set_read_idle_timeout(uint32_t ms) { read_idle_timeout_ms_ = ms; }
+
     /// @brief Get last rejection reason
     std::string last_rejection_reason() const { return last_rejection_; }
 
@@ -77,9 +83,11 @@ private:
     boost::asio::ip::tcp::socket socket_;
     std::unordered_map<SessionId, std::shared_ptr<Session>> sessions_;
     mutable std::shared_mutex sessions_mutex_;
-    size_t max_connections_ = 0;  // 0 = unlimited
-    size_t max_per_ip_ = 0;       // 0 = unlimited
-    size_t max_frame_size_ = 0;   // 0 = unlimited
+    size_t max_connections_ = 0;      // 0 = unlimited
+    size_t max_per_ip_ = 0;           // 0 = unlimited
+    size_t max_frame_size_ = 0;       // 0 = unlimited
+    size_t max_send_queue_ = 0;       // 0 = unlimited (queued message count)
+    uint32_t read_idle_timeout_ms_ = 0;  // 0 = disabled
     std::unordered_map<std::string, size_t> ip_counts_;
     std::string last_rejection_;
     bool listening_ = false;

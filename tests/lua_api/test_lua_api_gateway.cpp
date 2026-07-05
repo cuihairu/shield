@@ -53,9 +53,16 @@ public:
 
     shield::net::SessionId id() const override { return id_; }
     shield::net::RemoteAddress remote_addr() const override { return remote_; }
-    bool send(const std::vector<uint8_t>& data) override {
+    bool send(const std::vector<uint8_t>& data,
+              std::string* error = nullptr) override {
+        if (!alive_) {
+            if (error) {
+                *error = "session is closed";
+            }
+            return false;
+        }
         sent_.push_back(data);
-        return alive_;
+        return true;
     }
     void close(std::string reason) override {
         alive_ = false;

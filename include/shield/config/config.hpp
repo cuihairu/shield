@@ -38,6 +38,8 @@ struct RuntimeActorConfig {
     size_t max_connections = 0;
     size_t max_connections_per_ip = 0;
     size_t max_frame_size = 0;
+    size_t max_session_send_queue = 0;    // 0 = unlimited (messages per session)
+    uint32_t read_idle_timeout_ms = 0;    // 0 = disabled
     std::string network_protocol_json = "{}";
     bool network_protocol_enabled = false;
 };
@@ -86,6 +88,7 @@ private:
     friend bool validate_runtime_config(const RuntimeValidationOptions& options,
                                         std::string* error);
     friend std::vector<RuntimeActorConfig> runtime_actors();
+    friend size_t runtime_net_threads();
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -110,6 +113,10 @@ void reset_config();
 
 /// @brief Return actor declarations from the merged global config.
 std::vector<RuntimeActorConfig> runtime_actors();
+
+/// @brief Return the configured number of net I/O threads (net.threads).
+/// 0 = use single-threaded io_context (legacy behaviour).
+size_t runtime_net_threads();
 
 /// @brief Get a config value (convenience function)
 /// Example: shield::config::get("plugins.directory", "./plugins")

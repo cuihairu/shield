@@ -1051,7 +1051,13 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                                         error) ||
                     !validate_int_range(network, "max_frame_size",
                                         network_path.c_str(), 1,
-                                        16 * 1024 * 1024, error)) {
+                                        16 * 1024 * 1024, error) ||
+                    !validate_int_range(network, "max_session_send_queue",
+                                        network_path.c_str(), 0,
+                                        1000000, error) ||
+                    !validate_int_range(network, "read_idle_timeout",
+                                        network_path.c_str(), 0, 86400000,
+                                        error)) {
                     return false;
                 }
             }
@@ -1087,6 +1093,12 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                     return false;
                 }
             }
+        }
+    }
+
+    if (const YAML::Node net = root["net"]) {
+        if (!validate_int_range(net, "threads", "net", 0, 64, error)) {
+            return false;
         }
     }
 
@@ -1129,6 +1141,12 @@ std::vector<RuntimeActorConfig> runtime_actors() {
                 scalar_int(network, "max_connections_per_ip").value_or(0));
             item.max_frame_size = static_cast<size_t>(
                 scalar_int(network, "max_frame_size").value_or(0));
+            item.max_session_send_queue = static_cast<size_t>(
+                scalar_int(network, "max_session_send_queue").value_or(0));
+            if (network["read_idle_timeout"]) {
+                item.read_idle_timeout_ms = static_cast<uint32_t>(
+                    scalar_int(network, "read_idle_timeout").value_or(0));
+            }
             if (network["protocol"]) {
                 item.network_protocol_enabled = true;
                 item.network_protocol_json =
@@ -1140,6 +1158,23 @@ std::vector<RuntimeActorConfig> runtime_actors() {
     }
 
     return result;
+}
+
+size_t runtime_net_threads() {
+    auto& config = global_config();
+    std::shared_lock lock(config.impl_->mutex);
+    const YAML::Node root = config.impl_->root;
+    if (const YAML::Node net = root["net"]) {
+        if (net["threads"]) {
+            try {
+                const auto value = net["threads"].as<int>();
+                if (value < 0) return 0;
+                return static_cast<size_t>(value);
+            } catch (const std::exception&) {
+            }
+        }
+    }
+    return 0;
 }
 
 bool reload_config() {

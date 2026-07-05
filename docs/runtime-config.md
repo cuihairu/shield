@@ -23,6 +23,7 @@
 | `lua` | `shield_lua` |
 | `actors` | `shield_bootstrap` + `shield_core` + `shield_lua` |
 | `actors[].network` | `shield_net` |
+| `net` | `shield_net` |
 | `plugins` | `shield_plugin` |
 | `bootstrap` / `shutdown` | `shield_bootstrap` |
 
@@ -326,6 +327,7 @@ actors:
 | `actors[].network.*` | 监听地址必须是 `host:port` |
 | `actors[].network.tcp` | Phase 1 要求 `instances == 1` |
 | `actors[].network.udp/kcp/websocket` | Phase 1 拒绝启动；这些 transport 属于 deferred extension |
+| `net.threads` | 可选，默认 `0`（单 I/O 线程），范围 `0-64` |
 | `plugins.directory` | 可选；路径必须是字符串 |
 | `plugins.instances[].id` | 必填，本配置内唯一 |
 | `plugins.instances[].package` | 必填，必须存在于插件 catalog |

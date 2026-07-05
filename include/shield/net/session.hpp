@@ -2,8 +2,10 @@
 #pragma once
 
 #include <atomic>
-#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -50,8 +52,12 @@ public:
     /// @brief Get remote address
     virtual RemoteAddress remote_addr() const = 0;
 
-    /// @brief Send data to client
-    virtual bool send(const std::vector<uint8_t>& data) = 0;
+    /// @brief Enqueue data for asynchronous send. Returns true when the data
+    /// was accepted into the send queue; false (with @p error populated) when
+    /// the session is closed or the send queue is full (backpressure). This
+    /// never blocks on the socket.
+    virtual bool send(const std::vector<uint8_t>& data,
+                      std::string* error = nullptr) = 0;
 
     /// @brief Close session
     virtual void close(std::string reason) = 0;
@@ -86,7 +92,8 @@ struct SessionCallbacks {
     std::function<void(std::shared_ptr<Session>, const std::vector<uint8_t>&)>
         on_message;
     // Protocol path callback. DecodeLocal results are materialized before
-    // dispatch. ForwardRaw/Drop remain visible here for C++ data-plane users.
+    // dispatch. ForwardRaw results remain visible here for C++ data-plane
+    // users; Drop results are skipped before this callback is invoked.
     std::function<void(std::shared_ptr<Session>,
                        const shield::transport::DispatchResult&)>
         on_packet;
@@ -98,13 +105,20 @@ struct SessionCallbacks {
 class TcpSession : public Session,
                    public std::enable_shared_from_this<TcpSession> {
 public:
+    /// @param max_send_queue Max queued outgoing messages before
+    ///                        backpressure kicks in (0 = unlimited).
+    /// @param read_idle_timeout_ms Close the session if no data arrives for
+    ///                              this many milliseconds (0 = disabled).
     TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
-               SessionCallbacks callbacks, size_t max_frame_size = 0);
+               SessionCallbacks callbacks, size_t max_frame_size = 0,
+               size_t max_send_queue = 0,
+               uint32_t read_idle_timeout_ms = 0);
 
     SessionId id() const override { return id_; }
     RemoteAddress remote_addr() const override { return remote_addr_; }
 
-    bool send(const std::vector<uint8_t>& data) override;
+    bool send(const std::vector<uint8_t>& data,
+              std::string* error = nullptr) override;
     bool has_protocol_pipeline() const override {
         return protocol_pipeline_ != nullptr;
     }
@@ -121,10 +135,12 @@ public:
     std::string error_code() const override { return error_code_; }
 
     void set_user_data(std::string key, std::string value) override {
+        std::lock_guard<std::mutex> lock(user_data_mutex_);
         user_data_[std::move(key)] = std::move(value);
     }
 
     std::string get_user_data(std::string_view key) const override {
+        std::lock_guard<std::mutex> lock(user_data_mutex_);
         auto it = user_data_.find(std::string(key));
         return it != user_data_.end() ? it->second : "";
     }
@@ -134,19 +150,41 @@ public:
 
 private:
     void do_receive();
+    void do_async_write();
     void handle_error(std::string reason);
 
     SessionId id_;
     boost::asio::ip::tcp::socket socket_;
+    // All per-session async work (read / write / idle timer completion) runs
+    // on this strand, so TcpSession members touched only from strand handlers
+    // need no further synchronization.
+    boost::asio::any_io_executor strand_;
     RemoteAddress remote_addr_;
     SessionCallbacks callbacks_;
     std::atomic<bool> alive_{true};
     std::string error_code_;
 
+    mutable std::mutex user_data_mutex_;
     std::unordered_map<std::string, std::string> user_data_;
     std::vector<uint8_t> receive_buffer_;
     shield::transport::FrameDecoder frame_decoder_;
     std::unique_ptr<shield::transport::ProtocolPipeline> protocol_pipeline_;
+
+    // Async send queue. send_queue_ and send_in_progress_ are only touched
+    // from strand_ handlers; queued_count_ is atomic so the public send()
+    // path can do a fast backpressure check without locking.
+    std::deque<std::vector<uint8_t>> send_queue_;
+    bool send_in_progress_ = false;
+    size_t max_send_queue_ = 0;  // 0 = unlimited (queued message count)
+    std::atomic<size_t> queued_count_{0};
+
+    // Optional read idle timeout. 0 disables it.
+    boost::asio::basic_waitable_timer<
+        std::chrono::steady_clock,
+        boost::asio::wait_traits<std::chrono::steady_clock>,
+        boost::asio::any_io_executor>
+        read_deadline_;
+    uint32_t read_idle_timeout_ms_ = 0;
 };
 
 }  // namespace shield::net

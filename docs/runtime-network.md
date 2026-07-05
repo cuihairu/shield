@@ -169,7 +169,7 @@ session:remote_addr()
 | `max_connections` | 10000 | 最大并发连接数 |
 | `max_connections_per_ip` | 100 | 单 IP 最大连接数 |
 | `max_frame_size` | 64KB | 单帧最大体积 |
-| `max_session_send_queue` | 1000 | 单 session 发送队列上限 |
+| `max_session_send_queue` | 1000 | 单 session 待发送消息条数上限（非字节；每条消息体积受 `max_frame_size` 约束） |
 | `max_decode_errors` | 10 | 连续解码错误次数上限（超过断开） |
 | `read_idle_timeout` | 60s | 读空闲超时 |
 | `write_idle_timeout` | 30s | 写空闲超时 |
@@ -206,3 +206,30 @@ actors:
   - 主动断开连接
   - 记录 IP 和错误详情
 ```
+
+## I/O 线程模型
+
+网络层采用「多线程 I/O + 单线程业务逻辑」模型，与主流游戏引擎在业务侧的单线程简化保持一致：
+
+- **I/O 线程池**：由顶层 `net.threads` 控制并发执行 `io_context::run()` 的线程数。这些线程只做 socket 读写、frame/protocol 解码，以及 per-session strand 上串行化的回调派发；**不执行任何 Lua 业务代码**。
+- **per-session strand**：每条 session 的读、写、idle timer 完成事件绑定到独立 strand，即使跨 N 个 I/O 线程，单条 session 的事件依然严格串行、有序。
+- **业务逻辑单线程**：所有 Lua handler 经 `LuaGatewayBridge` 投递到 `LuaServiceManager` 邮箱，由唯一的 worker 线程排干。net 线程永远不内联跑 Lua。
+- **默认单线程**：`net.threads = 0`（默认）退回 legacy 单 I/O 线程路径；多线程是显式 opt-in，仅在连接数高、单线程 syscall/解码成为瓶颈时开启。
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `net.threads` | 0 | I/O 线程数；0 = 单 I/O 线程（legacy），范围 0..64 |
+
+`net.threads` 是顶层配置，不属于 `actors[].network`：
+
+```yaml
+net:
+  threads: 4
+actors:
+  - name: gateway
+    script: scripts/gateway.lua
+    network:
+      tcp: "0.0.0.0:8001"
+```
+
+解码（frame/protocol pipeline）当前在 I/O 线程的 strand 上执行而非业务线程——解码是 CPU 密集且无共享状态的工作，并行化通常是有益的。若需要「一切计算都进单业务线程」，可后续将解码也挪进 worker，但当前设计选择前者。

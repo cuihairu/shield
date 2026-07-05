@@ -1144,10 +1144,19 @@ static void register_session_handle(sol::state& lua) {
                 if (!session->send_message(message, &send_error)) {
                     results.push_back(sol::make_object(sv, false));
                     sol::table err = sv.create_table();
-                    err["code"] = "protocol_encode_failed";
+                    const bool queue_full =
+                        send_error.find("session_send_queue_full") !=
+                        std::string::npos;
+                    err["code"] = queue_full ? "session_send_queue_full"
+                                              : "protocol_encode_failed";
                     err["message"] =
-                        send_error.empty() ? "protocol encode failed"
-                                           : send_error;
+                        send_error.empty()
+                            ? (queue_full ? "session send queue is full"
+                                          : "protocol encode failed")
+                            : send_error;
+                    if (queue_full) {
+                        err["retryable"] = true;
+                    }
                     results.push_back(sol::make_object(sv, err));
                     return results;
                 }
@@ -1176,17 +1185,28 @@ static void register_session_handle(sol::state& lua) {
                 }
             }
 
-            if (!session->send(bytes)) {
+            std::string send_error;
+            if (!session->send(bytes, &send_error)) {
                 results.push_back(sol::make_object(sv, false));
                 sol::table err = sv.create_table();
-                const auto error_code = session->error_code();
-                err["code"] =
-                    error_code.empty() ? "session_send_failed" : error_code;
-                err["message"] = error_code.empty()
-                                     ? "session send failed"
-                                     : ("session send failed: " + error_code);
-                err["retryable"] =
-                    (error_code == "session_send_queue_full");
+                const bool queue_full =
+                    send_error.find("session_send_queue_full") !=
+                    std::string::npos;
+                if (queue_full) {
+                    err["code"] = "session_send_queue_full";
+                    err["message"] = "session send queue is full";
+                    err["retryable"] = true;
+                } else if (send_error.find("session is closed") !=
+                           std::string::npos) {
+                    err["code"] = "session_closed";
+                    err["message"] = "session is closed";
+                } else {
+                    err["code"] = "session_send_failed";
+                    err["message"] =
+                        send_error.empty() ? "session send failed"
+                                           : ("session send failed: " +
+                                              send_error);
+                }
                 results.push_back(sol::make_object(sv, err));
                 return results;
             }

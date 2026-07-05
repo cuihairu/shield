@@ -153,7 +153,8 @@ void TcpListener::do_accept() {
             }
         };
         auto session = std::make_shared<TcpSession>(
-            id, std::move(socket_), std::move(callbacks), max_frame_size_);
+            id, std::move(socket_), std::move(callbacks), max_frame_size_,
+            max_send_queue_, read_idle_timeout_ms_);
 
         // Store session
         {

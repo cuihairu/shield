@@ -9,6 +9,7 @@
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
 #endif
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/io/all.hpp>
@@ -106,7 +107,12 @@ struct GlobalState {
     std::unique_ptr<shield::lua::LuaRuntime> lua_runtime;
     std::unique_ptr<shield::lua::LuaServiceManager> lua_services;
     boost::asio::io_context net_io;
-    std::thread net_thread;
+    // A work guard keeps net_io.run() alive even when no async operations
+    // are pending, preventing the thread pool from spinning down prematurely.
+    std::optional<boost::asio::executor_work_guard<
+        boost::asio::io_context::executor_type>>
+        net_work_guard;
+    std::vector<std::thread> net_threads;
     std::vector<std::unique_ptr<shield::lua::LuaGatewayBridge>> gateway_bridges;
     std::vector<std::unique_ptr<shield::net::TcpListener>> tcp_listeners;
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -125,9 +131,10 @@ void cleanup_failed_initialize() {
                 listener->stop();
             }
         }
+        g_state->net_work_guard.reset();
         g_state->net_io.stop();
-        if (g_state->net_thread.joinable()) {
-            g_state->net_thread.join();
+        for (auto& t : g_state->net_threads) {
+            if (t.joinable()) t.join();
         }
         g_state->tcp_listeners.clear();
         g_state->gateway_bridges.clear();
@@ -413,6 +420,12 @@ bool initialize(const RuntimeConfig& config) {
         if (actor.max_frame_size > 0) {
             listener->set_max_frame_size(actor.max_frame_size);
         }
+        if (actor.max_session_send_queue > 0) {
+            listener->set_max_send_queue(actor.max_session_send_queue);
+        }
+        if (actor.read_idle_timeout_ms > 0) {
+            listener->set_read_idle_timeout(actor.read_idle_timeout_ms);
+        }
         listener->start();
         SHIELD_LOG_INFO(log, "TCP gateway listener started for actor '" +
                                  actor.name + "' on " + actor.network_tcp);
@@ -421,7 +434,19 @@ bool initialize(const RuntimeConfig& config) {
     }
 
     if (!g_state->tcp_listeners.empty()) {
-        g_state->net_thread = std::thread([]() { g_state->net_io.run(); });
+        const size_t net_threads_count = shield::config::runtime_net_threads();
+        if (net_threads_count > 0) {
+            g_state->net_work_guard.emplace(
+                g_state->net_io.get_executor());
+            for (size_t i = 0; i < net_threads_count; ++i) {
+                g_state->net_threads.emplace_back(
+                    [io = &g_state->net_io]() { io->run(); });
+            }
+        } else {
+            // Legacy single-threaded mode
+            g_state->net_threads.emplace_back(
+                []() { g_state->net_io.run(); });
+        }
     }
 
     // Run POST_START starters
@@ -456,9 +481,10 @@ void shutdown() {
             listener->stop();
         }
     }
+    g_state->net_work_guard.reset();
     g_state->net_io.stop();
-    if (g_state->net_thread.joinable()) {
-        g_state->net_thread.join();
+    for (auto& t : g_state->net_threads) {
+        if (t.joinable()) t.join();
     }
     g_state->tcp_listeners.clear();
     g_state->gateway_bridges.clear();
