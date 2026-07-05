@@ -176,6 +176,18 @@
 - Base 不引入第二套 lifecycle，不支持多继承，不恢复 setup 字段的 `on_*` 前缀。
 - P0/P1 测试以 setup 为准；Base 测试只验证无额外语义。
 
+### OD-015 Runtime Primitives Scope
+
+状态：closed。权威文档见 [基础组件与运行时适配边界](runtime-primitives.md)、[重构路线图](roadmap.md) 和 [网络运行时语义](runtime-network.md)。
+
+决策：
+
+- `shield.buffer` / `shield.crypto` / `shield.socket` / `shield.stream` / `shield.tls` 这类 runtime primitives 只保留为后置方向，不进入当前主路径。
+- 不把 cosocket 风格 API 放进当前对业务用户的默认心智模型。
+- 当前推荐心智模型保持三件事：客户端入站走 gateway / `SessionHandle`，服务间走 `shield.send/call`，对外 HTTP 走 `shield.http`。
+- 若未来推进 primitives，也应作为高级能力或后置阶段能力，而不是当前默认推荐路径。
+- `auth.jwt` 不是基础组件层中心能力；若长期保留，更合理的定位是基于基础原语的上层 provider。
+
 ## Open Decisions
 
 当前没有仍需设计拍板的基础语义项。后续若发现新的未决问题，先在本节记录，再同步更新对应权威文档。

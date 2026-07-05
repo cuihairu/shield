@@ -2,6 +2,8 @@
 
 > HS256 JWT 认证提供者，实现 `shield.auth.v1` 接口，基于 OpenSSL HMAC-SHA256 签名与验证，无状态设计。
 
+> 架构定位说明：`auth.jwt` 是具体 provider，不是 Shield 基础组件层的中心能力。更长期的方向应是先提供 `shield.crypto` 等基础原语，再由 Lua 或插件在其上实现 JWT / auth 策略。本文描述的是当前插件实现与接口契约，不代表“auth-first”分层方向。相关基础组件方向目前只保留为后置草案，见 [基础组件与运行时适配边界](/runtime-primitives)。
+
 ## 包信息
 
 - **包 ID**: `auth.jwt`
@@ -204,6 +206,8 @@ end
 local new_token = auth:refresh(refresh_token)
 auth:invalidate(token)
 ```
+
+更长期更推荐的方向是：Lua 侧若需要 JWT 业务能力，应优先建立在 `shield.crypto`、`shield.codec`、`shield.http` 等基础组件之上；`auth.jwt` 可保留为 provider 或示例实现，而不是唯一推荐入口。
 
 ## 平台特性
 

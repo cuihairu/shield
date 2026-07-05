@@ -120,3 +120,10 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 - 高级数据 mapper。
 - Schema 工具链。
+- Lua runtime primitives / cosocket 风格出站 I/O（如 `shield.buffer` / `shield.crypto` / `shield.socket` / `shield.stream` / `shield.tls`）。
+
+说明：
+
+- 当前主路径不要求用户理解或使用上述 primitives。
+- 当前推荐心智模型仍然是：客户端入站走 gateway / `SessionHandle`，服务间走 `shield.send/call`，对外 HTTP 走 `shield.http`。
+- primitives / cosocket 方向只保留为后置草案，不作为当前阶段阻塞项。

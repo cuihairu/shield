@@ -574,14 +574,20 @@ local ok, top = lb:top_n("arena_1v1", 10)
 
 ### 其他插件
 
-| Namespace | 说明 |
-| --- | --- |
-| `shield.auth.jwt` | JWT 签发 / 校验 / 刷新 |
-| `shield.metrics.prometheus` | counter / gauge / histogram |
-| `shield.health.http` | 注册健康检查、查询状态 |
-| `shield.matchmaking.elo` | 匹配队列、ELO 评分 |
+当前已稳定接入 Lua 的插件 namespace，应以各插件文档和实际 `register_lua` 实现为准。
 
-具体方法签名参考各插件的 `lua/` 封装文件或 `plugins/<package>/lua_bindings.cpp`。
+以下 namespace 当前仍属于**规划中**，不要视为已经可用的稳定 Lua API：
+
+| Namespace | 说明 | 当前状态 |
+| --- | --- | --- |
+| `shield.auth.jwt` | JWT 签发 / 校验 / 刷新 | 规划中，当前 `register_lua` 未实现 |
+| `shield.metrics.prometheus` | counter / gauge / histogram | 规划中，当前 `register_lua` 未实现 |
+| `shield.health.http` | 注册健康检查、查询状态 | 规划中，当前 `register_lua` 未实现 |
+| `shield.matchmaking.elo` | 匹配队列、ELO 评分 | 规划中，当前 `register_lua` 未实现 |
+
+如果后续补齐这些 Lua API，也应优先建立在基础组件与插件接口之上，而不是直接把上层策略塞进 core。相关基础组件方向目前只保留为后置草案，见 [基础组件与运行时适配边界](runtime-primitives.md)。
+
+具体方法签名参考各插件的 `lua/` 封装文件、`plugins/<package>/lua_bindings.cpp` 或对应插件文档中的“规划中”章节。
 
 ## Gateway API
 
