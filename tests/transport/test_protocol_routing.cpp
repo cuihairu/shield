@@ -756,4 +756,124 @@ BOOST_AUTO_TEST_CASE(XmldefCatalogLoadsGenericRoutes) {
     BOOST_CHECK(!login->policy.lazy_decode);
 }
 
+BOOST_AUTO_TEST_CASE(ProtocolPipelineDecodesTypeLenHeaderRouteWithJsonCodec) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 0x2001,
+        .target_service = 5,
+        .codec_id = 1,
+        .debug_name = "battle.attack",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = false},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::TypeLen;
+    profile.envelope.endian = Endian::Big;
+    profile.envelope.route_id_bytes = 2;
+    profile.envelope.length_bytes = 2;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Header;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    Packet packet;
+    packet.route_id = 0x2001;
+    packet.body = bytes(R"({"target":7,"damage":42})");
+    const auto encoded = pipeline.encode(packet.ref());
+    BOOST_REQUIRE_MESSAGE(pipeline.error().empty(), pipeline.error());
+
+    auto results = pipeline.feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_REQUIRE(results[0].route != nullptr);
+    BOOST_CHECK_EQUAL(results[0].route->route_id, 0x2001u);
+    BOOST_CHECK_EQUAL(results[0].route->debug_name, "battle.attack");
+    BOOST_CHECK(results[0].decoded());
+    BOOST_REQUIRE(results[0].decoded_body->has_message());
+    BOOST_CHECK_EQUAL(
+        (*results[0].decoded_body->message)["damage"].get<int>(), 42);
+}
+
+BOOST_AUTO_TEST_CASE(ProtocolPipelineResolvesBodyRouteWithDelimiterEnvelope) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 1001,
+        .target_service = 3,
+        .codec_id = 1,
+        .debug_name = "login",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = false},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::Delimiter;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Body;
+    profile.decode_body_route = true;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    const auto json_line =
+        nlohmann::json::object({{"route", "login"}, {"payload", {{"uid", 1}}}})
+            .dump();
+    auto feed_data = bytes(json_line);
+    feed_data.push_back('\n');
+
+    auto results = pipeline.feed(feed_data.data(), feed_data.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_REQUIRE(results[0].route != nullptr);
+    BOOST_CHECK_EQUAL(results[0].packet.route_id, 1001u);
+    BOOST_CHECK_EQUAL(results[0].route->debug_name, "login");
+    BOOST_CHECK(results[0].decoded());
+    BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
+    BOOST_REQUIRE(results[0].decoded_body->has_message());
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(),
+                      1);
+}
+
+BOOST_AUTO_TEST_CASE(ProtocolPipelineDecodeBeforeDispatchOverridesLazyDecode) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 1001,
+        .target_service = 3,
+        .codec_id = 1,
+        .debug_name = "login",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = true},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::LenPrefix;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Body;
+    profile.decode_body_route = true;
+    profile.decode_before_dispatch = true;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    Packet packet;
+    packet.body = bytes(R"({"route":"login","payload":{"x":1}})");
+    const auto encoded = pipeline.encode(packet.ref());
+    BOOST_REQUIRE_MESSAGE(pipeline.error().empty(), pipeline.error());
+
+    auto results = pipeline.feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_CHECK(results[0].decoded());
+    BOOST_REQUIRE(results[0].decoded_body->has_message());
+    BOOST_CHECK_EQUAL(
+        (*results[0].decoded_body->message)["x"].get<int>(), 1);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -1405,6 +1405,9 @@ const RouteEntry* ProtocolPipeline::resolve_route(Packet& packet,
 }
 
 BodyCodec* ProtocolPipeline::codec_for_route(const RouteEntry& route) {
+    // Phase 1: a pipeline binds a single body codec (profile_.default_codec_id).
+    // route.codec_id is kept as route metadata / future extension slot and is
+    // intentionally not used to select a per-route codec here.
     (void)route;
     return codecs_.find(profile_.default_codec_id);
 }
