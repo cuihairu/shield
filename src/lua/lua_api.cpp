@@ -1142,20 +1142,31 @@ static void register_session_handle(sol::state& lua) {
 
                 std::string send_error;
                 if (!session->send_message(message, &send_error)) {
+                    // send_message only fails synchronously for pre-flight
+                    // checks (closed, no pipeline, queue full). Encode itself
+                    // runs async on the session strand; encode failures are
+                    // logged there and the message dropped, not surfaced here.
                     results.push_back(sol::make_object(sv, false));
                     sol::table err = sv.create_table();
                     const bool queue_full =
                         send_error.find("session_send_queue_full") !=
                         std::string::npos;
-                    err["code"] = queue_full ? "session_send_queue_full"
-                                              : "protocol_encode_failed";
-                    err["message"] =
-                        send_error.empty()
-                            ? (queue_full ? "session send queue is full"
-                                          : "protocol encode failed")
-                            : send_error;
+                    const bool closed =
+                        send_error.find("session is closed") !=
+                        std::string::npos;
                     if (queue_full) {
+                        err["code"] = "session_send_queue_full";
+                        err["message"] = "session send queue is full";
                         err["retryable"] = true;
+                    } else if (closed) {
+                        err["code"] = "session_closed";
+                        err["message"] = "session is closed";
+                    } else {
+                        // e.g. "protocol pipeline is not configured"
+                        err["code"] = "protocol_not_configured";
+                        err["message"] = send_error.empty()
+                                             ? "protocol pipeline is not configured"
+                                             : send_error;
                     }
                     results.push_back(sol::make_object(sv, err));
                     return results;

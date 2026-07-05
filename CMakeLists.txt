@@ -269,21 +269,39 @@ function(shield_copy_runtime_dlls target)
         # install root (without triplet suffix). The user-facing
         # VCPKG_INSTALLED_DIR can point to a stale source-tree path, so we
         # prefer the underscore-prefixed internal variable and append the
-        # triplet explicitly.
-        if(DEFINED _VCPKG_INSTALLED_DIR)
-            set(_dll_root "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
-        else()
-            set(_dll_root "${VCPKG_INSTALLED_DIR}")
+        # triplet explicitly. Resolved once and cached for later callers.
+        if(NOT DEFINED _shield_dll_root)
+            if(DEFINED _VCPKG_INSTALLED_DIR)
+                set(_shield_dll_root
+                    "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}"
+                    CACHE INTERNAL "vcpkg runtime DLL root")
+            else()
+                set(_shield_dll_root "${VCPKG_INSTALLED_DIR}"
+                    CACHE INTERNAL "vcpkg runtime DLL root")
+            endif()
         endif()
-        add_custom_command(TARGET ${target} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${_dll_root}/bin"
-                "$<TARGET_FILE_DIR:${target}>"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "$<IF:$<CONFIG:Debug>,${_dll_root}/debug/bin,${_dll_root}/bin>"
-                "$<TARGET_FILE_DIR:${target}>"
-            COMMAND_EXPAND_LISTS
-        )
+
+        # A single global copy target rather than a per-target POST_BUILD.
+        # Every executable shares the same bin/$<CONFIG> output dir, so N
+        # parallel POST_BUILD copy_directory calls raced and intermittently
+        # failed with "Permission denied" under parallel MSBuild (seen on the
+        # Windows CI). One custom target = one copy = no race.
+        if(EXISTS "${_shield_dll_root}/bin"
+           AND NOT TARGET shield_copy_runtime_dlls)
+            add_custom_target(shield_copy_runtime_dlls ALL
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${_shield_dll_root}/bin"
+                    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>"
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "$<IF:$<CONFIG:Debug>,${_shield_dll_root}/debug/bin,${_shield_dll_root}/bin>"
+                    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>"
+                COMMENT "Copying runtime DLLs into ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>"
+                VERBATIM)
+        endif()
+
+        if(TARGET shield_copy_runtime_dlls)
+            add_dependencies(${target} shield_copy_runtime_dlls)
+        endif()
     endif()
 endfunction()
 

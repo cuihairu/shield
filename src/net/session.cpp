@@ -53,12 +53,13 @@ bool TcpSession::send(const std::vector<uint8_t>& data, std::string* error) {
         return true;
     }
 
-    // Soft backpressure: reject once the queued message count is already at
-    // the limit. An empty queue always accepts so the first message can still
-    // drain even when the limit is 1. queued_count_ is updated only on strand_;
-    // this fast-path read is intentionally approximate.
-    const size_t current = queued_count_.load();
-    if (max_send_queue_ > 0 && current >= max_send_queue_) {
+    // Hard backpressure: reserve a queued-message slot atomically on the
+    // caller thread. fetch_add is the check-and-count in one atomic step, so
+    // no matter how many senders race the queued total can never exceed
+    // max_send_queue_. Roll the reservation back if this send pushed us over.
+    const size_t reserved = queued_count_.fetch_add(1);
+    if (max_send_queue_ > 0 && reserved >= max_send_queue_) {
+        queued_count_.fetch_sub(1);
         if (error) {
             *error = "session_send_queue_full";
         }
@@ -69,9 +70,11 @@ bool TcpSession::send(const std::vector<uint8_t>& data, std::string* error) {
     auto frame = std::make_shared<std::vector<uint8_t>>(data);
     boost::asio::post(strand_, [self, frame]() {
         if (!self->alive_.load()) {
+            // Session died before the strand drained this post; release the
+            // slot that was reserved on the caller thread.
+            self->queued_count_.fetch_sub(1);
             return;
         }
-        self->queued_count_.fetch_add(1);
         self->send_queue_.push_back(std::move(*frame));
         if (!self->send_in_progress_) {
             self->send_in_progress_ = true;
@@ -97,21 +100,52 @@ bool TcpSession::send_message(const shield::transport::DecodedBody& message,
         return false;
     }
 
-    auto encoded = protocol_pipeline_->encode_message(message);
-    if (!protocol_pipeline_->error().empty()) {
+    // Reserve a slot under the hard backpressure bound, same as send().
+    const size_t reserved = queued_count_.fetch_add(1);
+    if (max_send_queue_ > 0 && reserved >= max_send_queue_) {
+        queued_count_.fetch_sub(1);
         if (error) {
-            *error = protocol_pipeline_->error();
-        }
-        return false;
-    }
-    if (encoded.empty()) {
-        if (error) {
-            *error = "protocol encode returned empty frame";
+            *error = "session_send_queue_full";
         }
         return false;
     }
 
-    return send(encoded, error);
+    // Encode on the session strand. protocol_pipeline_ is the same object
+    // do_receive() mutates via feed()/materialize_decode(), so all pipeline
+    // access must be strand-serialized to avoid a data race on the envelope
+    // buffer and the pipeline/error state. Encode failures (bad route, schema
+    // mismatch) are server-side bugs: log on the strand and drop the message
+    // rather than punishing an innocent client by closing the connection.
+    auto self = shared_from_this();
+    auto msg_copy = message;
+    boost::asio::post(strand_, [self, message = std::move(msg_copy)]() mutable {
+        if (!self->alive_.load()) {
+            self->queued_count_.fetch_sub(1);
+            return;
+        }
+        auto encoded = self->protocol_pipeline_->encode_message(std::move(message));
+        std::string enc_err;
+        if (!self->protocol_pipeline_->error().empty()) {
+            enc_err = self->protocol_pipeline_->error();
+        } else if (encoded.empty()) {
+            enc_err = "protocol encode returned empty frame";
+        }
+        if (!enc_err.empty()) {
+            self->queued_count_.fetch_sub(1);
+            auto& log = shield::log::get_logger("net");
+            SHIELD_LOG_ERROR(log,
+                             "Session " + std::to_string(self->id_) +
+                                 " outbound encode failed: " + enc_err);
+            return;
+        }
+        self->send_queue_.push_back(std::move(encoded));
+        if (!self->send_in_progress_) {
+            self->send_in_progress_ = true;
+            self->do_async_write();
+        }
+    });
+
+    return true;
 }
 
 void TcpSession::do_async_write() {
@@ -154,11 +188,18 @@ void TcpSession::close(std::string reason) {
     }
 
     // Drop queued sends on the strand so any in-flight write completes with
-    // operation_aborted rather than touching freed state.
+    // operation_aborted rather than touching freed state. Release only the
+    // slots for messages that were actually in the queue; late send() /
+    // send_message() posts that arrive after this will roll back their own
+    // reservation via the alive_ check, so a store(0) here would underflow on
+    // those rollbacks.
     auto self = shared_from_this();
     boost::asio::post(strand_, [self]() {
+        const size_t dropped = self->send_queue_.size();
         self->send_queue_.clear();
-        self->queued_count_.store(0);
+        if (dropped > 0) {
+            self->queued_count_.fetch_sub(dropped);
+        }
         self->send_in_progress_ = false;
     });
 

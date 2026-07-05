@@ -71,8 +71,15 @@ public:
     /// @brief Whether this session is bound to a protocol pipeline.
     virtual bool has_protocol_pipeline() const = 0;
 
-    /// @brief Encode and send a structured business message through the bound
-    /// protocol pipeline.
+    /// @brief Enqueue a structured business message for asynchronous encode
+    /// and send through the bound protocol pipeline. Encoding runs on the
+    /// session strand (the same strand that owns inbound decoding), so it
+    /// never races with do_receive(). Returns true once the message is
+    /// accepted for encode+send; false (with @p error) only for the sync
+    /// pre-flight checks: session closed, no pipeline bound, or send queue
+    /// full (backpressure). Encode failures (bad route, schema mismatch) are
+    /// server-side bugs -- they are logged on the strand and the message is
+    /// dropped, not returned synchronously and not closing the connection.
     virtual bool send_message(const shield::transport::DecodedBody& message,
                               std::string* error = nullptr) = 0;
     virtual std::string_view protocol_codec_name() const = 0;
@@ -171,8 +178,11 @@ private:
     std::unique_ptr<shield::transport::ProtocolPipeline> protocol_pipeline_;
 
     // Async send queue. send_queue_ and send_in_progress_ are only touched
-    // from strand_ handlers; queued_count_ is atomic so the public send()
-    // path can do a fast backpressure check without locking.
+    // from strand_ handlers. queued_count_ is an atomic count of reserved
+    // slots (messages accepted but not yet written or rolled back); send()
+    // and send_message() reserve a slot on the caller thread with fetch_add so
+    // the queued total can never exceed max_send_queue_. Each write
+    // completion, drop, or rollback does one fetch_sub to release its slot.
     std::deque<std::vector<uint8_t>> send_queue_;
     bool send_in_progress_ = false;
     size_t max_send_queue_ = 0;  // 0 = unlimited (queued message count)
