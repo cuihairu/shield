@@ -104,6 +104,8 @@ end
 
 如果未配置 `actors[].network.protocol`，TCP session 使用 legacy frame path 并调用 `on_client_message(session, payload)`。如果配置了 `network.protocol`，TCP session 使用 `ProtocolPipeline`。这里的 pipeline 不是业务可任意拼接的动态节点链，而是固定骨架上的协议部件组合。真实运行时语义已经收敛为只有 `DecodeLocal` 结果进入 Lua 的 `on_client_message(session, message)`。
 
+更长期的语义里，`network.protocol` 实际上是在为 listener 绑定一条 `ProtocolProfile`。系统内部可以同时存在多种 profile，但单条 session 一旦接受连接，就应固定绑定其中一种；不应允许同一连接在后续业务包中来回切换 `json/protobuf/sproto/...` 协议族。
+
 业务 gateway 是 Lua service：
 
 ```lua
@@ -124,6 +126,8 @@ return M
 目标语义里，`message` 是业务消息而不是未解码 transport payload。若 `body.codec = raw`，则 `message` 可以是字节串，但它仍是显式 decode 结果。`ForwardRaw` 和 `Drop` 不应触发 Lua 回调。
 
 实现快照：当前 protocol path 中，`json` 和 `msgpack` decode-local 都会把结构化业务消息作为 Lua table 送入 `on_client_message`；`raw` decode-local 会把字节串送入 `on_client_message`；`ForwardRaw` 和 `Drop` 不触发 Lua 回调。尚未实现真实 decoder 的 codec 当前不能进入 `DecodeLocal`。
+
+如果未来需要同一 listener 支持多种协议族，推荐也只在连接建立首阶段协商一次 profile，并把协商结果固化到 session。正常业务包头不应重复携带“我是 protobuf/sproto/json”这类协议家族标识；包头只应包含当前 profile 自身执行所需的 route/type/session/flags 等字段。
 
 gateway 负责：
 

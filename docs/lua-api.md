@@ -629,7 +629,8 @@ session:remote_addr()
 - `body.codec = json` 时，`message` 会作为 Lua table 传入
 - `body.codec = raw` 时，`message` 会作为字节串传入
 - `ForwardRaw`、`Drop` 和协议错误不会触发 Lua 回调
-- `msgpack`、`protobuf`、`sproto`、`xmldef`、`fbs` 这类尚未实现真实 decoder 的 codec 当前不能进入 `DecodeLocal`
+- `msgpack` 已可作为 structured codec 进入 `DecodeLocal`
+- `protobuf`、`sproto`、`xmldef`、`fbs` 这类尚未实现真实 decoder 的 codec 当前不能进入 `DecodeLocal`
 - protocol-enabled session 上，`session:send(payload)` 会走固定出站链路：`RouteResolver -> BodyCodec.encode -> Envelope.encode -> socket write`
 - `body.codec = raw` 时，`session:send("...")` 发送字节串
 - `body.codec = json` / `msgpack` 时，`session:send(...)` 应传业务 table / object；直接传字符串会返回 `protocol_message_required`

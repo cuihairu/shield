@@ -52,6 +52,8 @@ Lua gateway / business service
 
 因此 `json`、`msgpack`、`protobuf`、`sproto`、`xmldef` 这类协议，不应该被建模成“Lua 前面的一串任意节点”，而应该被建模成固定骨架里的协议部件组合。
 
+更进一步说，gateway 真正绑定的应是一条 session 级 `ProtocolProfile`，而不是“每包自报家门”。系统内部可以同时存在多种 profile，但同一条客户端连接一旦建立，就应固定使用其中一套。
+
 ## Lua 边界
 
 - Lua 侧应只接收 `DecodeLocal` 后的业务消息。
@@ -103,9 +105,14 @@ return M
 
 - 未配置 `actors[].network.protocol` 时，仍走 legacy frame path，并调用 `on_client_message(session, payload)`。
 - 已配置 `network.protocol` 时，真实 gateway Lua 路径也统一调用 `on_client_message(session, message)`。
+- 当前实际是 listener-fixed profile：listener 配什么，接入的 session 就绑定什么。
 - `DecodeLocal` 才会进入 Lua；`ForwardRaw`、`Drop` 和协议错误停留在 C++ 数据面。
-- `body.codec = json` 时，Lua 收到的是 table；`body.codec = raw` 时，Lua 收到的是字节串。
-- `msgpack`、`protobuf`、`sproto`、`xmldef`、`fbs` 这类尚未实现真实解码器的 codec 当前不能作为 `DecodeLocal` 进入 Lua。
+- `body.codec = json` / `msgpack` 时，Lua 收到的是 table；`body.codec = raw` 时，Lua 收到的是字节串。
+- `protobuf`、`sproto`、`xmldef`、`fbs` 这类尚未实现真实解码器的 codec 当前不能作为 `DecodeLocal` 进入 Lua。
+
+正常业务包头不应重复携带“我是 json/protobuf/sproto”这类协议家族标识；这些信息应在 listener 配置或首阶段握手时已经确定。
+
+对于 `xmldef`，后续目标不是只补一个服务端 decoder，而是补齐 `xml -> descriptor -> generator plugin -> runtime binding` 全链路；见 [Xmldef Toolchain Design](xmldef-toolchain-design.md) 和 [Xmldef Compiler / Runtime MVP](xmldef-compiler-runtime-mvp.md)。
 
 ## 非目标
 
