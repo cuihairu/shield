@@ -10,6 +10,7 @@ export default defineConfig({
     build: {
       // esbuild 0.25+ 对旧 target 的解构语法转换过于保守，目标浏览器其实都支持
       target: 'esnext',
+      chunkSizeWarningLimit: 2048,
     },
     optimizeDeps: {
       esbuildOptions: {

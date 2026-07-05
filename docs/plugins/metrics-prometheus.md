@@ -316,7 +316,7 @@ plugins/metrics.prometheus/
 
 Prometheus 作为数据源，Grafana 直接基于导出的指标名做查询。常用 PromQL：
 
-```promql
+```txt
 rate(shield_http_requests_total[5m])                          # QPS
 shield_active_players                                         # 在线人数
 rate(shield_request_duration_seconds_sum[5m])
