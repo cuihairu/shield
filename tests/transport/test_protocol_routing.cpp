@@ -4,6 +4,8 @@
 #include "shield/transport/protocol.hpp"
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -15,11 +17,13 @@ using shield::transport::EnvelopeConfig;
 using shield::transport::IdLenEnvelope;
 using shield::transport::JsonBodyCodec;
 using shield::transport::LenPrefixEnvelope;
+using shield::transport::MsgpackBodyCodec;
 using shield::transport::Packet;
 using shield::transport::ProtocolPipeline;
 using shield::transport::ProtocolProfile;
 using shield::transport::RawBodyCodec;
 using shield::transport::create_body_codec;
+using shield::transport::build_protocol_pipeline_from_json;
 using shield::transport::load_xmldef_routes_from_string;
 using shield::transport::RouteAction;
 using shield::transport::RouteEntry;
@@ -328,22 +332,340 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveJsonBodyRoute) {
     BOOST_CHECK_EQUAL(results[0].route->debug_name, "login");
     BOOST_CHECK(results[0].decoded());
     BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
+    BOOST_REQUIRE(results[0].decoded_body->has_message());
+    BOOST_REQUIRE(results[0].decoded_body->message->is_object());
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 1);
 }
 
-BOOST_AUTO_TEST_CASE(BinarySchemaCodecNamesArePassthroughUntilDecoded) {
+BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveMsgpackBodyRoute) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 1001,
+        .target_service = 3,
+        .codec_id = 1,
+        .schema_id = 0,
+        .debug_name = "login",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = false},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<MsgpackBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::LenPrefix;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Body;
+    profile.decode_body_route = true;
+    profile.decode_before_dispatch = false;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    Packet packet;
+    packet.body = nlohmann::json::to_msgpack(nlohmann::json::object(
+        {{"route", "login"},
+         {"payload", nlohmann::json::object({{"uid", 1}})}}));
+    const auto encoded = pipeline.encode(packet.ref());
+    BOOST_REQUIRE(pipeline.error().empty());
+
+    auto results = pipeline.feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_REQUIRE(results[0].route != nullptr);
+    BOOST_CHECK_EQUAL(results[0].packet.route_id, 1001u);
+    BOOST_CHECK_EQUAL(results[0].route->debug_name, "login");
+    BOOST_CHECK(results[0].decoded());
+    BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
+    BOOST_REQUIRE(results[0].decoded_body->has_message());
+    BOOST_REQUIRE(results[0].decoded_body->message->is_object());
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(ProtocolPipelineDropsUnknownRouteWithoutError) {
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<RawBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::IdLen;
+    profile.envelope.endian = Endian::Little;
+    profile.envelope.route_id_bytes = 2;
+    profile.envelope.length_bytes = 2;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Header;
+    profile.unknown_route_action = RouteAction::Drop;
+
+    RouteTable routes;
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    Packet packet;
+    packet.route_id = 0x77;
+    packet.body = bytes("opaque");
+    const auto encoded = pipeline.encode(packet.ref());
+    BOOST_REQUIRE(pipeline.error().empty());
+
+    auto results = pipeline.feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_CHECK(results[0].should_drop());
+    BOOST_CHECK(results[0].route == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesListenerMaxFrameSizeFallback) {
+    const auto config = R"json(
+{
+  "name": "json.simple",
+  "envelope": {
+    "type": "lenprefix",
+    "length_bytes": 4
+  },
+  "body": {
+    "codec": "json"
+  }
+}
+)json";
+
+    std::string error;
+    auto pipeline =
+        build_protocol_pipeline_from_json(config, "", 64, &error);
+    BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
+    BOOST_CHECK_EQUAL(pipeline->profile().envelope.max_frame_size, 64u);
+}
+
+BOOST_AUTO_TEST_CASE(BuildProtocolPipelineAcceptsForwardAliasForXmldefDefaultAction) {
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+                          "shield_protocol_routing_tests";
+    std::filesystem::create_directories(temp_dir);
+    const auto catalog_path = temp_dir / "messages.xml";
+    {
+        std::ofstream out(catalog_path);
+        out << R"xml(<protocol name="arena">
+  <message id="0x1001" name="player.move" />
+</protocol>)xml";
+    }
+
+    const auto config = std::string(R"json(
+{
+  "name": "xmldef.default",
+  "envelope": {
+    "type": "idlen",
+    "route_id_bytes": 2,
+    "length_bytes": 2
+  },
+  "body": {
+    "codec": "xmldef",
+    "catalog": "messages.xml"
+  },
+  "routing": {
+    "default_action": "forward"
+  }
+}
+)json");
+
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(
+        config, temp_dir.string(), 0, &error);
+    BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
+    BOOST_REQUIRE(pipeline->routes().find(0x1001) != nullptr);
+    BOOST_CHECK(pipeline->routes().find(0x1001)->policy.action ==
+                RouteAction::ForwardRaw);
+}
+
+BOOST_AUTO_TEST_CASE(ProtocolPipelineUsesProfileCodecForDecodeLocalRoutes) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 1001,
+        .target_service = 3,
+        .codec_id = 9,
+        .schema_id = 42,
+        .debug_name = "login",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = false},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::LenPrefix;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Body;
+    profile.decode_body_route = true;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    Packet packet;
+    packet.body = bytes(R"({"route":"login","payload":{"uid":1}})");
+    const auto encoded = pipeline.encode(packet.ref());
+    BOOST_REQUIRE(pipeline.error().empty());
+
+    auto results = pipeline.feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_REQUIRE(results[0].route != nullptr);
+    BOOST_CHECK(results[0].decoded());
+    BOOST_CHECK_EQUAL(results[0].decoded_body->codec_id, 9u);
+    BOOST_CHECK_EQUAL(results[0].decoded_body->schema_id, 42u);
+    BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
+}
+
+BOOST_AUTO_TEST_CASE(ProtocolPipelineCanMaterializeLazyDecodeLocalResult) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 1001,
+        .target_service = 3,
+        .codec_id = 9,
+        .schema_id = 42,
+        .debug_name = "login",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = true},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::LenPrefix;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Body;
+    profile.decode_body_route = true;
+    profile.decode_before_dispatch = false;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    Packet packet;
+    packet.body = bytes(R"({"route":"login","payload":{"uid":1}})");
+    const auto encoded = pipeline.encode(packet.ref());
+    BOOST_REQUIRE(pipeline.error().empty());
+
+    auto results = pipeline.feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_REQUIRE(results[0].route != nullptr);
+    BOOST_CHECK(!results[0].decoded());
+
+    BOOST_REQUIRE(pipeline.materialize_decode(results[0]));
+    BOOST_CHECK(results[0].decoded());
+    BOOST_CHECK_EQUAL(results[0].decoded_body->codec_id, 9u);
+    BOOST_CHECK_EQUAL(results[0].decoded_body->schema_id, 42u);
+    BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
+    BOOST_REQUIRE(results[0].decoded_body->has_message());
+    BOOST_REQUIRE(results[0].decoded_body->message->is_object());
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(ProtocolPipelineCanEncodeAndDecodeMsgpackBusinessMessage) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 1001,
+        .target_service = 3,
+        .codec_id = 1,
+        .schema_id = 0,
+        .debug_name = "login",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = false},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<MsgpackBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::LenPrefix;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Body;
+    profile.decode_body_route = true;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    shield::transport::DecodedBody body;
+    body.message = nlohmann::json::object({{"uid", 7}});
+
+    const auto encoded = pipeline.encode_message(std::move(body));
+    BOOST_REQUIRE(!encoded.empty());
+    BOOST_REQUIRE(pipeline.error().empty());
+
+    auto results = pipeline.feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_REQUIRE(results[0].ok());
+    BOOST_REQUIRE(results[0].route != nullptr);
+    BOOST_CHECK_EQUAL(results[0].route->route_id, 1001u);
+    BOOST_CHECK(results[0].decoded());
+    BOOST_REQUIRE(results[0].decoded_body->has_message());
+    BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 7);
+}
+
+BOOST_AUTO_TEST_CASE(StructuredCodecsRejectRawByteEgress) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 1001,
+        .target_service = 3,
+        .codec_id = 1,
+        .schema_id = 0,
+        .debug_name = "login",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = false},
+    });
+
+    {
+        BodyCodecRegistry codecs;
+        BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
+
+        ProtocolProfile profile;
+        profile.envelope_kind = EnvelopeKind::LenPrefix;
+        profile.default_codec_id = 1;
+        profile.route_source = RouteSource::Body;
+        profile.decode_body_route = true;
+
+        ProtocolPipeline pipeline(profile, routes, std::move(codecs));
+
+        shield::transport::DecodedBody body;
+        body.bytes = bytes("raw");
+
+        const auto encoded = pipeline.encode_message(body);
+        BOOST_CHECK(encoded.empty());
+        BOOST_CHECK_NE(pipeline.error().find("expects business message"),
+                       std::string::npos);
+    }
+
+    {
+        BodyCodecRegistry codecs;
+        BOOST_REQUIRE(codecs.add(1, std::make_unique<MsgpackBodyCodec>()));
+
+        ProtocolProfile profile;
+        profile.envelope_kind = EnvelopeKind::LenPrefix;
+        profile.default_codec_id = 1;
+        profile.route_source = RouteSource::Body;
+        profile.decode_body_route = true;
+
+        ProtocolPipeline pipeline(profile, routes, std::move(codecs));
+
+        shield::transport::DecodedBody body;
+        body.bytes = bytes("raw");
+
+        const auto encoded = pipeline.encode_message(body);
+        BOOST_CHECK(encoded.empty());
+        BOOST_CHECK_NE(pipeline.error().find("expects business message"),
+                       std::string::npos);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(BinarySchemaCodecNamesCannotDecodeLocalWithoutImplementation) {
     auto protobuf = create_body_codec("protobuf");
     auto fbs = create_body_codec("fbs");
     auto sproto = create_body_codec("sproto");
     auto xmldef = create_body_codec("xmldef");
+    auto msgpack = create_body_codec("msgpack");
 
     BOOST_REQUIRE(protobuf != nullptr);
     BOOST_REQUIRE(fbs != nullptr);
     BOOST_REQUIRE(sproto != nullptr);
     BOOST_REQUIRE(xmldef != nullptr);
+    BOOST_REQUIRE(msgpack != nullptr);
     BOOST_CHECK_EQUAL(protobuf->name(), "protobuf");
     BOOST_CHECK_EQUAL(fbs->name(), "fbs");
     BOOST_CHECK_EQUAL(sproto->name(), "sproto");
     BOOST_CHECK_EQUAL(xmldef->name(), "xmldef");
+    BOOST_CHECK_EQUAL(msgpack->name(), "msgpack");
 
     Packet packet;
     packet.route_id = 88;
@@ -354,11 +676,48 @@ BOOST_AUTO_TEST_CASE(BinarySchemaCodecNamesArePassthroughUntilDecoded) {
     route.codec_id = 4;
     route.schema_id = 123;
 
-    auto decoded = xmldef->decode(packet.ref(), route);
-    BOOST_CHECK_EQUAL(decoded.codec_id, 4u);
-    BOOST_CHECK_EQUAL(decoded.schema_id, 123u);
-    BOOST_CHECK_EQUAL_COLLECTIONS(decoded.bytes.begin(), decoded.bytes.end(),
-                                  packet.body.begin(), packet.body.end());
+    BOOST_CHECK_THROW(xmldef->decode(packet.ref(), route), std::runtime_error);
+    BOOST_CHECK_THROW(protobuf->decode(packet.ref(), route), std::runtime_error);
+    BOOST_CHECK_THROW(fbs->decode(packet.ref(), route), std::runtime_error);
+    BOOST_CHECK_THROW(sproto->decode(packet.ref(), route), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(ProtocolPipelineRejectsDecodeLocalForPlaceholderCodec) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 0x1001,
+        .target_service = 10,
+        .codec_id = 1,
+        .schema_id = 0,
+        .debug_name = "player.move",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = false},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, create_body_codec("xmldef")));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::IdLen;
+    profile.envelope.endian = Endian::Little;
+    profile.envelope.route_id_bytes = 2;
+    profile.envelope.length_bytes = 2;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Header;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    Packet packet;
+    packet.route_id = 0x1001;
+    packet.body = bytes("opaque");
+    const auto encoded = pipeline.encode(packet.ref());
+    BOOST_REQUIRE(pipeline.error().empty());
+
+    auto results = pipeline.feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(!results[0].ok());
+    BOOST_CHECK_NE(results[0].error.find("does not support decode_local"),
+                   std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(XmldefCatalogLoadsGenericRoutes) {

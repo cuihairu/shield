@@ -2,6 +2,9 @@
 #include "shield/net/listener.hpp"
 
 #include <boost/asio/buffer.hpp>
+#ifdef _WIN32
+#include <WinSock2.h>
+#endif
 #include <mutex>
 #include <shared_mutex>
 
@@ -32,8 +35,10 @@ TcpListener::TcpListener(boost::asio::io_context& io_context, uint16_t port,
 // SO_EXCLUSIVEADDRUSE instead, which gives Linux-like behaviour: the
 // bind will fail if another socket is already listening on the same port.
 #ifdef _WIN32
-    acceptor_.set_option(boost::asio::socket_base::exclusive_address_use(true),
-                         ec);
+    const BOOL exclusive = TRUE;
+    ::setsockopt(acceptor_.native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                 reinterpret_cast<const char*>(&exclusive),
+                 static_cast<int>(sizeof(exclusive)));
 #else
     acceptor_.set_option(boost::asio::socket_base::reuse_address(true), ec);
 #endif

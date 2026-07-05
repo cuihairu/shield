@@ -25,7 +25,12 @@ class LuaServiceManager;
 /// - On connect: calls gateway_service.on_connect(session_handle)
 /// - On message: calls gateway_service.on_client_message(session_handle,
 /// payload)
+/// - On protocol decode-local packet: routes decoded business message through
+///   on_client_message(session_handle, message)
 /// - On disconnect: calls gateway_service.on_disconnect(session_handle, reason)
+///
+/// ForwardRaw/Drop protocol actions stay in the C++ data plane and are not
+/// exposed to Lua.
 class LuaGatewayBridge {
 public:
     /// @brief Create a gateway bridge.
@@ -42,6 +47,9 @@ public:
                     const std::string& payload);
 
     /// @brief Handle a routed packet from a TCP session.
+    ///
+    /// Only DecodeLocal packets are forwarded into Lua, and they are bridged
+    /// as on_client_message payloads. ForwardRaw/Drop remain in C++.
     void on_packet(std::shared_ptr<shield::net::Session> session,
                    const shield::transport::DispatchResult& packet);
 

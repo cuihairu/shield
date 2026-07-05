@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <span>
 #include <string>
@@ -91,6 +92,7 @@ public:
 
     const RouteEntry* find(std::uint32_t route_id) const;
     const RouteEntry* find_by_name(std::string_view route_name) const;
+    const RouteEntry* only() const;
     bool contains(std::uint32_t route_id) const;
 
     void clear();
@@ -184,11 +186,17 @@ struct BodyRouteKey {
     bool empty() const { return route_id == 0 && route_name.empty(); }
 };
 
+struct ProtocolProfile;
+
 struct DecodedBody {
+    std::uint32_t route_id = 0;
     std::uint16_t codec_id = 0;
     std::uint16_t schema_id = 0;
     std::string route_name;
     std::vector<std::uint8_t> bytes;
+    std::optional<nlohmann::json> message;
+
+    bool has_message() const { return message.has_value(); }
 };
 
 class BodyCodec {
@@ -198,14 +206,18 @@ public:
     virtual std::string_view name() const = 0;
     virtual std::optional<BodyRouteKey> route_key(PacketRef packet);
     virtual DecodedBody decode(PacketRef packet, const RouteEntry& route) = 0;
-    virtual std::vector<std::uint8_t> encode(const DecodedBody& body) = 0;
+    virtual std::vector<std::uint8_t> encode(const DecodedBody& body,
+                                             const RouteEntry& route,
+                                             const ProtocolProfile& profile) = 0;
 };
 
 class RawBodyCodec final : public BodyCodec {
 public:
     std::string_view name() const override { return "raw"; }
     DecodedBody decode(PacketRef packet, const RouteEntry& route) override;
-    std::vector<std::uint8_t> encode(const DecodedBody& body) override;
+    std::vector<std::uint8_t> encode(const DecodedBody& body,
+                                     const RouteEntry& route,
+                                     const ProtocolProfile& profile) override;
 };
 
 class PassthroughBodyCodec final : public BodyCodec {
@@ -214,7 +226,9 @@ public:
 
     std::string_view name() const override { return name_; }
     DecodedBody decode(PacketRef packet, const RouteEntry& route) override;
-    std::vector<std::uint8_t> encode(const DecodedBody& body) override;
+    std::vector<std::uint8_t> encode(const DecodedBody& body,
+                                     const RouteEntry& route,
+                                     const ProtocolProfile& profile) override;
 
 private:
     std::string name_;
@@ -225,7 +239,19 @@ public:
     std::string_view name() const override { return "json"; }
     std::optional<BodyRouteKey> route_key(PacketRef packet) override;
     DecodedBody decode(PacketRef packet, const RouteEntry& route) override;
-    std::vector<std::uint8_t> encode(const DecodedBody& body) override;
+    std::vector<std::uint8_t> encode(const DecodedBody& body,
+                                     const RouteEntry& route,
+                                     const ProtocolProfile& profile) override;
+};
+
+class MsgpackBodyCodec final : public BodyCodec {
+public:
+    std::string_view name() const override { return "msgpack"; }
+    std::optional<BodyRouteKey> route_key(PacketRef packet) override;
+    DecodedBody decode(PacketRef packet, const RouteEntry& route) override;
+    std::vector<std::uint8_t> encode(const DecodedBody& body,
+                                     const RouteEntry& route,
+                                     const ProtocolProfile& profile) override;
 };
 
 std::unique_ptr<BodyCodec> create_body_codec(std::string_view name);
@@ -281,6 +307,9 @@ struct DispatchResult {
 
     bool ok() const { return error.empty(); }
     bool should_forward_raw() const { return action == RouteAction::ForwardRaw; }
+    bool should_drop() const {
+        return action == RouteAction::Drop && error.empty();
+    }
     bool decoded() const { return decoded_body.has_value(); }
 };
 
@@ -292,6 +321,8 @@ public:
     std::vector<DispatchResult> feed(const std::uint8_t* data,
                                      std::size_t size);
     std::vector<std::uint8_t> encode(const PacketRef& packet);
+    std::vector<std::uint8_t> encode_message(DecodedBody body);
+    bool materialize_decode(DispatchResult& result);
 
     const ProtocolProfile& profile() const { return profile_; }
     const Envelope& envelope() const { return *envelope_; }
@@ -299,11 +330,13 @@ public:
     const RouteTable& routes() const { return routes_; }
     BodyCodecRegistry& codecs() { return codecs_; }
     const BodyCodecRegistry& codecs() const { return codecs_; }
+    std::string_view default_codec_name() const;
     const std::string& error() const { return error_; }
     void reset();
 
 private:
     const RouteEntry* resolve_route(Packet& packet, DispatchResult& result);
+    const RouteEntry* resolve_outbound_route(DecodedBody& body);
     BodyCodec* codec_for_route(const RouteEntry& route);
 
     ProtocolProfile profile_;
@@ -312,5 +345,9 @@ private:
     BodyCodecRegistry codecs_;
     std::string error_;
 };
+
+std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
+    std::string_view config_json, std::string_view source_dir = {},
+    std::size_t fallback_max_frame_size = 0, std::string* error = nullptr);
 
 }  // namespace shield::transport

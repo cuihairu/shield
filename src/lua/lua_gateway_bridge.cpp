@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include "shield/log/logger.hpp"
+#include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/session.hpp"
 #include "shield/transport/protocol.hpp"
@@ -19,12 +20,7 @@ void LuaGatewayBridge::on_connect(
     std::shared_ptr<shield::net::Session> session) {
     if (!session) return;
 
-    // Build session info as a JSON object that the Lua handler can read.
-    // The Lua gateway_service.lua expects a table with id and remote_addr
-    // fields.
-    nlohmann::json session_info = {
-        {"id", std::to_string(session->id())},
-        {"remote_addr", session->remote_addr().to_string()}};
+    const auto session_info = make_session_handle_json(session);
 
     auto* manager = &manager_;
     const auto target = gateway_service_name_;
@@ -44,9 +40,7 @@ void LuaGatewayBridge::on_message(std::shared_ptr<shield::net::Session> session,
                                   const std::string& payload) {
     if (!session) return;
 
-    nlohmann::json session_info = {
-        {"id", std::to_string(session->id())},
-        {"remote_addr", session->remote_addr().to_string()}};
+    const auto session_info = make_session_handle_json(session);
 
     auto* manager = &manager_;
     const auto target = gateway_service_name_;
@@ -67,50 +61,42 @@ void LuaGatewayBridge::on_packet(
     std::shared_ptr<shield::net::Session> session,
     const shield::transport::DispatchResult& packet) {
     if (!session) return;
+    if (!packet.ok() || packet.should_drop() || packet.should_forward_raw()) {
+        return;
+    }
+    if (!packet.decoded()) {
+        return;
+    }
 
-    nlohmann::json session_info = {
-        {"id", std::to_string(session->id())},
-        {"remote_addr", session->remote_addr().to_string()}};
-
-    nlohmann::json packet_info = {
-        {"route_id", packet.packet.route_id},
-        {"kind", packet.packet.kind},
-        {"flags", packet.packet.flags},
-        {"seq", packet.packet.seq},
-        {"action", static_cast<int>(packet.action)},
-        {"target_service",
-         packet.route ? packet.route->target_service : std::uint32_t{0}},
-        {"codec_id", packet.route ? packet.route->codec_id : std::uint16_t{0}},
-        {"schema_id",
-         packet.route ? packet.route->schema_id : std::uint16_t{0}},
-        {"route", packet.route ? packet.route->debug_name : std::string{}}};
-
-    const std::string payload(packet.packet.body.begin(),
-                              packet.packet.body.end());
+    const auto session_info = make_session_handle_json(session);
+    nlohmann::json payload;
+    if (packet.decoded_body->has_message()) {
+        payload = *packet.decoded_body->message;
+    } else {
+        payload = std::string(packet.decoded_body->bytes.begin(),
+                              packet.decoded_body->bytes.end());
+    }
 
     auto* manager = &manager_;
     const auto target = gateway_service_name_;
-    manager_.enqueue_forked_task(
-        target, [manager, target, session_info, packet_info, payload]() {
-            std::string error;
-            if (!manager->send_system(
-                    target, "on_client_packet",
-                    nlohmann::json::array({session_info, packet_info, payload}),
-                    &error)) {
-                auto& log = shield::log::get_logger("lua");
-                SHIELD_LOG_WARNING(
-                    log, "Failed to queue gateway on_client_packet: " + error);
-            }
-        });
+    manager_.enqueue_forked_task(target, [manager, target, session_info,
+                                          payload = std::move(payload)]() {
+        std::string error;
+        if (!manager->send_system(target, "on_client_message",
+                                  nlohmann::json::array({session_info, payload}),
+                                  &error)) {
+            auto& log = shield::log::get_logger("lua");
+            SHIELD_LOG_WARNING(
+                log, "Failed to queue gateway on_client_message: " + error);
+        }
+    });
 }
 
 void LuaGatewayBridge::on_disconnect(
     std::shared_ptr<shield::net::Session> session, std::string reason) {
     if (!session) return;
 
-    nlohmann::json session_info = {
-        {"id", std::to_string(session->id())},
-        {"remote_addr", session->remote_addr().to_string()}};
+    const auto session_info = make_session_handle_json(session);
 
     auto* manager = &manager_;
     const auto target = gateway_service_name_;

@@ -221,8 +221,12 @@ caller service
 ```text
 socket bytes
   -> shield_net connection/session
-  -> shield_transport decode
-  -> gateway service on_client_message(session, payload)
+  -> shield_transport
+     -> Envelope
+     -> RouteExtractor
+     -> RoutePolicy
+     -> BodyCodec
+  -> gateway service on_client_message(session, message)
   -> gateway 将业务请求路由到其他 service
   -> gateway 依据 session/session_id 回写客户端
 ```
@@ -230,6 +234,7 @@ socket bytes
 规则：
 
 - gateway 是 Lua service 模式，不是独立框架层。
+- transport pipeline 形状固定，不是业务可任意拼接的 middleware chain。
 - 网络层只负责连接、session、背压和 transport 适配。
 - 认证、路由、会话表、玩家派发策略由 gateway / player 模块承担。
 
@@ -249,6 +254,14 @@ local send/call
 - 本地和远端尽量复用同一 `send/call/timeout/error` 语义。
 - remote name 只是 cluster route cache，不进入本地 core registry。
 - 节点发现属于 `shield_cluster`，不是 `shield_core` 的职责。
+- 默认跨服模型是逻辑 service 通信，不是客户端 raw frame 横向转发。
+
+推荐把跨服路径分成两类：
+
+- 主路径：`shield.send/call` 驱动的业务消息路由
+- 例外路径：`ForwardRaw` 驱动的协议数据面透传
+
+后者只适合 proxy/gateway/协议兼容场景，不应成为业务层的常规协作模型。
 
 ### 5. Ops 观测路径
 
@@ -388,7 +401,17 @@ Shield 只保留少量显式扩展点。
 
 ### Transport
 
-适合编解码、解帧、加密、KCP 等字节流层扩展。Phase 1 只要求 basic framing/codec/encryption 与 TCP session 组合可用；UDP/KCP/WebSocket 属于后续 transport extension。Transport 只处理网络字节和 payload 适配，不承载业务生命周期。
+适合编解码、解帧、加密、KCP 等字节流层扩展。Phase 1 只要求 basic framing/codec/encryption 与 TCP session 组合可用；UDP/KCP/WebSocket 属于后续 transport extension。Transport 只处理网络字节和固定 protocol pipeline 部件适配，不承载业务生命周期。
+
+固定 protocol pipeline 的典型槽位是：
+
+- `Envelope`
+- `RouteExtractor`
+- `RoutePolicy`
+- `BodyCodec`
+- `RouteResolver`
+
+`json`、`msgpack`、`protobuf`、`sproto`、`xmldef` 等协议应作为这些槽位上的实现来接入，而不是各自带一套独立业务链路。
 
 ### Optional Module
 

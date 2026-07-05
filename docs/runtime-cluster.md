@@ -64,6 +64,55 @@ local nodes = shield.cluster.nodes()
 - 节点 connect/disconnect、peer 管理属于配置和运维职责，不作为业务 Lua API 暴露。
 - Phase 1 只支持显式 `(node_id, service_name)` 寻址。
 
+## Cross-Node Main Path
+
+跨服默认主路径是“业务消息路由”，不是“客户端协议帧转发”。
+
+```text
+Lua service
+  -> shield.send / shield.call
+  -> shield_core
+  -> shield_cluster
+  -> CAF remote transport
+  -> remote shield_core
+  -> remote service
+```
+
+规则：
+
+- 跨服业务交互默认走 `shield.send/call`。
+- 本地和远端尽量复用同一套 service/message/timeout/error 语义。
+- 业务代码面向逻辑 service 名称或 `ServiceHandle`，不直接面向 CAF actor 或网络连接。
+- `shield_cluster` 负责把本地 service 语义扩展到远端，不再复制一套 cluster 专用业务调用模型。
+
+推荐目标：
+
+- 点对点业务请求：`shield.send/call`
+- 玩家归属路由：发给 owning service 或 `PlayerRef`
+- 全局广播、共享状态、持久化队列：走 `shield_global` 或数据插件
+
+不推荐作为默认跨服主路径的做法：
+
+- 直接暴露 CAF API 给业务层
+- 让业务层长期持有和转发客户端 raw frame
+- 跨 service 或跨节点传递 `SessionHandle`
+
+## Raw Forwarding As Exception Path
+
+`ForwardRaw` 只适合作为协议数据面的例外路径，而不是常规跨服模式。
+
+适用场景：
+
+- 代理/边缘网关需要把某些 header-route frame 原样转交给后端专用网关
+- 协议迁移期暂时保留旧二进制帧
+- 某些链路明确要求中间节点不解 body
+
+约束：
+
+- `ForwardRaw` 应终止在 C++ forwarding path，不应成为通用 Lua 业务 API。
+- 它解决的是 transport/protocol 转发，不是业务服务协作。
+- 一旦进入后端业务层，推荐尽快回到 `shield.send/call` 的逻辑消息模型。
+
 ## Cluster 语义
 
 共同约束：

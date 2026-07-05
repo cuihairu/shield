@@ -10,15 +10,19 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "shield/log/logger.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
+#include "shield/net/session.hpp"
 #include "shield/net/http_client.hpp"
 #include "shield/plugin/plugin_host.hpp"
 
@@ -50,6 +54,51 @@ sol::table make_error(sol::this_state state, std::string code,
     return err;
 }
 
+namespace {
+
+static constexpr std::string_view kSessionHandleMarker =
+    "__shield_session_handle";
+
+std::unordered_map<std::string, std::weak_ptr<shield::net::Session>>&
+session_handle_registry() {
+    static std::unordered_map<std::string, std::weak_ptr<shield::net::Session>>
+        registry;
+    return registry;
+}
+
+std::mutex& session_handle_registry_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+void remember_session_handle(
+    const std::shared_ptr<shield::net::Session>& session) {
+    if (!session) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(session_handle_registry_mutex());
+    session_handle_registry()[std::to_string(session->id())] = session;
+}
+
+std::shared_ptr<shield::net::Session> resolve_session_handle(
+    std::string_view session_id) {
+    std::lock_guard<std::mutex> lock(session_handle_registry_mutex());
+    auto& registry = session_handle_registry();
+    const auto it = registry.find(std::string(session_id));
+    if (it == registry.end()) {
+        return nullptr;
+    }
+
+    auto session = it->second.lock();
+    if (!session) {
+        registry.erase(it);
+    }
+    return session;
+}
+
+}  // namespace
+
 sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
     if (value.is_null()) {
         return sol::make_object(lua, sol::nil);
@@ -78,6 +127,21 @@ sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
         return sol::make_object(lua, table);
     }
     if (value.is_object()) {
+        if (value.contains(std::string(kSessionHandleMarker)) &&
+            value[std::string(kSessionHandleMarker)].is_boolean() &&
+            value[std::string(kSessionHandleMarker)].get<bool>()) {
+            sol::object maybe_ud = lua["__shield_make_session_handle"];
+            if (maybe_ud.valid() && maybe_ud.is<sol::protected_function>()) {
+                sol::protected_function make_handle =
+                    maybe_ud.as<sol::protected_function>();
+                auto result = make_handle(
+                    value.value("id", std::string{}),
+                    value.value("remote_addr", std::string{}));
+                if (result.valid() && result.return_count() > 0) {
+                    return result.get<sol::object>(0);
+                }
+            }
+        }
         sol::table table = lua.create_table();
         for (const auto& [key, item] : value.items()) {
             table[key] = json_to_lua(lua, item);
@@ -995,18 +1059,38 @@ void register_gateway_api(LuaRuntime& runtime) { (void)runtime; }
 // This is the base registration; actual session objects are created by
 // shield_net and passed to gateway handlers.
 struct SessionHandle {
+    std::weak_ptr<shield::net::Session> session;
     std::string id;
     std::string remote_address;
-    bool is_closed = false;
-    std::vector<std::string> send_queue;
-    size_t max_queue_size = 10000;
 
     SessionHandle() = default;
-    SessionHandle(std::string sid, std::string addr)
-        : id(std::move(sid)), remote_address(std::move(addr)) {}
+    SessionHandle(std::weak_ptr<shield::net::Session> s, std::string sid,
+                  std::string addr)
+        : session(std::move(s)),
+          id(std::move(sid)),
+          remote_address(std::move(addr)) {}
+
+    std::shared_ptr<shield::net::Session> resolve() {
+        if (auto live = session.lock()) {
+            return live;
+        }
+
+        auto live = resolve_session_handle(id);
+        if (live) {
+            session = live;
+        }
+        return live;
+    }
 };
 
 static void register_session_handle(sol::state& lua) {
+    lua.set_function(
+        "__shield_make_session_handle",
+        [](std::string id, std::string remote_addr) {
+            return SessionHandle{
+                resolve_session_handle(id), std::move(id),
+                std::move(remote_addr)};
+        });
     lua.new_usertype<SessionHandle>(
         "SessionHandle", sol::no_constructor, "id",
         [](const SessionHandle& s) { return s.id; }, "remote_addr",
@@ -1014,7 +1098,8 @@ static void register_session_handle(sol::state& lua) {
         [](SessionHandle& s, sol::object payload) -> sol::variadic_results {
             sol::variadic_results results;
             sol::state_view sv(payload.lua_state());
-            if (s.is_closed) {
+            auto session = s.resolve();
+            if (!session || !session->is_alive()) {
                 results.push_back(sol::make_object(sv, false));
                 sol::table err = sv.create_table();
                 err["code"] = "session_closed";
@@ -1022,24 +1107,111 @@ static void register_session_handle(sol::state& lua) {
                 results.push_back(sol::make_object(sv, err));
                 return results;
             }
-            if (s.send_queue.size() >= s.max_queue_size) {
+
+            if (session->has_protocol_pipeline()) {
+                shield::transport::DecodedBody message;
+                const auto codec_name =
+                    std::string(session->protocol_codec_name());
+                const bool raw_protocol = codec_name == "raw";
+                if (payload.is<sol::table>()) {
+                    message.message = lua_table_to_json(payload.as<sol::table>());
+                } else if (raw_protocol && payload.is<std::string>()) {
+                    const auto value = payload.as<std::string>();
+                    message.bytes.assign(value.begin(), value.end());
+                } else {
+                    auto json = lua_to_json(payload);
+                    if (json.is_object() || json.is_array()) {
+                        message.message = std::move(json);
+                    } else if (raw_protocol && json.is_string()) {
+                        const auto value = json.get<std::string>();
+                        message.bytes.assign(value.begin(), value.end());
+                    } else if (raw_protocol) {
+                        const auto serialized = json.dump();
+                        message.bytes.assign(serialized.begin(),
+                                             serialized.end());
+                    } else {
+                        results.push_back(sol::make_object(sv, false));
+                        sol::table err = sv.create_table();
+                        err["code"] = "protocol_message_required";
+                        err["message"] =
+                            "structured protocol session expects table/object payload";
+                        results.push_back(sol::make_object(sv, err));
+                        return results;
+                    }
+                }
+
+                std::string send_error;
+                if (!session->send_message(message, &send_error)) {
+                    results.push_back(sol::make_object(sv, false));
+                    sol::table err = sv.create_table();
+                    err["code"] = "protocol_encode_failed";
+                    err["message"] =
+                        send_error.empty() ? "protocol encode failed"
+                                           : send_error;
+                    results.push_back(sol::make_object(sv, err));
+                    return results;
+                }
+
+                results.push_back(sol::make_object(sv, true));
+                results.push_back(sol::make_object(sv, sol::nil));
+                return results;
+            }
+
+            std::vector<std::uint8_t> bytes;
+            if (payload.is<std::string>()) {
+                const auto value = payload.as<std::string>();
+                bytes.assign(value.begin(), value.end());
+            } else if (payload.is<sol::table>()) {
+                const auto serialized =
+                    lua_table_to_json(payload.as<sol::table>()).dump();
+                bytes.assign(serialized.begin(), serialized.end());
+            } else {
+                auto json = lua_to_json(payload);
+                if (json.is_string()) {
+                    const auto value = json.get<std::string>();
+                    bytes.assign(value.begin(), value.end());
+                } else {
+                    const auto serialized = json.dump();
+                    bytes.assign(serialized.begin(), serialized.end());
+                }
+            }
+
+            if (!session->send(bytes)) {
                 results.push_back(sol::make_object(sv, false));
                 sol::table err = sv.create_table();
-                err["code"] = "session_send_queue_full";
-                err["message"] = "send queue full";
+                const auto error_code = session->error_code();
+                err["code"] =
+                    error_code.empty() ? "session_send_failed" : error_code;
+                err["message"] = error_code.empty()
+                                     ? "session send failed"
+                                     : ("session send failed: " + error_code);
+                err["retryable"] =
+                    (error_code == "session_send_queue_full");
                 results.push_back(sol::make_object(sv, err));
                 return results;
             }
-            if (payload.is<std::string>()) {
-                s.send_queue.push_back(payload.as<std::string>());
-            }
             results.push_back(sol::make_object(sv, true));
+            results.push_back(sol::make_object(sv, sol::nil));
             return results;
         },
         "close",
         [](SessionHandle& s, sol::optional<std::string> reason) {
-            s.is_closed = true;
+            if (auto session = s.resolve()) {
+                session->close(reason.value_or("normal"));
+            }
         });
+}
+
+nlohmann::json make_session_handle_json(
+    const std::shared_ptr<shield::net::Session>& session) {
+    if (!session) {
+        return nullptr;
+    }
+    remember_session_handle(session);
+    return nlohmann::json::object(
+        {{std::string(kSessionHandleMarker), true},
+         {"id", std::to_string(session->id())},
+         {"remote_addr", session->remote_addr().to_string()}});
 }
 
 #ifdef SHIELD_ENABLE_CLUSTER

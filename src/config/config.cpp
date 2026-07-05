@@ -448,6 +448,12 @@ bool validate_network_protocol(const YAML::Node& protocol,
         }
         return false;
     }
+    if (protocol.size() == 0) {
+        if (error) {
+            *error = path + " must not be empty";
+        }
+        return false;
+    }
 
     if (protocol["name"]) {
         try {
@@ -1124,6 +1130,7 @@ std::vector<RuntimeActorConfig> runtime_actors() {
             item.max_frame_size = static_cast<size_t>(
                 scalar_int(network, "max_frame_size").value_or(0));
             if (network["protocol"]) {
+                item.network_protocol_enabled = true;
                 item.network_protocol_json =
                     yaml_to_json(network["protocol"]).dump();
             }

@@ -9,9 +9,11 @@
 #include <boost/test/unit_test.hpp>
 
 #include "shield/lua/lua_runtime.hpp"
+#include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/session.hpp"
+#include "shield/transport/protocol.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -41,8 +43,13 @@ SpawnResult spawn_gateway(LuaServiceManager& manager, const std::string& name,
 
 class MockSession final : public shield::net::Session {
 public:
-    MockSession(shield::net::SessionId id, shield::net::RemoteAddress remote)
-        : id_(id), remote_(std::move(remote)) {}
+    MockSession(shield::net::SessionId id, shield::net::RemoteAddress remote,
+                bool protocol_enabled = false,
+                std::string protocol_codec = "json")
+        : id_(id),
+          remote_(std::move(remote)),
+          protocol_enabled_(protocol_enabled),
+          protocol_codec_(std::move(protocol_codec)) {}
 
     shield::net::SessionId id() const override { return id_; }
     shield::net::RemoteAddress remote_addr() const override { return remote_; }
@@ -56,6 +63,22 @@ public:
     }
     bool is_alive() const override { return alive_; }
     std::string error_code() const override { return alive_ ? "" : "session_closed"; }
+    bool has_protocol_pipeline() const override { return protocol_enabled_; }
+    std::string_view protocol_codec_name() const override {
+        return protocol_enabled_ ? std::string_view(protocol_codec_)
+                                 : std::string_view{};
+    }
+    bool send_message(const shield::transport::DecodedBody& message,
+                      std::string* error) override {
+        if (!alive_) {
+            if (error) {
+                *error = "session is closed";
+            }
+            return false;
+        }
+        sent_messages_.push_back(message);
+        return true;
+    }
     void set_user_data(std::string key, std::string value) override {
         user_data_[std::move(key)] = std::move(value);
     }
@@ -64,12 +87,20 @@ public:
         return it == user_data_.end() ? "" : it->second;
     }
 
+    const std::vector<std::vector<uint8_t>>& sent() const { return sent_; }
+    const std::vector<shield::transport::DecodedBody>& sent_messages() const {
+        return sent_messages_;
+    }
+
 private:
     shield::net::SessionId id_;
     shield::net::RemoteAddress remote_;
+    bool protocol_enabled_ = false;
+    std::string protocol_codec_;
     bool alive_ = true;
     std::string close_reason_;
     std::vector<std::vector<uint8_t>> sent_;
+    std::vector<shield::transport::DecodedBody> sent_messages_;
     std::unordered_map<std::string, std::string> user_data_;
 };
 }  // namespace
@@ -285,6 +316,227 @@ BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
     BOOST_CHECK_EQUAL(
         sessions.values[0]["42"]["last_message"]["payload"].get<std::string>(),
         "hello");
+}
+
+BOOST_AUTO_TEST_CASE(
+    LuaGatewayBridgePassesRealSessionHandleToLuaForProtocolEgress) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_gateway(manager, "gw_protocol_handle");
+    BOOST_REQUIRE(result.success);
+
+    LuaGatewayBridge bridge(manager, result.service_id);
+    auto session = std::make_shared<MockSession>(
+        43, shield::net::RemoteAddress{"127.0.0.1", 34568}, true);
+
+    bridge.on_connect(session);
+    manager.pump_once();
+    manager.pump_once();
+
+    CallResult cr = manager.call(
+        result.service_id, "on_client_message",
+        nlohmann::json::array({make_session_handle_json(session),
+                               nlohmann::json::object({{"route", "login"},
+                                                       {"payload",
+                                                        nlohmann::json::object(
+                                                            {{"uid", 99}})}})}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 1u);
+    BOOST_REQUIRE(session->sent_messages()[0].has_message());
+    BOOST_CHECK_EQUAL(
+        (*session->sent_messages()[0].message)["route"].get<std::string>(),
+        "login");
+}
+
+BOOST_AUTO_TEST_CASE(
+    LuaGatewayBridgeRejectsRawStringEgressForStructuredProtocolSessions) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_gateway(manager, "gw_protocol_handle_raw");
+    BOOST_REQUIRE(result.success);
+
+    LuaGatewayBridge bridge(manager, result.service_id);
+    auto session = std::make_shared<MockSession>(
+        44, shield::net::RemoteAddress{"127.0.0.1", 34569}, true);
+
+    bridge.on_connect(session);
+    manager.pump_once();
+    manager.pump_once();
+
+    CallResult cr = manager.call(
+        result.service_id, "on_client_message",
+        nlohmann::json::array({make_session_handle_json(session), "raw_text"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 0u);
+
+    CallResult sessions = manager.call(result.service_id, "get_sessions",
+                                       nlohmann::json::array());
+    BOOST_REQUIRE(sessions.success);
+    BOOST_REQUIRE(sessions.values.is_array());
+    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
+    BOOST_REQUIRE(sessions.values[0].contains("44"));
+    BOOST_REQUIRE(sessions.values[0]["44"].contains("last_send"));
+    BOOST_CHECK_EQUAL(
+        sessions.values[0]["44"]["last_send"]["ok"].get<bool>(), false);
+    BOOST_REQUIRE(sessions.values[0]["44"]["last_send"]["error"].is_object());
+    BOOST_CHECK_EQUAL(
+        sessions.values[0]["44"]["last_send"]["error"]["code"]
+            .get<std::string>(),
+        "protocol_message_required");
+    BOOST_CHECK_EQUAL(
+        sessions.values[0]["44"]["last_message"]["payload"].get<std::string>(),
+        "raw_text");
+}
+
+BOOST_AUTO_TEST_CASE(
+    LuaGatewayBridgeRoutesDecodeLocalProtocolPacketsToClientMessage) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_gateway(manager, "gw_packet_bridge");
+    BOOST_REQUIRE(result.success);
+
+    LuaGatewayBridge bridge(manager, result.service_id);
+    auto session = std::make_shared<MockSession>(
+        77, shield::net::RemoteAddress{"127.0.0.1", 45678});
+
+    bridge.on_connect(session);
+    manager.pump_once();
+    manager.pump_once();
+
+    shield::transport::DispatchResult dispatch;
+    dispatch.action = shield::transport::RouteAction::DecodeLocal;
+    dispatch.packet.route_id = 0x1001;
+    dispatch.packet.kind =
+        static_cast<std::uint16_t>(shield::transport::PacketKind::Message);
+    dispatch.packet.body = std::vector<std::uint8_t>{'b', 'o', 'd', 'y'};
+
+    shield::transport::RouteEntry route;
+    route.route_id = 0x1001;
+    route.target_service = 9;
+    route.codec_id = 4;
+    route.schema_id = 33;
+    route.debug_name = "player.move";
+    dispatch.route = &route;
+    dispatch.decoded_body = shield::transport::DecodedBody{
+        .codec_id = 4,
+        .schema_id = 33,
+        .route_name = "player.move",
+        .bytes = std::vector<std::uint8_t>{'{', '}', '\n'},
+        .message = nlohmann::json::object({{"uid", 7}, {"dir", "north"}}),
+    };
+
+    bridge.on_packet(session, dispatch);
+    manager.pump_once();
+    manager.pump_once();
+
+    CallResult sessions = manager.call(result.service_id, "get_sessions",
+                                       nlohmann::json::array());
+    BOOST_REQUIRE(sessions.success);
+    BOOST_REQUIRE(sessions.values.is_array());
+    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
+    BOOST_REQUIRE(sessions.values[0].contains("77"));
+
+    const auto& state = sessions.values[0]["77"];
+    BOOST_REQUIRE(state.contains("last_message"));
+    BOOST_REQUIRE(state["last_message"]["payload"].is_object());
+    BOOST_CHECK_EQUAL(state["last_message"]["payload"]["uid"].get<int>(), 7);
+    BOOST_CHECK_EQUAL(
+        state["last_message"]["payload"]["dir"].get<std::string>(), "north");
+    BOOST_CHECK(!state.contains("last_packet"));
+}
+
+BOOST_AUTO_TEST_CASE(
+    LuaGatewayBridgeRoutesRawDecodeLocalProtocolPacketsAsStrings) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_gateway(manager, "gw_raw_packet_bridge");
+    BOOST_REQUIRE(result.success);
+
+    LuaGatewayBridge bridge(manager, result.service_id);
+    auto session = std::make_shared<MockSession>(
+        78, shield::net::RemoteAddress{"127.0.0.1", 45679});
+
+    bridge.on_connect(session);
+    manager.pump_once();
+    manager.pump_once();
+
+    shield::transport::DispatchResult dispatch;
+    dispatch.action = shield::transport::RouteAction::DecodeLocal;
+    dispatch.packet.route_id = 0x1002;
+    dispatch.packet.body = std::vector<std::uint8_t>{'r', 'a', 'w'};
+
+    shield::transport::RouteEntry route;
+    route.route_id = 0x1002;
+    route.target_service = 9;
+    route.codec_id = 1;
+    route.schema_id = 0;
+    route.debug_name = "raw.echo";
+    dispatch.route = &route;
+    dispatch.decoded_body = shield::transport::DecodedBody{
+        .codec_id = 1,
+        .schema_id = 0,
+        .route_name = "raw.echo",
+        .bytes = std::vector<std::uint8_t>{'r', 'a', 'w'},
+    };
+
+    bridge.on_packet(session, dispatch);
+    manager.pump_once();
+    manager.pump_once();
+
+    CallResult sessions = manager.call(result.service_id, "get_sessions",
+                                       nlohmann::json::array());
+    BOOST_REQUIRE(sessions.success);
+    BOOST_REQUIRE(sessions.values.is_array());
+    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
+    BOOST_REQUIRE(sessions.values[0].contains("78"));
+
+    const auto& state = sessions.values[0]["78"];
+    BOOST_REQUIRE(state.contains("last_message"));
+    BOOST_CHECK_EQUAL(state["last_message"]["payload"].get<std::string>(),
+                      "raw");
+}
+
+BOOST_AUTO_TEST_CASE(
+    LuaGatewayBridgeDoesNotExposeForwardRawProtocolPacketsToLua) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_gateway(manager, "gw_forward_raw_drop");
+    BOOST_REQUIRE(result.success);
+
+    LuaGatewayBridge bridge(manager, result.service_id);
+    auto session = std::make_shared<MockSession>(
+        88, shield::net::RemoteAddress{"127.0.0.1", 56789});
+
+    bridge.on_connect(session);
+    manager.pump_once();
+    manager.pump_once();
+
+    shield::transport::DispatchResult dispatch;
+    dispatch.action = shield::transport::RouteAction::ForwardRaw;
+    dispatch.packet.route_id = 0x2002;
+    dispatch.packet.body = std::vector<std::uint8_t>{'r', 'a', 'w'};
+    dispatch.packet.raw_frame =
+        std::vector<std::uint8_t>{'f', 'r', 'a', 'm', 'e'};
+
+    bridge.on_packet(session, dispatch);
+    manager.pump_once();
+    manager.pump_once();
+
+    CallResult sessions = manager.call(result.service_id, "get_sessions",
+                                       nlohmann::json::array());
+    BOOST_REQUIRE(sessions.success);
+    BOOST_REQUIRE(sessions.values.is_array());
+    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
+    BOOST_REQUIRE(sessions.values[0].contains("88"));
+
+    const auto& state = sessions.values[0]["88"];
+    BOOST_CHECK(!state.contains("last_message"));
+    BOOST_CHECK(!state.contains("last_packet"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

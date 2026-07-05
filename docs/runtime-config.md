@@ -186,9 +186,23 @@
 | `restart` | 否 | 服务异常退出后的重启策略 |
 | `limits` | 否 | 单 service 资源限制 |
 
-`actors[].network` 只声明该 service 是 gateway service。网络回调由 Lua module 上的 `on_connect`、`on_disconnect`、`on_client_message` 或 `on_client_packet` 实现。Phase 1 的 `network.tcp` 只支持 `instances: 1`，避免 listener 事件没有确定接收者。
+`actors[].network` 只声明该 service 是 gateway service。目标契约里，网络回调的 Lua 边界是 `on_connect`、`on_disconnect` 和接收已解码业务消息的 `on_client_message`。Phase 1 的 `network.tcp` 只支持 `instances: 1`，避免 listener 事件没有确定接收者。
 
-`actors[].network.protocol` 是当前网关协议配置入口。未配置时使用 legacy frame path，并调用 `on_client_message(session, payload)`；配置后使用 `ProtocolPipeline`，并调用 `on_client_packet(session, packet, payload)`。
+`actors[].network.protocol` 是当前网关协议配置入口。未配置时使用 legacy frame path，并调用 `on_client_message(session, payload)`；配置后使用 `ProtocolPipeline`。真实运行时语义是：只有 `DecodeLocal` 结果进入 Lua 的 `on_client_message(session, message)`，`ForwardRaw` / `Drop` 留在 C++ 数据面。`network.protocol` 必须是非空 map，`protocol: {}` 会被拒绝启动。
+
+`actors[].network.max_frame_size` 是 listener 级默认单帧上限。未显式设置 `protocol.envelope.max_frame_size` 时，protocol path 会继承这个值；如果设置了 `protocol.envelope.max_frame_size`，则以 envelope 值为准。
+
+`network.protocol` 描述的不是任意 middleware 节点链，而是固定 protocol pipeline 的部件组合。当前固定槽位包括：
+
+- `envelope`
+- `routing.source` 对应的 `RouteExtractor`
+- `routing` / `routes` 对应的 `RoutePolicy`
+- `body.codec` 对应的 `BodyCodec`
+- 出站侧的 `RouteResolver` 语义
+
+Phase 1 每个 actor 只注册一个 `body.codec`。route 上的 `codec_id` 会保留在路由元数据和 `DecodedBody` 中，但本地解码仍使用该 actor 的单一 `body.codec` 实现。
+
+`routing.action` / `routing.default_action` 的 `forward` 会按兼容别名处理，并归一化为 `forward_raw` 语义。
 
 ```yaml
 actors:

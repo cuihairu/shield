@@ -78,9 +78,19 @@ shield.send("chat", "broadcast", {
 
 ## 6. 网关是 Lua 服务模式
 
-网络层负责连接和字节流。业务网关应该是 Lua 服务，通过 `on_connect`、`on_disconnect`、`on_client_message(session, payload)` 等回调组织登录、会话和路由。
+网络层负责连接和字节流。业务网关应该是 Lua 服务，通过 `on_connect`、`on_disconnect`、`on_client_message(session, message)` 等回调组织登录、会话和路由。
 
-重构后不把 middleware chain 作为核心设计。鉴权、限流、CORS 等策略可以在 Lua gateway 服务或用户自己的 C++ transport 中实现。
+重构后不把 middleware chain 作为核心设计。协议层采用固定骨架：
+
+```text
+Ingress:
+  Envelope -> RouteExtractor -> RoutePolicy -> BodyCodec -> Lua
+
+Egress:
+  Lua -> RouteResolver -> BodyCodec -> Envelope
+```
+
+`json`、`msgpack`、`protobuf`、`sproto`、`xmldef` 这类协议差异体现在固定槽位的实现上，而不是让 gateway 自己拼任意节点链。鉴权、限流、CORS 等策略可以在 Lua gateway 服务或用户自己的 C++ transport 中实现。
 
 ## 7. 数据访问由插件提供
 

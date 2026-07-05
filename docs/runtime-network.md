@@ -26,11 +26,11 @@ Shield 有两层网络：
 - 监听客户端连接（Phase 1: TCP）
 - 管理连接生命周期（accept、close、reconnect）
 - 管理 Session 对象
-- 调用 gateway 回调（on_connect、on_disconnect、on_client_message / on_client_packet）
+- 调用 gateway 回调（on_connect、on_disconnect、on_client_message）
 
 **shield_transport 职责：**
 - 字节流解帧（framing）
-- 协议编解码（codec）
+- 协议部件执行：`Envelope`、`RouteExtractor`、`RoutePolicy`、`BodyCodec`、`RouteResolver`
 - 数据压缩（compression）
 - 数据加密（encryption）
 - KCP 协议实现（后续）
@@ -39,7 +39,16 @@ Shield 有两层网络：
 **职责边界：**
 - shield_net 不关心协议细节，只管理连接和 session
 - shield_transport 不关心连接管理，只处理字节流
-- gateway 收到的是 transport 切出的 body 字节串；启用 `network.protocol` 时还会收到 packet 路由元数据。body 是否已解码由 `BodyCodec` 和 lazy decode 策略决定。
+- gateway 的目标边界是 transport 已解码的业务消息；`ForwardRaw`、`Drop` 和协议错误应在 C++ 数据面结束。
+- 当前真实 gateway Lua 路径已经收敛为只接收 `on_client_message(session, message)`；protocol 中间态不再透给 Lua。
+
+固定 pipeline 视角下：
+
+- `Envelope` 负责 frame 边界
+- `RouteExtractor` 负责进站 route 提取
+- `RoutePolicy` 负责决定 decode / forward / drop
+- `BodyCodec` 负责业务消息编解码
+- `RouteResolver` 负责出站 route 选择
 
 ## 传输协议支持
 
@@ -93,7 +102,7 @@ end
 
 `shield_net` 管理 listener、connection、session。配置了 `actors[].network.tcp` 的单实例 Lua service 会在 bootstrap 中启动 TCP listener，并将 session 事件转发到同名 service 的 gateway 回调；Phase 1 拒绝 `network.tcp` 与 `instances != 1` 的组合。
 
-如果未配置 `actors[].network.protocol`，TCP session 使用 legacy frame path 并调用 `on_client_message(session, payload)`。如果配置了 `network.protocol`，TCP session 使用 `ProtocolPipeline`，调用 `on_client_packet(session, packet, payload)`。
+如果未配置 `actors[].network.protocol`，TCP session 使用 legacy frame path 并调用 `on_client_message(session, payload)`。如果配置了 `network.protocol`，TCP session 使用 `ProtocolPipeline`。这里的 pipeline 不是业务可任意拼接的动态节点链，而是固定骨架上的协议部件组合。真实运行时语义已经收敛为只有 `DecodeLocal` 结果进入 Lua 的 `on_client_message(session, message)`。
 
 业务 gateway 是 Lua service：
 
@@ -106,14 +115,15 @@ end
 function M.on_disconnect(session, reason)
 end
 
-function M.on_client_message(session, payload)
-end
-
-function M.on_client_packet(session, packet, payload)
+function M.on_client_message(session, message)
 end
 
 return M
 ```
+
+目标语义里，`message` 是业务消息而不是未解码 transport payload。若 `body.codec = raw`，则 `message` 可以是字节串，但它仍是显式 decode 结果。`ForwardRaw` 和 `Drop` 不应触发 Lua 回调。
+
+实现快照：当前 protocol path 中，`json` 和 `msgpack` decode-local 都会把结构化业务消息作为 Lua table 送入 `on_client_message`；`raw` decode-local 会把字节串送入 `on_client_message`；`ForwardRaw` 和 `Drop` 不触发 Lua 回调。尚未实现真实 decoder 的 codec 当前不能进入 `DecodeLocal`。
 
 gateway 负责：
 
@@ -126,7 +136,7 @@ core 不提供 middleware framework。
 
 ## SessionHandle
 
-目标语义中 Lua 只看到 opaque `SessionHandle`。当前真实 TCP bridge 传入 session 信息 table；`SessionHandle` userdata 已注册，但 `shield_net::Session` 到 userdata 的封装仍待补齐。
+Lua 只看到 opaque `SessionHandle`。当前真实 TCP bridge 已直接把连接事件桥接成可用的 `SessionHandle` userdata；handle 内部通过 session id 回查 live `shield_net::Session`，因此不会把原始 transport payload 或 C++ 指针直接暴露成业务对象。
 
 ```lua
 session:id()
@@ -142,6 +152,7 @@ session:remote_addr()
 - backpressure 超限返回错误。
 - session 断开后 handle stale，调用返回 `session_closed`。
 - `SessionHandle` 不应跨 service 通过 `shield.send/call` 传递；跨服务只传 `session_id`，由 gateway 维护映射。
+- 对绑定了 `network.protocol` 的 session，`session:send(payload)` 走固定出站 pipeline：先 resolve route，再做 body/envelope encode；其中 `raw` codec 发送字节串，`json/msgpack` 这类 structured codec 发送业务消息对象。对未绑定 protocol 的 session，仍按原始字节发送。
 
 ## 网络背压与限制
 

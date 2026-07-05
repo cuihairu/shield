@@ -127,6 +127,26 @@ shield_core
 - 一旦拿到 remote `ServiceHandle`，业务消息仍走 `shield.send/call`，不再定义 `shield.cluster.send/call`。
 - 节点 connect/disconnect、peer 管理属于部署/配置/ops 责任，不作为业务 Lua API 暴露。
 
+### 跨服主路径
+
+`shield_cluster` 的默认跨服模型是：
+
+```text
+service A
+  -> shield.send/call
+  -> shield_cluster
+  -> remote ServiceHandle / remote route
+  -> service B
+```
+
+也就是说：
+
+- 跨服默认是“逻辑 service 通信”
+- 不是“客户端协议帧在业务层横向传输”
+- 不是“业务 Lua 直接调用 CAF remote API”
+
+`ForwardRaw` 之类的原始帧转发只能作为 transport/gateway 例外路径存在，不能取代 `shield.send/call` 成为常规跨服模型。
+
 ### 配置 owner
 
 - `cluster`

@@ -23,12 +23,6 @@
 
 namespace shield::lua {
 
-namespace {
-
-sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value);
-
-}  // namespace
-
 // ============================================================================
 // CoroutineScheduler Implementation
 // ============================================================================
@@ -773,45 +767,6 @@ bool LuaRuntime::load_script(std::shared_ptr<LuaVM> vm,
     }
 }
 
-namespace {
-
-sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
-    if (value.is_null()) {
-        return sol::make_object(lua, sol::nil);
-    }
-    if (value.is_boolean()) {
-        return sol::make_object(lua, value.get<bool>());
-    }
-    if (value.is_number_integer()) {
-        return sol::make_object(lua, value.get<std::int64_t>());
-    }
-    if (value.is_number_unsigned()) {
-        return sol::make_object(lua, value.get<std::uint64_t>());
-    }
-    if (value.is_number_float()) {
-        return sol::make_object(lua, value.get<double>());
-    }
-    if (value.is_string()) {
-        return sol::make_object(lua, value.get<std::string>());
-    }
-    if (value.is_array()) {
-        sol::table table = lua.create_table();
-        int index = 1;
-        for (const auto& item : value) {
-            table[index++] = json_to_lua(lua, item);
-        }
-        return sol::make_object(lua, table);
-    }
-    if (value.is_object()) {
-        sol::table table = lua.create_table();
-        for (const auto& [key, item] : value.items()) {
-            table[key] = json_to_lua(lua, item);
-        }
-        return sol::make_object(lua, table);
-    }
-    return sol::make_object(lua, sol::nil);
-}
-
 bool lua_to_json(const sol::object& value, nlohmann::json* out) {
     if (!out) {
         return true;
@@ -899,8 +854,6 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
     *out = std::move(object);
     return true;
 }
-
-}  // namespace
 
 bool LuaRuntime::load_service_module(std::shared_ptr<LuaVM> vm,
                                      std::string_view script_path,

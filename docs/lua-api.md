@@ -596,7 +596,7 @@ end
 function M.on_disconnect(session, reason)
 end
 
-function M.on_client_message(session, payload)
+function M.on_client_message(session, message)
 end
 
 return M
@@ -616,10 +616,23 @@ session:remote_addr()
 - Lua 不直接操作 socket。
 - `session:send` 非阻塞，队列满返回错误。
 - 连接鉴权、限流、路由策略写在 Lua gateway service 中。
+- Lua gateway 的长期边界是已解码业务消息；未解码 transport payload 不应进入脚本层。
+- 如果 `body.codec = raw`，Lua 收到的可以是字节串，但它属于显式 decode 结果，不是 transport 中间态。
 - `SessionHandle` 只在 gateway callback 和 gateway 自身状态中使用，不作为 `shield.send/call` payload 跨服务传递。
 - framework 不提供 HTTP middleware chain。
 
-实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用（LAPI-009-01~05 测试覆盖）。bootstrap 会为单实例 `actors[].network.tcp` 创建 `TcpListener`，并通过 `LuaGatewayBridge` 将真实 session 事件路由到同名 Lua gateway service。当前桥接传入的是 session 信息 table；`SessionHandle` userdata 已注册并可被 Lua 使用，但真实 `shield_net::Session` 到 userdata 的封装仍属后续集成。
+实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用。bootstrap 会为单实例 `actors[].network.tcp` 创建 `TcpListener`，并通过 `LuaGatewayBridge` 将真实 session 事件路由到同名 Lua gateway service。当前桥接已经向 Lua 传入可用的 `SessionHandle` userdata；该 handle 通过内部 session registry 回查 live `shield_net::Session`，因此 `session:send(...)` / `session:close(...)` 已可直接作用于真实连接。
+
+当前 protocol path 的真实语义是：
+
+- `DecodeLocal` 才会进入 `on_client_message(session, message)`
+- `body.codec = json` 时，`message` 会作为 Lua table 传入
+- `body.codec = raw` 时，`message` 会作为字节串传入
+- `ForwardRaw`、`Drop` 和协议错误不会触发 Lua 回调
+- `msgpack`、`protobuf`、`sproto`、`xmldef`、`fbs` 这类尚未实现真实 decoder 的 codec 当前不能进入 `DecodeLocal`
+- protocol-enabled session 上，`session:send(payload)` 会走固定出站链路：`RouteResolver -> BodyCodec.encode -> Envelope.encode -> socket write`
+- `body.codec = raw` 时，`session:send("...")` 发送字节串
+- `body.codec = json` / `msgpack` 时，`session:send(...)` 应传业务 table / object；直接传字符串会返回 `protocol_message_required`
 
 ## HTTP API
 

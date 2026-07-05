@@ -4,7 +4,13 @@
 // This file defines the C++ side of the Lua API
 // It registers all shield.* functions into Lua
 
+#include <memory>
+#include <nlohmann/json_fwd.hpp>
 #include <sol/forward.hpp>
+
+namespace shield::net {
+class Session;
+}
 
 namespace shield::lua {
 
@@ -14,6 +20,16 @@ class LuaServiceManager;
 /// @brief Register the shield.* API into Lua
 /// This is called during Lua VM initialization
 void register_shield_api(LuaRuntime& runtime);
+
+/// @brief Convert JSON values into Lua values using Shield's runtime rules.
+/// Special transport/runtime marker objects may map to userdata instead of
+/// plain tables.
+sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value);
+
+/// @brief Build a JSON marker object that will become a Lua SessionHandle
+/// userdata when passed through json_to_lua().
+nlohmann::json make_session_handle_json(
+    const std::shared_ptr<shield::net::Session>& session);
 
 /// @brief Full API registration (internal use)
 void register_full_shield_api(sol::state& lua,

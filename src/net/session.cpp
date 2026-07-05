@@ -47,6 +47,38 @@ bool TcpSession::send(const std::vector<uint8_t>& data) {
     return true;
 }
 
+bool TcpSession::send_message(const shield::transport::DecodedBody& message,
+                              std::string* error) {
+    if (!alive_.load()) {
+        if (error) {
+            *error = "session is closed";
+        }
+        return false;
+    }
+    if (!protocol_pipeline_) {
+        if (error) {
+            *error = "protocol pipeline is not configured";
+        }
+        return false;
+    }
+
+    auto encoded = protocol_pipeline_->encode_message(message);
+    if (!protocol_pipeline_->error().empty()) {
+        if (error) {
+            *error = protocol_pipeline_->error();
+        }
+        return false;
+    }
+    if (encoded.empty()) {
+        if (error) {
+            *error = "protocol encode returned empty frame";
+        }
+        return false;
+    }
+
+    return send(encoded);
+}
+
 void TcpSession::close(std::string reason) {
     bool expected = true;
     if (!alive_.compare_exchange_strong(expected, false)) return;
@@ -84,17 +116,23 @@ void TcpSession::do_receive() {
                     return;
                 }
 
-                for (const auto& result : results) {
+                for (auto& result : results) {
                     if (!result.ok()) {
                         handle_error("protocol dispatch error: " +
                                      result.error);
                         return;
                     }
+                    if (result.should_drop()) {
+                        continue;
+                    }
+                    if (result.action ==
+                            shield::transport::RouteAction::DecodeLocal &&
+                        !protocol_pipeline_->materialize_decode(result)) {
+                        handle_error("protocol decode error: " + result.error);
+                        return;
+                    }
                     if (callbacks_.on_packet) {
                         callbacks_.on_packet(shared_from_this(), result);
-                    } else if (callbacks_.on_message) {
-                        callbacks_.on_message(shared_from_this(),
-                                              result.packet.body);
                     }
                 }
             } else {

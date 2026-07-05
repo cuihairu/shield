@@ -670,6 +670,13 @@ add_test(NAME shield_config_invalid_network_protocol_type_rejected
         -DEXPECTED_OUTPUT_REGEX=network.protocol.envelope.type
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
+add_test(NAME shield_config_empty_network_protocol_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/empty-network-protocol.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=network.protocol must not be empty
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
 add_test(NAME shield_config_duplicate_protocol_route_names_rejected
     COMMAND ${CMAKE_COMMAND}
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/duplicate-protocol-route-names.yaml"

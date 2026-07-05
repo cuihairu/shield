@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -201,6 +202,153 @@ const std::string* find_attr(
     return &it->second;
 }
 
+std::optional<Endian> parse_protocol_endian(const nlohmann::json& value) {
+    if (!value.is_string()) {
+        return std::nullopt;
+    }
+    const auto text = value.get<std::string>();
+    if (text == "big" || text == "be") {
+        return Endian::Big;
+    }
+    if (text == "little" || text == "le") {
+        return Endian::Little;
+    }
+    return std::nullopt;
+}
+
+std::optional<EnvelopeKind> parse_envelope_kind(const std::string& value) {
+    if (value == "lenprefix" || value == "len-prefix" ||
+        value == "len_prefix") {
+        return EnvelopeKind::LenPrefix;
+    }
+    if (value == "idlen" || value == "id-len" || value == "id_len") {
+        return EnvelopeKind::IdLen;
+    }
+    if (value == "typed_len" || value == "type_len" ||
+        value == "typed-len" || value == "typelen") {
+        return EnvelopeKind::TypeLen;
+    }
+    if (value == "delimiter" || value == "line") {
+        return EnvelopeKind::Delimiter;
+    }
+    return std::nullopt;
+}
+
+std::optional<RouteSource> parse_route_source(const std::string& value) {
+    if (value == "header" || value == "header.route_id" ||
+        value == "header.msg_id") {
+        return RouteSource::Header;
+    }
+    if (value == "body" || value == "body.route" ||
+        value == "body.route_id") {
+        return RouteSource::Body;
+    }
+    if (value == "none") {
+        return RouteSource::None;
+    }
+    return std::nullopt;
+}
+
+RouteSource default_route_source_for_envelope(EnvelopeKind kind) {
+    switch (kind) {
+        case EnvelopeKind::IdLen:
+        case EnvelopeKind::TypeLen:
+            return RouteSource::Header;
+        case EnvelopeKind::LenPrefix:
+        case EnvelopeKind::Delimiter:
+            return RouteSource::Body;
+    }
+    return RouteSource::Body;
+}
+
+std::optional<BodyRouteKey> structured_route_key(const nlohmann::json& value) {
+    if (!value.is_object()) {
+        return std::nullopt;
+    }
+
+    BodyRouteKey key;
+    if (value.contains("route_id") && value["route_id"].is_number_unsigned()) {
+        key.route_id = value["route_id"].get<std::uint32_t>();
+    } else if (value.contains("msg_id") &&
+               value["msg_id"].is_number_unsigned()) {
+        key.route_id = value["msg_id"].get<std::uint32_t>();
+    }
+
+    if (value.contains("route") && value["route"].is_string()) {
+        key.route_name = value["route"].get<std::string>();
+    } else if (value.contains("method") && value["method"].is_string()) {
+        key.route_name = value["method"].get<std::string>();
+    }
+
+    if (key.empty()) {
+        return std::nullopt;
+    }
+    return key;
+}
+
+DecodedBody decode_structured_body(PacketRef packet, const RouteEntry& route,
+                                   nlohmann::json message) {
+    DecodedBody body;
+    body.route_id = route.route_id;
+    body.codec_id = route.codec_id;
+    body.schema_id = route.schema_id;
+    body.bytes.assign(packet.body.begin(), packet.body.end());
+    if (auto key = structured_route_key(message)) {
+        body.route_name = std::move(key->route_name);
+    }
+    if (message.is_object() && message.contains("payload")) {
+        body.message = message["payload"];
+    } else {
+        body.message = std::move(message);
+    }
+    return body;
+}
+
+bool message_contains_route_hint(const nlohmann::json& message) {
+    return message.is_object() &&
+           (message.contains("route") || message.contains("route_id") ||
+            message.contains("msg_id") || message.contains("method"));
+}
+
+nlohmann::json encode_structured_message(const DecodedBody& body,
+                                        const RouteEntry& route) {
+    nlohmann::json message;
+    if (body.has_message()) {
+        if (message_contains_route_hint(*body.message)) {
+            message = *body.message;
+        } else {
+            message = nlohmann::json::object();
+            if (!body.route_name.empty()) {
+                message["route"] = body.route_name;
+            } else if (!route.debug_name.empty()) {
+                message["route"] = route.debug_name;
+            }
+            if (route.route_id != 0) {
+                message["route_id"] = route.route_id;
+            }
+            message["payload"] = *body.message;
+        }
+        return message;
+    }
+
+    if (!body.bytes.empty()) {
+        throw std::runtime_error(
+            "structured body codec expects business message, not raw bytes");
+    }
+
+    message = nlohmann::json::object();
+    if (!body.route_name.empty()) {
+        message["route"] = body.route_name;
+    } else if (!route.debug_name.empty()) {
+        message["route"] = route.debug_name;
+    }
+    if (route.route_id != 0) {
+        message["route_id"] = route.route_id;
+    }
+    message["payload"] = nlohmann::json::object();
+    return message;
+}
+
 }  // namespace
 
 PacketRef Packet::ref() const {
@@ -262,6 +410,13 @@ const RouteEntry* RouteTable::find_by_name(std::string_view route_name) const {
         return nullptr;
     }
     return find(it->second);
+}
+
+const RouteEntry* RouteTable::only() const {
+    if (routes_.size() != 1) {
+        return nullptr;
+    }
+    return &routes_.begin()->second;
 }
 
 bool RouteTable::contains(std::uint32_t route_id) const {
@@ -724,13 +879,20 @@ std::optional<BodyRouteKey> BodyCodec::route_key(PacketRef) {
 
 DecodedBody RawBodyCodec::decode(PacketRef packet, const RouteEntry& route) {
     DecodedBody body;
+    body.route_id = route.route_id;
     body.codec_id = route.codec_id;
     body.schema_id = route.schema_id;
     body.bytes.assign(packet.body.begin(), packet.body.end());
     return body;
 }
 
-std::vector<std::uint8_t> RawBodyCodec::encode(const DecodedBody& body) {
+std::vector<std::uint8_t> RawBodyCodec::encode(const DecodedBody& body,
+                                               const RouteEntry& route,
+                                               const ProtocolProfile&) {
+    (void)route;
+    if (body.has_message()) {
+        throw std::runtime_error("raw body codec expects bytes");
+    }
     return body.bytes;
 }
 
@@ -739,61 +901,64 @@ PassthroughBodyCodec::PassthroughBodyCodec(std::string name)
 
 DecodedBody PassthroughBodyCodec::decode(PacketRef packet,
                                          const RouteEntry& route) {
-    DecodedBody body;
-    body.codec_id = route.codec_id;
-    body.schema_id = route.schema_id;
-    body.bytes.assign(packet.body.begin(), packet.body.end());
-    return body;
+    (void)packet;
+    (void)route;
+    throw std::runtime_error("body codec does not support decode_local");
 }
 
 std::vector<std::uint8_t> PassthroughBodyCodec::encode(
-    const DecodedBody& body) {
-    return body.bytes;
+    const DecodedBody& body, const RouteEntry& route,
+    const ProtocolProfile& profile) {
+    (void)body;
+    (void)route;
+    (void)profile;
+    throw std::runtime_error("body codec does not support encode");
 }
 
 std::optional<BodyRouteKey> JsonBodyCodec::route_key(PacketRef packet) {
     try {
         const auto json = nlohmann::json::parse(packet.body.begin(),
                                                 packet.body.end());
-        BodyRouteKey key;
-
-        if (json.contains("route_id") && json["route_id"].is_number_unsigned()) {
-            key.route_id = json["route_id"].get<std::uint32_t>();
-        } else if (json.contains("msg_id") &&
-                   json["msg_id"].is_number_unsigned()) {
-            key.route_id = json["msg_id"].get<std::uint32_t>();
-        }
-
-        if (json.contains("route") && json["route"].is_string()) {
-            key.route_name = json["route"].get<std::string>();
-        } else if (json.contains("method") && json["method"].is_string()) {
-            key.route_name = json["method"].get<std::string>();
-        }
-
-        if (key.empty()) {
-            return std::nullopt;
-        }
-        return key;
+        return structured_route_key(json);
     } catch (...) {
         return std::nullopt;
     }
 }
 
 DecodedBody JsonBodyCodec::decode(PacketRef packet, const RouteEntry& route) {
-    DecodedBody body;
-    body.codec_id = route.codec_id;
-    body.schema_id = route.schema_id;
-    body.bytes.assign(packet.body.begin(), packet.body.end());
-
-    if (auto key = route_key(packet)) {
-        body.route_name = std::move(key->route_name);
-    }
-
-    return body;
+    auto json =
+        nlohmann::json::parse(packet.body.begin(), packet.body.end());
+    return decode_structured_body(packet, route, std::move(json));
 }
 
-std::vector<std::uint8_t> JsonBodyCodec::encode(const DecodedBody& body) {
-    return body.bytes;
+std::vector<std::uint8_t> JsonBodyCodec::encode(const DecodedBody& body,
+                                                const RouteEntry& route,
+                                                const ProtocolProfile&) {
+    const auto json = encode_structured_message(body, route);
+    const auto serialized = json.dump();
+    return std::vector<std::uint8_t>(serialized.begin(), serialized.end());
+}
+
+std::optional<BodyRouteKey> MsgpackBodyCodec::route_key(PacketRef packet) {
+    try {
+        const auto message = nlohmann::json::from_msgpack(packet.body.begin(),
+                                                          packet.body.end());
+        return structured_route_key(message);
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+DecodedBody MsgpackBodyCodec::decode(PacketRef packet, const RouteEntry& route) {
+    const auto message = nlohmann::json::from_msgpack(packet.body.begin(),
+                                                      packet.body.end());
+    return decode_structured_body(packet, route, message);
+}
+
+std::vector<std::uint8_t> MsgpackBodyCodec::encode(const DecodedBody& body,
+                                                   const RouteEntry& route,
+                                                   const ProtocolProfile&) {
+    return nlohmann::json::to_msgpack(encode_structured_message(body, route));
 }
 
 std::unique_ptr<BodyCodec> create_body_codec(std::string_view name) {
@@ -803,8 +968,11 @@ std::unique_ptr<BodyCodec> create_body_codec(std::string_view name) {
     if (name == "json") {
         return std::make_unique<JsonBodyCodec>();
     }
-    if (name == "msgpack" || name == "protobuf" || name == "fbs" ||
-        name == "flatbuffers" || name == "sproto") {
+    if (name == "msgpack") {
+        return std::make_unique<MsgpackBodyCodec>();
+    }
+    if (name == "protobuf" || name == "fbs" || name == "flatbuffers" ||
+        name == "sproto") {
         return std::make_unique<PassthroughBodyCodec>(std::string(name));
     }
     if (name == "xmldef" || name == "xml_def") {
@@ -1075,14 +1243,15 @@ std::vector<DispatchResult> ProtocolPipeline::feed(const std::uint8_t* data,
 
         if (route == nullptr) {
             result.action = profile_.unknown_route_action;
-            if (result.action == RouteAction::Drop) {
-                result.error = "unknown protocol route";
-            }
             results.push_back(std::move(result));
             continue;
         }
 
         result.action = route->policy.action;
+        if (result.action == RouteAction::Drop) {
+            results.push_back(std::move(result));
+            continue;
+        }
         const auto should_decode = result.action == RouteAction::DecodeLocal &&
                                    (profile_.decode_before_dispatch ||
                                     !route->policy.lazy_decode);
@@ -1093,7 +1262,11 @@ std::vector<DispatchResult> ProtocolPipeline::feed(const std::uint8_t* data,
                 results.push_back(std::move(result));
                 continue;
             }
-            result.decoded_body = codec->decode(result.packet.ref(), *route);
+            try {
+                result.decoded_body = codec->decode(result.packet.ref(), *route);
+            } catch (const std::exception& ex) {
+                result.error = std::string("body decode failed: ") + ex.what();
+            }
         }
 
         results.push_back(std::move(result));
@@ -1116,11 +1289,80 @@ std::vector<std::uint8_t> ProtocolPipeline::encode(const PacketRef& packet) {
     return encoded;
 }
 
+std::vector<std::uint8_t> ProtocolPipeline::encode_message(DecodedBody body) {
+    error_.clear();
+    if (!envelope_) {
+        error_ = "protocol envelope is not configured";
+        return {};
+    }
+
+    const auto* route = resolve_outbound_route(body);
+    if (route == nullptr) {
+        error_ = "failed to resolve outbound route";
+        return {};
+    }
+
+    auto* codec = codec_for_route(*route);
+    if (codec == nullptr) {
+        error_ = "body codec is not registered";
+        return {};
+    }
+
+    std::vector<std::uint8_t> body_bytes;
+    try {
+        body_bytes = codec->encode(body, *route, profile_);
+    } catch (const std::exception& ex) {
+        error_ = std::string("body encode failed: ") + ex.what();
+        return {};
+    }
+
+    Packet packet;
+    packet.route_id = route->route_id;
+    packet.kind = static_cast<std::uint16_t>(route->kind);
+    packet.body = std::move(body_bytes);
+    return encode(packet.ref());
+}
+
+bool ProtocolPipeline::materialize_decode(DispatchResult& result) {
+    if (!result.ok() || result.action != RouteAction::DecodeLocal) {
+        return result.ok();
+    }
+    if (result.decoded()) {
+        return true;
+    }
+    if (result.route == nullptr) {
+        result.error = "decode_local dispatch is missing route metadata";
+        return false;
+    }
+
+    auto* codec = codec_for_route(*result.route);
+    if (codec == nullptr) {
+        result.error = "body codec is not registered";
+        return false;
+    }
+
+    try {
+        result.decoded_body = codec->decode(result.packet.ref(), *result.route);
+        return true;
+    } catch (const std::exception& ex) {
+        result.error = std::string("body decode failed: ") + ex.what();
+        return false;
+    }
+}
+
 void ProtocolPipeline::reset() {
     error_.clear();
     if (envelope_) {
         envelope_->reset();
     }
+}
+
+std::string_view ProtocolPipeline::default_codec_name() const {
+    const auto* codec = codecs_.find(profile_.default_codec_id);
+    if (codec == nullptr) {
+        return {};
+    }
+    return codec->name();
 }
 
 const RouteEntry* ProtocolPipeline::resolve_route(Packet& packet,
@@ -1163,10 +1405,284 @@ const RouteEntry* ProtocolPipeline::resolve_route(Packet& packet,
 }
 
 BodyCodec* ProtocolPipeline::codec_for_route(const RouteEntry& route) {
-    if (route.codec_id != 0) {
-        return codecs_.find(route.codec_id);
-    }
+    (void)route;
     return codecs_.find(profile_.default_codec_id);
+}
+
+const RouteEntry* ProtocolPipeline::resolve_outbound_route(DecodedBody& body) {
+    bool saw_route_hint = body.route_id != 0 || !body.route_name.empty();
+
+    if (body.route_id != 0) {
+        if (const auto* route = routes_.find(body.route_id)) {
+            if (body.route_name.empty()) {
+                body.route_name = route->debug_name;
+            }
+            return route;
+        }
+    }
+
+    if (!body.route_name.empty()) {
+        if (const auto* route = routes_.find_by_name(body.route_name)) {
+            body.route_id = route->route_id;
+            return route;
+        }
+    }
+
+    if (body.has_message() && body.message->is_object()) {
+        const auto& message = *body.message;
+        if (message.contains("route_id")) {
+            saw_route_hint = true;
+        }
+        if (message.contains("route_id") &&
+            message["route_id"].is_number_unsigned()) {
+            const auto route_id = message["route_id"].get<std::uint32_t>();
+            if (const auto* route = routes_.find(route_id)) {
+                body.route_id = route_id;
+                if (body.route_name.empty()) {
+                    body.route_name = route->debug_name;
+                }
+                return route;
+            }
+        }
+        if (message.contains("msg_id")) {
+            saw_route_hint = true;
+        }
+        if (message.contains("msg_id") &&
+            message["msg_id"].is_number_unsigned()) {
+            const auto route_id = message["msg_id"].get<std::uint32_t>();
+            if (const auto* route = routes_.find(route_id)) {
+                body.route_id = route_id;
+                if (body.route_name.empty()) {
+                    body.route_name = route->debug_name;
+                }
+                return route;
+            }
+        }
+        if (message.contains("route")) {
+            saw_route_hint = true;
+        }
+        if (message.contains("route") && message["route"].is_string()) {
+            const auto route_name = message["route"].get<std::string>();
+            if (const auto* route = routes_.find_by_name(route_name)) {
+                body.route_id = route->route_id;
+                body.route_name = route_name;
+                return route;
+            }
+        }
+        if (message.contains("method")) {
+            saw_route_hint = true;
+        }
+        if (message.contains("method") && message["method"].is_string()) {
+            const auto route_name = message["method"].get<std::string>();
+            if (const auto* route = routes_.find_by_name(route_name)) {
+                body.route_id = route->route_id;
+                body.route_name = route_name;
+                return route;
+            }
+        }
+    }
+
+    if (!saw_route_hint) {
+        if (const auto* route = routes_.only()) {
+            body.route_id = route->route_id;
+            if (body.route_name.empty()) {
+                body.route_name = route->debug_name;
+            }
+            return route;
+        }
+    }
+
+    return nullptr;
+}
+
+std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
+    std::string_view config_json, std::string_view source_dir,
+    std::size_t fallback_max_frame_size, std::string* error) {
+    try {
+        nlohmann::json config =
+            nlohmann::json::parse(config_json, nullptr, false);
+        if (config.is_discarded() || !config.is_object() || config.empty()) {
+            return nullptr;
+        }
+
+        ProtocolProfile profile;
+        profile.name = config.value("name", std::string{});
+
+        const auto envelope = config.value("envelope", nlohmann::json::object());
+        if (envelope.is_object()) {
+            if (envelope.contains("type")) {
+                const auto parsed =
+                    parse_envelope_kind(envelope["type"].get<std::string>());
+                if (!parsed) {
+                    if (error) *error = "unknown network.protocol.envelope.type";
+                    return nullptr;
+                }
+                profile.envelope_kind = *parsed;
+            }
+            if (envelope.contains("endian")) {
+                const auto parsed = parse_protocol_endian(envelope["endian"]);
+                if (!parsed) {
+                    if (error) *error = "invalid network.protocol.envelope.endian";
+                    return nullptr;
+                }
+                profile.envelope.endian = *parsed;
+            }
+            profile.envelope.length_bytes =
+                static_cast<std::uint8_t>(envelope.value("length_bytes", 0));
+            profile.envelope.route_id_bytes =
+                static_cast<std::uint8_t>(envelope.value("route_id_bytes", 0));
+            profile.envelope.length_includes_header =
+                envelope.value("length_includes_header", false);
+            if (envelope.contains("delimiter") &&
+                envelope["delimiter"].is_string()) {
+                const auto delimiter = envelope["delimiter"].get<std::string>();
+                if (!delimiter.empty()) {
+                    profile.envelope.delimiter =
+                        static_cast<std::uint8_t>(delimiter.front());
+                }
+            }
+            profile.envelope.max_frame_size =
+                envelope.value("max_frame_size", std::size_t{0});
+        }
+        if (profile.envelope.max_frame_size == 0 &&
+            fallback_max_frame_size > 0) {
+            profile.envelope.max_frame_size = fallback_max_frame_size;
+        }
+        profile.route_source =
+            default_route_source_for_envelope(profile.envelope_kind);
+
+        const auto body = config.value("body", nlohmann::json::object());
+        const std::string body_codec = body.value("codec", "raw");
+
+        BodyCodecRegistry codecs;
+        constexpr std::uint16_t default_codec_id = 1;
+        auto codec = create_body_codec(body_codec);
+        if (!codec) {
+            if (error) *error = "unsupported network.protocol.body.codec";
+            return nullptr;
+        }
+        const std::string normalized_body_codec(codec->name());
+        codecs.add(default_codec_id, std::move(codec));
+        profile.default_codec_id = default_codec_id;
+
+        const auto routing = config.value("routing", nlohmann::json::object());
+        if (routing.is_object()) {
+            if (routing.contains("source") && routing["source"].is_string()) {
+                const auto parsed =
+                    parse_route_source(routing["source"].get<std::string>());
+                if (!parsed) {
+                    if (error) *error = "invalid network.protocol.routing.source";
+                    return nullptr;
+                }
+                profile.route_source = *parsed;
+            }
+            profile.decode_body_route = routing.value("decode_body_route", true);
+            profile.decode_before_dispatch =
+                routing.value("decode_before_dispatch", false);
+            if (routing.contains("unknown_route_action") &&
+                routing["unknown_route_action"].is_string()) {
+                const auto parsed =
+                    parse_action(routing["unknown_route_action"].get<std::string>());
+                if (!parsed) {
+                    if (error) {
+                        *error =
+                            "invalid network.protocol.routing.unknown_route_action";
+                    }
+                    return nullptr;
+                }
+                profile.unknown_route_action = *parsed;
+            }
+        }
+
+        RouteTable routes;
+        if (normalized_body_codec == "xmldef" && body.contains("catalog") &&
+            body["catalog"].is_string()) {
+            XmldefCatalogOptions catalog_options;
+            catalog_options.default_codec_id = default_codec_id;
+            if (routing.contains("default_action") &&
+                routing["default_action"].is_string()) {
+                const auto parsed =
+                    parse_action(routing["default_action"].get<std::string>());
+                if (!parsed) {
+                    if (error) {
+                        *error = "invalid network.protocol.routing.default_action";
+                    }
+                    return nullptr;
+                }
+                catalog_options.default_action = *parsed;
+            }
+            catalog_options.default_lazy_decode =
+                routing.value("lazy_decode", true);
+
+            std::filesystem::path catalog_path(body["catalog"].get<std::string>());
+            if (catalog_path.is_relative() && !source_dir.empty()) {
+                catalog_path = std::filesystem::path(std::string(source_dir)) /
+                               catalog_path;
+            }
+
+            std::string catalog_error;
+            if (!load_xmldef_routes_from_file(catalog_path.string(), routes,
+                                              catalog_options, &catalog_error)) {
+                if (error) {
+                    *error = "failed to load xmldef catalog: " + catalog_error;
+                }
+                return nullptr;
+            }
+        }
+
+        if (config.contains("routes") && config["routes"].is_array()) {
+            for (const auto& route : config["routes"]) {
+                if (!route.is_object()) {
+                    continue;
+                }
+                RouteEntry entry;
+                entry.route_id = route.value("id", std::uint32_t{0});
+                entry.target_service =
+                    route.value("target_service", std::uint32_t{0});
+                entry.codec_id = route.value("codec_id", default_codec_id);
+                entry.schema_id = route.value("schema_id", std::uint16_t{0});
+                entry.debug_name = route.value("name", std::string{});
+                entry.policy.lazy_decode = route.value("lazy_decode", true);
+                if (route.contains("action") && route["action"].is_string()) {
+                    const auto parsed =
+                        parse_action(route["action"].get<std::string>());
+                    if (!parsed) {
+                        if (error) {
+                            *error = "invalid network.protocol.routes.action";
+                        }
+                        return nullptr;
+                    }
+                    entry.policy.action = *parsed;
+                }
+                if (entry.route_id == 0) {
+                    if (error) *error = "network.protocol.routes[].id is required";
+                    return nullptr;
+                }
+
+                if (!entry.debug_name.empty()) {
+                    if (const auto* named = routes.find_by_name(entry.debug_name);
+                        named != nullptr && named->route_id != entry.route_id) {
+                        if (error) {
+                            *error =
+                                "network.protocol.routes contains duplicate name";
+                        }
+                        return nullptr;
+                    }
+                }
+
+                routes.upsert(std::move(entry));
+            }
+        }
+
+        return std::make_unique<ProtocolPipeline>(std::move(profile),
+                                                  std::move(routes),
+                                                  std::move(codecs));
+    } catch (const nlohmann::json::exception& ex) {
+        if (error) {
+            *error = std::string("invalid network.protocol: ") + ex.what();
+        }
+        return nullptr;
+    }
 }
 
 }  // namespace shield::transport

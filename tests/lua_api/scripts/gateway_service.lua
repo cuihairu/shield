@@ -81,7 +81,14 @@ function M.on_client_message(session, payload)
 
     -- Echo back via session:send if available.
     if type(session) == "userdata" and session.send then
-        session:send(payload)
+        local ok, err = session:send(payload)
+        if session_id and sessions[session_id] then
+            sessions[session_id].last_send = {
+                ok = ok,
+                error = err,
+                time = shield.now()
+            }
+        end
     end
 
     return true

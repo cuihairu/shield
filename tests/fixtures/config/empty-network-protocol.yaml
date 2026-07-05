@@ -1,0 +1,8 @@
+name: empty_network_protocol
+actors:
+  - name: empty_protocol_gateway
+    script: ../../scripts/bootstrap.lua
+    instances: 1
+    network:
+      tcp: "127.0.0.1:19101"
+      protocol: {}

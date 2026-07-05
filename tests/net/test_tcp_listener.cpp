@@ -6,7 +6,6 @@
 #include <boost/asio.hpp>
 
 #include <cstdint>
-
 namespace {
 
 std::uint16_t reserve_ephemeral_port(boost::asio::io_context& io) {

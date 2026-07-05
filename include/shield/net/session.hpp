@@ -62,6 +62,15 @@ public:
     /// @brief Get the last error code (for Lua API error mapping)
     virtual std::string error_code() const = 0;
 
+    /// @brief Whether this session is bound to a protocol pipeline.
+    virtual bool has_protocol_pipeline() const = 0;
+
+    /// @brief Encode and send a structured business message through the bound
+    /// protocol pipeline.
+    virtual bool send_message(const shield::transport::DecodedBody& message,
+                              std::string* error = nullptr) = 0;
+    virtual std::string_view protocol_codec_name() const = 0;
+
     /// @brief Set user data
     virtual void set_user_data(std::string key, std::string value) = 0;
 
@@ -76,6 +85,8 @@ struct SessionCallbacks {
         on_disconnect;
     std::function<void(std::shared_ptr<Session>, const std::vector<uint8_t>&)>
         on_message;
+    // Protocol path callback. DecodeLocal results are materialized before
+    // dispatch. ForwardRaw/Drop remain visible here for C++ data-plane users.
     std::function<void(std::shared_ptr<Session>,
                        const shield::transport::DispatchResult&)>
         on_packet;
@@ -94,6 +105,17 @@ public:
     RemoteAddress remote_addr() const override { return remote_addr_; }
 
     bool send(const std::vector<uint8_t>& data) override;
+    bool has_protocol_pipeline() const override {
+        return protocol_pipeline_ != nullptr;
+    }
+    bool send_message(const shield::transport::DecodedBody& message,
+                      std::string* error = nullptr) override;
+    std::string_view protocol_codec_name() const override {
+        if (!protocol_pipeline_) {
+            return {};
+        }
+        return protocol_pipeline_->default_codec_name();
+    }
     void close(std::string reason) override;
     bool is_alive() const override { return alive_.load(); }
     std::string error_code() const override { return error_code_; }
