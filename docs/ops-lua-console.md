@@ -43,7 +43,7 @@ optional HTTP debug endpoints
 
 规则：
 
-- 默认入口是 `local admin socket` 或仅绑定 `127.0.0.1` 的文本控制台。
+- 默认入口是 local Unix domain socket（AF_UNIX，Linux / macOS / Windows 10 1803+ 通用）；loopback TCP 仅作 opt-in 应急 / 转发通道，强制 bind `127.0.0.1` / `::1`。详见下文「传输与客户端分层」。
 - 是否允许 `telnet`/`nc` 连接只是传输层实现细节，不改变语义 owner。
 - 业务 Lua service 不直接 import、require 或调用此能力。
 
@@ -66,6 +66,65 @@ shield_lua / shield_net / shield_plugin / shield_cluster
 - `shield_ops` 不能直接持有或跨线程操作 `sol::state` / `lua_State*`。
 - `shield_lua` 拥有 Lua VM inspect provider 的语义与实现。
 - `shield_ops` 不能通过 console 反向改写 core 语义。
+
+## 传输与客户端分层
+
+控制台的“连接方式”与“交互体验”是两层，分开实现：
+
+- 服务器只做协议端点，不做终端。行编辑、补全、历史、着色等富体验全部由客户端实现，服务器不参与 telnet 选项协商、不维护终端状态。
+- 应用协议（行文本 + 可选 `--json`）与传输解耦，同一套协议可跑在任意传输上。
+- 监听端 in-process 于 server，不单独起 ops daemon：Lua VM 活在 server 进程，`lua.inspect` / `lua.eval` 必须在 server 进程执行，独立进程无法隔离 eval 的崩溃风险，只会多一条内部控制通道与一组故障点。这与 Erlang shell / Node inspector / Java JMX 的做法一致。
+- 客户端（`shield ops` TUI / Web 控制台 / `curl`）是独立 binary，通过 endpoint 连接。
+- 可选硬化：监听端按需 attach（如 `SIGUSR1` 触发临时拉起），平时不开 socket，把暴露面压到只在真正调试时存在。
+
+### 传输
+
+默认本地 Unix domain socket。Linux / macOS / Windows 10 1803+ 均支持 AF_UNIX，实现上复用同一套 `local::stream_protocol`，单一代码路径。loopback TCP 作为 opt-in，仅在需要 `nc` / `curl` 应急或跨 SSH 从笔记本连远端服务时启用。
+
+| 传输 | 平台 | 默认 | 鉴权 |
+| --- | --- | --- | --- |
+| Unix domain socket（AF_UNIX） | Linux / macOS / Win10+ | 是 | 文件权限 + 对端凭据（Linux/macOS）/ NTFS ACL（Windows） |
+| 命名管道 | Windows（可选） | 否 | 命名管道 ACL |
+| loopback TCP | 全平台 | 否（opt-in） | 强制环回 bind + 显式 token |
+
+选 socket 的理由同 Docker / systemd / PostgreSQL / ssh-agent：路径不抢端口、本地 gating 不用管 token。
+
+### 鉴权
+
+- Linux `SO_PEERCRED`、macOS `getpeereid` 直接拿到连接方 uid/pid，用于审计。
+- Windows AF_UNIX 无对端凭据机制，靠 NTFS ACL 卡住“谁能连”，审计层面拿不到对端 uid/pid，粒度依赖客户端自报。
+- TCP（opt-in）必须额外提供 token，且 bind 强制 `127.0.0.1` / `::1`，配置层拒绝非环回地址。
+
+### 客户端分层
+
+| 客户端 | 形态 | 场景 |
+| --- | --- | --- |
+| `shield ops` TUI | 终端，linenoise / crossline 行编辑 + 补全 + 历史 | 日常主入口，SSH 场景 |
+| Web 控制台 | xterm.js + WebSocket，复用 HTTP `/ops/*` | 最接近 Jupyter / IPython 体验 |
+| `shield ops exec` / `curl` | 一行 in / 一行 out，`--json` | 脚本化、CI |
+| `nc` / `telnet` | 裸字节流 | 仅应急，无补全，标为 degraded |
+
+参考：Elixir `IEx` 是“对 per-node VM 做富 REPL”的最近参照；skynet 的 telnet debug console 是反面教材。
+
+### endpoint 与自动判断
+
+传输选择统一成一条带 scheme 前缀的 endpoint 字符串，scheme 决定传输，避免“先试 socket 再试 tcp”的猜测式判断：
+
+```text
+unix:///run/shield/ops.sock
+tcp://127.0.0.1:9090
+```
+
+- 显式：`shield ops --endpoint unix:///run/shield/ops.sock`
+- 环境变量：`$SHIELD_OPS_ENDPOINT`
+- 默认（自动判断）：server 启动时把自身 endpoint 写进 discovery 文件（与 pid 文件同目录，如 `/run/shield/ops.endpoint`），客户端默认读该文件——读到 `unix:` 走 socket、读到 `tcp:` 走 TCP；文件不存在时回退到规范化 socket 路径。
+
+### 富体验所需的协议原语
+
+除命令执行外，协议需额外支持两个请求，二者均复用 L2 inspect 路径、在目标 service 的 owner 线程上执行：
+
+- `completion`：给定部分输入与 service，返回候选列表（枚举 module table key / 子命令）。
+- `introspection`：`obj?` 风格，返回类型 / 大小 / 最近采样摘要。
 
 ## 基本模型
 
@@ -417,11 +476,13 @@ ops:
   enabled: true
   console:
     enabled: true
-    bind: "127.0.0.1:9090"
-    transport: "text"
+    endpoint: "unix:///run/shield/ops.sock"     # scheme 决定传输；tcp opt-in 用 tcp://127.0.0.1:9090
+    discovery_file: "/run/shield/ops.endpoint"  # server 启动时写入实际 endpoint，客户端默认读取
+    protocol: text                              # text（+ 可选 --json）| json_rpc
+    on_demand: false                            # true = 仅按需 attach（如 SIGUSR1 触发），平时不开 socket
     auth:
-      type: token
-      token: ${OPS_TOKEN}
+      mode: peer_credential                     # socket 默认；tcp opt-in 下强制 token
+      token: ${OPS_TOKEN}                       # 仅 tcp opt-in 需要
   lua_console:
     enabled: true
     inspect_enabled: true
@@ -439,6 +500,7 @@ ops:
 - `ops.console.*` 负责管理入口本身。
 - `ops.lua_console.*` 负责 Lua 诊断能力。
 - `eval_enabled` 必须独立于 `inspect_enabled`。
+- `endpoint` 的 scheme 决定传输（`unix://` 默认 / `tcp://` opt-in）；客户端默认从 `discovery_file` 读取实际 endpoint。
 
 ## 命令返回形态
 
