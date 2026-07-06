@@ -14,6 +14,8 @@
 - 同一 Lua VM 内多 coroutine 协作式调度。
 - 同一时间最多一个 OS thread 进入同一 Lua VM。
 
+因此任何 `shield_ops` 下的 Lua inspect / snapshot / eval 能力，都必须回到目标 service 的 Lua VM owner 线程执行；不能从 admin 线程直接读取或操作该 VM。相关管理面设计见 [Lua 诊断控制台设计](ops-lua-console.md)。
+
 代价是内存更高，但边界清晰，利于隔离、热重启、IPC/cluster 一致语义。
 
 可优化点：

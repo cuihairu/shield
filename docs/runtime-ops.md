@@ -27,6 +27,8 @@
 | Profile | 采样式热点分析、消息延迟剖面、慢调用追踪 |
 | Health | 进程存活、关键模块就绪、资源状态 |
 
+Lua 诊断控制台与 Lua 内存观测是 `Console` / `Diagnostics` 的专项能力，单独设计见 [Lua 诊断控制台设计](ops-lua-console.md)。
+
 ## 可观测性现状与非目标
 
 当前产品只保留日志模块（控制台日志；文件日志作为 `shield_log` 的可选 sink，默认关闭；Lua 目标 API `shield.log.info/warn/error/debug`）。日志不是 `shield_core` 语义的一部分。
@@ -76,6 +78,16 @@ profile controls
 | `/ops/services/:name` | GET | 服务详情 |
 | `/ops/profile` | POST | 启动/停止 profile |
 | `/ops/config` | GET | 当前配置快照 |
+
+如果启用了 Lua 诊断控制台，管理面还可以额外暴露只读 Lua 观测能力，例如：
+
+| 能力 | 形态 | 说明 |
+|------|------|------|
+| `lua.inspect <service> summary` | console | 查看 service 对应 Lua VM 的摘要 |
+| `lua.snapshot <service>` | console / HTTP | 记录 Lua 内存摘要快照 |
+| `lua.diff <service> <a> <b>` | console / HTTP | 比较两次 Lua 快照 |
+
+任意 Lua 执行不是默认能力；如后续支持 `lua.eval`，也必须显式启用并默认仅限本地入口。详见 [Lua 诊断控制台设计](ops-lua-console.md)。
 
 ### 健康检查
 

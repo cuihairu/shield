@@ -303,6 +303,8 @@ shield.scheduler()
 - metrics exporter
 - profile 控制入口
 
+Lua 诊断控制台与 Lua 内存观测属于 `shield_ops` 的 `console` / `diagnostics` 子能力，专项设计见 [Lua 诊断控制台设计](ops-lua-console.md)。
+
 最终规则：
 
 - 业务 Lua service 不直接依赖 `shield_ops`。

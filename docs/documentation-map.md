@@ -47,6 +47,7 @@
 - [配置运行时语义](runtime-config.md)
 - [日志运行时语义](runtime-log.md)
 - [运维语义](runtime-ops.md)
+- [Lua 诊断控制台设计](ops-lua-console.md)
 
 ## 当前口径
 
