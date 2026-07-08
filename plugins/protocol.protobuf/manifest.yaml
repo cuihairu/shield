@@ -1,0 +1,35 @@
+schema_version: 1
+id: protocol.protobuf
+name: Protobuf Protocol Codec
+version: 1.0.0
+kind: protocol
+description: Protobuf provider for shield.protocol.codec.v1
+documentation:
+  url: https://cuihairu.github.io/shield/protocol-codec-plugins
+  description: Protobuf BodyCodec provider for descriptor-driven protocol profiles
+entry: shield_plugin_get_v1
+library:
+  windows: bin/libshield_protocol_protobuf.dll
+  linux: bin/libshield_protocol_protobuf.so
+  macos: bin/libshield_protocol_protobuf.dylib
+provides:
+  - interface: shield.protocol.codec.v1
+    capabilities:
+      - protobuf
+requires: []
+lua:
+  namespace: protocol.protobuf
+  search_paths: []
+config_schema:
+  type: object
+  required:
+    - descriptor_set
+  properties:
+    descriptor_set:
+      type: string
+    messages:
+      type: array
+      items:
+        type: object
+    json:
+      type: object

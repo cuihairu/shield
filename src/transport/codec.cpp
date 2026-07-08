@@ -71,18 +71,6 @@ bool MessagePackCodec::decode(const std::vector<uint8_t>& data,
 }
 #endif
 
-#ifdef SHIELD_HAS_PROTOBUF
-std::vector<uint8_t> ProtobufCodec::encode(std::string_view method,
-                                           std::string_view payload) {
-    return JsonCodec{}.encode(method, payload);
-}
-
-bool ProtobufCodec::decode(const std::vector<uint8_t>& data,
-                           std::string& method, std::string& payload) {
-    return JsonCodec{}.decode(data, method, payload);
-}
-#endif
-
 // Factory function
 std::unique_ptr<Codec> create_codec(std::string_view name) {
     if (name == "json") {
@@ -91,11 +79,6 @@ std::unique_ptr<Codec> create_codec(std::string_view name) {
 #ifdef SHIELD_ENABLE_MESSAGEPACK
     if (name == "msgpack") {
         return std::make_unique<MessagePackCodec>();
-    }
-#endif
-#ifdef SHIELD_HAS_PROTOBUF
-    if (name == "protobuf") {
-        return std::make_unique<ProtobufCodec>();
     }
 #endif
     return nullptr;

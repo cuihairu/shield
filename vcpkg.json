@@ -58,6 +58,12 @@
             "dependencies": [
                 "mongo-cxx-driver"
             ]
+        },
+        "protocol-protobuf": {
+            "description": "Protobuf protocol codec plugin dependency",
+            "dependencies": [
+                "protobuf"
+            ]
         }
     },
     "overrides": []

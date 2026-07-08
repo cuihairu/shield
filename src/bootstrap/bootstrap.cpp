@@ -6,6 +6,7 @@
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/plugin/plugin_host.hpp"
+#include "shield/plugin/protocol_codec.h"
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
 #endif
@@ -95,6 +96,50 @@ std::optional<Endpoint> parse_endpoint(const std::string& value) {
         return std::nullopt;
     }
     return endpoint;
+}
+
+shield::transport::ExternalBodyCodecResolver make_protocol_codec_resolver() {
+    return [](std::string_view provider, std::string_view codec_name,
+              std::string* error) -> const shield_protocol_codec_v1* {
+        const auto provider_name = std::string(provider);
+        const auto* codec =
+            shield::plugin::global_host()
+                .get_by_binding<shield_protocol_codec_v1>(provider_name);
+        if (codec == nullptr) {
+            if (error) {
+                *error = "protocol codec provider '" + provider_name +
+                         "' is not configured or does not provide " +
+                         SHIELD_PROTOCOL_CODEC_INTERFACE;
+            }
+            return nullptr;
+        }
+        if (codec->codec_name == nullptr ||
+            std::string_view(codec->codec_name) != codec_name) {
+            if (error) {
+                *error = "protocol codec provider '" + provider_name +
+                         "' does not serve codec '" +
+                         std::string(codec_name) + "'";
+            }
+            return nullptr;
+        }
+        if (codec->decode == nullptr || codec->encode == nullptr) {
+            if (error) {
+                *error = "protocol codec provider '" + provider_name +
+                         "' has incomplete vtable";
+            }
+            return nullptr;
+        }
+        return codec;
+    };
+}
+
+shield::transport::ProtocolBuildOptions protocol_build_options(
+    std::string_view source_dir, std::size_t fallback_max_frame_size) {
+    shield::transport::ProtocolBuildOptions options;
+    options.source_dir = source_dir;
+    options.fallback_max_frame_size = fallback_max_frame_size;
+    options.external_codec_resolver = make_protocol_codec_resolver();
+    return options;
 }
 
 }  // namespace
@@ -343,9 +388,10 @@ bool initialize(const RuntimeConfig& config) {
         }
         if (actor.network_protocol_enabled) {
             std::string protocol_error;
+            auto protocol_options =
+                protocol_build_options(actor.source_dir, actor.max_frame_size);
             auto probe = shield::transport::build_protocol_pipeline_from_json(
-                actor.network_protocol_json, actor.source_dir,
-                actor.max_frame_size, &protocol_error);
+                actor.network_protocol_json, protocol_options, &protocol_error);
             if (!probe) {
                 SHIELD_LOG_ERROR(log, "Invalid TCP protocol for actor '" +
                                           actor.name + "': " + protocol_error);
@@ -390,10 +436,11 @@ bool initialize(const RuntimeConfig& config) {
             callbacks.create_protocol_pipeline =
                 [protocol_json, source_dir, listener_max_frame_size]() mutable {
                     std::string protocol_error;
+                    auto protocol_options = protocol_build_options(
+                        source_dir, listener_max_frame_size);
                     auto pipeline =
                         shield::transport::build_protocol_pipeline_from_json(
-                            protocol_json, source_dir,
-                            listener_max_frame_size, &protocol_error);
+                            protocol_json, protocol_options, &protocol_error);
                     if (!pipeline && !protocol_error.empty()) {
                         auto& log = shield::log::get_logger("bootstrap");
                         SHIELD_LOG_ERROR(log, "Invalid network protocol: " +

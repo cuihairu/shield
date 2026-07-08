@@ -1,12 +1,16 @@
 #define BOOST_TEST_MODULE TransportProtocolRoutingTests
 #include <boost/test/unit_test.hpp>
 
+#include "shield/plugin/protocol_codec.h"
 #include "shield/transport/protocol.hpp"
 
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string_view>
 #include <vector>
 
@@ -20,6 +24,7 @@ using shield::transport::LenPrefixEnvelope;
 using shield::transport::MsgpackBodyCodec;
 using shield::transport::Packet;
 using shield::transport::ProtocolPipeline;
+using shield::transport::ProtocolBuildOptions;
 using shield::transport::ProtocolProfile;
 using shield::transport::RawBodyCodec;
 using shield::transport::create_body_codec;
@@ -37,6 +42,120 @@ namespace {
 
 std::vector<std::uint8_t> bytes(std::string_view value) {
     return std::vector<std::uint8_t>(value.begin(), value.end());
+}
+
+char* dup_test_string(std::string_view value) {
+    auto* out = static_cast<char*>(std::malloc(value.size() + 1));
+    if (out == nullptr) return nullptr;
+    std::memcpy(out, value.data(), value.size());
+    out[value.size()] = '\0';
+    return out;
+}
+
+std::uint8_t* dup_test_bytes(std::string_view value) {
+    if (value.empty()) return nullptr;
+    auto* out = static_cast<std::uint8_t*>(std::malloc(value.size()));
+    if (out == nullptr) return nullptr;
+    std::memcpy(out, value.data(), value.size());
+    return out;
+}
+
+struct FakeProtocolCodecState {
+    std::string codec_name = "protobuf";
+    std::string decoded_json = R"({"uid":7,"name":"alice"})";
+    std::string encoded_payload;
+    std::uint32_t last_route_id = 0;
+    std::uint16_t last_schema_id = 0;
+    std::string last_route_name;
+    std::string last_input_json;
+    std::vector<std::uint8_t> last_payload;
+};
+
+int fake_protocol_decode(const shield_protocol_codec_v1* self,
+                         const shield_protocol_decode_args_v1* args,
+                         shield_protocol_decode_result_v1* out,
+                         shield_error_v1* err) {
+    if (self == nullptr || args == nullptr || out == nullptr ||
+        self->user_data == nullptr) {
+        if (err) {
+            err->code = "test.invalid";
+            err->message = "invalid fake decode args";
+            err->phase = "test";
+        }
+        return -1;
+    }
+    auto* state = static_cast<FakeProtocolCodecState*>(self->user_data);
+    state->last_route_id = args->route_id;
+    state->last_schema_id = args->schema_id;
+    state->last_route_name = args->route_name ? args->route_name : "";
+    state->last_payload.clear();
+    if (args->payload != nullptr && args->payload_size > 0) {
+        state->last_payload.assign(args->payload,
+                                   args->payload + args->payload_size);
+    }
+    out->message_json = dup_test_string(state->decoded_json);
+    out->message_json_size = state->decoded_json.size();
+    return out->message_json == nullptr ? -1 : 0;
+}
+
+int fake_protocol_encode(const shield_protocol_codec_v1* self,
+                         const shield_protocol_encode_args_v1* args,
+                         shield_protocol_encode_result_v1* out,
+                         shield_error_v1* err) {
+    if (self == nullptr || args == nullptr || out == nullptr ||
+        self->user_data == nullptr) {
+        if (err) {
+            err->code = "test.invalid";
+            err->message = "invalid fake encode args";
+            err->phase = "test";
+        }
+        return -1;
+    }
+    auto* state = static_cast<FakeProtocolCodecState*>(self->user_data);
+    state->last_route_id = args->route_id;
+    state->last_schema_id = args->schema_id;
+    state->last_route_name = args->route_name ? args->route_name : "";
+    if (args->message_json != nullptr) {
+        state->last_input_json.assign(args->message_json,
+                                      args->message_json +
+                                          args->message_json_size);
+    } else {
+        state->last_input_json.clear();
+    }
+    state->encoded_payload = "pb:" + state->last_input_json;
+    out->payload = dup_test_bytes(state->encoded_payload);
+    out->payload_size = state->encoded_payload.size();
+    return out->payload == nullptr ? -1 : 0;
+}
+
+void fake_free_decode_result(const shield_protocol_codec_v1*,
+                             shield_protocol_decode_result_v1* result) {
+    if (result == nullptr) return;
+    std::free(const_cast<char*>(result->message_json));
+    result->message_json = nullptr;
+    result->message_json_size = 0;
+}
+
+void fake_free_encode_result(const shield_protocol_codec_v1*,
+                             shield_protocol_encode_result_v1* result) {
+    if (result == nullptr) return;
+    std::free(const_cast<std::uint8_t*>(result->payload));
+    result->payload = nullptr;
+    result->payload_size = 0;
+}
+
+shield_protocol_codec_v1 make_fake_protocol_codec(
+    FakeProtocolCodecState& state) {
+    shield_protocol_codec_v1 codec{};
+    codec.struct_size = sizeof(shield_protocol_codec_v1);
+    codec.codec_name = state.codec_name.c_str();
+    codec.version = "test";
+    codec.user_data = &state;
+    codec.decode = fake_protocol_decode;
+    codec.encode = fake_protocol_encode;
+    codec.free_decode_result = fake_free_decode_result;
+    codec.free_encode_result = fake_free_encode_result;
+    return codec;
 }
 
 }  // namespace
@@ -429,6 +548,183 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesListenerMaxFrameSizeFallback) {
         build_protocol_pipeline_from_json(config, "", 64, &error);
     BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
     BOOST_CHECK_EQUAL(pipeline->profile().envelope.max_frame_size, 64u);
+}
+
+BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
+    FakeProtocolCodecState state;
+    auto fake_codec = make_fake_protocol_codec(state);
+
+    const auto config = R"json(
+{
+  "name": "game.protobuf",
+  "envelope": {
+    "type": "idlen",
+    "route_id_bytes": 2,
+    "length_bytes": 2
+  },
+  "body": {
+    "codec": "protobuf",
+    "provider": "protocol.protobuf"
+  },
+  "routes": [
+    {
+      "id": 4097,
+      "name": "game.Login",
+      "target_service": 3,
+      "codec_id": 1,
+      "schema_id": 42,
+      "action": "decode",
+      "lazy_decode": false
+    }
+  ]
+}
+)json";
+
+    ProtocolBuildOptions options;
+    options.external_codec_resolver =
+        [&](std::string_view provider, std::string_view codec_name,
+            std::string*) -> const shield_protocol_codec_v1* {
+        BOOST_CHECK(provider == "protocol.protobuf");
+        BOOST_CHECK(codec_name == "protobuf");
+        return &fake_codec;
+    };
+
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(config, options, &error);
+    BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
+    BOOST_CHECK_EQUAL(std::string(pipeline->default_codec_name()), "protobuf");
+
+    Packet packet;
+    packet.route_id = 4097;
+    packet.body = bytes("wire-protobuf");
+    const auto encoded = pipeline->encode(packet.ref());
+    BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
+
+    auto results = pipeline->feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_REQUIRE(results[0].decoded());
+    BOOST_REQUIRE(results[0].decoded_body->has_message());
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 7);
+    BOOST_CHECK_EQUAL(
+        (*results[0].decoded_body->message)["name"].get<std::string>(),
+        "alice");
+    BOOST_CHECK_EQUAL(state.last_route_id, 4097u);
+    BOOST_CHECK_EQUAL(state.last_schema_id, 42u);
+    BOOST_CHECK_EQUAL(state.last_route_name, "game.Login");
+    BOOST_CHECK_EQUAL_COLLECTIONS(state.last_payload.begin(),
+                                  state.last_payload.end(),
+                                  packet.body.begin(), packet.body.end());
+
+    shield::transport::DecodedBody outbound;
+    outbound.route_id = 4097;
+    outbound.message =
+        nlohmann::json::object({{"uid", 9}, {"name", "bob"}});
+    const auto outbound_frame = pipeline->encode_message(outbound);
+    BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
+    BOOST_REQUIRE_GE(outbound_frame.size(), 4u);
+    BOOST_CHECK_EQUAL(state.last_route_id, 4097u);
+    BOOST_CHECK_EQUAL(state.last_schema_id, 42u);
+    BOOST_CHECK_EQUAL(state.last_route_name, "game.Login");
+
+    const auto outbound_json = nlohmann::json::parse(state.last_input_json);
+    BOOST_CHECK_EQUAL(outbound_json["uid"].get<int>(), 9);
+    BOOST_CHECK_EQUAL(outbound_json["name"].get<std::string>(), "bob");
+
+    const auto expected_payload = bytes(state.encoded_payload);
+    BOOST_CHECK_EQUAL_COLLECTIONS(outbound_frame.begin() + 4,
+                                  outbound_frame.end(),
+                                  expected_payload.begin(),
+                                  expected_payload.end());
+}
+
+BOOST_AUTO_TEST_CASE(BuildProtocolPipelinePropagatesMissingExternalProvider) {
+    const auto config = R"json(
+{
+  "name": "game.protobuf",
+  "envelope": {
+    "type": "idlen",
+    "route_id_bytes": 2,
+    "length_bytes": 2
+  },
+  "body": {
+    "codec": "protobuf",
+    "provider": "protocol.protobuf"
+  }
+}
+)json";
+
+    ProtocolBuildOptions options;
+    options.external_codec_resolver =
+        [](std::string_view, std::string_view,
+           std::string* resolver_error) -> const shield_protocol_codec_v1* {
+        if (resolver_error) {
+            *resolver_error = "missing protocol.protobuf provider";
+        }
+        return nullptr;
+    };
+
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(config, options, &error);
+    BOOST_CHECK(pipeline == nullptr);
+    BOOST_CHECK_NE(error.find("missing protocol.protobuf provider"),
+                   std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsProviderWithoutResolver) {
+    const auto config = R"json(
+{
+  "name": "game.protobuf",
+  "envelope": {
+    "type": "idlen",
+    "route_id_bytes": 2,
+    "length_bytes": 2
+  },
+  "body": {
+    "codec": "protobuf",
+    "provider": "protocol.protobuf"
+  }
+}
+)json";
+
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(config, {}, 0, &error);
+    BOOST_CHECK(pipeline == nullptr);
+    BOOST_CHECK_NE(error.find("no external codec resolver"),
+                   std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsProviderCodecMismatch) {
+    FakeProtocolCodecState state;
+    state.codec_name = "sproto";
+    auto fake_codec = make_fake_protocol_codec(state);
+
+    const auto config = R"json(
+{
+  "name": "game.protobuf",
+  "envelope": {
+    "type": "idlen",
+    "route_id_bytes": 2,
+    "length_bytes": 2
+  },
+  "body": {
+    "codec": "protobuf",
+    "provider": "protocol.protobuf"
+  }
+}
+)json";
+
+    ProtocolBuildOptions options;
+    options.external_codec_resolver =
+        [&](std::string_view, std::string_view,
+            std::string*) -> const shield_protocol_codec_v1* {
+        return &fake_codec;
+    };
+
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(config, options, &error);
+    BOOST_CHECK(pipeline == nullptr);
+    BOOST_CHECK_NE(error.find("provider does not serve"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(BuildProtocolPipelineAcceptsForwardAliasForXmldefDefaultAction) {

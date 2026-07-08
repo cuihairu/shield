@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include "shield/plugin/protocol_codec.h"
+
 namespace shield::transport {
 namespace {
 
@@ -347,6 +349,35 @@ nlohmann::json encode_structured_message(const DecodedBody& body,
     }
     message["payload"] = nlohmann::json::object();
     return message;
+}
+
+nlohmann::json plugin_business_message(const DecodedBody& body) {
+    if (body.has_message()) {
+        const auto& message = *body.message;
+        if (message.is_object() && message.contains("payload") &&
+            message_contains_route_hint(message)) {
+            return message["payload"];
+        }
+        return message;
+    }
+
+    if (!body.bytes.empty()) {
+        throw std::runtime_error(
+            "plugin body codec expects business message, not raw bytes");
+    }
+
+    return nlohmann::json::object();
+}
+
+std::string plugin_error_message(const shield_error_v1& err,
+                                 std::string_view fallback) {
+    if (err.message && err.message[0] != '\0') {
+        return err.message;
+    }
+    if (err.code && err.code[0] != '\0') {
+        return err.code;
+    }
+    return std::string(fallback);
 }
 
 }  // namespace
@@ -981,6 +1012,105 @@ std::unique_ptr<BodyCodec> create_body_codec(std::string_view name) {
     return nullptr;
 }
 
+ExternalBodyCodec::ExternalBodyCodec(std::string provider, std::string name,
+                                     const shield_protocol_codec_v1* codec)
+    : provider_(std::move(provider)), name_(std::move(name)), codec_(codec) {}
+
+DecodedBody ExternalBodyCodec::decode(PacketRef packet,
+                                      const RouteEntry& route) {
+    if (codec_ == nullptr || codec_->decode == nullptr) {
+        throw std::runtime_error("protocol codec provider '" + provider_ +
+                                 "' is not available");
+    }
+
+    shield_protocol_decode_args_v1 args{};
+    args.route_id = route.route_id;
+    args.codec_id = route.codec_id;
+    args.schema_id = route.schema_id;
+    args.route_name = route.debug_name.empty() ? nullptr : route.debug_name.c_str();
+    args.payload = packet.body.data();
+    args.payload_size = packet.body.size();
+
+    shield_protocol_decode_result_v1 out{};
+    shield_error_v1 err{};
+    const int rc = codec_->decode(codec_, &args, &out, &err);
+    if (rc != 0) {
+        throw std::runtime_error(plugin_error_message(err, "protocol decode failed"));
+    }
+
+    try {
+        DecodedBody body;
+        body.route_id = route.route_id;
+        body.codec_id = route.codec_id;
+        body.schema_id = route.schema_id;
+        body.route_name = route.debug_name;
+        body.bytes.assign(packet.body.begin(), packet.body.end());
+
+        if (out.message_json != nullptr && out.message_json_size > 0) {
+            const auto size =
+                static_cast<std::size_t>(out.message_json_size);
+            body.message = nlohmann::json::parse(
+                out.message_json, out.message_json + size);
+        } else {
+            body.message = nlohmann::json::object();
+        }
+
+        if (codec_->free_decode_result) {
+            codec_->free_decode_result(codec_, &out);
+        }
+        return body;
+    } catch (...) {
+        if (codec_->free_decode_result) {
+            codec_->free_decode_result(codec_, &out);
+        }
+        throw;
+    }
+}
+
+std::vector<std::uint8_t> ExternalBodyCodec::encode(
+    const DecodedBody& body, const RouteEntry& route,
+    const ProtocolProfile&) {
+    if (codec_ == nullptr || codec_->encode == nullptr) {
+        throw std::runtime_error("protocol codec provider '" + provider_ +
+                                 "' is not available");
+    }
+
+    const auto message = plugin_business_message(body);
+    const auto message_text = message.dump();
+
+    shield_protocol_encode_args_v1 args{};
+    args.route_id = route.route_id;
+    args.codec_id = route.codec_id;
+    args.schema_id = route.schema_id;
+    args.route_name = route.debug_name.empty() ? nullptr : route.debug_name.c_str();
+    args.message_json = message_text.data();
+    args.message_json_size = message_text.size();
+
+    shield_protocol_encode_result_v1 out{};
+    shield_error_v1 err{};
+    const int rc = codec_->encode(codec_, &args, &out, &err);
+    if (rc != 0) {
+        throw std::runtime_error(plugin_error_message(err, "protocol encode failed"));
+    }
+
+    std::vector<std::uint8_t> payload;
+    try {
+        if (out.payload != nullptr && out.payload_size > 0) {
+            const auto size = static_cast<std::size_t>(out.payload_size);
+            payload.assign(out.payload, out.payload + size);
+        }
+        if (codec_->free_encode_result) {
+            codec_->free_encode_result(codec_, &out);
+        }
+        return payload;
+    } catch (...) {
+        if (codec_->free_encode_result) {
+            codec_->free_encode_result(codec_, &out);
+        }
+        throw;
+    }
+}
+
 bool load_xmldef_routes_from_string(std::string_view xml, RouteTable& routes,
                                     const XmldefCatalogOptions& options,
                                     std::string* error) {
@@ -1499,8 +1629,8 @@ const RouteEntry* ProtocolPipeline::resolve_outbound_route(DecodedBody& body) {
 }
 
 std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
-    std::string_view config_json, std::string_view source_dir,
-    std::size_t fallback_max_frame_size, std::string* error) {
+    std::string_view config_json, const ProtocolBuildOptions& options,
+    std::string* error) {
     try {
         nlohmann::json config =
             nlohmann::json::parse(config_json, nullptr, false);
@@ -1548,18 +1678,58 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 envelope.value("max_frame_size", std::size_t{0});
         }
         if (profile.envelope.max_frame_size == 0 &&
-            fallback_max_frame_size > 0) {
-            profile.envelope.max_frame_size = fallback_max_frame_size;
+            options.fallback_max_frame_size > 0) {
+            profile.envelope.max_frame_size = options.fallback_max_frame_size;
         }
         profile.route_source =
             default_route_source_for_envelope(profile.envelope_kind);
 
         const auto body = config.value("body", nlohmann::json::object());
         const std::string body_codec = body.value("codec", "raw");
+        const std::string body_provider = body.value("provider", "");
 
         BodyCodecRegistry codecs;
         constexpr std::uint16_t default_codec_id = 1;
-        auto codec = create_body_codec(body_codec);
+        std::unique_ptr<BodyCodec> codec;
+        if (!body_provider.empty()) {
+            if (!options.external_codec_resolver) {
+                if (error) {
+                    *error = "network.protocol.body.provider is configured "
+                             "but no external codec resolver is available";
+                }
+                return nullptr;
+            }
+            std::string resolver_error;
+            const auto* external = options.external_codec_resolver(
+                body_provider, body_codec, &resolver_error);
+            if (external == nullptr) {
+                if (error) {
+                    *error = resolver_error.empty()
+                                 ? "failed to resolve network.protocol.body.provider"
+                                 : resolver_error;
+                }
+                return nullptr;
+            }
+            if (external->codec_name == nullptr ||
+                std::string_view(external->codec_name) != body_codec) {
+                if (error) {
+                    *error = "network.protocol.body.provider does not serve "
+                             "network.protocol.body.codec";
+                }
+                return nullptr;
+            }
+            if (external->decode == nullptr || external->encode == nullptr) {
+                if (error) {
+                    *error =
+                        "network.protocol.body.provider has incomplete vtable";
+                }
+                return nullptr;
+            }
+            codec = std::make_unique<ExternalBodyCodec>(
+                body_provider, body_codec, external);
+        } else {
+            codec = create_body_codec(body_codec);
+        }
         if (!codec) {
             if (error) *error = "unsupported network.protocol.body.codec";
             return nullptr;
@@ -1618,8 +1788,8 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 routing.value("lazy_decode", true);
 
             std::filesystem::path catalog_path(body["catalog"].get<std::string>());
-            if (catalog_path.is_relative() && !source_dir.empty()) {
-                catalog_path = std::filesystem::path(std::string(source_dir)) /
+            if (catalog_path.is_relative() && !options.source_dir.empty()) {
+                catalog_path = std::filesystem::path(std::string(options.source_dir)) /
                                catalog_path;
             }
 
@@ -1686,6 +1856,15 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
         }
         return nullptr;
     }
+}
+
+std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
+    std::string_view config_json, std::string_view source_dir,
+    std::size_t fallback_max_frame_size, std::string* error) {
+    ProtocolBuildOptions options;
+    options.source_dir = source_dir;
+    options.fallback_max_frame_size = fallback_max_frame_size;
+    return build_protocol_pipeline_from_json(config_json, options, error);
 }
 
 }  // namespace shield::transport

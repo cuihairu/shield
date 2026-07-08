@@ -73,6 +73,9 @@ endif()
 if(SHIELD_BUILD_PLUGIN_MONGODB)
   list(APPEND _shield_db_features "database-mongodb")
 endif()
+if(SHIELD_BUILD_PLUGIN_PROTOBUF)
+  list(APPEND _shield_db_features "protocol-protobuf")
+endif()
 if(_shield_db_features AND NOT DEFINED VCPKG_MANIFEST_FEATURES)
   set(VCPKG_MANIFEST_FEATURES ${_shield_db_features})
 elseif(_shield_db_features)
@@ -116,6 +119,7 @@ option(SHIELD_BUILD_PLUGIN_CACHE_REDIS "Build the Redis cache plugin (shield.cac
 option(SHIELD_BUILD_PLUGIN_QUEUE_REDIS "Build the Redis pub/sub queue plugin (shield.queue.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS "Build the Redis ZSET leaderboard plugin (shield.leaderboard.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_REDIS_DRIVER "Build the unified Redis driver plugin (shield.redis.v1)" OFF)
+option(SHIELD_BUILD_PLUGIN_PROTOBUF "Build the Protobuf protocol codec plugin (shield.protocol.codec.v1)" OFF)
 
 # Ensure config directory exists and create a minimal default config if missing.
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/config")
@@ -244,14 +248,6 @@ find_package(msgpack-cxx CONFIG QUIET)
 if(msgpack-cxx_FOUND)
   message(STATUS "Found msgpack-cxx, enabling MessagePack support")
   add_definitions(-DSHIELD_ENABLE_MESSAGEPACK)
-endif()
-
-# Try to find protobuf
-find_package(Protobuf CONFIG QUIET)
-if(Protobuf_FOUND)
-  message(STATUS "Found protobuf, enabling Protobuf support")
-  add_definitions(-DSHIELD_HAS_PROTOBUF)
-  set(SHIELD_HAS_PROTOBUF TRUE)
 endif()
 
 # Set output directories
@@ -535,7 +531,7 @@ target_include_directories(shield_bootstrap
 
 target_link_libraries(shield_bootstrap
     PUBLIC shield_base CAF::core CAF::io
-    PRIVATE shield_log shield_config shield_core shield_lua shield_net
+    PRIVATE shield_log shield_config shield_core shield_lua shield_net shield_plugin
 )
 
 if(SHIELD_ENABLE_CLUSTER)
@@ -751,11 +747,6 @@ if(msgpack-cxx_FOUND)
     message(STATUS "MessagePack support enabled for shield_transport")
 endif()
 
-if(SHIELD_HAS_PROTOBUF)
-    target_link_libraries(shield_transport PUBLIC protobuf::libprotobuf)
-    message(STATUS "Protobuf support enabled for shield_transport")
-endif()
-
 # =============================================================================
 # DATABASE BACKEND PLUGINS
 # =============================================================================
@@ -776,7 +767,8 @@ if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
    SHIELD_BUILD_PLUGIN_CACHE_REDIS OR
    SHIELD_BUILD_PLUGIN_QUEUE_REDIS OR
    SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS OR
-   SHIELD_BUILD_PLUGIN_REDIS_DRIVER)
+   SHIELD_BUILD_PLUGIN_REDIS_DRIVER OR
+   SHIELD_BUILD_PLUGIN_PROTOBUF)
     add_subdirectory(plugins)
 endif()
 
@@ -834,4 +826,5 @@ message(STATUS "  plugin cache.redis:${SHIELD_BUILD_PLUGIN_CACHE_REDIS}")
 message(STATUS "  plugin queue.redis:${SHIELD_BUILD_PLUGIN_QUEUE_REDIS}")
 message(STATUS "  plugin lb.redis:   ${SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS}")
 message(STATUS "  plugin redis.drv:  ${SHIELD_BUILD_PLUGIN_REDIS_DRIVER}")
+message(STATUS "  plugin protobuf:   ${SHIELD_BUILD_PLUGIN_PROTOBUF}")
 message(STATUS "")

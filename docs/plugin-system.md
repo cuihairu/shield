@@ -470,10 +470,67 @@ plugins:
 | `shield.auth.v1` | authentication provider。 |
 | `shield.metrics.v1` | metrics exporter。 |
 | `shield.health.v1` | health contributor。 |
+| `shield.protocol.codec.v1` | 网络协议 `BodyCodec` provider，例如 protobuf、sproto、msgpack、xmldef-native。 |
 
 `shield.document.v1` 与 `shield.database.v1` 并列而非继承：文档库的 filter / aggregation / _id 语义与 SQL 差距过大，强行套用 SQL 接口（query/execute/last_insert_id）会丢掉文档库的核心价值。两个接口可以由不同 package 各自提供。
 
 Redis 不作为公共基础设施插件类型暴露。需要 Redis 的能力应落到具体 provider：`cache.redis`、`queue.redis`、`leaderboard.redis`。
+
+## Protocol Codec Plugins
+
+协议 codec 插件是插件系统 v1 的普通 provider，不享有自动发现或自动启用特权。它们通过 `shield.protocol.codec.v1` 暴露 codec 能力，由 `network.protocol.body.provider` 显式引用 binding。
+
+设计原则：
+
+| 原则 | 说明 |
+| --- | --- |
+| 核心最小化 | `shield_transport` 目标只默认内置 `raw/json` 和固定 protocol pipeline。 |
+| 依赖隔离 | protobuf、sproto、flatbuffers、xmldef-native 的 runtime/compiler 依赖留在插件包内。 |
+| C ABI 边界 | 插件不继承 host C++ `BodyCodec`，不跨共享库边界传 STL、异常或 C++ 对象。 |
+| 显式启用 | 必须配置 `plugins.instances`、`plugins.bindings` 和 `body.provider`。 |
+| session 固定 | 插件只填充当前 session 绑定 profile 的 `BodyCodec` 槽位，不允许每包切换协议族。 |
+
+示例：
+
+```yaml
+plugins:
+  instances:
+    - id: protocol.protobuf.game
+      package: protocol.protobuf
+      required: true
+      config:
+        descriptor_set: conf/game.pb
+        messages:
+          - schema_id: 1
+            name: auth.LoginRequest
+
+  bindings:
+    protocol.protobuf: protocol.protobuf.game
+
+actors:
+  - name: gateway
+    script: scripts/gateway.lua
+    network:
+      tcp: "0.0.0.0:8001"
+      protocol:
+        name: game.protobuf
+        envelope:
+          type: idlen
+          route_id_bytes: 4
+          length_bytes: 4
+        body:
+          codec: protobuf
+          provider: protocol.protobuf
+        routing:
+          source: header.route_id
+        routes:
+          - id: 1001
+            name: auth.LoginRequest
+            schema_id: 1
+            action: decode
+```
+
+详细 ABI、protobuf 优先落地范围和各协议目标形态见 [Protocol Codec Plugins](protocol-codec-plugins.md)。
 
 ## Config Schema
 
@@ -699,6 +756,7 @@ v1 的强约束：
 | 类型系统 | 以 interface name 为主，例如 `shield.database.v1`、`shield.document.v1`。 |
 | 依赖注入 | 通过 manifest `requires` 和实例 `dependencies` 解析。 |
 | Redis 能力 | 通过具体 provider 暴露，不提供公共基础设施插件类型。 |
+| 协议 codec 能力 | 通过 `shield.protocol.codec.v1` provider 暴露；核心不默认加载 protobuf/sproto/xmldef-native。 |
 | Lua 自治 | 插件必须实现 `register_lua` 钩子。业务 Lua 绑定跟随插件目录，host 端 `src/lua/lua_api.cpp` 不感知具体插件。 |
 | namespace 派生 | Lua namespace 直接来自 manifest `lua.namespace`（或从 `id` 派生）。多实例用 `shield.<ns>(binding)` proxy。 |
 | 文档口径 | 当前文档只描述有效设计，不声明历史完成阶段。 |

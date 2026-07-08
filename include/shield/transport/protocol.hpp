@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -11,6 +12,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+struct shield_protocol_codec_v1;
 
 namespace shield::transport {
 
@@ -256,6 +259,23 @@ public:
 
 std::unique_ptr<BodyCodec> create_body_codec(std::string_view name);
 
+class ExternalBodyCodec final : public BodyCodec {
+public:
+    ExternalBodyCodec(std::string provider, std::string name,
+                      const shield_protocol_codec_v1* codec);
+
+    std::string_view name() const override { return name_; }
+    DecodedBody decode(PacketRef packet, const RouteEntry& route) override;
+    std::vector<std::uint8_t> encode(const DecodedBody& body,
+                                     const RouteEntry& route,
+                                     const ProtocolProfile& profile) override;
+
+private:
+    std::string provider_;
+    std::string name_;
+    const shield_protocol_codec_v1* codec_ = nullptr;
+};
+
 struct XmldefCatalogOptions {
     std::uint16_t default_codec_id = 0;
     RouteAction default_action = RouteAction::DecodeLocal;
@@ -345,6 +365,19 @@ private:
     BodyCodecRegistry codecs_;
     std::string error_;
 };
+
+using ExternalBodyCodecResolver = std::function<const shield_protocol_codec_v1*(
+    std::string_view provider, std::string_view codec_name, std::string* error)>;
+
+struct ProtocolBuildOptions {
+    std::string_view source_dir;
+    std::size_t fallback_max_frame_size = 0;
+    ExternalBodyCodecResolver external_codec_resolver;
+};
+
+std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
+    std::string_view config_json, const ProtocolBuildOptions& options,
+    std::string* error = nullptr);
 
 std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
     std::string_view config_json, std::string_view source_dir = {},

@@ -125,7 +125,7 @@ return M
 
 目标语义里，`message` 是业务消息而不是未解码 transport payload。若 `body.codec = raw`，则 `message` 可以是字节串，但它仍是显式 decode 结果。`ForwardRaw` 和 `Drop` 不应触发 Lua 回调。
 
-实现快照：当前 protocol path 中，`json` 和 `msgpack` decode-local 都会把结构化业务消息作为 Lua table 送入 `on_client_message`；`raw` decode-local 会把字节串送入 `on_client_message`；`ForwardRaw` 和 `Drop` 不触发 Lua 回调。尚未实现真实 decoder 的 codec 当前不能进入 `DecodeLocal`。
+实现快照：当前 protocol path 中，`json` 和 `msgpack` decode-local 都会把结构化业务消息作为 Lua table 送入 `on_client_message`；`raw` decode-local 会把字节串送入 `on_client_message`；`protobuf` 需要通过 `body.provider` 引用 `shield.protocol.codec.v1` 插件后才能进入 `DecodeLocal`；`ForwardRaw` 和 `Drop` 不触发 Lua 回调。尚未落地真实 provider 的 codec 当前不能进入 `DecodeLocal`。
 
 如果未来需要同一 listener 支持多种协议族，推荐也只在连接建立首阶段协商一次 profile，并把协商结果固化到 session。正常业务包头不应重复携带“我是 protobuf/sproto/json”这类协议家族标识；包头只应包含当前 profile 自身执行所需的 route/type/session/flags 等字段。
 

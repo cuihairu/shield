@@ -108,7 +108,8 @@ return M
 - 当前实际是 listener-fixed profile：listener 配什么，接入的 session 就绑定什么。
 - `DecodeLocal` 才会进入 Lua；`ForwardRaw`、`Drop` 和协议错误停留在 C++ 数据面。
 - `body.codec = json` / `msgpack` 时，Lua 收到的是 table；`body.codec = raw` 时，Lua 收到的是字节串。
-- `protobuf`、`sproto`、`xmldef`、`fbs` 这类尚未实现真实解码器的 codec 当前不能作为 `DecodeLocal` 进入 Lua。
+- `protobuf` 需要通过 `body.provider` 引用 `shield.protocol.codec.v1` 插件后才能作为 `DecodeLocal` 进入 Lua；未配置 provider 时仍只是占位 codec。
+- `sproto`、`xmldef`、`fbs` 这类尚未落地真实 provider 的 codec 当前不能作为 `DecodeLocal` 进入 Lua。
 
 正常业务包头不应重复携带“我是 json/protobuf/sproto”这类协议家族标识；这些信息应在 listener 配置或首阶段握手时已经确定。
 

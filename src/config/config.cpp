@@ -491,6 +491,22 @@ bool validate_network_protocol(const YAML::Node& protocol,
                 return false;
             }
         }
+        if (body["provider"]) {
+            try {
+                const auto provider = body["provider"].as<std::string>();
+                if (provider.empty()) {
+                    if (error) {
+                        *error = path + ".body.provider must not be empty";
+                    }
+                    return false;
+                }
+            } catch (const std::exception&) {
+                if (error) {
+                    *error = path + ".body.provider must be a string";
+                }
+                return false;
+            }
+        }
     }
 
     return validate_protocol_envelope(protocol["envelope"], path, error) &&

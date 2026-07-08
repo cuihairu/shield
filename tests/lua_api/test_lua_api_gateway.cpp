@@ -8,6 +8,7 @@
 #define BOOST_TEST_MODULE LuaApiGatewayTests
 #include <boost/test/unit_test.hpp>
 
+#include "shield/plugin/protocol_codec.h"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
@@ -17,7 +18,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdlib>
+#include <cstring>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -110,6 +115,132 @@ private:
     std::vector<shield::transport::DecodedBody> sent_messages_;
     std::unordered_map<std::string, std::string> user_data_;
 };
+
+char* dup_protocol_json(std::string_view value) {
+    auto* out = static_cast<char*>(std::malloc(value.size() + 1));
+    if (out == nullptr) return nullptr;
+    std::memcpy(out, value.data(), value.size());
+    out[value.size()] = '\0';
+    return out;
+}
+
+std::uint8_t* dup_protocol_payload(std::string_view value) {
+    if (value.empty()) return nullptr;
+    auto* out = static_cast<std::uint8_t*>(std::malloc(value.size()));
+    if (out == nullptr) return nullptr;
+    std::memcpy(out, value.data(), value.size());
+    return out;
+}
+
+struct FakeProtocolCodecState {
+    std::string decoded_json = R"json({"uid":7,"name":"alice"})json";
+    std::string encoded_payload;
+    std::string last_input_json;
+};
+
+int fake_protocol_decode(const shield_protocol_codec_v1* self,
+                         const shield_protocol_decode_args_v1* args,
+                         shield_protocol_decode_result_v1* out,
+                         shield_error_v1*) {
+    if (self == nullptr || args == nullptr || out == nullptr ||
+        self->user_data == nullptr) {
+        return -1;
+    }
+    auto* state = static_cast<FakeProtocolCodecState*>(self->user_data);
+    out->message_json = dup_protocol_json(state->decoded_json);
+    out->message_json_size = state->decoded_json.size();
+    return out->message_json == nullptr ? -1 : 0;
+}
+
+int fake_protocol_encode(const shield_protocol_codec_v1* self,
+                         const shield_protocol_encode_args_v1* args,
+                         shield_protocol_encode_result_v1* out,
+                         shield_error_v1*) {
+    if (self == nullptr || args == nullptr || out == nullptr ||
+        self->user_data == nullptr) {
+        return -1;
+    }
+    auto* state = static_cast<FakeProtocolCodecState*>(self->user_data);
+    if (args->message_json != nullptr && args->message_json_size > 0) {
+        state->last_input_json.assign(args->message_json,
+                                      args->message_json +
+                                          args->message_json_size);
+    } else {
+        state->last_input_json = "{}";
+    }
+    state->encoded_payload = "pb:" + state->last_input_json;
+    out->payload = dup_protocol_payload(state->encoded_payload);
+    out->payload_size = state->encoded_payload.size();
+    return out->payload == nullptr ? -1 : 0;
+}
+
+void fake_free_decode_result(const shield_protocol_codec_v1*,
+                             shield_protocol_decode_result_v1* result) {
+    if (result == nullptr) return;
+    std::free(const_cast<char*>(result->message_json));
+    result->message_json = nullptr;
+    result->message_json_size = 0;
+}
+
+void fake_free_encode_result(const shield_protocol_codec_v1*,
+                             shield_protocol_encode_result_v1* result) {
+    if (result == nullptr) return;
+    std::free(const_cast<std::uint8_t*>(result->payload));
+    result->payload = nullptr;
+    result->payload_size = 0;
+}
+
+shield_protocol_codec_v1 make_fake_protocol_codec(
+    FakeProtocolCodecState& state) {
+    shield_protocol_codec_v1 codec{};
+    codec.struct_size = sizeof(shield_protocol_codec_v1);
+    codec.codec_name = "protobuf";
+    codec.version = "test";
+    codec.user_data = &state;
+    codec.decode = fake_protocol_decode;
+    codec.encode = fake_protocol_encode;
+    codec.free_decode_result = fake_free_decode_result;
+    codec.free_encode_result = fake_free_encode_result;
+    return codec;
+}
+
+std::unique_ptr<shield::transport::ProtocolPipeline> make_fake_protobuf_pipeline(
+    const shield_protocol_codec_v1* codec, std::string* error = nullptr) {
+    const auto config = R"json(
+{
+  "name": "lua.protobuf",
+  "envelope": {
+    "type": "idlen",
+    "route_id_bytes": 2,
+    "length_bytes": 2
+  },
+  "body": {
+    "codec": "protobuf",
+    "provider": "protocol.protobuf"
+  },
+  "routes": [
+    {
+      "id": 4097,
+      "name": "shield.test.Login",
+      "schema_id": 42,
+      "action": "decode",
+      "lazy_decode": false
+    }
+  ]
+}
+)json";
+    shield::transport::ProtocolBuildOptions options;
+    options.external_codec_resolver =
+        [codec](std::string_view provider, std::string_view codec_name,
+                std::string*) -> const shield_protocol_codec_v1* {
+        if (provider != "protocol.protobuf" || codec_name != "protobuf") {
+            return nullptr;
+        }
+        return codec;
+    };
+    return shield::transport::build_protocol_pipeline_from_json(
+        config, options, error);
+}
 }  // namespace
 
 BOOST_AUTO_TEST_SUITE(Lapi009GatewayApi)
@@ -357,6 +488,38 @@ BOOST_AUTO_TEST_CASE(
 }
 
 BOOST_AUTO_TEST_CASE(
+    LuaGatewayBridgePassesProtobufSessionHandleToLuaForProtocolEgress) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_gateway(manager, "gw_protobuf_egress");
+    BOOST_REQUIRE(result.success);
+
+    LuaGatewayBridge bridge(manager, result.service_id);
+    auto session = std::make_shared<MockSession>(
+        45, shield::net::RemoteAddress{"127.0.0.1", 34570}, true,
+        "protobuf");
+
+    bridge.on_connect(session);
+    manager.pump_once();
+    manager.pump_once();
+
+    CallResult cr = manager.call(
+        result.service_id, "on_client_message",
+        nlohmann::json::array({make_session_handle_json(session),
+                               nlohmann::json::object(
+                                   {{"uid", 101}, {"name", "alice"}})}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 1u);
+    BOOST_REQUIRE(session->sent_messages()[0].has_message());
+    BOOST_CHECK_EQUAL(
+        (*session->sent_messages()[0].message)["uid"].get<int>(), 101);
+    BOOST_CHECK_EQUAL(
+        (*session->sent_messages()[0].message)["name"].get<std::string>(),
+        "alice");
+}
+
+BOOST_AUTO_TEST_CASE(
     LuaGatewayBridgeRejectsRawStringEgressForStructuredProtocolSessions) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
@@ -453,6 +616,67 @@ BOOST_AUTO_TEST_CASE(
     BOOST_CHECK_EQUAL(
         state["last_message"]["payload"]["dir"].get<std::string>(), "north");
     BOOST_CHECK(!state.contains("last_packet"));
+}
+
+BOOST_AUTO_TEST_CASE(
+    LuaGatewayBridgeRoutesFakeProtobufPipelinePacketsToLuaAndEchoesTable) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+
+    auto result = spawn_gateway(manager, "gw_protobuf_pipeline");
+    BOOST_REQUIRE(result.success);
+
+    FakeProtocolCodecState codec_state;
+    auto codec = make_fake_protocol_codec(codec_state);
+    std::string protocol_error;
+    auto pipeline = make_fake_protobuf_pipeline(&codec, &protocol_error);
+    BOOST_REQUIRE_MESSAGE(pipeline != nullptr, protocol_error);
+
+    LuaGatewayBridge bridge(manager, result.service_id);
+    auto session = std::make_shared<MockSession>(
+        79, shield::net::RemoteAddress{"127.0.0.1", 45680}, true,
+        "protobuf");
+
+    bridge.on_connect(session);
+    manager.pump_once();
+    manager.pump_once();
+
+    shield::transport::Packet packet;
+    packet.route_id = 4097;
+    packet.body = std::vector<std::uint8_t>{'p', 'b'};
+    const auto frame = pipeline->encode(packet.ref());
+    BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
+
+    auto dispatches = pipeline->feed(frame.data(), frame.size());
+    BOOST_REQUIRE_EQUAL(dispatches.size(), 1u);
+    BOOST_REQUIRE(dispatches[0].ok());
+    BOOST_REQUIRE(dispatches[0].decoded());
+    BOOST_REQUIRE(dispatches[0].decoded_body->has_message());
+
+    bridge.on_packet(session, dispatches[0]);
+    manager.pump_once();
+    manager.pump_once();
+
+    CallResult sessions = manager.call(result.service_id, "get_sessions",
+                                       nlohmann::json::array());
+    BOOST_REQUIRE(sessions.success);
+    BOOST_REQUIRE(sessions.values.is_array());
+    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
+    BOOST_REQUIRE(sessions.values[0].contains("79"));
+
+    const auto& state = sessions.values[0]["79"];
+    BOOST_REQUIRE(state["last_message"]["payload"].is_object());
+    BOOST_CHECK_EQUAL(state["last_message"]["payload"]["uid"].get<int>(), 7);
+    BOOST_CHECK_EQUAL(
+        state["last_message"]["payload"]["name"].get<std::string>(), "alice");
+
+    BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 1u);
+    BOOST_REQUIRE(session->sent_messages()[0].has_message());
+    BOOST_CHECK_EQUAL(
+        (*session->sent_messages()[0].message)["uid"].get<int>(), 7);
+    BOOST_CHECK_EQUAL(
+        (*session->sent_messages()[0].message)["name"].get<std::string>(),
+        "alice");
 }
 
 BOOST_AUTO_TEST_CASE(

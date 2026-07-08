@@ -19,6 +19,8 @@ ProtocolProfile
 当前实现已经把出站方向也收敛到同一套固定骨架：protocol-enabled session 上，Lua 的 `session:send(payload)` 不再直接拼 socket frame，而是统一走 `RouteResolver -> BodyCodec.encode -> Envelope.encode -> socket write`。
 这里也要保持 codec 边界干净：`raw` codec 发送字节串；`json` / `msgpack` 这类 structured codec 发送业务消息对象，不接受未建模 raw payload 旁路出站。
 
+目标架构中，核心只默认内置 `raw/json`。`msgpack`、`protobuf`、`sproto`、`flatbuffers` 和 `xmldef-native` 通过显式协议 codec 插件启用，避免把第三方 runtime、descriptor loader 和 schema compiler 硬耦合进 `shield_transport`。协议插件的详细契约见 [Protocol Codec Plugins](protocol-codec-plugins.md)。
+
 ## Why This Design
 
 旧的固定 frame 设计把“拆 TCP 字节流”和“解析业务 body”耦合在一起。对于 JSON 这类 route 写在 body 里的协议，这种做法问题不大；但对 xmldef、sproto、protobuf、flatbuffers 这类可用消息 ID 或 schema ID 路由的协议，提前解析 body 会浪费 CPU，也会阻塞纯转发路径。
@@ -88,6 +90,22 @@ Egress:
 - `PayloadCodec`
 
 当前 Phase 1 配置里仍然沿用 `body.codec` 这个简化字段，但它更接近“payload codec / native profile adapter”的缩写，而不是最终抽象的全部。
+
+### Builtin vs Plugin-Enabled Codecs
+
+`body.codec` 是协议语义名，不等于“核心一定内置该 codec”。目标启用策略如下：
+
+| Codec | Target Availability | Notes |
+| --- | --- | --- |
+| `raw` | builtin | 字节串直通和兼容路径。 |
+| `json` | builtin | 默认结构化 Lua table 协议。 |
+| `msgpack` | plugin-enabled | 可作为 bundled optional plugin；当前实现仍处于内置过渡期。 |
+| `protobuf` | plugin-enabled | 第一个优先落地的 schema-aware codec plugin。 |
+| `sproto` | plugin-enabled | 通过 `.sproto` runtime/compiler adapter 提供。 |
+| `fbs` / `flatbuffers` | plugin-enabled | 通过 bfbs/schema runtime 提供。 |
+| `xmldef` | mixed | catalog route loading 可留在核心；字段级 native decode/encode 由插件提供。 |
+
+插件化不是引入自动发现。用户必须在 `plugins.instances` 和 `plugins.bindings` 中显式启用 provider，并在 `network.protocol.body.provider` 中引用 binding。
 
 运行时固定槽位如下：
 
@@ -234,6 +252,19 @@ Egress:
 - 可以被创建为 placeholder codec name
 - 但不能真实完成 `DecodeLocal` / `encode`
 
+目标运行时支持矩阵如下：
+
+| Family / Codec Name | Default Core | Plugin Enabled | DecodeLocal | Encode |
+| --- | --- | --- | --- | --- |
+| `raw` | yes | n/a | yes | yes |
+| `json` | yes | n/a | yes | yes |
+| `msgpack` | no | yes | yes | yes |
+| `protobuf` | no | yes | yes | yes |
+| `sproto` | no | yes | yes | yes |
+| `fbs` / `flatbuffers` | no | yes | yes | yes |
+| `xmldef` catalog | yes | n/a | no | no |
+| `xmldef-native` | no | yes | yes | yes |
+
 ### Missing Pieces
 
 各 family 当前还缺的核心模块：
@@ -353,7 +384,8 @@ PacketRef.body + RouteEntry(schema_id, codec_id)
 - `raw` 把 body 作为字节串交给 Lua
 - `json` 解码后把业务消息作为 Lua table 交给 Lua；若 body 为 `{route=..., payload=...}` 形态，则进入 Lua 的是 `payload`
 - `msgpack` 与 `json` 保持同一业务语义，只是线上 body 表示改为 MessagePack 二进制；若 body 为 `{route=..., payload=...}` 形态，则进入 Lua 的仍然是 `payload`
-- `protobuf`、`fbs`、`sproto`、`xmldef` 这些尚未实现真实 decoder 的 codec，当前不能用于 `DecodeLocal`
+- `protobuf` 需要通过 `body.provider` 引用 `shield.protocol.codec.v1` 插件后才能用于 `DecodeLocal`；未配置 provider 时仍按占位 codec 处理。
+- `fbs`、`sproto`、`xmldef` 这些尚未落地真实 provider 的 codec，当前不能用于 `DecodeLocal`
 
 这条约束的目的很直接：没有真实解码语义的 body，不能越过 transport/Lua 边界冒充“业务消息”。
 
@@ -536,6 +568,7 @@ game.protobuf:
     endian: big
   body:
     codec: protobuf
+    provider: protocol.protobuf
   routing:
     source: header.route_id
     lazy_decode: true
@@ -591,8 +624,9 @@ game.fbs:
 | | `forward_raw` | `forward` |
 | | `drop` | — |
 | `body.codec` | `raw`、`json`、`msgpack` | — |
-| | `protobuf`、`fbs`、`flatbuffers`、`sproto` | 占位 codec，不能 `DecodeLocal` |
-| | `xmldef` | `xml_def`（占位 codec + catalog 路由表加载） |
+| | `protobuf`、`fbs`、`flatbuffers`、`sproto` | 当前为占位 codec；目标通过 `body.provider` 引用插件后可 `DecodeLocal` |
+| | `xmldef` | `xml_def`（当前：占位 codec + catalog 路由表加载；目标：native decode/encode 走插件） |
+| `body.provider` | plugin binding name | 目标字段；例如 `protocol.protobuf`，只在 plugin-enabled codec 上需要 |
 
 ## Profile Examples
 
@@ -682,4 +716,4 @@ BodyCodec(xmldef).decode(body, schema_id)
 3. 对 header-route 协议启用 `RouteTable` 和 `ForwardRaw` 标记。
 4. 收敛到统一回调语义：只有 `DecodeLocal` 后的业务消息进入 Lua。
 5. 未实现真实 decoder 的 codec 不允许走 `DecodeLocal`。
-6. 后续再分别补齐 protobuf、fbs、sproto、xmldef 的真实 `BodyCodec`；`msgpack` 已经属于可用的 structured codec。
+6. 后续通过协议 codec 插件分别补齐 protobuf、fbs、sproto、xmldef-native 的真实 `BodyCodec`；`msgpack` 当前已可用，但目标上应迁移为 bundled optional plugin 或显式构建开关。

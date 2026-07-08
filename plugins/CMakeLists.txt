@@ -60,3 +60,9 @@ endif()
 if(SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS)
     add_subdirectory(leaderboard.redis)
 endif()
+
+# --- Protocol codec plugins ---
+
+if(SHIELD_BUILD_PLUGIN_PROTOBUF)
+    add_subdirectory(protocol.protobuf)
+endif()
