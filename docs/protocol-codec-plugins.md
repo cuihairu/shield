@@ -10,13 +10,13 @@
 | --- | --- | --- |
 | `raw` | yes | 兼容旧 frame path、代理/转发和最小字节串调试。 |
 | `json` | yes | Lua table 语义天然匹配，配置和排障成本最低，无额外协议 runtime。 |
-| `msgpack` | no target | 可作为 bundled optional plugin；不应成为核心依赖。 |
+| `msgpack` | no target | 已有可选插件形态；当前核心内置仍作为过渡兼容路径保留。 |
 | `protobuf` | no | 需要 descriptor、DynamicMessage、版本兼容和 schema 映射，必须隔离到插件。 |
 | `sproto` | no | 需要独立 runtime/compiler 适配，必须隔离到插件。 |
 | `xmldef-native` | no | 属于 descriptor/toolchain/runtime 三层系统，不应直接塞进核心。 |
 | `flatbuffers` | no | 需要 bfbs/schema runtime，必须隔离到插件。 |
 
-过渡期说明：当前代码里 `msgpack` 仍是可用内置 codec，`protobuf/sproto/xmldef/fbs` 是占位 codec 名称。后续实现应收敛到本页口径：核心只保证 `raw/json`，其他协议通过显式插件启用。迁移完成前，文档和测试必须区分“当前实现快照”和“目标架构口径”。
+过渡期说明：当前代码里 `msgpack` 仍是可用内置 codec，同时也提供 `protocol.msgpack` 可选插件用于验证插件化路径；`protobuf` 通过 `protocol.protobuf` 插件启用；`sproto/xmldef/fbs` 仍是占位 codec 名称。后续实现应收敛到本页口径：核心只保证 `raw/json`，其他协议通过显式插件启用。迁移完成前，文档和测试必须区分“当前实现快照”和“目标架构口径”。
 
 ## Non-Goals
 
@@ -230,7 +230,7 @@ network:
 
 | Protocol | Target Form | Notes |
 | --- | --- | --- |
-| `msgpack` | bundled optional plugin | 可复用当前 JSON 语义，降低核心依赖。 |
+| `msgpack` | bundled optional plugin | 已落地 `protocol.msgpack` provider，复用当前 JSON 语义；核心内置路径待后续迁移/兼容策略收敛。 |
 | `sproto` | runtime codec plugin | 需要 `.sproto` loader/compiler adapter 和 package envelope 适配。 |
 | `xmldef-native` | descriptor/runtime plugin | catalog 路由加载可留在核心；字段级 decode/encode 走插件。 |
 | `flatbuffers` | runtime codec plugin | 需要 bfbs/schema loader 和 JSON bridge。 |
@@ -246,4 +246,4 @@ network:
 5. 已实现 protobuf 插件的 `FileDescriptorSet`、schema/route 映射、decode、encode 和真实 descriptor round-trip 测试。
 6. 已补 Lua ingress/egress 测试：protobuf codec session 的 `session:send(table)`，以及 fake provider pipeline decode 后进入 Lua 并 echo 出站。
 7. 下一步在可用 vcpkg/protobuf 环境中跑通 `test_protocol_protobuf_plugin` 和 Lua gateway 测试。
-8. 将当前内置 `msgpack` 迁移为 bundled optional plugin 或保留为兼容构建开关，并在文档中明确。
+8. 已新增 `protocol.msgpack` provider 和插件 ABI round-trip 测试；下一步决定是否移除核心内置 msgpack 或保留为兼容构建开关。

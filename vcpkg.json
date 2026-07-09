@@ -64,6 +64,12 @@
             "dependencies": [
                 "protobuf"
             ]
+        },
+        "protocol-msgpack": {
+            "description": "MessagePack protocol codec plugin dependency",
+            "dependencies": [
+                "msgpack"
+            ]
         }
     },
     "overrides": []

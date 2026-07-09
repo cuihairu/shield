@@ -638,6 +638,66 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
                                   expected_payload.end());
 }
 
+BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesMsgpackExternalProvider) {
+    FakeProtocolCodecState state;
+    state.codec_name = "msgpack";
+    state.decoded_json = R"({"ok":true})";
+    auto fake_codec = make_fake_protocol_codec(state);
+
+    const auto config = R"json(
+{
+  "name": "game.msgpack",
+  "envelope": {
+    "type": "idlen",
+    "route_id_bytes": 2,
+    "length_bytes": 2
+  },
+  "body": {
+    "codec": "msgpack",
+    "provider": "protocol.msgpack"
+  },
+  "routes": [
+    {
+      "id": 4098,
+      "name": "game.Ping",
+      "action": "decode",
+      "lazy_decode": false
+    }
+  ]
+}
+)json";
+
+    ProtocolBuildOptions options;
+    options.external_codec_resolver =
+        [&](std::string_view provider, std::string_view codec_name,
+            std::string*) -> const shield_protocol_codec_v1* {
+        BOOST_CHECK(provider == "protocol.msgpack");
+        BOOST_CHECK(codec_name == "msgpack");
+        return &fake_codec;
+    };
+
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(config, options, &error);
+    BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
+    BOOST_CHECK_EQUAL(std::string(pipeline->default_codec_name()), "msgpack");
+
+    Packet packet;
+    packet.route_id = 4098;
+    packet.body = bytes("wire-msgpack");
+    const auto encoded = pipeline->encode(packet.ref());
+    BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
+
+    auto results = pipeline->feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_REQUIRE(results[0].ok());
+    BOOST_REQUIRE(results[0].decoded());
+    BOOST_REQUIRE(results[0].decoded_body->has_message());
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["ok"].get<bool>(),
+                      true);
+    BOOST_CHECK_EQUAL(state.last_route_id, 4098u);
+    BOOST_CHECK_EQUAL(state.last_route_name, "game.Ping");
+}
+
 BOOST_AUTO_TEST_CASE(BuildProtocolPipelinePropagatesMissingExternalProvider) {
     const auto config = R"json(
 {

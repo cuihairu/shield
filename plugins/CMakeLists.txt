@@ -66,3 +66,7 @@ endif()
 if(SHIELD_BUILD_PLUGIN_PROTOBUF)
     add_subdirectory(protocol.protobuf)
 endif()
+
+if(SHIELD_BUILD_PLUGIN_MSGPACK)
+    add_subdirectory(protocol.msgpack)
+endif()

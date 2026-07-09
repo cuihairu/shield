@@ -99,7 +99,7 @@ Egress:
 | --- | --- | --- |
 | `raw` | builtin | 字节串直通和兼容路径。 |
 | `json` | builtin | 默认结构化 Lua table 协议。 |
-| `msgpack` | plugin-enabled | 可作为 bundled optional plugin；当前实现仍处于内置过渡期。 |
+| `msgpack` | plugin-enabled | 已有 `protocol.msgpack` 可选插件；当前实现仍保留内置过渡路径。 |
 | `protobuf` | plugin-enabled | 第一个优先落地的 schema-aware codec plugin。 |
 | `sproto` | plugin-enabled | 通过 `.sproto` runtime/compiler adapter 提供。 |
 | `fbs` / `flatbuffers` | plugin-enabled | 通过 bfbs/schema runtime 提供。 |
@@ -379,11 +379,11 @@ PacketRef.body + RouteEntry(schema_id, codec_id)
 | `xmldef` | Shield 通用 XML definition/catalog | msg id |
 | `raw` | none | no decode, byte passthrough |
 
-第一阶段代码提供 `RawBodyCodec`、`JsonBodyCodec`、`MsgpackBodyCodec` 和若干占位 codec 名称。当前只有 `raw`、`json` 和 `msgpack` 允许稳定进入 `DecodeLocal` 路径：
+第一阶段代码提供 `RawBodyCodec`、`JsonBodyCodec`、`MsgpackBodyCodec` 和若干占位 codec 名称；同时已提供 `protocol.msgpack` 可选插件用于验证插件化路径。当前只有 `raw`、`json` 和 `msgpack` 允许稳定进入 `DecodeLocal` 路径：
 
 - `raw` 把 body 作为字节串交给 Lua
 - `json` 解码后把业务消息作为 Lua table 交给 Lua；若 body 为 `{route=..., payload=...}` 形态，则进入 Lua 的是 `payload`
-- `msgpack` 与 `json` 保持同一业务语义，只是线上 body 表示改为 MessagePack 二进制；若 body 为 `{route=..., payload=...}` 形态，则进入 Lua 的仍然是 `payload`
+- `msgpack` 与 `json` 保持同一业务语义，只是线上 body 表示改为 MessagePack 二进制；若 body 为 `{route=..., payload=...}` 形态，则进入 Lua 的仍然是 `payload`。未配置 `body.provider` 时走过渡期内置 codec，配置 `provider: protocol.msgpack` 时走插件 codec。
 - `protobuf` 需要通过 `body.provider` 引用 `shield.protocol.codec.v1` 插件后才能用于 `DecodeLocal`；未配置 provider 时仍按占位 codec 处理。
 - `fbs`、`sproto`、`xmldef` 这些尚未落地真实 provider 的 codec，当前不能用于 `DecodeLocal`
 
@@ -716,4 +716,4 @@ BodyCodec(xmldef).decode(body, schema_id)
 3. 对 header-route 协议启用 `RouteTable` 和 `ForwardRaw` 标记。
 4. 收敛到统一回调语义：只有 `DecodeLocal` 后的业务消息进入 Lua。
 5. 未实现真实 decoder 的 codec 不允许走 `DecodeLocal`。
-6. 后续通过协议 codec 插件分别补齐 protobuf、fbs、sproto、xmldef-native 的真实 `BodyCodec`；`msgpack` 当前已可用，但目标上应迁移为 bundled optional plugin 或显式构建开关。
+6. 后续通过协议 codec 插件分别补齐 fbs、sproto、xmldef-native 的真实 `BodyCodec`；protobuf 和 msgpack 已有首个 provider 实现，msgpack 内置路径待迁移为兼容构建开关或删除。
