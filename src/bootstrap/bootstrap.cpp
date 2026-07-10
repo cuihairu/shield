@@ -311,8 +311,7 @@ bool initialize(const RuntimeConfig& config) {
         static caf::actor_system_config cfg;
         cfg.load<caf::io::middleman>();
         return cfg;
-    }
-    ();
+    }();
 
     // Set number of workers
     if (config.num_workers > 0) {
