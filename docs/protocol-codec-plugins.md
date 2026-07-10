@@ -245,5 +245,5 @@ network:
 4. 已让 `body.provider` 触发插件 codec 路径，并覆盖 provider 缺失/codec 不匹配测试。
 5. 已实现 protobuf 插件的 `FileDescriptorSet`、schema/route 映射、decode、encode 和真实 descriptor round-trip 测试。
 6. 已补 Lua ingress/egress 测试：protobuf codec session 的 `session:send(table)`，以及 fake provider pipeline decode 后进入 Lua 并 echo 出站。
-7. 下一步在可用 vcpkg/protobuf 环境中跑通 `test_protocol_protobuf_plugin` 和 Lua gateway 测试。
+7. 已在 CI 中启用 `SHIELD_BUILD_PLUGIN_PROTOBUF=ON` / `SHIELD_BUILD_PLUGIN_MSGPACK=ON`，protobuf 插件的 `test_protocol_protobuf_plugin` 和 `test_protocol_msgpack_plugin` 在 Ubuntu/macOS/Windows 三平台 CI 中通过。
 8. 已新增 `protocol.msgpack` provider 和插件 ABI round-trip 测试；已移除核心内置 `MsgpackBodyCodec`，`msgpack` 现为纯插件 codec。
