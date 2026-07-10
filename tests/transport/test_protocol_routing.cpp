@@ -455,52 +455,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveJsonBodyRoute) {
     BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 1);
 }
 
-BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveJsonBodyRoute) {
-    RouteTable routes;
-    routes.add(RouteEntry{
-        .route_id = 1001,
-        .target_service = 3,
-        .codec_id = 1,
-        .schema_id = 0,
-        .debug_name = "login",
-        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
-                              .lazy_decode = false},
-    });
-
-    BodyCodecRegistry codecs;
-    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
-
-    ProtocolProfile profile;
-    profile.envelope_kind = EnvelopeKind::LenPrefix;
-    profile.default_codec_id = 1;
-    profile.route_source = RouteSource::Body;
-    profile.decode_body_route = true;
-    profile.decode_before_dispatch = false;
-
-    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
-
-    const auto json_body = nlohmann::json::object(
-        {{"route", "login"},
-         {"payload", nlohmann::json::object({{"uid", 1}})}})
-                               .dump();
-    Packet packet;
-    packet.body.assign(json_body.begin(), json_body.end());
-    const auto encoded = pipeline.encode(packet.ref());
-    BOOST_REQUIRE(pipeline.error().empty());
-
-    auto results = pipeline.feed(encoded.data(), encoded.size());
-    BOOST_REQUIRE_EQUAL(results.size(), 1u);
-    BOOST_CHECK(results[0].ok());
-    BOOST_REQUIRE(results[0].route != nullptr);
-    BOOST_CHECK_EQUAL(results[0].packet.route_id, 1001u);
-    BOOST_CHECK_EQUAL(results[0].route->debug_name, "login");
-    BOOST_CHECK(results[0].decoded());
-    BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
-    BOOST_REQUIRE(results[0].decoded_body->has_message());
-    BOOST_REQUIRE(results[0].decoded_body->message->is_object());
-    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 1);
-}
-
 BOOST_AUTO_TEST_CASE(ProtocolPipelineDropsUnknownRouteWithoutError) {
     BodyCodecRegistry codecs;
     BOOST_REQUIRE(codecs.add(1, std::make_unique<RawBodyCodec>()));
