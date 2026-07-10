@@ -247,16 +247,6 @@ public:
                                      const ProtocolProfile& profile) override;
 };
 
-class MsgpackBodyCodec final : public BodyCodec {
-public:
-    std::string_view name() const override { return "msgpack"; }
-    std::optional<BodyRouteKey> route_key(PacketRef packet) override;
-    DecodedBody decode(PacketRef packet, const RouteEntry& route) override;
-    std::vector<std::uint8_t> encode(const DecodedBody& body,
-                                     const RouteEntry& route,
-                                     const ProtocolProfile& profile) override;
-};
-
 std::unique_ptr<BodyCodec> create_body_codec(std::string_view name);
 
 class ExternalBodyCodec final : public BodyCodec {

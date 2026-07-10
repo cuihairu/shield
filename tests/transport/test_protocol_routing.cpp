@@ -21,7 +21,6 @@ using shield::transport::EnvelopeConfig;
 using shield::transport::IdLenEnvelope;
 using shield::transport::JsonBodyCodec;
 using shield::transport::LenPrefixEnvelope;
-using shield::transport::MsgpackBodyCodec;
 using shield::transport::Packet;
 using shield::transport::ProtocolPipeline;
 using shield::transport::ProtocolBuildOptions;
@@ -456,7 +455,7 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveJsonBodyRoute) {
     BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 1);
 }
 
-BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveMsgpackBodyRoute) {
+BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveJsonBodyRoute) {
     RouteTable routes;
     routes.add(RouteEntry{
         .route_id = 1001,
@@ -469,7 +468,7 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveMsgpackBodyRoute) {
     });
 
     BodyCodecRegistry codecs;
-    BOOST_REQUIRE(codecs.add(1, std::make_unique<MsgpackBodyCodec>()));
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
 
     ProtocolProfile profile;
     profile.envelope_kind = EnvelopeKind::LenPrefix;
@@ -480,10 +479,12 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveMsgpackBodyRoute) {
 
     ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
 
-    Packet packet;
-    packet.body = nlohmann::json::to_msgpack(nlohmann::json::object(
+    const auto json_body = nlohmann::json::object(
         {{"route", "login"},
-         {"payload", nlohmann::json::object({{"uid", 1}})}}));
+         {"payload", nlohmann::json::object({{"uid", 1}})}})
+                               .dump();
+    Packet packet;
+    packet.body.assign(json_body.begin(), json_body.end());
     const auto encoded = pipeline.encode(packet.ref());
     BOOST_REQUIRE(pipeline.error().empty());
 
@@ -909,7 +910,7 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanMaterializeLazyDecodeLocalResult) {
     BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 1);
 }
 
-BOOST_AUTO_TEST_CASE(ProtocolPipelineCanEncodeAndDecodeMsgpackBusinessMessage) {
+BOOST_AUTO_TEST_CASE(ProtocolPipelineCanEncodeAndDecodeJsonBusinessMessage) {
     RouteTable routes;
     routes.add(RouteEntry{
         .route_id = 1001,
@@ -922,7 +923,7 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanEncodeAndDecodeMsgpackBusinessMessage) {
     });
 
     BodyCodecRegistry codecs;
-    BOOST_REQUIRE(codecs.add(1, std::make_unique<MsgpackBodyCodec>()));
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
 
     ProtocolProfile profile;
     profile.envelope_kind = EnvelopeKind::LenPrefix;
@@ -982,27 +983,6 @@ BOOST_AUTO_TEST_CASE(StructuredCodecsRejectRawByteEgress) {
         BOOST_CHECK_NE(pipeline.error().find("expects business message"),
                        std::string::npos);
     }
-
-    {
-        BodyCodecRegistry codecs;
-        BOOST_REQUIRE(codecs.add(1, std::make_unique<MsgpackBodyCodec>()));
-
-        ProtocolProfile profile;
-        profile.envelope_kind = EnvelopeKind::LenPrefix;
-        profile.default_codec_id = 1;
-        profile.route_source = RouteSource::Body;
-        profile.decode_body_route = true;
-
-        ProtocolPipeline pipeline(profile, routes, std::move(codecs));
-
-        shield::transport::DecodedBody body;
-        body.bytes = bytes("raw");
-
-        const auto encoded = pipeline.encode_message(body);
-        BOOST_CHECK(encoded.empty());
-        BOOST_CHECK_NE(pipeline.error().find("expects business message"),
-                       std::string::npos);
-    }
 }
 
 BOOST_AUTO_TEST_CASE(BinarySchemaCodecNamesCannotDecodeLocalWithoutImplementation) {
@@ -1036,6 +1016,7 @@ BOOST_AUTO_TEST_CASE(BinarySchemaCodecNamesCannotDecodeLocalWithoutImplementatio
     BOOST_CHECK_THROW(protobuf->decode(packet.ref(), route), std::runtime_error);
     BOOST_CHECK_THROW(fbs->decode(packet.ref(), route), std::runtime_error);
     BOOST_CHECK_THROW(sproto->decode(packet.ref(), route), std::runtime_error);
+    BOOST_CHECK_THROW(msgpack->decode(packet.ref(), route), std::runtime_error);
 }
 
 BOOST_AUTO_TEST_CASE(ProtocolPipelineRejectsDecodeLocalForPlaceholderCodec) {

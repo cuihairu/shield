@@ -970,28 +970,6 @@ std::vector<std::uint8_t> JsonBodyCodec::encode(const DecodedBody& body,
     return std::vector<std::uint8_t>(serialized.begin(), serialized.end());
 }
 
-std::optional<BodyRouteKey> MsgpackBodyCodec::route_key(PacketRef packet) {
-    try {
-        const auto message = nlohmann::json::from_msgpack(packet.body.begin(),
-                                                          packet.body.end());
-        return structured_route_key(message);
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-DecodedBody MsgpackBodyCodec::decode(PacketRef packet, const RouteEntry& route) {
-    const auto message = nlohmann::json::from_msgpack(packet.body.begin(),
-                                                      packet.body.end());
-    return decode_structured_body(packet, route, message);
-}
-
-std::vector<std::uint8_t> MsgpackBodyCodec::encode(const DecodedBody& body,
-                                                   const RouteEntry& route,
-                                                   const ProtocolProfile&) {
-    return nlohmann::json::to_msgpack(encode_structured_message(body, route));
-}
-
 std::unique_ptr<BodyCodec> create_body_codec(std::string_view name) {
     if (name == "raw") {
         return std::make_unique<RawBodyCodec>();
@@ -999,11 +977,8 @@ std::unique_ptr<BodyCodec> create_body_codec(std::string_view name) {
     if (name == "json") {
         return std::make_unique<JsonBodyCodec>();
     }
-    if (name == "msgpack") {
-        return std::make_unique<MsgpackBodyCodec>();
-    }
-    if (name == "protobuf" || name == "fbs" || name == "flatbuffers" ||
-        name == "sproto") {
+    if (name == "msgpack" || name == "protobuf" || name == "fbs" ||
+        name == "flatbuffers" || name == "sproto") {
         return std::make_unique<PassthroughBodyCodec>(std::string(name));
     }
     if (name == "xmldef" || name == "xml_def") {
