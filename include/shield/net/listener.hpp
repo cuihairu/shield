@@ -83,10 +83,10 @@ private:
     boost::asio::ip::tcp::socket socket_;
     std::unordered_map<SessionId, std::shared_ptr<Session>> sessions_;
     mutable std::shared_mutex sessions_mutex_;
-    size_t max_connections_ = 0;      // 0 = unlimited
-    size_t max_per_ip_ = 0;           // 0 = unlimited
-    size_t max_frame_size_ = 0;       // 0 = unlimited
-    size_t max_send_queue_ = 0;       // 0 = unlimited (queued message count)
+    size_t max_connections_ = 0;         // 0 = unlimited
+    size_t max_per_ip_ = 0;              // 0 = unlimited
+    size_t max_frame_size_ = 0;          // 0 = unlimited
+    size_t max_send_queue_ = 0;          // 0 = unlimited (queued message count)
     uint32_t read_idle_timeout_ms_ = 0;  // 0 = disabled
     std::unordered_map<std::string, size_t> ip_counts_;
     std::string last_rejection_;

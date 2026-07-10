@@ -209,9 +209,9 @@ public:
     virtual std::string_view name() const = 0;
     virtual std::optional<BodyRouteKey> route_key(PacketRef packet);
     virtual DecodedBody decode(PacketRef packet, const RouteEntry& route) = 0;
-    virtual std::vector<std::uint8_t> encode(const DecodedBody& body,
-                                             const RouteEntry& route,
-                                             const ProtocolProfile& profile) = 0;
+    virtual std::vector<std::uint8_t> encode(
+        const DecodedBody& body, const RouteEntry& route,
+        const ProtocolProfile& profile) = 0;
 };
 
 class RawBodyCodec final : public BodyCodec {
@@ -272,12 +272,12 @@ struct XmldefCatalogOptions {
     bool default_lazy_decode = true;
 };
 
-bool load_xmldef_routes_from_string(
-    std::string_view xml, RouteTable& routes,
-    const XmldefCatalogOptions& options = {}, std::string* error = nullptr);
-bool load_xmldef_routes_from_file(
-    std::string_view path, RouteTable& routes,
-    const XmldefCatalogOptions& options = {}, std::string* error = nullptr);
+bool load_xmldef_routes_from_string(std::string_view xml, RouteTable& routes,
+                                    const XmldefCatalogOptions& options = {},
+                                    std::string* error = nullptr);
+bool load_xmldef_routes_from_file(std::string_view path, RouteTable& routes,
+                                  const XmldefCatalogOptions& options = {},
+                                  std::string* error = nullptr);
 
 class BodyCodecRegistry {
 public:
@@ -316,7 +316,9 @@ struct DispatchResult {
     std::string error;
 
     bool ok() const { return error.empty(); }
-    bool should_forward_raw() const { return action == RouteAction::ForwardRaw; }
+    bool should_forward_raw() const {
+        return action == RouteAction::ForwardRaw;
+    }
     bool should_drop() const {
         return action == RouteAction::Drop && error.empty();
     }
@@ -357,7 +359,8 @@ private:
 };
 
 using ExternalBodyCodecResolver = std::function<const shield_protocol_codec_v1*(
-    std::string_view provider, std::string_view codec_name, std::string* error)>;
+    std::string_view provider, std::string_view codec_name,
+    std::string* error)>;
 
 struct ProtocolBuildOptions {
     std::string_view source_dir;

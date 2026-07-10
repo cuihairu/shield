@@ -118,8 +118,7 @@ public:
     ///                              this many milliseconds (0 = disabled).
     TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
                SessionCallbacks callbacks, size_t max_frame_size = 0,
-               size_t max_send_queue = 0,
-               uint32_t read_idle_timeout_ms = 0);
+               size_t max_send_queue = 0, uint32_t read_idle_timeout_ms = 0);
 
     SessionId id() const override { return id_; }
     RemoteAddress remote_addr() const override { return remote_addr_; }
