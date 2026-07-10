@@ -22,8 +22,8 @@
 #include "shield/log/logger.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
-#include "shield/net/session.hpp"
 #include "shield/net/http_client.hpp"
+#include "shield/net/session.hpp"
 #include "shield/plugin/plugin_host.hpp"
 
 namespace shield::lua {
@@ -134,9 +134,9 @@ sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
             if (maybe_ud.valid() && maybe_ud.is<sol::protected_function>()) {
                 sol::protected_function make_handle =
                     maybe_ud.as<sol::protected_function>();
-                auto result = make_handle(
-                    value.value("id", std::string{}),
-                    value.value("remote_addr", std::string{}));
+                auto result =
+                    make_handle(value.value("id", std::string{}),
+                                value.value("remote_addr", std::string{}));
                 if (result.valid() && result.return_count() > 0) {
                     return result.get<sol::object>(0);
                 }
@@ -1084,13 +1084,12 @@ struct SessionHandle {
 };
 
 static void register_session_handle(sol::state& lua) {
-    lua.set_function(
-        "__shield_make_session_handle",
-        [](std::string id, std::string remote_addr) {
-            return SessionHandle{
-                resolve_session_handle(id), std::move(id),
-                std::move(remote_addr)};
-        });
+    lua.set_function("__shield_make_session_handle",
+                     [](std::string id, std::string remote_addr) {
+                         return SessionHandle{resolve_session_handle(id),
+                                              std::move(id),
+                                              std::move(remote_addr)};
+                     });
     lua.new_usertype<SessionHandle>(
         "SessionHandle", sol::no_constructor, "id",
         [](const SessionHandle& s) { return s.id; }, "remote_addr",
@@ -1114,7 +1113,8 @@ static void register_session_handle(sol::state& lua) {
                     std::string(session->protocol_codec_name());
                 const bool raw_protocol = codec_name == "raw";
                 if (payload.is<sol::table>()) {
-                    message.message = lua_table_to_json(payload.as<sol::table>());
+                    message.message =
+                        lua_table_to_json(payload.as<sol::table>());
                 } else if (raw_protocol && payload.is<std::string>()) {
                     const auto value = payload.as<std::string>();
                     message.bytes.assign(value.begin(), value.end());
@@ -1134,7 +1134,8 @@ static void register_session_handle(sol::state& lua) {
                         sol::table err = sv.create_table();
                         err["code"] = "protocol_message_required";
                         err["message"] =
-                            "structured protocol session expects table/object payload";
+                            "structured protocol session expects table/object "
+                            "payload";
                         results.push_back(sol::make_object(sv, err));
                         return results;
                     }
@@ -1151,9 +1152,8 @@ static void register_session_handle(sol::state& lua) {
                     const bool queue_full =
                         send_error.find("session_send_queue_full") !=
                         std::string::npos;
-                    const bool closed =
-                        send_error.find("session is closed") !=
-                        std::string::npos;
+                    const bool closed = send_error.find("session is closed") !=
+                                        std::string::npos;
                     if (queue_full) {
                         err["code"] = "session_send_queue_full";
                         err["message"] = "session send queue is full";
@@ -1164,9 +1164,10 @@ static void register_session_handle(sol::state& lua) {
                     } else {
                         // e.g. "protocol pipeline is not configured"
                         err["code"] = "protocol_not_configured";
-                        err["message"] = send_error.empty()
-                                             ? "protocol pipeline is not configured"
-                                             : send_error;
+                        err["message"] =
+                            send_error.empty()
+                                ? "protocol pipeline is not configured"
+                                : send_error;
                     }
                     results.push_back(sol::make_object(sv, err));
                     return results;
@@ -1214,9 +1215,9 @@ static void register_session_handle(sol::state& lua) {
                 } else {
                     err["code"] = "session_send_failed";
                     err["message"] =
-                        send_error.empty() ? "session send failed"
-                                           : ("session send failed: " +
-                                              send_error);
+                        send_error.empty()
+                            ? "session send failed"
+                            : ("session send failed: " + send_error);
                 }
                 results.push_back(sol::make_object(sv, err));
                 return results;

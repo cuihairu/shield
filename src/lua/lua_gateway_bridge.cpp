@@ -82,9 +82,9 @@ void LuaGatewayBridge::on_packet(
     manager_.enqueue_forked_task(target, [manager, target, session_info,
                                           payload = std::move(payload)]() {
         std::string error;
-        if (!manager->send_system(target, "on_client_message",
-                                  nlohmann::json::array({session_info, payload}),
-                                  &error)) {
+        if (!manager->send_system(
+                target, "on_client_message",
+                nlohmann::json::array({session_info, payload}), &error)) {
             auto& log = shield::log::get_logger("lua");
             SHIELD_LOG_WARNING(
                 log, "Failed to queue gateway on_client_message: " + error);

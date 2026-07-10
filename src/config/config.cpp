@@ -271,8 +271,8 @@ bool validate_protocol_envelope(const YAML::Node& envelope,
         !validate_int_range(envelope, "route_id_bytes",
                             (path + ".envelope").c_str(), 0, 255, error) ||
         !validate_int_range(envelope, "max_frame_size",
-                            (path + ".envelope").c_str(), 0,
-                            16 * 1024 * 1024, error)) {
+                            (path + ".envelope").c_str(), 0, 16 * 1024 * 1024,
+                            error)) {
         return false;
     }
 
@@ -281,7 +281,8 @@ bool validate_protocol_envelope(const YAML::Node& envelope,
             (void)envelope["length_includes_header"].as<bool>();
         } catch (const std::exception&) {
             if (error) {
-                *error = path + ".envelope.length_includes_header must be a bool";
+                *error =
+                    path + ".envelope.length_includes_header must be a bool";
             }
             return false;
         }
@@ -321,8 +322,8 @@ bool validate_protocol_routing(const YAML::Node& routing,
 
     if (!validate_protocol_string_enum(
             routing, "source", path + ".routing",
-            {"header", "header.route_id", "header.msg_id", "body",
-             "body.route", "body.route_id", "none"},
+            {"header", "header.route_id", "header.msg_id", "body", "body.route",
+             "body.route_id", "none"},
             error) ||
         !validate_protocol_route_action(routing, "unknown_route_action",
                                         path + ".routing", error) ||
@@ -331,8 +332,8 @@ bool validate_protocol_routing(const YAML::Node& routing,
         return false;
     }
 
-    for (const char* key : {"decode_body_route", "decode_before_dispatch",
-                            "lazy_decode"}) {
+    for (const char* key :
+         {"decode_body_route", "decode_before_dispatch", "lazy_decode"}) {
         if (!routing[key]) {
             continue;
         }
@@ -401,7 +402,8 @@ bool validate_protocol_routes(const YAML::Node& routes, const std::string& path,
                                 error) ||
             !validate_int_range(route, "schema_id", item_path.c_str(), 0, 65535,
                                 error) ||
-            !validate_protocol_route_action(route, "action", item_path, error)) {
+            !validate_protocol_route_action(route, "action", item_path,
+                                            error)) {
             return false;
         }
 
@@ -476,8 +478,8 @@ bool validate_network_protocol(const YAML::Node& protocol,
         }
         if (!validate_protocol_string_enum(
                 body, "codec", path + ".body",
-                {"raw", "json", "msgpack", "protobuf", "fbs",
-                 "flatbuffers", "sproto", "xmldef", "xml_def"},
+                {"raw", "json", "msgpack", "protobuf", "fbs", "flatbuffers",
+                 "sproto", "xmldef", "xml_def"},
                 error)) {
             return false;
         }
@@ -1069,8 +1071,8 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                                         network_path.c_str(), 1,
                                         16 * 1024 * 1024, error) ||
                     !validate_int_range(network, "max_session_send_queue",
-                                        network_path.c_str(), 0,
-                                        1000000, error) ||
+                                        network_path.c_str(), 0, 1000000,
+                                        error) ||
                     !validate_int_range(network, "read_idle_timeout",
                                         network_path.c_str(), 0, 86400000,
                                         error)) {

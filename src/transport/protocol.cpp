@@ -160,18 +160,16 @@ std::unordered_map<std::string, std::string> parse_xml_attributes(
         }
 
         const auto key = std::string(tag.substr(key_begin, pos - key_begin));
-        while (pos < tag.size() &&
-               (tag[pos] == ' ' || tag[pos] == '\t' || tag[pos] == '\r' ||
-                tag[pos] == '\n')) {
+        while (pos < tag.size() && (tag[pos] == ' ' || tag[pos] == '\t' ||
+                                    tag[pos] == '\r' || tag[pos] == '\n')) {
             ++pos;
         }
         if (pos >= tag.size() || tag[pos] != '=') {
             continue;
         }
         ++pos;
-        while (pos < tag.size() &&
-               (tag[pos] == ' ' || tag[pos] == '\t' || tag[pos] == '\r' ||
-                tag[pos] == '\n')) {
+        while (pos < tag.size() && (tag[pos] == ' ' || tag[pos] == '\t' ||
+                                    tag[pos] == '\r' || tag[pos] == '\n')) {
             ++pos;
         }
         if (pos >= tag.size() || (tag[pos] != '"' && tag[pos] != '\'')) {
@@ -226,8 +224,8 @@ std::optional<EnvelopeKind> parse_envelope_kind(const std::string& value) {
     if (value == "idlen" || value == "id-len" || value == "id_len") {
         return EnvelopeKind::IdLen;
     }
-    if (value == "typed_len" || value == "type_len" ||
-        value == "typed-len" || value == "typelen") {
+    if (value == "typed_len" || value == "type_len" || value == "typed-len" ||
+        value == "typelen") {
         return EnvelopeKind::TypeLen;
     }
     if (value == "delimiter" || value == "line") {
@@ -241,8 +239,7 @@ std::optional<RouteSource> parse_route_source(const std::string& value) {
         value == "header.msg_id") {
         return RouteSource::Header;
     }
-    if (value == "body" || value == "body.route" ||
-        value == "body.route_id") {
+    if (value == "body" || value == "body.route" || value == "body.route_id") {
         return RouteSource::Body;
     }
     if (value == "none") {
@@ -313,7 +310,7 @@ bool message_contains_route_hint(const nlohmann::json& message) {
 }
 
 nlohmann::json encode_structured_message(const DecodedBody& body,
-                                        const RouteEntry& route) {
+                                         const RouteEntry& route) {
     nlohmann::json message;
     if (body.has_message()) {
         if (message_contains_route_hint(*body.message)) {
@@ -394,8 +391,7 @@ PacketRef Packet::ref() const {
 }
 
 bool RouteTable::add(RouteEntry entry) {
-    if (!entry.debug_name.empty() &&
-        route_names_.contains(entry.debug_name)) {
+    if (!entry.debug_name.empty() && route_names_.contains(entry.debug_name)) {
         return false;
     }
 
@@ -459,9 +455,7 @@ void RouteTable::clear() {
     route_names_.clear();
 }
 
-std::size_t RouteTable::size() const {
-    return routes_.size();
-}
+std::size_t RouteTable::size() const { return routes_.size(); }
 
 Envelope::Envelope(EnvelopeConfig config) : config_(config) {}
 
@@ -470,8 +464,7 @@ void Envelope::reset() {
     error_.clear();
 }
 
-LenPrefixEnvelope::LenPrefixEnvelope(EnvelopeConfig config)
-    : Envelope(config) {
+LenPrefixEnvelope::LenPrefixEnvelope(EnvelopeConfig config) : Envelope(config) {
     if (config_.length_bytes == 0) {
         config_.length_bytes = 4;
     }
@@ -511,14 +504,15 @@ std::vector<Packet> LenPrefixEnvelope::feed(const std::uint8_t* data,
             break;
         }
         const auto payload_len = *maybe_payload_len;
-        if (payload_len > std::numeric_limits<std::size_t>::max() -
-                              header_size) {
+        if (payload_len >
+            std::numeric_limits<std::size_t>::max() - header_size) {
             error_ = "lenprefix frame length overflow";
             buffer_.clear();
             break;
         }
         const auto total_len = payload_len + header_size;
-        if (config_.max_frame_size > 0 && payload_len > config_.max_frame_size) {
+        if (config_.max_frame_size > 0 &&
+            payload_len > config_.max_frame_size) {
             error_ = "lenprefix frame too large";
             buffer_.clear();
             break;
@@ -528,16 +522,18 @@ std::vector<Packet> LenPrefixEnvelope::feed(const std::uint8_t* data,
         }
 
         const auto payload_begin = buffer_.begin() + header_size;
-        const auto payload_end = payload_begin + static_cast<std::ptrdiff_t>(payload_len);
+        const auto payload_end =
+            payload_begin + static_cast<std::ptrdiff_t>(payload_len);
 
         Packet packet;
         packet.body.assign(payload_begin, payload_end);
-        packet.raw_frame.assign(buffer_.begin(), buffer_.begin() +
-                                                   static_cast<std::ptrdiff_t>(total_len));
+        packet.raw_frame.assign(
+            buffer_.begin(),
+            buffer_.begin() + static_cast<std::ptrdiff_t>(total_len));
         packets.push_back(std::move(packet));
 
-        buffer_.erase(buffer_.begin(), buffer_.begin() +
-                                         static_cast<std::ptrdiff_t>(total_len));
+        buffer_.erase(buffer_.begin(),
+                      buffer_.begin() + static_cast<std::ptrdiff_t>(total_len));
     }
 
     return packets;
@@ -601,10 +597,10 @@ std::vector<Packet> IdLenEnvelope::feed(const std::uint8_t* data,
     while (buffer_.size() >= header_size) {
         const auto route_id = read_uint(
             ByteSpan(buffer_.data(), config_.route_id_bytes), config_.endian);
-        const auto length_field = read_uint(
-            ByteSpan(buffer_.data() + config_.route_id_bytes,
-                     config_.length_bytes),
-            config_.endian);
+        const auto length_field =
+            read_uint(ByteSpan(buffer_.data() + config_.route_id_bytes,
+                               config_.length_bytes),
+                      config_.endian);
 
         if (route_id > std::numeric_limits<std::uint32_t>::max()) {
             error_ = "idlen route id overflow";
@@ -620,14 +616,15 @@ std::vector<Packet> IdLenEnvelope::feed(const std::uint8_t* data,
             break;
         }
         const auto payload_len = *maybe_payload_len;
-        if (payload_len > std::numeric_limits<std::size_t>::max() -
-                              header_size) {
+        if (payload_len >
+            std::numeric_limits<std::size_t>::max() - header_size) {
             error_ = "idlen frame length overflow";
             buffer_.clear();
             break;
         }
         const auto total_len = payload_len + header_size;
-        if (config_.max_frame_size > 0 && payload_len > config_.max_frame_size) {
+        if (config_.max_frame_size > 0 &&
+            payload_len > config_.max_frame_size) {
             error_ = "idlen frame too large";
             buffer_.clear();
             break;
@@ -637,17 +634,19 @@ std::vector<Packet> IdLenEnvelope::feed(const std::uint8_t* data,
         }
 
         const auto payload_begin = buffer_.begin() + header_size;
-        const auto payload_end = payload_begin + static_cast<std::ptrdiff_t>(payload_len);
+        const auto payload_end =
+            payload_begin + static_cast<std::ptrdiff_t>(payload_len);
 
         Packet packet;
         packet.route_id = static_cast<std::uint32_t>(route_id);
         packet.body.assign(payload_begin, payload_end);
-        packet.raw_frame.assign(buffer_.begin(), buffer_.begin() +
-                                                   static_cast<std::ptrdiff_t>(total_len));
+        packet.raw_frame.assign(
+            buffer_.begin(),
+            buffer_.begin() + static_cast<std::ptrdiff_t>(total_len));
         packets.push_back(std::move(packet));
 
-        buffer_.erase(buffer_.begin(), buffer_.begin() +
-                                         static_cast<std::ptrdiff_t>(total_len));
+        buffer_.erase(buffer_.begin(),
+                      buffer_.begin() + static_cast<std::ptrdiff_t>(total_len));
     }
 
     return packets;
@@ -666,11 +665,10 @@ std::vector<std::uint8_t> IdLenEnvelope::encode(const PacketRef& packet) {
         error_ = "idlen route id does not fit header";
         return out;
     }
-    const auto length_field = config_.length_includes_header
-                                  ? packet.body.size() +
-                                        config_.route_id_bytes +
-                                        config_.length_bytes
-                                  : packet.body.size();
+    const auto length_field =
+        config_.length_includes_header
+            ? packet.body.size() + config_.route_id_bytes + config_.length_bytes
+            : packet.body.size();
     if (!fits_width(length_field, config_.length_bytes)) {
         error_ = "idlen payload length does not fit header";
         return out;
@@ -720,10 +718,10 @@ std::vector<Packet> TypeLenEnvelope::feed(const std::uint8_t* data,
     while (buffer_.size() >= header_size) {
         const auto type_id = read_uint(
             ByteSpan(buffer_.data(), config_.route_id_bytes), config_.endian);
-        const auto length_field = read_uint(
-            ByteSpan(buffer_.data() + config_.route_id_bytes,
-                     config_.length_bytes),
-            config_.endian);
+        const auto length_field =
+            read_uint(ByteSpan(buffer_.data() + config_.route_id_bytes,
+                               config_.length_bytes),
+                      config_.endian);
 
         if (type_id > std::numeric_limits<std::uint32_t>::max()) {
             error_ = "typed_len type id overflow";
@@ -739,14 +737,15 @@ std::vector<Packet> TypeLenEnvelope::feed(const std::uint8_t* data,
             break;
         }
         const auto payload_len = *maybe_payload_len;
-        if (payload_len > std::numeric_limits<std::size_t>::max() -
-                              header_size) {
+        if (payload_len >
+            std::numeric_limits<std::size_t>::max() - header_size) {
             error_ = "typed_len frame length overflow";
             buffer_.clear();
             break;
         }
         const auto total_len = payload_len + header_size;
-        if (config_.max_frame_size > 0 && payload_len > config_.max_frame_size) {
+        if (config_.max_frame_size > 0 &&
+            payload_len > config_.max_frame_size) {
             error_ = "typed_len frame too large";
             buffer_.clear();
             break;
@@ -764,12 +763,13 @@ std::vector<Packet> TypeLenEnvelope::feed(const std::uint8_t* data,
         packet.kind = static_cast<std::uint16_t>(
             type_id & std::numeric_limits<std::uint16_t>::max());
         packet.body.assign(payload_begin, payload_end);
-        packet.raw_frame.assign(buffer_.begin(), buffer_.begin() +
-                                                   static_cast<std::ptrdiff_t>(total_len));
+        packet.raw_frame.assign(
+            buffer_.begin(),
+            buffer_.begin() + static_cast<std::ptrdiff_t>(total_len));
         packets.push_back(std::move(packet));
 
-        buffer_.erase(buffer_.begin(), buffer_.begin() +
-                                         static_cast<std::ptrdiff_t>(total_len));
+        buffer_.erase(buffer_.begin(),
+                      buffer_.begin() + static_cast<std::ptrdiff_t>(total_len));
     }
 
     return packets;
@@ -790,11 +790,10 @@ std::vector<std::uint8_t> TypeLenEnvelope::encode(const PacketRef& packet) {
         error_ = "typed_len type id does not fit header";
         return out;
     }
-    const auto length_field = config_.length_includes_header
-                                  ? packet.body.size() +
-                                        config_.route_id_bytes +
-                                        config_.length_bytes
-                                  : packet.body.size();
+    const auto length_field =
+        config_.length_includes_header
+            ? packet.body.size() + config_.route_id_bytes + config_.length_bytes
+            : packet.body.size();
     if (!fits_width(length_field, config_.length_bytes)) {
         error_ = "typed_len payload length does not fit header";
         return out;
@@ -808,8 +807,7 @@ std::vector<std::uint8_t> TypeLenEnvelope::encode(const PacketRef& packet) {
     return out;
 }
 
-DelimiterEnvelope::DelimiterEnvelope(EnvelopeConfig config)
-    : Envelope(config) {
+DelimiterEnvelope::DelimiterEnvelope(EnvelopeConfig config) : Envelope(config) {
     config_.length_bytes = 0;
     config_.route_id_bytes = 0;
     config_.route_source = RouteSource::Body;
@@ -887,15 +885,14 @@ std::unique_ptr<Envelope> create_envelope(EnvelopeKind kind,
 
 std::unique_ptr<Envelope> create_envelope(std::string_view kind,
                                           EnvelopeConfig config) {
-    if (kind == "lenprefix" || kind == "len-prefix" ||
-        kind == "len_prefix") {
+    if (kind == "lenprefix" || kind == "len-prefix" || kind == "len_prefix") {
         return create_envelope(EnvelopeKind::LenPrefix, config);
     }
     if (kind == "idlen" || kind == "id-len" || kind == "id_len") {
         return create_envelope(EnvelopeKind::IdLen, config);
     }
-    if (kind == "typed_len" || kind == "type_len" ||
-        kind == "typed-len" || kind == "typelen") {
+    if (kind == "typed_len" || kind == "type_len" || kind == "typed-len" ||
+        kind == "typelen") {
         return create_envelope(EnvelopeKind::TypeLen, config);
     }
     if (kind == "delimiter" || kind == "line") {
@@ -948,8 +945,8 @@ std::vector<std::uint8_t> PassthroughBodyCodec::encode(
 
 std::optional<BodyRouteKey> JsonBodyCodec::route_key(PacketRef packet) {
     try {
-        const auto json = nlohmann::json::parse(packet.body.begin(),
-                                                packet.body.end());
+        const auto json =
+            nlohmann::json::parse(packet.body.begin(), packet.body.end());
         return structured_route_key(json);
     } catch (...) {
         return std::nullopt;
@@ -957,8 +954,7 @@ std::optional<BodyRouteKey> JsonBodyCodec::route_key(PacketRef packet) {
 }
 
 DecodedBody JsonBodyCodec::decode(PacketRef packet, const RouteEntry& route) {
-    auto json =
-        nlohmann::json::parse(packet.body.begin(), packet.body.end());
+    auto json = nlohmann::json::parse(packet.body.begin(), packet.body.end());
     return decode_structured_body(packet, route, std::move(json));
 }
 
@@ -1002,7 +998,8 @@ DecodedBody ExternalBodyCodec::decode(PacketRef packet,
     args.route_id = route.route_id;
     args.codec_id = route.codec_id;
     args.schema_id = route.schema_id;
-    args.route_name = route.debug_name.empty() ? nullptr : route.debug_name.c_str();
+    args.route_name =
+        route.debug_name.empty() ? nullptr : route.debug_name.c_str();
     args.payload = packet.body.data();
     args.payload_size = packet.body.size();
 
@@ -1010,7 +1007,8 @@ DecodedBody ExternalBodyCodec::decode(PacketRef packet,
     shield_error_v1 err{};
     const int rc = codec_->decode(codec_, &args, &out, &err);
     if (rc != 0) {
-        throw std::runtime_error(plugin_error_message(err, "protocol decode failed"));
+        throw std::runtime_error(
+            plugin_error_message(err, "protocol decode failed"));
     }
 
     try {
@@ -1022,10 +1020,9 @@ DecodedBody ExternalBodyCodec::decode(PacketRef packet,
         body.bytes.assign(packet.body.begin(), packet.body.end());
 
         if (out.message_json != nullptr && out.message_json_size > 0) {
-            const auto size =
-                static_cast<std::size_t>(out.message_json_size);
-            body.message = nlohmann::json::parse(
-                out.message_json, out.message_json + size);
+            const auto size = static_cast<std::size_t>(out.message_json_size);
+            body.message = nlohmann::json::parse(out.message_json,
+                                                 out.message_json + size);
         } else {
             body.message = nlohmann::json::object();
         }
@@ -1042,9 +1039,9 @@ DecodedBody ExternalBodyCodec::decode(PacketRef packet,
     }
 }
 
-std::vector<std::uint8_t> ExternalBodyCodec::encode(
-    const DecodedBody& body, const RouteEntry& route,
-    const ProtocolProfile&) {
+std::vector<std::uint8_t> ExternalBodyCodec::encode(const DecodedBody& body,
+                                                    const RouteEntry& route,
+                                                    const ProtocolProfile&) {
     if (codec_ == nullptr || codec_->encode == nullptr) {
         throw std::runtime_error("protocol codec provider '" + provider_ +
                                  "' is not available");
@@ -1057,7 +1054,8 @@ std::vector<std::uint8_t> ExternalBodyCodec::encode(
     args.route_id = route.route_id;
     args.codec_id = route.codec_id;
     args.schema_id = route.schema_id;
-    args.route_name = route.debug_name.empty() ? nullptr : route.debug_name.c_str();
+    args.route_name =
+        route.debug_name.empty() ? nullptr : route.debug_name.c_str();
     args.message_json = message_text.data();
     args.message_json_size = message_text.size();
 
@@ -1065,7 +1063,8 @@ std::vector<std::uint8_t> ExternalBodyCodec::encode(
     shield_error_v1 err{};
     const int rc = codec_->encode(codec_, &args, &out, &err);
     if (rc != 0) {
-        throw std::runtime_error(plugin_error_message(err, "protocol encode failed"));
+        throw std::runtime_error(
+            plugin_error_message(err, "protocol encode failed"));
     }
 
     std::vector<std::uint8_t> payload;
@@ -1301,9 +1300,7 @@ void BodyCodecRegistry::clear() {
     codec_names_.clear();
 }
 
-std::size_t BodyCodecRegistry::size() const {
-    return codecs_.size();
-}
+std::size_t BodyCodecRegistry::size() const { return codecs_.size(); }
 
 ProtocolPipeline::ProtocolPipeline(ProtocolProfile profile, RouteTable routes,
                                    BodyCodecRegistry codecs)
@@ -1357,9 +1354,9 @@ std::vector<DispatchResult> ProtocolPipeline::feed(const std::uint8_t* data,
             results.push_back(std::move(result));
             continue;
         }
-        const auto should_decode = result.action == RouteAction::DecodeLocal &&
-                                   (profile_.decode_before_dispatch ||
-                                    !route->policy.lazy_decode);
+        const auto should_decode =
+            result.action == RouteAction::DecodeLocal &&
+            (profile_.decode_before_dispatch || !route->policy.lazy_decode);
         if (should_decode) {
             auto* codec = codec_for_route(*route);
             if (codec == nullptr) {
@@ -1368,7 +1365,8 @@ std::vector<DispatchResult> ProtocolPipeline::feed(const std::uint8_t* data,
                 continue;
             }
             try {
-                result.decoded_body = codec->decode(result.packet.ref(), *route);
+                result.decoded_body =
+                    codec->decode(result.packet.ref(), *route);
             } catch (const std::exception& ex) {
                 result.error = std::string("body decode failed: ") + ex.what();
             }
@@ -1510,9 +1508,10 @@ const RouteEntry* ProtocolPipeline::resolve_route(Packet& packet,
 }
 
 BodyCodec* ProtocolPipeline::codec_for_route(const RouteEntry& route) {
-    // Phase 1: a pipeline binds a single body codec (profile_.default_codec_id).
-    // route.codec_id is kept as route metadata / future extension slot and is
-    // intentionally not used to select a per-route codec here.
+    // Phase 1: a pipeline binds a single body codec
+    // (profile_.default_codec_id). route.codec_id is kept as route metadata /
+    // future extension slot and is intentionally not used to select a per-route
+    // codec here.
     (void)route;
     return codecs_.find(profile_.default_codec_id);
 }
@@ -1616,13 +1615,15 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
         ProtocolProfile profile;
         profile.name = config.value("name", std::string{});
 
-        const auto envelope = config.value("envelope", nlohmann::json::object());
+        const auto envelope =
+            config.value("envelope", nlohmann::json::object());
         if (envelope.is_object()) {
             if (envelope.contains("type")) {
                 const auto parsed =
                     parse_envelope_kind(envelope["type"].get<std::string>());
                 if (!parsed) {
-                    if (error) *error = "unknown network.protocol.envelope.type";
+                    if (error)
+                        *error = "unknown network.protocol.envelope.type";
                     return nullptr;
                 }
                 profile.envelope_kind = *parsed;
@@ -1630,7 +1631,8 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
             if (envelope.contains("endian")) {
                 const auto parsed = parse_protocol_endian(envelope["endian"]);
                 if (!parsed) {
-                    if (error) *error = "invalid network.protocol.envelope.endian";
+                    if (error)
+                        *error = "invalid network.protocol.envelope.endian";
                     return nullptr;
                 }
                 profile.envelope.endian = *parsed;
@@ -1669,8 +1671,9 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
         if (!body_provider.empty()) {
             if (!options.external_codec_resolver) {
                 if (error) {
-                    *error = "network.protocol.body.provider is configured "
-                             "but no external codec resolver is available";
+                    *error =
+                        "network.protocol.body.provider is configured "
+                        "but no external codec resolver is available";
                 }
                 return nullptr;
             }
@@ -1679,17 +1682,19 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 body_provider, body_codec, &resolver_error);
             if (external == nullptr) {
                 if (error) {
-                    *error = resolver_error.empty()
-                                 ? "failed to resolve network.protocol.body.provider"
-                                 : resolver_error;
+                    *error =
+                        resolver_error.empty()
+                            ? "failed to resolve network.protocol.body.provider"
+                            : resolver_error;
                 }
                 return nullptr;
             }
             if (external->codec_name == nullptr ||
                 std::string_view(external->codec_name) != body_codec) {
                 if (error) {
-                    *error = "network.protocol.body.provider does not serve "
-                             "network.protocol.body.codec";
+                    *error =
+                        "network.protocol.body.provider does not serve "
+                        "network.protocol.body.codec";
                 }
                 return nullptr;
             }
@@ -1700,8 +1705,8 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 }
                 return nullptr;
             }
-            codec = std::make_unique<ExternalBodyCodec>(
-                body_provider, body_codec, external);
+            codec = std::make_unique<ExternalBodyCodec>(body_provider,
+                                                        body_codec, external);
         } else {
             codec = create_body_codec(body_codec);
         }
@@ -1719,22 +1724,25 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 const auto parsed =
                     parse_route_source(routing["source"].get<std::string>());
                 if (!parsed) {
-                    if (error) *error = "invalid network.protocol.routing.source";
+                    if (error)
+                        *error = "invalid network.protocol.routing.source";
                     return nullptr;
                 }
                 profile.route_source = *parsed;
             }
-            profile.decode_body_route = routing.value("decode_body_route", true);
+            profile.decode_body_route =
+                routing.value("decode_body_route", true);
             profile.decode_before_dispatch =
                 routing.value("decode_before_dispatch", false);
             if (routing.contains("unknown_route_action") &&
                 routing["unknown_route_action"].is_string()) {
-                const auto parsed =
-                    parse_action(routing["unknown_route_action"].get<std::string>());
+                const auto parsed = parse_action(
+                    routing["unknown_route_action"].get<std::string>());
                 if (!parsed) {
                     if (error) {
                         *error =
-                            "invalid network.protocol.routing.unknown_route_action";
+                            "invalid "
+                            "network.protocol.routing.unknown_route_action";
                     }
                     return nullptr;
                 }
@@ -1753,7 +1761,8 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                     parse_action(routing["default_action"].get<std::string>());
                 if (!parsed) {
                     if (error) {
-                        *error = "invalid network.protocol.routing.default_action";
+                        *error =
+                            "invalid network.protocol.routing.default_action";
                     }
                     return nullptr;
                 }
@@ -1762,15 +1771,18 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
             catalog_options.default_lazy_decode =
                 routing.value("lazy_decode", true);
 
-            std::filesystem::path catalog_path(body["catalog"].get<std::string>());
+            std::filesystem::path catalog_path(
+                body["catalog"].get<std::string>());
             if (catalog_path.is_relative() && !options.source_dir.empty()) {
-                catalog_path = std::filesystem::path(std::string(options.source_dir)) /
-                               catalog_path;
+                catalog_path =
+                    std::filesystem::path(std::string(options.source_dir)) /
+                    catalog_path;
             }
 
             std::string catalog_error;
             if (!load_xmldef_routes_from_file(catalog_path.string(), routes,
-                                              catalog_options, &catalog_error)) {
+                                              catalog_options,
+                                              &catalog_error)) {
                 if (error) {
                     *error = "failed to load xmldef catalog: " + catalog_error;
                 }
@@ -1803,16 +1815,19 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                     entry.policy.action = *parsed;
                 }
                 if (entry.route_id == 0) {
-                    if (error) *error = "network.protocol.routes[].id is required";
+                    if (error)
+                        *error = "network.protocol.routes[].id is required";
                     return nullptr;
                 }
 
                 if (!entry.debug_name.empty()) {
-                    if (const auto* named = routes.find_by_name(entry.debug_name);
+                    if (const auto* named =
+                            routes.find_by_name(entry.debug_name);
                         named != nullptr && named->route_id != entry.route_id) {
                         if (error) {
                             *error =
-                                "network.protocol.routes contains duplicate name";
+                                "network.protocol.routes contains duplicate "
+                                "name";
                         }
                         return nullptr;
                     }
@@ -1822,9 +1837,8 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
             }
         }
 
-        return std::make_unique<ProtocolPipeline>(std::move(profile),
-                                                  std::move(routes),
-                                                  std::move(codecs));
+        return std::make_unique<ProtocolPipeline>(
+            std::move(profile), std::move(routes), std::move(codecs));
     } catch (const nlohmann::json::exception& ex) {
         if (error) {
             *error = std::string("invalid network.protocol: ") + ex.what();

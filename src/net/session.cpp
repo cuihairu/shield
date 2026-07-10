@@ -123,7 +123,8 @@ bool TcpSession::send_message(const shield::transport::DecodedBody& message,
             self->queued_count_.fetch_sub(1);
             return;
         }
-        auto encoded = self->protocol_pipeline_->encode_message(std::move(message));
+        auto encoded =
+            self->protocol_pipeline_->encode_message(std::move(message));
         std::string enc_err;
         if (!self->protocol_pipeline_->error().empty()) {
             enc_err = self->protocol_pipeline_->error();
@@ -133,9 +134,8 @@ bool TcpSession::send_message(const shield::transport::DecodedBody& message,
         if (!enc_err.empty()) {
             self->queued_count_.fetch_sub(1);
             auto& log = shield::log::get_logger("net");
-            SHIELD_LOG_ERROR(log,
-                             "Session " + std::to_string(self->id_) +
-                                 " outbound encode failed: " + enc_err);
+            SHIELD_LOG_ERROR(log, "Session " + std::to_string(self->id_) +
+                                      " outbound encode failed: " + enc_err);
             return;
         }
         self->send_queue_.push_back(std::move(encoded));
@@ -181,7 +181,7 @@ void TcpSession::close(std::string reason) {
     if (!alive_.compare_exchange_strong(expected, false)) return;
 
     boost::system::error_code ec;
-    socket_.close(ec);        // aborts pending async_read_some / async_write
+    socket_.close(ec);  // aborts pending async_read_some / async_write
     try {
         read_deadline_.cancel();
     } catch (...) {
@@ -217,8 +217,8 @@ void TcpSession::do_receive() {
         read_deadline_.expires_after(
             std::chrono::milliseconds(read_idle_timeout_ms_));
         read_deadline_.async_wait(boost::asio::bind_executor(
-            strand_, [self = shared_from_this()](
-                         const boost::system::error_code& ec) {
+            strand_,
+            [self = shared_from_this()](const boost::system::error_code& ec) {
                 if (ec) return;  // cancelled or shutting down
                 if (self->alive_.load()) {
                     self->handle_error("read idle timeout");
@@ -229,9 +229,9 @@ void TcpSession::do_receive() {
     socket_.async_read_some(
         boost::asio::buffer(receive_buffer_),
         boost::asio::bind_executor(
-            strand_, [self = shared_from_this()](
-                         const boost::system::error_code& ec,
-                         std::size_t bytes_read) {
+            strand_,
+            [self = shared_from_this()](const boost::system::error_code& ec,
+                                        std::size_t bytes_read) {
                 if (self->read_idle_timeout_ms_ > 0) {
                     try {
                         self->read_deadline_.cancel();
@@ -249,10 +249,9 @@ void TcpSession::do_receive() {
                 self->receive_buffer_.resize(bytes_read);
 
                 if (self->protocol_pipeline_) {
-                    auto results =
-                        self->protocol_pipeline_->feed(
-                            self->receive_buffer_.data(),
-                            self->receive_buffer_.size());
+                    auto results = self->protocol_pipeline_->feed(
+                        self->receive_buffer_.data(),
+                        self->receive_buffer_.size());
                     if (!self->protocol_pipeline_->error().empty()) {
                         self->handle_error("protocol decode error: " +
                                            self->protocol_pipeline_->error());
@@ -277,14 +276,14 @@ void TcpSession::do_receive() {
                             return;
                         }
                         if (self->callbacks_.on_packet) {
-                            self->callbacks_.on_packet(
-                                self->shared_from_this(), result);
+                            self->callbacks_.on_packet(self->shared_from_this(),
+                                                       result);
                         }
                     }
                 } else {
-                    auto frames = self->frame_decoder_.feed(
-                        self->receive_buffer_.data(),
-                        self->receive_buffer_.size());
+                    auto frames =
+                        self->frame_decoder_.feed(self->receive_buffer_.data(),
+                                                  self->receive_buffer_.size());
                     if (!self->frame_decoder_.error().empty()) {
                         self->handle_error("frame decode error: " +
                                            self->frame_decoder_.error());

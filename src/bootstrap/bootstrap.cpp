@@ -117,8 +117,8 @@ shield::transport::ExternalBodyCodecResolver make_protocol_codec_resolver() {
             std::string_view(codec->codec_name) != codec_name) {
             if (error) {
                 *error = "protocol codec provider '" + provider_name +
-                         "' does not serve codec '" +
-                         std::string(codec_name) + "'";
+                         "' does not serve codec '" + std::string(codec_name) +
+                         "'";
             }
             return nullptr;
         }
@@ -311,7 +311,8 @@ bool initialize(const RuntimeConfig& config) {
         static caf::actor_system_config cfg;
         cfg.load<caf::io::middleman>();
         return cfg;
-    }();
+    }
+    ();
 
     // Set number of workers
     if (config.num_workers > 0) {
@@ -443,8 +444,8 @@ bool initialize(const RuntimeConfig& config) {
                             protocol_json, protocol_options, &protocol_error);
                     if (!pipeline && !protocol_error.empty()) {
                         auto& log = shield::log::get_logger("bootstrap");
-                        SHIELD_LOG_ERROR(log, "Invalid network protocol: " +
-                                                  protocol_error);
+                        SHIELD_LOG_ERROR(
+                            log, "Invalid network protocol: " + protocol_error);
                     }
                     return pipeline;
                 };
@@ -483,16 +484,14 @@ bool initialize(const RuntimeConfig& config) {
     if (!g_state->tcp_listeners.empty()) {
         const size_t net_threads_count = shield::config::runtime_net_threads();
         if (net_threads_count > 0) {
-            g_state->net_work_guard.emplace(
-                g_state->net_io.get_executor());
+            g_state->net_work_guard.emplace(g_state->net_io.get_executor());
             for (size_t i = 0; i < net_threads_count; ++i) {
                 g_state->net_threads.emplace_back(
                     [io = &g_state->net_io]() { io->run(); });
             }
         } else {
             // Legacy single-threaded mode
-            g_state->net_threads.emplace_back(
-                []() { g_state->net_io.run(); });
+            g_state->net_threads.emplace_back([]() { g_state->net_io.run(); });
         }
     }
 
