@@ -165,6 +165,7 @@ set_tests_properties(test_plugin_host PROPERTIES LABELS "plugin" TIMEOUT 15)
 shield_copy_runtime_dlls(test_plugin_host)
 
 if(SHIELD_BUILD_PLUGIN_PROTOBUF)
+    find_package(Protobuf CONFIG REQUIRED)
     add_executable(test_protocol_protobuf_plugin
         plugin/test_protocol_protobuf_plugin.cpp
         $<TARGET_OBJECTS:shield_protocol_protobuf_obj>)
