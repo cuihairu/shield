@@ -104,6 +104,8 @@ jobs:
             -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
             -DSHIELD_BUILD_TESTS=ON
             -DSHIELD_BUILD_EXAMPLES=ON
+            -DSHIELD_BUILD_PLUGIN_PROTOBUF=ON
+            -DSHIELD_BUILD_PLUGIN_MSGPACK=ON
           )
 
           if [ "$RUNNER_OS" == "Windows" ]; then
