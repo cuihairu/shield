@@ -449,6 +449,8 @@ add_library(shield_net STATIC
     src/net/listener.cpp
     src/net/http_server.cpp
     src/net/http_client.cpp
+    src/net/console_session.cpp
+    src/net/console_server.cpp
 )
 
 target_include_directories(shield_net
@@ -525,6 +527,9 @@ add_library(shield_bootstrap STATIC
     src/shield.cpp
     src/bootstrap/bootstrap.cpp
     src/bootstrap/starter.cpp
+    src/console/command_dispatcher.cpp
+    src/console/root_commands.cpp
+    src/console/lua_commands.cpp
 )
 
 target_include_directories(shield_bootstrap
@@ -536,6 +541,11 @@ target_include_directories(shield_bootstrap
 target_link_libraries(shield_bootstrap
     PUBLIC shield_base CAF::core CAF::io
     PRIVATE shield_log shield_config shield_core shield_lua shield_net shield_plugin
+    PRIVATE nlohmann_json::nlohmann_json ${LUA_LIBRARIES} sol2::sol2
+)
+
+target_include_directories(shield_bootstrap
+    PRIVATE ${LUA_INCLUDE_DIR}
 )
 
 if(SHIELD_ENABLE_CLUSTER)
@@ -775,6 +785,14 @@ if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
    SHIELD_BUILD_PLUGIN_PROTOBUF OR
    SHIELD_BUILD_PLUGIN_MSGPACK)
     add_subdirectory(plugins)
+endif()
+
+# =============================================================================
+# TOOLS
+# =============================================================================
+option(SHIELD_BUILD_TOOLS "Build diagnostic tools (shield-console)" ON)
+if(SHIELD_BUILD_TOOLS)
+    add_subdirectory(tools/shield-console)
 endif()
 
 # =============================================================================

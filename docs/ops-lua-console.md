@@ -571,7 +571,7 @@ top_tables:
 
 ## 当前状态
 
-当前状态：**设计稿 / deferred implementation**
+当前状态：**已实现**，详见 [diagnostics-console.md](diagnostics-console.md)。
 
 这份文档冻结的是方向和边界，不声明当前源码已经实现：
 

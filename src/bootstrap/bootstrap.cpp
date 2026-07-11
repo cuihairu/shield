@@ -28,6 +28,10 @@
 #include "shield/core/caf_adapter.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
+#include "shield/net/console_server.hpp"
+#include "shield/console/command_dispatcher.hpp"
+#include "shield/console/root_commands.hpp"
+#include "shield/console/lua_commands.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/listener.hpp"
 #include "shield/shield.hpp"
@@ -160,6 +164,8 @@ struct GlobalState {
     std::vector<std::thread> net_threads;
     std::vector<std::unique_ptr<shield::lua::LuaGatewayBridge>> gateway_bridges;
     std::vector<std::unique_ptr<shield::net::TcpListener>> tcp_listeners;
+    std::unique_ptr<shield::net::ConsoleServer> console_server;
+    std::unique_ptr<shield::console::CommandDispatcher> console_dispatcher;
 #ifdef SHIELD_ENABLE_CLUSTER
     std::unique_ptr<shield::cluster::ClusterManager> cluster_manager;
 #endif
@@ -183,6 +189,11 @@ void cleanup_failed_initialize() {
         }
         g_state->tcp_listeners.clear();
         g_state->gateway_bridges.clear();
+        if (g_state->console_server) {
+            g_state->console_server->stop();
+            g_state->console_server.reset();
+            g_state->console_dispatcher.reset();
+        }
         if (g_state->lua_services) {
             g_state->lua_services->shutdown_all("startup_failed");
         }
@@ -503,6 +514,44 @@ bool initialize(const RuntimeConfig& config) {
         g_state->lua_services->start_worker();
     }
 
+    // Start console server if enabled
+    if (g_state->config.get_bool("console.enabled", false) &&
+        g_state->lua_services && g_state->lua_runtime) {
+        auto sock_path = g_state->config.get_string(
+            "console.socket_path", "/tmp/shield-console.sock");
+        try {
+            g_state->console_server =
+                std::make_unique<shield::net::ConsoleServer>(g_state->net_io,
+                                                             sock_path);
+            g_state->console_dispatcher =
+                std::make_unique<shield::console::CommandDispatcher>();
+
+            // Register command handlers
+            auto root_cmds = std::make_shared<shield::console::RootCommands>(
+                *g_state->lua_services);
+            root_cmds->register_all(*g_state->console_dispatcher);
+
+            auto lua_cmds = std::make_shared<shield::console::LuaCommands>(
+                *g_state->lua_services, *g_state->lua_runtime);
+            lua_cmds->register_all(*g_state->console_dispatcher);
+
+            // Wire the line handler from the dispatcher to the server
+            auto& dispatcher = *g_state->console_dispatcher;
+            g_state->console_server->set_on_line(
+                [&dispatcher](std::shared_ptr<shield::net::ConsoleSession> session,
+                              std::string line) {
+                    dispatcher.dispatch(session, line);
+                });
+
+            g_state->console_server->start();
+            SHIELD_LOG_INFO(log, "Console server listening on " + sock_path);
+        } catch (const std::exception& e) {
+            SHIELD_LOG_ERROR(log,
+                             std::string("Failed to start console server: ") +
+                                 e.what());
+        }
+    }
+
     g_state->initialized = true;
     SHIELD_LOG_INFO(log, "Shield runtime initialized");
     return true;
@@ -519,6 +568,13 @@ void shutdown() {
 
     // Run PRE_SHUTDOWN starters
     run_starters(Phase::PRE_SHUTDOWN);
+
+    // Stop console server before other components
+    if (g_state->console_server) {
+        g_state->console_server->stop();
+        g_state->console_server.reset();
+        g_state->console_dispatcher.reset();
+    }
 
     // Stop the Lua worker first so no new Lua code runs while we tear down.
     for (auto& listener : g_state->tcp_listeners) {

@@ -23,7 +23,9 @@
         "caf",
         "msgpack",
 
-        "curl"
+        "curl",
+
+        "replxx"
     ],
     "supports": "!uwp",
     "features": {

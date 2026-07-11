@@ -90,6 +90,28 @@ set_tests_properties(test_tcp_listener PROPERTIES
 )
 shield_copy_runtime_dlls(test_tcp_listener)
 
+# Console server tests - verifies Unix socket console, command dispatch, REPL.
+add_executable(test_console_server net/test_console_server.cpp)
+target_link_libraries(test_console_server
+    PRIVATE
+        shield_net
+        shield_bootstrap
+        Boost::unit_test_framework
+        Boost::headers
+        nlohmann_json::nlohmann_json
+)
+target_include_directories(test_console_server
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME test_console_server COMMAND test_console_server)
+set_tests_properties(test_console_server PROPERTIES
+    LABELS "net;console"
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+shield_copy_runtime_dlls(test_console_server)
+
 # Lua API test matrix (LAPI-001 ~ LAPI-010).
 add_subdirectory(lua_api)
 

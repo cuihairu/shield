@@ -201,6 +201,21 @@ public:
     // Reset the consecutive error counter for a service (called on success).
     void reset_error_count(const std::string& service_id);
 
+    /// @brief Execute arbitrary Lua code on a service's VM.
+    ///
+    /// MUST be called from the worker thread (e.g. inside enqueue_forked_task).
+    /// Compiles the code with luaL_loadbuffer, executes it, and converts
+    /// all return values to JSON.
+    ///
+    /// @param service_id The service whose VM to execute in
+    /// @param code Lua source code string
+    /// @param result Output: JSON array of return values (empty if none)
+    /// @param error Output: error message on failure
+    /// @return true if compilation and execution succeeded
+    bool exec_lua(const std::string& service_id, const std::string& code,
+                  nlohmann::json* result = nullptr,
+                  std::string* error = nullptr);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

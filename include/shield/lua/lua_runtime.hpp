@@ -433,6 +433,20 @@ public:
     // Get global variable
     std::string get_global(std::shared_ptr<LuaVM> vm, std::string_view name);
 
+    /// @brief Execute arbitrary Lua code on a VM and capture return values.
+    ///
+    /// Compiles with luaL_loadbuffer, executes with lua_pcall, and converts
+    /// all return values to a JSON array.
+    ///
+    /// @param vm The VM to execute in
+    /// @param code Lua source code
+    /// @param result Output: JSON array of return values (nullptr to ignore)
+    /// @param error Output: error message on failure (nullptr to ignore)
+    /// @return true if compilation and execution succeeded
+    bool exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
+                  nlohmann::json* result = nullptr,
+                  std::string* error = nullptr);
+
     // Set global variable
     void set_global(std::shared_ptr<LuaVM> vm, std::string_view name,
                     std::string_view value);

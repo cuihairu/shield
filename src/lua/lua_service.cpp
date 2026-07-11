@@ -1162,4 +1162,16 @@ void LuaServiceManager::reset_error_count(const std::string& service_id) {
     impl_->error_counts.erase(service_id);
 }
 
+bool LuaServiceManager::exec_lua(const std::string& service_id,
+                                  const std::string& code,
+                                  nlohmann::json* result,
+                                  std::string* error) {
+    auto it = impl_->services.find(service_id);
+    if (it == impl_->services.end()) {
+        if (error) *error = "Service not found: " + service_id;
+        return false;
+    }
+    return impl_->runtime.exec_lua(it->second, code, result, error);
+}
+
 }  // namespace shield::lua

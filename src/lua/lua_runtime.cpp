@@ -1324,6 +1324,67 @@ void LuaRuntime::set_global(std::shared_ptr<LuaVM> vm, std::string_view name,
     lua[name] = std::string(value);
 }
 
+bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
+                           nlohmann::json* result, std::string* error) {
+    if (!vm || !vm->state()) {
+        if (error) *error = "invalid VM";
+        return false;
+    }
+
+    sol::state& lua = *vm->state();
+    lua_State* L = lua.lua_state();
+
+    // Compile
+    int load_status = luaL_loadbuffer(L, code.c_str(), code.size(),
+                                       "=console");
+    if (load_status != LUA_OK) {
+        if (error) {
+            *error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "load error";
+        }
+        lua_pop(L, 1);
+        return false;
+    }
+
+    // Execute
+    int base = lua_gettop(L);  // function is at base
+    int call_status = lua_pcall(L, 0, LUA_MULTRET, 0);
+    if (call_status != LUA_OK) {
+        if (error) {
+            *error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "exec error";
+        }
+        lua_pop(L, 1);
+        return false;
+    }
+
+    // Capture return values
+    int nresults = lua_gettop(L) - base + 1;
+    if (result && nresults > 0) {
+        *result = nlohmann::json::array();
+        sol::state_view sv(L);
+        for (int i = base; i <= lua_gettop(L); ++i) {
+            sol::stack_object so(sv, i);
+            sol::object obj = so;
+            if (obj.is<sol::lua_nil_t>()) {
+                result->push_back(nullptr);
+            } else if (obj.is<bool>()) {
+                result->push_back(obj.as<bool>());
+            } else if (obj.is<int64_t>()) {
+                result->push_back(obj.as<int64_t>());
+            } else if (obj.is<double>()) {
+                result->push_back(obj.as<double>());
+            } else if (obj.is<std::string>()) {
+                result->push_back(obj.as<std::string>());
+            } else {
+                // For tables, functions, etc. - use sol::to_string
+                result->push_back(sol::to_string(obj));
+            }
+        }
+    }
+    // Clean up stack
+    lua_settop(L, base - 1);
+    return true;
+}
+
 // ============================================================================
 // LuaPack Encoder Implementation
 // ============================================================================
