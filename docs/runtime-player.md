@@ -4,6 +4,13 @@
 
 `shield_player` 是官方可选模块，不属于 `shield_core`，也不是当前 Lua API 最小契约。本文用于冻结未来边界，避免把玩家管理反向塞进 core。
 
+> **与架构决策的关系**：本阶段玩家承载模型遵循 [架构决策记录](architecture-decisions.md)：
+> - **AD-02/AD-03**：一个在线玩家 = 一个 PlayerService = 一个 CAF Actor = 一个私有 Lua VM；玩家状态是该 service 私有 Lua table，**不引入** `PlayerEntity`/Entity mailbox/Entity RPC。PlayerService 是普通 Service 的业务约定，不是新的对象类型或运行时。
+> - **AD-04**：`one-player-one-service` 为默认容量模型；`player_pool/avatar_shard` 仅在压测证明必要时作为独立架构升级引入。
+> - **AD-06**：`SessionHandle` 只在 gateway；PlayerService 只持 `session_id`。
+>
+> 本文其余部分（`PlayerSession` 对象方法、`PlayerRef` 远程 resolve、`player_pool` 模型等）描述的是 `shield_player` 模块的目标态语义，属可选模块范畴；在 CAF service runtime 纠偏与 `shield_player` 实现落地之前，不应据此推断 core 或 PlayerService 已具备这些能力。
+
 当前状态：
 
 - 本文冻结 `shield_player` optional module 的边界契约；具体 Lua API 进入 Phase 2+。
@@ -26,11 +33,13 @@
 
 **Player 是 Service 的增强模式，不是独立的 Actor 类型。**
 
+> 强调（AD-02/AD-03）：Player Service 就是普通 Service 的一个业务约定用法——一个在线玩家对应一个 PlayerService（一个 CAF Actor、一个私有 Lua VM）。玩家业务状态是该 service 私有 Lua table，**不是**一个独立的 `PlayerEntity` 运行时对象，也**没有** Entity 级别的 mailbox / `send/call`。`send/call` 的目标永远是 PlayerService 这个 service。
+
 | 概念 | 说明 |
 |------|------|
 | Service | Shield 的基本执行单元，拥有 Lua VM、mailbox、name |
 | Actor | Service 的同义词，强调消息驱动模型 |
-| Player | 绑定网络连接的 Service，有额外的生命周期管理 |
+| Player | 绑定网络连接的 Service，有额外的生命周期管理（可选 `shield_player`） |
 
 **Player Service = 普通 Service + 可选玩家态扩展**
 
@@ -394,10 +403,10 @@ player:reconnect_token() -- 获取重连 token
 
 `avatar` / `character` / `client` 的归属：
 
-- `SessionHandle` 表示网络连接，只由 gateway / `shield_net` 持有。
-- `PlayerSession` 表示本地玩家运行时对象，包含 uid、session_id、state、数据快照和发送能力。
-- `PlayerRef` 是跨 service 轻量引用，只用于定位玩家，不携带完整玩家数据。
-- `avatar`、`character`、`client` 这类业务对象应作为 `PlayerSession` 的数据字段或业务 Entity，由游戏自己定义；Shield 不把它们做成核心类型。
+- `SessionHandle` 表示网络连接，只由 gateway / `shield_net` 持有（AD-06）。
+- `PlayerSession` 表示本地玩家运行时对象，包含 uid、session_id、state、数据快照和发送能力（属 `shield_player` 可选模块目标态）。
+- `PlayerRef` 是跨 service 轻量引用，只用于定位玩家，不携带完整玩家数据（`shield_player` 可选模块目标态；远端 resolve 待后续）。
+- `avatar`、`character`、`client` 这类业务对象应作为 PlayerService 私有 Lua table 的数据字段，由游戏自己定义；Shield 不把它们做成核心类型，也不做 Entity 运行时（AD-03）。
 
 ## PlayerRef 跨 service 引用
 

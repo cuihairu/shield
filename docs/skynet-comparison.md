@@ -58,6 +58,8 @@ Shield 的目标不是重新实现 Skynet 的底层 actor runtime，而是用 CA
 | Lua service | Lua script service | CAF 不负责 Lua | `shield_lua` 实现 |
 | remote actor | harbor/cluster | middleman publish/connect | 不进 core，归入 `shield_cluster` |
 
+> **当前实现状态（待纠偏）**：上表是目标映射。当前 CAF service runtime 尚未闭环——`CafAdapter::call` 是 stub，Lua 服务由 `LuaServiceManager` 自管 mailbox + 单 worker runtime，并未真正落在 CAF actor 调度上。属架构债，待纠偏（见 [架构决策记录](architecture-decisions.md) AD-01、[roadmap](roadmap.md)）。纠偏后即可恢复本表的 skynet 式多 worker + 每 VM 串行调度。
+
 ## ID 与集群地址差异
 
 Skynet 的 actor address 可以采用高位 cluster/harbor id、低位本地 handle 的紧凑模型。Shield 保留这个思想，但不把 bit layout 作为 public `ServiceId` 契约。

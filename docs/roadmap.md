@@ -6,7 +6,23 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 当前收敛目标是先关闭一个可验证的单节点最小闭环：`shield::run`、Phase 1 配置验证、Lua module-table service、local registry、基础 `send/call` 返回形态、TCP gateway 边界、插件系统 v1 的 manifest/instance/binding 主路径和缺失插件能力的明确错误。handler 内 coroutine-aware `call/sleep` 已进入当前实现路径；任何需要多节点、真实后端、timer/fork coroutine 化、UDP/KCP/WebSocket 或官方可选模块的能力都不能作为当前 Phase 1 阻塞项。
 
-设计决策记录集中在 [Decision Log](open-decisions.md)。如果后续新增开放问题，需要先记录，再同步更新对应权威文档和本路线图。
+设计决策记录集中在 [Decision Log](open-decisions.md)；架构层面决策集中在 [架构决策记录](architecture-decisions.md)。如果后续新增开放问题，需要先记录，再同步更新对应权威文档和本路线图。
+
+## 架构纠偏（ADR 驱动）
+
+下列条目源于 [架构决策记录](architecture-decisions.md)。当前实现与最初设计存在偏差（CAF service runtime 未闭环、Lua 服务自管 runtime、客户端链路丢弃 route 信息），需按以下顺序纠偏。每步独立可验收，未勾选即未完成。
+
+- [ ] **AD-01 / 调度地基纯重构**：`LuaServiceManager::dispatch_stack` 改为 thread-local（或 per-worker 上下文）；服务注册表（`services/published_names/service_order`）加 shared_mutex。零语义变化，为多 worker 扫清隐式共享。
+- [ ] **AD-01 / `call` 语义**：`shield.call` 从同步重入（`src/lua/lua_service.cpp:561`）改为 coroutine yield + mailbox reply；消除跨 VM 直接执行。
+- [ ] **AD-01 / 多 worker 抢占调度**：per-service 执行权 + 全局激活队列 + N worker 线程，达成 skynet 式多核并发、每 VM 串行。
+- [ ] **AD-05 / 客户端路由闭环**：补完 `route_id → handler` 一次直达，消除「路由两次」。具体：
+  - `RouteTable` 增补 `route_id ↔ handler` 与 `route_id ↔ target service` 后半截映射（当前只有 `id↔name` 前半截，`include/shield/transport/protocol.hpp:91-107`）；route 名注册时**保留不丢弃**（调试用）；route 本身是 int 时直接用，是字符串才 hash。
+  - `LuaGatewayBridge` 透传 route：进入 Lua 传 `client = { route, payload }`（当前丢弃 route，`src/lua/lua_gateway_bridge.cpp:72-88`）；按 route 自动 dispatch 到 handler，业务不再写 if/else。
+  - bridge 使用 `RouteEntry::target_service` 分发（当前忽略，全投同一 gateway，`src/lua/lua_gateway_bridge.cpp:26-27`）。
+  - 出站删除从 payload 内 `route_id/msg_id/route/method` 猜 route 的 fallback，改为显式 `session:send({route, payload})`。
+  - 注：codec 与路由无关、session 级固定（`src/transport/protocol.cpp:1510-1517`），本项不涉及 codec 选择。
+- [ ] **route direction**：`RouteDirection{ClientToServer, ServerToClient}` + 配置校验，防止 c2s route 被误用于出站。
+- [ ] **死代码清理**：删除 `transport/codec.{hpp,cpp}`、`transport/encryption.{hpp,cpp}`（无任何调用方）。
 
 ## Phase 0: 文档和边界冻结
 

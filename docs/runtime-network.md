@@ -40,7 +40,7 @@ Shield 有两层网络：
 - shield_net 不关心协议细节，只管理连接和 session
 - shield_transport 不关心连接管理，只处理字节流
 - gateway 的目标边界是 transport 已解码的业务消息；`ForwardRaw`、`Drop` 和协议错误应在 C++ 数据面结束。
-- 当前真实 gateway Lua 路径已经收敛为只接收 `on_client_message(session, message)`；protocol 中间态不再透给 Lua。
+- 当前真实 gateway Lua 路径已经收敛为只接收 `on_client_message(session, client)`，其中 `client = { route, payload }`；protocol 中间态（route_id/PacketKind/seq/原始帧）不再透给 Lua（见 [架构决策记录](architecture-decisions.md) AD-05）。
 
 固定 pipeline 视角下：
 
@@ -155,8 +155,8 @@ session:remote_addr()
 - session send 是 non-blocking。
 - backpressure 超限返回错误。
 - session 断开后 handle stale，调用返回 `session_closed`。
-- `SessionHandle` 不应跨 service 通过 `shield.send/call` 传递；跨服务只传 `session_id`，由 gateway 维护映射。
-- 对绑定了 `network.protocol` 的 session，`session:send(payload)` 走固定出站 pipeline：先 resolve route，再做 body/envelope encode；其中 `raw` codec 发送字节串，`json/msgpack` 这类 structured codec 发送业务消息对象。对未绑定 protocol 的 session，仍按原始字节发送。
+- `SessionHandle` 不应跨 service 通过 `shield.send/call` 传递；跨服务只传 `session_id`（标量），由 gateway 维护 session_id ↔ SessionHandle 映射。PlayerService 只持 `session_id`，业务出站消息经 `shield.send(gateway, "client_send", {session_id, route, payload})` 回到 gateway 统一编码写回（见 [架构决策记录](architecture-decisions.md) AD-06、[网关设计](gateway.md)）。
+- 对绑定了 `network.protocol` 的 session，`session:send({route, payload})` 走固定出站 pipeline：仅从外层 `route` 解析路由，再做 body/envelope encode；其中 `raw` codec 时 `payload` 为字节串，`json/msgpack` 这类 structured codec 时 `payload` 为业务消息对象。对未绑定 protocol 的 session，仍按原始字节发送。
 
 这不排斥未来在后置阶段提供独立的 Lua 出站 socket 原语。若后续引入 `shield.socket`，它的定位也应是“Lua 主动发起的出站连接”，而不是取代 listener/session/gateway 体系。相关方向目前只保留为后置草案，见 [基础组件与运行时适配边界](runtime-primitives.md)。
 

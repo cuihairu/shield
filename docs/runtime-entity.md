@@ -4,6 +4,8 @@
 >
 > 本文描述的是在 Shield service 之上组织怪物、NPC、场景对象等游戏实体的一种推荐方向。它不定义 core API、配置 schema 或必须实现的 runtime module。若本文与 [最终架构总纲](architecture.md)、[Lua API 契约](lua-api.md) 或 [运行时语义决策稿](runtime-semantics.md) 冲突，以那些权威契约为准。
 
+> **与当前架构决策的关系**：第一阶段遵循 [架构决策记录](architecture-decisions.md) **AD-03：不引入 Entity 运行时**。即第一版**不**实现 `PlayerEntity`/Entity mailbox/Entity RPC/全局 `EntityManager`；怪物、NPC、掉落物等普通数据作为所属 service（如 RoomService）内部 Lua table，只有确实需要独立 actor 语义的对象才成为独立 service。本文描述的 Entity/Component 抽象是「未来可选的业务组织方向」，当前不作为实现承诺，也不预埋进 core 或默认运行路径。
+
 本文档包含 Shield 游戏实体（怪物、NPC、场景对象等）的抽象方式和组件化设计决策。
 
 ## 设计原则

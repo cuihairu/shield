@@ -602,17 +602,29 @@ end
 function M.on_disconnect(session, reason)
 end
 
-function M.on_client_message(session, message)
+-- client 是 DecodeLocal 后的逻辑消息（见 AD-05）：
+--   client.route    : 规范逻辑路由名（如 "c2s.player.move"）
+--   client.payload  : 解码后业务值；json/msgpack/protobuf 为 table，raw 为字节串
+function M.on_client_message(session, client)
+end
+
+-- PlayerService 回送 / push 的固定 service method（见 AD-02/AD-06）。
+function M.client_send(command)
+    -- command.session_id / command.route / command.payload
+    local session = lookup_session(command.session_id)
+    if session then
+        session:send({ route = command.route, payload = command.payload })
+    end
 end
 
 return M
 ```
 
-`SessionHandle`：
+`SessionHandle`（只在 gateway 内部使用，见 AD-06）：
 
 ```lua
 session:id()
-session:send(payload)
+session:send({ route = "s2c.player.move_result", payload = {...} })  -- 显式 route，不靠 payload 内字段猜
 session:close("reason")
 session:remote_addr()
 ```
@@ -620,27 +632,27 @@ session:remote_addr()
 规则：
 
 - Lua 不直接操作 socket。
-- `session:send` 非阻塞，队列满返回错误。
+- `session:send` 非阻塞，队列满返回错误；返回 `true` 仅代表已接受入队，不代表已写入 socket。
+- 客户端消息形状为 `client = { route, payload }`，codec 无关；`route_id`/`PacketKind`/`seq` 不进入 Lua（见 AD-05）。
+- 出站只从外层 `route` 解析路由，不从 payload 内 `route_id/msg_id/route/method` 猜 route。
 - 连接鉴权、限流、路由策略写在 Lua gateway service 中。
-- Lua gateway 的长期边界是已解码业务消息；未解码 transport payload 不应进入脚本层。
-- 如果 `body.codec = raw`，Lua 收到的可以是字节串，但它属于显式 decode 结果，不是 transport 中间态。
-- `SessionHandle` 只在 gateway callback 和 gateway 自身状态中使用，不作为 `shield.send/call` payload 跨服务传递。
-- framework 不提供 HTTP middleware chain。
+- `SessionHandle` 只在 gateway callback 和 gateway 自身状态中使用，不作为 `shield.send/call` payload 跨服务传递；PlayerService 只持 `session_id` 标量。
+- framework 不提供 HTTP middleware chain，也不提供框架级 client RPC（无 `client.call`、无 seq pending、无自动 response 关联）。
 
 实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用。bootstrap 会为单实例 `actors[].network.tcp` 创建 `TcpListener`，并通过 `LuaGatewayBridge` 将真实 session 事件路由到同名 Lua gateway service。当前桥接已经向 Lua 传入可用的 `SessionHandle` userdata；该 handle 通过内部 session registry 回查 live `shield_net::Session`，因此 `session:send(...)` / `session:close(...)` 已可直接作用于真实连接。
 
 当前 protocol path 的真实语义是：
 
-- `DecodeLocal` 才会进入 `on_client_message(session, message)`
-- `body.codec = json` 时，`message` 会作为 Lua table 传入
-- `body.codec = raw` 时，`message` 会作为字节串传入
-- `ForwardRaw`、`Drop` 和协议错误不会触发 Lua 回调
-- `msgpack` 已可作为 structured codec 进入 `DecodeLocal`
-- `protobuf` 需要通过 `body.provider` 引用 `shield.protocol.codec.v1` 插件后才能进入 `DecodeLocal`
-- `sproto`、`xmldef`、`fbs` 这类尚未落地真实 provider 的 codec 当前不能进入 `DecodeLocal`
-- protocol-enabled session 上，`session:send(payload)` 会走固定出站链路：`RouteResolver -> BodyCodec.encode -> Envelope.encode -> socket write`
-- `body.codec = raw` 时，`session:send("...")` 发送字节串
-- `body.codec = json` / `msgpack` 时，`session:send(...)` 应传业务 table / object；直接传字符串会返回 `protocol_message_required`
+- `DecodeLocal` 才会进入 `on_client_message`。
+- `body.codec = json` / `msgpack` 时，`client.payload` 是 Lua table。
+- `body.codec = raw` 时，`client.payload` 是字节串。
+- `ForwardRaw`、`Drop` 和协议错误不会触发 Lua 回调。
+- `msgpack` 已可作为 structured codec 进入 `DecodeLocal`。
+- `protobuf` 需要通过 `body.provider` 引用 `shield.protocol.codec.v1` 插件后才能进入 `DecodeLocal`。
+- `sproto`、`xmldef`、`fbs` 这类尚未落地真实 provider 的 codec 当前不能进入 `DecodeLocal`。
+- protocol-enabled session 上，`session:send({route,payload})` 走固定出站链路：`RouteResolver -> BodyCodec.encode -> Envelope.encode -> socket write`。
+
+> **契约收敛提示（路由闭环，见 [架构决策记录](architecture-decisions.md) AD-05）**：目标是 route_id 一次查表直达 handler，业务不写 if/else。当前是**未闭环半成品**——C++ 解出 route 后丢弃 route、只传裸 payload 给 Lua（`src/lua/lua_gateway_bridge.cpp:72-88`），且 `RouteTable` 没有 `route_id ↔ handler` 映射，`target_service` 未被使用（`src/lua/lua_gateway_bridge.cpp:26-27`），导致业务被迫在 `on_client_message` 内自己二次判断。出站则靠扫描 payload 内字段猜 route。补闭环为 roadmap 项（见 [客户端交互契约收敛](roadmap.md)）。codec 与路由无关，是 session 级固定（`src/transport/protocol.cpp:1510-1517`）。
 
 ## HTTP API
 

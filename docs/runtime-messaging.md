@@ -6,7 +6,7 @@
 
 `MessageEnvelope` 是 runtime 内部信封，Lua 用户不直接构造。
 
-> 注：下面的 C++ 结构是**概念模型**，用于说明字段语义；实际实现见 `include/shield/core/message.hpp`，其字段与消息类型区分方式与此处描述不同（无 `MessageKind` 枚举）。
+> 注：下面的 C++ 结构是**目标态概念模型**，用于说明字段语义；实际实现见 `include/shield/core/message.hpp`，其字段与消息类型区分方式与此处描述不同（无 `MessageKind` 枚举，用 `expects_response_` bool + `timeout_ms_` 表达）。call 的请求-响应关联由 `LuaServiceManager` 的 `pending_calls`（session 维度）维护，不在 envelope 上。
 
 ```cpp
 enum class MessageKind {
@@ -33,6 +33,8 @@ struct MessageEnvelope {
 - `src` 由 runtime 填充，Lua 不允许伪造。
 - `Send` 的 `request_id` 为 0。
 - `CallRequest` 和 `CallResponse` 使用非 0 `request_id`。
+
+> **服务间 vs 客户端**：上述 `request_id` 关联仅用于 **service ↔ service** 的 `shield.call`。**客户端 ↔ gateway 之间没有框架级 RPC**：`PacketKind`/`seq` 是 wire 层字段，当前无端到端语义，不构成 `client.call`、不维护 seq pending map。客户端 request/response/push 的 correlation token 由业务 payload 字段自管（见 [架构决策记录](architecture-decisions.md) AD-05、[网关设计](gateway.md)）。
 - `deadline` 本地用 monotonic time。
 - 跨节点传输时发送 remaining timeout，不发送本机 monotonic deadline。
 - `trace` 用于 ops、profile、慢调用定位。

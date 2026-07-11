@@ -4,6 +4,8 @@
 
 当前源码仍保留旧架构残留，因此本文描述的是**目标终态**，不是“源码已经全部实现”的声明。
 
+当前最显著的偏差：CAF service runtime 尚未闭环，Lua 服务实际由 `LuaServiceManager` 自管 runtime。这是一项待纠偏的架构债，详见 [架构决策记录](architecture-decisions.md)（AD-01）与 [roadmap](roadmap.md)。本文仍以「CAF 是唯一 actor runtime 底座」为目标态，不因当前实现偏差而改动目标。
+
 更细的运行时语义、Lua API、配置 schema、错误码和可选模块细节分别见对应专题文档；但模块边界、依赖方向、对象归属和扩展规则以本文为总纲。
 
 ## 文档角色
@@ -181,17 +183,17 @@ Shield 的公共契约按“谁拥有、谁定义、谁测试”分配：
 | `ServiceRegistry` | `shield_core` | runtime 内部 | 不适用 | 管理 name reserve/publish/query/unregister |
 | `MessageEnvelope` | `shield_core` | runtime 内部 / 测试可见 | 可以编码 | 承载 method、argc、args、trace、deadline 等 |
 | Lua VM | `shield_lua` | runtime 内部 | 不可以 | 默认按 service 生命周期管理 |
-| `SessionHandle` | `shield_net` | gateway callback + 网络层内部 | 不可以 | 只在网络语义内使用 |
-| `PlayerSession` | `shield_player` | `shield_player` 模块及业务 Lua | 可以按对象引用使用，但不替代 `SessionHandle` | 玩家态对象，面向登录/断线/重连 |
+| `SessionHandle` | `shield_net` | gateway callback + 网络层内部 | 不可以 | 只在网络语义内使用；不跨 service 传递（见 AD-06） |
+| `PlayerSession` | `shield_player`（可选，未实现） | 仅 `shield_player` 模块及业务 Lua | 不作为跨 service 对象传递 | 见 AD-02/AD-03：玩家状态归属 PlayerService 私有 Lua table；`shield_player` 与 PlayerSession 属可选模块范畴，非 core 对象 |
 | `ServiceAddress` / `NodeId` | `shield_core` / `shield_cluster` | Lua + C++（按 handle 封装） | 可以 | cluster 只扩展地址语义，不改 core handle 规则 |
 | `BootstrapContext` | `shield_bootstrap` | Starter 内部 | 不可以 | 显式 bootstrap 组合上下文，不是 service locator |
 | `RuntimeSnapshot` | `shield_core` + modules | `shield_ops`、调试、测试 | 只读导出 | 观测用快照，不参与业务路由 |
 
 ### 对象边界规则
 
-- `ServiceHandle` 是唯一跨 service 的运行时引用对象。
-- `SessionHandle` 不通过 `shield.send/call` payload 跨 service 传递；跨 service 只传 `session_id`。
-- `PlayerSession` 是可选模块对象，不进入 core 和最小 Lua API 主线。
+- `ServiceHandle` 是唯一跨 service 的运行时引用对象；`send/call` 的目标永远是 Service（见 AD-02）。
+- `SessionHandle` 不通过 `shield.send/call` payload 跨 service 传递；跨 service 只传 `session_id`（见 AD-06）。
+- `PlayerSession` 属可选模块对象，不进入 core 和最小 Lua API 主线；第一阶段玩家状态是 PlayerService 私有 Lua table，不另起运行时对象（见 AD-03）。
 - `BootstrapContext` 只存在于启动阶段，不泄漏到 service 运行阶段。
 - `RuntimeSnapshot` 只读，不可作为反向控制接口。
 
@@ -245,9 +247,11 @@ socket bytes
      -> RouteExtractor
      -> RoutePolicy
      -> BodyCodec
-  -> gateway service on_client_message(session, message)
-  -> gateway 将业务请求路由到其他 service
-  -> gateway 依据 session/session_id 回写客户端
+  -> gateway service on_client_message(session, client)
+     -- client = { route = "c2s.player.move", payload = {...} }
+  -> gateway 按 session_id 绑定，用 shield.send/call 路由到 PlayerService 或业务 service
+  -> PlayerService 经 shield.send(gateway, "client_send", {session_id, route, payload}) 回送
+  -> gateway 依据 session_id 回写客户端
 ```
 
 规则：
@@ -256,6 +260,7 @@ socket bytes
 - transport pipeline 形状固定，不是业务可任意拼接的 middleware chain。
 - 网络层只负责连接、session、背压和 transport 适配。
 - 认证、路由、会话表、玩家派发策略由 gateway / player 模块承担。
+- 客户端消息形状为 `client = { route, payload }`，codec 无关（见 AD-05）；`SessionHandle` 只在 gateway 内部使用，PlayerService 只持有 `session_id`（见 AD-06）。
 
 ### 4. Cluster 扩展路径
 

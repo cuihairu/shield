@@ -14,9 +14,18 @@ ProtocolProfile
   + RoutePolicy
 ```
 
-当前 Phase 1 的配置入口是 `actors[].network.protocol`。启用后，TCP session 会使用 `ProtocolPipeline`；未启用时继续使用 legacy frame path，并调用 `on_client_message(session, payload)`。在 protocol path 中，只有 `DecodeLocal` 结果进入 Lua 的 `on_client_message(session, message)`；`ForwardRaw` 和 `Drop` 留在 C++ 数据面。
+当前 Phase 1 的配置入口是 `actors[].network.protocol`。启用后，TCP session 会使用 `ProtocolPipeline`；未启用时继续使用 legacy frame path，并调用 `on_client_message(session, payload)`。在 protocol path 中，只有 `DecodeLocal` 结果进入 Lua 的 `on_client_message(session, client)`，其中 `client = { route, payload }`；`ForwardRaw` 和 `Drop` 留在 C++ 数据面。
 
-当前实现已经把出站方向也收敛到同一套固定骨架：protocol-enabled session 上，Lua 的 `session:send(payload)` 不再直接拼 socket frame，而是统一走 `RouteResolver -> BodyCodec.encode -> Envelope.encode -> socket write`。
+**route 的逻辑身份与 wire 身份（见 [架构决策记录](architecture-decisions.md) AD-05）**：
+
+- `route`（route name）是 Lua / 配置 / schema / 日志使用的**规范逻辑标识**，是面向业务的稳定契约。
+- `route_id` 是 session-bound protocol profile 内的**私有 wire key**，由 envelope 携带、RouteTable 内部映射，不进入 Lua，也不作为业务 API。
+- **route_id 与 codec 无关**：codec 是 session 级固定的（`profile_.default_codec_id`），`codec_for_route` 忽略 route 恒返回 default codec（`src/transport/protocol.cpp:1510-1517`）；`route.codec_id` 仅作元数据/未来扩展位。解析 route_id 的唯一目的是**识别消息种类、定位 handler**，不是选 codec。
+- ingress：envelope/route-extractor 解析出的 `route_id` 经 RouteTable 规范化为唯一逻辑 `route`，连同解码后的 `payload` 一并交给 Lua。
+- egress：只从业务侧显式提供的 route 名解析（`client.route` / `session:send({route,payload})` 的外层 `route`），不从 payload 内 `route_id/msg_id/route/method` 字段猜测。
+- `PacketKind`（Request/Response/Push/Control）与 `seq` 是 wire 层字段，当前没有端到端语义，**不构成框架级客户端 RPC**：不提供 `client.call`、不维护 seq pending map、不做自动 response 关联。客户端 request/response/push 的 correlation token 由业务 payload 字段自管。
+
+当前实现已经把出站方向也收敛到同一套固定骨架：protocol-enabled session 上，Lua 的 `session:send({route, payload})` 不再直接拼 socket frame，而是统一走 `RouteResolver -> BodyCodec.encode -> Envelope.encode -> socket write`。
 这里也要保持 codec 边界干净：`raw` codec 发送字节串；`json` / `msgpack` 这类 structured codec 发送业务消息对象，不接受未建模 raw payload 旁路出站。
 
 目标架构中，核心只默认内置 `raw/json`。`msgpack`、`protobuf`、`sproto`、`flatbuffers` 和 `xmldef-native` 通过显式协议 codec 插件启用，避免把第三方 runtime、descriptor loader 和 schema compiler 硬耦合进 `shield_transport`。协议插件的详细契约见 [Protocol Codec Plugins](protocol-codec-plugins.md)。
