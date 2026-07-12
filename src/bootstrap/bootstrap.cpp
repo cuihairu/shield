@@ -509,10 +509,10 @@ bool initialize(const RuntimeConfig& config) {
     }
 
     // Start console server if enabled
-    if (shield::config::get("console.enabled", false) &&
+    if (shield::config::get("console.enabled", "false") == "true" &&
         g_state->lua_services && g_state->lua_runtime) {
         auto sock_path = shield::config::get(
-            "console.socket_path", std::string("/tmp/shield-console.sock"));
+            "console.socket_path", "/tmp/shield-console.sock");
         try {
             g_state->console_server =
                 std::make_unique<shield::net::ConsoleServer>(g_state->net_io,

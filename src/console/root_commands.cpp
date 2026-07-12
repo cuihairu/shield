@@ -238,7 +238,7 @@ void RootCommands::cmd_plugin(shield::net::ConsoleSession& session,
             break;
     }
     nlohmann::json data = {{"id", inst->id},
-                           {"package", inst->package ? inst->package->id : ""},
+                           {"package", inst->package ? inst->package->manifest.id : ""},
                            {"state", state_str},
                            {"last_error", inst->last_error},
                            {"dependencies", inst->dep_ids}};
