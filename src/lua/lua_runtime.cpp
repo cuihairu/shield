@@ -1375,8 +1375,13 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
             } else if (obj.is<std::string>()) {
                 result->push_back(obj.as<std::string>());
             } else {
-                // For tables, functions, etc. - use sol::to_string
-                result->push_back(sol::to_string(obj));
+                // For tables, functions, etc. - convert to string via Lua tostring
+                lua_getglobal(L, "tostring");
+                lua_pushvalue(L, i);
+                lua_call(L, 1, 1);
+                const char* s = lua_tostring(L, -1);
+                result->push_back(s ? std::string(s) : "");
+                lua_pop(L, 1);
             }
         }
     }
