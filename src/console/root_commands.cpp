@@ -96,6 +96,7 @@ void RootCommands::cmd_status(shield::net::ConsoleSession& session,
     }
 
     // Cluster (thread-safe, may be null)
+#ifdef SHIELD_ENABLE_CLUSTER
     {
         auto* cm = shield::cluster::global_cluster_manager();
         if (cm) {
@@ -114,6 +115,7 @@ void RootCommands::cmd_status(shield::net::ConsoleSession& session,
             data["cluster"] = cluster;
         }
     }
+#endif
 
     nlohmann::json resp = {{"type", "result"}, {"data", data}};
     session.send_line(resp.dump());
@@ -291,6 +293,7 @@ void RootCommands::cmd_config(shield::net::ConsoleSession& session,
 
 void RootCommands::cmd_cluster(shield::net::ConsoleSession& session,
                                const std::vector<std::string>& /*args*/) {
+#ifdef SHIELD_ENABLE_CLUSTER
     auto* cm = shield::cluster::global_cluster_manager();
     if (!cm) {
         nlohmann::json resp = {
@@ -313,6 +316,11 @@ void RootCommands::cmd_cluster(shield::net::ConsoleSession& session,
     }
     nlohmann::json resp = {{"type", "result"}, {"data", data}};
     session.send_line(resp.dump());
+#else
+    nlohmann::json resp = {
+        {"type", "error"}, {"message", "Cluster not compiled"}};
+    session.send_line(resp.dump());
+#endif
 }
 
 void RootCommands::cmd_log_level(shield::net::ConsoleSession& session,
