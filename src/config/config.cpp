@@ -396,9 +396,7 @@ bool validate_protocol_routes(const YAML::Node& routes, const std::string& path,
             return false;
         }
 
-        if (!validate_int_range(route, "target_service", item_path.c_str(), 0,
-                                std::numeric_limits<int>::max(), error) ||
-            !validate_int_range(route, "codec_id", item_path.c_str(), 0, 65535,
+        if (!validate_int_range(route, "codec_id", item_path.c_str(), 0, 65535,
                                 error) ||
             !validate_int_range(route, "schema_id", item_path.c_str(), 0, 65535,
                                 error) ||

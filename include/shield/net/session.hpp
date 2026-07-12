@@ -89,6 +89,24 @@ public:
 
     /// @brief Get user data
     virtual std::string get_user_data(std::string_view key) const = 0;
+
+    /// @brief Set target service (AuthService pre-login, PlayerService post-login)
+    virtual void set_target_service(std::string service_name) = 0;
+
+    /// @brief Get target service
+    virtual std::string target_service() const = 0;
+
+    /// @brief Set trusted player identity (set after auth)
+    virtual void set_player_id(std::string player_id) = 0;
+
+    /// @brief Get player identity
+    virtual std::string player_id() const = 0;
+
+    /// @brief Set session epoch (incremented on each binding update)
+    virtual void set_epoch(uint32_t epoch) = 0;
+
+    /// @brief Get session epoch
+    virtual uint32_t epoch() const = 0;
 };
 
 /// @brief Session callbacks
@@ -151,6 +169,36 @@ public:
         return it != user_data_.end() ? it->second : "";
     }
 
+    void set_target_service(std::string service_name) override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        target_service_ = std::move(service_name);
+    }
+
+    std::string target_service() const override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        return target_service_;
+    }
+
+    void set_player_id(std::string player_id) override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        player_id_ = std::move(player_id);
+    }
+
+    std::string player_id() const override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        return player_id_;
+    }
+
+    void set_epoch(uint32_t epoch) override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        epoch_ = epoch;
+    }
+
+    uint32_t epoch() const override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        return epoch_;
+    }
+
     /// @brief Start receiving
     void start();
 
@@ -175,6 +223,12 @@ private:
     std::vector<uint8_t> receive_buffer_;
     shield::transport::FrameDecoder frame_decoder_;
     std::unique_ptr<shield::transport::ProtocolPipeline> protocol_pipeline_;
+
+    // Session binding: target service, player_id, epoch
+    mutable std::mutex binding_mutex_;
+    std::string target_service_;
+    std::string player_id_;
+    uint32_t epoch_ = 0;
 
     // Async send queue. send_queue_ and send_in_progress_ are only touched
     // from strand_ handlers. queued_count_ is an atomic count of reserved

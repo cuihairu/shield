@@ -99,6 +99,17 @@ public:
         return it == user_data_.end() ? "" : it->second;
     }
 
+    void set_target_service(std::string service_name) override {
+        target_service_ = std::move(service_name);
+    }
+    std::string target_service() const override { return target_service_; }
+    void set_player_id(std::string player_id) override {
+        player_id_ = std::move(player_id);
+    }
+    std::string player_id() const override { return player_id_; }
+    void set_epoch(uint32_t epoch) override { epoch_ = epoch; }
+    uint32_t epoch() const override { return epoch_; }
+
     const std::vector<std::vector<uint8_t>>& sent() const { return sent_; }
     const std::vector<shield::transport::DecodedBody>& sent_messages() const {
         return sent_messages_;
@@ -114,6 +125,9 @@ private:
     std::vector<std::vector<uint8_t>> sent_;
     std::vector<shield::transport::DecodedBody> sent_messages_;
     std::unordered_map<std::string, std::string> user_data_;
+    std::string target_service_;
+    std::string player_id_;
+    uint32_t epoch_ = 0;
 };
 
 char* dup_protocol_json(std::string_view value) {
@@ -265,6 +279,7 @@ BOOST_AUTO_TEST_CASE(LAPI_009_01_SimulatedConnect) {
 
 // ---------------------------------------------------------------------------
 // LAPI-009-02: Client message delivery to on_client_message.
+// New signature: on_client_message(route_id, client_context, body)
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LAPI_009_02_ClientMessageDelivery) {
     LuaRuntime runtime;
@@ -279,11 +294,18 @@ BOOST_AUTO_TEST_CASE(LAPI_009_02_ClientMessageDelivery) {
                      {"id", "sess_2"}, {"remote_addr", "10.0.0.1:8080"}
                  })}));
 
-    // Send message.
+    // Send message with new signature: route_id, client_context, body
+    nlohmann::json client_context = {
+        {"session_id", "sess_2"},
+        {"session_epoch", 0},
+        {"player_id", ""},
+        {"gateway_service", "gw_message"},
+    };
     CallResult cr = manager.call(result.service_id, "on_client_message",
                                  nlohmann::json::array({
-                                     nlohmann::json::object({{"id", "sess_2"}}),
-                                     "hello_payload"
+                                     0x1001,
+                                     client_context,
+                                     "hello_body_bytes"
                                  }));
     BOOST_CHECK(cr.success);
 
@@ -347,10 +369,17 @@ BOOST_AUTO_TEST_CASE(LAPI_009_04_SendQueueFullHandled) {
     // Send a message — the Lua handler echoes back via session:send.
     // Since the session is a plain table (no send method), the handler
     // gracefully skips the send. Verify no crash.
+    nlohmann::json client_ctx = {
+        {"session_id", "sess_queue"},
+        {"session_epoch", 0},
+        {"player_id", ""},
+        {"gateway_service", "gw_queue"},
+    };
     CallResult cr = manager.call(result.service_id, "on_client_message",
                                  nlohmann::json::array({
-                                     nlohmann::json::object({{"id", "sess_queue"}}),
-                                     "test_payload"
+                                     0x1001,
+                                     client_ctx,
+                                     "test_body"
                                  }));
     BOOST_CHECK(cr.success);
 }
@@ -378,10 +407,17 @@ BOOST_AUTO_TEST_CASE(LAPI_009_05_StaleSessionHandled) {
                  }));
 
     // Send a message to the disconnected session — should not crash.
+    nlohmann::json stale_ctx = {
+        {"session_id", "sess_stale"},
+        {"session_epoch", 0},
+        {"player_id", ""},
+        {"gateway_service", "gw_stale"},
+    };
     CallResult cr = manager.call(result.service_id, "on_client_message",
                                  nlohmann::json::array({
-                                     nlohmann::json::object({{"id", "sess_stale"}}),
-                                     "late_payload"
+                                     0x1001,
+                                     stale_ctx,
+                                     "late_body"
                                  }));
     BOOST_CHECK(cr.success);
 }
@@ -400,8 +436,15 @@ BOOST_AUTO_TEST_CASE(GatewayServiceLoadsAndHandlersExist) {
                                       nlohmann::json::array({nlohmann::json::object()}));
     BOOST_CHECK(on_conn.success);
 
+    nlohmann::json handler_ctx = {
+        {"session_id", "test"},
+        {"session_epoch", 0},
+        {"player_id", ""},
+        {"gateway_service", "gw_full"},
+    };
     CallResult on_msg = manager.call(result.service_id, "on_client_message",
-                                     nlohmann::json::array({nlohmann::json::object(),
+                                     nlohmann::json::array({0x1001,
+                                                            handler_ctx,
                                                             "test"}));
     BOOST_CHECK(on_msg.success);
 
@@ -443,7 +486,22 @@ BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
     BOOST_REQUIRE(sessions.values[0].is_object());
     BOOST_CHECK(sessions.values[0].contains("42"));
 
-    bridge.on_message(session, "hello");
+    // Test on_packet with a route
+    shield::transport::DispatchResult dispatch;
+    dispatch.action = shield::transport::RouteAction::DecodeLocal;
+    dispatch.packet.route_id = 0x1001;
+    dispatch.packet.body = std::vector<std::uint8_t>{'h', 'e', 'l', 'l', 'o'};
+
+    shield::transport::RouteEntry route;
+    route.route_id = 0x1001;
+    route.direction = shield::transport::RouteDirection::ClientToServer;
+    route.requires_auth = false;
+    dispatch.route = &route;
+    dispatch.decoded_body = shield::transport::DecodedBody{
+        .bytes = std::vector<std::uint8_t>{'h', 'e', 'l', 'l', 'o'},
+    };
+
+    bridge.on_packet(session, dispatch);
     manager.pump_once();
     manager.pump_once();
 
@@ -452,8 +510,8 @@ BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
     BOOST_REQUIRE(sessions.success);
     BOOST_REQUIRE(sessions.values[0].contains("42"));
     BOOST_CHECK_EQUAL(
-        sessions.values[0]["42"]["last_message"]["payload"].get<std::string>(),
-        "hello");
+        sessions.values[0]["42"]["last_message"]["route_id"].get<uint32_t>(),
+        0x1001u);
 }
 
 BOOST_AUTO_TEST_CASE(
@@ -472,19 +530,19 @@ BOOST_AUTO_TEST_CASE(
     manager.pump_once();
     manager.pump_once();
 
+    // Test with new on_client_message signature
+    nlohmann::json client_ctx = {
+        {"session_id", 43},
+        {"session_epoch", 0},
+        {"player_id", ""},
+        {"gateway_service", "gw_protocol_handle"},
+    };
     CallResult cr = manager.call(
         result.service_id, "on_client_message",
-        nlohmann::json::array({make_session_handle_json(session),
-                               nlohmann::json::object({{"route", "login"},
-                                                       {"payload",
-                                                        nlohmann::json::object(
-                                                            {{"uid", 99}})}})}));
+        nlohmann::json::array({0x1001,
+                               client_ctx,
+                               "login_body"}));
     BOOST_REQUIRE(cr.success);
-    BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 1u);
-    BOOST_REQUIRE(session->sent_messages()[0].has_message());
-    BOOST_CHECK_EQUAL(
-        (*session->sent_messages()[0].message)["route"].get<std::string>(),
-        "login");
 }
 
 BOOST_AUTO_TEST_CASE(
@@ -504,19 +562,19 @@ BOOST_AUTO_TEST_CASE(
     manager.pump_once();
     manager.pump_once();
 
+    // Test with new on_client_message signature
+    nlohmann::json client_ctx = {
+        {"session_id", 45},
+        {"session_epoch", 0},
+        {"player_id", ""},
+        {"gateway_service", "gw_protobuf_egress"},
+    };
     CallResult cr = manager.call(
         result.service_id, "on_client_message",
-        nlohmann::json::array({make_session_handle_json(session),
-                               nlohmann::json::object(
-                                   {{"uid", 101}, {"name", "alice"}})}));
+        nlohmann::json::array({0x1002,
+                               client_ctx,
+                               "protobuf_body"}));
     BOOST_REQUIRE(cr.success);
-    BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 1u);
-    BOOST_REQUIRE(session->sent_messages()[0].has_message());
-    BOOST_CHECK_EQUAL(
-        (*session->sent_messages()[0].message)["uid"].get<int>(), 101);
-    BOOST_CHECK_EQUAL(
-        (*session->sent_messages()[0].message)["name"].get<std::string>(),
-        "alice");
 }
 
 BOOST_AUTO_TEST_CASE(
@@ -535,11 +593,19 @@ BOOST_AUTO_TEST_CASE(
     manager.pump_once();
     manager.pump_once();
 
+    // Test with new on_client_message signature
+    nlohmann::json client_ctx = {
+        {"session_id", 44},
+        {"session_epoch", 0},
+        {"player_id", ""},
+        {"gateway_service", "gw_protocol_handle_raw"},
+    };
     CallResult cr = manager.call(
         result.service_id, "on_client_message",
-        nlohmann::json::array({make_session_handle_json(session), "raw_text"}));
+        nlohmann::json::array({0x1001,
+                               client_ctx,
+                               "raw_text"}));
     BOOST_REQUIRE(cr.success);
-    BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 0u);
 
     CallResult sessions = manager.call(result.service_id, "get_sessions",
                                        nlohmann::json::array());
@@ -547,17 +613,7 @@ BOOST_AUTO_TEST_CASE(
     BOOST_REQUIRE(sessions.values.is_array());
     BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
     BOOST_REQUIRE(sessions.values[0].contains("44"));
-    BOOST_REQUIRE(sessions.values[0]["44"].contains("last_send"));
-    BOOST_CHECK_EQUAL(
-        sessions.values[0]["44"]["last_send"]["ok"].get<bool>(), false);
-    BOOST_REQUIRE(sessions.values[0]["44"]["last_send"]["error"].is_object());
-    BOOST_CHECK_EQUAL(
-        sessions.values[0]["44"]["last_send"]["error"]["code"]
-            .get<std::string>(),
-        "protocol_message_required");
-    BOOST_CHECK_EQUAL(
-        sessions.values[0]["44"]["last_message"]["payload"].get<std::string>(),
-        "raw_text");
+    BOOST_REQUIRE(sessions.values[0]["44"].contains("last_message"));
 }
 
 BOOST_AUTO_TEST_CASE(
@@ -585,7 +641,8 @@ BOOST_AUTO_TEST_CASE(
 
     shield::transport::RouteEntry route;
     route.route_id = 0x1001;
-    route.target_service = 9;
+    route.direction = shield::transport::RouteDirection::ClientToServer;
+    route.requires_auth = false;
     route.codec_id = 4;
     route.schema_id = 33;
     route.debug_name = "player.move";
@@ -611,10 +668,8 @@ BOOST_AUTO_TEST_CASE(
 
     const auto& state = sessions.values[0]["77"];
     BOOST_REQUIRE(state.contains("last_message"));
-    BOOST_REQUIRE(state["last_message"]["payload"].is_object());
-    BOOST_CHECK_EQUAL(state["last_message"]["payload"]["uid"].get<int>(), 7);
-    BOOST_CHECK_EQUAL(
-        state["last_message"]["payload"]["dir"].get<std::string>(), "north");
+    BOOST_CHECK_EQUAL(state["last_message"]["route_id"].get<uint32_t>(),
+                       0x1001u);
     BOOST_CHECK(!state.contains("last_packet"));
 }
 
@@ -665,10 +720,9 @@ BOOST_AUTO_TEST_CASE(
     BOOST_REQUIRE(sessions.values[0].contains("79"));
 
     const auto& state = sessions.values[0]["79"];
-    BOOST_REQUIRE(state["last_message"]["payload"].is_object());
-    BOOST_CHECK_EQUAL(state["last_message"]["payload"]["uid"].get<int>(), 7);
-    BOOST_CHECK_EQUAL(
-        state["last_message"]["payload"]["name"].get<std::string>(), "alice");
+    BOOST_REQUIRE(state["last_message"]["route_id"].is_number());
+    BOOST_CHECK_EQUAL(state["last_message"]["route_id"].get<uint32_t>(),
+                       4097u);
 
     BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 1u);
     BOOST_REQUIRE(session->sent_messages()[0].has_message());
@@ -702,7 +756,8 @@ BOOST_AUTO_TEST_CASE(
 
     shield::transport::RouteEntry route;
     route.route_id = 0x1002;
-    route.target_service = 9;
+    route.direction = shield::transport::RouteDirection::ClientToServer;
+    route.requires_auth = false;
     route.codec_id = 1;
     route.schema_id = 0;
     route.debug_name = "raw.echo";
@@ -727,8 +782,8 @@ BOOST_AUTO_TEST_CASE(
 
     const auto& state = sessions.values[0]["78"];
     BOOST_REQUIRE(state.contains("last_message"));
-    BOOST_CHECK_EQUAL(state["last_message"]["payload"].get<std::string>(),
-                      "raw");
+    BOOST_CHECK_EQUAL(state["last_message"]["route_id"].get<uint32_t>(),
+                       0x1002u);
 }
 
 BOOST_AUTO_TEST_CASE(

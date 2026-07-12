@@ -1,8 +1,10 @@
 -- Test service for LAPI-009 (Gateway API)
 --
 -- Handles on_connect / on_disconnect / on_client_message gateway pattern.
--- Session objects may be full userdata (MockSessionHandle) or plain tables
--- depending on the test harness.
+-- New signature: on_client_message(route_id, client_context, body)
+--   route_id: number from wire header
+--   client_context: {session_id, session_epoch, player_id, gateway_service}
+--   body: raw body string (to be decoded by target VM)
 
 local M = {}
 
@@ -64,31 +66,17 @@ function M.on_disconnect(session, reason)
     end
 end
 
-function M.on_client_message(session, payload)
-    local session_id = nil
-    if type(session) == "table" then
-        session_id = session.id or session._internal_id
-    elseif type(session) == "userdata" and session.id then
-        session_id = session:id()
-    end
+-- New signature: on_client_message(route_id, client_context, body)
+function M.on_client_message(route_id, client_context, body)
+    local session_id = client_context and client_context.session_id or nil
 
-    if session_id and sessions[session_id] then
-        sessions[session_id].last_message = {
-            payload = payload,
+    if session_id and sessions[tostring(session_id)] then
+        sessions[tostring(session_id)].last_message = {
+            route_id = route_id,
+            body = body,
+            player_id = client_context and client_context.player_id or nil,
             time = shield.now()
         }
-    end
-
-    -- Echo back via session:send if available.
-    if type(session) == "userdata" and session.send then
-        local ok, err = session:send(payload)
-        if session_id and sessions[session_id] then
-            sessions[session_id].last_send = {
-                ok = ok,
-                error = err,
-                time = shield.now()
-            }
-        end
     end
 
     return true

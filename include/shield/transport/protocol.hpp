@@ -73,6 +73,12 @@ struct Packet {
     PacketRef ref() const;
 };
 
+enum class RouteDirection : std::uint8_t {
+    ClientToServer = 1,
+    ServerToClient = 2,
+    Bidirectional  = 3,
+};
+
 struct RoutePolicy {
     RouteAction action = RouteAction::DecodeLocal;
     bool lazy_decode = true;
@@ -80,7 +86,8 @@ struct RoutePolicy {
 
 struct RouteEntry {
     std::uint32_t route_id = 0;
-    std::uint32_t target_service = 0;
+    RouteDirection direction = RouteDirection::ClientToServer;
+    bool requires_auth = true;
     std::uint16_t codec_id = 0;
     std::uint16_t schema_id = 0;
     PacketKind kind = PacketKind::Message;

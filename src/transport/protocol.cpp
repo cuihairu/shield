@@ -1141,23 +1141,22 @@ bool load_xmldef_routes_from_string(std::string_view xml, RouteTable& routes,
         if (const auto* value = find_attr(attrs, "name")) {
             entry.debug_name = *value;
         }
-        if (const auto* value = find_attr(attrs, "target_service")) {
-            const auto parsed = parse_u32(*value);
-            if (!parsed) {
-                if (error) {
-                    *error =
-                        "xmldef target_service must be uint32 when present";
-                }
+        if (const auto* value = find_attr(attrs, "direction")) {
+            std::string dir_str(*value);
+            if (dir_str == "c2s" || dir_str == "client_to_server") {
+                entry.direction = RouteDirection::ClientToServer;
+            } else if (dir_str == "s2c" || dir_str == "server_to_client") {
+                entry.direction = RouteDirection::ServerToClient;
+            } else if (dir_str == "bidi" || dir_str == "bidirectional") {
+                entry.direction = RouteDirection::Bidirectional;
+            } else {
+                if (error) *error = "xmldef direction must be c2s/s2c/bidi";
                 return false;
             }
-            entry.target_service = *parsed;
-        } else if (const auto* value = find_attr(attrs, "target")) {
-            const auto parsed = parse_u32(*value);
-            if (!parsed) {
-                if (error) *error = "xmldef target must be uint32 when present";
-                return false;
-            }
-            entry.target_service = *parsed;
+        }
+        if (const auto* value = find_attr(attrs, "requires_auth")) {
+            std::string auth_str(*value);
+            entry.requires_auth = (auth_str == "true" || auth_str == "1");
         }
         if (const auto* value = find_attr(attrs, "codec_id")) {
             const auto parsed = parse_u16(*value);
@@ -1797,8 +1796,16 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 }
                 RouteEntry entry;
                 entry.route_id = route.value("id", std::uint32_t{0});
-                entry.target_service =
-                    route.value("target_service", std::uint32_t{0});
+                // direction: c2s (default), s2c, bidi
+                std::string dir_str = route.value("direction", std::string{"c2s"});
+                if (dir_str == "c2s" || dir_str == "client_to_server") {
+                    entry.direction = RouteDirection::ClientToServer;
+                } else if (dir_str == "s2c" || dir_str == "server_to_client") {
+                    entry.direction = RouteDirection::ServerToClient;
+                } else if (dir_str == "bidi" || dir_str == "bidirectional") {
+                    entry.direction = RouteDirection::Bidirectional;
+                }
+                entry.requires_auth = route.value("requires_auth", true);
                 entry.codec_id = route.value("codec_id", default_codec_id);
                 entry.schema_id = route.value("schema_id", std::uint16_t{0});
                 entry.debug_name = route.value("name", std::string{});

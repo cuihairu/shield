@@ -419,14 +419,8 @@ bool initialize(const RuntimeConfig& config) {
                  bridge.get()](std::shared_ptr<shield::net::Session> session) {
                 bridge_ptr->on_connect(std::move(session));
             };
-        callbacks.on_message =
-            [bridge_ptr = bridge.get()](
-                std::shared_ptr<shield::net::Session> session,
-                const std::vector<uint8_t>& payload) {
-                bridge_ptr->on_message(
-                    std::move(session),
-                    std::string(payload.begin(), payload.end()));
-            };
+        // on_message is removed - all messages go through protocol path
+        // (on_packet). Raw bytes without protocol are rejected.
         callbacks.on_disconnect =
             [bridge_ptr = bridge.get()](
                 std::shared_ptr<shield::net::Session> session,
