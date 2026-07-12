@@ -589,70 +589,106 @@ local ok, top = lb:top_n("arena_1v1", 10)
 
 具体方法签名参考各插件的 `lua/` 封装文件、`plugins/<package>/lua_bindings.cpp` 或对应插件文档中的“规划中”章节。
 
-## Gateway API
+## Client RPC API
 
-Gateway 是 Lua service 模式，不是独立 middleware framework。
+客户端 RPC 不是通用 Lua 消息入口。每个 RPC 由 compiled descriptor 定义 `route_id`、逻辑服务名、方向、schema 和 `binding_hint`；目标 Service VM 在启动期把它编译为缓存 handler。
+
+业务 module 只实现具体方法：
 
 ```lua
+local player_rpc = require("generated.player_rpc")
 local M = {}
+local state
 
-function M.on_connect(session)
-end
+function M.move(client, request)
+    assert(client:player_id() == state.player_id)
 
-function M.on_disconnect(session, reason)
-end
+    state.position = {
+        x = request.x,
+        y = request.y,
+        z = request.z,
+    }
 
--- client 是 DecodeLocal 后的逻辑消息（见 AD-05）：
---   client.route    : 规范逻辑路由名（如 "c2s.player.move"）
---   client.payload  : 解码后业务值；json/msgpack/protobuf 为 table，raw 为字节串
-function M.on_client_message(session, client)
-end
-
--- PlayerService 回送 / push 的固定 service method（见 AD-02/AD-06）。
-function M.client_send(command)
-    -- command.session_id / command.route / command.payload
-    local session = lookup_session(command.session_id)
-    if session then
-        session:send({ route = command.route, payload = command.payload })
-    end
+    return player_rpc.move_result(client, {
+        accepted = true,
+    })
 end
 
 return M
 ```
 
-`SessionHandle`（只在 gateway 内部使用，见 AD-06）：
+示例中的 `M.move` 由 descriptor 的 `binding_hint` 在启动期绑定到对应 client-to-server RPC。runtime 热路径只做 `route_id -> cached function`，不按字符串反射查 module，也不调用通用 client-message handler。
+
+### Handler 参数
+
+客户端 RPC handler 的固定参数是：
+
+```text
+handler(ClientContext, decoded RPC arguments)
+```
+
+如果该 RPC 的 request schema 生成单个 request table，则 Lua 形态为 `handler(client, request)`；若生成多个参数，则按生成契约传入。route、header、codec 和原始 body 都不是业务参数。
+
+`ClientContext` 为只读 userdata，最小 API：
 
 ```lua
-session:id()
-session:send({ route = "s2c.player.move_result", payload = {...} })  -- 显式 route，不靠 payload 内字段猜
-session:close("reason")
-session:remote_addr()
+client:player_id() -- 可信身份；预登录 RPC 可为 nil
+client:ref()       -- 返回可序列化 ClientRef
 ```
 
 规则：
 
-- Lua 不直接操作 socket。
-- `session:send` 非阻塞，队列满返回错误；返回 `true` 仅代表已接受入队，不代表已写入 socket。
-- 客户端消息形状为 `client = { route, payload }`，codec 无关；`route_id`/`PacketKind`/`seq` 不进入 Lua（见 AD-05）。
-- 出站只从外层 `route` 解析路由，不从 payload 内 `route_id/msg_id/route/method` 猜 route。
-- 连接鉴权、限流、路由策略写在 Lua gateway service 中。
-- `SessionHandle` 只在 gateway callback 和 gateway 自身状态中使用，不作为 `shield.send/call` payload 跨服务传递；PlayerService 只持 `session_id` 标量。
-- framework 不提供 HTTP middleware chain，也不提供框架级 client RPC（无 `client.call`、无 seq pending、无自动 response 关联）。
+- `player_id` 来自 Gateway 认证绑定，不信任客户端 body 的同名字段。
+- `ClientRef` 封装 Gateway 地址、session id、epoch、可信 player id 和 protocol profile identity，可作为普通 service 消息参数传递。
+- `ClientContext` / `ClientRef` 不暴露 `route_id`、route name、socket、codec、frame、CAF handle 或 `SessionHandle`。
+- `ClientRef` 不是 `ServiceHandle`，不能作为 `shield.send/call` 的 target。
 
-实现快照：Gateway 的 `on_connect/on_disconnect/on_client_message` Lua handler 已定义并可被调用。bootstrap 会为单实例 `actors[].network.tcp` 创建 `TcpListener`，并通过 `LuaGatewayBridge` 将真实 session 事件路由到同名 Lua gateway service。当前桥接已经向 Lua 传入可用的 `SessionHandle` userdata；该 handle 通过内部 session registry 回查 live `shield_net::Session`，因此 `session:send(...)` / `session:close(...)` 已可直接作用于真实连接。
+### 出站 response 与 push
 
-当前 protocol path 的真实语义是：
+服务端只能调用 descriptor/codegen 生成的具体 server-to-client RPC helper：
 
-- `DecodeLocal` 才会进入 `on_client_message`。
-- `body.codec = json` / `msgpack` 时，`client.payload` 是 Lua table。
-- `body.codec = raw` 时，`client.payload` 是字节串。
-- `ForwardRaw`、`Drop` 和协议错误不会触发 Lua 回调。
-- `msgpack` 已可作为 structured codec 进入 `DecodeLocal`。
-- `protobuf` 需要通过 `body.provider` 引用 `shield.protocol.codec.v1` 插件后才能进入 `DecodeLocal`。
-- `sproto`、`xmldef`、`fbs` 这类尚未落地真实 provider 的 codec 当前不能进入 `DecodeLocal`。
-- protocol-enabled session 上，`session:send({route,payload})` 走固定出站链路：`RouteResolver -> BodyCodec.encode -> Envelope.encode -> socket write`。
+```lua
+player_rpc.move_result(client, {
+    accepted = true,
+})
 
-> **契约收敛提示（路由闭环，见 [架构决策记录](architecture-decisions.md) AD-05）**：目标是 route_id 一次查表直达 handler，业务不写 if/else。当前是**未闭环半成品**——C++ 解出 route 后丢弃 route、只传裸 payload 给 Lua（`src/lua/lua_gateway_bridge.cpp:72-88`），且 `RouteTable` 没有 `route_id ↔ handler` 映射，`target_service` 未被使用（`src/lua/lua_gateway_bridge.cpp:26-27`），导致业务被迫在 `on_client_message` 内自己二次判断。出站则靠扫描 payload 内字段猜 route。补闭环为 roadmap 项（见 [客户端交互契约收敛](roadmap.md)）。codec 与路由无关，是 session 级固定（`src/transport/protocol.cpp:1510-1517`）。
+room_rpc.member_joined(client_ref, {
+    player_id = member_id,
+})
+```
+
+helper 已绑定 server-to-client `route_id` 与 response schema。业务只传 `ClientContext` 或 `ClientRef` 和该 RPC 的业务参数。
+
+规则：
+
+- 不提供接受 route 字符串、裸 `route_id` 或通用 envelope table 的发送 API。
+- route 信息写入 wire header，不写入 body。
+- response 与 push 使用同一 `ClientEgress` 路径，由不同 RPC method 语义区分。
+- Gateway 写回前校验 session id、epoch 和 owner；stale `ClientRef` 返回明确错误。
+- 第一版不提供通用 `client.call`、seq pending map、future 或自动 timeout correlation。
+
+### 动态服务路由
+
+客户端不能修改 session 路由。认证服务、PlayerService 或其他授权 Service 通过 runtime client-routing API 原子绑定或更新逻辑服务名：
+
+```text
+player -> current PlayerService
+room   -> current RoomService
+scene  -> current SceneService
+map    -> current MapService
+```
+
+具体管理 API 随 Service adapter 实现冻结，不允许用普通业务 body 携带 ServiceAddress、actor id 或 route 来替代。
+
+### 启动校验
+
+Service VM 启动时必须失败于以下情况：
+
+- descriptor 声明该逻辑服务的 client-to-server RPC，但 `binding_hint` 缺失；
+- binding 指向的 Lua function 不存在；
+- 同一 `route_id` 重复绑定；
+- RPC direction 与 handler 或 helper 用途不匹配；
+- request/response schema 或 codec provider 不可用。
 
 ## HTTP API
 

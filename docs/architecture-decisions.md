@@ -55,7 +55,8 @@ Shield 最初的设计约定是：
 **含义**：
 
 - 跨服务调用：`shield.send(service, method, ...)` / `shield.call(service, method, ...)`。
-- 客户端消息投递到玩家：`shield.send(player_service, "client_message", ...)`，目标仍是 PlayerService 这个 service，而非某个玩家对象。
+- 客户端 RPC 的 `route_id` 先由描述符选择逻辑服务名；Gateway 再从该 session 的动态路由上下文解析实际 Service actor。逻辑服务名默认是 `player`，也可以是 `scene`、`room`、`map` 等当前玩家已绑定的服务。
+- 目标 Service adapter 在本 VM 内按 header `route_id` 直达启动期注册的 handler。业务 Lua 不接收通用客户端消息后再自行分发。
 
 ---
 
@@ -97,47 +98,51 @@ Shield 最初的设计约定是：
 
 ---
 
-## AD-05：客户端路由一次直达（route_id → handler 闭环）
+## AD-05：客户端 RPC 路由设计
 
-**决策**：客户端消息路由应当**一次查表直达 handler**，不出现「C++ 路由一次、业务 Lua 再 if/else 判一次」的双重路由。
+**决策**：wire header 携带 `route_id`，body 是纯业务数据。所有客户端消息经 Gateway 发给 session 绑定的目标服务（登录前 → AuthService，登录后 → PlayerService）。`route_id` 的唯一职责是在目标 Service VM 内命中启动期缓存的 Lua handler。Gateway 不从 `route_id` 解析目标服务，不做多目标路由。
 
-**完整设计（目标态）**：
+**wire 格式**：
 
-1. **注册阶段（启动时建立，双向可查，不丢弃信息）**：
-   - 每个业务 handler 注册时建立映射：`route 名 ↔ route_id ↔ handler ↔ target service`。
-   - `route_id` 用于运行时高效查表；原始 `route 名` **保留不丢弃**，供日志、调试、错误信息使用——出问题能看到 `4097 = c2s.player.move`，而不是干瞪眼一个数字。
-   - 若协议的 route **本身就是整数**，则直接用该 int 作 `route_id`，跳过 hash；若 route 是字符串，才 hash 成 int。两种都支持，不强制 hash。
+```text
++------------------+------------------+
+|     Header       |       Body       |
+| (route_id, ...)  | (业务数据)        |
++------------------+------------------+
+```
 
-2. **运行时（一次路由直达）**：
-   - C++ 从帧头解出 `route_id` → 查表 → 同时得到「目标 service/进程」和「handler 函数」。
-   - 一次查表既决定发给谁、又决定调哪个函数；业务 handler 收到时已经是目标函数，**不写 if/else，不做字符串比较**。
+Header 携带 `route_id` 等传输层字段。Body 是纯业务数据，编码格式由 ProtocolProfile 决定（json / protobuf / msgpack）。route_id 不出现在 body 中。
 
-3. **消息形状**：透传到业务的逻辑消息为 `client = { route, payload }`，`route` 是稳定逻辑名，`route_id` 不进业务 Lua。
+**入站路径**：
 
-**codec 与路由无关（附注，非路由依据）**：
-- codec 是 **session 级固定**的，不是按 route 选择的：`ProtocolPipeline` 建 pipeline 时绑定 `profile_.default_codec_id`（`src/transport/protocol.cpp:1669,1719`）。
-- `codec_for_route()` 忽略 route，恒返回 `default_codec_id` 的 codec；`route.codec_id` 仅作元数据/未来扩展位（`src/transport/protocol.cpp:1510-1517`）。
-- 因此不存在「按消息种类切 codec」；解析 `route_id` 的唯一目的是识别消息种类、定位 handler。
+```text
+socket bytes
+  → frame decode → 读 header.route_id
+  → Gateway 路由表校验（route_id 合法 + direction + 认证要求）
+  → session.target（AuthService 或 PlayerService）
+  → CAF send ClientIngress { session_id, epoch, player_id, route_id, body_bytes }
+  → 目标 VM: route_id → cached handler → decode body → invoke handler(client, request)
+```
 
-**当前实现差距（诚实标注，未闭环）**：
+- Gateway 只读 header 中的 `route_id` 做合法性校验，不解码 body。
+- `body_bytes` 原样传递到目标 VM，由目标 VM 按 RPC schema 解码。
+- handler 签名固定为 `handler(ClientContext, decoded_request)`，不含 route_id 或原始 frame。
 
-| 设计要求 | 当前代码 | 状态 |
-|---|---|---|
-| `route_id ↔ route_name` 双向保留 | `RouteTable` 有 | 已做到 |
-| `route_id ↔ handler 函数` | 无此映射 | **缺失** |
-| `route_id ↔ target service`（分发） | `RouteEntry::target_service` 字段存在，但 bridge 不用它，全投给同一 gateway（`src/lua/lua_gateway_bridge.cpp:26-27`） | **未接上** |
-| route 透传到业务 | bridge 丢掉 route，只传 payload（`src/lua/lua_gateway_bridge.cpp:72-88`） | **缺失** |
-| 一次路由直达 handler | 业务被迫在 `on_client_message` 内自己 if/else 二次判断 | **未做到** |
+**预登录路由**：认证前 session 尚未绑定 PlayerService，预登录 RPC（login、token 验证等）目标为 AuthService，使用同样的 route_id → handler 机制。认证成功后 Gateway 原子切换 session.target = PlayerService。
 
-结论：当前路由链断在中途（注册表只建了 `id↔name` 前半截，`id↔handler`/`id↔target`/自动 dispatch 后半截未接）。补闭环是 roadmap 项，见 [客户端交互契约收敛](roadmap.md)。
+**出站路径**：codegen 生成的 server-to-client helper 已绑定 route_id 和 response_schema。业务只传 ClientContext + 业务参数。helper 编码 body_bytes 后 CAF 发送 ClientEgress 到 Gateway，Gateway 把 route_id 写入 wire header，body_bytes 作为 body。
 
-**不做**：
+**codec 与路由无关**：codec 是 session 级固定的（`src/transport/protocol.cpp:1669,1719`），不按 route 选择。`codec_for_route()` 忽略 route，恒返回 default_codec_id（`src/transport/protocol.cpp:1510-1517`）。
 
-- 不引入框架级 client RPC（不做 `client.call`、seq pending map、自动 response 关联）。
-- 客户端 request/response/push 的 correlation token（request id 等）由业务 payload schema 字段自管。
-- `PacketKind` / `seq` 不暴露为 Lua client API，不建立框架级请求-响应关联。
+**RPC 描述符**：每个客户端 RPC 在编译期由描述符定义 route_id、full_name、direction、request_schema、response_schema、binding_hint。目标 Service 启动时编译为 `route_id → cached Lua handler` 映射。route_name 只用于日志和调试，不进入 wire。
 
-详见 [网关设计](gateway.md)、[协议路由设计](protocol-routing-design.md)、[Lua API](lua-api.md)。
+**请求、响应与 push 边界**：
+
+- Shield 提供 descriptor 驱动的客户端 RPC method dispatch，以及生成的 server-to-client response/push helper。
+- 第一版不提供通用 `client.call`、seq pending map、future 或自动超时关联。若某个 RPC 需要 correlation token，由该 RPC 契约显式定义业务字段。
+- `PacketKind` / `seq` 不暴露为 Lua API，也不借用 CAF request id 建立客户端 pending 表。
+
+详见 [客户端 RPC 路由设计](protocol-routing-design.md)、[网关设计](gateway.md)、[Lua API](lua-api.md)。
 
 ---
 
@@ -146,14 +151,16 @@ Shield 最初的设计约定是：
 **决策**：
 
 - `SessionHandle` 只存在于 network / gateway 边界。
-- 跨 service payload 只传 `session_id`（标量）或未来 `PlayerRef`，**不**传 `SessionHandle`，也**不**传完整玩家会话对象。
-- PlayerService 不调用 `session:send`、不接触 codec / frame / ProtocolPipeline。
+- 登录后每个 `ClientIngress` 必须携带 runtime 注入的可信客户端上下文：Gateway 地址、`session_id`、session epoch、`player_id` 和 protocol profile id。它们是可序列化值，不是连接对象。
+- Lua handler 只看到只读 `ClientContext` 与该 RPC 的业务参数；`ClientContext` 可派生用于回包的 `ClientRef`；该值内部保留 protocol profile identity，但不向业务暴露 socket、CAF handle、codec 或 frame。
+- Player/Scene/Room/Map Service 通过注册的 server-to-client RPC helper 发送 `ClientEgress`；它们不调用通用 session send API，也不接触 codec / frame / ProtocolPipeline。
 
-**理由**：网络连接所有权归 gateway；PlayerService 只持有 `session_id` 作为标量身份，业务出站消息通过普通 service 消息回到 gateway，由 gateway 统一编码写回。这样：
+**理由**：网络连接所有权归 Gateway，但直接接收客户端 RPC 的任意目标 Service 都必须知道可信玩家身份，并能把响应送回原连接。因此跨 actor 传递稳定的值语义 client reference，而不是连接 handle。这样：
 
-- SessionHandle 不会随消息序列化或跨线程传播。
-- PlayerService 与具体协议、socket 实现彻底解耦。
-- 断线/重连/stale 消息的 owner 校验集中在 gateway 一处。
+- `SessionHandle` 不会随消息序列化或跨线程传播。
+- 目标 Service 无论位于本地还是远端，都能获得可信 `player_id` 和回包引用。
+- 业务 Service 与具体协议、socket 实现彻底解耦。
+- 断线、重连和 stale 回包的 owner/epoch 校验集中在 Gateway 一处。
 
 ---
 

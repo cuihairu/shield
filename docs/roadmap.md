@@ -10,19 +10,31 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 ## 架构纠偏（ADR 驱动）
 
-下列条目源于 [架构决策记录](architecture-decisions.md)。当前实现与最初设计存在偏差（CAF service runtime 未闭环、Lua 服务自管 runtime、客户端链路丢弃 route 信息），需按以下顺序纠偏。每步独立可验收，未勾选即未完成。
+以下顺序源于 [架构决策记录](architecture-decisions.md)。每一步必须独立验收；旧实现只能作为待删除源码存在，不能继续出现在 public 文档、示例或测试目标中。
 
-- [ ] **AD-01 / 调度地基纯重构**：`LuaServiceManager::dispatch_stack` 改为 thread-local（或 per-worker 上下文）；服务注册表（`services/published_names/service_order`）加 shared_mutex。零语义变化，为多 worker 扫清隐式共享。
-- [ ] **AD-01 / `call` 语义**：`shield.call` 从同步重入（`src/lua/lua_service.cpp:561`）改为 coroutine yield + mailbox reply；消除跨 VM 直接执行。
-- [ ] **AD-01 / 多 worker 抢占调度**：per-service 执行权 + 全局激活队列 + N worker 线程，达成 skynet 式多核并发、每 VM 串行。
-- [ ] **AD-05 / 客户端路由闭环**：补完 `route_id → handler` 一次直达，消除「路由两次」。具体：
-  - `RouteTable` 增补 `route_id ↔ handler` 与 `route_id ↔ target service` 后半截映射（当前只有 `id↔name` 前半截，`include/shield/transport/protocol.hpp:91-107`）；route 名注册时**保留不丢弃**（调试用）；route 本身是 int 时直接用，是字符串才 hash。
-  - `LuaGatewayBridge` 透传 route：进入 Lua 传 `client = { route, payload }`（当前丢弃 route，`src/lua/lua_gateway_bridge.cpp:72-88`）；按 route 自动 dispatch 到 handler，业务不再写 if/else。
-  - bridge 使用 `RouteEntry::target_service` 分发（当前忽略，全投同一 gateway，`src/lua/lua_gateway_bridge.cpp:26-27`）。
-  - 出站删除从 payload 内 `route_id/msg_id/route/method` 猜 route 的 fallback，改为显式 `session:send({route, payload})`。
-  - 注：codec 与路由无关、session 级固定（`src/transport/protocol.cpp:1510-1517`），本项不涉及 codec 选择。
-- [ ] **route direction**：`RouteDirection{ClientToServer, ServerToClient}` + 配置校验，防止 c2s route 被误用于出站。
-- [ ] **死代码清理**：删除 `transport/codec.{hpp,cpp}`、`transport/encryption.{hpp,cpp}`（无任何调用方）。
+1. [ ] **CAF 调度地基**：将 dispatch 上下文改为 per-worker/thread-local，Service registry 增加并发保护；不改变 public 语义。
+2. [ ] **CAF Service runtime 闭环**：Lua Service 的 spawn、mailbox、send、call、exit 全部落到 CAF actor；删除 `LuaServiceManager` 自管的第二套调度/runtime。
+3. [ ] **Service call 语义**：使用 CAF request/reply 驱动 Lua coroutine yield/resume，禁止跨 VM 同步重入和 dummy response。
+4. [ ] **客户端内部消息类别**：CAF behavior 接入结构化 `ClientIngress`、`ClientEgress` 与 client lifecycle control，禁止把所有 envelope 压成字符串或普通 Lua method。
+5. [ ] **RPC descriptor 与 binding**：compiled descriptor 定义 `route_id, direction, request_schema, response_schema, binding_hint`；每个目标 VM 启动时编译 `route_id -> cached Lua handler`，缺失或重复 binding 直接启动失败。
+6. [ ] **Session 绑定**：Gateway 维护 session 绑定（target ServiceHandle、player_id、epoch、protocol profile）。认证前 target = AuthService，认证后原子切换 target = PlayerService。room/scene/map 动态路由由 PlayerService 私有状态管理。
+7. [ ] **入站路径**：Gateway 只读 header `route_id`，经轻量路由表校验后投递 `ClientIngress` 到 session.target；目标 actor 命中 handler 后按 RPC schema 解 body。删除 Gateway 提前 decode、Lua 通用客户端回调和二次 route dispatch。
+8. [ ] **出站注册方法**：生成的 server-to-client RPC helper 构造 `ClientEgress`；Gateway 校验 session 后把 `route_id` 写入 header。删除通用 session 发送和 route/payload envelope。
+9. [ ] **Route direction 与安全校验**：冻结并实现 `ClientToServer` / `ServerToClient`，校验预登录权限、认证状态、body schema 与 stale epoch。
+10. [ ] **多 worker 调度**：由 CAF scheduler 并行执行不同 Service actor，保持单 Service/Lua VM 同时只有一个执行者。
+11. [ ] **死代码与旧测试清理**：删除旧 Gateway bridge/legacy frame 客户端业务入口，以及无调用方的 transport codec/encryption 残留；测试矩阵只验收新契约。
+
+### 客户端 RPC 闭环验收
+
+- wire body 中只有纯业务数据；唯一运行时路由键是 header `route_id`。
+- 所有客户端消息经 Gateway 发给 session.target（登录前 → AuthService，登录后 → PlayerService）。
+- Gateway 不从 route_id 解析目标服务，不做多目标路由。
+- 目标服务转发给 room/scene/map 由 Lua 内部决定。
+- Gateway 在选择目标前不解普通 RPC body。
+- 目标 VM 不做字符串反射或 Lua if/else route dispatch。
+- handler 收到可信 player/client context 和该 RPC 的业务参数，不收到 transport 元数据。
+- response/push 只通过注册的 server RPC helper 发出，旧 epoch 无法写入新连接。
+
 
 ## Phase 0: 文档和边界冻结
 

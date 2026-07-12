@@ -47,6 +47,56 @@ struct MessageEnvelope {
 跨节点只保证同一连接内写入顺序。
 ```
 
+## ClientIngress / ClientEgress
+
+客户端 RPC 在 Gateway 与目标 Service 之间传递的内部消息。
+
+### ClientIngress
+
+客户端 RPC 进入目标 actor 时使用：
+
+```cpp
+struct ClientIngress {
+  ServiceAddress gateway_address;
+  uint32_t session_id;
+  uint32_t session_epoch;
+  std::string player_id;          // 认证后有值，预登录为 nil
+  std::string protocol_profile_id;
+  uint32_t route_id;              // 来自 wire header
+  ByteBuffer body_bytes;          // 纯业务数据，原样传递
+};
+```
+
+- 这是 CAF/Shield runtime 内部消息，不是客户端 wire 格式，也不是 Lua API。
+- `route_id` 来自 wire header 的 frame decode，不是从 body 提取。
+- `body_bytes` 是 wire frame 的 body 部分，由目标 VM 按 RPC schema 解码。
+- CAF behavior 按内部消息类型区分 `ClientIngress`、普通 service send/call、生命周期控制等。
+
+### ClientEgress
+
+服务端发送 response/push 到 Gateway 时使用：
+
+```cpp
+struct ClientEgress {
+  uint32_t session_id;
+  uint32_t session_epoch;
+  uint32_t route_id;              // 由 codegen helper 绑定
+  ByteBuffer body_bytes;          // 按 response_schema 编码的业务数据
+};
+```
+
+- Gateway 收到后校验 session_id + session_epoch，把 route_id 写入 wire header，body_bytes 作为 body。
+
+### 客户端 RPC 状态码
+
+| 状态码 | 说明 |
+|--------|------|
+| `client_rpc.not_authenticated` | 未认证 session 访问需认证 RPC |
+| `client_rpc.route_not_found` | 未知 route_id |
+| `client_rpc.direction_rejected` | 方向不匹配 |
+| `client_rpc.epoch_expired` | session epoch 过期 |
+| `client_rpc.handler_missing` | 目标 VM 缺少 handler binding |
+
 ## MessagePayload
 
 core 中 payload 是不可变二进制 buffer。

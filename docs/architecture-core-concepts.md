@@ -78,21 +78,25 @@ shield.send("chat", "broadcast", {
 
 只有需要返回值时才使用 `shield.call`。
 
-## 6. 网关是 Lua 服务模式
+## 6. Gateway 是连接与 session 绑定边界
 
-网络层负责连接和字节流。业务网关应该是 Lua 服务，通过 `on_connect`、`on_disconnect`、`on_client_message(session, message)` 等回调组织登录、会话和路由。
-
-重构后不把 middleware chain 作为核心设计。协议层采用固定骨架：
+Gateway runtime 持有客户端连接和 session 绑定管理，不是通用 Lua 消息分发器。普通客户端 RPC 的固定链路是：
 
 ```text
-Ingress:
-  Envelope -> RouteExtractor -> RoutePolicy -> BodyCodec -> Lua
-
-Egress:
-  Lua -> RouteResolver -> BodyCodec -> Envelope
+frame decode -> header.route_id
+  -> Gateway 轻量路由表校验
+  -> session.target（AuthService 或 PlayerService）
+  -> CAF ClientIngress
+  -> target Service adapter: cached handler
+  -> body decode
+  -> concrete Lua RPC handler
 ```
 
-`json`、`msgpack`、`protobuf`、`sproto`、`xmldef` 这类协议差异体现在固定槽位的实现上，而不是让 gateway 自己拼任意节点链。鉴权、限流、CORS 等策略可以在 Lua gateway 服务或用户自己的 C++ transport 中实现。
+route 信息只存在 wire header；body 只包含该 RPC 的业务参数。Gateway 不从 route_id 解析目标服务，不做多目标路由，不解普通业务 body。
+
+CAF behavior 负责区分 `ClientIngress`、普通 service send/call、生命周期控制等内部消息类别；Shield Service adapter 负责把 header `route_id` 映射到目标 VM 中启动期缓存的 Lua handler。
+
+所有客户端消息发给 session 绑定的目标服务（登录前 → AuthService，登录后 → PlayerService）。room/scene/map 的动态路由由 PlayerService 私有状态管理，不在 Gateway 层面参与。
 
 ## 7. 数据访问由插件提供
 

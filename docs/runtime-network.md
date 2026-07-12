@@ -1,235 +1,189 @@
 # 网络运行时语义
 
-本文档包含 Shield 网络、transport 和 gateway 相关的运行时语义决策。
+本文冻结客户端连接、协议处理和 CAF actor 交互的目标契约。当前源码尚未闭环的部分统一记录在 [架构决策记录](architecture-decisions.md) AD-01/AD-05 和 [roadmap](roadmap.md)，本文不保留旧接口或兼容流程。
 
-当前 Phase 1 只冻结 TCP session、gateway handler 桥接、`SessionHandle` 目标语义和 basic transport framing/protocol pipeline。
-UDP、KCP、WebSocket 是目标能力和后续扩展方向，不作为 Phase 1 最小验收阻塞项。
-HTTP 业务 gateway 不进入 core；HTTP 管理端点只在 `shield_ops` 显式启用时存在。
+## 分层职责
 
-## 网络层职责划分
-
-Shield 有两层网络：
-
-| 层 | 职责 | 使用者 |
+| 层 | 职责 | 明确不负责 |
 | --- | --- | --- |
-| `shield_net` | 客户端连接管理、Session 生命周期 | Gateway 服务 |
-| `shield_transport` | 协议解析（Phase 1: 解帧、编解码、加密；后续: KCP/UDP/WebSocket 适配） | shield_net 内部 |
-| CAF middleman | 服务间通信、节点间通信 | 内部 Actor |
+| `shield_net` | listener、连接生命周期、I/O、背压、live session 所有权 | 业务 RPC dispatch、玩家状态 |
+| `shield_transport` | frame/envelope、header、session 级 codec/profile | 从 body 猜 route、选择业务 actor |
+| Gateway runtime | session registry、可信身份、动态服务路由、入站/出站校验 | 解普通 RPC body、持有 Lua handler |
+| CAF / `shield_core` | actor mailbox、调度、本地/远端消息投递 | 客户端 wire method 到 Lua 函数的自动映射 |
+| Service adapter | 客户端 RPC binding、目标 actor 内 decode、Lua handler 调用 | socket、listener、session 所有权 |
 
-```
-客户端 ──TCP──→ shield_net ──shield_transport──→ gateway
-                                                              ↓
-内部服务 ←────────────────────── CAF ←─────────────────── 业务路由
-```
+CAF middleman 承担 Service actor 的跨进程传输。客户端连接始终归接入它的 Gateway；目标业务 Service 位于本地或远端，不改变上层语义。
 
-**shield_net 职责：**
-- 监听客户端连接（Phase 1: TCP）
-- 管理连接生命周期（accept、close、reconnect）
-- 管理 Session 对象
-- 调用 gateway 回调（on_connect、on_disconnect、on_client_message）
+## ProtocolProfile
 
-**shield_transport 职责：**
-- 字节流解帧（framing）
-- 协议部件执行：`Envelope`、`RouteExtractor`、`RoutePolicy`、`BodyCodec`、`RouteResolver`
-- 数据压缩（compression）
-- 数据加密（encryption）
-- KCP 协议实现（后续）
-- 包校验（packet validation）
+每条 session 在 listener 配置或首阶段握手时绑定一个 `ProtocolProfile`，正常业务阶段不可切换。
 
-**职责边界：**
-- shield_net 不关心协议细节，只管理连接和 session
-- shield_transport 不关心连接管理，只处理字节流
-- gateway 的目标边界是 transport 已解码的业务消息；`ForwardRaw`、`Drop` 和协议错误应在 C++ 数据面结束。
-- 当前真实 gateway Lua 路径已经收敛为只接收 `on_client_message(session, client)`，其中 `client = { route, payload }`；protocol 中间态（route_id/PacketKind/seq/原始帧）不再透给 Lua（见 [架构决策记录](architecture-decisions.md) AD-05）。
+Profile 至少确定：
 
-固定 pipeline 视角下：
+- frame/envelope 格式；
+- header 中 `route_id` 的宽度和字节序；
+- compiled RPC descriptor；
+- body codec 与 schema package；
+- frame 大小、解码错误和未知 route 策略。
 
-- `Envelope` 负责 frame 边界
-- `RouteExtractor` 负责进站 route 提取
-- `RoutePolicy` 负责决定 decode / forward / drop
-- `BodyCodec` 负责业务消息编解码
-- `RouteResolver` 负责出站 route 选择
+正常客户端 RPC 必须在 header 中携带 `route_id`。body 只包含该 RPC 的业务参数，不包含 route name、`route_id`、method 或服务名。
 
-## 传输协议支持
+## SessionRoutingContext
 
-`shield_net` 的长期目标支持以下客户端传输协议：
+Gateway 为每条 live session 保存：
 
-| 协议 | Phase 1 状态 | 说明 | 适用场景 |
-|------|------|------|----------|
-| TCP | required | 可靠、有序、流式 | 默认选择，适合大多数场景 |
-| UDP | deferred | 不可靠、无序、数据报 | 实时性要求高，允许丢包 |
-| KCP | deferred | 快速可靠 ARQ 协议 | 游戏服务器，低延迟需求 |
-| WebSocket | deferred | 基于 TCP 的全双工 | Web 客户端、浏览器 |
-
-Phase 1 验收不得要求 UDP、KCP 或 WebSocket listener 可用。相关配置可以保留在文档示例中，但实现未启用时必须给出明确的配置错误或能力不可用错误，不能静默降级成 TCP。
-
-### KCP 支持
-
-KCP 属于 deferred transport extension；以下语义用于后续实现时保持与 TCP session API 一致。
-
-KCP 是一个快速可靠的 ARQ 协议，相比 TCP：
-
-- 更低的延迟（可配置重传间隔）
-- 更好的拥塞控制（可选关闭）
-- 更适合游戏场景
-
-配置示例：
-
-```yaml
-actors:
-  - name: gateway
-    script: scripts/gateway.lua
-    network:
-      kcp: "0.0.0.0:8001"
-      kcp_options:
-        nodelay: 1        # 启用 nodelay 模式
-        interval: 10      # 内部刷新间隔 10ms
-        resend: 2         # 快速重传触发次数
-        nc: 1             # 关闭流控
-```
-
-Lua API：
-
-```lua
--- KCP session 与 TCP session 接口一致
-function M.on_client_message(session, payload)
-    session:send(response)
-    session:close()
-end
-```
-
-## shield_net 与 gateway
-
-`shield_net` 管理 listener、connection、session。配置了 `actors[].network.tcp` 的单实例 Lua service 会在 bootstrap 中启动 TCP listener，并将 session 事件转发到同名 service 的 gateway 回调；Phase 1 拒绝 `network.tcp` 与 `instances != 1` 的组合。
-
-如果未配置 `actors[].network.protocol`，TCP session 使用 legacy frame path 并调用 `on_client_message(session, payload)`。如果配置了 `network.protocol`，TCP session 使用 `ProtocolPipeline`。这里的 pipeline 不是业务可任意拼接的动态节点链，而是固定骨架上的协议部件组合。真实运行时语义已经收敛为只有 `DecodeLocal` 结果进入 Lua 的 `on_client_message(session, message)`。
-
-更长期的语义里，`network.protocol` 实际上是在为 listener 绑定一条 `ProtocolProfile`。系统内部可以同时存在多种 profile，但单条 session 一旦接受连接，就应固定绑定其中一种；不应允许同一连接在后续业务包中来回切换 `json/protobuf/sproto/...` 协议族。
-
-业务 gateway 是 Lua service：
-
-```lua
-local M = {}
-
-function M.on_connect(session)
-end
-
-function M.on_disconnect(session, reason)
-end
-
-function M.on_client_message(session, message)
-end
-
-return M
-```
-
-目标语义里，`message` 是业务消息而不是未解码 transport payload。若 `body.codec = raw`，则 `message` 可以是字节串，但它仍是显式 decode 结果。`ForwardRaw` 和 `Drop` 不应触发 Lua 回调。
-
-实现快照：当前 protocol path 中，`json` 和 `msgpack` decode-local 都会把结构化业务消息作为 Lua table 送入 `on_client_message`；`raw` decode-local 会把字节串送入 `on_client_message`；`protobuf` 需要通过 `body.provider` 引用 `shield.protocol.codec.v1` 插件后才能进入 `DecodeLocal`；`ForwardRaw` 和 `Drop` 不触发 Lua 回调。尚未落地真实 provider 的 codec 当前不能进入 `DecodeLocal`。
-
-如果未来需要同一 listener 支持多种协议族，推荐也只在连接建立首阶段协商一次 profile，并把协商结果固化到 session。正常业务包头不应重复携带“我是 protobuf/sproto/json”这类协议家族标识；包头只应包含当前 profile 自身执行所需的 route/type/session/flags 等字段。
-
-gateway 负责：
-
-- 登录鉴权。
-- session 到 player/service 的映射。
-- 包路由。
-- 限流和业务校验。
-
-core 不提供 middleware framework。
-
-## SessionHandle
-
-Lua 只看到 opaque `SessionHandle`。当前真实 TCP bridge 已直接把连接事件桥接成可用的 `SessionHandle` userdata；handle 内部通过 session id 回查 live `shield_net::Session`，因此不会把原始 transport payload 或 C++ 指针直接暴露成业务对象。
-
-```lua
-session:id()
-session:send(payload)
-session:close(reason)
-session:remote_addr()
+```text
+SessionRoutingContext {
+  gateway_address
+  session_id
+  session_epoch
+  player_id?
+  protocol_profile_id
+  service_routes: map<logical service name, ServiceAddress>
+}
 ```
 
 规则：
 
-- Lua 不直接操作 gateway listener 对应的底层客户端 socket；业务侧通过 `SessionHandle` 与被接入的客户端连接交互。
-- session send 是 non-blocking。
-- backpressure 超限返回错误。
-- session 断开后 handle stale，调用返回 `session_closed`。
-- `SessionHandle` 不应跨 service 通过 `shield.send/call` 传递；跨服务只传 `session_id`（标量），由 gateway 维护 session_id ↔ SessionHandle 映射。PlayerService 只持 `session_id`，业务出站消息经 `shield.send(gateway, "client_send", {session_id, route, payload})` 回到 gateway 统一编码写回（见 [架构决策记录](architecture-decisions.md) AD-06、[网关设计](gateway.md)）。
-- 对绑定了 `network.protocol` 的 session，`session:send({route, payload})` 走固定出站 pipeline：仅从外层 `route` 解析路由，再做 body/envelope encode；其中 `raw` codec 时 `payload` 为字节串，`json/msgpack` 这类 structured codec 时 `payload` 为业务消息对象。对未绑定 protocol 的 session，仍按原始字节发送。
+- `session_id` 只在当前 Gateway 内定位连接；`session_epoch` 区分断线重连前后的 owner。
+- `player_id` 由认证结果写入，是可信身份，不从客户端业务 body 读取。
+- 登录后必须原子建立 `player_id` 和 `player -> PlayerServiceAddress`。
+- `scene`、`room`、`map` 等绑定只记录该玩家当前实际关联的 actor。
+- 逻辑服务名来自 RPC descriptor，不是固定 actor id；实际地址来自当前 session。
+- 更新或移除服务绑定时递增 epoch。旧 epoch 的入站、回包和路由更新必须拒绝或丢弃。
 
-这不排斥未来在后置阶段提供独立的 Lua 出站 socket 原语。若后续引入 `shield.socket`，它的定位也应是“Lua 主动发起的出站连接”，而不是取代 listener/session/gateway 体系。相关方向目前只保留为后置草案，见 [基础组件与运行时适配边界](runtime-primitives.md)。
+session 不复制全局 Service registry。它只保存当前连接需要的动态路由。
 
-## 网络背压与限制
+## 入站
 
-网络和 transport 必须有显式限制：
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `max_connections` | 10000 | 最大并发连接数 |
-| `max_connections_per_ip` | 100 | 单 IP 最大连接数 |
-| `max_frame_size` | 64KB | 单帧最大体积 |
-| `max_session_send_queue` | 1000 | 单 session 待发送消息条数上限（非字节；每条消息体积受 `max_frame_size` 约束） |
-| `max_decode_errors` | 10 | 连续解码错误次数上限（超过断开） |
-| `read_idle_timeout` | 60s | 读空闲超时 |
-| `write_idle_timeout` | 30s | 写空闲超时 |
-| `handshake_timeout` | 10s | 握手超时 |
-
-配置示例：
-
-```yaml
-actors:
-  - name: gateway
-    script: scripts/gateway.lua
-    network:
-      tcp: "0.0.0.0:8001"
-      max_connections: 50000
-      max_connections_per_ip: 200
-      max_frame_size: 131072       # 128KB
-      read_idle_timeout: 120000    # 2 分钟
+```text
+socket bytes
+  -> shield_net
+  -> frame/envelope decode
+  -> read header.route_id
+  -> RpcMethodDescriptor lookup
+  -> validate direction/auth/rate/size
+  -> descriptor.logical_service_name
+  -> session.service_routes[name]
+  -> CAF send ClientIngress
+  -> target Service actor mailbox
+  -> route_id -> cached Lua handler
+  -> decode body by RPC request schema
+  -> invoke handler(ClientContext, request)
 ```
 
-超过限制时优先返回错误或主动断开，不允许无界队列。
+Gateway 在选择目标 actor 前不得解普通业务 body。这样 header `route_id` 才能用于快速转发，也避免 Gateway 依赖所有业务 schema。
 
-### 背压行为
+预登录 RPC 的 descriptor 可以声明 `auth` 或 `gateway` 逻辑服务。listener 在创建 session 时为这些入口安装受限的 bootstrap route；认证完成后再绑定默认 `player`。
 
-```
-发送队列满时：
-  - 返回 session_send_queue_full 错误
-  - 业务层决定丢弃或等待
+## CAF 内部消息
 
-连接数达上限时：
-  - 新连接直接拒绝（TCP RST）
-  - 记录拒绝日志
+入站使用结构化 runtime 消息，而不是普通 Lua service method：
 
-解码错误达上限时：
-  - 主动断开连接
-  - 记录 IP 和错误详情
-```
-
-## I/O 线程模型
-
-网络层采用「多线程 I/O + 单线程业务逻辑」模型，与主流游戏引擎在业务侧的单线程简化保持一致：
-
-- **I/O 线程池**：由顶层 `net.threads` 控制并发执行 `io_context::run()` 的线程数。这些线程只做 socket 读写、frame/protocol 解码，以及 per-session strand 上串行化的回调派发；**不执行任何 Lua 业务代码**。
-- **per-session strand**：每条 session 的读、写、idle timer 完成事件绑定到独立 strand，即使跨 N 个 I/O 线程，单条 session 的事件依然严格串行、有序。
-- **业务逻辑单线程**：所有 Lua handler 经 `LuaGatewayBridge` 投递到 `LuaServiceManager` 邮箱，由唯一的 worker 线程排干。net 线程永远不内联跑 Lua。
-- **默认单线程**：`net.threads = 0`（默认）退回 legacy 单 I/O 线程路径；多线程是显式 opt-in，仅在连接数高、单线程 syscall/解码成为瓶颈时开启。
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `net.threads` | 0 | I/O 线程数；0 = 单 I/O 线程（legacy），范围 0..64 |
-
-`net.threads` 是顶层配置，不属于 `actors[].network`：
-
-```yaml
-net:
-  threads: 4
-actors:
-  - name: gateway
-    script: scripts/gateway.lua
-    network:
-      tcp: "0.0.0.0:8001"
+```text
+ClientIngress {
+  gateway_address
+  session_id
+  session_epoch
+  player_id?
+  protocol_profile_id
+  route_id
+  body_bytes
+}
 ```
 
-解码（frame/protocol pipeline）当前在 I/O 线程的 strand 上执行而非业务线程——解码是 CPU 密集且无共享状态的工作，并行化通常是有益的。若需要「一切计算都进单业务线程」，可后续将解码也挪进 worker，但当前设计选择前者。
+`route_id` 是从 wire header 复制的内部 dispatch 元数据，`body_bytes` 仍是原始 RPC body。二者不会重新包装进客户端 body，也不会作为业务参数交给 Lua。
+
+CAF behavior 至少区分：
+
+- `ClientIngress`；
+- `ClientEgress`；
+- 普通 Service `send/call`；
+- client disconnect/reconnect 等生命周期控制；
+- Service lifecycle。
+
+CAF 负责消息类型 dispatch 和 actor 调度；Shield Service adapter 负责 `route_id -> cached Lua handler`。不为每个 RPC 手写一个 CAF C++ 消息类型。
+
+## ClientContext 与 ClientRef
+
+`SessionHandle` 是 Gateway 内部连接对象，不进入业务 Lua，也不通过 CAF 消息传播。
+
+RPC handler 收到只读 `ClientContext`。它提供可信 `player_id` 和当前 client identity，并可导出值语义 `ClientRef`。二者都不暴露 socket、codec、frame、route、CAF handle 或底层 session 指针。
+
+`ClientRef` 至少封装：
+
+```text
+gateway_address + session_id + session_epoch + player_id? + protocol_profile_id
+```
+
+它可以作为普通 service 消息参数传递或跨进程序列化。Gateway 在处理回包、关闭或路由更新时必须重新校验 epoch，因此旧 `ClientRef` 不会命中新连接。
+
+## 出站
+
+Service 必须通过已注册的 server-to-client RPC helper 发送 response 或 push：
+
+```text
+generated RPC helper(ClientContext|ClientRef, business arguments)
+  -> method descriptor supplies route_id and response schema
+  -> encode business arguments
+  -> CAF send ClientEgress to gateway_address
+  -> Gateway validates session_id + session_epoch + owner
+  -> write route_id into wire header
+  -> frame/envelope encode
+  -> socket write
+```
+
+不存在接受 route 字符串、裸 `route_id` 或通用 table envelope 的业务发送 API。route 元数据由 helper 绑定的 descriptor 提供，业务参数中出现名为 `route`、`method` 或 `id` 的字段不会影响分发。
+
+## 动态服务绑定
+
+认证服务和已授权业务 Service 可以通过 client routing API 更新当前 session：
+
+- 原子绑定 `player_id` 与默认 `player` Service；
+- 绑定或替换 `scene`、`room`、`map` 等逻辑服务；
+- 离开目标时解除对应绑定；
+- 关闭当前 client。
+
+每次操作都携带 `ClientContext` 或 `ClientRef`，由 Gateway 做 epoch 和权限校验。客户端不能通过 body 指定 ServiceAddress 或修改路由表。
+
+## 断线与重连
+
+连接断开时，Gateway：
+
+1. 使 live session 失效并递增 epoch；
+2. 向当前 `player` Service 发送结构化 `ClientDisconnected` 控制消息；
+3. 清理或冻结该 session 的动态服务路由；
+4. 拒绝旧 `ClientRef` 的后续写回。
+
+重连认证成功后，Gateway 创建新 epoch，并由玩家 owner 决定恢复原 PlayerService 还是创建新实例。恢复成功后再重建其他动态路由。生命周期控制消息不是客户端 RPC，也不进入通用业务消息入口。
+
+## 背压与限制
+
+网络层必须显式限制：
+
+| 参数 | 说明 |
+| --- | --- |
+| `max_connections` | listener 最大连接数 |
+| `max_connections_per_ip` | 单 IP 最大连接数 |
+| `max_frame_size` | 单 frame 最大字节数 |
+| `max_session_send_queue` | 单 session 待写队列上限 |
+| `max_decode_errors` | 连续协议错误上限 |
+| `read_idle_timeout` | 读空闲超时 |
+| `write_idle_timeout` | 写空闲超时 |
+| `handshake_timeout` | 握手超时 |
+
+`ClientEgress` 被接受只表示进入 Gateway 写回流程，不表示客户端已经收到。队列满、session stale、Gateway 不可达等情况返回明确错误；runtime 不做无界缓存或隐式重试。
+
+## 线程与执行权
+
+- I/O 线程只执行 socket、frame/envelope 和 header 处理，不执行 Lua。
+- 目标 Service actor 在自己的 mailbox 调度点执行 handler binding、body decode 和 Lua 调用。
+- 同一 Service actor / Lua VM 同时只允许一个执行者。
+- 不同 Service actor 由 CAF scheduler 并行调度。
+- 同一连接的 frame 顺序在 session strand 上保持；不同连接之间不保证全局顺序。
+
+当前源码仍在 Gateway protocol path 提前 decode，并由独立 `LuaServiceManager` worker 执行业务。这是待删除的实现偏差，不改变本契约。
+
+## Transport 范围
+
+TCP 是第一版必需传输。UDP、KCP、WebSocket 可以作为后续 transport adapter，但必须复用同一 `SessionRoutingContext`、header `route_id`、`ClientIngress/ClientEgress` 和 epoch 校验语义，不得为不同 transport 发明不同 Lua 客户端 API。

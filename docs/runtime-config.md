@@ -187,52 +187,45 @@
 | `restart` | 否 | 服务异常退出后的重启策略 |
 | `limits` | 否 | 单 service 资源限制 |
 
-`actors[].network` 只声明该 service 是 gateway service。目标契约里，网络回调的 Lua 边界是 `on_connect`、`on_disconnect` 和接收已解码业务消息的 `on_client_message`。Phase 1 的 `network.tcp` 只支持 `instances: 1`，避免 listener 事件没有确定接收者。
+`actors[].network` 声明的是 Gateway 边界 owner，不是暴露客户端业务回调的 Lua service。它持有 listener、live session 和 `SessionRoutingContext`；业务 Lua 不接收 `on_client_message`，也不获得 `SessionHandle`。第一版 TCP listener 仍要求 `instances: 1`，确保每个 live session 只有一个 Gateway owner。
 
-`actors[].network.protocol` 是当前网关协议配置入口。未配置时使用 legacy frame path，并调用 `on_client_message(session, payload)`；配置后使用 `ProtocolPipeline`。真实运行时语义是：只有 `DecodeLocal` 结果进入 Lua 的 `on_client_message(session, message)`，`ForwardRaw` / `Drop` 留在 C++ 数据面。`network.protocol` 必须是非空 map，`protocol: {}` 会被拒绝启动。
+`actors[].network.protocol` 绑定 session 固定使用的 `ProtocolProfile`。该 profile 必须引用 compiled RPC descriptor；descriptor 才是 `route_id -> logical service name + direction + schema + binding_hint` 的唯一来源。配置不得出现 `routing.source`、`routes[]`、`target_service`、`action`、`lazy_decode` 或任何 body route 规则。
 
-`actors[].network.max_frame_size` 是 listener 级默认单帧上限。未显式设置 `protocol.envelope.max_frame_size` 时，protocol path 会继承这个值；如果设置了 `protocol.envelope.max_frame_size`，则以 envelope 值为准。
+`actors[].network.max_frame_size` 是 listener 级默认单帧上限。未显式设置 `protocol.envelope.max_frame_size` 时，profile 继承该值；显式设置时以 envelope 值为准。
 
-`network.protocol` 描述的不是任意 middleware 节点链，而是固定 protocol pipeline 的部件组合。当前固定槽位包括：
+协议配置只包含固定 wire/profile 部件：
 
-- `envelope`
-- `routing.source` 对应的 `RouteExtractor`
-- `routing` / `routes` 对应的 `RoutePolicy`
-- `body.codec` 对应的 `BodyCodec`
-- 出站侧的 `RouteResolver` 语义
+- `descriptor`：compiled RPC descriptor package；
+- `envelope`：frame 边界与 header `route_id` 读取/写入规则；
+- `body`：session 固定的 codec 与 provider；
+- `limits`：frame、解码错误、握手等限制。
 
-Phase 1 每个 actor 只注册一个 `body.codec`。route 上的 `codec_id` 会保留在路由元数据和 `DecodedBody` 中，但本地解码仍使用该 actor 的单一 `body.codec` 实现。
-
-`routing.action` / `routing.default_action` 的 `forward` 会按兼容别名处理，并归一化为 `forward_raw` 语义。
+Gateway 只从 header 读取 `route_id`，经 descriptor 取得逻辑服务名，再从 session 的动态服务路由解析当前 `ServiceAddress`。普通 RPC body 的 decode 必须在目标 Service actor 中进行。
 
 ```yaml
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/gateway_control.lua
     instances: 1
     network:
       tcp: "0.0.0.0:8001"
+      max_frame_size: 65536
       protocol:
-        name: json.simple
+        name: game.v1
+        descriptor: conf/game.descriptor.bin
         envelope:
-          type: lenprefix
+          type: idlen
+          route_id_bytes: 4
           length_bytes: 4
           endian: big
           max_frame_size: 65536
         body:
-          codec: json
-        routing:
-          source: body.route
-          decode_body_route: true
-          decode_before_dispatch: false
-          unknown_route_action: drop
-        routes:
-          - id: 1001
-            name: login
-            target_service: 1
-            action: decode
-            lazy_decode: false
+          codec: protobuf
+          provider: protocol.protobuf
 ```
+
+预登录 RPC 在 descriptor 中声明为 `auth` 或 `gateway` 逻辑服务；Gateway 在 session 创建时只安装这些受限 bootstrap binding。认证成功后，授权 Service 原子写入 `player_id` 和默认 `player -> PlayerServiceAddress`。room、scene、map 等绑定由当前玩家的业务流程动态更新，不能写成静态 actor 配置。
+
 
 `actors[].script` 可以是绝对路径，也可以是相对路径。相对路径解析规则：
 

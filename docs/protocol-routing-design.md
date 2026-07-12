@@ -1,728 +1,206 @@
-# Protocol Routing Design
+# 客户端 RPC 路由设计
 
-Shield 的网关协议层不是一条可任意拼接的动态 middleware chain，而是一条固定骨架的 protocol pipeline。
-协议适配点按 `Envelope -> RouteExtractor -> RoutePolicy -> BodyCodec` 分层，Lua 边界固定在 `DecodeLocal` 之后。
+本文冻结 Shield 客户端 RPC 的路由契约。wire header 携带 `route_id`；body 是纯业务数据。
 
-从更高一层的抽象看，真正需要固定的不是“某个 codec 名字”，而是一条 **session-bound ProtocolProfile**：
-
-```text
-ProtocolProfile
-  = ContractSource?
-  + CanonicalDescriptor?
-  + RouteEnvelope
-  + PayloadCodec
-  + RoutePolicy
-```
-
-当前 Phase 1 的配置入口是 `actors[].network.protocol`。启用后，TCP session 会使用 `ProtocolPipeline`；未启用时继续使用 legacy frame path，并调用 `on_client_message(session, payload)`。在 protocol path 中，只有 `DecodeLocal` 结果进入 Lua 的 `on_client_message(session, client)`，其中 `client = { route, payload }`；`ForwardRaw` 和 `Drop` 留在 C++ 数据面。
-
-**route 的逻辑身份与 wire 身份（见 [架构决策记录](architecture-decisions.md) AD-05）**：
-
-- `route`（route name）是 Lua / 配置 / schema / 日志使用的**规范逻辑标识**，是面向业务的稳定契约。
-- `route_id` 是 session-bound protocol profile 内的**私有 wire key**，由 envelope 携带、RouteTable 内部映射，不进入 Lua，也不作为业务 API。
-- **route_id 与 codec 无关**：codec 是 session 级固定的（`profile_.default_codec_id`），`codec_for_route` 忽略 route 恒返回 default codec（`src/transport/protocol.cpp:1510-1517`）；`route.codec_id` 仅作元数据/未来扩展位。解析 route_id 的唯一目的是**识别消息种类、定位 handler**，不是选 codec。
-- ingress：envelope/route-extractor 解析出的 `route_id` 经 RouteTable 规范化为唯一逻辑 `route`，连同解码后的 `payload` 一并交给 Lua。
-- egress：只从业务侧显式提供的 route 名解析（`client.route` / `session:send({route,payload})` 的外层 `route`），不从 payload 内 `route_id/msg_id/route/method` 字段猜测。
-- `PacketKind`（Request/Response/Push/Control）与 `seq` 是 wire 层字段，当前没有端到端语义，**不构成框架级客户端 RPC**：不提供 `client.call`、不维护 seq pending map、不做自动 response 关联。客户端 request/response/push 的 correlation token 由业务 payload 字段自管。
-
-当前实现已经把出站方向也收敛到同一套固定骨架：protocol-enabled session 上，Lua 的 `session:send({route, payload})` 不再直接拼 socket frame，而是统一走 `RouteResolver -> BodyCodec.encode -> Envelope.encode -> socket write`。
-这里也要保持 codec 边界干净：`raw` codec 发送字节串；`json` / `msgpack` 这类 structured codec 发送业务消息对象，不接受未建模 raw payload 旁路出站。
-
-目标架构中，核心只默认内置 `raw/json`。`msgpack`、`protobuf`、`sproto`、`flatbuffers` 和 `xmldef-native` 通过显式协议 codec 插件启用，避免把第三方 runtime、descriptor loader 和 schema compiler 硬耦合进 `shield_transport`。协议插件的详细契约见 [Protocol Codec Plugins](protocol-codec-plugins.md)。
-
-## Why This Design
-
-旧的固定 frame 设计把“拆 TCP 字节流”和“解析业务 body”耦合在一起。对于 JSON 这类 route 写在 body 里的协议，这种做法问题不大；但对 xmldef、sproto、protobuf、flatbuffers 这类可用消息 ID 或 schema ID 路由的协议，提前解析 body 会浪费 CPU，也会阻塞纯转发路径。
-
-新的设计把热路径压缩为一个轻量 packet：
-
-```cpp
-struct PacketRef {
-    uint32_t route_id;
-    uint16_t kind;
-    uint16_t flags;
-    uint32_t seq;
-    ByteSpan body;
-    ByteSpan raw_frame;
-};
-```
-
-`route_id` 是运行时主键。字符串 route 只用于配置、schema/catalog、Lua 注册和日志，启动时编译成整数 ID。这样路由表可以用 hash map 或数组索引，转发路径不用比较字符串。
-
-## Fixed Pipeline
-
-目标运行时流向如下：
+## 核心模型
 
 ```text
-Ingress:
-  socket bytes
-    -> Envelope decode
-    -> RouteExtractor
-    -> RouteTable / RoutePolicy
-       -> Drop / Reject: stop in C++
-       -> ForwardRaw: stop in C++ forwarding path
-       -> DecodeLocal: BodyCodec decode
-    -> Lua business handler
-
-Egress:
-  Lua business message
-    -> RouteResolver
-    -> BodyCodec encode
-    -> Envelope encode
-    -> socket write
+Client → Gateway → session.target Service → route_id → handler
 ```
 
-这套设计的约束是：
-
-- pipeline 形状固定，不允许按业务任意插 middleware 节点。
-- 协议差异体现在固定槽位的实现差异，不体现在链路结构差异。
-- Lua 只处理业务消息，不处理 undecoded frame/body。
-- forward/drop/reject 都不会泄漏到脚本层。
-
-## Component Model
-
-固定 pipeline 只描述“包怎么流”。但一个真实协议族通常还包含“契约从哪里来、route/header 怎么表达、body 怎么编码”。因此更完整的 profile 模型应拆成两层：
-
-1. 运行时固定槽位：
-
-- `Envelope`
-- `RouteExtractor`
-- `RoutePolicy`
-- `BodyCodec`
-- `RouteResolver`
-
-2. profile 语义分层：
-
-- `ContractSource`
-- `CanonicalDescriptor`
-- `RouteEnvelope`
-- `PayloadCodec`
-
-当前 Phase 1 配置里仍然沿用 `body.codec` 这个简化字段，但它更接近“payload codec / native profile adapter”的缩写，而不是最终抽象的全部。
-
-### Builtin vs Plugin-Enabled Codecs
-
-`body.codec` 是协议语义名，不等于“核心一定内置该 codec”。目标启用策略如下：
-
-| Codec | Target Availability | Notes |
-| --- | --- | --- |
-| `raw` | builtin | 字节串直通和兼容路径。 |
-| `json` | builtin | 默认结构化 Lua table 协议。 |
-| `msgpack` | plugin-enabled | 已有 `protocol.msgpack` 可选插件；当前实现仍保留内置过渡路径。 |
-| `protobuf` | plugin-enabled | 第一个优先落地的 schema-aware codec plugin。 |
-| `sproto` | plugin-enabled | 通过 `.sproto` runtime/compiler adapter 提供。 |
-| `fbs` / `flatbuffers` | plugin-enabled | 通过 bfbs/schema runtime 提供。 |
-| `xmldef` | mixed | catalog route loading 可留在核心；字段级 native decode/encode 由插件提供。 |
-
-插件化不是引入自动发现。用户必须在 `plugins.instances` 和 `plugins.bindings` 中显式启用 provider，并在 `network.protocol.body.provider` 中引用 binding。
-
-运行时固定槽位如下：
-
-| Slot | Ingress Role | Egress Role | Typical Implementations |
-| --- | --- | --- | --- |
-| `Envelope` | 切帧、组帧，必要时从 header 取基础字段 | 封帧 | `lenprefix`、`idlen`、`typed_len`、`delimiter` |
-| `RouteExtractor` | 从 header 或已允许读取的 body 区域提取 route key | 不参与 | `header.route_id`、`body.route` |
-| `RoutePolicy` | 根据 route key 决定 `DecodeLocal` / `ForwardRaw` / `Drop` | 通常不参与 | `RouteTable`、default action、unknown route action |
-| `BodyCodec` | 仅在 `DecodeLocal` 时 decode | 对业务消息 encode | `json`、`msgpack`、`protobuf`、`sproto`、`xmldef`、`raw` |
-| `RouteResolver` | 不参与 | 从业务消息解析出 route 或 route_id | `message.route`、static route、schema/message id mapping |
-
-因此，`json`、`msgpack`、`protobuf`、`sproto`、`xmldef` 这些都不是“任意 pipeline 节点链”，而是固定骨架里 `BodyCodec` 槽位的实现；必要时再配合对应的 `Envelope`、`RouteExtractor` 和 `RouteResolver`。
-
-## ProtocolProfile Model
-
-更干净的长期模型不是把 `json/msgpack/protobuf/sproto/xmldef` 全都并列叫 “codec”，而是拆成下面四层：
-
-### Frozen Terms
-
-本页从现在开始冻结以下术语，后续相关文档默认沿用，不再混用：
-
-| Term | Meaning |
-| --- | --- |
-| `ProtocolProfile` | 一条 session 绑定的一整套协议执行模型 |
-| `ContractSource` | 协议方法/类型/route 契约的来源 |
-| `CanonicalDescriptor` | 从不同来源统一编译出的契约视图 |
-| `RouteEnvelope` | 连接上 header/package/frame 的表达方式 |
-| `PayloadCodec` | payload bytes 和业务消息之间的编解码 |
-| `RoutePolicy` | route 命中后的 `DecodeLocal` / `ForwardRaw` / `Drop` 策略 |
-| `native profile` | 某协议族自带 contract + envelope + payload 约定的一体化适配 |
-| `typed-json` / `typed-msgpack` | 有 descriptor 约束的 `json/msgpack` payload 模式 |
-
-冻结规则：
-
-- `json/msgpack` 默认指 payload codec，不默认等于完整协议族
-- `protobuf/sproto/fbs` 默认视为 native profile family，而不只是 codec 名
-- `xmldef` 默认视为 `ContractSource` / descriptor provider，而不默认等于某一种唯一 binary codec
-
-### ContractSource
-
-描述协议方法、类型和 route 语义从哪里来。
-
-典型来源：
-
-- none
-- `xmldef/xml`
-- `.proto`
-- `.sproto`
-- `.fbs`
-
-### CanonicalDescriptor
-
-把不同来源统一编译成 runtime/generator 都能消费的契约视图。  
-至少包含：
-
-- methods
-- types
-- routes
-- direction
-- request/response/item 关系
-
-### RouteEnvelope
-
-描述这条连接上的 header/package 约定。  
-例如：
-
-- `lenprefix`
-- `idlen`
-- `typed_len`
-- `sproto_package`
-- `delimiter`
-
-### PayloadCodec
-
-只描述 payload bytes 和业务消息之间的映射。  
-例如：
-
-- `raw`
-- `json`
-- `msgpack`
-- `protobuf_binary`
-- `sproto_binary`
-- `flatbuffers_binary`
-
-### Family Mapping
-
-几类常见协议族在这个模型里的落点如下：
-
-| Family | ContractSource | Descriptor | RouteEnvelope | PayloadCodec |
-| --- | --- | --- | --- | --- |
-| `raw` | none | none | `lenprefix`/custom | `raw` |
-| `json` | none/optional | optional | `lenprefix`/`delimiter`/body route | `json` |
-| `typed-json` | `xmldef`/`.proto`/`.sproto`/`.fbs` | canonical | `idlen`/body route/custom | `json` |
-| `msgpack` | none/optional | optional | `lenprefix`/body route | `msgpack` |
-| `typed-msgpack` | `xmldef`/`.proto`/`.sproto`/`.fbs` | canonical | `idlen`/custom | `msgpack` |
-| `protobuf-native` | `.proto` | native/canonical | `typed_len`/custom RPC header | `protobuf_binary` |
-| `sproto-native` | `.sproto` | native/canonical | `sproto package(type, session)` | `sproto_binary` |
-| `xmldef-native` | `xmldef/xml` | canonical | `idlen`/custom | future native binary |
-
-这张表的关键点是：
-
-- `json/msgpack` 更接近纯 payload codec
-- `protobuf/sproto/fbs` 同时带有 contract source 和 native binary encoding
-- `xmldef` 更像 contract source / descriptor provider，而不是天然等于某一种唯一 wire format
-
-## Compatibility Matrix
-
-必须区分两种“兼容”：
-
-1. 架构兼容：这套模型能否容纳该协议族
-2. 当前实现兼容：仓库当前代码能否真实 `DecodeLocal` / `encode`
-
-### Architecture Compatibility
-
-按当前冻结术语，下面这些 family 都属于架构兼容范围：
-
-| Family | Architecture Compatible | Reason |
-| --- | --- | --- |
-| `raw` | yes | 纯 payload passthrough |
-| `json` | yes | 纯 payload codec 或 typed-json payload |
-| `msgpack` | yes | 纯 payload codec 或 typed-msgpack payload |
-| `protobuf-native` | yes | 可映射为 contract source + envelope + binary payload |
-| `sproto-native` | yes | 可映射为 contract source + package envelope + binary payload |
-| `flatbuffers-native` | yes | 可映射为 contract source + envelope + binary payload |
-| `xmldef-native` | yes | 可映射为 contract source + canonical descriptor + runtime adapter |
-
-### Current Runtime Support
-
-当前仓库实际支持矩阵如下：
-
-| Family / Codec Name | Route Extract | DecodeLocal | Encode | Notes |
-| --- | --- | --- | --- | --- |
-| `raw` | yes | yes | yes | 字节串直通 |
-| `json` | yes | yes | yes | 结构化 Lua table |
-| `msgpack` | yes | yes | yes | 与 json 同语义，不同 wire |
-| `protobuf` | partial | no | no | placeholder only |
-| `sproto` | partial | no | no | placeholder only |
-| `fbs` / `flatbuffers` | partial | no | no | placeholder only |
-| `xmldef` | partial | no | no | 仅 route catalog / route table |
-
-这里的 `partial` 指：
-
-- 可以出现在配置与 route 元数据里
-- 可以被创建为 placeholder codec name
-- 但不能真实完成 `DecodeLocal` / `encode`
-
-目标运行时支持矩阵如下：
-
-| Family / Codec Name | Default Core | Plugin Enabled | DecodeLocal | Encode |
-| --- | --- | --- | --- | --- |
-| `raw` | yes | n/a | yes | yes |
-| `json` | yes | n/a | yes | yes |
-| `msgpack` | no | yes | yes | yes |
-| `protobuf` | no | yes | yes | yes |
-| `sproto` | no | yes | yes | yes |
-| `fbs` / `flatbuffers` | no | yes | yes | yes |
-| `xmldef` catalog | yes | n/a | no | no |
-| `xmldef-native` | no | yes | yes | yes |
-
-### Missing Pieces
-
-各 family 当前还缺的核心模块：
-
-| Family | Missing Pieces |
-| --- | --- |
-| `protobuf-native` | descriptor loader, protobuf payload codec, route/message mapping, optional RPC envelope |
-| `sproto-native` | `.sproto` loader/compiler adapter, `package(type, session)` envelope, sproto payload codec |
-| `flatbuffers-native` | bfbs/schema loader, table/schema route mapping, flatbuffers payload adapter |
-| `xmldef-native` | compiler, canonical descriptor, runtime descriptor registry, native payload codec, binding compiler |
-
-## Layers
-
-### Envelope
-
-Envelope 只负责 TCP 字节流切帧，并尽量从 header 提取路由元数据。它不理解 body 格式。
-
-当前支持的 envelope：
-
-| Envelope | Frame | Route Source | Use Case |
-| --- | --- | --- | --- |
-| `lenprefix` | `[len][body]` | body | JSON、msgpack 简单网关 |
-| `idlen` | `[msg_id][len][body]` | header | xmldef、二进制消息表 |
-| `typed_len` | `[type][len][body]` | header | protobuf/fbs/sproto profile |
-| `delimiter` | `[body]\n` | body | JSON-RPC、文本协议 |
-
-当前第一阶段代码实现了 `LenPrefixEnvelope`、`IdLenEnvelope`、`TypeLenEnvelope` 和 `DelimiterEnvelope`。
-
-### RouteExtractor
-
-`RouteExtractor` 负责把 frame 映射到 route key。它可以来自 header，也可以来自经过显式允许的 body 路径。
-
-| Source | Meaning | Typical Protocols |
-| --- | --- | --- |
-| `header.route_id` | route 直接来自 header 字段 | `idlen`、`typed_len`、xmldef/protobuf/sproto/fbs |
-| `body.route` | route 需要从 body 中提取 | `json`、`msgpack`、文本协议 |
-
-`routing.source` 在运行时只有两类语义：`Header` 和 `Body`（外加 `none`）。上表中 `header.route_id` / `header.msg_id` 都归一化为 `Header`，`body.route` / `body.route_id` 都归一化为 `Body`——具体从 header 的哪个字段读取，完全由 `envelope.type` 决定，`routing.source` 的不同写法不会触发不同的提取逻辑，只是为了配置可读性提供别名。`none` 表示不从包里提取 route，只用于显式禁用路由的场景。
-
-当 route 来自 body 时，允许发生“最小必要读取”，但这不等于把整个 undecoded payload 暴露给 Lua。body route extract 仍属于 C++ protocol pipeline。
-
-### PacketRef
-
-`PacketRef` 是热路径结构。它只保存 header 可得信息和 body/raw frame 视图：
+- 所有客户端消息经过 Gateway 后，发给 **session 绑定的目标服务**。
+- 登录前：session.target = AuthService。
+- 登录后：session.target = PlayerService。
+- **route_id 的唯一职责**：在目标 Service VM 内选择 handler。
+- Gateway 不从 route_id 解析目标服务，不做多目标路由，不知道 room/scene/map。
+- 目标服务转发给其他服务由 Lua 内部决定，不在 Gateway 层面参与。
+
+## Wire 格式
+
+```text
++------------------+------------------+
+|     Header       |       Body       |
+| (route_id, ...)  | (业务数据)        |
++------------------+------------------+
+```
+
+- Header 携带 `route_id`、帧长度、校验等传输层字段。
+- Body 是纯业务数据，编码格式由 ProtocolProfile 决定（json / protobuf / msgpack）。
+- route_id 不出现在 body 中。body 不携带路由、envelope 或包装。
+
+## RPC 描述符
+
+每个客户端 RPC 在编译期由描述符定义：
+
+```text
+RpcMethodDescriptor {
+  route_id              uint32    wire header 中的方法标识，ProtocolProfile 内唯一
+  full_name             string    完整方法名，如 "player.move"，用于日志和调试
+  direction             enum      client_to_server | server_to_client
+  request_schema        schema    请求体结构（仅 client_to_server）
+  response_schema?      schema    响应体结构（仅 server_to_client）
+  binding_hint          string    目标 Lua handler 函数名，如 "move"
+}
+```
+
+约束：
+
+- `route_id` 在一个 ProtocolProfile 内唯一，写入 wire header。
+- `full_name` 只用于契约、代码生成、日志和调试，不进入 wire。
+- direction 不匹配的消息在 Gateway 拒绝。
+- 描述符在编译期确定，目标 Service 启动时编译为 `route_id → cached Lua handler` 映射。
+
+## 入站路径
 
 ```text
 socket bytes
-  -> Envelope.feed()
-  -> PacketRef(route_id, flags, seq, body, raw_frame)
+  → frame decode
+  → 读 header.route_id
+  → Gateway 路由表校验（route_id 合法 + direction + 认证要求）
+  → session.target（AuthService 或 PlayerService）
+  → CAF send ClientIngress { gateway_address, session_id, session_epoch, player_id,
+                              protocol_profile_id, route_id, body_bytes }
+  → 目标 VM 收到 ClientIngress
+  → binding cache: route_id → cached handler
+  → 按 request_schema decode body_bytes → 业务参数
+  → invoke handler(client_context, 业务参数)
 ```
 
-如果 route 在 header 中，例如 `idlen` 的 `msg_id`，网关可以马上查表决定：
+关键点：
+
+- Gateway 只读 header 中的 route_id 做合法性校验，不解码 body。
+- `body_bytes` 原样传递到目标 VM，由目标 VM 按 schema 解码。
+- handler 签名固定为 `handler(ClientContext, decoded_request)`，不含 route_id 或原始 frame。
+
+## 预登录路由
+
+认证前 session 尚未绑定 PlayerService。预登录 RPC（login、token 验证等）走以下路径：
 
 ```text
-route_id -> target_service + codec_id + schema_id + policy
+Client → Gateway → session.target = AuthService
+  → AuthService handler 处理登录逻辑
+  → 认证成功
+  → Gateway 原子切换 session.target = PlayerService
 ```
 
-如果策略是 `ForwardRaw`，协议层会保留 `raw_frame` 并标记 dispatch action，不解析 body。该结果停留在 C++ forwarding path，不进入 Lua；真正跨服务或跨节点转发应收敛到 transport/cluster 数据面。
+- 预登录 RPC 使用同样的 route_id → handler 机制，目标是 AuthService。
+- 认证成功后 Gateway 原子更新 session 的 target、player_id 和 epoch。
+- 认证前访问需认证的 route_id，Gateway 直接拒绝。
 
-### RouteTable
-
-`RouteTable` 是运行时路由索引：
-
-```cpp
-struct RouteEntry {
-    uint32_t route_id;
-    uint32_t target_service;
-    uint16_t codec_id;
-    uint16_t schema_id;
-    PacketKind kind;
-    std::string debug_name;
-    RoutePolicy policy;
-};
-```
-
-`RoutePolicy` 决定是否本地解码、原样转发或丢弃：
-
-| Action | Meaning |
-| --- | --- |
-| `DecodeLocal` | 交给对应 `BodyCodec` 解码后进入 Lua/C++ handler |
-| `ForwardRaw` | 不解 body，保留 `raw_frame` 供 C++ 转发路径使用，不进入 Lua |
-| `Drop` | 丢弃或按安全策略拒绝；默认不应因为 drop 直接断开 session |
-
-### BodyCodec
-
-`BodyCodec` 只在需要读取 body 时执行：
+## 出站路径
 
 ```text
-PacketRef.body + RouteEntry(schema_id, codec_id)
-  -> BodyCodec.decode()
-  -> handler
+Lua 业务代码调用 codegen helper:
+  player_rpc.move_result(client_context, { accepted = true })
+
+helper 内部:
+  → 按 response_schema encode 业务参数为 body_bytes
+  → CAF send ClientEgress { session_id, session_epoch, route_id, body_bytes } 到 gateway_address
+
+Gateway 收到 ClientEgress:
+  → 校验 session_id + session_epoch
+  → 把 route_id 写入 wire header
+  → body_bytes 作为 body
+  → frame encode → socket write
 ```
 
-当前 Phase 1 的 actor 配置只允许一个 `body.codec` 实例。`RouteEntry.codec_id` 仍保留为路由元数据和后续扩展位，用于标识包契约；但本地 `DecodeLocal` 仍使用 actor 的单一 `body.codec` 实现，而不是按 route 动态切换多个 codec。
+- `player_rpc.move_result` 是 codegen 生成的 server-to-client helper，已绑定 `route_id` 和 `response_schema`。
+- 业务代码只传 `ClientContext` 或 `ClientRef` + 业务参数。
+- Lua 不提供按字符串 route 或裸 `route_id` 的通用发送接口。
 
-从长期设计看，这里的 `body.codec` 更适合作为：
+## Gateway 路由表
 
-- 纯 payload codec 名称，例如 `json`、`msgpack`、`raw`
-- 或 native profile adapter 名称，例如 `protobuf-native`、`sproto-native`
-
-当前文档里为了兼容 Phase 1 代码和配置，仍沿用 `protobuf` / `sproto` / `xmldef` 这些占位名字。
-
-支持的 codec 应作为可插拔实现：
-
-| Codec | Schema Source | Route Mapping |
-| --- | --- | --- |
-| `json` | none/schema optional | body route 或 header route |
-| `msgpack` | none/schema optional | body route 或 header route |
-| `protobuf` | descriptor set | service/method 或 message id |
-| `fbs` | flatbuffers schema/bfbs | table id/schema id |
-| `sproto` | `.sproto` | tag/protocol id |
-| `xmldef` | Shield 通用 XML definition/catalog | msg id |
-| `raw` | none | no decode, byte passthrough |
-
-第一阶段代码提供 `RawBodyCodec`、`JsonBodyCodec`、`MsgpackBodyCodec` 和若干占位 codec 名称；同时已提供 `protocol.msgpack` 可选插件用于验证插件化路径。当前只有 `raw`、`json` 和 `msgpack` 允许稳定进入 `DecodeLocal` 路径：
-
-- `raw` 把 body 作为字节串交给 Lua
-- `json` 解码后把业务消息作为 Lua table 交给 Lua；若 body 为 `{route=..., payload=...}` 形态，则进入 Lua 的是 `payload`
-- `msgpack` 与 `json` 保持同一业务语义，只是线上 body 表示改为 MessagePack 二进制；若 body 为 `{route=..., payload=...}` 形态，则进入 Lua 的仍然是 `payload`。未配置 `body.provider` 时走过渡期内置 codec，配置 `provider: protocol.msgpack` 时走插件 codec。
-- `protobuf` 需要通过 `body.provider` 引用 `shield.protocol.codec.v1` 插件后才能用于 `DecodeLocal`；未配置 provider 时仍按占位 codec 处理。
-- `fbs`、`sproto`、`xmldef` 这些尚未落地真实 provider 的 codec，当前不能用于 `DecodeLocal`
-
-这条约束的目的很直接：没有真实解码语义的 body，不能越过 transport/Lua 边界冒充“业务消息”。
-
-### RouteResolver
-
-出站方向不再复用入站 `RouteExtractor` 的语义，而是由 `RouteResolver` 负责根据业务消息决定 route：
+Gateway 维护一张轻量校验表，编译期从描述符集构建：
 
 ```text
-business message
-  -> route / route_id resolve
-  -> BodyCodec.encode()
-  -> Envelope.encode()
+GatewayRouteTable:
+  route_id → { direction, requires_auth }
 ```
 
-常见解析方式：
+- 只做合法性校验：route_id 是否存在、方向是否允许客户端发起、是否需要认证。
+- 不含 logical_service_name、handler、schema 或 ServiceAddress。
+- 校验失败的消息在 Gateway 直接拒绝，不进入目标 VM。
 
-- 业务消息里自带 `route`
-- 由 message type 或 schema id 映射到 route_id
-- 由发送目标 service 的静态 profile 决定固定 route
-
-这样进站和出站方向都固定，但职责不同，避免把“读包头”和“写包头”混成一个抽象。
-
-## ProtocolProfile Binding
-
-最干净的运行时规则是：
-
-- 系统内可以并存多种 `ProtocolProfile`
-- 但同一条 session 上只能绑定一种 `ProtocolProfile`
-- 一旦绑定，该 session 后续所有业务包都按这套 profile 解释
-
-### Binding Time
-
-建议只允许两种绑定时机：
-
-1. listener 启动时静态绑定
-2. 连接建立后的首阶段握手一次性绑定
-
-不能允许：
-
-- 同一条 session 中途切换 profile
-- 每个业务包重新声明自己属于哪种协议族
-
-### Listener-fixed First
-
-Phase 1 当前实际支持的是 listener-fixed：
+## Session 绑定
 
 ```text
-actor listener
-  -> network.protocol
-  -> create ProtocolPipeline
-  -> all accepted sessions inherit that profile
+Session {
+  target           ServiceHandle    当前目标服务（AuthService 或 PlayerService）
+  player_id        string?          可信身份，认证后由 runtime 注入
+  session_epoch    uint32           每次绑定更新递增
+  protocol_profile string           编解码配置标识
+}
 ```
 
-这也是最干净、最容易调试的方案。
+- 登录前：target = AuthService，player_id = nil。
+- 登录后：target = PlayerService，player_id = 认证结果。
+- 进入房间/场景/地图：session binding 不变（仍指向 PlayerService）。动态路由由 PlayerService 私有状态管理。
+- 旧 epoch 的消息必须拒绝或丢弃。
 
-### Handshake Negotiation
+## ClientIngress 消息
 
-如果未来需要同一 listener 接入多种协议族，也应只允许在首阶段握手协商一次：
+客户端 RPC 进入目标 actor 时使用的内部消息：
 
 ```text
-accept socket
-  -> detect preface / magic / bootstrap frame
-  -> negotiate profile + descriptor version
-  -> bind session pipeline
-  -> enter normal business traffic
+ClientIngress {
+  gateway_address       ServiceAddress
+  session_id            uint32
+  session_epoch         uint32
+  player_id             string?
+  protocol_profile_id   string
+  route_id              uint32          来自 wire header
+  body_bytes            bytes           纯业务数据，原样传递
+}
 ```
 
-这里握手确认的应是：
+这是 CAF/Shield runtime 内部消息，不是客户端 wire 格式，也不是 Lua API。CAF behavior 按内部消息类型区分 `ClientIngress`、普通 service send/call、生命周期控制等类别。
 
-- protocol profile
-- descriptor/schema version
-- schema hash
-- feature flags
-- compression/encryption options
+## ClientEgress 消息
 
-而不是让后续每个业务包都重复携带这些元信息。
-
-### Header Rule
-
-一旦 session 已绑定 profile，正常业务包头只应携带这条 profile 执行所需的字段：
-
-- route id / type / tag
-- correlation id / session
-- flags
-- payload length
-
-通常不应再携带：
-
-- `codec = sproto/protobuf/json`
-- `contract = xmldef/proto/sproto`
-- `format family = ...`
-
-这些都属于握手或 listener 绑定时已经知道的冗余信息。
-
-## Actor Network Protocol
-
-完整协议由 envelope、route extract/resolve 规则、catalog/schema、body codec 和 routing policy 组合。当前实现不读取全局 `protocols.profiles`，而是从绑定 TCP listener 的 actor 上读取 `network.protocol`：
-
-```yaml
-actors:
-  - name: gateway
-    script: scripts/gateway.lua
-    instances: 1
-    network:
-      tcp: "0.0.0.0:8001"
-      protocol:
-        name: json.simple
-        envelope:
-          type: lenprefix
-          length_bytes: 4
-          endian: big
-          max_frame_size: 65536
-        body:
-          codec: json
-        routing:
-          source: body.route
-          decode_body_route: true
-          decode_before_dispatch: false
-          unknown_route_action: drop
-        routes:
-          - id: 1001
-            name: login
-            target_service: 1
-            action: decode
-            lazy_decode: false
-
-  - name: xmldef_gateway
-    script: scripts/gateway.lua
-    instances: 1
-    network:
-      tcp: "0.0.0.0:8002"
-      protocol:
-        name: xmldef.default
-        envelope:
-          type: idlen
-          route_id_bytes: 2
-          length_bytes: 2
-          endian: little
-        body:
-          codec: xmldef
-          catalog: conf/messages.xml
-        routing:
-          source: header.route_id
-          lazy_decode: true
-          default_action: forward_raw
-```
-
-等价的 profile 片段如下，便于讨论协议本身：
-
-```yaml
-json.simple:
-  envelope:
-    type: lenprefix
-    length_bytes: 4
-    endian: big
-  body:
-    codec: json
-  routing:
-    source: body.route
-    decode_body_route: true
-
-xmldef.default:
-  envelope:
-    type: idlen
-    route_id_bytes: 2
-    length_bytes: 2
-    endian: little
-  body:
-    codec: xmldef
-    catalog: conf/messages.xml
-  routing:
-    source: header.route_id
-    lazy_decode: true
-
-game.protobuf:
-  envelope:
-    type: idlen
-    route_id_bytes: 4
-    length_bytes: 4
-    endian: big
-  body:
-    codec: protobuf
-    provider: protocol.protobuf
-  routing:
-    source: header.route_id
-    lazy_decode: true
-
-game.fbs:
-  envelope:
-    type: idlen
-    route_id_bytes: 4
-    length_bytes: 4
-    endian: little
-  body:
-    codec: fbs
-  routing:
-    source: header.route_id
-    lazy_decode: true
-```
-
-兼容性说明：
-
-- `routing.default_action` 接受 `forward_raw`，也接受兼容别名 `forward`，启动时会归一化到 `ForwardRaw` 语义。
-- `protocol.envelope.max_frame_size` 未显式设置时，继承 listener 级 `network.max_frame_size`。
-
-### `default_action` 与 `unknown_route_action` 的区别
-
-两个名字都带“default”，但作用于完全不同的语义层，不要混用：
-
-| 字段 | 作用对象 | 语义 | 适用范围 |
-| --- | --- | --- | --- |
-| `routing.unknown_route_action` | `ProtocolProfile` | 收到一个**路由表里没有**的 route_id 时的动作 | 所有 codec |
-| `routing.default_action` | xmldef catalog 加载的每条 `<message>` / `<route>` 条目 | catalog 条目自身没写 `action` 时的默认值 | 仅 `body.codec: xmldef` 加载 catalog 时生效 |
-
-- `unknown_route_action` 是 runtime 行为：包到了、查不到 route、怎么办。
-- `default_action` 是 catalog 加载行为：把 XML 条目编译成 `RouteEntry` 时，没写 action 的条目填什么默认值。
-- `routes[]` 数组里的条目由各自的 `action` 字段控制；`routing.default_action` **不会**作用于 `routes[]` 条目。
-- `routing.lazy_decode` 同理：它只在 xmldef catalog 加载时作为条目的默认 `lazy_decode`，不会作用于 `routes[]` 数组里的条目。`routes[]` 条目由各自的 `lazy_decode` 字段控制。
-
-### 合法枚举值（含别名）
-
-便于排查配置错误，以下列出全部合法字符串值，运行时会做归一化：
-
-| 字段 | 合法值 | 别名 / 归一化 |
-| --- | --- | --- |
-| `envelope.type` | `lenprefix` | `len-prefix`、`len_prefix` |
-| | `idlen` | `id-len`、`id_len` |
-| | `typed_len` | `type_len`、`typed-len`、`typelen` |
-| | `delimiter` | `line` |
-| `envelope.endian` | `big` | `be` |
-| | `little` | `le` |
-| `routing.source` | `header` | `header.route_id`、`header.msg_id` |
-| | `body` | `body.route`、`body.route_id` |
-| | `none` | — |
-| `routing.unknown_route_action` / `default_action` / `routes[].action` | `decode` | `decode_local` |
-| | `forward_raw` | `forward` |
-| | `drop` | — |
-| `body.codec` | `raw`、`json`、`msgpack` | — |
-| | `protobuf`、`fbs`、`flatbuffers`、`sproto` | 当前为占位 codec；目标通过 `body.provider` 引用插件后可 `DecodeLocal` |
-| | `xmldef` | `xml_def`（当前：占位 codec + catalog 路由表加载；目标：native decode/encode 走插件） |
-| `body.provider` | plugin binding name | 目标字段；例如 `protocol.protobuf`，只在 plugin-enabled codec 上需要 |
-
-## Profile Examples
-
-从部件模型看，不同协议只是固定槽位上的不同实现：
-
-| Profile | Envelope | RouteExtractor | BodyCodec | RouteResolver |
-| --- | --- | --- | --- | --- |
-| `json.simple` | `lenprefix` | `body.route` | `json` | message field route |
-| `msgpack.simple` | `lenprefix` | `body.route` | `msgpack` | message field route |
-| `xmldef.default` | `idlen` | `header.route_id` | `xmldef` | schema/catalog 映射 |
-| `game.protobuf` | `idlen` / `typed_len` | `header.route_id` | `protobuf` | descriptor/message id 映射 |
-| `game.sproto` | `idlen` / `typed_len` | `header.route_id` | `sproto` | protocol id/tag 映射 |
-| `raw.proxy` | `idlen` / `typed_len` | `header.route_id` | `raw` | static route / route_id |
-
-这也是为什么协议实现的最小要求通常就是两件事：
-
-1. 入站：按固定槽位完成 extract + decode。
-2. 出站：按固定槽位完成 resolve + encode。
-
-不需要为每种协议单独发明一条新的业务 pipeline。
-
-`xmldef` 只参考“XML catalog 生成 msg_id 路由表”的思路，不照搬任何具体引擎的 entity/base/cell 语义。第一阶段只读取通用 `<message>` / `<route>` 元数据：
-
-```xml
-<protocol name="arena">
-  <message id="0x1001"
-           name="player.move"
-           target_service="10"
-           action="forward_raw"
-           codec_id="1"
-           schema_id="33"
-           lazy_decode="true" />
-
-  <route id="4098"
-         name="auth.login"
-         target="1"
-         action="decode"
-         schema="34"
-         lazy_decode="false" />
-</protocol>
-```
-
-字段级 XML schema 和二进制 body decode 后续由 `xmldef` 的具体 `BodyCodec` 实现补齐，路由阶段不依赖字段解析。
-
-## Forwarding Example
-
-在 header-route 协议中，client 包可以先到网关或代理服务。若 header 的 `msg_id` 映射到远端目标服务，网关不需要解 body：
+服务端发送 response/push 到 Gateway 时使用的内部消息：
 
 ```text
-client tcp bytes
-  -> idlen envelope extracts route_id
-  -> RouteTable finds route metadata
-  -> policy = ForwardRaw
-  -> C++ forwarding path uses raw_frame
-  -> no Lua callback
+ClientEgress {
+  session_id            uint32
+  session_epoch         uint32
+  route_id              uint32          由 codegen helper 绑定
+  body_bytes            bytes           按 response_schema 编码的业务数据
+}
 ```
 
-只有目标是当前服务的 handler 时，才执行：
+Gateway 收到后校验 session，把 route_id 写入 header，body_bytes 作为 body，发送到客户端。
 
-```text
-BodyCodec(xmldef).decode(body, schema_id)
-  -> Lua/C++ handler
+## ClientContext
+
+每个客户端 RPC handler 的第一个参数是只读 `ClientContext`：
+
+```lua
+client:player_id()    -- 可信身份；预登录 RPC 为 nil
+client:ref()          -- 可序列化 ClientRef（Gateway 地址、session id、epoch、player_id）
 ```
 
-这就是 header/body 分离的主要收益：转发路径不为业务字段解析付费。
+规则：
 
-但需要区分两类“转发”：
+- `player_id` 来自 Gateway 认证绑定，不信任客户端 body 中的同名字段。
+- `ClientRef` 可保存到服务状态或作为 service 消息参数传递，不是 actor reference。
+- `ClientContext` 不暴露 route_id、route name、原始 frame、codec 或 CAF handle。
 
-- **协议转发**：`ForwardRaw`，用于 transport/proxy 数据面
-- **业务转发**：`shield.send/call`，用于 service 间协作
+## 错误与安全
 
-长期默认设计应是：
+以下情况在调用业务 handler 前拒绝：
 
-- 进入业务层前，如果能纯转发，就留在 C++ `ForwardRaw` 路径
-- 一旦进入业务层，就转换为逻辑消息，再通过 `shield.send/call` 跨 service / 跨节点协作
+- 未知 route_id。
+- direction 不允许客户端发起。
+- 未认证 session 访问需认证的 route。
+- session epoch 已过期。
+- body 不符合 request_schema（在目标 VM decode 阶段）。
+- 目标 VM 缺少 handler binding（启动期就应失败，不进入运行时）。
 
-不要把客户端 raw frame 的长期跨服流转当成默认业务架构。
+## 明确不做
 
-## Compatibility
-
-现有 `FrameDecoder` 和 `Frame` 保留为未配置 `actors[].network.protocol` 时的兼容路径。配置 `network.protocol` 后使用新的 `Envelope` profile。
-
-推荐迁移顺序：
-
-1. 保留旧 TCP frame 行为。
-2. 以 `actors[].network.protocol` 作为唯一运行时配置入口。
-3. 对 header-route 协议启用 `RouteTable` 和 `ForwardRaw` 标记。
-4. 收敛到统一回调语义：只有 `DecodeLocal` 后的业务消息进入 Lua。
-5. 未实现真实 decoder 的 codec 不允许走 `DecodeLocal`。
-6. 后续通过协议 codec 插件分别补齐 fbs、sproto、xmldef-native 的真实 `BodyCodec`；protobuf 和 msgpack 已有首个 provider 实现，msgpack 内置路径待迁移为兼容构建开关或删除。
+- Gateway 多目标路由（session.service_routes[room/scene/map]）。
+- Gateway 知道 logical_service_name。
+- bit-segment route_id 编码服务类型。
+- Lua 二次 if/else 路由。
+- 业务暴露 route_id、原始 frame 或 codec。
+- 每个 RPC 映射一个静态 CAF C++ 消息类型。
