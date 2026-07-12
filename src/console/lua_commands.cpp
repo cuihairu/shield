@@ -5,6 +5,8 @@
 #include <nlohmann/json.hpp>
 
 #include "shield/log/logger.hpp"
+#include "shield/lua/lua_runtime.hpp"
+#include "shield/lua/lua_service.hpp"
 
 extern "C" {
 #include <lauxlib.h>

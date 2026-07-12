@@ -30,6 +30,7 @@ using shield::transport::create_body_codec;
 using shield::transport::build_protocol_pipeline_from_json;
 using shield::transport::load_xmldef_routes_from_string;
 using shield::transport::RouteAction;
+using shield::transport::RouteDirection;
 using shield::transport::RouteEntry;
 using shield::transport::RoutePolicy;
 using shield::transport::RouteSource;
