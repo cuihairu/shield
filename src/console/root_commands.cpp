@@ -215,10 +215,31 @@ void RootCommands::cmd_plugin(shield::net::ConsoleSession& session,
         session.send_line(resp.dump());
         return;
     }
+    // Convert state enum to string
+    std::string state_str;
+    switch (inst->state) {
+        case shield::plugin::State::planned:
+            state_str = "planned";
+            break;
+        case shield::plugin::State::loaded:
+            state_str = "loaded";
+            break;
+        case shield::plugin::State::started:
+            state_str = "started";
+            break;
+        case shield::plugin::State::unavailable:
+            state_str = "unavailable";
+            break;
+        case shield::plugin::State::failed:
+            state_str = "failed";
+            break;
+        case shield::plugin::State::stopped:
+            state_str = "stopped";
+            break;
+    }
     nlohmann::json data = {{"id", inst->id},
-                           {"package", inst->package_id},
-                           {"state", plugin_state_name(inst->state)},
-                           {"required", inst->required},
+                           {"package", inst->package ? inst->package->id : ""},
+                           {"state", state_str},
                            {"last_error", inst->last_error},
                            {"dependencies", inst->dep_ids}};
     nlohmann::json resp = {{"type", "result"}, {"data", data}};
