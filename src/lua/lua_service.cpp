@@ -3,6 +3,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <caf/actor.hpp>
+#include <caf/actor_system.hpp>
+#include <caf/event_based_actor.hpp>
+#include <caf/send.hpp>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -117,6 +121,15 @@ struct LuaServiceManager::Impl {
     std::thread worker_thread;
     std::mutex worker_mutex;
     std::condition_variable worker_cv;
+
+    // CAF actor system bridge (optional). When attached, every spawned Lua
+    // service also gets a CAF actor handle in service_actors. The actor is a
+    // lifecycle-owned placeholder for now: it accepts fire-and-forget string
+    // messages but does not yet drive Lua dispatch. Message delivery still
+    // goes through the mailbox; the actor becomes the message entry point in
+    // a later step. Protected by registry_mutex alongside the tables above.
+    caf::actor_system* actor_system = nullptr;
+    std::unordered_map<std::string, caf::actor> service_actors;
 
     static int64_t now_ms() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -280,6 +293,18 @@ LuaServiceManager::~LuaServiceManager() {
         impl_->runtime.timer_manager().cancel_all_for_service(service_id);
         impl_->runtime.coroutine_scheduler().cancel_all_for_service(service_id);
     }
+
+    // Tear down any CAF service actors. The actor system (when attached)
+    // outlives this manager because bootstrap resets it afterwards, so it is
+    // safe to ask the actors to stop here.
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        for (auto& [id, actor] : impl_->service_actors) {
+            caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
+        }
+        impl_->service_actors.clear();
+    }
+
     impl_->runtime.set_service_manager(nullptr);
 }
 
@@ -392,6 +417,20 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             impl_->owned_names[service_name].insert(service_name);
             impl_->service_order.push_back(service_name);
             impl_->mailboxes[service_name] = std::make_shared<Mailbox>(1000);
+
+            // Step 2a: create a CAF actor for this service when an actor
+            // system is attached. The actor is a lifecycle-owned placeholder;
+            // it accepts fire-and-forget messages but does not drive Lua
+            // dispatch yet (that lands in Step 2b).
+            if (impl_->actor_system) {
+                auto actor = impl_->actor_system->spawn(
+                    [](caf::event_based_actor* /*self*/) -> caf::behavior {
+                        return caf::behavior{[](const std::string&) {
+                            // placeholder: accepted but not dispatched
+                        }};
+                    });
+                impl_->service_actors.emplace(service_name, std::move(actor));
+            }
         }
 
         if (exit_after_init) {
@@ -688,6 +727,15 @@ void LuaServiceManager::exit(std::string_view service_id,
                                    impl_->service_order.end());
         impl_->mailboxes.erase(id);
         impl_->recently_exited.insert(id);
+
+        // Step 2a: tear down the service's CAF actor, if any. anon_send_exit
+        // asks the actor to stop; erasing the handle releases our reference.
+        if (auto actor_it = impl_->service_actors.find(id);
+            actor_it != impl_->service_actors.end()) {
+            caf::anon_send_exit(actor_it->second,
+                                caf::exit_reason::user_shutdown);
+            impl_->service_actors.erase(actor_it);
+        }
     }
 }
 
@@ -1276,6 +1324,17 @@ bool LuaServiceManager::exec_lua(const std::string& service_id,
         return false;
     }
     return impl_->runtime.exec_lua(service, code, result, error);
+}
+
+void LuaServiceManager::attach_actor_system(caf::actor_system& system) {
+    std::unique_lock lock(impl_->registry_mutex);
+    impl_->actor_system = &system;
+}
+
+bool LuaServiceManager::has_service_actor(const std::string& service_id) const {
+    std::shared_lock lock(impl_->registry_mutex);
+    return impl_->service_actors.find(service_id) !=
+           impl_->service_actors.end();
 }
 
 }  // namespace shield::lua

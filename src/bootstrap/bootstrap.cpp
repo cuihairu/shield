@@ -25,14 +25,14 @@
 #include <vector>
 
 #include "shield/caf_initializer.hpp"
+#include "shield/console/command_dispatcher.hpp"
+#include "shield/console/lua_commands.hpp"
+#include "shield/console/root_commands.hpp"
 #include "shield/core/caf_adapter.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
-#include "shield/net/console_server.hpp"
-#include "shield/console/command_dispatcher.hpp"
-#include "shield/console/root_commands.hpp"
-#include "shield/console/lua_commands.hpp"
 #include "shield/lua/lua_service.hpp"
+#include "shield/net/console_server.hpp"
 #include "shield/net/listener.hpp"
 #include "shield/shield.hpp"
 #include "shield/transport/protocol.hpp"
@@ -343,6 +343,11 @@ bool initialize(const RuntimeConfig& config) {
     g_state->lua_services =
         std::make_unique<shield::lua::LuaServiceManager>(*g_state->lua_runtime);
 
+    // Step 2a: let spawned Lua services also own a CAF actor handle. The
+    // actor is a lifecycle-owned placeholder for now; it does not yet drive
+    // Lua dispatch.
+    g_state->lua_services->attach_actor_system(*g_state->actor_system);
+
     for (const auto& actor : shield::config::runtime_actors()) {
         const int instances = actor.instances < 0 ? 0 : actor.instances;
         for (int i = 0; i < instances; ++i) {
@@ -511,8 +516,8 @@ bool initialize(const RuntimeConfig& config) {
     // Start console server if enabled
     if (shield::config::get("console.enabled", "false") == "true" &&
         g_state->lua_services && g_state->lua_runtime) {
-        auto sock_path = shield::config::get(
-            "console.socket_path", "/tmp/shield-console.sock");
+        auto sock_path = shield::config::get("console.socket_path",
+                                             "/tmp/shield-console.sock");
         try {
             g_state->console_server =
                 std::make_unique<shield::net::ConsoleServer>(g_state->net_io,
@@ -532,17 +537,16 @@ bool initialize(const RuntimeConfig& config) {
             // Wire the line handler from the dispatcher to the server
             auto& dispatcher = *g_state->console_dispatcher;
             g_state->console_server->set_on_line(
-                [&dispatcher](std::shared_ptr<shield::net::ConsoleSession> session,
-                              std::string line) {
-                    dispatcher.dispatch(session, line);
-                });
+                [&dispatcher](
+                    std::shared_ptr<shield::net::ConsoleSession> session,
+                    std::string line) { dispatcher.dispatch(session, line); });
 
             g_state->console_server->start();
             SHIELD_LOG_INFO(log, "Console server listening on " + sock_path);
         } catch (const std::exception& e) {
-            SHIELD_LOG_ERROR(log,
-                             std::string("Failed to start console server: ") +
-                                 e.what());
+            SHIELD_LOG_ERROR(
+                log,
+                std::string("Failed to start console server: ") + e.what());
         }
     }
 

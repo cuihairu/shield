@@ -16,6 +16,10 @@
 // this interface).
 struct lua_State;
 
+namespace caf {
+class actor_system;
+}  // namespace caf
+
 namespace shield::lua {
 
 class LuaRuntime;
@@ -215,6 +219,17 @@ public:
     bool exec_lua(const std::string& service_id, const std::string& code,
                   nlohmann::json* result = nullptr,
                   std::string* error = nullptr);
+
+    // Attach a CAF actor system so spawned Lua services are also given a CAF
+    // actor handle. Optional: when not attached, behavior is unchanged. This
+    // is the entry point for the CAF-is-the-only-actor-runtime convergence;
+    // the actor currently acts as a lifecycle-owned placeholder and does not
+    // yet drive Lua dispatch.
+    void attach_actor_system(caf::actor_system& system);
+
+    // Test-only introspection: returns true when a CAF actor handle is
+    // registered for the given service id.
+    bool has_service_actor(const std::string& service_id) const;
 
 private:
     struct Impl;
