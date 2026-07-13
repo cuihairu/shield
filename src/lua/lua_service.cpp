@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <shared_mutex>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -21,6 +22,22 @@
 #include "shield/lua/lua_runtime.hpp"
 
 namespace shield::lua {
+
+namespace {
+
+struct DispatchFrame {
+    std::string service_id;
+    std::string sender_id;
+    std::string trace_id;
+    int64_t deadline_ms = 0;
+    bool in_exit = false;
+    bool exit_requested = false;
+    std::string exit_reason = "normal";
+};
+
+thread_local std::vector<DispatchFrame> tls_dispatch_stack;
+
+}  // namespace
 
 CallResult CallResult::ok(nlohmann::json values) {
     return {true, std::move(values), ""};
@@ -39,19 +56,9 @@ struct LuaServiceManager::Impl {
     std::unordered_map<std::string, std::string> module_scripts;
     std::unordered_map<std::string, std::shared_ptr<Mailbox>> mailboxes;
     std::vector<std::string> service_order;
-    bool stopping = false;  // set by shutdown_all, checked by send/call/spawn
-
-    struct DispatchFrame {
-        std::string service_id;
-        std::string sender_id;
-        std::string trace_id;
-        int64_t deadline_ms = 0;
-        bool in_exit = false;
-        bool exit_requested = false;
-        std::string exit_reason = "normal";
-    };
-
-    std::vector<DispatchFrame> dispatch_stack;
+    mutable std::shared_mutex registry_mutex;
+    std::atomic<bool> stopping{
+        false};  // set by shutdown_all, checked by send/call/spawn
 
     // Forked task queue. Drained only by the worker thread (or pump_once on
     // the caller's thread when no worker is running).
@@ -157,42 +164,43 @@ struct LuaServiceManager::Impl {
     }
 
     std::string current_service_id() const {
-        if (dispatch_stack.empty()) {
+        if (tls_dispatch_stack.empty()) {
             return "";
         }
-        return dispatch_stack.back().service_id;
+        return tls_dispatch_stack.back().service_id;
     }
 
     std::string current_sender_id() const {
-        if (dispatch_stack.empty()) {
+        if (tls_dispatch_stack.empty()) {
             return "";
         }
-        return dispatch_stack.back().sender_id;
+        return tls_dispatch_stack.back().sender_id;
     }
 
     std::string current_trace_id() const {
-        if (dispatch_stack.empty()) {
+        if (tls_dispatch_stack.empty()) {
             return "";
         }
-        return dispatch_stack.back().trace_id;
+        return tls_dispatch_stack.back().trace_id;
     }
 
     int64_t current_deadline_ms() const {
-        if (dispatch_stack.empty()) {
+        if (tls_dispatch_stack.empty()) {
             return 0;
         }
-        return dispatch_stack.back().deadline_ms;
+        return tls_dispatch_stack.back().deadline_ms;
     }
 
     bool is_exit_requested(std::string* service_id, std::string* reason) const {
-        if (dispatch_stack.empty() || !dispatch_stack.back().exit_requested) {
+        if (tls_dispatch_stack.empty() ||
+            !tls_dispatch_stack.back().exit_requested) {
             return false;
         }
         if (service_id) {
-            *service_id = dispatch_stack.back().service_id;
+            *service_id = tls_dispatch_stack.back().service_id;
         }
         if (reason) {
-            *reason = dispatch_stack.back().exit_reason;
+            *reason = tls_dispatch_stack.back().exit_reason;
         }
         return true;
     }
@@ -218,7 +226,7 @@ struct LuaServiceManager::Impl {
                       bool in_exit, std::string trace_id = "",
                       int64_t deadline_ms = 0)
             : impl_(impl), service_id_(service_id) {
-            impl_.dispatch_stack.push_back({
+            tls_dispatch_stack.push_back({
                 std::move(service_id),
                 std::move(sender_id),
                 std::move(trace_id),
@@ -231,14 +239,15 @@ struct LuaServiceManager::Impl {
 
         ~DispatchScope() {
             // Save last sender for context_expired detection.
-            if (!impl_.dispatch_stack.empty()) {
-                const auto& frame = impl_.dispatch_stack.back();
+            if (!tls_dispatch_stack.empty()) {
+                const auto& frame = tls_dispatch_stack.back();
                 if (!frame.sender_id.empty()) {
+                    std::unique_lock lock(impl_.registry_mutex);
                     impl_.last_sender_per_service[frame.service_id] =
                         frame.sender_id;
                 }
             }
-            impl_.dispatch_stack.pop_back();
+            tls_dispatch_stack.pop_back();
         }
 
         DispatchScope(const DispatchScope&) = delete;
@@ -261,7 +270,11 @@ LuaServiceManager::~LuaServiceManager() {
     // TimerManager and CoroutineScheduler live in LuaRuntime, which outlives
     // this manager; without this cleanup their sol::function/std::function
     // callbacks would be released after the owning lua_State is already closed.
-    const auto service_ids = impl_->service_order;
+    std::vector<std::string> service_ids;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        service_ids = impl_->service_order;
+    }
     for (const auto& service_id : service_ids) {
         cancel_forked_tasks_for_service(service_id);
         impl_->runtime.timer_manager().cancel_all_for_service(service_id);
@@ -272,7 +285,7 @@ LuaServiceManager::~LuaServiceManager() {
 
 SpawnResult LuaServiceManager::spawn(std::string_view module,
                                      std::string_view opts_json) {
-    if (impl_->stopping) {
+    if (impl_->stopping.load()) {
         return SpawnResult::error("runtime is stopping");
     }
     try {
@@ -290,13 +303,16 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             service_name +=
                 std::to_string(std::hash<std::string_view>{}(module));
         }
-        if (impl_->services.contains(service_name)) {
-            return SpawnResult::error("service already exists: " +
-                                      service_name);
-        }
-        if (impl_->published_names.contains(service_name)) {
-            return SpawnResult::error("service name already exists: " +
-                                      service_name);
+        {
+            std::shared_lock lock(impl_->registry_mutex);
+            if (impl_->services.contains(service_name)) {
+                return SpawnResult::error("service already exists: " +
+                                          service_name);
+            }
+            if (impl_->published_names.contains(service_name)) {
+                return SpawnResult::error("service name already exists: " +
+                                          service_name);
+            }
         }
         if (!Impl::valid_name(service_name)) {
             return SpawnResult::error("invalid service name: " + service_name);
@@ -345,12 +361,15 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                         std::to_string(init_ms) + "ms (limit " +
                         std::to_string(spawn_timeout_ms) + "ms)");
                 }
-                if (auto names_it = impl_->owned_names.find(service_name);
-                    names_it != impl_->owned_names.end()) {
-                    for (const auto& name : names_it->second) {
-                        impl_->published_names.erase(name);
+                {
+                    std::unique_lock lock(impl_->registry_mutex);
+                    if (auto names_it = impl_->owned_names.find(service_name);
+                        names_it != impl_->owned_names.end()) {
+                        for (const auto& name : names_it->second) {
+                            impl_->published_names.erase(name);
+                        }
+                        impl_->owned_names.erase(names_it);
                     }
-                    impl_->owned_names.erase(names_it);
                 }
                 return SpawnResult::error("on_init failed for " + service_name +
                                           ": " + error);
@@ -361,13 +380,19 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                 exit_service_id == service_name;
         }
 
-        impl_->services[service_name] = std::move(vm);
-        impl_->published_names[service_name] = service_name;
-        impl_->owned_names[service_name].insert(service_name);
-        impl_->service_order.push_back(service_name);
-
-        // Create mailbox for the service
-        impl_->mailboxes[service_name] = std::make_shared<Mailbox>(1000);
+        {
+            std::unique_lock lock(impl_->registry_mutex);
+            if (impl_->services.contains(service_name) ||
+                impl_->published_names.contains(service_name)) {
+                return SpawnResult::error("service name already exists: " +
+                                          service_name);
+            }
+            impl_->services[service_name] = std::move(vm);
+            impl_->published_names[service_name] = service_name;
+            impl_->owned_names[service_name].insert(service_name);
+            impl_->service_order.push_back(service_name);
+            impl_->mailboxes[service_name] = std::make_shared<Mailbox>(1000);
+        }
 
         if (exit_after_init) {
             exit(service_name, exit_reason);
@@ -417,7 +442,7 @@ bool validate_message_payload(const nlohmann::json& args, std::string* error) {
 
 bool LuaServiceManager::send(std::string_view target, std::string_view method,
                              const nlohmann::json& args, std::string* error) {
-    if (impl_->stopping) {
+    if (impl_->stopping.load()) {
         if (error) *error = "runtime is stopping";
         return false;
     }
@@ -442,10 +467,13 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
     }
 
     const std::string service_id = query_service(target);
-
-    auto mailbox_it = impl_->mailboxes.find(service_id);
-    if (mailbox_it == impl_->mailboxes.end()) {
-        if (error) {
+    std::shared_ptr<Mailbox> mailbox;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto mailbox_it = impl_->mailboxes.find(service_id);
+        if (mailbox_it != impl_->mailboxes.end()) {
+            mailbox = mailbox_it->second;
+        } else if (error) {
             // Distinguish between "never existed" and "exited".
             if (impl_->recently_exited.count(service_id) > 0 ||
                 impl_->recently_exited.count(std::string(target)) > 0) {
@@ -454,6 +482,8 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
                 *error = "service not found: " + std::string(target);
             }
         }
+    }
+    if (!mailbox) {
         return false;
     }
 
@@ -473,7 +503,7 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
     msg.priority = Mailbox::Priority::Normal;
     msg.timestamp_ms = now_ms;
 
-    if (!mailbox_it->second->push(msg, Mailbox::Backpressure::DropNewest)) {
+    if (!mailbox->push(msg, Mailbox::Backpressure::DropNewest)) {
         if (error) {
             *error = "mailbox full";
         }
@@ -487,7 +517,7 @@ bool LuaServiceManager::send_system(std::string_view target,
                                     std::string_view method,
                                     const nlohmann::json& args,
                                     std::string* error) {
-    if (impl_->stopping) {
+    if (impl_->stopping.load()) {
         if (error) *error = "runtime is stopping";
         return false;
     }
@@ -497,8 +527,15 @@ bool LuaServiceManager::send_system(std::string_view target,
     }
 
     const std::string service_id = query_service(target);
-    auto mailbox_it = impl_->mailboxes.find(service_id);
-    if (mailbox_it == impl_->mailboxes.end()) {
+    std::shared_ptr<Mailbox> mailbox;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto mailbox_it = impl_->mailboxes.find(service_id);
+        if (mailbox_it != impl_->mailboxes.end()) {
+            mailbox = mailbox_it->second;
+        }
+    }
+    if (!mailbox) {
         if (error) *error = "service not found: " + std::string(target);
         return false;
     }
@@ -514,7 +551,7 @@ bool LuaServiceManager::send_system(std::string_view target,
     msg.priority = Mailbox::Priority::High;
     msg.timestamp_ms = now_ms;
 
-    if (!mailbox_it->second->push(msg, Mailbox::Backpressure::DropNewest)) {
+    if (!mailbox->push(msg, Mailbox::Backpressure::DropNewest)) {
         if (error) *error = "mailbox full";
         return false;
     }
@@ -527,8 +564,15 @@ bool LuaServiceManager::send_call_request(std::string_view target,
                                           uint64_t session,
                                           std::string* error) {
     const std::string service_id = query_service(target);
-    auto mailbox_it = impl_->mailboxes.find(service_id);
-    if (mailbox_it == impl_->mailboxes.end()) {
+    std::shared_ptr<Mailbox> mailbox;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto mailbox_it = impl_->mailboxes.find(service_id);
+        if (mailbox_it != impl_->mailboxes.end()) {
+            mailbox = mailbox_it->second;
+        }
+    }
+    if (!mailbox) {
         if (error) {
             *error = "service not found: " + std::string(target);
         }
@@ -549,7 +593,7 @@ bool LuaServiceManager::send_call_request(std::string_view target,
     msg.timestamp_ms = now_ms;
     msg.call_session = session;
     msg.call_reply_to = current_service_id();
-    if (!mailbox_it->second->push(msg, Mailbox::Backpressure::DropNewest)) {
+    if (!mailbox->push(msg, Mailbox::Backpressure::DropNewest)) {
         if (error) {
             *error = "mailbox full";
         }
@@ -562,14 +606,21 @@ CallResult LuaServiceManager::call(std::string_view target,
                                    std::string_view method,
                                    const nlohmann::json& args,
                                    int32_t timeout_ms) {
-    if (impl_->stopping) {
+    if (impl_->stopping.load()) {
         return CallResult::error("runtime is stopping");
     }
     (void)timeout_ms;
 
     const std::string service_id = query_service(target);
-    auto service_it = impl_->services.find(service_id);
-    if (service_it == impl_->services.end()) {
+    std::shared_ptr<LuaVM> service;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto service_it = impl_->services.find(service_id);
+        if (service_it != impl_->services.end()) {
+            service = service_it->second;
+        }
+    }
+    if (!service) {
         return CallResult::error("service not found: " + std::string(target));
     }
 
@@ -578,8 +629,8 @@ CallResult LuaServiceManager::call(std::string_view target,
 
     nlohmann::json values = nlohmann::json::array();
     std::string error;
-    if (!impl_->runtime.call_service_method(service_it->second, method, args,
-                                            &values, &error)) {
+    if (!impl_->runtime.call_service_method(service, method, args, &values,
+                                            &error)) {
         return CallResult::error(error);
     }
 
@@ -595,57 +646,73 @@ CallResult LuaServiceManager::call(std::string_view target,
 
 void LuaServiceManager::exit(std::string_view service_id,
                              std::string_view reason) {
-    auto it = impl_->services.find(std::string(service_id));
-    if (it == impl_->services.end()) {
+    const std::string id(service_id);
+    std::shared_ptr<LuaVM> service;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto it = impl_->services.find(id);
+        if (it != impl_->services.end()) {
+            service = it->second;
+        }
+    }
+    if (!service) {
         return;
     }
 
     std::string error;
     nlohmann::json args = std::string(reason);
-    Impl::DispatchScope scope(*impl_, std::string(service_id), "", true);
-    (void)impl_->runtime.call_service_function(it->second, "on_exit", args,
+    Impl::DispatchScope scope(*impl_, id, "", true);
+    (void)impl_->runtime.call_service_function(service, "on_exit", args,
                                                &error);
 
     // Cancel forked tasks / timers / coroutines BEFORE erasing the service
     // VM. These hold sol::function / std::function callbacks that reference
     // the service's lua_State; releasing them after the VM is destroyed
     // would luaL_unref on a closed state.
-    cancel_forked_tasks_for_service(std::string(service_id));
-    impl_->runtime.timer_manager().cancel_all_for_service(
-        std::string(service_id));
-    impl_->runtime.coroutine_scheduler().cancel_all_for_service(
-        std::string(service_id));
+    cancel_forked_tasks_for_service(id);
+    impl_->runtime.timer_manager().cancel_all_for_service(id);
+    impl_->runtime.coroutine_scheduler().cancel_all_for_service(id);
 
-    if (auto names_it = impl_->owned_names.find(std::string(service_id));
-        names_it != impl_->owned_names.end()) {
-        for (const auto& name : names_it->second) {
-            impl_->published_names.erase(name);
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        if (auto names_it = impl_->owned_names.find(id);
+            names_it != impl_->owned_names.end()) {
+            for (const auto& name : names_it->second) {
+                impl_->published_names.erase(name);
+            }
+            impl_->owned_names.erase(names_it);
         }
-        impl_->owned_names.erase(names_it);
+        impl_->services.erase(id);
+        impl_->service_order.erase(std::remove(impl_->service_order.begin(),
+                                               impl_->service_order.end(), id),
+                                   impl_->service_order.end());
+        impl_->mailboxes.erase(id);
+        impl_->recently_exited.insert(id);
     }
-    impl_->services.erase(it);
-    impl_->service_order.erase(
-        std::remove(impl_->service_order.begin(), impl_->service_order.end(),
-                    std::string(service_id)),
-        impl_->service_order.end());
-
-    // Clean up mailbox
-    impl_->mailboxes.erase(std::string(service_id));
-
-    // Track for service_dead error distinction.
-    impl_->recently_exited.insert(std::string(service_id));
 }
 
 void LuaServiceManager::shutdown_all(std::string_view reason) {
-    impl_->stopping = true;
+    impl_->stopping.store(true);
     std::unordered_set<std::string> seen;
-    const auto order = impl_->service_order;
+    std::vector<std::string> order;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        order = impl_->service_order;
+    }
     for (auto it = order.rbegin(); it != order.rend(); ++it) {
-        if (seen.insert(*it).second && impl_->services.contains(*it)) {
+        bool exists = false;
+        {
+            std::shared_lock lock(impl_->registry_mutex);
+            exists = impl_->services.contains(*it);
+        }
+        if (seen.insert(*it).second && exists) {
             exit(*it, reason);
         }
     }
-    impl_->service_order.clear();
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->service_order.clear();
+    }
 }
 
 std::string LuaServiceManager::current_service_id() const {
@@ -665,10 +732,10 @@ int64_t LuaServiceManager::current_deadline_ms() const {
 }
 
 void LuaServiceManager::request_current_exit(std::string_view reason) {
-    if (impl_->dispatch_stack.empty()) {
+    if (tls_dispatch_stack.empty()) {
         return;
     }
-    auto& frame = impl_->dispatch_stack.back();
+    auto& frame = tls_dispatch_stack.back();
     if (frame.in_exit) {
         return;
     }
@@ -677,13 +744,14 @@ void LuaServiceManager::request_current_exit(std::string_view reason) {
 }
 
 bool LuaServiceManager::is_in_exit() const {
-    if (impl_->dispatch_stack.empty()) {
+    if (tls_dispatch_stack.empty()) {
         return false;
     }
-    return impl_->dispatch_stack.back().in_exit;
+    return tls_dispatch_stack.back().in_exit;
 }
 
 std::string LuaServiceManager::query_service(std::string_view name) const {
+    std::shared_lock lock(impl_->registry_mutex);
     auto it = impl_->published_names.find(std::string(name));
     if (it == impl_->published_names.end()) {
         return "";
@@ -701,17 +769,19 @@ bool LuaServiceManager::register_name(std::string_view name,
         return false;
     }
     const bool in_current_dispatch =
-        !impl_->dispatch_stack.empty() &&
-        impl_->dispatch_stack.back().service_id == owner;
-    if (!impl_->services.contains(owner) && !in_current_dispatch) {
-        if (error) {
-            *error = "current service is not running: " + owner;
-        }
-        return false;
-    }
+        !tls_dispatch_stack.empty() &&
+        tls_dispatch_stack.back().service_id == owner;
     if (!Impl::valid_name(name)) {
         if (error) {
             *error = "invalid service name: " + std::string(name);
+        }
+        return false;
+    }
+
+    std::unique_lock lock(impl_->registry_mutex);
+    if (!impl_->services.contains(owner) && !in_current_dispatch) {
+        if (error) {
+            *error = "current service is not running: " + owner;
         }
         return false;
     }
@@ -738,6 +808,7 @@ bool LuaServiceManager::unregister_name(std::string_view name,
         return false;
     }
 
+    std::unique_lock lock(impl_->registry_mutex);
     auto existing = impl_->published_names.find(std::string(name));
     if (existing == impl_->published_names.end()) {
         if (error) {
@@ -763,47 +834,58 @@ bool LuaServiceManager::unregister_name(std::string_view name,
 
 std::vector<std::string> LuaServiceManager::list_services() const {
     std::vector<std::string> services;
-    services.reserve(impl_->published_names.size());
-    for (const auto& [name, _] : impl_->published_names) {
-        services.push_back(name);
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        services.reserve(impl_->published_names.size());
+        for (const auto& [name, _] : impl_->published_names) {
+            services.push_back(name);
+        }
     }
     std::sort(services.begin(), services.end());
     return services;
 }
 
 bool LuaServiceManager::process_mailbox(std::string_view service_id) {
-    auto mailbox_it = impl_->mailboxes.find(std::string(service_id));
-    if (mailbox_it == impl_->mailboxes.end()) {
+    const std::string id(service_id);
+    std::shared_ptr<Mailbox> mailbox;
+    std::shared_ptr<LuaVM> service;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto mailbox_it = impl_->mailboxes.find(id);
+        if (mailbox_it != impl_->mailboxes.end()) {
+            mailbox = mailbox_it->second;
+        }
+        auto service_it = impl_->services.find(id);
+        if (service_it != impl_->services.end()) {
+            service = service_it->second;
+        }
+    }
+    if (!mailbox || !service) {
         return false;
     }
 
     Mailbox::Message msg;
-    if (!mailbox_it->second->pop(&msg)) {
+    if (!mailbox->pop(&msg)) {
         return false;  // No messages to process
-    }
-
-    auto service_it = impl_->services.find(std::string(service_id));
-    if (service_it == impl_->services.end()) {
-        return false;  // Service no longer exists
     }
 
     // Process the message. Handlers run inside a Lua coroutine so they can
     // yield via shield.sleep / coroutine-aware call without blocking the
     // worker; a handler that does not yield completes synchronously here.
-    Impl::DispatchScope scope(*impl_, std::string(service_id), msg.sender,
-                              false, msg.trace_id, msg.deadline_ms);
+    Impl::DispatchScope scope(*impl_, id, msg.sender, false, msg.trace_id,
+                              msg.deadline_ms);
 
     std::string error;
     if (!impl_->runtime.call_service_method_coroutine(
-            service_it->second, msg.method, msg.args, &error, msg.call_session,
-            this, service_id)) {
+            service, msg.method, msg.args, &error, msg.call_session, this,
+            id)) {
         // Method failed - log error but continue processing other messages
     }
 
     std::string exit_service_id;
     std::string exit_reason;
     if (impl_->is_exit_requested(&exit_service_id, &exit_reason) &&
-        exit_service_id == service_id) {
+        exit_service_id == id) {
         exit(exit_service_id, exit_reason);
     }
 
@@ -814,9 +896,18 @@ int LuaServiceManager::process_all_mailboxes() {
     int processed = 0;
     // Take a snapshot because process_mailbox may call exit(), which erases
     // from impl_->services and invalidates iterators.
-    const auto snapshot = impl_->service_order;
+    std::vector<std::string> snapshot;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        snapshot = impl_->service_order;
+    }
     for (const auto& service_id : snapshot) {
-        if (!impl_->services.contains(service_id)) {
+        bool exists = false;
+        {
+            std::shared_lock lock(impl_->registry_mutex);
+            exists = impl_->services.contains(service_id);
+        }
+        if (!exists) {
             continue;
         }
         if (process_mailbox(service_id)) {
@@ -1135,8 +1226,15 @@ void LuaServiceManager::invoke_error_hook(const std::string& service_id,
                                           const std::string& error_type,
                                           const std::string& method_name,
                                           const std::string& error_message) {
-    auto it = impl_->services.find(service_id);
-    if (it == impl_->services.end()) {
+    std::shared_ptr<LuaVM> service;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto it = impl_->services.find(service_id);
+        if (it != impl_->services.end()) {
+            service = it->second;
+        }
+    }
+    if (!service) {
         return;
     }
 
@@ -1145,12 +1243,12 @@ void LuaServiceManager::invoke_error_hook(const std::string& service_id,
     ++count;
 
     // Call on_error(err, context) if defined on the service table.
-    impl_->runtime.invoke_hook(it->second, "on_error", error_message,
-                               error_type, method_name);
+    impl_->runtime.invoke_hook(service, "on_error", error_message, error_type,
+                               method_name);
 
     // Check panic threshold.
     if (count >= Impl::kDefaultMaxErrorsBeforePanic) {
-        impl_->runtime.invoke_hook(it->second, "on_panic",
+        impl_->runtime.invoke_hook(service, "on_panic",
                                    "consecutive errors reached limit",
                                    error_type, method_name);
         // Exit the service after panic.
@@ -1163,15 +1261,21 @@ void LuaServiceManager::reset_error_count(const std::string& service_id) {
 }
 
 bool LuaServiceManager::exec_lua(const std::string& service_id,
-                                  const std::string& code,
-                                  nlohmann::json* result,
-                                  std::string* error) {
-    auto it = impl_->services.find(service_id);
-    if (it == impl_->services.end()) {
+                                 const std::string& code,
+                                 nlohmann::json* result, std::string* error) {
+    std::shared_ptr<LuaVM> service;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto it = impl_->services.find(service_id);
+        if (it != impl_->services.end()) {
+            service = it->second;
+        }
+    }
+    if (!service) {
         if (error) *error = "Service not found: " + service_id;
         return false;
     }
-    return impl_->runtime.exec_lua(it->second, code, result, error);
+    return impl_->runtime.exec_lua(service, code, result, error);
 }
 
 }  // namespace shield::lua
