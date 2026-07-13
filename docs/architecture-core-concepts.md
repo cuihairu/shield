@@ -43,7 +43,6 @@ CAF 覆盖机制，Shield 补服务语义。
 
 CAF 可以承接 actor 调度、mailbox、spawn、send、request、timer 和远程 actor transport。Shield 仍然必须实现 service name registry、Lua coroutine pending/resume、Lua service 生命周期和 `shield.*` API。
 
-> **当前实现状态（待纠偏）**：CAF service runtime 尚未闭环——`CafAdapter::call` 仍是 stub，Lua 服务实际由 `LuaServiceManager` 自管一套 mailbox + 单 worker runtime。这是与上述目标态的偏差，属架构债，纳入纠偏计划（见 [架构决策记录](architecture-decisions.md) AD-01、[roadmap](roadmap.md)）。本节描述的「CAF 是唯一 actor runtime 底座」仍是坚持的目标，不因当前偏差而改变。
 
 ## 4. 小核心
 

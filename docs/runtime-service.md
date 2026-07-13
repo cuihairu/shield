@@ -129,11 +129,10 @@ shield.spawn("worker_pool", { name = "worker.pool" })
 
 round-robin、hash、按房间路由等能力应由显式 pool service 实现，不放进 core registry。
 
-当前实现状态：Phase 1 最小路径已在单节点 `LuaServiceManager` 中实现
-published name 表，支持默认 service name、`shield.query`、`shield.register`、
-`shield.unregister`、`shield.names` 和 service exit 自动清理 owned names。
-返回值暂时仍是本地 service name 字符串；完整 reserve/publish 状态机、
-opaque `ServiceHandle` userdata、ServiceId 单调分配和 stale handle 语义仍是目标实现。
+单节点 CAF service runtime 维护 published name 表，支持默认 service name、
+`shield.query`、`shield.register`、`shield.unregister`、`shield.names` 和
+service exit 自动清理 owned names。完整 registry 契约包括 reserve/publish 状态机、
+opaque `ServiceHandle` userdata、ServiceId 单调分配和 stale handle 语义。
 
 ## 心跳与离线清理
 
@@ -174,11 +173,10 @@ heartbeat 放在 `shield_cluster`，不进入 `shield_core`。
 
 Lua coroutine 会挂起直到目标 service init 成功或失败，但 runtime 线程不阻塞。
 
-当前实现状态：Phase 1 最小路径已经支持在单节点 `LuaServiceManager`
-中按 YAML `actors[].name` 解析脚本别名，创建独立 Lua VM，调用
-`on_init(args)`，成功后发布 service name，失败则返回 `nil, Error`。完整
-ServiceId/ServiceHandle userdata、name reserve 状态和 coroutine-aware
-异步 spawn 仍是目标语义。
+单节点 CAF service runtime 按 YAML `actors[].name` 解析脚本别名，创建独立
+Lua VM，调用 `on_init(args)`，成功后发布 service name，失败则返回
+`nil, Error`。完整 spawn 契约包括 ServiceId/ServiceHandle userdata、
+name reserve 状态和 coroutine-aware 异步 spawn。
 
 ```lua
 local h, err = shield.spawn("gateway", {

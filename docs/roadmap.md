@@ -13,8 +13,8 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 以下顺序源于 [架构决策记录](architecture-decisions.md)。每一步必须独立验收；旧实现只能作为待删除源码存在，不能继续出现在 public 文档、示例或测试目标中。
 
 1. [ ] **CAF 调度地基**：将 dispatch 上下文改为 per-worker/thread-local，Service registry 增加并发保护；不改变 public 语义。
-2. [ ] **CAF Service runtime 闭环**：Lua Service 的 spawn、mailbox、send、call、exit 全部落到 CAF actor；删除 `LuaServiceManager` 自管的第二套调度/runtime。
-3. [ ] **Service call 语义**：使用 CAF request/reply 驱动 Lua coroutine yield/resume，禁止跨 VM 同步重入和 dummy response。
+2. [ ] **CAF Service runtime 闭环**：Lua Service 的 spawn、mailbox、send、call、exit 全部落到 CAF actor。
+3. [ ] **Service call 语义**：使用 CAF request/reply 驱动 Lua coroutine yield/resume，禁止跨 VM 同步重入。
 4. [ ] **客户端内部消息类别**：CAF behavior 接入结构化 `ClientIngress`、`ClientEgress` 与 client lifecycle control，禁止把所有 envelope 压成字符串或普通 Lua method。
 5. [ ] **RPC descriptor 与 binding**：compiled descriptor 定义 `route_id, direction, request_schema, response_schema, binding_hint`；每个目标 VM 启动时编译 `route_id -> cached Lua handler`，缺失或重复 binding 直接启动失败。
 6. [ ] **Session 绑定**：Gateway 维护 session 绑定（target ServiceHandle、player_id、epoch、protocol profile）。认证前 target = AuthService，认证后原子切换 target = PlayerService。room/scene/map 动态路由由 PlayerService 私有状态管理。

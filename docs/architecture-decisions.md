@@ -1,29 +1,20 @@
 # 架构决策记录
 
-本文档冻结 Shield 当前阶段的架构决策，作为「设计说了什么」与「实现做到什么」的对齐基准。决策一旦写入本文，后续实现偏离即视为架构债，需显式纠偏而非默认继承。
+本文档冻结 Shield 当前阶段的架构决策，作为架构设计与实现推进的对齐基准。决策一旦写入本文，后续实现必须围绕该契约收敛。
 
 若本文与 [架构总纲](architecture.md)、[核心设计理念](architecture-core-concepts.md) 或 [Skynet 对比](skynet-comparison.md) 冲突，以本文为准。
 
 ---
 
-## 背景：设计目标与当前实现的偏差
+## 背景：设计目标
 
-Shield 最初的设计约定是：
+Shield 的设计约定是：
 
 > **参考 skynet 的 service/call/send/coroutine 语义，用 CAF 承接 actor runtime，Service 是唯一的可寻址 RPC 单元。**
 
 见 [核心设计理念 §3](architecture-core-concepts.md)、[Skynet 对比 §CAF 与 Skynet 语义的关系](skynet-comparison.md)。
 
-但当前实现**没有完整落地这条约定**：
-
-- `CafAdapter::call` 仍是 stub：`src/core/caf_adapter.cpp:94-105`（注释自认 "For now, return a dummy response"）。
-- `CafAdapter::spawn_service` 的 actor behavior 只是占位：`src/core/caf_adapter.cpp:70-72`（"Message dispatch will be replaced by Shield envelope routing"）。
-- bootstrap 创建 Lua 服务时走的是 `lua_services->spawn(...)`，不经 `caf_adapter->spawn_service`：`src/bootstrap/bootstrap.cpp:365`。
-- Lua 服务实际由 `LuaServiceManager` 自管一套 mailbox + 单 worker runtime：`src/lua/lua_service.cpp:35-112, 829-929`。
-
-也就是说，当前存在 **CAF actor 路径（未闭环）** 与 **LuaServiceManager 自管 runtime（实际在用）** 两套并行的 service runtime。这不是合理分层，而是「未完成的 CAF 路径 + 为了先跑通而长出来的临时 runtime」。
-
-本文冻结的决策，意在先把「坚持原设计」这一点定死，再把客户端交互契约和玩家承载模型收口，避免后续在偏差地基上继续堆叠。
+本文冻结的决策，意在把 CAF actor runtime、客户端交互契约和玩家承载模型收口，避免后续引入独立 service runtime 或额外可寻址对象模型。
 
 ---
 
@@ -33,11 +24,9 @@ Shield 最初的设计约定是：
 
 **理由**：这是项目最初的约定，也是「不重复造 skynet」的核心。CAF 提供了 actor / mailbox / scheduler / request-reply / remote actor，完全够用；选型没有错。
 
-**当前状态**：`LuaServiceManager` 自管 runtime 属于**架构偏差**，不是既定形态。纳入纠偏计划。
-
-**纠偏顺序**（见 [roadmap](roadmap.md)）：
+**推进顺序**（见 [roadmap](roadmap.md)）：
 1. `dispatch_stack` thread-local 化 + 服务注册表加 shared_mutex（零语义变化）。
-2. `shield.call` 从同步重入改为 coroutine yield + mailbox reply。
+2. `shield.call` 使用 CAF request/reply 驱动 coroutine yield/resume。
 3. per-service 执行权 + 全局激活队列 + N worker 抢占调度（达成 skynet 式多核并发，每 VM 串行）。
 
 ---

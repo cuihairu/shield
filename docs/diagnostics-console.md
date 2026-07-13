@@ -114,8 +114,8 @@ lua:gameserver1> detach
 ## 线程安全模型
 
 - **线程安全子系统**（PluginHost、Config、ClusterManager、Logger）：console 线程直接调用
-- **非线程安全子系统**（LuaServiceManager）：通过 `enqueue_forked_task` 调度到 Lua worker 线程，`promise/future` 回传结果
-- worker tick 间隔 ~10ms，查询延迟可忽略
+- **Service actor 子系统**：通过 CAF/service actor 调度投递到对应 runtime owner，`promise/future` 回传结果
+- actor 调度延迟通常可忽略
 
 ## 实现文件
 
