@@ -2,8 +2,11 @@
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
+#include <chrono>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <thread>
 
 #include "shield/caf_initializer.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -25,6 +28,27 @@ nlohmann::json opts_for(const std::string& name) {
         {"args", nlohmann::json::object()},
         {"config", nlohmann::json::object()},
     };
+}
+
+nlohmann::json timer_opts_for(const std::string& name,
+                              const std::string& test_case) {
+    return {
+        {"name", name},
+        {"args", nlohmann::json::object()},
+        {"config", {{"test_case", test_case}}},
+    };
+}
+
+bool wait_until(std::function<bool()> predicate,
+                std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return predicate();
 }
 }  // namespace
 
@@ -121,12 +145,26 @@ BOOST_AUTO_TEST_CASE(LuaApiUnchangedWithCafSystem) {
     LuaServiceManager manager(runtime);
     manager.attach_actor_system(system);
 
-    // send still works
+    // send still works without requiring the legacy worker thread
     auto s = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                            opts_for("caf_api_echo").dump());
     BOOST_REQUIRE(s.success);
     BOOST_CHECK(
         manager.send("caf_api_echo", "echo", nlohmann::json::array({"hello"})));
+
+    bool observed_send = false;
+    for (int i = 0; i < 20; ++i) {
+        CallResult seen = manager.call(s.service_id, "get_last_method",
+                                       nlohmann::json::array());
+        BOOST_REQUIRE(seen.success);
+        if (seen.values.size() == 1u && seen.values[0].is_string() &&
+            seen.values[0].get<std::string>() == "echo") {
+            observed_send = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    BOOST_CHECK(observed_send);
 
     // call still works
     CallResult cr =
@@ -134,6 +172,76 @@ BOOST_AUTO_TEST_CASE(LuaApiUnchangedWithCafSystem) {
     BOOST_REQUIRE(cr.success);
     BOOST_CHECK_EQUAL(cr.values.size(), 1u);
     BOOST_CHECK_EQUAL(cr.values[0].get<std::string>(), "world");
+}
+
+BOOST_AUTO_TEST_CASE(ForkExecutesWithoutWorkerWhenActorSystemAttached) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
+                                timer_opts_for("caf_fork", "fork").dump());
+    BOOST_REQUIRE(result.success);
+
+    // Fork stays on the pump path (drained by pump_once), so drive it here.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            (void)manager.pump_once();
+            CallResult cr = manager.call(result.service_id, "get_fork_count",
+                                         nlohmann::json::array());
+            return cr.success && cr.values.size() == 1u &&
+                   cr.values[0].get<int>() >= 1;
+        },
+        std::chrono::seconds(1)));
+}
+
+BOOST_AUTO_TEST_CASE(TimerOnceFiresWithoutWorkerWhenActorSystemAttached) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
+
+    auto result =
+        manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
+                      timer_opts_for("caf_timer_once", "timer_once").dump());
+    BOOST_REQUIRE(result.success);
+
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult cr = manager.call(result.service_id, "get_timer_count",
+                                         nlohmann::json::array());
+            return cr.success && cr.values.size() == 1u &&
+                   cr.values[0].get<int>() >= 1;
+        },
+        std::chrono::seconds(2)));
+}
+
+BOOST_AUTO_TEST_CASE(RepeatingTimerReschedulesViaCaf) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
+
+    auto result =
+        manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
+                      timer_opts_for("caf_timer_repeat", "fixed_delay").dump());
+    BOOST_REQUIRE(result.success);
+
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult cr = manager.call(result.service_id, "get_timer_count",
+                                         nlohmann::json::array());
+            return cr.success && cr.values.size() == 1u &&
+                   cr.values[0].get<int>() >= 2;
+        },
+        std::chrono::seconds(2)));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

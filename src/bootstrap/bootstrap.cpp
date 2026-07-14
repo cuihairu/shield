@@ -507,11 +507,10 @@ bool initialize(const RuntimeConfig& config) {
     // Run POST_START starters
     run_starters(Phase::POST_START);
 
-    // Start the Lua worker thread. After this point, all mailbox drains,
-    // timer fires, coroutine timeouts, and forked tasks happen on the worker.
-    if (g_state->lua_services) {
-        g_state->lua_services->start_worker();
-    }
+    // Step 2c: when a CAF actor system is attached, service actors now drive
+    // the normal message dispatch path directly. Keep start_worker() only for
+    // test-only compatibility paths; production no longer starts the Lua
+    // worker thread here.
 
     // Start console server if enabled
     if (shield::config::get("console.enabled", "false") == "true" &&
@@ -588,6 +587,10 @@ void shutdown() {
     g_state->tcp_listeners.clear();
     g_state->gateway_bridges.clear();
 
+    // Step 2c: the production runtime no longer depends on the dedicated Lua
+    // worker thread for normal message dispatch. Tests may still start the
+    // compatibility worker explicitly, so keep stop_worker() here as a safe
+    // no-op when the worker was never started.
     if (g_state->lua_services) {
         g_state->lua_services->stop_worker();
     }
