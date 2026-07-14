@@ -696,7 +696,13 @@ sol::variadic_results call_with_timeout(sol::this_state state,
 
 void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                         LuaRuntime* runtime) {
-    shield.set_function("now", []() -> int64_t {
+    shield.set_function("now", [manager]() -> int64_t {
+        return manager ? manager->clock_now_ms() : SystemClock{}.now_ms();
+    });
+
+    // Real monotonic milliseconds — NOT adjustable, for relative timing
+    // (network backoff, heartbeat intervals) in Lua that must stay real.
+    shield.set_function("monotonic", []() -> int64_t {
         const auto now = std::chrono::steady_clock::now().time_since_epoch();
         return std::chrono::duration_cast<std::chrono::milliseconds>(now)
             .count();
@@ -729,7 +735,11 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             }
 
             // Check timer limit.
-            if (runtime->timer_manager().active_count() >= kTimerLimit) {
+            const auto timer_count =
+                manager && manager->uses_caf_actor_system()
+                    ? manager->active_actor_timer_count()
+                    : runtime->timer_manager().active_count();
+            if (timer_count >= kTimerLimit) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 sol::this_state ts(callback.lua_state());
                 results.push_back(
@@ -737,8 +747,12 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
 
-            const uint64_t id = runtime->timer_manager().schedule_once(
-                delay_ms, callback, service_id);
+            const uint64_t id = manager && manager->uses_caf_actor_system() &&
+                                        !service_id.empty()
+                                    ? manager->schedule_actor_timer_once(
+                                          delay_ms, callback, service_id)
+                                    : runtime->timer_manager().schedule_once(
+                                          delay_ms, callback, service_id);
             results.push_back(sol::make_object(lua, id));
             return results;
         });
@@ -772,7 +786,11 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             }
 
             // Check timer limit.
-            if (runtime->timer_manager().active_count() >= kTimerLimit) {
+            const auto timer_count =
+                manager && manager->uses_caf_actor_system()
+                    ? manager->active_actor_timer_count()
+                    : runtime->timer_manager().active_count();
+            if (timer_count >= kTimerLimit) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 sol::this_state ts(callback.lua_state());
                 results.push_back(
@@ -780,15 +798,21 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
 
-            const uint64_t id = runtime->timer_manager().schedule_fixed_delay(
-                interval_ms, callback, service_id);
+            const uint64_t id =
+                manager && manager->uses_caf_actor_system() &&
+                        !service_id.empty()
+                    ? manager->schedule_actor_timer_fixed_delay(
+                          interval_ms, callback, service_id)
+                    : runtime->timer_manager().schedule_fixed_delay(
+                          interval_ms, callback, service_id);
             results.push_back(sol::make_object(lua, id));
             return results;
         });
 
     shield.set_function(
         "cancel_timer",
-        [runtime](sol::this_state state, uint64_t id) -> sol::variadic_results {
+        [manager, runtime](sol::this_state state,
+                           uint64_t id) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
 
@@ -799,7 +823,9 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
 
-            const bool cancelled = runtime->timer_manager().cancel(id);
+            const bool cancelled = manager && manager->uses_caf_actor_system()
+                                       ? manager->cancel_actor_timer(id)
+                                       : runtime->timer_manager().cancel(id);
             results.push_back(sol::make_object(lua, cancelled));
             if (!cancelled) {
                 results.push_back(
@@ -833,33 +859,38 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 service_id = manager->current_service_id();
             }
             auto& timer_mgr = runtime->timer_manager();
-            timer_mgr.schedule_once_fn(
-                delay_ms,
-                [co, ref, manager]() {
-                    int nres = 0;
-                    const int status = lua_resume(co, nullptr, 0, &nres);
-                    if (status == LUA_YIELD) {
-                        // Yielded again (e.g. another sleep/call): the API
-                        // that yielded has already anchored the coroutine for
-                        // its own resume source, so release this sleep anchor.
-                        luaL_unref(co, LUA_REGISTRYINDEX, ref);
-                        return;
-                    }
-                    // If this coroutine was servicing a call request that
-                    // yielded (e.g. the callee slept), route the response now
-                    // that it has completed. No-op for plain handlers.
-                    if (status == LUA_OK && manager) {
-                        nlohmann::json returns = nlohmann::json::array();
-                        for (int i = 0; i < nres; ++i) {
-                            sol::stack_object so(sol::state_view(co), i + 1);
-                            returns.push_back(lua_to_json(so));
-                        }
-                        manager->on_handler_completed(co, returns);
-                    }
-                    // LUA_OK (completed) or an error: release the anchor.
+            auto resume_fn = [co, ref, manager]() {
+                int nres = 0;
+                const int status = lua_resume(co, nullptr, 0, &nres);
+                if (status == LUA_YIELD) {
+                    // Yielded again (e.g. another sleep/call): the API
+                    // that yielded has already anchored the coroutine for
+                    // its own resume source, so release this sleep anchor.
                     luaL_unref(co, LUA_REGISTRYINDEX, ref);
-                },
-                service_id);
+                    return;
+                }
+                // If this coroutine was servicing a call request that
+                // yielded (e.g. the callee slept), route the response now
+                // that it has completed. No-op for plain handlers.
+                if (status == LUA_OK && manager) {
+                    nlohmann::json returns = nlohmann::json::array();
+                    for (int i = 0; i < nres; ++i) {
+                        sol::stack_object so(sol::state_view(co), i + 1);
+                        returns.push_back(lua_to_json(so));
+                    }
+                    manager->on_handler_completed(co, returns);
+                }
+                // LUA_OK (completed) or an error: release the anchor.
+                luaL_unref(co, LUA_REGISTRYINDEX, ref);
+            };
+            if (manager && manager->uses_caf_actor_system() &&
+                !service_id.empty()) {
+                (void)manager->schedule_actor_timer_once_fn(
+                    delay_ms, std::move(resume_fn), service_id);
+            } else {
+                timer_mgr.schedule_once_fn(delay_ms, std::move(resume_fn),
+                                           service_id);
+            }
         });
 
     // Blocking fallback used when shield.sleep is invoked outside any
@@ -1822,6 +1853,40 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
 #endif
 
     lua["shield"] = shield;
+
+    // AD-07: hook os.time / os.date so Lua business code also reads the
+    // business-time clock (adjustable in tests). Only the no-arg forms are
+    // redirected; os.time(table) and os.date(fmt, t) keep their original
+    // semantics (pure conversion). os.clock() is NOT touched — it is used
+    // for real CPU-time measurement (e.g. scripts/shield_aop.lua:562).
+    if (manager) {
+        sol::table os_t = lua["os"];
+        sol::function orig_time = os_t["time"];
+        sol::function orig_date = os_t["date"];
+        // os.time(): no-arg → business clock seconds; with table → original.
+        os_t.set_function("time",
+                          [manager, orig_time = std::move(orig_time)](
+                              sol::optional<sol::table> t) -> sol::object {
+                              sol::state_view lua(orig_time.lua_state());
+                              if (t.has_value()) {
+                                  return orig_time(t.value());
+                              }
+                              return sol::make_object(
+                                  lua, manager->clock_now_seconds());
+                          });
+        // os.date(fmt): no time → business clock; with time → original.
+        os_t.set_function(
+            "date",
+            [manager, orig_date = std::move(orig_date)](
+                sol::optional<std::string> fmt,
+                sol::optional<double> t) -> sol::object {
+                double when =
+                    t.has_value()
+                        ? t.value()
+                        : static_cast<double>(manager->clock_now_seconds());
+                return orig_date(fmt, when);
+            });
+    }
 
     // Coroutine dispatch helper used by
     // LuaRuntime::call_service_method_coroutine. It wraps a handler + args

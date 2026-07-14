@@ -1,6 +1,6 @@
 # 网络运行时语义
 
-本文冻结客户端连接、协议处理和 CAF actor 交互的目标契约。当前源码尚未闭环的部分统一记录在 [架构决策记录](architecture-decisions.md) AD-01/AD-05 和 [roadmap](roadmap.md)，本文不保留旧接口或兼容流程。
+本文冻结客户端连接、协议处理和 CAF actor 交互契约。CAF / `shield_core` 是客户端 RPC 入站、出站与 service 消息投递的唯一 actor runtime 边界，本文不保留旧接口或兼容流程。
 
 ## 分层职责
 
@@ -182,7 +182,6 @@ generated RPC helper(ClientContext|ClientRef, business arguments)
 - 不同 Service actor 由 CAF scheduler 并行调度。
 - 同一连接的 frame 顺序在 session strand 上保持；不同连接之间不保证全局顺序。
 
-当前源码仍在 Gateway protocol path 提前 decode，并由独立 `LuaServiceManager` worker 执行业务。这是待删除的实现偏差，不改变本契约。
 
 ## Transport 范围
 

@@ -119,6 +119,13 @@ public:
         std::string service_id;
     };
 
+    struct FireResult {
+        bool fired = false;
+        TimerId rescheduled_id = 0;
+        int64_t reschedule_delay_ms = 0;
+        std::string service_id;
+    };
+
     explicit TimerManager();
 
     // Schedule a one-shot timer
@@ -178,6 +185,16 @@ public:
                             std::function<void(const std::string& service_id,
                                                sol::function callback)>
                                 visitor);
+
+    // Consume an expired timer by id and run `visitor(service_id,
+    // raw_callback)` or the native callback directly. Returns metadata for
+    // repeating-timer rescheduling. Used by the CAF actor path to avoid the old
+    // global polling scan while preserving the existing timer storage and
+    // cancel semantics.
+    FireResult fire_timer(TimerId id,
+                          std::function<void(const std::string& service_id,
+                                             sol::function callback)>
+                              visitor);
 
     // Get active timer count
     size_t active_count() const;
