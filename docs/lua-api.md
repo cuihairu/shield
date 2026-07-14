@@ -104,7 +104,7 @@ end
 ```lua
 function M.on_shutdown(ctx)
     -- ctx.reason: "stopping" | "signal" | "check_config" | ...
-    -- ctx.deadline_ms: runtime monotonic deadline
+    -- ctx.deadline_ms: runtime monotonic deadline (InfraClock, not adjustable)
     -- ctx.timeout_ms: 本 service drain 预算
 end
 ```
@@ -373,9 +373,26 @@ end)
 
 ```lua
 local ms = shield.now()
+local mono = shield.monotonic()
 ```
 
-`shield.now()` 返回 runtime monotonic milliseconds，用于相对时间和 timeout，不用于持久化业务时间戳。
+### shield.now()
+
+返回 wall-clock UTC milliseconds（业务时间）。默认读 `system_clock`，可通过 `LuaServiceManager::attach_clock(MockClock)` 注入可拨时钟，测试时显式控制 `shield.now()` / `os.time()`（无参）/ `os.date()`（无参）的返回值。
+
+> **AD-07 分层时钟**：`shield.now()` 返回墙钟 UTC ms（LuaClock，可拨），用于业务逻辑（刷新/活动/过期判断/ID 生成）。`deadline_ms`、`timestamp` 等 C++ 内部字段保持 monotonic（InfraClock，不可拨）。参见 [架构决策 AD-07](architecture-decisions.md)。
+
+### shield.monotonic()
+
+返回 real monotonic milliseconds（`steady_clock`，不可拨）。用于 Lua 层需要真实流逝时间的场景（网络退避、心跳间隔、性能计时）。不受 `MockClock` 影响。
+
+### os.time / os.date / os.clock
+
+`os.time()`（无参）和 `os.date(fmt)`（无参）重定向到业务时钟（与 `shield.now()` 同源）。带参形式（`os.time(table)`、`os.date(fmt, t)`）保持原生行为。`os.clock()` 不受业务时钟影响，返回真实 CPU 时间。
+
+> **原因**：游戏业务代码大量直接用 `os.time()` 读当前时间（缓存过期、签到、活动开关），只拨 `shield.now()` 无法覆盖。将 `os.time`/`os.date` 无参形式接入同一业务时钟，使所有业务时间读取统一可控。
+
+实现快照：`shield.now()` 已实现，读 `LuaServiceManager` 持有的 `Clock`（默认 `SystemClock` 读 `system_clock`）；`shield.monotonic()` 已实现，读 `steady_clock`（不可拨）。`attach_clock()` 在 `src/lua/lua_service.cpp` 实现，镜像 `attach_actor_system`。`os.time()`/`os.date()` 无参 hook 在 `register_full_shield_api`（`src/lua/lua_api.cpp`）中安装，带参形式保留原函数。`os.clock()` 不动。`Clock`/`SystemClock`/`MockClock` 定义于 `include/shield/lua/clock.hpp`。`test_lua_api_clock` 覆盖 12 个用例：默认墙钟、一致性、MockClock set/advance、os hook 粒度（含 table 带参不受影响）、monotonic 不可拨、缓存过期/签到/cooldown 完整业务场景。
 
 ## Config API
 

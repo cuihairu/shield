@@ -4,6 +4,8 @@
 
 当前实现状态：`timer_once/timer/cancel_timer` 已实现，callback 通过 `check_and_fire_each` + `lua_pcall` 包裹执行，错误路由到 `on_error` hook。`shield.sleep` 已实现协程感知（yield + `_resume_after` 定时器 resume）。`shield.fork` 已实现，callback 通过 `lua_pcall` 包裹执行。`shield.call/call_timeout` 已实现协程感知调用 + timeout。详细实现状态以 [重构路线图](roadmap.md) 和 [Lua API 测试用例](lua-api-tests.md) 为准。
 
+**AD-07 分层时钟**已实现：`shield.now()` 返回 wall-clock UTC ms（可注入 `MockClock` 测试可拨），`shield.monotonic()` 返回 real `steady_clock` ms（不可拨）。`os.time()`/`os.date()` 无参形式重定向到业务时钟，`os.time(table)`/`os.date(fmt,t)`/`os.clock()` 保持原生行为。`LuaServiceManager::attach_clock()` 注入时钟，`Clock`/`SystemClock`/`MockClock` 定义于 `include/shield/lua/clock.hpp`。`test_lua_api_clock` 覆盖 12 个用例。
+
 ## timer API
 
 ```lua
@@ -35,7 +37,7 @@ timer(interval_ms)
 
 - `delay_ms >= 0`。
 - `interval_ms > 0`。
-- 时间基于 monotonic clock。
+- **时间分层（AD-07）**：定时器**触发**基于 monotonic clock（InfraClock，不可拨），与 CAF `delayed_send` / pump 扫描一致。Lua 业务读取的 `shield.now()` / `os.time()`（无参）/ `os.date()`（无参）走可注入的 wall-clock `Clock`（LuaClock，测试可拨）。`os.clock()` 不接入（保持真实 CPU 时间）。参见 [架构决策 AD-07](architecture-decisions.md)。
 - 周期 timer 使用 fixed-delay 语义。
 
 fixed-delay：

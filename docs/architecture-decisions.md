@@ -153,6 +153,16 @@ socket bytes
 
 ---
 
+## AD-07：可控业务时钟（分层时间）
+
+**决策**：时间分层——Lua 业务时间（`shield.now` / `os.time` 无参 / `os.date` 无参）走可注入的 wall-clock `Clock`，测试可拨；C++ 调度/网络时间（`deadline_ms` / `timestamp` / CAF `delayed_send` / pump 扫描）锁死真实 monotonic。`os.clock` 不接入（真实 CPU 时间，用于性能计时）。定时器**触发**保持真实时钟（属于调度层），callback 内业务读到的时间可拨。
+
+**理由**：游戏业务强依赖日期语义（刷新/活动/过期），必须可拨才能测试；而网络心跳、call 超时、定时触发属调度层，拨动会破坏运行时本身（连接误超时、调度错乱）。分层让"可测"与"运行时正确"不冲突。业务代码大量直用 `os.time`（仓库实证缓存过期等 ~12 处），只拨 `shield.now` 无意义，故 `os.time`/`os.date` 无参必须一并接入同一 Clock。`os.clock` 不动——`scripts/shield_aop.lua:562` 用它做忙等 `while os.clock()-start<0.01`，拨了会死循环。
+
+**实现状态**：已实现。`shield.now()` 读 `LuaServiceManager` 持有的 `Clock`（默认 `SystemClock`，`system_clock` 墙钟 UTC ms）；`shield.monotonic()` 读 `steady_clock`（不可拨）。`os.time()`/`os.date()` 无参 hook 在 `register_full_shield_api` 安装，带参形式保留原函数。`attach_clock()` 镜像 `attach_actor_system`。`Clock`/`SystemClock`/`MockClock` 定义于 `include/shield/lua/clock.hpp`。`test_lua_api_clock` 覆盖 12 个用例：默认墙钟、一致性、MockClock set/advance、os hook 粒度（含 table 带参不受影响）、monotonic 不可拨、缓存过期/签到/冷却完整业务场景。
+
+---
+
 ## 决策与本仓库其他文档的关系
 
 | 决策 | 影响文档 |
@@ -163,3 +173,4 @@ socket bytes
 | AD-04 | runtime-player.md |
 | AD-05 | gateway.md、protocol-routing-design.md、lua-api.md、runtime-messaging.md |
 | AD-06 | runtime-network.md、runtime-player.md、gateway.md、lua-api.md |
+| AD-07 | runtime-timer.md、lua-api.md |

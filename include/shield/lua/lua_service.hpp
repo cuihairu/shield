@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "shield/lua/clock.hpp"
+
 // Lua C type forward declaration (declared in the global namespace; the
 // runtime headers pull in the real definition, only the pointer is needed in
 // this interface).
@@ -227,9 +229,44 @@ public:
     // yet drive Lua dispatch.
     void attach_actor_system(caf::actor_system& system);
 
+    // Attach a business-time clock so Lua code reads wall-clock UTC via
+    // shield.now() / os.time() / os.date() (no-arg). When not attached the
+    // default SystemClock is used. Tests inject MockClock to control time.
+    // Mirrors the attach_actor_system injection pattern.
+    void attach_clock(std::shared_ptr<Clock> clock);
+
+    // Read the current business-time clock (wall-clock UTC).
+    // Default SystemClock when no clock has been attached.
+    int64_t clock_now_ms() const;
+    int64_t clock_now_seconds() const;
+
     // Test-only introspection: returns true when a CAF actor handle is
     // registered for the given service id.
     bool has_service_actor(const std::string& service_id) const;
+
+    // Returns true when a CAF actor system is attached and service actors are
+    // being used as the production message entry point.
+    bool uses_caf_actor_system() const;
+
+    // CAF-backed timer helpers used by the Lua API when a service actor exists.
+    uint64_t schedule_actor_timer_once(int64_t delay_ms, sol::function callback,
+                                       const std::string& service_id);
+    uint64_t schedule_actor_timer_once_fn(int64_t delay_ms,
+                                          std::function<void()> callback,
+                                          const std::string& service_id);
+    uint64_t schedule_actor_timer_fixed_delay(int64_t interval_ms,
+                                              sol::function callback,
+                                              const std::string& service_id);
+    bool cancel_actor_timer(uint64_t id);
+    size_t active_actor_timer_count() const;
+
+    // CAF-backed call-timeout bookkeeping. When a coroutine call is suspended
+    // under an attached CAF actor system, a delayed event is scheduled to
+    // resume the caller with a timeout error unless the call completes first.
+    uint64_t schedule_actor_call_timeout(int32_t timeout_ms,
+                                         const std::string& service_id,
+                                         uint64_t session);
+    bool cancel_actor_call_timeout(uint64_t session);
 
 private:
     struct Impl;
