@@ -5,12 +5,14 @@
 #include <caf/actor_system.hpp>
 #include <caf/event_based_actor.hpp>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <unordered_map>
 
 #include "shield/base/error.hpp"
 #include "shield/base/id.hpp"
 #include "shield/base/time.hpp"
 #include "shield/core/service_registry.hpp"
+#include "shield/lua/service_message.hpp"
 
 namespace shield::core {
 
@@ -67,8 +69,9 @@ ServiceHandle CafAdapter::spawn_service(
             // Call user behavior
             behavior(self);
 
-            return caf::behavior{[](const std::string&) {
-                // Message dispatch will be replaced by Shield envelope routing.
+            return caf::behavior{[](const shield::lua::ServiceMessage&) {
+                // Default message handler — real routing is in
+                // lua_service.cpp's per-service actor behavior.
             }};
         });
 
@@ -87,8 +90,24 @@ void CafAdapter::send(const ServiceHandle& target,
 
     auto& actor = target.internal()->get();
 
-    std::string payload(envelope.payload().begin(), envelope.payload().end());
-    caf::anon_send(actor, std::move(payload));
+    // Convert the MessageEnvelope into a CAF-native ServiceMessage.
+    // The payload bytes are interpreted as a JSON string (the convention
+    // used by the core layer); Lua services consume nlohmann::json natively.
+    nlohmann::json args = nlohmann::json::parse(
+        std::string(envelope.payload().begin(), envelope.payload().end()),
+        nullptr, false);  // allow_exceptions = false
+    if (args.is_discarded()) args = nlohmann::json::array();
+
+    shield::lua::ServiceMessage msg;
+    msg.sender = envelope.sender().name();
+    msg.method = envelope.method();
+    msg.args = std::move(args);
+    msg.trace_id = envelope.trace().to_string();
+    msg.priority = envelope.expects_response()
+                       ? shield::lua::MessagePriority::Normal
+                       : shield::lua::MessagePriority::Normal;
+
+    caf::anon_send(actor, std::move(msg));
 }
 
 MessageResponse CafAdapter::call(const ServiceHandle& target,

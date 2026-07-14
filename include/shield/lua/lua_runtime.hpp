@@ -239,11 +239,8 @@ public:
         int64_t timestamp_ms = 0;
         // Coroutine call correlation. Defaults describe a plain send.
         // Call-request: call_session != 0, call_reply_to = caller service id.
-        // Call-response: is_call_response = true, call_session matches the
-        // request, args = JSON array [ok, values...].
         uint64_t call_session = 0;
         std::string call_reply_to;
-        bool is_call_response = false;
     };
 
     explicit Mailbox(size_t max_size = 1000);

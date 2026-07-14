@@ -380,7 +380,7 @@ target_include_directories(shield_core
 
 target_link_libraries(shield_core
     PUBLIC shield_base
-    PRIVATE CAF::core CAF::io
+    PRIVATE CAF::core CAF::io nlohmann_json::nlohmann_json
 )
 
 # -----------------------------------------------------------------------------

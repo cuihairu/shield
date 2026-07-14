@@ -25,6 +25,7 @@
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/lua/lua_runtime.hpp"
+#include "shield/lua/service_message.hpp"
 
 namespace shield::lua {
 
@@ -188,102 +189,44 @@ struct LuaServiceManager::Impl {
         return clock_->now_seconds();
     }
 
-    // Decode a JSON-serialized message and dispatch it immediately on the
-    // current actor thread. This bypasses the legacy mailbox pump for normal
-    // message delivery when a CAF actor system is attached.
-    void dispatch_json_message(class LuaServiceManager* manager,
-                               const std::string& sid,
-                               const std::string& json_str) {
-        nlohmann::json j;
-        try {
-            j = nlohmann::json::parse(json_str);
-        } catch (...) {
-            return;  // malformed payload; drop
-        }
-
-        const auto kind = j.value("kind", std::string("message"));
-        if (kind == "fork") {
-            run_ready_fork_task(manager, j.value("task_id", uint64_t(0)));
-            return;
-        }
-        if (kind == "timer") {
-            fire_actor_timer(manager, sid, j.value("timer_id", uint64_t(0)));
-            return;
-        }
-        if (kind == "call_timeout") {
-            const uint64_t session = j.value("session", uint64_t(0));
-            // Clear the driver handle first so resume_caller (via the timeout
-            // path) does not try to cancel a driver that is already done.
-            manager->cancel_actor_call_timeout(session);
-            nlohmann::json timeout_err = nlohmann::json::array(
-                {nlohmann::json::object({{"code", "timeout"},
-                                         {"message", "call timeout"},
-                                         {"retryable", true}})});
-            manager->resume_caller(session, false, timeout_err);
-            return;
-        }
-        if (kind == "sync_call") {
-            // Step 3: synchronous call routed through CAF actor. The caller
-            // (main thread) is blocking on a PendingSyncCall CV. Dispatch the
-            // method and, when the handler completes, signal the caller.
-            const uint64_t sync_session = j.value("sync_session", uint64_t(0));
-            const std::string method = j.value("method", std::string(""));
-            const nlohmann::json args =
-                j.value("args", nlohmann::json::array());
-            const std::string sender = j.value("sender", std::string(""));
-            Mailbox::Message msg;
-            msg.sender = sender;
-            msg.method = method;
-            msg.args = args;
-            msg.trace_id = j.value("trace_id", std::string(""));
-            msg.deadline_ms = j.value("deadline_ms", int64_t(0));
-            msg.priority = Mailbox::Priority::Normal;
-            msg.timestamp_ms = j.value("timestamp_ms", int64_t(0));
-            // Use sync_session as call_session so on_handler_completed
-            // can identify it and signal the pending sync call.
-            msg.call_session = sync_session;
-            msg.call_reply_to = sender;
-            (void)dispatch_message(manager, sid, msg);
-            // If the handler completed synchronously (no yield),
-            // on_handler_completed already signaled the CV. If it yielded
-            // (e.g. shield.sleep), the handler will be resumed later and
-            // on_handler_completed will signal then. Either way, the caller
-            // is blocking on the CV and will be woken up.
-            return;
-        }
-
-        Mailbox::Message msg;
-        msg.sender = j.value("sender", std::string(""));
-        msg.method = j.value("method", std::string(""));
-        msg.args = j.value("args", nlohmann::json::object());
-        msg.trace_id = j.value("trace_id", std::string(""));
-        msg.deadline_ms = j.value("deadline_ms", int64_t(0));
-        msg.priority = j.value("priority", 0u) == 1 ? Mailbox::Priority::High
-                                                    : Mailbox::Priority::Normal;
-        msg.timestamp_ms = j.value("timestamp_ms", int64_t(0));
-        msg.call_session = j.value("call_session", uint64_t(0));
-        msg.call_reply_to = j.value("call_reply_to", std::string(""));
-        (void)dispatch_message(manager, sid, msg);
+    // Dispatch a CAF-native ServiceMessage (replaces the default "message" JSON
+    // kind). Converts the typed fields into a Mailbox::Message and routes to
+    // the existing dispatch_message path.
+    void dispatch_service_message(class LuaServiceManager* manager,
+                                  const std::string& id,
+                                  const ServiceMessage& msg) {
+        Mailbox::Message m;
+        m.sender = msg.sender;
+        m.method = msg.method;
+        m.args = msg.args;
+        m.trace_id = msg.trace_id;
+        m.deadline_ms = msg.deadline_ms;
+        m.priority = msg.priority == MessagePriority::High
+                         ? Mailbox::Priority::High
+                         : Mailbox::Priority::Normal;
+        m.timestamp_ms = msg.timestamp_ms;
+        m.call_session = msg.call_session;
+        m.call_reply_to = msg.call_reply_to;
+        (void)dispatch_message(manager, id, m);
     }
 
-    // Serialize a message into a JSON string for CAF transport. Used by the
-    // send/send_system/send_call_request paths when a CAF actor is available.
-    static std::string serialize_message(
-        const std::string& sender, const std::string& method,
-        const nlohmann::json& args, const std::string& trace_id,
-        int64_t deadline_ms, uint32_t priority, int64_t timestamp_ms,
-        uint64_t call_session = 0, const std::string& call_reply_to = "") {
-        nlohmann::json j;
-        j["sender"] = sender;
-        j["method"] = method;
-        j["args"] = args;
-        j["trace_id"] = trace_id;
-        j["deadline_ms"] = deadline_ms;
-        j["priority"] = priority;
-        j["timestamp_ms"] = timestamp_ms;
-        j["call_session"] = call_session;
-        j["call_reply_to"] = call_reply_to;
-        return j.dump();
+    // Dispatch a CAF-native SyncCallMessage (replaces the "sync_call" JSON
+    // kind). Uses sync_session as the call_session so on_handler_completed can
+    // signal the blocking caller.
+    void dispatch_sync_call_message(class LuaServiceManager* manager,
+                                    const std::string& id,
+                                    const SyncCallMessage& req) {
+        Mailbox::Message msg;
+        msg.sender = req.sender;
+        msg.method = req.method;
+        msg.args = req.args;
+        msg.trace_id = req.trace_id;
+        msg.deadline_ms = req.deadline_ms;
+        msg.priority = Mailbox::Priority::Normal;
+        msg.timestamp_ms = req.timestamp_ms;
+        msg.call_session = req.sync_session;
+        msg.call_reply_to = req.sender;
+        (void)dispatch_message(manager, id, msg);
     }
 
     bool dispatch_message(class LuaServiceManager* manager,
@@ -690,15 +633,40 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         // on_init-time fork/timer registration can immediately route through
         // the actor path. The service VM is published only after on_init
         // succeeds; until then the actor exists purely as an internal handle.
+        //
+        // The behavior pattern-matches the native typed messages
+        // (ServiceMessage, SyncCallMessage, timer_fire_atom + uint64_t,
+        // call_timeout_atom + uint64_t). No string/JSON dispatch remains.
         std::optional<caf::actor> precreated_actor;
         if (impl_->actor_system) {
             auto actor = impl_->actor_system->spawn(
                 [impl_ptr = impl_.get(), manager = this, svc = service_name](
                     caf::event_based_actor* /*self*/) -> caf::behavior {
-                    return caf::behavior{[impl_ptr, manager,
-                                          svc](const std::string& json_msg) {
-                        impl_ptr->dispatch_json_message(manager, svc, json_msg);
-                    }};
+                    return caf::behavior{
+                        // -- Native typed messages (new) --
+                        [impl_ptr, manager, svc](const ServiceMessage& msg) {
+                            impl_ptr->dispatch_service_message(manager, svc,
+                                                               msg);
+                        },
+                        [impl_ptr, manager, svc](const SyncCallMessage& req) {
+                            impl_ptr->dispatch_sync_call_message(manager, svc,
+                                                                 req);
+                        },
+                        [impl_ptr, manager, svc](timer_fire_atom,
+                                                 uint64_t timer_id) {
+                            impl_ptr->fire_actor_timer(manager, svc, timer_id);
+                        },
+                        [impl_ptr, manager, svc](call_timeout_atom,
+                                                 uint64_t session) {
+                            manager->cancel_actor_call_timeout(session);
+                            nlohmann::json timeout_err =
+                                nlohmann::json::array({nlohmann::json::object(
+                                    {{"code", "timeout"},
+                                     {"message", "call timeout"},
+                                     {"retryable", true}})});
+                            manager->resume_caller(session, false, timeout_err);
+                        },
+                    };
                 });
             {
                 std::unique_lock lock(impl_->registry_mutex);
@@ -861,10 +829,15 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
                     now.time_since_epoch())
                     .count();
             const std::string sender = current_service_id();
-            auto json_msg = Impl::serialize_message(
-                sender, std::string(method), args, impl_->current_trace_id(),
-                impl_->current_deadline_ms(), 0, now_ms);
-            caf::anon_send(*actor_opt, std::move(json_msg));
+            ServiceMessage msg;
+            msg.sender = sender;
+            msg.method = std::string(method);
+            msg.args = args;
+            msg.trace_id = impl_->current_trace_id();
+            msg.deadline_ms = impl_->current_deadline_ms();
+            msg.priority = MessagePriority::Normal;
+            msg.timestamp_ms = now_ms;
+            caf::anon_send(*actor_opt, std::move(msg));
             return true;
         }
     }
@@ -946,9 +919,15 @@ bool LuaServiceManager::send_system(std::string_view target,
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     now.time_since_epoch())
                     .count();
-            auto json_msg = Impl::serialize_message("", std::string(method),
-                                                    args, "", 0, 1, now_ms);
-            caf::anon_send(*actor_opt, std::move(json_msg));
+            ServiceMessage msg;
+            msg.sender = "";
+            msg.method = std::string(method);
+            msg.args = args;
+            msg.trace_id = "";
+            msg.deadline_ms = 0;
+            msg.priority = MessagePriority::High;
+            msg.timestamp_ms = now_ms;
+            caf::anon_send(*actor_opt, std::move(msg));
             return true;
         }
     }
@@ -1008,10 +987,17 @@ bool LuaServiceManager::send_call_request(std::string_view target,
                     now.time_since_epoch())
                     .count();
             const std::string sender = current_service_id();
-            auto json_msg = Impl::serialize_message(
-                sender, std::string(method), args, impl_->current_trace_id(),
-                impl_->current_deadline_ms(), 0, now_ms, session, sender);
-            caf::anon_send(*actor_opt, std::move(json_msg));
+            ServiceMessage msg;
+            msg.sender = sender;
+            msg.method = std::string(method);
+            msg.args = args;
+            msg.trace_id = impl_->current_trace_id();
+            msg.deadline_ms = impl_->current_deadline_ms();
+            msg.priority = MessagePriority::Normal;
+            msg.timestamp_ms = now_ms;
+            msg.call_session = session;
+            msg.call_reply_to = sender;
+            caf::anon_send(*actor_opt, std::move(msg));
             return true;
         }
     }
@@ -1106,25 +1092,23 @@ CallResult LuaServiceManager::call(std::string_view target,
                 impl_->pending_sync_calls[session] = pending;
             }
 
-            // Build JSON message for sync_call kind.
+            // Build typed SyncCallMessage for CAF-native dispatch.
             const auto now = std::chrono::steady_clock::now();
             const auto now_ms =
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     now.time_since_epoch())
                     .count();
-            nlohmann::json j;
-            j["kind"] = "sync_call";
-            j["sync_session"] = session;
-            j["sender"] = sender;
-            j["method"] = std::string(method);
-            j["args"] = args;
-            j["trace_id"] = impl_->current_trace_id();
-            j["deadline_ms"] = impl_->current_deadline_ms();
-            j["priority"] = 0;
-            j["timestamp_ms"] = now_ms;
+            SyncCallMessage sync_msg;
+            sync_msg.sync_session = session;
+            sync_msg.sender = sender;
+            sync_msg.method = std::string(method);
+            sync_msg.args = args;
+            sync_msg.trace_id = impl_->current_trace_id();
+            sync_msg.deadline_ms = impl_->current_deadline_ms();
+            sync_msg.timestamp_ms = now_ms;
 
             // Send to target actor.
-            caf::anon_send(*actor_opt, std::move(j.dump()));
+            caf::anon_send(*actor_opt, std::move(sync_msg));
 
             // Block until handler completes (or timeout).
             const int32_t effective_timeout =
@@ -1216,7 +1200,7 @@ void LuaServiceManager::exit(std::string_view service_id,
         cancel_actor_timer(timer_id);
     }
     // Cancel any pending CAF call-timeout drivers for calls originated by this
-    // service. The timeout path (dispatch_json_message / "call_timeout") will
+    // service. The timeout path (call_timeout_atom handler) will
     // no-op if the session is already gone from pending_calls.
     {
         std::unique_lock lock(impl_->registry_mutex);
@@ -1942,10 +1926,7 @@ uint64_t LuaServiceManager::schedule_actor_timer_once(
             self->delayed_send(self, std::chrono::milliseconds(delay_ms),
                                caf::tick_atom_v);
             return caf::behavior{[=](caf::tick_atom) {
-                nlohmann::json j;
-                j["kind"] = "timer";
-                j["timer_id"] = tid;
-                caf::anon_send(target, j.dump());
+                caf::anon_send(target, timer_fire_atom_v, tid);
                 self->quit();
             }};
         });
@@ -1993,10 +1974,7 @@ uint64_t LuaServiceManager::schedule_actor_timer_once_fn(
             self->delayed_send(self, std::chrono::milliseconds(delay_ms),
                                caf::tick_atom_v);
             return caf::behavior{[=](caf::tick_atom) {
-                nlohmann::json j;
-                j["kind"] = "timer";
-                j["timer_id"] = tid;
-                caf::anon_send(target, j.dump());
+                caf::anon_send(target, timer_fire_atom_v, tid);
                 self->quit();
             }};
         });
@@ -2047,10 +2025,7 @@ uint64_t LuaServiceManager::schedule_actor_timer_fixed_delay(
             self->delayed_send(self, std::chrono::milliseconds(interval_ms),
                                caf::tick_atom_v);
             return caf::behavior{[=](caf::tick_atom) {
-                nlohmann::json j;
-                j["kind"] = "timer";
-                j["timer_id"] = tid;
-                caf::anon_send(target, j.dump());
+                caf::anon_send(target, timer_fire_atom_v, tid);
                 self->delayed_send(self, std::chrono::milliseconds(interval_ms),
                                    caf::tick_atom_v);
             }};
@@ -2116,10 +2091,7 @@ uint64_t LuaServiceManager::schedule_actor_call_timeout(
             self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
                                caf::tick_atom_v);
             return caf::behavior{[=](caf::tick_atom) {
-                nlohmann::json j;
-                j["kind"] = "call_timeout";
-                j["session"] = session;
-                caf::anon_send(target, j.dump());
+                caf::anon_send(target, call_timeout_atom_v, session);
                 self->quit();
             }};
         });
