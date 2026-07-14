@@ -302,7 +302,7 @@ local ok, result = shield.call_timeout(3000, "db.player", "get", uid)
 
 使用单独函数覆盖 timeout，避免最后一个业务参数和 options table 歧义。
 
-实现快照：`shield.call` / `shield.call_timeout` 已实现协程感知路径——在 handler 协程中调用时，caller 通过 `_coro_call` → `suspend_for_call` + `coroutine.yield()` 挂起，callee 完成后 `resume_caller` 恢复 caller；主线程调用走 `_sync_call` 同步降级。call timeout 已通过 `pump_once` 中的 `check_call_timeouts` 实现：扫描 `pending_calls` 中超过 `deadline_ms` 的条目，以 `{code="timeout", message="call timeout"}` 恢复 caller。LAPI-005-06 已覆盖。
+实现快照：`shield.call` / `shield.call_timeout` 已实现协程感知路径——在 handler 协程中调用时，caller 通过 `_coro_call` → `suspend_for_call` + `coroutine.yield()` 挂起，callee 完成后 `resume_caller` 恢复 caller。`manager->call()`（C++ 侧）已路由到 CAF actor：若 target 有 CAF actor，发送 `"sync_call"` 消息到 actor 并通过条件变量阻塞等待 actor dispatch 完成；若无 CAF actor，保留直接调用路径（向后兼容）。自调用（caller == target）返回 `{code="self_call", message="self-call not supported via CAF path"}`。call timeout 通过 CAF `delayed_send` 实现，以 `{code="timeout", message="call timeout", retryable=true}` 恢复 caller。LAPI-005-06 已覆盖。
 
 ### Message Context
 

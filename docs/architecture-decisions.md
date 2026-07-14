@@ -25,8 +25,8 @@ Shield 的设计约定是：
 **理由**：这是项目最初的约定，也是「不重复造 skynet」的核心。CAF 提供了 actor / mailbox / scheduler / request-reply / remote actor，完全够用；选型没有错。
 
 **推进顺序**（见 [roadmap](roadmap.md)）：
-1. `dispatch_stack` thread-local 化 + 服务注册表加 shared_mutex（零语义变化）。
-2. `shield.call` 使用 CAF request/reply 驱动 coroutine yield/resume。
+1. ✅ `dispatch_stack` thread-local 化 + 服务注册表加 shared_mutex（零语义变化）。
+2. ✅ `shield.call` 使用 CAF request/reply 驱动 coroutine yield/resume。`manager->call()` 路由到 CAF actor + 条件变量阻塞等待，自调用返回错误。
 3. per-service 执行权 + 全局激活队列 + N worker 抢占调度（达成 skynet 式多核并发，每 VM 串行）。
 
 ---

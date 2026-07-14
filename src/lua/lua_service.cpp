@@ -159,6 +159,23 @@ struct LuaServiceManager::Impl {
     // (wall-clock UTC); tests inject MockClock via attach_clock().
     std::shared_ptr<Clock> clock_{std::make_shared<SystemClock>()};
 
+    // Pending synchronous calls from outside the actor system (main thread).
+    // manager->call() blocks on the CV until the actor dispatches the method
+    // and signals completion. This serializes Lua execution through the actor
+    // instead of bypassing it with synchronous reentry (AD-01 / Step 3).
+    struct PendingSyncCall {
+        uint64_t session = 0;
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool completed = false;
+        bool ok = false;
+        nlohmann::json values;
+        std::string error;
+    };
+    std::unordered_map<uint64_t, std::shared_ptr<PendingSyncCall>>
+        pending_sync_calls;
+    std::atomic<uint64_t> next_sync_call_session{1};
+
     bool uses_caf_actor_system() const { return actor_system != nullptr; }
 
     int64_t clock_now_ms() const {
@@ -203,6 +220,35 @@ struct LuaServiceManager::Impl {
                                          {"message", "call timeout"},
                                          {"retryable", true}})});
             manager->resume_caller(session, false, timeout_err);
+            return;
+        }
+        if (kind == "sync_call") {
+            // Step 3: synchronous call routed through CAF actor. The caller
+            // (main thread) is blocking on a PendingSyncCall CV. Dispatch the
+            // method and, when the handler completes, signal the caller.
+            const uint64_t sync_session = j.value("sync_session", uint64_t(0));
+            const std::string method = j.value("method", std::string(""));
+            const nlohmann::json args =
+                j.value("args", nlohmann::json::array());
+            const std::string sender = j.value("sender", std::string(""));
+            Mailbox::Message msg;
+            msg.sender = sender;
+            msg.method = method;
+            msg.args = args;
+            msg.trace_id = j.value("trace_id", std::string(""));
+            msg.deadline_ms = j.value("deadline_ms", int64_t(0));
+            msg.priority = Mailbox::Priority::Normal;
+            msg.timestamp_ms = j.value("timestamp_ms", int64_t(0));
+            // Use sync_session as call_session so on_handler_completed
+            // can identify it and signal the pending sync call.
+            msg.call_session = sync_session;
+            msg.call_reply_to = sender;
+            (void)dispatch_message(manager, sid, msg);
+            // If the handler completed synchronously (no yield),
+            // on_handler_completed already signaled the CV. If it yielded
+            // (e.g. shield.sleep), the handler will be resumed later and
+            // on_handler_completed will signal then. Either way, the caller
+            // is blocking on the CV and will be woken up.
             return;
         }
 
@@ -569,6 +615,20 @@ LuaServiceManager::~LuaServiceManager() {
             }
         }
         impl_->actor_call_timeouts.clear();
+    }
+
+    // Wake up any pending sync calls (manager->call() blocked on CV)
+    // so they don't hang forever during shutdown.
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        for (auto& [session, pending] : impl_->pending_sync_calls) {
+            std::unique_lock lk(pending->mtx);
+            pending->error = "runtime is stopping";
+            pending->ok = false;
+            pending->completed = true;
+            pending->cv.notify_one();
+        }
+        impl_->pending_sync_calls.clear();
     }
 
     impl_->runtime.set_service_manager(nullptr);
@@ -1001,7 +1061,6 @@ CallResult LuaServiceManager::call(std::string_view target,
     if (impl_->stopping.load()) {
         return CallResult::error("runtime is stopping");
     }
-    (void)timeout_ms;
 
     const std::string service_id = query_service(target);
     std::shared_ptr<LuaVM> service;
@@ -1017,6 +1076,86 @@ CallResult LuaServiceManager::call(std::string_view target,
     }
 
     const std::string sender = current_service_id();
+
+    // Step 3: if CAF actor system attached and target has actor, route
+    // through the actor (blocking wait on CV). This serializes execution
+    // through the actor mailbox instead of synchronous reentry.
+    if (impl_->actor_system) {
+        std::optional<caf::actor> actor_opt;
+        {
+            std::shared_lock lock(impl_->registry_mutex);
+            auto it = impl_->service_actors.find(service_id);
+            if (it != impl_->service_actors.end()) {
+                actor_opt = it->second;
+            }
+        }
+        if (actor_opt) {
+            // Self-call detection: avoid deadlock (actor mailbox would queue
+            // but actor is currently executing this handler).
+            if (sender == service_id) {
+                return CallResult::error(
+                    "self-call not supported via CAF path");
+            }
+
+            // Create pending sync call.
+            const uint64_t session = impl_->next_sync_call_session.fetch_add(1);
+            auto pending = std::make_shared<Impl::PendingSyncCall>();
+            pending->session = session;
+            {
+                std::unique_lock lock(impl_->registry_mutex);
+                impl_->pending_sync_calls[session] = pending;
+            }
+
+            // Build JSON message for sync_call kind.
+            const auto now = std::chrono::steady_clock::now();
+            const auto now_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now.time_since_epoch())
+                    .count();
+            nlohmann::json j;
+            j["kind"] = "sync_call";
+            j["sync_session"] = session;
+            j["sender"] = sender;
+            j["method"] = std::string(method);
+            j["args"] = args;
+            j["trace_id"] = impl_->current_trace_id();
+            j["deadline_ms"] = impl_->current_deadline_ms();
+            j["priority"] = 0;
+            j["timestamp_ms"] = now_ms;
+
+            // Send to target actor.
+            caf::anon_send(*actor_opt, std::move(j.dump()));
+
+            // Block until handler completes (or timeout).
+            const int32_t effective_timeout =
+                timeout_ms > 0 ? timeout_ms : 5000;
+            bool completed = false;
+            {
+                std::unique_lock lk(pending->mtx);
+                completed = pending->cv.wait_for(
+                    lk, std::chrono::milliseconds(effective_timeout),
+                    [&] { return pending->completed; });
+            }
+
+            // Cleanup.
+            {
+                std::unique_lock lock(impl_->registry_mutex);
+                impl_->pending_sync_calls.erase(session);
+            }
+
+            if (!completed) {
+                return CallResult::error(
+                    "call timeout (actor dispatch exceeded limit)");
+            }
+            if (pending->ok) {
+                return CallResult::ok(std::move(pending->values));
+            }
+            return CallResult::error(std::move(pending->error));
+        }
+    }
+
+    // Fallback: no CAF actor attached — direct synchronous call
+    // (original behavior for backward compatibility).
     Impl::DispatchScope scope(*impl_, service_id, sender, false);
 
     nlohmann::json values = nlohmann::json::array();
@@ -1592,6 +1731,28 @@ void LuaServiceManager::on_handler_completed(
 
 void LuaServiceManager::resume_caller(uint64_t session, bool ok,
                                       const nlohmann::json& values) {
+    // Step 3: check if this is a sync_call session (from manager->call()
+    // routed through CAF). If so, signal the blocking CV instead of resuming
+    // a Lua coroutine.
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        auto sync_it = impl_->pending_sync_calls.find(session);
+        if (sync_it != impl_->pending_sync_calls.end()) {
+            auto pending = sync_it->second;
+            impl_->pending_sync_calls.erase(sync_it);
+            lock.unlock();
+            {
+                std::unique_lock lk(pending->mtx);
+                pending->ok = ok;
+                pending->values = values;
+                pending->completed = true;
+            }
+            pending->cv.notify_one();
+            return;
+        }
+    }
+
+    // Existing: coro_call path — resume the caller's Lua coroutine.
     auto it = impl_->pending_calls.find(session);
     if (it == impl_->pending_calls.end()) {
         return;

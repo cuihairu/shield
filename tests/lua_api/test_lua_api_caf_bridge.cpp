@@ -244,4 +244,59 @@ BOOST_AUTO_TEST_CASE(RepeatingTimerReschedulesViaCaf) {
         std::chrono::seconds(2)));
 }
 
+// Step 3: sync_call via CAF actor — manager->call() routes through actor.
+BOOST_AUTO_TEST_CASE(SyncCallViaCafActor) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
+
+    // Spawn a messaging service that has a "echo" method.
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
+                                opts_for("sync_call_target").dump());
+    BOOST_REQUIRE(result.success);
+
+    // manager.call() should route through the CAF actor and return result.
+    CallResult cr =
+        manager.call(result.service_id, "echo", R"(["hello"])"_json);
+    BOOST_REQUIRE(cr.success);
+    BOOST_REQUIRE(cr.values.is_array());
+    BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
+    BOOST_CHECK_EQUAL(cr.values[0].get<std::string>(), "hello");
+}
+
+// Step 3: sync_call to nonexistent service returns error.
+BOOST_AUTO_TEST_CASE(SyncCallToNonexistentService) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
+
+    CallResult cr =
+        manager.call("nonexistent_service", "method", nlohmann::json::array());
+    BOOST_CHECK(!cr.success);
+    BOOST_CHECK(cr.error_message.find("not found") != std::string::npos);
+}
+
+// Step 3: sync_call to service without actor falls back to direct call.
+BOOST_AUTO_TEST_CASE(SyncCallFallbackWithoutActor) {
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime);
+    // No attach_actor_system — no CAF actors.
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
+                                opts_for("sync_fallback").dump());
+    BOOST_REQUIRE(result.success);
+
+    // Should use direct-call fallback (no CAF actor).
+    CallResult cr =
+        manager.call(result.service_id, "echo", R"(["world"])"_json);
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0].get<std::string>(), "world");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
