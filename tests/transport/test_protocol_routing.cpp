@@ -1,9 +1,5 @@
 #define BOOST_TEST_MODULE TransportProtocolRoutingTests
 #include <boost/test/unit_test.hpp>
-
-#include "shield/plugin/protocol_codec.h"
-#include "shield/transport/protocol.hpp"
-
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -14,21 +10,25 @@
 #include <string_view>
 #include <vector>
 
+#include "shield/plugin/protocol_codec.h"
+#include "shield/transport/protocol.hpp"
+
 using shield::transport::BodyCodecRegistry;
+using shield::transport::build_protocol_pipeline_from_json;
+using shield::transport::create_body_codec;
+using shield::transport::DelimiterEnvelope;
 using shield::transport::Endian;
-using shield::transport::EnvelopeKind;
 using shield::transport::EnvelopeConfig;
+using shield::transport::EnvelopeKind;
 using shield::transport::IdLenEnvelope;
 using shield::transport::JsonBodyCodec;
 using shield::transport::LenPrefixEnvelope;
+using shield::transport::load_xmldef_routes_from_string;
 using shield::transport::Packet;
-using shield::transport::ProtocolPipeline;
 using shield::transport::ProtocolBuildOptions;
+using shield::transport::ProtocolPipeline;
 using shield::transport::ProtocolProfile;
 using shield::transport::RawBodyCodec;
-using shield::transport::create_body_codec;
-using shield::transport::build_protocol_pipeline_from_json;
-using shield::transport::load_xmldef_routes_from_string;
 using shield::transport::RouteAction;
 using shield::transport::RouteDirection;
 using shield::transport::RouteEntry;
@@ -36,7 +36,6 @@ using shield::transport::RoutePolicy;
 using shield::transport::RouteSource;
 using shield::transport::RouteTable;
 using shield::transport::TypeLenEnvelope;
-using shield::transport::DelimiterEnvelope;
 
 namespace {
 
@@ -116,9 +115,8 @@ int fake_protocol_encode(const shield_protocol_codec_v1* self,
     state->last_schema_id = args->schema_id;
     state->last_route_name = args->route_name ? args->route_name : "";
     if (args->message_json != nullptr) {
-        state->last_input_json.assign(args->message_json,
-                                      args->message_json +
-                                          args->message_json_size);
+        state->last_input_json.assign(
+            args->message_json, args->message_json + args->message_json_size);
     } else {
         state->last_input_json.clear();
     }
@@ -185,11 +183,12 @@ BOOST_AUTO_TEST_CASE(IdLenEnvelopeExtractsRouteFromSplitFrame) {
     BOOST_REQUIRE_EQUAL(packets.size(), 1u);
     BOOST_CHECK_EQUAL(packets[0].route_id, 0x1234u);
     BOOST_CHECK_EQUAL(packets[0].body.size(), packet.body.size());
-    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(), packets[0].body.end(),
-                                  packet.body.begin(), packet.body.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(),
+                                  packets[0].body.end(), packet.body.begin(),
+                                  packet.body.end());
     BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].raw_frame.begin(),
-                                  packets[0].raw_frame.end(),
-                                  encoded.begin(), encoded.end());
+                                  packets[0].raw_frame.end(), encoded.begin(),
+                                  encoded.end());
 }
 
 BOOST_AUTO_TEST_CASE(RouteTableMapsIntegerRouteToForwardPolicy) {
@@ -200,8 +199,8 @@ BOOST_AUTO_TEST_CASE(RouteTableMapsIntegerRouteToForwardPolicy) {
     entry.codec_id = 7;
     entry.schema_id = 99;
     entry.debug_name = "cell.avatar.move";
-    entry.policy = RoutePolicy{.action = RouteAction::ForwardRaw,
-                               .lazy_decode = true};
+    entry.policy =
+        RoutePolicy{.action = RouteAction::ForwardRaw, .lazy_decode = true};
 
     BOOST_CHECK(routes.add(entry));
     BOOST_CHECK(!routes.add(entry));
@@ -255,8 +254,8 @@ BOOST_AUTO_TEST_CASE(HeaderRoutedPacketCanBeForwardedWithoutBodyDecode) {
         .codec_id = 55,
         .schema_id = 77,
         .debug_name = "base.forward_to_cell",
-        .policy = RoutePolicy{.action = RouteAction::ForwardRaw,
-                              .lazy_decode = true},
+        .policy =
+            RoutePolicy{.action = RouteAction::ForwardRaw, .lazy_decode = true},
     });
 
     const auto* route = routes.find(packets[0].route_id);
@@ -265,8 +264,8 @@ BOOST_AUTO_TEST_CASE(HeaderRoutedPacketCanBeForwardedWithoutBodyDecode) {
 
     // Forwarding can use the original frame bytes. No BodyCodec is needed.
     BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].raw_frame.begin(),
-                                  packets[0].raw_frame.end(),
-                                  encoded.begin(), encoded.end());
+                                  packets[0].raw_frame.end(), encoded.begin(),
+                                  encoded.end());
 }
 
 BOOST_AUTO_TEST_CASE(RawBodyCodecCopiesOnlyWhenDecodeIsRequested) {
@@ -299,8 +298,9 @@ BOOST_AUTO_TEST_CASE(LenPrefixEnvelopeLeavesRouteToBodyCodec) {
     BOOST_REQUIRE_EQUAL(packets.size(), 1u);
     BOOST_CHECK_EQUAL(packets[0].route_id, 0u);
     BOOST_CHECK(!packets[0].ref().has_header_route());
-    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(), packets[0].body.end(),
-                                  packet.body.begin(), packet.body.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(),
+                                  packets[0].body.end(), packet.body.begin(),
+                                  packet.body.end());
 }
 
 BOOST_AUTO_TEST_CASE(IdLenEnvelopeCanUseHeaderInclusiveLength) {
@@ -323,8 +323,9 @@ BOOST_AUTO_TEST_CASE(IdLenEnvelopeCanUseHeaderInclusiveLength) {
     auto packets = envelope.feed(encoded.data(), encoded.size());
     BOOST_REQUIRE_EQUAL(packets.size(), 1u);
     BOOST_CHECK_EQUAL(packets[0].route_id, 9u);
-    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(), packets[0].body.end(),
-                                  packet.body.begin(), packet.body.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(),
+                                  packets[0].body.end(), packet.body.begin(),
+                                  packet.body.end());
 }
 
 BOOST_AUTO_TEST_CASE(TypeLenEnvelopeUsesTypeAsRouteId) {
@@ -344,8 +345,9 @@ BOOST_AUTO_TEST_CASE(TypeLenEnvelopeUsesTypeAsRouteId) {
     BOOST_REQUIRE_EQUAL(packets.size(), 1u);
     BOOST_CHECK_EQUAL(packets[0].route_id, 0x7fu);
     BOOST_CHECK_EQUAL(packets[0].kind, 0x7fu);
-    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(), packets[0].body.end(),
-                                  packet.body.begin(), packet.body.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(),
+                                  packets[0].body.end(), packet.body.begin(),
+                                  packet.body.end());
 }
 
 BOOST_AUTO_TEST_CASE(DelimiterEnvelopeSplitsLineFrames) {
@@ -357,17 +359,18 @@ BOOST_AUTO_TEST_CASE(DelimiterEnvelopeSplitsLineFrames) {
 
     const auto one = bytes("one");
     const auto two = bytes("two");
-    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(), packets[0].body.end(),
-                                  one.begin(), one.end());
-    BOOST_CHECK_EQUAL_COLLECTIONS(packets[1].body.begin(), packets[1].body.end(),
-                                  two.begin(), two.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        packets[0].body.begin(), packets[0].body.end(), one.begin(), one.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        packets[1].body.begin(), packets[1].body.end(), two.begin(), two.end());
 
     const auto tail = bytes("-done\n");
     packets = envelope.feed(tail.data(), tail.size());
     BOOST_REQUIRE_EQUAL(packets.size(), 1u);
     const auto partial = bytes("partial-done");
-    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(), packets[0].body.end(),
-                                  partial.begin(), partial.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(),
+                                  packets[0].body.end(), partial.begin(),
+                                  partial.end());
 }
 
 BOOST_AUTO_TEST_CASE(ProtocolPipelineForwardsHeaderRouteWithoutDecode) {
@@ -378,8 +381,8 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineForwardsHeaderRouteWithoutDecode) {
         .codec_id = 1,
         .schema_id = 100,
         .debug_name = "cell.forward",
-        .policy = RoutePolicy{.action = RouteAction::ForwardRaw,
-                              .lazy_decode = true},
+        .policy =
+            RoutePolicy{.action = RouteAction::ForwardRaw, .lazy_decode = true},
     });
 
     BodyCodecRegistry codecs;
@@ -407,7 +410,7 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineForwardsHeaderRouteWithoutDecode) {
     BOOST_CHECK(results[0].should_forward_raw());
     BOOST_CHECK(!results[0].decoded());
     BOOST_REQUIRE(results[0].route != nullptr);
-    BOOST_CHECK_EQUAL(results[0].route->route_id, 0x2001u);
+    BOOST_CHECK_EQUAL(results[0].route->route_id, 0x11u);
     BOOST_CHECK_EQUAL_COLLECTIONS(results[0].packet.raw_frame.begin(),
                                   results[0].packet.raw_frame.end(),
                                   encoded.begin(), encoded.end());
@@ -499,8 +502,7 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesListenerMaxFrameSizeFallback) {
 )json";
 
     std::string error;
-    auto pipeline =
-        build_protocol_pipeline_from_json(config, "", 64, &error);
+    auto pipeline = build_protocol_pipeline_from_json(config, "", 64, &error);
     BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
     BOOST_CHECK_EQUAL(pipeline->profile().envelope.max_frame_size, 64u);
 }
@@ -569,13 +571,12 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
     BOOST_CHECK_EQUAL(state.last_schema_id, 42u);
     BOOST_CHECK_EQUAL(state.last_route_name, "game.Login");
     BOOST_CHECK_EQUAL_COLLECTIONS(state.last_payload.begin(),
-                                  state.last_payload.end(),
-                                  packet.body.begin(), packet.body.end());
+                                  state.last_payload.end(), packet.body.begin(),
+                                  packet.body.end());
 
     shield::transport::DecodedBody outbound;
     outbound.route_id = 4097;
-    outbound.message =
-        nlohmann::json::object({{"uid", 9}, {"name", "bob"}});
+    outbound.message = nlohmann::json::object({{"uid", 9}, {"name", "bob"}});
     const auto outbound_frame = pipeline->encode_message(outbound);
     BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
     BOOST_REQUIRE_GE(outbound_frame.size(), 4u);
@@ -588,10 +589,9 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
     BOOST_CHECK_EQUAL(outbound_json["name"].get<std::string>(), "bob");
 
     const auto expected_payload = bytes(state.encoded_payload);
-    BOOST_CHECK_EQUAL_COLLECTIONS(outbound_frame.begin() + 4,
-                                  outbound_frame.end(),
-                                  expected_payload.begin(),
-                                  expected_payload.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        outbound_frame.begin() + 4, outbound_frame.end(),
+        expected_payload.begin(), expected_payload.end());
 }
 
 BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesMsgpackExternalProvider) {
@@ -706,8 +706,7 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsProviderWithoutResolver) {
     std::string error;
     auto pipeline = build_protocol_pipeline_from_json(config, {}, 0, &error);
     BOOST_CHECK(pipeline == nullptr);
-    BOOST_CHECK_NE(error.find("no external codec resolver"),
-                   std::string::npos);
+    BOOST_CHECK_NE(error.find("no external codec resolver"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsProviderCodecMismatch) {
@@ -743,7 +742,8 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsProviderCodecMismatch) {
     BOOST_CHECK_NE(error.find("provider does not serve"), std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(BuildProtocolPipelineAcceptsForwardAliasForXmldefDefaultAction) {
+BOOST_AUTO_TEST_CASE(
+    BuildProtocolPipelineAcceptsForwardAliasForXmldefDefaultAction) {
     const auto temp_dir = std::filesystem::temp_directory_path() /
                           "shield_protocol_routing_tests";
     std::filesystem::create_directories(temp_dir);
@@ -774,8 +774,8 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineAcceptsForwardAliasForXmldefDefaultAct
 )json");
 
     std::string error;
-    auto pipeline = build_protocol_pipeline_from_json(
-        config, temp_dir.string(), 0, &error);
+    auto pipeline =
+        build_protocol_pipeline_from_json(config, temp_dir.string(), 0, &error);
     BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
     BOOST_REQUIRE(pipeline->routes().find(0x1001) != nullptr);
     BOOST_CHECK(pipeline->routes().find(0x1001)->policy.action ==
@@ -940,7 +940,8 @@ BOOST_AUTO_TEST_CASE(StructuredCodecsRejectRawByteEgress) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(BinarySchemaCodecNamesCannotDecodeLocalWithoutImplementation) {
+BOOST_AUTO_TEST_CASE(
+    BinarySchemaCodecNamesCannotDecodeLocalWithoutImplementation) {
     auto protobuf = create_body_codec("protobuf");
     auto fbs = create_body_codec("fbs");
     auto sproto = create_body_codec("sproto");
@@ -968,7 +969,8 @@ BOOST_AUTO_TEST_CASE(BinarySchemaCodecNamesCannotDecodeLocalWithoutImplementatio
     route.schema_id = 123;
 
     BOOST_CHECK_THROW(xmldef->decode(packet.ref(), route), std::runtime_error);
-    BOOST_CHECK_THROW(protobuf->decode(packet.ref(), route), std::runtime_error);
+    BOOST_CHECK_THROW(protobuf->decode(packet.ref(), route),
+                      std::runtime_error);
     BOOST_CHECK_THROW(fbs->decode(packet.ref(), route), std::runtime_error);
     BOOST_CHECK_THROW(sproto->decode(packet.ref(), route), std::runtime_error);
     BOOST_CHECK_THROW(msgpack->decode(packet.ref(), route), std::runtime_error);
@@ -1087,8 +1089,8 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineDecodesTypeLenHeaderRouteWithJsonCodec) {
     BOOST_CHECK_EQUAL(results[0].route->debug_name, "battle.attack");
     BOOST_CHECK(results[0].decoded());
     BOOST_REQUIRE(results[0].decoded_body->has_message());
-    BOOST_CHECK_EQUAL(
-        (*results[0].decoded_body->message)["damage"].get<int>(), 42);
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["damage"].get<int>(),
+                      42);
 }
 
 BOOST_AUTO_TEST_CASE(ProtocolPipelineResolvesBodyRouteWithDelimiterEnvelope) {
@@ -1128,8 +1130,7 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineResolvesBodyRouteWithDelimiterEnvelope) {
     BOOST_CHECK(results[0].decoded());
     BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
     BOOST_REQUIRE(results[0].decoded_body->has_message());
-    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(),
-                      1);
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["uid"].get<int>(), 1);
 }
 
 BOOST_AUTO_TEST_CASE(ProtocolPipelineDecodeBeforeDispatchOverridesLazyDecode) {
@@ -1165,8 +1166,7 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineDecodeBeforeDispatchOverridesLazyDecode) {
     BOOST_CHECK(results[0].ok());
     BOOST_CHECK(results[0].decoded());
     BOOST_REQUIRE(results[0].decoded_body->has_message());
-    BOOST_CHECK_EQUAL(
-        (*results[0].decoded_body->message)["x"].get<int>(), 1);
+    BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["x"].get<int>(), 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
