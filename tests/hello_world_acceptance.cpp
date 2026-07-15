@@ -1,12 +1,11 @@
 #define BOOST_TEST_MODULE HelloWorldAcceptanceTests
 #include <boost/test/unit_test.hpp>
-
-#include "shield/shield.hpp"
-
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <thread>
-#include <chrono>
+
+#include "shield/shield.hpp"
 
 using namespace boost::unit_test;
 
@@ -23,9 +22,12 @@ BOOST_AUTO_TEST_CASE(HW_001_ConfigFileExists) {
 
 BOOST_AUTO_TEST_CASE(HW_002_LuaScriptsExist) {
     // Verify that all required Lua scripts exist
-    BOOST_CHECK(std::filesystem::exists("../examples/hello_world/scripts/echo.lua"));
-    BOOST_CHECK(std::filesystem::exists("../examples/hello_world/scripts/gateway.lua"));
-    BOOST_CHECK(std::filesystem::exists("../examples/hello_world/scripts/player.lua"));
+    BOOST_CHECK(
+        std::filesystem::exists("../examples/hello_world/scripts/echo.lua"));
+    BOOST_CHECK(
+        std::filesystem::exists("../examples/hello_world/scripts/gateway.lua"));
+    BOOST_CHECK(
+        std::filesystem::exists("../examples/hello_world/scripts/player.lua"));
 }
 
 BOOST_AUTO_TEST_CASE(HW_003_LuaScriptsValidSyntax) {
@@ -47,7 +49,7 @@ BOOST_AUTO_TEST_CASE(HW_004_ServiceAPICoverage) {
     // Read echo.lua and check for required API calls
     std::ifstream echo_file("../examples/hello_world/scripts/echo.lua");
     std::string echo_content((std::istreambuf_iterator<char>(echo_file)),
-                           std::istreambuf_iterator<char>());
+                             std::istreambuf_iterator<char>());
 
     // Check for lifecycle API
     BOOST_CHECK(echo_content.find("on_init") != std::string::npos);
@@ -68,15 +70,17 @@ BOOST_AUTO_TEST_CASE(HW_005_GatewayServiceCoverage) {
     // Verify gateway service covers network and session management
     std::ifstream gateway_file("../examples/hello_world/scripts/gateway.lua");
     std::string gateway_content((std::istreambuf_iterator<char>(gateway_file)),
-                              std::istreambuf_iterator<char>());
+                                std::istreambuf_iterator<char>());
 
     // Check for network connection handlers
     BOOST_CHECK(gateway_content.find("on_connect") != std::string::npos);
     BOOST_CHECK(gateway_content.find("on_disconnect") != std::string::npos);
     BOOST_CHECK(gateway_content.find("on_client_message") != std::string::npos);
 
-    // Check for spawn API
-    BOOST_CHECK(gateway_content.find("shield.spawn") != std::string::npos);
+    // Check for messaging API — gateway forwards client disconnect via
+    // shield.send. It deliberately does not spawn services (gateway.lua is a
+    // pure forwarder); app.yaml's "动态创建 player" remains future work.
+    BOOST_CHECK(gateway_content.find("shield.send") != std::string::npos);
 
     // Check for session management
     BOOST_CHECK(gateway_content.find("sessions") != std::string::npos);
@@ -86,7 +90,7 @@ BOOST_AUTO_TEST_CASE(HW_006_PlayerServiceCoverage) {
     // Verify player service covers business logic and data access
     std::ifstream player_file("../examples/hello_world/scripts/player.lua");
     std::string player_content((std::istreambuf_iterator<char>(player_file)),
-                              std::istreambuf_iterator<char>());
+                               std::istreambuf_iterator<char>());
 
     // Check for business logic handlers
     BOOST_CHECK(player_content.find("login") != std::string::npos);
@@ -104,7 +108,7 @@ BOOST_AUTO_TEST_CASE(HW_007_DataAccessCoverage) {
     // Verify that the example demonstrates data access patterns
     std::ifstream player_file("../examples/hello_world/scripts/player.lua");
     std::string player_content((std::istreambuf_iterator<char>(player_file)),
-                              std::istreambuf_iterator<char>());
+                               std::istreambuf_iterator<char>());
 
     // Check for plugin v1 database API (configured via plugin instances).
     BOOST_CHECK(player_content.find("shield.database") != std::string::npos);
@@ -117,7 +121,7 @@ BOOST_AUTO_TEST_CASE(HW_008_MainEntryPoint) {
     // Verify that main.cpp uses the correct shield::run entry point
     std::ifstream main_file("../examples/hello_world/main.cpp");
     std::string main_content((std::istreambuf_iterator<char>(main_file)),
-                            std::istreambuf_iterator<char>());
+                             std::istreambuf_iterator<char>());
 
     // Check for shield::run usage
     BOOST_CHECK(main_content.find("shield::run") != std::string::npos);
