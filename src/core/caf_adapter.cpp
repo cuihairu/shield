@@ -11,8 +11,8 @@
 #include "shield/base/error.hpp"
 #include "shield/base/id.hpp"
 #include "shield/base/time.hpp"
+#include "shield/core/service_message.hpp"
 #include "shield/core/service_registry.hpp"
-#include "shield/lua/service_message.hpp"
 
 namespace shield::core {
 

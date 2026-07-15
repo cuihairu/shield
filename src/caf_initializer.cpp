@@ -1,6 +1,6 @@
 #include "caf/init_global_meta_objects.hpp"
 #include "caf/io/middleman.hpp"
-#include "shield/lua/service_message.hpp"
+#include "shield/core/service_message.hpp"
 
 void initialize_caf_types() {
     caf::core::init_global_meta_objects();

@@ -23,9 +23,9 @@
 #include "shield/base/error.hpp"
 #include "shield/base/result.hpp"
 #include "shield/config/config.hpp"
+#include "shield/core/service_message.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/lua/lua_runtime.hpp"
-#include "shield/lua/service_message.hpp"
 
 namespace shield::lua {
 

@@ -1,4 +1,12 @@
-// [SHIELD_LUA] CAF message types replacing JSON-string transport
+// [SHIELD_CORE] CAF message types for service actor transport
+//
+// NOTE on placement: these types are defined in `namespace shield::lua` (they
+// serve the Lua service layer) but the header lives under include/shield/core/
+// because the CAF adapter in shield_core must construct and send them. The
+// source-boundary check forbids shield_core from including headers under
+// shield/lua/, so the shared transport contract has to live one layer down.
+// The types themselves depend only on CAF + nlohmann::json, both already linked
+// by shield_core, so this does not widen shield_core's dependencies.
 //
 // These types replace the previous scheme where every CAF message was a
 // JSON-serialized std::string dispatched by a `kind` field. Each message kind
