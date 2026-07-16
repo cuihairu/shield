@@ -33,114 +33,6 @@ private:
     std::string service_id_;
 };
 
-/// @brief Timer manager for scheduling and canceling timers
-class TimerManager {
-public:
-    using TimerId = uint64_t;
-
-    enum class TimerType {
-        Once,        // One-shot timer
-        FixedDelay,  // Repeating timer with fixed delay
-    };
-
-    struct TimerCallback {
-        std::function<void()> callback;
-        sol::function
-            raw_callback;  // original Lua function, for coroutine wrapping
-        std::string service_id;
-    };
-
-    struct FireResult {
-        bool fired = false;
-        TimerId rescheduled_id = 0;
-        int64_t reschedule_delay_ms = 0;
-        std::string service_id;
-    };
-
-    explicit TimerManager();
-
-    // Schedule a one-shot timer
-    /// @param delay_ms Delay in milliseconds
-    /// @param callback Function to call when timer fires
-    /// @param service_id Owner service ID
-    /// @return Timer ID for cancellation
-    TimerId schedule_once(int64_t delay_ms, sol::function callback,
-                          const std::string& service_id);
-
-    // Schedule a one-shot timer with a native (C++) callback. Used by runtime
-    // internals such as coroutine sleep that need to resume a suspended Lua
-    // coroutine without going through a sol::function.
-    TimerId schedule_once_fn(int64_t delay_ms, std::function<void()> callback,
-                             const std::string& service_id);
-
-    // Schedule a repeating timer
-    /// @param interval_ms Interval in milliseconds
-    /// @param callback Function to call when timer fires
-    /// @param service_id Owner service ID
-    /// @return Timer ID for cancellation
-    TimerId schedule_fixed_delay(int64_t interval_ms, sol::function callback,
-                                 const std::string& service_id);
-
-    // Cancel a timer
-    /// @param id Timer ID
-    /// @return true if timer was cancelled
-    bool cancel(TimerId id);
-
-    // Cancel all timers for a service
-    void cancel_all_for_service(const std::string& service_id);
-
-    // Check and fire expired timers
-    /// @param now_ms Current monotonic time in milliseconds
-    /// @return Number of timers fired
-    int check_and_fire(int64_t now_ms);
-
-    // Check and fire expired timers with error reporting.
-    /// @param now_ms Current monotonic time in milliseconds
-    /// @param on_error Callback invoked with (service_id, error_message) when a
-    /// timer throws
-    /// @return Number of timers fired
-    int check_and_fire(int64_t now_ms,
-                       std::function<void(const std::string& service_id,
-                                          const std::string& error)>
-                           on_error);
-
-    // Visitor-based fire: calls `visitor(service_id, raw_callback)` for each
-    // expired timer instead of invoking the callback directly.  The visitor
-    // can wrap the callback in a coroutine, run it synchronously, etc.
-    // Repeating timers are rescheduled after the visitor returns.
-    /// @param now_ms Current monotonic time in milliseconds
-    /// @param visitor Called with (service_id, raw sol::function) for each
-    /// expired timer
-    /// @return Number of timers processed
-    int check_and_fire_each(int64_t now_ms,
-                            std::function<void(const std::string& service_id,
-                                               sol::function callback)>
-                                visitor);
-
-    // Consume an expired timer by id and run `visitor(service_id,
-    // raw_callback)` or the native callback directly. Returns metadata for
-    // repeating-timer rescheduling. Used by the CAF actor path to avoid the old
-    // global polling scan while preserving the existing timer storage and
-    // cancel semantics.
-    FireResult fire_timer(TimerId id,
-                          std::function<void(const std::string& service_id,
-                                             sol::function callback)>
-                              visitor);
-
-    // Get active timer count
-    size_t active_count() const;
-
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-
-    // Core repeating-timer scheduler taking a native callback. Used by the
-    // public sol::function overload and by internal rescheduling.
-    TimerId schedule_fixed_delay_fn(int64_t interval_ms,
-                                    std::function<void()> callback,
-                                    const std::string& service_id);
-};
-
 /// @brief Mailbox for service message queuing
 class Mailbox {
 public:
@@ -368,9 +260,6 @@ public:
     // Get service manager for this runtime
     LuaServiceManager* service_manager() const;
 
-    // Get timer manager for this runtime
-    TimerManager& timer_manager() { return *timer_manager_; }
-
     // Get global variable
     std::string get_global(std::shared_ptr<LuaVM> vm, std::string_view name);
 
@@ -402,9 +291,6 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
-
-    // Timer manager (shared across all VMs in this runtime)
-    std::unique_ptr<TimerManager> timer_manager_;
 };
 
 /// @brief Per-VM context for a Lua service

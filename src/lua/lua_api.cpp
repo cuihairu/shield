@@ -736,9 +736,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
 
             // Check timer limit.
             const auto timer_count =
-                manager && manager->uses_caf_actor_system()
-                    ? manager->active_actor_timer_count()
-                    : runtime->timer_manager().active_count();
+                manager ? manager->active_actor_timer_count() : 0;
             if (timer_count >= kTimerLimit) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 sol::this_state ts(callback.lua_state());
@@ -747,12 +745,10 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
 
-            const uint64_t id = manager && manager->uses_caf_actor_system() &&
-                                        !service_id.empty()
+            const uint64_t id = manager && !service_id.empty()
                                     ? manager->schedule_actor_timer_once(
                                           delay_ms, callback, service_id)
-                                    : runtime->timer_manager().schedule_once(
-                                          delay_ms, callback, service_id);
+                                    : 0;
             results.push_back(sol::make_object(lua, id));
             return results;
         });
@@ -787,9 +783,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
 
             // Check timer limit.
             const auto timer_count =
-                manager && manager->uses_caf_actor_system()
-                    ? manager->active_actor_timer_count()
-                    : runtime->timer_manager().active_count();
+                manager ? manager->active_actor_timer_count() : 0;
             if (timer_count >= kTimerLimit) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 sol::this_state ts(callback.lua_state());
@@ -798,13 +792,10 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
 
-            const uint64_t id =
-                manager && manager->uses_caf_actor_system() &&
-                        !service_id.empty()
-                    ? manager->schedule_actor_timer_fixed_delay(
-                          interval_ms, callback, service_id)
-                    : runtime->timer_manager().schedule_fixed_delay(
-                          interval_ms, callback, service_id);
+            const uint64_t id = manager && !service_id.empty()
+                                    ? manager->schedule_actor_timer_fixed_delay(
+                                          interval_ms, callback, service_id)
+                                    : 0;
             results.push_back(sol::make_object(lua, id));
             return results;
         });
@@ -823,9 +814,8 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
 
-            const bool cancelled = manager && manager->uses_caf_actor_system()
-                                       ? manager->cancel_actor_timer(id)
-                                       : runtime->timer_manager().cancel(id);
+            const bool cancelled =
+                manager ? manager->cancel_actor_timer(id) : false;
             results.push_back(sol::make_object(lua, cancelled));
             if (!cancelled) {
                 results.push_back(
@@ -858,7 +848,6 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             if (manager) {
                 service_id = manager->current_service_id();
             }
-            auto& timer_mgr = runtime->timer_manager();
             auto resume_fn = [co, ref, manager]() {
                 int nres = 0;
                 const int status = lua_resume(co, nullptr, 0, &nres);
@@ -883,13 +872,9 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 // LUA_OK (completed) or an error: release the anchor.
                 luaL_unref(co, LUA_REGISTRYINDEX, ref);
             };
-            if (manager && manager->uses_caf_actor_system() &&
-                !service_id.empty()) {
+            if (manager && !service_id.empty()) {
                 (void)manager->schedule_actor_timer_once_fn(
                     delay_ms, std::move(resume_fn), service_id);
-            } else {
-                timer_mgr.schedule_once_fn(delay_ms, std::move(resume_fn),
-                                           service_id);
             }
         });
 

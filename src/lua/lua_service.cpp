@@ -527,7 +527,6 @@ LuaServiceManager::~LuaServiceManager() {
     }
     for (const auto& service_id : service_ids) {
         cancel_forked_tasks_for_service(service_id);
-        impl_->runtime.timer_manager().cancel_all_for_service(service_id);
         std::vector<uint64_t> actor_timer_ids;
         {
             std::shared_lock lock(impl_->registry_mutex);
@@ -1213,7 +1212,6 @@ void LuaServiceManager::exit(std::string_view service_id,
     // the service's lua_State; releasing them after the VM is destroyed
     // would luaL_unref on a closed state.
     cancel_forked_tasks_for_service(id);
-    impl_->runtime.timer_manager().cancel_all_for_service(id);
     std::vector<uint64_t> actor_timer_ids;
     {
         std::shared_lock lock(impl_->registry_mutex);
@@ -1527,30 +1525,6 @@ int LuaServiceManager::pump_once() {
     }
     events += static_cast<int>(tasks_to_run.size());
 
-    const int64_t now = Impl::now_ms();
-    // Fire timer callbacks inside a protected call so thrown errors route
-    // to the service's on_error hook instead of crashing the pump.
-    events += impl_->runtime.timer_manager().check_and_fire_each(
-        now, [this](const std::string& service_id, sol::function cb) {
-            if (!cb.valid()) return;
-            lua_State* L = cb.lua_state();
-            cb.push(L);
-            int status = lua_pcall(L, 0, 0, 0);
-            if (status != LUA_OK) {
-                std::string err = "timer error";
-                if (lua_type(L, -1) == LUA_TSTRING) {
-                    err = lua_tostring(L, -1);
-                }
-                lua_settop(L, 0);
-                invoke_error_hook(service_id, "timer", "", err);
-            }
-        });
-    // Step 2c: when a CAF actor system is attached, both coroutine- and
-    // call-timeouts are driven by CAF delayed events rather than a global
-    // pump_once scan. Keep the legacy scan only as a no-CAF fallback.
-    if (!impl_->uses_caf_actor_system()) {
-        events += check_call_timeouts(now);
-    }
     return events;
 }
 
@@ -1620,7 +1594,7 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
     // is looked up by id in pending_tasks, so the sol::function never crosses
     // the CAF message boundary. This also fixes a production bug: with the
     // worker no longer started, the pump_once drain path was unreachable.
-    if (impl_->uses_caf_actor_system() && !service_id.empty()) {
+    if (!service_id.empty()) {
         std::shared_lock lock(impl_->registry_mutex);
         auto it = impl_->service_actors.find(service_id);
         if (it != impl_->service_actors.end()) {
@@ -1629,9 +1603,9 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
         }
     }
 
-    // No owning actor (legacy/test path without a CAF system, or a fork with
-    // empty service_id from the console): fall back to the worker/pump drain.
-    impl_->worker_cv.notify_one();
+    // No owning actor (fork with empty service_id from the console).
+    // Fall back to immediate execution on the current thread.
+    impl_->run_ready_fork_task(this, id);
     return id;
 }
 
@@ -1719,9 +1693,8 @@ uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
     const std::string service = pc.caller_service;
     impl_->pending_calls.emplace(session, std::move(pc));
 
-    // Step 2c: when a CAF actor system is attached, drive the call timeout via
-    // a CAF delayed event instead of relying on pump_once polling.
-    if (impl_->uses_caf_actor_system() && !service.empty()) {
+    // Step 2c: drive the call timeout via a CAF delayed event.
+    if (!service.empty()) {
         const int32_t effective = timeout_ms > 0 ? timeout_ms : 5000;
         schedule_actor_call_timeout(effective, service, session);
     }
@@ -1783,9 +1756,7 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
     // Cancel the CAF call-timeout driver (if any) now that the call has
     // completed normally. The timeout path itself erases the driver before
     // calling resume_caller, so this is a no-op for the timeout branch.
-    if (impl_->uses_caf_actor_system()) {
-        cancel_actor_call_timeout(session);
-    }
+    cancel_actor_call_timeout(session);
 
     lua_State* caller_co = pc.caller_co;
     if (caller_co == nullptr) {
