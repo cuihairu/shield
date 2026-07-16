@@ -555,7 +555,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             }
             std::string send_error;
             // Send carries call_session so the callee's dispatch can route the
-            // response back. call_reply_to is the caller's service id.
+            // response back to the caller.
             if (!manager->send_call_request(service_id, method, json_args,
                                             session, &send_error)) {
                 // Could not queue: cancel the pending wait with an error so

@@ -40,9 +40,8 @@ enum class MessagePriority : uint8_t {
 };
 
 /// Primary service message for send() / send_system() / send_call_request().
-/// Replaces the previous default ("message") JSON kind. The coroutine-call
-/// correlation fields (call_session / call_reply_to) distinguish a plain send
-/// from a call request.
+/// Replaces the previous default ("message") JSON kind. call_session (non-zero)
+/// distinguishes a plain send from a call request.
 struct ServiceMessage {
     std::string sender;
     std::string method;
@@ -52,7 +51,6 @@ struct ServiceMessage {
     MessagePriority priority = MessagePriority::Normal;
     int64_t timestamp_ms = 0;
     uint64_t call_session = 0;  // non-zero => call request
-    std::string call_reply_to;
 };
 
 /// Synchronous call request routed from manager->call() through the CAF actor.

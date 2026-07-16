@@ -207,7 +207,6 @@ struct LuaServiceManager::Impl {
                          : Mailbox::Priority::Normal;
         m.timestamp_ms = msg.timestamp_ms;
         m.call_session = msg.call_session;
-        m.call_reply_to = msg.call_reply_to;
         (void)dispatch_message(manager, id, m);
     }
 
@@ -226,7 +225,6 @@ struct LuaServiceManager::Impl {
         msg.priority = Mailbox::Priority::Normal;
         msg.timestamp_ms = req.timestamp_ms;
         msg.call_session = req.sync_session;
-        msg.call_reply_to = req.sender;
         (void)dispatch_message(manager, id, msg);
     }
 
@@ -1029,7 +1027,6 @@ bool LuaServiceManager::send_call_request(std::string_view target,
             msg.priority = MessagePriority::Normal;
             msg.timestamp_ms = now_ms;
             msg.call_session = session;
-            msg.call_reply_to = sender;
             caf::anon_send(*actor_opt, std::move(msg));
             return true;
         }
@@ -1063,7 +1060,6 @@ bool LuaServiceManager::send_call_request(std::string_view target,
     msg.priority = Mailbox::Priority::Normal;
     msg.timestamp_ms = now_ms;
     msg.call_session = session;
-    msg.call_reply_to = current_service_id();
     if (!mailbox->push(msg, Mailbox::Backpressure::DropNewest)) {
         if (error) {
             *error = "mailbox full";

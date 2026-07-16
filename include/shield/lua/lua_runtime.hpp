@@ -238,9 +238,8 @@ public:
         Priority priority = Priority::Normal;
         int64_t timestamp_ms = 0;
         // Coroutine call correlation. Defaults describe a plain send.
-        // Call-request: call_session != 0, call_reply_to = caller service id.
+        // Call-request: call_session != 0.
         uint64_t call_session = 0;
-        std::string call_reply_to;
     };
 
     explicit Mailbox(size_t max_size = 1000);
