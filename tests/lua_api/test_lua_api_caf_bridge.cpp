@@ -186,10 +186,10 @@ BOOST_AUTO_TEST_CASE(ForkExecutesWithoutWorkerWhenActorSystemAttached) {
                                 timer_opts_for("caf_fork", "fork").dump());
     BOOST_REQUIRE(result.success);
 
-    // Fork stays on the pump path (drained by pump_once), so drive it here.
+    // Fork routes through the service actor (CAF), so it executes without any
+    // pump_once driver — the actor drains fork_task_atom from its own mailbox.
     BOOST_CHECK(wait_until(
         [&]() {
-            (void)manager.pump_once();
             CallResult cr = manager.call(result.service_id, "get_fork_count",
                                          nlohmann::json::array());
             return cr.success && cr.values.size() == 1u &&

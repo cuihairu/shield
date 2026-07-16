@@ -6,6 +6,7 @@
 #include <caf/actor.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/event_based_actor.hpp>
+#include <caf/mail_cache.hpp>
 #include <caf/send.hpp>
 #include <chrono>
 #include <condition_variable>
@@ -641,30 +642,56 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         if (impl_->actor_system) {
             auto actor = impl_->actor_system->spawn(
                 [impl_ptr = impl_.get(), manager = this, svc = service_name](
-                    caf::event_based_actor* /*self*/) -> caf::behavior {
+                    caf::event_based_actor* self) -> caf::behavior {
+                    // Message stashing: until on_init completes on the spawning
+                    // thread, every incoming message is stashed so fork/timer/
+                    // call cannot touch this Lua VM concurrently with on_init.
+                    // The spawner sends init_ready_atom once on_init returns;
+                    // we then install the real behavior and release the stash.
+                    auto cache = std::make_shared<caf::mail_cache>(self, 4096);
+                    self->set_default_handler(
+                        [cache](caf::message& msg) -> caf::skippable_result {
+                            cache->stash(msg);
+                            return {};
+                        });
                     return caf::behavior{
-                        // -- Native typed messages (new) --
-                        [impl_ptr, manager, svc](const ServiceMessage& msg) {
-                            impl_ptr->dispatch_service_message(manager, svc,
-                                                               msg);
-                        },
-                        [impl_ptr, manager, svc](const SyncCallMessage& req) {
-                            impl_ptr->dispatch_sync_call_message(manager, svc,
-                                                                 req);
-                        },
-                        [impl_ptr, manager, svc](timer_fire_atom,
-                                                 uint64_t timer_id) {
-                            impl_ptr->fire_actor_timer(manager, svc, timer_id);
-                        },
-                        [impl_ptr, manager, svc](call_timeout_atom,
-                                                 uint64_t session) {
-                            manager->cancel_actor_call_timeout(session);
-                            nlohmann::json timeout_err =
-                                nlohmann::json::array({nlohmann::json::object(
-                                    {{"code", "timeout"},
-                                     {"message", "call timeout"},
-                                     {"retryable", true}})});
-                            manager->resume_caller(session, false, timeout_err);
+                        [self, cache, impl_ptr, manager, svc](init_ready_atom) {
+                            self->set_default_handler(caf::print_and_drop);
+                            self->become(caf::behavior{
+                                [impl_ptr, manager,
+                                 svc](const ServiceMessage& msg) {
+                                    impl_ptr->dispatch_service_message(
+                                        manager, svc, msg);
+                                },
+                                [impl_ptr, manager,
+                                 svc](const SyncCallMessage& req) {
+                                    impl_ptr->dispatch_sync_call_message(
+                                        manager, svc, req);
+                                },
+                                [impl_ptr, manager, svc](timer_fire_atom,
+                                                         uint64_t timer_id) {
+                                    impl_ptr->fire_actor_timer(manager, svc,
+                                                               timer_id);
+                                },
+                                [impl_ptr, manager, svc](call_timeout_atom,
+                                                         uint64_t session) {
+                                    manager->cancel_actor_call_timeout(session);
+                                    nlohmann::json timeout_err =
+                                        nlohmann::json::array(
+                                            {nlohmann::json::object(
+                                                {{"code", "timeout"},
+                                                 {"message", "call timeout"},
+                                                 {"retryable", true}})});
+                                    manager->resume_caller(session, false,
+                                                           timeout_err);
+                                },
+                                [impl_ptr, manager](fork_task_atom,
+                                                    uint64_t task_id) {
+                                    impl_ptr->run_ready_fork_task(manager,
+                                                                  task_id);
+                                },
+                            });
+                            cache->unstash();
                         },
                     };
                 });
@@ -734,6 +761,12 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             impl_->owned_names[service_name].insert(service_name);
             impl_->service_order.push_back(service_name);
             impl_->mailboxes[service_name] = std::make_shared<Mailbox>(1000);
+        }
+
+        // on_init succeeded: tell the actor to install its real behavior and
+        // release any messages stashed during init (see spawn lambda above).
+        if (precreated_actor) {
+            caf::anon_send(*precreated_actor, init_ready_atom_v);
         }
 
         if (exit_after_init) {
@@ -1588,13 +1621,23 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
         impl_->tasks_by_service[service_id].insert(id);
     }
 
-    // Fork tasks execute raw Lua and are often scheduled from inside on_init.
-    // Routing them through the CAF service actor would execute the callback on
-    // a CAF scheduler thread that may race with the spawning thread still
-    // running on_init on the same Lua VM. Keep fork on the pump path (drained
-    // by pump_once / the worker), which preserves single-thread execution for
-    // the VM. Timers/sleep/timeouts are safe on CAF because their delay
-    // guarantees they fire after on_init has returned.
+    // Route the fork to the owning service actor. The actor stashes every
+    // message until on_init completes (see spawn), so a fork scheduled during
+    // on_init runs serially after init — no Lua VM race. The callback itself
+    // is looked up by id in pending_tasks, so the sol::function never crosses
+    // the CAF message boundary. This also fixes a production bug: with the
+    // worker no longer started, the pump_once drain path was unreachable.
+    if (impl_->uses_caf_actor_system() && !service_id.empty()) {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto it = impl_->service_actors.find(service_id);
+        if (it != impl_->service_actors.end()) {
+            caf::anon_send(it->second, fork_task_atom_v, id);
+            return id;
+        }
+    }
+
+    // No owning actor (legacy/test path without a CAF system, or a fork with
+    // empty service_id from the console): fall back to the worker/pump drain.
     impl_->worker_cv.notify_one();
     return id;
 }
