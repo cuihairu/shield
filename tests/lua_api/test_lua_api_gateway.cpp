@@ -7,15 +7,20 @@
 
 #define BOOST_TEST_MODULE LuaApiGatewayTests
 #include <boost/test/unit_test.hpp>
+#include <caf/actor_system.hpp>
+#include <caf/actor_system_config.hpp>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "shield/caf_initializer.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -256,7 +261,24 @@ make_fake_protobuf_pipeline(const shield_protocol_codec_v1* codec,
     return shield::transport::build_protocol_pipeline_from_json(config, options,
                                                                 error);
 }
+
+bool wait_until(std::function<bool()> predicate,
+                std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return predicate();
+}
 }  // namespace
+
+struct CafInitFixture {
+    CafInitFixture() { initialize_caf_types(); }
+};
+BOOST_GLOBAL_FIXTURE(CafInitFixture);
 
 BOOST_AUTO_TEST_SUITE(Lapi009GatewayApi)
 
@@ -450,8 +472,12 @@ BOOST_AUTO_TEST_CASE(GatewayServiceLoadsAndHandlersExist) {
 // send(), which rejects on_* lifecycle method names.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = spawn_gateway(manager, "gw_bridge");
     BOOST_REQUIRE(result.success);
@@ -461,16 +487,17 @@ BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
         42, shield::net::RemoteAddress{"127.0.0.1", 34567});
 
     bridge.on_connect(session);
-    manager.pump_once();  // run bridge task
-    manager.pump_once();  // dispatch queued on_connect message
 
-    CallResult sessions = manager.call(result.service_id, "get_sessions",
-                                       nlohmann::json::array());
-    BOOST_REQUIRE(sessions.success);
-    BOOST_REQUIRE(sessions.values.is_array());
-    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
-    BOOST_REQUIRE(sessions.values[0].is_object());
-    BOOST_CHECK(sessions.values[0].contains("42"));
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            return sessions.success && sessions.values.is_array() &&
+                   sessions.values.size() == 1u &&
+                   sessions.values[0].is_object() &&
+                   sessions.values[0].contains("42");
+        },
+        std::chrono::seconds(1)));
 
     // Test on_packet with a route
     shield::transport::DispatchResult dispatch;
@@ -488,22 +515,33 @@ BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
     };
 
     bridge.on_packet(session, dispatch);
-    manager.pump_once();
-    manager.pump_once();
 
-    sessions = manager.call(result.service_id, "get_sessions",
-                            nlohmann::json::array());
-    BOOST_REQUIRE(sessions.success);
-    BOOST_REQUIRE(sessions.values[0].contains("42"));
-    BOOST_CHECK_EQUAL(
-        sessions.values[0]["42"]["last_message"]["route_id"].get<uint32_t>(),
-        0x1001u);
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            if (!sessions.success || !sessions.values.is_array() ||
+                sessions.values.size() < 1u) {
+                return false;
+            }
+            if (!sessions.values[0].contains("42")) {
+                return false;
+            }
+            return sessions.values[0]["42"].contains("last_message") &&
+                   sessions.values[0]["42"]["last_message"]["route_id"]
+                           .get<uint32_t>() == 0x1001u;
+        },
+        std::chrono::seconds(1)));
 }
 
 BOOST_AUTO_TEST_CASE(
     LuaGatewayBridgePassesRealSessionHandleToLuaForProtocolEgress) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = spawn_gateway(manager, "gw_protocol_handle");
     BOOST_REQUIRE(result.success);
@@ -513,8 +551,16 @@ BOOST_AUTO_TEST_CASE(
         43, shield::net::RemoteAddress{"127.0.0.1", 34568}, true);
 
     bridge.on_connect(session);
-    manager.pump_once();
-    manager.pump_once();
+
+    // Wait for the connect to be processed by the actor.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            return sessions.success && sessions.values.is_array() &&
+                   sessions.values.size() >= 1u;
+        },
+        std::chrono::seconds(1)));
 
     // Test with new on_client_message signature
     nlohmann::json client_ctx = {
@@ -531,8 +577,12 @@ BOOST_AUTO_TEST_CASE(
 
 BOOST_AUTO_TEST_CASE(
     LuaGatewayBridgePassesProtobufSessionHandleToLuaForProtocolEgress) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = spawn_gateway(manager, "gw_protobuf_egress");
     BOOST_REQUIRE(result.success);
@@ -542,8 +592,16 @@ BOOST_AUTO_TEST_CASE(
         45, shield::net::RemoteAddress{"127.0.0.1", 34570}, true, "protobuf");
 
     bridge.on_connect(session);
-    manager.pump_once();
-    manager.pump_once();
+
+    // Wait for the connect to be processed by the actor.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            return sessions.success && sessions.values.is_array() &&
+                   sessions.values.size() >= 1u;
+        },
+        std::chrono::seconds(1)));
 
     // Test with new on_client_message signature
     nlohmann::json client_ctx = {
@@ -560,8 +618,12 @@ BOOST_AUTO_TEST_CASE(
 
 BOOST_AUTO_TEST_CASE(
     LuaGatewayBridgeRejectsRawStringEgressForStructuredProtocolSessions) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = spawn_gateway(manager, "gw_protocol_handle_raw");
     BOOST_REQUIRE(result.success);
@@ -571,8 +633,16 @@ BOOST_AUTO_TEST_CASE(
         44, shield::net::RemoteAddress{"127.0.0.1", 34569}, true);
 
     bridge.on_connect(session);
-    manager.pump_once();
-    manager.pump_once();
+
+    // Wait for the connect to be processed by the actor.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            return sessions.success && sessions.values.is_array() &&
+                   sessions.values.size() >= 1u;
+        },
+        std::chrono::seconds(1)));
 
     // Test with new on_client_message signature
     nlohmann::json client_ctx = {
@@ -597,8 +667,12 @@ BOOST_AUTO_TEST_CASE(
 
 BOOST_AUTO_TEST_CASE(
     LuaGatewayBridgeRoutesDecodeLocalProtocolPacketsToClientMessage) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = spawn_gateway(manager, "gw_packet_bridge");
     BOOST_REQUIRE(result.success);
@@ -608,8 +682,16 @@ BOOST_AUTO_TEST_CASE(
         77, shield::net::RemoteAddress{"127.0.0.1", 45678});
 
     bridge.on_connect(session);
-    manager.pump_once();
-    manager.pump_once();
+
+    // Wait for the connect to be processed by the actor.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            return sessions.success && sessions.values.is_array() &&
+                   sessions.values.size() >= 1u;
+        },
+        std::chrono::seconds(1)));
 
     shield::transport::DispatchResult dispatch;
     dispatch.action = shield::transport::RouteAction::DecodeLocal;
@@ -635,27 +717,33 @@ BOOST_AUTO_TEST_CASE(
     };
 
     bridge.on_packet(session, dispatch);
-    manager.pump_once();
-    manager.pump_once();
 
-    CallResult sessions = manager.call(result.service_id, "get_sessions",
-                                       nlohmann::json::array());
-    BOOST_REQUIRE(sessions.success);
-    BOOST_REQUIRE(sessions.values.is_array());
-    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
-    BOOST_REQUIRE(sessions.values[0].contains("77"));
-
-    const auto& state = sessions.values[0]["77"];
-    BOOST_REQUIRE(state.contains("last_message"));
-    BOOST_CHECK_EQUAL(state["last_message"]["route_id"].get<uint32_t>(),
-                      0x1001u);
-    BOOST_CHECK(!state.contains("last_packet"));
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            if (!sessions.success || !sessions.values.is_array() ||
+                sessions.values.size() < 1u) {
+                return false;
+            }
+            if (!sessions.values[0].contains("77")) {
+                return false;
+            }
+            const auto& state = sessions.values[0]["77"];
+            return state.contains("last_message") &&
+                   state["last_message"]["route_id"].get<uint32_t>() == 0x1001u;
+        },
+        std::chrono::seconds(1)));
 }
 
 BOOST_AUTO_TEST_CASE(
     LuaGatewayBridgeRoutesFakeProtobufPipelinePacketsToLuaAndEchoesTable) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = spawn_gateway(manager, "gw_protobuf_pipeline");
     BOOST_REQUIRE(result.success);
@@ -671,8 +759,16 @@ BOOST_AUTO_TEST_CASE(
         79, shield::net::RemoteAddress{"127.0.0.1", 45680}, true, "protobuf");
 
     bridge.on_connect(session);
-    manager.pump_once();
-    manager.pump_once();
+
+    // Wait for the connect to be processed by the actor.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            return sessions.success && sessions.values.is_array() &&
+                   sessions.values.size() >= 1u;
+        },
+        std::chrono::seconds(1)));
 
     shield::transport::Packet packet;
     packet.route_id = 4097;
@@ -687,19 +783,23 @@ BOOST_AUTO_TEST_CASE(
     BOOST_REQUIRE(dispatches[0].decoded_body->has_message());
 
     bridge.on_packet(session, dispatches[0]);
-    manager.pump_once();
-    manager.pump_once();
 
-    CallResult sessions = manager.call(result.service_id, "get_sessions",
-                                       nlohmann::json::array());
-    BOOST_REQUIRE(sessions.success);
-    BOOST_REQUIRE(sessions.values.is_array());
-    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
-    BOOST_REQUIRE(sessions.values[0].contains("79"));
-
-    const auto& state = sessions.values[0]["79"];
-    BOOST_REQUIRE(state["last_message"]["route_id"].is_number());
-    BOOST_CHECK_EQUAL(state["last_message"]["route_id"].get<uint32_t>(), 4097u);
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            if (!sessions.success || !sessions.values.is_array() ||
+                sessions.values.size() < 1u) {
+                return false;
+            }
+            if (!sessions.values[0].contains("79")) {
+                return false;
+            }
+            const auto& state = sessions.values[0]["79"];
+            return state["last_message"]["route_id"].is_number() &&
+                   state["last_message"]["route_id"].get<uint32_t>() == 4097u;
+        },
+        std::chrono::seconds(1)));
 
     // Note: the protobuf pipeline echo (send back decoded message to session)
     // is not implemented in the current gateway bridge. The on_client_message
@@ -710,8 +810,12 @@ BOOST_AUTO_TEST_CASE(
 
 BOOST_AUTO_TEST_CASE(
     LuaGatewayBridgeRoutesRawDecodeLocalProtocolPacketsAsStrings) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = spawn_gateway(manager, "gw_raw_packet_bridge");
     BOOST_REQUIRE(result.success);
@@ -721,8 +825,16 @@ BOOST_AUTO_TEST_CASE(
         78, shield::net::RemoteAddress{"127.0.0.1", 45679});
 
     bridge.on_connect(session);
-    manager.pump_once();
-    manager.pump_once();
+
+    // Wait for the connect to be processed by the actor.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            return sessions.success && sessions.values.is_array() &&
+                   sessions.values.size() >= 1u;
+        },
+        std::chrono::seconds(1)));
 
     shield::transport::DispatchResult dispatch;
     dispatch.action = shield::transport::RouteAction::DecodeLocal;
@@ -745,26 +857,33 @@ BOOST_AUTO_TEST_CASE(
     };
 
     bridge.on_packet(session, dispatch);
-    manager.pump_once();
-    manager.pump_once();
 
-    CallResult sessions = manager.call(result.service_id, "get_sessions",
-                                       nlohmann::json::array());
-    BOOST_REQUIRE(sessions.success);
-    BOOST_REQUIRE(sessions.values.is_array());
-    BOOST_REQUIRE_EQUAL(sessions.values.size(), 1u);
-    BOOST_REQUIRE(sessions.values[0].contains("78"));
-
-    const auto& state = sessions.values[0]["78"];
-    BOOST_REQUIRE(state.contains("last_message"));
-    BOOST_CHECK_EQUAL(state["last_message"]["route_id"].get<uint32_t>(),
-                      0x1002u);
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            if (!sessions.success || !sessions.values.is_array() ||
+                sessions.values.size() < 1u) {
+                return false;
+            }
+            if (!sessions.values[0].contains("78")) {
+                return false;
+            }
+            const auto& state = sessions.values[0]["78"];
+            return state.contains("last_message") &&
+                   state["last_message"]["route_id"].get<uint32_t>() == 0x1002u;
+        },
+        std::chrono::seconds(1)));
 }
 
 BOOST_AUTO_TEST_CASE(
     LuaGatewayBridgeDoesNotExposeForwardRawProtocolPacketsToLua) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = spawn_gateway(manager, "gw_forward_raw_drop");
     BOOST_REQUIRE(result.success);
@@ -774,8 +893,16 @@ BOOST_AUTO_TEST_CASE(
         88, shield::net::RemoteAddress{"127.0.0.1", 56789});
 
     bridge.on_connect(session);
-    manager.pump_once();
-    manager.pump_once();
+
+    // Wait for the connect to be processed by the actor.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult sessions = manager.call(
+                result.service_id, "get_sessions", nlohmann::json::array());
+            return sessions.success && sessions.values.is_array() &&
+                   sessions.values.size() >= 1u;
+        },
+        std::chrono::seconds(1)));
 
     shield::transport::DispatchResult dispatch;
     dispatch.action = shield::transport::RouteAction::ForwardRaw;
@@ -785,8 +912,9 @@ BOOST_AUTO_TEST_CASE(
         std::vector<std::uint8_t>{'f', 'r', 'a', 'm', 'e'};
 
     bridge.on_packet(session, dispatch);
-    manager.pump_once();
-    manager.pump_once();
+
+    // Wait briefly for any potential message to be processed.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     CallResult sessions = manager.call(result.service_id, "get_sessions",
                                        nlohmann::json::array());

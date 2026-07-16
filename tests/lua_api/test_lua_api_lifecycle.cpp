@@ -1,13 +1,16 @@
 #define BOOST_TEST_MODULE LuaApiLifecycleTests
 #include <boost/test/unit_test.hpp>
+#include <caf/actor_system.hpp>
+#include <caf/actor_system_config.hpp>
+#include <chrono>
+#include <filesystem>
+#include <nlohmann/json.hpp>
+#include <thread>
 
+#include "shield/caf_initializer.hpp"
 #include "shield/config/config.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
-
-#include <nlohmann/json.hpp>
-
-#include <filesystem>
 
 using namespace shield::lua;
 
@@ -21,12 +24,30 @@ nlohmann::json opts_for(const std::string& name) {
         {"config", nlohmann::json::object()},
     };
 }
+
+bool wait_until(std::function<bool()> predicate,
+                std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return predicate();
+}
 }  // namespace
+
+struct CafInitFixture {
+    CafInitFixture() { initialize_caf_types(); }
+};
+BOOST_GLOBAL_FIXTURE(CafInitFixture);
 
 BOOST_AUTO_TEST_SUITE(LifecycleTests)
 
 BOOST_AUTO_TEST_CASE(LAPI_001_01_ValidModuleTable) {
-    // Test that a service can be spawned from a valid module that returns a table
+    // Test that a service can be spawned from a valid module that returns a
+    // table
     auto runtime = std::make_shared<LuaRuntime>();
     auto manager = std::make_shared<LuaServiceManager>(*runtime);
 
@@ -35,8 +56,8 @@ BOOST_AUTO_TEST_CASE(LAPI_001_01_ValidModuleTable) {
     runtime->register_api(vm);
 
     std::string error;
-    bool loaded = runtime->load_service_module(vm,
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
+    bool loaded = runtime->load_service_module(
+        vm, TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
 
     BOOST_REQUIRE(loaded);
     BOOST_CHECK(error.empty());
@@ -51,8 +72,8 @@ BOOST_AUTO_TEST_CASE(LAPI_002_01_OnInitNoReturnValue) {
     runtime->register_api(vm);
 
     std::string error;
-    bool loaded = runtime->load_service_module(vm,
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
+    bool loaded = runtime->load_service_module(
+        vm, TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
 
     BOOST_REQUIRE(loaded);
 
@@ -62,7 +83,8 @@ BOOST_AUTO_TEST_CASE(LAPI_002_01_OnInitNoReturnValue) {
         "config": {"test_case": "default"}
     })"_json;
 
-    bool init_result = runtime->call_service_function(vm, "on_init", args, &error);
+    bool init_result =
+        runtime->call_service_function(vm, "on_init", args, &error);
     BOOST_CHECK(init_result);
     BOOST_CHECK(error.empty());
 }
@@ -76,8 +98,8 @@ BOOST_AUTO_TEST_CASE(LAPI_002_02_OnInitReturnsTrue) {
     runtime->register_api(vm);
 
     std::string error;
-    bool loaded = runtime->load_service_module(vm,
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
+    bool loaded = runtime->load_service_module(
+        vm, TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
 
     BOOST_REQUIRE(loaded);
 
@@ -86,7 +108,8 @@ BOOST_AUTO_TEST_CASE(LAPI_002_02_OnInitReturnsTrue) {
         "config": {"test_case": "return_true"}
     })"_json;
 
-    bool init_result = runtime->call_service_function(vm, "on_init", args, &error);
+    bool init_result =
+        runtime->call_service_function(vm, "on_init", args, &error);
     BOOST_CHECK(init_result);
 }
 
@@ -99,8 +122,8 @@ BOOST_AUTO_TEST_CASE(LAPI_002_03_OnInitReturnsFalse) {
     runtime->register_api(vm);
 
     std::string error;
-    bool loaded = runtime->load_service_module(vm,
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
+    bool loaded = runtime->load_service_module(
+        vm, TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
 
     BOOST_REQUIRE(loaded);
 
@@ -109,7 +132,8 @@ BOOST_AUTO_TEST_CASE(LAPI_002_03_OnInitReturnsFalse) {
         "config": {"test_case": "return_false"}
     })"_json;
 
-    bool init_result = runtime->call_service_function(vm, "on_init", args, &error);
+    bool init_result =
+        runtime->call_service_function(vm, "on_init", args, &error);
     // Per lua-api.md: on_init returning false, "reason" indicates failure.
     // call_service_function returns false and sets error in this case.
     BOOST_CHECK(!init_result);
@@ -125,8 +149,8 @@ BOOST_AUTO_TEST_CASE(LAPI_002_04_OnInitThrowsError) {
     runtime->register_api(vm);
 
     std::string error;
-    bool loaded = runtime->load_service_module(vm,
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
+    bool loaded = runtime->load_service_module(
+        vm, TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
 
     BOOST_REQUIRE(loaded);
 
@@ -135,7 +159,8 @@ BOOST_AUTO_TEST_CASE(LAPI_002_04_OnInitThrowsError) {
         "config": {"test_case": "throw_error"}
     })"_json;
 
-    bool init_result = runtime->call_service_function(vm, "on_init", args, &error);
+    bool init_result =
+        runtime->call_service_function(vm, "on_init", args, &error);
     BOOST_CHECK(!init_result);
     BOOST_CHECK(!error.empty());
 }
@@ -148,8 +173,8 @@ BOOST_AUTO_TEST_CASE(LAPI_001_02_ModulesReturningNonTableAreRejected) {
     runtime->register_api(vm);
 
     std::string error;
-    bool loaded = runtime->load_service_module(vm,
-        TEST_SCRIPTS_DIR + "invalid_nil_module.lua", &error);
+    bool loaded = runtime->load_service_module(
+        vm, TEST_SCRIPTS_DIR + "invalid_nil_module.lua", &error);
 
     BOOST_CHECK(!loaded);
     BOOST_CHECK(!error.empty());
@@ -162,8 +187,8 @@ BOOST_AUTO_TEST_CASE(LAPI_001_03_SyntaxErrorIsReported) {
     runtime->register_api(vm);
 
     std::string error;
-    bool loaded = runtime->load_service_module(vm,
-        TEST_SCRIPTS_DIR + "syntax_error_module.lua", &error);
+    bool loaded = runtime->load_service_module(
+        vm, TEST_SCRIPTS_DIR + "syntax_error_module.lua", &error);
 
     BOOST_CHECK(!loaded);
     BOOST_CHECK(!error.empty());
@@ -177,8 +202,8 @@ BOOST_AUTO_TEST_CASE(LAPI_001_04_TopLevelThrowIsReported) {
     runtime->register_api(vm);
 
     std::string error;
-    bool loaded = runtime->load_service_module(vm,
-        TEST_SCRIPTS_DIR + "top_throw_module.lua", &error);
+    bool loaded = runtime->load_service_module(
+        vm, TEST_SCRIPTS_DIR + "top_throw_module.lua", &error);
 
     BOOST_CHECK(!loaded);
     BOOST_CHECK(!error.empty());
@@ -195,12 +220,13 @@ BOOST_AUTO_TEST_CASE(LAPI_002_05_OnExitIsInvocable) {
     runtime->register_api(vm);
 
     std::string error;
-    bool loaded = runtime->load_service_module(vm,
-        TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
+    bool loaded = runtime->load_service_module(
+        vm, TEST_SCRIPTS_DIR + "lifecycle_service.lua", &error);
     BOOST_REQUIRE(loaded);
 
     nlohmann::json args = R"({"reason": "normal"})"_json;
-    bool exit_result = runtime->call_service_function(vm, "on_exit", args, &error);
+    bool exit_result =
+        runtime->call_service_function(vm, "on_exit", args, &error);
     BOOST_CHECK(exit_result);
     BOOST_CHECK(error.empty());
 }
@@ -209,8 +235,12 @@ BOOST_AUTO_TEST_CASE(LAPI_002_05_OnExitIsInvocable) {
 // on_error hook: when a handler throws, on_error(err, context) is called.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(OnErrorHookCalledOnHandlerThrow) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "error_hook_service.lua",
                                 opts_for("on_error_test").dump());
@@ -220,19 +250,21 @@ BOOST_AUTO_TEST_CASE(OnErrorHookCalledOnHandlerThrow) {
     // (call_service_method_coroutine), which is where on_error is invoked.
     BOOST_REQUIRE(manager.send(result.service_id, "throwing_method",
                                nlohmann::json::array()));
-    (void)manager.pump_once();
 
     // Verify on_error was called by querying the service.
-    CallResult err_cr = manager.call(result.service_id, "get_last_error",
-                                     nlohmann::json::array());
-    BOOST_REQUIRE(err_cr.success);
-    BOOST_REQUIRE_GE(err_cr.values.size(), 1u);
-    BOOST_CHECK(err_cr.values[0].get<std::string>().find("intentional_error")
-                != std::string::npos);
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult err_cr = manager.call(
+                result.service_id, "get_last_error", nlohmann::json::array());
+            return err_cr.success && err_cr.values.size() >= 1u &&
+                   err_cr.values[0].get<std::string>().find(
+                       "intentional_error") != std::string::npos;
+        },
+        std::chrono::seconds(1)));
 
     // Verify context.type == "handler".
-    CallResult ctx_cr = manager.call(result.service_id, "get_last_error_context",
-                                     nlohmann::json::array());
+    CallResult ctx_cr = manager.call(
+        result.service_id, "get_last_error_context", nlohmann::json::array());
     BOOST_REQUIRE(ctx_cr.success);
     BOOST_REQUIRE_GE(ctx_cr.values.size(), 2u);
     BOOST_CHECK_EQUAL(ctx_cr.values[0].get<std::string>(), "handler");
@@ -254,13 +286,13 @@ BOOST_AUTO_TEST_CASE(OnErrorCounterResetsOnSuccess) {
     manager.call(result.service_id, "throwing_method", nlohmann::json::array());
 
     // A successful call should reset the counter.
-    CallResult cr = manager.call(result.service_id, "good_method",
-                                 nlohmann::json::array());
+    CallResult cr =
+        manager.call(result.service_id, "good_method", nlohmann::json::array());
     BOOST_REQUIRE(cr.success);
 
     // The service should still be alive (not panicked).
-    CallResult check = manager.call(result.service_id, "good_method",
-                                    nlohmann::json::array());
+    CallResult check =
+        manager.call(result.service_id, "good_method", nlohmann::json::array());
     BOOST_CHECK(check.success);
 }
 
@@ -281,10 +313,10 @@ BOOST_AUTO_TEST_CASE(OnExitCallGuard) {
 
     // The service is now exited. We can't call it anymore, but the on_exit
     // hook ran without crashing, and shield.call returned the expected error.
-    // The call_in_exit_result was stored in the service's Lua state before exit.
-    // Since the service is gone, we can't query it. But the fact that exit()
-    // completed without throwing is itself a valid assertion — if shield.call
-    // had blocked or crashed, exit() would not return cleanly.
+    // The call_in_exit_result was stored in the service's Lua state before
+    // exit. Since the service is gone, we can't query it. But the fact that
+    // exit() completed without throwing is itself a valid assertion — if
+    // shield.call had blocked or crashed, exit() would not return cleanly.
 }
 
 // ---------------------------------------------------------------------------
@@ -317,8 +349,9 @@ BOOST_AUTO_TEST_CASE(ConfigReadMissingKeyReturnsNil) {
                                 opts_for("config_nil_test").dump());
     BOOST_REQUIRE(result.success);
 
-    CallResult cr = manager.call(result.service_id, "read",
-                                 nlohmann::json::array({"nonexistent.key.12345"}));
+    CallResult cr =
+        manager.call(result.service_id, "read",
+                     nlohmann::json::array({"nonexistent.key.12345"}));
     BOOST_REQUIRE(cr.success);
     BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
     BOOST_CHECK(cr.values[0].is_null());
@@ -332,9 +365,9 @@ BOOST_AUTO_TEST_CASE(ConfigReadMissingKeyWithDefault) {
                                 opts_for("config_default_test").dump());
     BOOST_REQUIRE(result.success);
 
-    CallResult cr = manager.call(result.service_id, "read_default",
-                                 nlohmann::json::array({"nonexistent.key.12345",
-                                                        "fallback"}));
+    CallResult cr = manager.call(
+        result.service_id, "read_default",
+        nlohmann::json::array({"nonexistent.key.12345", "fallback"}));
     BOOST_REQUIRE(cr.success);
     BOOST_REQUIRE_EQUAL(cr.values.size(), 1u);
     BOOST_CHECK_EQUAL(cr.values[0].get<std::string>(), "fallback");

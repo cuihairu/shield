@@ -1,11 +1,15 @@
 #define BOOST_TEST_MODULE LuaApiConcurrencyTests
 #include <atomic>
 #include <boost/test/unit_test.hpp>
+#include <caf/actor_system.hpp>
+#include <caf/actor_system_config.hpp>
+#include <chrono>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "shield/caf_initializer.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 
@@ -28,11 +32,20 @@ SpawnResult spawn_service(LuaServiceManager& manager, const std::string& name) {
 }
 }  // namespace
 
+struct CafInitFixture {
+    CafInitFixture() { initialize_caf_types(); }
+};
+BOOST_GLOBAL_FIXTURE(CafInitFixture);
+
 BOOST_AUTO_TEST_SUITE(ConcurrencyTests)
 
 BOOST_AUTO_TEST_CASE(DispatchContextIsThreadLocal) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto result = spawn_service(manager, "thread_context_service");
     BOOST_REQUIRE(result.success);
@@ -42,11 +55,13 @@ BOOST_AUTO_TEST_CASE(DispatchContextIsThreadLocal) {
         manager.enqueue_forked_task(result.service_id, [&]() {
             worker_service_id = manager.current_service_id();
         });
-        BOOST_CHECK_EQUAL(manager.pump_once(), 1);
     });
 
     BOOST_CHECK_EQUAL(manager.current_service_id(), "");
     worker.join();
+    // With CAF, the fork task is routed through the service actor.
+    // Wait for it to execute.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     BOOST_CHECK_EQUAL(worker_service_id, result.service_id);
     BOOST_CHECK_EQUAL(manager.current_service_id(), "");
 }

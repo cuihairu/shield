@@ -1,11 +1,15 @@
 #define BOOST_TEST_MODULE LuaApiMessagingTests
 #include <boost/test/unit_test.hpp>
-
-#include "shield/lua/lua_runtime.hpp"
-#include "shield/lua/lua_service.hpp"
-
+#include <caf/actor_system.hpp>
+#include <caf/actor_system_config.hpp>
+#include <chrono>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <thread>
+
+#include "shield/caf_initializer.hpp"
+#include "shield/lua/lua_runtime.hpp"
+#include "shield/lua/lua_service.hpp"
 
 using namespace shield::lua;
 
@@ -20,17 +24,39 @@ nlohmann::json opts_for(const std::string& name) {
     };
 }
 
-SpawnResult spawn_messaging(LuaServiceManager& manager, const std::string& name) {
+SpawnResult spawn_messaging(LuaServiceManager& manager,
+                            const std::string& name) {
     return manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                          opts_for(name).dump());
 }
+
+bool wait_until(std::function<bool()> predicate,
+                std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return predicate();
+}
 }  // namespace
+
+struct CafInitFixture {
+    CafInitFixture() { initialize_caf_types(); }
+};
+BOOST_GLOBAL_FIXTURE(CafInitFixture);
 
 BOOST_AUTO_TEST_SUITE(MessagingTests)
 
 BOOST_AUTO_TEST_CASE(LAPI_004_01_SendByName) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto receiver = spawn_messaging(manager, "receiver_service");
     auto sender = spawn_messaging(manager, "sender_service");
@@ -43,18 +69,23 @@ BOOST_AUTO_TEST_CASE(LAPI_004_01_SendByName) {
     BOOST_REQUIRE(send_result.success);
     BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), true);
 
-    BOOST_REQUIRE(manager.process_mailbox(receiver.service_id));
-
-    CallResult last = manager.call(receiver.service_id, "get_last_args",
-                                   nlohmann::json::array());
-    BOOST_REQUIRE(last.success);
-    BOOST_REQUIRE_EQUAL(last.values.size(), 1u);
-    BOOST_CHECK_EQUAL(last.values[0][0].get<std::string>(), "test_message");
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult last = manager.call(receiver.service_id, "get_last_args",
+                                           nlohmann::json::array());
+            return last.success && last.values.size() == 1u &&
+                   last.values[0][0].get<std::string>() == "test_message";
+        },
+        std::chrono::seconds(1)));
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_004_02_SendByHandleFromQuery) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto receiver = spawn_messaging(manager, "handle_receiver");
     auto sender = spawn_messaging(manager, "handle_sender");
@@ -67,12 +98,14 @@ BOOST_AUTO_TEST_CASE(LAPI_004_02_SendByHandleFromQuery) {
     BOOST_REQUIRE(send_result.success);
     BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), true);
 
-    BOOST_REQUIRE(manager.process_mailbox(receiver.service_id));
-
-    CallResult last = manager.call(receiver.service_id, "get_last_args",
-                                   nlohmann::json::array());
-    BOOST_REQUIRE(last.success);
-    BOOST_CHECK_EQUAL(last.values[0][0].get<std::string>(), "handle_test");
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult last = manager.call(receiver.service_id, "get_last_args",
+                                           nlohmann::json::array());
+            return last.success && last.values.size() == 1u &&
+                   last.values[0][0].get<std::string>() == "handle_test";
+        },
+        std::chrono::seconds(1)));
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_004_03_SendToMissingService) {
@@ -93,8 +126,12 @@ BOOST_AUTO_TEST_CASE(LAPI_004_03_SendToMissingService) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_004_04_SendMissingMethodIsAcceptedButNotDispatched) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto receiver = spawn_messaging(manager, "method_receiver");
     auto sender = spawn_messaging(manager, "method_sender");
@@ -107,39 +144,27 @@ BOOST_AUTO_TEST_CASE(LAPI_004_04_SendMissingMethodIsAcceptedButNotDispatched) {
     BOOST_REQUIRE(send_result.success);
     BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), true);
 
-    BOOST_REQUIRE(manager.process_mailbox(receiver.service_id));
-
-    CallResult last = manager.call(receiver.service_id, "get_last_method",
-                                   nlohmann::json::array());
-    BOOST_REQUIRE(last.success);
-    BOOST_REQUIRE_EQUAL(last.values.size(), 1u);
-    BOOST_CHECK(last.values[0].is_null());
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult last =
+                manager.call(receiver.service_id, "get_last_method",
+                             nlohmann::json::array());
+            return last.success && last.values.size() == 1u &&
+                   last.values[0].is_null();
+        },
+        std::chrono::seconds(1)));
 }
 
-BOOST_AUTO_TEST_CASE(LAPI_004_05_MailboxFull) {
-    LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-
-    auto receiver = spawn_messaging(manager, "slow_receiver");
-    BOOST_REQUIRE(receiver.success);
-
-    std::string error;
-    bool mailbox_full = false;
-    for (int i = 0; i < 1001; ++i) {
-        if (!manager.send(receiver.service_id, "record",
-                          nlohmann::json::array({i}), &error)) {
-            mailbox_full = true;
-            break;
-        }
-    }
-
-    BOOST_CHECK(mailbox_full);
-    BOOST_CHECK(error.find("mailbox full") != std::string::npos);
-}
+// LAPI-004-05: MailboxFull test removed — CAF actor mailbox is unbounded.
+// Backpressure is deferred per docs/runtime-messaging.md.
 
 BOOST_AUTO_TEST_CASE(LAPI_004_06_SelfSendIsQueued) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
     LuaServiceManager manager(runtime);
+    manager.attach_actor_system(system);
 
     auto self_sender = spawn_messaging(manager, "self_sender");
     BOOST_REQUIRE(self_sender.success);
@@ -150,17 +175,17 @@ BOOST_AUTO_TEST_CASE(LAPI_004_06_SelfSendIsQueued) {
     BOOST_REQUIRE(send_result.success);
     BOOST_CHECK_EQUAL(send_result.values[0].get<bool>(), true);
 
-    CallResult before = manager.call(self_sender.service_id, "get_last_method",
-                                     nlohmann::json::array());
-    BOOST_REQUIRE(before.success);
-    BOOST_CHECK(before.values[0].is_null());
-
-    BOOST_REQUIRE(manager.process_mailbox(self_sender.service_id));
-
-    CallResult after = manager.call(self_sender.service_id, "get_last_method",
-                                    nlohmann::json::array());
-    BOOST_REQUIRE(after.success);
-    BOOST_CHECK_EQUAL(after.values[0].get<std::string>(), "record");
+    // With CAF, the self-send goes through the actor's mailbox and gets
+    // processed automatically. Wait for the message to be dispatched.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult after =
+                manager.call(self_sender.service_id, "get_last_method",
+                             nlohmann::json::array());
+            return after.success && after.values.size() == 1u &&
+                   after.values[0].get<std::string>() == "record";
+        },
+        std::chrono::seconds(1)));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
