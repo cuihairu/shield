@@ -515,11 +515,11 @@ LuaServiceManager::LuaServiceManager(LuaRuntime& runtime)
 }
 
 LuaServiceManager::~LuaServiceManager() {
-    // Cancel pending timer/fork/coroutine callbacks for every owned service
+    // Cancel pending timer/fork callbacks for every owned service
     // before this manager's state (and the service VMs it owns) is destroyed.
-    // TimerManager and CoroutineScheduler live in LuaRuntime, which outlives
-    // this manager; without this cleanup their sol::function/std::function
-    // callbacks would be released after the owning lua_State is already closed.
+    // TimerManager lives in LuaRuntime, which outlives this manager; without
+    // this cleanup its sol::function/std::function callbacks would be released
+    // after the owning lua_State is already closed.
     std::vector<std::string> service_ids;
     {
         std::shared_lock lock(impl_->registry_mutex);
@@ -528,7 +528,6 @@ LuaServiceManager::~LuaServiceManager() {
     for (const auto& service_id : service_ids) {
         cancel_forked_tasks_for_service(service_id);
         impl_->runtime.timer_manager().cancel_all_for_service(service_id);
-        impl_->runtime.coroutine_scheduler().cancel_all_for_service(service_id);
         std::vector<uint64_t> actor_timer_ids;
         {
             std::shared_lock lock(impl_->registry_mutex);
@@ -1215,7 +1214,6 @@ void LuaServiceManager::exit(std::string_view service_id,
     // would luaL_unref on a closed state.
     cancel_forked_tasks_for_service(id);
     impl_->runtime.timer_manager().cancel_all_for_service(id);
-    impl_->runtime.coroutine_scheduler().cancel_all_for_service(id);
     std::vector<uint64_t> actor_timer_ids;
     {
         std::shared_lock lock(impl_->registry_mutex);
@@ -1551,7 +1549,6 @@ int LuaServiceManager::pump_once() {
     // call-timeouts are driven by CAF delayed events rather than a global
     // pump_once scan. Keep the legacy scan only as a no-CAF fallback.
     if (!impl_->uses_caf_actor_system()) {
-        events += impl_->runtime.coroutine_scheduler().check_timeouts(now);
         events += check_call_timeouts(now);
     }
     return events;

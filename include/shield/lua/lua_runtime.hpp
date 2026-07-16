@@ -14,75 +14,6 @@ namespace shield::lua {
 class LuaVM;
 class LuaServiceManager;
 
-/// @brief Coroutine scheduler for managing suspended coroutines
-class CoroutineScheduler {
-public:
-    /// @brief Unique ID for a suspended coroutine
-    using CoroutineId = uint64_t;
-
-    /// @brief Status of a suspended coroutine
-    enum class Status {
-        Pending,    // Waiting for response/timer
-        Ready,      // Ready to resume
-        Completed,  // Completed successfully
-        Failed,     // Failed with error
-    };
-
-    /// @brief A suspended coroutine context
-    struct SuspendedCoroutine {
-        CoroutineId id;
-        std::string service_id;
-        sol::coroutine coroutine;
-        int64_t deadline_ms;
-        Status status = Status::Pending;
-        nlohmann::json result;  // For call responses
-        std::string error;      // For errors
-    };
-
-    explicit CoroutineScheduler();
-    ~CoroutineScheduler();
-
-    // Suspend current coroutine with a deadline
-    /// @param service_id Owner service ID
-    /// @param co The coroutine to suspend
-    /// @param timeout_ms Timeout in milliseconds
-    /// @return Coroutine ID for resuming
-    CoroutineId suspend(const std::string& service_id, sol::coroutine co,
-                        int32_t timeout_ms);
-
-    // Resume a coroutine with result
-    /// @param id Coroutine ID
-    /// @param result Response result (as JSON array)
-    /// @return true if coroutine was resumed
-    bool resume(CoroutineId id, const nlohmann::json& result);
-
-    // Resume a coroutine with error
-    /// @param id Coroutine ID
-    /// @param error Error message
-    /// @return true if coroutine was resumed
-    bool resume_with_error(CoroutineId id, const std::string& error);
-
-    // Cancel a coroutine (e.g., on service exit)
-    /// @param id Coroutine ID
-    /// @return true if coroutine was cancelled
-    bool cancel(CoroutineId id);
-
-    // Cancel all coroutines for a service
-    void cancel_all_for_service(const std::string& service_id);
-
-    // Check for timed out coroutines
-    /// @param now_ms Current monotonic time in milliseconds
-    /// @return Number of coroutines timed out
-    int check_timeouts(int64_t now_ms);
-
-    // Get active coroutine count
-    size_t active_count() const;
-
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-};
-
 /// @brief Opaque ServiceHandle userdata for Lua
 /// This prevents direct string manipulation of service IDs
 class ServiceHandle {
@@ -437,9 +368,6 @@ public:
     // Get service manager for this runtime
     LuaServiceManager* service_manager() const;
 
-    // Get coroutine scheduler for this runtime
-    CoroutineScheduler& coroutine_scheduler() { return *coroutine_scheduler_; }
-
     // Get timer manager for this runtime
     TimerManager& timer_manager() { return *timer_manager_; }
 
@@ -474,9 +402,6 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
-
-    // Coroutine scheduler (shared across all VMs in this runtime)
-    std::unique_ptr<CoroutineScheduler> coroutine_scheduler_;
 
     // Timer manager (shared across all VMs in this runtime)
     std::unique_ptr<TimerManager> timer_manager_;

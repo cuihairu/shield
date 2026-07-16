@@ -24,190 +24,6 @@
 namespace shield::lua {
 
 // ============================================================================
-// CoroutineScheduler Implementation
-// ============================================================================
-
-struct CoroutineScheduler::Impl {
-    std::unordered_map<CoroutineId, SuspendedCoroutine> suspended;
-    std::unordered_map<std::string, std::vector<CoroutineId>> by_service;
-    std::atomic<CoroutineId> next_id{1};
-    mutable std::mutex mutex;
-
-    CoroutineId generate_id() { return next_id.fetch_add(1); }
-
-    void insert(const SuspendedCoroutine& sc) {
-        std::lock_guard<std::mutex> lock(mutex);
-        suspended[sc.id] = sc;
-        by_service[sc.service_id].push_back(sc.id);
-    }
-
-    SuspendedCoroutine* find_ptr(CoroutineId id) {
-        std::lock_guard<std::mutex> lock(mutex);
-        auto it = suspended.find(id);
-        if (it != suspended.end()) {
-            return &it->second;
-        }
-        return nullptr;
-    }
-
-    bool erase(CoroutineId id) {
-        std::lock_guard<std::mutex> lock(mutex);
-        auto it = suspended.find(id);
-        if (it == suspended.end()) {
-            return false;
-        }
-
-        const std::string service_id = it->second.service_id;
-        suspended.erase(it);
-
-        // Remove from by_service index
-        auto service_it = by_service.find(service_id);
-        if (service_it != by_service.end()) {
-            auto& ids = service_it->second;
-            ids.erase(std::remove(ids.begin(), ids.end(), id), ids.end());
-            if (ids.empty()) {
-                by_service.erase(service_it);
-            }
-        }
-
-        return true;
-    }
-
-    std::vector<CoroutineId> get_for_service(const std::string& service_id) {
-        std::lock_guard<std::mutex> lock(mutex);
-        auto it = by_service.find(service_id);
-        if (it == by_service.end()) {
-            return {};
-        }
-        return it->second;
-    }
-
-    size_t size() const {
-        std::lock_guard<std::mutex> lock(mutex);
-        return suspended.size();
-    }
-};
-
-CoroutineScheduler::CoroutineScheduler() : impl_(std::make_unique<Impl>()) {}
-
-CoroutineScheduler::~CoroutineScheduler() = default;
-
-CoroutineScheduler::CoroutineId CoroutineScheduler::suspend(
-    const std::string& service_id, sol::coroutine co, int32_t timeout_ms) {
-    const CoroutineId id = impl_->generate_id();
-
-    // Calculate deadline
-    const auto now = std::chrono::steady_clock::now();
-    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            now.time_since_epoch())
-                            .count();
-    const int64_t deadline_ms = now_ms + timeout_ms;
-
-    SuspendedCoroutine sc = {id, service_id, co, deadline_ms, Status::Pending,
-                             {}, ""};
-
-    impl_->insert(sc);
-
-    return id;
-}
-
-bool CoroutineScheduler::resume(CoroutineId id, const nlohmann::json& result) {
-    SuspendedCoroutine* sc_ptr = impl_->find_ptr(id);
-    if (!sc_ptr) {
-        return false;  // Not found
-    }
-
-    if (sc_ptr->status != Status::Pending) {
-        return false;  // Not in pending state
-    }
-
-    // Copy the coroutine before erasing
-    sol::coroutine coroutine = sc_ptr->coroutine;
-
-    // Remove from suspended list before resuming
-    impl_->erase(id);
-
-    sol::state_view lua(coroutine.lua_state());
-    sol::variadic_results resume_args;
-    if (result.is_array()) {
-        resume_args.reserve(result.size());
-        for (const auto& item : result) {
-            resume_args.push_back(json_to_lua(lua, item));
-        }
-    } else {
-        resume_args.push_back(json_to_lua(lua, result));
-    }
-
-    auto resume_result = coroutine(sol::as_args(resume_args));
-    if (!resume_result.valid()) {
-        sol::error err = resume_result;
-        // Log error but still return true as we attempted resume
-    }
-
-    return true;
-}
-
-bool CoroutineScheduler::resume_with_error(CoroutineId id,
-                                           const std::string& error) {
-    SuspendedCoroutine* sc_ptr = impl_->find_ptr(id);
-    if (!sc_ptr) {
-        return false;  // Not found
-    }
-
-    if (sc_ptr->status != Status::Pending) {
-        return false;  // Not in pending state
-    }
-
-    // Copy the coroutine before erasing
-    sol::coroutine coroutine = sc_ptr->coroutine;
-
-    impl_->erase(id);
-
-    // Resume with false, error
-    auto resume_result = coroutine(false, error);
-    if (!resume_result.valid()) {
-        sol::error err = resume_result;
-    }
-
-    return true;
-}
-
-bool CoroutineScheduler::cancel(CoroutineId id) { return impl_->erase(id); }
-
-void CoroutineScheduler::cancel_all_for_service(const std::string& service_id) {
-    auto ids = impl_->get_for_service(service_id);
-    for (auto id : ids) {
-        cancel(id);
-    }
-}
-
-int CoroutineScheduler::check_timeouts(int64_t now_ms) {
-    int timed_out = 0;
-    std::vector<CoroutineId> to_timeout;
-
-    // Collect timed out coroutines
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        for (const auto& [id, sc] : impl_->suspended) {
-            if (sc.status == Status::Pending && sc.deadline_ms < now_ms) {
-                to_timeout.push_back(id);
-            }
-        }
-    }
-
-    // Resume them with timeout error
-    for (auto id : to_timeout) {
-        if (resume_with_error(id, "timeout")) {
-            ++timed_out;
-        }
-    }
-
-    return timed_out;
-}
-
-size_t CoroutineScheduler::active_count() const { return impl_->size(); }
-
-// ============================================================================
 // TimerManager Implementation
 // ============================================================================
 
@@ -748,7 +564,6 @@ struct LuaRuntime::Impl {
 
 LuaRuntime::LuaRuntime()
     : impl_(std::make_unique<Impl>()),
-      coroutine_scheduler_(std::make_unique<CoroutineScheduler>()),
       timer_manager_(std::make_unique<TimerManager>()) {}
 
 LuaRuntime::~LuaRuntime() = default;
@@ -1121,14 +936,6 @@ bool LuaRuntime::call_service_method_coroutine(
             return false;
         }
 
-        // Check coroutine limit.
-        constexpr size_t kCoroutineLimit = 1000;
-        if (coroutine_scheduler_ &&
-            coroutine_scheduler_->active_count() >= kCoroutineLimit) {
-            if (error) *error = "coroutine limit reached";
-            return false;
-        }
-
         sol::state_view lua(*vm->state());
         lua_State* L = lua.lua_state();
 
@@ -1325,7 +1132,7 @@ void LuaRuntime::set_global(std::shared_ptr<LuaVM> vm, std::string_view name,
 }
 
 bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
-                           nlohmann::json* result, std::string* error) {
+                          nlohmann::json* result, std::string* error) {
     if (!vm || !vm->state()) {
         if (error) *error = "invalid VM";
         return false;
@@ -1335,8 +1142,7 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
     lua_State* L = lua.lua_state();
 
     // Compile
-    int load_status = luaL_loadbuffer(L, code.c_str(), code.size(),
-                                       "=console");
+    int load_status = luaL_loadbuffer(L, code.c_str(), code.size(), "=console");
     if (load_status != LUA_OK) {
         if (error) {
             *error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "load error";
@@ -1375,7 +1181,8 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
             } else if (obj.is<std::string>()) {
                 result->push_back(obj.as<std::string>());
             } else {
-                // For tables, functions, etc. - convert to string via Lua tostring
+                // For tables, functions, etc. - convert to string via Lua
+                // tostring
                 lua_getglobal(L, "tostring");
                 lua_pushvalue(L, i);
                 lua_call(L, 1, 1);
