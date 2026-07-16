@@ -13,8 +13,7 @@ namespace shield::lua {
 
 LuaGatewayBridge::LuaGatewayBridge(LuaServiceManager& manager,
                                    std::string auth_service_name)
-    : manager_(manager),
-      auth_service_name_(std::move(auth_service_name)) {}
+    : manager_(manager), auth_service_name_(std::move(auth_service_name)) {}
 
 void LuaGatewayBridge::on_connect(
     std::shared_ptr<shield::net::Session> session) {
@@ -26,19 +25,15 @@ void LuaGatewayBridge::on_connect(
 
     const auto session_info = make_session_handle_json(session);
 
-    // Notify the auth service of new connection
-    auto* manager = &manager_;
-    const auto target = auth_service_name_;
-    manager_.enqueue_forked_task(target, [manager, target, session_info]() {
-        std::string error;
-        if (!manager->send_system(target, "on_connect",
-                                  nlohmann::json::array({session_info}),
-                                  &error)) {
-            auto& log = shield::log::get_logger("lua");
-            SHIELD_LOG_WARNING(log,
-                               "Failed to queue on_connect: " + error);
-        }
-    });
+    // Notify the auth service of new connection. send_system routes through
+    // the target's CAF actor (fire-and-forget anon_send), so it is safe to
+    // call directly from the network thread — no fork-task wrapper needed.
+    std::string error;
+    if (!manager_.send_system(auth_service_name_, "on_connect",
+                              nlohmann::json::array({session_info}), &error)) {
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_WARNING(log, "Failed to queue on_connect: " + error);
+    }
 }
 
 void LuaGatewayBridge::on_packet(
@@ -65,18 +60,17 @@ void LuaGatewayBridge::on_packet(
     // Check direction: client can only send ClientToServer or Bidirectional
     if (route->direction == shield::transport::RouteDirection::ServerToClient) {
         auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(
-            log, "Rejected server_to_client route from client: " +
-                     std::to_string(route_id));
+        SHIELD_LOG_WARNING(log,
+                           "Rejected server_to_client route from client: " +
+                               std::to_string(route_id));
         return;
     }
 
     // Check auth requirement
     if (route->requires_auth && session->player_id().empty()) {
         auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(
-            log, "Rejected unauthenticated access to route: " +
-                     std::to_string(route_id));
+        SHIELD_LOG_WARNING(log, "Rejected unauthenticated access to route: " +
+                                    std::to_string(route_id));
         return;
     }
 
@@ -84,9 +78,8 @@ void LuaGatewayBridge::on_packet(
     std::string target = session->target_service();
     if (target.empty()) {
         auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(log,
-                           "Session has no target service, route_id: " +
-                               std::to_string(route_id));
+        SHIELD_LOG_WARNING(log, "Session has no target service, route_id: " +
+                                    std::to_string(route_id));
         return;
     }
 
@@ -102,8 +95,8 @@ void LuaGatewayBridge::on_packet(
     if (packet.decoded_body.has_value()) {
         ingress.body_bytes = packet.decoded_body->bytes;
     } else {
-        ingress.body_bytes = std::vector<uint8_t>(
-            packet.packet.body.begin(), packet.packet.body.end());
+        ingress.body_bytes = std::vector<uint8_t>(packet.packet.body.begin(),
+                                                  packet.packet.body.end());
     }
 
     // 5. Send to session.target via LuaServiceManager
@@ -122,24 +115,20 @@ void LuaGatewayBridge::on_disconnect(
         target = auth_service_name_;
     }
 
-    auto* manager = &manager_;
-    manager_.enqueue_forked_task(
-        target, [manager, target, session_info, reason = std::move(reason)]() {
-            std::string error;
-            if (!manager->send_system(
-                    target, "on_disconnect",
-                    nlohmann::json::array({session_info, reason}), &error)) {
-                auto& log = shield::log::get_logger("lua");
-                SHIELD_LOG_WARNING(
-                    log, "Failed to queue on_disconnect: " + error);
-            }
-        });
+    std::string error;
+    if (!manager_.send_system(target, "on_disconnect",
+                              nlohmann::json::array({session_info, reason}),
+                              &error)) {
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_WARNING(log, "Failed to queue on_disconnect: " + error);
+    }
 }
 
 void LuaGatewayBridge::send_client_ingress(const std::string& target,
-                                            const ClientIngress& ingress) {
+                                           const ClientIngress& ingress) {
     // Serialize ClientIngress to JSON for Lua consumption
-    // Target service receives: on_client_message(route_id, client_context, body)
+    // Target service receives: on_client_message(route_id, client_context,
+    // body)
     //
     // For now, use the existing send_system mechanism.
     // The target Lua service will receive:
@@ -156,25 +145,19 @@ void LuaGatewayBridge::send_client_ingress(const std::string& target,
     };
 
     // body_bytes as raw string for Lua
-    std::string body_str(ingress.body_bytes.begin(),
-                         ingress.body_bytes.end());
+    std::string body_str(ingress.body_bytes.begin(), ingress.body_bytes.end());
 
-    auto* manager = &manager_;
-    manager_.enqueue_forked_task(
-        target,
-        [manager, target, route_id = ingress.route_id, client_context,
-         body_str]() {
-            std::string error;
-            if (!manager->send_system(
-                    target, "on_client_message",
-                    nlohmann::json::array(
-                        {route_id, client_context, body_str}),
-                    &error)) {
-                auto& log = shield::log::get_logger("lua");
-                SHIELD_LOG_WARNING(
-                    log, "Failed to queue ClientIngress: " + error);
-            }
-        });
+    // send_system routes the on_client_message call through the target's CAF
+    // actor directly (no fork-task wrapper). The target Lua service receives:
+    //   on_client_message(route_id, client_context, body_str)
+    std::string error;
+    if (!manager_.send_system(
+            target, "on_client_message",
+            nlohmann::json::array({ingress.route_id, client_context, body_str}),
+            &error)) {
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_WARNING(log, "Failed to queue ClientIngress: " + error);
+    }
 }
 
 }  // namespace shield::lua
