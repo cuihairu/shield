@@ -1,19 +1,22 @@
 #define BOOST_TEST_MODULE ConsoleServerTests
-#include <boost/test/unit_test.hpp>
-
-#include "shield/net/console_server.hpp"
-#include "shield/net/console_session.hpp"
-#include "shield/console/command_dispatcher.hpp"
-
 #include <boost/asio.hpp>
+#include <boost/test/unit_test.hpp>
 #include <chrono>
+#include <filesystem>
 #include <future>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <vector>
+
+#include "shield/console/command_dispatcher.hpp"
+#include "shield/net/console_server.hpp"
+#include "shield/net/console_session.hpp"
 
 namespace {
 
+#ifndef _WIN32
 // Helper: connect to a Unix socket and send/receive lines
 struct TestClient {
     boost::asio::io_context io;
@@ -23,8 +26,7 @@ struct TestClient {
 
     bool connect(const std::string& path) {
         try {
-            socket.connect(
-                boost::asio::local::stream_protocol::endpoint(path));
+            socket.connect(boost::asio::local::stream_protocol::endpoint(path));
             return true;
         } catch (...) {
             return false;
@@ -41,9 +43,9 @@ struct TestClient {
         boost::asio::read_until(socket, buf, '\n', ec);
         if (ec) return "";
         auto bufs = buf.data();
-        std::string data(boost::asio::buffers_begin(bufs),
-                         boost::asio::buffers_begin(bufs) +
-                             boost::asio::buffer_size(bufs));
+        std::string data(
+            boost::asio::buffers_begin(bufs),
+            boost::asio::buffers_begin(bufs) + boost::asio::buffer_size(bufs));
         if (!data.empty() && data.back() == '\n') data.pop_back();
         return data;
     }
@@ -53,8 +55,16 @@ struct TestClient {
         socket.close(ec);
     }
 };
+#endif
 
 const char* TEST_SOCK = "/tmp/shield-console-test.sock";
+
+void remove_test_socket() {
+#ifndef _WIN32
+    std::error_code ec;
+    std::filesystem::remove(TEST_SOCK, ec);
+#endif
+}
 
 }  // namespace
 
@@ -62,28 +72,30 @@ BOOST_AUTO_TEST_SUITE(ConsoleServerTests)
 
 BOOST_AUTO_TEST_CASE(ServerStartsAndStops) {
     boost::asio::io_context io;
-    ::unlink(TEST_SOCK);
+    remove_test_socket();
 
     shield::net::ConsoleServer server(io, TEST_SOCK);
     BOOST_CHECK_NO_THROW(server.start());
     BOOST_CHECK(server.session_count() == 0);
 
     server.stop();
+#ifndef _WIN32
     // Socket file should be removed
-    BOOST_CHECK(access(TEST_SOCK, F_OK) != 0);
+    BOOST_CHECK(!std::filesystem::exists(TEST_SOCK));
+#endif
 }
 
+#ifndef _WIN32
 BOOST_AUTO_TEST_CASE(ClientCanConnect) {
     boost::asio::io_context io;
-    ::unlink(TEST_SOCK);
+    remove_test_socket();
 
     shield::net::ConsoleServer server(io, TEST_SOCK);
-    server.set_on_line(
-        [](std::shared_ptr<shield::net::ConsoleSession> session,
-           std::string line) {
-            nlohmann::json resp = {{"type", "result"}, {"echo", line}};
-            session->send_line(resp.dump());
-        });
+    server.set_on_line([](std::shared_ptr<shield::net::ConsoleSession> session,
+                          std::string line) {
+        nlohmann::json resp = {{"type", "result"}, {"echo", line}};
+        session->send_line(resp.dump());
+    });
     server.start();
 
     // Run io in a thread
@@ -109,6 +121,7 @@ BOOST_AUTO_TEST_CASE(ClientCanConnect) {
     io.stop();
     if (io_thread.joinable()) io_thread.join();
 }
+#endif
 
 BOOST_AUTO_TEST_CASE(CommandDispatcherRoutesCommands) {
     shield::console::CommandDispatcher dispatcher;
@@ -118,7 +131,9 @@ BOOST_AUTO_TEST_CASE(CommandDispatcherRoutesCommands) {
     dispatcher.register_command(
         "help", "Show help",
         [&help_called](shield::net::ConsoleSession&,
-                       const std::vector<std::string>&) { help_called = true; });
+                       const std::vector<std::string>&) {
+            help_called = true;
+        });
     dispatcher.register_command(
         "root.status", "Show status",
         [&status_called](shield::net::ConsoleSession&,
@@ -131,18 +146,19 @@ BOOST_AUTO_TEST_CASE(CommandDispatcherRoutesCommands) {
     BOOST_CHECK(dispatcher.list_commands()[1].first == "root.status");
 }
 
+#ifndef _WIN32
 BOOST_AUTO_TEST_CASE(UnknownCommandReturnsError) {
     boost::asio::io_context io;
-    ::unlink(TEST_SOCK);
+    remove_test_socket();
 
     shield::console::CommandDispatcher dispatcher;
-    dispatcher.register_command(
-        "help", "Show help",
-        [](shield::net::ConsoleSession& session,
-           const std::vector<std::string>&) {
-            nlohmann::json resp = {{"type", "result"}, {"data", "ok"}};
-            session.send_line(resp.dump());
-        });
+    dispatcher.register_command("help", "Show help",
+                                [](shield::net::ConsoleSession& session,
+                                   const std::vector<std::string>&) {
+                                    nlohmann::json resp = {{"type", "result"},
+                                                           {"data", "ok"}};
+                                    session.send_line(resp.dump());
+                                });
 
     shield::net::ConsoleServer server(io, TEST_SOCK);
     server.set_on_line(
@@ -175,7 +191,7 @@ BOOST_AUTO_TEST_CASE(UnknownCommandReturnsError) {
 
 BOOST_AUTO_TEST_CASE(AttachAndDetachMode) {
     boost::asio::io_context io;
-    ::unlink(TEST_SOCK);
+    remove_test_socket();
 
     shield::console::CommandDispatcher dispatcher;
     dispatcher.register_command(
@@ -189,8 +205,7 @@ BOOST_AUTO_TEST_CASE(AttachAndDetachMode) {
                 return;
             }
             session.set_attached_service(args[0]);
-            nlohmann::json resp = {
-                {"type", "attached"}, {"service", args[0]}};
+            nlohmann::json resp = {{"type", "attached"}, {"service", args[0]}};
             session.send_line(resp.dump());
         });
 
@@ -242,5 +257,6 @@ BOOST_AUTO_TEST_CASE(AttachAndDetachMode) {
     io.stop();
     if (io_thread.joinable()) io_thread.join();
 }
+#endif
 
 BOOST_AUTO_TEST_SUITE_END()
