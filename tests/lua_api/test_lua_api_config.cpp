@@ -7,13 +7,12 @@
 // default (or nil when none is given).
 #define BOOST_TEST_MODULE LuaApiConfigTests
 #include <boost/test/unit_test.hpp>
+#include <nlohmann/json.hpp>
+#include <string>
 
 #include "shield/config/config.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
-
-#include <nlohmann/json.hpp>
-#include <string>
 
 using namespace shield::lua;
 using shield::config::global_config;
@@ -36,8 +35,8 @@ SpawnResult spawn_config_service(LuaServiceManager& manager,
 nlohmann::json read_value(LuaServiceManager& manager,
                           const std::string& service_id,
                           const std::string& key) {
-    CallResult cr = manager.call(service_id, "read",
-                                 nlohmann::json::array({key}), 1000);
+    CallResult cr =
+        manager.call(service_id, "read", nlohmann::json::array({key}), 1000);
     if (!cr.success || cr.values.empty()) {
         return nullptr;
     }
@@ -49,9 +48,9 @@ nlohmann::json read_default(LuaServiceManager& manager,
                             const std::string& service_id,
                             const std::string& key,
                             const nlohmann::json& default_value) {
-    CallResult cr = manager.call(service_id, "read_default",
-                                 nlohmann::json::array({key, default_value}),
-                                 1000);
+    CallResult cr =
+        manager.call(service_id, "read_default",
+                     nlohmann::json::array({key, default_value}), 1000);
     if (!cr.success || cr.values.empty()) {
         return nullptr;
     }
@@ -62,8 +61,12 @@ nlohmann::json read_default(LuaServiceManager& manager,
 BOOST_AUTO_TEST_SUITE(Lapi010ConfigApi)
 
 BOOST_AUTO_TEST_CASE(LAPI_010_01_ParsesTypedValues) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto& cfg = global_config();
     cfg.set("lapi_cfg.bool_true", std::string("true"));
@@ -91,8 +94,12 @@ BOOST_AUTO_TEST_CASE(LAPI_010_01_ParsesTypedValues) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_010_02_MissingKeyReturnsDefaultOrNil) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto spawned = spawn_config_service(manager, "config_reader_missing");
     BOOST_REQUIRE(spawned.success);
@@ -100,7 +107,8 @@ BOOST_AUTO_TEST_CASE(LAPI_010_02_MissingKeyReturnsDefaultOrNil) {
     const auto id = spawned.service_id;
 
     // Missing key without a default resolves to nil (null JSON).
-    BOOST_CHECK(read_value(manager, id, "lapi_cfg.definitely_missing").is_null());
+    BOOST_CHECK(
+        read_value(manager, id, "lapi_cfg.definitely_missing").is_null());
 
     // Missing key with a default resolves to the default value, preserving its
     // Lua type.
@@ -114,8 +122,12 @@ BOOST_AUTO_TEST_CASE(LAPI_010_02_MissingKeyReturnsDefaultOrNil) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_010_03_ExplicitValueShadowsDefault) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto& cfg = global_config();
     cfg.set("lapi_cfg.present", std::string("ok"));
@@ -127,8 +139,7 @@ BOOST_AUTO_TEST_CASE(LAPI_010_03_ExplicitValueShadowsDefault) {
 
     // A stored value must be returned even when a default is supplied.
     BOOST_CHECK_EQUAL(
-        read_default(manager, id, "lapi_cfg.present", "unused_default"),
-        "ok");
+        read_default(manager, id, "lapi_cfg.present", "unused_default"), "ok");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

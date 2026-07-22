@@ -49,7 +49,7 @@ BOOST_AUTO_TEST_CASE(LAPI_001_01_ValidModuleTable) {
     // Test that a service can be spawned from a valid module that returns a
     // table
     auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+    auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
     // Create a simple service VM
     auto vm = runtime->create_vm();
@@ -66,7 +66,7 @@ BOOST_AUTO_TEST_CASE(LAPI_001_01_ValidModuleTable) {
 BOOST_AUTO_TEST_CASE(LAPI_002_01_OnInitNoReturnValue) {
     // Test that on_init with no return value succeeds
     auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+    auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
     auto vm = runtime->create_vm();
     runtime->register_api(vm);
@@ -92,7 +92,7 @@ BOOST_AUTO_TEST_CASE(LAPI_002_01_OnInitNoReturnValue) {
 BOOST_AUTO_TEST_CASE(LAPI_002_02_OnInitReturnsTrue) {
     // Test that on_init returning true succeeds
     auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+    auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
     auto vm = runtime->create_vm();
     runtime->register_api(vm);
@@ -116,7 +116,7 @@ BOOST_AUTO_TEST_CASE(LAPI_002_02_OnInitReturnsTrue) {
 BOOST_AUTO_TEST_CASE(LAPI_002_03_OnInitReturnsFalse) {
     // Test that on_init returning false is handled
     auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+    auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
     auto vm = runtime->create_vm();
     runtime->register_api(vm);
@@ -143,7 +143,7 @@ BOOST_AUTO_TEST_CASE(LAPI_002_03_OnInitReturnsFalse) {
 BOOST_AUTO_TEST_CASE(LAPI_002_04_OnInitThrowsError) {
     // Test that on_init throwing an error is captured
     auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+    auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
     auto vm = runtime->create_vm();
     runtime->register_api(vm);
@@ -214,7 +214,7 @@ BOOST_AUTO_TEST_CASE(LAPI_001_04_TopLevelThrowIsReported) {
 // invocable and propagates the reason value.
 BOOST_AUTO_TEST_CASE(LAPI_002_05_OnExitIsInvocable) {
     auto runtime = std::make_shared<LuaRuntime>();
-    auto manager = std::make_shared<LuaServiceManager>(*runtime);
+    auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
     auto vm = runtime->create_vm();
     runtime->register_api(vm);
@@ -239,8 +239,7 @@ BOOST_AUTO_TEST_CASE(OnErrorHookCalledOnHandlerThrow) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "error_hook_service.lua",
                                 opts_for("on_error_test").dump());
@@ -275,8 +274,12 @@ BOOST_AUTO_TEST_CASE(OnErrorHookCalledOnHandlerThrow) {
 // on_error counter reset: after a successful call, the error counter resets.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(OnErrorCounterResetsOnSuccess) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "error_hook_service.lua",
                                 opts_for("error_counter_test").dump());
@@ -301,8 +304,12 @@ BOOST_AUTO_TEST_CASE(OnErrorCounterResetsOnSuccess) {
 // api_not_allowed_in_exit.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(OnExitCallGuard) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "error_hook_service.lua",
                                 opts_for("exit_call_guard").dump());
@@ -324,8 +331,12 @@ BOOST_AUTO_TEST_CASE(OnExitCallGuard) {
 // ---------------------------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(ConfigReadExistingKey) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     // Pre-set a config value so shield.config can read it.
     shield::config::global_config().set("test.key", "hello");
@@ -342,8 +353,12 @@ BOOST_AUTO_TEST_CASE(ConfigReadExistingKey) {
 }
 
 BOOST_AUTO_TEST_CASE(ConfigReadMissingKeyReturnsNil) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "config_service.lua",
                                 opts_for("config_nil_test").dump());
@@ -358,8 +373,12 @@ BOOST_AUTO_TEST_CASE(ConfigReadMissingKeyReturnsNil) {
 }
 
 BOOST_AUTO_TEST_CASE(ConfigReadMissingKeyWithDefault) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "config_service.lua",
                                 opts_for("config_default_test").dump());

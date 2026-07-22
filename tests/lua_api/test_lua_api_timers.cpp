@@ -63,8 +63,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_01_TimerOnce) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
                                 opts_for("timer_once").dump());
@@ -106,8 +105,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_02_TimerFixedDelay) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
                                 opts_for("fixed_delay").dump());
@@ -130,8 +128,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_03_CancelTimer) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
                                 opts_for("cancel").dump());
@@ -169,8 +166,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_04_TimerError) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
                                 opts_for("error").dump());
@@ -194,8 +190,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_06_ForkTask) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
                                 opts_for("fork").dump());
@@ -219,8 +214,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_07_ServiceExitCancelsTimers) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
                                 opts_for("cancel").dump());
@@ -238,8 +232,12 @@ BOOST_AUTO_TEST_CASE(LAPI_007_07_ServiceExitCancelsTimers) {
 // timestamp. Verified via a spawned service that calls shield.now() from
 // on_init and again from a method call.
 BOOST_AUTO_TEST_CASE(NowApiIsMonotonic) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
                                 opts_for("default").dump());
@@ -263,8 +261,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_08_CoroutineSleepIsNonBlocking) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "coro_sleep_service.lua",
                                 opts_for("sleep").dump());
@@ -300,8 +297,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_09_CoroutineSleepZeroYieldsAndResumes) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "coro_sleep_service.lua",
                                 opts_for("sleep_zero").dump());
@@ -329,8 +325,7 @@ BOOST_AUTO_TEST_CASE(LAPI_007_10_CoroutineSleepCanYieldRepeatedly) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "coro_sleep_service.lua",
                                 opts_for("sleep").dump());

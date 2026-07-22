@@ -1,12 +1,11 @@
 #define BOOST_TEST_MODULE LuaApiRegistryTests
+#include <algorithm>
 #include <boost/test/unit_test.hpp>
+#include <nlohmann/json.hpp>
+#include <string>
 
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
-
-#include <algorithm>
-#include <nlohmann/json.hpp>
-#include <string>
 
 using namespace shield::lua;
 
@@ -22,8 +21,7 @@ nlohmann::json opts_for(const std::string& name,
     };
 }
 
-SpawnResult spawn_service(LuaServiceManager& manager,
-                          const std::string& name,
+SpawnResult spawn_service(LuaServiceManager& manager, const std::string& name,
                           nlohmann::json config = nlohmann::json::object()) {
     return manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                          opts_for(name, std::move(config)).dump());
@@ -33,8 +31,12 @@ SpawnResult spawn_service(LuaServiceManager& manager,
 BOOST_AUTO_TEST_SUITE(RegistryTests)
 
 BOOST_AUTO_TEST_CASE(LAPI_003_01_QueryByNameReturnsEquivalentHandle) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_service(manager, "test_query_service");
     BOOST_REQUIRE(result.success);
@@ -50,20 +52,29 @@ BOOST_AUTO_TEST_CASE(LAPI_003_01_QueryByNameReturnsEquivalentHandle) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_003_02_DuplicateNameConflict) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto first = spawn_service(manager, "duplicate_test");
     BOOST_REQUIRE(first.success);
 
     auto second = spawn_service(manager, "duplicate_test");
     BOOST_CHECK(!second.success);
-    BOOST_CHECK(second.error_message.find("already exists") != std::string::npos);
+    BOOST_CHECK(second.error_message.find("already exists") !=
+                std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_003_03_InitFailedNameRollback) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     nlohmann::json config = {{"test_case", "return_false"}};
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "lifecycle_service.lua",
@@ -73,15 +84,20 @@ BOOST_AUTO_TEST_CASE(LAPI_003_03_InitFailedNameRollback) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_003_04_RegisterAlias) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_service(manager, "alias_owner",
                                 {{"register_alias", "alias.visible"}});
     BOOST_REQUIRE(result.success);
 
     BOOST_CHECK_EQUAL(manager.query_service("alias_owner"), result.service_id);
-    BOOST_CHECK_EQUAL(manager.query_service("alias.visible"), result.service_id);
+    BOOST_CHECK_EQUAL(manager.query_service("alias.visible"),
+                      result.service_id);
 
     CallResult cr = manager.call(result.service_id, "query_id",
                                  nlohmann::json::array({"alias.visible"}));
@@ -91,8 +107,12 @@ BOOST_AUTO_TEST_CASE(LAPI_003_04_RegisterAlias) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_003_05_ServiceExitRemovesOwnedNames) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_service(manager, "exit_test_service",
                                 {{"register_alias", "exit.alias"}});
@@ -105,8 +125,12 @@ BOOST_AUTO_TEST_CASE(LAPI_003_05_ServiceExitRemovesOwnedNames) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_003_06_InvalidNameRejected) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     for (const std::string invalid_name : {
              std::string(" "),
@@ -134,8 +158,12 @@ BOOST_AUTO_TEST_CASE(LAPI_003_06_InvalidNameRejected) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_003_07_NamesApiListsPublishedNames) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     BOOST_CHECK(manager.list_services().empty());
 
@@ -146,8 +174,10 @@ BOOST_AUTO_TEST_CASE(LAPI_003_07_NamesApiListsPublishedNames) {
     BOOST_REQUIRE(second.success);
 
     auto names = manager.list_services();
-    BOOST_CHECK(std::find(names.begin(), names.end(), "service_1") != names.end());
-    BOOST_CHECK(std::find(names.begin(), names.end(), "service_2") != names.end());
+    BOOST_CHECK(std::find(names.begin(), names.end(), "service_1") !=
+                names.end());
+    BOOST_CHECK(std::find(names.begin(), names.end(), "service_2") !=
+                names.end());
 
     CallResult cr = manager.call(first.service_id, "names_snapshot",
                                  nlohmann::json::array());
@@ -157,13 +187,18 @@ BOOST_AUTO_TEST_CASE(LAPI_003_07_NamesApiListsPublishedNames) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_003_08_UnregisterName) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_service(manager, "unregister_test",
                                 {{"register_alias", "unregister.alias"}});
     BOOST_REQUIRE(result.success);
-    BOOST_CHECK_EQUAL(manager.query_service("unregister.alias"), result.service_id);
+    BOOST_CHECK_EQUAL(manager.query_service("unregister.alias"),
+                      result.service_id);
 
     CallResult cr = manager.call(result.service_id, "unregister_name",
                                  nlohmann::json::array({"unregister.alias"}));

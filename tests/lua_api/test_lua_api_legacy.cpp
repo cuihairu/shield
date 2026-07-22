@@ -50,8 +50,12 @@ BOOST_GLOBAL_FIXTURE(CafInitFixture);
 BOOST_AUTO_TEST_SUITE(LegacyApiTests)
 
 BOOST_AUTO_TEST_CASE(LAPI_010_01_OldServiceApiUnavailable) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto service = spawn_legacy(manager, "legacy_service_test");
     BOOST_REQUIRE(service.success);
@@ -63,8 +67,12 @@ BOOST_AUTO_TEST_CASE(LAPI_010_01_OldServiceApiUnavailable) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_010_02_PluginApiAvailable) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto service = spawn_legacy(manager, "legacy_plugin_test");
     BOOST_REQUIRE(service.success);
@@ -77,8 +85,12 @@ BOOST_AUTO_TEST_CASE(LAPI_010_02_PluginApiAvailable) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_010_02A_NewPluginIntrospectionAvailable) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto service = spawn_legacy(manager, "legacy_plugin_v1_test");
     BOOST_REQUIRE(service.success);
@@ -91,8 +103,12 @@ BOOST_AUTO_TEST_CASE(LAPI_010_02A_NewPluginIntrospectionAvailable) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_010_03_OldColonDbApiFails) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto service = spawn_legacy(manager, "legacy_db_test");
     BOOST_REQUIRE(service.success);
@@ -108,8 +124,7 @@ BOOST_AUTO_TEST_CASE(LAPI_010_04_OldOnMessageEntryIsNotDispatched) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto service = spawn_legacy(manager, "legacy_onmessage_test");
     BOOST_REQUIRE(service.success);
@@ -130,8 +145,12 @@ BOOST_AUTO_TEST_CASE(LAPI_010_04_OldOnMessageEntryIsNotDispatched) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_010_05_OldDiApiUnavailable) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto service = spawn_legacy(manager, "legacy_di_test");
     BOOST_REQUIRE(service.success);

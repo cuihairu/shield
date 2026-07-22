@@ -55,8 +55,7 @@ BOOST_AUTO_TEST_CASE(LAPI_004_01_SendByName) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto receiver = spawn_messaging(manager, "receiver_service");
     auto sender = spawn_messaging(manager, "sender_service");
@@ -84,8 +83,7 @@ BOOST_AUTO_TEST_CASE(LAPI_004_02_SendByHandleFromQuery) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto receiver = spawn_messaging(manager, "handle_receiver");
     auto sender = spawn_messaging(manager, "handle_sender");
@@ -109,8 +107,12 @@ BOOST_AUTO_TEST_CASE(LAPI_004_02_SendByHandleFromQuery) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_004_03_SendToMissingService) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto sender = spawn_messaging(manager, "sender_test");
     BOOST_REQUIRE(sender.success);
@@ -130,8 +132,7 @@ BOOST_AUTO_TEST_CASE(LAPI_004_04_SendMissingMethodIsAcceptedButNotDispatched) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto receiver = spawn_messaging(manager, "method_receiver");
     auto sender = spawn_messaging(manager, "method_sender");
@@ -163,8 +164,7 @@ BOOST_AUTO_TEST_CASE(LAPI_004_06_SelfSendIsQueued) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto self_sender = spawn_messaging(manager, "self_sender");
     BOOST_REQUIRE(self_sender.success);

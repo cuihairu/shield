@@ -55,8 +55,12 @@ bool wait_until(std::function<bool()> predicate,
 BOOST_AUTO_TEST_SUITE(CafBridgeTests)
 
 BOOST_AUTO_TEST_CASE(NoActorSystemMeansNoServiceActor) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                                 opts_for("no_caf").dump());
@@ -70,8 +74,7 @@ BOOST_AUTO_TEST_CASE(SpawnCreatesCafActorHandleInternally) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                                 opts_for("caf_spawned").dump());
@@ -84,8 +87,7 @@ BOOST_AUTO_TEST_CASE(ExitRemovesCafActorMapping) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                                 opts_for("caf_exit_test").dump());
@@ -101,8 +103,7 @@ BOOST_AUTO_TEST_CASE(CafActorMappingCleanedOnShutdownAll) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto a = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                            opts_for("caf_shutdown_a").dump());
@@ -124,8 +125,7 @@ BOOST_AUTO_TEST_CASE(CafActorMappingCleanedOnDestruction) {
 
     LuaRuntime runtime;
     {
-        LuaServiceManager manager(runtime);
-        manager.attach_actor_system(system);
+        LuaServiceManager manager(runtime, system);
 
         auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                                     opts_for("caf_destructor").dump());
@@ -142,8 +142,7 @@ BOOST_AUTO_TEST_CASE(LuaApiUnchangedWithCafSystem) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     // send still works without requiring the legacy worker thread
     auto s = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
@@ -179,8 +178,7 @@ BOOST_AUTO_TEST_CASE(ForkExecutesWithoutWorkerWhenActorSystemAttached) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
                                 timer_opts_for("caf_fork", "fork").dump());
@@ -203,8 +201,7 @@ BOOST_AUTO_TEST_CASE(TimerOnceFiresWithoutWorkerWhenActorSystemAttached) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result =
         manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
@@ -226,8 +223,7 @@ BOOST_AUTO_TEST_CASE(RepeatingTimerReschedulesViaCaf) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result =
         manager.spawn(TEST_SCRIPTS_DIR + "timer_service.lua",
@@ -250,8 +246,7 @@ BOOST_AUTO_TEST_CASE(SyncCallViaCafActor) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     // Spawn a messaging service that has a "echo" method.
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
@@ -273,8 +268,7 @@ BOOST_AUTO_TEST_CASE(SyncCallToNonexistentService) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     CallResult cr =
         manager.call("nonexistent_service", "method", nlohmann::json::array());
@@ -285,7 +279,7 @@ BOOST_AUTO_TEST_CASE(SyncCallToNonexistentService) {
 // Step 3: sync_call to service without actor falls back to direct call.
 BOOST_AUTO_TEST_CASE(SyncCallFallbackWithoutActor) {
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     // No attach_actor_system — no CAF actors.
 
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",

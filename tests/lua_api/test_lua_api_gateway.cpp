@@ -286,8 +286,12 @@ BOOST_AUTO_TEST_SUITE(Lapi009GatewayApi)
 // LAPI-009-01: Gateway service handles simulated connect.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LAPI_009_01_SimulatedConnect) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_connect");
     BOOST_REQUIRE(result.success);
@@ -304,8 +308,12 @@ BOOST_AUTO_TEST_CASE(LAPI_009_01_SimulatedConnect) {
 // New signature: on_client_message(route_id, client_context, body)
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LAPI_009_02_ClientMessageDelivery) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_message");
     BOOST_REQUIRE(result.success);
@@ -338,8 +346,12 @@ BOOST_AUTO_TEST_CASE(LAPI_009_02_ClientMessageDelivery) {
 // LAPI-009-03: Disconnect handler.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LAPI_009_03_DisconnectHandler) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_disconnect");
     BOOST_REQUIRE(result.success);
@@ -371,8 +383,12 @@ BOOST_AUTO_TEST_CASE(LAPI_009_03_DisconnectHandler) {
 // to expose session creation to the test harness (deferred).
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LAPI_009_04_SendQueueFullHandled) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_queue");
     BOOST_REQUIRE(result.success);
@@ -402,8 +418,12 @@ BOOST_AUTO_TEST_CASE(LAPI_009_04_SendQueueFullHandled) {
 // Verify the handler processes the message even for a disconnected session.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LAPI_009_05_StaleSessionHandled) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_stale");
     BOOST_REQUIRE(result.success);
@@ -434,8 +454,12 @@ BOOST_AUTO_TEST_CASE(LAPI_009_05_StaleSessionHandled) {
 // Gateway module loads and all handler functions exist.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(GatewayServiceLoadsAndHandlersExist) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_full");
     BOOST_REQUIRE(result.success);
@@ -476,8 +500,7 @@ BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_bridge");
     BOOST_REQUIRE(result.success);
@@ -540,8 +563,7 @@ BOOST_AUTO_TEST_CASE(
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_protocol_handle");
     BOOST_REQUIRE(result.success);
@@ -581,8 +603,7 @@ BOOST_AUTO_TEST_CASE(
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_protobuf_egress");
     BOOST_REQUIRE(result.success);
@@ -622,8 +643,7 @@ BOOST_AUTO_TEST_CASE(
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_protocol_handle_raw");
     BOOST_REQUIRE(result.success);
@@ -671,8 +691,7 @@ BOOST_AUTO_TEST_CASE(
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_packet_bridge");
     BOOST_REQUIRE(result.success);
@@ -742,8 +761,7 @@ BOOST_AUTO_TEST_CASE(
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_protobuf_pipeline");
     BOOST_REQUIRE(result.success);
@@ -814,8 +832,7 @@ BOOST_AUTO_TEST_CASE(
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_raw_packet_bridge");
     BOOST_REQUIRE(result.success);
@@ -882,8 +899,7 @@ BOOST_AUTO_TEST_CASE(
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_gateway(manager, "gw_forward_raw_drop");
     BOOST_REQUIRE(result.success);

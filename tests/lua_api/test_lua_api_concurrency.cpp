@@ -44,8 +44,7 @@ BOOST_AUTO_TEST_CASE(DispatchContextIsThreadLocal) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto result = spawn_service(manager, "thread_context_service");
     BOOST_REQUIRE(result.success);
@@ -67,8 +66,12 @@ BOOST_AUTO_TEST_CASE(DispatchContextIsThreadLocal) {
 }
 
 BOOST_AUTO_TEST_CASE(ConcurrentQueryAndListAreStable) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     std::vector<std::string> names;
     for (int i = 0; i < 8; ++i) {

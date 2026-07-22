@@ -52,8 +52,12 @@ BOOST_GLOBAL_FIXTURE(CafInitFixture);
 BOOST_AUTO_TEST_SUITE(CallTests)
 
 BOOST_AUTO_TEST_CASE(LAPI_005_01_CallReturnsOneValue) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto callee = spawn_messaging(manager, "callee_service");
     BOOST_REQUIRE(callee.success);
@@ -66,8 +70,12 @@ BOOST_AUTO_TEST_CASE(LAPI_005_01_CallReturnsOneValue) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_005_02_CallReturnsFalseWithReasonAsBusinessValues) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto callee = spawn_messaging(manager, "callee_false_test");
     BOOST_REQUIRE(callee.success);
@@ -82,8 +90,12 @@ BOOST_AUTO_TEST_CASE(LAPI_005_02_CallReturnsFalseWithReasonAsBusinessValues) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_005_03_CallReturnsTrailingNil) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto callee = spawn_messaging(manager, "callee_nil_test");
     BOOST_REQUIRE(callee.success);
@@ -96,8 +108,12 @@ BOOST_AUTO_TEST_CASE(LAPI_005_03_CallReturnsTrailingNil) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_005_04_CalleeThrowsError) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto callee = spawn_messaging(manager, "callee_throw_test");
     BOOST_REQUIRE(callee.success);
@@ -110,8 +126,12 @@ BOOST_AUTO_TEST_CASE(LAPI_005_04_CalleeThrowsError) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_005_05_MethodMissing) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto callee = spawn_messaging(manager, "callee_missing_test");
     BOOST_REQUIRE(callee.success);
@@ -130,8 +150,7 @@ BOOST_AUTO_TEST_CASE(LAPI_005_06_CoroutineCallTimeout) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     // slow_method calls shield.sleep(150) — it will take >150ms to complete.
     auto callee = spawn_messaging(manager, "slow_callee_for_timeout");
@@ -161,8 +180,12 @@ BOOST_AUTO_TEST_CASE(LAPI_005_06_CoroutineCallTimeout) {
 // LAPI-005-06-sync: the synchronous C++ manager.call() path still ignores
 // timeout_ms. This preserves the original Phase 1 behaviour test.
 BOOST_AUTO_TEST_CASE(LAPI_005_06_SyncCallIgnoresTimeout) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto callee = spawn_messaging(manager, "slow_callee");
     BOOST_REQUIRE(callee.success);
@@ -180,8 +203,12 @@ BOOST_AUTO_TEST_CASE(LAPI_005_06_SyncCallIgnoresTimeout) {
 }
 
 BOOST_AUTO_TEST_CASE(CallApiFromLuaWrapsRuntimeResult) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto callee = spawn_messaging(manager, "lua_call_callee");
     auto caller = spawn_messaging(manager, "lua_call_caller");
@@ -201,8 +228,12 @@ BOOST_AUTO_TEST_CASE(CallApiFromLuaWrapsRuntimeResult) {
 }
 
 BOOST_AUTO_TEST_CASE(CallToExitedServiceFails) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto callee = spawn_messaging(manager, "exited_callee");
     BOOST_REQUIRE(callee.success);
@@ -221,8 +252,7 @@ BOOST_AUTO_TEST_CASE(LAPI_005_09_CoroutineCallReturnsCalleeValues) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     const std::string script = TEST_SCRIPTS_DIR + "coro_call_service.lua";
     auto callee = manager.spawn(script, opts_for("co_callee").dump());
@@ -262,8 +292,7 @@ BOOST_AUTO_TEST_CASE(LAPI_005_10_CoroutineCallWaitsForSleepingCallee) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     const std::string script = TEST_SCRIPTS_DIR + "coro_call_service.lua";
     auto callee = manager.spawn(script, opts_for("slow_callee").dump());
@@ -296,8 +325,7 @@ BOOST_AUTO_TEST_CASE(LAPI_005_11_CoroutineCallTimeoutReturnsErrorCode) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     const std::string script = TEST_SCRIPTS_DIR + "coro_call_service.lua";
     auto callee = manager.spawn(script, opts_for("to_callee").dump());

@@ -56,8 +56,7 @@ BOOST_AUTO_TEST_CASE(LAPI_006_01_SenderInMessageHandler) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto receiver = spawn_messaging(manager, "sender_receiver");
     auto sender = spawn_messaging(manager, "sender_service");
@@ -97,8 +96,7 @@ BOOST_AUTO_TEST_CASE(LAPI_006_02_SenderAfterHandlerReturnsIsCleared) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto receiver = spawn_messaging(manager, "context_test");
     auto sender = spawn_messaging(manager, "temp_sender");
@@ -126,8 +124,7 @@ BOOST_AUTO_TEST_CASE(LAPI_006_03_SenderInTimerCallbackIsNil) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto service = spawn_messaging(manager, "timer_sender_test",
                                    {{"test_case", "timer_sender"}});
@@ -152,8 +149,12 @@ BOOST_AUTO_TEST_CASE(LAPI_006_03_SenderInTimerCallbackIsNil) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_006_04_SelfContext) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
 
     auto service = spawn_messaging(manager, "self_test_service");
     BOOST_REQUIRE(service.success);
@@ -170,8 +171,7 @@ BOOST_AUTO_TEST_CASE(LAPI_006_05_ContextIsolation) {
     caf::actor_system system(cfg);
 
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
-    manager.attach_actor_system(system);
+    LuaServiceManager manager(runtime, system);
 
     auto receiver = spawn_messaging(manager, "isolation_receiver");
     auto sender1 = spawn_messaging(manager, "sender1");

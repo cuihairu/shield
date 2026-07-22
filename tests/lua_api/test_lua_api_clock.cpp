@@ -83,8 +83,12 @@ BOOST_AUTO_TEST_SUITE(ClockTests)
 
 // LCLK-01: Default SystemClock — shield.now() ≈ real wall-clock UTC ms.
 BOOST_AUTO_TEST_CASE(NowReturnsWallClockUtcMs) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk01");
     BOOST_REQUIRE(spawn.success);
 
@@ -103,8 +107,12 @@ BOOST_AUTO_TEST_CASE(NowReturnsWallClockUtcMs) {
 
 // LCLK-02: Default — shield.now()/1000 ≈ os.time() (within 1s tolerance).
 BOOST_AUTO_TEST_CASE(NowAndOsTimeAgree) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk02");
     BOOST_REQUIRE(spawn.success);
 
@@ -117,8 +125,12 @@ BOOST_AUTO_TEST_CASE(NowAndOsTimeAgree) {
 
 // LCLK-03: MockClock injection — shield.now() returns set value.
 BOOST_AUTO_TEST_CASE(MockClockSetNow) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk03");
     BOOST_REQUIRE(spawn.success);
 
@@ -132,8 +144,12 @@ BOOST_AUTO_TEST_CASE(MockClockSetNow) {
 
 // LCLK-04: MockClock advance — shield.now() advances with clock.
 BOOST_AUTO_TEST_CASE(MockClockAdvances) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk04");
     BOOST_REQUIRE(spawn.success);
 
@@ -151,8 +167,12 @@ BOOST_AUTO_TEST_CASE(MockClockAdvances) {
 
 // LCLK-05: os.time() no-arg reads MockClock.
 BOOST_AUTO_TEST_CASE(OsTimeNoArgReadsMockClock) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk05");
     BOOST_REQUIRE(spawn.success);
 
@@ -167,8 +187,12 @@ BOOST_AUTO_TEST_CASE(OsTimeNoArgReadsMockClock) {
 
 // LCLK-06: os.time(table) is NOT redirected — original conversion preserved.
 BOOST_AUTO_TEST_CASE(OsTimeTableNotRedirected) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk06");
     BOOST_REQUIRE(spawn.success);
 
@@ -187,8 +211,12 @@ BOOST_AUTO_TEST_CASE(OsTimeTableNotRedirected) {
 
 // LCLK-07: os.date(fmt) no-arg reads MockClock.
 BOOST_AUTO_TEST_CASE(OsDateNoArgReadsMockClock) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk07");
     BOOST_REQUIRE(spawn.success);
 
@@ -204,8 +232,12 @@ BOOST_AUTO_TEST_CASE(OsDateNoArgReadsMockClock) {
 
 // LCLK-08: os.date(fmt, t) with explicit time is NOT redirected.
 BOOST_AUTO_TEST_CASE(OsDateWithExplicitTimeNotRedirected) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk08");
     BOOST_REQUIRE(spawn.success);
 
@@ -221,8 +253,12 @@ BOOST_AUTO_TEST_CASE(OsDateWithExplicitTimeNotRedirected) {
 
 // LCLK-09: os.clock() is NOT hooked — still returns real CPU time.
 BOOST_AUTO_TEST_CASE(OsClockNotHooked) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk09");
     BOOST_REQUIRE(spawn.success);
 
@@ -239,8 +275,12 @@ BOOST_AUTO_TEST_CASE(OsClockNotHooked) {
 
 // LCLK-10: shield.monotonic() is NOT affected by MockClock.
 BOOST_AUTO_TEST_CASE(MonotonicNotAdjustable) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk10");
     BOOST_REQUIRE(spawn.success);
 
@@ -265,8 +305,12 @@ BOOST_AUTO_TEST_CASE(MonotonicNotAdjustable) {
 // Mirrors the pattern in scripts/shield_database_integration.lua:298:
 //   if cache_entry.expires > os.time() then ... end
 BOOST_AUTO_TEST_CASE(BusinessLogicRespectsMockTime) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk11");
     BOOST_REQUIRE(spawn.success);
 
@@ -299,8 +343,12 @@ BOOST_AUTO_TEST_CASE(BusinessLogicRespectsMockTime) {
 // using os.time/shield.now — all redirected to the business clock.
 // MockClock is advanced from C++ to drive time-based game logic.
 BOOST_AUTO_TEST_CASE(GameBusinessLogicViaLuaScript) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
     LuaRuntime runtime;
-    LuaServiceManager manager(runtime);
+    LuaServiceManager manager(runtime, system);
     auto spawn = manager.spawn(TEST_SCRIPTS_DIR + "clock_business.lua",
                                opts_for("biz").dump());
     BOOST_REQUIRE(spawn.success);
