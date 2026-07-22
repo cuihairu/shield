@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
+#include <caf/actor_system_config.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
 
