@@ -340,13 +340,8 @@ bool initialize(const RuntimeConfig& config) {
     run_starters(Phase::POST_SYSTEM_INIT);
 
     g_state->lua_runtime = std::make_unique<shield::lua::LuaRuntime>();
-    g_state->lua_services =
-        std::make_unique<shield::lua::LuaServiceManager>(*g_state->lua_runtime);
-
-    // Step 2a: let spawned Lua services also own a CAF actor handle. The
-    // actor is a lifecycle-owned placeholder for now; it does not yet drive
-    // Lua dispatch.
-    g_state->lua_services->attach_actor_system(*g_state->actor_system);
+    g_state->lua_services = std::make_unique<shield::lua::LuaServiceManager>(
+        *g_state->lua_runtime, *g_state->actor_system);
 
     for (const auto& actor : shield::config::runtime_actors()) {
         const int instances = actor.instances < 0 ? 0 : actor.instances;
