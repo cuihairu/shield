@@ -91,6 +91,13 @@ public:
     // Exit all services in reverse spawn order.
     void shutdown_all(std::string_view reason = "stopping");
 
+    // Stop the dedicated worker thread (if any). Called during shutdown.
+    void stop_worker();
+
+    // Attach a CAF actor system so that spawned services own a CAF actor
+    // handle.
+    void attach_actor_system(caf::actor_system& system);
+
     // Get current service ID
     std::string current_service_id() const;
 

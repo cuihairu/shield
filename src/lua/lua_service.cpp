@@ -1145,6 +1145,16 @@ void LuaServiceManager::shutdown_all(std::string_view reason) {
     }
 }
 
+void LuaServiceManager::stop_worker() {
+    // No-op: worker thread was removed during CAF migration.
+    // Kept for backward compatibility with bootstrap.cpp.
+}
+
+void LuaServiceManager::attach_actor_system(caf::actor_system& system) {
+    // No-op: actor system is now injected via constructor.
+    // Kept for backward compatibility with bootstrap.cpp.
+}
+
 std::string LuaServiceManager::current_service_id() const {
     return impl_->current_service_id();
 }
