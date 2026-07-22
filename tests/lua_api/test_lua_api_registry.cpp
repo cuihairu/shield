@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE LuaApiRegistryTests
 #include <algorithm>
 #include <boost/test/unit_test.hpp>
+#include <caf/actor_system.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
 

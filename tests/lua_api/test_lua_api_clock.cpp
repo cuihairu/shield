@@ -9,6 +9,7 @@
 
 #define BOOST_TEST_MODULE LuaApiClockTests
 #include <boost/test/unit_test.hpp>
+#include <caf/actor_system.hpp>
 #include <chrono>
 #include <ctime>
 #include <string>

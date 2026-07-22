@@ -7,6 +7,7 @@
 // default (or nil when none is given).
 #define BOOST_TEST_MODULE LuaApiConfigTests
 #include <boost/test/unit_test.hpp>
+#include <caf/actor_system.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
 
