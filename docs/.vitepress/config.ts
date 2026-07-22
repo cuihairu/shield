@@ -78,7 +78,6 @@ export default defineConfig({
           { text: 'cache.redis', link: '/plugins/cache-redis' },
           { text: 'queue.redis', link: '/plugins/queue-redis' },
           { text: 'leaderboard.redis', link: '/plugins/leaderboard-redis' },
-          { text: 'auth.jwt', link: '/plugins/auth-jwt' },
           { text: 'metrics.prometheus', link: '/plugins/metrics-prometheus' },
           { text: 'health.http', link: '/plugins/health-http' },
           { text: 'matchmaking.elo', link: '/plugins/matchmaking-elo' },

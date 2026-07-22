@@ -128,7 +128,6 @@ shield/
 │   ├── cache.redis/
 │   ├── queue.redis/
 │   ├── leaderboard.redis/
-│   ├── auth.jwt/
 │   ├── metrics.prometheus/
 │   ├── health.http/
 │   └── matchmaking.elo/

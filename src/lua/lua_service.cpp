@@ -26,6 +26,7 @@
 #include "shield/config/config.hpp"
 #include "shield/core/service_message.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/lua/lua_constants.hpp"
 #include "shield/lua/lua_runtime.hpp"
 
 namespace shield::lua {
@@ -60,19 +61,34 @@ CallResult CallResult::error(std::string msg) {
 
 struct LuaServiceManager::Impl {
     LuaRuntime& runtime;
+    caf::actor_system& system;
     std::unordered_map<std::string, std::shared_ptr<LuaVM>> services;
     std::unordered_map<std::string, std::string> published_names;
     std::unordered_map<std::string, std::unordered_set<std::string>>
         owned_names;
     std::unordered_map<std::string, std::string> module_scripts;
-    std::unordered_map<std::string, std::shared_ptr<Mailbox>> mailboxes;
     std::vector<std::string> service_order;
     mutable std::shared_mutex registry_mutex;
     std::atomic<bool> stopping{
         false};  // set by shutdown_all, checked by send/call/spawn
 
-    // Forked task queue. Drained only by the worker thread (or pump_once on
-    // the caller's thread when no worker is running).
+    // Internal message representation used between the CAF actor behavior and
+    // the Lua dispatch path. Replaces the legacy Mailbox::Message.
+    struct DispatchMessage {
+        std::string sender;
+        std::string method;
+        nlohmann::json args;
+        std::string trace_id;
+        int64_t deadline_ms = 0;
+        bool high_priority = false;
+        int64_t timestamp_ms = 0;
+        // Coroutine call correlation. Defaults describe a plain send.
+        // Call-request: call_session != 0.
+        uint64_t call_session = 0;
+    };
+
+    // Forked task queue. Tasks are enqueued by shield.fork and consumed when
+    // the owning service actor receives a fork_task_atom message.
     struct ForkedTask {
         uint64_t id;
         std::string service_id;
@@ -83,6 +99,7 @@ struct LuaServiceManager::Impl {
     std::vector<ForkedTask> pending_tasks;
     std::unordered_map<std::string, std::unordered_set<uint64_t>>
         tasks_by_service;
+    std::mutex task_mutex;
 
     // Coroutine call correlation. A call from a handler yields the caller's
     // coroutine; the callee runs and, on completion, resumes the caller with
@@ -103,7 +120,6 @@ struct LuaServiceManager::Impl {
     // Per-service consecutive error counter for panic detection.
     // Reset on successful handler completion; incremented on uncaught error.
     std::unordered_map<std::string, int> error_counts;
-    static constexpr int kDefaultMaxErrorsBeforePanic = 10;
 
     // Track recently exited services for service_dead error distinction.
     // Cleared periodically to avoid unbounded growth.
@@ -119,23 +135,8 @@ struct LuaServiceManager::Impl {
                               const std::string& method)>
         permission_check;
 
-    // Worker thread lifecycle. The worker drives mailboxes, timers, forked
-    // tasks, and coroutine timeouts. While the worker is running, all Lua
-    // execution happens on the worker thread (modulo shield.call reentry,
-    // which stays inline because it's already on the worker).
-    std::atomic<bool> worker_running{false};
-    std::atomic<bool> worker_stop_requested{false};
-    std::thread worker_thread;
-    std::mutex worker_mutex;
-    std::condition_variable worker_cv;
-
-    // CAF actor system bridge (optional). When attached, every spawned Lua
-    // service also gets a CAF actor handle in service_actors. The actor is a
-    // lifecycle-owned placeholder for now: it accepts fire-and-forget string
-    // messages but does not yet drive Lua dispatch. Message delivery still
-    // goes through the mailbox; the actor becomes the message entry point in
-    // a later step. Protected by registry_mutex alongside the tables above.
-    caf::actor_system* actor_system = nullptr;
+    // CAF actor system reference. LuaServiceManager now always requires a CAF
+    // actor system; every spawned service owns a CAF actor handle.
     std::unordered_map<std::string, caf::actor> service_actors;
 
     struct ActorTimerState {
@@ -178,8 +179,6 @@ struct LuaServiceManager::Impl {
         pending_sync_calls;
     std::atomic<uint64_t> next_sync_call_session{1};
 
-    bool uses_caf_actor_system() const { return actor_system != nullptr; }
-
     int64_t clock_now_ms() const {
         std::shared_lock lock(registry_mutex);
         return clock_->now_ms();
@@ -190,46 +189,43 @@ struct LuaServiceManager::Impl {
         return clock_->now_seconds();
     }
 
-    // Dispatch a CAF-native ServiceMessage (replaces the default "message" JSON
-    // kind). Converts the typed fields into a Mailbox::Message and routes to
-    // the existing dispatch_message path.
+    // Dispatch a CAF-native ServiceMessage. Converts the typed fields into an
+    // internal DispatchMessage and routes to the existing dispatch_message
+    // path.
     void dispatch_service_message(class LuaServiceManager* manager,
                                   const std::string& id,
                                   const ServiceMessage& msg) {
-        Mailbox::Message m;
+        DispatchMessage m;
         m.sender = msg.sender;
         m.method = msg.method;
         m.args = msg.args;
         m.trace_id = msg.trace_id;
         m.deadline_ms = msg.deadline_ms;
-        m.priority = msg.priority == MessagePriority::High
-                         ? Mailbox::Priority::High
-                         : Mailbox::Priority::Normal;
+        m.high_priority = msg.priority == MessagePriority::High;
         m.timestamp_ms = msg.timestamp_ms;
         m.call_session = msg.call_session;
         (void)dispatch_message(manager, id, m);
     }
 
-    // Dispatch a CAF-native SyncCallMessage (replaces the "sync_call" JSON
-    // kind). Uses sync_session as the call_session so on_handler_completed can
-    // signal the blocking caller.
+    // Dispatch a CAF-native SyncCallMessage. Uses sync_session as the
+    // call_session so on_handler_completed can signal the blocking caller.
     void dispatch_sync_call_message(class LuaServiceManager* manager,
                                     const std::string& id,
                                     const SyncCallMessage& req) {
-        Mailbox::Message msg;
+        DispatchMessage msg;
         msg.sender = req.sender;
         msg.method = req.method;
         msg.args = req.args;
         msg.trace_id = req.trace_id;
         msg.deadline_ms = req.deadline_ms;
-        msg.priority = Mailbox::Priority::Normal;
+        msg.high_priority = false;
         msg.timestamp_ms = req.timestamp_ms;
         msg.call_session = req.sync_session;
         (void)dispatch_message(manager, id, msg);
     }
 
     bool dispatch_message(class LuaServiceManager* manager,
-                          const std::string& id, const Mailbox::Message& msg) {
+                          const std::string& id, const DispatchMessage& msg) {
         std::shared_ptr<LuaVM> service;
         {
             std::shared_lock lock(registry_mutex);
@@ -297,7 +293,7 @@ struct LuaServiceManager::Impl {
                              uint64_t task_id) {
         std::optional<ForkedTask> task;
         {
-            std::lock_guard<std::mutex> lock(worker_mutex);
+            std::lock_guard<std::mutex> lock(task_mutex);
             for (auto it = pending_tasks.begin(); it != pending_tasks.end();
                  ++it) {
                 if (it->id == task_id) {
@@ -374,7 +370,7 @@ struct LuaServiceManager::Impl {
             .count();
     }
 
-    Impl(LuaRuntime& rt) : runtime(rt) {
+    Impl(LuaRuntime& rt, caf::actor_system& sys) : runtime(rt), system(sys) {
         for (const auto& actor : shield::config::runtime_actors()) {
             module_scripts.emplace(actor.name, resolve_script_path(actor));
         }
@@ -509,8 +505,9 @@ struct LuaServiceManager::Impl {
     };
 };
 
-LuaServiceManager::LuaServiceManager(LuaRuntime& runtime)
-    : impl_(std::make_unique<Impl>(runtime)) {
+LuaServiceManager::LuaServiceManager(LuaRuntime& runtime,
+                                     caf::actor_system& system)
+    : impl_(std::make_unique<Impl>(runtime, system)) {
     runtime.set_service_manager(this);
 }
 
@@ -626,7 +623,7 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         // Parse spawn timeout (default 10s).
         const int64_t spawn_timeout_ms = opts.value("timeout", 10000);
 
-        // Step 2c: create a CAF actor for this service before on_init so that
+        // Create a CAF actor for this service before on_init so that
         // on_init-time fork/timer registration can immediately route through
         // the actor path. The service VM is published only after on_init
         // succeeds; until then the actor exists purely as an internal handle.
@@ -634,68 +631,58 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         // The behavior pattern-matches the native typed messages
         // (ServiceMessage, SyncCallMessage, timer_fire_atom + uint64_t,
         // call_timeout_atom + uint64_t). No string/JSON dispatch remains.
-        std::optional<caf::actor> precreated_actor;
-        if (impl_->actor_system) {
-            auto actor = impl_->actor_system->spawn(
-                [impl_ptr = impl_.get(), manager = this, svc = service_name](
-                    caf::event_based_actor* self) -> caf::behavior {
-                    // Message stashing: until on_init completes on the spawning
-                    // thread, every incoming message is stashed so fork/timer/
-                    // call cannot touch this Lua VM concurrently with on_init.
-                    // The spawner sends init_ready_atom once on_init returns;
-                    // we then install the real behavior and release the stash.
-                    auto cache = std::make_shared<caf::mail_cache>(self, 4096);
-                    self->set_default_handler(
-                        [cache](caf::message& msg) -> caf::skippable_result {
-                            cache->stash(msg);
-                            return {};
-                        });
-                    return caf::behavior{
-                        [self, cache, impl_ptr, manager, svc](init_ready_atom) {
-                            self->set_default_handler(caf::print_and_drop);
-                            self->become(caf::behavior{
-                                [impl_ptr, manager,
-                                 svc](const ServiceMessage& msg) {
-                                    impl_ptr->dispatch_service_message(
-                                        manager, svc, msg);
-                                },
-                                [impl_ptr, manager,
-                                 svc](const SyncCallMessage& req) {
-                                    impl_ptr->dispatch_sync_call_message(
-                                        manager, svc, req);
-                                },
-                                [impl_ptr, manager, svc](timer_fire_atom,
-                                                         uint64_t timer_id) {
-                                    impl_ptr->fire_actor_timer(manager, svc,
-                                                               timer_id);
-                                },
-                                [impl_ptr, manager, svc](call_timeout_atom,
-                                                         uint64_t session) {
-                                    manager->cancel_actor_call_timeout(session);
-                                    nlohmann::json timeout_err =
-                                        nlohmann::json::array(
-                                            {nlohmann::json::object(
-                                                {{"code", "timeout"},
-                                                 {"message", "call timeout"},
-                                                 {"retryable", true}})});
-                                    manager->resume_caller(session, false,
-                                                           timeout_err);
-                                },
-                                [impl_ptr, manager](fork_task_atom,
-                                                    uint64_t task_id) {
-                                    impl_ptr->run_ready_fork_task(manager,
-                                                                  task_id);
-                                },
-                            });
-                            cache->unstash();
-                        },
-                    };
+        auto actor = impl_->system.spawn([impl_ptr = impl_.get(),
+                                          manager = this, svc = service_name](
+                                             caf::event_based_actor* self)
+                                             -> caf::behavior {
+            // Message stashing: until on_init completes on the spawning
+            // thread, every incoming message is stashed so fork/timer/
+            // call cannot touch this Lua VM concurrently with on_init.
+            // The spawner sends init_ready_atom once on_init returns;
+            // we then install the real behavior and release the stash.
+            auto cache = std::make_shared<caf::mail_cache>(self, 4096);
+            self->set_default_handler(
+                [cache](caf::message& msg) -> caf::skippable_result {
+                    cache->stash(msg);
+                    return {};
                 });
-            {
-                std::unique_lock lock(impl_->registry_mutex);
-                impl_->service_actors.emplace(service_name, actor);
-            }
-            precreated_actor = std::move(actor);
+            return caf::behavior{
+                [self, cache, impl_ptr, manager, svc](init_ready_atom) {
+                    self->set_default_handler(caf::print_and_drop);
+                    self->become(caf::behavior{
+                        [impl_ptr, manager, svc](const ServiceMessage& msg) {
+                            impl_ptr->dispatch_service_message(manager, svc,
+                                                               msg);
+                        },
+                        [impl_ptr, manager, svc](const SyncCallMessage& req) {
+                            impl_ptr->dispatch_sync_call_message(manager, svc,
+                                                                 req);
+                        },
+                        [impl_ptr, manager, svc](timer_fire_atom,
+                                                 uint64_t timer_id) {
+                            impl_ptr->fire_actor_timer(manager, svc, timer_id);
+                        },
+                        [impl_ptr, manager, svc](call_timeout_atom,
+                                                 uint64_t session) {
+                            manager->cancel_actor_call_timeout(session);
+                            nlohmann::json timeout_err =
+                                nlohmann::json::array({nlohmann::json::object(
+                                    {{"code", "timeout"},
+                                     {"message", "call timeout"},
+                                     {"retryable", true}})});
+                            manager->resume_caller(session, false, timeout_err);
+                        },
+                        [impl_ptr, manager](fork_task_atom, uint64_t task_id) {
+                            impl_ptr->run_ready_fork_task(manager, task_id);
+                        },
+                    });
+                    cache->unstash();
+                },
+            };
+        });
+        {
+            std::unique_lock lock(impl_->registry_mutex);
+            impl_->service_actors.emplace(service_name, actor);
         }
 
         nlohmann::json init_args = {
@@ -756,14 +743,11 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             impl_->published_names[service_name] = service_name;
             impl_->owned_names[service_name].insert(service_name);
             impl_->service_order.push_back(service_name);
-            impl_->mailboxes[service_name] = std::make_shared<Mailbox>(1000);
         }
 
         // on_init succeeded: tell the actor to install its real behavior and
         // release any messages stashed during init (see spawn lambda above).
-        if (precreated_actor) {
-            caf::anon_send(*precreated_actor, init_ready_atom_v);
-        }
+        caf::anon_send(actor, init_ready_atom_v);
 
         if (exit_after_init) {
             exit(service_name, exit_reason);
@@ -792,7 +776,6 @@ bool validate_message_method(std::string_view method, bool allow_reserved,
 
 bool validate_message_payload(const nlohmann::json& args, std::string* error) {
     const std::string serialized = args.dump();
-    constexpr size_t kMaxMessageSize = 1024 * 1024;
     if (serialized.size() > kMaxMessageSize) {
         if (error) {
             *error = "message too large: " + std::to_string(serialized.size()) +
@@ -839,46 +822,16 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
 
     const std::string service_id = query_service(target);
 
-    // Step 2b: prefer the CAF actor path when an actor system is attached.
-    // The actor's behavior delivers the message into the target mailbox and
-    // wakes the worker. Fallback to direct mailbox push when no actor system.
-    if (impl_->actor_system) {
-        std::optional<caf::actor> actor_opt;
-        {
-            std::shared_lock lock(impl_->registry_mutex);
-            auto it = impl_->service_actors.find(service_id);
-            if (it != impl_->service_actors.end()) {
-                actor_opt = it->second;
-            }
-        }
-        if (actor_opt) {
-            const auto now = std::chrono::steady_clock::now();
-            const auto now_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now.time_since_epoch())
-                    .count();
-            const std::string sender = current_service_id();
-            ServiceMessage msg;
-            msg.sender = sender;
-            msg.method = std::string(method);
-            msg.args = args;
-            msg.trace_id = impl_->current_trace_id();
-            msg.deadline_ms = impl_->current_deadline_ms();
-            msg.priority = MessagePriority::Normal;
-            msg.timestamp_ms = now_ms;
-            caf::anon_send(*actor_opt, std::move(msg));
-            return true;
-        }
-    }
-
-    std::shared_ptr<Mailbox> mailbox;
+    std::optional<caf::actor> actor_opt;
     {
         std::shared_lock lock(impl_->registry_mutex);
-        auto mailbox_it = impl_->mailboxes.find(service_id);
-        if (mailbox_it != impl_->mailboxes.end()) {
-            mailbox = mailbox_it->second;
-        } else if (error) {
-            // Distinguish between "never existed" and "exited".
+        auto it = impl_->service_actors.find(service_id);
+        if (it != impl_->service_actors.end()) {
+            actor_opt = it->second;
+        }
+    }
+    if (!actor_opt) {
+        if (error) {
             if (impl_->recently_exited.count(service_id) > 0 ||
                 impl_->recently_exited.count(std::string(target)) > 0) {
                 *error = "service dead: " + std::string(target);
@@ -886,8 +839,6 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
                 *error = "service not found: " + std::string(target);
             }
         }
-    }
-    if (!mailbox) {
         return false;
     }
 
@@ -895,25 +846,16 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             now.time_since_epoch())
                             .count();
-
     const std::string sender = current_service_id();
-
-    Mailbox::Message msg;
+    ServiceMessage msg;
     msg.sender = sender;
     msg.method = std::string(method);
     msg.args = args;
     msg.trace_id = impl_->current_trace_id();
     msg.deadline_ms = impl_->current_deadline_ms();
-    msg.priority = Mailbox::Priority::Normal;
+    msg.priority = MessagePriority::Normal;
     msg.timestamp_ms = now_ms;
-
-    if (!mailbox->push(msg, Mailbox::Backpressure::DropNewest)) {
-        if (error) {
-            *error = "mailbox full";
-        }
-        return false;
-    }
-
+    caf::anon_send(*actor_opt, std::move(msg));
     return true;
 }
 
@@ -932,44 +874,15 @@ bool LuaServiceManager::send_system(std::string_view target,
 
     const std::string service_id = query_service(target);
 
-    // Step 2b: prefer the CAF actor path.
-    if (impl_->actor_system) {
-        std::optional<caf::actor> actor_opt;
-        {
-            std::shared_lock lock(impl_->registry_mutex);
-            auto it = impl_->service_actors.find(service_id);
-            if (it != impl_->service_actors.end()) {
-                actor_opt = it->second;
-            }
-        }
-        if (actor_opt) {
-            const auto now = std::chrono::steady_clock::now();
-            const auto now_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now.time_since_epoch())
-                    .count();
-            ServiceMessage msg;
-            msg.sender = "";
-            msg.method = std::string(method);
-            msg.args = args;
-            msg.trace_id = "";
-            msg.deadline_ms = 0;
-            msg.priority = MessagePriority::High;
-            msg.timestamp_ms = now_ms;
-            caf::anon_send(*actor_opt, std::move(msg));
-            return true;
-        }
-    }
-
-    std::shared_ptr<Mailbox> mailbox;
+    std::optional<caf::actor> actor_opt;
     {
         std::shared_lock lock(impl_->registry_mutex);
-        auto mailbox_it = impl_->mailboxes.find(service_id);
-        if (mailbox_it != impl_->mailboxes.end()) {
-            mailbox = mailbox_it->second;
+        auto it = impl_->service_actors.find(service_id);
+        if (it != impl_->service_actors.end()) {
+            actor_opt = it->second;
         }
     }
-    if (!mailbox) {
+    if (!actor_opt) {
         if (error) *error = "service not found: " + std::string(target);
         return false;
     }
@@ -978,17 +891,15 @@ bool LuaServiceManager::send_system(std::string_view target,
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             now.time_since_epoch())
                             .count();
-
-    Mailbox::Message msg;
+    ServiceMessage msg;
+    msg.sender = "";
     msg.method = std::string(method);
     msg.args = args;
-    msg.priority = Mailbox::Priority::High;
+    msg.trace_id = "";
+    msg.deadline_ms = 0;
+    msg.priority = MessagePriority::High;
     msg.timestamp_ms = now_ms;
-
-    if (!mailbox->push(msg, Mailbox::Backpressure::DropNewest)) {
-        if (error) *error = "mailbox full";
-        return false;
-    }
+    caf::anon_send(*actor_opt, std::move(msg));
     return true;
 }
 
@@ -999,71 +910,36 @@ bool LuaServiceManager::send_call_request(std::string_view target,
                                           std::string* error) {
     const std::string service_id = query_service(target);
 
-    // Step 2b: prefer the CAF actor path.
-    if (impl_->actor_system) {
-        std::optional<caf::actor> actor_opt;
-        {
-            std::shared_lock lock(impl_->registry_mutex);
-            auto it = impl_->service_actors.find(service_id);
-            if (it != impl_->service_actors.end()) {
-                actor_opt = it->second;
-            }
-        }
-        if (actor_opt) {
-            const auto now = std::chrono::steady_clock::now();
-            const auto now_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now.time_since_epoch())
-                    .count();
-            const std::string sender = current_service_id();
-            ServiceMessage msg;
-            msg.sender = sender;
-            msg.method = std::string(method);
-            msg.args = args;
-            msg.trace_id = impl_->current_trace_id();
-            msg.deadline_ms = impl_->current_deadline_ms();
-            msg.priority = MessagePriority::Normal;
-            msg.timestamp_ms = now_ms;
-            msg.call_session = session;
-            caf::anon_send(*actor_opt, std::move(msg));
-            return true;
-        }
-    }
-
-    std::shared_ptr<Mailbox> mailbox;
+    std::optional<caf::actor> actor_opt;
     {
         std::shared_lock lock(impl_->registry_mutex);
-        auto mailbox_it = impl_->mailboxes.find(service_id);
-        if (mailbox_it != impl_->mailboxes.end()) {
-            mailbox = mailbox_it->second;
+        auto it = impl_->service_actors.find(service_id);
+        if (it != impl_->service_actors.end()) {
+            actor_opt = it->second;
         }
     }
-    if (!mailbox) {
+    if (!actor_opt) {
         if (error) {
             *error = "service not found: " + std::string(target);
         }
         return false;
     }
+
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             now.time_since_epoch())
                             .count();
-
-    Mailbox::Message msg;
-    msg.sender = current_service_id();
+    const std::string sender = current_service_id();
+    ServiceMessage msg;
+    msg.sender = sender;
     msg.method = std::string(method);
     msg.args = args;
     msg.trace_id = impl_->current_trace_id();
     msg.deadline_ms = impl_->current_deadline_ms();
-    msg.priority = Mailbox::Priority::Normal;
+    msg.priority = MessagePriority::Normal;
     msg.timestamp_ms = now_ms;
     msg.call_session = session;
-    if (!mailbox->push(msg, Mailbox::Backpressure::DropNewest)) {
-        if (error) {
-            *error = "mailbox full";
-        }
-        return false;
-    }
+    caf::anon_send(*actor_opt, std::move(msg));
     return true;
 }
 
@@ -1090,100 +966,74 @@ CallResult LuaServiceManager::call(std::string_view target,
 
     const std::string sender = current_service_id();
 
-    // Step 3: if CAF actor system attached and target has actor, route
-    // through the actor (blocking wait on CV). This serializes execution
-    // through the actor mailbox instead of synchronous reentry.
-    if (impl_->actor_system) {
-        std::optional<caf::actor> actor_opt;
-        {
-            std::shared_lock lock(impl_->registry_mutex);
-            auto it = impl_->service_actors.find(service_id);
-            if (it != impl_->service_actors.end()) {
-                actor_opt = it->second;
-            }
-        }
-        if (actor_opt) {
-            // Self-call detection: avoid deadlock (actor mailbox would queue
-            // but actor is currently executing this handler).
-            if (sender == service_id) {
-                return CallResult::error(
-                    "self-call not supported via CAF path");
-            }
-
-            // Create pending sync call.
-            const uint64_t session = impl_->next_sync_call_session.fetch_add(1);
-            auto pending = std::make_shared<Impl::PendingSyncCall>();
-            pending->session = session;
-            {
-                std::unique_lock lock(impl_->registry_mutex);
-                impl_->pending_sync_calls[session] = pending;
-            }
-
-            // Build typed SyncCallMessage for CAF-native dispatch.
-            const auto now = std::chrono::steady_clock::now();
-            const auto now_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now.time_since_epoch())
-                    .count();
-            SyncCallMessage sync_msg;
-            sync_msg.sync_session = session;
-            sync_msg.sender = sender;
-            sync_msg.method = std::string(method);
-            sync_msg.args = args;
-            sync_msg.trace_id = impl_->current_trace_id();
-            sync_msg.deadline_ms = impl_->current_deadline_ms();
-            sync_msg.timestamp_ms = now_ms;
-
-            // Send to target actor.
-            caf::anon_send(*actor_opt, std::move(sync_msg));
-
-            // Block until handler completes (or timeout).
-            const int32_t effective_timeout =
-                timeout_ms > 0 ? timeout_ms : 5000;
-            bool completed = false;
-            {
-                std::unique_lock lk(pending->mtx);
-                completed = pending->cv.wait_for(
-                    lk, std::chrono::milliseconds(effective_timeout),
-                    [&] { return pending->completed; });
-            }
-
-            // Cleanup.
-            {
-                std::unique_lock lock(impl_->registry_mutex);
-                impl_->pending_sync_calls.erase(session);
-            }
-
-            if (!completed) {
-                return CallResult::error(
-                    "call timeout (actor dispatch exceeded limit)");
-            }
-            if (pending->ok) {
-                return CallResult::ok(std::move(pending->values));
-            }
-            return CallResult::error(std::move(pending->error));
+    std::optional<caf::actor> actor_opt;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto it = impl_->service_actors.find(service_id);
+        if (it != impl_->service_actors.end()) {
+            actor_opt = it->second;
         }
     }
-
-    // Fallback: no CAF actor attached — direct synchronous call
-    // (original behavior for backward compatibility).
-    Impl::DispatchScope scope(*impl_, service_id, sender, false);
-
-    nlohmann::json values = nlohmann::json::array();
-    std::string error;
-    if (!impl_->runtime.call_service_method(service, method, args, &values,
-                                            &error)) {
-        return CallResult::error(error);
+    if (!actor_opt) {
+        return CallResult::error("service not found: " + std::string(target));
     }
 
-    std::string exit_service_id;
-    std::string exit_reason;
-    if (impl_->is_exit_requested(&exit_service_id, &exit_reason) &&
-        exit_service_id == service_id) {
-        exit(exit_service_id, exit_reason);
+    // Self-call detection: avoid deadlock (actor mailbox would queue but the
+    // actor is currently executing this handler).
+    if (sender == service_id) {
+        return CallResult::error("self-call not supported");
     }
 
-    return CallResult::ok(std::move(values));
+    // Create pending sync call.
+    const uint64_t session = impl_->next_sync_call_session.fetch_add(1);
+    auto pending = std::make_shared<Impl::PendingSyncCall>();
+    pending->session = session;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->pending_sync_calls[session] = pending;
+    }
+
+    // Build typed SyncCallMessage for CAF-native dispatch.
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now.time_since_epoch())
+                            .count();
+    SyncCallMessage sync_msg;
+    sync_msg.sync_session = session;
+    sync_msg.sender = sender;
+    sync_msg.method = std::string(method);
+    sync_msg.args = args;
+    sync_msg.trace_id = impl_->current_trace_id();
+    sync_msg.deadline_ms = impl_->current_deadline_ms();
+    sync_msg.timestamp_ms = now_ms;
+
+    // Send to target actor.
+    caf::anon_send(*actor_opt, std::move(sync_msg));
+
+    // Block until handler completes (or timeout).
+    const int32_t effective_timeout = timeout_ms > 0 ? timeout_ms : 5000;
+    bool completed = false;
+    {
+        std::unique_lock lk(pending->mtx);
+        completed = pending->cv.wait_for(
+            lk, std::chrono::milliseconds(effective_timeout),
+            [&] { return pending->completed; });
+    }
+
+    // Cleanup.
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->pending_sync_calls.erase(session);
+    }
+
+    if (!completed) {
+        return CallResult::error(
+            "call timeout (actor dispatch exceeded limit)");
+    }
+    if (pending->ok) {
+        return CallResult::ok(std::move(pending->values));
+    }
+    return CallResult::error(std::move(pending->error));
 }
 
 void LuaServiceManager::exit(std::string_view service_id,
@@ -1258,11 +1108,10 @@ void LuaServiceManager::exit(std::string_view service_id,
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
                                    impl_->service_order.end());
-        impl_->mailboxes.erase(id);
         impl_->recently_exited.insert(id);
 
-        // Step 2a: tear down the service's CAF actor, if any. anon_send_exit
-        // asks the actor to stop; erasing the handle releases our reference.
+        // Tear down the service's CAF actor. anon_send_exit asks the actor to
+        // stop; erasing the handle releases our reference.
         if (auto actor_it = impl_->service_actors.find(id);
             actor_it != impl_->service_actors.end()) {
             caf::anon_send_exit(actor_it->second,
@@ -1426,151 +1275,6 @@ std::vector<std::string> LuaServiceManager::list_services() const {
     return services;
 }
 
-bool LuaServiceManager::process_mailbox(std::string_view service_id) {
-    const std::string id(service_id);
-    std::shared_ptr<Mailbox> mailbox;
-    {
-        std::shared_lock lock(impl_->registry_mutex);
-        auto mailbox_it = impl_->mailboxes.find(id);
-        if (mailbox_it != impl_->mailboxes.end()) {
-            mailbox = mailbox_it->second;
-        }
-    }
-    if (!mailbox) {
-        return false;
-    }
-
-    Mailbox::Message msg;
-    if (!mailbox->pop(&msg)) {
-        return false;  // No messages to process
-    }
-
-    return impl_->dispatch_message(this, id, msg);
-}
-
-int LuaServiceManager::process_all_mailboxes() {
-    int processed = 0;
-    // Take a snapshot because process_mailbox may call exit(), which erases
-    // from impl_->services and invalidates iterators.
-    std::vector<std::string> snapshot;
-    {
-        std::shared_lock lock(impl_->registry_mutex);
-        snapshot = impl_->service_order;
-    }
-    for (const auto& service_id : snapshot) {
-        bool exists = false;
-        {
-            std::shared_lock lock(impl_->registry_mutex);
-            exists = impl_->services.contains(service_id);
-        }
-        if (!exists) {
-            continue;
-        }
-        if (process_mailbox(service_id)) {
-            ++processed;
-        }
-    }
-    return processed;
-}
-
-int LuaServiceManager::pump_once() {
-    int events = 0;
-    events += process_all_mailboxes();
-
-    // Drain forked tasks scheduled by shield.fork. Copy them out first so the
-    // task body can itself enqueue new tasks without invalidating iteration.
-    std::vector<Impl::ForkedTask> tasks_to_run;
-    {
-        std::lock_guard<std::mutex> lock(impl_->worker_mutex);
-        tasks_to_run.swap(impl_->pending_tasks);
-    }
-    for (const auto& task : tasks_to_run) {
-        Impl::DispatchScope scope(*impl_, task.service_id, "", false);
-        if (task.raw_fn.valid()) {
-            // Run in a protected call so thrown Lua errors route to on_error.
-            lua_State* L = task.raw_fn.lua_state();
-            task.raw_fn.push(L);
-            int status = lua_pcall(L, 0, 0, 0);
-            if (status != LUA_OK) {
-                std::string err = "fork error";
-                if (lua_type(L, -1) == LUA_TSTRING) {
-                    err = lua_tostring(L, -1);
-                }
-                lua_settop(L, 0);
-                auto& log = shield::log::get_logger("lua");
-                SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
-                                          " error: " + err);
-                invoke_error_hook(task.service_id, "fork", "", err);
-            }
-        } else {
-            try {
-                task.fn();
-            } catch (const std::exception& e) {
-                auto& log = shield::log::get_logger("lua");
-                SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
-                                          " error: " + e.what());
-                invoke_error_hook(task.service_id, "fork", "", e.what());
-            }
-        }
-        {
-            std::lock_guard<std::mutex> lock(impl_->worker_mutex);
-            auto it = impl_->tasks_by_service.find(task.service_id);
-            if (it != impl_->tasks_by_service.end()) {
-                it->second.erase(task.id);
-                if (it->second.empty()) {
-                    impl_->tasks_by_service.erase(it);
-                }
-            }
-        }
-    }
-    events += static_cast<int>(tasks_to_run.size());
-
-    return events;
-}
-
-void LuaServiceManager::start_worker() {
-    if (impl_->worker_running.load()) {
-        return;
-    }
-    impl_->worker_stop_requested.store(false);
-    impl_->worker_thread = std::thread([this]() {
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_INFO(log, "Lua worker thread started");
-        while (!impl_->worker_stop_requested.load()) {
-            try {
-                (void)pump_once();
-            } catch (const std::exception& e) {
-                SHIELD_LOG_ERROR(log,
-                                 std::string("worker pump error: ") + e.what());
-            }
-            std::unique_lock<std::mutex> lock(impl_->worker_mutex);
-            impl_->worker_cv.wait_for(
-                lock, std::chrono::milliseconds(10), [this]() {
-                    return impl_->worker_stop_requested.load() ||
-                           !impl_->pending_tasks.empty();
-                });
-        }
-        SHIELD_LOG_INFO(log, "Lua worker thread stopped");
-    });
-    impl_->worker_running.store(true);
-}
-
-void LuaServiceManager::stop_worker() {
-    if (!impl_->worker_running.load()) {
-        return;
-    }
-    impl_->worker_stop_requested.store(true);
-    {
-        std::lock_guard<std::mutex> lock(impl_->worker_mutex);
-        impl_->pending_tasks.clear();
-    }
-    impl_->worker_cv.notify_all();
-    if (impl_->worker_thread.joinable()) {
-        impl_->worker_thread.join();
-    }
-    impl_->worker_running.store(false);
-}
-
 uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
                                                 std::function<void()> task) {
     return enqueue_forked_task(std::move(service_id), std::move(task),
@@ -1580,9 +1284,13 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
 uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
                                                 std::function<void()> task,
                                                 sol::function raw_fn) {
+    if (service_id.empty()) {
+        return 0;
+    }
+
     const uint64_t id = impl_->next_task_id.fetch_add(1);
     {
-        std::lock_guard<std::mutex> lock(impl_->worker_mutex);
+        std::lock_guard<std::mutex> lock(impl_->task_mutex);
         impl_->pending_tasks.push_back(
             {id, service_id, std::move(task), std::move(raw_fn)});
         impl_->tasks_by_service[service_id].insert(id);
@@ -1592,28 +1300,38 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
     // message until on_init completes (see spawn), so a fork scheduled during
     // on_init runs serially after init — no Lua VM race. The callback itself
     // is looked up by id in pending_tasks, so the sol::function never crosses
-    // the CAF message boundary. This also fixes a production bug: with the
-    // worker no longer started, the pump_once drain path was unreachable.
-    if (!service_id.empty()) {
-        std::shared_lock lock(impl_->registry_mutex);
-        auto it = impl_->service_actors.find(service_id);
-        if (it != impl_->service_actors.end()) {
-            caf::anon_send(it->second, fork_task_atom_v, id);
-            return id;
-        }
+    // the CAF message boundary.
+    std::shared_lock lock(impl_->registry_mutex);
+    auto it = impl_->service_actors.find(service_id);
+    if (it != impl_->service_actors.end()) {
+        caf::anon_send(it->second, fork_task_atom_v, id);
+        return id;
     }
 
-    // No owning actor (fork with empty service_id from the console).
-    // Fall back to immediate execution on the current thread.
-    impl_->run_ready_fork_task(this, id);
-    return id;
+    // Service actor not found: roll back the enqueue.
+    {
+        std::lock_guard<std::mutex> lock(impl_->task_mutex);
+        auto by_service_it = impl_->tasks_by_service.find(service_id);
+        if (by_service_it != impl_->tasks_by_service.end()) {
+            by_service_it->second.erase(id);
+            if (by_service_it->second.empty()) {
+                impl_->tasks_by_service.erase(by_service_it);
+            }
+        }
+        impl_->pending_tasks.erase(
+            std::remove_if(
+                impl_->pending_tasks.begin(), impl_->pending_tasks.end(),
+                [id](const Impl::ForkedTask& t) { return t.id == id; }),
+            impl_->pending_tasks.end());
+    }
+    return 0;
 }
 
 void LuaServiceManager::cancel_forked_tasks_for_service(
     const std::string& service_id) {
     std::unordered_set<uint64_t> ids;
     {
-        std::lock_guard<std::mutex> lock(impl_->worker_mutex);
+        std::lock_guard<std::mutex> lock(impl_->task_mutex);
         auto it = impl_->tasks_by_service.find(service_id);
         if (it == impl_->tasks_by_service.end()) {
             return;
@@ -1632,7 +1350,7 @@ void LuaServiceManager::cancel_forked_tasks_for_service(
 
 size_t LuaServiceManager::pending_task_count(
     const std::string& service_id) const {
-    std::lock_guard<std::mutex> lock(impl_->worker_mutex);
+    std::lock_guard<std::mutex> lock(impl_->task_mutex);
     auto it = impl_->tasks_by_service.find(service_id);
     if (it == impl_->tasks_by_service.end()) {
         return 0;
@@ -1835,7 +1553,7 @@ void LuaServiceManager::invoke_error_hook(const std::string& service_id,
                                method_name);
 
     // Check panic threshold.
-    if (count >= Impl::kDefaultMaxErrorsBeforePanic) {
+    if (count >= kDefaultMaxErrorsBeforePanic) {
         impl_->runtime.invoke_hook(service, "on_panic",
                                    "consecutive errors reached limit",
                                    error_type, method_name);
@@ -1866,22 +1584,6 @@ bool LuaServiceManager::exec_lua(const std::string& service_id,
     return impl_->runtime.exec_lua(service, code, result, error);
 }
 
-void LuaServiceManager::attach_actor_system(caf::actor_system& system) {
-    std::unique_lock lock(impl_->registry_mutex);
-    impl_->actor_system = &system;
-}
-
-bool LuaServiceManager::has_service_actor(const std::string& service_id) const {
-    std::shared_lock lock(impl_->registry_mutex);
-    return impl_->service_actors.find(service_id) !=
-           impl_->service_actors.end();
-}
-
-bool LuaServiceManager::uses_caf_actor_system() const {
-    std::shared_lock lock(impl_->registry_mutex);
-    return impl_->uses_caf_actor_system();
-}
-
 void LuaServiceManager::attach_clock(std::shared_ptr<Clock> clock) {
     if (!clock) {
         return;  // reject null; keep existing clock
@@ -1907,9 +1609,6 @@ uint64_t LuaServiceManager::schedule_actor_timer_once(
     uint64_t id = 0;
     {
         std::unique_lock lock(impl_->registry_mutex);
-        if (!impl_->actor_system) {
-            return 0;
-        }
         auto it = impl_->service_actors.find(service_id);
         if (it == impl_->service_actors.end()) {
             return 0;
@@ -1927,23 +1626,32 @@ uint64_t LuaServiceManager::schedule_actor_timer_once(
             .active = true,
             .driver = caf::actor{}};
     }
-    auto driver = impl_->actor_system->spawn(
-        [svc = service_id, tid = id, target = *service_actor,
-         delay_ms](caf::event_based_actor* self) -> caf::behavior {
-            self->delayed_send(self, std::chrono::milliseconds(delay_ms),
-                               caf::tick_atom_v);
-            return caf::behavior{[=](caf::tick_atom) {
-                caf::anon_send(target, timer_fire_atom_v, tid);
-                self->quit();
-            }};
-        });
-    {
+
+    try {
+        auto driver = impl_->system.spawn(
+            [svc = service_id, tid = id, target = *service_actor,
+             delay_ms](caf::event_based_actor* self) -> caf::behavior {
+                self->delayed_send(self, std::chrono::milliseconds(delay_ms),
+                                   caf::tick_atom_v);
+                return caf::behavior{[=](caf::tick_atom) {
+                    caf::anon_send(target, timer_fire_atom_v, tid);
+                    self->quit();
+                }};
+            });
         std::unique_lock lock(impl_->registry_mutex);
         auto it = impl_->actor_timers.find(id);
         if (it != impl_->actor_timers.end()) {
             it->second.driver = std::move(driver);
             impl_->actor_timers_by_service[service_id].insert(id);
         }
+    } catch (const std::exception& e) {
+        // Clean up the timer state if spawn fails
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->actor_timers.erase(id);
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_ERROR(
+            log, std::string("Failed to spawn timer actor: ") + e.what());
+        return 0;
     }
     return id;
 }
@@ -1955,9 +1663,6 @@ uint64_t LuaServiceManager::schedule_actor_timer_once_fn(
     uint64_t id = 0;
     {
         std::unique_lock lock(impl_->registry_mutex);
-        if (!impl_->actor_system) {
-            return 0;
-        }
         auto it = impl_->service_actors.find(service_id);
         if (it == impl_->service_actors.end()) {
             return 0;
@@ -1975,23 +1680,32 @@ uint64_t LuaServiceManager::schedule_actor_timer_once_fn(
             .active = true,
             .driver = caf::actor{}};
     }
-    auto driver = impl_->actor_system->spawn(
-        [svc = service_id, tid = id, target = *service_actor,
-         delay_ms](caf::event_based_actor* self) -> caf::behavior {
-            self->delayed_send(self, std::chrono::milliseconds(delay_ms),
-                               caf::tick_atom_v);
-            return caf::behavior{[=](caf::tick_atom) {
-                caf::anon_send(target, timer_fire_atom_v, tid);
-                self->quit();
-            }};
-        });
-    {
+
+    try {
+        auto driver = impl_->system.spawn(
+            [svc = service_id, tid = id, target = *service_actor,
+             delay_ms](caf::event_based_actor* self) -> caf::behavior {
+                self->delayed_send(self, std::chrono::milliseconds(delay_ms),
+                                   caf::tick_atom_v);
+                return caf::behavior{[=](caf::tick_atom) {
+                    caf::anon_send(target, timer_fire_atom_v, tid);
+                    self->quit();
+                }};
+            });
         std::unique_lock lock(impl_->registry_mutex);
         auto it = impl_->actor_timers.find(id);
         if (it != impl_->actor_timers.end()) {
             it->second.driver = std::move(driver);
             impl_->actor_timers_by_service[service_id].insert(id);
         }
+    } catch (const std::exception& e) {
+        // Clean up the timer state if spawn fails
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->actor_timers.erase(id);
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_ERROR(
+            log, std::string("Failed to spawn timer actor: ") + e.what());
+        return 0;
     }
     return id;
 }
@@ -2006,9 +1720,6 @@ uint64_t LuaServiceManager::schedule_actor_timer_fixed_delay(
     uint64_t id = 0;
     {
         std::unique_lock lock(impl_->registry_mutex);
-        if (!impl_->actor_system) {
-            return 0;
-        }
         auto it = impl_->service_actors.find(service_id);
         if (it == impl_->service_actors.end()) {
             return 0;
@@ -2026,24 +1737,34 @@ uint64_t LuaServiceManager::schedule_actor_timer_fixed_delay(
             .active = true,
             .driver = caf::actor{}};
     }
-    auto driver = impl_->actor_system->spawn(
-        [svc = service_id, tid = id, target = *service_actor,
-         interval_ms](caf::event_based_actor* self) -> caf::behavior {
-            self->delayed_send(self, std::chrono::milliseconds(interval_ms),
-                               caf::tick_atom_v);
-            return caf::behavior{[=](caf::tick_atom) {
-                caf::anon_send(target, timer_fire_atom_v, tid);
+
+    try {
+        auto driver = impl_->system.spawn(
+            [svc = service_id, tid = id, target = *service_actor,
+             interval_ms](caf::event_based_actor* self) -> caf::behavior {
                 self->delayed_send(self, std::chrono::milliseconds(interval_ms),
                                    caf::tick_atom_v);
-            }};
-        });
-    {
+                return caf::behavior{[=](caf::tick_atom) {
+                    caf::anon_send(target, timer_fire_atom_v, tid);
+                    self->delayed_send(self,
+                                       std::chrono::milliseconds(interval_ms),
+                                       caf::tick_atom_v);
+                }};
+            });
         std::unique_lock lock(impl_->registry_mutex);
         auto it = impl_->actor_timers.find(id);
         if (it != impl_->actor_timers.end()) {
             it->second.driver = std::move(driver);
             impl_->actor_timers_by_service[service_id].insert(id);
         }
+    } catch (const std::exception& e) {
+        // Clean up the timer state if spawn fails
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->actor_timers.erase(id);
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_ERROR(
+            log, std::string("Failed to spawn timer actor: ") + e.what());
+        return 0;
     }
     return id;
 }
@@ -2082,9 +1803,6 @@ uint64_t LuaServiceManager::schedule_actor_call_timeout(
     std::shared_ptr<caf::actor> service_actor;
     {
         std::unique_lock lock(impl_->registry_mutex);
-        if (!impl_->actor_system) {
-            return session;
-        }
         auto it = impl_->service_actors.find(service_id);
         if (it == impl_->service_actors.end()) {
             return session;
@@ -2092,18 +1810,27 @@ uint64_t LuaServiceManager::schedule_actor_call_timeout(
         service_actor = std::make_shared<caf::actor>(it->second);
     }
 
-    auto driver = impl_->actor_system->spawn(
-        [manager = this, session, target = *service_actor,
-         timeout_ms](caf::event_based_actor* self) -> caf::behavior {
-            self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
-                               caf::tick_atom_v);
-            return caf::behavior{[=](caf::tick_atom) {
-                caf::anon_send(target, call_timeout_atom_v, session);
-                self->quit();
-            }};
-        });
-    std::unique_lock lock(impl_->registry_mutex);
-    impl_->actor_call_timeouts[session] = std::move(driver);
+    try {
+        auto driver = impl_->system.spawn(
+            [manager = this, session, target = *service_actor,
+             timeout_ms](caf::event_based_actor* self) -> caf::behavior {
+                self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
+                                   caf::tick_atom_v);
+                return caf::behavior{[=](caf::tick_atom) {
+                    caf::anon_send(target, call_timeout_atom_v, session);
+                    self->quit();
+                }};
+            });
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->actor_call_timeouts[session] = std::move(driver);
+    } catch (const std::exception& e) {
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_ERROR(
+            log,
+            std::string("Failed to spawn call timeout actor: ") + e.what());
+        // Return session anyway - timeout just won't fire, but call can still
+        // complete
+    }
     return session;
 }
 

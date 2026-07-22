@@ -139,7 +139,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 实现配置 schema 校验和默认值合并。
 - [x] 实现结构化错误对象和加载阶段错误报告。
 - [x] 实现 Lua introspection：`packages`、`instances`、`instance`、`binding`。
-- [x] 迁移 DATABASE / CACHE / QUEUE / LEADERBOARD / AUTH / METRIC / HEALTH / MATCHMAKING 等 provider 到 interface-based v1（含 sqlite/mysql/postgresql/mongodb/redis 系/queue/leaderboard/auth.jwt/metrics.prometheus/health.http/matchmaking.elo）。
+- [x] 迁移 DATABASE / CACHE / QUEUE / LEADERBOARD / METRIC / HEALTH / MATCHMAKING 等 provider 到 interface-based v1（含 sqlite/mysql/postgresql/mongodb/redis 系/queue/leaderboard/metrics.prometheus/health.http/matchmaking.elo）。认证/JWT 不作为 Shield 官方插件发布，保留在业务层实现。
 - [x] 决策：v1 不支持热加载、沙箱、请求级生命周期；这些方向不进入 v1，未来如需引入须重新设计 ABI 版本。
 
 ## Later

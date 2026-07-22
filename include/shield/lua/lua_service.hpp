@@ -26,7 +26,6 @@ namespace shield::lua {
 
 class LuaRuntime;
 class ServiceContext;
-class Mailbox;
 
 /// @brief Result of spawning a Lua service
 struct SpawnResult {
@@ -55,7 +54,7 @@ struct CallResult {
 /// Handles loading and spawning Lua services
 class LuaServiceManager {
 public:
-    explicit LuaServiceManager(LuaRuntime& runtime);
+    explicit LuaServiceManager(LuaRuntime& runtime, caf::actor_system& system);
     ~LuaServiceManager();
 
     // Spawn a service from a Lua module
@@ -118,34 +117,11 @@ public:
     // List registered services
     std::vector<std::string> list_services() const;
 
-    // Process next message from service's mailbox
-    /// @param service_id Service to process
-    /// @return true if a message was processed, false if mailbox was empty
-    bool process_mailbox(std::string_view service_id);
-
-    // Process one message from all services (round-robin)
-    /// @return Number of messages processed
-    int process_all_mailboxes();
-
-    // Execute a single runtime pump: drain mailboxes, fire expired timers,
-    // and timeout expired coroutines. Must be called from the worker thread
-    // or from a test harness that owns the runtime.
-    /// @return Number of events processed (messages + timers + timeouts)
-    int pump_once();
-
-    // Start the background worker thread that drives mailboxes, timers, and
-    // coroutine timeouts. After this call, all Lua code (except shield.call
-    // reentry from inside a handler on the worker thread) runs on the worker.
-    void start_worker();
-
-    // Stop the background worker thread. Joins the thread and clears pending
-    // forked tasks. Safe to call multiple times; safe to call without start.
-    void stop_worker();
-
-    // Enqueue a forked task to be executed by the worker thread. The task
-    // captures the owning service ID so it can be cancelled on service exit.
+    // Enqueue a forked task to be executed by the owning service actor. The
+    // task captures the owning service ID so it can be cancelled on service
+    // exit.
     /// @param service_id Owner service ID
-    /// @param task Function to execute on the worker thread
+    /// @param task Function to execute on the service actor
     /// @return Task ID for cancellation/tracking
     uint64_t enqueue_forked_task(std::string service_id,
                                  std::function<void()> task);
@@ -222,31 +198,15 @@ public:
                   nlohmann::json* result = nullptr,
                   std::string* error = nullptr);
 
-    // Attach a CAF actor system so spawned Lua services are also given a CAF
-    // actor handle. Optional: when not attached, behavior is unchanged. This
-    // is the entry point for the CAF-is-the-only-actor-runtime convergence;
-    // the actor currently acts as a lifecycle-owned placeholder and does not
-    // yet drive Lua dispatch.
-    void attach_actor_system(caf::actor_system& system);
-
     // Attach a business-time clock so Lua code reads wall-clock UTC via
     // shield.now() / os.time() / os.date() (no-arg). When not attached the
     // default SystemClock is used. Tests inject MockClock to control time.
-    // Mirrors the attach_actor_system injection pattern.
     void attach_clock(std::shared_ptr<Clock> clock);
 
     // Read the current business-time clock (wall-clock UTC).
     // Default SystemClock when no clock has been attached.
     int64_t clock_now_ms() const;
     int64_t clock_now_seconds() const;
-
-    // Test-only introspection: returns true when a CAF actor handle is
-    // registered for the given service id.
-    bool has_service_actor(const std::string& service_id) const;
-
-    // Returns true when a CAF actor system is attached and service actors are
-    // being used as the production message entry point.
-    bool uses_caf_actor_system() const;
 
     // CAF-backed timer helpers used by the Lua API when a service actor exists.
     uint64_t schedule_actor_timer_once(int64_t delay_ms, sol::function callback,

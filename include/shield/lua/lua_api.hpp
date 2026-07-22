@@ -26,6 +26,20 @@ void register_shield_api(LuaRuntime& runtime);
 /// plain tables.
 sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value);
 
+/// @brief Convert Lua values to JSON.
+/// This is the primary conversion function with error handling via return
+/// value.
+/// @param value The Lua object to convert
+/// @param out Output parameter for the resulting JSON value (set to nullptr on
+/// nil)
+/// @return true if conversion succeeded, false if unsupported type
+bool lua_to_json(const sol::object& value, nlohmann::json* out);
+
+/// @brief Convenience wrapper for lua_to_json that returns the value directly.
+/// Returns nullptr for nil values and "<unsupported>" string for unsupported
+/// types. Prefer the output-parameter version for better error handling.
+nlohmann::json lua_to_json(const sol::object& value);
+
 /// @brief Build a JSON marker object that will become a Lua SessionHandle
 /// userdata when passed through json_to_lua().
 nlohmann::json make_session_handle_json(

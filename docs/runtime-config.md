@@ -280,7 +280,7 @@ actors:
 
 ## Plugins 配置
 
-后端能力（SQL、文档、缓存、队列、排行榜、认证、监控等）统一走插件系统 v1。最小 runtime 配置层只识别 `plugins` 子树并把它交给 `PluginHost`；各实例的 `config` 由对应插件 `manifest.yaml` 的 `config_schema` 校验。
+后端能力（SQL、文档、缓存、队列、排行榜、监控等）统一走插件系统 v1。认证/JWT 属于业务层策略，不作为 Shield 官方插件发布。最小 runtime 配置层只识别 `plugins` 子树并把它交给 `PluginHost`；各实例的 `config` 由对应插件 `manifest.yaml` 的 `config_schema` 校验。
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |

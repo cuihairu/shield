@@ -24,117 +24,6 @@
 namespace shield::lua {
 
 // ============================================================================
-// Mailbox Implementation
-// ============================================================================
-
-struct Mailbox::Impl {
-    std::deque<Message> queues[4];  // One queue per priority (Urgent=0, High=1,
-                                    // Normal=2, Low=3)
-    size_t max_size;
-    std::atomic<size_t> dropped_count{0};
-    mutable std::mutex mutex;
-
-    explicit Impl(size_t max_sz) : max_size(max_sz) {}
-
-    size_t total_size() const {
-        size_t total = 0;
-        for (const auto& q : queues) {
-            total += q.size();
-        }
-        return total;
-    }
-
-    bool is_full() const { return total_size() >= max_size; }
-
-    void push_oldest(const Message& msg) {
-        queues[static_cast<int>(msg.priority)].push_back(msg);
-    }
-
-    void push_newest(const Message& msg) {
-        queues[static_cast<int>(msg.priority)].push_front(msg);
-    }
-
-    bool pop_next(Message* out) {
-        // Check queues in priority order (Urgent -> High -> Normal -> Low)
-        for (auto& q : queues) {
-            if (!q.empty()) {
-                *out = std::move(q.front());
-                q.pop_front();
-                return true;
-            }
-        }
-        return false;
-    }
-
-    bool drop_oldest() {
-        for (int i = 3; i >= 0; --i) {  // Start from lowest priority
-            if (!queues[i].empty()) {
-                queues[i].pop_back();
-                return true;
-            }
-        }
-        return false;
-    }
-};
-
-Mailbox::Mailbox(size_t max_size) : impl_(std::make_unique<Impl>(max_size)) {}
-
-Mailbox::~Mailbox() = default;
-
-bool Mailbox::push(const Message& msg, Backpressure strategy) {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-
-    if (!impl_->is_full()) {
-        impl_->push_oldest(msg);
-        return true;
-    }
-
-    // Handle backpressure
-    switch (strategy) {
-        case Backpressure::DropNewest:
-            impl_->dropped_count.fetch_add(1);
-            return false;
-
-        case Backpressure::DropOldest:
-            impl_->drop_oldest();
-            impl_->push_oldest(msg);
-            return true;
-
-        case Backpressure::Block:
-            // For Phase 1, we still drop; full blocking requires coroutine
-            // support
-            impl_->dropped_count.fetch_add(1);
-            return false;
-    }
-
-    return false;
-}
-
-bool Mailbox::pop(Message* out) {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->pop_next(out);
-}
-
-size_t Mailbox::size() const {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->total_size();
-}
-
-bool Mailbox::full() const {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->is_full();
-}
-
-void Mailbox::clear() {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    for (auto& q : impl_->queues) {
-        q.clear();
-    }
-}
-
-size_t Mailbox::dropped_count() const { return impl_->dropped_count.load(); }
-
-// ============================================================================
 // ServiceHandle Implementation
 // ============================================================================
 
@@ -263,19 +152,23 @@ struct LuaRuntime::Impl {
             return;
         }
 
-        // Find the oldest entry (LRU)
-        auto oldest_it = script_cache.begin();
-        int64_t oldest_time = oldest_it->second.last_used;
+        // Calculate how many entries to remove (at least 1, or 10% of overage)
+        const size_t overage = script_cache.size() - cache_config.max_size;
+        size_t to_remove = std::max(size_t(1), overage / 10);
 
-        for (auto it = script_cache.begin(); it != script_cache.end(); ++it) {
-            if (it->second.last_used < oldest_time) {
-                oldest_it = it;
-                oldest_time = it->second.last_used;
-            }
+        // Collect all entries with their last_used times for sorting
+        std::vector<std::pair<int64_t, std::string>> entries;
+        entries.reserve(script_cache.size());
+        for (const auto& [path, entry] : script_cache) {
+            entries.emplace_back(entry.last_used, path);
         }
 
-        if (oldest_it != script_cache.end()) {
-            script_cache.erase(oldest_it);
+        // Sort by last_used time (oldest first)
+        std::sort(entries.begin(), entries.end());
+
+        // Remove the oldest entries
+        for (size_t i = 0; i < to_remove && i < entries.size(); ++i) {
+            script_cache.erase(entries[i].second);
         }
     }
 };
@@ -387,6 +280,15 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
     }
     *out = std::move(object);
     return true;
+}
+
+// Convenience wrapper that returns the JSON value directly.
+nlohmann::json lua_to_json(const sol::object& value) {
+    nlohmann::json result;
+    if (!lua_to_json(value, &result)) {
+        return "<unsupported>";
+    }
+    return result;
 }
 
 bool LuaRuntime::load_service_module(std::shared_ptr<LuaVM> vm,
@@ -966,10 +868,13 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
             return true;
         }
         out.push_back(static_cast<uint8_t>(TypeTag::Number));
-        double val = d;
-        // Write double in little-endian
-        const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&val);
-        out.insert(out.end(), bytes, bytes + sizeof(double));
+        // Write double in little-endian using explicit bit manipulation
+        uint64_t bits;
+        std::memcpy(&bits, &d, sizeof(double));
+        for (int i = 0; i < 8; ++i) {
+            out.push_back(static_cast<uint8_t>(bits & 0xFF));
+            bits >>= 8;
+        }
         return true;
     }
 
@@ -1159,8 +1064,13 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua,
                 return sol::make_object(lua, sol::nil);
             }
             {
+                // Read double in little-endian using explicit bit manipulation
+                uint64_t bits = 0;
+                for (int i = 0; i < 8; ++i) {
+                    bits |= static_cast<uint64_t>(data[1 + i]) << (i * 8);
+                }
                 double val;
-                std::memcpy(&val, data + 1, sizeof(double));
+                std::memcpy(&val, &bits, sizeof(double));
                 out_consumed = 9;
                 return sol::make_object(lua, val);
             }

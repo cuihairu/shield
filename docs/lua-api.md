@@ -459,7 +459,7 @@ API：
 
 ## Plugin-provided APIs
 
-数据库、缓存、消息队列、认证、监控、健康检查、匹配等业务能力都由插件提供。插件的 Lua 绑定跟随插件目录，通过 `register_lua` 钩子注册到 `shield.<namespace>`。host 端 `src/lua/lua_api.cpp` 不感知任何具体插件 API。
+数据库、缓存、消息队列、监控、健康检查、匹配等后端能力由插件提供。认证/JWT 属于业务层策略，不作为 Shield 官方插件发布。插件的 Lua 绑定跟随插件目录，通过 `register_lua` 钩子注册到 `shield.<namespace>`。host 端 `src/lua/lua_api.cpp` 不感知任何具体插件 API。
 
 ### 调用形态
 
@@ -597,7 +597,6 @@ local ok, top = lb:top_n("arena_1v1", 10)
 
 | Namespace | 说明 | 当前状态 |
 | --- | --- | --- |
-| `shield.auth.jwt` | JWT 签发 / 校验 / 刷新 | 规划中，当前 `register_lua` 未实现 |
 | `shield.metrics.prometheus` | counter / gauge / histogram | 规划中，当前 `register_lua` 未实现 |
 | `shield.health.http` | 注册健康检查、查询状态 | 规划中，当前 `register_lua` 未实现 |
 | `shield.matchmaking.elo` | 匹配队列、ELO 评分 | 规划中，当前 `register_lua` 未实现 |

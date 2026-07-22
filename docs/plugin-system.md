@@ -63,7 +63,7 @@ host 的职责仅限于解析这些声明、注入依赖、调度生命周期。
 | 多实例是常态 | `db.main + db.audit + db.shard0..N + db.log`、`cache.session + cache.rank + cache.pubsub`；starter 默认实例根本不够用，最终还是 escape hatch 写 explicit |
 | 生产事故代价极高 | 玩家在线=流失+口碑+收入；事故定位每分钟都在烧钱；必须"一眼看配置就知道拓扑"，不允许 starter → override → 展开三层反查 |
 | 运维团队规模不大 | 不像互联网大厂有专职 SRE；主程/技术总监常兼任运维；配置可读性 > 简洁性 |
-| 复杂依赖需精确控制 | leaderboard 依赖 cache + database；matchmaking 依赖 leaderboard + database + cache；auth 依赖 cache（黑名单）；必须精确指定"哪个实例连哪个实例" |
+| 复杂依赖需精确控制 | leaderboard 依赖 cache + database；matchmaking 依赖 leaderboard + database + cache；protocol codec 依赖 descriptor 资产；必须精确指定"哪个实例连哪个实例" |
 | 环境差异大 | 开发用 sqlite 内存库，生产用 MySQL cluster；业务代码不变，差异全在配置层 |
 | 运营活动 + 紧急 hotfix 频繁 | 配置变更要快速、可逆、可审计；隐式行为阻断紧急回滚 |
 
@@ -467,7 +467,6 @@ plugins:
 | `shield.cache.v1` | cache provider，Redis 只是实现之一。 |
 | `shield.queue.v1` | queue/pubsub provider。 |
 | `shield.leaderboard.v1` | leaderboard provider。 |
-| `shield.auth.v1` | authentication provider。 |
 | `shield.metrics.v1` | metrics exporter。 |
 | `shield.health.v1` | health contributor。 |
 | `shield.protocol.codec.v1` | 网络协议 `BodyCodec` provider，例如 protobuf、sproto、msgpack、xmldef-native。 |
@@ -739,7 +738,6 @@ int my_register_lua(shield_plugin_instance_v1* self,
 | `cache.redis` | `shield.cache.redis` | get / set / del / incr / hget / hset |
 | `queue.redis` | `shield.queue.redis` | publish / subscribe / unsubscribe |
 | `leaderboard.redis` | `shield.leaderboard.redis` | set_entry / get_rank / top_n / remove_entry |
-| `auth.jwt` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 | `metrics.prometheus` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 | `health.http` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 | `matchmaking.elo` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |

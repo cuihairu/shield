@@ -186,7 +186,7 @@
 - 不把 cosocket 风格 API 放进当前对业务用户的默认心智模型。
 - 当前推荐心智模型保持三件事：客户端入站走 gateway / `SessionHandle`，服务间走 `shield.send/call`，对外 HTTP 走 `shield.http`。
 - 若未来推进 primitives，也应作为高级能力或后置阶段能力，而不是当前默认推荐路径。
-- `auth.jwt` 不是基础组件层中心能力；若长期保留，更合理的定位是基于基础原语的上层 provider。
+- JWT/Auth 不是基础组件层中心能力，也不作为 Shield 官方插件发布；应由业务层基于基础原语或外部服务实现。
 
 ## Open Decisions
 

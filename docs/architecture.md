@@ -141,7 +141,7 @@ CAF
 
 - 纯原语层：`buffer`、`encoding`、`crypto`、`codec core`、`tls common`
 - Lua 运行时表面：`shield.buffer`、`shield.encoding`、`shield.crypto`、`shield.socket`、`shield.stream`、`shield.http`
-- 应用层或插件层：`auth.jwt`、OAuth、Redis/MySQL/MongoDB 客户端、业务 RPC client
+- 应用层：JWT、OAuth、平台登录、业务 RPC client
 
 核心原则：
 
@@ -458,7 +458,7 @@ Egress:  server RPC helper -> encode body -> ClientEgress -> Gateway -> header.r
 - PlayerSession、远程 PlayerRef resolve 与 Entity-like 玩家 runtime
 - 旧 `shield.db.*` / `shield.redis.*` 全局数据 API，包括冒号式 `shield.db:query(...)` / `shield.redis:get(...)`
 
-插件系统 v1 的 `shield.plugin.*` 是新的扩展机制入口，提供 package/instance/binding introspection 与 plugin manifest 驱动的能力注册（数据库/缓存/队列/认证等）。它与上方"旧 Lua 插件执行模型（v0）"是两套独立设计：v0 已永久删除，v1 的权威契约见 [插件系统](plugin-system.md)。
+插件系统 v1 的 `shield.plugin.*` 是新的扩展机制入口，提供 package/instance/binding introspection 与 plugin manifest 驱动的能力注册（数据库/缓存/队列/监控等）。认证/JWT 属于业务层策略，不作为 Shield 官方插件发布。它与上方"旧 Lua 插件执行模型（v0）"是两套独立设计：v0 已永久删除，v1 的权威契约见 [插件系统](plugin-system.md)。
 
 这里删除的是跨模块、跨 service、跨 VM 的 lifecycle event bus，不禁止两类受限机制：runtime 直接调用的 service hook（如 `on_init/on_shutdown/on_exit`），以及单个 Lua VM 内部的本地 `shield.event` observer 工具。后者不能用于 application ready、shutdown 或 service lifecycle 编排。
 

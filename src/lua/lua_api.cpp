@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "shield/log/logger.hpp"
+#include "shield/lua/lua_constants.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/http_client.hpp"
@@ -28,11 +29,6 @@
 
 namespace shield::lua {
 
-// Resource limits per service.
-static constexpr size_t kTimerLimit = 10000;
-static constexpr size_t kForkLimit = 1000;
-
-nlohmann::json lua_to_json(const sol::object& value);
 sol::variadic_results call_with_timeout(sol::this_state state,
                                         LuaServiceManager* manager,
                                         LuaRuntime* runtime, int timeout_ms,
@@ -71,6 +67,21 @@ std::mutex& session_handle_registry_mutex() {
     return mutex;
 }
 
+// Counter for periodic cleanup of expired session handles
+static std::atomic<uint64_t> session_resolve_count{0};
+
+// Remove all expired weak_ptr entries from the registry
+void cleanup_expired_session_handles() {
+    auto& registry = session_handle_registry();
+    for (auto it = registry.begin(); it != registry.end();) {
+        if (it->second.expired()) {
+            it = registry.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void remember_session_handle(
     const std::shared_ptr<shield::net::Session>& session) {
     if (!session) {
@@ -85,6 +96,12 @@ std::shared_ptr<shield::net::Session> resolve_session_handle(
     std::string_view session_id) {
     std::lock_guard<std::mutex> lock(session_handle_registry_mutex());
     auto& registry = session_handle_registry();
+
+    // Periodic cleanup of expired entries
+    if (++session_resolve_count % kSessionCleanupInterval == 0) {
+        cleanup_expired_session_handles();
+    }
+
     const auto it = registry.find(std::string(session_id));
     if (it == registry.end()) {
         return nullptr;
@@ -196,35 +213,6 @@ nlohmann::json lua_table_to_json(const sol::table& table) {
     return object;
 }
 
-nlohmann::json lua_to_json(const sol::object& value) {
-    if (!value.valid() || value == sol::nil) {
-        return nullptr;
-    }
-    if (value.is<bool>()) {
-        return value.as<bool>();
-    }
-    if (value.is<double>()) {
-        // sol2's is<int64_t>() accepts any Lua number when
-        // SOL_NUMBER_PRECISION_CHECKS is off (the default), so checking it
-        // first would let as<int64_t>() truncate floats (e.g. 3.14 -> 3).
-        // Read as double, then only round-trip through int64_t when the
-        // value is a whole number so the JSON keeps its original type.
-        const double d = value.as<double>();
-        const auto as_int = static_cast<std::int64_t>(d);
-        if (static_cast<double>(as_int) == d) {
-            return as_int;
-        }
-        return d;
-    }
-    if (value.is<std::string>()) {
-        return value.as<std::string>();
-    }
-    if (value.is<sol::table>()) {
-        return lua_table_to_json(value.as<sol::table>());
-    }
-    return "<unsupported>";
-}
-
 nlohmann::json variadic_to_json_array(sol::variadic_args args) {
     nlohmann::json values = nlohmann::json::array();
     for (const auto& arg : args) {
@@ -272,13 +260,6 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                   sol::optional<sol::table> opts) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
-            if (!manager) {
-                results.push_back(sol::make_object(lua, sol::nil));
-                results.push_back(
-                    make_error(state, "runtime_unavailable",
-                               "Lua service manager is not available"));
-                return results;
-            }
 
             nlohmann::json options =
                 opts ? lua_table_to_json(*opts) : nlohmann::json::object();
@@ -309,9 +290,7 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
         });
 
     shield.set_function("exit", [manager](sol::optional<std::string> reason) {
-        if (manager) {
-            manager->request_current_exit(reason.value_or("normal"));
-        }
+        manager->request_current_exit(reason.value_or("normal"));
     });
 
     shield.set_function(
@@ -710,33 +689,16 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
 
     shield.set_function(
         "timer_once",
-        [manager, runtime](int delay_ms,
-                           sol::function callback) -> sol::variadic_results {
+        [manager](int delay_ms,
+                  sol::function callback) -> sol::variadic_results {
             sol::variadic_results results;
             sol::state_view lua(callback.lua_state());
 
-            if (!runtime) {
-                // Fallback to thread-based implementation
-                static std::atomic<uint64_t> timer_id{1};
-                const uint64_t id = timer_id.fetch_add(1);
-                std::thread([delay_ms, callback]() {
-                    std::this_thread::sleep_for(
-                        std::chrono::milliseconds(delay_ms));
-                    callback();
-                }).detach();
-                results.push_back(sol::make_object(lua, id));
-                return results;
-            }
-
             // Get current service ID
-            std::string service_id;
-            if (manager) {
-                service_id = manager->current_service_id();
-            }
+            const std::string service_id = manager->current_service_id();
 
             // Check timer limit.
-            const auto timer_count =
-                manager ? manager->active_actor_timer_count() : 0;
+            const auto timer_count = manager->active_actor_timer_count();
             if (timer_count >= kTimerLimit) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 sol::this_state ts(callback.lua_state());
@@ -745,45 +707,26 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
 
-            const uint64_t id = manager && !service_id.empty()
-                                    ? manager->schedule_actor_timer_once(
-                                          delay_ms, callback, service_id)
-                                    : 0;
+            const uint64_t id = service_id.empty()
+                                    ? 0
+                                    : manager->schedule_actor_timer_once(
+                                          delay_ms, callback, service_id);
             results.push_back(sol::make_object(lua, id));
             return results;
         });
 
     shield.set_function(
         "timer",
-        [manager, runtime](int interval_ms,
-                           sol::function callback) -> sol::variadic_results {
+        [manager](int interval_ms,
+                  sol::function callback) -> sol::variadic_results {
             sol::variadic_results results;
             sol::state_view lua(callback.lua_state());
 
-            if (!runtime) {
-                // Fallback to thread-based implementation
-                static std::atomic<uint64_t> timer_id{1};
-                const uint64_t id = timer_id.fetch_add(1);
-                std::thread([interval_ms, callback]() {
-                    while (true) {
-                        std::this_thread::sleep_for(
-                            std::chrono::milliseconds(interval_ms));
-                        callback();
-                    }
-                }).detach();
-                results.push_back(sol::make_object(lua, id));
-                return results;
-            }
-
             // Get current service ID
-            std::string service_id;
-            if (manager) {
-                service_id = manager->current_service_id();
-            }
+            const std::string service_id = manager->current_service_id();
 
             // Check timer limit.
-            const auto timer_count =
-                manager ? manager->active_actor_timer_count() : 0;
+            const auto timer_count = manager->active_actor_timer_count();
             if (timer_count >= kTimerLimit) {
                 results.push_back(sol::make_object(lua, sol::nil));
                 sol::this_state ts(callback.lua_state());
@@ -792,30 +735,21 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
 
-            const uint64_t id = manager && !service_id.empty()
-                                    ? manager->schedule_actor_timer_fixed_delay(
-                                          interval_ms, callback, service_id)
-                                    : 0;
+            const uint64_t id = service_id.empty()
+                                    ? 0
+                                    : manager->schedule_actor_timer_fixed_delay(
+                                          interval_ms, callback, service_id);
             results.push_back(sol::make_object(lua, id));
             return results;
         });
 
     shield.set_function(
         "cancel_timer",
-        [manager, runtime](sol::this_state state,
-                           uint64_t id) -> sol::variadic_results {
+        [manager](sol::this_state state, uint64_t id) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
 
-            if (!runtime) {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error(state, "runtime_unavailable",
-                                             "Timer manager is not available"));
-                return results;
-            }
-
-            const bool cancelled =
-                manager ? manager->cancel_actor_timer(id) : false;
+            const bool cancelled = manager->cancel_actor_timer(id);
             results.push_back(sol::make_object(lua, cancelled));
             if (!cancelled) {
                 results.push_back(
@@ -832,11 +766,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
     // _resume_after anchors the running coroutine against GC and arms the
     // timer; coroutine.yield suspends until the timer fires and resumes us.
     shield.set_function(
-        "_resume_after",
-        [manager, runtime](sol::this_state state, int delay_ms) {
-            if (!runtime) {
-                return;
-            }
+        "_resume_after", [manager](sol::this_state state, int delay_ms) {
             if (delay_ms < 0) {
                 delay_ms = 0;
             }
@@ -844,10 +774,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             // Anchor the thread so it survives GC while suspended.
             lua_pushthread(co);
             const int ref = luaL_ref(co, LUA_REGISTRYINDEX);
-            std::string service_id;
-            if (manager) {
-                service_id = manager->current_service_id();
-            }
+            const std::string service_id = manager->current_service_id();
             auto resume_fn = [co, ref, manager]() {
                 int nres = 0;
                 const int status = lua_resume(co, nullptr, 0, &nres);
@@ -861,7 +788,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 // If this coroutine was servicing a call request that
                 // yielded (e.g. the callee slept), route the response now
                 // that it has completed. No-op for plain handlers.
-                if (status == LUA_OK && manager) {
+                if (status == LUA_OK) {
                     nlohmann::json returns = nlohmann::json::array();
                     for (int i = 0; i < nres; ++i) {
                         sol::stack_object so(sol::state_view(co), i + 1);
@@ -872,7 +799,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                 // LUA_OK (completed) or an error: release the anchor.
                 luaL_unref(co, LUA_REGISTRYINDEX, ref);
             };
-            if (manager && !service_id.empty()) {
+            if (!service_id.empty()) {
                 (void)manager->schedule_actor_timer_once_fn(
                     delay_ms, std::move(resume_fn), service_id);
             }
@@ -913,10 +840,6 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
                   sol::function fn) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
-            if (!manager) {
-                results.push_back(sol::make_object(lua, sol::nil));
-                return results;
-            }
             const std::string service_id = manager->current_service_id();
 
             // Check fork limit.
@@ -928,8 +851,7 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
             // Capture the Lua function with its owning state_view. Execution
-            // happens on the worker thread; since the worker is the only thread
-            // touching Lua VMs once running, this is race-free.
+            // is dispatched to the owning service actor via fork_task_atom.
             uint64_t task_id = manager->enqueue_forked_task(
                 service_id,
                 [fn]() {

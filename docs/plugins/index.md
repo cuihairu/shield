@@ -33,7 +33,6 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 
 | 包 ID | 接口 | 说明 |
 |-------|------|------|
-| [auth.jwt](/plugins/auth-jwt) | `shield.auth.v1` | HS256 JWT 认证 |
 | [metrics.prometheus](/plugins/metrics-prometheus) | `shield.metrics.v1` | Prometheus 文本格式指标导出 |
 | [health.http](/plugins/health-http) | `shield.health.v1` | Kubernetes 兼容的健康检查端点 |
 | [matchmaking.elo](/plugins/matchmaking-elo) | `shield.matchmaking.v1` | ELO 匹配算法 |
