@@ -278,6 +278,8 @@ BOOST_AUTO_TEST_CASE(SyncCallToNonexistentService) {
 
 // Step 3: sync_call to service without actor falls back to direct call.
 BOOST_AUTO_TEST_CASE(SyncCallFallbackWithoutActor) {
+    caf::actor_system_config caf_cfg;
+    caf::actor_system system(caf_cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
     // No attach_actor_system — no CAF actors.

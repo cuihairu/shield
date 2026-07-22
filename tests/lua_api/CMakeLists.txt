@@ -17,6 +17,8 @@ function(shield_lua_api_test name)
             shield_core
             Boost::unit_test_framework
             Boost::headers
+            CAF::core
+            CAF::io
     )
     target_include_directories(${name}
         PRIVATE
@@ -46,4 +48,3 @@ shield_lua_api_test(test_lua_api_config)
 shield_lua_api_test(test_lua_api_gateway)
 shield_lua_api_test(test_lua_api_caf_bridge)
 shield_lua_api_test(test_lua_api_clock)
-target_link_libraries(test_lua_api_caf_bridge PRIVATE CAF::core CAF::io)

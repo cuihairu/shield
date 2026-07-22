@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "shield/caf_initializer.hpp"
 #include "shield/config/config.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -60,12 +61,17 @@ nlohmann::json read_default(LuaServiceManager& manager,
 }
 }  // namespace
 
+struct CafInitFixture {
+    CafInitFixture() { initialize_caf_types(); }
+};
+BOOST_GLOBAL_FIXTURE(CafInitFixture);
+
 BOOST_AUTO_TEST_SUITE(Lapi010ConfigApi)
 
 BOOST_AUTO_TEST_CASE(LAPI_010_01_ParsesTypedValues) {
-    caf::actor_system_config cfg;
+    caf::actor_system_config caf_cfg;
 
-    caf::actor_system system(cfg);
+    caf::actor_system system(caf_cfg);
 
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
@@ -124,9 +130,9 @@ BOOST_AUTO_TEST_CASE(LAPI_010_02_MissingKeyReturnsDefaultOrNil) {
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_010_03_ExplicitValueShadowsDefault) {
-    caf::actor_system_config cfg;
+    caf::actor_system_config caf_cfg;
 
-    caf::actor_system system(cfg);
+    caf::actor_system system(caf_cfg);
 
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);

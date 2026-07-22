@@ -48,6 +48,8 @@ BOOST_AUTO_TEST_SUITE(LifecycleTests)
 BOOST_AUTO_TEST_CASE(LAPI_001_01_ValidModuleTable) {
     // Test that a service can be spawned from a valid module that returns a
     // table
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
     auto runtime = std::make_shared<LuaRuntime>();
     auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
@@ -65,6 +67,9 @@ BOOST_AUTO_TEST_CASE(LAPI_001_01_ValidModuleTable) {
 
 BOOST_AUTO_TEST_CASE(LAPI_002_01_OnInitNoReturnValue) {
     // Test that on_init with no return value succeeds
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     auto runtime = std::make_shared<LuaRuntime>();
     auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
@@ -91,6 +96,9 @@ BOOST_AUTO_TEST_CASE(LAPI_002_01_OnInitNoReturnValue) {
 
 BOOST_AUTO_TEST_CASE(LAPI_002_02_OnInitReturnsTrue) {
     // Test that on_init returning true succeeds
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     auto runtime = std::make_shared<LuaRuntime>();
     auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
@@ -115,6 +123,9 @@ BOOST_AUTO_TEST_CASE(LAPI_002_02_OnInitReturnsTrue) {
 
 BOOST_AUTO_TEST_CASE(LAPI_002_03_OnInitReturnsFalse) {
     // Test that on_init returning false is handled
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     auto runtime = std::make_shared<LuaRuntime>();
     auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
@@ -142,6 +153,9 @@ BOOST_AUTO_TEST_CASE(LAPI_002_03_OnInitReturnsFalse) {
 
 BOOST_AUTO_TEST_CASE(LAPI_002_04_OnInitThrowsError) {
     // Test that on_init throwing an error is captured
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     auto runtime = std::make_shared<LuaRuntime>();
     auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 
@@ -213,6 +227,9 @@ BOOST_AUTO_TEST_CASE(LAPI_001_04_TopLevelThrowIsReported) {
 // The runtime only documents the reason semantics; we verify the function is
 // invocable and propagates the reason value.
 BOOST_AUTO_TEST_CASE(LAPI_002_05_OnExitIsInvocable) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
     auto runtime = std::make_shared<LuaRuntime>();
     auto manager = std::make_shared<LuaServiceManager>(*runtime, system);
 

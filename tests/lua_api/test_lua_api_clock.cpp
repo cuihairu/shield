@@ -15,6 +15,7 @@
 #include <ctime>
 #include <string>
 
+#include "shield/caf_initializer.hpp"
 #include "shield/lua/clock.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -81,6 +82,11 @@ int lua_int32(LuaServiceManager& manager, const std::string& sid,
 }
 }  // namespace
 
+struct CafInitFixture {
+    CafInitFixture() { initialize_caf_types(); }
+};
+BOOST_GLOBAL_FIXTURE(CafInitFixture);
+
 BOOST_AUTO_TEST_SUITE(ClockTests)
 
 // LCLK-01: Default SystemClock — shield.now() ≈ real wall-clock UTC ms.
@@ -92,6 +98,9 @@ BOOST_AUTO_TEST_CASE(NowReturnsWallClockUtcMs) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
     auto spawn = spawn_echo(manager, "clk01");
+    if (!spawn.success) {
+        std::cerr << "Spawn failed: " << spawn.error_message << std::endl;
+    }
     BOOST_REQUIRE(spawn.success);
 
     auto before = std::chrono::duration_cast<std::chrono::milliseconds>(

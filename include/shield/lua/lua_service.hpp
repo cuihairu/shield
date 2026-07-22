@@ -98,6 +98,9 @@ public:
     // handle.
     void attach_actor_system(caf::actor_system& system);
 
+    // Check if a service has an associated CAF actor.
+    bool has_service_actor(const std::string& service_id) const;
+
     // Get current service ID
     std::string current_service_id() const;
 

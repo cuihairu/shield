@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "shield/caf_initializer.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 
@@ -29,6 +30,11 @@ SpawnResult spawn_service(LuaServiceManager& manager, const std::string& name,
                          opts_for(name, std::move(config)).dump());
 }
 }  // namespace
+
+struct CafInitFixture {
+    CafInitFixture() { initialize_caf_types(); }
+};
+BOOST_GLOBAL_FIXTURE(CafInitFixture);
 
 BOOST_AUTO_TEST_SUITE(RegistryTests)
 

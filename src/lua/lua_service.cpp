@@ -1155,6 +1155,12 @@ void LuaServiceManager::attach_actor_system(caf::actor_system& system) {
     // Kept for backward compatibility with bootstrap.cpp.
 }
 
+bool LuaServiceManager::has_service_actor(const std::string& service_id) const {
+    std::shared_lock lock(impl_->registry_mutex);
+    return impl_->service_actors.find(service_id) !=
+           impl_->service_actors.end();
+}
+
 std::string LuaServiceManager::current_service_id() const {
     return impl_->current_service_id();
 }
