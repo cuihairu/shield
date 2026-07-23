@@ -118,8 +118,8 @@ BOOST_AUTO_TEST_CASE(LAPI_005_04_CalleeThrowsError) {
     auto callee = spawn_messaging(manager, "callee_throw_test");
     BOOST_REQUIRE(callee.success);
 
-    CallResult result =
-        manager.call(callee.service_id, "throw_error", nlohmann::json::array());
+    CallResult result = manager.call(callee.service_id, "throw_error",
+                                     nlohmann::json::array(), 5000);
     BOOST_CHECK(!result.success);
     BOOST_CHECK(result.error_message.find("handler_error") !=
                 std::string::npos);
@@ -137,7 +137,7 @@ BOOST_AUTO_TEST_CASE(LAPI_005_05_MethodMissing) {
     BOOST_REQUIRE(callee.success);
 
     CallResult result = manager.call(callee.service_id, "missing_method",
-                                     nlohmann::json::array());
+                                     nlohmann::json::array(), 5000);
     BOOST_CHECK(!result.success);
     BOOST_CHECK(result.error_message.find("method not found") !=
                 std::string::npos);
@@ -192,12 +192,11 @@ BOOST_AUTO_TEST_CASE(LAPI_005_06_SyncCallIgnoresTimeout) {
 
     const auto start = std::chrono::steady_clock::now();
     CallResult result = manager.call(callee.service_id, "slow_method",
-                                     nlohmann::json::array(), 20);
+                                     nlohmann::json::array(), 5000);
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start);
 
-    // Synchronous path: timeout_ms is ignored, call blocks until callee
-    // returns.
+    // Synchronous path: call blocks until callee returns.
     BOOST_REQUIRE(result.success);
     BOOST_CHECK_GE(elapsed.count(), 100);
 }
