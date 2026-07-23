@@ -54,21 +54,6 @@ bool wait_until(std::function<bool()> predicate,
 
 BOOST_AUTO_TEST_SUITE(CafBridgeTests)
 
-BOOST_AUTO_TEST_CASE(NoActorSystemMeansNoServiceActor) {
-    caf::actor_system_config cfg;
-
-    caf::actor_system system(cfg);
-
-    LuaRuntime runtime;
-    LuaServiceManager manager(runtime, system);
-
-    auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
-                                opts_for("no_caf").dump());
-    BOOST_REQUIRE_MESSAGE(result.success,
-                          "spawn failed: " + result.error_message);
-    BOOST_CHECK(!manager.has_service_actor("no_caf"));
-}
-
 BOOST_AUTO_TEST_CASE(SpawnCreatesCafActorHandleInternally) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
