@@ -7,6 +7,7 @@
 #include <caf/actor_system.hpp>
 #include <caf/event_based_actor.hpp>
 #include <caf/mail_cache.hpp>
+#include <caf/scoped_actor.hpp>
 #include <caf/send.hpp>
 #include <chrono>
 #include <condition_variable>
@@ -26,6 +27,7 @@
 #include "shield/config/config.hpp"
 #include "shield/core/service_message.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_constants.hpp"
 #include "shield/lua/lua_runtime.hpp"
 
@@ -177,7 +179,6 @@ struct LuaServiceManager::Impl {
     };
     std::unordered_map<uint64_t, std::shared_ptr<PendingSyncCall>>
         pending_sync_calls;
-    std::atomic<uint64_t> next_sync_call_session{1};
 
     int64_t clock_now_ms() const {
         std::shared_lock lock(registry_mutex);
@@ -222,6 +223,11 @@ struct LuaServiceManager::Impl {
         msg.timestamp_ms = req.timestamp_ms;
         msg.call_session = req.sync_session;
         (void)dispatch_message(manager, id, msg);
+    }
+
+    void dispatch_call_response(class LuaServiceManager* manager,
+                                const CallResponseMessage& msg) {
+        manager->resume_caller(msg.session, msg.ok, msg.values);
     }
 
     bool dispatch_message(class LuaServiceManager* manager,
@@ -376,6 +382,41 @@ struct LuaServiceManager::Impl {
         }
     }
 
+    void stop_and_wait_for_actors(const std::vector<caf::actor>& actors) {
+        if (actors.empty()) {
+            return;
+        }
+        for (const auto& actor : actors) {
+            if (actor) {
+                caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
+            }
+        }
+        caf::scoped_actor self{system};
+        self->wait_for(actors);
+    }
+
+    bool collect_actor_timer_for_cancel(
+        uint64_t id, std::vector<caf::actor>* actors_to_stop) {
+        std::unique_lock lock(registry_mutex);
+        auto it = actor_timers.find(id);
+        if (it == actor_timers.end()) {
+            return false;
+        }
+        if (it->second.driver) {
+            actors_to_stop->push_back(it->second.driver);
+        }
+        auto by_service_it =
+            actor_timers_by_service.find(it->second.service_id);
+        if (by_service_it != actor_timers_by_service.end()) {
+            by_service_it->second.erase(id);
+            if (by_service_it->second.empty()) {
+                actor_timers_by_service.erase(by_service_it);
+            }
+        }
+        actor_timers.erase(it);
+        return true;
+    }
+
     static std::string resolve_script_path(
         const shield::config::RuntimeActorConfig& actor) {
         std::filesystem::path script(actor.script);
@@ -518,6 +559,7 @@ LuaServiceManager::~LuaServiceManager() {
     // this cleanup its sol::function/std::function callbacks would be released
     // after the owning lua_State is already closed.
     std::vector<std::string> service_ids;
+    std::vector<caf::actor> actors_to_stop;
     {
         std::shared_lock lock(impl_->registry_mutex);
         service_ids = impl_->service_order;
@@ -533,26 +575,38 @@ LuaServiceManager::~LuaServiceManager() {
             }
         }
         for (auto timer_id : actor_timer_ids) {
-            cancel_actor_timer(timer_id);
+            impl_->collect_actor_timer_for_cancel(timer_id, &actors_to_stop);
         }
     }
 
-    // Tear down any CAF service actors. The actor system (when attached)
-    // outlives this manager because bootstrap resets it afterwards, so it is
-    // safe to ask the actors to stop here.
+    // Tear down CAF actors before releasing Lua VMs. Their handlers capture
+    // this manager and may still have queued timer/call messages.
     {
         std::unique_lock lock(impl_->registry_mutex);
+        actors_to_stop.reserve(
+            actors_to_stop.size() + impl_->service_actors.size() +
+            impl_->actor_timers.size() + impl_->actor_call_timeouts.size());
         for (auto& [id, actor] : impl_->service_actors) {
-            caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
+            if (actor) {
+                actors_to_stop.push_back(actor);
+            }
         }
         impl_->service_actors.clear();
+        for (auto& [id, timer] : impl_->actor_timers) {
+            if (timer.driver) {
+                actors_to_stop.push_back(timer.driver);
+            }
+        }
+        impl_->actor_timers.clear();
+        impl_->actor_timers_by_service.clear();
         for (auto& [session, driver] : impl_->actor_call_timeouts) {
             if (driver) {
-                caf::anon_send_exit(driver, caf::exit_reason::user_shutdown);
+                actors_to_stop.push_back(driver);
             }
         }
         impl_->actor_call_timeouts.clear();
     }
+    impl_->stop_and_wait_for_actors(actors_to_stop);
 
     // Wake up any pending sync calls (manager->call() blocked on CV)
     // so they don't hang forever during shutdown.
@@ -629,8 +683,9 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         // succeeds; until then the actor exists purely as an internal handle.
         //
         // The behavior pattern-matches the native typed messages
-        // (ServiceMessage, SyncCallMessage, timer_fire_atom + uint64_t,
-        // call_timeout_atom + uint64_t). No string/JSON dispatch remains.
+        // (ServiceMessage, SyncCallMessage, CallResponseMessage,
+        // timer_fire_atom + uint64_t, call_timeout_atom + uint64_t). No
+        // string/JSON dispatch remains.
         auto actor = impl_->system.spawn([impl_ptr = impl_.get(),
                                           manager = this, svc = service_name](
                                              caf::event_based_actor* self)
@@ -657,6 +712,9 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                         [impl_ptr, manager, svc](const SyncCallMessage& req) {
                             impl_ptr->dispatch_sync_call_message(manager, svc,
                                                                  req);
+                        },
+                        [impl_ptr, manager](const CallResponseMessage& msg) {
+                            impl_ptr->dispatch_call_response(manager, msg);
                         },
                         [impl_ptr, manager, svc](timer_fire_atom,
                                                  uint64_t timer_id) {
@@ -985,7 +1043,7 @@ CallResult LuaServiceManager::call(std::string_view target,
     }
 
     // Create pending sync call.
-    const uint64_t session = impl_->next_sync_call_session.fetch_add(1);
+    const uint64_t session = impl_->next_call_session.fetch_add(1);
     auto pending = std::make_shared<Impl::PendingSyncCall>();
     pending->session = session;
     {
@@ -1051,6 +1109,8 @@ void LuaServiceManager::exit(std::string_view service_id,
         return;
     }
 
+    const bool exiting_from_own_actor = current_service_id() == id;
+
     std::string error;
     nlohmann::json args = std::string(reason);
     Impl::DispatchScope scope(*impl_, id, "", true);
@@ -1062,6 +1122,7 @@ void LuaServiceManager::exit(std::string_view service_id,
     // the service's lua_State; releasing them after the VM is destroyed
     // would luaL_unref on a closed state.
     cancel_forked_tasks_for_service(id);
+    std::vector<caf::actor> actors_to_stop;
     std::vector<uint64_t> actor_timer_ids;
     {
         std::shared_lock lock(impl_->registry_mutex);
@@ -1072,7 +1133,7 @@ void LuaServiceManager::exit(std::string_view service_id,
         }
     }
     for (auto timer_id : actor_timer_ids) {
-        cancel_actor_timer(timer_id);
+        impl_->collect_actor_timer_for_cancel(timer_id, &actors_to_stop);
     }
     // Cancel any pending CAF call-timeout drivers for calls originated by this
     // service. The timeout path (call_timeout_atom handler) will
@@ -1085,8 +1146,7 @@ void LuaServiceManager::exit(std::string_view service_id,
             if (pc_it != impl_->pending_calls.end() &&
                 pc_it->second.caller_service == id) {
                 if (it->second) {
-                    caf::anon_send_exit(it->second,
-                                        caf::exit_reason::user_shutdown);
+                    actors_to_stop.push_back(it->second);
                 }
                 it = impl_->actor_call_timeouts.erase(it);
             } else {
@@ -1114,11 +1174,16 @@ void LuaServiceManager::exit(std::string_view service_id,
         // stop; erasing the handle releases our reference.
         if (auto actor_it = impl_->service_actors.find(id);
             actor_it != impl_->service_actors.end()) {
-            caf::anon_send_exit(actor_it->second,
-                                caf::exit_reason::user_shutdown);
+            if (actor_it->second && !exiting_from_own_actor) {
+                actors_to_stop.push_back(actor_it->second);
+            } else if (actor_it->second) {
+                caf::anon_send_exit(actor_it->second,
+                                    caf::exit_reason::user_shutdown);
+            }
             impl_->service_actors.erase(actor_it);
         }
     }
+    impl_->stop_and_wait_for_actors(actors_to_stop);
 }
 
 void LuaServiceManager::shutdown_all(std::string_view reason) {
@@ -1425,7 +1490,10 @@ uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
                      (timeout_ms > 0 ? timeout_ms : 5000);
     pc.caller_service = current_service_id();
     const std::string service = pc.caller_service;
-    impl_->pending_calls.emplace(session, std::move(pc));
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->pending_calls.emplace(session, std::move(pc));
+    }
 
     // Step 2c: drive the call timeout via a CAF delayed event.
     if (!service.empty()) {
@@ -1438,6 +1506,7 @@ uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
 void LuaServiceManager::set_handler_call_session(lua_State* co,
                                                  uint64_t session) {
     if (session != 0 && co != nullptr) {
+        std::unique_lock lock(impl_->registry_mutex);
         impl_->handler_call_session[co] = session;
     }
 }
@@ -1447,31 +1516,86 @@ void LuaServiceManager::on_handler_completed(
     if (co == nullptr) {
         return;
     }
-    auto it = impl_->handler_call_session.find(co);
-    if (it == impl_->handler_call_session.end()) {
-        return;
-    }
-    const uint64_t session = it->second;
-    impl_->handler_call_session.erase(it);
-    resume_caller(session, true, return_values);
-}
-
-void LuaServiceManager::resume_caller(uint64_t session, bool ok,
-                                      const nlohmann::json& values) {
-    // Step 3: check if this is a sync_call session (from manager->call()
-    // routed through CAF). If so, signal the blocking CV instead of resuming
-    // a Lua coroutine.
+    uint64_t session = 0;
     {
         std::unique_lock lock(impl_->registry_mutex);
-        auto sync_it = impl_->pending_sync_calls.find(session);
-        if (sync_it != impl_->pending_sync_calls.end()) {
-            auto pending = sync_it->second;
-            impl_->pending_sync_calls.erase(sync_it);
-            lock.unlock();
+        auto it = impl_->handler_call_session.find(co);
+        if (it == impl_->handler_call_session.end()) {
+            return;
+        }
+        session = it->second;
+        impl_->handler_call_session.erase(it);
+    }
+    complete_call(session, true, return_values);
+}
+
+void LuaServiceManager::on_handler_failed(lua_State* co,
+                                          const std::string& error_message) {
+    if (co == nullptr) {
+        return;
+    }
+    uint64_t session = 0;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        auto it = impl_->handler_call_session.find(co);
+        if (it == impl_->handler_call_session.end()) {
+            return;
+        }
+        session = it->second;
+        impl_->handler_call_session.erase(it);
+    }
+    complete_call(session, false, nlohmann::json::array({error_message}));
+}
+
+namespace {
+
+std::string call_error_message(const nlohmann::json& values) {
+    if (values.is_array() && !values.empty()) {
+        const auto& first = values.front();
+        if (first.is_string()) {
+            return first.get<std::string>();
+        }
+        if (first.is_object() && first.contains("message") &&
+            first["message"].is_string()) {
+            return first["message"].get<std::string>();
+        }
+        return first.dump();
+    }
+    if (values.is_string()) {
+        return values.get<std::string>();
+    }
+    if (values.is_object() && values.contains("message") &&
+        values["message"].is_string()) {
+        return values["message"].get<std::string>();
+    }
+    return "call failed";
+}
+
+}  // namespace
+
+void LuaServiceManager::complete_call(uint64_t session, bool ok,
+                                      const nlohmann::json& values) {
+    // External sync calls do not have a caller coroutine. Complete them
+    // directly after the callee has fully unwound.
+    {
+        std::shared_ptr<Impl::PendingSyncCall> pending;
+        {
+            std::unique_lock lock(impl_->registry_mutex);
+            auto sync_it = impl_->pending_sync_calls.find(session);
+            if (sync_it != impl_->pending_sync_calls.end()) {
+                pending = sync_it->second;
+                impl_->pending_sync_calls.erase(sync_it);
+            }
+        }
+        if (pending) {
             {
                 std::unique_lock lk(pending->mtx);
                 pending->ok = ok;
-                pending->values = values;
+                if (ok) {
+                    pending->values = values;
+                } else {
+                    pending->error = call_error_message(values);
+                }
                 pending->completed = true;
             }
             pending->cv.notify_one();
@@ -1479,13 +1603,46 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
         }
     }
 
-    // Existing: coro_call path — resume the caller's Lua coroutine.
-    auto it = impl_->pending_calls.find(session);
-    if (it == impl_->pending_calls.end()) {
+    std::optional<caf::actor> caller_actor;
+    std::string caller_service;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto pending_it = impl_->pending_calls.find(session);
+        if (pending_it == impl_->pending_calls.end()) {
+            return;
+        }
+        caller_service = pending_it->second.caller_service;
+        auto actor_it = impl_->service_actors.find(caller_service);
+        if (actor_it != impl_->service_actors.end()) {
+            caller_actor = actor_it->second;
+        }
+    }
+    if (!caller_actor) {
+        resume_caller(session, false,
+                      nlohmann::json::array(
+                          {"caller service not found: " + caller_service}));
         return;
     }
-    Impl::PendingCall pc = std::move(it->second);
-    impl_->pending_calls.erase(it);
+
+    CallResponseMessage response;
+    response.session = session;
+    response.ok = ok;
+    response.values = values;
+    caf::anon_send(*caller_actor, std::move(response));
+}
+
+void LuaServiceManager::resume_caller(uint64_t session, bool ok,
+                                      const nlohmann::json& values) {
+    Impl::PendingCall pc;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        auto it = impl_->pending_calls.find(session);
+        if (it == impl_->pending_calls.end()) {
+            return;
+        }
+        pc = std::move(it->second);
+        impl_->pending_calls.erase(it);
+    }
 
     // Cancel the CAF call-timeout driver (if any) now that the call has
     // completed normally. The timeout path itself erases the driver before
@@ -1512,12 +1669,37 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
     }
     int nres = 0;
     const int status = lua_resume(caller_co, nullptr, nargs, &nres);
-    if (status != LUA_OK && status != LUA_YIELD) {
-        // Caller errored resuming; drop it silently (logged elsewhere).
+    if (status == LUA_OK) {
+        nlohmann::json returns = nlohmann::json::array();
+        for (int i = 0; i < nres; ++i) {
+            nlohmann::json item;
+            sol::stack_object so(sol::state_view(caller_co), i + 1);
+            lua_to_json(so, &item);
+            returns.push_back(std::move(item));
+        }
         lua_settop(caller_co, 0);
+        if (pc.caller_anchor != LUA_NOREF) {
+            luaL_unref(caller_co, LUA_REGISTRYINDEX, pc.caller_anchor);
+        }
+        on_handler_completed(caller_co, returns);
+        return;
     }
-    // Release the anchor; the coroutine either completed or re-yielded (in
-    // which case a subsequent suspend re-anchored it).
+    if (status != LUA_YIELD) {
+        std::string err = "call continuation error";
+        if (lua_type(caller_co, -1) == LUA_TSTRING) {
+            err = lua_tostring(caller_co, -1);
+        }
+        // Caller errored resuming; drop it after propagating to its upstream
+        // caller if this handler was itself servicing a call.
+        lua_settop(caller_co, 0);
+        if (pc.caller_anchor != LUA_NOREF) {
+            luaL_unref(caller_co, LUA_REGISTRYINDEX, pc.caller_anchor);
+        }
+        on_handler_failed(caller_co, err);
+        return;
+    }
+    // Release the anchor; the coroutine re-yielded and the API that yielded has
+    // already re-anchored it for its next resume source.
     if (pc.caller_anchor != LUA_NOREF) {
         luaL_unref(caller_co, LUA_REGISTRYINDEX, pc.caller_anchor);
     }
@@ -1527,9 +1709,12 @@ int LuaServiceManager::check_call_timeouts(int64_t now_ms) {
     // Collect expired sessions first; we must not modify pending_calls while
     // iterating, and resume_caller erases from it.
     std::vector<uint64_t> expired;
-    for (const auto& [session, pc] : impl_->pending_calls) {
-        if (pc.deadline_ms <= now_ms) {
-            expired.push_back(session);
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        for (const auto& [session, pc] : impl_->pending_calls) {
+            if (pc.deadline_ms <= now_ms) {
+                expired.push_back(session);
+            }
         }
     }
 
@@ -1786,24 +1971,11 @@ uint64_t LuaServiceManager::schedule_actor_timer_fixed_delay(
 }
 
 bool LuaServiceManager::cancel_actor_timer(uint64_t id) {
-    std::unique_lock lock(impl_->registry_mutex);
-    auto it = impl_->actor_timers.find(id);
-    if (it == impl_->actor_timers.end()) {
-        return false;
-    }
-    if (it->second.driver) {
-        caf::anon_send_exit(it->second.driver, caf::exit_reason::user_shutdown);
-    }
-    auto by_service_it =
-        impl_->actor_timers_by_service.find(it->second.service_id);
-    if (by_service_it != impl_->actor_timers_by_service.end()) {
-        by_service_it->second.erase(id);
-        if (by_service_it->second.empty()) {
-            impl_->actor_timers_by_service.erase(by_service_it);
-        }
-    }
-    impl_->actor_timers.erase(it);
-    return true;
+    std::vector<caf::actor> actors_to_stop;
+    const bool cancelled =
+        impl_->collect_actor_timer_for_cancel(id, &actors_to_stop);
+    impl_->stop_and_wait_for_actors(actors_to_stop);
+    return cancelled;
 }
 
 size_t LuaServiceManager::active_actor_timer_count() const {

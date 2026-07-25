@@ -66,6 +66,14 @@ struct SyncCallMessage {
     int64_t timestamp_ms = 0;
 };
 
+/// Coroutine call response routed back to the caller service actor. The caller
+/// actor owns the Lua coroutine, so it must be the actor that resumes it.
+struct CallResponseMessage {
+    uint64_t session = 0;
+    bool ok = false;
+    nlohmann::json values = nlohmann::json::array();
+};
+
 }  // namespace shield::lua
 
 // Allow the JSON-bearing types to be passed as CAF messages within a single
@@ -73,6 +81,7 @@ struct SyncCallMessage {
 // local anon_send / send, which is the only transport used today.
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ServiceMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::SyncCallMessage)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::CallResponseMessage)
 
 // -- CAF type ID block --------------------------------------------------------
 //
@@ -85,6 +94,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(shield_lua, caf::first_custom_type_id)
 // Structured message types (full payload).
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ServiceMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::SyncCallMessage))
+CAF_ADD_TYPE_ID(shield_lua, (shield::lua::CallResponseMessage))
 
 // Lightweight tag messages: atom + uint64_t payload.
 // timer_fire_atom replaces kind="timer" (payload = timer_id).

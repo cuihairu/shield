@@ -164,8 +164,17 @@ public:
     void on_handler_completed(lua_State* co,
                               const nlohmann::json& return_values);
 
+    // Called when a handler coroutine fails while servicing a call request.
+    void on_handler_failed(lua_State* co, const std::string& error_message);
+
+    // Complete a call session from the callee side. Synchronous calls are
+    // completed immediately; coroutine call responses are routed to the caller
+    // service actor before resuming the caller coroutine.
+    void complete_call(uint64_t session, bool ok, const nlohmann::json& values);
+
     // Resume a suspended caller (looked up by session) with the given result
-    // values (or an error). Used by the response path and timeouts.
+    // values (or an error). Used by the caller actor after a response is routed
+    // back to it, and by timeouts fired on the caller actor.
     void resume_caller(uint64_t session, bool ok, const nlohmann::json& values);
 
     // Check whether the current dispatch context is inside an on_exit handler.

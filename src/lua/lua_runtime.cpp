@@ -534,23 +534,60 @@ bool LuaRuntime::call_service_method_coroutine(
     std::shared_ptr<LuaVM> vm, std::string_view method_name,
     const nlohmann::json& args, std::string* error, uint64_t call_session,
     LuaServiceManager* manager, std::string_view service_id) {
+    auto complete_call_failure = [&](const std::string& msg) {
+        if (call_session != 0 && manager != nullptr) {
+            manager->complete_call(call_session, false,
+                                   nlohmann::json::array({msg}));
+        }
+    };
+
+    auto fallback_dispatch = [&]() -> bool {
+        nlohmann::json returns = nlohmann::json::array();
+        std::string fallback_error;
+        const bool ok = call_service_method(
+            vm, method_name, args, call_session != 0 ? &returns : nullptr,
+            &fallback_error);
+        if (call_session != 0 && manager != nullptr) {
+            if (ok) {
+                manager->complete_call(call_session, true, returns);
+            } else {
+                manager->complete_call(call_session, false,
+                                       nlohmann::json::array({fallback_error}));
+            }
+        }
+        if (!ok && error) {
+            *error = fallback_error;
+        }
+        return ok;
+    };
+
     try {
         sol::table& service = vm->service_table();
         if (!service.valid()) {
-            if (error) *error = "service module not loaded";
+            const std::string msg = "service module not loaded";
+            if (error) *error = msg;
+            complete_call_failure(msg);
             return false;
         }
         sol::object value = service[std::string(method_name)];
         if (!value.valid() || value == sol::nil) {
-            if (error) *error = "method not found: " + std::string(method_name);
+            const std::string msg =
+                "method not found: " + std::string(method_name);
+            if (error) *error = msg;
+            complete_call_failure(msg);
             return false;
         }
         if (!value.is<sol::protected_function>()) {
-            if (error) *error = std::string(method_name) + " is not a function";
+            const std::string msg =
+                std::string(method_name) + " is not a function";
+            if (error) *error = msg;
+            complete_call_failure(msg);
             return false;
         }
         if (!args.is_array()) {
-            if (error) *error = "method args must be a JSON array";
+            const std::string msg = "method args must be a JSON array";
+            if (error) *error = msg;
+            complete_call_failure(msg);
             return false;
         }
 
@@ -561,8 +598,7 @@ bool LuaRuntime::call_service_method_coroutine(
         if (!factory.valid()) {
             // No coroutine factory registered (e.g. a VM without the full
             // shield API). Fall back to a plain synchronous dispatch.
-            nlohmann::json unused;
-            return call_service_method(vm, method_name, args, &unused, error);
+            return fallback_dispatch();
         }
 
         sol::protected_function handler = value.as<sol::protected_function>();
@@ -570,6 +606,7 @@ bool LuaRuntime::call_service_method_coroutine(
         for (const auto& arg : args) {
             args_table.add(json_to_lua(lua, arg));
         }
+        args_table["n"] = args.size();
 
         // Call the factory to build a handler coroutine. Use a protected call
         // so a factory failure degrades to synchronous dispatch instead of
@@ -580,8 +617,7 @@ bool LuaRuntime::call_service_method_coroutine(
         sol::protected_function factory_pf = lua["__shield_run_handler"];
         sol::protected_function_result fr = factory_pf(handler, args_table);
         if (!fr.valid()) {
-            sol::error err = fr;
-            return call_service_method(vm, method_name, args, nullptr, error);
+            return fallback_dispatch();
         }
         // The factory returns the coroutine thread at the top of the stack.
         // Grab its lua_State* via the C API (sol::thread's type check is
@@ -590,7 +626,7 @@ bool LuaRuntime::call_service_method_coroutine(
         // yields, shield.sleep has re-anchored it via its own registry ref.
         lua_State* co = lua_tothread(L, -1);
         if (co == nullptr) {
-            return call_service_method(vm, method_name, args, nullptr, error);
+            return fallback_dispatch();
         }
         // If this dispatch services a coroutine call request, tag the handler
         // coroutine so its completion can route the response back to the
@@ -631,6 +667,9 @@ bool LuaRuntime::call_service_method_coroutine(
         }
         lua_settop(co, 0);
         if (error) *error = msg;
+        if (call_session != 0 && manager != nullptr) {
+            manager->on_handler_failed(co, msg);
+        }
         if (manager && !service_id.empty()) {
             manager->invoke_error_hook(std::string(service_id), "handler",
                                        std::string(method_name), msg);
@@ -638,6 +677,7 @@ bool LuaRuntime::call_service_method_coroutine(
         return false;
     } catch (const std::exception& e) {
         if (error) *error = e.what();
+        complete_call_failure(e.what());
         return false;
     }
 }

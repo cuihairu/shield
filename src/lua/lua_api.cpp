@@ -528,8 +528,15 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             const uint64_t session = manager->suspend_for_call(co, timeout_ms);
 
             // Build and queue the call-request message.
+            std::size_t arg_count = args.size();
+            sol::object packed_count = args["n"];
+            if (packed_count.valid() && packed_count.is<int>()) {
+                const int n = packed_count.as<int>();
+                arg_count = n > 0 ? static_cast<std::size_t>(n) : 0;
+            }
+
             nlohmann::json json_args = nlohmann::json::array();
-            for (std::size_t i = 1; i <= args.size(); ++i) {
+            for (std::size_t i = 1; i <= arg_count; ++i) {
                 json_args.push_back(lua_to_json(args[static_cast<int>(i)]));
             }
             std::string send_error;
@@ -1806,7 +1813,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     lua.safe_script(
         "function __shield_run_handler(handler, args)\n"
         "  return coroutine.create(function()\n"
-        "    return handler(table.unpack(args))\n"
+        "    return handler(table.unpack(args, 1, args.n or #args))\n"
         "  end)\n"
         "end",
         [](lua_State*, sol::protected_function_result pfr)
