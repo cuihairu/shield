@@ -21,9 +21,16 @@ target_include_directories(shield_leaderboard_redis
 
 find_package(redis++ CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+# vcpkg static-only redis++ exports redis++::redis++_static; shared builds
+# export redis++::redis++. Pick whichever exists.
+if(TARGET redis++::redis++)
+    set(SHIELD_REDISPP_TARGET redis++::redis++)
+else()
+    set(SHIELD_REDISPP_TARGET redis++::redis++_static)
+endif()
 target_link_libraries(shield_leaderboard_redis
     PRIVATE
-        redis++::redis++
+        ${SHIELD_REDISPP_TARGET}
         nlohmann_json::nlohmann_json
         sol2::sol2
         ${LUA_LIBRARIES}

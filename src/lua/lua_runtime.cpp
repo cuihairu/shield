@@ -34,7 +34,8 @@ void ServiceHandle::register_usertype(sol::state& lua) {
         "new", sol::no_constructor,
 
         // Methods
-        "id", &ServiceHandle::id, "valid", &ServiceHandle::valid,
+        "id", &ServiceHandle::id, "node", &ServiceHandle::node, "valid",
+        &ServiceHandle::valid,
 
         // Metamethods
         sol::meta_function::to_string,

@@ -12,8 +12,8 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 以下顺序源于 [架构决策记录](architecture-decisions.md)。每一步必须独立验收；旧实现只能作为待删除源码存在，不能继续出现在 public 文档、示例或测试目标中。
 
-1. [ ] **CAF 调度地基**：将 dispatch 上下文改为 per-worker/thread-local，Service registry 增加并发保护；不改变 public 语义。
-2. [ ] **CAF Service runtime 闭环**：Lua Service 的 spawn、mailbox、send、call、exit 全部落到 CAF actor。
+1. [x] **CAF 调度地基**：dispatch 上下文为 thread-local（`tls_dispatch_stack`），Service registry 由 `shared_mutex` 保护；不改变 public 语义。
+2. [x] **CAF Service runtime 闭环**：Lua Service 的 spawn、mailbox、send、call、exit 全部落到 CAF actor；legacy Mailbox / worker thread / pump_once / 同步调用 fallback 已删除，`LuaServiceManager` 构造时必须绑定 `caf::actor_system`。
 3. [ ] **Service call 语义**：使用 CAF request/reply 驱动 Lua coroutine yield/resume，禁止跨 VM 同步重入。
 4. [ ] **客户端内部消息类别**：CAF behavior 接入结构化 `ClientIngress`、`ClientEgress` 与 client lifecycle control，禁止把所有 envelope 压成字符串或普通 Lua method。
 5. [ ] **RPC descriptor 与 binding**：compiled descriptor 定义 `route_id, direction, request_schema, response_schema, binding_hint`；每个目标 VM 启动时编译 `route_id -> cached Lua handler`，缺失或重复 binding 直接启动失败。
@@ -64,16 +64,16 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 实现 `shield.query/register/unregister/names` 的单节点最小 registry 路径。
 - [x] 提供 `shield.now`。
 - [x] 实现 `timer_once/timer/cancel_timer`、handler 内 coroutine-aware `sleep`、`fork` task id。
-  - `timer_once/timer/cancel_timer` 已走 `TimerManager`，callback 通过 `check_and_fire_each` + visitor 中 `lua_pcall` 包裹执行，错误路由到 `on_error` hook。
-  - `fork` 已走 worker 线程调度（`enqueue_forked_task`），callback 通过 `lua_pcall` 包裹执行（`raw_fn` 有效时），错误路由到 `on_error` hook。
-  - `shield.sleep` 已实现 handler 协程感知：async handler 中 yield + 由 `_resume_after` 定时器 resume；sync 调用、timer callback 和 fork task 路径走 `_block_sleep` 阻塞降级。LAPI-007-08/09/10 已覆盖。
-  - `shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` + `coroutine.yield()` → mailbox → `call_service_method_coroutine` → `resume_caller`），主线程走 `_sync_call` 同步降级。call timeout 已通过 `pump_once` 中的 `check_call_timeouts` 实现。LAPI-005-06 已覆盖。
+  - `timer_once/timer/cancel_timer` 已走 CAF actor timer，callback 通过 service actor 调度并在 `lua_pcall` 包裹执行，错误路由到 `on_error` hook。
+  - `fork` 已走 CAF actor 调度（`enqueue_forked_task` + `fork_task_atom`），callback 通过 `lua_pcall` 包裹执行（`raw_fn` 有效时），错误路由到 `on_error` hook。
+  - `shield.sleep` 已实现 handler 协程感知：async handler 中 yield + 由 `_resume_after` 定时器 resume；非协程路径走 `_block_sleep` 阻塞。LAPI-007-08/09/10 已覆盖。
+  - `shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` + `coroutine.yield()` → `resume_caller`），主线程走 `_sync_call` 同步调用。call timeout 由 CAF delayed `call_timeout_atom` 驱动。LAPI-005-06 已覆盖。
 - [x] 提供 `shield.log.*`。
 - [x] 删除旧 `shield.db.*` / `shield.redis.*` 全局数据 API，数据访问统一走插件 namespace + binding 逻辑名。
 - [x] 插件系统 v1 提供 manifest scan、catalog、instance、binding、C ABI guard、`register_lua` 分发和只读 introspection。
 - [x] 迁移官方数据插件的 Lua callable namespace：`shield.database.*` / `shield.cache.redis` / `shield.queue.redis` / `shield.leaderboard.redis` 均接收 binding 而非 instance_id。
 - [x] Lua 层 mapper/helper 只能作为插件 proxy 上的辅助能力存在；XML schema-mapper parser / descriptor / codegen 仍属 deferred 设计，不进入当前最小 runtime。
-- [x] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 runtime 线程的语义。`shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` → `coroutine.yield()` → `resume_caller`），call timeout 已通过 `check_call_timeouts` 实现。LAPI-005-06 已覆盖协程 timeout 和同步降级两条路径。
+- [x] 实现 `shield.call` 挂起当前 Lua 协程但不阻塞 CAF scheduler 线程的语义。`shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` → `coroutine.yield()` → `resume_caller`），call timeout 由 CAF delayed `call_timeout_atom` 驱动。LAPI-005-06 已覆盖协程 timeout 和同步调用两条路径。
 - [x] 删除旧 `shield.service("name")`、冒号式 DB/Redis API 和 legacy `on_message(src, type, data)` 入口。
 
 ## Phase 3: C++ 入口和配置
@@ -104,13 +104,13 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | 模块 | 当前状态 | 核对结论 |
 | --- | --- | --- |
 | `shield_base` | 当前 CMake target 已存在 | 基础类型路径已收敛，仍需后续补完整单元测试 |
-| `shield_core` | 当前 CMake target 已存在 | registry/message/handle 边界基本符合文档，CAF 仅允许在 adapter 边界 |
+| `shield_core` | 当前 CMake target 已存在 | 已收敛为 CAF 消息契约（`service_message.hpp`）+ CAF 类型注册；无人使用的 CafAdapter/ServiceRegistry/MessageEnvelope 平行层已删除，registry/handle 语义由 `shield_lua` 的 `LuaServiceManager` 承载 |
 | `shield_config` | 当前 CMake target 已存在 | Phase 1 启动期验证已接入；旧 ConfigManager/动态配置测试已从当前构建入口移出 |
 | `shield_log` | 当前 CMake target 已存在 | logger facade 已接入；旧 Boost log config 测试已从当前构建入口移出 |
 | `shield_transport` | 当前 CMake target 已存在 | frame/codec/encryption 在 target 内；旧 protocol handler/schema protocol 测试不属于当前验证路径 |
 | `shield_net` | 当前 CMake target 已存在 | 单实例 TCP listener/session 已接入 bootstrap 的 `actors[].network.tcp`；UDP/WebSocket 仍为 deferred |
 | `shield_plugin` | 当前 CMake target 已存在 | 插件系统 v1 已接入 manifest、instance、binding、C ABI、Lua register_lua 和官方数据插件；host 不链接 DB/Redis 驱动，不存在 `shield_data` target |
-| `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout 已实现；timer callback 已通过 pcall 包裹执行；fork callback raw_fn 已存储；on_error/on_panic/on_exit guard 已实现；gateway 已通过真实 `SessionHandle` userdata 连接到 `shield_net::Session`，并覆盖 protocol ingress/egress 桥接测试 |
+| `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout/spawn 已实现（异步 spawn 由专用 worker 线程执行 on_init，含 name reserve/publish 与超时补偿退出）；`shield.panic` 已接入 on_panic + exit("panic")；timer callback 已通过 pcall 包裹执行；fork callback raw_fn 已存储；on_error/on_panic/on_exit guard 已实现；gateway 已通过真实 `SessionHandle` userdata 连接到 `shield_net::Session`，并覆盖 protocol ingress/egress 桥接测试 |
 | `shield_bootstrap` | 当前 CMake target 已存在 | `shield::run` 和 CLI/config smoke tests 已登记在主 CMake |
 | optional modules | CMake 开关存在，默认关闭 | `shield_cluster` 已有静态 peers、节点状态快照和 route cache 查询骨架；跨节点 transport/route 学习仍未实现。`shield_global/ops` 仍未进入实现完成范围 |
 

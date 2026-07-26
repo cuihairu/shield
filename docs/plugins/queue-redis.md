@@ -164,6 +164,12 @@ q:unsubscribe("player.login")
 
 可用方法包括 `publish`、`subscribe`、`unsubscribe`。`publish` 成功时返回 `true`；`subscribe` / `unsubscribe` 成功时返回 `true`。
 
+Lua 订阅的投递模型（与 C-ABI 不同）：
+
+- `subscribe` 必须在 service handler 或 `on_init` 中调用（需要 owner service）；否则返回 `false, {code="invalid_context"}`。
+- 消费线程只执行 `XREADGROUP`，**不触碰 Lua**。每条消息通过 `host_api.lua_post_to_service` 投递到 owner service 的 actor，Lua callback 与随后的 `XACK` 都在该 actor 的调度点执行，与 handler 串行。
+- service exit 时未执行的投递随 actor 任务一起取消，对应消息保持 pending（at-least-once），可被其他 consumer 重新消费。
+
 ## 特殊语义
 
 ### Redis Streams vs pub/sub

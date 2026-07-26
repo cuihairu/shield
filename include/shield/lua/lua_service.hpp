@@ -91,16 +91,6 @@ public:
     // Exit all services in reverse spawn order.
     void shutdown_all(std::string_view reason = "stopping");
 
-    // Stop the dedicated worker thread (if any). Called during shutdown.
-    void stop_worker();
-
-    // Attach a CAF actor system so that spawned services own a CAF actor
-    // handle.
-    void attach_actor_system(caf::actor_system& system);
-
-    // Check if a service has an associated CAF actor.
-    bool has_service_actor(const std::string& service_id) const;
-
     // Get current service ID
     std::string current_service_id() const;
 
@@ -116,6 +106,22 @@ public:
     // Request that the currently running service exits after its handler
     // returns.
     void request_current_exit(std::string_view reason = "normal");
+
+    // Trigger the panic path for the currently running service: invoke its
+    // on_panic(reason, {type="explicit"}) hook (best-effort) and request exit
+    // with reason "panic". No-op outside a dispatch context.
+    void panic_current(std::string_view reason);
+
+    // Async spawn support. shield.spawn called inside a handler coroutine
+    // suspends the caller (via suspend_for_call) and enqueues the blocking
+    // part (VM creation + module load + on_init) onto a dedicated spawn
+    // worker thread so the caller's service actor stays responsive.
+    //
+    // enqueue_async_spawn: queue spawn work correlated with `session`.
+    // Returns false when the runtime is stopping (caller must fail the
+    // session itself).
+    bool enqueue_async_spawn(uint64_t session, std::string module,
+                             std::string opts_json);
 
     // Query a published local service name.
     std::string query_service(std::string_view name) const;
@@ -204,9 +210,9 @@ public:
 
     /// @brief Execute arbitrary Lua code on a service's VM.
     ///
-    /// MUST be called from the worker thread (e.g. inside enqueue_forked_task).
-    /// Compiles the code with luaL_loadbuffer, executes it, and converts
-    /// all return values to JSON.
+    /// MUST be called from the owning service actor's dispatch context (e.g.
+    /// inside a fork task callback). Compiles the code with luaL_loadbuffer,
+    /// executes it, and converts all return values to JSON.
     ///
     /// @param service_id The service whose VM to execute in
     /// @param code Lua source code string
@@ -248,6 +254,18 @@ public:
     bool cancel_actor_call_timeout(uint64_t session);
 
 private:
+    // Worker loop executing queued spawn jobs one at a time. Started in the
+    // constructor, stopped and joined in the destructor before any actor/VM
+    // teardown begins.
+    void spawn_worker_loop();
+
+    // Complete an async spawn session from the spawn worker thread. Routes
+    // the result to the caller actor via CallResponseMessage (same channel
+    // as coroutine call responses). If the caller already timed out, a
+    // successfully spawned child is exited again ("timeout") to honor the
+    // documented init-timeout contract.
+    void finish_async_spawn(uint64_t session, const SpawnResult& result);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

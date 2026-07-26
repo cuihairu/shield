@@ -78,7 +78,6 @@ constexpr const char* UNAVAILABLE = "unavailable";
 constexpr const char* INTERNAL = "internal";
 constexpr const char* SERVICE_NOT_FOUND = "service_not_found";
 constexpr const char* SERVICE_EXITING = "service_exiting";
-constexpr const char* MAILBOX_FULL = "mailbox_full";
 constexpr const char* MESSAGE_TOO_LARGE = "message_too_large";
 constexpr const char* SERIALIZATION_FAILED = "serialization_failed";
 constexpr const char* LUA_SCRIPT_ERROR = "lua_script_error";

@@ -99,7 +99,7 @@
 - 实现 non-blocking `send`。
 - 实现 `call` pending registry。
 - 实现 timeout 和 late response 丢弃。
-- 增加 self-send、stale handle、mailbox full 测试。
+- 增加 self-send、stale handle 测试（CAF actor mailbox 无界，无 mailbox full 用例）。
 
 ### M5. Lua service lifecycle
 

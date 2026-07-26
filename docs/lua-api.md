@@ -8,7 +8,7 @@
 启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
 coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、
 `shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、
-`on_exit` call guard、call timeout（`check_call_timeouts`）、
+`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、
 timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、
 TCP gateway listener 到 Lua handler 的 bootstrap 桥接、
 HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
@@ -159,7 +159,7 @@ end
 
 `on_error` 不改变服务状态。Phase 1 的 panic 策略固定为：同一 service 连续 handler/timer/fork 未捕获错误达到 `limits.max_errors_before_panic` 时进入 panic；未配置时默认 10。
 
-实现快照：`on_error` / `on_panic` hook 已实现。当 handler 抛错时，`call_service_method_coroutine` 调用 `LuaRuntime::invoke_hook` 触发 service table 上的 `on_error(err, context)`；timer callback 错误通过 `check_and_fire` 回调触发；fork task 错误通过 `pump_once` 触发。连续未捕获错误达到 `kDefaultMaxErrorsBeforePanic`（默认 10）时触发 `on_panic(reason, context)` 并 `exit("panic")`。成功执行后错误计数重置。`OnErrorHookCalledOnHandlerThrow` 测试覆盖。
+实现快照：`on_error` / `on_panic` hook 已实现。当 handler 抛错时，`call_service_method_coroutine` 调用 `LuaRuntime::invoke_hook` 触发 service table 上的 `on_error(err, context)`；timer callback 错误通过 CAF actor 调度触发；fork task 错误通过 CAF actor 调度 `fork_task_atom` 触发。连续未捕获错误达到 `kDefaultMaxErrorsBeforePanic`（默认 10）时触发 `on_panic(reason, context)` 并 `exit("panic")`。成功执行后错误计数重置。`OnErrorHookCalledOnHandlerThrow` 测试覆盖。
 
 ### on_panic(reason, context)
 
@@ -203,6 +203,16 @@ local h, err = shield.spawn("player", {
 - 成功：`ServiceHandle, nil`
 - 失败：`nil, Error`
 
+实现快照：`shield.spawn` 是"同步语义、异步实现"。在 handler 协程（含 fork task 协程）中调用时走 `_coro_spawn`：caller 经 `suspend_for_call` + `coroutine.yield()` 挂起，VM 创建、module 加载和 `on_init` 在专用 spawn worker 线程（单线程串行）上执行，完成后经 `CallResponseMessage` 路由回 caller actor 恢复协程——慢 `on_init` 不会阻塞 caller 的 service actor。VM 主线程（如 `on_init` 内）调用时保持同步路径（`_sync_spawn`）。spawn 期间 name 处于 reserved 状态：同名 spawn 立即失败（`service name already reserved`），`shield.query` 在 publish 前不可见；`on_init` 失败回滚 name（`init_failed`）。挂起超时按 `opts.timeout`（默认 10000ms）以 `{code="spawn_timeout"}` 恢复 caller，且成功但超时的子 service 会被补偿退出（reason `"timeout"`）。超时判定仍是事后测量，`on_init` 本身不会被抢占中断。测试覆盖见 `test_lua_api_spawn.cpp`。
+
+### shield.panic(reason)
+
+```lua
+shield.panic("unrecoverable state")
+```
+
+业务主动触发 panic 路径：调用当前 service 的 `on_panic(reason, {type="explicit"})` hook（best-effort），随后以 reason `"panic"` 退出当前 service。只能在 service dispatch 上下文中调用，否则为 no-op。
+
 ### shield.exit(reason)
 
 ```lua
@@ -218,6 +228,8 @@ local me = shield.self()
 ```
 
 返回当前 service 的 `ServiceHandle`。只能在 service coroutine 中调用。
+
+`ServiceHandle` 方法：`h:id()` 返回本地 service id；`h:node()` 返回 node id（单节点 runtime 恒为 `0`，即本地）；`h:valid()` 检查 handle 非空。
 
 ### shield.names()
 
@@ -263,7 +275,7 @@ local ok, err = shield.send("room.1", "join", uid, token)
 
 - `target` 可以是 service name 或 `ServiceHandle`。
 - 成功只表示 runtime 接受投递。
-- receiver 不存在、mailbox 满、runtime stopping 等返回 `false, Error`。
+- receiver 不存在、runtime stopping 等返回 `false, Error`。
 - `send` 不自动重试。
 - self-send 允许，但必须进入未来调度点，不允许 reentrant 执行。
 
@@ -276,7 +288,7 @@ local ok, profile = shield.call("player.1001", "get_profile", uid)
 规则：
 
 - 挂起当前 Lua coroutine。
-- 不阻塞 runtime worker thread。
+- 不阻塞 CAF scheduler 线程。
 - 使用默认 call timeout。
 - 成功返回：`true, ...callee_returns`
 - 失败返回：`false, Error`
@@ -302,7 +314,7 @@ local ok, result = shield.call_timeout(3000, "db.player", "get", uid)
 
 使用单独函数覆盖 timeout，避免最后一个业务参数和 options table 歧义。
 
-实现快照：`shield.call` / `shield.call_timeout` 已实现协程感知路径——在 handler 协程中调用时，caller 通过 `_coro_call` → `suspend_for_call` + `coroutine.yield()` 挂起，callee 完成后 `resume_caller` 恢复 caller。`manager->call()`（C++ 侧）已路由到 CAF actor：若 target 有 CAF actor，发送 `"sync_call"` 消息到 actor 并通过条件变量阻塞等待 actor dispatch 完成；若无 CAF actor，保留直接调用路径（向后兼容）。自调用（caller == target）返回 `{code="self_call", message="self-call not supported via CAF path"}`。call timeout 通过 CAF `delayed_send` 实现，以 `{code="timeout", message="call timeout", retryable=true}` 恢复 caller。LAPI-005-06 已覆盖。
+实现快照：`shield.call` / `shield.call_timeout` 已实现协程感知路径——在 handler 协程中调用时，caller 通过 `_coro_call` → `suspend_for_call` + `coroutine.yield()` 挂起，callee 完成后 `resume_caller` 恢复 caller。`manager->call()`（C++ 侧）始终路由到 target 的 CAF actor，发送 `SyncCallMessage` 并通过条件变量阻塞等待 actor dispatch 完成。同步路径的自调用（caller == target）返回错误 message `"self-call not supported"`，经 `call_error_code` 映射为 `{code="handler_error"}`。call timeout 通过 CAF `delayed_send` 实现，以 `{code="timeout", message="call timeout", retryable=true}` 恢复 caller。LAPI-005-06 已覆盖。
 
 ### Message Context
 
@@ -318,7 +330,7 @@ local deadline = shield.deadline()
 - handler 返回后上下文失效。
 - timer callback / fork task 中 `shield.sender()` 返回 `nil`。
 
-实现快照：`shield.sender()`、`shield.trace()`、`shield.deadline()` 均已实现。trace_id 和 deadline_ms 在 send/call 消息中传播，从 caller 的 dispatch context 携带到 callee 的 dispatch context。timer callback / fork task context 中 `shield.sender()` 返回 `nil`，`shield.trace()` 返回 `nil`，`shield.deadline()` 返回 `nil`。
+实现快照：`shield.sender()`、`shield.trace()`、`shield.deadline()` 均已实现。deadline_ms 和 trace_id 字段在 send/call 消息中传播，从 caller 的 dispatch context 携带到 callee 的 dispatch context；但 runtime 当前不生成 trace id，`shield.trace()` 恒返回 nil（生成属于 Phase 2+）。timer callback / fork task context 中 `shield.sender()` 返回 `nil`，`shield.trace()` 返回 `nil`，`shield.deadline()` 返回 `nil`。
 
 ## Timer API
 
@@ -341,7 +353,7 @@ end)
 规则：
 
 - fixed-delay：callback 结束后再安排下一次。
-- callback 当前通过 `lua_pcall` 执行，不是 coroutine；`shield.sleep` / `shield.call` 在 callback 中走同步降级路径。
+- callback 当前通过 `lua_pcall` 执行，不是 coroutine；`shield.sleep` / `shield.call` 在 callback 中走同步调用路径。
 - callback 抛错时触发 `on_error`。
 - service exit 自动取消 owned timers。
 
@@ -392,7 +404,7 @@ local mono = shield.monotonic()
 
 > **原因**：游戏业务代码大量直接用 `os.time()` 读当前时间（缓存过期、签到、活动开关），只拨 `shield.now()` 无法覆盖。将 `os.time`/`os.date` 无参形式接入同一业务时钟，使所有业务时间读取统一可控。
 
-实现快照：`shield.now()` 已实现，读 `LuaServiceManager` 持有的 `Clock`（默认 `SystemClock` 读 `system_clock`）；`shield.monotonic()` 已实现，读 `steady_clock`（不可拨）。`attach_clock()` 在 `src/lua/lua_service.cpp` 实现，镜像 `attach_actor_system`。`os.time()`/`os.date()` 无参 hook 在 `register_full_shield_api`（`src/lua/lua_api.cpp`）中安装，带参形式保留原函数。`os.clock()` 不动。`Clock`/`SystemClock`/`MockClock` 定义于 `include/shield/lua/clock.hpp`。`test_lua_api_clock` 覆盖 12 个用例：默认墙钟、一致性、MockClock set/advance、os hook 粒度（含 table 带参不受影响）、monotonic 不可拨、缓存过期/签到/cooldown 完整业务场景。
+实现快照：`shield.now()` 已实现，读 `LuaServiceManager` 持有的 `Clock`（默认 `SystemClock` 读 `system_clock`）；`shield.monotonic()` 已实现，读 `steady_clock`（不可拨）。`attach_clock()` 在 `src/lua/lua_service.cpp` 实现，用于测试注入 `MockClock`。`os.time()`/`os.date()` 无参 hook 在 `register_full_shield_api`（`src/lua/lua_api.cpp`）中安装，带参形式保留原函数。`os.clock()` 不动。`Clock`/`SystemClock`/`MockClock` 定义于 `include/shield/lua/clock.hpp`。`test_lua_api_clock` 覆盖 12 个用例：默认墙钟、一致性、MockClock set/advance、os hook 粒度（含 table 带参不受影响）、monotonic 不可拨、缓存过期/签到/cooldown 完整业务场景。
 
 ## Config API
 
@@ -832,7 +844,7 @@ local res = shield.http.post_form("https://api.example.com/login", {
 
 规则：
 
-- 当前实现同步执行 libcurl 请求；如果在 handler 内调用，会阻塞 Lua worker。异步 HTTP 属于后续工作。
+- 当前实现同步执行 libcurl 请求；如果在 handler 内调用，会阻塞当前 service actor（CAF scheduler 线程）。异步 HTTP 属于后续工作。
 - 支持 HTTP/1.1、HTTP/2、HTTPS（libcurl + OpenSSL/Schannel）。
 - 支持重定向、代理、Bearer/Basic auth、自定义 CA、SSL 校验开关、简单重试。连接复用依赖 libcurl easy handle 生命周期，当前未实现显式连接池。
 - 适合支付 API、webhook、REST API、文件传输等场景。

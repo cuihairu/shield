@@ -2,7 +2,7 @@
 --
 -- The handler yields via shield.sleep and is resumed by the runtime's sleep
 -- timer, so the C++ harness can verify that a sleeping handler does not block
--- the pump and that execution continues after the deadline.
+-- the service actor and that execution continues after the deadline.
 
 local M = {}
 

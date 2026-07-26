@@ -165,9 +165,6 @@ shield_request_duration_seconds_bucket{service="player",method="get_info",le="0.
 # TYPE shield_connections gauge
 shield_connections 1500
 
-# HELP shield_mailbox_size Mailbox size
-# TYPE shield_mailbox_size gauge
-shield_mailbox_size{service="player"} 10
 ```
 
 ### 服务列表
@@ -223,8 +220,7 @@ GET /ops/services/:name
     "errors": 0,
     "pending_calls": 2,
     "timers": 5,
-    "coroutines": 3,
-    "mailbox_size": 0
+    "coroutines": 3
   },
   "last_error": null
 }
@@ -246,7 +242,6 @@ ops 暴露必须遵守：
 ```txt
 service list
 registry names
-mailbox size
 pending calls
 timer count
 coroutine count

@@ -254,8 +254,11 @@ std::string extract_service_id(const sol::object& target) {
 }
 
 void register_service_api(sol::table& shield, LuaServiceManager* manager) {
+    // Synchronous spawn primitive: runs VM creation + on_init on the calling
+    // thread. The public shield.spawn wrapper (below) uses this on the main
+    // thread and the coroutine path inside handlers.
     shield.set_function(
-        "spawn",
+        "_sync_spawn",
         [manager](sol::this_state state, std::string module,
                   sol::optional<sol::table> opts) -> sol::variadic_results {
             sol::state_view lua(state);
@@ -296,9 +299,6 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
     shield.set_function(
         "self", [manager](sol::this_state state) -> sol::object {
             sol::state_view lua(state);
-            if (!manager) {
-                return sol::make_object(lua, sol::nil);
-            }
             const auto service_id = manager->current_service_id();
             if (service_id.empty()) {
                 return sol::make_object(lua, sol::nil);
@@ -311,9 +311,6 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                         [manager](sol::this_state state) -> sol::table {
                             sol::state_view lua(state);
                             sol::table names = lua.create_table();
-                            if (!manager) {
-                                return names;
-                            }
 
                             int index = 1;
                             for (const auto& name : manager->list_services()) {
@@ -328,13 +325,6 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                   std::string name) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
-            if (!manager) {
-                results.push_back(sol::make_object(lua, sol::nil));
-                results.push_back(
-                    make_error(state, "runtime_unavailable",
-                               "Lua service manager is not available"));
-                return results;
-            }
 
             const auto service = manager->query_service(name);
             if (!service.empty()) {
@@ -356,13 +346,6 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                   std::string name) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
-            if (!manager) {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(
-                    make_error(state, "runtime_unavailable",
-                               "Lua service manager is not available"));
-                return results;
-            }
 
             std::string error;
             if (!manager->register_name(name, &error)) {
@@ -381,13 +364,6 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                                   std::string name) -> sol::variadic_results {
                             sol::state_view lua(state);
                             sol::variadic_results results;
-                            if (!manager) {
-                                results.push_back(sol::make_object(lua, false));
-                                results.push_back(make_error(
-                                    state, "runtime_unavailable",
-                                    "Lua service manager is not available"));
-                                return results;
-                            }
 
                             std::string error;
                             if (!manager->unregister_name(name, &error)) {
@@ -401,6 +377,79 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                             results.push_back(sol::make_object(lua, sol::nil));
                             return results;
                         });
+
+    // Coroutine-aware spawn primitive. Suspends the caller's coroutine and
+    // queues the blocking part (VM creation + module load + on_init) onto the
+    // manager's spawn worker thread; the caller is resumed with
+    // [true, service_id] or [false, error_table] when the spawn completes
+    // (or on timeout). Returns the session id, or 0 when the coroutine path
+    // is unavailable (no dispatch context / runtime stopping) and the caller
+    // must fall back to _sync_spawn.
+    shield.set_function(
+        "_coro_spawn",
+        [manager](sol::this_state state, std::string module,
+                  sol::optional<sol::table> opts, int timeout_ms) -> uint64_t {
+            if (manager->current_service_id().empty()) {
+                return 0;
+            }
+            nlohmann::json options =
+                opts ? lua_table_to_json(*opts) : nlohmann::json::object();
+            if (!options.is_object()) {
+                options = nlohmann::json::object();
+            }
+
+            lua_State* co = state;
+            const uint64_t session = manager->suspend_for_call(co, timeout_ms);
+            if (!manager->enqueue_async_spawn(session, std::move(module),
+                                              options.dump())) {
+                nlohmann::json err = "runtime is stopping";
+                manager->resume_caller(session, false,
+                                       nlohmann::json::array({err}));
+                return 0;
+            }
+            return session;
+        });
+
+    // Rebuild a ServiceHandle userdata from a service id. Used by the
+    // shield.spawn wrapper after a coroutine resume (the response channel
+    // carries JSON, not userdata).
+    shield.set_function(
+        "_make_handle",
+        [](sol::this_state state, std::string service_id) -> sol::object {
+            sol::state_view lua(state);
+            ServiceHandle handle(std::move(service_id));
+            return sol::make_object(lua, handle);
+        });
+
+    // Business-triggered panic: invoke on_panic(reason, {type="explicit"})
+    // and exit the current service with reason "panic".
+    shield.set_function("panic", [manager](sol::optional<std::string> reason) {
+        manager->panic_current(reason.value_or("explicit panic"));
+    });
+
+    // Public shield.spawn: suspend inside handler coroutines (the spawn
+    // worker runs on_init off-actor), stay synchronous on the main thread.
+    sol::state_view lua(shield.lua_state());
+    lua["shield"] = shield;
+    lua.safe_script(
+        "shield.spawn = function(module, opts)\n"
+        "  local _, ismain = coroutine.running()\n"
+        "  if ismain then return shield._sync_spawn(module, opts) end\n"
+        "  local timeout = (type(opts) == 'table' and opts.timeout) or 10000\n"
+        "  local session = shield._coro_spawn(module, opts, timeout)\n"
+        "  if session == 0 then return shield._sync_spawn(module, opts) end\n"
+        "  local r = table.pack(coroutine.yield())\n"
+        "  if not r[1] then\n"
+        "    if type(r[2]) == 'table' and r[2].code == 'timeout' then\n"
+        "      r[2].code = 'spawn_timeout'\n"
+        "      r[2].message = 'spawn timeout'\n"
+        "    end\n"
+        "    return nil, r[2]\n"
+        "  end\n"
+        "  return shield._make_handle(r[2]), nil\n"
+        "end\n",
+        [](lua_State*, sol::protected_function_result pfr)
+            -> sol::protected_function_result { return pfr; });
 }
 
 void register_message_api(sol::table& shield, LuaServiceManager* manager,
@@ -411,13 +460,6 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                   sol::variadic_args args) -> sol::variadic_results {
             sol::state_view lua(state);
             sol::variadic_results results;
-            if (!manager) {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(
-                    make_error(state, "runtime_unavailable",
-                               "Lua service manager is not available"));
-                return results;
-            }
 
             std::string target_id = extract_service_id(target);
             if (target_id.empty()) {
@@ -434,11 +476,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                 // Map error message to stable error code.
                 std::string code = "service_not_found";
                 bool retryable = false;
-                if (error.find("mailbox full") != std::string::npos) {
-                    code = "mailbox_full";
-                    retryable = true;
-                } else if (error.find("runtime is stopping") !=
-                           std::string::npos) {
+                if (error.find("runtime is stopping") != std::string::npos) {
                     code = "runtime_stopping";
                 } else if (error.find("message too large") !=
                            std::string::npos) {
@@ -513,9 +551,6 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
         "_coro_call",
         [manager](sol::this_state state, sol::object target, std::string method,
                   sol::table args, int timeout_ms) -> uint64_t {
-            if (!manager) {
-                return 0;
-            }
             const std::string target_id = extract_service_id(target);
             if (target_id.empty()) {
                 return 0;
@@ -555,14 +590,10 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             return session;
         });
 
-    shield.set_function("_is_in_exit", [manager]() -> bool {
-        return manager && manager->is_in_exit();
-    });
+    shield.set_function("_is_in_exit",
+                        [manager]() -> bool { return manager->is_in_exit(); });
 
     shield.set_function("sender", [manager]() -> sol::optional<std::string> {
-        if (!manager) {
-            return sol::nullopt;
-        }
         // Returns nil in timer/fork context (no sender).
         // Returns nil outside any dispatch (module-level code).
         // The distinction between "no sender" and "context_expired" is
@@ -576,14 +607,12 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     });
 
     shield.set_function("trace", [manager]() -> sol::optional<std::string> {
-        if (!manager) return sol::nullopt;
         const auto trace = manager->current_trace_id();
         if (trace.empty()) return sol::nullopt;
         return trace;
     });
 
     shield.set_function("deadline", [manager]() -> sol::optional<int64_t> {
-        if (!manager) return sol::nullopt;
         const auto dl = manager->current_deadline_ms();
         if (dl <= 0) return sol::nullopt;
         return dl;
@@ -657,13 +686,6 @@ sol::variadic_results call_with_timeout(sol::this_state state,
         return "handler_error";
     };
 
-    if (!manager) {
-        results.push_back(sol::make_object(lua, false));
-        results.push_back(make_error(state, "runtime_unavailable",
-                                     "Lua service manager is not available"));
-        return results;
-    }
-
     CallResult result = manager->call(target, method, args, timeout_ms);
     if (!result.success) {
         results.push_back(sol::make_object(lua, false));
@@ -682,9 +704,8 @@ sol::variadic_results call_with_timeout(sol::this_state state,
 
 void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                         LuaRuntime* runtime) {
-    shield.set_function("now", [manager]() -> int64_t {
-        return manager ? manager->clock_now_ms() : SystemClock{}.now_ms();
-    });
+    shield.set_function(
+        "now", [manager]() -> int64_t { return manager->clock_now_ms(); });
 
     // Real monotonic milliseconds — NOT adjustable, for relative timing
     // (network backoff, heartbeat intervals) in Lua that must stay real.
@@ -812,9 +833,9 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             }
         });
 
-    // Blocking fallback used when shield.sleep is invoked outside any
-    // coroutine (e.g. from the synchronous manager.call path). The
-    // coroutine-aware branch below handles the yieldable case.
+    // Blocking sleep used when shield.sleep is invoked outside any coroutine
+    // (e.g. from module-level code). The coroutine-aware branch below handles
+    // the yieldable case inside service handlers.
     shield.set_function("_block_sleep", [](int delay_ms) {
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     });
@@ -822,8 +843,8 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
     sol::state_view lua(shield.lua_state());
     lua["shield"] = shield;
     // Define shield.sleep in Lua so it can use coroutine.yield natively. When
-    // not running inside a coroutine (synchronous dispatch) fall back to a
-    // blocking sleep so the call still completes.
+    // not running inside a coroutine, block the calling thread so the call
+    // still completes.
     lua.safe_script(
         "shield.sleep = function(ms)\n"
         "  local _, ismain = coroutine.running()\n"
@@ -948,7 +969,6 @@ void register_log_api(sol::table& shield, LuaServiceManager* manager) {
     // Helper: build log message with service context prefix.
     auto build_msg = [manager](sol::object value) -> std::string {
         std::string msg = lua_to_json(value).dump();
-        if (!manager) return msg;
         const std::string sid = manager->current_service_id();
         if (sid.empty()) return msg;
         return "[" + sid + "] " + msg;
@@ -1773,7 +1793,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     // redirected; os.time(table) and os.date(fmt, t) keep their original
     // semantics (pure conversion). os.clock() is NOT touched — it is used
     // for real CPU-time measurement (e.g. scripts/shield_aop.lua:562).
-    if (manager) {
+    {
         sol::table os_t = lua["os"];
         sol::function orig_time = os_t["time"];
         sol::function orig_date = os_t["date"];

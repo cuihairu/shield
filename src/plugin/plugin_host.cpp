@@ -462,6 +462,23 @@ bool PluginHost::load_all(std::string& error) {
 // (though typical use is to take L from the register_lua argument).
 thread_local lua_State* g_current_lua_state = nullptr;
 
+// Hooks backing lua_current_service_id / lua_post_to_service. Written by
+// LuaServiceManager ctor/dtor, read from actor and plugin threads.
+std::mutex& lua_hooks_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+LuaServiceHooks& lua_hooks_storage() {
+    static LuaServiceHooks hooks;
+    return hooks;
+}
+
+void PluginHost::set_lua_service_hooks(LuaServiceHooks hooks) {
+    std::lock_guard lock(lua_hooks_mutex());
+    lua_hooks_storage() = std::move(hooks);
+}
+
 const shield_host_api_v1& PluginHost::host_api_table() {
     static shield_host_api_v1 api{};
     static bool inited = false;
@@ -595,6 +612,59 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         thread_local std::string scratch;
         scratch = host->binding_instance_id(binding);
         return scratch.empty() ? nullptr : scratch.c_str();
+    };
+    api.lua_current_service_id = [](shield_plugin_context_v1*) -> const char* {
+        LuaServiceHooks hooks;
+        {
+            std::lock_guard lock(lua_hooks_mutex());
+            hooks = lua_hooks_storage();
+        }
+        if (!hooks.current_service_id) return nullptr;
+        // Contract: valid until the next call on the same thread.
+        thread_local std::string scratch;
+        scratch = hooks.current_service_id();
+        return scratch.empty() ? nullptr : scratch.c_str();
+    };
+    api.lua_post_to_service =
+        [](shield_plugin_context_v1*, const char* service_id, void (*fn)(void*),
+           void* user_data, void (*destroy_fn)(void*)) -> int {
+        if (!service_id || !service_id[0] || !fn) return -1;
+        LuaServiceHooks hooks;
+        {
+            std::lock_guard lock(lua_hooks_mutex());
+            hooks = lua_hooks_storage();
+        }
+        if (!hooks.post_to_service) return -1;
+
+        // Exactly-once destroy semantics: run() marks executed and calls
+        // destroy_fn after fn; if the task is dropped without running, the
+        // last shared_ptr release calls destroy_fn from the destructor.
+        struct PostTask {
+            void (*fn)(void*);
+            void* user_data;
+            void (*destroy_fn)(void*);
+            bool executed = false;
+            ~PostTask() {
+                if (!executed && destroy_fn) destroy_fn(user_data);
+            }
+            void run() {
+                executed = true;
+                fn(user_data);
+                if (destroy_fn) destroy_fn(user_data);
+            }
+        };
+        auto task = std::make_shared<PostTask>(
+            PostTask{fn, user_data, destroy_fn, false});
+        const uint64_t id =
+            hooks.post_to_service(service_id, [task]() { task->run(); });
+        if (id == 0) {
+            // Enqueue failed (service gone): the task was never queued, so
+            // suppress the destructor's destroy_fn — ownership of user_data
+            // stays with the caller per the API contract.
+            task->executed = true;
+            return -1;
+        }
+        return 0;
     };
     return api;
 }

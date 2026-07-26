@@ -28,7 +28,6 @@
 #include "shield/console/command_dispatcher.hpp"
 #include "shield/console/lua_commands.hpp"
 #include "shield/console/root_commands.hpp"
-#include "shield/core/caf_adapter.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -38,8 +37,6 @@
 #include "shield/transport/protocol.hpp"
 
 namespace shield::bootstrap {
-using shield::core::CafAdapter;
-using shield::core::initialize_core;
 
 namespace {
 
@@ -152,7 +149,6 @@ shield::transport::ProtocolBuildOptions protocol_build_options(
 struct GlobalState {
     RuntimeConfig config;
     std::unique_ptr<caf::actor_system> actor_system;
-    std::unique_ptr<CafAdapter> caf_adapter;
     std::unique_ptr<shield::lua::LuaRuntime> lua_runtime;
     std::unique_ptr<shield::lua::LuaServiceManager> lua_services;
     boost::asio::io_context net_io;
@@ -207,7 +203,6 @@ void cleanup_failed_initialize() {
         shield::cluster::set_global_cluster_manager(nullptr);
         g_state->cluster_manager.reset();
 #endif
-        g_state->caf_adapter.reset();
         g_state->actor_system.reset();
         g_state->initialized = false;
     }
@@ -324,15 +319,12 @@ bool initialize(const RuntimeConfig& config) {
         return cfg;
     }();
 
-    // Set number of workers
+    // Set number of CAF scheduler worker threads.
     if (config.num_workers > 0) {
-        // caf_config.set("scheduler.max-threads", config.num_workers);
+        caf_config.set("caf.scheduler.max-threads", config.num_workers);
     }
 
     g_state->actor_system = std::make_unique<caf::actor_system>(caf_config);
-
-    // Initialize CAF adapter
-    g_state->caf_adapter = initialize_core(*g_state->actor_system);
 
     SHIELD_LOG_INFO(log, "CAF actor system initialized");
 
@@ -502,11 +494,6 @@ bool initialize(const RuntimeConfig& config) {
     // Run POST_START starters
     run_starters(Phase::POST_START);
 
-    // Step 2c: when a CAF actor system is attached, service actors now drive
-    // the normal message dispatch path directly. Keep start_worker() only for
-    // test-only compatibility paths; production no longer starts the Lua
-    // worker thread here.
-
     // Start console server if enabled
     if (shield::config::get("console.enabled", "false") == "true" &&
         g_state->lua_services && g_state->lua_runtime) {
@@ -568,7 +555,8 @@ void shutdown() {
         g_state->console_dispatcher.reset();
     }
 
-    // Stop the Lua worker first so no new Lua code runs while we tear down.
+    // Stop network ingress first so no new Lua work is queued while we tear
+    // down.
     for (auto& listener : g_state->tcp_listeners) {
         if (listener) {
             listener->stop();
@@ -582,21 +570,12 @@ void shutdown() {
     g_state->tcp_listeners.clear();
     g_state->gateway_bridges.clear();
 
-    // Step 2c: the production runtime no longer depends on the dedicated Lua
-    // worker thread for normal message dispatch. Tests may still start the
-    // compatibility worker explicitly, so keep stop_worker() here as a safe
-    // no-op when the worker was never started.
-    if (g_state->lua_services) {
-        g_state->lua_services->stop_worker();
-    }
-
     // Shutdown actor system (which stops all actors)
     if (g_state->lua_services) {
         g_state->lua_services->shutdown_all("stopping");
     }
     g_state->lua_services.reset();
     g_state->lua_runtime.reset();
-    g_state->caf_adapter.reset();
     g_state->actor_system.reset();
 #ifdef SHIELD_ENABLE_CLUSTER
     if (g_state->cluster_manager) {

@@ -86,7 +86,6 @@
         "multiplier": 2
       },
       "limits": {
-        "max_mailbox_size": 10000,
         "max_coroutines": 1000,
         "max_pending_calls": 1000,
         "max_timers": 10000

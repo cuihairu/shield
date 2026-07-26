@@ -11,6 +11,7 @@
 #include <caf/send.hpp>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -30,6 +31,7 @@
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_constants.hpp"
 #include "shield/lua/lua_runtime.hpp"
+#include "shield/plugin/plugin_host.hpp"
 
 namespace shield::lua {
 
@@ -158,6 +160,25 @@ struct LuaServiceManager::Impl {
     std::atomic<uint64_t> next_actor_timer_id{1};
 
     std::unordered_map<uint64_t, caf::actor> actor_call_timeouts;
+
+    // Names reserved by in-flight spawn() calls (init not finished yet).
+    // Reserved names are rejected by spawn pre-checks but are not visible to
+    // query_service until published (docs: reserve -> publish state machine).
+    std::unordered_set<std::string> reserved_names;
+
+    // Dedicated spawn worker. shield.spawn invoked inside a handler coroutine
+    // suspends the caller and queues the blocking part (VM creation + module
+    // load + on_init) here so the caller's service actor stays responsive.
+    struct SpawnJob {
+        uint64_t session = 0;
+        std::string module;
+        std::string opts_json;
+    };
+    std::mutex spawn_mutex;
+    std::condition_variable spawn_cv;
+    std::deque<SpawnJob> spawn_queue;
+    bool spawn_stop = false;
+    std::thread spawn_thread;
 
     // Business-time clock (AD-07: layered time). Lua-facing shield.now(),
     // os.time(), os.date() (no-arg) all read this clock. Default SystemClock
@@ -550,14 +571,58 @@ LuaServiceManager::LuaServiceManager(LuaRuntime& runtime,
                                      caf::actor_system& system)
     : impl_(std::make_unique<Impl>(runtime, system)) {
     runtime.set_service_manager(this);
+
+    // Back the host_api lua_current_service_id / lua_post_to_service slots
+    // so plugins re-enter Lua on the owning service actor instead of
+    // touching a lua_State from plugin threads.
+    shield::plugin::LuaServiceHooks hooks;
+    hooks.current_service_id = [this]() { return current_service_id(); };
+    hooks.post_to_service = [this](const std::string& service_id,
+                                   std::function<void()> fn) {
+        return enqueue_forked_task(service_id, std::move(fn));
+    };
+    shield::plugin::global_host().set_lua_service_hooks(std::move(hooks));
+
+    impl_->spawn_thread =
+        std::thread(&LuaServiceManager::spawn_worker_loop, this);
 }
 
 LuaServiceManager::~LuaServiceManager() {
+    // Stop the spawn worker before any actor/VM teardown: a job running on
+    // that thread touches the registry and may finish by routing a response
+    // to a caller actor.
+    std::deque<Impl::SpawnJob> dropped_jobs;
+    {
+        std::lock_guard lock(impl_->spawn_mutex);
+        impl_->spawn_stop = true;
+        dropped_jobs = std::move(impl_->spawn_queue);
+        impl_->spawn_queue.clear();
+    }
+    impl_->spawn_cv.notify_all();
+    if (impl_->spawn_thread.joinable()) {
+        impl_->spawn_thread.join();
+    }
+    // Fail queued-but-never-started spawns. The caller actor may already be
+    // gone, so drop the pending wait without touching the caller's lua_State
+    // (its VM may be destroyed); a leaked registry ref in a dying VM is
+    // harmless.
+    for (const auto& job : dropped_jobs) {
+        cancel_actor_call_timeout(job.session);
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->pending_calls.erase(job.session);
+    }
+
+    // Detach the plugin hooks first so plugin threads can no longer post new
+    // work into this (dying) manager. A hook copied just before the clear
+    // may still fire during teardown — that window exists only during
+    // process shutdown.
+    shield::plugin::global_host().set_lua_service_hooks({});
+
     // Cancel pending timer/fork callbacks for every owned service
     // before this manager's state (and the service VMs it owns) is destroyed.
-    // TimerManager lives in LuaRuntime, which outlives this manager; without
-    // this cleanup its sol::function/std::function callbacks would be released
-    // after the owning lua_State is already closed.
+    // Without this cleanup the actor_timers' sol::function/std::function
+    // callbacks would be released after the owning lua_State is already
+    // closed.
     std::vector<std::string> service_ids;
     std::vector<caf::actor> actors_to_stop;
     {
@@ -646,7 +711,7 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                 std::to_string(std::hash<std::string_view>{}(module));
         }
         {
-            std::shared_lock lock(impl_->registry_mutex);
+            std::unique_lock lock(impl_->registry_mutex);
             if (impl_->services.contains(service_name)) {
                 return SpawnResult::error("service already exists: " +
                                           service_name);
@@ -655,9 +720,35 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                 return SpawnResult::error("service name already exists: " +
                                           service_name);
             }
+            if (impl_->reserved_names.contains(service_name)) {
+                return SpawnResult::error("service name already reserved: " +
+                                          service_name);
+            }
         }
         if (!Impl::valid_name(service_name)) {
             return SpawnResult::error("invalid service name: " + service_name);
+        }
+
+        // Reserve the name for the whole init phase: concurrent spawns with
+        // the same name fail fast, while query_service still cannot see the
+        // name until it is published after a successful on_init. The guard
+        // rolls the reservation back on every failure path; the success path
+        // clears it under the publish lock below.
+        struct NameReservation {
+            Impl* impl;
+            std::string name;
+            bool published = false;
+            ~NameReservation() {
+                if (published) {
+                    return;
+                }
+                std::unique_lock lock(impl->registry_mutex);
+                impl->reserved_names.erase(name);
+            }
+        } reservation{impl_.get(), service_name};
+        {
+            std::unique_lock lock(impl_->registry_mutex);
+            impl_->reserved_names.insert(service_name);
         }
 
         const std::string script_path = impl_->resolve_module(module);
@@ -801,6 +892,8 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             impl_->published_names[service_name] = service_name;
             impl_->owned_names[service_name].insert(service_name);
             impl_->service_order.push_back(service_name);
+            impl_->reserved_names.erase(service_name);
+            reservation.published = true;
         }
 
         // on_init succeeded: tell the actor to install its real behavior and
@@ -1210,20 +1303,125 @@ void LuaServiceManager::shutdown_all(std::string_view reason) {
     }
 }
 
-void LuaServiceManager::stop_worker() {
-    // No-op: worker thread was removed during CAF migration.
-    // Kept for backward compatibility with bootstrap.cpp.
+bool LuaServiceManager::enqueue_async_spawn(uint64_t session,
+                                            std::string module,
+                                            std::string opts_json) {
+    if (impl_->stopping.load()) {
+        return false;
+    }
+    {
+        std::lock_guard lock(impl_->spawn_mutex);
+        if (impl_->spawn_stop) {
+            return false;
+        }
+        impl_->spawn_queue.push_back(
+            Impl::SpawnJob{session, std::move(module), std::move(opts_json)});
+    }
+    impl_->spawn_cv.notify_one();
+    return true;
 }
 
-void LuaServiceManager::attach_actor_system(caf::actor_system& system) {
-    // No-op: actor system is now injected via constructor.
-    // Kept for backward compatibility with bootstrap.cpp.
+void LuaServiceManager::spawn_worker_loop() {
+    std::unique_lock lock(impl_->spawn_mutex);
+    while (true) {
+        impl_->spawn_cv.wait(lock, [this] {
+            return impl_->spawn_stop || !impl_->spawn_queue.empty();
+        });
+        if (impl_->spawn_stop && impl_->spawn_queue.empty()) {
+            return;
+        }
+        Impl::SpawnJob job = std::move(impl_->spawn_queue.front());
+        impl_->spawn_queue.pop_front();
+        lock.unlock();
+        SpawnResult result = spawn(job.module, job.opts_json);
+        finish_async_spawn(job.session, result);
+        lock.lock();
+    }
 }
 
-bool LuaServiceManager::has_service_actor(const std::string& service_id) const {
-    std::shared_lock lock(impl_->registry_mutex);
-    return impl_->service_actors.find(service_id) !=
-           impl_->service_actors.end();
+void LuaServiceManager::finish_async_spawn(uint64_t session,
+                                           const SpawnResult& result) {
+    bool caller_waiting = false;
+    bool caller_alive = false;
+    std::optional<caf::actor> caller_actor;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto pending_it = impl_->pending_calls.find(session);
+        if (pending_it != impl_->pending_calls.end()) {
+            caller_waiting = true;
+            auto actor_it =
+                impl_->service_actors.find(pending_it->second.caller_service);
+            if (actor_it != impl_->service_actors.end() && actor_it->second) {
+                caller_alive = true;
+                caller_actor = actor_it->second;
+            }
+        }
+    }
+
+    if (!caller_waiting) {
+        // The caller already resumed on timeout while init was still running.
+        // Roll the successfully spawned child back so "spawn timeout" keeps
+        // its documented meaning (init timeout -> service not started).
+        if (result.success) {
+            exit(result.service_id, "timeout");
+        }
+        return;
+    }
+
+    if (!caller_alive) {
+        // Caller service is gone (typically runtime shutdown). Drop the wait
+        // without touching its lua_State — the VM may already be destroyed.
+        // The child stays running; teardown handles it during shutdown.
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->pending_calls.erase(session);
+        return;
+    }
+
+    nlohmann::json values;
+    bool ok = result.success;
+    if (result.success) {
+        values = nlohmann::json::array({result.service_id});
+    } else {
+        std::string code = "spawn_failed";
+        if (result.error_message.find("timeout") != std::string::npos) {
+            code = "spawn_timeout";
+        } else if (result.error_message.find("on_init failed") !=
+                   std::string::npos) {
+            code = "init_failed";
+        }
+        values = nlohmann::json::array(
+            {nlohmann::json::object({{"code", code},
+                                     {"message", result.error_message},
+                                     {"retryable", false}})});
+    }
+
+    // Route through the caller's actor mailbox (same channel as coroutine
+    // call responses): resume_caller must run on the caller actor thread.
+    CallResponseMessage response;
+    response.session = session;
+    response.ok = ok;
+    response.values = std::move(values);
+    caf::anon_send(*caller_actor, std::move(response));
+}
+
+void LuaServiceManager::panic_current(std::string_view reason) {
+    const std::string service_id = current_service_id();
+    if (service_id.empty()) {
+        return;
+    }
+    std::shared_ptr<LuaVM> service;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto it = impl_->services.find(service_id);
+        if (it != impl_->services.end()) {
+            service = it->second;
+        }
+    }
+    if (service) {
+        impl_->runtime.invoke_hook(service, "on_panic", std::string(reason),
+                                   "explicit", "");
+    }
+    request_current_exit("panic");
 }
 
 std::string LuaServiceManager::current_service_id() const {

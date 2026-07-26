@@ -39,11 +39,9 @@ shield::run(argc, argv)
   │     - 基础类型注册
   │     - 全局 monotonic clock 初始化
   │
-  ├─ 5. 初始化 shield_core
-  │     - 创建 ServiceRegistry
-  │     - 创建 MessageRouter
-  │     - 创建 TimerScheduler
-  │     - 创建 CoroutineScheduler
+  ├─ 5. 初始化 shield_core / CAF
+  │     - 注册 CAF 类型（initialize_caf_types）
+  │     - 创建 caf::actor_system（scheduler 线程数来自 --workers）
   │     - 失败：输出错误，exit(1)
   │
   ├─ 6. 初始化数据层（如配置）
@@ -196,10 +194,9 @@ Phase 1 参数：
   │     - 停止 HTTP 端点
   │
   ├─ 8. 清理核心
-  │     - 释放 ServiceRegistry
-  │     - 释放 MessageRouter
-  │     - 释放 TimerScheduler
+  │     - 停止并释放所有 service actor（shutdown_all）
   │     - 释放所有 Lua VM
+  │     - 释放 caf::actor_system
   │
   └─ 9. 输出关闭日志，exit(0)
 ```

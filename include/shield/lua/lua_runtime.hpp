@@ -23,6 +23,10 @@ public:
 
     const std::string& id() const { return service_id_; }
 
+    // Node this handle routes to. Single-node runtime: always 0 (local).
+    // Cluster routing will carry a real NodeId once remote services exist.
+    uint32_t node() const { return 0; }
+
     // Check if handle is valid
     bool valid() const { return !service_id_.empty(); }
 
@@ -155,12 +159,11 @@ public:
                              std::string* error = nullptr);
 
     // Invoke a service method inside a Lua coroutine so it may yield via
-    // shield.sleep / (future) coroutine-aware call. Used by the async message
-    // dispatch path (process_mailbox). If the handler completes without
-    // yielding it behaves like call_service_method; if it yields, this returns
-    // true (no error) and the suspended coroutine is resumed later by the
-    // runtime (e.g. a sleep timer). Return values are not collected on the
-    // async path (returns is ignored).
+    // shield.sleep / coroutine-aware call. Used by the CAF actor dispatch path.
+    // If the handler completes without yielding it behaves like
+    // call_service_method; if it yields, this returns true (no error) and the
+    // suspended coroutine is resumed later by the runtime (e.g. a sleep timer).
+    // Return values are not collected on the async path (returns is ignored).
     bool call_service_method_coroutine(std::shared_ptr<LuaVM> vm,
                                        std::string_view method_name,
                                        const nlohmann::json& args,

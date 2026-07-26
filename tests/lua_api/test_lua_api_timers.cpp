@@ -1,9 +1,9 @@
 // LAPI-007: Timer and task API.
 //
 // Verifies that shield.timer_once / shield.timer schedule callbacks through
-// the runtime's TimerManager, and that those callbacks only fire when the
-// worker (or an explicit pump_once) drives the runtime. shield.fork is also
-// covered here because it shares the same worker pump path.
+// the CAF actor system, and that those callbacks fire without any worker thread
+// or explicit pump_once driver. shield.fork is also covered here because it
+// shares the same CAF actor dispatch path.
 //
 // shield.sleep is covered for handler coroutine yield/resume semantics. Timer
 // callbacks and fork tasks are currently protected non-coroutine calls.

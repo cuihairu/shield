@@ -64,7 +64,6 @@ BOOST_AUTO_TEST_CASE(SpawnCreatesCafActorHandleInternally) {
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                                 opts_for("caf_spawned").dump());
     BOOST_REQUIRE(result.success);
-    BOOST_CHECK(manager.has_service_actor("caf_spawned"));
 }
 
 BOOST_AUTO_TEST_CASE(ExitRemovesCafActorMapping) {
@@ -77,10 +76,11 @@ BOOST_AUTO_TEST_CASE(ExitRemovesCafActorMapping) {
     auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                                 opts_for("caf_exit_test").dump());
     BOOST_REQUIRE(result.success);
-    BOOST_CHECK(manager.has_service_actor("caf_exit_test"));
 
     manager.exit(result.service_id, "test_exit");
-    BOOST_CHECK(!manager.has_service_actor("caf_exit_test"));
+    // After exit, sending to the service should fail (actor torn down).
+    BOOST_CHECK(!manager.send(result.service_id, "echo",
+                              nlohmann::json::array({"hello"})));
 }
 
 BOOST_AUTO_TEST_CASE(CafActorMappingCleanedOnShutdownAll) {
@@ -96,12 +96,13 @@ BOOST_AUTO_TEST_CASE(CafActorMappingCleanedOnShutdownAll) {
                            opts_for("caf_shutdown_b").dump());
     BOOST_REQUIRE(a.success);
     BOOST_REQUIRE(b.success);
-    BOOST_CHECK(manager.has_service_actor("caf_shutdown_a"));
-    BOOST_CHECK(manager.has_service_actor("caf_shutdown_b"));
 
     manager.shutdown_all("shutdown_test");
-    BOOST_CHECK(!manager.has_service_actor("caf_shutdown_a"));
-    BOOST_CHECK(!manager.has_service_actor("caf_shutdown_b"));
+    // After shutdown, sending to either service should fail.
+    BOOST_CHECK(!manager.send("caf_shutdown_a", "echo",
+                              nlohmann::json::array({"hello"})));
+    BOOST_CHECK(!manager.send("caf_shutdown_b", "echo",
+                              nlohmann::json::array({"hello"})));
 }
 
 BOOST_AUTO_TEST_CASE(CafActorMappingCleanedOnDestruction) {
@@ -115,7 +116,6 @@ BOOST_AUTO_TEST_CASE(CafActorMappingCleanedOnDestruction) {
         auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                                     opts_for("caf_destructor").dump());
         BOOST_REQUIRE(result.success);
-        BOOST_CHECK(manager.has_service_actor("caf_destructor"));
         // manager goes out of scope; no crash expected
     }
     // If we reach here, destruction was clean
@@ -170,7 +170,7 @@ BOOST_AUTO_TEST_CASE(ForkExecutesWithoutWorkerWhenActorSystemAttached) {
     BOOST_REQUIRE(result.success);
 
     // Fork routes through the service actor (CAF), so it executes without any
-    // pump_once driver — the actor drains fork_task_atom from its own mailbox.
+    // pump_once driver — the actor drains fork_task_atom from its own queue.
     BOOST_CHECK(wait_until(
         [&]() {
             CallResult cr = manager.call(result.service_id, "get_fork_count",
@@ -259,25 +259,6 @@ BOOST_AUTO_TEST_CASE(SyncCallToNonexistentService) {
         manager.call("nonexistent_service", "method", nlohmann::json::array());
     BOOST_CHECK(!cr.success);
     BOOST_CHECK(cr.error_message.find("not found") != std::string::npos);
-}
-
-// Step 3: sync_call to service without actor falls back to direct call.
-BOOST_AUTO_TEST_CASE(SyncCallFallbackWithoutActor) {
-    caf::actor_system_config caf_cfg;
-    caf::actor_system system(caf_cfg);
-    LuaRuntime runtime;
-    LuaServiceManager manager(runtime, system);
-    // No attach_actor_system — no CAF actors.
-
-    auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
-                                opts_for("sync_fallback").dump());
-    BOOST_REQUIRE(result.success);
-
-    // Should use direct-call fallback (no CAF actor).
-    CallResult cr =
-        manager.call(result.service_id, "echo", R"(["world"])"_json);
-    BOOST_REQUIRE(cr.success);
-    BOOST_CHECK_EQUAL(cr.values[0].get<std::string>(), "world");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

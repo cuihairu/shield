@@ -76,7 +76,7 @@ Harness 要求：
 | LAPI-004-02 | target by handle | send | receiver 收到 |
 | LAPI-004-03 | target missing | send | `false, service_not_found` |
 | LAPI-004-04 | method missing | send | dead letter 记录 |
-| LAPI-004-05 | mailbox full | send | `mailbox_full` |
+| ~~LAPI-004-05~~ | ~~mailbox full~~ | ~~send~~ | ~~legacy Shield Mailbox 已删除，CAF actor mailbox 无界，此用例移除~~ |
 | LAPI-004-06 | self-send | send self | 不 reentrant，下一调度点执行 |
 
 ## LAPI-005 Message Call
@@ -91,6 +91,22 @@ Harness 要求：
 | LAPI-005-06 | timeout | call_timeout | `false, timeout` |
 | LAPI-005-07 | late response | callee returns after timeout | response discarded |
 | LAPI-005-08 | nested call | handler calls another service | runtime thread 不阻塞 |
+
+## LAPI-005A Lua-driven Spawn / Exit / Panic
+
+`tests/lua_api/test_lua_api_spawn.cpp`（scripts: `spawn_parent.lua`、
+`spawn_child.lua`、`spawn_fail_child.lua`、`spawn_in_init_parent.lua`、
+`spawn_panic_service.lua`、`spawn_watcher.lua`）。
+
+| Case | 设置 | 操作 | 断言 |
+| --- | --- | --- | --- |
+| LAPI-005A-01 | parent on_init | `shield.spawn`（VM 主线程） | 同步路径成功，child published，handle `node()==0` |
+| LAPI-005A-02 | handler 协程 spawn 慢 init child | spawn 进行中 call parent `ping` | parent 不阻塞（<400ms），spawn 完成返回正确 handle |
+| LAPI-005A-03 | 异步 spawn 持有 name reservation | 同名 spawn | `service name already reserved` 快速失败，原 spawn 正常完成 |
+| LAPI-005A-04 | child `on_init` 返回 `nil, err` | 协程 spawn | `nil, {code="init_failed"}`，name 回滚可再次 spawn |
+| LAPI-005A-05 | handler 调 `shield.exit` | send `exit_now` | service 停止，name 注销 |
+| LAPI-005A-06 | `shield.self():node()` | call `self_node` | `0`（本地） |
+| LAPI-005A-07 | handler 调 `shield.panic("test panic")` | watcher 观察 | `on_panic` 收到 `{type="explicit"}`，service 退出 |
 
 ## LAPI-006 Context
 
@@ -218,11 +234,11 @@ Harness 要求：
 
 | Case | 延迟原因 |
 | --- | --- |
-| ~~LAPI-005-06~~ | ~~call timeout 未实现~~ 已实现：`check_call_timeouts` 已接入 `pump_once`，LAPI-005-06 覆盖协程 timeout + 同步降级 ✅ |
+| ~~LAPI-005-06~~ | ~~call timeout 未实现~~ 已实现：call timeout 由 CAF delayed `call_timeout_atom` 驱动，LAPI-005-06 覆盖协程 timeout + 同步调用 ✅ |
 | ~~LAPI-005-07~~ | ~~late response 丢弃~~ call timeout 已实现，超时后 caller 已 resume；callee 返回时 `resume_caller` 在 `pending_calls` 中找不到 session，静默丢弃。行为正确 ✅ |
-| ~~LAPI-005-08~~ | ~~nested call~~ 协程路径支持：caller yield 后 worker 处理 callee mailbox，`CallApiFromLuaWrapsRuntimeResult` 测试覆盖嵌套 call ✅ |
-| LAPI-006-04 | trace id 传播：`shield.trace()` 返回固定值 `"trace:0"`，完整链路传播属于 Phase 2+。当前返回值可被调用，不会报错 |
-| ~~LAPI-006-05~~ | ~~deadline 可见性~~ 已实现：`shield.deadline()` 从 dispatch context 读取，通过消息传播 ✅ |
+| ~~LAPI-005-08~~ | ~~nested call~~ 协程路径支持：caller yield 后 CAF actor 处理 callee 消息，`CallApiFromLuaWrapsRuntimeResult` 测试覆盖嵌套 call ✅ |
+| LAPI-006-04 | trace id 传播：消息字段携带通道已实现（send/call 会把 `current_trace_id` 写入消息），但 runtime 当前不生成 trace id，`shield.trace()` 恒返回 nil。trace id 生成与完整链路传播属于 Phase 2+ |
+| ~~LAPI-006-05~~ | ~~deadline 可见性~~ 读取/传播通道已实现：`shield.deadline()` 从 dispatch context 读取，字段随消息传播；但 runtime 当前不为 call 赋值 deadline，`shield.deadline()` 恒返回 nil。deadline 赋值策略属于 Phase 2+ |
 | ~~LAPI-007-04~~ | ~~`on_error` hook 调用~~ 已实现：`invoke_hook` 调用 service table 上的 `on_error`，`OnErrorHookCalledOnHandlerThrow` 测试覆盖 ✅ |
 | ~~LAPI-007-05~~ | ~~`shield.sleep` coroutine 语义~~ 已由 LAPI-007-08 覆盖 ✅ |
 | LAPI-008-02/03/06 | 缺失 binding / 目标 instance unavailable 的 `module_unavailable` 需要插件 mock harness 覆盖 |

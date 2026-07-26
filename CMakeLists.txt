@@ -361,15 +361,11 @@ target_link_libraries(shield_config
 )
 
 # -----------------------------------------------------------------------------
-# shield_core - Pure core (service registry, message, timer, CAF adapter)
+# shield_core - CAF message contract (service_message.hpp) + CAF type init
 # DEPENDENCY CHECK: Must NOT link Lua, Asio/Beast, DB/Redis, log implementation
 # -----------------------------------------------------------------------------
 add_library(shield_core STATIC
     src/caf_initializer.cpp
-    src/core/service_handle.cpp
-    src/core/service_registry.cpp
-    src/core/message.cpp
-    src/core/caf_adapter.cpp
 )
 
 target_include_directories(shield_core

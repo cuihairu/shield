@@ -6,7 +6,7 @@
 
 `MessageEnvelope` 是 runtime 内部信封，Lua 用户不直接构造。
 
-> 注：下面的 C++ 结构是概念模型，用于说明字段语义；实际实现见 `include/shield/core/message.hpp`。service call 的请求-响应关联由 `shield_core` 基于 CAF request/reply 与 coroutine pending/resume 维护，不在 Lua API 中暴露。
+> 注：下面的 C++ 结构是概念模型，用于说明字段语义；实际实现见 `include/shield/core/service_message.hpp`（`ServiceMessage` / `SyncCallMessage` / `CallResponseMessage`）。service call 的请求-响应关联由 `LuaServiceManager` 基于 CAF actor 消息与 coroutine pending/resume 维护，不在 Lua API 中暴露。
 
 ```cpp
 enum class MessageKind {
@@ -271,21 +271,16 @@ Phase 1 的 `send` 只冻结最小投递语义，不暴露 QoS、可靠投递或
 - target 可以是 handle 或 name。
 - target 是 name 时，每次发送动态 query registry。
 - target 是 handle 时，直接按 handle 路由。
-- mailbox 满时返回 `mailbox_full` 或同等级明确错误，不阻塞调用方。
+- CAF actor mailbox 当前无界，因此 `send` 在本地投递时不会返回 `mailbox_full`；背压与 QoS 策略为后续设计项。
 
 可靠处理必须用 `shield.call` 或业务 ACK。
 
 ### Deferred 高级选项
 
-以下选项是后续 mailbox/QoS 设计草案，不属于 Phase 1 Lua API，也不进入当前验收矩阵。引入前必须先更新 [Lua API 契约](lua-api.md) 和 [Lua API 测试用例](lua-api-tests.md)。
+以下选项是后续消息/QoS 设计草案，不属于 Phase 1 Lua API，也不进入当前验收矩阵。引入前必须先更新 [Lua API 契约](lua-api.md) 和 [Lua API 测试用例](lua-api-tests.md)。
 
 ```lua
 local ok, err = shield.send(target, "event", data, {
-  -- 背压策略（当 mailbox 满时）
-  backpressure = "drop_oldest",  -- 丢弃最旧消息
-  -- backpressure = "drop_newest",  -- 丢弃最新消息（默认）
-  -- backpressure = "block",        -- 阻塞直到有空间
-
   -- QoS 优先级
   priority = "high",  -- "low" | "normal" | "high" | "urgent"
 
@@ -293,14 +288,6 @@ local ok, err = shield.send(target, "event", data, {
   reliable = false,   -- true 时 runtime 会跟踪投递状态
 })
 ```
-
-**背压策略：**
-
-| 策略 | 行为 | 适用场景 |
-|------|------|----------|
-| `drop_newest` | 丢弃新消息（默认） | 实时性优先，允许丢包 |
-| `drop_oldest` | 丢弃旧消息 | 状态更新，只关心最新值 |
-| `block` | 阻塞生产者 | 可靠性优先，不能丢消息 |
 
 **优先级：**
 
@@ -311,12 +298,11 @@ local ok, err = shield.send(target, "event", data, {
 | `normal` | 2 | 普通优先级（默认） |
 | `low` | 3 | 低优先级 |
 
-优先级影响 mailbox 内的消息排序，高优先级消息优先被取出处理。
+优先级为后续设计项，当前 CAF actor mailbox 不保证消息排序。
 
-当前实现状态：Phase 1 smoke test 已支持单节点本地 service name 字符串路由，
-并同步调用目标 Lua method。它用于验证 Lua API、参数传递、`sender()` 和错误
-返回形态；最终 mailbox、future scheduling、背压、dead letter、ServiceHandle
-路由和非 reentrant self-send 语义仍未完成。
+当前实现状态：Phase 1 已支持单节点本地 service name 字符串路由，消息通过
+CAF actor 异步投递到目标 service。`shield.call` 同步调用通过 CAF actor + 条件
+变量阻塞等待实现。非 reentrant self-send 已实现。
 
 ## shield.call 返回格式
 

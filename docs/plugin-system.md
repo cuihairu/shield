@@ -405,6 +405,28 @@ typedef struct shield_host_api_v1 {
     int (*lua_add_path)(shield_plugin_context_v1* ctx,
                         const char* path,
                         int is_cpath);
+
+    // 把 plugins.bindings 的逻辑名解析为目标 instance id。返回指针有效期到
+    // 同一线程下一次调用；未命中返回 NULL。
+    const char* (*binding_instance_id)(shield_plugin_context_v1* ctx,
+                                       const char* binding);
+
+    // 返回当前线程正在执行的 Lua service dispatch 的 service id；不在
+    // dispatch 中（模块加载、console eval、插件线程）返回 NULL。异步回调
+    // 需要在注册时捕获它，并经 lua_post_to_service 回到该 service ——
+    // 插件线程上绝不允许直接调用 Lua 函数。
+    const char* (*lua_current_service_id)(shield_plugin_context_v1* ctx);
+
+    // 投递一个任务到指定 service 的 actor 调度点执行（与该 service 的
+    // handler 串行，因此 fn 可以安全触碰该 service 的 lua_State）。host
+    // 保证 destroy_fn(user_data) 恰好被调用一次：任务执行时在 fn 之后；
+    // 任务被丢弃（如 service exit）时单独调用。返回 0 成功；非 0 表示
+    // 未调度，user_data 仍归调用方所有。
+    int (*lua_post_to_service)(shield_plugin_context_v1* ctx,
+                               const char* service_id,
+                               void (*fn)(void* user_data),
+                               void* user_data,
+                               void (*destroy_fn)(void* user_data));
 } shield_host_api_v1;
 ```
 

@@ -14,7 +14,7 @@ namespace shield::console {
 ///
 /// Thread-safe subsystems (PluginHost, Config, ClusterManager, Logger) are
 /// queried directly. Lua service queries are dispatched through
-/// enqueue_forked_task to run on the Lua worker thread.
+/// enqueue_forked_task to run on the owning service actor.
 class RootCommands {
 public:
     RootCommands(shield::lua::LuaServiceManager& lua_mgr);

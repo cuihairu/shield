@@ -156,8 +156,9 @@ BOOST_AUTO_TEST_CASE(LAPI_004_04_SendMissingMethodIsAcceptedButNotDispatched) {
         std::chrono::seconds(1)));
 }
 
-// LAPI-004-05: MailboxFull test removed — CAF actor mailbox is unbounded.
-// Backpressure is deferred per docs/runtime-messaging.md.
+// LAPI-004-05: MailboxFull test removed — the legacy Shield Mailbox no longer
+// exists; CAF actor mailboxes are unbounded. Backpressure is deferred per
+// docs/runtime-messaging.md.
 
 BOOST_AUTO_TEST_CASE(LAPI_004_06_SelfSendIsQueued) {
     caf::actor_system_config cfg;

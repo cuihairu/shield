@@ -177,9 +177,9 @@ Shield 的公共契约按“谁拥有、谁定义、谁测试”分配：
 
 | 对象 | owner | 可见范围 | 是否可跨 Service 传递 | 说明 |
 | --- | --- | --- | --- | --- |
-| `ServiceHandle` | `shield_core` | Lua + C++ | 可以 | 唯一可作为 `send/call` target 的 opaque Service reference |
-| `ServiceRegistry` | `shield_core` | runtime 内部 | 不适用 | 管理 name reserve/publish/query/unregister |
-| `MessageEnvelope` | `shield_core` | runtime 内部 | 可以编码 | 普通 Service send/call 信封 |
+| `ServiceHandle` | `shield_lua` | Lua + C++ | 可以 | 唯一可作为 `send/call` target 的 opaque Service reference |
+| `ServiceRegistry` | `shield_lua` | runtime 内部 | 不适用 | 管理 name reserve/publish/query/unregister；实现于 `LuaServiceManager` 内部 |
+| `MessageEnvelope` | `shield_lua` | runtime 内部 | 可以编码 | 普通 Service send/call 信封；CAF 传输类型见 `shield/core/service_message.hpp` |
 | Lua VM | `shield_lua` | runtime 内部 | 不可以 | 每个 Service 私有，随 actor 生命周期管理 |
 | `SessionHandle` | `shield_net` | Gateway runtime 内部 | 不可以 | live 连接 owner；不进入业务 Lua 或 CAF payload |
 | `SessionRoutingContext` | Gateway runtime | runtime 内部 | 不可以 | session 绑定（target ServiceHandle、player_id、epoch、protocol profile） |

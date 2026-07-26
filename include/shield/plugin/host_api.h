@@ -8,9 +8,9 @@
 
 #pragma once
 
-#include "shield/plugin/abi.h"
-
 #include <stdint.h>
+
+#include "shield/plugin/abi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,8 +19,8 @@ extern "C" {
 // Log levels matching shield::log.
 enum shield_log_level {
     SHIELD_LOG_DEBUG = 0,
-    SHIELD_LOG_INFO  = 1,
-    SHIELD_LOG_WARN  = 2,
+    SHIELD_LOG_INFO = 1,
+    SHIELD_LOG_WARN = 2,
     SHIELD_LOG_ERROR = 3,
 };
 
@@ -28,12 +28,13 @@ enum shield_log_level {
 // `code` is a stable dotted identifier (e.g. "plugin.abi.mismatch").
 // String fields are NULL-terminated UTF-8 and may be NULL when not applicable.
 struct shield_error_v1 {
-    const char* code;          // stable code, never NULL on failure
-    const char* message;       // human-readable detail
-    const char* hint;          // optional remediation hint
-    const char* package_id;    // package involved, may be NULL
-    const char* instance_id;   // instance involved, may be NULL
-    const char* phase;         // scan|catalog|plan|resolve|load|create|start|lua_register
+    const char* code;         // stable code, never NULL on failure
+    const char* message;      // human-readable detail
+    const char* hint;         // optional remediation hint
+    const char* package_id;   // package involved, may be NULL
+    const char* instance_id;  // instance involved, may be NULL
+    const char*
+        phase;  // scan|catalog|plan|resolve|load|create|start|lua_register
 };
 
 // Opaque per-instance context. The host allocates one per instance and the
@@ -44,10 +45,8 @@ struct shield_plugin_context_v1;
 // Host function table. The host populates every slot before calling create().
 struct shield_host_api_v1 {
     // Emit a log line tagged with the package and instance.
-    void (*log)(enum shield_log_level level,
-                const char* package_id,
-                const char* instance_id,
-                const char* message);
+    void (*log)(enum shield_log_level level, const char* package_id,
+                const char* instance_id, const char* message);
 
     // Report a structured error. The host logs it and may escalate (e.g.
     // fail a required instance). Does not return.
@@ -66,8 +65,7 @@ struct shield_host_api_v1 {
     // the interface. Returns the dependency's interface vtable pointer, or
     // NULL if the dependency is absent (optional deps may legitimately be).
     const void* (*dependency)(struct shield_plugin_context_v1* ctx,
-                              const char* name,
-                              const char* interface_name);
+                              const char* name, const char* interface_name);
 
     // Return the host's lua_State*. NULL if the host is running without a
     // Lua runtime (pure C++ mode). During register_lua this is non-NULL.
@@ -77,8 +75,7 @@ struct shield_host_api_v1 {
     // (is_cpath == 1). Relative paths resolve against the plugin package
     // root directory. Multiple calls accumulate. Returns 0 on success.
     // Typical use: ctx->host_api->lua_add_path(ctx, "lua/?.lua", 0).
-    int (*lua_add_path)(struct shield_plugin_context_v1* ctx,
-                        const char* path,
+    int (*lua_add_path)(struct shield_plugin_context_v1* ctx, const char* path,
                         int is_cpath);
 
     // Resolve a logical name from plugins.bindings to the target instance id.
@@ -88,6 +85,26 @@ struct shield_host_api_v1 {
     // binding_instance_id call on the same thread, or NULL if absent.
     const char* (*binding_instance_id)(struct shield_plugin_context_v1* ctx,
                                        const char* binding);
+
+    // Return the id of the Lua service whose dispatch is currently executing
+    // on this thread, or NULL when not inside a service dispatch (module
+    // load, console eval, plugin thread). Async plugin callbacks that need
+    // to re-enter Lua must capture this at registration time and deliver via
+    // lua_post_to_service — never call Lua functions on a plugin thread.
+    // String valid until the next call on the same thread.
+    const char* (*lua_current_service_id)(struct shield_plugin_context_v1* ctx);
+
+    // Post a task to run on a service actor's dispatch context (serialized
+    // with that service's handlers, so fn may safely touch that service's
+    // lua_State). The host guarantees destroy_fn(user_data) is called
+    // exactly once: after fn(user_data) if the task executed, or standalone
+    // if the task was dropped before execution (e.g. service exit). Returns
+    // 0 on success; non-zero means nothing was scheduled and the caller
+    // still owns user_data.
+    int (*lua_post_to_service)(struct shield_plugin_context_v1* ctx,
+                               const char* service_id,
+                               void (*fn)(void* user_data), void* user_data,
+                               void (*destroy_fn)(void* user_data));
 };
 
 #ifdef __cplusplus

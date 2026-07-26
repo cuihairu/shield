@@ -14,7 +14,7 @@ namespace shield::lua {
 /// tests inject MockClock so that time can be advanced/set explicitly.
 ///
 /// Design decision (AD-07): C++ infrastructure time — deadlines, message
-/// timestamps, CAF delayed_send, pump scans — stays on real monotonic clock
+/// timestamps, CAF delayed_send — stays on real monotonic clock
 /// and is NOT affected by this abstraction. Only the Lua-facing business-time
 /// surface is pluggable.
 class Clock {

@@ -24,9 +24,9 @@ void LuaCommands::register_all(CommandDispatcher& dispatcher) {
     dispatcher.register_command(
         "attach", "Enter interactive Lua REPL for a service (attach <service>)",
         [this](auto& s, auto& a) { cmd_attach(s, a); });
-    dispatcher.register_command(
-        "eval", "Execute Lua code in a sandbox (eval <code>)",
-        [this](auto& s, auto& a) { cmd_eval(s, a); });
+    dispatcher.register_command("eval",
+                                "Execute Lua code in a sandbox (eval <code>)",
+                                [this](auto& s, auto& a) { cmd_eval(s, a); });
 
     // Set the Lua line handler for attached sessions
     dispatcher.set_lua_line_handler(
@@ -35,7 +35,7 @@ void LuaCommands::register_all(CommandDispatcher& dispatcher) {
 }
 
 void LuaCommands::cmd_attach(shield::net::ConsoleSession& session,
-                              const std::vector<std::string>& args) {
+                             const std::vector<std::string>& args) {
     if (args.empty()) {
         nlohmann::json resp = {{"type", "error"},
                                {"message", "Usage: attach <service>"}};
@@ -45,24 +45,9 @@ void LuaCommands::cmd_attach(shield::net::ConsoleSession& session,
 
     const auto& service_name = args[0];
 
-    // Verify the service exists (via enqueue_forked_task for thread safety)
-    auto promise = std::make_shared<std::promise<bool>>();
-    auto future = promise->get_future();
-    lua_mgr_.enqueue_forked_task(
-        "", [&mgr = lua_mgr_, service_name, promise]() {
-            auto id = mgr.query_service(service_name);
-            promise->set_value(!id.empty());
-        });
-
-    if (future.wait_for(std::chrono::seconds(2)) !=
-        std::future_status::ready) {
-        nlohmann::json resp = {
-            {"type", "error"}, {"message", "timeout verifying service"}};
-        session.send_line(resp.dump());
-        return;
-    }
-
-    if (!future.get()) {
+    // Verify the service exists. query_service only reads the registry under
+    // a shared lock, so it is safe to call directly from the console thread.
+    if (lua_mgr_.query_service(service_name).empty()) {
         nlohmann::json resp = {
             {"type", "error"},
             {"message", "Service not found: " + service_name}};
@@ -132,13 +117,15 @@ bool LuaCommands::try_execute(
         lua_close(L);
     }
 
-    // Code compiles - execute on the worker thread via enqueue_forked_task
+    // Code compiles - execute on the owning service actor by enqueueing the
+    // task with the target service id (exec_lua must run in that actor's
+    // dispatch context).
     auto promise =
         std::make_shared<std::promise<std::pair<bool, nlohmann::json>>>();
     auto future = promise->get_future();
 
-    lua_mgr_.enqueue_forked_task(
-        "", [&mgr = lua_mgr_, service, code, promise]() {
+    const uint64_t task_id = lua_mgr_.enqueue_forked_task(
+        service, [&mgr = lua_mgr_, service, code, promise]() {
             nlohmann::json result;
             std::string error;
             bool ok = mgr.exec_lua(service, code, &result, &error);
@@ -149,11 +136,18 @@ bool LuaCommands::try_execute(
             }
         });
 
+    // Task rejected (service gone): report immediately instead of timing out.
+    if (task_id == 0) {
+        nlohmann::json resp = {{"type", "error"},
+                               {"message", "service unavailable: " + service}};
+        session->send_line(resp.dump());
+        return true;
+    }
+
     // Wait with timeout
-    if (future.wait_for(std::chrono::seconds(5)) !=
-        std::future_status::ready) {
-        nlohmann::json resp = {
-            {"type", "error"}, {"message", "execution timeout (5s)"}};
+    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        nlohmann::json resp = {{"type", "error"},
+                               {"message", "execution timeout (5s)"}};
         session->send_line(resp.dump());
         return true;
     }
@@ -175,15 +169,15 @@ bool LuaCommands::try_execute(
             session->send_line(resp.dump());
         }
     } else {
-        nlohmann::json resp = {
-            {"type", "error"}, {"message", data.get<std::string>()}};
+        nlohmann::json resp = {{"type", "error"},
+                               {"message", data.get<std::string>()}};
         session->send_line(resp.dump());
     }
     return true;
 }
 
 void LuaCommands::cmd_eval(shield::net::ConsoleSession& session,
-                            const std::vector<std::string>& args) {
+                           const std::vector<std::string>& args) {
     if (args.empty()) {
         nlohmann::json resp = {{"type", "error"},
                                {"message", "Usage: eval <lua code>"}};
@@ -198,35 +192,20 @@ void LuaCommands::cmd_eval(shield::net::ConsoleSession& session,
         code += args[i];
     }
 
-    // Execute in a temporary sandbox VM (not attached to any service)
-    auto promise =
-        std::make_shared<std::promise<std::pair<bool, nlohmann::json>>>();
-    auto future = promise->get_future();
-
-    lua_mgr_.enqueue_forked_task(
-        "", [&rt = lua_rt_, code, promise]() {
-            // Create a temporary VM for sandboxed eval
-            auto vm = rt.create_vm();
-            rt.register_api(vm);
-            nlohmann::json result;
-            std::string error;
-            bool ok = rt.exec_lua(vm, code, &result, &error);
-            if (ok) {
-                promise->set_value({true, result});
-            } else {
-                promise->set_value({false, nlohmann::json(error)});
-            }
-        });
-
-    if (future.wait_for(std::chrono::seconds(5)) !=
-        std::future_status::ready) {
-        nlohmann::json resp = {
-            {"type", "error"}, {"message", "execution timeout (5s)"}};
-        session.send_line(resp.dump());
-        return;
+    // Execute in a temporary sandbox VM (not attached to any service). The VM
+    // is created, used and destroyed on this console thread, so no other
+    // thread ever touches its lua_State; no actor handoff is needed.
+    auto vm = lua_rt_.create_vm();
+    lua_rt_.register_api(vm);
+    nlohmann::json result;
+    std::string error;
+    const bool ok = lua_rt_.exec_lua(vm, code, &result, &error);
+    nlohmann::json data;
+    if (ok) {
+        data = std::move(result);
+    } else {
+        data = nlohmann::json(error);
     }
-
-    auto [ok, data] = future.get();
     if (ok) {
         if (data.is_array() && data.empty()) {
             nlohmann::json resp = {{"type", "result"}, {"data", nullptr}};
@@ -239,8 +218,8 @@ void LuaCommands::cmd_eval(shield::net::ConsoleSession& session,
             session.send_line(resp.dump());
         }
     } else {
-        nlohmann::json resp = {
-            {"type", "error"}, {"message", data.get<std::string>()}};
+        nlohmann::json resp = {{"type", "error"},
+                               {"message", data.get<std::string>()}};
         session.send_line(resp.dump());
     }
 }

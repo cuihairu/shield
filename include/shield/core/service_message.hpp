@@ -2,9 +2,10 @@
 //
 // NOTE on placement: these types are defined in `namespace shield::lua` (they
 // serve the Lua service layer) but the header lives under include/shield/core/
-// because the CAF adapter in shield_core must construct and send them. The
-// source-boundary check forbids shield_core from including headers under
-// shield/lua/, so the shared transport contract has to live one layer down.
+// so that both shield_core (caf_initializer.cpp registers the type ID block)
+// and shield_lua (the service actors sending/consuming them) can use the
+// shared transport contract without shield_core depending on shield/lua/
+// headers (forbidden by the source-boundary check).
 // The types themselves depend only on CAF + nlohmann::json, both already linked
 // by shield_core, so this does not widen shield_core's dependencies.
 //
@@ -31,9 +32,7 @@
 namespace shield::lua {
 
 /// Priority mirrors the two values actually used on the CAF transport: High for
-/// system/lifecycle messages, Normal for everything else. Kept separate from
-/// Mailbox::Priority (which has 4 levels) to avoid pulling the Mailbox header
-/// into this message-type header.
+/// system/lifecycle messages, Normal for everything else.
 enum class MessagePriority : uint8_t {
     High = 0,
     Normal = 1,
@@ -107,8 +106,7 @@ CAF_ADD_ATOM(shield_lua, shield::lua, call_timeout_atom)
 // cannot race with on_init on the same Lua VM.
 CAF_ADD_ATOM(shield_lua, shield::lua, init_ready_atom)
 // fork_task_atom: shield.fork routes the task to the owning service actor
-// (payload = task_id, looked up in the pending_tasks map). Replaces the
-// worker/pump_once drain path.
+// (payload = task_id, looked up in the pending_tasks map).
 CAF_ADD_ATOM(shield_lua, shield::lua, fork_task_atom)
 
 CAF_END_TYPE_ID_BLOCK(shield_lua)

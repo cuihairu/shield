@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -27,6 +28,19 @@ class Config;
 }
 
 namespace shield::plugin {
+
+// Hooks backing the host_api lua_current_service_id / lua_post_to_service
+// slots. shield_lua registers these when a LuaServiceManager exists so
+// plugins can re-enter Lua on the owning service actor instead of touching
+// lua_State from plugin threads. shield_plugin does not link shield_lua;
+// the dependency is inverted through these std::function hooks.
+struct LuaServiceHooks {
+    // Current dispatch service id (empty when outside a dispatch).
+    std::function<std::string()> current_service_id;
+    // Post a task to a service actor. Returns task id, 0 on failure.
+    std::function<uint64_t(const std::string&, std::function<void()>)>
+        post_to_service;
+};
 
 // ---------------------------------------------------------------------------
 // Declarative model (from manifest + YAML config subtree)
@@ -199,6 +213,10 @@ public:
     // Returns false and sets `error` if any REQUIRED instance's register_lua
     // fails; non-required failures are logged and skipped.
     bool register_lua_all(struct lua_State* L, std::string& error);
+
+    // Register/clear the hooks behind host_api's lua_current_service_id and
+    // lua_post_to_service slots. Called by LuaServiceManager's ctor/dtor.
+    void set_lua_service_hooks(LuaServiceHooks hooks);
 
     // --- business access: binding name -> typed interface vtable ---
     // T must expose `static constexpr const char* interface_name`.

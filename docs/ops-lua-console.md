@@ -181,8 +181,6 @@ L1 不执行任意 Lua 代码，只暴露运行时可稳定采集的数据。
     "memory_kb": 2048
   },
   "runtime": {
-    "mailbox_size": 3,
-    "mailbox_dropped": 0,
     "pending_calls": 1,
     "timers": 5,
     "coroutines": 2,
@@ -194,7 +192,6 @@ L1 不执行任意 Lua 代码，只暴露运行时可稳定采集的数据。
 字段解释：
 
 - `memory_kb`：Lua VM 当前堆占用。语义限定为 Lua allocator 视角，不等于进程 RSS。
-- `mailbox_size` / `mailbox_dropped`：service mailbox 当前深度与丢弃数。
 - `pending_calls`：当前 coroutine-aware call 未完成数。
 - `timers`：该 service 拥有的 timer 数。
 - `coroutines`：该 service 当前挂起或活跃 coroutine 数。
@@ -381,7 +378,7 @@ Lua 内存排查最实用的能力不是单次 dump，而是 snapshot + diff。
 - 真正的 Lua table 泄漏
 - timer 未清理
 - pending call 堆积
-- mailbox/backpressure 引发的“看起来像内存涨”的现象
+- 消息堆积/背压引发的“看起来像内存涨”的现象
 
 ## 线程与时序要求
 
@@ -419,7 +416,6 @@ top retainers summary
 coroutine count
 timer count
 pending call count
-mailbox depth
 service names
 cluster node status
 plugin instance state
@@ -515,7 +511,6 @@ ops:
 > lua.inspect player.42 summary
 service: player.42
 lua_memory_kb: 2048
-mailbox: 3
 pending_calls: 1
 timers: 5
 coroutines: 2

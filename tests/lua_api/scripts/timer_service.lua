@@ -1,8 +1,8 @@
 -- Test service for LAPI-007 (Timers and Tasks)
 --
--- Drives the timer/fork API surface from on_init so that a test harness can
--- call manager->pump_once() (or rely on the worker) to fire callbacks and
--- then read back recorded state via get_callback_count / get_fork_count.
+-- Drives the timer/fork API surface from on_init. Callbacks are dispatched
+-- through the owning service actor; the test harness waits for the recorded
+-- state via get_timer_count / get_fork_count.
 
 local M = {}
 

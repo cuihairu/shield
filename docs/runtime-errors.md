@@ -12,9 +12,9 @@
 {
   code = "timeout",           -- 错误码（本文档定义）
   message = "call timeout",   -- 人类可读描述
+  retryable = true,           -- 是否建议重试（timeout=true，其他=false）
   -- 以下字段属于 Phase 2 扩展，当前未填充：
   -- source = "runtime",      -- 来源：runtime | data | network
-  -- retryable = false,       -- 是否建议重试
   -- detail = nil,            -- 可选调试信息
 }
 ```
@@ -35,18 +35,20 @@
 | `invalid_method` | send/call | 方法名非法（空、过长、含非法字符） | 否 | ✅ send 检查空/超长/on_ 前缀 |
 | `invalid_service_module` | spawn | Lua 文件未返回合法 service module table | 否 | ✅ |
 | `script_load_failed` | spawn | Lua 文件语法错误、load 失败或顶层代码抛错 | 否 | ✅ |
-| `invalid_name` | spawn | 服务名不合法（格式、长度、保留前缀） | 否 | ✅ |
-| `name_conflict` | spawn | 服务名已被占用 | 否 | ✅ |
+| `invalid_name` | spawn | 服务名不合法（格式、长度、保留前缀） | 否 | ⚠️ 当前统一返回 `spawn_failed` |
+| `name_conflict` | spawn | 服务名已被占用 | 否 | ⚠️ 当前统一返回 `spawn_failed` |
 | `encode_failed` | send/call | 消息编码失败（类型不支持、嵌套过深、循环引用） | 否 | ✅ send 检测 unsupported 类型 |
 | `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | ✅ send 检查 |
 | `service_not_found` | send/call | 目标服务不存在（name 未注册或 handle 已失效） | 是 | ✅ send 和 call 均返回 |
 | `service_dead` | send/call | 目标服务已停止 | 否 | ✅ send/call 区分 service_not_found 和 service_dead |
 | `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ✅ ClusterManager.check_node_reachable 返回 offline/suspect/removed |
-| `mailbox_full` | send | 目标服务 mailbox 达到上限 | 是 | ✅ |
 | `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | ✅ spawn 返回 init_failed 错误码 |
 | `spawn_timeout` | spawn | 服务初始化超过 `spawn_timeout`（默认 10s） | 否 | ✅ on_init 超时检测 |
 | `runtime_stopping` | send/call/spawn | 运行时正在关闭 | 否 | ✅ send/call/spawn 检查 |
 | `permission_denied` | send/call/spawn | 权限不足 | 否 | ✅ permission_check 钩子 |
+| `spawn_failed` | spawn | 其他未分类 spawn 失败（含当前 name 冲突/非法名的返回码） | 否 | ✅ spawn 默认错误码 |
+| `register_failed` | register | 发布本地 name 失败（name 冲突或非法） | 否 | ✅ register 返回 |
+| `unregister_failed` | unregister | 注销本地 name 失败 | 否 | ✅ unregister 返回 |
 | `timeout` | call | 调用超时（默认 5s） | 是 | ✅ |
 | `method_not_found` | call | 目标服务没有该方法 | 否 | ✅ |
 | `handler_error` | call | 目标服务 method 抛出未捕获异常 | 否 | ✅ call 返回 |
@@ -60,10 +62,10 @@
 
 | 错误码 | 说明 | 默认上限 | 状态 |
 |--------|------|----------|------|
-| `mailbox_full` | 单个 service mailbox 消息数超限 | 1000 | ✅ |
 | `coroutine_limit` | 单个 service coroutine 数超限 | 1000 | ✅ call_service_method_coroutine 检查 |
 | `pending_call_limit` | 单个 service 待响应 call 数超限 | 1000 | ✅ suspend_for_call 检查 |
 | `timer_limit` | 单个 service timer 数超限 | 10000 | ✅ timer_once/timer 返回 nil+error |
+| `timer_not_found` | cancel_timer 目标不存在或已完成 | — | ✅ cancel_timer 返回 false+error |
 | `fork_limit` | 单个 service fork task 数超限 | 1000 | ✅ fork 返回 nil+error |
 
 ## 三、数据插件错误

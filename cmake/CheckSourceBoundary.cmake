@@ -10,14 +10,11 @@ set(public_header_paths
 
 # Public headers allowed to include CAF / expose caf:: types. These are the
 # places where CAF legitimately leaks into the public interface:
-#   caf_adapter.hpp     - the core-internal CAF bridge (the one place that
-#                         knows about CAF in shield_core's API surface)
 #   caf_initializer.hpp - registers global meta objects before actor_system
 #   service_message.hpp - defines the CAF-native message types (ServiceMessage,
-#                         SyncCallMessage, timer/call-timeout atoms) that the
-#                         CAF adapter sends and Lua service actors consume
+#                         SyncCallMessage, timer/call-timeout atoms) that Lua
+#                         service actors send and consume
 set(public_caf_allowed_files
-  "${PROJECT_SOURCE_DIR}/include/shield/core/caf_adapter.hpp"
   "${PROJECT_SOURCE_DIR}/include/shield/caf_initializer.hpp"
   "${PROJECT_SOURCE_DIR}/include/shield/core/service_message.hpp"
 )

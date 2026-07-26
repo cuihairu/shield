@@ -131,8 +131,9 @@ round-robin、hash、按房间路由等能力应由显式 pool service 实现，
 
 单节点 CAF service runtime 维护 published name 表，支持默认 service name、
 `shield.query`、`shield.register`、`shield.unregister`、`shield.names` 和
-service exit 自动清理 owned names。完整 registry 契约包括 reserve/publish 状态机、
-opaque `ServiceHandle` userdata、ServiceId 单调分配和 stale handle 语义。
+service exit 自动清理 owned names。spawn 的 name reserve/publish 状态机与
+opaque `ServiceHandle` userdata 已实现；ServiceId 单调分配和 stale handle
+语义属于后续契约。
 
 ## 心跳与离线清理
 
@@ -175,8 +176,12 @@ Lua coroutine 会挂起直到目标 service init 成功或失败，但 runtime �
 
 单节点 CAF service runtime 按 YAML `actors[].name` 解析脚本别名，创建独立
 Lua VM，调用 `on_init(args)`，成功后发布 service name，失败则返回
-`nil, Error`。完整 spawn 契约包括 ServiceId/ServiceHandle userdata、
-name reserve 状态和 coroutine-aware 异步 spawn。
+`nil, Error`。ServiceHandle userdata、name reserve/publish 状态机和
+coroutine-aware 异步 spawn 均已实现：spawn 期间 name 处于 reserved
+状态（同名 spawn 失败、query 不可见），`on_init` 成功后 publish；
+handler 协程内 `shield.spawn` 挂起 caller，由专用 spawn worker 线程执行
+VM 创建与 `on_init`，不阻塞 caller 的 service actor。ServiceId 单调分配
+与 stale handle 语义属于后续契约。
 
 ```lua
 local h, err = shield.spawn("gateway", {
@@ -573,8 +578,10 @@ local deadline = shield.deadline()
 这些 API 只在 message handler coroutine 中有效。handler 返回后上下文失效。
 
 当前实现状态：`shield.self()`、`shield.sender()` 和 `shield.names()` 已在
-单节点 Lua service smoke test 中覆盖。返回值暂时是本地 service name 字符串，
-不是最终 opaque `ServiceHandle` userdata。
+单节点 Lua service smoke test 中覆盖。`shield.self()` 返回 opaque
+`ServiceHandle` userdata（`id()`/`node()`/`valid()`；`node()` 在单节点
+runtime 恒为 `0`）。`shield.sender()` 当前返回本地 service name 字符串，
+不是最终的 opaque sender handle。
 
 ## exit 与 shutdown
 
@@ -752,7 +759,6 @@ end
 
 | 资源 | 默认值 | 说明 |
 |------|--------|------|
-| `max_mailbox_size` | 10000 | 单个 service 的 mailbox 消息数上限 |
 | `max_coroutines_per_service` | 1000 | 单个 service 的最大 coroutine 数 |
 | `max_pending_calls_per_service` | 1000 | 单个 service 的待响应 call 数 |
 | `max_timers_per_service` | 10000 | 单个 service 的 timer 数 |
@@ -768,7 +774,6 @@ actors:
   - name: gateway
     script: scripts/gateway.lua
     limits:                          # 可选覆盖默认值
-      max_mailbox_size: 50000
       max_coroutines: 2000
       max_pending_calls: 2000
       max_timers: 20000
