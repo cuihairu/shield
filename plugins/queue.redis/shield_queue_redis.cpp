@@ -260,7 +260,12 @@ const shield_queue_v1& queue_vtable() {
 // Lua subscription (Streams-based)
 // ---------------------------------------------------------------------------
 struct lua_subscription {
-    std::shared_ptr<sw::redis::Redis> redis;
+    std::shared_ptr<sw::redis::Redis> redis;  // fallback: own connection
+    // Preferred (Phase 2 dual-path): redis.driver vtable + handle. When set,
+    // redis stays null and all commands run through the driver's shared pool
+    // via the raw command() escape hatch.
+    const shield_redis_v1* redis_driver = nullptr;
+    void* redis_handle = nullptr;
     sol::protected_function callback;
     std::thread worker;
     std::atomic<bool> running{false};
@@ -279,7 +284,190 @@ struct lua_subscription {
           channel(ch),
           consumer_name("shield-lua-" + ch),
           service_id(std::move(owner_service_id)) {}
+
+    lua_subscription(const shield_redis_v1* drv, void* handle,
+                     sol::protected_function cb, const std::string& ch,
+                     std::string owner_service_id)
+        : redis_driver(drv),
+          redis_handle(handle),
+          callback(std::move(cb)),
+          channel(ch),
+          consumer_name("shield-lua-" + ch),
+          service_id(std::move(owner_service_id)) {}
 };
+
+// ---------------------------------------------------------------------------
+// Dual-path command helpers.
+//
+// When the instance is wired to a redis.driver dependency, commands run
+// through the driver vtable's raw command() escape hatch on the driver's
+// shared connection pool; otherwise they run on the subscription's own
+// redis++ connection. NOTE: a blocking XREADGROUP through the driver pool
+// holds one pooled connection for up to kBlockMs per loop iteration — size
+// the driver's pool_size accordingly.
+// ---------------------------------------------------------------------------
+
+// (msg_id, payload) pairs extracted from one XREADGROUP reply.
+using StreamDeliveries = std::vector<std::pair<std::string, std::string>>;
+
+// XREADGROUP via the fallback redis++ connection. Returns false on error
+// (caller backs off and retries). An empty/NIL reply is not an error.
+bool read_group_own(sw::redis::Redis& redis, const std::string& channel,
+                    const std::string& consumer, StreamDeliveries* out) {
+    auto result =
+        redis.command("XREADGROUP", "GROUP", kGroupName, consumer, "COUNT",
+                      std::to_string(kReadCount), "BLOCK",
+                      std::to_string(kBlockMs), "STREAMS", channel, ">");
+    // result is an array of streams; each stream is [stream_name, [[id,
+    // fields], ...]]
+    if (!result || result->type == REDIS_REPLY_NIL) return true;
+    if (result->type != REDIS_REPLY_ARRAY) return true;
+    for (size_t si = 0; si < result->elements; ++si) {
+        auto* stream_reply = result->element[si];
+        if (!stream_reply || stream_reply->elements < 2) continue;
+        auto* entries = stream_reply->element[1];
+        if (!entries || entries->type != REDIS_REPLY_ARRAY) continue;
+        for (size_t ei = 0; ei < entries->elements; ++ei) {
+            auto* entry = entries->element[ei];
+            if (!entry || entry->elements < 2) continue;
+            // entry->element[0] = message id, entry->element[1] = fields array
+            auto* id_reply = entry->element[0];
+            auto* fields = entry->element[1];
+            if (!id_reply || !fields) continue;
+            std::string msg_id(id_reply->str, id_reply->len);
+            // Extract "payload" field. Fields are [key, value, key, value, ...]
+            std::string payload;
+            for (size_t fi = 0; fi + 1 < fields->elements; fi += 2) {
+                auto* key = fields->element[fi];
+                auto* val = fields->element[fi + 1];
+                if (key && val && key->str &&
+                    std::string(key->str, key->len) == "payload") {
+                    payload.assign(val->str, val->len);
+                    break;
+                }
+            }
+            out->emplace_back(std::move(msg_id), std::move(payload));
+        }
+    }
+    return true;
+}
+
+// XREADGROUP via the redis.driver vtable. Same reply shape as read_group_own
+// but delivered as shield_redis_value_v1 trees. Returns false on error.
+bool read_group_driver(const shield_redis_v1* drv, void* handle,
+                       const std::string& channel, const std::string& consumer,
+                       StreamDeliveries* out) {
+    std::string count = std::to_string(kReadCount);
+    std::string block = std::to_string(kBlockMs);
+    const shield_redis_arg_v1 args[] = {
+        {"XREADGROUP", 10},
+        {"GROUP", 5},
+        {kGroupName, std::strlen(kGroupName)},
+        {consumer.data(), consumer.size()},
+        {"COUNT", 5},
+        {count.data(), count.size()},
+        {"BLOCK", 5},
+        {block.data(), block.size()},
+        {"STREAMS", 7},
+        {channel.data(), channel.size()},
+        {">", 1},
+    };
+    shield_redis_value_v1* reply = nullptr;
+    shield_error_v1 err{};
+    const int rc = drv->command(handle, args, 11, &reply, &err);
+    if (rc != 0) {
+        if (reply) drv->free_value(reply);
+        return false;
+    }
+    if (!reply) return true;
+    if (reply->type == SHIELD_REDIS_ARRAY) {
+        for (uint64_t si = 0; si < reply->item_count; ++si) {
+            auto* stream = &reply->items[si];
+            if (stream->type != SHIELD_REDIS_ARRAY || stream->item_count < 2)
+                continue;
+            auto* entries = &stream->items[1];
+            if (entries->type != SHIELD_REDIS_ARRAY) continue;
+            for (uint64_t ei = 0; ei < entries->item_count; ++ei) {
+                auto* entry = &entries->items[ei];
+                if (entry->type != SHIELD_REDIS_ARRAY || entry->item_count < 2)
+                    continue;
+                auto* id_v = &entry->items[0];
+                auto* fields = &entry->items[1];
+                if (id_v->type != SHIELD_REDIS_STRING || !id_v->str) continue;
+                if (fields->type != SHIELD_REDIS_ARRAY) continue;
+                std::string msg_id(id_v->str,
+                                   static_cast<size_t>(id_v->str_len));
+                std::string payload;
+                for (uint64_t fi = 0; fi + 1 < fields->item_count; fi += 2) {
+                    auto* key = &fields->items[fi];
+                    auto* val = &fields->items[fi + 1];
+                    if (key->type == SHIELD_REDIS_STRING && key->str &&
+                        std::string(key->str, static_cast<size_t>(
+                                                  key->str_len)) == "payload" &&
+                        val->type == SHIELD_REDIS_STRING && val->str) {
+                        payload.assign(val->str,
+                                       static_cast<size_t>(val->str_len));
+                        break;
+                    }
+                }
+                out->emplace_back(std::move(msg_id), std::move(payload));
+            }
+        }
+    }
+    drv->free_value(reply);
+    return true;
+}
+
+// XACK one message through whichever connection the subscription uses.
+void xack(const lua_subscription& s, const std::string& msg_id) {
+    try {
+        if (s.redis_driver && s.redis_handle) {
+            const shield_redis_arg_v1 args[] = {
+                {"XACK", 4},
+                {s.channel.data(), s.channel.size()},
+                {kGroupName, std::strlen(kGroupName)},
+                {msg_id.data(), msg_id.size()},
+            };
+            shield_redis_value_v1* out = nullptr;
+            shield_error_v1 err{};
+            s.redis_driver->command(s.redis_handle, args, 4, &out, &err);
+            if (out) s.redis_driver->free_value(out);
+        } else if (s.redis) {
+            s.redis->command("XACK", s.channel, kGroupName, msg_id);
+        }
+    } catch (...) {
+    }
+}
+
+// XGROUP CREATE via the driver vtable. Idempotent — BUSYGROUP is ignored.
+bool ensure_group_driver(const shield_redis_v1* drv, void* handle,
+                         const std::string& stream, std::string* err_msg) {
+    const shield_redis_arg_v1 args[] = {
+        {"XGROUP", 6},
+        {"CREATE", 6},
+        {stream.data(), stream.size()},
+        {kGroupName, std::strlen(kGroupName)},
+        {"0", 1},
+        {"MKSTREAM", 8},
+    };
+    shield_redis_value_v1* out = nullptr;
+    shield_error_v1 err{};
+    const int rc = drv->command(handle, args, 6, &out, &err);
+    bool ok = true;
+    if (rc != 0 || (out && out->type == SHIELD_REDIS_ERROR)) {
+        // BUSYGROUP = group already exists; ignore.
+        const std::string msg =
+            (out && out->type == SHIELD_REDIS_ERROR && out->str)
+                ? std::string(out->str, static_cast<size_t>(out->str_len))
+                : (err.message ? err.message : "XGROUP CREATE failed");
+        if (msg.find("BUSYGROUP") == std::string::npos) {
+            ok = false;
+            if (err_msg) *err_msg = msg;
+        }
+    }
+    if (out) drv->free_value(out);
+    return ok;
+}
 
 struct queue_instance {
     shield_plugin_instance_v1 shell;
@@ -501,6 +689,34 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                     make_error_table(lua, "invalid_message", msg_err));
                 return results;
             }
+            // Driver path: XADD through redis.driver's shared pool.
+            if (inst->redis_driver && inst->redis_handle) {
+                const shield_redis_arg_v1 args[] = {
+                    {"XADD", 4},    {channel.data(), channel.size()}, {"*", 1},
+                    {"payload", 7}, {msg.data(), msg.size()},
+                };
+                shield_redis_value_v1* out = nullptr;
+                shield_error_v1 err{};
+                const int rc = inst->redis_driver->command(inst->redis_handle,
+                                                           args, 5, &out, &err);
+                const bool ok =
+                    rc == 0 && !(out && out->type == SHIELD_REDIS_ERROR);
+                const std::string emsg =
+                    ok ? std::string()
+                    : (out && out->type == SHIELD_REDIS_ERROR && out->str)
+                        ? std::string(out->str,
+                                      static_cast<size_t>(out->str_len))
+                        : (err.message ? err.message : "XADD failed");
+                if (out) inst->redis_driver->free_value(out);
+                if (ok) {
+                    results.push_back(sol::make_object(lua, true));
+                } else {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(
+                        make_error_table(lua, "redis_command_failed", emsg));
+                }
+                return results;
+            }
             std::string conn_err;
             auto redis = inst->make_redis(&conn_err);
             if (!redis) {
@@ -550,25 +766,43 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                                      "handler or on_init"));
                 return results;
             }
-            std::string conn_err;
-            auto redis = inst->make_redis(&conn_err);
-            if (!redis) {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(
-                    make_error_table(lua, "connection_failed", conn_err));
-                return results;
+            // Dual-path: use redis.driver's pool when the dependency is
+            // wired, otherwise a self-owned connection.
+            const bool use_driver = inst->redis_driver && inst->redis_handle;
+            std::shared_ptr<sw::redis::Redis> redis;
+            if (use_driver) {
+                std::string grp_err;
+                if (!ensure_group_driver(inst->redis_driver, inst->redis_handle,
+                                         channel, &grp_err)) {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(
+                        make_error_table(lua, "redis_command_failed", grp_err));
+                    return results;
+                }
+            } else {
+                std::string conn_err;
+                redis = inst->make_redis(&conn_err);
+                if (!redis) {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(
+                        make_error_table(lua, "connection_failed", conn_err));
+                    return results;
+                }
+                // Ensure consumer group
+                try {
+                    ensure_group(*redis, channel, kGroupName);
+                } catch (const std::exception& e) {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(
+                        lua, "redis_command_failed", e.what()));
+                    return results;
+                }
             }
-            // Ensure consumer group
-            try {
-                ensure_group(*redis, channel, kGroupName);
-            } catch (const std::exception& e) {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(
-                    make_error_table(lua, "redis_command_failed", e.what()));
-                return results;
-            }
-            auto sub = std::make_shared<lua_subscription>(redis, callback,
-                                                          channel, owner);
+            auto sub = use_driver ? std::make_shared<lua_subscription>(
+                                        inst->redis_driver, inst->redis_handle,
+                                        callback, channel, owner)
+                                  : std::make_shared<lua_subscription>(
+                                        redis, callback, channel, owner);
             sub->running.store(true);
             auto sub_ptr = sub;
             const shield_host_api_v1* host_api = inst->host_api;
@@ -586,83 +820,56 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                 };
                 while (sub_ptr->running.load()) {
                     try {
-                        auto result = sub_ptr->redis->command(
-                            "XREADGROUP", "GROUP", kGroupName,
-                            sub_ptr->consumer_name, "COUNT",
-                            std::to_string(kReadCount), "BLOCK",
-                            std::to_string(kBlockMs), "STREAMS",
-                            sub_ptr->channel, ">");
-                        if (!result || result->type == REDIS_REPLY_NIL)
+                        // Only the connection that executes commands differs
+                        // (driver pool vs own); the delivery semantics are
+                        // unchanged: XREADGROUP here, Lua callback + XACK on
+                        // the owning service actor via lua_post_to_service.
+                        StreamDeliveries deliveries;
+                        const bool read_ok =
+                            (sub_ptr->redis_driver && sub_ptr->redis_handle)
+                                ? read_group_driver(
+                                      sub_ptr->redis_driver,
+                                      sub_ptr->redis_handle, sub_ptr->channel,
+                                      sub_ptr->consumer_name, &deliveries)
+                                : read_group_own(
+                                      *sub_ptr->redis, sub_ptr->channel,
+                                      sub_ptr->consumer_name, &deliveries);
+                        if (!read_ok) {
+                            std::this_thread::sleep_for(
+                                std::chrono::milliseconds(100));
                             continue;
-                        if (result->type != REDIS_REPLY_ARRAY) continue;
-                        for (size_t si = 0; si < result->elements; ++si) {
-                            auto* stream_reply = result->element[si];
-                            if (!stream_reply || stream_reply->elements < 2)
-                                continue;
-                            auto* entries = stream_reply->element[1];
-                            if (!entries || entries->type != REDIS_REPLY_ARRAY)
-                                continue;
-                            for (size_t ei = 0; ei < entries->elements; ++ei) {
-                                auto* entry = entries->element[ei];
-                                if (!entry || entry->elements < 2) continue;
-                                auto* id_reply = entry->element[0];
-                                auto* fields = entry->element[1];
-                                if (!id_reply || !fields) continue;
-                                std::string msg_id(id_reply->str,
-                                                   id_reply->len);
-                                std::string payload;
-                                for (size_t fi = 0; fi + 1 < fields->elements;
-                                     fi += 2) {
-                                    auto* key = fields->element[fi];
-                                    auto* val = fields->element[fi + 1];
-                                    if (key && val && key->str &&
-                                        std::string(key->str, key->len) ==
-                                            "payload") {
-                                        payload.assign(val->str, val->len);
-                                        break;
-                                    }
-                                }
-                                auto* d =
-                                    new Delivery{sub_ptr, msg_id, payload};
-                                const int rc =
-                                    host_api && host_api->lua_post_to_service
-                                        ? host_api->lua_post_to_service(
-                                              ctx, sub_ptr->service_id.c_str(),
-                                              [](void* ud) {
-                                                  auto* d =
-                                                      static_cast<Delivery*>(
-                                                          ud);
-                                                  auto s = d->sub.lock();
-                                                  if (!s || !s->running.load())
-                                                      return;
-                                                  try {
-                                                      sol::
-                                                          protected_function_result
-                                                              r = s->callback(
-                                                                  s->channel,
-                                                                  d->payload);
-                                                      (void)r.valid();
-                                                  } catch (...) {
-                                                  }
-                                                  try {
-                                                      s->redis->command(
-                                                          "XACK", s->channel,
-                                                          kGroupName,
-                                                          d->msg_id);
-                                                  } catch (...) {
-                                                  }
-                                              },
-                                              d,
-                                              [](void* ud) {
-                                                  delete static_cast<Delivery*>(
-                                                      ud);
-                                              })
-                                        : -1;
-                                if (rc != 0) {
-                                    // Service gone or hook unavailable:
-                                    // leave the entry pending in Redis.
-                                    delete d;
-                                }
+                        }
+                        for (auto& [msg_id, payload] : deliveries) {
+                            auto* d = new Delivery{sub_ptr, msg_id, payload};
+                            const int rc =
+                                host_api && host_api->lua_post_to_service
+                                    ? host_api->lua_post_to_service(
+                                          ctx, sub_ptr->service_id.c_str(),
+                                          [](void* ud) {
+                                              auto* d =
+                                                  static_cast<Delivery*>(ud);
+                                              auto s = d->sub.lock();
+                                              if (!s || !s->running.load())
+                                                  return;
+                                              try {
+                                                  sol::protected_function_result
+                                                      r = s->callback(
+                                                          s->channel,
+                                                          d->payload);
+                                                  (void)r.valid();
+                                              } catch (...) {
+                                              }
+                                              xack(*s, d->msg_id);
+                                          },
+                                          d,
+                                          [](void* ud) {
+                                              delete static_cast<Delivery*>(ud);
+                                          })
+                                    : -1;
+                            if (rc != 0) {
+                                // Service gone or hook unavailable:
+                                // leave the entry pending in Redis.
+                                delete d;
                             }
                         }
                     } catch (const sw::redis::Error&) {
@@ -767,7 +974,8 @@ int queue_create(const shield_plugin_create_args_v1* args,
                 qi->host_api->dependency(qi->ctx, "redis", SHIELD_REDIS_V1));
             if (drv && drv->connect) {
                 char err_buf[256] = {};
-                void* handle = drv->connect(nullptr, err_buf, sizeof(err_buf));
+                void* handle =
+                    drv->connect(drv, nullptr, err_buf, sizeof(err_buf));
                 if (handle) {
                     qi->redis_driver = drv;
                     qi->redis_handle = handle;

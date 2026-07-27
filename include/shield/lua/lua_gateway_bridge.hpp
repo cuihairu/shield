@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,16 +25,19 @@ class LuaServiceManager;
 /// @brief ClientIngress message passed from Gateway to target Service VM.
 ///
 /// This is a runtime internal message, not a Lua API. The target Service VM
-/// uses route_id to select a cached handler, then decodes body_bytes by
-/// the RPC's request_schema.
+/// uses route_id to select a cached handler. body_bytes always carries the
+/// raw wire payload; when a codec plugin decoded the body on the pipeline,
+/// decoded_message carries the canonical JSON message (delivered to Lua as a
+/// table, nil when no codec decoded anything).
 struct ClientIngress {
     std::string gateway_service_name;  // for response routing back
     uint64_t session_id = 0;
     uint32_t session_epoch = 0;
-    std::string player_id;             // empty before auth
+    std::string player_id;  // empty before auth
     std::string protocol_profile_id;
-    uint32_t route_id = 0;             // from wire header
-    std::vector<uint8_t> body_bytes;   // pure business data, pass-through
+    uint32_t route_id = 0;            // from wire header
+    std::vector<uint8_t> body_bytes;  // pure business data, pass-through
+    std::optional<nlohmann::json> decoded_message;  // codec-decoded, if any
 };
 
 /// @brief Bridge that routes TCP session events to the session's target
@@ -46,8 +51,7 @@ struct ClientIngress {
 /// - Gateway does NOT know about room/scene/map
 class LuaGatewayBridge {
 public:
-    LuaGatewayBridge(LuaServiceManager& manager,
-                     std::string auth_service_name);
+    LuaGatewayBridge(LuaServiceManager& manager, std::string auth_service_name);
 
     /// @brief Handle a new TCP session connection.
     void on_connect(std::shared_ptr<shield::net::Session> session);

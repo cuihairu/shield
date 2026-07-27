@@ -430,21 +430,70 @@ bool initialize(const RuntimeConfig& config) {
             const auto protocol_json = actor.network_protocol_json;
             const auto source_dir = actor.source_dir;
             const auto listener_max_frame_size = actor.max_frame_size;
-            callbacks.create_protocol_pipeline =
-                [protocol_json, source_dir, listener_max_frame_size]() mutable {
-                    std::string protocol_error;
-                    auto protocol_options = protocol_build_options(
-                        source_dir, listener_max_frame_size);
-                    auto pipeline =
-                        shield::transport::build_protocol_pipeline_from_json(
-                            protocol_json, protocol_options, &protocol_error);
-                    if (!pipeline && !protocol_error.empty()) {
-                        auto& log = shield::log::get_logger("bootstrap");
+
+            // Resolve the codec plugin vtable ONCE per listener, here at
+            // setup time, instead of on every new connection. This is safe
+            // because plugins are never unloaded at runtime (PluginHost has
+            // no hot-unload API), shutdown() tears down network listeners
+            // and sessions before PluginHost shuts plugins down, and plugin
+            // libraries stay mapped until process exit — so a vtable
+            // captured here cannot dangle for the lifetime of this factory.
+            const shield_protocol_codec_v1* resolved_codec = nullptr;
+            {
+                const auto protocol_config =
+                    nlohmann::json::parse(protocol_json, nullptr, false);
+                const auto body = protocol_config.is_object()
+                                      ? protocol_config.value(
+                                            "body", nlohmann::json::object())
+                                      : nlohmann::json::object();
+                const std::string provider =
+                    body.is_object() ? body.value("provider", std::string{})
+                                     : std::string{};
+                if (!provider.empty()) {
+                    resolved_codec =
+                        shield::plugin::global_host()
+                            .get_by_binding<shield_protocol_codec_v1>(provider);
+                    if (resolved_codec == nullptr) {
                         SHIELD_LOG_ERROR(
-                            log, "Invalid network protocol: " + protocol_error);
+                            log,
+                            "Protocol codec provider '" + provider +
+                                "' for actor '" + actor.name +
+                                "' is not configured or does not provide " +
+                                SHIELD_PROTOCOL_CODEC_INTERFACE);
+                        cleanup_failed_initialize();
+                        return false;
                     }
-                    return pipeline;
-                };
+                }
+            }
+
+            callbacks.create_protocol_pipeline = [protocol_json, source_dir,
+                                                  listener_max_frame_size,
+                                                  resolved_codec]() {
+                std::string protocol_error;
+                auto protocol_options =
+                    protocol_build_options(source_dir, listener_max_frame_size);
+                if (resolved_codec != nullptr) {
+                    // Serve the vtable resolved once at listener setup.
+                    // build_protocol_pipeline_from_json still validates
+                    // codec-name match and vtable completeness on every
+                    // build.
+                    protocol_options.external_codec_resolver =
+                        [resolved_codec](
+                            std::string_view, std::string_view,
+                            std::string*) -> const shield_protocol_codec_v1* {
+                        return resolved_codec;
+                    };
+                }
+                auto pipeline =
+                    shield::transport::build_protocol_pipeline_from_json(
+                        protocol_json, protocol_options, &protocol_error);
+                if (!pipeline && !protocol_error.empty()) {
+                    auto& log = shield::log::get_logger("bootstrap");
+                    SHIELD_LOG_ERROR(
+                        log, "Invalid network protocol: " + protocol_error);
+                }
+                return pipeline;
+            };
         }
 
         auto listener = std::make_unique<shield::net::TcpListener>(
@@ -557,6 +606,11 @@ void shutdown() {
 
     // Stop network ingress first so no new Lua work is queued while we tear
     // down.
+    // INVARIANT: network listeners (and with them every Session and its
+    // ProtocolPipeline, which may hold a codec plugin vtable pointer) MUST
+    // be torn down — and the net threads joined — BEFORE PluginHost shuts
+    // the plugins down below. This guarantees no session pipeline can
+    // outlive the plugin vtable it resolved at listener setup time.
     for (auto& listener : g_state->tcp_listeners) {
         if (listener) {
             listener->stop();

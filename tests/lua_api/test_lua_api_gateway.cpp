@@ -750,7 +750,12 @@ BOOST_AUTO_TEST_CASE(
             }
             const auto& state = sessions.values[0]["77"];
             return state.contains("last_message") &&
-                   state["last_message"]["route_id"].get<uint32_t>() == 0x1001u;
+                   state["last_message"]["route_id"].get<uint32_t>() ==
+                       0x1001u &&
+                   state["last_message"].contains("message") &&
+                   state["last_message"]["message"]["uid"].get<int>() == 7 &&
+                   state["last_message"]["message"]["dir"].get<std::string>() ==
+                       "north";
         },
         std::chrono::seconds(1)));
 }
@@ -814,15 +819,22 @@ BOOST_AUTO_TEST_CASE(
                 return false;
             }
             const auto& state = sessions.values[0]["79"];
+            // The pipeline's fake codec decoded the payload into the
+            // canonical JSON message {"uid":7,"name":"alice"}; the bridge
+            // must hand it to Lua as a table on the 4th argument.
             return state["last_message"]["route_id"].is_number() &&
-                   state["last_message"]["route_id"].get<uint32_t>() == 4097u;
+                   state["last_message"]["route_id"].get<uint32_t>() == 4097u &&
+                   state["last_message"].contains("message") &&
+                   state["last_message"]["message"]["uid"].get<int>() == 7 &&
+                   state["last_message"]["message"]["name"]
+                           .get<std::string>() == "alice";
         },
         std::chrono::seconds(1)));
 
-    // Note: the protobuf pipeline echo (send back decoded message to session)
-    // is not implemented in the current gateway bridge. The on_client_message
-    // handler stores info but does not call session:send(). When the gateway
-    // framework supports auto-echo, add:
+    // Note: Lua egress auto-encode (Lua table -> codec plugin -> wire bytes
+    // via session:send_message) is not implemented in the current gateway
+    // bridge. The on_client_message handler stores info but does not call
+    // session:send(). When the gateway framework supports auto-echo, add:
     //   BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 1u);
 }
 
@@ -887,8 +899,12 @@ BOOST_AUTO_TEST_CASE(
                 return false;
             }
             const auto& state = sessions.values[0]["78"];
+            // Raw codec produces no decoded message: the 4th Lua argument
+            // must be nil, i.e. no "message" key in last_message.
             return state.contains("last_message") &&
-                   state["last_message"]["route_id"].get<uint32_t>() == 0x1002u;
+                   state["last_message"]["route_id"].get<uint32_t>() ==
+                       0x1002u &&
+                   !state["last_message"].contains("message");
         },
         std::chrono::seconds(1)));
 }

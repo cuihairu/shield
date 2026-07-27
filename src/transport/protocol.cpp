@@ -1707,6 +1707,23 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
             codec = std::make_unique<ExternalBodyCodec>(body_provider,
                                                         body_codec, external);
         } else {
+            // Fail fast: only builtin codecs (raw/json) and the catalog-driven
+            // xmldef path may be built without a provider. Any other codec
+            // name is served by a runtime-loaded codec plugin, so building a
+            // pipeline without a provider would silently install a
+            // PassthroughBodyCodec placeholder that throws on the first
+            // packet. Reject it here instead (bootstrap probes the pipeline
+            // factory at startup, so this surfaces as a startup error).
+            if (body_codec != "raw" && body_codec != "json" &&
+                body_codec != "xmldef" && body_codec != "xml_def") {
+                if (error) {
+                    *error = "network.protocol.body.codec '" + body_codec +
+                             "' is not a builtin codec; configure "
+                             "network.protocol.body.provider to a loaded "
+                             "codec plugin that serves it";
+                }
+                return nullptr;
+            }
             codec = create_body_codec(body_codec);
         }
         if (!codec) {
@@ -1797,7 +1814,8 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 RouteEntry entry;
                 entry.route_id = route.value("id", std::uint32_t{0});
                 // direction: c2s (default), s2c, bidi
-                std::string dir_str = route.value("direction", std::string{"c2s"});
+                std::string dir_str =
+                    route.value("direction", std::string{"c2s"});
                 if (dir_str == "c2s" || dir_str == "client_to_server") {
                     entry.direction = RouteDirection::ClientToServer;
                 } else if (dir_str == "s2c" || dir_str == "server_to_client") {

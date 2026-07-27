@@ -21,14 +21,7 @@
 // so the composite-score encoding stays byte-identical across the C and Lua
 // paths and both operate on the same Redis ZSET data.
 
-#include "shield/plugin/abi.h"
-#include "shield/plugin/host_api.h"
-#include "shield/plugin/leaderboard.h"
-#include "shield/plugin/redis.h"
-
 #include <sw/redis++/redis++.h>
-#include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -38,9 +31,16 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <sol/sol.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "shield/plugin/abi.h"
+#include "shield/plugin/host_api.h"
+#include "shield/plugin/leaderboard.h"
+#include "shield/plugin/redis.h"
 
 // shield_leaderboard_conn is opaque in leaderboard.h; concrete layout here.
 // Defined at global scope so lambda-to-function-pointer conversion sees the
@@ -68,11 +68,10 @@ char* dup_string(const char* s) {
 }
 
 constexpr int kDefaultFieldBits = 16;
-constexpr int kMaxFieldBits     = 64;
+constexpr int kMaxFieldBits = 64;
 
 // Encode the player's field values into a composite score. See file header.
-double encode_composite(const BoardConfig& bc,
-                        const char* const* field_names,
+double encode_composite(const BoardConfig& bc, const char* const* field_names,
                         const double* field_values, int field_count) {
     // Build a lookup so the caller's field order need not match the board's.
     // Missing fields contribute 0.
@@ -149,20 +148,23 @@ const shield_leaderboard_v1& lb_vtable() {
         "redis",
         "1.0.0",
         // connect
-        [](const shield_leaderboard_connect_args* args,
-           char* err_buf, int err_buf_size) -> shield_leaderboard_conn* {
+        [](const shield_leaderboard_connect_args* args, char* err_buf,
+           int err_buf_size) -> shield_leaderboard_conn* {
             if (!args) return nullptr;
             try {
                 sw::redis::ConnectionOptions opts;
-                opts.host = args->host && args->host[0] ? args->host : "localhost";
+                opts.host =
+                    args->host && args->host[0] ? args->host : "localhost";
                 opts.port = args->port > 0 ? args->port : 6379;
                 if (args->password && args->password[0])
                     opts.password = args->password;
                 opts.db = args->db > 0 ? args->db : 0;
                 opts.connect_timeout = std::chrono::milliseconds(
-                    args->connect_timeout_ms > 0 ? args->connect_timeout_ms : 5000);
+                    args->connect_timeout_ms > 0 ? args->connect_timeout_ms
+                                                 : 5000);
                 opts.socket_timeout = std::chrono::milliseconds(
-                    args->command_timeout_ms > 0 ? args->command_timeout_ms : 5000);
+                    args->command_timeout_ms > 0 ? args->command_timeout_ms
+                                                 : 5000);
                 auto redis = std::make_shared<sw::redis::Redis>(opts);
                 redis->ping();
                 return new shield_leaderboard_conn{redis};
@@ -176,13 +178,13 @@ const shield_leaderboard_v1& lb_vtable() {
         // disconnect
         [](shield_leaderboard_conn* c) { delete c; },
         // create_board
-        [](shield_leaderboard_conn* c,
-           const shield_leaderboard_config* config,
+        [](shield_leaderboard_conn* c, const shield_leaderboard_config* config,
            char* err_buf, int err_buf_size) -> int {
             if (!c || !config || !config->name) return -1;
             try {
                 std::lock_guard<std::mutex> lock(c->boards_mu);
-                c->boards[std::string(config->name)] = materialize_board(config);
+                c->boards[std::string(config->name)] =
+                    materialize_board(config);
                 return 0;
             } catch (const std::exception& e) {
                 if (err_buf && err_buf_size > 0)
@@ -198,13 +200,14 @@ const shield_leaderboard_v1& lb_vtable() {
                 std::lock_guard<std::mutex> lock(c->boards_mu);
                 c->boards.erase(std::string(board_name));
                 return 0;
-            } catch (...) { return -1; }
+            } catch (...) {
+                return -1;
+            }
         },
         // set_entry
         [](shield_leaderboard_conn* c, const char* board_name,
-           const char* player_id,
-           const char* const* field_names, const double* field_values,
-           int field_count) -> int {
+           const char* player_id, const char* const* field_names,
+           const double* field_values, int field_count) -> int {
             if (!c || !c->redis || !board_name || !player_id) return -1;
             try {
                 BoardConfig bc;
@@ -219,29 +222,30 @@ const shield_leaderboard_v1& lb_vtable() {
                         bc = it->second;
                     }
                 }
-                double score = encode_composite(bc, field_names,
-                                                field_values, field_count);
-                c->redis->zadd(std::string(board_name),
-                               std::string(player_id), score);
+                double score = encode_composite(bc, field_names, field_values,
+                                                field_count);
+                c->redis->zadd(std::string(board_name), std::string(player_id),
+                               score);
                 return 0;
-            } catch (...) { return -1; }
+            } catch (...) {
+                return -1;
+            }
         },
         // remove_entry
         [](shield_leaderboard_conn* c, const char* board_name,
            const char* player_id) -> int {
             if (!c || !c->redis || !board_name || !player_id) return -1;
             try {
-                c->redis->zrem(std::string(board_name),
-                               std::string(player_id));
+                c->redis->zrem(std::string(board_name), std::string(player_id));
                 return 0;
-            } catch (...) { return -1; }
+            } catch (...) {
+                return -1;
+            }
         },
         // get_entry
         [](shield_leaderboard_conn* c, const char* board_name,
-           const char* player_id,
-           shield_leaderboard_entry* out) -> int {
-            if (!c || !c->redis || !board_name || !player_id || !out)
-                return -1;
+           const char* player_id, shield_leaderboard_entry* out) -> int {
+            if (!c || !c->redis || !board_name || !player_id || !out) return -1;
             try {
                 auto score = c->redis->zscore(std::string(board_name),
                                               std::string(player_id));
@@ -270,10 +274,10 @@ const shield_leaderboard_v1& lb_vtable() {
                 int n = static_cast<int>(bc.field_defs.size());
                 out->field_count = n;
                 out->player_id = dup_string(player_id);
-                char** names = static_cast<char**>(
-                    std::calloc(n, sizeof(char*)));
-                double* vals = static_cast<double*>(
-                    std::calloc(n, sizeof(double)));
+                char** names =
+                    static_cast<char**>(std::calloc(n, sizeof(char*)));
+                double* vals =
+                    static_cast<double*>(std::calloc(n, sizeof(double)));
                 for (int i = 0; i < n; ++i) {
                     names[i] = dup_string(bc.field_defs[i].name);
                     vals[i] = ordered[i];
@@ -282,7 +286,9 @@ const shield_leaderboard_v1& lb_vtable() {
                 out->field_values = vals;
                 out->rank = 0;
                 return 0;
-            } catch (...) { return -1; }
+            } catch (...) {
+                return -1;
+            }
         },
         // get_rank
         [](shield_leaderboard_conn* c, const char* board_name,
@@ -292,10 +298,16 @@ const shield_leaderboard_v1& lb_vtable() {
             try {
                 auto r = c->redis->zrank(std::string(board_name),
                                          std::string(player_id));
-                if (!r) { *out_rank = 0; return -1; }
+                if (!r) {
+                    *out_rank = 0;
+                    return -1;
+                }
                 *out_rank = static_cast<int64_t>(*r) + 1;
                 return 0;
-            } catch (...) { *out_rank = 0; return -1; }
+            } catch (...) {
+                *out_rank = 0;
+                return -1;
+            }
         },
         // top_n
         [](shield_leaderboard_conn* c, const char* board_name, int n,
@@ -317,21 +329,24 @@ const shield_leaderboard_v1& lb_vtable() {
                         desc = c->boards[std::string(board_name)].primary_desc;
                     }
                     if (desc) {
-                        c->redis->zrevrange(std::string(board_name), 0,
-                                            n - 1, std::back_inserter(rows));
+                        c->redis->zrevrange(std::string(board_name), 0, n - 1,
+                                            std::back_inserter(rows));
                     } else {
-                        c->redis->zrange(std::string(board_name), 0,
-                                         n - 1, std::back_inserter(rows));
+                        c->redis->zrange(std::string(board_name), 0, n - 1,
+                                         std::back_inserter(rows));
                     }
                 } else {
-                    c->redis->zrevrange(std::string(board_name), 0,
-                                        n - 1, std::back_inserter(rows));
+                    c->redis->zrevrange(std::string(board_name), 0, n - 1,
+                                        std::back_inserter(rows));
                 }
                 out->success = 1;
                 out->error_code = "";
                 out->error_msg = "";
                 out->entry_count = static_cast<int>(rows.size());
-                if (rows.empty()) { out->entries = nullptr; return 0; }
+                if (rows.empty()) {
+                    out->entries = nullptr;
+                    return 0;
+                }
                 out->entries = static_cast<shield_leaderboard_entry*>(
                     std::calloc(rows.size(), sizeof(shield_leaderboard_entry)));
                 int idx = 0;
@@ -385,7 +400,8 @@ const shield_leaderboard_v1& lb_vtable() {
                         std::free(const_cast<char*>(e->field_names[i]));
                 std::free(const_cast<char**>(e->field_names));
             }
-            if (e->field_values) std::free(const_cast<double*>(e->field_values));
+            if (e->field_values)
+                std::free(const_cast<double*>(e->field_values));
             e->player_id = nullptr;
             e->field_names = nullptr;
             e->field_values = nullptr;
@@ -463,7 +479,8 @@ leaderboard_instance* find_instance(const std::string& id) {
 // Parse the validated instance config_json. Tolerant — the host already
 // checked against config_schema, so we only extract the known keys and fall
 // back to defaults for anything missing.
-void parse_instance_config(leaderboard_instance* inst, const char* config_json) {
+void parse_instance_config(leaderboard_instance* inst,
+                           const char* config_json) {
     if (!config_json || !config_json[0]) return;
     try {
         auto j = nlohmann::json::parse(config_json);
@@ -531,6 +548,17 @@ sol::table make_error_table(sol::state_view lua, const char* code,
     return t;
 }
 
+// Extract a human-readable message from a failed redis.driver call: prefer an
+// ERROR reply value, fall back to the err struct, then a static fallback.
+std::string driver_err_msg(const shield_redis_value_v1* out,
+                           const shield_error_v1& err, const char* fallback) {
+    if (out && out->type == SHIELD_REDIS_ERROR && out->str) {
+        return std::string(out->str, static_cast<size_t>(out->str_len));
+    }
+    if (err.message) return err.message;
+    return fallback;
+}
+
 // Free heap-allocated names owned by a cached BoardConfig. The instance cache
 // deep-copies field names (so they outlive the Lua config table) — we must
 // release them on overwrite / board delete / instance shutdown.
@@ -566,7 +594,8 @@ sol::table make_instance_proxy(sol::state_view lua,
                                leaderboard_instance* inst) {
     auto proxy = lua.create_table();
 
-    proxy.set_function("create_board",
+    proxy.set_function(
+        "create_board",
         [inst](sol::this_state s, std::string board_name,
                sol::table def) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -584,10 +613,8 @@ sol::table make_instance_proxy(sol::state_view lua,
                     sol::object v = kv.second;
                     if (!v.is<sol::table>()) continue;
                     sol::table fd = v.as<sol::table>();
-                    std::string name = fd.get_or("name",
-                                                  std::string(""));
-                    std::string order = fd.get_or("order",
-                                                  std::string("desc"));
+                    std::string name = fd.get_or("name", std::string(""));
+                    std::string order = fd.get_or("order", std::string("desc"));
                     if (name.empty()) continue;
                     shield_sort_direction dir =
                         (order == "asc") ? SHIELD_SORT_ASC : SHIELD_SORT_DESC;
@@ -626,62 +653,72 @@ sol::table make_instance_proxy(sol::state_view lua,
                 }
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "lb_create_failed", e.what()));
+                results.push_back(
+                    make_error_table(lua, "lb_create_failed", e.what()));
                 return results;
             }
             results.push_back(sol::make_object(lua, true));
             return results;
         });
 
-    proxy.set_function("delete_board",
+    proxy.set_function(
+        "delete_board",
         [inst](sol::this_state s,
                std::string board_name) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            // Drop the instance-level cache entry so future per-call
+            // queries stop using the (now-deleted) board's encoding.
+            auto drop_board_cache = [inst, &board_name]() {
+                std::lock_guard<std::mutex> lock(inst->boards_mu);
+                auto it = inst->boards.find(board_name);
+                if (it != inst->boards.end()) {
+                    free_board_config_names(it->second);
+                    inst->boards.erase(it);
+                }
+            };
+            // Driver path: DEL through redis.driver's typed del.
+            if (inst->redis_driver && inst->redis_handle) {
+                shield_error_v1 err{};
+                const int rc = inst->redis_driver->del(
+                    inst->redis_handle, board_name.c_str(), &err);
+                if (rc != 0) {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(
+                        lua, err.code ? err.code : "lb_query_failed",
+                        err.message ? err.message : "del failed"));
+                    return results;
+                }
+                drop_board_cache();
+                results.push_back(sol::make_object(lua, true));
+                return results;
+            }
             std::string open_err;
             auto redis = open_redis(inst, &open_err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", open_err));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", open_err));
                 return results;
             }
             try {
                 redis->del(board_name);
-                // Drop the instance-level cache entry so future per-call
-                // queries stop using the (now-deleted) board's encoding.
-                {
-                    std::lock_guard<std::mutex> lock(inst->boards_mu);
-                    auto it = inst->boards.find(board_name);
-                    if (it != inst->boards.end()) {
-                        free_board_config_names(it->second);
-                        inst->boards.erase(it);
-                    }
-                }
+                drop_board_cache();
                 results.push_back(sol::make_object(lua, true));
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "lb_query_failed", e.what()));
+                results.push_back(
+                    make_error_table(lua, "lb_query_failed", e.what()));
             }
             return results;
         });
 
-    proxy.set_function("set_entry",
-        [inst](sol::this_state s, std::string board_name,
-               std::string player_id,
+    proxy.set_function(
+        "set_entry",
+        [inst](sol::this_state s, std::string board_name, std::string player_id,
                sol::table fields_table) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
-            std::string open_err;
-            auto redis = open_redis(inst, &open_err);
-            if (!redis) {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", open_err));
-                return results;
-            }
             // Translate the Lua fields table {field_name = number, ...} into
             // parallel C arrays. encode_composite looks up each field by name,
             // so caller-supplied order does not matter.
@@ -692,7 +729,8 @@ sol::table make_instance_proxy(sol::state_view lua,
                 sol::object val = kv.second;
                 if (key.get_type() != sol::type::string) continue;
                 if (!val.is<double>() && !val.is<lua_Integer>() &&
-                    !val.is<bool>()) continue;
+                    !val.is<bool>())
+                    continue;
                 names_storage.push_back(key.as<std::string>());
                 if (val.is<bool>()) {
                     values_storage.push_back(val.as<bool>() ? 1.0 : 0.0);
@@ -710,32 +748,83 @@ sol::table make_instance_proxy(sol::state_view lua,
             // Resolve the board's BoardConfig from the per-instance cache and
             // encode via the SAME encode_composite() the C vtable uses.
             BoardConfig bc = resolve_board_config(inst, board_name);
-            double score = encode_composite(bc, names_ptr.data(),
-                                            values_storage.data(),
-                                            static_cast<int>(names_storage.size()));
+            double score =
+                encode_composite(bc, names_ptr.data(), values_storage.data(),
+                                 static_cast<int>(names_storage.size()));
+            // Driver path: ZADD through redis.driver's typed zadd.
+            if (inst->redis_driver && inst->redis_handle) {
+                shield_error_v1 err{};
+                const int rc = inst->redis_driver->zadd(
+                    inst->redis_handle, board_name.c_str(), score,
+                    player_id.c_str(), &err);
+                if (rc != 0) {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(
+                        lua, err.code ? err.code : "lb_query_failed",
+                        err.message ? err.message : "zadd failed"));
+                    return results;
+                }
+                results.push_back(sol::make_object(lua, true));
+                return results;
+            }
+            std::string open_err;
+            auto redis = open_redis(inst, &open_err);
+            if (!redis) {
+                results.push_back(sol::make_object(lua, false));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", open_err));
+                return results;
+            }
             try {
                 redis->zadd(board_name, player_id, score);
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "lb_query_failed", e.what()));
+                results.push_back(
+                    make_error_table(lua, "lb_query_failed", e.what()));
                 return results;
             }
             results.push_back(sol::make_object(lua, true));
             return results;
         });
 
-    proxy.set_function("remove_entry",
+    proxy.set_function(
+        "remove_entry",
         [inst](sol::this_state s, std::string board_name,
                std::string player_id) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
+            // Driver path: ZREM via the raw command escape hatch.
+            if (inst->redis_driver && inst->redis_handle) {
+                const shield_redis_arg_v1 args[] = {
+                    {"ZREM", 4},
+                    {board_name.data(), board_name.size()},
+                    {player_id.data(), player_id.size()},
+                };
+                shield_redis_value_v1* out = nullptr;
+                shield_error_v1 err{};
+                const int rc = inst->redis_driver->command(inst->redis_handle,
+                                                           args, 3, &out, &err);
+                const bool ok =
+                    rc == 0 && !(out && out->type == SHIELD_REDIS_ERROR);
+                const std::string emsg =
+                    ok ? std::string()
+                       : driver_err_msg(out, err, "zrem failed");
+                if (out) inst->redis_driver->free_value(out);
+                if (!ok) {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(
+                        make_error_table(lua, "lb_query_failed", emsg));
+                    return results;
+                }
+                results.push_back(sol::make_object(lua, true));
+                return results;
+            }
             std::string open_err;
             auto redis = open_redis(inst, &open_err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", open_err));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", open_err));
                 return results;
             }
             try {
@@ -743,13 +832,14 @@ sol::table make_instance_proxy(sol::state_view lua,
                 results.push_back(sol::make_object(lua, true));
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "lb_query_failed", e.what()));
+                results.push_back(
+                    make_error_table(lua, "lb_query_failed", e.what()));
             }
             return results;
         });
 
-    proxy.set_function("get_entry",
+    proxy.set_function(
+        "get_entry",
         [inst](sol::this_state s, std::string board_name,
                std::string player_id) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -758,8 +848,8 @@ sol::table make_instance_proxy(sol::state_view lua,
             auto redis = open_redis(inst, &open_err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", open_err));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", open_err));
                 return results;
             }
             try {
@@ -777,8 +867,8 @@ sol::table make_instance_proxy(sol::state_view lua,
                 auto entry_table = lua.create_table();
                 entry_table["player_id"] = player_id;
                 auto fields = lua.create_table();
-                for (size_t i = 0; i < bc.field_defs.size() &&
-                                   i < decoded.size(); ++i) {
+                for (size_t i = 0;
+                     i < bc.field_defs.size() && i < decoded.size(); ++i) {
                     if (bc.field_defs[i].name) {
                         fields[bc.field_defs[i].name] = decoded[i];
                     }
@@ -788,13 +878,14 @@ sol::table make_instance_proxy(sol::state_view lua,
                 results.push_back(entry_table);
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "lb_query_failed", e.what()));
+                results.push_back(
+                    make_error_table(lua, "lb_query_failed", e.what()));
             }
             return results;
         });
 
-    proxy.set_function("get_rank",
+    proxy.set_function(
+        "get_rank",
         [inst](sol::this_state s, std::string board_name,
                std::string player_id) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -803,8 +894,8 @@ sol::table make_instance_proxy(sol::state_view lua,
             auto redis = open_redis(inst, &open_err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", open_err));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", open_err));
                 return results;
             }
             try {
@@ -812,22 +903,23 @@ sol::table make_instance_proxy(sol::state_view lua,
                 if (!r) {
                     // Not ranked — ok=true with rank=0 (matches vtable).
                     results.push_back(sol::make_object(lua, true));
-                    results.push_back(sol::make_object(lua,
-                        static_cast<lua_Integer>(0)));
+                    results.push_back(
+                        sol::make_object(lua, static_cast<lua_Integer>(0)));
                 } else {
                     results.push_back(sol::make_object(lua, true));
-                    results.push_back(sol::make_object(lua,
-                        static_cast<lua_Integer>(*r + 1)));
+                    results.push_back(sol::make_object(
+                        lua, static_cast<lua_Integer>(*r + 1)));
                 }
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "lb_query_failed", e.what()));
+                results.push_back(
+                    make_error_table(lua, "lb_query_failed", e.what()));
             }
             return results;
         });
 
-    proxy.set_function("top_n",
+    proxy.set_function(
+        "top_n",
         [inst](sol::this_state s, std::string board_name,
                int n) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -836,8 +928,8 @@ sol::table make_instance_proxy(sol::state_view lua,
             auto redis = open_redis(inst, &open_err);
             if (!redis) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", open_err));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", open_err));
                 return results;
             }
             // The vtable's top_n returns only player_id + rank (it drops the
@@ -849,8 +941,8 @@ sol::table make_instance_proxy(sol::state_view lua,
             try {
                 if (n <= 0) {
                     results.push_back(sol::make_object(lua, false));
-                    results.push_back(make_error_table(
-                        lua, "invalid_args", "n must be positive"));
+                    results.push_back(make_error_table(lua, "invalid_args",
+                                                       "n must be positive"));
                     return results;
                 }
                 BoardConfig bc = resolve_board_config(inst, board_name);
@@ -871,8 +963,8 @@ sol::table make_instance_proxy(sol::state_view lua,
                     auto fields = lua.create_table();
                     std::vector<double> decoded;
                     decode_composite(bc, score, decoded);
-                    for (size_t i = 0; i < bc.field_defs.size() &&
-                                       i < decoded.size(); ++i) {
+                    for (size_t i = 0;
+                         i < bc.field_defs.size() && i < decoded.size(); ++i) {
                         if (bc.field_defs[i].name) {
                             fields[bc.field_defs[i].name] = decoded[i];
                         }
@@ -885,8 +977,8 @@ sol::table make_instance_proxy(sol::state_view lua,
                 return results;
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "lb_query_failed", e.what()));
+                results.push_back(
+                    make_error_table(lua, "lb_query_failed", e.what()));
                 return results;
             }
         });
@@ -894,8 +986,7 @@ sol::table make_instance_proxy(sol::state_view lua,
     return proxy;
 }
 
-int register_lua_impl(shield_plugin_instance_v1* self,
-                      struct lua_State* L,
+int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
                       shield_error_v1* err) {
     // register_lua installs the shared, idempotent callable namespace
     // shield.leaderboard.redis. Lua passes a binding logical name; host config
@@ -912,8 +1003,7 @@ int register_lua_impl(shield_plugin_instance_v1* self,
         !current->host_api->binding_instance_id) {
         if (err) {
             err->code = "plugin.lua_register.failed";
-            err->message =
-                "leaderboard.redis: host binding resolver is null";
+            err->message = "leaderboard.redis: host binding resolver is null";
         }
         return 1;
     }
@@ -929,9 +1019,10 @@ int register_lua_impl(shield_plugin_instance_v1* self,
         auto mt = lua.create_table();
         const shield_host_api_v1* host_api = current->host_api;
         shield_plugin_context_v1* ctx = current->ctx;
-        mt.set_function("__call",
+        mt.set_function(
+            "__call",
             [host_api, ctx](sol::this_state s, sol::table /*self*/,
-               std::string binding) -> sol::object {
+                            std::string binding) -> sol::object {
                 sol::state_view lua(s);
                 const char* instance_id =
                     host_api->binding_instance_id(ctx, binding.c_str());
@@ -948,8 +1039,7 @@ int register_lua_impl(shield_plugin_instance_v1* self,
 }
 
 int lb_create(const shield_plugin_create_args_v1* args,
-              shield_plugin_instance_v1** out,
-              shield_error_v1* err) {
+              shield_plugin_instance_v1** out, shield_error_v1* err) {
     (void)err;
     auto* inst = new leaderboard_instance;
     inst->instance_id = args->instance_id ? args->instance_id : "";
@@ -1009,8 +1099,8 @@ int lb_create(const shield_plugin_create_args_v1* args,
 
 }  // namespace
 
-extern "C" SHIELD_PLUGIN_EXPORT
-const struct shield_plugin_abi_v1* shield_plugin_get_v1(void) {
+extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
+shield_plugin_get_v1(void) {
     static const struct shield_plugin_abi_v1 abi = {
         SHIELD_PLUGIN_ABI_VERSION,
         sizeof(shield_plugin_abi_v1),

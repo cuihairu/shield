@@ -1,10 +1,12 @@
 -- Test service for LAPI-009 (Gateway API)
 --
 -- Handles on_connect / on_disconnect / on_client_message gateway pattern.
--- New signature: on_client_message(route_id, client_context, body)
+-- New signature: on_client_message(route_id, client_context, body, message)
 --   route_id: number from wire header
 --   client_context: {session_id, session_epoch, player_id, gateway_service}
 --   body: raw body string (to be decoded by target VM)
+--   message: decoded canonical message table when the listener's codec
+--            plugin decoded the body, nil otherwise
 
 local M = {}
 
@@ -66,14 +68,15 @@ function M.on_disconnect(session, reason)
     end
 end
 
--- New signature: on_client_message(route_id, client_context, body)
-function M.on_client_message(route_id, client_context, body)
+-- New signature: on_client_message(route_id, client_context, body, message)
+function M.on_client_message(route_id, client_context, body, message)
     local session_id = client_context and client_context.session_id or nil
 
     if session_id and sessions[tostring(session_id)] then
         sessions[tostring(session_id)].last_message = {
             route_id = route_id,
             body = body,
+            message = message,
             player_id = client_context and client_context.player_id or nil,
             time = shield.now()
         }

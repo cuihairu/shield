@@ -94,6 +94,12 @@ void LuaGatewayBridge::on_packet(
     // body_bytes: pass through raw bytes (Gateway does not decode body)
     if (packet.decoded_body.has_value()) {
         ingress.body_bytes = packet.decoded_body->bytes;
+        // decoded_message: when the pipeline's codec plugin decoded the
+        // payload, forward the canonical JSON message alongside the raw
+        // bytes so Lua services can consume it directly as a table.
+        if (packet.decoded_body->has_message()) {
+            ingress.decoded_message = packet.decoded_body->message;
+        }
     } else {
         ingress.body_bytes = std::vector<uint8_t>(packet.packet.body.begin(),
                                                   packet.packet.body.end());
@@ -127,15 +133,18 @@ void LuaGatewayBridge::on_disconnect(
 void LuaGatewayBridge::send_client_ingress(const std::string& target,
                                            const ClientIngress& ingress) {
     // Serialize ClientIngress to JSON for Lua consumption
-    // Target service receives: on_client_message(route_id, client_context,
-    // body)
+    // Target service receives:
+    //   on_client_message(route_id, client_context, body, message)
     //
     // For now, use the existing send_system mechanism.
     // The target Lua service will receive:
-    //   on_client_message(route_id, {session_id, player_id, ...}, body_bytes)
+    //   on_client_message(route_id, {session_id, player_id, ...}, body_bytes,
+    //                     decoded_message)
     //
     // body_bytes is passed as raw string; the target VM decodes it
-    // according to the RPC's request_schema.
+    // according to the RPC's request_schema. decoded_message is the codec
+    // plugin's canonical JSON message (a Lua table), or nil when no codec
+    // plugin decoded the body.
 
     nlohmann::json client_context = {
         {"session_id", ingress.session_id},
@@ -147,13 +156,19 @@ void LuaGatewayBridge::send_client_ingress(const std::string& target,
     // body_bytes as raw string for Lua
     std::string body_str(ingress.body_bytes.begin(), ingress.body_bytes.end());
 
+    // Decoded canonical message, or JSON null (Lua nil) when absent.
+    const nlohmann::json decoded_message = ingress.decoded_message.has_value()
+                                               ? *ingress.decoded_message
+                                               : nlohmann::json(nullptr);
+
     // send_system routes the on_client_message call through the target's CAF
     // actor directly (no fork-task wrapper). The target Lua service receives:
-    //   on_client_message(route_id, client_context, body_str)
+    //   on_client_message(route_id, client_context, body_str, message)
     std::string error;
     if (!manager_.send_system(
             target, "on_client_message",
-            nlohmann::json::array({ingress.route_id, client_context, body_str}),
+            nlohmann::json::array(
+                {ingress.route_id, client_context, body_str, decoded_message}),
             &error)) {
         auto& log = shield::log::get_logger("lua");
         SHIELD_LOG_WARNING(log, "Failed to queue ClientIngress: " + error);

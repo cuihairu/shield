@@ -6,7 +6,7 @@ Gateway 是客户端连接、session 管理和 wire 入口的边界，不是业�
 
 - 持有 live `SessionHandle`，管理连接、断线、重连和写回。
 - 维护 session 绑定：target（AuthService 或 PlayerService）、player_id、epoch、protocol profile。
-- 只解析 frame/header 所需字段；普通客户端 RPC 只读取 header `route_id`，不解业务 body。
+- 只解析 frame/header 所需字段；普通客户端 RPC 只读取 header `route_id`。当监听器配置了 codec 插件（`network.protocol.body.provider`）时，pipeline 会把 body 解码为规范 JSON message；Gateway 本身不做业务解码，只负责把原始字节和解码结果一起转发。
 - 用轻量路由表校验 route_id 合法性（存在、方向、认证要求），拒绝非法消息。
 - 校验通过后把 `ClientIngress` 投递到 session.target 的 CAF actor。
 - 接收目标 actor 的 `ClientEgress`，校验 session_id/epoch 后写入 wire header 并写 socket。
@@ -50,12 +50,12 @@ client socket bytes
   → Gateway 路由表校验（合法 + direction + 认证要求）
   → session.target（AuthService 或 PlayerService）
   → CAF send ClientIngress { gateway_address, session_id, session_epoch, player_id,
-                              protocol_profile_id, route_id, body_bytes }
+                              protocol_profile_id, route_id, body_bytes, decoded_message? }
   → target Service actor mailbox
-  → 目标 VM: route_id → cached handler → decode body → invoke handler(client, request)
+  → 目标 VM: route_id → cached handler → decode body（或直接消费 decoded_message）→ invoke handler(client, request)
 ```
 
-route_id 来自 wire header。body_bytes 原样传递到目标 VM，由目标 VM 按 RPC schema 解码。Gateway 不解码 body。
+route_id 来自 wire header。body_bytes 始终原样传递到目标 VM；当监听器的 protocol pipeline 配置了 codec 插件并完成解码时，Gateway 还会把解码出的规范 JSON message 一并交给 Lua（`on_client_message` 的第 4 个参数，Lua table；没有 codec 插件解码时为 nil）。没有配置 codec 插件时行为与旧设计一致：只转发原始字节，由目标 VM 按 RPC schema 解码。
 
 `ClientIngress` 是 runtime 内部消息，不是 Lua API，也不是客户端 body schema。CAF 负责把该内部消息投递给本地或远端 actor。
 

@@ -10,9 +10,9 @@
 // hgetall) are recursively freed by free_value().
 #pragma once
 
-#include "shield/plugin/abi.h"
-
 #include <stdint.h>
+
+#include "shield/plugin/abi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,13 +22,13 @@ extern "C" {
 
 // Value type discriminator.
 typedef enum shield_redis_type_v1 {
-    SHIELD_REDIS_NIL     = 0,
-    SHIELD_REDIS_STRING  = 1,
+    SHIELD_REDIS_NIL = 0,
+    SHIELD_REDIS_STRING = 1,
     SHIELD_REDIS_INTEGER = 2,
-    SHIELD_REDIS_DOUBLE  = 3,
-    SHIELD_REDIS_BOOL    = 4,
-    SHIELD_REDIS_ARRAY   = 5,
-    SHIELD_REDIS_ERROR   = 6
+    SHIELD_REDIS_DOUBLE = 3,
+    SHIELD_REDIS_BOOL = 4,
+    SHIELD_REDIS_ARRAY = 5,
+    SHIELD_REDIS_ERROR = 6
 } shield_redis_type_v1;
 
 // Generic Redis return value. Type field determines which union member is
@@ -36,13 +36,13 @@ typedef enum shield_redis_type_v1 {
 // free_value).
 typedef struct shield_redis_value_v1 {
     shield_redis_type_v1 type;
-    const char* str;                        // STRING / ERROR content
-    uint64_t str_len;                       // STRING / ERROR byte length
-    int64_t integer;                        // INTEGER
-    double number;                          // DOUBLE
-    int boolean;                            // BOOL (0 or 1)
-    struct shield_redis_value_v1* items;    // ARRAY elements
-    uint64_t item_count;                    // ARRAY element count
+    const char* str;                      // STRING / ERROR content
+    uint64_t str_len;                     // STRING / ERROR byte length
+    int64_t integer;                      // INTEGER
+    double number;                        // DOUBLE
+    int boolean;                          // BOOL (0 or 1)
+    struct shield_redis_value_v1* items;  // ARRAY elements
+    uint64_t item_count;                  // ARRAY element count
 } shield_redis_value_v1;
 
 // A single argument to command() — raw bytes, not NUL-terminated.
@@ -63,32 +63,36 @@ typedef struct shield_redis_v1 {
     const char* interface_name;  // "shield.redis.v1"
 
     // --- Connection handle ---
-    // Returns an opaque handle for use with all methods below. cfg may be
-    // NULL (the driver uses its own instance config). err_buf receives an
-    // error message on failure. disconnect() releases the handle (the
-    // underlying connection pool is managed by the driver instance and is
-    // NOT torn down by disconnect).
-    void* (*connect)(const void* cfg, char* err_buf, int err_buf_size);
-    void  (*disconnect)(void* handle);
+    // Returns an opaque handle for use with all methods below. The handle is
+    // bound to the driver instance that owns this vtable (self must be the
+    // vtable pointer returned by that instance's get_interface); with
+    // multiple driver instances each consumer gets the instance its
+    // dependency was resolved to. cfg may be NULL (the driver uses its own
+    // instance config). err_buf receives an error message on failure.
+    // disconnect() releases the handle (the underlying connection pool is
+    // managed by the driver instance and is NOT torn down by disconnect).
+    void* (*connect)(const shield_redis_v1* self, const void* cfg,
+                     char* err_buf, int err_buf_size);
+    void (*disconnect)(void* handle);
 
     // --- Key-Value ---
-    int (*get)(void* inst, const char* key,
-               shield_redis_value_v1** out, shield_error_v1* err);
-    int (*set)(void* inst, const char* key, const char* val,
-               int ttl_sec, shield_error_v1* err);
+    int (*get)(void* inst, const char* key, shield_redis_value_v1** out,
+               shield_error_v1* err);
+    int (*set)(void* inst, const char* key, const char* val, int ttl_sec,
+               shield_error_v1* err);
     int (*del)(void* inst, const char* key, shield_error_v1* err);
 
     // --- Hash ---
     int (*hget)(void* inst, const char* key, const char* field,
                 shield_redis_value_v1** out, shield_error_v1* err);
-    int (*hset)(void* inst, const char* key, const char* field,
-                const char* val, shield_error_v1* err);
-    int (*hgetall)(void* inst, const char* key,
-                   shield_redis_value_v1** out, shield_error_v1* err);
+    int (*hset)(void* inst, const char* key, const char* field, const char* val,
+                shield_error_v1* err);
+    int (*hgetall)(void* inst, const char* key, shield_redis_value_v1** out,
+                   shield_error_v1* err);
 
     // --- Sorted Set ---
-    int (*zadd)(void* inst, const char* key, double score,
-                const char* member, shield_error_v1* err);
+    int (*zadd)(void* inst, const char* key, double score, const char* member,
+                shield_error_v1* err);
     int (*zrange)(void* inst, const char* key, int start, int stop,
                   shield_redis_value_v1** out, shield_error_v1* err);
 
@@ -104,9 +108,8 @@ typedef struct shield_redis_v1 {
     // --- Raw command (escape hatch) ---
     // args[0] is the command name, args[1..] are its arguments.
     // Covers all Redis commands not exposed as typed methods.
-    int (*command)(void* inst, const shield_redis_arg_v1* args,
-                   uint64_t argc, shield_redis_value_v1** out,
-                   shield_error_v1* err);
+    int (*command)(void* inst, const shield_redis_arg_v1* args, uint64_t argc,
+                   shield_redis_value_v1** out, shield_error_v1* err);
 
     // --- Memory management ---
     // Release a value returned by any method above. Recursively frees nested

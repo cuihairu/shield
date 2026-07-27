@@ -709,6 +709,63 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsProviderWithoutResolver) {
     BOOST_CHECK_NE(error.find("no external codec resolver"), std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsPluginCodecWithoutProvider) {
+    const auto config = R"json(
+{
+  "name": "game.msgpack",
+  "envelope": {
+    "type": "idlen",
+    "route_id_bytes": 2,
+    "length_bytes": 2
+  },
+  "body": {
+    "codec": "msgpack"
+  }
+}
+)json";
+
+    // A plugin-served codec without a provider must fail at pipeline-build
+    // time instead of installing a placeholder that throws on first decode.
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(config, {}, 0, &error);
+    BOOST_CHECK(pipeline == nullptr);
+    BOOST_CHECK_NE(error.find("network.protocol.body.provider"),
+                   std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsMsgpackProviderResolvingNull) {
+    const auto config = R"json(
+{
+  "name": "game.msgpack",
+  "envelope": {
+    "type": "idlen",
+    "route_id_bytes": 2,
+    "length_bytes": 2
+  },
+  "body": {
+    "codec": "msgpack",
+    "provider": "protocol.msgpack"
+  }
+}
+)json";
+
+    ProtocolBuildOptions options;
+    options.external_codec_resolver =
+        [](std::string_view, std::string_view,
+           std::string* resolver_error) -> const shield_protocol_codec_v1* {
+        if (resolver_error) {
+            *resolver_error = "missing protocol.msgpack provider";
+        }
+        return nullptr;
+    };
+
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(config, options, &error);
+    BOOST_CHECK(pipeline == nullptr);
+    BOOST_CHECK_NE(error.find("missing protocol.msgpack provider"),
+                   std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsProviderCodecMismatch) {
     FakeProtocolCodecState state;
     state.codec_name = "sproto";

@@ -15,12 +15,6 @@
 // shield.redis(binding), returning a per-instance proxy whose methods
 // reuse the same sw::redis::Redis connection pool as the C vtable.
 
-#include "shield/plugin/abi.h"
-#include "shield/plugin/host_api.h"
-#include "shield/plugin/redis.h"
-
-#include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <sw/redis++/redis++.h>
 
 #include <chrono>
@@ -29,8 +23,14 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
+#include <sol/sol.hpp>
 #include <string>
 #include <vector>
+
+#include "shield/plugin/abi.h"
+#include "shield/plugin/host_api.h"
+#include "shield/plugin/redis.h"
 
 namespace {
 
@@ -122,9 +122,8 @@ shield_redis_value_v1* reply_to_value(const redisReply* reply) {
             if (reply->elements == 0 || reply->element == nullptr) {
                 v->items = nullptr;
             } else {
-                v->items = static_cast<shield_redis_value_v1*>(
-                    std::calloc(reply->elements,
-                                sizeof(shield_redis_value_v1)));
+                v->items = static_cast<shield_redis_value_v1*>(std::calloc(
+                    reply->elements, sizeof(shield_redis_value_v1)));
                 for (size_t i = 0; i < reply->elements; ++i) {
                     auto* item = reply_to_value(reply->element[i]);
                     if (item) {
@@ -146,6 +145,10 @@ shield_redis_value_v1* reply_to_value(const redisReply* reply) {
 
 struct redis_instance {
     shield_plugin_instance_v1 shell;
+    // Per-instance shield.redis.v1 vtable. Each instance owns its own copy so
+    // that get_interface() returns an instance-bound vtable and connect()
+    // can recover THIS instance from the self pointer (multi-instance safe).
+    shield_redis_v1 vtable_{};
     std::string instance_id;
     const shield_host_api_v1* host_api = nullptr;
     shield_plugin_context_v1* ctx = nullptr;
@@ -246,28 +249,46 @@ redis_instance* find_instance(const std::string& id) {
 
 // ---------------------------------------------------------------------------
 // v1 vtable — typed methods
+//
+// The function pointers are shared, but every instance gets its own vtable
+// copy (redis_instance::vtable_) filled by init_vtable(). connect() receives
+// that vtable pointer as `self` and resolves the owning instance through the
+// registry, so a consumer always lands on the instance its dependency was
+// wired to — never "the first started instance".
 // ---------------------------------------------------------------------------
 
-const shield_redis_v1& redis_vtable() {
-    static const shield_redis_v1 v = {
+void init_vtable(shield_redis_v1* out) {
+    *out = shield_redis_v1{
         sizeof(shield_redis_v1),
         SHIELD_REDIS_V1,
 
-        // connect — returns the driver instance as an opaque handle.
-        // cfg is ignored (the driver uses its own config from startup).
-        // Dependent plugins call this once to get a handle for all methods.
-        [](const void* /*cfg*/, char* err_buf,
+        // connect — returns the driver instance that owns `self` as an opaque
+        // handle. cfg is ignored (the driver uses its own config from
+        // startup). Dependent plugins call this once to get a handle for all
+        // methods.
+        [](const shield_redis_v1* self, const void* /*cfg*/, char* err_buf,
            int err_buf_size) -> void* {
-            // Find the first (and typically only) started redis.driver instance.
+            // Resolve the owning instance via vtable identity: get_interface()
+            // returned exactly &inst->vtable_ for some started instance.
+            if (!self) {
+                if (err_buf && err_buf_size > 0) {
+                    std::snprintf(
+                        err_buf, err_buf_size,
+                        "redis.driver: connect called with null vtable");
+                }
+                return nullptr;
+            }
             std::lock_guard lk(instances_mu());
             for (auto& [id, inst] : instances_map()) {
-                if (inst && inst->redis) {
+                if (inst && &inst->vtable_ == self) {
+                    if (!inst->redis) break;  // instance not started yet
                     return static_cast<void*>(inst);
                 }
             }
             if (err_buf && err_buf_size > 0) {
-                std::snprintf(err_buf, err_buf_size,
-                              "redis.driver: no started instance available");
+                std::snprintf(
+                    err_buf, err_buf_size,
+                    "redis.driver: no started instance for this vtable");
             }
             return nullptr;
         },
@@ -276,8 +297,8 @@ const shield_redis_v1& redis_vtable() {
         [](void* /*handle*/) {},
 
         // get
-        [](void* inst, const char* key,
-           shield_redis_value_v1** out, shield_error_v1* err) -> int {
+        [](void* inst, const char* key, shield_redis_value_v1** out,
+           shield_error_v1* err) -> int {
             if (!inst || !key || !out) return -1;
             auto* ri = static_cast<redis_instance*>(inst);
             if (!ri->redis) return -1;
@@ -290,15 +311,18 @@ const shield_redis_v1& redis_vtable() {
                 }
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.command.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.command.failed";
+                    err->message = e.what();
+                }
                 *out = make_nil_value();
                 return -1;
             }
         },
 
         // set
-        [](void* inst, const char* key, const char* val,
-           int ttl_sec, shield_error_v1* err) -> int {
+        [](void* inst, const char* key, const char* val, int ttl_sec,
+           shield_error_v1* err) -> int {
             if (!inst || !key || !val) return -1;
             auto* ri = static_cast<redis_instance*>(inst);
             if (!ri->redis) return -1;
@@ -311,7 +335,10 @@ const shield_redis_v1& redis_vtable() {
                 }
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.command.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.command.failed";
+                    err->message = e.what();
+                }
                 return -1;
             }
         },
@@ -325,7 +352,10 @@ const shield_redis_v1& redis_vtable() {
                 ri->redis->del(std::string(key));
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.command.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.command.failed";
+                    err->message = e.what();
+                }
                 return -1;
             }
         },
@@ -337,7 +367,8 @@ const shield_redis_v1& redis_vtable() {
             auto* ri = static_cast<redis_instance*>(inst);
             if (!ri->redis) return -1;
             try {
-                auto val = ri->redis->hget(std::string(key), std::string(field));
+                auto val =
+                    ri->redis->hget(std::string(key), std::string(field));
                 if (val) {
                     *out = make_string_value(*val);
                 } else {
@@ -345,15 +376,18 @@ const shield_redis_v1& redis_vtable() {
                 }
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.command.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.command.failed";
+                    err->message = e.what();
+                }
                 *out = make_nil_value();
                 return -1;
             }
         },
 
         // hset
-        [](void* inst, const char* key, const char* field,
-           const char* val, shield_error_v1* err) -> int {
+        [](void* inst, const char* key, const char* field, const char* val,
+           shield_error_v1* err) -> int {
             if (!inst || !key || !field || !val) return -1;
             auto* ri = static_cast<redis_instance*>(inst);
             if (!ri->redis) return -1;
@@ -362,14 +396,17 @@ const shield_redis_v1& redis_vtable() {
                                 std::string(val));
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.command.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.command.failed";
+                    err->message = e.what();
+                }
                 return -1;
             }
         },
 
         // hgetall
-        [](void* inst, const char* key,
-           shield_redis_value_v1** out, shield_error_v1* err) -> int {
+        [](void* inst, const char* key, shield_redis_value_v1** out,
+           shield_error_v1* err) -> int {
             if (!inst || !key || !out) return -1;
             auto* ri = static_cast<redis_instance*>(inst);
             if (!ri->redis) return -1;
@@ -384,8 +421,8 @@ const shield_redis_v1& redis_vtable() {
                 if (result.empty()) {
                     v->items = nullptr;
                 } else {
-                    v->items = static_cast<shield_redis_value_v1*>(
-                        std::calloc(v->item_count, sizeof(shield_redis_value_v1)));
+                    v->items = static_cast<shield_redis_value_v1*>(std::calloc(
+                        v->item_count, sizeof(shield_redis_value_v1)));
                     size_t i = 0;
                     for (const auto& [f, val] : result) {
                         // field
@@ -403,15 +440,18 @@ const shield_redis_v1& redis_vtable() {
                 *out = v;
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.command.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.command.failed";
+                    err->message = e.what();
+                }
                 *out = make_nil_value();
                 return -1;
             }
         },
 
         // zadd
-        [](void* inst, const char* key, double score,
-           const char* member, shield_error_v1* err) -> int {
+        [](void* inst, const char* key, double score, const char* member,
+           shield_error_v1* err) -> int {
             if (!inst || !key || !member) return -1;
             auto* ri = static_cast<redis_instance*>(inst);
             if (!ri->redis) return -1;
@@ -419,7 +459,10 @@ const shield_redis_v1& redis_vtable() {
                 ri->redis->zadd(std::string(key), std::string(member), score);
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.command.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.command.failed";
+                    err->message = e.what();
+                }
                 return -1;
             }
         },
@@ -441,19 +484,22 @@ const shield_redis_v1& redis_vtable() {
                 if (result.empty()) {
                     v->items = nullptr;
                 } else {
-                    v->items = static_cast<shield_redis_value_v1*>(
-                        std::calloc(result.size(), sizeof(shield_redis_value_v1)));
+                    v->items = static_cast<shield_redis_value_v1*>(std::calloc(
+                        result.size(), sizeof(shield_redis_value_v1)));
                     for (size_t i = 0; i < result.size(); ++i) {
                         v->items[i].type = SHIELD_REDIS_STRING;
-                        v->items[i].str = dup_bytes(result[i].data(),
-                                                    result[i].size());
+                        v->items[i].str =
+                            dup_bytes(result[i].data(), result[i].size());
                         v->items[i].str_len = result[i].size();
                     }
                 }
                 *out = v;
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.command.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.command.failed";
+                    err->message = e.what();
+                }
                 *out = make_nil_value();
                 return -1;
             }
@@ -493,7 +539,10 @@ const shield_redis_v1& redis_vtable() {
                 }
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.pipeline.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.pipeline.failed";
+                    err->message = e.what();
+                }
                 return -1;
             }
         },
@@ -507,16 +556,18 @@ const shield_redis_v1& redis_vtable() {
             try {
                 std::vector<std::string> argv;
                 for (uint64_t i = 0; i < argc; ++i) {
-                    argv.emplace_back(
-                        static_cast<const char*>(args[i].data),
-                        static_cast<size_t>(args[i].len));
+                    argv.emplace_back(static_cast<const char*>(args[i].data),
+                                      static_cast<size_t>(args[i].len));
                 }
                 // command() returns ReplyUPtr (unique_ptr<redisReply>)
                 auto reply = ri->redis->command(argv.begin(), argv.end());
                 *out = reply_to_value(reply.get());
                 return 0;
             } catch (const std::exception& e) {
-                if (err) { err->code = "redis.command.failed"; err->message = e.what(); }
+                if (err) {
+                    err->code = "redis.command.failed";
+                    err->message = e.what();
+                }
                 *out = make_nil_value();
                 return -1;
             }
@@ -538,7 +589,8 @@ const shield_redis_v1& redis_vtable() {
                     if (value->items[i].items) {
                         // One level of nesting is enough for typical Redis
                         // responses; deeper nesting is freed recursively.
-                        for (uint64_t j = 0; j < value->items[i].item_count; ++j) {
+                        for (uint64_t j = 0; j < value->items[i].item_count;
+                             ++j) {
                             if (value->items[i].items[j].str) {
                                 std::free(const_cast<char*>(
                                     value->items[i].items[j].str));
@@ -557,7 +609,6 @@ const shield_redis_v1& redis_vtable() {
             value->item_count = 0;
         },
     };
-    return v;
 }
 
 // ---------------------------------------------------------------------------
@@ -573,15 +624,14 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 }
 
 // Convert a shield_redis_value_v1 to a Lua object.
-sol::object value_to_lua(sol::state_view lua,
-                         const shield_redis_value_v1* v) {
+sol::object value_to_lua(sol::state_view lua, const shield_redis_value_v1* v) {
     if (!v) return sol::nil;
     switch (v->type) {
         case SHIELD_REDIS_NIL:
             return sol::nil;
         case SHIELD_REDIS_STRING:
-            return sol::make_object(lua,
-                std::string(v->str, static_cast<size_t>(v->str_len)));
+            return sol::make_object(
+                lua, std::string(v->str, static_cast<size_t>(v->str_len)));
         case SHIELD_REDIS_INTEGER:
             return sol::make_object(lua, static_cast<lua_Integer>(v->integer));
         case SHIELD_REDIS_DOUBLE:
@@ -596,8 +646,8 @@ sol::object value_to_lua(sol::state_view lua,
             return sol::make_object(lua, tbl);
         }
         case SHIELD_REDIS_ERROR:
-            return sol::make_object(lua,
-                std::string(v->str, static_cast<size_t>(v->str_len)));
+            return sol::make_object(
+                lua, std::string(v->str, static_cast<size_t>(v->str_len)));
     }
     return sol::nil;
 }
@@ -614,35 +664,37 @@ std::string lua_to_string(sol::object obj) {
 // Build a per-instance Lua proxy.
 sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
     auto proxy = lua.create_table();
-    const shield_redis_v1& v = redis_vtable();
+    const shield_redis_v1& v = inst->vtable_;
 
     // get(key) -> ok, value|nil|error
     proxy.set_function("get",
-        [&v, inst](sol::this_state s, std::string key) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
-            shield_redis_value_v1* out = nullptr;
-            shield_error_v1 err{};
-            int rc = v.get(inst, key.c_str(), &out, &err);
-            if (rc == 0) {
-                results.push_back(sol::make_object(lua, true));
-                if (out && out->type != SHIELD_REDIS_NIL) {
-                    results.push_back(value_to_lua(lua, out));
-                } else {
-                    results.push_back(sol::nil);
-                }
-            } else {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
-                    err.message ? err.message : "get failed"));
-            }
-            if (out) v.free_value(out);
-            return results;
-        });
+                       [&v, inst](sol::this_state s,
+                                  std::string key) -> sol::variadic_results {
+                           sol::state_view lua(s);
+                           sol::variadic_results results;
+                           shield_redis_value_v1* out = nullptr;
+                           shield_error_v1 err{};
+                           int rc = v.get(inst, key.c_str(), &out, &err);
+                           if (rc == 0) {
+                               results.push_back(sol::make_object(lua, true));
+                               if (out && out->type != SHIELD_REDIS_NIL) {
+                                   results.push_back(value_to_lua(lua, out));
+                               } else {
+                                   results.push_back(sol::nil);
+                               }
+                           } else {
+                               results.push_back(sol::make_object(lua, false));
+                               results.push_back(make_error_table(
+                                   lua, err.code ? err.code : "redis.error",
+                                   err.message ? err.message : "get failed"));
+                           }
+                           if (out) v.free_value(out);
+                           return results;
+                       });
 
     // set(key, value [, ttl]) -> ok, error
-    proxy.set_function("set",
+    proxy.set_function(
+        "set",
         [&v, inst](sol::this_state s, std::string key, std::string value,
                    sol::optional<lua_Integer> ttl) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -654,80 +706,85 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
                 results.push_back(sol::make_object(lua, true));
             } else {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
-                    err.message ? err.message : "set failed"));
+                results.push_back(
+                    make_error_table(lua, err.code ? err.code : "redis.error",
+                                     err.message ? err.message : "set failed"));
             }
             return results;
         });
 
     // del(key) -> ok, error
     proxy.set_function("del",
-        [&v, inst](sol::this_state s, std::string key) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
-            shield_error_v1 err{};
-            int rc = v.del(inst, key.c_str(), &err);
-            if (rc == 0) {
-                results.push_back(sol::make_object(lua, true));
-            } else {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
-                    err.message ? err.message : "del failed"));
-            }
-            return results;
-        });
+                       [&v, inst](sol::this_state s,
+                                  std::string key) -> sol::variadic_results {
+                           sol::state_view lua(s);
+                           sol::variadic_results results;
+                           shield_error_v1 err{};
+                           int rc = v.del(inst, key.c_str(), &err);
+                           if (rc == 0) {
+                               results.push_back(sol::make_object(lua, true));
+                           } else {
+                               results.push_back(sol::make_object(lua, false));
+                               results.push_back(make_error_table(
+                                   lua, err.code ? err.code : "redis.error",
+                                   err.message ? err.message : "del failed"));
+                           }
+                           return results;
+                       });
 
     // hget(key, field) -> ok, value|nil|error
     proxy.set_function("hget",
-        [&v, inst](sol::this_state s, std::string key,
-                   std::string field) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
-            shield_redis_value_v1* out = nullptr;
-            shield_error_v1 err{};
-            int rc = v.hget(inst, key.c_str(), field.c_str(), &out, &err);
-            if (rc == 0) {
-                results.push_back(sol::make_object(lua, true));
-                if (out && out->type != SHIELD_REDIS_NIL) {
-                    results.push_back(value_to_lua(lua, out));
-                } else {
-                    results.push_back(sol::nil);
-                }
-            } else {
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
-                    err.message ? err.message : "hget failed"));
-            }
-            if (out) v.free_value(out);
-            return results;
-        });
+                       [&v, inst](sol::this_state s, std::string key,
+                                  std::string field) -> sol::variadic_results {
+                           sol::state_view lua(s);
+                           sol::variadic_results results;
+                           shield_redis_value_v1* out = nullptr;
+                           shield_error_v1 err{};
+                           int rc = v.hget(inst, key.c_str(), field.c_str(),
+                                           &out, &err);
+                           if (rc == 0) {
+                               results.push_back(sol::make_object(lua, true));
+                               if (out && out->type != SHIELD_REDIS_NIL) {
+                                   results.push_back(value_to_lua(lua, out));
+                               } else {
+                                   results.push_back(sol::nil);
+                               }
+                           } else {
+                               results.push_back(sol::make_object(lua, false));
+                               results.push_back(make_error_table(
+                                   lua, err.code ? err.code : "redis.error",
+                                   err.message ? err.message : "hget failed"));
+                           }
+                           if (out) v.free_value(out);
+                           return results;
+                       });
 
     // hset(key, field, value) -> ok, error
-    proxy.set_function("hset",
+    proxy.set_function(
+        "hset",
         [&v, inst](sol::this_state s, std::string key, std::string field,
                    std::string value) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
             shield_error_v1 err{};
-            int rc = v.hset(inst, key.c_str(), field.c_str(),
-                            value.c_str(), &err);
+            int rc =
+                v.hset(inst, key.c_str(), field.c_str(), value.c_str(), &err);
             if (rc == 0) {
                 results.push_back(sol::make_object(lua, true));
             } else {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
+                results.push_back(make_error_table(
+                    lua, err.code ? err.code : "redis.error",
                     err.message ? err.message : "hset failed"));
             }
             return results;
         });
 
     // hgetall(key) -> ok, {field=value,...}|error
-    proxy.set_function("hgetall",
-        [&v, inst](sol::this_state s, std::string key) -> sol::variadic_results {
+    proxy.set_function(
+        "hgetall",
+        [&v, inst](sol::this_state s,
+                   std::string key) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
             shield_redis_value_v1* out = nullptr;
@@ -741,8 +798,10 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
                     auto& f = out->items[i];
                     auto& val = out->items[i + 1];
                     if (f.str && val.str) {
-                        tbl[std::string(f.str, static_cast<size_t>(f.str_len))] =
-                            std::string(val.str, static_cast<size_t>(val.str_len));
+                        tbl[std::string(f.str,
+                                        static_cast<size_t>(f.str_len))] =
+                            std::string(val.str,
+                                        static_cast<size_t>(val.str_len));
                     }
                 }
                 results.push_back(sol::make_object(lua, tbl));
@@ -751,8 +810,8 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
                 results.push_back(sol::make_object(lua, lua.create_table()));
             } else {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
+                results.push_back(make_error_table(
+                    lua, err.code ? err.code : "redis.error",
                     err.message ? err.message : "hgetall failed"));
             }
             if (out) v.free_value(out);
@@ -760,7 +819,8 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
         });
 
     // zadd(key, score, member) -> ok, error
-    proxy.set_function("zadd",
+    proxy.set_function(
+        "zadd",
         [&v, inst](sol::this_state s, std::string key, double score,
                    std::string member) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -771,15 +831,16 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
                 results.push_back(sol::make_object(lua, true));
             } else {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
+                results.push_back(make_error_table(
+                    lua, err.code ? err.code : "redis.error",
                     err.message ? err.message : "zadd failed"));
             }
             return results;
         });
 
     // zrange(key, start, stop) -> ok, {member,...}|error
-    proxy.set_function("zrange",
+    proxy.set_function(
+        "zrange",
         [&v, inst](sol::this_state s, std::string key, int start,
                    int stop) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -803,8 +864,8 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
                 results.push_back(sol::make_object(lua, lua.create_table()));
             } else {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
+                results.push_back(make_error_table(
+                    lua, err.code ? err.code : "redis.error",
                     err.message ? err.message : "zrange failed"));
             }
             if (out) v.free_value(out);
@@ -812,8 +873,10 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
         });
 
     // command(cmd, ...) -> ok, result|error
-    proxy.set_function("command",
-        [&v, inst](sol::this_state s, sol::variadic_args va) -> sol::variadic_results {
+    proxy.set_function(
+        "command",
+        [&v, inst](sol::this_state s,
+                   sol::variadic_args va) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
 
@@ -823,8 +886,9 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
             }
             if (args_storage.empty()) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    "invalid_args", "command requires at least 1 argument"));
+                results.push_back(
+                    make_error_table(lua, "invalid_args",
+                                     "command requires at least 1 argument"));
                 return results;
             }
 
@@ -836,16 +900,16 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
 
             shield_redis_value_v1* out = nullptr;
             shield_error_v1 err{};
-            int rc = v.command(inst, c_args.data(),
-                              static_cast<uint64_t>(c_args.size()),
-                              &out, &err);
+            int rc =
+                v.command(inst, c_args.data(),
+                          static_cast<uint64_t>(c_args.size()), &out, &err);
             if (rc == 0 && out) {
                 results.push_back(sol::make_object(lua, true));
                 results.push_back(value_to_lua(lua, out));
             } else {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
+                results.push_back(make_error_table(
+                    lua, err.code ? err.code : "redis.error",
                     err.message ? err.message : "command failed"));
             }
             if (out) v.free_value(out);
@@ -853,8 +917,10 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
         });
 
     // pipeline({{cmd,...}, {cmd,...}, ...}) -> ok, {result,...}|error
-    proxy.set_function("pipeline",
-        [&v, inst](sol::this_state s, sol::table cmds_table) -> sol::variadic_results {
+    proxy.set_function(
+        "pipeline",
+        [&v, inst](sol::this_state s,
+                   sol::table cmds_table) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
 
@@ -897,8 +963,8 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
             uint64_t out_count = 0;
             shield_error_v1 err{};
             int rc = v.pipeline(inst, cmds.data(),
-                                static_cast<uint64_t>(cmds.size()),
-                                &out_array, &out_count, &err);
+                                static_cast<uint64_t>(cmds.size()), &out_array,
+                                &out_count, &err);
             if (rc == 0) {
                 results.push_back(sol::make_object(lua, true));
                 auto tbl = lua.create_table();
@@ -908,8 +974,8 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
                 results.push_back(sol::make_object(lua, tbl));
             } else {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(lua,
-                    err.code ? err.code : "redis.error",
+                results.push_back(make_error_table(
+                    lua, err.code ? err.code : "redis.error",
                     err.message ? err.message : "pipeline failed"));
             }
             if (out_array) {
@@ -929,8 +995,7 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
 // register_lua: install shield.redis(binding) callable namespace
 // ---------------------------------------------------------------------------
 
-int register_lua_impl(shield_plugin_instance_v1* self,
-                      struct lua_State* L,
+int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
                       shield_error_v1* err) {
     if (!L) {
         if (err) {
@@ -959,9 +1024,10 @@ int register_lua_impl(shield_plugin_instance_v1* self,
         auto mt = lua.create_table();
         const shield_host_api_v1* host_api = current->host_api;
         shield_plugin_context_v1* ctx = current->ctx;
-        mt.set_function("__call",
+        mt.set_function(
+            "__call",
             [host_api, ctx](sol::this_state s, sol::table /*self*/,
-               std::string binding) -> sol::object {
+                            std::string binding) -> sol::object {
                 sol::state_view lua(s);
                 const char* instance_id =
                     host_api->binding_instance_id(ctx, binding.c_str());
@@ -982,14 +1048,14 @@ int register_lua_impl(shield_plugin_instance_v1* self,
 // ---------------------------------------------------------------------------
 
 int redis_driver_create(const shield_plugin_create_args_v1* args,
-                        shield_plugin_instance_v1** out,
-                        shield_error_v1* err) {
+                        shield_plugin_instance_v1** out, shield_error_v1* err) {
     (void)err;
     auto* inst = new redis_instance;
     inst->instance_id = args->instance_id ? args->instance_id : "";
     inst->host_api = args->host_api;
     inst->ctx = args->ctx;
     parse_instance_config(inst, args->config_json);
+    init_vtable(&inst->vtable_);
     register_instance(inst);
 
     inst->shell.struct_size = sizeof(shield_plugin_instance_v1);
@@ -998,7 +1064,7 @@ int redis_driver_create(const shield_plugin_create_args_v1* args,
                                    const char* iface,
                                    shield_error_v1*) -> const void* {
         if (iface && std::strcmp(iface, SHIELD_REDIS_V1) == 0)
-            return &redis_vtable();
+            return &reinterpret_cast<redis_instance*>(self)->vtable_;
         return nullptr;
     };
     inst->shell.start = [](shield_plugin_instance_v1* self,
@@ -1027,8 +1093,8 @@ int redis_driver_create(const shield_plugin_create_args_v1* args,
 
 }  // namespace
 
-extern "C" SHIELD_PLUGIN_EXPORT
-const struct shield_plugin_abi_v1* shield_plugin_get_v1(void) {
+extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
+shield_plugin_get_v1(void) {
     static const struct shield_plugin_abi_v1 abi = {
         SHIELD_PLUGIN_ABI_VERSION,
         sizeof(shield_plugin_abi_v1),
