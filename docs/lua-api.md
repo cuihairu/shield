@@ -406,6 +406,23 @@ local mono = shield.monotonic()
 
 实现快照：`shield.now()` 已实现，读 `LuaServiceManager` 持有的 `Clock`（默认 `SystemClock` 读 `system_clock`）；`shield.monotonic()` 已实现，读 `steady_clock`（不可拨）。`attach_clock()` 在 `src/lua/lua_service.cpp` 实现，用于测试注入 `MockClock`。`os.time()`/`os.date()` 无参 hook 在 `register_full_shield_api`（`src/lua/lua_api.cpp`）中安装，带参形式保留原函数。`os.clock()` 不动。`Clock`/`SystemClock`/`MockClock` 定义于 `include/shield/lua/clock.hpp`。`test_lua_api_clock` 覆盖 12 个用例：默认墙钟、一致性、MockClock set/advance、os hook 粒度（含 table 带参不受影响）、monotonic 不可拨、缓存过期/签到/cooldown 完整业务场景。
 
+### has_service_actor(service_id)
+
+检查服务是否有关联的 CAF actor。
+
+```cpp
+bool has_service_actor(const std::string& service_id) const;
+```
+
+参数：
+- `service_id` - 服务 ID
+
+返回：
+- `true` - 服务有关联的 CAF actor
+- `false` - 服务没有关联的 CAF actor 或服务不存在
+
+实现快照：`has_service_actor()` 在 `src/lua/lua_service.cpp` 实现，查询内部 `service_actors` 映射表。用于测试验证 CAF actor 系统集成状态。
+
 ## Config API
 
 ```lua
