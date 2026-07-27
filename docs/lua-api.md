@@ -19,8 +19,8 @@ HTTP 服务端 Lua 路由注册仍是占位入口，尚未接入 bootstrap。
 
 - Lua service 是普通 Lua module，返回一个 table。
 - 不使用 `shield.service("name")` 构造服务对象。
-- service handler 只接收业务参数，不隐式注入 `src`、session 或上下文。
-- 当前消息上下文通过 `shield.sender()`、`shield.trace()`、`shield.deadline()` 显式读取。
+- service handler 接收 `ctx` 作为第一个参数，包含当前消息上下文（sender、trace、deadline 等）。
+- `ctx` 是只读对象，handler 返回后上下文失效。
 - `shield.send` 非阻塞、无 ACK。
 - `shield.call` 挂起当前 Lua coroutine，但不阻塞 runtime 线程。
 - Runtime API 返回值统一使用 `ok, result_or_error`，业务返回的 `nil` 和 `false` 不应和 runtime 错误混淆。
@@ -40,9 +40,9 @@ function M.on_init(args)
     shield.log.info(M.name .. " started")
 end
 
-function M.ping(value)
-    local src = shield.sender()
-    shield.send(src, "pong", value)
+function M.ping(ctx, value)
+    -- ctx.sender 是发送者
+    shield.send(ctx.sender, "pong", value)
 end
 
 function M.on_shutdown(ctx)
@@ -319,18 +319,21 @@ local ok, result = shield.call_timeout(3000, "db.player", "get", uid)
 ### Message Context
 
 ```lua
-local src = shield.sender()
-local trace = shield.trace()
-local deadline = shield.deadline()
+function M.handler(ctx, ...)
+    local src = ctx.sender
+    local trace = ctx.trace
+    local deadline = ctx.deadline
+end
 ```
 
 规则：
 
+- `ctx` 是只读对象，包含当前消息上下文。
 - 只在 message handler coroutine 中有效。
 - handler 返回后上下文失效。
-- timer callback / fork task 中 `shield.sender()` 返回 `nil`。
+- timer callback / fork task 中 `ctx.sender` 返回 `nil`。
 
-实现快照：`shield.sender()`、`shield.trace()`、`shield.deadline()` 均已实现。deadline_ms 和 trace_id 字段在 send/call 消息中传播，从 caller 的 dispatch context 携带到 callee 的 dispatch context；但 runtime 当前不生成 trace id，`shield.trace()` 恒返回 nil（生成属于 Phase 2+）。timer callback / fork task context 中 `shield.sender()` 返回 `nil`，`shield.trace()` 返回 `nil`，`shield.deadline()` 返回 `nil`。
+实现快照：`ctx` 对象包含 `sender`、`trace`、`deadline` 字段。deadline_ms 和 trace_id 字段在 send/call 消息中传播，从 caller 的 dispatch context 携带到 callee 的 dispatch context；但 runtime 当前不生成 trace id，`ctx.trace` 恒返回 nil（生成属于 Phase 2+）。timer callback / fork task context 中 `ctx.sender` 返回 `nil`，`ctx.trace` 返回 `nil`，`ctx.deadline` 返回 `nil`。
 
 ## Timer API
 

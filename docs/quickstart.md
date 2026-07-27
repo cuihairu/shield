@@ -28,9 +28,8 @@ Lua 服务只关心业务：
 ```lua
 local M = {}
 
-function M.ping()
-    local src = shield.sender()
-    shield.send(src, "pong", { time = shield.now() })
+function M.ping(ctx)
+    shield.send(ctx.sender, "pong", { time = shield.now() })
 end
 
 return M

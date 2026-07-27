@@ -567,20 +567,22 @@ function M.kick(uid, reason)
 end
 ```
 
-如需当前消息上下文，使用显式 API：
+如需当前消息上下文，通过 `ctx` 参数获取：
 
 ```lua
-local src = shield.sender()
-local trace = shield.trace()
-local deadline = shield.deadline()
+function M.handler(ctx, ...)
+    local src = ctx.sender
+    local trace = ctx.trace
+    local deadline = ctx.deadline
+end
 ```
 
-这些 API 只在 message handler coroutine 中有效。handler 返回后上下文失效。
+`ctx` 是只读对象，只在 message handler coroutine 中有效。handler 返回后上下文失效。
 
-当前实现状态：`shield.self()`、`shield.sender()` 和 `shield.names()` 已在
+当前实现状态：`shield.self()` 和 `shield.names()` 已在
 单节点 Lua service smoke test 中覆盖。`shield.self()` 返回 opaque
 `ServiceHandle` userdata（`id()`/`node()`/`valid()`；`node()` 在单节点
-runtime 恒为 `0`）。`shield.sender()` 当前返回本地 service name 字符串，
+runtime 恒为 `0`）。`ctx.sender` 当前返回本地 service name 字符串，
 不是最终的 opaque sender handle。
 
 ## exit 与 shutdown

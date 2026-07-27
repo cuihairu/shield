@@ -112,9 +112,9 @@ Harness 要求：
 
 | Case | 设置 | 操作 | 断言 |
 | --- | --- | --- | --- |
-| LAPI-006-01 | send from A to B | B calls `shield.sender()` | equals A handle |
+| LAPI-006-01 | send from A to B | B receives `ctx.sender` | equals A handle |
 | LAPI-006-02 | handler returns | saved callback reads sender | `nil` or `context_expired` |
-| LAPI-006-03 | timer callback | `shield.sender()` | nil |
+| LAPI-006-03 | timer callback | `ctx.sender` | nil |
 | LAPI-006-04 | trace enabled | call chain | trace id propagated |
 | LAPI-006-05 | deadline enabled | call_timeout | remaining deadline visible |
 
@@ -237,8 +237,8 @@ Harness 要求：
 | ~~LAPI-005-06~~ | ~~call timeout 未实现~~ 已实现：call timeout 由 CAF delayed `call_timeout_atom` 驱动，LAPI-005-06 覆盖协程 timeout + 同步调用 ✅ |
 | ~~LAPI-005-07~~ | ~~late response 丢弃~~ call timeout 已实现，超时后 caller 已 resume；callee 返回时 `resume_caller` 在 `pending_calls` 中找不到 session，静默丢弃。行为正确 ✅ |
 | ~~LAPI-005-08~~ | ~~nested call~~ 协程路径支持：caller yield 后 CAF actor 处理 callee 消息，`CallApiFromLuaWrapsRuntimeResult` 测试覆盖嵌套 call ✅ |
-| LAPI-006-04 | trace id 传播：消息字段携带通道已实现（send/call 会把 `current_trace_id` 写入消息），但 runtime 当前不生成 trace id，`shield.trace()` 恒返回 nil。trace id 生成与完整链路传播属于 Phase 2+ |
-| ~~LAPI-006-05~~ | ~~deadline 可见性~~ 读取/传播通道已实现：`shield.deadline()` 从 dispatch context 读取，字段随消息传播；但 runtime 当前不为 call 赋值 deadline，`shield.deadline()` 恒返回 nil。deadline 赋值策略属于 Phase 2+ |
+| LAPI-006-04 | trace id 传播：消息字段携带通道已实现（send/call 会把 `current_trace_id` 写入消息），但 runtime 当前不生成 trace id，`ctx.trace` 恒返回 nil。trace id 生成与完整链路传播属于 Phase 2+ |
+| ~~LAPI-006-05~~ | ~~deadline 可见性~~ 读取/传播通道已实现：`ctx.deadline` 从 dispatch context 读取，字段随消息传播；但 runtime 当前不为 call 赋值 deadline，`ctx.deadline` 恒返回 nil。deadline 赋值策略属于 Phase 2+ |
 | ~~LAPI-007-04~~ | ~~`on_error` hook 调用~~ 已实现：`invoke_hook` 调用 service table 上的 `on_error`，`OnErrorHookCalledOnHandlerThrow` 测试覆盖 ✅ |
 | ~~LAPI-007-05~~ | ~~`shield.sleep` coroutine 语义~~ 已由 LAPI-007-08 覆盖 ✅ |
 | LAPI-008-02/03/06 | 缺失 binding / 目标 instance unavailable 的 `module_unavailable` 需要插件 mock harness 覆盖 |

@@ -235,8 +235,8 @@ caller service
 
 规则：
 
-- handler 参数只接收业务参数，不额外塞 `src`。
-- 调用方上下文通过 `shield.sender()`、`shield.trace()`、`shield.deadline()` 读取。
+- handler 接收 `ctx` 作为第一个参数，包含当前消息上下文（sender、trace、deadline 等）。
+- `ctx` 是只读对象，handler 返回后上下文失效。
 - `shield.call` 挂起当前 Lua coroutine，但不阻塞 runtime 线程。
 
 ### 3. Client 到 Gateway 到 Service

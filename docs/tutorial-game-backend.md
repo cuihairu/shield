@@ -93,12 +93,11 @@ return M
 local M = {}
 local rooms = {}
 
-function M.join(data)
-    local src = shield.sender()
+function M.join(ctx, data)
     local id = data.room_id
     rooms[id] = rooms[id] or { players = {} }
     table.insert(rooms[id].players, data.player_id)
-    shield.send(src, "room_joined", {
+    shield.send(ctx.sender, "room_joined", {
         session_id = data.session_id,
         room_id = id,
     })
@@ -112,10 +111,9 @@ return M
 ```lua
 local M = {}
 
-function M.send(data)
-    local src = shield.sender()
+function M.send(ctx, data)
     shield.log.info("chat " .. data.room_id .. ": " .. data.text)
-    shield.send(src, "chat_ok", {
+    shield.send(ctx.sender, "chat_ok", {
         session_id = data.session_id,
         room_id = data.room_id,
     })
