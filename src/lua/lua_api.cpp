@@ -593,6 +593,9 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     shield.set_function("_is_in_exit",
                         [manager]() -> bool { return manager->is_in_exit(); });
 
+    // DEPRECATED: Use ctx.sender instead. Kept for backward compatibility.
+    // In new code, prefer: function M.handler(ctx, ...) local src = ctx.sender
+    // end
     shield.set_function("sender", [manager]() -> sol::optional<std::string> {
         // Returns nil in timer/fork context (no sender).
         // Returns nil outside any dispatch (module-level code).
@@ -606,12 +609,14 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
         return sender;
     });
 
+    // DEPRECATED: Use ctx.trace instead. Kept for backward compatibility.
     shield.set_function("trace", [manager]() -> sol::optional<std::string> {
         const auto trace = manager->current_trace_id();
         if (trace.empty()) return sol::nullopt;
         return trace;
     });
 
+    // DEPRECATED: Use ctx.deadline instead. Kept for backward compatibility.
     shield.set_function("deadline", [manager]() -> sol::optional<int64_t> {
         const auto dl = manager->current_deadline_ms();
         if (dl <= 0) return sol::nullopt;

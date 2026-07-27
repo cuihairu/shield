@@ -17,11 +17,11 @@ function M.on_init(args)
     M.test_case = args.config and args.config.test_case or "default"
 end
 
-function M.get_sessions()
+function M.get_sessions(ctx)
     return sessions
 end
 
-function M.on_connect(session)
+function M.on_connect(ctx, session)
     session_counter = session_counter + 1
     local session_id = "session_" .. session_counter
 
@@ -54,7 +54,7 @@ function M.on_connect(session)
     return true
 end
 
-function M.on_disconnect(session, reason)
+function M.on_disconnect(ctx, session, reason)
     local session_id = nil
     if type(session) == "table" then
         session_id = session.id or session._internal_id
@@ -68,8 +68,8 @@ function M.on_disconnect(session, reason)
     end
 end
 
--- New signature: on_client_message(route_id, client_context, body, message)
-function M.on_client_message(route_id, client_context, body, message)
+-- New signature: on_client_message(ctx, route_id, client_context, body, message)
+function M.on_client_message(ctx, route_id, client_context, body, message)
     local session_id = client_context and client_context.session_id or nil
 
     if session_id and sessions[tostring(session_id)] then

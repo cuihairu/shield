@@ -6,11 +6,11 @@
 
 local M = {}
 
-function M.read(key)
+function M.read(ctx, key)
     return shield.config(key)
 end
 
-function M.read_default(key, default)
+function M.read_default(ctx, key, default)
     return shield.config(key, default)
 end
 

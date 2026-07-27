@@ -14,11 +14,11 @@ function M.on_init(args)
     return true
 end
 
-function M.ping()
+function M.ping(ctx)
     return "pong:" .. tostring(M.name)
 end
 
-function M.get_args()
+function M.get_args(ctx)
     return M.args
 end
 

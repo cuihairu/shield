@@ -29,31 +29,31 @@ function M.on_exit(reason)
 end
 
 -- A method that always throws.
-function M.throwing_method()
+function M.throwing_method(ctx)
     error("intentional_error")
 end
 
 -- A method that succeeds.
-function M.good_method()
+function M.good_method(ctx)
     return "ok"
 end
 
-function M.get_last_error()
+function M.get_last_error(ctx)
     return last_error
 end
 
-function M.get_last_error_context()
+function M.get_last_error_context(ctx)
     if last_error_context then
         return last_error_context.type, last_error_context.method
     end
     return nil, nil
 end
 
-function M.get_last_panic()
+function M.get_last_panic(ctx)
     return last_panic
 end
 
-function M.get_call_in_exit_result()
+function M.get_call_in_exit_result(ctx)
     if call_in_exit_result then
         return call_in_exit_result.ok, call_in_exit_result.err
     end

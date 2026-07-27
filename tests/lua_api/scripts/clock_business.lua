@@ -13,11 +13,11 @@ local M = {}
 ------------------------------------------------------------------------
 local cache = {}
 
-function M.set_cache(key, value, ttl_seconds)
+function M.set_cache(ctx, key, value, ttl_seconds)
     cache[key] = { value = value, expires = os.time() + ttl_seconds }
 end
 
-function M.get_cache(key)
+function M.get_cache(ctx, key)
     local entry = cache[key]
     if not entry then return nil end
     if entry.expires <= os.time() then
@@ -27,7 +27,7 @@ function M.get_cache(key)
     return entry.value
 end
 
-function M.cache_size()
+function M.cache_size(ctx)
     local n = 0
     for _ in pairs(cache) do n = n + 1 end
     return n
@@ -38,7 +38,7 @@ end
 ------------------------------------------------------------------------
 local last_checkin_date = ""
 
-function M.checkin()
+function M.checkin(ctx)
     local today = os.date("%Y-%m-%d")
     if today == last_checkin_date then
         return false, "already checked in today"
@@ -52,7 +52,7 @@ end
 ------------------------------------------------------------------------
 local last_action_ms = 0
 
-function M.do_action(cooldown_ms)
+function M.do_action(ctx, cooldown_ms)
     local now = shield.now()
     if now - last_action_ms < cooldown_ms then
         return false, "on cooldown"

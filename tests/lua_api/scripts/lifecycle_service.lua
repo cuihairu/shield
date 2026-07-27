@@ -22,22 +22,22 @@ function M.on_exit(reason)
 end
 
 -- Simple echo for basic testing
-function M.echo(msg)
+function M.echo(ctx, msg)
     return msg
 end
 
 -- Test method that returns multiple values
-function M.multi_return()
+function M.multi_return(ctx)
     return "first", "second", "third"
 end
 
 -- Test method that returns error
-function M.return_error()
+function M.return_error(ctx)
     return false, "method_error"
 end
 
 -- Test method that throws
-function M.throw_error()
+function M.throw_error(ctx)
     error("method_threw_error")
 end
 

@@ -2,15 +2,15 @@ local M = {}
 
 local legacy_on_message_called = false
 
-function M.has_service_api()
+function M.has_service_api(ctx)
     return shield.service ~= nil
 end
 
-function M.has_plugin_api()
+function M.has_plugin_api(ctx)
     return shield.plugin ~= nil
 end
 
-function M.has_new_plugin_introspection()
+function M.has_new_plugin_introspection(ctx)
     return shield.plugin ~= nil
         and shield.plugin.packages ~= nil
         and shield.plugin.instances ~= nil
@@ -18,14 +18,14 @@ function M.has_new_plugin_introspection()
         and shield.plugin.binding ~= nil
 end
 
-function M.colon_db_call_fails()
+function M.colon_db_call_fails(ctx)
     local ok = pcall(function()
         shield.db:query("SELECT 1", {})
     end)
     return not ok
 end
 
-function M.has_di_api()
+function M.has_di_api(ctx)
     return shield.inject ~= nil or shield.container ~= nil
 end
 
@@ -33,11 +33,11 @@ function M.on_message()
     legacy_on_message_called = true
 end
 
-function M.test_method()
+function M.test_method(ctx)
     return "new_dispatch_only"
 end
 
-function M.on_message_called()
+function M.on_message_called(ctx)
     return legacy_on_message_called
 end
 

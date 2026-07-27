@@ -603,11 +603,42 @@ bool LuaRuntime::call_service_method_coroutine(
         }
 
         sol::protected_function handler = value.as<sol::protected_function>();
+
+        // Create ctx table with message context (sender, trace, deadline)
+        sol::table ctx = lua.create_table();
+        if (manager != nullptr) {
+            // Set sender: nil if empty, otherwise the sender id
+            std::string sender = manager->current_sender_id();
+            if (sender.empty()) {
+                ctx["sender"] = sol::nil;
+            } else {
+                ctx["sender"] = sender;
+            }
+
+            // Set trace: nil if empty, otherwise the trace id
+            std::string trace = manager->current_trace_id();
+            if (trace.empty()) {
+                ctx["trace"] = sol::nil;
+            } else {
+                ctx["trace"] = trace;
+            }
+
+            // Set deadline: nil if <= 0, otherwise the deadline
+            int64_t deadline = manager->current_deadline_ms();
+            if (deadline <= 0) {
+                ctx["deadline"] = sol::nil;
+            } else {
+                ctx["deadline"] = deadline;
+            }
+        }
+
+        // Build args table with ctx as first argument
         sol::table args_table = lua.create_table();
+        args_table.add(ctx);  // ctx is the first argument
         for (const auto& arg : args) {
             args_table.add(json_to_lua(lua, arg));
         }
-        args_table["n"] = args.size();
+        args_table["n"] = args.size() + 1;  // +1 for ctx
 
         // Call the factory to build a handler coroutine. Use a protected call
         // so a factory failure degrades to synchronous dispatch instead of

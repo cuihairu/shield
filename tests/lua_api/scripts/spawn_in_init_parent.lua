@@ -16,7 +16,7 @@ function M.on_init(args)
     return true
 end
 
-function M.get_child()
+function M.get_child(ctx)
     return child_id, child_node
 end
 

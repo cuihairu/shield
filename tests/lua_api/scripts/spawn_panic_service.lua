@@ -16,7 +16,7 @@ function M.on_panic(reason, context)
     end
 end
 
-function M.boom()
+function M.boom(ctx)
     shield.panic("test panic")
     return true
 end

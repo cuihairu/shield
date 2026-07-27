@@ -17,66 +17,67 @@ function M.on_init(args)
 
     if config.test_case == "timer_sender" then
         shield.timer_once(20, function()
+            -- In timer context, ctx is not available, use shield.sender() for backward compatibility
             last_sender = shield.sender() or "__nil__"
         end)
     end
 end
 
-local function record_call(method, args)
-    last_sender = shield.sender()
+local function record_call(ctx, method, args)
+    last_sender = ctx.sender
     last_method = method
     last_args = args or {}
 end
 
-function M.record(...)
+function M.record(ctx, ...)
     local args = {...}
-    record_call("record", args)
+    record_call(ctx, "record", args)
     return true
 end
 
-function M.echo(msg)
-    record_call("echo", {msg})
+function M.echo(ctx, msg)
+    record_call(ctx, "echo", {msg})
     return msg
 end
 
-function M.return_value()
+function M.return_value(ctx)
     return "returned_value"
 end
 
-function M.return_false()
+function M.return_false(ctx)
     return false, "return_false_reason"
 end
 
-function M.return_nil()
+function M.return_nil(ctx)
     return nil
 end
 
-function M.throw_error()
+function M.throw_error(ctx)
     error("handler_error")
 end
 
-function M.multi_return(...)
+function M.multi_return(ctx, ...)
     return ...
 end
 
-function M.slow_method()
+function M.slow_method(ctx)
     shield.sleep(150)
     return "slow_done"
 end
 
-function M.get_last_sender()
+function M.get_last_sender(ctx)
     return last_sender
 end
 
-function M.get_last_method()
+function M.get_last_method(ctx)
     return last_method
 end
 
-function M.get_last_args()
+function M.get_last_args(ctx)
     return last_args
 end
 
-function M.query_id(name)
+function M.query_id(ctx, name)
     local handle, err = shield.query(name)
     if not handle then
         return nil, err and err.code or nil
@@ -84,21 +85,21 @@ function M.query_id(name)
     return handle:id()
 end
 
-function M.register_name(name)
+function M.register_name(ctx, name)
     local ok, err = shield.register(name)
     return ok, err and err.code or nil, err and err.message or nil
 end
 
-function M.unregister_name(name)
+function M.unregister_name(ctx, name)
     local ok, err = shield.unregister(name)
     return ok, err and err.code or nil, err and err.message or nil
 end
 
-function M.names_snapshot()
+function M.names_snapshot(ctx)
     return shield.names()
 end
 
-function M.self_id()
+function M.self_id(ctx)
     local handle = shield.self()
     if not handle then
         return nil
@@ -106,29 +107,30 @@ function M.self_id()
     return handle:id()
 end
 
-function M.current_sender()
-    return shield.sender()
+function M.current_sender(ctx)
+    return ctx.sender
 end
 
-function M.save_sender_reader()
+function M.save_sender_reader(ctx)
+    local sender = ctx.sender  -- Capture the value, not the ctx object
     saved_sender_reader = function()
-        return shield.sender()
+        return sender
     end
-    return shield.sender()
+    return ctx.sender
 end
 
-function M.read_saved_sender()
+function M.read_saved_sender(ctx)
     if not saved_sender_reader then
         return nil
     end
     return saved_sender_reader()
 end
 
-function M.send_to(target, method, ...)
+function M.send_to(ctx, target, method, ...)
     return shield.send(target, method, ...)
 end
 
-function M.send_to_query(name, method, ...)
+function M.send_to_query(ctx, name, method, ...)
     local handle, err = shield.query(name)
     if not handle then
         return false, err
@@ -136,11 +138,11 @@ function M.send_to_query(name, method, ...)
     return shield.send(handle, method, ...)
 end
 
-function M.call_target(target, method, ...)
+function M.call_target(ctx, target, method, ...)
     return shield.call(target, method, ...)
 end
 
-function M.call_timeout_target(timeout_ms, target, method, ...)
+function M.call_timeout_target(ctx, timeout_ms, target, method, ...)
     return shield.call_timeout(timeout_ms, target, method, ...)
 end
 

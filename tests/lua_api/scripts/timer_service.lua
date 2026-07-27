@@ -45,15 +45,15 @@ function M.on_init(args)
     end
 end
 
-function M.get_timer_count()
+function M.get_timer_count(ctx)
     return #timer_events
 end
 
-function M.get_fork_count()
+function M.get_fork_count(ctx)
     return #fork_events
 end
 
-function M.get_last_timer_id()
+function M.get_last_timer_id(ctx)
     return last_timer_id
 end
 

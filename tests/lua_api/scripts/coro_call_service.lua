@@ -10,7 +10,7 @@ local last_call_ok = nil
 local last_call_result = nil
 local last_call_extra = nil
 
-function M.call_and_record(target, method, ...)
+function M.call_and_record(ctx, target, method, ...)
     local ok, result, extra = shield.call(target, method, ...)
     last_call_ok = ok
     last_call_result = result
@@ -18,7 +18,7 @@ function M.call_and_record(target, method, ...)
     return ok
 end
 
-function M.call_timeout_and_record(timeout_ms, target, method, ...)
+function M.call_timeout_and_record(ctx, timeout_ms, target, method, ...)
     local ok, result, extra = shield.call_timeout(timeout_ms, target, method, ...)
     last_call_ok = ok
     last_call_result = result
@@ -26,30 +26,30 @@ function M.call_timeout_and_record(timeout_ms, target, method, ...)
     return ok
 end
 
-function M.greet(name)
+function M.greet(ctx, name)
     return "hello:" .. tostring(name)
 end
 
-function M.greet_multi(name)
+function M.greet_multi(ctx, name)
     return "hello:" .. tostring(name), "extra:" .. tostring(name)
 end
 
-function M.greet_slow(name)
+function M.greet_slow(ctx, name)
     -- Yields the callee coroutine via shield.sleep; the caller stays suspended
     -- until this sleeps-and-resumes, then returns its value.
     shield.sleep(40)
     return "slow:" .. tostring(name)
 end
 
-function M.get_last_call_ok()
+function M.get_last_call_ok(ctx)
     return last_call_ok
 end
 
-function M.get_last_call_result()
+function M.get_last_call_result(ctx)
     return last_call_result
 end
 
-function M.get_last_call_extra()
+function M.get_last_call_extra(ctx)
     return last_call_extra
 end
 

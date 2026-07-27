@@ -91,7 +91,10 @@ BOOST_AUTO_TEST_CASE(LAPI_006_01_SenderInMessageHandler) {
         std::chrono::seconds(1)));
 }
 
-BOOST_AUTO_TEST_CASE(LAPI_006_02_SenderAfterHandlerReturnsIsCleared) {
+// With explicit ctx parameter, the sender value is captured at call time.
+// A closure over ctx.sender retains the captured value (no "context
+// expiration").
+BOOST_AUTO_TEST_CASE(LAPI_006_02_SenderValueIsCapturedAtCallTime) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
 
@@ -108,13 +111,16 @@ BOOST_AUTO_TEST_CASE(LAPI_006_02_SenderAfterHandlerReturnsIsCleared) {
         nlohmann::json::array({"context_test", "save_sender_reader"}));
     BOOST_REQUIRE(send_result.success);
 
+    // With explicit ctx, the closure captures the sender value at call time.
+    // It should return the sender's service_id, not nil.
     BOOST_CHECK(wait_until(
         [&]() {
             CallResult saved =
                 manager.call(receiver.service_id, "read_saved_sender",
                              nlohmann::json::array());
             return saved.success && saved.values.size() == 1u &&
-                   saved.values[0].is_null();
+                   saved.values[0].is_string() &&
+                   saved.values[0].get<std::string>() == sender.service_id;
         },
         std::chrono::seconds(1)));
 }
