@@ -36,6 +36,7 @@ struct ClientIngress {
     std::string player_id;  // empty before auth
     std::string protocol_profile_id;
     uint32_t route_id = 0;            // from wire header
+    std::string method_name;          // RPC method name for dispatch
     std::vector<uint8_t> body_bytes;  // pure business data, pass-through
     std::optional<nlohmann::json> decoded_message;  // codec-decoded, if any
 };

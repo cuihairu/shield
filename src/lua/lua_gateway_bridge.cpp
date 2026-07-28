@@ -118,6 +118,7 @@ void LuaGatewayBridge::on_packet(
     ingress.player_id = session->player_id();
     ingress.route_id = route_id;
     ingress.protocol_profile_id = session->protocol_profile_id();
+    ingress.method_name = route->method_name.value_or("");
 
     // body_bytes: pass through raw bytes (Gateway does not decode body)
     if (packet.decoded_body.has_value()) {
@@ -183,6 +184,7 @@ void LuaGatewayBridge::send_client_ingress(const std::string& target,
         {"player_id", ingress.player_id},
         {"gateway_service", ingress.gateway_service_name},
         {"protocol_profile_id", ingress.protocol_profile_id},
+        {"method_name", ingress.method_name},
     };
 
     // body_bytes as raw string for Lua

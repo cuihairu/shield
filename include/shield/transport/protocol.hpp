@@ -94,7 +94,8 @@ struct RouteEntry {
     std::string debug_name;
     RoutePolicy policy;
     std::optional<std::string>
-        logical_service_name;  // for routing to logical service
+        logical_service_name;                // for routing to logical service
+    std::optional<std::string> method_name;  // RPC method name for dispatch
 };
 
 class RouteTable {
