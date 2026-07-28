@@ -52,7 +52,8 @@ struct ServiceAddress {
 struct SessionRoutingContext {
     std::string gateway_address;
     std::string session_id;
-    uint64_t session_epoch = 0;
+    uint32_t session_epoch =
+        0;  // Changed from uint64_t to uint32_t for consistency
     std::string player_id;
     std::string protocol_profile_id;
     std::unordered_map<std::string, ServiceAddress> service_routes;

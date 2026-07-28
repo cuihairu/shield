@@ -218,11 +218,12 @@ struct LuaServiceManager::Impl {
                                   const std::string& id,
                                   const ServiceMessage& msg) {
         // Validate session epoch if present (for gateway messages)
-        if (msg.session_id != 0 && msg.session_epoch != 0) {
+        // epoch 0 is a valid initial value, so we only check session_id != 0
+        if (msg.session_id != 0) {
             // In a full implementation, we would look up the session and
             // compare epochs. For now, we pass the epoch through to the
             // handler for validation.
-            // TODO: Implement session epoch validation in gateway bridge
+            // TODO: Implement session epoch validation with SessionRegistry
         }
 
         DispatchMessage m;
