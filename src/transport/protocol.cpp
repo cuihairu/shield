@@ -1197,6 +1197,12 @@ bool load_xmldef_routes_from_string(std::string_view xml, RouteTable& routes,
             }
             entry.policy.lazy_decode = *parsed;
         }
+        if (const auto* value = find_attr(attrs, "method")) {
+            entry.method_name = std::string(*value);
+        }
+        if (const auto* value = find_attr(attrs, "logical_service")) {
+            entry.logical_service_name = std::string(*value);
+        }
 
         if (!routes.add(std::move(entry))) {
             if (error) *error = "xmldef contains duplicate route id or name";
@@ -1828,6 +1834,14 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 entry.schema_id = route.value("schema_id", std::uint16_t{0});
                 entry.debug_name = route.value("name", std::string{});
                 entry.policy.lazy_decode = route.value("lazy_decode", true);
+                if (route.contains("method") && route["method"].is_string()) {
+                    entry.method_name = route["method"].get<std::string>();
+                }
+                if (route.contains("logical_service") &&
+                    route["logical_service"].is_string()) {
+                    entry.logical_service_name =
+                        route["logical_service"].get<std::string>();
+                }
                 if (route.contains("action") && route["action"].is_string()) {
                     const auto parsed =
                         parse_action(route["action"].get<std::string>());
