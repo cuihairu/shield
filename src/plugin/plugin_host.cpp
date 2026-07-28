@@ -6,6 +6,7 @@
 #include <deque>
 #include <lua.hpp>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string_view>
 #include <utility>

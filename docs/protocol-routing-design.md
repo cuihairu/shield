@@ -1,206 +1,222 @@
-# 客户端 RPC 路由设计
+# 客户端 RPC 服务自治路由设计
 
-本文冻结 Shield 客户端 RPC 的路由契约。wire header 携带 `route_id`；body 是纯业务数据。
+> 状态：目标契约，尚未完整实现。本文是客户端 RPC 路由、body 编解码和
+> Gateway/Service 边界的唯一设计依据；与旧 `LuaGatewayBridge`、
+> `on_client_message`、`session.target` 或 body-route 配置相冲突的描述均为
+> 待删除遗留，不是兼容目标。
 
-## 核心模型
+## 决策
 
-```text
-Client → Gateway → session.target Service → route_id → handler
-```
-
-- 所有客户端消息经过 Gateway 后，发给 **session 绑定的目标服务**。
-- 登录前：session.target = AuthService。
-- 登录后：session.target = PlayerService。
-- **route_id 的唯一职责**：在目标 Service VM 内选择 handler。
-- Gateway 不从 route_id 解析目标服务，不做多目标路由，不知道 room/scene/map。
-- 目标服务转发给其他服务由 Lua 内部决定，不在 Gateway 层面参与。
-
-## Wire 格式
+客户端 wire header 只携带 `route_id` 等传输字段，body 只携带该 RPC 的业务
+数据。`route_id` 从 compiled RPC descriptor 找到**逻辑服务名**；Gateway 用
+session 的动态绑定把逻辑服务名解析为当前 ServiceAddress。目标 Service 独占
+该服务的 RPC handler 表、请求/响应 schema 和 body codec。
 
 ```text
-+------------------+------------------+
-|     Header       |       Body       |
-| (route_id, ...)  | (业务数据)        |
-+------------------+------------------+
+client bytes
+  -> Gateway: envelope decode + header.route_id + edge validation
+  -> RpcDescriptor: route_id -> logical_service
+  -> SessionRoutingContext: logical_service -> ServiceAddress
+  -> ClientIngress(raw body bytes, ClientRef, descriptor identity)
+  -> target Service RPC adapter: route_id -> cached binding -> body decode
+  -> Lua handler(ClientContext, request)
 ```
 
-- Header 携带 `route_id`、帧长度、校验等传输层字段。
-- Body 是纯业务数据，编码格式由 ProtocolProfile 决定（json / protobuf / msgpack）。
-- route_id 不出现在 body 中。body 不携带路由、envelope 或包装。
+这不是“Gateway 业务分发”：Gateway 不知道 Lua handler、schema 或具体 codec，
+也不根据 body 作选择。它只拥有 live session、可信身份、动态服务绑定和客户端
+wire 边界。服务可独立拥有自己的 RPC 路由，因此 Player、Room、Scene、Map 等
+服务可按 descriptor 注册各自的路由，不需要把业务路由集中到 Gateway 或一个
+PlayerService。
 
-## RPC 描述符
+## 术语与所有权
 
-每个客户端 RPC 在编译期由描述符定义：
+| 对象 | Owner | 内容 | 不包含 |
+| --- | --- | --- | --- |
+| `ProtocolProfile` | Gateway/transport | envelope、header `route_id` 格式、descriptor package identity、传输限制 | body route、Lua handler、schema 实现 |
+| `RpcMethodDescriptor` | descriptor/toolchain | `route_id`、direction、logical_service、schema identity、binding hint、edge policy | ServiceAddress、SessionHandle |
+| `SessionRoutingContext` | Gateway | session id/epoch、player identity、profile、`logical_service -> ServiceAddress` | 全局 service registry、业务 handler |
+| `ServiceRpcTable` | target Service | 本服务允许的 route、缓存 Lua binding、request/response codec/schema | socket、live session |
+| `ClientContext` / `ClientRef` | Service adapter | 可信 client identity 和 Gateway 回包地址 | SessionHandle、frame、codec 实现 |
+
+`logical_service` 是 descriptor 中稳定的领域名称，例如 `auth`、`player`、
+`room`、`scene`、`map`；不是 actor name，不是实例 id，也不进入客户端 body。
+Gateway 只在当前 session 的 `service_routes` 中查它，不能回退到全局 registry。
+
+## Descriptor 是唯一静态来源
+
+每个 RPC descriptor 至少包含：
 
 ```text
 RpcMethodDescriptor {
-  route_id              uint32    wire header 中的方法标识，ProtocolProfile 内唯一
-  full_name             string    完整方法名，如 "player.move"，用于日志和调试
-  direction             enum      client_to_server | server_to_client
-  request_schema        schema    请求体结构（仅 client_to_server）
-  response_schema?      schema    响应体结构（仅 server_to_client）
-  binding_hint          string    目标 Lua handler 函数名，如 "move"
+  route_id          uint32
+  full_name         string
+  direction         client_to_server | server_to_client
+  logical_service   string
+  request_schema    SchemaRef?       // client_to_server
+  response_schema   SchemaRef?       // server_to_client
+  binding_hint      string           // target Lua method
+  requires_auth     bool
+  max_body_size     uint32
 }
 ```
 
 约束：
 
-- `route_id` 在一个 ProtocolProfile 内唯一，写入 wire header。
-- `full_name` 只用于契约、代码生成、日志和调试，不进入 wire。
-- direction 不匹配的消息在 Gateway 拒绝。
-- 描述符在编译期确定，目标 Service 启动时编译为 `route_id → cached Lua handler` 映射。
+- `route_id` 在一个 `ProtocolProfile` 中唯一，且只能来自 wire header。
+- `logical_service`、方向、认证要求、schema 和 binding 只在 descriptor 定义；
+  不能在 `actors[].network.protocol.routes[]`、Lua table 或 body 中复制一份。
+- target Service 启动时只加载属于自己的 descriptor entries，编译为
+  `route_id -> cached Lua function + schema codec`。缺失、重复或方向不匹配的
+  binding 必须在启动期失败。
+- `route`、`method`、`route_id`、`msg_id` 等字段即使出现在业务 JSON 中，也只
+  是业务字段，绝不能影响 Gateway 或 Service 的 RPC 选择。
 
 ## 入站路径
 
 ```text
 socket bytes
-  → frame decode
-  → 读 header.route_id
-  → Gateway 路由表校验（route_id 合法 + direction + 认证要求）
-  → session.target（AuthService 或 PlayerService）
-  → CAF send ClientIngress { gateway_address, session_id, session_epoch, player_id,
-                              protocol_profile_id, route_id, body_bytes }
-  → 目标 VM 收到 ClientIngress
-  → binding cache: route_id → cached handler
-  → 按 request_schema decode body_bytes → 业务参数
-  → invoke handler(client_context, 业务参数)
+  -> envelope decode
+  -> read header.route_id
+  -> descriptor lookup
+  -> Gateway edge validation
+       direction, requires_auth, frame/body size, session epoch
+  -> session.service_routes[descriptor.logical_service]
+  -> CAF ClientIngress
+  -> target ServiceRpcTable lookup
+  -> request schema / codec decode
+  -> Lua binding(ClientContext, decoded request)
 ```
 
-关键点：
+Gateway 的 edge validation 只使用 descriptor 投影出的轻量元数据；它不调用 body
+codec。未知 route、客户端发送 server-to-client route、未认证访问、缺少当前服务
+绑定、过期 epoch 都在 Gateway 拒绝。body 不符合 schema、handler 执行失败等由
+目标 Service 报告为 RPC 处理错误。
 
-- Gateway 只读 header 中的 route_id 做合法性校验，不解码 body。
-- `body_bytes` 原样传递到目标 VM，由目标 VM 按 schema 解码。
-- handler 签名固定为 `handler(ClientContext, decoded_request)`，不含 route_id 或原始 frame。
-
-## 预登录路由
-
-认证前 session 尚未绑定 PlayerService。预登录 RPC（login、token 验证等）走以下路径：
-
-```text
-Client → Gateway → session.target = AuthService
-  → AuthService handler 处理登录逻辑
-  → 认证成功
-  → Gateway 原子切换 session.target = PlayerService
-```
-
-- 预登录 RPC 使用同样的 route_id → handler 机制，目标是 AuthService。
-- 认证成功后 Gateway 原子更新 session 的 target、player_id 和 epoch。
-- 认证前访问需认证的 route_id，Gateway 直接拒绝。
-
-## 出站路径
-
-```text
-Lua 业务代码调用 codegen helper:
-  player_rpc.move_result(client_context, { accepted = true })
-
-helper 内部:
-  → 按 response_schema encode 业务参数为 body_bytes
-  → CAF send ClientEgress { session_id, session_epoch, route_id, body_bytes } 到 gateway_address
-
-Gateway 收到 ClientEgress:
-  → 校验 session_id + session_epoch
-  → 把 route_id 写入 wire header
-  → body_bytes 作为 body
-  → frame encode → socket write
-```
-
-- `player_rpc.move_result` 是 codegen 生成的 server-to-client helper，已绑定 `route_id` 和 `response_schema`。
-- 业务代码只传 `ClientContext` 或 `ClientRef` + 业务参数。
-- Lua 不提供按字符串 route 或裸 `route_id` 的通用发送接口。
-
-## Gateway 路由表
-
-Gateway 维护一张轻量校验表，编译期从描述符集构建：
-
-```text
-GatewayRouteTable:
-  route_id → { direction, requires_auth }
-```
-
-- 只做合法性校验：route_id 是否存在、方向是否允许客户端发起、是否需要认证。
-- 不含 logical_service_name、handler、schema 或 ServiceAddress。
-- 校验失败的消息在 Gateway 直接拒绝，不进入目标 VM。
-
-## Session 绑定
-
-```text
-Session {
-  target           ServiceHandle    当前目标服务（AuthService 或 PlayerService）
-  player_id        string?          可信身份，认证后由 runtime 注入
-  session_epoch    uint32           每次绑定更新递增
-  protocol_profile string           编解码配置标识
-}
-```
-
-- 登录前：target = AuthService，player_id = nil。
-- 登录后：target = PlayerService，player_id = 认证结果。
-- 进入房间/场景/地图：session binding 不变（仍指向 PlayerService）。动态路由由 PlayerService 私有状态管理。
-- 旧 epoch 的消息必须拒绝或丢弃。
-
-## ClientIngress 消息
-
-客户端 RPC 进入目标 actor 时使用的内部消息：
+`ClientIngress` 是类型化 runtime 消息，而不是普通 service method：
 
 ```text
 ClientIngress {
-  gateway_address       ServiceAddress
-  session_id            uint32
-  session_epoch         uint32
-  player_id             string?
-  protocol_profile_id   string
-  route_id              uint32          来自 wire header
-  body_bytes            bytes           纯业务数据，原样传递
+  ClientRef client
+  ProtocolProfileId profile_id
+  DescriptorId descriptor_id
+  uint32 route_id
+  ByteBuffer body_bytes
 }
 ```
 
-这是 CAF/Shield runtime 内部消息，不是客户端 wire 格式，也不是 Lua API。CAF behavior 按内部消息类型区分 `ClientIngress`、普通 service send/call、生命周期控制等类别。
+它不携带解码后的 JSON、route name、Lua handler、SessionHandle 或 raw frame。
 
-## ClientEgress 消息
+## 服务自治路由
 
-服务端发送 response/push 到 Gateway 时使用的内部消息：
+Gateway 维护的不是单一 `session.target`，而是当前连接最小必要的动态服务表：
+
+```text
+SessionRoutingContext {
+  gateway_address
+  session_id
+  session_epoch
+  player_id?
+  protocol_profile_id
+  service_routes: {
+    auth   -> AuthServiceAddress,
+    player -> PlayerServiceAddress,
+    room   -> RoomServiceAddress?,
+    scene  -> SceneServiceAddress?,
+    map    -> MapServiceAddress?
+  }
+}
+```
+
+- 新连接仅安装受限的 `auth` bootstrap binding。
+- 认证服务不能直接修改 `SessionHandle`；它向 Gateway 发送带 `ClientRef` 的类型化
+  control message，以 compare-and-set 的 epoch 原子绑定 `player_id` 和 `player`。
+- Player/Room/Scene/Map 等获授权服务可以同样绑定、替换或解除自己负责的逻辑服务。
+  Gateway 校验调用者权限、Gateway 地址和 epoch 后更新表。
+- 任一次绑定变更递增 epoch；旧 ingress、egress 与 control message 必须失效。
+- 服务之间的后续协作仍使用普通 `shield.send/call`；是否转发到 room/scene/map 是
+  各服务的业务决定，不通过 Gateway Lua 回调实现。
+
+这让“哪个服务接收某一类客户端 RPC”由 descriptor 明确，而“该 session 当前由
+哪个实例服务”由 Gateway 的动态绑定明确，两者都不依赖客户端可控数据。
+
+## 编解码边界
+
+`shield_transport` 只负责字节流、envelope、header 和 frame 限制。body codec 是
+descriptor 驱动的 Service RPC adapter 能力：
+
+```text
+inbound:  ClientIngress.body_bytes -> service-selected codec/schema -> Lua request
+outbound: Lua response -> service-selected codec/schema -> ClientEgress.body_bytes
+```
+
+- protobuf、msgpack 等 provider 只在 target Service 的 descriptor/schema 绑定中
+  被解析。插件仍可通过稳定 C ABI 返回 bytes/JSON bridge，但不参与 Gateway 的
+  handler dispatch。
+- codec 不能从 body 抽取或猜测 route；body codec 的输入 route 已由 descriptor
+  绑定，输出只表示业务 body。
+- 一个 session 的 envelope/profile 可以固定；同一服务的不同 RPC 可以使用其
+  descriptor 声明的 schema codec。是否允许多 codec 是 descriptor/toolchain 的
+  显式能力，绝不通过 body 自动探测。
+- raw forwarding 是独立数据面能力，必须有显式 destination 和 ownership；它不是
+  `ForwardRaw` 后静默丢弃，也不是普通 Lua RPC 的回退路径。
+
+## 出站路径
+
+业务代码只能使用 codegen 生成的具体 server-to-client RPC helper：
+
+```text
+Lua handler
+  -> generated helper(ClientContext | ClientRef, business arguments)
+  -> descriptor binds route_id + response schema + codec
+  -> encode body bytes in target Service
+  -> CAF ClientEgress
+  -> Gateway validates client gateway/session/epoch/owner
+  -> envelope writes route_id header
+  -> socket write
+```
 
 ```text
 ClientEgress {
-  session_id            uint32
-  session_epoch         uint32
-  route_id              uint32          由 codegen helper 绑定
-  body_bytes            bytes           按 response_schema 编码的业务数据
+  ClientRef client
+  ProtocolProfileId profile_id
+  uint32 route_id
+  ByteBuffer body_bytes
 }
 ```
 
-Gateway 收到后校验 session，把 route_id 写入 header，body_bytes 作为 body，发送到客户端。
+Gateway 不从 response table 的 `route_id`、`route`、`method` 或 `msg_id` 推断
+route。普通业务 Service 不获得 `SessionHandle`，不直接调用 `session:send`，不接触
+frame、envelope 或 `ProtocolPipeline`。
 
-## ClientContext
+## 生命周期与错误
 
-每个客户端 RPC handler 的第一个参数是只读 `ClientContext`：
+- Gateway 关闭 session 后先使当前 epoch 失效，再向当前绑定服务发送类型化
+  `ClientDisconnected` 控制消息；它不是 Lua `on_disconnect` 业务回调。
+- `ClientEgress` 入队成功不代表客户端收到数据。队列满、gateway 不匹配、session
+  不存在或 epoch 过期必须返回稳定错误，不能隐式重试或缓存。
+- 协议/编码错误按边界归属：frame/header 错误由 Gateway 处理；request/response
+  schema 或 codec 错误由目标 Service 处理；route/binding 配置错误启动期失败。
 
-```lua
-client:player_id()    -- 可信身份；预登录 RPC 为 nil
-client:ref()          -- 可序列化 ClientRef（Gateway 地址、session id、epoch、player_id）
-```
+## 禁止项
 
-规则：
+- 单一 `session.target` 作为所有业务 RPC 的唯一目标。
+- Gateway Lua `on_client_message` 作为正式 RPC dispatch 入口。
+- `actors[].network.protocol.routing`、`routes[]`、`action`、`lazy_decode`、
+  `routing.source` 或 body route 规则。
+- Gateway 提前解普通 RPC body，或将 canonical JSON 作为 ingress 的旁路参数。
+- 业务通过通用 `SessionHandle:send`、裸 route id、route 字符串或 envelope table 回包。
+- 从业务 body 的字段推断 inbound/outbound route。
+- 跨 service 或跨节点传递 `SessionHandle`。
 
-- `player_id` 来自 Gateway 认证绑定，不信任客户端 body 中的同名字段。
-- `ClientRef` 可保存到服务状态或作为 service 消息参数传递，不是 actor reference。
-- `ClientContext` 不暴露 route_id、route name、原始 frame、codec 或 CAF handle。
+## 验收标准
 
-## 错误与安全
+实现完成至少需要以下端到端验证：
 
-以下情况在调用业务 handler 前拒绝：
-
-- 未知 route_id。
-- direction 不允许客户端发起。
-- 未认证 session 访问需认证的 route。
-- session epoch 已过期。
-- body 不符合 request_schema（在目标 VM decode 阶段）。
-- 目标 VM 缺少 handler binding（启动期就应失败，不进入运行时）。
-
-## 明确不做
-
-- Gateway 多目标路由（session.service_routes[room/scene/map]）。
-- Gateway 知道 logical_service_name。
-- bit-segment route_id 编码服务类型。
-- Lua 二次 if/else 路由。
-- 业务暴露 route_id、原始 frame 或 codec。
-- 每个 RPC 映射一个静态 CAF C++ 消息类型。
+1. 真实 TCP 客户端经 header route 到 AuthService，body 仅在 AuthService 解码。
+2. 认证以 epoch CAS 原子建立 `player` binding；旧 ClientRef 无法写回。
+3. 同一 session 的 `player` 与 `room` route 分别送达其当前 ServiceAddress，且
+   Gateway 不依赖 Lua handler/schema。
+4. 目标服务通过生成 helper 发送 protobuf/msgpack response；Gateway 只封装 header
+   并写回 socket。
+5. 缺失 descriptor、重复 binding、无 session service binding、方向/认证错误、
+   schema 错误、stale egress 和写队列满均覆盖稳定错误路径。
