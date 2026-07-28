@@ -71,7 +71,8 @@ public:
     // such as shield_net -> Lua gateway callbacks, so it permits reserved
     // lifecycle method names like on_connect while preserving mailbox dispatch.
     bool send_system(std::string_view target, std::string_view method,
-                     const nlohmann::json& args, std::string* error = nullptr);
+                     const nlohmann::json& args, std::string* error = nullptr,
+                     uint64_t session_id = 0, uint32_t session_epoch = 0);
 
     // Send a coroutine call-request message to a service. Like send() but tags
     // the message with a call session so the callee's dispatch can route the

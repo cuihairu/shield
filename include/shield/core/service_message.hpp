@@ -49,7 +49,9 @@ struct ServiceMessage {
     int64_t deadline_ms = 0;
     MessagePriority priority = MessagePriority::Normal;
     int64_t timestamp_ms = 0;
-    uint64_t call_session = 0;  // non-zero => call request
+    uint64_t call_session = 0;   // non-zero => call request
+    uint64_t session_id = 0;     // for session epoch validation
+    uint32_t session_epoch = 0;  // for stale session detection
 };
 
 /// Synchronous call request routed from manager->call() through the CAF actor.

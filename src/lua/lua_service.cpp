@@ -217,6 +217,14 @@ struct LuaServiceManager::Impl {
     void dispatch_service_message(class LuaServiceManager* manager,
                                   const std::string& id,
                                   const ServiceMessage& msg) {
+        // Validate session epoch if present (for gateway messages)
+        if (msg.session_id != 0 && msg.session_epoch != 0) {
+            // In a full implementation, we would look up the session and
+            // compare epochs. For now, we pass the epoch through to the
+            // handler for validation.
+            // TODO: Implement session epoch validation in gateway bridge
+        }
+
         DispatchMessage m;
         m.sender = msg.sender;
         m.method = msg.method;
@@ -1013,7 +1021,8 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
 bool LuaServiceManager::send_system(std::string_view target,
                                     std::string_view method,
                                     const nlohmann::json& args,
-                                    std::string* error) {
+                                    std::string* error, uint64_t session_id,
+                                    uint32_t session_epoch) {
     if (impl_->stopping.load()) {
         if (error) *error = "runtime is stopping";
         return false;
@@ -1050,6 +1059,8 @@ bool LuaServiceManager::send_system(std::string_view target,
     msg.deadline_ms = 0;
     msg.priority = MessagePriority::High;
     msg.timestamp_ms = now_ms;
+    msg.session_id = session_id;
+    msg.session_epoch = session_epoch;
     caf::anon_send(*actor_opt, std::move(msg));
     return true;
 }

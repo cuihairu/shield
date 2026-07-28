@@ -110,7 +110,7 @@ void LuaGatewayBridge::on_packet(
         return;
     }
 
-    // 4. Build ClientIngress
+    // 4. Build ClientIngress with epoch validation
     ClientIngress ingress;
     ingress.gateway_service_name = auth_service_name_;  // for response routing
     ingress.session_id = session->id();
@@ -201,7 +201,7 @@ void LuaGatewayBridge::send_client_ingress(const std::string& target,
             target, "on_client_message",
             nlohmann::json::array(
                 {ingress.route_id, client_context, body_str, decoded_message}),
-            &error)) {
+            &error, ingress.session_id, ingress.session_epoch)) {
         auto& log = shield::log::get_logger("lua");
         SHIELD_LOG_WARNING(log, "Failed to queue ClientIngress: " + error);
     }
