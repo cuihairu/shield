@@ -1,6 +1,6 @@
 # 客户端 RPC 服务自治路由设计
 
-> 状态：目标契约，尚未完整实现。本文是客户端 RPC 路由、body 编解码和
+> 状态：已实现。本文是客户端 RPC 路由、body 编解码和
 > Gateway/Service 边界的唯一设计依据；与旧 `LuaGatewayBridge`、
 > `on_client_message`、`session.target` 或 body-route 配置相冲突的描述均为
 > 待删除遗留，不是兼容目标。
