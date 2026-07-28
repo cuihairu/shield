@@ -728,6 +728,89 @@ map    -> current MapService
 
 具体管理 API 随 Service adapter 实现冻结，不允许用普通业务 body 携带 ServiceAddress、actor id 或 route 来替代。
 
+#### SessionHandle API
+
+`SessionHandle` 是 Gateway 传递给 Lua 服务的 session 对象，用于管理客户端连接和路由。
+
+```lua
+-- 绑定逻辑服务名到服务地址
+-- logical_name: 逻辑服务名（如 "player", "room", "scene"）
+-- service_id: 服务实例 ID
+-- service_type: 服务类型（可选）
+local ok, err = session:bind_service(logical_name, service_id, service_type)
+
+-- 解绑逻辑服务名
+local ok, err = session:unbind_service(logical_name)
+
+-- 获取服务地址
+local addr = session:get_service(logical_name)
+-- addr 返回: {service_id = "...", service_type = "...", epoch = N} 或 nil
+
+-- 设置 player_id（认证成功后调用）
+local ok, err = session:set_player_id(player_id)
+
+-- 获取 player_id
+local player_id = session:player_id()
+
+-- 获取 session epoch
+local epoch = session:epoch()
+
+-- 获取 session ID
+local session_id = session:id()
+
+-- 获取远程地址
+local remote_addr = session:remote_addr()
+
+-- 发送数据到客户端
+local ok, err = session:send(data)
+
+-- 关闭 session
+session:close(reason)
+```
+
+#### 示例：认证服务绑定 player
+
+```lua
+function M.on_client_message(ctx, route_id, client_context, body, message)
+    -- 验证认证信息
+    local player_id = authenticate(body)
+    if not player_id then
+        return {code = "auth_failed"}
+    end
+
+    -- 设置 player_id
+    local ok, err = ctx.session:set_player_id(player_id)
+    if not ok then
+        return {code = "set_player_failed", message = err.message}
+    end
+
+    -- 绑定 player 服务
+    local player_service = find_or_create_player(player_id)
+    local ok, err = ctx.session:bind_service("player", player_service, "player")
+    if not ok then
+        return {code = "bind_player_failed", message = err.message}
+    end
+
+    return {code = "ok", player_id = player_id}
+end
+```
+
+#### 示例：获取当前绑定的服务
+
+```lua
+function M.on_client_message(ctx, route_id, client_context, body, message)
+    -- 获取当前绑定的 player 服务
+    local player_addr = ctx.session:get_service("player")
+    if not player_addr then
+        return {code = "no_player_bound"}
+    end
+
+    -- 发送消息到 player 服务
+    shield.send(player_addr.service_id, "handle_message", body)
+    return {code = "ok"}
+end
+```
+
 ### 启动校验
 
 Service VM 启动时必须失败于以下情况：
