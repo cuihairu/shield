@@ -1201,6 +1201,110 @@ static void register_session_handle(sol::state& lua) {
             if (auto session = s.resolve()) {
                 session->close(reason.value_or("normal"));
             }
+        },
+        "bind_service",
+        [](SessionHandle& s, sol::this_state state, std::string logical_name,
+           std::string service_id,
+           sol::optional<std::string> service_type) -> sol::variadic_results {
+            sol::variadic_results results;
+            sol::state_view sv(state);
+            auto session = s.resolve();
+            if (!session || !session->is_alive()) {
+                results.push_back(sol::make_object(sv, false));
+                sol::table err = sv.create_table();
+                err["code"] = "session_closed";
+                err["message"] = "session is closed";
+                results.push_back(sol::make_object(sv, err));
+                return results;
+            }
+
+            shield::net::ServiceAddress addr;
+            addr.service_id = service_id;
+            addr.service_type = service_type.value_or("");
+            addr.epoch = session->epoch();
+            session->bind_service(logical_name, std::move(addr));
+
+            results.push_back(sol::make_object(sv, true));
+            results.push_back(sol::make_object(sv, sol::nil));
+            return results;
+        },
+        "unbind_service",
+        [](SessionHandle& s, sol::this_state state,
+           std::string logical_name) -> sol::variadic_results {
+            sol::variadic_results results;
+            sol::state_view sv(state);
+            auto session = s.resolve();
+            if (!session || !session->is_alive()) {
+                results.push_back(sol::make_object(sv, false));
+                sol::table err = sv.create_table();
+                err["code"] = "session_closed";
+                err["message"] = "session is closed";
+                results.push_back(sol::make_object(sv, err));
+                return results;
+            }
+
+            session->unbind_service(logical_name);
+
+            results.push_back(sol::make_object(sv, true));
+            results.push_back(sol::make_object(sv, sol::nil));
+            return results;
+        },
+        "get_service",
+        [](SessionHandle& s, sol::this_state state,
+           std::string logical_name) -> sol::object {
+            sol::state_view sv(state);
+            auto session = s.resolve();
+            if (!session || !session->is_alive()) {
+                return sol::make_object(sv, sol::nil);
+            }
+
+            const auto* addr = session->get_service(logical_name);
+            if (!addr) {
+                return sol::make_object(sv, sol::nil);
+            }
+
+            sol::table result = sv.create_table();
+            result["service_id"] = addr->service_id;
+            result["service_type"] = addr->service_type;
+            result["epoch"] = addr->epoch;
+            return sol::make_object(sv, result);
+        },
+        "set_player_id",
+        [](SessionHandle& s, sol::this_state state,
+           std::string player_id) -> sol::variadic_results {
+            sol::variadic_results results;
+            sol::state_view sv(state);
+            auto session = s.resolve();
+            if (!session || !session->is_alive()) {
+                results.push_back(sol::make_object(sv, false));
+                sol::table err = sv.create_table();
+                err["code"] = "session_closed";
+                err["message"] = "session is closed";
+                results.push_back(sol::make_object(sv, err));
+                return results;
+            }
+
+            session->set_player_id(player_id);
+
+            results.push_back(sol::make_object(sv, true));
+            results.push_back(sol::make_object(sv, sol::nil));
+            return results;
+        },
+        "player_id",
+        [](SessionHandle& s) -> std::string {
+            auto session = s.resolve();
+            if (!session) {
+                return "";
+            }
+            return session->player_id();
+        },
+        "epoch",
+        [](SessionHandle& s) -> uint32_t {
+            auto session = s.resolve();
+            if (!session) {
+                return 0;
+            }
+            return session->epoch();
         });
 }
 
