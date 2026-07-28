@@ -41,6 +41,47 @@ constexpr const char* KICKED = "kicked";
 constexpr const char* SHUTDOWN = "shutdown";
 }  // namespace CloseReason
 
+/// @brief Service address for routing
+struct ServiceAddress {
+    std::string service_id;
+    std::string service_type;  // e.g., "player", "scene", "room"
+    uint32_t epoch = 0;        // binding epoch for stale detection
+};
+
+/// @brief Session routing context - manages logical service name mappings
+struct SessionRoutingContext {
+    std::string gateway_address;
+    std::string session_id;
+    uint64_t session_epoch = 0;
+    std::string player_id;
+    std::string protocol_profile_id;
+    std::unordered_map<std::string, ServiceAddress> service_routes;
+
+    /// @brief Bind a logical service name to a service address
+    void bind_service(const std::string& logical_name, ServiceAddress address) {
+        service_routes[logical_name] = std::move(address);
+        session_epoch++;
+    }
+
+    /// @brief Unbind a logical service name
+    void unbind_service(const std::string& logical_name) {
+        service_routes.erase(logical_name);
+        session_epoch++;
+    }
+
+    /// @brief Get service address by logical name
+    const ServiceAddress* get_service(const std::string& logical_name) const {
+        auto it = service_routes.find(logical_name);
+        return it != service_routes.end() ? &it->second : nullptr;
+    }
+
+    /// @brief Clear all routes (used on disconnect)
+    void clear_routes() {
+        service_routes.clear();
+        session_epoch++;
+    }
+};
+
 /// @brief Session interface
 class Session {
 public:
@@ -90,7 +131,8 @@ public:
     /// @brief Get user data
     virtual std::string get_user_data(std::string_view key) const = 0;
 
-    /// @brief Set target service (AuthService pre-login, PlayerService post-login)
+    /// @brief Set target service (AuthService pre-login, PlayerService
+    /// post-login)
     virtual void set_target_service(std::string service_name) = 0;
 
     /// @brief Get target service
@@ -107,6 +149,29 @@ public:
 
     /// @brief Get session epoch
     virtual uint32_t epoch() const = 0;
+
+    /// @brief Get routing context (mutable)
+    virtual SessionRoutingContext& routing_context() = 0;
+
+    /// @brief Get routing context (const)
+    virtual const SessionRoutingContext& routing_context() const = 0;
+
+    /// @brief Bind a logical service name to a service address
+    virtual void bind_service(const std::string& logical_name,
+                              ServiceAddress address) = 0;
+
+    /// @brief Unbind a logical service name
+    virtual void unbind_service(const std::string& logical_name) = 0;
+
+    /// @brief Get service address by logical name
+    virtual const ServiceAddress* get_service(
+        const std::string& logical_name) const = 0;
+
+    /// @brief Set protocol profile ID
+    virtual void set_protocol_profile_id(std::string profile_id) = 0;
+
+    /// @brief Get protocol profile ID
+    virtual std::string protocol_profile_id() const = 0;
 };
 
 /// @brief Session callbacks
@@ -199,6 +264,45 @@ public:
         return epoch_;
     }
 
+    SessionRoutingContext& routing_context() override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        return routing_context_;
+    }
+
+    const SessionRoutingContext& routing_context() const override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        return routing_context_;
+    }
+
+    void bind_service(const std::string& logical_name,
+                      ServiceAddress address) override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        routing_context_.bind_service(logical_name, std::move(address));
+        epoch_ = routing_context_.session_epoch;
+    }
+
+    void unbind_service(const std::string& logical_name) override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        routing_context_.unbind_service(logical_name);
+        epoch_ = routing_context_.session_epoch;
+    }
+
+    const ServiceAddress* get_service(
+        const std::string& logical_name) const override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        return routing_context_.get_service(logical_name);
+    }
+
+    void set_protocol_profile_id(std::string profile_id) override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        routing_context_.protocol_profile_id = std::move(profile_id);
+    }
+
+    std::string protocol_profile_id() const override {
+        std::lock_guard<std::mutex> lock(binding_mutex_);
+        return routing_context_.protocol_profile_id;
+    }
+
     /// @brief Start receiving
     void start();
 
@@ -229,6 +333,7 @@ private:
     std::string target_service_;
     std::string player_id_;
     uint32_t epoch_ = 0;
+    SessionRoutingContext routing_context_;
 
     // Async send queue. send_queue_ and send_in_progress_ are only touched
     // from strand_ handlers. queued_count_ is an atomic count of reserved

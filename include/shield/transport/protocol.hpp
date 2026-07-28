@@ -76,7 +76,7 @@ struct Packet {
 enum class RouteDirection : std::uint8_t {
     ClientToServer = 1,
     ServerToClient = 2,
-    Bidirectional  = 3,
+    Bidirectional = 3,
 };
 
 struct RoutePolicy {
@@ -93,6 +93,8 @@ struct RouteEntry {
     PacketKind kind = PacketKind::Message;
     std::string debug_name;
     RoutePolicy policy;
+    std::optional<std::string>
+        logical_service_name;  // for routing to logical service
 };
 
 class RouteTable {

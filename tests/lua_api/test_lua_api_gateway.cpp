@@ -115,6 +115,30 @@ public:
     void set_epoch(uint32_t epoch) override { epoch_ = epoch; }
     uint32_t epoch() const override { return epoch_; }
 
+    shield::net::SessionRoutingContext& routing_context() override {
+        return routing_context_;
+    }
+    const shield::net::SessionRoutingContext& routing_context() const override {
+        return routing_context_;
+    }
+    void bind_service(const std::string& logical_name,
+                      shield::net::ServiceAddress address) override {
+        routing_context_.bind_service(logical_name, std::move(address));
+    }
+    void unbind_service(const std::string& logical_name) override {
+        routing_context_.unbind_service(logical_name);
+    }
+    const shield::net::ServiceAddress* get_service(
+        const std::string& logical_name) const override {
+        return routing_context_.get_service(logical_name);
+    }
+    void set_protocol_profile_id(std::string profile_id) override {
+        routing_context_.protocol_profile_id = std::move(profile_id);
+    }
+    std::string protocol_profile_id() const override {
+        return routing_context_.protocol_profile_id;
+    }
+
     const std::vector<std::vector<uint8_t>>& sent() const { return sent_; }
     const std::vector<shield::transport::DecodedBody>& sent_messages() const {
         return sent_messages_;
@@ -133,6 +157,7 @@ private:
     std::string target_service_;
     std::string player_id_;
     uint32_t epoch_ = 0;
+    shield::net::SessionRoutingContext routing_context_;
 };
 
 char* dup_protocol_json(std::string_view value) {

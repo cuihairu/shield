@@ -23,6 +23,19 @@ void LuaGatewayBridge::on_connect(
     session->set_target_service(auth_service_name_);
     session->set_epoch(0);
 
+    // Initialize routing context
+    auto& routing = session->routing_context();
+    routing.gateway_address = auth_service_name_;
+    routing.session_id = std::to_string(session->id());
+    routing.session_epoch = 0;
+
+    // Bind AuthService as the default route
+    shield::net::ServiceAddress auth_addr;
+    auth_addr.service_id = auth_service_name_;
+    auth_addr.service_type = "auth";
+    auth_addr.epoch = 0;
+    session->bind_service("auth", std::move(auth_addr));
+
     const auto session_info = make_session_handle_json(session);
 
     // Notify the auth service of new connection. send_system routes through
@@ -74,8 +87,22 @@ void LuaGatewayBridge::on_packet(
         return;
     }
 
-    // 3. Get session target service
-    std::string target = session->target_service();
+    // 3. Get target service using routing context
+    // First try to get from route's logical service name, then fallback to
+    // session's target service
+    std::string target;
+    if (route->logical_service_name) {
+        const auto* addr = session->get_service(*route->logical_service_name);
+        if (addr) {
+            target = addr->service_id;
+        }
+    }
+
+    // Fallback to session's target service if no route-specific binding
+    if (target.empty()) {
+        target = session->target_service();
+    }
+
     if (target.empty()) {
         auto& log = shield::log::get_logger("lua");
         SHIELD_LOG_WARNING(log, "Session has no target service, route_id: " +
@@ -90,6 +117,7 @@ void LuaGatewayBridge::on_packet(
     ingress.session_epoch = session->epoch();
     ingress.player_id = session->player_id();
     ingress.route_id = route_id;
+    ingress.protocol_profile_id = session->protocol_profile_id();
 
     // body_bytes: pass through raw bytes (Gateway does not decode body)
     if (packet.decoded_body.has_value()) {
@@ -105,7 +133,7 @@ void LuaGatewayBridge::on_packet(
                                                   packet.packet.body.end());
     }
 
-    // 5. Send to session.target via LuaServiceManager
+    // 5. Send to target service via LuaServiceManager
     send_client_ingress(target, ingress);
 }
 
@@ -120,6 +148,9 @@ void LuaGatewayBridge::on_disconnect(
     if (target.empty()) {
         target = auth_service_name_;
     }
+
+    // Clear all routes on disconnect
+    session->routing_context().clear_routes();
 
     std::string error;
     if (!manager_.send_system(target, "on_disconnect",
@@ -151,6 +182,7 @@ void LuaGatewayBridge::send_client_ingress(const std::string& target,
         {"session_epoch", ingress.session_epoch},
         {"player_id", ingress.player_id},
         {"gateway_service", ingress.gateway_service_name},
+        {"protocol_profile_id", ingress.protocol_profile_id},
     };
 
     // body_bytes as raw string for Lua
