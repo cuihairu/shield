@@ -1,0 +1,41 @@
+schema_version: 1
+id: protocol.sproto
+name: Sproto Protocol Codec
+version: 1.0.0
+kind: protocol
+description: Sproto provider for shield.protocol.codec.v1
+documentation:
+  url: https://cuihairu.github.io/shield/protocol-codec-plugins
+  description: Sproto BodyCodec provider for game server protocol profiles
+entry: shield_plugin_get_v1
+library:
+  windows: bin/libshield_protocol_sproto.dll
+  linux: bin/libshield_protocol_sproto.so
+  macos: bin/libshield_protocol_sproto.dylib
+provides:
+  - interface: shield.protocol.codec.v1
+    capabilities:
+      - sproto
+requires: []
+lua:
+  namespace: protocol.sproto
+  search_paths: []
+config_schema:
+  type: object
+  required:
+    - schema
+  properties:
+    schema:
+      type: string
+      description: Path to sproto schema file (.sproto)
+    schema_string:
+      type: string
+      description: Inline sproto schema string
+    messages:
+      type: array
+      items:
+        type: object
+    pack:
+      type: boolean
+      description: Enable sproto 0-packing compression
+      default: false

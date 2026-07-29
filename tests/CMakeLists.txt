@@ -225,3 +225,24 @@ if(SHIELD_BUILD_PLUGIN_MSGPACK)
         TIMEOUT 10)
     shield_copy_runtime_dlls(test_protocol_msgpack_plugin)
 endif()
+
+if(SHIELD_BUILD_PLUGIN_SPROTO)
+    find_package(sproto CONFIG REQUIRED)
+    add_executable(test_protocol_sproto_plugin
+        protocol/test_protocol_sproto_plugin.cpp
+        $<TARGET_OBJECTS:shield_protocol_sproto_obj>)
+    target_link_libraries(test_protocol_sproto_plugin
+        PRIVATE
+            sproto::sproto
+            nlohmann_json::nlohmann_json
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_protocol_sproto_plugin
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_protocol_sproto_plugin
+             COMMAND test_protocol_sproto_plugin)
+    set_tests_properties(test_protocol_sproto_plugin PROPERTIES
+        LABELS "plugin;protocol"
+        TIMEOUT 10)
+    shield_copy_runtime_dlls(test_protocol_sproto_plugin)
+endif()

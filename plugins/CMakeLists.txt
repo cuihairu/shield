@@ -70,3 +70,7 @@ endif()
 if(SHIELD_BUILD_PLUGIN_MSGPACK)
     add_subdirectory(protocol.msgpack)
 endif()
+
+if(SHIELD_BUILD_PLUGIN_SPROTO)
+    add_subdirectory(protocol.sproto)
+endif()

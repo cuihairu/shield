@@ -72,6 +72,12 @@
             "dependencies": [
                 "msgpack"
             ]
+        },
+        "protocol-sproto": {
+            "description": "Sproto protocol codec plugin dependency",
+            "dependencies": [
+                "sproto"
+            ]
         }
     },
     "overrides": []

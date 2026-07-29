@@ -231,7 +231,7 @@ network:
 | Protocol | Target Form | Notes |
 | --- | --- | --- |
 | `msgpack` | bundled optional plugin | 已落地 `protocol.msgpack` provider，核心已移除内置路径。 |
-| `sproto` | runtime codec plugin | 需要 `.sproto` loader/compiler adapter 和 package envelope 适配。 |
+| `sproto` | runtime codec plugin | 已落地 `protocol.sproto` provider，支持 `.sproto` schema 和 0-packing 压缩。 |
 | `xmldef-native` | descriptor/runtime plugin | catalog 路由加载可留在核心；字段级 decode/encode 走插件。 |
 | `flatbuffers` | runtime codec plugin | 需要 bfbs/schema loader 和 JSON bridge。 |
 
@@ -247,9 +247,10 @@ network:
 6. 已实现 inbound decode → Lua：codec 插件解码出的 canonical JSON message 由 `LuaGatewayBridge` 作为 `on_client_message(route_id, client_context, body, message)` 的第 4 个参数交给 Lua table（无 codec 插件解码时为 nil），并有 fake provider pipeline 的端到端测试覆盖。Lua egress 自动编码（Lua table → 插件 encode → wire bytes）尚未实现，业务侧仍需显式编码后 `session:send`。
 7. 已在 CI 中启用 `SHIELD_BUILD_PLUGIN_PROTOBUF=ON` / `SHIELD_BUILD_PLUGIN_MSGPACK=ON`，protobuf 插件的 `test_protocol_protobuf_plugin` 和 `test_protocol_msgpack_plugin` 在 Ubuntu/macOS/Windows 三平台 CI 中通过。
 8. 已新增 `protocol.msgpack` provider 和插件 ABI round-trip 测试；已移除核心内置 `MsgpackBodyCodec`，`msgpack` 现为纯插件 codec。
+9. 已新增 `protocol.sproto` provider，支持 `.sproto` schema 加载、decode/encode 和可选 0-packing 压缩。
 
 ## Known Limitations
 
-- 遗留的 `src/transport/codec.cpp` `MessagePackCodec` 仍服务于非 pipeline 回退路径，与 `protocol.msgpack` 插件功能重复；当前保留，后续再收敛。
 - codec 按监听器锁定（`actors[].network.protocol.body`），不支持 per-route / per-session 协商（Non-Goal）。
 - Lua egress 不会自动调用插件 encode；只有 inbound decode 的结果会作为 Lua table 交付。
+- sproto 插件当前只支持基本类型（integer、boolean、string、struct），不支持 map 和 array 类型。
