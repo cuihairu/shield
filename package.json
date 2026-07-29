@@ -1,4 +1,7 @@
 {
   "name": "shield-workspace",
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "postcss": "^8.5.23"
+  }
 }
