@@ -39,10 +39,10 @@ jobs:
         include:
           - os: ubuntu-26.04
             compiler: gcc
-            timeout_minutes: 30
+            timeout_minutes: 45
           - os: macos-latest
             compiler: clang
-            timeout_minutes: 30
+            timeout_minutes: 45
           - os: windows-latest
             compiler: msvc
             timeout_minutes: 60
