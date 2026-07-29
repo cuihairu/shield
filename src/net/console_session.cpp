@@ -25,39 +25,38 @@ void ConsoleSession::do_read() {
     auto self = shared_from_this();
     boost::asio::async_read_until(
         socket_, read_buf_, '\n',
-        boost::asio::bind_executor(strand_, [self](boost::system::error_code ec,
-                                                    std::size_t bytes) {
-            if (ec) {
-                self->handle_close();
-                return;
-            }
-
-            // Extract lines from the buffer
-            auto bufs = self->read_buf_.data();
-            std::string data(
-                boost::asio::buffers_begin(bufs),
-                boost::asio::buffers_begin(bufs) + bytes);
-            self->read_buf_.consume(bytes);
-
-            // Process each complete line
-            std::string::size_type pos = 0;
-            while (pos < data.size()) {
-                auto nl = data.find('\n', pos);
-                if (nl == std::string::npos) break;
-                std::string line = data.substr(pos, nl - pos);
-                // Strip trailing \r if present
-                if (!line.empty() && line.back() == '\r') {
-                    line.pop_back();
+        boost::asio::bind_executor(
+            strand_, [self](boost::system::error_code ec, std::size_t bytes) {
+                if (ec) {
+                    self->handle_close();
+                    return;
                 }
-                pos = nl + 1;
-                if (self->callbacks_.on_line) {
-                    self->callbacks_.on_line(self, std::move(line));
-                }
-            }
 
-            // Continue reading
-            self->do_read();
-        }));
+                // Extract lines from the buffer
+                auto bufs = self->read_buf_.data();
+                std::string data(boost::asio::buffers_begin(bufs),
+                                 boost::asio::buffers_begin(bufs) + bytes);
+                self->read_buf_.consume(bytes);
+
+                // Process each complete line
+                std::string::size_type pos = 0;
+                while (pos < data.size()) {
+                    auto nl = data.find('\n', pos);
+                    if (nl == std::string::npos) break;
+                    std::string line = data.substr(pos, nl - pos);
+                    // Strip trailing \r if present
+                    if (!line.empty() && line.back() == '\r') {
+                        line.pop_back();
+                    }
+                    pos = nl + 1;
+                    if (self->callbacks_.on_line) {
+                        self->callbacks_.on_line(self, std::move(line));
+                    }
+                }
+
+                // Continue reading
+                self->do_read();
+            }));
 }
 
 void ConsoleSession::send_line(const std::string& line) {
@@ -84,16 +83,15 @@ void ConsoleSession::do_write() {
     auto& front = send_queue_.front();
     boost::asio::async_write(
         socket_, boost::asio::buffer(front),
-        boost::asio::bind_executor(
-            strand_,
-            [self](boost::system::error_code ec, std::size_t /*bytes*/) {
-                if (ec) {
-                    self->handle_close();
-                    return;
-                }
-                self->send_queue_.pop_front();
-                self->do_write();
-            }));
+        boost::asio::bind_executor(strand_, [self](boost::system::error_code ec,
+                                                   std::size_t /*bytes*/) {
+            if (ec) {
+                self->handle_close();
+                return;
+            }
+            self->send_queue_.pop_front();
+            self->do_write();
+        }));
 }
 
 void ConsoleSession::close() {

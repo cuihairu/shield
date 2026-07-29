@@ -20,7 +20,8 @@ ConsoleServer::ConsoleServer(boost::asio::io_context& io_context,
 #else
       acceptor_(io_context),
 #endif
-      socket_path_(socket_path) {}
+      socket_path_(socket_path) {
+}
 
 ConsoleServer::~ConsoleServer() { stop(); }
 
@@ -88,15 +89,14 @@ void ConsoleServer::do_accept() {
             // cleanup
             ConsoleSessionCallbacks cbs;
             cbs.on_line = on_line_;
-            cbs.on_close =
-                [this](std::shared_ptr<ConsoleSession> session) {
-                    std::lock_guard<std::mutex> lock(sessions_mutex_);
-                    auto it =
-                        std::find(sessions_.begin(), sessions_.end(), session);
-                    if (it != sessions_.end()) {
-                        sessions_.erase(it);
-                    }
-                };
+            cbs.on_close = [this](std::shared_ptr<ConsoleSession> session) {
+                std::lock_guard<std::mutex> lock(sessions_mutex_);
+                auto it =
+                    std::find(sessions_.begin(), sessions_.end(), session);
+                if (it != sessions_.end()) {
+                    sessions_.erase(it);
+                }
+            };
 
             auto session = std::make_shared<ConsoleSession>(
                 id, std::move(socket), std::move(cbs));
@@ -110,23 +110,22 @@ void ConsoleServer::do_accept() {
             do_accept();
         });
 #else
-    acceptor_.async_accept(
-        [this](boost::system::error_code ec,
-               boost::asio::ip::tcp::socket socket) {
-            if (ec) {
-                if (listening_) {
-                    std::cerr << "[console] accept error: " << ec.message()
-                              << std::endl;
-                }
-                return;
+    acceptor_.async_accept([this](boost::system::error_code ec,
+                                  boost::asio::ip::tcp::socket socket) {
+        if (ec) {
+            if (listening_) {
+                std::cerr << "[console] accept error: " << ec.message()
+                          << std::endl;
             }
+            return;
+        }
 
-            auto id = next_session_id_.fetch_add(1);
-            std::cerr << "[console] Windows session " << id << " accepted"
-                      << std::endl;
-            socket.close();
-            do_accept();
-        });
+        auto id = next_session_id_.fetch_add(1);
+        std::cerr << "[console] Windows session " << id << " accepted"
+                  << std::endl;
+        socket.close();
+        do_accept();
+    });
 #endif
 }
 

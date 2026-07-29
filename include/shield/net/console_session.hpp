@@ -24,8 +24,7 @@ struct ConsoleSessionCallbacks {
 ///
 /// Reads newline-delimited text lines and delivers them via on_line callback.
 /// Provides send_line() for sending JSON responses back.
-class ConsoleSession
-    : public std::enable_shared_from_this<ConsoleSession> {
+class ConsoleSession : public std::enable_shared_from_this<ConsoleSession> {
 public:
     using socket_t = boost::asio::local::stream_protocol::socket;
 

@@ -11,10 +11,12 @@
 namespace shield::console {
 
 /// @brief Handler function signature: receives the session and parsed arguments
-using CommandHandler = std::function<void(
-    shield::net::ConsoleSession& session, const std::vector<std::string>& args)>;
+using CommandHandler =
+    std::function<void(shield::net::ConsoleSession& session,
+                       const std::vector<std::string>& args)>;
 
-/// @brief Dispatches text commands from console sessions to registered handlers.
+/// @brief Dispatches text commands from console sessions to registered
+/// handlers.
 ///
 /// Supports two modes:
 /// - Command mode: lines are parsed as "command arg1 arg2 ..." and dispatched

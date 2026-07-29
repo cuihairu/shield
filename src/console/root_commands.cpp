@@ -21,26 +21,28 @@ void RootCommands::register_all(CommandDispatcher& dispatcher) {
     dispatcher.register_command("root.status",
                                 "Overview of services, plugins, cluster",
                                 [this](auto& s, auto& a) { cmd_status(s, a); });
-    dispatcher.register_command("root.services", "List all Lua services",
-                                [this](auto& s, auto& a) { cmd_services(s, a); });
-    dispatcher.register_command("root.service",
-                                "Show details for a specific service",
-                                [this](auto& s, auto& a) { cmd_service(s, a); });
-    dispatcher.register_command("root.plugins",
-                                "List all plugin packages and instances",
-                                [this](auto& s, auto& a) { cmd_plugins(s, a); });
+    dispatcher.register_command(
+        "root.services", "List all Lua services",
+        [this](auto& s, auto& a) { cmd_services(s, a); });
+    dispatcher.register_command(
+        "root.service", "Show details for a specific service",
+        [this](auto& s, auto& a) { cmd_service(s, a); });
+    dispatcher.register_command(
+        "root.plugins", "List all plugin packages and instances",
+        [this](auto& s, auto& a) { cmd_plugins(s, a); });
     dispatcher.register_command("root.plugin",
                                 "Show details for a specific plugin",
                                 [this](auto& s, auto& a) { cmd_plugin(s, a); });
     dispatcher.register_command("root.config",
                                 "Show config (root.config [key])",
                                 [this](auto& s, auto& a) { cmd_config(s, a); });
-    dispatcher.register_command("root.cluster",
-                                "Show cluster node status",
-                                [this](auto& s, auto& a) { cmd_cluster(s, a); });
-    dispatcher.register_command("root.log.level",
-                                "Get or set log level (root.log.level [debug|info|warn|error])",
-                                [this](auto& s, auto& a) { cmd_log_level(s, a); });
+    dispatcher.register_command(
+        "root.cluster", "Show cluster node status",
+        [this](auto& s, auto& a) { cmd_cluster(s, a); });
+    dispatcher.register_command(
+        "root.log.level",
+        "Get or set log level (root.log.level [debug|info|warn|error])",
+        [this](auto& s, auto& a) { cmd_log_level(s, a); });
 }
 
 void RootCommands::cmd_help(shield::net::ConsoleSession& session,
@@ -54,9 +56,12 @@ void RootCommands::cmd_help(shield::net::ConsoleSession& session,
         }
     }
     // Add Lua REPL commands
-    resp["lines"].push_back("attach <service>  - Enter interactive Lua REPL for a service");
-    resp["lines"].push_back("detach            - Exit Lua REPL back to command mode");
-    resp["lines"].push_back("eval <code>       - Execute Lua code in a sandbox");
+    resp["lines"].push_back(
+        "attach <service>  - Enter interactive Lua REPL for a service");
+    resp["lines"].push_back(
+        "detach            - Exit Lua REPL back to command mode");
+    resp["lines"].push_back(
+        "eval <code>       - Execute Lua code in a sandbox");
     resp["lines"].push_back("exit / quit       - Disconnect");
     session.send_line(resp.dump());
 }
@@ -129,13 +134,12 @@ void RootCommands::cmd_services(shield::net::ConsoleSession& session,
         auto names = mgr.list_services();
         promise->set_value(nlohmann::json(names));
     });
-    if (future.wait_for(std::chrono::seconds(2)) ==
-        std::future_status::ready) {
+    if (future.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
         nlohmann::json resp = {{"type", "result"}, {"data", future.get()}};
         session.send_line(resp.dump());
     } else {
-        nlohmann::json resp = {
-            {"type", "error"}, {"message", "timeout querying services"}};
+        nlohmann::json resp = {{"type", "error"},
+                               {"message", "timeout querying services"}};
         session.send_line(resp.dump());
     }
 }
@@ -151,24 +155,22 @@ void RootCommands::cmd_service(shield::net::ConsoleSession& session,
     const auto& name = args[0];
     auto promise = std::make_shared<std::promise<nlohmann::json>>();
     auto future = promise->get_future();
-    lua_mgr_.enqueue_forked_task(
-        "", [&mgr = lua_mgr_, name, promise]() {
-            nlohmann::json data;
-            data["name"] = name;
-            auto id = mgr.query_service(name);
-            data["exists"] = !id.empty();
-            if (!id.empty()) {
-                data["id"] = id;
-            }
-            promise->set_value(data);
-        });
-    if (future.wait_for(std::chrono::seconds(2)) ==
-        std::future_status::ready) {
+    lua_mgr_.enqueue_forked_task("", [&mgr = lua_mgr_, name, promise]() {
+        nlohmann::json data;
+        data["name"] = name;
+        auto id = mgr.query_service(name);
+        data["exists"] = !id.empty();
+        if (!id.empty()) {
+            data["id"] = id;
+        }
+        promise->set_value(data);
+    });
+    if (future.wait_for(std::chrono::seconds(2)) == std::future_status::ready) {
         nlohmann::json resp = {{"type", "result"}, {"data", future.get()}};
         session.send_line(resp.dump());
     } else {
-        nlohmann::json resp = {
-            {"type", "error"}, {"message", "timeout querying service"}};
+        nlohmann::json resp = {{"type", "error"},
+                               {"message", "timeout querying service"}};
         session.send_line(resp.dump());
     }
 }
@@ -239,11 +241,12 @@ void RootCommands::cmd_plugin(shield::net::ConsoleSession& session,
             state_str = "stopped";
             break;
     }
-    nlohmann::json data = {{"id", inst->id},
-                           {"package", inst->package ? inst->package->manifest.id : ""},
-                           {"state", state_str},
-                           {"last_error", inst->last_error},
-                           {"dependencies", inst->dep_ids}};
+    nlohmann::json data = {
+        {"id", inst->id},
+        {"package", inst->package ? inst->package->manifest.id : ""},
+        {"state", state_str},
+        {"last_error", inst->last_error},
+        {"dependencies", inst->dep_ids}};
     nlohmann::json resp = {{"type", "result"}, {"data", data}};
     session.send_line(resp.dump());
 }
@@ -259,9 +262,8 @@ void RootCommands::cmd_config(shield::net::ConsoleSession& session,
     } else {
         const auto& key = args[0];
         if (!cfg.has(key)) {
-            nlohmann::json resp = {
-                {"type", "error"},
-                {"message", "Config key not found: " + key}};
+            nlohmann::json resp = {{"type", "error"},
+                                   {"message", "Config key not found: " + key}};
             session.send_line(resp.dump());
             return;
         }
@@ -296,8 +298,8 @@ void RootCommands::cmd_cluster(shield::net::ConsoleSession& session,
 #ifdef SHIELD_ENABLE_CLUSTER
     auto* cm = shield::cluster::global_cluster_manager();
     if (!cm) {
-        nlohmann::json resp = {
-            {"type", "error"}, {"message", "Cluster not enabled"}};
+        nlohmann::json resp = {{"type", "error"},
+                               {"message", "Cluster not enabled"}};
         session.send_line(resp.dump());
         return;
     }
@@ -317,8 +319,8 @@ void RootCommands::cmd_cluster(shield::net::ConsoleSession& session,
     nlohmann::json resp = {{"type", "result"}, {"data", data}};
     session.send_line(resp.dump());
 #else
-    nlohmann::json resp = {
-        {"type", "error"}, {"message", "Cluster not compiled"}};
+    nlohmann::json resp = {{"type", "error"},
+                           {"message", "Cluster not compiled"}};
     session.send_line(resp.dump());
 #endif
 }
@@ -351,9 +353,8 @@ void RootCommands::cmd_log_level(shield::net::ConsoleSession& session,
         return;
     }
     shield::log::Logger::set_global_level(level);
-    nlohmann::json resp = {
-        {"type", "result"},
-        {"data", "Log level set to " + level_str}};
+    nlohmann::json resp = {{"type", "result"},
+                           {"data", "Log level set to " + level_str}};
     session.send_line(resp.dump());
 }
 

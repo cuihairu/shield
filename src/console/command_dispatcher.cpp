@@ -21,8 +21,9 @@ void CommandDispatcher::set_lua_line_handler(
     lua_line_handler_ = std::move(handler);
 }
 
-void CommandDispatcher::dispatch(std::shared_ptr<shield::net::ConsoleSession> session,
-                                  const std::string& line) {
+void CommandDispatcher::dispatch(
+    std::shared_ptr<shield::net::ConsoleSession> session,
+    const std::string& line) {
     // Strip leading/trailing whitespace
     std::string trimmed = line;
     auto start = trimmed.find_first_not_of(" \t\r");
@@ -71,7 +72,8 @@ void CommandDispatcher::dispatch(std::shared_ptr<shield::net::ConsoleSession> se
     // Unknown command
     nlohmann::json resp = {
         {"type", "error"},
-        {"message", "Unknown command: " + cmd + ". Type 'help' for available commands."}};
+        {"message",
+         "Unknown command: " + cmd + ". Type 'help' for available commands."}};
     session->send_line(resp.dump());
 }
 
