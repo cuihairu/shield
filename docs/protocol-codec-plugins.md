@@ -233,7 +233,7 @@ network:
 | `msgpack` | bundled optional plugin | 已落地 `protocol.msgpack` provider，核心已移除内置路径。 |
 | `sproto` | runtime codec plugin | 已落地 `protocol.sproto` provider，支持 `.sproto` schema 和 0-packing 压缩。 |
 | `xmldef-native` | descriptor/runtime plugin | catalog 路由加载可留在核心；字段级 decode/encode 走插件。 |
-| `flatbuffers` | runtime codec plugin | 需要 bfbs/schema loader 和 JSON bridge。 |
+| `flatbuffers` | runtime codec plugin | 已落地 `protocol.flatbuffers` provider，支持 `.bfbs` 二进制 schema 和 JSON 桥接。 |
 
 ## Implementation Order
 
@@ -248,9 +248,11 @@ network:
 7. 已在 CI 中启用 `SHIELD_BUILD_PLUGIN_PROTOBUF=ON` / `SHIELD_BUILD_PLUGIN_MSGPACK=ON`，protobuf 插件的 `test_protocol_protobuf_plugin` 和 `test_protocol_msgpack_plugin` 在 Ubuntu/macOS/Windows 三平台 CI 中通过。
 8. 已新增 `protocol.msgpack` provider 和插件 ABI round-trip 测试；已移除核心内置 `MsgpackBodyCodec`，`msgpack` 现为纯插件 codec。
 9. 已新增 `protocol.sproto` provider，支持 `.sproto` schema 加载、decode/encode 和可选 0-packing 压缩。
+10. 已新增 `protocol.flatbuffers` provider，支持 `.bfbs` 二进制 schema 加载、decode/encode 和 JSON 桥接。
 
 ## Known Limitations
 
 - codec 按监听器锁定（`actors[].network.protocol.body`），不支持 per-route / per-session 协商（Non-Goal）。
 - Lua egress 不会自动调用插件 encode；只有 inbound decode 的结果会作为 Lua table 交付。
 - sproto 插件当前只支持基本类型（integer、boolean、string、struct），不支持 map 和 array 类型。
+- flatbuffers 插件需要预编译的二进制 schema（.bfbs），不支持运行时从 .fbs 编译。

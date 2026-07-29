@@ -246,3 +246,24 @@ if(SHIELD_BUILD_PLUGIN_SPROTO)
         TIMEOUT 10)
     shield_copy_runtime_dlls(test_protocol_sproto_plugin)
 endif()
+
+if(SHIELD_BUILD_PLUGIN_FLATBUFFERS)
+    find_package(flatbuffers CONFIG REQUIRED)
+    add_executable(test_protocol_flatbuffers_plugin
+        protocol/test_protocol_flatbuffers_plugin.cpp
+        $<TARGET_OBJECTS:shield_protocol_flatbuffers_obj>)
+    target_link_libraries(test_protocol_flatbuffers_plugin
+        PRIVATE
+            flatbuffers::flatbuffers
+            nlohmann_json::nlohmann_json
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_protocol_flatbuffers_plugin
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_protocol_flatbuffers_plugin
+             COMMAND test_protocol_flatbuffers_plugin)
+    set_tests_properties(test_protocol_flatbuffers_plugin PROPERTIES
+        LABELS "plugin;protocol"
+        TIMEOUT 10)
+    shield_copy_runtime_dlls(test_protocol_flatbuffers_plugin)
+endif()

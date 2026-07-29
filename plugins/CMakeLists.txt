@@ -74,3 +74,7 @@ endif()
 if(SHIELD_BUILD_PLUGIN_SPROTO)
     add_subdirectory(protocol.sproto)
 endif()
+
+if(SHIELD_BUILD_PLUGIN_FLATBUFFERS)
+    add_subdirectory(protocol.flatbuffers)
+endif()

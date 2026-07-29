@@ -1,0 +1,38 @@
+schema_version: 1
+id: protocol.flatbuffers
+name: FlatBuffers Protocol Codec
+version: 1.0.0
+kind: protocol
+description: FlatBuffers provider for shield.protocol.codec.v1
+documentation:
+  url: https://cuihairu.github.io/shield/protocol-codec-plugins
+  description: FlatBuffers BodyCodec provider for zero-copy serialization
+entry: shield_plugin_get_v1
+library:
+  windows: bin/libshield_protocol_flatbuffers.dll
+  linux: bin/libshield_protocol_flatbuffers.so
+  macos: bin/libshield_protocol_flatbuffers.dylib
+provides:
+  - interface: shield.protocol.codec.v1
+    capabilities:
+      - flatbuffers
+      - fbs
+requires: []
+lua:
+  namespace: protocol.flatbuffers
+  search_paths: []
+config_schema:
+  type: object
+  required:
+    - schema
+  properties:
+    schema:
+      type: string
+      description: Path to compiled FlatBuffers binary schema file (.bfbs)
+    schema_dir:
+      type: string
+      description: Directory containing .bfbs schema files
+    messages:
+      type: array
+      items:
+        type: object

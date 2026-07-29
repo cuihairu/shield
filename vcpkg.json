@@ -78,6 +78,12 @@
             "dependencies": [
                 "sproto"
             ]
+        },
+        "protocol-flatbuffers": {
+            "description": "FlatBuffers protocol codec plugin dependency",
+            "dependencies": [
+                "flatbuffers"
+            ]
         }
     },
     "overrides": []
