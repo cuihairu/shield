@@ -2,18 +2,19 @@
 
 本文是 Shield 重构后的 Lua 用户 API 契约。运行时语义细节仍由各 `runtime-*.md` 文档展开；当示例或旧源码与本文冲突时，以本文为准。
 
-当前状态：本文冻结 Phase 1 Lua API 契约；源码需要按本文补齐实现和测试。
+> **当前状态**：本文冻结 Phase 1 Lua API 契约；源码需要按本文补齐实现和测试。
 
-实现快照：当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置
-启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、
-coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、
-`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、
-`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、
-timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、
-TCP gateway listener 到 Lua handler 的 bootstrap 桥接、
-HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
-HTTP 服务端 Lua 路由注册仍是占位入口，尚未接入 bootstrap。
-`on_shutdown(ctx)` 和单 VM 内部 `shield.event` 已定义为目标契约，但当前源码尚未实现。
+<details>
+<summary>实现快照（点击展开）</summary>
+
+当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、TCP gateway listener 到 Lua handler 的 bootstrap 桥接、HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
+
+- HTTP 服务端 Lua 路由注册仍是占位入口，尚未接入 bootstrap。
+- `on_shutdown(ctx)` 和单 VM 内部 `shield.event` 已定义为目标契约，但当前源码尚未实现。
+
+</details>
+
+---
 
 ## 设计原则
 
@@ -56,16 +57,20 @@ end
 return M
 ```
 
-加载规则：
+### 加载规则
 
-- 脚本必须返回 table。
-- table 上的普通函数就是可被 `send/call` 分发的 method。
-- `on_*` 名称为运行时 hook 或模块 hook 保留，业务 method 禁止使用 `on_` 前缀。
-- module 顶层代码只做轻量声明，不执行阻塞 I/O。
-- 每个 service 实例有独立 Lua state 或隔离上下文，不能共享可变 Lua 全局业务状态。
-- `shield.event` 的 listener 表属于当前 service 的 Lua VM；service 退出后随 VM 一起释放。
+| 规则 | 说明 |
+| --- | --- |
+| 返回 table | 脚本必须返回 table |
+| 普通函数即 method | table 上的普通函数就是可被 `send/call` 分发的 method |
+| 保留名称 | `on_*` 名称为运行时 hook 或模块 hook 保留，业务 method 禁止使用 `on_` 前缀 |
+| 顶层轻量声明 | module 顶层代码只做轻量声明，不执行阻塞 I/O |
+| 隔离上下文 | 每个 service 实例有独立 Lua state 或隔离上下文，不能共享可变 Lua 全局业务状态 |
+| event 生命周期 | `shield.event` 的 listener 表属于当前 service 的 Lua VM；service 退出后随 VM 一起释放 |
 
 ## Lifecycle Hooks
+
+---
 
 ### on_init(args)
 
@@ -80,22 +85,23 @@ function M.on_init(args)
 end
 ```
 
-成功：
+**返回值规则**：
 
-- 无返回值表示成功。
-- `return true` 表示成功。
+| 场景 | 返回值 | 说明 |
+| --- | --- | --- |
+| 成功 | 无返回值 | 表示成功 |
+| 成功 | `return true` | 表示成功 |
+| 失败 | `return false, "reason"` | 表示失败 |
+| 失败 | `return nil, "reason"` | 表示失败 |
+| 失败 | 抛出 Lua error | 表示失败 |
 
-失败：
+**失败后的处理**：
 
-- `return false, "reason"` 表示失败。
-- `return nil, "reason"` 表示失败。
-- 抛出 Lua error 表示失败。
+- `shield.spawn` 返回 `nil, Error`
+- 已 reserve 的 name rollback
+- service 不进入 running 状态
 
-失败后：
-
-- `shield.spawn` 返回 `nil, Error`。
-- 已 reserve 的 name rollback。
-- service 不进入 running 状态。
+---
 
 ### on_shutdown(ctx)
 
@@ -109,16 +115,18 @@ function M.on_shutdown(ctx)
 end
 ```
 
-规则：
+**规则**：
 
-- `on_shutdown` 用于停止接收业务入口、flush 内存状态、通知本服务拥有的外部资源进入 drain。
-- 运行时先停止 accept/readiness，再按依赖反向顺序调用 `on_shutdown`；依赖图未实现时按 spawn 逆序。
-- `on_shutdown` 可以是 coroutine-aware hook，可在 deadline 内使用 `shield.call`、`shield.sleep` 等会挂起的 API。
-- 超时或抛错只记录错误并继续关闭流程；随后仍会调用 `on_exit(reason)`。
-- 缺失 `on_shutdown` 视为 no-op。
-- 不提供 `on_ready` 广播；service ready 定义为 `on_init` 成功并 publish name，application ready 由 bootstrap 在 required actors 启动完且 accept 开启前后判定。
+- `on_shutdown` 用于停止接收业务入口、flush 内存状态、通知本服务拥有的外部资源进入 drain
+- 运行时先停止 accept/readiness，再按依赖反向顺序调用 `on_shutdown`；依赖图未实现时按 spawn 逆序
+- `on_shutdown` 可以是 coroutine-aware hook，可在 deadline 内使用 `shield.call`、`shield.sleep` 等会挂起的 API
+- 超时或抛错只记录错误并继续关闭流程；随后仍会调用 `on_exit(reason)`
+- 缺失 `on_shutdown` 视为 no-op
+- 不提供 `on_ready` 广播；service ready 定义为 `on_init` 成功并 publish name，application ready 由 bootstrap 在 required actors 启动完且 accept 开启前后判定
 
-实现状态：目标契约，当前源码尚未实现 `on_shutdown` 调度；当前 `shutdown.timeout.service_drain` 只是配置契约预留。
+> **实现状态**：目标契约，当前源码尚未实现 `on_shutdown` 调度；当前 `shutdown.timeout.service_drain` 只是配置契约预留。
+
+---
 
 ### on_exit(reason)
 
@@ -129,14 +137,16 @@ function M.on_exit(reason)
 end
 ```
 
-规则：
+**规则**：
 
-- `reason` 是字符串，如 `normal`、`stopping`、`panic`、`timeout`。
-- `on_exit` 是 final best-effort 清理，不承担异步 drain。
-- 不允许在 `on_exit` 中调用会挂起 coroutine 的 API，例如 `shield.call`、`shield.sleep`。
-- 如果需要跨服务 flush 或等待外部 I/O，应放在 `on_shutdown(ctx)`，不要放在 `on_exit(reason)`。
+| 规则 | 说明 |
+| --- | --- |
+| reason 类型 | 字符串，如 `normal`、`stopping`、`panic`、`timeout` |
+| 定位 | final best-effort 清理，不承担异步 drain |
+| 禁止操作 | 不允许调用会挂起 coroutine 的 API（如 `shield.call`、`shield.sleep`） |
+| 跨服务 flush | 应放在 `on_shutdown(ctx)`，不要放在 `on_exit(reason)` |
 
-实现快照：`shield.call` / `shield.call_timeout` 在 `on_exit` 上下文中调用时，Lua wrapper 检查 `shield._is_in_exit()` 并立即返回 `false, {code="api_not_allowed_in_exit", message="..."}`。`OnExitCallGuard` 测试覆盖。
+> **实现快照**：`shield.call` / `shield.call_timeout` 在 `on_exit` 上下文中调用时，Lua wrapper 检查 `shield._is_in_exit()` 并立即返回 `false, {code="api_not_allowed_in_exit", message="..."}`。`OnExitCallGuard` 测试覆盖。
 
 ### on_error(err, context)
 
@@ -148,18 +158,22 @@ function M.on_error(err, context)
 end
 ```
 
-`context` 字段：
+**context 字段**：
 
-| 字段 | 说明 |
-| --- | --- |
-| `type` | `handler`、`timer`、`fork`、`event` |
-| `method` | handler method 名称，非 handler 时为空 |
-| `event` | `shield.event` 事件名，仅 `type="event"` 时存在 |
-| `trace_id` | 可选 trace id |
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `type` | string | `handler`、`timer`、`fork`、`event` |
+| `method` | string | handler method 名称，非 handler 时为空 |
+| `event` | string | `shield.event` 事件名，仅 `type="event"` 时存在 |
+| `trace_id` | string | 可选 trace id |
+
+**panic 策略**：
 
 `on_error` 不改变服务状态。Phase 1 的 panic 策略固定为：同一 service 连续 handler/timer/fork 未捕获错误达到 `limits.max_errors_before_panic` 时进入 panic；未配置时默认 10。
 
-实现快照：`on_error` / `on_panic` hook 已实现。当 handler 抛错时，`call_service_method_coroutine` 调用 `LuaRuntime::invoke_hook` 触发 service table 上的 `on_error(err, context)`；timer callback 错误通过 CAF actor 调度触发；fork task 错误通过 CAF actor 调度 `fork_task_atom` 触发。连续未捕获错误达到 `kDefaultMaxErrorsBeforePanic`（默认 10）时触发 `on_panic(reason, context)` 并 `exit("panic")`。成功执行后错误计数重置。`OnErrorHookCalledOnHandlerThrow` 测试覆盖。
+> **实现快照**：`on_error` / `on_panic` hook 已实现。当 handler 抛错时，`call_service_method_coroutine` 调用 `LuaRuntime::invoke_hook` 触发 service table 上的 `on_error(err, context)`；timer callback 错误通过 CAF actor 调度触发；fork task 错误通过 CAF actor 调度 `fork_task_atom` 触发。连续未捕获错误达到 `kDefaultMaxErrorsBeforePanic`（默认 10）时触发 `on_panic(reason, context)` 并 `exit("panic")`。成功执行后错误计数重置。`OnErrorHookCalledOnHandlerThrow` 测试覆盖。
+
+---
 
 ### on_panic(reason, context)
 
@@ -171,11 +185,15 @@ function M.on_panic(reason, context)
 end
 ```
 
-规则：
+**规则**：
 
-- 不允许挂起。
-- 只能做同步、best-effort 的紧急记录或状态标记。
-- 返回值会被忽略。
+| 规则 | 说明 |
+| --- | --- |
+| 禁止挂起 | 不允许挂起 |
+| 允许操作 | 只能做同步、best-effort 的紧急记录或状态标记 |
+| 返回值 | 返回值会被忽略 |
+
+---
 
 ## Service API
 
@@ -189,21 +207,34 @@ local h, err = shield.spawn("player", {
 })
 ```
 
-参数：
+**参数**：
 
-| 参数 | 说明 |
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `module` | string | actor 类型或脚本别名，由 `actors[].name` 映射 |
+| `opts.name` | string | 可选 service name，本 runtime 内唯一 |
+| `opts.args` | table | 传给 `on_init(args).args` 的业务参数 |
+| `opts.timeout` | number | 覆盖 spawn timeout，单位 ms |
+
+**返回值**：
+
+| 场景 | 返回值 |
 | --- | --- |
-| `module` | actor 类型或脚本别名，由 `actors[].name` 映射 |
-| `opts.name` | 可选 service name，本 runtime 内唯一 |
-| `opts.args` | 传给 `on_init(args).args` 的业务参数 |
-| `opts.timeout` | 覆盖 spawn timeout，单位 ms |
+| 成功 | `ServiceHandle, nil` |
+| 失败 | `nil, Error` |
 
-返回：
+<details>
+<summary>实现快照（点击展开）</summary>
 
-- 成功：`ServiceHandle, nil`
-- 失败：`nil, Error`
+`shield.spawn` 是"同步语义、异步实现"。在 handler 协程（含 fork task 协程）中调用时走 `_coro_spawn`：caller 经 `suspend_for_call` + `coroutine.yield()` 挂起，VM 创建、module 加载和 `on_init` 在专用 spawn worker 线程（单线程串行）上执行，完成后经 `CallResponseMessage` 路由回 caller actor 恢复协程——慢 `on_init` 不会阻塞 caller 的 service actor。VM 主线程（如 `on_init` 内）调用时保持同步路径（`_sync_spawn`）。
 
-实现快照：`shield.spawn` 是"同步语义、异步实现"。在 handler 协程（含 fork task 协程）中调用时走 `_coro_spawn`：caller 经 `suspend_for_call` + `coroutine.yield()` 挂起，VM 创建、module 加载和 `on_init` 在专用 spawn worker 线程（单线程串行）上执行，完成后经 `CallResponseMessage` 路由回 caller actor 恢复协程——慢 `on_init` 不会阻塞 caller 的 service actor。VM 主线程（如 `on_init` 内）调用时保持同步路径（`_sync_spawn`）。spawn 期间 name 处于 reserved 状态：同名 spawn 立即失败（`service name already reserved`），`shield.query` 在 publish 前不可见；`on_init` 失败回滚 name（`init_failed`）。挂起超时按 `opts.timeout`（默认 10000ms）以 `{code="spawn_timeout"}` 恢复 caller，且成功但超时的子 service 会被补偿退出（reason `"timeout"`）。超时判定仍是事后测量，`on_init` 本身不会被抢占中断。测试覆盖见 `test_lua_api_spawn.cpp`。
+spawn 期间 name 处于 reserved 状态：同名 spawn 立即失败（`service name already reserved`），`shield.query` 在 publish 前不可见；`on_init` 失败回滚 name（`init_failed`）。挂起超时按 `opts.timeout`（默认 10000ms）以 `{code="spawn_timeout"}` 恢复 caller，且成功但超时的子 service 会被补偿退出（reason `"timeout"`）。超时判定仍是事后测量，`on_init` 本身不会被抢占中断。
+
+测试覆盖见 `test_lua_api_spawn.cpp`。
+
+</details>
+
+---
 
 ### shield.panic(reason)
 
@@ -213,6 +244,8 @@ shield.panic("unrecoverable state")
 
 业务主动触发 panic 路径：调用当前 service 的 `on_panic(reason, {type="explicit"})` hook（best-effort），随后以 reason `"panic"` 退出当前 service。只能在 service dispatch 上下文中调用，否则为 no-op。
 
+---
+
 ### shield.exit(reason)
 
 ```lua
@@ -220,6 +253,8 @@ shield.exit("normal")
 ```
 
 停止当前 service。`reason` 可省略，默认为 `normal`。
+
+---
 
 ### shield.self()
 
@@ -229,7 +264,13 @@ local me = shield.self()
 
 返回当前 service 的 `ServiceHandle`。只能在 service coroutine 中调用。
 
-`ServiceHandle` 方法：`h:id()` 返回本地 service id；`h:node()` 返回 node id（单节点 runtime 恒为 `0`，即本地）；`h:valid()` 检查 handle 非空。
+**ServiceHandle 方法**：
+
+| 方法 | 返回值 | 说明 |
+| --- | --- | --- |
+| `h:id()` | number | 本地 service id |
+| `h:node()` | number | node id（单节点 runtime 恒为 `0`，即本地） |
+| `h:valid()` | boolean | 检查 handle 非空 |
 
 ### shield.names()
 
@@ -239,6 +280,8 @@ local names = shield.names()
 
 返回当前 service 已发布的本地 name 列表。
 
+---
+
 ### shield.query(name)
 
 ```lua
@@ -246,6 +289,8 @@ local h, err = shield.query("gateway.main")
 ```
 
 查询本地 registry。cluster 全局发现不进入 core。
+
+---
 
 ### shield.register(name)
 
@@ -255,6 +300,8 @@ local ok, err = shield.register("gateway.public")
 
 给当前 service 发布一个本地 name。
 
+---
+
 ### shield.unregister(name)
 
 ```lua
@@ -262,6 +309,8 @@ local ok, err = shield.unregister("gateway.public")
 ```
 
 注销当前 service 拥有的 name。
+
+---
 
 ## Message API
 
@@ -271,13 +320,17 @@ local ok, err = shield.unregister("gateway.public")
 local ok, err = shield.send("room.1", "join", uid, token)
 ```
 
-规则：
+**规则**：
 
-- `target` 可以是 service name 或 `ServiceHandle`。
-- 成功只表示 runtime 接受投递。
-- receiver 不存在、runtime stopping 等返回 `false, Error`。
-- `send` 不自动重试。
-- self-send 允许，但必须进入未来调度点，不允许 reentrant 执行。
+| 规则 | 说明 |
+| --- | --- |
+| target 类型 | 可以是 service name 或 `ServiceHandle` |
+| 成功含义 | 成功只表示 runtime 接受投递 |
+| 失败返回 | receiver 不存在、runtime stopping 等返回 `false, Error` |
+| 重试 | `send` 不自动重试 |
+| self-send | 允许，但必须进入未来调度点，不允许 reentrant 执行 |
+
+---
 
 ### shield.call(target, method, ...)
 
@@ -285,15 +338,17 @@ local ok, err = shield.send("room.1", "join", uid, token)
 local ok, profile = shield.call("player.1001", "get_profile", uid)
 ```
 
-规则：
+**规则**：
 
-- 挂起当前 Lua coroutine。
-- 不阻塞 CAF scheduler 线程。
-- 使用默认 call timeout。
-- 成功返回：`true, ...callee_returns`
-- 失败返回：`false, Error`
+| 规则 | 说明 |
+| --- | --- |
+| 挂起行为 | 挂起当前 Lua coroutine |
+| 阻塞 | 不阻塞 CAF scheduler 线程 |
+| 超时 | 使用默认 call timeout |
+| 成功返回 | `true, ...callee_returns` |
+| 失败返回 | `false, Error` |
 
-业务返回 `nil` 或 `false` 时仍是成功：
+**业务返回 nil 或 false 时仍是成功**：
 
 ```lua
 -- callee
@@ -306,6 +361,8 @@ local ok, allowed, reason = shield.call("auth", "check", uid)
 -- ok == true, allowed == false
 ```
 
+---
+
 ### shield.call_timeout(timeout_ms, target, method, ...)
 
 ```lua
@@ -314,7 +371,16 @@ local ok, result = shield.call_timeout(3000, "db.player", "get", uid)
 
 使用单独函数覆盖 timeout，避免最后一个业务参数和 options table 歧义。
 
-实现快照：`shield.call` / `shield.call_timeout` 已实现协程感知路径——在 handler 协程中调用时，caller 通过 `_coro_call` → `suspend_for_call` + `coroutine.yield()` 挂起，callee 完成后 `resume_caller` 恢复 caller。`manager->call()`（C++ 侧）始终路由到 target 的 CAF actor，发送 `SyncCallMessage` 并通过条件变量阻塞等待 actor dispatch 完成。同步路径的自调用（caller == target）返回错误 message `"self-call not supported"`，经 `call_error_code` 映射为 `{code="handler_error"}`。call timeout 通过 CAF `delayed_send` 实现，以 `{code="timeout", message="call timeout", retryable=true}` 恢复 caller。LAPI-005-06 已覆盖。
+<details>
+<summary>实现快照（点击展开）</summary>
+
+`shield.call` / `shield.call_timeout` 已实现协程感知路径——在 handler 协程中调用时，caller 通过 `_coro_call` → `suspend_for_call` + `coroutine.yield()` 挂起，callee 完成后 `resume_caller` 恢复 caller。`manager->call()`（C++ 侧）始终路由到 target 的 CAF actor，发送 `SyncCallMessage` 并通过条件变量阻塞等待 actor dispatch 完成。
+
+同步路径的自调用（caller == target）返回错误 message `"self-call not supported"`，经 `call_error_code` 映射为 `{code="handler_error"}`。call timeout 通过 CAF `delayed_send` 实现，以 `{code="timeout", message="call timeout", retryable=true}` 恢复 caller。
+
+LAPI-005-06 已覆盖。
+
+</details>
 
 ### Message Context
 
@@ -326,14 +392,25 @@ function M.handler(ctx, ...)
 end
 ```
 
-规则：
+**规则**：
 
-- `ctx` 是只读对象，包含当前消息上下文。
-- 只在 message handler coroutine 中有效。
-- handler 返回后上下文失效。
-- timer callback / fork task 中 `ctx.sender` 返回 `nil`。
+| 规则 | 说明 |
+| --- | --- |
+| 只读 | `ctx` 是只读对象，包含当前消息上下文 |
+| 有效范围 | 只在 message handler coroutine 中有效 |
+| 生命周期 | handler 返回后上下文失效 |
+| timer/fork | timer callback / fork task 中 `ctx.sender` 返回 `nil` |
 
-实现快照：`ctx` 对象包含 `sender`、`trace`、`deadline` 字段。deadline_ms 和 trace_id 字段在 send/call 消息中传播，从 caller 的 dispatch context 携带到 callee 的 dispatch context；但 runtime 当前不生成 trace id，`ctx.trace` 恒返回 nil（生成属于 Phase 2+）。timer callback / fork task context 中 `ctx.sender` 返回 `nil`，`ctx.trace` 返回 `nil`，`ctx.deadline` 返回 `nil`。
+<details>
+<summary>实现快照（点击展开）</summary>
+
+`ctx` 对象包含 `sender`、`trace`、`deadline` 字段。deadline_ms 和 trace_id 字段在 send/call 消息中传播，从 caller 的 dispatch context 携带到 callee 的 dispatch context；但 runtime 当前不生成 trace id，`ctx.trace` 恒返回 nil（生成属于 Phase 2+）。
+
+timer callback / fork task context 中 `ctx.sender` 返回 `nil`，`ctx.trace` 返回 `nil`，`ctx.deadline` 返回 `nil`。
+
+</details>
+
+---
 
 ## Timer API
 
@@ -345,6 +422,8 @@ local id = shield.timer_once(1000, function()
 end)
 ```
 
+---
+
 ### shield.timer(interval_ms, callback)
 
 ```lua
@@ -353,18 +432,24 @@ local id = shield.timer(1000, function()
 end)
 ```
 
-规则：
+**规则**：
 
-- fixed-delay：callback 结束后再安排下一次。
-- callback 当前通过 `lua_pcall` 执行，不是 coroutine；`shield.sleep` / `shield.call` 在 callback 中走同步调用路径。
-- callback 抛错时触发 `on_error`。
-- service exit 自动取消 owned timers。
+| 规则 | 说明 |
+| --- | --- |
+| 调度策略 | fixed-delay：callback 结束后再安排下一次 |
+| 执行方式 | callback 当前通过 `lua_pcall` 执行，不是 coroutine；`shield.sleep` / `shield.call` 在 callback 中走同步调用路径 |
+| 错误处理 | callback 抛错时触发 `on_error` |
+| 生命周期 | service exit 自动取消 owned timers |
+
+---
 
 ### shield.cancel_timer(timer_id)
 
 ```lua
 local ok, err = shield.cancel_timer(id)
 ```
+
+---
 
 ### shield.sleep(delay_ms)
 
@@ -373,6 +458,8 @@ shield.sleep(100)
 ```
 
 在 message handler coroutine 中挂起当前 coroutine，不阻塞 runtime thread；在同步调用、timer callback 或 fork task 中走阻塞降级路径。
+
+---
 
 ### shield.fork(fn)
 
@@ -383,6 +470,8 @@ end)
 ```
 
 返回 numeric task id。fork task 属于当前 service，当前通过 `lua_pcall` 执行，不是 coroutine；service exit 时自动取消尚未执行的 task。
+
+---
 
 ## Time API
 
@@ -397,34 +486,38 @@ local mono = shield.monotonic()
 
 > **AD-07 分层时钟**：`shield.now()` 返回墙钟 UTC ms（LuaClock，可拨），用于业务逻辑（刷新/活动/过期判断/ID 生成）。`deadline_ms`、`timestamp` 等 C++ 内部字段保持 monotonic（InfraClock，不可拨）。参见 [架构决策 AD-07](architecture-decisions.md)。
 
+---
+
 ### shield.monotonic()
 
 返回 real monotonic milliseconds（`steady_clock`，不可拨）。用于 Lua 层需要真实流逝时间的场景（网络退避、心跳间隔、性能计时）。不受 `MockClock` 影响。
 
+---
+
 ### os.time / os.date / os.clock
 
-`os.time()`（无参）和 `os.date(fmt)`（无参）重定向到业务时钟（与 `shield.now()` 同源）。带参形式（`os.time(table)`、`os.date(fmt, t)`）保持原生行为。`os.clock()` 不受业务时钟影响，返回真实 CPU 时间。
+| 函数 | 行为 |
+| --- | --- |
+| `os.time()`（无参） | 重定向到业务时钟（与 `shield.now()` 同源） |
+| `os.date(fmt)`（无参） | 重定向到业务时钟（与 `shield.now()` 同源） |
+| `os.time(table)`（带参） | 保持原生行为 |
+| `os.date(fmt, t)`（带参） | 保持原生行为 |
+| `os.clock()` | 不受业务时钟影响，返回真实 CPU 时间 |
 
 > **原因**：游戏业务代码大量直接用 `os.time()` 读当前时间（缓存过期、签到、活动开关），只拨 `shield.now()` 无法覆盖。将 `os.time`/`os.date` 无参形式接入同一业务时钟，使所有业务时间读取统一可控。
 
-实现快照：`shield.now()` 已实现，读 `LuaServiceManager` 持有的 `Clock`（默认 `SystemClock` 读 `system_clock`）；`shield.monotonic()` 已实现，读 `steady_clock`（不可拨）。`attach_clock()` 在 `src/lua/lua_service.cpp` 实现，用于测试注入 `MockClock`。`os.time()`/`os.date()` 无参 hook 在 `register_full_shield_api`（`src/lua/lua_api.cpp`）中安装，带参形式保留原函数。`os.clock()` 不动。`Clock`/`SystemClock`/`MockClock` 定义于 `include/shield/lua/clock.hpp`。`test_lua_api_clock` 覆盖 12 个用例：默认墙钟、一致性、MockClock set/advance、os hook 粒度（含 table 带参不受影响）、monotonic 不可拨、缓存过期/签到/cooldown 完整业务场景。
+<details>
+<summary>实现快照（点击展开）</summary>
 
-### has_service_actor(service_id)
+`shield.now()` 已实现，读 `LuaServiceManager` 持有的 `Clock`（默认 `SystemClock` 读 `system_clock`）；`shield.monotonic()` 已实现，读 `steady_clock`（不可拨）。`attach_clock()` 在 `src/lua/lua_service.cpp` 实现，用于测试注入 `MockClock`。
 
-检查服务是否有关联的 CAF actor。
+`os.time()`/`os.date()` 无参 hook 在 `register_full_shield_api`（`src/lua/lua_api.cpp`）中安装，带参形式保留原函数。`os.clock()` 不动。`Clock`/`SystemClock`/`MockClock` 定义于 `include/shield/lua/clock.hpp`。
 
-```cpp
-bool has_service_actor(const std::string& service_id) const;
-```
+测试覆盖见 `test_lua_api_clock`：默认墙钟、一致性、MockClock set/advance、os hook 粒度（含 table 带参不受影响）、monotonic 不可拨、缓存过期/签到/cooldown 完整业务场景。
 
-参数：
-- `service_id` - 服务 ID
+</details>
 
-返回：
-- `true` - 服务有关联的 CAF actor
-- `false` - 服务没有关联的 CAF actor 或服务不存在
-
-实现快照：`has_service_actor()` 在 `src/lua/lua_service.cpp` 实现，查询内部 `service_actors` 映射表。用于测试验证 CAF actor 系统集成状态。
+---
 
 ## Config API
 
@@ -432,14 +525,23 @@ bool has_service_actor(const std::string& service_id) const;
 local host = shield.config("database.host", "localhost")
 ```
 
-规则：
+**规则**：
 
-- 读取 bootstrap 后的配置快照。
-- 默认只读。
-- 找不到 key 时返回第二个参数作为默认值；没有默认值则返回 `nil`。
-- 配置加载和合并由 C++ bootstrap 完成，Lua 不负责加载 YAML 文件。
+| 规则 | 说明 |
+| --- | --- |
+| 数据来源 | 读取 bootstrap 后的配置快照 |
+| 只读 | 默认只读 |
+| 默认值 | 找不到 key 时返回第二个参数作为默认值；没有默认值则返回 `nil` |
+| 加载方式 | 配置加载和合并由 C++ bootstrap 完成，Lua 不负责加载 YAML 文件 |
 
-实现快照：`shield.config` 已实现，key 为扁平字符串匹配（如 `"database.host"`），不支持嵌套路径遍历。返回值自动尝试转换为 boolean/integer/number/string。
+<details>
+<summary>实现快照（点击展开）</summary>
+
+`shield.config` 已实现，key 为扁平字符串匹配（如 `"database.host"`），不支持嵌套路径遍历。返回值自动尝试转换为 boolean/integer/number/string。
+
+</details>
+
+---
 
 ## Log API
 
@@ -450,13 +552,22 @@ shield.log.warn("message")
 shield.log.error("message")
 ```
 
-规则：
+**规则**：
 
-- 日志自动注入 service id。
-- 参数必须是 string 或可安全 tostring 的值。
-- 不允许在日志 API 中执行阻塞 I/O。
+| 规则 | 说明 |
+| --- | --- |
+| 自动注入 | 日志自动注入 service id |
+| 参数类型 | 参数必须是 string 或可安全 tostring 的值 |
+| 禁止操作 | 不允许在日志 API 中执行阻塞 I/O |
 
-实现快照：`shield.log.*` 输出时自动注入当前 service id 前缀（格式：`[service_id] message`）。service name 和 trace id 注入属于 Phase 2 扩展。
+<details>
+<summary>实现快照（点击展开）</summary>
+
+`shield.log.*` 输出时自动注入当前 service id 前缀（格式：`[service_id] message`）。service name 和 trace id 注入属于 Phase 2 扩展。
+
+</details>
+
+---
 
 ## Local Event API
 
@@ -471,7 +582,7 @@ shield.event.emit("inventory.changed", { item_id = "sword_01" })
 off()
 ```
 
-API：
+**API**：
 
 | API | 说明 |
 | --- | --- |
@@ -480,14 +591,18 @@ API：
 | `shield.event.emit(name, payload)` | 同步调用当前 VM 内 listener，返回被调用数量 |
 | `shield.event.clear(name?)` | 清空指定事件或全部本地 listener |
 
-规则：
+**规则**：
 
-- listener 在 `emit` 调用栈内同步执行，顺序为注册顺序。
-- listener 抛错时由当前 service 的 `on_error(err, {type="event", event=name})` 处理；其他 listener 继续执行。
-- listener 不能用于接收 `application_ready`、`shutdown`、`service_started` 等 runtime lifecycle 事件；这些不是 `shield.event` 的职责。
-- 跨 service 解耦使用 `shield.send/call` 或插件队列；跨 node 发布订阅属于可选模块或插件能力。
+| 规则 | 说明 |
+| --- | --- |
+| 执行方式 | listener 在 `emit` 调用栈内同步执行，顺序为注册顺序 |
+| 错误处理 | listener 抛错时由当前 service 的 `on_error(err, {type="event", event=name})` 处理；其他 listener 继续执行 |
+| 禁止用途 | listener 不能用于接收 `application_ready`、`shutdown`、`service_started` 等 runtime lifecycle 事件；这些不是 `shield.event` 的职责 |
+| 跨服务解耦 | 跨 service 解耦使用 `shield.send/call` 或插件队列；跨 node 发布订阅属于可选模块或插件能力 |
 
-实现状态：目标契约，当前源码尚未实现 `shield.event`。
+> **实现状态**：目标契约，当前源码尚未实现 `shield.event`。
+
+---
 
 ## Plugin-provided APIs
 
@@ -510,13 +625,17 @@ db:insert_one("users", { name = "alice", age = 30 })
 db_game:query("SELECT * FROM players WHERE id = ?", { pid })
 ```
 
-规则：
+**规则**：
 
-- **业务代码必须传 binding 逻辑名，不得传 instance_id**（禁止 `shield.database.mysql("db.main")` 这类直接传实例 id 的写法）。binding 是部署可变的逻辑引用，instance_id 是部署细节；设计理由与命名规则见 [插件系统 · 为什么用 binding](plugin-system.md#为什么-lua-访问用-binding-而非-instance-id)。
-- API coroutine-friendly。
-- 未启用对应插件、binding 不存在或目标实例未启动时返回 `nil, { code = "module_unavailable" }`。
-- 同一 package 多实例互不影响；每个 proxy 独立持有连接句柄。
-- `proxy` 的生命周期由 Lua GC 管理；连接池归插件 instance 自治，proxy 只持有插件定义的轻量引用或临时连接句柄。
+| 规则 | 说明 |
+| --- | --- |
+| binding 逻辑名 | **业务代码必须传 binding 逻辑名，不得传 instance_id**（禁止 `shield.database.mysql("db.main")` 这类直接传实例 id 的写法） |
+| 协程友好 | API coroutine-friendly |
+| 错误返回 | 未启用对应插件、binding 不存在或目标实例未启动时返回 `nil, { code = "module_unavailable" }` |
+| 多实例 | 同一 package 多实例互不影响；每个 proxy 独立持有连接句柄 |
+| 生命周期 | `proxy` 的生命周期由 Lua GC 管理；连接池归插件 instance 自治，proxy 只持有插件定义的轻量引用或临时连接句柄 |
+
+> **设计理由**：binding 是部署可变的逻辑引用，instance_id 是部署细节；设计理由与命名规则见 [插件系统 · 为什么用 binding](plugin-system.md#为什么-lua-访问用-binding-而非-instance-id)。
 
 ### Database（SQL）— `shield.database.<driver>`
 
@@ -536,13 +655,15 @@ local ok, result = db:transaction(function(tx)
 end)
 ```
 
-可用 namespace：
+**可用 namespace**：
 
 | Namespace | 接口 | 说明 |
 | --- | --- | --- |
 | `shield.database.sqlite` | `shield.database.v1` | 嵌入式 SQLite |
 | `shield.database.mysql` | `shield.database.v1` | MySQL X DevAPI |
 | `shield.database.postgresql` | `shield.database.v1` | libpq |
+
+---
 
 ### Database（文档）— `shield.database.mongodb`
 
@@ -581,7 +702,11 @@ mongo:transaction(function(tx)
 end)
 ```
 
-Lua table 会被 `nlohmann::json` 转为 BSON；查询操作符（`$gt` / `$set` / `$sum` 等）保持 Mongo 原生语义。ObjectId 作为 24 字符十六进制字符串传输。
+**说明**：
+
+- Lua table 会被 `nlohmann::json` 转为 BSON
+- 查询操作符（`$gt` / `$set` / `$sum` 等）保持 Mongo 原生语义
+- ObjectId 作为 24 字符十六进制字符串传输
 
 ### Cache — `shield.cache.redis`
 
@@ -596,6 +721,8 @@ cache:hset("session:" .. sid, "uid", uid)
 local ok, uid = cache:hget("session:" .. sid, "uid")
 ```
 
+---
+
 ### Queue — `shield.queue.redis`
 
 ```lua
@@ -607,6 +734,8 @@ q:subscribe("chat.world", function(channel, data)
 end)
 q:unsubscribe("chat.world")
 ```
+
+---
 
 ### Leaderboard — `shield.leaderboard.redis`
 
@@ -633,9 +762,11 @@ local ok, top = lb:top_n("arena_1v1", 10)
 | `shield.health.http` | 注册健康检查、查询状态 | 规划中，当前 `register_lua` 未实现 |
 | `shield.matchmaking.elo` | 匹配队列、ELO 评分 | 规划中，当前 `register_lua` 未实现 |
 
-如果后续补齐这些 Lua API，也应优先建立在基础组件与插件接口之上，而不是直接把上层策略塞进 core。相关基础组件方向目前只保留为后置草案，见 [基础组件与运行时适配边界](runtime-primitives.md)。
+> **说明**：如果后续补齐这些 Lua API，也应优先建立在基础组件与插件接口之上，而不是直接把上层策略塞进 core。相关基础组件方向目前只保留为后置草案，见 [基础组件与运行时适配边界](runtime-primitives.md)。
 
-具体方法签名参考各插件的 `lua/` 封装文件、`plugins/<package>/lua_bindings.cpp` 或对应插件文档中的“规划中”章节。
+具体方法签名参考各插件的 `lua/` 封装文件、`plugins/<package>/lua_bindings.cpp` 或对应插件文档中的”规划中”章节。
+
+---
 
 ## Client RPC API
 
@@ -684,12 +815,14 @@ client:player_id() -- 可信身份；预登录 RPC 可为 nil
 client:ref()       -- 返回可序列化 ClientRef
 ```
 
-规则：
+**规则**：
 
-- `player_id` 来自 Gateway 认证绑定，不信任客户端 body 的同名字段。
-- `ClientRef` 封装 Gateway 地址、session id、epoch、可信 player id 和 protocol profile identity，可作为普通 service 消息参数传递。
-- `ClientContext` / `ClientRef` 不暴露 `route_id`、route name、socket、codec、frame、CAF handle 或 `SessionHandle`。
-- `ClientRef` 不是 `ServiceHandle`，不能作为 `shield.send/call` 的 target。
+| 规则 | 说明 |
+| --- | --- |
+| player_id 来源 | 来自 Gateway 认证绑定，不信任客户端 body 的同名字段 |
+| ClientRef 封装 | 封装 Gateway 地址、session id、epoch、可信 player id 和 protocol profile identity，可作为普通 service 消息参数传递 |
+| 不暴露内容 | `ClientContext` / `ClientRef` 不暴露 `route_id`、route name、socket、codec、frame、CAF handle 或 `SessionHandle` |
+| 非 ServiceHandle | `ClientRef` 不是 `ServiceHandle`，不能作为 `shield.send/call` 的 target |
 
 ### 出站 response 与 push
 
@@ -707,13 +840,15 @@ room_rpc.member_joined(client_ref, {
 
 helper 已绑定 server-to-client `route_id` 与 response schema。业务只传 `ClientContext` 或 `ClientRef` 和该 RPC 的业务参数。
 
-规则：
+**规则**：
 
-- 不提供接受 route 字符串、裸 `route_id` 或通用 envelope table 的发送 API。
-- route 信息写入 wire header，不写入 body。
-- response 与 push 使用同一 `ClientEgress` 路径，由不同 RPC method 语义区分。
-- Gateway 写回前校验 session id、epoch 和 owner；stale `ClientRef` 返回明确错误。
-- 第一版不提供通用 `client.call`、seq pending map、future 或自动 timeout correlation。
+| 规则 | 说明 |
+| --- | --- |
+| 禁止通用 API | 不提供接受 route 字符串、裸 `route_id` 或通用 envelope table 的发送 API |
+| route 位置 | route 信息写入 wire header，不写入 body |
+| 语义区分 | response 与 push 使用同一 `ClientEgress` 路径，由不同 RPC method 语义区分 |
+| Gateway 校验 | Gateway 写回前校验 session id、epoch 和 owner；stale `ClientRef` 返回明确错误 |
+| Phase 1 限制 | 第一版不提供通用 `client.call`、seq pending map、future 或自动 timeout correlation |
 
 ### 动态服务路由
 
@@ -815,11 +950,15 @@ end
 
 Service VM 启动时必须失败于以下情况：
 
-- descriptor 声明该逻辑服务的 client-to-server RPC，但 `binding_hint` 缺失；
-- binding 指向的 Lua function 不存在；
-- 同一 `route_id` 重复绑定；
-- RPC direction 与 handler 或 helper 用途不匹配；
-- request/response schema 或 codec provider 不可用。
+| 校验项 | 说明 |
+| --- | --- |
+| 缺失 binding | descriptor 声明该逻辑服务的 client-to-server RPC，但 `binding_hint` 缺失 |
+| 函数不存在 | binding 指向的 Lua function 不存在 |
+| 重复绑定 | 同一 `route_id` 重复绑定 |
+| 方向不匹配 | RPC direction 与 handler 或 helper 用途不匹配 |
+| codec 不可用 | request/response schema 或 codec provider 不可用 |
+
+---
 
 ## HTTP API
 
@@ -899,7 +1038,7 @@ local res = shield.http.json("https://api.example.com/pay", {
 })
 ```
 
-返回值额外字段：
+**返回值额外字段**：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -917,6 +1056,8 @@ local res = shield.http.upload("https://api.example.com/upload", {
 }, 60)
 ```
 
+---
+
 #### 文件下载
 
 ```lua
@@ -925,6 +1066,8 @@ if res.ok then
     print("Downloaded: " .. res.status)
 end
 ```
+
+---
 
 #### 表单提交（application/x-www-form-urlencoded）
 
@@ -945,14 +1088,21 @@ local res = shield.http.post_form("https://api.example.com/login", {
 | `error` | string | 错误信息（成功时为空） |
 | `headers` | table | 响应头 |
 
-规则：
+**规则**：
 
-- 当前实现同步执行 libcurl 请求；如果在 handler 内调用，会阻塞当前 service actor（CAF scheduler 线程）。异步 HTTP 属于后续工作。
-- 支持 HTTP/1.1、HTTP/2、HTTPS（libcurl + OpenSSL/Schannel）。
-- 支持重定向、代理、Bearer/Basic auth、自定义 CA、SSL 校验开关、简单重试。连接复用依赖 libcurl easy handle 生命周期，当前未实现显式连接池。
-- 适合支付 API、webhook、REST API、文件传输等场景。
+| 规则 | 说明 |
+| --- | --- |
+| 同步执行 | 当前实现同步执行 libcurl 请求；如果在 handler 内调用，会阻塞当前 service actor（CAF scheduler 线程）。异步 HTTP 属于后续工作 |
+| 协议支持 | 支持 HTTP/1.1、HTTP/2、HTTPS（libcurl + OpenSSL/Schannel） |
+| 功能支持 | 支持重定向、代理、Bearer/Basic auth、自定义 CA、SSL 校验开关、简单重试。连接复用依赖 libcurl easy handle 生命周期，当前未实现显式连接池 |
+| 适用场景 | 适合支付 API、webhook、REST API、文件传输等场景 |
 
-实现快照：基于 libcurl 实现 `HttpClient`。`HttpClient::initialize()` 在 `register_full_shield_api` 时自动调用；`proxy`、`auth_basic`、`verify_ssl`、`ca_cert_path`、`retry` 与 `retry_delay` 会传递到 libcurl。
+<details>
+<summary>实现快照（点击展开）</summary>
+
+基于 libcurl 实现 `HttpClient`。`HttpClient::initialize()` 在 `register_full_shield_api` 时自动调用；`proxy`、`auth_basic`、`verify_ssl`、`ca_cert_path`、`retry` 与 `retry_delay` 会传递到 libcurl。
+
+</details>
 
 ### HTTP 服务端 (shield.httpd)
 
@@ -975,14 +1125,23 @@ shield.httpd.delete("/api/users/:id", function(req) end)
 shield.httpd.patch("/api/users/:id", function(req) end)
 ```
 
-规则：
+**规则**：
 
-- handler 接收 request table，返回 response table。
-- 路由在 bootstrap 阶段注册，运行时不变。
-- 不提供 middleware chain。
-- 适合管理/运维端点，不适合高并发业务流量。
+| 规则 | 说明 |
+| --- | --- |
+| handler 参数 | handler 接收 request table，返回 response table |
+| 路由注册时机 | 路由在 bootstrap 阶段注册，运行时不变 |
+| 无 middleware | 不提供 middleware chain |
+| 适用场景 | 适合管理/运维端点，不适合高并发业务流量 |
 
-实现快照：基于 Boost.Beast 的 C++ `HttpServer` 已存在，支持基础路由匹配和 JSON 响应。Lua `shield.httpd.*` 目前只接受注册调用并返回成功，尚未保存 handler 或接入 bootstrap；不要把它视为可用入站 HTTP 服务。
+<details>
+<summary>实现快照（点击展开）</summary>
+
+基于 Boost.Beast 的 C++ `HttpServer` 已存在，支持基础路由匹配和 JSON 响应。Lua `shield.httpd.*` 目前只接受注册调用并返回成功，尚未保存 handler 或接入 bootstrap；不要把它视为可用入站 HTTP 服务。
+
+</details>
+
+---
 
 ## Error Object
 
@@ -994,30 +1153,39 @@ if not ok then
 end
 ```
 
-字段：
+**字段**：
 
-| 字段 | 说明 |
-| --- | --- |
-| `code` | 稳定错误码字符串 |
-| `message` | 面向日志的错误说明 |
-| `retryable` | 是否适合业务重试（已实现：timeout=true，其他=false） |
-| `detail` | 可选调试信息（Phase 2，当前未填充） |
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `code` | string | 稳定错误码字符串 |
+| `message` | string | 面向日志的错误说明 |
+| `retryable` | boolean | 是否适合业务重试（已实现：timeout=true，其他=false） |
+| `detail` | any | 可选调试信息（Phase 2，当前未填充） |
 
 错误码清单见 [错误码参考](./runtime-errors.md)。
 
-实现快照：Error Object 返回 `code`、`message`、`retryable` 三个字段。`detail` 属于 Phase 2 扩展，当前未填充。timeout 错误 `retryable=true`，其他错误 `retryable=false`。
+<details>
+<summary>实现快照（点击展开）</summary>
+
+Error Object 返回 `code`、`message`、`retryable` 三个字段。`detail` 属于 Phase 2 扩展，当前未填充。timeout 错误 `retryable=true`，其他错误 `retryable=false`。
+
+</details>
+
+---
 
 ## 删除的旧 API
 
 以下旧 API 不进入重构目标，不保留兼容层：
 
-- `shield.service("name")`
-- 旧 Lua 插件执行模型和旧 `shield.plugin.list/by_type/loaded/capabilities`
-- DI/IoC 注入 API
-- annotation / condition API
-- gateway middleware chain API
-- `shield.db.*`、`shield.redis.*` 全局数据 API（包括 `shield.db.query(...)`、`shield.redis.get(...)`）
-- `shield.db:query(...)`、`shield.redis:get(...)` 等旧冒号形式
-- handler 形如 `on_message(src, msg_type, data)` 的统一入口
+| 旧 API | 说明 |
+| --- | --- |
+| `shield.service("name")` | 旧服务构造函数 |
+| 旧 Lua 插件执行模型 | 旧 `shield.plugin.list/by_type/loaded/capabilities` |
+| DI/IoC 注入 API | 依赖注入 API |
+| annotation / condition API | 注解/条件 API |
+| gateway middleware chain API | 网关中间件链 API |
+| `shield.db.*`、`shield.redis.*` | 全局数据 API（包括 `shield.db.query(...)`、`shield.redis.get(...)`） |
+| `shield.db:query(...)`、`shield.redis:get(...)` | 旧冒号形式 |
+| `on_message(src, msg_type, data)` | handler 形如 `on_message(src, msg_type, data)` 的统一入口 |
 
-说明：插件系统 v1 会重新引入只读 introspection API：`shield.plugin.packages()`、`shield.plugin.instances()`、`shield.plugin.instance(id)`、`shield.plugin.binding(name)`。这些 API 只查询插件 catalog/runtime state，不提供 Lua 插件执行能力，也不暴露 native vtable。
+> **说明**：插件系统 v1 会重新引入只读 introspection API：`shield.plugin.packages()`、`shield.plugin.instances()`、`shield.plugin.instance(id)`、`shield.plugin.binding(name)`。这些 API 只查询插件 catalog/runtime state，不提供 Lua 插件执行能力，也不暴露 native vtable。
