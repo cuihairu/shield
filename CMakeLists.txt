@@ -247,13 +247,6 @@ find_package(
              dll)
 find_package(CURL REQUIRED)
 
-# Try to find msgpack-cxx
-find_package(msgpack-cxx CONFIG QUIET)
-if(msgpack-cxx_FOUND)
-  message(STATUS "Found msgpack-cxx, enabling MessagePack support")
-  add_definitions(-DSHIELD_ENABLE_MESSAGEPACK)
-endif()
-
 # Set output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -751,11 +744,6 @@ endif()
 # =============================================================================
 # OPTIONAL SERIALIZATION SUPPORT
 # =============================================================================
-
-if(msgpack-cxx_FOUND)
-    target_link_libraries(shield_transport PUBLIC msgpack-cxx)
-    message(STATUS "MessagePack support enabled for shield_transport")
-endif()
 
 # =============================================================================
 # DATABASE BACKEND PLUGINS
