@@ -71,7 +71,7 @@ struct encode_context {
     std::string error;
 };
 
-static int encode_callback(struct sproto_arg* args) {
+static int encode_callback(const struct sproto_arg* args) {
     auto* ctx = static_cast<encode_context*>(args->ud);
     const auto& data = *ctx->data;
 
@@ -121,8 +121,9 @@ static int encode_callback(struct sproto_arg* args) {
             }
             // Nested struct - encode recursively
             auto* sub_ctx = new encode_context{&value, ""};
-            int result = sproto_encode(args->subtype, args->value, args->length,
-                                       encode_callback, sub_ctx);
+            int result =
+                sproto_encode(args->subtype, args->value, args->length,
+                              (sproto_callback)encode_callback, sub_ctx);
             if (result < 0) {
                 ctx->error = sub_ctx->error;
             }
@@ -141,7 +142,7 @@ struct decode_context {
     std::string error;
 };
 
-static int decode_callback(struct sproto_arg* args) {
+static int decode_callback(const struct sproto_arg* args) {
     auto* ctx = static_cast<decode_context*>(args->ud);
     auto& data = *ctx->data;
 
@@ -169,8 +170,9 @@ static int decode_callback(struct sproto_arg* args) {
         case SPROTO_TSTRUCT: {
             nlohmann::json sub_data = nlohmann::json::object();
             auto* sub_ctx = new decode_context{&sub_data, ""};
-            int result = sproto_decode(args->subtype, args->value, args->length,
-                                       decode_callback, sub_ctx);
+            int result =
+                sproto_decode(args->subtype, args->value, args->length,
+                              (sproto_callback)decode_callback, sub_ctx);
             if (result < 0) {
                 ctx->error = sub_ctx->error;
             } else {
@@ -339,8 +341,8 @@ int sproto_decode_func(const shield_protocol_codec_v1* self,
     nlohmann::json data = nlohmann::json::object();
     decode_context ctx{&data, ""};
 
-    int result =
-        sproto_decode(type, payload, payload_size, decode_callback, &ctx);
+    int result = sproto_decode(type, payload, payload_size,
+                               (sproto_callback)decode_callback, &ctx);
     if (result < 0) {
         fill_error(
             err, "protocol.decode_failed",
@@ -394,7 +396,8 @@ int sproto_encode_func(const shield_protocol_codec_v1* self,
     encode_context ctx{&data, ""};
 
     // First pass to get size
-    int encode_size = sproto_encode(type, nullptr, 0, encode_callback, &ctx);
+    int encode_size =
+        sproto_encode(type, nullptr, 0, (sproto_callback)encode_callback, &ctx);
     if (encode_size < 0) {
         fill_error(
             err, "protocol.encode_failed",
@@ -403,8 +406,8 @@ int sproto_encode_func(const shield_protocol_codec_v1* self,
     }
 
     std::vector<char> buffer(encode_size);
-    int result =
-        sproto_encode(type, buffer.data(), encode_size, encode_callback, &ctx);
+    int result = sproto_encode(type, buffer.data(), encode_size,
+                               (sproto_callback)encode_callback, &ctx);
     if (result < 0) {
         fill_error(
             err, "protocol.encode_failed",
