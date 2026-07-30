@@ -111,7 +111,8 @@ static int encode_callback(struct sproto_arg* args) {
                 return -1;
             }
             std::memcpy(args->value, str.data(), str.size());
-            return static_cast<int>(str.size());
+            args->length = static_cast<int>(str.size());
+            return 0;
         }
         case SPROTO_TSTRUCT: {
             if (!value.is_object()) {

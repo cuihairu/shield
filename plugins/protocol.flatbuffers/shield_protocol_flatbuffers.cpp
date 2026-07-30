@@ -242,15 +242,21 @@ int flatbuffers_decode(const shield_protocol_codec_v1* self,
         }
     }
 
-    // Convert to JSON using FlatBuffers reflection
+    // Convert to JSON using FlatBuffers parser
     std::string json;
-    if (payload) {
-        // Use FlatBuffers JSON generator
-        flatbuffers::Parser json_parser;
-        std::string schema_filename = "schema.fbs";
+    if (payload && args->payload_size > 0) {
+        // Create parser and deserialize schema
+        flatbuffers::Parser parser;
+        if (!parser.Deserialize(
+                reinterpret_cast<const uint8_t*>(inst->schema_data.data()),
+                inst->schema_data.size())) {
+            fill_error(err, "protocol.decode_failed",
+                       "failed to deserialize FlatBuffers schema");
+            return -1;
+        }
 
-        // Generate JSON from binary using reflection
-        if (!GenerateText(inst->schema, obj, payload, &json)) {
+        // Generate JSON from binary
+        if (!GenerateText(parser, payload, &json)) {
             fill_error(err, "protocol.decode_failed",
                        "failed to convert FlatBuffers to JSON");
             return -1;
@@ -293,16 +299,27 @@ int flatbuffers_encode(const shield_protocol_codec_v1* self,
                     args->message_json + args->message_json_size);
     }
 
-    // Parse JSON and create FlatBuffer
+    // Create parser and deserialize schema
     flatbuffers::Parser parser;
-
-    // Generate binary from JSON using reflection
-    std::vector<uint8_t> buffer;
-    if (!ParseAndGenerateText(parser, json.c_str(), obj, &buffer)) {
+    if (!parser.Deserialize(
+            reinterpret_cast<const uint8_t*>(inst->schema_data.data()),
+            inst->schema_data.size())) {
         fill_error(err, "protocol.encode_failed",
-                   "failed to convert JSON to FlatBuffers");
+                   "failed to deserialize FlatBuffers schema");
         return -1;
     }
+
+    // Parse JSON and create FlatBuffer
+    if (!parser.Parse(json.c_str())) {
+        fill_error(err, "protocol.encode_failed",
+                   "failed to parse JSON for FlatBuffers");
+        return -1;
+    }
+
+    auto buf_ptr = parser.builder_.GetBufferPointer();
+    auto buf_size = parser.builder_.GetSize();
+
+    std::vector<uint8_t> buffer(buf_ptr, buf_ptr + buf_size);
 
     out->payload = dup_bytes(buffer);
     out->payload_size = buffer.size();
