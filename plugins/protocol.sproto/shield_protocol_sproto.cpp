@@ -1,6 +1,8 @@
 // [SHIELD_PLUGIN] protocol.sproto — shield.protocol.codec.v1 provider.
 
+extern "C" {
 #include <sproto.h>
+}
 
 #include <cstdint>
 #include <cstdlib>
