@@ -227,13 +227,13 @@ if(SHIELD_BUILD_PLUGIN_MSGPACK)
 endif()
 
 if(SHIELD_BUILD_PLUGIN_SPROTO)
-    find_package(sproto CONFIG REQUIRED)
+    find_package(unofficial-sproto CONFIG REQUIRED)
     add_executable(test_protocol_sproto_plugin
         protocol/test_protocol_sproto_plugin.cpp
         $<TARGET_OBJECTS:shield_protocol_sproto_obj>)
     target_link_libraries(test_protocol_sproto_plugin
         PRIVATE
-            sproto::sproto
+            unofficial::sproto::sproto
             nlohmann_json::nlohmann_json
             Boost::unit_test_framework
             Boost::headers)

@@ -1,6 +1,6 @@
 # protocol.sproto — Sproto provider for shield.protocol.codec.v1.
 
-find_package(sproto CONFIG REQUIRED)
+find_package(unofficial-sproto CONFIG REQUIRED)
 
 add_library(shield_protocol_sproto_obj OBJECT shield_protocol_sproto.cpp)
 set_target_properties(shield_protocol_sproto_obj PROPERTIES
@@ -14,7 +14,7 @@ target_include_directories(shield_protocol_sproto_obj
 
 target_link_libraries(shield_protocol_sproto_obj
     PRIVATE
-        sproto::sproto
+        unofficial::sproto::sproto
         nlohmann_json::nlohmann_json
 )
 
@@ -24,7 +24,7 @@ add_library(shield_protocol_sproto MODULE
 
 target_link_libraries(shield_protocol_sproto
     PRIVATE
-        sproto::sproto
+        unofficial::sproto::sproto
         nlohmann_json::nlohmann_json
 )
 
