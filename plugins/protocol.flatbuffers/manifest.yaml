@@ -23,15 +23,13 @@ lua:
   search_paths: []
 config_schema:
   type: object
-  required:
-    - schema
   properties:
     schema:
       type: string
-      description: Path to compiled FlatBuffers binary schema file (.bfbs)
+      description: Path to FlatBuffers schema file (.fbs)
     schema_dir:
       type: string
-      description: Directory containing .bfbs schema files
+      description: Directory containing .fbs schema files
     messages:
       type: array
       items:
