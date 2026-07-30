@@ -235,7 +235,7 @@ int flatbuffers_decode(const shield_protocol_codec_v1* self,
     // Verify buffer
     if (payload) {
         flatbuffers::Verifier verifier(payload, args->payload_size);
-        if (!verifier.VerifyBuffer<flatbuffers::uoffset_t>()) {
+        if (!verifier.VerifyBuffer()) {
             fill_error(err, "protocol.decode_failed",
                        "flatbuffers verification failed");
             return -1;
