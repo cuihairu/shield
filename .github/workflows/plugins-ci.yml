@@ -103,8 +103,14 @@ jobs:
             -DSHIELD_BUILD_PLUGIN_MSGPACK=ON
             -DSHIELD_BUILD_PLUGIN_SPROTO=ON
             -DSHIELD_BUILD_PLUGIN_FLATBUFFERS=ON
-            -G Ninja
           )
+
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            CMAKE_ARGS+=(-G "Visual Studio 18 2026" -A x64)
+          else
+            CMAKE_ARGS+=(-G Ninja)
+          fi
+
           cmake -B build -S . "${CMAKE_ARGS[@]}"
 
       # Build
