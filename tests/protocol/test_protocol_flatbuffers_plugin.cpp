@@ -55,19 +55,14 @@ std::string write_temp_schema(const std::string& schema) {
 BOOST_AUTO_TEST_SUITE(protocol_flatbuffers_plugin)
 
 BOOST_AUTO_TEST_CASE(load_plugin_abi) {
-    // This test verifies the plugin ABI structure is correct
-    // Actual loading requires the plugin to be built and installed
-
     shield_plugin_abi_v1 abi{};
     abi.abi_version = SHIELD_PLUGIN_ABI_VERSION;
     abi.struct_size = sizeof(shield_plugin_abi_v1);
-    abi.plugin_name = "protocol.flatbuffers";
-    abi.plugin_version = "1.0.0";
-    abi.create = nullptr;  // Would be set by real plugin
+    abi.package_id = "protocol.flatbuffers";
+    abi.create = nullptr;
 
     BOOST_CHECK_EQUAL(abi.abi_version, SHIELD_PLUGIN_ABI_VERSION);
-    BOOST_CHECK_EQUAL(std::strcmp(abi.plugin_name, "protocol.flatbuffers"), 0);
-    BOOST_CHECK_EQUAL(std::strcmp(abi.plugin_version, "1.0.0"), 0);
+    BOOST_CHECK_EQUAL(std::strcmp(abi.package_id, "protocol.flatbuffers"), 0);
 }
 
 BOOST_AUTO_TEST_CASE(flatbuffers_schema_parsing) {
