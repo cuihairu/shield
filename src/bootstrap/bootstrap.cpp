@@ -27,6 +27,7 @@
 #include "shield/caf_initializer.hpp"
 #include "shield/console/command_dispatcher.hpp"
 #include "shield/console/lua_commands.hpp"
+#include "shield/console/ops_http_handler.hpp"
 #include "shield/console/root_commands.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -162,6 +163,8 @@ struct GlobalState {
     std::vector<std::unique_ptr<shield::net::TcpListener>> tcp_listeners;
     std::unique_ptr<shield::net::ConsoleServer> console_server;
     std::unique_ptr<shield::console::CommandDispatcher> console_dispatcher;
+    std::unique_ptr<shield::net::HttpServer> http_server;
+    std::unique_ptr<shield::console::OpsHttpHandler> ops_http_handler;
 #ifdef SHIELD_ENABLE_CLUSTER
     std::unique_ptr<shield::cluster::ClusterManager> cluster_manager;
 #endif
@@ -580,6 +583,34 @@ bool initialize(const RuntimeConfig& config) {
         }
     }
 
+    // Start HTTP ops server if enabled
+    if (shield::config::get("http.enabled", "false") == "true" &&
+        g_state->lua_services && g_state->lua_runtime) {
+        auto host = shield::config::get("http.host", "0.0.0.0");
+        auto port = static_cast<uint16_t>(
+            std::stoi(shield::config::get("http.port", "8080")));
+        try {
+            shield::net::HttpServerConfig http_config;
+            http_config.host = host;
+            http_config.port = port;
+            g_state->http_server =
+                std::make_unique<shield::net::HttpServer>(http_config);
+
+            g_state->ops_http_handler =
+                std::make_unique<shield::console::OpsHttpHandler>(
+                    *g_state->lua_services, *g_state->lua_runtime);
+            g_state->ops_http_handler->register_routes(*g_state->http_server);
+
+            g_state->http_server->start();
+            SHIELD_LOG_INFO(log, "HTTP ops server listening on " + host + ":" +
+                                     std::to_string(port));
+        } catch (const std::exception& e) {
+            SHIELD_LOG_ERROR(
+                log,
+                std::string("Failed to start HTTP ops server: ") + e.what());
+        }
+    }
+
     g_state->initialized = true;
     SHIELD_LOG_INFO(log, "Shield runtime initialized");
     return true;
@@ -602,6 +633,13 @@ void shutdown() {
         g_state->console_server->stop();
         g_state->console_server.reset();
         g_state->console_dispatcher.reset();
+    }
+
+    // Stop HTTP ops server
+    if (g_state->http_server) {
+        g_state->http_server->stop();
+        g_state->http_server.reset();
+        g_state->ops_http_handler.reset();
     }
 
     // Stop network ingress first so no new Lua work is queued while we tear

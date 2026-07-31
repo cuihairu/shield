@@ -527,6 +527,7 @@ add_library(shield_bootstrap STATIC
     src/console/command_dispatcher.cpp
     src/console/root_commands.cpp
     src/console/lua_commands.cpp
+    src/console/ops_http_handler.cpp
 )
 
 target_include_directories(shield_bootstrap

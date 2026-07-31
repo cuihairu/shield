@@ -37,15 +37,37 @@ shield 提供了一个交互式诊断控制台，用于线上服务的实时观�
 在 `config.yaml` 中启用：
 
 ```yaml
+# Unix socket 控制台
 console:
   enabled: true
   socket_path: /tmp/shield-console.sock   # Unix socket 路径
+
+# HTTP 端点（可选）
+http:
+  enabled: true
+  host: "0.0.0.0"        # 监听地址
+  port: 8080             # 监听端口
 ```
 
 启动后，使用 `shield-console` 连接：
 
 ```bash
 shield-console --sock /tmp/shield-console.sock
+```
+
+或使用 HTTP 端点：
+
+```bash
+# 获取状态
+curl http://localhost:8080/ops/status
+
+# 列出服务
+curl http://localhost:8080/ops/services
+
+# 执行 Lua 代码
+curl -X POST http://localhost:8080/ops/eval \
+  -H "Content-Type: application/json" \
+  -d '{"code": "return shield.self()"}'
 ```
 
 ## 命令参考
@@ -111,6 +133,60 @@ lua:gameserver1> detach
 | `continue` | 多行输入，等待更多行 | `{"type":"continue"}` |
 | `output` | Lua print() 输出 | `{"type":"output","text":"hello"}` |
 
+## HTTP API 参考
+
+### 端点列表
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/ops/status` | 服务/插件/集群状态 |
+| GET | `/ops/services` | 列出所有 Lua 服务 |
+| GET | `/ops/plugins` | 列出所有插件 |
+| GET | `/ops/config?key=<key>` | 查询配置 |
+| POST | `/ops/eval` | 执行 Lua 代码 |
+
+### 响应格式
+
+所有端点返回 JSON，结构与控制台协议一致：
+
+```json
+{
+  "type": "result",
+  "data": { ... }
+}
+```
+
+或错误：
+
+```json
+{
+  "type": "error",
+  "message": "error description"
+}
+```
+
+### 示例
+
+```bash
+# 获取状态
+curl http://localhost:8080/ops/status
+# {"type":"result","data":{"services":["gateway","player"],"plugins":[...]}}
+
+# 列出服务
+curl http://localhost:8080/ops/services
+# {"type":"result","data":["gateway","player"]}
+
+# 查询配置
+curl http://localhost:8080/ops/config?key=database.host
+# {"type":"result","data":"localhost"}
+
+# 执行 Lua 代码
+curl -X POST http://localhost:8080/ops/eval \
+  -H "Content-Type: application/json" \
+  -d '{"code": "return 1 + 2"}'
+# {"type":"result","data":3}
+```
+
 ## 线程安全模型
 
 - **线程安全子系统**（PluginHost、Config、ClusterManager、Logger）：console 线程直接调用
@@ -122,11 +198,13 @@ lua:gameserver1> detach
 ### 传输层
 - `include/shield/net/console_session.hpp` / `src/net/console_session.cpp`
 - `include/shield/net/console_server.hpp` / `src/net/console_server.cpp`
+- `include/shield/net/http_server.hpp` / `src/net/http_server.cpp`
 
 ### 命令层
 - `include/shield/console/command_dispatcher.hpp` / `src/console/command_dispatcher.cpp`
 - `include/shield/console/root_commands.hpp` / `src/console/root_commands.cpp`
 - `include/shield/console/lua_commands.hpp` / `src/console/lua_commands.cpp`
+- `include/shield/console/ops_http_handler.hpp` / `src/console/ops_http_handler.cpp`
 
 ### CLI 客户端
 - `tools/shield-console/main.cpp`
@@ -137,5 +215,5 @@ lua:gameserver1> detach
 ### 依赖修改
 - `include/shield/lua/lua_service.hpp` — 新增 `exec_lua()` 方法
 - `include/shield/lua/lua_runtime.hpp` — 新增 `exec_lua()` 方法
-- `src/bootstrap/bootstrap.cpp` — GlobalState 添加 console_server，生命周期管理
+- `src/bootstrap/bootstrap.cpp` — GlobalState 添加 console_server/http_server，生命周期管理
 - `vcpkg.json` — 添加 `replxx` 依赖
