@@ -142,8 +142,8 @@ shield::net::HttpResponse OpsHttpHandler::handle_config(
         // Return all config as JSON
         // Note: This is a simplified version - actual implementation would
         // need to serialize the full config
-        return make_json_response(200, {{"type", "result"},
-                                        {"data", "Use ?key=<key> to query"}}));
+        return make_json_response(
+            200, {{"type", "result"}, {"data", "Use ?key=<key> to query"}});
     }
 
     auto value = shield::config::get(target, "");
@@ -177,7 +177,8 @@ shield::net::HttpResponse OpsHttpHandler::handle_eval(
     std::string error;
     bool ok = lua_rt_.exec_lua(vm, code, &result, &error);
 
-    lua_rt_.destroy_vm(vm);
+    // VM will be automatically destroyed when shared_ptr goes out of scope
+    vm.reset();
 
     if (ok) {
         return make_json_response(200, {{"type", "result"}, {"data", result}});
