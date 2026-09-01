@@ -313,7 +313,7 @@ BOOST_AUTO_TEST_CASE(MonotonicNotAdjustable) {
 }
 
 // LCLK-11: Business-logic mock test — cache expiry driven by os.time().
-// Mirrors the pattern in scripts/shield_database_integration.lua:298:
+// Mirrors the classic game-server cache-expiry pattern:
 //   if cache_entry.expires > os.time() then ... end
 BOOST_AUTO_TEST_CASE(BusinessLogicRespectsMockTime) {
     caf::actor_system_config cfg;

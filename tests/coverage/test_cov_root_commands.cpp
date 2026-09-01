@@ -1,0 +1,458 @@
+#define BOOST_TEST_MODULE CovRootCommands
+#include <algorithm>
+#include <boost/asio.hpp>
+#include <boost/test/unit_test.hpp>
+#include <caf/actor_system.hpp>
+#include <caf/actor_system_config.hpp>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <future>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "shield/caf_initializer.hpp"
+#include "shield/config/config.hpp"
+#include "shield/console/command_dispatcher.hpp"
+#include "shield/console/root_commands.hpp"
+#include "shield/log/logger.hpp"
+#include "shield/lua/lua_runtime.hpp"
+#include "shield/lua/lua_service.hpp"
+#include "shield/net/console_session.hpp"
+#include "shield/plugin/plugin_host.hpp"
+
+namespace {
+
+namespace local = boost::asio::local;
+namespace fs = std::filesystem;
+
+const char* kEchoScript = "local M = {}\nreturn M\n";
+
+struct CafInitFixture {
+    CafInitFixture() { initialize_caf_types(); }
+};
+BOOST_GLOBAL_FIXTURE(CafInitFixture);
+
+// Console session backed by a connected socket pair, so handlers can call
+// send_line() and the test reads the JSON response from the peer socket.
+class ConsoleHarness {
+public:
+    boost::asio::io_context io;
+    local::stream_protocol::socket client{io};
+    std::shared_ptr<shield::net::ConsoleSession> session;
+    std::thread io_thread;
+
+    ConsoleHarness() {
+        local::stream_protocol::socket server_side(io);
+        boost::asio::local::connect_pair(server_side, client);
+        session = std::make_shared<shield::net::ConsoleSession>(
+            1, std::move(server_side), shield::net::ConsoleSessionCallbacks{});
+        session->start();
+        io_thread = std::thread([this]() { io.run(); });
+    }
+
+    ~ConsoleHarness() {
+        boost::system::error_code ec;
+        client.close(ec);
+        io.stop();
+        if (io_thread.joinable()) io_thread.join();
+    }
+
+    std::string read_line(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) {
+        auto buf = std::make_shared<boost::asio::streambuf>();
+        auto prom = std::make_shared<std::promise<std::string>>();
+        auto fut = prom->get_future();
+        boost::asio::post(io, [this, buf, prom]() {
+            boost::asio::async_read_until(
+                client, *buf, '\n',
+                [buf, prom](boost::system::error_code ec, std::size_t) {
+                    if (ec) {
+                        prom->set_value(std::string{});
+                        return;
+                    }
+                    std::istream is(buf.get());
+                    std::string line;
+                    std::getline(is, line);
+                    prom->set_value(line);
+                });
+        });
+        if (fut.wait_for(timeout) != std::future_status::ready) {
+            boost::system::error_code ec;
+            boost::asio::post(io, [this]() {
+                boost::system::error_code cancel_ec;
+                client.cancel(cancel_ec);
+            });
+            (void)ec;
+            return {};
+        }
+        return fut.get();
+    }
+};
+
+// Lua runtime + service manager + one spawned service named "svc".
+struct LuaFixture {
+    caf::actor_system_config caf_cfg;
+    std::unique_ptr<caf::actor_system> system;
+    std::unique_ptr<shield::lua::LuaRuntime> runtime;
+    std::unique_ptr<shield::lua::LuaServiceManager> manager;
+    fs::path script_path;
+
+    LuaFixture() {
+        script_path = fs::temp_directory_path() / "shield_cov_root_echo.lua";
+        std::ofstream(script_path) << kEchoScript;
+
+        system = std::make_unique<caf::actor_system>(caf_cfg);
+        runtime = std::make_unique<shield::lua::LuaRuntime>();
+        manager =
+            std::make_unique<shield::lua::LuaServiceManager>(*runtime, *system);
+
+        nlohmann::json opts = {{"name", "svc"},
+                               {"args", nlohmann::json::object()},
+                               {"config", nlohmann::json::object()}};
+        auto result = manager->spawn(script_path.string(), opts.dump());
+        BOOST_REQUIRE_MESSAGE(result.success, result.error_message);
+    }
+};
+
+std::string write_file(const fs::path& path, const std::string& content) {
+    std::ofstream(path) << content;
+    return path.string();
+}
+
+}  // namespace
+
+BOOST_FIXTURE_TEST_SUITE(RootCommandsTests, LuaFixture)
+
+BOOST_AUTO_TEST_CASE(HelpListsRegisteredCommands) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "help");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "result");
+    std::string joined = resp["lines"].dump();
+    BOOST_CHECK(joined.find("root.status") != std::string::npos);
+    BOOST_CHECK(joined.find("attach") != std::string::npos);
+    BOOST_CHECK(joined.find("detach") != std::string::npos);
+    BOOST_CHECK(joined.find("eval") != std::string::npos);
+    BOOST_CHECK(joined.find("exit / quit") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(StatusListsServices) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    // The services block dispatches through a ""-id forked task, which
+    // borrows any live service actor ("svc" here), so the list resolves.
+    auto start = std::chrono::steady_clock::now();
+    dispatcher.dispatch(harness.session, "root.status");
+    std::string line = harness.read_line(std::chrono::milliseconds(8000));
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start);
+    BOOST_REQUIRE(!line.empty());
+    BOOST_CHECK(elapsed < std::chrono::seconds(2));
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["services"].is_array());
+    BOOST_CHECK(resp["data"]["plugins"].is_array());
+}
+
+BOOST_AUTO_TEST_CASE(ServicesCommandListsNames) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "root.services");
+    std::string line = harness.read_line(std::chrono::milliseconds(8000));
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"].is_array());
+    bool found = false;
+    for (const auto& name : resp["data"]) {
+        if (name == "svc") {
+            found = true;
+        }
+    }
+    BOOST_CHECK(found);
+}
+
+BOOST_AUTO_TEST_CASE(ServiceCommandVariants) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    // No argument -> usage error.
+    dispatcher.dispatch(harness.session, "root.service");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("Usage") !=
+                std::string::npos);
+
+    // Existing service name resolves through the manager registry.
+    dispatcher.dispatch(harness.session, "root.service svc");
+    line = harness.read_line(std::chrono::milliseconds(8000));
+    BOOST_REQUIRE(!line.empty());
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["name"] == "svc");
+    BOOST_CHECK(resp["data"]["exists"] == true);
+
+    // Unknown service -> result reporting exists == false.
+    dispatcher.dispatch(harness.session, "root.service missing_svc");
+    line = harness.read_line(std::chrono::milliseconds(8000));
+    BOOST_REQUIRE(!line.empty());
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["exists"] == false);
+}
+
+BOOST_AUTO_TEST_CASE(PluginsAndPluginAcrossLifecycleStates) {
+    fs::path root_dir = fs::temp_directory_path() / "shield_cov_root_plugins";
+    fs::remove_all(root_dir);
+    fs::create_directories(root_dir / "good.pkg" / "bin");
+    fs::create_directories(root_dir / "broken.pkg" / "bin");
+
+    const char* good_manifest =
+        "schema_version: 1\n"
+        "id: minimal.test\n"
+        "name: Good\n"
+        "version: 1.0.0\n"
+        "kind: test\n"
+        "entry: shield_plugin_get_v1\n"
+        "library:\n"
+        "  linux: bin/libshield_minimal_test_plugin.so\n"
+        "  macos: bin/libshield_minimal_test_plugin.dylib\n"
+        "  windows: bin/libshield_minimal_test_plugin.dll\n"
+        "provides:\n"
+        "  - interface: minimal.test.iface\n"
+        "requires: []\n"
+        "config_schema:\n"
+        "  type: object\n";
+    write_file(root_dir / "good.pkg" / "manifest.yaml", good_manifest);
+    fs::copy_file(
+        "test_plugins/minimal.test/bin/libshield_minimal_test_plugin.so",
+        root_dir / "good.pkg" / "bin" / "libshield_minimal_test_plugin.so",
+        fs::copy_options::overwrite_existing);
+
+    const char* broken_manifest =
+        "schema_version: 1\n"
+        "id: broken.pkg\n"
+        "name: Broken\n"
+        "version: 1.0.0\n"
+        "kind: test\n"
+        "entry: shield_plugin_get_v1\n"
+        "library:\n"
+        "  linux: bin/missing_library.so\n"
+        "  macos: bin/missing_library.dylib\n"
+        "  windows: bin/missing_library.dll\n"
+        "provides:\n"
+        "  - interface: broken.iface\n"
+        "requires: []\n"
+        "config_schema:\n"
+        "  type: object\n";
+    write_file(root_dir / "broken.pkg" / "manifest.yaml", broken_manifest);
+
+    auto& host = shield::plugin::global_host();
+    std::string err;
+    host.scan(root_dir.string());
+    BOOST_REQUIRE_MESSAGE(host.catalog(err), err);
+
+    shield::plugin::PluginConfig pc;
+    pc.directory = root_dir.string();
+    shield::plugin::InstanceDecl good;
+    good.id = "inst_good";
+    good.package = "minimal.test";
+    good.required = true;
+    shield::plugin::InstanceDecl opt;
+    opt.id = "inst_opt";
+    opt.package = "absent.pkg";
+    opt.required = false;
+    shield::plugin::InstanceDecl broken;
+    broken.id = "inst_broken";
+    broken.package = "broken.pkg";
+    broken.required = true;
+    pc.instances.push_back(good);
+    pc.instances.push_back(opt);
+    pc.instances.push_back(broken);
+    BOOST_REQUIRE_MESSAGE(host.plan_and_resolve(pc, err), err);
+
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    auto query_state = [&](const std::string& cmd) -> std::string {
+        dispatcher.dispatch(harness.session, cmd);
+        std::string line = harness.read_line();
+        BOOST_REQUIRE(!line.empty());
+        return nlohmann::json::parse(line)["data"]["state"].get<std::string>();
+    };
+
+    // Usage error and unknown instance error.
+    dispatcher.dispatch(harness.session, "root.plugin");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("Usage") !=
+                std::string::npos);
+
+    dispatcher.dispatch(harness.session, "root.plugin no_such_instance");
+    line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("not found") !=
+                std::string::npos);
+
+    // planned state.
+    BOOST_CHECK_EQUAL(query_state("root.plugin inst_good"), "planned");
+
+    // load: good succeeds, broken (required, missing library) fails.
+    BOOST_CHECK(!host.load_all(err));
+    BOOST_CHECK_EQUAL(query_state("root.plugin inst_good"), "loaded");
+    BOOST_CHECK_EQUAL(query_state("root.plugin inst_broken"), "failed");
+    // unavailable instance has no package pointer.
+    dispatcher.dispatch(harness.session, "root.plugin inst_opt");
+    line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["data"]["state"] == "unavailable");
+    BOOST_CHECK(resp["data"]["package"] == "");
+
+    // started state.
+    BOOST_REQUIRE_MESSAGE(host.create_all(err), err);
+    BOOST_REQUIRE_MESSAGE(host.start_all(err), err);
+    BOOST_CHECK_EQUAL(query_state("root.plugin inst_good"), "started");
+
+    // root.plugins lists packages and instances.
+    dispatcher.dispatch(harness.session, "root.plugins");
+    line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["packages"].size() == 2);
+    BOOST_CHECK(resp["data"]["instances"].size() == 3);
+
+    // With instances present, root.status serializes each plugin instance.
+    dispatcher.dispatch(harness.session, "root.status");
+    line = harness.read_line(std::chrono::milliseconds(8000));
+    BOOST_REQUIRE(!line.empty());
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["plugins"].size() == 3);
+    BOOST_CHECK(resp["data"]["plugins"][0]["id"].is_string());
+
+    // stopped state after shutdown.
+    host.shutdown();
+    BOOST_CHECK_EQUAL(query_state("root.plugin inst_good"), "stopped");
+
+    fs::remove_all(root_dir);
+}
+
+BOOST_AUTO_TEST_CASE(ConfigCommandVariants) {
+    auto& cfg = shield::config::global_config();
+    cfg.set("cov.str", std::string("hello"));
+    cfg.set("cov.int", static_cast<int64_t>(42));
+    cfg.set("cov.dbl", 2.5);
+    cfg.set("cov.flag", true);
+    cfg.set("cov.arr", std::vector<std::string>{"a", "b"});
+
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    auto dispatch_json = [&](const std::string& cmd) -> nlohmann::json {
+        dispatcher.dispatch(harness.session, cmd);
+        std::string line = harness.read_line();
+        BOOST_REQUIRE(!line.empty());
+        return nlohmann::json::parse(line);
+    };
+
+    // Full dump.
+    auto resp = dispatch_json("root.config");
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"].is_object());
+
+    // Typed values.
+    BOOST_CHECK(dispatch_json("root.config cov.str")["data"] == "hello");
+    BOOST_CHECK(dispatch_json("root.config cov.int")["data"] == 42);
+    BOOST_CHECK(dispatch_json("root.config cov.dbl")["data"] == 2.5);
+    BOOST_CHECK(dispatch_json("root.config cov.flag")["data"] == true);
+    BOOST_CHECK(dispatch_json("root.config cov.arr")["data"] ==
+                nlohmann::json::array({"a", "b"}));
+
+    // Missing key.
+    resp = dispatch_json("root.config cov.missing");
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("not found") !=
+                std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(LogLevelCommandVariants) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    auto dispatch_json = [&](const std::string& cmd) -> nlohmann::json {
+        dispatcher.dispatch(harness.session, cmd);
+        std::string line = harness.read_line();
+        BOOST_REQUIRE(!line.empty());
+        return nlohmann::json::parse(line);
+    };
+
+    // No argument returns the current level.
+    auto resp = dispatch_json("root.log.level");
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"] == "info");
+
+    // Valid levels.
+    for (const char* level : {"debug", "info", "warn", "warning", "error"}) {
+        resp = dispatch_json(std::string("root.log.level ") + level);
+        BOOST_CHECK(resp["type"] == "result");
+    }
+
+    // The level actually changed and the getter reflects it.
+    resp = dispatch_json("root.log.level");
+    BOOST_CHECK(resp["data"] == "error");
+
+    // Invalid level.
+    resp = dispatch_json("root.log.level noisy");
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("Invalid level") !=
+                std::string::npos);
+
+    shield::log::Logger::set_global_level(shield::log::Level::Info);
+}
+
+BOOST_AUTO_TEST_CASE(ClusterCommandNotCompiled) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "root.cluster");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"] == "Cluster not compiled");
+}
+
+BOOST_AUTO_TEST_SUITE_END()

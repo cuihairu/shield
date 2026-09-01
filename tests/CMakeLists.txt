@@ -267,3 +267,6 @@ if(SHIELD_BUILD_PLUGIN_FLATBUFFERS)
         TIMEOUT 10)
     shield_copy_runtime_dlls(test_protocol_flatbuffers_plugin)
 endif()
+
+# Coverage-focused unit tests (one executable per src/ module).
+add_subdirectory(coverage)

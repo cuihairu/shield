@@ -9,7 +9,7 @@
 local M = {}
 
 ------------------------------------------------------------------------
--- 1. Cache expiry (os.time) — mirrors shield_database_integration.lua:298
+-- 1. Cache expiry (os.time) — classic game-server cache pattern
 ------------------------------------------------------------------------
 local cache = {}
 
