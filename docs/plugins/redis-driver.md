@@ -22,7 +22,7 @@ cmake -B build -DSHIELD_BUILD_PLUGIN_REDIS_DRIVER=ON
 
 ## 定位
 
-`redis.driver` 不是业务语义插件。它封装 redis++ 的全部能力（连接池、typed 命令、pipeline、cluster、sentinel、TLS），对外暴露稳定 C ABI 的 `shield.redis.v1`。
+`redis.driver` 不是业务语义插件。它封装 redis++ 的核心能力（连接池、typed 命令、pipeline、raw command），对外暴露稳定 C ABI 的 `shield.redis.v1`；cluster、sentinel、TLS 为规划中能力（当前未实现）。
 
 业务侧优先使用上层能力插件：
 
@@ -48,21 +48,16 @@ cmake -B build -DSHIELD_BUILD_PLUGIN_REDIS_DRIVER=ON
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `mode` | string | 否 | `single` | 连接模式：`single`、`sentinel`、`cluster` |
-| `host` | string | 是 | `127.0.0.1` | Redis 主机地址（`single` 模式） |
+| `mode` | string | 否 | `single` | 预留连接模式字段，当前仅实现 `single`（`sentinel`/`cluster` 未实现） |
+| `host` | string | 是 | `127.0.0.1` | Redis 主机地址 |
 | `port` | integer | 否 | `6379` | Redis 端口，范围 1-65535 |
 | `password` | string | 否 | - | 鉴权密码，`secret: true` 在日志中脱敏 |
-| `db` | integer | 否 | `0` | Redis DB 索引，范围 0-15（`single` / `sentinel` 模式） |
+| `db` | integer | 否 | `0` | Redis DB 索引，范围 0-15 |
 | `pool_size` | integer | 否 | `8` | redis++ 连接池大小，范围 1-256 |
 | `connect_timeout_ms` | integer | 否 | `5000` | 建连超时，范围 100-60000 毫秒 |
 | `command_timeout_ms` | integer | 否 | `3000` | 单条命令超时，范围 100-60000 毫秒 |
-| `tls.enabled` | boolean | 否 | `false` | 是否启用 TLS |
-| `tls.cert_path` | string | 否 | - | TLS 客户端证书路径 |
-| `tls.key_path` | string | 否 | - | TLS 客户端私钥路径 |
-| `tls.ca_cert_path` | string | 否 | - | TLS CA 证书路径 |
-| `sentinel.master_name` | string | 否 | - | Sentinel 主节点名（`sentinel` 模式必填） |
-| `sentinel.password` | string | 否 | - | Sentinel 密码 |
-| `cluster.addrs` | array | 否 | - | Cluster 节点地址列表（`cluster` 模式必填） |
+
+> TLS（`tls.*`）与 Sentinel / Cluster 模式（`sentinel.*`、`cluster.addrs`）为规划中的能力，当前驱动未实现，相关配置键不会被解析。
 
 完整 `app.yaml` 示例：
 
@@ -101,7 +96,9 @@ plugins:
     leaderboard.default: leaderboard.global
 ```
 
-### Sentinel 模式
+### Sentinel 模式（未实现）
+
+> Sentinel 与 Cluster 为规划中的能力，以下示例仅描述目标形态，当前版本的驱动不会解析这些配置。
 
 ```yaml
 - id: redis.main
@@ -116,7 +113,7 @@ plugins:
     pool_size: 16
 ```
 
-### Cluster 模式
+### Cluster 模式（未实现）
 
 ```yaml
 - id: redis.main
@@ -194,7 +191,8 @@ typedef struct shield_redis_v1 {
     const char* interface_name;
 
     // Connection handle
-    void* (*connect)(const void* cfg, char* err_buf, int err_buf_size);
+    void* (*connect)(const shield_redis_v1* self, const void* cfg,
+                     char* err_buf, int err_buf_size);
     void  (*disconnect)(void* handle);
 
     // Key-Value
@@ -448,52 +446,46 @@ helper 覆盖的方法：`get`、`set`、`del`、`hget`、`hset`、`hgetall`、`
 
 ### manifest 声明
 
-```yaml
-# cache.redis/manifest.yaml
-requires:
-  - name: redis
-    interface: shield.redis.v1
-    optional: false
-```
+当前三个上层插件的实际 manifest 均为可选依赖（Phase 2 双路径）：
 
 ```yaml
-# leaderboard.redis/manifest.yaml
+# cache.redis / leaderboard.redis / queue.redis 的 manifest.yaml
 requires:
   - name: redis
     interface: shield.redis.v1
-    optional: false
+    optional: true   # 可选；接线后走 redis.driver 共享池，未接线时回退自建连接
 ```
 
-```yaml
-# queue.redis/manifest.yaml
-requires:
-  - name: redis
-    interface: shield.redis.v1
-    optional: false
-```
+`optional: false`（强制依赖）属于 Phase 3，见下文迁移路径。
 
 ### 依赖注入
 
-上层插件在 `create` 阶段通过 `host_api->dependency()` 获取 vtable：
+上层插件在 **`start` 阶段**通过 `host_api->dependency()` 获取 vtable（create 阶段依赖实例尚未 start，`dependency()` 会返回 NULL）：
 
 ```cpp
-int cache_create(const shield_plugin_create_args_v1* args,
-                 shield_plugin_instance_v1** out,
-                 shield_error_v1* err) {
+// inst->shell.start 的真实形态（节选自 cache.redis）：
+inst->shell.start = [](shield_plugin_instance_v1* self,
+                       shield_error_v1*) -> int {
+    auto* ci = reinterpret_cast<cache_instance*>(self);
     // 获取 redis.driver 暴露的 shield.redis.v1
-    const shield_redis_v1* redis = static_cast<const shield_redis_v1*>(
-        args->host_api->dependency(args->ctx, "redis", SHIELD_REDIS_V1));
-
-    if (!redis) {
-        // redis.driver 未启动或未配置依赖
-        err->code = "plugin.dependency.missing";
-        err->message = "cache.redis requires shield.redis.v1";
-        return -1;
+    if (ci->host_api && ci->host_api->dependency) {
+        auto* drv = static_cast<const shield_redis_v1*>(
+            ci->host_api->dependency(ci->ctx, "redis", SHIELD_REDIS_V1));
+        if (drv && drv->connect) {
+            char err_buf[256] = {};
+            void* handle =
+                drv->connect(drv, nullptr, err_buf, sizeof(err_buf));
+            if (handle) {
+                ci->redis_driver = drv;
+                ci->redis_handle = handle;
+            }
+            // connect 失败时回退自建连接（Phase 2 双路径）。
+            // 后续操作：有驱动句柄走 drv->get(...)/command(...)，
+            // 否则走实例内部自建连接。
+        }
     }
-
-    // 后续使用 redis->get(...)、redis->hset(...) 等
-    // ...
-}
+    return 0;
+};
 ```
 
 ### 启动顺序
@@ -516,7 +508,7 @@ host 的拓扑排序保证 `redis.driver` 先于依赖它的插件启动：
 | Stream | `command("XADD"/"XREADGROUP"/...)` | 通过 raw command |
 | 事务 | `pipeline({"MULTI"}, ..., {"EXEC"})` | 通过 pipeline |
 | Streams / Pub/Sub | `command("XADD"/"XREADGROUP"/...)` 或 `command("PUBLISH"/...)` | 通过 raw command |
-| Cluster | 插件内部 redis++ cluster client | 配置 `mode: cluster` |
+| Cluster | 插件内部 redis++ cluster client | 未实现（规划中） |
 
 ## 迁移路径
 
@@ -616,9 +608,8 @@ plugins:
 
 ### Redis 版本要求
 
-- `single` 模式：Redis 2.0+（建议 6.0+ 以获得 ACL 和 TLS）
-- `sentinel` 模式：Redis 2.8+（Sentinel v1）
-- `cluster` 模式：Redis 3.0+
+- `single` 模式：Redis 2.0+（建议 6.0+）
+- `sentinel` / `cluster` 模式：未实现（规划中）
 
 ### 线程安全
 
@@ -629,9 +620,11 @@ plugins:
 | `command` | 线程安全 |
 | `free_value` | 不可并发释放同一个 value |
 
-### TLS 配置
+### TLS 配置（未实现）
 
-启用 TLS 时，redis++ 通过 hiredis 的 TLS 支持建立安全连接：
+> TLS 为规划中的能力，以下示例仅描述目标形态，当前版本的驱动不会解析这些配置。
+
+启用 TLS 时，redis++ 将通过 hiredis 的 TLS 支持建立安全连接：
 
 ```yaml
 config:

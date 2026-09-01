@@ -1,0 +1,86 @@
+# Shield runtime configuration with the Redis plugin dependency chain wired.
+#
+# Build with:
+#   cmake -S . -B build \
+#     -DSHIELD_BUILD_PLUGIN_REDIS_DRIVER=ON \
+#     -DSHIELD_BUILD_PLUGIN_CACHE_REDIS=ON \
+#     -DSHIELD_BUILD_PLUGIN_QUEUE_REDIS=ON \
+#     -DSHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS=ON
+#
+# All three upper-layer plugins share the redis.main connection pool via
+# manifest `requires` + instance `dependencies` (Phase 2 dual-path: with the
+# wiring below they use the driver's pool; without it each would fall back
+# to a self-owned connection built from its own config).
+
+app:
+  name: shield
+  version: "0.1.0"
+
+log:
+  level: info
+  console: true
+
+lua:
+  vm:
+    mode: per_service
+    max_vms: 128
+    max_memory_mb: 64
+  sandbox:
+    allow_os: false
+    allow_io: false
+  script_path: "scripts"
+  module_path: "scripts/?.lua;scripts/?/init.lua"
+  cache:
+    enabled: true
+    max_size: 100
+    ttl_seconds: 0
+
+actors:
+  - name: bootstrap
+    script: ../scripts/bootstrap.lua
+    instances: 1
+    required: true
+
+plugins:
+  directory: "./plugins"
+  instances:
+    - id: redis.main
+      package: redis.driver
+      required: true
+      config:
+        host: 127.0.0.1
+        port: 6379
+        pool_size: 16
+    - id: cache.session
+      package: cache.redis
+      dependencies:
+        redis: redis.main
+    - id: queue.main
+      package: queue.redis
+      dependencies:
+        redis: redis.main
+    - id: leaderboard.global
+      package: leaderboard.redis
+      dependencies:
+        redis: redis.main
+  bindings:
+    cache.default: cache.session
+    queue.default: queue.main
+    leaderboard.default: leaderboard.global
+
+bootstrap:
+  timeout:
+    config_load: 5000
+    log_init: 5000
+    core_init: 10000
+    plugin_init: 30000
+    net_init: 10000
+    script_init: 10000
+    service_spawn: 60000
+
+shutdown:
+  timeout:
+    service_drain: 30000
+    service_stop: 10000
+    plugin_shutdown: 10000
+    total: 60000

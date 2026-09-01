@@ -49,3 +49,14 @@ shutdown:
     service_stop: 10000
     plugin_shutdown: 10000
     total: 60000
+
+# Console server
+console:
+  enabled: true
+  socket_path: /tmp/shield-console.sock
+
+# HTTP ops endpoints
+http:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8080

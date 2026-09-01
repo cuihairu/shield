@@ -1066,7 +1066,8 @@ int lb_create(const shield_plugin_create_args_v1* args,
                 li->host_api->dependency(li->ctx, "redis", SHIELD_REDIS_V1));
             if (drv && drv->connect) {
                 char err_buf[256] = {};
-                void* handle = drv->connect(nullptr, err_buf, sizeof(err_buf));
+                void* handle = drv->connect(drv, nullptr, err_buf,
+                                            static_cast<int>(sizeof(err_buf)));
                 if (handle) {
                     li->redis_driver = drv;
                     li->redis_handle = handle;

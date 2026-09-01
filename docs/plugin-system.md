@@ -492,10 +492,13 @@ plugins:
 | `shield.metrics.v1` | metrics exporter。 |
 | `shield.health.v1` | health contributor。 |
 | `shield.protocol.codec.v1` | 网络协议 `BodyCodec` provider，例如 protobuf、sproto、msgpack、xmldef-native。 |
+| `shield.redis.v1` | 共享 Redis 连接池 driver（typed 命令 + pipeline + raw command），供上层 Redis 插件依赖。 |
+| `shield.auth.v1` | JWT 认证 provider（`plugins/auth_jwt` 提供；注意：认证/JWT 不作为官方插件发布口径见 [架构](architecture.md)，该包与接口保留在源码树供自建参考，不进入官方插件清单）。 |
+| `shield.matchmaking.v1` | 匹配 provider（ELO 评分，`plugins/matchmaking_elo` 提供）。 |
 
 `shield.document.v1` 与 `shield.database.v1` 并列而非继承：文档库的 filter / aggregation / _id 语义与 SQL 差距过大，强行套用 SQL 接口（query/execute/last_insert_id）会丢掉文档库的核心价值。两个接口可以由不同 package 各自提供。
 
-Redis 不作为公共基础设施插件类型暴露。需要 Redis 的能力应落到具体 provider：`cache.redis`、`queue.redis`、`leaderboard.redis`。
+面向业务的 Redis 能力不直接暴露连接，而是落到具体 provider：`cache.redis`、`queue.redis`、`leaderboard.redis`。这些 provider 不各自建连——它们通过 manifest `requires` + `plugins.instances[].dependencies` 依赖 `redis.driver`（`shield.redis.v1`），共享驱动实例的连接池（当前为 Phase 2 可选依赖双路径，见 [redis.driver](plugins/redis-driver.md)）。
 
 ## Protocol Codec Plugins
 
