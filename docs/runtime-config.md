@@ -188,7 +188,7 @@
 
 `actors[].network` 声明的是 Gateway 边界 owner，不是暴露客户端业务回调的 Lua service。它持有 listener、live session 和 `SessionRoutingContext`；业务 Lua 不接收 `on_client_message`，也不获得 `SessionHandle`。第一版 TCP listener 仍要求 `instances: 1`，确保每个 live session 只有一个 Gateway owner。
 
-`actors[].network.protocol` 绑定 session 固定使用的 `ProtocolProfile`。该 profile 必须引用 compiled RPC descriptor；descriptor 才是 `route_id -> logical service name + direction + schema + binding_hint` 的唯一来源。配置不得出现 `routing.source`、`routes[]`、`target_service`、`action`、`lazy_decode` 或任何 body route 规则。
+`actors[].network.protocol` 绑定 session 固定使用的 `ProtocolProfile`。目标终态下该 profile 必须引用 compiled RPC descriptor；descriptor 才是 `route_id -> logical service name + direction + schema + binding_hint` 的唯一来源。**当前实现仍支持在配置中直接声明 `routing.*` 与 `routes[]` 内联路由**（校验于 config.cpp，消费于 transport 层）；compiled RPC descriptor、`binding_hint` 与启动期 route_id -> handler 编译尚未实现，属于后续迁移方向，届时内联路由将被移除。
 
 `actors[].network.max_frame_size` 是 listener 级默认单帧上限。未显式设置 `protocol.envelope.max_frame_size` 时，profile 继承该值；显式设置时以 envelope 值为准。
 
@@ -329,9 +329,11 @@ actors:
 
 验证失败时拒绝启动，输出字段路径和原因。
 
-## 环境变量展开
+## 环境变量展开（未实现）
 
-支持 `${VAR}` 和 `${VAR:default}`：
+> `${VAR}` / `${VAR:default}` 展开为目标契约，当前配置加载器不会处理这些占位符——插件会拿到字面量字符串。实现前请勿在配置中使用。
+
+规划语义：
 
 ```json
 {

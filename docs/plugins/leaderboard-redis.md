@@ -363,7 +363,7 @@ board name 直接作为 Redis key，建议加前缀避免与业务其他 key 冲
 
 ### 连接数
 
-每个 `shield_leaderboard_conn` 使用一个 redis-plus-plus `Redis` 对象（无连接池配置，单连接）。并发查询会串行化在该连接上。高 QPS 场景建议拆分多个实例，或修改插件源码启用连接池（参考 cache.redis 的实现）。
+每个 `shield_leaderboard_conn` 在**自建连接回退路径**下使用一个 redis-plus-plus `Redis` 对象（无连接池配置，单连接）。并发查询会串行化在该连接上。高 QPS 场景优先通过 `dependencies: redis:` 接线 `redis.driver` 共享连接池（见 [redis.driver](redis-driver.md)），或拆分多个实例，或修改插件源码启用连接池（参考 cache.redis 的实现）。
 
 ## 相关链接
 

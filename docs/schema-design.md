@@ -1433,7 +1433,7 @@ local player = require("generated.player")
 
 ### Migration From Current Prototype
 
-当前原型：`include/shield/protocol/schema_protocol.hpp`、`src/protocol/schema_protocol.cpp`。迁移步骤：
+历史原型 `include/shield/protocol/schema_protocol.hpp` / `src/protocol/schema_protocol.cpp` 已在重构中删除（本文件开头已说明）。迁移步骤：
 
 1. 保留 `schema_protocol.hpp` 作为 facade。
 2. 抽出 `ProtocolValue` 到 `schema/value.hpp` 或 `wire/value.hpp`。

@@ -64,7 +64,7 @@ struct shield_queue_conn* (*connect)(const struct shield_queue_config* cfg,
 void (*disconnect)(struct shield_queue_conn* conn);
 ```
 
-- `connect` — 建立 redis-plus-plus 连接池，返回 `shield_queue_conn*`。连接池同时服务于 `publish`（`XADD`）和 `subscribe`（`XREADGROUP`）。失败时 `err_buf` 写入异常信息，返回 `nullptr`。
+- `connect` — 建立连接来源（Phase 2 双路径：接线了 `dependencies: redis:` 时复用 `redis.driver` 的共享连接池，见 [redis.driver](redis-driver.md)；否则基于实例自身配置建立 redis-plus-plus 连接池），返回 `shield_queue_conn*`。连接池同时服务于 `publish`（`XADD`）和 `subscribe`（`XREADGROUP`）。失败时 `err_buf` 写入异常信息，返回 `nullptr`。
 - `disconnect` — 停止所有消费线程，join 后释放连接。
 
 ### 发布

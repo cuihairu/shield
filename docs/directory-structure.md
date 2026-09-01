@@ -2,6 +2,8 @@
 
 本文档描述 Shield 重构后的目标目录结构。
 
+> **状态说明**：本文部分"当前状态"小节拍摄于重构早期，其中提到的 annotations/conditions/di/discovery/events/gateway/data 等目录、`include/shield/api.hpp` 公共头方案与 `test_starter_manager.cpp` 等测试文件已在后续重构中删除或被取代（现行结构见仓库根 `src/`、`include/` 与 `CMakeLists.txt`）。阅读时以目标结构为准，"当前状态"仅作历史参照。
+
 ## 设计原则
 
 1. **模块边界清晰**：每个模块有独立的 include/ 和 src/ 目录

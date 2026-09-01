@@ -14,7 +14,7 @@
 
 ## 构建启用
 
-`cache.redis` 默认跟随主工程构建，可通过 CMake 选项单独关闭：
+`cache.redis` 默认关闭，需通过 CMake 选项显式开启：
 
 ```bash
 cmake -B build -DSHIELD_BUILD_PLUGIN_CACHE_REDIS=ON
@@ -68,7 +68,12 @@ plugins:
 
 ## 接口契约
 
-源文件：`include/shield/plugin/cache.h`。每个实例通过 `connect()` 拿到一个独立的 `shield_cache_conn*`，背后是一个独立的 redis-plus-plus `Redis` 对象（带连接池）。v1 不存在公共 redis 基础设施插件，多个 cache 实例即使指向同一个 Redis，也只是通过 Redis 自身共享数据，host 不做胶水。
+源文件：`include/shield/plugin/cache.h`。实例支持两种连接来源（Phase 2 双路径）：
+
+1. **共享驱动路径（推荐）**：manifest 以 `optional: true` 声明对 `shield.redis.v1` 的依赖，并在实例配置中通过 `dependencies: redis: <redis.driver 实例 id>` 接线；start 阶段经 `host_api->dependency()` 获取驱动 vtable，`connect()` 复用驱动的共享连接池。完整示例见 [redis.driver](redis-driver.md) 与 `config/app-with-redis.yaml`。
+2. **自建连接回退**：未接线依赖时，`connect()` 基于实例自身配置建立独立的 redis-plus-plus `Redis` 对象（带连接池）。
+
+多个 cache 实例指向同一个 Redis 时，走驱动路径可共享连接池；自建路径下各实例独立建连，仅通过 Redis 自身共享数据。
 
 ### 连接管理
 

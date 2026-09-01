@@ -347,7 +347,7 @@ cluster:
 7. 保留有价值代码时必须归入明确 target。
 8. 无 target 归属的旧代码删除或移入实验区。
 
-当前已知需要重点清理：
+历史清理项（以下文件已在重构中删除，此处仅存目）：
 
 ```txt
 include/shield/service/service_api.hpp

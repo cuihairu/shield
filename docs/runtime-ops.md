@@ -33,7 +33,15 @@ Lua 诊断控制台与 Lua 内存观测是 `Console` / `Diagnostics` 的专项�
 
 当前产品只保留日志模块（控制台日志；文件日志作为 `shield_log` 的可选 sink，默认关闭；Lua 目标 API `shield.log.info/warn/error/debug`）。日志不是 `shield_core` 语义的一部分。
 
-Core 当前**不提供**：Prometheus metrics、HealthCheckRegistry、`/health` `/status` `/metrics` HTTP 端点、运行时诊断 HTTP API、配置热重载监控器。这些归入 `shield_ops` 官方可选模块或独立扩展，且不能反向污染 runtime core。
+Core 不内建：Prometheus metrics、HealthCheckRegistry、`/metrics` 端点、配置热重载监控器。这些归入 `shield_ops` 官方可选模块或独立扩展，且不能反向污染 runtime core。
+
+已落地的运维面（实现于 `shield_bootstrap` 的 console 组件，`http.enabled: true` 时生效）：
+
+- Unix socket 诊断控制台（`root.*` / Lua 命令，见 [Lua 诊断控制台设计](ops-lua-console.md)）
+- HTTP ops 端点：`/ops/status`、`/ops/services`、`/ops/plugins`、`/ops/config`、`/ops/eval`
+- Lua 业务侧 `shield.httpd.*` 可注册自有管理端点（见 [Lua API 契约](lua-api.md)）
+
+注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/health` 探针（不经 Lua actor 往返）尚未提供。
 
 ## shield_ops 默认策略
 

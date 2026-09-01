@@ -9,7 +9,7 @@
 
 当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、TCP gateway listener 到 Lua handler 的 bootstrap 桥接、HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
 
-- HTTP 服务端 Lua 路由注册仍是占位入口，尚未接入 bootstrap。
+- HTTP 服务端 Lua 路由（`shield.httpd.*`）已接入 bootstrap：路由保存于运行时注册表，由 `LuaHttpBridge` 镜像进 `HttpServer`，请求派发到注册服务的 actor 线程执行。
 - `on_shutdown(ctx)` 和单 VM 内部 `shield.event` 已定义为目标契约，但当前源码尚未实现。
 
 </details>
@@ -278,7 +278,7 @@ local me = shield.self()
 local names = shield.names()
 ```
 
-返回当前 service 已发布的本地 name 列表。
+返回本地 registry 中所有已发布服务 name 的列表（全局视图，不按调用者过滤）。
 
 ---
 
@@ -806,6 +806,8 @@ return M
 handler(ClientContext, decoded RPC arguments)
 ```
 
+> **实现状态**：Client RPC 章节整体为目标契约。当前入站路径已可用（`on_client_message(ctx, route_id, client_context, body, message)`，`client_context` 为携带 `session_id`/`session_epoch`/`player_id`/`method_name` 等字段的普通 table）；但 `ClientContext` userdata、`client:ref()`/`ClientRef`、codegen 出站 RPC helper、消息 ctx 中的 `ctx.session` 均未实现。出站回包当前使用 `SessionHandle:send`（由 gateway 服务在 `on_connect` 时通过 Lua API 获取）。
+
 如果该 RPC 的 request schema 生成单个 request table，则 Lua 形态为 `handler(client, request)`；若生成多个参数，则按生成契约传入。route、header、codec 和原始 body 都不是业务参数。
 
 `ClientContext` 为只读 userdata，最小 API：
@@ -964,7 +966,7 @@ Service VM 启动时必须失败于以下情况：
 
 ### HTTP 客户端 (shield.http)
 
-基于 libcurl，支持 HTTPS、HTTP/2、连接池、重定向、Cookie、代理、文件上传/下载。
+基于 libcurl，支持 HTTPS、HTTP/2、重定向、代理、文件上传/下载、Basic/Bearer 认证与可配置重试。连接池与 Cookie 会话当前未实现（每次请求独立连接）。
 
 #### 基础请求
 
@@ -1130,14 +1132,15 @@ shield.httpd.patch("/api/users/:id", function(req) end)
 | 规则 | 说明 |
 | --- | --- |
 | handler 参数 | handler 接收 request table，返回 response table |
-| 路由注册时机 | 路由在 bootstrap 阶段注册，运行时不变 |
+| 路由注册时机 | 服务 on_init 与运行期均可注册；同 method+path 后注册者覆盖先注册者，服务退出时其路由被移除 |
+| 派发语义 | 请求派发到注册服务的 actor 线程（与普通消息同一条串行路径），派发超时 2s 返回 504；服务不在时 503、路由不存在 404、handler 抛错 500（JSON `{type="error", message=...}`） |
 | 无 middleware | 不提供 middleware chain |
 | 适用场景 | 适合管理/运维端点，不适合高并发业务流量 |
 
 <details>
 <summary>实现快照（点击展开）</summary>
 
-基于 Boost.Beast 的 C++ `HttpServer` 已存在，支持基础路由匹配和 JSON 响应。Lua `shield.httpd.*` 目前只接受注册调用并返回成功，尚未保存 handler 或接入 bootstrap；不要把它视为可用入站 HTTP 服务。
+基于 Boost.Beast 的 `HttpServer` 提供 HTTP 服务。`shield.httpd.*` 将路由保存到 `LuaRuntime` 的注册表，bootstrap 的 `LuaHttpBridge` 把路由镜像进 `HttpServer`；请求经 `enqueue_forked_task` 派发到注册服务的 actor 线程上执行 Lua handler（与普通服务消息同一条串行派发路径，无 VM 竞争）。支持 `:param` 路径参数（如 `/api/users/:id`，通过 `req.params` 访问），`req` 携带 `method/path/query/params/headers/body`。handler 返回 `nil`（204）、字符串（text/plain）或 `{status, body, headers}` table（body 为 table 时 JSON 序列化）。要求在 `http.enabled: true` 时生效，且必须在服务上下文中注册（裸 VM 中调用会抛错）。
 
 </details>
 
