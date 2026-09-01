@@ -1275,6 +1275,10 @@ void LuaServiceManager::exit(std::string_view service_id,
                                    impl_->service_order.end());
         impl_->recently_exited.insert(id);
 
+        // Drop any shield.httpd.* routes owned by this service: their
+        // handlers belong to the VM being destroyed.
+        impl_->runtime.remove_http_routes_for_service(id);
+
         // Tear down the service's CAF actor. anon_send_exit asks the actor to
         // stop; erasing the handle releases our reference.
         if (auto actor_it = impl_->service_actors.find(id);
@@ -1440,6 +1444,13 @@ std::string LuaServiceManager::current_service_id() const {
     return impl_->current_service_id();
 }
 
+std::shared_ptr<LuaVM> LuaServiceManager::service_vm(
+    std::string_view service_id) const {
+    std::shared_lock lock(impl_->registry_mutex);
+    auto it = impl_->services.find(std::string(service_id));
+    return it != impl_->services.end() ? it->second : nullptr;
+}
+
 std::string LuaServiceManager::current_sender_id() const {
     return impl_->current_sender_id();
 }
@@ -1576,7 +1587,14 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
                                                 std::function<void()> task,
                                                 sol::function raw_fn) {
     if (service_id.empty()) {
-        return 0;
+        // Hostless callers (e.g. the ops HTTP endpoints) want the task to run
+        // on any managed dispatch thread. Borrow any live service actor so
+        // the task is not silently dropped.
+        std::shared_lock lock(impl_->registry_mutex);
+        if (impl_->service_actors.empty()) {
+            return 0;
+        }
+        service_id = impl_->service_actors.begin()->first;
     }
 
     const uint64_t id = impl_->next_task_id.fetch_add(1);

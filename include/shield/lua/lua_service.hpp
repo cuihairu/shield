@@ -25,6 +25,7 @@ class actor_system;
 namespace shield::lua {
 
 class LuaRuntime;
+class LuaVM;
 class ServiceContext;
 
 /// @brief Result of spawning a Lua service
@@ -94,6 +95,11 @@ public:
 
     // Get current service ID
     std::string current_service_id() const;
+
+    // Get the VM bound to a running service (nullptr if not found). The
+    // returned pointer keeps the VM alive; touch it only from that service's
+    // dispatch thread.
+    std::shared_ptr<LuaVM> service_vm(std::string_view service_id) const;
 
     // Get current sender ID
     std::string current_sender_id() const;

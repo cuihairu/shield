@@ -140,6 +140,28 @@ void Logger::set_global_level(Level level) {
     g_global_level = level;
 }
 
+Level Logger::get_global_level() {
+    std::lock_guard lock(g_mutex);
+    return g_global_level;
+}
+
+void Logger::apply_sinks(bool console, bool file, const std::string& file_path,
+                         size_t max_size_bytes, int max_files) {
+    std::lock_guard lock(g_mutex);
+    g_sinks.clear();
+    if (console) {
+        g_sinks.push_back(make_console_sink());
+    }
+    if (file) {
+        g_sinks.push_back(
+            make_rotating_sink(file_path, max_size_bytes, max_files));
+    }
+    if (g_sinks.empty()) {
+        // Never drop logs entirely.
+        g_sinks.push_back(make_console_sink());
+    }
+}
+
 Logger& get_logger(std::string_view name) {
     std::lock_guard lock(g_mutex);
 
@@ -202,6 +224,13 @@ RotatingFileSink::RotatingFileSink(std::string base_path, size_t max_size,
     : base_path_(std::move(base_path)),
       max_size_(max_size),
       max_files_(std::max(1, max_files)) {
+    // Create the parent directory so the documented default
+    // ("logs/shield.log") works on a fresh checkout.
+    if (const auto parent = std::filesystem::path(base_path_).parent_path();
+        !parent.empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(parent, ec);
+    }
     file_.open(base_path_, std::ios::app);
     if (std::filesystem::exists(base_path_)) {
         current_size_ =
@@ -238,7 +267,13 @@ void RotatingFileSink::rotate_if_needed() {
     file_.close();
     current_file_ = (current_file_ + 1) % max_files_;
     auto rotated = base_path_ + "." + std::to_string(current_file_);
-    std::filesystem::rename(base_path_, rotated);
+    // Rotation must never throw out of a write() call. Remove a stale
+    // rotated file first (POSIX rename overwrites, Windows does not) and
+    // swallow filesystem errors: on failure we keep appending to the
+    // current file rather than losing the log line.
+    std::error_code ec;
+    std::filesystem::remove(rotated, ec);
+    std::filesystem::rename(base_path_, rotated, ec);
     file_.open(base_path_, std::ios::trunc);
     current_size_ = 0;
 }

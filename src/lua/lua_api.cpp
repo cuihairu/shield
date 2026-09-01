@@ -1407,7 +1407,8 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
 }
 #endif
 
-void register_http_api(sol::table& shield) {
+void register_http_api(sol::table& shield, LuaServiceManager* manager,
+                       LuaRuntime* runtime) {
     sol::state_view lua(shield.lua_state());
 
     // =========================================================================
@@ -1762,13 +1763,31 @@ void register_http_api(sol::table& shield) {
     // =========================================================================
     auto httpd = lua.create_table();
 
-    // Route registration stubs. Full integration passes the HttpServer
-    // instance; these return true to indicate the call was accepted.
-    auto register_route = [](sol::this_state state, std::string method,
-                             std::string path, sol::function handler) {
+    // Routes are stored in the runtime's registration table. The bootstrap
+    // HTTP bridge (LuaHttpBridge) mirrors them into the HttpServer and
+    // dispatches requests back onto the registering service's actor thread.
+    auto register_route = [manager, runtime](
+                              sol::this_state state, std::string method,
+                              std::string path, sol::function handler) {
+        if (!manager || !runtime) {
+            throw sol::error("shield.httpd is not available in this context");
+        }
+        const std::string service_id = manager->current_service_id();
+        if (service_id.empty()) {
+            throw sol::error(
+                "shield.httpd routes must be registered from a running "
+                "service");
+        }
+        auto vm = runtime->vm_for_state(state);
+        if (!vm) {
+            throw sol::error("registering VM is not managed by the runtime");
+        }
+        std::string error;
+        if (!runtime->register_http_route(vm, service_id, method, path,
+                                          std::move(handler), &error)) {
+            throw sol::error("shield.httpd registration failed: " + error);
+        }
         sol::state_view lua(state);
-        // TODO: store route in HttpServer instance when integrated with
-        // bootstrap
         return sol::make_object(lua, true);
     };
 
@@ -1888,7 +1907,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_task_api(shield, manager, runtime);
     register_config_api(shield);
     register_log_api(shield, manager);
-    register_http_api(shield);
+    register_http_api(shield, manager, runtime);
     register_plugin_api(shield);
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -1901,7 +1920,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     // business-time clock (adjustable in tests). Only the no-arg forms are
     // redirected; os.time(table) and os.date(fmt, t) keep their original
     // semantics (pure conversion). os.clock() is NOT touched — it is used
-    // for real CPU-time measurement (e.g. scripts/shield_aop.lua:562).
+    // for real CPU-time measurement (e.g. busy-wait loops).
     {
         sol::table os_t = lua["os"];
         sol::function orig_time = os_t["time"];

@@ -5,6 +5,7 @@
 #include <boost/beast/http.hpp>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -66,8 +67,11 @@ public:
 
     /// @brief Register a route handler
     /// @param method HTTP method (GET, POST, etc.)
-    /// @param path URL path (e.g., "/api/health")
+    /// @param path URL path (e.g., "/api/health"). A path segment starting
+    ///        with ':' (e.g. "/api/users/:id") matches any single segment and
+    ///        captures it as a path parameter.
     /// @param handler Handler function
+    /// @note Thread-safe: routes may be registered while the server runs.
     void route(HttpMethod method, const std::string& path, HttpHandler handler);
 
     /// @brief Convenience: register a GET handler
@@ -108,11 +112,29 @@ private:
         }
     };
 
+    // One in-flight connection. Kept alive through shared_from_this while
+    // async operations are pending; released (closing the socket) when the
+    // connection errors, hits EOF, or is done after a non-keep-alive
+    // response.
+    struct Session;
+
+    // Match a request method/path against the route table. Tries an exact
+    // match first, then falls back to ':' parameter patterns. Returns the
+    // handler under lock (copied out so it runs outside the mutex).
+    std::shared_ptr<const HttpHandler> match_route(
+        HttpMethod method, const std::string& path) const;
+
+    // Shared request-processing pipeline used by every read callback.
+    HttpResponse dispatch(const HttpRequest& req) const;
+
     void do_accept();
     void handle_session(std::shared_ptr<net::ip::tcp::socket> socket);
 
     HttpServerConfig config_;
-    std::unordered_map<RouteKey, HttpHandler, RouteKeyHash> routes_;
+    mutable std::mutex routes_mutex_;
+    std::unordered_map<RouteKey, std::shared_ptr<const HttpHandler>,
+                       RouteKeyHash>
+        routes_;
     HttpHandler default_handler_;
 
     net::io_context io_context_;

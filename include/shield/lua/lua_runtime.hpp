@@ -4,9 +4,11 @@
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <sol/sol.hpp>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace shield::lua {
 
@@ -118,6 +120,19 @@ struct LuaCacheConfig {
     int64_t ttl_seconds = 0;  // 0 = never expire
 };
 
+/// @brief An inbound HTTP route registered from Lua via shield.httpd.*.
+///
+/// The handler is owned by the registering service's VM and must only be
+/// invoked on that service's dispatch thread (the LuaServiceManager forked
+/// task path guarantees this).
+struct HttpRouteRegistration {
+    std::string service_id;   // Registering service (dispatch target)
+    std::string method;       // "GET", "POST", ...
+    std::string path;         // Route pattern; ":name" matches a segment
+    std::weak_ptr<LuaVM> vm;  // Handler's VM (liveness guard)
+    std::shared_ptr<sol::function> handler;  // Bound to that VM
+};
+
 /// @brief Lua runtime manager
 /// Manages a pool of Lua VMs and provides API registration
 class LuaRuntime {
@@ -226,6 +241,53 @@ public:
     // Get cache statistics
     size_t cache_size() const;
     LuaCacheConfig cache_config() const;
+
+    // ---- Inbound HTTP routes (shield.httpd.*) ----
+
+    /// Register an HTTP route from a service VM. Must be called on the
+    /// registering service's dispatch thread.
+    bool register_http_route(std::shared_ptr<LuaVM> vm,
+                             const std::string& service_id,
+                             const std::string& method, const std::string& path,
+                             sol::function handler,
+                             std::string* error = nullptr);
+
+    /// Resolve the runtime-managed VM for a raw lua_State (nullptr if the
+    /// state does not belong to this runtime or its VM is gone).
+    std::shared_ptr<LuaVM> vm_for_state(lua_State* L);
+
+    /// Find a registration matching the concrete method/path. Supports the
+    /// same ':'-segment patterns as HttpServer. Returns nullopt when no
+    /// route matches. `out_params` (optional) receives captured parameters.
+    std::optional<HttpRouteRegistration> find_http_route(
+        const std::string& method, const std::string& path,
+        std::vector<std::pair<std::string, std::string>>* out_params =
+            nullptr) const;
+
+    /// All currently registered routes (for initial attach by the bridge).
+    std::vector<HttpRouteRegistration> http_routes() const;
+
+    /// Number of registered routes.
+    size_t http_route_count() const;
+
+    /// Remove every route registered by a service (called on service stop).
+    void remove_http_routes_for_service(const std::string& service_id);
+
+    /// Sink notified on every successful registration. Set by the bootstrap
+    /// HTTP bridge so late registrations reach a running HttpServer. Pass an
+    /// empty function to detach.
+    void set_http_route_sink(
+        std::function<void(const std::string& method, const std::string& path)>
+            sink);
+
+    /// Invoke a registered HTTP handler on its VM. Must be called on the
+    /// owning service's dispatch thread (the forked-task path).
+    /// `request_json` carries {method, path, query, params, headers, body};
+    /// `out_desc` receives {status, body, json_body, headers?} or
+    /// {lua_error} on handler failure. Returns false on internal errors.
+    bool call_http_handler(const HttpRouteRegistration& route,
+                           const nlohmann::json& request_json,
+                           nlohmann::json& out_desc, std::string* error);
 
 private:
     struct Impl;

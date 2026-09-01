@@ -328,10 +328,26 @@ void RootCommands::cmd_cluster(shield::net::ConsoleSession& session,
 void RootCommands::cmd_log_level(shield::net::ConsoleSession& session,
                                  const std::vector<std::string>& args) {
     if (args.empty()) {
-        // TODO: add get_global_level() to Logger
-        nlohmann::json resp = {
-            {"type", "result"},
-            {"data", "Use: root.log.level [debug|info|warn|error]"}};
+        using shield::log::Level;
+        std::string current;
+        switch (shield::log::Logger::get_global_level()) {
+            case Level::Debug:
+                current = "debug";
+                break;
+            case Level::Info:
+                current = "info";
+                break;
+            case Level::Warning:
+                current = "warn";
+                break;
+            case Level::Error:
+                current = "error";
+                break;
+            case Level::Fatal:
+                current = "fatal";
+                break;
+        }
+        nlohmann::json resp = {{"type", "result"}, {"data", current}};
         session.send_line(resp.dump());
         return;
     }

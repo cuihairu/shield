@@ -77,6 +77,17 @@ public:
     // Set global minimum level
     static void set_global_level(Level level);
 
+    // Get global minimum level
+    static Level get_global_level();
+
+    // Rebuild the sink list from configuration. Called after the config is
+    // loaded: keeps the console sink when `console` is true, attaches a
+    // rotating file sink when `file` is true. Falls back to a console sink
+    // when both are disabled so logs are never silently dropped.
+    static void apply_sinks(bool console, bool file,
+                            const std::string& file_path, size_t max_size_bytes,
+                            int max_files);
+
 private:
     std::string name_;
 };

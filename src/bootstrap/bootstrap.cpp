@@ -10,6 +10,7 @@
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
 #endif
+#include <algorithm>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <caf/actor_system.hpp>
@@ -30,6 +31,7 @@
 #include "shield/console/ops_http_handler.hpp"
 #include "shield/console/root_commands.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
+#include "shield/lua/lua_http_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/console_server.hpp"
@@ -165,6 +167,7 @@ struct GlobalState {
     std::unique_ptr<shield::console::CommandDispatcher> console_dispatcher;
     std::unique_ptr<shield::net::HttpServer> http_server;
     std::unique_ptr<shield::console::OpsHttpHandler> ops_http_handler;
+    std::unique_ptr<shield::lua::LuaHttpBridge> http_bridge;
 #ifdef SHIELD_ENABLE_CLUSTER
     std::unique_ptr<shield::cluster::ClusterManager> cluster_manager;
 #endif
@@ -259,6 +262,31 @@ bool initialize(const RuntimeConfig& config) {
         shield::config::get("log.level", config.log_level);
     shield::log::Logger::set_global_level(
         parse_log_level(configured_log_level));
+
+    // Apply log.console / log.file.* sink configuration now that the config
+    // is loaded. Logger::initialize() installed a console sink before this
+    // point; apply_sinks rebuilds the list from the effective configuration.
+    {
+        const bool log_console =
+            shield::config::get("log.console", "true") == "true";
+        const bool log_file =
+            shield::config::get("log.file.enabled", "false") == "true";
+        const auto file_path =
+            shield::config::get("log.file.path", "logs/shield.log");
+        const auto max_size_mb =
+            shield::config::get_int("log.file.max_size_mb", 100);
+        const auto max_files =
+            shield::config::get_int("log.file.max_files", 10);
+        shield::log::Logger::apply_sinks(
+            log_console, log_file, file_path,
+            static_cast<size_t>(std::max<int64_t>(1, max_size_mb)) * 1024 *
+                1024,
+            static_cast<int>(std::max<int64_t>(1, max_files)));
+        if (log_file) {
+            auto& log = shield::log::get_logger("bootstrap");
+            SHIELD_LOG_INFO(log, "File logging enabled: " + file_path);
+        }
+    }
 
     shield::config::RuntimeValidationOptions validation_options;
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -601,6 +629,12 @@ bool initialize(const RuntimeConfig& config) {
                     *g_state->lua_services, *g_state->lua_runtime);
             g_state->ops_http_handler->register_routes(*g_state->http_server);
 
+            // Mirror shield.httpd.* routes registered by Lua services into
+            // the server; later registrations flow through the sink.
+            g_state->http_bridge = std::make_unique<shield::lua::LuaHttpBridge>(
+                *g_state->lua_runtime, *g_state->lua_services);
+            g_state->http_bridge->attach(*g_state->http_server);
+
             g_state->http_server->start();
             SHIELD_LOG_INFO(log, "HTTP ops server listening on " + host + ":" +
                                      std::to_string(port));
@@ -637,6 +671,10 @@ void shutdown() {
 
     // Stop HTTP ops server
     if (g_state->http_server) {
+        if (g_state->http_bridge) {
+            g_state->http_bridge->detach();
+            g_state->http_bridge.reset();
+        }
         g_state->http_server->stop();
         g_state->http_server.reset();
         g_state->ops_http_handler.reset();

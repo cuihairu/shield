@@ -6,10 +6,94 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
+#include <cctype>
+#include <vector>
 
 #include "shield/log/logger.hpp"
 
 namespace shield::net {
+
+namespace {
+
+// Split "/a/b/c" into segments, ignoring empty parts (leading/trailing '/').
+std::vector<std::string> split_path(const std::string& path) {
+    std::vector<std::string> segments;
+    size_t pos = 0;
+    while (pos < path.size()) {
+        const size_t next = path.find('/', pos);
+        const std::string seg = path.substr(
+            pos, next == std::string::npos ? std::string::npos : next - pos);
+        if (!seg.empty()) {
+            segments.push_back(seg);
+        }
+        if (next == std::string::npos) {
+            break;
+        }
+        pos = next + 1;
+    }
+    return segments;
+}
+
+// True when a ':'-parameter route pattern matches the concrete path.
+bool pattern_matches(const std::vector<std::string>& pattern,
+                     const std::vector<std::string>& path) {
+    if (pattern.size() != path.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < pattern.size(); ++i) {
+        if (pattern[i].empty() || pattern[i][0] != ':') {
+            if (pattern[i] != path[i]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Case-insensitive substring check for a Connection-header token.
+bool connection_token_exists(const std::string& value, const char* token) {
+    std::string lower;
+    lower.reserve(value.size());
+    for (char c : value) {
+        lower.push_back(
+            static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return lower.find(token) != std::string::npos;
+}
+
+// Should the connection stay open after writing this response? An
+// explicit Connection header wins; otherwise HTTP/1.1 keeps the connection
+// alive and HTTP/1.0 closes it (mirrors beast's fields::keep_alive logic
+// evaluated against the request version).
+bool connection_keeps_alive(const HttpResponse& response,
+                            unsigned request_version) {
+    auto it = response.base().find(http::field::connection);
+    if (request_version < 11) {
+        return it != response.base().end() &&
+               connection_token_exists(std::string(it->value()), "keep-alive");
+    }
+    return it == response.base().end() ||
+           !connection_token_exists(std::string(it->value()), "close");
+}
+
+HttpMethod verb_to_method(http::verb verb) {
+    switch (verb) {
+        case http::verb::get:
+            return HttpMethod::GET;
+        case http::verb::post:
+            return HttpMethod::POST;
+        case http::verb::put:
+            return HttpMethod::PUT;
+        case http::verb::delete_:
+            return HttpMethod::DELETE_;
+        case http::verb::patch:
+            return HttpMethod::PATCH;
+        default:
+            return HttpMethod::ANY;
+    }
+}
+
+}  // namespace
 
 HttpServer::HttpServer(const HttpServerConfig& config) : config_(config) {}
 
@@ -17,7 +101,9 @@ HttpServer::~HttpServer() { stop(); }
 
 void HttpServer::route(HttpMethod method, const std::string& path,
                        HttpHandler handler) {
-    routes_[{method, path}] = std::move(handler);
+    auto stored = std::make_shared<const HttpHandler>(std::move(handler));
+    std::lock_guard<std::mutex> lock(routes_mutex_);
+    routes_[{method, path}] = std::move(stored);
 }
 
 void HttpServer::get(const std::string& path, HttpHandler handler) {
@@ -29,7 +115,71 @@ void HttpServer::post(const std::string& path, HttpHandler handler) {
 }
 
 void HttpServer::set_default_handler(HttpHandler handler) {
+    std::lock_guard<std::mutex> lock(routes_mutex_);
     default_handler_ = std::move(handler);
+}
+
+std::shared_ptr<const HttpHandler> HttpServer::match_route(
+    HttpMethod method, const std::string& path) const {
+    std::lock_guard<std::mutex> lock(routes_mutex_);
+
+    // Exact match first.
+    auto it = routes_.find({method, path});
+    if (it != routes_.end()) {
+        return it->second;
+    }
+    // ANY-method match.
+    it = routes_.find({HttpMethod::ANY, path});
+    if (it != routes_.end()) {
+        return it->second;
+    }
+    // ':' parameter patterns.
+    const auto segments = split_path(path);
+    for (const auto& [key, handler] : routes_) {
+        if (key.method != method && key.method != HttpMethod::ANY) {
+            continue;
+        }
+        if (key.path.find('/:') == std::string::npos) {
+            continue;
+        }
+        if (pattern_matches(split_path(key.path), segments)) {
+            return handler;
+        }
+    }
+    return nullptr;
+}
+
+HttpResponse HttpServer::dispatch(const HttpRequest& req) const {
+    HttpResponse response;
+    response.version(req.version());
+    response.set(http::field::server, "Shield/1.0");
+
+    std::string path(req.target());
+    // Strip query string for route matching.
+    const auto query_pos = path.find('?');
+    if (query_pos != std::string::npos) {
+        path = path.substr(0, query_pos);
+    }
+
+    auto handler = match_route(verb_to_method(req.method()), path);
+    if (handler) {
+        response = (*handler)(req);
+    } else if (default_handler_) {
+        auto def = default_handler_;
+        response = def(req);
+    } else {
+        response.result(http::status::not_found);
+        response.set(http::field::content_type, "application/json");
+        response.body() =
+            R"({"error":"not_found","message":"route not found"})";
+    }
+
+    if (response.base().find(http::field::content_type) ==
+        response.base().end()) {
+        response.set(http::field::content_type, "application/json");
+    }
+    response.prepare_payload();
+    return response;
 }
 
 void HttpServer::start() {
@@ -101,215 +251,79 @@ void HttpServer::do_accept() {
         });
 }
 
-void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
-    // Read and process HTTP requests on this connection (keep-alive loop).
-    auto buffer = std::make_shared<beast::flat_buffer>();
+// Per-connection session. The shared_from_this pattern ties the socket's
+// lifetime to the pending async chain: when a connection errors, reaches
+// EOF, or finishes a non-keep-alive exchange, the callbacks stop
+// re-arming and the last reference drops, closing the socket.
+struct HttpServer::Session : std::enable_shared_from_this<HttpServer::Session> {
+    HttpServer& server;
+    std::shared_ptr<net::ip::tcp::socket> socket;
+    std::shared_ptr<beast::flat_buffer> buffer;
 
-    // Use a weak_ptr to avoid capturing shared_ptr in async chain.
-    auto weak_socket = std::weak_ptr<net::ip::tcp::socket>(socket);
+    Session(HttpServer& srv, std::shared_ptr<net::ip::tcp::socket> sock)
+        : server(srv),
+          socket(std::move(sock)),
+          buffer(std::make_shared<beast::flat_buffer>()) {}
 
-    std::function<void()> read_request;
-    read_request = [this, socket, buffer, &read_request, weak_socket]() {
+    void start() { read_next(); }
+
+    void read_next() {
         auto req = std::make_shared<http::request<http::string_body>>();
+        http::async_read(*socket, *buffer, *req,
+                         [self = shared_from_this(), req](
+                             boost::beast::error_code ec, std::size_t) mutable {
+                             self->on_read(ec, std::move(req));
+                         });
+    }
 
-        http::async_read(
-            *socket, *buffer, *req,
-            [this, socket, buffer, req, weak_socket](
-                boost::beast::error_code ec, std::size_t bytes_transferred) {
-                (void)bytes_transferred;
+    void on_read(boost::beast::error_code ec,
+                 std::shared_ptr<http::request<http::string_body>> req) {
+        if (ec == http::error::end_of_stream) {
+            // Client closed the connection gracefully.
+            boost::system::error_code shutdown_ec;
+            socket->shutdown(net::ip::tcp::socket::shutdown_send, shutdown_ec);
+            return;  // dropping `self` closes the socket
+        }
+        if (ec) {
+            boost::system::error_code close_ec;
+            socket->close(close_ec);
+            return;  // read error, drop connection
+        }
 
-                if (ec == http::error::end_of_stream) {
-                    // Client closed connection gracefully.
-                    boost::system::error_code shutdown_ec;
-                    socket->shutdown(net::ip::tcp::socket::shutdown_send,
-                                     shutdown_ec);
-                    return;
-                }
+        HttpResponse response = server.dispatch(*req);
+        auto shared_response =
+            std::make_shared<HttpResponse>(std::move(response));
+        const bool keep =
+            connection_keeps_alive(*shared_response, req->version());
 
-                if (ec) {
-                    return;  // Read error, drop connection.
-                }
-
-                // Build response.
-                HttpResponse response;
-                response.version(req->version());
-                response.set(http::field::server, "Shield/1.0");
-
-                // Find matching route.
-                HttpMethod method = HttpMethod::ANY;
-                switch (req->method()) {
-                    case http::verb::get:
-                        method = HttpMethod::GET;
-                        break;
-                    case http::verb::post:
-                        method = HttpMethod::POST;
-                        break;
-                    case http::verb::put:
-                        method = HttpMethod::PUT;
-                        break;
-                    case http::verb::delete_:
-                        method = HttpMethod::DELETE_;
-                        break;
-                    case http::verb::patch:
-                        method = HttpMethod::PATCH;
-                        break;
-                    default:
-                        method = HttpMethod::ANY;
-                        break;
-                }
-
-                std::string path(req->target());
-                // Strip query string for route matching.
-                auto query_pos = path.find('?');
-                if (query_pos != std::string::npos) {
-                    path = path.substr(0, query_pos);
-                }
-
-                // Try exact match first.
-                auto it = routes_.find({method, path});
-                if (it != routes_.end()) {
-                    response = it->second(*req);
-                } else {
-                    // Try ANY method match.
-                    it = routes_.find({HttpMethod::ANY, path});
-                    if (it != routes_.end()) {
-                        response = it->second(*req);
-                    } else if (default_handler_) {
-                        response = default_handler_(*req);
-                    } else {
-                        response.result(http::status::not_found);
-                        response.set(http::field::content_type,
-                                     "application/json");
-                        response.body() =
-                            R"({"error":"not_found","message":"route not found"})";
-                    }
-                }
-
-                // Set common headers.
-                response.set(http::field::content_type,
-                             response.base().find(http::field::content_type) !=
-                                     response.base().end()
-                                 ? response.base()[http::field::content_type]
-                                 : "application/json");
-                response.prepare_payload();
-
-                // Write response.
-                auto shared_response =
-                    std::make_shared<HttpResponse>(std::move(response));
-
-                http::async_write(
-                    *socket, *shared_response,
-                    [this, socket, buffer, shared_response, weak_socket](
-                        boost::beast::error_code ec, std::size_t) {
-                        if (ec) {
-                            return;  // Write error, drop connection.
-                        }
-
-                        // Check if client wants keep-alive.
-                        if (shared_response->need_eof()) {
-                            boost::system::error_code shutdown_ec;
-                            socket->shutdown(
-                                net::ip::tcp::socket::shutdown_send,
-                                shutdown_ec);
-                            return;
-                        }
-
-                        // Read next request on the same connection.
-                        // Note: recursive async chain, not stack recursion.
-                        buffer->clear();
-                        auto new_req = std::make_shared<
-                            http::request<http::string_body>>();
-                        http::async_read(
-                            *socket, *buffer, *new_req,
-                            [this, socket, buffer, new_req, weak_socket](
-                                boost::beast::error_code ec2, std::size_t) {
-                                if (ec2) {
-                                    return;
-                                }
-                                // Process the new request inline.
-                                // For simplicity, handle synchronously here.
-                                // In production, dispatch to a strand.
-                            });
-                    });
+        http::async_write(
+            *socket, *shared_response,
+            [self = shared_from_this(), shared_response, keep](
+                boost::beast::error_code ec, std::size_t) mutable {
+                self->on_write(ec, keep);
             });
-    };
+    }
 
-    // Start reading.
-    auto req = std::make_shared<http::request<http::string_body>>();
-    http::async_read(
-        *socket, *buffer, *req,
-        [this, socket, buffer, req](boost::beast::error_code ec, std::size_t) {
-            if (ec) return;
+    void on_write(boost::beast::error_code ec, bool keep) {
+        if (ec) {
+            boost::system::error_code close_ec;
+            socket->close(close_ec);
+            return;  // write error, drop connection
+        }
+        if (!keep) {
+            // HTTP/1.0 request or "Connection: close": done with this
+            // connection.
+            boost::system::error_code shutdown_ec;
+            socket->shutdown(net::ip::tcp::socket::shutdown_send, shutdown_ec);
+            return;
+        }
+        buffer->clear();
+        read_next();
+    }
+};
 
-            HttpResponse response;
-            response.version(req->version());
-            response.set(http::field::server, "Shield/1.0");
-
-            HttpMethod method = HttpMethod::ANY;
-            switch (req->method()) {
-                case http::verb::get:
-                    method = HttpMethod::GET;
-                    break;
-                case http::verb::post:
-                    method = HttpMethod::POST;
-                    break;
-                case http::verb::put:
-                    method = HttpMethod::PUT;
-                    break;
-                case http::verb::delete_:
-                    method = HttpMethod::DELETE_;
-                    break;
-                case http::verb::patch:
-                    method = HttpMethod::PATCH;
-                    break;
-                default:
-                    method = HttpMethod::ANY;
-                    break;
-            }
-
-            std::string path(req->target());
-            auto query_pos = path.find('?');
-            if (query_pos != std::string::npos) {
-                path = path.substr(0, query_pos);
-            }
-
-            auto it = routes_.find({method, path});
-            if (it != routes_.end()) {
-                response = it->second(*req);
-            } else {
-                it = routes_.find({HttpMethod::ANY, path});
-                if (it != routes_.end()) {
-                    response = it->second(*req);
-                } else if (default_handler_) {
-                    response = default_handler_(*req);
-                } else {
-                    response.result(http::status::not_found);
-                    response.set(http::field::content_type, "application/json");
-                    response.body() =
-                        R"({"error":"not_found","message":"route not found"})";
-                }
-            }
-
-            if (response.base().find(http::field::content_type) ==
-                response.base().end()) {
-                response.set(http::field::content_type, "application/json");
-            }
-            response.prepare_payload();
-
-            auto shared_response =
-                std::make_shared<HttpResponse>(std::move(response));
-            http::async_write(*socket, *shared_response,
-                              [socket, shared_response](
-                                  boost::beast::error_code ec2, std::size_t) {
-                                  if (ec2) return;
-                                  if (shared_response->need_eof()) {
-                                      boost::system::error_code shutdown_ec;
-                                      socket->shutdown(
-                                          net::ip::tcp::socket::shutdown_send,
-                                          shutdown_ec);
-                                  }
-                              });
-        });
+void HttpServer::handle_session(std::shared_ptr<net::ip::tcp::socket> socket) {
+    std::make_shared<Session>(*this, std::move(socket))->start();
 }
 
 }  // namespace shield::net

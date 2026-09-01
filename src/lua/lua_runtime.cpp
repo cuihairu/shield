@@ -94,6 +94,16 @@ struct LuaRuntime::Impl {
     std::unordered_map<std::string, ScriptCacheEntry> script_cache;
     mutable std::mutex cache_mutex;
 
+    // Inbound HTTP routes registered via shield.httpd.*
+    std::vector<HttpRouteRegistration> http_routes;
+    std::function<void(const std::string&, const std::string&)> http_route_sink;
+    mutable std::mutex http_route_mutex;
+
+    // lua_State -> owning VM (for resolving the registering VM during
+    // on_init, before the service is published in the manager registry).
+    // Entries are lazily pruned when the weak_ptr expires.
+    std::unordered_map<lua_State*, std::weak_ptr<LuaVM>> vms_by_state;
+
     Impl() : default_state(std::make_shared<sol::state>()) {
         default_state->open_libraries(sol::lib::base, sol::lib::string,
                                       sol::lib::table, sol::lib::math);
@@ -178,8 +188,294 @@ LuaRuntime::LuaRuntime() : impl_(std::make_unique<Impl>()) {}
 
 LuaRuntime::~LuaRuntime() = default;
 
+namespace {
+
+// Segment-wise split of "/a/b" (empty segments skipped).
+std::vector<std::string> split_path_segments(const std::string& path) {
+    std::vector<std::string> segments;
+    size_t pos = 0;
+    while (pos < path.size()) {
+        const size_t next = path.find('/', pos);
+        const std::string seg = path.substr(
+            pos, next == std::string::npos ? std::string::npos : next - pos);
+        if (!seg.empty()) {
+            segments.push_back(seg);
+        }
+        if (next == std::string::npos) {
+            break;
+        }
+        pos = next + 1;
+    }
+    return segments;
+}
+
+// Match a ":param"-style pattern against a concrete path; captures params.
+bool route_pattern_match(
+    const std::string& pattern, const std::string& path,
+    std::vector<std::pair<std::string, std::string>>* out_params) {
+    const auto pat = split_path_segments(pattern);
+    const auto seg = split_path_segments(path);
+    if (pat.size() != seg.size()) {
+        return false;
+    }
+    std::vector<std::pair<std::string, std::string>> params;
+    for (size_t i = 0; i < pat.size(); ++i) {
+        if (!pat[i].empty() && pat[i][0] == ':') {
+            params.emplace_back(pat[i].substr(1), seg[i]);
+            continue;
+        }
+        if (pat[i] != seg[i]) {
+            return false;
+        }
+    }
+    if (out_params) {
+        *out_params = std::move(params);
+    }
+    return true;
+}
+
+}  // namespace
+
+std::shared_ptr<LuaVM> LuaRuntime::vm_for_state(lua_State* L) {
+    if (!L) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(impl_->http_route_mutex);
+    auto it = impl_->vms_by_state.find(L);
+    if (it == impl_->vms_by_state.end()) {
+        return nullptr;
+    }
+    auto vm = it->second.lock();
+    if (!vm) {
+        // VM is gone; prune the stale entry.
+        impl_->vms_by_state.erase(it);
+    }
+    return vm;
+}
+
+bool LuaRuntime::register_http_route(std::shared_ptr<LuaVM> vm,
+                                     const std::string& service_id,
+                                     const std::string& method,
+                                     const std::string& path,
+                                     sol::function handler,
+                                     std::string* error) {
+    if (service_id.empty()) {
+        if (error) {
+            *error =
+                "shield.httpd requires a running service context "
+                "(no current service)";
+        }
+        return false;
+    }
+    if (!vm) {
+        if (error) {
+            *error = "invalid VM";
+        }
+        return false;
+    }
+    if (!handler.valid()) {
+        if (error) {
+            *error = "handler must be a function";
+        }
+        return false;
+    }
+    if (path.empty() || path.front() != '/') {
+        if (error) {
+            *error = "path must start with '/'";
+        }
+        return false;
+    }
+
+    HttpRouteRegistration entry;
+    entry.service_id = service_id;
+    entry.method = method;
+    entry.path = path;
+    entry.vm = vm;
+    entry.handler = std::make_shared<sol::function>(std::move(handler));
+
+    std::function<void(const std::string&, const std::string&)> sink;
+    {
+        std::lock_guard<std::mutex> lock(impl_->http_route_mutex);
+        // Later registrations replace earlier ones for the same route,
+        // mirroring HttpServer::route semantics.
+        impl_->http_routes.erase(
+            std::remove_if(impl_->http_routes.begin(), impl_->http_routes.end(),
+                           [&method, &path](const HttpRouteRegistration& r) {
+                               return r.method == method && r.path == path;
+                           }),
+            impl_->http_routes.end());
+        impl_->http_routes.push_back(std::move(entry));
+        sink = impl_->http_route_sink;
+    }
+    if (sink) {
+        sink(method, path);
+    }
+    return true;
+}
+
+std::optional<HttpRouteRegistration> LuaRuntime::find_http_route(
+    const std::string& method, const std::string& path,
+    std::vector<std::pair<std::string, std::string>>* out_params) const {
+    std::vector<HttpRouteRegistration> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(impl_->http_route_mutex);
+        snapshot = impl_->http_routes;
+    }
+
+    std::vector<std::pair<std::string, std::string>> params;
+    for (const auto& route : snapshot) {
+        if (route.method != method) {
+            continue;
+        }
+        if (route_pattern_match(route.path, path, &params)) {
+            if (out_params) {
+                *out_params = std::move(params);
+            }
+            return route;
+        }
+    }
+    return std::nullopt;
+}
+
+std::vector<HttpRouteRegistration> LuaRuntime::http_routes() const {
+    std::lock_guard<std::mutex> lock(impl_->http_route_mutex);
+    return impl_->http_routes;
+}
+
+size_t LuaRuntime::http_route_count() const {
+    std::lock_guard<std::mutex> lock(impl_->http_route_mutex);
+    return impl_->http_routes.size();
+}
+
+void LuaRuntime::remove_http_routes_for_service(const std::string& service_id) {
+    std::lock_guard<std::mutex> lock(impl_->http_route_mutex);
+    impl_->http_routes.erase(
+        std::remove_if(impl_->http_routes.begin(), impl_->http_routes.end(),
+                       [&service_id](const HttpRouteRegistration& r) {
+                           return r.service_id == service_id;
+                       }),
+        impl_->http_routes.end());
+}
+
+void LuaRuntime::set_http_route_sink(
+    std::function<void(const std::string&, const std::string&)> sink) {
+    std::lock_guard<std::mutex> lock(impl_->http_route_mutex);
+    impl_->http_route_sink = std::move(sink);
+}
+
+bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
+                                   const nlohmann::json& request_json,
+                                   nlohmann::json& out_desc,
+                                   std::string* error) {
+    auto vm = route.vm.lock();
+    if (!vm || !vm->state()) {
+        if (error) {
+            *error = "service VM is gone";
+        }
+        return false;
+    }
+    if (!route.handler || !route.handler->valid()) {
+        if (error) {
+            *error = "handler is not callable";
+        }
+        return false;
+    }
+
+    try {
+        sol::state& lua = *vm->state();
+        sol::table t = lua.create_table();
+        t["method"] = request_json.value("method", "");
+        t["path"] = request_json.value("path", "");
+        t["query"] = request_json.value("query", "");
+        t["body"] = request_json.value("body", "");
+        sol::table params_t = lua.create_table();
+        if (request_json.contains("params")) {
+            for (auto it = request_json["params"].begin();
+                 it != request_json["params"].end(); ++it) {
+                params_t[it.key()] = it.value().get<std::string>();
+            }
+        }
+        t["params"] = params_t;
+        sol::table headers_t = lua.create_table();
+        if (request_json.contains("headers")) {
+            for (auto it = request_json["headers"].begin();
+                 it != request_json["headers"].end(); ++it) {
+                headers_t[it.key()] = it.value().get<std::string>();
+            }
+        }
+        t["headers"] = headers_t;
+
+        sol::object result = (*route.handler)(t);
+        out_desc = nlohmann::json::object();
+        out_desc["status"] = 200;
+        out_desc["json_body"] = false;
+
+        if (!result.valid() || result == sol::nil) {
+            out_desc["status"] = 204;
+            out_desc["body"] = "";
+            return true;
+        }
+        if (result.is<std::string>()) {
+            out_desc["body"] = result.as<std::string>();
+            return true;
+        }
+        if (!result.is<sol::table>()) {
+            if (error) {
+                *error = "handler must return a table, string, or nil";
+            }
+            return false;
+        }
+
+        sol::table resp = result.as<sol::table>();
+        sol::object status = resp["status"];
+        if (status.valid() && status.is<double>()) {
+            out_desc["status"] = static_cast<std::int64_t>(status.as<double>());
+        }
+        sol::object headers = resp["headers"];
+        if (headers.valid() && headers.is<sol::table>()) {
+            nlohmann::json h = nlohmann::json::object();
+            for (const auto& [k, v] : headers.as<sol::table>()) {
+                sol::object key = k;
+                sol::object value = v;
+                if (key.is<std::string>() && value.is<std::string>()) {
+                    h[key.as<std::string>()] = value.as<std::string>();
+                }
+            }
+            out_desc["headers"] = std::move(h);
+        }
+        sol::object body = resp["body"];
+        if (body.valid()) {
+            if (body.is<std::string>()) {
+                out_desc["body"] = body.as<std::string>();
+            } else {
+                // Non-string body: serialize through the shared Lua->JSON
+                // conversion (unsupported values become "<unsupported>").
+                nlohmann::json encoded;
+                lua_to_json(body, &encoded);
+                out_desc["body"] = encoded.dump();
+                out_desc["json_body"] = true;
+            }
+        } else {
+            out_desc["body"] = "";
+        }
+        return true;
+    } catch (const sol::error& e) {
+        out_desc = nlohmann::json::object();
+        out_desc["lua_error"] = std::string(e.what());
+        return true;
+    } catch (const std::exception& e) {
+        if (error) {
+            *error = std::string(e.what());
+        }
+        return false;
+    }
+}
+
 std::shared_ptr<LuaVM> LuaRuntime::create_vm() {
-    return std::make_shared<LuaVM>();
+    auto vm = std::make_shared<LuaVM>();
+    std::lock_guard<std::mutex> lock(impl_->http_route_mutex);
+    impl_->vms_by_state[vm->state()->lua_state()] = vm;
+    return vm;
 }
 
 bool LuaRuntime::load_script(std::shared_ptr<LuaVM> vm,
@@ -864,10 +1160,20 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
                 result->push_back(nullptr);
             } else if (obj.is<bool>()) {
                 result->push_back(obj.as<bool>());
-            } else if (obj.is<int64_t>()) {
-                result->push_back(obj.as<int64_t>());
             } else if (obj.is<double>()) {
-                result->push_back(obj.as<double>());
+                // sol2's is<int64_t>() accepts any Lua number when
+                // SOL_NUMBER_PRECISION_CHECKS is off (the default), so checking
+                // it first would let as<int64_t>() truncate floats (e.g. 2.5 ->
+                // 2). Read as double, then only round-trip through int64_t when
+                // the value is a whole number so the JSON keeps its original
+                // type. Mirrors lua_to_json above.
+                const double d = obj.as<double>();
+                const auto as_int = static_cast<std::int64_t>(d);
+                if (static_cast<double>(as_int) == d) {
+                    result->push_back(as_int);
+                } else {
+                    result->push_back(d);
+                }
             } else if (obj.is<std::string>()) {
                 result->push_back(obj.as<std::string>());
             } else {
