@@ -11,6 +11,7 @@
 #include "shield/cluster/cluster_manager.hpp"
 #endif
 #include <algorithm>
+#include <atomic>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <caf/actor_system.hpp>
@@ -659,6 +660,47 @@ void shutdown() {
     auto& log = shield::log::get_logger("bootstrap");
     SHIELD_LOG_INFO(log, "Shield runtime shutting down...");
 
+    // shutdown.timeout.* budgets (milliseconds). Built-in defaults keep a
+    // stuck on_exit or plugin shutdown callback from hanging process exit;
+    // the watchdog enforces the total budget by terminating the process.
+    const auto drain_budget_ms =
+        shield::config::get_int("shutdown.timeout.service_drain", 0);
+    const auto stop_budget_ms =
+        shield::config::get_int("shutdown.timeout.service_stop", 10000);
+    const auto plugin_budget_ms =
+        shield::config::get_int("shutdown.timeout.plugin_shutdown", 10000);
+    const auto total_budget_ms =
+        shield::config::get_int("shutdown.timeout.total", 30000);
+
+    // Total-budget watchdog: a detached thread force-exits the process if
+    // graceful shutdown has not completed in time.
+    auto shutdown_done = std::make_shared<std::atomic<bool>>(false);
+    if (total_budget_ms > 0) {
+        std::thread([done = shutdown_done, total_budget_ms]() {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(total_budget_ms));
+            if (!done->load()) {
+                shield::log::get_logger("bootstrap")
+                    .fatal(
+                        "shutdown total budget exhausted, forcing process "
+                        "exit");
+                std::_Exit(70);
+            }
+        }).detach();
+    }
+
+    // service_drain: give in-flight forked tasks a bounded window to finish
+    // before tearing services down (on_shutdown(ctx) is still a target
+    // contract; draining pending tasks is its current stand-in).
+    if (drain_budget_ms > 0 && g_state->lua_services) {
+        const auto drain_deadline = std::chrono::steady_clock::now() +
+                                    std::chrono::milliseconds(drain_budget_ms);
+        while (g_state->lua_services->pending_task_count_total() > 0 &&
+               std::chrono::steady_clock::now() < drain_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
     // Run PRE_SHUTDOWN starters
     run_starters(Phase::PRE_SHUTDOWN);
 
@@ -702,7 +744,7 @@ void shutdown() {
 
     // Shutdown actor system (which stops all actors)
     if (g_state->lua_services) {
-        g_state->lua_services->shutdown_all("stopping");
+        g_state->lua_services->shutdown_all("stopping", stop_budget_ms);
     }
     g_state->lua_services.reset();
     g_state->lua_runtime.reset();
@@ -721,10 +763,13 @@ void shutdown() {
     // Tear down the plugin system (invokes each instance's shutdown
     // callback). Libraries stay mapped until process exit so any holder of a
     // resolved vtable remains valid.
-    shield::plugin::global_host().shutdown();
+    shield::plugin::global_host().shutdown(plugin_budget_ms);
 
     g_state->initialized = false;
     SHIELD_LOG_INFO(log, "Shield runtime shutdown complete");
+
+    // Disarm the total-budget watchdog before logging tears down.
+    shutdown_done->store(true);
 
     // Shutdown logging after the final runtime log has been emitted.
     shield::log::Logger::shutdown();

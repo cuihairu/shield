@@ -191,7 +191,11 @@ public:
     bool startup(const PluginConfig& cfg, std::string& error);
 
     // Stop all started instances in reverse dependency order, then clear.
-    void shutdown();
+    // `budget_ms` bounds the total time spent in instance shutdown
+    // callbacks: once exhausted, remaining instances are marked stopped
+    // without invoking their callback (a stuck shutdown callback cannot
+    // hang process exit). <= 0 means unbounded.
+    void shutdown(int64_t budget_ms = 0);
 
     // --- individual pipeline stages (exposed for testing) ---
     void scan(const std::string& directory);

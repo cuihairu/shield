@@ -123,10 +123,15 @@ struct LuaServiceManager::Impl {
 
     // Per-service consecutive error counter for panic detection.
     // Reset on successful handler completion; incremented on uncaught error.
+    // Guarded by error_mutex: error hooks run on different service actors.
+    std::mutex error_mutex;
     std::unordered_map<std::string, int> error_counts;
 
     // Track recently exited services for service_dead error distinction.
-    // Cleared periodically to avoid unbounded growth.
+    // Reads happen under registry_mutex (shared); writes under
+    // registry_mutex (unique). Entries are removed when the same name is
+    // respawned, and the set is capped to bound memory.
+    static constexpr size_t kRecentlyExitedLimit = 4096;
     std::unordered_set<std::string> recently_exited;
 
     // Track last sender per service for context_expired detection.
@@ -902,6 +907,9 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             impl_->owned_names[service_name].insert(service_name);
             impl_->service_order.push_back(service_name);
             impl_->reserved_names.erase(service_name);
+            // A respawned name is alive again: clear its exit tombstone so
+            // senders get service_not_found-vs-dead distinction right.
+            impl_->recently_exited.erase(service_name);
             reservation.published = true;
         }
 
@@ -983,17 +991,22 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
     const std::string service_id = query_service(target);
 
     std::optional<caf::actor> actor_opt;
+    bool target_recently_exited = false;
     {
+        // Also read recently_exited under the same lock: exit() inserts
+        // into it under the unique lock on another thread.
         std::shared_lock lock(impl_->registry_mutex);
         auto it = impl_->service_actors.find(service_id);
         if (it != impl_->service_actors.end()) {
             actor_opt = it->second;
         }
+        target_recently_exited =
+            impl_->recently_exited.count(service_id) > 0 ||
+            impl_->recently_exited.count(std::string(target)) > 0;
     }
     if (!actor_opt) {
         if (error) {
-            if (impl_->recently_exited.count(service_id) > 0 ||
-                impl_->recently_exited.count(std::string(target)) > 0) {
+            if (target_recently_exited) {
                 *error = "service dead: " + std::string(target);
             } else {
                 *error = "service not found: " + std::string(target);
@@ -1273,6 +1286,11 @@ void LuaServiceManager::exit(std::string_view service_id,
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
                                    impl_->service_order.end());
+        // Cap the tombstone set: dropping history only degrades the
+        // service_dead vs service_not_found distinction for very old names.
+        if (impl_->recently_exited.size() >= Impl::kRecentlyExitedLimit) {
+            impl_->recently_exited.clear();
+        }
         impl_->recently_exited.insert(id);
 
         // Drop any shield.httpd.* routes owned by this service: their
@@ -1295,8 +1313,13 @@ void LuaServiceManager::exit(std::string_view service_id,
     impl_->stop_and_wait_for_actors(actors_to_stop);
 }
 
-void LuaServiceManager::shutdown_all(std::string_view reason) {
+void LuaServiceManager::shutdown_all(std::string_view reason,
+                                     int64_t stop_budget_ms) {
     impl_->stopping.store(true);
+    const auto deadline = stop_budget_ms > 0
+                              ? std::chrono::steady_clock::now() +
+                                    std::chrono::milliseconds(stop_budget_ms)
+                              : std::chrono::steady_clock::time_point::max();
     std::unordered_set<std::string> seen;
     std::vector<std::string> order;
     {
@@ -1310,12 +1333,51 @@ void LuaServiceManager::shutdown_all(std::string_view reason) {
             exists = impl_->services.contains(*it);
         }
         if (seen.insert(*it).second && exists) {
-            exit(*it, reason);
+            if (std::chrono::steady_clock::now() < deadline) {
+                exit(*it, reason);
+            } else {
+                // Graceful budget exhausted: skip on_exit and the per-service
+                // teardown waits; just remove the registration and kill the
+                // actor. A single stuck on_exit inside exit() is bounded by
+                // the process-level shutdown watchdog, not this check.
+                force_remove(*it, std::string(reason));
+            }
         }
     }
     {
         std::unique_lock lock(impl_->registry_mutex);
         impl_->service_order.clear();
+    }
+}
+
+void LuaServiceManager::force_remove(const std::string& id,
+                                     const std::string& reason) {
+    (void)reason;
+    caf::actor actor;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        if (auto names_it = impl_->owned_names.find(id);
+            names_it != impl_->owned_names.end()) {
+            for (const auto& name : names_it->second) {
+                impl_->published_names.erase(name);
+            }
+            impl_->owned_names.erase(names_it);
+        }
+        impl_->services.erase(id);
+        impl_->service_order.erase(std::remove(impl_->service_order.begin(),
+                                               impl_->service_order.end(), id),
+                                   impl_->service_order.end());
+        impl_->recently_exited.insert(id);
+        impl_->runtime.remove_http_routes_for_service(id);
+        if (auto actor_it = impl_->service_actors.find(id);
+            actor_it != impl_->service_actors.end()) {
+            actor = actor_it->second;
+            impl_->service_actors.erase(actor_it);
+        }
+    }
+    cancel_forked_tasks_for_service(id);
+    if (actor) {
+        caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
     }
 }
 
@@ -1667,6 +1729,11 @@ size_t LuaServiceManager::pending_task_count(
     return it->second.size();
 }
 
+size_t LuaServiceManager::pending_task_count_total() const {
+    std::lock_guard<std::mutex> lock(impl_->task_mutex);
+    return impl_->pending_tasks.size();
+}
+
 // Push a JSON value onto a raw lua_State using the C API (avoids sol2
 // stack-residue quirks when targeting a specific coroutine thread).
 static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
@@ -1973,9 +2040,13 @@ void LuaServiceManager::invoke_error_hook(const std::string& service_id,
         return;
     }
 
-    // Increment error counter.
-    int& count = impl_->error_counts[service_id];
-    ++count;
+    // Increment error counter (read the count under the lock; the panic
+    // threshold check below uses the local snapshot).
+    int count = 0;
+    {
+        std::lock_guard lock(impl_->error_mutex);
+        count = ++impl_->error_counts[service_id];
+    }
 
     // Call on_error(err, context) if defined on the service table.
     impl_->runtime.invoke_hook(service, "on_error", error_message, error_type,
@@ -1992,6 +2063,7 @@ void LuaServiceManager::invoke_error_hook(const std::string& service_id,
 }
 
 void LuaServiceManager::reset_error_count(const std::string& service_id) {
+    std::lock_guard lock(impl_->error_mutex);
     impl_->error_counts.erase(service_id);
 }
 

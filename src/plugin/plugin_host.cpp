@@ -918,7 +918,7 @@ bool PluginHost::startup(const PluginConfig& cfg, std::string& error) {
 // ---------------------------------------------------------------------------
 // shutdown: reverse order, then clear all state.
 // ---------------------------------------------------------------------------
-void PluginHost::shutdown() {
+void PluginHost::shutdown(int64_t budget_ms) {
     // Stop in reverse topological order (dependents first). We invoke each
     // instance's shutdown callback but DO NOT dlclose the libraries or clear
     // instances_ here: other host subsystems may still hold raw vtable
@@ -927,11 +927,25 @@ void PluginHost::shutdown() {
     // the PluginHost itself is destroyed (process teardown — by then every
     // data pool that resolved a vtable has already been torn down, because
     // global_host() is constructed before database() in bootstrap).
+    const auto deadline = budget_ms > 0
+                              ? std::chrono::steady_clock::now() +
+                                    std::chrono::milliseconds(budget_ms)
+                              : std::chrono::steady_clock::time_point::max();
     for (auto it = impl_->start_order.rbegin(); it != impl_->start_order.rend();
          ++it) {
         Instance* inst = find_instance_mut(*it);
         if (!inst) continue;
         if (inst->handle && inst->state == State::started) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                SHIELD_LOG_ERROR(
+                    shield::log::get_logger("plugin"),
+                    "plugin shutdown budget exhausted, skipping shutdown "
+                    "callback for instance: " +
+                        inst->decl.id);
+                inst->handle = nullptr;
+                inst->state = State::stopped;
+                continue;
+            }
             if (inst->handle->shutdown) inst->handle->shutdown(inst->handle);
             inst->handle = nullptr;
             inst->state = State::stopped;

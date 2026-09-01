@@ -90,8 +90,15 @@ public:
     // Exit a service
     void exit(std::string_view service_id, std::string_view reason = "normal");
 
-    // Exit all services in reverse spawn order.
-    void shutdown_all(std::string_view reason = "stopping");
+    // Exit all services in reverse spawn order. `stop_budget_ms` bounds the
+    // graceful phase (on_exit + actor teardown per service, checked between
+    // services): once exhausted, the remaining services take the force path
+    // (no on_exit; registry removal + actor kill). <= 0 means unbounded.
+    void shutdown_all(std::string_view reason = "stopping",
+                      int64_t stop_budget_ms = 0);
+
+    // Total forked tasks still pending across all services (drain signal).
+    size_t pending_task_count_total() const;
 
     // Get current service ID
     std::string current_service_id() const;
@@ -272,6 +279,10 @@ private:
     // successfully spawned child is exited again ("timeout") to honor the
     // documented init-timeout contract.
     void finish_async_spawn(uint64_t session, const SpawnResult& result);
+
+    // Force removal used by shutdown_all once the graceful budget is spent:
+    // registry teardown + actor kill without invoking on_exit.
+    void force_remove(const std::string& id, const std::string& reason);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

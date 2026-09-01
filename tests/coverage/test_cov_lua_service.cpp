@@ -1472,3 +1472,40 @@ BOOST_AUTO_TEST_CASE(PluginRegisterLuaInteractions) {
         host.shutdown();
     }
 }
+
+// ---------------------------------------------------------------------------
+// shutdown_all stop budget: once the graceful budget is spent, the remaining
+// services take the force path (no on_exit), bounding total shutdown time.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ShutdownAllBudgetForcesRemainingServices) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // on_exit busy-waits ~500ms (exit() runs it synchronously on the
+    // calling thread, so the delay is deterministic for this test).
+    const std::string module =
+        write_script("cov_slow_exit.lua",
+                     "local M = {}\n"
+                     "function M.on_init() end\n"
+                     "function M.on_exit(reason)\n"
+                     "    local start = shield.monotonic()\n"
+                     "    while shield.monotonic() - start < 500 do end\n"
+                     "end\n"
+                     "return M\n");
+    auto a = manager.spawn(module, opts_for("cov_budget_a"));
+    auto b = manager.spawn(module, opts_for("cov_budget_b"));
+    BOOST_REQUIRE(a.success);
+    BOOST_REQUIRE(b.success);
+
+    const auto begin = std::chrono::steady_clock::now();
+    manager.shutdown_all("budget", /*stop_budget_ms=*/1);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - begin);
+
+    // Service A takes the graceful path (one 500ms on_exit); service B is
+    // past the deadline and must be force-removed without another 500ms.
+    BOOST_CHECK_LT(elapsed.count(), 900);
+    BOOST_CHECK_EQUAL(manager.pending_task_count_total(), 0u);
+}
