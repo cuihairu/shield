@@ -1,38 +1,14 @@
-# Development Environment Configuration
-# app-dev.yaml - Development environment configuration overrides
+# Development environment configuration overlay.
+# Merge over a base config: shield --config config/app.yaml --config config/app-dev.yaml
+# Only keys the runtime actually consumes are listed here.
 
-# Override logger for development
 log:
-  global_level: "debug"
-  console:
-    enabled: true
-  file:
-    enabled: true
+  level: "debug"
 
-# Database for development
-database:
-  host: "localhost"
-  name: "shield_dev"
-  username: "dev_user"
-  password: "dev_password"
-
-# Server settings for development
-server:
-  port: 8080
-  max_connections: 10
-
-# Development game settings
-game:
-  max_players: 5
-  difficulty: "easy"
-  
-# Lua settings for development
 lua:
-  auto_reload: true
-  debug_mode: true
   script_path: "scripts"
   module_path: "scripts/?.lua;scripts/?/init.lua"
   cache:
-    enabled: false  # 开发环境禁用缓存以便热重载
+    enabled: false  # 开发环境禁用缓存，每次重读脚本
     max_size: 50
     ttl_seconds: 300

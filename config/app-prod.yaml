@@ -1,39 +1,13 @@
-# Production Environment Configuration  
-# app-prod.yaml - Production environment configuration overrides
+# Production environment configuration overlay.
+# Merge over a base config: shield --config config/app.yaml --config config/app-prod.yaml
+# Only keys the runtime actually consumes are listed here.
 
-# Production logger settings
 log:
-  global_level: "warn"
-  console:
-    enabled: false
-  file:
-    enabled: true
-    log_file: "/var/log/shield/shield.log"
+  level: "warn"
 
-# Production database
-database:
-  host: "prod-db.internal"
-  name: "shield_production"
-  username: "prod_user"
-  # password should be set via environment variable
-
-# Production server settings
-server:
-  host: "0.0.0.0"
-  port: 80
-  max_connections: 10000
-
-# Production game settings
-game:
-  max_players: 1000
-  difficulty: "hard"
-  
-# Lua settings for production
 lua:
-  auto_reload: false
-  debug_mode: false
-  script_path: "/opt/shield/scripts"
-  module_path: "/opt/shield/scripts/?.lua;/opt/shield/scripts/?/init.lua"
+  script_path: "scripts"
+  module_path: "scripts/?.lua;scripts/?/init.lua"
   cache:
     enabled: true   # 生产环境启用缓存提升性能
     max_size: 200
