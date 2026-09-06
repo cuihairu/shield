@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE CovBaseId
 #include <boost/test/unit_test.hpp>
+#include <set>
 #include <string>
 
 #include "shield/base/id.hpp"
@@ -65,6 +66,42 @@ BOOST_AUTO_TEST_CASE(NodeIdLocalAndFromString) {
     BOOST_CHECK(parsed == NodeId("node-a"));
     BOOST_CHECK(NodeId() == NodeId(""));
     BOOST_CHECK(NodeId("a") != NodeId("b"));
+}
+
+// ---------------------------------------------------------------------------
+// Branch-coverage additions (purely additive).
+// ---------------------------------------------------------------------------
+
+// The Mersenne-Twister behind TraceId::generate() only refreshes its state
+// block every 312 draws; generating past that boundary exercises the refill
+// branches inside the inlined engine.
+BOOST_AUTO_TEST_CASE(TraceIdGenerateAcrossTwisterRefills) {
+    std::set<uint64_t> seen;
+    for (int i = 0; i < 1200; ++i) {
+        seen.insert(TraceId::generate().value());
+    }
+    // With 48 random bits per id, collisions are astronomically unlikely.
+    BOOST_CHECK_GT(seen.size(), 1000u);
+}
+
+BOOST_AUTO_TEST_CASE(ServiceIdGenerateAcrossCounterWindow) {
+    std::set<uint64_t> seen;
+    for (int i = 0; i < 500; ++i) {
+        seen.insert(ServiceId::generate().value());
+    }
+    BOOST_CHECK_EQUAL(seen.size(), 500u);
+}
+
+BOOST_AUTO_TEST_CASE(TraceIdRoundTripThroughString) {
+    for (int i = 0; i < 50; ++i) {
+        const auto id = TraceId::generate();
+        const auto parsed = TraceId::from_string(id.to_string());
+        BOOST_CHECK_EQUAL(parsed.value(), id.value());
+        BOOST_CHECK(parsed == id);
+    }
+    // A plain "trace:"-less hex string also round-trips.
+    const TraceId made(0x0123456789abcdefULL);
+    BOOST_CHECK(TraceId::from_string(made.to_string()) == made);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

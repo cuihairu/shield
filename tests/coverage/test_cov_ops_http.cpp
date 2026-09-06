@@ -290,4 +290,105 @@ BOOST_AUTO_TEST_CASE(EvalEndpointVariants) {
     BOOST_CHECK(resp["type"] == "error");
 }
 
+// ---------------------------------------------------------------------------
+// Branch-coverage additions (purely additive).
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(StatusEndpointWithLiveServiceAndInstance) {
+    // With a live service the /ops/status services task actually runs (its
+    // lambda body executes) instead of timing out.
+    const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_svc2";
+    fs::create_directories(dir);
+    std::ofstream(dir / "svc.lua") << "return { on_init = function() end }\n";
+    auto spawned =
+        manager->spawn((dir / "svc.lua").string(),
+                       R"({"name":"cov_ops_svc2","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response =
+        client.get("/ops/status", std::chrono::milliseconds(2500));
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["services"].is_array());
+    BOOST_CHECK(resp["data"]["services"].size() >= 1);
+    BOOST_CHECK(resp["data"]["plugins"].is_array());
+    BOOST_CHECK(resp["data"]["plugins"].size() == 1);
+
+    manager->shutdown_all("done");
+}
+
+BOOST_AUTO_TEST_CASE(ConfigEndpointValueShapes) {
+    auto& cfg = shield::config::global_config();
+    cfg.set("cov3.esc",
+            std::string("quote\" back\\slash new\nline uni\xc3\x97"));
+    cfg.set("cov3.int", static_cast<int64_t>(-42));
+    cfg.set("cov3.dbl", 2.5);
+    cfg.set("cov3.flag", true);
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    auto get_data = [&](const std::string& path) -> nlohmann::json {
+        std::string response =
+            client.get(path, std::chrono::milliseconds(1500));
+        BOOST_REQUIRE(!response.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+        return nlohmann::json::parse(RawHttpClient::body(response))["data"];
+    };
+
+    // Values are returned through config::get() as strings.
+    BOOST_CHECK_EQUAL(get_data("/ops/config?key=cov3.esc")
+                          .get<std::string>()
+                          .find("quote\" back\\slash"),
+                      0u);
+    BOOST_CHECK_EQUAL(get_data("/ops/config?key=cov3.int"), "-42");
+    BOOST_CHECK_EQUAL(get_data("/ops/config?key=cov3.dbl"), "2.500000");
+    BOOST_CHECK_EQUAL(get_data("/ops/config?key=cov3.flag"), "true");
+
+    // A query string without any key= parameter falls back to the hint.
+    BOOST_CHECK(
+        get_data("/ops/config?other=1").get<std::string>().find("key") !=
+        std::string::npos);
+    // An empty key value also yields the hint.
+    BOOST_CHECK(get_data("/ops/config?key=").get<std::string>().find("key") !=
+                std::string::npos);
+    // A key whose value serializes to an empty string yields null data.
+    cfg.set("cov3.empty", std::string(""));
+    BOOST_CHECK(get_data("/ops/config?key=cov3.empty").is_null());
+}
+
+BOOST_AUTO_TEST_CASE(EvalEndpointBodyDiversity) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    // Error messages containing escapable characters flow through the
+    // error-response dump.
+    std::string response = client.post(
+        "/ops/eval",
+        R"json({"code": "error('boom \"quoted\" back\\slash new\nline ok'"})json",
+        std::chrono::milliseconds(2500));
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 400);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("boom") !=
+                std::string::npos);
+
+    // Successful values with the same diversity.
+    response = client.post(
+        "/ops/eval",
+        R"json({"code": "return 'val \"q\" 123456789012345678901234567890'"})json",
+        std::chrono::milliseconds(2500));
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"].size() == 1);
+    BOOST_CHECK(resp["data"][0].get<std::string>().find("val \"q\"") == 0u);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

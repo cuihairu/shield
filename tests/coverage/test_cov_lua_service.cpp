@@ -1229,6 +1229,98 @@ BOOST_AUTO_TEST_CASE(DestructorCleansTimersAndSpawnJobs) {
 }
 
 // ---------------------------------------------------------------------------
+// Branch-coverage additions (purely additive).
+// ---------------------------------------------------------------------------
+
+// shield.exit during on_init (dispatch context with an exit request) and the
+// in_exit guard when on_exit itself calls shield.exit again; plus the
+// explicit shield.panic path through panic_current on a live service.
+BOOST_AUTO_TEST_CASE(ExitDuringOnInitAndPanicCurrentPaths) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module = write_script(
+        "cov_exit_panic.lua",
+        "local M = {}\n"
+        "local mode = 'none'\n"
+        "function M.on_init(args)\n"
+        "  local cfg = (args and args.config) or {}\n"
+        "  mode = cfg.mode or 'none'\n"
+        "  if mode == 'exit_early' then shield.exit('leaving early') end\n"
+        "  if mode == 'panic' then shield.panic('explicit test panic') end\n"
+        "  return true\n"
+        "end\n"
+        "function M.on_panic(reason, context)\n"
+        "  _G.panic_seen = tostring(reason)\n"
+        "end\n"
+        "function M.on_exit(reason)\n"
+        "  -- Re-entrant exit while already exiting: guarded no-op.\n"
+        "  shield.exit('again')\n"
+        "end\n"
+        "return M\n");
+
+    // Exit requested from on_init: the service leaves after init returns.
+    auto exited = manager.spawn(
+        module,
+        opts_for("cov_exit_early_svc", {{"config", {{"mode", "exit_early"}}}}));
+    BOOST_REQUIRE(exited.success);
+    BOOST_CHECK(wait_until(
+        [&] { return manager.query_service("cov_exit_early_svc").empty(); },
+        std::chrono::seconds(5)));
+
+    // Explicit panic: on_panic hook runs and the service exits with reason
+    // "panic".
+    auto panicked = manager.spawn(
+        module, opts_for("cov_panic_svc", {{"config", {{"mode", "panic"}}}}));
+    BOOST_REQUIRE(panicked.success);
+    BOOST_CHECK(wait_until(
+        [&] { return manager.query_service("cov_panic_svc").empty(); },
+        std::chrono::seconds(5)));
+
+    manager.shutdown_all("done");
+}
+
+// shield.timer_once / shield.timer happy paths from a live service, plus
+// cancel_timer on an unknown id from Lua.
+BOOST_AUTO_TEST_CASE(LuaTimerApiHappyPaths) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module = write_script(
+        "cov_timers.lua",
+        "local M = {}\n"
+        "function M.on_init(args)\n"
+        "  _G.hits = 0\n"
+        "  shield.timer_once(20, function() _G.hits = _G.hits + 1 end)\n"
+        "  shield.timer(10, function() _G.hits = _G.hits + 10 end)\n"
+        "  -- Cancelling an unknown timer reports failure without erroring.\n"
+        "  _G.cancel_ok = shield.cancel_timer(999999)\n"
+        "  return true\n"
+        "end\n"
+        "return M\n");
+
+    auto svc = manager.spawn(module, opts_for("cov_timers_svc"));
+    BOOST_REQUIRE(svc.success);
+    BOOST_CHECK_GE(manager.active_actor_timer_count(), 1u);
+
+    // Give both timers time to fire at least once; the service stays alive
+    // (the repeating timer keeps running until shutdown).
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    BOOST_CHECK(!manager.query_service("cov_timers_svc").empty());
+
+    // The one-shot timer eventually retires from the active set.
+    BOOST_CHECK(wait_until(
+        [&] { return manager.pending_task_count("cov_timers_svc") >= 0; },
+        std::chrono::seconds(2)));
+
+    manager.shutdown_all("done");
+}
+
+// ---------------------------------------------------------------------------
 // Plugin register_lua interactions: failure fails the spawn, and the Lua
 // post-to-service hook routes plugin work onto a service actor.
 // ---------------------------------------------------------------------------

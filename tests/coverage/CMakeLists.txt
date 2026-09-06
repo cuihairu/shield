@@ -62,3 +62,7 @@ shield_coverage_test(test_cov_lua_gateway_bridge shield_lua shield_core CAF::cor
 shield_coverage_test(test_cov_lua_http_bridge shield_lua shield_core shield_net CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_runtime shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service shield_lua shield_core CAF::core CAF::io)
+
+# The ops HTTP client drains each response until its read deadline, so the
+# suite's wall time is dominated by per-request timeouts; give it headroom.
+set_tests_properties(test_cov_ops_http PROPERTIES TIMEOUT 300)

@@ -844,3 +844,129 @@ BOOST_AUTO_TEST_CASE(ValidateFullValidConfig) {
     // require_actors = false skips the actor section entirely.
     expect_valid("app:\n  name: solo\n", no_actors());
 }
+
+// ---------------------------------------------------------------------------
+// Branch-coverage additions (purely additive).
+// ---------------------------------------------------------------------------
+
+// Typed getters hitting the variant alternatives their happy paths skip:
+// arrays and booleans fall through to the defaults, arrays serialize through
+// the string getter's fallback, and has() distinguishes stored keys.
+BOOST_AUTO_TEST_CASE(TypedGettersOnCrossTypeKeys) {
+    Config c;
+    c.set("arr", ConfigValue(std::vector<std::string>{"one", "two"}));
+    c.set("flag", ConfigValue(true));
+    c.set("num", ConfigValue(int64_t{11}));
+    c.set("real", ConfigValue(0.5));
+    c.set("name", ConfigValue(std::string("val")));
+
+    // Array-typed keys: every scalar getter falls back to its default.
+    BOOST_CHECK_EQUAL(c.get_string("arr", "fallback"), "fallback");
+    BOOST_CHECK_EQUAL(c.get_int("arr", -3), -3);
+    BOOST_CHECK_EQUAL(c.get_double("arr", -0.5), -0.5);
+    BOOST_CHECK_EQUAL(c.get_bool("arr", true), true);
+
+    // Bool-typed keys through the numeric getters.
+    BOOST_CHECK_EQUAL(c.get_int("flag", 9), 9);
+    BOOST_CHECK_EQUAL(c.get_double("flag", 9.5), 9.5);
+
+    // String-typed keys through the numeric/bool getters (parse fallbacks).
+    BOOST_CHECK_EQUAL(c.get_int("name", 42), 42);
+    BOOST_CHECK_EQUAL(c.get_double("name", 4.5), 4.5);
+
+    // Array values still round-trip through the dedicated accessor.
+    const auto items = c.get_string_array("arr");
+    BOOST_REQUIRE_EQUAL(items.size(), 2U);
+    BOOST_CHECK_EQUAL(items[0], "one");
+    BOOST_CHECK_EQUAL(items[1], "two");
+    // Non-array keys yield an empty vector.
+    BOOST_CHECK(c.get_string_array("num").empty());
+    BOOST_CHECK(c.get_string_array("missing").empty());
+
+    // has() only reports stored keys.
+    BOOST_CHECK(c.has("num"));
+    BOOST_CHECK(!c.has("missing"));
+}
+
+// YAML scalars stored as strings exercise the conversion fallbacks of the
+// typed getters when loaded (rather than set()).
+BOOST_AUTO_TEST_CASE(TypedGettersOnLoadedUntaggedScalars) {
+    Config c;
+    BOOST_CHECK(c.load_yaml_string(
+        "plain_int: 41\nplain_float: 0.25\nplain_bool: false\n"
+        "listy: [a, b]\n"));
+    // yaml-cpp 0.9 keeps plain scalars untagged, so they arrive as strings.
+    BOOST_CHECK_EQUAL(c.get_int("plain_int"), 41);
+    BOOST_CHECK_EQUAL(c.get_double("plain_float"), 0.25);
+    BOOST_CHECK_EQUAL(c.get_bool("plain_bool"), false);
+    // Sequences of scalars are stored as arrays.
+    const auto items = c.get_string_array("listy");
+    BOOST_REQUIRE_EQUAL(items.size(), 2U);
+    BOOST_CHECK_EQUAL(items[0], "a");
+    BOOST_CHECK_EQUAL(items[1], "b");
+}
+
+BOOST_AUTO_TEST_CASE(LoadYamlFromDirectoryPathFails) {
+    Config c;
+    // Opening a directory as a file fails; the loader reports false.
+    BOOST_CHECK(!c.load_yaml(std::string(kTmpDir)));
+    BOOST_CHECK(!c.has("anything"));
+}
+
+// Explicit YAML tags route scalars into the typed storage alternatives,
+// and sequences containing non-scalars are dropped from the flat storage.
+BOOST_AUTO_TEST_CASE(FlattenTagsAndNonScalarSequences) {
+    Config c;
+    BOOST_CHECK(
+        c.load_yaml_string("ti: !!int 7\n"
+                           "tf: !!float 2.5\n"
+                           "tb: !!bool false\n"
+                           "allsc: [x, y]\n"
+                           "mixed: [a, [b]]\n"
+                           "map_in_seq: [{k: 1}]\n"));
+    BOOST_CHECK_EQUAL(c.get_int("ti"), 7);
+    BOOST_CHECK_EQUAL(c.get_double("tf"), 2.5);
+    BOOST_CHECK_EQUAL(c.get_bool("tb"), false);
+    // Typed storage converts through the string getter.
+    BOOST_CHECK_EQUAL(c.get_string("ti"), "7");
+    BOOST_CHECK_EQUAL(c.get_string("tb"), "false");
+
+    // All-scalar sequences survive flattening.
+    BOOST_CHECK(c.has("allsc"));
+    BOOST_REQUIRE_EQUAL(c.get_string_array("allsc").size(), 2U);
+    // Sequences with nested structures are dropped instead of flattened.
+    BOOST_CHECK(!c.has("mixed"));
+    BOOST_CHECK(!c.has("map_in_seq"));
+}
+
+// Merging configs combines nested subtrees key by key (deep merge) while
+// scalars from the overlay win.
+BOOST_AUTO_TEST_CASE(MergeNestedYamlTrees) {
+    Config a;
+    BOOST_CHECK(a.load_yaml_string("x:\n  a: 1\nkeep: base\n"));
+    Config b;
+    BOOST_CHECK(b.load_yaml_string("x:\n  b: 2\nkeep: over\n"));
+    a.merge(b);
+    BOOST_CHECK_EQUAL(a.get_int("x.a"), 1);
+    BOOST_CHECK_EQUAL(a.get_int("x.b"), 2);
+    BOOST_CHECK_EQUAL(a.get_string("keep"), "over");
+}
+
+// Loading twice into the same Config deep-merges the YAML trees: nested maps
+// union, overlay scalars replace.
+BOOST_AUTO_TEST_CASE(ReloadDeepMergesNestedTrees) {
+    Config c;
+    BOOST_CHECK(
+        c.load_yaml_string("x:\n  a: 1\n  inner:\n    i: 10\nkeep: base\n"));
+    BOOST_CHECK(
+        c.load_yaml_string("x:\n  b: 2\n  inner:\n    j: 20\nkeep: over\n"));
+    BOOST_CHECK_EQUAL(c.get_int("x.a"), 1);
+    BOOST_CHECK_EQUAL(c.get_int("x.b"), 2);
+    BOOST_CHECK_EQUAL(c.get_int("x.inner.i"), 10);
+    BOOST_CHECK_EQUAL(c.get_int("x.inner.j"), 20);
+    BOOST_CHECK_EQUAL(c.get_string("keep"), "over");
+
+    // Loading an empty document keeps the previous tree intact.
+    BOOST_CHECK(c.load_yaml_string(""));
+    BOOST_CHECK_EQUAL(c.get_int("x.a"), 1);
+}

@@ -452,4 +452,57 @@ BOOST_AUTO_TEST_CASE(BootstrapRunDelegatesToShieldRun) {
     BOOST_CHECK_EQUAL(shield::bootstrap::run(2, argv), 0);
 }
 
+// ---------------------------------------------------------------------------
+// Branch-coverage additions (purely additive).
+// ---------------------------------------------------------------------------
+
+// http.enabled with a port that cannot be bound: HttpServer::start throws,
+// the failure is caught and logged, and initialization still succeeds.
+BOOST_AUTO_TEST_CASE(HttpPortBindFailureIsNonFatal) {
+    // Reserve a port so the configured HTTP server cannot bind it.
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::acceptor reserve(
+        io, boost::asio::ip::tcp::endpoint(
+                boost::asio::ip::make_address("127.0.0.1"), 0));
+    const uint16_t taken_port = reserve.local_endpoint().port();
+
+    fs::path script = echo_script("shield_cov_boot_httpbind.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "http:\n  enabled: true\n  host: 127.0.0.1\n  port: " +
+        std::to_string(taken_port) +
+        "\n"
+        "actors:\n  - name: main\n    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    BOOST_CHECK(shield::bootstrap::is_initialized());
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
+// A repeated initialize() while the runtime is up re-initializes; the call
+// succeeds and shutdown afterwards still leaves the runtime down.
+BOOST_AUTO_TEST_CASE(DoubleInitializeWhileRunning) {
+    fs::path script = echo_script("shield_cov_boot_double.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n  - name: main\n    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    BOOST_CHECK(shield::bootstrap::is_initialized());
+    BOOST_CHECK(shield::bootstrap::initialize(rc));
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
+// shutdown() with no prior initialize() returns immediately.
+BOOST_AUTO_TEST_CASE(ShutdownWithoutInitializeIsHarmless) {
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -299,4 +299,119 @@ BOOST_AUTO_TEST_CASE(ReplOnVanishedService) {
                 std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// Branch-coverage additions (purely additive).
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(ReplValueShapes) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "attach svc");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+
+    auto dispatch_data = [&](const std::string& code) -> nlohmann::json {
+        dispatcher.dispatch(harness.session, code);
+        std::string l = harness.read_line();
+        BOOST_REQUIRE(!l.empty());
+        auto r = nlohmann::json::parse(l);
+        BOOST_CHECK(r["type"] == "result");
+        return r["data"];
+    };
+
+    // Numeric shapes: fractional, negative, huge (exponent formatting).
+    BOOST_CHECK_EQUAL(dispatch_data("return 3.14"), 3.14);
+    BOOST_CHECK_EQUAL(dispatch_data("return -7"), -7);
+    BOOST_CHECK(dispatch_data("return 1e300").get<double>() > 1e299);
+
+    // Booleans and nil.
+    BOOST_CHECK_EQUAL(dispatch_data("return true"), true);
+    BOOST_CHECK_EQUAL(dispatch_data("return false"), false);
+    BOOST_CHECK(dispatch_data("return nil").is_null());
+
+    // Strings: escapable characters, unicode, and past the SSO boundary.
+    // (Lua source needs a doubled backslash for one literal backslash.)
+    BOOST_CHECK_EQUAL(dispatch_data("return 'quoted \"str\" back\\\\'"),
+                      "quoted \"str\" back\\");
+    BOOST_CHECK_EQUAL(dispatch_data("return 'tab\\there'"), "tab\there");
+    BOOST_CHECK_EQUAL(dispatch_data("return '\xc3\xa9\xe2\x9c\x93'"),
+                      "\xc3\xa9\xe2\x9c\x93");
+    const std::string long_str =
+        dispatch_data("return string.rep('z', 80)").get<std::string>();
+    BOOST_CHECK_EQUAL(long_str.size(), 80u);
+
+    // Nested table returns serialize to JSON (shape depends on the keys).
+    auto table = dispatch_data("return {1, 'a', true}");
+    BOOST_CHECK(table.is_string() || table.is_array() || table.is_object());
+    auto named = dispatch_data("return {x = 1}");
+    BOOST_CHECK(named.is_string() || named.is_object());
+}
+
+BOOST_AUTO_TEST_CASE(ReplMultilineSyntaxErrorClearsBuffer) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "attach svc");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+
+    // Start a multiline block...
+    dispatcher.dispatch(harness.session, "if true then");
+    line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    BOOST_CHECK(nlohmann::json::parse(line)["type"] == "continue");
+    BOOST_CHECK(!harness.session->multiline_buffer().empty());
+
+    // ...then make the accumulated buffer a hard syntax error: reported and
+    // the multiline state cleared.
+    dispatcher.dispatch(harness.session, "))) garbage ((( ");
+    line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(harness.session->multiline_buffer().empty());
+
+    // The session is usable again.
+    dispatcher.dispatch(harness.session, "return 1");
+    line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    BOOST_CHECK(nlohmann::json::parse(line)["data"] == 1);
+}
+
+BOOST_AUTO_TEST_CASE(EvalValueShapes) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    auto dispatch_data = [&](const std::string& code) -> nlohmann::json {
+        dispatcher.dispatch(harness.session, "eval " + code);
+        std::string l = harness.read_line();
+        BOOST_REQUIRE(!l.empty());
+        auto r = nlohmann::json::parse(l);
+        BOOST_CHECK(r["type"] == "result");
+        return r["data"];
+    };
+
+    BOOST_CHECK_EQUAL(dispatch_data("return 2.5"), 2.5);
+    BOOST_CHECK_EQUAL(dispatch_data("return -900"), -900);
+    BOOST_CHECK_EQUAL(dispatch_data("return false"), false);
+    BOOST_CHECK(dispatch_data("return nil").is_null());
+    BOOST_CHECK_EQUAL(dispatch_data("return 'a\"b'"), "a\"b");
+    BOOST_CHECK_EQUAL(dispatch_data("return 'nl\\nline'"), "nl\nline");
+    BOOST_CHECK_EQUAL(
+        dispatch_data("return '\xc3\xa9\xe2\x9c\x93'").get<std::string>(),
+        "\xc3\xa9\xe2\x9c\x93");
+    BOOST_CHECK_EQUAL(
+        dispatch_data("return string.rep('q', 90)").get<std::string>().size(),
+        90u);
+    auto table = dispatch_data("return {x = 1}");
+    BOOST_CHECK(table.is_string() || table.is_object());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
