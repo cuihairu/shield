@@ -180,7 +180,7 @@ CliOptions parse_cli(int argc, char** argv) {
 #endif
 
     return options;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 void wait_for_stop() {
     while (!g_stop_requested.load()) {

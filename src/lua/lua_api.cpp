@@ -221,27 +221,6 @@ nlohmann::json variadic_to_json_array(sol::variadic_args args) {
     return values;
 }
 
-std::vector<std::string> table_to_string_vector(const sol::table& table) {
-    std::vector<std::string> params;
-    const auto size = table.size();
-    params.reserve(size);
-    for (std::size_t i = 1; i <= size; ++i) {
-        sol::object item = table[static_cast<int>(i)];
-        if (item == sol::nil) {
-            params.emplace_back("");
-        } else if (item.is<std::string>()) {
-            params.push_back(item.as<std::string>());
-        } else if (item.is<double>()) {
-            params.push_back(std::to_string(item.as<double>()));
-        } else if (item.is<bool>()) {
-            params.push_back(item.as<bool>() ? "true" : "false");
-        } else {
-            params.push_back(lua_to_json(item).dump());
-        }
-    }
-    return params;
-}
-
 // Helper to extract service ID from ServiceHandle or string
 std::string extract_service_id(const sol::object& target) {
     if (target.is<ServiceHandle>()) {

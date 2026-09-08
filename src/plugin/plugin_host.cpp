@@ -34,7 +34,7 @@ const char* state_name(State s) {
         case State::stopped:
             return "stopped";
     }
-    return "unknown";
+    return "unknown";  // GCOVR_EXCL_LINE (defensive: all states handled)
 }
 
 bool provides_interface(const Package* pkg, const std::string& interface_name) {
@@ -986,7 +986,7 @@ std::vector<std::string> PluginHost::package_ids() const {
     v.reserve(packages_.size());
     for (const auto& p : packages_) v.push_back(p.manifest.id);
     return v;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 const Package* PluginHost::find_package(const std::string& id) const {
     for (const auto& p : packages_)
@@ -1020,7 +1020,7 @@ std::vector<PackageInfo> PluginHost::list_packages() const {
         v.push_back(std::move(info));
     }
     return v;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 std::vector<InstanceInfo> PluginHost::list_instances() const {
     std::vector<InstanceInfo> v;
@@ -1033,7 +1033,7 @@ std::vector<InstanceInfo> PluginHost::list_instances() const {
         v.push_back(std::move(info));
     }
     return v;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 std::optional<BindingInfo> PluginHost::get_binding(
     std::string_view name) const {

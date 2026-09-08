@@ -54,6 +54,7 @@ shield_coverage_test(test_cov_lua_commands shield_bootstrap shield_net shield_pl
 shield_coverage_test(test_cov_ops_http shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_starter shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_bootstrap shield_bootstrap shield_net shield_plugin)
+shield_coverage_test(test_cov_bootstrap2 shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_shield shield_bootstrap shield_net shield_plugin)
 
 # shield_lua
@@ -62,6 +63,12 @@ shield_coverage_test(test_cov_lua_gateway_bridge shield_lua shield_core CAF::cor
 shield_coverage_test(test_cov_lua_http_bridge shield_lua shield_core shield_net CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_runtime shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service shield_lua shield_core CAF::core CAF::io)
+
+# Round-2 coverage suites (same modules, deeper branches).
+shield_coverage_test(test_cov_lua_api2 shield_lua shield_core shield_net CAF::core CAF::io)
+shield_coverage_test(test_cov_lua_runtime2 shield_lua shield_core CAF::core CAF::io)
+shield_coverage_test(test_cov_lua_service2 shield_lua shield_core CAF::core CAF::io)
+shield_coverage_test(test_cov_http_bridge2 shield_lua shield_core shield_net CAF::core CAF::io)
 
 # The ops HTTP client drains each response until its read deadline, so the
 # suite's wall time is dominated by per-request timeouts; give it headroom.

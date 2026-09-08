@@ -184,8 +184,8 @@ void TcpSession::close(std::string reason) {
     socket_.close(ec);  // aborts pending async_read_some / async_write
     try {
         read_deadline_.cancel();
-    } catch (...) {
-    }
+    } catch (...) {  // GCOVR_EXCL_LINE (cancel does not throw)
+    }  // GCOVR_EXCL_LINE
 
     // Drop queued sends on the strand so any in-flight write completes with
     // operation_aborted rather than touching freed state. Release only the
@@ -235,8 +235,8 @@ void TcpSession::do_receive() {
                 if (self->read_idle_timeout_ms_ > 0) {
                     try {
                         self->read_deadline_.cancel();
-                    } catch (...) {
-                    }
+                    } catch (...) {  // GCOVR_EXCL_LINE (cancel does not throw)
+                    }  // GCOVR_EXCL_LINE
                 }
                 if (ec) {
                     if (ec == boost::asio::error::operation_aborted) {

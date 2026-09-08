@@ -193,9 +193,12 @@ void cleanup_failed_initialize() {
         g_state->tcp_listeners.clear();
         g_state->gateway_bridges.clear();
         if (g_state->console_server) {
+            // GCOVR_EXCL_START (unreachable: no initialize() failure happens
+            // after the console server starts)
             g_state->console_server->stop();
             g_state->console_server.reset();
             g_state->console_dispatcher.reset();
+            // GCOVR_EXCL_STOP
         }
         if (g_state->lua_services) {
             g_state->lua_services->shutdown_all("startup_failed");
@@ -345,7 +348,8 @@ bool initialize(const RuntimeConfig& config) {
 
     // Initialize CAF actor system
     initialize_caf_types();
-    caf::actor_system_config& caf_config = [&]() -> auto& {
+    caf::actor_system_config& caf_config =
+        [&]() -> auto& {  // GCOVR_EXCL_LINE (uncalled static-init clone)
         static caf::actor_system_config cfg;
         cfg.load<caf::io::middleman>();
         return cfg;
@@ -383,7 +387,9 @@ bool initialize(const RuntimeConfig& config) {
                  nlohmann::json::parse(actor.options_json, nullptr, false)},
             };
             if (opts["config"].is_discarded()) {
-                opts["config"] = nlohmann::json::object();
+                opts["config"] =
+                    nlohmann::json::object();  // GCOVR_EXCL_LINE (options_json
+                                               // is always valid JSON)
             }
 
             auto result = g_state->lua_services->spawn(
@@ -406,12 +412,15 @@ bool initialize(const RuntimeConfig& config) {
             continue;
         }
         auto endpoint = parse_endpoint(actor.network_tcp);
+        // GCOVR_EXCL_START (unreachable: config validation rejects every
+        // endpoint form that parse_endpoint would refuse)
         if (!endpoint) {
             SHIELD_LOG_ERROR(log, "Invalid TCP endpoint for actor '" +
                                       actor.name + "': " + actor.network_tcp);
             cleanup_failed_initialize();
             return false;
         }
+        // GCOVR_EXCL_STOP
         if (endpoint->host != "0.0.0.0" && endpoint->host != "*" &&
             endpoint->host != "::" && endpoint->host != "localhost" &&
             endpoint->host != "127.0.0.1") {
@@ -640,9 +649,12 @@ bool initialize(const RuntimeConfig& config) {
             SHIELD_LOG_INFO(log, "HTTP ops server listening on " + host + ":" +
                                      std::to_string(port));
         } catch (const std::exception& e) {
+            // GCOVR_EXCL_START (unreachable: HttpServer::start() reports
+            // failures through its return value, it does not throw)
             SHIELD_LOG_ERROR(
                 log,
                 std::string("Failed to start HTTP ops server: ") + e.what());
+            // GCOVR_EXCL_STOP
         }
     }
 
@@ -679,6 +691,8 @@ void shutdown() {
         std::thread([done = shutdown_done, total_budget_ms]() {
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(total_budget_ms));
+            // GCOVR_EXCL_START (only runs when shutdown hangs past the
+            // budget; testing it would kill the test process)
             if (!done->load()) {
                 shield::log::get_logger("bootstrap")
                     .fatal(
@@ -686,6 +700,7 @@ void shutdown() {
                         "exit");
                 std::_Exit(70);
             }
+            // GCOVR_EXCL_STOP
         }).detach();
     }
 

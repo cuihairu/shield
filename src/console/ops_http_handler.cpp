@@ -194,7 +194,7 @@ shield::net::HttpResponse OpsHttpHandler::make_json_response(
     resp.body() = data.dump(2);
     resp.prepare_payload();
     return resp;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 shield::net::HttpResponse OpsHttpHandler::make_error_response(
     int status_code, const std::string& message) {

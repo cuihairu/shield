@@ -42,7 +42,7 @@ std::vector<uint8_t> Frame::serialize() const {
     result.insert(result.end(), payload_.begin(), payload_.end());
 
     return result;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 bool Frame::parse(const uint8_t* data, size_t size) {
     if (size < FrameHeader::HEADER_SIZE) {
@@ -118,7 +118,7 @@ std::vector<Frame> FrameDecoder::feed(const uint8_t* data, size_t size) {
     }
 
     return frames;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 void FrameDecoder::reset() {
     buffer_.clear();

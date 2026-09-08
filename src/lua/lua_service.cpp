@@ -139,6 +139,8 @@ struct LuaServiceManager::Impl {
 
     // Permission check hook (Phase 2). When set, called before send/call.
     // Returns empty string if allowed, error code if denied.
+    // GCOVR_EXCL_LINE markers below: no setter exists yet, so the hook is
+    // never installed (unreachable scaffold until Phase 2 lands).
     std::function<std::string(const std::string& sender,
                               const std::string& target,
                               const std::string& method)>
@@ -974,6 +976,7 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
     }
 
     // Permission check.
+    // GCOVR_EXCL_START (Phase-2 scaffold: no setter exists yet)
     if (impl_->permission_check) {
         const std::string sender = current_service_id();
         const std::string denial = impl_->permission_check(
@@ -983,6 +986,7 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
             return false;
         }
     }
+    // GCOVR_EXCL_STOP
 
     if (!validate_message_payload(args, error)) {
         return false;

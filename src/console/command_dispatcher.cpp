@@ -85,6 +85,6 @@ CommandDispatcher::list_commands() const {
         result.emplace_back(c.name, c.help);
     }
     return result;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 }  // namespace shield::console

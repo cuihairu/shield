@@ -970,3 +970,99 @@ BOOST_AUTO_TEST_CASE(ReloadDeepMergesNestedTrees) {
     BOOST_CHECK(c.load_yaml_string(""));
     BOOST_CHECK_EQUAL(c.get_int("x.a"), 1);
 }
+
+// ------------------------------------------------- extra coverage cases
+
+// flatten_yaml_node records scalars with their YAML-resolved tag: int, float
+// and bool values must land in storage as their typed ConfigValue variants
+// (and be readable through the typed getters).
+BOOST_AUTO_TEST_CASE(YamlScalarTypesFlattenAndFetch) {
+    Config c;
+    // Explicit tags make yaml-cpp report !!int / !!float / !!bool so the
+    // flatten step stores typed variants instead of strings.
+    BOOST_REQUIRE(c.load_yaml_string(
+        "a:\n  i: !!int 42\n  f: !!float 3.5\n  b: !!bool true\n  "
+        "bfalse: !!bool false\n  s: text\n"));
+    BOOST_CHECK_EQUAL(c.get_int("a.i"), 42);
+    BOOST_CHECK_EQUAL(c.get_double("a.f"), 3.5);
+    BOOST_CHECK_EQUAL(c.get_bool("a.b"), true);
+    BOOST_CHECK_EQUAL(c.get_bool("a.bfalse"), false);
+    BOOST_CHECK_EQUAL(c.get_string("a.s"), "text");
+}
+
+// to_json walks nested maps (yaml_to_json object branch), including a
+// nested-in-nested map, and stringifies scalar leaf values.
+BOOST_AUTO_TEST_CASE(ToJsonWithNestedMaps) {
+    Config c;
+    BOOST_REQUIRE(c.load_yaml_string("l1:\n  l2:\n    leaf: 7\n  s: str\n"));
+    // to_json flattens nested maps into dotted keys.
+    const auto j = c.to_json();
+    BOOST_CHECK(j.find("l1.l2.leaf") != std::string::npos);
+    BOOST_CHECK(j.find("l1.s") != std::string::npos);
+}
+
+// set() stores every ConfigValue alternative; get_value() hands each back
+// with the matching alternative active.
+BOOST_AUTO_TEST_CASE(SetAndGetEveryConfigValueType) {
+    Config c;
+
+    c.set("v.str", ConfigValue{std::string("s")});
+    c.set("v.i", ConfigValue{int64_t{-7}});
+    c.set("v.d", ConfigValue{double{2.25}});
+    c.set("v.b", ConfigValue{true});
+    c.set("v.vec", ConfigValue{std::vector<std::string>{"x", "y"}});
+
+    const auto* str = c.get_value("v.str");
+    BOOST_REQUIRE(str != nullptr);
+    BOOST_CHECK_EQUAL(std::get<std::string>(*str), "s");
+    const auto* i = c.get_value("v.i");
+    BOOST_REQUIRE(i != nullptr);
+    BOOST_CHECK_EQUAL(std::get<int64_t>(*i), -7);
+    const auto* d = c.get_value("v.d");
+    BOOST_REQUIRE(d != nullptr);
+    BOOST_CHECK_EQUAL(std::get<double>(*d), 2.25);
+    const auto* b = c.get_value("v.b");
+    BOOST_REQUIRE(b != nullptr);
+    BOOST_CHECK_EQUAL(std::get<bool>(*b), true);
+    const auto* vec = c.get_value("v.vec");
+    BOOST_REQUIRE(vec != nullptr);
+    const auto& as_vec = std::get<std::vector<std::string>>(*vec);
+    BOOST_REQUIRE_EQUAL(as_vec.size(), 2u);
+    BOOST_CHECK_EQUAL(as_vec[0], "x");
+    BOOST_CHECK_EQUAL(as_vec[1], "y");
+
+    // Unknown keys report absence.
+    BOOST_CHECK(c.get_value("v.missing") == nullptr);
+    BOOST_CHECK(!c.has("v.missing"));
+
+    // get_string_array returns the stored vector via the typed accessor.
+    const auto list = c.get_string_array("v.vec");
+    BOOST_REQUIRE_EQUAL(list.size(), 2u);
+    BOOST_CHECK_EQUAL(list[0], "x");
+    BOOST_CHECK_EQUAL(list[1], "y");
+}
+
+// An actor with a network section but no protocol block validates fine
+// (validate_network_protocol early-out on a null node).
+BOOST_AUTO_TEST_CASE(ValidateNetworkWithoutProtocolIsAccepted) {
+    // Default options validate actors (require_actors=true), which is where
+    // the per-actor network/protocol checks run.
+    expect_valid(actor_cfg("    network:\n      tcp: \"127.0.0.1:18112\"\n"),
+                 RuntimeValidationOptions{});
+}
+
+// protocol must be a mapping when present.
+BOOST_AUTO_TEST_CASE(ValidateNetworkProtocolScalarRejected) {
+    expect_invalid(
+        actor_cfg("    network:\n      tcp: \"127.0.0.1:18113\"\n      "
+                  "protocol: 42\n"),
+        RuntimeValidationOptions{}, "protocol must be a map");
+}
+
+// ... and it must not be empty.
+BOOST_AUTO_TEST_CASE(ValidateNetworkProtocolEmptyMapRejected) {
+    expect_invalid(
+        actor_cfg("    network:\n      tcp: \"127.0.0.1:18114\"\n      "
+                  "protocol: {}\n"),
+        RuntimeValidationOptions{}, "must not be empty");
+}

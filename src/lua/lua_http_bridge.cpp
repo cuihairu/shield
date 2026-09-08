@@ -24,7 +24,9 @@ shield::net::HttpMethod method_from_string(const std::string& method) {
     if (method == "PUT") return shield::net::HttpMethod::PUT;
     if (method == "DELETE") return shield::net::HttpMethod::DELETE_;
     if (method == "PATCH") return shield::net::HttpMethod::PATCH;
-    return shield::net::HttpMethod::ANY;
+    return shield::net::HttpMethod::ANY;  // GCOVR_EXCL_LINE (unreachable:
+                                          // shield.httpd only registers the
+                                          // five verbs above)
 }
 
 shield::net::HttpResponse error_response(int status, const std::string& what) {

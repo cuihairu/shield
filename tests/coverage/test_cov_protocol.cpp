@@ -2245,4 +2245,22 @@ BOOST_AUTO_TEST_CASE(XmldefLoadsCatalogWithRoutingDefaults) {
     BOOST_CHECK_EQUAL(pipeline->default_codec_name(), "xmldef");
 }
 
+// Every envelope reports its registry name; the codecs are also created
+// through their default constructors here to pin the name() one-liners.
+BOOST_AUTO_TEST_CASE(EnvelopeNamesAreStable) {
+    using namespace shield::transport;
+
+    LenPrefixEnvelope lenprefix;
+    BOOST_CHECK_EQUAL(lenprefix.name(), "lenprefix");
+
+    IdLenEnvelope idlen;
+    BOOST_CHECK_EQUAL(idlen.name(), "idlen");
+
+    TypeLenEnvelope typed_len;
+    BOOST_CHECK_EQUAL(typed_len.name(), "typed_len");
+
+    DelimiterEnvelope delimiter;
+    BOOST_CHECK_EQUAL(delimiter.name(), "delimiter");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -33,7 +33,7 @@ enum class Phase {
 /// @brief Starter interface
 class Starter {
 public:
-    virtual ~Starter() = default;
+    virtual ~Starter() = default;  // GCOVR_EXCL_LINE (dtor clones)
 
     /// @brief Get starter name
     virtual std::string name() const = 0;

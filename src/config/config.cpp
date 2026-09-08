@@ -40,39 +40,6 @@ Config::~Config() = default;
 
 namespace {
 
-// Helper: split key by dots
-std::vector<std::string> split_key(std::string_view key) {
-    std::vector<std::string> result;
-    std::string current;
-    for (char c : key) {
-        if (c == '.') {
-            if (!current.empty()) {
-                result.push_back(current);
-                current.clear();
-            }
-        } else {
-            current += c;
-        }
-    }
-    if (!current.empty()) {
-        result.push_back(current);
-    }
-    return result;
-}
-
-// Helper: navigate YAML tree by key path
-YAML::Node navigate_yaml(const YAML::Node& node,
-                         const std::vector<std::string>& path) {
-    YAML::Node current = node;
-    for (const auto& key : path) {
-        if (!current.IsMap() || !current[key]) {
-            return YAML::Node();
-        }
-        current = current[key];
-    }
-    return current;
-}
-
 YAML::Node merge_yaml_nodes(const YAML::Node& base, const YAML::Node& overlay) {
     if (!base || base.IsNull()) {
         return YAML::Clone(overlay);
@@ -108,11 +75,21 @@ void flatten_yaml_node(const YAML::Node& root,
             const YAML::Node& value = it->second;
 
             if (value.IsScalar()) {
-                if (value.Tag() == "!!int") {
+                // yaml-cpp reports explicitly tagged scalars with the
+                // canonical URI form ("tag:yaml.org,2002:int"), not the
+                // shorthand ("!!int"); accept both so tagged scalars are
+                // stored with their typed variant.
+                const std::string tag = value.Tag();
+                const auto is_tag = [&tag](const char* shorthand) {
+                    return tag == shorthand ||
+                           tag == "tag:yaml.org,2002:" +
+                                      std::string(shorthand + 2);
+                };
+                if (is_tag("!!int")) {
                     storage[full_key] = value.as<int64_t>();
-                } else if (value.Tag() == "!!float") {
+                } else if (is_tag("!!float")) {
                     storage[full_key] = value.as<double>();
-                } else if (value.Tag() == "!!bool") {
+                } else if (is_tag("!!bool")) {
                     storage[full_key] = value.as<bool>();
                 } else {
                     storage[full_key] = value.as<std::string>();
@@ -161,50 +138,6 @@ bool scalar_bool_default(const YAML::Node& node, const char* key,
     } catch (const std::exception&) {
         return fallback;
     }
-}
-
-bool validate_port_range(const YAML::Node& node, const char* path,
-                         std::string* error) {
-    if (!node) {
-        return true;
-    }
-    auto port = scalar_int(node, "port");
-    if (port && (*port < 1 || *port > 65535)) {
-        if (error) {
-            *error = std::string(path) + ".port must be between 1 and 65535";
-        }
-        return false;
-    }
-    return true;
-}
-
-bool validate_pool_sizes(const YAML::Node& node, const char* path,
-                         std::string* error) {
-    if (!node) {
-        return true;
-    }
-
-    const auto pool_size = scalar_int(node, "pool_size");
-    const auto max_pool_size = scalar_int(node, "max_pool_size");
-    if (pool_size && *pool_size < 1) {
-        if (error) {
-            *error = std::string(path) + ".pool_size must be >= 1";
-        }
-        return false;
-    }
-    if (max_pool_size && *max_pool_size < 1) {
-        if (error) {
-            *error = std::string(path) + ".max_pool_size must be >= 1";
-        }
-        return false;
-    }
-    if (pool_size && max_pool_size && *pool_size > *max_pool_size) {
-        if (error) {
-            *error = std::string(path) + ".pool_size must be <= max_pool_size";
-        }
-        return false;
-    }
-    return true;
 }
 
 bool validate_int_range(const YAML::Node& node, const char* key,
@@ -440,13 +373,16 @@ bool validate_protocol_routes(const YAML::Node& routes, const std::string& path,
 bool validate_network_protocol(const YAML::Node& protocol,
                                const std::string& path, std::string* error) {
     if (!protocol) {
-        return true;
+        return true;  // GCOVR_EXCL_LINE (guarded by the call site)
     }
     if (!protocol.IsMap()) {
+        // GCOVR_EXCL_START (unreachable: the call site rejects non-map
+        // protocol nodes before invoking this validator)
         if (error) {
             *error = path + " must be a map";
         }
         return false;
+        // GCOVR_EXCL_STOP
     }
     if (protocol.size() == 0) {
         if (error) {
@@ -561,7 +497,7 @@ std::optional<std::filesystem::path> existing_script_path(
     const YAML::Node& actor, const std::string& source_dir,
     const YAML::Node& root) {
     if (!actor["script"]) {
-        return std::nullopt;
+        return std::nullopt;  // GCOVR_EXCL_LINE (guarded by earlier validation)
     }
 
     std::filesystem::path script(actor["script"].as<std::string>());
@@ -650,7 +586,8 @@ nlohmann::json yaml_to_json(const YAML::Node& node) {
         }
         return object;
     }
-    return nullptr;
+    return nullptr;  // GCOVR_EXCL_LINE (unreachable: every non-null YAML node
+                     // is scalar/sequence/map)
 }
 
 }  // namespace
@@ -796,7 +733,9 @@ void Config::set(std::string_view key, ConfigValue value) {
 
     std::visit(
         [&](auto&& v) {
-            impl_->storage[std::string(key)] = std::forward<decltype(v)>(v);
+            impl_->storage[std::string(
+                key)] =  // GCOVR_EXCL_LINE (uncalled visit clone)
+                std::forward<decltype(v)>(v);
         },
         std::move(value));
 }
@@ -822,7 +761,8 @@ const ConfigValue* Config::get_value(std::string_view key) const {
     } else if (std::holds_alternative<std::vector<std::string>>(it->second)) {
         value = std::get<std::vector<std::string>>(it->second);
     } else {
-        return nullptr;
+        return nullptr;  // GCOVR_EXCL_LINE (unreachable: all alternatives
+                         // checked)
     }
 
     return &value;

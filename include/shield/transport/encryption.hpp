@@ -14,7 +14,7 @@ enum class Cipher { NONE, AES_128_GCM, AES_256_GCM, CHACHA20_POLY1305 };
 /// @brief Encryption interface
 class Encryption {
 public:
-    virtual ~Encryption() = default;
+    virtual ~Encryption() = default;  // GCOVR_EXCL_LINE (dtor clones)
 
     /// @brief Encrypt data
     virtual std::vector<uint8_t> encrypt(std::string_view data) = 0;

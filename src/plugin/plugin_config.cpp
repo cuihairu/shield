@@ -26,21 +26,21 @@ InstanceDecl parse_instance(const nlohmann::json& in) {
 }
 }  // namespace
 
-PluginConfig parse_plugin_config(const shield::config::Config& cfg) {
+PluginConfig parse_plugin_config_json(std::string_view json_text) {
     PluginConfig pc;
-    pc.directory = cfg.get_string("plugins.directory", "./plugins");
 
-    // Config does not expose a subtree walker, so round-trip through to_json()
-    // and parse the `plugins` node with nlohmann.
     nlohmann::json root;
     try {
-        root = nlohmann::json::parse(cfg.to_json());
+        root = nlohmann::json::parse(json_text);
     } catch (...) {
         return pc;  // unparseable global config → empty plugin config
     }
     if (!root.contains("plugins")) return pc;
     const auto& plugins = root["plugins"];
 
+    if (plugins.contains("directory") && plugins["directory"].is_string()) {
+        pc.directory = plugins["directory"].get<std::string>();
+    }
     if (plugins.contains("instances") && plugins["instances"].is_array()) {
         for (const auto& in : plugins.at("instances")) {
             pc.instances.push_back(parse_instance(in));
@@ -55,6 +55,24 @@ PluginConfig parse_plugin_config(const shield::config::Config& cfg) {
             pc.bindings.push_back(std::move(b));
         }
     }
+    return pc;
+}
+
+PluginConfig parse_plugin_config(const shield::config::Config& cfg) {
+    // Config does not expose a subtree walker, so round-trip through
+    // to_json() (YAML→JSON) and parse the `plugins` node with nlohmann.
+    PluginConfig pc;
+    // The flat "plugins.directory" key never nests in to_json() output, so
+    // read it directly from the Config view.
+    pc.directory = cfg.get_string("plugins.directory", "./plugins");
+    PluginConfig rest;
+    try {
+        rest = parse_plugin_config_json(cfg.to_json());
+    } catch (...) {
+        return pc;  // unparseable global config → directory-only result
+    }
+    pc.instances = std::move(rest.instances);
+    pc.bindings = std::move(rest.bindings);
     return pc;
 }
 

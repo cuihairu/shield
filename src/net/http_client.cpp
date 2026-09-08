@@ -62,10 +62,12 @@ HttpClientResponse HttpClient::request(const HttpClientOptions& options) {
     HttpClientResponse response;
 
     CURL* curl = curl_easy_init();
+    // GCOVR_EXCL_START (only fails on OOM; not testable)
     if (!curl) {
         response.error = "Failed to initialize curl handle";
         return response;
     }
+    // GCOVR_EXCL_STOP
 
     // Set URL.
     curl_easy_setopt(curl, CURLOPT_URL, options.url.c_str());
@@ -187,7 +189,7 @@ HttpClientResponse HttpClient::request(const HttpClientOptions& options) {
     curl_easy_cleanup(curl);
 
     return response;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 HttpClientResponse HttpClient::get(const std::string& url,
                                    int timeout_seconds) {
@@ -250,10 +252,12 @@ HttpClientResponse HttpClient::upload(
     HttpClientResponse response;
 
     CURL* curl = curl_easy_init();
+    // GCOVR_EXCL_START (only fails on OOM; not testable)
     if (!curl) {
         response.error = "Failed to initialize curl handle";
         return response;
     }
+    // GCOVR_EXCL_STOP
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
@@ -303,7 +307,7 @@ HttpClientResponse HttpClient::upload(
     curl_easy_cleanup(curl);
 
     return response;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 HttpClientResponse HttpClient::download(const std::string& url,
                                         const std::string& output_path,
@@ -311,10 +315,12 @@ HttpClientResponse HttpClient::download(const std::string& url,
     HttpClientResponse response;
 
     CURL* curl = curl_easy_init();
+    // GCOVR_EXCL_START (only fails on OOM; not testable)
     if (!curl) {
         response.error = "Failed to initialize curl handle";
         return response;
     }
+    // GCOVR_EXCL_STOP
 
     FILE* fp = fopen(output_path.c_str(), "wb");
     if (!fp) {
@@ -354,7 +360,7 @@ HttpClientResponse HttpClient::download(const std::string& url,
     }
 
     return response;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 HttpClientResponse HttpClient::post_form(
     const std::string& url,
@@ -370,9 +376,11 @@ HttpClientResponse HttpClient::post_form(
     // Build URL-encoded form body.
     std::string form_body;
     CURL* encoder = curl_easy_init();
+    // GCOVR_EXCL_START (only fails on OOM; not testable)
     if (!encoder) {
         return request(opts);
     }
+    // GCOVR_EXCL_STOP
     for (const auto& [key, value] : fields) {
         if (!form_body.empty()) form_body += "&";
         char* encoded_key = curl_easy_escape(encoder, key.c_str(),

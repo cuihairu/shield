@@ -240,3 +240,39 @@ return M
     }
     BOOST_CHECK_EQUAL(runtime.http_route_count(), 0u);
 }
+
+// Routes registered before the bridge has a server attached take the
+// register_on_server early-return; attach() replays them afterwards so the
+// route still serves requests.
+BOOST_AUTO_TEST_CASE(PreAttachRegistrationReplayedByAttach) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const char* script = R"lua(
+local M = {}
+function M.on_init()
+    shield.httpd.put("/preattach", function(req)
+        return { status = 200, body = "preattach-ok" }
+    end)
+end
+return M
+)lua";
+    const std::string module = write_script("cov_httpd_pre.lua", script);
+    auto svc = manager.spawn(
+        module, R"({"name":"cov_httpd_pre","args":{},"config":{}})");
+    BOOST_REQUIRE_MESSAGE(svc.success, "spawn failed: " + svc.error_message);
+    BOOST_REQUIRE_EQUAL(runtime.http_route_count(), 1u);
+
+    shield::net::HttpServer server;
+    LuaHttpBridge bridge(runtime, manager);
+    bridge.attach(server);  // replays the stored route onto the server
+
+    auto resp = bridge.handle(make_request("PUT", "/preattach"));
+    BOOST_CHECK_EQUAL(resp.result_int(), 200);
+    BOOST_CHECK_EQUAL(resp.body(), "preattach-ok");
+
+    bridge.detach();
+    manager.shutdown_all("done");
+}

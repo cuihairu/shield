@@ -83,3 +83,115 @@ BOOST_AUTO_TEST_CASE(load_plugin_config_uses_global_config) {
     check_empty(pc);
     shield::config::reset_config();
 }
+
+// ---------------------------------------------------------------------------
+// parse_plugin_config_json: nested plugins object parsing (the Config view
+// flattens keys, so these branches are exercised via the JSON seam).
+// ---------------------------------------------------------------------------
+
+// Full nested document: directory + instances (with dependencies/config) +
+// bindings all populate the PluginConfig.
+BOOST_AUTO_TEST_CASE(json_full_plugins_document_parses_all_fields) {
+    const char* kJson = R"({
+        "plugins": {
+            "directory": "/opt/shield/plugins",
+            "instances": [
+                {
+                    "id": "db.main",
+                    "package": "database.sqlite",
+                    "required": false,
+                    "dependencies": {"db": "db.main", "cache": "redis.main"},
+                    "config": {"port": 3306, "host": "127.0.0.1"}
+                }
+            ],
+            "bindings": {
+                "database.default": "db.main",
+                "cache.default": "redis.main"
+            }
+        }
+    })";
+    auto pc = shield::plugin::parse_plugin_config_json(kJson);
+    BOOST_CHECK_EQUAL(pc.directory, "/opt/shield/plugins");
+    BOOST_REQUIRE_EQUAL(pc.instances.size(), 1u);
+    const auto& inst = pc.instances.front();
+    BOOST_CHECK_EQUAL(inst.id, "db.main");
+    BOOST_CHECK_EQUAL(inst.package, "database.sqlite");
+    BOOST_CHECK(!inst.required);
+    BOOST_REQUIRE_EQUAL(inst.dependencies.size(), 2u);
+    BOOST_CHECK_EQUAL(inst.dependencies.at("db"), "db.main");
+    BOOST_CHECK_EQUAL(inst.dependencies.at("cache"), "redis.main");
+    BOOST_CHECK_EQUAL(inst.config.at("port").get<int>(), 3306);
+    BOOST_CHECK_EQUAL(inst.config.at("host").get<std::string>(), "127.0.0.1");
+    BOOST_REQUIRE_EQUAL(pc.bindings.size(), 2u);
+    BOOST_CHECK_EQUAL(pc.bindings[0].logical, "cache.default");
+    BOOST_CHECK_EQUAL(pc.bindings[0].instance_id, "redis.main");
+    BOOST_CHECK_EQUAL(pc.bindings[1].logical, "database.default");
+    BOOST_CHECK_EQUAL(pc.bindings[1].instance_id, "db.main");
+}
+
+// An instance with no fields falls back to defaults (required=true, empty
+// id/package/dependencies, empty JSON object config).
+BOOST_AUTO_TEST_CASE(json_instance_defaults_when_fields_missing) {
+    auto pc = shield::plugin::parse_plugin_config_json(
+        R"({"plugins": {"instances": [{}]}})");
+    BOOST_CHECK_EQUAL(pc.directory, "./plugins");
+    BOOST_REQUIRE_EQUAL(pc.instances.size(), 1u);
+    const auto& inst = pc.instances.front();
+    BOOST_CHECK(inst.id.empty());
+    BOOST_CHECK(inst.package.empty());
+    BOOST_CHECK(inst.required);
+    BOOST_CHECK(inst.dependencies.empty());
+    BOOST_CHECK(inst.config.is_object());
+    BOOST_CHECK(inst.config.empty());
+}
+
+// A non-object "dependencies" value is ignored by parse_instance.
+BOOST_AUTO_TEST_CASE(json_instance_non_object_dependencies_skipped) {
+    auto pc = shield::plugin::parse_plugin_config_json(
+        R"({"plugins": {"instances": [
+            {"id": "a", "dependencies": "not-an-object"}
+        ]}})");
+    BOOST_REQUIRE_EQUAL(pc.instances.size(), 1u);
+    BOOST_CHECK_EQUAL(pc.instances.front().id, "a");
+    BOOST_CHECK(pc.instances.front().dependencies.empty());
+}
+
+// Non-array "instances" and non-object "bindings" values are skipped; a
+// non-string "directory" keeps the default.
+BOOST_AUTO_TEST_CASE(json_mistyped_members_are_skipped) {
+    auto pc = shield::plugin::parse_plugin_config_json(
+        R"({"plugins": {
+            "directory": 42,
+            "instances": {"not": "an-array"},
+            "bindings": ["not", "an", "object"]
+        }})");
+    BOOST_CHECK_EQUAL(pc.directory, "./plugins");
+    check_empty(pc);
+}
+
+// Invalid JSON yields a default PluginConfig (catch-all path).
+BOOST_AUTO_TEST_CASE(json_invalid_input_yields_default_config) {
+    auto pc = shield::plugin::parse_plugin_config_json("{not json");
+    BOOST_CHECK_EQUAL(pc.directory, "./plugins");
+    check_empty(pc);
+}
+
+// A document without a "plugins" member short-circuits to defaults.
+BOOST_AUTO_TEST_CASE(json_without_plugins_member_yields_default_config) {
+    auto pc = shield::plugin::parse_plugin_config_json(R"({"server": {}})");
+    BOOST_CHECK_EQUAL(pc.directory, "./plugins");
+    check_empty(pc);
+}
+
+// Multiple instances are all parsed in order.
+BOOST_AUTO_TEST_CASE(json_multiple_instances_preserve_order) {
+    auto pc = shield::plugin::parse_plugin_config_json(
+        R"({"plugins": {"instances": [
+            {"id": "first", "package": "p1"},
+            {"id": "second", "package": "p2", "required": false}
+        ]}})");
+    BOOST_REQUIRE_EQUAL(pc.instances.size(), 2u);
+    BOOST_CHECK_EQUAL(pc.instances[0].id, "first");
+    BOOST_CHECK_EQUAL(pc.instances[1].id, "second");
+    BOOST_CHECK(!pc.instances[1].required);
+}

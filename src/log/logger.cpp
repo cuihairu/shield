@@ -41,7 +41,7 @@ const char* level_name(Level level) {
         case Level::Fatal:
             return "FATAL";
     }
-    return "INFO";
+    return "INFO";  // GCOVR_EXCL_LINE (defensive: all levels handled)
 }
 
 std::ostream& output_stream(bool use_stderr, Level level) {

@@ -12,7 +12,7 @@ namespace shield::transport {
 /// @brief Codec for serializing/deserializing messages
 class Codec {
 public:
-    virtual ~Codec() = default;
+    virtual ~Codec() = default;  // GCOVR_EXCL_LINE (dtor clones)
 
     /// @brief Encode a message to bytes
     virtual std::vector<uint8_t> encode(std::string_view method,

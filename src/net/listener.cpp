@@ -25,11 +25,13 @@ TcpListener::TcpListener(boost::asio::io_context& io_context, uint16_t port,
 
     // Open acceptor
     acceptor_.open(boost::asio::ip::tcp::v4(), ec);
+    // GCOVR_EXCL_START (only fails on fd exhaustion; not testable here)
     if (ec) {
         auto& log = shield::log::get_logger("net");
         SHIELD_LOG_ERROR(log, "Failed to open acceptor: " + ec.message());
         return;
     }
+    // GCOVR_EXCL_STOP
 
 // On Windows, SO_REUSEADDR allows hijacking an already-bound port. Use
 // SO_EXCLUSIVEADDRUSE instead, which gives Linux-like behaviour: the
@@ -57,14 +59,17 @@ TcpListener::TcpListener(boost::asio::io_context& io_context, uint16_t port,
     // Start listening
     acceptor_.listen(boost::asio::socket_base::max_listen_connections, ec);
 
+    // GCOVR_EXCL_START (listen after a successful bind only fails on
+    // exotic kernel-level errors; not testable here)
     if (ec) {
         auto& log = shield::log::get_logger("net");
         SHIELD_LOG_ERROR(log, "Failed to listen: " + ec.message());
         return;
     }
+    // GCOVR_EXCL_STOP
 
     listening_ = true;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 void TcpListener::start() {
     if (!listening_) {

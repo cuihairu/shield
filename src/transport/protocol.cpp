@@ -68,7 +68,7 @@ std::optional<std::size_t> body_length_from_field(std::uint64_t length_field,
                                                   bool includes_header) {
     if (!includes_header) {
         if (length_field > std::numeric_limits<std::size_t>::max()) {
-            return std::nullopt;
+            return std::nullopt;  // GCOVR_EXCL_LINE (unreachable on 64-bit)
         }
         return static_cast<std::size_t>(length_field);
     }
@@ -190,7 +190,7 @@ std::unordered_map<std::string, std::string> parse_xml_attributes(
     }
 
     return attrs;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 const std::string* find_attr(
     const std::unordered_map<std::string, std::string>& attrs,
@@ -257,7 +257,7 @@ RouteSource default_route_source_for_envelope(EnvelopeKind kind) {
         case EnvelopeKind::Delimiter:
             return RouteSource::Body;
     }
-    return RouteSource::Body;
+    return RouteSource::Body;  // GCOVR_EXCL_LINE (defensive: all kinds handled)
 }
 
 std::optional<BodyRouteKey> structured_route_key(const nlohmann::json& value) {
@@ -301,7 +301,7 @@ DecodedBody decode_structured_body(PacketRef packet, const RouteEntry& route,
         body.message = std::move(message);
     }
     return body;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 bool message_contains_route_hint(const nlohmann::json& message) {
     return message.is_object() &&
@@ -537,7 +537,7 @@ std::vector<Packet> LenPrefixEnvelope::feed(const std::uint8_t* data,
     }
 
     return packets;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 std::vector<std::uint8_t> LenPrefixEnvelope::encode(const PacketRef& packet) {
     error_.clear();
@@ -559,7 +559,7 @@ std::vector<std::uint8_t> LenPrefixEnvelope::encode(const PacketRef& packet) {
     write_uint(length_field, config_.length_bytes, config_.endian, out);
     out.insert(out.end(), packet.body.begin(), packet.body.end());
     return out;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 IdLenEnvelope::IdLenEnvelope(EnvelopeConfig config) : Envelope(config) {
     if (config_.route_id_bytes == 0) {
@@ -650,7 +650,7 @@ std::vector<Packet> IdLenEnvelope::feed(const std::uint8_t* data,
     }
 
     return packets;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 std::vector<std::uint8_t> IdLenEnvelope::encode(const PacketRef& packet) {
     error_.clear();
@@ -680,7 +680,7 @@ std::vector<std::uint8_t> IdLenEnvelope::encode(const PacketRef& packet) {
     write_uint(length_field, config_.length_bytes, config_.endian, out);
     out.insert(out.end(), packet.body.begin(), packet.body.end());
     return out;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 TypeLenEnvelope::TypeLenEnvelope(EnvelopeConfig config) : Envelope(config) {
     if (config_.route_id_bytes == 0) {
@@ -773,7 +773,7 @@ std::vector<Packet> TypeLenEnvelope::feed(const std::uint8_t* data,
     }
 
     return packets;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 std::vector<std::uint8_t> TypeLenEnvelope::encode(const PacketRef& packet) {
     error_.clear();
@@ -805,7 +805,7 @@ std::vector<std::uint8_t> TypeLenEnvelope::encode(const PacketRef& packet) {
     write_uint(length_field, config_.length_bytes, config_.endian, out);
     out.insert(out.end(), packet.body.begin(), packet.body.end());
     return out;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 DelimiterEnvelope::DelimiterEnvelope(EnvelopeConfig config) : Envelope(config) {
     config_.length_bytes = 0;
@@ -857,7 +857,7 @@ std::vector<Packet> DelimiterEnvelope::feed(const std::uint8_t* data,
     }
 
     return packets;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 std::vector<std::uint8_t> DelimiterEnvelope::encode(const PacketRef& packet) {
     error_.clear();
@@ -866,7 +866,7 @@ std::vector<std::uint8_t> DelimiterEnvelope::encode(const PacketRef& packet) {
     out.insert(out.end(), packet.body.begin(), packet.body.end());
     out.push_back(static_cast<std::uint8_t>(config_.delimiter));
     return out;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 std::unique_ptr<Envelope> create_envelope(EnvelopeKind kind,
                                           EnvelopeConfig config) {
@@ -912,7 +912,7 @@ DecodedBody RawBodyCodec::decode(PacketRef packet, const RouteEntry& route) {
     body.schema_id = route.schema_id;
     body.bytes.assign(packet.body.begin(), packet.body.end());
     return body;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 std::vector<std::uint8_t> RawBodyCodec::encode(const DecodedBody& body,
                                                const RouteEntry& route,
@@ -1733,8 +1733,11 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
             codec = create_body_codec(body_codec);
         }
         if (!codec) {
+            // GCOVR_EXCL_START (defensive: config validation accepts only
+            // codec names that create_body_codec knows)
             if (error) *error = "unsupported network.protocol.body.codec";
             return nullptr;
+            // GCOVR_EXCL_STOP
         }
         const std::string normalized_body_codec(codec->name());
         codecs.add(default_codec_id, std::move(codec));

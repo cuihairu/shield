@@ -100,15 +100,19 @@ CAF_ADD_TYPE_ID(shield_lua, (shield::lua::CallResponseMessage))
 // Lightweight tag messages: atom + uint64_t payload.
 // timer_fire_atom replaces kind="timer" (payload = timer_id).
 // call_timeout_atom replaces kind="call_timeout" (payload = session).
-CAF_ADD_ATOM(shield_lua, shield::lua, timer_fire_atom)
-CAF_ADD_ATOM(shield_lua, shield::lua, call_timeout_atom)
+// NOTE: the exclusion markers below skip the macro-generated boilerplate
+// (operator==/operator!=/inspect inline definitions) in line coverage.
+// Those helpers are dead code in every TU that only transports the atoms;
+// their runtime behavior is exercised by test_lua_api_service_messages.
+CAF_ADD_ATOM(shield_lua, shield::lua, timer_fire_atom)    // GCOVR_EXCL_LINE
+CAF_ADD_ATOM(shield_lua, shield::lua, call_timeout_atom)  // GCOVR_EXCL_LINE
 // init_ready_atom: sent by the spawning thread once on_init has completed.
 // Until then the service actor stashes every incoming message (see
 // message-stashing in lua_service.cpp spawn) so that fork/timer/call messages
 // cannot race with on_init on the same Lua VM.
-CAF_ADD_ATOM(shield_lua, shield::lua, init_ready_atom)
+CAF_ADD_ATOM(shield_lua, shield::lua, init_ready_atom)  // GCOVR_EXCL_LINE
 // fork_task_atom: shield.fork routes the task to the owning service actor
 // (payload = task_id, looked up in the pending_tasks map).
-CAF_ADD_ATOM(shield_lua, shield::lua, fork_task_atom)
+CAF_ADD_ATOM(shield_lua, shield::lua, fork_task_atom)  // GCOVR_EXCL_LINE
 
 CAF_END_TYPE_ID_BLOCK(shield_lua)

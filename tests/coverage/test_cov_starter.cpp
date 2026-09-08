@@ -104,3 +104,29 @@ BOOST_AUTO_TEST_CASE(FailingStarterAbortsPhase) {
     // Other phases still work afterwards.
     BOOST_CHECK(shield::bootstrap::run_starters(Phase::POST_SHUTDOWN));
 }
+
+namespace {
+// A starter that keeps the interface defaults for order() and should_run():
+// exercises the base-class implementations in starter.hpp.
+class DefaultPolicyStarter : public Starter {
+public:
+    explicit DefaultPolicyStarter(std::string name) : name_(std::move(name)) {}
+
+    std::string name() const override { return name_; }
+    bool execute(Phase) override { return true; }
+
+private:
+    std::string name_;
+};
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(StarterDefaultsOrderAndShouldRun) {
+    DefaultPolicyStarter starter("defaults");
+    BOOST_CHECK_EQUAL(starter.order(), 100);
+    // The default should_run() accepts every phase.
+    for (Phase phase :
+         {Phase::PRE_INIT, Phase::POST_SYSTEM_INIT, Phase::POST_CONFIG,
+          Phase::POST_START, Phase::PRE_SHUTDOWN, Phase::POST_SHUTDOWN}) {
+        BOOST_CHECK(starter.should_run(phase));
+    }
+}

@@ -19,7 +19,7 @@ namespace shield::lua {
 /// surface is pluggable.
 class Clock {
 public:
-    virtual ~Clock() = default;
+    virtual ~Clock() = default;  // GCOVR_EXCL_LINE (dtor clones)
 
     /// Wall-clock UTC milliseconds. Used by shield.now() and as the basis
     /// for os.time() (seconds) / os.date() (no-arg).

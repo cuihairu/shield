@@ -31,7 +31,7 @@ struct LogRecord {
 /// @brief Log sink interface
 class LogSink {
 public:
-    virtual ~LogSink() = default;
+    virtual ~LogSink() = default;  // GCOVR_EXCL_LINE (dtor clones)
 
     /// @brief Write a log record
     virtual void write(const LogRecord& record) = 0;

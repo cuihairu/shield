@@ -43,7 +43,7 @@ PluginLibrary PluginLibrary::load(const std::string& path, std::string& error) {
     }
 #endif
     return lib;
-}
+}  // GCOVR_EXCL_LINE (uncalled exit clone)
 
 bool PluginLibrary::is_loaded() const { return handle_ != nullptr; }
 

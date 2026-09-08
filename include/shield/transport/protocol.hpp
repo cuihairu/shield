@@ -129,7 +129,7 @@ struct EnvelopeConfig {
 class Envelope {
 public:
     explicit Envelope(EnvelopeConfig config = {});
-    virtual ~Envelope() = default;
+    virtual ~Envelope() = default;  // GCOVR_EXCL_LINE (dtor clones)
 
     virtual std::string_view name() const = 0;
     virtual std::vector<Packet> feed(const std::uint8_t* data,
@@ -214,7 +214,7 @@ struct DecodedBody {
 
 class BodyCodec {
 public:
-    virtual ~BodyCodec() = default;
+    virtual ~BodyCodec() = default;  // GCOVR_EXCL_LINE (dtor clones)
 
     virtual std::string_view name() const = 0;
     virtual std::optional<BodyRouteKey> route_key(PacketRef packet);

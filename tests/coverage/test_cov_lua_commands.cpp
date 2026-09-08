@@ -415,3 +415,30 @@ BOOST_AUTO_TEST_CASE(EvalValueShapes) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// An explicit empty `return` yields an empty result array, which the eval
+// and REPL handlers report as {"type":"result","data":null}.
+BOOST_FIXTURE_TEST_CASE(EmptyReturnShapes, LuaFixture) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    // eval path: empty array -> data null.
+    dispatcher.dispatch(harness.session, "eval return");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"].is_null());
+
+    // REPL path (attach first): empty array -> data null.
+    dispatcher.dispatch(harness.session, "attach svc");
+    BOOST_REQUIRE(!harness.read_line().empty());
+    dispatcher.dispatch(harness.session, "return");
+    line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"].is_null());
+}

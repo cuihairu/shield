@@ -86,7 +86,7 @@ struct SessionRoutingContext {
 /// @brief Session interface
 class Session {
 public:
-    virtual ~Session() = default;
+    virtual ~Session() = default;  // GCOVR_EXCL_LINE (dtor clones)
 
     /// @brief Get session ID
     virtual SessionId id() const = 0;

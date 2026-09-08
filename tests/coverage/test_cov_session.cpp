@@ -246,6 +246,11 @@ BOOST_AUTO_TEST_CASE(LifecycleAndMetadataAccessors) {
     BOOST_CHECK_EQUAL(session->routing_context().gateway_address, "gw:1");
     BOOST_CHECK_EQUAL(session->routing_context().session_id, "sid");
 
+    // the const overload of routing_context() exposes the same state
+    const Session& const_view = *session;
+    BOOST_CHECK_EQUAL(const_view.routing_context().gateway_address, "gw:1");
+    BOOST_CHECK_EQUAL(const_view.routing_context().session_id, "sid");
+
     // service binding keeps epoch in sync with the routing context
     ServiceAddress addr;
     addr.service_id = "svc-1";

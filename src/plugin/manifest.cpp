@@ -51,7 +51,8 @@ nlohmann::json yaml_to_json(const YAML::Node& node) {
         }
         return object;
     }
-    return nullptr;
+    return nullptr;  // GCOVR_EXCL_LINE (unreachable: non-null YAML nodes are
+                     // scalar/sequence/map)
 }
 }  // namespace
 

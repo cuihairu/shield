@@ -416,4 +416,125 @@ BOOST_AUTO_TEST_CASE(AcceptErrorIsLogged) {
 }
 #endif
 
+BOOST_AUTO_TEST_CASE(TrailingSlashPathStillMatchesRoute) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    auto server = make_server(port);
+    server.route(HttpMethod::GET, "/users/:id",
+                 [](const HttpRequest&) { return text_response("user"); });
+    server.start();
+    BOOST_REQUIRE(server.is_running());
+
+    // A trailing slash produces an empty final segment: split_path leaves the
+    // loop through the while condition instead of the break, and the
+    // remaining segments still match the parameter route.
+    RawClient c;
+    BOOST_REQUIRE(c.connect(port));
+    c.send_request("GET /users/42/ HTTP/1.0\r\nHost: t\r\n\r\n");
+    const auto resp = c.read_all();
+    BOOST_CHECK(resp.find("200") != std::string::npos);
+    BOOST_CHECK(resp.find("user") != std::string::npos);
+    c.close();
+
+    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(ExplicitConnectionHeaderDrivesKeepAliveDecision) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    auto server = make_server(port);
+    // HTTP/1.0 + explicit "Connection: keep-alive" in the response: the
+    // server must keep the socket open (connection_token_exists says yes).
+    server.get("/ka", [](const HttpRequest&) {
+        HttpResponse r = text_response("ka-body");
+        r.set(http::field::connection, "keep-alive");
+        return r;
+    });
+    // HTTP/1.1 + explicit "Connection: close" in the response: the server
+    // must close the socket after writing (connection_token_exists says
+    // close).
+    server.get("/close", [](const HttpRequest&) {
+        HttpResponse r = text_response("close-body");
+        r.set(http::field::connection, "close");
+        return r;
+    });
+    server.start();
+    BOOST_REQUIRE(server.is_running());
+
+    // (a) keep-alive over HTTP/1.0: two requests on one socket.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /ka HTTP/1.0\r\nHost: t\r\n\r\n");
+        const auto first = c.read_response_keepalive();
+        BOOST_CHECK(first.find("200") != std::string::npos);
+        BOOST_CHECK(first.find("ka-body") != std::string::npos);
+
+        c.send_request("GET /ka HTTP/1.0\r\nHost: t\r\n\r\n");
+        const auto second = c.read_response_keepalive();
+        BOOST_CHECK(second.find("200") != std::string::npos);
+        BOOST_CHECK(second.find("ka-body") != std::string::npos);
+        c.close();
+    }
+
+    // (b) close over HTTP/1.1: response then EOF on the same socket.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /close HTTP/1.1\r\nHost: t\r\n\r\n");
+        const auto resp = c.read_all();  // reads until the server closes
+        BOOST_CHECK(resp.find("200") != std::string::npos);
+        BOOST_CHECK(resp.find("close-body") != std::string::npos);
+    }
+
+    server.stop();
+}
+
+#ifndef _WIN32
+BOOST_AUTO_TEST_CASE(ClientAbortDuringLargeWriteClosesSession) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    auto server = make_server(port);
+    server.get("/big", [](const HttpRequest&) {
+        // Large enough that the write cannot complete before the client
+        // aborts, forcing the on_write error branch (socket close).
+        return text_response(std::string(8 * 1024 * 1024, 'b'));
+    });
+    server.start();
+    BOOST_REQUIRE(server.is_running());
+
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /big HTTP/1.1\r\nHost: t\r\n\r\n");
+        // Let the server start streaming the body...
+        std::this_thread::sleep_for(100ms);
+        // ...then force an RST so the pending async_write fails.
+        struct linger lg;
+        lg.l_onoff = 1;
+        lg.l_linger = 0;
+        ::setsockopt(c.socket.native_handle(), SOL_SOCKET, SO_LINGER, &lg,
+                     sizeof(lg));
+        c.close();
+        // Give the server time to observe the failed write and tear the
+        // session down before the assertions below.
+        std::this_thread::sleep_for(200ms);
+    }
+
+    // The server survives the aborted write and can still serve requests.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /big HTTP/1.0\r\nHost: t\r\n\r\n");
+        const auto resp = c.read_all();
+        BOOST_CHECK(resp.find("200") != std::string::npos);
+        c.close();
+    }
+    server.stop();
+}
+#endif
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -267,3 +267,29 @@ BOOST_FIXTURE_TEST_CASE(initialize_and_shutdown_lifecycle, LoggerReset) {
     log_ns::get_logger("cov.lifecycle").info("no sinks after shutdown");
     BOOST_CHECK(sink->records.empty());
 }
+
+// apply_sinks(false, false, ...) installs a console sink as the fallback so
+// records are never silently dropped.
+BOOST_AUTO_TEST_CASE(apply_sinks_with_nothing_enabled_falls_back_to_console,
+                     *boost::unit_test::timeout(10)) {
+    auto sink = attach_collector();
+    log_ns::Logger::apply_sinks(/*console=*/false, /*file=*/false, "", 0, 0);
+    log_ns::Logger::initialize();  // no-op: sinks already present
+    log_ns::get_logger("cov.apply").info("fallback");
+    // The collector was detached by apply_sinks; the console fallback sink
+    // must not crash and must not resurrect the collector.
+    BOOST_CHECK(sink->records.empty());
+}
+
+// A RotatingFileSink pointed at a path whose parent cannot be created (under
+// /proc) never opens its file; write/flush are silent no-ops.
+BOOST_AUTO_TEST_CASE(rotating_sink_unopenable_file_is_silent,
+                     *boost::unit_test::timeout(10)) {
+    {
+        auto sink =
+            log_ns::make_rotating_sink("/proc/no-such-dir/x.log", 32, 1);
+        sink->write(make_record(log_ns::Level::Info, "cov.rotbad", "dropped"));
+        sink->flush();
+    }  // dtor flush again
+    BOOST_CHECK(true);  // reached without throwing
+}

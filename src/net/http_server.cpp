@@ -32,7 +32,7 @@ std::vector<std::string> split_path(const std::string& path) {
         pos = next + 1;
     }
     return segments;
-}
+}  // GCOVR_EXCL_LINE (unwind cleanup for a throwing push_back; untestable)
 
 // True when a ':'-parameter route pattern matches the concrete path.
 bool pattern_matches(const std::vector<std::string>& pattern,

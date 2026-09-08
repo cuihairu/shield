@@ -174,6 +174,13 @@ std::string platform_library_path(const Manifest& m);
 PluginConfig parse_plugin_config(const shield::config::Config& cfg);
 PluginConfig load_plugin_config();
 
+// Parse a PluginConfig from a JSON document containing a nested "plugins"
+// object ({"plugins": {"directory": ..., "instances": [...], "bindings":
+// {...}}}). Never throws: invalid input yields a default PluginConfig.
+// Exposed primarily for tests; production code paths go through
+// parse_plugin_config(Config) above.
+PluginConfig parse_plugin_config_json(std::string_view json_text);
+
 // ---------------------------------------------------------------------------
 // PluginHost
 // ---------------------------------------------------------------------------
