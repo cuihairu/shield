@@ -2434,10 +2434,8 @@ BOOST_AUTO_TEST_CASE(BuildPipelineProviderResolverMismatchFails) {
     };
     ProtocolBuildOptions named;
     named.external_codec_resolver =
-        [&codec](std::string_view, std::string_view,
-                 std::string*) -> const shield_protocol_codec_v1* {
-        return &codec;
-    };
+        [](std::string_view, std::string_view,
+           std::string*) -> const shield_protocol_codec_v1* { return &codec; };
     error.clear();
     BOOST_CHECK(!build_protocol_pipeline_from_json(json.dump(), named, &error));
     BOOST_CHECK_NE(error.find("does not serve"), std::string::npos);

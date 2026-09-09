@@ -139,7 +139,7 @@ std::shared_ptr<const HttpHandler> HttpServer::match_route(
         if (key.method != method && key.method != HttpMethod::ANY) {
             continue;
         }
-        if (key.path.find('/:') == std::string::npos) {
+        if (key.path.find("/:") == std::string::npos) {
             continue;
         }
         if (pattern_matches(split_path(key.path), segments)) {
