@@ -2231,7 +2231,7 @@ BOOST_AUTO_TEST_CASE(XmldefLoadsCatalogWithRoutingDefaults) {
 {
   "envelope": {"type": "idlen", "route_id_bytes": 2, "length_bytes": 2},
   "body": {"codec": "xmldef", "catalog": ")json") +
-                        catalog.string() + R"json("},
+                        catalog.generic_string() + R"json("},
   "routing": {"default_action": "forward", "lazy_decode": false}
 }
 )json";

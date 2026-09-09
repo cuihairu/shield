@@ -105,6 +105,9 @@ bool wait_until(const std::function<bool()>& pred, int timeout_ms = 2000) {
 
 }  // namespace
 
+// Unix-domain console sockets are POSIX-only: the whole suite is skipped on
+// Windows (boost.asio local sockets compile there but cannot operate).
+#ifndef _WIN32
 BOOST_AUTO_TEST_SUITE(ConsoleNetCoverage)
 
 BOOST_AUTO_TEST_CASE(LineHandlingStripsCarriageReturnAndSplits) {
@@ -373,3 +376,4 @@ BOOST_AUTO_TEST_CASE(SessionStateHelpers) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+#endif  // !_WIN32

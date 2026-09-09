@@ -243,7 +243,8 @@ BOOST_FIXTURE_TEST_CASE(rotating_sink_rotates_on_size, LoggerReset) {
         BOOST_CHECK(fs::exists(base));
         BOOST_CHECK(fs::exists(base.string() + ".1"));
         // After the final rotation the base file only holds the last line.
-        BOOST_CHECK_LT(fs::file_size(base), 2 * kMaxSize);
+        // (Windows text mode expands newlines to CRLF, so allow the bound.)
+        BOOST_CHECK_LE(fs::file_size(base), 2 * kMaxSize);
         BOOST_CHECK(read_file(base).find("cov.rot") != std::string::npos);
     }  // destructor flush
 

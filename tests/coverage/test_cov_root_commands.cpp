@@ -125,6 +125,9 @@ std::string write_file(const fs::path& path, const std::string& content) {
 
 }  // namespace
 
+// The ConsoleHarness drives commands over a socketpair (boost.asio local
+// stream protocol), which cannot operate on Windows: skip the suite there.
+#ifndef _WIN32
 BOOST_FIXTURE_TEST_SUITE(RootCommandsTests, LuaFixture)
 
 BOOST_AUTO_TEST_CASE(HelpListsRegisteredCommands) {
@@ -763,3 +766,4 @@ BOOST_AUTO_TEST_CASE(PluginCommandsWithEmptyHostLists) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+#endif  // !_WIN32

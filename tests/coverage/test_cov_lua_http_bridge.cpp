@@ -84,14 +84,23 @@ return M
 // LuaRuntime HTTP route table.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(RouteTableRegistrationAndLookup) {
+    BOOST_TEST_CHECKPOINT("constructing runtime");
     LuaRuntime runtime;
+    BOOST_TEST_CHECKPOINT("creating vm");
     auto vm = runtime.create_vm();
 
     // Table-management test only: the handler is never invoked, so a
     // function from an unrelated state suffices as a non-nil callable.
+    // (safe_script: the unprotected script() path has misbehaved on
+    // macOS/Release runners.)
+    BOOST_TEST_CHECKPOINT("creating standalone state");
     sol::state standalone;
     standalone.open_libraries(sol::lib::base);
-    sol::function handler = standalone.script("return function() end");
+    BOOST_TEST_CHECKPOINT("compiling handler");
+    sol::function handler = standalone.safe_script("return function() end",
+                                                   sol::script_pass_on_error);
+    BOOST_REQUIRE(handler.valid());
+    BOOST_TEST_CHECKPOINT("handler ready");
 
     std::string error;
     // Invalid registrations.

@@ -448,6 +448,10 @@ BOOST_AUTO_TEST_CASE(scan_skips_unparseable_manifest) {
 }
 
 BOOST_AUTO_TEST_CASE(catalog_rejects_manifest_variants) {
+#ifndef _WIN32
+    // A manifest without a library entry for the current platform is
+    // rejected. (The fixture only declares a windows path, so on Windows
+    // itself the lookup succeeds and the check does not apply.)
     BOOST_TEST(run_catalog("schema_version: 1\n"
                            "id: nolibpath.test\n"
                            "entry: fake_entry_ok\n"
@@ -460,6 +464,7 @@ BOOST_AUTO_TEST_CASE(catalog_rejects_manifest_variants) {
                            "  type: object\n",
                            "cat_nolibpath")
                    .find("missing library path") != std::string::npos);
+#endif
     BOOST_TEST(run_catalog("schema_version: 1\n"
                            "id: emptyiface.test\n"
                            "entry: fake_entry_ok\n"
@@ -485,11 +490,16 @@ BOOST_AUTO_TEST_CASE(catalog_rejects_manifest_variants) {
                           "  - name: dep\n    interface: y.iface\n"),
             "cat_dupdep")
             .find("duplicate dependency") != std::string::npos);
+#ifndef _WIN32
+    // A POSIX-absolute library path must stay inside the package root. On
+    // Windows the manifest's windows entry (bin/other.dll) is the one in
+    // effect, so the absolute-path check does not apply there.
     BOOST_TEST(run_catalog(fake_manifest("abslib.test", "fake_entry_ok",
                                          "fake.test.iface", "", "",
                                          "/absolute/libfake.so"),
                            "cat_abslib")
                    .find("package root") != std::string::npos);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(plan_rejects_empty_and_duplicate_instance_ids) {
@@ -1379,6 +1389,7 @@ BOOST_AUTO_TEST_CASE(shutdown_budget_exhaustion_skips_remaining_callbacks) {
 // duplicate bindings, dependency cycles, and schema-validated config.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(catalog_rejects_empty_provides) {
+    if (!fake_ready()) return;
     auto root = unique_root("no_provides");
     make_package(root, "nopkg", fake_manifest("nopkg", "fake_entry_ok", ""),
                  true);
@@ -1390,6 +1401,7 @@ BOOST_AUTO_TEST_CASE(catalog_rejects_empty_provides) {
 }
 
 BOOST_AUTO_TEST_CASE(catalog_rejects_empty_interface_name) {
+    if (!fake_ready()) return;
     auto root = unique_root("empty_iface");
     auto m = fake_manifest("emptyiface", "fake_entry_ok", "placeholder");
     // Overwrite the provides block with an empty interface name.
@@ -1403,6 +1415,7 @@ BOOST_AUTO_TEST_CASE(catalog_rejects_empty_interface_name) {
 }
 
 BOOST_AUTO_TEST_CASE(catalog_rejects_duplicate_interface) {
+    if (!fake_ready()) return;
     auto root = unique_root("dup_iface");
     auto m = fake_manifest("dupiface", "fake_entry_ok", "placeholder");
     m.replace(

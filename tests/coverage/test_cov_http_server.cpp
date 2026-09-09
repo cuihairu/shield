@@ -146,10 +146,11 @@ BOOST_AUTO_TEST_CASE(StartStopLifecycle) {
 }
 
 BOOST_AUTO_TEST_CASE(StartFailsOnBusyPort) {
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(_WIN32)
     // BSD SO_REUSEADDR (boost.asio's default) lets a second acceptor bind
-    // the same port on macOS, so the busy-port failure cannot be observed.
-    BOOST_TEST_MESSAGE("busy-port rebind allowed on macOS; skipping");
+    // the same port on macOS, and Windows SO_REUSEADDR allows outright
+    // hijacking, so the busy-port failure cannot be observed on either.
+    BOOST_TEST_MESSAGE("busy-port rebind allowed on this platform; skipping");
     return;
 #endif
     boost::asio::io_context io;

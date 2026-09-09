@@ -2,6 +2,7 @@
 #include <boost/asio.hpp>
 #include <boost/test/unit_test.hpp>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -239,7 +240,9 @@ BOOST_AUTO_TEST_CASE(RetryOnConnectionFailure) {
 BOOST_AUTO_TEST_CASE(UploadMultipart) {
     shield::net::HttpClient::initialize();
 
-    const std::string path = "/tmp/shield-cov-upload.txt";
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "shield-cov-upload.txt")
+            .string();
     {
         std::ofstream out(path);
         out << "upload-payload";
@@ -281,7 +284,9 @@ BOOST_AUTO_TEST_CASE(DownloadToFile) {
     srv.start();
     const std::string base = "http://127.0.0.1:" + std::to_string(srv.port);
 
-    const std::string out_path = "/tmp/shield-cov-download.txt";
+    const std::string out_path =
+        (std::filesystem::temp_directory_path() / "shield-cov-download.txt")
+            .string();
     std::remove(out_path.c_str());
 
     auto r = HttpClient::download(base + "/file", out_path, 5);
