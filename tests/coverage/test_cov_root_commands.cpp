@@ -9,6 +9,7 @@
 #include <fstream>
 #include <future>
 #include <nlohmann/json.hpp>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -333,8 +334,21 @@ BOOST_AUTO_TEST_CASE(PluginsAndPluginAcrossLifecycleStates) {
 
     // load: good succeeds, broken (required, missing library) fails.
     BOOST_CHECK(!host.load_all(err));
-    BOOST_CHECK_EQUAL(query_state("root.plugin inst_good"), "loaded");
-    BOOST_CHECK_EQUAL(query_state("root.plugin inst_broken"), "failed");
+    {
+        const auto* good_inst = host.find_instance("inst_good");
+        const auto* broken_inst = host.find_instance("inst_broken");
+        std::ostringstream diag;
+        diag << "load_all err=" << err;
+        if (good_inst)
+            diag << " inst_good state=" << static_cast<int>(good_inst->state)
+                 << " last_error=" << good_inst->last_error;
+        if (broken_inst)
+            diag << " inst_broken state="
+                 << static_cast<int>(broken_inst->state);
+        BOOST_CHECK_MESSAGE(query_state("root.plugin inst_good") == "loaded",
+                            diag.str());
+        BOOST_CHECK_EQUAL(query_state("root.plugin inst_broken"), "failed");
+    }
     // unavailable instance has no package pointer.
     dispatcher.dispatch(harness.session, "root.plugin inst_opt");
     line = harness.read_line();
