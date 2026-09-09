@@ -2,12 +2,29 @@
 
 English | [简体中文](README.zh-CN.md)
 
+[![CI](https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/shield/actions/workflows/ci.yml)
 [![C++23](https://img.shields.io/badge/C++-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
 [![Lua 5.4](https://img.shields.io/badge/Lua-5.4-blue.svg)](https://www.lua.org/)
+[![Coverage](https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/shield)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 Shield is an actively refactored **single-node-first, Skynet-inspired,
 actor-based, Lua-first game server runtime**.
+
+## Test Coverage
+
+The per-module suites under `tests/coverage/` keep `src/` at **98%+ line
+coverage** (measured with gcc `--coverage` + gcovr). The CI `Coverage` job
+reruns them on every push, uploads the report to
+[Codecov](https://codecov.io/gh/cuihairu/shield), and fails when coverage
+drops below 97%:
+
+```bash
+cmake -S . -B build-cov -G Ninja   -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"   -DCMAKE_BUILD_TYPE=Debug -DSHIELD_BUILD_TESTS=ON   -DSHIELD_BUILD_EXAMPLES=OFF -DSHIELD_ENABLE_COVERAGE=ON
+cmake --build build-cov
+ctest --test-dir build-cov -L coverage --output-on-failure
+cd build-cov && gcovr -r . --exclude-directories '^(?\.)' --filter '\.\./src/'
+```
 
 This repository is not a stable release yet, but the minimal single-node runtime
 path is runnable: configuration loading, Lua service startup, local service

@@ -289,6 +289,7 @@ std::string fake_manifest(const std::string& id,
       << "entry: " << entry << "\n"
       << "library:\n"
       << "  linux: " << linux_lib << "\n"
+      << "  macos: " << linux_lib << "\n"
       << "  windows: bin/other.dll\n";
     if (provides.empty())
         o << "provides: []\n";

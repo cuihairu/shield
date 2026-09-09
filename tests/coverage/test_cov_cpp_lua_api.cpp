@@ -1344,12 +1344,8 @@ BOOST_AUTO_TEST_CASE(SessionHandleBranches) {
 // ---------------------------------------------------------------------------
 // HTTP + HTTPD + plugin introspection APIs.
 // ---------------------------------------------------------------------------
+#ifndef _WIN32  // MiniHttpServer uses raw POSIX sockets: not on Windows
 BOOST_AUTO_TEST_CASE(HttpAndPluginApis) {
-#ifdef _WIN32
-    // The MiniHttpServer helper uses raw POSIX sockets; skip on Windows.
-    BOOST_TEST_MESSAGE("raw-socket HTTP helper unavailable; skipping");
-    return;
-#endif
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -1527,5 +1523,6 @@ BOOST_AUTO_TEST_CASE(HttpAndPluginApis) {
         "assert(b.interface == 'cov.iface')\n"
         "assert(shield.plugin.binding('missing') == nil)"));
 }
+#endif  // !_WIN32
 
 BOOST_AUTO_TEST_SUITE_END()

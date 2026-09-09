@@ -1469,6 +1469,7 @@ std::filesystem::path build_cov_plugin(const std::string& entry_config) {
               << "entry: cov_plugin_entry\n"
               << "library:\n"
               << "  linux: bin/libcovplug.so\n"
+              << "  macos: bin/libcovplug.so\n"
               << "  windows: bin/other.dll\n"
               << "provides:\n  - interface: cov.test.iface\n"
               << "requires: []\n"

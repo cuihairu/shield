@@ -132,6 +132,97 @@ jobs:
         shell: bash
         run: ctest --test-dir build --build-config Release --output-on-failure
 
+  # 覆盖率 (Linux, gcov + gcovr): 运行 tests/coverage 全部套件并统计
+  # src/ 行覆盖率；低于 97% 时失败。
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+          python3 -m pip install gcovr==8.6
+
+      - name: Export GHA cache credentials
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Cache vcpkg installed
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/build-cov/vcpkg_installed
+          key: vcpkg-installed-coverage-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-installed-coverage-
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+        with:
+          vcpkgGitCommitId: 'a0b1c8d3a477c1cb4813d8e127a56961707ca42b'
+
+      - name: Configure (coverage)
+        run: >
+          cmake -B build-cov -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
+          -DSHIELD_BUILD_TESTS=ON
+          -DSHIELD_BUILD_EXAMPLES=OFF
+          -DSHIELD_ENABLE_COVERAGE=ON
+
+      - name: Build tests
+        run: cmake --build build-cov --parallel $(nproc)
+
+      - name: Run coverage suites
+        working-directory: build-cov
+        run: ctest --build-config Debug -L coverage --output-on-failure
+
+      - name: Collect coverage report
+        shell: bash
+        run: |
+          SUMMARY_FILE=coverage-summary.md
+          cd build-cov
+          gcovr -r . \
+            --exclude-directories '^\.(?!$)' \
+            --filter '\.\./src/' \
+            --txt coverage.txt \
+            --xml coverage.xml \
+            --html-details coverage.html \
+            --fail-under-line 97
+          TOTAL=$(grep -E '^TOTAL' coverage.txt)
+          echo "### Line coverage (src/)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$TOTAL" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: build-cov/coverage.xml
+          fail_ci_if_error: true
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            build-cov/coverage.txt
+            build-cov/coverage.xml
+            build-cov/coverage*.html
+
   # Docker 构建 (仅 main 分支)
   docker:
     name: Docker Build

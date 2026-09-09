@@ -93,6 +93,8 @@ BOOST_AUTO_TEST_CASE(load_yaml_file_with_lua_and_docs) {
                                "entry: shield_plugin_get_v1\n"
                                "library:\n"
                                "  linux: cov.so\n"
+                               "  macos: cov.dylib\n"
+                               "  windows: cov.dll\n"
                                "provides:\n"
                                "  - interface: cov.iface.v1\n"
                                "    capabilities: [sql]\n"
@@ -118,7 +120,13 @@ BOOST_AUTO_TEST_CASE(load_yaml_file_with_lua_and_docs) {
     BOOST_CHECK(m.lua.enabled);
     BOOST_CHECK_EQUAL(m.documentation.url, "https://example.com/cov");
     BOOST_CHECK(m.documentation.enabled);
+#if defined(_WIN32)
+    BOOST_CHECK_EQUAL(platform_library_path(m), "cov.dll");
+#elif defined(__APPLE__)
+    BOOST_CHECK_EQUAL(platform_library_path(m), "cov.dylib");
+#else
     BOOST_CHECK_EQUAL(platform_library_path(m), "cov.so");
+#endif
     BOOST_CHECK_EQUAL(m.config_schema["properties"]["label"].get<std::string>(),
                       "hello");
     fs::remove_all(path.parent_path());
@@ -170,12 +178,18 @@ BOOST_AUTO_TEST_CASE(load_manifest_bad_conversion_throws) {
 }
 
 // platform_library_path returns the current platform's library entry.
-BOOST_AUTO_TEST_CASE(platform_library_path_picks_linux) {
+BOOST_AUTO_TEST_CASE(platform_library_path_picks_current_platform) {
     auto j = base_manifest();
     j["library"] = {
         {"linux", "l.so"}, {"macos", "m.dylib"}, {"windows", "w.dll"}};
     auto m = parse_manifest(j);
+#if defined(_WIN32)
+    BOOST_CHECK_EQUAL(platform_library_path(m), "w.dll");
+#elif defined(__APPLE__)
+    BOOST_CHECK_EQUAL(platform_library_path(m), "m.dylib");
+#else
     BOOST_CHECK_EQUAL(platform_library_path(m), "l.so");
+#endif
 }
 
 // schema_version other than 1 is rejected with a runtime_error.

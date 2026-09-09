@@ -223,6 +223,18 @@ else()
   add_compile_options(-Wno-deprecated-declarations)
 endif()
 
+# Coverage instrumentation (gcc/clang): adds --coverage to compile and link
+# flags so gcovr can attribute test executions to source lines. Used by the
+# CI coverage job; keep OFF for regular builds.
+option(SHIELD_ENABLE_COVERAGE "Enable gcov coverage instrumentation (gcc/clang)" OFF)
+if(SHIELD_ENABLE_COVERAGE)
+  if(MSVC)
+    message(FATAL_ERROR "SHIELD_ENABLE_COVERAGE requires gcc or clang")
+  endif()
+  add_compile_options(--coverage)
+  add_link_options(--coverage)
+endif()
+
 # Find required packages
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
