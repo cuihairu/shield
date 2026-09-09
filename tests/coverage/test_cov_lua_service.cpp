@@ -6,7 +6,9 @@
 // call routing, async spawn outcomes, the C++ suspend/resume primitives, and
 // manager teardown paths. Lua fixtures are written to /tmp.
 #define BOOST_TEST_MODULE CovLuaService
+#ifndef _WIN32
 #include <dlfcn.h>
+#endif
 
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
@@ -1539,6 +1541,7 @@ BOOST_AUTO_TEST_CASE(PluginRegisterLuaInteractions) {
         auto other = manager.spawn(module, opts_for("cov_plug_other_svc"));
         BOOST_REQUIRE(other.success);
 
+#ifndef _WIN32  // dlopen introspection: POSIX only
         void* handle =
             dlopen((root / "covplug.test" / "bin" / "libcovplug.so").c_str(),
                    RTLD_NOW);
@@ -1559,6 +1562,7 @@ BOOST_AUTO_TEST_CASE(PluginRegisterLuaInteractions) {
         if (handle) {
             // Keep the handle open: the plugin stays loaded in the host.
         }
+#endif  // !_WIN32
         manager.exit(other.service_id, "cleanup");
         manager.exit(svc.service_id, "cleanup");
         host.shutdown();

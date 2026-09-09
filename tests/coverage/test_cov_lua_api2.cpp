@@ -2,9 +2,11 @@
 // main-thread sync call paths, httpd verb registration, plugin query APIs,
 // deadline propagation, and SessionHandle branches on dead sessions.
 #define BOOST_TEST_MODULE CovLuaApi2
+#ifndef _WIN32
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <atomic>
 #include <boost/test/unit_test.hpp>

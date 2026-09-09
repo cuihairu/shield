@@ -909,7 +909,7 @@ BOOST_AUTO_TEST_CASE(TypedGettersOnLoadedUntaggedScalars) {
 BOOST_AUTO_TEST_CASE(LoadYamlFromDirectoryPathFails) {
     Config c;
     // Opening a directory as a file fails; the loader reports false.
-    BOOST_CHECK(!c.load_yaml(std::string(kTmpDir)));
+    BOOST_CHECK(!c.load_yaml(kTmpDir.string()));
     BOOST_CHECK(!c.has("anything"));
 }
 

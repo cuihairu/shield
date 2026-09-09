@@ -101,6 +101,7 @@ BOOST_AUTO_TEST_CASE(HttpOpsBadHostIsNonFatal) {
 
 // console.enabled starts the console server; shutdown must stop it and reset
 // the dispatcher (console teardown branch).
+#ifndef _WIN32  // unix-domain console socket: POSIX only
 BOOST_AUTO_TEST_CASE(ConsoleServerStartsAndStops) {
     ShutdownGuard guard;
     const fs::path script = lua_script("console_on.lua");
@@ -125,5 +126,6 @@ BOOST_AUTO_TEST_CASE(ConsoleServerStartsAndStops) {
     std::error_code ec2;
     fs::remove(sock, ec2);
 }
+#endif  // !_WIN32
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -1,5 +1,9 @@
 #define BOOST_TEST_MODULE CovLogger
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 #include <boost/test/unit_test.hpp>
 #include <filesystem>
@@ -55,9 +59,13 @@ struct LoggerReset {
 };
 
 fs::path temp_dir() {
-    static const fs::path dir =
-        fs::temp_directory_path() /
-        ("shield_cov_logger_" + std::to_string(static_cast<long>(::getpid())));
+#ifdef _WIN32
+    const long pid = static_cast<long>(_getpid());
+#else
+    const long pid = static_cast<long>(::getpid());
+#endif
+    static const fs::path dir = fs::temp_directory_path() /
+                                ("shield_cov_logger_" + std::to_string(pid));
     fs::remove_all(dir);
     fs::create_directories(dir);
     return dir;

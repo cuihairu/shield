@@ -72,7 +72,8 @@ BOOST_AUTO_TEST_CASE(ServiceHandleMetamethods) {
                                sol::script_pass_on_error);
     BOOST_CHECK(res.valid());
     if (!res.valid()) {
-        std::fprintf(stderr, "lua error: %s\n", ((sol::error)res).what());
+        const sol::error err = res;
+        std::fprintf(stderr, "lua error: %s\n", err.what());
     }
 }
 

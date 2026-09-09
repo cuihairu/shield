@@ -1,8 +1,10 @@
 // Coverage tests for src/lua/lua_api.cpp
 #define BOOST_TEST_MODULE CovCppLuaApi
+#ifndef _WIN32
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <atomic>
 #include <boost/test/unit_test.hpp>
@@ -203,6 +205,7 @@ private:
 // Minimal blocking HTTP responder used to exercise shield.http response
 // handling (including JSON auto-parse) without external network access.
 // ---------------------------------------------------------------------------
+#ifndef _WIN32  // raw POSIX sockets: Linux/macOS only
 class MiniHttpServer {
 public:
     MiniHttpServer() {
@@ -343,6 +346,7 @@ private:
     std::atomic<bool> stopped_{false};
     std::thread thread_;
 };
+#endif  // !_WIN32
 
 // ---------------------------------------------------------------------------
 // Lua service scripts used by the interaction tests.
@@ -1341,6 +1345,11 @@ BOOST_AUTO_TEST_CASE(SessionHandleBranches) {
 // HTTP + HTTPD + plugin introspection APIs.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(HttpAndPluginApis) {
+#ifdef _WIN32
+    // The MiniHttpServer helper uses raw POSIX sockets; skip on Windows.
+    BOOST_TEST_MESSAGE("raw-socket HTTP helper unavailable; skipping");
+    return;
+#endif
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
