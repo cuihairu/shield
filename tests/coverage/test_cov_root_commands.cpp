@@ -255,7 +255,14 @@ BOOST_AUTO_TEST_CASE(PluginsAndPluginAcrossLifecycleStates) {
         "test_plugins/minimal.test/bin/"
         "libshield_minimal_test_plugin.so",
 #endif
-        root_dir / "good.pkg" / "bin" / "libshield_minimal_test_plugin.so",
+        root_dir / "good.pkg" / "bin" /
+#if defined(_WIN32)
+            "libshield_minimal_test_plugin.dll",
+#elif defined(__APPLE__)
+            "libshield_minimal_test_plugin.dylib",
+#else
+            "libshield_minimal_test_plugin.so",
+#endif
         fs::copy_options::overwrite_existing);
 
     const char* broken_manifest =

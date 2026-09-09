@@ -45,7 +45,7 @@ jobs:
             timeout_minutes: 45
           - os: windows-latest
             compiler: msvc
-            timeout_minutes: 60
+            timeout_minutes: 90
             build_parallel: 2
 
     steps:

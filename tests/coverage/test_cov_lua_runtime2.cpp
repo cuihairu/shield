@@ -216,6 +216,10 @@ BOOST_AUTO_TEST_CASE(RegisterHttpRouteGuardsAndSink) {
     BOOST_CHECK_EQUAL(sink_calls[0].second, "/sink");
 
     runtime.set_http_route_sink({});
+    // The /sink handler is bound to the standalone state above; drop the
+    // route before teardown so ~LuaRuntime never releases a sol::function
+    // reference on an already-closed lua_State.
+    runtime.remove_http_routes_for_service("svc");
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +251,9 @@ BOOST_AUTO_TEST_CASE(CallHttpHandlerVmGone) {
     BOOST_REQUIRE(route.has_value());
     BOOST_CHECK(!runtime.call_http_handler(*route, request, desc, &err));
     BOOST_CHECK_EQUAL(err, "service VM is gone");
+    // The placeholder handler is bound to the standalone state; drop the
+    // route before teardown.
+    runtime.remove_http_routes_for_service("svc2");
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +692,9 @@ BOOST_AUTO_TEST_CASE(CallHttpHandlerBadParamsReportsError) {
     std::string err;
     BOOST_CHECK(!runtime.call_http_handler(*route, request, desc, &err));
     BOOST_CHECK(!err.empty());
+    // The placeholder handler is bound to the standalone state; drop the
+    // route before teardown.
+    runtime.remove_http_routes_for_service("cov5.params");
 }
 
 // LuaPack rejects map keys whose encoded form exceeds the string budget.
