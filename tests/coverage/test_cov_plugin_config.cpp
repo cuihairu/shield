@@ -6,10 +6,10 @@
 
 namespace {
 
-// Full plugins subtree as it would appear in app.yaml. NOTE: Config stores
-// flattened dotted keys ("plugins.directory", ...) and to_json() emits those
-// flat keys verbatim, so the nested "plugins" JSON object parse_plugin_config
-// looks for never materializes from YAML-loaded data.
+// Full plugins subtree as it would appear in app.yaml. The flat Config
+// storage keeps only dotted scalar keys, so parse_plugin_config serializes
+// the `plugins` subtree from the YAML root via subtree_json(); the nested
+// instances/bindings therefore materialize in the parsed JSON document.
 const char* kFullPluginsYaml =
     "plugins:\n"
     "  directory: /opt/shield/plugins\n"
@@ -41,15 +41,23 @@ BOOST_AUTO_TEST_CASE(config_without_plugins_returns_defaults) {
     check_empty(pc);
 }
 
-// A YAML plugins: subtree flattens to dotted keys, so the parsed JSON root
-// has no "plugins" member and parse_plugin_config short-circuits; the
-// directory is still read via get_string("plugins.directory").
+// A YAML plugins: subtree is serialized from the YAML root, so both the
+// instances list and the bindings map parse into the PluginConfig; the
+// directory is read via get_string("plugins.directory").
 BOOST_AUTO_TEST_CASE(yaml_plugins_subtree_flattens_to_default_result) {
     shield::config::Config cfg;
     BOOST_REQUIRE(cfg.load_yaml_string(kFullPluginsYaml));
     auto pc = shield::plugin::parse_plugin_config(cfg);
     BOOST_CHECK_EQUAL(pc.directory, "/opt/shield/plugins");
-    check_empty(pc);
+    BOOST_REQUIRE_EQUAL(pc.instances.size(), 1u);
+    BOOST_CHECK_EQUAL(pc.instances[0].id, "db.main");
+    BOOST_CHECK_EQUAL(pc.instances[0].package, "database.sqlite");
+    BOOST_CHECK_EQUAL(pc.instances[0].required, false);
+    BOOST_CHECK_EQUAL(pc.instances[0].dependencies.at("db"), "db.main");
+    BOOST_CHECK_EQUAL(pc.instances[0].config.at("port"), 3306);
+    BOOST_REQUIRE_EQUAL(pc.bindings.size(), 1u);
+    BOOST_CHECK_EQUAL(pc.bindings[0].logical, "database.default");
+    BOOST_CHECK_EQUAL(pc.bindings[0].instance_id, "db.main");
 }
 
 // A literal top-level "plugins" storage entry survives to_json() as a scalar

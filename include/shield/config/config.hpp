@@ -89,6 +89,8 @@ private:
                                         std::string* error);
     friend std::vector<RuntimeActorConfig> runtime_actors();
     friend size_t runtime_net_threads();
+    friend std::string subtree_json(const Config& config,
+                                    std::string_view path);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -117,6 +119,12 @@ std::vector<RuntimeActorConfig> runtime_actors();
 /// @brief Return the configured number of net I/O threads (net.threads).
 /// 0 = use single-threaded io_context (legacy behaviour).
 size_t runtime_net_threads();
+
+/// @brief Serialize the YAML subtree at `path` (dot notation) to JSON.
+/// Nested maps, sequences and scalars are preserved (unlike the flat,
+/// dotted-key output of Config::to_json()). Returns "{}" when the path
+/// does not exist.
+std::string subtree_json(const Config& config, std::string_view path);
 
 /// @brief Get a config value (convenience function)
 /// Example: shield::config::get("plugins.directory", "./plugins")

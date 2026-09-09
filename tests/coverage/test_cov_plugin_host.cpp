@@ -50,6 +50,7 @@ struct fake_instance {
     const shield_host_api_v1* host;
     shield_plugin_context_v1* ctx;
     bool fail_start;
+    bool fail_register = false;
 };
 
 const shield_host_api_v1* g_host_api = nullptr;
@@ -100,6 +101,7 @@ int fake_register_lua(shield_plugin_instance_v1* self, struct lua_State* L,
                       struct shield_error_v1*) {
     auto* i = reinterpret_cast<fake_instance*>(self);
     if (!i || !i->host) return 0;
+    if (i->fail_register) return -1;
     g_lua_state_matches = (i->host->lua_state(i->ctx) == L) ? 1 : 0;
     g_add_path_rc = i->host->lua_add_path(i->ctx, "lua/?.lua", 0);
     g_add_cpath_rc = i->host->lua_add_path(i->ctx, "lua/?.so", 1);
@@ -147,6 +149,7 @@ int fake_create(const struct shield_plugin_create_args_v1* args,
     inst->host = args->host_api;
     inst->ctx = args->ctx;
     inst->fail_start = std::strstr(cfg, "\"start_fail\"") != nullptr;
+    inst->fail_register = std::strstr(cfg, "\"register_fail\"") != nullptr;
     inst->shell.struct_size = (uint32_t)sizeof(fake_instance);
     inst->shell.instance_id = args->instance_id;
     inst->shell.get_interface = fake_get_iface;
@@ -1231,4 +1234,342 @@ BOOST_AUTO_TEST_CASE(shutdown_with_stale_start_order_is_safe) {
     BOOST_TEST(err.find("instance id is required") != std::string::npos);
     host.shutdown();
     fs::remove_all(root);
+}
+
+// ---------------------------------------------------------------------------
+// Round-3: shutdown budget exhaustion. Two instances of a plugin whose
+// shutdown callback sleeps: with a tiny budget, the first callback burns the
+// deadline and the second instance is skipped without invoking its callback.
+// ---------------------------------------------------------------------------
+const char* kSlowShutdownPluginSource = R"SLOW(#include "shield/plugin/abi.h"
+#include "shield/plugin/host_api.h"
+
+#include <chrono>
+#include <cstring>
+#include <thread>
+
+namespace {
+const void* slow_get_iface(shield_plugin_instance_v1*, const char*,
+                           shield_error_v1*) {
+    static const int sentinel = 7;
+    return &sentinel;
+}
+int slow_start(shield_plugin_instance_v1*, shield_error_v1*) { return 0; }
+void slow_shutdown(shield_plugin_instance_v1* self) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    delete self;
+}
+int slow_create(const struct shield_plugin_create_args_v1*,
+                struct shield_plugin_instance_v1** out,
+                struct shield_error_v1*) {
+    *out = new shield_plugin_instance_v1{};
+    (*out)->struct_size = sizeof(shield_plugin_instance_v1);
+    (*out)->get_interface = slow_get_iface;
+    (*out)->start = slow_start;
+    (*out)->shutdown = slow_shutdown;
+    return 0;
+}
+}  // namespace
+
+extern "C" const shield_plugin_abi_v1* shield_plugin_get_v1() {
+    static shield_plugin_abi_v1 abi{};
+    abi.abi_version = SHIELD_PLUGIN_ABI_VERSION;
+    abi.struct_size = sizeof(shield_plugin_abi_v1);
+    abi.package_id = "slow.pkg";
+    abi.create = slow_create;
+    return &abi;
+}
+)SLOW";
+
+struct SlowShutdownPlugin {
+    fs::path so;
+    bool ok = false;
+    SlowShutdownPlugin() {
+        auto dir = fs::temp_directory_path() / "shield_cov_plugin_host" /
+                   "slow_plugin";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        auto src = dir / "slow_plugin.cpp";
+        write_file(src, kSlowShutdownPluginSource);
+        so = dir / "libslow_plugin.so";
+        std::vector<std::string> compilers;
+        if (const char* cxx = std::getenv("CXX")) compilers.push_back(cxx);
+        compilers.push_back("/usr/bin/x86_64-linux-gnu-g++-15");
+        compilers.push_back("/usr/bin/g++");
+        compilers.push_back("/usr/bin/c++");
+        const auto inc = source_include_dir().string();
+        for (const auto& c : compilers) {
+            std::ostringstream cmd;
+            cmd << c << " -std=c++17 -shared -fPIC -I\"" << inc << "\" -o \""
+                << so.string() << "\" \"" << src.string() << "\" 2>/dev/null";
+            if (std::system(cmd.str().c_str()) == 0 && fs::exists(so)) {
+                ok = true;
+                break;
+            }
+        }
+    }
+};
+
+SlowShutdownPlugin& slow_shutdown_plugin() {
+    static SlowShutdownPlugin p;
+    return p;
+}
+
+BOOST_AUTO_TEST_CASE(shutdown_budget_exhaustion_skips_remaining_callbacks) {
+    if (!slow_shutdown_plugin().ok) {
+        BOOST_TEST_MESSAGE("slow plugin compile unavailable; skipping");
+        return;
+    }
+
+    auto root = unique_root("slow_shutdown");
+    auto manifest =
+        fake_manifest("slow.pkg", "shield_plugin_get_v1", "fake.test.iface", "",
+                      "bindings_provided: []\n");
+    // fake_manifest's linux lib is bin/libfake.so; place the slow .so there.
+    auto pkg = root / "slow.pkg";
+    fs::create_directories(pkg / "bin");
+    write_file(pkg / "manifest.yaml", manifest);
+    fs::copy_file(slow_shutdown_plugin().so, pkg / "bin" / "libfake.so");
+
+    PluginConfig pc;
+    pc.directory = root.string();
+    InstanceDecl a;
+    a.id = "slow.a";
+    a.package = "slow.pkg";
+    InstanceDecl b;
+    b.id = "slow.b";
+    b.package = "slow.pkg";
+    pc.instances.push_back(a);
+    pc.instances.push_back(b);
+
+    PluginHost host;
+    std::string error;
+    if (!host.startup(pc, error)) {
+        std::ostringstream diag;
+        diag << "startup failed: " << error;
+        for (const auto& inst : host.instances()) {
+            diag << " [" << inst.id << " state=" << static_cast<int>(inst.state)
+                 << " err=" << inst.last_error << "]";
+        }
+        BOOST_REQUIRE_MESSAGE(false, diag.str());
+    }
+
+    // Tiny budget: the first shutdown callback (400ms) exhausts it, so the
+    // second instance is skipped without calling into the plugin.
+    host.shutdown(150);
+    for (const auto& inst : host.instances()) {
+        BOOST_CHECK(inst.state != State::started);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-4: catalog validation branches, required-instance failure paths,
+// duplicate bindings, dependency cycles, and schema-validated config.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(catalog_rejects_empty_provides) {
+    auto root = unique_root("no_provides");
+    make_package(root, "nopkg", fake_manifest("nopkg", "fake_entry_ok", ""),
+                 true);
+    PluginHost host;
+    std::string err;
+    BOOST_CHECK(!host.startup(PluginConfig{root.string()}, err));
+    BOOST_CHECK(err.find("at least one provided interface") !=
+                std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(catalog_rejects_empty_interface_name) {
+    auto root = unique_root("empty_iface");
+    auto m = fake_manifest("emptyiface", "fake_entry_ok", "placeholder");
+    // Overwrite the provides block with an empty interface name.
+    m.replace(m.find("provides:"), std::string::npos,
+              "provides:\n  - interface: ''\n");
+    make_package(root, "emptyiface", m, true);
+    PluginHost host;
+    std::string err;
+    BOOST_CHECK(!host.startup(PluginConfig{root.string()}, err));
+    BOOST_CHECK(err.find("empty provided interface") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(catalog_rejects_duplicate_interface) {
+    auto root = unique_root("dup_iface");
+    auto m = fake_manifest("dupiface", "fake_entry_ok", "placeholder");
+    m.replace(
+        m.find("provides:"), std::string::npos,
+        "provides:\n  - interface: dup.iface\n  - interface: dup.iface\n");
+    make_package(root, "dupiface", m, true);
+    PluginHost host;
+    std::string err;
+    BOOST_CHECK(!host.startup(PluginConfig{root.string()}, err));
+    BOOST_CHECK(err.find("duplicate interface") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(required_package_missing_fails_startup) {
+    if (!fake_ready()) return;
+    auto root = unique_root("missing_pkg");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("req", "no.such.package"));
+    PluginHost host;
+    std::string err;
+    BOOST_CHECK(!host.startup(cfg, err));
+    BOOST_CHECK(err.find("plugin.package.not_found") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(required_start_failure_fails_startup) {
+    if (!fake_ready()) return;
+    auto root = unique_root("req_start_fail");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("reqstart", "fake.test", true, {},
+                                 nlohmann::json{{"mode", "start_fail"}}));
+    PluginHost host;
+    std::string err;
+    BOOST_CHECK(!host.startup(cfg, err));
+    BOOST_CHECK(err.find("plugin.init.failed") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(duplicate_binding_rejected) {
+    if (!fake_ready()) return;
+    auto root = unique_root("dup_binding");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("b1", "fake.test"));
+    BindingDecl b1;
+    b1.logical = "same.binding";
+    b1.instance_id = "b1";
+    BindingDecl b2;
+    b2.logical = "same.binding";
+    b2.instance_id = "b1";
+    cfg.bindings.push_back(b1);
+    cfg.bindings.push_back(b2);
+    PluginHost host;
+    std::string err;
+    BOOST_CHECK(!host.startup(cfg, err));
+    BOOST_CHECK(err.find("duplicate binding") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(dependency_cycle_rejected) {
+    if (!fake_ready()) return;
+    auto root = unique_root("dep_cycle");
+    // The package requires a "peer" interface so both instances resolve a
+    // dependency edge and form a cycle.
+    make_package(root, "fake.test",
+                 fake_manifest("fake.test", "fake_entry_ok", "fake.test.iface",
+                               "  - name: peer\n    interface: "
+                               "fake.test.iface\n"),
+                 true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("x", "fake.test", true, {{"peer", "y"}}));
+    cfg.instances.push_back(decl("y", "fake.test", true, {{"peer", "x"}}));
+    PluginHost host;
+    std::string err;
+    BOOST_CHECK(!host.startup(cfg, err));
+    BOOST_CHECK(err.find("circular dependency") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(config_schema_required_field_missing_fails) {
+    if (!fake_ready()) return;
+    auto root = unique_root("cfg_required");
+    const std::string manifest =
+        "schema_version: 1\n"
+        "id: cfgreq\n"
+        "name: cfgreq\n"
+        "version: 1.0.0\n"
+        "kind: coverage\n"
+        "entry: fake_entry_ok\n"
+        "library:\n"
+        "  linux: bin/libfake.so\n"
+        "provides:\n"
+        "  - interface: fake.test.iface\n"
+        "requires: []\n"
+        "config_schema:\n"
+        "  type: object\n"
+        "  required:\n"
+        "    - port\n";
+    make_package(root, "cfgreq", manifest, true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    // No "port" in the instance config: validation fails and the required
+    // instance aborts startup.
+    cfg.instances.push_back(decl("needs_port", "cfgreq"));
+    PluginHost host;
+    std::string err;
+    BOOST_CHECK(!host.startup(cfg, err));
+    BOOST_CHECK(err.find("required field missing") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Round-5: binding targets a missing instance, non-required config-invalid
+// instance continues startup, and a failing non-required register_lua.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(binding_to_missing_instance_rejected) {
+    if (!fake_ready()) return;
+    auto root = unique_root("bind_missing");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("b1", "fake.test"));
+    BindingDecl b;
+    b.logical = "some.binding";
+    b.instance_id = "ghost_instance";
+    cfg.bindings.push_back(b);
+    PluginHost host;
+    std::string err;
+    BOOST_CHECK(!host.startup(cfg, err));
+    BOOST_CHECK(err.find("targets missing instance") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(non_required_config_invalid_instance_continues) {
+    if (!fake_ready()) return;
+    auto root = unique_root("cfg_optional");
+    const std::string manifest =
+        "schema_version: 1\n"
+        "id: cfgopt\n"
+        "name: cfgopt\n"
+        "version: 1.0.0\n"
+        "kind: coverage\n"
+        "entry: fake_entry_ok\n"
+        "library:\n"
+        "  linux: bin/libfake.so\n"
+        "provides:\n"
+        "  - interface: fake.test.iface\n"
+        "requires: []\n"
+        "config_schema:\n"
+        "  type: object\n"
+        "  required:\n"
+        "    - port\n";
+    make_package(root, "cfgopt", manifest, true);
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("healthy", "fake.test"));
+    // Non-required instance without the required "port": marked unavailable
+    // but startup continues and the healthy instance starts.
+    cfg.instances.push_back(decl("sick", "cfgopt", false));
+    PluginHost host;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+    BOOST_CHECK(host.find_instance("healthy")->state == State::started);
+    BOOST_CHECK(host.find_instance("sick")->state == State::unavailable);
+}
+
+BOOST_AUTO_TEST_CASE(non_required_register_lua_failure_logs_warning) {
+    if (!fake_ready()) return;
+    auto root = unique_root("register_fail");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("failer", "fake.test", false, {},
+                                 nlohmann::json{{"mode", "register_fail"}}));
+    PluginHost host;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+
+    auto L = make_lua();
+    BOOST_REQUIRE(L);
+    BOOST_CHECK(host.register_lua_all(L.get(), err));
 }

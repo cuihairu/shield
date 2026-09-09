@@ -414,8 +414,6 @@ BOOST_AUTO_TEST_CASE(EvalValueShapes) {
     BOOST_CHECK(table.is_string() || table.is_object());
 }
 
-BOOST_AUTO_TEST_SUITE_END()
-
 // An explicit empty `return` yields an empty result array, which the eval
 // and REPL handlers report as {"type":"result","data":null}.
 BOOST_FIXTURE_TEST_CASE(EmptyReturnShapes, LuaFixture) {
@@ -442,3 +440,34 @@ BOOST_FIXTURE_TEST_CASE(EmptyReturnShapes, LuaFixture) {
     BOOST_CHECK(resp["type"] == "result");
     BOOST_CHECK(resp["data"].is_null());
 }
+
+// ---------------------------------------------------------------------------
+// Round-3: attached REPL execution exceeding the 5s console deadline.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ReplExecutionTimeout) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "attach svc");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+
+    // Busy-loop for ~7s: the REPL's 5s wait_for lapses first and reports an
+    // execution timeout to the console.
+    dispatcher.dispatch(harness.session,
+                        "local t = os.clock() while os.clock() - t < 7 do end");
+    line = harness.read_line(std::chrono::milliseconds(15000));
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("execution timeout") !=
+                std::string::npos);
+
+    // Give the busy loop a moment to finish so teardown does not race the
+    // still-running exec task on the service actor.
+    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+}
+
+BOOST_AUTO_TEST_SUITE_END()

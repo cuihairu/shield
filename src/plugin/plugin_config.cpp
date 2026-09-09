@@ -59,15 +59,19 @@ PluginConfig parse_plugin_config_json(std::string_view json_text) {
 }
 
 PluginConfig parse_plugin_config(const shield::config::Config& cfg) {
-    // Config does not expose a subtree walker, so round-trip through
-    // to_json() (YAML→JSON) and parse the `plugins` node with nlohmann.
+    // The flat Config::to_json() view only carries dotted scalar keys, so
+    // nested structures (instances list, bindings map) are invisible there.
+    // Serialize the full `plugins` subtree from the YAML root instead and
+    // feed it to the JSON parser wrapped under its expected "plugins" key.
     PluginConfig pc;
     // The flat "plugins.directory" key never nests in to_json() output, so
     // read it directly from the Config view.
     pc.directory = cfg.get_string("plugins.directory", "./plugins");
     PluginConfig rest;
     try {
-        rest = parse_plugin_config_json(cfg.to_json());
+        rest = parse_plugin_config_json(
+            "{\"plugins\":" + shield::config::subtree_json(cfg, "plugins") +
+            "}");
     } catch (...) {
         return pc;  // unparseable global config → directory-only result
     }

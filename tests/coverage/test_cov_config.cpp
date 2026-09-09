@@ -1066,3 +1066,20 @@ BOOST_AUTO_TEST_CASE(ValidateNetworkProtocolEmptyMapRejected) {
                   "protocol: {}\n"),
         RuntimeValidationOptions{}, "must not be empty");
 }
+
+// reload_config() is a stub that always reports success.
+BOOST_AUTO_TEST_CASE(ReloadConfigReturnsTrue) {
+    BOOST_CHECK(shield::config::reload_config());
+}
+
+// subtree_json with an empty path returns the empty-object document.
+BOOST_AUTO_TEST_CASE(SubtreeJsonEmptyPathReturnsEmptyObject) {
+    Config c;
+    BOOST_REQUIRE(c.load_yaml_string("a:\n  b: 1\n"));
+    BOOST_CHECK_EQUAL(shield::config::subtree_json(c, ""), "{}");
+    // The nested map subtree serializes with its nested structure intact.
+    const auto subtree = shield::config::subtree_json(c, "a");
+    BOOST_CHECK_NE(subtree.find("\"b\":1"), std::string::npos);
+    // Missing paths also produce the empty-object document.
+    BOOST_CHECK_EQUAL(shield::config::subtree_json(c, "nope"), "{}");
+}

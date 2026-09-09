@@ -3,6 +3,7 @@
 // shutdown_all budget forcing, error message extraction, and spawn option
 // edge cases.
 #define BOOST_TEST_MODULE CovLuaService2
+#include <atomic>
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
@@ -283,4 +284,206 @@ BOOST_AUTO_TEST_CASE(ExitIdempotence) {
                            std::chrono::seconds(5)));
     // Second exit of the same id is a no-op.
     manager.exit(svc.service_id, "second");
+}
+
+// ---------------------------------------------------------------------------
+// Round-3 additions: name registration/unregistration outside a service
+// context, and unsigned 64-bit argument conversion.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(RegisterAndUnregisterNameWithoutServiceContext) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // From the main thread there is no current dispatch context: both
+    // registration and unregistration are rejected.
+    std::string error;
+    BOOST_CHECK(!manager.register_name("cov3.name", &error));
+    BOOST_CHECK(error.find("current service context") != std::string::npos);
+    error.clear();
+    BOOST_CHECK(!manager.unregister_name("cov3.name", &error));
+    BOOST_CHECK(error.find("current service context") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(CallWithUnsigned64Argument) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov3_u64.lua",
+                     "local M = {}\n"
+                     "function M.kind(ctx, v)\n"
+                     "  if v == nil then return 'nil' end\n"
+                     "  return math.type(v)\n"
+                     "end\n"
+                     "return M\n");
+    auto svc = manager.spawn(path, opts_for("cov3_u64"));
+    BOOST_REQUIRE(svc.success);
+
+    auto res = manager.call(
+        svc.service_id, "kind",
+        nlohmann::json::array({nlohmann::json(18446744073709551615ULL)}));
+    BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+    BOOST_REQUIRE_EQUAL(res.values.size(), 1u);
+    BOOST_CHECK_EQUAL(res.values[0].get<std::string>(), "integer");
+}
+
+// ---------------------------------------------------------------------------
+// Round-4: timer callback that raises (error hook path), and a still-pending
+// timer at manager teardown.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(TimerCallbackErrorIsContained) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path = write_script(
+        "cov4_timer_err.lua",
+        "local M = {}\n"
+        "function M.on_init()\n"
+        "    shield.timer_once(50, function() error('timer kaboom') end)\n"
+        "end\n"
+        "function M.ping(ctx) return 'pong' end\n"
+        "return M\n");
+    auto svc = manager.spawn(path, opts_for("cov4_timer_err"));
+    BOOST_REQUIRE(svc.success);
+
+    // The timer fires and its callback raises; the service stays alive and
+    // responsive afterwards.
+    CallResult res;
+    for (int i = 0; i < 40; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        res = manager.call(svc.service_id, "ping", nlohmann::json::array());
+        if (i > 5 && res.success) break;
+    }
+    BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+    BOOST_CHECK_EQUAL(res.values[0].get<std::string>(), "pong");
+}
+
+BOOST_AUTO_TEST_CASE(PendingTimerSurvivesManagerTeardown) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    {
+        LuaRuntime runtime;
+        LuaServiceManager manager(runtime, system);
+        const std::string path =
+            write_script("cov4_timer_pending.lua",
+                         "local M = {}\n"
+                         "function M.on_init()\n"
+                         "    shield.timer_once(60000, function() end)\n"
+                         "end\n"
+                         "return M\n");
+        auto svc = manager.spawn(path, opts_for("cov4_timer_pending"));
+        BOOST_REQUIRE(svc.success);
+        // Manager (and its timer drivers) is destroyed while the timer is
+        // still armed.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-5: a suspended coroutine call leaves a call-timeout driver actor
+// behind; manager teardown while the call is pending stops the driver.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(PendingCoroutineCallSurvivesManagerTeardown) {
+    const std::string callee = write_script(
+        "cov5_slow.lua",
+        "local M = {}\n"
+        "function M.slow(ctx) shield.sleep(8000) return 'done' end\n"
+        "return M\n");
+    const std::string caller =
+        write_script("cov5_caller.lua",
+                     "local M = {}\n"
+                     "function M.kick(ctx, target)\n"
+                     "  shield.call_timeout(10000, target, 'slow')\n"
+                     "  return 'kicked'\n"
+                     "end\n"
+                     "return M\n");
+
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    {
+        LuaRuntime runtime;
+        LuaServiceManager manager(runtime, system);
+        auto slow = manager.spawn(callee, opts_for("cov5_slow"));
+        BOOST_REQUIRE(slow.success);
+        auto base = manager.spawn(caller, opts_for("cov5_caller"));
+        BOOST_REQUIRE(base.success);
+
+        // Fire-and-forget so the caller's coroutine suspends with a pending
+        // call (and its timeout driver) while the manager is destroyed.
+        std::string err;
+        BOOST_CHECK(manager.send(base.service_id, "kick",
+                                 nlohmann::json::array({slow.service_id}),
+                                 &err));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-6: a second spawn of the same name while the first is still running
+// its (slow) on_init observes the name reservation and fails.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ConcurrentDuplicateSpawnHitsReservation) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov6_slow_init.lua",
+                     "local M = {}\n"
+                     "function M.on_init() shield.sleep(800) end\n"
+                     "return M\n");
+
+    std::atomic<bool> first_done{false};
+    SpawnResult first;
+    std::thread spawner([&]() {
+        first = manager.spawn(path, opts_for("cov6_dup"));
+        first_done = true;
+    });
+
+    // Wait until the first spawn is inside its slow on_init, then race a
+    // second spawn of the same name: it must observe the reservation.
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    SpawnResult second = manager.spawn(path, opts_for("cov6_dup"));
+
+    spawner.join();
+    BOOST_REQUIRE(first_done.load());
+    BOOST_REQUIRE_MESSAGE(first.success, first.error_message);
+    BOOST_CHECK(!second.success);
+    BOOST_CHECK(second.error_message.find("reserved") != std::string::npos);
+
+    manager.exit(first.service_id, "done");
+}
+
+// ---------------------------------------------------------------------------
+// Round-7: the exit-tombstone set is capped; after kRecentlyExitedLimit
+// exits the set is cleared on the next exit (old tombstones degrade to
+// service_not_found for very old names by design).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(RecentlyExitedTombstoneCapClearsSet) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov7_tomb.lua", "local M = {}\nreturn M\n");
+
+    // Spawn+exit unique names until the tombstone cap is exceeded. Each
+    // iteration leaves one tombstone; entry 4097 clears the set.
+    const int kLimit = 4096;
+    for (int i = 0; i <= kLimit; ++i) {
+        auto res = manager.spawn(path, opts_for("cov7_t_" + std::to_string(i)));
+        BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+        manager.exit(res.service_id, "done");
+    }
+    // The set was cleared at the overflow exit, so a lookup of the very
+    // first (oldest) name reports not-found semantics either way; the
+    // observable effect here is simply that the loop completed.
+    BOOST_CHECK(manager.list_services().empty());
 }

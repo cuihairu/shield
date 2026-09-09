@@ -1133,6 +1133,48 @@ size_t runtime_net_threads() {
     return 0;
 }
 
+namespace {
+
+// Walk a dotted path through nested map nodes. Uses only const operator[]
+// (no insertion side effect) and copy construction / return-by-value —
+// yaml-cpp's Node::operator= rebinds the *target* node via set_ref, so
+// assigning a child back onto a node that aliases its parent would destroy
+// the parent's subtree.
+const YAML::Node find_subtree_node(const YAML::Node& node,
+                                   std::string_view path) {
+    if (path.empty()) {
+        return node;
+    }
+    const auto dot = path.find('.');
+    const auto segment =
+        (dot == std::string_view::npos) ? path : path.substr(0, dot);
+    if (segment.empty() || !node.IsMap()) {
+        return YAML::Node(YAML::NodeType::Undefined);
+    }
+    const YAML::Node child = node[std::string(segment)];
+    if (!child || child.IsNull()) {
+        return YAML::Node(YAML::NodeType::Undefined);
+    }
+    return find_subtree_node(child, (dot == std::string_view::npos)
+                                        ? std::string_view{}
+                                        : path.substr(dot + 1));
+}
+
+}  // namespace
+
+std::string subtree_json(const Config& config, std::string_view path) {
+    if (path.empty()) {
+        return "{}";
+    }
+    std::shared_lock lock(config.impl_->mutex);
+    const YAML::Node root = config.impl_->root;
+    const YAML::Node node = find_subtree_node(root, path);
+    if (!node || node.IsNull()) {
+        return "{}";
+    }
+    return yaml_to_json(node).dump();
+}
+
 bool reload_config() {
     // Would need to track the original config path
     return true;

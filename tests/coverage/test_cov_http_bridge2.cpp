@@ -203,6 +203,11 @@ BOOST_AUTO_TEST_CASE(ServiceNotRunningYields503) {
     BOOST_CHECK(resp.body().find("ghost_service") != std::string::npos);
 
     bridge.detach();
+    // Drop the route before the registering VM and the standalone state
+    // backing its handler are destroyed: route entries hold sol::function
+    // references bound to those states, and releasing them from
+    // ~LuaRuntime would touch already-closed lua_States.
+    runtime.remove_http_routes_for_service("ghost_service");
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +293,36 @@ BOOST_AUTO_TEST_CASE(CancelledDispatchTaskYields504) {
     auto block_resp = block_future.get();
     BOOST_CHECK_EQUAL(block_resp.result_int(), 200);
     BOOST_CHECK_EQUAL(block_resp.body(), "blocked");
+
+    manager.shutdown_all("done");
+}
+
+// ---------------------------------------------------------------------------
+// Round-3: handler raising a Lua error yields a 500 carrying the lua_error
+// text from the handler's VM.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(RaisingHandlerYields500WithLuaError) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module =
+        write_script("cov3_raises.lua",
+                     "local M = {}\n"
+                     "function M.on_init()\n"
+                     "    shield.httpd.get('/raise', function(req)\n"
+                     "        error('handler kaboom')\n"
+                     "    end)\n"
+                     "end\n"
+                     "return M\n");
+    auto svc = manager.spawn(module, opts_for("cov3_raises").dump());
+    BOOST_REQUIRE(svc.success);
+
+    LuaHttpBridge bridge(runtime, manager);
+    auto resp = bridge.handle(make_request("GET", "/raise"));
+    BOOST_CHECK_EQUAL(resp.result_int(), 500);
+    BOOST_CHECK(resp.body().find("handler kaboom") != std::string::npos);
 
     manager.shutdown_all("done");
 }

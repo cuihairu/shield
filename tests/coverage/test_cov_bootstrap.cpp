@@ -662,7 +662,9 @@ static int fake_create(const struct shield_plugin_create_args_v1* args,
 
 extern "C" const shield_plugin_abi_v1* shield_plugin_get_v1() {
     static shield_plugin_abi_v1 abi{};
+    abi.abi_version = SHIELD_PLUGIN_ABI_VERSION;
     abi.struct_size = sizeof(shield_plugin_abi_v1);
+    abi.package_id = SHIELD_FAKE_PACKAGE_ID;
     abi.create = fake_create;
     return &abi;
 }
@@ -672,14 +674,13 @@ struct FakeCodecPlugin {
     fs::path dir;
     fs::path so;
     bool ok = false;
-    FakeCodecPlugin() {
+    FakeCodecPlugin(const std::string& package_id) {
         dir = fs::temp_directory_path() / "shield_cov_boot_fakecodec";
         std::error_code ec;
-        fs::remove_all(dir, ec);
         fs::create_directories(dir / "bin", ec);
-        auto src = dir / "fake_codec.cpp";
+        auto src = dir / ("fake_codec_" + package_id + ".cpp");
         write_file(src, kFakeCodecPluginSource);
-        so = dir / "bin" / "libfake_codec_plugin.so";
+        so = dir / "bin" / ("libfake_codec_" + package_id + ".so");
         // Find include dir for shield headers.
         const char* src_root = nullptr;
         for (const char* candidate :
@@ -701,8 +702,10 @@ struct FakeCodecPlugin {
         compilers.push_back("/usr/bin/c++");
         for (const auto& c : compilers) {
             std::ostringstream cmd;
-            cmd << c << " -std=c++17 -shared -fPIC -I\"" << inc << "\" -o \""
-                << so.string() << "\" \"" << src.string() << "\" 2>/dev/null";
+            cmd << c << " -std=c++17 -shared -fPIC -I\"" << inc << "\" "
+                << "-DSHIELD_FAKE_PACKAGE_ID=\"\\\"" << package_id << "\\\"\" "
+                << "-o \"" << so.string() << "\" \"" << src.string()
+                << "\" 2>/dev/null";
             if (std::system(cmd.str().c_str()) == 0 && fs::exists(so)) {
                 ok = true;
                 break;
@@ -711,9 +714,11 @@ struct FakeCodecPlugin {
     }
 };
 
-FakeCodecPlugin& fake_codec_plugin() {
-    static FakeCodecPlugin p;
-    return p;
+FakeCodecPlugin& fake_codec_plugin(const std::string& package_id) {
+    static std::map<std::string, std::unique_ptr<FakeCodecPlugin>> cache;
+    auto& entry = cache[package_id];
+    if (!entry) entry = std::make_unique<FakeCodecPlugin>(package_id);
+    return *entry;
 }
 
 std::string fake_codec_manifest(const std::string& id,
@@ -739,7 +744,7 @@ std::string fake_codec_manifest(const std::string& id,
 fs::path setup_codec_plugin_dir(const std::string& pkg_id,
                                 const std::string& codec_name = "",
                                 bool incomplete_vtable = false) {
-    auto& fp = fake_codec_plugin();
+    auto& fp = fake_codec_plugin(pkg_id);
     if (!fp.ok) return {};
     fs::path root = base_dir("shield_cov_boot_codec_" + pkg_id);
     fs::path pkg = root / pkg_id;
@@ -755,7 +760,7 @@ fs::path setup_codec_plugin_dir(const std::string& pkg_id,
 // Provider exists with correct codec name and valid vtable → probe succeeds,
 // listener factory resolved_codec is non-null → lines 137, 513, 516-517.
 BOOST_AUTO_TEST_CASE(CodecProviderValidVtable) {
-    if (!fake_codec_plugin().ok) return;
+    if (!fake_codec_plugin("codec.ok").ok) return;
 
     auto plugin_root = setup_codec_plugin_dir("codec.ok", "fakecodec");
     BOOST_REQUIRE(!plugin_root.empty());
@@ -771,6 +776,8 @@ BOOST_AUTO_TEST_CASE(CodecProviderValidVtable) {
         "  instances:\n"
         "    - id: codec.ok\n"
         "      package: codec.ok\n"
+        "      config:\n"
+        "        codec_name: msgpack\n"
         "  bindings:\n"
         "    codec.ok: codec.ok\n"
         "actors:\n"
@@ -796,7 +803,7 @@ BOOST_AUTO_TEST_CASE(CodecProviderValidVtable) {
 
 // Provider exists but codec_name doesn't match requested codec → lines 121-128.
 BOOST_AUTO_TEST_CASE(CodecProviderNameMismatch) {
-    if (!fake_codec_plugin().ok) return;
+    if (!fake_codec_plugin("codec.mismatch").ok) return;
 
     auto plugin_root = setup_codec_plugin_dir("codec.mismatch", "realcodec");
     BOOST_REQUIRE(!plugin_root.empty());
@@ -839,7 +846,7 @@ BOOST_AUTO_TEST_CASE(CodecProviderNameMismatch) {
 // Provider exists with matching codec name but incomplete vtable
 // (null decode/encode) → lines 130-135.
 BOOST_AUTO_TEST_CASE(CodecProviderIncompleteVtable) {
-    if (!fake_codec_plugin().ok) return;
+    if (!fake_codec_plugin("codec.incomplete").ok) return;
 
     // Set up a plugin directory with an "incomplete" instance that will
     // produce a codec with null decode/encode. We need a second package
@@ -890,6 +897,7 @@ BOOST_AUTO_TEST_CASE(CodecProviderIncompleteVtable) {
         "    - id: codec.incomplete\n"
         "      package: codec.incomplete\n"
         "      config:\n"
+        "        codec_name: msgpack\n"
         "        incomplete_vtable: true\n"
         "  bindings:\n"
         "    codec.incomplete: codec.incomplete\n"
@@ -996,8 +1004,8 @@ BOOST_AUTO_TEST_CASE(InvalidTCPEndpointNonNumericPort) {
     force_shutdown();
 }
 
-// Script not found in any path: resolve_script_path_with_lua_path falls
-// through to the bare-script return at line 74.
+// Script not found in any path: runtime config validation rejects the
+// actor before bootstrap reaches script resolution (initialize fails).
 BOOST_AUTO_TEST_CASE(ScriptNotFoundFallsBackToBareName) {
     fs::path cfg = write_config(
         "app:\n  name: cov\n"
@@ -1007,9 +1015,11 @@ BOOST_AUTO_TEST_CASE(ScriptNotFoundFallsBackToBareName) {
         "    script: shield_cov_boot_ghost_xyz_999.lua\n");
     shield::bootstrap::RuntimeConfig rc;
     rc.config_files = {cfg.string()};
-    // Initialization succeeds because the actor is optional.
-    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
-    shield::bootstrap::shutdown();
+    // Validation requires every declared script to exist, even for
+    // optional actors, so initialization fails here.
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    force_shutdown();
 }
 
 // Provider found in probe path but NOT in listener-setup path →
@@ -1017,7 +1027,7 @@ BOOST_AUTO_TEST_CASE(ScriptNotFoundFallsBackToBareName) {
 // The probe uses builtin "json" codec and succeeds; the listener setup
 // then tries to resolve the named provider and fails.
 BOOST_AUTO_TEST_CASE(CodecProviderNotFoundInListenerSetup) {
-    if (!fake_codec_plugin().ok) return;
+    if (!fake_codec_plugin("codec.miss").ok) return;
 
     // Set up a real plugin that DOES exist as "codec.miss"
     // so the probe path succeeds (json is builtin, doesn't need provider).
@@ -1065,7 +1075,7 @@ BOOST_AUTO_TEST_CASE(CodecProviderNotFoundInListenerSetup) {
 // instances/bindings → probe succeeds, listener factory resolved_codec is
 // non-null → lines 137, 513, 516-517.
 BOOST_AUTO_TEST_CASE(CodecProviderValidVtableWithBindings) {
-    if (!fake_codec_plugin().ok) return;
+    if (!fake_codec_plugin("codec.ok2").ok) return;
 
     auto plugin_root = setup_codec_plugin_dir("codec.ok2");
     BOOST_REQUIRE(!plugin_root.empty());
@@ -1081,6 +1091,8 @@ BOOST_AUTO_TEST_CASE(CodecProviderValidVtableWithBindings) {
         "  instances:\n"
         "    - id: codec.ok2\n"
         "      package: codec.ok2\n"
+        "      config:\n"
+        "        codec_name: msgpack\n"
         "  bindings:\n"
         "    codec.ok2: codec.ok2\n"
         "actors:\n"
@@ -1095,7 +1107,7 @@ BOOST_AUTO_TEST_CASE(CodecProviderValidVtableWithBindings) {
         "      protocol:\n"
         "        name: cov\n"
         "        body:\n"
-        "          codec: fakecodec\n"
+        "          codec: msgpack\n"
         "          provider: codec.ok2\n");
     shield::bootstrap::RuntimeConfig rc;
     rc.config_files = {cfg.string()};
@@ -1107,7 +1119,7 @@ BOOST_AUTO_TEST_CASE(CodecProviderValidVtableWithBindings) {
 // Provider exists but codec_name doesn't match requested codec, with proper
 // instances/bindings → lines 121-128.
 BOOST_AUTO_TEST_CASE(CodecProviderNameMismatchWithBindings) {
-    if (!fake_codec_plugin().ok) return;
+    if (!fake_codec_plugin("codec.mm2").ok) return;
 
     auto plugin_root = setup_codec_plugin_dir("codec.mm2");
     BOOST_REQUIRE(!plugin_root.empty());
@@ -1150,7 +1162,7 @@ BOOST_AUTO_TEST_CASE(CodecProviderNameMismatchWithBindings) {
 // Provider exists with matching codec name but incomplete vtable
 // (null decode/encode), with proper instances/bindings → lines 130-135.
 BOOST_AUTO_TEST_CASE(CodecProviderIncompleteVtableWithBindings) {
-    if (!fake_codec_plugin().ok) return;
+    if (!fake_codec_plugin("codec.iv2").ok) return;
 
     auto plugin_root = setup_codec_plugin_dir("codec.iv2");
     BOOST_REQUIRE(!plugin_root.empty());
@@ -1186,6 +1198,7 @@ BOOST_AUTO_TEST_CASE(CodecProviderIncompleteVtableWithBindings) {
         "    - id: codec.iv2\n"
         "      package: codec.iv2\n"
         "      config:\n"
+        "        codec_name: msgpack\n"
         "        incomplete_vtable: true\n"
         "  bindings:\n"
         "    codec.iv2: codec.iv2\n"
@@ -1201,7 +1214,7 @@ BOOST_AUTO_TEST_CASE(CodecProviderIncompleteVtableWithBindings) {
         "      protocol:\n"
         "        name: cov\n"
         "        body:\n"
-        "          codec: fakecodec\n"
+        "          codec: msgpack\n"
         "          provider: codec.iv2\n");
     shield::bootstrap::RuntimeConfig rc;
     rc.config_files = {cfg.string()};
@@ -1209,6 +1222,101 @@ BOOST_AUTO_TEST_CASE(CodecProviderIncompleteVtableWithBindings) {
     BOOST_CHECK(!shield::bootstrap::is_initialized());
     force_shutdown();
     fs::remove_all(plugin_root);
+}
+
+// ---------------------------------------------------------------------------
+// Round-5 additions: listener factory execution, ops HTTP config error, and
+// shutdown drain with a pending forked task.
+// ---------------------------------------------------------------------------
+
+// A valid codec-provider listener actually builds its protocol pipeline when
+// a client connects (the per-connection create_protocol_pipeline factory
+// runs and serves the captured vtable).
+BOOST_AUTO_TEST_CASE(CodecProviderListenerServesConnection) {
+    if (!fake_codec_plugin("codec.live").ok) return;
+
+    auto plugin_root = setup_codec_plugin_dir("codec.live");
+    BOOST_REQUIRE(!plugin_root.empty());
+
+    fs::path script = echo_script("shield_cov_boot_codec_live.lua");
+    uint16_t port = free_port();
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "plugins:\n"
+        "  directory: " +
+        plugin_root.string() +
+        "\n"
+        "  instances:\n"
+        "    - id: codec.live\n"
+        "      package: codec.live\n"
+        "      config:\n"
+        "        codec_name: msgpack\n"
+        "  bindings:\n"
+        "    codec.live: codec.live\n"
+        "actors:\n"
+        "  - name: gw\n"
+        "    script: " +
+        script.string() +
+        "\n"
+        "    network:\n"
+        "      tcp: 127.0.0.1:" +
+        std::to_string(port) +
+        "\n"
+        "      protocol:\n"
+        "        name: cov\n"
+        "        body:\n"
+        "          codec: msgpack\n"
+        "          provider: codec.live\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+
+    // Open a TCP connection: the listener accepts it and the per-connection
+    // protocol factory (resolved-codec branch) runs.
+    {
+        boost::asio::io_context io;
+        boost::asio::ip::tcp::socket client(io);
+        boost::system::error_code ec;
+        client.connect(boost::asio::ip::tcp::endpoint(
+                           boost::asio::ip::make_address("127.0.0.1"), port),
+                       ec);
+        BOOST_CHECK(!ec);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        client.close(ec);
+    }
+
+    // Let the session teardown and the queued on_disconnect message drain
+    // on the gateway actor before shutdown starts tearing VMs down.
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+
+    shield::bootstrap::shutdown();
+    fs::remove_all(plugin_root);
+}
+
+BOOST_AUTO_TEST_CASE(ShutdownDrainsPendingForkedTask) {
+    fs::path script =
+        write_file(fs::temp_directory_path() / "shield_cov_boot_drain_task.lua",
+                   "local M = {}\n"
+                   "function M.on_init()\n"
+                   "    shield.fork(function() shield.sleep(1500) end)\n"
+                   "    shield.fork(function() shield.sleep(1500) end)\n"
+                   "end\n"
+                   "return M\n");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "shutdown:\n"
+        "  timeout:\n"
+        "    service_drain: 3000\n"
+        "actors:\n"
+        "  - name: worker\n"
+        "    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    // Give the forked task time to be queued and start sleeping.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    shield::bootstrap::shutdown();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -177,3 +177,33 @@ BOOST_AUTO_TEST_CASE(platform_library_path_picks_linux) {
     auto m = parse_manifest(j);
     BOOST_CHECK_EQUAL(platform_library_path(m), "l.so");
 }
+
+// schema_version other than 1 is rejected with a runtime_error.
+BOOST_AUTO_TEST_CASE(load_manifest_wrong_schema_version_throws) {
+    auto path = write_manifest("wrongver", "schema_version: 2\n");
+    try {
+        load_manifest_file(path);
+        BOOST_FAIL("expected std::runtime_error");
+    } catch (const std::runtime_error& e) {
+        BOOST_CHECK(std::string(e.what()).find("schema_version must be 1") !=
+                    std::string::npos);
+    }
+    fs::remove_all(path.parent_path());
+}
+
+// load_manifest_file refuses files that are not named manifest.yaml.
+BOOST_AUTO_TEST_CASE(load_manifest_wrong_file_name_throws) {
+    auto root = fs::temp_directory_path() / "shield_cov_manifest_wrongname";
+    fs::remove_all(root);
+    fs::create_directories(root);
+    auto path = root / "plugin.yaml";
+    std::ofstream(path) << "schema_version: 1\n";
+    try {
+        load_manifest_file(path);
+        BOOST_FAIL("expected std::runtime_error");
+    } catch (const std::runtime_error& e) {
+        BOOST_CHECK(std::string(e.what()).find("must be named manifest.yaml") !=
+                    std::string::npos);
+    }
+    fs::remove_all(root);
+}

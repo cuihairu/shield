@@ -94,3 +94,19 @@ BOOST_AUTO_TEST_CASE(collect_secret_paths_walks_properties) {
     collect_secret_paths(json("scalar"), "", none);
     BOOST_CHECK(none.empty());
 }
+
+// Round-3: object "required" array enforcement and the "maximum" bound for
+// floating point values.
+BOOST_AUTO_TEST_CASE(object_required_fields_enforced) {
+    json schema = {{"type", "object"},
+                   {"required", json::array({"host", "port"})}};
+    BOOST_CHECK(!validate_config(schema, json{{"host", "x"}}).empty());
+    BOOST_CHECK(
+        validate_config(schema, json{{"host", "x"}, {"port", 1}}).empty());
+}
+
+BOOST_AUTO_TEST_CASE(float_above_maximum_fails) {
+    json schema = {{"type", "number"}, {"maximum", 10.0}};
+    BOOST_CHECK(!validate_config(schema, json(10.5)).empty());
+    BOOST_CHECK(validate_config(schema, json(9.5)).empty());
+}

@@ -481,3 +481,46 @@ BOOST_AUTO_TEST_CASE(OnConnectAndIngressHappyPath) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Round-3: an on_packet dispatch whose decoded body carries a structured
+// message forwards the canonical JSON to the target service.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(OnPacketForwardsDecodedMessage) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const auto script =
+        write_script("/tmp/opencode/cov_bridge_msg.lua", kBridgeServiceScript);
+    auto svc = manager.spawn(script, opts_for("cov_game").dump());
+    BOOST_REQUIRE(svc.success);
+
+    LuaGatewayBridge bridge(manager, "cov_ghost_auth");
+    auto session = std::make_shared<MockSession>(
+        105, shield::net::RemoteAddress{"127.0.0.1", 6005});
+    session->set_target_service(svc.service_id);
+
+    shield::transport::RouteEntry route;
+    route.route_id = 0x4003;
+    route.direction = shield::transport::RouteDirection::ClientToServer;
+    route.requires_auth = false;
+    route.method_name = "cov.method";
+
+    auto dispatch = make_packet(0x4003, &route);
+    BOOST_REQUIRE(dispatch.decoded_body.has_value());
+    dispatch.decoded_body->message =
+        std::optional<nlohmann::json>(nlohmann::json{{"k", "v"}});
+    bridge.on_packet(session, dispatch);
+
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult log = manager.call(svc.service_id, "get_log",
+                                          nlohmann::json::array());
+            return log.success && log.values.is_array() &&
+                   log.values.size() == 1u && log.values[0].is_array() &&
+                   log.values[0].size() == 1u;
+        },
+        std::chrono::seconds(3)));
+}

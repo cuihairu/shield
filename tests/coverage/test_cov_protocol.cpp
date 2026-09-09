@@ -2264,3 +2264,181 @@ BOOST_AUTO_TEST_CASE(EnvelopeNamesAreStable) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Round-3 additions: little-endian encode, includes-header feed framing,
+// delimiter feed, raw/passthrough decode_local, xmldef direction/schema_id,
+// duplicate debug names, and external-provider build errors.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(LenPrefixLittleEndianEncode) {
+    EnvelopeConfig config;
+    config.endian = Endian::Little;
+    config.length_bytes = 4;
+    LenPrefixEnvelope envelope(config);
+
+    Packet packet;
+    packet.body = bytes("abc");
+    const auto frame = envelope.encode(packet.ref());
+    BOOST_REQUIRE_EQUAL(frame.size(), 7u);
+    // Little-endian length prefix: 3, 0, 0, 0.
+    BOOST_CHECK_EQUAL(frame[0], 3);
+    BOOST_CHECK_EQUAL(frame[1], 0);
+    BOOST_CHECK_EQUAL(frame[2], 0);
+    BOOST_CHECK_EQUAL(frame[3], 0);
+}
+
+BOOST_AUTO_TEST_CASE(LenPrefixIncludesHeaderFeedsRoundTrip) {
+    EnvelopeConfig config;
+    config.length_bytes = 4;
+    config.length_includes_header = true;
+    LenPrefixEnvelope envelope(config);
+
+    Packet packet;
+    packet.body = bytes("hello");
+    const auto frame = envelope.encode(packet.ref());
+    BOOST_REQUIRE_EQUAL(frame.size(), 9u);
+
+    auto packets = envelope.feed(frame.data(), frame.size());
+    BOOST_REQUIRE(envelope.error().empty());
+    BOOST_REQUIRE_EQUAL(packets.size(), 1u);
+    BOOST_CHECK_EQUAL_COLLECTIONS(packets[0].body.begin(),
+                                  packets[0].body.end(), packet.body.begin(),
+                                  packet.body.end());
+}
+
+BOOST_AUTO_TEST_CASE(DelimiterFeedsMultiplePackets) {
+    EnvelopeConfig config;
+    config.delimiter = '\n';
+    DelimiterEnvelope envelope(config);
+
+    const std::vector<std::uint8_t> data{'a', 'b', '\n', 'c', '\n', 'd'};
+    auto packets = envelope.feed(data.data(), data.size());
+    BOOST_REQUIRE(envelope.error().empty());
+    BOOST_REQUIRE_EQUAL(packets.size(), 2u);
+    BOOST_REQUIRE_EQUAL(packets[0].body.size(), 2u);
+    BOOST_REQUIRE_EQUAL(packets[1].body.size(), 1u);
+    // Trailing partial frame stays buffered.
+    const std::vector<std::uint8_t> more{'e', '\n'};
+    packets = envelope.feed(more.data(), more.size());
+    BOOST_REQUIRE_EQUAL(packets.size(), 1u);
+    BOOST_REQUIRE(envelope.error().empty());
+}
+
+BOOST_AUTO_TEST_CASE(RawCodecDecodesToLocalBytes) {
+    RawBodyCodec codec;
+    Packet packet;
+    packet.body = bytes("payload");
+    RouteEntry route;
+    route.route_id = 5;
+    route.codec_id = 9;
+    route.schema_id = 11;
+    const DecodedBody body = codec.decode(packet.ref(), route);
+    BOOST_CHECK_EQUAL(body.route_id, 5u);
+    BOOST_CHECK_EQUAL(body.codec_id, 9u);
+    BOOST_CHECK_EQUAL(body.schema_id, 11u);
+    BOOST_CHECK_EQUAL_COLLECTIONS(body.bytes.begin(), body.bytes.end(),
+                                  packet.body.begin(), packet.body.end());
+}
+
+BOOST_AUTO_TEST_CASE(PassthroughCodecDecodeLocalThrows) {
+    PassthroughBodyCodec codec("msgpack");
+    Packet packet;
+    packet.body = bytes("x");
+    RouteEntry route;
+    BOOST_CHECK_THROW(codec.decode(packet.ref(), route), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(XmldefDirectionAndSchemaIdAttributes) {
+    RouteTable routes;
+    std::string error;
+    BOOST_REQUIRE(load_xmldef_routes_from_string(
+        "<message id=\"1\" name=\"up\" direction=\"c2s\" schema_id=\"7\"/>"
+        "<message id=\"2\" name=\"down\" direction=\"server_to_client\"/>",
+        routes, {}, &error));
+    const auto* c2s = routes.find(1);
+    BOOST_REQUIRE(c2s != nullptr);
+    BOOST_CHECK(c2s->direction == RouteDirection::ClientToServer);
+    BOOST_CHECK_EQUAL(c2s->schema_id, 7u);
+    const auto* s2c = routes.find(2);
+    BOOST_REQUIRE(s2c != nullptr);
+    BOOST_CHECK(s2c->direction == RouteDirection::ServerToClient);
+}
+
+BOOST_AUTO_TEST_CASE(RouteTableRejectsDuplicateDebugNames) {
+    RouteTable routes;
+    RouteEntry first;
+    first.route_id = 1;
+    first.debug_name = "same.name";
+    BOOST_CHECK(routes.add(std::move(first)));
+
+    RouteEntry dup;
+    dup.route_id = 2;
+    dup.debug_name = "same.name";
+    BOOST_CHECK(!routes.add(std::move(dup)));
+}
+
+BOOST_AUTO_TEST_CASE(BuildPipelineProviderWithoutResolverFails) {
+    const auto json = nlohmann::json::parse(R"({
+        "name": "p",
+        "body": {"codec": "msgpack", "provider": "some.provider"}
+    })");
+    ProtocolBuildOptions options;  // no external_codec_resolver installed
+    std::string error;
+    BOOST_CHECK(
+        !build_protocol_pipeline_from_json(json.dump(), options, &error));
+    BOOST_CHECK_NE(error.find("no external codec resolver is available"),
+                   std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(BuildPipelineProviderResolverMismatchFails) {
+    const auto json = nlohmann::json::parse(R"({
+        "name": "p",
+        "body": {"codec": "msgpack", "provider": "some.provider"}
+    })");
+    ProtocolBuildOptions options;
+    options.external_codec_resolver =
+        [](std::string_view, std::string_view,
+           std::string* error) -> const shield_protocol_codec_v1* {
+        if (error) *error = "provider has no such codec";
+        return nullptr;
+    };
+    std::string error;
+    BOOST_CHECK(
+        !build_protocol_pipeline_from_json(json.dump(), options, &error));
+    BOOST_CHECK_NE(error.find("provider has no such codec"), std::string::npos);
+
+    // A live vtable whose codec_name does not match body.codec is refused
+    // with the dedicated mismatch error.
+    static shield_protocol_codec_v1 codec{};
+    codec.struct_size = sizeof(shield_protocol_codec_v1);
+    codec.codec_name = "other_codec";
+    codec.decode = [](const shield_protocol_codec_v1*,
+                      const shield_protocol_decode_args_v1*,
+                      shield_protocol_decode_result_v1* out,
+                      shield_error_v1*) -> int {
+        if (out) {
+            out->message_json = "{}";
+            out->message_json_size = 2;
+        }
+        return 0;
+    };
+    codec.encode = [](const shield_protocol_codec_v1*,
+                      const shield_protocol_encode_args_v1*,
+                      shield_protocol_encode_result_v1* out,
+                      shield_error_v1*) -> int {
+        if (out) {
+            out->payload = nullptr;
+            out->payload_size = 0;
+        }
+        return 0;
+    };
+    ProtocolBuildOptions named;
+    named.external_codec_resolver =
+        [&codec](std::string_view, std::string_view,
+                 std::string*) -> const shield_protocol_codec_v1* {
+        return &codec;
+    };
+    error.clear();
+    BOOST_CHECK(!build_protocol_pipeline_from_json(json.dump(), named, &error));
+    BOOST_CHECK_NE(error.find("does not serve"), std::string::npos);
+}

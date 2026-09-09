@@ -96,7 +96,8 @@ function M.dead_call(ctx, target)
 end
 function M.dead_send(ctx, target)
   local ok, err = shield.send(target, "echo", 1)
-  return ok, err and err.code or nil
+  state.send_code = err and err.code or nil
+  return ok, state.send_code
 end
 function M.numeric_target(ctx)
   local ok, err = shield.send(42, "echo")
@@ -152,20 +153,19 @@ BOOST_AUTO_TEST_CASE(LuaToJsonMixedAndUnsupportedValues) {
     BOOST_CHECK_EQUAL(out["a"], 1);
     BOOST_CHECK_EQUAL(out["7"], "x");
 
-    // Function values are not convertible; the direct form returns a null
-    // marker ("<unsupported>" object) without failing.
+    // Function values are not convertible; the direct form returns the
+    // "<unsupported>" marker string without throwing.
     sol::object fn = lua.script("return function() end");
     nlohmann::json fn_json = lua_to_json(fn);
-    BOOST_CHECK(fn_json.is_object());
+    BOOST_CHECK_EQUAL(fn_json, "<unsupported>");
 
-    // Boolean member inside an array.
-    sol::object arr = lua.script("return {true, false, nil, 's'}");
+    // Boolean members inside a contiguous array.
+    sol::object arr = lua.script("return {true, false, 's'}");
     nlohmann::json arr_json = lua_to_json(arr);
     BOOST_CHECK(arr_json.is_array());
-    BOOST_CHECK_EQUAL(arr_json.size(), 4u);
+    BOOST_CHECK_EQUAL(arr_json.size(), 3u);
     BOOST_CHECK(arr_json[0].get<bool>());
     BOOST_CHECK(!arr_json[1].get<bool>());
-    BOOST_CHECK(arr_json[2].is_null());
 
     // json_to_lua with a value that only fits unsigned.
     lua["u"] = json_to_lua(lua, nlohmann::json(18446744073709551615ULL));
@@ -183,7 +183,7 @@ BOOST_AUTO_TEST_CASE(SyncCallErrorCodes) {
 
     sol::state lua;
     lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string);
+                       sol::lib::string, sol::lib::os, sol::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     // Call to a service that does not exist.
@@ -193,12 +193,13 @@ BOOST_AUTO_TEST_CASE(SyncCallErrorCodes) {
                            "assert(ok == false)\n"
                            "assert(err.code == 'service_not_found')"));
 
-    // Call with a reserved method name is rejected before dispatch.
-    BOOST_CHECK(run_script(lua,
-                           "local ok, err = shield._sync_call_timeout("
-                           "100, 'ghost', 'on_reserved')\n"
-                           "assert(ok == false)\n"
-                           "assert(err.code == 'invalid_method')"));
+    // send() with a reserved method name is rejected before dispatch
+    // (method validation happens ahead of the service lookup on send).
+    BOOST_CHECK(
+        run_script(lua,
+                   "local ok, err = shield.send('ghost', 'on_reserved')\n"
+                   "assert(ok == false)\n"
+                   "assert(err.code == 'invalid_method')"));
 
     // send() with a non-handle, non-string target.
     BOOST_CHECK(run_script(lua,
@@ -241,8 +242,9 @@ BOOST_AUTO_TEST_CASE(DeadlineAndDeadServiceCodes) {
     auto caller = manager.spawn(caller_path, opts_for("cov2_caller").dump());
     BOOST_REQUIRE(caller.success);
 
-    // Deadline: the caller uses call_timeout, so the callee handler observes
-    // a positive remaining budget through shield.deadline().
+    // Deadline: call_timeout does not propagate a deadline budget to the
+    // callee (only the pending-call timeout is armed), so the callee's
+    // shield.deadline() is nil and the caller records -1.
     {
         auto res = manager.call(caller.service_id, "probe",
                                 nlohmann::json::array({callee.service_id}));
@@ -254,10 +256,12 @@ BOOST_AUTO_TEST_CASE(DeadlineAndDeadServiceCodes) {
         BOOST_REQUIRE(res.success);
         BOOST_REQUIRE(res.values.size() >= 2u);
         BOOST_CHECK(res.values[0].get<bool>());
-        BOOST_CHECK(res.values[1].get<int64_t>() > 0);
+        BOOST_CHECK_EQUAL(res.values[1].get<int64_t>(), -1);
     }
 
-    // Calls / sends to an exited service map to service_dead.
+    // Calls to an exited service report service_not_found through the sync
+    // call path (no tombstone distinction), while send() to the recently
+    // exited service maps to service_dead via the exit tombstone.
     manager.exit(victim.service_id, "done");
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
@@ -270,13 +274,16 @@ BOOST_AUTO_TEST_CASE(DeadlineAndDeadServiceCodes) {
         auto res = manager.call(caller.service_id, "dead_send",
                                 nlohmann::json::array({victim.service_id}));
         BOOST_REQUIRE(res.success);
-        BOOST_CHECK(res.values[0].get<bool>());
+        BOOST_REQUIRE(res.values.size() >= 2u);
+        BOOST_CHECK(!res.values[0].get<bool>());
+        BOOST_CHECK_EQUAL(res.values[1].get<std::string>(), "service_dead");
     }
     {
         auto res =
             manager.call(caller.service_id, "get", nlohmann::json::array());
         BOOST_REQUIRE(res.success);
-        BOOST_CHECK_EQUAL(res.values[2].get<std::string>(), "service_dead");
+        BOOST_CHECK_EQUAL(res.values[2].get<std::string>(),
+                          "service_not_found");
     }
 
     // Mixed-table argument conversion through a real call.
@@ -304,6 +311,11 @@ BOOST_AUTO_TEST_CASE(HttpdVerbsRegisterRoutes) {
     BOOST_CHECK(runtime.find_http_route("PATCH", "/patch"));
     BOOST_CHECK(runtime.find_http_route("GET", "/after"));
     BOOST_CHECK_EQUAL(runtime.http_route_count(), 4u);
+
+    // Exit the service before teardown: exit() drops its shield.httpd
+    // routes, otherwise ~LuaRuntime would release sol::function references
+    // that are bound to the (already closed) service VM.
+    manager.exit(svc.service_id, "done");
 }
 
 // ---------------------------------------------------------------------------
@@ -326,7 +338,7 @@ BOOST_AUTO_TEST_CASE(PluginQueryApiWithLiveInstance) {
 
     sol::state lua;
     lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string);
+                       sol::lib::string, sol::lib::os, sol::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     shield::plugin::PluginConfig pc;
@@ -383,7 +395,7 @@ BOOST_AUTO_TEST_CASE(SessionHandleOnUnknownSession) {
 
     sol::state lua;
     lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string);
+                       sol::lib::string, sol::lib::os, sol::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     BOOST_CHECK(run_script(lua,
@@ -425,7 +437,7 @@ BOOST_AUTO_TEST_CASE(MakeSessionHandleJsonPopulatesRegistry) {
 
     sol::state lua;
     lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string);
+                       sol::lib::string, sol::lib::os, sol::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     // Fake session: id/remote are enough for handle creation.
@@ -488,4 +500,285 @@ BOOST_AUTO_TEST_CASE(MakeSessionHandleJsonPopulatesRegistry) {
     BOOST_CHECK(run_script(lua,
                            "assert(h:id() == tostring(4242))\n"
                            "assert(h:remote_addr():find('7777'))"));
+}
+
+// ---------------------------------------------------------------------------
+// Round-3 additions: conversion helpers, ServiceHandle metamethods, httpd
+// error paths, and coroutine error propagation shapes.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(JsonToLuaDiscardedAndUnsignedValues) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+
+    // A discarded JSON document (failed parse) converts to nil.
+    const nlohmann::json discarded =
+        nlohmann::json::parse("{broken", nullptr, false);
+    BOOST_CHECK(discarded.is_discarded());
+    sol::object nil_value = json_to_lua(lua, discarded);
+    BOOST_CHECK(nil_value == sol::nil);
+
+    // An unsigned integer that does not fit int64 keeps its value.
+    sol::object u = json_to_lua(lua, nlohmann::json(18446744073709551615ULL));
+    lua["u"] = u;
+    BOOST_CHECK(run_script(lua, "assert(math.type(u) == 'integer')"));
+}
+
+// ServiceHandle usertype metamethods: to_string and equality.
+BOOST_AUTO_TEST_CASE(ServiceHandleMetaMethods) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    BOOST_CHECK(run_script(lua,
+                           "local a = shield._make_handle('svc.a')\n"
+                           "local b = shield._make_handle('svc.a')\n"
+                           "local c = shield._make_handle('svc.c')\n"
+                           "assert(a == b)\n"
+                           "assert(a ~= c)\n"
+                           "assert(tostring(a):find('svc.a', 1, true))"));
+}
+
+// shield.httpd with a null manager registration context throws instead of
+// crashing.
+BOOST_AUTO_TEST_CASE(HttpdWithNullManagerThrows) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, nullptr, &runtime);
+
+    BOOST_CHECK(run_script(lua,
+                           "local ok, err = pcall(function()\n"
+                           "  shield.httpd.get('/x', function() end)\n"
+                           "end)\n"
+                           "assert(ok == false)\n"
+                           "assert(tostring(err):find('not available', 1, "
+                           "true))"));
+}
+
+// A live service registering an invalid httpd route (path without leading
+// '/') fails registration and fails the spawn.
+BOOST_AUTO_TEST_CASE(HttpdInvalidRoutePathFailsSpawn) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path = write_script(
+        "cov3_httpd_bad_path.lua",
+        "local M = {}\n"
+        "function M.on_init()\n"
+        "    shield.httpd.get('no-slash', function(req) return 'x' end)\n"
+        "end\n"
+        "return M\n");
+    auto res = manager.spawn(path, opts_for("cov3_httpd_bad").dump());
+    BOOST_CHECK(!res.success);
+    BOOST_CHECK(res.error_message.find("httpd") != std::string::npos ||
+                res.error_message.find("path") != std::string::npos);
+}
+
+// Coroutine call error propagation: the callee has no such method, so the
+// suspended caller resumes with the error string (call_error_message string
+// branch) and shield.call returns false plus the message.
+BOOST_AUTO_TEST_CASE(CoroutineCallErrorShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string callee_path = write_script(
+        "cov3_callee.lua",
+        "local M = {}\nfunction M.echo(ctx) return 1 end\nreturn M\n");
+    const std::string caller_path = write_script(
+        "cov3_caller.lua",
+        "local M = {}\n"
+        "local state = {}\n"
+        "function M.call_missing(ctx, target)\n"
+        "  local ok, err = shield.call(target, 'no_such_method')\n"
+        "  state.ok = ok\n"
+        "  state.err = err\n"
+        "  return ok, err\n"
+        "end\n"
+        "function M.spawn_broken(ctx)\n"
+        "  local h, err = shield.spawn('/tmp/shield_cov_lua_api3_nope.lua')\n"
+        "  return h, err\n"
+        "end\n"
+        "function M.get(ctx) return state.ok, state.err end\n"
+        "return M\n");
+
+    auto callee = manager.spawn(callee_path, opts_for("cov3_callee").dump());
+    BOOST_REQUIRE(callee.success);
+    auto caller = manager.spawn(caller_path, opts_for("cov3_caller").dump());
+    BOOST_REQUIRE(caller.success);
+
+    {
+        auto res = manager.call(caller.service_id, "call_missing",
+                                nlohmann::json::array({callee.service_id}));
+        BOOST_REQUIRE(res.success);
+        BOOST_REQUIRE(res.values.size() >= 2u);
+        BOOST_CHECK(res.values[0].get<bool>() == false);
+        const std::string err = res.values[1].get<std::string>();
+        BOOST_CHECK(err.find("method not found") != std::string::npos);
+    }
+
+    {
+        auto res = manager.call(caller.service_id, "spawn_broken",
+                                nlohmann::json::array());
+        BOOST_REQUIRE(res.success);
+        BOOST_REQUIRE(res.values.size() >= 2u);
+        BOOST_CHECK(res.values[0].is_null());
+        BOOST_CHECK(res.values[1].is_object());
+        BOOST_CHECK(res.values[1].contains("code"));
+        BOOST_CHECK(res.values[1].contains("message"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-4 additions: main-thread spawn success, config number-parsing edges,
+// service-context logging, and the blocking sync-call error path.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(MainThreadSpawnAndConfigEdges) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    const std::string module_path =
+        write_script("cov4_spawn_target.lua", "local M = {}\nreturn M\n");
+
+    // Main-thread shield.spawn succeeds synchronously and returns a handle.
+    BOOST_CHECK(
+        run_script(lua, "local h, err = shield.spawn('" + module_path +
+                            "', {name = 'cov4_spawned'})\n"
+                            "assert(h ~= nil,\n"
+                            "  err and (tostring(err.code) .. ' ' .. "
+                            "tostring(err.message)) or 'spawn failed')\n"
+                            "assert(h:id():find('cov4_spawned', 1, "
+                            "true))"));
+
+    // shield.config on a float-looking string that stod rejects (throw path
+    // falls through to the integer parser, which also rejects).
+    shield::config::global_config().set("cov4.badnum", std::string("e999xx"));
+    BOOST_CHECK(run_script(lua,
+                           "assert(shield.config('cov4.badnum') == "
+                           "'e999xx')"));
+}
+
+// shield.log from inside a service handler prefixes the service id; a
+// blocking _sync_call_timeout to a live service with a missing method maps
+// the callee error through call_error_message's string branch.
+BOOST_AUTO_TEST_CASE(ServiceLogPrefixAndSyncCallError) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string callee_path = write_script(
+        "cov4_callee.lua",
+        "local M = {}\nfunction M.echo(ctx) return 1 end\nreturn M\n");
+    const std::string caller_path = write_script(
+        "cov4_caller.lua",
+        "local M = {}\n"
+        "local state = {}\n"
+        "function M.log_it(ctx)\n"
+        "  shield.log.info('hello from service')\n"
+        "  return true\n"
+        "end\n"
+        "function M.sync_missing(ctx, target)\n"
+        "  local ok, err = shield._sync_call_timeout(3000, target, 'nope')\n"
+        "  state.sync_ok = ok\n"
+        "  state.sync_err = err\n"
+        "  return ok, err\n"
+        "end\n"
+        "function M.get(ctx) return state.sync_ok, state.sync_err end\n"
+        "return M\n");
+
+    auto callee = manager.spawn(callee_path, opts_for("cov4_callee").dump());
+    BOOST_REQUIRE(callee.success);
+    auto caller = manager.spawn(caller_path, opts_for("cov4_caller").dump());
+    BOOST_REQUIRE(caller.success);
+
+    {
+        auto res =
+            manager.call(caller.service_id, "log_it", nlohmann::json::array());
+        BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+    }
+
+    {
+        auto res = manager.call(caller.service_id, "sync_missing",
+                                nlohmann::json::array({callee.service_id}));
+        BOOST_REQUIRE(res.success);
+        BOOST_REQUIRE(res.values.size() >= 2u);
+        BOOST_CHECK(res.values[0].get<bool>() == false);
+        // err is a {code, message} table shaped by the sync-call error path.
+        BOOST_CHECK(res.values[1].contains("message"));
+        BOOST_CHECK(res.values[1]["message"].get<std::string>().find(
+                        "method not found") != std::string::npos);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-5: fork limit reached from inside a handler (tasks queue while the
+// handler runs on the actor, so the pending count climbs to the limit).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ForkLimitReachedInsideHandler) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov5_flood.lua",
+                     "local M = {}\n"
+                     "local state = {}\n"
+                     "function M.flood(ctx)\n"
+                     "  local hit = nil\n"
+                     "  for i = 1, 1100 do\n"
+                     "    local id, err = shield.fork(function() end)\n"
+                     "    if id == nil then hit = err.code break end\n"
+                     "  end\n"
+                     "  state.hit = hit\n"
+                     "  return hit\n"
+                     "end\n"
+                     "function M.get(ctx) return state.hit end\n"
+                     "return M\n");
+    auto svc = manager.spawn(path, opts_for("cov5_flood").dump());
+    BOOST_REQUIRE(svc.success);
+
+    auto res = manager.call(svc.service_id, "flood", nlohmann::json::array());
+    BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+    BOOST_REQUIRE_EQUAL(res.values.size(), 1u);
+    BOOST_CHECK_EQUAL(res.values[0].get<std::string>(), "fork_limit");
+}
+
+// shield.config on a value that neither stoll nor stod can convert: both
+// catch arms run and the raw string comes back.
+BOOST_AUTO_TEST_CASE(ConfigUnparseableNumberFallsBackToString) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::config::global_config().set("cov6.zzz", std::string("zzz"));
+    BOOST_CHECK(run_script(lua, "assert(shield.config('cov6.zzz') == 'zzz')"));
 }

@@ -16,6 +16,7 @@
 
 #include "shield/caf_initializer.hpp"
 #include "shield/lua/lua_api.hpp"
+#include "shield/lua/lua_http_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 
@@ -495,4 +496,207 @@ return M
     }
     BOOST_REQUIRE_MESSAGE(res.success, "call failed: " + res.error_message);
     BOOST_CHECK_EQUAL(res.values[0].get<bool>(), true);
+}
+
+// ---------------------------------------------------------------------------
+// Round-3 additions: http handler response shapes, unreadable module paths,
+// on_init false/error propagation, LuaPack edge branches.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(CallHttpHandlerResponseShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // Handlers must live in a runtime-managed VM: a spawned service
+    // registers them through shield.httpd from its on_init. Dispatching
+    // through the bridge runs call_http_handler on the owning actor.
+    const std::string module = write_script("cov3_http_shapes.lua",
+                                            R"lua(
+local M = {}
+function M.on_init()
+    shield.httpd.get('/nil', function(req) return nil end)
+    shield.httpd.get('/nobody', function(req) return {status = 201} end)
+    shield.httpd.get('/num', function(req) return 42 end)
+end
+return M
+)lua");
+    auto svc = manager.spawn(module, R"({"name":"cov3_shapes"})");
+    BOOST_REQUIRE(svc.success);
+
+    auto make_request = [](const std::string& target) {
+        shield::net::HttpRequest req;
+        req.method(boost::beast::http::verb::get);
+        req.target(target);
+        req.version(11);
+        return req;
+    };
+
+    LuaHttpBridge bridge(runtime, manager);
+
+    // Handler returning nil → 204 with empty body.
+    auto resp = bridge.handle(make_request("/nil"));
+    BOOST_CHECK_EQUAL(resp.result_int(), 204);
+
+    // Handler returning a table without body → empty body, custom status.
+    resp = bridge.handle(make_request("/nobody"));
+    BOOST_CHECK_EQUAL(resp.result_int(), 201);
+    BOOST_CHECK_EQUAL(resp.body(), "");
+
+    // Handler returning a non-table/string/nil value is rejected.
+    resp = bridge.handle(make_request("/num"));
+    BOOST_CHECK_EQUAL(resp.result_int(), 500);
+    BOOST_CHECK(resp.body().find("table, string, or nil") != std::string::npos);
+
+    manager.exit(svc.service_id, "done");
+}
+
+// load_service_module on a path that cannot be read (a directory) reports
+// the read failure instead of crashing.
+BOOST_AUTO_TEST_CASE(LoadServiceModuleUnreadablePath) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    std::string error;
+    BOOST_CHECK(!runtime.load_service_module(vm, kTmpDir, &error));
+}
+
+// call_service_function error shapes: explicit (false, reason) returns and
+// a non-string reason that fails message conversion.
+BOOST_AUTO_TEST_CASE(CallServiceFunctionErrorShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module = write_script("cov3_oninit_shapes.lua",
+                                            R"lua(
+local M = {}
+function M.deny() return false, "denied by policy" end
+function M.deny_table() return false, {code = 42} end
+function M.ok() return true end
+return M
+)lua");
+
+    auto vm = runtime.create_vm();
+    std::string error;
+    BOOST_REQUIRE(runtime.load_service_module(vm, module, &error));
+
+    BOOST_CHECK(
+        !runtime.call_service_function(vm, "deny", nlohmann::json(), &error));
+    BOOST_CHECK_EQUAL(error, "denied by policy");
+
+    // Non-string second return: message conversion throws and the failure
+    // surfaces through the catch-all.
+    BOOST_CHECK(!runtime.call_service_function(vm, "deny_table",
+                                               nlohmann::json(), &error));
+
+    BOOST_CHECK(
+        runtime.call_service_function(vm, "ok", nlohmann::json(), &error));
+}
+
+// LuaPack encoder: boolean map keys are rejected; a ServiceHandle nested as
+// a map value takes the ServiceHandle tag branch.
+BOOST_AUTO_TEST_CASE(LuaPackEncodeErrorAndHandleBranches) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    LuaPackEncoder encoder{LuaPackEncoder::Config{}};
+
+    {
+        sol::object bad_keys = lua.script("return {[true] = 1}");
+        std::vector<uint8_t> bytes;
+        BOOST_CHECK(!encoder.encode(lua, bad_keys, bytes));
+        BOOST_CHECK(encoder.error().find("map keys") != std::string::npos);
+    }
+
+    {
+        sol::object nested =
+            lua.script("return {h = shield._make_handle('cov3.pack')}");
+        std::vector<uint8_t> bytes;
+        BOOST_CHECK(encoder.encode(lua, nested, bytes));
+    }
+}
+
+// call_service_function with a (nil, reason) return pair: the nil-first
+// branch converts the second return into the error message.
+BOOST_AUTO_TEST_CASE(CallServiceFunctionNilReasonShape) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module = write_script("cov4_soft_deny.lua",
+                                            R"lua(
+local M = {}
+function M.soft_deny() return nil, "soft denied" end
+function M.silent_deny() return nil end
+return M
+)lua");
+
+    auto vm = runtime.create_vm();
+    std::string error;
+    BOOST_REQUIRE(runtime.load_service_module(vm, module, &error));
+
+    BOOST_CHECK(!runtime.call_service_function(vm, "soft_deny",
+                                               nlohmann::json(), &error));
+    BOOST_CHECK_EQUAL(error, "soft denied");
+
+    // nil with a single return keeps going (treated as success).
+    BOOST_CHECK(runtime.call_service_function(vm, "silent_deny",
+                                              nlohmann::json(), &error));
+}
+
+// ---------------------------------------------------------------------------
+// Round-5 additions.
+// ---------------------------------------------------------------------------
+// Non-string request params make the request-table conversion throw inside
+// call_http_handler; the exception surfaces through the error out-param
+// (the handler itself is never invoked).
+BOOST_AUTO_TEST_CASE(CallHttpHandlerBadParamsReportsError) {
+    LuaRuntime runtime;
+
+    // Placeholder handler from a standalone state: never invoked.
+    sol::state standalone;
+    standalone.open_libraries(sol::lib::base);
+    sol::function handler =
+        standalone.script("return function(req) return 'x' end");
+
+    auto vm = runtime.create_vm();
+    BOOST_CHECK(
+        runtime.register_http_route(vm, "cov5.params", "GET", "/p", handler));
+    auto route = runtime.find_http_route("GET", "/p");
+    BOOST_REQUIRE(route.has_value());
+
+    nlohmann::json request = {{"method", "GET"},
+                              {"path", "/p"},
+                              {"query", ""},
+                              {"params", {{"x", 5}}},
+                              {"headers", nlohmann::json::object()},
+                              {"body", ""}};
+    nlohmann::json desc;
+    std::string err;
+    BOOST_CHECK(!runtime.call_http_handler(*route, request, desc, &err));
+    BOOST_CHECK(!err.empty());
+}
+
+// LuaPack rejects map keys whose encoded form exceeds the string budget.
+BOOST_AUTO_TEST_CASE(LuaPackEncodeOversizedMapKeyFails) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::string);
+
+    LuaPackEncoder::Config config;
+    config.max_string_length = 1024;
+    LuaPackEncoder encoder(config);
+
+    sol::object value = lua.script("return {[string.rep('k', 2048)] = 1}");
+    std::vector<uint8_t> bytes;
+    BOOST_CHECK(!encoder.encode(lua, value, bytes));
+    BOOST_CHECK(!encoder.error().empty());
 }
