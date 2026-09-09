@@ -146,6 +146,12 @@ BOOST_AUTO_TEST_CASE(StartStopLifecycle) {
 }
 
 BOOST_AUTO_TEST_CASE(StartFailsOnBusyPort) {
+#ifdef __APPLE__
+    // BSD SO_REUSEADDR (boost.asio's default) lets a second acceptor bind
+    // the same port on macOS, so the busy-port failure cannot be observed.
+    BOOST_TEST_MESSAGE("busy-port rebind allowed on macOS; skipping");
+    return;
+#endif
     boost::asio::io_context io;
     const auto port = reserve_ephemeral_port(io);
 

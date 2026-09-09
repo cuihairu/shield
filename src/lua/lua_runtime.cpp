@@ -411,7 +411,19 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
         }
         t["headers"] = headers_t;
 
-        sol::object result = (*route.handler)(t);
+        // Invoke the handler through a checked protected result: with
+        // SOL_SAFE_FUNCTION_OBJECTS enabled (the default for debug builds
+        // without NDEBUG), converting an errored result straight to
+        // sol::object triggers a sol panic and replaces the handler's
+        // error text.
+        auto handler_result = (*route.handler)(t);
+        if (!handler_result.valid()) {
+            const sol::error err = handler_result;
+            out_desc = nlohmann::json::object();
+            out_desc["lua_error"] = std::string(err.what());
+            return true;
+        }
+        sol::object result = handler_result;
         out_desc = nlohmann::json::object();
         out_desc["status"] = 200;
         out_desc["json_body"] = false;

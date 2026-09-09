@@ -54,6 +54,11 @@ bool wait_until(std::function<bool()> predicate,
 }
 
 std::string write_script(const std::string& path, const char* content) {
+    if (const auto slash = path.find_last_of("/\\");
+        slash != std::string::npos) {
+        std::error_code ec;
+        std::filesystem::create_directories(path.substr(0, slash), ec);
+    }
     std::ofstream out(path, std::ios::trunc);
     out << content;
     return path;
@@ -1363,6 +1368,8 @@ BOOST_AUTO_TEST_CASE(HttpAndPluginApis) {
     lua["base_url"] = base;
 
     {
+        std::error_code mk_ec;
+        std::filesystem::create_directories("/tmp/opencode", mk_ec);
         std::ofstream up("/tmp/opencode/cov_upload.bin", std::ios::trunc);
         up << "upload-payload";
     }

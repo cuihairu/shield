@@ -244,7 +244,16 @@ BOOST_AUTO_TEST_CASE(PluginsAndPluginAcrossLifecycleStates) {
         "  type: object\n";
     write_file(root_dir / "good.pkg" / "manifest.yaml", good_manifest);
     fs::copy_file(
-        "test_plugins/minimal.test/bin/libshield_minimal_test_plugin.so",
+#if defined(_WIN32)
+        "test_plugins/minimal.test/bin/"
+        "libshield_minimal_test_plugin.dll",
+#elif defined(__APPLE__)
+        "test_plugins/minimal.test/bin/"
+        "libshield_minimal_test_plugin.dylib",
+#else
+        "test_plugins/minimal.test/bin/"
+        "libshield_minimal_test_plugin.so",
+#endif
         root_dir / "good.pkg" / "bin" / "libshield_minimal_test_plugin.so",
         fs::copy_options::overwrite_existing);
 

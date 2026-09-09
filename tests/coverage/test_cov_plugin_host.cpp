@@ -270,8 +270,19 @@ FakePlugin& fake_plugin() {
 }
 
 fs::path minimal_test_so() {
+#if defined(_WIN32)
     return fs::path(
-        "test_plugins/minimal.test/bin/libshield_minimal_test_plugin.so");
+        "test_plugins/minimal.test/bin/"
+        "libshield_minimal_test_plugin.dll");
+#elif defined(__APPLE__)
+    return fs::path(
+        "test_plugins/minimal.test/bin/"
+        "libshield_minimal_test_plugin.dylib");
+#else
+    return fs::path(
+        "test_plugins/minimal.test/bin/"
+        "libshield_minimal_test_plugin.so");
+#endif
 }
 
 std::string fake_manifest(const std::string& id,
@@ -1484,6 +1495,7 @@ BOOST_AUTO_TEST_CASE(config_schema_required_field_missing_fails) {
         "entry: fake_entry_ok\n"
         "library:\n"
         "  linux: bin/libfake.so\n"
+        "  macos: bin/libfake.so\n"
         "provides:\n"
         "  - interface: fake.test.iface\n"
         "requires: []\n"
@@ -1536,6 +1548,7 @@ BOOST_AUTO_TEST_CASE(non_required_config_invalid_instance_continues) {
         "entry: fake_entry_ok\n"
         "library:\n"
         "  linux: bin/libfake.so\n"
+        "  macos: bin/libfake.so\n"
         "provides:\n"
         "  - interface: fake.test.iface\n"
         "requires: []\n"
