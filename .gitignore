@@ -107,3 +107,10 @@ logs/
 未命名*.txt
 scratch_*
 draft_*
+*.gcno
+*.gcda
+*.gcov
+*.gcov.json.gz
+*.gcda.*
+*.gcno.*
+build-cov/
