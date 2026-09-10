@@ -10,8 +10,8 @@
 # socketpair fixtures cannot run there, and compiling every case out would
 # leave an empty Boost.Test module, which itself reports failure).
 function(shield_coverage_test name)
-    set(one_value_keywords POSIX_ONLY)
-    cmake_parse_arguments(PARSE_ARGV 1 arg "" "${one_value_keywords}" "")
+    set(options POSIX_ONLY)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "${options}" "" "")
     if(arg_POSIX_ONLY AND WIN32)
         return()
     endif()

@@ -38,8 +38,6 @@ struct CliOptions {
 
 std::atomic<bool> g_stop_requested{false};
 
-void request_stop() { g_stop_requested.store(true); }
-
 #ifdef _WIN32
 BOOL WINAPI console_handler(DWORD signal) {
     if (signal == CTRL_C_EVENT || signal == CTRL_BREAK_EVENT ||
@@ -189,6 +187,11 @@ void wait_for_stop() {
 }
 
 }  // namespace
+
+// Declared in shield/shield.hpp with external linkage; must live outside
+// the anonymous namespace above or tests embedding the runtime cannot
+// resolve it.
+void request_stop() { g_stop_requested.store(true); }
 
 int run(int argc, char** argv) {
     try {
