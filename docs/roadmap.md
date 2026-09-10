@@ -112,7 +112,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | `shield_plugin` | 当前 CMake target 已存在 | 插件系统 v1 已接入 manifest、instance、binding、C ABI、Lua register_lua 和官方数据插件；host 不链接 DB/Redis 驱动，不存在 `shield_data` target |
 | `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout/spawn 已实现（异步 spawn 由专用 worker 线程执行 on_init，含 name reserve/publish 与超时补偿退出）；`shield.panic` 已接入 on_panic + exit("panic")；timer callback 已通过 pcall 包裹执行；fork callback raw_fn 已存储；on_error/on_panic/on_exit guard 已实现；gateway 已通过真实 `SessionHandle` userdata 连接到 `shield_net::Session`，并覆盖 protocol ingress/egress 桥接测试 |
 | `shield_bootstrap` | 当前 CMake target 已存在 | `shield::run` 和 CLI/config smoke tests 已登记在主 CMake |
-| optional modules | CMake 开关存在，默认关闭 | `shield_cluster` 已有静态 peers、节点状态快照和 route cache 查询骨架；跨节点 transport/route 学习仍未实现。`shield_global/ops` 仍未进入实现完成范围 |
+| optional modules | CMake 开关存在，默认关闭 | `shield_cluster` 已有静态 peers、节点状态快照和 route cache 查询骨架；跨节点 transport/route 学习仍未实现（实测：peers 启动即标记 online 且无心跳降级，`shield.cluster.query` 因 route cache 为空必然失败，详见 runtime-cluster.md）。`shield_global/ops` 仍未进入实现完成范围 |
 
 ## Phase 5: 官方可选模块
 

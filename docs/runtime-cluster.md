@@ -10,6 +10,12 @@
 - 本地 `shield.query(name)` 继续只查询本地 registry。
 - optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 
+实现状态（2026-09 实测核对，与 [Phase 1 实现范围](#phase-1-实现范围)一致）：
+
+- **已实现（单机内可用）**：`cluster.*` 配置解析；节点状态数据结构与快照查询；`shield.cluster.nodes()/node_id()/node_epoch()`；`/ops/status` cluster 块与 console 命令；bootstrap 生命周期接线。
+- **未实现（跨节点全链路缺失）**：CAF middleman transport（`cluster.listen` 只被解析，运行时不 bind 端口）；peer 连接与握手；心跳交换与 `tick()` 调度；远端 route 学习（`register_route` 无调用方）；跨节点投递（`set_remote_send_fn` 无注入方，`send_remote` 恒返回 false）。
+- **已知误导行为**：静态 peers 在 `start()` 时即被标记 `online`（无连接检测），且心跳降级循环不会运行，因此 `nodes()` 与 `/ops/status` 会把不存在的 peer 持续报告为 `online`；`shield.cluster.query()` 因 route cache 永远为空而必然返回 `service_not_found`，且该错误无法与"节点不可达"区分（可达性检查被假 online 放行）。依赖节点状态做业务判断前必须阅读 [Phase 1 实现范围](#phase-1-实现范围)。
+
 ## shield_cluster 定位
 
 `shield_cluster` 负责跨进程和跨机器通信，不属于 `shield_core`。
@@ -33,7 +39,7 @@ CAF 底层已支持远程 Actor 通信（通过 middleman），`shield_cluster` 
 | 消息路由 | ✅ | 服务名路由、路由 cache |
 | 节点发现 | ❌ | Phase 1 仅支持静态配置 |
 | 负载均衡 | ❌ | 不进入 Phase 1 |
-| 心跳状态 | ❌ | online/suspect/offline/removed |
+| 心跳状态 | ❌ | online/suspect/offline/removed 状态模型已有，但驱动它的心跳交换与超时降级循环未实现（当前静态 peers 恒为 online） |
 
 ### Phase 1 实现策略
 
@@ -319,7 +325,29 @@ cluster:
 - 远端路由 cache 结构。
 - 显式 `(node_id, service_name)` route cache 查询。
 
-当前源码实现只覆盖静态配置、节点状态快照和 route cache 查询骨架；CAF middleman transport、真实心跳交换、远端 route 学习以及跨节点 `send/call` 投递仍属后续实现。
+当前源码实现状态（`src/cluster/cluster_manager.cpp`，2026-09 实测核对）：
+
+**已实现，行为可信：**
+
+- `cluster.node_id/listen/heartbeat_interval_ms/suspect_timeout_ms/offline_timeout_ms/peers` 配置解析。
+- 节点状态数据结构、`nodes()` / `find_node()` / `check_node_reachable()` 查询。
+- `shield.cluster.nodes()/node_id()/node_epoch()` Lua 查询（`node_id`、`node_epoch` 返回真实本地元数据）。
+- `/ops/status` 的 cluster 快照、console `root.*` 命令、bootstrap 创建/停止接线。
+
+**未实现（跨节点链路整体缺失）：**
+
+- **transport**：`cluster.listen` 只被解析，运行时不绑定端口；不向 peer 发起连接；无握手。
+- **心跳**：`tick()`（Online→Suspect→Offline 降级）在整个代码库中无调用方，没有心跳线程或定时调度。
+- **route 学习**：`register_route()` 无调用方，route cache 永远为空。
+- **投递**：`set_remote_send_fn()` 无注入方，`send_remote()` 恒返回 `false`；`RemoteSendFn` 的注入点是预留的 transport 接缝。
+
+**由此产生的当前实际行为（业务与运维须知）：**
+
+- 静态 peers 在 `start()` 时即被标记 `online`，之后没有任何状态变化：`shield.cluster.nodes()` 与 `/ops/status` 会把完全不存在（无进程监听）的 peer 持续报告为 `online`。
+- `shield.cluster.query(node, name)` 必然返回 `service_not_found`（route cache 为空），且因可达性检查被假 `online` 放行，错误信息无法区分"节点不可达"与"路由未注册"。
+- `node_epoch` 是随机 `uint64`，经 Lua number（double，53 位尾数）返回时精度丢失（实测形如 `1.24e+19`）；在 epoch 用于 stale-handle 比对之前需要先解决该序列化问题。
+
+因此：**当前启用 `cluster.node_id` 不会产生任何跨节点行为**，只会让系统呈现一个虚假的在线集群视图；未配置 `cluster.node_id` 时整条路径不激活，单节点部署不受影响。远端连接失败的 degrade 契约（见 [官方可选模块契约](optional-modules.md) 的"必须持续暴露 unhealthy 状态"）同样以 transport 实现为前提，当前尚不满足。
 
 **Phase 1 不做：**
 - 动态服务发现。

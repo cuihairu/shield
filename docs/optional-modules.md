@@ -70,11 +70,13 @@ optional module 初始化失败默认 fail fast。例外必须由模块自己的
 
 | 模块 | 配置段存在但模块未启用 | 显式启用后初始化失败 | 可 degrade 的场景 |
 | --- | --- | --- | --- |
-| `shield_cluster` | 启动失败 | 默认 fail fast | 远端连接失败可退化到单节点，但必须持续暴露 unhealthy 状态 |
+| `shield_cluster` | 启动失败 | 默认 fail fast | 远端连接失败可退化到单节点，但必须持续暴露 unhealthy 状态（见下方实现状态注记） |
 | `shield_global` | 启动失败 | fail fast | 无 |
 | `shield_player` | 启动失败 | fail fast | 无 |
 | `shield_server` | 启动失败 | fail fast | 无 |
 | `shield_ops` | 启动失败 | fail fast；管理端口绑定失败也 fail fast | metrics exporter 后端短暂失败可保持 unhealthy |
+
+> `shield_cluster` 实现状态注记（2026-09）：跨节点 transport 尚未实现（不连接 peer、不监听端口、心跳循环未运行），因此"远端连接失败 → 持续暴露 unhealthy"的契约当前不满足——实测静态 peers 被持续报告为 `online`。详细实测行为见 [集群运行时语义](runtime-cluster.md) 的 Phase 1 实现范围。
 
 ### 5. 只沿公开依赖方向扩展
 
