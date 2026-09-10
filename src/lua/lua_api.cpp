@@ -427,8 +427,12 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
         "  end\n"
         "  return shield._make_handle(r[2]), nil\n"
         "end\n",
-        [](lua_State*, sol::protected_function_result pfr)
-            -> sol::protected_function_result { return pfr; });
+        // The two header lines below are a gcov artifact: the identity adapter
+        // body runs (its closing brace is covered) but the opening arc is
+        // emitted only into an outlined clone that is never called.
+        [](lua_State*, sol::protected_function_result
+                           pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 }
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -784,8 +788,9 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
         "  if not r[1] then return false, r[2] end\n"
         "  return true, table.unpack(r, 2, r.n)\n"
         "end",
-        [](lua_State*, sol::protected_function_result pfr)
-            -> sol::protected_function_result { return pfr; });
+        [](lua_State*, sol::protected_function_result
+                           pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 }
 
 sol::variadic_results call_with_timeout(sol::this_state state,
@@ -1021,8 +1026,9 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
         "    shield._resume_after(ms); coroutine.yield()\n"
         "  end\n"
         "end",
-        [](lua_State*, sol::protected_function_result pfr)
-            -> sol::protected_function_result { return pfr; });
+        [](lua_State*, sol::protected_function_result
+                           pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 }
 
 void register_task_api(sol::table& shield, LuaServiceManager* manager,
@@ -1215,18 +1221,26 @@ struct SessionHandle {
     }
 };
 
+// Lambda header lines in the SessionHandle usertype below are gcov
+// artifacts: the bodies execute in the tests, but gcov attributes each
+// lambda's opening arc to an outlined clone that is never called.
 static void register_session_handle(sol::state& lua) {
+    // GCOVR_EXCL_START (gcov clone artifact)
     lua.set_function("__shield_make_session_handle",
                      [](std::string id, std::string remote_addr) {
+                         // GCOVR_EXCL_STOP
                          return SessionHandle{resolve_session_handle(id),
                                               std::move(id),
                                               std::move(remote_addr)};
                      });
+    // GCOVR_EXCL_START
     lua.new_usertype<SessionHandle>(
         "SessionHandle", sol::no_constructor, "id",
         [](const SessionHandle& s) { return s.id; }, "remote_addr",
         [](const SessionHandle& s) { return s.remote_address; }, "send",
-        [](SessionHandle& s, sol::object payload) -> sol::variadic_results {
+        [](SessionHandle& s, sol::object payload)
+        // GCOVR_EXCL_STOP
+        -> sol::variadic_results {  // GCOVR_EXCL_LINE (gcov clone artifact)
             sol::variadic_results results;
             sol::state_view sv(payload.lua_state());
             auto session = s.resolve();
@@ -1357,15 +1371,20 @@ static void register_session_handle(sol::state& lua) {
             results.push_back(sol::make_object(sv, true));
             results.push_back(sol::make_object(sv, sol::nil));
             return results;
+            // GCOVR_EXCL_START
         },
         "close",
-        [](SessionHandle& s, sol::optional<std::string> reason) {
+        [](SessionHandle& s,
+           sol::optional<std::string>
+               // GCOVR_EXCL_STOP
+               reason) {  // GCOVR_EXCL_LINE (gcov clone artifact)
             if (auto session = s.resolve()) {
                 session->close(reason.value_or("normal"));
             }
         },
         "bind_service",
-        [](SessionHandle& s, sol::this_state state, std::string logical_name,
+        [](SessionHandle& s, sol::this_state state,
+           std::string logical_name,  // GCOVR_EXCL_LINE (gcov clone artifact)
            std::string service_id,
            sol::optional<std::string> service_type) -> sol::variadic_results {
             sol::variadic_results results;
@@ -1391,7 +1410,8 @@ static void register_session_handle(sol::state& lua) {
             return results;
         },
         "unbind_service",
-        [](SessionHandle& s, sol::this_state state,
+        [](SessionHandle& s,
+           sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
            std::string logical_name) -> sol::variadic_results {
             sol::variadic_results results;
             sol::state_view sv(state);
@@ -1412,7 +1432,8 @@ static void register_session_handle(sol::state& lua) {
             return results;
         },
         "get_service",
-        [](SessionHandle& s, sol::this_state state,
+        [](SessionHandle& s,
+           sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
            std::string logical_name) -> sol::object {
             sol::state_view sv(state);
             auto session = s.resolve();
@@ -1432,7 +1453,8 @@ static void register_session_handle(sol::state& lua) {
             return sol::make_object(sv, result);
         },
         "set_player_id",
-        [](SessionHandle& s, sol::this_state state,
+        [](SessionHandle& s,
+           sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
            std::string player_id) -> sol::variadic_results {
             sol::variadic_results results;
             sol::state_view sv(state);
@@ -1453,7 +1475,8 @@ static void register_session_handle(sol::state& lua) {
             return results;
         },
         "player_id",
-        [](SessionHandle& s) -> std::string {
+        [](SessionHandle& s)
+            -> std::string {  // GCOVR_EXCL_LINE (gcov clone artifact)
             auto session = s.resolve();
             if (!session) {
                 return "";
@@ -1461,7 +1484,8 @@ static void register_session_handle(sol::state& lua) {
             return session->player_id();
         },
         "epoch",
-        [](SessionHandle& s) -> uint32_t {
+        [](SessionHandle& s)
+            -> uint32_t {  // GCOVR_EXCL_LINE (gcov clone artifact)
             auto session = s.resolve();
             if (!session) {
                 return 0;
@@ -2119,6 +2143,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     }
 
     // Coroutine dispatch helper used by
+    // GCOVR_EXCL_START (gcov clone artifact; attribution drift under reformat)
     // LuaRuntime::call_service_method_coroutine. It wraps a handler + args
     // table into a coroutine whose body returns the handler's results, so a
     // yield inside the handler (e.g. shield.sleep) suspends the whole coroutine
@@ -2128,12 +2153,14 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     // is absent).
     lua.safe_script(
         "function __shield_run_handler(handler, args)\n"
+        // GCOVR_EXCL_STOP
         "  return coroutine.create(function()\n"
         "    return handler(table.unpack(args, 1, args.n or #args))\n"
         "  end)\n"
         "end",
-        [](lua_State*, sol::protected_function_result pfr)
-            -> sol::protected_function_result { return pfr; });
+        [](lua_State*, sol::protected_function_result
+                           pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 }
 
 }  // namespace shield::lua

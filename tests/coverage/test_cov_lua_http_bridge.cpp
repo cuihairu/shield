@@ -294,3 +294,40 @@ return M
     bridge.detach();
     manager.shutdown_all("done");
 }
+
+// A bridge constructed before any server exists subscribes to route
+// registrations with server_ == nullptr, so the service's registration takes
+// the !server_ early-return inside register_on_server; attach() replays the
+// stored route afterwards.
+BOOST_AUTO_TEST_CASE(RegistrationBeforeAttachHitsEarlyReturn) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    LuaHttpBridge bridge(runtime, manager);
+
+    const char* script = R"lua(
+local M = {}
+function M.on_init()
+    shield.httpd.put("/pre", function(req)
+        return { status = 200, body = "pre-ok" }
+    end)
+end
+return M
+)lua";
+    const std::string module = write_script("cov_httpd_early.lua", script);
+    auto svc = manager.spawn(
+        module, R"({"name":"cov_httpd_early","args":{},"config":{}})");
+    BOOST_REQUIRE_MESSAGE(svc.success, "spawn failed: " + svc.error_message);
+    BOOST_CHECK_EQUAL(runtime.http_route_count(), 1u);
+
+    shield::net::HttpServer server;
+    bridge.attach(server);  // replays the route the early-return skipped
+    auto resp = bridge.handle(make_request("PUT", "/pre"));
+    BOOST_CHECK_EQUAL(resp.result_int(), 200);
+    BOOST_CHECK_EQUAL(resp.body(), "pre-ok");
+
+    bridge.detach();
+    manager.shutdown_all("done");
+}

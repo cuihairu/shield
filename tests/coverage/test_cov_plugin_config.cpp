@@ -203,3 +203,34 @@ BOOST_AUTO_TEST_CASE(json_multiple_instances_preserve_order) {
     BOOST_CHECK_EQUAL(pc.instances[1].id, "second");
     BOOST_CHECK(!pc.instances[1].required);
 }
+
+// A dependency value that is not a string makes the instance parser throw
+// (nlohmann get<std::string>), which unwinds through parse_instance.
+BOOST_AUTO_TEST_CASE(json_non_string_dependency_value_throws) {
+    BOOST_CHECK_THROW(shield::plugin::parse_plugin_config_json(
+                          R"({"plugins": {"instances": [
+                {"id": "bad", "package": "p1",
+                 "dependencies": {"db": [1, 2]}}
+            ]}})"),
+                      nlohmann::json::exception);
+}
+
+// The Config overload wraps its JSON parse in a catch-all: the same
+// non-string dependency arriving through the YAML subtree leaves the caller
+// with the directory-only result instead of an exception.
+BOOST_AUTO_TEST_CASE(config_non_string_dependency_returns_directory_only) {
+    shield::config::Config cfg;
+    BOOST_REQUIRE(
+        cfg.load_yaml_string("plugins:\n"
+                             "  directory: /data/plugins\n"
+                             "  instances:\n"
+                             "    - id: bad\n"
+                             "      package: p1\n"
+                             "      dependencies:\n"
+                             "        db:\n"
+                             "          - 1\n"
+                             "          - 2\n"));
+    auto pc = shield::plugin::parse_plugin_config(cfg);
+    BOOST_CHECK_EQUAL(pc.directory, "/data/plugins");
+    check_empty(pc);
+}

@@ -157,8 +157,14 @@ bool LuaCommands::try_execute(
         // Send each return value as a result
         if (data.is_array() && data.empty()) {
             // No return values
+            // Unreachable: exec_lua leaves *result null when the chunk
+            // yields no values, so data is never an empty array here.
+            // Unreachable: exec_lua leaves *result null when the chunk
+            // yields no values, so data is never an empty array here.
+            // GCOVR_EXCL_START
             nlohmann::json resp = {{"type", "result"}, {"data", nullptr}};
-            session->send_line(resp.dump());
+            // GCOVR_EXCL_STOP
+            session->send_line(resp.dump());  // GCOVR_EXCL_LINE
         } else if (data.is_array() && data.size() == 1) {
             // Single return value
             nlohmann::json resp = {{"type", "result"}, {"data", data[0]}};
@@ -208,8 +214,12 @@ void LuaCommands::cmd_eval(shield::net::ConsoleSession& session,
     }
     if (ok) {
         if (data.is_array() && data.empty()) {
+            // Unreachable: same as above -- exec_lua produces null, never
+            // an empty array, when the chunk returns nothing.
+            // GCOVR_EXCL_START
             nlohmann::json resp = {{"type", "result"}, {"data", nullptr}};
-            session.send_line(resp.dump());
+            // GCOVR_EXCL_STOP
+            session.send_line(resp.dump());  // GCOVR_EXCL_LINE
         } else if (data.is_array() && data.size() == 1) {
             nlohmann::json resp = {{"type", "result"}, {"data", data[0]}};
             session.send_line(resp.dump());

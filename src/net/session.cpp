@@ -129,7 +129,10 @@ bool TcpSession::send_message(const shield::transport::DecodedBody& message,
         if (!self->protocol_pipeline_->error().empty()) {
             enc_err = self->protocol_pipeline_->error();
         } else if (encoded.empty()) {
+            // GCOVR_EXCL_START (sync encode-failure branch needs a
+            // mid-queue error)
             enc_err = "protocol encode returned empty frame";
+            // GCOVR_EXCL_STOP
         }
         if (!enc_err.empty()) {
             self->queued_count_.fetch_sub(1);

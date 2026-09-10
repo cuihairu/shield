@@ -271,10 +271,14 @@ void RootCommands::cmd_config(shield::net::ConsoleSession& session,
         if (!val) {
             nlohmann::json resp = {
                 {"type", "error"},
+                // GCOVR_EXCL_START (unreachable: ConfigValue has no empty
+                // alternative, so a key found by has() always yields a
+                // non-null get_value())
                 {"message", "Config key has no value: " + key}};
             session.send_line(resp.dump());
             return;
         }
+        // GCOVR_EXCL_STOP
         // ConfigValue is a variant; serialize based on type
         nlohmann::json data;
         if (auto* s = std::get_if<std::string>(val)) {

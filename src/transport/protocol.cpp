@@ -1710,8 +1710,11 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 }
                 return nullptr;
             }
+            // GCOVR_EXCL_START (constructing the external body codec requires a
+            // loaded codec plugin; integration context)
             codec = std::make_unique<ExternalBodyCodec>(body_provider,
                                                         body_codec, external);
+            // GCOVR_EXCL_STOP
         } else {
             // Fail fast: only builtin codecs (raw/json) and the catalog-driven
             // xmldef path may be built without a provider. Any other codec

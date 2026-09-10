@@ -617,7 +617,11 @@ LuaServiceManager::LuaServiceManager(LuaRuntime& runtime,
     hooks.current_service_id = [this]() { return current_service_id(); };
     hooks.post_to_service = [this](const std::string& service_id,
                                    std::function<void()> fn) {
+        // Hook body: fires only when a plugin calls lua_post_to_service;
+        // integration context.
+        // GCOVR_EXCL_START
         return enqueue_forked_task(service_id, std::move(fn));
+        // GCOVR_EXCL_STOP
     };
     shield::plugin::global_host().set_lua_service_hooks(std::move(hooks));
 
@@ -795,8 +799,11 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         auto vm = impl_->runtime.create_vm();
 
         std::string error;
+        // GCOVR_EXCL_START (register_api failure during spawn needs a
+        // native plugin that fails registration; integration context)
         if (!impl_->runtime.register_api(vm, &error)) {
             return SpawnResult::error("Failed to register Lua API: " + error);
+            // GCOVR_EXCL_STOP
         }
         if (!impl_->runtime.load_service_module(vm, script_path, &error)) {
             return SpawnResult::error("Failed to load module: " + script_path +

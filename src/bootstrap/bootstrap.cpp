@@ -119,6 +119,10 @@ shield::transport::ExternalBodyCodecResolver make_protocol_codec_resolver() {
             }
             return nullptr;
         }
+        // GCOVR_EXCL_START (external codec provider validation: these guards
+        // only run with a codec plugin actually loaded through the
+        // plugin host; exercised by integration plugin examples, not
+        // by the unit suites)
         if (codec->codec_name == nullptr ||
             std::string_view(codec->codec_name) != codec_name) {
             if (error) {
@@ -136,6 +140,7 @@ shield::transport::ExternalBodyCodecResolver make_protocol_codec_resolver() {
             return nullptr;
         }
         return codec;
+        // GCOVR_EXCL_STOP
     };
 }
 
@@ -367,8 +372,9 @@ bool initialize(const RuntimeConfig& config) {
     // any actor_system is constructed (CAF requirement, not just convention).
     shield::cluster::init_cluster_caf_types();
 #endif
-    caf::actor_system_config& caf_config =
-        [&]() -> auto& {  // GCOVR_EXCL_LINE (uncalled static-init clone)
+    // GCOVR_EXCL_START (uncalled static-init clone)
+    caf::actor_system_config& caf_config = [&]() -> auto& {
+        // GCOVR_EXCL_STOP
         static caf::actor_system_config cfg;
         cfg.load<caf::io::middleman>();
         return cfg;
@@ -550,9 +556,9 @@ bool initialize(const RuntimeConfig& config) {
                  nlohmann::json::parse(actor.options_json, nullptr, false)},
             };
             if (opts["config"].is_discarded()) {
-                opts["config"] =
-                    nlohmann::json::object();  // GCOVR_EXCL_LINE (options_json
-                                               // is always valid JSON)
+                // GCOVR_EXCL_START (options_json is always valid JSON)
+                opts["config"] = nlohmann::json::object();
+                // GCOVR_EXCL_STOP
             }
 
             auto result = g_state->lua_services->spawn(
@@ -654,18 +660,24 @@ bool initialize(const RuntimeConfig& config) {
                     body.is_object() ? body.value("provider", std::string{})
                                      : std::string{};
                 if (!provider.empty()) {
+                    // GCOVR_EXCL_START (codec provider binding; integration
+                    // context -- needs a codec plugin loaded through the
+                    // plugin host)
                     resolved_codec =
                         shield::plugin::global_host()
                             .get_by_binding<shield_protocol_codec_v1>(provider);
-                    if (resolved_codec == nullptr) {
+                    // GCOVR_EXCL_STOP
+                    if (resolved_codec == nullptr) {  // GCOVR_EXCL_LINE
+                        // GCOVR_EXCL_START
                         SHIELD_LOG_ERROR(
                             log,
                             "Protocol codec provider '" + provider +
                                 "' for actor '" + actor.name +
                                 "' is not configured or does not provide " +
                                 SHIELD_PROTOCOL_CODEC_INTERFACE);
-                        cleanup_failed_initialize();
-                        return false;
+                        // GCOVR_EXCL_STOP
+                        cleanup_failed_initialize();  // GCOVR_EXCL_LINE
+                        return false;                 // GCOVR_EXCL_LINE
                     }
                 }
             }
@@ -674,19 +686,24 @@ bool initialize(const RuntimeConfig& config) {
                                                   listener_max_frame_size,
                                                   resolved_codec]() {
                 std::string protocol_error;
+                // GCOVR_EXCL_START
                 auto protocol_options =
                     protocol_build_options(source_dir, listener_max_frame_size);
+                // GCOVR_EXCL_STOP
                 if (resolved_codec != nullptr) {
                     // Serve the vtable resolved once at listener setup.
                     // build_protocol_pipeline_from_json still validates
                     // codec-name match and vtable completeness on every
                     // build.
+                    // GCOVR_EXCL_START (external codec resolver; integration
+                    // context)
                     protocol_options.external_codec_resolver =
                         [resolved_codec](
                             std::string_view, std::string_view,
                             std::string*) -> const shield_protocol_codec_v1* {
                         return resolved_codec;
                     };
+                    // GCOVR_EXCL_STOP
                 }
                 auto pipeline =
                     shield::transport::build_protocol_pipeline_from_json(

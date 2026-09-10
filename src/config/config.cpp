@@ -731,8 +731,13 @@ bool Config::has(std::string_view key) const {
 void Config::set(std::string_view key, ConfigValue value) {
     std::unique_lock lock(impl_->mutex);
 
+    // GCOVR_EXCL_START (gcov clone artifact)
     std::visit(
+        // The closure header line below is a gcov artifact: set() is
+        // exercised by SetAndGetEveryConfigValueType, but the arc lands in
+        // an uncalled clone on some gcc builds.
         [&](auto&& v) {
+            // GCOVR_EXCL_STOP
             impl_->storage[std::string(
                 key)] =  // GCOVR_EXCL_LINE (uncalled visit clone)
                 std::forward<decltype(v)>(v);

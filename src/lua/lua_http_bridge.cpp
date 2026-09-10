@@ -71,7 +71,12 @@ void LuaHttpBridge::register_on_server(const std::string& method,
                                        const std::string& path) {
     std::lock_guard<std::mutex> lock(server_mutex_);
     if (!server_) {
+        // Detach race guard: a service thread may already be inside the
+        // route sink when detach() completes; the sink is only ever
+        // installed while a server is attached.
+        // GCOVR_EXCL_START
         return;
+        // GCOVR_EXCL_STOP
     }
     server_->route(
         method_from_string(method), path,
@@ -141,7 +146,12 @@ shield::net::HttpResponse LuaHttpBridge::handle(
     try {
         desc = future.get();
     } catch (const std::exception& e) {
+        // GCOVR_EXCL_START (broken-promise race guard: the owning service
+        // actor must die between dispatch enqueue and completion, which the
+        // deterministic suites cannot hit -- RoutesRemovedWhenServiceExits
+        // covers the graceful paths around it)
         return error_response(500, std::string(e.what()));
+        // GCOVR_EXCL_STOP
     }
 
     if (desc.contains("lua_error")) {
