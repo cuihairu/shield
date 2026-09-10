@@ -97,6 +97,18 @@ struct RawHttpClient {
             timeout);
     }
 
+    // POST with an Authorization: Bearer header; empty token sends none.
+    std::string post_auth(const std::string& path, const std::string& body,
+                          const std::string& token) {
+        std::string auth =
+            token.empty() ? "" : "Authorization: Bearer " + token + "\r\n";
+        return request(
+            "POST " + path + " HTTP/1.0\r\nHost: cov\r\n" + auth +
+                "Content-Type: application/json\r\nContent-Length: " +
+                std::to_string(body.size()) + "\r\n\r\n" + body,
+            std::chrono::milliseconds(8000));
+    }
+
     static int status_code(const std::string& response) {
         // "HTTP/1.0 200 OK"
         auto pos = response.find(' ');
@@ -131,6 +143,13 @@ struct OpsFixture {
 
         shield::config::global_config().set("cov.ops.str",
                                             std::string("value"));
+
+        // /ops/eval is opt-in + token-gated; the fixture enables it so the
+        // eval cases can exercise the endpoint itself.
+        shield::config::global_config().set("http.eval_enabled",
+                                            std::string("true"));
+        shield::config::global_config().set("http.eval_token",
+                                            std::string("cov-token"));
 
         port = free_port();
         shield::net::HttpServerConfig cfg;
@@ -264,30 +283,117 @@ BOOST_AUTO_TEST_CASE(EvalEndpointVariants) {
     RawHttpClient client;
     client.connect_target("127.0.0.1", port);
 
-    // Invalid JSON body.
-    std::string response = client.post("/ops/eval", "this is not json");
+    // Missing Authorization header -> 401.
+    std::string response =
+        client.post_auth("/ops/eval", R"({"code": "return 1"})", "");
     BOOST_REQUIRE(!response.empty());
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 400);
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 401);
     auto resp = nlohmann::json::parse(RawHttpClient::body(response));
     BOOST_CHECK(resp["type"] == "error");
 
-    // Missing 'code' field.
-    response = client.post("/ops/eval", R"({"nope": 1})");
+    // Wrong token -> 401 (and never executes the code).
+    response = client.post_auth("/ops/eval", R"({"code": "return 1"})", "nope");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 401);
+
+    // Invalid JSON body (authorized).
+    response = client.post_auth("/ops/eval", "this is not json", "cov-token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 400);
+    resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "error");
+
+    // Missing 'code' field (authorized).
+    response = client.post_auth("/ops/eval", R"({"nope": 1})", "cov-token");
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 400);
 
     // Valid code -> 200 with data.
-    response = client.post("/ops/eval", R"({"code": "return 6 * 7"})");
+    response = client.post_auth("/ops/eval", R"({"code": "return 6 * 7"})",
+                                "cov-token");
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
     resp = nlohmann::json::parse(RawHttpClient::body(response));
     BOOST_CHECK(resp["type"] == "result");
     BOOST_CHECK(resp["data"] == nlohmann::json::array({42}));
 
     // Failing code -> 400 with error message.
-    response =
-        client.post("/ops/eval", R"json({"code": "error('bad code')"})json");
+    response = client.post_auth(
+        "/ops/eval", R"json({"code": "error('bad code')"})json", "cov-token");
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 400);
     resp = nlohmann::json::parse(RawHttpClient::body(response));
     BOOST_CHECK(resp["type"] == "error");
+}
+
+BOOST_AUTO_TEST_CASE(EvalVMIsRestricted) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    // The eval VM must not expose host-control libraries, even with a
+    // valid token (defense in depth behind the auth gate).
+    std::string response = client.post_auth(
+        "/ops/eval",
+        R"json({"code": "return type(os), type(os.execute), type(io), type(require), type(package), type(os.time)"})json",
+        "cov-token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"] ==
+                nlohmann::json::array(
+                    {"table", "nil", "nil", "nil", "nil", "function"}));
+}
+
+BOOST_AUTO_TEST_CASE(EvalDisabledByDefault) {
+    // Flip the config off and build an independent server+handler: the eval
+    // route must not be registered at all (404), while read endpoints stay.
+    auto& cfg = shield::config::global_config();
+    cfg.set("http.eval_enabled", std::string("false"));
+
+    uint16_t p2 = free_port();
+    shield::net::HttpServerConfig scfg;
+    scfg.host = "127.0.0.1";
+    scfg.port = p2;
+    shield::net::HttpServer server2(scfg);
+    shield::console::OpsHttpHandler handler2(*manager, *runtime);
+    handler2.register_routes(server2);
+    server2.start();
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", p2);
+    std::string response =
+        client.post_auth("/ops/eval", R"({"code": "return 1"})", "cov-token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 404);
+
+    // Restore for later cases in this suite.
+    cfg.set("http.eval_enabled", std::string("true"));
+}
+
+BOOST_AUTO_TEST_CASE(EvalWithoutTokenNotRegistered) {
+    // eval_enabled=true without a token must refuse to register the route.
+    auto& cfg = shield::config::global_config();
+    cfg.set("http.eval_token", std::string(""));
+
+    uint16_t p3 = free_port();
+    shield::net::HttpServerConfig scfg;
+    scfg.host = "127.0.0.1";
+    scfg.port = p3;
+    shield::net::HttpServer server3(scfg);
+    shield::console::OpsHttpHandler handler3(*manager, *runtime);
+    handler3.register_routes(server3);
+    server3.start();
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", p3);
+    // No token configured -> route absent regardless of what is sent.
+    std::string response =
+        client.post_auth("/ops/eval", R"({"code": "return 1"})", "");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 404);
+    response =
+        client.post_auth("/ops/eval", R"({"code": "return 1"})", "anything");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 404);
+
+    // Restore for later cases in this suite.
+    cfg.set("http.eval_token", std::string("cov-token"));
 }
 
 // ---------------------------------------------------------------------------
@@ -367,10 +473,10 @@ BOOST_AUTO_TEST_CASE(EvalEndpointBodyDiversity) {
 
     // Error messages containing escapable characters flow through the
     // error-response dump.
-    std::string response = client.post(
+    std::string response = client.post_auth(
         "/ops/eval",
         R"json({"code": "error('boom \"quoted\" back\\slash new\nline ok'"})json",
-        std::chrono::milliseconds(2500));
+        "cov-token");
     BOOST_REQUIRE(!response.empty());
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 400);
     auto resp = nlohmann::json::parse(RawHttpClient::body(response));
@@ -379,10 +485,10 @@ BOOST_AUTO_TEST_CASE(EvalEndpointBodyDiversity) {
                 std::string::npos);
 
     // Successful values with the same diversity.
-    response = client.post(
+    response = client.post_auth(
         "/ops/eval",
         R"json({"code": "return 'val \"q\" 123456789012345678901234567890'"})json",
-        std::chrono::milliseconds(2500));
+        "cov-token");
     BOOST_REQUIRE(!response.empty());
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
     resp = nlohmann::json::parse(RawHttpClient::body(response));

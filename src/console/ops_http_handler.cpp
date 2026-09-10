@@ -27,8 +27,40 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
                [this](const auto& req) { return handle_plugins(req); });
     server.get("/ops/config",
                [this](const auto& req) { return handle_config(req); });
+
+    // /ops/eval is a remote-code-entry point: opt-in (http.eval_enabled),
+    // token-gated (http.eval_token), and served in a restricted VM. The
+    // route simply stays unregistered otherwise, so the endpoint 404s.
+    if (shield::config::get("http.eval_enabled", "false") != "true") {
+        auto& log = shield::log::get_logger("ops");
+        SHIELD_LOG_INFO(log,
+                        "/ops/eval disabled (opt in via http.eval_enabled=true "
+                        "+ http.eval_token)");
+        return;
+    }
+    eval_token_ = shield::config::get("http.eval_token", "");
+    if (eval_token_.empty()) {
+        auto& log = shield::log::get_logger("ops");
+        SHIELD_LOG_ERROR(log,
+                         "/ops/eval NOT registered: http.eval_enabled=true "
+                         "requires a non-empty http.eval_token");
+        return;
+    }
     server.post("/ops/eval",
                 [this](const auto& req) { return handle_eval(req); });
+}
+
+bool OpsHttpHandler::token_matches(const std::string& provided,
+                                   const std::string& expected) {
+    // A length mismatch only leaks the length, never token content; equal
+    // lengths compare over every byte so timing reveals nothing.
+    if (provided.size() != expected.size()) return false;
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        diff |= static_cast<unsigned char>(provided[i]) ^
+                static_cast<unsigned char>(expected[i]);
+    }
+    return diff == 0;
 }
 
 shield::net::HttpResponse OpsHttpHandler::handle_status(
@@ -155,6 +187,18 @@ shield::net::HttpResponse OpsHttpHandler::handle_config(
 
 shield::net::HttpResponse OpsHttpHandler::handle_eval(
     const shield::net::HttpRequest& req) {
+    // Bearer token gate. Accept only "Authorization: Bearer <token>".
+    auto auth_it = req.find(boost::beast::http::field::authorization);
+    std::string provided =
+        auth_it == req.end() ? "" : std::string(auth_it->value());
+    constexpr char kBearerPrefix[] = "Bearer ";
+    if (provided.rfind(kBearerPrefix, 0) == 0) {
+        provided = provided.substr(sizeof(kBearerPrefix) - 1);
+    }
+    if (!token_matches(provided, eval_token_)) {
+        return make_error_response(401, "unauthorized");
+    }
+
     // Parse JSON body
     nlohmann::json body;
     try {
@@ -169,9 +213,11 @@ shield::net::HttpResponse OpsHttpHandler::handle_eval(
 
     std::string code = body["code"].get<std::string>();
 
-    // Execute in sandbox
+    // Execute in a restricted VM: the token gate is the first line of
+    // defense, the VM strip (no os.execute/io/require) the second.
     auto vm = lua_rt_.create_vm();
     lua_rt_.register_api(vm);
+    lua_rt_.restrict_vm(vm);
 
     nlohmann::json result;
     std::string error;

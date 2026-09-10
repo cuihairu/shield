@@ -147,6 +147,12 @@ public:
     // Create a new Lua VM
     std::shared_ptr<LuaVM> create_vm();
 
+    // Remove host-access capabilities (os.execute family, the io library,
+    // require, and package) from a VM. Intended for VMs that serve untrusted
+    // entry points such as the HTTP /ops/eval diagnostics endpoint; business
+    // VMs keep the full library set.
+    void restrict_vm(std::shared_ptr<LuaVM> vm);
+
     // Load a script into a VM
     /// @param vm The VM to load into
     /// @param script_path Path to the Lua script

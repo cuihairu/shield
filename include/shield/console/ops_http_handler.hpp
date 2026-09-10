@@ -19,7 +19,12 @@ namespace shield::console {
 /// - GET /ops/services - List all Lua services
 /// - GET /ops/plugins - List all plugins
 /// - GET /ops/config - Show config
-/// - POST /ops/eval - Execute Lua code in sandbox
+/// - POST /ops/eval - Execute Lua code; opt-in and token-gated
+///
+/// /ops/eval is a remote-code-entry point, so it is registered only when
+/// http.eval_enabled=true AND a non-empty http.eval_token is configured.
+/// Requests must carry "Authorization: Bearer <token>"; the code runs in a
+/// restricted VM (no os.execute/io/require, see LuaRuntime::restrict_vm).
 class OpsHttpHandler {
 public:
     OpsHttpHandler(shield::lua::LuaServiceManager& lua_mgr,
@@ -41,6 +46,10 @@ private:
         const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_eval(const shield::net::HttpRequest& req);
 
+    // Helper: constant-time Bearer token comparison for the eval gate
+    static bool token_matches(const std::string& provided,
+                              const std::string& expected);
+
     // Helper: create JSON response
     static shield::net::HttpResponse make_json_response(
         int status_code, const nlohmann::json& data);
@@ -49,6 +58,7 @@ private:
 
     shield::lua::LuaServiceManager& lua_mgr_;
     shield::lua::LuaRuntime& lua_rt_;
+    std::string eval_token_;
 };
 
 }  // namespace shield::console

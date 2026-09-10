@@ -41,6 +41,15 @@ Core 不内建：Prometheus metrics、HealthCheckRegistry、`/metrics` 端点、
 - HTTP ops 端点：`/ops/status`、`/ops/services`、`/ops/plugins`、`/ops/config`、`/ops/eval`
 - Lua 业务侧 `shield.httpd.*` 可注册自有管理端点（见 [Lua API 契约](lua-api.md)）
 
+HTTP ops 服务端安全基线：
+
+- `http.host` 默认 `127.0.0.1`（环回）；对外暴露必须显式配置并在前置层（防火墙/反代）再加控制。
+- `/ops/eval` 为远程代码入口，**默认不注册**（请求 404）。启用需同时满足：
+  - `http.eval_enabled: true`
+  - `http.eval_token: <非空 token>`，否则启动时报错且路由不注册
+- 已启用的 `/ops/eval` 要求 `Authorization: Bearer <token>`（常量时间比较），未授权请求返回 401。
+- eval 代码运行在受限 VM 中：`os.execute`/`os.exit`/`os.getenv`/`os.remove`/`os.rename`/`os.setlocale`、`io` 库、`require`/`package` 均被移除（`os.time`/`os.date`/`os.clock` 保留）。
+
 注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/health` 探针（不经 Lua actor 往返）尚未提供。
 
 ## shield_ops 默认策略

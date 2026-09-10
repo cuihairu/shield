@@ -624,7 +624,9 @@ bool initialize(const RuntimeConfig& config) {
     // Start HTTP ops server if enabled
     if (shield::config::get("http.enabled", "false") == "true" &&
         g_state->lua_services && g_state->lua_runtime) {
-        auto host = shield::config::get("http.host", "0.0.0.0");
+        // Default to loopback: these endpoints expose internals, and
+        // /ops/eval is a code-entry point. Expose further deliberately.
+        auto host = shield::config::get("http.host", "127.0.0.1");
         auto port = static_cast<uint16_t>(
             std::stoi(shield::config::get("http.port", "8080")));
         try {

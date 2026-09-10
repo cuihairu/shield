@@ -496,6 +496,28 @@ std::shared_ptr<LuaVM> LuaRuntime::create_vm() {
     return vm;
 }
 
+void LuaRuntime::restrict_vm(std::shared_ptr<LuaVM> vm) {
+    if (!vm) return;
+    sol::state& state = *vm->state();
+
+    // os: keep time/date/clock (business-clock hooks live there); drop the
+    // process- and host-control functions.
+    sol::table os_table = state["os"];
+    if (os_table.valid()) {
+        os_table["execute"] = sol::nil;
+        os_table["exit"] = sol::nil;
+        os_table["getenv"] = sol::nil;
+        os_table["remove"] = sol::nil;
+        os_table["rename"] = sol::nil;
+        os_table["setlocale"] = sol::nil;
+    }
+    // io: eval diagnostics need no file or process IO.
+    state["io"] = sol::nil;
+    // require/package: snippets cannot pull modules off the local disk.
+    state["require"] = sol::nil;
+    state["package"] = sol::nil;
+}
+
 bool LuaRuntime::load_script(std::shared_ptr<LuaVM> vm,
                              std::string_view script_path) {
     try {
