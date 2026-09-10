@@ -253,6 +253,7 @@ jobs:
             --txt coverage.txt \
             --xml coverage.xml \
             --html-details coverage.html \
+            --gcov-ignore-parse-errors negative_hits.warn \
             --fail-under-line 98
           TOTAL=$(grep -E '^TOTAL' coverage.txt)
           echo "### Line coverage (src/)" >> "$GITHUB_STEP_SUMMARY"
