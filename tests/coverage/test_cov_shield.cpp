@@ -1,7 +1,6 @@
 #define BOOST_TEST_MODULE CovShield
 #include <atomic>
 #include <boost/test/unit_test.hpp>
-#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -81,7 +80,10 @@ BOOST_AUTO_TEST_CASE(RunUntilStopSignal) {
     fs::path cfg = minimal_config();
     std::thread stopper([]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-        std::raise(SIGINT);
+        // In-process stop request instead of raise(SIGINT): the Windows
+        // console handler only reacts to GenerateConsoleCtrlEvent, so a
+        // raised SIGINT would never interrupt wait_for_stop() there.
+        shield::request_stop();
     });
     int rc = run_args({"--config", cfg.string()});
     stopper.join();

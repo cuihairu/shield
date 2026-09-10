@@ -4,11 +4,21 @@
 # cheap to iterate on.
 
 # Helper: link a coverage test against the given shield libraries.
+#
+# Optional first-keyword argument POSIX_ONLY: build and register the suite
+# only on non-Windows platforms (boost.asio local stream_protocol /
+# socketpair fixtures cannot run there, and compiling every case out would
+# leave an empty Boost.Test module, which itself reports failure).
 function(shield_coverage_test name)
+    set(one_value_keywords POSIX_ONLY)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "${one_value_keywords}" "")
+    if(arg_POSIX_ONLY AND WIN32)
+        return()
+    endif()
     add_executable(${name} ${name}.cpp)
     target_link_libraries(${name}
         PRIVATE
-            ${ARGN}
+            ${arg_UNPARSED_ARGUMENTS}
             Boost::unit_test_framework
             Boost::headers
     )
@@ -46,11 +56,11 @@ shield_coverage_test(test_cov_session shield_net)
 shield_coverage_test(test_cov_listener shield_net)
 shield_coverage_test(test_cov_http_server shield_net)
 shield_coverage_test(test_cov_http_client shield_net)
-shield_coverage_test(test_cov_console_net shield_net shield_bootstrap)
+shield_coverage_test(test_cov_console_net POSIX_ONLY shield_net shield_bootstrap)
 
 # shield_bootstrap (console commands, starter, bootstrap, shield facade)
-shield_coverage_test(test_cov_root_commands shield_bootstrap shield_net shield_plugin)
-shield_coverage_test(test_cov_lua_commands shield_bootstrap shield_net shield_plugin)
+shield_coverage_test(test_cov_root_commands POSIX_ONLY shield_bootstrap shield_net shield_plugin)
+shield_coverage_test(test_cov_lua_commands POSIX_ONLY shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_ops_http shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_starter shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_bootstrap shield_bootstrap shield_net shield_plugin)

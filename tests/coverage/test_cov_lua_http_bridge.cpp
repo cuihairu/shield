@@ -142,6 +142,15 @@ BOOST_AUTO_TEST_CASE(RouteTableRegistrationAndLookup) {
     runtime.remove_http_routes_for_service("svc_a");
     BOOST_CHECK_EQUAL(runtime.http_route_count(), 1u);
     BOOST_CHECK(runtime.find_http_route("GET", "/a"));
+
+    // The registered handlers reference `standalone`, which is destroyed
+    // before `runtime` (declaration order). Drop every remaining route
+    // while the state is still alive, mirroring what service teardown
+    // does in production; otherwise the sol::function destructors in the
+    // route table unref against a closed lua_State (crash on macOS and
+    // Windows, silent UB on Linux).
+    runtime.remove_http_routes_for_service("svc_b");
+    BOOST_CHECK_EQUAL(runtime.http_route_count(), 0u);
 }
 
 // ---------------------------------------------------------------------------
