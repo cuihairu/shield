@@ -217,13 +217,18 @@ BOOST_AUTO_TEST_CASE(SendRemoteUsesInjectedFunction) {
     BOOST_CHECK(!mgr.send_remote("node-b", "sid-1", "on_ping", "[]"));
 
     std::string got_node, got_service, got_method, got_args;
+    uint64_t got_session = 0;
+    int32_t got_timeout = 0;
     mgr.set_remote_send_fn(
         [&](const std::string& node, const std::string& service,
-            const std::string& method, const std::string& args_json) {
+            const std::string& method, const std::string& args_json,
+            uint64_t call_session, int32_t timeout_ms, std::string*) {
             got_node = node;
             got_service = service;
             got_method = method;
             got_args = args_json;
+            got_session = call_session;
+            got_timeout = timeout_ms;
             return true;
         });
     BOOST_CHECK(mgr.send_remote("node-b", "sid-1", "on_ping", R"(["a",1])"));
@@ -231,12 +236,30 @@ BOOST_AUTO_TEST_CASE(SendRemoteUsesInjectedFunction) {
     BOOST_CHECK_EQUAL(got_service, "sid-1");
     BOOST_CHECK_EQUAL(got_method, "on_ping");
     BOOST_CHECK_EQUAL(got_args, R"(["a",1])");
+    BOOST_CHECK_EQUAL(got_session, 0u);  // default: fire-and-forget
+    BOOST_CHECK_EQUAL(got_timeout, 0);
 
     // A transport-level failure propagates as false.
     mgr.set_remote_send_fn([](const std::string&, const std::string&,
-                              const std::string&,
-                              const std::string&) { return false; });
+                              const std::string&, const std::string&, uint64_t,
+                              int32_t, std::string*) { return false; });
     BOOST_CHECK(!mgr.send_remote("node-b", "sid-1", "on_ping", "[]"));
+
+    // Call envelopes carry the session + timeout; the error out-param
+    // surfaces the transport's failure reason.
+    mgr.set_remote_send_fn([](const std::string&, const std::string&,
+                              const std::string&, const std::string&,
+                              uint64_t call_session, int32_t timeout_ms,
+                              std::string* error) {
+        BOOST_CHECK_EQUAL(call_session, 77u);
+        BOOST_CHECK_EQUAL(timeout_ms, 1500);
+        if (error) *error = "node_offline";
+        return false;
+    });
+    std::string send_err;
+    BOOST_CHECK(!mgr.send_remote("node-b", "sid-1", "on_ping", "[]", 77, 1500,
+                                 &send_err));
+    BOOST_CHECK_EQUAL(send_err, "node_offline");
 }
 
 BOOST_AUTO_TEST_CASE(NodeEpochIsRandomAndStable) {

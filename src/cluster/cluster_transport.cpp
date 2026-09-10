@@ -8,6 +8,7 @@
 #include "shield/cluster/cluster_transport.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <caf/actor_system.hpp>
 #include <caf/error.hpp>
 #include <caf/event_based_actor.hpp>
@@ -17,7 +18,12 @@
 #include <caf/send.hpp>
 #include <caf/stateful_actor.hpp>
 #include <chrono>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "shield/cluster/cluster_messages.hpp"
@@ -44,9 +50,51 @@ struct PeerLink {
     std::string address;  // dial target, "host:port"
     std::string host;
     uint16_t port = 0;
+    std::string node_id;   // announced identity, learned at handshake
     caf::actor handle;     // invalid until the dial succeeds
     bool dialing = false;  // a dial request is in flight
 };
+
+// State shared between the transport actor and the ClusterTransport facade
+// methods (send_envelope / complete_proxied_call), which run on foreign
+// threads. Shared ownership keeps the actor's captures valid regardless of
+// teardown ordering.
+struct TransportSideState {
+    std::shared_mutex peers_mutex;
+    // Adopted node_id -> live connection handle (M4 data plane). Both nodes
+    // dial each other, so the dialer-side adoption fills this on both ends.
+    std::unordered_map<std::string, caf::actor> peers_by_node;
+    // Guards proxied_calls AND bridges: bridges are installed on a foreign
+    // thread and cleared by stop() while the actor keeps dispatching.
+    std::mutex data_mutex;
+    // Proxied call sessions (M4): local session -> (remote call_session,
+    // source node). Filled when an envelope call is dispatched, drained by
+    // complete_proxied_call or callee-side expiry.
+    std::unordered_map<uint64_t, std::pair<uint64_t, std::string>>
+        proxied_calls;
+    EnvelopeBridges bridges;
+};
+
+using SidePtr = std::shared_ptr<TransportSideState>;
+
+// Send a reply to the node a call envelope came from. Drops silently (with
+// a log) when the source connection is gone.
+void reply_to(const SidePtr& side, const std::string& source_node,
+              const EnvelopeReplyMsg& reply) {
+    caf::actor handle;
+    {
+        std::shared_lock lock(side->peers_mutex);
+        auto it = side->peers_by_node.find(source_node);
+        if (it == side->peers_by_node.end()) {
+            auto& log = shield::log::get_logger("cluster");
+            SHIELD_LOG_WARNING(log, "No connection to " + source_node +
+                                        "; dropping envelope reply");
+            return;
+        }
+        handle = it->second;
+    }
+    caf::anon_send(handle, reply);
+}
 
 struct transport_state {
     ClusterManager* manager = nullptr;
@@ -60,7 +108,7 @@ struct transport_state {
 using transport_actor = caf::stateful_actor<transport_state>;
 
 caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
-                             const ClusterConfig cfg) {
+                             const ClusterConfig cfg, const SidePtr& side) {
     auto& st = self->state();
     st.manager = manager;
     st.self_node_id = cfg.node_id;
@@ -85,14 +133,19 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
 
     auto& log = shield::log::get_logger("cluster");
 
-    self->set_down_handler([self](caf::down_msg& dm) {
+    self->set_down_handler([self, side](caf::down_msg& dm) {
         // The connection to a dialed peer died: definitive offline for that
         // node, routes invalidated; the connect loop redials.
         auto& st = self->state();
         for (auto& peer : st.peers) {
             if (peer.handle && peer.handle == dm.source) {
                 st.manager->on_peer_down(peer.address);
+                if (!peer.node_id.empty()) {
+                    std::unique_lock lock(side->peers_mutex);
+                    side->peers_by_node.erase(peer.node_id);
+                }
                 peer.handle = nullptr;
+                peer.node_id.clear();
                 break;
             }
         }
@@ -177,7 +230,7 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             }
         },
         // -- handshake completion (dialer side) ------------------------------
-        [self](const HelloAckMsg& ack) {
+        [self, side](const HelloAckMsg& ack) {
             auto& st = self->state();
             auto& log = shield::log::get_logger("cluster");
             SHIELD_LOG_DEBUG(log, "HelloAck from " + ack.node_id + " (epoch " +
@@ -199,6 +252,12 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                         SHIELD_LOG_INFO(log, "Peer " + peer.address +
                                                  " identified as " +
                                                  ack.node_id);
+                        // Adopt into the data-plane routing table (M4).
+                        peer.node_id = ack.node_id;
+                        {
+                            std::unique_lock lock(side->peers_mutex);
+                            side->peers_by_node[ack.node_id] = peer.handle;
+                        }
                         matched = true;
                         // Publish our routes immediately so a joining peer
                         // converges without waiting for a heartbeat tick.
@@ -257,6 +316,98 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             }
             self->state().manager->on_routes(routes.node_id, routes.epoch,
                                              entries);
+        },
+        // -- inbound service envelope (M4) ------------------------------------
+        [self, side](const EnvelopeMsg& env) {
+            // Bridges are invoked OUTSIDE data_mutex (they re-enter the
+            // transport from completion paths); snapshot each one under the
+            // lock, then call.
+            if (env.call_session == 0) {
+                // Fire-and-forget: dispatch and log failures; there is no
+                // reply channel for send.
+                std::function<bool(const std::string&, const std::string&,
+                                   const std::string&)>
+                    send_dispatch;
+                {
+                    std::lock_guard lock(side->data_mutex);
+                    send_dispatch = side->bridges.send_dispatch;
+                }
+                if (send_dispatch) {
+                    if (!send_dispatch(env.service_id, env.method,
+                                       env.args_json)) {
+                        auto& log = shield::log::get_logger("cluster");
+                        SHIELD_LOG_WARNING(
+                            log, "Envelope send dispatch failed on " +
+                                     env.service_id + "." + env.method);
+                    }
+                }
+                return;
+            }
+            // Call: allocate the proxied session, register its routing entry
+            // (remote session + source node) BEFORE dispatching — the callee
+            // may complete on another thread before call_dispatch even
+            // returns — then dispatch.
+            std::function<uint64_t(int32_t)> call_begin;
+            std::function<bool(uint64_t, const std::string&, const std::string&,
+                               const std::string&, std::string*)>
+                call_dispatch;
+            {
+                std::lock_guard lock(side->data_mutex);
+                call_begin = side->bridges.call_begin;
+                call_dispatch = side->bridges.call_dispatch;
+            }
+            uint64_t local = call_begin ? call_begin(env.timeout_ms) : 0;
+            if (local == 0) {
+                reply_to(side, env.source_node,
+                         EnvelopeReplyMsg{
+                             env.call_session, false, "", "service_not_found",
+                             "service not found: " + env.service_id});
+                return;
+            }
+            {
+                std::lock_guard lock(side->data_mutex);
+                side->proxied_calls[local] = {env.call_session,
+                                              env.source_node};
+            }
+            std::string dispatch_error;
+            const bool dispatched =
+                call_dispatch &&
+                call_dispatch(local, env.service_id, env.method, env.args_json,
+                              &dispatch_error);
+            if (!dispatched) {
+                // Immediate dispatch failure (target gone): unregister and
+                // fail the remote caller fast instead of letting it ride out
+                // its timeout.
+                {
+                    std::lock_guard lock(side->data_mutex);
+                    side->proxied_calls.erase(local);
+                }
+                reply_to(side, env.source_node,
+                         EnvelopeReplyMsg{
+                             env.call_session, false, "", "service_not_found",
+                             dispatch_error.empty()
+                                 ? "service not found: " + env.service_id
+                                 : dispatch_error});
+                return;
+            }
+        },
+        // -- inbound envelope reply (M4) --------------------------------------
+        [side](const EnvelopeReplyMsg& reply) {
+            // Routes into the caller-side pending-call table, resuming the
+            // suspended coroutine (unknown/expired sessions no-op there).
+            // Invoked outside data_mutex: the completion hook re-enters
+            // complete_proxied_call, which takes that mutex.
+            std::function<void(uint64_t, bool, const std::string&,
+                               const std::string&, const std::string&)>
+                reply_handler;
+            {
+                std::lock_guard lock(side->data_mutex);
+                reply_handler = side->bridges.reply_handler;
+            }
+            if (reply_handler) {
+                reply_handler(reply.call_session, reply.ok, reply.payload_json,
+                              reply.error_code, reply.error_message);
+            }
         }};
 }
 
@@ -273,6 +424,9 @@ struct ClusterTransport::Impl {
     caf::actor actor;
     uint16_t bound_port = 0;
     bool running = false;
+    // Shared with the actor and with the facade methods below, which run on
+    // whatever thread calls send_envelope / complete_proxied_call.
+    SidePtr side = std::make_shared<TransportSideState>();
 };
 
 ClusterTransport::ClusterTransport(caf::actor_system& system,
@@ -296,8 +450,8 @@ bool ClusterTransport::start(uint16_t* bound_port, std::string& error) {
     // NOTE: init_cluster_caf_types() must have been called before the actor
     // system was constructed (CAF requirement), not here.
 
-    impl_->actor =
-        impl_->system->spawn(transport_loop, impl_->manager, impl_->config);
+    impl_->actor = impl_->system->spawn(transport_loop, impl_->manager,
+                                        impl_->config, impl_->side);
 
     // Publish on the configured listen address. "0.0.0.0" (or an empty host
     // part) publishes on all interfaces; port 0 lets the OS pick.
@@ -346,6 +500,69 @@ void ClusterTransport::stop() {
     caf::anon_send_exit(impl_->actor, caf::exit_reason::user_shutdown);
     impl_->actor = nullptr;
     impl_->bound_port = 0;
+
+    // Drop data-plane state so later complete_proxied_call / send_envelope
+    // calls fail honestly instead of racing the dying actor. Bridges are
+    // cleared too: a straggler envelope in the actor's mailbox must not
+    // dispatch into a service manager that shutdown is already releasing.
+    {
+        std::unique_lock lock(impl_->side->peers_mutex);
+        impl_->side->peers_by_node.clear();
+    }
+    {
+        std::lock_guard lock(impl_->side->data_mutex);
+        impl_->side->proxied_calls.clear();
+        impl_->side->bridges = {};
+    }
+}
+
+void ClusterTransport::set_envelope_bridges(EnvelopeBridges bridges) {
+    std::lock_guard lock(impl_->side->data_mutex);
+    impl_->side->bridges = std::move(bridges);
+}
+
+bool ClusterTransport::send_envelope(const std::string& target_node,
+                                     const std::string& service_id,
+                                     const std::string& method,
+                                     const std::string& args_json,
+                                     uint64_t call_session, int32_t timeout_ms,
+                                     std::string* error) {
+    caf::actor handle;
+    {
+        std::shared_lock lock(impl_->side->peers_mutex);
+        auto it = impl_->side->peers_by_node.find(target_node);
+        if (it == impl_->side->peers_by_node.end()) {
+            if (error) *error = "node_offline";
+            return false;
+        }
+        handle = it->second;
+    }
+    // Fire into the connection actor; BASP queues and delivers over TCP.
+    // source_node lets the callee route the reply back without a reverse
+    // lookup (both nodes dial each other, but source is authoritative).
+    caf::anon_send(handle,
+                   EnvelopeMsg{impl_->manager->node_id(), service_id, method,
+                               args_json, call_session, timeout_ms});
+    return true;
+}
+
+void ClusterTransport::complete_proxied_call(uint64_t local_session, bool ok,
+                                             const std::string& payload_json,
+                                             const std::string& error_code,
+                                             const std::string& error_message) {
+    uint64_t remote_session = 0;
+    std::string source_node;
+    {
+        std::lock_guard lock(impl_->side->data_mutex);
+        auto it = impl_->side->proxied_calls.find(local_session);
+        if (it == impl_->side->proxied_calls.end()) return;  // already expired
+        remote_session = it->second.first;
+        source_node = it->second.second;
+        impl_->side->proxied_calls.erase(it);
+    }
+    reply_to(impl_->side, source_node,
+             EnvelopeReplyMsg{remote_session, ok, payload_json, error_code,
+                              error_message});
 }
 
 }  // namespace shield::cluster

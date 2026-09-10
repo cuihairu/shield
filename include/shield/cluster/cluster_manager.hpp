@@ -42,10 +42,13 @@ struct ClusterConfig {
     int offline_timeout_ms = 30000;
 };
 
-/// @brief Callback for cross-node message delivery
+/// @brief Callback for cross-node message delivery (M4). call_session != 0
+/// marks a call envelope; timeout_ms carries the caller's remaining budget
+/// (callee slack); on failure the transport sets *error (e.g. "node_offline").
 using RemoteSendFn = std::function<bool(
     const std::string& target_node, const std::string& service_id,
-    const std::string& method, const std::string& args_json)>;
+    const std::string& method, const std::string& args_json,
+    uint64_t call_session, int32_t timeout_ms, std::string* error)>;
 
 /// @brief Cluster manager: manages node connections, heartbeat, and routing.
 ///
@@ -117,10 +120,11 @@ public:
     /// @brief Set the function used to send messages to remote nodes
     void set_remote_send_fn(RemoteSendFn fn);
 
-    /// @brief Send a message to a remote node
+    /// @brief Send a message (or call envelope) to a remote node
     bool send_remote(const std::string& target_node,
                      const std::string& service_id, const std::string& method,
-                     const std::string& args_json);
+                     const std::string& args_json, uint64_t call_session = 0,
+                     int32_t timeout_ms = 0, std::string* error = nullptr);
 
     /// @brief Check if a node is reachable (online or connecting)
     /// @return empty string if reachable, error code if not

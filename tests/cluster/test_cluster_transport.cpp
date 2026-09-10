@@ -21,19 +21,25 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
 #include <utility>
 
+#include "shield/caf_initializer.hpp"
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/cluster/cluster_transport.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/lua/lua_runtime.hpp"
+#include "shield/lua/lua_service.hpp"
 
 using shield::cluster::ClusterConfig;
 using shield::cluster::ClusterManager;
 using shield::cluster::ClusterTransport;
 using shield::cluster::node_state_name;
 using shield::cluster::NodeState;
+using shield::lua::LuaRuntime;
+using shield::lua::LuaServiceManager;
 
 namespace {
 
@@ -103,6 +109,9 @@ struct Node {
     caf::actor_system_config caf_config;
     std::unique_ptr<caf::actor_system> system;
     std::unique_ptr<ClusterTransport> transport;
+    // M4 data plane (attached on demand by attach_data_plane below).
+    std::shared_ptr<LuaRuntime> runtime;
+    std::shared_ptr<LuaServiceManager> services;
 };
 
 std::unique_ptr<Node> make_node(
@@ -174,6 +183,139 @@ bool wait_until(Pred&& pred, std::chrono::milliseconds budget) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return pred();
+}
+
+const char* kMessagingScript = "../tests/lua_api/scripts/messaging_service.lua";
+
+// Spawn a messaging service on `n` under `name`, publishing the extra
+// (public) name `alias` when non-empty.
+shield::lua::SpawnResult spawn_messaging(Node& n, const std::string& name,
+                                         const std::string& alias) {
+    nlohmann::json opts = {{"name", name},
+                           {"args", nlohmann::json::object()},
+                           {"config", nlohmann::json::object()}};
+    if (!alias.empty()) {
+        opts["config"]["register_alias"] = alias;
+    }
+    return n.services->spawn(kMessagingScript, opts.dump());
+}
+
+// Wire the M4 data plane exactly like the bootstrap glue does: remote-send
+// leaves through the transport, inbound envelopes dispatch into the service
+// manager, proxied-call completions reply over the transport, and service
+// name changes become cluster routes. (The bootstrap itself cannot be
+// reused here — it reads process-global state.)
+void attach_data_plane(Node& n) {
+    // Idempotent; registers the shield_lua CAF block the service manager
+    // needs (core/io/cluster blocks are already registered by make_node).
+    initialize_caf_types();
+    n.runtime = std::make_shared<LuaRuntime>();
+    n.services = std::make_shared<LuaServiceManager>(*n.runtime, *n.system);
+
+    auto* mgr = n.manager.get();
+    n.services->set_name_change_notifier(
+        [mgr](const std::string& name, const std::string& service_id) {
+            mgr->on_local_route_changed(name, service_id);
+        });
+
+    auto services = n.services;
+    ClusterTransport* transport = n.transport.get();
+    n.manager->set_remote_send_fn(
+        [transport](const std::string& node, const std::string& service_id,
+                    const std::string& method, const std::string& args_json,
+                    uint64_t call_session, int32_t timeout_ms,
+                    std::string* error) {
+            return transport->send_envelope(node, service_id, method, args_json,
+                                            call_session, timeout_ms, error);
+        });
+
+    shield::cluster::EnvelopeBridges bridges;
+    bridges.send_dispatch = [services](const std::string& service_id,
+                                       const std::string& method,
+                                       const std::string& args_json) {
+        nlohmann::json args = nlohmann::json::parse(args_json, nullptr, false);
+        if (args.is_discarded()) args = nlohmann::json::array();
+        std::string error;
+        return services->send(service_id, method, args, &error);
+    };
+    bridges.call_begin = [services](int32_t timeout_ms) {
+        return services->begin_proxied_call(timeout_ms);
+    };
+    bridges.call_dispatch = [services](uint64_t session,
+                                       const std::string& service_id,
+                                       const std::string& method,
+                                       const std::string& args_json,
+                                       std::string* error) {
+        nlohmann::json args = nlohmann::json::parse(args_json, nullptr, false);
+        if (args.is_discarded()) args = nlohmann::json::array();
+        return services->dispatch_proxied_call(session, service_id, method,
+                                               args, error);
+    };
+    bridges.reply_handler = [services](uint64_t call_session, bool ok,
+                                       const std::string& payload_json,
+                                       const std::string& error_code,
+                                       const std::string& error_message) {
+        nlohmann::json values;
+        if (ok) {
+            values = nlohmann::json::parse(payload_json, nullptr, false);
+            if (values.is_discarded()) {
+                ok = false;
+                values = nlohmann::json::array({nlohmann::json::object(
+                    {{"code", "handler_error"},
+                     {"message", "invalid reply payload"}})});
+            }
+        } else {
+            values = nlohmann::json::array({nlohmann::json::object(
+                {{"code", error_code.empty() ? "handler_error" : error_code},
+                 {"message", error_message}})});
+        }
+        services->complete_call(call_session, ok, values);
+    };
+    n.transport->set_envelope_bridges(std::move(bridges));
+
+    n.services->set_proxied_call_hook(
+        [transport](uint64_t session, bool ok, const nlohmann::json& values) {
+            if (ok) {
+                transport->complete_proxied_call(session, true, values.dump(),
+                                                 "", "");
+                return;
+            }
+            std::string code = "handler_error";
+            std::string message = "call failed";
+            if (values.is_array() && !values.empty() &&
+                values.front().is_object()) {
+                const auto& first = values.front();
+                if (first.contains("code") && first["code"].is_string()) {
+                    code = first["code"].get<std::string>();
+                }
+                if (first.contains("message") && first["message"].is_string()) {
+                    message = first["message"].get<std::string>();
+                }
+            }
+            transport->complete_proxied_call(session, false, "", code, message);
+        });
+}
+
+// Deterministic teardown — same order as the bootstrap glue: stop the
+// transport first (its actor exits; the bridges that capture `services` are
+// cleared under the data mutex), and only then release the service manager
+// and runtime. Resetting the runtime while a straggler envelope dispatch or
+// proxied completion could still reference it (via the transport-side
+// bridges) leaves those closures with a dangling LuaRuntime.
+void teardown_node(Node& n) {
+    if (n.services) n.services->shutdown_all("test_done");
+    if (n.transport) n.transport->stop();
+    n.services.reset();
+    n.runtime.reset();
+    if (n.manager) n.manager->stop();
+}
+
+// Wait until node-a's route cache knows where `alias` lives on node-b.
+void wait_route(ClusterManager& mgr, const std::string& alias) {
+    BOOST_REQUIRE_MESSAGE(
+        wait_until([&] { return !mgr.query_remote("node-b", alias).empty(); },
+                   std::chrono::milliseconds(5000)),
+        "route for " << alias << " never converged on node-a");
 }
 
 }  // namespace
@@ -318,6 +460,186 @@ BOOST_AUTO_TEST_CASE(RouteTableConvergesAndPurgesOnPeerDown) {
     b->transport->stop();
     a->manager->stop();
     b->manager->stop();
+}
+
+// -- M4: cross-node send/call over the envelope data plane ------------------
+
+// The full round trip: node-a's caller service shield.call's a service that
+// lives on node-b (coroutine path), the main thread sync-calls it through
+// call_with_session, a one-way send lands on the callee, and a retracted
+// route fails with service_not_found rather than node_offline.
+BOOST_AUTO_TEST_CASE(RemoteCallAndSendRoundTripEndToEnd) {
+    enable_test_logging();
+    uint16_t port_a = free_port();
+    uint16_t port_b = free_port();
+    auto b = make_node("node-b", port_b, port_a);
+    auto a = make_node("node-a", port_a, port_b);
+    attach_data_plane(*a);
+    attach_data_plane(*b);
+
+    // shield.send/call resolve remote targets through the process-global
+    // cluster manager; in this single-process test only node-a originates
+    // remote calls, so the global points at its manager.
+    shield::cluster::set_global_cluster_manager(a->manager.get());
+
+    auto callee = spawn_messaging(*b, "echo_impl", "echo_svc");
+    BOOST_REQUIRE(callee.success);
+    auto caller = spawn_messaging(*a, "caller_impl", "");
+    BOOST_REQUIRE(caller.success);
+
+    wait_online(*a->manager, "node-b");
+    wait_online(*b->manager, "node-a");
+    wait_route(*a->manager, "echo_svc");
+
+    // Coroutine-path call: the caller's handler yields inside shield.call
+    // and is resumed when the echo reply arrives over the envelope path.
+    auto called = a->services->call(
+        caller.service_id, "call_target",
+        nlohmann::json::array({"node-b:echo_svc", "echo", "ping"}), 5000);
+    BOOST_REQUIRE(called.success);
+    BOOST_REQUIRE_EQUAL(called.values.size(), 2u);
+    BOOST_REQUIRE_MESSAGE(called.values[0].get<bool>() == true,
+                          "remote call failed: " << called.values[1].dump());
+    BOOST_CHECK_EQUAL(called.values[1].get<std::string>(), "ping");
+
+    // Main-thread sync call: the same round trip through
+    // LuaServiceManager::call_with_session.
+    const std::string remote_sid =
+        a->manager->query_remote("node-b", "echo_svc");
+    std::string send_err;
+    auto sync_result = a->services->call_with_session(
+        [&](uint64_t session, std::string& err) {
+            return a->manager->send_remote(
+                "node-b", remote_sid, "echo",
+                nlohmann::json::array({"direct"}).dump(), session, 3000, &err);
+        },
+        3000);
+    BOOST_REQUIRE(sync_result.success);
+    BOOST_REQUIRE_EQUAL(sync_result.values.size(), 1u);
+    BOOST_CHECK_EQUAL(sync_result.values[0].get<std::string>(), "direct");
+
+    // One-way send: the callee records the payload under its published name.
+    BOOST_CHECK(a->manager->send_remote(
+        "node-b", remote_sid, "record",
+        nlohmann::json::array({"one-way"}).dump(), 0, 0, &send_err));
+    BOOST_CHECK(wait_until(
+        [&] {
+            auto seen = b->services->call(remote_sid, "get_last_args",
+                                          nlohmann::json::array(), 2000);
+            return seen.success && !seen.values.empty() &&
+                   seen.values[0].is_array() && !seen.values[0].empty() &&
+                   seen.values[0][0] == "one-way";
+        },
+        std::chrono::milliseconds(5000)));
+
+    // Retraction: once node-b unpublishes the name, remote calls fail with
+    // service_not_found (route gone) while the node itself stays reachable.
+    auto unreg = b->services->call(remote_sid, "unregister_name",
+                                   nlohmann::json::array({"echo_svc"}), 2000);
+    BOOST_REQUIRE(unreg.success);
+    BOOST_CHECK(wait_until(
+        [&] { return a->manager->query_remote("node-b", "echo_svc").empty(); },
+        std::chrono::milliseconds(5000)));
+    auto after_retract = a->services->call(
+        caller.service_id, "call_timeout_target",
+        nlohmann::json::array({1000, "node-b:echo_svc", "echo", "x"}), 5000);
+    BOOST_REQUIRE(after_retract.success);
+    BOOST_CHECK_EQUAL(after_retract.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(after_retract.values[1]["code"].get<std::string>(),
+                      "service_not_found");
+
+    shield::cluster::set_global_cluster_manager(nullptr);
+    teardown_node(*a);
+    teardown_node(*b);
+}
+
+// Losing the peer's connection is definitive: the route purges, the node
+// degrades to Offline, and a remote call fails immediately with node_offline
+// instead of hanging until its timeout.
+BOOST_AUTO_TEST_CASE(RemoteCallFailsFastWhenPeerTransportStops) {
+    enable_test_logging();
+    uint16_t port_a = free_port();
+    uint16_t port_b = free_port();
+    auto b = make_node("node-b", port_b, port_a);
+    auto a = make_node("node-a", port_a, port_b);
+    attach_data_plane(*a);
+    attach_data_plane(*b);
+    shield::cluster::set_global_cluster_manager(a->manager.get());
+
+    auto callee = spawn_messaging(*b, "echo_impl", "echo_svc");
+    BOOST_REQUIRE(callee.success);
+    auto caller = spawn_messaging(*a, "caller_impl", "");
+    BOOST_REQUIRE(caller.success);
+
+    wait_online(*a->manager, "node-b");
+    wait_online(*b->manager, "node-a");
+    wait_route(*a->manager, "echo_svc");
+
+    b->transport->stop();
+    BOOST_CHECK(wait_for_state(*a->manager, "node-b", NodeState::Offline,
+                               std::chrono::milliseconds(10000)));
+    BOOST_CHECK_EQUAL(a->manager->query_remote("node-b", "echo_svc"), "");
+
+    const auto started = std::chrono::steady_clock::now();
+    auto failed = a->services->call(
+        caller.service_id, "call_timeout_target",
+        nlohmann::json::array({5000, "node-b:echo_svc", "echo", "x"}), 10000);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    BOOST_REQUIRE(failed.success);
+    BOOST_CHECK_EQUAL(failed.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(failed.values[1]["code"].get<std::string>(),
+                      "node_offline");
+    // Fast-fail, not a 5s ride to the caller's timeout.
+    BOOST_CHECK(elapsed < std::chrono::milliseconds(3000));
+
+    shield::cluster::set_global_cluster_manager(nullptr);
+    teardown_node(*a);
+    teardown_node(*b);
+}
+
+// A slow callee rides out the caller's budget: the local timeout driver
+// resumes the suspended caller with the stable timeout error while the
+// callee's late completion lands harmlessly on an already-expired session.
+BOOST_AUTO_TEST_CASE(RemoteCallTimesOutWhileCalleeIsSlow) {
+    enable_test_logging();
+    uint16_t port_a = free_port();
+    uint16_t port_b = free_port();
+    auto b = make_node("node-b", port_b, port_a);
+    auto a = make_node("node-a", port_a, port_b);
+    attach_data_plane(*a);
+    attach_data_plane(*b);
+    shield::cluster::set_global_cluster_manager(a->manager.get());
+
+    auto callee = spawn_messaging(*b, "echo_impl", "echo_svc");
+    BOOST_REQUIRE(callee.success);
+    auto caller = spawn_messaging(*a, "caller_impl", "");
+    BOOST_REQUIRE(caller.success);
+
+    wait_online(*a->manager, "node-b");
+    wait_online(*b->manager, "node-a");
+    wait_route(*a->manager, "echo_svc");
+
+    // slow_method sleeps 150ms on the callee; the caller only grants 50ms.
+    auto timed_out = a->services->call(
+        caller.service_id, "call_timeout_target",
+        nlohmann::json::array({50, "node-b:echo_svc", "slow_method"}), 5000);
+    BOOST_REQUIRE(timed_out.success);
+    BOOST_CHECK_EQUAL(timed_out.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(timed_out.values[1]["code"].get<std::string>(),
+                      "timeout");
+
+    // Give the callee's late completion time to arrive (it must no-op on
+    // node-a), then a fresh call still works end to end.
+    auto again = a->services->call(
+        caller.service_id, "call_target",
+        nlohmann::json::array({"node-b:echo_svc", "echo", "after"}), 5000);
+    BOOST_REQUIRE(again.success);
+    BOOST_CHECK_EQUAL(again.values[0].get<bool>(), true);
+    BOOST_CHECK_EQUAL(again.values[1].get<std::string>(), "after");
+
+    shield::cluster::set_global_cluster_manager(nullptr);
+    teardown_node(*a);
+    teardown_node(*b);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

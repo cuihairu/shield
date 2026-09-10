@@ -155,7 +155,12 @@ struct GlobalState {
     RuntimeConfig config;
     std::unique_ptr<caf::actor_system> actor_system;
     std::unique_ptr<shield::lua::LuaRuntime> lua_runtime;
-    std::unique_ptr<shield::lua::LuaServiceManager> lua_services;
+    // shared_ptr (not unique_ptr): the M4 data-plane closures (envelope
+    // bridges, remote-send, proxied-call hook) run on transport/service
+    // actor threads and may still be in flight while shutdown rewrites the
+    // other half of the pair. Shared ownership keeps every capture valid;
+    // the objects themselves fail honestly after their stop() has run.
+    std::shared_ptr<shield::lua::LuaServiceManager> lua_services;
     boost::asio::io_context net_io;
     // A work guard keeps net_io.run() alive even when no async operations
     // are pending, preventing the thread pool from spinning down prematurely.
@@ -172,7 +177,7 @@ struct GlobalState {
     std::unique_ptr<shield::lua::LuaHttpBridge> http_bridge;
 #ifdef SHIELD_ENABLE_CLUSTER
     std::unique_ptr<shield::cluster::ClusterManager> cluster_manager;
-    std::unique_ptr<shield::cluster::ClusterTransport> cluster_transport;
+    std::shared_ptr<shield::cluster::ClusterTransport> cluster_transport;
 #endif
     bool initialized = false;
 };
@@ -385,7 +390,7 @@ bool initialize(const RuntimeConfig& config) {
     // betray the node's reported health.
     if (cluster_config.enabled) {
         g_state->cluster_transport =
-            std::make_unique<shield::cluster::ClusterTransport>(
+            std::make_shared<shield::cluster::ClusterTransport>(
                 *g_state->actor_system, *g_state->cluster_manager,
                 cluster_config);
         uint16_t bound_port = 0;
@@ -405,7 +410,7 @@ bool initialize(const RuntimeConfig& config) {
     run_starters(Phase::POST_SYSTEM_INIT);
 
     g_state->lua_runtime = std::make_unique<shield::lua::LuaRuntime>();
-    g_state->lua_services = std::make_unique<shield::lua::LuaServiceManager>(
+    g_state->lua_services = std::make_shared<shield::lua::LuaServiceManager>(
         *g_state->lua_runtime, *g_state->actor_system);
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -419,6 +424,112 @@ bool initialize(const RuntimeConfig& config) {
                 if (auto* mgr = shield::cluster::global_cluster_manager()) {
                     mgr->on_local_route_changed(name, service_id);
                 }
+            });
+    }
+
+    // M4 data-plane glue. Every closure below is invoked from another
+    // thread (transport actor or service actor dispatch); all of them only
+    // touch thread-safe seams, and they hold shared_ptr so a capture can
+    // never dangle while teardown interleaves with in-flight messages.
+    if (g_state->cluster_manager && g_state->cluster_transport &&
+        g_state->lua_services) {
+        auto services = g_state->lua_services;
+        auto transport = g_state->cluster_transport;
+
+        // Caller side: shield.send/call aimed at "node:service" leaves via
+        // the transport envelope path.
+        g_state->cluster_manager->set_remote_send_fn(
+            [transport](const std::string& node, const std::string& service_id,
+                        const std::string& method, const std::string& args_json,
+                        uint64_t call_session, int32_t timeout_ms,
+                        std::string* error) {
+                return transport->send_envelope(node, service_id, method,
+                                                args_json, call_session,
+                                                timeout_ms, error);
+            });
+
+        // Callee side: inbound envelopes dispatch against the local service
+        // manager.
+        shield::cluster::EnvelopeBridges bridges;
+        bridges.send_dispatch = [services](const std::string& service_id,
+                                           const std::string& method,
+                                           const std::string& args_json) {
+            nlohmann::json args =
+                nlohmann::json::parse(args_json, nullptr, false);
+            if (args.is_discarded()) {
+                args = nlohmann::json::array();
+            }
+            std::string error;
+            return services->send(service_id, method, args, &error);
+        };
+        // Two-phase inbound call: the transport allocates the session, then
+        // registers its routing entry, THEN dispatches — so a fast callee
+        // completion can never race the registration.
+        bridges.call_begin = [services](int32_t timeout_ms) {
+            return services->begin_proxied_call(timeout_ms);
+        };
+        bridges.call_dispatch =
+            [services](uint64_t session, const std::string& service_id,
+                       const std::string& method, const std::string& args_json,
+                       std::string* error) {
+                nlohmann::json args =
+                    nlohmann::json::parse(args_json, nullptr, false);
+                if (args.is_discarded()) {
+                    args = nlohmann::json::array();
+                }
+                return services->dispatch_proxied_call(session, service_id,
+                                                       method, args, error);
+            };
+        bridges.reply_handler = [services](uint64_t call_session, bool ok,
+                                           const std::string& payload_json,
+                                           const std::string& error_code,
+                                           const std::string& error_message) {
+            nlohmann::json values;
+            if (ok) {
+                values = nlohmann::json::parse(payload_json, nullptr, false);
+                if (values.is_discarded()) {
+                    ok = false;
+                    values = nlohmann::json::array({nlohmann::json::object(
+                        {{"code", "handler_error"},
+                         {"message", "invalid reply payload"}})});
+                }
+            } else {
+                values = nlohmann::json::array({nlohmann::json::object(
+                    {{"code",
+                      error_code.empty() ? "handler_error" : error_code},
+                     {"message", error_message}})});
+            }
+            services->complete_call(call_session, ok, values);
+        };
+        transport->set_envelope_bridges(std::move(bridges));
+
+        // Proxied-call completions flow back out over the transport, reply
+        // addressed to the node the envelope came from.
+        g_state->lua_services->set_proxied_call_hook(
+            [transport](uint64_t session, bool ok,
+                        const nlohmann::json& values) {
+                if (ok) {
+                    transport->complete_proxied_call(session, true,
+                                                     values.dump(), "", "");
+                    return;
+                }
+                // values is the error array [{code, message, ...}]; lift the
+                // first entry's code/message into the reply fields.
+                std::string code = "handler_error";
+                std::string message = "call failed";
+                if (values.is_array() && !values.empty() &&
+                    values.front().is_object()) {
+                    const auto& first = values.front();
+                    if (first.contains("code") && first["code"].is_string()) {
+                        code = first["code"].get<std::string>();
+                    }
+                    if (first.contains("message") &&
+                        first["message"].is_string()) {
+                        message = first["message"].get<std::string>();
+                    }
+                }
+                transport->complete_proxied_call(session, false, "", code,
+                                                 message);
             });
     }
 #endif
@@ -815,15 +926,20 @@ void shutdown() {
     if (g_state->lua_services) {
         g_state->lua_services->shutdown_all("stopping", stop_budget_ms);
     }
-    g_state->lua_services.reset();
-    g_state->lua_runtime.reset();
 #ifdef SHIELD_ENABLE_CLUSTER
-    // The transport actor lives in the CAF system: unpublish and kill it
-    // while the system (and the manager its callbacks point at) are still
-    // alive, before the system goes away.
+    // Stop the transport BEFORE releasing the service manager: inbound
+    // envelope bridges dispatch into lua_services, so it must outlive the
+    // transport actor's message loop. stop() also clears the bridges, so a
+    // straggler mailbox message becomes an honest no-op. The transport
+    // actor lives in the CAF system: unpublish and kill it while the system
+    // (and the manager its callbacks point at) are still alive.
     if (g_state->cluster_transport) {
         g_state->cluster_transport->stop();
     }
+#endif
+    g_state->lua_services.reset();
+    g_state->lua_runtime.reset();
+#ifdef SHIELD_ENABLE_CLUSTER
     g_state->cluster_transport.reset();
 #endif
     g_state->actor_system.reset();

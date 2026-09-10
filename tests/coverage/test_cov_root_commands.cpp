@@ -15,6 +15,9 @@
 #include <vector>
 
 #include "shield/caf_initializer.hpp"
+#ifdef SHIELD_ENABLE_CLUSTER
+#include "shield/cluster/cluster_manager.hpp"
+#endif
 #include "shield/config/config.hpp"
 #include "shield/console/command_dispatcher.hpp"
 #include "shield/console/root_commands.hpp"
@@ -769,6 +772,53 @@ BOOST_AUTO_TEST_CASE(PluginCommandsWithEmptyHostLists) {
 
     fs::remove_all(empty_dir);
 }
+
+#ifdef SHIELD_ENABLE_CLUSTER
+// With a cluster manager installed, root.cluster and root.status report the
+// node snapshot. The manager is a phantom (one handshake-adopted peer, no
+// transport), so the JSON shape is checked without a network.
+BOOST_AUTO_TEST_CASE(ClusterCommandsReportManagerSnapshot) {
+    shield::cluster::ClusterConfig config;
+    config.enabled = true;
+    config.node_id = "cov-root";
+    config.listen_address = "127.0.0.1:0";
+    config.peers = {"127.0.0.1:59996"};
+    shield::cluster::ClusterManager cluster(config);
+    cluster.start();
+    cluster.on_handshake("127.0.0.1:59996", "node-b", 11);
+    shield::cluster::set_global_cluster_manager(&cluster);
+
+    {
+        ConsoleHarness harness;
+        shield::console::CommandDispatcher dispatcher;
+        shield::console::RootCommands root(*manager);
+        root.register_all(dispatcher);
+
+        dispatcher.dispatch(harness.session, "root.cluster");
+        std::string line = harness.read_line();
+        BOOST_REQUIRE(!line.empty());
+        auto resp = nlohmann::json::parse(line);
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK_EQUAL(resp["data"]["node_id"], "cov-root");
+        BOOST_CHECK(resp["data"].contains("node_epoch"));
+        BOOST_REQUIRE_EQUAL(resp["data"]["nodes"].size(), 1u);
+        BOOST_CHECK_EQUAL(resp["data"]["nodes"][0]["node_id"], "node-b");
+        BOOST_CHECK_EQUAL(resp["data"]["nodes"][0]["state"], "online");
+
+        dispatcher.dispatch(harness.session, "root.status");
+        line = harness.read_line(std::chrono::milliseconds(8000));
+        BOOST_REQUIRE(!line.empty());
+        resp = nlohmann::json::parse(line);
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK_EQUAL(resp["data"]["cluster"]["node_id"], "cov-root");
+        BOOST_REQUIRE_EQUAL(resp["data"]["cluster"]["nodes"].size(), 1u);
+        BOOST_CHECK_EQUAL(resp["data"]["cluster"]["nodes"][0]["epoch"], "11");
+    }
+
+    shield::cluster::set_global_cluster_manager(nullptr);
+    cluster.stop();
+}
+#endif
 
 BOOST_AUTO_TEST_SUITE_END()
 #endif  // !_WIN32

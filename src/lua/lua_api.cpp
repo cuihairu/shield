@@ -431,6 +431,79 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
             -> sol::protected_function_result { return pfr; });
 }
 
+#ifdef SHIELD_ENABLE_CLUSTER
+namespace {
+
+// Remote-target resolution for shield.send/call (M4). Local names always
+// win: "room.public" resolves locally even if a remote route shares the
+// name, and a colon-name that hits locally is never reinterpreted as
+// "node:service".
+struct RemoteResolution {
+    bool is_remote = false;
+    // Meaningful when is_remote: envelope destination.
+    std::string node;
+    std::string service_id;
+    // Non-empty when the remote target failed pre-flight (reachability /
+    // route lookup): the caller fails the send/call with this stable code
+    // instead of dispatching.
+    std::string error_code;
+    std::string error_message;
+};
+
+// Node-level failures recover on reconnect: surface them as retryable.
+bool remote_error_retryable(const std::string& code) {
+    return code == "node_offline" || code == "node_suspect";
+}
+
+// Stable code for a send_remote failure string (e.g. the transport's
+// "node_offline" out-param).
+std::string remote_send_error_code(const std::string& msg) {
+    if (msg.find("node_suspect") != std::string::npos) return "node_suspect";
+    if (msg.find("node_offline") != std::string::npos) return "node_offline";
+    return "transport_failed";
+}
+
+RemoteResolution resolve_remote_target(LuaServiceManager* manager,
+                                       const std::string& target_id) {
+    RemoteResolution res;
+    // Local hit wins, never reinterpreted as "node:service".
+    if (!manager->query_service(target_id).empty()) {
+        return res;
+    }
+    std::string node, name;
+    if (!shield::cluster::ClusterManager::parse_remote_target(target_id, node,
+                                                              name)) {
+        return res;
+    }
+    auto* cm = shield::cluster::global_cluster_manager();
+    if (!cm) {
+        // Cluster not initialized: no node namespace exists; treat as an
+        // ordinary local miss so the local path produces service_not_found.
+        return res;
+    }
+    if (node == cm->node_id()) {
+        // Self-qualified name: plain local service (already missed above).
+        return res;
+    }
+    res.is_remote = true;
+    res.node = node;
+    if (const std::string reachable = cm->check_node_reachable(node);
+        !reachable.empty()) {
+        res.error_code = reachable;
+        res.error_message = "cluster node is not reachable: " + node;
+        return res;
+    }
+    res.service_id = cm->query_remote(node, name);
+    if (res.service_id.empty()) {
+        res.error_code = "service_not_found";
+        res.error_message = "remote service not found: " + name + " on " + node;
+    }
+    return res;
+}
+
+}  // namespace
+#endif
+
 void register_message_api(sol::table& shield, LuaServiceManager* manager,
                           LuaRuntime* runtime) {
     shield.set_function(
@@ -448,6 +521,36 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                                "target must be ServiceHandle or string"));
                 return results;
             }
+
+#ifdef SHIELD_ENABLE_CLUSTER
+            // Cross-node fire-and-forget (M4): "node:service" leaves as an
+            // envelope; local names keep the in-process path below.
+            const auto remote = resolve_remote_target(manager, target_id);
+            if (remote.is_remote) {
+                if (!remote.error_code.empty()) {
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error(
+                        state, remote.error_code, remote.error_message,
+                        remote_error_retryable(remote.error_code)));
+                    return results;
+                }
+                std::string send_error;
+                auto* cm = shield::cluster::global_cluster_manager();
+                if (cm->send_remote(remote.node, remote.service_id, method,
+                                    variadic_to_json_array(args).dump(), 0, 0,
+                                    &send_error)) {
+                    results.push_back(sol::make_object(lua, true));
+                    results.push_back(sol::make_object(lua, sol::nil));
+                    return results;
+                }
+                results.push_back(sol::make_object(lua, false));
+                results.push_back(make_error(
+                    state, remote_send_error_code(send_error), send_error,
+                    remote_error_retryable(
+                        remote_send_error_code(send_error))));
+                return results;
+            }
+#endif
 
             std::string error;
             if (!manager->send(target_id, method, variadic_to_json_array(args),
@@ -534,6 +637,58 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             if (target_id.empty()) {
                 return 0;
             }
+
+            // Pack the arguments once for both dispatch paths.
+            std::size_t arg_count = args.size();
+            sol::object packed_count = args["n"];
+            if (packed_count.valid() && packed_count.is<int>()) {
+                const int n = packed_count.as<int>();
+                arg_count = n > 0 ? static_cast<std::size_t>(n) : 0;
+            }
+            nlohmann::json json_args = nlohmann::json::array();
+            for (std::size_t i = 1; i <= arg_count; ++i) {
+                json_args.push_back(lua_to_json(args[static_cast<int>(i)]));
+            }
+
+#ifdef SHIELD_ENABLE_CLUSTER
+            // Cross-node call (M4): suspend first, then pre-flight and send;
+            // every failure completes the session asynchronously (response
+            // message lands after the caller yields) so the wrapper's
+            // coroutine.yield() always gets exactly one resume.
+            const auto remote = resolve_remote_target(manager, target_id);
+            if (remote.is_remote) {
+                lua_State* co = state;
+                const uint64_t session =
+                    manager->suspend_for_call(co, timeout_ms);
+                if (!remote.error_code.empty()) {
+                    manager->complete_call(
+                        session, false,
+                        nlohmann::json::array({nlohmann::json::object(
+                            {{"code", remote.error_code},
+                             {"message", remote.error_message},
+                             {"retryable",
+                              remote_error_retryable(remote.error_code)}})}));
+                    return session;
+                }
+                std::string send_error;
+                auto* cm = shield::cluster::global_cluster_manager();
+                if (!cm->send_remote(remote.node, remote.service_id, method,
+                                     json_args.dump(), session, timeout_ms,
+                                     &send_error)) {
+                    const std::string code = remote_send_error_code(send_error);
+                    manager->complete_call(
+                        session, false,
+                        nlohmann::json::array({nlohmann::json::object(
+                            {{"code", code},
+                             {"message", send_error},
+                             {"retryable", remote_error_retryable(code)}})}));
+                }
+                // Non-zero session: the wrapper yields and the completion
+                // (success or the failure above) resumes it.
+                return session;
+            }
+#endif
+
             const std::string service_id = manager->query_service(target_id);
             if (service_id.empty()) {
                 return 0;
@@ -542,17 +697,6 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             const uint64_t session = manager->suspend_for_call(co, timeout_ms);
 
             // Build and queue the call-request message.
-            std::size_t arg_count = args.size();
-            sol::object packed_count = args["n"];
-            if (packed_count.valid() && packed_count.is<int>()) {
-                const int n = packed_count.as<int>();
-                arg_count = n > 0 ? static_cast<std::size_t>(n) : 0;
-            }
-
-            nlohmann::json json_args = nlohmann::json::array();
-            for (std::size_t i = 1; i <= arg_count; ++i) {
-                json_args.push_back(lua_to_json(args[static_cast<int>(i)]));
-            }
             std::string send_error;
             // Send carries call_session so the callee's dispatch can route the
             // response back to the caller.
@@ -669,6 +813,45 @@ sol::variadic_results call_with_timeout(sol::this_state state,
             return "coroutine_limit";
         return "handler_error";
     };
+
+#ifdef SHIELD_ENABLE_CLUSTER
+    // Cross-node sync call (M4): main-thread callers must not block the
+    // process on a remote round-trip through manager->call's local actor
+    // dispatch; call_with_session gives the same blocking-CV contract while
+    // the transport carries the envelope.
+    const auto remote = resolve_remote_target(manager, target);
+    if (remote.is_remote) {
+        if (!remote.error_code.empty()) {
+            results.push_back(sol::make_object(lua, false));
+            results.push_back(
+                make_error(state, remote.error_code, remote.error_message,
+                           remote_error_retryable(remote.error_code)));
+            return results;
+        }
+        auto* cm = shield::cluster::global_cluster_manager();
+        const std::string args_json = args.dump();
+        CallResult result = manager->call_with_session(
+            [cm, node = remote.node, sid = remote.service_id, &method,
+             &args_json, timeout_ms](uint64_t session, std::string& err) {
+                return cm->send_remote(node, sid, method, args_json, session,
+                                       timeout_ms, &err);
+            },
+            timeout_ms);
+        if (!result.success) {
+            const std::string code =
+                remote_send_error_code(result.error_message);
+            results.push_back(sol::make_object(lua, false));
+            results.push_back(make_error(state, code, result.error_message,
+                                         remote_error_retryable(code)));
+            return results;
+        }
+        results.push_back(sol::make_object(lua, true));
+        for (const auto& value : result.values) {
+            results.push_back(json_to_lua(lua, value));
+        }
+        return results;
+    }
+#endif
 
     CallResult result = manager->call(target, method, args, timeout_ms);
     if (!result.success) {

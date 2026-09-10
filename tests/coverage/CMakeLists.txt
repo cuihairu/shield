@@ -79,12 +79,19 @@ shield_coverage_test(test_cov_lua_gateway_bridge shield_lua shield_core CAF::cor
 shield_coverage_test(test_cov_lua_http_bridge shield_lua shield_core shield_net CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_runtime shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service shield_lua shield_core CAF::core CAF::io)
+shield_coverage_test(test_cov_lua_service3 shield_lua shield_core CAF::core CAF::io)
 
 # Round-2 coverage suites (same modules, deeper branches).
 shield_coverage_test(test_cov_lua_api2 shield_lua shield_core shield_net CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_runtime2 shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service2 shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_http_bridge2 shield_lua shield_core shield_net CAF::core CAF::io)
+
+# Cluster data plane (M4): only exists in cluster builds, same gating as the
+# integration suites in tests/cluster.
+if(SHIELD_ENABLE_CLUSTER)
+    shield_coverage_test(test_cov_cluster shield_cluster shield_lua CAF::core CAF::io)
+endif()
 
 # The ops HTTP client drains each response until its read deadline, so the
 # suite's wall time is dominated by per-request timeouts; give it headroom.

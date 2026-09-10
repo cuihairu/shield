@@ -129,33 +129,64 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
   清除）；`test_cov_lua_service2` 补 2 例钩子生命周期（spawn/register/
   unregister/exit 事件序列、on_init 失败回滚只收回 on_init 发布的名字）。
 
-### M4 跨节点 send/call 投递（2~4 天，最大项）
+### M4 跨节点 send/call 投递（2~4 天，最大项）✅ 已落地（2026-09）
 
-- `RemoteSendFn` 实装：查 route cache 得 `service_id` → envelope 发往目标
-  节点 transport actor：
-
-```cpp
-struct envelope {
-  std::string service_id;   // 目标 service（远端视角的本地 id）
-  std::string method;
-  std::string args_json;    // 复用既有 JSON 参数编码
-  uint64_t call_session;    // call 回包关联；send 为 0
-  std::string source_node;  // 回包路由
-};
-struct envelope_reply { uint64_t call_session; std::string result_json; std::string error_code; };
-```
-
-- 目标节点：envelope → 本地 `send/call` 派发路径（复用 shield_core 语义、
-  错误码、timeout），call 的结果经 `envelope_reply` 原路返回。
-- Lua 接线（唯一改动 `lua_api.cpp` 的点）：`shield.send/call` 入口先
-  `parse_remote_target()`；命中且目标非本节点 → `send_remote`；
-  `call` 接入既有 coroutine-aware pending-call 机制（`call_session` 关联
-  `envelope_reply`，超时语义与本地一致）。
-- 不可达语义：peer 非 Online → 立即失败，错误码复用 `node_offline` /
-  `node_suspect`（`check_node_reachable()` 已有），retryable 标记降级路径
-  与本地 `service_not_found` 区分。
-- 测试：双节点端到端（node-a call node-b echo service；node-b 停机后
-  call 立即失败且错误码正确；call 超时与本地同形）。
+- `RemoteSendFn` 实装 ✅：签名扩为
+  `(target_node, service_id, method, args_json, call_session, timeout_ms, error*)`；
+  bootstrap 注入并桥接 `ClusterTransport::send_envelope()`（按已采纳节点查
+  活连接，miss 即 `node_offline`）；wire 类型
+  `EnvelopeMsg{source_node, service_id, method, args_json, call_session,
+  timeout_ms}` / `EnvelopeReplyMsg{call_session, ok, payload_json,
+  error_code, error_message}`（载荷保持 JSON 字符串，与计划草案等价，
+  `timeout_ms` 为 M4 新增：携带 caller 剩余预算，供 callee slack 推导）。
+- 目标节点 ✅：envelope → 本地派发路径。call 在 callee 侧落成
+  **proxied 会话**（与原计划的偏离点，为解决 call-session 撞号）：
+  本地分配的 session 占用与本地 call 同一张 pending_calls 表
+  （`caller_co=nullptr`、`proxied=true`），完全复用本地派发/完成/超时
+  机制，完成时经 hook 原路回 `EnvelopeReplyMsg`；两侧 session 独立编号
+  （caller 的 `call_session` 只作为回包关联键），不存在跨节点撞号。
+- Lua 接线 ✅：唯一改动 `lua_api.cpp`（`lua_service.cpp` 保持零 cluster
+  依赖）。`shield.send/call/call_timeout` 入口 `resolve_remote_target()`：
+  **本地名字命中优先**（命中即绝不重解释为 `node:service`）→
+  `parse_remote_target` + node 非本节点 → 可达性预检 + route 解析 →
+  envelope；call 协程路径先 suspend 再预检/发送，任何失败经
+  `complete_call()` 异步完成（响应在 caller yield 之后送达，规避
+  yield 前恢复协程的隐患）；主线程同步路径新增
+  `LuaServiceManager::call_with_session()`（复用 pending_sync_calls 的
+  阻塞-CV 语义）。
+- 超时语义 ✅（与本地同形 + 兜底）：caller 侧沿用既有 CAF 超时驱动；
+  callee 侧 proxied 会话由直达 hook 的自足驱动兜底（caller 剩余超时 +
+  30s slack），caller 消失/对端断连都不会泄漏条目。
+- 不可达语义 ✅：peer 非 Online → 预检立即失败，错误码复用
+  `node_not_found`/`node_suspect`/`node_offline`/`node_removed`
+  （`check_node_reachable()`），`node_offline`/`node_suspect` 带
+  retryable；对端断连清路由后为 `service_not_found`；对端派发失败的
+  错误码经 `EnvelopeReplyMsg` 原样透传。
+- 测试 ✅：transport 集成测试扩至 6 例——新增 3 例挂真实 Lua 服务
+  管理器的双节点端到端（caller 服务 `shield.call("node-b:echo_svc")`
+  协程全链路 + 主线程 `call_with_session` + 单向 send 落地验证；
+  node-b transport 停机 → offline 清路由 → call 立即失败且错误码为
+  `node_offline`（≤3s，非耗尽超时）；慢 callee（sleep 150ms）超 caller
+  50ms 预算 → caller 得 `timeout`，callee 迟到完成对过期会话无害；
+  callee 注销名字 → `service_not_found`）。manager 单测同步覆盖扩展后
+  `send_remote` 签名（session/timeout/error 透传）。
+- 覆盖率 ✅：两种构建形态（cluster ON/OFF）行覆盖率均 ≥98%，CI
+  Coverage 门槛提升为 `--fail-under-line 98`。cluster 构建下
+  `test_cluster_manager`/`test_cluster_transport` 计入 `coverage` 标签；
+  新增 `tests/coverage/test_cov_cluster.cpp`（仅 cluster 构建注册）覆盖
+  proxied 会话原语（begin/abandon/finish/hook/自足超时驱动）、
+  `call_with_session` 全路径、transport 孤节点与未知服务 envelope 边界
+  路径（含异系统注入握手/心跳/路由/envelope 报文）、Lua API 远程分支
+  （send/同步 call/协程 call 的成功、预检失败、transport 失败与
+  retryable 映射——以 phantom peer + 脚本化 `RemoteSendFn` 免网络驱动）、
+  `shield.cluster.*` 绑定与 `parse_cluster_config`；`test_cov_lua_service3.cpp`
+  （所有构建注册）覆盖 proxied 会话原语与 `call_with_session`（含停机
+  唤醒阻塞调用）；`test_cov_shield` 新增 cluster bootstrap 用例——启停
+  顺序、空 node_id 拒绝、listen 冲突即失败、异系统向已发布 transport
+  actor 注入 envelope 走通 glue 全链路（send/call 桥、proxied hook 成败
+  两分支、caller 侧 reply handler）；`test_cov_root_commands`/`test_cov_ops_http`
+  的 cluster 块分别以快照管理器点亮 `root.cluster`/`root.status` 与
+  `/ops/status` 的 cluster 输出。
 
 ### M5 观测收尾（半天）
 
@@ -191,9 +222,10 @@ struct envelope_reply { uint64_t call_session; std::string result_json; std::str
    （已改带超时的异步拨号）；`anon_send` 不携带 sender，hello/ack 必须用
    `self->send` 才能让对端回包；集群 wire 类型必须在 `actor_system` 构造前
    注册，否则 CAF 直接 CAF_CRITICAL。
-2. **call 回包与协程恢复**：跨节点 `envelope_reply` 与既有
-   `call_session`/coroutine 机制的对接是最大单项风险；若接合代价过高，
-   退路是先交付 send（单向）与 call_timeout（独立临时 session）。
+2. **call 回包与协程恢复** ✅ M4 化解：callee 侧以 proxied 会话把进来的
+   call 变成"本地 call"，复用同一张 pending_calls 表与同一条完成路径，
+   caller 协程只在 yield 后被响应消息恢复；两侧 session 独立编号规避
+   撞号，退路方案（只交付单向 send）未启用。
 3. **降级可见性** ✅ M2 后失效：peer 视图即真实连接视图（握手成功才
    `online`），不存在假象期；看板语义与真实状态一致。
 4. **开放问题**：`cluster.listen` 需要鉴权/加密（Phase 2）；多网卡

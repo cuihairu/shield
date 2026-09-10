@@ -14,6 +14,9 @@
 #include <vector>
 
 #include "shield/caf_initializer.hpp"
+#ifdef SHIELD_ENABLE_CLUSTER
+#include "shield/cluster/cluster_manager.hpp"
+#endif
 #include "shield/config/config.hpp"
 #include "shield/console/ops_http_handler.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -496,5 +499,42 @@ BOOST_AUTO_TEST_CASE(EvalEndpointBodyDiversity) {
     BOOST_CHECK(resp["data"].size() == 1);
     BOOST_CHECK(resp["data"][0].get<std::string>().find("val \"q\"") == 0u);
 }
+
+#ifdef SHIELD_ENABLE_CLUSTER
+// With a cluster manager installed, /ops/status carries the cluster block
+// (node id, epoch, per-peer snapshot). Phantom manager: no transport.
+BOOST_AUTO_TEST_CASE(StatusEndpointIncludesClusterBlock) {
+    shield::cluster::ClusterConfig config;
+    config.enabled = true;
+    config.node_id = "cov-ops";
+    config.listen_address = "127.0.0.1:0";
+    config.peers = {"127.0.0.1:59995"};
+    shield::cluster::ClusterManager cluster(config);
+    cluster.start();
+    cluster.on_handshake("127.0.0.1:59995", "node-b", 12);
+    shield::cluster::set_global_cluster_manager(&cluster);
+
+    {
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", port);
+        std::string response =
+            client.get("/ops/status", std::chrono::milliseconds(9000));
+        BOOST_REQUIRE(!response.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+        auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK_EQUAL(resp["data"]["cluster"]["node_id"], "cov-ops");
+        BOOST_CHECK(resp["data"]["cluster"].contains("node_epoch"));
+        BOOST_REQUIRE_EQUAL(resp["data"]["cluster"]["nodes"].size(), 1u);
+        BOOST_CHECK_EQUAL(resp["data"]["cluster"]["nodes"][0]["node_id"],
+                          "node-b");
+        BOOST_CHECK_EQUAL(resp["data"]["cluster"]["nodes"][0]["state"],
+                          "online");
+    }
+
+    shield::cluster::set_global_cluster_manager(nullptr);
+    cluster.stop();
+}
+#endif
 
 BOOST_AUTO_TEST_SUITE_END()

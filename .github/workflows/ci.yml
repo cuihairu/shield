@@ -253,7 +253,7 @@ jobs:
             --txt coverage.txt \
             --xml coverage.xml \
             --html-details coverage.html \
-            --fail-under-line 97
+            --fail-under-line 98
           TOTAL=$(grep -E '^TOTAL' coverage.txt)
           echo "### Line coverage (src/)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

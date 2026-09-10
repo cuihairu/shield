@@ -201,6 +201,71 @@ public:
     // service actor before resuming the caller coroutine.
     void complete_call(uint64_t session, bool ok, const nlohmann::json& values);
 
+    // -- Proxied (remotely originated) call sessions (M4) --------------------
+    // A cross-node call envelope that lands on this node is dispatched under
+    // a locally-allocated "proxied" session occupying pending_calls with
+    // caller_co == nullptr. The normal completion machinery routes its
+    // outcome into the proxied hook (which replies over the transport)
+    // instead of resuming a coroutine.
+
+    // Allocate a proxied session for an incoming remote call. The deadline is
+    // the caller's remaining timeout (floored) plus slack, so a vanished
+    // remote caller cannot leak the entry forever. Thread-safe; never
+    // returns 0.
+    uint64_t begin_proxied_call(int32_t timeout_ms);
+
+    // Drop a proxied session whose local dispatch failed before its handler
+    // could run. Thread-safe; no-op for unknown or non-proxied sessions.
+    void abandon_proxied_call(uint64_t session);
+
+    // Completion hook for proxied sessions: invoked exactly once per session
+    // with (session, ok, values) — from complete_call when the handler
+    // finishes, or from check_call_timeouts on expiry. Thread-safe.
+    void set_proxied_call_hook(
+        std::function<void(uint64_t, bool, const nlohmann::json&)> hook);
+
+    // Erase a proxied session and route its outcome through the hook.
+    // Returns false when the session is gone or not proxied (the caller
+    // falls back to the local coroutine-resume path).
+    bool finish_proxied_call(uint64_t session, bool ok,
+                             const nlohmann::json& values);
+
+    // Run a call to completion on the calling thread: initiate(session)
+    // starts the work (returning false with `error` set fails the call
+    // immediately), then this blocks on the pending_sync_calls completion
+    // path until the handler finishes or timeout_ms elapses. Used by the
+    // remote sync-call path (main thread calling a service on another node).
+    CallResult call_with_session(
+        const std::function<bool(uint64_t, std::string&)>& initiate,
+        int32_t timeout_ms);
+
+    // Callee-side entry for an inbound remote call envelope (M4): allocates
+    // a proxied session, dispatches the request to the local service, and
+    // arms a self-contained expiry driver (caller timeout + slack). Returns
+    // the proxied session, or 0 when dispatch failed immediately (error
+    // set). Thread-safe.
+    uint64_t dispatch_remote_call(std::string_view service_id,
+                                  std::string_view method,
+                                  const nlohmann::json& args,
+                                  int32_t timeout_ms, std::string* error);
+
+    // Phase 2 of the split callee-side entry: dispatch a session allocated
+    // by begin_proxied_call() (the transport registers the envelope's
+    // routing entry between the two phases so a fast callee completion can
+    // never race it). Sends the call request and arms the expiry driver;
+    // returns false (error set) when the target service is gone, in which
+    // case the caller must abandon_proxied_call() the session. Thread-safe.
+    bool dispatch_proxied_call(uint64_t session, std::string_view service_id,
+                               std::string_view method,
+                               const nlohmann::json& args, std::string* error);
+
+    // Arm the expiry driver for a proxied session. Unlike the local-call
+    // driver it does not target a caller actor (there is none): on fire it
+    // fails the proxied session directly through the hook. Registered in the
+    // same table as local drivers, so shutdown_all tears it down. Public for
+    // tests that need a shorter fuse than the default slack.
+    void schedule_proxied_call_timeout(uint64_t session, int32_t timeout_ms);
+
     // Resume a suspended caller (looked up by session) with the given result
     // values (or an error). Used by the caller actor after a response is routed
     // back to it, and by timeouts fired on the caller actor.

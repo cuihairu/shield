@@ -284,15 +284,19 @@ if(SHIELD_ENABLE_CLUSTER)
         PRIVATE ${CMAKE_SOURCE_DIR}/include)
     add_test(NAME test_cluster_manager COMMAND test_cluster_manager)
     set_tests_properties(test_cluster_manager PROPERTIES
-        LABELS "cluster"
+        # "coverage" so cluster-enabled coverage builds measure the cluster
+        # module through these suites (the coverage job runs -L coverage).
+        LABELS "cluster;coverage"
         TIMEOUT 60)
     shield_copy_runtime_dlls(test_cluster_manager)
 
-    # Two CAF actor systems talking real BASP over loopback.
+    # Two CAF actor systems talking real BASP over loopback. The M4 cases
+    # attach real Lua service managers, so shield_lua links in too.
     add_executable(test_cluster_transport cluster/test_cluster_transport.cpp)
     target_link_libraries(test_cluster_transport
         PRIVATE
             shield_cluster
+            shield_lua
             Boost::unit_test_framework
             Boost::headers
     )
@@ -300,8 +304,12 @@ if(SHIELD_ENABLE_CLUSTER)
         PRIVATE ${CMAKE_SOURCE_DIR}/include)
     add_test(NAME test_cluster_transport COMMAND test_cluster_transport)
     set_tests_properties(test_cluster_transport PROPERTIES
-        LABELS "cluster"
-        TIMEOUT 120)
+        LABELS "cluster;coverage"
+        TIMEOUT 180
+        # The M4 cases spawn services from ../tests/lua_api/scripts/, so the
+        # working directory must be the build root (same contract as the
+        # lua_api suite).
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
     shield_copy_runtime_dlls(test_cluster_transport)
 endif()
 

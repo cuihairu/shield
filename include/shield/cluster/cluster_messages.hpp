@@ -66,6 +66,30 @@ struct RoutesMsg {
     std::vector<RouteEntry> routes;
 };
 
+/// Cross-node service message envelope (M4). The caller's node wraps a
+/// shield.send/call into this; the callee's transport dispatches it against
+/// its local LuaServiceManager. Payloads stay JSON strings so the wire types
+/// carry no Lua/nlohmann dependencies.
+struct EnvelopeMsg {
+    std::string source_node;  // caller's node id (reply routing)
+    std::string service_id;   // callee-local target service id
+    std::string method;
+    std::string args_json;      // JSON array of arguments
+    uint64_t call_session = 0;  // caller-side session; 0 = fire-and-forget
+    int32_t timeout_ms = 0;     // caller's remaining timeout (callee slack)
+};
+
+/// Callee -> caller completion of an enveloped call (M4). ok=false carries
+/// error_code/error_message; ok=true carries payload_json (the values array
+/// the caller's coroutine resumes with).
+struct EnvelopeReplyMsg {
+    uint64_t call_session = 0;
+    bool ok = true;
+    std::string payload_json;
+    std::string error_code;
+    std::string error_message;
+};
+
 template <class Inspector>
 bool inspect(Inspector& f, HelloMsg& x) {
     return f.object(x).fields(f.field("node_id", x.node_id),
@@ -94,6 +118,25 @@ bool inspect(Inspector& f, RoutesMsg& x) {
 }
 
 template <class Inspector>
+bool inspect(Inspector& f, EnvelopeMsg& x) {
+    return f.object(x).fields(f.field("source_node", x.source_node),
+                              f.field("service_id", x.service_id),
+                              f.field("method", x.method),
+                              f.field("args_json", x.args_json),
+                              f.field("call_session", x.call_session),
+                              f.field("timeout_ms", x.timeout_ms));
+}
+
+template <class Inspector>
+bool inspect(Inspector& f, EnvelopeReplyMsg& x) {
+    return f.object(x).fields(f.field("call_session", x.call_session),
+                              f.field("ok", x.ok),
+                              f.field("payload_json", x.payload_json),
+                              f.field("error_code", x.error_code),
+                              f.field("error_message", x.error_message));
+}
+
+template <class Inspector>
 bool inspect(Inspector& f, HeartbeatMsg& x) {
     return f.object(x).fields(f.field("node_id", x.node_id),
                               f.field("epoch", x.epoch), f.field("seq", x.seq));
@@ -114,6 +157,8 @@ CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::HelloAckMsg))
 CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::HeartbeatMsg))
 CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::RouteEntry))
 CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::RoutesMsg))
+CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::EnvelopeMsg))
+CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::EnvelopeReplyMsg))
 
 CAF_ADD_ATOM(shield_cluster, shield::cluster,
              connect_tick_atom)                              // GCOVR_EXCL_LINE

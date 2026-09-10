@@ -126,6 +126,10 @@ struct LuaServiceManager::Impl {
         int caller_anchor = LUA_NOREF;  // registry ref keeping caller_co alive
         int64_t deadline_ms = 0;
         std::string caller_service;
+        // M4: remotely originated call. Completion routes through
+        // proxied_call_hook (reply to the source node) instead of resuming a
+        // coroutine; there is no local caller actor or timeout driver.
+        bool proxied = false;
     };
     std::atomic<uint64_t> next_call_session{1};
     std::unordered_map<uint64_t, PendingCall>
@@ -220,6 +224,12 @@ struct LuaServiceManager::Impl {
     std::unordered_map<uint64_t, std::shared_ptr<PendingSyncCall>>
         pending_sync_calls;
 
+    // Completion hook for proxied (remotely originated) call sessions (M4).
+    // Installed by the bootstrap glue; forwards to the transport so the
+    // result reaches the node the envelope came from.
+    std::function<void(uint64_t, bool, const nlohmann::json&)>
+        proxied_call_hook;
+
     int64_t clock_now_ms() const {
         std::shared_lock lock(registry_mutex);
         return clock_->now_ms();
@@ -233,10 +243,10 @@ struct LuaServiceManager::Impl {
     // Dispatch a CAF-native ServiceMessage. Converts the typed fields into an
     // internal DispatchMessage and routes to the existing dispatch_message
     // path.
-    void dispatch_service_message(class LuaServiceManager* manager,
-                                  const std::string& id,
-                                  const ServiceMessage& msg) {
-        // Validate session epoch if present (for gateway messages)
+    void dispatch_service_message(
+        class LuaServiceManager* manager, const std::string& id,
+        const ServiceMessage&
+            msg) {  // Validate session epoch if present (for gateway messages)
         // epoch 0 is a valid initial value, so we only check session_id != 0
         if (msg.session_id != 0) {
             // In a full implementation, we would look up the session and
@@ -1375,6 +1385,21 @@ void LuaServiceManager::shutdown_all(std::string_view reason,
         std::unique_lock lock(impl_->registry_mutex);
         impl_->service_order.clear();
     }
+    // Unblock synchronous callers still waiting on their completion CV: the
+    // runtime is stopping, so letting them ride out their full timeout would
+    // only stall teardown. The destructor repeats this as a safety net for
+    // calls that outlive shutdown_all.
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        for (auto& [session, pending] : impl_->pending_sync_calls) {
+            std::unique_lock lk(pending->mtx);
+            pending->error = "runtime is stopping";
+            pending->ok = false;
+            pending->completed = true;
+            pending->cv.notify_one();
+        }
+        impl_->pending_sync_calls.clear();
+    }
 }
 
 void LuaServiceManager::force_remove(const std::string& id,
@@ -1907,6 +1932,11 @@ std::string call_error_message(const nlohmann::json& values) {
     return "call failed";
 }
 
+// Slack added to a proxied session's deadline on top of the caller's
+// remaining timeout: the remote caller's own timeout is authoritative, this
+// only bounds how long the entry may outlive a vanished caller.
+constexpr int64_t kProxiedCallSlackMs = 30000;
+
 }  // namespace
 
 void LuaServiceManager::complete_call(uint64_t session, bool ok,
@@ -1939,6 +1969,12 @@ void LuaServiceManager::complete_call(uint64_t session, bool ok,
         }
     }
 
+    // Proxied (remotely originated) calls have no local caller: route the
+    // outcome through the hook so the transport replies to the source node.
+    if (finish_proxied_call(session, ok, values)) {
+        return;
+    }
+
     std::optional<caf::actor> caller_actor;
     std::string caller_service;
     {
@@ -1965,6 +2001,181 @@ void LuaServiceManager::complete_call(uint64_t session, bool ok,
     response.ok = ok;
     response.values = values;
     caf::anon_send(*caller_actor, std::move(response));
+}
+
+uint64_t LuaServiceManager::begin_proxied_call(int32_t timeout_ms) {
+    const uint64_t session = impl_->next_call_session.fetch_add(1);
+    Impl::PendingCall pc;
+    pc.session = session;
+    pc.caller_co = nullptr;  // completion routes to the hook, not a coroutine
+    pc.proxied = true;
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now.time_since_epoch())
+                            .count();
+    pc.deadline_ms = now_ms + std::max(timeout_ms, 5000) + kProxiedCallSlackMs;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->pending_calls.emplace(session, std::move(pc));
+    }
+    return session;
+}
+
+void LuaServiceManager::abandon_proxied_call(uint64_t session) {
+    std::unique_lock lock(impl_->registry_mutex);
+    auto it = impl_->pending_calls.find(session);
+    if (it != impl_->pending_calls.end() && it->second.proxied) {
+        impl_->pending_calls.erase(it);
+    }
+}
+
+void LuaServiceManager::set_proxied_call_hook(
+    std::function<void(uint64_t, bool, const nlohmann::json&)> hook) {
+    impl_->proxied_call_hook = std::move(hook);
+}
+
+bool LuaServiceManager::finish_proxied_call(uint64_t session, bool ok,
+                                            const nlohmann::json& values) {
+    std::function<void(uint64_t, bool, const nlohmann::json&)> hook;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        auto it = impl_->pending_calls.find(session);
+        if (it == impl_->pending_calls.end() || !it->second.proxied) {
+            return false;
+        }
+        impl_->pending_calls.erase(it);
+        hook = impl_->proxied_call_hook;
+    }
+    // Cancel the expiry driver (if armed); unknown sessions no-op.
+    cancel_actor_call_timeout(session);
+    if (hook) {
+        hook(session, ok, values);
+    }
+    return true;
+}
+
+CallResult LuaServiceManager::call_with_session(
+    const std::function<bool(uint64_t, std::string&)>& initiate,
+    int32_t timeout_ms) {
+    if (impl_->stopping.load()) {
+        return CallResult::error("runtime is stopping");
+    }
+
+    const uint64_t session = impl_->next_call_session.fetch_add(1);
+    auto pending = std::make_shared<Impl::PendingSyncCall>();
+    pending->session = session;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->pending_sync_calls[session] = pending;
+    }
+
+    // Hand the session to the caller-provided starter (e.g. a remote
+    // envelope send). A synchronous failure means complete_call will never
+    // fire for this session: fail the call on the spot.
+    std::string dispatch_error;
+    if (!initiate || !initiate(session, dispatch_error)) {
+        {
+            std::unique_lock lock(impl_->registry_mutex);
+            impl_->pending_sync_calls.erase(session);
+        }
+        return CallResult::error(dispatch_error.empty() ? "call dispatch failed"
+                                                        : dispatch_error);
+    }
+
+    const int32_t effective_timeout = timeout_ms > 0 ? timeout_ms : 5000;
+    bool completed = false;
+    {
+        std::unique_lock lk(pending->mtx);
+        completed = pending->cv.wait_for(
+            lk, std::chrono::milliseconds(effective_timeout),
+            [&] { return pending->completed; });
+    }
+
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->pending_sync_calls.erase(session);
+    }
+
+    if (!completed) {
+        return CallResult::error(
+            "call timeout (actor dispatch exceeded limit)");
+    }
+    if (pending->ok) {
+        return CallResult::ok(std::move(pending->values));
+    }
+    return CallResult::error(std::move(pending->error));
+}
+
+uint64_t LuaServiceManager::dispatch_remote_call(std::string_view service_id,
+                                                 std::string_view method,
+                                                 const nlohmann::json& args,
+                                                 int32_t timeout_ms,
+                                                 std::string* error) {
+    const uint64_t session = begin_proxied_call(timeout_ms);
+    if (!dispatch_proxied_call(session, service_id, method, args, error)) {
+        abandon_proxied_call(session);
+        return 0;
+    }
+    return session;
+}
+
+bool LuaServiceManager::dispatch_proxied_call(uint64_t session,
+                                              std::string_view service_id,
+                                              std::string_view method,
+                                              const nlohmann::json& args,
+                                              std::string* error) {
+    if (!send_call_request(service_id, method, args, session, error)) {
+        return false;
+    }
+    // Arm the expiry driver from the session's deadline (begin_proxied_call
+    // derived it from the envelope's caller timeout + slack).
+    const int64_t now_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    int64_t delay_ms = 1;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto it = impl_->pending_calls.find(session);
+        if (it != impl_->pending_calls.end()) {
+            delay_ms = it->second.deadline_ms - now_ms;
+        }
+    }
+    schedule_proxied_call_timeout(
+        session, static_cast<int32_t>(delay_ms > 0 ? delay_ms : 1));
+    return true;
+}
+
+void LuaServiceManager::schedule_proxied_call_timeout(uint64_t session,
+                                                      int32_t timeout_ms) {
+    if (timeout_ms <= 0) {
+        return;
+    }
+    try {
+        auto driver = impl_->system.spawn(
+            [manager = this, session,
+             timeout_ms](caf::event_based_actor* self) -> caf::behavior {
+                self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
+                                   caf::tick_atom_v);
+                return caf::behavior{[=](caf::tick_atom) {
+                    nlohmann::json timeout_err = nlohmann::json::array(
+                        {nlohmann::json::object({{"code", "timeout"},
+                                                 {"message", "call timeout"},
+                                                 {"retryable", true}})});
+                    manager->finish_proxied_call(session, false, timeout_err);
+                    self->quit();
+                }};
+            });
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->actor_call_timeouts[session] = std::move(driver);
+    } catch (const std::exception& e) {
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_ERROR(log, std::string("Failed to spawn proxied call "
+                                          "timeout actor: ") +
+                                  e.what());
+        // Without the driver the entry still expires via its deadline in
+        // check_call_timeouts scans; nothing else breaks.
+    }
 }
 
 void LuaServiceManager::resume_caller(uint64_t session, bool ok,
@@ -2060,6 +2271,12 @@ int LuaServiceManager::check_call_timeouts(int64_t now_ms) {
                                  {"retryable", true}})});
 
     for (uint64_t session : expired) {
+        // Proxied sessions have no coroutine to resume, but their expiry
+        // must still reach the hook so the remote caller learns of the
+        // timeout instead of hanging until its own deadline.
+        if (finish_proxied_call(session, false, timeout_err)) {
+            continue;
+        }
         resume_caller(session, false, timeout_err);
     }
     return static_cast<int>(expired.size());
