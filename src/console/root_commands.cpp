@@ -108,14 +108,14 @@ void RootCommands::cmd_status(shield::net::ConsoleSession& session,
             auto nodes = cm->nodes();
             nlohmann::json cluster;
             cluster["node_id"] = cm->node_id();
-            cluster["node_epoch"] = cm->node_epoch();
+            cluster["node_epoch"] = std::to_string(cm->node_epoch());
             cluster["nodes"] = nlohmann::json::array();
             for (const auto& n : nodes) {
                 cluster["nodes"].push_back(
                     {{"node_id", n.node_id},
                      {"address", n.address},
                      {"state", shield::cluster::node_state_name(n.state)},
-                     {"epoch", n.epoch}});
+                     {"epoch", std::to_string(n.epoch)}});
             }
             data["cluster"] = cluster;
         }
@@ -306,14 +306,14 @@ void RootCommands::cmd_cluster(shield::net::ConsoleSession& session,
     auto nodes = cm->nodes();
     nlohmann::json data;
     data["node_id"] = cm->node_id();
-    data["node_epoch"] = cm->node_epoch();
+    data["node_epoch"] = std::to_string(cm->node_epoch());
     data["nodes"] = nlohmann::json::array();
     for (const auto& n : nodes) {
         data["nodes"].push_back(
             {{"node_id", n.node_id},
              {"address", n.address},
              {"state", shield::cluster::node_state_name(n.state)},
-             {"epoch", n.epoch},
+             {"epoch", std::to_string(n.epoch)},
              {"last_heartbeat_ms", n.last_heartbeat_ms}});
     }
     nlohmann::json resp = {{"type", "result"}, {"data", data}};

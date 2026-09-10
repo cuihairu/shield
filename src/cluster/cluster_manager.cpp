@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <mutex>
 #include <random>
 #include <shared_mutex>
+#include <thread>
 
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
@@ -25,11 +27,44 @@ struct ClusterManager::Impl {
     mutable std::shared_mutex mutex;
     RemoteSendFn remote_send_fn;
     bool running = false;
+    // Drives run_tick() at heartbeat_interval_ms; started by start(),
+    // joined by stop().
+    std::jthread heartbeat_thread;
 
     static int64_t now_ms() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::steady_clock::now().time_since_epoch())
             .count();
+    }
+
+    // Degradation pass over node states. Called by the heartbeat thread and
+    // by ClusterManager::tick() (tests / external schedulers).
+    int run_tick() {
+        if (!running) return 0;
+
+        int changes = 0;
+        const int64_t now = now_ms();
+
+        std::unique_lock lock(mutex);
+        for (auto& [id, node] : nodes) {
+            if (node.state == NodeState::Online) {
+                // Check if heartbeat timeout exceeded.
+                if (now - node.last_heartbeat_ms > config.suspect_timeout_ms) {
+                    node.state = NodeState::Suspect;
+                    ++changes;
+                    auto& log = shield::log::get_logger("cluster");
+                    SHIELD_LOG_WARNING(log, "Node " + id + " is now suspect");
+                }
+            } else if (node.state == NodeState::Suspect) {
+                if (now - node.last_heartbeat_ms > config.offline_timeout_ms) {
+                    node.state = NodeState::Offline;
+                    ++changes;
+                    auto& log = shield::log::get_logger("cluster");
+                    SHIELD_LOG_WARNING(log, "Node " + id + " is now offline");
+                }
+            }
+        }
+        return changes;
     }
 
     std::string route_key(const std::string& node_id,
@@ -76,9 +111,11 @@ void ClusterManager::start() {
                         " listen=" + impl_->config.listen_address +
                         " peers=" + std::to_string(impl_->config.peers.size()));
 
-    // In Phase 1, peers start as "connecting" and move to "online" on first
-    // successful heartbeat. Full CAF middleman integration is Phase 2+.
-    // For now, mark all peers as online (static config assumption).
+    // Phase 1 (M1): peers start online as a static-config assumption. No
+    // transport exists yet, so no heartbeat ever refreshes them; the
+    // scheduler thread below then degrades every peer honestly
+    // (online -> suspect -> offline) once the heartbeat windows lapse.
+    // A real handshake will replace this marking (M2).
     for (auto& [id, node] : impl_->nodes) {
         node.state = NodeState::Online;
         node.last_heartbeat_ms = Impl::now_ms();
@@ -86,11 +123,38 @@ void ClusterManager::start() {
 
     SHIELD_LOG_INFO(log, "Cluster started with " +
                              std::to_string(impl_->nodes.size()) + " peers");
+
+    // Heartbeat scheduler: drives run_tick() at heartbeat_interval_ms so
+    // node states degrade without an external caller. stop() halts it.
+    impl_->heartbeat_thread =
+        std::jthread([impl = impl_.get()](std::stop_token stop) {
+            std::mutex wake_mutex;
+            std::condition_variable_any wake_cv;
+            std::unique_lock<std::mutex> wake_lock(wake_mutex);
+            // Clamp the interval so a misconfigured 0ms cannot busy-loop.
+            const auto interval = std::chrono::milliseconds(
+                std::max(impl->config.heartbeat_interval_ms, 50));
+            while (!stop.stop_requested()) {
+                // run_tick() takes impl->mutex itself; the wake mutex here
+                // is only for interruptible sleeping. The never-true
+                // predicate makes the wait return on stop or timeout only.
+                impl->run_tick();
+                wake_cv.wait_for(wake_lock, stop, interval,
+                                 [] { return false; });
+            }
+        });
 }
 
 void ClusterManager::stop() {
     if (!impl_->running) return;
     impl_->running = false;
+
+    // Halt the scheduler before tearing node states down so tick() cannot
+    // observe half-finished teardown.
+    if (impl_->heartbeat_thread.joinable()) {
+        impl_->heartbeat_thread.request_stop();
+        impl_->heartbeat_thread.join();
+    }
 
     auto& log = shield::log::get_logger("cluster");
     SHIELD_LOG_INFO(log, "Cluster stopping");
@@ -191,35 +255,7 @@ std::string ClusterManager::check_node_reachable(
     return "node_offline";
 }
 
-int ClusterManager::tick() {
-    if (!impl_->running) return 0;
-
-    int changes = 0;
-    const int64_t now = Impl::now_ms();
-
-    std::unique_lock lock(impl_->mutex);
-    for (auto& [id, node] : impl_->nodes) {
-        if (node.state == NodeState::Online) {
-            // Check if heartbeat timeout exceeded.
-            if (now - node.last_heartbeat_ms >
-                impl_->config.suspect_timeout_ms) {
-                node.state = NodeState::Suspect;
-                ++changes;
-                auto& log = shield::log::get_logger("cluster");
-                SHIELD_LOG_WARNING(log, "Node " + id + " is now suspect");
-            }
-        } else if (node.state == NodeState::Suspect) {
-            if (now - node.last_heartbeat_ms >
-                impl_->config.offline_timeout_ms) {
-                node.state = NodeState::Offline;
-                ++changes;
-                auto& log = shield::log::get_logger("cluster");
-                SHIELD_LOG_WARNING(log, "Node " + id + " is now offline");
-            }
-        }
-    }
-    return changes;
-}
+int ClusterManager::tick() { return impl_->run_tick(); }
 
 ClusterConfig parse_cluster_config() {
     auto& cfg = shield::config::global_config();

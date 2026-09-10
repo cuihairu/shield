@@ -22,6 +22,12 @@ function(shield_coverage_test name)
             Boost::unit_test_framework
             Boost::headers
     )
+    if(SHIELD_ENABLE_CLUSTER)
+        # Keep the tests' view of the build shape in sync with the
+        # libraries: some suites assert both compile branches of code that
+        # is guarded by this define (root.cluster, cluster Lua API).
+        target_compile_definitions(${name} PRIVATE SHIELD_ENABLE_CLUSTER)
+    endif()
     target_include_directories(${name}
         PRIVATE
             ${CMAKE_SOURCE_DIR}/include

@@ -60,16 +60,21 @@ Lua: shield.send / shield.call("node-b:room", ...)
 
 每个里程碑独立可合入、独立有价值、不破坏单节点路径。
 
-### M1 心跳调度 + 诚实状态（无网络，半天）
+### M1 心跳调度 + 诚实状态（无网络，半天）✅ 已落地（2026-09）
 
 - bootstrap 启动低频定时线程（`std::jthread` + `heartbeat_interval_ms` 节拍）
   调用 `ClusterManager::tick()`；`stop()` 时收线。
+  实现落点：线程内聚在 `ClusterManager::start()/stop()` 内部（bootstrap 两条
+  收线路径都只需调 `stop()`，无需各自管理线程）。
 - 效果：transport 缺席时 peer 会经 `online → suspect → offline` 诚实降级，
   `/ops/status` 与 `shield.cluster.nodes()` 不再报告虚假健康，满足
   optional-modules "持续暴露 unhealthy" 契约的前半段。
 - 附带修复：`node_epoch` 经 Lua 返回的精度问题（返回 string 或截断为
-  53 位安全的派生值，二选一，倾向 string）。
-- 测试：`tick()` 降级序列单测（当前 cluster 模块零测试，先补状态机用例）。
+  53 位安全的派生值，二选一，倾向 string）。**实际落地**：Lua 绑定与
+  JSON 序列化（/ops/status、console）统一改为十进制字符串。
+- 测试：`tests/cluster/test_cluster_manager.cpp`（状态机降级序列、心跳线程
+  自驱动、route cache、`parse_remote_target`、注入式投递接缝）；CI 新增
+  `SHIELD_ENABLE_CLUSTER=ON` 的 Cluster job（`ctest -L cluster`）。
 
 ### M2 transport：握手 + 心跳（CAF middleman，2~3 天）
 

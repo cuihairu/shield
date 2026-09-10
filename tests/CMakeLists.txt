@@ -268,5 +268,26 @@ if(SHIELD_BUILD_PLUGIN_FLATBUFFERS)
     shield_copy_runtime_dlls(test_protocol_flatbuffers_plugin)
 endif()
 
+# ---------------------------------------------------------------------------
+# Cluster manager tests (require SHIELD_ENABLE_CLUSTER; CI runs them in the
+# dedicated cluster job via the "cluster" label)
+# ---------------------------------------------------------------------------
+if(SHIELD_ENABLE_CLUSTER)
+    add_executable(test_cluster_manager cluster/test_cluster_manager.cpp)
+    target_link_libraries(test_cluster_manager
+        PRIVATE
+            shield_cluster
+            Boost::unit_test_framework
+            Boost::headers
+    )
+    target_include_directories(test_cluster_manager
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_cluster_manager COMMAND test_cluster_manager)
+    set_tests_properties(test_cluster_manager PROPERTIES
+        LABELS "cluster"
+        TIMEOUT 60)
+    shield_copy_runtime_dlls(test_cluster_manager)
+endif()
+
 # Coverage-focused unit tests (one executable per src/ module).
 add_subdirectory(coverage)

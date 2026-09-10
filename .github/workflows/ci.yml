@@ -132,6 +132,60 @@ jobs:
         shell: bash
         run: ctest --test-dir build --build-config Release --output-on-failure
 
+  # 集群模块 (Linux, SHIELD_ENABLE_CLUSTER=ON): 构建 cluster 路径并运行
+  # cluster 标签测试。主 build 矩阵不带 cluster，此 job 补上该编译路径。
+  cluster:
+    name: Cluster
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+
+      - name: Export GHA cache credentials
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Cache vcpkg installed
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/build-cluster/vcpkg_installed
+          key: vcpkg-installed-cluster-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-installed-cluster-
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+        with:
+          vcpkgGitCommitId: 'a0b1c8d3a477c1cb4813d8e127a56961707ca42b'
+
+      - name: Configure (cluster enabled)
+        run: >
+          cmake -B build-cluster -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
+          -DSHIELD_BUILD_TESTS=ON
+          -DSHIELD_BUILD_EXAMPLES=OFF
+          -DSHIELD_ENABLE_CLUSTER=ON
+
+      - name: Build
+        run: cmake --build build-cluster --parallel $(nproc)
+
+      - name: Test
+        run: ctest --test-dir build-cluster --build-config Release -L cluster --output-on-failure
+
   # 覆盖率 (Linux, gcov + gcovr): 运行 tests/coverage 全部套件并统计
   # src/ 行覆盖率；低于 97% 时失败。
   coverage:

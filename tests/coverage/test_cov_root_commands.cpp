@@ -474,7 +474,7 @@ BOOST_AUTO_TEST_CASE(LogLevelCommandVariants) {
     shield::log::Logger::set_global_level(shield::log::Level::Info);
 }
 
-BOOST_AUTO_TEST_CASE(ClusterCommandNotCompiled) {
+BOOST_AUTO_TEST_CASE(ClusterCommandAvailability) {
     ConsoleHarness harness;
     shield::console::CommandDispatcher dispatcher;
     shield::console::RootCommands root(*manager);
@@ -485,7 +485,12 @@ BOOST_AUTO_TEST_CASE(ClusterCommandNotCompiled) {
     BOOST_REQUIRE(!line.empty());
     auto resp = nlohmann::json::parse(line);
     BOOST_CHECK(resp["type"] == "error");
+#ifdef SHIELD_ENABLE_CLUSTER
+    // Compiled but this fixture configures no cluster manager.
+    BOOST_CHECK(resp["message"] == "Cluster not enabled");
+#else
     BOOST_CHECK(resp["message"] == "Cluster not compiled");
+#endif
 }
 
 // ---------------------------------------------------------------------------

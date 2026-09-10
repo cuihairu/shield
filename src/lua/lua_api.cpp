@@ -1361,7 +1361,8 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
             entry["state"] = shield::cluster::node_state_name(node.state);
             entry["last_heartbeat_ms"] = node.last_heartbeat_ms;
             entry["connected_at_ms"] = node.connected_at_ms;
-            entry["epoch"] = node.epoch;
+            // Decimal string: see the node_epoch() binding above.
+            entry["epoch"] = std::to_string(node.epoch);
             nodes[index++] = entry;
         }
         return nodes;
@@ -1377,9 +1378,14 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
             return cluster_manager->node_id();
         });
 
-    cluster.set_function("node_epoch", []() -> uint64_t {
+    cluster.set_function("node_epoch", []() -> sol::optional<std::string> {
         auto* cluster_manager = shield::cluster::global_cluster_manager();
-        return cluster_manager ? cluster_manager->node_epoch() : 0;
+        if (!cluster_manager) {
+            return sol::nullopt;
+        }
+        // Serialized as a decimal string: uint64 does not survive the
+        // Lua number (double, 53-bit mantissa) round-trip.
+        return std::to_string(cluster_manager->node_epoch());
     });
 
     shield["cluster"] = cluster;
