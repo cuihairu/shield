@@ -144,6 +144,15 @@ public:
     bool register_name(std::string_view name, std::string* error = nullptr);
     bool unregister_name(std::string_view name, std::string* error = nullptr);
 
+    // Observe service-name publication changes (spawn publish, register/
+    // unregister, service exit retraction). The notifier receives
+    // (name, service_id); an empty service_id means the name was retracted.
+    // Invoked outside the registry lock after each committed change. Set once
+    // at bootstrap before any service spawns (e.g. cluster route
+    // advertisement); unsettable notifier simply observes nothing.
+    void set_name_change_notifier(
+        std::function<void(const std::string&, const std::string&)> fn);
+
     // List registered services
     std::vector<std::string> list_services() const;
 

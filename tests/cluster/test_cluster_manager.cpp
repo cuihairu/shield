@@ -354,3 +354,84 @@ BOOST_AUTO_TEST_CASE(PeerDownClearsRoutesAndMarksOffline) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// M3 route learning: the local publication table (shipped to peers at
+// heartbeat cadence) and the epoch-validated remote route cache.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_SUITE(ClusterRoutes)
+
+BOOST_AUTO_TEST_CASE(LocalRoutePublishRetractAndSnapshot) {
+    ClusterManager mgr(two_peer_config());
+    BOOST_CHECK(mgr.local_routes().empty());
+
+    mgr.on_local_route_changed("room.public", "sid-1");
+    mgr.on_local_route_changed("auth.login", "sid-2");
+    auto routes = mgr.local_routes();
+    BOOST_CHECK_EQUAL(routes.size(), 2u);
+    bool saw_room = false, saw_auth = false;
+    for (const auto& [name, service_id] : routes) {
+        saw_room = saw_room || (name == "room.public" && service_id == "sid-1");
+        saw_auth = saw_auth || (name == "auth.login" && service_id == "sid-2");
+    }
+    BOOST_CHECK(saw_room && saw_auth);
+
+    // Re-publish overwrites; empty service_id retracts.
+    mgr.on_local_route_changed("room.public", "sid-3");
+    mgr.on_local_route_changed("auth.login", "");
+    routes = mgr.local_routes();
+    BOOST_CHECK_EQUAL(routes.size(), 1u);
+    BOOST_CHECK_EQUAL(routes[0].first, "room.public");
+    BOOST_CHECK_EQUAL(routes[0].second, "sid-3");
+
+    // Retracting a name that was never published is a no-op.
+    mgr.on_local_route_changed("ghost", "");
+    BOOST_CHECK_EQUAL(mgr.local_routes().size(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(OnRoutesReplacesBucketAndValidatesEpoch) {
+    ClusterManager mgr(two_peer_config());
+
+    // Routes from an identity we never adopted are dropped.
+    mgr.on_routes("node-a", 1, {{"room.public", "sid-1"}});
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "room.public"), "");
+
+    // Adopted node + matching epoch: the table lands.
+    mgr.on_handshake(kPeerA, "node-a", 1);
+    mgr.on_routes("node-a", 1,
+                  {{"room.public", "sid-1"}, {"extra.svc", "sid-2"}});
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "room.public"), "sid-1");
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "extra.svc"), "sid-2");
+
+    // A stale epoch (table from a dead instance) is dropped wholesale; the
+    // live instance's table survives untouched.
+    mgr.on_routes("node-a", 0, {{"room.public", "stale"}});
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "room.public"), "sid-1");
+
+    // Full-bucket replace: names absent from the new table disappear.
+    mgr.on_routes("node-a", 1, {{"room.public", "sid-new"}});
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "room.public"), "sid-new");
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "extra.svc"), "");
+
+    // Empty service_id entries are filtered out, the rest still land.
+    mgr.on_routes("node-a", 1, {{"room.public", ""}, {"keep.svc", "sid-4"}});
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "room.public"), "");
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "keep.svc"), "sid-4");
+}
+
+BOOST_AUTO_TEST_CASE(EarlyRoutesUnderPlaceholderKeyDoNotLeak) {
+    // RoutesMsg only ever travels post-handshake on the wire, but the
+    // receiver's guard is identity + epoch, and a pre-adoption placeholder
+    // entry has epoch 0. A table stored under the placeholder key must not
+    // survive the rename to the announced identity.
+    ClusterManager mgr(two_peer_config());
+    mgr.on_routes(kPeerB, 0, {{"early.svc", "sid-5"}});
+    BOOST_CHECK_EQUAL(mgr.query_remote(kPeerB, "early.svc"), "sid-5");
+
+    // Adoption erases the placeholder-keyed cache before renaming.
+    mgr.on_handshake(kPeerB, "node-b", 5);
+    BOOST_CHECK_EQUAL(mgr.query_remote(kPeerB, "early.svc"), "");
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-b", "early.svc"), "");
+}
+
+BOOST_AUTO_TEST_SUITE_END()

@@ -17,11 +17,13 @@
 #include <caf/init_global_meta_objects.hpp>
 #include <caf/io/middleman.hpp>
 #include <chrono>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/cluster/cluster_transport.hpp"
@@ -103,8 +105,9 @@ struct Node {
     std::unique_ptr<ClusterTransport> transport;
 };
 
-std::unique_ptr<Node> make_node(const std::string& node_id, uint16_t listen,
-                                uint16_t peer_port) {
+std::unique_ptr<Node> make_node(
+    const std::string& node_id, uint16_t listen, uint16_t peer_port,
+    const std::function<void(Node&)>& configure = {}) {
     // CAF requires core + io middleman meta objects, and our wire types,
     // registered before any actor_system exists (same trio as
     // initialize_caf_types() plus the cluster block).
@@ -125,6 +128,9 @@ std::unique_ptr<Node> make_node(const std::string& node_id, uint16_t listen,
     node->manager->start();
     node->caf_config.load<caf::io::middleman>();
     node->system = std::make_unique<caf::actor_system>(node->caf_config);
+    // Hook for per-test state (e.g. local routes) that must exist before
+    // the transport — and therefore any handshake traffic — starts.
+    if (configure) configure(*node);
     node->transport = std::make_unique<ClusterTransport>(
         *node->system, *node->manager, node->config);
     uint16_t bound = 0;
@@ -157,6 +163,17 @@ void wait_online(ClusterManager& mgr, const std::string& id) {
                              std::chrono::milliseconds(10000));
     BOOST_REQUIRE_MESSAGE(
         ok, "peer " << id << " never came online; state=" << state_of(mgr, id));
+}
+
+// Generic poll helper for cross-node convergence (route cache hits etc.).
+template <typename Pred>
+bool wait_until(Pred&& pred, std::chrono::milliseconds budget) {
+    auto deadline = std::chrono::steady_clock::now() + budget;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (pred()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return pred();
 }
 
 }  // namespace
@@ -239,6 +256,66 @@ BOOST_AUTO_TEST_CASE(PeerDownMarksOfflineAndRestartReconnectsWithNewEpoch) {
     reborn_transport->stop();
     a->transport->stop();
     reborn->stop();
+    a->manager->stop();
+    b->manager->stop();
+}
+
+// M3: the full local route table rides every heartbeat and is re-sent right
+// after the handshake, so node-b's remote route cache converges to node-a's
+// publications — before any heartbeat, on a publish, on a retract, and the
+// cache is purged when node-a's connection drops.
+BOOST_AUTO_TEST_CASE(RouteTableConvergesAndPurgesOnPeerDown) {
+    enable_test_logging();
+    uint16_t port_a = free_port();
+    uint16_t port_b = free_port();
+
+    // node-b starts dialing first; node-a publishes a route BEFORE its
+    // transport ever comes up, so only the post-handshake RoutesMsg (not a
+    // heartbeat tick) can explain an early hit on node-b's side.
+    auto b = make_node("node-b", port_b, port_a);
+    auto a = make_node("node-a", port_a, port_b, [](Node& n) {
+        n.manager->on_local_route_changed("room.public", "sid-join");
+    });
+
+    wait_online(*a->manager, "node-b");
+    wait_online(*b->manager, "node-a");
+
+    BOOST_CHECK(wait_until(
+        [&] {
+            return b->manager->query_remote("node-a", "room.public") ==
+                   "sid-join";
+        },
+        std::chrono::milliseconds(5000)));
+    // Empty local table on b: nothing to find on a's side.
+    BOOST_CHECK_EQUAL(a->manager->query_remote("node-b", "room.public"), "");
+
+    // A later publication propagates at heartbeat cadence.
+    a->manager->on_local_route_changed("auth.login", "sid-2");
+    BOOST_CHECK(wait_until(
+        [&] {
+            return b->manager->query_remote("node-a", "auth.login") == "sid-2";
+        },
+        std::chrono::milliseconds(5000)));
+
+    // Retraction propagates the same way: the next full table simply no
+    // longer contains the name.
+    a->manager->on_local_route_changed("auth.login", "");
+    BOOST_CHECK(wait_until(
+        [&] {
+            return b->manager->query_remote("node-a", "auth.login").empty();
+        },
+        std::chrono::milliseconds(5000)));
+    // ... while the untouched route survives the replace.
+    BOOST_CHECK_EQUAL(b->manager->query_remote("node-a", "room.public"),
+                      "sid-join");
+
+    // node-a's connection drop is definitive offline and purges b's cache.
+    a->transport->stop();
+    BOOST_CHECK(wait_for_state(*b->manager, "node-a", NodeState::Offline,
+                               std::chrono::milliseconds(10000)));
+    BOOST_CHECK_EQUAL(b->manager->query_remote("node-a", "room.public"), "");
+
+    b->transport->stop();
     a->manager->stop();
     b->manager->stop();
 }

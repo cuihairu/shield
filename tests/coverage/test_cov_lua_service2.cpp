@@ -10,9 +10,13 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "shield/caf_initializer.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -486,4 +490,158 @@ BOOST_AUTO_TEST_CASE(RecentlyExitedTombstoneCapClearsSet) {
     // first (oldest) name reports not-found semantics either way; the
     // observable effect here is simply that the loop completed.
     BOOST_CHECK(manager.list_services().empty());
+}
+
+// ---------------------------------------------------------------------------
+// M3 route learning hook: the name-change notifier observes every committed
+// publication change — spawn publish, in-handler register/unregister, and
+// exit retraction — with an empty service_id marking a retraction.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(NameChangeNotifierObservesLifecycle) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    std::mutex mutex;
+    std::vector<std::pair<std::string, std::string>> events;
+    auto snapshot = [&]() {
+        std::lock_guard lock(mutex);
+        return events;
+    };
+    manager.set_name_change_notifier(
+        [&](const std::string& name, const std::string& service_id) {
+            std::lock_guard lock(mutex);
+            events.emplace_back(name, service_id);
+        });
+
+    const std::string path = write_script(
+        "cov8_notifier.lua",
+        "local M = {}\n"
+        "function M.on_init(args)\n"
+        "  local config = (args and args.config) or {}\n"
+        "  if config.register_alias then "
+        "shield.register(config.register_alias) end\n"
+        "end\n"
+        "function M.register_name(ctx, name)\n"
+        "  local ok, err = shield.register(name)\n"
+        "  return ok, err and err.code or nil, err and err.message or nil\n"
+        "end\n"
+        "function M.unregister_name(ctx, name)\n"
+        "  local ok, err = shield.unregister(name)\n"
+        "  return ok, err and err.code or nil, err and err.message or nil\n"
+        "end\n"
+        "return M\n");
+
+    // This file's opts_for() merges extra keys at the top level; on_init
+    // reads args.config.*, so build the spawn opts directly.
+    nlohmann::json opts = {
+        {"name", "cov8_notifier_svc"},
+        {"args", nlohmann::json::object()},
+        {"config", nlohmann::json{{"register_alias", "cov8.alias"}}},
+    };
+    auto svc = manager.spawn(path, opts.dump());
+    BOOST_REQUIRE(svc.success);
+
+    // Spawn commits both names: the on_init alias registration fires first
+    // (it happens during on_init), then the service's own publish. Both
+    // carry the live service id.
+    {
+        auto got = snapshot();
+        BOOST_REQUIRE_EQUAL(got.size(), 2u);
+        BOOST_CHECK_EQUAL(got[0].first, "cov8.alias");
+        BOOST_CHECK_EQUAL(got[0].second, svc.service_id);
+        BOOST_CHECK_EQUAL(got[1].first, "cov8_notifier_svc");
+        BOOST_CHECK_EQUAL(got[1].second, svc.service_id);
+    }
+
+    // In-handler register/unregister each commit one change.
+    auto cr = manager.call(svc.service_id, "register_name",
+                           nlohmann::json::array({"cov8.alias2"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), true);
+    {
+        auto got = snapshot();
+        BOOST_REQUIRE_EQUAL(got.size(), 3u);
+        BOOST_CHECK_EQUAL(got[2].first, "cov8.alias2");
+        BOOST_CHECK_EQUAL(got[2].second, svc.service_id);
+    }
+
+    cr = manager.call(svc.service_id, "unregister_name",
+                      nlohmann::json::array({"cov8.alias2"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), true);
+    {
+        auto got = snapshot();
+        BOOST_REQUIRE_EQUAL(got.size(), 4u);
+        BOOST_CHECK_EQUAL(got[3].first, "cov8.alias2");
+        BOOST_CHECK(got[3].second.empty());  // retraction
+    }
+
+    // Service exit retracts every name the service owns, including the
+    // service's own name. Exit is asynchronous: poll for the events.
+    manager.exit(svc.service_id, "notifier_done");
+    const bool retracted = wait_until(
+        [&] {
+            auto got = snapshot();
+            bool saw_alias = false, saw_self = false;
+            for (const auto& [name, service_id] : got) {
+                saw_alias =
+                    saw_alias || (name == "cov8.alias" && service_id.empty());
+                saw_self = saw_self ||
+                           (name == "cov8_notifier_svc" && service_id.empty());
+            }
+            return saw_alias && saw_self;
+        },
+        std::chrono::milliseconds(5000));
+    BOOST_CHECK(retracted);
+    BOOST_CHECK(manager.query_service("cov8_notifier_svc").empty());
+    BOOST_CHECK(manager.query_service("cov8.alias").empty());
+}
+
+// ---------------------------------------------------------------------------
+// M3 hook, failure path: when on_init fails after registering a name, the
+// rollback retracts what on_init published (the service's own name was
+// never committed, so it emits nothing).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(NameChangeNotifierObservesInitFailureRollback) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    std::mutex mutex;
+    std::vector<std::pair<std::string, std::string>> events;
+    manager.set_name_change_notifier(
+        [&](const std::string& name, const std::string& service_id) {
+            std::lock_guard lock(mutex);
+            events.emplace_back(name, service_id);
+        });
+
+    const std::string path =
+        write_script("cov8_bad_init.lua",
+                     "local M = {}\n"
+                     "function M.on_init(args)\n"
+                     "  local config = (args and args.config) or {}\n"
+                     "  shield.register(config.register_alias)\n"
+                     "  return false, 'init_failed_intentionally'\n"
+                     "end\n"
+                     "return M\n");
+
+    nlohmann::json opts = {
+        {"name", "cov8_bad_svc"},
+        {"args", nlohmann::json::object()},
+        {"config", nlohmann::json{{"register_alias", "cov8.bad.alias"}}},
+    };
+    auto res = manager.spawn(path, opts.dump());
+    BOOST_CHECK(!res.success);
+
+    std::lock_guard lock(mutex);
+    BOOST_REQUIRE_EQUAL(events.size(), 2u);
+    // Publish from inside on_init, then the rollback retraction of the
+    // same name. The service's own name never emitted anything.
+    BOOST_CHECK_EQUAL(events[0].first, "cov8.bad.alias");
+    BOOST_CHECK_EQUAL(events[0].second, "cov8_bad_svc");
+    BOOST_CHECK_EQUAL(events[1].first, "cov8.bad.alias");
+    BOOST_CHECK(events[1].second.empty());
 }

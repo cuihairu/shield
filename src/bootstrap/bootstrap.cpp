@@ -408,6 +408,21 @@ bool initialize(const RuntimeConfig& config) {
     g_state->lua_services = std::make_unique<shield::lua::LuaServiceManager>(
         *g_state->lua_runtime, *g_state->actor_system);
 
+#ifdef SHIELD_ENABLE_CLUSTER
+    // M3: local service-name publications become cluster routes. The
+    // notifier must be installed before any service spawns; it reads the
+    // manager through the global accessor so shutdown ordering (manager
+    // released first) stays safe.
+    if (g_state->cluster_manager && g_state->cluster_transport) {
+        g_state->lua_services->set_name_change_notifier(
+            [](const std::string& name, const std::string& service_id) {
+                if (auto* mgr = shield::cluster::global_cluster_manager()) {
+                    mgr->on_local_route_changed(name, service_id);
+                }
+            });
+    }
+#endif
+
     for (const auto& actor : shield::config::runtime_actors()) {
         const int instances = actor.instances < 0 ? 0 : actor.instances;
         for (int i = 0; i < instances; ++i) {

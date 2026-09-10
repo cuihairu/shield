@@ -15,6 +15,7 @@
 #include <caf/type_id.hpp>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // The cluster block starts right after the shield_lua block; this header
 // declares caf::id_block::shield_lua_last_type_id.
@@ -48,6 +49,23 @@ struct HeartbeatMsg {
     uint64_t seq = 0;
 };
 
+/// One published service name on the sending node (M3).
+struct RouteEntry {
+    std::string name;
+    std::string service_id;
+};
+
+/// Full local route table snapshot, sent right after the handshake and
+/// piggybacked at heartbeat cadence. Full-table (not incremental) is a
+/// deliberate M3 choice: idempotent, self-healing, and propagation of a
+/// shutdown (empty table) needs no retract protocol. Receivers replace the
+/// whole per-node bucket.
+struct RoutesMsg {
+    std::string node_id;
+    uint64_t epoch = 0;
+    std::vector<RouteEntry> routes;
+};
+
 template <class Inspector>
 bool inspect(Inspector& f, HelloMsg& x) {
     return f.object(x).fields(f.field("node_id", x.node_id),
@@ -60,6 +78,19 @@ bool inspect(Inspector& f, HelloAckMsg& x) {
     return f.object(x).fields(f.field("node_id", x.node_id),
                               f.field("epoch", x.epoch),
                               f.field("proto_version", x.proto_version));
+}
+
+template <class Inspector>
+bool inspect(Inspector& f, RouteEntry& x) {
+    return f.object(x).fields(f.field("name", x.name),
+                              f.field("service_id", x.service_id));
+}
+
+template <class Inspector>
+bool inspect(Inspector& f, RoutesMsg& x) {
+    return f.object(x).fields(f.field("node_id", x.node_id),
+                              f.field("epoch", x.epoch),
+                              f.field("routes", x.routes));
 }
 
 template <class Inspector>
@@ -81,6 +112,8 @@ CAF_BEGIN_TYPE_ID_BLOCK(shield_cluster,
 CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::HelloMsg))
 CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::HelloAckMsg))
 CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::HeartbeatMsg))
+CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::RouteEntry))
+CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::RoutesMsg))
 
 CAF_ADD_ATOM(shield_cluster, shield::cluster,
              connect_tick_atom)                              // GCOVR_EXCL_LINE

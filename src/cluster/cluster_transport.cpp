@@ -200,6 +200,17 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                                  " identified as " +
                                                  ack.node_id);
                         matched = true;
+                        // Publish our routes immediately so a joining peer
+                        // converges without waiting for a heartbeat tick.
+                        auto routes = st.manager->local_routes();
+                        std::vector<RouteEntry> entries;
+                        entries.reserve(routes.size());
+                        for (auto& [name, service_id] : routes) {
+                            entries.push_back(RouteEntry{name, service_id});
+                        }
+                        caf::anon_send(peer.handle,
+                                       RoutesMsg{st.self_node_id, st.self_epoch,
+                                                 std::move(entries)});
                         break;
                     }
                 }
@@ -215,14 +226,37 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
         },
         [self](hb_tick_atom) {
             auto& st = self->state();
+            // Full local route table snapshot rides along with every
+            // heartbeat (M3): idempotent, self-healing, and an empty table
+            // (service shutdown) propagates without a retract protocol.
+            auto routes = st.manager->local_routes();
+            std::vector<RouteEntry> entries;
+            entries.reserve(routes.size());
+            for (auto& [name, service_id] : routes) {
+                entries.push_back(RouteEntry{name, service_id});
+            }
             for (auto& peer : st.peers) {
                 if (!peer.handle) continue;
                 caf::anon_send(
                     peer.handle,
                     HeartbeatMsg{st.self_node_id, st.self_epoch, st.hb_seq++});
+                caf::anon_send(peer.handle, RoutesMsg{st.self_node_id,
+                                                      st.self_epoch, entries});
             }
             self->delayed_send(self, tick_interval(st.heartbeat_interval_ms),
                                hb_tick_atom_v);
+        },
+        // -- inbound route table (M3) ----------------------------------------
+        [self](const RoutesMsg& routes) {
+            // The manager seam takes pairs to keep cluster_manager.hpp
+            // decoupled from the wire header.
+            std::vector<std::pair<std::string, std::string>> entries;
+            entries.reserve(routes.routes.size());
+            for (const auto& entry : routes.routes) {
+                entries.emplace_back(entry.name, entry.service_id);
+            }
+            self->state().manager->on_routes(routes.node_id, routes.epoch,
+                                             entries);
         }};
 }
 

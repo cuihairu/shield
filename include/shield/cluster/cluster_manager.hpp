@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace shield::cluster {
@@ -92,6 +93,20 @@ public:
                         const std::string& service_name,
                         const std::string& service_id);
 
+    // -- Local route table (M3) ----------------------------------------------
+    // The set of service names published by THIS node. Fed by the service
+    // manager via on_local_route_changed; shipped to peers in full by the
+    // transport at heartbeat cadence (RoutesMsg).
+
+    /// @brief A local name was published (service_id non-empty) or retracted
+    /// (service_id empty). Idempotent.
+    void on_local_route_changed(const std::string& service_name,
+                                const std::string& service_id);
+
+    /// @brief Snapshot of the local route table, for the transport to ship.
+    /// Vector of (name, service_id) pairs.
+    std::vector<std::pair<std::string, std::string>> local_routes() const;
+
     /// @brief Check if a target is on a remote node.
     /// Parses "node_id:service_name" format.
     /// @return true if target is remote, sets out_node and out_service
@@ -131,6 +146,13 @@ public:
     /// the node Offline (definitive, no suspect grace) and drop its cached
     /// routes.
     void on_peer_down(const std::string& address);
+
+    /// @brief A full route table arrived from `node_id`. Requires the node to
+    /// be adopted and the announced epoch to match; a stale instance's table
+    /// is dropped. Replaces the node's whole route bucket (full-table sync).
+    void on_routes(
+        const std::string& node_id, uint64_t epoch,
+        const std::vector<std::pair<std::string, std::string>>& routes);
 
     /// @brief Drop all cached routes learned for `node_id`.
     void clear_routes(const std::string& node_id);

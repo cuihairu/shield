@@ -26,6 +26,9 @@ struct ClusterManager::Impl {
     std::unordered_map<std::string,
                        std::unordered_map<std::string, std::string>>
         route_cache;
+    // Service names published by THIS node: name -> service_id. Shipped to
+    // peers in full at heartbeat cadence (M3).
+    std::unordered_map<std::string, std::string> local_routes;
     mutable std::shared_mutex mutex;
     RemoteSendFn remote_send_fn;
     bool running = false;
@@ -217,6 +220,27 @@ void ClusterManager::register_route(const std::string& node_id,
     impl_->route_cache[node_id][service_name] = service_id;
 }
 
+void ClusterManager::on_local_route_changed(const std::string& service_name,
+                                            const std::string& service_id) {
+    std::unique_lock lock(impl_->mutex);
+    if (service_id.empty()) {
+        impl_->local_routes.erase(service_name);
+    } else {
+        impl_->local_routes[service_name] = service_id;
+    }
+}
+
+std::vector<std::pair<std::string, std::string>> ClusterManager::local_routes()
+    const {
+    std::shared_lock lock(impl_->mutex);
+    std::vector<std::pair<std::string, std::string>> result;
+    result.reserve(impl_->local_routes.size());
+    for (const auto& [name, service_id] : impl_->local_routes) {
+        result.emplace_back(name, service_id);
+    }
+    return result;
+}
+
 bool ClusterManager::parse_remote_target(std::string_view target,
                                          std::string& out_node,
                                          std::string& out_service) {
@@ -292,6 +316,24 @@ void ClusterManager::on_peer_down(const std::string& address) {
                                 " lost, node is offline");
     it->second.state = NodeState::Offline;
     impl_->route_cache.erase(it->second.node_id);
+}
+
+void ClusterManager::on_routes(
+    const std::string& node_id, uint64_t epoch,
+    const std::vector<std::pair<std::string, std::string>>& routes) {
+    std::unique_lock lock(impl_->mutex);
+    auto it = impl_->nodes.find(node_id);
+    if (it == impl_->nodes.end()) return;  // not adopted yet
+    if (it->second.epoch != epoch) {
+        // Stale table from a dead instance: drop silently, the live one
+        // re-announces on its next heartbeat.
+        return;
+    }
+    auto& bucket = impl_->route_cache[node_id];
+    bucket.clear();
+    for (const auto& [name, service_id] : routes) {
+        if (!service_id.empty()) bucket[name] = service_id;
+    }
 }
 
 void ClusterManager::clear_routes(const std::string& node_id) {

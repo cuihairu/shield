@@ -106,18 +106,28 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
   双 `caf::actor_system` 真实 BASP 集成测试（握手、心跳保活、杀对端
   即 offline、同端口重启重连且新 epoch 清路由）。
 
-### M3 路由学习（1 天）
+### M3 路由学习（1 天）✅ 已落地（2026-09）
 
-- 通告源：`LuaServiceManager` 的 publish/unpublish 状态机
-  （`published_names` 变更处）回调 ClusterManager；shutdown 时全量撤销。
-- 交换：`hello`/`heartbeat` 捎带本地路由表（首次全量 + 之后增量
-  `route_announce{node_id, service_name, service_id}`）。
-- 接收：写入既有 `register_route()`；`on_peer_down` 时清除该节点全部
-  route cache（防 stale）。
-- 效果：`shield.cluster.query()` 从"必然失败"变为语义正确的
-  `service_not_found`，且与"节点不可达"错误可区分（M1/M2 后可达性检查可信）。
-- 测试：node-a 注册服务 → node-b `query` 命中；node-a 下线 → node-b
-  query 返回节点不可达；name 注销 → cache 失效。
+- 通告源 ✅：`LuaServiceManager::set_name_change_notifier(fn)` 观察每一次
+  已提交的发布变更（spawn 发布、`shield.register`/`unregister`、on_init
+  失败回滚、服务退出收回；空 `service_id` = 收回），在 registry 锁外回调；
+  bootstrap 注入到 `ClusterManager::on_local_route_changed()`。
+  `lua_service.cpp` 零 cluster 依赖（无 ifdef）。
+- 交换 ✅（与原计划偏离，实测更稳）：放弃增量 `route_announce`，改为
+  **完整表随每个心跳捎带**（`RoutesMsg`）+ **握手完成后立即补发一次**。
+  理由：幂等（丢包/乱序自愈）、无需撤销协议（空表自然传播"服务已全部
+  下线"）、实现面小（Phase 1 服务名量级小，全量表成本可忽略）。
+- 接收 ✅：`on_routes()` 要求节点已采纳且 epoch 匹配（stale 实例的表
+  静默丢弃），整桶替换；`on_peer_down`/新 epoch 再握手继续清整桶。
+- 效果 ✅：`shield.cluster.query()` 从"必然失败"变为可命中远端真实发布
+  （收敛延迟：握手后 ≤ 一个心跳周期），且与"节点不可达"错误可区分。
+  注意：只完成名字解析，投递仍是 M4。
+- 测试 ✅：manager 单测扩至 18 例（本地路由表发布/收回快照、`on_routes`
+  整桶替换 + epoch 校验 + 未知节点丢弃 + 空 service_id 过滤、占位键早期
+  路由不泄漏进采纳身份）；transport 集成测试扩至 3 例（握手前发布 →
+  握手后即命中、运行中发布/收回随心跳传播、对端断连 → offline + 路由
+  清除）；`test_cov_lua_service2` 补 2 例钩子生命周期（spawn/register/
+  unregister/exit 事件序列、on_init 失败回滚只收回 on_init 发布的名字）。
 
 ### M4 跨节点 send/call 投递（2~4 天，最大项）
 

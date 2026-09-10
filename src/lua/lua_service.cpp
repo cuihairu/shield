@@ -76,6 +76,18 @@ struct LuaServiceManager::Impl {
     std::atomic<bool> stopping{
         false};  // set by shutdown_all, checked by send/call/spawn
 
+    // Observer for name publication changes (set once at bootstrap, before
+    // any spawn; read without the registry lock, invoked outside of it).
+    std::function<void(const std::string&, const std::string&)>
+        name_change_notifier;
+
+    // Forward one committed name change to the notifier (never called while
+    // holding registry_mutex).
+    void notify_name_change(const std::string& name,
+                            const std::string& service_id) {
+        if (name_change_notifier) name_change_notifier(name, service_id);
+    }
+
     // Internal message representation used between the CAF actor behavior and
     // the Lua dispatch path. Replaces the legacy Mailbox::Message.
     struct DispatchMessage {
@@ -876,6 +888,7 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                         std::to_string(init_ms) + "ms (limit " +
                         std::to_string(spawn_timeout_ms) + "ms)");
                 }
+                std::vector<std::string> retracted;
                 {
                     std::unique_lock lock(impl_->registry_mutex);
                     impl_->service_actors.erase(service_name);
@@ -883,9 +896,13 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                         names_it != impl_->owned_names.end()) {
                         for (const auto& name : names_it->second) {
                             impl_->published_names.erase(name);
+                            retracted.push_back(name);
                         }
                         impl_->owned_names.erase(names_it);
                     }
+                }
+                for (const auto& name : retracted) {
+                    impl_->notify_name_change(name, "");
                 }
                 return SpawnResult::error("on_init failed for " + service_name +
                                           ": " + error);
@@ -914,6 +931,7 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             impl_->recently_exited.erase(service_name);
             reservation.published = true;
         }
+        impl_->notify_name_change(service_name, service_name);
 
         // on_init succeeded: tell the actor to install its real behavior and
         // release any messages stashed during init (see spawn lambda above).
@@ -1277,12 +1295,14 @@ void LuaServiceManager::exit(std::string_view service_id,
         }
     }
 
+    std::vector<std::string> retracted;
     {
         std::unique_lock lock(impl_->registry_mutex);
         if (auto names_it = impl_->owned_names.find(id);
             names_it != impl_->owned_names.end()) {
             for (const auto& name : names_it->second) {
                 impl_->published_names.erase(name);
+                retracted.push_back(name);
             }
             impl_->owned_names.erase(names_it);
         }
@@ -1313,6 +1333,9 @@ void LuaServiceManager::exit(std::string_view service_id,
             }
             impl_->service_actors.erase(actor_it);
         }
+    }
+    for (const auto& name : retracted) {
+        impl_->notify_name_change(name, "");
     }
     impl_->stop_and_wait_for_actors(actors_to_stop);
 }
@@ -1358,12 +1381,14 @@ void LuaServiceManager::force_remove(const std::string& id,
                                      const std::string& reason) {
     (void)reason;
     caf::actor actor;
+    std::vector<std::string> retracted;
     {
         std::unique_lock lock(impl_->registry_mutex);
         if (auto names_it = impl_->owned_names.find(id);
             names_it != impl_->owned_names.end()) {
             for (const auto& name : names_it->second) {
                 impl_->published_names.erase(name);
+                retracted.push_back(name);
             }
             impl_->owned_names.erase(names_it);
         }
@@ -1382,6 +1407,9 @@ void LuaServiceManager::force_remove(const std::string& id,
     cancel_forked_tasks_for_service(id);
     if (actor) {
         caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
+    }
+    for (const auto& name : retracted) {
+        impl_->notify_name_change(name, "");
     }
 }
 
@@ -1593,6 +1621,8 @@ bool LuaServiceManager::register_name(std::string_view name,
 
     impl_->published_names[std::string(name)] = owner;
     impl_->owned_names[owner].insert(std::string(name));
+    lock.unlock();
+    impl_->notify_name_change(std::string(name), owner);
     return true;
 }
 
@@ -1627,7 +1657,14 @@ bool LuaServiceManager::unregister_name(std::string_view name,
         names_it != impl_->owned_names.end()) {
         names_it->second.erase(std::string(name));
     }
+    lock.unlock();
+    impl_->notify_name_change(std::string(name), "");
     return true;
+}
+
+void LuaServiceManager::set_name_change_notifier(
+    std::function<void(const std::string&, const std::string&)> fn) {
+    impl_->name_change_notifier = std::move(fn);
 }
 
 std::vector<std::string> LuaServiceManager::list_services() const {
