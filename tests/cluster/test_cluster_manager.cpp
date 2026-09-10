@@ -1,4 +1,4 @@
-// ClusterManager state-machine unit tests (M1).
+// ClusterManager state-machine unit tests (M1 + M2 seams).
 // Constructed directly from ClusterConfig: no global config, no network,
 // no bootstrap. Timing tests use short windows with generous poll budgets.
 #define BOOST_TEST_MODULE ClusterManagerTests
@@ -84,29 +84,39 @@ BOOST_AUTO_TEST_CASE(TickBeforeStartIsNoop) {
     BOOST_CHECK_EQUAL(mgr.check_node_reachable(kPeerA), "");
 }
 
-BOOST_AUTO_TEST_CASE(StartMarksPeersOnlineAndTickDegradesThem) {
+BOOST_AUTO_TEST_CASE(StartKeepsPeersConnectingUntilHandshake) {
+    // M2: start() no longer fakes Online — the transport's handshake does.
+    // With no transport, peers stay Connecting (reachable placeholder) until
+    // they either complete the handshake or the offline window lapses.
     auto cfg = two_peer_config();
     cfg.suspect_timeout_ms = 50;
     cfg.offline_timeout_ms = 150;
     ClusterManager mgr(cfg);
 
     mgr.start();
-    BOOST_CHECK(mgr.find_node(kPeerA)->state == NodeState::Online);
-    BOOST_CHECK(mgr.find_node(kPeerB)->state == NodeState::Online);
-    BOOST_CHECK_EQUAL(mgr.check_node_reachable(kPeerA), "");
+    BOOST_CHECK(mgr.find_node(kPeerA)->state == NodeState::Connecting);
+
+    // Handshake completes: identity adoption renames the entry under the
+    // announced node_id and marks it Online.
+    mgr.on_handshake(kPeerA, "node-a", 7);
+    mgr.on_handshake(kPeerB, "node-b", 8);
+    BOOST_CHECK(mgr.find_node("node-a")->state == NodeState::Online);
+    BOOST_CHECK(mgr.find_node("node-b")->state == NodeState::Online);
+    BOOST_CHECK_EQUAL(mgr.check_node_reachable("node-a"), "");
+    BOOST_CHECK(!mgr.find_node(kPeerA));  // placeholder key is gone
 
     // Past suspect_timeout but before offline_timeout: exactly one
     // degradation per peer, and the reachable error reflects it.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     BOOST_CHECK_EQUAL(mgr.tick(), 2);
-    BOOST_CHECK(mgr.find_node(kPeerA)->state == NodeState::Suspect);
-    BOOST_CHECK_EQUAL(mgr.check_node_reachable(kPeerA), "node_suspect");
+    BOOST_CHECK(mgr.find_node("node-a")->state == NodeState::Suspect);
+    BOOST_CHECK_EQUAL(mgr.check_node_reachable("node-a"), "node_suspect");
 
     // Past offline_timeout: second degradation, then steady state.
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     BOOST_CHECK_EQUAL(mgr.tick(), 2);
-    BOOST_CHECK(mgr.find_node(kPeerA)->state == NodeState::Offline);
-    BOOST_CHECK_EQUAL(mgr.check_node_reachable(kPeerA), "node_offline");
+    BOOST_CHECK(mgr.find_node("node-a")->state == NodeState::Offline);
+    BOOST_CHECK_EQUAL(mgr.check_node_reachable("node-a"), "node_offline");
     BOOST_CHECK_EQUAL(mgr.tick(), 0);
 
     // An unknown node is distinct from a known-but-degraded one.
@@ -116,9 +126,27 @@ BOOST_AUTO_TEST_CASE(StartMarksPeersOnlineAndTickDegradesThem) {
     mgr.stop();
 }
 
+BOOST_AUTO_TEST_CASE(ConnectingPeerDegradesToOfflineAfterHandshakeTimeout) {
+    // A configured peer that never completes a handshake is honest debris:
+    // once the offline window passes with no transport success, tick() flips
+    // Connecting -> Offline directly (no suspect grace for a node we never
+    // really talked to).
+    auto cfg = two_peer_config();
+    cfg.offline_timeout_ms = 50;
+    ClusterManager mgr(cfg);
+
+    mgr.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(90));
+    BOOST_CHECK_EQUAL(mgr.tick(), 2);
+    BOOST_CHECK(mgr.find_node(kPeerA)->state == NodeState::Offline);
+    BOOST_CHECK_EQUAL(mgr.check_node_reachable(kPeerA), "node_offline");
+    mgr.stop();
+}
+
 BOOST_AUTO_TEST_CASE(HeartbeatThreadDrivesDegradation) {
     // No manual tick() calls: the scheduler thread started by start() must
-    // degrade peers on its own.
+    // degrade peers on its own. Peers that never handshake degrade straight
+    // to Offline; an adopted peer goes through the suspect ladder.
     auto cfg = two_peer_config();
     cfg.heartbeat_interval_ms = 20;  // clamped to >= 50 internally
     cfg.suspect_timeout_ms = 60;
@@ -126,16 +154,26 @@ BOOST_AUTO_TEST_CASE(HeartbeatThreadDrivesDegradation) {
     ClusterManager mgr(cfg);
 
     mgr.start();
-    BOOST_CHECK(wait_for_state(mgr, kPeerA, NodeState::Suspect,
+    BOOST_CHECK(wait_for_state(mgr, kPeerA, NodeState::Offline,
                                std::chrono::milliseconds(2000)));
     BOOST_CHECK(wait_for_state(mgr, kPeerB, NodeState::Offline,
+                               std::chrono::milliseconds(2000)));
+
+    // A late handshake still adopts the identity and restores Online; the
+    // placeholder entry disappears with the rename.
+    mgr.on_handshake(kPeerA, "node-a", 5);
+    BOOST_CHECK(mgr.find_node("node-a")->state == NodeState::Online);
+    BOOST_CHECK(!mgr.find_node(kPeerA));
+
+    // ... and the running scheduler degrades it again once heartbeats stop.
+    BOOST_CHECK(wait_for_state(mgr, "node-a", NodeState::Suspect,
                                std::chrono::milliseconds(2000)));
 
     // stop() must join the scheduler without hanging; after it, the
     // peer states are torn down to Removed.
     mgr.stop();
-    BOOST_CHECK(mgr.find_node(kPeerA)->state == NodeState::Removed);
-    BOOST_CHECK_EQUAL(mgr.check_node_reachable(kPeerA), "node_removed");
+    BOOST_CHECK(mgr.find_node("node-a")->state == NodeState::Removed);
+    BOOST_CHECK_EQUAL(mgr.check_node_reachable("node-a"), "node_removed");
     // tick() after stop stays a no-op.
     BOOST_CHECK_EQUAL(mgr.tick(), 0);
 }
@@ -150,11 +188,12 @@ BOOST_AUTO_TEST_CASE(DoubleStopAndDestructorStopAreSafe) {
         mgr.stop();  // second stop is a no-op
     }  // destructor runs stop() again on a stopped manager
 
-    // Restart after a full stop is supported: peers come back online with a
-    // fresh heartbeat scheduler, and stop() tears them down again.
+    // Restart after a full stop is supported: peers are tracked again (in
+    // the Connecting placeholder state) with a fresh heartbeat scheduler,
+    // and stop() tears them down again.
     ClusterManager mgr(cfg);
     mgr.start();
-    BOOST_CHECK(mgr.find_node(kPeerA)->state == NodeState::Online);
+    BOOST_CHECK(mgr.find_node(kPeerA)->state == NodeState::Connecting);
     mgr.stop();
     BOOST_CHECK(mgr.find_node(kPeerA)->state == NodeState::Removed);
     mgr.stop();
@@ -222,6 +261,96 @@ BOOST_AUTO_TEST_CASE(NodesSnapshotCarriesPeerAddresses) {
     }
     BOOST_CHECK(saw_a && saw_b);
     BOOST_CHECK_EQUAL(mgr.node_id(), "test-node");
+}
+
+BOOST_AUTO_TEST_CASE(HandshakeAdoptsIdentity) {
+    ClusterManager mgr(two_peer_config());
+    BOOST_CHECK(!mgr.find_node("node-a"));  // unknown before handshake
+
+    mgr.on_handshake(kPeerA, "node-a", 42);
+    const auto* adopted = mgr.find_node("node-a");
+    BOOST_REQUIRE(adopted);
+    BOOST_CHECK(adopted->state == NodeState::Online);
+    BOOST_CHECK_EQUAL(adopted->epoch, 42u);
+    BOOST_CHECK_EQUAL(adopted->address, kPeerA);
+    BOOST_CHECK(!mgr.find_node(kPeerA));  // renamed away from the placeholder
+    BOOST_CHECK_EQUAL(mgr.check_node_reachable("node-a"), "");
+
+    // Handshake for an address that is not a configured peer is ignored.
+    mgr.on_handshake("10.0.0.1:1", "rogue", 1);
+    BOOST_CHECK(!mgr.find_node("rogue"));
+}
+
+BOOST_AUTO_TEST_CASE(RehandshakeWithNewEpochClearsRoutes) {
+    ClusterManager mgr(two_peer_config());
+    mgr.on_handshake(kPeerA, "node-a", 1);
+    mgr.register_route("node-a", "room.public", "sid-1");
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "room.public"), "sid-1");
+
+    // Same epoch (idempotent retry): routes survive.
+    mgr.on_handshake(kPeerA, "node-a", 1);
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "room.public"), "sid-1");
+
+    // New epoch means the peer restarted: its routes are stale.
+    mgr.on_handshake(kPeerA, "node-a", 2);
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "room.public"), "");
+    BOOST_CHECK_EQUAL(mgr.find_node("node-a")->epoch, 2u);
+    BOOST_CHECK(mgr.find_node("node-a")->state == NodeState::Online);
+}
+
+BOOST_AUTO_TEST_CASE(HeartbeatRestoresSuspectNode) {
+    auto cfg = two_peer_config();
+    cfg.suspect_timeout_ms = 50;
+    cfg.offline_timeout_ms = 5000;
+    ClusterManager mgr(cfg);
+
+    // tick() is gated on start(): without it the state machine is frozen.
+    mgr.start();
+    mgr.on_handshake(kPeerB, "node-b", 9);
+    BOOST_CHECK(mgr.find_node("node-b")->state == NodeState::Online);
+
+    // Let the heartbeat clock lapse: ticks (ours or the scheduler's) flip
+    // Online -> Suspect. Poll instead of asserting an exact change count —
+    // the background scheduler's first tick may land anywhere in here.
+    auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    while (std::chrono::steady_clock::now() < deadline) {
+        mgr.tick();
+        if (mgr.find_node("node-b")->state == NodeState::Suspect) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    BOOST_CHECK(mgr.find_node("node-b")->state == NodeState::Suspect);
+
+    // A heartbeat restores Online and restarts the clock.
+    mgr.on_heartbeat("node-b");
+    BOOST_CHECK(mgr.find_node("node-b")->state == NodeState::Online);
+    BOOST_CHECK_EQUAL(mgr.tick(), 0);
+
+    // Heartbeats from unknown nodes neither crash nor register anything.
+    mgr.on_heartbeat("ghost");
+    BOOST_CHECK(!mgr.find_node("ghost"));
+
+    mgr.stop();
+}
+
+BOOST_AUTO_TEST_CASE(PeerDownClearsRoutesAndMarksOffline) {
+    ClusterManager mgr(two_peer_config());
+    mgr.on_handshake(kPeerA, "node-a", 3);
+    mgr.register_route("node-a", "room.public", "sid-9");
+
+    mgr.on_peer_down(kPeerA);
+    const auto* node = mgr.find_node("node-a");
+    BOOST_REQUIRE(node);
+    // Definitive drop: no suspect grace for a closed connection.
+    BOOST_CHECK(node->state == NodeState::Offline);
+    BOOST_CHECK_EQUAL(mgr.check_node_reachable("node-a"), "node_offline");
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-a", "room.public"), "");
+
+    // Repeated and unknown drops are no-ops.
+    mgr.on_peer_down(kPeerA);
+    mgr.on_peer_down("10.0.0.9:1");
+    BOOST_CHECK(mgr.find_node("node-a")->state == NodeState::Offline);
+    BOOST_CHECK_EQUAL(mgr.nodes().size(), 2u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

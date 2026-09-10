@@ -482,6 +482,7 @@ target_compile_definitions(shield_net PUBLIC SHIELD_HAS_CURL)
 if(SHIELD_ENABLE_CLUSTER)
     add_library(shield_cluster STATIC
         src/cluster/cluster_manager.cpp
+        src/cluster/cluster_transport.cpp
     )
     target_include_directories(shield_cluster
         PUBLIC
@@ -489,7 +490,7 @@ if(SHIELD_ENABLE_CLUSTER)
             ${CMAKE_CURRENT_BINARY_DIR}/include
     )
     target_link_libraries(shield_cluster
-        PUBLIC shield_base shield_log shield_config
+        PUBLIC shield_base shield_log shield_config CAF::core CAF::io
     )
     message(STATUS "shield_cluster: enabled")
 endif()

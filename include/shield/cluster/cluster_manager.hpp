@@ -111,6 +111,30 @@ public:
     /// @return empty string if reachable, error code if not
     std::string check_node_reachable(const std::string& node_id) const;
 
+    // -- Transport seams (M2) ------------------------------------------------
+    // ClusterTransport reports connection lifecycle events here; the manager
+    // remains the single owner of node state.
+
+    /// @brief The peer dialed at `address` completed the handshake and
+    /// announced `node_id`/`epoch`. Adopts the identity: renames the
+    /// placeholder entry (peers are keyed by address until then), marks the
+    /// node Online and restarts the heartbeat clock. A changed epoch on a
+    /// re-handshake (peer restarted) invalidates the node's cached routes.
+    void on_handshake(const std::string& address, const std::string& node_id,
+                      uint64_t epoch);
+
+    /// @brief A heartbeat arrived from a known node: refresh liveness and
+    /// restore Suspect/Offline nodes back to Online.
+    void on_heartbeat(const std::string& node_id);
+
+    /// @brief The connection to the peer dialed at `address` dropped: mark
+    /// the node Offline (definitive, no suspect grace) and drop its cached
+    /// routes.
+    void on_peer_down(const std::string& address);
+
+    /// @brief Drop all cached routes learned for `node_id`.
+    void clear_routes(const std::string& node_id);
+
     /// @brief Process cluster tick (heartbeat, timeout checks)
     /// @return Number of state changes
     int tick();

@@ -9,6 +9,7 @@
 #include "shield/plugin/protocol_codec.h"
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
+#include "shield/cluster/cluster_transport.hpp"
 #endif
 #include <algorithm>
 #include <atomic>
@@ -171,6 +172,7 @@ struct GlobalState {
     std::unique_ptr<shield::lua::LuaHttpBridge> http_bridge;
 #ifdef SHIELD_ENABLE_CLUSTER
     std::unique_ptr<shield::cluster::ClusterManager> cluster_manager;
+    std::unique_ptr<shield::cluster::ClusterTransport> cluster_transport;
 #endif
     bool initialized = false;
 };
@@ -207,6 +209,13 @@ void cleanup_failed_initialize() {
         g_state->lua_runtime.reset();
         shield::plugin::global_host().shutdown();
 #ifdef SHIELD_ENABLE_CLUSTER
+        // The transport actor lives in the CAF system: unpublish and kill it
+        // while the system (and the manager its callbacks point at) are
+        // still alive.
+        if (g_state->cluster_transport) {
+            g_state->cluster_transport->stop();
+        }
+        g_state->cluster_transport.reset();
         if (g_state->cluster_manager) {
             g_state->cluster_manager->stop();
         }
@@ -348,6 +357,11 @@ bool initialize(const RuntimeConfig& config) {
 
     // Initialize CAF actor system
     initialize_caf_types();
+#ifdef SHIELD_ENABLE_CLUSTER
+    // Cluster wire types must be in CAF's global meta object table before
+    // any actor_system is constructed (CAF requirement, not just convention).
+    shield::cluster::init_cluster_caf_types();
+#endif
     caf::actor_system_config& caf_config =
         [&]() -> auto& {  // GCOVR_EXCL_LINE (uncalled static-init clone)
         static caf::actor_system_config cfg;
@@ -363,6 +377,29 @@ bool initialize(const RuntimeConfig& config) {
     g_state->actor_system = std::make_unique<caf::actor_system>(caf_config);
 
     SHIELD_LOG_INFO(log, "CAF actor system initialized");
+
+#ifdef SHIELD_ENABLE_CLUSTER
+    // Cluster transport needs the live CAF system to publish the cluster
+    // actor and dial peers. A listen failure is fatal: the operator
+    // explicitly configured a cluster, silently running standalone would
+    // betray the node's reported health.
+    if (cluster_config.enabled) {
+        g_state->cluster_transport =
+            std::make_unique<shield::cluster::ClusterTransport>(
+                *g_state->actor_system, *g_state->cluster_manager,
+                cluster_config);
+        uint16_t bound_port = 0;
+        std::string transport_error;
+        if (!g_state->cluster_transport->start(&bound_port, transport_error)) {
+            SHIELD_LOG_ERROR(
+                log, "Cluster transport failed to start: " + transport_error);
+            cleanup_failed_initialize();
+            return false;
+        }
+        SHIELD_LOG_INFO(log, "Cluster transport listening on port " +
+                                 std::to_string(bound_port));
+    }
+#endif
 
     // Run POST_SYSTEM_INIT starters
     run_starters(Phase::POST_SYSTEM_INIT);
@@ -765,6 +802,15 @@ void shutdown() {
     }
     g_state->lua_services.reset();
     g_state->lua_runtime.reset();
+#ifdef SHIELD_ENABLE_CLUSTER
+    // The transport actor lives in the CAF system: unpublish and kill it
+    // while the system (and the manager its callbacks point at) are still
+    // alive, before the system goes away.
+    if (g_state->cluster_transport) {
+        g_state->cluster_transport->stop();
+    }
+    g_state->cluster_transport.reset();
+#endif
     g_state->actor_system.reset();
 #ifdef SHIELD_ENABLE_CLUSTER
     if (g_state->cluster_manager) {

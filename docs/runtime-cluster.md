@@ -10,11 +10,11 @@
 - 本地 `shield.query(name)` 继续只查询本地 registry。
 - optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 
-实现状态（2026-09，M1 心跳调度已落地，与 [Phase 1 实现范围](#phase-1-实现范围)一致）：
+实现状态（2026-09，M1 心跳调度 + M2 CAF middleman transport 已落地，与 [Phase 1 实现范围](#phase-1-实现范围)一致）：
 
-- **已实现（单机内可用）**：`cluster.*` 配置解析；节点状态数据结构与快照查询；`shield.cluster.nodes()/node_id()/node_epoch()`；`/ops/status` cluster 块与 console 命令；bootstrap 生命周期接线；**心跳调度线程**（`start()` 起内部 `std::jthread` 按 `heartbeat_interval_ms` 驱动 `tick()` 降级，`stop()` 收线），peers 会按 `online → suspect → offline` 如实降级；`node_epoch` 与节点快照中的 `epoch` 以十进制字符串暴露（uint64 不经 Lua/JSON number 往返丢精度）。
-- **未实现（跨节点全链路缺失）**：CAF middleman transport（`cluster.listen` 只被解析，运行时不 bind 端口）；peer 连接与握手；transport 心跳交换（`tick()` 降级调度已实现，但没有真实心跳来源刷新 peers）；远端 route 学习（`register_route` 无调用方）；跨节点投递（`set_remote_send_fn` 无注入方，`send_remote` 恒返回 false）。
-- **当前实际行为**：静态 peers 在 `start()` 时即被标记 `online`（静态配置假设，见下方说明），但该状态最多持续 `suspect_timeout_ms`；此后由心跳调度线程降级为 `suspect`，`offline_timeout_ms` 后降级为 `offline`。也就是说 transport 落地前，节点视图最终会如实显示所有 peer 为 offline（unhealthy 契约的前半段已满足）。`shield.cluster.query()` 因 route cache 为空而必然返回 `service_not_found`；降级后同一调用会先被 `node_suspect`/`node_offline` 可达性检查拦下，两种错误可区分。后续实现路线见 [cluster 实现方案](cluster-implementation-plan.md)。
+- **已实现（跨节点握手/保活全链路）**：`cluster.*` 配置解析；节点状态数据结构与快照查询；`shield.cluster.nodes()/node_id()/node_epoch()`；`/ops/status` cluster 块与 console 命令；bootstrap 生命周期接线；**心跳调度线程**（`start()` 起内部 `std::jthread` 按 `heartbeat_interval_ms` 驱动 `tick()` 降级，`stop()` 收线）；**CAF middleman transport**（M2）：绑定 `cluster.listen`、主动拨号全部静态 peers、hello/hello_ack 握手（协议版本 v1，身份采纳只在拨号侧完成）、按心跳节拍互发 `HeartbeatMsg`、连接断开即刻 offline 并清路由、带 2s 超时的异步重拨（对端重启可自愈，新 epoch 使旧路由失效）。双节点集成测试以两个真实 `caf::actor_system` 走 BASP 验证握手/保活/下线/重启重连（`tests/cluster/test_cluster_transport.cpp`）。
+- **未实现（数据面缺失）**：远端 route 学习（`register_route` 无调用方，route cache 只会被握手/下线清除）；跨节点投递（`set_remote_send_fn` 无注入方，`send_remote` 恒返回 false）。
+- **当前实际行为**：静态 peers 以 `connecting` 占位（临时以拨号地址为节点标识）；握手完成后改名为对端宣布的 `node_id` 并转为 `online`；此后心跳保活，超时按 `online → suspect → offline` 如实降级。对端进程退出会经连接断开事件直接置 `offline`（无 suspect 宽限）并清除其路由缓存；对端重启后自动重连，新 epoch 触发路由失效。`cluster.listen` 绑定失败视为致命错误，启动即失败。`shield.cluster.query()` 因 route cache 为空而必然返回 `service_not_found`（M3 接入 route 学习前如此）。后续实现路线见 [cluster 实现方案](cluster-implementation-plan.md)。
 
 ## shield_cluster 定位
 
@@ -39,7 +39,7 @@ CAF 底层已支持远程 Actor 通信（通过 middleman），`shield_cluster` 
 | 消息路由 | ✅ | 服务名路由、路由 cache |
 | 节点发现 | ❌ | Phase 1 仅支持静态配置 |
 | 负载均衡 | ❌ | 不进入 Phase 1 |
-| 心跳状态 | ❌ | online/suspect/offline/removed 状态模型已有；超时降级循环由 M1 心跳调度线程驱动（M1 已落地），transport 心跳交换未实现——peers 从初始 online 如实降级为 suspect/offline，但不会有真实心跳把在线 peer 拉回来 |
+| 心跳状态 | ❌ | online/suspect/offline/removed 状态模型已有；降级循环由 M1 心跳调度线程驱动，心跳交换由 M2 transport 承担（握手后按节拍互发 HeartbeatMsg，可把 suspect/offline 拉回 online） |
 
 ### Phase 1 实现策略
 
@@ -325,7 +325,7 @@ cluster:
 - 远端路由 cache 结构。
 - 显式 `(node_id, service_name)` route cache 查询。
 
-当前源码实现状态（`src/cluster/cluster_manager.cpp`，2026-09 实测核对）：
+当前源码实现状态（`src/cluster/`，2026-09 实测核对）：
 
 **已实现，行为可信：**
 
@@ -333,22 +333,24 @@ cluster:
 - 节点状态数据结构、`nodes()` / `find_node()` / `check_node_reachable()` 查询。
 - `shield.cluster.nodes()/node_id()/node_epoch()` Lua 查询（`node_id`、`node_epoch` 返回真实本地元数据；`node_epoch` 与节点快照 `epoch` 均为十进制字符串）。
 - `/ops/status` 的 cluster 快照、console `root.*` 命令、bootstrap 创建/停止接线。
-- **心跳调度线程（M1）**：`start()` 启动内部 `std::jthread`，按 `heartbeat_interval_ms`（下限 50ms）驱动 `tick()` 降级；`stop()` 先收线再清理节点状态。`tests/cluster/` 覆盖状态机降级序列、route cache、`parse_remote_target`、注入式投递接缝。
+- **心跳调度线程（M1）**：`start()` 启动内部 `std::jthread`，按 `heartbeat_interval_ms`（下限 50ms）驱动 `tick()` 降级；`stop()` 先收线再清理节点状态。
+- **CAF middleman transport（M2，`cluster_transport.cpp`）**：绑定 `cluster.listen`（`0.0.0.0`/`*` 绑全部接口）；按心跳节拍带 2s 超时异步拨号全部静态 peers，断线自动重拨；hello/hello_ack 握手（协议版本 v1，版本不符拒绝完成握手）。身份采纳只发生在拨号侧：ack 的 sender 即本节点拨号所得 proxy，与 peer 条目一一对应，不依赖对端播报的监听地址字符串。握手采纳 `node_id` + `epoch`，`connecting` 占位条目就此改名；epoch 变化的再握手（对端重启）清除该节点路由缓存。心跳按节拍互发，`on_heartbeat` 刷新 liveness 并可把 `suspect`/`offline` 拉回 `online`；连接断开事件直接置 `offline` 并清路由。
+- bootstrap 在 CAF actor system 构建后启动 transport（集群 wire 类型必须在任何 `actor_system` 构造前注册，已与 `initialize_caf_types()` 并列处理）；`cluster.listen` 绑定失败为致命错误；两条 teardown 路径均先停 transport 再停 manager。
+- `tests/cluster/test_cluster_manager.cpp`（15 例：状态机、握手采纳、epoch 失效、心跳恢复、下线清路由、握手超时降级）与 `tests/cluster/test_cluster_transport.cpp`（2 例：双 `caf::actor_system` 真实 BASP 握手/保活/下线/同端口重启重连）。
 
-**未实现（跨节点链路整体缺失）：**
+**未实现（数据面缺失，M3/M4）：**
 
-- **transport**：`cluster.listen` 只被解析，运行时不绑定端口；不向 peer 发起连接；无握手。
-- **心跳交换**：没有 transport 心跳来源刷新 `last_heartbeat_ms`；降级调度本身已由 M1 线程驱动，因此 peers 只会从初始 `online` 走向 `suspect`/`offline`，不会有真实心跳把可达 peer 拉回 `online`。
-- **route 学习**：`register_route()` 无调用方，route cache 永远为空。
+- **route 学习**：`register_route()` 无调用方；route cache 只会被握手（epoch 变化）、下线事件清除，永远不会命中。
 - **投递**：`set_remote_send_fn()` 无注入方，`send_remote()` 恒返回 `false`；`RemoteSendFn` 的注入点是预留的 transport 接缝（单测已覆盖注入行为）。
 
 **由此产生的当前实际行为（业务与运维须知）：**
 
-- 静态 peers 在 `start()` 时即被标记 `online`（静态配置假设），但该状态不再持续：`suspect_timeout_ms`（默认 15s）后降级 `suspect`，`offline_timeout_ms`（默认 30s）后降级 `offline`，由心跳调度线程自动完成。transport 落地前，节点视图最终会如实显示所有 peer 为 `offline`；依赖旧"恒 online"假象的看板会先变红，属预期。
+- 静态 peers 以 `connecting` 占位（临时以拨号地址为节点标识）；握手完成转为 `online` 并按真实 `node_id` 可查。对端不可达时，`connecting` 在 `offline_timeout_ms` 后如实降级为 `offline`——配置了不存在的 peer 不会被报成健康节点。
+- 在线 peers 由心跳保活；对端进程退出即刻 `offline` 并清其路由（无 suspect 宽限）；对端重启后自动重连，新 epoch 触发路由失效。`suspect_timeout_ms` 后降级 `suspect`，`offline_timeout_ms` 后降级 `offline`，由心跳调度线程自动完成。
 - `shield.cluster.query(node, name)` 在 route cache 为空时返回 `service_not_found`；peer 降级后同一调用先被可达性检查以 `node_suspect`/`node_offline` 拦下，"节点不可达"与"路由未注册"自此可区分。
-- `node_epoch` 与节点快照 `epoch` 以十进制字符串经 Lua/JSON 暴露（uint64 直接过 double 会丢精度）；stale-handle 比对须按字符串比较，M2 握手接入真实 epoch 前该值尚无跨节点语义。
+- `node_epoch` 与节点快照 `epoch` 以十进制字符串经 Lua/JSON 暴露（uint64 直接过 double 会丢精度）；stale-handle 比对须按字符串比较。M2 起握手 epoch 具备跨节点语义：peer 重启（新 epoch）即宣告其旧路由全部失效。
 
-因此：**当前启用 `cluster.node_id` 不会产生任何跨节点行为**，只会让系统呈现一个虚假的在线集群视图；未配置 `cluster.node_id` 时整条路径不激活，单节点部署不受影响。远端连接失败的 degrade 契约（见 [官方可选模块契约](optional-modules.md) 的"必须持续暴露 unhealthy 状态"）同样以 transport 实现为前提，当前尚不满足。
+因此：启用 `cluster.node_id` 后，集群会呈现真实的连接/握手/保活/下线视图（健康节点 `online`，故障节点 `offline`）；但**跨节点数据面尚未打通**，`shield.cluster.query` 必然 `service_not_found`、跨节点投递尚未实现。未配置 `cluster.node_id` 时整条路径不激活，单节点部署不受影响。远端连接失败的 degrade 契约（见 [官方可选模块契约](optional-modules.md) 的"必须持续暴露 unhealthy 状态"）已满足：故障节点如实暴露 `offline`。
 
 **Phase 1 不做：**
 - 动态服务发现。

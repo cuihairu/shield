@@ -76,29 +76,35 @@ Lua: shield.send / shield.call("node-b:room", ...)
   自驱动、route cache、`parse_remote_target`、注入式投递接缝）；CI 新增
   `SHIELD_ENABLE_CLUSTER=ON` 的 Cluster job（`ctest -L cluster`）。
 
-### M2 transport：握手 + 心跳（CAF middleman，2~3 天）
+### M2 transport：握手 + 心跳（CAF middleman，2~3 天）✅ 已落地（2026-09）
 
 - `ClusterTransport` 以 CAF actor 形态实现：
   - 服务端：`middleman().publish(actor, port)` 绑定 `cluster.listen`；
-  - 客户端：对每个静态 peer `middleman().remote_actor("shield-cluster", host, port)`，
-    断线按 `heartbeat_interval_ms` 退避重连。
-- CAF 强类型消息（CAF 自带序列化，不引入 JSON envelope）：
+  - 客户端：对每个静态 peer 经 middleman actor 异步拨号（`connect_atom`，
+    2s 超时；**不用** `remote_actor()`——其内部 `infinite` 超时会卡死重连循环，
+    对端重启窗口即触发），断线按 `heartbeat_interval_ms` 重试。
+- CAF 强类型消息（CAF 自带序列化，不引入 JSON envelope；`inspect()`
+  手写——`CAF_ADD_TYPE_ID` 只注册类型身份，不生成序列化）：
 
 ```cpp
 struct hello { std::string node_id; uint64_t epoch; uint32_t proto_version; };
-struct hello_ack { std::string node_id; uint64_t epoch; };
+struct hello_ack { std::string node_id; uint64_t epoch; uint32_t proto_version; };
 struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
-struct peer_down { std::string node_id; };
 ```
 
-- 握手成功：以对端宣告的 `node_id/epoch` 替换 address 占位 → 置 `Online`，
-  触发 `on_peer_up`；此后周期 `heartbeat`，停发即由 M1 的 `tick()` 降级。
-- 接线：bootstrap `initialize()` 创建 transport 并
-  `set_remote_send_fn`（M4 前先注入空实现）。
+- 握手成功：以对端宣告的 `node_id/epoch` 替换 address 占位 → 置 `Online`。
+  身份采纳只在拨号侧（ack sender == 拨号所得 proxy，与 peer 条目一一对应，
+  不解析对端播报地址）；两侧互拨因此互相采纳。`on_peer_up` 未单设，由
+  `on_handshake`/`on_heartbeat` 承担。
+- 接线：bootstrap 在 actor system 构建后创建/启动 transport；listen 失败
+  即初始化失败。注意集群 wire 类型必须在任何 `actor_system` 构造前注册
+  （`init_cluster_caf_types()`，与 `initialize_caf_types()` 并列）。
 - 安全注记：CAF 端口无鉴权，Phase 1 以内网隔离为前提；`hello` 预留
   `proto_version` 字段，后续可加 shared secret 校验。
-- 测试：同机双节点集成测试（两个 ClusterManager + 两个端口）：
-  握手上线、杀对端后 `tick()` 降级、对端恢复重连。
+- 测试：`test_cluster_manager.cpp` 扩至 15 例（握手采纳、epoch 失效、
+  心跳恢复、下线清路由、握手超时降级）；`test_cluster_transport.cpp`
+  双 `caf::actor_system` 真实 BASP 集成测试（握手、心跳保活、杀对端
+  即 offline、同端口重启重连且新 epoch 清路由）。
 
 ### M3 路由学习（1 天）
 
@@ -170,14 +176,15 @@ struct envelope_reply { uint64_t call_session; std::string result_json; std::str
 
 ## 7. 风险与开放问题
 
-1. **CAF middleman 接合**：项目对 CAF 的使用偏浅，middleman 的
-   publish/remote_actor 与手写 actor 系统的细节（端口占用处理、异步
-   remote_actor 解析失败路径）需在 M2 首日打样验证。
+1. **CAF middleman 接合** ✅ M2 打样已验证：publish/`connect_atom` 异步拨号
+   可行；踩坑实录——`remote_actor()` 内部 `infinite` 超时会卡死重连循环
+   （已改带超时的异步拨号）；`anon_send` 不携带 sender，hello/ack 必须用
+   `self->send` 才能让对端回包；集群 wire 类型必须在 `actor_system` 构造前
+   注册，否则 CAF 直接 CAF_CRITICAL。
 2. **call 回包与协程恢复**：跨节点 `envelope_reply` 与既有
    `call_session`/coroutine 机制的对接是最大单项风险；若接合代价过高，
    退路是先交付 send（单向）与 call_timeout（独立临时 session）。
-3. **降级可见性**：M1 落地后（M2 之前）所有 peer 将如实显示
-   `suspect/offline`——比假 online 诚实，但依赖旧假象的运维看板会先"变红"，
-   属预期行为，发布说明需注明。
+3. **降级可见性** ✅ M2 后失效：peer 视图即真实连接视图（握手成功才
+   `online`），不存在假象期；看板语义与真实状态一致。
 4. **开放问题**：`cluster.listen` 需要鉴权/加密（Phase 2）；多网卡
    advertise 地址（`hello` 载荷是否携带可达地址）在静态 peers 下暂不需要。

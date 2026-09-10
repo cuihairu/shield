@@ -76,7 +76,7 @@ optional module 初始化失败默认 fail fast。例外必须由模块自己的
 | `shield_server` | 启动失败 | fail fast | 无 |
 | `shield_ops` | 启动失败 | fail fast；管理端口绑定失败也 fail fast | metrics exporter 后端短暂失败可保持 unhealthy |
 
-> `shield_cluster` 实现状态注记（2026-09，M1 后）：心跳调度已落地（M1）——peers 不再被持续报告为 `online`，会按 `online → suspect → offline` 如实降级并持续暴露 unhealthy，"持续暴露 unhealthy"契约的前半段已满足。跨节点 transport 仍未实现（不连接 peer、不监听端口、无握手与心跳交换），"远端连接失败"场景本身尚未发生，完整 degrade 契约以 transport 落地（方案见 [cluster 实现方案](cluster-implementation-plan.md)）为前提。详细实测行为见 [集群运行时语义](runtime-cluster.md) 的 Phase 1 实现范围。
+> `shield_cluster` 实现状态注记（2026-09，M2 后）：心跳调度（M1）与 CAF middleman transport（M2）均已落地——节点绑定 `cluster.listen`、与静态 peers 握手（采纳对端 `node_id`/`epoch`）、按节拍互发心跳，对端退出即刻 `offline` 并持续暴露 unhealthy，degrade 契约（"远端连接失败可退化，但必须持续暴露 unhealthy 状态"）已满足。跨节点数据面（route 学习、`shield.cluster.query` 命中、跨节点投递）尚未实现，见 [cluster 实现方案](cluster-implementation-plan.md) 与 [集群运行时语义](runtime-cluster.md) 的 Phase 1 实现范围。
 
 ### 5. 只沿公开依赖方向扩展
 

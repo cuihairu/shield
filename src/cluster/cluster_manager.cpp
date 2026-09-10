@@ -22,8 +22,10 @@ struct ClusterManager::Impl {
     ClusterConfig config;
     uint64_t node_epoch = 0;
     std::unordered_map<std::string, NodeInfo> nodes;
-    // Remote route cache: "node_id:service_name" -> service_id
-    std::unordered_map<std::string, std::string> route_cache;
+    // Remote route cache, bucketed per node: node_id -> (name -> service_id).
+    std::unordered_map<std::string,
+                       std::unordered_map<std::string, std::string>>
+        route_cache;
     mutable std::shared_mutex mutex;
     RemoteSendFn remote_send_fn;
     bool running = false;
@@ -47,7 +49,18 @@ struct ClusterManager::Impl {
 
         std::unique_lock lock(mutex);
         for (auto& [id, node] : nodes) {
-            if (node.state == NodeState::Online) {
+            if (node.state == NodeState::Connecting) {
+                // Handshake never completed within the offline window: the
+                // dial target is treated as confirmed unreachable.
+                if (now - node.connected_at_ms > config.offline_timeout_ms) {
+                    node.state = NodeState::Offline;
+                    ++changes;
+                    auto& log = shield::log::get_logger("cluster");
+                    SHIELD_LOG_WARNING(log, "Node " + id +
+                                                " handshake timed out, now "
+                                                "offline");
+                }
+            } else if (node.state == NodeState::Online) {
                 // Check if heartbeat timeout exceeded.
                 if (now - node.last_heartbeat_ms > config.suspect_timeout_ms) {
                     node.state = NodeState::Suspect;
@@ -67,15 +80,19 @@ struct ClusterManager::Impl {
         return changes;
     }
 
-    std::string route_key(const std::string& node_id,
-                          const std::string& service_name) const {
-        return node_id + ":" + service_name;
+    // Peers are keyed by node_id after adoption but by dial address before;
+    // address is the only stable identifier across the rename.
+    std::unordered_map<std::string, NodeInfo>::iterator find_by_address(
+        const std::string& address) {
+        for (auto it = nodes.begin(); it != nodes.end(); ++it) {
+            if (it->second.address == address) return it;
+        }
+        return nodes.end();
     }
 
     void add_peer(const std::string& address) {
-        // Extract node_id from address or use address as placeholder.
-        // In Phase 1, peers are just addresses; node_id is learned during
-        // handshake.
+        // Peers start in Connecting; the node_id is learned during the
+        // handshake (on_handshake renames the entry).
         NodeInfo info;
         info.address = address;
         info.state = NodeState::Connecting;
@@ -111,15 +128,12 @@ void ClusterManager::start() {
                         " listen=" + impl_->config.listen_address +
                         " peers=" + std::to_string(impl_->config.peers.size()));
 
-    // Phase 1 (M1): peers start online as a static-config assumption. No
-    // transport exists yet, so no heartbeat ever refreshes them; the
-    // scheduler thread below then degrades every peer honestly
-    // (online -> suspect -> offline) once the heartbeat windows lapse.
-    // A real handshake will replace this marking (M2).
-    for (auto& [id, node] : impl_->nodes) {
-        node.state = NodeState::Online;
-        node.last_heartbeat_ms = Impl::now_ms();
-    }
+    // Phase 1 (M2): peers stay Connecting until the transport completes a
+    // real handshake (on_handshake adopts the announced identity and marks
+    // them Online). Without a transport they degrade honestly
+    // (Connecting -> Offline) once the offline window lapses — run_tick()
+    // below enforces that, so a configured-but-absent peer is never
+    // reported as healthy.
 
     SHIELD_LOG_INFO(log, "Cluster started with " +
                              std::to_string(impl_->nodes.size()) + " peers");
@@ -190,18 +204,17 @@ const NodeInfo* ClusterManager::find_node(const std::string& node_id) const {
 std::string ClusterManager::query_remote(
     const std::string& node_id, const std::string& service_name) const {
     std::shared_lock lock(impl_->mutex);
-    auto it = impl_->route_cache.find(impl_->route_key(node_id, service_name));
-    if (it != impl_->route_cache.end()) {
-        return it->second;
-    }
-    return "";
+    auto node_it = impl_->route_cache.find(node_id);
+    if (node_it == impl_->route_cache.end()) return "";
+    auto svc_it = node_it->second.find(service_name);
+    return svc_it != node_it->second.end() ? svc_it->second : "";
 }
 
 void ClusterManager::register_route(const std::string& node_id,
                                     const std::string& service_name,
                                     const std::string& service_id) {
     std::unique_lock lock(impl_->mutex);
-    impl_->route_cache[impl_->route_key(node_id, service_name)] = service_id;
+    impl_->route_cache[node_id][service_name] = service_id;
 }
 
 bool ClusterManager::parse_remote_target(std::string_view target,
@@ -232,6 +245,58 @@ bool ClusterManager::send_remote(const std::string& target_node,
                                      args_json);
     }
     return false;
+}
+
+void ClusterManager::on_handshake(const std::string& address,
+                                  const std::string& node_id, uint64_t epoch) {
+    std::unique_lock lock(impl_->mutex);
+    auto it = impl_->find_by_address(address);
+    if (it == impl_->nodes.end()) return;  // unknown dial target
+    auto& info = it->second;
+    if (info.epoch != epoch) {
+        // Fresh identity (first handshake, or the peer restarted and drew a
+        // new epoch): cached routes for this node are stale.
+        impl_->route_cache.erase(info.node_id);
+        info.epoch = epoch;
+    }
+    info.state = NodeState::Online;
+    info.last_heartbeat_ms = Impl::now_ms();
+    if (info.node_id != node_id) {
+        // Rename the placeholder entry under the announced identity.
+        NodeInfo renamed = info;
+        renamed.node_id = node_id;
+        impl_->nodes.erase(it);
+        impl_->nodes[node_id] = std::move(renamed);
+    }
+}
+
+void ClusterManager::on_heartbeat(const std::string& node_id) {
+    std::unique_lock lock(impl_->mutex);
+    auto it = impl_->nodes.find(node_id);
+    if (it == impl_->nodes.end()) return;  // not adopted yet; hello will do
+    auto& info = it->second;
+    if (info.state == NodeState::Suspect || info.state == NodeState::Offline) {
+        auto& log = shield::log::get_logger("cluster");
+        SHIELD_LOG_INFO(log, "Node " + node_id + " is back online");
+        info.state = NodeState::Online;
+    }
+    info.last_heartbeat_ms = Impl::now_ms();
+}
+
+void ClusterManager::on_peer_down(const std::string& address) {
+    std::unique_lock lock(impl_->mutex);
+    auto it = impl_->find_by_address(address);
+    if (it == impl_->nodes.end()) return;
+    auto& log = shield::log::get_logger("cluster");
+    SHIELD_LOG_WARNING(log, "Connection to peer " + it->second.node_id +
+                                " lost, node is offline");
+    it->second.state = NodeState::Offline;
+    impl_->route_cache.erase(it->second.node_id);
+}
+
+void ClusterManager::clear_routes(const std::string& node_id) {
+    std::unique_lock lock(impl_->mutex);
+    impl_->route_cache.erase(node_id);
 }
 
 std::string ClusterManager::check_node_reachable(

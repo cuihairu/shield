@@ -287,6 +287,22 @@ if(SHIELD_ENABLE_CLUSTER)
         LABELS "cluster"
         TIMEOUT 60)
     shield_copy_runtime_dlls(test_cluster_manager)
+
+    # Two CAF actor systems talking real BASP over loopback.
+    add_executable(test_cluster_transport cluster/test_cluster_transport.cpp)
+    target_link_libraries(test_cluster_transport
+        PRIVATE
+            shield_cluster
+            Boost::unit_test_framework
+            Boost::headers
+    )
+    target_include_directories(test_cluster_transport
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_cluster_transport COMMAND test_cluster_transport)
+    set_tests_properties(test_cluster_transport PROPERTIES
+        LABELS "cluster"
+        TIMEOUT 120)
+    shield_copy_runtime_dlls(test_cluster_transport)
 endif()
 
 # Coverage-focused unit tests (one executable per src/ module).
