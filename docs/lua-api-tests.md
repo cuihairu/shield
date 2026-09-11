@@ -149,11 +149,11 @@ Harness 要求：
 
 | Case | 设置 | 操作 | 断言 |
 | --- | --- | --- | --- |
-| LAPI-009-01 | gateway service | simulated connect | `on_connect(session)` called |
-| LAPI-009-02 | client frame decoded | deliver payload | `on_client_message(session, payload)` called |
-| LAPI-009-03 | disconnect | close session | `on_disconnect(session, reason)` called |
-| LAPI-009-04 | send queue full | `session:send` | `false, session_send_queue_full` |
-| LAPI-009-05 | stale session | send after close | `false, session_closed` |
+| LAPI-009-01 | gateway service | typed Bound | `on_client_bound(ctx, client)` called |
+| LAPI-009-02 | ingress request forms | deliver decoded/raw body | 编译绑定 `handler(ctx, client, request)` called;request 按 descriptor 契约成形 |
+| LAPI-009-03 | disconnect | typed Disconnected | `on_disconnect(ctx, client, reason)` called |
+| LAPI-009-04 | kick | typed Unbound | `on_client_unbound(ctx, client, reason)` called |
+| LAPI-009-05 | unknown client | ingress before bind | handler 正常执行,无 session 记录 |
 
 ## LAPI-010 Legacy API Rejection
 

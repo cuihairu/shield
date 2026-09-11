@@ -1535,59 +1535,9 @@ const RouteEntry* ProtocolPipeline::resolve_outbound_route(DecodedBody& body) {
         }
     }
 
-    if (body.has_message() && body.message->is_object()) {
-        const auto& message = *body.message;
-        if (message.contains("route_id")) {
-            saw_route_hint = true;
-        }
-        if (message.contains("route_id") &&
-            message["route_id"].is_number_unsigned()) {
-            const auto route_id = message["route_id"].get<std::uint32_t>();
-            if (const auto* route = routes_.find(route_id)) {
-                body.route_id = route_id;
-                if (body.route_name.empty()) {
-                    body.route_name = route->debug_name;
-                }
-                return route;
-            }
-        }
-        if (message.contains("msg_id")) {
-            saw_route_hint = true;
-        }
-        if (message.contains("msg_id") &&
-            message["msg_id"].is_number_unsigned()) {
-            const auto route_id = message["msg_id"].get<std::uint32_t>();
-            if (const auto* route = routes_.find(route_id)) {
-                body.route_id = route_id;
-                if (body.route_name.empty()) {
-                    body.route_name = route->debug_name;
-                }
-                return route;
-            }
-        }
-        if (message.contains("route")) {
-            saw_route_hint = true;
-        }
-        if (message.contains("route") && message["route"].is_string()) {
-            const auto route_name = message["route"].get<std::string>();
-            if (const auto* route = routes_.find_by_name(route_name)) {
-                body.route_id = route->route_id;
-                body.route_name = route_name;
-                return route;
-            }
-        }
-        if (message.contains("method")) {
-            saw_route_hint = true;
-        }
-        if (message.contains("method") && message["method"].is_string()) {
-            const auto route_name = message["method"].get<std::string>();
-            if (const auto* route = routes_.find_by_name(route_name)) {
-                body.route_id = route->route_id;
-                body.route_name = route_name;
-                return route;
-            }
-        }
-    }
+    // [M3] The route travels in the header (ClientEgress.route_id), never in
+    // the payload: message bodies are pure business data, so JSON fields like
+    // route_id/msg_id/route/method are no longer scanned for route hints.
 
     if (!saw_route_hint) {
         if (const auto* route = routes_.only()) {

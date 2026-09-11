@@ -244,7 +244,7 @@ network:
 3. 核心内置 `raw/json` 工厂；`msgpack` 等插件 codec 名在 `create_body_codec` 中保留 `PassthroughBodyCodec` 占位（仅供直接单测）。`build_protocol_pipeline_from_json` 对非内置 codec 在缺少 `body.provider` 或 provider 解析失败时直接构建报错（bootstrap 启动期 probe 即失败），不再静默安装运行时才爆炸的占位 codec。
 4. 已让 `body.provider` 触发插件 codec 路径；codec vtable 在监听器启动时解析一次并被 pipeline 工厂捕获（插件不可热卸载，shutdown 先拆 listener/session 再关 PluginHost，vtable 不会悬空），并覆盖 provider 缺失/codec 不匹配/无 provider 的构建期报错测试。
 5. 已实现 protobuf 插件的 `FileDescriptorSet`、schema/route 映射、decode、encode 和真实 descriptor round-trip 测试。
-6. 已实现 inbound decode → Lua：codec 插件解码出的 canonical JSON message 由 `LuaGatewayBridge` 作为 `on_client_message(route_id, client_context, body, message)` 的第 4 个参数交给 Lua table（无 codec 插件解码时为 nil），并有 fake provider pipeline 的端到端测试覆盖。Lua egress 自动编码（Lua table → 插件 encode → wire bytes）尚未实现，业务侧仍需显式编码后 `session:send`。
+6. 已实现 inbound decode → Lua：codec 插件解码出的 canonical JSON message 作为 `ClientIngress.decoded_request` 随行到目标 VM，直接成为编译绑定 `handler(ctx, client, request)` 的 request table（无 codec 插件解码时按 descriptor 契约由目标 VM 解码或传原始字节），并有 fake provider pipeline 的端到端测试覆盖。Lua egress 自动编码（Lua table → 插件 encode → wire bytes）尚未实现，业务侧仍需显式编码后经 `shield.client_rpc` 出站。
 7. 已在 CI 中启用 `SHIELD_BUILD_PLUGIN_PROTOBUF=ON` / `SHIELD_BUILD_PLUGIN_MSGPACK=ON`，protobuf 插件的 `test_protocol_protobuf_plugin` 和 `test_protocol_msgpack_plugin` 在 Ubuntu/macOS/Windows 三平台 CI 中通过。
 8. 已新增 `protocol.msgpack` provider 和插件 ABI round-trip 测试；已移除核心内置 `MsgpackBodyCodec`，`msgpack` 现为纯插件 codec。
 9. 已新增 `protocol.sproto` provider，支持 `.sproto` schema 加载、decode/encode 和可选 0-packing 压缩。

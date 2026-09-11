@@ -186,7 +186,7 @@
 | `restart` | 否 | 服务异常退出后的重启策略 |
 | `limits` | 否 | 单 service 资源限制 |
 
-`actors[].network` 声明的是 Gateway 边界 owner，不是暴露客户端业务回调的 Lua service。它持有 listener、live session 和 session 的单一 target 绑定；业务 Lua 不接收 `on_client_message`，也不获得 `SessionHandle`。第一版 TCP listener 仍要求 `instances: 1`，确保每个 live session 只有一个 Gateway owner。
+`actors[].network` 声明的是 Gateway 边界 owner，不是暴露客户端业务回调的 Lua service。它持有 listener、live session 和 session 的单一 target 绑定；业务 Lua 不接收通用消息回调（入站只经 spawn 期编译的 RPC 绑定 `handler(ctx, client, request)` 到达 target），也不获得 `SessionHandle`。第一版 TCP listener 仍要求 `instances: 1`，确保每个 live session 只有一个 Gateway owner。
 
 `actors[].network.protocol` 绑定 session 固定使用的 `ProtocolProfile`，只描述 wire 形态（envelope、body codec、限制）。客户端 RPC 路由的唯一静态来源是 **`actors[].rpc.routes`**：每个 actor 声明自己的 descriptor 条目（`id`/`name`/`binding`/`direction`/`owner_service`/`requires_auth`/`action`/`lazy_decode` 与 schema 元数据，字段契约见 [protocol-routing-design.md](protocol-routing-design.md)）。config 校验单 actor 的字段与唯一性；bootstrap 把所有 actor 的条目合并为全局 descriptor 表（跨 actor 的 `id`/`name` 冲突导致启动失败）并注入 listener pipeline；每个 Lua service 在 spawn 时只编译 `owner_service == 自身` 的条目，c2s/bidi 的 `binding` 解析不到模块函数即 spawn 失败（`handler_missing`）。**`network.protocol.routes` 内联路由已删除**，配置中出现即报错（pre-1.0 不做兼容读）。
 

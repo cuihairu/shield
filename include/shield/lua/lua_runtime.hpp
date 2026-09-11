@@ -10,6 +10,8 @@
 #include <string_view>
 #include <vector>
 
+#include "shield/core/service_message.hpp"
+
 namespace shield::lua {
 
 // Opaque handle to a Lua VM state
@@ -206,6 +208,19 @@ public:
                                        uint64_t call_session = 0,
                                        LuaServiceManager* manager = nullptr,
                                        std::string_view service_id = "");
+
+    // Invoke a compiled client-RPC handler (route_id -> handler, resolved at
+    // spawn) inside a Lua coroutine: handler(ctx, client, request). The client
+    // identity materializes as a read-only ClientContext userdata from the
+    // marker in ingress.context. Client ingress is fire-and-forget: there is
+    // no call session to complete, and a handler error routes through the
+    // service error hook with error_type "client_rpc". The request value
+    // travels inside ingress.decoded_request (canonical message, JSON-decoded
+    // body, or raw bytes as a JSON string — normalized by the dispatcher).
+    bool invoke_client_rpc(std::shared_ptr<LuaVM> vm, sol::function handler,
+                           const ClientIngress& ingress, std::string* error,
+                           LuaServiceManager* manager = nullptr,
+                           std::string_view service_id = "");
 
     // Invoke a named hook function on a service's module table.
     // The hook is called as hook(err, context_table) where context_table

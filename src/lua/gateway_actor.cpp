@@ -2,6 +2,7 @@
 #include "shield/lua/gateway_actor.hpp"
 
 #include <caf/event_based_actor.hpp>
+#include <caf/send.hpp>
 #include <nlohmann/json.hpp>
 #include <utility>
 
@@ -170,8 +171,21 @@ void handle_client_bind(GatewayDeps& deps, const ClientBindRequest& request) {
             nlohmann::json::array(
                 {fresh_context(deps, request.context, updated).to_json()}));
     }
-    // [M3] A typed ClientControlMessage::Bound is delivered to the new
-    // target service together with the ingress dispatch flip.
+    // Notify the new target that the session is now bound to it (ingress
+    // dispatch flips with the binding, so from here on its handlers see the
+    // client). Fire-and-forget binds notify too — the target must learn
+    // about its new client either way. Best-effort: a null manager (bare unit
+    // tests) simply skips the notification.
+    if (deps.manager != nullptr) {
+        if (caf::actor target =
+                deps.manager->service_actor(updated.target_service);
+            target != nullptr) {
+            ClientControlMessage bound;
+            bound.kind = ClientControlMessage::Kind::Bound;
+            bound.context = fresh_context(deps, request.context, updated);
+            caf::anon_send(target, std::move(bound));
+        }
+    }
 }
 
 void handle_client_close(GatewayDeps& deps, const ClientCloseRequest& request) {
@@ -183,12 +197,31 @@ void handle_client_close(GatewayDeps& deps, const ClientCloseRequest& request) {
                                std::to_string(request.context.session_id));
         return;
     }
+    const std::string reason = request.reason.empty()
+                                   ? std::string(net::CloseReason::KICKED)
+                                   : request.reason;
+    // Tell the current target it is losing the client before the binding is
+    // invalidated: the bridge's disconnect path only notifies a live target,
+    // so the kick must deliver on_client_unbound itself.
+    const net::SessionBinding binding = session->binding();
+    if (!binding.target_service.empty() && deps.manager != nullptr) {
+        if (caf::actor target =
+                deps.manager->service_actor(binding.target_service);
+            target != nullptr) {
+            ClientControlMessage unbound;
+            unbound.kind = ClientControlMessage::Kind::Unbound;
+            unbound.context = ClientContextData{
+                deps.gateway_name, request.context.session_id, binding.epoch,
+                binding.player_id, binding.protocol_profile_id};
+            unbound.reason = reason;
+            caf::anon_send(target, std::move(unbound));
+        }
+    }
     // Invalidate first: outstanding references (old epochs) must fail from
     // this point on, even before the socket actually closes.
     session->apply_binding("", "", net::kAnyEpoch, nullptr);
     deps.registry->remove(request.context.session_id);
-    session->close(request.reason.empty() ? net::CloseReason::KICKED
-                                          : request.reason);
+    session->close(reason);
 }
 
 // -- Actor

@@ -53,24 +53,33 @@ struct MessageEnvelope {
 
 ### ClientIngress
 
-客户端 RPC 进入目标 actor 时使用：
+客户端 RPC 进入目标 actor 时使用（自架构纠偏 M3 起为入站唯一入口）：
 
 ```cpp
 struct ClientIngress {
-  ServiceAddress gateway_address;
-  uint32_t session_id;
-  uint32_t session_epoch;
-  std::string player_id;          // 认证后有值，预登录为 nil
-  std::string protocol_profile_id;
-  uint32_t route_id;              // 来自 wire header
-  ByteBuffer body_bytes;          // 纯业务数据，原样传递
+  ClientContextData context;      // {gateway_address, session_id, session_epoch,
+                                  //  player_id, protocol_profile_id}
+  uint32_t route_id = 0;          // 来自 wire header
+  std::vector<uint8_t> body_bytes;  // 纯业务数据，原样传递
+  std::optional<nlohmann::json> decoded_request;  // pipeline codec 产出的规范 JSON
 };
 ```
 
 - 这是 CAF/Shield runtime 内部消息，不是客户端 wire 格式，也不是 Lua API。
 - `route_id` 来自 wire header 的 frame decode，不是从 body 提取。
-- `body_bytes` 是 wire frame 的 body 部分，由目标 VM 按 RPC schema 解码。
-- CAF behavior 按内部消息类型区分 `ClientIngress`、普通 service send/call、生命周期控制等。
+- `body_bytes` 是 wire frame 的 body 部分。handler 的 request 值按 descriptor
+  契约成形：`decoded_request` 优先；否则 request_codec 为空或 `json` 的 route
+  由目标 VM 把 `body_bytes` 按 JSON 解码（失败回退原始字节字符串）；其他
+  request_codec（如 `raw`）始终传原始字节字符串。
+- 目标 VM 按 spawn 期编译的 route 表把 `route_id` 直接分发到
+  `handler(ClientContext, request)`。
+- CAF behavior 按内部消息类型区分 `ClientIngress`、普通 service send/call、
+  生命周期控制等。
+
+session 生命周期（接入/断开/被踢）以 typed `ClientControlMessage` 传递，
+Lua 侧约定：`Bound` → `on_client_bound(ctx, client)`，`Disconnected` →
+`on_disconnect(ctx, client, reason)`，`Unbound` →
+`on_client_unbound(ctx, client, reason)`，`Reconnected` 预留（当前警告并丢弃）。
 
 ### ClientEgress
 
@@ -78,14 +87,15 @@ struct ClientIngress {
 
 ```cpp
 struct ClientEgress {
-  uint32_t session_id;
-  uint32_t session_epoch;
-  uint32_t route_id;              // 由 codegen helper 绑定
-  ByteBuffer body_bytes;          // 按 response_schema 编码的业务数据
+  ClientContextData context;      // 携带 session_id + session_epoch
+  uint32_t route_id = 0;          // 由 shield.client_rpc.<name> helper 绑定
+  std::vector<uint8_t> body_bytes;  // 按 response_schema 编码的业务数据
+  std::optional<nlohmann::json> message;
 };
 ```
 
-- Gateway 收到后校验 session_id + session_epoch，把 route_id 写入 wire header，body_bytes 作为 body。
+- Gateway actor 收到后校验 session 存在、存活、epoch 相等、owner 匹配，把
+  route_id 写入 wire header，body_bytes 作为 body。
 
 ### 客户端 RPC 状态码
 

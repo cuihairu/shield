@@ -56,10 +56,14 @@ BOOST_AUTO_TEST_CASE(MessageStructsRoundTripDefaultFields) {
     ServiceMessage msg;
     BOOST_CHECK_EQUAL(msg.deadline_ms, 0);
     BOOST_CHECK_EQUAL(msg.call_session, 0u);
-    BOOST_CHECK_EQUAL(msg.session_id, 0u);
-    BOOST_CHECK_EQUAL(msg.session_epoch, 0u);
     BOOST_CHECK(msg.priority == MessagePriority::Normal);
     BOOST_CHECK(msg.args.is_null());
+
+    ClientIngress ingress;
+    BOOST_CHECK_EQUAL(ingress.route_id, 0u);
+    BOOST_CHECK(ingress.context.session_id == 0u);
+    BOOST_CHECK(!ingress.decoded_request.has_value());
+    BOOST_CHECK(ingress.body_bytes.empty());
 
     SyncCallMessage sync;
     BOOST_CHECK_EQUAL(sync.sync_session, 0u);

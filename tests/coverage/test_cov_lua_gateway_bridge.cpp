@@ -1,4 +1,4 @@
-// Coverage tests for src/lua/lua_gateway_bridge.cpp
+// Coverage tests for src/lua/lua_gateway_bridge.cpp (M3 typed dispatch).
 #define BOOST_TEST_MODULE CovLuaGatewayBridge
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
@@ -25,18 +25,36 @@ using namespace shield::lua;
 
 namespace {
 
+// M3-contract service: typed control messages land in on_client_bound /
+// on_disconnect / on_client_unbound; ingress lands in the compiled c2s
+// bindings declared in the spawn opts. Every entry is appended to `log` so
+// the tests can assert on what actually reached the VM.
 const char* kBridgeServiceScript = R"lua(
 local M = {}
 local log = {}
+local function key_of(client)
+    if type(client) == "userdata" then
+        local ok, id = pcall(client.session_id, client)
+        if ok then return id end
+    elseif type(client) == "table" then
+        return client.session_id
+    end
+    return nil
+end
 function M.on_init(args) end
-function M.on_connect(ctx, info) table.insert(log, {"on_connect"}) return "ok" end
-function M.on_disconnect(ctx, info, reason) table.insert(log, {"on_disconnect"}) return "ok" end
-function M.on_client_message(ctx, route_id, client_ctx, body, message)
-  table.insert(log, {"on_client_message", route_id})
-  return "ok"
+function M.on_client_bound(ctx, client)
+  table.insert(log, {"bound", key_of(client)}) return true
+end
+function M.on_disconnect(ctx, client, reason)
+  table.insert(log, {"disconnected", reason}) return true
+end
+function M.on_client_unbound(ctx, client, reason)
+  table.insert(log, {"unbound", reason}) return true
+end
+function M.h_move(ctx, client, request)
+  table.insert(log, {"move", key_of(client), request}) return true
 end
 function M.get_log(ctx) return log end
-function M.ping(ctx) return "pong" end
 return M
 )lua";
 
@@ -46,11 +64,25 @@ std::string write_script(const std::string& path, const char* content) {
     return path;
 }
 
+// Two c2s routes: 0x4001 open, 0x6001 auth-required. Both bind to h_move.
 nlohmann::json opts_for(const std::string& name) {
     return {
         {"name", name},
         {"args", nlohmann::json::object()},
         {"config", nlohmann::json::object()},
+        {"rpc",
+         {{"routes", nlohmann::json::array({
+                         nlohmann::json{{"id", 0x4001},
+                                        {"name", "move_open"},
+                                        {"direction", "c2s"},
+                                        {"binding", "h_move"},
+                                        {"requires_auth", false}},
+                         nlohmann::json{{"id", 0x6001},
+                                        {"name", "move_auth"},
+                                        {"direction", "c2s"},
+                                        {"binding", "h_move"},
+                                        {"requires_auth", true}},
+                     })}}},
     };
 }
 
@@ -157,6 +189,20 @@ shield::transport::DispatchResult make_packet(
     return dispatch;
 }
 
+// Scan helper: the anon_send mailbox does not guarantee an ordering between
+// control and ingress messages observable from the test thread, so asserts
+// look for the expected entry anywhere in the log.
+inline const nlohmann::json* find_entry(const nlohmann::json& log,
+                                        const std::string& kind) {
+    for (const auto& entry : log) {
+        if (entry.is_array() && !entry.empty() &&
+            entry[0].get<std::string>() == kind) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 struct CafInitFixture {
@@ -182,10 +228,10 @@ BOOST_AUTO_TEST_CASE(NullSessionsShortCircuit) {
     BOOST_CHECK(true);
 }
 
-// on_connect against a missing auth service: send_system fails and the
-// failure is logged (warning branch), while the initial binding is installed
-// and the session is registered with the gateway registry.
-BOOST_AUTO_TEST_CASE(OnConnectSendFailureLogsWarning) {
+// on_connect against a missing auth service: the initial binding is
+// installed and the session is registered with the gateway registry, and the
+// missing-actor warning branch fires.
+BOOST_AUTO_TEST_CASE(OnConnectGhostAuthLogsWarning) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -206,8 +252,26 @@ BOOST_AUTO_TEST_CASE(OnConnectSendFailureLogsWarning) {
     BOOST_CHECK(registry->find(101) != nullptr);
 }
 
-// on_packet rejection branches: not-ok packet, unknown route, wrong
-// direction, unauthenticated access to a protected route.
+// A null registry skips registration (both on_connect and on_disconnect)
+// without disturbing the binding install or the missing-actor warning.
+BOOST_AUTO_TEST_CASE(NullRegistrySkipsRegistration) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+    LuaGatewayBridge bridge(manager, "cov_ghost_auth", nullptr);
+
+    auto session = std::make_shared<MockSession>(
+        111, shield::net::RemoteAddress{"127.0.0.1", 6011});
+    bridge.on_connect(session);
+    BOOST_CHECK_EQUAL(session->binding().target_service, "cov_ghost_auth");
+
+    bridge.on_disconnect(session, "cov_null_registry");
+    BOOST_CHECK(true);
+}
+
+// on_packet rejection branches: not-ok packet, drop, forward-raw, unknown
+// route, wrong direction, unauthenticated access to a protected route.
 BOOST_AUTO_TEST_CASE(OnPacketRejectionBranches) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
@@ -253,20 +317,12 @@ BOOST_AUTO_TEST_CASE(OnPacketRejectionBranches) {
     auth_req.requires_auth = true;
     bridge.on_packet(session, make_packet(0x2002, &auth_req));
 
-    // Same route passes once the player is authenticated; no target service
-    // configured on this session -> "no target service" warning branch.
-    session->apply_binding("cov_game", "player-1", shield::net::kAnyEpoch,
-                           nullptr);
-    bridge.on_packet(session, make_packet(0x2002, &auth_req, false));
-
-    // No decoded body: body bytes come straight from the wire packet.
-    session->apply_binding("", "", shield::net::kAnyEpoch, nullptr);
     BOOST_CHECK(true);
 }
 
-// Route without logical name and empty session target: falls through to the
-// empty-target warning branch.
-BOOST_AUTO_TEST_CASE(OnPacketNoTargetService) {
+// A valid route on a session whose binding carries no target service hits
+// the empty-target warning branch (single target: no fallback exists).
+BOOST_AUTO_TEST_CASE(OnPacketEmptyTargetWarning) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -275,6 +331,7 @@ BOOST_AUTO_TEST_CASE(OnPacketNoTargetService) {
         manager, "cov_ghost_auth",
         std::make_shared<shield::lua::GatewaySessionRegistry>());
 
+    // Never on_connect-ed: default binding has an empty target_service.
     auto session = std::make_shared<MockSession>(
         103, shield::net::RemoteAddress{"127.0.0.1", 6003});
 
@@ -282,57 +339,13 @@ BOOST_AUTO_TEST_CASE(OnPacketNoTargetService) {
     route.route_id = 0x3001;
     route.direction = shield::transport::RouteDirection::Bidirectional;
     route.requires_auth = false;
-    bridge.on_packet(session, make_packet(0x3001, &route, false));
+    bridge.on_packet(session, make_packet(0x3001, &route));
     BOOST_CHECK(true);
 }
 
-// Route resolution ignores any per-route service notion: dispatch always
-// lands on the session's bound target service.
-BOOST_AUTO_TEST_CASE(OnPacketUsesSessionTargetService) {
-    caf::actor_system_config cfg;
-    caf::actor_system system(cfg);
-    LuaRuntime runtime;
-    LuaServiceManager manager(runtime, system);
-
-    const auto script = write_script("/tmp/opencode/cov_bridge_service.lua",
-                                     kBridgeServiceScript);
-    auto svc = manager.spawn(script, opts_for("cov_game").dump());
-    BOOST_REQUIRE(svc.success);
-    auto svc2 = manager.spawn(script, opts_for("cov_game_fallback").dump());
-    BOOST_REQUIRE(svc2.success);
-
-    LuaGatewayBridge bridge(
-        manager, "cov_ghost_auth",
-        std::make_shared<shield::lua::GatewaySessionRegistry>());
-    auto session = std::make_shared<MockSession>(
-        104, shield::net::RemoteAddress{"127.0.0.1", 6004});
-    session->reset_binding({svc2.service_id, "", "cov_ghost_auth", "", 0});
-
-    // Route-level logical_service routing is gone: the gateway forwards to
-    // the session's bound target unconditionally.
-    shield::transport::RouteEntry route;
-    route.route_id = 0x4001;
-    route.direction = shield::transport::RouteDirection::ClientToServer;
-    route.requires_auth = false;
-    bridge.on_packet(session, make_packet(0x4001, &route));
-
-    BOOST_CHECK(wait_until(
-        [&]() {
-            CallResult log = manager.call(svc2.service_id, "get_log",
-                                          nlohmann::json::array());
-            return log.success && log.values.is_array() &&
-                   log.values.size() == 1u && log.values[0].is_array() &&
-                   log.values[0].size() == 1u && log.values[0][0].is_array() &&
-                   log.values[0][0].size() == 2u &&
-                   log.values[0][0][0].get<std::string>() ==
-                       "on_client_message" &&
-                   log.values[0][0][1].get<uint32_t>() == 0x4001u;
-        },
-        std::chrono::seconds(3)));
-}
-
-// Ingress delivery failure: the target resolves to a dead service name.
-BOOST_AUTO_TEST_CASE(ClientIngressFailureLogsWarning) {
+// The bound target resolves to a service name with no actor: the delivery
+// failure warning branch fires.
+BOOST_AUTO_TEST_CASE(ClientIngressTargetActorMissing) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -353,39 +366,10 @@ BOOST_AUTO_TEST_CASE(ClientIngressFailureLogsWarning) {
     BOOST_CHECK(true);
 }
 
-// on_disconnect: null handled above; a live session drops its registry
-// entry, and a session with an empty target falls back to the auth service
-// name (ghost here -> failure warning branch).
-BOOST_AUTO_TEST_CASE(OnDisconnectFallbackAndFailure) {
-    caf::actor_system_config cfg;
-    caf::actor_system system(cfg);
-    LuaRuntime runtime;
-    LuaServiceManager manager(runtime, system);
-    auto registry = std::make_shared<shield::lua::GatewaySessionRegistry>();
-    LuaGatewayBridge bridge(manager, "cov_ghost_auth", registry);
-
-    // Session that was never connected: empty target falls back to the
-    // (missing) auth service, hitting the send-failure warning branch.
-    auto fresh = std::make_shared<MockSession>(
-        109, shield::net::RemoteAddress{"127.0.0.1", 6009});
-    bridge.on_disconnect(fresh, "cov_fresh");
-
-    auto session = std::make_shared<MockSession>(
-        106, shield::net::RemoteAddress{"127.0.0.1", 6006});
-    bridge.on_connect(session);
-    BOOST_CHECK_EQUAL(registry->size(), 1u);
-    BOOST_CHECK(registry->find(106) != nullptr);
-
-    bridge.on_disconnect(session, "cov_reason");
-
-    // The registry entry is gone; the binding itself is left to the socket
-    // teardown (egress rejects unknown sessions from here on).
-    BOOST_CHECK_EQUAL(registry->size(), 0u);
-    BOOST_CHECK_EQUAL(session->binding().target_service, "cov_ghost_auth");
-}
-
-// on_disconnect success path: a live target service receives the event.
-BOOST_AUTO_TEST_CASE(OnDisconnectDeliversToLiveTarget) {
+// Happy path end to end: on_connect delivers Bound to the live auth service,
+// authenticated ingress (decoded body carrying a canonical JSON message)
+// reaches the compiled binding, and on_disconnect delivers Disconnected.
+BOOST_AUTO_TEST_CASE(OnConnectIngressAndDisconnectHappyPath) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -396,39 +380,68 @@ BOOST_AUTO_TEST_CASE(OnDisconnectDeliversToLiveTarget) {
     auto svc = manager.spawn(script, opts_for("cov_auth").dump());
     BOOST_REQUIRE(svc.success);
 
-    LuaGatewayBridge bridge(
-        manager, svc.service_id,
-        std::make_shared<shield::lua::GatewaySessionRegistry>());
+    auto registry = std::make_shared<shield::lua::GatewaySessionRegistry>();
+    LuaGatewayBridge bridge(manager, svc.service_id, registry);
     auto session = std::make_shared<MockSession>(
         107, shield::net::RemoteAddress{"127.0.0.1", 6007});
-    session->reset_binding({svc.service_id, "", svc.service_id, "", 0});
+
+    bridge.on_connect(session);
+    BOOST_CHECK_EQUAL(session->target_service(), svc.service_id);
+    BOOST_CHECK_EQUAL(registry->size(), 1u);
+
+    // Authentication: the CAS install flips the player identity and bumps
+    // the epoch, so the protected route below is allowed.
+    BOOST_CHECK(session->apply_binding(svc.service_id, "player-9", 0, nullptr));
+
+    shield::transport::RouteEntry route;
+    route.route_id = 0x6001;
+    route.direction = shield::transport::RouteDirection::ClientToServer;
+    route.requires_auth = true;  // session has a player id, so allowed
+
+    auto dispatch = make_packet(0x6001, &route);
+    BOOST_REQUIRE(dispatch.decoded_body.has_value());
+    dispatch.decoded_body->message =
+        std::optional<nlohmann::json>(nlohmann::json{{"k", "v"}});
+    bridge.on_packet(session, dispatch);
 
     bridge.on_disconnect(session, "client_closed");
+    BOOST_CHECK_EQUAL(registry->size(), 0u);
 
+    // log = {{"bound", 107}, {"move", 107, {"k":"v"}}, {"disconnected",
+    // "client_closed"}} in some order -- the full typed lifecycle.
     BOOST_CHECK(wait_until(
         [&]() {
             CallResult log = manager.call(svc.service_id, "get_log",
                                           nlohmann::json::array());
-            return log.success && log.values.is_array() &&
-                   log.values.size() == 1u && log.values[0].is_array() &&
-                   log.values[0].size() == 1u && log.values[0][0].is_array() &&
-                   log.values[0][0].size() == 1u &&
-                   log.values[0][0][0].get<std::string>() == "on_disconnect";
+            if (!log.success || !log.values.is_array() ||
+                log.values.size() != 1u || !log.values[0].is_array() ||
+                log.values[0].size() != 3u) {
+                return false;
+            }
+            const auto& entries = log.values[0];
+            const nlohmann::json* bound = find_entry(entries, "bound");
+            const nlohmann::json* move = find_entry(entries, "move");
+            const nlohmann::json* disc = find_entry(entries, "disconnected");
+            return bound != nullptr && (*bound)[1].get<uint64_t>() == 107u &&
+                   move != nullptr && (*move)[1].get<uint64_t>() == 107u &&
+                   (*move)[2]["k"].get<std::string>() == "v" &&
+                   disc != nullptr &&
+                   (*disc)[1].get<std::string>() == "client_closed";
         },
         std::chrono::seconds(3)));
 }
 
-// on_connect success path plus a decoded ingress round trip through the
-// live auth service (regression guard for the happy path).
-BOOST_AUTO_TEST_CASE(OnConnectAndIngressHappyPath) {
+// No decoded body: body bytes come straight off the wire packet; a
+// non-JSON payload reaches the handler as the raw string fallback.
+BOOST_AUTO_TEST_CASE(OnPacketWithoutDecodedBodyUsesWireBytes) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    const auto script = write_script("/tmp/opencode/cov_bridge_service.lua",
-                                     kBridgeServiceScript);
-    auto svc = manager.spawn(script, opts_for("cov_auth2").dump());
+    const auto script =
+        write_script("/tmp/opencode/cov_bridge_wire.lua", kBridgeServiceScript);
+    auto svc = manager.spawn(script, opts_for("cov_wire").dump());
     BOOST_REQUIRE(svc.success);
 
     LuaGatewayBridge bridge(
@@ -436,73 +449,93 @@ BOOST_AUTO_TEST_CASE(OnConnectAndIngressHappyPath) {
         std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         108, shield::net::RemoteAddress{"127.0.0.1", 6008});
-
     bridge.on_connect(session);
-    BOOST_CHECK_EQUAL(session->target_service(), "cov_auth2");
-
-    // Authentication: the CAS install flips the player identity and bumps
-    // the epoch, so the protected route below is allowed.
-    BOOST_CHECK(session->apply_binding("cov_auth2", "player-9", 0, nullptr));
 
     shield::transport::RouteEntry route;
-    route.route_id = 0x6001;
+    route.route_id = 0x4001;
     route.direction = shield::transport::RouteDirection::ClientToServer;
-    route.requires_auth = true;  // session has a player id, so allowed
-    bridge.on_packet(session, make_packet(0x6001, &route));
+    route.requires_auth = false;
+    bridge.on_packet(session, make_packet(0x4001, &route, false));
 
+    // JSON-parse of "body" fails -> the descriptor contract's string
+    // fallback form. Both the Bound control message and the ingress land in
+    // the log (order not observed from the test thread).
     BOOST_CHECK(wait_until(
         [&]() {
             CallResult log = manager.call(svc.service_id, "get_log",
                                           nlohmann::json::array());
-            return log.success && log.values.is_array() &&
-                   log.values.size() == 1u && log.values[0].is_array() &&
-                   log.values[0].size() == 2u;
+            if (!log.success || !log.values.is_array() ||
+                log.values.size() != 1u || !log.values[0].is_array() ||
+                log.values[0].size() != 2u) {
+                return false;
+            }
+            const nlohmann::json* move = find_entry(log.values[0], "move");
+            return move != nullptr && (*move)[2].get<std::string>() == "body";
         },
         std::chrono::seconds(3)));
 }
 
-BOOST_AUTO_TEST_SUITE_END()
-
-// ---------------------------------------------------------------------------
-// Round-3: an on_packet dispatch whose decoded body carries a structured
-// message forwards the canonical JSON to the target service.
-// ---------------------------------------------------------------------------
-BOOST_AUTO_TEST_CASE(OnPacketForwardsDecodedMessage) {
+// Decoded body without a codec message: bytes still come from the decoded
+// body, and a JSON-decodable payload is parsed into the request table.
+BOOST_AUTO_TEST_CASE(OnPacketDecodedBodyWithoutMessageParsesJson) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    const auto script =
-        write_script("/tmp/opencode/cov_bridge_msg.lua", kBridgeServiceScript);
-    auto svc = manager.spawn(script, opts_for("cov_game").dump());
+    const auto script = write_script("/tmp/opencode/cov_bridge_decoded.lua",
+                                     kBridgeServiceScript);
+    auto svc = manager.spawn(script, opts_for("cov_decoded").dump());
     BOOST_REQUIRE(svc.success);
 
     LuaGatewayBridge bridge(
-        manager, "cov_ghost_auth",
+        manager, svc.service_id,
         std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
-        105, shield::net::RemoteAddress{"127.0.0.1", 6005});
-    session->reset_binding({svc.service_id, "", "cov_ghost_auth", "", 0});
+        109, shield::net::RemoteAddress{"127.0.0.1", 6009});
+    bridge.on_connect(session);
 
     shield::transport::RouteEntry route;
-    route.route_id = 0x4003;
+    route.route_id = 0x4001;
     route.direction = shield::transport::RouteDirection::ClientToServer;
     route.requires_auth = false;
 
-    auto dispatch = make_packet(0x4003, &route);
-    BOOST_REQUIRE(dispatch.decoded_body.has_value());
-    dispatch.decoded_body->message =
-        std::optional<nlohmann::json>(nlohmann::json{{"k", "v"}});
+    auto dispatch = make_packet(0x4001, &route);
+    dispatch.decoded_body->bytes = std::vector<std::uint8_t>{
+        '{', '"', 'w', 'i', 'r', 'e', '"', ':', '1', '}'};
     bridge.on_packet(session, dispatch);
 
     BOOST_CHECK(wait_until(
         [&]() {
             CallResult log = manager.call(svc.service_id, "get_log",
                                           nlohmann::json::array());
-            return log.success && log.values.is_array() &&
-                   log.values.size() == 1u && log.values[0].is_array() &&
-                   log.values[0].size() == 1u;
+            if (!log.success || !log.values.is_array() ||
+                log.values.size() != 1u || !log.values[0].is_array() ||
+                log.values[0].size() != 2u) {
+                return false;
+            }
+            const nlohmann::json* move = find_entry(log.values[0], "move");
+            return move != nullptr && (*move)[2]["wire"].get<int>() == 1;
         },
         std::chrono::seconds(3)));
 }
+
+// on_disconnect for a session with an empty binding returns early (the
+// gateway actor already delivered Unbound on a kick).
+BOOST_AUTO_TEST_CASE(OnDisconnectEmptyBindingSkipsNotify) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+    auto registry = std::make_shared<shield::lua::GatewaySessionRegistry>();
+    LuaGatewayBridge bridge(manager, "cov_ghost_auth", registry);
+
+    // Never connected: empty binding, but the registry remove still runs.
+    auto fresh = std::make_shared<MockSession>(
+        110, shield::net::RemoteAddress{"127.0.0.1", 6010});
+    bridge.on_disconnect(fresh, "cov_fresh");
+    BOOST_CHECK_EQUAL(registry->size(), 0u);
+    BOOST_CHECK(true);
+}
+
+BOOST_AUTO_TEST_SUITE_END()

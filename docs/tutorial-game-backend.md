@@ -29,6 +29,20 @@ actors:
     script: scripts/gateway.lua
     network:
       tcp: "0.0.0.0:8001"
+    rpc:
+      routes:
+        - { id: 1, name: login, direction: c2s, binding: login, requires_auth: false }
+
+  - name: player
+    script: scripts/player.lua
+    instances: 1
+    rpc:
+      routes:
+        - { id: 100, name: login_result, direction: s2c, binding: login_result }
+        - { id: 2, name: join_room, direction: c2s, binding: join_room, requires_auth: true }
+        - { id: 200, name: room_joined, direction: s2c, binding: room_joined }
+        - { id: 3, name: chat, direction: c2s, binding: chat, requires_auth: true }
+        - { id: 300, name: chat_ok, direction: s2c, binding: chat_ok }
 
   - name: room
     script: scripts/room.lua
@@ -39,49 +53,85 @@ actors:
     instances: 1
 ```
 
-## Gateway Service
+## Gateway Service（auth 入口）
+
+Gateway 边界把每个 session 绑定到唯一 target：登录前是本服务，登录成功后
+`shield.client.bind` 原子切换到 player。room/chat 的动态路由由 player 的
+私有状态管理，不经过 Gateway。
 
 ```lua
 local M = {}
-local sessions = {}
 
-function M.on_connect(session)
-    sessions[session:id()] = session
+-- ClientControlMessage::Bound：客户端接入本（auth 入口）服务
+function M.on_client_bound(ctx, client)
+    shield.log.info("client " .. client:session_id() .. " connected")
 end
 
-function M.on_client_message(session, payload)
-    if payload.type == "join_room" then
-        shield.send("room", "join", {
-            session_id = session:id(),
-            player_id = payload.player_id,
-            room_id = payload.room_id
-        })
-    elseif payload.type == "chat" then
-        shield.send("chat", "send", {
-            session_id = session:id(),
-            player_id = payload.player_id,
-            room_id = payload.room_id,
-            text = payload.text
-        })
+-- route 1：登录；成功后单一 target 原子切换到 player（epoch 递增）
+function M.login(ctx, client, request)
+    local ok, ref = shield.client.bind(client, request.player_id, "player")
+    if not ok then
+        return
+    end
+    shield.client_rpc.login_result(ref, { ok = true })
+end
+
+-- ClientControlMessage::Disconnected
+function M.on_disconnect(ctx, client, reason)
+    shield.log.info("client disconnected: " .. reason)
+end
+
+return M
+```
+
+## Player Service（登录后的单一 target）
+
+```lua
+local M = {}
+local refs = {}  -- player_id -> ClientRef（私有状态，不经过 Gateway）
+
+-- ClientControlMessage::Bound：客户端切换到本服务，记录 s2c 出站引用
+function M.on_client_bound(ctx, client)
+    if client:player_id() ~= "" then
+        refs[client:player_id()] = client:ref()
     end
 end
 
-function M.room_joined(data)
-    local session = sessions[data.session_id]
-    if session then
-        session:send({ type = "room_joined", room_id = data.room_id })
+-- route 2：进房（认证由 Gateway 的 requires_auth 校验保证）
+function M.join_room(ctx, client, request)
+    shield.send("room", "join", {
+        player_id = client:player_id(),
+        room_id = request.room_id
+    })
+end
+
+-- route 3：聊天
+function M.chat(ctx, client, request)
+    shield.send("chat", "send", {
+        player_id = client:player_id(),
+        room_id = request.room_id,
+        text = request.text
+    })
+end
+
+-- room/chat 的内部回包：按私有状态找回 ClientRef 后 s2c 出站
+function M.room_joined(ctx, data)
+    local ref = refs[data.player_id]
+    if ref then
+        shield.client_rpc.room_joined(ref, { room_id = data.room_id })
     end
 end
 
-function M.chat_ok(data)
-    local session = sessions[data.session_id]
-    if session then
-        session:send({ type = "chat_ok", room_id = data.room_id })
+function M.chat_ok(ctx, data)
+    local ref = refs[data.player_id]
+    if ref then
+        shield.client_rpc.chat_ok(ref, { room_id = data.room_id })
     end
 end
 
-function M.on_disconnect(session)
-    sessions[session:id()] = nil
+-- ClientControlMessage::Disconnected
+function M.on_disconnect(ctx, client, reason)
+    refs[client:player_id()] = nil
 end
 
 return M

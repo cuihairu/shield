@@ -1016,3 +1016,133 @@ BOOST_AUTO_TEST_CASE(CoroutineCtxFromDispatch) {
         },
         std::chrono::seconds(2)));
 }
+
+// ---------------------------------------------------------------------------
+// invoke_client_rpc branches (M3 typed client ingress dispatch).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ClientIngressDispatchBranches) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+    std::string error;
+
+    // 1. Bare VM: no coroutine factory registered.
+    auto bare_vm = runtime.create_vm();
+    ClientIngress ingress;
+    ingress.route_id = 0x1001;
+    ingress.decoded_request = nlohmann::json::object({{"uid", 7}});
+    BOOST_CHECK(!runtime.invoke_client_rpc(bare_vm, sol::nil, ingress, &error));
+    BOOST_CHECK_EQUAL(error, "coroutine factory not registered");
+
+    auto vm = runtime.create_vm();
+    BOOST_REQUIRE(runtime.register_api(vm));
+    sol::state& lua = runtime.vm_state(vm);
+    runtime.exec_lua(
+        vm,
+        "function cov_ok(ctx, client, request) return request.uid end\n"
+        "function cov_boom(ctx, client, request) error('rpc boom') end\n");
+
+    // 2. Invalid handler.
+    ingress.decoded_request = nlohmann::json::object({{"uid", 1}});
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm, sol::nil, ingress, &error));
+    BOOST_CHECK_EQUAL(error, "handler is not a function");
+
+    // 3. Missing request value.
+    ClientIngress no_request;
+    no_request.route_id = 0x1001;
+    sol::function ok_fn = lua["cov_ok"];
+    BOOST_REQUIRE(ok_fn.valid());
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm, ok_fn, no_request, &error));
+    BOOST_CHECK_EQUAL(error, "ingress request value missing");
+
+    // 4. Happy path: handler receives (ctx, client userdata, request).
+    ingress.decoded_request = nlohmann::json::object({{"uid", 41}});
+    error.clear();
+    BOOST_CHECK(runtime.invoke_client_rpc(vm, ok_fn, ingress, &error, &manager,
+                                          "cov_ingress_svc"));
+    BOOST_CHECK(error.empty());
+
+    // 5. Factory that raises: factory failure surfaces.
+    runtime.exec_lua(vm,
+                     "__shield_run_handler = function() error('fac boom') "
+                     "end");
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm, ok_fn, ingress, &error));
+    BOOST_CHECK_EQUAL(error, "handler coroutine factory failed");
+
+    // 6. Factory returning a non-thread: thread missing.
+    runtime.exec_lua(vm, "__shield_run_handler = function() return 42 end");
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm, ok_fn, ingress, &error));
+    BOOST_CHECK_EQUAL(error, "handler coroutine thread missing");
+
+    // Restore the real factory.
+    runtime.exec_lua(vm,
+                     "function __shield_run_handler(handler, args)\n"
+                     "  return coroutine.create(function()\n"
+                     "    return handler(table.unpack(args, 1, args.n or "
+                     "#args))\n"
+                     "  end)\n"
+                     "end");
+
+    // 7. Handler raising inside the coroutine: error string surfaces and the
+    // service error hook runs with error_type "client_rpc".
+    sol::function boom_fn = lua["cov_boom"];
+    BOOST_REQUIRE(boom_fn.valid());
+    error.clear();
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm, boom_fn, ingress, &error,
+                                           &manager, "cov_ingress_svc"));
+    BOOST_CHECK(error.find("rpc boom") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// invoke_client_rpc error hook: on_error sees error_type "client_rpc" and the
+// route id as the method context.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ClientIngressErrorHookReceivesRouteId) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path = write_script(
+        "ingress_error.lua",
+        "local M = {}\n"
+        "local captured = {}\n"
+        "function M.on_error(err, ctx)\n"
+        "  captured = {err = err, type = ctx.type, method = ctx.method}\n"
+        "end\n"
+        "function M.get_captured(ctx) return captured end\n"
+        "function M.gw_boom(ctx, client, request) error('ingress boom') end\n"
+        "_G.__test_gw_boom = M.gw_boom\n"
+        "return M\n");
+    auto svc = manager.spawn(path, R"({"name": "cov_ingress_err"})");
+    BOOST_REQUIRE(svc.success);
+
+    auto vm_handle = manager.service_vm(svc.service_id);
+    BOOST_REQUIRE(vm_handle != nullptr);
+    sol::state& lua = runtime.vm_state(vm_handle);
+    sol::function boom = lua["__test_gw_boom"];
+    BOOST_REQUIRE(boom.valid());
+
+    ClientIngress ingress;
+    ingress.route_id = 0x2002;
+    ingress.decoded_request = nlohmann::json::object();
+    std::string error;
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm_handle, boom, ingress, &error,
+                                           &manager, svc.service_id));
+    BOOST_CHECK(error.find("ingress boom") != std::string::npos);
+
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult r = manager.call(svc.service_id, "get_captured",
+                                        nlohmann::json::array());
+            return r.success && r.values.size() == 1u &&
+                   r.values[0].is_object() && r.values[0].contains("type");
+        },
+        std::chrono::seconds(2)));
+
+    CallResult r =
+        manager.call(svc.service_id, "get_captured", nlohmann::json::array());
+    BOOST_CHECK_EQUAL(r.values[0]["type"].get<std::string>(), "client_rpc");
+    BOOST_CHECK_EQUAL(r.values[0]["method"].get<std::string>(), "8194");
+}

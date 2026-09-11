@@ -55,9 +55,9 @@
 
 | ID | 场景 | 操作 | 期望 |
 | --- | --- | --- | --- |
-| OMOD-PL-001 | player 未启用 | gateway 回调 | `on_connect/on_client_message/on_disconnect` 仍可独立工作 |
+| OMOD-PL-001 | player 未启用 | gateway 回调 | `on_client_bound/on_disconnect/on_client_unbound` 仍可独立工作 |
 | OMOD-PL-002 | 启用 player | 登录成功 | `on_auth -> on_login` 顺序稳定 |
-| OMOD-PL-003 | 客户端业务消息 | `on_client_message(player, payload)` | 只传 payload / player 状态，不走 legacy `msg_type` 入口 |
+| OMOD-PL-003 | 客户端业务消息 | 编译绑定 `handler(ctx, client, request)` | 只传 request / player 状态，不走 legacy `msg_type` 入口 |
 | OMOD-PL-004 | 跨 service 协作 | gateway -> player_manager | 只传 `session_id`，不传 `SessionHandle` |
 | OMOD-PL-005 | 断线重连成功 | reconnect window 内重连 | 触发 `on_reconnect`，恢复 PlayerSession |
 | OMOD-PL-006 | 重连窗口超时 | reconnect fail | 触发 `on_logout(reason=timeout)` |

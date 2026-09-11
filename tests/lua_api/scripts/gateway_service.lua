@@ -1,14 +1,16 @@
 -- Test service for LAPI-009 (Gateway API)
 --
--- Gateway lifecycle handlers under the single-target client identity:
---   on_connect(client_context)
---   on_disconnect(client_context, reason)
---   on_client_message(route_id, client_context, body, message)
+-- Single-target client handling under the M3 typed-dispatch contract:
+--   on_client_bound(ctx, client)                     -- ClientControlMessage::Bound
+--   on_disconnect(ctx, client, reason)               -- ClientControlMessage::Disconnected
+--   on_client_unbound(ctx, client, reason)           -- ClientControlMessage::Unbound (kick)
+--   <binding>(ctx, client, request)                  -- compiled c2s/bidi RPC handlers
 -- The dispatch prepends the call context table as the first argument, so the
--- Lua signatures below carry the leading ctx. client_context materializes as
--- a read-only ClientContext userdata when the payload carries the
--- __shield_client_ref marker (real bridge path); the direct-call tests pass
--- plain tables, so both shapes are handled.
+-- Lua signatures below carry the leading ctx. `client` materializes as a
+-- read-only ClientContext userdata on the bridge path; the direct-call tests
+-- pass plain tables, so both shapes are handled. `request` is the descriptor
+-- contract value: decoded_request table when the pipeline codec produced one,
+-- else the JSON-decoded body, else the raw bytes as a string.
 
 local M = {}
 
@@ -42,6 +44,20 @@ local function player_of(client)
     return nil
 end
 
+local function record_message(client, route_id, request)
+    local key = session_key(client)
+    if key and sessions[key] then
+        sessions[key].last_message = {
+            route_id = route_id,
+            request = request,
+            request_type = type(request),
+            player_id = player_of(client),
+            time = shield.now()
+        }
+    end
+    return true
+end
+
 function M.on_init(args)
     M.test_case = args.config and args.config.test_case or "default"
 end
@@ -50,7 +66,7 @@ function M.get_sessions(ctx)
     return sessions
 end
 
-function M.on_connect(ctx, client)
+function M.on_client_bound(ctx, client)
     local key = session_key(client)
     if key == nil then
         return false
@@ -73,18 +89,24 @@ function M.on_disconnect(ctx, client, reason)
     end
 end
 
-function M.on_client_message(ctx, route_id, client, body, message)
+function M.on_client_unbound(ctx, client, reason)
     local key = session_key(client)
     if key and sessions[key] then
-        sessions[key].last_message = {
-            route_id = route_id,
-            body = body,
-            message = message,
-            player_id = player_of(client),
-            time = shield.now()
-        }
+        sessions[key].connected = false
+        sessions[key].unbound_reason = reason
     end
-    return true
+end
+
+-- Compiled c2s/bidi bindings (declared in the spawn opts' rpc.routes and
+-- resolved at startup). The bridge delivers typed ClientIngress here; the
+-- direct-call tests pass the same (client, request) shape. Route ids: 0x1001
+-- (= 4097) carries structured/JSON-decodable payloads, 0x1002 raw strings.
+function M.gw_move(ctx, client, request)
+    return record_message(client, 0x1001, request)
+end
+
+function M.gw_raw_echo(ctx, client, request)
+    return record_message(client, 0x1002, request)
 end
 
 return M

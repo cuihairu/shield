@@ -54,12 +54,17 @@ client socket bytes
   → Gateway 路由表校验（合法 + direction + 认证要求）
   → session.target（AuthService 或 PlayerService）
   → CAF send ClientIngress { gateway_address, session_id, session_epoch, player_id,
-                              protocol_profile_id, route_id, body_bytes, decoded_message? }
+                              protocol_profile_id, route_id, body_bytes, decoded_request? }
   → target Service actor mailbox
-  → 目标 VM: route_id → cached handler → decode body（或直接消费 decoded_message）→ invoke handler(client, request)
+  → 目标 VM: route_id → cached handler → decode body（或直接消费 decoded_request）→ invoke handler(client, request)
 ```
 
-route_id 来自 wire header。body_bytes 始终原样传递到目标 VM；当监听器的 protocol pipeline 配置了 codec 插件并完成解码时，Gateway 还会把解码出的规范 JSON message 一并交给 Lua（`on_client_message` 的第 4 个参数，Lua table；没有 codec 插件解码时为 nil）。没有配置 codec 插件时行为与旧设计一致：只转发原始字节，由目标 VM 按 RPC schema 解码。
+route_id 来自 wire header。body_bytes 始终原样传递到目标 VM；request 值按
+descriptor 契约成形：当监听器的 protocol pipeline 配置了 codec 插件并完成解码时，
+解码出的规范 JSON message 作为 `ClientIngress.decoded_request` 随行，直接作为
+handler 的 request table；否则 request_codec 为空或 `json` 的 route 由目标 VM
+把 body_bytes 按 JSON 解码（失败时回退为原始字节字符串）；`raw` 等其他
+request_codec 始终传原始字节字符串。
 
 `ClientIngress` 是 runtime 内部消息，不是 Lua API，也不是客户端 body schema。CAF 负责把该内部消息投递给本地或远端 actor。
 

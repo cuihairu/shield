@@ -51,9 +51,7 @@ struct ServiceMessage {
     int64_t deadline_ms = 0;
     MessagePriority priority = MessagePriority::Normal;
     int64_t timestamp_ms = 0;
-    uint64_t call_session = 0;   // non-zero => call request
-    uint64_t session_id = 0;     // for session epoch validation
-    uint32_t session_epoch = 0;  // for stale session detection
+    uint64_t call_session = 0;  // non-zero => call request
 };
 
 /// Synchronous call request routed from manager->call() through the CAF actor.
@@ -113,6 +111,18 @@ struct ClientEgress {
     std::optional<nlohmann::json> message;
 };
 
+/// Validated client-to-server business payload, sent by the gateway bridge to
+/// the session's bound target service. The target's compiled RPC table routes
+/// route_id to its handler; the handler receives (ClientContext, request)
+/// where request is decoded_request when the pipeline codec produced one, else
+/// the JSON-decoded body_bytes, else the raw bytes as a string.
+struct ClientIngress {
+    ClientContextData context;
+    uint32_t route_id = 0;
+    std::vector<uint8_t> body_bytes;
+    std::optional<nlohmann::json> decoded_request;
+};
+
 /// Session lifecycle notification from the gateway to the bound target
 /// service. This is a typed control message, not a Lua business callback.
 struct ClientControlMessage {
@@ -155,6 +165,7 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ServiceMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::SyncCallMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::CallResponseMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientEgress)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientIngress)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientControlMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientBindRequest)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientCloseRequest)
@@ -172,6 +183,7 @@ CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ServiceMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::SyncCallMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::CallResponseMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientEgress))
+CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientIngress))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientControlMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientBindRequest))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientCloseRequest))

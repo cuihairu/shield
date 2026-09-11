@@ -1,12 +1,10 @@
 // [SHIELD_LUA] Gateway bridge implementation
 #include "shield/lua/lua_gateway_bridge.hpp"
 
-#include <nlohmann/json.hpp>
+#include <caf/send.hpp>
 
-#include "shield/core/service_message.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/lua/gateway_actor.hpp"
-#include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/session.hpp"
 #include "shield/transport/protocol.hpp"
@@ -15,16 +13,15 @@ namespace shield::lua {
 
 namespace {
 
-/// Trusted client identity for a session in its current binding state. This
-/// is the JSON marker form: the Lua API layer materializes it into a
-/// read-only ClientContext userdata on delivery.
-nlohmann::json client_context_marker(const std::string& gateway_name,
-                                     net::SessionId session_id,
-                                     const net::SessionBinding& binding) {
+/// Trusted client identity for a session in its current binding state.
+ClientContextData client_context(const std::string& gateway_name,
+                                 net::SessionId session_id,
+                                 const net::SessionBinding& binding) {
     return ClientContextData{gateway_name, session_id, binding.epoch,
-                             binding.player_id, binding.protocol_profile_id}
-        .to_json();
+                             binding.player_id, binding.protocol_profile_id};
 }
+
+auto& bridge_log() { return shield::log::get_logger("lua"); }
 
 }  // namespace
 
@@ -50,18 +47,19 @@ void LuaGatewayBridge::on_connect(
         registry_->add(session, initial);
     }
 
-    const nlohmann::json client_context =
-        client_context_marker(auth_service_name_, session->id(), initial);
-
-    // Notify the auth service of new connection. send_system routes through
-    // the target's CAF actor (fire-and-forget anon_send), so it is safe to
-    // call directly from the network thread — no fork-task wrapper needed.
-    std::string error;
-    if (!manager_.send_system(auth_service_name_, "on_connect",
-                              nlohmann::json::array({client_context}),
-                              &error)) {
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(log, "Failed to queue on_connect: " + error);
+    // Notify the auth service that the session is now bound to it. The
+    // target's actor receives a typed control message (fire-and-forget
+    // anon_send), so this is safe to call directly from the network thread.
+    if (caf::actor target = manager_.service_actor(auth_service_name_);
+        target != nullptr) {
+        ClientControlMessage bound;
+        bound.kind = ClientControlMessage::Kind::Bound;
+        bound.context =
+            client_context(auth_service_name_, session->id(), initial);
+        caf::anon_send(target, std::move(bound));
+    } else {
+        SHIELD_LOG_WARNING(bridge_log(), "auth service " + auth_service_name_ +
+                                             " has no actor for on_connect");
     }
 }
 
@@ -80,16 +78,14 @@ void LuaGatewayBridge::on_packet(
     const auto* route = packet.route;
     if (!route) {
         // Unknown route_id, reject
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(log,
+        SHIELD_LOG_WARNING(bridge_log(),
                            "Unknown route_id: " + std::to_string(route_id));
         return;
     }
 
     // Check direction: client can only send ClientToServer or Bidirectional
     if (route->direction == shield::transport::RouteDirection::ServerToClient) {
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(log,
+        SHIELD_LOG_WARNING(bridge_log(),
                            "Rejected server_to_client route from client: " +
                                std::to_string(route_id));
         return;
@@ -99,9 +95,10 @@ void LuaGatewayBridge::on_packet(
 
     // Check auth requirement
     if (route->requires_auth && binding.player_id.empty()) {
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(log, "Rejected unauthenticated access to route: " +
-                                    std::to_string(route_id));
+        SHIELD_LOG_WARNING(bridge_log(),
+                           "Rejected unauthenticated access to "
+                           "route: " +
+                               std::to_string(route_id));
         return;
     }
 
@@ -111,37 +108,40 @@ void LuaGatewayBridge::on_packet(
     const std::string target = binding.target_service;
 
     if (target.empty()) {
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(log, "Session has no target service, route_id: " +
-                                    std::to_string(route_id));
+        SHIELD_LOG_WARNING(bridge_log(),
+                           "Session has no target service, "
+                           "route_id: " +
+                               std::to_string(route_id));
         return;
     }
 
-    // 4. Build ClientIngress with the live binding state
+    // 4. Build the typed ingress with the live binding state and deliver it
+    // to the target's actor mailbox.
     ClientIngress ingress;
-    ingress.gateway_service_name = auth_service_name_;  // response route back
-    ingress.session_id = session->id();
-    ingress.session_epoch = binding.epoch;
-    ingress.player_id = binding.player_id;
+    ingress.context =
+        client_context(auth_service_name_, session->id(), binding);
     ingress.route_id = route_id;
-    ingress.protocol_profile_id = binding.protocol_profile_id;
 
-    // body_bytes: pass through raw bytes (Gateway does not decode body)
+    // body_bytes: pass through raw bytes (Gateway does not decode body); a
+    // codec plugin's canonical JSON message rides along as decoded_request.
     if (packet.decoded_body.has_value()) {
         ingress.body_bytes = packet.decoded_body->bytes;
-        // decoded_message: when the pipeline's codec plugin decoded the
-        // payload, forward the canonical JSON message alongside the raw
-        // bytes so Lua services can consume it directly as a table.
         if (packet.decoded_body->has_message()) {
-            ingress.decoded_message = packet.decoded_body->message;
+            ingress.decoded_request = packet.decoded_body->message;
         }
     } else {
         ingress.body_bytes = std::vector<uint8_t>(packet.packet.body.begin(),
                                                   packet.packet.body.end());
     }
 
-    // 5. Send to target service via LuaServiceManager
-    send_client_ingress(target, ingress);
+    if (caf::actor target_actor = manager_.service_actor(target);
+        target_actor != nullptr) {
+        caf::anon_send(target_actor, std::move(ingress));
+    } else {
+        SHIELD_LOG_WARNING(bridge_log(), "target service " + target +
+                                             " has no actor for route " +
+                                             std::to_string(route_id));
+    }
 }
 
 void LuaGatewayBridge::on_disconnect(
@@ -152,55 +152,22 @@ void LuaGatewayBridge::on_disconnect(
         registry_->remove(session->id());
     }
 
-    // Notify the current target service of disconnection. The session is on
-    // its way out; no binding invalidation is needed beyond dropping the
-    // registry entry (egress rejects unknown sessions).
-    net::SessionBinding binding = session->binding();
-    std::string target = binding.target_service;
-    if (target.empty()) {
-        target = auth_service_name_;
+    // Notify the current target service that its client went away. An empty
+    // binding means the gateway actor already delivered Unbound on a kick
+    // (it invalidates the binding before closing the socket); sending a
+    // second notification would double-count the detach.
+    const net::SessionBinding binding = session->binding();
+    if (binding.target_service.empty()) {
+        return;
     }
-    const nlohmann::json client_context =
-        client_context_marker(auth_service_name_, session->id(), binding);
-
-    std::string error;
-    if (!manager_.send_system(target, "on_disconnect",
-                              nlohmann::json::array({client_context, reason}),
-                              &error)) {
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(log, "Failed to queue on_disconnect: " + error);
-    }
-}
-
-void LuaGatewayBridge::send_client_ingress(const std::string& target,
-                                           const ClientIngress& ingress) {
-    // Transitional flattening ([M3] replaces this with the typed CAF
-    // ClientIngress message). The target Lua service receives:
-    //   on_client_message(route_id, client_context, body_str, message)
-    // where client_context materializes as a read-only ClientContext
-    // userdata from the __shield_client_ref marker. body_bytes is passed as
-    // a raw string; decoded_message is the codec plugin's canonical JSON
-    // message (a Lua table), or nil when no codec plugin decoded the body.
-    const ClientContextData context{
-        ingress.gateway_service_name, ingress.session_id, ingress.session_epoch,
-        ingress.player_id, ingress.protocol_profile_id};
-
-    // body_bytes as raw string for Lua
-    std::string body_str(ingress.body_bytes.begin(), ingress.body_bytes.end());
-
-    // Decoded canonical message, or JSON null (Lua nil) when absent.
-    const nlohmann::json decoded_message = ingress.decoded_message.has_value()
-                                               ? *ingress.decoded_message
-                                               : nlohmann::json(nullptr);
-
-    std::string error;
-    if (!manager_.send_system(
-            target, "on_client_message",
-            nlohmann::json::array({ingress.route_id, context.to_json(),
-                                   body_str, decoded_message}),
-            &error, ingress.session_id, ingress.session_epoch)) {
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_WARNING(log, "Failed to queue ClientIngress: " + error);
+    if (caf::actor target = manager_.service_actor(binding.target_service);
+        target != nullptr) {
+        ClientControlMessage disconnected;
+        disconnected.kind = ClientControlMessage::Kind::Disconnected;
+        disconnected.context =
+            client_context(auth_service_name_, session->id(), binding);
+        disconnected.reason = std::move(reason);
+        caf::anon_send(target, std::move(disconnected));
     }
 }
 

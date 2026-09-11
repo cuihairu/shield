@@ -1,11 +1,11 @@
 # 客户端 RPC 服务自治路由设计
 
-> 状态：descriptor 契约与启动期 binding 编译已实现（架构纠偏 M1）。
-> session 单一 target 绑定、`ClientContext`/`ClientRef`、typed
-> `ClientIngress`/`ClientEgress` 按路线图 M2/M3 落地；文中相应小节标注了
-> 责任里程碑。本文是客户端 RPC 路由、body 编解码和 Gateway/Service 边界的
-> 唯一设计依据；与旧 `LuaGatewayBridge` body-route、`on_client_message`
-> 常驻分发或 `service_routes` 多绑定相冲突的描述均为待删除遗留，不是兼容
+> 状态：descriptor 契约、启动期 binding 编译（架构纠偏 M1）、session 单一
+> target 绑定、`ClientContext`/`ClientRef`、typed
+> `ClientIngress`/`ClientEgress` 入站分发（M2/M3）均已实现；文中相应小节
+> 标注了责任里程碑。本文是客户端 RPC 路由、body 编解码和 Gateway/Service
+> 边界的唯一设计依据；与旧 `LuaGatewayBridge` body-route、JSON 常驻消息回调
+> 或 `service_routes` 多绑定相冲突的描述均为已删除遗留，不是兼容
 > 目标。
 
 ## 决策
@@ -118,9 +118,10 @@ Gateway 拒绝（丢帧 + warn + 计数，不回写错误帧）；handler 执行
 Service 以稳定错误码报告（见“生命周期与错误”）。
 
 `ClientIngress` 是类型化 runtime 消息，而不是普通 service method；契约见
-[runtime-messaging.md](runtime-messaging.md)。过渡期（M1 已完成、M3
-翻转前）入站仍走 `on_client_message` JSON 约定入口，目标取 session 当前
-target；M3 删除该入口。
+[runtime-messaging.md](runtime-messaging.md)。入站分发自架构纠偏 M3 起完全
+走该类型化消息：Gateway 校验后把 `ClientIngress` 投递到 session 当前
+target 的 actor，由目标 VM 的编译 route 表直接分发到
+`handler(ClientContext, request)`。
 
 ## Session 绑定：单一 target [M2]
 
@@ -203,8 +204,8 @@ Gateway 不从 response table 的 `route_id`、`route`、`method` 或 `msg_id`
 
 ## 禁止项
 
-- Gateway 按 body 内容、route 字符串或 Lua 回调做业务二次分发（M3 删除
-  `on_client_message` 常驻入口）。
+- Gateway 按 body 内容、route 字符串或 Lua 回调做业务二次分发（入站只有
+  typed `ClientIngress` 单一入口）。
 - session 多服务绑定表（`service_routes`）、`bind_service`/
   `unbind_service` API。
 - `network.protocol.routes` 内联路由，或从业务 body 字段推断

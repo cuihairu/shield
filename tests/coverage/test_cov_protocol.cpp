@@ -1851,49 +1851,49 @@ BOOST_AUTO_TEST_CASE(ResolveByNameSetsRouteId) {
     BOOST_REQUIRE(pipeline->routes().find(1001) != nullptr);
 }
 
-BOOST_AUTO_TEST_CASE(ResolveByMessageRouteId) {
+// [M3] The outbound route travels in the header (ClientEgress.route_id /
+// route_name set by the gateway), never inside the payload: message bodies
+// are pure business data, so in-message route_id/msg_id/route/method keys no
+// longer resolve a route.
+BOOST_AUTO_TEST_CASE(BodyHintsNoLongerResolveOutboundRoute) {
     auto pipeline = make_outbound_pipeline(two_routes());
-    DecodedBody body;
-    body.message = nlohmann::json{{"route_id", 1001u}};
-    const auto frame = pipeline->encode_message(body);
-    BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
-    BOOST_CHECK(!frame.empty());
-}
 
-BOOST_AUTO_TEST_CASE(ResolveByMessageMsgId) {
-    auto pipeline = make_outbound_pipeline(two_routes());
-    DecodedBody body;
-    body.message = nlohmann::json{{"msg_id", 1002u}};
-    const auto frame = pipeline->encode_message(body);
-    BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
-    BOOST_CHECK(!frame.empty());
-}
+    DecodedBody by_route_id;
+    by_route_id.message = nlohmann::json{{"route_id", 1001u}};
+    BOOST_CHECK(pipeline->encode_message(by_route_id).empty());
 
-BOOST_AUTO_TEST_CASE(ResolveByMessageRouteString) {
-    auto pipeline = make_outbound_pipeline(two_routes());
-    DecodedBody body;
-    body.message = nlohmann::json{{"route", "login"}};
-    const auto frame = pipeline->encode_message(body);
-    BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
-    BOOST_CHECK(!frame.empty());
-}
+    DecodedBody by_msg_id;
+    by_msg_id.message = nlohmann::json{{"msg_id", 1002u}};
+    BOOST_CHECK(pipeline->encode_message(by_msg_id).empty());
 
-BOOST_AUTO_TEST_CASE(ResolveByMessageMethodString) {
-    auto pipeline = make_outbound_pipeline(two_routes());
-    DecodedBody body;
-    body.message = nlohmann::json{{"method", "ping"}};
-    const auto frame = pipeline->encode_message(body);
-    BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
-    BOOST_CHECK(!frame.empty());
-}
+    DecodedBody by_route_string;
+    by_route_string.message = nlohmann::json{{"route", "login"}};
+    BOOST_CHECK(pipeline->encode_message(by_route_string).empty());
 
-BOOST_AUTO_TEST_CASE(ResolveByMessageRouteIdMissThenMsgIdMissFails) {
-    auto pipeline = make_outbound_pipeline(two_routes());
-    DecodedBody body;
-    body.message = nlohmann::json{{"route_id", 9999u}, {"msg_id", 8888u}};
-    BOOST_CHECK(pipeline->encode_message(body).empty());
+    DecodedBody by_method_string;
+    by_method_string.message = nlohmann::json{{"method", "ping"}};
+    BOOST_CHECK(pipeline->encode_message(by_method_string).empty());
+
     BOOST_CHECK_NE(pipeline->error().find("failed to resolve outbound route"),
                    std::string::npos);
+}
+
+// Body hints are not route hints even when exactly one route is configured:
+// the single-route fallback still applies (no explicit header hint exists),
+// so the payload's "route" key is delivered verbatim as business data.
+BOOST_AUTO_TEST_CASE(SingleRouteFallbackIgnoresBodyHints) {
+    RouteTable routes;
+    RouteEntry only_route;
+    only_route.route_id = 77;
+    only_route.debug_name = "solo";
+    routes.upsert(only_route);
+
+    auto pipeline = make_outbound_pipeline(std::move(routes));
+    DecodedBody body;
+    body.message = nlohmann::json{{"route", "login"}, {"uid", 5}};
+    const auto frame = pipeline->encode_message(body);
+    BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
+    BOOST_CHECK(!frame.empty());
 }
 
 BOOST_AUTO_TEST_CASE(ResolveThroughSingleRouteWhenNoHints) {

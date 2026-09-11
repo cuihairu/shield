@@ -263,18 +263,9 @@ struct LuaServiceManager::Impl {
     // Dispatch a CAF-native ServiceMessage. Converts the typed fields into an
     // internal DispatchMessage and routes to the existing dispatch_message
     // path.
-    void dispatch_service_message(
-        class LuaServiceManager* manager, const std::string& id,
-        const ServiceMessage&
-            msg) {  // Validate session epoch if present (for gateway messages)
-        // epoch 0 is a valid initial value, so we only check session_id != 0
-        if (msg.session_id != 0) {
-            // In a full implementation, we would look up the session and
-            // compare epochs. For now, we pass the epoch through to the
-            // handler for validation.
-            // TODO: Implement session epoch validation with SessionRegistry
-        }
-
+    void dispatch_service_message(class LuaServiceManager* manager,
+                                  const std::string& id,
+                                  const ServiceMessage& msg) {
         DispatchMessage m;
         m.sender = msg.sender;
         m.method = msg.method;
@@ -307,6 +298,114 @@ struct LuaServiceManager::Impl {
     void dispatch_call_response(class LuaServiceManager* manager,
                                 const CallResponseMessage& msg) {
         manager->resume_caller(msg.session, msg.ok, msg.values);
+    }
+
+    // Route a validated client-to-server payload to the target VM's compiled
+    // RPC handler. Unlike ServiceMessage dispatch there is no method-name
+    // lookup: the spawn-time RPC table owns route_id -> handler, so an
+    // unknown route here is a startup-contract violation and is dropped with
+    // a warning (never queued or retried). The request value follows the
+    // descriptor contract: a pipeline-decoded canonical message wins, else a
+    // JSON codec decodes body_bytes, else the raw bytes travel as a string.
+    void dispatch_client_ingress(class LuaServiceManager* manager,
+                                 const std::string& id,
+                                 const ClientIngress& msg) {
+        std::shared_ptr<LuaVM> service;
+        sol::function handler;
+        ClientIngress normalized = msg;
+        {
+            std::shared_lock lock(registry_mutex);
+            auto svc_it = services.find(id);
+            if (svc_it == services.end()) {
+                auto& log = shield::log::get_logger("lua");
+                SHIELD_LOG_WARNING(log, "client rpc for unknown service " + id);
+                return;
+            }
+            service = svc_it->second;
+            auto rpc_it = service_rpc.find(id);
+            if (rpc_it == service_rpc.end()) {
+                auto& log = shield::log::get_logger("lua");
+                SHIELD_LOG_WARNING(log, "client rpc table missing for " + id);
+                return;
+            }
+            auto h_it = rpc_it->second.handlers.find(msg.route_id);
+            if (h_it == rpc_it->second.handlers.end()) {
+                auto& log = shield::log::get_logger("lua");
+                SHIELD_LOG_WARNING(log, "client rpc route " +
+                                            std::to_string(msg.route_id) +
+                                            " not owned by " + id);
+                return;
+            }
+            handler = h_it->second;
+            if (!normalized.decoded_request) {
+                const auto* descriptor =
+                    rpc_it->second.descriptors.find(msg.route_id);
+                const bool json_codec = descriptor == nullptr ||
+                                        descriptor->request_codec.empty() ||
+                                        descriptor->request_codec == "json";
+                if (json_codec) {
+                    auto parsed = nlohmann::json::parse(
+                        normalized.body_bytes.begin(),
+                        normalized.body_bytes.end(), nullptr, false);
+                    normalized.decoded_request =
+                        parsed.is_discarded()
+                            ? nlohmann::json(
+                                  std::string(normalized.body_bytes.begin(),
+                                              normalized.body_bytes.end()))
+                            : std::move(parsed);
+                } else {
+                    normalized.decoded_request = nlohmann::json(
+                        std::string(normalized.body_bytes.begin(),
+                                    normalized.body_bytes.end()));
+                }
+            }
+        }
+        std::string error;
+        if (!runtime.invoke_client_rpc(service, handler, normalized, &error,
+                                       manager, id)) {
+            auto& log = shield::log::get_logger("lua");
+            SHIELD_LOG_WARNING(
+                log, "client rpc dispatch failed on " + id + " route " +
+                         std::to_string(msg.route_id) + ": " + error);
+        }
+    }
+
+    // Session lifecycle notification from the gateway: map the control kind
+    // to its Lua convention handler and reuse the ordinary dispatch path
+    // (which materializes the client-context marker into the read-only
+    // ClientContext userdata). Reserved kinds have no producer yet and are
+    // dropped with a warning.
+    void dispatch_client_control(class LuaServiceManager* manager,
+                                 const std::string& id,
+                                 const ClientControlMessage& msg) {
+        std::string method;
+        nlohmann::json args = nlohmann::json::array({msg.context.to_json()});
+        switch (msg.kind) {
+            case ClientControlMessage::Kind::Bound:
+                method = "on_client_bound";
+                break;
+            case ClientControlMessage::Kind::Disconnected:
+                method = "on_disconnect";
+                args.push_back(msg.reason);
+                break;
+            case ClientControlMessage::Kind::Unbound:
+                method = "on_client_unbound";
+                args.push_back(msg.reason);
+                break;
+            case ClientControlMessage::Kind::Reconnected: {
+                // Reserved: no producer in this milestone.
+                auto& log = shield::log::get_logger("lua");
+                SHIELD_LOG_WARNING(log,
+                                   "dropped Reconnected control for session " +
+                                       std::to_string(msg.context.session_id));
+                return;
+            }
+        }
+        std::string error;
+        if (!manager->send_system(id, method, args, &error)) {
+            auto& log = shield::log::get_logger("lua");
+            SHIELD_LOG_WARNING(log, "Failed to queue " + method + ": " + error);
+        }
     }
 
     bool dispatch_message(class LuaServiceManager* manager,
@@ -927,6 +1026,15 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                             impl_ptr->dispatch_service_message(manager, svc,
                                                                msg);
                         },
+                        [impl_ptr, manager, svc](const ClientIngress& msg) {
+                            impl_ptr->dispatch_client_ingress(manager, svc,
+                                                              msg);
+                        },
+                        [impl_ptr, manager,
+                         svc](const ClientControlMessage& msg) {
+                            impl_ptr->dispatch_client_control(manager, svc,
+                                                              msg);
+                        },
                         [impl_ptr, manager, svc](const SyncCallMessage& req) {
                             impl_ptr->dispatch_sync_call_message(manager, svc,
                                                                  req);
@@ -1157,8 +1265,7 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
 bool LuaServiceManager::send_system(std::string_view target,
                                     std::string_view method,
                                     const nlohmann::json& args,
-                                    std::string* error, uint64_t session_id,
-                                    uint32_t session_epoch) {
+                                    std::string* error) {
     if (impl_->stopping.load()) {
         if (error) *error = "runtime is stopping";
         return false;
@@ -1195,10 +1302,16 @@ bool LuaServiceManager::send_system(std::string_view target,
     msg.deadline_ms = 0;
     msg.priority = MessagePriority::High;
     msg.timestamp_ms = now_ms;
-    msg.session_id = session_id;
-    msg.session_epoch = session_epoch;
     caf::anon_send(*actor_opt, std::move(msg));
     return true;
+}
+
+caf::actor LuaServiceManager::service_actor(
+    std::string_view service_name) const {
+    const std::string service_id = query_service(service_name);
+    std::shared_lock lock(impl_->registry_mutex);
+    auto it = impl_->service_actors.find(service_id);
+    return it == impl_->service_actors.end() ? nullptr : it->second;
 }
 
 bool LuaServiceManager::send_call_request(std::string_view target,

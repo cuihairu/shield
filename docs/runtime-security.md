@@ -121,15 +121,15 @@ actors:
 Lua 层实现：
 
 ```lua
-function M.on_client_message(session, payload)
-    -- 网关层限流：按客户端 IP 检查
-    if not check_rate_limit(session:remote_addr()) then
-        session:send({ error = "rate_limited" })
-        return
+-- spawn 期编译的 c2s RPC 绑定(ctx 由 dispatch 前置)
+function M.move(ctx, client, request)
+    -- 网关层限流：按客户端身份检查
+    if not check_rate_limit(client:session_id()) then
+        return  -- 超限帧直接丢弃（不回写错误帧）
     end
 
     -- 处理消息
-    process_message(session, payload)
+    process_move(client, request)
 end
 ```
 
@@ -200,35 +200,37 @@ Gateway 服务负责客户端认证：
 
 ```lua
 local pending_auth = {}
-local authenticated = {}
 
-function M.on_connect(session)
-    pending_auth[session:id()] = true
-    session:send({ status = "auth_required" })
+-- ClientControlMessage::Bound：客户端接入本（auth 入口）服务
+function M.on_client_bound(ctx, client)
+    pending_auth[client:session_id()] = true
 end
 
-function M.on_client_message(session, payload)
-    local sid = session:id()
+-- 编译的 c2s 绑定：登录前所有业务 route 都落在这里
+function M.login(ctx, client, request)
+    local sid = client:session_id()
 
-    if pending_auth[sid] then
-        if payload.type ~= "auth" then
-            session:close("auth_required")
-            return
-        end
+    if not pending_auth[sid] then
+        return  -- 重复登录等异常帧直接丢弃
+    end
 
-        local user = verify_token(payload.token)
-        if not user then
-            session:close("auth_failed")
-            return
-        end
-
-        pending_auth[sid] = nil
-        authenticated[sid] = user.id
-        session:send({ status = "authenticated" })
+    local user = verify_token(request.token)
+    if not user then
+        shield.client.close(client, "auth_failed")
         return
     end
 
-    dispatch_authenticated_message(session, payload, authenticated[sid])
+    pending_auth[sid] = nil
+    -- 原子切换单一 target 到 player 服务，返回可用于 s2c 出站的 ClientRef
+    local ok, ref = shield.client.bind(client, user.id, "player")
+    if ok then
+        shield.client_rpc.login_result(ref, { status = "authenticated" })
+    end
+end
+
+-- ClientControlMessage::Disconnected
+function M.on_disconnect(ctx, client, reason)
+    pending_auth[client:session_id()] = nil
 end
 ```
 

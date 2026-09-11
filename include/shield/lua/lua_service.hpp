@@ -71,10 +71,10 @@ public:
 
     // Queue a runtime-owned event to a service. This is for internal bridges
     // such as shield_net -> Lua gateway callbacks, so it permits reserved
-    // lifecycle method names like on_connect while preserving mailbox dispatch.
+    // lifecycle method names like on_client_bound while preserving mailbox
+    // dispatch.
     bool send_system(std::string_view target, std::string_view method,
-                     const nlohmann::json& args, std::string* error = nullptr,
-                     uint64_t session_id = 0, uint32_t session_epoch = 0);
+                     const nlohmann::json& args, std::string* error = nullptr);
 
     // Send a coroutine call-request message to a service. Like send() but tags
     // the message with a call session so the callee's dispatch can route the
@@ -110,6 +110,11 @@ public:
     // find the gateway actor that owns the session.
     void register_gateway_actor(std::string gateway_name, caf::actor actor);
     caf::actor gateway_actor(std::string_view gateway_name) const;
+
+    // A running service's actor by service name (or alias), nullptr when the
+    // service does not exist. The gateway bridge uses it to deliver typed
+    // ClientIngress / ClientControlMessage directly to the target's mailbox.
+    caf::actor service_actor(std::string_view service_name) const;
 
     // Get current service ID
     std::string current_service_id() const;

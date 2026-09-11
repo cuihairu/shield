@@ -809,13 +809,12 @@ runtime 热路径只做 `route_id -> cached function`,不按字符串反射查 m
 handler(ClientContext, decoded RPC arguments)
 ```
 
-> **实现状态(M2)**:入站分发仍在过渡形态——Gateway 目前以
-> `on_client_message(ctx, route_id, client_context, body, message)` 调用目标服务,
-> 其中 `client_context` 是 `ClientContext` userdata(M3 将翻转为上面的
-> `handler(client, request)` 直接分发并删除 `on_client_message`)。出站与身份
-> userdata 已是最终形态:`ClientContext`/`ClientRef` 只读 userdata、
-> `shield.client.bind/close`、按 descriptor 自动注册的 `shield.client_rpc.<name>`
-> helper 均已可用。
+> **实现状态(M3)**:入站与出站均为最终形态。Gateway 将校验过的入站打包为
+> typed `ClientIngress` CAF 消息发送到 session 当前 target 的 actor;目标 VM
+> 按 spawn 期编译的 route 表以 `handler(client, request)` 直接分发(热路径
+> 只做 `route_id -> cached function`)。身份与出站:`ClientContext`/`ClientRef`
+> 只读 userdata、`shield.client.bind/close`、按 descriptor 自动注册的
+> `shield.client_rpc.<name>` helper 均已可用。
 
 如果该 RPC 的 request schema 生成单个 request table,则 Lua 形态为
 `handler(client, request)`;若生成多个参数,则按生成契约传入。route、header、codec

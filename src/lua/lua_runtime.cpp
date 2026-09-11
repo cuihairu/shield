@@ -1105,6 +1105,95 @@ bool LuaRuntime::call_service_method_coroutine(
     }
 }
 
+bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
+                                   sol::function handler,
+                                   const ClientIngress& ingress,
+                                   std::string* error,
+                                   LuaServiceManager* manager,
+                                   std::string_view service_id) {
+    try {
+        sol::state_view lua(*vm->state());
+        lua_State* L = lua.lua_state();
+
+        sol::function factory = lua["__shield_run_handler"];
+        if (!factory.valid()) {
+            // No coroutine factory registered (a VM without the full shield
+            // API): client RPC requires coroutine-aware dispatch.
+            if (error) *error = "coroutine factory not registered";
+            return false;
+        }
+        if (!handler.valid()) {
+            if (error) *error = "handler is not a function";
+            return false;
+        }
+        if (!ingress.decoded_request.has_value()) {
+            if (error) *error = "ingress request value missing";
+            return false;
+        }
+
+        // Build args (ctx, client, request): the dispatch ctx table first,
+        // then the client identity (the marker materializes as the read-only
+        // ClientContext userdata inside json_to_lua), then the request value.
+        sol::table ctx = lua.create_table();
+        if (manager != nullptr) {
+            std::string sender = manager->current_sender_id();
+            ctx["sender"] =
+                sender.empty() ? sol::nil : sol::make_object(lua, sender);
+            std::string trace = manager->current_trace_id();
+            ctx["trace"] =
+                trace.empty() ? sol::nil : sol::make_object(lua, trace);
+            int64_t deadline = manager->current_deadline_ms();
+            ctx["deadline"] =
+                deadline <= 0 ? sol::nil : sol::make_object(lua, deadline);
+        }
+
+        sol::table args_table = lua.create_table();
+        args_table.add(ctx);
+        args_table.add(json_to_lua(lua, ingress.context.to_json()));
+        args_table.add(json_to_lua(lua, *ingress.decoded_request));
+        args_table["n"] = 3;
+
+        sol::protected_function factory_pf = lua["__shield_run_handler"];
+        sol::protected_function_result fr = factory_pf(handler, args_table);
+        if (!fr.valid()) {
+            if (error) *error = "handler coroutine factory failed";
+            return false;
+        }
+        lua_State* co = lua_tothread(L, -1);
+        if (co == nullptr) {
+            if (error) *error = "handler coroutine thread missing";
+            return false;
+        }
+
+        int nres = 0;
+        const int status = lua_resume(co, L, 0, &nres);
+        if (status == LUA_OK || status == LUA_YIELD) {
+            if (manager && !service_id.empty()) {
+                manager->reset_error_count(std::string(service_id));
+            }
+            return true;
+        }
+        // Error: the error object is on the coroutine's stack. Client ingress
+        // is fire-and-forget, so a handler error routes through the service
+        // error hook only.
+        std::string msg = "client rpc route " +
+                          std::to_string(ingress.route_id) + " raised an error";
+        if (lua_type(co, -1) == LUA_TSTRING) {
+            msg = lua_tostring(co, -1);
+        }
+        lua_settop(co, 0);
+        if (error) *error = msg;
+        if (manager && !service_id.empty()) {
+            manager->invoke_error_hook(std::string(service_id), "client_rpc",
+                                       std::to_string(ingress.route_id), msg);
+        }
+        return false;
+    } catch (const std::exception& e) {
+        if (error) *error = e.what();
+        return false;
+    }
+}
+
 bool LuaRuntime::invoke_hook(std::shared_ptr<LuaVM> vm, const char* hook_name,
                              const std::string& err_or_reason,
                              const std::string& error_type,

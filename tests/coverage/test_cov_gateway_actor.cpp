@@ -9,6 +9,7 @@
 #include <caf/send.hpp>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <string>
@@ -502,6 +503,76 @@ BOOST_AUTO_TEST_CASE(CloseWithEmptyReasonUsesKickedDefault) {
 
     BOOST_CHECK_EQUAL(session->close_reason(),
                       std::string(shield::net::CloseReason::KICKED));
+}
+
+// With a live target service actor, a bind delivers a Bound control message
+// and a close delivers Unbound to that target (production notify paths).
+BOOST_AUTO_TEST_CASE(BindAndCloseNotifyTargetActor) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const char* target_script = R"lua(
+local M = {}
+local log = {}
+function M.on_init(args) end
+function M.on_client_bound(ctx, client)
+  table.insert(log, {"bound", client:session_id()}) return true
+end
+function M.on_client_unbound(ctx, client, reason)
+  table.insert(log, {"unbound", client:session_id(), reason}) return true
+end
+function M.get_log(ctx) return log end
+return M
+)lua";
+    const std::string target_path = "/tmp/opencode/cov_gw_target.lua";
+    {
+        std::ofstream out(target_path, std::ios::trunc);
+        out << target_script;
+    }
+    auto svc = manager.spawn(target_path, R"({"name": "cov_gw_target"})");
+    BOOST_REQUIRE(svc.success);
+
+    auto registry = std::make_shared<GatewaySessionRegistry>();
+    auto stats = std::make_shared<GatewayStats>();
+    GatewayDeps deps{"gw", registry, stats, s2c_table(), &manager};
+
+    auto session = make_session(32, auth_binding());
+    registry->add(session, session->binding());
+
+    // Bind to the live target: the notify branch sends Bound to its actor.
+    ClientBindRequest request;
+    request.context = context_of(session);
+    request.player_id = "player-32";
+    request.target_service = svc.service_id;
+    handle_client_bind(deps, request);
+    BOOST_CHECK_EQUAL(stats->binds_ok.load(), 1u);
+
+    // Close: the Unbound notify branch fires before the binding is cleared.
+    ClientCloseRequest close_request;
+    close_request.context = context_of(session);
+    close_request.reason = "gw_kick";
+    handle_client_close(deps, close_request);
+    BOOST_CHECK_EQUAL(session->close_count(), 1);
+
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult log = manager.call(svc.service_id, "get_log",
+                                          nlohmann::json::array());
+            if (!log.success || !log.values.is_array() ||
+                log.values.size() != 1u || !log.values[0].is_array() ||
+                log.values[0].size() != 2u) {
+                return false;
+            }
+            const auto& entries = log.values[0];
+            return entries[0].is_array() && entries[0][0] == "bound" &&
+                   entries[0][1].get<uint64_t>() == 32u &&
+                   entries[1].is_array() && entries[1][0] == "unbound" &&
+                   entries[1][1].get<uint64_t>() == 32u &&
+                   entries[1][2] == "gw_kick";
+        },
+        std::chrono::seconds(3)));
 }
 
 // -- spawn_gateway_actor ------------------------------------------------------

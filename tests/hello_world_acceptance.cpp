@@ -72,15 +72,11 @@ BOOST_AUTO_TEST_CASE(HW_005_GatewayServiceCoverage) {
     std::string gateway_content((std::istreambuf_iterator<char>(gateway_file)),
                                 std::istreambuf_iterator<char>());
 
-    // Check for network connection handlers
-    BOOST_CHECK(gateway_content.find("on_connect") != std::string::npos);
+    // Check for the typed client-control handlers (M3 contract): the gateway
+    // service receives Bound / Disconnected / Unbound as Lua callbacks.
+    BOOST_CHECK(gateway_content.find("on_client_bound") != std::string::npos);
     BOOST_CHECK(gateway_content.find("on_disconnect") != std::string::npos);
-    BOOST_CHECK(gateway_content.find("on_client_message") != std::string::npos);
-
-    // Check for messaging API — gateway forwards client disconnect via
-    // shield.send. It deliberately does not spawn services (gateway.lua is a
-    // pure forwarder); app.yaml's "动态创建 player" remains future work.
-    BOOST_CHECK(gateway_content.find("shield.send") != std::string::npos);
+    BOOST_CHECK(gateway_content.find("on_client_unbound") != std::string::npos);
 
     // Check for session management
     BOOST_CHECK(gateway_content.find("sessions") != std::string::npos);
