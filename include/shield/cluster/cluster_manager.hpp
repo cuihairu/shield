@@ -86,6 +86,12 @@ public:
     /// @return NodeInfo pointer, or nullptr if not found
     const NodeInfo* find_node(const std::string& node_id) const;
 
+    /// @brief M5 observability: milliseconds since this node's last
+    /// heartbeat (or handshake) arrived. Returns -1 when none has arrived
+    /// yet. Note last_heartbeat_ms itself is a steady-clock value, not a
+    /// wall timestamp — read the age, never the raw field.
+    int64_t heartbeat_age_ms(const NodeInfo& node) const;
+
     /// @brief Query a remote service name on a specific node.
     /// Returns empty string if node not found or name not resolved.
     std::string query_remote(const std::string& node_id,

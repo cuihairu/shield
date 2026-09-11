@@ -204,6 +204,11 @@ const NodeInfo* ClusterManager::find_node(const std::string& node_id) const {
     return it != impl_->nodes.end() ? &it->second : nullptr;
 }
 
+int64_t ClusterManager::heartbeat_age_ms(const NodeInfo& node) const {
+    if (node.last_heartbeat_ms == 0) return -1;
+    return Impl::now_ms() - node.last_heartbeat_ms;
+}
+
 std::string ClusterManager::query_remote(
     const std::string& node_id, const std::string& service_name) const {
     std::shared_lock lock(impl_->mutex);

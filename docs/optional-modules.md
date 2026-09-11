@@ -70,13 +70,11 @@ optional module 初始化失败默认 fail fast。例外必须由模块自己的
 
 | 模块 | 配置段存在但模块未启用 | 显式启用后初始化失败 | 可 degrade 的场景 |
 | --- | --- | --- | --- |
-| `shield_cluster` | 启动失败 | 默认 fail fast | 远端连接失败可退化到单节点，但必须持续暴露 unhealthy 状态（见下方实现状态注记） |
+| `shield_cluster` | 启动失败 | 默认 fail fast | 远端连接失败可退化到单节点，但必须持续暴露 unhealthy 状态 |
 | `shield_global` | 启动失败 | fail fast | 无 |
 | `shield_player` | 启动失败 | fail fast | 无 |
 | `shield_server` | 启动失败 | fail fast | 无 |
 | `shield_ops` | 启动失败 | fail fast；管理端口绑定失败也 fail fast | metrics exporter 后端短暂失败可保持 unhealthy |
-
-> `shield_cluster` 实现状态注记（2026-09，M4 后）：心跳调度（M1）、CAF middleman transport（M2）、路由学习（M3）与跨节点投递（M4）均已落地——节点绑定 `cluster.listen`、与静态 peers 握手（采纳对端 `node_id`/`epoch`）、按节拍互发心跳（捎带完整本地路由表），对端退出即刻 `offline` 并持续暴露 unhealthy，degrade 契约（"远端连接失败可退化，但必须持续暴露 unhealthy 状态"）已满足。本地服务发布表随心跳在集群内自动同步，`shield.cluster.query` 可命中远端真实发布；`shield.send`/`shield.call` 支持 `"node:service"` 目标的真实跨节点投递（envelope 数据面，超时/错误码语义与本地同形，`node_offline`/`node_suspect` 可与 `service_not_found` 区分），详见 [cluster 实现方案](cluster-implementation-plan.md) 与 [集群运行时语义](runtime-cluster.md) 的 Phase 1 实现范围。
 
 ### 5. 只沿公开依赖方向扩展
 

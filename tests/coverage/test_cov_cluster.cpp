@@ -245,6 +245,15 @@ BOOST_AUTO_TEST_CASE(TransportEdgePaths) {
     // Unknown proxied sessions complete nowhere (honest drop).
     transport->complete_proxied_call(987654, true, "[]", "", "");
 
+    // M5: a failed send is not traffic — nothing was live, nothing left.
+    const auto stats = transport->stats();
+    BOOST_CHECK_EQUAL(stats.live_connections, 0u);
+    BOOST_CHECK_EQUAL(stats.reconnects, 0u);
+    BOOST_CHECK_EQUAL(stats.tx_messages, 0u);
+    BOOST_CHECK_EQUAL(stats.rx_messages, 0u);
+    BOOST_CHECK_EQUAL(stats.tx_heartbeats, 0u);
+    BOOST_CHECK_EQUAL(stats.rx_heartbeats, 0u);
+
     transport->stop();
     // A second stop is a no-op, and sends keep failing after the stop.
     transport->stop();
@@ -395,6 +404,15 @@ BOOST_AUTO_TEST_CASE(TransportMalformedInjections) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     // Nothing was adopted: the peer table is still empty.
     BOOST_CHECK(manager->find_node("intruder") == nullptr);
+
+    // M5: inbound frames counted on arrival (two envelopes + one reply, one
+    // heartbeat), but nothing left — the envelope reply had no connection
+    // to the announced source and dropped.
+    const auto stats = transport->stats();
+    BOOST_CHECK_EQUAL(stats.live_connections, 0u);
+    BOOST_CHECK_EQUAL(stats.tx_messages, 0u);
+    BOOST_CHECK_GE(stats.rx_messages, 3u);
+    BOOST_CHECK_GE(stats.rx_heartbeats, 1u);
 
     transport.reset();
     system.reset();

@@ -225,6 +225,7 @@ void cleanup_failed_initialize() {
         if (g_state->cluster_transport) {
             g_state->cluster_transport->stop();
         }
+        shield::cluster::set_global_cluster_transport(nullptr);
         g_state->cluster_transport.reset();
         if (g_state->cluster_manager) {
             g_state->cluster_manager->stop();
@@ -407,6 +408,10 @@ bool initialize(const RuntimeConfig& config) {
             cleanup_failed_initialize();
             return false;
         }
+        // M5: admin surfaces (/ops/status, root.status / root.cluster) read
+        // the transport counters through the process-global pointer.
+        shield::cluster::set_global_cluster_transport(
+            g_state->cluster_transport.get());
         SHIELD_LOG_INFO(log, "Cluster transport listening on port " +
                                  std::to_string(bound_port));
     }
@@ -957,6 +962,7 @@ void shutdown() {
     g_state->lua_services.reset();
     g_state->lua_runtime.reset();
 #ifdef SHIELD_ENABLE_CLUSTER
+    shield::cluster::set_global_cluster_transport(nullptr);
     g_state->cluster_transport.reset();
 #endif
     g_state->actor_system.reset();

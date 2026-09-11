@@ -16,7 +16,11 @@
 
 #include "shield/caf_initializer.hpp"
 #ifdef SHIELD_ENABLE_CLUSTER
+#include <caf/init_global_meta_objects.hpp>
+#include <caf/io/middleman.hpp>
+
 #include "shield/cluster/cluster_manager.hpp"
+#include "shield/cluster/cluster_transport.hpp"
 #endif
 #include "shield/config/config.hpp"
 #include "shield/console/command_dispatcher.hpp"
@@ -801,9 +805,15 @@ BOOST_AUTO_TEST_CASE(ClusterCommandsReportManagerSnapshot) {
         BOOST_CHECK(resp["type"] == "result");
         BOOST_CHECK_EQUAL(resp["data"]["node_id"], "cov-root");
         BOOST_CHECK(resp["data"].contains("node_epoch"));
+        // No transport registered: the counter block is absent (M5), and
+        // the handshake-adopted peer has a numeric heartbeat age.
+        BOOST_CHECK(!resp["data"].contains("connections"));
         BOOST_REQUIRE_EQUAL(resp["data"]["nodes"].size(), 1u);
         BOOST_CHECK_EQUAL(resp["data"]["nodes"][0]["node_id"], "node-b");
         BOOST_CHECK_EQUAL(resp["data"]["nodes"][0]["state"], "online");
+        BOOST_CHECK(resp["data"]["nodes"][0]["heartbeat_age_ms"].is_number());
+        BOOST_CHECK_GE(
+            resp["data"]["nodes"][0]["heartbeat_age_ms"].get<int64_t>(), 0);
 
         dispatcher.dispatch(harness.session, "root.status");
         line = harness.read_line(std::chrono::milliseconds(8000));
@@ -815,6 +825,61 @@ BOOST_AUTO_TEST_CASE(ClusterCommandsReportManagerSnapshot) {
         BOOST_CHECK_EQUAL(resp["data"]["cluster"]["nodes"][0]["epoch"], "11");
     }
 
+    shield::cluster::set_global_cluster_manager(nullptr);
+    cluster.stop();
+}
+
+// With a transport registered, root.cluster carries the M5 counter block.
+// A solo transport (no peers) keeps every counter at zero, so the JSON
+// shape is checked deterministically without a network.
+BOOST_AUTO_TEST_CASE(ClusterCommandExposesTransportCounters) {
+    shield::cluster::ClusterConfig config;
+    config.enabled = true;
+    config.node_id = "cov-root-tx";
+    config.listen_address = "127.0.0.1:0";
+    config.peers = {"127.0.0.1:59997"};
+    shield::cluster::ClusterManager cluster(config);
+    cluster.start();
+    cluster.on_handshake("127.0.0.1:59997", "node-b", 7);
+    shield::cluster::set_global_cluster_manager(&cluster);
+
+    caf::core::init_global_meta_objects();
+    caf::io::middleman::init_global_meta_objects();
+    shield::cluster::init_cluster_caf_types();
+    caf::actor_system_config caf_config;
+    caf_config.load<caf::io::middleman>();
+    auto system = std::make_unique<caf::actor_system>(caf_config);
+    auto transport = std::make_unique<shield::cluster::ClusterTransport>(
+        *system, cluster, config);
+    uint16_t bound = 0;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(transport->start(&bound, error), error);
+    shield::cluster::set_global_cluster_transport(transport.get());
+
+    {
+        ConsoleHarness harness;
+        shield::console::CommandDispatcher dispatcher;
+        shield::console::RootCommands root(*manager);
+        root.register_all(dispatcher);
+
+        dispatcher.dispatch(harness.session, "root.cluster");
+        std::string line = harness.read_line();
+        BOOST_REQUIRE(!line.empty());
+        auto resp = nlohmann::json::parse(line);
+        BOOST_CHECK(resp["type"] == "result");
+        // Solo transport, nothing dialed yet: counters exist and read zero.
+        BOOST_CHECK_EQUAL(resp["data"]["connections"], 0);
+        BOOST_CHECK_EQUAL(resp["data"]["reconnects"], 0);
+        BOOST_CHECK_EQUAL(resp["data"]["tx_messages"], 0);
+        BOOST_CHECK_EQUAL(resp["data"]["rx_messages"], 0);
+        BOOST_CHECK_EQUAL(resp["data"]["tx_heartbeats"], 0);
+        BOOST_CHECK_EQUAL(resp["data"]["rx_heartbeats"], 0);
+    }
+
+    shield::cluster::set_global_cluster_transport(nullptr);
+    transport->stop();
+    transport.reset();
+    system.reset();
     shield::cluster::set_global_cluster_manager(nullptr);
     cluster.stop();
 }

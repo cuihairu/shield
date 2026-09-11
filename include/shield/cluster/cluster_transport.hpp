@@ -69,6 +69,20 @@ struct EnvelopeBridges {
 /// on_handshake / on_heartbeat / on_peer_down seams.
 class ClusterTransport {
 public:
+    /// @brief M5 observability snapshot. The counters are monotonic totals
+    /// since the transport started; live_connections is the number of
+    /// adopted peers that have a connection right now. "Messages" are
+    /// data-plane envelopes and replies; heartbeats are counted separately
+    /// (route-table syncs ride with heartbeats and are not counted).
+    struct Stats {
+        uint64_t live_connections = 0;
+        uint64_t reconnects = 0;
+        uint64_t tx_messages = 0;
+        uint64_t rx_messages = 0;
+        uint64_t tx_heartbeats = 0;
+        uint64_t rx_heartbeats = 0;
+    };
+
     /// @param system CAF actor system with the io middleman loaded.
     /// @param manager Node state owner; must outlive the transport.
     /// @param config Cluster config (node identity, listen address, peers,
@@ -114,9 +128,19 @@ public:
                                const std::string& error_code,
                                const std::string& error_message);
 
+    /// @brief M5 observability snapshot. Lock-free except for the (short)
+    /// shared peer-table read; safe from any thread.
+    Stats stats() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+
+/// @brief Runtime-owned transport access for admin/observability surfaces
+/// (M5): /ops/status and console root.status / root.cluster read the
+/// counters here. Null when clustering is disabled or not yet started.
+ClusterTransport* global_cluster_transport();
+void set_global_cluster_transport(ClusterTransport* transport);
 
 }  // namespace shield::cluster

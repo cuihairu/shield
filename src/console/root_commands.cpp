@@ -4,6 +4,7 @@
 #include <future>
 #include <nlohmann/json.hpp>
 
+#include "cluster_status.hpp"
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
@@ -105,19 +106,7 @@ void RootCommands::cmd_status(shield::net::ConsoleSession& session,
     {
         auto* cm = shield::cluster::global_cluster_manager();
         if (cm) {
-            auto nodes = cm->nodes();
-            nlohmann::json cluster;
-            cluster["node_id"] = cm->node_id();
-            cluster["node_epoch"] = std::to_string(cm->node_epoch());
-            cluster["nodes"] = nlohmann::json::array();
-            for (const auto& n : nodes) {
-                cluster["nodes"].push_back(
-                    {{"node_id", n.node_id},
-                     {"address", n.address},
-                     {"state", shield::cluster::node_state_name(n.state)},
-                     {"epoch", std::to_string(n.epoch)}});
-            }
-            data["cluster"] = cluster;
+            data["cluster"] = build_cluster_status_json();
         }
     }
 #endif
@@ -307,19 +296,7 @@ void RootCommands::cmd_cluster(shield::net::ConsoleSession& session,
         session.send_line(resp.dump());
         return;
     }
-    auto nodes = cm->nodes();
-    nlohmann::json data;
-    data["node_id"] = cm->node_id();
-    data["node_epoch"] = std::to_string(cm->node_epoch());
-    data["nodes"] = nlohmann::json::array();
-    for (const auto& n : nodes) {
-        data["nodes"].push_back(
-            {{"node_id", n.node_id},
-             {"address", n.address},
-             {"state", shield::cluster::node_state_name(n.state)},
-             {"epoch", std::to_string(n.epoch)},
-             {"last_heartbeat_ms", n.last_heartbeat_ms}});
-    }
+    nlohmann::json data = build_cluster_status_json();
     nlohmann::json resp = {{"type", "result"}, {"data", data}};
     session.send_line(resp.dump());
 #else

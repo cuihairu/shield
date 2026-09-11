@@ -191,9 +191,23 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
 ### M5 观测收尾（半天）
 
 - `/ops/status` cluster 块补充：连接数、重连计数、收发消息计数、最近
-  一次心跳时延。
+  一次心跳时延。✅
 - console `root.cluster` 命令同步；`runtime-cluster.md` 把"未实现"清单
-  翻转为已实现，并撤销 optional-modules.md 的实现状态注记。
+  翻转为已实现，并撤销 optional-modules.md 的实现状态注记。✅
+
+M5 落地形态：计数器挂在 transport 侧的 `TransportSideState`（actor 线程
+与 facade 线程共写的 `std::atomic`），`ClusterTransport::stats()` 无锁快
+照；`connections` 取自已采纳身份的活连接表，`reconnects` 由 down 标记 +
+再拨成功判别（首次连接不计），消息计数只算数据面 envelope/reply（路由表
+随心跳捎带不计入），心跳收发单列。心跳时延采用**年龄语义**
+（`heartbeat_age_ms = now - last_heartbeat_ms`，未收到为 null/-1），不改
+wire 格式（真 RTT 需 HeartbeatMsg 回显，超出 Phase 1）。三个出口
+（`/ops/status`、`root.status`、`root.cluster`）的 cluster 块收敛到共享
+构建器 `src/console/cluster_status.cpp`，bootstrap 经
+`global_cluster_transport()` 注册 transport（与 manager 全局指针同生命周
+期）。测试：transport 集成测试在握手保活/重启重连/端到端 call-send 用例
+中断言计数器，`test_cov_cluster` 补计数边界（失败发送不计数、异系统注入
+只进 rx），console 覆盖测试验证计数器键出现/缺席两形态与心跳年龄。
 
 ## 5. 关键设计决策
 

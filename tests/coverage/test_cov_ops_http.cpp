@@ -525,11 +525,16 @@ BOOST_AUTO_TEST_CASE(StatusEndpointIncludesClusterBlock) {
         BOOST_CHECK(resp["type"] == "result");
         BOOST_CHECK_EQUAL(resp["data"]["cluster"]["node_id"], "cov-ops");
         BOOST_CHECK(resp["data"]["cluster"].contains("node_epoch"));
+        // No transport registered in this fixture: the M5 counter block is
+        // absent, and the adopted peer reports a numeric heartbeat age.
+        BOOST_CHECK(!resp["data"]["cluster"].contains("connections"));
         BOOST_REQUIRE_EQUAL(resp["data"]["cluster"]["nodes"].size(), 1u);
         BOOST_CHECK_EQUAL(resp["data"]["cluster"]["nodes"][0]["node_id"],
                           "node-b");
         BOOST_CHECK_EQUAL(resp["data"]["cluster"]["nodes"][0]["state"],
                           "online");
+        BOOST_CHECK(resp["data"]["cluster"]["nodes"][0]["heartbeat_age_ms"]
+                        .is_number());
     }
 
     shield::cluster::set_global_cluster_manager(nullptr);

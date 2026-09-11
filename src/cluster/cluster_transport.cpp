@@ -53,6 +53,9 @@ struct PeerLink {
     std::string node_id;   // announced identity, learned at handshake
     caf::actor handle;     // invalid until the dial succeeds
     bool dialing = false;  // a dial request is in flight
+    // Set when a live connection to this peer dropped; the next successful
+    // dial is then a reconnect (M5 counter), not the first connect.
+    bool dropped = false;
 };
 
 // State shared between the transport actor and the ClusterTransport facade
@@ -73,6 +76,16 @@ struct TransportSideState {
     std::unordered_map<uint64_t, std::pair<uint64_t, std::string>>
         proxied_calls;
     EnvelopeBridges bridges;
+    // M5 observability counters. Touched from the actor thread and the
+    // facade threads; admin endpoints read them without either mutex.
+    // "Messages" are data-plane envelopes and replies, counted when they
+    // actually leave / when they arrive; route-table syncs ride with
+    // heartbeats and are not counted.
+    std::atomic<uint64_t> tx_messages{0};
+    std::atomic<uint64_t> rx_messages{0};
+    std::atomic<uint64_t> tx_heartbeats{0};
+    std::atomic<uint64_t> rx_heartbeats{0};
+    std::atomic<uint64_t> reconnects{0};
 };
 
 using SidePtr = std::shared_ptr<TransportSideState>;
@@ -93,6 +106,7 @@ void reply_to(const SidePtr& side, const std::string& source_node,
         }
         handle = it->second;
     }
+    side->tx_messages.fetch_add(1, std::memory_order_relaxed);
     caf::anon_send(handle, reply);
 }
 
@@ -144,6 +158,7 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                     std::unique_lock lock(side->peers_mutex);
                     side->peers_by_node.erase(peer.node_id);
                 }
+                peer.dropped = true;
                 peer.handle = nullptr;
                 peer.node_id.clear();
                 break;
@@ -166,7 +181,7 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                               kDialTimeout, caf::connect_atom_v, peer.host,
                               peer.port)
                     .then(
-                        [self, addr = peer.address](
+                        [self, side, addr = peer.address](
                             caf::node_id, caf::strong_actor_ptr& ptr,
                             const std::set<std::string>&) {
                             auto& st = self->state();
@@ -175,6 +190,13 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                 if (peer.address != addr) continue;
                                 peer.dialing = false;
                                 if (peer.handle || !ptr) return;
+                                if (peer.dropped) {
+                                    // A previous connection on this address
+                                    // went down: this dial is a reconnect.
+                                    peer.dropped = false;
+                                    side->reconnects.fetch_add(
+                                        1, std::memory_order_relaxed);
+                                }
                                 peer.handle = caf::actor_cast<caf::actor>(ptr);
                                 self->monitor(peer.handle);
                                 // Deliberately NOT anon_send: the hello must
@@ -280,10 +302,11 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             }
         },
         // -- liveness --------------------------------------------------------
-        [self](const HeartbeatMsg& hb) {
+        [self, side](const HeartbeatMsg& hb) {
+            side->rx_heartbeats.fetch_add(1, std::memory_order_relaxed);
             self->state().manager->on_heartbeat(hb.node_id);
         },
-        [self](hb_tick_atom) {
+        [self, side](hb_tick_atom) {
             auto& st = self->state();
             // Full local route table snapshot rides along with every
             // heartbeat (M3): idempotent, self-healing, and an empty table
@@ -299,6 +322,7 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                 caf::anon_send(
                     peer.handle,
                     HeartbeatMsg{st.self_node_id, st.self_epoch, st.hb_seq++});
+                side->tx_heartbeats.fetch_add(1, std::memory_order_relaxed);
                 caf::anon_send(peer.handle, RoutesMsg{st.self_node_id,
                                                       st.self_epoch, entries});
             }
@@ -319,6 +343,7 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
         },
         // -- inbound service envelope (M4) ------------------------------------
         [self, side](const EnvelopeMsg& env) {
+            side->rx_messages.fetch_add(1, std::memory_order_relaxed);
             // Bridges are invoked OUTSIDE data_mutex (they re-enter the
             // transport from completion paths); snapshot each one under the
             // lock, then call.
@@ -393,6 +418,7 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
         },
         // -- inbound envelope reply (M4) --------------------------------------
         [side](const EnvelopeReplyMsg& reply) {
+            side->rx_messages.fetch_add(1, std::memory_order_relaxed);
             // Routes into the caller-side pending-call table, resuming the
             // suspended coroutine (unknown/expired sessions no-op there).
             // Invoked outside data_mutex: the completion hook re-enters
@@ -415,6 +441,10 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
 
 void init_cluster_caf_types() {
     caf::init_global_meta_objects<caf::id_block::shield_cluster>();
+}
+
+namespace {
+ClusterTransport* g_cluster_transport = nullptr;
 }
 
 struct ClusterTransport::Impl {
@@ -540,6 +570,7 @@ bool ClusterTransport::send_envelope(const std::string& target_node,
     // Fire into the connection actor; BASP queues and delivers over TCP.
     // source_node lets the callee route the reply back without a reverse
     // lookup (both nodes dial each other, but source is authoritative).
+    impl_->side->tx_messages.fetch_add(1, std::memory_order_relaxed);
     caf::anon_send(handle,
                    EnvelopeMsg{impl_->manager->node_id(), service_id, method,
                                args_json, call_session, timeout_ms});
@@ -563,6 +594,28 @@ void ClusterTransport::complete_proxied_call(uint64_t local_session, bool ok,
     reply_to(impl_->side, source_node,
              EnvelopeReplyMsg{remote_session, ok, payload_json, error_code,
                               error_message});
+}
+
+ClusterTransport::Stats ClusterTransport::stats() const {
+    Stats out;
+    {
+        std::shared_lock lock(impl_->side->peers_mutex);
+        out.live_connections = impl_->side->peers_by_node.size();
+    }
+    out.reconnects = impl_->side->reconnects.load(std::memory_order_relaxed);
+    out.tx_messages = impl_->side->tx_messages.load(std::memory_order_relaxed);
+    out.rx_messages = impl_->side->rx_messages.load(std::memory_order_relaxed);
+    out.tx_heartbeats =
+        impl_->side->tx_heartbeats.load(std::memory_order_relaxed);
+    out.rx_heartbeats =
+        impl_->side->rx_heartbeats.load(std::memory_order_relaxed);
+    return out;
+}
+
+ClusterTransport* global_cluster_transport() { return g_cluster_transport; }
+
+void set_global_cluster_transport(ClusterTransport* transport) {
+    g_cluster_transport = transport;
 }
 
 }  // namespace shield::cluster

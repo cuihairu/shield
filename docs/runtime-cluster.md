@@ -10,7 +10,7 @@
 - 本地 `shield.query(name)` 继续只查询本地 registry。
 - optional module 的横向 owner、配置归属和 disabled 语义见 [官方可选模块契约](optional-modules.md)。
 
-实现状态（2026-09，M1 心跳调度 + M2 CAF middleman transport + M3 路由学习 + M4 跨节点投递已落地，与 [Phase 1 实现范围](#phase-1-实现范围)一致）：
+实现状态（2026-09，M1 心跳调度 + M2 CAF middleman transport + M3 路由学习 + M4 跨节点投递 + M5 观测收尾已落地，与 [Phase 1 实现范围](#phase-1-实现范围)一致）：
 
 - **已实现（握手/保活/路由学习/跨节点投递）**：`cluster.*` 配置解析；节点状态数据结构与快照查询；`shield.cluster.nodes()/node_id()/node_epoch()`；`/ops/status` cluster 块与 console 命令；bootstrap 生命周期接线；**心跳调度线程**（`start()` 起内部 `std::jthread` 按 `heartbeat_interval_ms` 驱动 `tick()` 降级，`stop()` 收线）；**CAF middleman transport**（M2）：绑定 `cluster.listen`、主动拨号全部静态 peers、hello/hello_ack 握手（协议版本 v1，身份采纳只在拨号侧完成）、按心跳节拍互发 `HeartbeatMsg`、连接断开即刻 offline 并清路由、带 2s 超时的异步重拨（对端重启可自愈，新 epoch 使旧路由失效）；**route 学习**（M3）：`LuaServiceManager` 名字变更钩子（spawn 发布/register/unregister/退出收回，bootstrap 注入）维护本节点发布表，完整表随每个心跳捎带广播（幂等、自愈，空表自然传播服务下线），握手后立即补发一次加速收敛；接收端要求节点已采纳且 epoch 匹配，整桶替换（stale 实例的表被静默丢弃）；**跨节点投递**（M4）：`EnvelopeMsg`/`EnvelopeReplyMsg` 数据面（详见 [Phase 1 实现范围](#phase-1-实现范围)），`shield.send/call` 对 `node:service` 形态的目标走 envelope 路径。双节点集成测试以两个真实 `caf::actor_system` 走 BASP 验证握手/保活/下线/重启重连/路由收敛与断连清除，并挂真实 Lua 服务管理器验证跨节点 send/call 全链路（`tests/cluster/test_cluster_transport.cpp`）。
 - **当前实际行为**：静态 peers 以 `connecting` 占位（临时以拨号地址为节点标识）；握手完成后改名为对端宣布的 `node_id` 并转为 `online`；此后心跳保活，超时按 `online → suspect → offline` 如实降级。对端进程退出会经连接断开事件直接置 `offline`（无 suspect 宽限）并清除其路由缓存；对端重启后自动重连，新 epoch 触发路由失效。`cluster.listen` 绑定失败视为致命错误，启动即失败。`shield.cluster.query(node, name)` 能命中对端真实发布的服务名（本地 `shield.register` 的每一次变更都会传播）；路由命中后 `shield.send`/`shield.call`/`shield.call_timeout` 可直接以 `"node:service"` 为目标完成真实跨节点投递。后续实现路线见 [cluster 实现方案](cluster-implementation-plan.md)。
@@ -332,6 +332,7 @@ cluster:
 - 节点状态数据结构、`nodes()` / `find_node()` / `check_node_reachable()` 查询。
 - `shield.cluster.nodes()/node_id()/node_epoch()` Lua 查询（`node_id`、`node_epoch` 返回真实本地元数据；`node_epoch` 与节点快照 `epoch` 均为十进制字符串）。
 - `/ops/status` 的 cluster 快照、console `root.*` 命令、bootstrap 创建/停止接线。
+- **观测指标（M5）**：`ClusterTransport::stats()` 原子计数器——`connections`（活跃连接数，已采纳身份的活连接）、`reconnects`（重连计数，断连后的再拨成功次数）、`tx_messages`/`rx_messages`（数据面 envelope/reply 收发计数，路由表随心跳捎带不计入）、`tx_heartbeats`/`rx_heartbeats`（心跳收发计数）；`ClusterManager::heartbeat_age_ms()` 提供**最近一次心跳时延**（年龄语义：`now - last_heartbeat_ms`，尚未收到心跳为 `-1`；注意 `last_heartbeat_ms` 本身是 steady-clock 值，无墙钟含义，消费方一律读年龄）。`/ops/status` cluster 块与 console `root.status`/`root.cluster` 共享同一 JSON 构建器（`src/console/cluster_status.cpp`），三个出口字段一致：计数器六键（transport 未注册时整组缺席）+ 每节点 `last_heartbeat_ms` 与 `heartbeat_age_ms`（无心跳时为 `null`）。bootstrap 注册/注销 `global_cluster_transport()` 与 manager 全局指针同生命周期。
 - **心跳调度线程（M1）**：`start()` 启动内部 `std::jthread`，按 `heartbeat_interval_ms`（下限 50ms）驱动 `tick()` 降级；`stop()` 先收线再清理节点状态。
 - **CAF middleman transport（M2，`cluster_transport.cpp`）**：绑定 `cluster.listen`（`0.0.0.0`/`*` 绑全部接口）；按心跳节拍带 2s 超时异步拨号全部静态 peers，断线自动重拨；hello/hello_ack 握手（协议版本 v1，版本不符拒绝完成握手）。身份采纳只发生在拨号侧：ack 的 sender 即本节点拨号所得 proxy，与 peer 条目一一对应，不依赖对端播报的监听地址字符串。握手采纳 `node_id` + `epoch`，`connecting` 占位条目就此改名；epoch 变化的再握手（对端重启）清除该节点路由缓存。心跳按节拍互发，`on_heartbeat` 刷新 liveness 并可把 `suspect`/`offline` 拉回 `online`；连接断开事件直接置 `offline` 并清路由。
 - bootstrap 在 CAF actor system 构建后启动 transport（集群 wire 类型必须在任何 `actor_system` 构造前注册，已与 `initialize_caf_types()` 并列处理）；`cluster.listen` 绑定失败为致命错误；两条 teardown 路径均先停 transport 再停 manager。
@@ -352,7 +353,7 @@ cluster:
 - `shield.cluster.query(node, name)` 可命中对端真实发布的服务名（收敛延迟：握手后 ≤ 一个心跳周期）；对端服务注销后同名查询随下一次心跳失效；peer 降级后同一调用先被可达性检查以 `node_suspect`/`node_offline` 拦下，"节点不可达"与"路由未注册"自此可区分。查询命中之后 `shield.send`/`shield.call` 即完成真实跨节点投递（`"node:service"` 目标形态）。
 - `node_epoch` 与节点快照 `epoch` 以十进制字符串经 Lua/JSON 暴露（uint64 直接过 double 会丢精度）；stale-handle 比对须按字符串比较。M2 起握手 epoch 具备跨节点语义：peer 重启（新 epoch）即宣告其旧路由全部失效。
 
-因此：启用 `cluster.node_id` 后，集群会呈现真实的连接/握手/保活/下线视图（健康节点 `online`，故障节点 `offline`），本地服务发布表在集群内自动同步，`shield.cluster.query` 能解析远端服务名，且 `shield.send/call` 可对 `"node:service"` 目标完成真实跨节点投递（超时/错误码语义与本地 call 同形）。未配置 `cluster.node_id` 时整条路径不激活，单节点部署不受影响。远端连接失败的 degrade 契约（见 [官方可选模块契约](optional-modules.md) 的"必须持续暴露 unhealthy 状态"）已满足：故障节点如实暴露 `offline`。
+因此：启用 `cluster.node_id` 后，集群会呈现真实的连接/握手/保活/下线视图（健康节点 `online`，故障节点 `offline`），本地服务发布表在集群内自动同步，`shield.cluster.query` 能解析远端服务名，且 `shield.send/call` 可对 `"node:service"` 目标完成真实跨节点投递（超时/错误码语义与本地 call 同形）。未配置 `cluster.node_id` 时整条路径不激活，单节点部署不受影响。远端连接失败的 degrade 契约（[官方可选模块契约](optional-modules.md) 的"必须持续暴露 unhealthy 状态"）已满足：故障节点如实暴露 `offline`。
 
 **Phase 1 不做：**
 - 动态服务发现。

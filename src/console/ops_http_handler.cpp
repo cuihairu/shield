@@ -9,6 +9,7 @@
 #include "shield/plugin/plugin_host.hpp"
 
 #ifdef SHIELD_ENABLE_CLUSTER
+#include "cluster_status.hpp"
 #include "shield/cluster/cluster_manager.hpp"
 #endif
 
@@ -102,19 +103,7 @@ shield::net::HttpResponse OpsHttpHandler::handle_status(
     {
         auto* cm = shield::cluster::global_cluster_manager();
         if (cm) {
-            auto nodes = cm->nodes();
-            nlohmann::json cluster;
-            cluster["node_id"] = cm->node_id();
-            cluster["node_epoch"] = std::to_string(cm->node_epoch());
-            cluster["nodes"] = nlohmann::json::array();
-            for (const auto& n : nodes) {
-                cluster["nodes"].push_back(
-                    {{"node_id", n.node_id},
-                     {"address", n.address},
-                     {"state", shield::cluster::node_state_name(n.state)},
-                     {"epoch", std::to_string(n.epoch)}});
-            }
-            data["cluster"] = cluster;
+            data["cluster"] = build_cluster_status_json();
         }
     }
 #endif

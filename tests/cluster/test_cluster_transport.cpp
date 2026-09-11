@@ -386,6 +386,21 @@ BOOST_AUTO_TEST_CASE(TwoNodesHandshakeAndHeartbeatKeepsThemOnline) {
     BOOST_CHECK(a->manager->find_node("node-b")->state == NodeState::Online);
     BOOST_CHECK(b->manager->find_node("node-a")->state == NodeState::Online);
 
+    // M5 observability: one adopted live connection per node, no reconnect
+    // yet, and heartbeats have flowed in both directions. The freshest
+    // heartbeat is younger than the sleep above (age semantics, not RTT).
+    for (const Node* n : {a.get(), b.get()}) {
+        const auto stats = n->transport->stats();
+        BOOST_CHECK_EQUAL(stats.live_connections, 1u);
+        BOOST_CHECK_EQUAL(stats.reconnects, 0u);
+        BOOST_CHECK_GE(stats.tx_heartbeats, 1u);
+        BOOST_CHECK_GE(stats.rx_heartbeats, 1u);
+        const int64_t age = n->manager->heartbeat_age_ms(
+            *n->manager->find_node(n == a.get() ? "node-b" : "node-a"));
+        BOOST_CHECK_GE(age, 0);
+        BOOST_CHECK_LE(age, 5000);
+    }
+
     // Order matters: the transport actors live in the CAF systems, so they
     // must die before the systems (and their managers) do.
     a->transport->stop();
@@ -434,6 +449,12 @@ BOOST_AUTO_TEST_CASE(PeerDownMarksOfflineAndRestartReconnectsWithNewEpoch) {
 
     // The restarted side also learned node-a again (it dials too).
     wait_online(*reborn, "node-a");
+
+    // M5: node-a's redial after the drop counts as a reconnect, and the
+    // live connection count is back to exactly one.
+    const auto stats_a = a->transport->stats();
+    BOOST_CHECK_GE(stats_a.reconnects, 1u);
+    BOOST_CHECK_EQUAL(stats_a.live_connections, 1u);
 
     // Tear down in dependency order: transport actors first (their CAF
     // systems and managers must stay alive underneath them).
@@ -588,6 +609,17 @@ BOOST_AUTO_TEST_CASE(RemoteCallAndSendRoundTripEndToEnd) {
     BOOST_CHECK_EQUAL(after_retract.values[0].get<bool>(), false);
     BOOST_CHECK_EQUAL(after_retract.values[1]["code"].get<std::string>(),
                       "service_not_found");
+
+    // M5: the round trips left their mark — a sent three envelopes (the two
+    // calls plus the one-way send) and received two replies; b mirrored
+    // that (three in, two out). The retracted call failed locally and
+    // never touched the wire.
+    const auto stats_a = a->transport->stats();
+    BOOST_CHECK_GE(stats_a.tx_messages, 3u);
+    BOOST_CHECK_GE(stats_a.rx_messages, 2u);
+    const auto stats_b = b->transport->stats();
+    BOOST_CHECK_GE(stats_b.rx_messages, 3u);
+    BOOST_CHECK_GE(stats_b.tx_messages, 2u);
 
     shield::cluster::set_global_cluster_manager(nullptr);
     teardown_node(*a);
