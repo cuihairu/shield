@@ -82,8 +82,11 @@ void enable_test_logging() {
     shield::log::Logger::set_global_level(shield::log::Level::Debug);
 }
 
-// Reserve a loopback port and hand it back. There is a tiny race between
-// close() and the CAF listener bind, acceptable for tests.
+// Ask the kernel for a free loopback port via the usual bind(0) probe.
+// The probe closes its socket, so the port can be lost to any other
+// ephemeral-port consumer on the machine before the CAF listener re-binds
+// it; make_node() reports that as a failed start and make_node_pair()
+// below retries the whole pair on fresh ports.
 uint16_t free_port() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     BOOST_REQUIRE_GE(fd, 0);
@@ -144,10 +147,51 @@ std::unique_ptr<Node> make_node(
         *node->system, *node->manager, node->config);
     uint16_t bound = 0;
     std::string error;
-    BOOST_REQUIRE_MESSAGE(node->transport->start(&bound, error),
-                          "transport start failed: " << error);
+    if (!node->transport->start(&bound, error)) {
+        // Most likely cause: the port handed out by free_port() was taken
+        // between its close() and this bind. Return null so the caller can
+        // retry on fresh ports instead of failing the test case.
+        BOOST_TEST_MESSAGE(
+            "make_node(" << node_id << "): transport start failed: " << error);
+        return nullptr;
+    }
     BOOST_CHECK_EQUAL(bound, listen);
     return node;
+}
+
+// Bring up the standard two-node cluster used by the IT cases below.
+//
+// Both nodes learn each other's port up front, so a listen port lost to
+// the free_port() race (see above) cannot be repaired in place: the peer
+// would keep dialing the stale address. Tear the pair down and retry with
+// fresh ports instead; `port_a`/`port_b` are updated to the ports that
+// were actually bound. `a_first` keeps each test's original construction
+// order (which test asserts timing semantics about who dials first).
+std::pair<std::unique_ptr<Node>, std::unique_ptr<Node>> make_node_pair(
+    uint16_t& port_a, uint16_t& port_b, bool a_first = true,
+    const std::function<void(Node&)>& configure_a = {},
+    const std::function<void(Node&)>& configure_b = {}) {
+    for (int attempt = 1; attempt <= 5; ++attempt) {
+        port_a = free_port();
+        port_b = free_port();
+        std::unique_ptr<Node> a, b;
+        if (a_first) {
+            a = make_node("node-a", port_a, port_b, configure_a);
+            if (!a) continue;
+            b = make_node("node-b", port_b, port_a, configure_b);
+        } else {
+            b = make_node("node-b", port_b, port_a, configure_b);
+            if (!b) continue;
+            a = make_node("node-a", port_a, port_b, configure_a);
+        }
+        if (a && b) return {std::move(a), std::move(b)};
+        // The built node (if any) is destroyed by scope exit: both dtors
+        // stop cleanly, including a transport that never started.
+        BOOST_TEST_MESSAGE("node pair attempt " << attempt
+                                                << " lost a port, retrying");
+    }
+    BOOST_FAIL("could not bring up a two-node cluster on free ports");
+    return {};
 }
 
 // Poll until node `id` on `mgr` reaches `expected` or the budget runs out.
@@ -324,10 +368,9 @@ BOOST_AUTO_TEST_SUITE(ClusterTransportIT)
 
 BOOST_AUTO_TEST_CASE(TwoNodesHandshakeAndHeartbeatKeepsThemOnline) {
     enable_test_logging();
-    uint16_t port_a = free_port();
-    uint16_t port_b = free_port();
-    auto a = make_node("node-a", port_a, port_b);
-    auto b = make_node("node-b", port_b, port_a);
+    uint16_t port_a = 0;
+    uint16_t port_b = 0;
+    auto [a, b] = make_node_pair(port_a, port_b);
 
     // Each side adopts the other's real identity (dialer-side hello_ack).
     wait_online(*a->manager, "node-b");
@@ -353,10 +396,9 @@ BOOST_AUTO_TEST_CASE(TwoNodesHandshakeAndHeartbeatKeepsThemOnline) {
 
 BOOST_AUTO_TEST_CASE(PeerDownMarksOfflineAndRestartReconnectsWithNewEpoch) {
     enable_test_logging();
-    uint16_t port_a = free_port();
-    uint16_t port_b = free_port();
-    auto a = make_node("node-a", port_a, port_b);
-    auto b = make_node("node-b", port_b, port_a);
+    uint16_t port_a = 0;
+    uint16_t port_b = 0;
+    auto [a, b] = make_node_pair(port_a, port_b);
 
     wait_online(*a->manager, "node-b");
     wait_online(*b->manager, "node-a");
@@ -408,16 +450,16 @@ BOOST_AUTO_TEST_CASE(PeerDownMarksOfflineAndRestartReconnectsWithNewEpoch) {
 // cache is purged when node-a's connection drops.
 BOOST_AUTO_TEST_CASE(RouteTableConvergesAndPurgesOnPeerDown) {
     enable_test_logging();
-    uint16_t port_a = free_port();
-    uint16_t port_b = free_port();
+    uint16_t port_a = 0;
+    uint16_t port_b = 0;
 
     // node-b starts dialing first; node-a publishes a route BEFORE its
     // transport ever comes up, so only the post-handshake RoutesMsg (not a
     // heartbeat tick) can explain an early hit on node-b's side.
-    auto b = make_node("node-b", port_b, port_a);
-    auto a = make_node("node-a", port_a, port_b, [](Node& n) {
-        n.manager->on_local_route_changed("room.public", "sid-join");
-    });
+    auto [a, b] =
+        make_node_pair(port_a, port_b, /*a_first=*/false, [](Node& n) {
+            n.manager->on_local_route_changed("room.public", "sid-join");
+        });
 
     wait_online(*a->manager, "node-b");
     wait_online(*b->manager, "node-a");
@@ -470,10 +512,9 @@ BOOST_AUTO_TEST_CASE(RouteTableConvergesAndPurgesOnPeerDown) {
 // route fails with service_not_found rather than node_offline.
 BOOST_AUTO_TEST_CASE(RemoteCallAndSendRoundTripEndToEnd) {
     enable_test_logging();
-    uint16_t port_a = free_port();
-    uint16_t port_b = free_port();
-    auto b = make_node("node-b", port_b, port_a);
-    auto a = make_node("node-a", port_a, port_b);
+    uint16_t port_a = 0;
+    uint16_t port_b = 0;
+    auto [a, b] = make_node_pair(port_a, port_b, /*a_first=*/false);
     attach_data_plane(*a);
     attach_data_plane(*b);
 
@@ -558,10 +599,9 @@ BOOST_AUTO_TEST_CASE(RemoteCallAndSendRoundTripEndToEnd) {
 // instead of hanging until its timeout.
 BOOST_AUTO_TEST_CASE(RemoteCallFailsFastWhenPeerTransportStops) {
     enable_test_logging();
-    uint16_t port_a = free_port();
-    uint16_t port_b = free_port();
-    auto b = make_node("node-b", port_b, port_a);
-    auto a = make_node("node-a", port_a, port_b);
+    uint16_t port_a = 0;
+    uint16_t port_b = 0;
+    auto [a, b] = make_node_pair(port_a, port_b, /*a_first=*/false);
     attach_data_plane(*a);
     attach_data_plane(*b);
     shield::cluster::set_global_cluster_manager(a->manager.get());
@@ -602,10 +642,9 @@ BOOST_AUTO_TEST_CASE(RemoteCallFailsFastWhenPeerTransportStops) {
 // callee's late completion lands harmlessly on an already-expired session.
 BOOST_AUTO_TEST_CASE(RemoteCallTimesOutWhileCalleeIsSlow) {
     enable_test_logging();
-    uint16_t port_a = free_port();
-    uint16_t port_b = free_port();
-    auto b = make_node("node-b", port_b, port_a);
-    auto a = make_node("node-a", port_a, port_b);
+    uint16_t port_a = 0;
+    uint16_t port_b = 0;
+    auto [a, b] = make_node_pair(port_a, port_b, /*a_first=*/false);
     attach_data_plane(*a);
     attach_data_plane(*b);
     shield::cluster::set_global_cluster_manager(a->manager.get());
