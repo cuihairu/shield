@@ -21,6 +21,7 @@ class Session;
 namespace shield::lua {
 
 class LuaServiceManager;
+class GatewaySessionRegistry;
 
 /// @brief ClientIngress message passed from Gateway to target Service VM.
 ///
@@ -29,8 +30,11 @@ class LuaServiceManager;
 /// raw wire payload; when a codec plugin decoded the body on the pipeline,
 /// decoded_message carries the canonical JSON message (delivered to Lua as a
 /// table, nil when no codec decoded anything).
+///
+/// [M3] This struct becomes the typed CAF ClientIngress message and the
+/// JSON flattening in send_client_ingress disappears.
 struct ClientIngress {
-    std::string gateway_service_name;  // for response routing back
+    std::string gateway_service_name;  // gateway actor name (response route)
     uint64_t session_id = 0;
     uint32_t session_epoch = 0;
     std::string player_id;  // empty before auth
@@ -41,17 +45,20 @@ struct ClientIngress {
 };
 
 /// @brief Bridge that routes TCP session events to the session's target
-/// service (AuthService pre-login, PlayerService post-login).
+/// service (the listener's auth entry service pre-login, the bound target
+/// after shield.client.bind).
 ///
 /// Routing model:
-/// - Gateway reads header route_id for validation only (direction + auth)
-/// - All validated messages go to session.target_service
-/// - Target VM uses route_id -> cached handler dispatch
-/// - Gateway does NOT parse route_id for target service selection
-/// - Gateway does NOT know about room/scene/map
+/// - The bridge registers/removes sessions in the listener's
+///   GatewaySessionRegistry; the gateway actor owns binding changes
+/// - Single target: validated ingress goes to the session's bound
+///   target_service, never to a per-route service
+/// - The client identity travels to Lua as a ClientContext userdata
+///   (materialized from the __shield_client_ref JSON marker)
 class LuaGatewayBridge {
 public:
-    LuaGatewayBridge(LuaServiceManager& manager, std::string auth_service_name);
+    LuaGatewayBridge(LuaServiceManager& manager, std::string auth_service_name,
+                     std::shared_ptr<GatewaySessionRegistry> registry);
 
     /// @brief Handle a new TCP session connection.
     void on_connect(std::shared_ptr<shield::net::Session> session);
@@ -59,7 +66,7 @@ public:
     /// @brief Handle a routed packet from a TCP session.
     ///
     /// Validates route_id (existence, direction, auth), then sends
-    /// ClientIngress to session.target_service.
+    /// ClientIngress to the session's bound target.
     void on_packet(std::shared_ptr<shield::net::Session> session,
                    const shield::transport::DispatchResult& packet);
 
@@ -74,6 +81,7 @@ private:
 
     LuaServiceManager& manager_;
     std::string auth_service_name_;  // pre-login target
+    std::shared_ptr<GatewaySessionRegistry> registry_;
 };
 
 }  // namespace shield::lua

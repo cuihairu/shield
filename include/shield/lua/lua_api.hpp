@@ -40,10 +40,11 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out);
 /// types. Prefer the output-parameter version for better error handling.
 nlohmann::json lua_to_json(const sol::object& value);
 
-/// @brief Build a JSON marker object that will become a Lua SessionHandle
-/// userdata when passed through json_to_lua().
-nlohmann::json make_session_handle_json(
-    const std::shared_ptr<shield::net::Session>& session);
+/// @brief Register one shield.client_rpc.<name> helper bound to a
+/// server-to-client descriptor route. Called per service VM at spawn time,
+/// after the descriptor table is compiled.
+void register_client_rpc_helper(sol::state& lua, LuaServiceManager* manager,
+                                std::string_view name, uint32_t route_id);
 
 /// @brief Full API registration (internal use)
 void register_full_shield_api(sol::state& lua,

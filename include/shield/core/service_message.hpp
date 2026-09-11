@@ -27,7 +27,9 @@
 #include <caf/type_id.hpp>
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace shield::lua {
 
@@ -75,6 +77,75 @@ struct CallResponseMessage {
     nlohmann::json values = nlohmann::json::array();
 };
 
+/// Trusted client identity snapshot. Produced by the gateway, carried to
+/// services inside client RPC messages, and shipped back on egress/control
+/// messages so the gateway can re-validate the reference. When a client
+/// identity travels inside an ordinary service message payload it uses the
+/// JSON marker shape produced by to_json() ("__shield_client_ref": true),
+/// which the Lua API layer materializes into a read-only userdata.
+struct ClientContextData {
+    std::string gateway_address;  // gateway actor name (the egress route back)
+    uint64_t session_id = 0;
+    uint32_t session_epoch = 0;
+    std::string player_id;  // empty before authentication
+    std::string protocol_profile_id;
+
+    /// JSON marker encoding (see above). Round-trips through from_json().
+    nlohmann::json to_json() const;
+
+    /// Parses a JSON marker produced by to_json(); nullopt when @p json is
+    /// not a client-context marker.
+    static std::optional<ClientContextData> from_json(
+        const nlohmann::json& json);
+};
+
+/// Server-to-client business payload. Fire-and-forget: the gateway validates
+/// the reference (registry hit, session alive, epoch equal, owner player_id,
+/// descriptor direction) and enqueues the payload on the session; a rejected
+/// egress is dropped with a warning, never queued or retried. Exactly one of
+/// message (structured codec payload, e.g. json profile) / body_bytes (raw
+/// codec payload) is carried — mirroring the codec boundary of the inbound
+/// DecodedBody.
+struct ClientEgress {
+    ClientContextData context;
+    uint32_t route_id = 0;
+    std::vector<uint8_t> body_bytes;
+    std::optional<nlohmann::json> message;
+};
+
+/// Session lifecycle notification from the gateway to the bound target
+/// service. This is a typed control message, not a Lua business callback.
+struct ClientControlMessage {
+    enum class Kind : uint8_t {
+        Bound,         // binding replaced: new target attached
+        Disconnected,  // session closed: current target detached
+        Reconnected,   // reserved for future reconnect handling
+        Unbound,       // binding replaced away from this target
+    };
+    Kind kind = Kind::Disconnected;
+    ClientContextData context;
+    std::string reason;
+};
+
+/// shield.client.bind request, routed to the gateway actor that owns the
+/// session. The response is delivered through the ordinary call protocol
+/// (complete_call): ok=true carries the fresh ClientRef marker, ok=false a
+/// {"code": ...} error table.
+struct ClientBindRequest {
+    uint64_t call_session = 0;   // 0 = fire-and-forget bind (no waiter)
+    std::string sender_service;  // requesting service, for error reporting
+    ClientContextData context;   // session reference + expected epoch
+    std::string player_id;       // trusted identity to install
+    std::string target_service;  // new single target
+};
+
+/// shield.client.close request: invalidate the binding, then close the
+/// socket with the given reason.
+struct ClientCloseRequest {
+    ClientContextData context;
+    std::string reason;
+};
+
 }  // namespace shield::lua
 
 // Allow the JSON-bearing types to be passed as CAF messages within a single
@@ -83,6 +154,10 @@ struct CallResponseMessage {
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ServiceMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::SyncCallMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::CallResponseMessage)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientEgress)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientControlMessage)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientBindRequest)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientCloseRequest)
 
 // -- CAF type ID block --------------------------------------------------------
 //
@@ -96,6 +171,10 @@ CAF_BEGIN_TYPE_ID_BLOCK(shield_lua, caf::first_custom_type_id)
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ServiceMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::SyncCallMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::CallResponseMessage))
+CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientEgress))
+CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientControlMessage))
+CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientBindRequest))
+CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientCloseRequest))
 
 // Lightweight tag messages: atom + uint64_t payload.
 // timer_fire_atom replaces kind="timer" (payload = timer_id).

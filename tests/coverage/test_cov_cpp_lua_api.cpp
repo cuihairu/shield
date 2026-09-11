@@ -26,6 +26,7 @@
 
 #include "shield/caf_initializer.hpp"
 #include "shield/config/config.hpp"
+#include "shield/core/service_message.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -137,38 +138,24 @@ public:
         auto it = user_data_.find(std::string(key));
         return it == user_data_.end() ? "" : it->second;
     }
-    void set_target_service(std::string service_name) override {
-        target_service_ = std::move(service_name);
+    shield::net::SessionBinding binding() const override { return binding_; }
+    void reset_binding(shield::net::SessionBinding initial) override {
+        binding_ = std::move(initial);
     }
-    std::string target_service() const override { return target_service_; }
-    void set_player_id(std::string player_id) override {
-        player_id_ = std::move(player_id);
-    }
-    std::string player_id() const override { return player_id_; }
-    void set_epoch(uint32_t epoch) override { epoch_ = epoch; }
-    uint32_t epoch() const override { return epoch_; }
-    shield::net::SessionRoutingContext& routing_context() override {
-        return routing_context_;
-    }
-    const shield::net::SessionRoutingContext& routing_context() const override {
-        return routing_context_;
-    }
-    void bind_service(const std::string& logical_name,
-                      shield::net::ServiceAddress address) override {
-        routing_context_.bind_service(logical_name, std::move(address));
-    }
-    void unbind_service(const std::string& logical_name) override {
-        routing_context_.unbind_service(logical_name);
-    }
-    const shield::net::ServiceAddress* get_service(
-        const std::string& logical_name) const override {
-        return routing_context_.get_service(logical_name);
-    }
-    void set_protocol_profile_id(std::string profile_id) override {
-        routing_context_.protocol_profile_id = std::move(profile_id);
-    }
-    std::string protocol_profile_id() const override {
-        return routing_context_.protocol_profile_id;
+    bool apply_binding(std::string target_service, std::string player_id,
+                       uint32_t expected_epoch,
+                       shield::net::SessionBinding* out) override {
+        if (expected_epoch != shield::net::kAnyEpoch &&
+            expected_epoch != binding_.epoch) {
+            return false;
+        }
+        binding_.target_service = std::move(target_service);
+        binding_.player_id = std::move(player_id);
+        ++binding_.epoch;
+        if (out != nullptr) {
+            *out = binding_;
+        }
+        return true;
     }
 
     void set_raw_send_failure(std::string error) {
@@ -200,10 +187,7 @@ private:
     std::vector<std::vector<uint8_t>> sent_;
     std::vector<shield::transport::DecodedBody> sent_messages_;
     std::unordered_map<std::string, std::string> user_data_;
-    std::string target_service_;
-    std::string player_id_;
-    uint32_t epoch_ = 0;
-    shield::net::SessionRoutingContext routing_context_;
+    shield::net::SessionBinding binding_;
 };
 
 // ---------------------------------------------------------------------------
@@ -592,15 +576,21 @@ BOOST_AUTO_TEST_CASE(JsonToLuaTypeBranches) {
     BOOST_CHECK(lua["v_obj"].get_type() == sol::type::table);
     BOOST_CHECK(run_script(lua, "assert(v_obj.a == 1 and v_obj.b == 'x')"));
 
-    // Marker object without a session-handle factory installed: falls
-    // through to a plain table.
-    nlohmann::json marker = nlohmann::json::object(
-        {{"__shield_session_handle", true}, {"id", std::string("1")}});
+    // Client-identity marker in a VM without the identity factory installed
+    // (no register_full_shield_api here): stays a plain table.
+    nlohmann::json marker =
+        shield::lua::ClientContextData{"gw-1", 1, 3, "player-1", "json"}
+            .to_json();
     lua["v_marker"] = json_to_lua(lua, marker);
     BOOST_CHECK(lua["v_marker"].get_type() == sol::type::table);
+    BOOST_CHECK(run_script(lua, "assert(v_marker.player_id == 'player-1')"));
 
-    // make_session_handle_json(null) yields JSON null.
-    BOOST_CHECK(make_session_handle_json(nullptr).is_null());
+    // A marker-shaped object with a wrong flag value is NOT an identity:
+    // it stays a plain table.
+    nlohmann::json fake = nlohmann::json::object(
+        {{"__shield_client_ref", false}, {"session_id", 1}});
+    lua["v_fake"] = json_to_lua(lua, fake);
+    BOOST_CHECK(lua["v_fake"].get_type() == sol::type::table);
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,11 +1111,11 @@ BOOST_AUTO_TEST_CASE(RuntimeStoppingCodes) {
 }
 
 // ---------------------------------------------------------------------------
-// SessionHandle userdata behaviour: resolve fallbacks, registry expiry and
-// cleanup, all send variants (pipeline / raw / failure modes), close,
-// bind/unbind/get service, set_player_id, player_id, epoch.
+// Client identity userdata behaviour: marker materialization, read-only
+// properties, ClientRef derivation, marker round-trip through lua_to_json,
+// and from_json rejection branches (non-marker objects stay plain tables).
 // ---------------------------------------------------------------------------
-BOOST_AUTO_TEST_CASE(SessionHandleBranches) {
+BOOST_AUTO_TEST_CASE(ClientIdentityBranches) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -1136,214 +1126,105 @@ BOOST_AUTO_TEST_CASE(SessionHandleBranches) {
                        sol::lib::string, sol::lib::os);
     register_full_shield_api(lua, &manager, &runtime);
 
-    // Marker conversion to a userdata handle.
-    auto live = std::make_shared<MockSession>(
-        201, shield::net::RemoteAddress{"10.0.0.1", 7001});
-    live->set_player_id("player-201");
-    live->set_epoch(9);
-    nlohmann::json marker = make_session_handle_json(live);
-    lua["h"] = json_to_lua(lua, marker);
-    BOOST_CHECK(
-        run_script(lua,
-                   "assert(h:id() == '201')\n"
-                   "assert(h:remote_addr():find('10%.0%.0%.1') ~= nil)\n"
-                   "assert(h:player_id() == 'player-201')\n"
-                   "assert(h:epoch() == 9)"));
-
-    // Resolve fallback: handle created before the session was registered.
+    // Full marker -> ClientContext userdata, plus ref() -> ClientRef.
+    nlohmann::json marker =
+        shield::lua::ClientContextData{"cov_gw", 201, 9, "player-201", "json"}
+            .to_json();
+    lua["ctx"] = json_to_lua(lua, marker);
     BOOST_CHECK(run_script(
         lua,
-        "local early = __shield_make_session_handle('202', '1.1.1.1:1')\n"
-        "assert(early:player_id() == '' and early:epoch() == 0)\n"
-        "stale_202 = early"));
-    auto late = std::make_shared<MockSession>(
-        202, shield::net::RemoteAddress{"10.0.0.2", 7002});
-    late->set_player_id("player-202");
-    late->set_epoch(4);
-    make_session_handle_json(late);
-    // Reuse the stale handle: its weak pointer is re-anchored through the
-    // registry fallback during resolve().
-    BOOST_CHECK(run_script(lua,
-                           "assert(stale_202:player_id() == 'player-202')\n"
-                           "assert(stale_202:epoch() == 4)"));
+        "assert(ctx:session_id() == 201)\n"
+        "assert(ctx:session_epoch() == 9)\n"
+        "assert(ctx:player_id() == 'player-201')\n"
+        "assert(ctx:gateway() == 'cov_gw')\n"
+        "assert(ctx:protocol_profile_id() == 'json')\n"
+        "local ref = ctx:ref()\n"
+        "assert(ref:session_id() == 201 and ref:session_epoch() == 9)\n"
+        "assert(ref:player_id() == 'player-201')"));
 
-    // Unknown handle id resolves to nothing.
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ghost = __shield_make_session_handle('999999', 'x')\n"
-                   "assert(ghost:player_id() == '' and ghost:epoch() == 0)"));
+    // Both userdata kinds serialize back to the marker form when passed
+    // through lua_to_json (message-argument transport).
+    const nlohmann::json ctx_back = lua_to_json(lua["ctx"]);
+    BOOST_CHECK(ctx_back.is_object());
+    BOOST_CHECK(ctx_back["__shield_client_ref"].get<bool>());
+    BOOST_CHECK_EQUAL(ctx_back["session_id"].get<uint64_t>(), 201u);
+    BOOST_CHECK_EQUAL(ctx_back["session_epoch"].get<uint32_t>(), 9u);
+    BOOST_CHECK_EQUAL(ctx_back["player_id"].get<std::string>(), "player-201");
+    BOOST_CHECK_EQUAL(ctx_back["gateway_address"].get<std::string>(), "cov_gw");
+    BOOST_CHECK_EQUAL(ctx_back["protocol_profile_id"].get<std::string>(),
+                      "json");
 
-    // --- Non-pipeline session send variants -----------------------------
-    auto plain = std::make_shared<MockSession>(
-        203, shield::net::RemoteAddress{"10.0.0.3", 7003});
-    lua["hp"] = json_to_lua(lua, make_session_handle_json(plain));
-    BOOST_CHECK(run_script(lua,
-                           "local ok, err = hp:send('raw-bytes')\n"
-                           "assert(ok == true and err == nil)"));
-    BOOST_CHECK_EQUAL(
-        std::string(plain->sent().back().begin(), plain->sent().back().end()),
-        "raw-bytes");
-    BOOST_CHECK(run_script(lua,
-                           "local ok = hp:send({k = 'v', n = 3})\n"
-                           "assert(ok == true)"));
-    BOOST_CHECK(run_script(lua, "assert(hp:send(42) == true)"));
-    BOOST_CHECK(run_script(lua, "assert(hp:send(print) == true)"));
-    // Sparse / zero-index / mixed-key tables exercise the array-vs-object
-    // detection branches of the table-to-JSON conversion.
-    BOOST_CHECK(run_script(lua, "assert(hp:send({[1] = 1, [3] = 3}) == true)"));
-    BOOST_CHECK(run_script(lua, "assert(hp:send({[0] = 1, x = 2}) == true)"));
-    BOOST_CHECK(
-        run_script(lua, "assert(hp:send({[true] = 1, y = 2}) == true)"));
-    plain->set_raw_send_failure("session_send_queue_full: retry later");
+    // The materializer global builds the same userdata directly (this is the
+    // coroutine-resume path entry point used by push_json_to_stack).
     BOOST_CHECK(run_script(
         lua,
-        "local ok, err = hp:send('x')\n"
-        "assert(ok == false and err.code == 'session_send_queue_full')\n"
-        "assert(err.retryable == true)"));
-    plain->set_raw_send_failure("session is closed");
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = hp:send('x')\n"
-                   "assert(ok == false and err.code == 'session_closed')"));
-    plain->set_raw_send_failure("some other failure");
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = hp:send('x')\n"
-                   "assert(ok == false and err.code == 'session_send_failed')\n"
-                   "assert(err.message:find('some other failure') ~= nil)"));
-    plain->set_raw_send_failure("");
+        "local made = __shield_make_client_context(77, 2, 'p-77', 'gw77', "
+        "'raw')\n"
+        "assert(made:session_id() == 77 and made:session_epoch() == 2)\n"
+        "assert(made:player_id() == 'p-77')\n"
+        "assert(made:gateway() == 'gw77')\n"
+        "assert(made:protocol_profile_id() == 'raw')"));
 
-    // --- Structured pipeline session ------------------------------------
-    auto pipe = std::make_shared<MockSession>(
-        204, shield::net::RemoteAddress{"10.0.0.4", 7004}, true, "json");
-    lua["hs"] = json_to_lua(lua, make_session_handle_json(pipe));
+    // Rejection branches: anything that is not a well-formed marker stays a
+    // plain table (from_json returns nullopt).
+    const nlohmann::json not_object = nlohmann::json::array({1, 2});
+    lua["bad1"] = json_to_lua(lua, not_object);
+    BOOST_CHECK(lua["bad1"].get_type() == sol::type::table);
+
+    const nlohmann::json flag_false = nlohmann::json::object(
+        {{"__shield_client_ref", false}, {"session_id", 1}});
+    lua["bad2"] = json_to_lua(lua, flag_false);
+    BOOST_CHECK(lua["bad2"].get_type() == sol::type::table);
+    BOOST_CHECK(run_script(lua, "assert(bad2.session_id == 1)"));
+
+    const nlohmann::json flag_wrong_type =
+        nlohmann::json::object({{"__shield_client_ref", "yes"}});
+    lua["bad3"] = json_to_lua(lua, flag_wrong_type);
+    BOOST_CHECK(lua["bad3"].get_type() == sol::type::table);
+
+    // Field-level type guards: wrong-typed fields fall back to defaults but
+    // the marker is still materialized.
+    const nlohmann::json wrong_fields =
+        nlohmann::json::object({{"__shield_client_ref", true},
+                                {"session_id", "not-a-number"},
+                                {"session_epoch", -1},
+                                {"player_id", 42},
+                                {"gateway_address", true},
+                                {"protocol_profile_id", std::vector<int>{1}}});
+    lua["loose"] = json_to_lua(lua, wrong_fields);
     BOOST_CHECK(run_script(lua,
-                           "local ok, err = hs:send({cmd = 'login'})\n"
-                           "assert(ok == true and err == nil)"));
-    BOOST_CHECK(pipe->sent_messages().back().message.has_value());
-    BOOST_CHECK(pipe->sent_messages().back().message->is_object());
+                           "assert(loose:session_id() == 0)\n"
+                           "assert(loose:session_epoch() == 0)\n"
+                           "assert(loose:player_id() == '')\n"
+                           "assert(loose:gateway() == '')\n"
+                           "assert(loose:protocol_profile_id() == '')"));
+
+    // Marker with no optional fields at all: all defaults.
+    const nlohmann::json bare =
+        nlohmann::json::object({{"__shield_client_ref", true}});
+    lua["bare_ctx"] = json_to_lua(lua, bare);
     BOOST_CHECK(run_script(
         lua,
-        "local ok, err = hs:send(7)\n"
-        "assert(ok == false and err.code == 'protocol_message_required')"));
-    pipe->set_msg_send_failure("session_send_queue_full: full");
-    BOOST_CHECK(run_script(
-        lua,
-        "local ok, err = hs:send({a = 1})\n"
-        "assert(ok == false and err.code == 'session_send_queue_full')"));
-    pipe->set_msg_send_failure("session is closed");
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = hs:send({a = 1})\n"
-                   "assert(ok == false and err.code == 'session_closed')"));
-    pipe->set_msg_send_failure("protocol pipeline is not configured");
-    BOOST_CHECK(run_script(
-        lua,
-        "local ok, err = hs:send({a = 1})\n"
-        "assert(ok == false and err.code == 'protocol_not_configured')"));
-    pipe->set_msg_send_failure("");
+        "assert(bare_ctx:session_id() == 0 and bare_ctx:session_epoch() == 0)\n"
+        "assert(bare_ctx:player_id() == '' and bare_ctx:gateway() == '')"));
 
-    // --- Raw-codec pipeline session -------------------------------------
-    auto raw = std::make_shared<MockSession>(
-        205, shield::net::RemoteAddress{"10.0.0.5", 7005}, true, "raw");
-    lua["hr"] = json_to_lua(lua, make_session_handle_json(raw));
-    BOOST_CHECK(run_script(lua, "assert(hr:send('text') == true)"));
-    BOOST_CHECK_EQUAL(std::string(raw->sent_messages().back().bytes.begin(),
-                                  raw->sent_messages().back().bytes.end()),
-                      "text");
-    BOOST_CHECK(run_script(lua, "assert(hr:send(true) == true)"));
-    BOOST_CHECK(run_script(lua, "assert(hr:send(print) == true)"));
-    BOOST_CHECK(run_script(lua, "assert(hr:send({t = 1}) == true)"));
-
-    // --- Closed session branches ----------------------------------------
-    plain->close("cov_done");
-    BOOST_CHECK_EQUAL(plain->close_reason(), "cov_done");
+    // from_json direct unit coverage for the same branches.
     BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = hp:send('x')\n"
-                   "assert(ok == false and err.code == 'session_closed')"));
+        !shield::lua::ClientContextData::from_json(not_object).has_value());
     BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = hp:send({x = 1})\n"
-                   "assert(ok == false and err.code == 'session_closed')"));
-    pipe->close("cov_done");
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = hs:send({x = 1})\n"
-                   "assert(ok == false and err.code == 'session_closed')"));
-
-    // bind_service / unbind_service / get_service on a live session.
-    auto binder = std::make_shared<MockSession>(
-        206, shield::net::RemoteAddress{"10.0.0.6", 7006});
-    lua["hb"] = json_to_lua(lua, make_session_handle_json(binder));
-    BOOST_CHECK(run_script(
-        lua,
-        "local ok, err = hb:bind_service('game', 'cov_game', 'game')\n"
-        "assert(ok == true and err == nil)"));
-    BOOST_CHECK(run_script(lua,
-                           "local info = hb:get_service('game')\n"
-                           "assert(info.service_id == 'cov_game')\n"
-                           "assert(info.service_type == 'game')\n"
-                           "assert(type(info.epoch) == 'number')"));
-    BOOST_CHECK(run_script(lua, "assert(hb:get_service('nope') == nil)"));
-    BOOST_CHECK(run_script(lua,
-                           "local ok = hb:unbind_service('game')\n"
-                           "assert(ok == true)"));
-    BOOST_CHECK(run_script(lua,
-                           "local ok, err = hb:set_player_id('player-206')\n"
-                           "assert(ok == true and err == nil)\n"
-                           "assert(hb:player_id() == 'player-206')"));
-
-    // Closed-session branches for bind/unbind/get/set_player_id.
-    binder->close("cov_done");
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = hb:bind_service('g', 's')\n"
-                   "assert(ok == false and err.code == 'session_closed')"));
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = hb:unbind_service('g')\n"
-                   "assert(ok == false and err.code == 'session_closed')"));
-    BOOST_CHECK(run_script(lua, "assert(hb:get_service('g') == nil)"));
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = hb:set_player_id('p')\n"
-                   "assert(ok == false and err.code == 'session_closed')"));
-
-    // SessionHandle.close on a live session.
-    auto closer = std::make_shared<MockSession>(
-        207, shield::net::RemoteAddress{"10.0.0.7", 7007});
-    lua["hc"] = json_to_lua(lua, make_session_handle_json(closer));
-    BOOST_CHECK(run_script(lua, "hc:close('cov_bye')"));
-    BOOST_CHECK_EQUAL(closer->close_reason(), "cov_bye");
-
-    // Expired registry entry: resolve erases it and returns null.
-    {
-        auto temp = std::make_shared<MockSession>(
-            208, shield::net::RemoteAddress{"10.0.0.8", 7008});
-        make_session_handle_json(temp);
-        lua["hx"] = json_to_lua(lua, make_session_handle_json(temp));
-    }
-    BOOST_CHECK(run_script(lua,
-                           "assert(hx:player_id() == '')\n"
-                           "assert(hx:epoch() == 0)"));
-
-    // Periodic cleanup: drive >= kSessionCleanupInterval resolves so the
-    // cleanup sweep runs. Keep one never-resolved expired entry (210) plus
-    // live entries (201) present so the sweep exercises both erase and
-    // advance branches.
-    {
-        auto temp = std::make_shared<MockSession>(
-            210, shield::net::RemoteAddress{"10.0.0.9", 7009});
-        make_session_handle_json(temp);
-    }
-    for (int i = 0; i < 110; ++i) {
-        BOOST_CHECK(
-            run_script(lua,
-                       "local t = __shield_make_session_handle('201', 'x')\n"
-                       "assert(t ~= nil)"));
-    }
-    BOOST_CHECK(live != nullptr);
+        !shield::lua::ClientContextData::from_json(flag_false).has_value());
+    BOOST_CHECK(!shield::lua::ClientContextData::from_json(flag_wrong_type)
+                     .has_value());
+    const auto loose_data =
+        shield::lua::ClientContextData::from_json(wrong_fields);
+    BOOST_REQUIRE(loose_data.has_value());
+    BOOST_CHECK_EQUAL(loose_data->session_id, 0u);
+    BOOST_CHECK_EQUAL(loose_data->session_epoch, 0u);
+    BOOST_CHECK(loose_data->player_id.empty());
+    BOOST_CHECK(loose_data->gateway_address.empty());
+    const auto bare_data = shield::lua::ClientContextData::from_json(bare);
+    BOOST_REQUIRE(bare_data.has_value());
+    BOOST_CHECK_EQUAL(bare_data->session_id, 0u);
 }
 
 // ---------------------------------------------------------------------------

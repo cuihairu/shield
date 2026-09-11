@@ -182,6 +182,10 @@ struct LuaServiceManager::Impl {
     // actor system; every spawned service owns a CAF actor handle.
     std::unordered_map<std::string, caf::actor> service_actors;
 
+    // Gateway actors by gateway name (see gateway_actor.hpp). Populated by
+    // bootstrap, one per listener.
+    std::unordered_map<std::string, caf::actor> gateway_actors;
+
     struct ActorTimerState {
         uint64_t id = 0;
         int64_t interval_ms = 0;
@@ -858,11 +862,15 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                     }
                     if (descriptor.direction ==
                         shield::transport::RouteDirection::ServerToClient) {
-                        // s2c helpers are created by the Lua API layer (M2);
-                        // binding presence was already enforced by the
-                        // descriptor parser. Keep the descriptor so the
-                        // helper table can bind route_id -> binding.
+                        // s2c helpers: publish shield.client_rpc.<binding> so
+                        // the handler can push server-to-client payloads
+                        // through the owning gateway actor (M2). Binding
+                        // presence was already enforced by the descriptor
+                        // parser.
                         (void)rpc_state.descriptors.add(descriptor);
+                        register_client_rpc_helper(impl_->runtime.vm_state(vm),
+                                                   this, descriptor.binding,
+                                                   descriptor.route_id);
                         return;
                     }
                     sol::function handler;
@@ -1888,6 +1896,23 @@ size_t LuaServiceManager::pending_task_count_total() const {
     return impl_->pending_tasks.size();
 }
 
+caf::actor_system& LuaServiceManager::actor_system() const {
+    return impl_->system;
+}
+
+void LuaServiceManager::register_gateway_actor(std::string gateway_name,
+                                               caf::actor actor) {
+    std::unique_lock lock(impl_->registry_mutex);
+    impl_->gateway_actors[std::move(gateway_name)] = std::move(actor);
+}
+
+caf::actor LuaServiceManager::gateway_actor(
+    std::string_view gateway_name) const {
+    std::shared_lock lock(impl_->registry_mutex);
+    auto it = impl_->gateway_actors.find(std::string(gateway_name));
+    return it != impl_->gateway_actors.end() ? it->second : caf::actor{};
+}
+
 // Push a JSON value onto a raw lua_State using the C API (avoids sol2
 // stack-residue quirks when targeting a specific coroutine thread).
 static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
@@ -1912,6 +1937,22 @@ static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
             lua_rawseti(L, -2, i++);
         }
     } else if (v.is_object()) {
+        // A trusted client-identity marker materializes as the read-only
+        // ClientContext userdata instead of a plain table (same rule as
+        // json_to_lua in lua_api.cpp). The global helper is registered into
+        // every service VM by register_client_identity_api.
+        if (auto ctx = ClientContextData::from_json(v)) {
+            lua_getglobal(L, "__shield_make_client_context");
+            lua_pushinteger(L, static_cast<lua_Integer>(ctx->session_id));
+            lua_pushinteger(L, static_cast<lua_Integer>(ctx->session_epoch));
+            lua_pushlstring(L, ctx->player_id.data(), ctx->player_id.size());
+            lua_pushlstring(L, ctx->gateway_address.data(),
+                            ctx->gateway_address.size());
+            lua_pushlstring(L, ctx->protocol_profile_id.data(),
+                            ctx->protocol_profile_id.size());
+            lua_call(L, 5, 1);
+            return;
+        }
         lua_createtable(L, 0, static_cast<int>(v.size()));
         for (auto it = v.begin(); it != v.end(); ++it) {
             lua_pushlstring(L, it.key().data(), it.key().size());

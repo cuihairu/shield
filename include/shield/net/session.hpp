@@ -41,46 +41,21 @@ constexpr const char* KICKED = "kicked";
 constexpr const char* SHUTDOWN = "shutdown";
 }  // namespace CloseReason
 
-/// @brief Service address for routing
-struct ServiceAddress {
-    std::string service_id;
-    std::string service_type;  // e.g., "player", "scene", "room"
-    uint32_t epoch = 0;        // binding epoch for stale detection
-};
+/// @brief Epoch sentinel for apply_binding(): skip the staleness check and
+/// replace the binding unconditionally (used when invalidating a session).
+inline constexpr uint32_t kAnyEpoch = 0xFFFFFFFFu;
 
-/// @brief Session routing context - manages logical service name mappings
-struct SessionRoutingContext {
-    std::string gateway_address;
-    std::string session_id;
-    uint32_t session_epoch =
-        0;  // Changed from uint64_t to uint32_t for consistency
-    std::string player_id;
+/// @brief Single-target binding of a live session. The gateway keeps exactly
+/// one target service per session: the listener's auth entry service before
+/// login, the player service after. Every successful apply_binding()
+/// increments epoch, so stale ingress/egress/control references carrying an
+/// older epoch are rejected.
+struct SessionBinding {
+    std::string target_service;  // auth service pre-login, player service after
+    std::string player_id;       // empty until authenticated
+    std::string gateway_name;    // gateway actor / listener owner
     std::string protocol_profile_id;
-    std::unordered_map<std::string, ServiceAddress> service_routes;
-
-    /// @brief Bind a logical service name to a service address
-    void bind_service(const std::string& logical_name, ServiceAddress address) {
-        service_routes[logical_name] = std::move(address);
-        session_epoch++;
-    }
-
-    /// @brief Unbind a logical service name
-    void unbind_service(const std::string& logical_name) {
-        service_routes.erase(logical_name);
-        session_epoch++;
-    }
-
-    /// @brief Get service address by logical name
-    const ServiceAddress* get_service(const std::string& logical_name) const {
-        auto it = service_routes.find(logical_name);
-        return it != service_routes.end() ? &it->second : nullptr;
-    }
-
-    /// @brief Clear all routes (used on disconnect)
-    void clear_routes() {
-        service_routes.clear();
-        session_epoch++;
-    }
+    uint32_t epoch = 0;  // incremented on every binding replacement
 };
 
 /// @brief Session interface
@@ -132,47 +107,24 @@ public:
     /// @brief Get user data
     virtual std::string get_user_data(std::string_view key) const = 0;
 
-    /// @brief Set target service (AuthService pre-login, PlayerService
-    /// post-login)
-    virtual void set_target_service(std::string service_name) = 0;
+    /// @brief Snapshot of the current single-target binding.
+    virtual SessionBinding binding() const = 0;
 
-    /// @brief Get target service
-    virtual std::string target_service() const = 0;
+    /// @brief Install the initial (pre-auth) binding. Used once by the
+    /// gateway when the connection is accepted; epoch starts from the
+    /// value carried by @p initial (0 for a fresh session).
+    virtual void reset_binding(SessionBinding initial) = 0;
 
-    /// @brief Set trusted player identity (set after auth)
-    virtual void set_player_id(std::string player_id) = 0;
-
-    /// @brief Get player identity
-    virtual std::string player_id() const = 0;
-
-    /// @brief Set session epoch (incremented on each binding update)
-    virtual void set_epoch(uint32_t epoch) = 0;
-
-    /// @brief Get session epoch
-    virtual uint32_t epoch() const = 0;
-
-    /// @brief Get routing context (mutable)
-    virtual SessionRoutingContext& routing_context() = 0;
-
-    /// @brief Get routing context (const)
-    virtual const SessionRoutingContext& routing_context() const = 0;
-
-    /// @brief Bind a logical service name to a service address
-    virtual void bind_service(const std::string& logical_name,
-                              ServiceAddress address) = 0;
-
-    /// @brief Unbind a logical service name
-    virtual void unbind_service(const std::string& logical_name) = 0;
-
-    /// @brief Get service address by logical name
-    virtual const ServiceAddress* get_service(
-        const std::string& logical_name) const = 0;
-
-    /// @brief Set protocol profile ID
-    virtual void set_protocol_profile_id(std::string profile_id) = 0;
-
-    /// @brief Get protocol profile ID
-    virtual std::string protocol_profile_id() const = 0;
+    /// @brief Compare-and-set binding replacement. When @p expected_epoch is
+    /// kAnyEpoch or equals the current epoch, the binding is replaced with
+    /// the given target and player identity, epoch is incremented, and true
+    /// is returned with the new binding written to @p out when non-null.
+    /// On epoch mismatch the session state is left untouched and false is
+    /// returned. The whole compare-write-increment runs in one critical
+    /// section.
+    virtual bool apply_binding(std::string target_service,
+                               std::string player_id, uint32_t expected_epoch,
+                               SessionBinding* out = nullptr) = 0;
 };
 
 /// @brief Session callbacks
@@ -235,73 +187,30 @@ public:
         return it != user_data_.end() ? it->second : "";
     }
 
-    void set_target_service(std::string service_name) override {
+    SessionBinding binding() const override {
         std::lock_guard<std::mutex> lock(binding_mutex_);
-        target_service_ = std::move(service_name);
+        return binding_;
     }
 
-    std::string target_service() const override {
+    void reset_binding(SessionBinding initial) override {
         std::lock_guard<std::mutex> lock(binding_mutex_);
-        return target_service_;
+        binding_ = std::move(initial);
     }
 
-    void set_player_id(std::string player_id) override {
+    bool apply_binding(std::string target_service, std::string player_id,
+                       uint32_t expected_epoch,
+                       SessionBinding* out = nullptr) override {
         std::lock_guard<std::mutex> lock(binding_mutex_);
-        player_id_ = std::move(player_id);
-    }
-
-    std::string player_id() const override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        return player_id_;
-    }
-
-    void set_epoch(uint32_t epoch) override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        epoch_ = epoch;
-    }
-
-    uint32_t epoch() const override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        return epoch_;
-    }
-
-    SessionRoutingContext& routing_context() override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        return routing_context_;
-    }
-
-    const SessionRoutingContext& routing_context() const override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        return routing_context_;
-    }
-
-    void bind_service(const std::string& logical_name,
-                      ServiceAddress address) override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        routing_context_.bind_service(logical_name, std::move(address));
-        epoch_ = routing_context_.session_epoch;
-    }
-
-    void unbind_service(const std::string& logical_name) override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        routing_context_.unbind_service(logical_name);
-        epoch_ = routing_context_.session_epoch;
-    }
-
-    const ServiceAddress* get_service(
-        const std::string& logical_name) const override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        return routing_context_.get_service(logical_name);
-    }
-
-    void set_protocol_profile_id(std::string profile_id) override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        routing_context_.protocol_profile_id = std::move(profile_id);
-    }
-
-    std::string protocol_profile_id() const override {
-        std::lock_guard<std::mutex> lock(binding_mutex_);
-        return routing_context_.protocol_profile_id;
+        if (expected_epoch != kAnyEpoch && expected_epoch != binding_.epoch) {
+            return false;
+        }
+        binding_.target_service = std::move(target_service);
+        binding_.player_id = std::move(player_id);
+        ++binding_.epoch;
+        if (out != nullptr) {
+            *out = binding_;
+        }
+        return true;
     }
 
     /// @brief Start receiving
@@ -329,12 +238,11 @@ private:
     shield::transport::FrameDecoder frame_decoder_;
     std::unique_ptr<shield::transport::ProtocolPipeline> protocol_pipeline_;
 
-    // Session binding: target service, player_id, epoch
+    // Session binding. Guarded by binding_mutex_ because the gateway actor
+    // (CAF thread) and the bridge callbacks (net threads) touch it from
+    // different threads than the strand handlers.
     mutable std::mutex binding_mutex_;
-    std::string target_service_;
-    std::string player_id_;
-    uint32_t epoch_ = 0;
-    SessionRoutingContext routing_context_;
+    SessionBinding binding_;
 
     // Async send queue. send_queue_ and send_in_progress_ are only touched
     // from strand_ handlers. queued_count_ is an atomic count of reserved

@@ -770,12 +770,13 @@ local ok, top = lb:top_n("arena_1v1", 10)
 
 ## Client RPC API
 
-客户端 RPC 不是通用 Lua 消息入口。每个 RPC 由 compiled descriptor 定义 `route_id`、逻辑服务名、方向、schema 和 `binding_hint`；目标 Service VM 在启动期把它编译为缓存 handler。
+客户端 RPC 不是通用 Lua 消息入口。每个 RPC 由 RPC descriptor(`actors[].rpc.routes`)定义
+`route_id`、方向、schema 与 `binding`;目标 Service VM 在启动期把它编译为缓存 handler,
+s2c 路由则在同一时刻把 `shield.client_rpc.<binding>` helper 注册进该 VM。
 
-业务 module 只实现具体方法：
+业务 module 只实现具体方法:
 
 ```lua
-local player_rpc = require("generated.player_rpc")
 local M = {}
 local state
 
@@ -788,7 +789,7 @@ function M.move(client, request)
         z = request.z,
     }
 
-    return player_rpc.move_result(client, {
+    return shield.client_rpc.move_result(client, {
         accepted = true,
     })
 end
@@ -796,172 +797,140 @@ end
 return M
 ```
 
-示例中的 `M.move` 由 descriptor 的 `binding_hint` 在启动期绑定到对应 client-to-server RPC。runtime 热路径只做 `route_id -> cached function`，不按字符串反射查 module，也不调用通用 client-message handler。
+示例中的 `M.move` 由 descriptor 的 `binding` 在启动期绑定到对应 client-to-server RPC。
+runtime 热路径只做 `route_id -> cached function`,不按字符串反射查 module,也不调用
+通用 client-message handler。
 
 ### Handler 参数
 
-客户端 RPC handler 的固定参数是：
+客户端 RPC handler 的固定参数是:
 
 ```text
 handler(ClientContext, decoded RPC arguments)
 ```
 
-> **实现状态**：Client RPC 章节整体为目标契约。当前入站路径已可用（`on_client_message(ctx, route_id, client_context, body, message)`，`client_context` 为携带 `session_id`/`session_epoch`/`player_id`/`method_name` 等字段的普通 table）；但 `ClientContext` userdata、`client:ref()`/`ClientRef`、codegen 出站 RPC helper、消息 ctx 中的 `ctx.session` 均未实现。出站回包当前使用 `SessionHandle:send`（由 gateway 服务在 `on_connect` 时通过 Lua API 获取）。
+> **实现状态(M2)**:入站分发仍在过渡形态——Gateway 目前以
+> `on_client_message(ctx, route_id, client_context, body, message)` 调用目标服务,
+> 其中 `client_context` 是 `ClientContext` userdata(M3 将翻转为上面的
+> `handler(client, request)` 直接分发并删除 `on_client_message`)。出站与身份
+> userdata 已是最终形态:`ClientContext`/`ClientRef` 只读 userdata、
+> `shield.client.bind/close`、按 descriptor 自动注册的 `shield.client_rpc.<name>`
+> helper 均已可用。
 
-如果该 RPC 的 request schema 生成单个 request table，则 Lua 形态为 `handler(client, request)`；若生成多个参数，则按生成契约传入。route、header、codec 和原始 body 都不是业务参数。
+如果该 RPC 的 request schema 生成单个 request table,则 Lua 形态为
+`handler(client, request)`;若生成多个参数,则按生成契约传入。route、header、codec
+和原始 body 都不是业务参数。
 
-`ClientContext` 为只读 userdata，最小 API：
+### ClientContext 与 ClientRef
+
+`ClientContext` 在 `__shield_client_ref` 标记随消息到达时物化为只读 userdata,
+`ClientRef` 是 `shield.client.bind` 的返回值。两者共用同一套只读属性:
 
 ```lua
-client:player_id() -- 可信身份；预登录 RPC 可为 nil
-client:ref()       -- 返回可序列化 ClientRef
+client:player_id()          -- 可信身份;预登录为空字符串
+client:session_id()         -- Gateway 侧连接 id
+client:session_epoch()      -- 绑定纪元;stale 引用会比对失败
+client:protocol_profile_id()
+client:gateway()            -- gateway actor 名(egress 回程地址)
+
+client:ref()                -- 仅 ClientContext:派生可传递的 ClientRef
 ```
 
-**规则**：
+userdata 不可由 Lua 构造(`sol::no_constructor`),也不可变;作为 service 消息参数
+传出时自动序列化回标记形态,在对端 VM 中再次物化。
+
+### shield.client.bind / close
+
+session 绑定是**单一 target**:认证前指向 listener 的 auth 入口服务,认证成功后原子
+切换到 PlayerService。不存在多服务绑定表;room/scene/map 等动态路由属于 PlayerService
+私有状态,用 `shield.send/call` 转发。
+
+```lua
+-- 认证服务内(必须运行在 handler 协程中):
+-- 挂起当前协程,CAS 替换 session 绑定,恢复时返回 (true, ClientRef) 或 (false, error)
+local ok, ref = shield.client.bind(client, player_id, "player")
+if not ok then
+    -- ref = {code = "client_rpc.epoch_expired", message = ...}
+    return {code = ref.code}
+end
+
+-- 主动踢下线:失效绑定 + 移除注册 + 关闭 socket(reason 为空时记为 "kicked")
+shield.client.close(ref, "kicked")
+```
 
 | 规则 | 说明 |
 | --- | --- |
-| player_id 来源 | 来自 Gateway 认证绑定，不信任客户端 body 的同名字段 |
-| ClientRef 封装 | 封装 Gateway 地址、session id、epoch、可信 player id 和 protocol profile identity，可作为普通 service 消息参数传递 |
-| 不暴露内容 | `ClientContext` / `ClientRef` 不暴露 `route_id`、route name、socket、codec、frame、CAF handle 或 `SessionHandle` |
-| 非 ServiceHandle | `ClientRef` 不是 `ServiceHandle`，不能作为 `shield.send/call` 的 target |
+| 协程要求 | `shield.client.bind` 只能在 handler 协程中调用;主协程/on_exit 返回错误表 |
+| 单一 target | 绑定只有一个 target service;成功后 epoch 递增,旧引用立即失效 |
+| CAS 失败码 | 绑定失败统一返回 `client_rpc.epoch_expired`(session 消失或 epoch 过期) |
+| bind 挂起 | bind 挂起协程等待 gateway 应答,超时(5s)由 CAF delayed driver 触发失败恢复 |
+| close 默认原因 | `shield.client.close(ref)` 不传 reason 时按 `"kicked"` 关闭 |
 
 ### 出站 response 与 push
 
-服务端只能调用 descriptor/codegen 生成的具体 server-to-client RPC helper：
+服务端只能调用按 s2c descriptor 自动注册的具体 server-to-client RPC helper:
 
 ```lua
-player_rpc.move_result(client, {
+shield.client_rpc.move_result(client, {
     accepted = true,
 })
 
-room_rpc.member_joined(client_ref, {
+shield.client_rpc.member_joined(client_ref, {
     player_id = member_id,
 })
 ```
 
-helper 已绑定 server-to-client `route_id` 与 response schema。业务只传 `ClientContext` 或 `ClientRef` 和该 RPC 的业务参数。
+helper 在 spawn 期绑定 s2c `route_id`(第一个参数接受 `ClientContext` 或 `ClientRef`,
+第二个参数是 table(结构化消息)或 string(原始字节)),fire-and-forget;Gateway 在
+写回前校验 registry 命中、epoch 相等、owner player_id 与路由方向,拒绝只 warn + 计数,
+不排队不重试。
 
-**规则**：
+**规则**:
 
 | 规则 | 说明 |
 | --- | --- |
 | 禁止通用 API | 不提供接受 route 字符串、裸 `route_id` 或通用 envelope table 的发送 API |
-| route 位置 | route 信息写入 wire header，不写入 body |
-| 语义区分 | response 与 push 使用同一 `ClientEgress` 路径，由不同 RPC method 语义区分 |
-| Gateway 校验 | Gateway 写回前校验 session id、epoch 和 owner；stale `ClientRef` 返回明确错误 |
+| route 位置 | route 信息写入 wire header,不写入 body |
+| 语义区分 | response 与 push 使用同一 `ClientEgress` 路径,由不同 RPC method 语义区分 |
+| Gateway 校验 | Gateway 写回前校验 session id、epoch 和 owner;stale `ClientRef` 丢弃并计数 |
 | Phase 1 限制 | 第一版不提供通用 `client.call`、seq pending map、future 或自动 timeout correlation |
 
-### 动态服务路由
-
-客户端不能修改 session 路由。认证服务、PlayerService 或其他授权 Service 通过 runtime client-routing API 原子绑定或更新逻辑服务名：
-
-```text
-player -> current PlayerService
-room   -> current RoomService
-scene  -> current SceneService
-map    -> current MapService
-```
-
-具体管理 API 随 Service adapter 实现冻结，不允许用普通业务 body 携带 ServiceAddress、actor id 或 route 来替代。
-
-#### SessionHandle API
-
-`SessionHandle` 是 Gateway 传递给 Lua 服务的 session 对象，用于管理客户端连接和路由。
+### 示例:认证服务绑定 player
 
 ```lua
--- 绑定逻辑服务名到服务地址
--- logical_name: 逻辑服务名（如 "player", "room", "scene"）
--- service_id: 服务实例 ID
--- service_type: 服务类型（可选）
-local ok, err = session:bind_service(logical_name, service_id, service_type)
-
--- 解绑逻辑服务名
-local ok, err = session:unbind_service(logical_name)
-
--- 获取服务地址
-local addr = session:get_service(logical_name)
--- addr 返回: {service_id = "...", service_type = "...", epoch = N} 或 nil
-
--- 设置 player_id（认证成功后调用）
-local ok, err = session:set_player_id(player_id)
-
--- 获取 player_id
-local player_id = session:player_id()
-
--- 获取 session epoch
-local epoch = session:epoch()
-
--- 获取 session ID
-local session_id = session:id()
-
--- 获取远程地址
-local remote_addr = session:remote_addr()
-
--- 发送数据到客户端
-local ok, err = session:send(data)
-
--- 关闭 session
-session:close(reason)
-```
-
-#### 示例：认证服务绑定 player
-
-```lua
-function M.on_client_message(ctx, route_id, client_context, body, message)
-    -- 验证认证信息
-    local player_id = authenticate(body)
+-- auth 服务:routed login(c2s descriptor binding = "login")
+function M.login(client, request)
+    local player_id = authenticate(request)
     if not player_id then
         return {code = "auth_failed"}
     end
 
-    -- 设置 player_id
-    local ok, err = ctx.session:set_player_id(player_id)
+    -- 挂起协程;gateway CAS 成功后恢复并拿到 ClientRef
+    local ok, ref = shield.client.bind(client, player_id, "player")
     if not ok then
-        return {code = "set_player_failed", message = err.message}
+        return {code = ref.code}
     end
 
-    -- 绑定 player 服务
-    local player_service = find_or_create_player(player_id)
-    local ok, err = ctx.session:bind_service("player", player_service, "player")
-    if not ok then
-        return {code = "bind_player_failed", message = err.message}
-    end
-
-    return {code = "ok", player_id = player_id}
-end
-```
-
-#### 示例：获取当前绑定的服务
-
-```lua
-function M.on_client_message(ctx, route_id, client_context, body, message)
-    -- 获取当前绑定的 player 服务
-    local player_addr = ctx.session:get_service("player")
-    if not player_addr then
-        return {code = "no_player_bound"}
-    end
-
-    -- 发送消息到 player 服务
-    shield.send(player_addr.service_id, "handle_message", body)
+    -- 新 target(此处即本服务)与客户端都收到登录结果
+    shield.client_rpc.login_result(ref, {player_id = ref:player_id()})
     return {code = "ok"}
 end
 ```
 
 ### 启动校验
 
-Service VM 启动时必须失败于以下情况：
+Service VM 启动时必须失败于以下情况:
 
 | 校验项 | 说明 |
 | --- | --- |
-| 缺失 binding | descriptor 声明该逻辑服务的 client-to-server RPC，但 `binding_hint` 缺失 |
-| 函数不存在 | binding 指向的 Lua function 不存在 |
-| 重复绑定 | 同一 `route_id` 重复绑定 |
-| 方向不匹配 | RPC direction 与 handler 或 helper 用途不匹配 |
-| codec 不可用 | request/response schema 或 codec provider 不可用 |
+| 缺失 binding | descriptor 声明该服务的 client-to-server RPC,但 `binding` 缺失 |
+| 函数不存在 | binding 指向的 Lua function 不存在或不是 function(`handler_missing`) |
+| 重复绑定 | 同一 `route_id` 或同名 descriptor 重复声明 |
+| 方向不匹配 | s2c 路由不会编译为入站 handler;c2s 路由不会注册出站 helper |
+| owner 不匹配 | `owner_service` 指向其他 actor 的条目不在本 VM 编译 |
 
----
-
+> **说明**:`network.protocol.routes`(logical_service/method 形态)已在 M1 移除;
+> descriptor 是路由的唯一来源,见 [RPC descriptor](protocol-routing-design.md)。
 ## HTTP API
 
 ### HTTP 客户端 (shield.http)

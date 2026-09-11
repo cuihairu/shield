@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "shield/caf_initializer.hpp"
+#include "shield/lua/gateway_actor.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -104,39 +105,30 @@ public:
         auto it = user_data_.find(std::string(key));
         return it == user_data_.end() ? "" : it->second;
     }
-    void set_target_service(std::string service_name) override {
-        target_service_ = std::move(service_name);
+
+    shield::net::SessionBinding binding() const override { return binding_; }
+    void reset_binding(shield::net::SessionBinding initial) override {
+        binding_ = std::move(initial);
     }
-    std::string target_service() const override { return target_service_; }
-    void set_player_id(std::string player_id) override {
-        player_id_ = std::move(player_id);
+    bool apply_binding(std::string target_service, std::string player_id,
+                       uint32_t expected_epoch,
+                       shield::net::SessionBinding* out) override {
+        if (expected_epoch != shield::net::kAnyEpoch &&
+            expected_epoch != binding_.epoch) {
+            return false;
+        }
+        binding_.target_service = std::move(target_service);
+        binding_.player_id = std::move(player_id);
+        ++binding_.epoch;
+        if (out != nullptr) {
+            *out = binding_;
+        }
+        return true;
     }
-    std::string player_id() const override { return player_id_; }
-    void set_epoch(uint32_t epoch) override { epoch_ = epoch; }
-    uint32_t epoch() const override { return epoch_; }
-    shield::net::SessionRoutingContext& routing_context() override {
-        return routing_context_;
-    }
-    const shield::net::SessionRoutingContext& routing_context() const override {
-        return routing_context_;
-    }
-    void bind_service(const std::string& logical_name,
-                      shield::net::ServiceAddress address) override {
-        routing_context_.bind_service(logical_name, std::move(address));
-    }
-    void unbind_service(const std::string& logical_name) override {
-        routing_context_.unbind_service(logical_name);
-    }
-    const shield::net::ServiceAddress* get_service(
-        const std::string& logical_name) const override {
-        return routing_context_.get_service(logical_name);
-    }
-    void set_protocol_profile_id(std::string profile_id) override {
-        routing_context_.protocol_profile_id = std::move(profile_id);
-    }
-    std::string protocol_profile_id() const override {
-        return routing_context_.protocol_profile_id;
-    }
+
+    // Test-side read helpers (not part of the Session interface).
+    std::string target_service() const { return binding_.target_service; }
+    uint32_t epoch() const { return binding_.epoch; }
 
 private:
     shield::net::SessionId id_;
@@ -146,10 +138,7 @@ private:
     std::vector<std::vector<uint8_t>> sent_;
     std::vector<shield::transport::DecodedBody> sent_messages_;
     std::unordered_map<std::string, std::string> user_data_;
-    std::string target_service_;
-    std::string player_id_;
-    uint32_t epoch_ = 0;
-    shield::net::SessionRoutingContext routing_context_;
+    shield::net::SessionBinding binding_;
 };
 
 shield::transport::DispatchResult make_packet(
@@ -183,7 +172,9 @@ BOOST_AUTO_TEST_CASE(NullSessionsShortCircuit) {
     caf::actor_system system(cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
-    LuaGatewayBridge bridge(manager, "cov_ghost_auth");
+    LuaGatewayBridge bridge(
+        manager, "cov_ghost_auth",
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
 
     bridge.on_connect(nullptr);
     bridge.on_packet(nullptr, shield::transport::DispatchResult{});
@@ -192,27 +183,27 @@ BOOST_AUTO_TEST_CASE(NullSessionsShortCircuit) {
 }
 
 // on_connect against a missing auth service: send_system fails and the
-// failure is logged (warning branch), while session defaults are installed.
+// failure is logged (warning branch), while the initial binding is installed
+// and the session is registered with the gateway registry.
 BOOST_AUTO_TEST_CASE(OnConnectSendFailureLogsWarning) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
-    LuaGatewayBridge bridge(manager, "cov_ghost_auth");
+    auto registry = std::make_shared<shield::lua::GatewaySessionRegistry>();
+    LuaGatewayBridge bridge(manager, "cov_ghost_auth", registry);
 
     auto session = std::make_shared<MockSession>(
         101, shield::net::RemoteAddress{"127.0.0.1", 6001});
     bridge.on_connect(session);
 
-    BOOST_CHECK_EQUAL(session->target_service(), "cov_ghost_auth");
-    BOOST_CHECK_EQUAL(session->epoch(), 0u);
-    BOOST_CHECK_NE(session->get_service("auth"), nullptr);
-    BOOST_CHECK_EQUAL(session->get_service("auth")->service_id,
-                      "cov_ghost_auth");
-    BOOST_CHECK_EQUAL(session->get_service("auth")->service_type, "auth");
-    BOOST_CHECK_EQUAL(session->routing_context().session_id, "101");
-    BOOST_CHECK_EQUAL(session->routing_context().gateway_address,
-                      "cov_ghost_auth");
+    const shield::net::SessionBinding binding = session->binding();
+    BOOST_CHECK_EQUAL(binding.target_service, "cov_ghost_auth");
+    BOOST_CHECK_EQUAL(binding.epoch, 0u);
+    BOOST_CHECK_EQUAL(binding.player_id, "");
+    BOOST_CHECK_EQUAL(binding.gateway_name, "cov_ghost_auth");
+    BOOST_CHECK_EQUAL(registry->size(), 1u);
+    BOOST_CHECK(registry->find(101) != nullptr);
 }
 
 // on_packet rejection branches: not-ok packet, unknown route, wrong
@@ -222,7 +213,9 @@ BOOST_AUTO_TEST_CASE(OnPacketRejectionBranches) {
     caf::actor_system system(cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
-    LuaGatewayBridge bridge(manager, "cov_ghost_auth");
+    LuaGatewayBridge bridge(
+        manager, "cov_ghost_auth",
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
 
     auto session = std::make_shared<MockSession>(
         102, shield::net::RemoteAddress{"127.0.0.1", 6002});
@@ -262,11 +255,12 @@ BOOST_AUTO_TEST_CASE(OnPacketRejectionBranches) {
 
     // Same route passes once the player is authenticated; no target service
     // configured on this session -> "no target service" warning branch.
-    session->set_player_id("player-1");
+    session->apply_binding("cov_game", "player-1", shield::net::kAnyEpoch,
+                           nullptr);
     bridge.on_packet(session, make_packet(0x2002, &auth_req, false));
 
     // No decoded body: body bytes come straight from the wire packet.
-    session->set_player_id("");
+    session->apply_binding("", "", shield::net::kAnyEpoch, nullptr);
     BOOST_CHECK(true);
 }
 
@@ -277,7 +271,9 @@ BOOST_AUTO_TEST_CASE(OnPacketNoTargetService) {
     caf::actor_system system(cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
-    LuaGatewayBridge bridge(manager, "cov_ghost_auth");
+    LuaGatewayBridge bridge(
+        manager, "cov_ghost_auth",
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
 
     auto session = std::make_shared<MockSession>(
         103, shield::net::RemoteAddress{"127.0.0.1", 6003});
@@ -305,10 +301,12 @@ BOOST_AUTO_TEST_CASE(OnPacketUsesSessionTargetService) {
     auto svc2 = manager.spawn(script, opts_for("cov_game_fallback").dump());
     BOOST_REQUIRE(svc2.success);
 
-    LuaGatewayBridge bridge(manager, "cov_ghost_auth");
+    LuaGatewayBridge bridge(
+        manager, "cov_ghost_auth",
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         104, shield::net::RemoteAddress{"127.0.0.1", 6004});
-    session->set_target_service(svc2.service_id);
+    session->reset_binding({svc2.service_id, "", "cov_ghost_auth", "", 0});
 
     // Route-level logical_service routing is gone: the gateway forwards to
     // the session's bound target unconditionally.
@@ -339,11 +337,13 @@ BOOST_AUTO_TEST_CASE(ClientIngressFailureLogsWarning) {
     caf::actor_system system(cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
-    LuaGatewayBridge bridge(manager, "cov_ghost_auth");
+    LuaGatewayBridge bridge(
+        manager, "cov_ghost_auth",
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
 
     auto session = std::make_shared<MockSession>(
         105, shield::net::RemoteAddress{"127.0.0.1", 6005});
-    session->set_target_service("cov_dead_target");
+    session->reset_binding({"cov_dead_target", "", "cov_ghost_auth", "", 0});
 
     shield::transport::RouteEntry route;
     route.route_id = 0x5001;
@@ -353,14 +353,16 @@ BOOST_AUTO_TEST_CASE(ClientIngressFailureLogsWarning) {
     BOOST_CHECK(true);
 }
 
-// on_disconnect: null handled above; live session with empty target falls
-// back to the auth service name; ghost auth service -> failure warning.
+// on_disconnect: null handled above; a live session drops its registry
+// entry, and a session with an empty target falls back to the auth service
+// name (ghost here -> failure warning branch).
 BOOST_AUTO_TEST_CASE(OnDisconnectFallbackAndFailure) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
-    LuaGatewayBridge bridge(manager, "cov_ghost_auth");
+    auto registry = std::make_shared<shield::lua::GatewaySessionRegistry>();
+    LuaGatewayBridge bridge(manager, "cov_ghost_auth", registry);
 
     // Session that was never connected: empty target falls back to the
     // (missing) auth service, hitting the send-failure warning branch.
@@ -371,17 +373,15 @@ BOOST_AUTO_TEST_CASE(OnDisconnectFallbackAndFailure) {
     auto session = std::make_shared<MockSession>(
         106, shield::net::RemoteAddress{"127.0.0.1", 6006});
     bridge.on_connect(session);
-
-    shield::net::ServiceAddress addr;
-    addr.service_id = "some.service";
-    session->bind_service("zone", addr);
-    BOOST_REQUIRE_NE(session->get_service("zone"), nullptr);
+    BOOST_CHECK_EQUAL(registry->size(), 1u);
+    BOOST_CHECK(registry->find(106) != nullptr);
 
     bridge.on_disconnect(session, "cov_reason");
 
-    // All routes are cleared on disconnect.
-    BOOST_CHECK_EQUAL(session->get_service("zone"), nullptr);
-    BOOST_CHECK_EQUAL(session->get_service("auth"), nullptr);
+    // The registry entry is gone; the binding itself is left to the socket
+    // teardown (egress rejects unknown sessions from here on).
+    BOOST_CHECK_EQUAL(registry->size(), 0u);
+    BOOST_CHECK_EQUAL(session->binding().target_service, "cov_ghost_auth");
 }
 
 // on_disconnect success path: a live target service receives the event.
@@ -396,10 +396,12 @@ BOOST_AUTO_TEST_CASE(OnDisconnectDeliversToLiveTarget) {
     auto svc = manager.spawn(script, opts_for("cov_auth").dump());
     BOOST_REQUIRE(svc.success);
 
-    LuaGatewayBridge bridge(manager, svc.service_id);
+    LuaGatewayBridge bridge(
+        manager, svc.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         107, shield::net::RemoteAddress{"127.0.0.1", 6007});
-    session->set_target_service(svc.service_id);
+    session->reset_binding({svc.service_id, "", svc.service_id, "", 0});
 
     bridge.on_disconnect(session, "client_closed");
 
@@ -429,15 +431,18 @@ BOOST_AUTO_TEST_CASE(OnConnectAndIngressHappyPath) {
     auto svc = manager.spawn(script, opts_for("cov_auth2").dump());
     BOOST_REQUIRE(svc.success);
 
-    LuaGatewayBridge bridge(manager, svc.service_id);
+    LuaGatewayBridge bridge(
+        manager, svc.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         108, shield::net::RemoteAddress{"127.0.0.1", 6008});
-    session->set_epoch(7);
-    session->set_protocol_profile_id("cov_profile");
-    session->set_player_id("player-9");
 
     bridge.on_connect(session);
     BOOST_CHECK_EQUAL(session->target_service(), "cov_auth2");
+
+    // Authentication: the CAS install flips the player identity and bumps
+    // the epoch, so the protected route below is allowed.
+    BOOST_CHECK(session->apply_binding("cov_auth2", "player-9", 0, nullptr));
 
     shield::transport::RouteEntry route;
     route.route_id = 0x6001;
@@ -473,10 +478,12 @@ BOOST_AUTO_TEST_CASE(OnPacketForwardsDecodedMessage) {
     auto svc = manager.spawn(script, opts_for("cov_game").dump());
     BOOST_REQUIRE(svc.success);
 
-    LuaGatewayBridge bridge(manager, "cov_ghost_auth");
+    LuaGatewayBridge bridge(
+        manager, "cov_ghost_auth",
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         105, shield::net::RemoteAddress{"127.0.0.1", 6005});
-    session->set_target_service(svc.service_id);
+    session->reset_binding({svc.service_id, "", "cov_ghost_auth", "", 0});
 
     shield::transport::RouteEntry route;
     route.route_id = 0x4003;

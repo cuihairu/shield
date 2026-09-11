@@ -27,13 +27,6 @@ static constexpr size_t kMaxMessageSize = 1024 * 1024;
 static constexpr int kDefaultMaxErrorsBeforePanic = 10;
 
 // ============================================================================
-// Session Management
-// ============================================================================
-
-/// @brief Interval (in resolve calls) for cleaning up expired session handles
-static constexpr uint64_t kSessionCleanupInterval = 100;
-
-// ============================================================================
 // Timeouts (milliseconds)
 // ============================================================================
 

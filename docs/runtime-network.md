@@ -31,7 +31,7 @@ Profile 至少确定：
 ## Session 绑定：单一 target
 
 Gateway 为每条 live session 只维护一个当前 target 绑定（`SessionBinding`，
-M2 落地）：
+M2 已落地）：
 
 ```text
 SessionBinding {
@@ -111,45 +111,57 @@ CAF 负责消息类型 dispatch 和 actor 调度；Shield Service adapter 负责
 
 ## ClientContext 与 ClientRef
 
-`SessionHandle` 是 Gateway 内部连接对象，不进入业务 Lua，也不通过 CAF 消息传播。
+session 连接对象是 Gateway 内部状态,不进入业务 Lua,也不通过 CAF 消息传播。业务只见
+只读 `ClientContext` / `ClientRef` userdata(M2 已落地):二者都不暴露 socket、codec、
+frame、route、CAF handle 或底层 session 指针,只读属性为
+`player_id` / `session_id` / `session_epoch` / `protocol_profile_id` / `gateway`;
+`ClientContext` 额外提供 `ref()` 派生值语义 `ClientRef`。
 
-RPC handler 收到只读 `ClientContext`。它提供可信 `player_id` 和当前 client identity，并可导出值语义 `ClientRef`。二者都不暴露 socket、codec、frame、route、CAF handle 或底层 session 指针。
-
-`ClientRef` 至少封装：
+`ClientRef` 封装(M2 已落地):
 
 ```text
-gateway_address + session_id + session_epoch + player_id? + protocol_profile_id
+gateway_address + session_id + session_epoch + player_id + protocol_profile_id
 ```
 
-它可以作为普通 service 消息参数传递或跨进程序列化。Gateway 在处理回包、关闭或路由更新时必须重新校验 epoch，因此旧 `ClientRef` 不会命中新连接。
+它作为普通 service 消息参数传递:传出时序列化为 `__shield_client_ref` JSON 标记,到达
+对端 VM 时重新物化为 userdata。Gateway 在处理回包、关闭或绑定更新时重新校验 epoch,
+因此旧 `ClientRef` 不会命中新连接。
 
 ## 出站
 
-Service 必须通过已注册的 server-to-client RPC helper 发送 response 或 push：
+Service 必须通过 spawn 期按 s2c descriptor 自动注册的
+`shield.client_rpc.<binding>` helper 发送 response 或 push(M2 已落地):
 
 ```text
-generated RPC helper(ClientContext|ClientRef, business arguments)
-  -> method descriptor supplies route_id and response schema
-  -> encode business arguments
+shield.client_rpc.<name>(ClientContext|ClientRef, business_table_or_bytes)
+  -> helper supplies route_id（descriptor 绑定）
+  -> table 参数编码为结构化 message，string 参数原样作为 body bytes
   -> CAF send ClientEgress to gateway_address
-  -> Gateway validates session_id + session_epoch + owner
+  -> Gateway 校验门：registry 命中 → epoch 相等 → owner player_id
+     → descriptor 路由存在 → 方向允许 s2c → send_message
   -> write route_id into wire header
   -> frame/envelope encode
   -> socket write
 ```
 
-不存在接受 route 字符串、裸 `route_id` 或通用 table envelope 的业务发送 API。route 元数据由 helper 绑定的 descriptor 提供，业务参数中出现名为 `route`、`method` 或 `id` 的字段不会影响分发。
+不存在接受 route 字符串、裸 `route_id` 或通用 table envelope 的业务发送 API。route 元
+数据由 helper 绑定的 descriptor 提供,业务参数中出现名为 `route`、`method` 或 `id` 的
+字段不会影响分发。egress 是 fire-and-forget:拒绝只 warn + 计数,不排队、不重试、不回写
+错误帧。
 
 ## 单一 target 绑定
 
-认证服务通过 `shield.client.bind(client, player_id, target)`（M2 落地）请求 Gateway actor 原子替换当前 session 的 target 绑定并写入 `player_id`：
+认证服务通过 `shield.client.bind(client, player_id, target)`(M2 已落地)请求 Gateway
+actor 原子替换当前 session 的 target 绑定并写入 `player_id`:
 
-- 返回新的 `ClientRef`，旧 `ClientRef` 因 epoch 递增而失效；
-- 绑定请求经 Gateway 做 epoch 和 owner 校验；客户端不能通过 body 指定
-  target 或修改绑定；
-- 关闭当前 client 使用 `shield.client.close(ref, reason)`；
-- room/scene/map 等动态协作是 target 服务私有状态，通过普通
-  `shield.send/call` 完成，不经 Gateway。
+- bind 挂起调用协程,Gateway CAS(`apply_binding`:expected epoch 比对 → 写入 →
+  epoch 递增)成功后以 `(true, ClientRef)` 恢复,失败以
+  `(false, {code="client_rpc.epoch_expired"})` 恢复;
+- 旧 `ClientRef` 因 epoch 递增而失效;客户端不能通过 body 指定 target 或修改绑定;
+- 关闭当前 client 使用 `shield.client.close(ref, reason)`:先失效绑定,再移除注册,
+  最后关闭 socket(空 reason 记为 "kicked");
+- room/scene/map 等动态协作是 target 服务私有状态,通过普通
+  `shield.send/call` 完成,不经 Gateway。
 
 ## 断线与重连
 

@@ -7,6 +7,8 @@
 #endif
 #include <algorithm>
 #include <atomic>
+#include <caf/actor.hpp>
+#include <caf/send.hpp>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -19,7 +21,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "shield/core/service_message.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/lua/client_identity.hpp"
 #include "shield/lua/lua_constants.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -50,71 +54,64 @@ sol::table make_error(sol::this_state state, std::string code,
     return err;
 }
 
+// -- Client identity userdata (ClientContext / ClientRef) ---------------------
+//
+// Both wrap the same trusted identity snapshot (ClientContextData, see
+// client_identity.hpp). A ClientContext materializes whenever a
+// __shield_client_ref marker arrives in a message payload (gateway ingress,
+// on_connect/on_disconnect); a ClientRef is what shield.client.bind returns.
+// Lua cannot construct them (sol::no_constructor) and cannot mutate them.
+// Passing either as a message argument serializes back to the marker form.
+
 namespace {
 
-static constexpr std::string_view kSessionHandleMarker =
-    "__shield_session_handle";
-
-std::unordered_map<std::string, std::weak_ptr<shield::net::Session>>&
-session_handle_registry() {
-    static std::unordered_map<std::string, std::weak_ptr<shield::net::Session>>
-        registry;
-    return registry;
+// Shared read-only property binding for ClientContext and ClientRef: the
+// concrete Box parameter keeps sol's wrapper happy (a generic lambda is not
+// convertible to a single function pointer).
+template <typename Box>
+void bind_identity_properties(sol::usertype<Box>& type) {
+    type.set("player_id", [](const Box& box) { return box.data.player_id; });
+    type.set("session_id", [](const Box& box) { return box.data.session_id; });
+    type.set("session_epoch",
+             [](const Box& box) { return box.data.session_epoch; });
+    type.set("protocol_profile_id",
+             [](const Box& box) { return box.data.protocol_profile_id; });
+    type.set("gateway",
+             [](const Box& box) { return box.data.gateway_address; });
 }
 
-std::mutex& session_handle_registry_mutex() {
-    static std::mutex mutex;
-    return mutex;
-}
-
-// Counter for periodic cleanup of expired session handles
-static std::atomic<uint64_t> session_resolve_count{0};
-
-// Remove all expired weak_ptr entries from the registry
-void cleanup_expired_session_handles() {
-    auto& registry = session_handle_registry();
-    for (auto it = registry.begin(); it != registry.end();) {
-        if (it->second.expired()) {
-            it = registry.erase(it);
-        } else {
-            ++it;
-        }
+bool extract_client_data(const sol::object& object, ClientContextData* out) {
+    if (object.is<ClientContextBox>()) {
+        *out = object.as<const ClientContextBox&>().data;
+        return true;
     }
-}
-
-void remember_session_handle(
-    const std::shared_ptr<shield::net::Session>& session) {
-    if (!session) {
-        return;
+    if (object.is<ClientRefBox>()) {
+        *out = object.as<const ClientRefBox&>().data;
+        return true;
     }
-
-    std::lock_guard<std::mutex> lock(session_handle_registry_mutex());
-    session_handle_registry()[std::to_string(session->id())] = session;
-}
-
-std::shared_ptr<shield::net::Session> resolve_session_handle(
-    std::string_view session_id) {
-    std::lock_guard<std::mutex> lock(session_handle_registry_mutex());
-    auto& registry = session_handle_registry();
-
-    // Periodic cleanup of expired entries
-    if (++session_resolve_count % kSessionCleanupInterval == 0) {
-        cleanup_expired_session_handles();
-    }
-
-    const auto it = registry.find(std::string(session_id));
-    if (it == registry.end()) {
-        return nullptr;
-    }
-
-    auto session = it->second.lock();
-    if (!session) {
-        registry.erase(it);
-    }
-    return session;
+    return false;
 }
 
 }  // namespace
+
+// Reads the client identity out of a ClientContext/ClientRef argument (or a
+// __shield_client_ref marker table that travelled through a path without
+// materialization). Used by shield.client.bind/close and the client_rpc
+// egress helpers.
+static bool client_arg_to_data(const sol::object& object,
+                               ClientContextData* out) {
+    if (extract_client_data(object, out)) {
+        return true;
+    }
+    if (object.is<sol::table>()) {
+        auto data = ClientContextData::from_json(lua_to_json(object));
+        if (data.has_value()) {
+            *out = std::move(*data);
+            return true;
+        }
+    }
+    return false;
+}
 
 sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
     if (value.is_null()) {
@@ -144,16 +141,17 @@ sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
         return sol::make_object(lua, table);
     }
     if (value.is_object()) {
-        if (value.contains(std::string(kSessionHandleMarker)) &&
-            value[std::string(kSessionHandleMarker)].is_boolean() &&
-            value[std::string(kSessionHandleMarker)].get<bool>()) {
-            sol::object maybe_ud = lua["__shield_make_session_handle"];
+        // A trusted client-identity marker materializes as the read-only
+        // ClientContext userdata. from_json does all field validation, so a
+        // malformed field degrades to its default instead of throwing.
+        if (auto ctx = ClientContextData::from_json(value)) {
+            sol::object maybe_ud = lua["__shield_make_client_context"];
             if (maybe_ud.valid() && maybe_ud.is<sol::protected_function>()) {
-                sol::protected_function make_handle =
+                sol::protected_function make_context =
                     maybe_ud.as<sol::protected_function>();
-                auto result =
-                    make_handle(value.value("id", std::string{}),
-                                value.value("remote_addr", std::string{}));
+                auto result = make_context(ctx->session_id, ctx->session_epoch,
+                                           ctx->player_id, ctx->gateway_address,
+                                           ctx->protocol_profile_id);
                 if (result.valid() && result.return_count() > 0) {
                     return result.get<sol::object>(0);
                 }
@@ -1193,317 +1191,195 @@ void register_gateway_api(LuaRuntime& runtime) { (void)runtime; }
 
 }  // namespace api
 
-// SessionHandle: a Lua userdata representing a network session.
-// This is the base registration; actual session objects are created by
-// shield_net and passed to gateway handlers.
-struct SessionHandle {
-    std::weak_ptr<shield::net::Session> session;
-    std::string id;
-    std::string remote_address;
-
-    SessionHandle() = default;
-    SessionHandle(std::weak_ptr<shield::net::Session> s, std::string sid,
-                  std::string addr)
-        : session(std::move(s)),
-          id(std::move(sid)),
-          remote_address(std::move(addr)) {}
-
-    std::shared_ptr<shield::net::Session> resolve() {
-        if (auto live = session.lock()) {
-            return live;
-        }
-
-        auto live = resolve_session_handle(id);
-        if (live) {
-            session = live;
-        }
-        return live;
-    }
-};
-
-// Lambda header lines in the SessionHandle usertype below are gcov
-// artifacts: the bodies execute in the tests, but gcov attributes each
-// lambda's opening arc to an outlined clone that is never called.
-static void register_session_handle(sol::state& lua) {
-    // GCOVR_EXCL_START (gcov clone artifact)
-    lua.set_function("__shield_make_session_handle",
-                     [](std::string id, std::string remote_addr) {
-                         // GCOVR_EXCL_STOP
-                         return SessionHandle{resolve_session_handle(id),
-                                              std::move(id),
-                                              std::move(remote_addr)};
+// -- Client identity registration ---------------------------------------------
+//
+// ClientContext / ClientRef usertypes plus the __shield_make_client_context
+// materializer used by json_to_lua and by the coroutine resume path. No
+// constructor is exported: identity userdata is created by the runtime only.
+void register_client_identity_api(sol::state& lua) {
+    sol::usertype<ClientContextBox> context_type =
+        lua.new_usertype<ClientContextBox>("ClientContext",
+                                           sol::no_constructor);
+    bind_identity_properties(context_type);
+    context_type.set("ref",  // GCOVR_EXCL_LINE (gcov clone artifact)
+                     [](const ClientContextBox& box, sol::this_state s) {
+                         return sol::make_object(s, ClientRefBox{box.data});
                      });
-    // GCOVR_EXCL_START
-    lua.new_usertype<SessionHandle>(
-        "SessionHandle", sol::no_constructor, "id",
-        [](const SessionHandle& s) { return s.id; }, "remote_addr",
-        [](const SessionHandle& s) { return s.remote_address; }, "send",
-        [](SessionHandle& s, sol::object payload)
-        // GCOVR_EXCL_STOP
-        -> sol::variadic_results {  // GCOVR_EXCL_LINE (gcov clone artifact)
-            sol::variadic_results results;
-            sol::state_view sv(payload.lua_state());
-            auto session = s.resolve();
-            if (!session || !session->is_alive()) {
-                results.push_back(sol::make_object(sv, false));
-                sol::table err = sv.create_table();
-                err["code"] = "session_closed";
-                err["message"] = "session is closed";
-                results.push_back(sol::make_object(sv, err));
-                return results;
-            }
+    sol::usertype<ClientRefBox> ref_type =
+        lua.new_usertype<ClientRefBox>("ClientRef", sol::no_constructor);
+    bind_identity_properties(ref_type);
 
-            if (session->has_protocol_pipeline()) {
-                shield::transport::DecodedBody message;
-                const auto codec_name =
-                    std::string(session->protocol_codec_name());
-                const bool raw_protocol = codec_name == "raw";
-                if (payload.is<sol::table>()) {
-                    message.message =
-                        lua_table_to_json(payload.as<sol::table>());
-                } else if (raw_protocol && payload.is<std::string>()) {
-                    const auto value = payload.as<std::string>();
-                    message.bytes.assign(value.begin(), value.end());
-                } else {
-                    auto json = lua_to_json(payload);
-                    if (json.is_object() || json.is_array()) {
-                        message.message = std::move(json);
-                    } else if (raw_protocol && json.is_string()) {
-                        const auto value = json.get<std::string>();
-                        message.bytes.assign(value.begin(), value.end());
-                    } else if (raw_protocol) {
-                        const auto serialized = json.dump();
-                        message.bytes.assign(serialized.begin(),
-                                             serialized.end());
-                    } else {
-                        results.push_back(sol::make_object(sv, false));
-                        sol::table err = sv.create_table();
-                        err["code"] = "protocol_message_required";
-                        err["message"] =
-                            "structured protocol session expects table/object "
-                            "payload";
-                        results.push_back(sol::make_object(sv, err));
-                        return results;
-                    }
-                }
-
-                std::string send_error;
-                if (!session->send_message(message, &send_error)) {
-                    // send_message only fails synchronously for pre-flight
-                    // checks (closed, no pipeline, queue full). Encode itself
-                    // runs async on the session strand; encode failures are
-                    // logged there and the message dropped, not surfaced here.
-                    results.push_back(sol::make_object(sv, false));
-                    sol::table err = sv.create_table();
-                    const bool queue_full =
-                        send_error.find("session_send_queue_full") !=
-                        std::string::npos;
-                    const bool closed = send_error.find("session is closed") !=
-                                        std::string::npos;
-                    if (queue_full) {
-                        err["code"] = "session_send_queue_full";
-                        err["message"] = "session send queue is full";
-                        err["retryable"] = true;
-                    } else if (closed) {
-                        err["code"] = "session_closed";
-                        err["message"] = "session is closed";
-                    } else {
-                        // e.g. "protocol pipeline is not configured"
-                        err["code"] = "protocol_not_configured";
-                        err["message"] =
-                            send_error.empty()
-                                ? "protocol pipeline is not configured"
-                                : send_error;
-                    }
-                    results.push_back(sol::make_object(sv, err));
-                    return results;
-                }
-
-                results.push_back(sol::make_object(sv, true));
-                results.push_back(sol::make_object(sv, sol::nil));
-                return results;
-            }
-
-            std::vector<std::uint8_t> bytes;
-            if (payload.is<std::string>()) {
-                const auto value = payload.as<std::string>();
-                bytes.assign(value.begin(), value.end());
-            } else if (payload.is<sol::table>()) {
-                const auto serialized =
-                    lua_table_to_json(payload.as<sol::table>()).dump();
-                bytes.assign(serialized.begin(), serialized.end());
-            } else {
-                auto json = lua_to_json(payload);
-                if (json.is_string()) {
-                    const auto value = json.get<std::string>();
-                    bytes.assign(value.begin(), value.end());
-                } else {
-                    const auto serialized = json.dump();
-                    bytes.assign(serialized.begin(), serialized.end());
-                }
-            }
-
-            std::string send_error;
-            if (!session->send(bytes, &send_error)) {
-                results.push_back(sol::make_object(sv, false));
-                sol::table err = sv.create_table();
-                const bool queue_full =
-                    send_error.find("session_send_queue_full") !=
-                    std::string::npos;
-                if (queue_full) {
-                    err["code"] = "session_send_queue_full";
-                    err["message"] = "session send queue is full";
-                    err["retryable"] = true;
-                } else if (send_error.find("session is closed") !=
-                           std::string::npos) {
-                    err["code"] = "session_closed";
-                    err["message"] = "session is closed";
-                } else {
-                    err["code"] = "session_send_failed";
-                    err["message"] =
-                        send_error.empty()
-                            ? "session send failed"
-                            : ("session send failed: " + send_error);
-                }
-                results.push_back(sol::make_object(sv, err));
-                return results;
-            }
-            results.push_back(sol::make_object(sv, true));
-            results.push_back(sol::make_object(sv, sol::nil));
-            return results;
-            // GCOVR_EXCL_START
-        },
-        "close",
-        [](SessionHandle& s,
-           sol::optional<std::string>
-               // GCOVR_EXCL_STOP
-               reason) {  // GCOVR_EXCL_LINE (gcov clone artifact)
-            if (auto session = s.resolve()) {
-                session->close(reason.value_or("normal"));
-            }
-        },
-        "bind_service",
-        [](SessionHandle& s, sol::this_state state,
-           std::string logical_name,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           std::string service_id,
-           sol::optional<std::string> service_type) -> sol::variadic_results {
-            sol::variadic_results results;
-            sol::state_view sv(state);
-            auto session = s.resolve();
-            if (!session || !session->is_alive()) {
-                results.push_back(sol::make_object(sv, false));
-                sol::table err = sv.create_table();
-                err["code"] = "session_closed";
-                err["message"] = "session is closed";
-                results.push_back(sol::make_object(sv, err));
-                return results;
-            }
-
-            shield::net::ServiceAddress addr;
-            addr.service_id = service_id;
-            addr.service_type = service_type.value_or("");
-            addr.epoch = session->epoch();
-            session->bind_service(logical_name, std::move(addr));
-
-            results.push_back(sol::make_object(sv, true));
-            results.push_back(sol::make_object(sv, sol::nil));
-            return results;
-        },
-        "unbind_service",
-        [](SessionHandle& s,
-           sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           std::string logical_name) -> sol::variadic_results {
-            sol::variadic_results results;
-            sol::state_view sv(state);
-            auto session = s.resolve();
-            if (!session || !session->is_alive()) {
-                results.push_back(sol::make_object(sv, false));
-                sol::table err = sv.create_table();
-                err["code"] = "session_closed";
-                err["message"] = "session is closed";
-                results.push_back(sol::make_object(sv, err));
-                return results;
-            }
-
-            session->unbind_service(logical_name);
-
-            results.push_back(sol::make_object(sv, true));
-            results.push_back(sol::make_object(sv, sol::nil));
-            return results;
-        },
-        "get_service",
-        [](SessionHandle& s,
-           sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           std::string logical_name) -> sol::object {
-            sol::state_view sv(state);
-            auto session = s.resolve();
-            if (!session || !session->is_alive()) {
-                return sol::make_object(sv, sol::nil);
-            }
-
-            const auto* addr = session->get_service(logical_name);
-            if (!addr) {
-                return sol::make_object(sv, sol::nil);
-            }
-
-            sol::table result = sv.create_table();
-            result["service_id"] = addr->service_id;
-            result["service_type"] = addr->service_type;
-            result["epoch"] = addr->epoch;
-            return sol::make_object(sv, result);
-        },
-        "set_player_id",
-        [](SessionHandle& s,
-           sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           std::string player_id) -> sol::variadic_results {
-            sol::variadic_results results;
-            sol::state_view sv(state);
-            auto session = s.resolve();
-            if (!session || !session->is_alive()) {
-                results.push_back(sol::make_object(sv, false));
-                sol::table err = sv.create_table();
-                err["code"] = "session_closed";
-                err["message"] = "session is closed";
-                results.push_back(sol::make_object(sv, err));
-                return results;
-            }
-
-            session->set_player_id(player_id);
-
-            results.push_back(sol::make_object(sv, true));
-            results.push_back(sol::make_object(sv, sol::nil));
-            return results;
-        },
-        "player_id",
-        [](SessionHandle& s)
-            -> std::string {  // GCOVR_EXCL_LINE (gcov clone artifact)
-            auto session = s.resolve();
-            if (!session) {
-                return "";
-            }
-            return session->player_id();
-        },
-        "epoch",
-        [](SessionHandle& s)
-            -> uint32_t {  // GCOVR_EXCL_LINE (gcov clone artifact)
-            auto session = s.resolve();
-            if (!session) {
-                return 0;
-            }
-            return session->epoch();
+    lua.set_function(
+        "__shield_make_client_context",
+        [](sol::this_state s, std::uint64_t session_id,
+           std::uint32_t session_epoch, std::string player_id,
+           std::string gateway_address, std::string protocol_profile_id) {
+            return sol::make_object(
+                s, ClientContextBox{ClientContextData{
+                       std::move(gateway_address), session_id, session_epoch,
+                       std::move(player_id), std::move(protocol_profile_id)}});
         });
 }
 
-nlohmann::json make_session_handle_json(
-    const std::shared_ptr<shield::net::Session>& session) {
-    if (!session) {
-        return nullptr;
-    }
-    remember_session_handle(session);
-    return nlohmann::json::object(
-        {{std::string(kSessionHandleMarker), true},
-         {"id", std::to_string(session->id())},
-         {"remote_addr", session->remote_addr().to_string()}});
+// shield.client.* (bind / close) and the _client_* primitives behind them.
+// The bind primitive suspends the caller coroutine exactly like _coro_call:
+// the gateway actor completes the session through complete_call, and the
+// Lua wrapper resumes with (true, client_ref) or (false, error_table).
+void register_client_api(sol::table& shield, LuaServiceManager* manager) {
+    shield.set_function(
+        "_client_bind",
+        [manager](sol::this_state state, sol::object client,
+                  std::string player_id, std::string target_service,
+                  int timeout_ms) -> uint64_t {
+            ClientContextData data;
+            if (!client_arg_to_data(client, &data) || player_id.empty() ||
+                target_service.empty()) {
+                return 0;
+            }
+            // Suspend first: every failure below completes the session
+            // asynchronously so the wrapper's coroutine.yield() always gets
+            // exactly one resume.
+            const uint64_t session =
+                manager->suspend_for_call(state, timeout_ms);
+            caf::actor gateway = manager->gateway_actor(data.gateway_address);
+            if (gateway == nullptr) {
+                manager->complete_call(
+                    session, false,
+                    nlohmann::json::array({nlohmann::json::object(
+                        {{"code", "client_rpc.epoch_expired"},
+                         {"message",
+                          "gateway not found: " + data.gateway_address}})}));
+                return session;
+            }
+            ClientBindRequest request;
+            request.call_session = session;
+            request.sender_service = manager->current_service_id();
+            request.context = data;
+            request.player_id = std::move(player_id);
+            request.target_service = std::move(target_service);
+            caf::anon_send(gateway, std::move(request));
+            return session;
+        });
+
+    shield.set_function(
+        "_client_close",
+        [manager](sol::object client, std::string reason) -> bool {
+            ClientContextData data;
+            if (!client_arg_to_data(client, &data)) {
+                return false;
+            }
+            caf::actor gateway = manager->gateway_actor(data.gateway_address);
+            if (gateway == nullptr) {
+                return false;
+            }
+            ClientCloseRequest request;
+            request.context = data;
+            request.reason = std::move(reason);
+            caf::anon_send(gateway, std::move(request));
+            return true;
+        });
+
+    shield.set_function(
+        "_client_egress",
+        [manager](sol::object client, uint32_t route_id,
+                  sol::object payload) -> bool {
+            ClientContextData data;
+            if (!client_arg_to_data(client, &data)) {
+                return false;
+            }
+            caf::actor gateway = manager->gateway_actor(data.gateway_address);
+            if (gateway == nullptr) {
+                return false;
+            }
+            ClientEgress egress;
+            egress.context = data;
+            egress.route_id = route_id;
+            if (payload.is<sol::table>()) {
+                egress.message = lua_to_json(payload);
+            } else if (payload.is<std::string>()) {
+                const auto value = payload.as<std::string>();
+                egress.body_bytes.assign(value.begin(), value.end());
+            } else {
+                return false;
+            }
+            caf::anon_send(gateway, std::move(egress));
+            return true;
+        });
+
+    sol::state_view lua(shield.lua_state());
+    sol::table client = lua.create_table();
+    shield["client"] = client;
+    // The wrapper bodies resolve the shield table as a global at CALL time
+    // (register_full_shield_api assigns lua["shield"] afterwards), so the
+    // chunk only returns the functions instead of touching the global.
+    sol::function bind_fn = lua.safe_script(
+        "return function(client, player_id, target)\n"
+        "  if shield._is_in_exit() then\n"
+        "    return false, {code='api_not_allowed_in_exit', "
+        "message='shield.client.bind is not allowed in on_exit'}\n"
+        "  end\n"
+        "  local _, ismain = coroutine.running()\n"
+        "  if ismain then\n"
+        "    return false, {code='call_not_allowed_off_coroutine', "
+        "message='shield.client.bind requires a handler coroutine'}\n"
+        "  end\n"
+        "  local session = shield._client_bind(client, player_id, target, "
+        "5000)\n"
+        "  if session == 0 then\n"
+        "    return false, {code='invalid_client_reference', "
+        "message='bind requires a ClientContext or ClientRef and a "
+        "non-empty player_id and target'}\n"
+        "  end\n"
+        "  local r = table.pack(coroutine.yield())\n"
+        "  if not r[1] then return false, r[2] end\n"
+        "  return true, r[2]\n"
+        "end\n",
+        [](lua_State*, sol::protected_function_result
+                           pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+    client["bind"] = bind_fn;
+    sol::function close_fn = lua.safe_script(
+        "return function(client, reason)\n"
+        "  return shield._client_close(client, reason or 'kicked')\n"
+        "end\n",
+        [](lua_State*, sol::protected_function_result
+                           pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+    client["close"] = close_fn;
+}
+
+// Registers one shield.client_rpc.<name> helper bound to a server-to-client
+// descriptor route. Called per service VM at spawn time (after the
+// descriptor table is compiled).
+void register_client_rpc_helper(sol::state& lua, LuaServiceManager* manager,
+                                std::string_view name, uint32_t route_id) {
+    sol::table shield = lua["shield"];
+    sol::table client_rpc = shield["client_rpc"];
+    client_rpc.set_function(
+        std::string(name),
+        [manager, route_id](sol::object client, sol::object payload) -> bool {
+            ClientContextData data;
+            if (!client_arg_to_data(client, &data)) {
+                return false;
+            }
+            caf::actor gateway = manager->gateway_actor(data.gateway_address);
+            if (gateway == nullptr) {
+                return false;
+            }
+            ClientEgress egress;
+            egress.context = data;
+            egress.route_id = route_id;
+            if (payload.is<sol::table>()) {
+                egress.message = lua_to_json(payload);
+            } else if (payload.is<std::string>()) {
+                const auto value = payload.as<std::string>();
+                egress.body_bytes.assign(value.begin(), value.end());
+            } else {
+                return false;
+            }
+            caf::anon_send(gateway, std::move(egress));
+            return true;
+        });
 }
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -2089,7 +1965,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
 
     // Register usertypes
     ServiceHandle::register_usertype(lua);
-    register_session_handle(lua);
+    register_client_identity_api(lua);
 
     auto shield = lua.create_table();
 
@@ -2099,6 +1975,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_task_api(shield, manager, runtime);
     register_config_api(shield);
     register_log_api(shield, manager);
+    register_client_api(shield, manager);
     register_http_api(shield, manager, runtime);
     register_plugin_api(shield);
 

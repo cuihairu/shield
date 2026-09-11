@@ -37,7 +37,8 @@ return M
 区别只在业务约定：
 
 - `args.player_id` 来自认证结果；
-- `args.client_ref` 是值语义回包引用，不是 `SessionHandle`；
+- `args.client_ref` 是值语义回包引用(`shield.client.bind` 返回的 `ClientRef`),不是
+  session 连接对象;
 - module 注册目标逻辑服务名为 `player` 的客户端 RPC bindings；
 - 断线、重连和登出控制消息由 Service adapter 送入同一 actor mailbox。
 
@@ -50,15 +51,19 @@ PlayerService 没有额外 mailbox，也没有独立于 Service 的 `send/call` 
 ```text
 client auth RPC
   → Gateway session.target = AuthService
-  → AuthService handler
+  → AuthService handler（协程）
   → validate credentials
-  → spawn or locate PlayerService
-  → atomically update session: { target = PlayerServiceAddress, player_id, epoch }
+  → shield.client.bind(client, player_id, "player")
+  → Gateway CAS：expected epoch 比对 → 写 target/player_id → epoch 递增
+  → 协程恢复，拿到新 epoch 的 ClientRef
 ```
 
-认证前只能调用 descriptor 明确标记为 pre-login 的 RPC。认证成功后的原子更新必须同时写入 target、可信 `player_id` 和 epoch，不能只保存其中之一。
+认证前只能调用 descriptor 明确标记为 pre-login 的 RPC。认证成功后的原子更新必须同时
+写入 target、可信 `player_id` 和 epoch,不能只保存其中之一。
 
-重复登录、顶号和恢复旧 PlayerService 都是 player 模块策略，但最终必须通过 Gateway 的 epoch 校验更新 session owner。
+重复登录、顶号和恢复旧 PlayerService 都是 player 模块策略,但最终必须通过
+`shield.client.bind` 的 Gateway epoch 校验更新 session owner;stale 引用的 bind 会以
+`client_rpc.epoch_expired` 失败。
 
 ## 客户端 RPC handler
 
@@ -184,7 +189,7 @@ end
 5. PlayerService 替换保存的 `ClientRef`；
 6. 旧 epoch 的回包、关闭和路由更新全部失效。
 
-离线消息可以保存在 PlayerService 私有状态或外部持久化/队列中。它不是 `SessionHandle` 的发送队列，也不绕过注册的 server-to-client RPC helper。
+离线消息可以保存在 PlayerService 私有状态或外部持久化/队列中。它不是客户端连接的发送队列,也不绕过注册的 `shield.client_rpc.*` server-to-client helper。
 
 ## 持久化
 
@@ -215,5 +220,5 @@ end
 - Entity-like 玩家对象、base/cell/avatar 模型。
 - 玩家对象自己的 mailbox、RPC、timer 或 coroutine runtime。
 - 客户端消息通用回调及 Lua 二次 route dispatch。
-- PlayerService 直接操作 socket、SessionHandle、codec、frame 或 envelope。
+- PlayerService 直接操作 socket、session 连接对象、codec、frame 或 envelope。
 - 客户端通过 body 指定 player id、目标 Service 或 route。

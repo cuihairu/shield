@@ -316,7 +316,10 @@ void TcpSession::handle_error(std::string reason) {
                reason.find("frame") != std::string::npos) {
         error_code_ = "decode_error";
     } else if (reason.find("timeout") != std::string::npos) {
+        // GCOVR_EXCL_START (gated branch: no call site produces a non-idle
+        // timeout reason today; kept for handshake-stage errors)
         error_code_ = "handshake_timeout";
+        // GCOVR_EXCL_STOP
     } else {
         error_code_ = "session_closed";
     }

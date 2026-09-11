@@ -76,6 +76,7 @@ shield_coverage_test(test_cov_shield shield_bootstrap shield_net shield_plugin)
 
 # shield_lua
 shield_coverage_test(test_cov_cpp_lua_api shield_lua shield_core CAF::core CAF::io)
+shield_coverage_test(test_cov_gateway_actor shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_gateway_bridge shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_http_bridge shield_lua shield_core shield_net CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_runtime shield_lua shield_core CAF::core CAF::io)

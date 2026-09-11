@@ -147,6 +147,11 @@ public:
     // Create a new Lua VM
     std::shared_ptr<LuaVM> create_vm();
 
+    // sol state of a VM created by create_vm. Lets the service manager
+    // publish generated per-VM helpers (e.g. s2c client_rpc closures)
+    // without depending on the LuaVM definition.
+    sol::state& vm_state(const std::shared_ptr<LuaVM>& vm);
+
     // Remove host-access capabilities (os.execute family, the io library,
     // require, and package) from a VM. Intended for VMs that serve untrusted
     // entry points such as the HTTP /ops/eval diagnostics endpoint; business

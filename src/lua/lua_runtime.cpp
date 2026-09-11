@@ -17,6 +17,7 @@
 
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/lua/client_identity.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/plugin/plugin_host.hpp"
@@ -502,6 +503,10 @@ std::shared_ptr<LuaVM> LuaRuntime::create_vm() {
     return vm;
 }
 
+sol::state& LuaRuntime::vm_state(const std::shared_ptr<LuaVM>& vm) {
+    return *vm->state();
+}
+
 void LuaRuntime::restrict_vm(std::shared_ptr<LuaVM> vm) {
     if (!vm) return;
     sol::state& state = *vm->state();
@@ -564,6 +569,16 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
     }
     if (value.is<std::string>()) {
         *out = value.as<std::string>();
+        return true;
+    }
+    // Client identity userdata travels through message payloads in its
+    // marker form (the inverse of the json_to_lua materialization).
+    if (value.is<ClientContextBox>()) {
+        *out = value.as<const ClientContextBox&>().data.to_json();
+        return true;
+    }
+    if (value.is<ClientRefBox>()) {
+        *out = value.as<const ClientRefBox&>().data.to_json();
         return true;
     }
     if (!value.is<sol::table>()) {

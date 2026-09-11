@@ -63,7 +63,7 @@ RouteEntry route_entry_from_descriptor(const RpcDescriptor& descriptor) {
     entry.debug_name = descriptor.name;
     entry.policy = descriptor.policy;
     return entry;
-}
+}  // GCOVR_EXCL_LINE (gcov clone artifact)
 
 namespace {
 

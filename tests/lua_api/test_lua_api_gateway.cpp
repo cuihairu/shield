@@ -1,9 +1,9 @@
 // LAPI-009: Gateway API tests.
 //
 // Exercises the gateway service pattern via LuaServiceManager::call():
-// on_connect / on_client_message / on_disconnect with table-based session
-// simulation.  MockSessionHandle userdata tests are deferred until the
-// gateway C++ integration layer exposes session creation to the test harness.
+// on_connect / on_client_message / on_disconnect with table-based client
+// context simulation. Identity userdata integration is covered by the
+// coverage suites (ClientIdentityBranches) and the bridge tests.
 
 #define BOOST_TEST_MODULE LuaApiGatewayTests
 #include <boost/test/unit_test.hpp>
@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "shield/caf_initializer.hpp"
+#include "shield/lua/gateway_actor.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -104,39 +105,24 @@ public:
         return it == user_data_.end() ? "" : it->second;
     }
 
-    void set_target_service(std::string service_name) override {
-        target_service_ = std::move(service_name);
+    shield::net::SessionBinding binding() const override { return binding_; }
+    void reset_binding(shield::net::SessionBinding initial) override {
+        binding_ = std::move(initial);
     }
-    std::string target_service() const override { return target_service_; }
-    void set_player_id(std::string player_id) override {
-        player_id_ = std::move(player_id);
-    }
-    std::string player_id() const override { return player_id_; }
-    void set_epoch(uint32_t epoch) override { epoch_ = epoch; }
-    uint32_t epoch() const override { return epoch_; }
-
-    shield::net::SessionRoutingContext& routing_context() override {
-        return routing_context_;
-    }
-    const shield::net::SessionRoutingContext& routing_context() const override {
-        return routing_context_;
-    }
-    void bind_service(const std::string& logical_name,
-                      shield::net::ServiceAddress address) override {
-        routing_context_.bind_service(logical_name, std::move(address));
-    }
-    void unbind_service(const std::string& logical_name) override {
-        routing_context_.unbind_service(logical_name);
-    }
-    const shield::net::ServiceAddress* get_service(
-        const std::string& logical_name) const override {
-        return routing_context_.get_service(logical_name);
-    }
-    void set_protocol_profile_id(std::string profile_id) override {
-        routing_context_.protocol_profile_id = std::move(profile_id);
-    }
-    std::string protocol_profile_id() const override {
-        return routing_context_.protocol_profile_id;
+    bool apply_binding(std::string target_service, std::string player_id,
+                       uint32_t expected_epoch,
+                       shield::net::SessionBinding* out) override {
+        if (expected_epoch != shield::net::kAnyEpoch &&
+            expected_epoch != binding_.epoch) {
+            return false;
+        }
+        binding_.target_service = std::move(target_service);
+        binding_.player_id = std::move(player_id);
+        ++binding_.epoch;
+        if (out != nullptr) {
+            *out = binding_;
+        }
+        return true;
     }
 
     const std::vector<std::vector<uint8_t>>& sent() const { return sent_; }
@@ -154,10 +140,7 @@ private:
     std::vector<std::vector<uint8_t>> sent_;
     std::vector<shield::transport::DecodedBody> sent_messages_;
     std::unordered_map<std::string, std::string> user_data_;
-    std::string target_service_;
-    std::string player_id_;
-    uint32_t epoch_ = 0;
-    shield::net::SessionRoutingContext routing_context_;
+    shield::net::SessionBinding binding_;
 };
 
 char* dup_protocol_json(std::string_view value) {
@@ -407,8 +390,8 @@ BOOST_AUTO_TEST_CASE(LAPI_009_03_DisconnectHandler) {
 // LAPI-009-04: Send queue full — tested via Lua-side session:send mock.
 // The gateway_service.lua now checks session:send return values and records
 // errors. We verify that a table-based session with a failing send is handled.
-// Full MockSessionHandle userdata integration requires the C++ gateway layer
-// to expose session creation to the test harness (deferred).
+// The identity userdata itself carries no send method; the handler
+// gracefully skips the egress when the context is a plain table.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LAPI_009_04_SendQueueFullHandled) {
     caf::actor_system_config cfg;
@@ -445,7 +428,7 @@ BOOST_AUTO_TEST_CASE(LAPI_009_04_SendQueueFullHandled) {
 // LAPI-009-05: Stale session — send after disconnect.
 // Verify the handler processes the message even for a disconnected session.
 // ---------------------------------------------------------------------------
-BOOST_AUTO_TEST_CASE(LAPI_009_05_StaleSessionHandled) {
+BOOST_AUTO_TEST_CASE(LAPI_009_05_StaleClientHandled) {
     caf::actor_system_config cfg;
 
     caf::actor_system system(cfg);
@@ -533,7 +516,9 @@ BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
     auto result = spawn_gateway(manager, "gw_bridge");
     BOOST_REQUIRE(result.success);
 
-    LuaGatewayBridge bridge(manager, result.service_id);
+    LuaGatewayBridge bridge(
+        manager, result.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         42, shield::net::RemoteAddress{"127.0.0.1", 34567});
 
@@ -586,7 +571,7 @@ BOOST_AUTO_TEST_CASE(LuaGatewayBridgeQueuesReservedGatewayEvents) {
 }
 
 BOOST_AUTO_TEST_CASE(
-    LuaGatewayBridgePassesRealSessionHandleToLuaForProtocolEgress) {
+    LuaGatewayBridgePassesRealClientContextToLuaForProtocolEgress) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
 
@@ -596,7 +581,9 @@ BOOST_AUTO_TEST_CASE(
     auto result = spawn_gateway(manager, "gw_protocol_handle");
     BOOST_REQUIRE(result.success);
 
-    LuaGatewayBridge bridge(manager, result.service_id);
+    LuaGatewayBridge bridge(
+        manager, result.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         43, shield::net::RemoteAddress{"127.0.0.1", 34568}, true);
 
@@ -626,7 +613,7 @@ BOOST_AUTO_TEST_CASE(
 }
 
 BOOST_AUTO_TEST_CASE(
-    LuaGatewayBridgePassesProtobufSessionHandleToLuaForProtocolEgress) {
+    LuaGatewayBridgePassesProtobufClientContextToLuaForProtocolEgress) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
 
@@ -636,7 +623,9 @@ BOOST_AUTO_TEST_CASE(
     auto result = spawn_gateway(manager, "gw_protobuf_egress");
     BOOST_REQUIRE(result.success);
 
-    LuaGatewayBridge bridge(manager, result.service_id);
+    LuaGatewayBridge bridge(
+        manager, result.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         45, shield::net::RemoteAddress{"127.0.0.1", 34570}, true, "protobuf");
 
@@ -676,7 +665,9 @@ BOOST_AUTO_TEST_CASE(
     auto result = spawn_gateway(manager, "gw_protocol_handle_raw");
     BOOST_REQUIRE(result.success);
 
-    LuaGatewayBridge bridge(manager, result.service_id);
+    LuaGatewayBridge bridge(
+        manager, result.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         44, shield::net::RemoteAddress{"127.0.0.1", 34569}, true);
 
@@ -724,7 +715,9 @@ BOOST_AUTO_TEST_CASE(
     auto result = spawn_gateway(manager, "gw_packet_bridge");
     BOOST_REQUIRE(result.success);
 
-    LuaGatewayBridge bridge(manager, result.service_id);
+    LuaGatewayBridge bridge(
+        manager, result.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         77, shield::net::RemoteAddress{"127.0.0.1", 45678});
 
@@ -805,7 +798,9 @@ BOOST_AUTO_TEST_CASE(
     auto pipeline = make_fake_protobuf_pipeline(&codec, &protocol_error);
     BOOST_REQUIRE_MESSAGE(pipeline != nullptr, protocol_error);
 
-    LuaGatewayBridge bridge(manager, result.service_id);
+    LuaGatewayBridge bridge(
+        manager, result.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         79, shield::net::RemoteAddress{"127.0.0.1", 45680}, true, "protobuf");
 
@@ -877,7 +872,9 @@ BOOST_AUTO_TEST_CASE(
     auto result = spawn_gateway(manager, "gw_raw_packet_bridge");
     BOOST_REQUIRE(result.success);
 
-    LuaGatewayBridge bridge(manager, result.service_id);
+    LuaGatewayBridge bridge(
+        manager, result.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         78, shield::net::RemoteAddress{"127.0.0.1", 45679});
 
@@ -948,7 +945,9 @@ BOOST_AUTO_TEST_CASE(
     auto result = spawn_gateway(manager, "gw_forward_raw_drop");
     BOOST_REQUIRE(result.success);
 
-    LuaGatewayBridge bridge(manager, result.service_id);
+    LuaGatewayBridge bridge(
+        manager, result.service_id,
+        std::make_shared<shield::lua::GatewaySessionRegistry>());
     auto session = std::make_shared<MockSession>(
         88, shield::net::RemoteAddress{"127.0.0.1", 56789});
 

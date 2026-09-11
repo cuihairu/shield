@@ -19,6 +19,7 @@
 struct lua_State;
 
 namespace caf {
+class actor;
 class actor_system;
 }  // namespace caf
 
@@ -99,6 +100,16 @@ public:
 
     // Total forked tasks still pending across all services (drain signal).
     size_t pending_task_count_total() const;
+
+    // The actor system every service actor lives on. Bootstrap uses it to
+    // spawn one gateway actor per listener (see gateway_actor.hpp).
+    caf::actor_system& actor_system() const;
+
+    // Gateway actors by gateway name (the listener owner actor name). Client
+    // contexts carry this name as gateway_address so egress/bind requests
+    // find the gateway actor that owns the session.
+    void register_gateway_actor(std::string gateway_name, caf::actor actor);
+    caf::actor gateway_actor(std::string_view gateway_name) const;
 
     // Get current service ID
     std::string current_service_id() const;

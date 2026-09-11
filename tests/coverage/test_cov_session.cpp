@@ -18,7 +18,6 @@ namespace {
 using boost::asio::ip::tcp;
 using namespace std::chrono_literals;
 
-using shield::net::ServiceAddress;
 using shield::net::Session;
 using shield::net::SessionCallbacks;
 using shield::net::SessionId;
@@ -230,47 +229,44 @@ BOOST_AUTO_TEST_CASE(LifecycleAndMetadataAccessors) {
     BOOST_CHECK_EQUAL(session->get_user_data("k1"), "v1");
     BOOST_CHECK_EQUAL(session->get_user_data("missing"), "");
 
-    // target service / player / epoch / profile
-    session->set_target_service("AuthService");
-    BOOST_CHECK_EQUAL(session->target_service(), "AuthService");
-    session->set_player_id("player-9");
-    BOOST_CHECK_EQUAL(session->player_id(), "player-9");
-    session->set_epoch(42);
-    BOOST_CHECK_EQUAL(session->epoch(), 42u);
-    session->set_protocol_profile_id("profile-A");
-    BOOST_CHECK_EQUAL(session->protocol_profile_id(), "profile-A");
+    // Fresh session: an all-empty binding at epoch 0.
+    shield::net::SessionBinding fresh = session->binding();
+    BOOST_CHECK_EQUAL(fresh.target_service, "");
+    BOOST_CHECK_EQUAL(fresh.player_id, "");
+    BOOST_CHECK_EQUAL(fresh.gateway_name, "");
+    BOOST_CHECK_EQUAL(fresh.protocol_profile_id, "");
+    BOOST_CHECK_EQUAL(fresh.epoch, 0u);
 
-    // routing context direct mutation
-    session->routing_context().gateway_address = "gw:1";
-    session->routing_context().session_id = "sid";
-    BOOST_CHECK_EQUAL(session->routing_context().gateway_address, "gw:1");
-    BOOST_CHECK_EQUAL(session->routing_context().session_id, "sid");
+    // reset_binding installs the pre-auth identity in one shot.
+    session->reset_binding({"AuthService", "", "gw:1", "profile-A", 0});
+    fresh = session->binding();
+    BOOST_CHECK_EQUAL(fresh.target_service, "AuthService");
+    BOOST_CHECK_EQUAL(fresh.gateway_name, "gw:1");
+    BOOST_CHECK_EQUAL(fresh.protocol_profile_id, "profile-A");
+    BOOST_CHECK_EQUAL(fresh.epoch, 0u);
+    BOOST_CHECK_EQUAL(fresh.player_id, "");
 
-    // the const overload of routing_context() exposes the same state
-    const Session& const_view = *session;
-    BOOST_CHECK_EQUAL(const_view.routing_context().gateway_address, "gw:1");
-    BOOST_CHECK_EQUAL(const_view.routing_context().session_id, "sid");
+    // CAS read: a stale expected epoch is rejected and leaves the binding
+    // untouched.
+    shield::net::SessionBinding out;
+    BOOST_CHECK(!session->apply_binding("PlayerService", "player-9", 5, &out));
+    BOOST_CHECK_EQUAL(session->binding().target_service, "AuthService");
+    BOOST_CHECK_EQUAL(session->binding().epoch, 0u);
+    BOOST_CHECK_EQUAL(out.epoch, 0u);  // out only written on success
 
-    // service binding keeps epoch in sync with the routing context
-    ServiceAddress addr;
-    addr.service_id = "svc-1";
-    addr.service_type = "player";
-    addr.epoch = 3;
-    session->bind_service("auth", addr);
-    BOOST_REQUIRE(session->get_service("auth") != nullptr);
-    BOOST_CHECK_EQUAL(session->get_service("auth")->service_id, "svc-1");
-    BOOST_CHECK_EQUAL(session->get_service("auth")->service_type, "player");
-    BOOST_CHECK_EQUAL(session->get_service("auth")->epoch, 3u);
-    BOOST_CHECK_EQUAL(session->epoch(),
-                      session->routing_context().session_epoch);
-    BOOST_CHECK(session->get_service("nope") == nullptr);
+    // CAS hit: matching expected epoch flips target+player and bumps epoch.
+    BOOST_CHECK(session->apply_binding("PlayerService", "player-9", 0, &out));
+    BOOST_CHECK_EQUAL(out.target_service, "PlayerService");
+    BOOST_CHECK_EQUAL(out.player_id, "player-9");
+    BOOST_CHECK_EQUAL(out.epoch, 1u);
+    BOOST_CHECK_EQUAL(session->binding().epoch, 1u);
+    BOOST_CHECK_EQUAL(session->binding().target_service, "PlayerService");
 
-    session->unbind_service("auth");
-    BOOST_CHECK(session->get_service("auth") == nullptr);
-
-    session->routing_context().bind_service("scene", addr);
-    session->routing_context().clear_routes();
-    BOOST_CHECK(session->get_service("scene") == nullptr);
+    // kAnyEpoch bypasses the staleness check (gateway invalidation path).
+    BOOST_CHECK(session->apply_binding("", "", shield::net::kAnyEpoch, &out));
+    BOOST_CHECK_EQUAL(out.target_service, "");
+    BOOST_CHECK_EQUAL(out.player_id, "");
+    BOOST_CHECK_EQUAL(out.epoch, 2u);
 
     // start fires on_connect
     session->start();

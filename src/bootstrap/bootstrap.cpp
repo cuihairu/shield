@@ -32,6 +32,7 @@
 #include "shield/console/lua_commands.hpp"
 #include "shield/console/ops_http_handler.hpp"
 #include "shield/console/root_commands.hpp"
+#include "shield/lua/gateway_actor.hpp"
 #include "shield/lua/lua_gateway_bridge.hpp"
 #include "shield/lua/lua_http_bridge.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -175,6 +176,10 @@ struct GlobalState {
         net_work_guard;
     std::vector<std::thread> net_threads;
     std::vector<std::unique_ptr<shield::lua::LuaGatewayBridge>> gateway_bridges;
+    // One gateway actor per listener; exited after the listeners stop and
+    // before the Lua services shut down (their bind responses call back into
+    // the manager).
+    std::vector<caf::actor> gateway_actors;
     std::vector<std::unique_ptr<shield::net::TcpListener>> tcp_listeners;
     std::unique_ptr<shield::net::ConsoleServer> console_server;
     std::unique_ptr<shield::console::CommandDispatcher> console_dispatcher;
@@ -205,6 +210,12 @@ void cleanup_failed_initialize() {
         }
         g_state->tcp_listeners.clear();
         g_state->gateway_bridges.clear();
+        for (const auto& gateway_actor : g_state->gateway_actors) {
+            // A later listener (protocol validation, port bind) can fail
+            // after earlier gateway actors have spawned.
+            caf::anon_send_exit(gateway_actor, caf::exit_reason::user_shutdown);
+        }
+        g_state->gateway_actors.clear();
         if (g_state->console_server) {
             // GCOVR_EXCL_START (unreachable: no initialize() failure happens
             // after the console server starts)
@@ -662,8 +673,26 @@ bool initialize(const RuntimeConfig& config) {
             }
         }
 
+        // One gateway actor per listener: it owns the live-session registry
+        // for this listener and handles ClientEgress / ClientBindRequest /
+        // ClientCloseRequest (see gateway_actor.hpp). The merged descriptor
+        // table is copied into the actor so egress validation has route
+        // metadata independent of the spawn closures.
+        auto session_registry =
+            std::make_shared<shield::lua::GatewaySessionRegistry>();
+        shield::lua::GatewayDeps gateway_deps;
+        gateway_deps.gateway_name = actor.name;
+        gateway_deps.registry = session_registry;
+        gateway_deps.stats = std::make_shared<shield::lua::GatewayStats>();
+        gateway_deps.descriptors = descriptor_routes;
+        gateway_deps.manager = g_state->lua_services.get();
+        g_state->gateway_actors.push_back(shield::lua::spawn_gateway_actor(
+            g_state->lua_services->actor_system(), std::move(gateway_deps)));
+        g_state->lua_services->register_gateway_actor(
+            actor.name, g_state->gateway_actors.back());
+
         auto bridge = std::make_unique<shield::lua::LuaGatewayBridge>(
-            *g_state->lua_services, actor.name);
+            *g_state->lua_services, actor.name, std::move(session_registry));
         shield::net::SessionCallbacks callbacks;
         callbacks.on_connect =
             [bridge_ptr =
@@ -989,6 +1018,13 @@ void shutdown() {
     }
     g_state->tcp_listeners.clear();
     g_state->gateway_bridges.clear();
+
+    // Exit the gateway actors before the Lua services shut down: their
+    // bind responses call back into the manager (complete_call).
+    for (const auto& gateway_actor : g_state->gateway_actors) {
+        caf::anon_send_exit(gateway_actor, caf::exit_reason::user_shutdown);
+    }
+    g_state->gateway_actors.clear();
 
     // Shutdown actor system (which stops all actors)
     if (g_state->lua_services) {

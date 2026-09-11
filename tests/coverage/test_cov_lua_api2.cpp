@@ -1,6 +1,6 @@
 // Coverage tests (round 2) for src/lua/lua_api.cpp: conversion helpers,
 // main-thread sync call paths, httpd verb registration, plugin query APIs,
-// deadline propagation, and SessionHandle branches on dead sessions.
+// deadline propagation, and shield.client primitive rejections.
 #define BOOST_TEST_MODULE CovLuaApi2
 #ifndef _WIN32
 #include <netinet/in.h>
@@ -23,6 +23,7 @@
 
 #include "shield/caf_initializer.hpp"
 #include "shield/config/config.hpp"
+#include "shield/core/service_message.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -387,9 +388,10 @@ BOOST_AUTO_TEST_CASE(PluginQueryApiWithLiveInstance) {
 }
 
 // ---------------------------------------------------------------------------
-// SessionHandle branches on a dead/unknown session id.
+// shield.client primitives without a gateway: argument validation and
+// missing-gateway rejection (bind additionally refuses the main coroutine).
 // ---------------------------------------------------------------------------
-BOOST_AUTO_TEST_CASE(SessionHandleOnUnknownSession) {
+BOOST_AUTO_TEST_CASE(ClientPrimitivesWithoutGateway) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -400,38 +402,47 @@ BOOST_AUTO_TEST_CASE(SessionHandleOnUnknownSession) {
                        sol::lib::string, sol::lib::os, sol::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
-    BOOST_CHECK(run_script(lua,
-                           "local s = __shield_make_session_handle("
-                           "'999999', '1.2.3.4:5')\n"
-                           "assert(s:id() == '999999')\n"
-                           "assert(s:remote_addr() == '1.2.3.4:5')\n"
-                           "local ok, err = s:send({k = 1})\n"
-                           "assert(ok == false)\n"
-                           "assert(err.code == 'session_closed')\n"
-                           "local ok2, err2 = s:send('text')\n"
-                           "assert(ok2 == false)\n"
-                           "assert(err2.code == 'session_closed')\n"
-                           "s:close('bye')\n"
-                           "local bok, berr = s:bind_service('n', 'svc')\n"
-                           "assert(bok == false)\n"
-                           "assert(berr.code == 'session_closed')\n"
-                           "local uok, uerr = s:unbind_service('n')\n"
-                           "assert(uok == false)\n"
-                           "assert(uerr.code == 'session_closed')\n"
-                           "assert(s:get_service('n') == nil)\n"
-                           "local pok, perr = s:set_player_id('p1')\n"
-                           "assert(pok == false)\n"
-                           "assert(perr.code == 'session_closed')\n"
-                           "assert(s:player_id() == '')\n"
-                           "assert(s:epoch() == 0)"));
+    // Main-coroutine guard: bind refuses before touching any state.
+    BOOST_CHECK(
+        run_script(lua,
+                   "local ok, err = shield.client.bind(nil, 'p1', 'target')\n"
+                   "assert(ok == false)\n"
+                   "assert(err.code == 'call_not_allowed_off_coroutine')"));
+
+    // close with a non-client argument fails.
+    BOOST_CHECK(
+        run_script(lua, "assert(shield.client.close(nil, 'bye') == false)"));
+
+    // close with a materialized identity but no gateway registered: the
+    // egress route cannot be resolved, so the request is dropped (false).
+    BOOST_CHECK(run_script(
+        lua,
+        "local ctx = __shield_make_client_context(1, 0, 'p1', 'ghost_gw', "
+        "'json')\n"
+        "assert(shield.client.close(ctx, 'bye') == false)"));
+
+    // The same request through the raw primitive with the marker-table
+    // form (the shape a client identity takes inside message payloads).
+    lua["ref_marker"] =
+        shield::lua::ClientContextData{"ghost_gw", 1, 0, "p1", "json"}
+            .to_json();
+    BOOST_CHECK(run_script(
+        lua, "assert(shield._client_close(ref_marker, 'bye') == false)"));
+
+    // Egress with no gateway: dropped regardless of payload shape.
+    BOOST_CHECK(run_script(
+        lua,
+        "local ctx = __shield_make_client_context(1, 0, 'p1', 'ghost_gw', "
+        "'json')\n"
+        "assert(shield._client_egress(ctx, 7, {k = 'v'}) == false)\n"
+        "assert(shield._client_egress(ref_marker, 7, 'bytes') == false)"));
 }
 
 // ---------------------------------------------------------------------------
-// json_to_lua round-trip of a session-handle marker when the resolver
-// registry holds a live session: make_session_handle_json populates the
-// registry, json_to_lua rebuilds the userdata.
+// json_to_lua round-trip of a client-identity marker: the trusted identity
+// materializes as a read-only ClientContext and serializes back unchanged.
 // ---------------------------------------------------------------------------
-BOOST_AUTO_TEST_CASE(MakeSessionHandleJsonPopulatesRegistry) {
+BOOST_AUTO_TEST_CASE(ClientContextMarkerRoundTrip) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -442,66 +453,24 @@ BOOST_AUTO_TEST_CASE(MakeSessionHandleJsonPopulatesRegistry) {
                        sol::lib::string, sol::lib::os, sol::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
-    // Fake session: id/remote are enough for handle creation.
-    class FakeSession final : public shield::net::Session {
-    public:
-        shield::net::SessionId id() const override { return 4242; }
-        shield::net::RemoteAddress remote_addr() const override {
-            return shield::net::RemoteAddress{"127.0.0.1", 7777};
-        }
-        bool send(const std::vector<uint8_t>&,
-                  std::string* = nullptr) override {
-            return false;
-        }
-        void close(std::string) override {}
-        bool is_alive() const override { return true; }
-        std::string error_code() const override { return ""; }
-        bool has_protocol_pipeline() const override { return false; }
-        std::string_view protocol_codec_name() const override { return {}; }
-        bool send_message(const shield::transport::DecodedBody&,
-                          std::string*) override {
-            return false;
-        }
-        void set_user_data(std::string, std::string) override {}
-        std::string get_user_data(std::string_view) const override {
-            return "";
-        }
-        void set_target_service(std::string) override {}
-        std::string target_service() const override { return ""; }
-        void set_player_id(std::string) override {}
-        std::string player_id() const override { return ""; }
-        void set_epoch(uint32_t) override {}
-        uint32_t epoch() const override { return 0; }
-        shield::net::SessionRoutingContext& routing_context() override {
-            return ctx_;
-        }
-        const shield::net::SessionRoutingContext& routing_context()
-            const override {
-            return ctx_;
-        }
-        void set_protocol_profile_id(std::string) override {}
-        std::string protocol_profile_id() const override { return ""; }
-        void unbind_service(const std::string&) override {}
-        void bind_service(const std::string&,
-                          shield::net::ServiceAddress) override {}
-        const shield::net::ServiceAddress* get_service(
-            const std::string&) const override {
-            return nullptr;
-        }
-
-    private:
-        shield::net::SessionRoutingContext ctx_;
-    };
-
-    auto session = std::make_shared<FakeSession>();
-    nlohmann::json marker = make_session_handle_json(session);
+    const nlohmann::json marker =
+        shield::lua::ClientContextData{"cov_gw", 4242, 1, "player-42", "json"}
+            .to_json();
     BOOST_CHECK(marker.is_object());
-    BOOST_CHECK(marker.value("__shield_session_handle", false));
+    BOOST_CHECK(marker.value("__shield_client_ref", false));
 
-    lua["h"] = json_to_lua(sol::state_view(lua), marker);
+    lua["ctx"] = json_to_lua(sol::state_view(lua), marker);
     BOOST_CHECK(run_script(lua,
-                           "assert(h:id() == tostring(4242))\n"
-                           "assert(h:remote_addr():find('7777'))"));
+                           "assert(ctx:session_id() == 4242)\n"
+                           "assert(ctx:session_epoch() == 1)\n"
+                           "assert(ctx:player_id() == 'player-42')\n"
+                           "assert(ctx:gateway() == 'cov_gw')\n"
+                           "assert(ctx:protocol_profile_id() == 'json')\n"
+                           "local ref = ctx:ref()\n"
+                           "assert(ref:session_id() == 4242)"));
+
+    // And back: the userdata serializes to the identical marker shape.
+    BOOST_CHECK(lua_to_json(lua["ctx"]) == marker);
 }
 
 // ---------------------------------------------------------------------------

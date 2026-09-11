@@ -379,6 +379,7 @@ target_link_libraries(shield_config
 # -----------------------------------------------------------------------------
 add_library(shield_core STATIC
     src/caf_initializer.cpp
+    src/core/service_message.cpp
 )
 
 target_include_directories(shield_core
@@ -504,6 +505,7 @@ add_library(shield_lua STATIC
     src/lua/lua_api.cpp
     src/lua/lua_runtime.cpp
     src/lua/lua_gateway_bridge.cpp
+    src/lua/gateway_actor.cpp
     src/lua/lua_http_bridge.cpp
 )
 

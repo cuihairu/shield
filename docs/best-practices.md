@@ -33,17 +33,27 @@ local ok, result = shield.call_timeout(3000, "player", "get_info", { id = "1001"
 
 ## 网关逻辑
 
-把网关当作 Lua 服务，而不是依赖框架中间件链。
+认证入口只做认证与绑定;业务分发留在 target 服务内,不在 Gateway 按 body 二次路由。
 
 ```lua
-function gateway.on_client_message(session, payload)
-    if payload.type == "login" then
-        -- authenticate here
-    else
-        shield.send("router", payload.type, payload)
+-- auth 服务:login 是 c2s descriptor binding
+function M.login(client, request)
+    local player_id = authenticate(request)
+    if not player_id then
+        return {code = "auth_failed"}
     end
+    -- 挂起协程,CAS 切换单一 target 到 "player";恢复时拿到新 epoch 的 ClientRef
+    local ok, ref = shield.client.bind(client, player_id, "player")
+    if not ok then
+        return {code = ref.code}
+    end
+    shield.client_rpc.login_result(ref, {player_id = ref:player_id()})
+    return {code = "ok"}
 end
 ```
+
+出站一律走按 s2c descriptor 注册的 `shield.client_rpc.<name>` helper,不写裸
+route_id,不做通用 send。
 
 ## 数据访问
 
