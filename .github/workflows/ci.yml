@@ -186,8 +186,10 @@ jobs:
       - name: Test
         run: ctest --test-dir build-cluster --build-config Release -L cluster --output-on-failure
 
-  # 覆盖率 (Linux, gcov + gcovr): 运行 tests/coverage 全部套件并统计
-  # src/ 行覆盖率；低于 97% 时失败。
+  # 覆盖率 (Linux, gcov + gcovr): 在 Debug + coverage 构建下运行全部测试
+  # 套件并统计 src/ 行覆盖率；低于 98% 时失败。必须跑全量而不是只跑
+  # tests/coverage 标签：覆盖率统计覆盖整个 src/，而相当一部分路径只被
+  # lua_api / transport / plugin 等其他标签的套件覆盖，漏跑会系统性低估。
   coverage:
     name: Coverage
     runs-on: ubuntu-26.04
@@ -238,9 +240,9 @@ jobs:
       - name: Build tests
         run: cmake --build build-cov --parallel $(nproc)
 
-      - name: Run coverage suites
+      - name: Run all test suites (serial, coverage build)
         working-directory: build-cov
-        run: ctest --build-config Debug -L coverage --output-on-failure
+        run: ctest --build-config Debug --output-on-failure
 
       - name: Collect coverage report
         shell: bash
