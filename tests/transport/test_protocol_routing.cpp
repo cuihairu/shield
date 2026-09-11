@@ -511,6 +511,8 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
     FakeProtocolCodecState state;
     auto fake_codec = make_fake_protocol_codec(state);
 
+    // Inline protocol.routes was folded into the RPC descriptor set; this
+    // codec-plumbing test registers its route directly on the pipeline.
     const auto config = R"json(
 {
   "name": "game.protobuf",
@@ -522,19 +524,7 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
   "body": {
     "codec": "protobuf",
     "provider": "protocol.protobuf"
-  },
-  "routes": [
-    {
-      "id": 4097,
-      "name": "game.Login",
-      "direction": "c2s",
-      "requires_auth": false,
-      "codec_id": 1,
-      "schema_id": 42,
-      "action": "decode",
-      "lazy_decode": false
-    }
-  ]
+  }
 }
 )json";
 
@@ -551,6 +541,16 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
     auto pipeline = build_protocol_pipeline_from_json(config, options, &error);
     BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
     BOOST_CHECK_EQUAL(std::string(pipeline->default_codec_name()), "protobuf");
+    {
+        RouteEntry entry;
+        entry.route_id = 4097;
+        entry.debug_name = "game.Login";
+        entry.direction = RouteDirection::ClientToServer;
+        entry.requires_auth = false;
+        entry.schema_id = 42;
+        entry.policy.lazy_decode = false;
+        pipeline->routes().upsert(entry);
+    }
 
     Packet packet;
     packet.route_id = 4097;
@@ -611,15 +611,7 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesMsgpackExternalProvider) {
   "body": {
     "codec": "msgpack",
     "provider": "protocol.msgpack"
-  },
-  "routes": [
-    {
-      "id": 4098,
-      "name": "game.Ping",
-      "action": "decode",
-      "lazy_decode": false
-    }
-  ]
+  }
 }
 )json";
 
@@ -636,6 +628,14 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesMsgpackExternalProvider) {
     auto pipeline = build_protocol_pipeline_from_json(config, options, &error);
     BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
     BOOST_CHECK_EQUAL(std::string(pipeline->default_codec_name()), "msgpack");
+    {
+        RouteEntry entry;
+        entry.route_id = 4098;
+        entry.debug_name = "game.Ping";
+        entry.direction = RouteDirection::ClientToServer;
+        entry.policy.lazy_decode = false;
+        pipeline->routes().upsert(entry);
+    }
 
     Packet packet;
     packet.route_id = 4098;

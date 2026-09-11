@@ -797,6 +797,40 @@ bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
     }
 }
 
+bool LuaRuntime::resolve_service_method(std::shared_ptr<LuaVM> vm,
+                                        std::string_view method_name,
+                                        sol::function* out,
+                                        std::string* error) {
+    try {
+        sol::table& service = vm->service_table();
+        if (!service.valid()) {
+            if (error) {
+                *error = "service module not loaded";
+            }
+            return false;
+        }
+
+        sol::object value = service[std::string(method_name)];
+        if (!value.valid() || value == sol::nil ||
+            !value.is<sol::protected_function>()) {
+            if (error) {
+                *error = "method '" + std::string(method_name) +
+                         "' is missing or not a function";
+            }
+            return false;
+        }
+        if (out != nullptr) {
+            *out = value.as<sol::protected_function>();
+        }
+        return true;
+    } catch (const std::exception& e) {
+        if (error) {
+            *error = e.what();
+        }
+        return false;
+    }
+}
+
 bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
                                      std::string_view method_name,
                                      const nlohmann::json& args,

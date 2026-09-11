@@ -288,6 +288,22 @@ bool validate_protocol_routes(const YAML::Node& routes, const std::string& path,
     if (!routes) {
         return true;
     }
+    // Inline route tables were folded into the RPC descriptor set: the
+    // single static source is now actors[].rpc.routes.
+    (void)routes;
+    if (error) {
+        *error =
+            path + ".routes was removed; declare actors[].rpc.routes instead";
+    }
+    return false;
+}
+
+bool validate_actor_rpc_routes(const YAML::Node& rpc, const std::string& path,
+                               std::string* error) {
+    if (!rpc || !rpc["routes"]) {
+        return true;
+    }
+    const auto& routes = rpc["routes"];
     if (!routes.IsSequence()) {
         if (error) {
             *error = path + ".routes must be an array";
@@ -329,15 +345,39 @@ bool validate_protocol_routes(const YAML::Node& routes, const std::string& path,
             return false;
         }
 
-        if (!validate_int_range(route, "codec_id", item_path.c_str(), 0, 65535,
-                                error) ||
-            !validate_int_range(route, "schema_id", item_path.c_str(), 0, 65535,
-                                error) ||
-            !validate_protocol_route_action(route, "action", item_path,
-                                            error)) {
+        // binding is the one required string: without it the route has
+        // nothing to compile against at spawn time.
+        if (!route["binding"]) {
+            if (error) {
+                *error = item_path + ".binding is required";
+            }
             return false;
         }
 
+        if (!validate_protocol_string_enum(
+                route, "direction", item_path,
+                {"c2s", "client_to_server", "s2c", "server_to_client", "bidi",
+                 "bidirectional"},
+                error) ||
+            // The rpc.routes descriptor set only accepts the canonical
+            // actions; the xmldef-era "decode"/"forward" aliases are not
+            // part of this contract.
+            !validate_protocol_string_enum(
+                route, "action", item_path,
+                {"decode_local", "forward_raw", "drop"}, error)) {
+            return false;
+        }
+
+        if (route["requires_auth"]) {
+            try {
+                (void)route["requires_auth"].as<bool>();
+            } catch (const std::exception&) {
+                if (error) {
+                    *error = item_path + ".requires_auth must be a bool";
+                }
+                return false;
+            }
+        }
         if (route["lazy_decode"]) {
             try {
                 (void)route["lazy_decode"].as<bool>();
@@ -349,18 +389,35 @@ bool validate_protocol_routes(const YAML::Node& routes, const std::string& path,
             }
         }
 
-        if (route["name"]) {
+        for (const char* key :
+             {"binding", "owner_service", "name", "request_codec",
+              "request_schema", "response_schema"}) {
+            if (!route[key]) {
+                continue;
+            }
             try {
-                const auto name = route["name"].as<std::string>();
-                if (!name.empty() && !names.insert(name).second) {
+                const auto value = route[key].as<std::string>();
+                // binding is the one required string: without it the route
+                // has nothing to compile against at spawn time.
+                if (std::string(key) == "binding" && value.empty()) {
                     if (error) {
-                        *error = path + ".routes contains duplicate name";
+                        *error = item_path + ".binding must not be empty";
                     }
                     return false;
                 }
             } catch (const std::exception&) {
                 if (error) {
-                    *error = item_path + ".name must be a string";
+                    *error = item_path + "." + key + " must be a string";
+                }
+                return false;
+            }
+        }
+
+        if (route["name"]) {
+            const auto name = route["name"].as<std::string>();
+            if (!name.empty() && !names.insert(name).second) {
+                if (error) {
+                    *error = path + ".routes contains duplicate name";
                 }
                 return false;
             }
@@ -1023,6 +1080,17 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                 }
             }
 
+            if (actor["rpc"] && !actor["rpc"].IsMap()) {
+                if (error) {
+                    *error = "actors[" + name + "].rpc must be a map";
+                }
+                return false;
+            }
+            if (!validate_actor_rpc_routes(actor["rpc"],
+                                           "actors[" + name + "].rpc", error)) {
+                return false;
+            }
+
             actors_to_resolve.emplace_back(name, actor);
         }
 
@@ -1112,6 +1180,13 @@ std::vector<RuntimeActorConfig> runtime_actors() {
                 item.network_protocol_enabled = true;
                 item.network_protocol_json =
                     yaml_to_json(network["protocol"]).dump();
+            }
+        }
+        if (const YAML::Node rpc = actor["rpc"]) {
+            // Intermediate node check: chaining ["routes"] directly onto an
+            // undefined rpc node throws yaml-cpp's InvalidNode.
+            if (const YAML::Node routes = rpc["routes"]) {
+                item.rpc_routes_json = yaml_to_json(routes).dump();
             }
         }
 

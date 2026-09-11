@@ -32,6 +32,7 @@
 #include "shield/lua/lua_constants.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/plugin/plugin_host.hpp"
+#include "shield/transport/rpc_descriptor.hpp"
 
 namespace shield::lua {
 
@@ -72,6 +73,21 @@ struct LuaServiceManager::Impl {
         owned_names;
     std::unordered_map<std::string, std::string> module_scripts;
     std::vector<std::string> service_order;
+
+    // Per-service compiled client RPC state. Populated during spawn from
+    // opts["rpc"]["routes"]: the descriptors owned by this service plus the
+    // route_id -> Lua handler table for its inbound (c2s/bidi) bindings,
+    // resolved once at startup (a missing handler fails the spawn, so
+    // dispatch never resolves handlers dynamically). Guarded by
+    // registry_mutex like the other per-service registry maps. Must be
+    // erased BEFORE the owning VM in services (sol handles reference the
+    // VM's lua_State).
+    struct ServiceRpcState {
+        shield::transport::RpcDescriptorTable descriptors;
+        std::unordered_map<std::uint32_t, sol::function> handlers;
+    };
+    std::unordered_map<std::string, ServiceRpcState> service_rpc;
+
     mutable std::shared_mutex registry_mutex;
     std::atomic<bool> stopping{
         false};  // set by shutdown_all, checked by send/call/spawn
@@ -810,6 +826,64 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                                       ": " + error);
         }
 
+        // Compile this actor's rpc.routes against the loaded module.
+        // Startup is the single validation point: an inbound (c2s/bidi)
+        // binding whose method is missing or not a function fails the spawn
+        // here (handler_missing), so dispatch never resolves handlers
+        // dynamically. s2c routes only need a non-empty binding (their
+        // helpers are API-level). Entries owned by other services are not
+        // compiled here; they exist in the gateway merge table only.
+        Impl::ServiceRpcState rpc_state;
+        {
+            const nlohmann::json routes_json =
+                opts.contains("rpc") && opts["rpc"].is_object() &&
+                        opts["rpc"].contains("routes")
+                    ? opts["rpc"]["routes"]
+                    : nlohmann::json::array();
+            shield::transport::RpcDescriptorTable descriptors;
+            std::string rpc_error;
+            if (!shield::transport::parse_rpc_routes_json(
+                    routes_json.dump(), descriptors, &rpc_error)) {
+                return SpawnResult::error("rpc.routes for " + service_name +
+                                          ": " + rpc_error);
+            }
+            descriptors.for_each(
+                [&](const shield::transport::RpcDescriptor& descriptor) {
+                    if (!rpc_error.empty()) {
+                        return;
+                    }
+                    if (!descriptor.owner_service.empty() &&
+                        descriptor.owner_service != service_name) {
+                        return;
+                    }
+                    if (descriptor.direction ==
+                        shield::transport::RouteDirection::ServerToClient) {
+                        // s2c helpers are created by the Lua API layer (M2);
+                        // binding presence was already enforced by the
+                        // descriptor parser. Keep the descriptor so the
+                        // helper table can bind route_id -> binding.
+                        (void)rpc_state.descriptors.add(descriptor);
+                        return;
+                    }
+                    sol::function handler;
+                    if (!impl_->runtime.resolve_service_method(
+                            vm, descriptor.binding, &handler, &rpc_error)) {
+                        rpc_error = "route " +
+                                    std::to_string(descriptor.route_id) +
+                                    " binding '" + descriptor.binding +
+                                    "': handler_missing (" + rpc_error + ")";
+                        return;
+                    }
+                    (void)rpc_state.descriptors.add(descriptor);
+                    rpc_state.handlers.emplace(descriptor.route_id,
+                                               std::move(handler));
+                });
+            if (!rpc_error.empty()) {
+                return SpawnResult::error("rpc binding compile failed for " +
+                                          service_name + ": " + rpc_error);
+            }
+        }
+
         // Parse spawn timeout (default 10s).
         const int64_t spawn_timeout_ms = opts.value("timeout", 10000);
 
@@ -939,6 +1013,7 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                                           service_name);
             }
             impl_->services[service_name] = std::move(vm);
+            impl_->service_rpc[service_name] = std::move(rpc_state);
             impl_->published_names[service_name] = service_name;
             impl_->owned_names[service_name].insert(service_name);
             impl_->service_order.push_back(service_name);
@@ -1323,6 +1398,9 @@ void LuaServiceManager::exit(std::string_view service_id,
             }
             impl_->owned_names.erase(names_it);
         }
+        // Erase the RPC state before the VM: sol handler handles reference
+        // the VM's lua_State and must be destroyed while it is alive.
+        impl_->service_rpc.erase(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
@@ -1424,6 +1502,9 @@ void LuaServiceManager::force_remove(const std::string& id,
             }
             impl_->owned_names.erase(names_it);
         }
+        // Erase the RPC state before the VM (sol handles reference the VM's
+        // lua_State); see exit() for the mirrored ordering.
+        impl_->service_rpc.erase(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),

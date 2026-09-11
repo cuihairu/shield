@@ -14,6 +14,7 @@
 
 #include "shield/plugin/protocol_codec.h"
 #include "shield/transport/protocol.hpp"
+#include "shield/transport/rpc_descriptor.hpp"
 
 using shield::transport::BodyCodecRegistry;
 using shield::transport::build_protocol_pipeline_from_json;
@@ -1314,7 +1315,10 @@ BOOST_AUTO_TEST_CASE(LazyDecodeBoolValues) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(MethodAndLogicalServiceAttributes) {
+BOOST_AUTO_TEST_CASE(XmldefIgnoresRoutingAttributes) {
+    // method/logical_service were folded into the RPC descriptor set
+    // (actors[].rpc.routes); the xmldef catalog describes the
+    // transport-level route table only and tolerates the legacy attributes.
     RouteTable routes;
     std::string error;
     BOOST_REQUIRE(load_ok(
@@ -1322,10 +1326,8 @@ BOOST_AUTO_TEST_CASE(MethodAndLogicalServiceAttributes) {
         routes, &error));
     const auto* route = routes.find(1);
     BOOST_REQUIRE(route != nullptr);
-    BOOST_REQUIRE(route->method_name.has_value());
-    BOOST_CHECK_EQUAL(*route->method_name, "do_login");
-    BOOST_REQUIRE(route->logical_service_name.has_value());
-    BOOST_CHECK_EQUAL(*route->logical_service_name, "auth");
+    BOOST_CHECK_EQUAL(route->route_id, 1u);
+    BOOST_CHECK(route->debug_name.empty());
 }
 
 BOOST_AUTO_TEST_CASE(DefaultOptionsApplyToEntries) {
@@ -2114,82 +2116,128 @@ BOOST_AUTO_TEST_CASE(RoutingDecodeBodyRouteFlag) {
     BOOST_CHECK(pipeline->profile().decode_before_dispatch);
 }
 
-BOOST_AUTO_TEST_CASE(RoutesArraySkipsNonObjectEntries) {
-    const auto config = R"json(
-{"routes": [5, {"id": 1, "name": "first"}]}
-)json";
+BOOST_AUTO_TEST_CASE(DescriptorRoutesFlowIntoPipelineRouteTable) {
+    // Inline protocol.routes was removed: the pipeline's route table is
+    // derived from the RPC descriptor set injected via ProtocolBuildOptions.
+    shield::transport::RpcDescriptorTable descriptors;
     std::string error;
-    auto pipeline = build_protocol_pipeline_from_json(config, {}, &error);
-    BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
-    BOOST_REQUIRE(pipeline->routes().find(1) != nullptr);
-}
+    BOOST_REQUIRE(shield::transport::parse_rpc_routes_json(
+        R"json([
+    {"id": 1, "name": "login", "binding": "do_login"},
+    {"id": 2, "direction": "bidirectional", "binding": "chat",
+     "requires_auth": false, "action": "forward_raw", "lazy_decode": false}
+  ])json",
+        descriptors, &error));
+    BOOST_CHECK_EQUAL(descriptors.size(), 2u);
 
-BOOST_AUTO_TEST_CASE(RouteDirectionsAndMetadataParse) {
     const auto config = R"json(
 {
-  "routes": [
-    {"id": 1, "direction": "s2c"},
-    {"id": 2, "direction": "bidirectional"},
-    {"id": 3, "method": "do_it", "logical_service": "auth",
-     "requires_auth": false, "codec_id": 6, "schema_id": 8,
-     "lazy_decode": false}
-  ]
+  "name": "descriptor.source",
+  "envelope": {"type": "idlen", "route_id_bytes": 2, "length_bytes": 2},
+  "body": {"codec": "json"}
 }
 )json";
-    std::string error;
-    auto pipeline = build_protocol_pipeline_from_json(config, {}, &error);
+    ProtocolBuildOptions options;
+    options.descriptor_routes = &descriptors;
+    auto pipeline = build_protocol_pipeline_from_json(config, options, &error);
     BOOST_REQUIRE_MESSAGE(pipeline != nullptr, error);
 
     const auto* first = pipeline->routes().find(1);
     BOOST_REQUIRE(first != nullptr);
-    BOOST_CHECK(first->direction == RouteDirection::ServerToClient);
+    BOOST_CHECK_EQUAL(first->debug_name, "login");
+    BOOST_CHECK(first->direction == RouteDirection::ClientToServer);
+    BOOST_CHECK(first->requires_auth);
+    BOOST_CHECK(first->policy.action == RouteAction::DecodeLocal);
     const auto* second = pipeline->routes().find(2);
     BOOST_REQUIRE(second != nullptr);
     BOOST_CHECK(second->direction == RouteDirection::Bidirectional);
-    const auto* third = pipeline->routes().find(3);
+    BOOST_CHECK(!second->requires_auth);
+    BOOST_CHECK(second->policy.action == RouteAction::ForwardRaw);
+    BOOST_CHECK(!second->policy.lazy_decode);
+}
+
+BOOST_AUTO_TEST_CASE(DescriptorParseRejectsNonObjectEntries) {
+    shield::transport::RpcDescriptorTable descriptors;
+    std::string error;
+    BOOST_CHECK(!shield::transport::parse_rpc_routes_json(
+        R"json([5, {"id": 1, "binding": "x"}])json", descriptors, &error));
+    BOOST_CHECK_NE(error.find("objects"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(DescriptorParseDirectionsAndMetadata) {
+    shield::transport::RpcDescriptorTable descriptors;
+    std::string error;
+    BOOST_REQUIRE(shield::transport::parse_rpc_routes_json(
+        R"json([
+    {"id": 1, "binding": "a", "direction": "s2c", "name": "push"},
+    {"id": 2, "binding": "b", "direction": "bidirectional"},
+    {"id": 3, "binding": "c", "direction": "client_to_server",
+     "owner_service": "player", "request_codec": "json",
+     "request_schema": "move.req", "response_schema": "move.resp",
+     "requires_auth": false, "lazy_decode": false}
+  ])json",
+        descriptors, &error));
+
+    const auto* first = descriptors.find(1);
+    BOOST_REQUIRE(first != nullptr);
+    BOOST_CHECK(first->direction == RouteDirection::ServerToClient);
+    BOOST_CHECK_EQUAL(first->name, "push");
+    const auto* second = descriptors.find(2);
+    BOOST_REQUIRE(second != nullptr);
+    BOOST_CHECK(second->direction == RouteDirection::Bidirectional);
+    const auto* third = descriptors.find(3);
     BOOST_REQUIRE(third != nullptr);
-    BOOST_REQUIRE(third->method_name.has_value());
-    BOOST_CHECK_EQUAL(*third->method_name, "do_it");
-    BOOST_REQUIRE(third->logical_service_name.has_value());
-    BOOST_CHECK_EQUAL(*third->logical_service_name, "auth");
+    BOOST_CHECK_EQUAL(third->owner_service, "player");
+    BOOST_CHECK_EQUAL(third->request_codec, "json");
+    BOOST_CHECK_EQUAL(third->request_schema, "move.req");
+    BOOST_CHECK_EQUAL(third->response_schema, "move.resp");
     BOOST_CHECK(!third->requires_auth);
-    BOOST_CHECK_EQUAL(third->codec_id, 6u);
-    BOOST_CHECK_EQUAL(third->schema_id, 8u);
     BOOST_CHECK(!third->policy.lazy_decode);
+    BOOST_CHECK_EQUAL(descriptors.find_by_name("push")->route_id, 1u);
 }
 
 BOOST_AUTO_TEST_CASE(RejectsInvalidRouteAction) {
-    const auto config = R"json({"routes":[{"id":1,"action":"teleport"}]})json";
+    shield::transport::RpcDescriptorTable descriptors;
     std::string error;
-    BOOST_CHECK(build_protocol_pipeline_from_json(config, {}, &error) ==
-                nullptr);
-    BOOST_CHECK_NE(error.find("routes.action"), std::string::npos);
+    BOOST_CHECK(!shield::transport::parse_rpc_routes_json(
+        R"json([{"id":1,"binding":"x","action":"teleport"}])json", descriptors,
+        &error));
+    BOOST_CHECK_NE(error.find("action"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(RejectsZeroRouteId) {
-    const auto config = R"json({"routes":[{"id":0}]})json";
+    shield::transport::RpcDescriptorTable descriptors;
     std::string error;
-    BOOST_CHECK(build_protocol_pipeline_from_json(config, {}, &error) ==
-                nullptr);
+    BOOST_CHECK(!shield::transport::parse_rpc_routes_json(
+        R"json([{"id":0,"binding":"x"}])json", descriptors, &error));
     BOOST_CHECK_NE(error.find("id is required"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(RejectsDuplicateRouteName) {
-    const auto config = R"json(
-{"routes": [{"id":1,"name":"dup"},{"id":2,"name":"dup"}]}
-)json";
+    shield::transport::RpcDescriptorTable descriptors;
+    std::string error;
+    BOOST_CHECK(!shield::transport::parse_rpc_routes_json(
+        R"json([{"id":1,"name":"dup","binding":"x"},
+                {"id":2,"name":"dup","binding":"y"}])json",
+        descriptors, &error));
+    BOOST_CHECK_NE(error.find("duplicate id or name"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(InlineRoutesKeyIsRejected) {
+    // Pre-1.0: no compatibility shim. Any protocol config that still declares
+    // inline routes is rejected with the migration pointer.
+    const auto config = R"json({"routes": [{"id": 1, "binding": "x"}]})json";
     std::string error;
     BOOST_CHECK(build_protocol_pipeline_from_json(config, {}, &error) ==
                 nullptr);
-    BOOST_CHECK_NE(error.find("duplicate name"), std::string::npos);
-}
+    BOOST_CHECK_NE(error.find("was removed"), std::string::npos);
+    BOOST_CHECK_NE(error.find("actors[].rpc.routes"), std::string::npos);
 
-BOOST_AUTO_TEST_CASE(RouteArraySkippedWhenNotArray) {
-    const auto config = R"json({"routes": 7})json";
-    std::string error;
-    auto pipeline = build_protocol_pipeline_from_json(config, {}, &error);
-    BOOST_CHECK_MESSAGE(pipeline != nullptr, error);
-    BOOST_CHECK_EQUAL(pipeline->routes().size(), 0u);
+    const auto scalar_config = R"json({"routes": 7})json";
+    error.clear();
+    BOOST_CHECK(build_protocol_pipeline_from_json(scalar_config, {}, &error) ==
+                nullptr);
+    BOOST_CHECK_NE(error.find("was removed"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(XmldefCatalogMissingFileFails) {

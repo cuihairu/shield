@@ -42,6 +42,9 @@ struct RuntimeActorConfig {
     uint32_t read_idle_timeout_ms = 0;  // 0 = disabled
     std::string network_protocol_json = "{}";
     bool network_protocol_enabled = false;
+    /// JSON array of this actor's `rpc.routes` (client RPC descriptors).
+    /// "[]" when the actor declares none.
+    std::string rpc_routes_json = "[]";
 };
 
 /// @brief Configuration interface

@@ -1,0 +1,28 @@
+app:
+  name: duplicate_rpc_route_ids
+
+actors:
+  - name: auth_gateway
+    script: tests/lua_api/scripts/lifecycle_service.lua
+    instances: 1
+    required: true
+    rpc:
+      routes:
+        - id: 1001
+          name: login
+          binding: do_login
+  - name: player_service
+    script: tests/lua_api/scripts/lifecycle_service.lua
+    instances: 1
+    required: true
+    rpc:
+      routes:
+        - id: 1001
+          name: move
+          binding: do_move
+
+database:
+  enabled: false
+
+redis:
+  enabled: false

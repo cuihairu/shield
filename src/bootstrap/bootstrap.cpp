@@ -40,6 +40,7 @@
 #include "shield/net/listener.hpp"
 #include "shield/shield.hpp"
 #include "shield/transport/protocol.hpp"
+#include "shield/transport/rpc_descriptor.hpp"
 
 namespace shield::bootstrap {
 
@@ -545,6 +546,47 @@ bool initialize(const RuntimeConfig& config) {
     }
 #endif
 
+    // Merge every actor's rpc.routes into one gateway descriptor set: route
+    // ids and names must be unique across the process (a single client-facing
+    // route namespace), so conflicts fail bootstrap before any actor spawns.
+    // An entry without an explicit owner_service belongs to the actor that
+    // declared it; every VM then receives the normalized union and compiles
+    // exactly the entries it owns, so a binding that resolves nowhere fails
+    // its owner's spawn (handler_missing) instead of surfacing at dispatch.
+    nlohmann::json merged_rpc_routes = nlohmann::json::array();
+    for (const auto& actor : shield::config::runtime_actors()) {
+        nlohmann::json routes =
+            nlohmann::json::parse(actor.rpc_routes_json, nullptr, false);
+        if (routes.is_discarded() || !routes.is_array()) {
+            // GCOVR_EXCL_START (rpc_routes_json is always valid JSON from
+            // the config layer; spawn revalidates the shape anyway)
+            routes = nlohmann::json::array();
+            // GCOVR_EXCL_STOP
+        }
+        for (auto& route : routes) {
+            if (!route.is_object()) {
+                // GCOVR_EXCL_LINE (config validation rejects non-map route
+                // items before bootstrap runs)
+                continue;  // shape errors are reported by the parser below
+            }
+            if (!route.contains("owner_service") ||
+                !route["owner_service"].is_string() ||
+                route["owner_service"].get<std::string>().empty()) {
+                route["owner_service"] = actor.name;
+            }
+        }
+        merged_rpc_routes.insert(merged_rpc_routes.end(), routes.begin(),
+                                 routes.end());
+    }
+    shield::transport::RpcDescriptorTable descriptor_routes;
+    std::string descriptor_error;
+    if (!shield::transport::parse_rpc_routes_json(
+            merged_rpc_routes.dump(), descriptor_routes, &descriptor_error)) {
+        SHIELD_LOG_ERROR(log, "Invalid rpc.routes: " + descriptor_error);
+        cleanup_failed_initialize();
+        return false;
+    }
+
     for (const auto& actor : shield::config::runtime_actors()) {
         const int instances = actor.instances < 0 ? 0 : actor.instances;
         for (int i = 0; i < instances; ++i) {
@@ -565,6 +607,7 @@ bool initialize(const RuntimeConfig& config) {
                 opts["config"] = nlohmann::json::object();
                 // GCOVR_EXCL_STOP
             }
+            opts["rpc"] = {{"routes", merged_rpc_routes}};
 
             auto result = g_state->lua_services->spawn(
                 resolve_script_path(actor), opts.dump());
@@ -608,6 +651,7 @@ bool initialize(const RuntimeConfig& config) {
             std::string protocol_error;
             auto protocol_options =
                 protocol_build_options(actor.source_dir, actor.max_frame_size);
+            protocol_options.descriptor_routes = &descriptor_routes;
             auto probe = shield::transport::build_protocol_pipeline_from_json(
                 actor.network_protocol_json, protocol_options, &protocol_error);
             if (!probe) {
@@ -689,11 +733,13 @@ bool initialize(const RuntimeConfig& config) {
 
             callbacks.create_protocol_pipeline = [protocol_json, source_dir,
                                                   listener_max_frame_size,
-                                                  resolved_codec]() {
+                                                  resolved_codec,
+                                                  descriptor_routes]() {
                 std::string protocol_error;
                 // GCOVR_EXCL_START
                 auto protocol_options =
                     protocol_build_options(source_dir, listener_max_frame_size);
+                protocol_options.descriptor_routes = &descriptor_routes;
                 // GCOVR_EXCL_STOP
                 if (resolved_codec != nullptr) {
                     // Serve the vtable resolved once at listener setup.

@@ -13,7 +13,7 @@ core 只定义单节点 runtime 必需配置：
 - `app`
 - `log`
 - `lua`
-- `actors`
+- `actors`（含 gateway actor 的 `network` listener/profile 与 `rpc.routes` descriptor 声明）
 - `plugins`
 - `bootstrap`
 - `shutdown`
@@ -67,5 +67,6 @@ actors:
 - `conditions`
 - `annotations`
 - DI/IoC 装配配置
+- `network.protocol.routes` 内联路由（由 `actors[].rpc.routes` descriptor 取代）
 
 如果未来确实需要，只能在非 core 扩展文档中重新定义，不能再反向塞回 `runtime-config.md`。

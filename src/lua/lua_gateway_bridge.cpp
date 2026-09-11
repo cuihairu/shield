@@ -87,21 +87,11 @@ void LuaGatewayBridge::on_packet(
         return;
     }
 
-    // 3. Get target service using routing context
-    // First try to get from route's logical service name, then fallback to
-    // session's target service
-    std::string target;
-    if (route->logical_service_name) {
-        const auto* addr = session->get_service(*route->logical_service_name);
-        if (addr) {
-            target = addr->service_id;
-        }
-    }
-
-    // Fallback to session's target service if no route-specific binding
-    if (target.empty()) {
-        target = session->target_service();
-    }
+    // 3. Resolve the target service from the session's routing context.
+    // Route-level logical_service routing is gone: the RPC descriptor set
+    // owns binding -> owner mapping inside the target VM, and the gateway
+    // only ever forwards to the session's bound target.
+    const std::string target = session->target_service();
 
     if (target.empty()) {
         auto& log = shield::log::get_logger("lua");
@@ -118,7 +108,6 @@ void LuaGatewayBridge::on_packet(
     ingress.player_id = session->player_id();
     ingress.route_id = route_id;
     ingress.protocol_profile_id = session->protocol_profile_id();
-    ingress.method_name = route->method_name.value_or("");
 
     // body_bytes: pass through raw bytes (Gateway does not decode body)
     if (packet.decoded_body.has_value()) {
@@ -184,7 +173,6 @@ void LuaGatewayBridge::send_client_ingress(const std::string& target,
         {"player_id", ingress.player_id},
         {"gateway_service", ingress.gateway_service_name},
         {"protocol_profile_id", ingress.protocol_profile_id},
-        {"method_name", ingress.method_name},
     };
 
     // body_bytes as raw string for Lua

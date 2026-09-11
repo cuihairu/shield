@@ -283,3 +283,33 @@ BOOST_AUTO_TEST_CASE(ShutdownWakesPendingSyncCalls) {
     BOOST_CHECK(!result->success);
     BOOST_CHECK_EQUAL(result->error_message, "runtime is stopping");
 }
+
+// ---------------------------------------------------------------------------
+// Spawn-time rpc descriptor parsing (M1): malformed rpc.routes opts fail the
+// spawn before the service is published.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(SpawnFailsOnMalformedRpcRoutes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // Duplicate route ids inside one descriptor set.
+    nlohmann::json opts = {
+        {"name", "cov_lsvc3_rpc_dup"},
+        {"args", nlohmann::json::object()},
+        {"config", nlohmann::json::object()},
+        {"rpc",
+         {{"routes", nlohmann::json::array({
+                         {{"id", 1}, {"name", "a"}, {"binding", "echo"}},
+                         {{"id", 1}, {"name", "b"}, {"binding", "echo"}},
+                     })}}}};
+    const auto result = manager.spawn(
+        write_script("cov_lsvc3_rpc_dup.lua", kCalleeScript), opts.dump());
+    BOOST_CHECK(!result.success);
+    BOOST_CHECK_NE(result.error_message.find("rpc.routes for"),
+                   std::string::npos);
+    BOOST_CHECK_NE(result.error_message.find("duplicate"), std::string::npos);
+    // The failed spawn published nothing.
+    BOOST_CHECK(manager.query_service("cov_lsvc3_rpc_dup").empty());
+}

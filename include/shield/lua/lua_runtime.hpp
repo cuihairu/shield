@@ -170,6 +170,15 @@ public:
                                const nlohmann::json& args,
                                std::string* error = nullptr);
 
+    // Resolve a method on the loaded service module to a Lua function
+    // handle. Returns false (with *error) when the module is not loaded or
+    // the name is missing / not a function. Used by spawn-time RPC binding
+    // compilation so dispatch can assume handlers exist.
+    bool resolve_service_method(std::shared_ptr<LuaVM> vm,
+                                std::string_view method_name,
+                                sol::function* out = nullptr,
+                                std::string* error = nullptr);
+
     // Dispatch a service method with JSON-array arguments and collect all
     // return values as a JSON array. Missing or non-function methods are
     // errors.

@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "shield/plugin/protocol_codec.h"
+#include "shield/transport/rpc_descriptor.hpp"
 
 namespace shield::transport {
 namespace {
@@ -1197,12 +1198,6 @@ bool load_xmldef_routes_from_string(std::string_view xml, RouteTable& routes,
             }
             entry.policy.lazy_decode = *parsed;
         }
-        if (const auto* value = find_attr(attrs, "method")) {
-            entry.method_name = std::string(*value);
-        }
-        if (const auto* value = find_attr(attrs, "logical_service")) {
-            entry.logical_service_name = std::string(*value);
-        }
 
         if (!routes.add(std::move(entry))) {
             if (error) *error = "xmldef contains duplicate route id or name";
@@ -1818,68 +1813,22 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
             }
         }
 
-        if (config.contains("routes") && config["routes"].is_array()) {
-            for (const auto& route : config["routes"]) {
-                if (!route.is_object()) {
-                    continue;
-                }
-                RouteEntry entry;
-                entry.route_id = route.value("id", std::uint32_t{0});
-                // direction: c2s (default), s2c, bidi
-                std::string dir_str =
-                    route.value("direction", std::string{"c2s"});
-                if (dir_str == "c2s" || dir_str == "client_to_server") {
-                    entry.direction = RouteDirection::ClientToServer;
-                } else if (dir_str == "s2c" || dir_str == "server_to_client") {
-                    entry.direction = RouteDirection::ServerToClient;
-                } else if (dir_str == "bidi" || dir_str == "bidirectional") {
-                    entry.direction = RouteDirection::Bidirectional;
-                }
-                entry.requires_auth = route.value("requires_auth", true);
-                entry.codec_id = route.value("codec_id", default_codec_id);
-                entry.schema_id = route.value("schema_id", std::uint16_t{0});
-                entry.debug_name = route.value("name", std::string{});
-                entry.policy.lazy_decode = route.value("lazy_decode", true);
-                if (route.contains("method") && route["method"].is_string()) {
-                    entry.method_name = route["method"].get<std::string>();
-                }
-                if (route.contains("logical_service") &&
-                    route["logical_service"].is_string()) {
-                    entry.logical_service_name =
-                        route["logical_service"].get<std::string>();
-                }
-                if (route.contains("action") && route["action"].is_string()) {
-                    const auto parsed =
-                        parse_action(route["action"].get<std::string>());
-                    if (!parsed) {
-                        if (error) {
-                            *error = "invalid network.protocol.routes.action";
-                        }
-                        return nullptr;
-                    }
-                    entry.policy.action = *parsed;
-                }
-                if (entry.route_id == 0) {
-                    if (error)
-                        *error = "network.protocol.routes[].id is required";
-                    return nullptr;
-                }
-
-                if (!entry.debug_name.empty()) {
-                    if (const auto* named =
-                            routes.find_by_name(entry.debug_name);
-                        named != nullptr && named->route_id != entry.route_id) {
-                        if (error) {
-                            *error =
-                                "network.protocol.routes contains duplicate "
-                                "name";
-                        }
-                        return nullptr;
-                    }
-                }
-
-                routes.upsert(std::move(entry));
+        if (config.contains("routes")) {
+            // Inline route tables were folded into the RPC descriptor set:
+            // declare actors[].rpc.routes instead (single static source).
+            if (error) {
+                *error =
+                    "network.protocol.routes was removed; declare "
+                    "actors[].rpc.routes instead";
             }
+            return nullptr;
+        }
+
+        if (options.descriptor_routes != nullptr) {
+            options.descriptor_routes->for_each(
+                [&routes](const RpcDescriptor& descriptor) {
+                    routes.upsert(route_entry_from_descriptor(descriptor));
+                });
         }
 
         return std::make_unique<ProtocolPipeline>(

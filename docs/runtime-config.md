@@ -186,20 +186,19 @@
 | `restart` | 否 | 服务异常退出后的重启策略 |
 | `limits` | 否 | 单 service 资源限制 |
 
-`actors[].network` 声明的是 Gateway 边界 owner，不是暴露客户端业务回调的 Lua service。它持有 listener、live session 和 `SessionRoutingContext`；业务 Lua 不接收 `on_client_message`，也不获得 `SessionHandle`。第一版 TCP listener 仍要求 `instances: 1`，确保每个 live session 只有一个 Gateway owner。
+`actors[].network` 声明的是 Gateway 边界 owner，不是暴露客户端业务回调的 Lua service。它持有 listener、live session 和 session 的单一 target 绑定；业务 Lua 不接收 `on_client_message`，也不获得 `SessionHandle`。第一版 TCP listener 仍要求 `instances: 1`，确保每个 live session 只有一个 Gateway owner。
 
-`actors[].network.protocol` 绑定 session 固定使用的 `ProtocolProfile`。目标终态下该 profile 必须引用 compiled RPC descriptor；descriptor 才是 `route_id -> logical service name + direction + schema + binding_hint` 的唯一来源。**当前实现仍支持在配置中直接声明 `routing.*` 与 `routes[]` 内联路由**（校验于 config.cpp，消费于 transport 层）；compiled RPC descriptor、`binding_hint` 与启动期 route_id -> handler 编译尚未实现，属于后续迁移方向，届时内联路由将被移除。
+`actors[].network.protocol` 绑定 session 固定使用的 `ProtocolProfile`，只描述 wire 形态（envelope、body codec、限制）。客户端 RPC 路由的唯一静态来源是 **`actors[].rpc.routes`**：每个 actor 声明自己的 descriptor 条目（`id`/`name`/`binding`/`direction`/`owner_service`/`requires_auth`/`action`/`lazy_decode` 与 schema 元数据，字段契约见 [protocol-routing-design.md](protocol-routing-design.md)）。config 校验单 actor 的字段与唯一性；bootstrap 把所有 actor 的条目合并为全局 descriptor 表（跨 actor 的 `id`/`name` 冲突导致启动失败）并注入 listener pipeline；每个 Lua service 在 spawn 时只编译 `owner_service == 自身` 的条目，c2s/bidi 的 `binding` 解析不到模块函数即 spawn 失败（`handler_missing`）。**`network.protocol.routes` 内联路由已删除**，配置中出现即报错（pre-1.0 不做兼容读）。
 
 `actors[].network.max_frame_size` 是 listener 级默认单帧上限。未显式设置 `protocol.envelope.max_frame_size` 时，profile 继承该值；显式设置时以 envelope 值为准。
 
 协议配置只包含固定 wire/profile 部件：
 
-- `descriptor`：compiled RPC descriptor package；
 - `envelope`：frame 边界与 header `route_id` 读取/写入规则；
 - `body`：session 固定的 codec 与 provider；
-- `limits`：frame、解码错误、握手等限制。
+- `routing`：遗留的 route 来源开关（header/body），仅服务过渡期入口，后续里程碑随 body route 分发一并移除。
 
-Gateway 只从 header 读取 `route_id`，经 descriptor 取得逻辑服务名，再从 session 的动态服务路由解析当前 `ServiceAddress`。普通 RPC body 的 decode 必须在目标 Service actor 中进行。
+Gateway 只从 header 读取 `route_id`，在 descriptor 校验表中确认其存在与方向，然后把消息投递给 session 的当前单一 target。普通 RPC body 的 decode 必须在目标 Service actor 中进行。
 
 ```yaml
 actors:
@@ -211,7 +210,6 @@ actors:
       max_frame_size: 65536
       protocol:
         name: game.v1
-        descriptor: conf/game.descriptor.bin
         envelope:
           type: idlen
           route_id_bytes: 4
@@ -221,9 +219,20 @@ actors:
         body:
           codec: protobuf
           provider: protocol.protobuf
+    rpc:
+      routes:
+        - id: 1001
+          name: login
+          binding: do_login
+          direction: c2s
+          requires_auth: false
+        - id: 2001
+          name: login_result
+          binding: push_result
+          direction: s2c
 ```
 
-预登录 RPC 在 descriptor 中声明为 `auth` 或 `gateway` 逻辑服务；Gateway 在 session 创建时只安装这些受限 bootstrap binding。认证成功后，授权 Service 原子写入 `player_id` 和默认 `player -> PlayerServiceAddress`。room、scene、map 等绑定由当前玩家的业务流程动态更新，不能写成静态 actor 配置。
+预登录 RPC 在 descriptor 中声明 `requires_auth: false`；认证成功后由认证服务通过 `shield.client.bind` 把 session 的 target 原子切换到玩家服务。room、scene、map 等动态路由由玩家服务私有状态管理，不能写成静态 actor 配置。
 
 
 `actors[].script` 可以是绝对路径，也可以是相对路径。相对路径解析规则：

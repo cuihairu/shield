@@ -437,6 +437,7 @@ add_library(shield_transport STATIC
     src/transport/codec.cpp
     src/transport/encryption.cpp
     src/transport/protocol.cpp
+    src/transport/rpc_descriptor.cpp
 )
 
 target_include_directories(shield_transport
@@ -718,11 +719,11 @@ add_test(NAME shield_config_empty_network_protocol_rejected
         -DEXPECTED_OUTPUT_REGEX=network.protocol must not be empty
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
-add_test(NAME shield_config_duplicate_protocol_route_names_rejected
+add_test(NAME shield_config_duplicate_rpc_route_ids_rejected
     COMMAND ${CMAKE_COMMAND}
-        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/duplicate-protocol-route-names.yaml"
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/duplicate-rpc-route-ids.yaml"
         -DEXPECTED_EXIT_CODE=1
-        -DEXPECTED_OUTPUT_REGEX=duplicate name
+        -DEXPECTED_OUTPUT_REGEX=rpc route conflict
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
 add_test(NAME shield_config_missing_actor_script_rejected

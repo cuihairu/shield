@@ -359,6 +359,10 @@ BOOST_AUTO_TEST_CASE(RuntimeActorsFull) {
         "  - name: a1\n    script: " + g_script_abs +
         "\n    instances: 3\n    required: 5\n"
         "    options:\n      map: true\n      num: 5\n      nul:\n"
+        "    rpc:\n      routes:\n        - id: 1001\n          name: "
+        "login\n          binding: do_login\n          direction: c2s\n"
+        "        - id: 2001\n          name: login_result\n          "
+        "binding: push_result\n          direction: s2c\n"
         "  - name: a2\n    script: s2.lua\n    required: true\n"
         "    options: [1, 2.5, true, text]\n"
         "    network:\n      tcp: \"127.0.0.1:19001\"\n      "
@@ -383,6 +387,12 @@ BOOST_AUTO_TEST_CASE(RuntimeActorsFull) {
     BOOST_CHECK_NE(actors[0].options_json.find("\"num\":5"), std::string::npos);
     BOOST_CHECK_NE(actors[0].options_json.find("\"nul\":null"),
                    std::string::npos);
+    // rpc.routes flows through to the spawn-time descriptor source.
+    BOOST_CHECK_NE(actors[0].rpc_routes_json.find("\"binding\":\"do_login\""),
+                   std::string::npos);
+    BOOST_CHECK_NE(actors[0].rpc_routes_json.find("\"direction\":\"s2c\""),
+                   std::string::npos);
+    BOOST_CHECK_EQUAL(actors[1].rpc_routes_json, "[]");
 
     BOOST_CHECK_EQUAL(actors[1].network_tcp, "127.0.0.1:19001");
     BOOST_CHECK_EQUAL(actors[1].max_connections, 100U);
@@ -690,50 +700,75 @@ BOOST_AUTO_TEST_CASE(ValidateProtocolRouting) {
         opts);
 }
 
-BOOST_AUTO_TEST_CASE(ValidateProtocolRoutes) {
+BOOST_AUTO_TEST_CASE(ProtocolRoutesKeyIsRejected) {
+    // Inline network.protocol.routes was folded into the RPC descriptor set:
+    // the key is rejected outright (pre-1.0, no compatibility shim).
     const auto opts = RuntimeValidationOptions{};
-    const std::string prefix = "        routes:\n";
-    expect_invalid(proto_cfg("        routes: 42\n"), opts,
+    expect_invalid(proto_cfg("        routes: []\n"), opts, "was removed");
+    expect_invalid(
+        proto_cfg("        routes:\n          - id: 1\n            name: "
+                  "login\n"),
+        opts, "actors[].rpc.routes");
+}
+
+BOOST_AUTO_TEST_CASE(ValidateActorRpcRoutes) {
+    const auto opts = RuntimeValidationOptions{};
+    expect_invalid(actor_cfg("    rpc: 42\n"), opts, "rpc must be a map");
+
+    const std::string prefix = "    rpc:\n      routes:\n";
+    // Sequence items sit at 8 spaces; their map keys at 10.
+    const std::string r1 = prefix + "        - id: 1\n          binding: b\n";
+    expect_invalid(actor_cfg("    rpc:\n      routes: 42\n"), opts,
                    "routes must be an array");
-    expect_invalid(proto_cfg(prefix + "          - 42\n"), opts,
+    expect_invalid(actor_cfg(prefix + "        - 42\n"), opts,
                    "routes[0] must be a map");
-    expect_invalid(proto_cfg(prefix + "          - name: noid\n"), opts,
-                   "routes[0].id is required");
-    expect_invalid(proto_cfg(prefix + "          - id: abc\n"), opts,
-                   "routes[0].id is required");
-    expect_invalid(proto_cfg(prefix + "          - id: 0\n"), opts,
+    expect_invalid(actor_cfg(prefix + "        - name: noid\n" + r1), opts,
+                   "routes[0].id is required and must be an integer");
+    expect_invalid(actor_cfg(prefix + "        - id: abc\n" + r1), opts,
+                   "routes[0].id is required and must be an integer");
+    expect_invalid(actor_cfg(prefix + "        - id: 0\n" + r1), opts,
                    "routes[0].id must be >= 1");
-    expect_invalid(proto_cfg(prefix + "          - id: 1\n            name: r\n"
-                                      "          - id: 1\n"),
+    expect_invalid(actor_cfg(r1 + "        - id: 1\n          binding: c\n"),
                    opts, "duplicate id");
+    expect_invalid(actor_cfg(r1 + "          direction: sideways\n"), opts,
+                   "direction has an unsupported value");
+    expect_invalid(actor_cfg(r1 + "          action: bogus\n"), opts,
+                   "action has an unsupported value");
+    expect_invalid(actor_cfg(r1 + "          requires_auth: 7\n"), opts,
+                   "requires_auth must be a bool");
+    expect_invalid(actor_cfg(r1 + "          lazy_decode: 7\n"), opts,
+                   "lazy_decode must be a bool");
     expect_invalid(
-        proto_cfg(prefix + "          - id: 1\n            codec_id: "
-                           "70000\n"),
-        opts, "routes[0].codec_id must be between");
+        actor_cfg(prefix + "        - id: 1\n          binding: \"\"\n"), opts,
+        "binding must not be empty");
     expect_invalid(
-        proto_cfg(prefix + "          - id: 1\n            schema_id: "
-                           "-2\n"),
-        opts, "routes[0].schema_id must be between");
-    expect_invalid(proto_cfg(prefix + "          - id: 1\n            action: "
-                                      "bogus\n"),
-                   opts, "routes[0].action has an unsupported value");
-    expect_invalid(proto_cfg(prefix + "          - id: 1\n            "
-                                      "lazy_decode: 7\n"),
-                   opts, "routes[0].lazy_decode must be a bool");
-    expect_invalid(proto_cfg(prefix + "          - id: 1\n            name:\n"
-                                      "              k: v\n"),
-                   opts, "routes[0].name must be a string");
-    expect_invalid(proto_cfg(prefix + "          - id: 1\n            name: "
-                                      "dup\n          - id: 2\n            "
-                                      "name: dup\n"),
+        actor_cfg(prefix + "        - id: 1\n          name: n1\n          "
+                           "owner_service:\n            k: v\n          "
+                           "binding: b\n"),
+        opts, "owner_service must be a string");
+    expect_invalid(actor_cfg(prefix + "        - id: 1\n"
+                                      "          name: dup\n"
+                                      "          binding: b\n"
+                                      "        - id: 2\n"
+                                      "          name: dup\n"
+                                      "          binding: c\n"),
                    opts, "duplicate name");
-    expect_valid(
-        proto_cfg(prefix + "          - id: 1\n            name: login\n"
-                           "            codec_id: 10\n            schema_id: "
-                           "20\n            action: decode\n            "
-                           "lazy_decode: true\n          - id: 2\n            "
-                           "name: logout\n            action: forward\n"),
-        opts);
+    expect_valid(actor_cfg(prefix + "        - id: 1\n"
+                                    "          name: login\n"
+                                    "          binding: do_login\n"
+                                    "          direction: c2s\n"
+                                    "          requires_auth: false\n"
+                                    "          action: decode_local\n"
+                                    "          lazy_decode: true\n"
+                                    "          request_codec: json\n"
+                                    "          request_schema: login.req\n"
+                                    "          response_schema: login.resp\n"
+                                    "        - id: 2\n"
+                                    "          name: push\n"
+                                    "          binding: push_helper\n"
+                                    "          direction: s2c\n"),
+                 opts);
+    expect_valid(actor_cfg("    rpc: {}\n"), opts);
 }
 
 BOOST_AUTO_TEST_CASE(ValidateShutdown) {
@@ -829,16 +864,16 @@ BOOST_AUTO_TEST_CASE(ValidateFullValidConfig) {
         "          decode_body_route: true\n"
         "          decode_before_dispatch: false\n"
         "          lazy_decode: false\n"
-        "        routes:\n"
-        "          - id: 1\n"
-        "            name: login\n"
-        "            codec_id: 10\n"
-        "            schema_id: 20\n"
-        "            action: decode\n"
-        "            lazy_decode: false\n"
-        "          - id: 2\n"
-        "            name: logout\n"
-        "            action: forward\n";
+        "    rpc:\n"
+        "      routes:\n"
+        "        - id: 1\n"
+        "          name: login\n"
+        "          binding: do_login\n"
+        "          lazy_decode: false\n"
+        "        - id: 2\n"
+        "          name: logout\n"
+        "          binding: do_logout\n"
+        "          action: drop\n";
     expect_valid(yaml, RuntimeValidationOptions{});
 
     // require_actors = false skips the actor section entirely.

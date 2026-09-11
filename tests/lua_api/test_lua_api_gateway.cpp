@@ -250,6 +250,8 @@ shield_protocol_codec_v1 make_fake_protocol_codec(
 std::unique_ptr<shield::transport::ProtocolPipeline>
 make_fake_protobuf_pipeline(const shield_protocol_codec_v1* codec,
                             std::string* error = nullptr) {
+    // Inline protocol.routes was folded into the RPC descriptor set; the
+    // transport-level route this codec test needs is upserted directly.
     const auto config = R"json(
 {
   "name": "lua.protobuf",
@@ -261,17 +263,7 @@ make_fake_protobuf_pipeline(const shield_protocol_codec_v1* codec,
   "body": {
     "codec": "protobuf",
     "provider": "protocol.protobuf"
-  },
-  "routes": [
-    {
-      "id": 4097,
-      "name": "shield.test.Login",
-      "schema_id": 42,
-      "action": "decode",
-      "lazy_decode": false,
-      "requires_auth": false
-    }
-  ]
+  }
 }
 )json";
     shield::transport::ProtocolBuildOptions options;
@@ -283,8 +275,19 @@ make_fake_protobuf_pipeline(const shield_protocol_codec_v1* codec,
         }
         return codec;
     };
-    return shield::transport::build_protocol_pipeline_from_json(config, options,
-                                                                error);
+    auto pipeline = shield::transport::build_protocol_pipeline_from_json(
+        config, options, error);
+    if (pipeline != nullptr) {
+        shield::transport::RouteEntry entry;
+        entry.route_id = 4097;
+        entry.debug_name = "shield.test.Login";
+        entry.schema_id = 42;
+        entry.direction = shield::transport::RouteDirection::ClientToServer;
+        entry.requires_auth = false;
+        entry.policy.lazy_decode = false;
+        pipeline->routes().upsert(entry);
+    }
+    return pipeline;
 }
 
 bool wait_until(std::function<bool()> predicate,

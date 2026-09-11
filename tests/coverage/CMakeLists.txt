@@ -48,6 +48,7 @@ shield_coverage_test(test_cov_codec shield_transport)
 shield_coverage_test(test_cov_encryption shield_transport)
 shield_coverage_test(test_cov_frame shield_transport)
 shield_coverage_test(test_cov_protocol shield_transport)
+shield_coverage_test(test_cov_rpc_descriptor shield_transport)
 
 # shield_log / shield_plugin / shield_config
 shield_coverage_test(test_cov_logger shield_log)

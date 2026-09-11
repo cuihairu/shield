@@ -308,4 +308,159 @@ BOOST_AUTO_TEST_CASE(PanicFromLuaInvokesHookAndExits) {
                    std::chrono::seconds(3)));
 }
 
+// ------------------------------------------------------------------
+// Spawn-time client RPC binding compilation (architecture M1).
+// Startup is the single validation point: an inbound (c2s/bidi) binding
+// that does not resolve to a module function fails the spawn with
+// handler_missing, so dispatch never resolves handlers dynamically.
+// ------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(SpawnSucceedsWithCompilableRpcBindings) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    nlohmann::json opts = opts_for("rpc_ok");
+    opts["rpc"] = {
+        {"routes",
+         nlohmann::json::array({
+             {{"id", 1001}, {"name", "login"}, {"binding", "do_login"}},
+             {{"id", 1002},
+              {"name", "move"},
+              {"binding", "do_move"},
+              {"requires_auth", true}},
+             {{"id", 2001},
+              {"name", "login_result"},
+              {"binding", "push_result"},
+              {"direction", "s2c"}},
+             {{"id", 1003},
+              {"name", "chat"},
+              {"binding", "chat"},
+              {"direction", "bidi"}},
+         })}};
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "rpc_binding_service.lua",
+                                opts.dump());
+    BOOST_REQUIRE_MESSAGE(result.success, result.error_message);
+}
+
+BOOST_AUTO_TEST_CASE(SpawnFailsWhenInboundBindingMissing) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    nlohmann::json opts = opts_for("rpc_missing_handler");
+    opts["rpc"] = {
+        {"routes",
+         nlohmann::json::array({
+             {{"id", 1}, {"name", "gone"}, {"binding", "no_such_method"}},
+         })}};
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "rpc_binding_service.lua",
+                                opts.dump());
+    BOOST_CHECK(!result.success);
+    BOOST_CHECK_NE(result.error_message.find("handler_missing"),
+                   std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(SpawnFailsWhenBindingIsNotAFunction) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    nlohmann::json opts = opts_for("rpc_not_callable");
+    opts["rpc"] = {{"routes", nlohmann::json::array({
+                                  {{"id", 1},
+                                   {"name", "table_binding"},
+                                   {"binding", "not_callable"}},
+                              })}};
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "rpc_binding_service.lua",
+                                opts.dump());
+    BOOST_CHECK(!result.success);
+    BOOST_CHECK_NE(result.error_message.find("handler_missing"),
+                   std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(SpawnFailsWhenS2cBindingEmpty) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    nlohmann::json opts = opts_for("rpc_empty_s2c");
+    opts["rpc"] = {{"routes", nlohmann::json::array({
+                                  {{"id", 1},
+                                   {"name", "push"},
+                                   {"binding", ""},
+                                   {"direction", "s2c"}},
+                              })}};
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "rpc_binding_service.lua",
+                                opts.dump());
+    // Empty bindings are rejected by the descriptor parser (all directions).
+    BOOST_CHECK(!result.success);
+    BOOST_CHECK_NE(result.error_message.find("binding is required"),
+                   std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(SpawnFailsOnMalformedRpcRoutes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // Duplicate route ids inside one actor's descriptor set.
+    nlohmann::json opts = opts_for("rpc_dup_id");
+    opts["rpc"] = {
+        {"routes", nlohmann::json::array({
+                       {{"id", 1}, {"name", "a"}, {"binding", "do_login"}},
+                       {{"id", 1}, {"name", "b"}, {"binding", "do_move"}},
+                   })}};
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "rpc_binding_service.lua",
+                                opts.dump());
+    BOOST_CHECK(!result.success);
+    BOOST_CHECK_NE(result.error_message.find("duplicate"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(SpawnFailsOnNonArrayRpcRoutes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    nlohmann::json opts = opts_for("rpc_bad_shape");
+    opts["rpc"] = {{"routes", "not-an-array"}};
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "rpc_binding_service.lua",
+                                opts.dump());
+    BOOST_CHECK(!result.success);
+    BOOST_CHECK_NE(result.error_message.find("JSON array"), std::string::npos);
+}
+
+// Foreign-owned entries are not compiled against this VM: a route declared
+// with owner_service pointing at another actor must not fail this spawn.
+BOOST_AUTO_TEST_CASE(SpawnIgnoresForeignOwnedRoutes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    nlohmann::json opts = opts_for("rpc_foreign");
+    opts["rpc"] = {{"routes", nlohmann::json::array({
+                                  {{"id", 1},
+                                   {"name", "elsewhere"},
+                                   {"binding", "no_such_method"},
+                                   {"owner_service", "someone_else"}},
+                              })}};
+
+    auto result = manager.spawn(TEST_SCRIPTS_DIR + "rpc_binding_service.lua",
+                                opts.dump());
+    BOOST_REQUIRE_MESSAGE(result.success, result.error_message);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

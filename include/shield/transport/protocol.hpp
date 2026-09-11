@@ -93,9 +93,6 @@ struct RouteEntry {
     PacketKind kind = PacketKind::Message;
     std::string debug_name;
     RoutePolicy policy;
-    std::optional<std::string>
-        logical_service_name;                // for routing to logical service
-    std::optional<std::string> method_name;  // RPC method name for dispatch
 };
 
 class RouteTable {
@@ -372,10 +369,16 @@ using ExternalBodyCodecResolver = std::function<const shield_protocol_codec_v1*(
     std::string_view provider, std::string_view codec_name,
     std::string* error)>;
 
+class RpcDescriptorTable;
+
 struct ProtocolBuildOptions {
     std::string_view source_dir;
     std::size_t fallback_max_frame_size = 0;
     ExternalBodyCodecResolver external_codec_resolver;
+    /// Gateway-side route source: when set, the pipeline's RouteTable is
+    /// derived from this descriptor table (the merged `actors[].rpc.routes`
+    /// set) instead of inline `network.protocol.routes` (removed).
+    const RpcDescriptorTable* descriptor_routes = nullptr;
 };
 
 std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(

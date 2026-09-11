@@ -2108,6 +2108,12 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
 
     lua["shield"] = shield;
 
+    // Client RPC namespace (architecture-correction M1). Populated by the
+    // gateway actor integration: shield.client.bind/close (M2) and one
+    // helper per s2c descriptor (M2). Existing as an empty table now keeps
+    // the API surface stable for scripts written against the new contract.
+    lua["shield"]["client_rpc"] = lua.create_table();
+
     // AD-07: hook os.time / os.date so Lua business code also reads the
     // business-time clock (adjustable in tests). Only the no-arg forms are
     // redirected; os.time(table) and os.date(fmt, t) keep their original

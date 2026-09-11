@@ -363,7 +363,10 @@ BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     fs::path scripts_dir = work / "scripts";
     fs::create_directories(scripts_dir);
     write_file(work / "echo_src.lua", "local M = {}\nreturn M\n");
-    write_file(scripts_dir / "echo_path.lua", "local M = {}\nreturn M\n");
+    // The gateway actor declares an inbound rpc route; its binding must
+    // resolve in the owning script or the spawn fails (handler_missing).
+    write_file(scripts_dir / "echo_path.lua",
+               "local M = {}\nfunction M.handle() end\nreturn M\n");
 
     fs::path console_dir = work / "console";
     fs::create_directories(console_dir);
@@ -392,7 +395,8 @@ BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     yaml +=
         "      protocol:\n        name: cov\n        body:\n          codec: "
         "json\n";
-    yaml += "        routes:\n          - id: 1\n            action: decode\n";
+    yaml += "    rpc:\n      routes:\n        - id: 1\n";
+    yaml += "          name: cov_msg\n          binding: handle\n";
     // Non-loopback host only triggers a warning; the listener binds all IPv4.
     yaml += "  - name: warnhost\n    script: echo_path.lua\n    network:\n";
     yaml += "      tcp: 10.99.99.99:" + std::to_string(warn_port) + "\n";
@@ -1335,6 +1339,109 @@ BOOST_AUTO_TEST_CASE(ShutdownDrainsPendingForkedTask) {
     // Give the forked task time to be queued and start sleeping.
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     shield::bootstrap::shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// rpc descriptor merge (M1): bootstrap merges every actor's rpc.routes into
+// one gateway descriptor set, normalizes owner_service to the declaring
+// actor, and hands the union to every VM so each compiles exactly its own
+// bindings. Startup stays the single validation point.
+// ---------------------------------------------------------------------------
+
+// A route declared by one actor but owned by another compiles inside the
+// owner's VM (the normalized union reaches every spawn), and an implicit
+// owner is resolved to the declaring actor.
+BOOST_AUTO_TEST_CASE(InitializeCompilesCrossOwnedRpcRoute) {
+    fs::path owner_script =
+        write_file(fs::temp_directory_path() / "shield_cov_boot_rpc_owner.lua",
+                   "local M = {}\n"
+                   "function M.do_login() return true end\n"
+                   "return M\n");
+    fs::path other_script = echo_script("shield_cov_boot_rpc_decl.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: gateway\n"
+        "    script: " +
+        other_script.string() +
+        "\n"
+        "    rpc:\n"
+        "      routes:\n"
+        "        - id: 1001\n"
+        "          name: login\n"
+        "          binding: do_login\n"
+        "          owner_service: player\n"
+        "        - id: 2001\n"
+        "          name: login_result\n"
+        "          binding: push_result\n"
+        "          direction: s2c\n"
+        "  - name: player\n"
+        "    script: " +
+        owner_script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    shield::bootstrap::shutdown();
+}
+
+// A binding owned by an actor that does not define it fails that actor's
+// spawn even when the route is declared by a different actor
+// (handler_missing at startup, not at dispatch time).
+BOOST_AUTO_TEST_CASE(InitializeFailsWhenOwnerMissingRpcBinding) {
+    fs::path script = echo_script("shield_cov_boot_rpc_nobody.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: gateway\n"
+        "    script: " +
+        script.string() +
+        "\n"
+        "    rpc:\n"
+        "      routes:\n"
+        "        - id: 1001\n"
+        "          name: login\n"
+        "          binding: no_such_method\n"
+        "          owner_service: player\n"
+        "  - name: player\n"
+        "    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    force_shutdown();
+}
+
+// The same route id declared by two actors conflicts in the merged gateway
+// descriptor set and aborts initialization before any actor spawns.
+BOOST_AUTO_TEST_CASE(InitializeFailsOnCrossActorRpcRouteConflict) {
+    fs::path script = echo_script("shield_cov_boot_rpc_conflict.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: auth\n"
+        "    script: " +
+        script.string() +
+        "\n"
+        "    rpc:\n"
+        "      routes:\n"
+        "        - id: 1001\n"
+        "          name: login\n"
+        "          binding: do_login\n"
+        "  - name: player\n"
+        "    script: " +
+        script.string() +
+        "\n"
+        "    rpc:\n"
+        "      routes:\n"
+        "        - id: 1001\n"
+        "          name: login_mirror\n"
+        "          binding: do_login\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    force_shutdown();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

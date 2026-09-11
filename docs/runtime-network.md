@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `shield_net` | listener、连接生命周期、I/O、背压、live session 所有权 | 业务 RPC dispatch、玩家状态 |
 | `shield_transport` | frame/envelope、header、session 级 codec/profile | 从 body 猜 route、选择业务 actor |
-| Gateway runtime | session registry、可信身份、动态服务路由、入站/出站校验 | 解普通 RPC body、持有 Lua handler |
+| Gateway runtime | session registry、可信身份、单一 target 绑定、入站/出站校验 | 解普通 RPC body、持有 Lua handler |
 | CAF / `shield_core` | actor mailbox、调度、本地/远端消息投递 | 客户端 wire method 到 Lua 函数的自动映射 |
 | Service adapter | 客户端 RPC binding、目标 actor 内 decode、Lua handler 调用 | socket、listener、session 所有权 |
 
@@ -28,18 +28,18 @@ Profile 至少确定：
 
 正常客户端 RPC 必须在 header 中携带 `route_id`。body 只包含该 RPC 的业务参数，不包含 route name、`route_id`、method 或服务名。
 
-## SessionRoutingContext
+## Session 绑定：单一 target
 
-Gateway 为每条 live session 保存：
+Gateway 为每条 live session 只维护一个当前 target 绑定（`SessionBinding`，
+M2 落地）：
 
 ```text
-SessionRoutingContext {
-  gateway_address
-  session_id
-  session_epoch
+SessionBinding {
+  target_service
   player_id?
+  gateway_name
   protocol_profile_id
-  service_routes: map<logical service name, ServiceAddress>
+  session_epoch
 }
 ```
 
@@ -47,12 +47,13 @@ SessionRoutingContext {
 
 - `session_id` 只在当前 Gateway 内定位连接；`session_epoch` 区分断线重连前后的 owner。
 - `player_id` 由认证结果写入，是可信身份，不从客户端业务 body 读取。
-- 登录后必须原子建立 `player_id` 和 `player -> PlayerServiceAddress`。
-- `scene`、`room`、`map` 等绑定只记录该玩家当前实际关联的 actor。
-- 逻辑服务名来自 RPC descriptor，不是固定 actor id；实际地址来自当前 session。
-- 更新或移除服务绑定时递增 epoch。旧 epoch 的入站、回包和路由更新必须拒绝或丢弃。
-
-session 不复制全局 Service registry。它只保存当前连接需要的动态路由。
+- 登录前 target 是认证入口服务；认证成功后由 Gateway actor 以
+  compare-and-set 的 epoch 原子替换 target 与 `player_id`（见
+  [protocol-routing-design.md](protocol-routing-design.md)）。
+- 绑定替换递增 epoch。旧 epoch 的入站、回包和绑定更新必须拒绝或丢弃。
+- room、scene、map 等动态路由是 PlayerService 私有业务状态，不进入
+  Gateway；session 不存在多服务绑定表，`bind_service`/`unbind_service`
+  API 已删除。
 
 ## 入站
 
@@ -61,38 +62,42 @@ socket bytes
   -> shield_net
   -> frame/envelope decode
   -> read header.route_id
-  -> RpcMethodDescriptor lookup
-  -> validate direction/auth/rate/size
-  -> descriptor.logical_service_name
-  -> session.service_routes[name]
+  -> descriptor 校验表（route 存在、direction、requires_auth）
+  -> session 单一 target 绑定
   -> CAF send ClientIngress
   -> target Service actor mailbox
-  -> route_id -> cached Lua handler
-  -> decode body by RPC request schema
+  -> route_id -> 启动期编译的 Lua binding
+  -> decode body by profile body codec
   -> invoke handler(ClientContext, request)
 ```
 
 Gateway 在选择目标 actor 前不得解普通业务 body。这样 header `route_id` 才能用于快速转发，也避免 Gateway 依赖所有业务 schema。
 
-预登录 RPC 的 descriptor 可以声明 `auth` 或 `gateway` 逻辑服务。listener 在创建 session 时为这些入口安装受限的 bootstrap route；认证完成后再绑定默认 `player`。
+预登录 RPC 在 descriptor 中声明 `requires_auth: false`。认证完成后再由认证服务通过 `shield.client.bind` 把 target 原子切到玩家服务。
 
 ## CAF 内部消息
 
 入站使用结构化 runtime 消息，而不是普通 Lua service method：
 
 ```text
-ClientIngress {
+ClientContextData {
   gateway_address
   session_id
   session_epoch
   player_id?
   protocol_profile_id
+}
+
+ClientIngress {
+  ClientContextData context
   route_id
+  body_codec_name
   body_bytes
+  decoded_request?      // profile codec 已解码的规范 JSON（如有）
 }
 ```
 
-`route_id` 是从 wire header 复制的内部 dispatch 元数据，`body_bytes` 仍是原始 RPC body。二者不会重新包装进客户端 body，也不会作为业务参数交给 Lua。
+`route_id` 是从 wire header 复制的内部 dispatch 元数据，`body_bytes` 仍是原始 RPC body。二者不会重新包装进客户端 body，也不会作为业务参数交给 Lua。完整 CAF 消息契约（`ClientEgress`、`ClientControlMessage`、bind/close 请求）见 [runtime-messaging.md](runtime-messaging.md)。
 
 CAF behavior 至少区分：
 
@@ -135,27 +140,27 @@ generated RPC helper(ClientContext|ClientRef, business arguments)
 
 不存在接受 route 字符串、裸 `route_id` 或通用 table envelope 的业务发送 API。route 元数据由 helper 绑定的 descriptor 提供，业务参数中出现名为 `route`、`method` 或 `id` 的字段不会影响分发。
 
-## 动态服务绑定
+## 单一 target 绑定
 
-认证服务和已授权业务 Service 可以通过 client routing API 更新当前 session：
+认证服务通过 `shield.client.bind(client, player_id, target)`（M2 落地）请求 Gateway actor 原子替换当前 session 的 target 绑定并写入 `player_id`：
 
-- 原子绑定 `player_id` 与默认 `player` Service；
-- 绑定或替换 `scene`、`room`、`map` 等逻辑服务；
-- 离开目标时解除对应绑定；
-- 关闭当前 client。
-
-每次操作都携带 `ClientContext` 或 `ClientRef`，由 Gateway 做 epoch 和权限校验。客户端不能通过 body 指定 ServiceAddress 或修改路由表。
+- 返回新的 `ClientRef`，旧 `ClientRef` 因 epoch 递增而失效；
+- 绑定请求经 Gateway 做 epoch 和 owner 校验；客户端不能通过 body 指定
+  target 或修改绑定；
+- 关闭当前 client 使用 `shield.client.close(ref, reason)`；
+- room/scene/map 等动态协作是 target 服务私有状态，通过普通
+  `shield.send/call` 完成，不经 Gateway。
 
 ## 断线与重连
 
 连接断开时，Gateway：
 
 1. 使 live session 失效并递增 epoch；
-2. 向当前 `player` Service 发送结构化 `ClientDisconnected` 控制消息；
-3. 清理或冻结该 session 的动态服务路由；
+2. 向当前 target 发送结构化 `ClientControlMessage::Disconnected` 控制消息；
+3. 注销该 session 的 registry 记录；
 4. 拒绝旧 `ClientRef` 的后续写回。
 
-重连认证成功后，Gateway 创建新 epoch，并由玩家 owner 决定恢复原 PlayerService 还是创建新实例。恢复成功后再重建其他动态路由。生命周期控制消息不是客户端 RPC，也不进入通用业务消息入口。
+重连认证成功后，Gateway 创建新 epoch，并由玩家 owner 决定恢复原 PlayerService 还是创建新实例，恢复后重新执行 target 绑定。生命周期控制消息不是客户端 RPC，也不进入通用业务消息入口。
 
 ## 背压与限制
 
@@ -185,4 +190,4 @@ generated RPC helper(ClientContext|ClientRef, business arguments)
 
 ## Transport 范围
 
-TCP 是第一版必需传输。UDP、KCP、WebSocket 可以作为后续 transport adapter，但必须复用同一 `SessionRoutingContext`、header `route_id`、`ClientIngress/ClientEgress` 和 epoch 校验语义，不得为不同 transport 发明不同 Lua 客户端 API。
+TCP 是第一版必需传输。UDP、KCP、WebSocket 可以作为后续 transport adapter，但必须复用同一 session 单一 target 绑定、header `route_id`、`ClientIngress/ClientEgress` 和 epoch 校验语义，不得为不同 transport 发明不同 Lua 客户端 API。

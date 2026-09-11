@@ -290,8 +290,9 @@ BOOST_AUTO_TEST_CASE(OnPacketNoTargetService) {
     BOOST_CHECK(true);
 }
 
-// Route with a logical service name: the bound address wins as the target.
-BOOST_AUTO_TEST_CASE(OnPacketLogicalServiceBinding) {
+// Route resolution ignores any per-route service notion: dispatch always
+// lands on the session's bound target service.
+BOOST_AUTO_TEST_CASE(OnPacketUsesSessionTargetService) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -309,24 +310,17 @@ BOOST_AUTO_TEST_CASE(OnPacketLogicalServiceBinding) {
         104, shield::net::RemoteAddress{"127.0.0.1", 6004});
     session->set_target_service(svc2.service_id);
 
-    // Bound logical name routes to the bound service id.
-    shield::net::ServiceAddress addr;
-    addr.service_id = svc.service_id;
-    addr.service_type = "game";
-    addr.epoch = 3;
-    session->bind_service("game", addr);
-
+    // Route-level logical_service routing is gone: the gateway forwards to
+    // the session's bound target unconditionally.
     shield::transport::RouteEntry route;
     route.route_id = 0x4001;
     route.direction = shield::transport::RouteDirection::ClientToServer;
     route.requires_auth = false;
-    route.logical_service_name = "game";
-    route.method_name = "cov.method";
     bridge.on_packet(session, make_packet(0x4001, &route));
 
     BOOST_CHECK(wait_until(
         [&]() {
-            CallResult log = manager.call(svc.service_id, "get_log",
+            CallResult log = manager.call(svc2.service_id, "get_log",
                                           nlohmann::json::array());
             return log.success && log.values.is_array() &&
                    log.values.size() == 1u && log.values[0].is_array() &&
@@ -335,24 +329,6 @@ BOOST_AUTO_TEST_CASE(OnPacketLogicalServiceBinding) {
                    log.values[0][0][0].get<std::string>() ==
                        "on_client_message" &&
                    log.values[0][0][1].get<uint32_t>() == 0x4001u;
-        },
-        std::chrono::seconds(3)));
-
-    // Logical name present but not bound: falls back to the session target.
-    shield::transport::RouteEntry unbound;
-    unbound.route_id = 0x4002;
-    unbound.direction = shield::transport::RouteDirection::ClientToServer;
-    unbound.requires_auth = false;
-    unbound.logical_service_name = "missing_logical";
-    bridge.on_packet(session, make_packet(0x4002, &unbound, false));
-
-    BOOST_CHECK(wait_until(
-        [&]() {
-            CallResult log = manager.call(svc2.service_id, "get_log",
-                                          nlohmann::json::array());
-            return log.success && log.values.is_array() &&
-                   log.values.size() == 1u && log.values[0].is_array() &&
-                   log.values[0].size() == 1u;
         },
         std::chrono::seconds(3)));
 }
@@ -506,7 +482,6 @@ BOOST_AUTO_TEST_CASE(OnPacketForwardsDecodedMessage) {
     route.route_id = 0x4003;
     route.direction = shield::transport::RouteDirection::ClientToServer;
     route.requires_auth = false;
-    route.method_name = "cov.method";
 
     auto dispatch = make_packet(0x4003, &route);
     BOOST_REQUIRE(dispatch.decoded_body.has_value());
