@@ -168,7 +168,7 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
 
     return {
         // -- dial / retry loop ---------------------------------------------
-        [self](connect_tick_atom) {
+        [self, side](connect_tick_atom) {
             auto& st = self->state();
             auto& log = shield::log::get_logger("cluster");
             for (auto& peer : st.peers) {
