@@ -302,10 +302,12 @@ BOOST_AUTO_TEST_CASE(AcceptErrorWhileListeningIsLogged) {
     server.start();
     IoRunner runner(io);
 
-    // Exhaust the fd table (two slots in reserve: the client socket plus
-    // headroom) and connect: the connection lands in the backlog, but
-    // accept() fails with EMFILE, which is logged because the server is
-    // still listening.
+    // Exhaust the fd table until exactly ONE slot is left free, then
+    // connect: the client socket consumes that last slot, so when the
+    // server accepts the queued connection no fd is left and accept()
+    // fails with EMFILE, which is logged because the server is still
+    // listening.  With two slots in reserve the accepted socket would
+    // take the second one and the connection would succeed instead.
     // The client socket is created before the table is exhausted.
     ConsoleClient client;
     std::vector<int> fds;
@@ -314,9 +316,7 @@ BOOST_AUTO_TEST_CASE(AcceptErrorWhileListeningIsLogged) {
         if (fd < 0) break;
         fds.push_back(fd);
     }
-    if (fds.size() >= 2) {
-        ::close(fds.back());
-        fds.pop_back();
+    if (fds.size() >= 1) {
         ::close(fds.back());
         fds.pop_back();
     }
@@ -326,14 +326,14 @@ BOOST_AUTO_TEST_CASE(AcceptErrorWhileListeningIsLogged) {
         BOOST_FAIL("client connect failed");
     }
     std::this_thread::sleep_for(300ms);
-    client.close();
 
-    // Stop the server first so the accept loop drains, then wait for any
-    // sessions to be cleaned up.  On macOS under CI load the accept may
-    // succeed despite fd exhaustion; stopping + waiting covers both cases.
+    // The descriptors stay exhausted until after this check: under CI load
+    // the accept completion may only run once the sleep has elapsed, and
+    // freeing fds first would let it succeed and create a session.
+    BOOST_CHECK_EQUAL(server.session_count(), 0u);
+
     server.stop();
-    BOOST_CHECK(wait_until([&] { return server.session_count() == 0; }));
-
+    client.close();
     for (int fd : fds) ::close(fd);
 }
 #endif
