@@ -369,23 +369,19 @@ src/shield_net/
 #### shield_transport
 
 ```
-src/shield_transport/
-├── include/
-│   ├── packet_reader.hpp      # 数据包读取
-│   ├── packet_writer.hpp      # 数据包写入
-│   ├── protocol_adapter.hpp   # 协议适配器
-│   └── transport_starter.hpp  # TransportStarter
-├── src/
-│   ├── packet_reader.cpp
-│   └── ...
-├── tests/
-│   └── test_packet_reader.cpp
-└── CMakeLists.txt
+include/shield/transport/
+├── protocol.hpp               # ProtocolPipeline / profile / route 表
+└── rpc_descriptor.hpp         # 客户端 RPC descriptor 表
+src/transport/
+├── protocol.cpp
+└── rpc_descriptor.cpp
 ```
 
-职责：协议适配层，在字节流和消息之间转换。
+职责：协议管线（envelope 定界、body codec、route 校验）与 RPC descriptor 表；在字节流和结构化消息之间转换。
 
-**依赖**：shield_base, shield_log, shield_net
+**依赖**：shield_base, shield_log
+
+具体协议实现放在 `shield_transport` 内部或其子目录中。独立 `shield_protocol` 不进入当前目标结构；schema 工具链属于 deferred extension。帧级 fallback codec/encryption 已删除：TCP 必须绑定 `network.protocol`，无管线的入站字节一律拒绝（`protocol_not_configured`）。
 
 具体协议实现放在 `shield_transport` 内部或其子目录中。独立 `shield_protocol` 不进入当前目标结构；schema 工具链属于 deferred extension。
 

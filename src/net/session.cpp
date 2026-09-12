@@ -12,7 +12,6 @@
 #include <unordered_map>
 
 #include "shield/log/logger.hpp"
-#include "shield/transport/frame.hpp"
 
 namespace shield::net {
 
@@ -23,7 +22,6 @@ TcpSession::TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
       socket_(std::move(socket)),
       strand_(boost::asio::make_strand(socket_.get_executor())),
       callbacks_(std::move(callbacks)),
-      frame_decoder_(max_frame_size),
       max_send_queue_(max_send_queue),
       read_deadline_(socket_.get_executor()),
       read_idle_timeout_ms_(read_idle_timeout_ms) {
@@ -284,21 +282,11 @@ void TcpSession::do_receive() {
                         }
                     }
                 } else {
-                    auto frames =
-                        self->frame_decoder_.feed(self->receive_buffer_.data(),
-                                                  self->receive_buffer_.size());
-                    if (!self->frame_decoder_.error().empty()) {
-                        self->handle_error("frame decode error: " +
-                                           self->frame_decoder_.error());
-                        return;
-                    }
-
-                    for (const auto& frame : frames) {
-                        if (self->callbacks_.on_message) {
-                            self->callbacks_.on_message(
-                                self->shared_from_this(), frame.payload());
-                        }
-                    }
+                    // No protocol pipeline: raw-byte ingress is not
+                    // supported (it silently dropped everything), so
+                    // reject the session with a stable error code.
+                    self->handle_error("protocol_not_configured");
+                    return;
                 }
 
                 self->do_receive();
@@ -312,8 +300,9 @@ void TcpSession::handle_error(std::string reason) {
     // Map error reason to stable error code.
     if (reason.find("idle") != std::string::npos) {
         error_code_ = "read_idle_timeout";
-    } else if (reason.find("decode") != std::string::npos ||
-               reason.find("frame") != std::string::npos) {
+    } else if (reason == "protocol_not_configured") {
+        error_code_ = "protocol_not_configured";
+    } else if (reason.find("decode") != std::string::npos) {
         error_code_ = "decode_error";
     } else if (reason.find("timeout") != std::string::npos) {
         // GCOVR_EXCL_START (gated branch: no call site produces a non-idle

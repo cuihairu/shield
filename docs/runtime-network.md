@@ -202,4 +202,10 @@ actor 原子替换当前 session 的 target 绑定并写入 `player_id`:
 
 ## Transport 范围
 
-TCP 是第一版必需传输。UDP、KCP、WebSocket 可以作为后续 transport adapter，但必须复用同一 session 单一 target 绑定、header `route_id`、`ClientIngress/ClientEgress` 和 epoch 校验语义，不得为不同 transport 发明不同 Lua 客户端 API。
+TCP 是第一版必需传输。每条 TCP listener 必须绑定 `network.protocol`(config 校验强制):
+声明 `network.tcp` 而缺少 `network.protocol` 会导致启动失败。session 没有协议管线时的
+入站字节不再有 fallback 通路(旧的裸 frame 解码/加密层已删除),连接会以稳定错误码
+`protocol_not_configured` 立即关闭。UDP、KCP、WebSocket 可以作为后续 transport
+adapter,但必须复用同一 session 单一 target 绑定、header `route_id`、
+`ClientIngress/ClientEgress` 和 epoch 校验语义,不得为不同 transport 发明不同 Lua
+客户端 API。

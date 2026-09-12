@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "shield/net/session.hpp"
-#include "shield/transport/frame.hpp"
 #include "shield/transport/protocol.hpp"
 
 namespace {
@@ -28,7 +27,6 @@ using shield::transport::BodyRouteKey;
 using shield::transport::DecodedBody;
 using shield::transport::DispatchResult;
 using shield::transport::EnvelopeKind;
-using shield::transport::Frame;
 using shield::transport::JsonBodyCodec;
 using shield::transport::Packet;
 using shield::transport::PacketRef;
@@ -78,12 +76,6 @@ std::vector<std::uint8_t> read_exact(tcp::socket& sock,
     io.restart();
     if (ec) out.clear();
     return out;
-}
-
-std::vector<std::uint8_t> make_frame(std::string_view payload,
-                                     std::uint16_t type = 1) {
-    Frame f(type, bytes(payload));
-    return f.serialize();
 }
 
 // LenPrefix envelope + JSON body routes: 1001 "login" DecodeLocal(lazy),
@@ -290,56 +282,7 @@ BOOST_AUTO_TEST_CASE(LifecycleAndMetadataAccessors) {
     BOOST_CHECK_EQUAL(err, "session is closed");
 }
 
-BOOST_AUTO_TEST_CASE(SendReceiveRawFrames) {
-    SocketPair p;
-
-    std::atomic<int> messages{0};
-    std::string last_payload;
-
-    SessionCallbacks cbs;
-    cbs.on_message = [&](std::shared_ptr<Session>,
-                         const std::vector<std::uint8_t>& payload) {
-        ++messages;
-        last_payload.assign(payload.begin(), payload.end());
-    };
-
-    auto session = std::make_shared<TcpSession>(1, std::move(p.server), cbs);
-    session->start();
-
-    // Empty send is accepted without queuing anything.
-    std::string err;
-    BOOST_CHECK(session->send({}, &err));
-    BOOST_CHECK(err.empty());
-
-    // Full frame.
-    write_client(p.client, make_frame("hello world"));
-    p.io.run_for(150ms);
-    BOOST_CHECK_EQUAL(messages.load(), 1);
-    BOOST_CHECK_EQUAL(last_payload, "hello world");
-
-    // Half frame first, remainder later: decoder must accumulate.
-    auto whole = make_frame("split-frame-payload");
-    write_client(p.client,
-                 std::vector<std::uint8_t>(whole.begin(), whole.begin() + 5));
-    p.io.run_for(100ms);
-    BOOST_CHECK_EQUAL(messages.load(), 1);
-    write_client(p.client,
-                 std::vector<std::uint8_t>(whole.begin() + 5, whole.end()));
-    p.io.run_for(150ms);
-    BOOST_CHECK_EQUAL(messages.load(), 2);
-    BOOST_CHECK_EQUAL(last_payload, "split-frame-payload");
-
-    // Server -> client raw send.
-    BOOST_CHECK(session->send(bytes("pong")));
-    auto got = read_exact(p.client, p.io, 4);
-    BOOST_CHECK_EQUAL(got.size(), 4u);
-    BOOST_CHECK(std::string(got.begin(), got.end()) == "pong");
-
-    session->close("normal");
-    p.io.run_for(100ms);
-}
-
-BOOST_AUTO_TEST_CASE(FrameDecodeErrorClosesSession) {
+BOOST_AUTO_TEST_CASE(RawIngressWithoutPipelineIsRejected) {
     SocketPair p;
 
     std::atomic<bool> disconnected{false};
@@ -348,20 +291,30 @@ BOOST_AUTO_TEST_CASE(FrameDecodeErrorClosesSession) {
         disconnected = true;
     };
 
-    // max_frame_size = 8 bytes
-    auto session = std::make_shared<TcpSession>(2, std::move(p.server), cbs, 8);
+    auto session = std::make_shared<TcpSession>(1, std::move(p.server), cbs);
     session->start();
+    BOOST_CHECK(!session->has_protocol_pipeline());
 
-    // Header claims a 0xFFFF payload, far above the 8 byte limit.
-    std::vector<std::uint8_t> bad(8);
-    bad[2] = 0xFF;
-    bad[3] = 0xFF;
-    write_client(p.client, bad);
+    // Empty send is accepted without queuing anything.
+    std::string err;
+    BOOST_CHECK(session->send({}, &err));
+    BOOST_CHECK(err.empty());
+
+    // Server -> client raw send still works before any ingress.
+    BOOST_CHECK(session->send(bytes("pong")));
+    auto got = read_exact(p.client, p.io, 4);
+    BOOST_CHECK_EQUAL(got.size(), 4u);
+    BOOST_CHECK(std::string(got.begin(), got.end()) == "pong");
+    BOOST_CHECK(session->is_alive());
+
+    // Raw-byte ingress without a protocol pipeline is rejected: the old
+    // fallback silently dropped everything, so this closes the session with
+    // a stable error code instead.
+    write_client(p.client, bytes("raw bytes"));
     p.io.run_for(200ms);
-
     BOOST_CHECK(disconnected.load());
     BOOST_CHECK(!session->is_alive());
-    BOOST_CHECK_EQUAL(session->error_code(), "decode_error");
+    BOOST_CHECK_EQUAL(session->error_code(), "protocol_not_configured");
 }
 
 BOOST_AUTO_TEST_CASE(ReadIdleTimeoutClosesSession) {
@@ -377,13 +330,9 @@ BOOST_AUTO_TEST_CASE(ReadIdleTimeoutClosesSession) {
         std::make_shared<TcpSession>(3, std::move(p.server), cbs, 0, 0, 60);
     session->start();
 
-    // Data within the idle window: the read handler cancels the pending
-    // deadline and re-arms a fresh one.
-    write_client(p.client, make_frame("keepalive"));
-    p.io.run_for(40ms);
-    BOOST_CHECK(session->is_alive());
-
-    // Now go silent: deadline must fire and close the session.
+    // Stay silent past the idle window: deadline must fire and close the
+    // session. (Inbound data would end the session via the pipeline check,
+    // so keepalive traffic cannot be exercised here without a pipeline.)
     p.io.run_for(500ms);
     BOOST_CHECK(disconnected.load());
     BOOST_CHECK(!session->is_alive());
@@ -527,7 +476,6 @@ BOOST_AUTO_TEST_CASE(PipelineDispatchPaths) {
     std::atomic<int> packets{0};
     std::atomic<int> decoded_count{0};
     std::atomic<int> forwarded_count{0};
-    std::atomic<int> messages{0};
 
     SessionCallbacks cbs;
     cbs.create_protocol_pipeline = [] { return make_json_pipeline(); };
@@ -539,8 +487,6 @@ BOOST_AUTO_TEST_CASE(PipelineDispatchPaths) {
             ++decoded_count;
         }
     };
-    cbs.on_message = [&](std::shared_ptr<Session>,
-                         const std::vector<std::uint8_t>&) { ++messages; };
 
     auto session = std::make_shared<TcpSession>(11, std::move(p.server), cbs);
     session->start();
@@ -563,7 +509,6 @@ BOOST_AUTO_TEST_CASE(PipelineDispatchPaths) {
     BOOST_CHECK_EQUAL(packets.load(), 2);
     BOOST_CHECK_EQUAL(decoded_count.load(), 1);
     BOOST_CHECK_EQUAL(forwarded_count.load(), 1);
-    BOOST_CHECK_EQUAL(messages.load(), 0);  // raw on_message path unused
     BOOST_CHECK(session->is_alive());
 
     session->close("normal");

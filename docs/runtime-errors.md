@@ -110,10 +110,11 @@ Redis 系插件 namespace（如 `shield.cache.redis(...)`、`shield.queue.redis(
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|
-| `session_closed` | session 已关闭，handle stale | 否 | ✅ SessionHandle.send 返回 |
-| `session_send_queue_full` | session 发送队列已满 | 是 | ✅ SessionHandle.send 返回 |
+| `session_closed` | session 已关闭，handle stale | 否 | ✅ TcpSession::send/send_message 返回 |
+| `session_send_queue_full` | session 发送队列已满 | 是 | ✅ TcpSession::send/send_message 返回 |
 | `handshake_timeout` | 握手超时 | 否 | ✅ TcpSession::handle_error 映射 |
 | `decode_error` | 协议解码错误 | 否 | ✅ TcpSession::handle_error 映射 |
+| `protocol_not_configured` | session 未绑定协议管线时收到入站字节(TCP 必须带 `network.protocol`) | 否 | ✅ TcpSession::handle_error 映射 |
 | `connection_limit` | 连接数达到上限 | 是 | ✅ TcpListener::do_accept 检查 |
 | `ip_limit` | 单 IP 连接数达到上限 | 否 | ✅ TcpListener::do_accept 检查 |
 

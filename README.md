@@ -131,7 +131,7 @@ core semantics:
 | `shield_base` | Shared value types such as Result, Error, ByteBuffer, time, and IDs |
 | `shield_lua` | Lua VM management and `shield.*` bindings |
 | `shield_net` | Client connections (TCP in Phase 1; UDP/KCP/WebSocket deferred), Session management |
-| `shield_transport` | Optional byte-stream adaptation such as framing or encryption |
+| `shield_transport` | Protocol pipeline (envelope framing, body codecs, route validation) and RPC descriptor table |
 | `shield_plugin` | Plugin manifest/catalog, instances, bindings, C ABI, and plugin Lua registration |
 | `shield_config` | YAML configuration loading |
 | `shield_log` | Runtime logging |

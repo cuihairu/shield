@@ -1,0 +1,9 @@
+app:
+  name: tcp_without_protocol
+
+actors:
+  - name: raw_gateway
+    script: smoke_root.lua
+    instances: 1
+    network:
+      tcp: "127.0.0.1:19102"

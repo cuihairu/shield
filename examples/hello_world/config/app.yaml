@@ -11,12 +11,16 @@ log:
 
 # Actor 定义 - 声明式绑定
 actors:
-  # Lua 网关 + 可选 C++ 传输层
+  # Lua 网关(TCP 监听 + 协议管线)
   - name: "gateway"
     script: "../scripts/gateway.lua"
-    transport: MyTransport       # 可选：自定义传输层（解帧/解密）
     network:
       tcp: "0.0.0.0:8001"
+      protocol:
+        envelope:
+          type: "lenprefix"
+        body:
+          codec: "json"
     instances: 1
 
   # Lua 服务

@@ -22,7 +22,7 @@
 | `shield_config` | YAML 加载、schema 验证 | `shield_base`, `shield_log`, `yaml-cpp` |
 | `shield_core` | service registry、message router、timer、CAF adapter | `shield_base`, CAF |
 | `shield_plugin` | manifest/catalog、instance、binding、C ABI host、`register_lua` 分发 | `shield_base`, `shield_log`, `shield_config`, Lua |
-| `shield_transport` | frame/codec/encryption adapter | `shield_base`, `shield_log` |
+| `shield_transport` | 协议管线与 RPC descriptor 表 | `shield_base`, `shield_log` |
 | `shield_net` | listener、session、connection 管理 | `shield_base`, `shield_log`, `shield_config`, `shield_transport`, Asio/Beast |
 | `shield_lua` | Lua VM、Lua API binding、Lua service loader | `shield_base`, `shield_log`, `shield_config`, `shield_core`, `shield_net`, `shield_plugin`, Lua/sol2 |
 | `shield_bootstrap` | Starter、`shield::run` | selected runtime modules |

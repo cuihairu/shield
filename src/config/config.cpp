@@ -1046,6 +1046,18 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                 if (!validate_listener_address(network, "tcp", name, error)) {
                     return false;
                 }
+                // A TCP listener without a protocol pipeline has no inbound
+                // dispatch (the raw-frame fallback was removed): declaring
+                // network.tcp without network.protocol is a config error, not
+                // a listener that silently drops everything it receives.
+                if (network["tcp"] && !network["protocol"]) {
+                    if (error) {
+                        *error = "actors[" + name +
+                                 "].network.tcp requires network.protocol "
+                                 "(raw-frame ingress is not supported)";
+                    }
+                    return false;
+                }
                 if (network["protocol"] && !network["protocol"].IsMap()) {
                     if (error) {
                         *error = "actors[" + name +

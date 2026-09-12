@@ -242,7 +242,6 @@ find_package(Lua REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
 find_package(redis++ CONFIG REQUIRED)
 find_package(CAF CONFIG REQUIRED)
-find_package(OpenSSL REQUIRED)
 
 if(NOT MSVC)
   foreach(caf_target CAF::internal CAF::core)
@@ -431,12 +430,9 @@ if(TARGET shield_core)
 endif()
 
 # -----------------------------------------------------------------------------
-# shield_transport - Frame/codec/encryption adapter
+# shield_transport - protocol pipeline and RPC descriptor
 # -----------------------------------------------------------------------------
 add_library(shield_transport STATIC
-    src/transport/frame.cpp
-    src/transport/codec.cpp
-    src/transport/encryption.cpp
     src/transport/protocol.cpp
     src/transport/rpc_descriptor.cpp
 )
@@ -449,7 +445,6 @@ target_include_directories(shield_transport
 
 target_link_libraries(shield_transport
     PUBLIC shield_base shield_log
-    PRIVATE OpenSSL::SSL OpenSSL::Crypto
 )
 
 # -----------------------------------------------------------------------------
@@ -719,6 +714,13 @@ add_test(NAME shield_config_empty_network_protocol_rejected
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/empty-network-protocol.yaml"
         -DEXPECTED_EXIT_CODE=1
         -DEXPECTED_OUTPUT_REGEX=network.protocol must not be empty
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+add_test(NAME shield_config_tcp_without_protocol_rejected
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/tcp-without-protocol.yaml"
+        -DEXPECTED_EXIT_CODE=1
+        -DEXPECTED_OUTPUT_REGEX=requires network.protocol
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
 add_test(NAME shield_config_duplicate_rpc_route_ids_rejected

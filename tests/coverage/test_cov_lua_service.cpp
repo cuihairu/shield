@@ -6,6 +6,11 @@
 // call routing, async spawn outcomes, the C++ suspend/resume primitives, and
 // manager teardown paths. Lua fixtures are written to /tmp.
 #define BOOST_TEST_MODULE CovLuaService
+
+// Set from CMake so the fake-plugin compile works on any checkout path.
+#ifndef SHIELD_SOURCE_DIR
+#define SHIELD_SOURCE_DIR "."
+#endif
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
@@ -1635,7 +1640,7 @@ std::filesystem::path build_cov_plugin(const std::string& entry_config) {
         out << kCovPluginSource;
     }
     const fs::path so = dir / "bin" / "libcovplug.so";
-    fs::path inc = fs::path("/home/cui/workspaces/shield/include");
+    fs::path inc = fs::path(SHIELD_SOURCE_DIR) / "include";
     const char* compilers[] = {"/usr/bin/x86_64-linux-gnu-g++-15",
                                "/usr/bin/g++", "/usr/bin/c++"};
     for (const char* cxx : compilers) {

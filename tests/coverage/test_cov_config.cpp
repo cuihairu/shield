@@ -584,15 +584,21 @@ BOOST_AUTO_TEST_CASE(ValidateNetworkBasics) {
     expect_invalid(actor_cfg("    network:\n      tcp: \"127.0.0.1:99999\"\n"),
                    opts, "port must be between");
     expect_invalid(actor_cfg("    instances: 2\n    network:\n      tcp: "
-                             "\"127.0.0.1:18001\"\n"),
+                             "\"127.0.0.1:18001\"\n      protocol:\n"
+                             "        envelope:\n          type: lenprefix\n"
+                             "        body:\n          codec: json\n"),
                    opts, "requires instances to be 1");
     expect_invalid(
         actor_cfg("    network:\n      tcp: \"127.0.0.1:18001\"\n      "
-                  "max_connections: 0\n"),
+                  "protocol:\n        envelope:\n          type: lenprefix\n"
+                  "        body:\n          codec: json\n"
+                  "      max_connections: 0\n"),
         opts, "max_connections must be between");
     expect_invalid(
         actor_cfg("    network:\n      tcp: \"127.0.0.1:18001\"\n      "
-                  "max_connections: abc\n"),
+                  "protocol:\n        envelope:\n          type: lenprefix\n"
+                  "        body:\n          codec: json\n"
+                  "      max_connections: abc\n"),
         opts, "max_connections must be an integer");
     expect_invalid(actor_cfg("    network:\n      protocol: 42\n"), opts,
                    "network.protocol must be a map");
@@ -600,9 +606,13 @@ BOOST_AUTO_TEST_CASE(ValidateNetworkBasics) {
         actor_cfg("    network:\n      tcp: \"127.0.0.1:18001\"\n      "
                   "protocol: {}\n"),
         opts, "must not be empty");
+    expect_invalid(actor_cfg("    network:\n      tcp: \"127.0.0.1:18001\"\n"),
+                   opts, "requires network.protocol");
     expect_valid(
         actor_cfg(
             "    network:\n      tcp: \"127.0.0.1:18001\"\n      "
+            "protocol:\n        envelope:\n          type: lenprefix\n"
+            "        body:\n          codec: json\n      "
             "max_connections: 10\n      max_connections_per_ip: 2\n      "
             "max_frame_size: 1024\n      max_session_send_queue: 8\n      "
             "read_idle_timeout: 100\n"),
@@ -1084,13 +1094,29 @@ BOOST_AUTO_TEST_CASE(SetAndGetEveryConfigValueType) {
     BOOST_CHECK_EQUAL(list[1], "y");
 }
 
-// An actor with a network section but no protocol block validates fine
-// (validate_network_protocol early-out on a null node).
-BOOST_AUTO_TEST_CASE(ValidateNetworkWithoutProtocolIsAccepted) {
+// A tcp listener without a protocol block is a config error: raw-frame
+// ingress was removed, so the session would have no inbound dispatch.
+BOOST_AUTO_TEST_CASE(ValidateTcpWithoutProtocolIsRejected) {
     // Default options validate actors (require_actors=true), which is where
     // the per-actor network/protocol checks run.
-    expect_valid(actor_cfg("    network:\n      tcp: \"127.0.0.1:18112\"\n"),
-                 RuntimeValidationOptions{});
+    expect_invalid(actor_cfg("    network:\n      tcp: \"127.0.0.1:18112\"\n"),
+                   RuntimeValidationOptions{}, "requires network.protocol");
+}
+
+// The same rejection through the checked-in fixture file.
+BOOST_AUTO_TEST_CASE(TcpWithoutProtocolFixtureIsRejected) {
+    shield::config::reset_config();
+    auto& cfg = shield::config::global_config();
+    BOOST_REQUIRE(
+        cfg.load_yaml((fs::path(SHIELD_SOURCE_DIR) / "tests" / "fixtures" /
+                       "config" / "tcp-without-protocol.yaml")
+                          .string()));
+    std::string error;
+    const bool ok = shield::config::validate_runtime_config(
+        RuntimeValidationOptions{}, &error);
+    shield::config::reset_config();
+    BOOST_CHECK(!ok);
+    BOOST_CHECK_NE(error.find("requires network.protocol"), std::string::npos);
 }
 
 // protocol must be a mapping when present.

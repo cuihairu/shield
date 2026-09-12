@@ -406,8 +406,7 @@ CAF 不应直接复用以下 Lua 表面 API：
 截至当前文档版本：
 
 - `shield.http` 已存在
-- `SessionHandle` 与 gateway bridge 已存在
-- transport 中已有 OpenSSL 加密实现片段
+- transport 中旧的 OpenSSL 帧级加密实现片段已删除（`shield.crypto` 是后续官方原语层）
 - JWT/Auth 不作为 Shield 官方插件发布
 
 但以下能力尚未作为稳定基础组件正式冻结并实现：

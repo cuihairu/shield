@@ -1,4 +1,9 @@
 #define BOOST_TEST_MODULE CovBootstrap
+
+// Set from CMake so the fake-plugin compile works on any checkout path.
+#ifndef SHIELD_SOURCE_DIR
+#define SHIELD_SOURCE_DIR "."
+#endif
 #include <boost/asio.hpp>
 #include <boost/test/unit_test.hpp>
 #include <chrono>
@@ -185,7 +190,8 @@ BOOST_AUTO_TEST_CASE(InitializeLegacySingleNetThread) {
         "  - name: gw\n"
         "    script: " +
         script.string() +
-        "\n    network:\n      tcp: 127.0.0.1:" + std::to_string(port) + "\n");
+        "\n    network:\n      tcp: 127.0.0.1:" + std::to_string(port) +
+        "\n      protocol:\n        body:\n          codec: json\n");
 
     // An empty config_files entry is skipped; the real file is loaded.
     shield::bootstrap::RuntimeConfig rc;
@@ -250,11 +256,12 @@ BOOST_AUTO_TEST_CASE(DuplicateListenerPortFails) {
         "    script: " +
         script.string() +
         "\n    network:\n      tcp: 127.0.0.1:" + std::to_string(port) +
-        "\n"
+        "\n      protocol:\n        body:\n          codec: json\n"
         "  - name: second\n"
         "    script: " +
         script.string() +
-        "\n    network:\n      tcp: 127.0.0.1:" + std::to_string(port) + "\n");
+        "\n    network:\n      tcp: 127.0.0.1:" + std::to_string(port) +
+        "\n      protocol:\n        body:\n          codec: json\n");
     shield::bootstrap::RuntimeConfig rc;
     rc.config_files = {cfg.string()};
     // The second listener cannot bind (port in use) and the failure unwinds
@@ -400,6 +407,7 @@ BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     // Non-loopback host only triggers a warning; the listener binds all IPv4.
     yaml += "  - name: warnhost\n    script: echo_path.lua\n    network:\n";
     yaml += "      tcp: 10.99.99.99:" + std::to_string(warn_port) + "\n";
+    yaml += "      protocol:\n        body:\n          codec: json\n";
     fs::path cfg = write_file(work / "app.yaml", yaml);
 
     shield::bootstrap::RuntimeConfig rc;
@@ -704,7 +712,7 @@ struct FakeCodecPlugin {
         // Find include dir for shield headers.
         const char* src_root = nullptr;
         for (const char* candidate :
-             {"/home/cui/workspaces/shield",
+             {SHIELD_SOURCE_DIR,
               std::getenv("SHIELD_SRC") ? std::getenv("SHIELD_SRC") : ""}) {
             if (candidate && candidate[0] &&
                 fs::exists(fs::path(candidate) / "include" / "shield" /

@@ -1129,10 +1129,7 @@ include/shield/protocol/
     compatibility.hpp
     validation.hpp
   wire/
-    frame.hpp
-    frame_codec.hpp
     protobuf_wire.hpp
-    payload_codec.hpp
   rpc/
     pending_call.hpp
     pending_call_registry.hpp
@@ -1148,9 +1145,7 @@ src/protocol/
     compatibility.cpp
     validation.cpp
   wire/
-    frame_codec.cpp
     protobuf_wire.cpp
-    payload_codec.cpp
   rpc/
     pending_call_registry.cpp
     stream_registry.cpp

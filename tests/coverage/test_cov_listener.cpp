@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "shield/net/listener.hpp"
-#include "shield/transport/frame.hpp"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -25,7 +24,6 @@ using shield::net::Session;
 using shield::net::SessionCallbacks;
 using shield::net::SessionId;
 using shield::net::TcpListener;
-using shield::transport::Frame;
 
 std::vector<std::uint8_t> bytes(std::string_view s) {
     return {s.begin(), s.end()};
@@ -74,12 +72,6 @@ struct Client {
         socket.close(ec);
     }
 };
-
-std::vector<std::uint8_t> make_frame(std::string_view payload,
-                                     std::uint16_t type = 1) {
-    Frame f(type, bytes(payload));
-    return f.serialize();
-}
 
 bool wait_until(const std::function<bool()>& pred, int timeout_ms = 2000) {
     for (int i = 0; i < timeout_ms / 5; ++i) {
@@ -143,7 +135,7 @@ BOOST_AUTO_TEST_CASE(BindFailureAndStartNoOp) {
     listener.stop();
 }
 
-BOOST_AUTO_TEST_CASE(AcceptSessionEchoAndDisconnect) {
+BOOST_AUTO_TEST_CASE(AcceptSessionRejectsRawIngressAndDisconnects) {
     boost::asio::io_context io;
     const auto port = reserve_ephemeral_port(io);
 
@@ -155,10 +147,6 @@ BOOST_AUTO_TEST_CASE(AcceptSessionEchoAndDisconnect) {
     callbacks.on_connect = [&](std::shared_ptr<Session> s) {
         ++connects;
         last_id = s->id();
-    };
-    callbacks.on_message = [&](std::shared_ptr<Session> s,
-                               const std::vector<uint8_t>& payload) {
-        s->send(payload);  // echo back
     };
     callbacks.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
         ++disconnects;
@@ -179,19 +167,14 @@ BOOST_AUTO_TEST_CASE(AcceptSessionEchoAndDisconnect) {
     BOOST_REQUIRE(session != nullptr);
     BOOST_CHECK(session->is_alive());
 
-    c1.send(make_frame("ping"));
-    io.run_for(150ms);
-    // TcpSession::send transmits raw payload bytes without re-framing.
-    auto echoed = c1.read_exact(4);
-    BOOST_CHECK(std::string(echoed.begin(), echoed.end()) == "ping");
-
-    // Client-side close: EOF -> session close -> on_disconnect wrapper ->
-    // on_session_close removes the session and its per-IP entry.
-    c1.close();
+    // Raw ingress without a protocol pipeline closes the session with a
+    // stable error code (the old fallback silently dropped the bytes).
+    c1.send(bytes("ping"));
     io.run_for(200ms);
     BOOST_CHECK(wait_until([&] { return disconnects.load() == 1; }));
     BOOST_CHECK(wait_until([&] { return listener.session_count() == 0; }));
     BOOST_CHECK(listener.find_session(last_id.load()) == nullptr);
+    BOOST_CHECK_EQUAL(session->error_code(), "protocol_not_configured");
 
     listener.stop();
     io.run_for(100ms);

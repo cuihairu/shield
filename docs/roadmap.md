@@ -22,7 +22,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 8. [ ] **出站注册方法**：生成的 server-to-client RPC helper 构造 `ClientEgress`；Gateway 校验 session 后把 `route_id` 写入 header。删除通用 session 发送和 route/payload envelope。
 9. [ ] **Route direction 与安全校验**：冻结并实现 `ClientToServer` / `ServerToClient`，校验预登录权限、认证状态、body schema 与 stale epoch。
 10. [ ] **多 worker 调度**：由 CAF scheduler 并行执行不同 Service actor，保持单 Service/Lua VM 同时只有一个执行者。
-11. [ ] **死代码与旧测试清理**：删除旧 Gateway bridge/legacy frame 客户端业务入口，以及无调用方的 transport codec/encryption 残留；测试矩阵只验收新契约。
+11. [x] **死代码与旧测试清理**：删除旧 Gateway bridge/legacy frame 客户端业务入口，以及无调用方的 transport codec/encryption 残留；测试矩阵只验收新契约。
 
 ### 客户端 RPC 闭环验收
 
@@ -107,7 +107,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | `shield_core` | 当前 CMake target 已存在 | 已收敛为 CAF 消息契约（`service_message.hpp`）+ CAF 类型注册；无人使用的 CafAdapter/ServiceRegistry/MessageEnvelope 平行层已删除，registry/handle 语义由 `shield_lua` 的 `LuaServiceManager` 承载 |
 | `shield_config` | 当前 CMake target 已存在 | Phase 1 启动期验证已接入；旧 ConfigManager/动态配置测试已从当前构建入口移出 |
 | `shield_log` | 当前 CMake target 已存在 | logger facade 已接入；旧 Boost log config 测试已从当前构建入口移出 |
-| `shield_transport` | 当前 CMake target 已存在 | frame/codec/encryption 在 target 内；旧 protocol handler/schema protocol 测试不属于当前验证路径 |
+| `shield_transport` | 当前 CMake target 已存在 | 协议管线 + RPC descriptor 表；旧 frame/codec/encryption 与对应测试已删除，TCP 无 `network.protocol` 为启动错误 |
 | `shield_net` | 当前 CMake target 已存在 | 单实例 TCP listener/session 已接入 bootstrap 的 `actors[].network.tcp`；UDP/WebSocket 仍为 deferred |
 | `shield_plugin` | 当前 CMake target 已存在 | 插件系统 v1 已接入 manifest、instance、binding、C ABI、Lua register_lua 和官方数据插件；host 不链接 DB/Redis 驱动，不存在 `shield_data` target |
 | `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout/spawn 已实现（异步 spawn 由专用 worker 线程执行 on_init，含 name reserve/publish 与超时补偿退出）；`shield.panic` 已接入 on_panic + exit("panic")；timer callback 已通过 pcall 包裹执行；fork callback raw_fn 已存储；on_error/on_panic/on_exit guard 已实现；gateway 已通过真实 `SessionHandle` userdata 连接到 `shield_net::Session`，并覆盖 protocol ingress/egress 桥接测试 |

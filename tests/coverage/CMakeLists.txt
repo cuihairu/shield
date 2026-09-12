@@ -44,9 +44,6 @@ endfunction()
 
 # shield_base / shield_transport
 shield_coverage_test(test_cov_base_id shield_base)
-shield_coverage_test(test_cov_codec shield_transport)
-shield_coverage_test(test_cov_encryption shield_transport)
-shield_coverage_test(test_cov_frame shield_transport)
 shield_coverage_test(test_cov_protocol shield_transport)
 shield_coverage_test(test_cov_rpc_descriptor shield_transport)
 
@@ -100,3 +97,12 @@ endif()
 # The ops HTTP client drains each response until its read deadline, so the
 # suite's wall time is dominated by per-request timeouts; give it headroom.
 set_tests_properties(test_cov_ops_http PROPERTIES TIMEOUT 300)
+
+# Suites that compile fake plugins at test time need the shield include tree;
+# pass it from the build configuration instead of a hardcoded source path.
+target_compile_definitions(test_cov_lua_service
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_definitions(test_cov_bootstrap
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_definitions(test_cov_config
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

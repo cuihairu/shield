@@ -16,7 +16,6 @@
 #include <utility>
 #include <vector>
 
-#include "shield/transport/frame.hpp"
 #include "shield/transport/protocol.hpp"
 
 namespace shield::net {
@@ -132,8 +131,6 @@ struct SessionCallbacks {
     std::function<void(std::shared_ptr<Session>)> on_connect;
     std::function<void(std::shared_ptr<Session>, std::string_view)>
         on_disconnect;
-    std::function<void(std::shared_ptr<Session>, const std::vector<uint8_t>&)>
-        on_message;
     // Protocol path callback. DecodeLocal results are materialized before
     // dispatch. ForwardRaw results remain visible here for C++ data-plane
     // users; Drop results are skipped before this callback is invoked.
@@ -235,7 +232,6 @@ private:
     mutable std::mutex user_data_mutex_;
     std::unordered_map<std::string, std::string> user_data_;
     std::vector<uint8_t> receive_buffer_;
-    shield::transport::FrameDecoder frame_decoder_;
     std::unique_ptr<shield::transport::ProtocolPipeline> protocol_pipeline_;
 
     // Session binding. Guarded by binding_mutex_ because the gateway actor

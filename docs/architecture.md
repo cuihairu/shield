@@ -94,7 +94,7 @@ Shield 的最终目标是一个**Lua 优先、单节点最小部署清晰、可�
 | --- | --- | --- | --- |
 | `shield_lua` | Lua VM 生命周期、Lua service loader、`shield.*` 绑定，以及基础组件 Lua 表面（如未来的 `shield.buffer` / `shield.crypto` / `shield.socket`） | 主 Lua API 契约 | 网络监听、DB 驱动、cluster 路由 |
 | `shield_net` | 连接生命周期、live session、listener、网络背压 | runtime 内部 session 能力 | RPC handler、玩家状态、Lua session 发送 API |
-| `shield_transport` | Phase 1 basic framing/codec/encryption；UDP/KCP/WebSocket 适配为后续 transport extension | 通常不直接暴露给 Lua | service 语义、业务路由 |
+| `shield_transport` | 协议管线（envelope 定界、body codec、route 校验）与 RPC descriptor 表；UDP/KCP/WebSocket 适配为后续 transport extension | 通常不直接暴露给 Lua | service 语义、业务路由 |
 | `shield_plugin` | 插件 manifest/catalog、实例生命周期、binding 解析、C ABI / Lua 注册分发 | `shield.plugin.*` introspection、插件自注册的 `shield.<namespace>` | 具体数据库/Redis 驱动、业务数据模型 |
 | `shield_config` | YAML 加载、环境变量展开、schema 校验 | `shield.config(path)` 读取 | service registry、Lua VM |
 | `shield_log` | 日志 sink、级别、结构化输出、轮转 | `shield.log.*` | metrics、profile、health |

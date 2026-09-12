@@ -181,7 +181,6 @@
 | `instances` | 否 | 启动实例数；`0` 表示只允许动态 spawn |
 | `required` | 否 | 启动失败是否导致 runtime 启动失败，默认 true |
 | `network` | 否 | gateway 类 service 的 listener 配置 |
-| `transport` | 否 | C++ transport 名称 |
 | `options` | 否 | 传给 `on_init(args).config` 的业务配置 |
 | `restart` | 否 | 服务异常退出后的重启策略 |
 | `limits` | 否 | 单 service 资源限制 |

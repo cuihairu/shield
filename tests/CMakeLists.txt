@@ -27,27 +27,6 @@ set_tests_properties(test_hello_world_acceptance PROPERTIES
 )
 shield_copy_runtime_dlls(test_hello_world_acceptance)
 
-# Transport frame tests - verifies length-prefixed framing boundaries used by
-# TCP sessions and gateway listeners.
-add_executable(test_transport_frame transport/test_transport_frame.cpp)
-target_link_libraries(test_transport_frame
-    PRIVATE
-        shield_transport
-        Boost::unit_test_framework
-        Boost::headers
-)
-target_include_directories(test_transport_frame
-    PRIVATE
-        ${CMAKE_SOURCE_DIR}/include
-)
-add_test(NAME test_transport_frame COMMAND test_transport_frame)
-set_tests_properties(test_transport_frame PROPERTIES
-    LABELS "transport"
-    TIMEOUT 30
-    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-)
-shield_copy_runtime_dlls(test_transport_frame)
-
 # Header-first protocol routing tests - verifies route-id based forwarding and
 # lazy body decode primitives used by protocol profiles.
 add_executable(test_protocol_routing transport/test_protocol_routing.cpp)
