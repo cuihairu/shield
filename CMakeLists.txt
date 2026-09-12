@@ -444,7 +444,7 @@ target_include_directories(shield_transport
 )
 
 target_link_libraries(shield_transport
-    PUBLIC shield_base shield_log
+    PUBLIC shield_base shield_log nlohmann_json::nlohmann_json
 )
 
 # -----------------------------------------------------------------------------
