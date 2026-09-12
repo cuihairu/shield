@@ -44,7 +44,7 @@ uint16_t free_port() {
 std::string scripts_dir() {
     return (std::filesystem::path(SHIELD_SOURCE_DIR) / "examples" /
             "hello_world" / "scripts")
-        .string();
+        .generic_string();
 }
 
 // idlen frame: [route_id:2B BE][length:2B BE][body]
