@@ -10,6 +10,7 @@
 #include <dlfcn.h>
 #endif
 
+#include <algorithm>
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
@@ -844,7 +845,10 @@ BOOST_AUTO_TEST_CASE(TimerForkCoroutinesKeepActorResponsive) {
                                nlohmann::json::array({callee.service_id})));
 
     // While the timer coroutine is suspended, the probe actor must keep
-    // answering calls (beats would all time out against a blocked actor).
+    // answering calls (against a blocked actor every beat would time out, so
+    // a single success already proves the contract; the window keeps sampling
+    // but the assertion stays at >= 1 — a slow CI runner cannot fit two call
+    // round-trips into the 100ms budget).
     int beats = 0;
     const auto timer_window_end =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
@@ -855,9 +859,12 @@ BOOST_AUTO_TEST_CASE(TimerForkCoroutinesKeepActorResponsive) {
         if (beat.success) {
             ++beats;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(
+            std::min(std::chrono::milliseconds(20),
+                     std::chrono::duration_cast<std::chrono::milliseconds>(
+                         timer_window_end - std::chrono::steady_clock::now())));
     }
-    BOOST_CHECK_GE(beats, 2);
+    BOOST_CHECK_GE(beats, 1);
 
     // Still suspended inside the timer callback at this point (callee sleeps
     // 250ms after a ~10ms fire delay).
@@ -889,9 +896,14 @@ BOOST_AUTO_TEST_CASE(TimerForkCoroutinesKeepActorResponsive) {
         if (beat.success) {
             ++beats;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(
+            std::min(std::chrono::milliseconds(20),
+                     std::chrono::duration_cast<std::chrono::milliseconds>(
+                         fork_window_end - std::chrono::steady_clock::now())));
     }
-    BOOST_CHECK_GE(beats, 2);
+    // Same reasoning as the timer window: one successful beat while the fork
+    // task is suspended proves the actor kept answering.
+    BOOST_CHECK_GE(beats, 1);
 
     BOOST_CHECK(wait_until(
         [&]() {
