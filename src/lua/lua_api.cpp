@@ -971,6 +971,10 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                     // that yielded has already anchored the coroutine for
                     // its own resume source, so release this sleep anchor.
                     luaL_unref(co, LUA_REGISTRYINDEX, ref);
+                    // Publish the yield for the yield handshake
+                    // (CallYieldSync): a call completion may already be
+                    // waiting on another thread.
+                    manager->mark_call_yielded(co);
                     return;
                 }
                 // If this coroutine was servicing a call request that

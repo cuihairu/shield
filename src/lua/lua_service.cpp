@@ -242,6 +242,21 @@ struct LuaServiceManager::Impl {
     // Coroutine call correlation. A call from a handler yields the caller's
     // coroutine; the callee runs and, on completion, resumes the caller with
     // the callee's return values.
+    //
+    // Yield handshake: suspend_for_call registers the caller coroutine before
+    // the suspending wrapper reaches its coroutine.yield(). A completion that
+    // arrives in that window (the sync _coro_call pre-dispatch completions,
+    // or a callee that answers within a scheduling slice) must not resume a
+    // coroutine that is still running on the registering thread — lua_resume
+    // rejects that and the response would be lost with no recovery source
+    // (the call's own timeout driver is cancelled by the completion). The
+    // resume source therefore waits on this shared sync until the driving
+    // thread has observed LUA_YIELD and marks it (mark_call_yielded).
+    struct CallYieldSync {
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool yielded = false;
+    };
     struct PendingCall {
         uint64_t session = 0;
         lua_State* caller_co = nullptr;
@@ -252,6 +267,9 @@ struct LuaServiceManager::Impl {
         // proxied_call_hook (reply to the source node) instead of resuming a
         // coroutine; there is no local caller actor or timeout driver.
         bool proxied = false;
+        // Shared with the resume source (copies of this entry keep the same
+        // object alive). Null for proxied calls, which have no coroutine.
+        std::shared_ptr<CallYieldSync> yield_sync;
     };
     std::atomic<uint64_t> next_call_session{1};
     std::unordered_map<uint64_t, PendingCall>
@@ -2499,6 +2517,9 @@ uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
     Impl::PendingCall pc;
     pc.session = session;
     pc.caller_co = caller_co;
+    // Arm the yield handshake: until the driving thread observes LUA_YIELD,
+    // resume_caller must not touch the coroutine (see CallYieldSync).
+    pc.yield_sync = std::make_shared<Impl::CallYieldSync>();
     // Anchor the caller coroutine against GC while it is suspended.
     lua_pushthread(caller_co);
     pc.caller_anchor = luaL_ref(caller_co, LUA_REGISTRYINDEX);
@@ -2853,6 +2874,25 @@ void LuaServiceManager::schedule_proxied_call_timeout(uint64_t session,
     }
 }
 
+void LuaServiceManager::mark_call_yielded(lua_State* co) {
+    if (co == nullptr) {
+        return;
+    }
+    // The driving thread observed LUA_YIELD: every suspension this coroutine
+    // registered is now safe to resume from any thread. There is at most one
+    // unsatisfied suspension per coroutine (the wrappers yield serially), but
+    // marking all matching entries is harmless — completed sessions are
+    // already erased from pending_calls.
+    std::shared_lock lock(impl_->registry_mutex);
+    for (auto& [session, pc] : impl_->pending_calls) {
+        if (pc.caller_co == co && pc.yield_sync != nullptr) {
+            std::lock_guard sync_lock(pc.yield_sync->mtx);
+            pc.yield_sync->yielded = true;
+            pc.yield_sync->cv.notify_all();
+        }
+    }
+}
+
 void LuaServiceManager::resume_caller(uint64_t session, bool ok,
                                       const nlohmann::json& values) {
     Impl::PendingCall pc;
@@ -2874,6 +2914,21 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
     lua_State* caller_co = pc.caller_co;
     if (caller_co == nullptr) {
         return;
+    }
+
+    // Yield handshake: if the caller has not reached its coroutine.yield()
+    // yet, it is still running on the thread that registered the suspension;
+    // resuming it here would fail ("cannot resume running coroutine") and the
+    // completion would be lost with no recovery source. Wait for the driving
+    // thread to mark the yield. The wait is bounded: a wrapper that never
+    // yields (protocol violation) must not wedge an actor thread forever —
+    // the resume below then fails into the existing error path.
+    if (pc.yield_sync != nullptr) {
+        std::unique_lock sync_lock(pc.yield_sync->mtx);
+        if (!pc.yield_sync->yielded) {
+            pc.yield_sync->cv.wait_for(sync_lock, std::chrono::seconds(5),
+                                       [&] { return pc.yield_sync->yielded; });
+        }
     }
 
     // Build the resume payload: (ok, values...). The caller's shield.call
@@ -2935,6 +2990,10 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
     if (pc.caller_anchor != LUA_NOREF) {
         luaL_unref(caller_co, LUA_REGISTRYINDEX, pc.caller_anchor);
     }
+    // The re-yield may correspond to a nested suspension (e.g. the handler
+    // issued another shield.call): re-arm the handshake for its next resume
+    // source.
+    mark_call_yielded(caller_co);
 }
 
 int LuaServiceManager::check_call_timeouts(int64_t now_ms) {
