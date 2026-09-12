@@ -761,6 +761,8 @@ std::string fake_codec_manifest(const std::string& id,
       << "entry: shield_plugin_get_v1\n"
       << "library:\n"
       << "  linux: " << lib_path << "\n"
+      << "  macos: " << lib_path << "\n"
+      << "  windows: " << lib_path << "\n"
       << "provides:\n"
       << "  - interface: shield.protocol.codec.v1\n"
       << "requires: []\n"
