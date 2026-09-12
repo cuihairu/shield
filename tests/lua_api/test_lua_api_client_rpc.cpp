@@ -69,6 +69,32 @@ shield::transport::RpcDescriptorTable gateway_routes() {
     return table;
 }
 
+// Spawn opts for the ingress-driven case: the auth VM also owns the c2s
+// login binding, so a typed ClientIngress can reach M.login through the
+// spawn-time RPC table exactly as the gateway bridge would deliver it.
+nlohmann::json ingress_auth_opts(const std::string& name) {
+    return {
+        {"name", name},
+        {"args", nlohmann::json::object()},
+        {"config", nlohmann::json::object()},
+        {"rpc",
+         {{"routes", nlohmann::json::array({nlohmann::json{
+                                                {"id", 1000},
+                                                {"name", "login"},
+                                                {"direction", "c2s"},
+                                                {"binding", "login"},
+                                                {"requires_auth", false},
+                                            },
+                                            nlohmann::json{
+                                                {"id", 1001},
+                                                {"name", "login_result"},
+                                                {"direction", "s2c"},
+                                                {"binding", "login_result"},
+                                                {"requires_auth", false},
+                                            }})}}},
+    };
+}
+
 class MockSession final : public shield::net::Session {
 public:
     MockSession(shield::net::SessionId id, shield::net::RemoteAddress remote)
@@ -409,6 +435,43 @@ BOOST_AUTO_TEST_CASE(BindRejectsInvalidClientArgument) {
     BOOST_CHECK_EQUAL(bad.values[0]["code"].get<std::string>(),
                       "invalid_client_reference");
     BOOST_CHECK_EQUAL(world.stats->binds_ok.load(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(IngressDrivenBindResumesHandlerCoroutine) {
+    // Regression (M6 e2e): dispatch_client_ingress must establish the
+    // dispatch context before running the handler coroutine. Without it a
+    // shield.client.bind inside a client RPC handler records an empty
+    // caller_service, the gateway's completion cannot route back to this
+    // actor, and the handler coroutine never resumes — no egress, no
+    // error, the session just hangs.
+    GatewayWorld world;
+    auto auth = world.manager.spawn(TEST_SCRIPTS_DIR + "client_rpc_service.lua",
+                                    ingress_auth_opts("auth_ingress").dump());
+    BOOST_REQUIRE(auth.success);
+
+    auto session = connect_session(*world.registry, 103);
+
+    ClientIngress ingress;
+    ingress.context = ClientContextData{"gw", 103, 0, "", "json"};
+    ingress.route_id = 1000;
+    ingress.decoded_request = nlohmann::json("player-1");
+
+    caf::anon_send(world.manager.service_actor(auth.service_id), ingress);
+
+    // The handler resumed after the bind and pushed the welcome egress.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            return !session->sent_messages().empty() &&
+                   world.stats->egress_accepted.load() == 1u;
+        },
+        std::chrono::seconds(2)));
+    BOOST_CHECK_EQUAL(session->target_service(), "player");
+    BOOST_CHECK_EQUAL(session->epoch(), 1u);
+    BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 1u);
+    BOOST_REQUIRE(session->sent_messages()[0].has_message());
+    BOOST_CHECK_EQUAL(
+        (*session->sent_messages()[0].message)["welcome"].get<std::string>(),
+        "player-1");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -56,7 +56,7 @@ client socket bytes
   → CAF send ClientIngress { gateway_address, session_id, session_epoch, player_id,
                               protocol_profile_id, route_id, body_bytes, decoded_request? }
   → target Service actor mailbox
-  → 目标 VM: route_id → cached handler → decode body（或直接消费 decoded_request）→ invoke handler(client, request)
+  → 目标 VM: route_id → cached handler → decode body（或直接消费 decoded_request）→ invoke handler(ctx, client, request)
 ```
 
 route_id 来自 wire header。body_bytes 始终原样传递到目标 VM；request 值按

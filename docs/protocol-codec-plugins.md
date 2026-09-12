@@ -82,7 +82,7 @@ actor 绑定协议时显式引用 provider：
 ```yaml
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/auth.lua
     network:
       tcp: "0.0.0.0:8001"
       protocol:

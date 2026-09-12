@@ -151,7 +151,7 @@ shield/
 │
 └── templates/                  # Lua 模板（给用户复制）
     ├── services/
-    │   ├── gateway.lua
+    │   ├── auth.lua
     │   ├── player.lua
     │   └── ...
 ```

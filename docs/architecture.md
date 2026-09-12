@@ -106,7 +106,7 @@ Shield 的最终目标是一个**Lua 优先、单节点最小部署清晰、可�
 | --- | --- | --- | --- |
 | `shield_cluster` | 多进程/多机器通信、节点身份、远端路由 cache、节点心跳、可选发现 | `shield_core` 公共 handle/message 语义，必要运行时快照 | 改写本地 registry 规则、把发现机制塞进 core |
 | `shield_global` | 跨进程共享数据、分布式锁、排行榜、队列、限流器、调度 | 数据插件 binding、`shield_cluster`（可选） | 直接拥有 DB/Redis 驱动实现、回写 core 配置 |
-| `shield_player` | 玩家认证、登录、重连、离线消息、PlayerManager | `shield_net`、`shield_lua`、数据插件 binding、`shield_global`（可选） | 暴露 `SessionHandle` 跨 service 传递 |
+| `shield_player` | 玩家认证、登录、重连、离线消息、PlayerManager | `shield_net`、`shield_lua`、数据插件 binding、`shield_global`（可选） | 暴露裸 session/连接句柄跨 service 传递 |
 | `shield_server` | 服务器状态、维护模式、关闭流程、状态通知 | `shield_core`、`shield_ops` 快照接口 | 替代 core bootstrap、接管玩家生命周期 |
 | `shield_ops` | metrics、health、diagnostics、console、profile | runtime snapshot、只读计数器、模块公开状态接口 | 反向控制 core 语义、成为业务依赖 |
 
@@ -181,8 +181,8 @@ Shield 的公共契约按“谁拥有、谁定义、谁测试”分配：
 | `ServiceRegistry` | `shield_lua` | runtime 内部 | 不适用 | 管理 name reserve/publish/query/unregister；实现于 `LuaServiceManager` 内部 |
 | `MessageEnvelope` | `shield_lua` | runtime 内部 | 可以编码 | 普通 Service send/call 信封；CAF 传输类型见 `shield/core/service_message.hpp` |
 | Lua VM | `shield_lua` | runtime 内部 | 不可以 | 每个 Service 私有，随 actor 生命周期管理 |
-| `SessionHandle` | `shield_net` | Gateway runtime 内部 | 不可以 | live 连接 owner；不进入业务 Lua 或 CAF payload |
-| `SessionRoutingContext` | Gateway runtime | runtime 内部 | 不可以 | session 绑定（target ServiceHandle、player_id、epoch、protocol profile） |
+| `Session`（`shield_net`） | `shield_net` | Gateway runtime 内部 | 不可以 | live 连接 owner；不进入业务 Lua，跨服务只以只读 `ClientContext`/`ClientRef` 标记传播 |
+| `SessionBinding` | Gateway runtime | runtime 内部 | 不可以 | session 单一 target 绑定（target service、player_id、epoch、protocol profile） |
 | `ClientContext` | Service adapter | 客户端 RPC handler | 不可以 | 单次入站的只读可信上下文 |
 | `ClientRef` | Service adapter | Lua + 内部消息 | 可以 | Gateway 地址、session id/epoch 和 player id 的值引用；不是 actor target |
 | `ServiceAddress` / `NodeId` | `shield_core` / CAF adapter | runtime 内部，按 handle 封装 | 可以 | 本地/远端 Service actor 地址 |
@@ -192,7 +192,7 @@ Shield 的公共契约按“谁拥有、谁定义、谁测试”分配：
 ### 对象边界规则
 
 - Service 是唯一可寻址 actor 单元，`shield.send/call` 的 target 只能是 `ServiceHandle` 或可解析为 Service 的名称。
-- `SessionHandle` 永远不进入业务 Lua，也不通过 CAF 消息传播。
+- 裸 `Session`/连接句柄永远不进入业务 Lua；业务侧只接触只读 `ClientContext`/`ClientRef`（值语义标记可跨服务序列化并物化为只读 userdata）。
 - `ClientRef` 可以跨 Service/进程序列化，但只能用于客户端回包、关闭和动态路由操作，不能作为 actor target。
 - 玩家状态是 PlayerService 私有 Lua table；不建立 PlayerSession、PlayerRef、Entity mailbox 或第二套 RPC runtime。
 - 客户端 RPC 使用 `ClientIngress/ClientEgress` 内部消息；普通 Service RPC 使用 `MessageEnvelope`，二者不混成字符串消息。
@@ -261,7 +261,7 @@ socket bytes
 - 目标服务转发给其他服务由 Lua 内部决定，不在 Gateway 层面参与。
 - route_id 的唯一职责是在目标 VM 内选择 handler。
 - Gateway 不解普通业务 body、不持有业务 handler。
-- `SessionHandle` 不进入业务 Lua；目标 Service 只接收只读 `ClientContext` 与解码后的 RPC 参数。
+- 裸连接句柄不进入业务 Lua；目标 Service 只接收只读 `ClientContext` 与解码后的 RPC 参数。
 
 ### 4. Cluster 扩展路径
 
@@ -380,7 +380,7 @@ shield_core + modules
 最终不做：
 
 - 不进入最小 Lua API 主线。
-- 不把 `SessionHandle` 变成可跨 service 业务对象。
+- 不把裸 session/连接句柄变成可跨 service 业务对象（跨服务只传 `ClientContext`/`ClientRef` 标记）。
 
 ### `shield_server`
 

@@ -18,8 +18,8 @@ int main(int argc, char** argv) {
 
 ```yaml
 actors:
-  - name: echo
-    script: scripts/echo.lua
+  - name: auth
+    script: scripts/auth.lua
     instances: 1
 ```
 
@@ -37,11 +37,17 @@ return M
 
 ## 当前状态
 
-- `examples/hello_world/` 已接入统一 C++ 入口并可构建启动；完整 Lua 行为验收仍待补。
+- `examples/hello_world/` 是可构建、可启动的完整示例：auth（TCP 监听 +
+  预登录 login）→ player（认证后单一 target）→ room（私有转发 + s2c
+  回包）的客户端 RPC 闭环，并配有两个 acceptance 测试（脚本/配置存在性、
+  真实 TCP e2e：`tests/acceptance/test_client_rpc_e2e.cpp`）。
 - `include/shield/shield.hpp` 和 `shield::run(argc, argv)` 已落地，并有 CLI smoke tests。
-- `config/app.yaml` 已收敛为 Phase 1 最小配置；配置错误会在启动期 fail fast。
-- Lua service 文件必须返回 table，当前已支持 `on_init(args)`、`on_exit(reason)`、最小 `spawn/send/call/self/sender/names/now/log` 路径。
-- `shield.call` / `shield.call_timeout` 和 handler 内的 `shield.sleep` 已走 coroutine-aware 路径；timer callback 与 fork task 同样以协程方式执行，可在其中 `sleep`/`call` 而不阻塞 actor。
+- 配置错误在启动期 fail fast；`--check-config` 可离线校验。
+- Lua service 文件必须返回 table；`on_init(args)`、`on_exit(reason)` 与
+  `send/call/self/sender/names/now/log` 已可用。
+- `shield.call` 与 handler 内的 `shield.sleep` 走 coroutine-aware 路径；
+  timer callback、fork task 与客户端 RPC handler 同样以协程方式执行，可
+  在其中 `sleep`/`call` 而不阻塞 actor。
 - 后端能力通过插件系统 v1 提供；没有声明实例或 binding 时，业务代码必须按不可用能力处理。
 
 ## 后续验收标准

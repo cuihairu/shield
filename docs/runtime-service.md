@@ -441,7 +441,7 @@ end
 ```yaml
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/auth.lua
     panic_threshold:
       consecutive_errors: 10      # 连续 10 次 on_error 后触发 on_panic
       window: 60000               # 统计窗口 60 秒
@@ -621,7 +621,7 @@ stop accept / readiness
 ```yaml
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/auth.lua
     restart:
       policy: on-failure          # always | on-failure | never
       max_retries: 5              # 最大重试次数（0 = 无限）
@@ -699,7 +699,7 @@ retry 5: 30s (达到 max_delay)
 ```yaml
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/auth.lua
     depends_on:                # 依赖的服务
       - player_manager
       - server_manager
@@ -774,7 +774,7 @@ end
 ```yaml
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/auth.lua
     limits:                          # 可选覆盖默认值
       max_coroutines: 2000
       max_pending_calls: 2000

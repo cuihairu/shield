@@ -9,7 +9,7 @@ is not a currently verified runnable guide.
 my-game/
 ├── config/app.yaml
 └── scripts/
-    ├── gateway.lua
+    ├── auth.lua
     ├── room.lua
     └── chat.lua
 ```
@@ -26,7 +26,7 @@ log:
 
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/auth.lua
     network:
       tcp: "0.0.0.0:8001"
     rpc:

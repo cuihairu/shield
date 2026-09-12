@@ -54,7 +54,7 @@
 
 决策：
 
-- Phase 1 只冻结 TCP session、`SessionHandle` 和 basic transport framing。
+- Phase 1 只冻结 TCP session 与 basic transport framing。
 - UDP、KCP、WebSocket 保留为目标语义和后续扩展，不作为 Phase 1 验收阻塞项。
 - HTTP 业务 gateway 不进入 core；HTTP 管理端点只在 `shield_ops` 显式启用时存在。
 
@@ -129,7 +129,7 @@
 - 跨 service 玩家引用命名为 `PlayerRef`，不命名为 `PlayerHandle`，避免与 `ServiceHandle` 混淆。
 - `PlayerRef` 是 player 模块内部引用，**不是** `ServiceHandle` 的替代品。
 - `PlayerRef` 结构为 `{ uid, node_id, service_id, epoch }`；`epoch` 来自 shield_cluster 的 `node_epoch`，单节点为 0。
-- 跨 service payload **只能**传 `PlayerRef`，禁止传 `SessionHandle` 或完整 `PlayerSession`。
+- 跨 service payload **只能**传 `PlayerRef`（或客户端 RPC 的只读 `ClientContext`/`ClientRef` 标记），禁止传裸连接句柄或完整 `PlayerSession`。
 - `shield.player.resolve(ref)` P0 仅冻结本地 resolve；远端 resolve 留 Phase 2+，由 `shield_cluster` + `shield_player` 协作定义。
 - ref 失效返回 `nil, Error{code="player_not_found"}`，不抛错。
 
@@ -184,7 +184,7 @@
 
 - `shield.buffer` / `shield.crypto` / `shield.socket` / `shield.stream` / `shield.tls` 这类 runtime primitives 只保留为后置方向，不进入当前主路径。
 - 不把 cosocket 风格 API 放进当前对业务用户的默认心智模型。
-- 当前推荐心智模型保持三件事：客户端入站走 gateway / `SessionHandle`，服务间走 `shield.send/call`，对外 HTTP 走 `shield.http`。
+- 当前推荐心智模型保持三件事：客户端入站走 gateway 单一 target + 只读 `ClientContext`/`ClientRef`，服务间走 `shield.send/call`，对外 HTTP 走 `shield.http`。
 - 若未来推进 primitives，也应作为高级能力或后置阶段能力，而不是当前默认推荐路径。
 - JWT/Auth 不是基础组件层中心能力，也不作为 Shield 官方插件发布；应由业务层基于基础原语或外部服务实现。
 

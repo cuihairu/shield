@@ -40,7 +40,7 @@
 | [消息语义](runtime-messaging.md) | MessageEnvelope、MessagePayload、send、call、背压、QoS、超时、nested call、coroutine 调度、错误处理 |
 | [定时器语义](runtime-timer.md) | timer API、时间语义、错误语义、sleep、fork、Task ID |
 | [Lua VM 语义](runtime-lua-vm.md) | Lua VM 模型、热更新策略、Blue-Green 替换 |
-| [网络语义](runtime-network.md) | shield_net、shield_transport、gateway、SessionHandle、Phase 1 TCP 范围、deferred UDP/KCP/WebSocket |
+| [网络语义](runtime-network.md) | shield_net、shield_transport、gateway、`ClientContext`/`ClientRef`、Phase 1 TCP 范围、deferred UDP/KCP/WebSocket |
 | [数据访问架构](runtime-data.md) | core 零数据、插件数据接口、binding 调用形态、连接池归插件自治 |
 | [日志语义](runtime-log.md) | 日志级别、结构化格式、上下文注入、轮转、审计日志 |
 | [Starter 系统](starter-system.md) | BootstrapContext、Starter 顺序、ScriptStarter、旧 DI/插件设计删除 |

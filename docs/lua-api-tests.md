@@ -17,7 +17,7 @@ tests/lua_api/
 ├── lua_api_test_harness.cpp
 ├── scripts/
 │   ├── lifecycle_service.lua
-│   ├── messaging_echo.lua
+│   ├── messaging_service.lua
 │   ├── timer_service.lua
 │   ├── data_service.lua
 │   ├── gateway_service.lua
@@ -207,7 +207,7 @@ Harness 要求：
 | LAPI-011-19 | `shield.player.resolve` 远端 ref（remote resolve 未启用） | 解析 ref | `nil, remote_resolve_unimplemented` |
 | LAPI-011-20 | `shield.player.resolve` 字段非法 | 解析 ref | `nil, invalid_player_ref` |
 | LAPI-011-21 | cross-service 传 `PlayerRef` | send payload | receiver 拿到等价 ref |
-| LAPI-011-22 | cross-service 传 `SessionHandle` | send payload | runtime 拒绝并返回错误 |
+| LAPI-011-22 | cross-service 传裸连接句柄（非 `ClientContext`/`ClientRef`） | send payload | runtime 拒绝并返回错误 |
 | LAPI-011-23 | cross-service 传完整 `PlayerSession` | send payload | runtime 拒绝并返回错误 |
 | LAPI-011-24 | auth 返回 `anonymous=true` 且未开启 anonymous | 认证 | `nil, anonymous_disabled` |
 | LAPI-011-25 | anonymous 已开启且 auth 返回 `anonymous=true` | 认证 | 状态进入 `anonymous`，默认不触发 persistence |
@@ -249,5 +249,5 @@ Harness 要求：
 | LAPI-008-04 | SQL error 路径需要由 SQL 插件测试或统一 mock 插件覆盖 |
 | LAPI-008-07 | subscribe then exit：需要 queue plugin mock/集成测试覆盖订阅生命周期 |
 | ~~LAPI-009-01~05~~ | ~~Gateway session 模拟~~ 已覆盖：connect/message/disconnect/queue_full/stale_send 共 6 个测试 ✅ |
-| LAPI-009-real-session | 真实 TCP session 到 Lua `SessionHandle` userdata 的封装仍未覆盖；当前 bootstrap 已接入 TCP listener 与 LuaGatewayBridge，但测试仍使用 table 模拟 |
+| LAPI-009-real-session | 真实 TCP session → `ClientContext`/`ClientRef` 的闭环 | `tests/acceptance/test_client_rpc_e2e.cpp`（M6）：真实 TCP 客户端 login→bind→move→s2c 回包 |
 | ~~LAPI-002-06~~ | ~~`on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit`~~ 已实现：`_is_in_exit()` + Lua wrapper guard，`OnExitCallGuard` 测试覆盖 ✅ |

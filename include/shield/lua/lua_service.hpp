@@ -1,10 +1,12 @@
 // [SHIELD_LUA] Lua service interface
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <sol/forward.hpp>
 #include <string>
 #include <string_view>
@@ -88,13 +90,23 @@ public:
     CallResult call(std::string_view target, std::string_view method,
                     const nlohmann::json& args, int32_t timeout_ms = 5000);
 
-    // Exit a service
-    void exit(std::string_view service_id, std::string_view reason = "normal");
+    // Exit a service. `on_exit` runs on the service's actor thread via a
+    // structured exit request; `deadline` (steady clock, from shutdown_all)
+    // bounds how long the caller waits for it. When the deadline passes the
+    // hung teardown takes over: the VM is never destroyed while its on_exit
+    // may still be running, so the service is retired without touching any
+    // of its sol state. nullopt means wait without a deadline.
+    void exit(std::string_view service_id, std::string_view reason = "normal",
+              std::optional<std::chrono::steady_clock::time_point> deadline =
+                  std::nullopt);
 
     // Exit all services in reverse spawn order. `stop_budget_ms` bounds the
-    // graceful phase (on_exit + actor teardown per service, checked between
-    // services): once exhausted, the remaining services take the force path
-    // (no on_exit; registry removal + actor kill). <= 0 means unbounded.
+    // whole graceful phase: every service gets on_exit on its own actor
+    // thread, but the total wait may not exceed the budget — once it is
+    // exhausted, the remaining services take the force path (no on_exit;
+    // registry removal + actor kill), and a service whose on_exit outlives
+    // its share of the budget is retired by the hung teardown (no sol state
+    // is destroyed underneath the stuck actor thread). <= 0 means unbounded.
     void shutdown_all(std::string_view reason = "stopping",
                       int64_t stop_budget_ms = 0);
 

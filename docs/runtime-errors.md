@@ -106,7 +106,7 @@ Redis 系插件 namespace（如 `shield.cache.redis(...)`、`shield.queue.redis(
 
 ## 五、网络错误
 
-`shield_net` / `SessionHandle` 相关的错误。
+`shield_net` / session / 客户端 RPC 相关的错误。
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|

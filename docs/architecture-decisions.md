@@ -137,9 +137,9 @@ socket bytes
 
 ## AD-06：SessionHandle 边界
 
-**决策**：
+**决策**（实现口径见下方后继说明；`SessionHandle` 类型已删除）：
 
-- `SessionHandle` 只存在于 network / gateway 边界。
+- 裸 session/连接句柄只存在于 network / gateway 边界，不进入业务 Lua 或 CAF payload。
 - 登录后每个 `ClientIngress` 必须携带 runtime 注入的可信客户端上下文：Gateway 地址、`session_id`、session epoch、`player_id` 和 protocol profile id。它们是可序列化值，不是连接对象。
 - Lua handler 只看到只读 `ClientContext` 与该 RPC 的业务参数；`ClientContext` 可派生用于回包的 `ClientRef`；该值内部保留 protocol profile identity，但不向业务暴露 socket、CAF handle、codec 或 frame。
 - Player/Scene/Room/Map Service 通过注册的 server-to-client RPC helper 发送 `ClientEgress`；它们不调用通用 session send API，也不接触 codec / frame / ProtocolPipeline。
@@ -150,6 +150,8 @@ socket bytes
 - 目标 Service 无论位于本地还是远端，都能获得可信 `player_id` 和回包引用。
 - 业务 Service 与具体协议、socket 实现彻底解耦。
 - 断线、重连和 stale 回包的 owner/epoch 校验集中在 Gateway 一处。
+
+**后继实现**（架构纠偏 M2 起）：`SessionHandle` 类型已删除。上述边界由只读 `ClientContext`（单次入站的 userdata）与 `ClientRef`（可回包的值引用，经 `__shield_client_ref` JSON 标记跨服务序列化并物化为只读 userdata）承载；session 单一 target 绑定与 epoch 由 Gateway 的 `SessionBinding` 管理，裸连接句柄不再有任何业务侧类型。
 
 ---
 

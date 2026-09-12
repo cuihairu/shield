@@ -27,6 +27,32 @@ set_tests_properties(test_hello_world_acceptance PROPERTIES
 )
 shield_copy_runtime_dlls(test_hello_world_acceptance)
 
+# Client RPC end-to-end: a real TCP client drives the hello_world closure
+# (login -> bind -> move -> egress reply) over the idlen wire format through
+# bootstrap + the listener pipeline. Sources the example scripts from the
+# source tree via SHIELD_SOURCE_DIR.
+add_executable(test_client_rpc_e2e acceptance/test_client_rpc_e2e.cpp)
+target_link_libraries(test_client_rpc_e2e
+    PRIVATE
+        shield_bootstrap
+        shield_lua
+        Boost::unit_test_framework
+        Boost::headers
+)
+target_include_directories(test_client_rpc_e2e
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+)
+target_compile_definitions(test_client_rpc_e2e
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME test_client_rpc_e2e COMMAND test_client_rpc_e2e)
+set_tests_properties(test_client_rpc_e2e PROPERTIES
+    LABELS "acceptance"
+    TIMEOUT 120
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+shield_copy_runtime_dlls(test_client_rpc_e2e)
+
 # Header-first protocol routing tests - verifies route-id based forwarding and
 # lazy body decode primitives used by protocol profiles.
 add_executable(test_protocol_routing transport/test_protocol_routing.cpp)

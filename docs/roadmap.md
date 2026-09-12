@@ -14,19 +14,19 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 1. [x] **CAF 调度地基**：dispatch 上下文为 thread-local（`tls_dispatch_stack`），Service registry 由 `shared_mutex` 保护；不改变 public 语义。
 2. [x] **CAF Service runtime 闭环**：Lua Service 的 spawn、mailbox、send、call、exit 全部落到 CAF actor；legacy Mailbox / worker thread / pump_once / 同步调用 fallback 已删除，`LuaServiceManager` 构造时必须绑定 `caf::actor_system`。
-3. [ ] **Service call 语义**：使用 CAF request/reply 驱动 Lua coroutine yield/resume，禁止跨 VM 同步重入。
-4. [ ] **客户端内部消息类别**：CAF behavior 接入结构化 `ClientIngress`、`ClientEgress` 与 client lifecycle control，禁止把所有 envelope 压成字符串或普通 Lua method。
-5. [ ] **RPC descriptor 与 binding**：compiled descriptor 定义 `route_id, direction, request_schema, response_schema, binding_hint`；每个目标 VM 启动时编译 `route_id -> cached Lua handler`，缺失或重复 binding 直接启动失败。
-6. [ ] **Session 绑定**：Gateway 维护 session 绑定（target ServiceHandle、player_id、epoch、protocol profile）。认证前 target = AuthService，认证后原子切换 target = PlayerService。room/scene/map 动态路由由 PlayerService 私有状态管理。
-7. [ ] **入站路径**：Gateway 只读 header `route_id`，经轻量路由表校验后投递 `ClientIngress` 到 session.target；目标 actor 命中 handler 后按 RPC schema 解 body。删除 Gateway 提前 decode、Lua 通用客户端回调和二次 route dispatch。
-8. [ ] **出站注册方法**：生成的 server-to-client RPC helper 构造 `ClientEgress`；Gateway 校验 session 后把 `route_id` 写入 header。删除通用 session 发送和 route/payload envelope。
-9. [ ] **Route direction 与安全校验**：冻结并实现 `ClientToServer` / `ServerToClient`，校验预登录权限、认证状态、body schema 与 stale epoch。
-10. [ ] **多 worker 调度**：由 CAF scheduler 并行执行不同 Service actor，保持单 Service/Lua VM 同时只有一个执行者。
+3. [x] **Service call 语义**：使用 CAF request/reply 驱动 Lua coroutine yield/resume，禁止跨 VM 同步重入。（M4：统一 call_session 协程路径 + C++ 外部等待者；timer/fork 回调协程化；`SyncCallMessage` 与 CV 阻塞已删除）
+4. [x] **客户端内部消息类别**：CAF behavior 接入结构化 `ClientIngress`、`ClientEgress` 与 client lifecycle control，禁止把所有 envelope 压成字符串或普通 Lua method。（M2/M3）
+5. [x] **RPC descriptor 与 binding**：compiled descriptor 定义 `route_id, direction, request_schema, response_schema, binding_hint`；每个目标 VM 启动时编译 `route_id -> cached Lua handler`，缺失或重复 binding 直接启动失败。（M1：`actors[].rpc.routes` 为唯一静态来源，`network.protocol.routes` 出现即报错）
+6. [x] **Session 绑定**：Gateway 维护 session 绑定（target ServiceHandle、player_id、epoch、protocol profile）。认证前 target = AuthService，认证后原子切换 target = PlayerService。room/scene/map 动态路由由 PlayerService 私有状态管理。（M2：`SessionBinding` CAS `apply_binding`，epoch 递增使旧引用失效）
+7. [x] **入站路径**：Gateway 只读 header `route_id`，经轻量路由表校验后投递 `ClientIngress` 到 session.target；目标 actor 命中 handler 后按 RPC schema 解 body。删除 Gateway 提前 decode、Lua 通用客户端回调和二次 route dispatch。（M3：`on_client_message` JSON 压平回调与 body 藏 route 分支已删除）
+8. [x] **出站注册方法**：生成的 server-to-client RPC helper 构造 `ClientEgress`；Gateway 校验 session 后把 `route_id` 写入 header。删除通用 session 发送和 route/payload envelope。（M2/M6：`shield.client_rpc.<name>` helper；header-route envelope（idlen/typelen）下 json body 为纯业务数据，不再写 `{route, route_id, payload}` 包装）
+9. [x] **Route direction 与安全校验**：冻结并实现 `ClientToServer` / `ServerToClient`，校验预登录权限、认证状态、body schema 与 stale epoch。（direction/requires_auth/stale epoch 已实现并测试；body schema 按冻结口径收敛为 descriptor 元数据记录，物理校验随 schema 工具链后置）
+10. [x] **多 worker 调度**：由 CAF scheduler 并行执行不同 Service actor，保持单 Service/Lua VM 同时只有一个执行者。（M1 起 service 即 CAF actor，shutdown_all 的结构化退出保持预算内单执行者语义）
 11. [x] **死代码与旧测试清理**：删除旧 Gateway bridge/legacy frame 客户端业务入口，以及无调用方的 transport codec/encryption 残留；测试矩阵只验收新契约。
 
 ### 客户端 RPC 闭环验收
 
-- wire body 中只有纯业务数据；唯一运行时路由键是 header `route_id`。
+- wire body 中只有纯业务数据；唯一运行时路由键是 header `route_id`。（已由 `tests/acceptance/test_client_rpc_e2e.cpp` 在真实 TCP 链路上验证：idlen 帧头 route_id、login → bind → move → s2c 回包、body 无路由字段）
 - 所有客户端消息经 Gateway 发给 session.target（登录前 → AuthService，登录后 → PlayerService）。
 - Gateway 不从 route_id 解析目标服务，不做多目标路由。
 - 目标服务转发给 room/scene/map 由 Lua 内部决定。
@@ -110,7 +110,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | `shield_transport` | 当前 CMake target 已存在 | 协议管线 + RPC descriptor 表；旧 frame/codec/encryption 与对应测试已删除，TCP 无 `network.protocol` 为启动错误 |
 | `shield_net` | 当前 CMake target 已存在 | 单实例 TCP listener/session 已接入 bootstrap 的 `actors[].network.tcp`；UDP/WebSocket 仍为 deferred |
 | `shield_plugin` | 当前 CMake target 已存在 | 插件系统 v1 已接入 manifest、instance、binding、C ABI、Lua register_lua 和官方数据插件；host 不链接 DB/Redis 驱动，不存在 `shield_data` target |
-| `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout/spawn 已实现（异步 spawn 由专用 worker 线程执行 on_init，含 name reserve/publish 与超时补偿退出）；`shield.panic` 已接入 on_panic + exit("panic")；timer callback 已通过 pcall 包裹执行；fork callback raw_fn 已存储；on_error/on_panic/on_exit guard 已实现；gateway 已通过真实 `SessionHandle` userdata 连接到 `shield_net::Session`，并覆盖 protocol ingress/egress 桥接测试 |
+| `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout/spawn 已实现（异步 spawn 由专用 worker 线程执行 on_init，含 name reserve/publish 与超时补偿退出）；`shield.panic` 已接入 on_panic + exit("panic")；on_error/on_panic/on_exit guard 已实现；客户端 RPC 已接入 typed `ClientIngress`/`ClientEgress` 与只读 `ClientContext`/`ClientRef` userdata（`shield.client.bind/close` + `shield.client_rpc.<name>` helper），`shutdown_all` 支持预算内结构化退出与超时强杀 |
 | `shield_bootstrap` | 当前 CMake target 已存在 | `shield::run` 和 CLI/config smoke tests 已登记在主 CMake |
 | optional modules | CMake 开关存在，默认关闭 | `shield_cluster` 已有静态 peers、节点状态快照和 route cache 查询骨架；跨节点 transport/route 学习仍未实现（实测：peers 启动即标记 online 且无心跳降级，`shield.cluster.query` 因 route cache 为空必然失败，详见 runtime-cluster.md）。`shield_global/ops` 仍未进入实现完成范围 |
 
@@ -153,5 +153,5 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 说明：
 
 - 当前主路径不要求用户理解或使用上述 primitives。
-- 当前推荐心智模型仍然是：客户端入站走 gateway / `SessionHandle`，服务间走 `shield.send/call`，对外 HTTP 走 `shield.http`。
+- 当前推荐心智模型仍然是：客户端入站走 gateway 单一 target + `ClientContext`/`shield.client_rpc.<name>` helper，服务间走 `shield.send/call`，对外 HTTP 走 `shield.http`。
 - primitives / cosocket 方向只保留为后置草案，不作为当前阶段阻塞项。

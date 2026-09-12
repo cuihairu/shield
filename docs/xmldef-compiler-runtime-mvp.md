@@ -395,7 +395,7 @@ Phase 1 推荐启动顺序：
 ### Integration Tests
 
 - protocol pipeline ingress decode-local -> Lua handler
-- Lua `session:send(...)` -> xmldef encode -> envelope
+- Lua s2c helper -> xmldef encode -> envelope（route_id 只来自 descriptor，不从 body 推断）
 - binding 缺失导致启动失败
 
 ## Phase 1 Non-goals

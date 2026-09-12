@@ -2,11 +2,12 @@
 
 > 状态：descriptor 契约、启动期 binding 编译（架构纠偏 M1）、session 单一
 > target 绑定、`ClientContext`/`ClientRef`、typed
-> `ClientIngress`/`ClientEgress` 入站分发（M2/M3）均已实现；文中相应小节
-> 标注了责任里程碑。本文是客户端 RPC 路由、body 编解码和 Gateway/Service
-> 边界的唯一设计依据；与旧 `LuaGatewayBridge` body-route、JSON 常驻消息回调
-> 或 `service_routes` 多绑定相冲突的描述均为已删除遗留，不是兼容
-> 目标。
+> `ClientIngress`/`ClientEgress` 入站分发（M2/M3）、端到端闭环
+> （M6：`tests/acceptance/test_client_rpc_e2e.cpp` 真实 TCP 验证）均已实现；
+> 文中相应小节标注了责任里程碑。本文是客户端 RPC 路由、body 编解码和
+> Gateway/Service 边界的唯一设计依据；与旧 `LuaGatewayBridge` body-route、
+> JSON 常驻消息回调或 `service_routes` 多绑定相冲突的描述均为已删除遗留，
+> 不是兼容目标。
 
 ## 决策
 
@@ -40,7 +41,7 @@ descriptor 明确“哪个 route 由哪个 actor 的哪个 Lua 方法处理”�
 | `RpcDescriptor` | descriptor/bootstrap | `route_id`、direction、`binding`、`owner_service`、auth/policy 元数据 | ServiceAddress、socket、live session |
 | Session 单一 target 绑定 | Gateway | target service、player_id、epoch、profile [M2] | 全局 service registry、业务 handler |
 | 每 VM RPC 表 | target Service | 本服务拥有的 route -> 已编译 `sol::function` | socket、listener、session 所有权 |
-| `ClientContext` / `ClientRef` | Service adapter | 可信 client identity 和 Gateway 回包地址 [M2] | SessionHandle、frame、codec 实现 |
+| `ClientContext` / `ClientRef` | Service adapter | 可信 client identity 和 Gateway 回包地址 [M2] | 裸连接句柄、frame、codec 实现 |
 
 ## Descriptor 是唯一静态来源
 
@@ -166,6 +167,11 @@ outbound: Lua response -> ClientEgress.body_bytes
   dispatch。
 - codec 不能从 body 抽取或猜测 route；body codec 的输入 route 已由
   descriptor 绑定，输出只表示业务 body。
+- 出站 body 形态由 envelope 能力决定（M6 契约）：header-route envelope
+  （`idlen`/`typelen`）把 route 写进帧头，json codec 出站即为纯业务
+  JSON，绝不写 `{route, route_id, payload}` 包装；无帧头 route 的遗留
+  envelope（`lenprefix`/`delimiter`）保留该包装，否则其帧在线上不可
+  路由。入站对 body 中遗留的 `payload` 包装保持解包容忍。
 - raw forwarding（`action: forward_raw`）必须有显式 ownership；它不是
   普通 Lua RPC 的回退路径，也不会静默丢弃。
 
@@ -185,7 +191,7 @@ Lua handler
 ```
 
 Gateway 不从 response table 的 `route_id`、`route`、`method` 或 `msg_id`
-推断 route。普通业务 Service 不获得 `SessionHandle`，不直接调用
+推断 route。普通业务 Service 不获得裸连接句柄，不直接调用
 `session:send`，不接触 frame、envelope 或 `ProtocolPipeline`。
 `ClientEgress` 是 fire-and-forget：入队成功只表示进入 Gateway 写回流程。
 
@@ -219,4 +225,5 @@ Gateway 不从 response table 的 `route_id`、`route`、`method` 或 `msg_id`
 
 以 [roadmap](roadmap.md) 架构纠偏 3-11 的验收契约为准；端到端闭环
 （真实 TCP 客户端 login -> bind -> move -> s2c 回包、header route_id 正
-确、body 纯业务）在 M6 的 acceptance 测试中落地。
+确、body 纯业务）已由 `tests/acceptance/test_client_rpc_e2e.cpp` 落地
+（M6）。

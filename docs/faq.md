@@ -16,7 +16,7 @@ Shield 可以有官方 `shield_cluster` 可选模块，用于多进程/多机器
 
 ## 还会支持 HTTP 吗？
 
-Phase 1 只冻结 TCP session、`SessionHandle` 和 basic transport framing。UDP、KCP、WebSocket 是后续扩展目标，不作为第一版最小验收阻塞项。
+Phase 1 只冻结 TCP session 与 basic transport framing。UDP、KCP、WebSocket 是后续扩展目标，不作为第一版最小验收阻塞项。
 
 HTTP 不进入 `shield_core` 第一版，也不作为业务 gateway 的默认 transport。第一版只允许 `shield_ops` 在显式启用时提供 HTTP 管理端点，例如 `/ops/health`、`/ops/status`、`/ops/metrics`。业务 HTTP server、REST router、middleware chain 和 Web framework 集成均推迟到独立 transport 扩展或应用层自行实现。
 

@@ -441,7 +441,7 @@ socket.Send(rawBytes);
 
 为避免 Lua 手拼 route/schema，服务端也应有辅助层：
 
-- `session:send(message_table)` 由 `RouteResolver` 处理
+- 客户端回包只经 descriptor 注册的 s2c helper（`shield.client_rpc.<name>`），不走通用 `session:send`
 - 可选生成 `xmldef.send.AvatarMove(session, msg)` helper
 - 可选生成 `shield.xmldef.routes.AvatarMove`
 

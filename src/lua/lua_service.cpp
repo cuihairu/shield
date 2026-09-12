@@ -101,6 +101,14 @@ struct LuaServiceManager::Impl {
     // shield.call even though the service is not published yet. Guarded by
     // registry_mutex like services.
     std::unordered_map<std::string, std::shared_ptr<LuaVM>> init_vms;
+
+    // VMs retired by the hung teardown (shutdown budget exhausted while
+    // on_exit is still running). Declared BEFORE service_rpc so that, at
+    // destruction, the sol handles in service_rpc unref against a still
+    // alive lua_State — a hung VM must outlive every handle that points
+    // into it, which is why these are never destroyed here (the leak is
+    // bounded by the number of stuck services a process may accumulate).
+    std::vector<std::shared_ptr<LuaVM>> hung_vms;
     std::unordered_map<std::string, std::string> published_names;
     std::unordered_map<std::string, std::unordered_set<std::string>>
         owned_names;
@@ -481,6 +489,15 @@ struct LuaServiceManager::Impl {
                 }
             }
         }
+
+        // Dispatch context for the handler coroutine: without it a
+        // shield.client.bind inside the handler records an empty
+        // caller_service, and the completion cannot route back to this
+        // actor (the pending call is dropped silently and the coroutine
+        // never resumes). Client ingress is gateway-originated
+        // fire-and-forget, so there is no sender/trace/deadline.
+        DispatchScope scope(*this, id, "", false);
+
         std::string error;
         if (!runtime.invoke_client_rpc(service, handler, normalized, &error,
                                        manager, id)) {
@@ -748,6 +765,98 @@ struct LuaServiceManager::Impl {
         }
         caf::scoped_actor self{system};
         self->wait_for(actors);
+    }
+
+    // wait_for_actors with a deadline (nullopt = unbounded, same as
+    // wait_for_actors). CAF's wait_for has no timeout overload, so this
+    // drives the wait off down_msg monitors and a receive deadline instead.
+    // Returns false when the deadline passed with actors still alive.
+    bool wait_for_actors_until(
+        const std::vector<caf::actor>& actors,
+        std::optional<std::chrono::steady_clock::time_point> deadline) {
+        if (actors.empty() || !deadline) {
+            wait_for_actors(actors);
+            return true;
+        }
+        std::vector<caf::actor> live;
+        for (const auto& actor : actors) {
+            if (actor) {
+                live.push_back(actor);
+            }
+        }
+        if (live.empty()) {
+            return true;
+        }
+        caf::scoped_actor self{system};
+        for (const auto& actor : live) {
+            self->monitor(actor);
+        }
+        size_t remaining = live.size();
+        while (remaining > 0) {
+            auto now = std::chrono::steady_clock::now();
+            if (now >= *deadline) {
+                return false;
+            }
+            self->receive(
+                [&](const caf::down_msg& down) {
+                    for (const auto& actor : live) {
+                        if (down.source == actor.address()) {
+                            --remaining;
+                            break;
+                        }
+                    }
+                },
+                caf::after(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    *deadline - now)) >>
+                    [] {
+                        // Timed out; the loop re-checks the deadline.
+                    });
+        }
+        return true;
+    }
+
+    // Teardown for a service whose on_exit outlived the shutdown budget.
+    // The actor thread may still be inside the stuck on_exit, so nothing
+    // that could touch its lua_State runs here: fork/timer/RPC/http state
+    // stays put (their sol handles are kept valid by the VM parked in
+    // hung_vms) and the actor handle is parked instead of joined. The
+    // registry drops the service so callers observe it as gone.
+    void hung_service_teardown(const std::string& id) {
+        std::shared_ptr<LuaVM> service;
+        std::vector<std::string> retracted;
+        {
+            std::unique_lock lock(registry_mutex);
+            if (auto vm_it = services.find(id); vm_it != services.end()) {
+                service = std::move(vm_it->second);
+                services.erase(vm_it);
+            }
+            if (service) {
+                hung_vms.push_back(std::move(service));
+            }
+            if (auto names_it = owned_names.find(id);
+                names_it != owned_names.end()) {
+                for (const auto& name : names_it->second) {
+                    published_names.erase(name);
+                    retracted.push_back(name);
+                }
+                owned_names.erase(names_it);
+            }
+            service_order.erase(
+                std::remove(service_order.begin(), service_order.end(), id),
+                service_order.end());
+            recently_exited.insert(id);
+            if (auto actor_it = service_actors.find(id);
+                actor_it != service_actors.end()) {
+                // Park without joining: the actor quits by itself once the
+                // stuck on_exit finally unwinds (or never, for a real
+                // deadlock — the process watchdog owns that case).
+                retire_actor(std::move(actor_it->second));
+                service_actors.erase(actor_it);
+            }
+        }
+        for (const auto& name : retracted) {
+            notify_name_change(name, "");
+        }
     }
 
     // Parks a driver handle instead of destroying it on this thread. See the
@@ -1798,8 +1907,9 @@ CallResult LuaServiceManager::call(std::string_view target,
     return CallResult::error(std::move(pending->error));
 }
 
-void LuaServiceManager::exit(std::string_view service_id,
-                             std::string_view reason) {
+void LuaServiceManager::exit(
+    std::string_view service_id, std::string_view reason,
+    std::optional<std::chrono::steady_clock::time_point> deadline) {
     const std::string id(service_id);
     std::shared_ptr<LuaVM> service;
     {
@@ -1819,7 +1929,9 @@ void LuaServiceManager::exit(std::string_view service_id,
     if (exiting_from_own_actor) {
         // Own-actor exit: we are already on the service's actor thread
         // (inside a dispatch handler), so running on_exit inline is the
-        // serialized continuation of the current message.
+        // serialized continuation of the current message. A deadline cannot
+        // apply: waiting out a stuck on_exit would mean waiting on this
+        // thread, which IS the stuck thread.
         std::string error;
         nlohmann::json args = std::string(reason);
         Impl::DispatchScope scope(*impl_, id, "", true);
@@ -1846,13 +1958,21 @@ void LuaServiceManager::exit(std::string_view service_id,
         // on_exit must complete before the teardown below: the handler
         // resolves its VM through the registry, and the VM's last owner
         // (the local `service` handle) dies with this frame.
-        impl_->wait_for_actors(actors_to_wait);
+        const bool settled =
+            impl_->wait_for_actors_until(actors_to_wait, deadline);
         // wait_for_actors joins on CAF's monitor-down, which is raised while
         // the actor's worker is still unwinding cleanup() — releasing the
         // last reference on this thread would destroy the actor storage
         // underneath it (TSan-verified heap corruption). Park the handles in
         // the graveyard; the Impl destructor releases them safely.
         impl_->retire_actors(std::move(actors_to_wait));
+        if (!settled) {
+            // Budget exhausted with on_exit still running: bail out of the
+            // teardown instead of destroying fork/timer/RPC/http state whose
+            // sol handles point into the VM the stuck thread is using.
+            impl_->hung_service_teardown(id);
+            return;
+        }
     }
 
     // Cancel forked tasks / timers / coroutines BEFORE erasing the service
@@ -1976,8 +2096,12 @@ void LuaServiceManager::shutdown_all(std::string_view reason,
             exists = impl_->services.contains(*it);
         }
         if (seen.insert(*it).second && exists) {
-            if (std::chrono::steady_clock::now() < deadline) {
-                exit(*it, reason);
+            const auto now = std::chrono::steady_clock::now();
+            if (now < deadline) {
+                // The whole budget is shared: every graceful exit waits at
+                // most until the common deadline, so one stuck on_exit
+                // cannot starve the services queued behind it.
+                exit(*it, reason, deadline);
             } else {
                 // Graceful budget exhausted: skip on_exit and the per-service
                 // teardown waits; just remove the registration and kill the

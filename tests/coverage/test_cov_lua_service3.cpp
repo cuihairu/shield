@@ -313,3 +313,117 @@ BOOST_AUTO_TEST_CASE(SpawnFailsOnMalformedRpcRoutes) {
     // The failed spawn published nothing.
     BOOST_CHECK(manager.query_service("cov_lsvc3_rpc_dup").empty());
 }
+
+// ---------------------------------------------------------------------------
+// shutdown_all budget (M6-a): the stop budget bounds the whole graceful
+// phase, per service on_exit runs on its own actor thread, and a hung
+// on_exit cannot starve the services queued behind it.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ShutdownGracefulExitWithinBudget) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // on_exit sleeps briefly (the blocking-sleep path: on_exit runs as a
+    // plain pcall, not a coroutine) — well inside the budget.
+    const auto spawned =
+        manager.spawn(write_script("cov_lsvc3_exit_ok.lua", R"lua(
+local M = {}
+function M.on_exit(reason)
+    shield.log.info("bye: " .. tostring(reason))
+    shield.sleep(30)
+end
+return M
+)lua"),
+                      opts_for("cov_lsvc3_exit_ok_impl"));
+    BOOST_REQUIRE(spawned.success);
+
+    const auto started = std::chrono::steady_clock::now();
+    manager.shutdown_all("cov_budget_ok", 5000);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    BOOST_CHECK_LT(elapsed, 3000);
+    // The graceful path retired the service for real.
+    BOOST_CHECK(manager.query_service("cov_lsvc3_exit_ok_impl").empty());
+}
+
+BOOST_AUTO_TEST_CASE(ShutdownHungOnExitTimesOut) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // on_exit spins for 2 seconds: far beyond the 250ms budget, but bounded
+    // so the actor thread recovers by itself and the test binary can exit.
+    const auto spawned =
+        manager.spawn(write_script("cov_lsvc3_exit_hung.lua", R"lua(
+local M = {}
+function M.on_exit(reason)
+    local t = shield.now()
+    while shield.now() - t < 2000 do end
+end
+return M
+)lua"),
+                      opts_for("cov_lsvc3_exit_hung_impl"));
+    BOOST_REQUIRE(spawned.success);
+
+    const auto started = std::chrono::steady_clock::now();
+    manager.shutdown_all("cov_budget_hung", 250);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    // The budget (plus scheduling slack), not the 2s on_exit, bounded the
+    // wait — the hung teardown did not join the stuck actor. 1500ms keeps
+    // this distinct from the ~2000ms an unbounded join would take.
+    BOOST_CHECK_LT(elapsed, 1500);
+    // The service is gone from the registry even though its on_exit never
+    // finished; the VM is parked in the hung graveyard, untouched.
+    BOOST_CHECK(manager.query_service("cov_lsvc3_exit_hung_impl").empty());
+}
+
+BOOST_AUTO_TEST_CASE(ShutdownSharesBudgetAcrossServices) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // Spawn order: busy (hung) first, quick second. shutdown_all exits in
+    // reverse spawn order, so the quick service is queued BEHIND the hung
+    // one — the shared deadline must still retire both, quickly.
+    const auto busy =
+        manager.spawn(write_script("cov_lsvc3_exit_busy.lua", R"lua(
+local M = {}
+function M.on_exit(reason)
+    local t = shield.now()
+    while shield.now() - t < 2000 do end
+end
+return M
+)lua"),
+                      opts_for("cov_lsvc3_exit_busy_impl"));
+    BOOST_REQUIRE(busy.success);
+    const auto quick =
+        manager.spawn(write_script("cov_lsvc3_exit_quick.lua", R"lua(
+local M = {}
+function M.on_exit(reason)
+    shield.sleep(20)
+end
+return M
+)lua"),
+                      opts_for("cov_lsvc3_exit_quick_impl"));
+    BOOST_REQUIRE(quick.success);
+
+    const auto started = std::chrono::steady_clock::now();
+    manager.shutdown_all("cov_budget_shared", 500);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    // Working path: ~800ms (quick graceful + busy timeout). An unbounded
+    // join of the busy on_exit would take ~2000ms more.
+    BOOST_CHECK_LT(elapsed, 1500);
+    // Both retired: quick gracefully inside its share, busy via the hung
+    // teardown — neither starved the other.
+    BOOST_CHECK(manager.query_service("cov_lsvc3_exit_quick_impl").empty());
+    BOOST_CHECK(manager.query_service("cov_lsvc3_exit_busy_impl").empty());
+}

@@ -111,7 +111,7 @@ network:
 ```yaml
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/auth.lua
     rate_limit:
       requests_per_second: 1000    # 每秒请求数
       burst_size: 100              # 突发大小

@@ -310,8 +310,32 @@ bool message_contains_route_hint(const nlohmann::json& message) {
             message.contains("msg_id") || message.contains("method"));
 }
 
+// Whether the frame envelope carries the route id in the header. Header-route
+// envelopes (idlen/typelen) make the body pure business data; envelopes
+// without a header route (lenprefix/delimiter) need the {route, route_id,
+// payload} wrapper below — it is the only way their frames stay routable.
+bool envelope_carries_route(const ProtocolProfile& profile) {
+    return profile.envelope_kind == EnvelopeKind::IdLen ||
+           profile.envelope_kind == EnvelopeKind::TypeLen;
+}
+
 nlohmann::json encode_structured_message(const DecodedBody& body,
-                                         const RouteEntry& route) {
+                                         const RouteEntry& route,
+                                         const ProtocolProfile& profile) {
+    if (envelope_carries_route(profile)) {
+        // Terminal contract: the route travels in the frame header only —
+        // never write route fields into the body.
+        if (body.has_message()) {
+            return *body.message;
+        }
+        if (!body.bytes.empty()) {
+            throw std::runtime_error(
+                "structured body codec expects business message, not raw "
+                "bytes");
+        }
+        return nlohmann::json::object();
+    }
+
     nlohmann::json message;
     if (body.has_message()) {
         if (message_contains_route_hint(*body.message)) {
@@ -959,10 +983,10 @@ DecodedBody JsonBodyCodec::decode(PacketRef packet, const RouteEntry& route) {
     return decode_structured_body(packet, route, std::move(json));
 }
 
-std::vector<std::uint8_t> JsonBodyCodec::encode(const DecodedBody& body,
-                                                const RouteEntry& route,
-                                                const ProtocolProfile&) {
-    const auto json = encode_structured_message(body, route);
+std::vector<std::uint8_t> JsonBodyCodec::encode(
+    const DecodedBody& body, const RouteEntry& route,
+    const ProtocolProfile& profile) {
+    const auto json = encode_structured_message(body, route, profile);
     const auto serialized = json.dump();
     return std::vector<std::uint8_t>(serialized.begin(), serialized.end());
 }

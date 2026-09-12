@@ -1,84 +1,64 @@
--- player.lua - 用户参考示例
+-- player.lua - Hello World 玩家服务(认证后的 session target)
 --
--- 演示新版插件自治 Lua API：
---   shield.database.<driver>(binding) 返回绑定到该逻辑名的 proxy
---   shield.cache.redis(binding)       同理
--- binding 由 app.yaml 的 plugins.bindings 声明；未声明时返回 nil, err。
+-- bind 成功后 ClientControlMessage::Bound 到达这里;move c2s RPC
+-- (descriptor owner=player)在 spawn 期编译的绑定表中分发。
+-- room/scene 属于玩家服务的私有转发决策:用 shield.send 把业务
+-- 转给 room actor,回包由 room 经 s2c helper 发出。
 
-local M = {}
-
--- 通过 binding 逻辑名拿到数据库 / 缓存 proxy。
--- app.yaml 中需要声明：
---   plugins:
---     instances:
---       - { id: "db.main",    package: "database.sqlite", required: true,
---           config: { database: "data/game.db" } }
---       - { id: "cache.main", package: "cache.redis",     required: true,
---           config: { host: "127.0.0.1", port: 6379 } }
---     bindings:
---       database.default: "db.main"
---       cache.chat: "cache.main"
--- 未配置时 shield.database.sqlite / shield.cache.redis 返回 nil, err，业务自行降级。
-local DB = shield.database.sqlite("database.default")
-local Cache = shield.cache.redis("cache.chat")
+local M = {
+    clients = {},  -- session_id -> ClientContext(只读)
+}
 
 function M.on_init(args)
-    M.session_id = args.args and args.args.session_id
-    M.handle = shield.self()
-    shield.log.info("player created: " .. tostring(M.handle))
+    M.name = args.name or "player"
+    shield.log.info(M.name .. " started")
 end
 
-function M.login(data)
-    local src = shield.sender()
-
-    if not DB then
-        shield.send(src, "login_failed", { message = "db_unavailable" })
-        return
-    end
-
-    local ok, rows = DB:query(
-        "SELECT * FROM users WHERE id = ?",
-        { data.user_id }
-    )
-    if not ok then
-        shield.send(src, "login_failed", { message = "db_error" })
-        return
-    end
-
-    if #rows == 0 then
-        shield.send(src, "login_failed", { message = "user_not_found" })
-        return
-    end
-
-    M.user = rows[1]
-    shield.send(src, "login_ok", { name = M.user.name })
-end
-
-function M.chat(data)
-    if not M.user or not Cache then
-        return
-    end
-
-    -- cache.redis 插件的 publish 对应 Redis PUBLISH，返回订阅者数。
-    Cache:publish("chat:" .. data.channel, {
-        from = M.user.name,
-        text = data.text,
+-- bind 成功后新 target 收到 Bound
+function M.on_client_bound(ctx, client)
+    M.clients[client:session_id()] = client
+    shield.log.info("player online: " .. client:player_id())
+    shield.send("room", "join", {
+        client = client,
+        player_id = client:player_id(),
     })
 end
 
-function M.logout()
-    if M.user and DB then
-        DB:execute(
-            "UPDATE users SET last_login = datetime('now') WHERE id = ?",
-            { M.user.id }
-        )
-    end
+-- 认证后 c2s RPC(descriptor id=2, direction=c2s, requires_auth=true,
+-- binding=move)。gateway 已在 descriptor 校验层拒绝过未认证请求,
+-- 这里 assert 兜底:handler 收到的 client 身份是 gateway 附加的可信
+-- 上下文,不是业务可伪造参数。
+function M.move(ctx, client, request)
+    assert(client:player_id() ~= "", "not authenticated")
 
-    shield.exit("normal")
+    -- 目标服务转发给 room 由 Lua 内部决定:fire-and-forget,
+    -- move_result 由 room 经 s2c helper 回发。
+    shield.send("room", "move", {
+        client = client,
+        player_id = client:player_id(),
+        x = tonumber(request.x) or 0,
+        y = tonumber(request.y) or 0,
+    })
+end
+
+-- 断开:session target 此时是 player
+function M.on_disconnect(ctx, client, reason)
+    M.clients[client:session_id()] = nil
+    shield.log.info("player offline: " .. tostring(client:session_id()) ..
+        " reason=" .. reason)
+    shield.send("room", "leave", { session_id = client:session_id() })
+end
+
+-- 被踢下线(shield.client.close)
+function M.on_client_unbound(ctx, client, reason)
+    M.clients[client:session_id()] = nil
+    shield.log.info("player kicked: " .. tostring(client:session_id()) ..
+        " reason=" .. reason)
+    shield.send("room", "leave", { session_id = client:session_id() })
 end
 
 function M.on_exit(reason)
-    shield.log.info("player exiting: " .. reason)
+    shield.log.info("player stopping: " .. reason)
 end
 
 return M

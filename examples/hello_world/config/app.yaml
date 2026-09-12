@@ -1,5 +1,12 @@
-# Shield Hello World - 最终 API 形态 (spec)
-# 所有服务（Lua 和 C++）统一在 YAML 中声明
+# Shield Hello World - 客户端 RPC 闭环示例
+#
+# 单一 target 模型:每个 session 绑定唯一目标服务。
+#   登录前 target = auth(预登录 login);shield.client.bind 成功后
+#   target 原子切换到 player;room 由 player 用 shield.send 私有转发。
+#
+# 客户端 RPC 的唯一静态来源是 actors[].rpc.routes:bootstrap 把所有
+# actor 的条目合并为全局 descriptor 表(route id/name 冲突即启动失败),
+# 每个 VM 只编译 owner 为自身的条目。
 
 app:
   name: "hello_world"
@@ -9,41 +16,62 @@ log:
   level: "info"
   console: true
 
-# Actor 定义 - 声明式绑定
 actors:
-  # Lua 网关(TCP 监听 + 协议管线)
-  - name: "gateway"
-    script: "../scripts/gateway.lua"
+  # 认证入口:TCP 监听 + 协议管线 + 预登录 login / login_result
+  - name: "auth"
+    script: "../scripts/auth.lua"
+    instances: 1
     network:
       tcp: "0.0.0.0:8001"
       protocol:
+        # idlen:route id 走帧头([route_id:2B BE][length:2B BE][body]),
+        # body 是纯业务 JSON,不含任何路由字段。
         envelope:
-          type: "lenprefix"
+          type: "idlen"
+          route_id_bytes: 2
+          length_bytes: 2
+          endian: "big"
         body:
           codec: "json"
-    instances: 1
+    rpc:
+      routes:
+        - id: 1
+          name: "login"
+          binding: "login"
+          direction: "c2s"
+          requires_auth: false
+        - id: 100
+          name: "login_result"
+          binding: "login_result"
+          direction: "s2c"
 
-  # Lua 服务
-  - name: "echo"
-    script: "../scripts/echo.lua"
-    instances: 4
-
-  # Lua 服务（动态创建）
+  # 玩家服务:认证后的 session target,持有 move 入站路由
   - name: "player"
     script: "../scripts/player.lua"
-    instances: 0
+    instances: 1
+    rpc:
+      routes:
+        - id: 2
+          name: "move"
+          binding: "move"
+          direction: "c2s"
+          requires_auth: true
 
-  # C++ 服务（配置驱动，不用宏）
-  # - name: "combat"
-  #   cpp: true
-  #   class: CombatService
-  #   config:
-  #     damage_multiplier: 1.5
+  # 房间服务:由 player 私有转发到达,持有 move_result 出站路由
+  - name: "room"
+    script: "../scripts/room.lua"
+    instances: 1
+    rpc:
+      routes:
+        - id: 200
+          name: "move_result"
+          binding: "move_result"
+          direction: "s2c"
 
 # 后端能力通过插件系统 v1 显式启用。
-# Lua 业务代码使用 binding 逻辑名访问后端能力，例如
+# Lua 业务代码使用 binding 逻辑名访问后端能力,例如
 # shield.database.sqlite("database.default")。
-# hello_world 默认不依赖外部 DB/Redis；需要时取消注释并提供对应插件包。
+# hello_world 默认不依赖外部 DB/Redis;需要时取消注释并提供对应插件包。
 # plugins:
 #   directory: "../../plugins"
 #   instances:
@@ -52,12 +80,5 @@ actors:
 #       required: false
 #       config:
 #         database: "data/game.db"
-#     - id: "cache.main"
-#       package: "cache.redis"
-#       required: false
-#       config:
-#         host: "127.0.0.1"
-#         port: 6379
 #   bindings:
 #     database.default: "db.main"
-#     cache.chat: "cache.main"

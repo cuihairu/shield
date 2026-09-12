@@ -533,7 +533,7 @@ plugins:
 
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/auth.lua
     network:
       tcp: "0.0.0.0:8001"
       protocol:

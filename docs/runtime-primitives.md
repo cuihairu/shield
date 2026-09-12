@@ -1,6 +1,6 @@
 # 基础组件与运行时适配边界
 
-> 状态：后置草案。本文不属于当前主路径，也不是当前对业务用户承诺的公开 API 契约。当前用户侧最短心智模型仍然是：客户端入站走 gateway / `SessionHandle`，服务间走 `shield.send/call`，对外 HTTP 走 `shield.http`。
+> 状态：后置草案。本文不属于当前主路径，也不是当前对业务用户承诺的公开 API 契约。当前用户侧最短心智模型仍然是：客户端入站走 gateway 单一 target + 只读 `ClientContext`/`ClientRef`，服务间走 `shield.send/call`，对外 HTTP 走 `shield.http`。
 
 本文整理的是更后置的高级能力方向：如果未来要补 Lua runtime primitives、cosocket 风格出站 I/O 和更底层的 crypto/buffer/stream 原语，边界应如何收敛。
 
@@ -373,13 +373,13 @@ CAF 不应直接复用以下 Lua 表面 API：
 边界应保持：
 
 - 入站 listener / session / gateway 继续由 `shield_net + shield_transport` 管理
-- `SessionHandle` 继续是固定网络入口的业务句柄
+- 只读 `ClientContext`/`ClientRef` 继续是固定网络入口的业务句柄
 - `shield.socket` 主要用于 Lua 发起的出站连接
 - 不建议第一阶段让 Lua 动态创建通用服务端 listener 来取代现有 gateway/session 模型
 
 也就是说：
 
-- `SessionHandle` 面向“被接入的客户端连接”
+- `ClientContext`/`ClientRef` 面向“被接入的客户端连接”
 - `shield.socket` 面向“Lua 主动发起的出站连接”
 
 两者不是同一个对象模型。

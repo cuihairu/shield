@@ -253,7 +253,7 @@ key 必须是 string 或 integer 类型。
 ```yaml
 actors:
   - name: gateway
-    script: scripts/gateway.lua
+    script: scripts/auth.lua
     codec:
       max_nesting_depth: 64       # 最大嵌套深度
       max_string_length: 1048576  # 最大字符串长度 (1MB)

@@ -13,7 +13,7 @@
 - 依赖已公开的 core/runtime contract，而不是反向修改它们。
 - 有独立的 public surface、配置段、错误归属和测试矩阵。
 
-反过来说，凡是必须常驻最小运行路径、会改写 `ServiceHandle` / `send/call` / `SessionHandle` / core config 规则的能力，都不应该放进 optional module。
+反过来说，凡是必须常驻最小运行路径、会改写 `ServiceHandle` / `send/call` / session 绑定 / core config 规则的能力，都不应该放进 optional module。
 
 ## 通用规则
 
@@ -48,7 +48,7 @@ optional module 不可以改写以下内容：
 - 本地 `ServiceRegistry` 语义
 - `shield.send/call/spawn/exit` 基础语义
 - `shield.query(name)` 的“本地 registry only”约束
-- `SessionHandle` 不可跨 service 传递的规则
+- 裸连接句柄不可跨 service 传递的规则（跨服务只传 `ClientContext`/`ClientRef` 标记）
 - core config schema 的 owner
 
 ### 3. 一模块一 owner
@@ -106,7 +106,7 @@ shield_core
 | --- | --- | --- | --- |
 | `shield_cluster` | `shield_core` | 复用 handle、timeout、错误语义 | 改写本地 registry、把发现逻辑塞进 core |
 | `shield_global` | 数据插件 | 复用 cache/queue/leaderboard/database 等插件 binding | 直接拥有连接池或底层驱动 |
-| `shield_player` | `shield_net` | 消费 `session_id`、gateway 回调、session 状态 | 跨 service 传 `SessionHandle` |
+| `shield_player` | `shield_net` | 消费 `session_id`、gateway 回调、session 状态 | 跨 service 传裸连接句柄 |
 | `shield_server` | `shield_player` / `shield_global` | 读取状态、广播维护流程 | 成为这些模块的 owner |
 | `shield_ops` | all | 只读观测、导出状态 | 反向控制语义、成为业务依赖 |
 
@@ -227,8 +227,8 @@ shield.scheduler()
 
 - `shield_player` 是玩家态扩展，不改变普通 Lua service 的 module-table + named method 基础模型。
 - player hooks 只在 player module 场景内生效，不替代普通 service method dispatch。
-- `SessionHandle` 只留在 gateway / `shield_net` 内部映射中。
-- `shield_player` 跨 service 传递**只能**使用 `PlayerRef`；不传 `SessionHandle`，也不传完整 `PlayerSession`。
+- 裸 `Session`/连接句柄只留在 gateway / `shield_net` 内部映射中。
+- `shield_player` 跨 service 传递**只能**使用 `PlayerRef`；不传裸连接句柄，也不传完整 `PlayerSession`。
 - `PlayerRef` 不是 `ServiceHandle` 的替代品，只是 player 模块内部引用。
 - 玩家 ready 是 `shield_player` 的 `PlayerSession` 状态，不是普通 service `on_ready`，也不是 application lifecycle event。
 - `avatar`、`character`、`client` 属于业务数据或业务 Entity，应挂在 `PlayerSession` 或用户 service 内；它们不是 Shield core object。
