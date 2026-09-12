@@ -33,13 +33,6 @@
 
 namespace shield::lua {
 
-sol::variadic_results call_with_timeout(sol::this_state state,
-                                        LuaServiceManager* manager,
-                                        LuaRuntime* runtime, int timeout_ms,
-                                        const std::string& target,
-                                        const std::string& method,
-                                        const nlohmann::json& args);
-
 sol::table make_error(sol::this_state state, std::string code,
                       std::string message, bool retryable = false,
                       sol::object detail = sol::nil) {
@@ -52,6 +45,24 @@ sol::table make_error(sol::this_state state, std::string code,
         err["detail"] = detail;
     }
     return err;
+}
+
+// Map a raw call-failure message to the stable call error code (shared by
+// the coroutine call wrapper's string-shaping and the _coro_call pre-dispatch
+// failures).
+std::string call_error_code_for(const std::string& msg) {
+    if (msg.find("service not found") != std::string::npos)
+        return "service_not_found";
+    if (msg.find("service dead") != std::string::npos) return "service_dead";
+    if (msg.find("method not found") != std::string::npos)
+        return "method_not_found";
+    if (msg.find("runtime is stopping") != std::string::npos)
+        return "runtime_stopping";
+    if (msg.find("invalid method") != std::string::npos)
+        return "invalid_method";
+    if (msg.find("coroutine limit") != std::string::npos)
+        return "coroutine_limit";
+    return "handler_error";
 }
 
 // -- Client identity userdata (ClientContext / ClientRef) ---------------------
@@ -233,7 +244,8 @@ std::string extract_service_id(const sol::object& target) {
 void register_service_api(sol::table& shield, LuaServiceManager* manager) {
     // Synchronous spawn primitive: runs VM creation + on_init on the calling
     // thread. The public shield.spawn wrapper (below) uses this on the main
-    // thread and the coroutine path inside handlers.
+    // thread, inside a spawn's on_init, and as the fallback when the
+    // coroutine path cannot suspend.
     shield.set_function(
         "_sync_spawn",
         [manager](sol::this_state state, std::string module,
@@ -271,6 +283,13 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
 
     shield.set_function("exit", [manager](sol::optional<std::string> reason) {
         manager->request_current_exit(reason.value_or("normal"));
+    });
+
+    // True while a spawn's on_init runs its initial segment on the spawning
+    // thread: shield.spawn resolves synchronously there (the child's init
+    // blocks the spawner, never a service actor).
+    shield.set_function("_in_on_init", [] {
+        return LuaServiceManager::spawn_init_in_progress();
     });
 
     shield.set_function(
@@ -405,13 +424,15 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
     });
 
     // Public shield.spawn: suspend inside handler coroutines (the spawn
-    // worker runs on_init off-actor), stay synchronous on the main thread.
+    // worker runs on_init off-actor), stay synchronous on the main thread and
+    // inside a spawn's on_init (on the spawning thread).
     sol::state_view lua(shield.lua_state());
     lua["shield"] = shield;
     lua.safe_script(
         "shield.spawn = function(module, opts)\n"
         "  local _, ismain = coroutine.running()\n"
-        "  if ismain then return shield._sync_spawn(module, opts) end\n"
+        "  if ismain or shield._in_on_init() then return "
+        "shield._sync_spawn(module, opts) end\n"
         "  local timeout = (type(opts) == 'table' and opts.timeout) or 10000\n"
         "  local session = shield._coro_spawn(module, opts, timeout)\n"
         "  if session == 0 then return shield._sync_spawn(module, opts) end\n"
@@ -588,56 +609,36 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             return results;
         });
 
-    shield.set_function(
-        "_sync_call",
-        [manager, runtime](sol::this_state state, sol::object target,
-                           std::string method,
-                           sol::variadic_args args) -> sol::variadic_results {
-            std::string target_id = extract_service_id(target);
-            if (target_id.empty()) {
-                sol::state_view lua(state);
-                sol::variadic_results results;
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(
-                    make_error(state, "invalid_target",
-                               "target must be ServiceHandle or string"));
-                return results;
-            }
-            return call_with_timeout(state, manager, runtime, 5000, target_id,
-                                     method, variadic_to_json_array(args));
-        });
-
-    shield.set_function(
-        "_sync_call_timeout",
-        [manager, runtime](sol::this_state state, int timeout_ms,
-                           sol::object target, std::string method,
-                           sol::variadic_args args) -> sol::variadic_results {
-            std::string target_id = extract_service_id(target);
-            if (target_id.empty()) {
-                sol::state_view lua(state);
-                sol::variadic_results results;
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(
-                    make_error(state, "invalid_target",
-                               "target must be ServiceHandle or string"));
-                return results;
-            }
-            return call_with_timeout(state, manager, runtime, timeout_ms,
-                                     target_id, method,
-                                     variadic_to_json_array(args));
-        });
-
     // Coroutine-aware call primitive. Suspends the caller's coroutine and
     // sends a call-request message to the target; the caller is resumed with
     // [ok, values...] when the callee completes (or on timeout). Returns the
-    // session id (0 if the request could not be queued).
+    // session id (0 if the caller is not inside a coroutine).
     shield.set_function(
         "_coro_call",
         [manager](sol::this_state state, sol::object target, std::string method,
                   sol::table args, int timeout_ms) -> uint64_t {
+            // Refuse to suspend the main thread: the Lua wrapper never
+            // dispatches off-coroutine, and anchoring the main thread here
+            // would leave it suspended with no resume source.
+            if (lua_pushthread(state) == 1) {
+                lua_pop(state, 1);
+                return 0;
+            }
+            lua_pop(state, 1);
             const std::string target_id = extract_service_id(target);
             if (target_id.empty()) {
-                return 0;
+                // Invalid target shape: suspend, then complete asynchronously
+                // so the yielded wrapper gets the stable error table.
+                lua_State* co = state;
+                const uint64_t session =
+                    manager->suspend_for_call(co, timeout_ms);
+                manager->complete_call(
+                    session, false,
+                    nlohmann::json::array({nlohmann::json::object(
+                        {{"code", "invalid_target"},
+                         {"message", "target must be ServiceHandle or string"},
+                         {"retryable", false}})}));
+                return session;
             }
 
             // Pack the arguments once for both dispatch paths.
@@ -693,7 +694,20 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
 
             const std::string service_id = manager->query_service(target_id);
             if (service_id.empty()) {
-                return 0;
+                // Unknown local target: suspend, then complete asynchronously
+                // (via the caller's own actor mailbox) so the wrapper's
+                // coroutine.yield() still gets exactly one resume with the
+                // stable error table.
+                lua_State* co = state;
+                const uint64_t session =
+                    manager->suspend_for_call(co, timeout_ms);
+                manager->complete_call(
+                    session, false,
+                    nlohmann::json::array({nlohmann::json::object(
+                        {{"code", "service_not_found"},
+                         {"message", "service not found: " + target_id},
+                         {"retryable", false}})}));
+                return session;
             }
             lua_State* co = state;
             const uint64_t session = manager->suspend_for_call(co, timeout_ms);
@@ -704,19 +718,46 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             // response back to the caller.
             if (!manager->send_call_request(service_id, method, json_args,
                                             session, &send_error)) {
-                // Could not queue: cancel the pending wait with an error so
-                // the caller resumes immediately instead of hanging.
-                nlohmann::json err;
-                err = send_error;
-                manager->resume_caller(session, false,
-                                       nlohmann::json::array({err}));
-                return 0;
+                // Could not queue (e.g. runtime stopping): complete the
+                // session through the same async channel so the caller
+                // resumes with a stable error table.
+                // GCOVR_EXCL_START (race window: the target's actor is gone
+                // between the lookup above and this send)
+                manager->complete_call(
+                    session, false,
+                    nlohmann::json::array({nlohmann::json::object(
+                        {{"code", call_error_code_for(send_error)},
+                         {"message", send_error},
+                         {"retryable", false}})}));
+                return session;
+                // GCOVR_EXCL_STOP
             }
             return session;
         });
 
     shield.set_function("_is_in_exit",
                         [manager]() -> bool { return manager->is_in_exit(); });
+
+    // Target-shape check for the call wrappers: returns the normalized
+    // service id, or nil when the target is neither a ServiceHandle nor a
+    // string. Shape errors are programming errors and are reported with
+    // invalid_target regardless of the calling context.
+    shield.set_function("_call_target_id",
+                        [](sol::this_state state,
+                           sol::object target) -> sol::optional<std::string> {
+                            const std::string id = extract_service_id(target);
+                            if (id.empty()) {
+                                return sol::nullopt;
+                            }
+                            return id;
+                        });
+
+    // Stable error code for a raw call-failure message (used by the call
+    // wrapper to shape non-table resume payloads into {code, message}).
+    shield.set_function("_call_error_code",
+                        [](sol::optional<std::string> msg) -> std::string {
+                            return call_error_code_for(msg.value_or(""));
+                        });
 
     // DEPRECATED: Use ctx.sender instead. Kept for backward compatibility.
     // In new code, prefer: function M.handler(ctx, ...) local src = ctx.sender
@@ -748,10 +789,11 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
         return dl;
     });
 
-    // Override shield.call / shield.call_timeout with Lua wrappers that pick
-    // the coroutine-aware path when running inside a handler coroutine (so the
-    // caller yields instead of blocking the worker) and fall back to the
-    // synchronous path on the main thread.
+    // shield.call / shield.call_timeout are coroutine-only: inside a handler
+    // coroutine (handler, timer/fork callback, on_init) the caller suspends
+    // until the callee completes; on the main thread — module-level code —
+    // they are rejected with a stable error code instead of blocking the
+    // worker.
     sol::state_view lua(shield.lua_state());
     lua["shield"] = shield;
     lua.safe_script(
@@ -760,14 +802,29 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
         "    return false, {code='api_not_allowed_in_exit', "
         "message='shield.call is not allowed in on_exit'}\n"
         "  end\n"
+        "  if shield._call_target_id(target) == nil then\n"
+        "    return false, {code='invalid_target', "
+        "message='target must be ServiceHandle or string', retryable=false}\n"
+        "  end\n"
         "  local _, ismain = coroutine.running()\n"
-        "  if ismain then return shield._sync_call(target, method, ...) end\n"
+        "  if ismain then\n"
+        "    return false, {code='call_not_allowed_off_coroutine', "
+        "message='shield.call is only allowed inside a coroutine'}\n"
+        "  end\n"
         "  local session = shield._coro_call(target, method, table.pack(...), "
         "5000)\n"
-        "  if session == 0 then return shield._sync_call(target, method, ...) "
-        "end\n"
+        "  if session == 0 then\n"
+        "    return false, {code='call_not_allowed_off_coroutine', "
+        "message='shield.call is only allowed inside a coroutine'}\n"
+        "  end\n"
         "  local r = table.pack(coroutine.yield())\n"
-        "  if not r[1] then return false, r[2] end\n"
+        "  if not r[1] then\n"
+        "    if type(r[2]) == 'table' then return false, r[2] end\n"
+        "    local msg = tostring(r[2])\n"
+        "    return false, { code = shield._call_error_code(msg), message = "
+        "msg "
+        "}\n"
+        "  end\n"
         "  return true, table.unpack(r, 2, r.n)\n"
         "end\n"
         "shield.call_timeout = function(timeout_ms, target, method, ...)\n"
@@ -775,101 +832,34 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
         "    return false, {code='api_not_allowed_in_exit', "
         "message='shield.call_timeout is not allowed in on_exit'}\n"
         "  end\n"
+        "  if shield._call_target_id(target) == nil then\n"
+        "    return false, {code='invalid_target', "
+        "message='target must be ServiceHandle or string', retryable=false}\n"
+        "  end\n"
         "  local _, ismain = coroutine.running()\n"
-        "  if ismain then return shield._sync_call_timeout(timeout_ms, target, "
-        "method, ...) end\n"
+        "  if ismain then\n"
+        "    return false, {code='call_not_allowed_off_coroutine', "
+        "message='shield.call_timeout is only allowed inside a coroutine'}\n"
+        "  end\n"
         "  local session = shield._coro_call(target, method, table.pack(...), "
         "timeout_ms)\n"
-        "  if session == 0 then return shield._sync_call_timeout(timeout_ms, "
-        "target, method, ...) end\n"
+        "  if session == 0 then\n"
+        "    return false, {code='call_not_allowed_off_coroutine', "
+        "message='shield.call_timeout is only allowed inside a coroutine'}\n"
+        "  end\n"
         "  local r = table.pack(coroutine.yield())\n"
-        "  if not r[1] then return false, r[2] end\n"
+        "  if not r[1] then\n"
+        "    if type(r[2]) == 'table' then return false, r[2] end\n"
+        "    local msg = tostring(r[2])\n"
+        "    return false, { code = shield._call_error_code(msg), message = "
+        "msg "
+        "}\n"
+        "  end\n"
         "  return true, table.unpack(r, 2, r.n)\n"
         "end",
         [](lua_State*, sol::protected_function_result
                            pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
         -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
-}
-
-sol::variadic_results call_with_timeout(sol::this_state state,
-                                        LuaServiceManager* manager,
-                                        LuaRuntime* runtime, int timeout_ms,
-                                        const std::string& target,
-                                        const std::string& method,
-                                        const nlohmann::json& args) {
-    sol::state_view lua(state);
-    sol::variadic_results results;
-
-    // Helper to map call error message to stable error code.
-    auto call_error_code = [](const std::string& msg) -> std::string {
-        if (msg.find("service not found") != std::string::npos)
-            return "service_not_found";
-        if (msg.find("service dead") != std::string::npos)
-            return "service_dead";
-        if (msg.find("method not found") != std::string::npos)
-            return "method_not_found";
-        if (msg.find("runtime is stopping") != std::string::npos)
-            return "runtime_stopping";
-        if (msg.find("invalid method") != std::string::npos)
-            return "invalid_method";
-        if (msg.find("coroutine limit") != std::string::npos)
-            return "coroutine_limit";
-        return "handler_error";
-    };
-
-#ifdef SHIELD_ENABLE_CLUSTER
-    // Cross-node sync call (M4): main-thread callers must not block the
-    // process on a remote round-trip through manager->call's local actor
-    // dispatch; call_with_session gives the same blocking-CV contract while
-    // the transport carries the envelope.
-    const auto remote = resolve_remote_target(manager, target);
-    if (remote.is_remote) {
-        if (!remote.error_code.empty()) {
-            results.push_back(sol::make_object(lua, false));
-            results.push_back(
-                make_error(state, remote.error_code, remote.error_message,
-                           remote_error_retryable(remote.error_code)));
-            return results;
-        }
-        auto* cm = shield::cluster::global_cluster_manager();
-        const std::string args_json = args.dump();
-        CallResult result = manager->call_with_session(
-            [cm, node = remote.node, sid = remote.service_id, &method,
-             &args_json, timeout_ms](uint64_t session, std::string& err) {
-                return cm->send_remote(node, sid, method, args_json, session,
-                                       timeout_ms, &err);
-            },
-            timeout_ms);
-        if (!result.success) {
-            const std::string code =
-                remote_send_error_code(result.error_message);
-            results.push_back(sol::make_object(lua, false));
-            results.push_back(make_error(state, code, result.error_message,
-                                         remote_error_retryable(code)));
-            return results;
-        }
-        results.push_back(sol::make_object(lua, true));
-        for (const auto& value : result.values) {
-            results.push_back(json_to_lua(lua, value));
-        }
-        return results;
-    }
-#endif
-
-    CallResult result = manager->call(target, method, args, timeout_ms);
-    if (!result.success) {
-        results.push_back(sol::make_object(lua, false));
-        results.push_back(make_error(state,
-                                     call_error_code(result.error_message),
-                                     result.error_message));
-        return results;
-    }
-
-    results.push_back(sol::make_object(lua, true));
-    for (const auto& value : result.values) {
-        results.push_back(json_to_lua(lua, value));
-    }
-    return results;
 }
 
 void register_timer_api(sol::table& shield, LuaServiceManager* manager,
@@ -973,7 +963,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             lua_pushthread(co);
             const int ref = luaL_ref(co, LUA_REGISTRYINDEX);
             const std::string service_id = manager->current_service_id();
-            auto resume_fn = [co, ref, manager]() {
+            auto resume_fn = [co, ref, manager, service_id]() {
                 int nres = 0;
                 const int status = lua_resume(co, nullptr, 0, &nres);
                 if (status == LUA_YIELD) {
@@ -993,6 +983,13 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                         returns.push_back(lua_to_json(so));
                     }
                     manager->on_handler_completed(co, returns);
+                }
+                // Terminal segment (LUA_OK or error): honor a shield.exit
+                // the continuation requested. During spawn-init the spawn
+                // path owns the request instead.
+                if (!service_id.empty() &&
+                    !LuaServiceManager::spawn_init_in_progress()) {
+                    manager->finish_pending_exit(service_id);
                 }
                 // LUA_OK (completed) or an error: release the anchor.
                 luaL_unref(co, LUA_REGISTRYINDEX, ref);
@@ -1051,6 +1048,20 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
             }
             // Capture the Lua function with its owning state_view. Execution
             // is dispatched to the owning service actor via fork_task_atom.
+            // The task outlives the registering coroutine (on_init / any
+            // handler runs as one), so re-anchor the function onto the main
+            // thread's lua_State — otherwise the coroutine's lua_State may be
+            // collected by the GC and every later use of the captured
+            // reference would dangle (mirror of anchor_to_main_thread in
+            // lua_service.cpp).
+            lua_State* fn_state = fn.lua_state();
+            lua_State* fn_main =
+                fn_state == nullptr ? nullptr : sol::main_thread(fn_state);
+            if (fn_main != nullptr && fn_main != fn_state &&
+                fn.registry_index() != LUA_NOREF) {
+                fn =
+                    sol::function(fn_main, sol::ref_index(fn.registry_index()));
+            }
             uint64_t task_id = manager->enqueue_forked_task(
                 service_id,
                 [fn]() {

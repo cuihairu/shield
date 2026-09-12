@@ -137,6 +137,14 @@ public:
     // returns.
     void request_current_exit(std::string_view reason = "normal");
 
+    // Consume a pending shield.exit request for a service (if any) and run
+    // its exit path. Called at coroutine segment completion points — dispatch
+    // completion, spawn init completion, and every resume of a suspended
+    // handler — because the requesting dispatch frame may already be gone
+    // (the tail of a yielded on_init runs on a caller-actor resume frame).
+    // Returns true when an exit was driven.
+    bool finish_pending_exit(const std::string& service_id);
+
     // Trigger the panic path for the currently running service: invoke its
     // on_panic(reason, {type="explicit"}) hook (best-effort) and request exit
     // with reason "panic". No-op outside a dispatch context.
@@ -291,6 +299,12 @@ public:
     // Used by shield.call / shield.call_timeout to reject calls during exit.
     bool is_in_exit() const;
 
+    // True on the thread running a spawn's on_init initial segment. Used by
+    // shield.spawn to resolve synchronously inside on_init (the spawning
+    // thread blocks, never a service actor). False on actor threads that
+    // resume a yielded on_init, so a post-yield spawn stays async.
+    static bool spawn_init_in_progress();
+
     // Scan pending_calls for expired deadlines and resume each timed-out
     // caller with (false, {code="timeout", message="call timeout"}).
     /// @param now_ms Current monotonic time in milliseconds
@@ -355,6 +369,12 @@ public:
     uint64_t schedule_actor_call_timeout(int32_t timeout_ms,
                                          const std::string& service_id,
                                          uint64_t session);
+    // External-waiter timeout driver: completes a manager.call() /
+    // call_with_session() session with a timeout error via complete_call when
+    // the delay elapses (the caller thread waits on the waiter's CV). Returns
+    // false when the driver could not be armed (the caller then falls back to
+    // a timed wait).
+    bool schedule_external_call_timeout(int32_t timeout_ms, uint64_t session);
     bool cancel_actor_call_timeout(uint64_t session);
 
 private:

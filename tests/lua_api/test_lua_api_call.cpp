@@ -177,30 +177,6 @@ BOOST_AUTO_TEST_CASE(LAPI_005_06_CoroutineCallTimeout) {
         std::chrono::seconds(2)));
 }
 
-// LAPI-005-06-sync: the synchronous C++ manager.call() path still ignores
-// timeout_ms. This preserves the original Phase 1 behaviour test.
-BOOST_AUTO_TEST_CASE(LAPI_005_06_SyncCallIgnoresTimeout) {
-    caf::actor_system_config cfg;
-
-    caf::actor_system system(cfg);
-
-    LuaRuntime runtime;
-    LuaServiceManager manager(runtime, system);
-
-    auto callee = spawn_messaging(manager, "slow_callee");
-    BOOST_REQUIRE(callee.success);
-
-    const auto start = std::chrono::steady_clock::now();
-    CallResult result = manager.call(callee.service_id, "slow_method",
-                                     nlohmann::json::array(), 5000);
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - start);
-
-    // Synchronous path: call blocks until callee returns.
-    BOOST_REQUIRE(result.success);
-    BOOST_CHECK_GE(elapsed.count(), 100);
-}
-
 BOOST_AUTO_TEST_CASE(CallApiFromLuaWrapsRuntimeResult) {
     caf::actor_system_config cfg;
 

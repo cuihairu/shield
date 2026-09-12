@@ -2,7 +2,7 @@
 
 本文档包含 Shield 定时器、sleep 和 fork 相关的运行时语义决策。
 
-当前实现状态：`timer_once/timer/cancel_timer` 已实现，每个 timer 由一个 CAF driver actor 驱动（`delayed_send` + `tick_atom`），到期向 owning service actor 发送 `timer_fire_atom`，callback 在 service actor 调度点通过 `lua_pcall` 包裹执行，错误路由到 `on_error` hook。`shield.sleep` 已实现协程感知（yield + `_resume_after` 定时器 resume）。`shield.fork` 已实现，callback 通过 `lua_pcall` 包裹执行。`shield.call/call_timeout` 已实现协程感知调用 + timeout。详细实现状态以 [重构路线图](roadmap.md) 和 [Lua API 测试用例](lua-api-tests.md) 为准。
+当前实现状态：`timer_once/timer/cancel_timer` 已实现，每个 timer 由一个 CAF driver actor 驱动（`delayed_send` + `tick_atom`），到期向 owning service actor 发送 `timer_fire_atom`，callback 在 service actor 调度点通过 `invoke_coroutine` 以协程方式执行（可 `shield.sleep` / `shield.call` 挂起，actor 不被阻塞），错误路由到 `on_error` hook。`shield.sleep` 已实现协程感知（yield + `_resume_after` 定时器 resume）。`shield.fork` 已实现，task body 同样以协程方式执行。`shield.call/call_timeout` 已实现协程感知调用 + timeout。详细实现状态以 [重构路线图](roadmap.md) 和 [Lua API 测试用例](lua-api-tests.md) 为准。
 
 **AD-07 分层时钟**已实现：`shield.now()` 返回 wall-clock UTC ms（可注入 `MockClock` 测试可拨），`shield.monotonic()` 返回 real `steady_clock` ms（不可拨）。`os.time()`/`os.date()` 无参形式重定向到业务时钟，`os.time(table)`/`os.date(fmt,t)`/`os.clock()` 保持原生行为。`LuaServiceManager::attach_clock()` 注入时钟，`Clock`/`SystemClock`/`MockClock` 定义于 `include/shield/lua/clock.hpp`。`test_lua_api_clock` 覆盖 12 个用例。
 
@@ -20,8 +20,8 @@ local ok = shield.cancel_timer(id)
 
 规则：
 
-- timer callback 在当前 service 的 Lua VM 中执行，通过 `lua_pcall` 包裹，错误路由到 `on_error` hook。
-- callback 当前在 pcall 中执行（非协程），可以调用同步 API；`shield.sleep`/`shield.call` 在 callback 中走同步降级路径。
+- timer callback 在当前 service 的 Lua VM 中以协程方式执行（`invoke_coroutine` 包裹），错误路由到 `on_error` hook。
+- callback 内 `shield.sleep`/`shield.call` 挂起回调协程，actor 立即回到 mailbox 继续处理其他消息；回调结束后由既有 resume 机制继续。
 - timer 归属当前 service。
 - service exit 时自动取消 owned timers。
 - `TimerId` 是 opaque userdata，不暴露 CAF。
@@ -69,9 +69,9 @@ shield.sleep(1000)
 
 语义：
 
-- 在 message handler coroutine 中只挂起当前 coroutine。
-- 在同步调用、timer callback 或 fork task 等非协程上下文中走阻塞降级路径。
-- handler coroutine 路径不阻塞 runtime 线程。
+- 在协程上下文（message handler、timer/fork callback、on_init、on_shutdown）中只挂起当前 coroutine。
+- 仅在 module-level 代码等无协程上下文中退化为阻塞线程的 `_block_sleep`。
+- 协程路径不阻塞 runtime 线程。
 - 基于 timer 实现。
 - service exit 时 sleep coroutine 被取消。
 - 业务需要非阻塞等待时应在 service handler 内调用。
@@ -92,7 +92,8 @@ end)
 
 - fork task 与当前 service 共享 Lua VM 和 Lua 状态。
 - fork task 没有 service id，没有 mailbox，没有 name。
-- fork task 当前通过 `lua_pcall` 执行，不是 coroutine；`shield.sleep` / `shield.call` 在其中走同步降级路径。
+- fork task 以协程方式执行（`invoke_coroutine` 包裹）；`shield.sleep` / `shield.call` 在其中挂起 task 协程，不阻塞 actor。
+- `on_init` 内调度的 fork 在 init 完成后才串行执行：actor 在 init 期间 stash `fork_task_atom`，`init_ready` 时统一 unstash——fork 绝不与 spawning 线程并发进入同一 Lua VM。
 - fork unhandled error 记录日志和 ops 指标，不杀死 service。
 - service exit 时自动取消 owned fork tasks。
 

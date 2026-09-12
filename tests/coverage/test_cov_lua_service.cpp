@@ -112,6 +112,59 @@ end
 return M
 )lua";
 
+// Timer/fork callbacks are coroutines: while one suspends on shield.call +
+// shield.sleep, the owning actor must keep servicing other messages.
+const char* kTimerForkProbeScript = R"lua(
+local M = {}
+local st = {}
+function M.start_timer_probe(ctx, target)
+  st.timer_started = true
+  shield.timer_once(10, function()
+    local ok, v = shield.call(target, "slow")
+    st.timer_call_ok = ok
+    st.timer_call_val = tostring(v)
+    st.timer_done = true
+  end)
+  return true
+end
+function M.start_fork_probe(ctx, target)
+  st.fork_started = true
+  shield.fork(function()
+    local ok, v = shield.call(target, "slow")
+    st.fork_call_ok = ok
+    st.fork_call_val = tostring(v)
+    st.fork_done = true
+  end)
+  return true
+end
+function M.beat(ctx)
+  st.beats = (st.beats or 0) + 1
+  return st.beats
+end
+function M.state(ctx)
+  return st.timer_done or false, st.timer_call_val or "",
+         st.fork_done or false, st.fork_call_val or ""
+end
+return M
+)lua";
+
+// on_init runs inside a coroutine: shield.call to an already-spawned service
+// suspends on_init until the response arrives, then spawn completes.
+const char* kOnInitCallScript = R"lua(
+local M = {}
+local boot = {}
+function M.on_init(args)
+  local ok, v = shield.call(args.args.target, "echo", "from_init")
+  boot.ok = ok
+  boot.v = tostring(v)
+  return true
+end
+function M.boot_state(ctx)
+  return boot.ok or false, boot.v or ""
+end
+return M
+)lua";
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -364,7 +417,7 @@ BOOST_AUTO_TEST_CASE(SystemMessagePaths) {
 }
 
 // ---------------------------------------------------------------------------
-// call: self-call rejection and dispatch timeout.
+// call: coroutine self-call round-trip and dispatch timeout.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(CallSelfAndTimeout) {
     caf::actor_system_config cfg;
@@ -379,21 +432,22 @@ BOOST_AUTO_TEST_CASE(CallSelfAndTimeout) {
                      "function M.on_init(args) myname = args.name end\n"
                      "function M.ping(ctx) return 'pong' end\n"
                      "function M.self_sync(ctx)\n"
-                     "  local ok, err = shield._sync_call(myname, 'ping')\n"
-                     "  return ok, err and err.message or 'nil'\n"
+                     "  local ok, v = shield.call(myname, 'ping')\n"
+                     "  return ok, v or 'nil'\n"
                      "end\n"
                      "return M\n");
     auto svc = manager.spawn(module, opts_for("cov_self_svc"));
     BOOST_REQUIRE(svc.success);
 
-    // A synchronous call from a service to itself is rejected.
+    // A coroutine self-call serializes through the actor's own mailbox: the
+    // handler suspends, the call request is dispatched back into the same
+    // service, and the caller resumes with the callee's value.
     CallResult cr = manager.call(svc.service_id, "self_sync",
                                  nlohmann::json::array(), 2000);
     BOOST_REQUIRE(cr.success);
     BOOST_REQUIRE_EQUAL(cr.values.size(), 2u);
-    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), false);
-    BOOST_CHECK(cr.values[1].get<std::string>().find("self-call") !=
-                std::string::npos);
+    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), true);
+    BOOST_CHECK_EQUAL(cr.values[1].get<std::string>(), "pong");
 
     // External call to a slow handler times out.
     const std::string slow_module = write_script(
@@ -762,6 +816,130 @@ BOOST_AUTO_TEST_CASE(CoroutineCallRouting) {
                 std::string::npos);
     BOOST_CHECK_EQUAL(st.values[3].get<std::string>(), "timeout");
     BOOST_CHECK_EQUAL(st.values[4].get<std::string>(), "resumed");
+}
+
+// ---------------------------------------------------------------------------
+// Timer/fork callbacks run as coroutines: a callback that suspends on
+// shield.call + shield.sleep must leave the owning actor free to service
+// other messages in the meantime.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(TimerForkCoroutinesKeepActorResponsive) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string callee_path =
+        write_script("tf_callee.lua", kCalleeScript);
+    const std::string probe_path =
+        write_script("tf_probe.lua", kTimerForkProbeScript);
+
+    auto callee = manager.spawn(callee_path, opts_for("tf_callee_svc"));
+    auto probe = manager.spawn(probe_path, opts_for("tf_probe_svc"));
+    BOOST_REQUIRE(callee.success && probe.success);
+
+    // Timer callback: fires at ~10ms, then suspends ~250ms inside
+    // shield.call(callee, "slow").
+    BOOST_REQUIRE(manager.send(probe.service_id, "start_timer_probe",
+                               nlohmann::json::array({callee.service_id})));
+
+    // While the timer coroutine is suspended, the probe actor must keep
+    // answering calls (beats would all time out against a blocked actor).
+    int beats = 0;
+    const auto timer_window_end =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    while (std::chrono::steady_clock::now() < timer_window_end) {
+        CallResult beat =
+            manager.call(probe.service_id, "beat", nlohmann::json::array(),
+                         /*timeout_ms=*/500);
+        if (beat.success) {
+            ++beats;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    BOOST_CHECK_GE(beats, 2);
+
+    // Still suspended inside the timer callback at this point (callee sleeps
+    // 250ms after a ~10ms fire delay).
+    CallResult st =
+        manager.call(probe.service_id, "state", nlohmann::json::array(), 500);
+    BOOST_REQUIRE(st.success);
+    BOOST_CHECK(!st.values[0].get<bool>());
+
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult s = manager.call(probe.service_id, "state",
+                                        nlohmann::json::array(), 500);
+            return s.success && s.values[0].get<bool>();
+        },
+        std::chrono::seconds(3)));
+    st = manager.call(probe.service_id, "state", nlohmann::json::array(), 500);
+    BOOST_REQUIRE(st.success);
+    BOOST_CHECK_EQUAL(st.values[1].get<std::string>(), "slow_done");
+
+    // Fork task: same non-blocking contract.
+    BOOST_REQUIRE(manager.send(probe.service_id, "start_fork_probe",
+                               nlohmann::json::array({callee.service_id})));
+    beats = 0;
+    const auto fork_window_end =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    while (std::chrono::steady_clock::now() < fork_window_end) {
+        CallResult beat = manager.call(probe.service_id, "beat",
+                                       nlohmann::json::array(), 500);
+        if (beat.success) {
+            ++beats;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    BOOST_CHECK_GE(beats, 2);
+
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult s = manager.call(probe.service_id, "state",
+                                        nlohmann::json::array(), 500);
+            return s.success && s.values[2].get<bool>();
+        },
+        std::chrono::seconds(3)));
+    st = manager.call(probe.service_id, "state", nlohmann::json::array(), 500);
+    BOOST_REQUIRE(st.success);
+    BOOST_CHECK_EQUAL(st.values[3].get<std::string>(), "slow_done");
+}
+
+// ---------------------------------------------------------------------------
+// on_init runs inside a coroutine: shield.call to an already-spawned service
+// suspends on_init until the response arrives, and spawn completes after it.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(OnInitCoroutineCallSucceeds) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string callee_path =
+        write_script("oi_callee.lua", kCalleeScript);
+    const std::string init_path =
+        write_script("oi_init.lua", kOnInitCallScript);
+
+    auto callee = manager.spawn(callee_path, opts_for("oi_callee_svc"));
+    BOOST_REQUIRE(callee.success);
+
+    nlohmann::json opts = {
+        {"name", "oi_init_svc"},
+        {"args", nlohmann::json::object({{"target", callee.service_id}})},
+        {"config", nlohmann::json::object()},
+    };
+    auto svc = manager.spawn(init_path, opts.dump());
+    // Spawn success itself proves on_init (including the nested call)
+    // completed inside the spawn timeout budget.
+    BOOST_REQUIRE(svc.success);
+
+    CallResult st =
+        manager.call(svc.service_id, "boot_state", nlohmann::json::array(),
+                     /*timeout_ms=*/1000);
+    BOOST_REQUIRE(st.success);
+    BOOST_REQUIRE_EQUAL(st.values.size(), 2u);
+    BOOST_CHECK_EQUAL(st.values[0].get<bool>(), true);
+    BOOST_CHECK_EQUAL(st.values[1].get<std::string>(), "from_init");
 }
 
 // ---------------------------------------------------------------------------

@@ -431,6 +431,28 @@ function M.call_who(ctx, target)
   return ok, sender, ctx_sender
 end
 
+-- Coroutine call path with a custom timeout budget on the happy path.
+function M.call_timeout_ok(ctx, target)
+  local ok, v = shield.call_timeout(2000, target, "ping")
+  return ok, v
+end
+
+-- Call error mapping seen from Lua inside a handler.
+function M.call_err(ctx, target, method)
+  local ok, err = shield.call(target, method)
+  if ok then return true end
+  return false, err and err.code or nil
+end
+
+-- send/call through a ServiceHandle userdata target from a handler.
+function M.handle_roundtrip(ctx, target)
+  local h, qerr = shield.query(target)
+  if not h then return false, false, qerr and qerr.code or nil end
+  local sent = shield.send(h, "ping", "via_handle")
+  local ok, v = shield.call(h, "ping")
+  return sent == true, ok, v
+end
+
 function M.spawn_array_opts(ctx, module)
   local h, err = shield.spawn(module, {1, 2})
   if not h then return false, err and err.code or nil end
@@ -464,14 +486,22 @@ end
 
 function M.sleep_then_call(ctx, target)
   shield.sleep(20)
-  local ok, err = shield.call_timeout(50, target, "ping")
+  -- After the sleep timer resumes this handler it yields again inside the
+  -- call; the callee's response completes the resumed segment.
+  local ok, v = shield.call_timeout(2000, target, "ping")
   state.sleep_call_ok = ok
-  state.sleep_call_err = err and err.code or nil
+  state.sleep_call_err = v or nil
+  -- Same shape with a budget shorter than the callee's own sleep: the call
+  -- timeout driver resumes the suspended handler with the timeout error.
+  local ok2, err2 = shield.call_timeout(50, target, "sleepy")
+  state.sleep_call2_ok = ok2
+  state.sleep_call2_err = err2 and err2.code or nil
   return ok
 end
 
 function M.get_sleep_call(ctx)
-  return state.sleep_call_ok, state.sleep_call_err
+  return state.sleep_call_ok, state.sleep_call_err,
+      state.sleep_call2_ok, state.sleep_call2_err
 end
 
 function M.self_exit(ctx)
@@ -720,15 +750,17 @@ BOOST_AUTO_TEST_CASE(MainThreadApiSurface) {
                    "local ok, err = shield.call_timeout(50, 123, 'm')\n"
                    "assert(ok == false and err.code == 'invalid_target')"));
 
-    // shield.send / shield.call to an unknown service.
+    // shield.send to an unknown service. Off-coroutine, shield.call freezes
+    // to call_not_allowed_off_coroutine (target shape is still validated
+    // first, above).
     BOOST_CHECK(
         run_script(lua,
                    "local ok, err = shield.send('cov_ghost', 'm')\n"
                    "assert(ok == false and err.code == 'service_not_found')"));
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = shield.call('cov_ghost', 'm')\n"
-                   "assert(ok == false and err.code == 'service_not_found')"));
+    BOOST_CHECK(run_script(lua,
+                           "local ok, err = shield.call('cov_ghost', 'm')\n"
+                           "assert(ok == false and err.code == "
+                           "'call_not_allowed_off_coroutine')"));
 
     // Log functions with and without a service prefix (no context here).
     BOOST_CHECK(run_script(lua,
@@ -842,35 +874,35 @@ BOOST_AUTO_TEST_CASE(ServiceInteractionPaths) {
     BOOST_CHECK_EQUAL(cw.values[0].get<bool>(), true);
     BOOST_CHECK_EQUAL(cw.values[1].get<std::string>(), "cov_a");
 
-    // Main-thread shield.call_timeout against a live service (synchronous
-    // path with a custom timeout).
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os);
-    register_full_shield_api(lua, &manager, &runtime);
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, v = shield.call_timeout(2000, 'cov_b', 'ping')\n"
-                   "assert(ok == true and v == 'pong')"));
+    // Coroutine call path with a custom timeout budget (happy path).
+    CallResult ct_ok = manager.call(a.service_id, "call_timeout_ok",
+                                    nlohmann::json::array({"cov_b"}));
+    BOOST_REQUIRE(ct_ok.success);
+    BOOST_CHECK_EQUAL(ct_ok.values[0].get<bool>(), true);
+    BOOST_CHECK_EQUAL(ct_ok.values[1].get<std::string>(), "pong");
 
-    // Call error mapping seen from Lua: method_not_found / handler_error.
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = shield.call('cov_b', 'missing_method')\n"
-                   "assert(ok == false and err.code == 'method_not_found')"));
-    BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = shield.call('cov_b', 'thrower')\n"
-                   "assert(ok == false and err.code == 'handler_error')"));
+    // Call error mapping seen from Lua inside a handler: method_not_found /
+    // handler_error.
+    CallResult err_missing =
+        manager.call(a.service_id, "call_err",
+                     nlohmann::json::array({"cov_b", "missing_method"}));
+    BOOST_REQUIRE(err_missing.success);
+    BOOST_CHECK_EQUAL(err_missing.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(err_missing.values[1].get<std::string>(),
+                      "method_not_found");
+    CallResult err_throw = manager.call(
+        a.service_id, "call_err", nlohmann::json::array({"cov_b", "thrower"}));
+    BOOST_REQUIRE(err_throw.success);
+    BOOST_CHECK_EQUAL(err_throw.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(err_throw.values[1].get<std::string>(), "handler_error");
 
-    // send/call through a ServiceHandle userdata target.
-    BOOST_CHECK(
-        run_script(lua,
-                   "local h, qerr = shield.query('cov_b')\n"
-                   "assert(h ~= nil and qerr == nil)\n"
-                   "assert(shield.send(h, 'ping', 'via_handle') == true)\n"
-                   "local ok, v = shield.call(h, 'ping')\n"
-                   "assert(ok == true and v == 'pong')"));
+    // send/call through a ServiceHandle userdata target from a handler.
+    CallResult handle_rt = manager.call(a.service_id, "handle_roundtrip",
+                                        nlohmann::json::array({"cov_b"}));
+    BOOST_REQUIRE(handle_rt.success);
+    BOOST_CHECK_EQUAL(handle_rt.values[0].get<bool>(), true);
+    BOOST_CHECK_EQUAL(handle_rt.values[1].get<bool>(), true);
+    BOOST_CHECK_EQUAL(handle_rt.values[2].get<std::string>(), "pong");
 
     // The coroutine call ran with cov_a as the sender on the callee side.
     CallResult trace = manager.call(a.service_id, "trace_of", no_args);
@@ -1025,17 +1057,24 @@ BOOST_AUTO_TEST_CASE(ServiceInteractionPaths) {
     BOOST_REQUIRE_MESSAGE(sl.success, sl.error_message);
     BOOST_CHECK_EQUAL(sl.values[0].get<std::string>(), "slept_once");
 
-    // Sleep followed by a coroutine call: when the sleep timer resumes the
+    // Sleep followed by coroutine calls: when the sleep timer resumes the
     // handler it yields again inside the call (LUA_YIELD resume branch).
-    // The short call timeout then completes the handler deterministically.
+    // The instant callee completes the first resumed segment; the short
+    // budget against the sleepy callee completes the second deterministically
+    // with the timeout code.
     BOOST_REQUIRE(manager.send(a.service_id, "sleep_then_call",
                                nlohmann::json::array({"cov_b"})));
     BOOST_CHECK(wait_until(
         [&]() {
             CallResult v =
                 manager.call(a.service_id, "get_sleep_call", no_args, 1000);
-            return v.success && v.values.is_array() && v.values.size() == 2u &&
-                   v.values[0].is_boolean() && v.values[0].get<bool>() == false;
+            return v.success && v.values.is_array() && v.values.size() == 4u &&
+                   v.values[0].is_boolean() &&
+                   v.values[0].get<bool>() == true &&
+                   v.values[1].get<std::string>() == "pong" &&
+                   v.values[2].is_boolean() &&
+                   v.values[2].get<bool>() == false &&
+                   v.values[3].get<std::string>() == "timeout";
         },
         std::chrono::seconds(3)));
 
@@ -1096,18 +1135,32 @@ BOOST_AUTO_TEST_CASE(RuntimeStoppingCodes) {
 
     manager.shutdown_all("cov_stopping");
 
+    // send stays legal off-coroutine (fire-and-forget) and surfaces the
+    // stopping state; spawn fails deterministically.
     BOOST_CHECK(
         run_script(lua,
                    "local ok, err = shield.send('cov_stop_b', 'ping')\n"
                    "assert(ok == false and err.code == 'runtime_stopping')"));
     BOOST_CHECK(
-        run_script(lua,
-                   "local ok, err = shield.call('cov_stop_b', 'ping')\n"
-                   "assert(ok == false and err.code == 'runtime_stopping')"));
-    BOOST_CHECK(
         run_script(lua, "local h, err = shield.spawn('" + script_b +
                             "')\n"
                             "assert(h == nil and err.code == 'spawn_failed')"));
+
+    // shield.call is frozen off-coroutine (M4 semantics): a stopping runtime
+    // does not re-enable suspending the caller thread.
+    BOOST_CHECK(run_script(lua,
+                           "local ok, err = shield.call('cov_stop_b', 'ping')\n"
+                           "assert(ok == false and err.code == "
+                           "'call_not_allowed_off_coroutine')"));
+
+    // The stable error-code mapping for the stopping failure message stays
+    // reachable for coroutine callers racing the shutdown window.
+    BOOST_CHECK(
+        run_script(lua,
+                   "assert(shield._call_error_code('runtime is stopping') == "
+                   "'runtime_stopping')\n"
+                   "assert(shield._call_error_code('service not found: x') == "
+                   "'service_not_found')"));
 }
 
 // ---------------------------------------------------------------------------

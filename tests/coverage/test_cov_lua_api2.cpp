@@ -85,17 +85,21 @@ function M.probe(ctx, target)
   return ok
 end
 function M.probe_main_thread(ctx, target)
-  local ok, err = shield._sync_call_timeout(50, target, "echo", "x")
+  local ok, err = shield.call(target, "echo", "x")
   return ok, err and err.code or nil
 end
 function M.invalid_method_call(ctx, target)
-  local ok, err = shield._sync_call_timeout(500, target, "on_reserved")
+  local ok, err = shield.call(target, "on_reserved")
   return ok, err and err.code or nil
 end
 function M.dead_call(ctx, target)
-  local ok, err = shield._sync_call_timeout(500, target, "echo", 1)
+  local ok, err = shield.call_timeout(500, target, "echo", 1)
   state.dead_code = err and err.code or nil
   return ok
+end
+function M.bad_call_target(ctx)
+  local ok, err = shield.call(42, "echo")
+  return ok, err and err.code or nil
 end
 function M.dead_send(ctx, target)
   local ok, err = shield.send(target, "echo", 1)
@@ -189,12 +193,17 @@ BOOST_AUTO_TEST_CASE(SyncCallErrorCodes) {
                        sol::lib::string, sol::lib::os, sol::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
-    // Call to a service that does not exist.
-    BOOST_CHECK(run_script(lua,
-                           "local ok, err = shield._sync_call_timeout("
-                           "100, 'ghost', 'echo', 1)\n"
-                           "assert(ok == false)\n"
-                           "assert(err.code == 'service_not_found')"));
+    // Main-thread shield.call / shield.call_timeout are frozen to an explicit
+    // error code (M4: calls only run inside coroutines).
+    BOOST_CHECK(
+        run_script(lua,
+                   "local ok, err = shield.call('ghost', 'echo', 1)\n"
+                   "assert(ok == false)\n"
+                   "assert(err.code == 'call_not_allowed_off_coroutine')\n"
+                   "local ok2, err2 = shield.call_timeout(100, 'ghost', "
+                   "'echo', 1)\n"
+                   "assert(ok2 == false)\n"
+                   "assert(err2.code == 'call_not_allowed_off_coroutine')"));
 
     // send() with a reserved method name is rejected before dispatch
     // (method validation happens ahead of the service lookup on send).
@@ -262,9 +271,9 @@ BOOST_AUTO_TEST_CASE(DeadlineAndDeadServiceCodes) {
         BOOST_CHECK_EQUAL(res.values[1].get<int64_t>(), -1);
     }
 
-    // Calls to an exited service report service_not_found through the sync
-    // call path (no tombstone distinction), while send() to the recently
-    // exited service maps to service_dead via the exit tombstone.
+    // Calls to an exited service report service_not_found through the
+    // coroutine call path (no tombstone distinction), while send() to the
+    // recently exited service maps to service_dead via the exit tombstone.
     manager.exit(victim.service_id, "done");
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
@@ -272,6 +281,14 @@ BOOST_AUTO_TEST_CASE(DeadlineAndDeadServiceCodes) {
         auto res = manager.call(caller.service_id, "dead_call",
                                 nlohmann::json::array({victim.service_id}));
         BOOST_REQUIRE(res.success);
+    }
+    {
+        auto res = manager.call(caller.service_id, "bad_call_target",
+                                nlohmann::json::array());
+        BOOST_REQUIRE(res.success);
+        BOOST_REQUIRE(res.values.size() >= 2u);
+        BOOST_CHECK(!res.values[0].get<bool>());
+        BOOST_CHECK_EQUAL(res.values[1].get<std::string>(), "invalid_target");
     }
     {
         auto res = manager.call(caller.service_id, "dead_send",
@@ -598,8 +615,13 @@ BOOST_AUTO_TEST_CASE(CoroutineCallErrorShapes) {
         BOOST_REQUIRE(res.success);
         BOOST_REQUIRE(res.values.size() >= 2u);
         BOOST_CHECK(res.values[0].get<bool>() == false);
-        const std::string err = res.values[1].get<std::string>();
-        BOOST_CHECK(err.find("method not found") != std::string::npos);
+        // The call wrapper shapes a non-table resume payload into the stable
+        // {code, message} error form.
+        BOOST_REQUIRE(res.values[1].is_object());
+        BOOST_CHECK_EQUAL(res.values[1].value("code", ""), "method_not_found");
+        BOOST_CHECK(
+            res.values[1].value("message", "").find("method not found") !=
+            std::string::npos);
     }
 
     {
@@ -651,8 +673,8 @@ BOOST_AUTO_TEST_CASE(MainThreadSpawnAndConfigEdges) {
 }
 
 // shield.log from inside a service handler prefixes the service id; a
-// blocking _sync_call_timeout to a live service with a missing method maps
-// the callee error through call_error_message's string branch.
+// coroutine call to a live service with a missing method maps the callee
+// error through the call wrapper's string-to-error-table shaping.
 BOOST_AUTO_TEST_CASE(ServiceLogPrefixAndSyncCallError) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
@@ -671,7 +693,7 @@ BOOST_AUTO_TEST_CASE(ServiceLogPrefixAndSyncCallError) {
         "  return true\n"
         "end\n"
         "function M.sync_missing(ctx, target)\n"
-        "  local ok, err = shield._sync_call_timeout(3000, target, 'nope')\n"
+        "  local ok, err = shield.call_timeout(3000, target, 'nope')\n"
         "  state.sync_ok = ok\n"
         "  state.sync_err = err\n"
         "  return ok, err\n"

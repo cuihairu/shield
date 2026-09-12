@@ -64,10 +64,10 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - [x] 实现 `shield.query/register/unregister/names` 的单节点最小 registry 路径。
 - [x] 提供 `shield.now`。
 - [x] 实现 `timer_once/timer/cancel_timer`、handler 内 coroutine-aware `sleep`、`fork` task id。
-  - `timer_once/timer/cancel_timer` 已走 CAF actor timer，callback 通过 service actor 调度并在 `lua_pcall` 包裹执行，错误路由到 `on_error` hook。
-  - `fork` 已走 CAF actor 调度（`enqueue_forked_task` + `fork_task_atom`），callback 通过 `lua_pcall` 包裹执行（`raw_fn` 有效时），错误路由到 `on_error` hook。
+  - `timer_once/timer/cancel_timer` 已走 CAF actor timer，callback 通过 service actor 调度并以 `invoke_coroutine` 协程方式执行（可 `shield.sleep`/`shield.call` 挂起，不阻塞 actor），错误路由到 `on_error` hook。
+  - `fork` 已走 CAF actor 调度（`enqueue_forked_task` + `fork_task_atom`），task body 以 `invoke_coroutine` 协程方式执行（`raw_fn` 有效时），错误路由到 `on_error` hook。
   - `shield.sleep` 已实现 handler 协程感知：async handler 中 yield + 由 `_resume_after` 定时器 resume；非协程路径走 `_block_sleep` 阻塞。LAPI-007-08/09/10 已覆盖。
-  - `shield.call` / `shield.call_timeout` 已实现协程感知调用路径（`_coro_call` → `suspend_for_call` + `coroutine.yield()` → `resume_caller`），主线程走 `_sync_call` 同步调用。call timeout 由 CAF delayed `call_timeout_atom` 驱动。LAPI-005-06 已覆盖。
+  - `shield.call` / `shield.call_timeout` 已实现统一协程调用路径（`_coro_call` → `suspend_for_call` + `coroutine.yield()` → caller actor mailbox 回投 → `resume_caller`）；主线程/module-level 调用返回 `call_not_allowed_off_coroutine`，C++ `manager.call()` 走外部等待者（同一 `call_session` 协议）。call timeout 由 CAF delayed `call_timeout_atom` 驱动。LAPI-005 已覆盖。
 - [x] 提供 `shield.log.*`。
 - [x] 删除旧 `shield.db.*` / `shield.redis.*` 全局数据 API，数据访问统一走插件 namespace + binding 逻辑名。
 - [x] 插件系统 v1 提供 manifest scan、catalog、instance、binding、C ABI guard、`register_lua` 分发和只读 introspection。

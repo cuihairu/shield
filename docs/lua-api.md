@@ -7,7 +7,7 @@
 <details>
 <summary>实现快照（点击展开）</summary>
 
-当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、timer/fork callback `lua_pcall` 包裹（错误路由到 `on_error`）、TCP gateway listener 到 Lua handler 的 bootstrap 桥接、HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
+当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、timer/fork/on_init 回调统一协程 dispatch（`invoke_coroutine`，挂起与错误路由到 `on_error` 均与 handler 一致）、TCP gateway listener 到 Lua handler 的 bootstrap 桥接、HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
 
 - HTTP 服务端 Lua 路由（`shield.httpd.*`）已接入 bootstrap：路由保存于运行时注册表，由 `LuaHttpBridge` 镜像进 `HttpServer`，请求派发到注册服务的 actor 线程执行。
 - `on_shutdown(ctx)` 和单 VM 内部 `shield.event` 已定义为目标契约，但当前源码尚未实现。
@@ -374,9 +374,9 @@ local ok, result = shield.call_timeout(3000, "db.player", "get", uid)
 <details>
 <summary>实现快照（点击展开）</summary>
 
-`shield.call` / `shield.call_timeout` 已实现协程感知路径——在 handler 协程中调用时，caller 通过 `_coro_call` → `suspend_for_call` + `coroutine.yield()` 挂起，callee 完成后 `resume_caller` 恢复 caller。`manager->call()`（C++ 侧）始终路由到 target 的 CAF actor，发送 `SyncCallMessage` 并通过条件变量阻塞等待 actor dispatch 完成。
+`shield.call` / `shield.call_timeout` 只有协程路径——在 handler / timer / fork / on_init 协程中调用时，caller 通过 `_coro_call` → `suspend_for_call` + `coroutine.yield()` 挂起；callee 完成后响应经 caller actor mailbox 回投，`resume_caller` 在 caller actor 线程恢复 caller 协程（actor 在挂起期间继续处理其他消息）。C++ 侧 `manager->call()` 是外部等待者：向 target actor 发送统一 call 请求（`ServiceMessage` + `call_session`），在外部 `call_session` 上通过条件变量等待同一套响应路径，对 Lua 语义无感知。
 
-同步路径的自调用（caller == target）返回错误 message `"self-call not supported"`，经 `call_error_code` 映射为 `{code="handler_error"}`。call timeout 通过 CAF `delayed_send` 实现，以 `{code="timeout", message="call timeout", retryable=true}` 恢复 caller。
+不在协程中的调用（module-level 代码、主线程）返回 `false, {code="call_not_allowed_off_coroutine", message="..."}`。协程内自调用（caller == target）合法：caller 协程 yield 释放 dispatch 后，请求经自身 actor mailbox 串行处理。call timeout 通过 CAF `delayed_send` 实现，以 `{code="timeout", message="call timeout", retryable=true}` 恢复 caller。
 
 LAPI-005-06 已覆盖。
 
@@ -437,7 +437,7 @@ end)
 | 规则 | 说明 |
 | --- | --- |
 | 调度策略 | fixed-delay：callback 结束后再安排下一次 |
-| 执行方式 | callback 当前通过 `lua_pcall` 执行，不是 coroutine；`shield.sleep` / `shield.call` 在 callback 中走同步调用路径 |
+| 执行方式 | callback 是 coroutine（`invoke_coroutine` 包裹）；`shield.sleep` / `shield.call` 在 callback 中挂起回调协程，不阻塞 actor |
 | 错误处理 | callback 抛错时触发 `on_error` |
 | 生命周期 | service exit 自动取消 owned timers |
 
@@ -457,7 +457,7 @@ local ok, err = shield.cancel_timer(id)
 shield.sleep(100)
 ```
 
-在 message handler coroutine 中挂起当前 coroutine，不阻塞 runtime thread；在同步调用、timer callback 或 fork task 中走阻塞降级路径。
+在协程上下文（message handler、timer/fork callback、on_init、on_shutdown）中挂起当前 coroutine，不阻塞 runtime thread；仅在 module-level 代码等无协程上下文中退化为阻塞线程的 `_block_sleep`。
 
 ---
 

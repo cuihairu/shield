@@ -6,7 +6,7 @@
 
 `MessageEnvelope` 是 runtime 内部信封，Lua 用户不直接构造。
 
-> 注：下面的 C++ 结构是概念模型，用于说明字段语义；实际实现见 `include/shield/core/service_message.hpp`（`ServiceMessage` / `SyncCallMessage` / `CallResponseMessage`）。service call 的请求-响应关联由 `LuaServiceManager` 基于 CAF actor 消息与 coroutine pending/resume 维护，不在 Lua API 中暴露。
+> 注：下面的 C++ 结构是概念模型，用于说明字段语义；实际实现见 `include/shield/core/service_message.hpp`（`ServiceMessage` / `CallResponseMessage`）。service call 的请求-响应关联由 `LuaServiceManager` 基于 `call_session` 与 CAF actor 消息、coroutine pending/resume 维护，不在 Lua API 中暴露。
 
 ```cpp
 enum class MessageKind {

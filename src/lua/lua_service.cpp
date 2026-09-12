@@ -37,6 +37,25 @@
 namespace shield::lua {
 
 namespace {
+// Re-anchor a sol reference onto the main thread's lua_State. Handlers
+// registered from inside a coroutine (on_init and every service handler run
+// as one) carry that coroutine's lua_State, which the GC may collect once
+// the coroutine finishes; a stored lua_State* would then dangle and any
+// later use (luaL_unref from the cancel/erase paths) would crash. The
+// registry is shared across all threads of one global_State, so re-refering
+// the same registry entry from the main thread keeps the stored pointer
+// alive without changing which value the reference names.
+sol::function anchor_to_main_thread(sol::function fn) {
+    lua_State* state = fn.lua_state();
+    if (state == nullptr || !fn.valid()) {
+        return fn;
+    }
+    lua_State* main_state = sol::main_thread(state);
+    if (main_state == nullptr || main_state == state) {
+        return fn;
+    }
+    return sol::function(main_state, sol::ref_index(fn.registry_index()));
+}
 
 struct DispatchFrame {
     std::string service_id;
@@ -44,8 +63,6 @@ struct DispatchFrame {
     std::string trace_id;
     int64_t deadline_ms = 0;
     bool in_exit = false;
-    bool exit_requested = false;
-    std::string exit_reason = "normal";
 };
 
 thread_local std::vector<DispatchFrame> tls_dispatch_stack;
@@ -64,10 +81,26 @@ CallResult CallResult::error(std::string msg) {
     return {false, nlohmann::json::array(), std::move(msg)};
 }
 
+// True on the thread currently running a spawn's on_init (the spawning
+// thread, or the spawn worker for async spawns). shield.spawn inside on_init
+// takes the synchronous path: the child's init blocks the spawning thread —
+// exactly the pre-coroutine behavior — while a spawn from a resumed init
+// coroutine (actor thread) keeps the async path. Not set on the actor thread
+// that resumes a yielded on_init, so a post-yield spawn never blocks an
+// actor.
+thread_local bool t_in_spawn_init = false;
+
 struct LuaServiceManager::Impl {
     LuaRuntime& runtime;
     caf::actor_system& system;
     std::unordered_map<std::string, std::shared_ptr<LuaVM>> services;
+    // VMs of services whose on_init is still running (registered by spawn
+    // before the init coroutine starts, erased when the spawn finishes or
+    // rolls back). Timer/fork dispatch during init resolves the VM here: the
+    // suspended init coroutine must be resumable via shield.sleep /
+    // shield.call even though the service is not published yet. Guarded by
+    // registry_mutex like services.
+    std::unordered_map<std::string, std::shared_ptr<LuaVM>> init_vms;
     std::unordered_map<std::string, std::string> published_names;
     std::unordered_map<std::string, std::unordered_set<std::string>>
         owned_names;
@@ -88,7 +121,80 @@ struct LuaServiceManager::Impl {
     };
     std::unordered_map<std::string, ServiceRpcState> service_rpc;
 
+    // Pending shield.exit requests, keyed by service id. The requesting
+    // dispatch frame may pop before the dispatcher looks for the request
+    // (the tail of a yielded on_init / handler runs on a resume frame on
+    // another actor thread), so a thread-local flag alone would lose it.
+    // The dispatcher (dispatch_message / spawn / every coroutine resume
+    // completion point) consumes the entry and drives exit() from there.
+    std::mutex exit_request_mutex;
+    std::unordered_map<std::string, std::string> service_exit_requests;
+
+    // Records a pending exit request for a service (unless it is already
+    // exiting). Called with the dispatch frame's service id.
+    void request_exit_for(const std::string& service_id, std::string reason) {
+        if (service_id.empty()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(exit_request_mutex);
+        service_exit_requests[service_id] = std::move(reason);
+    }
+
+    // Consumes a pending exit request for a service: returns true (exactly
+    // once) with the requested reason, or false when none is pending.
+    bool consume_exit_request(const std::string& service_id,
+                              std::string* reason) {
+        std::lock_guard<std::mutex> lock(exit_request_mutex);
+        auto it = service_exit_requests.find(service_id);
+        if (it == service_exit_requests.end()) {
+            return false;
+        }
+        if (reason) {
+            *reason = std::move(it->second);
+        }
+        service_exit_requests.erase(it);
+        return true;
+    }
+
     mutable std::shared_mutex registry_mutex;
+
+    // VM lookup for timer/fork dispatch: a published service wins; while a
+    // spawn's on_init is still running the VM is only in init_vms.
+    std::shared_ptr<LuaVM> find_dispatch_vm(const std::string& id) {
+        std::shared_lock lock(registry_mutex);
+        if (auto it = services.find(id); it != services.end()) {
+            return it->second;
+        }
+        if (auto it = init_vms.find(id); it != init_vms.end()) {
+            return it->second;
+        }
+        return nullptr;
+    }
+
+    // RAII over the init_vms entry: spawn registers the VM before on_init
+    // starts; the guard erases it on every exit path (success, rollback,
+    // exception). It also drops a pending exit request that on_init recorded
+    // but the spawn never consumed (init failed after the request): a
+    // respawned incarnation must not inherit it.
+    struct InitVmRegistration {
+        Impl& impl;
+        const std::string& name;
+        ~InitVmRegistration() {
+            std::string dropped;
+            impl.consume_exit_request(name, &dropped);
+            std::unique_lock lock(impl.registry_mutex);
+            impl.init_vms.erase(name);
+        }
+    };
+
+    // RAII over the spawn-init thread flag (t_in_spawn_init): shield.spawn
+    // inside the initial on_init segment resolves synchronously. Saves and
+    // restores so a nested spawn's on_init does not clear the outer flag.
+    struct SpawnInitFlag {
+        bool prev = t_in_spawn_init;
+        ~SpawnInitFlag() { t_in_spawn_init = prev; }
+    };
+
     std::atomic<bool> stopping{
         false};  // set by shutdown_all, checked by send/call/spawn
 
@@ -204,6 +310,20 @@ struct LuaServiceManager::Impl {
 
     std::unordered_map<uint64_t, caf::actor> actor_call_timeouts;
 
+    // Graveyard for retired CAF actor handles: one-shot timer drivers that
+    // already fired, cancelled timer / call-timeout drivers, and service
+    // actors erased from service_actors. CAF's monitor-down notification
+    // that wait_for_actors joins on is raised while the actor's worker is
+    // still unwinding its cleanup() (stream/attachable teardown runs after
+    // the down message), so dropping the last reference on a service-actor,
+    // caller, or foreign thread — even after wait_for_actors — can race that
+    // unwind and destroy the actor storage underneath it (TSan-verified heap
+    // corruption). Retired handles therefore live here; the Impl destructor
+    // drains the graveyard with stop_and_wait_for_actors at a point where
+    // nothing concurrent can touch the actors anymore.
+    std::mutex retired_actors_mutex;
+    std::vector<caf::actor> retired_actors;
+
     // Names reserved by in-flight spawn() calls (init not finished yet).
     // Reserved names are rejected by spawn pre-checks but are not visible to
     // query_service until published (docs: reserve -> publish state machine).
@@ -276,23 +396,6 @@ struct LuaServiceManager::Impl {
         m.timestamp_ms = msg.timestamp_ms;
         m.call_session = msg.call_session;
         (void)dispatch_message(manager, id, m);
-    }
-
-    // Dispatch a CAF-native SyncCallMessage. Uses sync_session as the
-    // call_session so on_handler_completed can signal the blocking caller.
-    void dispatch_sync_call_message(class LuaServiceManager* manager,
-                                    const std::string& id,
-                                    const SyncCallMessage& req) {
-        DispatchMessage msg;
-        msg.sender = req.sender;
-        msg.method = req.method;
-        msg.args = req.args;
-        msg.trace_id = req.trace_id;
-        msg.deadline_ms = req.deadline_ms;
-        msg.high_priority = false;
-        msg.timestamp_ms = req.timestamp_ms;
-        msg.call_session = req.sync_session;
-        (void)dispatch_message(manager, id, msg);
     }
 
     void dispatch_call_response(class LuaServiceManager* manager,
@@ -432,12 +535,9 @@ struct LuaServiceManager::Impl {
             // Method failed - log error but continue processing other messages.
         }
 
-        std::string exit_service_id;
-        std::string exit_reason;
-        if (is_exit_requested(&exit_service_id, &exit_reason) &&
-            exit_service_id == id) {
-            manager->exit(exit_service_id, exit_reason);
-        }
+        // Honor shield.exit requested by the handler (or by a resumed
+        // continuation of it — see finish_pending_exit).
+        manager->finish_pending_exit(id);
 
         return true;
     }
@@ -446,20 +546,20 @@ struct LuaServiceManager::Impl {
                            const ForkedTask& task) {
         DispatchScope scope(*this, task.service_id, "", false);
         if (task.raw_fn.valid()) {
-            lua_State* L = task.raw_fn.lua_state();
-            task.raw_fn.push(L);
-            int status = lua_pcall(L, 0, 0, 0);
-            if (status != LUA_OK) {
-                std::string err = "fork error";
-                if (lua_type(L, -1) == LUA_TSTRING) {
-                    err = lua_tostring(L, -1);
-                }
-                lua_settop(L, 0);
-                auto& log = shield::log::get_logger("lua");
-                SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
-                                          " error: " + err);
-                manager->invoke_error_hook(task.service_id, "fork", "", err);
+            // Coroutine-aware dispatch: the forked task may yield via
+            // shield.sleep / shield.call; the actor thread returns to the
+            // mailbox immediately and the suspended coroutine is resumed by
+            // the runtime when its wait completes.
+            std::string error;
+            std::shared_ptr<LuaVM> service = find_dispatch_vm(task.service_id);
+            if (service &&
+                runtime.invoke_coroutine(service, task.raw_fn, {}, "fork", "",
+                                         0, manager, task.service_id, &error)) {
+                return;
             }
+            auto& log = shield::log::get_logger("lua");
+            SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
+                                      " error: " + error);
         } else {
             try {
                 task.fn();
@@ -508,30 +608,43 @@ struct LuaServiceManager::Impl {
             return;
         }
         DispatchScope scope(*this, service_id, "", false);
-        lua_State* L = cb.lua_state();
-        cb.push(L);
-        int status = lua_pcall(L, 0, 0, 0);
-        if (status != LUA_OK) {
-            std::string err = "timer error";
-            if (lua_type(L, -1) == LUA_TSTRING) {
-                err = lua_tostring(L, -1);
-            }
-            lua_settop(L, 0);
-            manager->invoke_error_hook(service_id, "timer", "", err);
+        // Coroutine-aware dispatch: the callback may yield via shield.sleep /
+        // shield.call; the actor thread returns to the mailbox immediately.
+        std::string error;
+        std::shared_ptr<LuaVM> service = find_dispatch_vm(service_id);
+        if (!service) {
+            return;
+        }
+        if (!runtime.invoke_coroutine(service, cb, {}, "timer", "", 0, manager,
+                                      service_id, &error)) {
+            auto& log = shield::log::get_logger("lua");
+            SHIELD_LOG_ERROR(log, "timer error: " + error);
         }
     }
 
     void fire_actor_timer(class LuaServiceManager* manager,
                           const std::string& service_id, uint64_t timer_id) {
         ActorTimerState timer;
+        caf::actor retired_driver;
         bool found = false;
         {
             std::unique_lock lock(registry_mutex);
             auto it = actor_timers.find(timer_id);
             if (it != actor_timers.end() && it->second.active) {
                 timer = it->second;
+                // The fire path never carries the driver in the copied state:
+                // its last external reference may only be released where the
+                // driver is provably not running (after wait_for_actors on
+                // retired_driver below) or by the stop_and_wait paths that
+                // cancel it. Erasing a non-repeating entry drops one
+                // reference — often the last one, and CAF then runs its
+                // on_unreachable teardown right here while the driver's
+                // worker thread is still inside the tick handler that sent
+                // this very fire message (TSan-verified data race).
+                timer.driver = caf::actor{};
                 found = true;
                 if (!it->second.repeating) {
+                    retired_driver = std::move(it->second.driver);
                     actor_timers_by_service[it->second.service_id].erase(
                         timer_id);
                     actor_timers.erase(it);
@@ -542,10 +655,45 @@ struct LuaServiceManager::Impl {
             return;
         }
         if (timer.has_native_callback) {
+            // Native callbacks (the sleep resume) continue a suspended
+            // coroutine on this actor thread. Re-establish the owning
+            // service's dispatch context first: everything the continuation
+            // does — another shield.call's caller_service stamp, shield.fork
+            // / timer ownership, shield.self — resolves through the dispatch
+            // stack, and an empty stack would mis-route them.
+            DispatchScope scope(*this, service_id, "", false);
             timer.native_callback();
         } else {
             run_timer_callback_now(manager, service_id, timer.raw_callback);
         }
+        // The one-shot driver quits itself after firing; wait for it to
+        // terminate here so the graveyard below never parks a running actor.
+        // Waiting cannot deadlock: the driver's tick handler only forwards
+        // the fire message and quits — it never needs this service actor
+        // again. Even so the last reference is NOT dropped on this thread:
+        // wait_for_actors joins on CAF's monitor-down, which the driver's
+        // worker raises before its message loop has fully unwound, so the
+        // destructor here would still race that unwind. The handle goes to
+        // the graveyard instead and dies with the Impl.
+        if (retired_driver) {
+            wait_for_actors({retired_driver});
+            retire_actor(std::move(retired_driver));
+        }
+    }
+
+    // Runs the service's on_exit handler on the actor thread (the
+    // ServiceExitRequest handler). Mirrors the inline copy in exit(): errors
+    // are swallowed, a nested shield.exit inside on_exit is ignored.
+    void run_exit_handler(const std::string& service_id,
+                          const std::string& reason) {
+        std::shared_ptr<LuaVM> service = find_dispatch_vm(service_id);
+        if (!service) {
+            return;
+        }
+        std::string error;
+        nlohmann::json args = nlohmann::json(reason);
+        DispatchScope scope(*this, service_id, "", true);
+        (void)runtime.call_service_function(service, "on_exit", args, &error);
     }
 
     static int64_t now_ms() {
@@ -569,8 +717,36 @@ struct LuaServiceManager::Impl {
                 caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
             }
         }
+        wait_for_actors(actors);
+    }
+
+    // Blocks until every listed actor has terminated. Unlike
+    // stop_and_wait_for_actors this never sends an exit signal: used when an
+    // actor terminates itself (the ServiceExitRequest handler quits after
+    // running on_exit) and an exit signal racing that request would drop it.
+    void wait_for_actors(const std::vector<caf::actor>& actors) {
+        if (actors.empty()) {
+            return;
+        }
         caf::scoped_actor self{system};
         self->wait_for(actors);
+    }
+
+    // Parks a driver handle instead of destroying it on this thread. See the
+    // graveyard comment on the member declaration: the release must not happen
+    // while any CAF worker may still be inside the driver's message loop.
+    void retire_actor(caf::actor&& handle) {
+        if (!handle) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(retired_actors_mutex);
+        retired_actors.push_back(std::move(handle));
+    }
+
+    void retire_actors(std::vector<caf::actor>&& handles) {
+        for (auto& handle : handles) {
+            retire_actor(std::move(handle));
+        }
     }
 
     bool collect_actor_timer_for_cancel(
@@ -581,7 +757,13 @@ struct LuaServiceManager::Impl {
             return false;
         }
         if (it->second.driver) {
-            actors_to_stop->push_back(it->second.driver);
+            // Move the driver out: the entry dies below while the driver
+            // actor may still be running its tick handler. Releasing its last
+            // external reference at that moment would trigger CAF's
+            // on_unreachable teardown on this thread concurrently with that
+            // handler; the reference must only be released after
+            // stop_and_wait_for_actors joined the driver.
+            actors_to_stop->push_back(std::move(it->second.driver));
         }
         auto by_service_it =
             actor_timers_by_service.find(it->second.service_id);
@@ -656,20 +838,6 @@ struct LuaServiceManager::Impl {
         return tls_dispatch_stack.back().deadline_ms;
     }
 
-    bool is_exit_requested(std::string* service_id, std::string* reason) const {
-        if (tls_dispatch_stack.empty() ||
-            !tls_dispatch_stack.back().exit_requested) {
-            return false;
-        }
-        if (service_id) {
-            *service_id = tls_dispatch_stack.back().service_id;
-        }
-        if (reason) {
-            *reason = tls_dispatch_stack.back().exit_reason;
-        }
-        return true;
-    }
-
     static bool valid_name(std::string_view name) {
         if (name.empty() || name.size() > 64 || name.rfind("shield.", 0) == 0) {
             return false;
@@ -697,8 +865,6 @@ struct LuaServiceManager::Impl {
                 std::move(trace_id),
                 deadline_ms,
                 in_exit,
-                false,
-                "normal",
             });
         }
 
@@ -814,39 +980,70 @@ LuaServiceManager::~LuaServiceManager() {
             impl_->actor_timers.size() + impl_->actor_call_timeouts.size());
         for (auto& [id, actor] : impl_->service_actors) {
             if (actor) {
-                actors_to_stop.push_back(actor);
+                // Move: the clear() below would otherwise release the map
+                // entry's reference while the actor may still be running.
+                actors_to_stop.push_back(std::move(actor));
             }
         }
         impl_->service_actors.clear();
         for (auto& [id, timer] : impl_->actor_timers) {
             if (timer.driver) {
-                actors_to_stop.push_back(timer.driver);
+                // Move: the clear() below would otherwise release the map
+                // entry's reference while the driver may still be running;
+                // releasing ours after stop_and_wait_for_actors is safe.
+                actors_to_stop.push_back(std::move(timer.driver));
             }
         }
         impl_->actor_timers.clear();
         impl_->actor_timers_by_service.clear();
         for (auto& [session, driver] : impl_->actor_call_timeouts) {
             if (driver) {
-                actors_to_stop.push_back(driver);
+                // Same move-before-clear reasoning as the timer drivers.
+                actors_to_stop.push_back(std::move(driver));
             }
         }
         impl_->actor_call_timeouts.clear();
     }
     impl_->stop_and_wait_for_actors(actors_to_stop);
+    // Drop the joined drivers into the graveyard rather than destructing the
+    // vector here: an entry whose driver already terminated is harmless, but
+    // routing every release through the graveyard keeps one single policy.
+    impl_->retire_actors(std::move(actors_to_stop));
 
-    // Wake up any pending sync calls (manager->call() blocked on CV)
-    // so they don't hang forever during shutdown.
+    // Wake up any pending sync calls (manager->call() / call_with_session
+    // blocked on a CV) so they don't hang forever during shutdown, then wait
+    // until every waiter has left: unlike the shutdown_all copy this runs
+    // right before impl_ dies, so a waiter still touching pending_sync_calls
+    // after the notify would be a use-after-free.
     {
-        std::unique_lock lock(impl_->registry_mutex);
-        for (auto& [session, pending] : impl_->pending_sync_calls) {
-            std::unique_lock lk(pending->mtx);
-            pending->error = "runtime is stopping";
-            pending->ok = false;
-            pending->completed = true;
-            pending->cv.notify_one();
+        for (;;) {
+            {
+                std::unique_lock lock(impl_->registry_mutex);
+                if (impl_->pending_sync_calls.empty()) {
+                    break;
+                }
+                for (auto& [session, pending] : impl_->pending_sync_calls) {
+                    std::unique_lock lk(pending->mtx);
+                    if (!pending->completed) {
+                        pending->error = "runtime is stopping";
+                        pending->ok = false;
+                        pending->completed = true;
+                        pending->cv.notify_one();
+                    }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        impl_->pending_sync_calls.clear();
     }
+
+    // Final graveyard drain: by now every live and retired driver has been
+    // sent an exit signal and waited on (the retired_actors vector itself
+    // may hold already-terminated one-shots plus drivers that were cancelled
+    // while still armed). Nothing concurrent can touch them anymore — the
+    // spawn worker is stopped and every service actor is gone — so the last
+    // references may finally be released here.
+    impl_->stop_and_wait_for_actors(impl_->retired_actors);
+    impl_->retired_actors.clear();
 
     impl_->runtime.set_service_manager(nullptr);
 }
@@ -1000,21 +1197,53 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         // succeeds; until then the actor exists purely as an internal handle.
         //
         // The behavior pattern-matches the native typed messages
-        // (ServiceMessage, SyncCallMessage, CallResponseMessage,
-        // timer_fire_atom + uint64_t, call_timeout_atom + uint64_t). No
-        // string/JSON dispatch remains.
+        // (ServiceMessage, CallResponseMessage, timer_fire_atom + uint64_t,
+        // call_timeout_atom + uint64_t). No string/JSON dispatch remains.
         auto actor = impl_->system.spawn([impl_ptr = impl_.get(),
                                           manager = this, svc = service_name](
                                              caf::event_based_actor* self)
                                              -> caf::behavior {
             // Message stashing: until on_init completes on the spawning
-            // thread, every incoming message is stashed so fork/timer/
-            // call cannot touch this Lua VM concurrently with on_init.
-            // The spawner sends init_ready_atom once on_init returns;
-            // we then install the real behavior and release the stash.
+            // thread, business messages are stashed so fork/timer/call
+            // cannot touch this Lua VM concurrently with on_init. Runtime
+            // driven resume messages pass through: sleep timers, call
+            // responses and call timeouts can only arrive once on_init has
+            // yielded, i.e. while the spawning thread is parked on the init
+            // waiter and the VM is idle. fork_task_atom is deliberately NOT
+            // passed through: a fork enqueued by a still synchronous on_init
+            // would otherwise execute here while the spawning thread is still
+            // inside the VM — two OS threads in one lua_State. Stashing it
+            // defers execution to the unstash below, so a fork scheduled
+            // during on_init runs serially after init (the documented fork
+            // contract). The spawner sends init_ready_atom once on_init
+            // returns; we then install the real behavior and release the
+            // stash.
             auto cache = std::make_shared<caf::mail_cache>(self, 4096);
             self->set_default_handler(
-                [cache](caf::message& msg) -> caf::skippable_result {
+                [cache, impl_ptr, manager,
+                 svc](caf::message& msg) -> caf::skippable_result {
+                    if (msg.size() == 2 &&
+                        (msg.match_element<timer_fire_atom>(0) ||
+                         msg.match_element<call_timeout_atom>(0))) {
+                        const uint64_t payload = msg.get_as<uint64_t>(1);
+                        if (msg.match_element<timer_fire_atom>(0)) {
+                            impl_ptr->fire_actor_timer(manager, svc, payload);
+                        } else {
+                            manager->cancel_actor_call_timeout(payload);
+                            nlohmann::json timeout_err =
+                                nlohmann::json::array({nlohmann::json::object(
+                                    {{"code", "timeout"},
+                                     {"message", "call timeout"},
+                                     {"retryable", true}})});
+                            manager->resume_caller(payload, false, timeout_err);
+                        }
+                        return {};
+                    }
+                    if (msg.match_element<CallResponseMessage>(0)) {
+                        impl_ptr->dispatch_call_response(
+                            manager, msg.get_as<CallResponseMessage>(0));
+                        return {};
+                    }
                     cache->stash(msg);
                     return {};
                 });
@@ -1034,10 +1263,6 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                          svc](const ClientControlMessage& msg) {
                             impl_ptr->dispatch_client_control(manager, svc,
                                                               msg);
-                        },
-                        [impl_ptr, manager, svc](const SyncCallMessage& req) {
-                            impl_ptr->dispatch_sync_call_message(manager, svc,
-                                                                 req);
                         },
                         [impl_ptr, manager](const CallResponseMessage& msg) {
                             impl_ptr->dispatch_call_response(manager, msg);
@@ -1059,6 +1284,17 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                         [impl_ptr, manager](fork_task_atom, uint64_t task_id) {
                             impl_ptr->run_ready_fork_task(manager, task_id);
                         },
+                        [self, impl_ptr, svc](const ServiceExitRequest& req) {
+                            // Structured exit from a foreign thread
+                            // (manager.exit / shutdown_all): on_exit runs
+                            // here on the actor thread — the only thread
+                            // allowed to touch this VM — and the actor quits
+                            // itself so the exiting thread can observe
+                            // completion via wait_for instead of racing this
+                            // thread with a direct VM call.
+                            impl_ptr->run_exit_handler(svc, req.reason);
+                            self->quit(caf::exit_reason::user_shutdown);
+                        },
                     });
                     cache->unstash();
                 },
@@ -1067,7 +1303,13 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         {
             std::unique_lock lock(impl_->registry_mutex);
             impl_->service_actors.emplace(service_name, actor);
+            // Init-phase VM registration: timer/fork dispatch during on_init
+            // resolves the VM here (find_dispatch_vm) so a shield.sleep or
+            // fork inside on_init is resumable even though the service is
+            // not published yet. Erased on every exit path by the guard.
+            impl_->init_vms[service_name] = vm;
         }
+        Impl::InitVmRegistration init_vm_guard{*impl_, service_name};
 
         nlohmann::json init_args = {
             {"name", service_name},
@@ -1078,27 +1320,96 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         bool exit_after_init = false;
         std::string exit_reason;
         {
-            const auto init_start = std::chrono::steady_clock::now();
-
             Impl::DispatchScope scope(*impl_, service_name, "", false);
-            if (!impl_->runtime.call_service_function(vm, "on_init", init_args,
-                                                      &error)) {
-                // Check if failure was due to timeout.
-                const auto init_end = std::chrono::steady_clock::now();
-                const auto init_ms =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        init_end - init_start)
-                        .count();
-                if (init_ms >= spawn_timeout_ms) {
-                    return SpawnResult::error(
-                        "spawn timeout: on_init took " +
-                        std::to_string(init_ms) + "ms (limit " +
-                        std::to_string(spawn_timeout_ms) + "ms)");
+            // on_init runs as a coroutine so it may yield inside
+            // shield.sleep / shield.call: the spawn waits on the external
+            // waiter while the runtime resumes the coroutine. The spawn
+            // timeout budget bounds the whole wait.
+            Impl::SpawnInitFlag spawn_init_flag;
+            t_in_spawn_init = true;
+            sol::function on_init_fn;
+            if (impl_->runtime.resolve_service_method(vm, "on_init",
+                                                      &on_init_fn, &error)) {
+                // An on_init that never yields (busy loop / pure sync code)
+                // runs to completion inside the starter lambda below: the
+                // only timeout signal is the elapsed measurement, exactly as
+                // the synchronous dispatch did.
+                const int64_t init_start = Impl::now_ms();
+                auto init_result = call_with_session(
+                    [&](uint64_t session, std::string& err) -> bool {
+                        // on_init keeps its historical no-ctx signature:
+                        // on_init(args) — the init arguments arrive directly.
+                        return impl_->runtime.invoke_coroutine(
+                            vm, on_init_fn, {init_args}, "handler", "on_init",
+                            session, this, service_name, &err,
+                            /*prepend_ctx=*/false);
+                    },
+                    static_cast<int32_t>(spawn_timeout_ms));
+                const int64_t init_elapsed_ms = Impl::now_ms() - init_start;
+                // A non-yielding on_init that overruns the budget cannot be
+                // preempted: the elapsed measurement (not the CAF driver)
+                // must win over a business false/nil return, matching the
+                // synchronous dispatch semantics.
+                const bool init_overran =
+                    init_elapsed_ms >= static_cast<int64_t>(spawn_timeout_ms);
+                if (!init_result.success) {
+                    error = init_result.error_message;
+                    if (error.find("call timeout") != std::string::npos ||
+                        init_overran) {
+                        return SpawnResult::error(
+                            "spawn timeout: on_init exceeded " +
+                            std::to_string(spawn_timeout_ms) + "ms limit");
+                    }
+                } else if (!init_result.values.empty()) {
+                    // call_service_function contract: a hook returning
+                    // (false, msg) or (nil, msg) reports a failure.
+                    const nlohmann::json& first = init_result.values[0];
+                    const bool false_first =
+                        first.is_boolean() && !first.get<bool>();
+                    const bool nil_first =
+                        first.is_null() && init_result.values.size() > 1;
+                    if (false_first || nil_first) {
+                        if (init_overran) {
+                            return SpawnResult::error(
+                                "spawn timeout: on_init exceeded " +
+                                std::to_string(spawn_timeout_ms) + "ms limit");
+                        }
+                        error = init_result.values.size() > 1 &&
+                                        init_result.values[1].is_string()
+                                    ? init_result.values[1].get<std::string>()
+                                : false_first ? "on_init returned false"
+                                              : "on_init returned nil";
+                    }
                 }
+            } else {
+                // A module without on_init is fine (call_service_function
+                // treated a missing hook as a silent no-op); anything else is
+                // a load failure surfaced below.
+                if (error.find("is missing or not a function") ==
+                    std::string::npos) {
+                    return SpawnResult::error("on_init failed for " +
+                                              service_name + ": " + error);
+                }
+                error.clear();
+            }
+            if (!error.empty()) {
                 std::vector<std::string> retracted;
                 {
                     std::unique_lock lock(impl_->registry_mutex);
-                    impl_->service_actors.erase(service_name);
+                    if (auto actor_it =
+                            impl_->service_actors.find(service_name);
+                        actor_it != impl_->service_actors.end()) {
+                        // The actor may still be inside the failed on_init on
+                        // its worker thread; the graveyard keeps the handle
+                        // alive until the Impl destructor joins it.
+                        if (actor_it->second) {
+                            caf::anon_send_exit(
+                                actor_it->second,
+                                caf::exit_reason::user_shutdown);
+                        }
+                        impl_->retire_actor(std::move(actor_it->second));
+                        impl_->service_actors.erase(actor_it);
+                    }
                     if (auto names_it = impl_->owned_names.find(service_name);
                         names_it != impl_->owned_names.end()) {
                         for (const auto& name : names_it->second) {
@@ -1114,17 +1425,29 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                 return SpawnResult::error("on_init failed for " + service_name +
                                           ": " + error);
             }
-            std::string exit_service_id;
+            // The tail of a yielded on_init runs on a caller-actor resume
+            // frame (a foreign thread from this spawn), so a shield.exit
+            // issued there is only visible through the shared pending-exit
+            // store — consume it here, exactly once, after init succeeded.
             exit_after_init =
-                impl_->is_exit_requested(&exit_service_id, &exit_reason) &&
-                exit_service_id == service_name;
+                impl_->consume_exit_request(service_name, &exit_reason);
         }
 
         {
             std::unique_lock lock(impl_->registry_mutex);
             if (impl_->services.contains(service_name) ||
                 impl_->published_names.contains(service_name)) {
-                impl_->service_actors.erase(service_name);
+                if (auto actor_it = impl_->service_actors.find(service_name);
+                    actor_it != impl_->service_actors.end()) {
+                    // Graveyard policy: the actor may still be running its
+                    // on_init; never release the last reference here.
+                    if (actor_it->second) {
+                        caf::anon_send_exit(actor_it->second,
+                                            caf::exit_reason::user_shutdown);
+                    }
+                    impl_->retire_actor(std::move(actor_it->second));
+                    impl_->service_actors.erase(actor_it);
+                }
                 return SpawnResult::error("service name already exists: " +
                                           service_name);
             }
@@ -1395,7 +1718,9 @@ CallResult LuaServiceManager::call(std::string_view target,
         return CallResult::error("self-call not supported");
     }
 
-    // Create pending sync call.
+    // Create the pending external waiter, then send the call request through
+    // the ordinary ServiceMessage path (call_session non-zero marks it as a
+    // call; the callee's completion routes back via complete_call).
     const uint64_t session = impl_->next_call_session.fetch_add(1);
     auto pending = std::make_shared<Impl::PendingSyncCall>();
     pending->session = session;
@@ -1404,31 +1729,39 @@ CallResult LuaServiceManager::call(std::string_view target,
         impl_->pending_sync_calls[session] = pending;
     }
 
-    // Build typed SyncCallMessage for CAF-native dispatch.
     const auto now = std::chrono::steady_clock::now();
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             now.time_since_epoch())
                             .count();
-    SyncCallMessage sync_msg;
-    sync_msg.sync_session = session;
-    sync_msg.sender = sender;
-    sync_msg.method = std::string(method);
-    sync_msg.args = args;
-    sync_msg.trace_id = impl_->current_trace_id();
-    sync_msg.deadline_ms = impl_->current_deadline_ms();
-    sync_msg.timestamp_ms = now_ms;
+    ServiceMessage msg;
+    msg.sender = sender;
+    msg.method = std::string(method);
+    msg.args = args;
+    msg.trace_id = impl_->current_trace_id();
+    msg.deadline_ms = impl_->current_deadline_ms();
+    msg.timestamp_ms = now_ms;
+    msg.call_session = session;
 
     // Send to target actor.
-    caf::anon_send(*actor_opt, std::move(sync_msg));
+    caf::anon_send(*actor_opt, std::move(msg));
 
-    // Block until handler completes (or timeout).
+    // Block until the handler completes. The expiry is driven by the CAF
+    // delayed driver (it completes the call with a timeout error); when the
+    // driver could not be armed, fall back to a timed wait on this thread.
     const int32_t effective_timeout = timeout_ms > 0 ? timeout_ms : 5000;
+    const bool driver_armed =
+        schedule_external_call_timeout(effective_timeout, session);
     bool completed = false;
     {
         std::unique_lock lk(pending->mtx);
-        completed = pending->cv.wait_for(
-            lk, std::chrono::milliseconds(effective_timeout),
-            [&] { return pending->completed; });
+        if (driver_armed) {
+            pending->cv.wait(lk, [&] { return pending->completed; });
+        } else {
+            completed = pending->cv.wait_for(
+                lk, std::chrono::milliseconds(effective_timeout),
+                [&] { return pending->completed; });
+        }
+        completed = completed || pending->completed;
     }
 
     // Cleanup.
@@ -1464,11 +1797,45 @@ void LuaServiceManager::exit(std::string_view service_id,
 
     const bool exiting_from_own_actor = current_service_id() == id;
 
-    std::string error;
-    nlohmann::json args = std::string(reason);
-    Impl::DispatchScope scope(*impl_, id, "", true);
-    (void)impl_->runtime.call_service_function(service, "on_exit", args,
-                                               &error);
+    std::vector<caf::actor> actors_to_wait;
+    if (exiting_from_own_actor) {
+        // Own-actor exit: we are already on the service's actor thread
+        // (inside a dispatch handler), so running on_exit inline is the
+        // serialized continuation of the current message.
+        std::string error;
+        nlohmann::json args = std::string(reason);
+        Impl::DispatchScope scope(*impl_, id, "", true);
+        (void)impl_->runtime.call_service_function(service, "on_exit", args,
+                                                   &error);
+    } else {
+        // Foreign-thread exit: never touch the VM here. Route on_exit
+        // through the actor's mailbox (the ServiceExitRequest handler runs
+        // it and quits the actor) and wait below — a direct call would race
+        // the actor thread processing in-flight messages on the same
+        // lua_State, which is heap corruption, not just a data race.
+        std::optional<caf::actor> actor;
+        {
+            std::shared_lock lock(impl_->registry_mutex);
+            auto it = impl_->service_actors.find(id);
+            if (it != impl_->service_actors.end() && it->second) {
+                actor = it->second;
+            }
+        }
+        if (actor) {
+            caf::anon_send(*actor, ServiceExitRequest{std::string(reason)});
+            actors_to_wait.push_back(*actor);
+        }
+        // on_exit must complete before the teardown below: the handler
+        // resolves its VM through the registry, and the VM's last owner
+        // (the local `service` handle) dies with this frame.
+        impl_->wait_for_actors(actors_to_wait);
+        // wait_for_actors joins on CAF's monitor-down, which is raised while
+        // the actor's worker is still unwinding cleanup() — releasing the
+        // last reference on this thread would destroy the actor storage
+        // underneath it (TSan-verified heap corruption). Park the handles in
+        // the graveyard; the Impl destructor releases them safely.
+        impl_->retire_actors(std::move(actors_to_wait));
+    }
 
     // Cancel forked tasks / timers / coroutines BEFORE erasing the service
     // VM. These hold sol::function / std::function callbacks that reference
@@ -1499,7 +1866,10 @@ void LuaServiceManager::exit(std::string_view service_id,
             if (pc_it != impl_->pending_calls.end() &&
                 pc_it->second.caller_service == id) {
                 if (it->second) {
-                    actors_to_stop.push_back(it->second);
+                    // Move before erase: the entry's reference must not be
+                    // released while the driver may still be running; ours
+                    // drops after stop_and_wait_for_actors below.
+                    actors_to_stop.push_back(std::move(it->second));
                 }
                 it = impl_->actor_call_timeouts.erase(it);
             } else {
@@ -1537,16 +1907,24 @@ void LuaServiceManager::exit(std::string_view service_id,
         // handlers belong to the VM being destroyed.
         impl_->runtime.remove_http_routes_for_service(id);
 
-        // Tear down the service's CAF actor. anon_send_exit asks the actor to
-        // stop; erasing the handle releases our reference.
+        // Tear down the service's CAF actor. For an own-actor exit, an exit
+        // signal stops the actor once this handler unwinds; for a
+        // foreign-thread exit the actor already received the
+        // ServiceExitRequest and quits itself after on_exit — an exit signal
+        // here could race and drop that request, so only the handle is
+        // released.
         if (auto actor_it = impl_->service_actors.find(id);
             actor_it != impl_->service_actors.end()) {
-            if (actor_it->second && !exiting_from_own_actor) {
-                actors_to_stop.push_back(actor_it->second);
-            } else if (actor_it->second) {
+            if (actor_it->second && exiting_from_own_actor) {
                 caf::anon_send_exit(actor_it->second,
                                     caf::exit_reason::user_shutdown);
             }
+            // Move the handle into the graveyard before erasing the entry:
+            // releasing it here — possibly the last external reference —
+            // would let this thread destroy the actor storage while the
+            // actor's worker may still be inside cleanup() (see the
+            // actors_to_wait comment above).
+            impl_->retire_actor(std::move(actor_it->second));
             impl_->service_actors.erase(actor_it);
         }
     }
@@ -1554,6 +1932,10 @@ void LuaServiceManager::exit(std::string_view service_id,
         impl_->notify_name_change(name, "");
     }
     impl_->stop_and_wait_for_actors(actors_to_stop);
+    // The drivers were joined above, but releasing the last reference on this
+    // thread can still race the CAF worker's final unwind of a driver's
+    // message loop — park the handles in the graveyard instead.
+    impl_->retire_actors(std::move(actors_to_stop));
 }
 
 void LuaServiceManager::shutdown_all(std::string_view reason,
@@ -1634,13 +2016,19 @@ void LuaServiceManager::force_remove(const std::string& id,
         impl_->runtime.remove_http_routes_for_service(id);
         if (auto actor_it = impl_->service_actors.find(id);
             actor_it != impl_->service_actors.end()) {
-            actor = actor_it->second;
+            // Move before erase: the entry's reference must not be released
+            // on this thread while the actor's worker may still be running
+            // (same graveyard policy as exit()).
+            actor = std::move(actor_it->second);
             impl_->service_actors.erase(actor_it);
         }
     }
     cancel_forked_tasks_for_service(id);
     if (actor) {
         caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
+        // anon_send_exit only queues the signal; this thread dropping the
+        // last reference here could still race the actor's cleanup unwind.
+        impl_->retire_actor(std::move(actor));
     }
     for (const auto& name : retracted) {
         impl_->notify_name_change(name, "");
@@ -1799,8 +2187,30 @@ void LuaServiceManager::request_current_exit(std::string_view reason) {
     if (frame.in_exit) {
         return;
     }
-    frame.exit_requested = true;
-    frame.exit_reason = reason.empty() ? "normal" : std::string(reason);
+    // Shared pending-exit store: the frame carrying this request may pop
+    // before the dispatcher consumes it (a yielded on_init continues on a
+    // resume frame of the caller actor thread), so the request must not
+    // live only in thread-local state.
+    impl_->request_exit_for(frame.service_id,
+                            reason.empty() ? "normal" : std::string(reason));
+}
+
+bool LuaServiceManager::finish_pending_exit(const std::string& service_id) {
+    // A request recorded while the service is still in spawn-init must be
+    // driven by the spawn path after it publishes the service (exit() cannot
+    // tear down an unpublished VM): leave it pending for spawn to consume.
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        if (!impl_->services.contains(service_id)) {
+            return false;
+        }
+    }
+    std::string reason;
+    if (!impl_->consume_exit_request(service_id, &reason)) {
+        return false;
+    }
+    exit(service_id, reason);
+    return true;
 }
 
 bool LuaServiceManager::is_in_exit() const {
@@ -1809,6 +2219,8 @@ bool LuaServiceManager::is_in_exit() const {
     }
     return tls_dispatch_stack.back().in_exit;
 }
+
+bool LuaServiceManager::spawn_init_in_progress() { return t_in_spawn_init; }
 
 std::string LuaServiceManager::query_service(std::string_view name) const {
     std::shared_lock lock(impl_->registry_mutex);
@@ -1923,6 +2335,10 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
 uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
                                                 std::function<void()> task,
                                                 sol::function raw_fn) {
+    // Stored in pending_tasks for a lifetime that outlives the registering
+    // coroutine: keep the reference's lua_State on the main thread (see
+    // anchor_to_main_thread).
+    raw_fn = anchor_to_main_thread(std::move(raw_fn));
     if (service_id.empty()) {
         // Hostless callers (e.g. the ops HTTP endpoints) want the task to run
         // on any managed dispatch thread. Borrow any live service actor so
@@ -2183,6 +2599,9 @@ constexpr int64_t kProxiedCallSlackMs = 30000;
 
 void LuaServiceManager::complete_call(uint64_t session, bool ok,
                                       const nlohmann::json& values) {
+    // Whichever path completes first wins: cancel the expiry driver so a
+    // late timeout cannot fire against a session that is already finished.
+    cancel_actor_call_timeout(session);
     // External sync calls do not have a caller coroutine. Complete them
     // directly after the callee has fully unwound.
     {
@@ -2232,9 +2651,13 @@ void LuaServiceManager::complete_call(uint64_t session, bool ok,
         }
     }
     if (!caller_actor) {
-        resume_caller(session, false,
-                      nlohmann::json::array(
-                          {"caller service not found: " + caller_service}));
+        // The caller's actor is gone (exited): nothing may resume the
+        // suspended coroutine — resume_caller must run on the caller actor
+        // thread, and an inline resume here would drive the caller's Lua VM
+        // from a foreign thread. Drop the pending entry; the coroutine (and
+        // its anchor) dies with the caller's VM.
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->pending_calls.erase(session);
         return;
     }
 
@@ -2324,13 +2747,23 @@ CallResult LuaServiceManager::call_with_session(
                                                         : dispatch_error);
     }
 
+    // Expiry is driven by the CAF delayed driver (it completes the call with
+    // a timeout error); fall back to a timed wait if the driver was not
+    // armed.
     const int32_t effective_timeout = timeout_ms > 0 ? timeout_ms : 5000;
+    const bool driver_armed =
+        schedule_external_call_timeout(effective_timeout, session);
     bool completed = false;
     {
         std::unique_lock lk(pending->mtx);
-        completed = pending->cv.wait_for(
-            lk, std::chrono::milliseconds(effective_timeout),
-            [&] { return pending->completed; });
+        if (driver_armed) {
+            pending->cv.wait(lk, [&] { return pending->completed; });
+        } else {
+            completed = pending->cv.wait_for(
+                lk, std::chrono::milliseconds(effective_timeout),
+                [&] { return pending->completed; });
+        }
+        completed = completed || pending->completed;
     }
 
     {
@@ -2445,6 +2878,14 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
 
     // Build the resume payload: (ok, values...). The caller's shield.call
     // wrapper unpacks these via coroutine.yield()'s return values.
+    //
+    // Re-establish the caller's dispatch context for the continuation: the
+    // resume runs on the caller actor thread, whose thread-local dispatch
+    // stack does not carry the original frame (an on_init coroutine, for
+    // example, is first driven by the spawning thread). Without this frame
+    // every suspend_for_call issued after the first resume records an empty
+    // caller_service and the next completion cannot route back.
+    Impl::DispatchScope scope(*impl_, pc.caller_service, "", false);
     lua_pushboolean(caller_co, ok ? 1 : 0);
     int nargs = 1;
     if (values.is_array()) {
@@ -2471,6 +2912,7 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
             luaL_unref(caller_co, LUA_REGISTRYINDEX, pc.caller_anchor);
         }
         on_handler_completed(caller_co, returns);
+        finish_pending_exit(pc.caller_service);
         return;
     }
     if (status != LUA_YIELD) {
@@ -2485,6 +2927,7 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
             luaL_unref(caller_co, LUA_REGISTRYINDEX, pc.caller_anchor);
         }
         on_handler_failed(caller_co, err);
+        finish_pending_exit(pc.caller_service);
         return;
     }
     // Release the anchor; the coroutine re-yielded and the API that yielded has
@@ -2606,6 +3049,9 @@ uint64_t LuaServiceManager::schedule_actor_timer_once(
     if (!callback.valid()) {
         return 0;
     }
+    // Stored for a lifetime that outlives the registering coroutine: keep the
+    // reference's lua_State on the main thread (see anchor_to_main_thread).
+    callback = anchor_to_main_thread(std::move(callback));
     std::shared_ptr<caf::actor> service_actor;
     uint64_t id = 0;
     {
@@ -2717,6 +3163,9 @@ uint64_t LuaServiceManager::schedule_actor_timer_fixed_delay(
     if (!callback.valid()) {
         return 0;
     }
+    // Stored for a lifetime that outlives the registering coroutine: keep the
+    // reference's lua_State on the main thread (see anchor_to_main_thread).
+    callback = anchor_to_main_thread(std::move(callback));
     std::shared_ptr<caf::actor> service_actor;
     uint64_t id = 0;
     {
@@ -2775,12 +3224,46 @@ bool LuaServiceManager::cancel_actor_timer(uint64_t id) {
     const bool cancelled =
         impl_->collect_actor_timer_for_cancel(id, &actors_to_stop);
     impl_->stop_and_wait_for_actors(actors_to_stop);
+    // Same graveyard policy as exit(): joined above, released later.
+    impl_->retire_actors(std::move(actors_to_stop));
     return cancelled;
 }
 
 size_t LuaServiceManager::active_actor_timer_count() const {
     std::shared_lock lock(impl_->registry_mutex);
     return impl_->actor_timers.size();
+}
+
+bool LuaServiceManager::schedule_external_call_timeout(int32_t timeout_ms,
+                                                       uint64_t session) {
+    if (timeout_ms <= 0) {
+        return false;
+    }
+    try {
+        auto driver = impl_->system.spawn(
+            [manager = this, session,
+             timeout_ms](caf::event_based_actor* self) -> caf::behavior {
+                self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
+                                   caf::tick_atom_v);
+                return caf::behavior{[=](caf::tick_atom) {
+                    nlohmann::json timeout_err = nlohmann::json::array(
+                        {nlohmann::json::object({{"code", "timeout"},
+                                                 {"message", "call timeout"},
+                                                 {"retryable", true}})});
+                    manager->complete_call(session, false, timeout_err);
+                    self->quit();
+                }};
+            });
+        std::unique_lock lock(impl_->registry_mutex);
+        impl_->actor_call_timeouts[session] = std::move(driver);
+        return true;
+    } catch (const std::exception& e) {
+        auto& log = shield::log::get_logger("lua");
+        SHIELD_LOG_ERROR(log, std::string("Failed to spawn external call "
+                                          "timeout driver: ") +
+                                  e.what());
+        return false;
+    }
 }
 
 uint64_t LuaServiceManager::schedule_actor_call_timeout(
@@ -2823,15 +3306,24 @@ uint64_t LuaServiceManager::schedule_actor_call_timeout(
 }
 
 bool LuaServiceManager::cancel_actor_call_timeout(uint64_t session) {
-    std::unique_lock lock(impl_->registry_mutex);
-    auto it = impl_->actor_call_timeouts.find(session);
-    if (it == impl_->actor_call_timeouts.end()) {
-        return false;
+    caf::actor cancelled_driver;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        auto it = impl_->actor_call_timeouts.find(session);
+        if (it == impl_->actor_call_timeouts.end()) {
+            return false;
+        }
+        if (it->second) {
+            caf::anon_send_exit(it->second, caf::exit_reason::user_shutdown);
+            // The entry dies below while the driver may still be running its
+            // (or a still-armed) tick; move the handle out so the erase never
+            // releases a reference on this thread, and park it in the
+            // graveyard — the Impl destructor joins it there.
+            cancelled_driver = std::move(it->second);
+        }
+        impl_->actor_call_timeouts.erase(it);
     }
-    if (it->second) {
-        caf::anon_send_exit(it->second, caf::exit_reason::user_shutdown);
-    }
-    impl_->actor_call_timeouts.erase(it);
+    impl_->retire_actor(std::move(cancelled_driver));
     return true;
 }
 

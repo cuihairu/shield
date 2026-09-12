@@ -54,19 +54,6 @@ struct ServiceMessage {
     uint64_t call_session = 0;  // non-zero => call request
 };
 
-/// Synchronous call request routed from manager->call() through the CAF actor.
-/// Replaces the previous "sync_call" JSON kind. Carries sync_session so the
-/// callee's dispatch can route the response back to the blocking caller.
-struct SyncCallMessage {
-    uint64_t sync_session = 0;
-    std::string sender;
-    std::string method;
-    nlohmann::json args;
-    std::string trace_id;
-    int64_t deadline_ms = 0;
-    int64_t timestamp_ms = 0;
-};
-
 /// Coroutine call response routed back to the caller service actor. The caller
 /// actor owns the Lua coroutine, so it must be the actor that resumes it.
 struct CallResponseMessage {
@@ -156,19 +143,28 @@ struct ClientCloseRequest {
     std::string reason;
 };
 
+/// Structured exit request for a service actor, sent by manager.exit /
+/// shutdown_all when they run on a foreign thread. on_exit must execute on
+/// the owning actor thread (every other message does), so the actor runs the
+/// handler itself and quits afterwards; the exiting thread observes
+/// completion by waiting for the actor instead of touching the VM directly.
+struct ServiceExitRequest {
+    std::string reason;
+};
+
 }  // namespace shield::lua
 
 // Allow the JSON-bearing types to be passed as CAF messages within a single
 // actor system. CAF will not attempt to (de)serialize them; this is safe for
 // local anon_send / send, which is the only transport used today.
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ServiceMessage)
-CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::SyncCallMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::CallResponseMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientEgress)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientIngress)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientControlMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientBindRequest)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientCloseRequest)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ServiceExitRequest)
 
 // -- CAF type ID block --------------------------------------------------------
 //
@@ -180,13 +176,13 @@ CAF_BEGIN_TYPE_ID_BLOCK(shield_lua, caf::first_custom_type_id)
 
 // Structured message types (full payload).
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ServiceMessage))
-CAF_ADD_TYPE_ID(shield_lua, (shield::lua::SyncCallMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::CallResponseMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientEgress))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientIngress))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientControlMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientBindRequest))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientCloseRequest))
+CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ServiceExitRequest))
 
 // Lightweight tag messages: atom + uint64_t payload.
 // timer_fire_atom replaces kind="timer" (payload = timer_id).

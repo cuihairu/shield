@@ -82,10 +82,12 @@ shield_coverage_test(test_cov_lua_http_bridge shield_lua shield_core shield_net 
 shield_coverage_test(test_cov_lua_runtime shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service3 shield_lua shield_core CAF::core CAF::io)
+shield_coverage_test(test_cov_lua_service4 shield_lua shield_core CAF::core CAF::io)
 
 # Round-2 coverage suites (same modules, deeper branches).
 shield_coverage_test(test_cov_lua_api2 shield_lua shield_core shield_net CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_runtime2 shield_lua shield_core CAF::core CAF::io)
+shield_coverage_test(test_cov_lua_runtime3 shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service2 shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_http_bridge2 shield_lua shield_core shield_net CAF::core CAF::io)
 

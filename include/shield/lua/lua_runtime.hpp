@@ -222,6 +222,26 @@ public:
                            LuaServiceManager* manager = nullptr,
                            std::string_view service_id = "");
 
+    // Coroutine-aware dispatch core shared by message handlers, timer/fork
+    // callbacks, and on_init: runs handler(ctx, ...) inside a coroutine built
+    // by the __shield_run_handler factory so the handler may yield via
+    // shield.sleep / coroutine-aware call. A handler that completes
+    // synchronously has its return values routed to the pending call (when
+    // call_session is non-zero); a yielded handler counts as success and is
+    // resumed later by the runtime. A synchronous failure routes through the
+    // service error hook with the given error_type and returns false with
+    // *error set. A VM without the factory falls back to a plain synchronous
+    // call (the handler cannot yield there).
+    bool invoke_coroutine(std::shared_ptr<LuaVM> vm, sol::function handler,
+                          const std::vector<nlohmann::json>& args,
+                          const std::string& error_type,
+                          const std::string& method_label,
+                          uint64_t call_session = 0,
+                          LuaServiceManager* manager = nullptr,
+                          std::string_view service_id = "",
+                          std::string* error = nullptr, bool prepend_ctx = true,
+                          bool degrade_on_factory_failure = false);
+
     // Invoke a named hook function on a service's module table.
     // The hook is called as hook(err, context_table) where context_table
     // has fields {type, method}. Returns true if the hook existed and was

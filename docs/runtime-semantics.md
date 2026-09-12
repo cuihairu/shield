@@ -19,7 +19,7 @@
 当前收敛顺序：
 
 - Phase 1 最小闭环覆盖单节点 Lua service、registry、基础 `send/call` 返回形态、TCP gateway、插件系统 v1 的显式实例/binding、配置验证和 `shield::run` 入口。
-- handler 内 coroutine-aware `call/sleep` 已进入当前实现路径；timer callback 和 fork task 当前仍是受保护的非协程调用。真实 DB/Redis 驱动连接、UDP/KCP/WebSocket、ops snapshot 和官方可选模块不作为当前最小验收阻塞项。
+- handler 内 coroutine-aware `call/sleep` 已进入当前实现路径；timer callback 和 fork task 同样以协程方式执行（`invoke_coroutine`），挂起语义与 handler 一致。真实 DB/Redis 驱动连接、UDP/KCP/WebSocket、ops snapshot 和官方可选模块不作为当前最小验收阻塞项。
 - schema/tooling、mapper、entity/component 等文档是后续草案；除非路线图重新纳入，否则不能反向扩大当前 runtime 范围。
 
 ### 权威契约
@@ -114,7 +114,7 @@
 - 实现 `TimerId`。
 - 实现 `timer_once`、`timer`、`cancel_timer`。
 - 实现 handler coroutine-aware `sleep`。
-- 实现 `fork` 和 task id；当前 task body 通过受保护的非协程调用执行。
+- 实现 `fork` 和 task id；task body 以协程方式执行（`invoke_coroutine` 包裹）。
 - 增加 fixed-delay、timer error stop、service exit auto-cancel 测试。
 
 ### M7. net/gateway/plugins

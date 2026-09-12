@@ -91,6 +91,10 @@ Harness 要求：
 | LAPI-005-06 | timeout | call_timeout | `false, timeout` |
 | LAPI-005-07 | late response | callee returns after timeout | response discarded |
 | LAPI-005-08 | nested call | handler calls another service | runtime thread 不阻塞 |
+| LAPI-005-09 | 主线程/module-level 调 `shield.call`/`call_timeout` | 非 coroutine 上下文 | `false, {code="call_not_allowed_off_coroutine"}` |
+| LAPI-005-10 | 协程内 `shield.call` 挂起期间 | 同 service 第二消息 | actor 不阻塞，第二消息被处理 |
+| LAPI-005-11 | on_init 内 `shield.call` | spawn | on_init 协程挂起至响应到达，spawn 成功完成 |
+| LAPI-005-12 | timer/fork callback 内 `call + sleep` | callback 挂起期间 | actor 不阻塞，回调完成后恢复 |
 
 ## LAPI-005A Lua-driven Spawn / Exit / Panic
 

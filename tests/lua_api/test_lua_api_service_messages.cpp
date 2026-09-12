@@ -65,10 +65,6 @@ BOOST_AUTO_TEST_CASE(MessageStructsRoundTripDefaultFields) {
     BOOST_CHECK(!ingress.decoded_request.has_value());
     BOOST_CHECK(ingress.body_bytes.empty());
 
-    SyncCallMessage sync;
-    BOOST_CHECK_EQUAL(sync.sync_session, 0u);
-    BOOST_CHECK(sync.args.is_null());
-
     CallResponseMessage resp;
     BOOST_CHECK(!resp.ok);
     BOOST_CHECK(resp.values.is_array());

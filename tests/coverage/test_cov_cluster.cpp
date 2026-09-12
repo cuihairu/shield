@@ -808,65 +808,6 @@ BOOST_AUTO_TEST_CASE(LuaRemoteSendPaths) {
 }
 
 // ---------------------------------------------------------------------------
-// Main-thread synchronous remote call (shield._sync_call_timeout): success,
-// initiate failure, and pre-flight failure mapping.
-// ---------------------------------------------------------------------------
-BOOST_AUTO_TEST_CASE(LuaRemoteSyncCallPaths) {
-    caf::actor_system_config cfg;
-    caf::actor_system system(cfg);
-    LuaRuntime runtime;
-    LuaServiceManager manager(runtime, system);
-    PhantomPeerManager cluster;
-
-    ScriptedSend scripted;
-    scripted.completer = &manager;  // complete the call like a transport
-    cluster.manager->set_remote_send_fn(
-        [&scripted](const std::string& node, const std::string& sid,
-                    const std::string& method, const std::string& args,
-                    uint64_t session, int32_t timeout, std::string* err) {
-            return scripted.invoke(node, sid, method, args, session, timeout,
-                                   err);
-        });
-    cluster.manager->register_route("node-b", "svc", "sid-1");
-    shield::cluster::set_global_cluster_manager(cluster.manager.get());
-
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
-
-    // Success: the scripted transport completes the session from its
-    // thread; the main-thread call returns the values.
-    scripted.outcome = true;
-    BOOST_CHECK(run_script(lua,
-                           "local ok, v = shield._sync_call_timeout(2000, "
-                           "'node-b:svc', 'echo', 'x')\n"
-                           "assert(ok == true)\n"
-                           "assert(v == 'pong')"));
-    BOOST_CHECK_EQUAL(scripted.session != 0, true);
-    BOOST_CHECK_EQUAL(scripted.timeout, 2000);
-
-    // Initiate failure: the transport error maps to a retryable code.
-    scripted.outcome = false;
-    scripted.error = "node_suspect";
-    BOOST_CHECK(run_script(
-        lua,
-        "local ok, err = shield._sync_call_timeout(500, 'node-b:svc', 'echo')\n"
-        "assert(ok == false)\n"
-        "assert(err.code == 'node_suspect')\n"
-        "assert(err.retryable == true)"));
-
-    // Pre-flight failure (unknown route): fails without touching the wire.
-    BOOST_CHECK(run_script(lua,
-                           "local ok, err = shield._sync_call_timeout(500, "
-                           "'node-b:missing', 'echo')\n"
-                           "assert(ok == false)\n"
-                           "assert(err.code == 'service_not_found')"));
-
-    cluster.manager->set_remote_send_fn(nullptr);
-}
-
-// ---------------------------------------------------------------------------
 // Coroutine-path remote call: the caller service yields inside shield.call
 // and is resumed by the scripted transport's completion.
 // ---------------------------------------------------------------------------

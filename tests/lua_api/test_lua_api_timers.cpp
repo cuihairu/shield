@@ -6,7 +6,8 @@
 // shares the same CAF actor dispatch path.
 //
 // shield.sleep is covered for handler coroutine yield/resume semantics. Timer
-// callbacks and fork tasks are currently protected non-coroutine calls.
+// callbacks and fork tasks dispatch through the same coroutine entry point,
+// so they may shield.sleep / shield.call without blocking the actor.
 #define BOOST_TEST_MODULE LuaApiTimersTests
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>

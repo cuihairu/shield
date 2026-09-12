@@ -70,9 +70,15 @@ void flatten_yaml_node(const YAML::Node& root,
         }
 
         for (auto it = node.begin(); it != node.end(); ++it) {
-            std::string key = it->first.as<std::string>();
+            // Dereference into a named object: binding `it->second` to a
+            // reference goes through yaml-cpp's operator-> proxy, and the
+            // lifetime extension of that temporary trips gcc's ASan
+            // stack-use-after-scope instrumentation. A named copy is
+            // unambiguous for compilers and sanitizers alike.
+            const auto entry = *it;
+            std::string key = entry.first.as<std::string>();
             std::string full_key = prefix.empty() ? key : prefix + "." + key;
-            const YAML::Node& value = it->second;
+            const YAML::Node& value = entry.second;
 
             if (value.IsScalar()) {
                 // yaml-cpp reports explicitly tagged scalars with the

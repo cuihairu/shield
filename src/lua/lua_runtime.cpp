@@ -24,6 +24,26 @@
 
 namespace shield::lua {
 
+namespace {
+// Mirror of anchor_to_main_thread in lua_service.cpp: re-anchor a sol
+// reference onto the main thread's lua_State so a stored lua_State* cannot
+// dangle after the registering coroutine is collected by the GC. The
+// registry is shared across all threads of one global_State, so re-refering
+// the same registry entry from the main thread keeps the pointer alive
+// without changing which value the reference names.
+sol::function anchor_to_main_thread(sol::function fn) {
+    lua_State* state = fn.lua_state();
+    if (state == nullptr || !fn.valid()) {
+        return fn;
+    }
+    lua_State* main_state = sol::main_thread(state);
+    if (main_state == nullptr || main_state == state) {
+        return fn;
+    }
+    return sol::function(main_state, sol::ref_index(fn.registry_index()));
+}
+}  // namespace
+
 // ============================================================================
 // ServiceHandle Implementation
 // ============================================================================
@@ -253,8 +273,22 @@ std::shared_ptr<LuaVM> LuaRuntime::vm_for_state(lua_State* L) {
     if (!L) {
         return nullptr;
     }
+    // Handlers (and on_init) run as coroutine threads of the service VM, so
+    // the calling state is often not the main thread the VM map is keyed by.
+    // Resolve the origin main thread via the registry's LUA_RIDX_MAINTHREAD.
+    lua_State* origin = L;
+    if (lua_pushthread(L) == 0) {
+        lua_pop(L, 1);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
+        if (lua_State* main = lua_tothread(L, -1)) {
+            origin = main;
+        }
+        lua_pop(L, 1);
+    } else {
+        lua_pop(L, 1);
+    }
     std::lock_guard<std::mutex> lock(impl_->http_route_mutex);
-    auto it = impl_->vms_by_state.find(L);
+    auto it = impl_->vms_by_state.find(origin);
     if (it == impl_->vms_by_state.end()) {
         return nullptr;
     }
@@ -264,7 +298,7 @@ std::shared_ptr<LuaVM> LuaRuntime::vm_for_state(lua_State* L) {
         impl_->vms_by_state.erase(it);
     }
     return vm;
-}  // GCOVR_EXCL_LINE (uncalled exit clone)
+}
 
 bool LuaRuntime::register_http_route(std::shared_ptr<LuaVM> vm,
                                      const std::string& service_id,
@@ -304,7 +338,10 @@ bool LuaRuntime::register_http_route(std::shared_ptr<LuaVM> vm,
     entry.method = method;
     entry.path = path;
     entry.vm = vm;
-    entry.handler = std::make_shared<sol::function>(std::move(handler));
+    // Routes outlive the registering coroutine: keep the handler's lua_State
+    // on the main thread (see anchor_to_main_thread above).
+    entry.handler = std::make_shared<sol::function>(
+        anchor_to_main_thread(std::move(handler)));
 
     std::function<void(const std::string&, const std::string&)> sink;
     {
@@ -922,6 +959,208 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
     }
 }
 
+bool LuaRuntime::invoke_coroutine(
+    std::shared_ptr<LuaVM> vm, sol::function handler,
+    const std::vector<nlohmann::json>& args, const std::string& error_type,
+    const std::string& method_label, uint64_t call_session,
+    LuaServiceManager* manager, std::string_view service_id, std::string* error,
+    bool prepend_ctx, bool degrade_on_factory_failure) {
+    // Completion helpers: route the outcome to the pending call request (when
+    // present) and to the service error hook on failure.
+    auto finish_ok = [&](const nlohmann::json& returns) -> bool {
+        if (call_session != 0 && manager != nullptr) {
+            manager->complete_call(call_session, true, returns);
+        }
+        if (manager && !service_id.empty()) {
+            manager->reset_error_count(std::string(service_id));
+        }
+        return true;
+    };
+    auto finish_err = [&](const std::string& msg) -> bool {
+        if (error) *error = msg;
+        if (call_session != 0 && manager != nullptr) {
+            manager->complete_call(call_session, false,
+                                   nlohmann::json::array({msg}));
+        }
+        if (manager && !service_id.empty()) {
+            manager->invoke_error_hook(std::string(service_id), error_type,
+                                       method_label, msg);
+            // The segment terminated here (error): honor a shield.exit it
+            // requested. During spawn-init the spawn path owns the request
+            // instead — exit() cannot drive an unpublished service.
+            if (!LuaServiceManager::spawn_init_in_progress()) {
+                manager->finish_pending_exit(std::string(service_id));
+            }
+        }
+        return false;
+    };
+
+    try {
+        sol::state_view lua(*vm->state());
+        lua_State* L = lua.lua_state();
+
+        // Plain synchronous execution with the same completion routing as the
+        // coroutine path. Used when no factory is registered (bare VM) and —
+        // for callers that opt in — as the degrade path for a failing
+        // factory. The degrade path never passes ctx: it mirrors the
+        // historical synchronous dispatch signature.
+        auto run_sync = [&](bool with_ctx) -> bool {
+            std::vector<sol::object> call_args;
+            if (with_ctx) {
+                sol::table ctx = lua.create_table();
+                call_args.push_back(ctx);
+            }
+            for (const auto& arg : args) {
+                call_args.push_back(json_to_lua(lua, arg));
+            }
+            sol::protected_function handler_pf = handler;
+            sol::protected_function_result fr =
+                handler_pf(sol::as_args(call_args));
+            if (!fr.valid()) {
+                sol::error err = fr;
+                std::string msg = err.what();
+                // GCOVR_EXCL_START (defensive: sol error messages always
+                // carry a "[string ...]:N:" position prefix, so msg is never
+                // empty in practice)
+                if (msg.empty()) {
+                    msg = method_label + " raised an error";
+                }
+                // GCOVR_EXCL_STOP
+                return finish_err(msg);
+            }
+            nlohmann::json returns = nlohmann::json::array();
+            for (int i = 0; i < fr.return_count(); ++i) {
+                nlohmann::json item;
+                lua_to_json(fr.get<sol::object>(i), &item);
+                returns.push_back(std::move(item));
+            }
+            return finish_ok(returns);
+        };
+
+        sol::function factory = lua["__shield_run_handler"];
+        if (!factory.valid()) {
+            // Bare VM without the shield API: the handler cannot yield, so
+            // this degrades to a plain synchronous call with the same
+            // completion routing as the coroutine path.
+            return run_sync(prepend_ctx);
+        }
+        if (!handler.valid()) {
+            return finish_err("handler is not a function");
+        }
+
+        // Dispatch ctx table: sender / trace / deadline from the active
+        // dispatch scope (nil when unset). Hooks with a no-ctx signature
+        // (on_init receives (args) directly) pass prepend_ctx = false.
+        sol::table args_table = lua.create_table();
+        int arg_count = 0;
+        if (prepend_ctx) {
+            sol::table ctx = lua.create_table();
+            if (manager != nullptr) {
+                std::string sender = manager->current_sender_id();
+                ctx["sender"] =
+                    sender.empty() ? sol::nil : sol::make_object(lua, sender);
+                std::string trace = manager->current_trace_id();
+                ctx["trace"] =
+                    trace.empty() ? sol::nil : sol::make_object(lua, trace);
+                int64_t deadline = manager->current_deadline_ms();
+                ctx["deadline"] =
+                    deadline <= 0 ? sol::nil : sol::make_object(lua, deadline);
+            }
+            args_table.add(ctx);
+            ++arg_count;
+        }
+        for (const auto& arg : args) {
+            args_table.add(json_to_lua(lua, arg));
+            ++arg_count;
+        }
+        args_table["n"] = arg_count;
+
+        // The factory result stays alive across lua_resume so the thread
+        // remains anchored on the main stack; a yielding handler is
+        // re-anchored by whichever API suspended it. A factory failure
+        // degrades to synchronous dispatch instead of throwing through the
+        // runtime.
+        sol::protected_function factory_pf = lua["__shield_run_handler"];
+        sol::protected_function_result fr = factory_pf(handler, args_table);
+        if (!fr.valid()) {
+            if (degrade_on_factory_failure) {
+                return run_sync(false);
+            }
+            sol::error err = fr;
+            std::string msg = err.what();
+            if (msg.empty()) {
+                msg = "handler coroutine factory failed";
+            }
+            return finish_err(msg);
+        }
+        lua_State* co = lua_tothread(L, -1);
+        if (co == nullptr) {
+            if (degrade_on_factory_failure) {
+                return run_sync(false);
+            }
+            return finish_err("handler coroutine thread missing");
+        }
+        // A call request tags its handler coroutine so the completion can be
+        // routed back to the caller when the coroutine finishes (possibly
+        // much later, after several yields).
+        if (call_session != 0 && manager != nullptr) {
+            manager->set_handler_call_session(co, call_session);
+        }
+
+        int nres = 0;
+        const int status = lua_resume(co, L, 0, &nres);
+        if (status == LUA_OK) {
+            nlohmann::json returns = nlohmann::json::array();
+            for (int i = 0; i < nres; ++i) {
+                nlohmann::json item;
+                sol::stack_object so(sol::state_view(co), i + 1);
+                lua_to_json(so, &item);
+                returns.push_back(std::move(item));
+            }
+            // Routes the response to the caller via on_handler_completed when
+            // this dispatch serviced a call request.
+            if (call_session != 0 && manager != nullptr) {
+                manager->on_handler_completed(co, returns);
+            }
+            if (manager && !service_id.empty()) {
+                manager->reset_error_count(std::string(service_id));
+                // The segment completed here (LUA_OK): honor a shield.exit
+                // it requested. During spawn-init the spawn path owns the
+                // request instead — exit() cannot drive an unpublished
+                // service.
+                if (!LuaServiceManager::spawn_init_in_progress()) {
+                    manager->finish_pending_exit(std::string(service_id));
+                }
+            }
+            return true;
+        }
+        if (status == LUA_YIELD) {
+            // Suspended (shield.sleep / call): anchored by the suspending API
+            // and resumed by the runtime.
+            return true;
+        }
+        std::string msg = method_label.empty()
+                              ? std::string("handler raised an error")
+                              : method_label + " raised an error";
+        if (lua_type(co, -1) == LUA_TSTRING) {
+            msg = lua_tostring(co, -1);
+        }
+        lua_settop(co, 0);
+        if (call_session != 0 && manager != nullptr) {
+            manager->on_handler_failed(co, msg);
+        }
+        if (manager && !service_id.empty()) {
+            manager->invoke_error_hook(std::string(service_id), error_type,
+                                       method_label, msg);
+        }
+        if (error) *error = msg;
+        return false;
+    } catch (const std::exception& e) {
+        if (error) *error = e.what();
+        return false;
+    }
+}
+
 bool LuaRuntime::call_service_method_coroutine(
     std::shared_ptr<LuaVM> vm, std::string_view method_name,
     const nlohmann::json& args, std::string* error, uint64_t call_session,
@@ -933,6 +1172,8 @@ bool LuaRuntime::call_service_method_coroutine(
         }
     };
 
+    // Synchronous dispatch for VMs without the shield API: the handler
+    // cannot yield, so completion happens inline.
     auto fallback_dispatch = [&]() -> bool {
         nlohmann::json returns = nlohmann::json::array();
         std::string fallback_error;
@@ -984,120 +1225,19 @@ bool LuaRuntime::call_service_method_coroutine(
         }
 
         sol::state_view lua(*vm->state());
-        lua_State* L = lua.lua_state();
-
-        sol::function factory = lua["__shield_run_handler"];
-        if (!factory.valid()) {
+        if (!lua["__shield_run_handler"].valid()) {
             // No coroutine factory registered (e.g. a VM without the full
             // shield API). Fall back to a plain synchronous dispatch.
             return fallback_dispatch();
         }
 
         sol::protected_function handler = value.as<sol::protected_function>();
-
-        // Create ctx table with message context (sender, trace, deadline)
-        sol::table ctx = lua.create_table();
-        if (manager != nullptr) {
-            // Set sender: nil if empty, otherwise the sender id
-            std::string sender = manager->current_sender_id();
-            if (sender.empty()) {
-                ctx["sender"] = sol::nil;
-            } else {
-                ctx["sender"] = sender;
-            }
-
-            // Set trace: nil if empty, otherwise the trace id
-            std::string trace = manager->current_trace_id();
-            if (trace.empty()) {
-                ctx["trace"] = sol::nil;
-            } else {
-                ctx["trace"] = trace;
-            }
-
-            // Set deadline: nil if <= 0, otherwise the deadline
-            int64_t deadline = manager->current_deadline_ms();
-            if (deadline <= 0) {
-                ctx["deadline"] = sol::nil;
-            } else {
-                ctx["deadline"] = deadline;
-            }
-        }
-
-        // Build args table with ctx as first argument
-        sol::table args_table = lua.create_table();
-        args_table.add(ctx);  // ctx is the first argument
-        for (const auto& arg : args) {
-            args_table.add(json_to_lua(lua, arg));
-        }
-        args_table["n"] = args.size() + 1;  // +1 for ctx
-
-        // Call the factory to build a handler coroutine. Use a protected call
-        // so a factory failure degrades to synchronous dispatch instead of
-        // throwing through the runtime. The result `fr` is kept alive across
-        // lua_resume so the thread stays anchored on the main stack; if the
-        // handler yields, shield.sleep has already re-anchored it via its own
-        // registry ref before yielding.
-        sol::protected_function factory_pf = lua["__shield_run_handler"];
-        sol::protected_function_result fr = factory_pf(handler, args_table);
-        if (!fr.valid()) {
-            return fallback_dispatch();
-        }
-        // The factory returns the coroutine thread at the top of the stack.
-        // Grab its lua_State* via the C API (sol::thread's type check is
-        // stricter than necessary here). fr stays alive across lua_resume so
-        // the thread remains anchored on the main stack; if the handler
-        // yields, shield.sleep has re-anchored it via its own registry ref.
-        lua_State* co = lua_tothread(L, -1);
-        if (co == nullptr) {
-            return fallback_dispatch();
-        }
-        // If this dispatch services a coroutine call request, tag the handler
-        // coroutine so its completion can route the response back to the
-        // caller.
-        if (call_session != 0 && manager != nullptr) {
-            manager->set_handler_call_session(co, call_session);
-        }
-
-        int nres = 0;
-        const int status = lua_resume(co, L, 0, &nres);
-        if (status == LUA_OK) {
-            // Handler completed synchronously. Collect its return values and,
-            // if this was a call request, resume the suspended caller.
-            if (call_session != 0 && manager != nullptr) {
-                nlohmann::json returns = nlohmann::json::array();
-                for (int i = 0; i < nres; ++i) {
-                    nlohmann::json item;
-                    sol::stack_object so(sol::state_view(co), i + 1);
-                    lua_to_json(so, &item);
-                    returns.push_back(std::move(item));
-                }
-                manager->on_handler_completed(co, returns);
-            }
-            if (manager && !service_id.empty()) {
-                manager->reset_error_count(std::string(service_id));
-            }
-            return true;
-        }
-        if (status == LUA_YIELD) {
-            // Handler suspended (e.g. shield.sleep). It is anchored against GC
-            // by whatever caused the yield and will be resumed by the runtime.
-            return true;
-        }
-        // Error: the error object is on the coroutine's stack.
-        std::string msg = std::string(method_name) + " raised an error";
-        if (lua_type(co, -1) == LUA_TSTRING) {
-            msg = lua_tostring(co, -1);
-        }
-        lua_settop(co, 0);
-        if (error) *error = msg;
-        if (call_session != 0 && manager != nullptr) {
-            manager->on_handler_failed(co, msg);
-        }
-        if (manager && !service_id.empty()) {
-            manager->invoke_error_hook(std::string(service_id), "handler",
-                                       std::string(method_name), msg);
-        }
-        return false;
+        std::vector<nlohmann::json> arg_vec(args.begin(), args.end());
+        return invoke_coroutine(vm, handler, arg_vec, "handler",
+                                std::string(method_name), call_session, manager,
+                                service_id, error,
+                                /*prepend_ctx=*/true,
+                                /*degrade_on_factory_failure=*/true);
     } catch (const std::exception& e) {
         if (error) *error = e.what();
         complete_call_failure(e.what());
