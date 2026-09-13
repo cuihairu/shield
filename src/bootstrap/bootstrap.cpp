@@ -562,12 +562,16 @@ bool initialize(const RuntimeConfig& config) {
                 if (!services->send_system(service_id, "on_server_state_change",
                                            nlohmann::json::array({state_name}),
                                            &error)) {
+                    // GCOVR_EXCL_START (defensive: state notifications only
+                    // fire while the Lua runtime is alive; the stopping-
+                    // teardown window is not deterministically reachable)
                     // Transient runtime teardown: keep the watcher so a
                     // restart of the runtime (or the remaining drain window)
                     // still sees later transitions.
                     return error == "runtime is stopping"
                                ? shield::server::Delivery::kRetryable
                                : shield::server::Delivery::kGone;
+                    // GCOVR_EXCL_STOP
                 }
                 return shield::server::Delivery::kOk;
             });

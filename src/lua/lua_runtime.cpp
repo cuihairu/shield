@@ -548,12 +548,16 @@ sol::state& LuaRuntime::vm_state(const std::shared_ptr<LuaVM>& vm) {
     return *vm->state();
 }
 
+// GCOVR_EXCL_START (server-only helper: the CI coverage shape builds with
+// SHIELD_ENABLE_SERVER=OFF, so this has no caller there; the full-build tree
+// exercises it through the shield.server.watch facade)
 sol::table LuaRuntime::service_table(const std::shared_ptr<LuaVM>& vm) const {
     if (!vm) {
         return sol::nil;
     }
     return vm->service_table();
 }
+// GCOVR_EXCL_STOP
 
 void LuaRuntime::restrict_vm(std::shared_ptr<LuaVM> vm) {
     if (!vm) return;

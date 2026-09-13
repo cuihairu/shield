@@ -393,4 +393,36 @@ BOOST_AUTO_TEST_CASE(ServerEnabledRunWatchClosedLoop) {
                                   script.string() + "\n");
     BOOST_CHECK_EQUAL(run_args({"--config", cfg.string()}), 0);
 }
+
+// A watcher whose owner died before finishing init is pruned on the next
+// transition: bootstrap's notify_fn finds no live service_vm, reports kGone,
+// and the manager drops the registration. The doomed actor opts out of
+// required so the failed spawn does not abort the whole bootstrap.
+BOOST_AUTO_TEST_CASE(ServerWatcherOfFailedSpawnIsPruned) {
+    fs::path doomed = write_temp("shield_cov_server_gone.lua", R"lua(
+local M = {}
+function M.on_init(args)
+    shield.server.watch(function(ctx, new_state) end)
+    error("boom: watcher owner dies before init completes")
+end
+return M
+)lua");
+    fs::path main_script = write_temp("shield_cov_server_gone_main.lua",
+                                      "local M = {}\nreturn M\n");
+    fs::path cfg = write_temp("shield_cov_server_gone.yaml",
+                              "app:\n  name: cov-server-gone\n"
+                              "actors:\n"
+                              "  - name: main\n    script: " +
+                                  main_script.string() +
+                                  "\n"
+                                  "  - name: doomed\n    script: " +
+                                  doomed.string() + "\n    required: false\n");
+    std::thread stopper([]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        shield::request_stop();
+    });
+    int rc = run_args({"--config", cfg.string()});
+    stopper.join();
+    BOOST_CHECK_EQUAL(rc, 0);
+}
 #endif  // SHIELD_ENABLE_SERVER

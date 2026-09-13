@@ -308,6 +308,37 @@ BOOST_AUTO_TEST_CASE(LAPI_SV_04_ExitedWatcherAutoDeregisters) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+BOOST_AUTO_TEST_SUITE(LapiServerWatchEdges)
+
+// A float-typed watch id takes the facade's double unwrapping branch; the
+// contract keeps unknown ids silently successful.
+BOOST_AUTO_TEST_CASE(LAPI_SV_08_UnwatchAcceptsFloatId) {
+    ServerWorld world;
+    auto svc = world.spawn("sv_unwatch_float");
+    if (!svc.success) BOOST_TEST_MESSAGE("spawn error: " << svc.error_message);
+    BOOST_REQUIRE(svc.success);
+
+    CallResult u = call(world.manager, svc.service_id, "do_unwatch_float",
+                        nlohmann::json::array({7.0}));
+    BOOST_REQUIRE(u.success);
+    BOOST_CHECK(!u.values.empty());
+    BOOST_CHECK(u.values[0] == true);
+}
+
+// Watch called at module top level: no dispatch frame and no registry entry
+// yet, so the facade answers with invalid_argument instead of registering.
+// The script asserts the error itself; a failed assert fails the spawn.
+BOOST_AUTO_TEST_CASE(LAPI_SV_09_TopLevelWatchIsRejected) {
+    ServerWorld world;
+    SpawnResult svc = world.manager.spawn(
+        "../tests/lua_api/scripts/server_service_topwatch.lua",
+        service_opts("sv_top_watch").dump());
+    if (!svc.success) BOOST_TEST_MESSAGE("spawn error: " << svc.error_message);
+    BOOST_REQUIRE(svc.success);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 BOOST_AUTO_TEST_SUITE(LapiServerShutdown)
 
 BOOST_AUTO_TEST_CASE(LAPI_SV_05_ImmediateShutdownClosedLoop) {

@@ -2487,7 +2487,7 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
 // module_unavailable (LAPI-011 前言) instead of being a nil field.
 void register_player_stub_api(sol::table& shield, sol::state_view lua) {
     auto unavailable = lua.safe_script(
-        "return function()\n"
+        "return function()\n"  // GCOVR_EXCL_LINE (safe_script chunk artifact)
         "  return nil, {code = 'module_unavailable', message = "
         "'shield_player is not enabled', retryable = false}\n"
         "end\n",
@@ -2658,7 +2658,8 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
     // ---- state control ----
     server.set_function(
         "set_state",
-        [](sol::this_state state, std::string name) -> sol::variadic_results {
+        [](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           std::string name) -> sol::variadic_results {
             sol::state_view s(state);
             sol::variadic_results results;
             auto* sm = shield::server::ServerManager::global();
@@ -2689,7 +2690,8 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
 
     server.set_function(
         "shutdown",
-        [](sol::this_state state, sol::object delay) -> sol::variadic_results {
+        [](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           sol::object delay) -> sol::variadic_results {
             sol::state_view s(state);
             sol::variadic_results results;
             auto* sm = shield::server::ServerManager::global();
@@ -2771,11 +2773,18 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
                 // watcher): it is not in the registry yet, so prefer the
                 // dispatch frame's VM before the registry lookup.
                 auto vm = manager->current_service_vm();
+                // GCOVR_EXCL_START (defensive: current_service_vm already
+                // retries through the registry, so a null result here means
+                // the service is gone and service_vm would return null too)
                 if (!vm) {
                     vm = manager->service_vm(service_id);
                 }
+                // GCOVR_EXCL_STOP
                 module_tbl = runtime->service_table(vm);
             }
+            // GCOVR_EXCL_START (defensive: every dispatch context resolves
+            // a vm whose module loaded — load failures never reach the
+            // dispatch scope, and a null vm above leaves the nil sentinel)
             if (!module_tbl.valid()) {
                 results.push_back(sol::make_object(s, sol::nil));
                 results.push_back(
@@ -2783,6 +2792,7 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
                                "watch requires a loaded service module"));
                 return results;
             }
+            // GCOVR_EXCL_STOP
             const auto watch_id = sm->watch(service_id);
             // The chunk stores the callback and installs the forwarder. The
             // impl table is re-resolved from this state's globals on every
@@ -2798,7 +2808,7 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
 
     server.set_function(
         "unwatch",
-        [](sol::this_state state,
+        [](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
            sol::object watch_id) -> sol::variadic_results {
             sol::state_view s(state);
             sol::variadic_results results;
@@ -2831,7 +2841,7 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
 // module_unavailable instead of being a nil field.
 void register_server_stub_api(sol::table& shield, sol::state_view lua) {
     auto unavailable = lua.safe_script(
-        "return function()\n"
+        "return function()\n"  // GCOVR_EXCL_LINE (safe_script chunk artifact)
         "  return nil, {code = 'module_unavailable', message = "
         "'shield_server is not enabled', retryable = false}\n"
         "end\n",

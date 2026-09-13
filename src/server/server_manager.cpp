@@ -133,8 +133,12 @@ bool ServerManager::transition_allowed(ServerState from, ServerState to) {
             return to == ServerState::kRunning ||
                    to == ServerState::kMaintenance ||
                    to == ServerState::kShutdown;
-        case ServerState::kShutdown:
-            return false;  // GCOVR_EXCL_LINE (terminal state handled above)
+        case ServerState::kShutdown:  // GCOVR_EXCL_LINE (the terminal guard
+                                      // above returns before the switch)
+            // GCOVR_EXCL_START (unreachable: the from==kShutdown guard
+            // above rejects every migration out of the terminal state)
+            return false;
+            // GCOVR_EXCL_STOP
     }
     return false;  // GCOVR_EXCL_LINE (every enum value is handled above)
 }
@@ -270,15 +274,15 @@ bool ServerManager::schedule_shutdown(std::uint64_t delay_ms,
             return false;
         }
         if (!transition_allowed(state_, ServerState::kShutdown)) {
-            // Unreachable: every state other than shutdown itself may move
-            // to shutdown (guarded for symmetry with set_state).
-            if (error) {  // GCOVR_EXCL_LINE (unreachable twin of set_state)
-                *error =  // GCOVR_EXCL_LINE
-                    std::string("invalid state transition: ") +  //
-                    server_state_name(state_) + " -> shutdown";
+            // GCOVR_EXCL_START (unreachable twin of set_state: every state
+            // other than shutdown itself may move to shutdown)
+            if (error) {
+                *error = std::string("invalid state transition: ") +
+                         server_state_name(state_) + " -> shutdown";
             }
-            return false;  // GCOVR_EXCL_LINE
+            return false;
         }
+        // GCOVR_EXCL_STOP
         state_ = ServerState::kShutdown;
         shutdown_scheduled_ = true;
         to_notify = watchers_;

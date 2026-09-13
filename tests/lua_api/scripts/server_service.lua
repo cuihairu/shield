@@ -57,6 +57,12 @@ function M.do_unwatch(ctx)
     return shield.server.unwatch(M.watch_id)
 end
 
+-- The same call with a float-typed id: the facade unwraps Lua numbers that
+-- carry the float subtype through its double branch.
+function M.do_unwatch_float(ctx, id)
+    return shield.server.unwatch(id)
+end
+
 -- delay: nil (immediate), a number, or a string to probe invalid_argument.
 function M.do_shutdown(ctx, delay)
     local ok, err = shield.server.shutdown(delay)

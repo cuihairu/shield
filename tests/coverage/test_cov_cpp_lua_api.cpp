@@ -782,6 +782,15 @@ BOOST_AUTO_TEST_CASE(MainThreadApiSurface) {
         " {1, 2})\n"
         "assert(h == nil and err.code == 'spawn_failed')"));
 
+    // _sync_spawn with non-positive integer keys: the options table is not
+    // array-like (lua_table_to_json's index <= 0 branch), so it normalizes
+    // to an empty object and the spawn still reports its own failure.
+    BOOST_CHECK(run_script(
+        lua,
+        "local h, err = shield.spawn('/tmp/opencode/cov_does_not_exist.lua',"
+        " {[0] = 'zero', [-1] = 'neg'})\n"
+        "assert(h == nil and err.code == 'spawn_failed')"));
+
     // spawn_timeout: on_init slower than the configured timeout.
     const auto slow =
         write_script("/tmp/opencode/cov_init_slow_fail.lua", kInitSlowFail);
@@ -1160,7 +1169,13 @@ BOOST_AUTO_TEST_CASE(RuntimeStoppingCodes) {
                    "assert(shield._call_error_code('runtime is stopping') == "
                    "'runtime_stopping')\n"
                    "assert(shield._call_error_code('service not found: x') == "
-                   "'service_not_found')"));
+                   "'service_not_found')\n"
+                   "assert(shield._call_error_code('invalid method name: "
+                   "length must be 1-128') == 'invalid_method')\n"
+                   "assert(shield._call_error_code('coroutine limit "
+                   "exceeded') == 'coroutine_limit')\n"
+                   "assert(shield._call_error_code('anything else') == "
+                   "'handler_error')"));
 }
 
 // ---------------------------------------------------------------------------

@@ -488,3 +488,49 @@ BOOST_AUTO_TEST_CASE(ConfigAccessorReturnsOwnConfig) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Coverage edges: the terminal-state guard inside transition_allowed and the
+// no-notifier early return in the notification path.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_SUITE(ServerCoverageEdges)
+
+// A shutdown server is terminal: every further set_state to a different
+// state is rejected with the stable transition error (the terminal guard in
+// transition_allowed), while the same-value set stays an idempotent success.
+BOOST_AUTO_TEST_CASE(TerminalStateRejectsFurtherMigrations) {
+    RecordedManager rec;
+    rec.mgr.set_locality("");
+    const auto id = rec.mgr.watch("svc_a");
+    BOOST_CHECK(rec.mgr.set_state(ServerState::kRunning, nullptr));
+    BOOST_CHECK(rec.mgr.set_state(ServerState::kShutdown, nullptr));
+    BOOST_CHECK(rec.mgr.state() == ServerState::kShutdown);
+    for (auto to : {ServerState::kStarting, ServerState::kRunning,
+                    ServerState::kMaintenance}) {
+        std::string error;
+        BOOST_CHECK(!rec.mgr.set_state(to, &error));
+        BOOST_CHECK_NE(error.find("invalid state transition"),
+                       std::string::npos);
+    }
+    // Same-value on the terminal state: idempotent, silent success.
+    BOOST_CHECK(rec.mgr.set_state(ServerState::kShutdown, nullptr));
+    BOOST_CHECK_EQUAL(rec.calls.size(), 2u);  // running + shutdown only
+    rec.mgr.unwatch(id);
+}
+
+// Without a notifier installed the delivery pass is a no-op: transitions
+// still succeed and the watcher stays registered for a later notifier.
+BOOST_AUTO_TEST_CASE(NotificationsWithoutNotifyFnKeepWatchers) {
+    ServerManager mgr(default_config());
+    mgr.set_locality("");
+    const auto id = mgr.watch("svc_a");
+    mgr.mark_ready();
+    BOOST_CHECK(mgr.state() == ServerState::kRunning);
+    BOOST_CHECK_EQUAL(mgr.watcher_count(), 1u);
+    BOOST_CHECK(mgr.set_state(ServerState::kMaintenance, nullptr));
+    BOOST_CHECK_EQUAL(mgr.watcher_count(), 1u);
+    mgr.unwatch(id);
+    BOOST_CHECK_EQUAL(mgr.watcher_count(), 0u);
+}
+
+BOOST_AUTO_TEST_SUITE_END()

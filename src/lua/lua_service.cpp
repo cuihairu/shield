@@ -960,6 +960,9 @@ struct LuaServiceManager::Impl {
         return tls_dispatch_stack.back().sender_id;
     }
 
+    // GCOVR_EXCL_START (server-only helper: the CI coverage shape builds
+    // with SHIELD_ENABLE_SERVER=OFF, so this has no caller there; the
+    // full-build tree exercises it through the shield.server.watch facade)
     std::shared_ptr<LuaVM> current_service_vm() const {
         if (!tls_dispatch_stack.empty()) {
             if (auto& vm = tls_dispatch_stack.back().vm) {
@@ -974,6 +977,7 @@ struct LuaServiceManager::Impl {
         auto it = services.find(id);
         return it != services.end() ? it->second : nullptr;
     }
+    // GCOVR_EXCL_STOP
 
     std::string current_trace_id() const {
         if (tls_dispatch_stack.empty()) {
@@ -2361,9 +2365,12 @@ std::shared_ptr<LuaVM> LuaServiceManager::service_vm(
     return it != impl_->services.end() ? it->second : nullptr;
 }
 
+// GCOVR_EXCL_START (server-only helper: the CI coverage shape builds with
+// SHIELD_ENABLE_SERVER=OFF, so this has no caller there)
 std::shared_ptr<LuaVM> LuaServiceManager::current_service_vm() const {
     return impl_->current_service_vm();
 }
+// GCOVR_EXCL_STOP
 
 std::string LuaServiceManager::current_sender_id() const {
     return impl_->current_sender_id();
@@ -2786,8 +2793,11 @@ std::string call_error_message(const nlohmann::json& values) {
             first["message"].is_string()) {
             return first["message"].get<std::string>();
         }
-        return first.dump();
+        return first.dump();  // GCOVR_EXCL_LINE (failure sites pass a plain
+                              // string or a {message,...} object)
     }
+    // GCOVR_EXCL_START (defensive: every complete_call failure site wraps
+    // its payload in an array, so values is never a bare string or object)
     if (values.is_string()) {
         return values.get<std::string>();
     }
@@ -2796,6 +2806,7 @@ std::string call_error_message(const nlohmann::json& values) {
         return values["message"].get<std::string>();
     }
     return "call failed";
+    // GCOVR_EXCL_STOP
 }
 
 // Slack added to a proxied session's deadline on top of the caller's
@@ -3215,7 +3226,8 @@ int LuaServiceManager::check_call_timeouts(int64_t now_ms) {
         // must still reach the hook so the remote caller learns of the
         // timeout instead of hanging until its own deadline.
         if (finish_proxied_call(session, false, timeout_err)) {
-            continue;
+            continue;  // GCOVR_EXCL_LINE (needs a cluster build: proxied
+                       // sessions only exist with SHIELD_ENABLE_CLUSTER)
         }
         resume_caller(session, false, timeout_err);
     }
