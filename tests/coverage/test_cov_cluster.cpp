@@ -42,6 +42,9 @@
 #include "shield/lua/player_ref_box.hpp"
 #include "shield/player/player_manager.hpp"
 #endif
+#ifdef SHIELD_ENABLE_SERVER
+#include "shield/server/server_manager.hpp"
+#endif
 
 using namespace shield::lua;
 using shield::cluster::ClusterConfig;
@@ -671,6 +674,91 @@ BOOST_AUTO_TEST_CASE(PlayerLuaApiPrimitives) {
     )lua"));
 }
 #endif  // SHIELD_ENABLE_PLAYER
+
+// ---------------------------------------------------------------------------
+// ServerLuaApiPrimitives: the shield.server Lua facade against a bare state
+// (no dispatch context). Covers the argument-validation branches and the
+// no-global-manager degradation that the LAPI-SV suite's happy paths do not
+// reach. Only compiled when the server module is built in.
+// ---------------------------------------------------------------------------
+#ifdef SHIELD_ENABLE_SERVER
+BOOST_AUTO_TEST_CASE(ServerLuaApiPrimitives) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::server::ServerConfig config;
+    config.name = "cov-server";
+    shield::server::ServerManager sm(config);
+    shield::server::ServerManager::set_global(&sm);
+
+    // Read surface + the full set_state/shutdown argument matrix, driven
+    // without a dispatch context (watch must refuse here).
+    BOOST_CHECK(run_script(lua, R"lua(
+        local S = shield.server
+        assert(S.state() == 'starting')
+        assert(S.uptime() == 0)
+        assert(S.version() == '')
+        assert(S.node_id() == '')
+        assert(S.started_at() == 0)
+        assert(S.config().name == 'cov-server')
+        local function err_of(...)
+            local _, e = ...
+            return type(e) == 'table' and e.code or nil
+        end
+        assert(err_of(S.set_state('bogus')) == 'invalid_state')
+        assert(err_of(S.set_state('maintenance'))
+            == 'invalid_state_transition')
+        assert(S.set_state('starting') == true)
+        assert(S.set_state('running') == true)
+        assert(S.state() == 'running')
+        -- watch needs a callback function, then a dispatch context.
+        assert(err_of(S.watch('not-a-function')) == 'invalid_argument')
+        assert(err_of(S.watch(function() end)) == 'invalid_argument')
+        -- unwatch without a dispatch context still succeeds (the C++ side
+        -- unregisters; the chunk detach is a no-op for unknown ids).
+        assert(S.unwatch(42) == true)
+        for _, bad in ipairs({-1, 1.5, 'x'}) do
+            assert(err_of(S.shutdown(bad)) == 'invalid_argument')
+        end
+        -- The state machine is untouched by the refusals above.
+        assert(S.state() == 'running')
+        -- Immediate handover consumes the schedule; a repeat is refused.
+        assert(S.shutdown(0) == true)
+        assert(S.state() == 'shutdown')
+        assert(err_of(S.shutdown(0)) == 'shutdown_already_scheduled')
+        assert(err_of(S.set_state('running')) == 'invalid_state_transition')
+        assert(S.unwatch(7) == true)
+    )lua"));
+    BOOST_CHECK_EQUAL(sm.watcher_count(), 0u);
+
+    // Without a global manager every entry degrades to module_unavailable.
+    shield::server::ServerManager::set_global(nullptr);
+    BOOST_CHECK(run_script(lua, R"lua(
+        local S = shield.server
+        assert(S.state() == nil)
+        assert(S.uptime() == nil)
+        assert(S.version() == nil)
+        assert(S.node_id() == nil)
+        assert(S.started_at() == nil)
+        assert(S.config() == nil)
+        local function err_of(...)
+            local _, e = ...
+            return type(e) == 'table' and e.code or nil
+        end
+        assert(err_of(S.set_state('running')) == 'module_unavailable')
+        assert(err_of(S.shutdown(0)) == 'module_unavailable')
+        assert(err_of(S.watch(function() end)) == 'module_unavailable')
+        assert(err_of(S.unwatch(1)) == 'module_unavailable')
+    )lua"));
+}
+#endif  // SHIELD_ENABLE_SERVER
 
 // ---------------------------------------------------------------------------
 // ClusterManager unit gaps: the seamless send_remote error, route

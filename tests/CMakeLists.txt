@@ -342,5 +342,29 @@ if(SHIELD_ENABLE_PLAYER)
     shield_copy_runtime_dlls(test_player_manager)
 endif()
 
+# ---------------------------------------------------------------------------
+# Server state machine tests (require SHIELD_ENABLE_SERVER; CI runs them in
+# the cluster job, which enables the module, via the "server" label)
+# ---------------------------------------------------------------------------
+if(SHIELD_ENABLE_SERVER)
+    add_executable(test_server_manager server/test_server_manager.cpp)
+    target_link_libraries(test_server_manager
+        PRIVATE
+            shield_server
+            shield_config
+            Boost::unit_test_framework
+            Boost::headers
+    )
+    target_include_directories(test_server_manager
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_server_manager COMMAND test_server_manager)
+    set_tests_properties(test_server_manager PROPERTIES
+        # "coverage" so server-enabled coverage builds measure the server
+        # core through this suite (same convention as the cluster suites).
+        LABELS "server;coverage"
+        TIMEOUT 60)
+    shield_copy_runtime_dlls(test_server_manager)
+endif()
+
 # Coverage-focused unit tests (one executable per src/ module).
 add_subdirectory(coverage)

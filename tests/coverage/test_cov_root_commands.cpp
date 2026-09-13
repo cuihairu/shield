@@ -22,6 +22,9 @@
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/cluster/cluster_transport.hpp"
 #endif
+#ifdef SHIELD_ENABLE_SERVER
+#include "shield/server/server_manager.hpp"
+#endif
 #include "shield/config/config.hpp"
 #include "shield/console/command_dispatcher.hpp"
 #include "shield/console/root_commands.hpp"
@@ -499,6 +502,71 @@ BOOST_AUTO_TEST_CASE(ClusterCommandAvailability) {
     BOOST_CHECK(resp["message"] == "Cluster not compiled");
 #endif
 }
+
+BOOST_AUTO_TEST_CASE(ServerCommandAvailability) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "root.server");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+#ifdef SHIELD_ENABLE_SERVER
+    // Compiled but this fixture installs no server manager.
+    BOOST_CHECK(resp["message"] == "Server not enabled");
+#else
+    BOOST_CHECK(resp["message"] == "Server not compiled");
+#endif
+}
+
+#ifdef SHIELD_ENABLE_SERVER
+// With a server manager installed, root.server and root.status report the
+// state-machine snapshot (OD-017: read-only exposure, no /ops/server).
+BOOST_AUTO_TEST_CASE(ServerCommandsReportManagerSnapshot) {
+    shield::server::ServerConfig config;
+    config.name = "cov-console";
+    config.info_name = "Cov Console";
+    config.info_version = "1.2.3";
+    config.info_region = "test-ops";
+    shield::server::ServerManager sm(config);
+    sm.mark_ready();
+    sm.set_locality("cov-node-a");
+    shield::server::ServerManager::set_global(&sm);
+
+    {
+        ConsoleHarness harness;
+        shield::console::CommandDispatcher dispatcher;
+        shield::console::RootCommands root(*manager);
+        root.register_all(dispatcher);
+
+        dispatcher.dispatch(harness.session, "root.server");
+        std::string line = harness.read_line();
+        BOOST_REQUIRE(!line.empty());
+        auto resp = nlohmann::json::parse(line);
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK_EQUAL(resp["data"]["state"], "running");
+        BOOST_CHECK_EQUAL(resp["data"]["name"], "cov-console");
+        BOOST_CHECK_EQUAL(resp["data"]["node_id"], "cov-node-a");
+        BOOST_CHECK_EQUAL(resp["data"]["info"]["region"], "test-ops");
+        BOOST_CHECK_EQUAL(resp["data"]["watchers"], 0u);
+        BOOST_CHECK(resp["data"]["shutdown_scheduled"] == false);
+
+        dispatcher.dispatch(harness.session, "root.status");
+        line = harness.read_line(std::chrono::milliseconds(8000));
+        BOOST_REQUIRE(!line.empty());
+        resp = nlohmann::json::parse(line);
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK_EQUAL(resp["data"]["server"]["state"], "running");
+        BOOST_CHECK_EQUAL(resp["data"]["server"]["info"]["name"],
+                          "Cov Console");
+    }
+
+    shield::server::ServerManager::set_global(nullptr);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Branch-coverage additions (keep purely additive; no existing case above is

@@ -1,0 +1,10 @@
+app:
+  name: optional_server_disabled
+
+actors:
+  - name: worker
+    script: smoke_root.lua
+    instances: 1
+
+server_manager:
+  name: disabled-node

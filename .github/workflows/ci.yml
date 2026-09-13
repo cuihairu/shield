@@ -181,12 +181,13 @@ jobs:
           -DSHIELD_BUILD_EXAMPLES=OFF
           -DSHIELD_ENABLE_CLUSTER=ON
           -DSHIELD_ENABLE_PLAYER=ON
+          -DSHIELD_ENABLE_SERVER=ON
 
       - name: Build
         run: cmake --build build-cluster --parallel $(nproc)
 
       - name: Test
-        run: ctest --test-dir build-cluster --build-config Release -L "cluster|player" --output-on-failure
+        run: ctest --test-dir build-cluster --build-config Release -L "cluster|player|server" --output-on-failure
 
   # 覆盖率 (Linux, gcov + gcovr): 在 Debug + coverage 构建下运行全部测试
   # 套件并统计 src/ 行覆盖率；低于 98% 时失败。必须跑全量而不是只跑

@@ -28,6 +28,10 @@ function(shield_coverage_test name)
         # is guarded by this define (root.cluster, cluster Lua API).
         target_compile_definitions(${name} PRIVATE SHIELD_ENABLE_CLUSTER)
     endif()
+    if(SHIELD_ENABLE_SERVER)
+        # Same for the server define (ServerLuaApiPrimitives).
+        target_compile_definitions(${name} PRIVATE SHIELD_ENABLE_SERVER)
+    endif()
     target_include_directories(${name}
         PRIVATE
             ${CMAKE_SOURCE_DIR}/include
@@ -70,6 +74,13 @@ shield_coverage_test(test_cov_starter shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_bootstrap shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_bootstrap2 shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_shield shield_bootstrap shield_net shield_plugin)
+if(SHIELD_ENABLE_SERVER)
+    # ServerEnabledRunWatchClosedLoop drives the bootstrap notify wiring;
+    # the console/ops suites assert the read-only server exposure.
+    target_link_libraries(test_cov_shield PRIVATE shield_server)
+    target_link_libraries(test_cov_root_commands PRIVATE shield_server)
+    target_link_libraries(test_cov_ops_http PRIVATE shield_server)
+endif()
 
 # shield_lua
 shield_coverage_test(test_cov_cpp_lua_api shield_lua shield_core CAF::core CAF::io)
@@ -98,6 +109,10 @@ if(SHIELD_ENABLE_CLUSTER)
         target_link_libraries(test_cov_cluster PRIVATE shield_player)
         target_compile_definitions(test_cov_cluster
                                    PRIVATE SHIELD_ENABLE_PLAYER)
+    endif()
+    if(SHIELD_ENABLE_SERVER)
+        # ServerLuaApiPrimitives: same shape, the server facade faces.
+        target_link_libraries(test_cov_cluster PRIVATE shield_server)
     endif()
 endif()
 

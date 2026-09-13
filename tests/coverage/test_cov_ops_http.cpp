@@ -17,6 +17,9 @@
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
 #endif
+#ifdef SHIELD_ENABLE_SERVER
+#include "shield/server/server_manager.hpp"
+#endif
 #include "shield/config/config.hpp"
 #include "shield/console/ops_http_handler.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -539,6 +542,42 @@ BOOST_AUTO_TEST_CASE(StatusEndpointIncludesClusterBlock) {
 
     shield::cluster::set_global_cluster_manager(nullptr);
     cluster.stop();
+}
+#endif
+
+#ifdef SHIELD_ENABLE_SERVER
+// With a server manager installed, /ops/status carries the server block
+// (state machine snapshot, read-only; OD-017 keeps /ops/server out).
+BOOST_AUTO_TEST_CASE(StatusEndpointIncludesServerBlock) {
+    shield::server::ServerConfig config;
+    config.name = "cov-ops-node";
+    config.info_name = "Cov Ops";
+    config.info_version = "4.5.6";
+    config.info_region = "cn-test";
+    shield::server::ServerManager sm(config);
+    sm.mark_ready();
+    shield::server::ServerManager::set_global(&sm);
+
+    {
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", port);
+        std::string response =
+            client.get("/ops/status", std::chrono::milliseconds(9000));
+        BOOST_REQUIRE(!response.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+        auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK_EQUAL(resp["data"]["server"]["state"], "running");
+        BOOST_CHECK_EQUAL(resp["data"]["server"]["name"], "cov-ops-node");
+        BOOST_CHECK_EQUAL(resp["data"]["server"]["version"], "4.5.6");
+        BOOST_CHECK_EQUAL(resp["data"]["server"]["info"]["region"], "cn-test");
+        BOOST_CHECK(resp["data"]["server"]["uptime_seconds"].is_number());
+        BOOST_CHECK(resp["data"]["server"]["started_at_ms"].is_number());
+        BOOST_CHECK_EQUAL(resp["data"]["server"]["watchers"], 0u);
+        BOOST_CHECK(resp["data"]["server"]["shutdown_scheduled"] == false);
+    }
+
+    shield::server::ServerManager::set_global(nullptr);
 }
 #endif
 

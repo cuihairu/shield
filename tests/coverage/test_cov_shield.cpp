@@ -20,6 +20,9 @@
 #include "shield/cluster/cluster_messages.hpp"
 #include "shield/cluster/cluster_transport.hpp"
 #endif
+#ifdef SHIELD_ENABLE_SERVER
+#include "shield/server/server_manager.hpp"
+#endif
 
 #include "shield/shield.hpp"
 
@@ -340,3 +343,54 @@ BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidPlayerConfig) {
                                   "  multi_device: bogus\n");
     BOOST_CHECK_EQUAL(run_args({"--config", cfg.string()}), 1);
 }
+
+#ifdef SHIELD_ENABLE_SERVER
+// Same fail-fast shape for the server module: an overlong server_manager
+// info field is rejected at initialization and the run aborts with 1.
+BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidServerConfig) {
+    fs::path script =
+        write_temp("shield_cov_shield_bads.lua", "local M = {}\nreturn M\n");
+    fs::path cfg = write_temp("shield_cov_shield_bad_server.yaml",
+                              "app:\n  name: bad-server\n"
+                              "actors:\n  - name: a\n    script: " +
+                                  script.string() +
+                                  "\n"
+                                  "server_manager:\n"
+                                  "  info:\n"
+                                  "    name: " +
+                                  std::string(65, 'x') + "\n");
+    BOOST_CHECK_EQUAL(run_args({"--config", cfg.string()}), 1);
+}
+
+// A full bootstrap run with the server module built in: a service registers
+// a state watcher from on_init, the init-complete mark_ready delivers the
+// running transition through the real notify wiring, the watcher drives
+// running -> maintenance via set_state, and the maintenance notification
+// hands over via shield.server.shutdown(0) — whose stop request ends the
+// run cleanly. rc == 0 proves every link in the chain fired.
+namespace {
+const char* kServerWatchScript = R"lua(
+local M = {}
+function M.on_init(args)
+    shield.server.watch(function(ctx, new_state)
+        if new_state == 'running' then
+            shield.server.set_state('maintenance')
+        else
+            shield.server.shutdown(0)
+        end
+    end)
+end
+return M
+)lua";
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(ServerEnabledRunWatchClosedLoop) {
+    fs::path script =
+        write_temp("shield_cov_server_watch.lua", kServerWatchScript);
+    fs::path cfg = write_temp("shield_cov_server_watch.yaml",
+                              "app:\n  name: cov-server-watch\n"
+                              "actors:\n  - name: main\n    script: " +
+                                  script.string() + "\n");
+    BOOST_CHECK_EQUAL(run_args({"--config", cfg.string()}), 0);
+}
+#endif  // SHIELD_ENABLE_SERVER

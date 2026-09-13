@@ -64,3 +64,15 @@ if(SHIELD_ENABLE_PLAYER)
         PRIVATE SHIELD_ENABLE_PLAYER)
     set_tests_properties(test_lua_api_player PROPERTIES TIMEOUT 120)
 endif()
+
+# shield_server LAPI-SV matrix. Same optional-module shape as the player
+# suite above: the stub branch asserts the module_unavailable degradation,
+# the enabled branch drives watch delivery through the system-message
+# channel and the shutdown handover against a real dispatch context.
+shield_lua_api_test(test_lua_api_server)
+if(SHIELD_ENABLE_SERVER)
+    target_compile_definitions(test_lua_api_server
+        PRIVATE SHIELD_ENABLE_SERVER)
+    target_link_libraries(test_lua_api_server PRIVATE shield_server)
+    set_tests_properties(test_lua_api_server PROPERTIES TIMEOUT 120)
+endif()
