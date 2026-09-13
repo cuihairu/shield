@@ -113,6 +113,7 @@ option(SHIELD_ENABLE_CLUSTER "Enable cluster support (optional)" OFF)
 option(SHIELD_ENABLE_GLOBAL "Enable global helpers (optional)" OFF)
 option(SHIELD_ENABLE_OPS "Enable ops/diagnostics (optional)" OFF)
 option(SHIELD_ENABLE_PLAYER "Enable player session support (optional)" OFF)
+option(SHIELD_ENABLE_SERVER "Enable server state module (optional)" OFF)
 # DB backend plugins are discovered at runtime; see plugins/*/CMakeLists.txt.
 # Each plugin is a separate shared library so users only ship the DLLs they
 # actually need. SHIELD_BUILD_DB_PLUGINS selects which plugins to build
@@ -512,6 +513,24 @@ if(SHIELD_ENABLE_PLAYER)
 endif()
 
 # -----------------------------------------------------------------------------
+# shield_server (optional, OFF by default)
+# -----------------------------------------------------------------------------
+if(SHIELD_ENABLE_SERVER)
+    add_library(shield_server STATIC
+        src/server/server_manager.cpp
+    )
+    target_include_directories(shield_server
+        PUBLIC
+            ${PROJECT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(shield_server
+        PUBLIC shield_base shield_log shield_config
+    )
+    message(STATUS "shield_server: enabled")
+endif()
+
+# -----------------------------------------------------------------------------
 # shield_lua - Lua VM, API bindings, service loader
 # -----------------------------------------------------------------------------
 add_library(shield_lua STATIC
@@ -553,6 +572,11 @@ if(SHIELD_ENABLE_PLAYER)
     target_compile_definitions(shield_lua PRIVATE SHIELD_ENABLE_PLAYER)
 endif()
 
+if(SHIELD_ENABLE_SERVER)
+    target_link_libraries(shield_lua PRIVATE shield_server)
+    target_compile_definitions(shield_lua PRIVATE SHIELD_ENABLE_SERVER)
+endif()
+
 # -----------------------------------------------------------------------------
 # shield_bootstrap - Starter, shield::run
 # -----------------------------------------------------------------------------
@@ -565,6 +589,7 @@ add_library(shield_bootstrap STATIC
     src/console/lua_commands.cpp
     src/console/ops_http_handler.cpp
     src/console/cluster_status.cpp
+    src/console/server_status.cpp
 )
 
 target_include_directories(shield_bootstrap
@@ -593,6 +618,11 @@ if(SHIELD_ENABLE_PLAYER)
     target_compile_definitions(shield_bootstrap PRIVATE SHIELD_ENABLE_PLAYER)
 endif()
 
+if(SHIELD_ENABLE_SERVER)
+    target_link_libraries(shield_bootstrap PRIVATE shield_server)
+    target_compile_definitions(shield_bootstrap PRIVATE SHIELD_ENABLE_SERVER)
+endif()
+
 # -----------------------------------------------------------------------------
 # shield - Main executable
 # -----------------------------------------------------------------------------
@@ -603,6 +633,9 @@ if(SHIELD_ENABLE_CLUSTER)
 endif()
 if(SHIELD_ENABLE_PLAYER)
     target_compile_definitions(shield PRIVATE SHIELD_ENABLE_PLAYER)
+endif()
+if(SHIELD_ENABLE_SERVER)
+    target_compile_definitions(shield PRIVATE SHIELD_ENABLE_SERVER)
 endif()
 shield_copy_runtime_dlls(shield)
 
@@ -698,6 +731,15 @@ if(NOT SHIELD_ENABLE_PLAYER)
             "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-player-disabled.yaml"
             -DEXPECTED_EXIT_CODE=1
             -DEXPECTED_OUTPUT_REGEX=shield_player
+            -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+    )
+endif()
+if(NOT SHIELD_ENABLE_SERVER)
+    add_test(NAME shield_config_server_requires_module
+        COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-server-disabled.yaml"
+            -DEXPECTED_EXIT_CODE=1
+            -DEXPECTED_OUTPUT_REGEX=shield_server
             -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
     )
 endif()
@@ -894,6 +936,7 @@ message(STATUS "  shield_cluster:    ${SHIELD_ENABLE_CLUSTER}")
 message(STATUS "  shield_global:     ${SHIELD_ENABLE_GLOBAL}")
 message(STATUS "  shield_ops:        ${SHIELD_ENABLE_OPS}")
 message(STATUS "  shield_player:     ${SHIELD_ENABLE_PLAYER}")
+message(STATUS "  shield_server:     ${SHIELD_ENABLE_SERVER}")
 message(STATUS "  db plugin mysql:   ${SHIELD_BUILD_DB_PLUGIN_MYSQL}")
 message(STATUS "  db plugin pgsql:   ${SHIELD_BUILD_DB_PLUGIN_POSTGRESQL}")
 message(STATUS "  db plugin sqlite:  ${SHIELD_BUILD_DB_PLUGIN_SQLITE}")

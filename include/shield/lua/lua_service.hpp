@@ -131,6 +131,13 @@ public:
     // Get current service ID
     std::string current_service_id() const;
 
+    // The VM of the dispatch currently running on this thread. During the
+    // on_init window the spawned service is not yet in the registry (its
+    // id cannot be resolved by service_vm), so the spawn scope carries the
+    // VM on the dispatch frame; outside on_init this falls back to the
+    // registry lookup. Returns nullptr outside any dispatch.
+    std::shared_ptr<LuaVM> current_service_vm() const;
+
     // Get the VM bound to a running service (nullptr if not found). The
     // returned pointer keeps the VM alive; touch it only from that service's
     // dispatch thread.

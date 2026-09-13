@@ -154,6 +154,12 @@ public:
     // without depending on the LuaVM definition.
     sol::state& vm_state(const std::shared_ptr<LuaVM>& vm);
 
+    // Module table a VM loaded via load_service_module. Lets the optional
+    // shield_server module install state-change forwarders on the business
+    // module without depending on the LuaVM definition. Returns an invalid
+    // table when no module was loaded.
+    sol::table service_table(const std::shared_ptr<LuaVM>& vm) const;
+
     // Remove host-access capabilities (os.execute family, the io library,
     // require, and package) from a VM. Intended for VMs that serve untrusted
     // entry points such as the HTTP /ops/eval diagnostics endpoint; business

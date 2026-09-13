@@ -8,6 +8,9 @@
 #ifdef SHIELD_ENABLE_PLAYER
 #include "shield/player/player_manager.hpp"
 #endif
+#ifdef SHIELD_ENABLE_SERVER
+#include "shield/server/server_manager.hpp"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <caf/actor.hpp>
@@ -2513,6 +2516,339 @@ void register_player_stub_api(sol::table& shield, sol::state_view lua) {
 }
 #endif
 
+#ifdef SHIELD_ENABLE_SERVER
+// -----------------------------------------------------------------------------
+// shield_server (P0): C++ ServerManager state truth + this per-VM
+// orchestration chunk holding the watcher callbacks. See runtime-server.md.
+//
+// The chunk runs once per VM. register_server_api runs before
+// lua["shield"] is assigned; all shield.* references resolve at CALL time.
+// The C++ watch registry only stores {watch_id, service_id} (OD-016: no
+// sol::function in shield_server), so this chunk owns the callbacks and
+// installs the M.on_server_state_change forwarder the C++ notify path
+// (send_system dispatch) calls into.
+//
+// The chunk also publishes its api table as a per-VM global
+// (__shield_server_impl). The C++ facade resolves it at CALL time from the
+// invoking state and must never capture it in a C++ lambda: a captured
+// sol::table outlives the register call (the lambda userdata lives until
+// GC finalizes it), and dereferencing that reference from the finalizer
+// races/aliases the VM teardown (the same dangling-reference class the
+// sol-reference-coroutine anchor rule exists for — long-lived C++ holders
+// never keep sol references; resolve at call time instead).
+// -----------------------------------------------------------------------------
+constexpr const char* kServerOrchestration = R"lua(
+local impl = {watchers = {}, prev = nil, installed = false}
+
+local api = {
+    -- Store the callback and (once per VM) install the forwarder the
+    -- system-message dispatch calls into. Re-watching an existing id is
+    -- idempotent: the original callback is kept.
+    attach = function(M, watch_id, fn)
+        if impl.watchers[watch_id] then return true end
+        impl.watchers[watch_id] = fn
+        if not impl.installed then
+            impl.installed = true
+            local prev = rawget(M, 'on_server_state_change')
+            if type(prev) == 'function' then impl.prev = prev end
+            M.on_server_state_change = function(ctx, new_state)
+                if impl.prev then
+                    local ok, err = pcall(impl.prev, ctx, new_state)
+                    if not ok then
+                        shield.log.warn('on_server_state_change failed: ' ..
+                                            tostring(err))
+                    end
+                end
+                for _, watcher in pairs(impl.watchers) do
+                    local wok, werr = pcall(watcher, ctx, new_state)
+                    if not wok then
+                        shield.log.warn('server watch callback failed: ' ..
+                                            tostring(werr))
+                    end
+                end
+            end
+        end
+        return true
+    end,
+    detach = function(watch_id)
+        impl.watchers[watch_id] = nil
+        return true
+    end,
+}
+
+rawset(_G, '__shield_server_impl', api)
+return api
+)lua";
+
+void register_server_api(sol::table& shield, LuaServiceManager* manager,
+                         LuaRuntime* runtime) {
+    sol::state_view lua(shield.lua_state());
+
+    // Run the orchestration chunk once per VM; it publishes the impl table
+    // as the per-VM __shield_server_impl global, which the watch/unwatch
+    // facades resolve at CALL time (never captured: see the chunk comment).
+    lua.safe_script(
+        kServerOrchestration,
+        [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           sol::protected_function_result
+               pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+
+    auto server = lua.create_table();
+
+    // ---- read-only runtime info ----
+    server.set_function("state", [](sol::this_state state) -> sol::object {
+        auto* sm = shield::server::ServerManager::global();
+        if (sm == nullptr) {
+            return sol::make_object(state, sol::nil);
+        }
+        return sol::make_object(state,
+                                shield::server::server_state_name(sm->state()));
+    });
+
+    server.set_function("uptime", [](sol::this_state state) -> sol::object {
+        auto* sm = shield::server::ServerManager::global();
+        if (sm == nullptr) {
+            return sol::make_object(state, sol::nil);
+        }
+        return sol::make_object(state, sm->uptime_seconds());
+    });
+
+    server.set_function("version", [](sol::this_state state) -> sol::object {
+        auto* sm = shield::server::ServerManager::global();
+        if (sm == nullptr) {
+            return sol::make_object(state, sol::nil);
+        }
+        return sol::make_object(state, sm->version());
+    });
+
+    server.set_function("node_id", [](sol::this_state state) -> sol::object {
+        auto* sm = shield::server::ServerManager::global();
+        if (sm == nullptr) {
+            return sol::make_object(state, sol::nil);
+        }
+        return sol::make_object(state, sm->node_id());
+    });
+
+    server.set_function("started_at", [](sol::this_state state) -> sol::object {
+        auto* sm = shield::server::ServerManager::global();
+        if (sm == nullptr) {
+            return sol::make_object(state, sol::nil);
+        }
+        return sol::make_object(state, sm->started_at_ms());
+    });
+
+    server.set_function("config", [](sol::this_state state) -> sol::object {
+        sol::state_view s(state);
+        auto* sm = shield::server::ServerManager::global();
+        if (sm == nullptr) {
+            return sol::make_object(s, sol::nil);
+        }
+        const auto& c = sm->config();
+        sol::table cfg = s.create_table();
+        cfg["name"] = c.name;
+        sol::table info = s.create_table();
+        info["name"] = c.info_name;
+        info["version"] = c.info_version;
+        info["region"] = c.info_region;
+        cfg["info"] = info;
+        return sol::make_object(s, cfg);
+    });
+
+    // ---- state control ----
+    server.set_function(
+        "set_state",
+        [](sol::this_state state, std::string name) -> sol::variadic_results {
+            sol::state_view s(state);
+            sol::variadic_results results;
+            auto* sm = shield::server::ServerManager::global();
+            if (sm == nullptr) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "module_unavailable",
+                               "shield_server is not initialized"));
+                return results;
+            }
+            shield::server::ServerState parsed;
+            if (!shield::server::parse_server_state(name, &parsed)) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(make_error(state, "invalid_state",
+                                             "unknown server state: " + name));
+                return results;
+            }
+            std::string error;
+            if (!sm->set_state(parsed, &error)) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "invalid_state_transition", error));
+                return results;
+            }
+            results.push_back(sol::make_object(s, true));
+            return results;
+        });
+
+    server.set_function(
+        "shutdown",
+        [](sol::this_state state, sol::object delay) -> sol::variadic_results {
+            sol::state_view s(state);
+            sol::variadic_results results;
+            auto* sm = shield::server::ServerManager::global();
+            if (sm == nullptr) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "module_unavailable",
+                               "shield_server is not initialized"));
+                return results;
+            }
+            // The delay must be a non-negative integer number of
+            // milliseconds. Lua numbers are doubles, so check through the
+            // double view: negative and fractional values are rejected
+            // here (an unsigned integer view would wrap negative values).
+            std::uint64_t delay_ms = 0;
+            bool valid = false;
+            if (delay.is<double>()) {
+                const double raw = delay.as<double>();
+                if (raw >= 0.0 && raw == std::floor(raw) &&
+                    raw <= 9007199254740992.0) {
+                    delay_ms = static_cast<std::uint64_t>(raw);
+                    valid = true;
+                }
+            }
+            if (!valid) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(make_error(
+                    state, "invalid_argument",
+                    "shutdown delay must be a non-negative integer ms"));
+                return results;
+            }
+            std::string error;
+            if (!sm->schedule_shutdown(delay_ms, &error)) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "shutdown_already_scheduled", error));
+                return results;
+            }
+            results.push_back(sol::make_object(s, true));
+            return results;
+        });
+
+    // ---- state watchers ----
+    server.set_function(
+        "watch",
+        [manager, runtime](sol::this_state state,
+                           sol::object cb) -> sol::variadic_results {
+            sol::state_view s(state);
+            sol::variadic_results results;
+            auto* sm = shield::server::ServerManager::global();
+            if (sm == nullptr) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "module_unavailable",
+                               "shield_server is not initialized"));
+                return results;
+            }
+            if (!cb.is<sol::function>()) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "invalid_argument",
+                               "watch expects a callback function"));
+                return results;
+            }
+            // Watchers register for the calling service; that requires a
+            // dispatch context (on_init or a handler).
+            const auto service_id = manager->current_service_id();
+            if (service_id.empty()) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "invalid_argument",
+                               "watch requires a service context (call it from "
+                               "on_init or a handler)"));
+                return results;
+            }
+            sol::table module_tbl = sol::nil;
+            if (runtime) {
+                // The calling service may still be spawning (an on_init
+                // watcher): it is not in the registry yet, so prefer the
+                // dispatch frame's VM before the registry lookup.
+                auto vm = manager->current_service_vm();
+                if (!vm) {
+                    vm = manager->service_vm(service_id);
+                }
+                module_tbl = runtime->service_table(vm);
+            }
+            if (!module_tbl.valid()) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "invalid_argument",
+                               "watch requires a loaded service module"));
+                return results;
+            }
+            const auto watch_id = sm->watch(service_id);
+            // The chunk stores the callback and installs the forwarder. The
+            // impl table is re-resolved from this state's globals on every
+            // call (coroutines share them) instead of being captured by the
+            // lambda: a captured sol reference would be dereferenced from
+            // the GC finalizer that later destroys the lambda.
+            sol::table impl = s.globals()["__shield_server_impl"];
+            sol::protected_function attach = impl["attach"];
+            attach(module_tbl, watch_id, cb);
+            results.push_back(sol::make_object(s, watch_id));
+            return results;
+        });
+
+    server.set_function(
+        "unwatch",
+        [](sol::this_state state,
+           sol::object watch_id) -> sol::variadic_results {
+            sol::state_view s(state);
+            sol::variadic_results results;
+            auto* sm = shield::server::ServerManager::global();
+            if (sm == nullptr) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "module_unavailable",
+                               "shield_server is not initialized"));
+                return results;
+            }
+            std::uint64_t id = 0;
+            if (watch_id.is<std::uint64_t>()) {
+                id = watch_id.as<std::uint64_t>();
+            } else if (watch_id.is<double>()) {
+                id = static_cast<std::uint64_t>(watch_id.as<double>());
+            }
+            sm->unwatch(id);
+            sol::table impl = s.globals()["__shield_server_impl"];
+            sol::protected_function detach = impl["detach"];
+            detach(id);
+            results.push_back(sol::make_object(s, true));
+            return results;
+        });
+
+    shield["server"] = server;
+}
+#else
+// Module compiled out: every shield.server.* entry reports
+// module_unavailable instead of being a nil field.
+void register_server_stub_api(sol::table& shield, sol::state_view lua) {
+    auto unavailable = lua.safe_script(
+        "return function()\n"
+        "  return nil, {code = 'module_unavailable', message = "
+        "'shield_server is not enabled', retryable = false}\n"
+        "end\n",
+        [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           sol::protected_function_result
+               pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+    auto server = lua.create_table();
+    for (const char* name :
+         {"state", "uptime", "version", "node_id", "started_at", "config",
+          "set_state", "shutdown", "watch", "unwatch"}) {
+        server[name] = unavailable;
+    }
+    shield["server"] = server;
+}
+#endif
+
 void register_http_api(sol::table& shield, LuaServiceManager* manager,
                        LuaRuntime* runtime) {
     sol::state_view lua(shield.lua_state());
@@ -3033,6 +3369,12 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_player_api(shield, manager);
 #else
     register_player_stub_api(shield, lua);
+#endif
+
+#ifdef SHIELD_ENABLE_SERVER
+    register_server_api(shield, manager, runtime);
+#else
+    register_server_stub_api(shield, lua);
 #endif
 
     lua["shield"] = shield;

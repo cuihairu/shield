@@ -548,6 +548,13 @@ sol::state& LuaRuntime::vm_state(const std::shared_ptr<LuaVM>& vm) {
     return *vm->state();
 }
 
+sol::table LuaRuntime::service_table(const std::shared_ptr<LuaVM>& vm) const {
+    if (!vm) {
+        return sol::nil;
+    }
+    return vm->service_table();
+}
+
 void LuaRuntime::restrict_vm(std::shared_ptr<LuaVM> vm) {
     if (!vm) return;
     sol::state& state = *vm->state();

@@ -14,6 +14,9 @@
 #ifdef SHIELD_ENABLE_PLAYER
 #include "shield/player/player_manager.hpp"
 #endif
+#ifdef SHIELD_ENABLE_SERVER
+#include "shield/server/server_manager.hpp"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <boost/asio/executor_work_guard.hpp>
@@ -199,6 +202,9 @@ struct GlobalState {
 #ifdef SHIELD_ENABLE_PLAYER
     std::unique_ptr<shield::player::PlayerManager> player_manager;
 #endif
+#ifdef SHIELD_ENABLE_SERVER
+    std::unique_ptr<shield::server::ServerManager> server_manager;
+#endif
     bool initialized = false;
 };
 
@@ -240,6 +246,16 @@ void cleanup_failed_initialize() {
         g_state->lua_services.reset();
         g_state->lua_runtime.reset();
         shield::plugin::global_host().shutdown();
+#ifdef SHIELD_ENABLE_SERVER
+        // Mirror the successful-teardown order: halt the timer and drop the
+        // injected callbacks first (they capture lua_services, released
+        // above), then unregister the global.
+        if (g_state->server_manager) {
+            g_state->server_manager->stop();
+        }
+        shield::server::ServerManager::set_global(nullptr);
+        g_state->server_manager.reset();
+#endif
 #ifdef SHIELD_ENABLE_CLUSTER
         // The transport actor lives in the CAF system: unpublish and kill it
         // while the system (and the manager its callbacks point at) are
@@ -346,7 +362,11 @@ bool initialize(const RuntimeConfig& config) {
 #else
     validation_options.player_enabled = false;
 #endif
+#ifdef SHIELD_ENABLE_SERVER
+    validation_options.server_enabled = true;
+#else
     validation_options.server_enabled = false;
+#endif
     validation_options.ops_enabled = false;
 
     std::string validation_error;
@@ -423,6 +443,39 @@ bool initialize(const RuntimeConfig& config) {
     }
 #endif
 
+#ifdef SHIELD_ENABLE_SERVER
+    // Server module: parse its own config section up front (fail fast on a
+    // malformed `server_manager:` block) and install the process-wide state
+    // machine. State truth is C++-side; the Lua facade only reads and
+    // migrates it. mark_ready() below flips the state machine to `running`
+    // once initialization completes.
+    {
+        shield::server::ServerConfig server_config;
+        std::string server_error;
+        if (!shield::server::ServerConfig::from_global_config(&server_config,
+                                                              &server_error) ||
+            !shield::server::validate_server_config(server_config,
+                                                    &server_error)) {
+            SHIELD_LOG_ERROR(log, "Invalid server config: " + server_error);
+            cleanup_failed_initialize();
+            return false;
+        }
+        g_state->server_manager =
+            std::make_unique<shield::server::ServerManager>(server_config);
+#ifdef SHIELD_ENABLE_CLUSTER
+        if (g_state->cluster_manager) {
+            g_state->server_manager->set_locality(
+                g_state->cluster_manager->node_id());
+        }
+#endif
+        g_state->server_manager->set_version_fallback(
+            shield::config::get("app.version", ""));
+        shield::server::ServerManager::set_global(
+            g_state->server_manager.get());
+        SHIELD_LOG_INFO(log, "Server subsystem initialized");
+    }
+#endif
+
     // Initialize CAF actor system
     initialize_caf_types();
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -480,6 +533,48 @@ bool initialize(const RuntimeConfig& config) {
     g_state->lua_runtime = std::make_unique<shield::lua::LuaRuntime>();
     g_state->lua_services = std::make_shared<shield::lua::LuaServiceManager>(
         *g_state->lua_runtime, *g_state->actor_system);
+
+#ifdef SHIELD_ENABLE_SERVER
+    // Wire the server state machine to the runtime it drives:
+    // - notify_fn delivers state changes to watcher services over the
+    //   system-message channel (send() rejects reserved on_* methods, so
+    //   the bridge uses send_system, same as the gateway hook path). A gone
+    //   service auto-unregisters; "runtime is stopping" keeps watching.
+    // - stop_request_fn is the same cooperative stop the signal handlers
+    //   invoke (shutdown(ms) handover, OD-017).
+    // The capture is a raw pointer: a shared_ptr copy here would keep the
+    // manager alive past shutdown()'s explicit release order
+    // (lua_services -> lua_runtime), and destroying that last reference
+    // later — when stop() clears this callback — would re-run
+    // ~LuaServiceManager against the already-freed runtime (ASan-verified).
+    // stop() joins the shutdown timer before clearing the callbacks, so
+    // neither can run after the pointer stops being valid.
+    {
+        auto* services = g_state->lua_services.get();
+        g_state->server_manager->set_notify_fn(
+            [services](
+                const std::string& service_id,
+                const std::string& state_name) -> shield::server::Delivery {
+                if (!services->service_vm(service_id)) {
+                    return shield::server::Delivery::kGone;
+                }
+                std::string error;
+                if (!services->send_system(service_id, "on_server_state_change",
+                                           nlohmann::json::array({state_name}),
+                                           &error)) {
+                    // Transient runtime teardown: keep the watcher so a
+                    // restart of the runtime (or the remaining drain window)
+                    // still sees later transitions.
+                    return error == "runtime is stopping"
+                               ? shield::server::Delivery::kRetryable
+                               : shield::server::Delivery::kGone;
+                }
+                return shield::server::Delivery::kOk;
+            });
+        g_state->server_manager->set_stop_request_fn(
+            []() { shield::request_stop(); });
+    }
+#endif
 
 #ifdef SHIELD_ENABLE_CLUSTER
     // M3: local service-name publications become cluster routes. The
@@ -968,6 +1063,14 @@ bool initialize(const RuntimeConfig& config) {
         // GCOVR_EXCL_STOP
     }
 
+#ifdef SHIELD_ENABLE_SERVER
+    // Init complete: flip the server state machine to `running` (the
+    // uptime/started_at origin) before the runtime is marked initialized.
+    if (g_state->server_manager) {
+        g_state->server_manager->mark_ready();
+    }
+#endif
+
     g_state->initialized = true;
     SHIELD_LOG_INFO(log, "Shield runtime initialized");
     return true;
@@ -1103,6 +1206,18 @@ void shutdown() {
     // was already stopped by shutdown_all above.
     shield::player::PlayerManager::set_global(nullptr);
     g_state->player_manager.reset();
+#endif
+#ifdef SHIELD_ENABLE_SERVER
+    // Halt the shutdown timer and clear the notify/stop callbacks BEFORE
+    // releasing the manager: the timer body reads the stop callback under
+    // the manager lock, and the notify callback captures lua_services
+    // (released above). stop() joins the timer, so nothing can fire into
+    // the teardown.
+    if (g_state->server_manager) {
+        g_state->server_manager->stop();
+    }
+    shield::server::ServerManager::set_global(nullptr);
+    g_state->server_manager.reset();
 #endif
     g_state->actor_system.reset();
 #ifdef SHIELD_ENABLE_CLUSTER

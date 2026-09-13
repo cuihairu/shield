@@ -63,6 +63,9 @@ struct DispatchFrame {
     std::string trace_id;
     int64_t deadline_ms = 0;
     bool in_exit = false;
+    // Set by the spawn scope only: during on_init the service is not yet
+    // in the registry, so current_service_vm() needs the frame's VM.
+    std::shared_ptr<LuaVM> vm;
 };
 
 thread_local std::vector<DispatchFrame> tls_dispatch_stack;
@@ -957,6 +960,21 @@ struct LuaServiceManager::Impl {
         return tls_dispatch_stack.back().sender_id;
     }
 
+    std::shared_ptr<LuaVM> current_service_vm() const {
+        if (!tls_dispatch_stack.empty()) {
+            if (auto& vm = tls_dispatch_stack.back().vm) {
+                return vm;
+            }
+        }
+        const std::string id = current_service_id();
+        if (id.empty()) {
+            return nullptr;
+        }
+        std::shared_lock lock(registry_mutex);
+        auto it = services.find(id);
+        return it != services.end() ? it->second : nullptr;
+    }
+
     std::string current_trace_id() const {
         if (tls_dispatch_stack.empty()) {
             return "";
@@ -990,7 +1008,8 @@ struct LuaServiceManager::Impl {
     public:
         DispatchScope(Impl& impl, std::string service_id, std::string sender_id,
                       bool in_exit, std::string trace_id = "",
-                      int64_t deadline_ms = 0)
+                      int64_t deadline_ms = 0,
+                      std::shared_ptr<LuaVM> scope_vm = nullptr)
             : impl_(impl), service_id_(service_id) {
             tls_dispatch_stack.push_back({
                 std::move(service_id),
@@ -998,6 +1017,7 @@ struct LuaServiceManager::Impl {
                 std::move(trace_id),
                 deadline_ms,
                 in_exit,
+                std::move(scope_vm),
             });
         }
 
@@ -1464,7 +1484,8 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         bool exit_after_init = false;
         std::string exit_reason;
         {
-            Impl::DispatchScope scope(*impl_, service_name, "", false);
+            Impl::DispatchScope scope(*impl_, service_name, "", false, "", 0,
+                                      vm);
             // on_init runs as a coroutine so it may yield inside
             // shield.sleep / shield.call: the spawn waits on the external
             // waiter while the runtime resumes the coroutine. The spawn
@@ -2338,6 +2359,10 @@ std::shared_ptr<LuaVM> LuaServiceManager::service_vm(
     std::shared_lock lock(impl_->registry_mutex);
     auto it = impl_->services.find(std::string(service_id));
     return it != impl_->services.end() ? it->second : nullptr;
+}
+
+std::shared_ptr<LuaVM> LuaServiceManager::current_service_vm() const {
+    return impl_->current_service_vm();
 }
 
 std::string LuaServiceManager::current_sender_id() const {

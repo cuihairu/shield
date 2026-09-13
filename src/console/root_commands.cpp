@@ -5,10 +5,14 @@
 #include <nlohmann/json.hpp>
 
 #include "cluster_status.hpp"
+#include "server_status.hpp"
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/plugin/plugin_host.hpp"
+#ifdef SHIELD_ENABLE_SERVER
+#include "shield/server/server_manager.hpp"
+#endif
 
 namespace shield::console {
 
@@ -40,6 +44,9 @@ void RootCommands::register_all(CommandDispatcher& dispatcher) {
     dispatcher.register_command(
         "root.cluster", "Show cluster node status",
         [this](auto& s, auto& a) { cmd_cluster(s, a); });
+    dispatcher.register_command("root.server",
+                                "Show server state machine status",
+                                [this](auto& s, auto& a) { cmd_server(s, a); });
     dispatcher.register_command(
         "root.log.level",
         "Get or set log level (root.log.level [debug|info|warn|error])",
@@ -107,6 +114,16 @@ void RootCommands::cmd_status(shield::net::ConsoleSession& session,
         auto* cm = shield::cluster::global_cluster_manager();
         if (cm) {
             data["cluster"] = build_cluster_status_json();
+        }
+    }
+#endif
+
+    // Server state machine (thread-safe, may be null)
+#ifdef SHIELD_ENABLE_SERVER
+    {
+        auto* sm = shield::server::ServerManager::global();
+        if (sm) {
+            data["server"] = build_server_status_json();
         }
     }
 #endif
@@ -302,6 +319,26 @@ void RootCommands::cmd_cluster(shield::net::ConsoleSession& session,
 #else
     nlohmann::json resp = {{"type", "error"},
                            {"message", "Cluster not compiled"}};
+    session.send_line(resp.dump());
+#endif
+}
+
+void RootCommands::cmd_server(shield::net::ConsoleSession& session,
+                              const std::vector<std::string>& /*args*/) {
+#ifdef SHIELD_ENABLE_SERVER
+    auto* sm = shield::server::ServerManager::global();
+    if (!sm) {
+        nlohmann::json resp = {{"type", "error"},
+                               {"message", "Server not enabled"}};
+        session.send_line(resp.dump());
+        return;
+    }
+    nlohmann::json resp = {{"type", "result"},
+                           {"data", build_server_status_json()}};
+    session.send_line(resp.dump());
+#else
+    nlohmann::json resp = {{"type", "error"},
+                           {"message", "Server not compiled"}};
     session.send_line(resp.dump());
 #endif
 }

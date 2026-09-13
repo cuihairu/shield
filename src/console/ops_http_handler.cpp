@@ -13,6 +13,11 @@
 #include "shield/cluster/cluster_manager.hpp"
 #endif
 
+#ifdef SHIELD_ENABLE_SERVER
+#include "server_status.hpp"
+#include "shield/server/server_manager.hpp"
+#endif
+
 namespace shield::console {
 
 OpsHttpHandler::OpsHttpHandler(shield::lua::LuaServiceManager& lua_mgr,
@@ -104,6 +109,16 @@ shield::net::HttpResponse OpsHttpHandler::handle_status(
         auto* cm = shield::cluster::global_cluster_manager();
         if (cm) {
             data["cluster"] = build_cluster_status_json();
+        }
+    }
+#endif
+
+    // Server state machine (read-only snapshot)
+#ifdef SHIELD_ENABLE_SERVER
+    {
+        auto* sm = shield::server::ServerManager::global();
+        if (sm) {
+            data["server"] = build_server_status_json();
         }
     }
 #endif
