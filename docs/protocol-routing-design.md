@@ -25,7 +25,7 @@ client bytes
   -> session 单一 target 绑定
   -> ClientIngress(typed, 携带可信 client 上下文)          [M3]
   -> target Service: route_id -> 启动期编译的 Lua binding
-  -> Lua handler(ClientContext, request)
+  -> Lua handler(ctx, ClientContext, request)
 ```
 
 这不是“Gateway 业务分发”：Gateway 不知道 Lua handler、schema 或具体 codec，
@@ -110,7 +110,7 @@ socket bytes
   -> CAF ClientIngress（typed，含可信 client 上下文） [M3]
   -> target VM: route_id -> 启动期编译的 binding
   -> request decode（profile body codec）
-  -> handler(ClientContext, decoded request)
+  -> handler(ctx, ClientContext, decoded request)
 ```
 
 Gateway 的 edge validation 只使用 descriptor 投影出的轻量元数据；它不解

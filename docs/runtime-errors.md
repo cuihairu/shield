@@ -118,7 +118,33 @@ Redis 系插件 namespace（如 `shield.cache.redis(...)`、`shield.queue.redis(
 | `connection_limit` | 连接数达到上限 | 是 | ✅ TcpListener::do_accept 检查 |
 | `ip_limit` | 单 IP 连接数达到上限 | 否 | ✅ TcpListener::do_accept 检查 |
 
-## 六、错误处理建议
+## 六、shield_player 错误
+
+`shield.player.*` 门面与 player 会话状态机产生的错误(runtime-player.md
+"shield_player 模块契约(P0)")。除 guard 的 `not_ready` 以 bool + code 返回外,
+其余均以 `nil + 错误对象` 形态返回;guard 拒绝与 gateway 入站校验失败同形态
+(丢帧 + warn + 计数,不回写错误帧)。
+
+| 错误码 | 说明 | retryable | 状态 |
+|--------|------|-----------|------|
+| `module_unavailable` | SHIELD_ENABLE_PLAYER 未编译;每个 `shield.player.*` 入口都返回 | 否 | ✅ register_player_stub_api |
+| `setup_invalid` | setup 缺少必填钩子或参数形状非法 | 否 | ✅ impl.setup 校验 |
+| `auth_failed` | auth hook 拒绝,或未产出非空 string player_id | 否 | ✅ impl.authenticate 第 1 步 |
+| `anonymous_disabled` | auth 结果带 anonymous 但配置未开启 | 否 | ✅ impl.authenticate 第 2 步 |
+| `spectator_disabled` | auth 结果带 spectator 但配置未开启 | 否 | ✅ impl.authenticate 第 2 步 |
+| `already_online` | PlayerManager admit:该 uid 已有在线会话(默认单设备踢旧) | 否 | ✅ PlayerManager::admit |
+| `too_many_devices` | multi 设备策略下超出 player.max_devices | 否 | ✅ PlayerManager::admit |
+| `instance_script_required` | authenticate 未配置 opts.instance_script 无法 spawn 实例 | 否 | ✅ impl.authenticate 第 4 步 |
+| `invalid_player_ref` | push/resolve 目标既不是 uid 字符串也不是合法 PlayerRef | 否 | ✅ impl.push / resolve |
+| `player_not_found` | resolve:ref 已失效;push:uid 不由本服务承载 | 否 | ✅ PlayerManager::get / impl.push |
+| `remote_resolve_unimplemented` | resolve 收到跨节点 ref(P0 仅本地) | 否 | ✅ resolve |
+| `not_ready` | client_message guard:会话未到 ready,消息丢帧 + 计数 | 否 | ✅ `__shield_player_guard` |
+| `rejected` | client_message 业务 hook 拒绝且未给 code 时的兜底 | 否 | ✅ `__shield_player_guard` |
+| `offline_queue_full` | 离线队列超过 player.message_queue_limit(默认 64) | 是 | ✅ impl.push |
+| `push_route_not_found` | push 目标 route 无 s2c helper | 否 | ✅ impl.push |
+| `persistence_save_failed` | player_save 抛错;按 player.on_save_error 记 warn 或 panic | 是 | ✅ defaults.save |
+
+## 七、错误处理建议
 
 ### 重试策略
 

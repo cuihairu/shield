@@ -81,6 +81,11 @@ Lua 侧约定：`Bound` → `on_client_bound(ctx, client)`，`Disconnected` →
 `on_disconnect(ctx, client, reason)`，`Unbound` →
 `on_client_unbound(ctx, client, reason)`，`Reconnected` 预留（当前警告并丢弃）。
 
+> 玩家重连窗口不经由 `Reconnected` 控制消息：`shield_player` 在认证路径内
+> 识别同 uid 的存活会话并 restore（复用实例、按序 flush 离线队列），
+> 见 [runtime-player.md](./runtime-player.md) 与 [lua-api.md](./lua-api.md)
+> "Player API"。
+
 ### ClientEgress
 
 服务端发送 response/push 到 Gateway 时使用：

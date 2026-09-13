@@ -194,7 +194,7 @@ Shield 的公共契约按“谁拥有、谁定义、谁测试”分配：
 - Service 是唯一可寻址 actor 单元，`shield.send/call` 的 target 只能是 `ServiceHandle` 或可解析为 Service 的名称。
 - 裸 `Session`/连接句柄永远不进入业务 Lua；业务侧只接触只读 `ClientContext`/`ClientRef`（值语义标记可跨服务序列化并物化为只读 userdata）。
 - `ClientRef` 可以跨 Service/进程序列化，但只能用于客户端回包、关闭和动态路由操作，不能作为 actor target。
-- 玩家状态是 PlayerService 私有 Lua table；不建立 PlayerSession、PlayerRef、Entity mailbox 或第二套 RPC runtime。
+- 玩家状态是 PlayerService 私有 Lua table；不建立 Entity mailbox 或第二套 RPC runtime。`PlayerSession`/`PlayerRef` 只是 `shield_player` 模块层会话对象与值引用，不是 actor，也没有自己的 mailbox/RPC。
 - 客户端 RPC 使用 `ClientIngress/ClientEgress` 内部消息；普通 Service RPC 使用 `MessageEnvelope`，二者不混成字符串消息。
 - `BootstrapContext` 只存在于启动阶段；`RuntimeSnapshot` 只读。
 
@@ -455,7 +455,7 @@ Egress:  server RPC helper -> encode body -> ClientEgress -> Gateway -> header.r
 - Gateway Lua 通用客户端消息回调和 Lua 二次 route dispatch
 - 通用 session 发送 API
 - 静态 `route_id -> actor id` 配置
-- PlayerSession、远程 PlayerRef resolve 与 Entity-like 玩家 runtime
+- Entity-like 玩家 runtime 与远程 PlayerRef resolve（模块内 `PlayerSession`/`PlayerRef` 见 [玩家运行时语义](runtime-player.md)）
 - 旧 `shield.db.*` / `shield.redis.*` 全局数据 API，包括冒号式 `shield.db:query(...)` / `shield.redis:get(...)`
 
 插件系统 v1 的 `shield.plugin.*` 是新的扩展机制入口，提供 package/instance/binding introspection 与 plugin manifest 驱动的能力注册（数据库/缓存/队列/监控等）。认证/JWT 属于业务层策略，不作为 Shield 官方插件发布。它与上方"旧 Lua 插件执行模型（v0）"是两套独立设计：v0 已永久删除，v1 的权威契约见 [插件系统](plugin-system.md)。

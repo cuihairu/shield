@@ -68,7 +68,7 @@ socket bytes
   -> target Service actor mailbox
   -> route_id -> 启动期编译的 Lua binding
   -> decode body by profile body codec
-  -> invoke handler(ClientContext, request)
+  -> invoke handler(ctx, ClientContext, request)
 ```
 
 Gateway 在选择目标 actor 前不得解普通业务 body。这样 header `route_id` 才能用于快速转发，也避免 Gateway 依赖所有业务 schema。

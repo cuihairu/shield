@@ -780,7 +780,7 @@ s2c 路由则在同一时刻把 `shield.client_rpc.<binding>` helper 注册进�
 local M = {}
 local state
 
-function M.move(client, request)
+function M.move(ctx, client, request)
     assert(client:player_id() == state.player_id)
 
     state.position = {
@@ -806,18 +806,18 @@ runtime 热路径只做 `route_id -> cached function`,不按字符串反射查 m
 客户端 RPC handler 的固定参数是:
 
 ```text
-handler(ClientContext, decoded RPC arguments)
+handler(ctx, ClientContext, decoded RPC arguments)
 ```
 
 > **实现状态(M3)**:入站与出站均为最终形态。Gateway 将校验过的入站打包为
 > typed `ClientIngress` CAF 消息发送到 session 当前 target 的 actor;目标 VM
-> 按 spawn 期编译的 route 表以 `handler(client, request)` 直接分发(热路径
+> 按 spawn 期编译的 route 表以 `handler(ctx, client, request)` 直接分发(热路径
 > 只做 `route_id -> cached function`)。身份与出站:`ClientContext`/`ClientRef`
 > 只读 userdata、`shield.client.bind/close`、按 descriptor 自动注册的
 > `shield.client_rpc.<name>` helper 均已可用。
 
 如果该 RPC 的 request schema 生成单个 request table,则 Lua 形态为
-`handler(client, request)`;若生成多个参数,则按生成契约传入。route、header、codec
+`handler(ctx, client, request)`;若生成多个参数,则按生成契约传入。route、header、codec
 和原始 body 都不是业务参数。
 
 ### ClientContext 与 ClientRef
@@ -898,7 +898,7 @@ helper 在 spawn 期绑定 s2c `route_id`(第一个参数接受 `ClientContext` 
 
 ```lua
 -- auth 服务:routed login(c2s descriptor binding = "login")
-function M.login(client, request)
+function M.login(ctx, client, request)
     local player_id = authenticate(request)
     if not player_id then
         return {code = "auth_failed"}
@@ -1109,6 +1109,117 @@ shield.httpd.patch("/api/users/:id", function(req) end)
 <summary>实现快照（点击展开）</summary>
 
 基于 Boost.Beast 的 `HttpServer` 提供 HTTP 服务。`shield.httpd.*` 将路由保存到 `LuaRuntime` 的注册表，bootstrap 的 `LuaHttpBridge` 把路由镜像进 `HttpServer`；请求经 `enqueue_forked_task` 派发到注册服务的 actor 线程上执行 Lua handler（与普通服务消息同一条串行派发路径，无 VM 竞争）。支持 `:param` 路径参数（如 `/api/users/:id`，通过 `req.params` 访问），`req` 携带 `method/path/query/params/headers/body`。handler 返回 `nil`（204）、字符串（text/plain）或 `{status, body, headers}` table（body 为 table 时 JSON 序列化）。要求在 `http.enabled: true` 时生效，且必须在服务上下文中注册（裸 VM 中调用会抛错）。
+
+</details>
+
+---
+
+## Player API
+
+`shield.player` 是可选模块 `shield_player` 提供的玩家会话门面
+（`SHIELD_ENABLE_PLAYER` 编译开关）。业务不直接操作 socket 或 session 表，
+而是通过 `shield.player.setup(M, opts)` 一次性声明钩子，框架负责
+认证、状态机（connecting → authenticating → online → ready）、
+客户端消息准入、离线推送队列与重连窗口。
+
+模块未编译时每个 `shield.player.*` 入口返回 `nil + {code="module_unavailable"}`,
+而不是 nil 字段。
+
+### setup 与钩子
+
+```lua
+local M = {}
+
+-- 必填钩子（缺任一 setup 失败: nil + {code="setup_invalid"}）
+function M.auth(ctx, client, request)
+    -- 校验 request,返回 true, player_id 或 {player_id = ...}
+    return true, request.player_id
+end
+
+function M.login(ctx, client, auth_result) end
+function M.client_message(ctx, client, route_name, request)
+    -- 返回 false, code 即拒绝该消息(丢帧 + warn + 计数)
+    return true
+end
+function M.disconnect(ctx, client, reason) end
+function M.logout(ctx, client, reason) end
+
+-- 可选钩子(未提供时框架执行文档化默认实现;覆盖后默认不自动执行,
+-- 需要保留时显式调用 shield.player.defaults.*)
+function M.ready(ctx, client)
+    return shield.player.defaults.ready(ctx, client)
+end
+
+local player = shield.player.setup(M, {
+    instance_script = "scripts/player_instance.lua",  -- 每玩家实例脚本
+    instance_routes  = { ... },                       -- 实例 VM 的 s2c 路由
+})
+
+-- 认证入口(在 pre-login 路由 handler 内调用)
+local ok, client_ref = player:authenticate(ctx, client, request)
+```
+
+| 规则 | 说明 |
+| --- | --- |
+| 钩子签名 | 所有钩子首参为 dispatch ctx,随后是 client 与业务参数 |
+| 认证流程 | auth hook → anonymous/spectator 开关 → PlayerManager 准入(单设备踢旧/多设备上限) → spawn `player_<uid>` 实例 → `shield.client.bind` |
+| 重连窗口 | 断开后 `player.reconnect_window_ms`(默认 30000)内同 uid 登录复用实例,按序 flush 离线队列;超时 logout(reason="timeout") |
+| 客户端消息 | ready 前到达的业务消息被 guard 丢弃(`not_ready` 计数);ready 后先过 `M.client_message` |
+| 离线推送 | `player:push` 在线直发 s2c helper,离线入队(上限 `player.message_queue_limit` 默认 64,满则 `offline_queue_full`) |
+| 跨服务传值 | 只传 PlayerRef / ClientContext / ClientRef,不传整个会话对象 |
+
+### 门面方法(setup 返回值)
+
+| 方法 | 说明 |
+| --- | --- |
+| `player:authenticate(ctx, client, request)` | 完整认证闭环;成功返回 `true, 新鲜 ClientRef` |
+| `player:push(target, route_name, payload)` | s2c 推送;target 为 uid 字符串或 PlayerRef |
+| `player:set_data(key, value)` / `player:get_data(key)` | 实例内存状态(persistence 白名单字段之外不落盘) |
+| `player:session()` | 只读快照 `{uid, state, device_id, service_id}` 或 nil |
+| `player:logout(reason)` | 主动登出:unregister + logout hook + save |
+
+### 模块级函数
+
+| 函数 | 说明 |
+| --- | --- |
+| `shield.player.resolve(ref)` | PlayerRef → 会话快照;失效 `player_not_found`,跨节点 `remote_resolve_unimplemented` |
+| `shield.player.get(uid)` | 等价 `manager.get` |
+| `shield.player.config()` | 生效配置快照(扁平键,如 `message_queue_limit`) |
+| `shield.player.stats()` | `{rejected_not_ready, rejected_by_guard, offline_dropped}` 计数 |
+| `shield.player.now_ms()` | 单调毫秒时钟 |
+| `shield.player.node_info()` | `{node_id, epoch}`(epoch 为十进制字符串,uint64 不走 Lua double) |
+| `shield.player.defaults.allow/ready/reconnect/save` | 默认钩子实现,业务覆盖后显式调用 |
+
+### manager(uid 索引操作)
+
+`shield.player.manager.admit / register_session / mark_disconnected /
+mark_reconnected / get / get_devices / set_state / size / unregister` 暴露
+C++ PlayerManager 的原语(测试与运维用;业务认证走 `authenticate`)。
+
+### PlayerRef 与 ClientContext 的访问契约
+
+两类只读 userdata 的访问面不同,跨服务传值经 marker JSON 往返:
+
+| 类型 | 访问形式 | 字段/方法 |
+| --- | --- | --- |
+| PlayerRef(`ref.uid`) | **属性式**(record-like) | `uid / node_id / service_id / epoch` |
+| ClientContext / ClientRef(`client:player_id()`) | **方法式** | `player_id / session_id / session_epoch / protocol_profile_id / gateway`(`client.ref` 亦为方法 `client:ref()`) |
+
+错误码清单见 [错误码参考](./runtime-errors.md) "六、shield_player 错误";
+模块契约详见 [runtime-player.md](./runtime-player.md)。
+
+<details>
+<summary>实现快照（点击展开）</summary>
+
+`register_player_api` 在每个 VM 注册 `shield.player` 表;orchestration chunk
+(kPlayerOrchestration)持有 per-VM 的 impl 状态(会话、离线队列、计数)。
+认证准入与状态裁决在 C++ `PlayerManager`(进程级单例,admit 返回
+`admit/kick_old/restore/reject`);ready 真相在 PlayerManager,guard 与
+`player:session()` 都读它。实例 spawn 为 `player_<uid>` 独立服务,断开重连
+窗口内 restore 复用,flush 走新鲜 bind 的 ClientRef(旧 epoch 的 egress 被
+gateway 按 binding epoch 校验丢弃)。PlayerRef 跨服务序列化为
+`__shield_client_ref` / `__shield_player_ref` marker JSON,接收端物化回
+只读 userdata。
 
 </details>
 

@@ -129,7 +129,7 @@ function M.move(ctx, client, request)
     end
 
     -- 处理消息
-    process_move(client, request)
+    process_move(ctx, client, request)
 end
 ```
 

@@ -71,6 +71,8 @@ Shield 的设计约定是：
 
 参见 [实体与组件化草案](runtime-entity.md)（该文已降级为草案/非当前契约）。
 
+**澄清**（shield_player P0 起）：本文禁止的是「可 `send/call` 的 Entity actor」这层第二 runtime。`shield_player` 的 `PlayerSession`（模块持有的会话元数据）与 `PlayerRef`（`{uid, node_id, service_id, epoch}` 值引用）不是 actor：没有 mailbox、没有自己的 RPC/timer/coroutine，不能作为 `shield.send/call` 的 target，因此不在禁止范围内；`player_pool` 分片仍是压测前置的可选策略（OD-012）。
+
 ---
 
 ## AD-04：one-player-one-service 为默认容量模型
@@ -110,12 +112,12 @@ socket bytes
   → Gateway 路由表校验（route_id 合法 + direction + 认证要求）
   → session.target（AuthService 或 PlayerService）
   → CAF send ClientIngress { session_id, epoch, player_id, route_id, body_bytes }
-  → 目标 VM: route_id → cached handler → decode body → invoke handler(client, request)
+  → 目标 VM: route_id → cached handler → decode body → invoke handler(ctx, client, request)
 ```
 
 - Gateway 只读 header 中的 `route_id` 做合法性校验，不解码 body。
 - `body_bytes` 原样传递到目标 VM，由目标 VM 按 RPC schema 解码。
-- handler 签名固定为 `handler(ClientContext, decoded_request)`，不含 route_id 或原始 frame。
+- handler 签名固定为 `handler(ctx, ClientContext, request)`（`ctx` 为 sender 上下文表），不含 route_id 或原始 frame。
 
 **预登录路由**：认证前 session 尚未绑定 PlayerService，预登录 RPC（login、token 验证等）目标为 AuthService，使用同样的 route_id → handler 机制。认证成功后 Gateway 原子切换 session.target = PlayerService。
 

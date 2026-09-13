@@ -37,7 +37,7 @@ local ok, result = shield.call_timeout(3000, "player", "get_info", { id = "1001"
 
 ```lua
 -- auth 服务:login 是 c2s descriptor binding
-function M.login(client, request)
+function M.login(ctx, client, request)
     local player_id = authenticate(request)
     if not player_id then
         return {code = "auth_failed"}

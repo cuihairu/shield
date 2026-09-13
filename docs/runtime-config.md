@@ -411,7 +411,7 @@ Phase 1 只承诺极少量本地热更新：
 | `cluster` | `shield_cluster` | [集群语义](runtime-cluster.md) |
 | `global` | `shield_global` | [全局数据](runtime-global.md) |
 | `ops` | `shield_ops` | [运维语义](runtime-ops.md) |
-| `player` | `shield_player` | [玩家生命周期](runtime-player.md) |
+| `player` / `player_manager` | `shield_player` | [玩家生命周期](runtime-player.md) |
 | `server_manager` | `shield_server` | [服务器状态](runtime-server.md) |
 
 optional module 启用后，由该模块读取并验证自己的配置段。core bootstrap 只负责把未消费的 optional 配置快照传给已启用模块。
