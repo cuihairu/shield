@@ -92,6 +92,13 @@ shield_coverage_test(test_cov_http_bridge2 shield_lua shield_core shield_net CAF
 # integration suites in tests/cluster.
 if(SHIELD_ENABLE_CLUSTER)
     shield_coverage_test(test_cov_cluster shield_cluster shield_lua CAF::core CAF::io)
+    if(SHIELD_ENABLE_PLAYER)
+        # PlayerLuaApiPrimitives keeps the module's manager/resolve/config Lua
+        # faces visible to the merged gcda (this suite runs last).
+        target_link_libraries(test_cov_cluster PRIVATE shield_player)
+        target_compile_definitions(test_cov_cluster
+                                   PRIVATE SHIELD_ENABLE_PLAYER)
+    endif()
 endif()
 
 # The ops HTTP client drains each response until its read deadline, so the

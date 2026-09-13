@@ -255,6 +255,43 @@ BOOST_AUTO_TEST_CASE(BindClosedLoopBindsAndEgresses) {
     BOOST_CHECK_EQUAL(world.stats->binds_ok.load(), 1u);
 }
 
+// The client.ref slot materializes the ClientRefBox face: its methods
+// answer and the egress helper accepts it as the identity argument.
+BOOST_AUTO_TEST_CASE(ClientRefSlotAndMethodFaceWork) {
+    GatewayWorld world;
+    auto auth = world.manager.spawn(TEST_SCRIPTS_DIR + "client_rpc_service.lua",
+                                    auth_opts("auth_ref").dump());
+    BOOST_REQUIRE(auth.success);
+
+    auto session = connect_session(*world.registry, 108);
+    CallResult result = world.manager.call(
+        auth.service_id, "ref_probe",
+        nlohmann::json::array({client_marker("gw", 108, 0, ""), "player-8"}));
+    BOOST_REQUIRE(result.success);
+    const nlohmann::json& value = result.values[0];
+    BOOST_CHECK_EQUAL(value["bound"].get<bool>(), true);
+    BOOST_CHECK_EQUAL(value["sent"].get<bool>(), true);
+    BOOST_CHECK_EQUAL(value["proto"].get<std::string>(), "json");
+    BOOST_CHECK_EQUAL(value["gw"].get<std::string>(), "gw");
+    BOOST_CHECK_EQUAL(value["epoch"].get<uint32_t>(), 1u);
+}
+
+// A marker table (the wire form, no userdata materialization) egresses too.
+BOOST_AUTO_TEST_CASE(MarkerTableEgressesThroughHelper) {
+    GatewayWorld world;
+    auto auth = world.manager.spawn(TEST_SCRIPTS_DIR + "client_rpc_service.lua",
+                                    auth_opts("auth_marker").dump());
+    BOOST_REQUIRE(auth.success);
+
+    auto session = connect_session(*world.registry, 109);
+    CallResult result = world.manager.call(
+        auth.service_id, "marker_egress",
+        nlohmann::json::array({client_marker("gw", 109, 0, ""), "player-9"}));
+    BOOST_REQUIRE(result.success);
+    BOOST_CHECK(wait_until([&]() { return !session->sent_messages().empty(); },
+                           std::chrono::seconds(2)));
+}
+
 BOOST_AUTO_TEST_CASE(StaleReferenceFailsWithEpochExpired) {
     GatewayWorld world;
     auto auth = world.manager.spawn(TEST_SCRIPTS_DIR + "client_rpc_service.lua",

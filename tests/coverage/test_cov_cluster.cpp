@@ -38,6 +38,10 @@
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
+#ifdef SHIELD_ENABLE_PLAYER
+#include "shield/lua/player_ref_box.hpp"
+#include "shield/player/player_manager.hpp"
+#endif
 
 using namespace shield::lua;
 using shield::cluster::ClusterConfig;
@@ -483,6 +487,188 @@ BOOST_AUTO_TEST_CASE(ClusterLuaApiPaths) {
                            "assert(type(epoch) == 'string')\n"
                            "assert(#epoch > 0)"));
 }
+
+// ---------------------------------------------------------------------------
+// ClusterManager unit gaps: the seamless send_remote error, route
+// ---------------------------------------------------------------------------
+// Player Lua API primitives: the manager index operations, the resolve error
+// matrix, and the config snapshot under all three multi-device policies. Runs
+// against a local PlayerManager without a gateway; only compiled when the
+// player module is built in (this suite is the last one to run, so it is what
+// the merged gcda records for these faces).
+// ---------------------------------------------------------------------------
+#ifdef SHIELD_ENABLE_PLAYER
+BOOST_AUTO_TEST_CASE(PlayerLuaApiPrimitives) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::player::PlayerConfig config;
+    config.enabled = true;
+    shield::player::PlayerManager pm(config);
+    shield::player::PlayerManager::set_global(&pm);
+
+    BOOST_CHECK(run_script(lua, R"lua(
+        local P = shield.player
+        local ms = P.now_ms()
+        -- fresh admit allows
+        local d = P.manager.admit('u-cov', 'dev-1', ms)
+        assert(d and d.kind == 'allow')
+        local info = P.node_info()
+        local ref = {uid = 'u-cov', node_id = info.node_id or '',
+                     service_id = 'player_u-cov', epoch = 0}
+        -- every state name round-trips; unknown names fall back to connecting
+        for _, st in ipairs({'connecting', 'online', 'ready', 'anonymous',
+                             'spectator', 'bogus'}) do
+            assert(P.manager.register_session(ref, 'dev-1', st, ms))
+        end
+        local s = P.manager.get('u-cov')
+        assert(s and s.uid == 'u-cov')
+        for _, st in ipairs({'authenticating', 'disconnected', 'online',
+                             'anonymous', 'spectator', 'ready',
+                             'connecting'}) do
+            assert(P.manager.set_state('u-cov', st))
+        end
+        assert(not P.manager.set_state('u-cov', 'nonsense'))
+        assert(#P.manager.get_devices('u-cov') == 1)
+        assert(P.manager.size() >= 1)
+        assert(P.get('u-cov') ~= nil)
+        assert(P.get('ghost-cov') == nil)
+        -- disconnect / reconnect / restore inside the window
+        assert(P.manager.mark_disconnected('u-cov', ms))
+        assert(P.manager.mark_reconnected('u-cov', ms))
+        assert(P.manager.mark_disconnected('u-cov', ms))
+        local d2 = P.manager.admit('u-cov', 'dev-1', ms + 1)
+        assert(d2 and d2.kind == 'restore')
+        -- resolve success and the full error matrix
+        local ok = P.resolve({uid = 'u-cov'})
+        assert(ok and ok.uid == 'u-cov')
+        local function err_of(...)
+            local _, e = ...
+            return type(e) == 'table' and e.code or nil
+        end
+        assert(err_of(P.resolve({})) == 'invalid_player_ref')
+        assert(err_of(P.resolve({uid = ''})) == 'invalid_player_ref')
+        assert(err_of(P.resolve({uid = 'u-cov', node_id = 'node-x'}))
+            == 'remote_resolve_unimplemented')
+        assert(err_of(P.resolve('not-a-ref')) == 'invalid_player_ref')
+        assert(err_of(P.resolve({uid = 'ghost'})) == 'player_not_found')
+        local cfg = P.config()
+        assert(cfg.multi_device == 'single')
+        assert(type(cfg.message_queue_limit) == 'number')
+        assert(type(cfg.persistence) == 'table')
+        -- setup converts a raised error into a returned nil + setup_invalid
+        -- (the opts hook lookup raises through a __index metamethod)
+        local boom = setmetatable({}, {__index = function() error('boom') end})
+        local pv, pe = P.setup({}, boom)
+        assert(pv == nil)
+        assert(pe and pe.code == 'setup_invalid')
+        assert(P.manager.unregister('u-cov') == 'player_u-cov')
+        assert(P.manager.unregister('u-cov') == nil)
+    )lua"));
+
+    // kick_old: a second live device receives the old session's service id.
+    shield::player::PlayerConfig kick_cfg = config;
+    kick_cfg.multi_device = shield::player::MultiDevicePolicy::kKickOld;
+    {
+        shield::player::PlayerManager kick_pm(kick_cfg);
+        shield::player::PlayerManager::set_global(&kick_pm);
+        BOOST_CHECK(run_script(lua, R"lua(
+            local P = shield.player
+            local ms = P.now_ms()
+            local d1 = P.manager.admit('u-kick', 'dev-1', ms)
+            assert(d1 and d1.kind == 'allow')
+            assert(P.manager.register_session(
+                {uid = 'u-kick', node_id = '', service_id = 'player_u-kick',
+                 epoch = 0}, 'dev-1', 'online', ms))
+            local d2 = P.manager.admit('u-kick', 'dev-2', ms)
+            assert(d2 and d2.kind == 'kick_old')
+            assert(d2.code == 'replaced')
+            assert(d2.kicked_service_id == 'player_u-kick')
+            assert(P.config().multi_device == 'kick_old')
+        )lua"));
+        shield::player::PlayerManager::set_global(&pm);
+    }
+
+    // multi: brand-new devices consume quota, known ones re-enter free.
+    shield::player::PlayerConfig multi_cfg = config;
+    multi_cfg.multi_device = shield::player::MultiDevicePolicy::kMulti;
+    multi_cfg.max_devices = 1;
+    multi_cfg.persistence_fields = {"exp", "gold"};
+    {
+        shield::player::PlayerManager multi_pm(multi_cfg);
+        shield::player::PlayerManager::set_global(&multi_pm);
+        BOOST_CHECK(run_script(lua, R"lua(
+            local P = shield.player
+            local ms = P.now_ms()
+            local d1 = P.manager.admit('u-multi', 'dev-1', ms)
+            assert(d1 and d1.kind == 'allow')
+            assert(P.manager.register_session(
+                {uid = 'u-multi', node_id = '', service_id = 'player_u-multi',
+                 epoch = 0}, 'dev-1', 'online', ms))
+            local d2 = P.manager.admit('u-multi', 'dev-new', ms)
+            assert(d2 and d2.kind == 'reject')
+            assert(d2.code == 'too_many_devices')
+            local d3 = P.manager.admit('u-multi', 'dev-1', ms)
+            assert(d3 and d3.kind == 'allow')
+            local cfg = P.config()
+            assert(cfg.multi_device == 'multi')
+            assert(cfg.max_devices == 1)
+            assert(#cfg.persistence.fields == 2)
+            assert(cfg.persistence.fields[1] == 'exp')
+        )lua"));
+        shield::player::PlayerManager::set_global(&pm);
+    }
+
+    // resolve also accepts the read-only PlayerRef userdata directly (the
+    // form a __shield_player_ref marker materializes into).
+    BOOST_CHECK(run_script(lua, R"lua(
+        local P = shield.player
+        local ms = P.now_ms()
+        assert(P.manager.register_session(
+            {uid = 'u-box', node_id = '', service_id = 'player_u-box',
+             epoch = 0}, 'dev-1', 'ready', ms))
+    )lua"));
+    {
+        shield::lua::PlayerRefBox box;
+        box.data.uid = "u-box";
+        box.data.service_id = "player_u-box";
+        lua["__box_ref"] = sol::make_object(lua, box);
+        BOOST_CHECK(run_script(lua, R"lua(
+            local ok, snap = shield.player.resolve(__box_ref)
+            assert(ok and ok.uid == 'u-box')
+            assert(ok.service_id == 'player_u-box')
+        )lua"));
+    }
+
+    // Without a global manager every primitive degrades honestly.
+    shield::player::PlayerManager::set_global(nullptr);
+    BOOST_CHECK(run_script(lua, R"lua(
+        local P = shield.player
+        local d, e = P.manager.admit('u-x', 'dev', 1)
+        assert(d == nil)
+        assert(e and e.code == 'module_unavailable')
+        local r, e2 = P.resolve({uid = 'u-x'})
+        assert(r == nil)
+        assert(e2 and e2.code == 'module_unavailable')
+        assert(P.manager.register_session({}, 'dev', 'online', 1) == nil)
+        assert(P.manager.unregister('u-x') == nil)
+        assert(P.get('u-x') == nil)
+        assert(not P.manager.set_state('u-x', 'online'))
+        assert(not P.manager.mark_disconnected('u-x', 1))
+        assert(not P.manager.mark_reconnected('u-x', 1))
+        assert(#P.manager.get_devices('u-x') == 0)
+        assert(P.manager.size() == 0)
+        assert(next(P.config()) == nil)
+    )lua"));
+}
+#endif  // SHIELD_ENABLE_PLAYER
 
 // ---------------------------------------------------------------------------
 // ClusterManager unit gaps: the seamless send_remote error, route

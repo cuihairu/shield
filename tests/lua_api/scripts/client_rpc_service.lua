@@ -30,6 +30,40 @@ function M.egress(ctx, client, payload)
     return shield.client_rpc.login_result(client, payload)
 end
 
+-- The client.ref slot materializes the ClientRefBox face of the identity:
+-- the egress helper accepts it directly and its method accessors work.
+function M.ref_probe(ctx, client, player_id)
+    local ok, ref = shield.client.bind(client, player_id, "player")
+    if not ok then
+        return {bound = false,
+                code = ref and ref.code or "unknown"}
+    end
+    local r = ref:ref()
+    if not r then return {bound = true, no_ref = true} end
+    local sent = shield.client_rpc.login_result(r, {via = "refbox"})
+    return {bound = true, sent = sent, proto = r:protocol_profile_id(),
+            gw = r:gateway(), epoch = r:session_epoch()}
+end
+
+-- A plain __shield_client_ref marker table also egresses: the path a
+-- payload takes when it crosses a boundary without userdata
+-- materialization.
+function M.marker_egress(ctx, client, player_id)
+    local ok, ref = shield.client.bind(client, player_id, "player")
+    if not ok then return false end
+    -- The marker carries the post-bind epoch: an egress whose context
+    -- trails the live binding is dropped as stale by the gateway.
+    local marker = {__shield_client_ref = true,
+                    gateway_address = ref:gateway(),
+                    session_id = ref:session_id(),
+                    session_epoch = ref:session_epoch(),
+                    player_id = player_id,
+                    protocol_profile_id = ref:protocol_profile_id()}
+    local sent = shield.client_rpc.login_result(marker, {via = "marker"})
+    local direct = shield._client_egress(marker, 1001, {via = "primitive"})
+    return sent == true and direct == true
+end
+
 -- Raw-bytes egress through the generated helper (string payload).
 function M.egress_raw(ctx, client)
     return shield.client_rpc.login_result(client, "raw-bytes")

@@ -1,0 +1,11 @@
+app:
+  name: optional_player_disabled
+
+actors:
+  - name: worker
+    script: smoke_root.lua
+    instances: 1
+
+player:
+  multi_device: single
+  anonymous: false

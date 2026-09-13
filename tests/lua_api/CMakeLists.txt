@@ -51,3 +51,16 @@ shield_lua_api_test(test_lua_api_gateway)
 shield_lua_api_test(test_lua_api_caf_bridge)
 shield_lua_api_test(test_lua_api_clock)
 shield_lua_api_test(test_lua_api_service_messages)
+
+# shield_player LAPI-011 matrix. The module is optional: shield_lua always
+# builds (the Lua surface degrades to the module_unavailable stub), and the
+# test target keeps its two branches in sync with the library's compile
+# shape. The enabled branch exercises the full authenticate closed loop
+# through a real gateway actor, so give it the same headroom as the
+# cluster transport suite.
+shield_lua_api_test(test_lua_api_player)
+if(SHIELD_ENABLE_PLAYER)
+    target_compile_definitions(test_lua_api_player
+        PRIVATE SHIELD_ENABLE_PLAYER)
+    set_tests_properties(test_lua_api_player PROPERTIES TIMEOUT 120)
+endif()

@@ -318,5 +318,29 @@ if(SHIELD_ENABLE_CLUSTER)
     shield_copy_runtime_dlls(test_cluster_transport)
 endif()
 
+# ---------------------------------------------------------------------------
+# Player manager tests (require SHIELD_ENABLE_PLAYER; CI runs them in the
+# cluster job, which enables the module, via the "player" label)
+# ---------------------------------------------------------------------------
+if(SHIELD_ENABLE_PLAYER)
+    add_executable(test_player_manager player/test_player_manager.cpp)
+    target_link_libraries(test_player_manager
+        PRIVATE
+            shield_player
+            shield_config
+            Boost::unit_test_framework
+            Boost::headers
+    )
+    target_include_directories(test_player_manager
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_player_manager COMMAND test_player_manager)
+    set_tests_properties(test_player_manager PROPERTIES
+        # "coverage" so player-enabled coverage builds measure the player
+        # core through this suite (same convention as the cluster suites).
+        LABELS "player;coverage"
+        TIMEOUT 60)
+    shield_copy_runtime_dlls(test_player_manager)
+endif()
+
 # Coverage-focused unit tests (one executable per src/ module).
 add_subdirectory(coverage)

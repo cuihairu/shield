@@ -82,6 +82,34 @@ BOOST_AUTO_TEST_CASE(SpawnFromOnInitUsesSyncPath) {
     BOOST_CHECK_EQUAL(pong.values[0].get<std::string>(), "pong:init_child");
 }
 
+// A spawn opts table whose shape is a plain object (with awkward keys)
+// survives lua_table_to_json: int keys become strings, the boolean key is
+// dropped, and the child still spawns.
+BOOST_AUTO_TEST_CASE(SpawnOptsTableWithMixedKeysStillSpawns) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    nlohmann::json args = {
+        {"child_script", TEST_SCRIPTS_DIR + "spawn_child.lua"}};
+    auto parent = manager.spawn(TEST_SCRIPTS_DIR + "spawn_opts_shape.lua",
+                                opts_for("opts_shape_parent", args).dump());
+    BOOST_REQUIRE(parent.success);
+
+    CallResult got = call_once(manager, parent.service_id, "get_result");
+    BOOST_REQUIRE(got.success);
+    BOOST_CHECK_EQUAL(got.values[0].get<std::string>(), "spawned");
+
+    BOOST_CHECK_EQUAL(manager.query_service("opts_shape_child"),
+                      "opts_shape_child");
+    CallResult pong = call_once(manager, "opts_shape_child", "ping");
+    BOOST_REQUIRE(pong.success);
+    BOOST_CHECK_EQUAL(pong.values[0].get<std::string>(),
+                      "pong:opts_shape_child");
+}
+
 // shield.spawn inside a handler coroutine suspends instead of blocking the
 // caller's service actor: the parent keeps answering messages while the
 // child's slow on_init runs on the spawn worker.
