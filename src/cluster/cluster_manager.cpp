@@ -369,7 +369,8 @@ std::string ClusterManager::check_node_reachable(
         case NodeState::Removed:
             return "node_removed";
     }
-    return "node_offline";
+    return "node_offline";  // GCOVR_EXCL_LINE (every enum value is listed
+                            // above)
 }
 
 int ClusterManager::tick() { return impl_->run_tick(); }
@@ -422,7 +423,7 @@ ClusterConfig parse_cluster_config() {
     }
 
     return cc;
-}
+}  // GCOVR_EXCL_LINE (function-exit arc artifact)
 
 ClusterManager* global_cluster_manager() { return g_cluster_manager; }
 
@@ -443,7 +444,7 @@ std::string node_state_name(NodeState state) {
         case NodeState::Removed:
             return "removed";
     }
-    return "unknown";
+    return "unknown";  // GCOVR_EXCL_LINE (every enum value is listed above)
 }
 
 }  // namespace shield::cluster

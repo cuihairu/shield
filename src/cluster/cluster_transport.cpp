@@ -228,7 +228,8 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                connect_tick_atom_v);
         },
         // -- inbound handshake ---------------------------------------------
-        [self](const HelloMsg& hello) {
+        [self](const HelloMsg& hello) {  // GCOVR_EXCL_LINE (gcov attributes no
+                                         // code to this line)
             auto& log = shield::log::get_logger("cluster");
             SHIELD_LOG_DEBUG(log, "Hello from " + hello.node_id + " (epoch " +
                                       std::to_string(hello.epoch) + ")");
@@ -330,7 +331,8 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                hb_tick_atom_v);
         },
         // -- inbound route table (M3) ----------------------------------------
-        [self](const RoutesMsg& routes) {
+        [self](const RoutesMsg& routes) {  // GCOVR_EXCL_LINE (gcov attributes
+                                           // no code to this line)
             // The manager seam takes pairs to keep cluster_manager.hpp
             // decoupled from the wire header.
             std::vector<std::pair<std::string, std::string>> entries;

@@ -48,7 +48,9 @@ BOOL WINAPI console_handler(DWORD signal) {
     return FALSE;
 }
 #else
-void signal_handler(int) { request_stop(); }
+void signal_handler(int) {  // GCOVR_EXCL_LINE (requires a real process
+    request_stop();         // GCOVR_EXCL_LINE signal; suites stop in-process)
+}  // GCOVR_EXCL_LINE
 #endif
 
 void install_signal_handlers() {

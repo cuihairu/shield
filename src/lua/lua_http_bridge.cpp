@@ -145,14 +145,15 @@ shield::net::HttpResponse LuaHttpBridge::handle(
     nlohmann::json desc;
     try {
         desc = future.get();
-    } catch (const std::exception& e) {
+    } catch (  // GCOVR_EXCL_LINE (broken-promise race guard, see START)
+        const std::exception& e) {  // GCOVR_EXCL_LINE (continuation)
         // GCOVR_EXCL_START (broken-promise race guard: the owning service
         // actor must die between dispatch enqueue and completion, which the
         // deterministic suites cannot hit -- RoutesRemovedWhenServiceExits
         // covers the graceful paths around it)
         return error_response(500, std::string(e.what()));
         // GCOVR_EXCL_STOP
-    }
+    }  // GCOVR_EXCL_LINE
 
     if (desc.contains("lua_error")) {
         return error_response(500, desc["lua_error"].get<std::string>());
