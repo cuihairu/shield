@@ -112,6 +112,7 @@ option(SHIELD_BUILD_EXAMPLES "Build Shield examples" ON)
 option(SHIELD_ENABLE_CLUSTER "Enable cluster support (optional)" OFF)
 option(SHIELD_ENABLE_GLOBAL "Enable global helpers (optional)" OFF)
 option(SHIELD_ENABLE_OPS "Enable ops/diagnostics (optional)" OFF)
+option(SHIELD_ENABLE_PLAYER "Enable player session support (optional)" OFF)
 # DB backend plugins are discovered at runtime; see plugins/*/CMakeLists.txt.
 # Each plugin is a separate shared library so users only ship the DLLs they
 # actually need. SHIELD_BUILD_DB_PLUGINS selects which plugins to build
@@ -493,6 +494,24 @@ if(SHIELD_ENABLE_CLUSTER)
 endif()
 
 # -----------------------------------------------------------------------------
+# shield_player (optional, OFF by default)
+# -----------------------------------------------------------------------------
+if(SHIELD_ENABLE_PLAYER)
+    add_library(shield_player STATIC
+        src/player/player_manager.cpp
+    )
+    target_include_directories(shield_player
+        PUBLIC
+            ${PROJECT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(shield_player
+        PUBLIC shield_base shield_log shield_config
+    )
+    message(STATUS "shield_player: enabled")
+endif()
+
+# -----------------------------------------------------------------------------
 # shield_lua - Lua VM, API bindings, service loader
 # -----------------------------------------------------------------------------
 add_library(shield_lua STATIC
@@ -527,6 +546,11 @@ target_link_libraries(shield_lua
 if(SHIELD_ENABLE_CLUSTER)
     target_link_libraries(shield_lua PRIVATE shield_cluster)
     target_compile_definitions(shield_lua PRIVATE SHIELD_ENABLE_CLUSTER)
+endif()
+
+if(SHIELD_ENABLE_PLAYER)
+    target_link_libraries(shield_lua PRIVATE shield_player)
+    target_compile_definitions(shield_lua PRIVATE SHIELD_ENABLE_PLAYER)
 endif()
 
 # -----------------------------------------------------------------------------
@@ -564,6 +588,11 @@ if(SHIELD_ENABLE_CLUSTER)
     target_compile_definitions(shield_bootstrap PRIVATE SHIELD_ENABLE_CLUSTER)
 endif()
 
+if(SHIELD_ENABLE_PLAYER)
+    target_link_libraries(shield_bootstrap PRIVATE shield_player)
+    target_compile_definitions(shield_bootstrap PRIVATE SHIELD_ENABLE_PLAYER)
+endif()
+
 # -----------------------------------------------------------------------------
 # shield - Main executable
 # -----------------------------------------------------------------------------
@@ -571,6 +600,9 @@ add_executable(shield src/main.cpp)
 target_link_libraries(shield PRIVATE shield_bootstrap)
 if(SHIELD_ENABLE_CLUSTER)
     target_compile_definitions(shield PRIVATE SHIELD_ENABLE_CLUSTER)
+endif()
+if(SHIELD_ENABLE_PLAYER)
+    target_compile_definitions(shield PRIVATE SHIELD_ENABLE_PLAYER)
 endif()
 shield_copy_runtime_dlls(shield)
 
@@ -657,6 +689,15 @@ else()
             "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-cluster-disabled.yaml"
             -DEXPECTED_EXIT_CODE=1
             -DEXPECTED_OUTPUT_REGEX=shield_cluster
+            -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+    )
+endif()
+if(NOT SHIELD_ENABLE_PLAYER)
+    add_test(NAME shield_config_player_requires_module
+        COMMAND ${CMAKE_COMMAND}
+            "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-player-disabled.yaml"
+            -DEXPECTED_EXIT_CODE=1
+            -DEXPECTED_OUTPUT_REGEX=shield_player
             -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
     )
 endif()
@@ -852,6 +893,7 @@ message(STATUS "Optional modules:")
 message(STATUS "  shield_cluster:    ${SHIELD_ENABLE_CLUSTER}")
 message(STATUS "  shield_global:     ${SHIELD_ENABLE_GLOBAL}")
 message(STATUS "  shield_ops:        ${SHIELD_ENABLE_OPS}")
+message(STATUS "  shield_player:     ${SHIELD_ENABLE_PLAYER}")
 message(STATUS "  db plugin mysql:   ${SHIELD_BUILD_DB_PLUGIN_MYSQL}")
 message(STATUS "  db plugin pgsql:   ${SHIELD_BUILD_DB_PLUGIN_POSTGRESQL}")
 message(STATUS "  db plugin sqlite:  ${SHIELD_BUILD_DB_PLUGIN_SQLITE}")

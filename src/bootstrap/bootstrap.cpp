@@ -11,6 +11,9 @@
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/cluster/cluster_transport.hpp"
 #endif
+#ifdef SHIELD_ENABLE_PLAYER
+#include "shield/player/player_manager.hpp"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <boost/asio/executor_work_guard.hpp>
@@ -190,6 +193,9 @@ struct GlobalState {
     std::unique_ptr<shield::cluster::ClusterManager> cluster_manager;
     std::shared_ptr<shield::cluster::ClusterTransport> cluster_transport;
 #endif
+#ifdef SHIELD_ENABLE_PLAYER
+    std::unique_ptr<shield::player::PlayerManager> player_manager;
+#endif
     bool initialized = false;
 };
 
@@ -331,7 +337,11 @@ bool initialize(const RuntimeConfig& config) {
     validation_options.cluster_enabled = false;
 #endif
     validation_options.global_enabled = false;
+#ifdef SHIELD_ENABLE_PLAYER
+    validation_options.player_enabled = true;
+#else
     validation_options.player_enabled = false;
+#endif
     validation_options.server_enabled = false;
     validation_options.ops_enabled = false;
 
@@ -375,6 +385,37 @@ bool initialize(const RuntimeConfig& config) {
         g_state->cluster_manager->start();
         shield::cluster::set_global_cluster_manager(
             g_state->cluster_manager.get());
+    }
+#endif
+
+#ifdef SHIELD_ENABLE_PLAYER
+    // Player module: parse its own config section up front (fail fast on a
+    // malformed `player:` block) and install the process-wide session index.
+    // The manager always exists when the module is compiled in; the Lua-side
+    // setup() is what turns it on for business use.
+    {
+        shield::player::PlayerConfig player_config;
+        std::string player_error;
+        if (!shield::player::PlayerConfig::from_global_config(&player_config,
+                                                              &player_error) ||
+            !shield::player::validate_player_config(player_config,
+                                                    &player_error)) {
+            SHIELD_LOG_ERROR(log, "Invalid player config: " + player_error);
+            cleanup_failed_initialize();
+            return false;
+        }
+        g_state->player_manager =
+            std::make_unique<shield::player::PlayerManager>(player_config);
+#ifdef SHIELD_ENABLE_CLUSTER
+        if (g_state->cluster_manager) {
+            g_state->player_manager->set_locality(
+                g_state->cluster_manager->node_id(),
+                g_state->cluster_manager->node_epoch());
+        }
+#endif
+        shield::player::PlayerManager::set_global(
+            g_state->player_manager.get());
+        SHIELD_LOG_INFO(log, "Player subsystem initialized");
     }
 #endif
 
@@ -1046,6 +1087,12 @@ void shutdown() {
 #ifdef SHIELD_ENABLE_CLUSTER
     shield::cluster::set_global_cluster_transport(nullptr);
     g_state->cluster_transport.reset();
+#endif
+#ifdef SHIELD_ENABLE_PLAYER
+    // The session index dies with the process: every player service actor
+    // was already stopped by shutdown_all above.
+    shield::player::PlayerManager::set_global(nullptr);
+    g_state->player_manager.reset();
 #endif
     g_state->actor_system.reset();
 #ifdef SHIELD_ENABLE_CLUSTER

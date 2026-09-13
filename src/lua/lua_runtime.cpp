@@ -20,6 +20,7 @@
 #include "shield/lua/client_identity.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_service.hpp"
+#include "shield/lua/player_ref_box.hpp"
 #include "shield/plugin/plugin_host.hpp"
 
 namespace shield::lua {
@@ -618,6 +619,19 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
         *out = value.as<const ClientRefBox&>().data.to_json();
         return true;
     }
+#ifdef SHIELD_ENABLE_PLAYER
+    // PlayerRef userdata travels in its marker form (the inverse of the
+    // json_to_lua materialization).
+    if (value.is<PlayerRefBox>()) {
+        const auto& d = value.as<const PlayerRefBox&>().data;
+        *out = nlohmann::json{{"__shield_player_ref", true},
+                              {"uid", d.uid},
+                              {"node_id", d.node_id},
+                              {"service_id", d.service_id},
+                              {"epoch", d.epoch}};
+        return true;
+    }
+#endif
     if (!value.is<sol::table>()) {
         *out = "<unsupported>";
         return false;
@@ -643,19 +657,25 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
     }
 
     if (array_like && max_index == entry_count) {
+        // An unsupported child already wrote the "<unsupported>" sentinel
+        // into its own out slot; embed it in the parent structure instead of
+        // bailing with an unwritten parent (which the caller would read as
+        // null and silently lose the whole return value).
         nlohmann::json array = nlohmann::json::array();
+        bool all_supported = true;
         for (std::size_t i = 1; i <= max_index; ++i) {
             nlohmann::json item;
             if (!lua_to_json(table[static_cast<int>(i)], &item)) {
-                return false;
+                all_supported = false;
             }
             array.push_back(std::move(item));
         }
         *out = std::move(array);
-        return true;
+        return all_supported;
     }
 
     nlohmann::json object = nlohmann::json::object();
+    bool all_supported = true;
     for (const auto& [key, val] : table) {
         sol::object key_obj = key;
         std::string object_key;
@@ -669,12 +689,12 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
 
         nlohmann::json item;
         if (!lua_to_json(val, &item)) {
-            return false;
+            all_supported = false;
         }
         object[object_key] = std::move(item);
     }
     *out = std::move(object);
-    return true;
+    return all_supported;
 }
 
 // Convenience wrapper that returns the JSON value directly.
@@ -1070,8 +1090,14 @@ bool LuaRuntime::invoke_coroutine(
             ++arg_count;
         }
         for (const auto& arg : args) {
-            args_table.add(json_to_lua(lua, arg));
+            sol::object value = json_to_lua(lua, arg);
             ++arg_count;
+            // table::add(nil) appends at objlen+1, which after a deleted
+            // slot reuses the hole and shifts every later argument left; a
+            // JSON null argument must stay a positional hole instead.
+            // raw_set with an explicit key leaves it as one (unpack hands
+            // the callee nil for it, using args.n below as the length).
+            args_table.raw_set(arg_count, value);
         }
         args_table["n"] = arg_count;
 
@@ -1297,6 +1323,50 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
         args_table.add(json_to_lua(lua, ingress.context.to_json()));
         args_table.add(json_to_lua(lua, *ingress.decoded_request));
         args_table["n"] = 3;
+
+#ifdef SHIELD_ENABLE_PLAYER
+        // shield_player client-message guard (runtime-player.md): when the
+        // VM has run shield.player.setup, every authenticated client message
+        // passes through the guard before the compiled route handler. A
+        // rejection (or a guard error) drops the frame with a warning — the
+        // same shape as a gateway ingress validation failure — and never
+        // reaches the handler.
+        sol::object guard_obj = lua["__shield_player_guard"];
+        if (guard_obj.valid() && guard_obj.is<sol::function>()) {
+            std::string route_name =
+                "route_" + std::to_string(ingress.route_id);
+            sol::object names_obj = lua["shield"]["_client_route_names"];
+            if (names_obj.valid() && names_obj.is<sol::table>()) {
+                sol::object name = names_obj.as<sol::table>().get<sol::object>(
+                    static_cast<std::int64_t>(ingress.route_id));
+                if (name.valid() && name.is<std::string>()) {
+                    route_name = name.as<std::string>();
+                }
+            }
+            sol::protected_function guard =
+                guard_obj.as<sol::protected_function>();
+            sol::protected_function_result gr =
+                guard(ctx, args_table[2], route_name, args_table[3]);
+            bool allowed = false;
+            std::string reject_code;
+            if (gr.valid() && gr.return_count() > 0) {
+                allowed = gr.get<bool>(0);
+                if (!allowed && gr.return_count() > 1 &&
+                    gr.get<sol::object>(1).is<std::string>()) {
+                    reject_code = gr.get<std::string>(1);
+                }
+            }
+            if (!allowed) {
+                auto& log = shield::log::get_logger("lua");
+                SHIELD_LOG_WARNING(
+                    log,
+                    "client message dropped by player guard: route=" +
+                        route_name +
+                        (reject_code.empty() ? "" : " code=" + reject_code));
+                return true;
+            }
+        }
+#endif
 
         sol::protected_function factory_pf = lua["__shield_run_handler"];
         sol::protected_function_result fr = factory_pf(handler, args_table);

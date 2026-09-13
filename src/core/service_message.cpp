@@ -38,12 +38,16 @@ std::optional<ClientContextData> ClientContextData::from_json(
         it != json.end() && it->is_string()) {
         data.gateway_address = it->get<std::string>();
     }
-    if (auto it = json.find("session_id");
-        it != json.end() && it->is_number_unsigned()) {
+    // A JSON literal like `999` decodes as a signed integer; accept both
+    // integer flavors (non-negative) so marker identities round-trip.
+    if (auto it = json.find("session_id"); it != json.end() &&
+                                           it->is_number_integer() &&
+                                           it->get<std::int64_t>() >= 0) {
         data.session_id = it->get<uint64_t>();
     }
-    if (auto it = json.find("session_epoch");
-        it != json.end() && it->is_number_unsigned()) {
+    if (auto it = json.find("session_epoch"); it != json.end() &&
+                                              it->is_number_integer() &&
+                                              it->get<std::int64_t>() >= 0) {
         data.session_epoch = it->get<uint32_t>();
     }
     if (auto it = json.find("player_id"); it != json.end() && it->is_string()) {

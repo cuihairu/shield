@@ -893,6 +893,7 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
         {"cluster", "shield_cluster", options.cluster_enabled},
         {"global", "shield_global", options.global_enabled},
         {"player", "shield_player", options.player_enabled},
+        {"player_manager", "shield_player", options.player_enabled},
         {"server_manager", "shield_server", options.server_enabled},
         {"ops", "shield_ops", options.ops_enabled},
     };
