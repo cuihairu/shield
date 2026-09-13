@@ -88,26 +88,6 @@ BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidConfig) {
     force_shutdown();
 }
 
-#ifdef SHIELD_ENABLE_PLAYER
-BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidPlayerConfig) {
-    // An unknown multi_device value fails the player module's own config
-    // parse, which aborts bootstrap before any actor spawns.
-    const fs::path script = echo_script("boot_player_bad.lua");
-    fs::path cfg = write_config(
-        "app:\n  name: bad-player\n"
-        "actors:\n  - name: a\n    script: " +
-        script.string() +
-        "\n"
-        "player:\n"
-        "  multi_device: bogus\n");
-    shield::bootstrap::RuntimeConfig rc;
-    rc.config_files = {cfg.string()};
-    BOOST_CHECK(!shield::bootstrap::initialize(rc));
-    BOOST_CHECK(!shield::bootstrap::is_initialized());
-    force_shutdown();
-}
-#endif
-
 BOOST_AUTO_TEST_CASE(InitializeFailsOnPluginCatalogError) {
     // Two packages with the same manifest id make PluginHost::catalog fail,
     // which aborts initialization at plugin startup.

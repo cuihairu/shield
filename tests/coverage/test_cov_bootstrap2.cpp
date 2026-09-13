@@ -128,4 +128,17 @@ BOOST_AUTO_TEST_CASE(ConsoleServerStartsAndStops) {
 }
 #endif  // !_WIN32
 
+// An actor script that resolves to nothing (not absolute, not under the
+// lua.script_path) falls through to the raw name and fails the spawn.
+BOOST_AUTO_TEST_CASE(InitializeFailsOnMissingActorScript) {
+    ShutdownGuard guard;
+    fs::path cfg = write_config(
+        "app:\n  name: no-script\n"
+        "actors:\n  - name: a\n    script: definitely_missing_cov.lua\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

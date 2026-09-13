@@ -549,6 +549,8 @@ BOOST_AUTO_TEST_CASE(PlayerLuaApiPrimitives) {
         -- resolve success and the full error matrix
         local ok = P.resolve({uid = 'u-cov'})
         assert(ok and ok.uid == 'u-cov')
+        -- a non-numeric epoch string parses to 0 instead of erroring
+        assert(P.resolve({uid = 'u-cov', epoch = 'zz'}))
         local function err_of(...)
             local _, e = ...
             return type(e) == 'table' and e.code or nil
@@ -676,6 +678,8 @@ BOOST_AUTO_TEST_CASE(PlayerLuaApiPrimitives) {
 // parse_cluster_config.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(ManagerUnitGaps) {
+    // No suite owns the global pointer here; assert the getter seam itself.
+    BOOST_CHECK(shield::cluster::global_cluster_manager() == nullptr);
     ClusterConfig config;
     config.enabled = true;
     config.node_id = "cov-units";
@@ -1071,3 +1075,300 @@ BOOST_AUTO_TEST_CASE(LuaRemoteCoroutineCallPaths) {
 
     cluster.manager->set_remote_send_fn(nullptr);
 }
+
+// Caller service exercising the remote-call edge surfaces: the scripted
+// reply round-trip and a bad target shape (suspends, then completes with the
+// stable invalid_target table).
+const char* kRemoteEdgeCallerScript = R"lua(
+local M = {}
+local st = {}
+function M.do_remote(ctx, target, method, payload)
+  local ok, v = shield.call(target, method, payload)
+  st.ok = ok
+  st.v = tostring(v)
+  return ok
+end
+function M.do_bad_target(ctx)
+  local ok, v = shield.call(123, 'x')
+  st.ok = ok
+  st.code = type(v) == 'table' and (v.code or '') or ''
+  return ok
+end
+function M.state(ctx) return st.ok, st.v or '', st.code or '' end
+return M
+)lua";
+
+BOOST_AUTO_TEST_CASE(RemoteCallEdgeReplyPaths) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+    PhantomPeerManager cluster;
+
+    ScriptedSend scripted;
+    scripted.completer = &manager;
+    cluster.manager->set_remote_send_fn(
+        [&scripted](const std::string& node, const std::string& sid,
+                    const std::string& method, const std::string& args,
+                    uint64_t session, int32_t timeout, std::string* err) {
+            return scripted.invoke(node, sid, method, args, session, timeout,
+                                   err);
+        });
+    cluster.manager->register_route("node-b", "svc", "sid-1");
+    shield::cluster::set_global_cluster_manager(cluster.manager.get());
+
+    const auto caller = manager.spawn(
+        write_script("cov_cluster_edge_caller.lua", kRemoteEdgeCallerScript),
+        opts_for("cov_edge_caller"));
+    BOOST_REQUIRE(caller.success);
+
+    scripted.outcome = true;
+    auto fired =
+        manager.call(caller.service_id, "do_remote",
+                     nlohmann::json::array({"node-b:svc", "echo", "hi"}), 5000);
+    BOOST_CHECK(fired.success);
+    BOOST_CHECK(wait_until(
+        [&] {
+            auto state = manager.call(caller.service_id, "state",
+                                      nlohmann::json::array(), 2000);
+            return state.success && state.values.size() >= 2 &&
+                   state.values[1].get<std::string>() == "pong";
+        },
+        std::chrono::milliseconds(5000)));
+
+    auto bad = manager.call(caller.service_id, "do_bad_target",
+                            nlohmann::json::array(), 5000);
+    BOOST_CHECK(bad.success);
+    BOOST_CHECK(wait_until(
+        [&] {
+            auto state = manager.call(caller.service_id, "state",
+                                      nlohmann::json::array(), 2000);
+            return state.success && state.values.size() >= 3 &&
+                   state.values[2].get<std::string>() == "invalid_target";
+        },
+        std::chrono::milliseconds(5000)));
+
+    cluster.manager->set_remote_send_fn(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// LuaServiceManager gap paths: synchronous spawn init failure, unknown call
+// targets, external sync-call initiation failure, the error-value shapes
+// flowing through call_error_message, and proxied-session expiry (hook
+// completion instead of a coroutine resume).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ServiceManagerGapPaths) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // Synchronous spawn whose on_init throws fails with the init message.
+    auto bad = manager.spawn(
+        write_script("cov_gap_bad_init.lua",
+                     "local M = {}\n"
+                     "function M.on_init(args) error('init boom') end\n"
+                     "return M\n"),
+        opts_for("cov_gap_bad"));
+    BOOST_CHECK(!bad.success);
+    BOOST_CHECK(bad.error_message.find("on_init failed") != std::string::npos);
+    BOOST_CHECK(bad.error_message.find("init boom") != std::string::npos);
+
+    // call(): unknown target and unknown actor both report the lookup miss.
+    auto missing =
+        manager.call("ghost:svc", "echo", nlohmann::json::array(), 100);
+    BOOST_CHECK(!missing.success);
+    BOOST_CHECK(missing.error_message.find("service not found") !=
+                std::string::npos);
+
+    // External sync call whose initiate fails on the spot: no session is
+    // left pending and the dispatch error comes straight back.
+    auto dispatch_failed = manager.call_with_session(
+        [](uint64_t, std::string& err) {
+            err = "wire down";
+            return false;
+        },
+        500);
+    BOOST_CHECK(!dispatch_failed.success);
+    BOOST_CHECK_EQUAL(dispatch_failed.error_message, "wire down");
+
+    // Error-value shapes through the sync-call completion path — this is
+    // call_error_message's whole extraction surface.
+    struct ErrShape {
+        const char* want;
+        nlohmann::json values;
+    };
+    const ErrShape shapes[] = {
+        {"123", nlohmann::json::array({123})},  // array, non-string first
+        {"plain", nlohmann::json("plain")},     // bare string
+        {"obj msg", nlohmann::json{{"message", "obj msg"}}},  // object
+        {"call failed", nlohmann::json(3.14)},  // none of the above
+    };
+    for (const auto& shape : shapes) {
+        std::thread worker;
+        auto r = manager.call_with_session(
+            [&](uint64_t session, std::string&) {
+                worker = std::thread([session, values = shape.values,
+                                      &manager]() {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    manager.complete_call(session, false, values);
+                });
+                return true;
+            },
+            2000);
+        BOOST_REQUIRE(worker.joinable());
+        worker.join();
+        BOOST_CHECK(!r.success);
+        BOOST_CHECK_EQUAL(r.error_message, shape.want);
+    }
+
+    // Proxied session expiry: the deadline is the caller timeout plus slack,
+    // so a fabricated "now" past the deadline expires it immediately and the
+    // hook (not a coroutine resume) receives the timeout.
+    const auto start_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    const uint64_t proxied = manager.begin_proxied_call(5000);
+    BOOST_CHECK_NE(proxied, 0u);
+    std::atomic<bool> hook_fired{false};
+    std::atomic<uint64_t> hook_session{0};
+    std::atomic<bool> hook_ok{true};
+    manager.set_proxied_call_hook(
+        [&](uint64_t s, bool ok, const nlohmann::json&) {
+            hook_session = s;
+            hook_ok = ok;
+            hook_fired = true;
+        });
+    int expired = 0;
+    BOOST_CHECK(wait_until(
+        [&] {
+            expired = manager.check_call_timeouts(start_ms + 3600000);
+            return expired > 0;
+        },
+        std::chrono::milliseconds(5000)));
+    BOOST_CHECK_EQUAL(hook_session.load(), proxied);
+    BOOST_CHECK(!hook_ok.load());
+    manager.set_proxied_call_hook(nullptr);
+
+    // The call wrapper's raw-message -> stable-code seam, driven directly
+    // (the resume path feeds it non-table payloads).
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+    BOOST_CHECK(
+        run_script(lua,
+                   "assert(shield._call_error_code('service not found: x') == "
+                   "'service_not_found')\n"
+                   "assert(shield._call_error_code('invalid method m') == "
+                   "'invalid_method')\n"
+                   "assert(shield._call_error_code('coroutine limit') == "
+                   "'coroutine_limit')\n"
+                   "assert(shield._call_error_code('anything else') == "
+                   "'handler_error')\n"));
+
+    // A forked task that raises a Lua error is contained by the coroutine
+    // dispatch and must not take the service actor down.
+    const auto forker =
+        manager.spawn(write_script("cov_gap_fork.lua",
+                                   "local M = {}\n"
+                                   "function M.fire(ctx)\n"
+                                   "  local id = shield.fork(function() "
+                                   "error('fork kaput') end)\n"
+                                   "  return id ~= nil\n"
+                                   "end\n"
+                                   "return M\n"),
+                      opts_for("cov_gap_fork_impl"));
+    BOOST_REQUIRE(forker.success);
+    auto fired_task =
+        manager.call(forker.service_id, "fire", nlohmann::json::array(), 2000);
+    BOOST_REQUIRE(fired_task.success);
+    BOOST_CHECK(fired_task.values[0].get<bool>());
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    auto alive =
+        manager.call(forker.service_id, "fire", nlohmann::json::array(), 2000);
+    BOOST_CHECK(alive.success);
+
+    // shield.call_timeout against a local service that overshoots: the
+    // caller's actor arms the call-timeout driver, the deadline fires, and
+    // the suspended caller resumes with the stable timeout error table.
+    const auto slow = manager.spawn(
+        write_script("cov_gap_slow.lua",
+                     "local M = {}\n"
+                     "function M.on_init(args)\n"
+                     "    local config = (args and args.config) or {}\n"
+                     "    if config.register_alias then\n"
+                     "        shield.register(config.register_alias)\n"
+                     "    end\n"
+                     "    return true\n"
+                     "end\n"
+                     "function M.slow(ctx) shield.sleep(400) return 'done' "
+                     "end\n"
+                     "return M\n"),
+        opts_for("cov_gap_slow_impl",
+                 {{"config", {{"register_alias", "cov_gap_slow"}}}}));
+    BOOST_REQUIRE(slow.success);
+    BOOST_REQUIRE(wait_until(
+        [&] { return !manager.query_service("cov_gap_slow").empty(); },
+        std::chrono::milliseconds(5000)));
+    const auto tcaller = manager.spawn(
+        write_script("cov_gap_tcaller.lua",
+                     "local M = {}\n"
+                     "local st = {}\n"
+                     "function M.fire(ctx)\n"
+                     "  local ok, v = shield.call_timeout(80, 'cov_gap_slow', "
+                     "'slow')\n"
+                     "  st.ok = ok\n"
+                     "  st.code = type(v) == 'table' and (v.code or '') or ''\n"
+                     "  return ok\n"
+                     "end\n"
+                     "function M.state(ctx) return st.ok, st.code or '' end\n"
+                     "return M\n"),
+        opts_for("cov_gap_tcaller_impl"));
+    BOOST_REQUIRE(tcaller.success);
+    auto tfire =
+        manager.call(tcaller.service_id, "fire", nlohmann::json::array(), 5000);
+    BOOST_CHECK(tfire.success);
+    BOOST_CHECK(wait_until(
+        [&] {
+            auto state = manager.call(tcaller.service_id, "state",
+                                      nlohmann::json::array(), 2000);
+            return state.success && state.values.size() >= 2 &&
+                   !state.values[0].get<bool>() &&
+                   state.values[1].get<std::string>() == "timeout";
+        },
+        std::chrono::milliseconds(5000)));
+}
+
+#ifdef SHIELD_ENABLE_PLAYER
+// player.multi_device outside the single|kick_old|multi set is rejected by
+// the flattened-key parse (not silently defaulted).
+BOOST_AUTO_TEST_CASE(PlayerConfigParseRejectsUnknownPolicy) {
+    auto& cfg = shield::config::global_config();
+    const std::string saved = cfg.get_string("player.multi_device", "single");
+    cfg.set("player.multi_device", std::string{"bogus"});
+    shield::player::PlayerConfig parsed;
+    std::string error;
+    BOOST_CHECK(
+        !shield::player::PlayerConfig::from_global_config(&parsed, &error));
+    BOOST_CHECK(error.find("multi_device") != std::string::npos);
+    // The two remaining policy arms of the same parse.
+    cfg.set("player.multi_device", std::string{"multi"});
+    shield::player::PlayerConfig multi_parsed;
+    std::string multi_error;
+    BOOST_CHECK(shield::player::PlayerConfig::from_global_config(&multi_parsed,
+                                                                 &multi_error));
+    BOOST_CHECK(multi_parsed.multi_device ==
+                shield::player::MultiDevicePolicy::kMulti);
+    cfg.set("player.multi_device", std::string{"kick_old"});
+    shield::player::PlayerConfig kick_parsed;
+    std::string kick_error;
+    BOOST_CHECK(shield::player::PlayerConfig::from_global_config(&kick_parsed,
+                                                                 &kick_error));
+    BOOST_CHECK(kick_parsed.multi_device ==
+                shield::player::MultiDevicePolicy::kKickOld);
+    // No unset API: restore the value the other suites expect to read.
+    cfg.set("player.multi_device", saved);
+}
+#endif

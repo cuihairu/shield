@@ -751,6 +751,11 @@ BOOST_AUTO_TEST_CASE(ValidateActorRpcRoutes) {
     expect_invalid(
         actor_cfg(prefix + "        - id: 1\n          binding: \"\"\n"), opts,
         "binding must not be empty");
+    // binding is the one required string: a route without it has nothing to
+    // compile against at spawn time.
+    expect_invalid(
+        actor_cfg(prefix + "        - id: 1\n          name: nobinding\n"),
+        opts, "binding is required");
     expect_invalid(
         actor_cfg(prefix + "        - id: 1\n          name: n1\n          "
                            "owner_service:\n            k: v\n          "

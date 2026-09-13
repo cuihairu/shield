@@ -322,3 +322,21 @@ BOOST_AUTO_TEST_CASE(ClusterGlueHandlesInboundEnvelopes) {
 #endif
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// shield::run returns 1 when bootstrap::initialize rejects the config. With
+// SHIELD_ENABLE_PLAYER an unknown multi_device value fails the player
+// module's own config parse; without it the optional-module presence check
+// rejects the player section. Either way the run aborts with 1. Lives in
+// this suite because it is the last writer of bootstrap.cpp's gcda profile.
+BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidPlayerConfig) {
+    fs::path script =
+        write_temp("shield_cov_shield_badp.lua", "local M = {}\nreturn M\n");
+    fs::path cfg = write_temp("shield_cov_shield_bad_player.yaml",
+                              "app:\n  name: bad-player\n"
+                              "actors:\n  - name: a\n    script: " +
+                                  script.string() +
+                                  "\n"
+                                  "player:\n"
+                                  "  multi_device: bogus\n");
+    BOOST_CHECK_EQUAL(run_args({"--config", cfg.string()}), 1);
+}

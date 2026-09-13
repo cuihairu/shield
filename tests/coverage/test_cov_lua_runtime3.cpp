@@ -200,3 +200,25 @@ BOOST_AUTO_TEST_CASE(CallHttpHandlerInvalidAndLuaError) {
                 std::string::npos);
     fx.runtime.remove_http_routes_for_service("cov3.http");
 }
+
+// A handler returning a non-table value (e.g. a number) is rejected by the
+// result-shape guard with "handler must return a table, string, or nil"
+// before any conversion is attempted.
+BOOST_AUTO_TEST_CASE(CallHttpHandlerNonTableReturnRejectedByShapeGuard) {
+    BareVm fx;
+    sol::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
+    lua.script("function num_handler(ctx, req) return 42 end");
+
+    std::string reg_err;
+    BOOST_CHECK(fx.runtime.register_http_route(
+        fx.vm, "cov3.http", "GET", "/cov3-num", lua["num_handler"], &reg_err));
+
+    auto route = fx.runtime.find_http_route("GET", "/cov3-num", nullptr);
+    BOOST_REQUIRE(route.has_value());
+    nlohmann::json desc;
+    std::string error;
+    BOOST_CHECK(
+        !fx.runtime.call_http_handler(*route, {{"path", "/x"}}, desc, &error));
+    BOOST_CHECK_EQUAL(error, "handler must return a table, string, or nil");
+    fx.runtime.remove_http_routes_for_service("cov3.http");
+}

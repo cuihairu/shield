@@ -16,6 +16,7 @@
 using shield::transport::BodyCodecRegistry;
 using shield::transport::build_protocol_pipeline_from_json;
 using shield::transport::create_body_codec;
+using shield::transport::DecodedBody;
 using shield::transport::DelimiterEnvelope;
 using shield::transport::Endian;
 using shield::transport::EnvelopeConfig;
@@ -1227,3 +1228,77 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineDecodeBeforeDispatchOverridesLazyDecode) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// Header-route envelope + json body codec + raw bytes body: the structured
+// encode path must refuse to write raw bytes as the business message (the
+// route travels in the header, the body must be the decoded message).
+BOOST_AUTO_TEST_CASE(JsonBodyCodecRejectsRawBytesOnHeaderRouteEnvelope) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 7,
+        .direction = RouteDirection::ClientToServer,
+        .codec_id = 1,
+        .schema_id = 0,
+        .debug_name = "cell.raw",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = false},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::IdLen;
+    profile.envelope.endian = Endian::Little;
+    profile.envelope.route_id_bytes = 2;
+    profile.envelope.length_bytes = 2;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Header;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    DecodedBody body;
+    body.route_id = 7;
+    body.bytes = bytes("definitely-not-a-json-message");
+    const auto encoded = pipeline.encode_message(std::move(body));
+    BOOST_CHECK(encoded.empty());
+    BOOST_CHECK(!pipeline.error().empty());
+    BOOST_CHECK_NE(pipeline.error().find("not raw bytes"), std::string::npos);
+}
+
+// An envelope whose header route demands the JSON body codec but carries no
+// message at all encodes as an empty JSON object: absence of bytes is a
+// valid empty document, not an encode failure.
+BOOST_AUTO_TEST_CASE(JsonHeaderRouteEncodesEmptyBodyAsEmptyObject) {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 7,
+        .direction = RouteDirection::ClientToServer,
+        .codec_id = 1,
+        .schema_id = 0,
+        .debug_name = "cell.empty",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = false},
+    });
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::IdLen;
+    profile.envelope.endian = Endian::Little;
+    profile.envelope.route_id_bytes = 2;
+    profile.envelope.length_bytes = 2;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Header;
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    DecodedBody body;
+    body.route_id = 7;
+    const auto encoded = pipeline.encode_message(std::move(body));
+    BOOST_CHECK(!encoded.empty());
+    BOOST_CHECK(pipeline.error().empty());
+    const std::string text(encoded.begin(), encoded.end());
+    BOOST_CHECK_NE(text.find("{}"), std::string::npos);
+}

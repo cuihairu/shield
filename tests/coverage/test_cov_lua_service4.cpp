@@ -309,6 +309,23 @@ BOOST_AUTO_TEST_CASE(ClientIngressAndControlWarnMatrix,
     control.reason = "cov_reconnect";
     caf::anon_send(boom_actor, control);
 
+    // A Bound control for a service that defines no on_client_bound: the
+    // mapped send_system dispatch queues fine (a missing hook is a silent
+    // no-op) and the call itself is dropped inside the VM.
+    ClientControlMessage bound;
+    bound.kind = ClientControlMessage::Kind::Bound;
+    bound.context = ctx;
+    caf::anon_send(bare_actor, bound);
+
+    // A Bound control whose serialized context exceeds kMaxMessageSize: the
+    // mapped send_system dispatch fails payload validation and the queueing
+    // warning fires.
+    ClientControlMessage oversized;
+    oversized.kind = ClientControlMessage::Kind::Bound;
+    oversized.context = ctx;
+    oversized.context.gateway_address = std::string(1024 * 1024 + 64, 'g');
+    caf::anon_send(bare_actor, oversized);
+
     // Give the actor thread a moment to process everything, then tear down.
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     manager.shutdown_all("cov_ingress_matrix");
