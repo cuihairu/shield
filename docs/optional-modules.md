@@ -97,7 +97,7 @@ shield_core
 | `shield_cluster` | 多节点地址语义、远端路由 cache、节点心跳、可选发现 | `shield.cluster.*` + remote `ServiceHandle` routing | `cluster` | `shield_core`，必要 runtime snapshot | 本地 `send/call/query` 行为完全不变 |
 | `shield_global` | 跨进程共享数据、分布式锁、排行榜、队列、限流器、调度 | `shield.global()`、`shield.mutex()`、`shield.rank()` 等 | `global` | 数据插件 binding，可选 `shield_cluster` | 插件 namespace 仍可独立使用 |
 | `shield_player` | 认证、重连、离线消息、PlayerSession、PlayerManager | `shield.player.*`、`PlayerSession`、player hooks | `player`、`player_manager` | `shield_net`、`shield_lua`、数据插件 binding，可选 `shield_global` | gateway 回调和普通 service 语义仍可独立工作 |
-| `shield_server` | 服务器状态、维护模式、关闭广播、运行时信息 | `shield.server()`、`server_manager` service | `server_manager` | `shield_core`，可读 `shield_player` / `shield_global` 状态 | bootstrap 和 service 运行路径不依赖它 |
+| `shield_server` | 服务器状态机、维护模式、关闭交接、状态通知、运行时信息 | `shield.server.*` 门面、ServerManager 进程级单例 | `server_manager` | `shield_core`，可读 `shield_player` / `shield_cluster` 只读快照 | bootstrap 和 service 运行路径不依赖它 |
 | `shield_ops` | metrics、health、console、profile、diagnostics | HTTP/admin endpoints；不提供业务 Lua API | `ops` | runtime snapshot、module status | runtime 正常运行不依赖任何 ops 入口 |
 
 ## 跨模块协作矩阵
@@ -267,14 +267,15 @@ shield.scheduler()
 
 `shield_server` 拥有：
 
-- `shield.server()`
-- `server_manager` service
+- `shield.server.*` Lua 门面（state/uptime/version/node_id/started_at/config/set_state/shutdown/watch/unwatch）
+- ServerManager 进程级单例（非 service，无 mailbox、无 CAF actor）
 
 最终规则：
 
 - `shield_server` 负责服务器级状态，不负责 service runtime 基础语义。
-- `shield_server` 可以触发维护模式和关服流程，但真正的 stop/drain 仍由 bootstrap/core 路径执行。
-- 服务器状态通知是模块能力，不是全局事件总线回归。
+- `shield_server` 可以触发维护模式和关服交接，但真正的 stop/drain 仍由 bootstrap/core 路径执行。
+- 服务器状态通知只投递给显式注册的观察者（system 消息通道），不是全局事件总线回归。
+- 维护模式只提供状态真相；登录准入 gate 由业务层实现。
 
 ### 配置 owner
 
@@ -282,9 +283,9 @@ shield.scheduler()
 
 ### 语义 owner
 
-- server state：`starting/running/maintenance/shutdown`
-- 运行时信息：version、started_at、node_id
-- 状态通知
+- server state：`starting/running/maintenance/shutdown`（迁移校验归 ServerManager）
+- 运行时信息：version、started_at、node_id、uptime
+- 状态通知：watch/unwatch 注册表与投递
 
 ### 不允许的能力
 

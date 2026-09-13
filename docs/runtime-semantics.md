@@ -55,7 +55,7 @@
 | [集群语义](runtime-cluster.md) | 可选 `shield_cluster`：节点发现、远端路由、节点心跳、旧代码处理 |
 | [全局数据](runtime-global.md) | 可选 `shield_global`：GlobalData、跨进程共享数据、分布式锁（重入、续期）、排行榜、限流器、Pub/Sub |
 | [玩家生命周期](runtime-player.md) | 可选 `shield_player`：PlayerSession、PlayerManager、认证、断线重连、离线消息缓存、多设备策略 |
-| [服务器状态](runtime-server.md) | 可选 `shield_server`：ServerManager、服务器状态、运行时信息、状态变更通知 |
+| [服务器状态](runtime-server.md) | 可选 `shield_server`（P0 已落地）：ServerManager 进程级单例、四态状态机、维护模式、`shutdown(ms)` 关闭交接、watch 状态通知、运行时信息 |
 | [运维语义](runtime-ops.md) | 可选 `shield_ops`：运维端点、metrics、健康检查 |
 
 ### 草案与业务模式

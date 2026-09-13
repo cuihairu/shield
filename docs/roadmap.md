@@ -112,7 +112,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 | `shield_plugin` | 当前 CMake target 已存在 | 插件系统 v1 已接入 manifest、instance、binding、C ABI、Lua register_lua 和官方数据插件；host 不链接 DB/Redis 驱动，不存在 `shield_data` target |
 | `shield_lua` | 当前 CMake target 已存在 | module table/on_init/spawn/registry/基础 API 已接入；coroutine-aware sleep/call/timeout/spawn 已实现（异步 spawn 由专用 worker 线程执行 on_init，含 name reserve/publish 与超时补偿退出）；`shield.panic` 已接入 on_panic + exit("panic")；on_error/on_panic/on_exit guard 已实现；客户端 RPC 已接入 typed `ClientIngress`/`ClientEgress` 与只读 `ClientContext`/`ClientRef` userdata（`shield.client.bind/close` + `shield.client_rpc.<name>` helper），`shutdown_all` 支持预算内结构化退出与超时强杀 |
 | `shield_bootstrap` | 当前 CMake target 已存在 | `shield::run` 和 CLI/config smoke tests 已登记在主 CMake |
-| optional modules | CMake 开关存在，默认关闭 | `shield_cluster` M1-M5 已落地：心跳调度、CAF middleman transport（握手/保活/重连）、路由学习（心跳捎带广播）、跨节点 `node:service` send/call 投递与观测指标（详见 runtime-cluster.md）。`shield_global/ops/player/server` 仍未进入实现完成范围 |
+| optional modules | CMake 开关存在，默认关闭 | `shield_cluster` M1-M5 已落地：心跳调度、CAF middleman transport（握手/保活/重连）、路由学习（心跳捎带广播）、跨节点 `node:service` send/call 投递与观测指标（详见 runtime-cluster.md）。`shield_player` P0 已落地：`shield.player.setup` 状态机、多设备裁决、重连窗口、离线推送队列与持久化约定（详见 runtime-player.md）；`shield.player.Base` 语法糖与远端 resolve 留 P2/Phase 2+。`shield_server` P0 已落地：状态机（starting/running/maintenance/shutdown）、维护模式、`shutdown(ms)` 关闭交接、`watch` 状态通知与 ops 只读快照（详见 runtime-server.md）。`shield_global/ops` 仍未进入实现完成范围 |
 
 ## Phase 5: 官方可选模块
 
@@ -125,6 +125,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - `shield_ops`：Prometheus 指标、健康检查、HTTP/console 管理端点、profile。
 - [x] 冻结每个 optional module 的初始化失败策略：默认 fail fast；`shield_cluster` 允许远端连接失败时退化为单节点 unhealthy；未启用却配置 optional 段必须启动失败。
 - [x] 冻结 `shield_player` 文档契约：`shield.player.setup` 主 API 与默认 hook 实现表、persistence adapter 边界、`PlayerRef` 本地/远端边界、anonymous/spectator opt-in 状态、多设备策略、`player_pool` 容量模型和 `shield.player.Base` 语法糖边界。实现仍按 P0/P1/P2 分阶段推进。
+- [x] 落地 `shield_server` P0：进程级 ServerManager 单例、四态状态机与迁移校验、`shield.server` Lua 门面（state/set_state/shutdown/watch）、`shutdown(ms)` 经 `request_stop` 的关闭交接、`/ops/status` server 块与 `root.server` 只读快照（OD-016/OD-017；SIGINT 自动置 shutdown 态留 P1）。
 
 ## 插件系统
 

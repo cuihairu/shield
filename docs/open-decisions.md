@@ -188,6 +188,31 @@
 - 若未来推进 primitives，也应作为高级能力或后置阶段能力，而不是当前默认推荐路径。
 - JWT/Auth 不是基础组件层中心能力，也不作为 Shield 官方插件发布；应由业务层基于基础原语或外部服务实现。
 
+### OD-016 Server State Machine and API Surface
+
+状态：closed。权威文档见 [服务器状态运行时语义](runtime-server.md) 和 [官方可选模块契约](optional-modules.md)。
+
+决策：
+
+- ServerManager 是进程级 C++ 单例（照 PlayerManager：`global()/set_global()`），不是 service：没有 mailbox、没有 CAF actor、不 spawn service、不进入 Starter 编排。
+- 状态机为 `starting → running ⇄ maintenance`、`running/maintenance/starting → shutdown`；`shutdown` 终态；`→ starting` 恒非法；`starting → maintenance` 非法；同值 set 幂等成功且不通知；非法迁移返回错误不崩溃。
+- `starting → running` 由 bootstrap init complete 自动触发（`mark_ready`），不暴露为 API。
+- 配置段只有 `server_manager.{name, info.{name,version,region}}`，全可选；删除草稿的 `enabled`（启用只由编译开关决定）、`state`（初始状态恒为 starting）、`on_state_change`（通知开关由 watch 注册行为表达）字段。
+- 状态观察者注册为 `shield.server:watch(fn)`；投递必须走 system 消息通道（`send_system`）——普通 `send()` 静默拒绝 `on_` 前缀方法，而状态通知方法名属于保留前缀域。回调签名带 dispatch ctx（`fn(ctx, new_state)`），与 handler dispatch 规则一致。
+- 否决"C++ 注册表持有 `sol::function`"方案：会让纯 C++ 的 ServerManager 链接 sol2，破坏可单测性。C++ 注册表只存 `{watch_id, service_id}`；观察者回调由每 VM 的编排层持有并安装转发 handler，观察者 service 退出时按判活自动注销。
+
+### OD-017 Server Shutdown Handover and Maintenance Boundary
+
+状态：closed。权威文档见 [服务器状态运行时语义](runtime-server.md)。
+
+决策：
+
+- `server:shutdown(ms)` 只做三件事：迁移到 `shutdown`、通知观察者、`ms` 毫秒后调用与 SIGINT/SIGTERM 同路径的进程停止请求。它不接管 drain 预算——超时与退出顺序仍归 bootstrap `shutdown.timeout.*`。
+- 重复 `shutdown` 返回 `shutdown_already_scheduled`，不重复计时；计时线程用 `std::jthread` + stop_token，bootstrap 两条清理路径都显式 stop。
+- 维护模式 P0 只提供 `state()` 真相查询；登录准入 gate 由业务 / `shield_player` 层自行实现，core 与 gateway 不感知维护状态。
+- 状态通知回调经 bootstrap 注入的 `notify_fn` 回调进入 messaging 层，ServerManager 不直接依赖 `shield_lua`，避免环形依赖。
+- ops 暴露并入 `/ops/status` 的 `server` 块与 console `root.server` 命令；不设独立 `/ops/server` 端点，不提供 ops 写操作入口。
+
 ## Open Decisions
 
 当前没有仍需设计拍板的基础语义项。后续若发现新的未决问题，先在本节记录，再同步更新对应权威文档。

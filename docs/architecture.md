@@ -107,7 +107,7 @@ Shield 的最终目标是一个**Lua 优先、单节点最小部署清晰、可�
 | `shield_cluster` | 多进程/多机器通信、节点身份、远端路由 cache、节点心跳、可选发现 | `shield_core` 公共 handle/message 语义，必要运行时快照 | 改写本地 registry 规则、把发现机制塞进 core |
 | `shield_global` | 跨进程共享数据、分布式锁、排行榜、队列、限流器、调度 | 数据插件 binding、`shield_cluster`（可选） | 直接拥有 DB/Redis 驱动实现、回写 core 配置 |
 | `shield_player` | 玩家认证、登录、重连、离线消息、PlayerManager | `shield_net`、`shield_lua`、数据插件 binding、`shield_global`（可选） | 暴露裸 session/连接句柄跨 service 传递 |
-| `shield_server` | 服务器状态、维护模式、关闭流程、状态通知 | `shield_core`、`shield_ops` 快照接口 | 替代 core bootstrap、接管玩家生命周期 |
+| `shield_server` | 服务器状态机、运行时信息、状态通知、关闭交接 | `shield_core` 公共语义；cluster/player 只读快照 | 替代 core bootstrap、接管玩家生命周期、强依赖 ops（ops 单向读它的快照） |
 | `shield_ops` | metrics、health、diagnostics、console、profile | runtime snapshot、只读计数器、模块公开状态接口 | 反向控制 core 语义、成为业务依赖 |
 
 ## 依赖方向
@@ -386,12 +386,14 @@ shield_core + modules
 
 最终定位：
 
-- 提供服务器级状态、维护模式、关服流程、运行时信息发布。
+- 提供服务器级状态机、运行时信息发布、状态通知与关闭交接。
+- ServerManager 是进程级单例，不是 service；`starting → running` 由 bootstrap init complete 自动触发。
 
 最终不做：
 
-- 不替代 `shield_bootstrap`。
-- 不把运维控制语义塞进 core。
+- 不替代 `shield_bootstrap`（`shutdown(ms)` 只交接停止请求，drain 预算仍归 bootstrap）。
+- 不把运维控制语义塞进 core（维护准入 gate 由业务层实现）。
+- 不强依赖 `shield_ops`（ops 单向读取它的状态快照）。
 
 ### `shield_ops`
 

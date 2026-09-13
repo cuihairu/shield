@@ -71,13 +71,31 @@
 
 | ID | 场景 | 操作 | 期望 |
 | --- | --- | --- | --- |
-| OMOD-SV-001 | server 模块未启用 | 启动 runtime | bootstrap / core 不依赖 `server_manager` |
-| OMOD-SV-002 | 启用 server | init complete | 状态进入 `running` |
-| OMOD-SV-003 | maintenance 切换 | `server:set_state("maintenance")` | 新登录按模块策略受限，现有 service 继续运行 |
-| OMOD-SV-004 | shutdown 请求 | `server:shutdown(ms)` | 进入 `shutdown`，最终仍走 bootstrap/core 的优雅关闭路径 |
-| OMOD-SV-005 | 状态观察者 | `watch_state` 注册 | 状态变化收到通知 |
-| OMOD-SV-006 | 配置缺失/非法 | 启动模块 | 定位为 `server_manager` 配置错误 |
-| OMOD-SV-007 | 非法状态迁移 | `running -> starting` 等 | 返回 server 模块 API 错误，不导致 runtime 崩溃 |
+| OMOD-SV-001 | server 模块未启用 | 启动 runtime | bootstrap / core 不依赖 `server_manager`；`shield.server.*` 返回 `module_unavailable` |
+| OMOD-SV-002 | 启用 server | init complete | 状态自动进入 `running`（`mark_ready`），uptime/started_at 从该点计起 |
+| OMOD-SV-003 | maintenance 切换 | `server:set_state("maintenance")` | 状态迁移成功并通知观察者；准入 gate 由业务层实现，现有 service 继续运行 |
+| OMOD-SV-004 | shutdown 请求 | `server:shutdown(ms)` | 立即进入 `shutdown` 并通知观察者，ms 后走与 SIGINT 同路径的停止请求；drain 预算仍归 bootstrap |
+| OMOD-SV-005 | 状态观察者 | `server:watch(fn)` 注册 | 状态变化在观察者 actor 线程收到 `fn(ctx, new_state)` 通知 |
+| OMOD-SV-006 | 配置缺失/非法 | 启动模块 | 缺失用默认值；非法（空 name / info 超 64 字符）fail fast，定位为 `server_manager` 配置错误 |
+| OMOD-SV-007 | 非法状态迁移 | `running -> starting` 等 | 返回 `invalid_state_transition`，不导致 runtime 崩溃、状态不变 |
+| OMOD-SV-008 | server 模块未编译 | 调用任一 `shield.server.*` 入口 | 返回 `nil + {code="module_unavailable"}`，retryable=false |
+| OMOD-SV-009 | 重复 watch / 未知 unwatch | 同 service 再次 `watch`；`unwatch` 已注销 id | 重复 watch 返回同一 id；未知 unwatch 静默成功 |
+| OMOD-SV-010 | shutdown 非法参数 | `shutdown(-1)` / `shutdown(1.5)` / `shutdown("x")` | 返回 `invalid_argument`，不迁移状态、不触发停止 |
+| OMOD-SV-011 | maintenance 下服务继续运行 | 置 maintenance 后 `send/call` | service messaging、gateway、插件 namespace 语义不变 |
+| OMOD-SV-012 | 观察者 service 退出 | 迁移状态 | 失效观察者自动注销，不影响其他观察者与状态机 |
+| OMOD-SV-013 | 配置非法 fail fast | `server_manager.info.name` 超长启动 | bootstrap 初始化失败，错误定位到 `server_manager` 配置路径 |
+| OMOD-SV-014 | 只读观测暴露 | `root.server` / `GET /ops/status` | 输出 `{state, uptime_seconds, version, node_id, started_at_ms, name, info, watchers}`；未编译时 `root.server` 明确提示、响应无 server 块 |
+
+### OMOD-SV 测试映射
+
+- OMOD-SV-001 → `tests/lua_api/test_lua_api_server.cpp` stub 分支 + `shield_config_server_requires_module` 负向 CLI 用例
+- OMOD-SV-002/007 → `tests/server/test_server_manager.cpp` ServerTransitions/ServerLifecycle/ServerSetState
+- OMOD-SV-003/011 → ServerSetState + `tests/lua_api/test_lua_api_server.cpp`（迁移后 messaging 语义不变）
+- OMOD-SV-004/010 → ServerShutdownScheduling + Shutdown suite（立即/重复/非法参数）
+- OMOD-SV-005/009/012 → ServerWatch + Watch suite（幂等/自动注销/unwatch）
+- OMOD-SV-006/013 → ServerConfigParsing + `InitializeFailsOnInvalidServerConfig`
+- OMOD-SV-008 → stub 分支全入口断言
+- OMOD-SV-014 → console/ops 套件 root.server 与 /ops/status server 块断言
 
 ## OMOD-OPS `shield_ops`
 

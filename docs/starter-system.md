@@ -88,7 +88,7 @@ public:
 | `ServiceStarter` | configured services | `CoreStarter`, `ScriptStarter` | spawn YAML 声明的 Lua/C++ services |
 | `AcceptStarter` | active listeners | `NetStarter`, `ServiceStarter` | 服务已 ready 后开启网络 accept |
 
-可选模块如 `ClusterStarter`、`OpsStarter`、`GlobalStarter` 必须在独立官方模块中声明，不能进入 `shield_core` 或默认 Starter 列表。
+可选模块如 `ClusterStarter`、`OpsStarter`、`GlobalStarter` 必须在独立官方模块中声明，不能进入 `shield_core` 或默认 Starter 列表。`shield_server` 不需要 Starter：ServerManager 是进程级单例，由 bootstrap 直接构造并在 init complete 时 `mark_ready`（见 runtime-server.md）。
 
 ## 启动顺序
 

@@ -144,7 +144,21 @@ Redis 系插件 namespace（如 `shield.cache.redis(...)`、`shield.queue.redis(
 | `push_route_not_found` | push 目标 route 无 s2c helper | 否 | ✅ impl.push |
 | `persistence_save_failed` | player_save 抛错;按 player.on_save_error 记 warn 或 panic | 是 | ✅ defaults.save |
 
-## 七、错误处理建议
+## 七、shield_server 错误
+
+`shield.server.*` 门面与服务器状态机产生的错误(runtime-server.md)。
+除 `set_state`/`shutdown` 的参数与状态机错误以 `nil + 错误对象` 形态返回外,
+查询入口恒成功(模块不可用时返回 `module_unavailable`)。
+
+| 错误码 | 说明 | retryable | 状态 |
+|--------|------|-----------|------|
+| `module_unavailable` | SHIELD_ENABLE_SERVER 未编译或模块未初始化;每个 `shield.server.*` 入口都返回 | 否 | ✅ register_server_stub_api |
+| `invalid_state` | `set_state` 参数不是 starting/running/maintenance/shutdown 之一 | 否 | ✅ impl.set_state |
+| `invalid_state_transition` | 状态机不允许的迁移(如 starting→maintenance、shutdown 后任何迁移) | 否 | ✅ impl.set_state |
+| `shutdown_already_scheduled` | `shutdown` 重复调用;不重复计时 | 否 | ✅ impl.shutdown |
+| `invalid_argument` | `shutdown` 参数不是 ≥0 的整数 | 否 | ✅ impl.shutdown |
+
+## 八、错误处理建议
 
 ### 重试策略
 

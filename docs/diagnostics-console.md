@@ -84,6 +84,7 @@ curl -X POST http://localhost:8080/ops/eval \
 | `root.plugin <id>` | 插件详情（含 last_error） |
 | `root.config [key]` | 配置查询（无参数=全部 JSON） |
 | `root.cluster` | 集群节点状态 |
+| `root.server` | 服务器状态（state/uptime/version/观察者数；server 模块未启用时提示不可用） |
 | `root.log.level [level]` | 读取/设置日志级别（debug/info/warn/error） |
 | `attach <service>` | 进入服务的 Lua VM 交互式 REPL |
 | `eval <code>` | 在独立 Lua 沙箱中执行一次性代码 |
@@ -139,7 +140,7 @@ lua:gameserver1> detach
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/ops/status` | 服务/插件/集群状态 |
+| GET | `/ops/status` | 服务/插件/集群/服务器状态 |
 | GET | `/ops/services` | 列出所有 Lua 服务 |
 | GET | `/ops/plugins` | 列出所有插件 |
 | GET | `/ops/config?key=<key>` | 查询配置 |
@@ -170,7 +171,8 @@ lua:gameserver1> detach
 ```bash
 # 获取状态
 curl http://localhost:8080/ops/status
-# {"type":"result","data":{"services":["gateway","player"],"plugins":[...]}}
+# {"type":"result","data":{"services":["gateway","player"],"plugins":[...],"server":{"state":"running","uptime_seconds":3600,...}}}
+# server 块仅在 SHIELD_ENABLE_SERVER 编译并启用时出现（只读快照，见 runtime-server.md）
 
 # 列出服务
 curl http://localhost:8080/ops/services
@@ -189,7 +191,7 @@ curl -X POST http://localhost:8080/ops/eval \
 
 ## 线程安全模型
 
-- **线程安全子系统**（PluginHost、Config、ClusterManager、Logger）：console 线程直接调用
+- **线程安全子系统**（PluginHost、Config、ClusterManager、ServerManager、Logger）：console 线程直接调用
 - **Service actor 子系统**：通过 CAF/service actor 调度投递到对应 runtime owner，`promise/future` 回传结果
 - actor 调度延迟通常可忽略
 
@@ -204,6 +206,8 @@ curl -X POST http://localhost:8080/ops/eval \
 - `include/shield/console/command_dispatcher.hpp` / `src/console/command_dispatcher.cpp`
 - `include/shield/console/root_commands.hpp` / `src/console/root_commands.cpp`
 - `include/shield/console/lua_commands.hpp` / `src/console/lua_commands.cpp`
+- `include/shield/console/cluster_status.hpp` / `src/console/cluster_status.cpp`
+- `include/shield/console/server_status.hpp` / `src/console/server_status.cpp`
 - `include/shield/console/ops_http_handler.hpp` / `src/console/ops_http_handler.cpp`
 
 ### CLI 客户端

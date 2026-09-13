@@ -1225,6 +1225,68 @@ gateway 按 binding epoch 校验丢弃)。PlayerRef 跨服务序列化为
 
 ---
 
+## Server API
+
+`shield.server` 是可选模块 `shield_server` 提供的服务器状态门面
+（`SHIELD_ENABLE_SERVER` 编译开关）。它暴露服务器状态机查询与迁移、
+运行时信息（uptime/version/node_id）和状态观察者注册。
+业务语义（维护准入 gate、关服前的数据保存）由业务 service 在观察回调里实现。
+
+模块未编译或未初始化时每个 `shield.server.*` 入口返回
+`nil + {code="module_unavailable"}`，而不是 nil 字段。
+
+```lua
+local server = shield.server
+
+-- 只读查询
+local state = server:state()        -- "starting" | "running" | "maintenance" | "shutdown"
+local up    = server:uptime()       -- running 起点的 steady 秒数
+local ver   = server:version()      -- info.version → 回退 app.version → ""
+local node  = server:node_id()      -- cluster node_id；standalone 为 ""
+local at    = server:started_at()   -- running 起点的 wall-clock ms（未进入 running 为 0）
+local cfg   = server:config()       -- {name=..., info={name=..., version=..., region=...}}
+
+-- 状态控制
+local ok, err = server:set_state("maintenance")  -- 非法迁移 → invalid_state_transition
+local ok, err = server:shutdown(30000)           -- 30 秒后请求进程停止
+
+-- 状态观察（回调签名 fn(ctx, new_state)，与 handler dispatch 同规则）
+local id = server:watch(function(ctx, new_state)
+    if new_state == "shutdown" then
+        -- 保存数据等关服准备
+    end
+end)
+server:unwatch(id)
+```
+
+### 语义要点
+
+| 规则 | 说明 |
+| --- | --- |
+| 状态机 | `starting → running`（bootstrap init complete 自动）；`running ⇄ maintenance`；`running/maintenance/starting → shutdown`（终态）；`→ starting` 恒非法 |
+| `set_state` | 未知状态名 `invalid_state`；非法迁移 `invalid_state_transition`；同值幂等成功且不通知 |
+| `shutdown` | 重复调用 `shutdown_already_scheduled`；参数非非负整数 `invalid_argument`；drain 预算仍归 bootstrap `shutdown.timeout.*` |
+| watch | 同一 service 重复 watch 幂等（同 id）；回调在观察者 actor 线程串行；观察者退出自动注销；`unwatch` 幂等 |
+
+错误码清单见 [错误码参考](./runtime-errors.md) "七、shield_server 错误"；
+模块契约详见 [runtime-server.md](./runtime-server.md)。
+
+<details>
+<summary>实现快照（点击展开）</summary>
+
+`register_server_api` 在每个 VM 注册 `shield.server` 表；状态真相在 C++
+`ServerManager`（进程级单例，`global()/set_global()`，bootstrap init
+complete 时 `mark_ready`）。watch 注册表在 C++ 侧只存 `{watch_id,
+service_id}`，不持有 Lua 闭包；每 VM 编排层持有观察者函数并安装转发
+handler，投递走 system 消息通道（`send_system`，与 gateway 桥同路径），
+观察者 service 退出时按判活自动注销。`shutdown(ms)` 计时线程在
+ServerManager 内部（`std::jthread`），到期调用与 SIGINT/SIGTERM 同路径
+的进程停止请求。
+
+</details>
+
+---
+
 ## Error Object
 
 运行时错误统一返回只读 table：
