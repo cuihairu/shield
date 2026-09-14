@@ -3092,6 +3092,26 @@ local function make_reliable_queue(name, opts)
   return q
 end
 
+local function make_priority_queue(name, opts)
+  local q = {name = name}
+  -- Contract priorities: a smaller value pops first (urgent=1, normal=5,
+  -- low=10); the default is the documented normal level.
+  function q:push(v, priority)
+    prim.priority_push(name, prim.encode(v), priority or 5)
+    return true
+  end
+  function q:pop(timeout)
+    return pop_with_wait(function() return prim.priority_pop_now(name) end,
+                         timeout)
+  end
+  function q:length() return prim.priority_length(name) end
+  function q:purge()
+    prim.priority_purge(name)
+    return true
+  end
+  return q
+end
+
 -- ---- rate limiter bounded wait (polls allow like queue pops) ----
 impl.attach_rate_wait = function(limiter)
   limiter.wait = function(self, key, timeout)
@@ -3144,6 +3164,7 @@ local api = {
   make_rwlock = make_rwlock,
   make_queue = make_queue,
   make_delay_queue = make_delay_queue,
+  make_priority_queue = make_priority_queue,
   make_reliable_queue = make_reliable_queue,
   pop_with_wait = pop_with_wait,
   attach_rate_wait = impl.attach_rate_wait,
@@ -3278,6 +3299,28 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     });
     prim.set_function("delay_purge",
                       [gm](const std::string& name) { gm->delay_purge(name); });
+    prim.set_function("priority_push", [gm](const std::string& name,
+                                            const std::string& payload,
+                                            double priority) {
+        gm->priority_push(name, payload, static_cast<std::int64_t>(priority));
+    });
+    prim.set_function(
+        "priority_pop_now",
+        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name) -> sol::object {
+            sol::state_view s(state);
+            std::string payload;
+            if (!gm->priority_pop(name, &payload)) {
+                return sol::make_object(s, sol::nil);
+            }
+            return sol::make_object(s, payload);
+        });
+    prim.set_function("priority_length", [gm](const std::string& name) {
+        return gm->priority_length(name);
+    });
+    prim.set_function("priority_purge", [gm](const std::string& name) {
+        gm->priority_purge(name);
+    });
     prim.set_function(
         "rel_configure", [gm](const std::string& name, double max_retries) {
             gm->reliable_configure(name, static_cast<int>(max_retries));
@@ -3794,6 +3837,12 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                             return queue_factory(state, "make_reliable_queue",
                                                  name, opts);
                         });
+    shield.set_function("priority_queue",
+                        [queue_factory](sol::this_state state, sol::object name,
+                                        sol::optional<sol::table> opts) {
+                            return queue_factory(state, "make_priority_queue",
+                                                 name, opts);
+                        });
 
     // ---- shield.scheduler() ----
     shield.set_function(
@@ -4039,7 +4088,7 @@ void register_global_stub_api(sol::table& shield, sol::state_view lua) {
     for (const char* name :
          {"global", "mutex", "rwlock", "spinlock", "distributed_mutex",
           "distributed_rwlock", "rank", "queue", "delay_queue",
-          "reliable_queue", "scheduler", "rate_limiter"}) {
+          "priority_queue", "reliable_queue", "scheduler", "rate_limiter"}) {
         shield[name] = unavailable;
     }
 }

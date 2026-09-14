@@ -358,6 +358,31 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_08_ReliableQueueMatrix) {
     BOOST_CHECK_EQUAL(v["dead_size_after"], 0);
 }
 
+BOOST_AUTO_TEST_CASE(LAPI_GL_13_PriorityQueueMatrix) {
+    GlobalWorld world;
+    auto svc = world.spawn("gl_priority");
+    BOOST_REQUIRE(svc.success);
+    CallResult r = call(world.manager, svc.service_id, "priority_matrix",
+                        nlohmann::json::array());
+    if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
+    BOOST_REQUIRE(r.success);
+    const nlohmann::json& v = r.values[0];
+    // Smaller priority pops first (urgent=1 < normal=5 < low=10); ties keep
+    // FIFO order; the default level is the documented normal (5).
+    BOOST_CHECK(!v.contains("pop_empty"));
+    BOOST_CHECK_EQUAL(v["length"], 3);
+    BOOST_CHECK_EQUAL(v["pop_urgent"], "urgent");
+    BOOST_CHECK_EQUAL(v["fifo1"], "normal");
+    BOOST_CHECK_EQUAL(v["fifo2"], "n1");
+    BOOST_CHECK_EQUAL(v["pop_high"], "high");
+    BOOST_CHECK_EQUAL(v["pop_n2"], "n2");
+    BOOST_CHECK_EQUAL(v["pop_default"], "default1");
+    BOOST_CHECK_EQUAL(v["length_drained"], 1);
+    BOOST_CHECK_EQUAL(v["pop_low"], "low");
+    BOOST_CHECK(!v.contains("drain_empty"));
+    BOOST_CHECK_EQUAL(v["length_after_purge"], 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(LapiGlobalScheduler)
@@ -536,7 +561,7 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_12_StubReportsModuleUnavailable) {
     for (const std::string& name :
          {"global", "mutex", "rwlock", "spinlock", "distributed_mutex",
           "distributed_rwlock", "rank", "queue", "delay_queue",
-          "reliable_queue", "scheduler", "rate_limiter"}) {
+          "priority_queue", "reliable_queue", "scheduler", "rate_limiter"}) {
         BOOST_CHECK_EQUAL(codes[name].get<std::string>(), "module_unavailable");
     }
 }

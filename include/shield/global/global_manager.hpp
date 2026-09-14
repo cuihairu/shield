@@ -291,6 +291,15 @@ public:
     void delay_purge(const std::string& name);
     std::size_t delay_queue_count();
 
+    // ---- priority queues (smaller priority pops first, FIFO within a
+    // level; the P0 backend is the Redis ZSET twin's in-process shape) ----
+    void priority_push(const std::string& name, std::string payload,
+                       std::int64_t priority);
+    bool priority_pop(const std::string& name, std::string* out);
+    std::size_t priority_length(const std::string& name);
+    void priority_purge(const std::string& name);
+    std::size_t priority_queue_count();
+
     // ---- reliable queues (pop -> delivery handle -> ack/nack) ----
     /// Per-queue knobs; `max_retries` <= 0 keeps the default of 3.
     void reliable_configure(const std::string& name, int max_retries);
@@ -422,6 +431,10 @@ private:
     std::unordered_map<std::string, std::multimap<std::uint64_t, DelayedItem>>
         delay_queues_;
     std::unordered_map<std::string, ReliableQueue> reliable_queues_;
+    /// name -> (priority -> FIFO levels); empty levels are erased on pop.
+    std::unordered_map<std::string,
+                       std::map<std::int64_t, std::deque<std::string>>>
+        priority_queues_;
 
     mutable std::mutex sched_mutex_;
     std::unordered_map<std::string, SchedTask> tasks_;

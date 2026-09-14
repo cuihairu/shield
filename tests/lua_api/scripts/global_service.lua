@@ -237,6 +237,43 @@ function M.reliable_matrix(ctx)
     return results
 end
 
+function M.priority_matrix(ctx)
+    local results = {}
+    local q = shield.priority_queue("priority_tasks")
+    results.pop_empty = q:pop()
+    q:push({task = "low"}, 10)
+    q:push({task = "normal"}, 5)
+    q:push({task = "urgent"}, 1)
+    results.length = q:length()
+    local urgent = q:pop()
+    results.pop_urgent = urgent and urgent.task
+    -- a level keeps FIFO order across pushes
+    q:push({task = "n1"}, 5)
+    q:push({task = "n2"}, 5)
+    local first = q:pop()
+    local second = q:pop()
+    results.fifo1 = first and first.task
+    results.fifo2 = second and second.task
+    -- the default priority is the documented normal level (5): it queues
+    -- behind n2 in that level, and level 1 still jumps ahead of both
+    q:push({task = "default1"})
+    q:push({task = "high"}, 1)
+    local high = q:pop()
+    results.pop_high = high and high.task
+    local n2 = q:pop()
+    results.pop_n2 = n2 and n2.task
+    local def = q:pop()
+    results.pop_default = def and def.task
+    results.length_drained = q:length()
+    local low = q:pop(100)
+    results.pop_low = low and low.task
+    -- bounded wait expires on an empty queue
+    results.drain_empty = q:pop(50)
+    q:purge()
+    results.length_after_purge = q:length()
+    return results
+end
+
 -- ---------------------------------------------------------------------------
 -- scheduler
 -- ---------------------------------------------------------------------------
@@ -356,6 +393,7 @@ function M.stub_probe(ctx)
     probe('queue', function() return shield.queue("q") end)
     probe('delay_queue', function() return shield.delay_queue("q") end)
     probe('reliable_queue', function() return shield.reliable_queue("q") end)
+    probe('priority_queue', function() return shield.priority_queue("q") end)
     probe('scheduler', function() return shield.scheduler() end)
     probe('rate_limiter', function() return shield.rate_limiter("r") end)
     return codes

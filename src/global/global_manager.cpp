@@ -1071,6 +1071,64 @@ std::size_t GlobalManager::delay_queue_count() {
     return delay_queues_.size();
 }
 
+// ---- priority queues ----
+
+void GlobalManager::priority_push(const std::string& name, std::string payload,
+                                  std::int64_t priority) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    priority_queues_[name][priority].push_back(std::move(payload));
+}
+
+bool GlobalManager::priority_pop(const std::string& name, std::string* out) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    auto it = priority_queues_.find(name);
+    if (it == priority_queues_.end()) {
+        return false;
+    }
+    // Lowest level first; erase levels drained to empty so a burst of one
+    // shot priorities does not leave empty buckets behind.
+    auto& levels = it->second;
+    for (auto lit = levels.begin(); lit != levels.end(); ++lit) {
+        auto& bucket = lit->second;
+        if (bucket.empty()) {
+            continue;
+        }
+        if (out) {
+            *out = std::move(bucket.front());
+        }
+        bucket.pop_front();
+        if (bucket.empty()) {
+            levels.erase(lit);
+        }
+        return true;
+    }
+    return false;
+}
+
+std::size_t GlobalManager::priority_length(const std::string& name) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    auto it = priority_queues_.find(name);
+    if (it == priority_queues_.end()) {
+        return 0;
+    }
+    std::size_t total = 0;
+    for (const auto& [priority, bucket] : it->second) {
+        (void)priority;
+        total += bucket.size();
+    }
+    return total;
+}
+
+void GlobalManager::priority_purge(const std::string& name) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    priority_queues_.erase(name);
+}
+
+std::size_t GlobalManager::priority_queue_count() {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    return priority_queues_.size();
+}
+
 // ---- reliable queues ----
 
 void GlobalManager::reliable_configure(const std::string& name,
