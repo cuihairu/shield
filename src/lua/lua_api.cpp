@@ -2929,7 +2929,7 @@ local function make_exclusive(name, opts, registry)
     local ok = wait_for(function() return self:try_acquire() end, waited,
                         self.retry)
     if ok then return true end
-    return nil, timeout_error('lock acquire', waited)
+    return false, timeout_error('lock acquire', waited)
   end
   function lock:with(fn)
     local ok, err = self:acquire()
@@ -2963,7 +2963,7 @@ local function make_guard(name, opts, kind, owner)
     local waited = timeout or 0
     local ok = wait_for(function() return try() end, waited, self.retry)
     if ok then return true end
-    return nil, timeout_error('lock acquire', waited)
+    return false, timeout_error('lock acquire', waited)
   end
   function guard:with(fn)
     local ok, err = self:acquire()
@@ -3183,6 +3183,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 return sol::make_object(s, sol::nil);
             }
             sol::table out = s.create_table();
+            out["exists"] = true;
             out["owner"] = info.owner;
             out["count"] = info.count;
             out["acquired_at"] = info.acquired_at_ms;
@@ -3372,7 +3373,8 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
             sol::table g = s.create_table();
-            g.set_function("set", [mgr](sol::object key, sol::object value,
+            g.set_function("set", [mgr](sol::object /*self*/, sol::object key,
+                                        sol::object value,
                                         sol::optional<double> ttl) {
                 mgr->data_set(key.as<std::string>(), lua_to_json(value).dump(),
                               ttl ? static_cast<std::uint64_t>(*ttl) : 0);
@@ -3381,7 +3383,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             g.set_function(
                 "get",
                 [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object key) -> sol::object {
+                      sol::object /*self*/, sol::object key) -> sol::object {
                     sol::state_view s(state);
                     std::string value;
                     if (!mgr->data_get(key.as<std::string>(), &value)) {
@@ -3393,13 +3395,13 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                     }
                     return json_to_lua(s, parsed);
                 });
-            g.set_function("delete", [mgr](sol::object key) {
+            g.set_function("delete", [mgr](sol::object, sol::object key) {
                 return mgr->data_delete(key.as<std::string>());
             });
             g.set_function(
                 "incr",
                 [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object key,
+                      sol::object /*self*/, sol::object key,
                       sol::optional<double> delta) -> sol::variadic_results {
                     sol::state_view s(state);
                     sol::variadic_results results;
@@ -3420,7 +3422,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             g.set_function(
                 "decr",
                 [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object key,
+                      sol::object /*self*/, sol::object key,
                       sol::optional<double> delta) -> sol::variadic_results {
                     sol::state_view s(state);
                     sol::variadic_results results;
@@ -3441,7 +3443,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             g.set_function(
                 "mset",
                 [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::table kvs,
+                      sol::object /*self*/, sol::table kvs,
                       sol::optional<double> ttl) -> sol::variadic_results {
                     sol::state_view s(state);
                     sol::variadic_results results;
@@ -3467,6 +3469,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             g.set_function(
                 "mget",
                 [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      sol::object /*self*/,
                       sol::variadic_args args) -> sol::object {
                     sol::state_view s(state);
                     sol::table out = s.create_table();
@@ -3489,7 +3492,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             g.set_function(
                 "get_cached",
                 [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object key,
+                      sol::object /*self*/, sol::object key,
                       sol::optional<double> ttl) -> sol::object {
                     sol::state_view s(state);
                     std::string value;
@@ -3505,7 +3508,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                     }
                     return json_to_lua(s, parsed);
                 });
-            g.set_function("invalidate", [mgr](sol::object key) {
+            g.set_function("invalidate", [mgr](sol::object, sol::object key) {
                 mgr->cache_invalidate(key.as<std::string>());
                 return true;
             });
@@ -3539,7 +3542,10 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 sol::make_object(s, make_error(state, "invalid_argument",
                                                "invalid lock arguments")));
         }
-        return std::make_tuple(sol::make_object(s, std::move(result)),
+        // Unwrap the pfr explicitly: make_object on the whole result does
+        // not reliably push the callee's first return value here.
+        sol::object lock_obj = result.get<sol::object>(0);
+        return std::make_tuple(std::move(lock_obj),
                                sol::make_object(s, sol::nil));
     };
     shield.set_function(
@@ -3575,7 +3581,9 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
 
     // ---- shield.rank(name) ----
     shield.set_function(
-        "rank", [lua](sol::this_state state) -> sol::variadic_results {
+        "rank",
+        [lua](sol::this_state state,
+              sol::object board_obj) -> sol::variadic_results {
             sol::state_view s(state);
             sol::variadic_results results;
             auto* mgr = shield::global::GlobalManager::global();
@@ -3586,45 +3594,56 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                                "shield_global is not initialized"));
                 return results;
             }
+            if (!board_obj.is<std::string>()) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(make_error(state, "invalid_argument",
+                                             "rank requires a board name"));
+                return results;
+            }
+            const std::string board = board_obj.as<std::string>();
             sol::table rank = s.create_table();
-            rank.set_function("update", [mgr](std::string board,
-                                              std::string uid, double score) {
-                mgr->rank_update(board, uid, score);
+            rank.set_function(
+                "update", [mgr, board](sol::object /*self*/, std::string uid,
+                                       double score) {
+                    mgr->rank_update(board, uid, score);
+                    return true;
+                });
+            rank.set_function("mupdate", [mgr, board](sol::object /*self*/,
+                                                      sol::table updates) {
+                std::vector<std::pair<std::string, double>> batch;
+                for (auto& [uid, score] : updates) {
+                    if (uid.is<std::string>() && score.is<double>()) {
+                        batch.emplace_back(uid.as<std::string>(),
+                                           score.as<double>());
+                    }
+                }
+                mgr->rank_mupdate(board, batch);
                 return true;
             });
             rank.set_function(
-                "mupdate", [mgr](std::string board, sol::table updates) {
-                    std::vector<std::pair<std::string, double>> batch;
-                    for (auto& [uid, score] : updates) {
-                        if (uid.is<std::string>() && score.is<double>()) {
-                            batch.emplace_back(uid.as<std::string>(),
-                                               score.as<double>());
-                        }
-                    }
-                    mgr->rank_mupdate(board, batch);
-                    return true;
-                });
-            rank.set_function(
                 "score",
-                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      std::string board, std::string uid) -> sol::object {
+                [mgr, board](sol::this_state state, sol::object /*self*/,
+                             sol::object uid) -> sol::object {
                     sol::state_view s(state);
-                    auto value = mgr->rank_score(board, uid);
-                    if (!value.has_value()) {
+                    if (!uid.is<std::string>()) {
                         return sol::make_object(s, sol::nil);
                     }
-                    return sol::make_object(s, *value);
+                    auto value = mgr->rank_score(board, uid.as<std::string>());
+                    return value ? sol::make_object(s, *value)
+                                 : sol::make_object(s, sol::nil);
                 });
             rank.set_function(
                 "position",
-                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      std::string board, std::string uid) -> sol::object {
+                [mgr, board](sol::this_state state, sol::object /*self*/,
+                             sol::object uid) -> sol::object {
                     sol::state_view s(state);
-                    auto value = mgr->rank_position(board, uid);
-                    if (!value.has_value()) {
+                    if (!uid.is<std::string>()) {
                         return sol::make_object(s, sol::nil);
                     }
-                    return sol::make_object(s, *value);
+                    auto value =
+                        mgr->rank_position(board, uid.as<std::string>());
+                    return value ? sol::make_object(s, *value)
+                                 : sol::make_object(s, sol::nil);
                 });
             auto entry_table = [](sol::state_view s,
                                   const shield::global::RankEntry& entry) {
@@ -3636,8 +3655,9 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             };
             rank.set_function(
                 "top",
-                [mgr, entry_table](sol::this_state state,  // GCOVR_EXCL_LINE
-                                   std::string board, double n) -> sol::object {
+                [mgr, board, entry_table](sol::this_state state,
+                                          sol::object /*self*/,
+                                          double n) -> sol::object {
                     sol::state_view s(state);
                     sol::table out = s.create_table();
                     for (const auto& entry :
@@ -3648,9 +3668,9 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 });
             rank.set_function(
                 "range",
-                [mgr, entry_table](sol::this_state state,  // GCOVR_EXCL_LINE
-                                   std::string board, double from,
-                                   double to) -> sol::object {
+                [mgr, board, entry_table](sol::this_state state,
+                                          sol::object /*self*/, double from,
+                                          double to) -> sol::object {
                     sol::state_view s(state);
                     sol::table out = s.create_table();
                     for (const auto& entry : mgr->rank_range(
@@ -3662,9 +3682,9 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 });
             rank.set_function(
                 "range_by_score",
-                [mgr, entry_table](sol::this_state state,  // GCOVR_EXCL_LINE
-                                   std::string board, double lo,
-                                   double hi) -> sol::object {
+                [mgr, board, entry_table](sol::this_state state,
+                                          sol::object /*self*/, double lo,
+                                          double hi) -> sol::object {
                     sol::state_view s(state);
                     sol::table out = s.create_table();
                     for (const auto& entry :
@@ -3675,13 +3695,17 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 });
             rank.set_function(
                 "around",
-                [mgr, entry_table](sol::this_state state,  // GCOVR_EXCL_LINE
-                                   std::string board, std::string uid,
-                                   double n) -> sol::object {
+                [mgr, board, entry_table](sol::this_state state,
+                                          sol::object /*self*/, sol::object uid,
+                                          double n) -> sol::object {
                     sol::state_view s(state);
+                    if (!uid.is<std::string>()) {
+                        return sol::make_object(s, sol::nil);
+                    }
                     sol::table out = s.create_table();
-                    const auto around = mgr->rank_around(
-                        board, uid, static_cast<std::size_t>(n));
+                    const auto around =
+                        mgr->rank_around(board, uid.as<std::string>(),
+                                         static_cast<std::size_t>(n));
                     sol::table above = s.create_table();
                     for (const auto& entry : around.above) {
                         above.add(entry_table(s, entry));
@@ -3698,14 +3722,14 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                     out["below"] = below;
                     return out;
                 });
-            rank.set_function("count", [mgr](std::string board) {
+            rank.set_function("count", [mgr, board](sol::object /*self*/) {
                 return mgr->rank_count(board);
             });
-            rank.set_function("remove",
-                              [mgr](std::string board, std::string uid) {
-                                  return mgr->rank_remove(board, uid);
-                              });
-            rank.set_function("clear", [mgr](std::string board) {
+            rank.set_function(
+                "remove", [mgr, board](sol::object /*self*/, std::string uid) {
+                    return mgr->rank_remove(board, uid);
+                });
+            rank.set_function("clear", [mgr, board](sol::object /*self*/) {
                 mgr->rank_clear(board);
                 return true;
             });
@@ -3737,7 +3761,10 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 sol::make_object(s, make_error(state, "invalid_argument",
                                                "invalid queue arguments")));
         }
-        return std::make_tuple(sol::make_object(s, std::move(result)),
+        // Unwrap the pfr explicitly: make_object on the whole result does
+        // not reliably push the callee's first return value here.
+        sol::object queue_obj = result.get<sol::object>(0);
+        return std::make_tuple(std::move(queue_obj),
                                sol::make_object(s, sol::nil));
     };
     shield.set_function(
@@ -3860,52 +3887,57 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             };
             sol::table sched = s.create_table();
             sched.set_function(
-                "cron", [register_task](sol::this_state state, sol::object name,
+                "cron", [register_task](sol::this_state state,
+                                        sol::object /*self*/, sol::object name,
                                         sol::object expr, sol::object cb,
                                         sol::optional<sol::table> /*opts*/) {
                     return register_task(state, "cron", name, expr, cb);
                 });
             sched.set_function(
                 "interval",
-                [register_task](sol::this_state state, sol::object name,
-                                sol::object ms, sol::object cb,
+                [register_task](sol::this_state state, sol::object /*self*/,
+                                sol::object name, sol::object ms,
+                                sol::object cb,
                                 sol::optional<sol::table> /*opts*/) {
                     return register_task(state, "interval", name, ms, cb);
                 });
             sched.set_function(
-                "once", [register_task](sol::this_state state, sol::object name,
+                "once", [register_task](sol::this_state state,
+                                        sol::object /*self*/, sol::object name,
                                         sol::object delay, sol::object cb,
                                         sol::optional<sol::table> /*opts*/) {
                     return register_task(state, "once", name, delay, cb);
                 });
-            sched.set_function("get",
-                               [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                                     std::string name) -> sol::object {
-                                   sol::state_view s(state);
-                                   auto info = mgr->sched_get(name);
-                                   if (!info.has_value()) {
-                                       return sol::make_object(s, sol::nil);
-                                   }
-                                   sol::table out = s.create_table();
-                                   out["name"] = info->name;
-                                   out["type"] = info->type;
-                                   out["schedule"] = info->schedule;
-                                   out["next_run"] = info->next_run_ms;
-                                   out["last_run"] = info->last_run_ms;
-                                   out["run_count"] = info->run_count;
-                                   out["status"] = info->paused ? "paused"
-                                                   : info->done ? "done"
-                                                                : "active";
-                                   return out;
-                               });
-            sched.set_function("pause", [mgr](std::string name) {
+            sched.set_function(
+                "get",
+                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      sol::object, std::string name) -> sol::object {
+                    sol::state_view s(state);
+                    auto info = mgr->sched_get(name);
+                    if (!info.has_value()) {
+                        return sol::make_object(s, sol::nil);
+                    }
+                    sol::table out = s.create_table();
+                    out["name"] = info->name;
+                    out["type"] = info->type;
+                    out["schedule"] = info->schedule;
+                    out["next_run"] = info->next_run_ms;
+                    out["last_run"] = info->last_run_ms;
+                    out["run_count"] = info->run_count;
+                    out["status"] = info->paused ? "paused"
+                                    : info->done ? "done"
+                                                 : "active";
+                    return out;
+                });
+            sched.set_function("pause", [mgr](sol::object, std::string name) {
                 return mgr->sched_pause(name);
             });
-            sched.set_function("resume", [mgr](std::string name) {
+            sched.set_function("resume", [mgr](sol::object, std::string name) {
                 return mgr->sched_resume(name);
             });
             sched.set_function(
-                "remove", [lua, mgr](sol::this_state state, std::string name) {
+                "remove", [lua, mgr](sol::this_state state, sol::object,
+                                     std::string name) {
                     mgr->sched_remove(name);
                     sol::state_view s(state);
                     sol::table impl = s.globals()["__shield_global_impl"];
@@ -3913,7 +3945,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                     detach(name);
                     return true;
                 });
-            sched.set_function("trigger", [mgr](std::string name) {
+            sched.set_function("trigger", [mgr](sol::object, std::string name) {
                 return mgr->sched_trigger(name);
             });
             results.push_back(sol::make_object(s, sched));

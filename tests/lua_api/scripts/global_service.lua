@@ -59,8 +59,8 @@ end
 -- locks
 -- ---------------------------------------------------------------------------
 
--- Exclusive lock matrix. `preset` (C++ test) optionally holds the lock
--- through the manager first so try_acquire observes contention.
+-- Exclusive lock matrix. `preset` only enables the in-matrix compete
+-- probe, which is blocked by the `l` hold itself (same owner rules).
 function M.lock_matrix(ctx, preset)
     local results = {}
     local l = shield.mutex("test_lock", {ttl = 60000})
@@ -79,26 +79,32 @@ function M.lock_matrix(ctx, preset)
     results.try3 = l:try_acquire()
     results.extend = l:extend(30000)
     results.ttl_held = l:ttl() > 0
-    -- with() runs the body and releases
-    results.with = l:with(function() return "ran" end)
+    -- with() runs the body and releases; pack the (ok, value) returns
+    -- into a table so both survive result serialization.
+    results.with = {l:with(function() return "ran" end)}
     results.released_after_with = not l:release()
     -- acquire with timeout succeeds once free
     local l2 = shield.mutex("test_lock2", {retry = 5})
     results.acquire_timeout = l2:acquire(200)
     results.acquire_after_release = (function()
         l2:release()
-        return l2:acquire(50)
+        local ok = l2:acquire(50)
+        l2:release()  -- leave the registry clean for the size check
+        return ok
     end)()
     -- spinlock facade shares the same semantics under its own registry
     local s = shield.spinlock("test_lock", {ttl = 60000})
     results.spinlock_free = s:try_acquire()
-    results.spinlock_mutex_independent = shield.mutex("test_lock",
-                                                      {ttl = 60000}):try_acquire()
+    s:release()
+    local probe = shield.mutex("test_lock", {ttl = 60000})
+    results.spinlock_mutex_independent = probe:try_acquire()
+    probe:release()
     -- distributed twins ride the same backend in P0
     local d = shield.distributed_mutex("dist_lock", {ttl = 60000})
     results.dist_try = d:try_acquire()
     results.dist_compete = shield.distributed_mutex("dist_lock",
                                                     {ttl = 60000}):try_acquire()
+    d:release()
     local drw = shield.distributed_rwlock("dist_rw")
     results.dist_rw_read = drw:read_lock():try_acquire()
     return results
@@ -130,7 +136,7 @@ function M.rwlock_matrix(ctx)
     results.write_release2 = w:release()
     results.read_after_write = rw:read_lock():try_acquire()
     -- with() on a read guard
-    results.read_with = rw:read_lock():with(function() return 7 end)
+    results.read_with = {rw:read_lock():with(function() return 7 end)}
     return results
 end
 
@@ -193,6 +199,10 @@ function M.queue_matrix(ctx)
     d:push_at({reward = "now"}, os.time() - 5)
     results.delay_pending = d:pending()
     results.delay_ready = d:ready()
+    -- The already-due entry pops immediately (earliest deadline first);
+    -- the delayed entry comes out through the bounded wait.
+    local now = d:pop(50)
+    results.delay_pop_now = now and now.reward
     local late = d:pop(3000)
     results.delay_pop_late = late and late.reward
     local b = q:pop(100)

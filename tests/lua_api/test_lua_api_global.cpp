@@ -150,11 +150,13 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_01_DataFacadeRoundTrip) {
     BOOST_CHECK_EQUAL(v["ok"], true);
     BOOST_CHECK_EQUAL(v["get_value"]["name"], "ada");
     BOOST_CHECK_EQUAL(v["get_value"]["level"], 3);
-    BOOST_CHECK(v["missing"].is_null());
+    // Lua nil assignments drop the key entirely: absence is the
+    // serialized form of a nil read.
+    BOOST_CHECK(!v.contains("missing"));
     BOOST_CHECK_EQUAL(v["counter"], 40);
     BOOST_CHECK_EQUAL(v["mget_a"], "1");
     BOOST_CHECK_EQUAL(v["mget_b_x"], true);
-    BOOST_CHECK(v["mget_missing"].is_null());
+    BOOST_CHECK(!v.contains("mget_missing"));
     BOOST_CHECK_EQUAL(v["deleted"], true);
     BOOST_CHECK_EQUAL(v["deleted_again"], false);
     BOOST_CHECK_EQUAL(v["cached_1"], "v");
@@ -168,10 +170,8 @@ BOOST_AUTO_TEST_SUITE(LapiGlobalLocks)
 
 BOOST_AUTO_TEST_CASE(LAPI_GL_02_ExclusiveLockMatrix) {
     GlobalWorld world;
-    // A competing holder via the manager (same registry as shield.mutex).
-    BOOST_CHECK(
-        world.gm.mutex_acquire("mutex", "test_lock", "cpp-owner", 60000) ==
-        shield::global::LockStatus::kOk);
+    // No C++ preset holder: GL_03/GL_04 already cover cross-owner
+    // contention, and this matrix expects an uncontended start (try1).
     auto svc = world.spawn("gl_lock");
     BOOST_REQUIRE(svc.success);
 
@@ -189,7 +189,9 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_02_ExclusiveLockMatrix) {
     BOOST_CHECK_EQUAL(v["release1"], true);
     BOOST_CHECK_EQUAL(v["release2"], true);
     BOOST_CHECK_EQUAL(v["release_unheld"], false);
-    BOOST_CHECK(v["owner_info"].is_null());
+    // Lock fully released -> lock_info reports nothing -> owner() is nil
+    // -> the boolean comparison serializes as false.
+    BOOST_CHECK_EQUAL(v["owner_info"], false);
     BOOST_CHECK_EQUAL(v["ttl_unheld"], -1);
     BOOST_CHECK_EQUAL(v["try3"], true);
     BOOST_CHECK_EQUAL(v["extend"], true);
@@ -206,9 +208,8 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_02_ExclusiveLockMatrix) {
     BOOST_CHECK_EQUAL(v["dist_try"], true);
     BOOST_CHECK_EQUAL(v["dist_compete"], false);
     BOOST_CHECK_EQUAL(v["dist_rw_read"], true);
-    // The cpp-owner hold was released by the Lua side's takeover? No:
-    // cpp-owner still holds nothing — verify the registry is empty now.
-    BOOST_CHECK_EQUAL(world.gm.mutex_registry_size("mutex"), 1u);
+    // The matrix released every hold: the registry is empty again.
+    BOOST_CHECK_EQUAL(world.gm.mutex_registry_size("mutex"), 0u);
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_GL_03_AcquireWaitsForContendedLock) {
@@ -259,11 +260,12 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_05_RwLockMatrix) {
     BOOST_REQUIRE(r.success);
     const nlohmann::json& v = r.values[0];
     BOOST_CHECK_EQUAL(v["read_shared"], true);
-    BOOST_CHECK_EQUAL(v["write_blocked_by_readers"], false);
+    // Docs: readers shared, writer exclusive -> readers block the writer.
+    BOOST_CHECK_EQUAL(v["write_blocked_by_readers"], true);
     BOOST_CHECK_EQUAL(v["read_release1"], true);
     BOOST_CHECK_EQUAL(v["read_release2"], true);
     BOOST_CHECK_EQUAL(v["write_now_free"], true);
-    BOOST_CHECK_EQUAL(v["read_blocked_by_writer"], false);
+    BOOST_CHECK_EQUAL(v["read_blocked_by_writer"], true);
     BOOST_CHECK_EQUAL(v["write_reentrant"], true);
     BOOST_CHECK_EQUAL(v["write_release1"], true);
     BOOST_CHECK_EQUAL(v["write_release2"], true);
@@ -291,9 +293,9 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_06_RankFacadeMatrix) {
     BOOST_CHECK_EQUAL(v["top1_score"], 1100);
     BOOST_CHECK_EQUAL(v["top2"], "p1");  // tie 1000: uid asc
     BOOST_CHECK_EQUAL(v["position"], 3);
-    BOOST_CHECK(v["position_missing"].is_null());
+    BOOST_CHECK(!v.contains("position_missing"));
     BOOST_CHECK_EQUAL(v["score"], 1100);
-    BOOST_CHECK(v["score_missing"].is_null());
+    BOOST_CHECK(!v.contains("score_missing"));
     BOOST_CHECK_EQUAL(v["range1"], "p1");
     BOOST_CHECK_EQUAL(v["range_size"], 2);
     // by_score(950..1050) = p1(1000, rank2), p3(1000, rank3)
@@ -322,13 +324,14 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_07_QueueFacadeMatrix) {
     if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
     BOOST_REQUIRE(r.success);
     const nlohmann::json& v = r.values[0];
-    BOOST_CHECK(v["pop_empty"].is_null());
+    BOOST_CHECK(!v.contains("pop_empty"));
     BOOST_CHECK_EQUAL(v["length"], 3);
     BOOST_CHECK_EQUAL(v["pop_a"], "a");
     // The delay queue had one ready entry (push_at in the past) and one
     // late entry; the ready one pops first.
     BOOST_CHECK_EQUAL(v["delay_pending"], 1);
     BOOST_CHECK_EQUAL(v["delay_ready"], 1);
+    BOOST_CHECK_EQUAL(v["delay_pop_now"], "now");
     BOOST_CHECK_EQUAL(v["delay_pop_late"], "late");
     BOOST_CHECK_EQUAL(v["pop_b"], "b");
     BOOST_CHECK_EQUAL(v["length_after_purge"], 0);
