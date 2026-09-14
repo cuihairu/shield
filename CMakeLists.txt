@@ -719,7 +719,12 @@ add_test(NAME shield_runtime_registry_smoke
         -DEXPECTED_OUTPUT_REGEX=registry_smoke_done
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
-if(SHIELD_ENABLE_CLUSTER)
+# The test asserts that enabling a module in config without compiling it
+# fails at startup, so each branch needs its module OFF: the global fixture
+# only errors when shield_global is not built, the cluster fixture likewise.
+# With both optional modules enabled there is no disabled-module scenario to
+# exercise and the test is not registered.
+if(SHIELD_ENABLE_CLUSTER AND NOT SHIELD_ENABLE_GLOBAL)
     add_test(NAME shield_config_optional_requires_module
         COMMAND ${CMAKE_COMMAND}
             "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-global-disabled.yaml"
@@ -727,7 +732,7 @@ if(SHIELD_ENABLE_CLUSTER)
             -DEXPECTED_OUTPUT_REGEX=shield_global
             -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
     )
-else()
+elseif(NOT SHIELD_ENABLE_CLUSTER)
     add_test(NAME shield_config_optional_requires_module
         COMMAND ${CMAKE_COMMAND}
             "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/optional-cluster-disabled.yaml"

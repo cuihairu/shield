@@ -1,8 +1,8 @@
 # 全局能力运行时语义
 
-> 状态：设计草案，非当前实现契约。
+> 状态：P0 已落地（`SHIELD_ENABLE_GLOBAL=ON`；测试矩阵 `tests/lua_api/test_lua_api_global.cpp`）。
 >
-> 本文冻结 `shield_global` optional module 的边界契约；下文给出的 `shield.global()`、锁、排行榜、队列、限流器等 Lua API **均未实现**，进入 Phase 2+。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
+> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）。P0 的"分布式"锁与可靠队列与本地后端共享进程内 `GlobalManager`（跨进程 seam 预留，Redis 后端为终态形态）；`shield.rate_limiter` 属 P1（调用返回 `module_unavailable` 稳定错误），`shield.priority_queue`、`shield.broadcast_queue` 与 Redis 后端尚未实现（见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
 
 本文档包含 Shield 跨进程共享数据、分布式锁、排行榜、消息队列等全局能力的运行时语义决策。
 
