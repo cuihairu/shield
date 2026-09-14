@@ -366,5 +366,29 @@ if(SHIELD_ENABLE_SERVER)
     shield_copy_runtime_dlls(test_server_manager)
 endif()
 
+# ---------------------------------------------------------------------------
+# Global capability store tests (require SHIELD_ENABLE_GLOBAL; CI runs them
+# in the cluster job, which enables the module, via the "global" label)
+# ---------------------------------------------------------------------------
+if(SHIELD_ENABLE_GLOBAL)
+    add_executable(test_global_manager global/test_global_manager.cpp)
+    target_link_libraries(test_global_manager
+        PRIVATE
+            shield_global
+            shield_config
+            Boost::unit_test_framework
+            Boost::headers
+    )
+    target_include_directories(test_global_manager
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_global_manager COMMAND test_global_manager)
+    set_tests_properties(test_global_manager PROPERTIES
+        # "coverage" so global-enabled coverage builds measure the global
+        # core through this suite (same convention as the cluster suites).
+        LABELS "global;coverage"
+        TIMEOUT 120)
+    shield_copy_runtime_dlls(test_global_manager)
+endif()
+
 # Coverage-focused unit tests (one executable per src/ module).
 add_subdirectory(coverage)

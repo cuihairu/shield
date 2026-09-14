@@ -11,6 +11,9 @@
 #ifdef SHIELD_ENABLE_SERVER
 #include "shield/server/server_manager.hpp"
 #endif
+#ifdef SHIELD_ENABLE_GLOBAL
+#include "shield/global/global_manager.hpp"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <caf/actor.hpp>
@@ -2859,6 +2862,1098 @@ void register_server_stub_api(sol::table& shield, sol::state_view lua) {
 }
 #endif
 
+#ifdef SHIELD_ENABLE_GLOBAL
+// -----------------------------------------------------------------------------
+// shield_global (P0): global data + local cache, locks, leaderboards,
+// queues and the scheduler over the C++ GlobalManager store.
+//
+// Waiting entries (lock acquire, queue pop with timeout) MUST yield the
+// running coroutine instead of blocking the actor thread — a yield can
+// never cross a C++ call frame, so the wait loops live in this Lua chunk
+// (never inside a C++ lambda) and only the non-blocking primitives are
+// C++ functions injected up front as __shield_global_primitives.
+// -----------------------------------------------------------------------------
+constexpr const char* kGlobalOrchestration = R"lua(
+local impl = {sched = {}, sched_prev = nil, sched_installed = false}
+local prim = rawget(_G, '__shield_global_primitives')
+
+-- Wait until try_fn() returns true. timeout_ms nil (or < 0) = single
+-- attempt; 0 = poll until success; n > 0 = bounded wait. Uses
+-- shield.sleep (coroutine-aware) so actor threads never block.
+local function wait_for(try_fn, timeout_ms, retry_ms)
+  if try_fn() then return true end
+  if timeout_ms == nil or timeout_ms < 0 then return false end
+  local deadline = shield.now() + timeout_ms
+  while true do
+    local remaining = deadline - shield.now()
+    if remaining <= 0 then return false end
+    shield.sleep(math.min(retry_ms, remaining))
+    if try_fn() then return true end
+  end
+end
+
+local function timeout_error(what, timeout_ms)
+  return {code = 'timeout',
+          message = what .. ' timed out after ' .. tostring(timeout_ms) .. 'ms',
+          retryable = true}
+end
+
+-- ---- exclusive locks (mutex / spinlock / distributed_mutex) ----
+local function make_exclusive(name, opts, registry)
+  opts = opts or {}
+  local lock = {
+    name = name,
+    ttl = opts.ttl or 0,
+    retry = opts.retry or 20,
+    _owner = registry .. ':' .. name .. ':' .. tostring({}),
+  }
+  function lock:try_acquire()
+    return prim.lock_try(registry, name, self._owner, self.ttl)
+  end
+  function lock:release()
+    return prim.lock_release(registry, name, self._owner)
+  end
+  function lock:extend(ttl)
+    return prim.lock_extend(registry, name, self._owner, ttl or self.ttl)
+  end
+  function lock:owner()
+    return prim.lock_info(registry, name)
+  end
+  function lock:ttl()
+    local info = prim.lock_info(registry, name)
+    if not info or not info.exists then return -1 end
+    return info.ttl_remaining or -1
+  end
+  function lock:acquire(timeout)
+    local waited = timeout or 0
+    local ok = wait_for(function() return self:try_acquire() end, waited,
+                        self.retry)
+    if ok then return true end
+    return nil, timeout_error('lock acquire', waited)
+  end
+  function lock:with(fn)
+    local ok, err = self:acquire()
+    if not ok then return false, err end
+    local results = table.pack(pcall(fn))
+    self:release()
+    if results[1] then
+      return true, table.unpack(results, 2, results.n)
+    end
+    return false, results[2]
+  end
+  return lock
+end
+
+-- ---- reader/writer guards ----
+local function make_guard(name, opts, kind, owner)
+  local guard = {retry = (opts and opts.retry) or 20, _owner = owner}
+  local try, release
+  if kind == 'write' then
+    try = function(ttl)
+      return prim.rw_write_try(name, owner, ttl or (opts and opts.ttl) or 0)
+    end
+    release = function() return prim.rw_write_release(name, owner) end
+  else
+    try = function() return prim.rw_read_try(name, owner) end
+    release = function() return prim.rw_read_release(name, owner) end
+  end
+  function guard:try_acquire() return try() end
+  function guard:release() return release() end
+  function guard:acquire(timeout)
+    local waited = timeout or 0
+    local ok = wait_for(function() return try() end, waited, self.retry)
+    if ok then return true end
+    return nil, timeout_error('lock acquire', waited)
+  end
+  function guard:with(fn)
+    local ok, err = self:acquire()
+    if not ok then return false, err end
+    local results = table.pack(pcall(fn))
+    release()
+    if results[1] then
+      return true, table.unpack(results, 2, results.n)
+    end
+    return false, results[2]
+  end
+  return guard
+end
+
+local function make_rwlock(name, opts)
+  return {
+    name = name,
+    read_lock = function(self)
+      return make_guard(name, opts, 'read', 'r:' .. name .. ':' .. tostring({}))
+    end,
+    write_lock = function(self)
+      return make_guard(name, opts, 'write', 'w:' .. name .. ':' .. tostring({}))
+    end,
+  }
+end
+
+-- ---- queue pop with timeout (single attempt / bounded wait) ----
+local function pop_with_wait(pop_now, timeout)
+  local msg = false
+  local got = wait_for(function()
+    local m = pop_now()
+    if m ~= nil then msg = m return true end
+    return false
+  end, timeout, 10)
+  if not got then return nil end
+  return prim.decode(msg)
+end
+
+-- ---- queues ----
+local function make_queue(name, opts)
+  local q = {name = name}
+  function q:push(v)
+    prim.queue_push(name, prim.encode(v))
+    return true
+  end
+  function q:push_batch(arr)
+    for _, v in ipairs(arr) do prim.queue_push(name, prim.encode(v)) end
+    return true
+  end
+  function q:pop(timeout)
+    return pop_with_wait(function() return prim.queue_pop_now(name) end,
+                         timeout)
+  end
+  function q:length() return prim.queue_length(name) end
+  function q:purge()
+    prim.queue_purge(name)
+    return true
+  end
+  return q
+end
+
+local function make_delay_queue(name, opts)
+  local q = {name = name}
+  function q:push(v, delay)
+    prim.delay_push(name, prim.encode(v), delay)
+    return true
+  end
+  function q:push_at(v, at)
+    -- Contract timestamps are seconds (os.time()), the store keeps ms.
+    prim.delay_push_at(name, prim.encode(v), at * 1000)
+    return true
+  end
+  function q:pop(timeout)
+    return pop_with_wait(function() return prim.delay_pop_now(name) end,
+                         timeout)
+  end
+  function q:pending() return prim.delay_pending(name) end
+  function q:ready() return prim.delay_ready(name) end
+  function q:purge()
+    prim.delay_purge(name)
+    return true
+  end
+  return q
+end
+
+local function make_reliable_queue(name, opts)
+  opts = opts or {}
+  prim.rel_configure(name, opts.max_retries or 3)
+  local q = {name = name}
+  function q:push(v)
+    prim.rel_push(name, prim.encode(v))
+    return true
+  end
+  function q:pop(timeout)
+    local id, payload
+    local got = wait_for(function()
+      local i, p = prim.rel_pop_now(name)
+      if i ~= nil then id = i payload = p return true end
+      return false
+    end, timeout, 10)
+    if not got then return nil end
+    local handle = {
+      id = id,
+      ack = function(self2) return prim.rel_ack(name, id) end,
+      nack = function(self2, retry)
+        return prim.rel_nack(name, id, retry or 0)
+      end,
+    }
+    return prim.decode(payload), handle
+  end
+  function q:dead_letter()
+    return {
+      range = function(self2, from, to)
+        local rows = prim.rel_dead_range(name, from, to or from)
+        local out = {}
+        for i, row in ipairs(rows) do out[i] = prim.decode(row.payload) end
+        return out
+      end,
+      size = function(self2) return prim.rel_dead_size(name) end,
+      purge = function(self2)
+        prim.rel_dead_purge(name)
+        return true
+      end,
+    }
+  end
+  return q
+end
+
+-- ---- scheduler callback registry ----
+impl.attach_sched = function(M, task, fn)
+  impl.sched[task] = fn
+  if not impl.sched_installed then
+    impl.sched_installed = true
+    local prev = rawget(M, 'on_scheduler_task')
+    if type(prev) == 'function' then impl.sched_prev = prev end
+    M.on_scheduler_task = function(ctx, task)
+      if impl.sched_prev then
+        local ok, err = pcall(impl.sched_prev, ctx, task)
+        if not ok then
+          shield.log.warn('on_scheduler_task failed: ' .. tostring(err))
+        end
+      end
+      local fn2 = impl.sched[task]
+      if fn2 then
+        local ok2, err2 = pcall(fn2, ctx)
+        if not ok2 then
+          shield.log.warn('scheduler task failed: ' .. tostring(err2))
+        end
+      else
+        shield.log.warn('scheduler task has no callback: ' .. tostring(task))
+      end
+    end
+  end
+  return true
+end
+impl.detach_sched = function(task) impl.sched[task] = nil return true end
+impl.sched_count = function()
+  local n = 0
+  for _ in pairs(impl.sched) do n = n + 1 end
+  return n
+end
+
+local api = {
+  make_mutex = function(name, opts) return make_exclusive(name, opts, 'mutex') end,
+  make_spinlock = function(name, opts)
+    return make_exclusive(name, opts, 'spinlock')
+  end,
+  make_rwlock = make_rwlock,
+  make_queue = make_queue,
+  make_delay_queue = make_delay_queue,
+  make_reliable_queue = make_reliable_queue,
+  pop_with_wait = pop_with_wait,
+  attach_sched = impl.attach_sched,
+  detach_sched = impl.detach_sched,
+  sched_count = impl.sched_count,
+}
+rawset(_G, '__shield_global_impl', api)
+return api
+)lua";
+
+void register_global_api(sol::table& shield, LuaServiceManager* manager,
+                         LuaRuntime* runtime) {
+    sol::state_view lua(shield.lua_state());
+
+    // Non-blocking primitives the orchestration chunk builds the waiting
+    // API on. Created per VM, then handed to the chunk; C++ never keeps a
+    // reference past this registration (call-time resolution only).
+    sol::table prim = lua.create_table();
+    auto* gm = shield::global::GlobalManager::global();
+    auto lock_try = [gm](const std::string& registry, const std::string& name,
+                         const std::string& owner, double ttl) {
+        return gm->mutex_acquire(registry, name, owner,
+                                 static_cast<std::uint64_t>(ttl)) ==
+               shield::global::LockStatus::kOk;
+    };
+    prim.set_function("lock_try", lock_try);
+    prim.set_function("lock_release",
+                      [gm](const std::string& registry, const std::string& name,
+                           const std::string& owner) {
+                          return gm->mutex_release(registry, name, owner) ==
+                                 shield::global::LockStatus::kOk;
+                      });
+    prim.set_function("lock_extend",
+                      [gm](const std::string& registry, const std::string& name,
+                           const std::string& owner, double ttl) {
+                          return gm->mutex_extend(
+                              registry, name, owner,
+                              static_cast<std::uint64_t>(ttl));
+                      });
+    prim.set_function(
+        "lock_info",
+        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& registry, const std::string& name) {
+            sol::state_view s(state);
+            const auto info = gm->mutex_info(registry, name);
+            if (!info.exists) {
+                return sol::make_object(s, sol::nil);
+            }
+            sol::table out = s.create_table();
+            out["owner"] = info.owner;
+            out["count"] = info.count;
+            out["acquired_at"] = info.acquired_at_ms;
+            out["ttl_remaining"] = info.ttl_remaining_ms;
+            return sol::make_object(s, out);
+        });
+    prim.set_function(
+        "rw_write_try",
+        [gm](const std::string& name, const std::string& owner, double ttl) {
+            return gm->rw_write_acquire(name, owner,
+                                        static_cast<std::uint64_t>(ttl)) ==
+                   shield::global::LockStatus::kOk;
+        });
+    prim.set_function("rw_write_release",
+                      [gm](const std::string& name, const std::string& owner) {
+                          return gm->rw_write_release(name, owner) ==
+                                 shield::global::LockStatus::kOk;
+                      });
+    prim.set_function(
+        "rw_write_extend",
+        [gm](const std::string& name, const std::string& owner, double ttl) {
+            return gm->rw_write_extend(name, owner,
+                                       static_cast<std::uint64_t>(ttl));
+        });
+    prim.set_function("rw_read_try",
+                      [gm](const std::string& name, const std::string& owner) {
+                          return gm->rw_read_acquire(name, owner) ==
+                                 shield::global::LockStatus::kOk;
+                      });
+    prim.set_function("rw_read_release",
+                      [gm](const std::string& name, const std::string& owner) {
+                          return gm->rw_read_release(name, owner) ==
+                                 shield::global::LockStatus::kOk;
+                      });
+    prim.set_function("queue_push", [gm](const std::string& name,
+                                         const std::string& payload) {
+        gm->queue_push(name, payload);
+    });
+    prim.set_function(
+        "queue_pop_now",
+        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name) -> sol::object {
+            sol::state_view s(state);
+            std::string payload;
+            if (!gm->queue_pop(name, &payload)) {
+                return sol::make_object(s, sol::nil);
+            }
+            return sol::make_object(s, payload);
+        });
+    prim.set_function("queue_length", [gm](const std::string& name) {
+        return gm->queue_length(name);
+    });
+    prim.set_function("queue_purge",
+                      [gm](const std::string& name) { gm->queue_purge(name); });
+    prim.set_function(
+        "delay_push", [gm](const std::string& name, const std::string& payload,
+                           double delay) {
+            gm->delay_push(name, payload, static_cast<std::uint64_t>(delay));
+        });
+    prim.set_function(
+        "delay_push_at",
+        [gm](const std::string& name, const std::string& payload, double at) {
+            gm->delay_push_at(name, payload, static_cast<std::uint64_t>(at));
+        });
+    prim.set_function(
+        "delay_pop_now",
+        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name) -> sol::object {
+            sol::state_view s(state);
+            std::string payload;
+            if (!gm->delay_pop(name, &payload)) {
+                return sol::make_object(s, sol::nil);
+            }
+            return sol::make_object(s, payload);
+        });
+    prim.set_function("delay_pending", [gm](const std::string& name) {
+        return gm->delay_pending(name);
+    });
+    prim.set_function("delay_ready", [gm](const std::string& name) {
+        return gm->delay_ready(name);
+    });
+    prim.set_function("delay_purge",
+                      [gm](const std::string& name) { gm->delay_purge(name); });
+    prim.set_function(
+        "rel_configure", [gm](const std::string& name, double max_retries) {
+            gm->reliable_configure(name, static_cast<int>(max_retries));
+        });
+    prim.set_function(
+        "rel_push", [gm](const std::string& name, const std::string& payload) {
+            gm->reliable_push(name, payload);
+        });
+    prim.set_function(
+        "rel_pop_now",
+        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name) -> std::tuple<sol::object, sol::object> {
+            sol::state_view s(state);
+            shield::global::ReliableDelivery delivery;
+            if (!gm->reliable_pop(name, &delivery)) {
+                return {sol::make_object(s, sol::nil),
+                        sol::make_object(s, sol::nil)};
+            }
+            return {sol::make_object(s, delivery.delivery_id),
+                    sol::make_object(s, delivery.payload)};
+        });
+    prim.set_function("rel_ack", [gm](const std::string& name,
+                                      double delivery_id) {
+        return gm->reliable_ack(name, static_cast<std::uint64_t>(delivery_id));
+    });
+    prim.set_function("rel_nack", [gm](const std::string& name,
+                                       double delivery_id, double retry) {
+        switch (gm->reliable_nack(name, static_cast<std::uint64_t>(delivery_id),
+                                  static_cast<std::uint64_t>(retry))) {
+            case shield::global::NackResult::kRequeued:
+                return "requeued";
+            case shield::global::NackResult::kDead:
+                return "dead";
+            case shield::global::NackResult::kNotFound:
+                break;
+        }
+        return "not_found";
+    });
+    prim.set_function(
+        "rel_dead_range",
+        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name, double from, double to) -> sol::object {
+            sol::state_view s(state);
+            auto entries =
+                gm->reliable_dead_range(name, static_cast<std::size_t>(from),
+                                        static_cast<std::size_t>(to));
+            sol::table out = s.create_table();
+            for (const auto& entry : entries) {
+                sol::table row = s.create_table();
+                row["id"] = entry.delivery_id;
+                row["payload"] = entry.payload;
+                row["retries"] = entry.retries;
+                out.add(row);
+            }
+            return out;
+        });
+    prim.set_function("rel_dead_size", [gm](const std::string& name) {
+        return gm->reliable_dead_size(name);
+    });
+    prim.set_function("rel_dead_purge", [gm](const std::string& name) {
+        gm->reliable_dead_purge(name);
+    });
+    prim.set_function(
+        "encode", [](sol::object value) { return lua_to_json(value).dump(); });
+    prim.set_function(
+        "decode",
+        [](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           const std::string& text) -> sol::object {
+            sol::state_view s(state);
+            auto parsed = nlohmann::json::parse(text, nullptr, false);
+            if (parsed.is_discarded()) {
+                return sol::make_object(s, sol::nil);
+            }
+            return json_to_lua(s, parsed);
+        });
+    lua["__shield_global_primitives"] = prim;
+
+    // Run the orchestration chunk once per VM.
+    lua.safe_script(
+        kGlobalOrchestration,
+        [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           sol::protected_function_result
+               pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+
+    // Resolve the impl table at CALL time (never captured: same rule as
+    // the server orchestration chunk).
+    auto impl_table = [lua]() {
+        sol::table impl = lua.globals()["__shield_global_impl"];
+        return impl;
+    };
+
+    // ---- shield.global(): global data + local cache ----
+    shield.set_function(
+        "global", [lua](sol::this_state state) -> sol::variadic_results {
+            sol::state_view s(state);
+            sol::variadic_results results;
+            auto* mgr = shield::global::GlobalManager::global();
+            if (mgr == nullptr) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "module_unavailable",
+                               "shield_global is not initialized"));
+                return results;
+            }
+            sol::table g = s.create_table();
+            g.set_function("set", [mgr](sol::object key, sol::object value,
+                                        sol::optional<double> ttl) {
+                mgr->data_set(key.as<std::string>(), lua_to_json(value).dump(),
+                              ttl ? static_cast<std::uint64_t>(*ttl) : 0);
+                return true;
+            });
+            g.set_function(
+                "get",
+                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      sol::object key) -> sol::object {
+                    sol::state_view s(state);
+                    std::string value;
+                    if (!mgr->data_get(key.as<std::string>(), &value)) {
+                        return sol::make_object(s, sol::nil);
+                    }
+                    auto parsed = nlohmann::json::parse(value, nullptr, false);
+                    if (parsed.is_discarded()) {
+                        return sol::make_object(s, value);
+                    }
+                    return json_to_lua(s, parsed);
+                });
+            g.set_function("delete", [mgr](sol::object key) {
+                return mgr->data_delete(key.as<std::string>());
+            });
+            g.set_function(
+                "incr",
+                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      sol::object key,
+                      sol::optional<double> delta) -> sol::variadic_results {
+                    sol::state_view s(state);
+                    sol::variadic_results results;
+                    std::int64_t out = 0;
+                    std::string error;
+                    if (!mgr->data_incr_by(
+                            key.as<std::string>(),
+                            delta ? static_cast<std::int64_t>(*delta) : 1, &out,
+                            &error)) {
+                        results.push_back(sol::make_object(s, sol::nil));
+                        results.push_back(
+                            make_error(state, "invalid_value", error));
+                        return results;
+                    }
+                    results.push_back(sol::make_object(s, out));
+                    return results;
+                });
+            g.set_function(
+                "decr",
+                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      sol::object key,
+                      sol::optional<double> delta) -> sol::variadic_results {
+                    sol::state_view s(state);
+                    sol::variadic_results results;
+                    std::int64_t out = 0;
+                    std::string error;
+                    if (!mgr->data_incr_by(
+                            key.as<std::string>(),
+                            delta ? -static_cast<std::int64_t>(*delta) : -1,
+                            &out, &error)) {
+                        results.push_back(sol::make_object(s, sol::nil));
+                        results.push_back(
+                            make_error(state, "invalid_value", error));
+                        return results;
+                    }
+                    results.push_back(sol::make_object(s, out));
+                    return results;
+                });
+            g.set_function(
+                "mset",
+                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      sol::table kvs,
+                      sol::optional<double> ttl) -> sol::variadic_results {
+                    sol::state_view s(state);
+                    sol::variadic_results results;
+                    std::vector<std::pair<std::string, std::string>> pairs;
+                    for (auto& [k, v] : kvs) {
+                        if (k.is<std::string>()) {
+                            pairs.emplace_back(k.as<std::string>(),
+                                               lua_to_json(v).dump());
+                        }
+                    }
+                    std::string error;
+                    if (!mgr->data_mset(
+                            pairs, ttl ? static_cast<std::uint64_t>(*ttl) : 0,
+                            &error)) {
+                        results.push_back(sol::make_object(s, sol::nil));
+                        results.push_back(
+                            make_error(state, "invalid_argument", error));
+                        return results;
+                    }
+                    results.push_back(sol::make_object(s, true));
+                    return results;
+                });
+            g.set_function(
+                "mget",
+                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      sol::variadic_args args) -> sol::object {
+                    sol::state_view s(state);
+                    sol::table out = s.create_table();
+                    for (const auto& arg : args) {
+                        std::string value;
+                        if (mgr->data_get(arg.as<std::string>(), &value)) {
+                            auto parsed =
+                                nlohmann::json::parse(value, nullptr, false);
+                            if (!parsed.is_discarded()) {
+                                out.add(json_to_lua(s, parsed));
+                                continue;
+                            }
+                            out.add(sol::make_object(s, value));
+                        } else {
+                            out.add(sol::make_object(s, sol::nil));
+                        }
+                    }
+                    return out;
+                });
+            g.set_function(
+                "get_cached",
+                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      sol::object key,
+                      sol::optional<double> ttl) -> sol::object {
+                    sol::state_view s(state);
+                    std::string value;
+                    if (!mgr->cache_get(
+                            key.as<std::string>(),
+                            ttl ? static_cast<std::uint64_t>(*ttl) : 0,
+                            &value)) {
+                        return sol::make_object(s, sol::nil);
+                    }
+                    auto parsed = nlohmann::json::parse(value, nullptr, false);
+                    if (parsed.is_discarded()) {
+                        return sol::make_object(s, value);
+                    }
+                    return json_to_lua(s, parsed);
+                });
+            g.set_function("invalidate", [mgr](sol::object key) {
+                mgr->cache_invalidate(key.as<std::string>());
+                return true;
+            });
+            results.push_back(sol::make_object(s, g));
+            return results;
+        });
+
+    // ---- lock factories (waiting semantics live in the chunk) ----
+    auto lock_factory = [lua, impl_table](sol::this_state state,
+                                          const char* maker, sol::object name,
+                                          sol::optional<sol::table> opts) {
+        sol::state_view s(state);
+        auto* mgr = shield::global::GlobalManager::global();
+        if (mgr == nullptr) {
+            return std::make_tuple(
+                sol::make_object(s, sol::nil),
+                sol::make_object(
+                    s, make_error(state, "module_unavailable",
+                                  "shield_global is not initialized")));
+        }
+        (void)mgr;
+        sol::table impl = impl_table();
+        sol::protected_function make = impl[maker];
+        sol::protected_function_result result =
+            name.is<std::string>() && opts.has_value()
+                ? make(name.as<std::string>(), *opts)
+                : make(name.is<std::string>() ? name.as<std::string>() : "");
+        if (!result.valid()) {
+            return std::make_tuple(
+                sol::make_object(s, sol::nil),
+                sol::make_object(s, make_error(state, "invalid_argument",
+                                               "invalid lock arguments")));
+        }
+        return std::make_tuple(sol::make_object(s, std::move(result)),
+                               sol::make_object(s, sol::nil));
+    };
+    shield.set_function(
+        "mutex", [lock_factory](sol::this_state state, sol::object name,
+                                sol::optional<sol::table> opts) {
+            return lock_factory(state, "make_mutex", name, opts);
+        });
+    shield.set_function(
+        "spinlock", [lock_factory](sol::this_state state, sol::object name,
+                                   sol::optional<sol::table> opts) {
+            return lock_factory(state, "make_spinlock", name, opts);
+        });
+    shield.set_function(
+        "rwlock", [lock_factory](sol::this_state state, sol::object name,
+                                 sol::optional<sol::table> opts) {
+            return lock_factory(state, "make_rwlock", name, opts);
+        });
+    shield.set_function("distributed_mutex",
+                        [lock_factory](sol::this_state state, sol::object name,
+                                       sol::optional<sol::table> opts) {
+                            // P0: the distributed twin rides the in-process
+                            // backend (the cross-process seam is the manager
+                            // itself).
+                            return lock_factory(state, "make_mutex", name,
+                                                opts);
+                        });
+    shield.set_function("distributed_rwlock",
+                        [lock_factory](sol::this_state state, sol::object name,
+                                       sol::optional<sol::table> opts) {
+                            return lock_factory(state, "make_rwlock", name,
+                                                opts);
+                        });
+
+    // ---- shield.rank(name) ----
+    shield.set_function(
+        "rank", [lua](sol::this_state state) -> sol::variadic_results {
+            sol::state_view s(state);
+            sol::variadic_results results;
+            auto* mgr = shield::global::GlobalManager::global();
+            if (mgr == nullptr) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "module_unavailable",
+                               "shield_global is not initialized"));
+                return results;
+            }
+            sol::table rank = s.create_table();
+            rank.set_function("update", [mgr](std::string board,
+                                              std::string uid, double score) {
+                mgr->rank_update(board, uid, score);
+                return true;
+            });
+            rank.set_function(
+                "mupdate", [mgr](std::string board, sol::table updates) {
+                    std::vector<std::pair<std::string, double>> batch;
+                    for (auto& [uid, score] : updates) {
+                        if (uid.is<std::string>() && score.is<double>()) {
+                            batch.emplace_back(uid.as<std::string>(),
+                                               score.as<double>());
+                        }
+                    }
+                    mgr->rank_mupdate(board, batch);
+                    return true;
+                });
+            rank.set_function(
+                "score",
+                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      std::string board, std::string uid) -> sol::object {
+                    sol::state_view s(state);
+                    auto value = mgr->rank_score(board, uid);
+                    if (!value.has_value()) {
+                        return sol::make_object(s, sol::nil);
+                    }
+                    return sol::make_object(s, *value);
+                });
+            rank.set_function(
+                "position",
+                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                      std::string board, std::string uid) -> sol::object {
+                    sol::state_view s(state);
+                    auto value = mgr->rank_position(board, uid);
+                    if (!value.has_value()) {
+                        return sol::make_object(s, sol::nil);
+                    }
+                    return sol::make_object(s, *value);
+                });
+            auto entry_table = [](sol::state_view s,
+                                  const shield::global::RankEntry& entry) {
+                sol::table row = s.create_table();
+                row["uid"] = entry.uid;
+                row["score"] = entry.score;
+                row["rank"] = entry.rank;
+                return row;
+            };
+            rank.set_function(
+                "top",
+                [mgr, entry_table](sol::this_state state,  // GCOVR_EXCL_LINE
+                                   std::string board, double n) -> sol::object {
+                    sol::state_view s(state);
+                    sol::table out = s.create_table();
+                    for (const auto& entry :
+                         mgr->rank_top(board, static_cast<std::size_t>(n))) {
+                        out.add(entry_table(s, entry));
+                    }
+                    return out;
+                });
+            rank.set_function(
+                "range",
+                [mgr, entry_table](sol::this_state state,  // GCOVR_EXCL_LINE
+                                   std::string board, double from,
+                                   double to) -> sol::object {
+                    sol::state_view s(state);
+                    sol::table out = s.create_table();
+                    for (const auto& entry : mgr->rank_range(
+                             board, static_cast<std::uint64_t>(from),
+                             static_cast<std::uint64_t>(to))) {
+                        out.add(entry_table(s, entry));
+                    }
+                    return out;
+                });
+            rank.set_function(
+                "range_by_score",
+                [mgr, entry_table](sol::this_state state,  // GCOVR_EXCL_LINE
+                                   std::string board, double lo,
+                                   double hi) -> sol::object {
+                    sol::state_view s(state);
+                    sol::table out = s.create_table();
+                    for (const auto& entry :
+                         mgr->rank_range_by_score(board, lo, hi)) {
+                        out.add(entry_table(s, entry));
+                    }
+                    return out;
+                });
+            rank.set_function(
+                "around",
+                [mgr, entry_table](sol::this_state state,  // GCOVR_EXCL_LINE
+                                   std::string board, std::string uid,
+                                   double n) -> sol::object {
+                    sol::state_view s(state);
+                    sol::table out = s.create_table();
+                    const auto around = mgr->rank_around(
+                        board, uid, static_cast<std::size_t>(n));
+                    sol::table above = s.create_table();
+                    for (const auto& entry : around.above) {
+                        above.add(entry_table(s, entry));
+                    }
+                    sol::table below = s.create_table();
+                    for (const auto& entry : around.below) {
+                        below.add(entry_table(s, entry));
+                    }
+                    out["above"] = above;
+                    out["target"] = around.target
+                                        ? sol::make_object(
+                                              s, entry_table(s, *around.target))
+                                        : sol::make_object(s, sol::nil);
+                    out["below"] = below;
+                    return out;
+                });
+            rank.set_function("count", [mgr](std::string board) {
+                return mgr->rank_count(board);
+            });
+            rank.set_function("remove",
+                              [mgr](std::string board, std::string uid) {
+                                  return mgr->rank_remove(board, uid);
+                              });
+            rank.set_function("clear", [mgr](std::string board) {
+                mgr->rank_clear(board);
+                return true;
+            });
+            results.push_back(sol::make_object(s, rank));
+            return results;
+        });
+
+    // ---- queue factories (waiting pop semantics live in the chunk) ----
+    auto queue_factory = [lua, impl_table](sol::this_state state,
+                                           const char* maker, sol::object name,
+                                           sol::optional<sol::table> opts) {
+        sol::state_view s(state);
+        auto* mgr = shield::global::GlobalManager::global();
+        if (mgr == nullptr) {
+            return std::make_tuple(
+                sol::make_object(s, sol::nil),
+                sol::make_object(
+                    s, make_error(state, "module_unavailable",
+                                  "shield_global is not initialized")));
+        }
+        (void)mgr;
+        sol::table impl = impl_table();
+        sol::protected_function make = impl[maker];
+        sol::protected_function_result result =
+            opts.has_value() ? make(name, *opts) : make(name);
+        if (!result.valid()) {
+            return std::make_tuple(
+                sol::make_object(s, sol::nil),
+                sol::make_object(s, make_error(state, "invalid_argument",
+                                               "invalid queue arguments")));
+        }
+        return std::make_tuple(sol::make_object(s, std::move(result)),
+                               sol::make_object(s, sol::nil));
+    };
+    shield.set_function(
+        "queue", [queue_factory](sol::this_state state, sol::object name,
+                                 sol::optional<sol::table> opts) {
+            return queue_factory(state, "make_queue", name, opts);
+        });
+    shield.set_function(
+        "delay_queue", [queue_factory](sol::this_state state, sol::object name,
+                                       sol::optional<sol::table> opts) {
+            return queue_factory(state, "make_delay_queue", name, opts);
+        });
+    shield.set_function("reliable_queue",
+                        [queue_factory](sol::this_state state, sol::object name,
+                                        sol::optional<sol::table> opts) {
+                            return queue_factory(state, "make_reliable_queue",
+                                                 name, opts);
+                        });
+
+    // ---- shield.scheduler() ----
+    shield.set_function(
+        "scheduler",
+        [lua, manager,
+         runtime](sol::this_state state) -> sol::variadic_results {
+            sol::state_view s(state);
+            sol::variadic_results results;
+            auto* mgr = shield::global::GlobalManager::global();
+            if (mgr == nullptr) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "module_unavailable",
+                               "shield_global is not initialized"));
+                return results;
+            }
+            auto register_task = [lua, manager, runtime](
+                                     sol::this_state state, const char* type,
+                                     sol::object name, sol::object schedule,
+                                     sol::object cb) -> sol::variadic_results {
+                sol::state_view s(state);
+                sol::variadic_results results;
+                auto* mgr2 = shield::global::GlobalManager::global();
+                if (!name.is<std::string>() || name.as<std::string>().empty()) {
+                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(
+                        make_error(state, "invalid_argument",
+                                   "task name must be a non-empty string"));
+                    return results;
+                }
+                if (!cb.is<sol::function>()) {
+                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(
+                        make_error(state, "invalid_argument",
+                                   "task expects a callback function"));
+                    return results;
+                }
+                std::string schedule_text;
+                if (schedule.is<std::string>()) {
+                    schedule_text = schedule.as<std::string>();
+                } else if (schedule.is<double>()) {
+                    const double raw = schedule.as<double>();
+                    if (raw < 0.0 || raw != std::floor(raw)) {
+                        results.push_back(sol::make_object(s, sol::nil));
+                        results.push_back(make_error(
+                            state, "invalid_argument",
+                            "schedule must be a non-negative integer ms"));
+                        return results;
+                    }
+                    schedule_text =
+                        std::to_string(static_cast<std::uint64_t>(raw));
+                } else {
+                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(make_error(
+                        state, "invalid_argument",
+                        "schedule must be a cron string or an ms number"));
+                    return results;
+                }
+                const std::string service_id = manager->current_service_id();
+                if (service_id.empty()) {
+                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(make_error(
+                        state, "invalid_argument",
+                        "scheduler tasks require a service context (register "
+                        "from on_init or a handler)"));
+                    return results;
+                }
+                std::string error;
+                if (!mgr2->sched_register(type, name.as<std::string>(),
+                                          schedule_text, service_id, &error)) {
+                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(
+                        make_error(state, "invalid_argument", error));
+                    return results;
+                }
+                // Resolve the calling service's module table and store the
+                // callback in the per-VM registry (same VM resolution as
+                // the server watch facade).
+                sol::table module_tbl = sol::nil;
+                if (runtime) {
+                    auto vm = manager->current_service_vm();
+                    if (!vm) {
+                        vm = manager->service_vm(service_id);
+                    }
+                    if (vm) {
+                        module_tbl = runtime->service_table(vm);
+                    }
+                }
+                if (!module_tbl.valid()) {
+                    mgr2->sched_remove(name.as<std::string>());
+                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(make_error(
+                        state, "invalid_argument",
+                        "scheduler tasks require a loaded service module"));
+                    return results;
+                }
+                sol::table impl = s.globals()["__shield_global_impl"];
+                sol::protected_function attach = impl["attach_sched"];
+                attach(module_tbl, name, cb);
+                results.push_back(sol::make_object(s, true));
+                return results;
+            };
+            sol::table sched = s.create_table();
+            sched.set_function(
+                "cron", [register_task](sol::this_state state, sol::object name,
+                                        sol::object expr, sol::object cb,
+                                        sol::optional<sol::table> /*opts*/) {
+                    return register_task(state, "cron", name, expr, cb);
+                });
+            sched.set_function(
+                "interval",
+                [register_task](sol::this_state state, sol::object name,
+                                sol::object ms, sol::object cb,
+                                sol::optional<sol::table> /*opts*/) {
+                    return register_task(state, "interval", name, ms, cb);
+                });
+            sched.set_function(
+                "once", [register_task](sol::this_state state, sol::object name,
+                                        sol::object delay, sol::object cb,
+                                        sol::optional<sol::table> /*opts*/) {
+                    return register_task(state, "once", name, delay, cb);
+                });
+            sched.set_function("get",
+                               [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
+                                     std::string name) -> sol::object {
+                                   sol::state_view s(state);
+                                   auto info = mgr->sched_get(name);
+                                   if (!info.has_value()) {
+                                       return sol::make_object(s, sol::nil);
+                                   }
+                                   sol::table out = s.create_table();
+                                   out["name"] = info->name;
+                                   out["type"] = info->type;
+                                   out["schedule"] = info->schedule;
+                                   out["next_run"] = info->next_run_ms;
+                                   out["last_run"] = info->last_run_ms;
+                                   out["run_count"] = info->run_count;
+                                   out["status"] = info->paused ? "paused"
+                                                   : info->done ? "done"
+                                                                : "active";
+                                   return out;
+                               });
+            sched.set_function("pause", [mgr](std::string name) {
+                return mgr->sched_pause(name);
+            });
+            sched.set_function("resume", [mgr](std::string name) {
+                return mgr->sched_resume(name);
+            });
+            sched.set_function(
+                "remove", [lua, mgr](sol::this_state state, std::string name) {
+                    mgr->sched_remove(name);
+                    sol::state_view s(state);
+                    sol::table impl = s.globals()["__shield_global_impl"];
+                    sol::protected_function detach = impl["detach_sched"];
+                    detach(name);
+                    return true;
+                });
+            sched.set_function("trigger", [mgr](std::string name) {
+                return mgr->sched_trigger(name);
+            });
+            results.push_back(sol::make_object(s, sched));
+            return results;
+        });
+
+    // ---- rate limiter: frozen surface, P1 scope (runtime-global.md) ----
+    shield.set_function(
+        "rate_limiter", [](sol::this_state state) -> sol::variadic_results {
+            sol::state_view s(state);
+            sol::variadic_results results;
+            results.push_back(sol::make_object(s, sol::nil));
+            results.push_back(make_error(state, "not_implemented",
+                                         "shield.rate_limiter is P1 scope "
+                                         "(see runtime-global.md)"));
+            return results;
+        });
+}
+#else
+// Module compiled out: every shield_global factory reports
+// module_unavailable instead of being a nil field.
+void register_global_stub_api(sol::table& shield, sol::state_view lua) {
+    auto unavailable = lua.safe_script(
+        "return function()\n"  // GCOVR_EXCL_LINE (safe_script chunk artifact)
+        "  return nil, {code = 'module_unavailable', message = "
+        "'shield_global is not enabled', retryable = false}\n"
+        "end\n",
+        [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           sol::protected_function_result
+               pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
+        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+    for (const char* name :
+         {"global", "mutex", "rwlock", "spinlock", "distributed_mutex",
+          "distributed_rwlock", "rank", "queue", "delay_queue",
+          "reliable_queue", "scheduler", "rate_limiter"}) {
+        shield[name] = unavailable;
+    }
+}
+#endif
+
 void register_http_api(sol::table& shield, LuaServiceManager* manager,
                        LuaRuntime* runtime) {
     sol::state_view lua(shield.lua_state());
@@ -3385,6 +4480,12 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_server_api(shield, manager, runtime);
 #else
     register_server_stub_api(shield, lua);
+#endif
+
+#ifdef SHIELD_ENABLE_GLOBAL
+    register_global_api(shield, manager, runtime);
+#else
+    register_global_stub_api(shield, lua);
 #endif
 
     lua["shield"] = shield;

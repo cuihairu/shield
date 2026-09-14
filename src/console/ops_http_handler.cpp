@@ -18,6 +18,11 @@
 #include "shield/server/server_manager.hpp"
 #endif
 
+#ifdef SHIELD_ENABLE_GLOBAL
+#include "global_status.hpp"
+#include "shield/global/global_manager.hpp"
+#endif
+
 namespace shield::console {
 
 OpsHttpHandler::OpsHttpHandler(shield::lua::LuaServiceManager& lua_mgr,
@@ -119,6 +124,16 @@ shield::net::HttpResponse OpsHttpHandler::handle_status(
         auto* sm = shield::server::ServerManager::global();
         if (sm) {
             data["server"] = build_server_status_json();
+        }
+    }
+#endif
+
+    // Global capability store (read-only snapshot)
+#ifdef SHIELD_ENABLE_GLOBAL
+    {
+        nlohmann::json global = build_global_status_json();
+        if (!global.is_null()) {
+            data["global"] = std::move(global);
         }
     }
 #endif

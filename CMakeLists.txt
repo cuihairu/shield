@@ -577,6 +577,11 @@ if(SHIELD_ENABLE_SERVER)
     target_compile_definitions(shield_lua PRIVATE SHIELD_ENABLE_SERVER)
 endif()
 
+if(SHIELD_ENABLE_GLOBAL)
+    target_link_libraries(shield_lua PRIVATE shield_global)
+    target_compile_definitions(shield_lua PRIVATE SHIELD_ENABLE_GLOBAL)
+endif()
+
 # -----------------------------------------------------------------------------
 # shield_bootstrap - Starter, shield::run
 # -----------------------------------------------------------------------------
@@ -590,6 +595,7 @@ add_library(shield_bootstrap STATIC
     src/console/ops_http_handler.cpp
     src/console/cluster_status.cpp
     src/console/server_status.cpp
+    src/console/global_status.cpp
 )
 
 target_include_directories(shield_bootstrap
@@ -621,6 +627,11 @@ endif()
 if(SHIELD_ENABLE_SERVER)
     target_link_libraries(shield_bootstrap PRIVATE shield_server)
     target_compile_definitions(shield_bootstrap PRIVATE SHIELD_ENABLE_SERVER)
+endif()
+
+if(SHIELD_ENABLE_GLOBAL)
+    target_link_libraries(shield_bootstrap PRIVATE shield_global)
+    target_compile_definitions(shield_bootstrap PRIVATE SHIELD_ENABLE_GLOBAL)
 endif()
 
 # -----------------------------------------------------------------------------
@@ -840,7 +851,15 @@ add_test(NAME shield_source_boundary_check
 # shield_global (OFF by default)
 if(SHIELD_ENABLE_GLOBAL)
     add_library(shield_global STATIC
-        # TODO: Add global helpers implementation
+        src/global/global_manager.cpp
+    )
+    target_include_directories(shield_global
+        PUBLIC
+            ${PROJECT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_BINARY_DIR}/include
+    )
+    target_link_libraries(shield_global
+        PUBLIC shield_base shield_log shield_config
     )
     message(STATUS "shield_global: enabled")
 endif()

@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 
 #include "cluster_status.hpp"
+#include "global_status.hpp"
 #include "server_status.hpp"
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/config/config.hpp"
@@ -47,6 +48,9 @@ void RootCommands::register_all(CommandDispatcher& dispatcher) {
     dispatcher.register_command("root.server",
                                 "Show server state machine status",
                                 [this](auto& s, auto& a) { cmd_server(s, a); });
+    dispatcher.register_command("root.global",
+                                "Show global capability store status",
+                                [this](auto& s, auto& a) { cmd_global(s, a); });
     dispatcher.register_command(
         "root.log.level",
         "Get or set log level (root.log.level [debug|info|warn|error])",
@@ -124,6 +128,16 @@ void RootCommands::cmd_status(shield::net::ConsoleSession& session,
         auto* sm = shield::server::ServerManager::global();
         if (sm) {
             data["server"] = build_server_status_json();
+        }
+    }
+#endif
+
+    // Global capability store (thread-safe, may be null)
+#ifdef SHIELD_ENABLE_GLOBAL
+    {
+        nlohmann::json global = build_global_status_json();
+        if (!global.is_null()) {
+            data["global"] = std::move(global);
         }
     }
 #endif
@@ -339,6 +353,25 @@ void RootCommands::cmd_server(shield::net::ConsoleSession& session,
 #else
     nlohmann::json resp = {{"type", "error"},
                            {"message", "Server not compiled"}};
+    session.send_line(resp.dump());
+#endif
+}
+
+void RootCommands::cmd_global(shield::net::ConsoleSession& session,
+                              const std::vector<std::string>& /*args*/) {
+#ifdef SHIELD_ENABLE_GLOBAL
+    nlohmann::json global = build_global_status_json();
+    if (global.is_null()) {
+        nlohmann::json resp = {{"type", "error"},
+                               {"message", "Global not enabled"}};
+        session.send_line(resp.dump());
+        return;
+    }
+    nlohmann::json resp = {{"type", "result"}, {"data", global}};
+    session.send_line(resp.dump());
+#else
+    nlohmann::json resp = {{"type", "error"},
+                           {"message", "Global not compiled"}};
     session.send_line(resp.dump());
 #endif
 }

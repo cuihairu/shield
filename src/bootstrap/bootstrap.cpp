@@ -17,6 +17,9 @@
 #ifdef SHIELD_ENABLE_SERVER
 #include "shield/server/server_manager.hpp"
 #endif
+#ifdef SHIELD_ENABLE_GLOBAL
+#include "shield/global/global_manager.hpp"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <boost/asio/executor_work_guard.hpp>
@@ -205,6 +208,9 @@ struct GlobalState {
 #ifdef SHIELD_ENABLE_SERVER
     std::unique_ptr<shield::server::ServerManager> server_manager;
 #endif
+#ifdef SHIELD_ENABLE_GLOBAL
+    std::unique_ptr<shield::global::GlobalManager> global_manager;
+#endif
     bool initialized = false;
 };
 
@@ -255,6 +261,16 @@ void cleanup_failed_initialize() {
         }
         shield::server::ServerManager::set_global(nullptr);
         g_state->server_manager.reset();
+#endif
+#ifdef SHIELD_ENABLE_GLOBAL
+        // Same ordering rule as the successful teardown: stop() joins the
+        // tick thread and drops the fire callback (which captures
+        // lua_services, released above) before the manager is destroyed.
+        if (g_state->global_manager) {
+            g_state->global_manager->stop();
+        }
+        shield::global::GlobalManager::set_global(nullptr);
+        g_state->global_manager.reset();
 #endif
 #ifdef SHIELD_ENABLE_CLUSTER
         // The transport actor lives in the CAF system: unpublish and kill it
@@ -356,7 +372,11 @@ bool initialize(const RuntimeConfig& config) {
 #else
     validation_options.cluster_enabled = false;
 #endif
+#ifdef SHIELD_ENABLE_GLOBAL
+    validation_options.global_enabled = true;
+#else
     validation_options.global_enabled = false;
+#endif
 #ifdef SHIELD_ENABLE_PLAYER
     validation_options.player_enabled = true;
 #else
@@ -476,6 +496,30 @@ bool initialize(const RuntimeConfig& config) {
     }
 #endif
 
+#ifdef SHIELD_ENABLE_GLOBAL
+    // Global module: parse its own config section up front (fail fast on
+    // an invalid `global:` block) and install the process-wide store.
+    // Scheduler task delivery is wired after the Lua services exist; the
+    // tick thread starts there too.
+    {
+        shield::global::GlobalConfig global_config;
+        std::string global_error;
+        if (!shield::global::GlobalConfig::from_global_config(&global_config,
+                                                              &global_error) ||
+            !shield::global::validate_global_config(global_config,
+                                                    &global_error)) {
+            SHIELD_LOG_ERROR(log, "Invalid global config: " + global_error);
+            cleanup_failed_initialize();
+            return false;
+        }
+        g_state->global_manager =
+            std::make_unique<shield::global::GlobalManager>(global_config);
+        shield::global::GlobalManager::set_global(
+            g_state->global_manager.get());
+        SHIELD_LOG_INFO(log, "Global subsystem initialized");
+    }
+#endif
+
     // Initialize CAF actor system
     initialize_caf_types();
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -577,6 +621,32 @@ bool initialize(const RuntimeConfig& config) {
             });
         g_state->server_manager->set_stop_request_fn(
             []() { shield::request_stop(); });
+    }
+#endif
+
+#ifdef SHIELD_ENABLE_GLOBAL
+    // Scheduler task delivery rides the same system-message channel the
+    // server watch bridge uses: the per-VM forwarder (installed by the
+    // Lua orchestration chunk) resolves the task callback and invokes it
+    // on the owning service actor. A gone service drops the task.
+    {
+        auto* services = g_state->lua_services.get();
+        // Raw pointer on purpose: the capture must not extend the
+        // manager's lifetime past shutdown()'s explicit release order
+        // (stop() joins the tick thread before lua_services is freed, so
+        // a fire can never race the teardown).
+        g_state->global_manager->set_task_fire_fn(
+            [services](const std::string& service_id,
+                       const std::string& task_name) -> bool {
+                if (!services->service_vm(service_id)) {
+                    return false;
+                }
+                std::string error;
+                return services->send_system(service_id, "on_scheduler_task",
+                                             nlohmann::json::array({task_name}),
+                                             &error);
+            });
+        g_state->global_manager->start();
     }
 #endif
 
@@ -1222,6 +1292,16 @@ void shutdown() {
     }
     shield::server::ServerManager::set_global(nullptr);
     g_state->server_manager.reset();
+#endif
+#ifdef SHIELD_ENABLE_GLOBAL
+    // Join the scheduler tick thread and drop the fire callback (it
+    // captures lua_services, released above) BEFORE the manager goes
+    // away: stop() guarantees no fire races the teardown.
+    if (g_state->global_manager) {
+        g_state->global_manager->stop();
+    }
+    shield::global::GlobalManager::set_global(nullptr);
+    g_state->global_manager.reset();
 #endif
     g_state->actor_system.reset();
 #ifdef SHIELD_ENABLE_CLUSTER

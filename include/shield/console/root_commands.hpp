@@ -41,6 +41,8 @@ private:
                      const std::vector<std::string>& args);
     void cmd_server(shield::net::ConsoleSession& session,
                     const std::vector<std::string>& args);
+    void cmd_global(shield::net::ConsoleSession& session,
+                    const std::vector<std::string>& args);
     void cmd_log_level(shield::net::ConsoleSession& session,
                        const std::vector<std::string>& args);
 

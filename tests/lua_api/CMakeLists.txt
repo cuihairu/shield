@@ -76,3 +76,15 @@ if(SHIELD_ENABLE_SERVER)
     target_link_libraries(test_lua_api_server PRIVATE shield_server)
     set_tests_properties(test_lua_api_server PROPERTIES TIMEOUT 120)
 endif()
+
+# shield_global LAPI-GL matrix. Same optional-module shape again: the stub
+# branch asserts the module_unavailable degradation, the enabled branch
+# drives the data/lock/rank/queue/scheduler facades against a real dispatch
+# context (scheduler delivery rides the system-message channel).
+shield_lua_api_test(test_lua_api_global)
+if(SHIELD_ENABLE_GLOBAL)
+    target_compile_definitions(test_lua_api_global
+        PRIVATE SHIELD_ENABLE_GLOBAL)
+    target_link_libraries(test_lua_api_global PRIVATE shield_global)
+    set_tests_properties(test_lua_api_global PROPERTIES TIMEOUT 180)
+endif()
