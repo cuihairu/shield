@@ -3092,6 +3092,16 @@ local function make_reliable_queue(name, opts)
   return q
 end
 
+-- ---- rate limiter bounded wait (polls allow like queue pops) ----
+impl.attach_rate_wait = function(limiter)
+  limiter.wait = function(self, key, timeout)
+    local ok = wait_for(function() return self:allow(key) end, timeout, 10)
+    if ok then return true end
+    return false, timeout_error('rate limit wait', timeout or 0)
+  end
+  return limiter
+end
+
 -- ---- scheduler callback registry ----
 impl.attach_sched = function(M, task, fn)
   impl.sched[task] = fn
@@ -3136,6 +3146,7 @@ local api = {
   make_delay_queue = make_delay_queue,
   make_reliable_queue = make_reliable_queue,
   pop_with_wait = pop_with_wait,
+  attach_rate_wait = impl.attach_rate_wait,
   attach_sched = impl.attach_sched,
   detach_sched = impl.detach_sched,
   sched_count = impl.sched_count,
@@ -3952,15 +3963,63 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             return results;
         });
 
-    // ---- rate limiter: frozen surface, P1 scope (runtime-global.md) ----
+    // ---- shield.rate_limiter(name, opts) ----
     shield.set_function(
-        "rate_limiter", [](sol::this_state state) -> sol::variadic_results {
+        "rate_limiter",
+        [lua, impl_table](
+            sol::this_state state, sol::object name_obj,
+            sol::optional<sol::table> opts) -> sol::variadic_results {
             sol::state_view s(state);
             sol::variadic_results results;
-            results.push_back(sol::make_object(s, sol::nil));
-            results.push_back(make_error(state, "not_implemented",
-                                         "shield.rate_limiter is P1 scope "
-                                         "(see runtime-global.md)"));
+            auto* mgr = shield::global::GlobalManager::global();
+            if (mgr == nullptr) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "module_unavailable",
+                               "shield_global is not initialized"));
+                return results;
+            }
+            if (!name_obj.is<std::string>()) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(make_error(state, "invalid_argument",
+                                             "rate_limiter requires a name"));
+                return results;
+            }
+            const std::string name = name_obj.as<std::string>();
+            shield::global::RateLimitConfig config;
+            if (opts.has_value()) {
+                sol::table o = *opts;
+                config.rate = o.get_or("rate", 100.0);
+                config.burst = o.get_or("burst", 200.0);
+                config.sliding = o.get_or("sliding", false);
+                config.window_ms =
+                    static_cast<std::uint64_t>(o.get_or("window", 60000.0));
+                config.max_requests =
+                    static_cast<std::uint64_t>(o.get_or("max_requests", 100.0));
+            }
+            mgr->rate_limit_configure(name, config);
+            sol::table limiter = s.create_table();
+            limiter["name"] = name;
+            limiter.set_function(
+                "allow", [mgr, name](sol::object /*self*/, std::string key) {
+                    return mgr->rate_limit_allow(name, key, 1.0).allowed;
+                });
+            limiter.set_function("remaining", [mgr, name](sol::object /*self*/,
+                                                          std::string key) {
+                return mgr->rate_limit_remaining(name, key);
+            });
+            // Bounded wait lives in the chunk (coroutine-aware sleep).
+            sol::table impl = impl_table();
+            sol::protected_function attach = impl["attach_rate_wait"];
+            auto attached = attach(limiter);
+            if (!attached.valid()) {
+                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(
+                    make_error(state, "invalid_argument",
+                               "rate limiter wait attach failed"));
+                return results;
+            }
+            results.push_back(sol::make_object(s, limiter));
             return results;
         });
 }

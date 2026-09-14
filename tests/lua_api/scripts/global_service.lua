@@ -303,10 +303,35 @@ function M.sched_count(ctx)
     return impl and impl.sched_count() or -1
 end
 
--- rate_limiter reports its P1 status through the stable error shape.
-function M.rate_limiter_probe(ctx)
-    local _, err = shield.rate_limiter("api")
-    return {code = err and err.code}
+-- rate_limiter: token bucket drain + key isolation + bounded wait +
+-- exact sliding window.
+function M.rate_limiter_matrix(ctx)
+    local results = {}
+    -- rate 10/s refills 1 token per 100ms: the post-drain deny below is
+    -- stable against sub-millisecond test jitter.
+    local l = shield.rate_limiter("api_limit", {rate = 10, burst = 5})
+    results.allow1 = l:allow("ip1")
+    l:allow("ip1")
+    l:allow("ip1")
+    l:allow("ip1")
+    results.remaining_after4 = l:remaining("ip1")
+    results.allow5 = l:allow("ip1")
+    results.remaining_after5 = l:remaining("ip1")
+    results.allow6 = l:allow("ip1")
+    results.other_key = l:allow("ip2")
+    local w = shield.rate_limiter("wait_limit", {rate = 1000, burst = 1})
+    w:allow("k")
+    results.wait_ok = w:wait("k", 500)
+    local s = shield.rate_limiter("strict",
+                                  {sliding = true, window = 60000,
+                                   max_requests = 3})
+    s:allow("u")
+    s:allow("u")
+    results.sliding_remaining = s:remaining("u")
+    results.sliding3 = s:allow("u")
+    results.sliding4 = s:allow("u")
+    results.sliding_fresh = s:remaining("nobody")
+    return results
 end
 
 -- Stub probe: drives every factory (compiled-out build) and reports the

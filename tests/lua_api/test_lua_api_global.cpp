@@ -479,15 +479,30 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_10_CronOnceAndValidation) {
     BOOST_CHECK_EQUAL(no_fn.values[0]["code"], "invalid_argument");
 }
 
-BOOST_AUTO_TEST_CASE(LAPI_GL_11_RateLimiterReportsP1Status) {
+BOOST_AUTO_TEST_CASE(LAPI_GL_11_RateLimiterMatrix) {
     GlobalWorld world;
     auto svc = world.spawn("gl_rate");
     BOOST_REQUIRE(svc.success);
-    CallResult r = call(world.manager, svc.service_id, "rate_limiter_probe",
+    CallResult r = call(world.manager, svc.service_id, "rate_limiter_matrix",
                         nlohmann::json::array());
     if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
     BOOST_REQUIRE(r.success);
-    BOOST_CHECK_EQUAL(r.values[0]["code"], "not_implemented");
+    const nlohmann::json& v = r.values[0];
+    // Token bucket: burst 5 drained by 5 allows, then denied until refill
+    // (rate 10/s makes the deny stable); keys are independent.
+    BOOST_CHECK_EQUAL(v["allow1"], true);
+    BOOST_CHECK_EQUAL(v["remaining_after4"], 1);
+    BOOST_CHECK_EQUAL(v["allow5"], true);
+    BOOST_CHECK_EQUAL(v["remaining_after5"], 0);
+    BOOST_CHECK_EQUAL(v["allow6"], false);
+    BOOST_CHECK_EQUAL(v["other_key"], true);
+    // rate 1000/s: a bounded wait succeeds once a token refills.
+    BOOST_CHECK_EQUAL(v["wait_ok"], true);
+    // Sliding window: exact per-window count, fresh keys start full.
+    BOOST_CHECK_EQUAL(v["sliding_remaining"], 1);
+    BOOST_CHECK_EQUAL(v["sliding3"], true);
+    BOOST_CHECK_EQUAL(v["sliding4"], false);
+    BOOST_CHECK_EQUAL(v["sliding_fresh"], 3);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

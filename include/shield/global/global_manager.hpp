@@ -148,6 +148,25 @@ struct SchedInfo {
 using TaskFireFn =
     std::function<bool(const std::string& service_id, const std::string& task)>;
 
+/// ---------------------------------------------------------------------------
+/// Rate limiters: token bucket (default) or exact sliding window, per
+/// (limiter, key). P0 keeps the buckets in-process; the Redis quota sync of
+/// runtime-global.md is the Phase 2+ backend shape.
+/// ---------------------------------------------------------------------------
+struct RateLimitConfig {
+    double rate = 100.0;               /// refill tokens per second (bucket)
+    double burst = 200.0;              /// bucket capacity (bucket)
+    bool sliding = false;              /// true: exact window, ignore rate/burst
+    std::uint64_t window_ms = 60000;   /// window size (sliding)
+    std::uint64_t max_requests = 100;  /// per-window cap (sliding)
+};
+
+struct RateLimitResult {
+    bool allowed = false;
+    double remaining = 0.0;            /// tokens (bucket) or slots (window)
+    std::uint64_t retry_after_ms = 0;  /// 0 when allowed
+};
+
 /// Process-wide store. Thread-safe; every domain keeps its own mutex so a
 /// slow scheduler tick never blocks data traffic.
 class GlobalManager {
@@ -303,6 +322,20 @@ public:
     std::vector<SchedInfo> sched_list();
     std::size_t sched_active_count();
 
+    // ---- rate limiters ----
+    /// (Re)sets the limiter's config and drops its per-key state, so a
+    /// re-configure never leaves buckets sized for the old shape.
+    void rate_limit_configure(const std::string& name,
+                              const RateLimitConfig& config);
+    /// Consumes `cost` tokens (bucket) or one slot (sliding; cost ignored).
+    RateLimitResult rate_limit_allow(const std::string& name,
+                                     const std::string& key, double cost);
+    /// Query-only: refills/evicts virtually, mutates nothing.
+    double rate_limit_remaining(const std::string& name,
+                                const std::string& key);
+    std::size_t rate_limit_key_count(const std::string& name);
+    void rate_limit_purge(const std::string& name);
+
 private:
     struct MutexEntry {
         std::string owner;
@@ -337,6 +370,18 @@ private:
     struct SchedTask {
         SchedInfo info;
         CronFields cron;  // valid when type == "cron"
+    };
+    struct RateBucket {
+        double tokens = 0;
+        std::uint64_t last_refill_ms = 0;  // 0 = not initialized yet
+    };
+    struct RateWindow {
+        std::deque<std::uint64_t> hits;  // ms timestamps inside the window
+    };
+    struct RateLimiter {
+        RateLimitConfig config;
+        std::unordered_map<std::string, RateBucket> buckets;
+        std::unordered_map<std::string, RateWindow> windows;
     };
 
     // Shared helpers (each domain lock must already be held).
@@ -380,6 +425,10 @@ private:
 
     mutable std::mutex sched_mutex_;
     std::unordered_map<std::string, SchedTask> tasks_;
+
+    mutable std::mutex rate_limits_mutex_;
+    std::unordered_map<std::string, RateLimiter> rate_limiters_;
+
     TaskFireFn task_fire_fn_;
     std::jthread tick_thread_;
     bool tick_running_ = false;

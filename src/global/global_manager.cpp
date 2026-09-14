@@ -1333,6 +1333,123 @@ std::size_t GlobalManager::sched_active_count() {
     return active;
 }
 
+// ---- rate limiters ----
+
+void GlobalManager::rate_limit_configure(const std::string& name,
+                                         const RateLimitConfig& config) {
+    std::lock_guard<std::mutex> lock(rate_limits_mutex_);
+    auto& limiter = rate_limiters_[name];
+    limiter.config = config;
+    // Drop per-key state: buckets/windows sized for the old config must not
+    // leak into the new shape.
+    limiter.buckets.clear();
+    limiter.windows.clear();
+}
+
+RateLimitResult GlobalManager::rate_limit_allow(const std::string& name,
+                                                const std::string& key,
+                                                double cost) {
+    std::lock_guard<std::mutex> lock(rate_limits_mutex_);
+    auto it = rate_limiters_.find(name);
+    if (it == rate_limiters_.end()) {
+        return {};
+    }
+    const RateLimitConfig& cfg = it->second.config;
+    const std::uint64_t now = now_ms();
+    RateLimitResult out;
+    if (cfg.sliding) {
+        auto& hits = it->second.windows[key].hits;
+        while (!hits.empty() && now - hits.front() >= cfg.window_ms) {
+            hits.pop_front();
+        }
+        if (hits.size() < cfg.max_requests) {
+            hits.push_back(now);
+            out.allowed = true;
+            out.remaining = static_cast<double>(cfg.max_requests - hits.size());
+        } else {
+            out.remaining = 0.0;
+            out.retry_after_ms =
+                hits.front() + cfg.window_ms - now;  // oldest hit ages out
+        }
+        return out;
+    }
+
+    auto& bucket = it->second.buckets[key];
+    if (bucket.last_refill_ms == 0) {
+        bucket.tokens = cfg.burst;
+    }
+    const double elapsed = static_cast<double>(now - bucket.last_refill_ms);
+    if (elapsed > 0) {
+        bucket.tokens =
+            std::min(cfg.burst, bucket.tokens + elapsed * cfg.rate / 1000.0);
+        bucket.last_refill_ms = now;
+    }
+    if (cost > 0 && bucket.tokens >= cost) {
+        bucket.tokens -= cost;
+        out.allowed = true;
+        out.remaining = bucket.tokens;
+    } else {
+        out.remaining = bucket.tokens;
+        if (cfg.rate > 0 && cost > 0) {
+            out.retry_after_ms = static_cast<std::uint64_t>(
+                (cost - bucket.tokens) * 1000.0 / cfg.rate);
+        }
+    }
+    return out;
+}
+
+double GlobalManager::rate_limit_remaining(const std::string& name,
+                                           const std::string& key) {
+    std::lock_guard<std::mutex> lock(rate_limits_mutex_);
+    auto it = rate_limiters_.find(name);
+    if (it == rate_limiters_.end()) {
+        return 0.0;
+    }
+    const RateLimitConfig& cfg = it->second.config;
+    const std::uint64_t now = now_ms();
+    if (cfg.sliding) {
+        auto wit = it->second.windows.find(key);
+        if (wit == it->second.windows.end()) {
+            return static_cast<double>(cfg.max_requests);
+        }
+        // Query-only: evict on a copy, never mutate the stored window.
+        auto hits = wit->second.hits;
+        while (!hits.empty() && now - hits.front() >= cfg.window_ms) {
+            hits.pop_front();
+        }
+        const std::size_t used =
+            std::min<std::size_t>(hits.size(), cfg.max_requests);
+        return static_cast<double>(cfg.max_requests - used);
+    }
+    auto bit = it->second.buckets.find(key);
+    if (bit == it->second.buckets.end() || bit->second.last_refill_ms == 0) {
+        return cfg.burst;
+    }
+    const double elapsed =
+        static_cast<double>(now - bit->second.last_refill_ms);
+    return std::min(cfg.burst,
+                    bit->second.tokens + elapsed * cfg.rate / 1000.0);
+}
+
+std::size_t GlobalManager::rate_limit_key_count(const std::string& name) {
+    std::lock_guard<std::mutex> lock(rate_limits_mutex_);
+    auto it = rate_limiters_.find(name);
+    if (it == rate_limiters_.end()) {
+        return 0;
+    }
+    return it->second.config.sliding ? it->second.windows.size()
+                                     : it->second.buckets.size();
+}
+
+void GlobalManager::rate_limit_purge(const std::string& name) {
+    std::lock_guard<std::mutex> lock(rate_limits_mutex_);
+    auto it = rate_limiters_.find(name);
+    if (it != rate_limiters_.end()) {
+        it->second.buckets.clear();
+        it->second.windows.clear();
+    }
+}
+
 void GlobalManager::fire_task(const SchedTask& task) {
     TaskFireFn fn;
     {
