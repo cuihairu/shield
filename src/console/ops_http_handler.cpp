@@ -5,6 +5,7 @@
 #include <future>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -126,6 +127,10 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
                [this](const auto& req) { return handle_metrics(req); });
     server.get("/ops/services",
                [this](const auto& req) { return handle_services(req); });
+    // ":name" pattern matches only when the exact "/ops/services" route
+    // missed, so list vs. detail never shadow each other.
+    server.get("/ops/services/:name",
+               [this](const auto& req) { return handle_service_detail(req); });
     server.get("/ops/plugins",
                [this](const auto& req) { return handle_plugins(req); });
     server.get("/ops/config",
@@ -466,6 +471,36 @@ shield::net::HttpResponse OpsHttpHandler::handle_services(
                                   {{"type", "result"}, {"data", future.get()}});
     }
     return make_error_response(504, "timeout querying services");
+}
+
+shield::net::HttpResponse OpsHttpHandler::handle_service_detail(
+    const shield::net::HttpRequest& req) {
+    // Pull ":name" out of /ops/services/<name> (query string stripped).
+    std::string target(req.target());
+    const auto query_pos = target.find('?');
+    if (query_pos != std::string::npos) {
+        target.resize(query_pos);
+    }
+    constexpr char kPrefix[] = "/ops/services/";
+    if (target.rfind(kPrefix, 0) != 0 || target.size() <= sizeof(kPrefix) - 1) {
+        return make_error_response(404, "missing service name");
+    }
+    const std::string name = target.substr(sizeof(kPrefix) - 1);
+
+    auto promise =
+        std::make_shared<std::promise<std::optional<nlohmann::json>>>();
+    auto future = promise->get_future();
+    lua_mgr_.enqueue_forked_task("", [&mgr = lua_mgr_, promise, name]() {
+        promise->set_value(mgr.service_detail(name));
+    });
+    if (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+        return make_error_response(504, "timeout querying service");
+    }
+    auto detail = future.get();
+    if (!detail) {
+        return make_error_response(404, "service not found: " + name);
+    }
+    return make_json_response(200, {{"type", "result"}, {"data", *detail}});
 }
 
 shield::net::HttpResponse OpsHttpHandler::handle_plugins(

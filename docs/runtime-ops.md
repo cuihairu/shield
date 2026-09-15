@@ -50,7 +50,7 @@ HTTP ops 服务端安全基线：
 - 已启用的 `/ops/eval` 要求 `Authorization: Bearer <token>`（常量时间比较），未授权请求返回 401。
 - eval 代码运行在受限 VM 中：`os.execute`/`os.exit`/`os.getenv`/`os.remove`/`os.rename`/`os.setlocale`、`io` 库、`require`/`package` 均被移除（`os.time`/`os.date`/`os.clock` 保留）。
 
-注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/ops/health` 探针（进程内读取、不经 Lua actor 往返，actor 网格卡死时仍可应答）与 `/ops/metrics` Prometheus 导出已提供（P0）；`/ops/services/:name`、`/ops/profile` 尚未提供。
+注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/ops/health` 探针（进程内读取、不经 Lua actor 往返，actor 网格卡死时仍可应答）、`/ops/metrics` Prometheus 导出与 `/ops/services/:name` 服务详情已提供（P0）；`/ops/profile` 尚未提供。
 
 ## shield_ops 默认策略
 
@@ -92,7 +92,7 @@ profile controls
 | `/ops/status` | GET | 运行时状态 |
 | `/ops/metrics` | GET | 指标导出（Prometheus 格式，已提供） |
 | `/ops/services` | GET | 服务列表 |
-| `/ops/services/:name` | GET | 服务详情（尚未提供） |
+| `/ops/services/:name` | GET | 服务详情（已提供） |
 | `/ops/profile` | POST | 启动/停止 profile（尚未提供） |
 | `/ops/config` | GET | 当前配置快照 |
 
@@ -241,25 +241,23 @@ GET /ops/services
 GET /ops/services/:name
 ```
 
+P0 实测口径：注册表内只读快照，走 `""-id` forked task（与 `/ops/services` 列表同路），2s 超时返回 504。未发布的名字（on_init 中、已退出）与列表口径一致按不存在处理，返回 404。
+
 响应：
 
 ```json
 {
-  "name": "player.1",
-  "id": 2,
-  "type": "player",
-  "status": "running",
-  "uptime": 3600,
-  "stats": {
-    "requests": 5000,
-    "errors": 0,
-    "pending_calls": 2,
-    "timers": 5,
-    "coroutines": 3
-  },
-  "last_error": null
+  "type": "result",
+  "data": {
+    "name": "gateway",
+    "state": "running",
+    "script": "/path/to/gateway.lua",
+    "rpc_routes": 2
+  }
 }
 ```
+
+per-service `uptime`/`requests`/`errors`/`timers`/`coroutines` 等统计不在 P0 范围（依赖 per-service 流量计数），留后续。
 
 ## ops 安全
 

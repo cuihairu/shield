@@ -46,6 +46,8 @@ private:
         const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_services(
         const shield::net::HttpRequest& req);
+    shield::net::HttpResponse handle_service_detail(
+        const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_plugins(
         const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_config(

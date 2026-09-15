@@ -199,6 +199,12 @@ public:
     // List registered services
     std::vector<std::string> list_services() const;
 
+    // One published service's read-only snapshot: name, state ("running"),
+    // resolved script path and RPC route count. nullopt when the name is
+    // not a published service (initializing or exited names report 404 at
+    // the ops layer, consistent with list_services omitting them).
+    std::optional<nlohmann::json> service_detail(std::string_view name) const;
+
     // Enqueue a forked task to be executed by the owning service actor. The
     // task captures the owning service ID so it can be cancelled on service
     // exit.

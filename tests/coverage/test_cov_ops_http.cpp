@@ -236,6 +236,45 @@ BOOST_AUTO_TEST_CASE(ServicesListedWhenServiceIsAlive) {
     manager->shutdown_all("done");
 }
 
+BOOST_AUTO_TEST_CASE(ServiceDetailEndpoint) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    // Spawn a real service first: the ""-id ops task needs a live service
+    // actor to run on, so the 404 case below must also run after this.
+    const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_svc";
+    fs::create_directories(dir);
+    std::ofstream(dir / "detail_svc.lua")
+        << "return { on_init = function() end }\n";
+    auto spawned =
+        manager->spawn((dir / "detail_svc.lua").string(),
+                       R"({"name":"cov_detail_svc","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+
+    // Unknown name under a live mesh -> 404 (route matched, service absent).
+    std::string response =
+        client.get("/ops/services/nope.svc", std::chrono::milliseconds(9000));
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 404);
+
+    // Known name -> running snapshot with name/script/rpc_routes.
+    response = client.get("/ops/services/cov_detail_svc",
+                          std::chrono::milliseconds(9000));
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["name"], "cov_detail_svc");
+    BOOST_CHECK_EQUAL(resp["data"]["state"], "running");
+    // script is recorded only for config-defined runtime actors; a service
+    // spawned here may legitimately omit it.
+    BOOST_CHECK(!resp["data"].contains("script") ||
+                resp["data"]["script"].is_string());
+    BOOST_CHECK(resp["data"]["rpc_routes"].is_number_unsigned());
+
+    manager->shutdown_all("done");
+}
+
 BOOST_AUTO_TEST_CASE(ServicesEndpointTimesOut) {
     RawHttpClient client;
     client.connect_target("127.0.0.1", port);

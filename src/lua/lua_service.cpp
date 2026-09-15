@@ -2534,6 +2534,28 @@ std::vector<std::string> LuaServiceManager::list_services() const {
     return services;
 }  // GCOVR_EXCL_LINE (function-exit arc artifact of list_services)
 
+std::optional<nlohmann::json> LuaServiceManager::service_detail(
+    std::string_view name) const {
+    std::shared_lock lock(impl_->registry_mutex);
+    const std::string key(name);
+    // Only published services carry a detail snapshot: a name still in
+    // on_init lives in init_vms and an exited one in recently_exited —
+    // neither is listed by list_services, so neither answers here either.
+    if (!impl_->services.contains(key)) {
+        return std::nullopt;
+    }
+    nlohmann::json detail = {{"name", key}, {"state", "running"}};
+    if (auto script_it = impl_->module_scripts.find(key);
+        script_it != impl_->module_scripts.end()) {
+        detail["script"] = script_it->second;
+    }
+    if (auto rpc_it = impl_->service_rpc.find(key);
+        rpc_it != impl_->service_rpc.end()) {
+        detail["rpc_routes"] = rpc_it->second.descriptors.size();
+    }
+    return detail;
+}
+
 uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
                                                 std::function<void()> task) {
     return enqueue_forked_task(std::move(service_id), std::move(task),

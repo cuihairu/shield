@@ -35,6 +35,8 @@ nlohmann::json build_global_status_json() {
                      {"total_members", gm->rank_total_members()}};
     root["queues"] = {{"normal", gm->queue_count()},
                       {"delay", gm->delay_queue_count()},
+                      {"priority", gm->priority_queue_count()},
+                      {"broadcast", gm->broadcast_queue_count()},
                       {"reliable", gm->reliable_queue_count()}};
     std::size_t tasks = 0;
     for (const auto& task : gm->sched_list()) {
