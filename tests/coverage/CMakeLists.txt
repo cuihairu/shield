@@ -48,6 +48,7 @@ endfunction()
 
 # shield_base / shield_transport
 shield_coverage_test(test_cov_base_id shield_base)
+shield_coverage_test(test_cov_base_types shield_base)
 shield_coverage_test(test_cov_protocol shield_transport)
 shield_coverage_test(test_cov_rpc_descriptor shield_transport)
 

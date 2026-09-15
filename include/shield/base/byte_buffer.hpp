@@ -41,6 +41,7 @@ public:
     // Mutations
     void clear() {
         data_.clear();
+        read_pos_ = 0;
         write_pos_ = 0;
     }
 

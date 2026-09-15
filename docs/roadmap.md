@@ -103,7 +103,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 | 模块 | 当前状态 | 核对结论 |
 | --- | --- | --- |
-| `shield_base` | 当前 CMake target 已存在 | 基础类型路径已收敛，仍需后续补完整单元测试 |
+| `shield_base` | 当前 CMake target 已存在 | 基础类型路径已收敛；单元测试已补齐（`test_cov_base_id` 覆盖 id，`test_cov_base_types` 覆盖 byte_buffer/error/result/time，顺带修正 `ByteBuffer::clear` 不重置读位置的疏漏） |
 | `shield_core` | 当前 CMake target 已存在 | 已收敛为 CAF 消息契约（`service_message.hpp`）+ CAF 类型注册；无人使用的 CafAdapter/ServiceRegistry/MessageEnvelope 平行层已删除，registry/handle 语义由 `shield_lua` 的 `LuaServiceManager` 承载 |
 | `shield_config` | 当前 CMake target 已存在 | Phase 1 启动期验证已接入；旧 ConfigManager/动态配置测试已从当前构建入口移出 |
 | `shield_log` | 当前 CMake target 已存在 | logger facade 已接入；旧 Boost log config 测试已从当前构建入口移出 |
