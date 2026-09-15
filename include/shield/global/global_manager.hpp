@@ -300,6 +300,31 @@ public:
     void priority_purge(const std::string& name);
     std::size_t priority_queue_count();
 
+    // ---- broadcast queues (bounded per-queue history + per-group
+    // cursors; live callback dispatch is the Lua facade's job since C++
+    // never holds Lua refs — groups that miss pushes catch up from the
+    // history on their next attach) ----
+    /// Bounds the retained history; applies to existing state too.
+    void broadcast_configure(const std::string& name, std::size_t max_history);
+    /// Appends and returns the assigned sequence number.
+    std::uint64_t broadcast_push(const std::string& name, std::string payload);
+    /// Creates the group at the queue head when new; returns its cursor
+    /// (last delivered seq).
+    std::uint64_t broadcast_attach(const std::string& name,
+                                   const std::string& group);
+    /// Appends payloads with seq > the group cursor to `out` (read-only
+    /// peek) and returns the highest seq returned, or 0 when none.
+    std::uint64_t broadcast_since(const std::string& name,
+                                  const std::string& group,
+                                  std::vector<std::string>* out);
+    /// Advances the group cursor to max(cursor, seq); creates on demand.
+    void broadcast_commit(const std::string& name, const std::string& group,
+                          std::uint64_t seq);
+    std::size_t broadcast_history_size(const std::string& name);
+    std::size_t broadcast_group_count(const std::string& name);
+    void broadcast_purge(const std::string& name);
+    std::size_t broadcast_queue_count();
+
     // ---- reliable queues (pop -> delivery handle -> ack/nack) ----
     /// Per-queue knobs; `max_retries` <= 0 keeps the default of 3.
     void reliable_configure(const std::string& name, int max_retries);
@@ -392,6 +417,13 @@ private:
         std::unordered_map<std::string, RateBucket> buckets;
         std::unordered_map<std::string, RateWindow> windows;
     };
+    struct BroadcastQueue {
+        std::uint64_t next_seq = 1;
+        std::size_t max_history = 1000;
+        std::deque<std::pair<std::uint64_t, std::string>> history;
+        std::unordered_map<std::string, std::uint64_t>
+            group_cursors;  // group -> last delivered seq
+    };
 
     // Shared helpers (each domain lock must already be held).
     bool mutex_try_acquire_locked(
@@ -435,6 +467,7 @@ private:
     std::unordered_map<std::string,
                        std::map<std::int64_t, std::deque<std::string>>>
         priority_queues_;
+    std::unordered_map<std::string, BroadcastQueue> broadcast_queues_;
 
     mutable std::mutex sched_mutex_;
     std::unordered_map<std::string, SchedTask> tasks_;

@@ -383,6 +383,41 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_13_PriorityQueueMatrix) {
     BOOST_CHECK_EQUAL(v["length_after_purge"], 0);
 }
 
+BOOST_AUTO_TEST_CASE(LAPI_GL_14_BroadcastQueueMatrix) {
+    GlobalWorld world;
+    auto svc = world.spawn("gl_broadcast");
+    BOOST_REQUIRE(svc.success);
+    CallResult r = call(world.manager, svc.service_id, "broadcast_matrix",
+                        nlohmann::json::array());
+    if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
+    BOOST_REQUIRE(r.success);
+    const nlohmann::json& v = r.values[0];
+    // Live fan-out reaches a group subscribed from the start; a group
+    // joining mid-stream starts at the head with no retro delivery.
+    BOOST_CHECK_EQUAL(v["sub1"], true);
+    BOOST_CHECK_EQUAL(v["live"], 2);
+    BOOST_CHECK_EQUAL(v["live_first"], "login");
+    BOOST_CHECK_EQUAL(v["sub2"], true);
+    BOOST_CHECK_EQUAL(v["late_initial"], 0);
+    BOOST_CHECK_EQUAL(v["late_after_push"], 1);
+    // Offline catch-up: pushes made while unsubscribed replay in order on
+    // the next subscribe; cursors survive the unsubscribe.
+    BOOST_CHECK_EQUAL(v["unsub"], true);
+    BOOST_CHECK_EQUAL(v["away_still"], 1);
+    BOOST_CHECK_EQUAL(v["resub"], true);
+    BOOST_CHECK_EQUAL(v["catchup_added"], 2);
+    BOOST_CHECK_EQUAL(v["catchup_first"], "offline1");
+    BOOST_CHECK_EQUAL(v["catchup_last"], "offline2");
+    BOOST_CHECK_EQUAL(v["groups"], 2);
+    // A throwing callback is contained; other groups still receive.
+    BOOST_CHECK_EQUAL(v["push_with_bad_sub"], true);
+    BOOST_CHECK_EQUAL(v["ui_after_bad"], 6);
+    // History is capped at max_history; purge resets everything.
+    BOOST_CHECK_EQUAL(v["history"], 8);
+    BOOST_CHECK_EQUAL(v["history_after_purge"], 0);
+    BOOST_CHECK_EQUAL(v["groups_after_purge"], 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(LapiGlobalScheduler)
@@ -561,7 +596,8 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_12_StubReportsModuleUnavailable) {
     for (const std::string& name :
          {"global", "mutex", "rwlock", "spinlock", "distributed_mutex",
           "distributed_rwlock", "rank", "queue", "delay_queue",
-          "priority_queue", "reliable_queue", "scheduler", "rate_limiter"}) {
+          "priority_queue", "broadcast_queue", "reliable_queue", "scheduler",
+          "rate_limiter"}) {
         BOOST_CHECK_EQUAL(codes[name].get<std::string>(), "module_unavailable");
     }
 }

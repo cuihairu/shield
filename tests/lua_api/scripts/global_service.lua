@@ -274,6 +274,52 @@ function M.priority_matrix(ctx)
     return results
 end
 
+function M.broadcast_matrix(ctx)
+    local results = {}
+    local q = shield.broadcast_queue("events", {max_history = 8})
+    -- live fan-out to a group subscribed from the start
+    local seen = {}
+    results.sub1 = q:subscribe("ui", function(msg)
+        seen[#seen + 1] = msg.type
+    end)
+    q:push({type = "login"})
+    q:push({type = "kill"})
+    results.live = #seen
+    results.live_first = seen[1]
+    -- a group joining mid-stream starts at the head: no retro delivery
+    local late = {}
+    results.sub2 = q:subscribe("achv", function(msg)
+        late[#late + 1] = msg.type
+    end)
+    results.late_initial = #late
+    q:push({type = "logout"})
+    results.late_after_push = #late
+    -- offline catch-up: away pushes replay in order on re-subscribe
+    results.unsub = q:unsubscribe("achv")
+    q:push({type = "offline1"})
+    q:push({type = "offline2"})
+    results.away_still = #late
+    results.resub = q:subscribe("achv", function(msg)
+        late[#late + 1] = msg.type
+    end)
+    results.catchup_added = #late - 1
+    results.catchup_first = late[2]
+    results.catchup_last = late[3]
+    -- groups stay tracked (cursors survive unsubscribe)
+    results.groups = q:groups()
+    -- a throwing callback does not break dispatch nor other groups
+    q:subscribe("bad", function() error("boom") end)
+    results.push_with_bad_sub = q:push({type = "p6"})
+    results.ui_after_bad = #seen
+    -- history is bounded (6 pushes kept, cap 8; trim leaves the newest)
+    for i = 7, 10 do q:push({type = "p" .. i}) end
+    results.history = q:history()
+    q:purge()
+    results.history_after_purge = q:history()
+    results.groups_after_purge = q:groups()
+    return results
+end
+
 -- ---------------------------------------------------------------------------
 -- scheduler
 -- ---------------------------------------------------------------------------
@@ -394,6 +440,7 @@ function M.stub_probe(ctx)
     probe('delay_queue', function() return shield.delay_queue("q") end)
     probe('reliable_queue', function() return shield.reliable_queue("q") end)
     probe('priority_queue', function() return shield.priority_queue("q") end)
+    probe('broadcast_queue', function() return shield.broadcast_queue("q") end)
     probe('scheduler', function() return shield.scheduler() end)
     probe('rate_limiter', function() return shield.rate_limiter("r") end)
     return codes

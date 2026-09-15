@@ -1129,6 +1129,100 @@ std::size_t GlobalManager::priority_queue_count() {
     return priority_queues_.size();
 }
 
+// ---- broadcast queues ----
+
+void GlobalManager::broadcast_configure(const std::string& name,
+                                        std::size_t max_history) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    broadcast_queues_[name].max_history = max_history;
+}
+
+std::uint64_t GlobalManager::broadcast_push(const std::string& name,
+                                            std::string payload) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    auto& queue = broadcast_queues_[name];
+    const std::uint64_t seq = queue.next_seq++;
+    queue.history.emplace_back(seq, std::move(payload));
+    while (queue.history.size() > queue.max_history) {
+        queue.history.pop_front();
+    }
+    return seq;
+}
+
+std::uint64_t GlobalManager::broadcast_attach(const std::string& name,
+                                              const std::string& group) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    auto& queue = broadcast_queues_[name];
+    auto [it, inserted] =
+        queue.group_cursors.try_emplace(group, queue.next_seq - 1);
+    (void)inserted;
+    return it->second;
+}
+
+std::uint64_t GlobalManager::broadcast_since(const std::string& name,
+                                             const std::string& group,
+                                             std::vector<std::string>* out) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    auto qit = broadcast_queues_.find(name);
+    if (qit == broadcast_queues_.end()) {
+        return 0;
+    }
+    auto& queue = qit->second;
+    auto git = queue.group_cursors.find(group);
+    if (git == queue.group_cursors.end()) {
+        return 0;  // unknown group: nothing to replay
+    }
+    const std::uint64_t cursor = git->second;
+    std::uint64_t last = 0;
+    for (const auto& [seq, payload] : queue.history) {
+        if (seq <= cursor) {
+            continue;
+        }
+        if (out) {
+            out->push_back(payload);
+        }
+        last = seq;
+    }
+    return last;
+}
+
+void GlobalManager::broadcast_commit(const std::string& name,
+                                     const std::string& group,
+                                     std::uint64_t seq) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    auto qit = broadcast_queues_.find(name);
+    if (qit == broadcast_queues_.end()) {
+        return;
+    }
+    auto& cursors = qit->second.group_cursors;
+    auto [it, inserted] = cursors.try_emplace(group, seq);
+    if (!inserted && seq > it->second) {
+        it->second = seq;
+    }
+}
+
+std::size_t GlobalManager::broadcast_history_size(const std::string& name) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    auto it = broadcast_queues_.find(name);
+    return it == broadcast_queues_.end() ? 0 : it->second.history.size();
+}
+
+std::size_t GlobalManager::broadcast_group_count(const std::string& name) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    auto it = broadcast_queues_.find(name);
+    return it == broadcast_queues_.end() ? 0 : it->second.group_cursors.size();
+}
+
+void GlobalManager::broadcast_purge(const std::string& name) {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    broadcast_queues_.erase(name);
+}
+
+std::size_t GlobalManager::broadcast_queue_count() {
+    std::lock_guard<std::mutex> lock(queues_mutex_);
+    return broadcast_queues_.size();
+}
+
 // ---- reliable queues ----
 
 void GlobalManager::reliable_configure(const std::string& name,

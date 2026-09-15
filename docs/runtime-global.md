@@ -2,7 +2,7 @@
 
 > 状态：P0 已落地（`SHIELD_ENABLE_GLOBAL=ON`；测试矩阵 `tests/lua_api/test_lua_api_global.cpp`）。
 >
-> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数为 Phase 2+ 形态，进程内版本语义对齐"Redis 不可用"降级行为）；`shield.priority_queue` 已实现（进程内多级队列，值越小越优先、同优先级 FIFO；Redis ZSET 后端为 Phase 2+ 形态），`shield.broadcast_queue` 与 Redis 后端尚未实现（见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
+> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/广播/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数为 Phase 2+ 形态，进程内版本语义对齐"Redis 不可用"降级行为）；`shield.priority_queue` 与 `shield.broadcast_queue` 已实现（前者进程内多级队列，值越小越优先、同优先级 FIFO；后者进程内为有界 history + 每组 cursor，实时回调分发发生在推送方 VM，离线组在重新 subscribe 时按序补发——跨进程实时广播 Pub/Sub 留 Phase 2+）；Redis 后端尚未实现（见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
 
 本文档包含 Shield 跨进程共享数据、分布式锁、排行榜、消息队列等全局能力的运行时语义决策。
 
@@ -573,6 +573,8 @@ end)
 q:push({ type = "boss_killed", uid = "player_1" })
 ```
 
+P0 进程内口径：`q` 另提供 `unsubscribe(group)`（仅解除本地回调，组 cursor 保留用于离线补发）、`history()`（保留条数）、`groups()`（已跟踪组数）、`purge()`；`subscribe` 的 opts 支持 `max_history`（默认 1000）。回调分发发生在推送方 VM（C++ 后端不持有 Lua 引用）；离线/其他 VM 的组通过 history + cursor 在重新 `subscribe` 时补发；跨进程实时广播（Pub/Sub + Stream）留 Phase 2+。
+
 ### 实现机制
 
 各队列类型使用不同的 Redis 数据结构：
@@ -1120,5 +1122,5 @@ GET /ops/scheduler
 | 限流器 | P0（进程内；Redis 周期同步留 Phase 2+） | 防刷、防滥用 |
 | Pub/Sub | P1 | 跨进程通知 |
 | 优先级队列 | P0（进程内；Redis ZSET 后端留 Phase 2+） | 紧急任务 |
-| 广播队列 | P1 | 事件通知 |
+| 广播队列 | P0（进程内；跨进程 Pub/Sub 留 Phase 2+） | 事件通知 |
 | Redlock | P2 | 强一致场景 |

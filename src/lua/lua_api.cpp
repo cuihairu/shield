@@ -3112,6 +3112,70 @@ local function make_priority_queue(name, opts)
   return q
 end
 
+-- Broadcast: the store keeps bounded history + per-group cursors; the
+-- callbacks themselves live in this VM (C++ never holds Lua refs). A
+-- group that misses pushes catches up out of the history on its next
+-- subscribe; cross-process live fan-out is the Phase 2+ Pub/Sub shape.
+local function make_broadcast_queue(name, opts)
+  opts = opts or {}
+  local max_history = tonumber(opts.max_history)
+  if max_history and max_history > 0 then
+    prim.broadcast_configure(name, math.floor(max_history))
+  end
+  local q = {name = name, _subs = {}}
+  local function deliver(group, msg, seq)
+    local sub = q._subs[group]
+    if not sub then return end  -- the group unsubscribed mid-dispatch
+    local ok, err = pcall(sub.fn, msg)
+    if not ok then
+      shield.log.warn('broadcast callback failed: ' .. tostring(err))
+    end
+    prim.broadcast_commit(name, group, seq)
+  end
+  function q:push(v)
+    local payload = prim.encode(v)
+    local seq = prim.broadcast_push(name, payload)
+    local msg = prim.decode(payload)
+    for group in pairs(q._subs) do deliver(group, msg, seq) end
+    return true
+  end
+  function q:subscribe(group, fn)
+    if type(group) ~= 'string' or type(fn) ~= 'function' then
+      return nil, {code = 'invalid_argument',
+                   message = 'subscribe(group, function) required',
+                   retryable = false}
+    end
+    -- Attach first: a new group starts at the head (no retro delivery);
+    -- a known cursor catches up below.
+    prim.broadcast_attach(name, group)
+    q._subs[group] = {fn = fn}
+    -- One offline catch-up pass. Pushes racing inside the replay (from a
+    -- re-entrant callback) already delivered through q:push above.
+    local rows, last = prim.broadcast_since(name, group)
+    if last > 0 then
+      for i = 1, #rows do
+        local ok, err = pcall(fn, prim.decode(rows[i]))
+        if not ok then
+          shield.log.warn('broadcast replay failed: ' .. tostring(err))
+        end
+      end
+      prim.broadcast_commit(name, group, last)
+    end
+    return true
+  end
+  function q:unsubscribe(group)
+    q._subs[group] = nil
+    return true
+  end
+  function q:history() return prim.broadcast_history_size(name) end
+  function q:groups() return prim.broadcast_group_count(name) end
+  function q:purge()
+    prim.broadcast_purge(name)
+    return true
+  end
+  return q
+end
+
 -- ---- rate limiter bounded wait (polls allow like queue pops) ----
 impl.attach_rate_wait = function(limiter)
   limiter.wait = function(self, key, timeout)
@@ -3165,6 +3229,7 @@ local api = {
   make_queue = make_queue,
   make_delay_queue = make_delay_queue,
   make_priority_queue = make_priority_queue,
+  make_broadcast_queue = make_broadcast_queue,
   make_reliable_queue = make_reliable_queue,
   pop_with_wait = pop_with_wait,
   attach_rate_wait = impl.attach_rate_wait,
@@ -3320,6 +3385,46 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     });
     prim.set_function("priority_purge", [gm](const std::string& name) {
         gm->priority_purge(name);
+    });
+    prim.set_function("broadcast_configure", [gm](const std::string& name,
+                                                  double max_history) {
+        gm->broadcast_configure(name, static_cast<std::size_t>(max_history));
+    });
+    prim.set_function("broadcast_push", [gm](const std::string& name,
+                                             const std::string& payload) {
+        return gm->broadcast_push(name, payload);
+    });
+    prim.set_function("broadcast_attach",
+                      [gm](const std::string& name, const std::string& group) {
+                          return gm->broadcast_attach(name, group);
+                      });
+    prim.set_function(
+        "broadcast_since",
+        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name,
+             const std::string& group) -> std::tuple<sol::object, sol::object> {
+            sol::state_view s(state);
+            std::vector<std::string> rows;
+            const std::uint64_t last = gm->broadcast_since(name, group, &rows);
+            sol::table out = s.create_table();
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                out[i + 1] = rows[i];
+            }
+            return {sol::make_object(s, out), sol::make_object(s, last)};
+        });
+    prim.set_function(
+        "broadcast_commit",
+        [gm](const std::string& name, const std::string& group, double seq) {
+            gm->broadcast_commit(name, group, static_cast<std::uint64_t>(seq));
+        });
+    prim.set_function("broadcast_history_size", [gm](const std::string& name) {
+        return gm->broadcast_history_size(name);
+    });
+    prim.set_function("broadcast_group_count", [gm](const std::string& name) {
+        return gm->broadcast_group_count(name);
+    });
+    prim.set_function("broadcast_purge", [gm](const std::string& name) {
+        gm->broadcast_purge(name);
     });
     prim.set_function(
         "rel_configure", [gm](const std::string& name, double max_retries) {
@@ -3843,6 +3948,12 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                             return queue_factory(state, "make_priority_queue",
                                                  name, opts);
                         });
+    shield.set_function("broadcast_queue",
+                        [queue_factory](sol::this_state state, sol::object name,
+                                        sol::optional<sol::table> opts) {
+                            return queue_factory(state, "make_broadcast_queue",
+                                                 name, opts);
+                        });
 
     // ---- shield.scheduler() ----
     shield.set_function(
@@ -4088,7 +4199,8 @@ void register_global_stub_api(sol::table& shield, sol::state_view lua) {
     for (const char* name :
          {"global", "mutex", "rwlock", "spinlock", "distributed_mutex",
           "distributed_rwlock", "rank", "queue", "delay_queue",
-          "priority_queue", "reliable_queue", "scheduler", "rate_limiter"}) {
+          "priority_queue", "broadcast_queue", "reliable_queue", "scheduler",
+          "rate_limiter"}) {
         shield[name] = unavailable;
     }
 }
