@@ -200,16 +200,19 @@ public:
     // List registered services
     std::vector<std::string> list_services() const;
 
-    // Cumulative traffic counters for one service incarnation: spawn starts
-    // them at zero and exit drops the entry (a respawn re-counts).
-    struct ServiceTraffic {
+    // Cumulative stats for one service incarnation: spawn starts the
+    // counters at zero and pins the publish instant; exit drops the entry
+    // (a respawn re-counts and re-times).
+    struct ServiceStats {
         std::uint64_t requests = 0;
         std::uint64_t errors = 0;
+        double uptime_seconds = 0.0;
+        std::size_t timers = 0;
     };
 
-    // Per-service traffic snapshot (requests/errors), taken under the
-    // registry lock; counter reads are relaxed atomics.
-    std::map<std::string, ServiceTraffic> service_traffic() const;
+    // Per-service stats snapshot (traffic + uptime + active timers), taken
+    // under the registry lock; counter reads are relaxed atomics.
+    std::map<std::string, ServiceStats> service_stats() const;
 
     // One published service's read-only snapshot: name, state ("running"),
     // resolved script path and RPC route count. nullopt when the name is

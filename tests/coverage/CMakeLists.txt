@@ -118,7 +118,7 @@ endif()
 
 # The ops HTTP client drains each response until its read deadline, so the
 # suite's wall time is dominated by per-request timeouts; give it headroom.
-set_tests_properties(test_cov_ops_http PROPERTIES TIMEOUT 300)
+set_tests_properties(test_cov_ops_http PROPERTIES TIMEOUT 600)
 
 # Suites that compile fake plugins at test time need the shield include tree;
 # pass it from the build configuration instead of a hardcoded source path.

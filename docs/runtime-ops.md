@@ -50,7 +50,7 @@ HTTP ops 服务端安全基线：
 - 已启用的 `/ops/eval` 要求 `Authorization: Bearer <token>`（常量时间比较），未授权请求返回 401。
 - eval 代码运行在受限 VM 中：`os.execute`/`os.exit`/`os.getenv`/`os.remove`/`os.rename`/`os.setlocale`、`io` 库、`require`/`package` 均被移除（`os.time`/`os.date`/`os.clock` 保留）。
 
-注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/ops/health` 探针（进程内读取、不经 Lua actor 往返，actor 网格卡死时仍可应答）、`/ops/metrics` Prometheus 导出与 `/ops/services/:name` 服务详情已提供（P0）；`/ops/profile` 尚未提供。
+注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/ops/health` 探针（进程内读取、不经 Lua actor 往返，actor 网格卡死时仍可应答）、`/ops/metrics` Prometheus 导出与 `/ops/services/:name` 服务详情（含流量/uptime/timers 统计）已提供（P0）；`/ops/profile` 尚未提供。
 
 ## shield_ops 默认策略
 
@@ -112,7 +112,7 @@ profile controls
 GET /ops/health
 ```
 
-P0 实现为轻量探针：全部读取在 HTTP 线程内进程内完成，不经 Lua actor 往返，因此 actor 网格卡死时探针仍可应答。P0 取舍：HTTP 恒 200，verdict 携带在 body 中（503 映射留后续）；`unhealthy` 档位保留给后续（如 actor 网格失联检测）。
+P0 实现为轻量探针：全部读取在 HTTP 线程内进程内完成，不经 Lua actor 往返，因此 actor 网格卡死时探针仍可应答。verdict 同时映射到 HTTP 状态码：`ok` → 200，`degraded` → 503（body 信封不变，负载均衡/编排器可以只看状态码做门禁，探针仍可读 body 里的 per-check 明细）；`unhealthy` 档位保留给后续（如 actor 网格失联检测）。
 
 响应（与其他 ops 端点一致的 `type`/`data` 信封）：
 
@@ -190,6 +190,8 @@ P0 导出 Prometheus 0.0.4 文本格式（`Content-Type: text/plain; version=0.0
 | `shield_services` | gauge | 已注册 Lua 服务数（actor 往返，500ms 超时省略） |
 | `shield_service_requests_total{service}` | counter | 服务收到的消息数（send/call/system 合流，按服务本轮生命周期累计，respawn 归零） |
 | `shield_service_errors_total{service}` | counter | 服务 handler 失败数（口径同上） |
+| `shield_service_uptime_seconds{service}` | gauge | 服务本轮生命周期存活秒数（自 publish 起单调计时，respawn 重计） |
+| `shield_service_timers{service}` | gauge | 服务当前活跃 actor timer 数 |
 | `shield_server_state{state}` | gauge | Server 状态机（SERVER=ON 且 manager 存在） |
 | `shield_global_data_keys` / `shield_global_cache_entries` | gauge | global 数据键 / 本地缓存条目（GLOBAL=ON 且 manager 存在） |
 | `shield_global_cache_hits_total` / `shield_global_cache_misses_total` | counter | 缓存命中/未命中 |
@@ -202,7 +204,7 @@ P0 导出 Prometheus 0.0.4 文本格式（`Content-Type: text/plain; version=0.0
 | `shield_cluster_transport_messages_total{direction}` | counter | 收发消息数（tx/rx） |
 | `shield_cluster_transport_heartbeats_total{direction}` | counter | 收发心跳数（tx/rx） |
 
-`shield_requests_total`、`shield_request_duration_seconds` 等 per-service 流量指标不在 P0 范围，留后续。
+`shield_requests_total`、`shield_request_duration_seconds` 等聚合请求量/时延指标不在当前范围，留后续。
 
 ### 服务列表
 
@@ -210,32 +212,7 @@ P0 导出 Prometheus 0.0.4 文本格式（`Content-Type: text/plain; version=0.0
 GET /ops/services
 ```
 
-响应：
-
-```json
-{
-  "services": [
-    {
-      "name": "gateway",
-      "id": 1,
-      "type": "gateway",
-      "status": "running",
-      "uptime": 3600,
-      "requests": 10000,
-      "errors": 5
-    },
-    {
-      "name": "player.1",
-      "id": 2,
-      "type": "player",
-      "status": "running",
-      "uptime": 3600,
-      "requests": 5000,
-      "errors": 0
-    }
-  ]
-}
-```
+当前实现返回 `type`/`data` 信封，`data` 为已发布服务名的字符串数组（与 `list_services()` 一致；on_init 中与已退出的名字不出现）。带统计字段的列表条目形态留后续——per-service 统计现可经 `/ops/services/:name` 与 `/ops/metrics` 获取。
 
 ### 服务详情
 
@@ -256,12 +233,14 @@ P0 实测口径：注册表内只读快照，走 `""-id` forked task（与 `/ops
     "script": "/path/to/gateway.lua",
     "rpc_routes": 2,
     "requests": 1234,
-    "errors": 2
+    "errors": 2,
+    "uptime_seconds": 3600.5,
+    "timers": 1
   }
 }
 ```
 
-`requests`/`errors` 为该服务本轮生命周期的累计流量（spawn 归零、exit 移除）；`script` 仅配置态 runtime actor 有记录，spawn 服务可缺省。per-service `uptime`/`timers`/`coroutines` 等统计留后续。
+`requests`/`errors` 为该服务本轮生命周期的累计流量（spawn 归零、exit 移除）；`uptime_seconds` 自 publish 起单调计时（respawn 重计）；`timers` 为该服务当前活跃 actor timer 数；`script` 仅配置态 runtime actor 有记录，spawn 服务可缺省。per-service `coroutines` 等统计留后续。
 
 ## ops 安全
 

@@ -137,9 +137,13 @@ struct LuaServiceManager::Impl {
     // erases alongside services. Guarded by registry_mutex like the other
     // per-service maps; dispatch copies the shared_ptr out under the lock
     // and bumps the relaxed atomics lock-free on the service actor thread.
+    // spawned_at is pinned at construction — i.e. the publish instant — so
+    // the entry also carries the incarnation's uptime baseline.
     struct ServiceCounters {
         std::atomic<std::uint64_t> requests{0};
         std::atomic<std::uint64_t> errors{0};
+        std::chrono::steady_clock::time_point spawned_at{
+            std::chrono::steady_clock::now()};
     };
     std::unordered_map<std::string, std::shared_ptr<ServiceCounters>>
         service_counters;
@@ -2587,25 +2591,47 @@ std::optional<nlohmann::json> LuaServiceManager::service_detail(
         detail["rpc_routes"] = rpc_it->second.descriptors.size();
     }
     // Every published service has a counters entry (inserted at publish,
-    // erased on exit), so the traffic fields are unconditional here.
+    // erased on exit), so the traffic/uptime fields are unconditional here.
     if (auto counters_it = impl_->service_counters.find(key);
         counters_it != impl_->service_counters.end()) {
         detail["requests"] =
             counters_it->second->requests.load(std::memory_order_relaxed);
         detail["errors"] =
             counters_it->second->errors.load(std::memory_order_relaxed);
+        detail["uptime_seconds"] =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          counters_it->second->spawned_at)
+                .count();
+    }
+    // Active actor timers registered by this incarnation (0 when it never
+    // scheduled one); the map is guarded by the same registry lock.
+    if (auto timers_it = impl_->actor_timers_by_service.find(key);
+        timers_it != impl_->actor_timers_by_service.end()) {
+        detail["timers"] = timers_it->second.size();
+    } else {
+        detail["timers"] = std::size_t{0};
     }
     return detail;
 }
 
-std::map<std::string, LuaServiceManager::ServiceTraffic>
-LuaServiceManager::service_traffic() const {
-    std::map<std::string, ServiceTraffic> out;
+std::map<std::string, LuaServiceManager::ServiceStats>
+LuaServiceManager::service_stats() const {
+    std::map<std::string, ServiceStats> out;
     std::shared_lock lock(impl_->registry_mutex);
     for (const auto& [name, counters] : impl_->service_counters) {
-        out[name] =
-            ServiceTraffic{counters->requests.load(std::memory_order_relaxed),
-                           counters->errors.load(std::memory_order_relaxed)};
+        out[name] = ServiceStats{
+            counters->requests.load(std::memory_order_relaxed),
+            counters->errors.load(std::memory_order_relaxed),
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          counters->spawned_at)
+                .count(),
+            [&] {
+                if (auto timers_it = impl_->actor_timers_by_service.find(name);
+                    timers_it != impl_->actor_timers_by_service.end()) {
+                    return timers_it->second.size();
+                }
+                return std::size_t{0};
+            }()};
     }
     return out;
 }

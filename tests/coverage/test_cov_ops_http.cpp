@@ -271,14 +271,20 @@ BOOST_AUTO_TEST_CASE(ServiceDetailEndpoint) {
     BOOST_CHECK(!resp["data"].contains("script") ||
                 resp["data"]["script"].is_string());
     BOOST_CHECK(resp["data"]["rpc_routes"].is_number_unsigned());
+    // Per-incarnation stats: monotonic uptime since publish and the active
+    // actor timer count (this service never schedules one).
+    BOOST_CHECK(resp["data"]["uptime_seconds"].is_number());
+    BOOST_CHECK(resp["data"]["uptime_seconds"].get<double>() >= 0.0);
+    BOOST_CHECK_EQUAL(resp["data"]["timers"], 0u);
 
     manager->shutdown_all("done");
 }
 
-BOOST_AUTO_TEST_CASE(ServiceTrafficMetrics) {
-    // Per-service traffic counters ride the same dispatch path as every
-    // message (send/call/system); drive them from C++ via send_system and
-    // observe them both through /ops/metrics and the detail snapshot.
+BOOST_AUTO_TEST_CASE(ServiceStatsMetrics) {
+    // Per-service stats (traffic + uptime + active timers) ride the same
+    // dispatch path as every message (send/call/system); drive the traffic
+    // from C++ via send_system and observe them both through /ops/metrics
+    // and the detail snapshot.
     const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_svc";
     fs::create_directories(dir);
     std::ofstream(dir / "traffic_svc.lua")
@@ -306,15 +312,18 @@ BOOST_AUTO_TEST_CASE(ServiceTrafficMetrics) {
     RawHttpClient client;
     client.connect_target("127.0.0.1", port);
 
-    // /ops/services/:name carries the same counters.
+    // /ops/services/:name carries the same counters plus uptime/timers.
     bool detail_ok = false;
     for (int i = 0; i < 100 && !detail_ok; ++i) {
         std::string response = client.get("/ops/services/cov_traffic_svc",
                                           std::chrono::milliseconds(9000));
         if (RawHttpClient::status_code(response) == 200) {
             auto resp = nlohmann::json::parse(RawHttpClient::body(response));
-            detail_ok =
-                resp["data"]["requests"] == 5 && resp["data"]["errors"] == 2;
+            detail_ok = resp["data"]["requests"] == 5 &&
+                        resp["data"]["errors"] == 2 &&
+                        resp["data"]["uptime_seconds"].is_number() &&
+                        resp["data"]["uptime_seconds"].get<double>() >= 0.0 &&
+                        resp["data"]["timers"] == 0;
         }
         if (!detail_ok) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -322,7 +331,7 @@ BOOST_AUTO_TEST_CASE(ServiceTrafficMetrics) {
     }
     BOOST_CHECK(detail_ok);
 
-    // /ops/metrics exposes the counters in Prometheus form.
+    // /ops/metrics exposes the counters and the per-incarnation gauges.
     bool metrics_ok = false;
     std::string metrics_body;
     for (int i = 0; i < 100 && !metrics_ok; ++i) {
@@ -334,7 +343,13 @@ BOOST_AUTO_TEST_CASE(ServiceTrafficMetrics) {
                          "\"cov_traffic_svc\"} 5") != std::string::npos &&
                      metrics_body.find(
                          "shield_service_errors_total{service="
-                         "\"cov_traffic_svc\"} 2") != std::string::npos;
+                         "\"cov_traffic_svc\"} 2") != std::string::npos &&
+                     metrics_body.find(
+                         "shield_service_timers{service="
+                         "\"cov_traffic_svc\"} 0") != std::string::npos &&
+                     metrics_body.find(
+                         "shield_service_uptime_seconds{"
+                         "service=\"cov_traffic_svc\"} ") != std::string::npos;
         if (!metrics_ok) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
@@ -342,6 +357,59 @@ BOOST_AUTO_TEST_CASE(ServiceTrafficMetrics) {
     BOOST_CHECK(metrics_ok);
     BOOST_CHECK(metrics_body.find("# TYPE shield_service_requests_total "
                                   "counter") != std::string::npos);
+    BOOST_CHECK(metrics_body.find("# TYPE shield_service_uptime_seconds "
+                                  "gauge") != std::string::npos);
+    BOOST_CHECK(metrics_body.find("# TYPE shield_service_timers "
+                                  "gauge") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(ServiceTimersReported) {
+    // A repeating shield.timer registered in on_init shows up as one active
+    // timer in both the detail snapshot and the metrics export.
+    const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_svc";
+    fs::create_directories(dir);
+    std::ofstream(dir / "timer_svc.lua")
+        << "return { on_init = function()\n"
+           "  shield.timer(50, function() end)\n"
+           "end }\n";
+    auto spawned =
+        manager->spawn((dir / "timer_svc.lua").string(),
+                       R"({"name":"cov_timer_svc","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    bool detail_ok = false;
+    for (int i = 0; i < 100 && !detail_ok; ++i) {
+        std::string response = client.get("/ops/services/cov_timer_svc",
+                                          std::chrono::milliseconds(9000));
+        if (RawHttpClient::status_code(response) == 200) {
+            auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+            detail_ok = resp["data"]["timers"] == 1 &&
+                        resp["data"]["uptime_seconds"].is_number() &&
+                        resp["data"]["uptime_seconds"].get<double>() >= 0.0;
+        }
+        if (!detail_ok) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+    BOOST_CHECK(detail_ok);
+
+    bool metrics_ok = false;
+    for (int i = 0; i < 100 && !metrics_ok; ++i) {
+        std::string response =
+            client.get("/ops/metrics", std::chrono::milliseconds(9000));
+        metrics_ok = RawHttpClient::body(response).find(
+                         "shield_service_timers{service=\"cov_timer_svc\"} "
+                         "1") != std::string::npos;
+        if (!metrics_ok) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+    BOOST_CHECK(metrics_ok);
+
+    manager->shutdown_all("done");
 
     manager->shutdown_all("done");
 }
@@ -813,7 +881,9 @@ BOOST_AUTO_TEST_CASE(RequiredPluginDegradesHealth) {
     client.connect_target("127.0.0.1", port);
     std::string response = client.get("/ops/health");
     BOOST_REQUIRE(!response.empty());
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    // The degraded verdict maps onto the status code (ok -> 200,
+    // degraded -> 503); the body envelope is unchanged either way.
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 503);
     auto resp = nlohmann::json::parse(RawHttpClient::body(response));
     BOOST_CHECK_EQUAL(resp["data"]["status"], "degraded");
     BOOST_CHECK_EQUAL(resp["data"]["checks"]["plugins"]["status"], "degraded");

@@ -236,8 +236,10 @@ shield::net::HttpResponse OpsHttpHandler::handle_health(
     }
 #endif
 
-    // Overall: degraded when any check degraded (P0 keeps HTTP 200 and
-    // carries the verdict in the body; a 503 mapping can come later).
+    // Overall: degraded when any check degraded. The verdict maps onto the
+    // HTTP status (ok -> 200, degraded -> 503) while the body keeps the same
+    // envelope, so load balancers and orchestrators can gate on the status
+    // code alone and probes can still read the per-check detail.
     std::string status = "ok";
     for (const auto& [name, check] : checks.items()) {
         (void)name;
@@ -249,7 +251,8 @@ shield::net::HttpResponse OpsHttpHandler::handle_health(
     nlohmann::json data = {{"status", status},
                            {"uptime", process_uptime_seconds()},
                            {"checks", std::move(checks)}};
-    return make_json_response(200, {{"type", "result"}, {"data", data}});
+    return make_json_response(status == "ok" ? 200 : 503,
+                              {{"type", "result"}, {"data", data}});
 }
 
 shield::net::HttpResponse OpsHttpHandler::handle_metrics(
@@ -282,12 +285,18 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             nlohmann::json payload = {{"count", mgr.list_services().size()}};
             nlohmann::json requests = nlohmann::json::object();
             nlohmann::json errors = nlohmann::json::object();
-            for (const auto& [name, traffic] : mgr.service_traffic()) {
-                requests[name] = traffic.requests;
-                errors[name] = traffic.errors;
+            nlohmann::json uptime = nlohmann::json::object();
+            nlohmann::json timers = nlohmann::json::object();
+            for (const auto& [name, stats] : mgr.service_stats()) {
+                requests[name] = stats.requests;
+                errors[name] = stats.errors;
+                uptime[name] = stats.uptime_seconds;
+                timers[name] = stats.timers;
             }
             payload["requests"] = std::move(requests);
             payload["errors"] = std::move(errors);
+            payload["uptime"] = std::move(uptime);
+            payload["timers"] = std::move(timers);
             promise->set_value(std::move(payload));
         });
         if (future.wait_for(std::chrono::milliseconds(500)) ==
@@ -298,6 +307,8 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
                       payload.value("count", 0.0));
             std::vector<std::pair<std::string, double>> request_samples;
             std::vector<std::pair<std::string, double>> error_samples;
+            std::vector<std::pair<std::string, double>> uptime_samples;
+            std::vector<std::pair<std::string, double>> timer_samples;
             for (const auto& [name, value] :
                  payload.value("requests", nlohmann::json::object()).items()) {
                 request_samples.emplace_back(
@@ -308,6 +319,16 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
                 error_samples.emplace_back(
                     "service=\"" + prom_escape(name) + "\"", value);
             }
+            for (const auto& [name, value] :
+                 payload.value("uptime", nlohmann::json::object()).items()) {
+                uptime_samples.emplace_back(
+                    "service=\"" + prom_escape(name) + "\"", value);
+            }
+            for (const auto& [name, value] :
+                 payload.value("timers", nlohmann::json::object()).items()) {
+                timer_samples.emplace_back(
+                    "service=\"" + prom_escape(name) + "\"", value);
+            }
             prom_emit_group(out, "shield_service_requests_total", "counter",
                             "Messages dispatched to the service "
                             "(send/call/system)",
@@ -315,6 +336,12 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             prom_emit_group(out, "shield_service_errors_total", "counter",
                             "Dispatch handler failures per service",
                             error_samples);
+            prom_emit_group(out, "shield_service_uptime_seconds", "gauge",
+                            "Seconds since the service incarnation was "
+                            "published (reset on respawn)",
+                            uptime_samples);
+            prom_emit_group(out, "shield_service_timers", "gauge",
+                            "Active timers per service", timer_samples);
         }
     }
 
