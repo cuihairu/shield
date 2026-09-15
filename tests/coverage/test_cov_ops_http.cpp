@@ -275,6 +275,77 @@ BOOST_AUTO_TEST_CASE(ServiceDetailEndpoint) {
     manager->shutdown_all("done");
 }
 
+BOOST_AUTO_TEST_CASE(ServiceTrafficMetrics) {
+    // Per-service traffic counters ride the same dispatch path as every
+    // message (send/call/system); drive them from C++ via send_system and
+    // observe them both through /ops/metrics and the detail snapshot.
+    const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_svc";
+    fs::create_directories(dir);
+    std::ofstream(dir / "traffic_svc.lua")
+        << "local M = {}\n"
+           "function M.on_ping() return 'pong' end\n"
+           "function M.on_boom() error('boom') end\n"
+           "return M\n";
+    auto spawned =
+        manager->spawn((dir / "traffic_svc.lua").string(),
+                       R"({"name":"cov_traffic_svc","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+
+    // send_system only enqueues — the dispatch (and its counters) complete
+    // asynchronously on the service actor, so the assertions below poll.
+    std::string err;
+    for (int i = 0; i < 3; ++i) {
+        BOOST_REQUIRE(manager->send_system("cov_traffic_svc", "on_ping",
+                                           nlohmann::json::array(), &err));
+    }
+    for (int i = 0; i < 2; ++i) {
+        BOOST_REQUIRE(manager->send_system("cov_traffic_svc", "on_boom",
+                                           nlohmann::json::array(), &err));
+    }
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    // /ops/services/:name carries the same counters.
+    bool detail_ok = false;
+    for (int i = 0; i < 100 && !detail_ok; ++i) {
+        std::string response = client.get("/ops/services/cov_traffic_svc",
+                                          std::chrono::milliseconds(9000));
+        if (RawHttpClient::status_code(response) == 200) {
+            auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+            detail_ok =
+                resp["data"]["requests"] == 5 && resp["data"]["errors"] == 2;
+        }
+        if (!detail_ok) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+    BOOST_CHECK(detail_ok);
+
+    // /ops/metrics exposes the counters in Prometheus form.
+    bool metrics_ok = false;
+    std::string metrics_body;
+    for (int i = 0; i < 100 && !metrics_ok; ++i) {
+        std::string response =
+            client.get("/ops/metrics", std::chrono::milliseconds(9000));
+        metrics_body = RawHttpClient::body(response);
+        metrics_ok = metrics_body.find(
+                         "shield_service_requests_total{service="
+                         "\"cov_traffic_svc\"} 5") != std::string::npos &&
+                     metrics_body.find(
+                         "shield_service_errors_total{service="
+                         "\"cov_traffic_svc\"} 2") != std::string::npos;
+        if (!metrics_ok) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+    BOOST_CHECK(metrics_ok);
+    BOOST_CHECK(metrics_body.find("# TYPE shield_service_requests_total "
+                                  "counter") != std::string::npos);
+
+    manager->shutdown_all("done");
+}
+
 BOOST_AUTO_TEST_CASE(ServicesEndpointTimesOut) {
     RawHttpClient client;
     client.connect_target("127.0.0.1", port);

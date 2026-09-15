@@ -273,20 +273,48 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
                         "Plugin instances by lifecycle state", samples);
     }
 
-    // Service count: the one metric that needs the actor mesh; omitted on
-    // timeout so a wedged mesh never wedges the scrape.
+    // Service count + per-service traffic: the metrics that need the actor
+    // mesh; omitted on timeout so a wedged mesh never wedges the scrape.
     {
         auto promise = std::make_shared<std::promise<nlohmann::json>>();
         auto future = promise->get_future();
         lua_mgr_.enqueue_forked_task("", [&mgr = lua_mgr_, promise]() {
-            auto names = mgr.list_services();
-            promise->set_value(nlohmann::json(names));
+            nlohmann::json payload = {{"count", mgr.list_services().size()}};
+            nlohmann::json requests = nlohmann::json::object();
+            nlohmann::json errors = nlohmann::json::object();
+            for (const auto& [name, traffic] : mgr.service_traffic()) {
+                requests[name] = traffic.requests;
+                errors[name] = traffic.errors;
+            }
+            payload["requests"] = std::move(requests);
+            payload["errors"] = std::move(errors);
+            promise->set_value(std::move(payload));
         });
         if (future.wait_for(std::chrono::milliseconds(500)) ==
             std::future_status::ready) {
-            const double count = static_cast<double>(future.get().size());
+            const nlohmann::json payload = future.get();
             prom_emit(out, "shield_services", "gauge",
-                      "Registered Lua services", "", count);
+                      "Registered Lua services", "",
+                      payload.value("count", 0.0));
+            std::vector<std::pair<std::string, double>> request_samples;
+            std::vector<std::pair<std::string, double>> error_samples;
+            for (const auto& [name, value] :
+                 payload.value("requests", nlohmann::json::object()).items()) {
+                request_samples.emplace_back(
+                    "service=\"" + prom_escape(name) + "\"", value);
+            }
+            for (const auto& [name, value] :
+                 payload.value("errors", nlohmann::json::object()).items()) {
+                error_samples.emplace_back(
+                    "service=\"" + prom_escape(name) + "\"", value);
+            }
+            prom_emit_group(out, "shield_service_requests_total", "counter",
+                            "Messages dispatched to the service "
+                            "(send/call/system)",
+                            request_samples);
+            prom_emit_group(out, "shield_service_errors_total", "counter",
+                            "Dispatch handler failures per service",
+                            error_samples);
         }
     }
 

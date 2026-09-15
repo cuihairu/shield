@@ -132,6 +132,18 @@ struct LuaServiceManager::Impl {
     };
     std::unordered_map<std::string, ServiceRpcState> service_rpc;
 
+    // Cumulative per-service traffic counters (requests/errors), one entry
+    // per published incarnation: spawn inserts fresh, every teardown path
+    // erases alongside services. Guarded by registry_mutex like the other
+    // per-service maps; dispatch copies the shared_ptr out under the lock
+    // and bumps the relaxed atomics lock-free on the service actor thread.
+    struct ServiceCounters {
+        std::atomic<std::uint64_t> requests{0};
+        std::atomic<std::uint64_t> errors{0};
+    };
+    std::unordered_map<std::string, std::shared_ptr<ServiceCounters>>
+        service_counters;
+
     // Pending shield.exit requests, keyed by service id. The requesting
     // dispatch frame may pop before the dispatcher looks for the request
     // (the tail of a yielded on_init / handler runs on a resume frame on
@@ -558,11 +570,16 @@ struct LuaServiceManager::Impl {
     bool dispatch_message(class LuaServiceManager* manager,
                           const std::string& id, const DispatchMessage& msg) {
         std::shared_ptr<LuaVM> service;
+        std::shared_ptr<ServiceCounters> counters;
         {
             std::shared_lock lock(registry_mutex);
             auto service_it = services.find(id);
             if (service_it != services.end()) {
                 service = service_it->second;
+                if (auto counters_it = service_counters.find(id);
+                    counters_it != service_counters.end()) {
+                    counters = counters_it->second;
+                }
             }
         }
         if (!service) {
@@ -573,10 +590,19 @@ struct LuaServiceManager::Impl {
                             msg.deadline_ms);
 
         std::string error;
-        if (!runtime.call_service_method_coroutine(
-                service, msg.method, msg.args, &error, msg.call_session,
-                manager, id)) {
-            // Method failed - log error but continue processing other messages.
+        const bool dispatched_ok = runtime.call_service_method_coroutine(
+            service, msg.method, msg.args, &error, msg.call_session, manager,
+            id);
+        // Method failed - log error but continue processing other messages.
+
+        // Traffic accounting stays out of the registry lock: the counters
+        // outlive this dispatch through the shared_ptr even if the service
+        // exits concurrently (the entry just drops from later snapshots).
+        if (counters) {
+            counters->requests.fetch_add(1, std::memory_order_relaxed);
+            if (!dispatched_ok) {
+                counters->errors.fetch_add(1, std::memory_order_relaxed);
+            }
         }
 
         // Honor shield.exit requested by the handler (or by a resumed
@@ -839,6 +865,7 @@ struct LuaServiceManager::Impl {
                 service = std::move(vm_it->second);
                 services.erase(vm_it);
             }
+            service_counters.erase(id);
             if (service) {
                 hung_vms.push_back(std::move(service));
             }
@@ -1624,6 +1651,10 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                                           service_name);
             }
             impl_->services[service_name] = std::move(vm);
+            // Fresh traffic counters per incarnation: a respawned name
+            // re-counts from zero (the exit path dropped the old entry).
+            impl_->service_counters[service_name] =
+                std::make_shared<Impl::ServiceCounters>();
             impl_->service_rpc[service_name] = std::move(rpc_state);
             impl_->published_names[service_name] = service_name;
             impl_->owned_names[service_name].insert(service_name);
@@ -2086,6 +2117,7 @@ void LuaServiceManager::exit(
         // Erase the RPC state before the VM: sol handler handles reference
         // the VM's lua_State and must be destroyed while it is alive.
         impl_->service_rpc.erase(id);
+        impl_->service_counters.erase(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
@@ -2206,6 +2238,7 @@ void LuaServiceManager::force_remove(const std::string& id,
         // Erase the RPC state before the VM (sol handles reference the VM's
         // lua_State); see exit() for the mirrored ordering.
         impl_->service_rpc.erase(id);
+        impl_->service_counters.erase(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
@@ -2553,7 +2586,28 @@ std::optional<nlohmann::json> LuaServiceManager::service_detail(
         rpc_it != impl_->service_rpc.end()) {
         detail["rpc_routes"] = rpc_it->second.descriptors.size();
     }
+    // Every published service has a counters entry (inserted at publish,
+    // erased on exit), so the traffic fields are unconditional here.
+    if (auto counters_it = impl_->service_counters.find(key);
+        counters_it != impl_->service_counters.end()) {
+        detail["requests"] =
+            counters_it->second->requests.load(std::memory_order_relaxed);
+        detail["errors"] =
+            counters_it->second->errors.load(std::memory_order_relaxed);
+    }
     return detail;
+}
+
+std::map<std::string, LuaServiceManager::ServiceTraffic>
+LuaServiceManager::service_traffic() const {
+    std::map<std::string, ServiceTraffic> out;
+    std::shared_lock lock(impl_->registry_mutex);
+    for (const auto& [name, counters] : impl_->service_counters) {
+        out[name] =
+            ServiceTraffic{counters->requests.load(std::memory_order_relaxed),
+                           counters->errors.load(std::memory_order_relaxed)};
+    }
+    return out;
 }
 
 uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,

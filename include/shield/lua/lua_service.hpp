@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -198,6 +199,17 @@ public:
 
     // List registered services
     std::vector<std::string> list_services() const;
+
+    // Cumulative traffic counters for one service incarnation: spawn starts
+    // them at zero and exit drops the entry (a respawn re-counts).
+    struct ServiceTraffic {
+        std::uint64_t requests = 0;
+        std::uint64_t errors = 0;
+    };
+
+    // Per-service traffic snapshot (requests/errors), taken under the
+    // registry lock; counter reads are relaxed atomics.
+    std::map<std::string, ServiceTraffic> service_traffic() const;
 
     // One published service's read-only snapshot: name, state ("running"),
     // resolved script path and RPC route count. nullopt when the name is

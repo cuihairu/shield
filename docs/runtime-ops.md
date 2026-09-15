@@ -188,6 +188,8 @@ P0 导出 Prometheus 0.0.4 文本格式（`Content-Type: text/plain; version=0.0
 | `shield_uptime_seconds` | gauge | 进程 uptime |
 | `shield_plugin_instances{state}` | gauge | 插件实例按生命周期状态（planned/loaded/started/unavailable/failed/stopped） |
 | `shield_services` | gauge | 已注册 Lua 服务数（actor 往返，500ms 超时省略） |
+| `shield_service_requests_total{service}` | counter | 服务收到的消息数（send/call/system 合流，按服务本轮生命周期累计，respawn 归零） |
+| `shield_service_errors_total{service}` | counter | 服务 handler 失败数（口径同上） |
 | `shield_server_state{state}` | gauge | Server 状态机（SERVER=ON 且 manager 存在） |
 | `shield_global_data_keys` / `shield_global_cache_entries` | gauge | global 数据键 / 本地缓存条目（GLOBAL=ON 且 manager 存在） |
 | `shield_global_cache_hits_total` / `shield_global_cache_misses_total` | counter | 缓存命中/未命中 |
@@ -252,12 +254,14 @@ P0 实测口径：注册表内只读快照，走 `""-id` forked task（与 `/ops
     "name": "gateway",
     "state": "running",
     "script": "/path/to/gateway.lua",
-    "rpc_routes": 2
+    "rpc_routes": 2,
+    "requests": 1234,
+    "errors": 2
   }
 }
 ```
 
-per-service `uptime`/`requests`/`errors`/`timers`/`coroutines` 等统计不在 P0 范围（依赖 per-service 流量计数），留后续。
+`requests`/`errors` 为该服务本轮生命周期的累计流量（spawn 归零、exit 移除）；`script` 仅配置态 runtime actor 有记录，spawn 服务可缺省。per-service `uptime`/`timers`/`coroutines` 等统计留后续。
 
 ## ops 安全
 
