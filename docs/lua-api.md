@@ -1168,6 +1168,19 @@ local ok, client_ref = player:authenticate(ctx, client, request)
 | 离线推送 | `player:push` 在线直发 s2c helper,离线入队(上限 `player.message_queue_limit` 默认 64,满则 `offline_queue_full`) |
 | 跨服务传值 | 只传 PlayerRef / ClientContext / ClientRef,不传整个会话对象 |
 
+P2 语法糖 `shield.player.Base.setup(M, opts)`:钩子按 setup 字段名
+(`auth`/`login`/`client_message`/`disconnect`/`logout`/`ready`/`reconnect`/
+`save`,无 `on_*` 前缀)自动从 M 收集,不必在 opts 里列名;opts 只携带
+非钩子选项(`instance_script`/`instance_routes`),显式给出的钩子函数
+优先于同名模块方法。Base 是纯糖(OD-014):内部转调 `setup`,不引入
+第二套 lifecycle、不做继承;必填钩子缺失同样 `setup_invalid`。
+
+```lua
+local player = shield.player.Base.setup(M, {
+    instance_script = "scripts/player_instance.lua",
+})
+```
+
 ### 门面方法(setup 返回值)
 
 | 方法 | 说明 |
@@ -1188,6 +1201,7 @@ local ok, client_ref = player:authenticate(ctx, client, request)
 | `shield.player.stats()` | `{rejected_not_ready, rejected_by_guard, offline_dropped}` 计数 |
 | `shield.player.now_ms()` | 单调毫秒时钟 |
 | `shield.player.node_info()` | `{node_id, epoch}`(epoch 为十进制字符串,uint64 不走 Lua double) |
+| `shield.player.Base.setup(M, opts)` | P2 语法糖:钩子按名从 M 收集后转调 `setup`(OD-014 边界) |
 | `shield.player.defaults.allow/ready/reconnect/save` | 默认钩子实现,业务覆盖后显式调用 |
 
 ### manager(uid 索引操作)

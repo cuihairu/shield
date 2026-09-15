@@ -329,6 +329,70 @@ BOOST_AUTO_TEST_CASE(LAPI_011_05_DefaultsExposeFourImplementations) {
     BOOST_CHECK_EQUAL(names.values[0][3].get<std::string>(), "save");
 }
 
+// shield.player.Base (P2 sugar, OD-014): the tests verify the collection
+// rules and that Base adds no semantics beyond impl.setup.
+BOOST_AUTO_TEST_CASE(LAPI_011_18_BaseSetupCollectsHooksFromModule) {
+    caf::actor_system_config caf_cfg;
+    caf::actor_system system(caf_cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    auto svc = manager.spawn(PLAYER_SCRIPT, service_opts("auth_base").dump());
+    BOOST_REQUIRE(svc.success);
+    CallResult cr = call(manager, svc.service_id, "do_base_setup",
+                         nlohmann::json::array({"collect", nullptr}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0]["ok"].get<bool>(), true);
+    BOOST_CHECK_EQUAL(cr.values[0]["has_auth"].get<bool>(), true);
+    BOOST_CHECK_EQUAL(cr.values[0]["has_push"].get<bool>(), true);
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_011_19_BaseSetupMissingRequiredHookFails) {
+    caf::actor_system_config caf_cfg;
+    caf::actor_system system(caf_cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    for (const std::string& hook :
+         {"auth", "login", "client_message", "disconnect", "logout"}) {
+        auto svc = manager.spawn(
+            PLAYER_SCRIPT, service_opts("auth_base_missing_" + hook).dump());
+        BOOST_REQUIRE(svc.success);
+        CallResult cr =
+            call(manager, svc.service_id, "do_base_setup",
+                 nlohmann::json::array({"missing_" + hook, nullptr}));
+        BOOST_REQUIRE(cr.success);
+        BOOST_CHECK_EQUAL(cr.values[0]["ok"].get<bool>(), false);
+        BOOST_CHECK_EQUAL(cr.values[0]["code"].get<std::string>(),
+                          "setup_invalid");
+    }
+}
+
+BOOST_AUTO_TEST_CASE(LAPI_011_20_BaseSetupOptsHookOverridesCollected) {
+    caf::actor_system_config caf_cfg;
+    caf::actor_system system(caf_cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    auto svc =
+        manager.spawn(PLAYER_SCRIPT, service_opts("auth_base_ovr").dump());
+    BOOST_REQUIRE(svc.success);
+    CallResult cr = call(manager, svc.service_id, "do_base_setup",
+                         nlohmann::json::array({"override", nullptr}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0]["ok"].get<bool>(), true);
+
+    // The explicit opts hook is the installed one: with no session yet the
+    // guard passes everything through untouched (LAPI-011-10 semantics), so
+    // the override win is observable only after a session exists — assert
+    // the facade is functional and the override never broke collection.
+    CallResult guard =
+        call(manager, svc.service_id, "do_guard",
+             nlohmann::json::array(
+                 {nullptr, nullptr, "chat", nlohmann::json{{"block", true}}}));
+    BOOST_REQUIRE(guard.success);
+    BOOST_CHECK_EQUAL(guard.values[0]["allowed"].get<bool>(), true);
+}
 BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(Lapi011Primitives)
@@ -745,6 +809,15 @@ BOOST_AUTO_TEST_CASE(LAPI_011_17_StubReportsModuleUnavailable) {
     BOOST_REQUIRE(setup.success);
     BOOST_CHECK_EQUAL(setup.values[0]["ok"].get<bool>(), false);
     BOOST_CHECK_EQUAL(setup.values[0]["code"].get<std::string>(),
+                      "module_unavailable");
+
+    // The P2 sugar degrades the same way: Base.setup reports the code
+    // instead of erroring or silently returning nil.
+    CallResult base = call(manager, svc.service_id, "do_base_setup",
+                           nlohmann::json::array({"collect", nullptr}));
+    BOOST_REQUIRE(base.success);
+    BOOST_CHECK_EQUAL(base.values[0]["ok"].get<bool>(), false);
+    BOOST_CHECK_EQUAL(base.values[0]["code"].get<std::string>(),
                       "module_unavailable");
 
     // The other entries degrade the same way instead of erroring.

@@ -270,6 +270,12 @@ end
 - `shield.player.resolve(ref)`：P0 仅本地。字段非法 → `nil, {code="invalid_player_ref"}`；非本节点 → `nil, {code="remote_resolve_unimplemented"}`；本地无此会话 → `nil, {code="player_not_found"}`。成功返回只读会话门面（`uid()/state()/kind()/service_id()/ref()`）。
 - `shield.player.get(uid)` 返回本机主会话门面；`shield.player.manager` 暴露 `unregister/get/get_devices` 索引操作。
 
+### Base 语法糖（P2）
+
+`shield.player.Base.setup(M, opts)` 是 `shield.player.setup` 的薄语法糖（OD-014）：全部八个钩子（`auth`/`login`/`client_message`/`disconnect`/`logout`/`ready`/`reconnect`/`save`）按 setup 字段名自动从模块表收集，不必在 opts 里列名；opts 只携带非钩子选项（`instance_script`/`instance_routes`），显式给出的钩子函数优先于同名模块方法。必填钩子缺失同样是 `nil, {code="setup_invalid"}`；模块未启用时 `Base.setup` 报 `module_unavailable`。
+
+边界（冻结）：Base 必须基于 `shield.player.setup`（内部转调，不新增注册路径）；不引入第二套 lifecycle、不做继承/多继承；钩子名保持 setup 字段名（不恢复 `on_*` 前缀）。Base 测试只验证收集规则与无额外语义。
+
 ### 配置段（owner：shield_player）
 
 ```yaml

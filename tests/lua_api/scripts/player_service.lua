@@ -158,6 +158,38 @@ function M.do_setup(ctx, mode, instance_script, instance_routes)
             has_session = type(player.session) == 'function'}
 end
 
+-- Base sugar (P2, OD-014): hooks collected from the module by their setup
+-- field names. mode: "collect" (every hook present on the copy), or
+-- "missing_<hook>" (that required method is dropped from the copy), or
+-- "override" (an explicit opts client_message wins over the collected one).
+function M.do_base_setup(ctx, mode, instance_routes)
+    mode = mode or 'collect'
+    local m = {}
+    for _, name in ipairs({'auth', 'login', 'client_message', 'disconnect',
+                           'logout'}) do
+        if mode ~= ('missing_' .. name) then m[name] = M[name] end
+    end
+    local opts = {instance_routes = instance_routes}
+    if mode == 'override' then
+        opts.client_message = function(c, client, route_name, request)
+            record('cm_override', route_name)
+            return true
+        end
+    end
+    local ok, setup_result, setup_err = pcall(function()
+        return shield.player.Base.setup(m, opts)
+    end)
+    if not ok then return {ok = false, error = tostring(setup_result)} end
+    if not setup_result then
+        return {ok = false,
+                code = type(setup_err) == 'table' and setup_err.code
+                    or 'setup_invalid'}
+    end
+    player = setup_result
+    return {ok = true, has_auth = type(player.authenticate) == 'function',
+            has_push = type(player.push) == 'function'}
+end
+
 function M.do_authenticate(ctx, client, request)
     if not player then return {ok = false, code = 'not_setup'} end
     local ok, second = player:authenticate(ctx, client, request)

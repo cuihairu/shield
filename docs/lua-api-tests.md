@@ -217,7 +217,7 @@ Harness 要求：
 | LAPI-011-29 | multi_device `kick_old` 且 UID 已在线 | 新连接认证 | 旧会话 `logout` reason 为 `replaced` |
 | LAPI-011-30 | multi_device `multi` 且超过 `max_devices` | 新连接认证 | `false, too_many_devices` |
 | LAPI-011-31 | `player_pool` 模式 | 同一 uid 多条消息 | 路由到同一 shard 且单玩家 handler 串行 |
-| LAPI-011-32 | `shield.player.Base.extend(opts)` | spawn player service | 行为等价于 `shield.player.setup(M, opts)` |
+| LAPI-011-32 | `shield.player.Base.setup(M, opts)`（P2 语法糖，OD-014：不引入第二套 lifecycle、不做继承、钩子名无 `on_*` 前缀） | spawn player service，模块上同名钩子齐备 | 行为等价于 `shield.player.setup(M, opts)`；缺必填钩子 `nil, setup_invalid`；opts 显式钩子优先；模块未启用 `module_unavailable` |
 | LAPI-011-33 | Base 覆盖可选 hook | 触发 hook | 默认实现不自动执行 |
 
 ## 验收要求

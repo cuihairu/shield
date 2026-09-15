@@ -2133,7 +2133,33 @@ function impl.setup(M, opts)
     return f
 end
 
-return {setup = impl.setup, defaults = defaults, impl = impl}
+-- shield.player.Base (P2 syntax sugar, OD-014): collects the hooks from the
+-- module table by their setup field names and delegates to impl.setup — no
+-- second lifecycle, no inheritance, no on_* prefix. opts carries only the
+-- non-hook options (instance_script/instance_routes); an explicit hook
+-- function in opts wins over the same-named module method.
+local ALL_HOOKS = {}
+for _, name in ipairs(REQUIRED) do table.insert(ALL_HOOKS, name) end
+for _, name in ipairs(OPTIONAL) do table.insert(ALL_HOOKS, name) end
+
+local Base = {}
+function Base.setup(M, opts)
+    local merged = {}
+    for _, name in ipairs(ALL_HOOKS) do
+        if type(M[name]) == 'function' then merged[name] = M[name] end
+    end
+    if type(opts) == 'table' then
+        for _, key in ipairs({'instance_script', 'instance_routes'}) do
+            merged[key] = opts[key]
+        end
+        for _, name in ipairs(ALL_HOOKS) do
+            if type(opts[name]) == 'function' then merged[name] = opts[name] end
+        end
+    end
+    return impl.setup(M, merged)
+end
+
+return {setup = impl.setup, defaults = defaults, impl = impl, Base = Base}
 )lua";
 
 void register_player_api(sol::table& shield, LuaServiceManager* manager) {
@@ -2482,6 +2508,7 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
         });
 
     player["defaults"] = impl["defaults"];
+    player["Base"] = impl["Base"];
 
     shield["player"] = player;
 }
@@ -2515,6 +2542,11 @@ void register_player_stub_api(sol::table& shield, sol::state_view lua) {
         defaults[name] = unavailable;
     }
     player["defaults"] = defaults;
+    // Base stays a table (its sugar shape is meaningless without the
+    // module), but calling Base.setup reports the same stable code.
+    auto base = lua.create_table();
+    base["setup"] = unavailable;
+    player["Base"] = base;
     shield["player"] = player;
 }
 #endif
