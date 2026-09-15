@@ -414,6 +414,131 @@ BOOST_AUTO_TEST_CASE(ServiceTimersReported) {
     manager->shutdown_all("done");
 }
 
+BOOST_AUTO_TEST_CASE(PendingCallsAndTasksReported) {
+    // The instantaneous gauges: a published handler suspended in a
+    // coroutine-aware call shows up on the caller's entry (pending_calls,
+    // observed live through service_stats/detail/metrics), and both gauge
+    // families are constant fixtures of the export with a labeled sample
+    // per service — pending_tasks included, whose nonzero window only
+    // exists behind a busy actor and cannot be widened deterministically
+    // from outside. The live observation polls the manager directly from
+    // this thread: the HTTP detail route rides the same snapshot, but a
+    // request-per-poll loop here measurably starves the forked-task lane
+    // it observes (11s responses with both actors idle), so the endpoints
+    // are asserted once, after the suspension has come and gone.
+    const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_svc";
+    fs::create_directories(dir);
+    std::ofstream(dir / "pending_slow.lua") << "return { on_work = function()\n"
+                                               "  shield.sleep(800)\n"
+                                               "  return 'done'\n"
+                                               "end }\n";
+    std::ofstream(dir / "pending_caller.lua")
+        << "return { on_kick = function()\n"
+           "  shield.call('cov_pending_slow', 'on_work')\n"
+           "end }\n";
+    auto spawned =
+        manager->spawn((dir / "pending_slow.lua").string(),
+                       R"({"name":"cov_pending_slow","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    spawned = manager->spawn(
+        (dir / "pending_caller.lua").string(),
+        R"({"name":"cov_pending_caller","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+
+    // Wait for both incarnations to publish.
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        auto stats = manager->service_stats();
+        published = stats.count("cov_pending_caller") > 0 &&
+                    stats.count("cov_pending_slow") > 0;
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    // Suspend the caller's handler in a coroutine-aware call and poll the
+    // stats snapshot (registry-locked read, no traffic generated) until the
+    // caller-side entry counts it.
+    std::string err;
+    BOOST_REQUIRE(manager->send_system("cov_pending_caller", "on_kick",
+                                       nlohmann::json::array(), &err));
+    bool saw_pending_call = false;
+    for (int i = 0; i < 800 && !saw_pending_call; ++i) {
+        auto stats = manager->service_stats();
+        auto it = stats.find("cov_pending_caller");
+        saw_pending_call = it != stats.end() && it->second.pending_calls == 1;
+        if (!saw_pending_call) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    BOOST_CHECK(saw_pending_call);
+    // While the call is suspended the caller holds exactly one entry; the
+    // callee holds none (it is executing, not calling out).
+    if (saw_pending_call) {
+        auto stats = manager->service_stats();
+        BOOST_CHECK_EQUAL(stats.at("cov_pending_slow").pending_calls, 0u);
+    }
+    // The entry is transient: once the callee answers, the caller is back
+    // at zero (bounded wait — the callee sleeps 800ms total).
+    bool drained = false;
+    for (int i = 0; i < 1500 && !drained; ++i) {
+        auto stats = manager->service_stats();
+        auto it = stats.find("cov_pending_caller");
+        drained = it != stats.end() && it->second.pending_calls == 0;
+        if (!drained) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    BOOST_CHECK(drained);
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    // Both fields ride the detail snapshot.
+    bool detail_ok = false;
+    for (int i = 0; i < 20 && !detail_ok; ++i) {
+        std::string response = client.get("/ops/services/cov_pending_caller",
+                                          std::chrono::milliseconds(9000));
+        if (RawHttpClient::status_code(response) == 200) {
+            auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+            detail_ok = resp["data"]["pending_calls"] == 0 &&
+                        resp["data"]["pending_tasks"] == 0;
+        }
+        if (!detail_ok) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    BOOST_CHECK(detail_ok);
+
+    // ... and the metrics export carries both families with one labeled
+    // sample line per service (zero included).
+    bool metrics_ok = false;
+    std::string metrics_body;
+    for (int i = 0; i < 20 && !metrics_ok; ++i) {
+        std::string response =
+            client.get("/ops/metrics", std::chrono::milliseconds(9000));
+        metrics_body = RawHttpClient::body(response);
+        metrics_ok =
+            metrics_body.find(
+                "# TYPE shield_service_pending_calls "
+                "gauge") != std::string::npos &&
+            metrics_body.find(
+                "# TYPE shield_service_pending_tasks "
+                "gauge") != std::string::npos &&
+            metrics_body.find("shield_service_pending_calls{service=") !=
+                std::string::npos &&
+            metrics_body.find("shield_service_pending_tasks{service=") !=
+                std::string::npos;
+        if (!metrics_ok) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    BOOST_CHECK(metrics_ok);
+
+    manager->shutdown_all("done");
+}
+
 BOOST_AUTO_TEST_CASE(ServicesEndpointTimesOut) {
     RawHttpClient client;
     client.connect_target("127.0.0.1", port);

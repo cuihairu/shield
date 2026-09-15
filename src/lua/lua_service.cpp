@@ -2611,6 +2611,17 @@ std::optional<nlohmann::json> LuaServiceManager::service_detail(
     } else {
         detail["timers"] = std::size_t{0};
     }
+    // Calls whose caller coroutine is suspended under this incarnation's
+    // name (entries whose caller is still initializing carry an empty or
+    // unpublished name and match nothing here). Same registry lock.
+    detail["pending_calls"] = static_cast<std::uint64_t>(std::count_if(
+        impl_->pending_calls.begin(), impl_->pending_calls.end(),
+        [&key](const decltype(impl_->pending_calls)::value_type& entry) {
+            return entry.second.caller_service == key;
+        }));
+    // Forked tasks queued for this incarnation but not yet picked up by its
+    // actor. task_mutex nests inside registry_mutex only in this direction.
+    detail["pending_tasks"] = pending_task_count(key);
     return detail;
 }
 
@@ -2631,7 +2642,19 @@ LuaServiceManager::service_stats() const {
                     return timers_it->second.size();
                 }
                 return std::size_t{0};
-            }()};
+            }(),
+            0,
+            0};
+    }
+    // Suspended caller coroutines join their caller's entry; a call hung in
+    // an unpublished (still-initializing) caller is attributed to no entry.
+    for (const auto& [session, call] : impl_->pending_calls) {
+        if (auto it = out.find(call.caller_service); it != out.end()) {
+            ++it->second.pending_calls;
+        }
+    }
+    for (auto& [name, stats] : out) {
+        stats.pending_tasks = pending_task_count(name);
     }
     return out;
 }

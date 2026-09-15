@@ -50,7 +50,7 @@ HTTP ops 服务端安全基线：
 - 已启用的 `/ops/eval` 要求 `Authorization: Bearer <token>`（常量时间比较），未授权请求返回 401。
 - eval 代码运行在受限 VM 中：`os.execute`/`os.exit`/`os.getenv`/`os.remove`/`os.rename`/`os.setlocale`、`io` 库、`require`/`package` 均被移除（`os.time`/`os.date`/`os.clock` 保留）。
 
-注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/ops/health` 探针（进程内读取、不经 Lua actor 往返，actor 网格卡死时仍可应答）、`/ops/metrics` Prometheus 导出与 `/ops/services/:name` 服务详情（含流量/uptime/timers 统计）已提供（P0）；`/ops/profile` 尚未提供。
+注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/ops/health` 探针（进程内读取、不经 Lua actor 往返，actor 网格卡死时仍可应答）、`/ops/metrics` Prometheus 导出与 `/ops/services/:name` 服务详情（含流量/uptime/timers/pending_calls/pending_tasks 统计）已提供（P0）；`/ops/profile` 尚未提供。
 
 ## shield_ops 默认策略
 
@@ -192,6 +192,8 @@ P0 导出 Prometheus 0.0.4 文本格式（`Content-Type: text/plain; version=0.0
 | `shield_service_errors_total{service}` | counter | 服务 handler 失败数（口径同上） |
 | `shield_service_uptime_seconds{service}` | gauge | 服务本轮生命周期存活秒数（自 publish 起单调计时，respawn 重计） |
 | `shield_service_timers{service}` | gauge | 服务当前活跃 actor timer 数 |
+| `shield_service_pending_calls{service}` | gauge | 以该服务名义挂起在协程 call 上的条目数（caller 侧瞬时值） |
+| `shield_service_pending_tasks{service}` | gauge | 已入队但尚未被其 actor 取走的 fork 任务数（瞬时值） |
 | `shield_server_state{state}` | gauge | Server 状态机（SERVER=ON 且 manager 存在） |
 | `shield_global_data_keys` / `shield_global_cache_entries` | gauge | global 数据键 / 本地缓存条目（GLOBAL=ON 且 manager 存在） |
 | `shield_global_cache_hits_total` / `shield_global_cache_misses_total` | counter | 缓存命中/未命中 |
@@ -235,12 +237,14 @@ P0 实测口径：注册表内只读快照，走 `""-id` forked task（与 `/ops
     "requests": 1234,
     "errors": 2,
     "uptime_seconds": 3600.5,
-    "timers": 1
+    "timers": 1,
+    "pending_calls": 0,
+    "pending_tasks": 0
   }
 }
 ```
 
-`requests`/`errors` 为该服务本轮生命周期的累计流量（spawn 归零、exit 移除）；`uptime_seconds` 自 publish 起单调计时（respawn 重计）；`timers` 为该服务当前活跃 actor timer 数；`script` 仅配置态 runtime actor 有记录，spawn 服务可缺省。per-service `coroutines` 等统计留后续。
+`requests`/`errors` 为该服务本轮生命周期的累计流量（spawn 归零、exit 移除）；`uptime_seconds` 自 publish 起单调计时（respawn 重计）；`timers` 为该服务当前活跃 actor timer 数；`pending_calls` 为以该服务名义挂起在协程 call 上的条目数（caller 侧瞬时值）；`pending_tasks` 为已入队但尚未被其 actor 取走的 fork 任务数（瞬时值）；`script` 仅配置态 runtime actor 有记录，spawn 服务可缺省。per-service `coroutines` 计数与 Lua 堆内存（`memory_kb`）留后续（见 [Lua 诊断控制台设计](ops-lua-console.md) 的 L1/L2 分层）。
 
 ## ops 安全
 

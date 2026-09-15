@@ -287,16 +287,22 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             nlohmann::json errors = nlohmann::json::object();
             nlohmann::json uptime = nlohmann::json::object();
             nlohmann::json timers = nlohmann::json::object();
+            nlohmann::json pending_calls = nlohmann::json::object();
+            nlohmann::json pending_tasks = nlohmann::json::object();
             for (const auto& [name, stats] : mgr.service_stats()) {
                 requests[name] = stats.requests;
                 errors[name] = stats.errors;
                 uptime[name] = stats.uptime_seconds;
                 timers[name] = stats.timers;
+                pending_calls[name] = stats.pending_calls;
+                pending_tasks[name] = stats.pending_tasks;
             }
             payload["requests"] = std::move(requests);
             payload["errors"] = std::move(errors);
             payload["uptime"] = std::move(uptime);
             payload["timers"] = std::move(timers);
+            payload["pending_calls"] = std::move(pending_calls);
+            payload["pending_tasks"] = std::move(pending_tasks);
             promise->set_value(std::move(payload));
         });
         if (future.wait_for(std::chrono::milliseconds(500)) ==
@@ -342,6 +348,27 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
                             uptime_samples);
             prom_emit_group(out, "shield_service_timers", "gauge",
                             "Active timers per service", timer_samples);
+            std::vector<std::pair<std::string, double>> pending_call_samples;
+            std::vector<std::pair<std::string, double>> pending_task_samples;
+            for (const auto& [name, value] :
+                 payload.value("pending_calls", nlohmann::json::object())
+                     .items()) {
+                pending_call_samples.emplace_back(
+                    "service=\"" + prom_escape(name) + "\"", value);
+            }
+            for (const auto& [name, value] :
+                 payload.value("pending_tasks", nlohmann::json::object())
+                     .items()) {
+                pending_task_samples.emplace_back(
+                    "service=\"" + prom_escape(name) + "\"", value);
+            }
+            prom_emit_group(out, "shield_service_pending_calls", "gauge",
+                            "Coroutine-aware calls suspended per service "
+                            "(caller side)",
+                            pending_call_samples);
+            prom_emit_group(out, "shield_service_pending_tasks", "gauge",
+                            "Forked tasks queued per service",
+                            pending_task_samples);
         }
     }
 

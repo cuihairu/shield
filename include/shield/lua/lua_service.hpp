@@ -208,10 +208,17 @@ public:
         std::uint64_t errors = 0;
         double uptime_seconds = 0.0;
         std::size_t timers = 0;
+        // Calls whose caller coroutine is currently suspended in this
+        // incarnation (the caller-side half of the coroutine-aware call
+        // path), plus forked tasks queued for its actor but not yet picked
+        // up. Instantaneous gauges, not counters.
+        std::uint64_t pending_calls = 0;
+        std::size_t pending_tasks = 0;
     };
 
-    // Per-service stats snapshot (traffic + uptime + active timers), taken
-    // under the registry lock; counter reads are relaxed atomics.
+    // Per-service stats snapshot (traffic + uptime + active timers +
+    // pending calls/tasks), taken under the registry lock; counter reads
+    // are relaxed atomics.
     std::map<std::string, ServiceStats> service_stats() const;
 
     // One published service's read-only snapshot: name, state ("running"),
