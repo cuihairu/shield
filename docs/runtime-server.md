@@ -173,4 +173,5 @@ P0 不设独立 `/ops/server` 端点。服务器状态作为只读快照并入�
 - 独立 `/ops/server` HTTP 端点与 ops 写操作。
 - ServerStarter（ServerManager 不参与 Starter 编排）。
 - 全局事件总线（通知只投递给显式注册的观察者）。
-- SIGINT/SIGTERM 外部停机时自动迁移到 `shutdown` 状态（外部停机没有 Lua 观察窗口；列为 P1 候选）。
+
+外部停机（SIGINT/SIGTERM、console stop 等）由 bootstrap 在 `shutdown()` 入口统一把 ServerManager 迁移到 `shutdown` 态（已落地，P1）：观察者通知照常投递，但外部停机不提供 Lua 观察窗口——回调能否在拆除前执行取决于调度，不作为契约。

@@ -125,7 +125,8 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 - `shield_ops`：Prometheus 指标、健康检查、HTTP/console 管理端点、profile。（P0 已落地 `/ops/health` + `/ops/metrics` + `/ops/services/:name`；`/ops/profile`、per-service 流量指标留后续）
 - [x] 冻结每个 optional module 的初始化失败策略：默认 fail fast；`shield_cluster` 允许远端连接失败时退化为单节点 unhealthy；未启用却配置 optional 段必须启动失败。
 - [x] 冻结 `shield_player` 文档契约：`shield.player.setup` 主 API 与默认 hook 实现表、persistence adapter 边界、`PlayerRef` 本地/远端边界、anonymous/spectator opt-in 状态、多设备策略、`player_pool` 容量模型和 `shield.player.Base` 语法糖边界。实现仍按 P0/P1/P2 分阶段推进。
-- [x] 落地 `shield_server` P0：进程级 ServerManager 单例、四态状态机与迁移校验、`shield.server` Lua 门面（state/set_state/shutdown/watch）、`shutdown(ms)` 经 `request_stop` 的关闭交接、`/ops/status` server 块与 `root.server` 只读快照（OD-016/OD-017；SIGINT 自动置 shutdown 态留 P1）。
+- [x] 落地 `shield_server` P0：进程级 ServerManager 单例、四态状态机与迁移校验、`shield.server` Lua 门面（state/set_state/shutdown/watch）、`shutdown(ms)` 经 `request_stop` 的关闭交接、`/ops/status` server 块与 `root.server` 只读快照（OD-016/OD-017）。
+- [x] 落地 `shield_server` P1：外部停机（SIGINT/SIGTERM 等）由 bootstrap 在 shutdown 入口统一把 ServerManager 迁移到 shutdown 态并投递观察者通知（外部停机不承诺 Lua 观察窗口）。
 
 ## 插件系统
 

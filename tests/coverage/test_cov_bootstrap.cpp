@@ -10,13 +10,18 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "shield/bootstrap/bootstrap.hpp"
+#include "shield/bootstrap/starter.hpp"
 #include "shield/config/config.hpp"
+#ifdef SHIELD_ENABLE_SERVER
+#include "shield/server/server_manager.hpp"
+#endif
 
 namespace {
 
@@ -65,6 +70,25 @@ void force_shutdown() {
         shield::bootstrap::shutdown();
     }
 }
+
+#ifdef SHIELD_ENABLE_SERVER
+// PRE_SHUTDOWN probe: by the time shutdown starters run, an external stop
+// must already have driven the server state machine to its terminal state.
+// Deterministic by construction — schedule_shutdown happens at shutdown()
+// entry, before any starter phase or service teardown.
+struct ServerStateProbeStarter : shield::bootstrap::Starter {
+    std::string name() const override { return "cov_server_state_probe"; }
+    bool execute(shield::bootstrap::Phase phase) override {
+        if (phase == shield::bootstrap::Phase::PRE_SHUTDOWN) {
+            auto* sm = shield::server::ServerManager::global();
+            observed_shutdown =
+                sm && sm->state() == shield::server::ServerState::kShutdown;
+        }
+        return true;
+    }
+    bool observed_shutdown = false;
+};
+#endif
 
 }  // namespace
 
@@ -1453,5 +1477,39 @@ BOOST_AUTO_TEST_CASE(InitializeFailsOnCrossActorRpcRouteConflict) {
     BOOST_CHECK(!shield::bootstrap::is_initialized());
     force_shutdown();
 }
+
+#ifdef SHIELD_ENABLE_SERVER
+BOOST_AUTO_TEST_CASE(ExternalStopTransitionsServerToShutdown) {
+    // SIGINT/SIGTERM (and any other external stop) land in shutdown()
+    // without ever touching the server state machine; the machine must
+    // still reach its terminal state before teardown starters run
+    // (runtime-server.md shutdown contract; external shutdown keeps no
+    // Lua observation window, so the state itself is the observable).
+    auto probe = std::make_unique<ServerStateProbeStarter>();
+    auto* probe_ptr = probe.get();
+    shield::bootstrap::register_starter(std::move(probe));
+
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: solid\n"
+        "    script: " +
+        echo_script("shield_cov_boot_sigint.lua").string() +
+        "\n"
+        "server_manager:\n"
+        "  name: cov_sigint_srv\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    force_shutdown();
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    BOOST_REQUIRE(shield::server::ServerManager::global());
+    // Reset the flag after any leftover-runtime force_shutdown above so the
+    // assertion below only reads THIS shutdown's probe run.
+    probe_ptr->observed_shutdown = false;
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(probe_ptr->observed_shutdown);
+    force_shutdown();
+}
+#endif
 
 BOOST_AUTO_TEST_SUITE_END()

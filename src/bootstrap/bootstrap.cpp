@@ -1159,6 +1159,22 @@ void shutdown() {
     auto& log = shield::log::get_logger("bootstrap");
     SHIELD_LOG_INFO(log, "Shield runtime shutting down...");
 
+#ifdef SHIELD_ENABLE_SERVER
+    // External stop sources (SIGINT/SIGTERM, console stop) end up here
+    // without ever touching the server state machine; drive it through its
+    // terminal state first so watchers receive the "shutdown" notification
+    // while the runtime can still deliver and /ops reads report the true
+    // state during a slow teardown (runtime-server.md shutdown contract;
+    // external shutdown keeps no Lua observation window). A server-side
+    // shutdown(ms) handover already scheduled it — schedule_shutdown is
+    // idempotent there ("shutdown already scheduled"), and the injected
+    // stop request firing again is a harmless no-op mid-shutdown.
+    if (g_state->server_manager) {
+        std::string server_error;
+        (void)g_state->server_manager->schedule_shutdown(0, &server_error);
+    }
+#endif
+
     // shutdown.timeout.* budgets (milliseconds). Built-in defaults keep a
     // stuck on_exit or plugin shutdown callback from hanging process exit;
     // the watchdog enforces the total budget by terminating the process.
