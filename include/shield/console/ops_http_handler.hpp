@@ -15,7 +15,9 @@ namespace shield::console {
 /// @brief HTTP endpoints for ops/monitoring
 ///
 /// Provides REST API endpoints that mirror the console commands:
+/// - GET /ops/health - Lightweight health probe (no Lua actor round trip)
 /// - GET /ops/status - Service/plugin/cluster status
+/// - GET /ops/metrics - Prometheus text format metrics
 /// - GET /ops/services - List all Lua services
 /// - GET /ops/plugins - List all plugins
 /// - GET /ops/config - Show config
@@ -36,7 +38,11 @@ public:
 
 private:
     // Route handlers
+    shield::net::HttpResponse handle_health(
+        const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_status(
+        const shield::net::HttpRequest& req);
+    shield::net::HttpResponse handle_metrics(
         const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_services(
         const shield::net::HttpRequest& req);

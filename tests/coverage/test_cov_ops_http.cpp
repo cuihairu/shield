@@ -545,6 +545,177 @@ BOOST_AUTO_TEST_CASE(StatusEndpointIncludesClusterBlock) {
 }
 #endif
 
+BOOST_AUTO_TEST_CASE(HealthEndpoint) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.get("/ops/health");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "result");
+    const auto& data = resp["data"];
+    // The fixture only carries an optional unavailable instance, so the
+    // process reports ok; the probe never does a Lua actor round trip.
+    BOOST_CHECK_EQUAL(data["status"], "ok");
+    BOOST_CHECK(data["uptime"].is_number());
+    BOOST_CHECK(data["uptime"].get<double>() >= 0.0);
+    BOOST_CHECK_EQUAL(data["checks"]["core"]["status"], "ok");
+    BOOST_CHECK_EQUAL(data["checks"]["plugins"]["status"], "ok");
+    BOOST_CHECK_EQUAL(data["checks"]["plugins"]["required_down"], 0u);
+    BOOST_CHECK_EQUAL(data["checks"]["plugins"]["started"], 0u);
+}
+
+BOOST_AUTO_TEST_CASE(MetricsEndpoint) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.get("/ops/metrics");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    // Prometheus exposition format, not JSON.
+    BOOST_CHECK(response.find("text/plain; version=0.0.4") !=
+                std::string::npos);
+    const std::string& body = RawHttpClient::body(response);
+    BOOST_CHECK(body.find("# HELP shield_uptime_seconds") != std::string::npos);
+    BOOST_CHECK(body.find("# TYPE shield_uptime_seconds gauge") !=
+                std::string::npos);
+    BOOST_CHECK(body.find("shield_plugin_instances{state=\"unavailable\"} 1") !=
+                std::string::npos);
+    BOOST_CHECK(body.find("# TYPE shield_plugin_instances gauge") !=
+                std::string::npos);
+}
+
+#ifdef SHIELD_ENABLE_SERVER
+// With a server manager installed the health probe carries the server
+// check (running -> ok) and metrics expose the state machine gauge.
+BOOST_AUTO_TEST_CASE(HealthAndMetricsIncludeServerBlock) {
+    shield::server::ServerConfig config;
+    config.name = "cov-ops-health";
+    shield::server::ServerManager sm(config);
+    sm.mark_ready();
+    shield::server::ServerManager::set_global(&sm);
+
+    {
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", port);
+        std::string response = client.get("/ops/health");
+        BOOST_REQUIRE(!response.empty());
+        auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+        BOOST_CHECK_EQUAL(resp["data"]["checks"]["server"]["status"], "ok");
+        BOOST_CHECK_EQUAL(resp["data"]["checks"]["server"]["state"], "running");
+        BOOST_CHECK_EQUAL(resp["data"]["status"], "ok");
+
+        response = client.get("/ops/metrics");
+        BOOST_REQUIRE(!response.empty());
+        BOOST_CHECK(RawHttpClient::body(response).find(
+                        "shield_server_state{state=\"running\"} 1") !=
+                    std::string::npos);
+    }
+
+    shield::server::ServerManager::set_global(nullptr);
+}
+#endif
+
+#ifdef SHIELD_ENABLE_CLUSTER
+// Phantom cluster manager (no transport): health reports the online peer,
+// metrics expose the node gauge without the transport counters.
+BOOST_AUTO_TEST_CASE(HealthAndMetricsIncludeClusterBlock) {
+    shield::cluster::ClusterConfig config;
+    config.enabled = true;
+    config.node_id = "cov-ops-health";
+    config.listen_address = "127.0.0.1:0";
+    config.peers = {"127.0.0.1:59995"};
+    shield::cluster::ClusterManager cluster(config);
+    cluster.start();
+    cluster.on_handshake("127.0.0.1:59995", "node-b", 12);
+    shield::cluster::set_global_cluster_manager(&cluster);
+
+    {
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", port);
+        std::string response = client.get("/ops/health");
+        BOOST_REQUIRE(!response.empty());
+        auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+        BOOST_CHECK_EQUAL(resp["data"]["checks"]["cluster"]["status"], "ok");
+        BOOST_CHECK_EQUAL(resp["data"]["checks"]["cluster"]["nodes_online"],
+                          1u);
+        BOOST_CHECK_EQUAL(resp["data"]["checks"]["cluster"]["nodes_down"], 0u);
+        BOOST_CHECK_EQUAL(resp["data"]["status"], "ok");
+
+        response = client.get("/ops/metrics");
+        BOOST_REQUIRE(!response.empty());
+        const std::string& body = RawHttpClient::body(response);
+        BOOST_CHECK(body.find("shield_cluster_nodes{state=\"online\"} 1") !=
+                    std::string::npos);
+        // No transport registered in this fixture: counter block absent.
+        BOOST_CHECK(body.find("shield_cluster_transport_messages_total") ==
+                    std::string::npos);
+    }
+
+    shield::cluster::set_global_cluster_manager(nullptr);
+    cluster.stop();
+}
+#endif
+
+BOOST_AUTO_TEST_CASE(RequiredPluginDegradesHealth) {
+    // A required instance whose package is present but library file missing
+    // fails the load stage, stays in the instance table as "failed", and
+    // flips the overall health verdict to degraded. (A required instance
+    // whose package is missing entirely fails plan_and_resolve before
+    // entering the table, so the load-stage failure is the reachable
+    // degradation path.) Kept last: plan_and_resolve resets the shared
+    // instance table, dropping the fixture's cov_opt instance.
+    auto& host = shield::plugin::global_host();
+    fs::path dir = fs::temp_directory_path() / "shield_cov_ops_plugins_req";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "broken.req");
+    std::ofstream(dir / "broken.req" / "manifest.yaml")
+        << "schema_version: 1\n"
+           "id: broken.req\n"
+           "name: Broken\n"
+           "version: 1.0.0\n"
+           "kind: test\n"
+           "entry: shield_plugin_get_v1\n"
+           "library:\n"
+           "  linux: bin/libdoes_not_exist.so\n"
+           "  macos: bin/libdoes_not_exist.dylib\n"
+           "  windows: bin/libdoes_not_exist.dll\n"
+           "provides:\n"
+           "  - interface: broken.req.iface\n"
+           "requires: []\n"
+           "config_schema:\n"
+           "  type: object\n";
+    std::string err;
+    host.scan(dir.string());
+    BOOST_REQUIRE_MESSAGE(host.catalog(err), err);
+    shield::plugin::PluginConfig pc;
+    pc.directory = dir.string();
+    shield::plugin::InstanceDecl decl;
+    decl.id = "cov_req";
+    decl.package = "broken.req";
+    decl.required = true;
+    pc.instances.push_back(decl);
+    BOOST_REQUIRE_MESSAGE(host.plan_and_resolve(pc, err), err);
+    // The load stage fails on the missing library; the required instance is
+    // marked failed but stays in the table for introspection.
+    BOOST_CHECK_MESSAGE(!host.load_all(err), "load_all must fail");
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.get("/ops/health");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK_EQUAL(resp["data"]["status"], "degraded");
+    BOOST_CHECK_EQUAL(resp["data"]["checks"]["plugins"]["status"], "degraded");
+    BOOST_CHECK_EQUAL(resp["data"]["checks"]["plugins"]["required_down"], 1u);
+    // Metrics reflect the same instance in its failed state.
+    response = client.get("/ops/metrics");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK(RawHttpClient::body(response).find(
+                    "shield_plugin_instances{state=\"failed\"} 1") !=
+                std::string::npos);
+}
+
 #ifdef SHIELD_ENABLE_SERVER
 // With a server manager installed, /ops/status carries the server block
 // (state machine snapshot, read-only; OD-017 keeps /ops/server out).

@@ -1,8 +1,12 @@
 // [SHIELD_CONSOLE] HTTP ops endpoints implementation
 #include "shield/console/ops_http_handler.hpp"
 
+#include <chrono>
 #include <future>
+#include <map>
 #include <nlohmann/json.hpp>
+#include <utility>
+#include <vector>
 
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
@@ -11,6 +15,7 @@
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "cluster_status.hpp"
 #include "shield/cluster/cluster_manager.hpp"
+#include "shield/cluster/cluster_transport.hpp"
 #endif
 
 #ifdef SHIELD_ENABLE_SERVER
@@ -23,6 +28,89 @@
 #include "shield/global/global_manager.hpp"
 #endif
 
+namespace {
+
+/// Process start reference for uptime-based health and metrics. First use
+/// in this translation unit pins the process start (good enough for a
+/// health probe; the optional server module has the authoritative clock).
+const std::chrono::steady_clock::time_point kProcessStart =
+    std::chrono::steady_clock::now();
+
+double process_uptime_seconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                         kProcessStart)
+        .count();
+}
+
+/// Prometheus label-value escaping (backslash, quote, newline).
+std::string prom_escape(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char c : value) {
+        switch (c) {
+            case '\\':
+                out += "\\\\";
+                break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            default:
+                out += c;
+        }
+    }
+    return out;
+}
+
+/// Appends one HELP/TYPE header pair plus a single sample line.
+void prom_emit(std::string& out, const std::string& name,
+               const std::string& type, const std::string& help,
+               const std::string& labels, double value) {
+    out += "# HELP " + name + " " + help + "\n";
+    out += "# TYPE " + name + " " + type + "\n";
+    out += name;
+    if (!labels.empty()) {
+        out += "{" + labels + "}";
+    }
+    out += ' ';
+    if (value == static_cast<long long>(value)) {
+        out += std::to_string(static_cast<long long>(value));
+    } else {
+        out += std::to_string(value);
+    }
+    out += '\n';
+}
+
+/// Grouped variant: one HELP/TYPE header pair, then one sample per label
+/// set (labels must already be escaped).
+void prom_emit_group(
+    std::string& out, const std::string& name, const std::string& type,
+    const std::string& help,
+    const std::vector<std::pair<std::string, double>>& samples) {
+    if (samples.empty()) {
+        return;
+    }
+    out += "# HELP " + name + " " + help + "\n";
+    out += "# TYPE " + name + " " + type + "\n";
+    for (const auto& [labels, value] : samples) {
+        out += name;
+        if (!labels.empty()) {
+            out += "{" + labels + "}";
+        }
+        out += ' ';
+        if (value == static_cast<long long>(value)) {
+            out += std::to_string(static_cast<long long>(value));
+        } else {
+            out += std::to_string(value);
+        }
+        out += '\n';
+    }
+}
+
+}  // namespace
+
 namespace shield::console {
 
 OpsHttpHandler::OpsHttpHandler(shield::lua::LuaServiceManager& lua_mgr,
@@ -30,8 +118,12 @@ OpsHttpHandler::OpsHttpHandler(shield::lua::LuaServiceManager& lua_mgr,
     : lua_mgr_(lua_mgr), lua_rt_(lua_rt) {}
 
 void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
+    server.get("/ops/health",
+               [this](const auto& req) { return handle_health(req); });
     server.get("/ops/status",
                [this](const auto& req) { return handle_status(req); });
+    server.get("/ops/metrics",
+               [this](const auto& req) { return handle_metrics(req); });
     server.get("/ops/services",
                [this](const auto& req) { return handle_services(req); });
     server.get("/ops/plugins",
@@ -72,6 +164,226 @@ bool OpsHttpHandler::token_matches(const std::string& provided,
                 static_cast<unsigned char>(expected[i]);
     }
     return diff == 0;
+}
+
+shield::net::HttpResponse OpsHttpHandler::handle_health(
+    const shield::net::HttpRequest& req) {
+    // Lightweight probe: process-local reads only, never a Lua actor round
+    // trip, so it answers even when the actor mesh is wedged.
+    nlohmann::json checks;
+    checks["core"] = {{"status", "ok"},
+                      {"uptime_seconds", process_uptime_seconds()}};
+
+    // Plugins: a required instance that did not reach "started" degrades
+    // the process (absent optional instances are fine).
+    {
+        std::size_t started = 0;
+        std::size_t required_down = 0;
+        for (const auto& inst :
+             shield::plugin::global_host().list_instances()) {
+            if (inst.state == "started") {
+                ++started;
+            } else if (inst.required) {
+                ++required_down;
+            }
+        }
+        checks["plugins"] = {{"status", required_down == 0 ? "ok" : "degraded"},
+                             {"started", started},
+                             {"required_down", required_down}};
+    }
+
+#ifdef SHIELD_ENABLE_SERVER
+    if (auto* sm = shield::server::ServerManager::global()) {
+        const char* state = shield::server::server_state_name(sm->state());
+        // Only "running" counts as healthy; starting/maintenance/shutdown
+        // all mean the process is not serving normally right now.
+        const bool ok = sm->state() == shield::server::ServerState::kRunning;
+        checks["server"] = {{"status", ok ? "ok" : "degraded"},
+                            {"state", state}};
+    }
+#endif
+
+#ifdef SHIELD_ENABLE_CLUSTER
+    if (auto* cm = shield::cluster::global_cluster_manager()) {
+        std::size_t online = 0;
+        std::size_t down = 0;
+        for (const auto& n : cm->nodes()) {
+            const auto state = n.state;
+            if (state == shield::cluster::NodeState::Online) {
+                ++online;
+            } else if (state == shield::cluster::NodeState::Offline ||
+                       state == shield::cluster::NodeState::Removed) {
+                ++down;
+            }
+        }
+        checks["cluster"] = {{"status", down == 0 ? "ok" : "degraded"},
+                             {"nodes_online", online},
+                             {"nodes_down", down}};
+    }
+#endif
+
+#ifdef SHIELD_ENABLE_GLOBAL
+    // Same convention as server/cluster above: a GLOBAL-capable build may
+    // still run as a non-global node, so absence omits the check rather
+    // than degrading it.
+    if (shield::global::GlobalManager::global() != nullptr) {
+        checks["global"] = {{"status", "ok"}};
+    }
+#endif
+
+    // Overall: degraded when any check degraded (P0 keeps HTTP 200 and
+    // carries the verdict in the body; a 503 mapping can come later).
+    std::string status = "ok";
+    for (const auto& [name, check] : checks.items()) {
+        (void)name;
+        if (check.value("status", "ok") != "ok") {
+            status = "degraded";
+            break;
+        }
+    }
+    nlohmann::json data = {{"status", status},
+                           {"uptime", process_uptime_seconds()},
+                           {"checks", std::move(checks)}};
+    return make_json_response(200, {{"type", "result"}, {"data", data}});
+}
+
+shield::net::HttpResponse OpsHttpHandler::handle_metrics(
+    const shield::net::HttpRequest& req) {
+    std::string out;
+    prom_emit(out, "shield_uptime_seconds", "gauge",
+              "Process uptime in seconds", "", process_uptime_seconds());
+
+    // Plugins grouped by lifecycle state.
+    {
+        std::map<std::string, double> by_state;
+        for (const auto& inst :
+             shield::plugin::global_host().list_instances()) {
+            by_state[inst.state] += 1.0;
+        }
+        std::vector<std::pair<std::string, double>> samples;
+        for (const auto& [state, count] : by_state) {
+            samples.emplace_back("state=\"" + prom_escape(state) + "\"", count);
+        }
+        prom_emit_group(out, "shield_plugin_instances", "gauge",
+                        "Plugin instances by lifecycle state", samples);
+    }
+
+    // Service count: the one metric that needs the actor mesh; omitted on
+    // timeout so a wedged mesh never wedges the scrape.
+    {
+        auto promise = std::make_shared<std::promise<nlohmann::json>>();
+        auto future = promise->get_future();
+        lua_mgr_.enqueue_forked_task("", [&mgr = lua_mgr_, promise]() {
+            auto names = mgr.list_services();
+            promise->set_value(nlohmann::json(names));
+        });
+        if (future.wait_for(std::chrono::milliseconds(500)) ==
+            std::future_status::ready) {
+            const double count = static_cast<double>(future.get().size());
+            prom_emit(out, "shield_services", "gauge",
+                      "Registered Lua services", "", count);
+        }
+    }
+
+#ifdef SHIELD_ENABLE_SERVER
+    if (auto* sm = shield::server::ServerManager::global()) {
+        prom_emit(
+            out, "shield_server_state", "gauge",
+            "Server state machine (1 for the current state)",
+            "state=\"" +
+                prom_escape(shield::server::server_state_name(sm->state())) +
+                "\"",
+            1.0);
+    }
+#endif
+
+#ifdef SHIELD_ENABLE_GLOBAL
+    if (auto* gm = shield::global::GlobalManager::global()) {
+        prom_emit(out, "shield_global_data_keys", "gauge", "Global data keys",
+                  "", static_cast<double>(gm->data_size()));
+        prom_emit(out, "shield_global_cache_entries", "gauge",
+                  "Local cache entries", "",
+                  static_cast<double>(gm->cache_size()));
+        prom_emit(out, "shield_global_cache_hits_total", "counter",
+                  "Local cache hits", "",
+                  static_cast<double>(gm->cache_hits()));
+        prom_emit(out, "shield_global_cache_misses_total", "counter",
+                  "Local cache misses", "",
+                  static_cast<double>(gm->cache_misses()));
+        prom_emit_group(
+            out, "shield_global_queues", "gauge", "Queues by family",
+            {{"type=\"normal\"", static_cast<double>(gm->queue_count())},
+             {"type=\"delay\"", static_cast<double>(gm->delay_queue_count())},
+             {"type=\"priority\"",
+              static_cast<double>(gm->priority_queue_count())},
+             {"type=\"broadcast\"",
+              static_cast<double>(gm->broadcast_queue_count())},
+             {"type=\"reliable\"",
+              static_cast<double>(gm->reliable_queue_count())}});
+        prom_emit_group(
+            out, "shield_global_locks", "gauge", "Live locks by kind",
+            {{"kind=\"mutex\"",
+              static_cast<double>(gm->mutex_registry_size("mutex"))},
+             {"kind=\"spinlock\"",
+              static_cast<double>(gm->mutex_registry_size("spinlock"))},
+             {"kind=\"rwlock\"", static_cast<double>(gm->rwlock_count())}});
+        prom_emit(out, "shield_global_rank_boards", "gauge",
+                  "Leaderboard boards", "",
+                  static_cast<double>(gm->rank_board_count()));
+        prom_emit(out, "shield_global_rank_members", "gauge",
+                  "Leaderboard members across boards", "",
+                  static_cast<double>(gm->rank_total_members()));
+        prom_emit(out, "shield_global_scheduler_tasks", "gauge",
+                  "Registered scheduler tasks", "",
+                  static_cast<double>(gm->sched_list().size()));
+        prom_emit(out, "shield_global_scheduler_active", "gauge",
+                  "Active (not paused/done) scheduler tasks", "",
+                  static_cast<double>(gm->sched_active_count()));
+    }
+#endif
+
+#ifdef SHIELD_ENABLE_CLUSTER
+    if (auto* cm = shield::cluster::global_cluster_manager()) {
+        std::map<std::string, double> nodes_by_state;
+        for (const auto& n : cm->nodes()) {
+            nodes_by_state[shield::cluster::node_state_name(n.state)] += 1.0;
+        }
+        std::vector<std::pair<std::string, double>> samples;
+        for (const auto& [state, count] : nodes_by_state) {
+            samples.emplace_back("state=\"" + prom_escape(state) + "\"", count);
+        }
+        prom_emit_group(out, "shield_cluster_nodes", "gauge",
+                        "Cluster nodes by state", samples);
+        if (auto* ct = shield::cluster::global_cluster_transport()) {
+            const auto stats = ct->stats();
+            prom_emit(out, "shield_cluster_transport_connections", "gauge",
+                      "Live cluster transport connections", "",
+                      static_cast<double>(stats.live_connections));
+            prom_emit(out, "shield_cluster_transport_reconnects_total",
+                      "counter", "Cluster transport reconnects", "",
+                      static_cast<double>(stats.reconnects));
+            prom_emit_group(
+                out, "shield_cluster_transport_messages_total", "counter",
+                "Cluster transport messages",
+                {{"direction=\"tx\"", static_cast<double>(stats.tx_messages)},
+                 {"direction=\"rx\"", static_cast<double>(stats.rx_messages)}});
+            prom_emit_group(
+                out, "shield_cluster_transport_heartbeats_total", "counter",
+                "Cluster transport heartbeats",
+                {{"direction=\"tx\"", static_cast<double>(stats.tx_heartbeats)},
+                 {"direction=\"rx\"",
+                  static_cast<double>(stats.rx_heartbeats)}});
+        }
+    }
+#endif
+
+    shield::net::HttpResponse resp;
+    resp.result(boost::beast::http::status::ok);
+    resp.set(boost::beast::http::field::content_type,
+             "text/plain; version=0.0.4; charset=utf-8");
+    resp.body() = std::move(out);
+    resp.prepare_payload();
+    return resp;
 }
 
 shield::net::HttpResponse OpsHttpHandler::handle_status(

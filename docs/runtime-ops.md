@@ -38,7 +38,7 @@ Core 不内建：Prometheus metrics、HealthCheckRegistry、`/metrics` 端点、
 已落地的运维面（实现于 `shield_bootstrap` 的 console 组件，`http.enabled: true` 时生效）：
 
 - Unix socket 诊断控制台（`root.*` / Lua 命令，见 [Lua 诊断控制台设计](ops-lua-console.md)）
-- HTTP ops 端点：`/ops/status`、`/ops/services`、`/ops/plugins`、`/ops/config`、`/ops/eval`
+- HTTP ops 端点：`/ops/health`、`/ops/status`、`/ops/metrics`、`/ops/services`、`/ops/plugins`、`/ops/config`、`/ops/eval`
 - Lua 业务侧 `shield.httpd.*` 可注册自有管理端点（见 [Lua API 契约](lua-api.md)）
 
 HTTP ops 服务端安全基线：
@@ -50,7 +50,7 @@ HTTP ops 服务端安全基线：
 - 已启用的 `/ops/eval` 要求 `Authorization: Bearer <token>`（常量时间比较），未授权请求返回 401。
 - eval 代码运行在受限 VM 中：`os.execute`/`os.exit`/`os.getenv`/`os.remove`/`os.rename`/`os.setlocale`、`io` 库、`require`/`package` 均被移除（`os.time`/`os.date`/`os.clock` 保留）。
 
-注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/health` 探针（不经 Lua actor 往返）尚未提供。
+注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/ops/health` 探针（进程内读取、不经 Lua actor 往返，actor 网格卡死时仍可应答）与 `/ops/metrics` Prometheus 导出已提供（P0）；`/ops/services/:name`、`/ops/profile` 尚未提供。
 
 ## shield_ops 默认策略
 
@@ -88,12 +88,12 @@ profile controls
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/ops/health` | GET | 健康检查 |
+| `/ops/health` | GET | 健康检查（已提供） |
 | `/ops/status` | GET | 运行时状态 |
-| `/ops/metrics` | GET | 指标导出（Prometheus 格式） |
+| `/ops/metrics` | GET | 指标导出（Prometheus 格式，已提供） |
 | `/ops/services` | GET | 服务列表 |
-| `/ops/services/:name` | GET | 服务详情 |
-| `/ops/profile` | POST | 启动/停止 profile |
+| `/ops/services/:name` | GET | 服务详情（尚未提供） |
+| `/ops/profile` | POST | 启动/停止 profile（尚未提供） |
 | `/ops/config` | GET | 当前配置快照 |
 
 如果启用了 Lua 诊断控制台，管理面还可以额外暴露只读 Lua 观测能力，例如：
@@ -112,20 +112,33 @@ profile controls
 GET /ops/health
 ```
 
-响应：
+P0 实现为轻量探针：全部读取在 HTTP 线程内进程内完成，不经 Lua actor 往返，因此 actor 网格卡死时探针仍可应答。P0 取舍：HTTP 恒 200，verdict 携带在 body 中（503 映射留后续）；`unhealthy` 档位保留给后续（如 actor 网格失联检测）。
+
+响应（与其他 ops 端点一致的 `type`/`data` 信封）：
 
 ```json
 {
-  "status": "ok",  // ok | degraded | unhealthy
-  "uptime": 3600,
-  "checks": {
-    "core": { "status": "ok" },
-    "database": { "status": "ok", "latency_ms": 5 },
-    "redis": { "status": "ok", "latency_ms": 2 },
-    "cluster": { "status": "ok", "nodes": 3 }
+  "type": "result",
+  "data": {
+    "status": "ok",  // ok | degraded；任一 check 非 ok 即 degraded
+    "uptime": 3600.5,
+    "checks": {
+      "core": { "status": "ok", "uptime_seconds": 3600.5 },
+      "plugins": { "status": "ok", "started": 2, "required_down": 0 }
+    }
   }
 }
 ```
+
+checks 按编译开关与运行时状态裁剪：
+
+- `core`：恒存在；uptime 秒数。
+- `plugins`：恒存在；required 实例未达 `started` 即 degraded（optional 实例缺失不影响）。
+- `server`（`SERVER=ON` 且 ServerManager 已初始化）：仅 `running` 计为 ok，`starting`/`maintenance`/`shutdown` 均 degraded。
+- `cluster`（`CLUSTER=ON` 且 ClusterManager 已初始化）：有 Offline/Removed 节点即 degraded。
+- `global`（`GLOBAL=ON` 且 GlobalManager 已初始化）：manager 存在即 ok。
+
+与 server/cluster 一致的裁剪约定：模块已编译但本节点未启用该角色（manager 不存在）时省略该 check，而非 degrade——global 节点角色是部署形态，不是健康缺陷。`database`/`redis` 等依赖探活留后续。
 
 ### 运行时状态
 
@@ -166,23 +179,28 @@ GET /ops/status
 GET /ops/metrics
 ```
 
-响应（Prometheus 格式）：
+P0 导出 Prometheus 0.0.4 文本格式（`Content-Type: text/plain; version=0.0.4; charset=utf-8`，HELP/TYPE 头齐全，标签值转义 `\` `"` `\n`）。进程内读取为主，唯一经 actor 网格的 `shield_services` 在 500ms 超时时省略——网格卡死不会拖死抓取。
 
-```
-# HELP shield_requests_total Total requests
-# TYPE shield_requests_total counter
-shield_requests_total{service="player",method="get_info"} 1234
+按编译开关与运行时状态裁剪的指标族：
 
-# HELP shield_request_duration_seconds Request duration
-# TYPE shield_request_duration_seconds histogram
-shield_request_duration_seconds_bucket{service="player",method="get_info",le="0.01"} 1000
-shield_request_duration_seconds_bucket{service="player",method="get_info",le="0.1"} 1200
+| 指标 | 类型 | 说明 |
+|------|------|------|
+| `shield_uptime_seconds` | gauge | 进程 uptime |
+| `shield_plugin_instances{state}` | gauge | 插件实例按生命周期状态（planned/loaded/started/unavailable/failed/stopped） |
+| `shield_services` | gauge | 已注册 Lua 服务数（actor 往返，500ms 超时省略） |
+| `shield_server_state{state}` | gauge | Server 状态机（SERVER=ON 且 manager 存在） |
+| `shield_global_data_keys` / `shield_global_cache_entries` | gauge | global 数据键 / 本地缓存条目（GLOBAL=ON 且 manager 存在） |
+| `shield_global_cache_hits_total` / `shield_global_cache_misses_total` | counter | 缓存命中/未命中 |
+| `shield_global_queues{type}` | gauge | 队列数（normal/delay/priority/broadcast/reliable） |
+| `shield_global_locks{kind}` | gauge | 存活锁（mutex/spinlock/rwlock） |
+| `shield_global_rank_boards` / `shield_global_rank_members` | gauge | 排行榜板数 / 成员总数 |
+| `shield_global_scheduler_tasks` / `shield_global_scheduler_active` | gauge | 调度任务总数 / 活跃数 |
+| `shield_cluster_nodes{state}` | gauge | 集群节点按状态（CLUSTER=ON 且 manager 存在） |
+| `shield_cluster_transport_connections` / `..._reconnects_total` | gauge/counter | 传输连接数 / 重连次数（transport 存在） |
+| `shield_cluster_transport_messages_total{direction}` | counter | 收发消息数（tx/rx） |
+| `shield_cluster_transport_heartbeats_total{direction}` | counter | 收发心跳数（tx/rx） |
 
-# HELP shield_connections Current connections
-# TYPE shield_connections gauge
-shield_connections 1500
-
-```
+`shield_requests_total`、`shield_request_duration_seconds` 等 per-service 流量指标不在 P0 范围，留后续。
 
 ### 服务列表
 
