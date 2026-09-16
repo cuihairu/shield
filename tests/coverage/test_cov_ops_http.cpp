@@ -545,6 +545,115 @@ BOOST_AUTO_TEST_CASE(PendingCallsAndTasksReported) {
     manager->shutdown_all("done");
 }
 
+BOOST_AUTO_TEST_CASE(CoroutinesAndMemoryReported) {
+    // L1 gauges: a handler suspended in shield.sleep is exactly one live
+    // coroutine on its service (registered at factory start, erased at the
+    // terminal resume), and every dispatch exit samples the VM's Lua heap
+    // into memory_kb (an empty Lua VM already reports a nonzero GCCOUNT).
+    // Same observation discipline as PendingCallsAndTasksReported: poll the
+    // manager from this thread, assert each HTTP endpoint once.
+    const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_svc";
+    fs::create_directories(dir);
+    std::ofstream(dir / "live_svc.lua") << "return { on_nap = function()\n"
+                                           "  shield.sleep(700)\n"
+                                           "  return 'awake'\n"
+                                           "end }\n";
+    auto spawned =
+        manager->spawn((dir / "live_svc.lua").string(),
+                       R"({"name":"cov_live_svc","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = manager->service_stats().count("cov_live_svc") > 0;
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    std::string err;
+    BOOST_REQUIRE(manager->send_system("cov_live_svc", "on_nap",
+                                       nlohmann::json::array(), &err));
+    // Inside the suspension window the service holds exactly one live
+    // coroutine; the sampling heap gauge is already populated by the same
+    // dispatch's scope exit.
+    bool saw_live = false;
+    for (int i = 0; i < 700 && !saw_live; ++i) {
+        auto stats = manager->service_stats();
+        auto it = stats.find("cov_live_svc");
+        saw_live = it != stats.end() && it->second.coroutines == 1 &&
+                   it->second.memory_kb > 0;
+        if (!saw_live) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    BOOST_CHECK(saw_live);
+    if (saw_live) {
+        // The detail snapshot reads the same locked registry.
+        auto detail = manager->service_detail("cov_live_svc");
+        BOOST_REQUIRE(detail.has_value());
+        BOOST_CHECK_EQUAL((*detail)["coroutines"], 1u);
+    }
+    // The sleep resolves on its timer resume and the coroutine completes:
+    // the gauge drains back to zero (bounded wait — the nap is 700ms).
+    bool drained = false;
+    for (int i = 0; i < 1500 && !drained; ++i) {
+        auto stats = manager->service_stats();
+        auto it = stats.find("cov_live_svc");
+        drained = it != stats.end() && it->second.coroutines == 0;
+        if (!drained) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    BOOST_CHECK(drained);
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    bool detail_ok = false;
+    for (int i = 0; i < 20 && !detail_ok; ++i) {
+        std::string response = client.get("/ops/services/cov_live_svc",
+                                          std::chrono::milliseconds(9000));
+        if (RawHttpClient::status_code(response) == 200) {
+            auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+            detail_ok = resp["data"]["coroutines"] == 0 &&
+                        resp["data"]["memory_kb"].is_number_unsigned() &&
+                        resp["data"]["memory_kb"].get<std::uint64_t>() > 0;
+        }
+        if (!detail_ok) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    BOOST_CHECK(detail_ok);
+
+    // Both families ride the export with one labeled sample per service.
+    bool metrics_ok = false;
+    std::string metrics_body;
+    for (int i = 0; i < 20 && !metrics_ok; ++i) {
+        std::string response =
+            client.get("/ops/metrics", std::chrono::milliseconds(9000));
+        metrics_body = RawHttpClient::body(response);
+        metrics_ok = metrics_body.find(
+                         "# TYPE shield_service_coroutines "
+                         "gauge") != std::string::npos &&
+                     metrics_body.find(
+                         "# TYPE shield_service_memory_kb "
+                         "gauge") != std::string::npos &&
+                     metrics_body.find(
+                         "shield_service_coroutines{service="
+                         "\"cov_live_svc\"} 0") != std::string::npos &&
+                     metrics_body.find(
+                         "shield_service_memory_kb{service="
+                         "\"cov_live_svc\"} ") != std::string::npos;
+        if (!metrics_ok) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
+    BOOST_CHECK(metrics_ok);
+
+    manager->shutdown_all("done");
+}
+
 BOOST_AUTO_TEST_CASE(ServicesEndpointTimesOut) {
     RawHttpClient client;
     client.connect_target("127.0.0.1", port);

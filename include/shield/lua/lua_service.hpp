@@ -214,11 +214,17 @@ public:
         // up. Instantaneous gauges, not counters.
         std::uint64_t pending_calls = 0;
         std::size_t pending_tasks = 0;
+        // Live handler coroutines (running or suspended, not yet finished)
+        // and the Lua heap size in KB sampled at the last dispatch exit.
+        // Both are instantaneous gauges; memory_kb is a sampling value, not
+        // a live read (never touch another thread's lua_State).
+        std::size_t coroutines = 0;
+        std::uint64_t memory_kb = 0;
     };
 
     // Per-service stats snapshot (traffic + uptime + active timers +
-    // pending calls/tasks), taken under the registry lock; counter reads
-    // are relaxed atomics.
+    // pending calls/tasks + coroutines/memory), taken under the registry
+    // lock; counter reads are relaxed atomics.
     std::map<std::string, ServiceStats> service_stats() const;
 
     // One published service's read-only snapshot: name, state ("running"),
@@ -262,6 +268,16 @@ public:
     // resume_caller waits — resuming a still-running coroutine would fail and
     // lose the response with no recovery source.
     void mark_call_yielded(lua_State* co);
+
+    // Live-coroutine bookkeeping (L1 observability): every coroutine the
+    // handler factory starts is registered under its service and erased at
+    // whichever resume source observes its terminal state (LUA_OK or
+    // error); a suspended (LUA_YIELD) coroutine stays counted until its
+    // next resume. Service teardown drops its remaining entries. An empty
+    // service_id (bare VM dispatch) is not counted — it belongs to no
+    // published service.
+    void note_coroutine_started(lua_State* co, std::string_view service_id);
+    void note_coroutine_finished(lua_State* co);
 
     // Record that the handler running on `co` is servicing a call request with
     // `session`, so its completion can be routed back to the caller.

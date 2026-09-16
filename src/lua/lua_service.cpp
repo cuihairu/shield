@@ -142,6 +142,9 @@ struct LuaServiceManager::Impl {
     struct ServiceCounters {
         std::atomic<std::uint64_t> requests{0};
         std::atomic<std::uint64_t> errors{0};
+        // Lua heap KB sampled at the last dispatch exit on the owning
+        // thread (O(1) gc query). Relaxed: an observability gauge.
+        std::atomic<std::uint64_t> memory_kb{0};
         std::chrono::steady_clock::time_point spawned_at{
             std::chrono::steady_clock::now()};
     };
@@ -197,6 +200,20 @@ struct LuaServiceManager::Impl {
             return it->second;
         }
         return nullptr;  // GCOVR_EXCL_LINE (race: service left both maps)
+    }
+
+    // Caller holds registry_mutex. Drops every live-coroutine entry owned
+    // by `id`: the service is leaving the registry and its suspended
+    // coroutines will never observe a terminal resume. Never touches the
+    // lua_States themselves — teardown only retires bookkeeping.
+    void drop_live_coroutines_locked(const std::string& id) {
+        for (auto it = live_coroutines.begin(); it != live_coroutines.end();) {
+            if (it->second == id) {
+                it = live_coroutines.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     // RAII over the init_vms entry: spawn registers the VM before on_init
@@ -304,6 +321,13 @@ struct LuaServiceManager::Impl {
         pending_calls;  // session -> caller wait
     std::unordered_map<lua_State*, uint64_t>
         handler_call_session;  // callee co -> session
+
+    // Live handler coroutines keyed by their lua_State, valued by the
+    // owning service id. Same registry-lock domain as the other per-service
+    // registry maps: every coroutine resume source erases on terminal
+    // states and service teardown drops the service's remaining entries
+    // (a suspended coroutine whose service exits never resumes).
+    std::unordered_map<lua_State*, std::string> live_coroutines;
 
     // Per-service consecutive error counter for panic detection.
     // Reset on successful handler completion; incremented on uncaught error.
@@ -870,6 +894,7 @@ struct LuaServiceManager::Impl {
                 services.erase(vm_it);
             }
             service_counters.erase(id);
+            drop_live_coroutines_locked(id);
             if (service) {
                 hung_vms.push_back(std::move(service));
             }
@@ -1064,6 +1089,26 @@ struct LuaServiceManager::Impl {
                     std::unique_lock lock(impl_.registry_mutex);
                     impl_.last_sender_per_service[frame.service_id] =
                         frame.sender_id;
+                }
+                // Sample the VM's Lua heap at dispatch exit (L1 memory
+                // observability): this thread is the VM's only executor
+                // here and lua_gc(GCCOUNT) is O(1), so the cost stays
+                // bounded. A sampling gauge — a handler that finishes on a
+                // resume frame outside any scope keeps the last sample,
+                // and a service already torn down simply does not store.
+                const std::shared_ptr<LuaVM> vm =
+                    frame.vm ? frame.vm
+                             : impl_.find_dispatch_vm(frame.service_id);
+                if (vm) {
+                    const int kb = lua_gc(
+                        impl_.runtime.vm_state(vm).lua_state(), LUA_GCCOUNT);
+                    std::shared_lock lock(impl_.registry_mutex);
+                    if (auto it = impl_.service_counters.find(frame.service_id);
+                        it != impl_.service_counters.end()) {
+                        it->second->memory_kb.store(
+                            static_cast<std::uint64_t>(kb),
+                            std::memory_order_relaxed);
+                    }
                 }
             }
             tls_dispatch_stack.pop_back();
@@ -2122,6 +2167,7 @@ void LuaServiceManager::exit(
         // the VM's lua_State and must be destroyed while it is alive.
         impl_->service_rpc.erase(id);
         impl_->service_counters.erase(id);
+        impl_->drop_live_coroutines_locked(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
@@ -2243,6 +2289,7 @@ void LuaServiceManager::force_remove(const std::string& id,
         // lua_State); see exit() for the mirrored ordering.
         impl_->service_rpc.erase(id);
         impl_->service_counters.erase(id);
+        impl_->drop_live_coroutines_locked(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
@@ -2598,6 +2645,10 @@ std::optional<nlohmann::json> LuaServiceManager::service_detail(
             counters_it->second->requests.load(std::memory_order_relaxed);
         detail["errors"] =
             counters_it->second->errors.load(std::memory_order_relaxed);
+        // Lua heap KB as of the last dispatch exit (sampling value; see
+        // DispatchScope).
+        detail["memory_kb"] =
+            counters_it->second->memory_kb.load(std::memory_order_relaxed);
         detail["uptime_seconds"] =
             // GCOVR_EXCL_START (duration expression continuation attributed
             // to no arc; the field itself is asserted by tests)
@@ -2625,6 +2676,14 @@ std::optional<nlohmann::json> LuaServiceManager::service_detail(
     // Forked tasks queued for this incarnation but not yet picked up by its
     // actor. task_mutex nests inside registry_mutex only in this direction.
     detail["pending_tasks"] = pending_task_count(key);
+    // Handler coroutines of this incarnation still running or suspended
+    // (registered at factory start, erased at terminal resume or teardown).
+    // Same registry lock.
+    detail["coroutines"] = static_cast<std::uint64_t>(std::count_if(
+        impl_->live_coroutines.begin(), impl_->live_coroutines.end(),
+        [&key](const decltype(impl_->live_coroutines)::value_type& entry) {
+            return entry.second == key;
+        }));
     return detail;
 }
 
@@ -2650,7 +2709,7 @@ LuaServiceManager::service_stats() const {
                 }
                 return std::size_t{0};
             }(),
-            0, 0};
+            0, 0, 0, counters->memory_kb.load(std::memory_order_relaxed)};
     }
     // Suspended caller coroutines join their caller's entry; a call hung in
     // an unpublished (still-initializing) caller is attributed to no entry.
@@ -2661,6 +2720,13 @@ LuaServiceManager::service_stats() const {
     }
     for (auto& [name, stats] : out) {
         stats.pending_tasks = pending_task_count(name);
+        // Live handler coroutines attributed to this incarnation, same
+        // grouping as pending_calls above.
+        stats.coroutines = static_cast<std::uint64_t>(std::count_if(
+            impl_->live_coroutines.begin(), impl_->live_coroutines.end(),
+            [&name](const decltype(impl_->live_coroutines)::value_type& entry) {
+                return entry.second == name;
+            }));
     }
     return out;
 }
@@ -3211,6 +3277,27 @@ void LuaServiceManager::schedule_proxied_call_timeout(uint64_t session,
     // GCOVR_EXCL_STOP
 }
 
+void LuaServiceManager::note_coroutine_started(lua_State* co,
+                                               std::string_view service_id) {
+    // Empty ids (bare VM dispatch) belong to no published service and are
+    // never inserted — such an entry could never be grouped or torn down.
+    if (co == nullptr || service_id.empty()) {
+        return;  // GCOVR_EXCL_LINE (defensive: both call sites guard the
+    }  // same conditions before invoking)
+    std::unique_lock lock(impl_->registry_mutex);
+    impl_->live_coroutines.insert_or_assign(co, std::string(service_id));
+}
+
+void LuaServiceManager::note_coroutine_finished(lua_State* co) {
+    // Idempotent: whichever resume source observes the terminal state
+    // first wins; the service may already be gone from the registry.
+    if (co == nullptr) {
+        return;  // GCOVR_EXCL_LINE (defensive null guard, same shape as
+    }  // mark_call_yielded: call sites pass factory-made coroutines)
+    std::unique_lock lock(impl_->registry_mutex);
+    impl_->live_coroutines.erase(co);
+}
+
 void LuaServiceManager::mark_call_yielded(lua_State* co) {
     if (co == nullptr) {
         return;  // GCOVR_EXCL_LINE (defensive null guard: every call site
@@ -3304,6 +3391,8 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
         if (pc.caller_anchor != LUA_NOREF) {
             luaL_unref(caller_co, LUA_REGISTRYINDEX, pc.caller_anchor);
         }
+        // Terminal: the caller coroutine completed on this resume.
+        note_coroutine_finished(caller_co);
         on_handler_completed(caller_co, returns);
         finish_pending_exit(pc.caller_service);
         return;
@@ -3319,6 +3408,8 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
         if (pc.caller_anchor != LUA_NOREF) {
             luaL_unref(caller_co, LUA_REGISTRYINDEX, pc.caller_anchor);
         }
+        // Terminal (error): drop the live-coroutine entry.
+        note_coroutine_finished(caller_co);
         on_handler_failed(caller_co, err);
         finish_pending_exit(pc.caller_service);
         return;

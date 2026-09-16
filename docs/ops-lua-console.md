@@ -569,7 +569,7 @@ top_tables:
 按上文能力分层逐层核对（勿再笼统标注）：
 
 - **诊断控制台本体：已实现**，两层架构详见 [diagnostics-console.md](diagnostics-console.md)——Root 层 `root.*` 只读观测命令（status/services/service/plugins/config/cluster/server/global/log.level）与 Script 层 `attach` REPL / `eval` 沙箱（含 HTTP `/ops/eval`，token 门控）。
-- **L1 只读快照：部分落地**。`/ops/services/:name` 与 `/ops/metrics` 已暴露 runtime 计数器（requests/errors/uptime/timers/pending_calls/pending_tasks，见 [运维运行时语义](runtime-ops.md)）；`coroutines` 与 `memory_kb` 需要协程生命周期埋点与 owner 线程 Lua allocator 读取，未采集。
+- **L1 只读快照：已落地**。`/ops/services/:name` 与 `/ops/metrics` 暴露 runtime 计数器与瞬时 gauge（requests/errors/uptime/timers/pending_calls/pending_tasks/coroutines/memory_kb，见 [运维运行时语义](runtime-ops.md)）。`coroutines` 经协程生命周期埋点采集（handler 工厂启动登记、终态 resume 与服务 teardown 擦除）；`memory_kb` 在 owner 线程 dispatch 退出采样 `lua_gc(GCCOUNT)`（O(1)，不跨线程触碰 lua_State）。
 - **L2 受限 inspect（`lua.inspect` / `lua.snapshot` / `lua.diff`，即上文 Phase B 清单）：未实现**，留后续。
 - **Phase C 的 `lua.eval`/`lua.exec` 语义已由 `attach` REPL 与 `eval` 承载**（先于 L1/L2 完整落地，因带 token 门控与超时约束）。
 

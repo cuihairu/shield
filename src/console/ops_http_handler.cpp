@@ -298,6 +298,8 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             nlohmann::json timers = nlohmann::json::object();
             nlohmann::json pending_calls = nlohmann::json::object();
             nlohmann::json pending_tasks = nlohmann::json::object();
+            nlohmann::json coroutines = nlohmann::json::object();
+            nlohmann::json memory_kb = nlohmann::json::object();
             for (const auto& [name, stats] : mgr.service_stats()) {
                 requests[name] = stats.requests;
                 errors[name] = stats.errors;
@@ -305,6 +307,8 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
                 timers[name] = stats.timers;
                 pending_calls[name] = stats.pending_calls;
                 pending_tasks[name] = stats.pending_tasks;
+                coroutines[name] = stats.coroutines;
+                memory_kb[name] = stats.memory_kb;
             }
             payload["requests"] = std::move(requests);
             payload["errors"] = std::move(errors);
@@ -312,6 +316,8 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             payload["timers"] = std::move(timers);
             payload["pending_calls"] = std::move(pending_calls);
             payload["pending_tasks"] = std::move(pending_tasks);
+            payload["coroutines"] = std::move(coroutines);
+            payload["memory_kb"] = std::move(memory_kb);
             promise->set_value(std::move(payload));
         });
         if (future.wait_for(std::chrono::milliseconds(500)) ==
@@ -378,6 +384,27 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             prom_emit_group(out, "shield_service_pending_tasks", "gauge",
                             "Forked tasks queued per service",
                             pending_task_samples);
+            std::vector<std::pair<std::string, double>> coroutine_samples;
+            std::vector<std::pair<std::string, double>> memory_samples;
+            for (const auto& [name, value] :
+                 payload.value("coroutines", nlohmann::json::object())
+                     .items()) {
+                coroutine_samples.emplace_back(
+                    "service=\"" + prom_escape(name) + "\"", value);
+            }
+            for (const auto& [name, value] :
+                 payload.value("memory_kb", nlohmann::json::object()).items()) {
+                memory_samples.emplace_back(
+                    "service=\"" + prom_escape(name) + "\"", value);
+            }
+            prom_emit_group(out, "shield_service_coroutines", "gauge",
+                            "Live handler coroutines per service (running "
+                            "or suspended)",
+                            coroutine_samples);
+            prom_emit_group(out, "shield_service_memory_kb", "gauge",
+                            "Lua heap KB per service sampled at the last "
+                            "dispatch exit",
+                            memory_samples);
         }
     }
 

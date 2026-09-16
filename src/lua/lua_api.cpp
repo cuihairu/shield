@@ -1053,6 +1053,8 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                     manager->mark_call_yielded(co);
                     return;
                 }
+                // Terminal (LUA_OK or error): drop the live-coroutine entry.
+                manager->note_coroutine_finished(co);
                 // If this coroutine was servicing a call request that
                 // yielded (e.g. the callee slept), route the response now
                 // that it has completed. No-op for plain handlers.

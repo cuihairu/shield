@@ -1157,10 +1157,19 @@ bool LuaRuntime::invoke_coroutine(
         if (call_session != 0 && manager != nullptr) {
             manager->set_handler_call_session(co, call_session);
         }
+        // L1 observability: this handler coroutine counts as live under its
+        // service until some resume source observes its terminal state.
+        if (manager != nullptr && !service_id.empty()) {
+            manager->note_coroutine_started(co, service_id);
+        }
 
         int nres = 0;
         const int status = lua_resume(co, L, 0, &nres);
         if (status == LUA_OK) {
+            // Terminal: this resume observed the coroutine complete.
+            if (manager != nullptr) {
+                manager->note_coroutine_finished(co);
+            }
             nlohmann::json returns = nlohmann::json::array();
             for (int i = 0; i < nres; ++i) {
                 nlohmann::json item;
@@ -1202,6 +1211,10 @@ bool LuaRuntime::invoke_coroutine(
             msg = lua_tostring(co, -1);
         }
         lua_settop(co, 0);
+        // Terminal (error): drop the live-coroutine entry.
+        if (manager != nullptr) {
+            manager->note_coroutine_finished(co);
+        }
         if (call_session != 0 && manager != nullptr) {
             manager->on_handler_failed(co, msg);
         }
@@ -1412,10 +1425,18 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
             if (error) *error = "handler coroutine thread missing";
             return false;
         }
+        if (manager != nullptr && !service_id.empty()) {
+            manager->note_coroutine_started(co, service_id);
+        }
 
         int nres = 0;
         const int status = lua_resume(co, L, 0, &nres);
         if (status == LUA_OK || status == LUA_YIELD) {
+            if (status == LUA_OK && manager != nullptr) {
+                // Fire-and-forget completion: no later resume will observe
+                // this coroutine's terminal state, so finish it here.
+                manager->note_coroutine_finished(co);
+            }
             if (status == LUA_YIELD && manager != nullptr) {
                 // Publish the yield for the yield handshake (CallYieldSync):
                 // a completion may already be waiting on another thread.
@@ -1435,6 +1456,10 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
             msg = lua_tostring(co, -1);
         }
         lua_settop(co, 0);
+        // Terminal (error): drop the live-coroutine entry.
+        if (manager != nullptr) {
+            manager->note_coroutine_finished(co);
+        }
         if (error) *error = msg;
         if (manager && !service_id.empty()) {
             manager->invoke_error_hook(std::string(service_id), "client_rpc",
