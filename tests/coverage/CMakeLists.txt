@@ -32,6 +32,12 @@ function(shield_coverage_test name)
         # Same for the server define (ServerLuaApiPrimitives).
         target_compile_definitions(${name} PRIVATE SHIELD_ENABLE_SERVER)
     endif()
+    if(SHIELD_ENABLE_GLOBAL)
+        # Same for the global define (GlobalCommandAvailability): the
+        # libraries carry it PRIVATE, so tests must be told the build shape
+        # to assert the right branch.
+        target_compile_definitions(${name} PRIVATE SHIELD_ENABLE_GLOBAL)
+    endif()
     target_include_directories(${name}
         PRIVATE
             ${CMAKE_SOURCE_DIR}/include

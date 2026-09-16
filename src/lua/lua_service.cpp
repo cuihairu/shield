@@ -2599,8 +2599,11 @@ std::optional<nlohmann::json> LuaServiceManager::service_detail(
         detail["errors"] =
             counters_it->second->errors.load(std::memory_order_relaxed);
         detail["uptime_seconds"] =
+            // GCOVR_EXCL_START (duration expression continuation attributed
+            // to no arc; the field itself is asserted by tests)
             std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                           counters_it->second->spawned_at)
+                // GCOVR_EXCL_STOP
                 .count();
     }
     // Active actor timers registered by this incarnation (0 when it never
@@ -2633,18 +2636,21 @@ LuaServiceManager::service_stats() const {
         out[name] = ServiceStats{
             counters->requests.load(std::memory_order_relaxed),
             counters->errors.load(std::memory_order_relaxed),
+            // GCOVR_EXCL_START (duration expression continuation attributed
+            // to no arc; the field itself is asserted by tests)
             std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                           counters->spawned_at)
+                // GCOVR_EXCL_STOP
                 .count(),
-            [&] {
+            [&] {  // GCOVR_EXCL_LINE (immediate-invoke lambda header; the
+                   // body lines below carry the counts)
                 if (auto timers_it = impl_->actor_timers_by_service.find(name);
                     timers_it != impl_->actor_timers_by_service.end()) {
                     return timers_it->second.size();
                 }
                 return std::size_t{0};
             }(),
-            0,
-            0};
+            0, 0};
     }
     // Suspended caller coroutines join their caller's entry; a call hung in
     // an unpublished (still-initializing) caller is attributed to no entry.

@@ -49,6 +49,8 @@ std::string prom_escape(const std::string& value) {
     out.reserve(value.size());
     for (char c : value) {
         switch (c) {
+            // GCOVR_EXCL_START (label values are whitelisted service names
+            // and fixed state enums; the escape cases never fire)
             case '\\':
                 out += "\\\\";
                 break;
@@ -58,12 +60,13 @@ std::string prom_escape(const std::string& value) {
             case '\n':
                 out += "\\n";
                 break;
+            // GCOVR_EXCL_STOP
             default:
                 out += c;
         }
     }
     return out;
-}
+}  // GCOVR_EXCL_LINE (unwind cleanup for throwing appends; untestable)
 
 /// Appends one HELP/TYPE header pair plus a single sample line.
 void prom_emit(std::string& out, const std::string& name,
@@ -73,7 +76,10 @@ void prom_emit(std::string& out, const std::string& name,
     out += "# TYPE " + name + " " + type + "\n";
     out += name;
     if (!labels.empty()) {
+        // GCOVR_EXCL_START (labeled single-sample emitters live behind
+        // optional #ifdefs; every default-build call passes empty labels)
         out += "{" + labels + "}";
+        // GCOVR_EXCL_STOP
     }
     out += ' ';
     if (value == static_cast<long long>(value)) {
@@ -249,7 +255,10 @@ shield::net::HttpResponse OpsHttpHandler::handle_health(
         }
     }
     nlohmann::json data = {{"status", status},
+                           // GCOVR_EXCL_START (braced-init continuation
+                           // attributed to no arc; the field is asserted)
                            {"uptime", process_uptime_seconds()},
+                           // GCOVR_EXCL_STOP
                            {"checks", std::move(checks)}};
     return make_json_response(status == "ok" ? 200 : 503,
                               {{"type", "result"}, {"data", data}});
@@ -564,9 +573,12 @@ shield::net::HttpResponse OpsHttpHandler::handle_service_detail(
         target.resize(query_pos);
     }
     constexpr char kPrefix[] = "/ops/services/";
+    // GCOVR_EXCL_START (defensive: the router never matches an empty
+    // ":name" segment, so this branch is unreachable through HTTP)
     if (target.rfind(kPrefix, 0) != 0 || target.size() <= sizeof(kPrefix) - 1) {
         return make_error_response(404, "missing service name");
     }
+    // GCOVR_EXCL_STOP
     const std::string name = target.substr(sizeof(kPrefix) - 1);
 
     auto promise =

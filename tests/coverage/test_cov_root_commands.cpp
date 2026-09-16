@@ -522,6 +522,25 @@ BOOST_AUTO_TEST_CASE(ServerCommandAvailability) {
 #endif
 }
 
+BOOST_AUTO_TEST_CASE(GlobalCommandAvailability) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::RootCommands root(*manager);
+    root.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "root.global");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+#ifdef SHIELD_ENABLE_GLOBAL
+    // Compiled but this fixture initializes no global manager.
+    BOOST_CHECK(resp["message"] == "Global not enabled");
+#else
+    BOOST_CHECK(resp["message"] == "Global not compiled");
+#endif
+}
+
 #ifdef SHIELD_ENABLE_SERVER
 // With a server manager installed, root.server and root.status report the
 // state-machine snapshot (OD-017: read-only exposure, no /ops/server).

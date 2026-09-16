@@ -478,6 +478,12 @@ BOOST_AUTO_TEST_CASE(PendingCallsAndTasksReported) {
     if (saw_pending_call) {
         auto stats = manager->service_stats();
         BOOST_CHECK_EQUAL(stats.at("cov_pending_slow").pending_calls, 0u);
+        // The detail snapshot reads the same locked registry, so inside the
+        // suspension window it reports the same live gauge (one shot from
+        // this thread — no request loop, see the case comment above).
+        auto detail = manager->service_detail("cov_pending_caller");
+        BOOST_REQUIRE(detail.has_value());
+        BOOST_CHECK_EQUAL((*detail)["pending_calls"], 1u);
     }
     // The entry is transient: once the callee answers, the caller is back
     // at zero (bounded wait — the callee sleeps 800ms total).
@@ -548,6 +554,49 @@ BOOST_AUTO_TEST_CASE(ServicesEndpointTimesOut) {
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 504);
     auto resp = nlohmann::json::parse(RawHttpClient::body(response));
     BOOST_CHECK(resp["type"] == "error");
+}
+
+BOOST_AUTO_TEST_CASE(ServiceDetailEdgePaths) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    // No live service in this fixture: the ""-id ops task has no actor to
+    // borrow, so a well-formed detail request times out into 504.
+    std::string response =
+        client.get("/ops/services/cov_absent", std::chrono::milliseconds(9000));
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 504);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "error");
+
+    // With a live service the same route resolves; the query string must be
+    // stripped before the ":name" segment is interpreted, so it rides along.
+    const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_svc";
+    fs::create_directories(dir);
+    std::ofstream(dir / "edge_svc.lua")
+        << "return { on_init = function() end }\n";
+    auto spawned =
+        manager->spawn((dir / "edge_svc.lua").string(),
+                       R"({"name":"cov_edge_svc","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = manager->service_stats().count("cov_edge_svc") > 0;
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    response = client.get("/ops/services/cov_edge_svc?verbose=1",
+                          std::chrono::milliseconds(9000));
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["name"], "cov_edge_svc");
+
+    manager->shutdown_all("done");
 }
 
 BOOST_AUTO_TEST_CASE(PluginsEndpoint) {
@@ -1056,5 +1105,116 @@ BOOST_AUTO_TEST_CASE(StatusEndpointIncludesServerBlock) {
     shield::server::ServerManager::set_global(nullptr);
 }
 #endif
+
+BOOST_AUTO_TEST_CASE(ConfigDefinedActorCarriesScriptInDetail) {
+    // service_detail's "script" field exists only for config-defined
+    // runtime actors: the manager snapshots config's actor table into its
+    // module_scripts at construction (mirroring bootstrap's per-actor
+    // script resolution), so a manager built after injecting an actors
+    // section reports the resolved path for a service spawned from it.
+    // Config is process-global; the trailing reset keeps the injection
+    // case-local.
+    const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_cfgactor";
+    fs::create_directories(dir);
+    const fs::path script = dir / "cfg_actor.lua";
+    std::ofstream(script) << "return { on_init = function() end }\n";
+
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(g.load_yaml_string(
+        std::string("app:\n  name: covops\nnet:\n  threads: 1\nactors:\n") +
+        "  - name: cov_cfg_actor\n    script: " + script.string()));
+    {
+        shield::lua::LuaServiceManager cfg_mgr(*runtime, *system);
+        // Same spawn shape bootstrap uses for config actors: the resolved
+        // script path plus {name, args, config} options.
+        auto spawned =
+            cfg_mgr.spawn(script.string(),
+                          R"({"name":"cov_cfg_actor","args":{},"config":{}})");
+        BOOST_REQUIRE(spawned.success);
+        bool published = false;
+        for (int i = 0; i < 200 && !published; ++i) {
+            published = cfg_mgr.service_stats().count("cov_cfg_actor") > 0;
+            if (!published) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+        BOOST_REQUIRE(published);
+
+        auto detail = cfg_mgr.service_detail("cov_cfg_actor");
+        BOOST_REQUIRE(detail.has_value());
+        BOOST_CHECK_EQUAL((*detail)["name"], "cov_cfg_actor");
+        BOOST_CHECK_EQUAL((*detail)["script"], script.string());
+
+        cfg_mgr.shutdown_all("done");
+    }
+    shield::config::reset_config();
+}
+
+BOOST_AUTO_TEST_CASE(StartedPluginInstanceInHealthAndMetrics) {
+    // minimal.test is a build-tree fixture package (prebuilt .so, no
+    // test-time compiler): drive it through global_host's staged pipeline
+    // to "started" — the only state the health probe counts — then shut
+    // the host down and scrape again with an empty instance table: the
+    // grouped plugin emitter skips the whole family instead of emitting
+    // headers with no samples. Kept last alongside the required-plugin
+    // case: the scan/plan here resets the shared instance table.
+    BOOST_REQUIRE(fs::exists("test_plugins/minimal.test/manifest.yaml"));
+    auto& host = shield::plugin::global_host();
+    std::string err;
+    host.scan("test_plugins");
+    BOOST_REQUIRE_MESSAGE(host.catalog(err), err);
+    shield::plugin::PluginConfig pc;
+    pc.directory = "test_plugins";
+    shield::plugin::InstanceDecl decl;
+    decl.id = "cov_started";
+    decl.package = "minimal.test";
+    decl.required = false;
+    pc.instances.push_back(decl);
+    BOOST_REQUIRE_MESSAGE(host.plan_and_resolve(pc, err), err);
+    BOOST_REQUIRE_MESSAGE(host.load_all(err), err);
+    BOOST_REQUIRE_MESSAGE(host.create_all(err), err);
+    BOOST_REQUIRE_MESSAGE(host.start_all(err), err);
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.get("/ops/health");
+    BOOST_REQUIRE(!response.empty());
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK_EQUAL(resp["data"]["status"], "ok");
+    BOOST_CHECK_EQUAL(resp["data"]["checks"]["plugins"]["started"], 1u);
+    BOOST_CHECK_EQUAL(resp["data"]["checks"]["plugins"]["required_down"], 0u);
+
+    response = client.get("/ops/metrics");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK(RawHttpClient::body(response).find(
+                    "shield_plugin_instances{state=\"started\"} 1") !=
+                std::string::npos);
+
+    // shutdown() marks instances stopped but keeps them in the table
+    // (resolved vtables must stay valid until process exit), so the stopped
+    // state still shows up as a sample...
+    host.shutdown(100);
+    response = client.get("/ops/metrics");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK(RawHttpClient::body(response).find(
+                    "shield_plugin_instances{state=\"stopped\"} 1") !=
+                std::string::npos);
+    response = client.get("/ops/health");
+    BOOST_REQUIRE(!response.empty());
+    resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK_EQUAL(resp["data"]["checks"]["plugins"]["started"], 0u);
+
+    // ...while the empty-sample path needs an explicit empty re-plan: it
+    // resets the shared instance table, and the grouped emitter then skips
+    // the whole family instead of emitting headers with no samples.
+    shield::plugin::PluginConfig empty_pc;
+    empty_pc.directory = "test_plugins";
+    BOOST_REQUIRE_MESSAGE(host.plan_and_resolve(empty_pc, err), err);
+    response = client.get("/ops/metrics");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK(RawHttpClient::body(response).find("shield_plugin_instances") ==
+                std::string::npos);
+}
 
 BOOST_AUTO_TEST_SUITE_END()
