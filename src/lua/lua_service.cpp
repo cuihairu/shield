@@ -329,6 +329,40 @@ struct LuaServiceManager::Impl {
     // (a suspended coroutine whose service exits never resumes).
     std::unordered_map<lua_State*, std::string> live_coroutines;
 
+    // L2 inspect snapshots (lua.snapshot / lua.diff): registry-locked
+    // copies of a service's L1 gauges. Bounded ring per service; entries
+    // die with the incarnation (teardown drops the deque).
+    struct InspectSnapshot {
+        std::string name;
+        std::int64_t wall_ms = 0;
+        std::uint64_t requests = 0;
+        std::uint64_t errors = 0;
+        std::uint64_t memory_kb = 0;
+        std::uint64_t pending_calls = 0;
+        std::size_t pending_tasks = 0;
+        std::size_t coroutines = 0;
+        std::size_t timers = 0;
+        double uptime_seconds = 0.0;
+    };
+    static constexpr std::size_t kInspectSnapshotsPerService = 8;
+    std::map<std::string, std::deque<InspectSnapshot>> inspect_snapshots;
+    std::uint64_t next_snapshot_seq = 0;
+
+    // Read-only JSON form of a stored L2 snapshot (capture echoes it back;
+    // diff embeds both ends plus the delta).
+    static nlohmann::json snapshot_to_json(const InspectSnapshot& s) {
+        return nlohmann::json{{"name", s.name},
+                              {"wall_ms", s.wall_ms},
+                              {"requests", s.requests},
+                              {"errors", s.errors},
+                              {"memory_kb", s.memory_kb},
+                              {"pending_calls", s.pending_calls},
+                              {"pending_tasks", s.pending_tasks},
+                              {"coroutines", s.coroutines},
+                              {"timers", s.timers},
+                              {"uptime_seconds", s.uptime_seconds}};
+    }
+
     // Per-service consecutive error counter for panic detection.
     // Reset on successful handler completion; incremented on uncaught error.
     // Guarded by error_mutex: error hooks run on different service actors.
@@ -895,6 +929,7 @@ struct LuaServiceManager::Impl {
             }
             service_counters.erase(id);
             drop_live_coroutines_locked(id);
+            inspect_snapshots.erase(id);
             if (service) {
                 hung_vms.push_back(std::move(service));
             }
@@ -2168,6 +2203,7 @@ void LuaServiceManager::exit(
         impl_->service_rpc.erase(id);
         impl_->service_counters.erase(id);
         impl_->drop_live_coroutines_locked(id);
+        impl_->inspect_snapshots.erase(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
@@ -2290,6 +2326,7 @@ void LuaServiceManager::force_remove(const std::string& id,
         impl_->service_rpc.erase(id);
         impl_->service_counters.erase(id);
         impl_->drop_live_coroutines_locked(id);
+        impl_->inspect_snapshots.erase(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
@@ -2685,6 +2722,121 @@ std::optional<nlohmann::json> LuaServiceManager::service_detail(
             return entry.second == key;
         }));
     return detail;
+}
+
+std::optional<nlohmann::json> LuaServiceManager::capture_inspect_snapshot(
+    const std::string& service_id, const std::string& name,
+    std::string* error) {
+    std::unique_lock lock(impl_->registry_mutex);
+    // Published services only: a name still in on_init or already exited
+    // has no gauges worth freezing (same scope as service_detail).
+    if (!impl_->services.contains(service_id)) {
+        if (error) {
+            *error = "service not published: " + service_id;
+        }
+        return std::nullopt;
+    }
+    auto& deque = impl_->inspect_snapshots[service_id];
+    const std::string stored_name =
+        name.empty() ? "snap-" + std::to_string(++impl_->next_snapshot_seq)
+                     : name;
+    // A same-name capture replaces the stored entry (a refresh, not a new
+    // sample); auto names never collide.
+    for (auto it = deque.begin(); it != deque.end(); ++it) {
+        if (it->name == stored_name) {
+            deque.erase(it);
+            break;
+        }
+    }
+    Impl::InspectSnapshot snap;
+    snap.name = stored_name;
+    snap.wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::system_clock::now().time_since_epoch())
+                       .count();
+    if (auto it = impl_->service_counters.find(service_id);
+        it != impl_->service_counters.end()) {
+        snap.requests = it->second->requests.load(std::memory_order_relaxed);
+        snap.errors = it->second->errors.load(std::memory_order_relaxed);
+        snap.memory_kb = it->second->memory_kb.load(std::memory_order_relaxed);
+        snap.uptime_seconds =
+            // GCOVR_EXCL_START (duration expression continuation attributed
+            // to no arc; the field itself is asserted by tests)
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          it->second->spawned_at)
+                // GCOVR_EXCL_STOP
+                .count();
+    }
+    if (auto it = impl_->actor_timers_by_service.find(service_id);
+        it != impl_->actor_timers_by_service.end()) {
+        snap.timers = it->second.size();
+    }
+    snap.pending_calls = static_cast<std::uint64_t>(std::count_if(
+        impl_->pending_calls.begin(), impl_->pending_calls.end(),
+        [&service_id](const decltype(impl_->pending_calls)::value_type& e) {
+            return e.second.caller_service == service_id;
+        }));
+    // task_mutex nests inside registry_mutex in this direction only.
+    snap.pending_tasks = pending_task_count(service_id);
+    snap.coroutines = static_cast<std::uint64_t>(std::count_if(
+        impl_->live_coroutines.begin(), impl_->live_coroutines.end(),
+        [&service_id](const decltype(impl_->live_coroutines)::value_type& e) {
+            return e.second == service_id;
+        }));
+    deque.push_back(std::move(snap));
+    // Bounded ring: the oldest sample falls off first.
+    if (deque.size() > Impl::kInspectSnapshotsPerService) {
+        deque.pop_front();
+    }
+    return Impl::snapshot_to_json(deque.back());
+}
+
+std::optional<nlohmann::json> LuaServiceManager::diff_inspect_snapshots(
+    const std::string& service_id, const std::string& a, const std::string& b,
+    std::string* error) {
+    std::shared_lock lock(impl_->registry_mutex);
+    auto svc_it = impl_->inspect_snapshots.find(service_id);
+    if (svc_it == impl_->inspect_snapshots.end()) {
+        if (error) {
+            *error = "no snapshots for service: " + service_id;
+        }
+        return std::nullopt;
+    }
+    const Impl::InspectSnapshot* sa = nullptr;
+    const Impl::InspectSnapshot* sb = nullptr;
+    for (const auto& s : svc_it->second) {
+        if (s.name == a) sa = &s;
+        if (s.name == b) sb = &s;
+    }
+    if (sa == nullptr || sb == nullptr) {
+        if (error) {
+            *error =
+                "unknown snapshot name: " + std::string(sa == nullptr ? a : b);
+        }
+        return std::nullopt;
+    }
+    const auto delta_of = [](std::uint64_t va, std::uint64_t vb) {
+        return static_cast<std::int64_t>(vb) - static_cast<std::int64_t>(va);
+    };
+    // GCOVR_EXCL_START (braced-init aggregation artifact: gcc books the
+    // whole initializer's counts onto a few continuation lines, leaving the
+    // element lines at 0 even though the diff tests assert every field)
+    nlohmann::json delta = {
+        {"wall_ms", sb->wall_ms - sa->wall_ms},
+        {"requests", delta_of(sa->requests, sb->requests)},
+        {"errors", delta_of(sa->errors, sb->errors)},
+        {"memory_kb", delta_of(sa->memory_kb, sb->memory_kb)},
+        {"pending_calls", delta_of(sa->pending_calls, sb->pending_calls)},
+        {"pending_tasks", static_cast<std::int64_t>(sb->pending_tasks) -
+                              static_cast<std::int64_t>(sa->pending_tasks)},
+        {"coroutines", static_cast<std::int64_t>(sb->coroutines) -
+                           static_cast<std::int64_t>(sa->coroutines)},
+        {"timers", static_cast<std::int64_t>(sb->timers) -
+                       static_cast<std::int64_t>(sa->timers)},
+        {"uptime_seconds", sb->uptime_seconds - sa->uptime_seconds}};
+    // GCOVR_EXCL_STOP
+    return nlohmann::json{{"a", Impl::snapshot_to_json(*sa)},
+                          {"b", Impl::snapshot_to_json(*sb)},
+                          {"delta", std::move(delta)}};
 }
 
 std::map<std::string, LuaServiceManager::ServiceStats>

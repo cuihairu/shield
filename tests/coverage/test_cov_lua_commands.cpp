@@ -470,4 +470,266 @@ BOOST_AUTO_TEST_CASE(ReplExecutionTimeout) {
     std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 }
 
+// ---------------------------------------------------------------------------
+// L2 restricted inspect: lua.inspect / lua.snapshot / lua.diff.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(LuaInspectCommandVariants) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    // Missing service / field and unknown field all surface the usage.
+    dispatcher.dispatch(harness.session, "lua.inspect");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("Usage") !=
+                std::string::npos);
+    dispatcher.dispatch(harness.session, "lua.inspect svc");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    dispatcher.dispatch(harness.session, "lua.inspect svc bogus_field");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("Usage") !=
+                std::string::npos);
+
+    // Unknown service.
+    dispatcher.dispatch(harness.session, "lua.inspect ghost summary");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("not found") !=
+                std::string::npos);
+
+    // summary carries the full detail snapshot (same fields as
+    // /ops/services/:name).
+    dispatcher.dispatch(harness.session, "lua.inspect svc summary");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["name"], "svc");
+    BOOST_CHECK(resp["data"]["requests"].is_number_unsigned());
+    BOOST_CHECK(resp["data"]["memory_kb"].is_number_unsigned());
+    BOOST_CHECK(resp["data"]["coroutines"].is_number_unsigned());
+
+    // Each focused field projects one gauge plus the name.
+    dispatcher.dispatch(harness.session, "lua.inspect svc memory");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["name"], "svc");
+    BOOST_CHECK(resp["data"]["memory_kb"].is_number_unsigned());
+    dispatcher.dispatch(harness.session, "lua.inspect svc coroutines");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["coroutines"], 0u);
+    dispatcher.dispatch(harness.session, "lua.inspect svc timers");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["timers"], 0u);
+    dispatcher.dispatch(harness.session, "lua.inspect svc pending_calls");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["pending_calls"], 0u);
+}
+
+BOOST_AUTO_TEST_CASE(LuaSnapshotAndDiffCommands) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    // Usage shapes.
+    dispatcher.dispatch(harness.session, "lua.snapshot");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("Usage") !=
+                std::string::npos);
+    dispatcher.dispatch(harness.session, "lua.diff svc only_one");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("Usage") !=
+                std::string::npos);
+
+    // Unknown service for both.
+    dispatcher.dispatch(harness.session, "lua.snapshot ghost");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("not found") !=
+                std::string::npos);
+    dispatcher.dispatch(harness.session, "lua.diff ghost a b");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("not found") !=
+                std::string::npos);
+
+    // Auto-named capture.
+    dispatcher.dispatch(harness.session, "lua.snapshot svc");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["name"].get<std::string>().find("snap-") == 0u);
+    BOOST_CHECK(resp["data"]["wall_ms"].is_number());
+    // Named capture.
+    dispatcher.dispatch(harness.session, "lua.snapshot svc base");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["name"], "base");
+
+    // Unknown snapshot names error with the missing name.
+    dispatcher.dispatch(harness.session, "lua.diff svc base missing");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("missing") !=
+                std::string::npos);
+
+    // Same-name diff: the ring holds one entry, so a == b and every delta
+    // is zero (legitimate, not an error).
+    dispatcher.dispatch(harness.session, "lua.snapshot svc base");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    dispatcher.dispatch(harness.session, "lua.diff svc base base");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["a"]["name"], "base");
+    BOOST_CHECK_EQUAL(resp["data"]["delta"]["requests"], 0);
+    BOOST_CHECK_EQUAL(resp["data"]["delta"]["memory_kb"], 0);
+    BOOST_CHECK(resp["data"]["delta"]["uptime_seconds"].get<double>() >= 0.0);
+}
+
+BOOST_AUTO_TEST_CASE(InspectSnapshotRingAndTeardown) {
+    std::string err;
+    // Manager-level guard: an unpublished name refuses to capture.
+    auto bad = manager->capture_inspect_snapshot("ghost_svc", "g1", &err);
+    BOOST_CHECK(!bad.has_value());
+    BOOST_CHECK(err.find("not published") != std::string::npos);
+
+    // Ring bound: 9 auto captures keep only the last 8, so the oldest
+    // (snap-A below) is gone by the end.
+    const std::string first =
+        (*manager->capture_inspect_snapshot("svc", "", &err))["name"];
+    for (int i = 0; i < 8; ++i) {
+        BOOST_REQUIRE(
+            manager->capture_inspect_snapshot("svc", "", &err).has_value());
+    }
+    auto gone = manager->diff_inspect_snapshots("svc", first, first, &err);
+    BOOST_CHECK(!gone.has_value());
+    BOOST_CHECK(err.find("unknown snapshot") != std::string::npos);
+
+    // Teardown drops the service's snapshots: spawn a second incarnation,
+    // capture, exit, and observe the "no snapshots" verdict by direct call
+    // (the published name no longer resolves through query_service).
+    const fs::path extra = fs::temp_directory_path() / "shield_cov_lua_l2.lua";
+    std::ofstream(extra) << "local M = {}\nreturn M\n";
+    auto spawned = manager->spawn(extra.string(),
+                                  R"({"name":"svc_l2","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = !manager->query_service("svc_l2").empty();
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+    BOOST_REQUIRE(
+        manager->capture_inspect_snapshot("svc_l2", "s1", &err).has_value());
+    manager->exit("svc_l2");
+    bool exited = false;
+    for (int i = 0; i < 200 && !exited; ++i) {
+        exited = manager->query_service("svc_l2").empty();
+        if (!exited) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(exited);
+    auto dropped = manager->diff_inspect_snapshots("svc_l2", "s1", "s1", &err);
+    BOOST_CHECK(!dropped.has_value());
+    BOOST_CHECK(err.find("no snapshots") != std::string::npos);
+}
+
+// A capture taken while the service has live state: an armed timer, a
+// handler coroutine suspended in a cross-service call, and the matching
+// pending-call entry. This is the L2 snapshot's raison d'être — freezing
+// gauges mid-flight, not only idle zeros.
+BOOST_AUTO_TEST_CASE(InspectSnapshotCapturesLiveState) {
+    const fs::path slow = fs::temp_directory_path() / "shield_cov_l2_slow.lua";
+    std::ofstream(slow) << "local M = {}\n"
+                           "function M.slow(ctx) shield.sleep(600) return 'ok' "
+                           "end\n"
+                           "return M\n";
+    const fs::path busy = fs::temp_directory_path() / "shield_cov_l2_busy.lua";
+    std::ofstream(busy) << "local M = {}\n"
+                           "function M.on_init(args)\n"
+                           "  shield.timer_once(700, function() end)\n"
+                           "end\n"
+                           "function M.nap(ctx)\n"
+                           "  return shield.call('cov_l2_slow', 'slow')\n"
+                           "end\n"
+                           "return M\n";
+
+    auto slow_svc = manager->spawn(
+        slow.string(), R"({"name":"cov_l2_slow","args":{},"config":{}})");
+    BOOST_REQUIRE(slow_svc.success);
+    auto busy_svc = manager->spawn(
+        busy.string(), R"({"name":"cov_l2_busy","args":{},"config":{}})");
+    BOOST_REQUIRE(busy_svc.success);
+
+    // Fire-and-forget: the nap handler suspends inside the cross-service
+    // call, keeping its coroutine, the pending-call entry and the init-time
+    // timer alive simultaneously.
+    BOOST_REQUIRE(
+        manager->send(busy_svc.service_id, "nap", nlohmann::json::array()));
+
+    // Poll the registry with direct C++ reads (an HTTP poll loop here would
+    // starve the fork lane that drives the call continuation).
+    bool live = false;
+    for (int i = 0; i < 400 && !live; ++i) {
+        auto d = manager->service_detail(busy_svc.service_id);
+        live = d.has_value() && (*d)["coroutines"].get<std::uint64_t>() >= 1 &&
+               (*d)["pending_calls"].get<std::uint64_t>() >= 1 &&
+               (*d)["timers"].get<std::uint64_t>() >= 1;
+        if (!live) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    BOOST_REQUIRE(live);
+
+    std::string err;
+    const auto snap =
+        manager->capture_inspect_snapshot(busy_svc.service_id, "live", &err);
+    BOOST_REQUIRE(snap.has_value());
+    BOOST_CHECK_GE((*snap)["timers"].get<std::uint64_t>(), 1u);
+    BOOST_CHECK_GE((*snap)["coroutines"].get<std::uint64_t>(), 1u);
+    BOOST_CHECK_GE((*snap)["pending_calls"].get<std::uint64_t>(), 1u);
+
+    // Let the nap continuation and the 700ms timer finish so teardown does
+    // not race them.
+    for (int i = 0; i < 900; ++i) {
+        auto d = manager->service_detail(busy_svc.service_id);
+        if (d.has_value() && (*d)["coroutines"].get<std::uint64_t>() == 0 &&
+            (*d)["timers"].get<std::uint64_t>() == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

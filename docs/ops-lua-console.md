@@ -570,7 +570,7 @@ top_tables:
 
 - **诊断控制台本体：已实现**，两层架构详见 [diagnostics-console.md](diagnostics-console.md)——Root 层 `root.*` 只读观测命令（status/services/service/plugins/config/cluster/server/global/log.level）与 Script 层 `attach` REPL / `eval` 沙箱（含 HTTP `/ops/eval`，token 门控）。
 - **L1 只读快照：已落地**。`/ops/services/:name` 与 `/ops/metrics` 暴露 runtime 计数器与瞬时 gauge（requests/errors/uptime/timers/pending_calls/pending_tasks/coroutines/memory_kb，见 [运维运行时语义](runtime-ops.md)）。`coroutines` 经协程生命周期埋点采集（handler 工厂启动登记、终态 resume 与服务 teardown 擦除）；`memory_kb` 在 owner 线程 dispatch 退出采样 `lua_gc(GCCOUNT)`（O(1)，不跨线程触碰 lua_State）。
-- **L2 受限 inspect（`lua.inspect` / `lua.snapshot` / `lua.diff`，即上文 Phase B 清单）：未实现**，留后续。
+- **L2 受限 inspect：第一刀已落地**。`lua.inspect <service> summary|memory|coroutines|timers|pending_calls`（registry 锁内只读投影，console 线程零 Lua 触碰、零 actor 往返）、`lua.snapshot <service> [name]`（L1 gauge 快照，重名覆盖、每服务环形保留最近 8 份、随 incarnation teardown 清除）、`lua.diff <service> <a> <b>`（逐字段 delta，负向变化如实呈现）已在 console 命令面可用（L1 数据源即上条）。`lua.inspect <service> refs`（owner 线程受限对象图遍历）与 snapshot 的对象图摘要扩展留第二刀。
 - **Phase C 的 `lua.eval`/`lua.exec` 语义已由 `attach` REPL 与 `eval` 承载**（先于 L1/L2 完整落地，因带 token 门控与超时约束）。
 
 这份文档冻结的是方向和边界，不声明当前源码已经实现：

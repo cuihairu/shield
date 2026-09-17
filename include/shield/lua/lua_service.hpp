@@ -233,6 +233,29 @@ public:
     // the ops layer, consistent with list_services omitting them).
     std::optional<nlohmann::json> service_detail(std::string_view name) const;
 
+    // -- L2 restricted inspect: snapshot capture and diff ---------------
+    // Console-only diagnostics (lua.snapshot / lua.diff). A snapshot is a
+    // registry-locked copy of the service's L1 gauges plus its traffic
+    // counters — no Lua state is touched, so capture is safe from any
+    // thread and has bounded latency. Snapshots die with the service
+    // incarnation (a diff across incarnations is meaningless).
+
+    // Capture the current gauges under `name` (auto-named "snap-N" when
+    // empty; capturing an existing name replaces that entry). Each service
+    // keeps its last 8 snapshots. Returns the stored snapshot JSON, or
+    // nullopt with `error` set when `service_id` is not a published
+    // service.
+    std::optional<nlohmann::json> capture_inspect_snapshot(
+        const std::string& service_id, const std::string& name,
+        std::string* error);
+
+    // Compare two stored snapshots by name. Returns {a, b, delta} where
+    // delta carries b - a per numeric field, or nullopt with `error` set
+    // when the service or either snapshot name is unknown.
+    std::optional<nlohmann::json> diff_inspect_snapshots(
+        const std::string& service_id, const std::string& a,
+        const std::string& b, std::string* error);
+
     // Enqueue a forked task to be executed by the owning service actor. The
     // task captures the owning service ID so it can be cancelled on service
     // exit.
