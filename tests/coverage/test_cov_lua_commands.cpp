@@ -732,4 +732,194 @@ BOOST_AUTO_TEST_CASE(InspectSnapshotCapturesLiveState) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// L2 refs walker: lua.inspect <svc> refs / LuaServiceManager::inspect_refs.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(InspectRefsWalkerSummary) {
+    // The module packs one value of every walker category: nested tables,
+    // a function, a coroutine (LUA_TTHREAD), a ServiceHandle (LUA_TUSERDATA,
+    // shield.self), strings, a non-string table key ("[boolean]" segment),
+    // over-long keys (the 48-char segment cap and the 96-char path cut)
+    // and a self-reference cycle. Twenty leaf tables push the table count
+    // past the 16-entry report limit.
+    const fs::path rich = fs::temp_directory_path() / "shield_cov_l2_refs.lua";
+    std::ofstream(rich) << "local M = {}\n"
+                           "M.label = \"widget\"\n"
+                           "M[42] = { x = 1, y = 2 }\n"
+                           "M[true] = {}\n"
+                           "M.fn = function() end\n"
+                           "M.co = coroutine.create(function() end)\n"
+                           "M[string.rep('a', 60)] = "
+                           "{ [string.rep('b', 60)] = {} }\n"
+                           "M.nested = { deep = { deeper = {} } }\n"
+                           "M.self = M\n"
+                           "for i = 1, 20 do M['leaf' .. i] = {} end\n"
+                           "function M.on_init()\n"
+                           "  M.handle = shield.self()\n"
+                           "end\n"
+                           "return M\n";
+    auto spawned = manager->spawn(
+        rich.string(), R"({"name":"svc_refs","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = !manager->query_service("svc_refs").empty();
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    std::string err;
+    // Unpublished names refuse before any fork dispatch.
+    auto ghost = manager->inspect_refs("ghost_refs", 4, 1000, &err);
+    BOOST_CHECK(!ghost.has_value());
+    BOOST_CHECK(err.find("not published") != std::string::npos);
+
+    // Bounded walk: counts, top tables, cycle handling (M.self points back
+    // at the already-visited module table) and the depth cut at max_depth 2
+    // (M.nested.deep.deeper stays unvisited, without marking truncated).
+    auto refs = manager->inspect_refs("svc_refs", 2, 20000, &err);
+    BOOST_REQUIRE_MESSAGE(refs.has_value(), err);
+    BOOST_CHECK_EQUAL((*refs)["name"], "svc_refs");
+    BOOST_CHECK_EQUAL((*refs)["depth_limit"], 2);
+    BOOST_CHECK((*refs)["truncated"] == false);
+    // M + [42] + [true]'s value + the two long-key tables + nested + deep
+    // + 20 leaves (deeper stays below the depth cut).
+    BOOST_CHECK_EQUAL((*refs)["counts"]["tables"], 27u);
+    // M.fn plus the on_init hook.
+    BOOST_CHECK_EQUAL((*refs)["counts"]["functions"], 2u);
+    BOOST_CHECK_EQUAL((*refs)["counts"]["coroutines"], 1u);
+    BOOST_CHECK_EQUAL((*refs)["counts"]["userdata"], 1u);
+    BOOST_CHECK_EQUAL((*refs)["counts"]["strings"], 1u);
+    BOOST_CHECK_EQUAL((*refs)["counts"]["string_bytes"], 6u);
+    const auto& top = (*refs)["top_tables"];
+    BOOST_REQUIRE(top.is_array());
+    // 27 visited tables, but the report keeps at most 16.
+    BOOST_REQUIRE_EQUAL(top.size(), 16u);
+    BOOST_CHECK_EQUAL(top[0]["path"], "M");
+    BOOST_CHECK_EQUAL(top[0]["entries"], 30u);
+    // The 60+60-char key chain exceeds the 96-char path budget exactly at
+    // the innermost table: its reported path is cut with the "~" tail.
+    bool path_cut_seen = false;
+    for (const auto& t : top) {
+        const std::string p = t["path"].get<std::string>();
+        if (!p.empty() && p.back() == '~') {
+            BOOST_CHECK_EQUAL(p.size(), 97u);
+            path_cut_seen = true;
+        }
+    }
+    BOOST_CHECK(path_cut_seen);
+    // nodes_visited: 30 root + 2 in M.[42] + 1 in the long-key outer
+    // table + 1 M.nested + 1 M.nested.deep.
+    BOOST_CHECK_EQUAL((*refs)["nodes_visited"], 35u);
+
+    // Node budget exhaustion marks the walk truncated.
+    auto tight = manager->inspect_refs("svc_refs", 4, 3, &err);
+    BOOST_REQUIRE(tight.has_value());
+    BOOST_CHECK((*tight)["truncated"] == true);
+    BOOST_CHECK_EQUAL((*tight)["nodes_visited"], 3u);
+
+    // Out-of-range arguments land on the documented bounds.
+    auto clamped = manager->inspect_refs("svc_refs", 100, 100000, &err);
+    BOOST_REQUIRE(clamped.has_value());
+    BOOST_CHECK_EQUAL((*clamped)["depth_limit"], 8);
+    BOOST_CHECK_EQUAL((*clamped)["node_budget"], 50000u);
+}
+
+BOOST_AUTO_TEST_CASE(InspectRefsConsoleCommand) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    // Depth outside [1,8] surfaces the usage line, not a walker error.
+    for (const char* bad : {"lua.inspect svc refs 0", "lua.inspect svc refs 9",
+                            "lua.inspect svc refs NaN"}) {
+        dispatcher.dispatch(harness.session, bad);
+        std::string line = harness.read_line();
+        auto resp = nlohmann::json::parse(line);
+        BOOST_CHECK(resp["type"] == "error");
+        BOOST_CHECK(resp["message"].get<std::string>().find("Usage") !=
+                    std::string::npos);
+    }
+
+    // Unknown service is rejected by the console fast path (registry read),
+    // same as every other inspect subcommand.
+    dispatcher.dispatch(harness.session, "lua.inspect ghost refs");
+    std::string line = harness.read_line();
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("not found") !=
+                std::string::npos);
+
+    // Happy path, default depth.
+    dispatcher.dispatch(harness.session, "lua.inspect svc refs");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["name"], "svc");
+    BOOST_CHECK_GE(resp["data"]["counts"]["tables"].get<std::uint64_t>(), 1u);
+    BOOST_CHECK(resp["data"]["top_tables"].is_array());
+
+    // Explicit depth is echoed through depth_limit.
+    dispatcher.dispatch(harness.session, "lua.inspect svc refs 3");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["depth_limit"], 3);
+}
+
+// The refs walk is a fork task on the owning service actor: a service
+// wedged in a synchronous (non-yielding) handler cannot pick it up, and the
+// console-side bounded wait lapses after 2s instead of hanging.
+BOOST_AUTO_TEST_CASE(InspectRefsDispatchTimeout) {
+    const fs::path churn =
+        fs::temp_directory_path() / "shield_cov_l2_churn.lua";
+    std::ofstream(churn) << "local M = {}\n"
+                            "function M.churn(ctx)\n"
+                            "  local t0 = os.clock()\n"
+                            "  while os.clock() - t0 < 7 do end\n"
+                            "  return 'done'\n"
+                            "end\n"
+                            "return M\n";
+    auto spawned = manager->spawn(
+        churn.string(), R"({"name":"svc_churn","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = !manager->query_service("svc_churn").empty();
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    // Occupy the service actor with a 7s synchronous handler; the 2s refs
+    // dispatch wait must lapse long before the mailbox drains. One busy
+    // run covers both frontends: the console command surfaces the timeout
+    // as an error line, then the manager-level call asserts the message.
+    BOOST_REQUIRE(manager->send("svc_churn", "churn", nlohmann::json::array()));
+
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+    dispatcher.dispatch(harness.session, "lua.inspect svc_churn refs");
+    std::string line = harness.read_line(std::chrono::milliseconds(15000));
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find(
+                    "refs dispatch timeout") != std::string::npos);
+
+    std::string err;
+    const auto refs = manager->inspect_refs("svc_churn", 4, 20000, &err);
+    BOOST_CHECK(!refs.has_value());
+    BOOST_CHECK(err.find("refs dispatch timeout") != std::string::npos);
+
+    // Let the busy handler finish so teardown does not race it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

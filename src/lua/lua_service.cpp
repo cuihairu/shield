@@ -13,11 +13,13 @@
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <shared_mutex>
+#include <sol/sol.hpp>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -55,6 +57,192 @@ sol::function anchor_to_main_thread(sol::function fn) {
         return fn;
     }
     return sol::function(main_state, sol::ref_index(fn.registry_index()));
+}
+
+// L2 refs walker (lua.inspect <svc> refs): a bounded DFS over the service
+// module's object graph. Must run on the owning service actor thread only —
+// the iteration is raw (lua_next / lua_tolstring never invoke metamethods),
+// allocates no Lua objects, and Lua's GC is non-moving, so pointer-keyed
+// bookkeeping stays valid for the whole walk.
+struct RefsWalker {
+    lua_State* L;
+    int max_depth;
+    std::size_t budget;  // entries still allowed to visit (the time budget)
+    std::unordered_set<const void*> seen;
+    std::uint64_t tables = 0;
+    std::uint64_t functions = 0;
+    std::uint64_t userdata = 0;
+    std::uint64_t threads = 0;
+    std::uint64_t strings = 0;
+    std::uint64_t string_bytes = 0;
+    bool truncated = false;
+    struct TableInfo {
+        std::string path;
+        std::size_t entries = 0;
+        int depth = 0;
+    };
+    std::vector<TableInfo> tables_info;
+
+    // Path segment for the key at `idx`: a bare name for string keys,
+    // "[123]" for array indices, "[<type>]" for anything else.
+    std::string key_segment(int idx) const {
+        const int t = lua_type(L, idx);
+        if (t == LUA_TSTRING) {
+            std::size_t len = 0;
+            const char* s = lua_tolstring(L, idx, &len);
+            // Cap the segment: one pathological multi-megabyte string key
+            // must not dominate the report.
+            if (len > 48) {
+                len = 48;
+            }
+            return std::string(s, len);
+        }
+        if (t == LUA_TNUMBER) {
+            return "[" + std::to_string(lua_tointeger(L, idx)) + "]";
+        }
+        return std::string("[") + lua_typename(L, t) + "]";
+    }
+
+    void count_value(int idx) {
+        switch (lua_type(L, idx)) {
+            case LUA_TSTRING: {
+                std::size_t len = 0;
+                lua_tolstring(L, idx, &len);
+                ++strings;
+                string_bytes += len;
+                break;
+            }
+            case LUA_TFUNCTION:
+                maybe_count_pointer(idx, &functions);
+                break;
+            case LUA_TUSERDATA:
+                maybe_count_pointer(idx, &userdata);
+                break;
+            case LUA_TTHREAD:
+                maybe_count_pointer(idx, &threads);
+                break;
+            default:
+                break;  // tables handled by the caller; scalars not counted
+        }
+    }
+
+    void maybe_count_pointer(int idx, std::uint64_t* counter) {
+        const void* p = lua_topointer(L, idx);
+        if (p != nullptr && seen.insert(p).second) {
+            ++*counter;
+        }
+    }
+
+    // Walk the table at absolute stack index `abs_idx`; every table gets
+    // one TableInfo slot and its entry count is written back through
+    // `entries_out`. Stack discipline: each recursion level keeps its own
+    // next key/value pair balanced even on the truncated early exit
+    // (value popped before break, the pending key popped after). lua_next
+    // is the raw traversal on Lua 5.5 — lua_rawnext no longer exists — and
+    // it only errors on a key neither nil nor in the table, which cannot
+    // happen here (the key came from the previous lua_next).
+    void walk(int abs_idx, const std::string& path, int depth,
+              std::size_t* entries_out) {
+        std::size_t entries = 0;
+        bool broke = false;
+        lua_pushnil(L);
+        while (lua_next(L, abs_idx) != 0) {
+            if (budget == 0) {
+                truncated = true;
+                broke = true;
+                lua_pop(L, 1);  // value; the pending key is popped below
+                break;
+            }
+            --budget;
+            ++entries;
+            count_value(-1);
+            const int vt = lua_type(L, -1);
+            if (vt == LUA_TTABLE && depth < max_depth) {
+                const void* p = lua_topointer(L, -1);
+                if (seen.insert(p).second) {
+                    ++tables;
+                    std::string child = path + "." + key_segment(-2);
+                    // Deep paths stop growing (the "~" tail marks the cut)
+                    // but the table still counts and still recurses.
+                    if (child.size() > 96) {
+                        child = child.substr(0, 96) + "~";
+                    }
+                    const std::size_t slot = tables_info.size();
+                    tables_info.push_back({child, 0, depth + 1});
+                    std::size_t child_entries = 0;
+                    // The value sits at the stack top: recurse against its
+                    // absolute index so deeper pushes cannot invalidate it.
+                    walk(lua_gettop(L), child, depth + 1, &child_entries);
+                    tables_info[slot].entries = child_entries;
+                }
+            }
+            lua_pop(L, 1);  // value; keep the key for the next lua_next
+        }
+        if (broke) {
+            lua_pop(L, 1);  // the pending key
+        }
+        *entries_out = entries;
+    }
+};
+
+// Drive one refs walk over a service's module table and shape the summary
+// JSON. Owner-actor-thread only.
+nlohmann::json walk_module_refs(LuaRuntime& runtime,
+                                const std::shared_ptr<LuaVM>& vm,
+                                const std::string& service_id, int max_depth,
+                                std::size_t max_nodes) {
+    sol::table module = runtime.service_table(vm);
+    if (!module.valid()) {
+        // GCOVR_EXCL_START (defensive: a published service always has its
+        // module loaded — the table stays nil only for VMs that never
+        // finished spawning, which the registry check above refuses)
+        return nlohmann::json{{"error", "service module not loaded"}};
+    }  // GCOVR_EXCL_STOP
+    lua_State* L = runtime.vm_state(vm).lua_state();
+    RefsWalker w{L, max_depth, max_nodes};
+    module.push();
+    w.seen.insert(lua_topointer(L, -1));
+    ++w.tables;
+    std::size_t root_entries = 0;
+    w.walk(lua_gettop(L), "M", 0, &root_entries);
+    lua_pop(L, 1);
+    // The module table gets its own slot so it competes in the top list.
+    w.tables_info.push_back({"M", root_entries, 0});
+
+    std::sort(
+        w.tables_info.begin(), w.tables_info.end(),
+        [](const RefsWalker::TableInfo& a, const RefsWalker::TableInfo& b) {
+            if (a.entries != b.entries) {
+                return a.entries > b.entries;
+            }
+            return a.path < b.path;
+        });
+    // Result size limit: at most 16 tables survive the report.
+    if (w.tables_info.size() > 16) {
+        w.tables_info.resize(16);
+    }
+    nlohmann::json top = nlohmann::json::array();
+    for (const auto& t : w.tables_info) {
+        top.push_back(
+            {{"path", t.path}, {"entries", t.entries}, {"depth", t.depth}});
+    }
+    // Computed before the JSON initializer: a subtraction inline in this
+    // multi-line initializer lands on a line gcov never credits (same
+    // artifact class as the linker-dedup exclusions in lua_runtime.cpp).
+    const std::uint64_t nodes_visited = max_nodes - w.budget;
+    return nlohmann::json{{"name", service_id},
+                          {"depth_limit", max_depth},
+                          {"node_budget", max_nodes},
+                          {"nodes_visited", nodes_visited},
+                          {"counts",
+                           {{"tables", w.tables},
+                            {"functions", w.functions},
+                            {"userdata", w.userdata},
+                            {"coroutines", w.threads},
+                            {"strings", w.strings},
+                            {"string_bytes", w.string_bytes}}},
+                          {"truncated", w.truncated},
+                          {"top_tables", std::move(top)}};
 }
 
 struct DispatchFrame {
@@ -2837,6 +3025,80 @@ std::optional<nlohmann::json> LuaServiceManager::diff_inspect_snapshots(
     return nlohmann::json{{"a", Impl::snapshot_to_json(*sa)},
                           {"b", Impl::snapshot_to_json(*sb)},
                           {"delta", std::move(delta)}};
+}
+
+std::optional<nlohmann::json> LuaServiceManager::inspect_refs(
+    const std::string& service_id, int max_depth, std::size_t max_nodes,
+    std::string* error) {
+    // Clamp to sane bounds: the walk's cost is one raw iteration per
+    // visited entry, so the node cap doubles as the time budget.
+    const int depth = std::clamp(max_depth, 1, 8);
+    const std::size_t nodes =
+        std::clamp(max_nodes, std::size_t{1}, std::size_t{50000});
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        if (!impl_->services.contains(service_id)) {
+            if (error) {
+                *error = "service not published: " + service_id;
+            }
+            return std::nullopt;
+        }
+    }
+    auto promise = std::make_shared<std::promise<nlohmann::json>>();
+    auto future = promise->get_future();
+    // Plain std::function payload, deliberately free of any sol capture:
+    // a queued task is destroyed on arbitrary threads (manager teardown,
+    // service exit) and a sol handle would luaL_unref the VM's registry
+    // there — the cross-thread race the fork-task cleanup paths avoid by
+    // abandoning refs. The VM is resolved fresh on the actor thread below.
+    const uint64_t task_id = enqueue_forked_task(
+        service_id, [impl = impl_.get(), service_id, depth, nodes, promise]() {
+            nlohmann::json out;
+            const std::shared_ptr<LuaVM> vm =
+                impl->find_dispatch_vm(service_id);
+            // GCOVR_EXCL_START (defensive: the task only runs while the
+            // service is published — exit cancels its queued tasks first,
+            // so find_dispatch_vm cannot miss here. Same race class as the
+            // marked nullptr return inside find_dispatch_vm.)
+            if (!vm) {
+                // The service left the registry while the task waited in
+                // the mailbox.
+                out = nlohmann::json{{"error", "service vm not reachable"}};
+            } else {  // GCOVR_EXCL_STOP
+                out = walk_module_refs(impl->runtime, vm, service_id, depth,
+                                       nodes);
+            }
+            promise->set_value(std::move(out));
+        });
+    // GCOVR_EXCL_START (defensive: the actor is spawned before the service
+    // enters the registry and removed after it leaves, so a name the check
+    // above accepted always has a live actor here)
+    if (task_id == 0) {
+        if (error) {
+            *error = "service actor not found: " + service_id;
+        }
+        return std::nullopt;
+    }  // GCOVR_EXCL_STOP
+    // Bounded wait: an owner stuck in a long handler must not wedge the
+    // console thread. The task itself is node-capped and still runs out
+    // its result into the (discarded) future — a set_value nobody reads.
+    if (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+        if (error) {
+            *error = "refs dispatch timeout (owner busy): " + service_id;
+        }
+        return std::nullopt;
+    }
+    nlohmann::json out = future.get();
+    // GCOVR_EXCL_START (defensive: the only producers of the "error" field
+    // are the excluded actor-side guards above)
+    if (out.contains("error")) {
+        // Actor-side failure (module gone / vm unreachable mid-wait).
+        if (error) {
+            *error = out["error"].get<std::string>();
+        }
+        return std::nullopt;
+    }  // GCOVR_EXCL_STOP
+    return out;
 }
 
 std::map<std::string, LuaServiceManager::ServiceStats>

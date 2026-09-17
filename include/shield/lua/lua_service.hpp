@@ -256,6 +256,21 @@ public:
         const std::string& service_id, const std::string& a,
         const std::string& b, std::string* error);
 
+    // Walk the service module's object graph (lua.inspect <svc> refs): a
+    // bounded traversal from the module table over nested tables,
+    // functions, strings and userdata, aggregated into a read-only summary
+    // (counts + top tables by entry count). Unlike the registry-read
+    // inspect fields this touches Lua state, so the walk itself runs on
+    // the owning service actor thread (a forked task); the node cap is the
+    // time budget (O(1) per raw entry) and this side waits at most 2s.
+    // max_depth is clamped to [1,8], max_nodes to [1,50000]. Returns
+    // nullopt with `error` set when the service is unknown, its actor
+    // vanished, or the owner never picked the task up in time.
+    std::optional<nlohmann::json> inspect_refs(const std::string& service_id,
+                                               int max_depth,
+                                               std::size_t max_nodes,
+                                               std::string* error);
+
     // Enqueue a forked task to be executed by the owning service actor. The
     // task captures the owning service ID so it can be cancelled on service
     // exit.

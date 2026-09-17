@@ -34,7 +34,7 @@ void LuaCommands::register_all(CommandDispatcher& dispatcher) {
         "lua.inspect",
         "Read-only service diagnostics "
         "(lua.inspect <service> "
-        "[summary|memory|coroutines|timers|pending_calls])",
+        "[summary|memory|coroutines|timers|pending_calls|refs [depth]])",
         [this](auto& s, auto& a) { cmd_inspect(s, a); });
     dispatcher.register_command(
         "lua.snapshot",
@@ -205,7 +205,7 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
             {"type", "error"},
             {"message",
              "Usage: lua.inspect <service> "
-             "[summary|memory|coroutines|timers|pending_calls]"}};
+             "[summary|memory|coroutines|timers|pending_calls|refs [depth]]"}};
         session.send_line(resp.dump());
     };
     if (args.size() < 2) {
@@ -241,6 +241,27 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
     } else if (field == "pending_calls") {
         data = nlohmann::json{{"name", args[0]},
                               {"pending_calls", (*detail)["pending_calls"]}};
+    } else if (field == "refs") {
+        // The only subcommand that leaves the registry-read fast path: the
+        // walk runs on the owning service actor thread (bounded fork task,
+        // 2s dispatch wait). depth is optional and clamped to [1,8].
+        int depth = 4;
+        if (args.size() > 2) {
+            depth = std::atoi(args[2].c_str());
+            if (depth < 1 || depth > 8) {
+                usage();
+                return;
+            }
+        }
+        std::string refs_error;
+        const std::optional<nlohmann::json> refs =
+            lua_mgr_.inspect_refs(service_id, depth, 20000, &refs_error);
+        if (!refs.has_value()) {
+            nlohmann::json resp = {{"type", "error"}, {"message", refs_error}};
+            session.send_line(resp.dump());
+            return;
+        }
+        data = std::move(*refs);
     } else {
         usage();
         return;
