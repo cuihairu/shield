@@ -233,6 +233,24 @@ public:
     // the ops layer, consistent with list_services omitting them).
     std::optional<nlohmann::json> service_detail(std::string_view name) const;
 
+    // -- L2 restricted inspect: registry-read projections ---------------
+    // Per-item detail for the lua.inspect <svc> timers / pending_calls
+    // subcommands. Both project existing bookkeeping under the registry
+    // lock — no Lua state, no actor round trip, bounded result size — and
+    // return nullopt with `error` set when `service_id` is not a published
+    // service.
+
+    // Active actor timers: total/repeating/once counts, the per-timer
+    // interval list (capped) and the milliseconds until the nearest fire.
+    std::optional<nlohmann::json> timer_inspect(const std::string& service_id,
+                                                std::string* error);
+
+    // Calls waiting for their peer's response: per-call caller service,
+    // proxied flag and milliseconds left before the timeout deadline
+    // (nearest-deadline first, list capped with "truncated": true).
+    std::optional<nlohmann::json> pending_calls_inspect(
+        const std::string& service_id, std::string* error);
+
     // -- L2 restricted inspect: snapshot capture and diff ---------------
     // Console-only diagnostics (lua.snapshot / lua.diff). A snapshot is a
     // registry-locked copy of the service's L1 gauges plus its traffic

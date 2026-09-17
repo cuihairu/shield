@@ -4,6 +4,7 @@
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -920,6 +921,250 @@ BOOST_AUTO_TEST_CASE(InspectRefsDispatchTimeout) {
 
     // Let the busy handler finish so teardown does not race it.
     std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+}
+
+// ---------------------------------------------------------------------------
+// L2 timers / pending_calls detail projections (lua.inspect <svc>
+// timers|pending_calls): registry-locked reads of the per-item bookkeeping.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(InspectTimersAndCallsDetail) {
+    const fs::path slow = fs::temp_directory_path() / "shield_cov_l2_slow.lua";
+    std::ofstream(slow) << "local M = {}\n"
+                           "function M.slow(ctx) shield.sleep(600) return 'ok' "
+                           "end\n"
+                           "return M\n";
+    // The busy service holds, at once: a repeating timer (fires several
+    // times while the test polls, driving the next-fire advance), a
+    // one-shot timer, a call suspended against the slow service (the
+    // pending call) and a shield.sleep timer driven by the native-callback
+    // registration path.
+    const fs::path busy =
+        fs::temp_directory_path() / "shield_cov_l2_detail_busy.lua";
+    std::ofstream(busy) << "local M = {}\n"
+                           "function M.on_init(args)\n"
+                           "  shield.timer_once(700, function() end)\n"
+                           "  shield.timer(250, function() end)\n"
+                           "end\n"
+                           "function M.nap(ctx)\n"
+                           "  return shield.call('cov_l2_slow', 'slow')\n"
+                           "end\n"
+                           "function M.snooze(ctx)\n"
+                           "  shield.sleep(500)\n"
+                           "  return 'woke'\n"
+                           "end\n"
+                           "return M\n";
+
+    auto slow_svc = manager->spawn(
+        slow.string(), R"({"name":"cov_l2_slow","args":{},"config":{}})");
+    BOOST_REQUIRE(slow_svc.success);
+    auto busy_svc = manager->spawn(
+        busy.string(), R"({"name":"cov_l2_busy","args":{},"config":{}})");
+    BOOST_REQUIRE(busy_svc.success);
+
+    // Fire-and-forget: nap suspends inside the cross-service call, snooze
+    // inside shield.sleep — both keep their pending wait bookkeeping.
+    BOOST_REQUIRE(
+        manager->send(busy_svc.service_id, "nap", nlohmann::json::array()));
+    BOOST_REQUIRE(
+        manager->send(busy_svc.service_id, "snooze", nlohmann::json::array()));
+
+    bool live = false;
+    for (int i = 0; i < 400 && !live; ++i) {
+        auto d = manager->service_detail(busy_svc.service_id);
+        live = d.has_value() && (*d)["timers"].get<std::size_t>() >= 2 &&
+               (*d)["pending_calls"].get<std::uint64_t>() >= 1;
+        if (!live) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    BOOST_REQUIRE(live);
+
+    std::string err;
+    auto ghost_timers = manager->timer_inspect("ghost_detail", &err);
+    BOOST_CHECK(!ghost_timers.has_value());
+    BOOST_CHECK(err.find("not published") != std::string::npos);
+    auto ghost_calls = manager->pending_calls_inspect("ghost_detail", &err);
+    BOOST_CHECK(!ghost_calls.has_value());
+    BOOST_CHECK(err.find("not published") != std::string::npos);
+
+    const auto timers = manager->timer_inspect(busy_svc.service_id, &err);
+    BOOST_REQUIRE_MESSAGE(timers.has_value(), err);
+    BOOST_CHECK_EQUAL((*timers)["name"], "cov_l2_busy");
+    BOOST_CHECK_GE((*timers)["timers"].get<std::uint64_t>(), 2u);
+    BOOST_CHECK_GE((*timers)["repeating"].get<std::uint64_t>(), 1u);
+    BOOST_CHECK_GE((*timers)["once"].get<std::uint64_t>(), 1u);
+    BOOST_CHECK((*timers)["intervals_ms"].is_array());
+    // Nearest due time sits within one interval of now: a small negative
+    // value is the in-flight window between the CAF tick firing and the
+    // actor-side next-fire advance.
+    const int64_t fire_left = (*timers)["next_fire_ms_left"].get<int64_t>();
+    BOOST_CHECK_GT(fire_left, -250);
+    BOOST_CHECK_LE(fire_left, 250);
+
+    const auto calls =
+        manager->pending_calls_inspect(busy_svc.service_id, &err);
+    BOOST_REQUIRE_MESSAGE(calls.has_value(), err);
+    BOOST_CHECK_GE((*calls)["pending_calls"].get<std::uint64_t>(), 1u);
+    const auto& items = (*calls)["calls"];
+    BOOST_REQUIRE(items.is_array());
+    BOOST_REQUIRE(!items.empty());
+    // Both waits were issued by cov_l2_busy; neither is proxied; both are
+    // still far from their deadlines (5s default vs a ~600ms sleep).
+    bool nap_seen = false;
+    for (const auto& c : items) {
+        BOOST_CHECK_EQUAL(c["caller"], "cov_l2_busy");
+        BOOST_CHECK(c["proxied"] == false);
+        BOOST_CHECK_GT(c["ms_left"].get<int64_t>(), 0);
+        BOOST_CHECK_LT(c["ms_left"].get<int64_t>(), 5000);
+        nap_seen = true;
+    }
+    BOOST_CHECK(nap_seen);
+
+    // The callee side of the suspended call has no outgoing wait.
+    const auto slow_calls =
+        manager->pending_calls_inspect(slow_svc.service_id, &err);
+    BOOST_REQUIRE_MESSAGE(slow_calls.has_value(), err);
+    BOOST_CHECK_EQUAL((*slow_calls)["pending_calls"], 0u);
+    BOOST_CHECK((*slow_calls)["calls"].empty());
+
+    // Console projections carry the same detail.
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+    dispatcher.dispatch(harness.session, "lua.inspect cov_l2_busy timers");
+    std::string line = harness.read_line();
+    auto resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["name"], "cov_l2_busy");
+    BOOST_CHECK(resp["data"]["next_fire_ms_left"].is_number_integer());
+    dispatcher.dispatch(harness.session,
+                        "lua.inspect cov_l2_busy pending_calls");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["pending_calls"], (*calls)["pending_calls"]);
+
+    // Empty projections keep the gauge-compatible numeric fields.
+    dispatcher.dispatch(harness.session,
+                        "lua.inspect cov_l2_slow pending_calls");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["pending_calls"], 0u);
+    BOOST_CHECK(resp["data"]["calls"].is_array());
+
+    // Let the snooze sleep, the nap call and the timers finish/die with the
+    // incarnation so teardown does not race them.
+    manager->exit(busy_svc.service_id);
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+}
+
+// >32 concurrent waits: the report caps at 32 entries with "truncated",
+// and the nearest-deadline sort is exercised with both distinct deadlines
+// (two waves, different call timeouts) and same-deadline ties (within one
+// wave all waits are stamped in the same handler tick).
+BOOST_AUTO_TEST_CASE(InspectPendingCallsTruncation) {
+    // The waits are coroutine-path spawns: each suspends the caller through
+    // suspend_for_call (same pending_calls bookkeeping as shield.call) while
+    // the manager's spawn worker drains them one by one — no callee dispatch
+    // involved. Wave A uses the default 10s budget, wave B 20s; the 5ms gap
+    // between the waves keeps cross-wave deadlines distinct while waits
+    // inside one wave are stamped within the same millisecond with
+    // overwhelming probability.
+    const fs::path busy =
+        fs::temp_directory_path() / "shield_cov_l2_tr_busy.lua";
+    std::ofstream(busy) << "local M = {}\n"
+                        << "local W = {}\n"
+                        << "function M.flood_a(ctx)\n"
+                        << "  for i = 1, 18 do\n"
+                        << "    W[#W + 1] = coroutine.wrap(function()\n"
+                        << "      shield.spawn('" << script_path.string()
+                        << "', {name = 'tr_child_a_' .. i})\n"
+                        << "    end)\n"
+                        << "    W[#W]()\n"
+                        << "  end\n"
+                        << "end\n"
+                        << "function M.flood_b(ctx)\n"
+                        << "  for i = 1, 18 do\n"
+                        << "    W[#W + 1] = coroutine.wrap(function()\n"
+                        << "      shield.spawn('" << script_path.string()
+                        << "', {name = 'tr_child_b_' .. i, timeout = 20000})\n"
+                        << "    end)\n"
+                        << "    W[#W]()\n"
+                        << "  end\n"
+                        << "end\n"
+                        << "return M\n";
+
+    auto busy_svc = manager->spawn(
+        busy.string(), R"({"name":"cov_l2_tr_busy","args":{},"config":{}})");
+    BOOST_REQUIRE(busy_svc.success);
+
+    BOOST_REQUIRE(
+        manager->send(busy_svc.service_id, "flood_a", nlohmann::json::array()));
+    BOOST_REQUIRE(
+        manager->send(busy_svc.service_id, "flood_b", nlohmann::json::array()));
+
+    std::string err;
+    bool flooded = false;
+    std::uint64_t peak = 0;
+    for (int i = 0; i < 2000 && !flooded; ++i) {
+        auto d = manager->pending_calls_inspect(busy_svc.service_id, &err);
+        const auto n =
+            d.has_value() ? (*d)["pending_calls"].get<std::uint64_t>() : 0u;
+        if (n > peak) {
+            peak = n;
+        }
+        flooded = n >= 33u;
+    }
+    BOOST_REQUIRE_MESSAGE(
+        flooded, "expected 33+ pending waits, peak=" << peak << " err=" << err);
+
+    const auto calls =
+        manager->pending_calls_inspect(busy_svc.service_id, &err);
+    BOOST_REQUIRE_MESSAGE(calls.has_value(), err);
+    BOOST_CHECK_GE((*calls)["pending_calls"].get<std::uint64_t>(), 33u);
+    BOOST_REQUIRE((*calls).contains("truncated"));
+    BOOST_CHECK((*calls)["truncated"] == true);
+    const auto& items = (*calls)["calls"];
+    BOOST_REQUIRE(items.is_array());
+    BOOST_CHECK_EQUAL(items.size(), 32u);
+    // Sorted by nearest deadline; ties keep ascending session ids.
+    int64_t prev_left = 0;
+    std::uint64_t prev_session = 0;
+    for (const auto& c : items) {
+        const int64_t ms_left = c["ms_left"].get<int64_t>();
+        const std::uint64_t session = c["session"].get<std::uint64_t>();
+        BOOST_CHECK_EQUAL(c["caller"], "cov_l2_tr_busy");
+        BOOST_CHECK(c["proxied"] == false);
+        BOOST_CHECK_GT(ms_left, 0);
+        BOOST_CHECK_GE(ms_left, prev_left);
+        if (ms_left == prev_left) {
+            BOOST_CHECK_GE(session, prev_session);
+        }
+        prev_left = ms_left;
+        prev_session = session;
+    }
+
+    // The console projection carries the truncation marker too.
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+    dispatcher.dispatch(harness.session,
+                        "lua.inspect cov_l2_tr_busy pending_calls");
+    std::string line = harness.read_line();
+    auto resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_REQUIRE(resp["data"].contains("truncated"));
+    BOOST_CHECK(resp["data"]["truncated"] == true);
+    BOOST_CHECK_EQUAL(resp["data"]["pending_calls"], (*calls)["pending_calls"]);
+
+    // No drain wait: the observation window already served its purpose, and
+    // the explicit exit cancels the suspended waits and queued spawns (the
+    // same teardown proven by the nap/snooze case above).
+    manager->exit(busy_svc.service_id);
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

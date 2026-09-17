@@ -588,6 +588,11 @@ struct LuaServiceManager::Impl {
         uint64_t id = 0;
         int64_t interval_ms = 0;
         bool repeating = false;
+        // Steady-clock due time of the next fire (set at registration,
+        // advanced at every repeating fire) — the timer_inspect projection
+        // reports the nearest one. Bookkeeping only; the CAF driver actor
+        // owns the actual schedule.
+        int64_t next_fire_ms = 0;
         std::string service_id;
         sol::function raw_callback;
         std::function<void()> native_callback;
@@ -968,6 +973,11 @@ struct LuaServiceManager::Impl {
                     actor_timers_by_service[it->second.service_id].erase(
                         timer_id);
                     actor_timers.erase(it);
+                } else {
+                    // The driver reschedules itself; keep the projection's
+                    // due time in step (drift equals the fire-dispatch lag).
+                    it->second.next_fire_ms =
+                        Impl::now_ms() + it->second.interval_ms;
                 }
             }
         }
@@ -3101,6 +3111,117 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_refs(
     return out;
 }
 
+std::optional<nlohmann::json> LuaServiceManager::timer_inspect(
+    const std::string& service_id, std::string* error) {
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        if (!impl_->services.contains(service_id)) {
+            if (error) {
+                *error = "service not published: " + service_id;
+            }
+            return std::nullopt;
+        }
+        // Timer bookkeeping lives under the same registry lock; aggregate
+        // without leaving it (registry_mutex nests nothing here).
+        uint64_t total = 0;
+        uint64_t repeating = 0;
+        int64_t nearest_fire_ms = 0;
+        nlohmann::json intervals = nlohmann::json::array();
+        const auto service_timers =
+            impl_->actor_timers_by_service.find(service_id);
+        if (service_timers != impl_->actor_timers_by_service.end()) {
+            for (const uint64_t timer_id : service_timers->second) {
+                const auto it = impl_->actor_timers.find(timer_id);
+                // Defensive: both timer books are maintained pairwise under
+                // the same registry lock (registration, fire retirement and
+                // cancel), so a stale per-service id cannot be observed.
+                // GCOVR_EXCL_START
+                if (it == impl_->actor_timers.end()) {
+                    continue;
+                }
+                // GCOVR_EXCL_STOP
+                ++total;
+                const auto& timer = it->second;
+                repeating += timer.repeating ? 1 : 0;
+                if (intervals.size() < 32) {
+                    intervals.push_back(timer.interval_ms);
+                }
+                if (nearest_fire_ms == 0 ||
+                    timer.next_fire_ms < nearest_fire_ms) {
+                    nearest_fire_ms = timer.next_fire_ms;
+                }
+            }
+        }
+        // Named locals keep the line counts on their own lines (the json
+        // initializer otherwise records the arc on a continuation line).
+        const std::uint64_t once_count = total - repeating;
+        nlohmann::json out{{"name", service_id},
+                           {"timers", total},
+                           {"repeating", repeating},
+                           {"once", once_count},
+                           {"intervals_ms", std::move(intervals)}};
+        if (total > 0) {
+            // Named local keeps the line count on its own line (the json
+            // initializer otherwise records the arc on a continuation line).
+            const int64_t fire_left = nearest_fire_ms - Impl::now_ms();
+            out["next_fire_ms_left"] = fire_left;
+        }
+        return out;
+    }
+}
+
+std::optional<nlohmann::json> LuaServiceManager::pending_calls_inspect(
+    const std::string& service_id, std::string* error) {
+    std::vector<const Impl::PendingCall*> calls;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        if (!impl_->services.contains(service_id)) {
+            if (error) {
+                *error = "service not published: " + service_id;
+            }
+            return std::nullopt;
+        }
+        for (const auto& [session, pending] : impl_->pending_calls) {
+            // The wait belongs to this service when its caller (or, for a
+            // proxied remote call, the receiving incarnation) is it. The
+            // caller_service stamp is taken at call entry inside the
+            // caller's dispatch scope.
+            if (pending.caller_service == service_id) {
+                calls.push_back(&pending);
+            }
+        }
+    }
+    const int64_t now = Impl::now_ms();
+    // Nearest deadline first; session id breaks ties deterministically.
+    std::sort(calls.begin(), calls.end(),
+              [](const Impl::PendingCall* a, const Impl::PendingCall* b) {
+                  if (a->deadline_ms != b->deadline_ms) {
+                      return a->deadline_ms < b->deadline_ms;
+                  }
+                  return a->session < b->session;
+              });
+    nlohmann::json items = nlohmann::json::array();
+    // Report size limit: the summary keeps at most 32 entries.
+    for (std::size_t i = 0; i < calls.size() && i < 32; ++i) {
+        // Named locals keep the counts on their own lines (multi-element
+        // json initializers otherwise record the arcs on a few continuation
+        // lines only).
+        const int64_t ms_left = calls[i]->deadline_ms - now;
+        items.push_back({{"session", calls[i]->session},
+                         {"caller", calls[i]->caller_service},
+                         {"ms_left", ms_left},
+                         {"proxied", calls[i]->proxied}});
+    }
+    const std::size_t pending_count = calls.size();
+    nlohmann::json out{{"name", service_id},
+                       {"pending_calls", pending_count},
+                       {"calls", std::move(items)}};
+    if (calls.size() > 32) {
+        out["truncated"] = true;
+    }
+    return out;
+}
+
 std::map<std::string, LuaServiceManager::ServiceStats>
 LuaServiceManager::service_stats() const {
     std::map<std::string, ServiceStats> out;
@@ -3990,6 +4111,7 @@ uint64_t LuaServiceManager::schedule_actor_timer_once(
             .id = id,
             .interval_ms = delay_ms,
             .repeating = false,
+            .next_fire_ms = Impl::now_ms() + delay_ms,
             .service_id = service_id,
             .raw_callback = callback,
             .native_callback = {},
@@ -4046,6 +4168,7 @@ uint64_t LuaServiceManager::schedule_actor_timer_once_fn(
             .id = id,
             .interval_ms = delay_ms,
             .repeating = false,
+            .next_fire_ms = Impl::now_ms() + delay_ms,
             .service_id = service_id,
             .raw_callback = sol::function{},
             .native_callback = std::move(callback),
@@ -4108,6 +4231,7 @@ uint64_t LuaServiceManager::schedule_actor_timer_fixed_delay(
             .id = id,
             .interval_ms = interval_ms,
             .repeating = true,
+            .next_fire_ms = Impl::now_ms() + interval_ms,
             .service_id = service_id,
             .raw_callback = callback,
             .native_callback = {},

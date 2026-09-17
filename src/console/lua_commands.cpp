@@ -175,8 +175,6 @@ bool LuaCommands::try_execute(
             // No return values
             // Unreachable: exec_lua leaves *result null when the chunk
             // yields no values, so data is never an empty array here.
-            // Unreachable: exec_lua leaves *result null when the chunk
-            // yields no values, so data is never an empty array here.
             // GCOVR_EXCL_START
             nlohmann::json resp = {{"type", "result"}, {"data", nullptr}};
             // GCOVR_EXCL_STOP
@@ -236,11 +234,38 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
         data = nlohmann::json{{"name", args[0]},
                               {"coroutines", (*detail)["coroutines"]}};
     } else if (field == "timers") {
-        data =
-            nlohmann::json{{"name", args[0]}, {"timers", (*detail)["timers"]}};
+        // Registry-read projection of the per-timer bookkeeping: counts,
+        // intervals and the nearest due time (still no Lua state, no actor
+        // round trip).
+        std::string timers_error;
+        const std::optional<nlohmann::json> timers =
+            lua_mgr_.timer_inspect(service_id, &timers_error);
+        // Defensive: the projection can only fail when the service leaves
+        // the registry between the detail snapshot above and this call.
+        // GCOVR_EXCL_START
+        if (!timers.has_value()) {
+            nlohmann::json resp = {{"type", "error"},
+                                   {"message", timers_error}};
+            session.send_line(resp.dump());
+            return;
+        }
+        // GCOVR_EXCL_STOP
+        data = std::move(*timers);
     } else if (field == "pending_calls") {
-        data = nlohmann::json{{"name", args[0]},
-                              {"pending_calls", (*detail)["pending_calls"]}};
+        // Same projection class: per-call caller, deadline budget and
+        // proxied flag, nearest deadline first, list capped at 32.
+        std::string calls_error;
+        const std::optional<nlohmann::json> calls =
+            lua_mgr_.pending_calls_inspect(service_id, &calls_error);
+        // Same race-window defense as the timers branch above.
+        // GCOVR_EXCL_START
+        if (!calls.has_value()) {
+            nlohmann::json resp = {{"type", "error"}, {"message", calls_error}};
+            session.send_line(resp.dump());
+            return;
+        }
+        // GCOVR_EXCL_STOP
+        data = std::move(*calls);
     } else if (field == "refs") {
         // The only subcommand that leaves the registry-read fast path: the
         // walk runs on the owning service actor thread (bounded fork task,
