@@ -2930,6 +2930,15 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
     // Service actor not found: roll back the enqueue.
     {
         std::lock_guard<std::mutex> lock(impl_->task_mutex);
+        // Same abandon-before-erase as cancel_forked_tasks_for_service:
+        // this thread may not be the VM's owner, so the anchored function
+        // must not luaL_unref the registry here. The leaked entry dies with
+        // the VM.
+        for (auto& t : impl_->pending_tasks) {
+            if (t.id == id) {
+                t.raw_fn.abandon();
+            }
+        }
         auto by_service_it = impl_->tasks_by_service.find(service_id);
         if (by_service_it != impl_->tasks_by_service.end()) {
             by_service_it->second.erase(id);
@@ -2957,6 +2966,18 @@ void LuaServiceManager::cancel_forked_tasks_for_service(
         }
         ids = it->second;
         impl_->tasks_by_service.erase(it);
+        // Dropping a queued task releases its anchored Lua function, and
+        // this may run on any thread (manager teardown, service exit). The
+        // sol destructor would luaL_unref the owning VM's registry — a
+        // cross-thread Lua mutation racing the service actor's own dispatch
+        // on the same registry. Abandon the ref instead: the registry entry
+        // leaks and is reclaimed when the VM closes (same policy as the
+        // dropped spawn jobs above).
+        for (auto& t : impl_->pending_tasks) {
+            if (ids.count(t.id) > 0) {
+                t.raw_fn.abandon();
+            }
+        }
         impl_->pending_tasks.erase(
             std::remove_if(impl_->pending_tasks.begin(),
                            impl_->pending_tasks.end(),
