@@ -378,6 +378,8 @@ local ok, result = shield.call_timeout(3000, "db.player", "get", uid)
 
 不在协程中的调用（module-level 代码、主线程）返回 `false, {code="call_not_allowed_off_coroutine", message="..."}`。协程内自调用（caller == target）合法：caller 协程 yield 释放 dispatch 后，请求经自身 actor mailbox 串行处理。call timeout 通过 CAF `delayed_send` 实现，以 `{code="timeout", message="call timeout", retryable=true}` 恢复 caller。
 
+**yield 窗口与恢复线程不变量**：`suspend_for_call` 注册挂起后、协程执行到 `coroutine.yield()` 之前存在一个窗口——若响应在窗口内到达，`resume_caller` 发现协程仍在注册线程上运行（Lua 状态为 running），不就地恢复（`lua_resume` 会拒绝 running 协程），而是把响应消息重新投递回 caller actor 邮箱；协程 yield 后的下一轮消息处理时自然以挂起态直接恢复。由 Lua 层自驱动、yield 无 C++ 观测点的协程（`coroutine.wrap`、timer/fork 回调）在响应到达时已处于挂起态，同样走直接恢复。该机制保证一条硬不变量：**caller 协程的每次 `lua_resume` 都发生在拥有它的 actor 线程上**——例如 on_init 协程由 spawn 线程驱动，其 call 响应绝不在 spawn 线程恢复协程，否则会与 pre-init 直通消息（timer fire / call response）并发进入同一 `lua_State`。超时与正常完成共用重投路径；重投计数有上限（协程永不 yield 时对齐历史盲等失败的丢弃语义），每次重投顺延超时扫描的截止时间防止重复触发。
+
 LAPI-005-06 已覆盖。
 
 </details>
