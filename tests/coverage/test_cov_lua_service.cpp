@@ -1186,21 +1186,21 @@ BOOST_AUTO_TEST_CASE(SuspendResumePrimitives) {
 
 // ---------------------------------------------------------------------------
 // Yield-window guard: a completion arriving while the caller coroutine is
-// still running on its driving thread must be parked and handed out by
-// mark_call_yielded, never waited on and never lost.
+// still running on its driving thread must never be resumed in place (that
+// would fail with "cannot resume running coroutine") and never waited on.
+// resume_caller re-enqueues the response through the caller actor's mailbox;
+// with no caller actor registered (this primitive-level case) it falls
+// through to the erase path, dropping the response while leaving the
+// coroutine untouched and recoverable.
 // ---------------------------------------------------------------------------
 namespace {
 
 std::atomic<int> g_parked_gate{0};
 std::atomic<bool> g_parked_body_running{false};
 
-// The driver-thread body: spin until the test thread has parked a
-// completion against this (still running) coroutine, then yield. The
-// payload the parked completion resumes with is stashed in a global for
-// the assertions.
-// Continuation for the yield below: runs when the parked completion
-// resumes the coroutine, with the resume payload (ok, values...) on the
-// stack. Stashes it in a global for the assertions.
+// Continuation for the yield below: runs when something resumes the
+// coroutine, with the resume payload (ok, values...) on the stack. Stashes
+// it in a global for the assertions.
 int parked_continue(lua_State* L, int status, lua_KContext ctx) {
     (void)status;
     (void)ctx;
@@ -1224,7 +1224,7 @@ int parked_body(lua_State* L) {
 
 }  // namespace
 
-BOOST_AUTO_TEST_CASE(ParkedCompletionHandoff) {
+BOOST_AUTO_TEST_CASE(YieldWindowDropWithoutCallerActor) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
     LuaRuntime runtime;
@@ -1247,19 +1247,32 @@ BOOST_AUTO_TEST_CASE(ParkedCompletionHandoff) {
     while (!g_parked_body_running.load(std::memory_order_acquire)) {
         std::this_thread::yield();
     }
-    // The body is spinning: the coroutine is running on the driver thread.
-    // Park the completion against it — no wait, no resume, the entry goes
-    // back with completion_ready and this returns immediately.
+    // The body is spinning: the coroutine is running on the driver thread
+    // and no caller actor exists for it, so the completion cannot be
+    // routed anywhere. resume_caller must return promptly (no wait) and
+    // leave the running coroutine untouched.
     uint64_t session = manager.suspend_for_call(co, 10000);
     manager.resume_caller(session, true, nlohmann::json::array({42}));
 
-    // Release the body: it reaches its yield (the suspension no C++ code
-    // observed), and observing it hands the parked completion out — the
-    // body resumes with (true, 42) and stashes it.
+    // The completion was dropped, not parked: the timeout registry no
+    // longer knows the session.
+    BOOST_CHECK_EQUAL(manager.check_call_timeouts(INT64_MAX), 0);
+
+    // Release the body: it reaches its yield (a suspension no C++ code
+    // observed) and stays suspended — the coroutine is intact and its
+    // yield_sync handshake was never disturbed.
     g_parked_gate.store(1, std::memory_order_release);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     manager.mark_call_yielded(co);
     driver.join();
+
+    // The test itself is the recovery source: resuming delivers the
+    // payload to the continuation, proving the dropped completion never
+    // corrupted the coroutine state.
+    lua_pushboolean(co, 1);
+    lua_pushinteger(co, 42);
+    int nres = 0;
+    BOOST_CHECK_EQUAL(lua_resume(co, nullptr, 2, &nres), LUA_OK);
 
     lua_getglobal(co, "cov_parked_payload");
     if (lua_istable(co, -1)) {
@@ -1270,7 +1283,7 @@ BOOST_AUTO_TEST_CASE(ParkedCompletionHandoff) {
         BOOST_CHECK_EQUAL(lua_tointeger(co, -1), 42);
         lua_pop(co, 2);
     } else {
-        BOOST_FAIL("parked completion never reached the coroutine body");
+        BOOST_FAIL("manual resume payload never reached the coroutine body");
     }
 }
 
