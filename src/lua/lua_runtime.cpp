@@ -1164,6 +1164,14 @@ bool LuaRuntime::invoke_coroutine(
         }
 
         int nres = 0;
+        // Driving-phase registration: resume_caller on another thread
+        // re-enqueues a completion arriving while this guard is held
+        // (see LuaServiceManager::resume_caller).
+        std::unique_ptr<LuaServiceManager::DrivingGuard> driving;
+        if (manager != nullptr) {
+            driving =
+                std::make_unique<LuaServiceManager::DrivingGuard>(*manager, co);
+        }
         const int status = lua_resume(co, L, 0, &nres);
         if (status == LUA_OK) {
             // Terminal: this resume observed the coroutine complete.
@@ -1196,12 +1204,9 @@ bool LuaRuntime::invoke_coroutine(
         }
         if (status == LUA_YIELD) {
             // Suspended (shield.sleep / call): anchored by the suspending API
-            // and resumed by the runtime. Publish the yield so a completion
-            // that already arrived on another thread may resume the
-            // coroutine (see CallYieldSync in LuaServiceManager).
-            if (manager != nullptr) {
-                manager->mark_call_yielded(co);
-            }
+            // and resumed by the runtime. The driving-phase registration
+            // ends with the guard below, so a completion that arrives later
+            // resumes directly.
             return true;
         }
         std::string msg = method_label.empty()
@@ -1430,17 +1435,17 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
         }
 
         int nres = 0;
+        std::unique_ptr<LuaServiceManager::DrivingGuard> driving;
+        if (manager != nullptr) {
+            driving =
+                std::make_unique<LuaServiceManager::DrivingGuard>(*manager, co);
+        }
         const int status = lua_resume(co, L, 0, &nres);
         if (status == LUA_OK || status == LUA_YIELD) {
             if (status == LUA_OK && manager != nullptr) {
                 // Fire-and-forget completion: no later resume will observe
                 // this coroutine's terminal state, so finish it here.
                 manager->note_coroutine_finished(co);
-            }
-            if (status == LUA_YIELD && manager != nullptr) {
-                // Publish the yield for the yield handshake (CallYieldSync):
-                // a completion may already be waiting on another thread.
-                manager->mark_call_yielded(co);
             }
             if (manager && !service_id.empty()) {
                 manager->reset_error_count(std::string(service_id));

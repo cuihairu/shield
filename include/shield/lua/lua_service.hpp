@@ -317,13 +317,19 @@ public:
     // callee completes (or on timeout).
     uint64_t suspend_for_call(lua_State* caller_co, int32_t timeout_ms);
 
-    // Yield handshake (called by every coroutine resume source once
-    // lua_resume returned LUA_YIELD): publishes that the coroutine driving
-    // `co` has observed the suspension, so a completion that already arrived
-    // on another thread may safely lua_resume it. Until this fires,
-    // resume_caller waits — resuming a still-running coroutine would fail and
-    // lose the response with no recovery source.
-    void mark_call_yielded(lua_State* co);
+    // Driving-phase registration for coroutine resume sources (see
+    // resume_caller): held across a lua_resume span, it makes a completion
+    // arriving on another thread re-enqueue through the caller actor instead
+    // of racing the drive. Every resume source outside this TU (runtime
+    // dispatch, sleep timers) wraps its lua_resume in one of these.
+    struct DrivingGuard {
+        LuaServiceManager& manager;
+        lua_State* co;
+        DrivingGuard(LuaServiceManager& mgr, lua_State* c);
+        ~DrivingGuard();
+        DrivingGuard(const DrivingGuard&) = delete;
+        DrivingGuard& operator=(const DrivingGuard&) = delete;
+    };
 
     // Live-coroutine bookkeeping (L1 observability): every coroutine the
     // handler factory starts is registered under its service and erased at
@@ -524,10 +530,9 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
-    // Drive the lua_resume of a caller coroutine already known to be
-    // suspended (resume_caller's yield-window guard passed). Shared by the
-    // direct path and by mark_call_yielded handing out a parked completion;
-    // the anchor and caller_service fields ride along because the pending
+    // Drive the lua_resume of a caller coroutine already known to be free
+    // of a registered driver (resume_caller's driving-phase guard passed).
+    // The anchor and caller_service fields ride along because the pending
     // entry has already been taken out of the registry.
     void resume_suspended_caller(int caller_anchor,
                                  const std::string& caller_service,

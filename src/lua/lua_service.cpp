@@ -476,24 +476,18 @@ struct LuaServiceManager::Impl {
     // coroutine; the callee runs and, on completion, resumes the caller with
     // the callee's return values.
     //
-    // Yield handshake: suspend_for_call registers the caller coroutine before
-    // the suspending wrapper reaches its coroutine.yield(). A completion that
-    // arrives in that window (the sync _coro_call pre-dispatch completions,
-    // or a callee that answers within a scheduling slice) must not resume a
-    // coroutine that is still running on the registering thread — lua_resume
-    // rejects that and the response would be lost with no recovery source
-    // (the call's own timeout driver is cancelled by the completion). The
-    // resume source instead reads the coroutine's authoritative state:
-    // suspended (a Lua-driven yield no C++ code saw — coroutine.wrap,
-    // timer and fork callbacks) resumes directly, still-running re-enqueues
-    // the completion through the caller actor. This sync remains as the
-    // observation record mark_call_yielded publishes to; it no longer gates
-    // a wait.
-    struct CallYieldSync {
-        std::mutex mtx;
-        std::condition_variable cv;
-        bool yielded = false;
-    };
+    // Driving-phase guard: every coroutine resume source registers the
+    // thread state it is about to drive in driving_cos (registry-locked)
+    // for the whole lua_resume span. resume_caller consults the set instead
+    // of peeking at the coroutine's Lua state — reading lua_status /
+    // lua_getstack of a thread another OS thread is actively driving is a
+    // data race (MSVC release builds crashed on exactly that in
+    // CallErrorCodesAreStable), while the set read is mutex-ordered. A
+    // response arriving while the caller is registered (the yield window:
+    // suspend_for_call runs inside the still-running coroutine) is
+    // re-enqueued through the caller actor; everything else resumes
+    // directly.
+    std::unordered_set<lua_State*> driving_cos;
     struct PendingCall {
         uint64_t session = 0;
         lua_State* caller_co = nullptr;
@@ -504,9 +498,6 @@ struct LuaServiceManager::Impl {
         // proxied_call_hook (reply to the source node) instead of resuming a
         // coroutine; there is no local caller actor or timeout driver.
         bool proxied = false;
-        // Shared with the resume source (copies of this entry keep the same
-        // object alive). Null for proxied calls, which have no coroutine.
-        std::shared_ptr<CallYieldSync> yield_sync;
         // Yield-window requeue counter (resume_caller re-enqueues the
         // response while the caller coroutine is still running on its
         // driving thread; the cap bounds the loop for a caller that never
@@ -1686,11 +1677,11 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             // yielded, i.e. while the spawning thread is parked on the init
             // waiter and the VM is idle. That pass-through is only safe
             // because resume_caller re-enqueues a response through this
-            // actor's mailbox whenever the caller coroutine is still
-            // running on its driving thread — every lua_resume of a
-            // handler coroutine stays on an actor thread, never on the
-            // spawning thread that observed the yield. A completion parked
-            // (and resumed) by mark_call_yielded would break exactly this
+            // actor's mailbox whenever the caller coroutine's driving
+            // phase is still registered — every lua_resume of a handler
+            // coroutine stays on an actor thread, never on the spawning
+            // thread that observed the yield. A completion resumed by
+            // whatever thread observed the yield would break exactly this
             // invariant: two OS threads inside one lua_State.
             // fork_task_atom is deliberately NOT
             // passed through: a fork enqueued by a still synchronous on_init
@@ -3481,10 +3472,6 @@ uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
     Impl::PendingCall pc;
     pc.session = session;
     pc.caller_co = caller_co;
-    // Arm the yield handshake: until the driving thread observes LUA_YIELD,
-    // resume_caller must not touch the coroutine — it re-enqueues the
-    // response through the caller actor instead (see CallYieldSync).
-    pc.yield_sync = std::make_shared<Impl::CallYieldSync>();
     // Anchor the caller coroutine against GC while it is suspended.
     lua_pushthread(caller_co);
     pc.caller_anchor = luaL_ref(caller_co, LUA_REGISTRYINDEX);
@@ -3872,27 +3859,16 @@ void LuaServiceManager::note_coroutine_finished(lua_State* co) {
     impl_->live_coroutines.erase(co);
 }
 
-void LuaServiceManager::mark_call_yielded(lua_State* co) {
-    if (co == nullptr) {
-        return;  // GCOVR_EXCL_LINE (defensive null guard: every call site
-    }  // passes a coroutine suspended by our own wrappers)
+LuaServiceManager::DrivingGuard::DrivingGuard(LuaServiceManager& mgr,
+                                              lua_State* c)
+    : manager(mgr), co(c) {
+    std::unique_lock lock(manager.impl_->registry_mutex);
+    manager.impl_->driving_cos.insert(co);
+}
 
-    // The driving thread observed LUA_YIELD: every suspension this coroutine
-    // registered is now safe to resume from any thread. There is at most one
-    // unsatisfied suspension per coroutine (the wrappers yield serially), but
-    // marking all matching entries is harmless — completed sessions are
-    // already erased from pending_calls. Resume sources that hit the yield
-    // window re-enqueue their response instead of waiting here, so marking
-    // does not hand anything out: the re-enqueued message is processed on
-    // the caller actor thread after the yield, where the resume belongs.
-    std::shared_lock lock(impl_->registry_mutex);
-    for (auto& [session, pc] : impl_->pending_calls) {
-        if (pc.caller_co == co && pc.yield_sync != nullptr) {
-            std::lock_guard sync_lock(pc.yield_sync->mtx);
-            pc.yield_sync->yielded = true;
-            pc.yield_sync->cv.notify_all();
-        }
-    }
+LuaServiceManager::DrivingGuard::~DrivingGuard() {
+    std::unique_lock lock(manager.impl_->registry_mutex);
+    manager.impl_->driving_cos.erase(co);
 }
 
 void LuaServiceManager::resume_caller(uint64_t session, bool ok,
@@ -3916,38 +3892,36 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
         }
         caller_service = &it->second.caller_service;
 
-        // Yield-window guard: if the caller has not reached its
-        // coroutine.yield() yet, it is still running on the thread that
-        // registered the suspension (lua_status LUA_OK with live frames —
-        // the "normal" coroutine state). Resuming it now would fail
-        // ("cannot resume running coroutine"), and parking the completion
-        // for mark_call_yielded to hand out is not an option either: the
-        // parked resume would run on whatever thread observes the yield —
-        // for an on_init coroutine that is the spawning thread, which must
-        // keep exclusive access to the VM against the caller actor's
-        // pre-init pass-through handlers (timer fires, other call
-        // responses). Instead re-enqueue the response onto the caller
+        // Yield-window guard, driving-phase edition: if the caller is
+        // currently registered in driving_cos, some OS thread is inside the
+        // VM on it (it registered this very suspension from within its own
+        // running frame and has not reached coroutine.yield() yet). Resuming
+        // it now would fail, and peeking at its Lua state to find out is a
+        // data race — so the decision reads only the mutex-ordered set.
+        // Instead of waiting, re-enqueue the response onto the caller
         // actor's mailbox: the requeued message is processed on the caller
-        // actor thread after the driving thread has yielded the coroutine,
-        // so every lua_resume stays on the actor that owns it.
+        // actor thread after the driving thread has yielded the coroutine
+        // (the registration is gone by then), so every lua_resume stays on
+        // the actor that owns it — including an on_init coroutine's, whose
+        // yield window would otherwise tempt a spawn-thread resume while
+        // the caller actor's pre-init pass-through handlers touch the VM.
         //
         // A coroutine the Lua layer drives itself (timer/fork callbacks,
         // user coroutine.wrap threads nested under a handler) yields inside
         // Lua — control jumps straight back to the calling Lua frame and no
-        // C++ code observes LUA_YIELD for it. For those the guard sees a
-        // suspended coroutine (the driver thread is busy inside *this*
-        // message handler and the yield is long done), so the resume
-        // proceeds immediately with no wait — the historical blind
+        // C++ code observes LUA_YIELD for it. For those the registration is
+        // already gone when the response arrives (the driver thread is busy
+        // inside *this* message handler and the yield is long done), so the
+        // resume proceeds immediately with no wait — the historical blind
         // handshake wait is gone.
-        lua_Debug ar;
+        //
         // GCOVR_EXCL_START (the requeue arm is a race window: within one
         // actor, messages are serial, so a response processed while the
-        // coroutine still runs only happens during spawn's on_init driving,
-        // a microsecond-scale window no unit test can pin. End-to-end
-        // correctness of the window is covered by the on_init call suites,
-        // e.g. CallErrorCodesAreStable.)
-        if (lua_status(caller_co) == LUA_OK &&
-            lua_getstack(caller_co, 0, &ar) > 0) {
+        // driver is still registered only happens during spawn's on_init
+        // driving, a microsecond-scale window no unit test can pin.
+        // End-to-end correctness of the window is covered by the on_init
+        // call suites, e.g. CallErrorCodesAreStable.)
+        if (impl_->driving_cos.contains(caller_co)) {
             auto actor_it = impl_->service_actors.find(*caller_service);
             if (actor_it != impl_->service_actors.end() &&
                 it->second.requeues < 20) {
@@ -3955,16 +3929,16 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
                 ++it->second.requeues;
                 // Slide the timeout deadline so a concurrently expiring
                 // check_call_timeouts pass does not re-enqueue this
-                // response every tick while the coroutine is still running.
+                // response every tick while the driver is still registered.
                 it->second.deadline_ms += 50;
                 caller_actor = actor_it->second;
             }
             // GCOVR_EXCL_STOP
-            // else: no caller actor to route through (primitive-level
-            // tests, actor already stopped) or the requeue cap tripped (a
-            // caller that never yields) — fall through to the erase path,
-            // which drops the response exactly like the historical 5s
-            // handshake wait's failure path left it.
+            // else: no caller actor to route through (actor already
+            // stopped) or the requeue cap tripped (a caller that never
+            // yields) — fall through to the erase path, which drops the
+            // response exactly like the historical 5s handshake wait's
+            // failure path left it.
         }
     }
 
@@ -4011,6 +3985,8 @@ void LuaServiceManager::resume_suspended_caller(
     // every suspend_for_call issued after the first resume records an empty
     // caller_service and the next completion cannot route back.
     Impl::DispatchScope scope(*impl_, caller_service, "", false);
+    // Register the driving phase for the resume span (see driving_cos).
+    DrivingGuard driving(*this, caller_co);
     lua_pushboolean(caller_co, ok ? 1 : 0);
     int nargs = 1;
     if (values.is_array()) {
@@ -4065,9 +4041,9 @@ void LuaServiceManager::resume_suspended_caller(
         luaL_unref(caller_co, LUA_REGISTRYINDEX, caller_anchor);
     }
     // The re-yield may correspond to a nested suspension (e.g. the handler
-    // issued another shield.call): re-arm the handshake for its next resume
-    // source.
-    mark_call_yielded(caller_co);
+    // issued another shield.call): its next resume source routes through
+    // resume_caller again, whose driving-phase guard sees the registration
+    // already gone.
 }
 
 int LuaServiceManager::check_call_timeouts(int64_t now_ms) {

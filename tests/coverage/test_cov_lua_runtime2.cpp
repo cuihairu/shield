@@ -453,7 +453,8 @@ return M
             .success);
     auto svc =
         manager.spawn(caller, R"({"name":"caller","args":{},"config":{}})");
-    BOOST_REQUIRE(svc.success);
+    BOOST_REQUIRE_MESSAGE(svc.success,
+                          "spawn caller failed: " + svc.error_message);
 
     CallResult res;
     for (int i = 0; i < 100; ++i) {

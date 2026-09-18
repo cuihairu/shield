@@ -1185,13 +1185,14 @@ BOOST_AUTO_TEST_CASE(SuspendResumePrimitives) {
 }
 
 // ---------------------------------------------------------------------------
-// Yield-window guard: a completion arriving while the caller coroutine is
-// still running on its driving thread must never be resumed in place (that
-// would fail with "cannot resume running coroutine") and never waited on.
-// resume_caller re-enqueues the response through the caller actor's mailbox;
-// with no caller actor registered (this primitive-level case) it falls
-// through to the erase path, dropping the response while leaving the
-// coroutine untouched and recoverable.
+// Yield-window guard, driving-phase edition: a completion arriving while the
+// caller's driving registration (LuaServiceManager::DrivingGuard) is held
+// must never be resumed in place (that would fail with "cannot resume
+// running coroutine") and never waited on. resume_caller re-enqueues the
+// response through the caller actor's mailbox; with no caller actor
+// registered (this primitive-level case) it falls through to the erase
+// path, dropping the response while leaving the running coroutine untouched
+// and recoverable.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -1238,19 +1239,22 @@ BOOST_AUTO_TEST_CASE(YieldWindowDropWithoutCallerActor) {
     lua_State* co = lua_newthread(lua.lua_state());
     lua_pushcfunction(co, parked_body);
 
-    // Drive the body on a helper thread: it is "running elsewhere" (LUA_OK
-    // with live frames) from the moment it starts until its yield.
+    // Drive the body on a helper thread; while it spins, hold the driving
+    // registration just like a production resume source would around its
+    // lua_resume span (the registration is what production drivers hold
+    // while the coroutine runs inside the VM).
     std::thread driver([&]() {
         int nres = 0;
+        LuaServiceManager::DrivingGuard driving(manager, co);
         lua_resume(co, nullptr, 0, &nres);  // stops inside lua_yield
     });
     while (!g_parked_body_running.load(std::memory_order_acquire)) {
         std::this_thread::yield();
     }
-    // The body is spinning: the coroutine is running on the driver thread
-    // and no caller actor exists for it, so the completion cannot be
-    // routed anywhere. resume_caller must return promptly (no wait) and
-    // leave the running coroutine untouched.
+    // The body is spinning with the driving registration held and no
+    // caller actor exists for the entry, so the completion cannot be
+    // routed anywhere. resume_caller must return promptly (no wait, no
+    // Lua-state peek) and fall through to the erase path.
     uint64_t session = manager.suspend_for_call(co, 10000);
     manager.resume_caller(session, true, nlohmann::json::array({42}));
 
@@ -1259,16 +1263,13 @@ BOOST_AUTO_TEST_CASE(YieldWindowDropWithoutCallerActor) {
     BOOST_CHECK_EQUAL(manager.check_call_timeouts(INT64_MAX), 0);
 
     // Release the body: it reaches its yield (a suspension no C++ code
-    // observed) and stays suspended — the coroutine is intact and its
-    // yield_sync handshake was never disturbed.
+    // observed) and stays suspended — the guard releases with the driver.
     g_parked_gate.store(1, std::memory_order_release);
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    manager.mark_call_yielded(co);
     driver.join();
 
-    // The test itself is the recovery source: resuming delivers the
-    // payload to the continuation, proving the dropped completion never
-    // corrupted the coroutine state.
+    // The test itself is the recovery source: resuming after the driving
+    // registration is gone delivers the payload to the continuation,
+    // proving the dropped completion never corrupted the coroutine state.
     lua_pushboolean(co, 1);
     lua_pushinteger(co, 42);
     int nres = 0;
