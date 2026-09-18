@@ -613,22 +613,51 @@ BOOST_AUTO_TEST_CASE(LuaSnapshotAndDiffCommands) {
     BOOST_CHECK_EQUAL(resp["data"]["delta"]["requests"], 0);
     BOOST_CHECK_EQUAL(resp["data"]["delta"]["memory_kb"], 0);
     BOOST_CHECK(resp["data"]["delta"]["uptime_seconds"].get<double>() >= 0.0);
+
+    // The third argument opts the capture into the owner-thread refs walk.
+    // Same-name refresh replaces the stored entry, so the plain capture
+    // above is overwritten by a refs-sampled one.
+    dispatcher.dispatch(harness.session, "lua.snapshot svc base refs");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["refs"].is_object());
+    BOOST_CHECK(resp["data"]["refs"]["counts"]["tables"] >= 1);
+    // A fourth argument (anything but exactly "refs") surfaces usage.
+    dispatcher.dispatch(harness.session, "lua.snapshot svc x extra");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("Usage") !=
+                std::string::npos);
+    // Diff between refs-sampled ends carries the refs delta object.
+    dispatcher.dispatch(harness.session, "lua.snapshot svc base2 refs");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    dispatcher.dispatch(harness.session, "lua.diff svc base base2");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["delta"]["refs"].is_object());
+    BOOST_CHECK_EQUAL(resp["data"]["delta"]["refs"]["counts"]["tables"], 0);
 }
 
 BOOST_AUTO_TEST_CASE(InspectSnapshotRingAndTeardown) {
     std::string err;
     // Manager-level guard: an unpublished name refuses to capture.
-    auto bad = manager->capture_inspect_snapshot("ghost_svc", "g1", &err);
+    auto bad =
+        manager->capture_inspect_snapshot("ghost_svc", "g1", false, &err);
     BOOST_CHECK(!bad.has_value());
     BOOST_CHECK(err.find("not published") != std::string::npos);
 
     // Ring bound: 9 auto captures keep only the last 8, so the oldest
     // (snap-A below) is gone by the end.
     const std::string first =
-        (*manager->capture_inspect_snapshot("svc", "", &err))["name"];
+        (*manager->capture_inspect_snapshot("svc", "", false, &err))["name"];
     for (int i = 0; i < 8; ++i) {
-        BOOST_REQUIRE(
-            manager->capture_inspect_snapshot("svc", "", &err).has_value());
+        BOOST_REQUIRE(manager->capture_inspect_snapshot("svc", "", false, &err)
+                          .has_value());
     }
     auto gone = manager->diff_inspect_snapshots("svc", first, first, &err);
     BOOST_CHECK(!gone.has_value());
@@ -650,8 +679,8 @@ BOOST_AUTO_TEST_CASE(InspectSnapshotRingAndTeardown) {
         }
     }
     BOOST_REQUIRE(published);
-    BOOST_REQUIRE(
-        manager->capture_inspect_snapshot("svc_l2", "s1", &err).has_value());
+    BOOST_REQUIRE(manager->capture_inspect_snapshot("svc_l2", "s1", false, &err)
+                      .has_value());
     manager->exit("svc_l2");
     bool exited = false;
     for (int i = 0; i < 200 && !exited; ++i) {
@@ -714,8 +743,8 @@ BOOST_AUTO_TEST_CASE(InspectSnapshotCapturesLiveState) {
     BOOST_REQUIRE(live);
 
     std::string err;
-    const auto snap =
-        manager->capture_inspect_snapshot(busy_svc.service_id, "live", &err);
+    const auto snap = manager->capture_inspect_snapshot(busy_svc.service_id,
+                                                        "live", false, &err);
     BOOST_REQUIRE(snap.has_value());
     BOOST_CHECK_GE((*snap)["timers"].get<std::uint64_t>(), 1u);
     BOOST_CHECK_GE((*snap)["coroutines"].get<std::uint64_t>(), 1u);
@@ -921,6 +950,191 @@ BOOST_AUTO_TEST_CASE(InspectRefsDispatchTimeout) {
 
     // Let the busy handler finish so teardown does not race it.
     std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot object-graph extension: with_refs captures, refs delta in diff,
+// and the busy-owner refs_error record.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(InspectSnapshotWithRefsAndDiff) {
+    // The module grows and shrinks a subtable between captures so the refs
+    // delta has real movement: M.box gains three leaf tables, then goes
+    // away (driven over fire-and-forget sends, polled through captures).
+    const fs::path mut = fs::temp_directory_path() / "shield_cov_l2_mut.lua";
+    std::ofstream(mut) << "local M = {}\n"
+                          "function M.grow(ctx)\n"
+                          "  M.box = {}\n"
+                          "  for i = 1, 3 do M.box['leaf' .. i] = {} end\n"
+                          "  return 'grown'\n"
+                          "end\n"
+                          "function M.shrink(ctx)\n"
+                          "  M.box = nil\n"
+                          "  return 'shrunk'\n"
+                          "end\n"
+                          "return M\n";
+    auto spawned = manager->spawn(
+        mut.string(), R"({"name":"svc_mut","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = !manager->query_service("svc_mut").empty();
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    std::string err;
+    // A plain capture keeps refs null and records no error.
+    const auto plain =
+        manager->capture_inspect_snapshot("svc_mut", "p0", false, &err);
+    BOOST_REQUIRE(plain.has_value());
+    BOOST_CHECK((*plain)["refs"].is_null());
+    BOOST_CHECK(!plain->contains("refs_error"));
+
+    // Base capture with refs: M alone (the module has no on_init).
+    const auto base =
+        manager->capture_inspect_snapshot("svc_mut", "rb", true, &err);
+    BOOST_REQUIRE_MESSAGE(base.has_value(), err);
+    BOOST_REQUIRE((*base)["refs"].is_object());
+    const std::int64_t base_tables =
+        (*base)["refs"]["counts"]["tables"].get<std::int64_t>();
+    BOOST_CHECK_GE(base_tables, 1);
+    BOOST_CHECK((*base)["refs"]["counts"]["tables"] >= 1);
+    BOOST_CHECK(!base->contains("refs_error"));
+    BOOST_CHECK((*base)["refs"]["top_tables"].is_array());
+
+    // Grow the module on the owner thread, then poll captures (same-name
+    // overwrite keeps the ring bounded) until the growth shows up.
+    BOOST_REQUIRE(manager->send("svc_mut", "grow", nlohmann::json::array()));
+    std::optional<nlohmann::json> grown;
+    for (int i = 0; i < 200 && !grown.has_value(); ++i) {
+        auto attempt =
+            manager->capture_inspect_snapshot("svc_mut", "rg", true, &err);
+        BOOST_REQUIRE_MESSAGE(attempt.has_value(), err);
+        if ((*attempt)["refs"]["counts"]["tables"].get<std::int64_t>() >=
+            base_tables + 4) {
+            grown = std::move(attempt);
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(grown.has_value());
+    // M.box plus its three leaves on top of the baseline count.
+    BOOST_CHECK_EQUAL((*grown)["refs"]["counts"]["tables"].get<std::int64_t>(),
+                      base_tables + 4);
+
+    // Diff base vs grown: tables delta +4, M.box reported added.
+    auto d1 = manager->diff_inspect_snapshots("svc_mut", "rb", "rg", &err);
+    BOOST_REQUIRE_MESSAGE(d1.has_value(), err);
+    BOOST_CHECK((*d1)["delta"]["refs"].is_object());
+    BOOST_CHECK_EQUAL(
+        (*d1)["delta"]["refs"]["counts"]["tables"].get<std::int64_t>(), 4);
+    const auto& tops = (*d1)["delta"]["refs"]["top_tables"];
+    BOOST_REQUIRE(tops.is_array());
+    bool box_added = false;
+    for (const auto& t : tops) {
+        if (t["path"] == "M.box") {
+            BOOST_CHECK_EQUAL(t["change"], "added");
+            BOOST_CHECK_EQUAL(t["entries"], 3u);
+            box_added = true;
+        }
+    }
+    BOOST_CHECK(box_added);
+
+    // Shrink, capture, diff again: M.box removed, tables back to baseline.
+    BOOST_REQUIRE(manager->send("svc_mut", "shrink", nlohmann::json::array()));
+    std::optional<nlohmann::json> shrunk;
+    for (int i = 0; i < 200 && !shrunk.has_value(); ++i) {
+        auto attempt =
+            manager->capture_inspect_snapshot("svc_mut", "rs", true, &err);
+        BOOST_REQUIRE_MESSAGE(attempt.has_value(), err);
+        if ((*attempt)["refs"]["counts"]["tables"].get<std::int64_t>() ==
+            base_tables) {
+            shrunk = std::move(attempt);
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(shrunk.has_value());
+    auto d2 = manager->diff_inspect_snapshots("svc_mut", "rg", "rs", &err);
+    BOOST_REQUIRE_MESSAGE(d2.has_value(), err);
+    BOOST_CHECK_EQUAL(
+        (*d2)["delta"]["refs"]["counts"]["tables"].get<std::int64_t>(), -4);
+    const auto& tops2 = (*d2)["delta"]["refs"]["top_tables"];
+    bool box_removed = false;
+    for (const auto& t : tops2) {
+        if (t["path"] == "M.box") {
+            BOOST_CHECK_EQUAL(t["change"], "removed");
+            box_removed = true;
+        }
+    }
+    BOOST_CHECK(box_removed);
+
+    // Mixed ends (plain vs refs-sampled) refuse to invent a baseline:
+    // delta.refs is null.
+    auto d3 = manager->diff_inspect_snapshots("svc_mut", "p0", "rb", &err);
+    BOOST_REQUIRE_MESSAGE(d3.has_value(), err);
+    BOOST_CHECK((*d3)["delta"]["refs"].is_null());
+
+    manager->exit("svc_mut");
+    bool exited = false;
+    for (int i = 0; i < 200 && !exited; ++i) {
+        exited = manager->query_service("svc_mut").empty();
+        if (!exited) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(exited);
+}
+
+// A capture with refs against a service wedged in a synchronous handler
+// still freezes its L1 gauges; the graph sample lapses after the same 2s
+// bounded wait and is recorded as refs_error on the stored snapshot.
+BOOST_AUTO_TEST_CASE(InspectSnapshotRefsBusyOwnerRecordsError) {
+    const fs::path churn2 =
+        fs::temp_directory_path() / "shield_cov_l2_churn2.lua";
+    std::ofstream(churn2) << "local M = {}\n"
+                             "function M.churn(ctx)\n"
+                             "  local t0 = os.clock()\n"
+                             "  while os.clock() - t0 < 6 do end\n"
+                             "  return 'done'\n"
+                             "end\n"
+                             "return M\n";
+    auto spawned = manager->spawn(
+        churn2.string(), R"({"name":"svc_churn2","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = !manager->query_service("svc_churn2").empty();
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    BOOST_REQUIRE(
+        manager->send("svc_churn2", "churn", nlohmann::json::array()));
+
+    std::string err;
+    const auto snap =
+        manager->capture_inspect_snapshot("svc_churn2", "busy", true, &err);
+    BOOST_REQUIRE_MESSAGE(snap.has_value(), err);
+    // Gauges still captured; the graph sample is not.
+    BOOST_CHECK((*snap)["refs"].is_null());
+    BOOST_CHECK((*snap)["refs_error"].is_string());
+    BOOST_CHECK((*snap)["refs_error"].get<std::string>().find(
+                    "refs dispatch timeout") != std::string::npos);
+    // And the record survives into the stored JSON (read back via diff).
+    const auto d =
+        manager->diff_inspect_snapshots("svc_churn2", "busy", "busy", &err);
+    BOOST_REQUIRE_MESSAGE(d.has_value(), err);
+    BOOST_CHECK((*d)["a"]["refs"].is_null());
+    BOOST_CHECK((*d)["a"]["refs_error"].get<std::string>().find(
+                    "refs dispatch timeout") != std::string::npos);
+
+    // Let the busy handler finish so teardown does not race it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(5000));
 }
 
 // ---------------------------------------------------------------------------

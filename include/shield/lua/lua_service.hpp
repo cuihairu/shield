@@ -260,11 +260,17 @@ public:
 
     // Capture the current gauges under `name` (auto-named "snap-N" when
     // empty; capturing an existing name replaces that entry). Each service
-    // keeps its last 8 snapshots. Returns the stored snapshot JSON, or
-    // nullopt with `error` set when `service_id` is not a published
-    // service.
+    // keeps its last 8 snapshots. With `with_refs` the capture also
+    // snapshots the owner-thread object-graph summary (lua.inspect <svc>
+    // refs projection): the gauges are frozen under the registry lock
+    // first, then the walk is dispatched to the owning service actor with
+    // the same 2s bounded wait as inspect_refs — a busy owner records
+    // `refs_error` on the stored snapshot instead of failing the capture.
+    // The stored JSON carries "refs": null unless captured. Returns the
+    // stored snapshot JSON, or nullopt with `error` set when `service_id`
+    // is not a published service.
     std::optional<nlohmann::json> capture_inspect_snapshot(
-        const std::string& service_id, const std::string& name,
+        const std::string& service_id, const std::string& name, bool with_refs,
         std::string* error);
 
     // Compare two stored snapshots by name. Returns {a, b, delta} where

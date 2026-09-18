@@ -297,13 +297,17 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
 
 void LuaCommands::cmd_snapshot(shield::net::ConsoleSession& session,
                                const std::vector<std::string>& args) {
-    if (args.empty()) {
+    if (args.empty() || args.size() > 3 ||
+        (args.size() == 3 && args[2] != "refs")) {
         nlohmann::json resp = {
             {"type", "error"},
-            {"message", "Usage: lua.snapshot <service> [name]"}};
+            {"message", "Usage: lua.snapshot <service> [name] [refs]"}};
         session.send_line(resp.dump());
         return;
     }
+    // The third argument opts the capture into an owner-thread object-graph
+    // walk (lua.inspect <svc> refs projection, 2s bounded dispatch wait).
+    const bool with_refs = args.size() == 3;
     // An unresolved name and an incarnation that left the registry between
     // the two locked reads both surface as "not found".
     const std::string service_id = lua_mgr_.query_service(args[0]);
@@ -313,7 +317,7 @@ void LuaCommands::cmd_snapshot(shield::net::ConsoleSession& session,
             ? std::optional<nlohmann::json>{}
             : lua_mgr_.capture_inspect_snapshot(
                   service_id, args.size() > 1 ? args[1] : std::string(),
-                  &error);
+                  with_refs, &error);
     if (!snap.has_value()) {
         nlohmann::json resp = {{"type", "error"},
                                {"message", "Service not found: " + args[0]}};

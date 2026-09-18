@@ -522,6 +522,25 @@ struct LuaServiceManager::Impl {
     // copies of a service's L1 gauges. Bounded ring per service; entries
     // die with the incarnation (teardown drops the deque).
     struct InspectSnapshot {
+        // Owner-thread object-graph summary, captured only when the caller
+        // asks (with_refs): flat counts mirror the walk_module_refs JSON so
+        // a diff can produce per-field deltas, and top_tables keeps the
+        // walk's path/entries pairs in report order.
+        struct RefsSummary {
+            std::int64_t nodes_visited = 0;
+            bool truncated = false;
+            std::int64_t tables = 0;
+            std::int64_t functions = 0;
+            std::int64_t userdata = 0;
+            std::int64_t coroutines = 0;
+            std::int64_t strings = 0;
+            std::int64_t string_bytes = 0;
+            struct TopTable {
+                std::string path;
+                std::int64_t entries = 0;
+            };
+            std::vector<TopTable> top_tables;
+        };
         std::string name;
         std::int64_t wall_ms = 0;
         std::uint64_t requests = 0;
@@ -532,24 +551,57 @@ struct LuaServiceManager::Impl {
         std::size_t coroutines = 0;
         std::size_t timers = 0;
         double uptime_seconds = 0.0;
+        // Absent unless the capture asked for refs — ring entries stay
+        // cheap by default. refs_error records an owner-busy timeout (the
+        // gauges are still captured; the graph is simply not sampled).
+        std::optional<RefsSummary> refs;
+        std::string refs_error;
     };
     static constexpr std::size_t kInspectSnapshotsPerService = 8;
     std::map<std::string, std::deque<InspectSnapshot>> inspect_snapshots;
     std::uint64_t next_snapshot_seq = 0;
 
+    // Read-only JSON form of the refs summary (null when not captured).
+    static nlohmann::json refs_summary_to_json(
+        const InspectSnapshot::RefsSummary& r) {
+        nlohmann::json top = nlohmann::json::array();
+        for (const auto& t : r.top_tables) {
+            top.push_back({{"path", t.path}, {"entries", t.entries}});
+        }
+        return nlohmann::json{{"nodes_visited", r.nodes_visited},
+                              {"truncated", r.truncated},
+                              {"counts",
+                               {{"tables", r.tables},
+                                {"functions", r.functions},
+                                {"userdata", r.userdata},
+                                {"coroutines", r.coroutines},
+                                {"strings", r.strings},
+                                {"string_bytes", r.string_bytes}}},
+                              {"top_tables", std::move(top)}};
+    }
+
     // Read-only JSON form of a stored L2 snapshot (capture echoes it back;
     // diff embeds both ends plus the delta).
     static nlohmann::json snapshot_to_json(const InspectSnapshot& s) {
-        return nlohmann::json{{"name", s.name},
-                              {"wall_ms", s.wall_ms},
-                              {"requests", s.requests},
-                              {"errors", s.errors},
-                              {"memory_kb", s.memory_kb},
-                              {"pending_calls", s.pending_calls},
-                              {"pending_tasks", s.pending_tasks},
-                              {"coroutines", s.coroutines},
-                              {"timers", s.timers},
-                              {"uptime_seconds", s.uptime_seconds}};
+        nlohmann::json refs = nullptr;
+        if (s.refs.has_value()) {
+            refs = refs_summary_to_json(*s.refs);
+        }
+        nlohmann::json j = {{"name", s.name},
+                            {"wall_ms", s.wall_ms},
+                            {"requests", s.requests},
+                            {"errors", s.errors},
+                            {"memory_kb", s.memory_kb},
+                            {"pending_calls", s.pending_calls},
+                            {"pending_tasks", s.pending_tasks},
+                            {"coroutines", s.coroutines},
+                            {"timers", s.timers},
+                            {"uptime_seconds", s.uptime_seconds},
+                            {"refs", std::move(refs)}};
+        if (!s.refs_error.empty()) {
+            j["refs_error"] = s.refs_error;
+        }
+        return j;
     }
 
     // Per-service consecutive error counter for panic detection.
@@ -2962,69 +3014,129 @@ std::optional<nlohmann::json> LuaServiceManager::service_detail(
 }
 
 std::optional<nlohmann::json> LuaServiceManager::capture_inspect_snapshot(
-    const std::string& service_id, const std::string& name,
+    const std::string& service_id, const std::string& name, bool with_refs,
     std::string* error) {
-    std::unique_lock lock(impl_->registry_mutex);
-    // Published services only: a name still in on_init or already exited
-    // has no gauges worth freezing (same scope as service_detail).
-    if (!impl_->services.contains(service_id)) {
-        if (error) {
-            *error = "service not published: " + service_id;
+    std::string stored_name;
+    nlohmann::json plain;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        // Published services only: a name still in on_init or already exited
+        // has no gauges worth freezing (same scope as service_detail).
+        if (!impl_->services.contains(service_id)) {
+            if (error) {
+                *error = "service not published: " + service_id;
+            }
+            return std::nullopt;
         }
-        return std::nullopt;
+        auto& deque = impl_->inspect_snapshots[service_id];
+        stored_name = name.empty()
+                          ? "snap-" + std::to_string(++impl_->next_snapshot_seq)
+                          : name;
+        // A same-name capture replaces the stored entry (a refresh, not a new
+        // sample); auto names never collide.
+        for (auto it = deque.begin(); it != deque.end(); ++it) {
+            if (it->name == stored_name) {
+                deque.erase(it);
+                break;
+            }
+        }
+        Impl::InspectSnapshot snap;
+        snap.name = stored_name;
+        snap.wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count();
+        if (auto it = impl_->service_counters.find(service_id);
+            it != impl_->service_counters.end()) {
+            snap.requests =
+                it->second->requests.load(std::memory_order_relaxed);
+            snap.errors = it->second->errors.load(std::memory_order_relaxed);
+            snap.memory_kb =
+                it->second->memory_kb.load(std::memory_order_relaxed);
+            snap.uptime_seconds =
+                // GCOVR_EXCL_START (duration expression continuation attributed
+                // to no arc; the field itself is asserted by tests)
+                std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                              it->second->spawned_at)
+                    // GCOVR_EXCL_STOP
+                    .count();
+        }
+        if (auto it = impl_->actor_timers_by_service.find(service_id);
+            it != impl_->actor_timers_by_service.end()) {
+            snap.timers = it->second.size();
+        }
+        snap.pending_calls = static_cast<std::uint64_t>(std::count_if(
+            impl_->pending_calls.begin(), impl_->pending_calls.end(),
+            [&service_id](const decltype(impl_->pending_calls)::value_type& e) {
+                return e.second.caller_service == service_id;
+            }));
+        // task_mutex nests inside registry_mutex in this direction only.
+        snap.pending_tasks = pending_task_count(service_id);
+        snap.coroutines = static_cast<std::uint64_t>(std::count_if(
+            impl_->live_coroutines.begin(), impl_->live_coroutines.end(),
+            [&service_id](
+                const decltype(impl_->live_coroutines)::value_type& e) {
+                return e.second == service_id;
+            }));
+        deque.push_back(std::move(snap));
+        // Bounded ring: the oldest sample falls off first.
+        if (deque.size() > Impl::kInspectSnapshotsPerService) {
+            deque.pop_front();
+        }
+        plain = Impl::snapshot_to_json(deque.back());
     }
-    auto& deque = impl_->inspect_snapshots[service_id];
-    const std::string stored_name =
-        name.empty() ? "snap-" + std::to_string(++impl_->next_snapshot_seq)
-                     : name;
-    // A same-name capture replaces the stored entry (a refresh, not a new
-    // sample); auto names never collide.
-    for (auto it = deque.begin(); it != deque.end(); ++it) {
-        if (it->name == stored_name) {
-            deque.erase(it);
-            break;
+
+    // The refs walk leaves the registry lock: inspect_refs re-checks
+    // publication and dispatches onto the owner actor thread with a 2s
+    // bounded wait — holding registry_mutex across that would freeze every
+    // registry reader (console, dispatch, teardown).
+    if (with_refs) {
+        std::string refs_error;
+        std::optional<nlohmann::json> refs =
+            inspect_refs(service_id, 4, 20000, &refs_error);
+        std::unique_lock lock(impl_->registry_mutex);
+        // Patch the stored entry by name: a concurrent same-name capture
+        // replaces the entry, so the newest match is the right target. If
+        // the incarnation left (deque dropped) the patch is silently
+        // skipped — the returned JSON just keeps refs null.
+        auto ring_it = impl_->inspect_snapshots.find(service_id);
+        if (ring_it != impl_->inspect_snapshots.end()) {
+            for (auto it = ring_it->second.rbegin();
+                 it != ring_it->second.rend(); ++it) {
+                if (it->name == stored_name) {
+                    if (refs.has_value()) {
+                        Impl::InspectSnapshot::RefsSummary summary;
+                        summary.nodes_visited =
+                            (*refs)["nodes_visited"].get<std::int64_t>();
+                        summary.truncated = (*refs)["truncated"].get<bool>();
+                        const auto& counts = (*refs)["counts"];
+                        summary.tables = counts["tables"].get<std::int64_t>();
+                        summary.functions =
+                            counts["functions"].get<std::int64_t>();
+                        summary.userdata =
+                            counts["userdata"].get<std::int64_t>();
+                        summary.coroutines =
+                            counts["coroutines"].get<std::int64_t>();
+                        summary.strings = counts["strings"].get<std::int64_t>();
+                        summary.string_bytes =
+                            counts["string_bytes"].get<std::int64_t>();
+                        for (const auto& t : (*refs)["top_tables"]) {
+                            summary.top_tables.push_back(
+                                {t["path"].get<std::string>(),
+                                 t["entries"].get<std::int64_t>()});
+                        }
+                        it->refs = std::move(summary);
+                        it->refs_error.clear();
+                    } else {
+                        it->refs_error = refs_error;
+                    }
+                    // Echo the patched entry back to the caller.
+                    plain = Impl::snapshot_to_json(*it);
+                    break;
+                }
+            }
         }
     }
-    Impl::InspectSnapshot snap;
-    snap.name = stored_name;
-    snap.wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                       std::chrono::system_clock::now().time_since_epoch())
-                       .count();
-    if (auto it = impl_->service_counters.find(service_id);
-        it != impl_->service_counters.end()) {
-        snap.requests = it->second->requests.load(std::memory_order_relaxed);
-        snap.errors = it->second->errors.load(std::memory_order_relaxed);
-        snap.memory_kb = it->second->memory_kb.load(std::memory_order_relaxed);
-        snap.uptime_seconds =
-            // GCOVR_EXCL_START (duration expression continuation attributed
-            // to no arc; the field itself is asserted by tests)
-            std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                          it->second->spawned_at)
-                // GCOVR_EXCL_STOP
-                .count();
-    }
-    if (auto it = impl_->actor_timers_by_service.find(service_id);
-        it != impl_->actor_timers_by_service.end()) {
-        snap.timers = it->second.size();
-    }
-    snap.pending_calls = static_cast<std::uint64_t>(std::count_if(
-        impl_->pending_calls.begin(), impl_->pending_calls.end(),
-        [&service_id](const decltype(impl_->pending_calls)::value_type& e) {
-            return e.second.caller_service == service_id;
-        }));
-    // task_mutex nests inside registry_mutex in this direction only.
-    snap.pending_tasks = pending_task_count(service_id);
-    snap.coroutines = static_cast<std::uint64_t>(std::count_if(
-        impl_->live_coroutines.begin(), impl_->live_coroutines.end(),
-        [&service_id](const decltype(impl_->live_coroutines)::value_type& e) {
-            return e.second == service_id;
-        }));
-    deque.push_back(std::move(snap));
-    // Bounded ring: the oldest sample falls off first.
-    if (deque.size() > Impl::kInspectSnapshotsPerService) {
-        deque.pop_front();
-    }
-    return Impl::snapshot_to_json(deque.back());
+    return plain;
 }
 
 std::optional<nlohmann::json> LuaServiceManager::diff_inspect_snapshots(
@@ -3071,6 +3183,71 @@ std::optional<nlohmann::json> LuaServiceManager::diff_inspect_snapshots(
                        static_cast<std::int64_t>(sa->timers)},
         {"uptime_seconds", sb->uptime_seconds - sa->uptime_seconds}};
     // GCOVR_EXCL_STOP
+    // Object-graph delta only when both ends sampled refs: mixing a
+    // sampled end with an unsampled one would invent a baseline.
+    if (sa->refs.has_value() && sb->refs.has_value()) {
+        const auto& ra = *sa->refs;
+        const auto& rb = *sb->refs;
+        const auto i64_delta = [](std::int64_t va, std::int64_t vb) {
+            return vb - va;
+        };
+        // GCOVR_EXCL_START (braced-init aggregation artifact: same class as
+        // the delta initializer above — the element lines book 0)
+        nlohmann::json counts_delta = {
+            {"tables", i64_delta(ra.tables, rb.tables)},
+            {"functions", i64_delta(ra.functions, rb.functions)},
+            {"userdata", i64_delta(ra.userdata, rb.userdata)},
+            {"coroutines", i64_delta(ra.coroutines, rb.coroutines)},
+            {"strings", i64_delta(ra.strings, rb.strings)},
+            {"string_bytes", i64_delta(ra.string_bytes, rb.string_bytes)}};
+        // GCOVR_EXCL_STOP
+        // Top tables matched by path: both ends keep the walk's report
+        // order, so union on path with per-end presence flags. Added /
+        // removed tables carry their absolute entry count; matched ones
+        // carry the entries delta.
+        nlohmann::json top_delta = nlohmann::json::array();
+        for (const auto& tb : rb.top_tables) {
+            const Impl::InspectSnapshot::RefsSummary::TopTable* match = nullptr;
+            for (const auto& cand : ra.top_tables) {
+                if (cand.path == tb.path) {
+                    match = &cand;
+                    break;
+                }
+            }
+            if (match == nullptr) {
+                top_delta.push_back({{"path", tb.path},
+                                     {"change", "added"},
+                                     {"entries", tb.entries}});
+            } else {
+                top_delta.push_back(
+                    {{"path", tb.path},
+                     {"change", "delta"},
+                     {"entries", i64_delta(match->entries, tb.entries)}});
+            }
+        }
+        for (const auto& ta : ra.top_tables) {
+            bool present_b = false;
+            for (const auto& cand : rb.top_tables) {
+                if (cand.path == ta.path) {
+                    present_b = true;
+                    break;
+                }
+            }
+            if (!present_b) {
+                top_delta.push_back({{"path", ta.path},
+                                     {"change", "removed"},
+                                     {"entries", ta.entries}});
+            }
+        }
+        // GCOVR_EXCL_START (braced-init aggregation artifact)
+        delta["refs"] = {
+            {"nodes_visited", i64_delta(ra.nodes_visited, rb.nodes_visited)},
+            {"counts", std::move(counts_delta)},
+            {"top_tables", std::move(top_delta)}};
+        // GCOVR_EXCL_STOP
+    } else {
+        delta["refs"] = nullptr;
+    }
     return nlohmann::json{{"a", Impl::snapshot_to_json(*sa)},
                           {"b", Impl::snapshot_to_json(*sb)},
                           {"delta", std::move(delta)}};
