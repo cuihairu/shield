@@ -1072,6 +1072,18 @@ BOOST_AUTO_TEST_CASE(InspectPendingCallsTruncation) {
     // between the waves keeps cross-wave deadlines distinct while waits
     // inside one wave are stamped within the same millisecond with
     // overwhelming probability.
+    // The children sleep briefly in on_init: the spawn worker finishes one
+    // child per interval, so the wait pool drains slowly and stays above
+    // the truncation threshold for the whole assertion window.
+    const fs::path child =
+        fs::temp_directory_path() / "shield_cov_l2_tr_child.lua";
+    std::ofstream(child) << "local M = {}\n"
+                         << "function M.on_init(args)\n"
+                         << "  shield.sleep(300)\n"
+                         << "  return true\n"
+                         << "end\n"
+                         << "return M\n";
+
     const fs::path busy =
         fs::temp_directory_path() / "shield_cov_l2_tr_busy.lua";
     std::ofstream(busy) << "local M = {}\n"
@@ -1079,7 +1091,7 @@ BOOST_AUTO_TEST_CASE(InspectPendingCallsTruncation) {
                         << "function M.flood_a(ctx)\n"
                         << "  for i = 1, 18 do\n"
                         << "    W[#W + 1] = coroutine.wrap(function()\n"
-                        << "      shield.spawn('" << script_path.string()
+                        << "      shield.spawn('" << child.string()
                         << "', {name = 'tr_child_a_' .. i})\n"
                         << "    end)\n"
                         << "    W[#W]()\n"
@@ -1088,7 +1100,7 @@ BOOST_AUTO_TEST_CASE(InspectPendingCallsTruncation) {
                         << "function M.flood_b(ctx)\n"
                         << "  for i = 1, 18 do\n"
                         << "    W[#W + 1] = coroutine.wrap(function()\n"
-                        << "      shield.spawn('" << script_path.string()
+                        << "      shield.spawn('" << child.string()
                         << "', {name = 'tr_child_b_' .. i, timeout = 20000})\n"
                         << "    end)\n"
                         << "    W[#W]()\n"
@@ -1115,7 +1127,10 @@ BOOST_AUTO_TEST_CASE(InspectPendingCallsTruncation) {
         if (n > peak) {
             peak = n;
         }
-        flooded = n >= 33u;
+        // 35 gives the assertion window headroom: the worker drains one
+        // wait per child on_init sleep, so the pool stays above 33 through
+        // both the direct inspect and the console projection below.
+        flooded = n >= 35u;
     }
     BOOST_REQUIRE_MESSAGE(
         flooded, "expected 33+ pending waits, peak=" << peak << " err=" << err);
@@ -1158,7 +1173,13 @@ BOOST_AUTO_TEST_CASE(InspectPendingCallsTruncation) {
     BOOST_REQUIRE(resp["type"] == "result");
     BOOST_REQUIRE(resp["data"].contains("truncated"));
     BOOST_CHECK(resp["data"]["truncated"] == true);
-    BOOST_CHECK_EQUAL(resp["data"]["pending_calls"], (*calls)["pending_calls"]);
+    // The two reads race the live spawn-worker drain, so the totals may
+    // differ by a child or two between them; the projection must still see
+    // an overflowing pool, and its own total vs the capped list stays
+    // consistent within one read.
+    BOOST_CHECK_GE(resp["data"]["pending_calls"].get<std::uint64_t>(), 33u);
+    BOOST_CHECK_GE(resp["data"]["pending_calls"].get<std::uint64_t>(),
+                   resp["data"]["calls"].size());
 
     // No drain wait: the observation window already served its purpose, and
     // the explicit exit cancels the suspended waits and queued spawns (the

@@ -523,6 +523,16 @@ private:
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
+
+    // Drive the lua_resume of a caller coroutine already known to be
+    // suspended (resume_caller's yield-window guard passed). Shared by the
+    // direct path and by mark_call_yielded handing out a parked completion;
+    // the anchor and caller_service fields ride along because the pending
+    // entry has already been taken out of the registry.
+    void resume_suspended_caller(int caller_anchor,
+                                 const std::string& caller_service,
+                                 lua_State* caller_co, bool ok,
+                                 const nlohmann::json& values);
 };
 
 }  // namespace shield::lua

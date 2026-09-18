@@ -16,6 +16,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
@@ -1181,6 +1182,154 @@ BOOST_AUTO_TEST_CASE(SuspendResumePrimitives) {
     uint64_t s_late = manager.suspend_for_call(co_late, 1);
     std::this_thread::sleep_for(std::chrono::milliseconds(60));
     BOOST_CHECK_EQUAL(manager.check_call_timeouts(INT64_MAX), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Yield-window guard: a completion arriving while the caller coroutine is
+// still running on its driving thread must be parked and handed out by
+// mark_call_yielded, never waited on and never lost.
+// ---------------------------------------------------------------------------
+namespace {
+
+std::atomic<int> g_parked_gate{0};
+std::atomic<bool> g_parked_body_running{false};
+
+// The driver-thread body: spin until the test thread has parked a
+// completion against this (still running) coroutine, then yield. The
+// payload the parked completion resumes with is stashed in a global for
+// the assertions.
+// Continuation for the yield below: runs when the parked completion
+// resumes the coroutine, with the resume payload (ok, values...) on the
+// stack. Stashes it in a global for the assertions.
+int parked_continue(lua_State* L, int status, lua_KContext ctx) {
+    (void)status;
+    (void)ctx;
+    int n = lua_gettop(L);
+    lua_createtable(L, n, 0);
+    for (int i = 1; i <= n; ++i) {
+        lua_pushvalue(L, i);
+        lua_rawseti(L, -2, i);
+    }
+    lua_setglobal(L, "cov_parked_payload");
+    return 0;
+}
+
+int parked_body(lua_State* L) {
+    g_parked_body_running.store(true, std::memory_order_release);
+    while (g_parked_gate.load(std::memory_order_acquire) == 0) {
+        std::this_thread::yield();
+    }
+    return lua_yieldk(L, 0, 0, parked_continue);
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(ParkedCompletionHandoff) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine);
+    g_parked_gate.store(0);
+    g_parked_body_running.store(false);
+
+    lua_State* co = lua_newthread(lua.lua_state());
+    lua_pushcfunction(co, parked_body);
+
+    // Drive the body on a helper thread: it is "running elsewhere" (LUA_OK
+    // with live frames) from the moment it starts until its yield.
+    std::thread driver([&]() {
+        int nres = 0;
+        lua_resume(co, nullptr, 0, &nres);  // stops inside lua_yield
+    });
+    while (!g_parked_body_running.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    // The body is spinning: the coroutine is running on the driver thread.
+    // Park the completion against it — no wait, no resume, the entry goes
+    // back with completion_ready and this returns immediately.
+    uint64_t session = manager.suspend_for_call(co, 10000);
+    manager.resume_caller(session, true, nlohmann::json::array({42}));
+
+    // Release the body: it reaches its yield (the suspension no C++ code
+    // observed), and observing it hands the parked completion out — the
+    // body resumes with (true, 42) and stashes it.
+    g_parked_gate.store(1, std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    manager.mark_call_yielded(co);
+    driver.join();
+
+    lua_getglobal(co, "cov_parked_payload");
+    if (lua_istable(co, -1)) {
+        lua_rawgeti(co, -1, 1);
+        BOOST_CHECK(lua_toboolean(co, -1) == 1);
+        lua_pop(co, 1);
+        lua_rawgeti(co, -1, 2);
+        BOOST_CHECK_EQUAL(lua_tointeger(co, -1), 42);
+        lua_pop(co, 2);
+    } else {
+        BOOST_FAIL("parked completion never reached the coroutine body");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Regression: concurrent calls from coroutine.wrap threads (a yield no C++
+// code observes) drain without the historical handshake stall.
+// ---------------------------------------------------------------------------
+const char* kWrapFloodCallerScript = R"lua(
+local M = {}
+local W = {}
+function M.flood(ctx, target, n)
+  for i = 1, n do
+    W[i] = coroutine.wrap(function()
+      local ok, v = shield.call(target, 'ping')
+      _R = (_R or 0) + (ok and 1 or 0)
+    end)
+    W[i]()
+  end
+  return true
+end
+function M.received(ctx) return _R or 0 end
+return M
+)lua";
+
+BOOST_AUTO_TEST_CASE(WrapConcurrentCallDrain) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string callee = write_script("cov_wrap_callee.lua",
+                                            "local M = {}\n"
+                                            "function M.ping(ctx)\n"
+                                            "  shield.sleep(20)\n"
+                                            "  return 'pong'\n"
+                                            "end\n"
+                                            "return M\n");
+    const std::string caller =
+        write_script("cov_wrap_caller.lua", kWrapFloodCallerScript);
+    auto slow = manager.spawn(callee, opts_for("cov_wrap_slow"));
+    auto flood = manager.spawn(caller, opts_for("cov_wrap_flood"));
+    BOOST_REQUIRE(slow.success);
+    BOOST_REQUIRE(flood.success);
+
+    auto fired = manager.call(flood.service_id, "flood",
+                              nlohmann::json::array({slow.service_id, 8}));
+    BOOST_REQUIRE(fired.success);
+
+    // All 8 wrap threads must get their replies (each is a 20ms callee
+    // sleep away), well inside the 5s call budget.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult r = manager.call(flood.service_id, "received",
+                                        nlohmann::json::array(), 1000);
+            return r.success && r.values.size() == 1u && r.values[0] == 8;
+        },
+        std::chrono::seconds(4)));
+    manager.exit(flood.service_id, "cleanup");
+    manager.exit(slow.service_id, "cleanup");
 }
 
 // ---------------------------------------------------------------------------
