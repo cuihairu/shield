@@ -306,6 +306,18 @@ public:
     std::optional<nlohmann::json> inspect_memory(const std::string& service_id,
                                                  std::string* error);
 
+    // Inspect a service's live coroutines (lua.inspect <svc> coroutines):
+    // one owner-thread fork task enumerating the live-coroutine registry
+    // (per-coroutine lua_status — safe, the owner never concurrently
+    // drives them), the waiting call sessions, and the resume
+    // bookkeeping (origin, last resume source, resume count, age).
+    // Bounded report: entries capped at 32 by last-resume recency with a
+    // truncated flag. Same 2s bounded wait as inspect_refs.
+    // Returns nullopt with `error` set when the service is unknown, its
+    // actor vanished, or the owner never picked the task up in time.
+    std::optional<nlohmann::json> inspect_coroutines(
+        const std::string& service_id, std::string* error);
+
     // Enqueue a forked task to be executed by the owning service actor. The
     // task captures the owning service ID so it can be cancelled on service
     // exit.
@@ -354,9 +366,32 @@ public:
     // error); a suspended (LUA_YIELD) coroutine stays counted until its
     // next resume. Service teardown drops its remaining entries. An empty
     // service_id (bare VM dispatch) is not counted — it belongs to no
-    // published service.
-    void note_coroutine_started(lua_State* co, std::string_view service_id);
+    // published service. `origin` is the dispatch kind that first drove
+    // the coroutine ("handler"/"fork"/"timer"/...) — the observability
+    // metadata (origin + resume bookkeeping, lua.inspect <svc>
+    // coroutines) lives in the same registry-lock domain and dies with
+    // the same erase.
+    //
+    // `anchor_ref` is the registry ref (caller does lua_pushthread(co) +
+    // luaL_ref) that keeps the coroutine's thread alive for as long as it
+    // is bookkept: a bare coroutine.yield() has no suspending C++ API to
+    // re-anchor it, so without the ref the GC could collect the suspended
+    // thread and leave these maps dangling. note_coroutine_finished
+    // releases it (terminal resumes always run on the owner thread);
+    // teardown deliberately does NOT — a hung service's lua_State must
+    // never be touched from outside its actor, and every other path
+    // destroys the VM outright, taking the registry (and the refs) with it.
+    void note_coroutine_started(lua_State* co, std::string_view service_id,
+                                std::string_view origin, int anchor_ref);
     void note_coroutine_finished(lua_State* co);
+
+    // Record a resume of a live coroutine from a C++ resume source (the
+    // dispatch that first drove it counts via note_coroutine_started):
+    // "call-response" or "call-timeout" from resume_suspended_caller.
+    // Ignored for unknown coroutines (already terminal, or never
+    // registered). Lua-driven resumes (coroutine.wrap) have no C++
+    // observation point and are honestly absent from the bookkeeping.
+    void note_coroutine_resumed(lua_State* co, std::string_view source);
 
     // Record that the handler running on `co` is servicing a call request with
     // `session`, so its completion can be routed back to the caller.
@@ -443,7 +478,11 @@ public:
     // Resume a suspended caller (looked up by session) with the given result
     // values (or an error). Used by the caller actor after a response is routed
     // back to it, and by timeouts fired on the caller actor.
-    void resume_caller(uint64_t session, bool ok, const nlohmann::json& values);
+    // `source` feeds the coroutine resume bookkeeping ("call-response" /
+    // "call-timeout"): the timeout sites pass "call-timeout", every other
+    // completion defaults to "call-response".
+    void resume_caller(uint64_t session, bool ok, const nlohmann::json& values,
+                       std::string_view source = "call-response");
 
     // Check whether the current dispatch context is inside an on_exit handler.
     // Used by shield.call / shield.call_timeout to reject calls during exit.
@@ -550,11 +589,13 @@ private:
     // Drive the lua_resume of a caller coroutine already known to be free
     // of a registered driver (resume_caller's driving-phase guard passed).
     // The anchor and caller_service fields ride along because the pending
-    // entry has already been taken out of the registry.
+    // entry has already been taken out of the registry; `source` feeds the
+    // coroutine resume bookkeeping.
     void resume_suspended_caller(int caller_anchor,
                                  const std::string& caller_service,
                                  lua_State* caller_co, bool ok,
-                                 const nlohmann::json& values);
+                                 const nlohmann::json& values,
+                                 std::string_view source);
 };
 
 }  // namespace shield::lua

@@ -240,8 +240,18 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
         }
         data = std::move(*mem);
     } else if (field == "coroutines") {
-        data = nlohmann::json{{"name", args[0]},
-                              {"coroutines", (*detail)["coroutines"]}};
+        // Dispatch-type like memory/refs: per-coroutine status and resume
+        // bookkeeping are enumerated on the owning service actor thread
+        // (2s bounded wait here).
+        std::string co_error;
+        const std::optional<nlohmann::json> cos =
+            lua_mgr_.inspect_coroutines(service_id, &co_error);
+        if (!cos.has_value()) {
+            nlohmann::json resp = {{"type", "error"}, {"message", co_error}};
+            session.send_line(resp.dump());
+            return;
+        }
+        data = std::move(*cos);
     } else if (field == "timers") {
         // Registry-read projection of the per-timer bookkeeping: counts,
         // intervals and the nearest due time (still no Lua state, no actor

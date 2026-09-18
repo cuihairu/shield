@@ -528,11 +528,13 @@ BOOST_AUTO_TEST_CASE(LuaInspectCommandVariants) {
     BOOST_CHECK_EQUAL(resp["data"]["name"], "svc");
     BOOST_CHECK(resp["data"]["gc"]["memory_kb"].is_number_unsigned());
     BOOST_CHECK(resp["data"]["retainers"].is_object());
+    // coroutines is dispatch-shaped now (owner-thread enumeration, see
+    // InspectCoroutinesDetail); the idle echo service reports none.
     dispatcher.dispatch(harness.session, "lua.inspect svc coroutines");
     line = harness.read_line();
     resp = nlohmann::json::parse(line);
     BOOST_REQUIRE(resp["type"] == "result");
-    BOOST_CHECK_EQUAL(resp["data"]["coroutines"], 0u);
+    BOOST_CHECK_EQUAL(resp["data"]["total"], 0u);
     dispatcher.dispatch(harness.session, "lua.inspect svc timers");
     line = harness.read_line();
     resp = nlohmann::json::parse(line);
@@ -1031,6 +1033,308 @@ BOOST_AUTO_TEST_CASE(InspectMemoryDispatchTimeout) {
 
     // Let the busy handler finish so teardown does not race it.
     std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+}
+
+// L2 coroutines: lua.inspect <svc> coroutines / inspect_coroutines — the
+// per-coroutine lua_status read on the owner thread plus the resume
+// bookkeeping (origin / last resume source / resume count).
+BOOST_AUTO_TEST_CASE(InspectCoroutinesDetail) {
+    // park: a bare coroutine.yield() suspends the handler coroutine and no
+    // C++ resume source ever picks it up — exactly the stuck-coroutine
+    // shape this subcommand exists to expose. slow_echo: a responder whose
+    // 300ms sleep widens the window in which the two_calls caller sits on
+    // its SECOND shield.call, i.e. after one call-response resume.
+    const fs::path co_mod = fs::temp_directory_path() / "shield_cov_l2_co.lua";
+    std::ofstream(co_mod) << "local M = {}\n"
+                             "function M.park(ctx)\n"
+                             "  coroutine.yield()\n"
+                             "  return 'unreachable'\n"
+                             "end\n"
+                             "function M.two_calls(ctx)\n"
+                             "  shield.call('co_rsp', 'slow_echo', {'a'})\n"
+                             "  shield.call('co_rsp', 'slow_echo', {'b'})\n"
+                             "  return 'done'\n"
+                             "end\n"
+                             "return M\n";
+    const fs::path rsp_mod =
+        fs::temp_directory_path() / "shield_cov_l2_co_rsp.lua";
+    std::ofstream(rsp_mod) << "local M = {}\n"
+                              "function M.slow_echo(ctx, v)\n"
+                              "  shield.sleep(300)\n"
+                              "  return v\n"
+                              "end\n"
+                              "return M\n";
+    auto spawned = manager->spawn(co_mod.string(),
+                                  R"({"name":"svc_co","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    auto spawned_rsp = manager->spawn(
+        rsp_mod.string(), R"({"name":"co_rsp","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned_rsp.success);
+    bool published = false;
+    bool published_rsp = false;
+    for (int i = 0; i < 200 && (!published || !published_rsp); ++i) {
+        published = !manager->query_service("svc_co").empty();
+        published_rsp = !manager->query_service("co_rsp").empty();
+        if (!published || !published_rsp) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+    BOOST_REQUIRE(published_rsp);
+
+    std::string err;
+    // Unpublished names refuse before any fork dispatch.
+    auto ghost = manager->inspect_coroutines("ghost_co", &err);
+    BOOST_CHECK(!ghost.has_value());
+    BOOST_CHECK(err.find("not published") != std::string::npos);
+
+    // Idle service: no live coroutines.
+    auto idle = manager->inspect_coroutines("svc_co", &err);
+    BOOST_REQUIRE_MESSAGE(idle.has_value(), err);
+    BOOST_CHECK_EQUAL((*idle)["total"], 0u);
+    BOOST_CHECK((*idle)["truncated"] == false);
+    BOOST_CHECK((*idle)["entries"].is_array());
+
+    // Park one handler coroutine (fire-and-forget; poll for the async
+    // dispatch to land).
+    BOOST_REQUIRE(manager->send("svc_co", "park", nlohmann::json::array()));
+    std::optional<nlohmann::json> parked;
+    for (int i = 0; i < 200; ++i) {
+        auto snap = manager->inspect_coroutines("svc_co", &err);
+        if (snap.has_value() && (*snap)["total"] >= 1u) {
+            parked = std::move(snap);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    BOOST_REQUIRE_MESSAGE(parked.has_value(), "parked coroutine never showed");
+    BOOST_CHECK_EQUAL((*parked)["total"], 1u);
+    BOOST_CHECK_EQUAL((*parked)["by_status"]["suspended"], 1u);
+    const auto& e0 = (*parked)["entries"][0];
+    BOOST_CHECK_EQUAL(e0["status"], "suspended");
+    BOOST_CHECK_EQUAL(e0["origin"], "handler");
+    BOOST_CHECK_EQUAL(e0["resumes"], 1u);
+    BOOST_CHECK_EQUAL(e0["last_resume"], "dispatch");
+    BOOST_CHECK(e0["driving"] == false);
+    BOOST_CHECK(e0["waiting_call"].is_null());
+    BOOST_CHECK_GE(e0["age_ms"].get<std::int64_t>(), 0);
+
+    // Call-response resume bookkeeping: two_calls suspends twice. While it
+    // sits on the second shield.call the responder's 300ms sleep holds the
+    // window open — the caller's last resume source is "call-response",
+    // the resume count ticks to 2, and waiting_call points at the
+    // still-pending session. All three must hold on one entry: the poll
+    // tolerates a snapshot that caught the caller right between its resume
+    // and its next suspend bookkeeping.
+    BOOST_REQUIRE(
+        manager->send("svc_co", "two_calls", nlohmann::json::array()));
+    nlohmann::json caller_entry;
+    bool caller_seen = false;
+    for (int i = 0; i < 300 && !caller_seen; ++i) {
+        auto snap = manager->inspect_coroutines("svc_co", &err);
+        if (snap.has_value()) {
+            for (const auto& e : (*snap)["entries"]) {
+                if (e["origin"] == "handler" &&
+                    e["last_resume"] == "call-response" &&
+                    e["status"] == "suspended" && e["resumes"] == 2u &&
+                    !e["waiting_call"].is_null()) {
+                    caller_entry = e;
+                    caller_seen = true;
+                    break;
+                }
+            }
+        }
+        if (!caller_seen) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_CHECK_MESSAGE(caller_seen, "call-response resume never observed");
+    // The parked coroutine from the first segment is still there: first
+    // drive only, bare yield, no call session.
+    if (caller_seen) {
+        auto snap = manager->inspect_coroutines("svc_co", &err);
+        BOOST_REQUIRE(snap.has_value());
+        bool parked_seen = false;
+        for (const auto& e : (*snap)["entries"]) {
+            if (e["last_resume"] == "dispatch" && e["resumes"] == 1u &&
+                e["waiting_call"].is_null()) {
+                parked_seen = true;
+                BOOST_CHECK_EQUAL(e["status"], "suspended");
+                BOOST_CHECK_EQUAL(e["origin"], "handler");
+            }
+        }
+        BOOST_CHECK(parked_seen);
+    }
+    // The responder side: co_rsp enumerates its own slow_echo coroutine,
+    // suspended inside shield.sleep while serving the caller's request —
+    // first drive only, waiting_call holds the callee-side session.
+    bool responder_seen = false;
+    for (int i = 0; i < 300 && !responder_seen; ++i) {
+        auto rsp_snap = manager->inspect_coroutines("co_rsp", &err);
+        if (rsp_snap.has_value()) {
+            for (const auto& e : (*rsp_snap)["entries"]) {
+                if (e["last_resume"] == "dispatch" && e["resumes"] == 1u &&
+                    !e["waiting_call"].is_null()) {
+                    responder_seen = true;
+                    BOOST_CHECK_EQUAL(e["status"], "suspended");
+                    BOOST_CHECK_EQUAL(e["origin"], "handler");
+                    BOOST_CHECK_EQUAL(e["last_resume"], "dispatch");
+                }
+            }
+        }
+        if (!responder_seen) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_CHECK(responder_seen);
+
+    // two_calls and both responders complete and drain; the parked
+    // coroutine from the first segment stays (no resume source exists for
+    // a bare yield) — exactly one live coroutine remains.
+    bool drained = false;
+    for (int i = 0; i < 300 && !drained; ++i) {
+        auto snap = manager->inspect_coroutines("svc_co", &err);
+        drained = snap.has_value() && (*snap)["total"] == 1u &&
+                  (*snap)["entries"][0]["resumes"] == 1u &&
+                  (*snap)["entries"][0]["last_resume"] == "dispatch";
+        if (!drained) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_CHECK_MESSAGE(drained, "two_calls never drained");
+
+    // Console frontend: the ghost fast path is unchanged, the happy path
+    // carries the dispatch-shaped detail.
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "lua.inspect ghost coroutines");
+    std::string line = harness.read_line();
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("not found") !=
+                std::string::npos);
+
+    dispatcher.dispatch(harness.session, "lua.inspect svc_co coroutines");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["name"], "svc_co");
+    BOOST_CHECK(resp["data"]["by_status"].is_object());
+    BOOST_CHECK(resp["data"]["entries"].is_array());
+}
+
+// The coroutine enumeration is a fork task on the owning service actor,
+// same as memory/refs: a service wedged in a synchronous handler cannot
+// pick it up, and the 2s bounded wait lapses with the coroutines-specific
+// message. Self-contained spawn: this case must also run standalone.
+BOOST_AUTO_TEST_CASE(InspectCoroutinesDispatchTimeout) {
+    const fs::path churn =
+        fs::temp_directory_path() / "shield_cov_l2_churn_co.lua";
+    std::ofstream(churn) << "local M = {}\n"
+                            "function M.churn(ctx)\n"
+                            "  local t0 = os.clock()\n"
+                            "  while os.clock() - t0 < 7 do end\n"
+                            "  return 'done'\n"
+                            "end\n"
+                            "return M\n";
+    auto spawned = manager->spawn(
+        churn.string(), R"({"name":"svc_churn_co","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = !manager->query_service("svc_churn_co").empty();
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    // One busy run covers both frontends: console error line first, then
+    // the manager-level call asserts the message.
+    BOOST_REQUIRE(
+        manager->send("svc_churn_co", "churn", nlohmann::json::array()));
+
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+    dispatcher.dispatch(harness.session, "lua.inspect svc_churn_co coroutines");
+    std::string line = harness.read_line(std::chrono::milliseconds(15000));
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find(
+                    "coroutines dispatch timeout") != std::string::npos);
+
+    std::string err;
+    const auto cos = manager->inspect_coroutines("svc_churn_co", &err);
+    BOOST_CHECK(!cos.has_value());
+    BOOST_CHECK(err.find("coroutines dispatch timeout") != std::string::npos);
+
+    // Let the busy handler finish so teardown does not race it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+}
+
+// 40 parked coroutines overflow the 32-entry report cap: total counts all
+// of them, the report keeps the 32 most recently resumed entries and flags
+// truncated.
+BOOST_AUTO_TEST_CASE(InspectCoroutinesTruncation) {
+    const fs::path co_mod =
+        fs::temp_directory_path() / "shield_cov_l2_co_tr.lua";
+    std::ofstream(co_mod) << "local M = {}\n"
+                             "function M.park(ctx)\n"
+                             "  coroutine.yield()\n"
+                             "  return 'unreachable'\n"
+                             "end\n"
+                             "return M\n";
+    auto spawned = manager->spawn(
+        co_mod.string(), R"({"name":"svc_co_tr","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = !manager->query_service("svc_co_tr").empty();
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    for (int i = 0; i < 40; ++i) {
+        BOOST_REQUIRE(
+            manager->send("svc_co_tr", "park", nlohmann::json::array()));
+    }
+    std::string err;
+    std::optional<nlohmann::json> snap;
+    std::uint64_t last_total = 0;
+    for (int i = 0; i < 300; ++i) {
+        auto s = manager->inspect_coroutines("svc_co_tr", &err);
+        if (s.has_value()) {
+            last_total = (*s)["total"].get<std::uint64_t>();
+            if (last_total >= 40u) {
+                snap = std::move(s);
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    BOOST_TEST_MESSAGE("last observed total = " << last_total);
+    BOOST_REQUIRE_MESSAGE(snap.has_value(),
+                          "40 parked coroutines never accumulated");
+    BOOST_CHECK_EQUAL((*snap)["total"], 40u);
+    BOOST_CHECK((*snap)["truncated"] == true);
+    BOOST_CHECK_EQUAL((*snap)["entries"].size(), 32u);
+    // by_status is tallied before the cap, so it still counts all 40.
+    BOOST_CHECK_EQUAL((*snap)["by_status"]["suspended"], 40u);
+    // Kept entries are the most recently resumed ones: age_ms ascending.
+    std::int64_t prev_age = -1;
+    for (const auto& e : (*snap)["entries"]) {
+        const std::int64_t age = e["age_ms"].get<std::int64_t>();
+        BOOST_CHECK_GE(age, prev_age);
+        prev_age = age;
+    }
 }
 
 // The refs walk is a fork task on the owning service actor: a service

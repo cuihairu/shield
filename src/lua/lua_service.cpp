@@ -439,10 +439,15 @@ struct LuaServiceManager::Impl {
     // Caller holds registry_mutex. Drops every live-coroutine entry owned
     // by `id`: the service is leaving the registry and its suspended
     // coroutines will never observe a terminal resume. Never touches the
-    // lua_States themselves — teardown only retires bookkeeping.
+    // lua_States themselves — teardown only retires bookkeeping. The GC
+    // anchor refs (CoroutineMeta::anchor_ref) are intentionally NOT
+    // released here: a hung service's lua_State must never be touched from
+    // outside its actor, and every other path destroys the VM outright,
+    // taking the registry (and the refs) with it.
     void drop_live_coroutines_locked(const std::string& id) {
         for (auto it = live_coroutines.begin(); it != live_coroutines.end();) {
             if (it->second == id) {
+                coroutine_meta.erase(it->first);
                 it = live_coroutines.erase(it);
             } else {
                 ++it;
@@ -562,6 +567,24 @@ struct LuaServiceManager::Impl {
     // states and service teardown drops the service's remaining entries
     // (a suspended coroutine whose service exits never resumes).
     std::unordered_map<lua_State*, std::string> live_coroutines;
+
+    // Per-coroutine resume bookkeeping, key domain identical to
+    // live_coroutines (inserted by note_coroutine_started, erased at the
+    // same points). origin is the dispatch kind that first drove the
+    // coroutine (invoke_coroutine's error_type); last_resume records the
+    // most recent C++ resume source ("dispatch" initially, then
+    // "call-response"/"call-timeout"). Lua-driven resumes (wrap) have no
+    // C++ observation point and leave the bookkeeping at its last value.
+    struct CoroutineMeta {
+        std::string origin;
+        std::uint64_t resumes = 0;
+        std::string last_resume;
+        std::int64_t last_resume_ms = 0;
+        // Registry ref anchoring the coroutine's thread against the GC
+        // while it is bookkept (see note_coroutine_started in the header).
+        int anchor_ref = LUA_NOREF;
+    };
+    std::unordered_map<lua_State*, CoroutineMeta> coroutine_meta;
 
     // L2 inspect snapshots (lua.snapshot / lua.diff): registry-locked
     // copies of a service's L1 gauges. Bounded ring per service; entries
@@ -1809,7 +1832,8 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                                 {{"code", "timeout"},
                                  {"message", "call timeout"},
                                  {"retryable", true}})});
-                        manager->resume_caller(payload, false, timeout_err);
+                        manager->resume_caller(payload, false, timeout_err,
+                                               "call-timeout");
                     }
                     // GCOVR_EXCL_STOP
                     return {};
@@ -1858,7 +1882,8 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                                     {{"code", "timeout"},
                                      {"message", "call timeout"},
                                      {"retryable", true}})});
-                            manager->resume_caller(session, false, timeout_err);
+                            manager->resume_caller(session, false, timeout_err,
+                                                   "call-timeout");
                         },
                         [impl_ptr,  // GCOVR_EXCL_LINE (lambda entry artifact)
                          manager](  // GCOVR_EXCL_LINE (lambda entry artifact)
@@ -3452,6 +3477,160 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_memory(
     return out;
 }
 
+std::optional<nlohmann::json> LuaServiceManager::inspect_coroutines(
+    const std::string& service_id, std::string* error) {
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        if (!impl_->services.contains(service_id)) {
+            if (error) {
+                *error = "service not published: " + service_id;
+            }
+            return std::nullopt;
+        }
+    }
+    auto promise = std::make_shared<std::promise<nlohmann::json>>();
+    auto future = promise->get_future();
+    // Same payload discipline as the other inspect forks: no sol capture,
+    // the VM is resolved fresh on the actor thread.
+    const uint64_t task_id = enqueue_forked_task(
+        service_id, [impl = impl_.get(), service_id, promise]() {
+            // One registry pass collects plain data; the lua_status reads
+            // happen after the lock. Both are safe: this task runs on the
+            // owning actor, which serializes against every resume source
+            // (hard invariant — a coroutine is always resumed by its owner
+            // thread), so no coroutine is being driven right now and the
+            // lua_States cannot be erased mid-enumeration.
+            struct Entry {
+                lua_State* co;
+                Impl::CoroutineMeta meta;
+                std::uint64_t waiting_call;
+                bool driving;
+            };
+            std::vector<Entry> collected;
+            {
+                std::shared_lock lock(impl->registry_mutex);
+                for (const auto& [co, owner] : impl->live_coroutines) {
+                    if (owner != service_id) {
+                        continue;
+                    }
+                    static const Impl::CoroutineMeta kEmpty;
+                    auto mit = impl->coroutine_meta.find(co);
+                    const Impl::CoroutineMeta& meta =
+                        mit != impl->coroutine_meta.end() ? mit->second
+                                                          : kEmpty;
+                    // The call the coroutine is currently busy with: serving
+                    // one (callee side, handler_call_session) or awaiting a
+                    // response for one (caller side, pending_calls reverse
+                    // scan).
+                    std::uint64_t waiting_call = 0;
+                    auto wit = impl->handler_call_session.find(co);
+                    if (wit != impl->handler_call_session.end()) {
+                        waiting_call = wit->second;
+                    } else {
+                        for (const auto& [sess, pc] : impl->pending_calls) {
+                            if (pc.caller_co == co) {
+                                waiting_call = sess;
+                                break;
+                            }
+                        }
+                    }
+                    collected.push_back({co, meta, waiting_call,
+                                         impl->driving_cos.contains(co)});
+                }
+            }
+            const std::int64_t now = Impl::now_ms();
+            nlohmann::json by_status = {
+                {"suspended", 0}, {"finished", 0}, {"error", 0}, {"other", 0}};
+            nlohmann::json entries = nlohmann::json::array();
+            for (auto& e : collected) {
+                // Map lua_status to a report label; only non-running
+                // threads reach here (see the invariant above).
+                const char* label;
+                switch (lua_status(e.co)) {
+                    case LUA_YIELD:
+                        label = "suspended";
+                        break;
+                    // GCOVR_EXCL_START (defensive: a coroutine only persists
+                    // in live_coroutines while suspended (LUA_YIELD) —
+                    // finished and errored ones are erased by
+                    // note_coroutine_finished before any inspection can
+                    // observe them, so these arms keep the lua_status mapping
+                    // complete but cannot execute)
+                    case LUA_OK:
+                        label = "finished";
+                        break;
+                    case LUA_ERRRUN:
+                    case LUA_ERRERR:
+                    case LUA_ERRSYNTAX:
+                        label = "error";
+                        break;
+                    default:
+                        label = "other";
+                        break;
+                }  // GCOVR_EXCL_STOP
+                by_status[label] = by_status[label].get<std::uint64_t>() + 1;
+                // Computed before the initializer (gcov artifact).
+                const std::int64_t age_ms = now - e.meta.last_resume_ms;
+                entries.push_back(
+                    {{"status", label},
+                     {"origin", e.meta.origin},
+                     {"resumes", e.meta.resumes},
+                     {"last_resume", e.meta.last_resume},
+                     {"age_ms", age_ms},
+                     {"driving", e.driving},
+                     {"waiting_call", e.waiting_call != 0
+                                          ? nlohmann::json(e.waiting_call)
+                                          : nlohmann::json(nullptr)}});
+            }
+            // Report cap: keep the 32 most recently resumed coroutines.
+            bool truncated = false;
+            if (entries.size() > 32) {
+                std::sort(entries.begin(), entries.end(),
+                          [](const nlohmann::json& a, const nlohmann::json& b) {
+                              return a["age_ms"].get<std::int64_t>() <
+                                     b["age_ms"].get<std::int64_t>();
+                          });
+                entries.erase(entries.begin() + 32, entries.end());
+                truncated = true;
+            }
+            // Built as a named local so the initializer lines keep stable
+            // per-line counters (gcov artifact).
+            const std::size_t total = collected.size();
+            nlohmann::json report{{"name", service_id},
+                                  {"total", total},
+                                  {"truncated", truncated},
+                                  {"by_status", std::move(by_status)},
+                                  {"entries", std::move(entries)}};
+            promise->set_value(std::move(report));
+        });
+    // GCOVR_EXCL_START (defensive: the actor is spawned before the service
+    // enters the registry and removed after it leaves, same reasoning as
+    // inspect_refs)
+    if (task_id == 0) {
+        if (error) {
+            *error = "service actor not found: " + service_id;
+        }
+        return std::nullopt;
+    }  // GCOVR_EXCL_STOP
+    if (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+        if (error) {
+            *error = "coroutines dispatch timeout (owner busy): " + service_id;
+        }
+        return std::nullopt;
+    }
+    nlohmann::json out = future.get();
+    // GCOVR_EXCL_START (defensive: the only producers of the "error" field
+    // are the excluded actor-side guards — none of the code above can set
+    // it on this path)
+    if (out.contains("error")) {
+        if (error) {
+            *error = out["error"].get<std::string>();
+        }
+        return std::nullopt;
+    }  // GCOVR_EXCL_STOP
+    return out;
+}
+
 std::optional<nlohmann::json> LuaServiceManager::timer_inspect(
     const std::string& service_id, std::string* error) {
     {
@@ -4172,7 +4351,9 @@ void LuaServiceManager::schedule_proxied_call_timeout(uint64_t session,
 }
 
 void LuaServiceManager::note_coroutine_started(lua_State* co,
-                                               std::string_view service_id) {
+                                               std::string_view service_id,
+                                               std::string_view origin,
+                                               int anchor_ref) {
     // Empty ids (bare VM dispatch) belong to no published service and are
     // never inserted — such an entry could never be grouped or torn down.
     if (co == nullptr || service_id.empty()) {
@@ -4180,6 +4361,10 @@ void LuaServiceManager::note_coroutine_started(lua_State* co,
     }  // same conditions before invoking)
     std::unique_lock lock(impl_->registry_mutex);
     impl_->live_coroutines.insert_or_assign(co, std::string(service_id));
+    // First drive: the dispatch that created the coroutine is its first
+    // resume source.
+    impl_->coroutine_meta[co] = {std::string(origin), 1, "dispatch",
+                                 Impl::now_ms(), anchor_ref};
 }
 
 void LuaServiceManager::note_coroutine_finished(lua_State* co) {
@@ -4190,6 +4375,33 @@ void LuaServiceManager::note_coroutine_finished(lua_State* co) {
     }  // mark_call_yielded: call sites pass factory-made coroutines)
     std::unique_lock lock(impl_->registry_mutex);
     impl_->live_coroutines.erase(co);
+    // Release the GC anchor with it. Safe here (and only here): a terminal
+    // resume always runs on the owner thread — the hard invariant that
+    // also makes the lua_status reads in inspect_coroutines safe.
+    if (auto it = impl_->coroutine_meta.find(co);
+        it != impl_->coroutine_meta.end()) {
+        if (it->second.anchor_ref != LUA_NOREF) {
+            luaL_unref(co, LUA_REGISTRYINDEX, it->second.anchor_ref);
+        }
+        impl_->coroutine_meta.erase(it);
+    }
+}
+
+void LuaServiceManager::note_coroutine_resumed(lua_State* co,
+                                               std::string_view source) {
+    // Unknown coroutines (never registered, already terminal, or the
+    // service left the registry) are ignored — the key domain stays
+    // identical to live_coroutines.
+    if (co == nullptr) {
+        return;  // GCOVR_EXCL_LINE (defensive null guard, same shape as
+    }  // note_coroutine_finished)
+    std::unique_lock lock(impl_->registry_mutex);
+    auto it = impl_->coroutine_meta.find(co);
+    if (it != impl_->coroutine_meta.end()) {
+        it->second.resumes++;
+        it->second.last_resume = std::string(source);
+        it->second.last_resume_ms = Impl::now_ms();
+    }
 }
 
 LuaServiceManager::DrivingGuard::DrivingGuard(LuaServiceManager& mgr,
@@ -4205,7 +4417,8 @@ LuaServiceManager::DrivingGuard::~DrivingGuard() {
 }
 
 void LuaServiceManager::resume_caller(uint64_t session, bool ok,
-                                      const nlohmann::json& values) {
+                                      const nlohmann::json& values,
+                                      std::string_view source) {
     // Peek under the registry lock: the yield-window requeue below must
     // leave the entry in place, so the completion cannot be moved out
     // unconditionally.
@@ -4304,12 +4517,12 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
     cancel_actor_call_timeout(session);
 
     resume_suspended_caller(pc.caller_anchor, pc.caller_service, caller_co, ok,
-                            values);
+                            values, source);
 }
 
 void LuaServiceManager::resume_suspended_caller(
     int caller_anchor, const std::string& caller_service, lua_State* caller_co,
-    bool ok, const nlohmann::json& values) {
+    bool ok, const nlohmann::json& values, std::string_view source) {
     // Build the resume payload: (ok, values...). The caller's shield.call
     // wrapper unpacks these via coroutine.yield()'s return values.
     //
@@ -4322,6 +4535,9 @@ void LuaServiceManager::resume_suspended_caller(
     Impl::DispatchScope scope(*impl_, caller_service, "", false);
     // Register the driving phase for the resume span (see driving_cos).
     DrivingGuard driving(*this, caller_co);
+    // Resume bookkeeping for lua.inspect <svc> coroutines: this C++ resume
+    // source is the coroutine's most recent driver.
+    note_coroutine_resumed(caller_co, source);
     lua_pushboolean(caller_co, ok ? 1 : 0);
     int nargs = 1;
     if (values.is_array()) {
@@ -4407,7 +4623,7 @@ int LuaServiceManager::check_call_timeouts(int64_t now_ms) {
             continue;  // GCOVR_EXCL_LINE (needs a cluster build: proxied
                        // sessions only exist with SHIELD_ENABLE_CLUSTER)
         }
-        resume_caller(session, false, timeout_err);
+        resume_caller(session, false, timeout_err, "call-timeout");
     }
     return static_cast<int>(expired.size());
 }

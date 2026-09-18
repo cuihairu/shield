@@ -1195,8 +1195,19 @@ bool LuaRuntime::invoke_coroutine(
         }
         // L1 observability: this handler coroutine counts as live under its
         // service until some resume source observes its terminal state.
+        // error_type doubles as the resume origin for the inspect detail.
+        // The registry ref anchors the thread against the GC for as long
+        // as it is bookkept: a bare coroutine.yield() has no suspending
+        // C++ API to re-anchor it, so once the dispatch stack unwinds the
+        // GC could otherwise collect the suspended thread and leave
+        // live_coroutines dangling. The (shared) registry is reachable
+        // from the coroutine itself, so this never touches the main stack.
+        int co_anchor = LUA_NOREF;
         if (manager != nullptr && !service_id.empty()) {
-            manager->note_coroutine_started(co, service_id);
+            lua_pushthread(co);
+            co_anchor = luaL_ref(co, LUA_REGISTRYINDEX);
+            manager->note_coroutine_started(co, service_id, error_type,
+                                            co_anchor);
         }
 
         int nres = 0;
@@ -1467,7 +1478,12 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
             return false;
         }
         if (manager != nullptr && !service_id.empty()) {
-            manager->note_coroutine_started(co, service_id);
+            // "client_rpc" mirrors the error-hook classification below.
+            // GC anchor, same reasoning as the handler dispatch path.
+            lua_pushthread(co);
+            const int co_anchor = luaL_ref(co, LUA_REGISTRYINDEX);
+            manager->note_coroutine_started(co, service_id, "client_rpc",
+                                            co_anchor);
         }
 
         int nres = 0;
