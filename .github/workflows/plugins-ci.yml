@@ -103,6 +103,12 @@ jobs:
             -DSHIELD_BUILD_PLUGIN_MSGPACK=ON
             -DSHIELD_BUILD_PLUGIN_SPROTO=ON
             -DSHIELD_BUILD_PLUGIN_FLATBUFFERS=ON
+            # DB plugins: compiled on CI so they cannot silently rot when a
+            # dependency (e.g. sol2) breaks their API — the Lua facade soft-
+            # failure contract test exercises each enabled plugin's .so.
+            -DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON
+            -DSHIELD_BUILD_DB_PLUGIN_MYSQL=ON
+            -DSHIELD_BUILD_DB_PLUGIN_POSTGRESQL=ON
           )
 
           if [ "$RUNNER_OS" == "Windows" ]; then

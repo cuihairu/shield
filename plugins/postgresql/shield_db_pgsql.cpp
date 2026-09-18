@@ -26,15 +26,7 @@
 // the conn is PQfinish()'d on release instead of being returned to the
 // free-list, so the next acquire grows a fresh connection.
 
-#include "shield/plugin/abi.h"
-#include "shield/plugin/database.h"
-#include "shield/plugin/host_api.h"
-#include "shield_db_mapper.hpp"
-#include "shield_lua_plugin_binding.hpp"
-
 #include <libpq-fe.h>
-#include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 
 #include <chrono>
 #include <condition_variable>
@@ -44,9 +36,25 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <queue>
+#include <sol/sol.hpp>
 #include <string>
 #include <vector>
+
+#include "shield/plugin/abi.h"
+#include "shield/plugin/database.h"
+#include "shield/plugin/host_api.h"
+#include "shield_db_mapper.hpp"
+#include "shield_lua_plugin_binding.hpp"
+
+// shield_db_conn is forward-declared opaque in database.h. The concrete
+// layout must live at global scope so it completes the very type the vtable
+// pointers reference — an anonymous-namespace definition would be a distinct
+// type and the lambdas would not convert to the function pointers.
+struct shield_db_conn {
+    PGconn* pg;
+};
 
 namespace {
 
@@ -60,8 +68,14 @@ char* dup_string(const char* s) {
 
 void clear_result(shield_db_result* r) {
     if (!r) return;
-    if (r->error_msg)  { std::free(const_cast<char*>(r->error_msg)); r->error_msg = nullptr; }
-    if (r->error_code) { std::free(const_cast<char*>(r->error_code)); r->error_code = nullptr; }
+    if (r->error_msg) {
+        std::free(const_cast<char*>(r->error_msg));
+        r->error_msg = nullptr;
+    }
+    if (r->error_code) {
+        std::free(const_cast<char*>(r->error_code));
+        r->error_code = nullptr;
+    }
     if (r->cells) {
         int n = r->row_count * r->col_count;
         for (int i = 0; i < n; ++i) {
@@ -94,9 +108,8 @@ int fill_from_pgresult(PGresult* res, bool is_select, shield_db_result* out) {
     if (status == PGRES_COMMAND_OK) {
         out->success = 1;
         char* affected = PQcmdTuples(res);
-        out->affected_rows = affected && affected[0]
-                                 ? std::strtoll(affected, nullptr, 10)
-                                 : 0;
+        out->affected_rows =
+            affected && affected[0] ? std::strtoll(affected, nullptr, 10) : 0;
         out->last_insert_id = 0;
         out->row_count = 0;
         out->col_count = 0;
@@ -119,14 +132,15 @@ int fill_from_pgresult(PGresult* res, bool is_select, shield_db_result* out) {
 
         if (n_rows > 0 && n_cols > 0) {
             size_t cells_bytes = sizeof(char*) * static_cast<size_t>(n_rows) *
-                                                   static_cast<size_t>(n_cols);
+                                 static_cast<size_t>(n_cols);
             out->cells = static_cast<const char**>(std::malloc(cells_bytes));
             if (out->cells) {
                 int idx = 0;
                 for (int r = 0; r < n_rows; ++r) {
                     for (int c = 0; c < n_cols; ++c) {
                         if (PQgetisnull(res, r, c)) {
-                            const_cast<const char**>(out->cells)[idx++] = nullptr;
+                            const_cast<const char**>(out->cells)[idx++] =
+                                nullptr;
                         } else {
                             const char* v = PQgetvalue(res, r, c);
                             const_cast<const char**>(out->cells)[idx++] =
@@ -161,7 +175,8 @@ int fill_from_pgresult(PGresult* res, bool is_select, shield_db_result* out) {
     out->cells = nullptr;
 
     const char* msg = PQresultErrorMessage(res);
-    out->error_msg = dup_string(msg && msg[0] ? msg : "postgresql: query failed");
+    out->error_msg =
+        dup_string(msg && msg[0] ? msg : "postgresql: query failed");
     const char* sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
     out->error_code = dup_string(map_sqlstate(sqlstate));
     return 0;
@@ -186,9 +201,8 @@ std::string rewrite_placeholders(const char* sql) {
     return out;
 }
 
-int run_pg_query(PGconn* conn, const char* sql,
-                 const char* const* params, int n_params,
-                 bool is_select, shield_db_result* out) {
+int run_pg_query(PGconn* conn, const char* sql, const char* const* params,
+                 int n_params, bool is_select, shield_db_result* out) {
     if (!conn || !sql) {
         out->success = 0;
         out->error_msg = dup_string("postgresql: invalid arguments");
@@ -200,14 +214,9 @@ int run_pg_query(PGconn* conn, const char* sql,
 
     PGresult* res;
     if (n_params > 0) {
-        res = PQexecParams(conn,
-                           rewritten.c_str(),
-                           n_params,
-                           nullptr,
-                           const_cast<const char**>(params),
-                           nullptr,
-                           nullptr,
-                           0);
+        res =
+            PQexecParams(conn, rewritten.c_str(), n_params, nullptr,
+                         const_cast<const char**>(params), nullptr, nullptr, 0);
     } else {
         res = PQexec(conn, rewritten.c_str());
     }
@@ -221,12 +230,6 @@ int run_pg_query(PGconn* conn, const char* sql,
     return rc;
 }
 
-// shield_db_conn is forward-declared opaque in database.h; concrete layout
-// defined here.
-struct shield_db_conn {
-    PGconn* pg;
-};
-
 // ---------------------------------------------------------------------------
 // v1 database vtable (per-call connect; independent of the instance pool).
 // ---------------------------------------------------------------------------
@@ -237,8 +240,8 @@ const shield_database_v1& db_vtable() {
         "postgresql",
         "1.0.0",
         // connect
-        [](const shield_db_connect_args* args,
-           char* err_buf, int err_buf_size) -> shield_db_conn* {
+        [](const shield_db_connect_args* args, char* err_buf,
+           int err_buf_size) -> shield_db_conn* {
             if (!args) return nullptr;
             std::string conninfo;
             auto append = [&](const char* key, const char* val) {
@@ -300,9 +303,8 @@ const shield_database_v1& db_vtable() {
             return ok;
         },
         // query
-        [](shield_db_conn* c, const char* sql,
-           const char* const* params, int n_params,
-           shield_db_result* out) -> int {
+        [](shield_db_conn* c, const char* sql, const char* const* params,
+           int n_params, shield_db_result* out) -> int {
             if (!c || !c->pg) {
                 out->success = 0;
                 out->error_msg = dup_string("postgresql: connection is null");
@@ -312,9 +314,8 @@ const shield_database_v1& db_vtable() {
             return run_pg_query(c->pg, sql, params, n_params, true, out);
         },
         // execute
-        [](shield_db_conn* c, const char* sql,
-           const char* const* params, int n_params,
-           shield_db_result* out) -> int {
+        [](shield_db_conn* c, const char* sql, const char* const* params,
+           int n_params, shield_db_result* out) -> int {
             if (!c || !c->pg) {
                 out->success = 0;
                 out->error_msg = dup_string("postgresql: connection is null");
@@ -509,8 +510,11 @@ struct pool_guard {
     pool_guard& operator=(pool_guard&& o) noexcept {
         if (this != &o) {
             release();
-            inst = o.inst; conn = o.conn; bad = o.bad;
-            o.inst = nullptr; o.conn = nullptr;
+            inst = o.inst;
+            conn = o.conn;
+            bad = o.bad;
+            o.inst = nullptr;
+            o.conn = nullptr;
         }
         return *this;
     }
@@ -588,12 +592,10 @@ pool_guard acquire_conn(pgsql_instance* inst, std::string* err) {
     }
 
     // Pool exhausted and at capacity: wait for a release.
-    int timeout_ms = inst->connect_timeout_ms > 0
-                         ? inst->connect_timeout_ms
-                         : 5000;
-    if (inst->pool_cv.wait_for(lk,
-            std::chrono::milliseconds(timeout_ms),
-            [inst] { return !inst->free_list.empty(); })) {
+    int timeout_ms =
+        inst->connect_timeout_ms > 0 ? inst->connect_timeout_ms : 5000;
+    if (inst->pool_cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
+                               [inst] { return !inst->free_list.empty(); })) {
         PGconn* pg = inst->free_list.front();
         inst->free_list.pop();
         lk.unlock();
@@ -627,20 +629,21 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 
 // Build a Lua error table from a PGresult (pulls SQLSTATE + primary message).
 sol::table make_error_from_result(sol::state_view lua, PGresult* res) {
-    const char* sqlstate = res ? PQresultErrorField(res, PG_DIAG_SQLSTATE)
-                               : nullptr;
+    const char* sqlstate =
+        res ? PQresultErrorField(res, PG_DIAG_SQLSTATE) : nullptr;
     const char* msg = res ? PQresultErrorMessage(res) : nullptr;
     return make_error_table(lua, map_sqlstate(sqlstate),
-                            msg && msg[0] ? std::string(msg)
-                                          : std::string("postgresql: query failed"));
+                            msg && msg[0]
+                                ? std::string(msg)
+                                : std::string("postgresql: query failed"));
 }
 
 // Convert the value of `res` at (row, col) into a Lua object. PostgreSQL
 // returns everything as text via PQgetvalue; we rely on the field's OID
 // (PQftype) only to distinguish "definitely integer" (INT2/INT4/INT8/OID)
 // from "definitely float" (FLOAT4/FLOAT8/NUMERIC) from text. NULL stays nil.
-sol::object pg_cell_to_lua(sol::state_view lua, PGresult* res,
-                           int row, int col) {
+sol::object pg_cell_to_lua(sol::state_view lua, PGresult* res, int row,
+                           int col) {
     if (PQgetisnull(res, row, col)) return sol::nil;
     const char* v = PQgetvalue(res, row, col);
     if (!v) return sol::nil;
@@ -648,17 +651,21 @@ sol::object pg_cell_to_lua(sol::state_view lua, PGresult* res,
     std::string s = v;
     // Numeric types: INT2=21, INT4=23, INT8=20, OID=26. BOOL=16.
     if (t == 21 || t == 23 || t == 20 || t == 26) {
-        try { return sol::make_object(lua, static_cast<lua_Integer>(
-            std::strtoll(v, nullptr, 10))); }
-        catch (...) { /* fall through */ }
+        try {
+            return sol::make_object(
+                lua, static_cast<lua_Integer>(std::strtoll(v, nullptr, 10)));
+        } catch (...) { /* fall through */
+        }
     }
     if (t == 16) {
         // boolean — libpq renders 't'/'f'.
         return sol::make_object(lua, s == "t");
     }
     if (t == 700 || t == 701 || t == 1700) {
-        try { return sol::make_object(lua, std::stod(s)); }
-        catch (...) { /* fall through */ }
+        try {
+            return sol::make_object(lua, std::stod(s));
+        } catch (...) { /* fall through */
+        }
     }
     return sol::make_object(lua, s);
 }
@@ -711,9 +718,9 @@ lua_params collect_lua_params(sol::optional<sol::table> params,
             out.storage.push_back(v.as<std::string>());
             out.ptrs.push_back(out.storage.back().c_str());
         } else {
-            if (err_msg) *err_msg =
-                "unsupported parameter type at index " + std::to_string(i + 1) +
-                "; bound as NULL";
+            if (err_msg)
+                *err_msg = "unsupported parameter type at index " +
+                           std::to_string(i + 1) + "; bound as NULL";
             out.storage.emplace_back();
             out.ptrs.push_back(nullptr);
         }
@@ -726,25 +733,19 @@ lua_params collect_lua_params(sol::optional<sol::table> params,
 //   "query_one" -> single row table or nil
 //   "execute"   -> table {affected=N}
 // On error, *ok is set to false and *err_out receives an error table.
-sol::object run_statement(sol::state_view lua, PGconn* conn,
-                          const std::string& sql,
-                          sol::optional<sol::table> params,
-                          const char* mode,  // "query" | "query_one" | "execute"
-                          bool* ok, sol::table* err_out,
-                          bool* conn_bad) {
+sol::object run_statement(
+    sol::state_view lua, PGconn* conn, const std::string& sql,
+    sol::optional<sol::table> params,
+    const char* mode,  // "query" | "query_one" | "execute"
+    bool* ok, sol::table* err_out, bool* conn_bad) {
     std::string bind_err;
     lua_params lp = collect_lua_params(params, &bind_err);
 
     std::string rewritten = rewrite_placeholders(sql.c_str());
 
-    PGresult* res = PQexecParams(conn,
-                                 rewritten.c_str(),
-                                 static_cast<int>(lp.ptrs.size()),
-                                 nullptr,
-                                 lp.ptrs.data(),
-                                 nullptr,
-                                 nullptr,
-                                 0);
+    PGresult* res =
+        PQexecParams(conn, rewritten.c_str(), static_cast<int>(lp.ptrs.size()),
+                     nullptr, lp.ptrs.data(), nullptr, nullptr, 0);
     if (!res) {
         // Out of memory on libpq side — conn is almost certainly toast.
         *ok = false;
@@ -767,16 +768,16 @@ sol::object run_statement(sol::state_view lua, PGconn* conn,
     if (std::strcmp(mode, "execute") == 0) {
         char* affected = PQcmdTuples(res);
         auto t = lua.create_table();
-        t["affected"] = affected && affected[0]
-                            ? static_cast<lua_Integer>(
-                                  std::strtoll(affected, nullptr, 10))
-                            : 0;
+        t["affected"] =
+            affected && affected[0]
+                ? static_cast<lua_Integer>(std::strtoll(affected, nullptr, 10))
+                : 0;
         result = t;
     } else if (std::strcmp(mode, "query_one") == 0) {
         if (PQntuples(res) > 0) {
             result = pg_row_to_lua(lua, res, 0);
         } else {
-            result = sol::nil;
+            result = sol::object(sol::nil);  // no rows
         }
     } else {  // "query"
         auto rows = lua.create_table();
@@ -801,7 +802,8 @@ sol::table make_handle_proxy(sol::state_view lua, pgsql_instance* inst,
 sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
     auto proxy = lua.create_table();
 
-    proxy.set_function("query",
+    proxy.set_function(
+        "query",
         [inst](sol::this_state s, std::string sql,
                sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -810,21 +812,22 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             pool_guard g = acquire_conn(inst, &err);
             if (!g.get()) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", err));
                 return results;
             }
             bool ok = false, conn_bad = false;
             sol::table err_t;
-            sol::object rows = run_statement(lua, g.get(), sql, params,
-                                             "query", &ok, &err_t, &conn_bad);
+            sol::object rows = run_statement(lua, g.get(), sql, params, "query",
+                                             &ok, &err_t, &conn_bad);
             g.bad = conn_bad;  // let pool_guard PQfinish dead conns
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? rows : err_t);
             return results;
         });
 
-    proxy.set_function("query_one",
+    proxy.set_function(
+        "query_one",
         [inst](sol::this_state s, std::string sql,
                sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -833,21 +836,22 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             pool_guard g = acquire_conn(inst, &err);
             if (!g.get()) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", err));
                 return results;
             }
             bool ok = false, conn_bad = false;
             sol::table err_t;
-            sol::object row = run_statement(lua, g.get(), sql, params,
-                                            "query_one", &ok, &err_t, &conn_bad);
+            sol::object row = run_statement(
+                lua, g.get(), sql, params, "query_one", &ok, &err_t, &conn_bad);
             g.bad = conn_bad;
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? row : err_t);
             return results;
         });
 
-    proxy.set_function("execute",
+    proxy.set_function(
+        "execute",
         [inst](sol::this_state s, std::string sql,
                sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -856,8 +860,8 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             pool_guard g = acquire_conn(inst, &err);
             if (!g.get()) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", err));
                 return results;
             }
             bool ok = false, conn_bad = false;
@@ -870,7 +874,8 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             return results;
         });
 
-    proxy.set_function("transaction",
+    proxy.set_function(
+        "transaction",
         [inst](sol::this_state s,
                sol::protected_function callback) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -879,8 +884,8 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             pool_guard g = acquire_conn(inst, &err);
             if (!g.get()) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "connection_failed", err));
+                results.push_back(
+                    make_error_table(lua, "connection_failed", err));
                 return results;
             }
 
@@ -946,13 +951,12 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
                     if (PQresultStatus(res) == PGRES_COMMAND_OK) {
                         tx_ok = true;
                     } else {
-                        const char* sqlstate = PQresultErrorField(
-                            res, PG_DIAG_SQLSTATE);
+                        const char* sqlstate =
+                            PQresultErrorField(res, PG_DIAG_SQLSTATE);
                         tx_err_code = map_sqlstate(sqlstate);
                         const char* m = PQresultErrorMessage(res);
-                        tx_err_msg = m && m[0] ? m
-                                               : (std::string(tx_sql) +
-                                                  " failed");
+                        tx_err_msg =
+                            m && m[0] ? m : (std::string(tx_sql) + " failed");
                         if (PQstatus(g.get()) == CONNECTION_BAD)
                             conn_bad = true;
                     }
@@ -963,25 +967,24 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
 
             if (!tx_ok) {
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, tx_err_code, tx_err_msg));
+                results.push_back(
+                    make_error_table(lua, tx_err_code, tx_err_msg));
                 return results;
             }
 
             if (saw_error) {
                 // Callback raised — soft failure after successful rollback.
                 results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, "transaction_rolled_back",
-                    "callback raised an error"));
+                results.push_back(make_error_table(lua,
+                                                   "transaction_rolled_back",
+                                                   "callback raised an error"));
                 return results;
             }
 
             if (user_abort) {
                 results.push_back(sol::make_object(lua, false));
                 results.push_back(make_error_table(
-                    lua, "transaction_rolled_back",
-                    "callback returned false"));
+                    lua, "transaction_rolled_back", "callback returned false"));
                 return results;
             }
 
@@ -1005,45 +1008,51 @@ sol::table make_handle_proxy(sol::state_view lua, pgsql_instance* /*inst*/,
                              PGconn* conn, bool* conn_bad) {
     auto proxy = lua.create_table();
 
-    proxy.set_function("query",
-        [conn, conn_bad](sol::this_state s, std::string sql,
-                         sol::optional<sol::table> params) -> sol::variadic_results {
+    proxy.set_function(
+        "query",
+        [conn, conn_bad](
+            sol::this_state s, std::string sql,
+            sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
             bool ok = false, cd = false;
             sol::table err_t;
-            sol::object rows = run_statement(lua, conn, sql, params,
-                                             "query", &ok, &err_t, &cd);
+            sol::object rows = run_statement(lua, conn, sql, params, "query",
+                                             &ok, &err_t, &cd);
             if (cd) *conn_bad = true;
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? rows : err_t);
             return results;
         });
 
-    proxy.set_function("query_one",
-        [conn, conn_bad](sol::this_state s, std::string sql,
-                         sol::optional<sol::table> params) -> sol::variadic_results {
+    proxy.set_function(
+        "query_one",
+        [conn, conn_bad](
+            sol::this_state s, std::string sql,
+            sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
             bool ok = false, cd = false;
             sol::table err_t;
-            sol::object row = run_statement(lua, conn, sql, params,
-                                            "query_one", &ok, &err_t, &cd);
+            sol::object row = run_statement(lua, conn, sql, params, "query_one",
+                                            &ok, &err_t, &cd);
             if (cd) *conn_bad = true;
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? row : err_t);
             return results;
         });
 
-    proxy.set_function("execute",
-        [conn, conn_bad](sol::this_state s, std::string sql,
-                         sol::optional<sol::table> params) -> sol::variadic_results {
+    proxy.set_function(
+        "execute",
+        [conn, conn_bad](
+            sol::this_state s, std::string sql,
+            sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
             sol::variadic_results results;
             bool ok = false, cd = false;
             sol::table err_t;
-            sol::object res = run_statement(lua, conn, sql, params,
-                                            "execute", &ok, &err_t, &cd);
+            sol::object res = run_statement(lua, conn, sql, params, "execute",
+                                            &ok, &err_t, &cd);
             if (cd) *conn_bad = true;
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? res : err_t);
@@ -1053,8 +1062,7 @@ sol::table make_handle_proxy(sol::state_view lua, pgsql_instance* /*inst*/,
     return proxy;
 }
 
-int register_lua_impl(shield_plugin_instance_v1* self,
-                      struct lua_State* L,
+int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
                       shield_error_v1* err) {
     // register_lua installs the shared, idempotent callable namespace
     // shield.database.postgresql. Lua passes a binding logical name;
@@ -1077,11 +1085,12 @@ int register_lua_impl(shield_plugin_instance_v1* self,
         auto* owner = reinterpret_cast<pgsql_instance*>(self);
         auto ns = lua.create_table();
         auto mt = lua.create_table();
-        mt.set_function("__call",
+        mt.set_function(
+            "__call",
             [host_api = owner ? owner->host_api : nullptr,
              ctx = owner ? owner->ctx : nullptr](
-               sol::this_state s, sol::table /*self*/,
-               sol::optional<std::string> binding) -> sol::variadic_results {
+                sol::this_state s, sol::table /*self*/,
+                sol::optional<std::string> binding) -> sol::variadic_results {
                 sol::state_view lua(s);
                 sol::variadic_results results;
                 std::string logical = binding.value_or("");
@@ -1120,8 +1129,7 @@ void drain_pool(pgsql_instance* inst) {
 }
 
 int pg_create(const shield_plugin_create_args_v1* args,
-              shield_plugin_instance_v1** out,
-              shield_error_v1* err) {
+              shield_plugin_instance_v1** out, shield_error_v1* err) {
     (void)err;
     auto* inst = new pgsql_instance;
     inst->host_api = args ? args->host_api : nullptr;
@@ -1140,7 +1148,9 @@ int pg_create(const shield_plugin_create_args_v1* args,
             return &db_vtable();
         return nullptr;
     };
-    inst->shell.start = [](shield_plugin_instance_v1*, shield_error_v1*) { return 0; };
+    inst->shell.start = [](shield_plugin_instance_v1*, shield_error_v1*) {
+        return 0;
+    };
     inst->shell.shutdown = [](shield_plugin_instance_v1* self) {
         // shell is the first member of pgsql_instance (offset 0), so self
         // points at the enclosing pgsql_instance. Standard C-ABI pattern.
@@ -1156,8 +1166,8 @@ int pg_create(const shield_plugin_create_args_v1* args,
 
 }  // namespace
 
-extern "C" SHIELD_PLUGIN_EXPORT
-const struct shield_plugin_abi_v1* shield_plugin_get_v1(void) {
+extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
+shield_plugin_get_v1(void) {
     static const struct shield_plugin_abi_v1 abi = {
         SHIELD_PLUGIN_ABI_VERSION,
         sizeof(shield_plugin_abi_v1),

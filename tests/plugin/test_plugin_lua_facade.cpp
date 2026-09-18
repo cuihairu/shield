@@ -108,6 +108,20 @@ BOOST_AUTO_TEST_CASE(DatabaseMongodbFacadeSoftFailure) {
 }
 #endif
 
+#ifdef SHIELD_FACADE_MYSQL_LIBRARY
+BOOST_AUTO_TEST_CASE(DatabaseMysqlFacadeSoftFailure) {
+    facade_soft_failure(SHIELD_FACADE_MYSQL_LIBRARY, "shield.database.mysql",
+                        kSoftFailureScript);
+}
+#endif
+
+#ifdef SHIELD_FACADE_POSTGRESQL_LIBRARY
+BOOST_AUTO_TEST_CASE(DatabasePostgresqlFacadeSoftFailure) {
+    facade_soft_failure(SHIELD_FACADE_POSTGRESQL_LIBRARY,
+                        "shield.database.postgresql", kSoftFailureScript);
+}
+#endif
+
 #ifdef SHIELD_FACADE_CACHE_REDIS_LIBRARY
 BOOST_AUTO_TEST_CASE(CacheRedisFacadeSoftFailure) {
     facade_soft_failure(SHIELD_FACADE_CACHE_REDIS_LIBRARY, "shield.cache.redis",

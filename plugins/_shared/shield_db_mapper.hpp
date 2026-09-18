@@ -313,7 +313,9 @@ end
 // Thread-safety: each lua_State is single-threaded by Shield's contract
 // (one VM per service), so no lock is needed around the registry access.
 inline bool apply_db_mapper_api(sol::state_view lua, sol::table proxy) {
-    if (!lua.valid() || !proxy.valid()) return false;
+    // sol2 3.5 dropped state_view::valid(); a null lua_State is the only
+    // invalid state a state_view can represent.
+    if (lua.lua_state() == nullptr || !proxy.valid()) return false;
 
     sol::table reg = lua.registry();
     sol::optional<sol::protected_function> cached =
@@ -327,12 +329,13 @@ inline bool apply_db_mapper_api(sol::state_view lua, sol::table proxy) {
         // Compile the chunk once. lua.load() is unambiguous compared to
         // safe_script's many overloads. The chunk returns a function
         // (closure over local helpers) that we then invoke with the proxy.
-        sol::load_result load_res = lua.load(
-            std::string(kDbMapperLuaScript),
-            "shield_db_mapper",
-            sol::load_mode::text);
-        if (!load_res.valid() ||
-            load_res.get_type() != sol::type::function) {
+        sol::load_result load_res =
+            lua.load(std::string(kDbMapperLuaScript), "shield_db_mapper",
+                     sol::load_mode::text);
+        // load_result::get_type() is gone in sol2 3.5. A successful load
+        // always pushes the compiled chunk (a function); a failed load is
+        // covered by valid(), so the old type check was redundant.
+        if (!load_res.valid()) {
             return false;
         }
         apply_fn = load_res.get<sol::protected_function>();

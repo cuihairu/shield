@@ -418,6 +418,8 @@ if(SHIELD_BUILD_DB_PLUGIN_SQLITE
 
     foreach(_facade IN
             ITEMS "SQLITE:SHIELD_BUILD_DB_PLUGIN_SQLITE:shield_database_sqlite"
+                  "MYSQL:SHIELD_BUILD_DB_PLUGIN_MYSQL:shield_db_mysql"
+                  "POSTGRESQL:SHIELD_BUILD_DB_PLUGIN_POSTGRESQL:shield_db_pgsql"
                   "MONGODB:SHIELD_BUILD_PLUGIN_MONGODB:shield_doc_mongodb"
                   "CACHE_REDIS:SHIELD_BUILD_PLUGIN_CACHE_REDIS:shield_cache_redis"
                   "QUEUE_REDIS:SHIELD_BUILD_PLUGIN_QUEUE_REDIS:shield_queue_redis"
