@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -12,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -42,6 +44,33 @@ sol::function anchor_to_main_thread(sol::function fn) {
         return fn;
     }
     return sol::function(main_state, sol::ref_index(fn.registry_index()));
+}
+
+// Diagnostic panic handler: the default sol at_panic throws with only the
+// generic "An unexpected error occurred" message, which hides the real Lua
+// error (and whether it was a non-string error object) from host logs. Dump
+// the error object plus a traceback to stderr so CI logs can answer "what
+// panicked, where", then mirror the default throw behaviour (a plain return
+// would make Lua exit the process).
+int shield_lua_panic(lua_State* L) {
+    std::string detail;
+    if (lua_type(L, -1) == LUA_TSTRING) {
+        const char* msg = lua_tostring(L, -1);
+        detail = msg != nullptr ? msg : "<null error string>";
+    } else {
+        detail = std::string("non-string error object (type=") +
+                 lua_typename(L, lua_type(L, -1)) + ")";
+    }
+    luaL_traceback(L, L, detail.c_str(), 0);
+    const char* tb = lua_tostring(L, -1);
+    std::fprintf(stderr, "*** shield lua panic: %s\n",
+                 tb != nullptr ? tb : detail.c_str());
+    std::fflush(stderr);
+    throw std::runtime_error("lua: error: " + detail);
+}
+
+void install_panic_handler(const std::shared_ptr<sol::state>& state) {
+    lua_atpanic(state->lua_state(), shield_lua_panic);
 }
 }  // namespace
 
@@ -97,6 +126,7 @@ public:
             sol::lib::string,    // GCOVR_EXCL_LINE (line-continuation artifact)
             sol::lib::table,     // GCOVR_EXCL_LINE (line-continuation artifact)
             sol::lib::math, sol::lib::io, sol::lib::os, sol::lib::coroutine);
+        install_panic_handler(state_);
 
         // Set Lua module search path from configuration
         std::string module_path = shield::config::get(
@@ -142,6 +172,7 @@ struct LuaRuntime::Impl {
     Impl() : default_state(std::make_shared<sol::state>()) {
         default_state->open_libraries(sol::lib::base, sol::lib::string,
                                       sol::lib::table, sol::lib::math);
+        install_panic_handler(default_state);
 
         // Load cache configuration
         cache_config.enabled =

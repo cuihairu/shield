@@ -11,6 +11,7 @@
 #include <caf/send.hpp>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <deque>
 #include <filesystem>
 #include <future>
@@ -1842,6 +1843,36 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                     error = init_result.error_message;
                     if (error.find("call timeout") != std::string::npos ||
                         init_overran) {
+                        // Diagnostic for spawn-hang investigations: surface
+                        // the pending-call bookkeeping at expiry so logs can
+                        // distinguish "response lost" from "requeue loop".
+                        // GCOVR_EXCL_START (diagnostic dump: this branch is
+                        // the external-driver expiry arm, exercised only by
+                        // end-to-end spawn timeouts on loaded machines)
+                        {
+                            std::shared_lock diag_lock(impl_->registry_mutex);
+                            std::fprintf(
+                                stderr,
+                                "*** shield spawn timeout diag: service=%s "
+                                "pending_calls=%zu pending_sync_calls=%zu "
+                                "driving=%zu\n",
+                                service_name.c_str(),
+                                impl_->pending_calls.size(),
+                                impl_->pending_sync_calls.size(),
+                                impl_->driving_cos.size());
+                            for (const auto& [diag_session, diag_pc] :
+                                 impl_->pending_calls) {
+                                std::fprintf(stderr,
+                                             "***   session=%llu caller=%s "
+                                             "requeues=%d\n",
+                                             static_cast<unsigned long long>(
+                                                 diag_session),
+                                             diag_pc.caller_service.c_str(),
+                                             diag_pc.requeues);
+                            }
+                            std::fflush(stderr);
+                        }
+                        // GCOVR_EXCL_STOP
                         return SpawnResult::error(
                             "spawn timeout: on_init exceeded " +
                             std::to_string(spawn_timeout_ms) + "ms limit");
@@ -3881,7 +3912,9 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
     caf::actor caller_actor;
     bool requeue = false;
     {
-        std::shared_lock lock(impl_->registry_mutex);
+        // Unique, not shared: the requeue arm below mutates requeues and
+        // deadline_ms, and shared_lock holders may not write.
+        std::unique_lock lock(impl_->registry_mutex);
         auto it = impl_->pending_calls.find(session);
         if (it == impl_->pending_calls.end()) {
             return;
