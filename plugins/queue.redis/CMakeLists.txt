@@ -10,6 +10,7 @@ add_library(shield_queue_redis MODULE shield_queue_redis.cpp)
 target_include_directories(shield_queue_redis
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/plugins/_shared
         ${PROJECT_SOURCE_DIR}/plugins/queue.redis
         ${LUA_INCLUDE_DIR}
         ${SOL2_INCLUDE_DIRS}

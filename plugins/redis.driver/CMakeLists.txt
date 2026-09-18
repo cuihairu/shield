@@ -10,6 +10,7 @@ add_library(shield_redis_driver MODULE shield_redis_driver.cpp)
 target_include_directories(shield_redis_driver
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/plugins/_shared
         ${PROJECT_SOURCE_DIR}/plugins/redis.driver
         ${LUA_INCLUDE_DIR}
         ${SOL2_INCLUDE_DIRS}

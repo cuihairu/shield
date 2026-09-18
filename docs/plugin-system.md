@@ -667,16 +667,22 @@ namespace 直接来自 manifest 的 `lua.namespace` 字段（或省略时从 `id
 
 ```lua
 -- 业务 Lua 代码
-local mongo_default = shield.database.mongodb()                  -- 插件定义的默认 binding
-local mongo_audit   = shield.database.mongodb("document.audit")  -- 指定 binding 逻辑名
+local mongo_default = shield.database.mongodb("database.default")  -- 指定 binding 逻辑名
+local mongo_audit   = shield.database.mongodb("document.audit")    -- 另一 binding
 
 -- 返回的 proxy 绑定到 binding 解析出的 instance，调用时直接路由到 C ABI
 mongo_audit:insert_one("events", { type = "login", user = "alice" })
 
 local cursor = mongo_default:find("users", { age = { ["$gt"] = 18 } })
+
+-- 缺失/未配置 binding 的软失败形态（使用规则 5）：
+local proxy, err = shield.database.mongodb("ghost.binding")
+-- proxy == nil, err = { code = "module_unavailable", message = ..., binding = "ghost.binding" }
 ```
 
-C 侧实现：`register_lua` 创建 `shield.database.mongodb` 这个 table，metatable 的 `__call` 接收 binding 逻辑名，查 PluginHost 解析到对应实例并取得 `shield_document_v1*` 和插件连接句柄，构造 proxy。
+binding 逻辑名是必填参数（省略或解析失败一律软失败返回 `nil, { code = "module_unavailable" }`）；没有「插件默认 binding」隐式语义——业务代码显式声明依赖哪个逻辑名，与使用规则 2 的 `<interface-type>.<purpose>` 命名约定一致。
+
+C 侧实现：`register_lua` 创建 `shield.database.mongodb` 这个 table，metatable 的 `__call` 接收 binding 逻辑名，经共享 binding 解析（`resolve_lua_binding`）查 PluginHost；解析失败走 `push_module_unavailable` 软失败，成功则取得 `shield_document_v1*` 和插件连接句柄构造 proxy。
 
 ### 为什么 Lua 访问用 binding 而非 instance_id
 

@@ -392,3 +392,49 @@ endif()
 
 # Coverage-focused unit tests (one executable per src/ module).
 add_subdirectory(coverage)
+
+# ---------------------------------------------------------------------------
+# Plugin Lua facade contract (soft-failure shape of the callable namespaces).
+# Each official facade plugin case is enabled by its build switch, so this
+# test covers whatever plugins the current tree builds — no-op on trees with
+# optional plugins off (the optional-plugins CI builds them all).
+# ---------------------------------------------------------------------------
+if(SHIELD_BUILD_DB_PLUGIN_SQLITE
+   OR SHIELD_BUILD_PLUGIN_MONGODB
+   OR SHIELD_BUILD_PLUGIN_CACHE_REDIS
+   OR SHIELD_BUILD_PLUGIN_QUEUE_REDIS
+   OR SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS
+   OR SHIELD_BUILD_PLUGIN_REDIS_DRIVER)
+    add_executable(test_plugin_lua_facade plugin/test_plugin_lua_facade.cpp)
+    target_link_libraries(test_plugin_lua_facade
+        PRIVATE
+            shield_plugin
+            sol2::sol2
+            ${LUA_LIBRARIES}
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_plugin_lua_facade
+        PRIVATE ${CMAKE_SOURCE_DIR}/include ${LUA_INCLUDE_DIR})
+
+    foreach(_facade IN
+            ITEMS "SQLITE:SHIELD_BUILD_DB_PLUGIN_SQLITE:shield_database_sqlite"
+                  "MONGODB:SHIELD_BUILD_PLUGIN_MONGODB:shield_doc_mongodb"
+                  "CACHE_REDIS:SHIELD_BUILD_PLUGIN_CACHE_REDIS:shield_cache_redis"
+                  "QUEUE_REDIS:SHIELD_BUILD_PLUGIN_QUEUE_REDIS:shield_queue_redis"
+                  "LEADERBOARD_REDIS:SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS:shield_leaderboard_redis"
+                  "REDIS_DRIVER:SHIELD_BUILD_PLUGIN_REDIS_DRIVER:shield_redis_driver")
+        string(REPLACE ":" ";" _facade_parts "${_facade}")
+        list(GET _facade_parts 0 _facade_name)
+        list(GET _facade_parts 1 _facade_switch)
+        list(GET _facade_parts 2 _facade_target)
+        if(${_facade_switch})
+            target_compile_definitions(test_plugin_lua_facade PRIVATE
+                "SHIELD_FACADE_${_facade_name}_LIBRARY=\"$<TARGET_FILE:${_facade_target}>\"")
+            add_dependencies(test_plugin_lua_facade ${_facade_target})
+        endif()
+    endforeach()
+
+    add_test(NAME test_plugin_lua_facade COMMAND test_plugin_lua_facade)
+    set_tests_properties(test_plugin_lua_facade PROPERTIES LABELS "plugin" TIMEOUT 60)
+    shield_copy_runtime_dlls(test_plugin_lua_facade)
+endif()

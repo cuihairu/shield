@@ -14,6 +14,7 @@ add_library(shield_cache_redis MODULE shield_cache_redis.cpp)
 target_include_directories(shield_cache_redis
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/plugins/_shared
         ${PROJECT_SOURCE_DIR}/plugins/cache.redis
         ${LUA_INCLUDE_DIR}
         ${SOL2_INCLUDE_DIRS}

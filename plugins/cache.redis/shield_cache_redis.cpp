@@ -34,6 +34,7 @@
 #include "shield/plugin/cache.h"
 #include "shield/plugin/host_api.h"
 #include "shield/plugin/redis.h"
+#include "shield_lua_plugin_binding.hpp"
 
 // shield_cache_conn is opaque in cache.h; concrete layout lives here.
 // When redis_driver is set, all operations go through redis.driver's vtable.
@@ -873,15 +874,22 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
         shield_plugin_context_v1* ctx = current->ctx;
         mt.set_function(
             "__call",
-            [host_api, ctx](sol::this_state s, sol::table /*self*/,
-                            std::string binding) -> sol::object {
+            [host_api, ctx](
+                sol::this_state s, sol::table /*self*/,
+                sol::optional<std::string> binding) -> sol::variadic_results {
                 sol::state_view lua(s);
-                const char* instance_id =
-                    host_api->binding_instance_id(ctx, binding.c_str());
-                if (!instance_id) return sol::nil;
-                auto* inst = find_instance(instance_id);
-                if (!inst) return sol::nil;
-                return sol::make_object(lua, make_instance_proxy(lua, inst));
+                sol::variadic_results results;
+                std::string logical = binding.value_or("");
+                auto* inst = shield::plugins::resolve_lua_binding(
+                    host_api, ctx, logical, find_instance);
+                if (!inst) {
+                    shield::plugins::push_module_unavailable(results, lua,
+                                                             logical);
+                    return results;
+                }
+                results.push_back(
+                    sol::make_object(lua, make_instance_proxy(lua, inst)));
+                return results;
             });
         ns[sol::metatable_key] = mt;
         cache["redis"] = ns;

@@ -612,13 +612,11 @@ off()
 
 ### 调用形态
 
-每个插件 namespace 是一个 **callable table**：传 `binding` 逻辑名返回绑定到目标 instance 的 proxy。binding 来自主配置 `plugins.bindings`，host 通过 binding 解析到 instance，再向该 instance 取得对应 interface。插件可以为无参调用提供自己的默认 binding 策略，但推荐业务显式传 binding 名。
+每个插件 namespace 是一个 **callable table**：传 `binding` 逻辑名返回绑定到目标 instance 的 proxy。binding 来自主配置 `plugins.bindings`，host 通过 binding 解析到 instance，再向该 instance 取得对应 interface。binding 是必填参数——省略或解析失败一律软失败（`nil, { code = "module_unavailable" }`），不存在隐式默认 binding。
 
 ```lua
--- 默认实例（插件定义的默认 binding，若未配置则返回 module_unavailable）
-local db = shield.database.mongodb()
-
--- 指定 binding 逻辑名
+-- 显式指定 binding 逻辑名
+local db       = shield.database.mongodb("database.default")
 local db_audit = shield.database.mongodb("document.audit")
 local db_game  = shield.database.mysql("database.default")
 
