@@ -644,9 +644,9 @@ sol::table make_error_from_result(sol::state_view lua, PGresult* res) {
 // from "definitely float" (FLOAT4/FLOAT8/NUMERIC) from text. NULL stays nil.
 sol::object pg_cell_to_lua(sol::state_view lua, PGresult* res, int row,
                            int col) {
-    if (PQgetisnull(res, row, col)) return sol::nil;
+    if (PQgetisnull(res, row, col)) return sol::lua_nil;
     const char* v = PQgetvalue(res, row, col);
-    if (!v) return sol::nil;
+    if (!v) return sol::lua_nil;
     Oid t = PQftype(res, col);
     std::string s = v;
     // Numeric types: INT2=21, INT4=23, INT8=20, OID=26. BOOL=16.
@@ -702,7 +702,7 @@ lua_params collect_lua_params(sol::optional<sol::table> params,
     out.ptrs.reserve(positional.size());
     for (size_t i = 0; i < positional.size(); ++i) {
         const sol::object& v = positional[i];
-        if (!v.valid() || v == sol::nil) {
+        if (!v.valid() || v == sol::lua_nil) {
             out.storage.emplace_back();
             out.ptrs.push_back(nullptr);
         } else if (v.is<bool>()) {
@@ -752,7 +752,7 @@ sol::object run_statement(
         *conn_bad = true;
         *err_out = make_error_table(lua, "connection_lost",
                                     "postgresql: PQexecParams returned NULL");
-        return sol::nil;
+        return sol::lua_nil;
     }
 
     ExecStatusType status = PQresultStatus(res);
@@ -761,10 +761,10 @@ sol::object run_statement(
         if (PQstatus(conn) == CONNECTION_BAD) *conn_bad = true;
         PQclear(res);
         *ok = false;
-        return sol::nil;
+        return sol::lua_nil;
     }
 
-    sol::object result = sol::nil;
+    sol::object result = sol::lua_nil;
     if (std::strcmp(mode, "execute") == 0) {
         char* affected = PQcmdTuples(res);
         auto t = lua.create_table();
@@ -777,7 +777,7 @@ sol::object run_statement(
         if (PQntuples(res) > 0) {
             result = pg_row_to_lua(lua, res, 0);
         } else {
-            result = sol::object(sol::nil);  // no rows
+            result = sol::object(sol::lua_nil);  // no rows
         }
     } else {  // "query"
         auto rows = lua.create_table();

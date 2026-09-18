@@ -585,7 +585,7 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 }
 
 bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
-    if (!v.valid() || v == sol::nil) {
+    if (!v.valid() || v == sol::lua_nil) {
         if (err) *err = "message is nil";
         return false;
     }
@@ -613,7 +613,7 @@ bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
         try {
             std::function<nlohmann::json(sol::object)> encode;
             encode = [&encode](sol::object o) -> nlohmann::json {
-                if (!o.valid() || o == sol::nil) return nullptr;
+                if (!o.valid() || o == sol::lua_nil) return nullptr;
                 if (o.is<bool>()) return o.as<bool>();
                 if (o.is<lua_Integer>()) return o.as<lua_Integer>();
                 if (o.is<double>()) return o.as<double>();

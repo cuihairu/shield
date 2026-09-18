@@ -403,15 +403,15 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 }
 
 // Extract a Lua string from a shield_redis_value_v1 (STRING or NIL -> nil).
-// Returns sol::nil for NIL/NULL, or a Lua string for STRING type.
+// Returns sol::lua_nil for NIL/NULL, or a Lua string for STRING type.
 static sol::object redis_value_to_lua_string(sol::state_view lua,
                                              const shield_redis_value_v1* v) {
-    if (!v || v->type == SHIELD_REDIS_NIL) return sol::nil;
+    if (!v || v->type == SHIELD_REDIS_NIL) return sol::lua_nil;
     if (v->type == SHIELD_REDIS_STRING && v->str) {
         return sol::make_object(
             lua, std::string(v->str, static_cast<size_t>(v->str_len)));
     }
-    return sol::nil;
+    return sol::lua_nil;
 }
 
 // Build a per-instance proxy table. Each method opens a redis handle, runs
@@ -459,7 +459,7 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
                 if (v) {
                     results.push_back(sol::make_object(lua, *v));
                 } else {
-                    results.push_back(sol::nil);
+                    results.push_back(sol::lua_nil);
                 }
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
@@ -738,7 +738,7 @@ sol::table make_instance_proxy(sol::state_view lua, cache_instance* inst) {
                 if (v)
                     results.push_back(sol::make_object(lua, *v));
                 else
-                    results.push_back(sol::nil);
+                    results.push_back(sol::lua_nil);
             } catch (const std::exception& e) {
                 results.push_back(sol::make_object(lua, false));
                 results.push_back(

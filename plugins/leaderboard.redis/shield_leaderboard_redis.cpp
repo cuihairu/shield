@@ -859,7 +859,7 @@ sol::table make_instance_proxy(sol::state_view lua,
                     // Player not present. (true, nil) so callers can
                     // distinguish "board ok, no entry" from a hard failure.
                     results.push_back(sol::make_object(lua, true));
-                    results.push_back(sol::make_object(lua, sol::nil));
+                    results.push_back(sol::make_object(lua, sol::lua_nil));
                     return results;
                 }
                 BoardConfig bc = resolve_board_config(inst, board_name);

@@ -603,7 +603,7 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 //   bytes     -> string (raw bytes)
 //   anything else -> nil (we don't know the layout)
 sol::object value_to_lua(sol::state_view lua, const mysqlx::Value& v) {
-    if (v.isNull()) return sol::nil;
+    if (v.isNull()) return sol::lua_nil;
 
     // Integer family first (covers TINYINT/SMALLINT/INT/BIGINT/YEAR).
     try {
@@ -645,7 +645,7 @@ sol::object value_to_lua(sol::state_view lua, const mysqlx::Value& v) {
         return sol::make_object(lua, std::move(s));
     } catch (...) {
     }
-    return sol::nil;
+    return sol::lua_nil;
 }
 
 // Convert a mysqlx::Row into a Lua table keyed by column name. Column names
@@ -669,7 +669,7 @@ sol::table row_to_lua(sol::state_view lua, const mysqlx::Row& row,
 // Bind one Lua value onto a SqlStatement as a `?` placeholder. mysqlx accepts
 // std::string, int64, double, bool, and a few others. nil binds NULL.
 void bind_lua_param(mysqlx::SqlStatement& stmt, const sol::object& v) {
-    if (!v.valid() || v == sol::nil) {
+    if (!v.valid() || v == sol::lua_nil) {
         stmt.bind(static_cast<const char*>(nullptr));
         return;
     }
@@ -759,7 +759,7 @@ sol::object run_statement(sol::state_view lua, mysqlx::Session& session,
             // SQL NULL".
             if (result.count() == 0) {
                 *ok = true;
-                return sol::nil;
+                return sol::lua_nil;
             }
             mysqlx::Row row = result.fetchOne();
             *ok = true;
@@ -785,18 +785,18 @@ sol::object run_statement(sol::state_view lua, mysqlx::Session& session,
                        std::strcmp(code, "connection_timeout") == 0);
         }
         *err_out = make_error_table(lua, code, msg);
-        return sol::nil;
+        return sol::lua_nil;
     } catch (const std::exception& e) {
         *ok = false;
         if (broken) *broken = false;
         *err_out = make_error_table(lua, "db_query_failed", e.what());
-        return sol::nil;
+        return sol::lua_nil;
     } catch (...) {
         *ok = false;
         if (broken) *broken = false;
         *err_out =
             make_error_table(lua, "db_query_failed", "unknown mysql error");
-        return sol::nil;
+        return sol::lua_nil;
     }
 }
 

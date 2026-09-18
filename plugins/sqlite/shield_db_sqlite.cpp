@@ -367,7 +367,7 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 //   anything else    -> NULL (with a soft warning in *err_msg if provided)
 int bind_lua_param(sqlite3_stmt* stmt, int idx, const sol::object& v,
                    std::string* err_msg) {
-    if (!v.valid() || v == sol::nil) {
+    if (!v.valid() || v == sol::lua_nil) {
         return sqlite3_bind_null(stmt, idx);
     }
     // Boolean first — sol casts bool to int otherwise.
@@ -411,12 +411,12 @@ sol::table row_to_lua(sol::state_view lua, sqlite3_stmt* stmt) {
                 break;
             case SQLITE_TEXT: {
                 const unsigned char* t = sqlite3_column_text(stmt, c);
-                // Split into branches: a ternary of std::string vs sol::nil
+                // Split into branches: a ternary of std::string vs sol::lua_nil
                 // is ambiguous under sol2 3.5.
                 if (t) {
                     row[name] = std::string(reinterpret_cast<const char*>(t));
                 } else {
-                    row[name] = sol::nil;
+                    row[name] = sol::lua_nil;
                 }
                 break;
             }
@@ -427,12 +427,12 @@ sol::table row_to_lua(sol::state_view lua, sqlite3_stmt* stmt) {
                     row[name] = std::string(static_cast<const char*>(b),
                                             static_cast<size_t>(sz));
                 } else {
-                    row[name] = sol::nil;
+                    row[name] = sol::lua_nil;
                 }
                 break;
             }
             default:
-                row[name] = sol::nil;  // SQLITE_NULL
+                row[name] = sol::lua_nil;  // SQLITE_NULL
                 break;
         }
     }
@@ -459,7 +459,7 @@ sol::object run_statement(
         *ok = false;
         *err_out =
             make_error_table(lua, map_sqlite_error(rc), sqlite3_errmsg(db));
-        return sol::nil;
+        return sol::lua_nil;
     }
     // Bind parameters (Lua sequence table 1..N). Collect positional values
     // first to avoid any iterator invalidation from stack work during bind.
@@ -479,12 +479,12 @@ sol::object run_statement(
                 *err_out = make_error_table(
                     lua, map_sqlite_error(brc),
                     bind_err.empty() ? sqlite3_errmsg(db) : bind_err);
-                return sol::nil;
+                return sol::lua_nil;
             }
         }
     }
 
-    sol::object result = sol::nil;
+    sol::object result = sol::lua_nil;
     if (std::strcmp(mode, "execute") == 0) {
         // Step once; we don't collect rows for DML.
         rc = sqlite3_step(stmt);
@@ -493,7 +493,7 @@ sol::object run_statement(
             *ok = false;
             *err_out =
                 make_error_table(lua, map_sqlite_error(rc), sqlite3_errmsg(db));
-            return sol::nil;
+            return sol::lua_nil;
         }
         auto t = lua.create_table();
         t["affected"] = static_cast<lua_Integer>(sqlite3_changes(db));
@@ -505,13 +505,13 @@ sol::object run_statement(
         if (rc == SQLITE_ROW) {
             result = row_to_lua(lua, stmt);
         } else if (rc == SQLITE_DONE) {
-            result = sol::object(sol::nil);  // no rows
+            result = sol::object(sol::lua_nil);  // no rows
         } else {
             sqlite3_finalize(stmt);
             *ok = false;
             *err_out =
                 make_error_table(lua, map_sqlite_error(rc), sqlite3_errmsg(db));
-            return sol::nil;
+            return sol::lua_nil;
         }
     } else {  // "query"
         auto rows = lua.create_table();
@@ -527,7 +527,7 @@ sol::object run_statement(
                 *ok = false;
                 *err_out = make_error_table(lua, map_sqlite_error(rc),
                                             sqlite3_errmsg(db));
-                return sol::nil;
+                return sol::lua_nil;
             }
         }
         result = rows;

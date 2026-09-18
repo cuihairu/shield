@@ -626,10 +626,10 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 
 // Convert a shield_redis_value_v1 to a Lua object.
 sol::object value_to_lua(sol::state_view lua, const shield_redis_value_v1* v) {
-    if (!v) return sol::nil;
+    if (!v) return sol::lua_nil;
     switch (v->type) {
         case SHIELD_REDIS_NIL:
-            return sol::nil;
+            return sol::lua_nil;
         case SHIELD_REDIS_STRING:
             return sol::make_object(
                 lua, std::string(v->str, static_cast<size_t>(v->str_len)));
@@ -650,7 +650,7 @@ sol::object value_to_lua(sol::state_view lua, const shield_redis_value_v1* v) {
             return sol::make_object(
                 lua, std::string(v->str, static_cast<size_t>(v->str_len)));
     }
-    return sol::nil;
+    return sol::lua_nil;
 }
 
 // Convert a Lua object to a string for command arguments.
@@ -681,7 +681,7 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
                                if (out && out->type != SHIELD_REDIS_NIL) {
                                    results.push_back(value_to_lua(lua, out));
                                } else {
-                                   results.push_back(sol::nil);
+                                   results.push_back(sol::lua_nil);
                                }
                            } else {
                                results.push_back(sol::make_object(lua, false));
@@ -748,7 +748,7 @@ sol::table make_instance_proxy(sol::state_view lua, redis_instance* inst) {
                                if (out && out->type != SHIELD_REDIS_NIL) {
                                    results.push_back(value_to_lua(lua, out));
                                } else {
-                                   results.push_back(sol::nil);
+                                   results.push_back(sol::lua_nil);
                                }
                            } else {
                                results.push_back(sol::make_object(lua, false));

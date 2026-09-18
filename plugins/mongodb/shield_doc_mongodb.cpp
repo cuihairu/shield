@@ -834,7 +834,7 @@ sol::table make_error_table(sol::state_view lua, const std::exception& e) {
 sol::object json_to_lua(sol::state_view lua, const nlohmann::json& j) {
     switch (j.type()) {
         case nlohmann::json::value_t::null:
-            return sol::nil;
+            return sol::lua_nil;
         case nlohmann::json::value_t::boolean:
             return sol::make_object(lua, j.get<bool>());
         case nlohmann::json::value_t::number_integer:
@@ -861,11 +861,11 @@ sol::object json_to_lua(sol::state_view lua, const nlohmann::json& j) {
             return t;
         }
         case nlohmann::json::value_t::binary:
-            return sol::nil;
+            return sol::lua_nil;
         case nlohmann::json::value_t::discarded:
-            return sol::nil;
+            return sol::lua_nil;
     }
-    return sol::nil;
+    return sol::lua_nil;
 }
 
 // Convert a Lua object into nlohmann::json (recursive). Tables with
@@ -1000,7 +1000,7 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                     results.push_back(json_to_lua(
                         lua, nlohmann::json::parse(bsoncxx::to_json(*maybe))));
                 } else {
-                    results.push_back(sol::nil);
+                    results.push_back(sol::lua_nil);
                 }
                 return results;
             } catch (const std::exception& e) {
@@ -1366,7 +1366,7 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                     results.push_back(json_to_lua(
                         lua, nlohmann::json::parse(bsoncxx::to_json(*maybe))));
                 } else {
-                    results.push_back(sol::nil);
+                    results.push_back(sol::lua_nil);
                 }
                 return results;
             } catch (const std::exception& e) {
