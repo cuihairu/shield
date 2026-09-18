@@ -186,6 +186,51 @@ struct RefsWalker {
     }
 };
 
+// One GC sample over the collector's knobs (owner-actor-thread only).
+// LUA_GCPARAM with val -1 is a pure read; the mode has no read-only probe —
+// LUA_GCGEN/LUA_GCINC switch the collector and return the mode they found,
+// so the probe below switches to generational and restores incremental when
+// that is what it disturbed. Safe under the actor-thread invariant: no
+// other code runs against this lua_State between the two calls, and a mode
+// switch does not touch the stored parameters.
+nlohmann::json collect_gc_info(lua_State* L) {
+    const int kb = lua_gc(L, LUA_GCCOUNT);
+    const int kb_rem = lua_gc(L, LUA_GCCOUNTB);
+    const bool running = lua_gc(L, LUA_GCISRUNNING) != 0;
+    const int prev_mode = lua_gc(L, LUA_GCGEN);
+    if (prev_mode == LUA_GCINC) {
+        lua_gc(L, LUA_GCINC);
+    }
+    // Each knob goes into a local first: lua_gc calls inline in the
+    // multi-line initializer below are a gcov aggregation artifact (the
+    // element lines never get credited — same class as nodes_visited).
+    const int p_minormul = lua_gc(L, LUA_GCPARAM, LUA_GCPMINORMUL, -1);
+    const int p_majorminor = lua_gc(L, LUA_GCPARAM, LUA_GCPMAJORMINOR, -1);
+    const int p_minormajor = lua_gc(L, LUA_GCPARAM, LUA_GCPMINORMAJOR, -1);
+    const int p_pause = lua_gc(L, LUA_GCPARAM, LUA_GCPPAUSE, -1);
+    const int p_stepmul = lua_gc(L, LUA_GCPARAM, LUA_GCPSTEPMUL, -1);
+    const int p_stepsize = lua_gc(L, LUA_GCPARAM, LUA_GCPSTEPSIZE, -1);
+    nlohmann::json params = {
+        {"minormul", p_minormul},     {"majorminor", p_majorminor},
+        {"minormajor", p_minormajor}, {"pause", p_pause},
+        {"stepmul", p_stepmul},       {"stepsize", p_stepsize},
+    };
+    // Computed before the initializer: arithmetic inline in this multi-line
+    // initializer lands on a line gcov never credits (same artifact class
+    // as nodes_visited below).
+    const std::int64_t total_bytes =
+        static_cast<std::int64_t>(kb) * 1024 + kb_rem;
+    // memory_kb keeps the legacy field name: same GCCOUNT figure, but now
+    // sampled precisely at inspect time rather than the L1 dispatch-exit
+    // gauge.
+    return nlohmann::json{
+        {"total_bytes", total_bytes},
+        {"memory_kb", kb},
+        {"running", running},
+        {"mode", prev_mode == LUA_GCGEN ? "generational" : "incremental"},
+        {"params", std::move(params)}};
+}
+
 // Drive one refs walk over a service's module table and shape the summary
 // JSON. Owner-actor-thread only.
 nlohmann::json walk_module_refs(LuaRuntime& runtime,
@@ -3219,10 +3264,13 @@ std::optional<nlohmann::json> LuaServiceManager::diff_inspect_snapshots(
                                      {"change", "added"},
                                      {"entries", tb.entries}});
             } else {
-                top_delta.push_back(
-                    {{"path", tb.path},
-                     {"change", "delta"},
-                     {"entries", i64_delta(match->entries, tb.entries)}});
+                // Local first: an inline call in this multi-line
+                // initializer is a gcov aggregation artifact.
+                const std::int64_t entries_delta =
+                    i64_delta(match->entries, tb.entries);
+                top_delta.push_back({{"path", tb.path},
+                                     {"change", "delta"},
+                                     {"entries", entries_delta}});
             }
         }
         for (const auto& ta : ra.top_tables) {
@@ -3319,6 +3367,83 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_refs(
     // are the excluded actor-side guards above)
     if (out.contains("error")) {
         // Actor-side failure (module gone / vm unreachable mid-wait).
+        if (error) {
+            *error = out["error"].get<std::string>();
+        }
+        return std::nullopt;
+    }  // GCOVR_EXCL_STOP
+    return out;
+}
+
+std::optional<nlohmann::json> LuaServiceManager::inspect_memory(
+    const std::string& service_id, std::string* error) {
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        if (!impl_->services.contains(service_id)) {
+            if (error) {
+                *error = "service not published: " + service_id;
+            }
+            return std::nullopt;
+        }
+    }
+    auto promise = std::make_shared<std::promise<nlohmann::json>>();
+    auto future = promise->get_future();
+    // Same payload discipline as inspect_refs: no sol capture (the task
+    // can be destroyed on arbitrary threads); the VM is resolved fresh on
+    // the actor thread.
+    const uint64_t task_id = enqueue_forked_task(
+        service_id, [impl = impl_.get(), service_id, promise]() {
+            nlohmann::json out;
+            const std::shared_ptr<LuaVM> vm =
+                impl->find_dispatch_vm(service_id);
+            // GCOVR_EXCL_START (defensive: same race class as the
+            // inspect_refs guard — service exit cancels queued tasks
+            // before the VM goes away)
+            if (!vm) {
+                out = nlohmann::json{{"error", "service vm not reachable"}};
+            } else {  // GCOVR_EXCL_STOP
+                lua_State* L = impl->runtime.vm_state(vm).lua_state();
+                out = {{"name", service_id}, {"gc", collect_gc_info(L)}};
+                // Retainers share the dispatch: one walk from the module
+                // table (depth 4 / 20000 nodes, the refs defaults),
+                // projected down to its head — full counts live under
+                // lua.inspect <svc> refs.
+                nlohmann::json refs = walk_module_refs(
+                    impl->runtime, vm, service_id, /*max_depth=*/4,
+                    /*max_nodes=*/20000);
+                if (!refs.contains("error")) {
+                    // GCOVR_EXCL_START (braced-init aggregation artifact)
+                    out["retainers"] = {
+                        {"nodes_visited", refs["nodes_visited"]},
+                        {"truncated", refs["truncated"]},
+                        {"top_tables", refs["top_tables"]}};
+                    // GCOVR_EXCL_STOP
+                }
+            }
+            promise->set_value(std::move(out));
+        });
+    // GCOVR_EXCL_START (defensive: the actor is spawned before the service
+    // enters the registry and removed after it leaves, same reasoning as
+    // inspect_refs)
+    if (task_id == 0) {
+        if (error) {
+            *error = "service actor not found: " + service_id;
+        }
+        return std::nullopt;
+    }  // GCOVR_EXCL_STOP
+    // Same bounded wait: an owner stuck in a long handler must not wedge
+    // the console thread; the task still runs out its result into the
+    // (discarded) future.
+    if (future.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+        if (error) {
+            *error = "memory dispatch timeout (owner busy): " + service_id;
+        }
+        return std::nullopt;
+    }
+    nlohmann::json out = future.get();
+    // GCOVR_EXCL_START (defensive: the only producers of the "error" field
+    // are the excluded actor-side guards above)
+    if (out.contains("error")) {
         if (error) {
             *error = out["error"].get<std::string>();
         }

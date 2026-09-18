@@ -228,8 +228,17 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
     if (field == "summary") {
         data = std::move(*detail);
     } else if (field == "memory") {
-        data = nlohmann::json{{"name", args[0]},
-                              {"memory_kb", (*detail)["memory_kb"]}};
+        // Dispatch-type like refs: the GC sample and the retainers walk
+        // run on the owning service actor thread (2s bounded wait here).
+        std::string mem_error;
+        const std::optional<nlohmann::json> mem =
+            lua_mgr_.inspect_memory(service_id, &mem_error);
+        if (!mem.has_value()) {
+            nlohmann::json resp = {{"type", "error"}, {"message", mem_error}};
+            session.send_line(resp.dump());
+            return;
+        }
+        data = std::move(*mem);
     } else if (field == "coroutines") {
         data = nlohmann::json{{"name", args[0]},
                               {"coroutines", (*detail)["coroutines"]}};

@@ -235,7 +235,7 @@ lua.diff <service> <snapshot_a> <snapshot_b>
 含义：
 
 - `summary`：聚合显示该 service 当前 Lua 诊断摘要。
-- `memory`：输出 Lua VM 堆内存及主要 retainers 摘要。
+- `memory`：owner 线程一次 dispatch 内联 GC 采样与 retainers 摘要（同 `refs` 的 fork task + 2s bounded wait 模型）：`total_bytes`/`memory_kb`（`GCCOUNT`+`GCCOUNTB` 精确采样）、`gc`（collector 运行标志、模式 incremental|generational、六个 collector 参数 minormul/majorminor/minormajor/pause/stepmul/stepsize）、`retainers`（从 module table 出发 depth 4 / 20000 节点一次遍历的头：nodes_visited/truncated/top_tables）。owner 忙时以 `memory dispatch timeout (owner busy)` 报错，不挂起 console。
 - `refs`：从 service module table 出发，按深度/数量限制遍历对象图，输出 top tables。
 - `coroutines`：列出 coroutine 数量、状态摘要、最近 resume 来源等可用信息。
 - `timers`：列出 timer 数量、最近到期时间、重复/单次类型摘要。
@@ -570,7 +570,7 @@ top_tables:
 
 - **诊断控制台本体：已实现**，两层架构详见 [diagnostics-console.md](diagnostics-console.md)——Root 层 `root.*` 只读观测命令（status/services/service/plugins/config/cluster/server/global/log.level）与 Script 层 `attach` REPL / `eval` 沙箱（含 HTTP `/ops/eval`，token 门控）。
 - **L1 只读快照：已落地**。`/ops/services/:name` 与 `/ops/metrics` 暴露 runtime 计数器与瞬时 gauge（requests/errors/uptime/timers/pending_calls/pending_tasks/coroutines/memory_kb，见 [运维运行时语义](runtime-ops.md)）。`coroutines` 经协程生命周期埋点采集（handler 工厂启动登记、终态 resume 与服务 teardown 擦除）；`memory_kb` 在 owner 线程 dispatch 退出采样 `lua_gc(GCCOUNT)`（O(1)，不跨线程触碰 lua_State）。
-- **L2 受限 inspect：已全量落地**。`lua.inspect <service> summary|memory|coroutines|timers|pending_calls`（registry 锁内只读投影，console 线程零 Lua 触碰、零 actor 往返）、`lua.inspect <service> refs [depth]`（owner 线程受限对象图遍历：fork task 投递 + 2s bounded wait，depth∈[1,8]、节点预算即时间预算，输出 counts/top_tables/truncated）、`lua.snapshot <service> [name] [refs]`（L1 gauge 快照，重名覆盖、每服务环形保留最近 8 份、随 incarnation teardown 清除；`refs` 参数附加对象图摘要，owner 忙记 `refs_error` 不阻塞采集）、`lua.diff <service> <a> <b>`（逐字段 delta，负向变化如实呈现；两端均有对象图摘要时附 counts/top_tables 按 path 匹配的 refs delta）。已在 console 命令面可用（L1 数据源即上条）。
+- **L2 受限 inspect：已全量落地**。`lua.inspect <service> summary|coroutines|timers|pending_calls`（registry 锁内只读投影，console 线程零 Lua 触碰、零 actor 往返）、`lua.inspect <service> memory`（owner 线程一次 dispatch：GC 采样——total_bytes/memory_kb、running、模式与六个 collector 参数——加 retainers 头，depth 4 / 20000 节点同 refs 默认，fork task + 2s bounded wait）、`lua.inspect <service> refs [depth]`（owner 线程受限对象图遍历：fork task 投递 + 2s bounded wait，depth∈[1,8]、节点预算即时间预算，输出 counts/top_tables/truncated）、`lua.snapshot <service> [name] [refs]`（L1 gauge 快照，重名覆盖、每服务环形保留最近 8 份、随 incarnation teardown 清除；`refs` 参数附加对象图摘要，owner 忙记 `refs_error` 不阻塞采集）、`lua.diff <service> <a> <b>`（逐字段 delta，负向变化如实呈现；两端均有对象图摘要时附 counts/top_tables 按 path 匹配的 refs delta）。已在 console 命令面可用（L1 数据源即上条）。
 - **Phase C 的 `lua.eval`/`lua.exec` 语义已由 `attach` REPL 与 `eval` 承载**（先于 L1/L2 完整落地，因带 token 门控与超时约束）。
 
 这份文档冻结的是方向和边界，不声明当前源码已经实现：

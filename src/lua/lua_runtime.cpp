@@ -66,8 +66,10 @@ int shield_lua_panic(lua_State* L) {
     }
     luaL_traceback(L, L, detail.c_str(), 0);
     const char* tb = lua_tostring(L, -1);
-    std::fprintf(stderr, "*** shield lua panic: %s\n",
-                 tb != nullptr ? tb : detail.c_str());
+    // Ternary into a local: inline in the fprintf call it is a gcov
+    // aggregation artifact (the continuation line never gets credited).
+    const char* tb_msg = tb != nullptr ? tb : detail.c_str();
+    std::fprintf(stderr, "*** shield lua panic: %s\n", tb_msg);
     std::fflush(stderr);
     throw sol::error("lua: error: " + detail);
 }

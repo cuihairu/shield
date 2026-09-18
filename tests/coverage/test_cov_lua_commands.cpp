@@ -518,13 +518,16 @@ BOOST_AUTO_TEST_CASE(LuaInspectCommandVariants) {
     BOOST_CHECK(resp["data"]["memory_kb"].is_number_unsigned());
     BOOST_CHECK(resp["data"]["coroutines"].is_number_unsigned());
 
-    // Each focused field projects one gauge plus the name.
+    // memory is dispatch-shaped now (owner-thread GC sample + retainers
+    // head, see InspectMemoryGcAndRetainers); the focused projection keeps
+    // only its headline fields.
     dispatcher.dispatch(harness.session, "lua.inspect svc memory");
     line = harness.read_line();
     resp = nlohmann::json::parse(line);
     BOOST_REQUIRE(resp["type"] == "result");
     BOOST_CHECK_EQUAL(resp["data"]["name"], "svc");
-    BOOST_CHECK(resp["data"]["memory_kb"].is_number_unsigned());
+    BOOST_CHECK(resp["data"]["gc"]["memory_kb"].is_number_unsigned());
+    BOOST_CHECK(resp["data"]["retainers"].is_object());
     dispatcher.dispatch(harness.session, "lua.inspect svc coroutines");
     line = harness.read_line();
     resp = nlohmann::json::parse(line);
@@ -898,6 +901,136 @@ BOOST_AUTO_TEST_CASE(InspectRefsConsoleCommand) {
     resp = nlohmann::json::parse(line);
     BOOST_REQUIRE(resp["type"] == "result");
     BOOST_CHECK_EQUAL(resp["data"]["depth_limit"], 3);
+}
+
+// L2 memory: lua.inspect <svc> memory / LuaServiceManager::inspect_memory —
+// one owner-thread fork task carrying the GC sample and the retainers head.
+BOOST_AUTO_TEST_CASE(InspectMemoryGcAndRetainers) {
+    const fs::path mem = fs::temp_directory_path() / "shield_cov_l2_mem.lua";
+    std::ofstream(mem) << "local M = {}\n"
+                          "M.blob = {}\n"
+                          "for i = 1, 50 do M['k' .. i] = { i } end\n"
+                          "return M\n";
+    auto spawned = manager->spawn(
+        mem.string(), R"({"name":"svc_mem","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = !manager->query_service("svc_mem").empty();
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    std::string err;
+    // Unpublished names refuse before any fork dispatch.
+    auto ghost = manager->inspect_memory("ghost_mem", &err);
+    BOOST_CHECK(!ghost.has_value());
+    BOOST_CHECK(err.find("not published") != std::string::npos);
+
+    auto report = manager->inspect_memory("svc_mem", &err);
+    BOOST_REQUIRE_MESSAGE(report.has_value(), err);
+    BOOST_CHECK_EQUAL((*report)["name"], "svc_mem");
+    const std::int64_t kb = (*report)["gc"]["memory_kb"].get<std::int64_t>();
+    BOOST_CHECK_GT(kb, 0);
+    // total_bytes is the same sample refined with GCCOUNTB.
+    BOOST_CHECK_EQUAL((*report)["gc"]["total_bytes"].get<std::int64_t>() / 1024,
+                      kb);
+    // The default collector runs incremental; every parameter knob is
+    // exposed with a non-negative value.
+    BOOST_CHECK_EQUAL((*report)["gc"]["mode"], "incremental");
+    BOOST_CHECK((*report)["gc"]["running"].is_boolean());
+    for (const char* p : {"minormul", "majorminor", "minormajor", "pause",
+                          "stepmul", "stepsize"}) {
+        BOOST_CHECK_MESSAGE((*report)["gc"]["params"].contains(p),
+                            "missing gc param: " << p);
+        BOOST_CHECK_GE((*report)["gc"]["params"][p].get<int>(), 0);
+    }
+    // Retainers head: the walk starts at the module table, which holds
+    // blob plus k1..k50.
+    BOOST_CHECK((*report)["retainers"]["truncated"] == false);
+    BOOST_CHECK_GT((*report)["retainers"]["nodes_visited"].get<std::uint64_t>(),
+                   0u);
+    const auto& top = (*report)["retainers"]["top_tables"];
+    BOOST_REQUIRE(top.is_array());
+    BOOST_REQUIRE_GE(top.size(), 1u);
+    BOOST_CHECK_EQUAL(top[0]["path"], "M");
+    BOOST_CHECK_GE(top[0]["entries"].get<std::uint64_t>(), 51u);
+
+    // Console frontend: the ghost fast path is unchanged (registry read),
+    // the happy path now carries the dispatch-shaped report.
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "lua.inspect ghost memory");
+    std::string line = harness.read_line();
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("not found") !=
+                std::string::npos);
+
+    dispatcher.dispatch(harness.session, "lua.inspect svc_mem memory");
+    line = harness.read_line();
+    resp = nlohmann::json::parse(line);
+    BOOST_REQUIRE(resp["type"] == "result");
+    BOOST_CHECK_EQUAL(resp["data"]["name"], "svc_mem");
+    BOOST_CHECK_GT(resp["data"]["gc"]["memory_kb"].get<std::int64_t>(), 0);
+    BOOST_CHECK(resp["data"]["gc"]["params"].is_object());
+    BOOST_CHECK(resp["data"]["retainers"]["top_tables"].is_array());
+}
+
+// The memory sample is a fork task on the owning service actor, same as
+// the refs walk: a service wedged in a synchronous handler cannot pick it
+// up, and the 2s bounded wait lapses instead of hanging the console.
+BOOST_AUTO_TEST_CASE(InspectMemoryDispatchTimeout) {
+    const fs::path churn =
+        fs::temp_directory_path() / "shield_cov_l2_churn_mem.lua";
+    std::ofstream(churn) << "local M = {}\n"
+                            "function M.churn(ctx)\n"
+                            "  local t0 = os.clock()\n"
+                            "  while os.clock() - t0 < 7 do end\n"
+                            "  return 'done'\n"
+                            "end\n"
+                            "return M\n";
+    auto spawned = manager->spawn(
+        churn.string(), R"({"name":"svc_churn_mem","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    bool published = false;
+    for (int i = 0; i < 200 && !published; ++i) {
+        published = !manager->query_service("svc_churn_mem").empty();
+        if (!published) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_REQUIRE(published);
+
+    // One busy run covers both frontends: the console command surfaces the
+    // timeout as an error line, then the manager-level call asserts it.
+    BOOST_REQUIRE(
+        manager->send("svc_churn_mem", "churn", nlohmann::json::array()));
+
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+    dispatcher.dispatch(harness.session, "lua.inspect svc_churn_mem memory");
+    std::string line = harness.read_line(std::chrono::milliseconds(15000));
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find(
+                    "memory dispatch timeout") != std::string::npos);
+
+    std::string err;
+    const auto mem = manager->inspect_memory("svc_churn_mem", &err);
+    BOOST_CHECK(!mem.has_value());
+    BOOST_CHECK(err.find("memory dispatch timeout") != std::string::npos);
+
+    // Let the busy handler finish so teardown does not race it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(4000));
 }
 
 // The refs walk is a fork task on the owning service actor: a service

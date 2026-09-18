@@ -295,6 +295,17 @@ public:
                                                std::size_t max_nodes,
                                                std::string* error);
 
+    // Inspect a service's heap (lua.inspect <svc> memory): an owner-thread
+    // GC sample (total bytes, collector running flag, mode, all six
+    // collector parameters) plus a retainers head — the top tables by
+    // entry count from one module-table walk at the refs defaults (depth
+    // 4 / 20000 nodes). One forked dispatch for the whole report, same
+    // 2s bounded wait as inspect_refs. Returns nullopt with `error` set
+    // when the service is unknown, its actor vanished, or the owner never
+    // picked the task up in time.
+    std::optional<nlohmann::json> inspect_memory(const std::string& service_id,
+                                                 std::string* error);
+
     // Enqueue a forked task to be executed by the owning service actor. The
     // task captures the owning service ID so it can be cancelled on service
     // exit.
