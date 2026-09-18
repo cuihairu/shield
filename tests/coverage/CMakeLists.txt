@@ -130,7 +130,10 @@ set_tests_properties(test_cov_ops_http PROPERTIES TIMEOUT 600)
 # The refs-snapshot cases park on the 2s bounded dispatch wait (one per
 # capture against a busy owner) and drain busy-handler sleeps to keep
 # teardown safe; loaded CI machines push the suite past the default 120s.
-set_tests_properties(test_cov_lua_commands PROPERTIES TIMEOUT 300)
+# POSIX_ONLY: not defined on Windows, where set_tests_properties would fail.
+if(NOT WIN32)
+    set_tests_properties(test_cov_lua_commands PROPERTIES TIMEOUT 300)
+endif()
 
 # Suites that compile fake plugins at test time need the shield include tree;
 # pass it from the build configuration instead of a hardcoded source path.
