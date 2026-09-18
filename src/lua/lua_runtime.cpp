@@ -13,7 +13,6 @@
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 #include <sstream>
-#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -51,7 +50,11 @@ sol::function anchor_to_main_thread(sol::function fn) {
 // error (and whether it was a non-string error object) from host logs. Dump
 // the error object plus a traceback to stderr so CI logs can answer "what
 // panicked, where", then mirror the default throw behaviour (a plain return
-// would make Lua exit the process).
+// would make Lua exit the process). The exception MUST stay a sol::error:
+// unsafe call sites (e.g. the HTTP handler dispatch) recover from an
+// escaping Lua error through catch(const sol::error&) and surface what()
+// as the lua_error field — a different exception type would fall into the
+// generic std::exception arm and downgrade the failure shape.
 int shield_lua_panic(lua_State* L) {
     std::string detail;
     if (lua_type(L, -1) == LUA_TSTRING) {
@@ -66,7 +69,7 @@ int shield_lua_panic(lua_State* L) {
     std::fprintf(stderr, "*** shield lua panic: %s\n",
                  tb != nullptr ? tb : detail.c_str());
     std::fflush(stderr);
-    throw std::runtime_error("lua: error: " + detail);
+    throw sol::error("lua: error: " + detail);
 }
 
 void install_panic_handler(const std::shared_ptr<sol::state>& state) {
