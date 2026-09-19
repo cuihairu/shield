@@ -55,6 +55,11 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       严格性（`user_id = 123` vs `userid = "123"` 目前 runtime 才暴露）
 - [ ] 寻址软收敛完成后的下一步：评估 `request_codec` per-route 覆盖的
       实际使用率，决定是否收敛为 profile 级唯一
+- [ ] listener bind 失败清理路径的跨平台崩溃：`DuplicateListenerPortFails`
+      在 macOS 必崩（已 `#ifndef __APPLE__` 禁用，见用例注释 TODO）、
+      Windows CI 偶发段错误（22847bb 主 CI，rerun 待判定）；
+      `cleanup_failed_initialize` 拆除首个 listener 的路径存在竞态/悬垂，
+      需要在真平台上定位根因而不是继续扩排除名单
 - [ ] xmldef 工具链/文档适配：xmldef descriptor 的 `schema_id` 是其
       descriptor 系统内部概念，与 codec ABI 无关；xmldef 实施时 catalog
       导出的路由需适配收敛后的 ABI（只产出 `schema_name`）
