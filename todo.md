@@ -57,9 +57,15 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       实际使用率，决定是否收敛为 profile 级唯一
 - [ ] listener bind 失败清理路径的跨平台崩溃：`DuplicateListenerPortFails`
       在 macOS 必崩（已 `#ifndef __APPLE__` 禁用，见用例注释 TODO）、
-      Windows CI 偶发段错误（22847bb 主 CI，rerun 待判定）；
+      Windows CI 偶发段错误（22847bb 主 CI 首现；ac48657 主 CI 再现，
+      rerun 通过——flaky 性质已判定，非稳定回归）；
       `cleanup_failed_initialize` 拆除首个 listener 的路径存在竞态/悬垂，
-      需要在真平台上定位根因而不是继续扩排除名单
+      需要在真平台上定位根因而不是继续扩排除名单。
+      线索（ac48657 失败日志，panic forensics 抓到）：崩溃前有
+      `[C]: in global 'error'` 携带 nil 错误对象触发裸 panic
+      （"non-string error object (type=nil)"）——bind 失败的错误传播
+      链上存在 error(nil) 调用且无 pcall 保护，可能与拆除路径的悬垂
+      叠加；排查时先找 error(nil) 的调用点
 - [ ] xmldef 工具链/文档适配：xmldef descriptor 的 `schema_id` 是其
       descriptor 系统内部概念，与 codec ABI 无关；xmldef 实施时 catalog
       导出的路由需适配收敛后的 ABI（只产出 `schema_name`）
