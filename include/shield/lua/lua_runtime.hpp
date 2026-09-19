@@ -166,7 +166,8 @@ public:
     // VMs keep the full library set.
     void restrict_vm(std::shared_ptr<LuaVM> vm);
 
-    // Load a script into a VM
+    // Load a script into a VM. Load, syntax and runtime errors are reported
+    // as false — never raised, in Debug or Release alike.
     /// @param vm The VM to load into
     /// @param script_path Path to the Lua script
     /// @return true if successful

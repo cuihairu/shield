@@ -61,28 +61,44 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       rerun 通过——flaky 性质已判定，非稳定回归）；
       `cleanup_failed_initialize` 拆除首个 listener 的路径存在竞态/悬垂，
       需要在真平台上定位根因而不是继续扩排除名单。
-      线索（ac48657 失败日志，panic forensics 抓到）：崩溃前有
-      `[C]: in global 'error'` 携带 nil 错误对象触发裸 panic
-      （"non-string error object (type=nil)"）——bind 失败的错误传播
-      链上存在 error(nil) 调用且无 pcall 保护，可能与拆除路径的悬垂
-      叠加；排查时先找 error(nil) 的调用点。
-      注意（panic 改造后口径更新）：panic handler 已改为 forensics +
-      abort、不再 throw（本文件原 c8352e9 数据点记录的「MSVC 下
-      panic throw 穿 C 帧 catch 不住」问题随之消除；三个裸 lua_call
-      调用点已全部保护化，生产代码不再有可达 at_panic 的路径）。
-      上述 bind 清理路径若真有 error(nil) 裸调用，现在会以 abort
-      形式确定性暴露——排查时 forensics 输出（`*** shield lua panic`
-      前缀）仍是第一线索。
+      线索勘误（2026-09-19 重读 ac48657 attempt-1 完整日志，此前归因有误）：
+      该次 Windows job 实为**两个独立失败**——
+      (a) Test #9 `shield_runtime_lua_smoke`（exit 1，10.08s）：smoke_root
+      的 on_init 10s spawn 超时。stderr 序列：session=3 requeue spin
+      n=3..20 全 ok=1（无 resume_diag → cap 触顶后 fall-through resume
+      未被拒）→ panic ctx `state=coroutine depth=0 []` → panic detail
+      "non-string error object (type=nil)" → CAF 报 `user.scheduled-actor`
+      unhandled exception（即服务 actor；双层 "lua: error:" 前缀 =
+      旧 handler 拼一层 + sol::error 构造函数自动加一层，是**单次
+      panic** 非二次触发）。工作假设：nil panic 使旧 handler 的
+      sol::error 从 actor 消息处理中逃逸 → actor 死亡 → 挂起的 call
+      永无完成 → on_init 超时。ctx depth=0 与 detail type=nil 在同一
+      handler 内自相矛盾（top=0 时 lua_type(-1)=TNONE 应报 "no
+      value"；5.5 reset 后 at_panic 恒可见错误对象）→ 疑为同线程两个
+      panic 事件的 stderr 交错，或存在空栈进 at_panic 的未知路径。
+      **panic 改造（c2ce720）后此形态若复现将以 abort + forensics
+      确定性暴露**，届时以 `*** shield lua panic` 输出为准重启排查。
+      (b) 08:48 的 `DuplicateListenerPortFails` memory access violation
+      （write to 0x20f1b196cd8）——独立段错误，与 (a) 的 nil panic
+      无关，本条目真正的根因目标仍是它。
+      原线索中 "`[C]: in global 'error'` 携带 nil 触发裸 panic" 系
+      误读：那些 traceback 来自 doomed/flaky 用例**故意**在 main chunk
+      调 error('load time boom') 的良性加载失败日志（错误对象是
+      字符串），与 panic 无关。
 - [ ] shield.sleep 续延（lua_api.cpp `_resume_after` resume_fn）的终态
       错误分支与其它 resume 路径不对称：缺 `lua_settop(co,0)` 清理
       （错误对象滞留协程栈至 GC）、不走 error hook/on_handler_failed。
       补齐是行为变更（on_handler_failed 开始对 sleep 路径触发，含
       错误阈值 panic 计数），需独立设计 error_type/method_label 取值
       并补 service handler sleep 后 error 的集成用例
-- [ ] `load_script`（lua_runtime.cpp）仍用 sol 的 `script_file` throw 式
-      API（纯 C++ 帧，MSVC 无碍）。src/ 内无调用者、公共 API 面；
-      可仿 `load_service_module` 的 load_result + protected_function
-      惯用法消除，属清理性质
+- [x] `load_script`（lua_runtime.cpp）的 sol `script_file` throw 式 API
+      已消除（2026-09-19）：c2ce720 的 panic-abort 语义让它从"清理项"
+      变成承重 bug——NDEBUG 下 script_file 退化为 luaL_dofile，加载
+      失败直达 at_panic（原 throw 设计靠 catch(sol::error) 兜住，abort
+      设计下直接 SIGABRT），三平台 Release 矩阵的 LoadScriptFile /
+      LoadFailures / LoadScriptOnDirectoryFails 全灭。已改为
+      luaL_loadfile + lua_pcall 保护式（失败返回 false，永不 raise），
+      并补了执行期 error 分支用例。
 - [ ] xmldef 工具链/文档适配：xmldef descriptor 的 `schema_id` 是其
       descriptor 系统内部概念，与 codec ABI 无关；xmldef 实施时 catalog
       导出的路由需适配收敛后的 ABI（只产出 `schema_name`）

@@ -128,6 +128,12 @@ BOOST_AUTO_TEST_CASE(LoadScriptFile) {
         write_script("load_bad.lua", "this is not ( valid lua\n");
     BOOST_CHECK(!runtime.load_script(vm, bad_path));
 
+    // A file that loads but raises at execution time is also a plain false
+    // (the protected exec arm) — not an escaping error.
+    const std::string exec_bad_path =
+        write_script("load_exec_bad.lua", "error('exec boom')\n");
+    BOOST_CHECK(!runtime.load_script(vm, exec_bad_path));
+
     BOOST_CHECK(!runtime.load_script(vm, kTmpDir + "/definitely_missing.lua"));
 }
 

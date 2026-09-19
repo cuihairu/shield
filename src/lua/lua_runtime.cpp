@@ -669,12 +669,22 @@ void LuaRuntime::restrict_vm(std::shared_ptr<LuaVM> vm) {
 
 bool LuaRuntime::load_script(std::shared_ptr<LuaVM> vm,
                              std::string_view script_path) {
-    try {
-        auto result = vm->state()->script_file(std::string(script_path));
-        return result.valid();
-    } catch (const std::exception& e) {
+    // Protected load + exec (luaL_loadfile / lua_pcall): syntax, IO and
+    // runtime errors come back as a status plus an error object on the
+    // stack instead of being raised. sol's script_file is only protected in
+    // Debug (SOL_SAFE); under NDEBUG it degrades to luaL_dofile, whose
+    // failure surfaces through at_panic — now an abort — so the failure
+    // must never be raised in the first place (c2ce720 Release CI).
+    lua_State* L = vm->state()->lua_state();
+    if (luaL_loadfile(L, std::string(script_path).c_str()) != LUA_OK) {
+        lua_pop(L, 1);  // drop the error object
         return false;
     }
+    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+        lua_pop(L, 1);  // drop the error object
+        return false;
+    }
+    return true;
 }
 
 bool lua_to_json(const sol::object& value, nlohmann::json* out) {
