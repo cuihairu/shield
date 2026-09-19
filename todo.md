@@ -55,36 +55,48 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       严格性（`user_id = 123` vs `userid = "123"` 目前 runtime 才暴露）
 - [ ] 寻址软收敛完成后的下一步：评估 `request_codec` per-route 覆盖的
       实际使用率，决定是否收敛为 profile 级唯一
-- [ ] listener bind 失败清理路径的跨平台崩溃：`DuplicateListenerPortFails`
-      在 macOS 必崩（已 `#ifndef __APPLE__` 禁用，见用例注释 TODO）、
-      Windows CI 偶发段错误（22847bb 主 CI 首现；ac48657 主 CI 再现，
-      rerun 通过——flaky 性质已判定，非稳定回归）；
-      `cleanup_failed_initialize` 拆除首个 listener 的路径存在竞态/悬垂，
-      需要在真平台上定位根因而不是继续扩排除名单。
-      线索勘误（2026-09-19 重读 ac48657 attempt-1 完整日志，此前归因有误）：
-      该次 Windows job 实为**两个独立失败**——
-      (a) Test #9 `shield_runtime_lua_smoke`（exit 1，10.08s）：smoke_root
-      的 on_init 10s spawn 超时。stderr 序列：session=3 requeue spin
-      n=3..20 全 ok=1（无 resume_diag → cap 触顶后 fall-through resume
-      未被拒）→ panic ctx `state=coroutine depth=0 []` → panic detail
-      "non-string error object (type=nil)" → CAF 报 `user.scheduled-actor`
-      unhandled exception（即服务 actor；双层 "lua: error:" 前缀 =
-      旧 handler 拼一层 + sol::error 构造函数自动加一层，是**单次
-      panic** 非二次触发）。工作假设：nil panic 使旧 handler 的
-      sol::error 从 actor 消息处理中逃逸 → actor 死亡 → 挂起的 call
-      永无完成 → on_init 超时。ctx depth=0 与 detail type=nil 在同一
-      handler 内自相矛盾（top=0 时 lua_type(-1)=TNONE 应报 "no
-      value"；5.5 reset 后 at_panic 恒可见错误对象）→ 疑为同线程两个
-      panic 事件的 stderr 交错，或存在空栈进 at_panic 的未知路径。
-      **panic 改造（c2ce720）后此形态若复现将以 abort + forensics
-      确定性暴露**，届时以 `*** shield lua panic` 输出为准重启排查。
-      (b) 08:48 的 `DuplicateListenerPortFails` memory access violation
-      （write to 0x20f1b196cd8）——独立段错误，与 (a) 的 nil panic
-      无关，本条目真正的根因目标仍是它。
-      原线索中 "`[C]: in global 'error'` 携带 nil 触发裸 panic" 系
-      误读：那些 traceback 来自 doomed/flaky 用例**故意**在 main chunk
-      调 error('load time boom') 的良性加载失败日志（错误对象是
-      字符串），与 panic 无关。
+- [x] listener bind 失败清理路径的跨平台崩溃已根因修复（2026-09-19，
+      Linux ASan 现场取证，非猜测）：不是单一竞态，而是 bootstrap
+      拆除顺序的**三类悬垂**——macOS/Windows 分配器不复用 freed
+      chunk 故必炸，Linux 靠 chunk 复用侥幸存活（推断，解释为何
+      coverage 长期绿）——
+      (a) console 命令对象悬垂 `this`：`RootCommands`/`LuaCommands`
+      是 initialize 局部 shared_ptr，注册进 dispatcher 的 lambda 捕
+      裸 `this`，initialize 一返回即悬垂（ASan：FullStack 里
+      `cmd_help` 读已释放的 RootCommands；Linux 上疑似 LuaCommands
+      复用同 chunk 且字段同布局，帮助命令"照常工作"实为读错对象）
+      → 两者移入 GlobalState；
+      (b) console dispatcher 先于 net 线程 join 销毁：shutdown 顶部
+      reset dispatcher 时 net 线程还可能在跑 console read 完成回调
+      （ASan 实证 T9 正在 dispatch、T0 已 free）→ dispatcher 与命令
+      对象改到 net 线程 join 之后销毁（cleanup_failed_initialize 本
+      就先 join，顺序不动）；
+      (c) initialize 失败点在监听器循环**内部**调
+      cleanup_failed_initialize：`g_state_owner.reset()` 销毁
+      GlobalState 之后 `return false` 的栈展开才析构循环局部（失败的
+      listener/bridge/callbacks），其捕获仍指 GlobalState 内存
+      （ASan：~TcpListener 读 freed `vector<uint8_t>`）→ 主体改
+      `initialize_impl`，cleanup 由 wrapper 统一延迟到栈展开完成后；
+      附带：gateway actor `anon_send_exit` 异步退出与 `lua_services`
+      销毁竞态（GatewayDeps.manager 裸指针）→ 新增
+      `exit_gateway_actors_and_wait`（monitor + down_msg + 5s 兜底，
+      惯用法同 lua_service `wait_for_actors_until`），shutdown 与
+      cleanup 共用。
+      验证：ASan 树（build-asan）复现 → 修复后 test_cov_bootstrap
+      全量与 test_cov_lua_http_bridge 零报错；三个用例已摘除
+      `#ifndef __APPLE__`（DuplicateListenerPortFails /
+      FullStackInitializeAndShutdown / HttpPortBindFailureIsNonFatal），
+      待 CI macOS/Windows job 真平台复核；若 macOS 仍有残余崩溃，按
+      同法继续 ASan 取证（http_bridge 的 0x40/0x9 近空指针家族在
+      Linux ASan 下未复现，暂无证据指向同类，先不动）。
+      线索勘误存档（2026-09-19 重读 ac48657 attempt-1 完整日志）：
+      该次 Windows job 实为两个独立失败——smoke 的 nil panic（requeue
+      spin cap 触顶 → 旧 throw 式 panic handler 的 sol::error 逃逸
+      actor → on_init 超时；c2ce720 后将以 abort+forensics 确定性
+      暴露）与 08:48 `DuplicateListenerPortFails` 段错误，与本条目
+      (a)(b)(c) 同根；"`[C]: in global 'error'` 携带 nil" 系误读
+      （doomed/flaky 用例故意在 main chunk 调 error 的良性加载失败
+      日志，错误对象是字符串）。
 - [ ] shield.sleep 续延（lua_api.cpp `_resume_after` resume_fn）的终态
       错误分支与其它 resume 路径不对称：缺 `lua_settop(co,0)` 清理
       （错误对象滞留协程栈至 GC）、不走 error hook/on_handler_failed。

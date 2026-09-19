@@ -26,6 +26,7 @@
 #include <boost/asio/io_context.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/io/all.hpp>
+#include <caf/scoped_actor.hpp>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
@@ -195,6 +196,13 @@ struct GlobalState {
     std::vector<std::unique_ptr<shield::net::TcpListener>> tcp_listeners;
     std::unique_ptr<shield::net::ConsoleServer> console_server;
     std::unique_ptr<shield::console::CommandDispatcher> console_dispatcher;
+    // The dispatcher stores the command handlers as lambdas capturing `this`,
+    // so the command objects must outlive initialize()'s scope. They used to
+    // be locals: freed while console sessions still dispatched into them
+    // (Linux only survived because the allocator handed the freed chunk to
+    // the next command object with an identical field layout).
+    std::shared_ptr<shield::console::RootCommands> root_commands;
+    std::shared_ptr<shield::console::LuaCommands> lua_commands;
     std::unique_ptr<shield::net::HttpServer> http_server;
     std::unique_ptr<shield::console::OpsHttpHandler> ops_http_handler;
     std::unique_ptr<shield::lua::LuaHttpBridge> http_bridge;
@@ -217,6 +225,57 @@ struct GlobalState {
 static GlobalState* g_state = nullptr;
 static std::unique_ptr<GlobalState> g_state_owner;
 
+// Exit every live gateway actor and block until each is really gone.
+// down_msg only fires after the actor finished its last handler, so once
+// this returns no bind/close/egress response can still dereference the raw
+// LuaServiceManager pointer in GatewayDeps. A bare anon_send_exit loop used
+// to race the teardown: the exit messages are queued asynchronously while
+// the caller moved on to destroy the manager those handlers point at.
+static void exit_gateway_actors_and_wait() {
+    if (g_state->gateway_actors.empty()) {
+        return;
+    }
+    caf::scoped_actor self{*g_state->actor_system};
+    for (const auto& gateway_actor : g_state->gateway_actors) {
+        self->monitor(gateway_actor);
+        caf::anon_send_exit(gateway_actor, caf::exit_reason::user_shutdown);
+    }
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    size_t remaining = g_state->gateway_actors.size();
+    while (remaining > 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            // GCOVR_EXCL_START (safety valve: no test wedges a gateway
+            // actor mid-handler for 5s; teardown proceeds best-effort)
+            SHIELD_LOG_WARNING(shield::log::get_logger("bootstrap"),
+                               "gateway actor did not exit within 5s; "
+                               "continuing teardown");
+            break;
+            // GCOVR_EXCL_STOP
+        }
+        self->receive(
+            [&](const caf::down_msg& down) {
+                for (const auto& gateway_actor : g_state->gateway_actors) {
+                    if (down.source == gateway_actor.address()) {
+                        --remaining;
+                        break;
+                    }
+                }
+            },
+            // GCOVR_EXCL_START (timeout arm of the receive never fires in
+            // tests: gateway actors exit in milliseconds; the 5s deadline is
+            // a teardown safety valve, same as the break above)
+            caf::after(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                deadline - now)) >>
+                [] {
+                    // Timed out; the loop re-checks the deadline.
+                });
+        // GCOVR_EXCL_STOP
+    }
+    g_state->gateway_actors.clear();
+}
+
 void cleanup_failed_initialize() {
     if (g_state) {
         for (auto& listener : g_state->tcp_listeners) {
@@ -232,18 +291,17 @@ void cleanup_failed_initialize() {
         }
         g_state->tcp_listeners.clear();
         g_state->gateway_bridges.clear();
-        for (const auto& gateway_actor : g_state->gateway_actors) {
-            // A later listener (protocol validation, port bind) can fail
-            // after earlier gateway actors have spawned.
-            caf::anon_send_exit(gateway_actor, caf::exit_reason::user_shutdown);
-        }
-        g_state->gateway_actors.clear();
+        // A later listener (protocol validation, port bind) can fail after
+        // earlier gateway actors have spawned.
+        exit_gateway_actors_and_wait();
         if (g_state->console_server) {
             // GCOVR_EXCL_START (unreachable: no initialize() failure happens
             // after the console server starts)
             g_state->console_server->stop();
             g_state->console_server.reset();
             g_state->console_dispatcher.reset();
+            g_state->root_commands.reset();
+            g_state->lua_commands.reset();
             // GCOVR_EXCL_STOP
         }
         if (g_state->lua_services) {
@@ -296,7 +354,7 @@ void cleanup_failed_initialize() {
 }
 
 // Initialize
-bool initialize(const RuntimeConfig& config) {
+static bool initialize_impl(const RuntimeConfig& config) {
     if (g_state && g_state->initialized) {
         return true;  // Already initialized
     }
@@ -329,7 +387,6 @@ bool initialize(const RuntimeConfig& config) {
             SHIELD_LOG_INFO(log, "Config loaded: " + config_file);
         } else {
             SHIELD_LOG_ERROR(log, "Failed to load config: " + config_file);
-            cleanup_failed_initialize();
             return false;
         }
     }
@@ -393,7 +450,6 @@ bool initialize(const RuntimeConfig& config) {
     if (!shield::config::validate_runtime_config(validation_options,
                                                  &validation_error)) {
         SHIELD_LOG_ERROR(log, "Invalid config: " + validation_error);
-        cleanup_failed_initialize();
         return false;
     }
 
@@ -409,7 +465,6 @@ bool initialize(const RuntimeConfig& config) {
         std::string plugin_err;
         if (!shield::plugin::global_host().startup(plugin_cfg, plugin_err)) {
             SHIELD_LOG_ERROR(log, "Plugin startup failed: " + plugin_err);
-            cleanup_failed_initialize();
             return false;
         }
         SHIELD_LOG_INFO(log, "Plugin system started");
@@ -421,7 +476,6 @@ bool initialize(const RuntimeConfig& config) {
         if (cluster_config.node_id.empty()) {
             SHIELD_LOG_ERROR(
                 log, "Invalid cluster config: cluster.node_id is required");
-            cleanup_failed_initialize();
             return false;
         }
         g_state->cluster_manager =
@@ -445,7 +499,6 @@ bool initialize(const RuntimeConfig& config) {
             !shield::player::validate_player_config(player_config,
                                                     &player_error)) {
             SHIELD_LOG_ERROR(log, "Invalid player config: " + player_error);
-            cleanup_failed_initialize();
             return false;
         }
         g_state->player_manager =
@@ -477,7 +530,6 @@ bool initialize(const RuntimeConfig& config) {
             !shield::server::validate_server_config(server_config,
                                                     &server_error)) {
             SHIELD_LOG_ERROR(log, "Invalid server config: " + server_error);
-            cleanup_failed_initialize();
             return false;
         }
         g_state->server_manager =
@@ -509,7 +561,6 @@ bool initialize(const RuntimeConfig& config) {
             !shield::global::validate_global_config(global_config,
                                                     &global_error)) {
             SHIELD_LOG_ERROR(log, "Invalid global config: " + global_error);
-            cleanup_failed_initialize();
             return false;
         }
         g_state->global_manager =
@@ -559,7 +610,6 @@ bool initialize(const RuntimeConfig& config) {
         if (!g_state->cluster_transport->start(&bound_port, transport_error)) {
             SHIELD_LOG_ERROR(
                 log, "Cluster transport failed to start: " + transport_error);
-            cleanup_failed_initialize();
             return false;
         }
         // M5: admin surfaces (/ops/status, root.status / root.cluster) read
@@ -811,7 +861,6 @@ bool initialize(const RuntimeConfig& config) {
     if (!shield::transport::parse_rpc_routes_json(
             merged_rpc_routes.dump(), descriptor_routes, &descriptor_error)) {
         SHIELD_LOG_ERROR(log, "Invalid rpc.routes: " + descriptor_error);
-        cleanup_failed_initialize();
         return false;
     }
 
@@ -843,7 +892,6 @@ bool initialize(const RuntimeConfig& config) {
                 SHIELD_LOG_ERROR(log, "Failed to spawn actor '" + service_name +
                                           "': " + result.error_message);
                 if (actor.required) {
-                    cleanup_failed_initialize();
                     return false;
                 }
                 continue;
@@ -862,7 +910,6 @@ bool initialize(const RuntimeConfig& config) {
         if (!endpoint) {
             SHIELD_LOG_ERROR(log, "Invalid TCP endpoint for actor '" +
                                       actor.name + "': " + actor.network_tcp);
-            cleanup_failed_initialize();
             return false;
         }
         // GCOVR_EXCL_STOP
@@ -885,7 +932,6 @@ bool initialize(const RuntimeConfig& config) {
             if (!probe) {
                 SHIELD_LOG_ERROR(log, "Invalid TCP protocol for actor '" +
                                           actor.name + "': " + protocol_error);
-                cleanup_failed_initialize();
                 return false;
             }
         }
@@ -971,8 +1017,7 @@ bool initialize(const RuntimeConfig& config) {
                                 "' is not configured or does not provide " +
                                 SHIELD_PROTOCOL_CODEC_INTERFACE);
                         // GCOVR_EXCL_STOP
-                        cleanup_failed_initialize();  // GCOVR_EXCL_LINE
-                        return false;                 // GCOVR_EXCL_LINE
+                        return false;  // GCOVR_EXCL_LINE
                     }
                 }
             }
@@ -1019,7 +1064,6 @@ bool initialize(const RuntimeConfig& config) {
         if (!listener->is_open()) {
             SHIELD_LOG_ERROR(log, "Failed to start TCP listener for actor '" +
                                       actor.name + "' on " + actor.network_tcp);
-            cleanup_failed_initialize();
             return false;
         }
         if (actor.max_connections > 0) {
@@ -1073,21 +1117,25 @@ bool initialize(const RuntimeConfig& config) {
             g_state->console_dispatcher =
                 std::make_unique<shield::console::CommandDispatcher>();
 
-            // Register command handlers
-            auto root_cmds = std::make_shared<shield::console::RootCommands>(
-                *g_state->lua_services);
-            root_cmds->register_all(*g_state->console_dispatcher);
+            // Register command handlers. The objects live in g_state (not
+            // in this scope): the dispatcher stores handlers as lambdas
+            // capturing `this`, so scope-local ownership left those lambdas
+            // dangling the moment initialize returned.
+            g_state->root_commands =
+                std::make_shared<shield::console::RootCommands>(
+                    *g_state->lua_services);
+            g_state->root_commands->register_all(*g_state->console_dispatcher);
 
-            auto lua_cmds = std::make_shared<shield::console::LuaCommands>(
-                *g_state->lua_services, *g_state->lua_runtime);
-            lua_cmds->register_all(*g_state->console_dispatcher);
+            g_state->lua_commands =
+                std::make_shared<shield::console::LuaCommands>(
+                    *g_state->lua_services, *g_state->lua_runtime);
+            g_state->lua_commands->register_all(*g_state->console_dispatcher);
 
             // Wire the line handler from the dispatcher to the server
-            auto& dispatcher = *g_state->console_dispatcher;
             g_state->console_server->set_on_line(
-                [&dispatcher](
+                [dispatcher = g_state->console_dispatcher.get()](
                     std::shared_ptr<shield::net::ConsoleSession> session,
-                    std::string line) { dispatcher.dispatch(session, line); });
+                    std::string line) { dispatcher->dispatch(session, line); });
 
             g_state->console_server->start();
             SHIELD_LOG_INFO(log, "Console server listening on " + sock_path);
@@ -1148,6 +1196,21 @@ bool initialize(const RuntimeConfig& config) {
     g_state->initialized = true;
     SHIELD_LOG_INFO(log, "Shield runtime initialized");
     return true;
+}
+
+bool initialize(const RuntimeConfig& config) {
+    const bool ok = initialize_impl(config);
+    if (!ok) {
+        // Teardown runs only after initialize_impl's stack is gone: the
+        // failure sites sit mid-loop and their locals (the failed listener,
+        // the bridge, the session callbacks) hold captures into
+        // GlobalState-owned memory. The teardown used to run at the failure
+        // site, so those locals destructed after GlobalState died and their
+        // destructors read freed memory (ASan: ~TcpListener in the
+        // DuplicateListenerPortFails crash family).
+        cleanup_failed_initialize();
+    }
+    return ok;
 }
 
 // Shutdown
@@ -1226,10 +1289,13 @@ void shutdown() {
     run_starters(Phase::PRE_SHUTDOWN);
 
     // Stop console server before other components
+    // Stop accepting and close the sessions now, but keep the dispatcher
+    // and the command objects alive until the net threads are joined below:
+    // a line already read dispatches through them on those threads, and
+    // destroying the objects first was an ASan-confirmed use-after-free
+    // (cmd_help reading the freed RootCommands).
     if (g_state->console_server) {
         g_state->console_server->stop();
-        g_state->console_server.reset();
-        g_state->console_dispatcher.reset();
     }
 
     // Stop HTTP ops server
@@ -1263,12 +1329,19 @@ void shutdown() {
     g_state->tcp_listeners.clear();
     g_state->gateway_bridges.clear();
 
+    // The net threads are joined: nothing can dispatch into the console
+    // dispatcher anymore, so the console objects can finally die. They hold
+    // references into the Lua services/runtime, which are released below.
+    g_state->console_server.reset();
+    g_state->console_dispatcher.reset();
+    g_state->root_commands.reset();
+    g_state->lua_commands.reset();
+
     // Exit the gateway actors before the Lua services shut down: their
-    // bind responses call back into the manager (complete_call).
-    for (const auto& gateway_actor : g_state->gateway_actors) {
-        caf::anon_send_exit(gateway_actor, caf::exit_reason::user_shutdown);
-    }
-    g_state->gateway_actors.clear();
+    // bind responses call back into the manager (complete_call). The wait
+    // joins on each actor's down message, so no handler can still
+    // dereference the manager once this returns.
+    exit_gateway_actors_and_wait();
 
     // Shutdown actor system (which stops all actors)
     if (g_state->lua_services) {
