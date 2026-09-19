@@ -215,7 +215,7 @@ lua:
   search_paths: [lua/?.lua]
 documentation:
   url: https://cuihairu.github.io/shield/plugins/database-mysql
-  description: MySQL provider for the shield.database.v1 interface via the X DevAPI
+  description: MySQL provider for the shield.database.v1 interface via prepared statements
 config_schema:
   type: object
   required: [host, database, username]

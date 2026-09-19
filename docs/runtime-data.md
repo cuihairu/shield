@@ -54,7 +54,7 @@ Lua 业务 ──shield.database.mysql("database.default"):<method>(...)──�
 
 | 接口 | 能力 | 实现插件 | 驱动 |
 |------|------|----------|------|
-| `shield.database.v1` | SQL（query / execute / 事务） | mysql / postgresql / sqlite | mysqlx / libpq / sqlite3 |
+| `shield.database.v1` | SQL（query / execute / 事务） | mysql / postgresql / sqlite | libmariadb / libpq / sqlite3 |
 | `shield.document.v1` | 文档 CRUD / 聚合 | mongodb | mongocxx |
 | `shield.cache.v1` | KV / hash / TTL / counter | cache.redis | redis++ |
 | `shield.queue.v1` | 消息队列 | queue.redis | redis++ |

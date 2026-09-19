@@ -106,7 +106,7 @@
         "required": true,
         "config": {
           "host": "127.0.0.1",
-          "port": 33060,
+          "port": 3306,
           "database": "game",
           "user": "root",
           "password": "${DB_PASSWORD:}",

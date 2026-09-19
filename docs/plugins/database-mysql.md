@@ -1,8 +1,8 @@
 # MySQL
 
-> 通过 MySQL X DevAPI 提供客户端-服务器模式的 SQL 数据库，适合需要持久化、高并发写、跨服共享数据的游戏后端。
+> 通过经典 MySQL 协议提供客户端-服务器模式的 SQL 数据库，适合需要持久化、高并发写、跨服共享数据的游戏后端。
 
-`database.mysql` 是 Shield 官方提供的 [`shield.database.v1`](/plugin-system#interface-model) 实现之一，基于 [MySQL Connector/C++](https://dev.mysql.com/doc/connector-cpp/en/) X DevAPI。X DevAPI 默认走 MySQL X Protocol（端口 33060），而非经典协议（端口 3306）——业务方部署 MySQL 时需要启用 `mysqlx` 插件并开放 33060 端口。
+`database.mysql` 是 Shield 官方提供的 [`shield.database.v1`](/plugin-system#interface-model) 实现之一，基于 [MariaDB Connector/C](https://mariadb-corporation.github.io/mariadb-connector-c/)（libmariadb）——一个轻量的 C 语言 MySQL 协议客户端，可同时连接 MySQL 与 MariaDB 服务器。所有 SQL 通过二进制协议的 prepared statement 执行，参数与结果均为类型化绑定。
 
 ## 包信息
 
@@ -12,7 +12,7 @@
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_DB_PLUGIN_MYSQL`
 - **源码**: `plugins/mysql/`
-- **依赖**: [mysql-connector-cpp](https://dev.mysql.com/doc/connector-cpp/en/) （vcpkg 端口 `mysql-connector-cpp`，提供 X DevAPI）
+- **依赖**: [libmariadb](https://mariadb-corporation.github.io/mariadb-connector-c/)（vcpkg 端口 `libmariadb`，LGPL-2.1+，传递依赖仅 zlib/openssl）
 
 ## 构建启用
 
@@ -26,9 +26,9 @@ cmake --build build
 该选项触发：
 
 1. `plugins/mysql/` 下的 shared library 被构建到 `plugins/database.mysql/bin/`。
-2. vcpkg manifest feature `database-mysql` 被启用，自动安装 `mysql-connector-cpp` 端口（X DevAPI 头文件 `<mysqlx/xdevapi.h>` 和导入库）。
+2. vcpkg manifest feature `database-mysql` 被启用，自动安装 `libmariadb` 端口（头文件 `<mysql/mysql.h>` 和导入库）。
 
-`mysql-connector-cpp` 是一个较大的依赖（含 protobuf、icu 等），首次 vcpkg 安装耗时较长。建议本地开发时只在需要 MySQL 的 feature set 下开启。
+libmariadb 依赖树很小（zlib + openssl），构建与 CI 时长远轻于 mysql-connector-cpp 一类的重型驱动。
 
 ## 配置 Schema
 
@@ -37,11 +37,11 @@ cmake --build build
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `host` | string | 否 | `127.0.0.1` | MySQL 服务器主机名或 IP。 |
-| `port` | integer | 否 | `3306` | **经典协议端口**。注意：X DevAPI 实际使用 X Protocol 端口（默认 33060），但插件当前直接把此端口透传给 `mysqlx::Session`；生产环境部署需要确认 MySQL 实例的 `mysqlx_port` 配置。 |
+| `port` | integer | 否 | `3306` | 经典 MySQL 协议端口。 |
 | `database` | string | 是 | — | 默认 schema 名。 |
 | `username` | string | 是 | — | 登录用户名。 |
 | `password` | string | 否 | — | 登录密码。标记为 `secret`，日志和 dashboard 会脱敏。 |
-| `connect_timeout_ms` | integer | 否 | `5000` | 建立 TCP 连接 + X Protocol 握手的超时，单位毫秒，范围 100-60000。 |
+| `connect_timeout_ms` | integer | 否 | `5000` | 建立 TCP 连接 + 协议握手的超时，单位毫秒，范围 100-60000。 |
 | `query_timeout_ms` | integer | 否 | `5000` | 单条 SQL 执行超时，单位毫秒，范围 100-300000。 |
 
 ### 完整 app.yaml 示例
@@ -94,9 +94,9 @@ int  (*ping)(struct shield_db_conn* conn);
 
 | 方法 | 语义 |
 |------|------|
-| `connect` | 构造一个 `mysqlx::Session(host, port, user, password, database)`。失败时捕获 `mysqlx::Error` / `std::exception` 写入 `err_buf`，返回 `NULL`。 |
-| `disconnect` | 先 `session->close()`，再 `delete` 内部结构。`NULL` 安全。`close()` 内部异常被吞掉（保证幂等）。 |
-| `ping` | 执行 `SELECT 1`，成功返回 1，任何异常返回 0。 |
+| `connect` | `mysql_init` + `mysql_real_connect`（带 connect/read/write 超时与 `utf8mb4` 字符集）。失败时把 `mysql_error` 写入 `err_buf`，返回 `NULL`。 |
+| `disconnect` | `mysql_close` + 释放内部结构。`NULL` 安全，幂等。 |
+| `ping` | `mysql_ping`，成功返回 1，任何错误返回 0。 |
 
 `shield_db_connect_args` 中所有字段都参与连接：`host`、`port`、`user`、`password`、`database`。`extra_json` 当前不解析。
 
@@ -111,14 +111,14 @@ int (*execute)(struct shield_db_conn* conn, const char* sql,
                struct shield_db_result* out_result);
 ```
 
-两者底层共用 `run_stmt`，差别在 `collect_rows` 标志：
+两者底层共用 `run_stmt`（prepared statement 引擎），差别在 `collect_rows` 标志：
 
 | 方法 | 行为 |
 |------|------|
-| `query` | `collect_rows=true`：迭代 result set 把所有行物化到 `out_result->cells`。适合 `SELECT`。 |
-| `execute` | `collect_rows=false`：只取 `getAffectedItemsCount()` 和 `getAutoIncrementValue()`。适合 `INSERT/UPDATE/DELETE`。 |
+| `query` | `collect_rows=true`：`mysql_stmt_fetch` 循环把所有行物化到 `out_result->cells`。适合 `SELECT`。 |
+| `execute` | `collect_rows=false`：只取 `mysql_stmt_affected_rows` 和 `mysql_stmt_insert_id`。适合 `INSERT/UPDATE/DELETE`。 |
 
-参数绑定：`stmt.bind(params[i])`。`NULL` 参数（`params[i] == NULL`）会被绑定成空字符串 `""`——这是 mysqlx API 限制，业务侧如果需要真正的 SQL NULL，需要改用专门接口（当前 v1 ABI 暂未暴露）。
+参数绑定：vtable 路径所有参数按文本（`MYSQL_TYPE_STRING`）绑定；`NULL` 参数（`params[i] == NULL`）绑定为真正的 SQL `NULL`（`MYSQL_TYPE_NULL`）。Lua 路径则按 Lua 类型分别绑定整数/浮点/字符串/NULL。
 
 返回值规则同 SQLite：0 表示调用成功（SQL 层失败由 `out_result->success=0` 表达），非 0 表示硬错误。
 

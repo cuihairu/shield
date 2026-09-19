@@ -1,28 +1,33 @@
 // [SHIELD_PLUGIN] database.mysql — MySQL provider for shield.database.v1.
 //
-// v1 ABI (shield_plugin_get_v1). The X DevAPI session lifecycle and SQL
-// execution are inherited from the legacy implementation; only the ABI shell
-// is new. Error code mapping follows the conventions used elsewhere in shield:
+// v1 ABI (shield_plugin_get_v1). Built on MariaDB Connector/C (libmariadb),
+// which speaks the classic MySQL client/server protocol and therefore works
+// against both MySQL and MariaDB servers. Statements run through the prepared
+// statement API (mysql_stmt_*) so `?` placeholders are bound, never spliced.
+// Error code mapping follows the conventions used elsewhere in shield:
 //   "connection_lost"      Lost connection / server gone
 //   "connection_timeout"   query timed out
 //   "syntax_error"         SQL parse / grammar error
 //   "constraint_violation" Duplicate key / FK / CHECK
 //   "transaction_aborted"  Deadlock
-//   "db_query_failed"      Catch-all for other mysqlx::Error
+//   "db_query_failed"      Catch-all for other errors
 //
 // Lua autonomy: register_lua installs the shared callable namespace
-// shield.database.mysql(binding). Each call acquires a Session from a
-// per-instance connection pool, runs the statement, and returns the Session
-// to the pool on scope exit. The C vtable still creates/closes a fresh
-// Session per connect — C-ABI callers do NOT get pooling, only Lua callers
-// do. This keeps the vtable semantics unchanged while giving Lua scripts the
-// warm-connection performance they expect.
+// shield.database.mysql(binding). Each call acquires a connection from a
+// per-instance connection pool, runs the statement, and returns the
+// connection to the pool on scope exit. The C vtable still creates/closes a
+// fresh connection per connect — C-ABI callers do NOT get pooling, only Lua
+// callers do. This keeps the vtable semantics unchanged while giving Lua
+// scripts the warm-connection performance they expect.
 
-#include <mysqlx/xdevapi.h>
+#include <mysql/errmsg.h>
+#include <mysql/mysql.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -46,7 +51,7 @@
 // pointers reference — an anonymous-namespace definition would be a distinct
 // type and the lambdas would not convert to the function pointers.
 struct shield_db_conn {
-    std::unique_ptr<mysqlx::Session> session;
+    MYSQL* db;
 };
 
 namespace {
@@ -81,104 +86,392 @@ void clear_result(shield_db_result* r) {
     r->col_count = 0;
 }
 
-const char* map_mysqlx_error(const char* msg) {
-    if (!msg) return "db_query_failed";
-    std::string m(msg);
-    if (m.find("Lost connection") != std::string::npos ||
-        m.find("server has gone away") != std::string::npos)
-        return "connection_lost";
-    if (m.find("timeout") != std::string::npos ||
-        m.find("timed out") != std::string::npos)
-        return "connection_timeout";
-    if (m.find("syntax") != std::string::npos ||
-        m.find("SQL syntax") != std::string::npos)
-        return "syntax_error";
-    if (m.find("Duplicate") != std::string::npos ||
-        m.find("foreign key") != std::string::npos ||
-        m.find("constraint") != std::string::npos)
-        return "constraint_violation";
-    if (m.find("Deadlock") != std::string::npos) return "transaction_aborted";
+// Map a MySQL/MariaDB error to a stable shield error code. Prefers the
+// numeric error (server errno for server-side errors, CR_* codes 2000+ for
+// client-side ones) and falls back to message sniffing for anything the
+// table doesn't cover.
+const char* map_mysql_error(unsigned err, const char* msg) {
+    switch (err) {
+        case CR_CONN_HOST_ERROR:
+        case CR_SERVER_GONE_ERROR:
+        case CR_SERVER_LOST:
+        case CR_SERVER_LOST_EXTENDED:  // 2055 — extended read-failure variant
+            return "connection_lost";
+        case 1044:
+        case 1045:
+        case 1698:  // "Access denied" family
+            return "auth_failed";
+        case 1064:  // ER_PARSE_ERROR
+        case 1149:  // ER_SYNTAX_ERROR
+            return "syntax_error";
+        case 1022:
+        case 1062:  // ER_DUP_ENTRY
+        case 1451:
+        case 1452:  // FK violations
+            return "constraint_violation";
+        case 1205:  // ER_LOCK_WAIT_TIMEOUT
+            return "connection_timeout";
+        case 1213:  // ER_LOCK_DEADLOCK
+            return "transaction_aborted";
+        default:
+            break;
+    }
+    if (msg) {
+        std::string m(msg);
+        if (m.find("Lost connection") != std::string::npos ||
+            m.find("server has gone away") != std::string::npos ||
+            m.find("Can't connect") != std::string::npos)
+            return "connection_lost";
+        if (m.find("timed out") != std::string::npos ||
+            m.find("timeout") != std::string::npos)
+            return "connection_timeout";
+        if (m.find("Duplicate") != std::string::npos ||
+            m.find("foreign key") != std::string::npos ||
+            m.find("constraint") != std::string::npos)
+            return "constraint_violation";
+        if (m.find("Deadlock") != std::string::npos)
+            return "transaction_aborted";
+    }
     return "db_query_failed";
 }
 
-int fill_exception(std::exception_ptr ep, shield_db_result* out) {
+// Fill `out` with the last error on `mysql`. Always returns 0 (soft failure:
+// the statement failed, not the vtable call).
+int fill_mysql_error(MYSQL* mysql, shield_db_result* out) {
     out->success = 0;
-    std::string msg;
-    std::string code = "db_query_failed";
-    try {
-        std::rethrow_exception(ep);
-    } catch (const mysqlx::Error& e) {
-        msg = e.what();
-        code = map_mysqlx_error(msg.c_str());
-    } catch (const std::exception& e) {
-        msg = e.what();
-    } catch (...) {
-        msg = "unknown plugin error";
-    }
-    out->error_msg = dup_string(msg.c_str());
-    out->error_code = dup_string(code.c_str());
+    unsigned err = mysql ? mysql_errno(mysql) : 0;
+    const char* msg = mysql ? mysql_error(mysql) : "mysql: connection is null";
+    if (!msg || !msg[0]) msg = "unknown mysql error";
+    out->error_msg = dup_string(msg);
+    out->error_code = dup_string(map_mysql_error(err, msg));
     return 0;
 }
 
-int run_stmt(mysqlx::Session& session, const char* sql,
-             const char* const* params, int n_params, bool collect_rows,
-             shield_db_result* out) {
-    try {
-        auto stmt = session.sql(sql);
-        for (int i = 0; i < n_params; ++i) {
-            stmt.bind(params ? params[i] : "");
-        }
-        auto result = stmt.execute();
+int fill_text_error(const char* msg, shield_db_result* out) {
+    out->success = 0;
+    out->error_msg = dup_string(msg);
+    out->error_code = dup_string("db_query_failed");
+    return 0;
+}
 
-        if (collect_rows) {
-            std::vector<const char*> cells;
-            int col_count = 0;
-            int row_count = 0;
-            for (auto row : result) {
-                col_count = static_cast<int>(row.colCount());
-                for (int c = 0; c < col_count; ++c) {
-                    auto v = row[c];
-                    if (v.isNull()) {
-                        cells.push_back(nullptr);
-                    } else {
-                        std::string s = v.get<std::string>();
-                        cells.push_back(dup_string(s.c_str()));
-                    }
-                }
-                ++row_count;
-            }
-            out->success = 1;
-            out->row_count = row_count;
-            out->col_count = col_count;
-            out->affected_rows = 0;
-            out->last_insert_id = 0;
-            if (row_count > 0) {
-                out->cells = static_cast<const char**>(
-                    std::malloc(sizeof(char*) * cells.size()));
-                if (out->cells) {
-                    std::memcpy(const_cast<char**>(out->cells), cells.data(),
-                                sizeof(char*) * cells.size());
-                }
-            }
-        } else {
-            out->success = 1;
-            out->affected_rows =
-                static_cast<int64_t>(result.getAffectedItemsCount());
-            out->last_insert_id =
-                static_cast<int64_t>(result.getAutoIncrementValue());
-            out->row_count = 0;
-            out->col_count = 0;
-            out->cells = nullptr;
-        }
-        return 0;
-    } catch (...) {
-        return fill_exception(std::current_exception(), out);
+// ---------------------------------------------------------------------------
+// Prepared statement engine
+//
+// Statements run through mysql_stmt_* so `?` placeholders are bound, never
+// spliced. Result rows are fetched with per-column typed buffers (chosen from
+// the column's wire type) so Lua callers keep their type semantics — an INT
+// column comes back as a Lua integer, not "42".
+// ---------------------------------------------------------------------------
+
+// Cell kinds for stmt_result::kinds.
+enum : unsigned char {
+    kCellInt = 'i',
+    kCellDbl = 'd',
+    kCellStr = 's',
+    kCellNull = 'n'
+};
+
+struct stmt_result {
+    bool has_rows = false;
+    int col_count = 0;
+    int row_count = 0;
+    std::vector<std::string> col_names;
+    // Per [row][col] typed cells; exactly one of the three is live per cell,
+    // selected by kinds[row][col].
+    std::vector<std::vector<int64_t>> ints;
+    std::vector<std::vector<double>> dbls;
+    std::vector<std::vector<std::string>> strs;
+    std::vector<std::vector<unsigned char>> kinds;
+    int64_t affected = 0;
+    int64_t insert_id = 0;
+};
+
+struct stmt_error {
+    std::string code;
+    std::string msg;
+};
+
+// True when the column should be received into an int64 buffer.
+bool col_is_int(const MYSQL_FIELD& f) {
+    switch (f.type) {
+        case MYSQL_TYPE_TINY:
+        case MYSQL_TYPE_SHORT:
+        case MYSQL_TYPE_LONG:
+        case MYSQL_TYPE_INT24:
+        case MYSQL_TYPE_LONGLONG:
+        case MYSQL_TYPE_YEAR:
+            return true;
+        default:
+            return false;
     }
 }
 
-int run_simple(mysqlx::Session& session, const char* sql,
-               shield_db_result* out) {
-    return run_stmt(session, sql, nullptr, 0, false, out);
+// True when the column should be received into a double buffer.
+bool col_is_double(const MYSQL_FIELD& f) {
+    switch (f.type) {
+        case MYSQL_TYPE_FLOAT:
+        case MYSQL_TYPE_DOUBLE:
+        case MYSQL_TYPE_DECIMAL:
+        case MYSQL_TYPE_NEWDECIMAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Execute a prepared statement and fetch the complete result set (if any)
+// into `res`. On failure fills *err and returns false.
+bool exec_typed(MYSQL* mysql, const char* sql,
+                const std::vector<MYSQL_BIND>& params, stmt_result* res,
+                stmt_error* err) {
+    MYSQL_STMT* stmt = mysql_stmt_init(mysql);
+    if (!stmt) {
+        *err = {"db_query_failed", "mysql_stmt_init failed"};
+        return false;
+    }
+
+    // Ask the driver to update field->max_length during store_result so the
+    // string buffers can be sized correctly before the fetch binds.
+    my_bool update_max_len = 1;
+    mysql_stmt_attr_set(stmt, STMT_ATTR_UPDATE_MAX_LENGTH, &update_max_len);
+
+    bool ok = false;
+    if (mysql_stmt_prepare(stmt, sql,
+                           static_cast<unsigned long>(strlen(sql))) != 0) {
+        *err = {map_mysql_error(mysql_stmt_errno(stmt), mysql_stmt_error(stmt)),
+                mysql_stmt_error(stmt)};
+    } else if (mysql_stmt_param_count(stmt) !=
+               static_cast<unsigned long>(params.size())) {
+        *err = {"db_query_failed",
+                "mysql: parameter count mismatch (" +
+                    std::to_string(params.size()) + " given, " +
+                    std::to_string(mysql_stmt_param_count(stmt)) +
+                    " expected)"};
+    } else {
+        if (!params.empty() &&
+            mysql_stmt_bind_param(
+                stmt, const_cast<MYSQL_BIND*>(params.data())) != 0) {
+            *err = {
+                map_mysql_error(mysql_stmt_errno(stmt), mysql_stmt_error(stmt)),
+                mysql_stmt_error(stmt)};
+        } else if (mysql_stmt_execute(stmt) != 0) {
+            *err = {
+                map_mysql_error(mysql_stmt_errno(stmt), mysql_stmt_error(stmt)),
+                mysql_stmt_error(stmt)};
+        } else {
+            ok = true;
+        }
+    }
+
+    if (!ok) {
+        mysql_stmt_close(stmt);
+        return false;
+    }
+
+    // No result set (DML / SET / ...): report affected rows + insert id.
+    if (mysql_stmt_field_count(stmt) == 0) {
+        res->affected = static_cast<int64_t>(mysql_stmt_affected_rows(stmt));
+        res->insert_id = static_cast<int64_t>(mysql_stmt_insert_id(stmt));
+        mysql_stmt_close(stmt);
+        return true;
+    }
+
+    MYSQL_RES* meta = mysql_stmt_result_metadata(stmt);
+    if (!meta) {
+        *err = {"db_query_failed", "mysql_stmt_result_metadata failed"};
+        mysql_stmt_close(stmt);
+        return false;
+    }
+    unsigned n_fields = mysql_num_fields(meta);
+    res->col_count = static_cast<int>(n_fields);
+    res->has_rows = true;
+
+    // Materialize the result so max_length becomes authoritative.
+    if (mysql_stmt_store_result(stmt) != 0) {
+        *err = {map_mysql_error(mysql_stmt_errno(stmt), mysql_stmt_error(stmt)),
+                mysql_stmt_error(stmt)};
+        mysql_free_result(meta);
+        mysql_stmt_close(stmt);
+        return false;
+    }
+
+    // Column metadata (a copy — `meta` is freed before the fetch loop).
+    std::vector<MYSQL_FIELD> fields(mysql_fetch_fields(meta),
+                                    mysql_fetch_fields(meta) + n_fields);
+    std::vector<unsigned char> kind(n_fields);
+    std::vector<unsigned long> buf_size(n_fields);
+    for (unsigned c = 0; c < n_fields; ++c) {
+        if (col_is_int(fields[c])) {
+            kind[c] = kCellInt;
+            buf_size[c] = sizeof(int64_t);
+        } else if (col_is_double(fields[c])) {
+            kind[c] = kCellDbl;
+            buf_size[c] = sizeof(double);
+        } else {
+            kind[c] = kCellStr;
+            buf_size[c] = fields[c].max_length + 1;
+        }
+        res->col_names.push_back(fields[c].name ? fields[c].name
+                                                : std::to_string(c + 1));
+    }
+    mysql_free_result(meta);
+
+    res->row_count = static_cast<int>(mysql_stmt_num_rows(stmt));
+    res->ints.assign(res->row_count, std::vector<int64_t>(n_fields, 0));
+    res->dbls.assign(res->row_count, std::vector<double>(n_fields, 0.0));
+    res->strs.assign(res->row_count, std::vector<std::string>(n_fields));
+    res->kinds.assign(res->row_count, kind);
+
+    // Per-column fetch buffers: one slot per column, reused across rows.
+    std::vector<MYSQL_BIND> bind(n_fields, MYSQL_BIND{});
+    std::vector<int64_t> int_buf(n_fields, 0);
+    std::vector<double> dbl_buf(n_fields, 0.0);
+    std::vector<std::string> str_buf(n_fields);
+    std::vector<unsigned long> str_len(n_fields, 0);
+    std::vector<my_bool> is_null(n_fields, 0);
+    std::vector<my_bool> trunc(n_fields, 0);
+    for (unsigned c = 0; c < n_fields; ++c) {
+        bind[c].is_null = &is_null[c];
+        bind[c].error = &trunc[c];
+        if (kind[c] == kCellInt) {
+            bind[c].buffer_type = MYSQL_TYPE_LONGLONG;
+            bind[c].buffer = &int_buf[c];
+            bind[c].buffer_length = sizeof(int64_t);
+        } else if (kind[c] == kCellDbl) {
+            bind[c].buffer_type = MYSQL_TYPE_DOUBLE;
+            bind[c].buffer = &dbl_buf[c];
+            bind[c].buffer_length = sizeof(double);
+        } else {
+            str_buf[c].assign(buf_size[c], '\0');
+            bind[c].buffer_type = MYSQL_TYPE_STRING;
+            bind[c].buffer = str_buf[c].data();
+            bind[c].buffer_length = buf_size[c];
+            bind[c].length = &str_len[c];
+        }
+    }
+    if (mysql_stmt_bind_result(stmt, bind.data()) != 0) {
+        *err = {map_mysql_error(mysql_stmt_errno(stmt), mysql_stmt_error(stmt)),
+                mysql_stmt_error(stmt)};
+        mysql_stmt_close(stmt);
+        return false;
+    }
+
+    for (int r = 0; r < res->row_count; ++r) {
+        int fetch_rc = mysql_stmt_fetch(stmt);
+        if (fetch_rc == MYSQL_NO_DATA) break;
+        if (fetch_rc != 0 && fetch_rc != MYSQL_DATA_TRUNCATED) {
+            *err = {
+                map_mysql_error(mysql_stmt_errno(stmt), mysql_stmt_error(stmt)),
+                mysql_stmt_error(stmt)};
+            mysql_stmt_close(stmt);
+            return false;
+        }
+        for (unsigned c = 0; c < n_fields; ++c) {
+            if (is_null[c]) {
+                res->kinds[r][c] = kCellNull;
+                continue;
+            }
+            switch (res->kinds[r][c]) {
+                case kCellInt:
+                    res->ints[r][c] = int_buf[c];
+                    break;
+                case kCellDbl:
+                    res->dbls[r][c] = dbl_buf[c];
+                    break;
+                default:
+                    res->strs[r][c].assign(str_buf[c].data(),
+                                           str_len[c] ? str_len[c] : 0);
+                    break;
+            }
+        }
+    }
+
+    mysql_stmt_close(stmt);
+    return true;
+}
+
+int run_stmt(MYSQL* mysql, const char* sql, const char* const* params,
+             int n_params, bool collect_rows, shield_db_result* out) {
+    if (!mysql || !sql) {
+        return fill_text_error("mysql: invalid arguments", out);
+    }
+
+    // vtable params are all text — bind them as strings.
+    std::vector<MYSQL_BIND> binds(n_params, MYSQL_BIND{});
+    std::vector<my_bool> nulls(n_params, 0);
+    std::vector<unsigned long> lengths(n_params, 0);
+    for (int i = 0; i < n_params; ++i) {
+        if (!params || !params[i]) {
+            nulls[i] = 1;
+            binds[i].buffer_type = MYSQL_TYPE_NULL;
+            binds[i].is_null = &nulls[i];
+        } else {
+            lengths[i] = static_cast<unsigned long>(strlen(params[i]));
+            binds[i].buffer_type = MYSQL_TYPE_STRING;
+            binds[i].buffer = const_cast<char*>(params[i]);
+            binds[i].buffer_length = lengths[i];
+            binds[i].length = &lengths[i];
+        }
+    }
+
+    stmt_result res;
+    stmt_error err;
+    if (!exec_typed(mysql, sql, binds, &res, &err)) {
+        out->success = 0;
+        out->error_msg = dup_string(err.msg.c_str());
+        out->error_code = dup_string(err.code.c_str());
+        return 0;
+    }
+
+    out->success = 1;
+    out->error_msg = nullptr;
+    out->error_code = nullptr;
+    out->affected_rows = res.affected;
+    out->last_insert_id = res.insert_id;
+    out->row_count = 0;
+    out->col_count = 0;
+    out->cells = nullptr;
+
+    if (!collect_rows || !res.has_rows) return 0;
+
+    // The C-ABI surface carries text cells: format each typed cell.
+    out->row_count = res.row_count;
+    out->col_count = res.col_count;
+    size_t total =
+        static_cast<size_t>(res.row_count) * static_cast<size_t>(res.col_count);
+    out->cells = static_cast<const char**>(
+        std::malloc(sizeof(char*) * (total ? total : 1)));
+    if (!out->cells) return fill_text_error("mysql: out of memory", out);
+
+    char num_buf[32];
+    size_t k = 0;
+    for (int r = 0; r < res.row_count; ++r) {
+        for (int c = 0; c < res.col_count; ++c, ++k) {
+            switch (res.kinds[r][c]) {
+                case kCellNull:
+                    out->cells[k] = nullptr;
+                    break;
+                case kCellInt:
+                    std::snprintf(num_buf, sizeof(num_buf), "%lld",
+                                  static_cast<long long>(res.ints[r][c]));
+                    out->cells[k] = dup_string(num_buf);
+                    break;
+                case kCellDbl:
+                    std::snprintf(num_buf, sizeof(num_buf), "%.17g",
+                                  res.dbls[r][c]);
+                    out->cells[k] = dup_string(num_buf);
+                    break;
+                default:
+                    out->cells[k] = dup_string(res.strs[r][c].c_str());
+                    break;
+            }
+        }
+    }
+    return 0;
+}
+
+int run_simple(MYSQL* mysql, const char* sql, shield_db_result* out) {
+    return run_stmt(mysql, sql, nullptr, 0, false, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -199,81 +492,80 @@ const shield_database_v1& db_vtable() {
         [](const shield_db_connect_args* args, char* err_buf,
            int err_buf_size) -> shield_db_conn* {
             if (!args) return nullptr;
-            try {
-                auto s = std::make_unique<mysqlx::Session>(
-                    args->host ? args->host : "localhost",
-                    args->port ? args->port : 3306,
-                    args->user ? args->user : "root",
-                    args->password ? args->password : "",
-                    args->database ? args->database : "shield");
-                return new shield_db_conn{std::move(s)};
-            } catch (const mysqlx::Error& e) {
+            MYSQL* db = mysql_init(nullptr);
+            if (!db) {
                 if (err_buf && err_buf_size > 0)
-                    std::snprintf(err_buf, err_buf_size, "%s", e.what());
-                return nullptr;
-            } catch (const std::exception& e) {
-                if (err_buf && err_buf_size > 0)
-                    std::snprintf(err_buf, err_buf_size, "%s", e.what());
+                    std::snprintf(err_buf, err_buf_size,
+                                  "mysql: out of memory");
                 return nullptr;
             }
+            unsigned int timeout =
+                args->connect_timeout_ms
+                    ? std::max(1u, static_cast<unsigned>(
+                                       args->connect_timeout_ms / 1000))
+                    : 5;
+            mysql_options(db, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
+            mysql_options(db, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+            if (!mysql_real_connect(db, args->host ? args->host : "localhost",
+                                    args->user ? args->user : "root",
+                                    args->password ? args->password : "",
+                                    args->database ? args->database : "shield",
+                                    args->port ? args->port : 3306, nullptr,
+                                    0)) {
+                if (err_buf && err_buf_size > 0)
+                    std::snprintf(err_buf, err_buf_size, "%s", mysql_error(db));
+                mysql_close(db);
+                return nullptr;
+            }
+            return new shield_db_conn{db};
         },
         // disconnect
         [](shield_db_conn* c) {
             if (!c) return;
-            if (c->session) {
-                try {
-                    c->session->close();
-                } catch (...) {
-                }
-            }
+            if (c->db) mysql_close(c->db);
             delete c;
         },
         // ping
         [](shield_db_conn* c) -> int {
-            if (!c || !c->session) return 0;
-            try {
-                c->session->sql("SELECT 1").execute();
-                return 1;
-            } catch (...) {
-                return 0;
-            }
+            if (!c || !c->db) return 0;
+            return mysql_ping(c->db) == 0 ? 1 : 0;
         },
         // query
         [](shield_db_conn* c, const char* sql, const char* const* params,
            int n_params, shield_db_result* out) -> int {
-            if (!c || !c->session || !sql) {
+            if (!c || !c->db || !sql) {
                 out->success = 0;
                 out->error_msg = dup_string("mysql: invalid arguments");
                 out->error_code = dup_string("db_query_failed");
                 return 1;
             }
-            return run_stmt(*c->session, sql, params, n_params, true, out);
+            return run_stmt(c->db, sql, params, n_params, true, out);
         },
         // execute
         [](shield_db_conn* c, const char* sql, const char* const* params,
            int n_params, shield_db_result* out) -> int {
-            if (!c || !c->session || !sql) {
+            if (!c || !c->db || !sql) {
                 out->success = 0;
                 out->error_msg = dup_string("mysql: invalid arguments");
                 out->error_code = dup_string("db_query_failed");
                 return 1;
             }
-            return run_stmt(*c->session, sql, params, n_params, false, out);
+            return run_stmt(c->db, sql, params, n_params, false, out);
         },
         // begin
         [](shield_db_conn* c, shield_db_result* out) -> int {
-            if (!c || !c->session) return 1;
-            return run_simple(*c->session, "START TRANSACTION", out);
+            if (!c || !c->db) return 1;
+            return run_simple(c->db, "START TRANSACTION", out);
         },
         // commit
         [](shield_db_conn* c, shield_db_result* out) -> int {
-            if (!c || !c->session) return 1;
-            return run_simple(*c->session, "COMMIT", out);
+            if (!c || !c->db) return 1;
+            return run_simple(c->db, "COMMIT", out);
         },
         // rollback
         [](shield_db_conn* c, shield_db_result* out) -> int {
-            if (!c || !c->session) return 1;
-            return run_simple(*c->session, "ROLLBACK", out);
+            if (!c || !c->db) return 1;
+            return run_simple(c->db, "ROLLBACK", out);
         },
         // free_result
         [](shield_db_result* r) { clear_result(r); },
@@ -301,7 +593,7 @@ struct mysql_instance {
 
     // Parsed config (from args->config_json). Defaults match manifest.yaml.
     std::string host = "127.0.0.1";
-    int port = 33060;  // X Protocol port (NOT 3306)
+    int port = 3306;  // classic MySQL client/server protocol port
     std::string database;
     std::string username;
     std::string password;
@@ -313,8 +605,8 @@ struct mysql_instance {
     // Pool state — protected by pool_mu.
     std::mutex pool_mu;
     std::condition_variable pool_cv;
-    std::queue<std::shared_ptr<mysqlx::Session>> free_list;
-    int current_size = 0;  // live sessions (in free_list + checked out)
+    std::queue<MYSQL*> free_list;
+    int current_size = 0;  // live connections (in free_list + checked out)
 };
 
 // Process-wide registry: instance_id -> mysql_instance*. The callable Lua
@@ -381,83 +673,101 @@ void parse_instance_config(mysql_instance* inst, const char* config_json) {
 // ---------------------------------------------------------------------------
 // Connection pool
 //
-// mysqlx::Session is expensive to construct (TCP + auth + session setup), so
-// the Lua proxy keeps a per-instance free list. acquire_session() returns a
-// RAII guard that pushes the Session back onto the free list (and notifies
-// one waiter) when it goes out of scope.
+// A TCP + auth handshake is expensive, so the Lua proxy keeps a per-instance
+// free list of live MYSQL* connections. acquire_session() returns a RAII
+// guard that pushes the connection back onto the free list (and notifies one
+// waiter) when it goes out of scope.
 //
 // Lifecycle:
 //   - Try free_list first (fast path, no construction).
-//   - If free_list is empty and current_size < pool_size, open a new Session
-//     (current_size is bumped under the lock so concurrent openers don't
-//     overshoot).
+//   - If free_list is empty and current_size < pool_size, open a new
+//     connection (current_size is bumped under the lock so concurrent
+//     openers don't overshoot).
 //   - Otherwise wait on pool_cv up to acquire_timeout_ms, then fail.
 //
-// Broken sessions are discarded (not pushed back) so the next acquirer gets a
-// fresh one. current_size is decremented when a session is dropped.
+// Broken connections are discarded (not pushed back) so the next acquirer
+// gets a fresh one. current_size is decremented when a connection is dropped.
 // ---------------------------------------------------------------------------
 
-// Build a new mysqlx::Session from the instance config. Throws on failure.
-std::shared_ptr<mysqlx::Session> open_session(const mysql_instance* inst) {
-    // mysqlx::Session(host, port, user, password, schema) uses the X Protocol.
-    // The query_timeout is applied per-statement via the SqlStatement API
-    // (mysqlx has no per-session query timeout in the X DevAPI; the host
-    // connect_timeout maps to the TCP connect phase implicitly).
-    auto s = std::make_shared<mysqlx::Session>(
-        inst->host, inst->port > 0 ? inst->port : 33060,
-        inst->username.empty() ? std::string("root") : inst->username,
-        inst->password, inst->database);
-    return s;
+// Open a new connection from the instance config. Returns nullptr on failure
+// and fills *err with the server's message.
+MYSQL* open_conn(const mysql_instance* inst, std::string* err) {
+    MYSQL* db = mysql_init(nullptr);
+    if (!db) {
+        if (err) *err = "mysql: out of memory";
+        return nullptr;
+    }
+    unsigned int connect_timeout = static_cast<unsigned int>(
+        inst->connect_timeout_ms > 0 ? (inst->connect_timeout_ms + 999) / 1000
+                                     : 5);
+    // Approximate the per-statement query timeout with socket read/write
+    // timeouts (the client library has no per-statement deadline).
+    unsigned int query_timeout = static_cast<unsigned int>(
+        inst->query_timeout_ms > 0 ? (inst->query_timeout_ms + 999) / 1000 : 5);
+    mysql_options(db, MYSQL_OPT_CONNECT_TIMEOUT, &connect_timeout);
+    mysql_options(db, MYSQL_OPT_READ_TIMEOUT, &query_timeout);
+    mysql_options(db, MYSQL_OPT_WRITE_TIMEOUT, &query_timeout);
+    mysql_options(db, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+
+    if (!mysql_real_connect(
+            db, inst->host.c_str(),
+            inst->username.empty() ? "root" : inst->username.c_str(),
+            inst->password.c_str(), inst->database.c_str(),
+            inst->port > 0 ? static_cast<unsigned int>(inst->port) : 3306,
+            nullptr, 0)) {
+        if (err) *err = std::string("mysql connect: ") + mysql_error(db);
+        mysql_close(db);
+        return nullptr;
+    }
+    return db;
 }
 
-// RAII guard — releases the session back to the pool on destruction. If the
-// session is marked broken (e.g. the caller observed a connection error), the
-// guard drops it instead of returning a known-bad session.
+// RAII guard — releases the connection back to the pool on destruction. If
+// the connection is marked broken (e.g. the caller observed a connection
+// error), the guard drops it instead of returning a known-bad connection.
 struct pool_guard {
     mysql_instance* inst = nullptr;
-    std::shared_ptr<mysqlx::Session> sess;
+    MYSQL* sess = nullptr;
     bool broken = false;
 
     pool_guard() = default;
-    pool_guard(mysql_instance* i, std::shared_ptr<mysqlx::Session> s)
-        : inst(i), sess(std::move(s)) {}
+    pool_guard(mysql_instance* i, MYSQL* s) : inst(i), sess(s) {}
 
     ~pool_guard() {
         if (!inst || !sess) return;
         if (broken) {
-            // Discard: try to close (best effort), then decrement live count.
-            try {
-                sess->close();
-            } catch (...) {
-            }
+            // Discard: close (best effort), then decrement live count.
+            mysql_close(sess);
             std::lock_guard lk(inst->pool_mu);
             inst->current_size -= 1;
             inst->pool_cv.notify_one();
             return;
         }
         std::lock_guard lk(inst->pool_mu);
-        inst->free_list.push(std::move(sess));
+        inst->free_list.push(sess);
         inst->pool_cv.notify_one();
     }
 
     pool_guard(const pool_guard&) = delete;
     pool_guard& operator=(const pool_guard&) = delete;
     pool_guard(pool_guard&& o) noexcept
-        : inst(o.inst), sess(std::move(o.sess)), broken(o.broken) {
+        : inst(o.inst), sess(o.sess), broken(o.broken) {
         o.inst = nullptr;
+        o.sess = nullptr;
     }
     pool_guard& operator=(pool_guard&& o) noexcept {
         if (this != &o) {
             inst = o.inst;
-            sess = std::move(o.sess);
+            sess = o.sess;
             broken = o.broken;
             o.inst = nullptr;
+            o.sess = nullptr;
         }
         return *this;
     }
 
-    mysqlx::Session* operator->() const { return sess.get(); }
-    mysqlx::Session& operator*() const { return *sess; }
+    MYSQL* operator->() const { return sess; }
+    MYSQL& operator*() const { return *sess; }
     explicit operator bool() const { return sess != nullptr; }
 };
 
@@ -482,10 +792,10 @@ std::unique_ptr<pool_guard> acquire_session(mysql_instance* inst,
         return std::make_unique<pool_guard>();
     }
 
-    // Outcome enum for the in-lock probe: TAKE (free session), OPEN (slot
+    // Outcome enum for the in-lock probe: TAKE (free connection), OPEN (slot
     // reserved, must construct outside the lock), WAIT (pool full).
     enum class Probe { take, open, wait };
-    std::shared_ptr<mysqlx::Session> taken;
+    MYSQL* taken = nullptr;
     Probe probe;
     {
         std::lock_guard lk(inst->pool_mu);
@@ -502,17 +812,16 @@ std::unique_ptr<pool_guard> acquire_session(mysql_instance* inst,
     }
 
     if (probe == Probe::take) {
-        return std::make_unique<pool_guard>(inst, std::move(taken));
+        return std::make_unique<pool_guard>(inst, taken);
     }
 
     if (probe == Probe::open) {
-        try {
-            return std::make_unique<pool_guard>(inst, open_session(inst));
-        } catch (const std::exception& e) {
-            if (err) *err = std::string("mysql connect: ") + e.what();
-        } catch (...) {
-            if (err) *err = "mysql connect: unknown error";
+        std::string open_err;
+        MYSQL* db = open_conn(inst, &open_err);
+        if (db) {
+            return std::make_unique<pool_guard>(inst, db);
         }
+        if (err) *err = open_err;
         // Open failed — release the slot and wake one waiter.
         std::lock_guard lk(inst->pool_mu);
         inst->current_size -= 1;
@@ -535,21 +844,20 @@ std::unique_ptr<pool_guard> acquire_session(mysql_instance* inst,
         return std::make_unique<pool_guard>();
     }
     if (!inst->free_list.empty()) {
-        auto s = inst->free_list.front();
+        MYSQL* s = inst->free_list.front();
         inst->free_list.pop();
         lk.unlock();
-        return std::make_unique<pool_guard>(inst, std::move(s));
+        return std::make_unique<pool_guard>(inst, s);
     }
     // Slot opened up — reserve and open outside the lock.
     inst->current_size += 1;
     lk.unlock();
-    try {
-        return std::make_unique<pool_guard>(inst, open_session(inst));
-    } catch (const std::exception& e) {
-        if (err) *err = std::string("mysql connect: ") + e.what();
-    } catch (...) {
-        if (err) *err = "mysql connect: unknown error";
+    std::string open_err;
+    MYSQL* db = open_conn(inst, &open_err);
+    if (db) {
+        return std::make_unique<pool_guard>(inst, db);
     }
+    if (err) *err = open_err;
     std::lock_guard lk2(inst->pool_mu);
     inst->current_size -= 1;
     inst->pool_cv.notify_one();
@@ -561,12 +869,9 @@ std::unique_ptr<pool_guard> acquire_session(mysql_instance* inst,
 void drain_pool(mysql_instance* inst) {
     std::lock_guard lk(inst->pool_mu);
     while (!inst->free_list.empty()) {
-        auto s = inst->free_list.front();
+        MYSQL* s = inst->free_list.front();
         inst->free_list.pop();
-        try {
-            s->close();
-        } catch (...) {
-        }
+        mysql_close(s);
     }
     inst->current_size = 0;
 }
@@ -585,119 +890,104 @@ sol::table make_error_table(sol::state_view lua, const char* code,
     return t;
 }
 
-// Convert one mysqlx::Value to a Lua object.
-//
-// We avoid switching on Value::getType() because the enum names differ across
-// mysql-connector-cpp releases (e.g. VINT64 vs INT64 vs LONGLONG). Instead we
-// probe with typed get<T>() calls inside try/catch blocks — mysqlx throws
-// std::bad_cast (wrapped in mysqlx::Error) when the conversion is invalid, so
-// the first successful extraction wins. The probe order prefers integer over
-// double to preserve precision for BIGINT columns.
-//
-// Mapping:
-//   null      -> nil
-//   integer   -> lua_Integer (int64_t)
-//   uint64    -> lua_Integer if it fits, else double
-//   float/double/decimal -> number (Lua has no native decimal)
-//   string    -> string
-//   bytes     -> string (raw bytes)
-//   anything else -> nil (we don't know the layout)
-sol::object value_to_lua(sol::state_view lua, const mysqlx::Value& v) {
-    if (v.isNull()) return sol::lua_nil;
+// Typed parameter buffers for a Lua-bound statement. MYSQL_BIND entries
+// reference these, so the struct must outlive mysql_stmt_execute.
+struct lua_params {
+    std::vector<MYSQL_BIND> binds;
+    std::vector<int64_t> ints;
+    std::vector<double> dbls;
+    std::vector<std::string> strs;
+    std::vector<unsigned long> lengths;
+    std::vector<my_bool> nulls;
+};
 
-    // Integer family first (covers TINYINT/SMALLINT/INT/BIGINT/YEAR).
-    try {
-        return sol::make_object(lua,
-                                static_cast<lua_Integer>(v.get<int64_t>()));
-    } catch (...) {
-    }
-    // Unsigned 64-bit (BIGINT UNSIGNED).
-    try {
-        uint64_t u = v.get<uint64_t>();
-        if (u <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-            return sol::make_object(
-                lua, static_cast<lua_Integer>(static_cast<int64_t>(u)));
+// Bind positional Lua values to `?` placeholders. nil -> SQL NULL;
+// bool -> 0/1; integer and number bind natively; strings bind as text;
+// anything else falls back to its stringified form (mirroring the sqlite
+// plugin's tolerant bind behaviour).
+lua_params make_lua_params(const std::vector<sol::object>& values) {
+    lua_params p;
+    size_t n = values.size();
+    p.binds.resize(n);
+    p.ints.resize(n, 0);
+    p.dbls.resize(n, 0.0);
+    p.strs.resize(n);
+    p.lengths.resize(n, 0);
+    p.nulls.resize(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        const sol::object& v = values[i];
+        MYSQL_BIND& b = p.binds[i];
+        b.is_null = &p.nulls[i];
+        if (!v.valid() || v == sol::lua_nil) {
+            p.nulls[i] = 1;
+            b.buffer_type = MYSQL_TYPE_NULL;
+            continue;
         }
-        return sol::make_object(
-            lua, static_cast<lua_Number>(static_cast<double>(u)));
-    } catch (...) {
+        if (v.is<bool>()) {
+            // Integer first — sol2 would otherwise coerce to double.
+            p.ints[i] = v.as<bool>() ? 1 : 0;
+            b.buffer_type = MYSQL_TYPE_LONGLONG;
+            b.buffer = &p.ints[i];
+            b.buffer_length = sizeof(int64_t);
+            continue;
+        }
+        if (v.is<lua_Integer>()) {
+            p.ints[i] = static_cast<int64_t>(v.as<lua_Integer>());
+            b.buffer_type = MYSQL_TYPE_LONGLONG;
+            b.buffer = &p.ints[i];
+            b.buffer_length = sizeof(int64_t);
+            continue;
+        }
+        if (v.is<double>()) {
+            p.dbls[i] = v.as<double>();
+            b.buffer_type = MYSQL_TYPE_DOUBLE;
+            b.buffer = &p.dbls[i];
+            b.buffer_length = sizeof(double);
+            continue;
+        }
+        std::string s;
+        if (v.is<std::string>()) {
+            s = v.as<std::string>();
+        } else {
+            try {
+                s = v.as<std::string>();  // stringify fallback
+            } catch (...) {
+                p.nulls[i] = 1;
+                b.buffer_type = MYSQL_TYPE_NULL;
+                continue;
+            }
+        }
+        p.strs[i] = std::move(s);
+        p.lengths[i] = static_cast<unsigned long>(p.strs[i].size());
+        b.buffer_type = MYSQL_TYPE_STRING;
+        b.buffer = p.strs[i].data();
+        b.buffer_length = p.lengths[i];
+        b.length = &p.lengths[i];
     }
-    // Floating point (FLOAT/DOUBLE/DECIMAL).
-    try {
-        return sol::make_object(lua, v.get<double>());
-    } catch (...) {
-    }
-    try {
-        return sol::make_object(
-            lua, static_cast<lua_Number>(static_cast<double>(v.get<float>())));
-    } catch (...) {
-    }
-    // Boolean (BIT(1)/BOOL).
-    try {
-        return sol::make_object(lua, v.get<bool>());
-    } catch (...) {
-    }
-    // String / raw bytes (CHAR/VARCHAR/TEXT/BLOB/ENUM/SET/DATE/TIME/DATETIME/
-    // TIMESTAMP/JSON/GEOMETRY — mysqlx exposes them all as std::string via
-    // the same conversion path).
-    try {
-        std::string s = v.get<std::string>();
-        return sol::make_object(lua, std::move(s));
-    } catch (...) {
-    }
-    return sol::lua_nil;
+    return p;
 }
 
-// Convert a mysqlx::Row into a Lua table keyed by column name. Column names
-// come from the SqlResult's Column metadata.
-sol::table row_to_lua(sol::state_view lua, const mysqlx::Row& row,
-                      const mysqlx::Columns& cols) {
+// Convert result row `r` into a Lua table keyed by column name.
+sol::table row_to_lua(sol::state_view lua, const stmt_result& res, int r) {
     auto t = lua.create_table();
-    unsigned n = row.colCount();
-    for (unsigned c = 0; c < n; ++c) {
-        std::string name;
-        try {
-            name = cols[c].getColumnName();
-        } catch (...) {
-            name = std::to_string(c + 1);  // fallback 1-based key
+    for (int c = 0; c < res.col_count; ++c) {
+        const std::string& name = res.col_names[c];
+        switch (res.kinds[r][c]) {
+            case kCellNull:
+                t[name] = sol::lua_nil;
+                break;
+            case kCellInt:
+                t[name] = static_cast<lua_Integer>(res.ints[r][c]);
+                break;
+            case kCellDbl:
+                t[name] = static_cast<lua_Number>(res.dbls[r][c]);
+                break;
+            default:
+                t[name] = res.strs[r][c];
+                break;
         }
-        t[name] = value_to_lua(lua, row[c]);
     }
     return t;
-}
-
-// Bind one Lua value onto a SqlStatement as a `?` placeholder. mysqlx accepts
-// std::string, int64, double, bool, and a few others. nil binds NULL.
-void bind_lua_param(mysqlx::SqlStatement& stmt, const sol::object& v) {
-    if (!v.valid() || v == sol::lua_nil) {
-        stmt.bind(static_cast<const char*>(nullptr));
-        return;
-    }
-    if (v.is<bool>()) {
-        stmt.bind(v.as<bool>() ? 1 : 0);
-        return;
-    }
-    // Integer first — sol2 will otherwise coerce to double.
-    if (v.is<lua_Integer>()) {
-        stmt.bind(static_cast<int64_t>(v.as<lua_Integer>()));
-        return;
-    }
-    if (v.is<double>()) {
-        stmt.bind(v.as<double>());
-        return;
-    }
-    if (v.is<std::string>()) {
-        stmt.bind(v.as<std::string>());
-        return;
-    }
-    // Fallback: stringify (tables/functions/etc.) — this mirrors the sqlite
-    // plugin's tolerant bind behaviour.
-    try {
-        std::string s = v.as<std::string>();
-        stmt.bind(s);
-    } catch (...) {
-        stmt.bind(static_cast<const char*>(nullptr));
-    }
 }
 
 // Collect positional params from a Lua table (sequence keys 1..N) in order.
@@ -719,94 +1009,84 @@ std::vector<sol::object> collect_positional(
     return out;
 }
 
-// Run a statement on `session` and return one of:
+// Run a statement on `mysql` and return one of:
 //   "query"     -> sequence table {row1, row2, ...}
 //   "query_one" -> single row table or nil
 //   "execute"   -> table {affected=N, last_insert_id=M}
 //
 // On error, *ok is set to false and *err_out receives an error table. The
 // `broken` flag is set when the error looks like a connection-lost so the
-// caller can drop the pooled session.
-sol::object run_statement(sol::state_view lua, mysqlx::Session& session,
+// caller can drop the pooled connection.
+sol::object run_statement(sol::state_view lua, MYSQL* mysql,
                           const std::string& sql,
                           const sol::optional<sol::table>& params,
                           const char* mode,  // "query"|"query_one"|"execute"
                           bool* ok, sol::table* err_out, bool* broken) {
-    try {
-        auto stmt = session.sql(sql);
-        for (auto& v : collect_positional(params)) {
-            bind_lua_param(stmt, v);
-        }
-        mysqlx::SqlResult result = stmt.execute();
-
-        if (std::strcmp(mode, "execute") == 0) {
-            auto t = lua.create_table();
-            t["affected"] =
-                static_cast<lua_Integer>(result.getAffectedItemsCount());
-            t["last_insert_id"] =
-                static_cast<lua_Integer>(result.getAutoIncrementValue());
-            *ok = true;
-            return t;
-        }
-
-        // getColumns() returns const Columns&; Columns is non-copyable.
-        const mysqlx::Columns& cols = result.getColumns();
-        if (std::strcmp(mode, "query_one") == 0) {
-            // mysqlx::SqlResult::count() reports the number of rows in the
-            // result set. fetchOne() returns a default-constructed Row when
-            // the result is empty — comparing against count() is the robust
-            // way to distinguish "no rows" from "row whose first column is
-            // SQL NULL".
-            if (result.count() == 0) {
-                *ok = true;
-                return sol::lua_nil;
-            }
-            mysqlx::Row row = result.fetchOne();
-            *ok = true;
-            return row_to_lua(lua, row, cols);
-        }
-
-        // "query" — sequence of rows.
-        auto rows = lua.create_table();
-        int idx = 1;
-        for (const mysqlx::Row& row : result) {
-            rows[idx++] = row_to_lua(lua, row, cols);
-        }
-        *ok = true;
-        return rows;
-    } catch (const mysqlx::Error& e) {
+    stmt_error err;
+    stmt_result res;
+    if (!exec_typed(mysql, sql.c_str(),
+                    make_lua_params(collect_positional(params)).binds, &res,
+                    &err)) {
         *ok = false;
-        std::string msg = e.what();
-        const char* code = map_mysqlx_error(msg.c_str());
-        // Mark broken for connection-class errors so the pool drops the
-        // session.
         if (broken) {
-            *broken = (std::strcmp(code, "connection_lost") == 0 ||
-                       std::strcmp(code, "connection_timeout") == 0);
+            *broken = (err.code == "connection_lost" ||
+                       err.code == "connection_timeout");
         }
-        *err_out = make_error_table(lua, code, msg);
-        return sol::lua_nil;
-    } catch (const std::exception& e) {
-        *ok = false;
-        if (broken) *broken = false;
-        *err_out = make_error_table(lua, "db_query_failed", e.what());
-        return sol::lua_nil;
-    } catch (...) {
-        *ok = false;
-        if (broken) *broken = false;
-        *err_out =
-            make_error_table(lua, "db_query_failed", "unknown mysql error");
+        *err_out = make_error_table(lua, err.code.c_str(), err.msg);
         return sol::lua_nil;
     }
+    if (broken) *broken = false;
+
+    if (std::strcmp(mode, "execute") == 0) {
+        auto t = lua.create_table();
+        t["affected"] = static_cast<lua_Integer>(res.affected);
+        t["last_insert_id"] = static_cast<lua_Integer>(res.insert_id);
+        *ok = true;
+        return t;
+    }
+
+    if (!res.has_rows) {
+        // Query on a statement that produced no result set.
+        *ok = true;
+        if (std::strcmp(mode, "query_one") == 0) return sol::lua_nil;
+        return sol::make_object(lua, lua.create_table());
+    }
+
+    if (std::strcmp(mode, "query_one") == 0) {
+        *ok = true;
+        if (res.row_count == 0) return sol::lua_nil;
+        return row_to_lua(lua, res, 0);
+    }
+
+    // "query" — sequence of rows.
+    auto rows = lua.create_table();
+    int idx = 1;
+    for (int r = 0; r < res.row_count; ++r) {
+        rows[idx++] = row_to_lua(lua, res, r);
+    }
+    *ok = true;
+    return rows;
 }
 
 // Forward decl — make_handle_proxy is used by transaction().
-sol::table make_handle_proxy(sol::state_view lua,
-                             std::shared_ptr<mysqlx::Session> sess,
+sol::table make_handle_proxy(sol::state_view lua, MYSQL* sess,
                              mysql_instance* inst);
 
-// Build the per-instance proxy. Each top-level method acquires a Session from
-// the pool (pool_guard returns it on scope exit).
+// Execute a transaction-control statement (BEGIN/COMMIT/ROLLBACK) on a
+// pooled connection. On failure fills *code/*msg with the mapped error.
+bool run_tx_sql(MYSQL* mysql, const char* sql, const char** code,
+                std::string* msg) {
+    if (mysql_real_query(mysql, sql,
+                         static_cast<unsigned long>(std::strlen(sql))) == 0) {
+        return true;
+    }
+    *code = map_mysql_error(mysql_errno(mysql), mysql_error(mysql));
+    *msg = std::string(sql) + ": " + mysql_error(mysql);
+    return false;
+}
+
+// Build the per-instance proxy. Each top-level method acquires a connection
+// from the pool (pool_guard returns it on scope exit).
 sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
     auto proxy = lua.create_table();
 
@@ -829,8 +1109,8 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             bool ok = false;
             bool broken = false;
             sol::table err;
-            sol::object rows = run_statement(lua, **guard, sql, params, "query",
-                                             &ok, &err, &broken);
+            sol::object rows = run_statement(lua, guard->sess, sql, params,
+                                             "query", &ok, &err, &broken);
             guard->broken = broken;
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? rows : err);
@@ -856,7 +1136,7 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             bool ok = false;
             bool broken = false;
             sol::table err;
-            sol::object row = run_statement(lua, **guard, sql, params,
+            sol::object row = run_statement(lua, guard->sess, sql, params,
                                             "query_one", &ok, &err, &broken);
             guard->broken = broken;
             results.push_back(sol::make_object(lua, ok));
@@ -883,7 +1163,7 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             bool ok = false;
             bool broken = false;
             sol::table err;
-            sol::object res = run_statement(lua, **guard, sql, params,
+            sol::object res = run_statement(lua, guard->sess, sql, params,
                                             "execute", &ok, &err, &broken);
             guard->broken = broken;
             results.push_back(sol::make_object(lua, ok));
@@ -909,23 +1189,19 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             }
 
             // BEGIN
-            try {
-                (*guard)->sql("START TRANSACTION").execute();
-            } catch (const mysqlx::Error& e) {
-                guard->broken = true;
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(make_error_table(
-                    lua, map_mysqlx_error(e.what()), e.what()));
-                return results;
-            } catch (const std::exception& e) {
-                guard->broken = true;
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(
-                    make_error_table(lua, "db_query_failed", e.what()));
-                return results;
+            {
+                const char* code = nullptr;
+                std::string msg;
+                if (!run_tx_sql(guard->sess, "START TRANSACTION", &code,
+                                &msg)) {
+                    guard->broken = true;
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua, code, msg));
+                    return results;
+                }
             }
 
-            // tx proxy shares this session.
+            // tx proxy shares this connection.
             sol::table tx = make_handle_proxy(lua, guard->sess, inst);
             sol::protected_function_result cb_res = callback(tx);
             bool commit = cb_res.valid();
@@ -940,24 +1216,17 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             }
 
             const char* tx_sql = commit ? "COMMIT" : "ROLLBACK";
-            try {
-                (*guard)->sql(tx_sql).execute();
-            } catch (const mysqlx::Error& e) {
-                // COMMIT/ROLLBACK failed — typically connection lost or
+            {
+                const char* code = nullptr;
+                std::string msg;
+                // COMMIT/ROLLBACK failure — typically connection lost or
                 // deadlock during commit. Mark broken so the pool drops it.
-                guard->broken = true;
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(
-                    make_error_table(lua, map_mysqlx_error(e.what()),
-                                     std::string(tx_sql) + ": " + e.what()));
-                return results;
-            } catch (const std::exception& e) {
-                guard->broken = true;
-                results.push_back(sol::make_object(lua, false));
-                results.push_back(
-                    make_error_table(lua, "db_query_failed",
-                                     std::string(tx_sql) + ": " + e.what()));
-                return results;
+                if (!run_tx_sql(guard->sess, tx_sql, &code, &msg)) {
+                    guard->broken = true;
+                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(make_error_table(lua, code, msg));
+                    return results;
+                }
             }
 
             if (!cb_res.valid()) {
@@ -988,10 +1257,10 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
     return proxy;
 }
 
-// Proxy whose methods reuse a shared mysqlx::Session (used inside
-// transactions). Holds a shared_ptr so the session outlives the tx table.
-sol::table make_handle_proxy(sol::state_view lua,
-                             std::shared_ptr<mysqlx::Session> sess,
+// Proxy whose methods reuse the transaction's connection (used inside
+// transactions). The MYSQL* is owned by transaction()'s pool_guard, which
+// outlives the tx table.
+sol::table make_handle_proxy(sol::state_view lua, MYSQL* sess,
                              mysql_instance* /*inst*/) {
     auto proxy = lua.create_table();
 
@@ -1004,9 +1273,9 @@ sol::table make_handle_proxy(sol::state_view lua,
             bool ok = false;
             bool broken = false;
             sol::table err;
-            sol::object rows = run_statement(lua, *sess, sql, params, "query",
+            sol::object rows = run_statement(lua, sess, sql, params, "query",
                                              &ok, &err, &broken);
-            (void)broken;  // tx session lifecycle is owned by transaction()
+            (void)broken;  // tx connection lifecycle is owned by transaction()
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? rows : err);
             return results;
@@ -1021,8 +1290,8 @@ sol::table make_handle_proxy(sol::state_view lua,
             bool ok = false;
             bool broken = false;
             sol::table err;
-            sol::object row = run_statement(lua, *sess, sql, params,
-                                            "query_one", &ok, &err, &broken);
+            sol::object row = run_statement(lua, sess, sql, params, "query_one",
+                                            &ok, &err, &broken);
             (void)broken;
             results.push_back(sol::make_object(lua, ok));
             results.push_back(ok ? row : err);
@@ -1038,7 +1307,7 @@ sol::table make_handle_proxy(sol::state_view lua,
             bool ok = false;
             bool broken = false;
             sol::table err;
-            sol::object res = run_statement(lua, *sess, sql, params, "execute",
+            sol::object res = run_statement(lua, sess, sql, params, "execute",
                                             &ok, &err, &broken);
             (void)broken;
             results.push_back(sol::make_object(lua, ok));

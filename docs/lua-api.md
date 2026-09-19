@@ -660,7 +660,7 @@ end)
 | Namespace | 接口 | 说明 |
 | --- | --- | --- |
 | `shield.database.sqlite` | `shield.database.v1` | 嵌入式 SQLite |
-| `shield.database.mysql` | `shield.database.v1` | MySQL X DevAPI |
+| `shield.database.mysql` | `shield.database.v1` | MySQL（MariaDB Connector/C） |
 | `shield.database.postgresql` | `shield.database.v1` | libpq |
 
 ---

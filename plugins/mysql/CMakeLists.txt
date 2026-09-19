@@ -1,4 +1,7 @@
-# database.mysql — MySQL X DevAPI provider for shield.database.v1 (plugin system v1).
+# database.mysql — MySQL provider for shield.database.v1 (plugin system v1).
+#
+# Built on MariaDB Connector/C (libmariadb), which speaks the classic MySQL
+# client/server protocol and connects to both MySQL and MariaDB servers.
 #
 # Builds a runtime-loadable MODULE library implementing shield_plugin_get_v1.
 # Deployed to <runtime>/plugins/database.mysql/{manifest.yaml,bin/...} so
@@ -20,33 +23,15 @@ target_include_directories(shield_db_mysql
         ${SOL2_INCLUDE_DIRS}
 )
 
-find_package(unofficial-mysql-connector-cpp CONFIG REQUIRED)
-# The vcpkg connector target does not declare its transitive deps; the
-# mysqlx headers inline protobuf types, and its static libs reference
-# OpenSSL (TLS) and zstd/lz4 (compression), so the .so must link them
-# itself or dlopen() fails with undefined symbols.
-find_package(Protobuf CONFIG REQUIRED)
-find_package(OpenSSL REQUIRED)
-find_package(zstd CONFIG REQUIRED)
-find_package(lz4 CONFIG REQUIRED)
-find_package(ZLIB REQUIRED)
+find_package(unofficial-libmariadb CONFIG REQUIRED)
+# The MariaDB Connector/C target declares its transitive deps (z/ssl/crypto)
+# itself — unlike mysql-connector-cpp, no manual link patching is needed.
 target_link_libraries(shield_db_mysql
     PRIVATE
-        unofficial::mysql-connector-cpp::connector
-        protobuf::libprotobuf
-        OpenSSL::SSL
-        OpenSSL::Crypto
-        zstd::libzstd
-        lz4::lz4
-        ZLIB::ZLIB
+        unofficial::libmariadb
         sol2::sol2
         ${LUA_LIBRARIES}
 )
-
-# The connector's static libs reference glibc's DNS resolver API.
-if(UNIX)
-    target_link_libraries(shield_db_mysql PRIVATE resolv)
-endif()
 
 set_target_properties(shield_db_mysql PROPERTIES
     PREFIX ""

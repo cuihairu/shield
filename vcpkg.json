@@ -32,7 +32,7 @@
         "database": {
             "description": "Database drivers (optional)",
             "dependencies": [
-                "mysql-connector-cpp",
+                "libmariadb",
                 "libpq",
                 "sqlite3"
             ]
@@ -40,7 +40,7 @@
         "database-mysql": {
             "description": "MySQL backend plugin dependency",
             "dependencies": [
-                "mysql-connector-cpp"
+                "libmariadb"
             ]
         },
         "database-postgresql": {

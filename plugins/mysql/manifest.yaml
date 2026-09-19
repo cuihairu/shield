@@ -3,10 +3,10 @@ id: database.mysql
 name: MySQL
 version: 1.0.0
 kind: database
-description: MySQL X DevAPI provider for shield.database.v1
+description: MySQL provider for shield.database.v1 (MariaDB Connector/C)
 documentation:
   url: https://cuihairu.github.io/shield/plugins/database-mysql
-  description: MySQL provider for the shield.database.v1 interface via the X DevAPI
+  description: MySQL provider for the shield.database.v1 interface via prepared statements
 entry: shield_plugin_get_v1
 library:
   windows: bin/libshield_db_mysql.dll
@@ -33,7 +33,7 @@ config_schema:
       default: 127.0.0.1
     port:
       type: integer
-      default: 33060
+      default: 3306
       minimum: 1
       maximum: 65535
     database:
