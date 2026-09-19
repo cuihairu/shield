@@ -887,9 +887,10 @@ namespace {
 // values degrade to "<unsupported>" through lua_to_json's own fallback.
 void describe_hook_message(std::string_view func_name, const sol::object& obj,
                            std::string* out) {
-    if (out == nullptr) {
-        return;
+    if (out == nullptr) {  // GCOVR_EXCL_START (defensive: both callers pass a
+        return;            // local string, guarded by their own if (error))
     }
+    // GCOVR_EXCL_STOP
     nlohmann::json encoded;
     lua_to_json(obj, &encoded);
     *out = std::string(func_name) + " failed with non-string message: " +
@@ -975,12 +976,17 @@ bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
         }
 
         return true;
+        // GCOVR_EXCL_START (defensive: every sol call inside the try is a
+        // protected_function_result read, and the message-slot conversions
+        // type-check before touching the stack — nothing here is expected to
+        // throw; the catch keeps an unexpected throw from escaping the API)
     } catch (const std::exception& e) {
         if (error) {
             *error = e.what();
         }
         return false;
     }
+    // GCOVR_EXCL_STOP
 }
 
 bool LuaRuntime::resolve_service_method(std::shared_ptr<LuaVM> vm,

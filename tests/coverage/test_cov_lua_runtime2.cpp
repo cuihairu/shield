@@ -665,6 +665,95 @@ return M
                                               nlohmann::json(), &error));
 }
 
+// call_service_function failure shapes that leave the message slot empty or
+// non-string on the bare stack: (false), (nil, table) and (nil, nil). Each
+// must produce a described error string instead of raising through
+// sol::as<std::string> (which would land in at_panic).
+BOOST_AUTO_TEST_CASE(CallServiceFunctionEmptyMessageShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module = write_script("cov4_msg_shapes.lua",
+                                            R"lua(
+local M = {}
+function M.deny_bare() return false end
+function M.deny_bool() return false, false end
+function M.nil_table() return nil, {code = 7, retry = false} end
+function M.nil_nil() return nil, nil end
+return M
+)lua");
+
+    auto vm = runtime.create_vm();
+    std::string error;
+    BOOST_REQUIRE(runtime.load_service_module(vm, module, &error));
+
+    // (false) with no message slot at all.
+    BOOST_CHECK(!runtime.call_service_function(vm, "deny_bare",
+                                               nlohmann::json(), &error));
+    BOOST_CHECK_EQUAL(error, "deny_bare returned false");
+
+    // (false, false): a non-string message slot, stringified inline.
+    BOOST_CHECK(!runtime.call_service_function(vm, "deny_bool",
+                                               nlohmann::json(), &error));
+    BOOST_CHECK(error.find("deny_bool") != std::string::npos &&
+                error.find("non-string") != std::string::npos);
+
+    // (nil, table): the nil-first branch describes the table the same way.
+    BOOST_CHECK(!runtime.call_service_function(vm, "nil_table",
+                                               nlohmann::json(), &error));
+    BOOST_CHECK(error.find("nil_table") != std::string::npos &&
+                error.find("code") != std::string::npos);
+
+    // (nil, nil): an empty message slot on the nil-first branch.
+    BOOST_CHECK(!runtime.call_service_function(vm, "nil_nil", nlohmann::json(),
+                                               &error));
+    BOOST_CHECK_EQUAL(error, "nil_nil returned nil");
+}
+
+// The at_panic handler must surface the real error object through the
+// sol::error it throws (unsafe call sites recover via catch(const
+// sol::error&)), for both string and non-string error objects. The call
+// goes through lua_call (a truly unprotected call); sol::function's
+// operator() is protected and would swallow the error instead.
+BOOST_AUTO_TEST_CASE(PanicHandlerSurfacesErrorObject) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    sol::state& lua = runtime.vm_state(vm);
+    lua_State* L = lua.lua_state();
+
+    lua.script("function __cov_boom_str() error('boom-string-msg') end");
+    bool caught = false;
+    try {
+        lua_getglobal(L, "__cov_boom_str");
+        lua_call(L, 0, 0);
+    } catch (const sol::error& e) {
+        caught = true;
+        BOOST_CHECK(std::string(e.what()).find("boom-string-msg") !=
+                    std::string::npos);
+    }
+    BOOST_CHECK(caught);
+
+    // Non-string error object: the handler must still describe the panic
+    // and throw a recoverable sol::error, not exit the process. A table
+    // error object survives the kernel's error path verbatim (error(nil) is
+    // converted to a string by the Lua 5.5 kernel and would not reach the
+    // non-string arm). The throw unwinds through the C Lua frames, which
+    // re-enters the panic path once — assert recoverability rather than an
+    // exact message.
+    lua.script("function __cov_boom_tbl() error({code = 1}) end");
+    caught = false;
+    try {
+        lua_getglobal(L, "__cov_boom_tbl");
+        lua_call(L, 0, 0);
+    } catch (const sol::error& e) {
+        caught = true;
+        BOOST_CHECK(!std::string(e.what()).empty());
+    }
+    BOOST_CHECK(caught);
+}
+
 // ---------------------------------------------------------------------------
 // Round-5 additions.
 // ---------------------------------------------------------------------------

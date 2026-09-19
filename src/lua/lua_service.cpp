@@ -4522,6 +4522,16 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
     // above — the mailbox enqueue must not run under the registry lock,
     // which dispatch_call_response takes on the actor thread)
     if (requeue) {
+        // One mailbox self-loop takes microseconds; the driving span it is
+        // waiting out contains CAF scheduler operations (timeout driver
+        // arm/cancel) that take milliseconds under load. Spinning flat out
+        // burns the whole cap before the driver can finish its span, and
+        // the cap-trip resume then races the still-running coroutine.
+        // Sleeping one millisecond per loop turns the 20-loop cap into a
+        // 20 ms wait window — orders of magnitude beyond any CAF operation
+        // — and yields the CPU to the driving thread. Negligible next to
+        // the call's own timeout budget.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         CallResponseMessage requeued{session, ok, values};
         caf::anon_send(caller_actor, std::move(requeued));
         return;
