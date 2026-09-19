@@ -61,6 +61,11 @@ RouteEntry route_entry_from_descriptor(const RpcDescriptor& descriptor) {
     entry.requires_auth = descriptor.requires_auth;
     entry.kind = descriptor.kind;
     entry.debug_name = descriptor.name;
+    // Schema addressing collapses here at compile time: explicit override
+    // wins, else the route name itself (same-name convention).
+    entry.schema_name = descriptor.request_schema.empty()
+                            ? descriptor.name
+                            : descriptor.request_schema;
     entry.policy = descriptor.policy;
     return entry;
 }  // GCOVR_EXCL_LINE (gcov clone artifact)
@@ -147,9 +152,18 @@ bool parse_rpc_routes_json(std::string_view routes_json,
         descriptor.request_codec = route.value("request_codec", std::string{});
         descriptor.request_schema =
             route.value("request_schema", std::string{});
-        descriptor.response_schema =
-            route.value("response_schema", std::string{});
         descriptor.policy.lazy_decode = route.value("lazy_decode", true);
+
+        for (const char* removed : {"schema_id", "response_schema"}) {
+            if (route.contains(removed)) {
+                if (error) {
+                    *error = std::string("rpc.routes[]") + "." + removed +
+                             " was removed; schema addressing is the route "
+                             "name plus an optional request_schema override";
+                }
+                return false;
+            }
+        }
         if (route.contains("action")) {
             if (!route["action"].is_string()) {
                 if (error) *error = "rpc.routes[].action must be a string";

@@ -64,8 +64,6 @@ struct FakeProtocolCodecState {
     std::string codec_name = "protobuf";
     std::string decoded_json = R"({"uid":7,"name":"alice"})";
     std::string encoded_payload;
-    std::uint32_t last_route_id = 0;
-    std::uint16_t last_schema_id = 0;
     std::string last_route_name;
     std::string last_input_json;
     std::vector<std::uint8_t> last_payload;
@@ -85,8 +83,6 @@ int fake_protocol_decode(const shield_protocol_codec_v1* self,
         return -1;
     }
     auto* state = static_cast<FakeProtocolCodecState*>(self->user_data);
-    state->last_route_id = args->route_id;
-    state->last_schema_id = args->schema_id;
     state->last_route_name = args->route_name ? args->route_name : "";
     state->last_payload.clear();
     if (args->payload != nullptr && args->payload_size > 0) {
@@ -112,8 +108,6 @@ int fake_protocol_encode(const shield_protocol_codec_v1* self,
         return -1;
     }
     auto* state = static_cast<FakeProtocolCodecState*>(self->user_data);
-    state->last_route_id = args->route_id;
-    state->last_schema_id = args->schema_id;
     state->last_route_name = args->route_name ? args->route_name : "";
     if (args->message_json != nullptr) {
         state->last_input_json.assign(
@@ -197,8 +191,7 @@ BOOST_AUTO_TEST_CASE(RouteTableMapsIntegerRouteToForwardPolicy) {
     RouteEntry entry;
     entry.route_id = 0x2001;
     entry.direction = RouteDirection::ClientToServer;
-    entry.codec_id = 7;
-    entry.schema_id = 99;
+    entry.schema_name = "cell.AvatarMove";
     entry.debug_name = "cell.avatar.move";
     entry.policy =
         RoutePolicy{.action = RouteAction::ForwardRaw, .lazy_decode = true};
@@ -210,8 +203,7 @@ BOOST_AUTO_TEST_CASE(RouteTableMapsIntegerRouteToForwardPolicy) {
 
     const auto* found = routes.find(0x2001);
     BOOST_REQUIRE(found != nullptr);
-    BOOST_CHECK_EQUAL(found->codec_id, 7u);
-    BOOST_CHECK_EQUAL(found->schema_id, 99u);
+    BOOST_CHECK_EQUAL(found->schema_name, "cell.AvatarMove");
     BOOST_CHECK_EQUAL(found->debug_name, "cell.avatar.move");
     BOOST_CHECK(found->policy.action == RouteAction::ForwardRaw);
     BOOST_CHECK(found->policy.lazy_decode);
@@ -252,8 +244,6 @@ BOOST_AUTO_TEST_CASE(HeaderRoutedPacketCanBeForwardedWithoutBodyDecode) {
     routes.add(RouteEntry{
         .route_id = 0x3002,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 55,
-        .schema_id = 77,
         .debug_name = "base.forward_to_cell",
         .policy =
             RoutePolicy{.action = RouteAction::ForwardRaw, .lazy_decode = true},
@@ -276,14 +266,11 @@ BOOST_AUTO_TEST_CASE(RawBodyCodecCopiesOnlyWhenDecodeIsRequested) {
 
     RouteEntry route;
     route.route_id = 7;
-    route.codec_id = 1;
-    route.schema_id = 2;
 
     RawBodyCodec codec;
     auto decoded = codec.decode(packet.ref(), route);
 
-    BOOST_CHECK_EQUAL(decoded.codec_id, 1u);
-    BOOST_CHECK_EQUAL(decoded.schema_id, 2u);
+    BOOST_CHECK_EQUAL(decoded.route_id, 7u);
     BOOST_CHECK_EQUAL_COLLECTIONS(decoded.bytes.begin(), decoded.bytes.end(),
                                   packet.body.begin(), packet.body.end());
 }
@@ -379,8 +366,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineForwardsHeaderRouteWithoutDecode) {
     routes.add(RouteEntry{
         .route_id = 0x11,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
-        .schema_id = 100,
         .debug_name = "cell.forward",
         .policy =
             RoutePolicy{.action = RouteAction::ForwardRaw, .lazy_decode = true},
@@ -422,8 +407,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanResolveJsonBodyRoute) {
     routes.add(RouteEntry{
         .route_id = 1001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
-        .schema_id = 0,
         .debug_name = "login",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = false},
@@ -548,7 +531,7 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
         entry.debug_name = "game.Login";
         entry.direction = RouteDirection::ClientToServer;
         entry.requires_auth = false;
-        entry.schema_id = 42;
+        entry.schema_name = "game.Login";
         entry.policy.lazy_decode = false;
         pipeline->routes().upsert(entry);
     }
@@ -568,8 +551,6 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
     BOOST_CHECK_EQUAL(
         (*results[0].decoded_body->message)["name"].get<std::string>(),
         "alice");
-    BOOST_CHECK_EQUAL(state.last_route_id, 4097u);
-    BOOST_CHECK_EQUAL(state.last_schema_id, 42u);
     BOOST_CHECK_EQUAL(state.last_route_name, "game.Login");
     BOOST_CHECK_EQUAL_COLLECTIONS(state.last_payload.begin(),
                                   state.last_payload.end(), packet.body.begin(),
@@ -581,8 +562,6 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesExternalBodyCodecProvider) {
     const auto outbound_frame = pipeline->encode_message(outbound);
     BOOST_REQUIRE_MESSAGE(pipeline->error().empty(), pipeline->error());
     BOOST_REQUIRE_GE(outbound_frame.size(), 4u);
-    BOOST_CHECK_EQUAL(state.last_route_id, 4097u);
-    BOOST_CHECK_EQUAL(state.last_schema_id, 42u);
     BOOST_CHECK_EQUAL(state.last_route_name, "game.Login");
 
     const auto outbound_json = nlohmann::json::parse(state.last_input_json);
@@ -633,6 +612,7 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesMsgpackExternalProvider) {
         RouteEntry entry;
         entry.route_id = 4098;
         entry.debug_name = "game.Ping";
+        entry.schema_name = "game.Ping";
         entry.direction = RouteDirection::ClientToServer;
         entry.policy.lazy_decode = false;
         pipeline->routes().upsert(entry);
@@ -651,7 +631,6 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineUsesMsgpackExternalProvider) {
     BOOST_REQUIRE(results[0].decoded_body->has_message());
     BOOST_CHECK_EQUAL((*results[0].decoded_body->message)["ok"].get<bool>(),
                       true);
-    BOOST_CHECK_EQUAL(state.last_route_id, 4098u);
     BOOST_CHECK_EQUAL(state.last_route_name, "game.Ping");
 }
 
@@ -845,8 +824,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineUsesProfileCodecForDecodeLocalRoutes) {
     routes.add(RouteEntry{
         .route_id = 1001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 9,
-        .schema_id = 42,
         .debug_name = "login",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = false},
@@ -873,8 +850,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineUsesProfileCodecForDecodeLocalRoutes) {
     BOOST_CHECK(results[0].ok());
     BOOST_REQUIRE(results[0].route != nullptr);
     BOOST_CHECK(results[0].decoded());
-    BOOST_CHECK_EQUAL(results[0].decoded_body->codec_id, 9u);
-    BOOST_CHECK_EQUAL(results[0].decoded_body->schema_id, 42u);
     BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
 }
 
@@ -883,8 +858,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanMaterializeLazyDecodeLocalResult) {
     routes.add(RouteEntry{
         .route_id = 1001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 9,
-        .schema_id = 42,
         .debug_name = "login",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = true},
@@ -915,8 +888,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanMaterializeLazyDecodeLocalResult) {
 
     BOOST_REQUIRE(pipeline.materialize_decode(results[0]));
     BOOST_CHECK(results[0].decoded());
-    BOOST_CHECK_EQUAL(results[0].decoded_body->codec_id, 9u);
-    BOOST_CHECK_EQUAL(results[0].decoded_body->schema_id, 42u);
     BOOST_CHECK_EQUAL(results[0].decoded_body->route_name, "login");
     BOOST_REQUIRE(results[0].decoded_body->has_message());
     BOOST_REQUIRE(results[0].decoded_body->message->is_object());
@@ -928,8 +899,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineCanEncodeAndDecodeJsonBusinessMessage) {
     routes.add(RouteEntry{
         .route_id = 1001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
-        .schema_id = 0,
         .debug_name = "login",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = false},
@@ -969,8 +938,6 @@ BOOST_AUTO_TEST_CASE(StructuredCodecsRejectRawByteEgress) {
     routes.add(RouteEntry{
         .route_id = 1001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
-        .schema_id = 0,
         .debug_name = "login",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = false},
@@ -1020,8 +987,6 @@ BOOST_AUTO_TEST_CASE(
 
     RouteEntry route;
     route.route_id = 88;
-    route.codec_id = 4;
-    route.schema_id = 123;
 
     BOOST_CHECK_THROW(xmldef->decode(packet.ref(), route), std::runtime_error);
     BOOST_CHECK_THROW(protobuf->decode(packet.ref(), route),
@@ -1035,8 +1000,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineRejectsDecodeLocalForPlaceholderCodec) {
     routes.add(RouteEntry{
         .route_id = 0x1001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
-        .schema_id = 0,
         .debug_name = "player.move",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = false},
@@ -1075,10 +1038,10 @@ BOOST_AUTO_TEST_CASE(XmldefCatalogLoadsGenericRoutes) {
     const auto xml = R"xml(
 <protocol name="arena">
   <message id="0x1001" name="player.move" direction="c2s"
-           action="forward_raw" codec_id="4" schema_id="33"
+           action="forward_raw"
            lazy_decode="true" requires_auth="false" />
   <route id="4098" name="auth.login" direction="c2s"
-         action="decode" schema="34" lazy_decode="false" />
+         action="decode" lazy_decode="false" />
 </protocol>
 )xml";
 
@@ -1091,8 +1054,8 @@ BOOST_AUTO_TEST_CASE(XmldefCatalogLoadsGenericRoutes) {
     BOOST_CHECK_EQUAL(move->debug_name, "player.move");
     BOOST_CHECK(move->direction == RouteDirection::ClientToServer);
     BOOST_CHECK(!move->requires_auth);
-    BOOST_CHECK_EQUAL(move->codec_id, 4u);
-    BOOST_CHECK_EQUAL(move->schema_id, 33u);
+    // Same-name convention applies to the catalog path too.
+    BOOST_CHECK_EQUAL(move->schema_name, "player.move");
     BOOST_CHECK(move->policy.action == RouteAction::ForwardRaw);
     BOOST_CHECK(move->policy.lazy_decode);
 
@@ -1100,7 +1063,6 @@ BOOST_AUTO_TEST_CASE(XmldefCatalogLoadsGenericRoutes) {
     BOOST_REQUIRE(login != nullptr);
     BOOST_CHECK_EQUAL(login->route_id, 4098u);
     BOOST_CHECK(login->direction == RouteDirection::ClientToServer);
-    BOOST_CHECK_EQUAL(login->schema_id, 34u);
     BOOST_CHECK(login->policy.action == RouteAction::DecodeLocal);
     BOOST_CHECK(!login->policy.lazy_decode);
 }
@@ -1110,7 +1072,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineDecodesTypeLenHeaderRouteWithJsonCodec) {
     routes.add(RouteEntry{
         .route_id = 0x2001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
         .debug_name = "battle.attack",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = false},
@@ -1152,7 +1113,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineResolvesBodyRouteWithDelimiterEnvelope) {
     routes.add(RouteEntry{
         .route_id = 1001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
         .debug_name = "login",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = false},
@@ -1192,7 +1152,6 @@ BOOST_AUTO_TEST_CASE(ProtocolPipelineDecodeBeforeDispatchOverridesLazyDecode) {
     routes.add(RouteEntry{
         .route_id = 1001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
         .debug_name = "login",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = true},
@@ -1233,8 +1192,6 @@ BOOST_AUTO_TEST_CASE(JsonBodyCodecRejectsRawBytesOnHeaderRouteEnvelope) {
     routes.add(RouteEntry{
         .route_id = 7,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
-        .schema_id = 0,
         .debug_name = "cell.raw",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = false},
@@ -1270,8 +1227,6 @@ BOOST_AUTO_TEST_CASE(JsonHeaderRouteEncodesEmptyBodyAsEmptyObject) {
     routes.add(RouteEntry{
         .route_id = 7,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
-        .schema_id = 0,
         .debug_name = "cell.empty",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = false},

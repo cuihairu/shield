@@ -94,30 +94,23 @@ BOOST_AUTO_TEST_CASE(codec_interface_structure) {
 }
 
 BOOST_AUTO_TEST_CASE(decode_args_structure) {
-    // Test decode args structure
+    // Only the host-resolved schema type name travels with the payload.
     shield_protocol_decode_args_v1 args{};
-    args.route_id = 1001;
-    args.schema_id = 1;
     args.route_name = "LoginRequest";
     args.payload = nullptr;
     args.payload_size = 0;
 
-    BOOST_CHECK_EQUAL(args.route_id, 1001);
-    BOOST_CHECK_EQUAL(args.schema_id, 1);
     BOOST_CHECK_EQUAL(std::strcmp(args.route_name, "LoginRequest"), 0);
+    BOOST_CHECK_EQUAL(args.payload_size, 0u);
 }
 
 BOOST_AUTO_TEST_CASE(encode_args_structure) {
-    // Test encode args structure
+    // Only the host-resolved schema type name travels with the message.
     shield_protocol_encode_args_v1 args{};
-    args.route_id = 1002;
-    args.schema_id = 2;
     args.route_name = "LoginResponse";
     args.message_json = R"({"code": 200, "message": "success"})";
     args.message_json_size = std::strlen(args.message_json);
 
-    BOOST_CHECK_EQUAL(args.route_id, 1002);
-    BOOST_CHECK_EQUAL(args.schema_id, 2);
     BOOST_CHECK_EQUAL(std::strcmp(args.route_name, "LoginResponse"), 0);
     BOOST_CHECK(args.message_json_size > 0);
 }

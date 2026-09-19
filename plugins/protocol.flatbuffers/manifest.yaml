@@ -30,7 +30,3 @@ config_schema:
     schema_dir:
       type: string
       description: Directory containing .fbs schema files
-    messages:
-      type: array
-      items:
-        type: object

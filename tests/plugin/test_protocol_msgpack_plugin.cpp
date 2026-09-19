@@ -1,15 +1,13 @@
 #define BOOST_TEST_MODULE ProtocolMsgpackPluginTests
 #include <boost/test/unit_test.hpp>
+#include <cstdint>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <vector>
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
 #include "shield/plugin/protocol_codec.h"
-
-#include <nlohmann/json.hpp>
-
-#include <cstdint>
-#include <string>
-#include <vector>
 
 extern "C" const shield_plugin_abi_v1* shield_plugin_get_v1(void);
 
@@ -41,9 +39,9 @@ BOOST_AUTO_TEST_CASE(CodecRoundTripsCanonicalJsonMessage) {
     BOOST_REQUIRE(instance != nullptr);
     BOOST_REQUIRE(instance->get_interface != nullptr);
 
-    const auto* codec = static_cast<const shield_protocol_codec_v1*>(
-        instance->get_interface(instance, SHIELD_PROTOCOL_CODEC_INTERFACE,
-                                nullptr));
+    const auto* codec =
+        static_cast<const shield_protocol_codec_v1*>(instance->get_interface(
+            instance, SHIELD_PROTOCOL_CODEC_INTERFACE, nullptr));
     BOOST_REQUIRE(codec != nullptr);
     BOOST_CHECK_EQUAL(codec->codec_name, "msgpack");
     BOOST_REQUIRE(codec->encode != nullptr);
@@ -52,15 +50,13 @@ BOOST_AUTO_TEST_CASE(CodecRoundTripsCanonicalJsonMessage) {
     const std::string message_json =
         R"json({"uid":7,"name":"alice","tags":["a","b"]})json";
     shield_protocol_encode_args_v1 encode_args{};
-    encode_args.route_id = 4097;
     encode_args.message_json = message_json.data();
     encode_args.message_json_size = message_json.size();
 
     shield_protocol_encode_result_v1 encoded{};
     shield_error_v1 encode_error{};
-    BOOST_REQUIRE_EQUAL(codec->encode(codec, &encode_args, &encoded,
-                                      &encode_error),
-                        0);
+    BOOST_REQUIRE_EQUAL(
+        codec->encode(codec, &encode_args, &encoded, &encode_error), 0);
     BOOST_REQUIRE(encoded.payload != nullptr);
     BOOST_REQUIRE_GT(encoded.payload_size, 0u);
     const std::vector<std::uint8_t> payload(
@@ -68,15 +64,13 @@ BOOST_AUTO_TEST_CASE(CodecRoundTripsCanonicalJsonMessage) {
     codec->free_encode_result(codec, &encoded);
 
     shield_protocol_decode_args_v1 decode_args{};
-    decode_args.route_id = 4097;
     decode_args.payload = payload.data();
     decode_args.payload_size = payload.size();
 
     shield_protocol_decode_result_v1 decoded{};
     shield_error_v1 decode_error{};
-    BOOST_REQUIRE_EQUAL(codec->decode(codec, &decode_args, &decoded,
-                                      &decode_error),
-                        0);
+    BOOST_REQUIRE_EQUAL(
+        codec->decode(codec, &decode_args, &decoded, &decode_error), 0);
     const auto decoded_json =
         parse_json_result(decoded.message_json, decoded.message_json_size);
     BOOST_CHECK_EQUAL(decoded_json["uid"].get<int>(), 7);
@@ -96,14 +90,13 @@ BOOST_AUTO_TEST_CASE(CodecReportsInvalidPayload) {
 
     shield_plugin_instance_v1* instance = nullptr;
     shield_error_v1 create_error{};
-    BOOST_REQUIRE_EQUAL(shield_plugin_get_v1()->create(&args, &instance,
-                                                       &create_error),
-                        0);
+    BOOST_REQUIRE_EQUAL(
+        shield_plugin_get_v1()->create(&args, &instance, &create_error), 0);
     BOOST_REQUIRE(instance != nullptr);
 
-    const auto* codec = static_cast<const shield_protocol_codec_v1*>(
-        instance->get_interface(instance, SHIELD_PROTOCOL_CODEC_INTERFACE,
-                                nullptr));
+    const auto* codec =
+        static_cast<const shield_protocol_codec_v1*>(instance->get_interface(
+            instance, SHIELD_PROTOCOL_CODEC_INTERFACE, nullptr));
     BOOST_REQUIRE(codec != nullptr);
 
     const std::vector<std::uint8_t> invalid = {0xc1};
@@ -113,8 +106,7 @@ BOOST_AUTO_TEST_CASE(CodecReportsInvalidPayload) {
 
     shield_protocol_decode_result_v1 decoded{};
     shield_error_v1 decode_error{};
-    BOOST_CHECK_NE(codec->decode(codec, &decode_args, &decoded,
-                                 &decode_error),
+    BOOST_CHECK_NE(codec->decode(codec, &decode_args, &decoded, &decode_error),
                    0);
     BOOST_REQUIRE(decode_error.code != nullptr);
     BOOST_CHECK_EQUAL(decode_error.code, "protocol.decode_failed");

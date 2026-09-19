@@ -88,10 +88,13 @@ struct RouteEntry {
     std::uint32_t route_id = 0;
     RouteDirection direction = RouteDirection::ClientToServer;
     bool requires_auth = true;
-    std::uint16_t codec_id = 0;
-    std::uint16_t schema_id = 0;
     PacketKind kind = PacketKind::Message;
+    /// Diagnostic route name (also the route-table lookup key by name).
     std::string debug_name;
+    /// Final schema type name for codec plugins, resolved at descriptor
+    /// compile time: the route's explicit `request_schema` override when set,
+    /// else `debug_name` (same-name convention).
+    std::string schema_name;
     RoutePolicy policy;
 };
 
@@ -200,8 +203,6 @@ struct ProtocolProfile;
 
 struct DecodedBody {
     std::uint32_t route_id = 0;
-    std::uint16_t codec_id = 0;
-    std::uint16_t schema_id = 0;
     std::string route_name;
     std::vector<std::uint8_t> bytes;
     std::optional<nlohmann::json> message;
@@ -274,7 +275,6 @@ private:
 };
 
 struct XmldefCatalogOptions {
-    std::uint16_t default_codec_id = 0;
     RouteAction default_action = RouteAction::DecodeLocal;
     bool default_lazy_decode = true;
 };

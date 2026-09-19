@@ -110,9 +110,9 @@ BOOST_AUTO_TEST_CASE(RouteEntryFromDescriptorMapsTransportFields) {
     BOOST_CHECK(entry.kind == PacketKind::Request);
     BOOST_CHECK(entry.policy.action == RouteAction::ForwardRaw);
     BOOST_CHECK(!entry.policy.lazy_decode);
-    // Lua-facing fields are intentionally not carried onto the wire path.
-    BOOST_CHECK_EQUAL(entry.codec_id, 0u);
-    BOOST_CHECK_EQUAL(entry.schema_id, 0u);
+    // Schema addressing collapses at compile time: no override means the
+    // route name is the schema type name (same-name convention).
+    BOOST_CHECK_EQUAL(entry.schema_name, "chat");
 }
 
 BOOST_AUTO_TEST_CASE(ParseRejectsMalformedJson) {
@@ -200,7 +200,7 @@ BOOST_AUTO_TEST_CASE(ParseAcceptsCanonicalContractAndDefaults) {
      "action": "decode_local"},
     {"id": 2, "binding": "do_move", "direction": "client_to_server",
      "owner_service": "player", "request_codec": "json",
-     "request_schema": "move.req", "response_schema": "move.resp",
+     "request_schema": "move.req",
      "requires_auth": false, "action": "forward_raw", "lazy_decode": false},
     {"id": 3, "binding": "push_helper", "direction": "s2c",
      "requires_auth": true},
@@ -223,7 +223,6 @@ BOOST_AUTO_TEST_CASE(ParseAcceptsCanonicalContractAndDefaults) {
     BOOST_CHECK_EQUAL(move->owner_service, "player");
     BOOST_CHECK_EQUAL(move->request_codec, "json");
     BOOST_CHECK_EQUAL(move->request_schema, "move.req");
-    BOOST_CHECK_EQUAL(move->response_schema, "move.resp");
     BOOST_CHECK(!move->requires_auth);
     BOOST_CHECK(move->policy.action == RouteAction::ForwardRaw);
     BOOST_CHECK(!move->policy.lazy_decode);
@@ -236,6 +235,29 @@ BOOST_AUTO_TEST_CASE(ParseAcceptsCanonicalContractAndDefaults) {
     BOOST_REQUIRE(chat != nullptr);
     BOOST_CHECK(chat->direction == RouteDirection::Bidirectional);
     BOOST_CHECK(chat->policy.action == RouteAction::Drop);
+}
+
+BOOST_AUTO_TEST_CASE(SchemaNamePrefersExplicitOverride) {
+    RpcDescriptor descriptor = make_descriptor(9, "login", "do_login");
+    descriptor.request_schema = "auth.LoginRequest";
+
+    const auto entry = route_entry_from_descriptor(descriptor);
+    // Explicit request_schema override wins over the same-name convention.
+    BOOST_CHECK_EQUAL(entry.schema_name, "auth.LoginRequest");
+}
+
+BOOST_AUTO_TEST_CASE(ParseRejectsRemovedAddressingKeys) {
+    RpcDescriptorTable table;
+    std::string error;
+
+    BOOST_CHECK(!shield::transport::parse_rpc_routes_json(
+        R"json([{"id":1,"binding":"x","schema_id":42}])json", table, &error));
+    BOOST_CHECK_NE(error.find("schema_id"), std::string::npos);
+
+    BOOST_CHECK(!shield::transport::parse_rpc_routes_json(
+        R"json([{"id":1,"binding":"x","response_schema":"r"}])json", table,
+        &error));
+    BOOST_CHECK_NE(error.find("response_schema"), std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

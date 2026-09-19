@@ -28,8 +28,10 @@ struct RpcDescriptor {
     std::string binding;
     std::string owner_service;
     std::string request_codec;  // empty = profile default codec
+    /// Explicit schema type name override; empty = same-name convention
+    /// (the route `name` is the schema type). Resolved by the host at
+    /// descriptor compile time into RouteEntry.schema_name.
     std::string request_schema;
-    std::string response_schema;
     RoutePolicy policy;
     PacketKind kind = PacketKind::Message;
 };
@@ -66,16 +68,22 @@ private:
 };
 
 /// Derives the transport-level lookup entry (used by the protocol pipeline's
-/// RouteTable) from a descriptor. Lua-facing fields (binding, owner_service,
-/// schemas) are intentionally not carried onto the wire-path entry.
+/// RouteTable) from a descriptor. The schema addressing decision is made here
+/// at compile time: `schema_name` = explicit `request_schema` override when
+/// set, else the route `name` (same-name convention). This is the final type
+/// name handed to codec plugins; they never resolve ids. Lua-facing fields
+/// (binding, owner_service) are intentionally not carried onto the wire-path
+/// entry.
 RouteEntry route_entry_from_descriptor(const RpcDescriptor& descriptor);
 
 /// Parses the JSON array form of `actors[].rpc.routes` into `table`. Each
 /// element supports: id (required, >= 1), name, direction (c2s|s2c|bidi,
 /// default c2s), requires_auth (default true), binding (required, non-empty),
-/// owner_service, request_codec, request_schema, response_schema, action
-/// (decode_local|forward_raw|drop), lazy_decode. Returns false with *error
-/// set on malformed input or in-table conflicts.
+/// owner_service, request_codec, request_schema, action
+/// (decode_local|forward_raw|drop), lazy_decode. The removed `schema_id` and
+/// `response_schema` keys are rejected (pre-1.0: no silent-ignore compat
+/// reads). Returns false with *error set on malformed input or in-table
+/// conflicts.
 bool parse_rpc_routes_json(std::string_view routes_json,
                            RpcDescriptorTable& table,
                            std::string* error = nullptr);

@@ -110,7 +110,6 @@ struct FakeExtState {
     bool free_encode_throw_once = false;
     std::string last_encode_input;
     std::string last_decode_route_name;
-    std::uint32_t last_route_id = 0;
 };
 
 int fake_ext_decode(const shield_protocol_codec_v1* self,
@@ -122,7 +121,6 @@ int fake_ext_decode(const shield_protocol_codec_v1* self,
         return -1;
     }
     auto* state = static_cast<FakeExtState*>(self->user_data);
-    state->last_route_id = args->route_id;
     state->last_decode_route_name = args->route_name ? args->route_name : "";
     if (state->decode_rc != 0) {
         if (err) {
@@ -157,7 +155,6 @@ int fake_ext_encode(const shield_protocol_codec_v1* self,
         return -1;
     }
     auto* state = static_cast<FakeExtState*>(self->user_data);
-    state->last_route_id = args->route_id;
     if (state->encode_rc != 0) {
         if (err) {
             err->code = state->err_code;
@@ -928,15 +925,11 @@ BOOST_AUTO_TEST_CASE(JsonDecodeReadsMsgIdAndMethodKeys) {
 
     RouteEntry by_id;
     by_id.route_id = 1001;
-    by_id.codec_id = 2;
-    by_id.schema_id = 3;
 
     Packet id_packet;
     id_packet.body = bytes(R"({"msg_id":1001,"payload":{"ok":true}})");
     auto decoded = codec.decode(id_packet.ref(), by_id);
     BOOST_CHECK_EQUAL(decoded.route_id, 1001u);
-    BOOST_CHECK_EQUAL(decoded.codec_id, 2u);
-    BOOST_CHECK_EQUAL(decoded.schema_id, 3u);
     BOOST_REQUIRE(decoded.has_message());
     BOOST_CHECK((*decoded.message)["ok"].get<bool>());
 
@@ -961,9 +954,8 @@ BOOST_AUTO_TEST_SUITE(CovExternalBodyCodec)
 RouteEntry ext_route() {
     RouteEntry route;
     route.route_id = 5;
-    route.codec_id = 2;
-    route.schema_id = 3;
     route.debug_name = "fight";
+    route.schema_name = "fight";
     return route;
 }
 
@@ -1037,14 +1029,11 @@ BOOST_AUTO_TEST_CASE(DecodeCopiesRouteMetadataAndBytes) {
     packet.body = bytes("wire");
     const auto decoded = codec.decode(packet.ref(), ext_route());
     BOOST_CHECK_EQUAL(decoded.route_id, 5u);
-    BOOST_CHECK_EQUAL(decoded.codec_id, 2u);
-    BOOST_CHECK_EQUAL(decoded.schema_id, 3u);
     BOOST_CHECK_EQUAL(decoded.route_name, "fight");
     BOOST_CHECK_EQUAL_COLLECTIONS(decoded.bytes.begin(), decoded.bytes.end(),
                                   packet.body.begin(), packet.body.end());
     BOOST_REQUIRE(decoded.has_message());
     BOOST_CHECK_EQUAL((*decoded.message)["uid"].get<int>(), 7);
-    BOOST_CHECK_EQUAL(state.last_route_id, 5u);
     BOOST_CHECK_EQUAL(state.last_decode_route_name, "fight");
 }
 
@@ -1248,33 +1237,19 @@ BOOST_AUTO_TEST_CASE(RequiresAuthVariants) {
     BOOST_CHECK(routes.find(2)->requires_auth);
 }
 
-BOOST_AUTO_TEST_CASE(CodecAndSchemaAttrErrors) {
+BOOST_AUTO_TEST_CASE(RemovedCodecAndSchemaAttrsAreIgnored) {
+    // codec_id/schema_id/schema attrs were removed with the schema addressing
+    // collapse; the catalog tolerates them as unknown attributes.
+    RouteTable routes;
     std::string error;
-    {
-        RouteTable routes;
-        BOOST_CHECK(
-            !load_ok("<message id=\"1\" codec_id=\"65536\"/>", routes, &error));
-        BOOST_CHECK_NE(error.find("codec_id"), std::string::npos);
-    }
-    {
-        RouteTable routes;
-        BOOST_CHECK(
-            !load_ok("<message id=\"1\" schema_id=\"xx\"/>", routes, &error));
-        BOOST_CHECK_NE(error.find("schema_id"), std::string::npos);
-    }
-    {
-        RouteTable routes;
-        BOOST_CHECK(
-            !load_ok("<message id=\"1\" schema=\"bad\"/>", routes, &error));
-        BOOST_CHECK_NE(error.find("schema"), std::string::npos);
-    }
-    {
-        RouteTable routes;
-        BOOST_CHECK(load_ok("<message id=\"1\" codec_id=\"9\" schema=\"8\"/>",
-                            routes, &error));
-        BOOST_CHECK_EQUAL(routes.find(1)->codec_id, 9u);
-        BOOST_CHECK_EQUAL(routes.find(1)->schema_id, 8u);
-    }
+    BOOST_REQUIRE(
+        load_ok("<message id=\"1\" codec_id=\"65536\" "
+                "schema_id=\"xx\" schema=\"bad\"/>",
+                routes, &error));
+    BOOST_CHECK(error.empty());
+    const auto* route = routes.find(1);
+    BOOST_REQUIRE(route != nullptr);
+    BOOST_CHECK_EQUAL(route->route_id, 1u);
 }
 
 BOOST_AUTO_TEST_CASE(ActionDropAndInvalidAction) {
@@ -1334,14 +1309,12 @@ BOOST_AUTO_TEST_CASE(DefaultOptionsApplyToEntries) {
     RouteTable routes;
     std::string error;
     XmldefCatalogOptions options;
-    options.default_codec_id = 4;
     options.default_action = RouteAction::ForwardRaw;
     options.default_lazy_decode = false;
     BOOST_REQUIRE(load_xmldef_routes_from_string("<message id=\"1\"/>", routes,
                                                  options, &error));
     const auto* route = routes.find(1);
     BOOST_REQUIRE(route != nullptr);
-    BOOST_CHECK_EQUAL(route->codec_id, 4u);
     BOOST_CHECK(route->policy.action == RouteAction::ForwardRaw);
     BOOST_CHECK(!route->policy.lazy_decode);
 }
@@ -2173,7 +2146,7 @@ BOOST_AUTO_TEST_CASE(DescriptorParseDirectionsAndMetadata) {
     {"id": 2, "binding": "b", "direction": "bidirectional"},
     {"id": 3, "binding": "c", "direction": "client_to_server",
      "owner_service": "player", "request_codec": "json",
-     "request_schema": "move.req", "response_schema": "move.resp",
+     "request_schema": "move.req",
      "requires_auth": false, "lazy_decode": false}
   ])json",
         descriptors, &error));
@@ -2190,7 +2163,6 @@ BOOST_AUTO_TEST_CASE(DescriptorParseDirectionsAndMetadata) {
     BOOST_CHECK_EQUAL(third->owner_service, "player");
     BOOST_CHECK_EQUAL(third->request_codec, "json");
     BOOST_CHECK_EQUAL(third->request_schema, "move.req");
-    BOOST_CHECK_EQUAL(third->response_schema, "move.resp");
     BOOST_CHECK(!third->requires_auth);
     BOOST_CHECK(!third->policy.lazy_decode);
     BOOST_CHECK_EQUAL(descriptors.find_by_name("push")->route_id, 1u);
@@ -2315,7 +2287,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
 // Round-3 additions: little-endian encode, includes-header feed framing,
-// delimiter feed, raw/passthrough decode_local, xmldef direction/schema_id,
+// delimiter feed, raw/passthrough decode_local, xmldef direction,
 // duplicate debug names, and external-provider build errors.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LenPrefixLittleEndianEncode) {
@@ -2378,12 +2350,8 @@ BOOST_AUTO_TEST_CASE(RawCodecDecodesToLocalBytes) {
     packet.body = bytes("payload");
     RouteEntry route;
     route.route_id = 5;
-    route.codec_id = 9;
-    route.schema_id = 11;
     const DecodedBody body = codec.decode(packet.ref(), route);
     BOOST_CHECK_EQUAL(body.route_id, 5u);
-    BOOST_CHECK_EQUAL(body.codec_id, 9u);
-    BOOST_CHECK_EQUAL(body.schema_id, 11u);
     BOOST_CHECK_EQUAL_COLLECTIONS(body.bytes.begin(), body.bytes.end(),
                                   packet.body.begin(), packet.body.end());
 }
@@ -2396,17 +2364,16 @@ BOOST_AUTO_TEST_CASE(PassthroughCodecDecodeLocalThrows) {
     BOOST_CHECK_THROW(codec.decode(packet.ref(), route), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(XmldefDirectionAndSchemaIdAttributes) {
+BOOST_AUTO_TEST_CASE(XmldefDirectionAttributes) {
     RouteTable routes;
     std::string error;
     BOOST_REQUIRE(load_xmldef_routes_from_string(
-        "<message id=\"1\" name=\"up\" direction=\"c2s\" schema_id=\"7\"/>"
+        "<message id=\"1\" name=\"up\" direction=\"c2s\"/>"
         "<message id=\"2\" name=\"down\" direction=\"server_to_client\"/>",
         routes, {}, &error));
     const auto* c2s = routes.find(1);
     BOOST_REQUIRE(c2s != nullptr);
     BOOST_CHECK(c2s->direction == RouteDirection::ClientToServer);
-    BOOST_CHECK_EQUAL(c2s->schema_id, 7u);
     const auto* s2c = routes.find(2);
     BOOST_REQUIRE(s2c != nullptr);
     BOOST_CHECK(s2c->direction == RouteDirection::ServerToClient);

@@ -13,32 +13,35 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
                  ∨ route name（同名约定，默认）
 ```
 
-- [ ] ABI（`include/shield/plugin/protocol_codec.h`）：`decode_args_v1` /
+- [x] ABI（`include/shield/plugin/protocol_codec.h`）：`decode_args_v1` /
       `encode_args_v1` 删除 `route_id` / `codec_id` / `schema_id`，只留
       `route_name` + payload/message 字段；注释写明 route_name 语义 =
       host 解析好的最终 schema 类型名
-- [ ] `RpcDescriptor`：删 `response_schema` 死字段；`request_schema`
+- [x] `RpcDescriptor`：删 `response_schema` 死字段；`request_schema`
       语义改为「显式 schema 类型名覆盖；空 = 同名约定」
-- [ ] `RouteEntry`：删 `schema_id`；新增 `schema_name`（`request_schema`
+- [x] `RouteEntry`：删 `schema_id`；新增 `schema_name`（`request_schema`
       非空取之，否则取 `debug_name`）
-- [ ] `DecodedBody`：删 `schema_id`；`codec_id` 无消费点则一并删
-- [ ] `ExternalBodyCodec::decode/encode`：`args.route_name` 改用
+- [x] `DecodedBody`：删 `schema_id`；`codec_id` 无消费点则一并删
+- [x] `ExternalBodyCodec::decode/encode`：`args.route_name` 改用
       `route.schema_name`；核实出站（response table key）路径统一走
       `schema_name`
-- [ ] xmldef catalog：删 `schema_id` / `schema` attr 解析段
-- [ ] `config.cpp`：routes 键白名单删 `schema_id` / `response_schema`
-      （JSON routes 的 `schema_id` 从未被解析过，纯删即可）
-- [ ] `protocol.protobuf` / `protocol.flatbuffers`：删 `schema_names` /
+- [x] xmldef catalog：删 `schema_id` / `schema` attr 解析段
+      （连同 `RouteEntry.codec_id` 死字段与 `XmldefCatalogOptions.default_codec_id` 一并删除——
+      `codec_for_route` 有意不用 route.codec_id，管线绑定单一 codec）
+- [x] `config.cpp`：routes 键白名单删 `response_schema`；`schema_id` /
+      `response_schema` 已删键在 YAML 与 JSON 两条解析路径均「出现即报错」
+      （pre-1.0 不做静默兼容读，先例：`network.protocol.routes`）
+- [x] `protocol.protobuf` / `protocol.flatbuffers`：删 `schema_names` /
       `route_names` 两张映射与 `messages` 配置解析，resolve 收为单行
-      按名查找；manifest `config_schema` 删 `messages` / `route_map`
-- [ ] `protocol.msgpack`：跟随新 ABI 签名（已确认零字段引用）
-- [ ] 测试：fake codec 跟随新 ABI；schema_id 用例改写为
+      按名查找；manifest `config_schema` 删 `messages`（fbs 的映射本是
+      死代码：decode/encode 从未调用 resolve）
+- [x] `protocol.msgpack`：跟随新 ABI 签名（零字段引用，无需改动）
+- [x] 测试：fake codec 跟随新 ABI；schema_id 用例改写为
       「同名约定默认」+「request_schema 覆盖优先」两条正路用例；
-      config 新增已删键报错用例
-- [ ] docs：`protocol-routing-design.md` 字段表已更新（本刀已改）；
-      实施后复核两篇协议文档与代码一致——特别是
-      `protocol-codec-plugins.md` Implementation Order 第 5 条
-      「schema/route 映射已实现」需改写为收敛后的口径
+      config 新增已删键报错用例（YAML/JSON 双路径）
+- [x] docs：`protocol-routing-design.md` 字段表已更新；
+      `protocol-codec-plugins.md` Implementation Order 第 5 条已改写为
+      收敛后口径
 
 验收：全量重编 + 串行测试（build-plugins 与主树）+ clang-format，
 四家协议插件编译/测试全绿。

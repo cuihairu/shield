@@ -27,9 +27,5 @@ config_schema:
   properties:
     descriptor_set:
       type: string
-    messages:
-      type: array
-      items:
-        type: object
     json:
       type: object

@@ -16,10 +16,12 @@ extern "C" {
 
 #define SHIELD_PROTOCOL_CODEC_INTERFACE "shield.protocol.codec.v1"
 
+// route_name is the final schema type name resolved by the host at descriptor
+// compile time: the route's explicit `request_schema` override when set, else
+// the route name itself (same-name convention). It is the only addressing key
+// a codec provider receives; route/codec/schema ids are host-internal routing
+// concepts and are deliberately not part of this ABI.
 struct shield_protocol_decode_args_v1 {
-    uint32_t route_id;
-    uint16_t codec_id;
-    uint16_t schema_id;
     const char* route_name;
     const uint8_t* payload;
     uint64_t payload_size;
@@ -31,9 +33,6 @@ struct shield_protocol_decode_result_v1 {
 };
 
 struct shield_protocol_encode_args_v1 {
-    uint32_t route_id;
-    uint16_t codec_id;
-    uint16_t schema_id;
     const char* route_name;
     const char* message_json;
     uint64_t message_json_size;

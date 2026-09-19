@@ -297,7 +297,6 @@ make_fake_protobuf_pipeline(const shield_protocol_codec_v1* codec,
         shield::transport::RouteEntry entry;
         entry.route_id = 4097;
         entry.debug_name = "shield.test.Login";
-        entry.schema_id = 42;
         entry.direction = shield::transport::RouteDirection::ClientToServer;
         entry.requires_auth = false;
         entry.policy.lazy_decode = false;
@@ -683,13 +682,9 @@ BOOST_AUTO_TEST_CASE(LuaGatewayBridgeRoutesRawDecodeLocalAsStrings) {
     route.route_id = 4098;
     route.direction = shield::transport::RouteDirection::ClientToServer;
     route.requires_auth = false;
-    route.codec_id = 1;
-    route.schema_id = 0;
     route.debug_name = "raw.echo";
     dispatch.route = &route;
     dispatch.decoded_body = shield::transport::DecodedBody{
-        .codec_id = 1,
-        .schema_id = 0,
         .route_name = "raw.echo",
         .bytes = std::vector<std::uint8_t>{'r', 'a', 'w'},
     };

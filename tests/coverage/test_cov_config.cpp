@@ -748,6 +748,12 @@ BOOST_AUTO_TEST_CASE(ValidateActorRpcRoutes) {
                    "requires_auth must be a bool");
     expect_invalid(actor_cfg(r1 + "          lazy_decode: 7\n"), opts,
                    "lazy_decode must be a bool");
+    // Removed addressing keys are rejected outright (pre-1.0: no
+    // silent-ignore compat reads).
+    expect_invalid(actor_cfg(r1 + "          schema_id: 42\n"), opts,
+                   "schema_id was removed");
+    expect_invalid(actor_cfg(r1 + "          response_schema: login.resp\n"),
+                   opts, "response_schema was removed");
     expect_invalid(
         actor_cfg(prefix + "        - id: 1\n          binding: \"\"\n"), opts,
         "binding must not be empty");
@@ -777,7 +783,6 @@ BOOST_AUTO_TEST_CASE(ValidateActorRpcRoutes) {
                                     "          lazy_decode: true\n"
                                     "          request_codec: json\n"
                                     "          request_schema: login.req\n"
-                                    "          response_schema: login.resp\n"
                                     "        - id: 2\n"
                                     "          name: push\n"
                                     "          binding: push_helper\n"

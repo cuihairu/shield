@@ -1,16 +1,11 @@
 // [SHIELD_PLUGIN] protocol.protobuf — shield.protocol.codec.v1 provider.
 
-#include "shield/plugin/abi.h"
-#include "shield/plugin/host_api.h"
-#include "shield/plugin/protocol_codec.h"
-
-#include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/descriptor.h>
+#include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/descriptor_database.h>
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/message.h>
 #include <google/protobuf/util/json_util.h>
-#include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <cstdlib>
@@ -19,9 +14,13 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
-#include <unordered_map>
+
+#include "shield/plugin/abi.h"
+#include "shield/plugin/host_api.h"
+#include "shield/plugin/protocol_codec.h"
 
 namespace {
 
@@ -41,8 +40,8 @@ std::uint8_t* dup_bytes(const std::string& value) {
     return out;
 }
 
-void fill_error(shield_error_v1* err, const char* code,
-                const char* message, const char* phase = "runtime") {
+void fill_error(shield_error_v1* err, const char* code, const char* message,
+                const char* phase = "runtime") {
     if (!err) return;
     err->code = code;
     err->message = message;
@@ -66,39 +65,16 @@ struct protobuf_instance {
     google::protobuf::SimpleDescriptorDatabase descriptor_db;
     std::unique_ptr<google::protobuf::DescriptorPool> pool;
     std::unique_ptr<google::protobuf::DynamicMessageFactory> factory;
-    std::unordered_map<std::uint16_t, std::string> schema_names;
-    std::unordered_map<std::uint32_t, std::string> route_names;
 };
 
+// route_name is the host-resolved final schema type name (request_schema
+// override or the route name itself). It is the only addressing key.
 const google::protobuf::Descriptor* resolve_descriptor(
-    const protobuf_instance& inst,
-    const shield_protocol_decode_args_v1& args) {
-    if (args.schema_id != 0) {
-        const auto by_schema = inst.schema_names.find(args.schema_id);
-        if (by_schema != inst.schema_names.end()) {
-            return inst.pool->FindMessageTypeByName(by_schema->second);
-        }
+    const protobuf_instance& inst, const char* route_name) {
+    if (route_name == nullptr || route_name[0] == '\0') {
+        return nullptr;
     }
-    if (args.route_id != 0) {
-        const auto by_route = inst.route_names.find(args.route_id);
-        if (by_route != inst.route_names.end()) {
-            return inst.pool->FindMessageTypeByName(by_route->second);
-        }
-    }
-    if (args.route_name != nullptr && args.route_name[0] != '\0') {
-        return inst.pool->FindMessageTypeByName(args.route_name);
-    }
-    return nullptr;
-}
-
-const google::protobuf::Descriptor* resolve_descriptor(
-    const protobuf_instance& inst,
-    const shield_protocol_encode_args_v1& args) {
-    shield_protocol_decode_args_v1 decode_args{};
-    decode_args.route_id = args.route_id;
-    decode_args.schema_id = args.schema_id;
-    decode_args.route_name = args.route_name;
-    return resolve_descriptor(inst, decode_args);
+    return inst.pool->FindMessageTypeByName(route_name);
 }
 
 bool load_config(protobuf_instance* inst, const char* config_json,
@@ -118,29 +94,6 @@ bool load_config(protobuf_instance* inst, const char* config_json,
         return false;
     }
     inst->descriptor_set_path = config["descriptor_set"].get<std::string>();
-
-    if (config.contains("messages") && config["messages"].is_array()) {
-        for (const auto& item : config["messages"]) {
-            if (!item.is_object() || !item.contains("name") ||
-                !item["name"].is_string()) {
-                continue;
-            }
-            const auto name = item["name"].get<std::string>();
-            if (item.contains("schema_id") &&
-                item["schema_id"].is_number_unsigned()) {
-                const auto schema_id = item["schema_id"].get<std::uint32_t>();
-                if (schema_id <= UINT16_MAX) {
-                    inst->schema_names[static_cast<std::uint16_t>(schema_id)] =
-                        name;
-                }
-            }
-            if (item.contains("route_id") &&
-                item["route_id"].is_number_unsigned()) {
-                inst->route_names[item["route_id"].get<std::uint32_t>()] =
-                    name;
-            }
-        }
-    }
     return true;
 }
 
@@ -162,10 +115,10 @@ bool load_descriptors(protobuf_instance* inst, std::string* error) {
             return false;
         }
     }
-    inst->pool =
-        std::make_unique<google::protobuf::DescriptorPool>(&inst->descriptor_db);
-    inst->factory =
-        std::make_unique<google::protobuf::DynamicMessageFactory>(inst->pool.get());
+    inst->pool = std::make_unique<google::protobuf::DescriptorPool>(
+        &inst->descriptor_db);
+    inst->factory = std::make_unique<google::protobuf::DynamicMessageFactory>(
+        inst->pool.get());
     return true;
 }
 
@@ -174,11 +127,12 @@ int protobuf_decode(const shield_protocol_codec_v1* self,
                     shield_protocol_decode_result_v1* out,
                     shield_error_v1* err) {
     if (!self || !args || !out || !self->user_data) {
-        fill_error(err, "protocol.decode_failed", "invalid protobuf decode args");
+        fill_error(err, "protocol.decode_failed",
+                   "invalid protobuf decode args");
         return -1;
     }
     auto* inst = static_cast<protobuf_instance*>(self->user_data);
-    const auto* descriptor = resolve_descriptor(*inst, *args);
+    const auto* descriptor = resolve_descriptor(*inst, args->route_name);
     if (!descriptor) {
         fill_error(err, "protocol.schema_not_found",
                    "protobuf message descriptor was not found");
@@ -198,16 +152,15 @@ int protobuf_decode(const shield_protocol_codec_v1* self,
         return -1;
     }
     if (args->payload == nullptr && args->payload_size > 0) {
-        fill_error(err, "protocol.decode_failed",
-                   "protobuf payload is null");
+        fill_error(err, "protocol.decode_failed", "protobuf payload is null");
         return -1;
     }
     const char empty_payload[] = "";
-    const auto* payload =
-        args->payload_size == 0
-            ? empty_payload
-            : reinterpret_cast<const char*>(args->payload);
-    if (!message->ParseFromArray(payload, static_cast<int>(args->payload_size))) {
+    const auto* payload = args->payload_size == 0
+                              ? empty_payload
+                              : reinterpret_cast<const char*>(args->payload);
+    if (!message->ParseFromArray(payload,
+                                 static_cast<int>(args->payload_size))) {
         fill_error(err, "protocol.decode_failed",
                    "failed to parse protobuf payload");
         return -1;
@@ -230,11 +183,12 @@ int protobuf_encode(const shield_protocol_codec_v1* self,
                     shield_protocol_encode_result_v1* out,
                     shield_error_v1* err) {
     if (!self || !args || !out || !self->user_data) {
-        fill_error(err, "protocol.encode_failed", "invalid protobuf encode args");
+        fill_error(err, "protocol.encode_failed",
+                   "invalid protobuf encode args");
         return -1;
     }
     auto* inst = static_cast<protobuf_instance*>(self->user_data);
-    const auto* descriptor = resolve_descriptor(*inst, *args);
+    const auto* descriptor = resolve_descriptor(*inst, args->route_name);
     if (!descriptor) {
         fill_error(err, "protocol.schema_not_found",
                    "protobuf message descriptor was not found");
@@ -257,7 +211,8 @@ int protobuf_encode(const shield_protocol_codec_v1* self,
         json.assign(args->message_json,
                     args->message_json + args->message_json_size);
     }
-    auto status = google::protobuf::util::JsonStringToMessage(json, message.get());
+    auto status =
+        google::protobuf::util::JsonStringToMessage(json, message.get());
     if (!status.ok()) {
         fill_error(err, "protocol.encode_failed",
                    "failed to convert JSON to protobuf message");
@@ -291,8 +246,7 @@ void free_encode_result(const shield_protocol_codec_v1*,
 }
 
 int protobuf_create(const shield_plugin_create_args_v1* args,
-                    shield_plugin_instance_v1** out,
-                    shield_error_v1* err) {
+                    shield_plugin_instance_v1** out, shield_error_v1* err) {
     if (out == nullptr) {
         fill_error(err, "plugin.create.invalid",
                    "protobuf create output pointer is null", "create");
@@ -343,9 +297,7 @@ int protobuf_create(const shield_plugin_create_args_v1* args,
         delete reinterpret_cast<protobuf_instance*>(self);
     };
     inst->shell.register_lua = [](shield_plugin_instance_v1*, lua_State*,
-                                  shield_error_v1*) {
-        return 0;
-    };
+                                  shield_error_v1*) { return 0; };
 
     *out = &inst->shell;
     return 0;
@@ -353,13 +305,11 @@ int protobuf_create(const shield_plugin_create_args_v1* args,
 
 }  // namespace
 
-extern "C" SHIELD_PLUGIN_EXPORT
-const shield_plugin_abi_v1* shield_plugin_get_v1(void) {
+extern "C" SHIELD_PLUGIN_EXPORT const shield_plugin_abi_v1*
+shield_plugin_get_v1(void) {
     static const shield_plugin_abi_v1 abi = {
-        SHIELD_PLUGIN_ABI_VERSION,
-        sizeof(shield_plugin_abi_v1),
-        "protocol.protobuf",
-        "1.0.0",
+        SHIELD_PLUGIN_ABI_VERSION, sizeof(shield_plugin_abi_v1),
+        "protocol.protobuf",       "1.0.0",
         protobuf_create,
     };
     return &abi;

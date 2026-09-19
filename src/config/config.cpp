@@ -374,6 +374,19 @@ bool validate_actor_rpc_routes(const YAML::Node& rpc, const std::string& path,
             return false;
         }
 
+        // Removed addressing keys are rejected outright (pre-1.0: no
+        // silent-ignore compat reads), mirroring parse_rpc_routes_json.
+        for (const char* removed : {"schema_id", "response_schema"}) {
+            if (route[removed]) {
+                if (error) {
+                    *error = item_path + "." + removed +
+                             " was removed; schema addressing is the route "
+                             "name plus an optional request_schema override";
+                }
+                return false;
+            }
+        }
+
         if (route["requires_auth"]) {
             try {
                 (void)route["requires_auth"].as<bool>();
@@ -395,9 +408,8 @@ bool validate_actor_rpc_routes(const YAML::Node& rpc, const std::string& path,
             }
         }
 
-        for (const char* key :
-             {"binding", "owner_service", "name", "request_codec",
-              "request_schema", "response_schema"}) {
+        for (const char* key : {"binding", "owner_service", "name",
+                                "request_codec", "request_schema"}) {
             if (!route[key]) {
                 continue;
             }

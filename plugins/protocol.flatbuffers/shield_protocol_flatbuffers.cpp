@@ -14,7 +14,6 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
-#include <unordered_map>
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
@@ -61,24 +60,7 @@ struct flatbuffers_instance {
     std::string schema_path;
     std::string schema_dir;
     std::string schema_text;
-
-    std::unordered_map<std::uint16_t, std::string> schema_names;
-    std::unordered_map<std::uint32_t, std::string> route_names;
 };
-
-const std::string& resolve_type_name(const flatbuffers_instance& inst,
-                                     std::uint16_t schema_id,
-                                     const char* route_name) {
-    static const std::string empty;
-    if (schema_id != 0) {
-        const auto it = inst.schema_names.find(schema_id);
-        if (it != inst.schema_names.end()) return it->second;
-    }
-    if (route_name != nullptr && route_name[0] != '\0') {
-        return inst.schema_names.count(0) ? inst.schema_names.at(0) : empty;
-    }
-    return empty;
-}
 
 bool load_config(flatbuffers_instance* inst, const char* config_json,
                  std::string* error) {
@@ -104,27 +86,6 @@ bool load_config(flatbuffers_instance* inst, const char* config_json,
         return false;
     }
 
-    if (config.contains("messages") && config["messages"].is_array()) {
-        for (const auto& item : config["messages"]) {
-            if (!item.is_object() || !item.contains("name") ||
-                !item["name"].is_string()) {
-                continue;
-            }
-            const auto name = item["name"].get<std::string>();
-            if (item.contains("schema_id") &&
-                item["schema_id"].is_number_unsigned()) {
-                const auto schema_id = item["schema_id"].get<std::uint32_t>();
-                if (schema_id <= UINT16_MAX) {
-                    inst->schema_names[static_cast<std::uint16_t>(schema_id)] =
-                        name;
-                }
-            }
-            if (item.contains("route_id") &&
-                item["route_id"].is_number_unsigned()) {
-                inst->route_names[item["route_id"].get<std::uint32_t>()] = name;
-            }
-        }
-    }
     return true;
 }
 

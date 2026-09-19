@@ -86,7 +86,6 @@ std::unique_ptr<ProtocolPipeline> make_json_pipeline(
     routes.add(RouteEntry{
         .route_id = 1001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
         .debug_name = "login",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = true},
@@ -94,7 +93,6 @@ std::unique_ptr<ProtocolPipeline> make_json_pipeline(
     routes.add(RouteEntry{
         .route_id = 1002,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
         .debug_name = "fwd",
         .policy =
             RoutePolicy{.action = RouteAction::ForwardRaw, .lazy_decode = true},
@@ -142,7 +140,6 @@ std::unique_ptr<ProtocolPipeline> make_throwing_pipeline() {
     routes.add(RouteEntry{
         .route_id = 2001,
         .direction = RouteDirection::ClientToServer,
-        .codec_id = 1,
         .debug_name = "boom",
         .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
                               .lazy_decode = true},

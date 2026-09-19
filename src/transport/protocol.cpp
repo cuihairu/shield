@@ -105,14 +105,6 @@ std::optional<std::uint32_t> parse_u32(std::string_view value) {
     }
 }
 
-std::optional<std::uint16_t> parse_u16(std::string_view value) {
-    const auto parsed = parse_u32(value);
-    if (!parsed || *parsed > std::numeric_limits<std::uint16_t>::max()) {
-        return std::nullopt;
-    }
-    return static_cast<std::uint16_t>(*parsed);
-}
-
 std::optional<bool> parse_bool(std::string_view value) {
     const auto text = trim_copy(value);
     if (text == "true" || text == "1" || text == "yes") {
@@ -290,8 +282,6 @@ DecodedBody decode_structured_body(PacketRef packet, const RouteEntry& route,
                                    nlohmann::json message) {
     DecodedBody body;
     body.route_id = route.route_id;
-    body.codec_id = route.codec_id;
-    body.schema_id = route.schema_id;
     body.bytes.assign(packet.body.begin(), packet.body.end());
     if (auto key = structured_route_key(message)) {
         body.route_name = std::move(key->route_name);
@@ -933,8 +923,6 @@ std::optional<BodyRouteKey> BodyCodec::route_key(PacketRef) {
 DecodedBody RawBodyCodec::decode(PacketRef packet, const RouteEntry& route) {
     DecodedBody body;
     body.route_id = route.route_id;
-    body.codec_id = route.codec_id;
-    body.schema_id = route.schema_id;
     body.bytes.assign(packet.body.begin(), packet.body.end());
     return body;
 }  // GCOVR_EXCL_LINE (uncalled exit clone)
@@ -1020,11 +1008,8 @@ DecodedBody ExternalBodyCodec::decode(PacketRef packet,
     }
 
     shield_protocol_decode_args_v1 args{};
-    args.route_id = route.route_id;
-    args.codec_id = route.codec_id;
-    args.schema_id = route.schema_id;
     args.route_name =
-        route.debug_name.empty() ? nullptr : route.debug_name.c_str();
+        route.schema_name.empty() ? nullptr : route.schema_name.c_str();
     args.payload = packet.body.data();
     args.payload_size = packet.body.size();
 
@@ -1039,8 +1024,6 @@ DecodedBody ExternalBodyCodec::decode(PacketRef packet,
     try {
         DecodedBody body;
         body.route_id = route.route_id;
-        body.codec_id = route.codec_id;
-        body.schema_id = route.schema_id;
         body.route_name = route.debug_name;
         body.bytes.assign(packet.body.begin(), packet.body.end());
 
@@ -1076,11 +1059,8 @@ std::vector<std::uint8_t> ExternalBodyCodec::encode(const DecodedBody& body,
     const auto message_text = message.dump();
 
     shield_protocol_encode_args_v1 args{};
-    args.route_id = route.route_id;
-    args.codec_id = route.codec_id;
-    args.schema_id = route.schema_id;
     args.route_name =
-        route.debug_name.empty() ? nullptr : route.debug_name.c_str();
+        route.schema_name.empty() ? nullptr : route.schema_name.c_str();
     args.message_json = message_text.data();
     args.message_json_size = message_text.size();
 
@@ -1159,12 +1139,14 @@ bool load_xmldef_routes_from_string(std::string_view xml, RouteTable& routes,
 
         RouteEntry entry;
         entry.route_id = *route_id;
-        entry.codec_id = options.default_codec_id;
         entry.policy.action = options.default_action;
         entry.policy.lazy_decode = options.default_lazy_decode;
 
         if (const auto* value = find_attr(attrs, "name")) {
             entry.debug_name = *value;
+            // Same-name convention, matching route_entry_from_descriptor:
+            // the catalog route name is also the schema type name.
+            entry.schema_name = *value;
         }
         if (const auto* value = find_attr(attrs, "direction")) {
             std::string dir_str(*value);
@@ -1182,29 +1164,6 @@ bool load_xmldef_routes_from_string(std::string_view xml, RouteTable& routes,
         if (const auto* value = find_attr(attrs, "requires_auth")) {
             std::string auth_str(*value);
             entry.requires_auth = (auth_str == "true" || auth_str == "1");
-        }
-        if (const auto* value = find_attr(attrs, "codec_id")) {
-            const auto parsed = parse_u16(*value);
-            if (!parsed) {
-                if (error) *error = "xmldef codec_id must be uint16";
-                return false;
-            }
-            entry.codec_id = *parsed;
-        }
-        if (const auto* value = find_attr(attrs, "schema_id")) {
-            const auto parsed = parse_u16(*value);
-            if (!parsed) {
-                if (error) *error = "xmldef schema_id must be uint16";
-                return false;
-            }
-            entry.schema_id = *parsed;
-        } else if (const auto* value = find_attr(attrs, "schema")) {
-            const auto parsed = parse_u16(*value);
-            if (!parsed) {
-                if (error) *error = "xmldef schema must be uint16";
-                return false;
-            }
-            entry.schema_id = *parsed;
         }
         if (const auto* value = find_attr(attrs, "action")) {
             const auto parsed = parse_action(*value);
@@ -1532,10 +1491,8 @@ const RouteEntry* ProtocolPipeline::resolve_route(Packet& packet,
 }
 
 BodyCodec* ProtocolPipeline::codec_for_route(const RouteEntry& route) {
-    // Phase 1: a pipeline binds a single body codec
-    // (profile_.default_codec_id). route.codec_id is kept as route metadata /
-    // future extension slot and is intentionally not used to select a per-route
-    // codec here.
+    // A pipeline binds a single body codec (profile_.default_codec_id); route
+    // entries carry no codec identity.
     (void)route;
     return codecs_.find(profile_.default_codec_id);
 }
@@ -1751,7 +1708,6 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
         if (normalized_body_codec == "xmldef" && body.contains("catalog") &&
             body["catalog"].is_string()) {
             XmldefCatalogOptions catalog_options;
-            catalog_options.default_codec_id = default_codec_id;
             if (routing.contains("default_action") &&
                 routing["default_action"].is_string()) {
                 const auto parsed =
