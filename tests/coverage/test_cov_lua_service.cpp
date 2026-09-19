@@ -1245,7 +1245,7 @@ BOOST_AUTO_TEST_CASE(YieldWindowDropWithoutCallerActor) {
     // while the coroutine runs inside the VM).
     std::thread driver([&]() {
         int nres = 0;
-        LuaServiceManager::DrivingGuard driving(manager, co);
+        LuaServiceManager::DrivingGuard driving(manager, co, "test-driver");
         lua_resume(co, nullptr, 0, &nres);  // stops inside lua_yield
     });
     while (!g_parked_body_running.load(std::memory_order_acquire)) {

@@ -594,10 +594,13 @@ return M
         !runtime.call_service_function(vm, "deny", nlohmann::json(), &error));
     BOOST_CHECK_EQUAL(error, "denied by policy");
 
-    // Non-string second return: message conversion throws and the failure
-    // surfaces through the catch-all.
+    // Non-string second return: the message slot is type-checked and the
+    // value is described inline instead of raising an unprotected
+    // luaL_error on the bare stack (which would land in at_panic).
     BOOST_CHECK(!runtime.call_service_function(vm, "deny_table",
                                                nlohmann::json(), &error));
+    BOOST_CHECK(error.find("deny") != std::string::npos &&
+                error.find("code") != std::string::npos);
 
     BOOST_CHECK(
         runtime.call_service_function(vm, "ok", nlohmann::json(), &error));

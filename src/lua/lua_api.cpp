@@ -1029,59 +1029,60 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
     // timer to resume the current coroutine and then yields. The C primitive
     // _resume_after anchors the running coroutine against GC and arms the
     // timer; coroutine.yield suspends until the timer fires and resumes us.
-    shield.set_function("_resume_after", [manager](sol::this_state state,
-                                                   int delay_ms) {
-        if (delay_ms < 0) {
-            delay_ms = 0;
-        }
-        lua_State* co = state;  // current coroutine thread
-        // Anchor the thread so it survives GC while suspended.
-        lua_pushthread(co);
-        const int ref = luaL_ref(co, LUA_REGISTRYINDEX);
-        const std::string service_id = manager->current_service_id();
-        auto resume_fn = [co, ref, manager, service_id]() {
-            int nres = 0;
-            // Driving-phase registration: a call completion arriving
-            // while this guard is held is re-enqueued by resume_caller
-            // instead of racing this resume.
-            std::unique_ptr<LuaServiceManager::DrivingGuard> driving =
-                std::make_unique<LuaServiceManager::DrivingGuard>(*manager, co);
-            const int status = lua_resume(co, nullptr, 0, &nres);
-            if (status == LUA_YIELD) {
-                // Yielded again (e.g. another sleep/call): the API
-                // that yielded has already anchored the coroutine for
-                // its own resume source, so release this sleep anchor.
-                luaL_unref(co, LUA_REGISTRYINDEX, ref);
-                return;
+    shield.set_function(
+        "_resume_after", [manager](sol::this_state state, int delay_ms) {
+            if (delay_ms < 0) {
+                delay_ms = 0;
             }
-            // Terminal (LUA_OK or error): drop the live-coroutine entry.
-            manager->note_coroutine_finished(co);
-            // If this coroutine was servicing a call request that
-            // yielded (e.g. the callee slept), route the response now
-            // that it has completed. No-op for plain handlers.
-            if (status == LUA_OK) {
-                nlohmann::json returns = nlohmann::json::array();
-                for (int i = 0; i < nres; ++i) {
-                    sol::stack_object so(sol::state_view(co), i + 1);
-                    returns.push_back(lua_to_json(so));
+            lua_State* co = state;  // current coroutine thread
+            // Anchor the thread so it survives GC while suspended.
+            lua_pushthread(co);
+            const int ref = luaL_ref(co, LUA_REGISTRYINDEX);
+            const std::string service_id = manager->current_service_id();
+            auto resume_fn = [co, ref, manager, service_id]() {
+                int nres = 0;
+                // Driving-phase registration: a call completion arriving
+                // while this guard is held is re-enqueued by resume_caller
+                // instead of racing this resume.
+                std::unique_ptr<LuaServiceManager::DrivingGuard> driving =
+                    std::make_unique<LuaServiceManager::DrivingGuard>(
+                        *manager, co, "sleep-timer");
+                const int status = lua_resume(co, nullptr, 0, &nres);
+                if (status == LUA_YIELD) {
+                    // Yielded again (e.g. another sleep/call): the API
+                    // that yielded has already anchored the coroutine for
+                    // its own resume source, so release this sleep anchor.
+                    luaL_unref(co, LUA_REGISTRYINDEX, ref);
+                    return;
                 }
-                manager->on_handler_completed(co, returns);
+                // Terminal (LUA_OK or error): drop the live-coroutine entry.
+                manager->note_coroutine_finished(co);
+                // If this coroutine was servicing a call request that
+                // yielded (e.g. the callee slept), route the response now
+                // that it has completed. No-op for plain handlers.
+                if (status == LUA_OK) {
+                    nlohmann::json returns = nlohmann::json::array();
+                    for (int i = 0; i < nres; ++i) {
+                        sol::stack_object so(sol::state_view(co), i + 1);
+                        returns.push_back(lua_to_json(so));
+                    }
+                    manager->on_handler_completed(co, returns);
+                }
+                // Terminal segment (LUA_OK or error): honor a shield.exit
+                // the continuation requested. During spawn-init the spawn
+                // path owns the request instead.
+                if (!service_id.empty() &&
+                    !LuaServiceManager::spawn_init_in_progress()) {
+                    manager->finish_pending_exit(service_id);
+                }
+                // LUA_OK (completed) or an error: release the anchor.
+                luaL_unref(co, LUA_REGISTRYINDEX, ref);
+            };
+            if (!service_id.empty()) {
+                (void)manager->schedule_actor_timer_once_fn(
+                    delay_ms, std::move(resume_fn), service_id);
             }
-            // Terminal segment (LUA_OK or error): honor a shield.exit
-            // the continuation requested. During spawn-init the spawn
-            // path owns the request instead.
-            if (!service_id.empty() &&
-                !LuaServiceManager::spawn_init_in_progress()) {
-                manager->finish_pending_exit(service_id);
-            }
-            // LUA_OK (completed) or an error: release the anchor.
-            luaL_unref(co, LUA_REGISTRYINDEX, ref);
-        };
-        if (!service_id.empty()) {
-            (void)manager->schedule_actor_timer_once_fn(
-                delay_ms, std::move(resume_fn), service_id);
-        }
-    });
+        });
 
     // Blocking sleep used when shield.sleep is invoked outside any coroutine
     // (e.g. from module-level code). The coroutine-aware branch below handles

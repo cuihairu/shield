@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -63,6 +64,24 @@ int shield_lua_panic(lua_State* L) {
     } else {
         detail = std::string("non-string error object (type=") +
                  lua_typename(L, lua_type(L, -1)) + ")";
+    }
+    // Forensics for CI-only panics: which thread held which VM and what was
+    // on its stack when the unprotected error crossed the C boundary.
+    {
+        std::string dump =
+            std::string(sol::main_thread(L) == L ? "main" : "coroutine") +
+            " depth=" + std::to_string(lua_gettop(L)) + " [";
+        for (int i = 1; i <= lua_gettop(L) && i <= 16; ++i) {
+            if (i > 1) dump += ", ";
+            dump +=
+                "#" + std::to_string(i) + ":" + lua_typename(L, lua_type(L, i));
+        }
+        dump += "]";
+        std::fprintf(stderr, "*** shield lua panic ctx: tid=%zu state=%s\n",
+                     static_cast<size_t>(std::hash<std::thread::id>{}(
+                         std::this_thread::get_id())),
+                     dump.c_str());
+        std::fflush(stderr);
     }
     luaL_traceback(L, L, detail.c_str(), 0);
     const char* tb = lua_tostring(L, -1);
@@ -861,6 +880,24 @@ bool LuaRuntime::load_service_module(std::shared_ptr<LuaVM> vm,
     // GCOVR_EXCL_STOP
 }
 
+namespace {
+
+// Stringify a non-string (false, nil) hook-failure message slot. Runs on the
+// bare stack with no active pcall, so this must never raise: unsupported
+// values degrade to "<unsupported>" through lua_to_json's own fallback.
+void describe_hook_message(std::string_view func_name, const sol::object& obj,
+                           std::string* out) {
+    if (out == nullptr) {
+        return;
+    }
+    nlohmann::json encoded;
+    lua_to_json(obj, &encoded);
+    *out = std::string(func_name) + " failed with non-string message: " +
+           (encoded.is_string() ? encoded.get<std::string>() : encoded.dump());
+}
+
+}  // namespace
+
 bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
                                        std::string_view func_name,
                                        const nlohmann::json& args,
@@ -897,21 +934,42 @@ bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
         }
 
         sol::object first = result.get<sol::object>(0);
+        // The message slot is host-read on the bare stack (no active pcall):
+        // a bare as<std::string> on a non-string raises an unprotected
+        // luaL_error that long-jumps past the catch below into at_panic, so
+        // the type is checked first and anything else is stringified through
+        // the shared Lua->JSON conversion.
         if (first.is<bool>() && !first.as<bool>()) {
             sol::object second = result.get<sol::object>(1);
             if (error) {
-                *error = second.valid() && second != sol::nil
-                             ? second.as<std::string>()
-                             : std::string(func_name) + " returned false";
+                if (second.valid() && second != sol::nil) {
+                    if (second.is<std::string>()) {
+                        *error = second.as<std::string>();
+                    } else {
+                        std::string described;
+                        describe_hook_message(func_name, second, &described);
+                        *error = described;
+                    }
+                } else {
+                    *error = std::string(func_name) + " returned false";
+                }
             }
             return false;
         }
         if (first == sol::nil && result.return_count() > 1) {
             sol::object second = result.get<sol::object>(1);
             if (error) {
-                *error = second.valid() && second != sol::nil
-                             ? second.as<std::string>()
-                             : std::string(func_name) + " returned nil";
+                if (second.valid() && second != sol::nil) {
+                    if (second.is<std::string>()) {
+                        *error = second.as<std::string>();
+                    } else {
+                        std::string described;
+                        describe_hook_message(func_name, second, &described);
+                        *error = described;
+                    }
+                } else {
+                    *error = std::string(func_name) + " returned nil";
+                }
             }
             return false;
         }
@@ -1216,8 +1274,8 @@ bool LuaRuntime::invoke_coroutine(
         // (see LuaServiceManager::resume_caller).
         std::unique_ptr<LuaServiceManager::DrivingGuard> driving;
         if (manager != nullptr) {
-            driving =
-                std::make_unique<LuaServiceManager::DrivingGuard>(*manager, co);
+            driving = std::make_unique<LuaServiceManager::DrivingGuard>(
+                *manager, co, "init-drive");
         }
         const int status = lua_resume(co, L, 0, &nres);
         if (status == LUA_OK) {
@@ -1489,8 +1547,8 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
         int nres = 0;
         std::unique_ptr<LuaServiceManager::DrivingGuard> driving;
         if (manager != nullptr) {
-            driving =
-                std::make_unique<LuaServiceManager::DrivingGuard>(*manager, co);
+            driving = std::make_unique<LuaServiceManager::DrivingGuard>(
+                *manager, co, "client-rpc");
         }
         const int status = lua_resume(co, L, 0, &nres);
         if (status == LUA_OK || status == LUA_YIELD) {

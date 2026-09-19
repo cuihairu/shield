@@ -554,6 +554,14 @@ struct LuaServiceManager::Impl {
         // driving thread; the cap bounds the loop for a caller that never
         // yields — it matches the historical handshake wait's drop).
         int requeues = 0;
+        // Rejected-resume requeue counter (resume_suspended_caller's
+        // concurrent-completion guard). Deliberately independent of
+        // requeues: the driving-phase spin can legitimately burn its whole
+        // cap inside one init-drive span (the span contains CAF scheduler
+        // operations that are millisecond-scale under load, while one
+        // mailbox self-loop is microsecond-scale), and the guard must stay
+        // armed when that spin trips its cap and falls through.
+        int resume_retries = 0;
     };
     std::atomic<uint64_t> next_call_session{1};
     std::unordered_map<uint64_t, PendingCall>
@@ -4405,8 +4413,10 @@ void LuaServiceManager::note_coroutine_resumed(lua_State* co,
 }
 
 LuaServiceManager::DrivingGuard::DrivingGuard(LuaServiceManager& mgr,
-                                              lua_State* c)
+                                              lua_State* c,
+                                              std::string_view src)
     : manager(mgr), co(c) {
+    (void)src;  // diagnostic hook: source tag available for forensics
     std::unique_lock lock(manager.impl_->registry_mutex);
     manager.impl_->driving_cos.insert(co);
 }
@@ -4475,6 +4485,24 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
                 it->second.requeues < 20) {
                 requeue = true;
                 ++it->second.requeues;
+                // DIAGNOSTIC: one or two spins are the normal yield-window
+                // race (init-drive spans hold the registration while CAF
+                // scheduler calls complete). A longer spin means a driver
+                // holding the registration across many mailbox cycles —
+                // worth surfacing, and if the cap trips the fall-through
+                // resume is caught by resume_suspended_caller's guard.
+                if (it->second.requeues >= 3) {
+                    std::fprintf(
+                        stderr,
+                        "*** shield requeue spin: session=%llu n=%d "
+                        "tid=%zu ok=%d\n",
+                        static_cast<unsigned long long>(session),
+                        it->second.requeues,
+                        static_cast<size_t>(std::hash<std::thread::id>{}(
+                            std::this_thread::get_id())),
+                        ok ? 1 : 0);
+                    std::fflush(stderr);
+                }
                 // Slide the timeout deadline so a concurrently expiring
                 // check_call_timeouts pass does not re-enqueue this
                 // response every tick while the driver is still registered.
@@ -4516,13 +4544,14 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
     // calling resume_caller, so this is a no-op for the timeout branch.
     cancel_actor_call_timeout(session);
 
-    resume_suspended_caller(pc.caller_anchor, pc.caller_service, caller_co, ok,
-                            values, source);
+    resume_suspended_caller(session, pc.caller_anchor, pc.caller_service,
+                            caller_co, ok, values, pc.resume_retries, source);
 }
 
 void LuaServiceManager::resume_suspended_caller(
-    int caller_anchor, const std::string& caller_service, lua_State* caller_co,
-    bool ok, const nlohmann::json& values, std::string_view source) {
+    uint64_t session, int caller_anchor, const std::string& caller_service,
+    lua_State* caller_co, bool ok, const nlohmann::json& values,
+    int resume_retries, std::string_view source) {
     // Build the resume payload: (ok, values...). The caller's shield.call
     // wrapper unpacks these via coroutine.yield()'s return values.
     //
@@ -4534,7 +4563,7 @@ void LuaServiceManager::resume_suspended_caller(
     // caller_service and the next completion cannot route back.
     Impl::DispatchScope scope(*impl_, caller_service, "", false);
     // Register the driving phase for the resume span (see driving_cos).
-    DrivingGuard driving(*this, caller_co);
+    DrivingGuard driving(*this, caller_co, source);
     // Resume bookkeeping for lua.inspect <svc> coroutines: this C++ resume
     // source is the coroutine's most recent driver.
     note_coroutine_resumed(caller_co, source);
@@ -4573,6 +4602,79 @@ void LuaServiceManager::resume_suspended_caller(
         std::string err = "call continuation error";
         if (lua_type(caller_co, -1) == LUA_TSTRING) {
             err = lua_tostring(caller_co, -1);
+        }
+        // Concurrent-completion guard: lua_resume rejects with this exact
+        // message when the coroutine is mid-frame on another thread (the
+        // kernel reports LUA_OK + a live call frame — "dead" is the
+        // different message for terminal states). The winner of the race is
+        // driving the continuation right now, so this completion is not an
+        // error: put the pending entry back and re-enqueue it through the
+        // caller actor's mailbox (the driving-phase requeue path resumes it
+        // as soon as the winner's segment yields). The retry budget is this
+        // guard's own: the driving-phase spin cap can trip legitimately
+        // inside one init-drive span (millisecond-scale CAF operations under
+        // load), and the fall-through resume that follows it is exactly the
+        // case this guard exists for. Anchor and coroutine stay untouched
+        // (the coroutine may still be alive).
+        // Diagnostics (read on this thread, right after its own resume):
+        // kernel thread status, stack top and the error-object type — these
+        // pin down which interleaving produced a rejected resume.
+        std::fprintf(
+            stderr,
+            "*** resume_diag: FAIL co=%p tid=%zu status=%d lstat=%d top=%d "
+            "errtype=%s retries=%d src=%.*s\n",
+            (void*)caller_co,
+            static_cast<size_t>(
+                std::hash<std::thread::id>{}(std::this_thread::get_id())),
+            status, lua_status(caller_co), lua_gettop(caller_co),
+            lua_typename(caller_co, lua_type(caller_co, -1)), resume_retries,
+            static_cast<int>(source.size()), source.data());
+        std::fflush(stderr);
+        if (err == "cannot resume non-suspended coroutine" &&
+            resume_retries < 3) {
+            // GCOVR_EXCL_START (race window: two completions must interleave
+            // inside one resume span — a microsecond-scale interleaving no
+            // unit test can pin)
+            std::fprintf(stderr,
+                         "*** shield resume requeue: co=%p session=%llu "
+                         "retries=%d src=%.*s\n",
+                         (void*)caller_co,
+                         static_cast<unsigned long long>(session),
+                         resume_retries + 1, static_cast<int>(source.size()),
+                         source.data());
+            std::fflush(stderr);
+            {
+                std::unique_lock lock(impl_->registry_mutex);
+                // Drop the kernel's error object from the coroutine stack so
+                // the re-enqueued resume carries only its own payload.
+                lua_settop(caller_co, 0);
+                Impl::PendingCall restored;
+                restored.session = session;
+                restored.caller_co = caller_co;
+                restored.caller_anchor = caller_anchor;
+                restored.caller_service = caller_service;
+                restored.deadline_ms =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count() +
+                    50;
+                restored.requeues = 0;
+                restored.resume_retries = resume_retries + 1;
+                impl_->pending_calls.insert_or_assign(session,
+                                                      std::move(restored));
+            }
+            if (auto actor_it = impl_->service_actors.find(caller_service);
+                actor_it != impl_->service_actors.end()) {
+                CallResponseMessage reenqueued{session, ok, values};
+                caf::anon_send(actor_it->second, std::move(reenqueued));
+            } else {
+                // Caller actor is gone; the coroutine dies with its VM and
+                // the anchor with it — nothing can resume it.
+                std::unique_lock lock(impl_->registry_mutex);
+                impl_->pending_calls.erase(session);
+            }
+            return;
+            // GCOVR_EXCL_STOP
         }
         // Caller errored resuming; drop it after propagating to its upstream
         // caller if this handler was itself servicing a call.

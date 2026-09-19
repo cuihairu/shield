@@ -354,7 +354,8 @@ public:
     struct DrivingGuard {
         LuaServiceManager& manager;
         lua_State* co;
-        DrivingGuard(LuaServiceManager& mgr, lua_State* c);
+        DrivingGuard(LuaServiceManager& mgr, lua_State* c,
+                     std::string_view src);
         ~DrivingGuard();
         DrivingGuard(const DrivingGuard&) = delete;
         DrivingGuard& operator=(const DrivingGuard&) = delete;
@@ -590,12 +591,17 @@ private:
     // of a registered driver (resume_caller's driving-phase guard passed).
     // The anchor and caller_service fields ride along because the pending
     // entry has already been taken out of the registry; `source` feeds the
-    // coroutine resume bookkeeping.
-    void resume_suspended_caller(int caller_anchor,
+    // coroutine resume bookkeeping. `session`/`resume_retries` support the
+    // concurrent-completion requeue: a resume rejected with "cannot resume
+    // non-suspended coroutine" means another thread is driving the same
+    // coroutine right now, so the completion is put back into pending_calls
+    // and re-enqueued (bounded by its own retry budget, independent of the
+    // driving-phase spin cap) instead of failing the handler.
+    void resume_suspended_caller(uint64_t session, int caller_anchor,
                                  const std::string& caller_service,
                                  lua_State* caller_co, bool ok,
                                  const nlohmann::json& values,
-                                 std::string_view source);
+                                 int resume_retries, std::string_view source);
 };
 
 }  // namespace shield::lua
