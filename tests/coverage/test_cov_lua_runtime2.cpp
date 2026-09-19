@@ -596,7 +596,7 @@ return M
 
     // Non-string second return: the message slot is type-checked and the
     // value is described inline instead of raising an unprotected
-    // luaL_error on the bare stack (which would land in at_panic).
+    // luaL_error on the bare stack (which would now abort via at_panic).
     BOOST_CHECK(!runtime.call_service_function(vm, "deny_table",
                                                nlohmann::json(), &error));
     BOOST_CHECK(error.find("deny") != std::string::npos &&
@@ -668,7 +668,7 @@ return M
 // call_service_function failure shapes that leave the message slot empty or
 // non-string on the bare stack: (false), (nil, table) and (nil, nil). Each
 // must produce a described error string instead of raising through
-// sol::as<std::string> (which would land in at_panic).
+// sol::as<std::string> (which would now abort via at_panic).
 BOOST_AUTO_TEST_CASE(CallServiceFunctionEmptyMessageShapes) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
@@ -712,55 +712,9 @@ return M
     BOOST_CHECK_EQUAL(error, "nil_nil returned nil");
 }
 
-// The at_panic handler must surface the real error object through the
-// sol::error it throws (unsafe call sites recover via catch(const
-// sol::error&)), for both string and non-string error objects. The call
-// goes through lua_call (a truly unprotected call); sol::function's
-// operator() is protected and would swallow the error instead.
-//
-// POSIX only: the throw crosses the C Lua frames (luaD_throw is longjmp in
-// a C build), and MSVC's unwinder cannot reliably pass a C++ exception
-// through those frames — the catch below is entered on gcc/clang but the
-// error escapes as an uncaught fatal on windows-latest. See the todo note
-// on the panic-handler throw design being platform-limited.
-#ifndef _WIN32
-BOOST_AUTO_TEST_CASE(PanicHandlerSurfacesErrorObject) {
-    LuaRuntime runtime;
-    auto vm = runtime.create_vm();
-    sol::state& lua = runtime.vm_state(vm);
-    lua_State* L = lua.lua_state();
-
-    lua.script("function __cov_boom_str() error('boom-string-msg') end");
-    bool caught = false;
-    try {
-        lua_getglobal(L, "__cov_boom_str");
-        lua_call(L, 0, 0);
-    } catch (const sol::error& e) {
-        caught = true;
-        BOOST_CHECK(std::string(e.what()).find("boom-string-msg") !=
-                    std::string::npos);
-    }
-    BOOST_CHECK(caught);
-
-    // Non-string error object: the handler must still describe the panic
-    // and throw a recoverable sol::error, not exit the process. A table
-    // error object survives the kernel's error path verbatim (error(nil) is
-    // converted to a string by the Lua 5.5 kernel and would not reach the
-    // non-string arm). The throw unwinds through the C Lua frames, which
-    // re-enters the panic path once — assert recoverability rather than an
-    // exact message.
-    lua.script("function __cov_boom_tbl() error({code = 1}) end");
-    caught = false;
-    try {
-        lua_getglobal(L, "__cov_boom_tbl");
-        lua_call(L, 0, 0);
-    } catch (const sol::error& e) {
-        caught = true;
-        BOOST_CHECK(!std::string(e.what()).empty());
-    }
-    BOOST_CHECK(caught);
-}
-#endif  // !_WIN32
+// The old PanicHandlerSurfacesErrorObject case (throw+catch recovery
+// semantics, #ifndef _WIN32) is gone: the panic handler now logs forensics
+// and aborts instead of throwing — see tests/coverage/test_cov_lua_panic.cpp.
 
 // ---------------------------------------------------------------------------
 // Round-5 additions.

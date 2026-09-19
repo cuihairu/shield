@@ -3972,8 +3972,16 @@ static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
                             ctx->gateway_address.size());
             lua_pushlstring(L, ctx->protocol_profile_id.data(),
                             ctx->protocol_profile_id.size());
-            lua_call(L, 5, 1);
-            return;
+            // Protected: this fires on the shield.call continuation resume
+            // path (resume_suspended_caller), which has no recovery point
+            // above it — since the panic handler aborts, a failing
+            // materializer (or a VM without the registration) must degrade
+            // to the plain-table branch below instead (mirrors json_to_lua's
+            // fallback in lua_api.cpp).
+            if (lua_pcall(L, 5, 1, 0) == LUA_OK) {
+                return;
+            }
+            lua_pop(L, 1);  // drop the error object; fall through
         }
         lua_createtable(L, 0, static_cast<int>(v.size()));
         for (auto it = v.begin(); it != v.end(); ++it) {

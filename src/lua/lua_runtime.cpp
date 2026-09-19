@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "lua_panic.hpp"
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/lua/client_identity.hpp"
@@ -45,18 +47,30 @@ sol::function anchor_to_main_thread(sol::function fn) {
     }
     return sol::function(main_state, sol::ref_index(fn.registry_index()));
 }
+}  // namespace
 
-// Diagnostic panic handler: the default sol at_panic throws with only the
+// Diagnostic panic handler. The default sol at_panic throws with only the
 // generic "An unexpected error occurred" message, which hides the real Lua
-// error (and whether it was a non-string error object) from host logs. Dump
-// the error object plus a traceback to stderr so CI logs can answer "what
-// panicked, where", then mirror the default throw behaviour (a plain return
-// would make Lua exit the process). The exception MUST stay a sol::error:
-// unsafe call sites (e.g. the HTTP handler dispatch) recover from an
-// escaping Lua error through catch(const sol::error&) and surface what()
-// as the lua_error field — a different exception type would fall into the
-// generic std::exception arm and downgrade the failure shape.
-int shield_lua_panic(lua_State* L) {
+// error (and whether it was a non-string error object) from host logs.
+//
+// Semantics: forensics, then abort. Every production call path into Lua is
+// protected (pcall / lua_resume / explicitly protected_function), so an
+// error reaching at_panic is by construction a C++-side misuse of an
+// unprotected call or a kernel-level failure — there is no recovering the
+// VM. The handler therefore must not throw: a C++ exception cannot
+// reliably unwind through the C Lua frames (luaD_throw is longjmp in a C
+// build; MSVC loses it — see the c8352e9 Windows CI data point), and the
+// Lua 5.5 kernel abort()s right after a returning handler anyway (ldo.c
+// luaD_throw). Aborting explicitly keeps the message ours and the
+// semantics identical on every platform.
+//
+// Note on state: Lua 5.5 resets the panicking thread before the handler
+// runs (luaD_throw -> luaE_resetthread). The error object survives at the
+// bottom of the reset stack (reachable at index -1, top == 1) but the
+// frame chain is gone, so the traceback prints no Lua frames on 5.5; it is
+// kept because it is free and future-proof.
+std::string write_lua_panic_forensics(lua_State* L, std::FILE* sink) {
+    const int entry_top = lua_gettop(L);
     std::string detail;
     if (lua_type(L, -1) == LUA_TSTRING) {
         const char* msg = lua_tostring(L, -1);
@@ -77,21 +91,35 @@ int shield_lua_panic(lua_State* L) {
                 "#" + std::to_string(i) + ":" + lua_typename(L, lua_type(L, i));
         }
         dump += "]";
-        std::fprintf(stderr, "*** shield lua panic ctx: tid=%zu state=%s\n",
+        std::fprintf(sink, "*** shield lua panic ctx: tid=%zu state=%s\n",
                      static_cast<size_t>(std::hash<std::thread::id>{}(
                          std::this_thread::get_id())),
                      dump.c_str());
-        std::fflush(stderr);
+        std::fflush(sink);
     }
     luaL_traceback(L, L, detail.c_str(), 0);
     const char* tb = lua_tostring(L, -1);
     // Ternary into a local: inline in the fprintf call it is a gcov
     // aggregation artifact (the continuation line never gets credited).
     const char* tb_msg = tb != nullptr ? tb : detail.c_str();
-    std::fprintf(stderr, "*** shield lua panic: %s\n", tb_msg);
-    std::fflush(stderr);
-    throw sol::error("lua: error: " + detail);
+    std::fprintf(sink, "*** shield lua panic: %s\n", tb_msg);
+    std::fflush(sink);
+    lua_settop(L, entry_top);  // tests drive this on live states
+    return detail;
+}  // GCOVR_EXCL_LINE (function-exit arc artifact: the aborting caller in
+// shield_lua_panic never returns, so the exit arc starves; the body above
+// is covered in-process by the forensics tests)
+
+namespace {
+// GCOVR_EXCL_START (abort path: this body only ever executes inside the
+// death-test child, which dies by SIGABRT before gcov flushes its
+// counters; the formatting itself is covered in-process through
+// write_lua_panic_forensics)
+int shield_lua_panic(lua_State* L) {
+    write_lua_panic_forensics(L, stderr);
+    std::abort();
 }
+// GCOVR_EXCL_STOP
 
 void install_panic_handler(const std::shared_ptr<sol::state>& state) {
     lua_atpanic(state->lua_state(), shield_lua_panic);
@@ -513,12 +541,15 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
         }
         t["headers"] = headers_t;
 
-        // Invoke the handler through a checked protected result: with
-        // SOL_SAFE_FUNCTION_OBJECTS enabled (the default for debug builds
-        // without NDEBUG), converting an errored result straight to
-        // sol::object triggers a sol panic and replaces the handler's
-        // error text.
-        auto handler_result = (*route.handler)(t);
+        // Invoke the handler through an explicitly protected call: with
+        // NDEBUG (release), SOL_SAFE_FUNCTION_OBJECTS is off and
+        // sol::function::operator() is a bare lua_call — a handler error
+        // would reach the panic handler (which aborts) instead of the
+        // lua_error field below. The checked read of the result also keeps
+        // SOL_SAFE_FUNCTION_OBJECTS from replacing the handler's error text
+        // with a sol panic message when an errored result is converted.
+        sol::protected_function handler_pf = *route.handler;
+        auto handler_result = handler_pf(t);
         if (!handler_result.valid()) {
             const sol::error err = handler_result;
             out_desc = nlohmann::json::object();
@@ -579,12 +610,12 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
             out_desc["body"] = "";
         }
         return true;
-    } catch (const sol::error& e) {  // GCOVR_EXCL_START (defensive: every
-        out_desc = nlohmann::json::object();  // throwing call above is guarded
-        out_desc["lua_error"] =     // by an is<> check, and Lua-level handler
-            std::string(e.what());  // errors arrive via the checked result)
-        return true;
-    } catch (const std::exception& e) {  // GCOVR_EXCL_STOP
+    } catch (const std::exception& e) {
+        // No sol::error arm: the handler runs through an explicitly
+        // protected call (errors arrive via the checked result above), and
+        // every throwing conversion in this block is guarded by an is<>
+        // check. This catch remains for allocation failures and similar
+        // C++-side exceptions.
         if (error) {
             *error = std::string(e.what());
         }
@@ -1770,12 +1801,26 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
                 result->push_back(obj.as<std::string>());
             } else {
                 // For tables, functions, etc. - convert to string via Lua
-                // tostring
+                // tostring. The call must stay protected: __tostring
+                // metamethods (and the tostring global itself) are
+                // user-controllable in the eval VMs, and since the panic
+                // handler aborts, an unprotected lua_call here would kill
+                // the process instead of degrading this one result slot.
+                // (luaL_tolstring is not an alternative: it raises
+                // unprotected through luaL_callmeta/luaL_error.)
                 lua_getglobal(L, "tostring");
                 lua_pushvalue(L, i);
-                lua_call(L, 1, 1);
-                const char* s = lua_tostring(L, -1);
-                result->push_back(s ? std::string(s) : "");
+                if (lua_pcall(L, 1, 1, 0) == LUA_OK) {
+                    const char* s = lua_tostring(L, -1);
+                    result->push_back(s ? std::string(s) : "");
+                } else {
+                    // Degrade: carry the failure in the slot instead of
+                    // failing the whole exec (the chunk already succeeded).
+                    const char* emsg = lua_tostring(L, -1);
+                    result->push_back(
+                        std::string("<tostring error: ") +
+                        (emsg != nullptr ? emsg : "non-string error") + ">");
+                }
                 lua_pop(L, 1);
             }
         }

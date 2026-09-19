@@ -66,14 +66,23 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       （"non-string error object (type=nil)"）——bind 失败的错误传播
       链上存在 error(nil) 调用且无 pcall 保护，可能与拆除路径的悬垂
       叠加；排查时先找 error(nil) 的调用点。
-      补充（c8352e9 的 Windows CI 数据点）：`shield_lua_panic` 从
-      at_panic throw sol::error 的设计在 MSVC 上不可靠——C Lua 的
-      luaD_throw 走 longjmp，C++ 异常穿越无 unwind info 的 C 帧后
-      catch(sol::error&) 接不住（gcc/clang 可以）。PanicHandler 测试
-      已 `#ifndef _WIN32` 禁用；所有依赖「panic throw 被上层
-      catch 恢复」的路径在 Windows 上均应视为可疑，与上述段错误
-      可能同根。长期方向：panic handler 改为不 throw（记录后
-      longjmp/abort 语义化）或 Windows 构建改 C++ 编译 Lua
+      注意（panic 改造后口径更新）：panic handler 已改为 forensics +
+      abort、不再 throw（本文件原 c8352e9 数据点记录的「MSVC 下
+      panic throw 穿 C 帧 catch 不住」问题随之消除；三个裸 lua_call
+      调用点已全部保护化，生产代码不再有可达 at_panic 的路径）。
+      上述 bind 清理路径若真有 error(nil) 裸调用，现在会以 abort
+      形式确定性暴露——排查时 forensics 输出（`*** shield lua panic`
+      前缀）仍是第一线索。
+- [ ] shield.sleep 续延（lua_api.cpp `_resume_after` resume_fn）的终态
+      错误分支与其它 resume 路径不对称：缺 `lua_settop(co,0)` 清理
+      （错误对象滞留协程栈至 GC）、不走 error hook/on_handler_failed。
+      补齐是行为变更（on_handler_failed 开始对 sleep 路径触发，含
+      错误阈值 panic 计数），需独立设计 error_type/method_label 取值
+      并补 service handler sleep 后 error 的集成用例
+- [ ] `load_script`（lua_runtime.cpp）仍用 sol 的 `script_file` throw 式
+      API（纯 C++ 帧，MSVC 无碍）。src/ 内无调用者、公共 API 面；
+      可仿 `load_service_module` 的 load_result + protected_function
+      惯用法消除，属清理性质
 - [ ] xmldef 工具链/文档适配：xmldef descriptor 的 `schema_id` 是其
       descriptor 系统内部概念，与 codec ABI 无关；xmldef 实施时 catalog
       导出的路由需适配收敛后的 ABI（只产出 `schema_name`）

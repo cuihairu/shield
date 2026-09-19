@@ -30,6 +30,7 @@
 
 #include "shield/caf_initializer.hpp"
 #include "shield/config/config.hpp"
+#include "shield/core/service_message.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/plugin/plugin_host.hpp"
@@ -1138,6 +1139,40 @@ BOOST_AUTO_TEST_CASE(SuspendResumePrimitives) {
     nlohmann::json mixed = nlohmann::json::array(
         {1u, 2.5, nullptr, nlohmann::json({{"k", 1}}), nlohmann::json({1, 2})});
     manager.resume_caller(s_mixed, true, mixed);
+
+    // A trusted client-identity marker in the resume payload reaches
+    // push_json_to_stack's __shield_make_client_context call (now
+    // protected). With no helper registered on this bare state it degrades
+    // to a plain table instead of reaching the aborting panic handler.
+    const nlohmann::json marker =
+        ClientContextData{"cov_gw", 4242, 1, "player-42", "json"}.to_json();
+    lua_State* co_plain = make_coro(lua, "cov_ok, cov_plain = ... return 0");
+    uint64_t s_plain = manager.suspend_for_call(co_plain, 10000);
+    manager.resume_caller(s_plain, true, nlohmann::json::array({marker}));
+    sol::table plain_tbl = lua["cov_plain"];
+    BOOST_CHECK(plain_tbl.valid());
+    BOOST_CHECK(plain_tbl["__shield_client_ref"].valid());
+
+    // With a helper registered the marker materializes through the
+    // protected call.
+    lua.script(
+        "function __shield_make_client_context(sid, epoch, pid, gw, prof) "
+        "return {sid = sid, pid = pid} end");
+    lua_State* co_ctx = make_coro(lua, "cov_ok, cov_ctx = ... return 0");
+    uint64_t s_ctx = manager.suspend_for_call(co_ctx, 10000);
+    manager.resume_caller(s_ctx, true, nlohmann::json::array({marker}));
+    sol::table ctx_tbl = lua["cov_ctx"];
+    BOOST_CHECK(ctx_tbl.valid());
+    BOOST_CHECK_EQUAL(ctx_tbl["sid"].get_or(0), 4242);
+
+    // A raising helper degrades the slot to the plain table as well.
+    lua.script("function __shield_make_client_context() error('ctx-boom') end");
+    lua_State* co_boom = make_coro(lua, "cov_ok, cov_boom = ... return 0");
+    uint64_t s_boom = manager.suspend_for_call(co_boom, 10000);
+    manager.resume_caller(s_boom, true, nlohmann::json::array({marker}));
+    sol::table boom_tbl = lua["cov_boom"];
+    BOOST_CHECK(boom_tbl.valid());
+    BOOST_CHECK(boom_tbl["__shield_client_ref"].valid());
 
     // Non-array, non-null payload (a bare string).
     lua_State* co_str = make_coro(lua, "return ...");

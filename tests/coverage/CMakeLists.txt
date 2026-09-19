@@ -106,6 +106,10 @@ shield_coverage_test(test_cov_lua_runtime3 shield_lua shield_core CAF::core CAF:
 shield_coverage_test(test_cov_lua_service2 shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_http_bridge2 shield_lua shield_core shield_net CAF::core CAF::io)
 
+# Panic forensics + abort semantics (the death test is #ifndef _WIN32 inside
+# the file, so the suite itself builds everywhere).
+shield_coverage_test(test_cov_lua_panic shield_lua shield_core CAF::core CAF::io)
+
 # Cluster data plane (M4): only exists in cluster builds, same gating as the
 # integration suites in tests/cluster.
 if(SHIELD_ENABLE_CLUSTER)
