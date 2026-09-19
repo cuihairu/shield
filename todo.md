@@ -65,7 +65,15 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       `[C]: in global 'error'` 携带 nil 错误对象触发裸 panic
       （"non-string error object (type=nil)"）——bind 失败的错误传播
       链上存在 error(nil) 调用且无 pcall 保护，可能与拆除路径的悬垂
-      叠加；排查时先找 error(nil) 的调用点
+      叠加；排查时先找 error(nil) 的调用点。
+      补充（c8352e9 的 Windows CI 数据点）：`shield_lua_panic` 从
+      at_panic throw sol::error 的设计在 MSVC 上不可靠——C Lua 的
+      luaD_throw 走 longjmp，C++ 异常穿越无 unwind info 的 C 帧后
+      catch(sol::error&) 接不住（gcc/clang 可以）。PanicHandler 测试
+      已 `#ifndef _WIN32` 禁用；所有依赖「panic throw 被上层
+      catch 恢复」的路径在 Windows 上均应视为可疑，与上述段错误
+      可能同根。长期方向：panic handler 改为不 throw（记录后
+      longjmp/abort 语义化）或 Windows 构建改 C++ 编译 Lua
 - [ ] xmldef 工具链/文档适配：xmldef descriptor 的 `schema_id` 是其
       descriptor 系统内部概念，与 codec ABI 无关；xmldef 实施时 catalog
       导出的路由需适配收敛后的 ABI（只产出 `schema_name`）
