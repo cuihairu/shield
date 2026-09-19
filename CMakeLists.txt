@@ -79,9 +79,6 @@ endif()
 if(SHIELD_BUILD_PLUGIN_MSGPACK)
   list(APPEND _shield_db_features "protocol-msgpack")
 endif()
-if(SHIELD_BUILD_PLUGIN_SPROTO)
-  list(APPEND _shield_db_features "protocol-sproto")
-endif()
 if(SHIELD_BUILD_PLUGIN_FLATBUFFERS)
   list(APPEND _shield_db_features "protocol-flatbuffers")
 endif()
@@ -132,7 +129,6 @@ option(SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS "Build the Redis ZSET leaderboard p
 option(SHIELD_BUILD_PLUGIN_REDIS_DRIVER "Build the unified Redis driver plugin (shield.redis.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_PROTOBUF "Build the Protobuf protocol codec plugin (shield.protocol.codec.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_MSGPACK "Build the MessagePack protocol codec plugin (shield.protocol.codec.v1)" OFF)
-option(SHIELD_BUILD_PLUGIN_SPROTO "Build the Sproto protocol codec plugin (shield.protocol.codec.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_FLATBUFFERS "Build the FlatBuffers protocol codec plugin (shield.protocol.codec.v1)" OFF)
 
 # Ensure config directory exists and create a minimal default config if missing.
@@ -904,7 +900,6 @@ if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
    SHIELD_BUILD_PLUGIN_REDIS_DRIVER OR
    SHIELD_BUILD_PLUGIN_PROTOBUF OR
    SHIELD_BUILD_PLUGIN_MSGPACK OR
-   SHIELD_BUILD_PLUGIN_SPROTO OR
    SHIELD_BUILD_PLUGIN_FLATBUFFERS)
     add_subdirectory(plugins)
 endif()
@@ -975,6 +970,5 @@ message(STATUS "  plugin lb.redis:   ${SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS}")
 message(STATUS "  plugin redis.drv:  ${SHIELD_BUILD_PLUGIN_REDIS_DRIVER}")
 message(STATUS "  plugin protobuf:   ${SHIELD_BUILD_PLUGIN_PROTOBUF}")
 message(STATUS "  plugin msgpack:    ${SHIELD_BUILD_PLUGIN_MSGPACK}")
-message(STATUS "  plugin sproto:     ${SHIELD_BUILD_PLUGIN_SPROTO}")
 message(STATUS "  plugin flatbuffers:${SHIELD_BUILD_PLUGIN_FLATBUFFERS}")
 message(STATUS "")

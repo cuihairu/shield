@@ -75,7 +75,8 @@ actors:
 | `requires_auth` | bool | `true` | Gateway 边缘认证校验 |
 | `action` | enum | `decode_local` | `decode_local` / `forward_raw` / `drop` |
 | `lazy_decode` | bool | `true` | 解码时机 |
-| `request_codec` / `request_schema` / `response_schema` | string | 空 | schema 元数据，Phase 1 仅记录 |
+| `request_codec` | string | 空 | per-route codec 覆盖；空 = profile 默认 codec |
+| `request_schema` | string | 空 | 显式 schema 类型名覆盖；空 = 路由 `name` 同名约定。host 在 descriptor 编译期解析为最终类型名，随 `RouteEntry.schema_name` 传给 codec 插件 |
 
 校验分三层，全部失败即启动失败：
 
@@ -161,10 +162,12 @@ inbound:  ClientIngress.body_bytes -> profile codec -> Lua request（或启动
 outbound: Lua response -> ClientEgress.body_bytes
 ```
 
-- descriptor 的 `request_schema`/`response_schema` 在 Phase 1 只作为元数据
-  记录；按 schema 选择 codec 的 provider 机制属于后续 toolchain 方向，
-  插件仍可通过稳定 C ABI 提供 bytes/JSON bridge，但不参与 handler
-  dispatch。
+- schema 寻址在 descriptor 编译期收口：`request_schema` 非空则取之，
+  否则取路由 `name`（同名约定），产物为 `RouteEntry.schema_name`，
+  即传给 codec 插件的 `route_name`。`response_schema` 已移除——
+  req/resp 不同类型名的表达属于 Phase 2（方向不对称 schema），现状
+  由 s2c 独立路由声明覆盖。插件仍可通过稳定 C ABI 提供 bytes/JSON
+  bridge，但不参与 handler dispatch。
 - codec 不能从 body 抽取或猜测 route；body codec 的输入 route 已由
   descriptor 绑定，输出只表示业务 body。
 - 出站 body 形态由 envelope 能力决定（M6 契约）：header-route envelope

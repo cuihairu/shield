@@ -999,7 +999,7 @@ std::unique_ptr<BodyCodec> create_body_codec(std::string_view name) {
         return std::make_unique<JsonBodyCodec>();
     }
     if (name == "msgpack" || name == "protobuf" || name == "fbs" ||
-        name == "flatbuffers" || name == "sproto") {
+        name == "flatbuffers") {
         return std::make_unique<PassthroughBodyCodec>(std::string(name));
     }
     if (name == "xmldef" || name == "xml_def") {

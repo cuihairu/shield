@@ -491,7 +491,7 @@ plugins:
 | `shield.leaderboard.v1` | leaderboard provider。 |
 | `shield.metrics.v1` | metrics exporter。 |
 | `shield.health.v1` | health contributor。 |
-| `shield.protocol.codec.v1` | 网络协议 `BodyCodec` provider，例如 protobuf、sproto、msgpack、xmldef-native。 |
+| `shield.protocol.codec.v1` | 网络协议 `BodyCodec` provider，例如 protobuf、msgpack、xmldef-native。 |
 | `shield.redis.v1` | 共享 Redis 连接池 driver（typed 命令 + pipeline + raw command），供上层 Redis 插件依赖。 |
 | `shield.auth.v1` | JWT 认证 provider（`plugins/auth_jwt` 提供；注意：认证/JWT 不作为官方插件发布口径见 [架构](architecture.md)，该包与接口保留在源码树供自建参考，不进入官方插件清单）。 |
 | `shield.matchmaking.v1` | 匹配 provider（ELO 评分，`plugins/matchmaking_elo` 提供）。 |
@@ -509,7 +509,7 @@ plugins:
 | 原则 | 说明 |
 | --- | --- |
 | 核心最小化 | `shield_transport` 目标只默认内置 `raw/json` 和固定 protocol pipeline。 |
-| 依赖隔离 | protobuf、sproto、flatbuffers、xmldef-native 的 runtime/compiler 依赖留在插件包内。 |
+| 依赖隔离 | protobuf、flatbuffers、xmldef-native 的 runtime/compiler 依赖留在插件包内。 |
 | C ABI 边界 | 插件不继承 host C++ `BodyCodec`，不跨共享库边界传 STL、异常或 C++ 对象。 |
 | 显式启用 | 必须配置 `plugins.instances`、`plugins.bindings` 和 `body.provider`。 |
 | session 固定 | 插件只填充当前 session 绑定 profile 的 `BodyCodec` 槽位，不允许每包切换协议族。 |
@@ -524,9 +524,6 @@ plugins:
       required: true
       config:
         descriptor_set: conf/game.pb
-        messages:
-          - schema_id: 1
-            name: auth.LoginRequest
 
   bindings:
     protocol.protobuf: protocol.protobuf.game
@@ -550,7 +547,6 @@ actors:
         routes:
           - id: 1001
             name: auth.LoginRequest
-            schema_id: 1
             action: decode
 ```
 
@@ -785,7 +781,7 @@ v1 的强约束：
 | 类型系统 | 以 interface name 为主，例如 `shield.database.v1`、`shield.document.v1`。 |
 | 依赖注入 | 通过 manifest `requires` 和实例 `dependencies` 解析。 |
 | Redis 能力 | 通过具体 provider 暴露，不提供公共基础设施插件类型。 |
-| 协议 codec 能力 | 通过 `shield.protocol.codec.v1` provider 暴露；核心不默认加载 protobuf/sproto/xmldef-native。 |
+| 协议 codec 能力 | 通过 `shield.protocol.codec.v1` provider 暴露；核心不默认加载 protobuf/xmldef-native。 |
 | Lua 自治 | 插件必须实现 `register_lua` 钩子。业务 Lua 绑定跟随插件目录，host 端 `src/lua/lua_api.cpp` 不感知具体插件。 |
 | namespace 派生 | Lua namespace 直接来自 manifest `lua.namespace`（或从 `id` 派生）。多实例用 `shield.<ns>(binding)` proxy。 |
 | 文档口径 | 当前文档只描述有效设计，不声明历史完成阶段。 |

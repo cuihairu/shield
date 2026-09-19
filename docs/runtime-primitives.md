@@ -258,8 +258,8 @@ Shield 适合借鉴这种“cosocket 风格”，但不应照搬 `ngx.*` 命名�
 
 说明：
 
-- `protobuf` / `sproto` / `xmldef` / `fbs` 更适合作为协议族或 descriptor/profile 系统的一部分，不是最小 runtime core 必须硬编码进去的一组顶层脚本 API。
-- 但底层纯编解码能力如果需要，仍可通过可选模块方式接入 `shield.codec.protobuf` / `shield.codec.sproto`。
+- `protobuf` / `xmldef` / `fbs` 更适合作为协议族或 descriptor/profile 系统的一部分，不是最小 runtime core 必须硬编码进去的一组顶层脚本 API。
+- 但底层纯编解码能力如果需要，仍可通过可选模块方式接入 `shield.codec.protobuf`。
 
 #### `shield.url`
 

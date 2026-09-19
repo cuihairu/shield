@@ -476,7 +476,7 @@ bool validate_network_protocol(const YAML::Node& protocol,
         if (!validate_protocol_string_enum(
                 body, "codec", path + ".body",
                 {"raw", "json", "msgpack", "protobuf", "fbs", "flatbuffers",
-                 "sproto", "xmldef", "xml_def"},
+                 "xmldef", "xml_def"},
                 error)) {
             return false;
         }

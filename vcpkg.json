@@ -4,10 +4,12 @@
     "builtin-baseline": "a0b1c8d3a477c1cb4813d8e127a56961707ca42b",
     "dependencies": [
         "lua",
-        { "name": "yaml-cpp", "version>=": "0.9.0" },
+        {
+            "name": "yaml-cpp",
+            "version>=": "0.9.0"
+        },
         "nlohmann-json",
         "sol2",
-
         "boost-asio",
         "boost-beast",
         "boost-filesystem",
@@ -16,15 +18,11 @@
         "boost-test",
         "boost-url",
         "boost-dll",
-
         "openssl",
         "redis-plus-plus",
-
         "caf",
         "msgpack",
-
         "curl",
-
         "replxx"
     ],
     "supports": "!uwp",
@@ -71,12 +69,6 @@
             "description": "MessagePack protocol codec plugin dependency",
             "dependencies": [
                 "msgpack"
-            ]
-        },
-        "protocol-sproto": {
-            "description": "Sproto protocol codec plugin dependency",
-            "dependencies": [
-                "sproto"
             ]
         },
         "protocol-flatbuffers": {

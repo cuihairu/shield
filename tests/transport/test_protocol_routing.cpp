@@ -769,7 +769,7 @@ BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsMsgpackProviderResolvingNull) {
 
 BOOST_AUTO_TEST_CASE(BuildProtocolPipelineRejectsProviderCodecMismatch) {
     FakeProtocolCodecState state;
-    state.codec_name = "sproto";
+    state.codec_name = "fbs";
     auto fake_codec = make_fake_protocol_codec(state);
 
     const auto config = R"json(
@@ -1002,18 +1002,15 @@ BOOST_AUTO_TEST_CASE(
     BinarySchemaCodecNamesCannotDecodeLocalWithoutImplementation) {
     auto protobuf = create_body_codec("protobuf");
     auto fbs = create_body_codec("fbs");
-    auto sproto = create_body_codec("sproto");
     auto xmldef = create_body_codec("xmldef");
     auto msgpack = create_body_codec("msgpack");
 
     BOOST_REQUIRE(protobuf != nullptr);
     BOOST_REQUIRE(fbs != nullptr);
-    BOOST_REQUIRE(sproto != nullptr);
     BOOST_REQUIRE(xmldef != nullptr);
     BOOST_REQUIRE(msgpack != nullptr);
     BOOST_CHECK_EQUAL(protobuf->name(), "protobuf");
     BOOST_CHECK_EQUAL(fbs->name(), "fbs");
-    BOOST_CHECK_EQUAL(sproto->name(), "sproto");
     BOOST_CHECK_EQUAL(xmldef->name(), "xmldef");
     BOOST_CHECK_EQUAL(msgpack->name(), "msgpack");
 
@@ -1030,7 +1027,6 @@ BOOST_AUTO_TEST_CASE(
     BOOST_CHECK_THROW(protobuf->decode(packet.ref(), route),
                       std::runtime_error);
     BOOST_CHECK_THROW(fbs->decode(packet.ref(), route), std::runtime_error);
-    BOOST_CHECK_THROW(sproto->decode(packet.ref(), route), std::runtime_error);
     BOOST_CHECK_THROW(msgpack->decode(packet.ref(), route), std::runtime_error);
 }
 

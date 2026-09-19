@@ -5,10 +5,10 @@
 // between payload bytes and canonical JSON business messages.
 #pragma once
 
+#include <stdint.h>
+
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
-
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,9 +51,9 @@ struct shield_protocol_codec_v1 {
 #endif
 
     uint32_t struct_size;
-    const char* codec_name;      // "protobuf" | "sproto" | ...
+    const char* codec_name;  // "protobuf" | "flatbuffers" | ...
     const char* version;
-    void* user_data;             // plugin-owned, may be NULL
+    void* user_data;  // plugin-owned, may be NULL
 
     int (*decode)(const struct shield_protocol_codec_v1* self,
                   const struct shield_protocol_decode_args_v1* args,
@@ -65,13 +65,11 @@ struct shield_protocol_codec_v1 {
                   struct shield_protocol_encode_result_v1* out,
                   struct shield_error_v1* err);
 
-    void (*free_decode_result)(
-        const struct shield_protocol_codec_v1* self,
-        struct shield_protocol_decode_result_v1* result);
+    void (*free_decode_result)(const struct shield_protocol_codec_v1* self,
+                               struct shield_protocol_decode_result_v1* result);
 
-    void (*free_encode_result)(
-        const struct shield_protocol_codec_v1* self,
-        struct shield_protocol_encode_result_v1* result);
+    void (*free_encode_result)(const struct shield_protocol_codec_v1* self,
+                               struct shield_protocol_encode_result_v1* result);
 };
 
 #ifdef __cplusplus

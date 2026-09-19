@@ -94,7 +94,7 @@ Lua 侧约定：`Bound` → `on_client_bound(ctx, client)`，`Disconnected` →
 struct ClientEgress {
   ClientContextData context;      // 携带 session_id + session_epoch
   uint32_t route_id = 0;          // 由 shield.client_rpc.<name> helper 绑定
-  std::vector<uint8_t> body_bytes;  // 按 response_schema 编码的业务数据
+  std::vector<uint8_t> body_bytes;  // 按路由 schema 编码的业务数据
   std::optional<nlohmann::json> message;
 };
 ```
