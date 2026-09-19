@@ -86,9 +86,10 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       全量与 test_cov_lua_http_bridge 零报错；三个用例已摘除
       `#ifndef __APPLE__`（DuplicateListenerPortFails /
       FullStackInitializeAndShutdown / HttpPortBindFailureIsNonFatal），
-      待 CI macOS/Windows job 真平台复核；若 macOS 仍有残余崩溃，按
-      同法继续 ASan 取证（http_bridge 的 0x40/0x9 近空指针家族在
-      Linux ASan 下未复现，暂无证据指向同类，先不动）。
+      CI 三平台真平台复核通过（2026-09-19，57dea31：macOS/Windows/
+      ubuntu job 全绿，三个用例在 macOS 首次真实运行无崩溃）；
+      http_bridge 的 0x40/0x9 近空指针家族在 Linux ASan 下未复现，
+      暂无证据指向同类，先不动。
       线索勘误存档（2026-09-19 重读 ac48657 attempt-1 完整日志）：
       该次 Windows job 实为两个独立失败——smoke 的 nil panic（requeue
       spin cap 触顶 → 旧 throw 式 panic handler 的 sol::error 逃逸
