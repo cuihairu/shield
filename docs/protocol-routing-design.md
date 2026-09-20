@@ -75,7 +75,7 @@ actors:
 | `requires_auth` | bool | `true` | Gateway 边缘认证校验 |
 | `action` | enum | `decode_local` | `decode_local` / `forward_raw` / `drop` |
 | `lazy_decode` | bool | `true` | 解码时机 |
-| `request_codec` | string | 空 | per-route codec 覆盖；空 = profile 默认 codec |
+| `request_codec` | string | 空 | 客户端 RPC 解码提示，**不是 codec 选择**：无 codec 插件产出 `decoded_request` 时，空或 `json` = 目标 VM 对 body_bytes 尝试 JSON 解码（失败回退原始字节字符串）；其他值 = 原样传原始字节字符串。管线 codec 绑定始终 profile 级单一，与本字段无关 |
 | `request_schema` | string | 空 | 显式 schema 类型名覆盖；空 = 路由 `name` 同名约定。host 在 descriptor 编译期解析为最终类型名，随 `RouteEntry.schema_name` 传给 codec 插件 |
 
 校验分三层，全部失败即启动失败：

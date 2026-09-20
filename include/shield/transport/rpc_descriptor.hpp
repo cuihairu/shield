@@ -27,7 +27,11 @@ struct RpcDescriptor {
     bool requires_auth = true;
     std::string binding;
     std::string owner_service;
-    std::string request_codec;  // empty = profile default codec
+    /// Client-RPC decode hint, not a codec selection: when no codec plugin
+    /// produced decoded_request, empty or "json" lets the target VM try a
+    /// JSON parse of body_bytes (falling back to a raw-byte string); any
+    /// other value always delivers the raw bytes as a string.
+    std::string request_codec;
     /// Explicit schema type name override; empty = same-name convention
     /// (the route `name` is the schema type). Resolved by the host at
     /// descriptor compile time into RouteEntry.schema_name.

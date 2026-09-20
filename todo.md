@@ -53,8 +53,18 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       已覆盖主要场景，非急迫
 - [ ] 无 schema codec（json/msgpack）的可选 schema 校验插件：Lua 边界
       严格性（`user_id = 123` vs `userid = "123"` 目前 runtime 才暴露）
-- [ ] 寻址软收敛完成后的下一步：评估 `request_codec` per-route 覆盖的
-      实际使用率，决定是否收敛为 profile 级唯一
+- [x] 寻址软收敛完成后的下一步：`request_codec` per-route 覆盖评估
+      已完成（2026-09-20），结论**保留**：全仓库唯一消费点是
+      lua_service.cpp 客户端 RPC dispatch 的 json/raw 启发式——无
+      codec 插件产出 `decoded_request` 时，空或 "json" 由目标 VM 尝试
+      JSON 解码（失败回退原始字节字符串），其他值原样传字节。它是
+      无 codec 插件 profile 下同监听器混合 JSON/二进制路由的唯一
+      控制点，删除即破坏真实部署形态（gateway 测试的 raw 路由是
+      语义而非测试杠杆）。已修正误导表述：字段注释与
+      protocol-routing-design.md 字段表原先称 "per-route codec 覆盖 /
+      空 = profile 默认 codec"，收敛后 codec 绑定恒为 profile 级单一、
+      本字段从不参与 codec 插件选择，已改写为"解码提示，非 codec
+      选择"的准确口径。
 - [x] listener bind 失败清理路径的跨平台崩溃已根因修复（2026-09-19，
       Linux ASan 现场取证，非猜测）：不是单一竞态，而是 bootstrap
       拆除顺序的**三类悬垂**——macOS/Windows 分配器不复用 freed
