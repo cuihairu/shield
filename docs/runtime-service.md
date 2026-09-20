@@ -382,7 +382,7 @@ end
 function M.on_error(err, context)
     -- err: 错误信息
     -- context: {
-    --   type = "handler" | "timer" | "fork",
+    --   type = "handler" | "timer" | "fork" | "sleep",
     --   method = "method_name",  -- 仅 handler 错误
     -- }
 
@@ -452,7 +452,7 @@ actors:
 ```
 错误发生
   │
-  ├─ handler/timer/fork 异常
+  ├─ handler/timer/fork/sleep 续延异常
   │   ├─ 调用 on_error（仅上报）
   │   ├─ 检查连续错误计数
   │   │   ├─ 未达阈值 → 继续运行

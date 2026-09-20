@@ -98,12 +98,20 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       (a)(b)(c) 同根；"`[C]: in global 'error'` 携带 nil" 系误读
       （doomed/flaky 用例故意在 main chunk 调 error 的良性加载失败
       日志，错误对象是字符串）。
-- [ ] shield.sleep 续延（lua_api.cpp `_resume_after` resume_fn）的终态
-      错误分支与其它 resume 路径不对称：缺 `lua_settop(co,0)` 清理
-      （错误对象滞留协程栈至 GC）、不走 error hook/on_handler_failed。
-      补齐是行为变更（on_handler_failed 开始对 sleep 路径触发，含
-      错误阈值 panic 计数），需独立设计 error_type/method_label 取值
-      并补 service handler sleep 后 error 的集成用例
+- [x] shield.sleep 续延（lua_api.cpp `_resume_after` resume_fn）的终态
+      错误分支已与其它 resume 路径对齐（2026-09-20）：错误臂补齐
+      `lua_settop(co,0)`（错误对象不再滞留协程栈）、
+      `on_handler_failed`（sleep 后 error 的在途 call 从"挂到超时"变
+      为立即收到失败）、`invoke_error_hook`（error_type 取 "sleep"、
+      method_label 空，对齐 ("fork","") 先例；on_error 钩子 + 连续
+      错误阈值 panic 计数自此覆盖 sleep 路径）。顺序镜像
+      invoke_coroutine 终态错误臂；文档注释同步。
+      集成用例：SleepContinuationErrorRoutesFailureAndHook
+      （string error 上游收到 boom 消息 + on_error 收到
+      {type="sleep"}；table error 走默认消息 "sleep continuation
+      error"；无 call 会话的 plain handler 只计数不上报）+
+      SleepContinuationErrorsCountTowardPanic（10 次连续 sleep 错误
+      触发 panic 退出，与 handler 路径阈值语义一致）。
 - [x] `load_script`（lua_runtime.cpp）的 sol `script_file` throw 式 API
       已消除（2026-09-19）：c2ce720 的 panic-abort 语义让它从"清理项"
       变成承重 bug——NDEBUG 下 script_file 退化为 luaL_dofile，加载

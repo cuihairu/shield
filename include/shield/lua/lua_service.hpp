@@ -505,7 +505,8 @@ public:
     // function exists), increment the per-service error counter, and invoke
     // on_panic(reason, context) if the counter reaches the configured limit.
     /// @param service_id The service that encountered the error
-    /// @param error_type Context type: "handler", "timer", or "fork"
+    /// @param error_type Context type: "handler", "timer", "fork", or
+    ///        "sleep" (sleep continuation)
     /// @param method_name Handler method name (empty for timer/fork)
     /// @param error_message The error message
     void invoke_error_hook(const std::string& service_id,

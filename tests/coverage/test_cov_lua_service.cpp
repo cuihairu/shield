@@ -1521,6 +1521,125 @@ BOOST_AUTO_TEST_CASE(PanicThresholdExitsService) {
 }
 
 // ---------------------------------------------------------------------------
+// shield.sleep continuation errors: a handler that sleeps and then raises is
+// terminal for its coroutine. The sleep resume path must behave like the
+// other terminal paths — drain the error object off the coroutine stack,
+// route an in-flight call's failure upstream, and feed the service's
+// on_error hook (error_type "sleep", empty method name).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(SleepContinuationErrorRoutesFailureAndHook) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module =
+        write_script("cov_sleep_err.lua",
+                     "local M = {}\n"
+                     "local errs = {}\n"
+                     "function M.on_error(err, ctx)\n"
+                     "  errs[#errs + 1] = tostring(err) .. '|' ..\n"
+                     "    tostring(ctx.type) .. '|' .. tostring(ctx.method)\n"
+                     "end\n"
+                     "function M.sleep_fail(ctx)\n"
+                     "  shield.sleep(30)\n"
+                     "  error('boom-after-sleep')\n"
+                     "end\n"
+                     "function M.sleep_fail_nonstring(ctx)\n"
+                     "  shield.sleep(30)\n"
+                     "  error({ code = 42 })\n"
+                     "end\n"
+                     "function M.get_errs(ctx)\n"
+                     "  return table.concat(errs, ';;')\n"
+                     "end\n"
+                     "function M.get_err_count(ctx) return #errs end\n"
+                     "return M\n");
+    auto svc = manager.spawn(module, opts_for("cov_sleep_err_svc"));
+    BOOST_REQUIRE(svc.success);
+
+    // The handler serviced a call: the sleep continuation routes the error
+    // upstream as the call's failure instead of leaving it to time out.
+    CallResult cr = manager.call(svc.service_id, "sleep_fail",
+                                 nlohmann::json::array(), 2000);
+    BOOST_CHECK(!cr.success);
+    BOOST_CHECK(cr.error_message.find("boom-after-sleep") != std::string::npos);
+
+    // on_error fired with error_type "sleep" and an empty method name.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult s = manager.call(svc.service_id, "get_errs",
+                                        nlohmann::json::array(), 500);
+            return s.success && s.values.size() == 1u &&
+                   s.values[0].get<std::string>().find("|sleep|") !=
+                       std::string::npos;
+        },
+        std::chrono::seconds(2)));
+
+    // A non-string error object takes the default-message arm.
+    cr = manager.call(svc.service_id, "sleep_fail_nonstring",
+                      nlohmann::json::array(), 2000);
+    BOOST_CHECK(!cr.success);
+    BOOST_CHECK_EQUAL(cr.error_message, "sleep continuation error");
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult s = manager.call(svc.service_id, "get_err_count",
+                                        nlohmann::json::array(), 500);
+            return s.success && s.values.size() == 1u &&
+                   s.values[0].get<int>() >= 2;
+        },
+        std::chrono::seconds(2)));
+
+    // A handler that sleeps and errors without servicing a call: no upstream
+    // to notify, but on_error still counts the error.
+    BOOST_REQUIRE(
+        manager.send(svc.service_id, "sleep_fail", nlohmann::json::array()));
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult s = manager.call(svc.service_id, "get_err_count",
+                                        nlohmann::json::array(), 500);
+            return s.success && s.values.size() == 1u &&
+                   s.values[0].get<int>() >= 3;
+        },
+        std::chrono::seconds(2)));
+}
+
+// ---------------------------------------------------------------------------
+// Sleep-path errors feed the same consecutive-error threshold: the 10th
+// sleep continuation error panics and exits the service.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(SleepContinuationErrorsCountTowardPanic) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module =
+        write_script("cov_sleep_panic.lua",
+                     "local M = {}\n"
+                     "function M.on_error(err) end\n"
+                     "function M.sleep_fail(ctx)\n"
+                     "  shield.sleep(5)\n"
+                     "  error('boom')\n"
+                     "end\n"
+                     "function M.ping(ctx) return 'pong' end\n"
+                     "return M\n");
+    auto svc = manager.spawn(module, opts_for("cov_sleep_panic_svc"));
+    BOOST_REQUIRE(svc.success);
+
+    for (int i = 0; i < 10; ++i) {
+        CallResult cr = manager.call(svc.service_id, "sleep_fail",
+                                     nlohmann::json::array(), 1000);
+        BOOST_CHECK(!cr.success);
+    }
+
+    // The 10th sleep continuation error panicked; the service exits
+    // asynchronously, so poll for it.
+    BOOST_CHECK(wait_until(
+        [&]() { return manager.query_service("cov_sleep_panic_svc").empty(); },
+        std::chrono::seconds(3)));
+}
+
+// ---------------------------------------------------------------------------
 // Script path resolution through the runtime actor config.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(ResolveScriptPathFromConfig) {
