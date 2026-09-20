@@ -48,9 +48,16 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
 
 ## Phase 2 候选（另行立项，不与上刀混合）
 
-- [ ] 方向不对称 schema：req/resp 不同类型名的表达。需要 ABI 扩展
-      （encode 侧独立的 response schema 寻址）；现状 s2c 独立路由声明
-      已覆盖主要场景，非急迫
+- [x] 方向不对称 schema 评估完成（2026-09-20），结论**无需 ABI 扩展**，
+      "需要 encode 侧独立 response schema 寻址"的前提已过时：出站
+      encode 按目标 s2c 路由自己的 `RouteEntry.schema_name` 寻址
+      （`ExternalBodyCodec::encode` → `resolve_outbound_route`），
+      gateway 出站强制 `direction == ServerToClient`（同 route_id
+      回包被 `egress_direction_rejected` 拒绝；测试锚点
+      test_cov_gateway_actor.cpp:251、test_cov_lua_gateway_bridge.cpp:306），req≠resp 即「c2s 一条 + s2c 一条路由」
+      各自声明，类型名与路由名不一致用 `request_schema` 覆盖。
+      protocol-codec-plugins.md 三处过时表述（决策第 5 点、已知
+      边界、Known Limitations）已同步勘正。
 - [x] 无 schema codec（json/msgpack）的可选 schema 校验插件（2026-09-20）：
       校验嵌入 codec 插件本体（零管线改动）。新增 `protocol.json` 校验替身
       provider；`protocol.msgpack` 升 1.1.0。实例配置 `schemas`（键 =

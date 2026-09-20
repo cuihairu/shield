@@ -202,9 +202,13 @@ host 在 descriptor → `RouteEntry` 编译期完成上述解析（产物为
 
 5. **`response_schema` 死字段直接删除，而不是兑现它。** 它曾在
    descriptor 声明但 ABI 与管线均未消费。req/resp 不同类型名的
-   表达（方向不对称 schema）需要 ABI 扩展与出站寻址设计，属于
-   Phase 2；现状 s2c 独立路由声明已覆盖主要场景。保留一个不生效
-   的字段只会让配置者误以为它有语义。
+   表达（方向不对称 schema）无需 ABI 扩展：出站 encode 按**目标
+   s2c 路由自己的** `schema_name` 寻址（`ExternalBodyCodec::encode`
+   → `resolve_outbound_route`），gateway 出站强制
+   `direction == ServerToClient`（同 route_id 回包被拒），req≠resp
+   即「c2s 一条路由 + s2c 一条路由」各自声明，类型名差异由
+   `request_schema` 覆盖。保留一个不生效的字段只会让配置者误以为
+   它有语义。
 
 ### 插件侧的义务
 
@@ -362,7 +366,11 @@ host 日志（`protocol.json` / `protocol.msgpack` 前缀，含首个错误点�
 - body 路由键提取类配置（`route_key`）不能配外部 provider：`ExternalBodyCodec`
   不实现 body 路由键提取，body-route 协议配 `protocol.json` 会在构建期报错；
   校验插件面向 header 路由（idlen/typelen）或单路由 profile。
-- 方向不对称 schema（c2s/s2c 不同类型）需要 ABI 扩展，属 Phase 2（既有 todo）。
+- 方向不对称 schema（req/resp 不同类型）不需要 ABI 扩展：req≠resp
+  由「c2s 路由 + s2c 路由」各自声明表达（出站 encode 按目标 s2c
+  路由的 `schema_name` 寻址，同 route_id 回包被 gateway 出站
+  direction 校验拒绝），类型名与路由名不一致用 `request_schema`
+  覆盖。
 - `xmldef` 不在本机制范围（类型系统搁置中）。
 
 ## Implementation Order
@@ -388,4 +396,6 @@ host 日志（`protocol.json` / `protocol.msgpack` 前缀，含首个错误点�
 - payload schema 校验的 c2s 违规（reject）沿用 decode 失败语义即断连（`decode_error`）；收紧前先用 `on_violation: warn` 观察。
 - 校验器 `integer` 是 token 级语义（JSON 里 `123.0` 不算 integer），`additionalProperties` 非布尔值宽松忽略——两者都是有意的宽松默认，不是 bug。
 - `ExternalBodyCodec` 无 body 路由键提取（`route_key`）实现，body-route 协议配外部 codec provider 构建期报错。
-- 方向不对称 schema（req/resp 不同类型）未支持，需要 ABI 扩展（Phase 2）。
+- 方向不对称 schema（req/resp 不同类型）由 s2c 独立路由声明表达
+  （出站按目标路由 `schema_name` 寻址、同 id 回包被 direction
+  校验拒绝），不需要 ABI 扩展。
