@@ -568,6 +568,13 @@ v1 schema 支持以下最小集合：
 | `enum` | 字符串或数字枚举。 |
 | `items` | array 元素 schema。 |
 | `secret` | 日志和 introspection 中脱敏。 |
+| `additionalProperties` | 仅布尔 `false` 强制拒绝未声明键；缺省/true/非布尔值宽松忽略。 |
+| `minLength` / `maxLength` | 字符串长度闭区间。 |
+| `minItems` / `maxItems` | array 元素个数闭区间。 |
+
+同一校验器也被 codec 插件复用为 payload schema 校验（键类型检查用于 manifest
+`config_schema`，payload 校验用于 `protocol.json` / `protocol.msgpack`，见
+[Protocol Codec Plugins](protocol-codec-plugins.md)）。
 
 ## Error Model
 

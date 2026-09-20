@@ -231,6 +231,26 @@ if(SHIELD_BUILD_PLUGIN_MSGPACK)
     shield_copy_runtime_dlls(test_protocol_msgpack_plugin)
 endif()
 
+if(SHIELD_BUILD_PLUGIN_JSON)
+    add_executable(test_protocol_json_plugin
+        plugin/test_protocol_json_plugin.cpp
+        $<TARGET_OBJECTS:shield_protocol_json_obj>)
+    target_link_libraries(test_protocol_json_plugin
+        PRIVATE
+            shield_transport
+            nlohmann_json::nlohmann_json
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_protocol_json_plugin
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_protocol_json_plugin
+             COMMAND test_protocol_json_plugin)
+    set_tests_properties(test_protocol_json_plugin PROPERTIES
+        LABELS "plugin;protocol"
+        TIMEOUT 10)
+    shield_copy_runtime_dlls(test_protocol_json_plugin)
+endif()
+
 if(SHIELD_BUILD_PLUGIN_FLATBUFFERS)
     find_package(flatbuffers CONFIG REQUIRED)
     add_executable(test_protocol_flatbuffers_plugin

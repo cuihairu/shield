@@ -75,3 +75,7 @@ endif()
 if(SHIELD_BUILD_PLUGIN_FLATBUFFERS)
     add_subdirectory(protocol.flatbuffers)
 endif()
+
+if(SHIELD_BUILD_PLUGIN_JSON)
+    add_subdirectory(protocol.json)
+endif()

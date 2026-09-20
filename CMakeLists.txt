@@ -130,6 +130,7 @@ option(SHIELD_BUILD_PLUGIN_REDIS_DRIVER "Build the unified Redis driver plugin (
 option(SHIELD_BUILD_PLUGIN_PROTOBUF "Build the Protobuf protocol codec plugin (shield.protocol.codec.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_MSGPACK "Build the MessagePack protocol codec plugin (shield.protocol.codec.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_FLATBUFFERS "Build the FlatBuffers protocol codec plugin (shield.protocol.codec.v1)" OFF)
+option(SHIELD_BUILD_PLUGIN_JSON "Build the JSON protocol codec plugin (shield.protocol.codec.v1)" OFF)
 
 # Ensure config directory exists and create a minimal default config if missing.
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/config")
@@ -900,7 +901,8 @@ if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
    SHIELD_BUILD_PLUGIN_REDIS_DRIVER OR
    SHIELD_BUILD_PLUGIN_PROTOBUF OR
    SHIELD_BUILD_PLUGIN_MSGPACK OR
-   SHIELD_BUILD_PLUGIN_FLATBUFFERS)
+   SHIELD_BUILD_PLUGIN_FLATBUFFERS OR
+   SHIELD_BUILD_PLUGIN_JSON)
     add_subdirectory(plugins)
 endif()
 
@@ -971,4 +973,5 @@ message(STATUS "  plugin redis.drv:  ${SHIELD_BUILD_PLUGIN_REDIS_DRIVER}")
 message(STATUS "  plugin protobuf:   ${SHIELD_BUILD_PLUGIN_PROTOBUF}")
 message(STATUS "  plugin msgpack:    ${SHIELD_BUILD_PLUGIN_MSGPACK}")
 message(STATUS "  plugin flatbuffers:${SHIELD_BUILD_PLUGIN_FLATBUFFERS}")
+message(STATUS "  plugin json:       ${SHIELD_BUILD_PLUGIN_JSON}")
 message(STATUS "")

@@ -17,6 +17,8 @@
 
 核心只内置 `raw` 和 `json`。`msgpack` 已迁移至 `protocol.msgpack` 插件，需通过 `body.provider` 显式启用；`protobuf`/`flatbuffers` 分别通过 `protocol.protobuf` / `protocol.flatbuffers` 插件启用；`xmldef` 仍是占位 codec 名称。
 
+`protocol.json` 插件（v1.0.0）是内置 json 的**可选校验替身**：不设 `body.provider` 时内置 json 照旧生效，默认零变化；显式设置 `provider: protocol.json` 才替换，换来的是可选的 per-route payload schema 校验（见下文「可选 Schema 校验」）。
+
 ## Non-Goals
 
 - 不引入按包自动探测协议类型。
@@ -281,6 +283,88 @@ network:
 | `xmldef-native` | descriptor/runtime plugin | catalog 路由加载可留在核心；字段级 decode/encode 走插件。 |
 | `flatbuffers` | runtime codec plugin | 已落地 `protocol.flatbuffers` provider，支持 `.fbs` 文本 schema 和 JSON 桥接。 |
 
+## 可选 Schema 校验（json / msgpack）
+
+无 schema 的 codec（json/msgpack）对 payload 形状零约束：`user_id = 123` 与
+`userid = "123"` 这类字段名/类型漂移要到 Lua handler 运行期才暴露。两个 codec
+插件提供**可选**的 per-route payload schema 校验，在 ingress/egress 边界拦截：
+
+- `protocol.json`：内置 json 的校验替身（`provider: protocol.json` 启用）。decode
+  与内置一样解析并解包可选的顶层 `{"payload": ...}` 信封，**schema 校验的是解包后
+  的业务消息**——schema 描述的是交付给 Lua 的形状。
+- `protocol.msgpack`：v1.1.0 起，`from_msgpack` 之后、`to_msgpack` 之前校验。
+
+校验核心复用 host 的最小 JSON-Schema 子集校验器（`src/plugin/schema_validator`），
+插件不自带第二套实现。
+
+### 配置
+
+两插件共用同一组实例配置键（`plugins.instances[].config`）：
+
+```yaml
+plugins:
+  instances:
+    - id: protocol.json.gateway
+      package: protocol.json
+      config:
+        schemas:
+          auth.LoginRequest:
+            type: object
+            required: [userid]
+            properties:
+              userid: { type: string, minLength: 1 }
+            additionalProperties: false
+        require_schema: false
+        on_violation: reject
+```
+
+| 键 | 类型 | 默认 | 语义 |
+| --- | --- | --- | --- |
+| `schemas` | object | 无 | 内联 schema 表；键 = host 解析好的 schema 类型名（`RouteEntry.schema_name`），与 ABI 的 `route_name` 单级查找同构。 |
+| `schemas_file` | string | 无 | 从文件读 schema 表（create 时读盘解析）。与 `schemas` **互斥**，都设 create 失败。 |
+| `require_schema` | bool | false | true 时未配置 schema 的路由直接失败 `protocol.schema_not_found`；默认放行（无 schema = 无约束）。 |
+| `on_violation` | reject/warn | reject | `reject` 校验失败即拒绝；`warn` 记 host WARN 日志后放行（观察模式）。 |
+
+### 关键字子集
+
+校验器支持的最小关键字集（全部 opt-in，宽松默认；`apply_defaults` /
+`collect_secret_paths` 等配置期辅助不受影响）：
+
+| 关键字 | 适用 | 语义 |
+| --- | --- | --- |
+| `type` | 全部 | `object`/`array`/`string`/`integer`/`number`/`boolean`；`integer` 是 token 级语义（`123.0` 不算）；未知类型宽松放行（前向兼容）。 |
+| `enum` | 全部 | 值必须枚举匹配。 |
+| `minimum` / `maximum` | 数值 | 闭区间。 |
+| `required` | object | 键必须存在（先于 additionalProperties 判定）。 |
+| `properties` | object | 递归校验已声明的键，错误路径 `a.b[i].c`。 |
+| `additionalProperties` | object | **仅布尔 false 强制**（拒绝未声明键）；缺省/true/非布尔值宽松忽略。字段名拼写的最后防线。 |
+| `minLength` / `maxLength` | string | 闭区间长度约束。 |
+| `minItems` / `maxItems` | array | 元素个数约束，先于 `items` 判定。 |
+| `items` | array | 递归校验每个元素。 |
+
+不支持 `$ref` / `oneOf` / `pattern` / additionalProperties-as-schema（schema 形状
+错误在 create 或首次校验时以 `schema evaluation error` 暴露，不会逃逸 C ABI）。
+
+### 错误映射与断连语义
+
+| 场景 | 错误码 | 传播路径 |
+| --- | --- | --- |
+| 路由未配置 schema 且 `require_schema: true` | `protocol.schema_not_found` | 同 decode/encode 失败。 |
+| decode（c2s）校验违规（reject） | `protocol.decode_failed` | pipeline 报 `body decode failed: ...` → session 层 `error_code_ = "decode_error"` → **断连**。 |
+| encode（s2c）校验违规（reject） | `protocol.encode_failed` | 出站仅丢该条消息，不断连。 |
+
+**c2s 违规会断连**是既有 decode 失败语义（不是校验插件新增的）——这也正是
+`on_violation: warn` 存在的意义：先观察线上违规再收紧为 reject。违规明细走
+host 日志（`protocol.json` / `protocol.msgpack` 前缀，含首个错误点的路径）。
+
+### 已知边界
+
+- body 路由键提取类配置（`route_key`）不能配外部 provider：`ExternalBodyCodec`
+  不实现 body 路由键提取，body-route 协议配 `protocol.json` 会在构建期报错；
+  校验插件面向 header 路由（idlen/typelen）或单路由 profile。
+- 方向不对称 schema（c2s/s2c 不同类型）需要 ABI 扩展，属 Phase 2（既有 todo）。
+- `xmldef` 不在本机制范围（类型系统搁置中）。
+
 ## Implementation Order
 
 当前推荐顺序和状态：
@@ -294,9 +378,14 @@ network:
 7. 已在 CI 中启用 `SHIELD_BUILD_PLUGIN_PROTOBUF=ON` / `SHIELD_BUILD_PLUGIN_MSGPACK=ON`，protobuf 插件的 `test_protocol_protobuf_plugin` 和 `test_protocol_msgpack_plugin` 在 Ubuntu/macOS/Windows 三平台 CI 中通过。
 8. 已新增 `protocol.msgpack` provider 和插件 ABI round-trip 测试；已移除核心内置 `MsgpackBodyCodec`，`msgpack` 现为纯插件 codec。
 10. 已新增 `protocol.flatbuffers` provider，支持 `.fbs` 文本 schema 加载、decode/encode 和 JSON 桥接。
+11. 已新增 `protocol.json` 校验替身 provider，并为 `protocol.msgpack`（v1.1.0）与 `protocol.json` 加上可选 per-route payload schema 校验（共享 `plugins/_shared/shield_payload_schema.hpp` glue，复用 host 子集校验器）；校验器核心补 `additionalProperties`（布尔 false 强制）/`minLength`/`maxLength`/`minItems`/`maxItems`。CI 以 `SHIELD_BUILD_PLUGIN_JSON=ON` 跑 `test_protocol_json_plugin`（含管线级断连语义测试）。
 
 ## Known Limitations
 
 - codec 按监听器锁定（`actors[].network.protocol.body`），不支持 per-route / per-session 协商（Non-Goal）。
 - Lua egress 不会自动调用插件 encode；只有 inbound decode 的结果会作为 Lua table 交付。
 - flatbuffers 插件使用 `.fbs` 文本 schema，运行时通过 `Parser::Parse` 加载并编译。
+- payload schema 校验的 c2s 违规（reject）沿用 decode 失败语义即断连（`decode_error`）；收紧前先用 `on_violation: warn` 观察。
+- 校验器 `integer` 是 token 级语义（JSON 里 `123.0` 不算 integer），`additionalProperties` 非布尔值宽松忽略——两者都是有意的宽松默认，不是 bug。
+- `ExternalBodyCodec` 无 body 路由键提取（`route_key`）实现，body-route 协议配外部 codec provider 构建期报错。
+- 方向不对称 schema（req/resp 不同类型）未支持，需要 ABI 扩展（Phase 2）。

@@ -110,3 +110,103 @@ BOOST_AUTO_TEST_CASE(float_above_maximum_fails) {
     BOOST_CHECK(!validate_config(schema, json(10.5)).empty());
     BOOST_CHECK(validate_config(schema, json(9.5)).empty());
 }
+
+// ---------------------------------------------------------------------------
+// additionalProperties: boolean false = strict mode. This is the catch for
+// the motivating payload typo (a "userid" vs "user_id" field name drift used
+// to pass silently because unknown keys were never rejected).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(additional_properties_strict_rejects_unknown_keys) {
+    json schema = {
+        {"type", "object"},
+        {"required", json::array({"userid"})},
+        {"properties", {{"userid", {{"type", "string"}, {"minLength", 1}}}}},
+        {"additionalProperties", false}};
+
+    // Exact key match passes.
+    BOOST_CHECK(validate_config(schema, json{{"userid", "123"}}).empty());
+
+    // Typo-only payload: "required" fires first with a clear message.
+    auto err = validate_config(schema, json{{"user_id", 123}});
+    BOOST_CHECK_EQUAL(err, "userid: required field missing");
+
+    // Required key present plus an unknown key: strict mode rejects it with
+    // the key in the path.
+    err = validate_config(schema, json{{"userid", "123"}, {"user_id", 123}});
+    BOOST_CHECK_EQUAL(err, "user_id: additional property not allowed");
+}
+
+BOOST_AUTO_TEST_CASE(additional_properties_lenient_by_default) {
+    json schema = {{"type", "object"},
+                   {"properties", {{"a", {{"type", "integer"}}}}}};
+    // Absent keyword: unknown keys pass.
+    BOOST_CHECK(
+        validate_config(schema, json{{"a", 1}, {"extra", true}}).empty());
+    // Explicit true: lenient.
+    json lenient = schema;
+    lenient["additionalProperties"] = true;
+    BOOST_CHECK(validate_config(lenient, json{{"a", 1}, {"extra", 1}}).empty());
+    // Non-bool value: leniently ignored.
+    json weird = schema;
+    weird["additionalProperties"] = "nope";
+    BOOST_CHECK(validate_config(weird, json{{"a", 1}, {"extra", 1}}).empty());
+}
+
+BOOST_AUTO_TEST_CASE(additional_properties_recursive_into_nested_objects) {
+    json schema = {{"type", "object"},
+                   {"properties",
+                    {{"nested",
+                      {{"type", "object"},
+                       {"properties", {{"ok", {{"type", "boolean"}}}}},
+                       {"additionalProperties", false}}}}},
+                   {"additionalProperties", false}};
+
+    BOOST_CHECK(
+        validate_config(schema, json{{"nested", {{"ok", true}}}}).empty());
+    auto err =
+        validate_config(schema, json{{"nested", {{"ok", true}, {"spy", 1}}}});
+    BOOST_CHECK_EQUAL(err, "nested.spy: additional property not allowed");
+}
+
+// minLength / maxLength: bounds are inclusive; messages follow the
+// ": below minimum" / ": above maximum" style.
+BOOST_AUTO_TEST_CASE(string_length_bounds) {
+    json schema = {{"type", "string"}, {"minLength", 2}, {"maxLength", 4}};
+    BOOST_CHECK(!validate_config(schema, json("x")).empty());
+    BOOST_CHECK(validate_config(schema, json("xx")).empty());
+    BOOST_CHECK(validate_config(schema, json("xxxx")).empty());
+    BOOST_CHECK(!validate_config(schema, json("xxxxx")).empty());
+
+    auto err = validate_config(schema, json("x"));
+    BOOST_CHECK_EQUAL(err, ": below minLength");
+    BOOST_CHECK_EQUAL(validate_config(schema, json("xxxxx")),
+                      ": above maxLength");
+}
+
+// minItems / maxItems: applied before per-element "items" validation, so a
+// too-short array reports the length, not an element error.
+BOOST_AUTO_TEST_CASE(array_item_count_bounds) {
+    json schema = {{"type", "array"},
+                   {"minItems", 2},
+                   {"maxItems", 3},
+                   {"items", {{"type", "integer"}}}};
+    BOOST_CHECK(!validate_config(schema, json::array({1})).empty());
+    BOOST_CHECK(validate_config(schema, json::array({1, 2})).empty());
+    BOOST_CHECK(validate_config(schema, json::array({1, 2, 3})).empty());
+    BOOST_CHECK(!validate_config(schema, json::array({1, 2, 3, 4})).empty());
+    // Elements still validated when the count is fine.
+    BOOST_CHECK(!validate_config(schema, json::array({1, "x"})).empty());
+    BOOST_CHECK_EQUAL(validate_config(schema, json::array({1})),
+                      ": below minItems");
+    BOOST_CHECK_EQUAL(validate_config(schema, json::array({1, 2, 3, 4})),
+                      ": above maxItems");
+}
+
+// Non-numeric length keywords are leniently ignored (payload schemas are
+// user-supplied; a malformed bound must not throw out of the validator).
+BOOST_AUTO_TEST_CASE(non_numeric_length_bounds_ignored) {
+    json schema = {{"type", "string"}, {"minLength", "abc"}};
+    BOOST_CHECK(validate_config(schema, json("any length")).empty());
+    json arr = {{"type", "array"}, {"maxItems", "lots"}};
+    BOOST_CHECK(validate_config(arr, json::array({1, 2, 3, 4, 5})).empty());
+}

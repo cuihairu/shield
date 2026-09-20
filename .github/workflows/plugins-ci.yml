@@ -102,6 +102,7 @@ jobs:
             -DSHIELD_BUILD_PLUGIN_PROTOBUF=ON
             -DSHIELD_BUILD_PLUGIN_MSGPACK=ON
             -DSHIELD_BUILD_PLUGIN_FLATBUFFERS=ON
+            -DSHIELD_BUILD_PLUGIN_JSON=ON
             # DB plugins: compiled on CI so they cannot silently rot when a
             # dependency (e.g. sol2) breaks their API — the Lua facade soft-
             # failure contract test exercises each enabled plugin's .so.

@@ -1,24 +1,24 @@
 schema_version: 1
-id: protocol.msgpack
-name: MessagePack Protocol Codec
-version: 1.1.0
+id: protocol.json
+name: JSON Protocol Codec
+version: 1.0.0
 kind: protocol
-description: MessagePack provider for shield.protocol.codec.v1
+description: JSON provider for shield.protocol.codec.v1 with optional payload schema validation
 documentation:
   url: https://cuihairu.github.io/shield/protocol-codec-plugins
-  description: MessagePack BodyCodec provider for JSON-shaped protocol profiles
+  description: Validating JSON BodyCodec provider for JSON-shaped protocol profiles
 entry: shield_plugin_get_v1
 library:
-  windows: bin/libshield_protocol_msgpack.dll
-  linux: bin/libshield_protocol_msgpack.so
-  macos: bin/libshield_protocol_msgpack.dylib
+  windows: bin/libshield_protocol_json.dll
+  linux: bin/libshield_protocol_json.so
+  macos: bin/libshield_protocol_json.dylib
 provides:
   - interface: shield.protocol.codec.v1
     capabilities:
-      - msgpack
+      - json
 requires: []
 lua:
-  namespace: protocol.msgpack
+  namespace: protocol.json
   search_paths: []
 config_schema:
   type: object

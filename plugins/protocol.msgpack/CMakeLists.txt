@@ -1,6 +1,9 @@
 # protocol.msgpack - MessagePack provider for shield.protocol.codec.v1.
 
-add_library(shield_protocol_msgpack_obj OBJECT shield_protocol_msgpack.cpp)
+add_library(shield_protocol_msgpack_obj OBJECT
+    shield_protocol_msgpack.cpp
+    ${PROJECT_SOURCE_DIR}/src/plugin/schema_validator.cpp
+)
 set_target_properties(shield_protocol_msgpack_obj PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
@@ -8,6 +11,8 @@ set_target_properties(shield_protocol_msgpack_obj PROPERTIES
 target_include_directories(shield_protocol_msgpack_obj
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/plugin
+        ${PROJECT_SOURCE_DIR}/plugins/_shared
 )
 
 target_link_libraries(shield_protocol_msgpack_obj

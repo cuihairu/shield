@@ -1,9 +1,12 @@
 // [SHIELD_PLUGIN] Minimal JSON-Schema subset validator.
 //
 // Validates an instance config against the config_schema declared in a
-// plugin manifest. Supports the small keyword set documented in
-// docs/plugin-system.md §Config Schema:
+// plugin manifest, and payload messages against optional per-route schemas
+// (see plugins/_shared/shield_payload_schema.hpp). Supports the small
+// keyword set documented in docs/plugin-system.md §Config Schema:
 //   type, required, properties, default, minimum, maximum, enum, items,
+//   additionalProperties (boolean false = strict), minLength, maxLength,
+//   minItems, maxItems,
 //   secret (recognized for masking, not enforced here).
 #pragma once
 

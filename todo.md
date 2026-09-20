@@ -51,8 +51,16 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
 - [ ] 方向不对称 schema：req/resp 不同类型名的表达。需要 ABI 扩展
       （encode 侧独立的 response schema 寻址）；现状 s2c 独立路由声明
       已覆盖主要场景，非急迫
-- [ ] 无 schema codec（json/msgpack）的可选 schema 校验插件：Lua 边界
-      严格性（`user_id = 123` vs `userid = "123"` 目前 runtime 才暴露）
+- [x] 无 schema codec（json/msgpack）的可选 schema 校验插件（2026-09-20）：
+      校验嵌入 codec 插件本体（零管线改动）。新增 `protocol.json` 校验替身
+      provider；`protocol.msgpack` 升 1.1.0。实例配置 `schemas`（键 =
+      `RouteEntry.schema_name`）XOR `schemas_file`、`require_schema`
+      （miss → `protocol.schema_not_found`）、`on_violation`
+      reject|warn。校验核心复用 host 子集校验器并补
+      `additionalProperties`（仅布尔 false 强制——拼写错误的最后防线）/
+      `minLength`/`maxLength`/`minItems`/`maxItems`。decode 违规（reject）
+      沿用 decode 失败语义即断连，`warn` 为观察模式。方向不对称 schema
+      仍留 Phase 2（上一条）。
 - [x] 寻址软收敛完成后的下一步：`request_codec` per-route 覆盖评估
       已完成（2026-09-20），结论**保留**：全仓库唯一消费点是
       lua_service.cpp 客户端 RPC dispatch 的 json/raw 启发式——无

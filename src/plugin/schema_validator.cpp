@@ -52,6 +52,35 @@ std::string validate_config(const nlohmann::json& schema,
                 }
             }
         }
+        // Strict mode: reject keys not declared under "properties". Only a
+        // boolean false enforces it (non-bool values are leniently ignored).
+        if (schema.contains("additionalProperties") &&
+            schema.at("additionalProperties").is_boolean() &&
+            !schema.at("additionalProperties").get<bool>() &&
+            schema.contains("properties") &&
+            schema.at("properties").is_object()) {
+            for (auto it = value.begin(); it != value.end(); ++it) {
+                if (!schema.at("properties").contains(it.key())) {
+                    return join_path(path, it.key()) +
+                           ": additional property not allowed";
+                }
+            }
+        }
+    }
+
+    if (value.is_string()) {
+        if (schema.contains("minLength") &&
+            schema.at("minLength").is_number() &&
+            static_cast<double>(value.get<std::string>().size()) <
+                schema.at("minLength").get<double>()) {
+            return path + ": below minLength";
+        }
+        if (schema.contains("maxLength") &&
+            schema.at("maxLength").is_number() &&
+            static_cast<double>(value.get<std::string>().size()) >
+                schema.at("maxLength").get<double>()) {
+            return path + ": above maxLength";
+        }
     }
 
     if (value.is_number()) {
@@ -76,12 +105,25 @@ std::string validate_config(const nlohmann::json& schema,
         if (!ok) return path + ": value not in enum";
     }
 
-    if (value.is_array() && schema.contains("items")) {
-        size_t i = 0;
-        for (const auto& el : value) {
-            auto err = validate_config(schema.at("items"), el,
-                                       path + "[" + std::to_string(i++) + "]");
-            if (!err.empty()) return err;
+    if (value.is_array()) {
+        if (schema.contains("minItems") && schema.at("minItems").is_number() &&
+            static_cast<double>(value.size()) <
+                schema.at("minItems").get<double>()) {
+            return path + ": below minItems";
+        }
+        if (schema.contains("maxItems") && schema.at("maxItems").is_number() &&
+            static_cast<double>(value.size()) >
+                schema.at("maxItems").get<double>()) {
+            return path + ": above maxItems";
+        }
+        if (schema.contains("items")) {
+            size_t i = 0;
+            for (const auto& el : value) {
+                auto err =
+                    validate_config(schema.at("items"), el,
+                                    path + "[" + std::to_string(i++) + "]");
+                if (!err.empty()) return err;
+            }
         }
     }
 
