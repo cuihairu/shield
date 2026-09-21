@@ -141,8 +141,8 @@ jobs:
         shell: bash
         run: |
           dir="$HOME/Library/Logs/DiagnosticReports"
-          ctest --test-dir build --build-config Release 2>&1 |
-            sed -n 's|^[0-9]*/[0-9]* Test #[0-9]*: \([A-Za-z0-9_]*\) .*\*\*\*Failed.*|\1|p' |
+          ctest --test-dir build --build-config Release > /tmp/ctest.log 2>&1 || true
+          sed -n 's|^[0-9]*/[0-9]* Test #[0-9]*: \([A-Za-z0-9_]*\) .*\*\*\*Failed.*|\1|p' /tmp/ctest.log |
             sort -u |
             while IFS= read -r t; do
               bin=$(find build -name "$t" -type f | head -1)
