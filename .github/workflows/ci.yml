@@ -132,6 +132,23 @@ jobs:
         shell: bash
         run: ctest --test-dir build --build-config Release --output-on-failure
 
+      # A test that dies on a signal leaves a .ips crash report (signed
+      # frames for the crashing thread) under DiagnosticReports; dump the
+      # shield ones so a platform-only crash is debuggable from CI logs.
+      - name: Collect crash reports
+        if: failure() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          dir="$HOME/Library/Logs/DiagnosticReports"
+          ls -la "$dir" 2>/dev/null || true
+          found=0
+          while IFS= read -r f; do
+            found=1
+            echo "===== crash report: $f ====="
+            cat "$f"
+          done < <(find "$dir" -name 'test_cov_*' -mmin -30 -type f 2>/dev/null)
+          [ "$found" -eq 1 ] || echo "no shield crash reports found"
+
   # 集群模块 (Linux, SHIELD_ENABLE_CLUSTER=ON): 构建 cluster 路径并运行
   # cluster 标签测试。主 build 矩阵不带 cluster，此 job 补上该编译路径。
   # 可选的 shield_player 模块同样在此编译路径开启（player 标签测试一并跑）。

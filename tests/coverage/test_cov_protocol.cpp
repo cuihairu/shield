@@ -3309,9 +3309,12 @@ BOOST_AUTO_TEST_CASE(BuildXmlDefAliasLoadsCatalogRoutes) {
     }
     // A string routing.default_action next to an xmldef catalog overrides the
     // catalog default for every route the catalog loads.
+    // generic_string(): the embedded config is JSON, and a Windows backslash
+    // path would be an illegal escape sequence there.
     const std::string config =
         std::string(R"({"body":{"codec":"xml_def","catalog":")") +
-        catalog.string() + R"("},"routing":{"default_action":"forward"}})";
+        catalog.generic_string() +
+        R"("},"routing":{"default_action":"forward"}})";
     std::string error;
     auto pipeline = build_protocol_pipeline_from_json(config, "", 0, &error);
     BOOST_REQUIRE(pipeline != nullptr);
@@ -3321,7 +3324,7 @@ BOOST_AUTO_TEST_CASE(BuildXmlDefAliasLoadsCatalogRoutes) {
     // contains-false arm: the catalog keeps its own default action.
     const std::string plain_config =
         std::string(R"({"body":{"codec":"xml_def","catalog":")") +
-        catalog.string() + R"("}})";
+        catalog.generic_string() + R"("}})";
     auto plain = build_protocol_pipeline_from_json(plain_config, "", 0, &error);
     BOOST_REQUIRE(plain != nullptr);
     BOOST_REQUIRE(plain->routes().find(0x77) != nullptr);
