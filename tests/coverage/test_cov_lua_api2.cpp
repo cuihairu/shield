@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 #include <string>
@@ -43,6 +44,18 @@ std::string write_script(const std::string& name, const std::string& content) {
     out << content;
     out.close();
     return path;
+}
+
+bool wait_until(const std::function<bool()>& predicate,
+                std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return predicate();
 }
 
 bool run_script(sol::state& lua, const std::string& code) {
@@ -774,4 +787,421 @@ BOOST_AUTO_TEST_CASE(ConfigUnparseableNumberFallsBackToString) {
 
     shield::config::global_config().set("cov6.zzz", std::string("zzz"));
     BOOST_CHECK(run_script(lua, "assert(shield.config('cov6.zzz') == 'zzz')"));
+}
+
+// ---------------------------------------------------------------------------
+// Round-6 additions (branch coverage): make_error detail variants, the
+// error-code shim, the sync send error matrix, the client-context
+// materializer guard arms, sparse-array argument shapes, coroutine-call
+// primitive shapes, fork anchoring, config exponent parsing, the
+// _client_bind empty-field guards, the client_rpc helper registration
+// guards, and httpd without a runtime.
+// ---------------------------------------------------------------------------
+
+// Direct declaration (the definition's default arguments are not repeated).
+namespace shield::lua {
+sol::table make_error(sol::this_state state, std::string code,
+                      std::string message, bool retryable, sol::object detail);
+}
+
+// make_error's detail branch: a valid non-nil object is attached, while a
+// valid-but-nil object and an invalid object both leave the field absent.
+// The error-code shim maps a "service dead" message to service_dead.
+BOOST_AUTO_TEST_CASE(MakeErrorDetailAndErrorCodeShim) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua);
+
+    BOOST_CHECK(run_script(lua,
+                           "assert(shield._call_error_code('x service dead "
+                           "y') == 'service_dead')\n"
+                           "assert(shield._call_error_code('service not "
+                           "found: z') == 'service_not_found')"));
+
+    // Valid non-nil detail: attached to the error table.
+    {
+        sol::object detail = sol::make_object(lua, "extra-context");
+        sol::table err = shield::lua::make_error(
+            sol::this_state(lua.lua_state()), "code_a", "msg_a", false, detail);
+        BOOST_CHECK_EQUAL(err["code"].get<std::string>(), "code_a");
+        BOOST_CHECK_EQUAL(err["detail"].get<std::string>(), "extra-context");
+    }
+    // Valid but nil detail: no detail field.
+    {
+        sol::object detail(lua, sol::nil);
+        sol::table err = shield::lua::make_error(
+            sol::this_state(lua.lua_state()), "code_b", "msg_b", true, detail);
+        BOOST_CHECK_EQUAL(err["code"].get<std::string>(), "code_b");
+        BOOST_CHECK(!err["detail"].valid());
+    }
+    // Invalid object detail: no detail field either.
+    {
+        sol::object detail{};
+        sol::table err = shield::lua::make_error(
+            sol::this_state(lua.lua_state()), "code_c", "msg_c", false, detail);
+        BOOST_CHECK_EQUAL(err["code"].get<std::string>(), "code_c");
+        BOOST_CHECK(!err["detail"].valid());
+    }
+}
+
+// The sync send() error chain in lua_api maps each manager error message to
+// a stable code; the message-too-large and unsupported-value arms need
+// payloads that trip the payload validators.
+BOOST_AUTO_TEST_CASE(SyncSendErrorMatrix) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    const std::string callee_path = write_script(
+        "cov7_callee.lua",
+        "local M = {}\nfunction M.echo(ctx, v) return v end\nreturn M\n");
+    auto callee = manager.spawn(callee_path, opts_for("cov7_callee").dump());
+    BOOST_REQUIRE(callee.success);
+
+    // Oversized string argument: exceeds kMaxMessageSize (1 MiB).
+    BOOST_CHECK(run_script(
+        lua, "local ok, err = shield.send('" + callee.service_id +
+                 "', 'echo', string.rep('x', 1100 * 1024))\n"
+                 "assert(ok == false)\n"
+                 "assert(err.code == 'message_too_large', err.code)\n"
+                 "assert(err.message:find('message too large', 1, true))"));
+
+    // A function argument serializes to the <unsupported> sentinel, which
+    // the payload validator rejects.
+    BOOST_CHECK(run_script(
+        lua, "local ok, err = shield.send('" + callee.service_id +
+                 "', 'echo', function() end)\n"
+                 "assert(ok == false)\n"
+                 "assert(err.code == 'encode_failed', err.code)\n"
+                 "assert(err.message:find('unsupported', 1, true))"));
+
+    // A recently exited service maps to service_dead (the dead arm sits at
+    // the end of the else-if chain).
+    manager.exit(callee.service_id, "done");
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    BOOST_CHECK(
+        run_script(lua, "local ok, err = shield.send('" + callee.service_id +
+                            "', 'echo', 1)\n"
+                            "assert(ok == false)\n"
+                            "assert(err.code == 'service_dead', err.code)"));
+}
+
+// The client-identity materializer inside json_to_lua degrades to a plain
+// table whenever the installed __shield_make_client_context hook is not a
+// usable function or returns nothing.
+BOOST_AUTO_TEST_CASE(ClientContextMaterializerGuardArms) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, nullptr, nullptr);
+
+    const nlohmann::json marker =
+        shield::lua::ClientContextData{"ghost_gw", 7, 3, "p1", "json"}
+            .to_json();
+    lua["ctx_marker"] = marker;
+
+    // Hook set to a non-function value: the is<protected_function> guard
+    // fails and the marker degrades to a plain table.
+    BOOST_CHECK(run_script(lua,
+                           "__shield_make_client_context = 'not a "
+                           "function'"));
+    {
+        sol::object obj = json_to_lua(sol::state_view(lua), marker);
+        BOOST_CHECK(obj.is<sol::table>());
+        BOOST_CHECK(obj.as<sol::table>()["gateway_address"].valid());
+    }
+
+    // Hook that errors: the protected call fails and the fallback runs.
+    BOOST_CHECK(run_script(lua,
+                           "__shield_make_client_context = function()\n"
+                           "  error('materializer boom')\n"
+                           "end"));
+    {
+        sol::object obj = json_to_lua(sol::state_view(lua), marker);
+        BOOST_CHECK(obj.is<sol::table>());
+    }
+
+    // Hook returning nothing: return_count() == 0 and the fallback runs.
+    BOOST_CHECK(
+        run_script(lua, "__shield_make_client_context = function() end"));
+    {
+        sol::object obj = json_to_lua(sol::state_view(lua), marker);
+        BOOST_CHECK(obj.is<sol::table>());
+    }
+}
+
+// A Lua table with integer keys but a hole is carried as a JSON object (not
+// an array), so the payload validation still passes and send() succeeds.
+BOOST_AUTO_TEST_CASE(SparseIntegerKeyedArgSentAsObject) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    const std::string callee_path = write_script(
+        "cov8_callee.lua",
+        "local M = {}\nfunction M.echo(ctx, v) return v end\nreturn M\n");
+    auto callee = manager.spawn(callee_path, opts_for("cov8_callee").dump());
+    BOOST_REQUIRE(callee.success);
+
+    // {[1]='a', [3]='b'}: all keys are positive integers (array_like holds)
+    // but max_index != entry_count, so the table is emitted as an object.
+    BOOST_CHECK(run_script(
+        lua, "local ok, err = shield.send('" + callee.service_id +
+                 "', 'echo', {[1] = 'a', [3] = 'b'})\n"
+                 "assert(ok == true, err and (err.code .. ' ' .. err.message) "
+                 "or 'send failed')"));
+}
+
+// Direct use of the coroutine-call primitive: an invalid target suspends and
+// completes with the stable invalid_target error, while the packed-count
+// variants control how many positional arguments are forwarded.
+BOOST_AUTO_TEST_CASE(CoroCallPrimitiveShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string callee_path = write_script(
+        "cov9_callee.lua",
+        "local M = {}\nfunction M.echo(ctx, v) return v end\nreturn M\n");
+    const std::string caller_path = write_script(
+        "cov9_caller.lua",
+        "local M = {}\n"
+        "function M.prim_invalid(ctx)\n"
+        "  local sid = shield._coro_call(42, 'echo', {}, 800)\n"
+        "  local ok, err = coroutine.yield()\n"
+        "  return sid ~= nil and sid ~= 0, ok, err and err.code or nil\n"
+        "end\n"
+        "function M.prim_no_n(ctx, target)\n"
+        "  shield._coro_call(target, 'echo', {1}, 3000)\n"
+        "  local ok, v = coroutine.yield()\n"
+        "  return ok, v\n"
+        "end\n"
+        "function M.prim_bad_n(ctx, target)\n"
+        "  shield._coro_call(target, 'echo', {n = 'x', 1}, 3000)\n"
+        "  local ok, v = coroutine.yield()\n"
+        "  return ok, v\n"
+        "end\n"
+        "function M.prim_zero_n(ctx, target)\n"
+        "  shield._coro_call(target, 'echo', {n = 0}, 3000)\n"
+        "  local ok, v = coroutine.yield()\n"
+        "  return ok, v\n"
+        "end\n"
+        "return M\n");
+
+    auto callee = manager.spawn(callee_path, opts_for("cov9_callee").dump());
+    BOOST_REQUIRE(callee.success);
+    auto caller = manager.spawn(caller_path, opts_for("cov9_caller").dump());
+    BOOST_REQUIRE(caller.success);
+
+    {
+        auto res = manager.call(caller.service_id, "prim_invalid",
+                                nlohmann::json::array());
+        BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+        BOOST_REQUIRE(res.values.size() >= 3u);
+        BOOST_CHECK(res.values[0].get<bool>());  // a session id was returned
+        BOOST_CHECK(!res.values[1].get<bool>());
+        BOOST_CHECK_EQUAL(res.values[2].get<std::string>(), "invalid_target");
+    }
+    {
+        auto res = manager.call(caller.service_id, "prim_no_n",
+                                nlohmann::json::array({callee.service_id}));
+        BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+        BOOST_REQUIRE(res.values.size() >= 2u);
+        BOOST_CHECK(res.values[0].get<bool>());
+        BOOST_CHECK_EQUAL(res.values[1].get<int>(), 1);
+    }
+    {
+        // A non-integer "n" is ignored: the table size decides the arity.
+        auto res = manager.call(caller.service_id, "prim_bad_n",
+                                nlohmann::json::array({callee.service_id}));
+        BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+        BOOST_REQUIRE(res.values.size() >= 2u);
+        BOOST_CHECK(res.values[0].get<bool>());
+        BOOST_CHECK_EQUAL(res.values[1].get<int>(), 1);
+    }
+    {
+        // n = 0 sends no positional arguments at all.
+        auto res = manager.call(caller.service_id, "prim_zero_n",
+                                nlohmann::json::array({callee.service_id}));
+        BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+        BOOST_REQUIRE(res.values.size() >= 2u);
+        BOOST_CHECK(res.values[0].get<bool>());
+        BOOST_CHECK(res.values[1].is_null());
+    }
+}
+
+// A function forked inside a handler coroutine is re-anchored onto the main
+// thread's state; forking from the main thread (hostless) takes the
+// same-state shortcut and still dispatches through a borrowed service actor.
+BOOST_AUTO_TEST_CASE(ForkAnchorsInsideHandlerAndFromMainThread) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string callee_path = write_script(
+        "cov10_callee.lua",
+        "local M = {}\nfunction M.echo(ctx) return 1 end\nreturn M\n");
+    const std::string caller_path =
+        write_script("cov10_caller.lua",
+                     "local M = {}\n"
+                     "function M.fork_inside(ctx)\n"
+                     "  local id, err = shield.fork(function() end)\n"
+                     "  return type(id), err and err.code or nil\n"
+                     "end\n"
+                     "return M\n");
+    auto callee = manager.spawn(callee_path, opts_for("cov10_callee").dump());
+    BOOST_REQUIRE(callee.success);
+    auto caller = manager.spawn(caller_path, opts_for("cov10_caller").dump());
+    BOOST_REQUIRE(caller.success);
+
+    {
+        auto res = manager.call(caller.service_id, "fork_inside",
+                                nlohmann::json::array());
+        BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+        BOOST_REQUIRE(res.values.size() >= 2u);
+        BOOST_CHECK_EQUAL(res.values[0].get<std::string>(), "number");
+        BOOST_CHECK(res.values[1].is_null());
+    }
+
+    BOOST_CHECK(wait_until(
+        [&] {
+            return manager.pending_task_count_total() == 0 &&
+                   manager.active_fork_task_count() == 0;
+        },
+        std::chrono::seconds(10)));
+
+    // Main-thread fork (fn's state is already the main state, so the
+    // re-anchor is skipped) borrows the callee's actor and returns a task id.
+    sol::state main_lua;
+    main_lua.open_libraries(sol::lib::base, sol::lib::coroutine,
+                            sol::lib::table, sol::lib::string, sol::lib::os,
+                            sol::lib::math);
+    register_full_shield_api(main_lua, &manager, &runtime);
+    BOOST_CHECK(run_script(main_lua,
+                           "local id = shield.fork(function() end)\n"
+                           "assert(type(id) == 'number' and id > 0,\n"
+                           "  'fork returned ' .. tostring(id))"));
+    // Drain the execute phase too: pending_task_count_total() hits zero at
+    // dequeue time, while the task body — which runs main_lua's function on
+    // the borrowed actor thread — may still be in flight. Destroying
+    // main_lua before the body finishes races lua_close against it.
+    BOOST_CHECK(wait_until(
+        [&] {
+            return manager.pending_task_count_total() == 0 &&
+                   manager.active_fork_task_count() == 0;
+        },
+        std::chrono::seconds(10)));
+}
+
+// shield.config parses exponent-notation floats when the whole string is
+// consumed, including the capital-E variant.
+BOOST_AUTO_TEST_CASE(ConfigExponentNotationParsesAsFloat) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua);
+
+    shield::config::global_config().set("cov11.exponent", std::string("1E3"));
+    BOOST_CHECK(
+        run_script(lua, "assert(shield.config('cov11.exponent') == 1000.0)"));
+}
+
+// The _client_bind primitive refuses (returns 0, no suspension) when the
+// player id or the target service is empty. The client argument is a valid
+// marker table, so the 0 returns come from the empty-field guards and not
+// from client-argument rejection.
+BOOST_AUTO_TEST_CASE(ClientBindEmptyFieldGuards) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, nullptr, nullptr);
+
+    BOOST_CHECK(
+        run_script(lua,
+                   "ctx_marker = {__shield_client_ref = true,\n"
+                   "  gateway_address = 'ghost_gw', session_id = 7,\n"
+                   "  session_epoch = 3, player_id = 'p1',\n"
+                   "  protocol_profile_id = 'json'}\n"
+                   "assert(shield._client_bind(ctx_marker, '', 'target', "
+                   "100) == 0)\n"
+                   "assert(shield._client_bind(ctx_marker, 'p1', '', 100) == "
+                   "0)"));
+}
+
+// register_client_rpc_helper: the route-name reverse map is created on
+// demand, repaired when clobbered with a non-table, and reused when already
+// valid. The registered helper rejects a non-client argument.
+BOOST_AUTO_TEST_CASE(RegisterClientRpcHelperGuardArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, nullptr);
+
+    // Fresh state: the helper creates the reverse-name table (valid-arm).
+    register_client_rpc_helper(lua, &manager, "push_msg", 41);
+    BOOST_CHECK(run_script(lua,
+                           "assert(shield._client_route_names[41] == "
+                           "'push_msg')\n"
+                           "assert(type(shield.client_rpc.push_msg) == "
+                           "'function')\n"
+                           "assert(shield.client_rpc.push_msg(nil, {}) == "
+                           "false)"));
+
+    // Clobbered reverse map (valid table but not a table): repaired.
+    BOOST_CHECK(run_script(lua, "shield._client_route_names = 17"));
+    register_client_rpc_helper(lua, &manager, "kick_msg", 42);
+    BOOST_CHECK(run_script(lua,
+                           "assert(shield._client_route_names[42] == "
+                           "'kick_msg')\n"
+                           "assert(shield._client_route_names[41] == nil)"));
+
+    // Already-valid reverse map: reused without recreation.
+    register_client_rpc_helper(lua, &manager, "pong_msg", 43);
+    BOOST_CHECK(run_script(lua,
+                           "assert(shield._client_route_names[43] == "
+                           "'pong_msg')\n"
+                           "assert(shield._client_route_names[42] == "
+                           "'kick_msg')"));
+}
+
+// httpd route registration without a runtime is rejected with the stable
+// "not available" error even when a manager is present.
+BOOST_AUTO_TEST_CASE(HttpdWithoutRuntimeThrows) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, nullptr);
+
+    BOOST_CHECK(
+        run_script(lua,
+                   "local ok, err = pcall(function()\n"
+                   "  shield.httpd.get('/no-runtime', function() end)\n"
+                   "end)\n"
+                   "assert(ok == false)\n"
+                   "assert(tostring(err):find('not available', 1, true))"));
 }

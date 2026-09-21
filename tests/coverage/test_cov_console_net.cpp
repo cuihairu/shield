@@ -338,6 +338,58 @@ BOOST_AUTO_TEST_CASE(AcceptErrorWhileListeningIsLogged) {
 }
 #endif
 
+BOOST_AUTO_TEST_CASE(EmptyLineIsDeliveredToHandler) {
+    remove_socket();
+    boost::asio::io_context io;
+
+    std::atomic<int> lines{0};
+    std::string last;
+
+    ConsoleServer server(io, SOCK_PATH);
+    server.set_on_line([&](std::shared_ptr<ConsoleSession>, std::string line) {
+        ++lines;
+        last = line;
+    });
+    server.start();
+    IoRunner runner(io);
+
+    ConsoleClient client;
+    BOOST_REQUIRE(client.connect(SOCK_PATH));
+    BOOST_CHECK(wait_until([&] { return server.session_count() == 1; }));
+
+    // A bare newline carries an empty line body: the CR-strip guard must
+    // short-circuit on the empty line and still deliver it.
+    client.send_raw("\n");
+    BOOST_CHECK(wait_until([&] { return lines.load() == 1; }));
+    BOOST_CHECK_EQUAL(last, "");
+
+    client.close();
+    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(MissingOnLineHandlerIsTolerated) {
+    remove_socket();
+    boost::asio::io_context io;
+
+    // No set_on_line(): the session's line callback stays empty and lines
+    // are dropped without tearing the connection down.
+    ConsoleServer server(io, SOCK_PATH);
+    server.start();
+    IoRunner runner(io);
+
+    ConsoleClient client;
+    BOOST_REQUIRE(client.connect(SOCK_PATH));
+    BOOST_CHECK(wait_until([&] { return server.session_count() == 1; }));
+
+    client.send_line("ignored");
+    client.send_line("also-ignored");
+    std::this_thread::sleep_for(200ms);
+    BOOST_CHECK_EQUAL(server.session_count(), 1u);
+
+    client.close();
+    server.stop();
+}
+
 BOOST_AUTO_TEST_CASE(SessionStateHelpers) {
     remove_socket();
     boost::asio::io_context io;

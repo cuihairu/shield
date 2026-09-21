@@ -19,6 +19,7 @@
 
 #include "shield/caf_initializer.hpp"
 #include "shield/config/config.hpp"
+#include "shield/lua/client_identity.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
@@ -1151,4 +1152,632 @@ BOOST_AUTO_TEST_CASE(ClientIngressErrorHookReceivesRouteId) {
         manager.call(svc.service_id, "get_captured", nlohmann::json::array());
     BOOST_CHECK_EQUAL(r.values[0]["type"].get<std::string>(), "client_rpc");
     BOOST_CHECK_EQUAL(r.values[0]["method"].get<std::string>(), "8194");
+}
+
+// ---------------------------------------------------------------------------
+// Branch-coverage round: cache TTL hit / disabled cache / stale VM registry.
+// ---------------------------------------------------------------------------
+
+// A reload that lands inside the TTL window keeps the cached entry (the
+// expiry comparison takes its not-expired arm).
+BOOST_AUTO_TEST_CASE(ScriptCacheTtlHitWithinWindow) {
+    auto& config = shield::config::global_config();
+    config.set("lua.cache.ttl_seconds", static_cast<int64_t>(3600));
+    {
+        LuaRuntime runtime;
+        const std::string path =
+            write_script("cache_ttl_hit.lua",
+                         "return { get = function() return 'hit' end }\n");
+        auto vm1 = runtime.create_vm();
+        BOOST_REQUIRE(runtime.load_service_module(vm1, path));
+        BOOST_CHECK_EQUAL(runtime.cache_size(), 1u);
+        // Reload immediately (well inside the TTL): served from the cache.
+        auto vm2 = runtime.create_vm();
+        BOOST_REQUIRE(runtime.load_service_module(vm2, path));
+        BOOST_CHECK_EQUAL(runtime.cache_size(), 1u);
+    }
+    config.set("lua.cache.ttl_seconds", static_cast<int64_t>(0));
+}
+
+// With the cache disabled the file is read on every load and nothing is
+// inserted into (or served from) the cache.
+BOOST_AUTO_TEST_CASE(ScriptCacheDisabledBypassesCache) {
+    auto& config = shield::config::global_config();
+    config.set("lua.cache.enabled", false);
+    {
+        LuaRuntime runtime;
+        const std::string path =
+            write_script("cache_disabled.lua",
+                         "return { get = function() return 'off' end }\n");
+        auto vm = runtime.create_vm();
+        BOOST_REQUIRE(runtime.load_service_module(vm, path));
+        BOOST_CHECK_EQUAL(runtime.cache_size(), 0u);
+        nlohmann::json ret;
+        BOOST_REQUIRE(runtime.call_service_method(
+            vm, "get", nlohmann::json::array(), &ret));
+        BOOST_CHECK_EQUAL(ret[0].get<std::string>(), "off");
+    }
+    config.set("lua.cache.enabled", true);
+}
+
+// A destroyed VM leaves a stale entry in the state registry; looking the
+// old lua_State up again prunes it (the pointer is only compared as a key,
+// never dereferenced).
+BOOST_AUTO_TEST_CASE(VmForStatePrunesDestroyedEntry) {
+    LuaRuntime runtime;
+    lua_State* stale = nullptr;
+    {
+        auto vm = runtime.create_vm();
+        stale = runtime.vm_state(vm).lua_state();
+    }
+    auto looked = runtime.vm_for_state(stale);
+    BOOST_CHECK(looked == nullptr);
+}
+
+// register_http_route guards with error = nullptr: every rejection arm must
+// stay silent instead of dereferencing the error out-param.
+BOOST_AUTO_TEST_CASE(RegisterHttpRouteGuardsWithoutErrorOut) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    sol::state_view lua(runtime.vm_state(vm).lua_state());
+    lua.script("function h(ctx, req) return {} end");
+    sol::function fn = lua["h"];
+    // empty service id (guard order: service id first)
+    BOOST_CHECK(!runtime.register_http_route(vm, "", "GET", "/rt-a", fn));
+    // null VM
+    BOOST_CHECK(
+        !runtime.register_http_route(nullptr, "cov.rt", "GET", "/rt-b", fn));
+    // handler not a function
+    BOOST_CHECK(!runtime.register_http_route(vm, "cov.rt", "GET", "/rt-c",
+                                             sol::function()));
+    // empty path and a path without the leading slash
+    BOOST_CHECK(!runtime.register_http_route(vm, "cov.rt", "GET", "", fn));
+    BOOST_CHECK(!runtime.register_http_route(vm, "cov.rt", "GET", "abc", fn));
+    runtime.remove_http_routes_for_service("cov.rt");
+}
+
+// call_http_handler guards with error = nullptr: VM-gone, an invalid stored
+// handler, a plain-string body, and the params-conversion catch all run
+// without an error out-param.
+BOOST_AUTO_TEST_CASE(CallHttpHandlerGuardsWithoutErrorOut) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    sol::state_view lua(runtime.vm_state(vm).lua_state());
+    lua.script(
+        "function ph(ctx, req) return 'plain' end\n"
+        "function thrower(ctx, req) error('g6 boom') end\n");
+    // Plain-string body handler, no *error.
+    BOOST_CHECK(runtime.register_http_route(vm, "cov.g6", "GET", "/g6-plain",
+                                            lua["ph"]));
+    auto route = runtime.find_http_route("GET", "/g6-plain", nullptr);
+    BOOST_REQUIRE(route.has_value());
+    nlohmann::json desc;
+    BOOST_CHECK(runtime.call_http_handler(*route, {{"path", "/g6-plain"}}, desc,
+                                          nullptr));
+    BOOST_CHECK_EQUAL(desc["body"].get<std::string>(), "plain");
+
+    // Non-string param value: the conversion throws into the catch, and the
+    // catch keeps silent with error = nullptr.
+    BOOST_CHECK(runtime.register_http_route(vm, "cov.g6", "GET", "/g6-throw",
+                                            lua["thrower"]));
+    auto route2 = runtime.find_http_route("GET", "/g6-throw", nullptr);
+    BOOST_REQUIRE(route2.has_value());
+    nlohmann::json desc2;
+    BOOST_CHECK(!runtime.call_http_handler(
+        *route2, {{"path", "/x"}, {"params", {{"x", 5}}}}, desc2, nullptr));
+
+    // A stored handler that lost its function: still reports failure with
+    // error = nullptr.
+    auto route3 = runtime.find_http_route("GET", "/g6-plain", nullptr);
+    BOOST_REQUIRE(route3.has_value());
+    route3->handler = std::make_shared<sol::function>();
+    nlohmann::json desc3;
+    BOOST_CHECK(!runtime.call_http_handler(*route3, {{"path", "/g6-plain"}},
+                                           desc3, nullptr));
+    runtime.remove_http_routes_for_service("cov.g6");
+
+    // A route whose VM is gone: error = nullptr must not be dereferenced.
+    auto vm2 = runtime.create_vm();
+    sol::state_view lua2(runtime.vm_state(vm2).lua_state());
+    lua2.script("function gone(ctx, req) return {} end");
+    BOOST_CHECK(runtime.register_http_route(vm2, "cov.g6gone", "GET",
+                                            "/g6-gone", lua2["gone"]));
+    auto route4 = runtime.find_http_route("GET", "/g6-gone", nullptr);
+    BOOST_REQUIRE(route4.has_value());
+    // The route still holds a sol::function into vm2's state; abandoning it
+    // lets the route outlive the VM without a dangling luaL_unref running
+    // when the route table entry is erased below (the reference's
+    // destructor must never touch a closed lua_State).
+    route4->handler->abandon();
+    vm2.reset();
+    nlohmann::json desc4;
+    BOOST_CHECK(!runtime.call_http_handler(*route4, {{"path", "/g6-gone"}},
+                                           desc4, nullptr));
+    runtime.remove_http_routes_for_service("cov.g6gone");
+}
+
+// Handler response shapes: the status / headers field guards take every
+// reachable arm (missing, wrong type, array-keyed and numeric-valued
+// header tables, and a well-formed header map).
+BOOST_AUTO_TEST_CASE(CallHttpHandlerResponseFieldShapes) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    sol::state_view lua(runtime.vm_state(vm).lua_state());
+    lua.script(
+        "function s_empty(ctx, req) return {} end\n"
+        "function s_badstatus(ctx, req) return {status = 'x'} end\n"
+        "function s_numstatus(ctx, req) return {status = 201} end\n"
+        "function s_badheaders(ctx, req) return {headers = 'x'} end\n"
+        "function s_arrheaders(ctx, req) return {headers = {[1] = 'a'}} end\n"
+        "function s_numval(ctx, req) return {headers = {k = 1}} end\n"
+        "function s_okheaders(ctx, req) return {headers = {a = 'b'}} end\n");
+    struct Shape {
+        const char* fn;
+        const char* path;
+        int expected_status;
+    };
+    const Shape shapes[] = {
+        {"s_empty", "/g7-empty", 200},   {"s_badstatus", "/g7-bs", 200},
+        {"s_numstatus", "/g7-ns", 201},  {"s_badheaders", "/g7-bh", 200},
+        {"s_arrheaders", "/g7-ah", 200}, {"s_numval", "/g7-nv", 200},
+        {"s_okheaders", "/g7-oh", 200},
+    };
+    for (const auto& s : shapes) {
+        BOOST_CHECK_MESSAGE(
+            runtime.register_http_route(vm, "cov.g7", "GET", s.path, lua[s.fn]),
+            s.path);
+        auto route = runtime.find_http_route("GET", s.path, nullptr);
+        BOOST_REQUIRE_MESSAGE(route.has_value(), s.path);
+        nlohmann::json desc;
+        BOOST_CHECK_MESSAGE(runtime.call_http_handler(
+                                *route, {{"path", s.path}}, desc, nullptr),
+                            s.path);
+        BOOST_CHECK_EQUAL(desc["status"].get<int>(), s.expected_status);
+    }
+    runtime.remove_http_routes_for_service("cov.g7");
+}
+
+// service_table(nullptr) reports "no table" and restrict_vm(nullptr) is a
+// no-op — the null guards of the two VM helpers.
+BOOST_AUTO_TEST_CASE(NullVmHelperGuards) {
+    LuaRuntime runtime;
+    sol::table t = runtime.service_table(nullptr);
+    BOOST_CHECK(!t.valid());
+    runtime.restrict_vm(nullptr);  // must be a safe no-op
+}
+
+// lua_to_json on a default-constructed (invalid) sol::object reports
+// failure; a ClientRefBox userdata converts through its embedded payload.
+BOOST_AUTO_TEST_CASE(LuaToJsonInvalidObjectAndClientRefBox) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    sol::state_view lua(runtime.vm_state(vm).lua_state());
+
+    sol::object invalid;
+    nlohmann::json out;
+    // An invalid object converts like nil: success with a JSON null.
+    BOOST_CHECK(lua_to_json(invalid, &out));
+    BOOST_CHECK(out.is_null());
+
+    auto boxed = sol::make_object(lua, ClientRefBox{});
+    nlohmann::json out2;
+    BOOST_CHECK(lua_to_json(boxed, &out2));
+    BOOST_CHECK(out2.is_object());
+}
+
+// load_service_module failure paths with error = nullptr: missing file,
+// syntax error, a top-level error() raise, and a non-table module return.
+BOOST_AUTO_TEST_CASE(LoadServiceModuleFailuresWithoutErrorOut) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    BOOST_CHECK(
+        !runtime.load_service_module(vm, kTmpDir + "/cov10_no_such.lua"));
+    const std::string syntax = write_script("cov10_syntax.lua", "return =\n");
+    BOOST_CHECK(!runtime.load_service_module(vm, syntax));
+    const std::string toperr =
+        write_script("cov10_toperr.lua", "error('top-level boom')\n");
+    BOOST_CHECK(!runtime.load_service_module(vm, toperr));
+    const std::string notable =
+        write_script("cov10_notable.lua", "return 42\n");
+    BOOST_CHECK(!runtime.load_service_module(vm, notable));
+}
+
+// call_service_function message-slot shapes: string / nil / non-string
+// failure messages, with and without an error out-param.
+BOOST_AUTO_TEST_CASE(CallServiceFunctionMessageSlotShapes) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    const std::string path =
+        write_script("cov11_msgs.lua",
+                     "local M = {}\n"
+                     "function M.f_false_str() return false, 'because' end\n"
+                     "function M.f_false_nil() return false, nil end\n"
+                     "function M.f_false_num() return false, 42 end\n"
+                     "function M.f_false_fn() return false, print end\n"
+                     "function M.f_false_tbl() return false, {t = 1} end\n"
+                     "function M.f_nil_extra() return nil, 'extra' end\n"
+                     "function M.f_nil_nil() return nil, nil end\n"
+                     "function M.f_boom() error('slot boom') end\n"
+                     "M.not_fn = 42\n"
+                     "return M\n");
+    BOOST_REQUIRE(runtime.load_service_module(vm, path));
+
+    std::string error;
+    // A string message slot is passed through verbatim.
+    BOOST_CHECK(!runtime.call_service_function(
+        vm, "f_false_str", nlohmann::json::object(), &error));
+    BOOST_CHECK_EQUAL(error, "because");
+    // A nil second slot produces the generic "returned false" message.
+    BOOST_CHECK(!runtime.call_service_function(
+        vm, "f_false_nil", nlohmann::json::object(), &error));
+    BOOST_CHECK_EQUAL(error, "f_false_nil returned false");
+    // Non-string slots (number / function / table) go through the shared
+    // Lua->JSON stringify fallback.
+    for (const char* name : {"f_false_num", "f_false_fn", "f_false_tbl"}) {
+        error.clear();
+        BOOST_CHECK_MESSAGE(!runtime.call_service_function(
+                                vm, name, nlohmann::json::object(), &error),
+                            name);
+        BOOST_CHECK_MESSAGE(
+            error.find("failed with non-string message") != std::string::npos,
+            name);
+    }
+    // A nil first return forwards a non-nil second slot as the message.
+    BOOST_CHECK(!runtime.call_service_function(
+        vm, "f_nil_extra", nlohmann::json::object(), &error));
+    BOOST_CHECK_EQUAL(error, "extra");
+    // A nil second slot produces the generic "returned nil" message.
+    BOOST_CHECK(!runtime.call_service_function(
+        vm, "f_nil_nil", nlohmann::json::object(), &error));
+    BOOST_CHECK_EQUAL(error, "f_nil_nil returned nil");
+    // A handler error surfaces through the checked result.
+    BOOST_CHECK(!runtime.call_service_function(
+        vm, "f_boom", nlohmann::json::object(), &error));
+    BOOST_CHECK(error.find("slot boom") != std::string::npos);
+    // A non-function module member is rejected.
+    BOOST_CHECK(!runtime.call_service_function(
+        vm, "not_fn", nlohmann::json::object(), &error));
+    BOOST_CHECK_EQUAL(error, "not_fn is not a function");
+    // The same failure shapes with error = nullptr.
+    BOOST_CHECK(
+        !runtime.call_service_function(vm, "not_fn", nlohmann::json::object()));
+    BOOST_CHECK(
+        !runtime.call_service_function(vm, "f_boom", nlohmann::json::object()));
+    BOOST_CHECK(!runtime.call_service_function(vm, "f_false_nil",
+                                               nlohmann::json::object()));
+    BOOST_CHECK(!runtime.call_service_function(vm, "f_false_num",
+                                               nlohmann::json::object()));
+    BOOST_CHECK(!runtime.call_service_function(vm, "f_nil_extra",
+                                               nlohmann::json::object()));
+}
+
+// resolve_service_method branches: a non-function member, and the out/error
+// nullptr combinations on success and failure.
+BOOST_AUTO_TEST_CASE(ResolveServiceMethodBranches) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    const std::string path =
+        write_script("cov12_resolve.lua",
+                     "local M = {}\n"
+                     "function M.add(a, b) return a + b end\n"
+                     "M.not_fn = 42\n"
+                     "return M\n");
+    BOOST_REQUIRE(runtime.load_service_module(vm, path));
+
+    std::string error;
+    sol::function out;
+    BOOST_CHECK(!runtime.resolve_service_method(vm, "not_fn", &out, &error));
+    BOOST_CHECK(error.find("not_fn") != std::string::npos);
+    BOOST_CHECK(error.find("missing or not a function") != std::string::npos);
+
+    error.clear();
+    BOOST_CHECK(
+        !runtime.resolve_service_method(vm, "missing", nullptr, nullptr));
+    BOOST_CHECK(
+        !runtime.resolve_service_method(vm, "not_fn", nullptr, nullptr));
+    BOOST_CHECK(runtime.resolve_service_method(vm, "add", &out, nullptr));
+    BOOST_CHECK(out.valid());
+    BOOST_CHECK(runtime.resolve_service_method(vm, "add", nullptr, nullptr));
+}
+
+// call_service_method guards with returns = nullptr and error = nullptr:
+// not loaded, non-function member, non-array args, unsupported return, and
+// a handler error.
+BOOST_AUTO_TEST_CASE(CallServiceMethodWithoutErrorOut) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    // not loaded
+    BOOST_CHECK(
+        !runtime.call_service_method(vm, "add", nlohmann::json::array()));
+
+    const std::string path =
+        write_script("cov13_methods.lua",
+                     "local M = {}\n"
+                     "function M.add(a, b) return a + b end\n"
+                     "function M.boom() error('m13 boom') end\n"
+                     "function M.fn_out() return print end\n"
+                     "M.not_fn = 42\n"
+                     "return M\n");
+    BOOST_REQUIRE(runtime.load_service_module(vm, path));
+
+    BOOST_CHECK(
+        runtime.call_service_method(vm, "add", nlohmann::json::array({2, 3})));
+    BOOST_CHECK(
+        !runtime.call_service_method(vm, "missing", nlohmann::json::array()));
+    BOOST_CHECK(
+        !runtime.call_service_method(vm, "not_fn", nlohmann::json::array()));
+    BOOST_CHECK(
+        !runtime.call_service_method(vm, "add", nlohmann::json::object()));
+    // An unsupported (function) return is only detected through the
+    // returns out-param; with returns = nullptr the call just succeeds.
+    nlohmann::json fn_returns;
+    BOOST_CHECK(!runtime.call_service_method(
+        vm, "fn_out", nlohmann::json::array(), &fn_returns));
+    BOOST_CHECK(
+        !runtime.call_service_method(vm, "boom", nlohmann::json::array()));
+}
+
+// invoke_coroutine completion matrix on a factory-bearing service VM: every
+// session / manager / service-id combination of finish_ok and finish_err.
+BOOST_AUTO_TEST_CASE(InvokeCoroutineCompletionMatrix) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov14_matrix.lua",
+                     "local M = {}\n"
+                     "function M.ok() return 'done' end\n"
+                     "function M.boom() error('matrix boom') end\n"
+                     "function M.boom_tbl() error({code = 7}) end\n"
+                     "G_boom = M.boom\n"
+                     "G_boom_tbl = M.boom_tbl\n"
+                     "return M\n");
+    auto svc = manager.spawn(path, R"({"name": "cov14_matrix"})");
+    BOOST_REQUIRE(svc.success);
+    auto vm_handle = manager.service_vm(svc.service_id);
+    BOOST_REQUIRE(vm_handle != nullptr);
+    sol::state& lua = runtime.vm_state(vm_handle);
+
+    // finish_ok combinations (success).
+    BOOST_CHECK(runtime.call_service_method_coroutine(vm_handle, "ok",
+                                                      nlohmann::json::array()));
+    BOOST_CHECK(runtime.call_service_method_coroutine(
+        vm_handle, "ok", nlohmann::json::array(), nullptr, 141, &manager,
+        svc.service_id));
+    BOOST_CHECK(runtime.call_service_method_coroutine(
+        vm_handle, "ok", nlohmann::json::array(), nullptr, 142, &manager, ""));
+
+    // finish_err combinations (failure): label-less error text, missing
+    // manager, empty service id, and a non-string error object.
+    std::string error;
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm_handle, "boom", nlohmann::json::array(), &error));
+    BOOST_CHECK(error.find("boom") != std::string::npos);
+
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm_handle, "boom", nlohmann::json::array(), nullptr, 0, nullptr, ""));
+
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm_handle, "boom", nlohmann::json::array(), nullptr, 143, &manager,
+        svc.service_id));
+
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm_handle, "boom", nlohmann::json::array(), nullptr, 0, &manager, ""));
+
+    // A table error object keeps the default "raised an error" text (the
+    // stack top is not a string).
+    error.clear();
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm_handle, "boom_tbl", nlohmann::json::array(), &error, 144, &manager,
+        svc.service_id));
+    BOOST_CHECK(error.find("raised an error") != std::string::npos);
+
+    // invoke_coroutine directly with an empty method label: the label-less
+    // default message arm. The functions are picked up from _G (the script
+    // aliases them there) because the module members live in the service
+    // table, not in the global table.
+    sol::function boom = lua["G_boom"];
+    BOOST_REQUIRE(boom.valid());
+    error.clear();
+    BOOST_CHECK(!runtime.invoke_coroutine(vm_handle, boom, {}, "handler", "", 0,
+                                          nullptr, "", &error));
+    BOOST_CHECK(error.find("matrix boom") != std::string::npos);
+
+    // And with a non-string error object the label-less default text stands.
+    sol::function boom_tbl = lua["G_boom_tbl"];
+    BOOST_REQUIRE(boom_tbl.valid());
+    error.clear();
+    BOOST_CHECK(!runtime.invoke_coroutine(vm_handle, boom_tbl, {}, "handler",
+                                          "", 0, nullptr, "", &error));
+    BOOST_CHECK_EQUAL(error, "handler raised an error");
+}
+
+// A service whose on_init raises fails its spawn; the pending-exit shortcut
+// during spawn-init is skipped through its in-progress arm.
+BOOST_AUTO_TEST_CASE(SpawnOnInitErrorFailsSpawn) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov15_initfail.lua",
+                     "local M = {}\n"
+                     "function M.on_init() error('init boom') end\n"
+                     "return M\n");
+    auto svc = manager.spawn(path, R"({"name": "cov15_initfail"})");
+    BOOST_CHECK(!svc.success);
+}
+
+// call_service_method_coroutine fallback (bare VM, no factory) combos:
+// guards with error = nullptr and completion with / without a manager.
+BOOST_AUTO_TEST_CASE(CallServiceMethodCoroutineFallbackCombos) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    auto vm = runtime.create_vm();
+    // not loaded, no error out-param, with and without completion routing.
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm, "add", nlohmann::json::array()));
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm, "add", nlohmann::json::array(), nullptr, 161, &manager, ""));
+
+    const std::string path =
+        write_script("cov16_fallback.lua",
+                     "local M = {}\n"
+                     "function M.ok() return 'fine' end\n"
+                     "function M.boom() error('fb boom') end\n"
+                     "M.not_fn = 42\n"
+                     "return M\n");
+    BOOST_REQUIRE(runtime.load_service_module(vm, path));
+
+    // missing method: error = nullptr both with and without a manager.
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm, "missing", nlohmann::json::array()));
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm, "missing", nlohmann::json::array(), nullptr, 162, &manager, ""));
+    // non-function member and non-array args with error = nullptr.
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm, "not_fn", nlohmann::json::array()));
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm, "ok", nlohmann::json::object()));
+    // fallback dispatch failure routed to a pending call.
+    BOOST_CHECK(!runtime.call_service_method_coroutine(
+        vm, "boom", nlohmann::json::array(), nullptr, 163, &manager, "cov16"));
+    // fallback dispatch success routed to a pending call.
+    BOOST_CHECK(runtime.call_service_method_coroutine(
+        vm, "ok", nlohmann::json::array(), nullptr, 164, &manager, "cov16"));
+}
+
+// invoke_client_rpc with error = nullptr across the guard, completion and
+// error-hook branches; plus the factory-failure and non-thread factory
+// shapes on a bare VM.
+BOOST_AUTO_TEST_CASE(InvokeClientRpcNullErrorAndManagerCombos) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    auto bare = runtime.create_vm();
+    // factory missing, error = nullptr
+    sol::state_view bare_lua(runtime.vm_state(bare).lua_state());
+    bare_lua.script("function bare_h(ctx, client, req) return 'x' end");
+    sol::function bare_h = bare_lua["bare_h"];
+    ClientIngress ingress;
+    ingress.decoded_request = nlohmann::json::object();
+    BOOST_CHECK(!runtime.invoke_client_rpc(bare, bare_h, ingress, nullptr));
+
+    const std::string path = write_script(
+        "cov17_rpc.lua",
+        "local M = {}\n"
+        "function M.gw_ok(ctx, client, req) return 'done' end\n"
+        "function M.gw_boom(ctx, client, req) error('rpc boom 17') end\n"
+        "function M.gw_tbl(ctx, client, req) error({code = 3}) end\n"
+        "_G.__cov17_ok = M.gw_ok\n"
+        "_G.__cov17_boom = M.gw_boom\n"
+        "_G.__cov17_tbl = M.gw_tbl\n"
+        "return M\n");
+    auto svc = manager.spawn(path, R"({"name": "cov17_rpc"})");
+    BOOST_REQUIRE(svc.success);
+    auto vm = manager.service_vm(svc.service_id);
+    BOOST_REQUIRE(vm != nullptr);
+    sol::state& lua = runtime.vm_state(vm);
+    sol::function ok_h = lua["__cov17_ok"];
+    sol::function boom_h = lua["__cov17_boom"];
+    sol::function tbl_h = lua["__cov17_tbl"];
+
+    // handler not a function (error = nullptr)
+    BOOST_CHECK(
+        !runtime.invoke_client_rpc(vm, sol::function(), ingress, nullptr));
+    // success without a manager and without an error out-param
+    BOOST_CHECK(runtime.invoke_client_rpc(vm, ok_h, ingress, nullptr));
+    // success with a manager but an empty service id
+    BOOST_CHECK(
+        runtime.invoke_client_rpc(vm, ok_h, ingress, nullptr, &manager, ""));
+    // failure without a manager and without an error out-param
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm, boom_h, ingress, nullptr));
+    // failure with a manager and an empty service id
+    BOOST_CHECK(
+        !runtime.invoke_client_rpc(vm, boom_h, ingress, nullptr, &manager, ""));
+    // failure with a non-string error object
+    std::string error;
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm, tbl_h, ingress, &error, &manager,
+                                           svc.service_id));
+    BOOST_CHECK(error.find("raised an error") != std::string::npos);
+    // request value missing, error = nullptr
+    ClientIngress no_req;
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm, ok_h, no_req, nullptr));
+
+    // factory failure and non-thread factory result on a bare VM.
+    auto vm2 = runtime.create_vm();
+    sol::state_view lua2(runtime.vm_state(vm2).lua_state());
+    lua2.script(
+        "function ok_fn() end\n"
+        "__shield_run_handler = function() error('factory kaput 17') end\n");
+    sol::function ok2 = lua2["ok_fn"];
+    ingress.decoded_request = nlohmann::json::object();
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm2, ok2, ingress, nullptr));
+    lua2.script("__shield_run_handler = function() return {} end");
+    BOOST_CHECK(!runtime.invoke_client_rpc(vm2, ok2, ingress, nullptr));
+}
+
+// exec_lua with error = nullptr across load / exec failures, plus the
+// non-string tostring-failure and exec-error fallback arms.
+BOOST_AUTO_TEST_CASE(ExecLuaNullErrorAndTostringFallbacks) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    nlohmann::json result;
+
+    // null VM
+    BOOST_CHECK(!runtime.exec_lua(nullptr, "return 1", &result));
+    // syntax error without an error out-param
+    BOOST_CHECK(!runtime.exec_lua(vm, "ret urn 1", &result));
+    // runtime error without an error out-param
+    BOOST_CHECK(!runtime.exec_lua(vm, "error('e18')", &result));
+    // a non-string error object: lua_tostring yields null and the fallback
+    // message is used.
+    std::string error;
+    BOOST_CHECK(!runtime.exec_lua(vm, "error({})", &result, &error));
+    BOOST_CHECK_EQUAL(error, "exec error");
+    // a raising __tostring whose error object is itself a non-string: the
+    // tostring pcall fails and lua_tostring yields null again.
+    result.clear();
+    const bool ok = runtime.exec_lua(
+        vm, "return setmetatable({}, {__tostring = function() error({}) end})",
+        &result, &error);
+    BOOST_CHECK(ok);
+    BOOST_REQUIRE(result.is_array() && result.size() == 1u);
+    BOOST_CHECK(result[0].get<std::string>().find("non-string error") !=
+                std::string::npos);
+}
+
+// LuaPack edge shapes: a default-constructed sol::object encodes as Nil,
+// and both bad-magic byte orders are rejected by the decoder.
+BOOST_AUTO_TEST_CASE(LuaPackInvalidObjectAndBadMagic) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    sol::state_view lua(runtime.vm_state(vm).lua_state());
+
+    LuaPackEncoder::Config cfg;
+    LuaPackEncoder encoder(cfg);
+    std::vector<uint8_t> out;
+    sol::object invalid;
+    BOOST_CHECK(encoder.encode(lua, invalid, out));
+    // 4-byte header (magic + version + flags) plus the Nil value tag.
+    BOOST_REQUIRE_EQUAL(out.size(), 5u);
+    BOOST_CHECK_EQUAL(out[4],
+                      static_cast<uint8_t>(LuaPackEncoder::TypeTag::Nil));
+
+    LuaPackDecoder decoder;
+    size_t consumed = 0;
+    sol::object v1 = decoder.decode(lua, {'X', 'P', 1, 0}, consumed);
+    BOOST_CHECK(v1 == sol::nil);
+    BOOST_CHECK_EQUAL(decoder.error(), "invalid LuaPack magic bytes");
+    sol::object v2 = decoder.decode(lua, {'L', 'B', 1, 0}, consumed);
+    BOOST_CHECK(v2 == sol::nil);
+    BOOST_CHECK_EQUAL(decoder.error(), "invalid LuaPack magic bytes");
 }

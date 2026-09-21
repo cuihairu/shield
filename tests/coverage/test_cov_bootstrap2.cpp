@@ -81,8 +81,8 @@ BOOST_AUTO_TEST_CASE(UnresolvedCodecProviderFailsInitialize) {
     force_shutdown();
 }
 
-// An unparseable http.host makes the ops-server start() throw inside the
-// guarded block; the error is logged and initialization still completes.
+// An unparseable http.host makes the ops-server start() report failure via
+// its return value; the error is logged and initialization still completes.
 BOOST_AUTO_TEST_CASE(HttpOpsBadHostIsNonFatal) {
     ShutdownGuard guard;
     const fs::path script = lua_script("ops_host.lua");

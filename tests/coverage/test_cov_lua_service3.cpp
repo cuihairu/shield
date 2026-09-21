@@ -128,6 +128,25 @@ BOOST_AUTO_TEST_CASE(ProxiedCallPrimitives) {
                            std::chrono::milliseconds(3000)));
     BOOST_CHECK_EQUAL(hook_session.load(), expiring);
     BOOST_CHECK_EQUAL(hook_code, "timeout");
+
+    // A non-proxied (caller-side) session: abandon is a no-op — the entry
+    // stays put and is later dropped by complete_call on its no-caller-actor
+    // cleanup path (a bare VM caller has an empty caller_service).
+    sol::state scratch;
+    scratch.open_libraries(sol::lib::base);
+    const uint64_t caller_session =
+        manager.suspend_for_call(scratch.lua_state(), 60000);
+    BOOST_CHECK_NE(caller_session, 0u);
+    // While a proxied entry is pending, service_stats attributes it to no
+    // service entry (its caller_service is empty, matching no map key).
+    const uint64_t proxied_pending = manager.begin_proxied_call(60000);
+    (void)manager.service_stats();
+    manager.abandon_proxied_call(proxied_pending);
+    // Abandoning the non-proxied entry must not erase it...
+    manager.abandon_proxied_call(caller_session);
+    // ...complete_call still finds it and drops it (no caller actor).
+    manager.complete_call(caller_session, false,
+                          nlohmann::json::array({"gone"}));
 }
 
 // ---------------------------------------------------------------------------

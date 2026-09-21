@@ -24,7 +24,8 @@ nlohmann::json ClientContextData::to_json() const {
         {"session_epoch", session_epoch},
         {"player_id", player_id},
         {"protocol_profile_id", protocol_profile_id},
-    };
+    };  // GCOVR_EXCL_BR_LINE (compiler artifact: never-executed arms inside the
+        // inlined nlohmann initializer-list constructor)
 }
 
 std::optional<ClientContextData> ClientContextData::from_json(

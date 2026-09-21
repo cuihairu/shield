@@ -260,4 +260,52 @@ BOOST_AUTO_TEST_CASE(ParseRejectsRemovedAddressingKeys) {
     BOOST_CHECK_NE(error.find("response_schema"), std::string::npos);
 }
 
+// Branch closure: every parse failure path must also work when the caller
+// passes no error out-param at all.
+BOOST_AUTO_TEST_CASE(ParseFailureModesWithNullErrorOutParam) {
+    const char* const bad_inputs[] = {
+        "{not json",
+        R"({"a": 1})",
+        R"([42])",
+        R"([{"name": "noid"}])",
+        R"([{"id": 0, "binding": "x"}])",
+        R"([{"id": 1}])",
+        R"([{"id": 1, "binding": "x", "direction": 3}])",
+        R"([{"id": 1, "binding": "x", "direction": "sideways"}])",
+        R"json([{"id":1,"binding":"x","schema_id":42}])json",
+        R"json([{"id":1,"binding":"x","response_schema":"r"}])json",
+        R"([{"id": 1, "binding": "x", "action": 9}])",
+        R"([{"id": 1, "binding": "x", "action": "teleport"}])",
+        R"([{"id": 1, "binding": "x"}, {"id": 1, "binding": "y"}])",
+        R"([{"id": 1, "name": "dup", "binding": "x"},
+            {"id": 2, "name": "dup", "binding": "y"}])",
+    };
+    for (const auto* input : bad_inputs) {
+        RpcDescriptorTable table;
+        BOOST_CHECK_MESSAGE(
+            !shield::transport::parse_rpc_routes_json(input, table, nullptr),
+            input);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(MergeConflictWithoutErrorOutParam) {
+    RpcDescriptorTable table;
+    RpcDescriptorTable conflicting;
+    BOOST_CHECK(table.add(make_descriptor(1, "login")));
+    BOOST_CHECK(conflicting.add(make_descriptor(1, "dup")));
+    // error == nullptr must not crash the conflict path.
+    BOOST_CHECK(!table.merge(conflicting, nullptr));
+}
+
+BOOST_AUTO_TEST_CASE(ParseDirectionLongAlias) {
+    RpcDescriptorTable table;
+    std::string error;
+    BOOST_CHECK(shield::transport::parse_rpc_routes_json(
+        R"([{"id": 1, "binding": "x", "direction": "server_to_client"}])",
+        table, &error));
+    const auto* route = table.find(1);
+    BOOST_REQUIRE(route != nullptr);
+    BOOST_CHECK(route->direction == RouteDirection::ServerToClient);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

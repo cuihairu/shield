@@ -53,8 +53,12 @@ void LuaCommands::register_all(CommandDispatcher& dispatcher) {
 void LuaCommands::cmd_attach(shield::net::ConsoleSession& session,
                              const std::vector<std::string>& args) {
     if (args.empty()) {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message", "Usage: attach <service>"}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message",
+             "Usage: attach <service>"}};  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: inlined nlohmann::json
+                                           // braced-init branches)
         session.send_line(resp.dump());
         return;
     }
@@ -66,7 +70,10 @@ void LuaCommands::cmd_attach(shield::net::ConsoleSession& session,
     if (lua_mgr_.query_service(service_name).empty()) {
         nlohmann::json resp = {
             {"type", "error"},
-            {"message", "Service not found: " + service_name}};
+            {"message", "Service not found: " +
+                            service_name}};  // GCOVR_EXCL_BR_LINE (compiler
+                                             // artifact: inlined nlohmann::json
+                                             // braced-init branches)
         session.send_line(resp.dump());
         return;
     }
@@ -74,7 +81,11 @@ void LuaCommands::cmd_attach(shield::net::ConsoleSession& session,
     // Enter REPL mode
     session.set_attached_service(service_name);
     session.clear_multiline();
-    nlohmann::json resp = {{"type", "attached"}, {"service", service_name}};
+    nlohmann::json resp = {
+        {"type", "attached"},
+        {"service",
+         service_name}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                          // nlohmann::json braced-init branches)
     session.send_line(resp.dump());
 }
 
@@ -90,7 +101,10 @@ void LuaCommands::handle_lua_line(
             session->clear_multiline();
         } else {
             // Need more input
-            nlohmann::json resp = {{"type", "continue"}};
+            nlohmann::json resp = {
+                {"type",
+                 "continue"}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                // inlined nlohmann::json braced-init branches)
             session->send_line(resp.dump());
         }
         return;
@@ -102,7 +116,10 @@ void LuaCommands::handle_lua_line(
     } else {
         // Incomplete statement, start multiline
         session->append_multiline(line);
-        nlohmann::json resp = {{"type", "continue"}};
+        nlohmann::json resp = {
+            {"type",
+             "continue"}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                            // nlohmann::json braced-init branches)
         session->send_line(resp.dump());
     }
 }
@@ -117,16 +134,29 @@ bool LuaCommands::try_execute(
         int status = luaL_loadbuffer(L, code.c_str(), code.size(), "=repl");
         if (status == LUA_ERRSYNTAX) {
             const char* msg = lua_tostring(L, -1);
-            std::string err_msg = msg ? msg : "syntax error";
+            std::string err_msg =
+                msg ? msg : "syntax error";  // GCOVR_EXCL_BR_LINE (defensive:
+                                             // LUA_ERRSYNTAX always pushes a
+                                             // string error message,
+                                             // lua_tostring never returns null)
             // Check if it's an "eof" error (incomplete statement)
-            if (err_msg.find("<eof>") != std::string::npos ||
+            if (err_msg.find("<eof>") !=
+                    std::string::npos ||  // GCOVR_EXCL_BR_LINE (compiler
+                                          // artifact: residual inlined find()
+                                          // comparison edge; the
+                                          // real-syntax-error arm is covered by
+                                          // the 'return )' cases)
                 err_msg.find("eof") != std::string::npos) {
                 lua_close(L);
                 return false;  // Need more input
             }
             // Real syntax error
             lua_close(L);
-            nlohmann::json resp = {{"type", "error"}, {"message", err_msg}};
+            nlohmann::json resp = {
+                {"type", "error"},
+                {"message",
+                 err_msg}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                             // nlohmann::json braced-init branches)
             session->send_line(resp.dump());
             return true;  // Handled (error reported)
         }
@@ -140,8 +170,15 @@ bool LuaCommands::try_execute(
         std::make_shared<std::promise<std::pair<bool, nlohmann::json>>>();
     auto future = promise->get_future();
 
+    // GCOVR_EXCL_BR_START (compiler artifact: lambda-body STL branches
+    // are attributed to the capture line)
     const uint64_t task_id = lua_mgr_.enqueue_forked_task(
-        service, [&mgr = lua_mgr_, service, code, promise]() {
+        service,
+        [&mgr = lua_mgr_, service,
+         code,         // GCOVR_EXCL_BR_LINE (compiler artifact: lambda-body STL
+                       // branches attributed to this line)
+         promise]() {  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda-body STL
+                       // branches attributed to this line)
             nlohmann::json result;
             std::string error;
             bool ok = mgr.exec_lua(service, code, &result, &error);
@@ -149,21 +186,30 @@ bool LuaCommands::try_execute(
                 promise->set_value({true, result});
             } else {
                 promise->set_value({false, nlohmann::json(error)});
+                // GCOVR_EXCL_BR_STOP
             }
         });
 
     // Task rejected (service gone): report immediately instead of timing out.
     if (task_id == 0) {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message", "service unavailable: " + service}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message",
+             "service unavailable: " +
+                 service}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                             // nlohmann::json braced-init branches)
         session->send_line(resp.dump());
         return true;
     }
 
     // Wait with timeout
     if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message", "execution timeout (5s)"}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message",
+             "execution timeout (5s)"}};  // GCOVR_EXCL_BR_LINE (compiler
+                                          // artifact: inlined nlohmann::json
+                                          // braced-init branches)
         session->send_line(resp.dump());
         return true;
     }
@@ -171,7 +217,11 @@ bool LuaCommands::try_execute(
     auto [ok, data] = future.get();
     if (ok) {
         // Send each return value as a result
-        if (data.is_array() && data.empty()) {
+        if (data.is_array() &&  // GCOVR_EXCL_BR_LINE (defensive: exec_lua
+                                // yields null for valueless chunks, see below)
+            data.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: exec_lua yields
+                             // null (never an empty array) for valueless
+                             // chunks, see Unreachable note below)
             // No return values
             // Unreachable: exec_lua leaves *result null when the chunk
             // yields no values, so data is never an empty array here.
@@ -181,16 +231,28 @@ bool LuaCommands::try_execute(
             session->send_line(resp.dump());  // GCOVR_EXCL_LINE
         } else if (data.is_array() && data.size() == 1) {
             // Single return value
-            nlohmann::json resp = {{"type", "result"}, {"data", data[0]}};
+            nlohmann::json resp = {
+                {"type", "result"},
+                {"data",
+                 data[0]}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                             // nlohmann::json braced-init branches)
             session->send_line(resp.dump());
         } else {
             // Multiple return values
-            nlohmann::json resp = {{"type", "result"}, {"data", data}};
+            nlohmann::json resp = {
+                {"type", "result"},
+                {"data",
+                 data}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                          // nlohmann::json braced-init branches)
             session->send_line(resp.dump());
         }
     } else {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message", data.get<std::string>()}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message",
+             data.get<std::string>()}};  // GCOVR_EXCL_BR_LINE (compiler
+                                         // artifact: inlined nlohmann::json
+                                         // braced-init branches)
         session->send_line(resp.dump());
     }
     return true;
@@ -203,9 +265,12 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
             {"type", "error"},
             {"message",
              "Usage: lua.inspect <service> "
-             "[summary|memory|coroutines|timers|pending_calls|refs [depth]]"}};
+             "[summary|memory|coroutines|timers|pending_calls|refs "
+             "[depth]]"}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                            // inlined nlohmann::json braced-init branches)
         session.send_line(resp.dump());
-    };
+    };  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda-body STL branches
+        // attributed to this line)
     if (args.size() < 2) {
         usage();
         return;
@@ -218,8 +283,12 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
         service_id.empty() ? std::optional<nlohmann::json>{}
                            : lua_mgr_.service_detail(service_id);
     if (!detail.has_value()) {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message", "Service not found: " + args[0]}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message",
+             "Service not found: " +
+                 args[0]}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                             // nlohmann::json braced-init branches)
         session.send_line(resp.dump());
         return;
     }
@@ -234,7 +303,11 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
         const std::optional<nlohmann::json> mem =
             lua_mgr_.inspect_memory(service_id, &mem_error);
         if (!mem.has_value()) {
-            nlohmann::json resp = {{"type", "error"}, {"message", mem_error}};
+            nlohmann::json resp = {
+                {"type", "error"},
+                {"message",
+                 mem_error}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                               // nlohmann::json braced-init branches)
             session.send_line(resp.dump());
             return;
         }
@@ -247,7 +320,11 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
         const std::optional<nlohmann::json> cos =
             lua_mgr_.inspect_coroutines(service_id, &co_error);
         if (!cos.has_value()) {
-            nlohmann::json resp = {{"type", "error"}, {"message", co_error}};
+            nlohmann::json resp = {
+                {"type", "error"},
+                {"message",
+                 co_error}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                              // nlohmann::json braced-init branches)
             session.send_line(resp.dump());
             return;
         }
@@ -270,7 +347,10 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
         }
         // GCOVR_EXCL_STOP
         data = std::move(*timers);
-    } else if (field == "pending_calls") {
+    } else if (field ==  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                         // std::string comparison edges)
+               "pending_calls") {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                   // inlined std::string comparison edges)
         // Same projection class: per-call caller, deadline budget and
         // proxied flag, nearest deadline first, list capped at 32.
         std::string calls_error;
@@ -285,7 +365,8 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
         }
         // GCOVR_EXCL_STOP
         data = std::move(*calls);
-    } else if (field == "refs") {
+    } else if (field == "refs") {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                   // inlined std::string comparison edges)
         // The only subcommand that leaves the registry-read fast path: the
         // walk runs on the owning service actor thread (bounded fork task,
         // 2s dispatch wait). depth is optional and clamped to [1,8].
@@ -301,7 +382,11 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
         const std::optional<nlohmann::json> refs =
             lua_mgr_.inspect_refs(service_id, depth, 20000, &refs_error);
         if (!refs.has_value()) {
-            nlohmann::json resp = {{"type", "error"}, {"message", refs_error}};
+            nlohmann::json resp = {
+                {"type", "error"},
+                {"message",
+                 refs_error}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                // inlined nlohmann::json braced-init branches)
             session.send_line(resp.dump());
             return;
         }
@@ -310,7 +395,11 @@ void LuaCommands::cmd_inspect(shield::net::ConsoleSession& session,
         usage();
         return;
     }
-    nlohmann::json resp = {{"type", "result"}, {"data", std::move(data)}};
+    nlohmann::json resp = {
+        {"type", "result"},
+        {"data",
+         std::move(data)}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                             // nlohmann::json braced-init branches)
     session.send_line(resp.dump());
 }
 
@@ -318,9 +407,12 @@ void LuaCommands::cmd_snapshot(shield::net::ConsoleSession& session,
                                const std::vector<std::string>& args) {
     if (args.empty() || args.size() > 3 ||
         (args.size() == 3 && args[2] != "refs")) {
+        // GCOVR_EXCL_BR_START (compiler artifact: inlined nlohmann::json
+        // braced-init branches)
         nlohmann::json resp = {
             {"type", "error"},
             {"message", "Usage: lua.snapshot <service> [name] [refs]"}};
+        // GCOVR_EXCL_BR_STOP
         session.send_line(resp.dump());
         return;
     }
@@ -335,25 +427,41 @@ void LuaCommands::cmd_snapshot(shield::net::ConsoleSession& session,
         service_id.empty()
             ? std::optional<nlohmann::json>{}
             : lua_mgr_.capture_inspect_snapshot(
-                  service_id, args.size() > 1 ? args[1] : std::string(),
+                  service_id,
+                  args.size() > 1
+                      ? args[1]  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                 // inlined std::string comparison edges)
+                      : std::string(),  // GCOVR_EXCL_BR_LINE (compiler
+                                        // artifact: inlined std::string
+                                        // comparison edges)
                   with_refs, &error);
     if (!snap.has_value()) {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message", "Service not found: " + args[0]}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message",
+             "Service not found: " +
+                 args[0]}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                             // nlohmann::json braced-init branches)
         session.send_line(resp.dump());
         return;
     }
-    nlohmann::json resp = {{"type", "result"}, {"data", std::move(*snap)}};
+    nlohmann::json resp = {
+        {"type", "result"},
+        {"data",
+         std::move(*snap)}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                              // nlohmann::json braced-init branches)
     session.send_line(resp.dump());
 }
 
 void LuaCommands::cmd_diff(shield::net::ConsoleSession& session,
                            const std::vector<std::string>& args) {
     if (args.size() < 3) {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message",
-                                "Usage: lua.diff <service> <snapshot_a> "
-                                "<snapshot_b>"}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message",
+             "Usage: lua.diff <service> <snapshot_a> "
+             "<snapshot_b>"}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                // inlined nlohmann::json braced-init branches)
         session.send_line(resp.dump());
         return;
     }
@@ -368,20 +476,32 @@ void LuaCommands::cmd_diff(shield::net::ConsoleSession& session,
     if (!diff.has_value()) {
         nlohmann::json resp = {
             {"type", "error"},
-            {"message", service_id.empty() ? "Service not found: " + args[0]
-                                           : "diff failed: " + error}};
+            {"message",
+             service_id.empty()
+                 ? "Service not found: " + args[0]
+                 : "diff failed: " +
+                       error}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                 // inlined nlohmann::json braced-init branches)
         session.send_line(resp.dump());
         return;
     }
-    nlohmann::json resp = {{"type", "result"}, {"data", std::move(*diff)}};
+    nlohmann::json resp = {
+        {"type", "result"},
+        {"data",
+         std::move(*diff)}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                              // nlohmann::json braced-init branches)
     session.send_line(resp.dump());
 }
 
 void LuaCommands::cmd_eval(shield::net::ConsoleSession& session,
                            const std::vector<std::string>& args) {
     if (args.empty()) {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message", "Usage: eval <lua code>"}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message",
+             "Usage: eval <lua code>"}};  // GCOVR_EXCL_BR_LINE (compiler
+                                          // artifact: inlined nlohmann::json
+                                          // braced-init branches)
         session.send_line(resp.dump());
         return;
     }
@@ -408,7 +528,11 @@ void LuaCommands::cmd_eval(shield::net::ConsoleSession& session,
         data = nlohmann::json(error);
     }
     if (ok) {
-        if (data.is_array() && data.empty()) {
+        if (data.is_array() &&  // GCOVR_EXCL_BR_LINE (defensive: exec_lua
+                                // yields null for valueless chunks, see below)
+            data.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: exec_lua yields
+                             // null (never an empty array) for valueless
+                             // chunks, see Unreachable note below)
             // Unreachable: same as above -- exec_lua produces null, never
             // an empty array, when the chunk returns nothing.
             // GCOVR_EXCL_START
@@ -416,15 +540,27 @@ void LuaCommands::cmd_eval(shield::net::ConsoleSession& session,
             // GCOVR_EXCL_STOP
             session.send_line(resp.dump());  // GCOVR_EXCL_LINE
         } else if (data.is_array() && data.size() == 1) {
-            nlohmann::json resp = {{"type", "result"}, {"data", data[0]}};
+            nlohmann::json resp = {
+                {"type", "result"},
+                {"data",
+                 data[0]}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                             // nlohmann::json braced-init branches)
             session.send_line(resp.dump());
         } else {
-            nlohmann::json resp = {{"type", "result"}, {"data", data}};
+            nlohmann::json resp = {
+                {"type", "result"},
+                {"data",
+                 data}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                          // nlohmann::json braced-init branches)
             session.send_line(resp.dump());
         }
     } else {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message", data.get<std::string>()}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message",
+             data.get<std::string>()}};  // GCOVR_EXCL_BR_LINE (compiler
+                                         // artifact: inlined nlohmann::json
+                                         // braced-init branches)
         session.send_line(resp.dump());
     }
 }

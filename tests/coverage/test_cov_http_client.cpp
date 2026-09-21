@@ -83,6 +83,14 @@ struct LocalServer {
             r.body() = "DOWNLOADED-CONTENT";
             return r;
         });
+        // A header with a name but no value: the client-side header parser
+        // must record it with an empty string.
+        server->get("/empty-header", [](const HttpRequest&) {
+            HttpResponse r{http::status::ok, 11};
+            r.set("X-Empty", "");
+            r.body() = "empty-header";
+            return r;
+        });
         server->start();
     }
 };
@@ -339,6 +347,24 @@ BOOST_AUTO_TEST_CASE(PostFormUrlEncoded) {
     auto r2 = HttpClient::post_form(
         "http://127.0.0.1:" + std::to_string(dead_port()) + "/echo", fields, 2);
     BOOST_CHECK(!r2.error.empty());
+
+    srv.server->stop();
+}
+
+BOOST_AUTO_TEST_CASE(EmptyResponseHeaderValueIsCaptured) {
+    shield::net::HttpClient::initialize();
+    LocalServer srv;
+    srv.start();
+    const std::string base = "http://127.0.0.1:" + std::to_string(srv.port);
+
+    auto r = HttpClient::get(base + "/empty-header", 5);
+    BOOST_CHECK(r.error.empty());
+    BOOST_CHECK_EQUAL(r.status_code, 200);
+    BOOST_CHECK_EQUAL(r.body, "empty-header");
+    // "X-Empty:" has a colon but no usable value; the header parser stores
+    // it under an empty string.
+    BOOST_CHECK_EQUAL(r.headers.count("X-Empty"), 1u);
+    BOOST_CHECK_EQUAL(r.headers.at("X-Empty"), "");
 
     srv.server->stop();
 }

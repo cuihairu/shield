@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <new>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
@@ -16,7 +17,9 @@
 #include "shield/transport/protocol.hpp"
 #include "shield/transport/rpc_descriptor.hpp"
 
+using shield::transport::BodyCodec;
 using shield::transport::BodyCodecRegistry;
+using shield::transport::BodyRouteKey;
 using shield::transport::build_protocol_pipeline_from_json;
 using shield::transport::create_body_codec;
 using shield::transport::create_envelope;
@@ -1092,6 +1095,15 @@ BOOST_AUTO_TEST_CASE(EncodeUnwrapsPayloadAndHandlesEmptyBody) {
     BOOST_CHECK_EQUAL(input["uid"].get<int>(), 2);
     BOOST_CHECK(!input.contains("payload"));
 
+    // A "payload" key without any route hint stays the whole business
+    // message: unwrapping requires an explicit hint key.
+    DecodedBody unhinted;
+    unhinted.message = nlohmann::json{{"payload", nlohmann::json{{"uid", 3}}}};
+    (void)codec.encode(unhinted, ext_route(), ProtocolProfile{});
+    const auto unhinted_input = nlohmann::json::parse(state.last_encode_input);
+    BOOST_CHECK(unhinted_input.contains("payload"));
+    BOOST_CHECK(!unhinted_input.contains("route_id"));
+
     DecodedBody empty;
     BOOST_CHECK_NO_THROW(codec.encode(empty, ext_route(), ProtocolProfile{}));
     BOOST_CHECK_EQUAL(state.last_encode_input, "{}");
@@ -1280,6 +1292,18 @@ BOOST_AUTO_TEST_CASE(LazyDecodeBoolValues) {
         RouteTable routes;
         BOOST_REQUIRE(
             load_ok("<message id=\"1\" lazy_decode=\"no\"/>", routes, &error));
+        BOOST_CHECK(!routes.find(1)->policy.lazy_decode);
+    }
+    {
+        RouteTable routes;
+        BOOST_REQUIRE(load_ok("<message id=\"1\" lazy_decode=\"false\"/>",
+                              routes, &error));
+        BOOST_CHECK(!routes.find(1)->policy.lazy_decode);
+    }
+    {
+        RouteTable routes;
+        BOOST_REQUIRE(
+            load_ok("<message id=\"1\" lazy_decode=\"0\"/>", routes, &error));
         BOOST_CHECK(!routes.find(1)->policy.lazy_decode);
     }
     {
@@ -2455,3 +2479,983 @@ BOOST_AUTO_TEST_CASE(BuildPipelineProviderResolverMismatchFails) {
     BOOST_CHECK(!build_protocol_pipeline_from_json(json.dump(), named, &error));
     BOOST_CHECK_NE(error.find("does not serve"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Round-4 branch closure: helper fakes
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// External codec fake with explicit knobs for the ExternalBodyCodec edge
+// arms: zero-size message json, broken json, silent failure (error struct
+// left zeroed), null / zero-size / oversized payloads, and free callbacks
+// that may be absent (nullptr) altogether.
+struct ArmExtState {
+    std::string decode_json = R"({"uid":7})";
+    bool decode_broken_json = false;
+    bool decode_size_zero = false;
+    bool decode_silent_failure = false;
+    bool payload_null = false;
+    bool payload_size_zero = false;
+    bool payload_oversized = false;
+    bool drop_free_decode = false;
+    bool drop_free_encode = false;
+    std::string last_encode_input;
+    std::string last_route_name;
+    std::string last_decode_route_name;
+};
+
+int arm_ext_decode(const shield_protocol_codec_v1* self,
+                   const shield_protocol_decode_args_v1* args,
+                   shield_protocol_decode_result_v1* out, shield_error_v1*) {
+    auto* state = static_cast<ArmExtState*>(self->user_data);
+    if (args != nullptr) {
+        state->last_decode_route_name =
+            args->route_name ? args->route_name : "";
+    }
+    if (state->decode_silent_failure) {
+        return -1;  // deliberately leaves the error struct zeroed
+    }
+    out->message_json =
+        dup_cstr(state->decode_broken_json ? "{broken" : state->decode_json);
+    out->message_json_size =
+        state->decode_size_zero ? 0 : std::strlen(out->message_json);
+    return 0;
+}
+
+void arm_ext_free_decode(const shield_protocol_codec_v1*,
+                         shield_protocol_decode_result_v1* result) {
+    if (result == nullptr) return;
+    std::free(const_cast<char*>(result->message_json));
+    result->message_json = nullptr;
+    result->message_json_size = 0;
+}
+
+int arm_ext_encode(const shield_protocol_codec_v1* self,
+                   const shield_protocol_encode_args_v1* args,
+                   shield_protocol_encode_result_v1* out, shield_error_v1*) {
+    auto* state = static_cast<ArmExtState*>(self->user_data);
+    if (args->message_json != nullptr) {
+        state->last_encode_input.assign(
+            args->message_json, args->message_json + args->message_json_size);
+    } else {
+        state->last_encode_input.clear();
+    }
+    state->last_route_name = args->route_name ? args->route_name : "";
+    if (state->payload_null) {
+        out->payload = nullptr;
+        out->payload_size = 0;
+        return 0;
+    }
+    out->payload = dup_bin("ENC");
+    if (state->payload_oversized) {
+        out->payload_size = std::uint64_t{1} << 60;
+    } else {
+        out->payload_size = state->payload_size_zero ? 0u : 3u;
+    }
+    return out->payload == nullptr ? -1 : 0;
+}
+
+void arm_ext_free_encode(const shield_protocol_codec_v1*,
+                         shield_protocol_encode_result_v1* result) {
+    if (result == nullptr) return;
+    std::free(const_cast<std::uint8_t*>(result->payload));
+    result->payload = nullptr;
+    result->payload_size = 0;
+}
+
+shield_protocol_codec_v1 make_arm_codec(ArmExtState& state) {
+    shield_protocol_codec_v1 codec{};
+    codec.struct_size = sizeof(shield_protocol_codec_v1);
+    codec.codec_name = "armcodec";
+    codec.version = "cov";
+    codec.user_data = &state;
+    codec.decode = arm_ext_decode;
+    codec.encode = arm_ext_encode;
+    codec.free_decode_result =
+        state.drop_free_decode ? nullptr : arm_ext_free_decode;
+    codec.free_encode_result =
+        state.drop_free_encode ? nullptr : arm_ext_free_encode;
+    return codec;
+}
+
+// Codec whose route_key returns an empty (but present) BodyRouteKey: the
+// pipeline must treat that the same as "no hint".
+class EmptyRouteKeyCodec final : public BodyCodec {
+public:
+    std::string_view name() const override { return "empty-key"; }
+    std::optional<BodyRouteKey> route_key(PacketRef) override {
+        return BodyRouteKey{};
+    }
+    DecodedBody decode(PacketRef packet, const RouteEntry& route) override {
+        DecodedBody body;
+        body.route_id = route.route_id;
+        body.bytes.assign(packet.body.begin(), packet.body.end());
+        return body;
+    }
+    std::vector<std::uint8_t> encode(const DecodedBody& body, const RouteEntry&,
+                                     const ProtocolProfile&) override {
+        return body.bytes;
+    }
+};
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Envelope edge arms
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(CovBranchEnvelopeArms)
+
+BOOST_AUTO_TEST_CASE(IdLenFeedAndEncodeArms) {
+    // feed(nullptr, 0) is a legal flush: no error, nothing out.
+    IdLenEnvelope envelope;
+    BOOST_CHECK(envelope.feed(nullptr, 0).empty());
+    BOOST_CHECK(envelope.error().empty());
+
+    // Invalid length width (route_id width fine).
+    EnvelopeConfig bad_len;
+    bad_len.route_id_bytes = 2;
+    bad_len.length_bytes = 3;
+    IdLenEnvelope bad_len_env(bad_len);
+    const std::vector<std::uint8_t> chunk{0x01, 0x02, 0x00};
+    BOOST_CHECK(bad_len_env.feed(chunk.data(), chunk.size()).empty());
+    BOOST_CHECK(!bad_len_env.error().empty());
+
+    // max_frame_size set, incoming frame within the cap. The frame helper
+    // encodes LE, so the envelope must match (the EnvelopeConfig default
+    // is Big).
+    EnvelopeConfig capped;
+    capped.route_id_bytes = 2;
+    capped.length_bytes = 2;
+    capped.max_frame_size = 64;
+    capped.endian = Endian::Little;
+    IdLenEnvelope capped_env(capped);
+    const auto frame = idlen_le_frame(0x10, "small");
+    auto packets = capped_env.feed(frame.data(), frame.size());
+    BOOST_REQUIRE_EQUAL(packets.size(), 1u);
+    BOOST_CHECK_EQUAL(packets[0].route_id, 0x10u);
+    BOOST_CHECK(capped_env.error().empty());
+
+    // Encode with an invalid route_id width fails.
+    EnvelopeConfig bad_id;
+    bad_id.route_id_bytes = 3;
+    bad_id.length_bytes = 2;
+    IdLenEnvelope bad_id_env(bad_id);
+    Packet packet;
+    packet.route_id = 1;
+    packet.body = bytes("x");
+    BOOST_CHECK(bad_id_env.encode(packet.ref()).empty());
+    BOOST_CHECK(!bad_id_env.error().empty());
+}
+
+BOOST_AUTO_TEST_CASE(TypeLenFeedAndEncodeArms) {
+    // feed(nullptr, 0) flush.
+    TypeLenEnvelope envelope;
+    BOOST_CHECK(envelope.feed(nullptr, 0).empty());
+    BOOST_CHECK(envelope.error().empty());
+
+    // Invalid route_id width on feed.
+    EnvelopeConfig bad_id;
+    bad_id.route_id_bytes = 3;
+    bad_id.length_bytes = 2;
+    TypeLenEnvelope bad_id_env(bad_id);
+    const std::vector<std::uint8_t> chunk{0x01, 0x02, 0x00};
+    BOOST_CHECK(bad_id_env.feed(chunk.data(), chunk.size()).empty());
+    BOOST_CHECK(!bad_id_env.error().empty());
+
+    // max_frame_size set, frame within the cap.
+    EnvelopeConfig capped;
+    capped.route_id_bytes = 1;
+    capped.length_bytes = 2;
+    capped.max_frame_size = 64;
+    TypeLenEnvelope capped_env(capped);
+    Packet framed;
+    framed.route_id = 7;
+    framed.body = bytes("abc");
+    const auto encoded = capped_env.encode(framed.ref());
+    BOOST_REQUIRE(!encoded.empty());
+    auto packets = capped_env.feed(encoded.data(), encoded.size());
+    BOOST_REQUIRE_EQUAL(packets.size(), 1u);
+    BOOST_CHECK(capped_env.error().empty());
+
+    // Encode with an invalid length width fails.
+    EnvelopeConfig bad_len;
+    bad_len.route_id_bytes = 1;
+    bad_len.length_bytes = 3;
+    TypeLenEnvelope bad_len_env(bad_len);
+    Packet packet;
+    packet.route_id = 1;
+    packet.body = bytes("x");
+    BOOST_CHECK(bad_len_env.encode(packet.ref()).empty());
+    BOOST_CHECK(!bad_len_env.error().empty());
+
+    // length_includes_header round-trips too.
+    EnvelopeConfig incl;
+    incl.route_id_bytes = 1;
+    incl.length_bytes = 2;
+    incl.length_includes_header = true;
+    TypeLenEnvelope incl_env(incl);
+    Packet inner;
+    inner.route_id = 7;
+    inner.body = bytes("abc");
+    const auto incl_frame = incl_env.encode(inner.ref());
+    BOOST_REQUIRE(!incl_frame.empty());
+    auto incl_packets = incl_env.feed(incl_frame.data(), incl_frame.size());
+    BOOST_REQUIRE_EQUAL(incl_packets.size(), 1u);
+    BOOST_CHECK(incl_env.error().empty());
+}
+
+BOOST_AUTO_TEST_CASE(DelimiterInLimitArms) {
+    // No delimiter seen, buffered bytes within the cap: silent.
+    EnvelopeConfig cap;
+    cap.delimiter = '\n';
+    cap.max_frame_size = 16;
+    DelimiterEnvelope envelope(cap);
+    const auto partial = bytes("short");
+    BOOST_CHECK(envelope.feed(partial.data(), partial.size()).empty());
+    BOOST_CHECK(envelope.error().empty());
+
+    // Framed lines within the cap are dispatched normally.
+    const auto lines = bytes("ok\ndata\n");
+    auto packets = envelope.feed(lines.data(), lines.size());
+    BOOST_REQUIRE_EQUAL(packets.size(), 2u);
+    BOOST_CHECK(envelope.error().empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Codec / registry / xmldef edge arms
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(CovBranchCodecArms)
+
+BOOST_AUTO_TEST_CASE(JsonRouteKeyRejectsNonScalarHintFields) {
+    JsonBodyCodec codec;
+    Packet packet;
+
+    packet.body = bytes(R"({"route_id":"5"})");
+    BOOST_CHECK(!codec.route_key(packet.ref()).has_value());
+    packet.body = bytes(R"({"msg_id":"x"})");
+    BOOST_CHECK(!codec.route_key(packet.ref()).has_value());
+    packet.body = bytes(R"({"route":5})");
+    BOOST_CHECK(!codec.route_key(packet.ref()).has_value());
+    packet.body = bytes(R"({"method":7})");
+    BOOST_CHECK(!codec.route_key(packet.ref()).has_value());
+}
+
+BOOST_AUTO_TEST_CASE(JsonDecodeAcceptsNonObjectMessage) {
+    JsonBodyCodec codec;
+    RouteEntry route;
+    route.route_id = 1;
+    Packet packet;
+    packet.body = bytes("[1,2,3]");
+    const auto decoded = codec.decode(packet.ref(), route);
+    BOOST_REQUIRE(decoded.has_message());
+    BOOST_CHECK(decoded.message->is_array());
+    BOOST_CHECK_EQUAL(decoded.route_id, 1u);
+}
+
+BOOST_AUTO_TEST_CASE(JsonEncodeHintKeysAndEmptyRouteArms) {
+    JsonBodyCodec codec;
+    ProtocolProfile profile;
+
+    // Non-object payload is wrapped under "payload".
+    DecodedBody scalar;
+    scalar.message = nlohmann::json(42);
+    RouteEntry route;
+    route.route_id = 9;
+    route.debug_name = "login";
+    const auto wrapped = codec.encode(scalar, route, profile);
+    auto parsed =
+        nlohmann::json::parse(std::string(wrapped.begin(), wrapped.end()));
+    BOOST_CHECK(parsed["route"] == "login");
+    BOOST_CHECK(parsed["route_id"] == 9);
+    BOOST_CHECK(parsed["payload"] == 42);
+
+    // Objects already carrying hint keys pass through verbatim.
+    DecodedBody by_msg_id;
+    by_msg_id.message = nlohmann::json{{"msg_id", 1}, {"uid", 2}};
+    const auto kept = codec.encode(by_msg_id, route, profile);
+    parsed = nlohmann::json::parse(std::string(kept.begin(), kept.end()));
+    BOOST_CHECK(!parsed.contains("payload"));
+    BOOST_CHECK(parsed["msg_id"] == 1);
+
+    DecodedBody by_method;
+    by_method.message = nlohmann::json{{"method", "m"}};
+    const auto kept2 = codec.encode(by_method, route, profile);
+    parsed = nlohmann::json::parse(std::string(kept2.begin(), kept2.end()));
+    BOOST_CHECK(!parsed.contains("payload"));
+
+    // Empty body + unnamed route: neither key is emitted.
+    DecodedBody empty;
+    RouteEntry anon;
+    const auto bare = codec.encode(empty, anon, profile);
+    parsed = nlohmann::json::parse(std::string(bare.begin(), bare.end()));
+    BOOST_CHECK(!parsed.contains("route"));
+    BOOST_CHECK(!parsed.contains("route_id"));
+}
+
+BOOST_AUTO_TEST_CASE(RouteTableUpsertNameBookkeepingArms) {
+    RouteTable routes;
+
+    // Previously unnamed entry gains a name.
+    RouteEntry anon;
+    anon.route_id = 5;
+    BOOST_CHECK(routes.add(anon));
+    RouteEntry five;
+    five.route_id = 5;
+    five.debug_name = "five";
+    routes.upsert(five);
+    BOOST_REQUIRE(routes.find(5) != nullptr);
+    BOOST_CHECK_EQUAL(routes.find(5)->debug_name, "five");
+    BOOST_REQUIRE(routes.find_by_name("five") != nullptr);
+
+    // Old name was stolen by another id: no name-map erase.
+    RouteEntry a;
+    a.route_id = 1;
+    a.debug_name = "alpha";
+    BOOST_CHECK(routes.add(a));
+    RouteEntry steal;
+    steal.route_id = 2;
+    steal.debug_name = "alpha";
+    routes.upsert(steal);
+    BOOST_REQUIRE(routes.find_by_name("alpha") != nullptr);
+    BOOST_CHECK_EQUAL(routes.find_by_name("alpha")->route_id, 2u);
+    RouteEntry renamed;
+    renamed.route_id = 1;
+    renamed.debug_name = "beta";
+    routes.upsert(renamed);
+    BOOST_CHECK_EQUAL(routes.find(1)->debug_name, "beta");
+    BOOST_CHECK_EQUAL(routes.find_by_name("alpha")->route_id, 2u);
+
+    // Own-name replacement erases and re-registers.
+    RouteEntry g;
+    g.route_id = 3;
+    g.debug_name = "gamma";
+    BOOST_CHECK(routes.add(g));
+    RouteEntry steal_g;
+    steal_g.route_id = 4;
+    steal_g.debug_name = "gamma";
+    routes.upsert(steal_g);
+    RouteEntry d;
+    d.route_id = 4;
+    d.debug_name = "delta";
+    routes.upsert(d);
+    BOOST_CHECK(routes.find_by_name("gamma") == nullptr);
+    BOOST_REQUIRE(routes.find_by_name("delta") != nullptr);
+    BOOST_CHECK_EQUAL(routes.find_by_name("delta")->route_id, 4u);
+
+    // Old name no longer in the map at all.
+    RouteEntry eps;
+    eps.route_id = 3;
+    eps.debug_name = "eps";
+    routes.upsert(eps);
+    BOOST_CHECK_EQUAL(routes.find(3)->debug_name, "eps");
+    BOOST_CHECK(routes.find_by_name("gamma") == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(BodyCodecRegistryUpsertArms) {
+    BodyCodecRegistry codecs;
+
+    // Fresh id: plain insert.
+    codecs.upsert(1, std::make_unique<PassthroughBodyCodec>("alpha"));
+    BOOST_CHECK_EQUAL(codecs.size(), 1u);
+
+    // Same id rename: own name erased and re-registered.
+    codecs.upsert(1, std::make_unique<PassthroughBodyCodec>("beta"));
+    BOOST_CHECK(codecs.find_by_name("alpha") == nullptr);
+    BOOST_REQUIRE(codecs.find_by_name("beta") != nullptr);
+
+    // Old name belongs to another id now: keep it.
+    codecs.upsert(2, std::make_unique<PassthroughBodyCodec>("beta"));
+    codecs.upsert(1, std::make_unique<JsonBodyCodec>());
+    BOOST_REQUIRE(codecs.find(1) != nullptr);
+    BOOST_CHECK(codecs.find(1)->name() == "json");
+    BOOST_REQUIRE(codecs.find_by_name("beta") != nullptr);
+
+    // Replacement with an empty name registers no alias.
+    codecs.upsert(1, std::make_unique<PassthroughBodyCodec>(""));
+    BOOST_CHECK(codecs.find_by_name("") == nullptr);
+
+    // Existing codec without a registered name: lookup misses cleanly.
+    codecs.upsert(1, std::make_unique<PassthroughBodyCodec>("omega"));
+    BOOST_REQUIRE(codecs.find_by_name("omega") != nullptr);
+    BOOST_CHECK(codecs.find_by_name("omega")->name() == "omega");
+}
+
+BOOST_AUTO_TEST_CASE(XmldefAttrParserWhitespaceAndQuoteArms) {
+    RouteTable routes;
+    std::string error;
+    // Whitespace variants before keys and around '=', a bare '/' inside the
+    // attribute text, key characters '-', '.', '_', a single-quoted value,
+    // and a trailing bare attribute with no '=' before end of tag.
+    const auto xml =
+        "<message id='3' /\t\n\r my-key.my_attr = \t\n\r \"v\" tail>";
+    BOOST_REQUIRE(load_xmldef_routes_from_string(xml, routes, {}, &error));
+    BOOST_REQUIRE(routes.find(3) != nullptr);
+    BOOST_CHECK(routes.find(3)->debug_name.empty());
+}
+
+BOOST_AUTO_TEST_CASE(XmldefEmptyTagAndCrlfAttributes) {
+    RouteTable routes;
+    std::string error;
+    const auto xml = "<>\n<message \r\n id \r\n = \r\n '4' \r\n/>";
+    BOOST_REQUIRE(load_xmldef_routes_from_string(xml, routes, {}, &error));
+    BOOST_REQUIRE(routes.find(4) != nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(XmldefValuelessAttrStillYieldsMissingId) {
+    RouteTable routes;
+    std::string error;
+    // Unquoted value running to end of tag: attribute dropped, id missing.
+    BOOST_CHECK(
+        !load_xmldef_routes_from_string("<message id=>", routes, {}, &error));
+    BOOST_CHECK_NE(error.find("missing id"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(XmldefBareMessageTagHasNoAttributeText) {
+    RouteTable routes;
+    std::string error;
+    // A tag with no separator at all: attribute text is skipped entirely.
+    BOOST_CHECK(
+        !load_xmldef_routes_from_string("<message>", routes, {}, &error));
+    BOOST_CHECK_NE(error.find("missing id"), std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(XmldefBoolDirectionActionAliases) {
+    RouteTable routes;
+    std::string error;
+    const auto xml =
+        "<message id='10' lazy_decode='1'/>"
+        "<message id='11' lazy_decode='false'/>"
+        "<message id='12' requires_auth='1'/>"
+        "<message id='13' direction='s2c'/>"
+        "<message id='14' direction='client_to_server'/>"
+        "<message id='15' direction='bidirectional'/>"
+        "<message id='16' action='decode_local'/>";
+    BOOST_REQUIRE(load_xmldef_routes_from_string(xml, routes, {}, &error));
+    BOOST_REQUIRE(routes.find(10) != nullptr);
+    BOOST_CHECK(routes.find(10)->policy.lazy_decode);
+    BOOST_REQUIRE(routes.find(11) != nullptr);
+    BOOST_CHECK(!routes.find(11)->policy.lazy_decode);
+    BOOST_REQUIRE(routes.find(12) != nullptr);
+    BOOST_CHECK(routes.find(12)->requires_auth);
+    BOOST_CHECK(routes.find(13)->direction == RouteDirection::ServerToClient);
+    BOOST_CHECK(routes.find(14)->direction == RouteDirection::ClientToServer);
+    BOOST_CHECK(routes.find(15)->direction == RouteDirection::Bidirectional);
+    BOOST_CHECK(routes.find(16)->policy.action == RouteAction::DecodeLocal);
+}
+
+BOOST_AUTO_TEST_CASE(XmldefFailurePathsTolerantOfNullErrorOutParam) {
+    RouteTable routes;
+    BOOST_CHECK(!load_xmldef_routes_from_string("<message id=\"1\"", routes, {},
+                                                nullptr));
+    BOOST_CHECK(!load_xmldef_routes_from_string("<message name=\"x\"/>", routes,
+                                                {}, nullptr));
+    BOOST_CHECK(!load_xmldef_routes_from_string("<message id=\"zz\"/>", routes,
+                                                {}, nullptr));
+    BOOST_CHECK(!load_xmldef_routes_from_string(
+        "<message id=\"1\" direction=\"north\"/>", routes, {}, nullptr));
+    BOOST_CHECK(!load_xmldef_routes_from_string(
+        "<message id=\"1\" action=\"explode\"/>", routes, {}, nullptr));
+    BOOST_CHECK(!load_xmldef_routes_from_string(
+        "<message id=\"1\" lazy_decode=\"maybe\"/>", routes, {}, nullptr));
+    BOOST_CHECK(!load_xmldef_routes_from_string(
+        "<message id=\"7\"/><route id=\"7\"/>", routes, {}, nullptr));
+    BOOST_CHECK(!load_xmldef_routes_from_file(
+        "/nonexistent/shield/cov/null_err.xml", routes, {}, nullptr));
+}
+
+BOOST_AUTO_TEST_CASE(ExtDecodeZeroSizeMessageYieldsEmptyObject) {
+    ArmExtState state;
+    state.decode_size_zero = true;
+    state.drop_free_decode = true;
+    const auto codec = make_arm_codec(state);
+    ExternalBodyCodec ext("prov", "armcodec", &codec);
+    RouteEntry route;
+    route.route_id = 1;
+    Packet packet;
+    packet.body = bytes("x");
+    const auto decoded = ext.decode(packet.ref(), route);
+    BOOST_REQUIRE(decoded.has_message());
+    BOOST_CHECK(decoded.message->is_object());
+    BOOST_CHECK(decoded.message->empty());
+}
+
+BOOST_AUTO_TEST_CASE(ExtDecodeBrokenJsonWithNullFreeRethrows) {
+    ArmExtState state;
+    state.decode_broken_json = true;
+    state.drop_free_decode = true;
+    const auto codec = make_arm_codec(state);
+    ExternalBodyCodec ext("prov", "armcodec", &codec);
+    RouteEntry route;
+    route.route_id = 1;
+    Packet packet;
+    packet.body = bytes("x");
+    BOOST_CHECK_THROW(ext.decode(packet.ref(), route),
+                      nlohmann::json::exception);
+}
+
+BOOST_AUTO_TEST_CASE(ExtSilentDecodeFailureFallsBackToDefaultMessage) {
+    ArmExtState state;
+    state.decode_silent_failure = true;  // error struct stays zeroed
+    const auto codec = make_arm_codec(state);
+    ExternalBodyCodec ext("prov", "armcodec", &codec);
+    RouteEntry route;
+    route.route_id = 1;
+    Packet packet;
+    packet.body = bytes("x");
+    bool caught = false;
+    try {
+        (void)ext.decode(packet.ref(), route);
+    } catch (const std::runtime_error& ex) {
+        caught = true;
+        BOOST_CHECK_NE(std::string(ex.what()).find("protocol decode failed"),
+                       std::string::npos);
+    }
+    BOOST_CHECK(caught);
+}
+
+BOOST_AUTO_TEST_CASE(ExtEncodePayloadEdgeArms) {
+    RouteEntry route;
+    route.route_id = 1;
+    ProtocolProfile profile;
+    DecodedBody body;
+    body.message = nlohmann::json{{"a", 1}};
+
+    {
+        // Null payload from the provider: empty frame body, no throw.
+        ArmExtState state;
+        state.payload_null = true;
+        state.drop_free_encode = true;
+        const auto codec = make_arm_codec(state);
+        ExternalBodyCodec ext("prov", "armcodec", &codec);
+        const auto out = ext.encode(body, route, profile);
+        BOOST_CHECK(out.empty());
+    }
+    {
+        // Non-null payload with zero size: nothing to copy.
+        ArmExtState state;
+        state.payload_size_zero = true;
+        state.drop_free_encode = true;
+        const auto codec = make_arm_codec(state);
+        ExternalBodyCodec ext("prov", "armcodec", &codec);
+        const auto out = ext.encode(body, route, profile);
+        BOOST_CHECK(out.empty());
+    }
+    {
+        // Absurd payload_size: payload.assign cannot satisfy the
+        // allocation (1 EiB exceeds every platform's address space), so
+        // the failure surfaces as std::bad_alloc through the catch-all,
+        // which still runs the provider's free callback when present.
+        ArmExtState state;
+        state.payload_oversized = true;
+        state.drop_free_encode = true;
+        const auto codec = make_arm_codec(state);
+        ExternalBodyCodec ext("prov", "armcodec", &codec);
+        BOOST_CHECK_THROW(ext.encode(body, route, profile), std::bad_alloc);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(ExtEncodeNullRouteNameForEmptySchema) {
+    ArmExtState state;
+    ProtocolProfile profile;
+    const auto codec = make_arm_codec(state);
+    ExternalBodyCodec ext("prov", "armcodec", &codec);
+    RouteEntry route;
+    route.route_id = 1;  // schema_name empty: provider receives nullptr
+    DecodedBody body;
+    body.message = nlohmann::json{{"a", 1}};
+    (void)ext.encode(body, route, profile);
+    BOOST_CHECK(state.last_route_name.empty());
+}
+
+BOOST_AUTO_TEST_CASE(ExtEncodeMessageShapes) {
+    ArmExtState state;
+    const auto codec = make_arm_codec(state);
+    ExternalBodyCodec ext("prov", "armcodec", &codec);
+    RouteEntry route;
+    route.route_id = 1;
+    ProtocolProfile profile;
+
+    // Non-object message is forwarded verbatim.
+    DecodedBody scalar;
+    scalar.message = nlohmann::json(42);
+    (void)ext.encode(scalar, route, profile);
+    BOOST_CHECK_EQUAL(state.last_encode_input, "42");
+
+    // An object carrying a route hint counts as a transport wrapper: the
+    // provider receives the inner business payload, not the wrapper.
+    DecodedBody hinted;
+    hinted.message = nlohmann::json{{"payload", {{"a", 1}}}, {"msg_id", 5}};
+    (void)ext.encode(hinted, route, profile);
+    BOOST_CHECK_EQUAL(state.last_encode_input, "{\"a\":1}");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Pipeline-level edge arms
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(CovBranchPipelineArms)
+
+BOOST_AUTO_TEST_CASE(TypeLenStructuredEncodeKeepsMessagePure) {
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::TypeLen;
+    profile.envelope.route_id_bytes = 1;
+    profile.envelope.length_bytes = 2;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Header;
+
+    RouteTable routes;
+    RouteEntry entry;
+    entry.route_id = 0x21;
+    entry.debug_name = "tlang";
+    BOOST_REQUIRE(routes.add(entry));
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<JsonBodyCodec>()));
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    DecodedBody body;
+    body.route_id = 0x21;
+    body.message = nlohmann::json{{"hp", 5}};
+    const auto frame = pipeline.encode_message(std::move(body));
+    BOOST_REQUIRE(!frame.empty());
+    BOOST_CHECK(pipeline.error().empty());
+
+    auto results = pipeline.feed(frame.data(), frame.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_REQUIRE(results[0].ok());
+    const auto& raw = results[0].packet.body;
+    const auto parsed =
+        nlohmann::json::parse(std::string(raw.begin(), raw.end()));
+    // Header-carried route: the payload stays pure business data.
+    BOOST_CHECK((parsed == nlohmann::json{{"hp", 5}}));
+    BOOST_CHECK(!parsed.contains("route"));
+    BOOST_CHECK(!parsed.contains("route_id"));
+}
+
+BOOST_AUTO_TEST_CASE(BodyRouteScanDisabledYieldsUnknownRoute) {
+    const std::string config = R"({
+        "envelope": {"type": "lenprefix", "length_bytes": 4},
+        "body": {"codec": "json"},
+        "routing": {"decode_body_route": false}
+    })";
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(config, {}, &error);
+    BOOST_REQUIRE(pipeline != nullptr);
+
+    const auto payload = bytes(R"({"route":"nope"})");
+    auto frame = concat(be_bytes(payload.size(), 4), payload);
+    auto results = pipeline->feed(frame.data(), frame.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_CHECK(results[0].route == nullptr);
+    BOOST_CHECK(results[0].should_drop());
+}
+
+BOOST_AUTO_TEST_CASE(EmptyRouteKeyTreatedAsNoHint) {
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::LenPrefix;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Body;
+    profile.decode_body_route = true;
+
+    RouteTable routes;
+    RouteEntry entry;
+    entry.route_id = 0x40;
+    entry.debug_name = "login";
+    BOOST_REQUIRE(routes.add(entry));
+
+    BodyCodecRegistry codecs;
+    BOOST_REQUIRE(codecs.add(1, std::make_unique<EmptyRouteKeyCodec>()));
+
+    ProtocolPipeline pipeline(profile, std::move(routes), std::move(codecs));
+
+    const auto payload = bytes(R"({"route":"login"})");
+    auto frame = concat(be_bytes(payload.size(), 4), payload);
+    auto results = pipeline.feed(frame.data(), frame.size());
+    BOOST_REQUIRE_EQUAL(results.size(), 1u);
+    BOOST_CHECK(results[0].ok());
+    BOOST_CHECK(results[0].route == nullptr);
+    BOOST_CHECK(results[0].should_drop());
+}
+
+BOOST_AUTO_TEST_CASE(OutboundUnknownNameFailsToEncode) {
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::LenPrefix;
+    profile.default_codec_id = 1;
+    ProtocolPipeline pipeline(profile, RouteTable{}, BodyCodecRegistry{});
+
+    DecodedBody body;
+    body.route_name = "missing";
+    BOOST_CHECK(pipeline.encode_message(std::move(body)).empty());
+    BOOST_CHECK_EQUAL(pipeline.error(), "failed to resolve outbound route");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// build_protocol_pipeline_from_json edge arms
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(CovBranchBuildArms)
+
+BOOST_AUTO_TEST_CASE(BuildAcceptsAliasSpellings) {
+    std::string error;
+
+    auto len_prefix = build_protocol_pipeline_from_json(
+        R"({"envelope":{"type":"len-prefix"}})", "", 0, &error);
+    BOOST_REQUIRE(len_prefix != nullptr);
+    BOOST_CHECK(len_prefix->envelope().name() == "lenprefix");
+
+    auto delimited = build_protocol_pipeline_from_json(
+        R"({"envelope":{"type":"delimiter"}})", "", 0, &error);
+    BOOST_REQUIRE(delimited != nullptr);
+    BOOST_CHECK(delimited->envelope().name() == "delimiter");
+
+    auto be = build_protocol_pipeline_from_json(
+        R"({"envelope":{"endian":"be"}})", "", 0, &error);
+    BOOST_REQUIRE(be != nullptr);
+    BOOST_CHECK(be->profile().envelope.endian == Endian::Big);
+
+    auto le = build_protocol_pipeline_from_json(
+        R"({"envelope":{"endian":"le"}})", "", 0, &error);
+    BOOST_REQUIRE(le != nullptr);
+    BOOST_CHECK(le->profile().envelope.endian == Endian::Little);
+
+    const std::pair<const char*, RouteSource> sources[] = {
+        {"header.route_id", RouteSource::Header},
+        {"header.msg_id", RouteSource::Header},
+        {"body.route", RouteSource::Body},
+        {"body.route_id", RouteSource::Body},
+    };
+    for (const auto& [value, expected] : sources) {
+        const std::string config =
+            std::string(R"({"routing":{"source":")") + value + "\"}}";
+        auto pipeline =
+            build_protocol_pipeline_from_json(config, "", 0, &error);
+        BOOST_REQUIRE_MESSAGE(pipeline != nullptr, value);
+        BOOST_CHECK(pipeline->profile().route_source == expected);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(BuildToleratesNonObjectSectionsAndValues) {
+    std::string error;
+
+    auto non_object_envelope =
+        build_protocol_pipeline_from_json(R"({"envelope": 5})", "", 0, &error);
+    BOOST_REQUIRE(non_object_envelope != nullptr);
+
+    auto non_object_routing =
+        build_protocol_pipeline_from_json(R"({"routing": 5})", "", 0, &error);
+    BOOST_REQUIRE(non_object_routing != nullptr);
+
+    auto non_string_delimiter = build_protocol_pipeline_from_json(
+        R"({"envelope":{"type":"line","delimiter":9}})", "", 0, &error);
+    BOOST_REQUIRE(non_string_delimiter != nullptr);
+    BOOST_CHECK(non_string_delimiter->envelope().name() == "delimiter");
+    BOOST_CHECK_EQUAL(non_string_delimiter->profile().envelope.delimiter,
+                      static_cast<std::uint8_t>('\n'));
+
+    auto non_string_routing_values = build_protocol_pipeline_from_json(
+        R"({"routing":{"source":5,"unknown_route_action":7}})", "", 0, &error);
+    BOOST_REQUIRE(non_string_routing_values != nullptr);
+    BOOST_CHECK(non_string_routing_values->profile().route_source ==
+                RouteSource::Body);
+    BOOST_CHECK(non_string_routing_values->profile().unknown_route_action ==
+                RouteAction::Drop);
+
+    // Explicit max_frame_size wins over the fallback.
+    auto explicit_max = build_protocol_pipeline_from_json(
+        R"({"envelope":{"max_frame_size":64}})", "", 99, &error);
+    BOOST_REQUIRE(explicit_max != nullptr);
+    BOOST_CHECK_EQUAL(explicit_max->profile().envelope.max_frame_size, 64u);
+
+    // xmldef without a catalog builds an empty route table.
+    auto no_catalog = build_protocol_pipeline_from_json(
+        R"({"body":{"codec":"xmldef"}})", "", 0, &error);
+    BOOST_REQUIRE(no_catalog != nullptr);
+    BOOST_CHECK_EQUAL(no_catalog->routes().size(), 0u);
+
+    // Non-string catalog value is skipped the same way.
+    auto non_string_catalog = build_protocol_pipeline_from_json(
+        R"({"body":{"codec":"xmldef","catalog":5}})", "", 0, &error);
+    BOOST_REQUIRE(non_string_catalog != nullptr);
+
+    // Non-string default_action falls back to the catalog default.
+    auto non_string_default = build_protocol_pipeline_from_json(
+        R"({"body":{"codec":"xmldef"},"routing":{"default_action":3}})", "", 0,
+        &error);
+    BOOST_REQUIRE(non_string_default != nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(CreateBodyCodecFlatbuffersAlias) {
+    const auto codec = create_body_codec("flatbuffers");
+    BOOST_REQUIRE(codec != nullptr);
+    BOOST_CHECK(codec->name() == "flatbuffers");
+}
+
+BOOST_AUTO_TEST_CASE(BuildXmlDefAliasLoadsCatalogRoutes) {
+    const auto catalog = cov_temp_dir() / "cov_branch_xmldef_alias.xml";
+    {
+        std::ofstream out(catalog);
+        out << "<message id = \"0x77\"  name = \"alias.route\"/>\n";
+    }
+    // A string routing.default_action next to an xmldef catalog overrides the
+    // catalog default for every route the catalog loads.
+    const std::string config =
+        std::string(R"({"body":{"codec":"xml_def","catalog":")") +
+        catalog.string() + R"("},"routing":{"default_action":"forward"}})";
+    std::string error;
+    auto pipeline = build_protocol_pipeline_from_json(config, "", 0, &error);
+    BOOST_REQUIRE(pipeline != nullptr);
+    BOOST_REQUIRE(pipeline->routes().find(0x77) != nullptr);
+    BOOST_CHECK_EQUAL(pipeline->routes().find(0x77)->debug_name, "alias.route");
+    // The same catalog without a routing.default_action exercises the
+    // contains-false arm: the catalog keeps its own default action.
+    const std::string plain_config =
+        std::string(R"({"body":{"codec":"xml_def","catalog":")") +
+        catalog.string() + R"("}})";
+    auto plain = build_protocol_pipeline_from_json(plain_config, "", 0, &error);
+    BOOST_REQUIRE(plain != nullptr);
+    BOOST_REQUIRE(plain->routes().find(0x77) != nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(BuildFailurePathsTolerantOfNullErrorOutParam) {
+    const char* const provider_cfg =
+        R"({"body":{"codec":"msgpack","provider":"p"}})";
+
+    // JSON type error while reading envelope fields.
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        R"({"envelope":{"length_bytes":"four"}})", ProtocolBuildOptions{},
+        nullptr));
+
+    // Unknown envelope type / endian.
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        R"({"envelope":{"type":"smoke"}})", ProtocolBuildOptions{}, nullptr));
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        R"({"envelope":{"endian":"middle"}})", ProtocolBuildOptions{},
+        nullptr));
+
+    // Provider configured but no resolver installed.
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        provider_cfg, ProtocolBuildOptions{}, nullptr));
+
+    // Resolver returns null with a message / with no message at all.
+    {
+        ProtocolBuildOptions options;
+        options.external_codec_resolver =
+            [](std::string_view, std::string_view,
+               std::string* error) -> const shield_protocol_codec_v1* {
+            if (error) *error = "resolver broke";
+            return nullptr;
+        };
+        BOOST_CHECK(
+            !build_protocol_pipeline_from_json(provider_cfg, options, nullptr));
+    }
+    {
+        ProtocolBuildOptions options;
+        options.external_codec_resolver =
+            [](std::string_view, std::string_view,
+               std::string*) -> const shield_protocol_codec_v1* {
+            return nullptr;  // leaves resolver_error empty on purpose
+        };
+        BOOST_CHECK(
+            !build_protocol_pipeline_from_json(provider_cfg, options, nullptr));
+    }
+
+    // vtable whose codec_name is null / does not match / is incomplete.
+    static shield_protocol_codec_v1 unnamed{};
+    unnamed.struct_size = sizeof(shield_protocol_codec_v1);
+    unnamed.codec_name = nullptr;
+    unnamed.decode = [](const shield_protocol_codec_v1*,
+                        const shield_protocol_decode_args_v1*,
+                        shield_protocol_decode_result_v1* out,
+                        shield_error_v1*) -> int {
+        if (out) {
+            out->message_json = "{}";
+            out->message_json_size = 2;
+        }
+        return 0;
+    };
+    unnamed.encode = [](const shield_protocol_codec_v1*,
+                        const shield_protocol_encode_args_v1*,
+                        shield_protocol_encode_result_v1* out,
+                        shield_error_v1*) -> int {
+        if (out) {
+            out->payload = nullptr;
+            out->payload_size = 0;
+        }
+        return 0;
+    };
+    {
+        ProtocolBuildOptions options;
+        options.external_codec_resolver =
+            [](std::string_view, std::string_view,
+               std::string*) -> const shield_protocol_codec_v1* {
+            return &unnamed;
+        };
+        BOOST_CHECK(
+            !build_protocol_pipeline_from_json(provider_cfg, options, nullptr));
+    }
+    static shield_protocol_codec_v1 misnamed{};
+    misnamed.struct_size = sizeof(shield_protocol_codec_v1);
+    misnamed.codec_name = "other";
+    misnamed.decode = unnamed.decode;
+    misnamed.encode = unnamed.encode;
+    {
+        ProtocolBuildOptions options;
+        options.external_codec_resolver =
+            [](std::string_view, std::string_view,
+               std::string*) -> const shield_protocol_codec_v1* {
+            return &misnamed;
+        };
+        BOOST_CHECK(
+            !build_protocol_pipeline_from_json(provider_cfg, options, nullptr));
+    }
+    {
+        FakeExtState state;
+        const auto partial = make_ext_codec(state, true, false);
+        ProtocolBuildOptions options;
+        options.external_codec_resolver =
+            [&partial](std::string_view, std::string_view,
+                       std::string*) -> const shield_protocol_codec_v1* {
+            return &partial;
+        };
+        BOOST_CHECK(
+            !build_protocol_pipeline_from_json(provider_cfg, options, nullptr));
+    }
+
+    // Unknown codec name without a provider.
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        R"({"body":{"codec":"msgpack"}})", ProtocolBuildOptions{}, nullptr));
+
+    // Routing validation failures.
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        R"({"routing":{"source":"sideways"}})", ProtocolBuildOptions{},
+        nullptr));
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        R"({"routing":{"unknown_route_action":"explode"}})",
+        ProtocolBuildOptions{}, nullptr));
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        R"({"body":{"codec":"xmldef","catalog":"x.xml"},
+            "routing":{"default_action":"zoom"}})",
+        ProtocolBuildOptions{}, nullptr));
+
+    // Relative catalog with an empty source_dir cannot be opened.
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        R"({"body":{"codec":"xmldef","catalog":"definitely_missing_rel.xml"}})",
+        ProtocolBuildOptions{}, nullptr));
+
+    // The removed inline routes key is rejected.
+    BOOST_CHECK(!build_protocol_pipeline_from_json(
+        R"({"routes":[]})", ProtocolBuildOptions{}, nullptr));
+}
+
+BOOST_AUTO_TEST_SUITE_END()

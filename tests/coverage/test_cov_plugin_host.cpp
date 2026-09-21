@@ -24,6 +24,8 @@ int lua_getfield(lua_State*, int, const char*);
 const char* lua_tolstring(lua_State*, int, size_t*);
 void lua_settop(lua_State*, int);
 void lua_pushnil(lua_State*);
+void lua_pushlstring(lua_State*, const char*, size_t);
+void lua_setfield(lua_State*, int, const char*);
 int lua_setglobal(lua_State*, const char*);
 }
 
@@ -50,7 +52,9 @@ struct fake_instance {
     const shield_host_api_v1* host;
     shield_plugin_context_v1* ctx;
     bool fail_start;
+    bool fail_start_noerr = false;
     bool fail_register = false;
+    bool fail_register_noerr = false;
 };
 
 const shield_host_api_v1* g_host_api = nullptr;
@@ -86,6 +90,10 @@ int fake_start(shield_plugin_instance_v1* self, shield_error_v1* err) {
         }
         return -1;
     }
+    if (i && i->fail_start_noerr) {
+        // Fail without touching the error struct (all fields stay null).
+        return -1;
+    }
     ++g_started;
     return 0;
 }
@@ -98,10 +106,20 @@ void fake_shutdown(shield_plugin_instance_v1* self) {
 void bump_released(shield_plugin_instance_v1*) { ++g_released_unstarted; }
 
 int fake_register_lua(shield_plugin_instance_v1* self, struct lua_State* L,
-                      struct shield_error_v1*) {
+                      struct shield_error_v1* err) {
     auto* i = reinterpret_cast<fake_instance*>(self);
     if (!i || !i->host) return 0;
-    if (i->fail_register) return -1;
+    if (i->fail_register) {
+        if (err) {
+            err->code = "fake.reg_failed";
+            err->message = "register refused";
+        }
+        return -1;
+    }
+    if (i->fail_register_noerr) {
+        // Fail without touching the error struct (fields stay null).
+        return -1;
+    }
     g_lua_state_matches = (i->host->lua_state(i->ctx) == L) ? 1 : 0;
     g_add_path_rc = i->host->lua_add_path(i->ctx, "lua/?.lua", 0);
     g_add_cpath_rc = i->host->lua_add_path(i->ctx, "lua/?.so", 1);
@@ -130,17 +148,31 @@ int fake_create(const struct shield_plugin_create_args_v1* args,
         *out = nullptr;
         return -1;
     }
+    if (std::strstr(cfg, "\"create_fail_noerr\"")) {
+        // Failure without touching the error struct (fields stay null).
+        *out = nullptr;
+        return -1;
+    }
+    if (std::strstr(cfg, "\"null_handle\"")) {
+        // Success status but a null handle.
+        *out = nullptr;
+        return 0;
+    }
     if (std::strstr(cfg, "\"bad_handle\"") ||
-        std::strstr(cfg, "\"no_getif\"") || std::strstr(cfg, "\"no_iface\"")) {
+        std::strstr(cfg, "\"no_getif\"") || std::strstr(cfg, "\"no_iface\"") ||
+        std::strstr(cfg, "\"no_shutdown\"")) {
         static struct shield_plugin_instance_v1 shell;
         shell.struct_size = std::strstr(cfg, "\"bad_handle\"")
                                 ? 8u
                                 : (uint32_t)sizeof(shield_plugin_instance_v1);
         shell.instance_id = args->instance_id;
-        shell.get_interface =
-            std::strstr(cfg, "\"no_iface\"") ? null_iface : nullptr;
+        shell.get_interface = (std::strstr(cfg, "\"no_iface\"") ||
+                               std::strstr(cfg, "\"no_shutdown\""))
+                                  ? null_iface
+                                  : nullptr;
         shell.start = nullptr;
-        shell.shutdown = bump_released;
+        shell.shutdown =
+            std::strstr(cfg, "\"no_shutdown\"") ? nullptr : bump_released;
         shell.register_lua = nullptr;
         *out = &shell;
         return 0;
@@ -149,11 +181,16 @@ int fake_create(const struct shield_plugin_create_args_v1* args,
     inst->host = args->host_api;
     inst->ctx = args->ctx;
     inst->fail_start = std::strstr(cfg, "\"start_fail\"") != nullptr;
+    inst->fail_start_noerr =
+        std::strstr(cfg, "\"start_fail_noerr\"") != nullptr;
     inst->fail_register = std::strstr(cfg, "\"register_fail\"") != nullptr;
+    inst->fail_register_noerr =
+        std::strstr(cfg, "\"register_fail_noerr\"") != nullptr;
     inst->shell.struct_size = (uint32_t)sizeof(fake_instance);
     inst->shell.instance_id = args->instance_id;
     inst->shell.get_interface = fake_get_iface;
-    inst->shell.start = fake_start;
+    inst->shell.start =
+        std::strstr(cfg, "\"no_start\"") ? nullptr : fake_start;
     inst->shell.shutdown = fake_shutdown;
     inst->shell.register_lua = fake_register_lua;
     if (args->instance_id && std::strstr(args->instance_id, "consumer"))
@@ -212,6 +249,30 @@ extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
 fake_entry_badstruct(void) {
     static const struct shield_plugin_abi_v1 abi = {
         SHIELD_PLUGIN_ABI_VERSION, 4, "fake.test", "9.9.9", fake_create};
+    return &abi;
+}
+extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
+fake_entry_badver(void) {
+    // Same layout but a wrong abi_version value.
+    static const struct shield_plugin_abi_v1 abi = {
+        SHIELD_PLUGIN_ABI_VERSION + 1, (uint32_t)sizeof(shield_plugin_abi_v1),
+        "fake.test", "9.9.9", fake_create};
+    return &abi;
+}
+extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
+fake_entry_nullpkg(void) {
+    // Valid version/size but a null package_id.
+    static const struct shield_plugin_abi_v1 abi = {
+        SHIELD_PLUGIN_ABI_VERSION, (uint32_t)sizeof(shield_plugin_abi_v1),
+        nullptr, "9.9.9", fake_create};
+    return &abi;
+}
+extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
+fake_entry_nocreate(void) {
+    // Valid header but a null create slot.
+    static const struct shield_plugin_abi_v1 abi = {
+        SHIELD_PLUGIN_ABI_VERSION, (uint32_t)sizeof(shield_plugin_abi_v1),
+        "nocreate.test", "9.9.9", nullptr};
     return &abi;
 }
 )FAKE";
@@ -924,6 +985,10 @@ BOOST_AUTO_TEST_CASE(chain_success_host_api_battery) {
     BOOST_CHECK(api->dependency(ctx, "dep", "minimal.test.iface") != nullptr);
     BOOST_CHECK(api->dependency(ctx, "dep", "fake.test.iface") == nullptr);
 
+    // A bound instance that is actually started resolves to its interface
+    // vtable (the unavailable-instance degradation arm is probed elsewhere).
+    BOOST_CHECK(host.get_by_binding<FakeTestInterface>("b2") != nullptr);
+
     BOOST_CHECK_EQUAL(api->config_get(ctx, "nested.port"), "5");
     BOOST_CHECK(api->config_get(ctx, "nested") != nullptr);
 
@@ -1599,4 +1664,525 @@ BOOST_AUTO_TEST_CASE(non_required_register_lua_failure_logs_warning) {
     auto L = make_lua();
     BOOST_REQUIRE(L);
     BOOST_CHECK(host.register_lua_all(L.get(), err));
+}
+
+// ---------------------------------------------------------------------------
+// Branch-closure cases: the remaining reachable arms of scan / catalog /
+// plan / load / create / start / host-api helpers.
+// ---------------------------------------------------------------------------
+
+// Scanning a root that exists but is not a directory is a no-op.
+BOOST_AUTO_TEST_CASE(scan_rejects_non_directory_root) {
+    auto root = unique_root("scan_file_root");
+    write_file(root / "plainfile", "not a directory");
+    PluginHost host;
+    host.scan((root / "plainfile").string());
+    BOOST_CHECK(host.package_ids().empty());
+    fs::remove_all(root);
+}
+
+// A requires entry with a name but an empty interface is rejected by catalog.
+BOOST_AUTO_TEST_CASE(catalog_rejects_require_with_empty_interface) {
+    BOOST_TEST(run_catalog(fake_manifest("badiface.test", "fake_entry_ok",
+                                         "fake.test.iface",
+                                         "  - name: dep\n    interface: ''\n"),
+                           "cat_empty_req_iface")
+                   .find("invalid dependency") != std::string::npos);
+}
+
+// An optional require whose configured dependency target does not exist is
+// skipped: the instance stays planned with no resolved deps. The same holds
+// when the target exists but its package never scanned (unavailable), which
+// also exercises provides_interface's null-package guard.
+BOOST_AUTO_TEST_CASE(optional_require_with_missing_dependency_is_skipped) {
+    if (!fake_ready()) return;
+    auto root = unique_root("plan_opt_ghost");
+    make_package(root, "plain.test",
+                 fake_manifest("plain.test", "fake_entry_ok", "iface.plain",
+                               "  - name: dep\n    interface: iface.plain\n"
+                               "    optional: true\n"),
+                 true);
+    PluginHost host;
+    std::string err;
+    host.scan(root.string());
+    BOOST_REQUIRE(host.catalog(err));
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("u", "plain.test", true, {{"dep", "ghost"}}));
+    // The dependency target resolves to a real instance whose package is
+    // missing entirely.
+    cfg.instances.push_back(decl("g", "no.such.package", false));
+    cfg.instances.push_back(decl("v", "plain.test", true, {{"dep", "g"}}));
+    BOOST_REQUIRE(host.plan_and_resolve(cfg, err));
+    const Instance* inst = host.find_instance("u");
+    BOOST_REQUIRE(inst);
+    BOOST_CHECK(inst->state == State::planned);
+    BOOST_CHECK(inst->dep_ids.empty());
+    const Instance* v = host.find_instance("v");
+    BOOST_REQUIRE(v);
+    BOOST_CHECK(v->state == State::planned);
+    BOOST_CHECK(v->dep_ids.empty());
+    BOOST_CHECK(host.find_instance("g")->state == State::unavailable);
+    fs::remove_all(root);
+}
+
+// An undeclared dependency name is reported even when the manifest declares
+// other requires (find_require walks a non-empty list without a match).
+BOOST_AUTO_TEST_CASE(undeclared_dependency_with_nonempty_requires) {
+    if (!fake_ready()) return;
+    auto root = unique_root("plan_undeclared");
+    make_package(root, "plain.test",
+                 fake_manifest("plain.test", "fake_entry_ok", "iface.plain",
+                               "  - name: need\n    interface: iface.plain\n"),
+                 true);
+    PluginHost host;
+    std::string err;
+    host.scan(root.string());
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("u", "plain.test", true, {{"other", "t"}}));
+    BOOST_CHECK(!host.plan_and_resolve(cfg, err));
+    BOOST_TEST(err.find("plugin.dependency.undeclared") != std::string::npos);
+    fs::remove_all(root);
+}
+
+// config_get's dot-path loop exits through the segment-exhausted arm (trailing
+// dot) and the non-object-parent arm (scalar mid-path).
+BOOST_AUTO_TEST_CASE(config_get_dotpath_exit_arms) {
+    if (!fake_ready()) return;
+    auto root = unique_root("cfg_dotpath");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginHost host;
+    std::string err;
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(
+        decl("consumer", "fake.test", true, {},
+             nlohmann::json{{"name", "n"},
+                            {"nested", nlohmann::json{{"port", 5}}}}));
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+    auto symbols = load_fake_symbols(root / "fake.test" / "bin" / "libfake.so");
+    auto* ctx = symbols.ctx_consumer();
+    BOOST_REQUIRE(ctx);
+    // Trailing dot: the last segment repeats, then start runs past the end.
+    BOOST_CHECK(symbols.host_api->config_get(ctx, "nested.") != nullptr);
+    // Scalar mid-path: the parent of "x" is not an object, so navigation
+    // stops and the scalar itself is returned.
+    BOOST_CHECK_EQUAL(symbols.host_api->config_get(ctx, "name.x"), "n");
+    fs::remove_all(root);
+}
+
+// A required instance whose register_lua callback fails reports the plugin's
+// error code and message in the host error string.
+BOOST_AUTO_TEST_CASE(required_register_failure_reports_plugin_error) {
+    if (!fake_ready()) return;
+    auto root = unique_root("register_fail_required");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("failer", "fake.test", true, {},
+                                 nlohmann::json{{"mode", "register_fail"}}));
+    PluginHost host;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+
+    auto L = make_lua();
+    BOOST_REQUIRE(L);
+    BOOST_CHECK(!host.register_lua_all(L.get(), err));
+    BOOST_TEST(err.find("plugin.lua_register.failed") != std::string::npos);
+    BOOST_TEST(err.find("failer") != std::string::npos);
+    BOOST_TEST(err.find("[fake.reg_failed]") != std::string::npos);
+    BOOST_TEST(err.find("register refused") != std::string::npos);
+}
+
+// A register_lua failure that leaves the error struct untouched exercises the
+// null code/message arms of the host-side failure message: no "[code]" suffix
+// and no plugin message are appended.
+BOOST_AUTO_TEST_CASE(required_register_failure_without_error_fields) {
+    if (!fake_ready()) return;
+    auto root = unique_root("register_fail_noerr");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(
+        decl("failer", "fake.test", true, {},
+             nlohmann::json{{"mode", "register_fail_noerr"}}));
+    PluginHost host;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+
+    auto L = make_lua();
+    BOOST_REQUIRE(L);
+    BOOST_CHECK(!host.register_lua_all(L.get(), err));
+    BOOST_TEST(err.find("plugin.lua_register.failed") != std::string::npos);
+    BOOST_TEST(err.find("failer") != std::string::npos);
+    BOOST_TEST(err.find("[") == std::string::npos);  // no "[code]" suffix
+    BOOST_TEST(err.find("register refused") == std::string::npos);
+    fs::remove_all(root);
+}
+
+// An ABI table whose create slot is null is rejected at create time with the
+// generic create-failure message; the host never dereferences the slot.
+BOOST_AUTO_TEST_CASE(load_rejects_null_create_slot) {
+    if (!fake_ready()) return;
+    auto root = unique_root("load_nocreate");
+    make_package(root, "nocreate.test",
+                 fake_manifest("nocreate.test", "fake_entry_nocreate"), true);
+    PluginHost host;
+    std::string err;
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("r", "nocreate.test", true));
+    BOOST_CHECK(!host.startup(cfg, err));
+    BOOST_TEST(err.find("plugin.create.failed") != std::string::npos);
+    BOOST_TEST(err.find("(package_id") == std::string::npos);
+    fs::remove_all(root);
+}
+
+// Topological sort: a fan-in node's indegree is decremented past zero (the
+// enqueue arm) and partially decremented (the stay-queued arm), in both the
+// cycle-detection pass and the start_order materialization pass.
+BOOST_AUTO_TEST_CASE(topo_sort_cascades_through_fan_in) {
+    if (!fake_ready()) return;
+    auto root = unique_root("topo_fanin");
+    make_package(root, "fake.test",
+                 fake_manifest("fake.test", "fake_entry_ok", "fake.test.iface",
+                               "  - name: d1\n    interface: fake.test.iface\n"
+                               "    optional: true\n"
+                               "  - name: d2\n    interface: fake.test.iface\n"
+                               "    optional: true\n"),
+                 true);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("p1", "fake.test"));
+    cfg.instances.push_back(decl("p2", "fake.test"));
+    cfg.instances.push_back(
+        decl("m", "fake.test", true, {{"d1", "p1"}, {"d2", "p2"}}));
+    cfg.instances.push_back(decl("s", "fake.test"));
+    PluginHost host;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+    // The fan-in consumer starts after both of its providers.
+    BOOST_CHECK(host.find_instance("m")->state == State::started);
+    BOOST_CHECK(host.find_instance("s")->state == State::started);
+    fs::remove_all(root);
+}
+
+// ABI guard value variants: a wrong abi_version and a null package_id are
+// both rejected with the matching mismatch message.
+BOOST_AUTO_TEST_CASE(abi_guard_value_variants) {
+    if (!fake_ready()) return;
+    auto root = unique_root("abi_values");
+    make_package(root, "badver",
+                 fake_manifest("badver.test", "fake_entry_badver"), true);
+    make_package(root, "nullpkg",
+                 fake_manifest("nullpkg.test", "fake_entry_nullpkg"), true);
+    {
+        PluginHost host;
+        std::string err;
+        PluginConfig cfg;
+        cfg.directory = root.string();
+        cfg.instances.push_back(decl("r", "badver.test", true));
+        BOOST_CHECK(!host.startup(cfg, err));
+        BOOST_TEST(err.find("(abi_version)") != std::string::npos);
+    }
+    {
+        PluginHost host;
+        std::string err;
+        PluginConfig cfg;
+        cfg.directory = root.string();
+        cfg.instances.push_back(decl("r", "nullpkg.test", true));
+        BOOST_CHECK(!host.startup(cfg, err));
+        BOOST_TEST(err.find("(package_id") != std::string::npos);
+    }
+    fs::remove_all(root);
+}
+
+// Create-failure arms without error fields: a -1 return with the error struct
+// untouched, a 0 return with a null handle, and a handle whose shutdown slot
+// is null when the host releases the unstarted instance.
+BOOST_AUTO_TEST_CASE(create_failure_error_field_arms) {
+    if (!fake_ready()) return;
+    auto root = unique_root("create_arms");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    {
+        // create returns -1 without setting any error field.
+        PluginHost host;
+        std::string err;
+        PluginConfig cfg;
+        cfg.directory = root.string();
+        cfg.instances.push_back(
+            decl("r", "fake.test", true, {},
+                 nlohmann::json{{"mode", "create_fail_noerr"}}));
+        BOOST_CHECK(!host.startup(cfg, err));
+        BOOST_TEST(err.find("plugin.create.failed") != std::string::npos);
+        BOOST_TEST(err.find("[") == std::string::npos);  // no "[code]" suffix
+    }
+    {
+        // create returns 0 but leaves the handle null.
+        PluginHost host;
+        std::string err;
+        PluginConfig cfg;
+        cfg.directory = root.string();
+        cfg.instances.push_back(decl("r", "fake.test", true, {},
+                                     nlohmann::json{{"mode", "null_handle"}}));
+        BOOST_CHECK(!host.startup(cfg, err));
+        BOOST_TEST(err.find("plugin.create.failed") != std::string::npos);
+    }
+    {
+        // create returns a shell whose get_interface reports nothing and
+        // whose shutdown slot is null; releasing the unstarted handle must
+        // not call through the null slot.
+        PluginHost host;
+        std::string err;
+        PluginConfig cfg;
+        cfg.directory = root.string();
+        cfg.instances.push_back(decl("r", "fake.test", true, {},
+                                     nlohmann::json{{"mode", "no_shutdown"}}));
+        BOOST_CHECK(!host.startup(cfg, err));
+        BOOST_TEST(err.find("does not provide declared interface") !=
+                   std::string::npos);
+    }
+    fs::remove_all(root);
+}
+
+// Start arms: a null start slot counts as started; a start failure without
+// any error fields still fails the required instance.
+BOOST_AUTO_TEST_CASE(start_slot_value_arms) {
+    if (!fake_ready()) return;
+    auto root = unique_root("start_arms");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    {
+        PluginHost host;
+        std::string err;
+        PluginConfig cfg;
+        cfg.directory = root.string();
+        cfg.instances.push_back(decl("m", "fake.test", true, {},
+                                     nlohmann::json{{"mode", "no_start"}}));
+        BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+        BOOST_CHECK(host.find_instance("m")->state == State::started);
+        host.shutdown();
+    }
+    {
+        PluginHost host;
+        std::string err;
+        PluginConfig cfg;
+        cfg.directory = root.string();
+        cfg.instances.push_back(
+            decl("f", "fake.test", true, {},
+                 nlohmann::json{{"mode", "start_fail_noerr"}}));
+        BOOST_CHECK(!host.startup(cfg, err));
+        BOOST_TEST(err.find("plugin.init.failed") != std::string::npos);
+        BOOST_TEST(err.find("requested") == std::string::npos);  // no message
+    }
+    fs::remove_all(root);
+}
+
+// The host-api dependency probe rejects a null interface name after the
+// context and name guards.
+BOOST_AUTO_TEST_CASE(dependency_probe_rejects_null_interface) {
+    if (!fake_ready()) return;
+    BOOST_REQUIRE(fs::exists(minimal_test_so()));
+    auto root = unique_root("dep_null_iface");
+    make_package(root, "minimal.test",
+                 fake_manifest("minimal.test", "shield_plugin_get_v1",
+                               "minimal.test.iface", "", "",
+                               "bin/libshield_minimal_test_plugin.so"),
+                 false, minimal_test_so(), "libshield_minimal_test_plugin.so");
+    make_package(root, "fake.test",
+                 fake_manifest("fake.test", "fake_entry_ok", "fake.test.iface",
+                               "  - name: dep\n    interface: "
+                               "minimal.test.iface\n"),
+                 true);
+    PluginHost host;
+    std::string err;
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("db", "minimal.test"));
+    cfg.instances.push_back(
+        decl("consumer", "fake.test", true, {{"dep", "db"}}));
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+    auto symbols = load_fake_symbols(root / "fake.test" / "bin" / "libfake.so");
+    auto* ctx = symbols.ctx_consumer();
+    BOOST_REQUIRE(ctx);
+    BOOST_CHECK(symbols.host_api->dependency(ctx, "dep", nullptr) == nullptr);
+    fs::remove_all(root);
+}
+
+// register_lua_all tolerates a Lua state whose package.path / package.cpath
+// are nil (extended from an empty base) and does not double up on a path that
+// already ends with a separator.
+BOOST_AUTO_TEST_CASE(lua_register_tolerates_nil_and_semi_paths) {
+    if (!fake_ready()) return;
+    auto root = unique_root("lua_nil_fields");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginHost host;
+    std::string err;
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("consumer", "fake.test"));
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+    auto symbols = load_fake_symbols(root / "fake.test" / "bin" / "libfake.so");
+
+    auto L = make_lua();
+    BOOST_REQUIRE(L);
+    lua_getglobal(L.get(), "package");
+    lua_pushnil(L.get());
+    lua_setfield(L.get(), -2, "path");
+    lua_pushnil(L.get());
+    lua_setfield(L.get(), -2, "cpath");
+    lua_settop(L.get(), 0);
+    BOOST_REQUIRE(host.register_lua_all(L.get(), err));
+    BOOST_CHECK_EQUAL(symbols.add_path_rc(), 0);
+    BOOST_CHECK_EQUAL(symbols.add_cpath_rc(), 0);
+    auto path = lua_package_field(L.get(), "path");
+    auto abs_pattern =
+        (root / "fake.test" / "lua" / "?.lua").lexically_normal().string();
+    BOOST_TEST(path.find(abs_pattern) != std::string::npos);
+
+    // A package.path already ending in ';' must not gain another one.
+    lua_getglobal(L.get(), "package");
+    lua_pushlstring(L.get(), "/preset/?.lua;", 14);
+    lua_setfield(L.get(), -2, "path");
+    lua_settop(L.get(), 0);
+    BOOST_REQUIRE(host.register_lua_all(L.get(), err));
+    auto path2 = lua_package_field(L.get(), "path");
+    BOOST_TEST(path2.find("/preset/?.lua;") == 0);
+    BOOST_TEST(path2.find(";;") == std::string::npos);
+    fs::remove_all(root);
+}
+
+// inject_lua_paths shows the same nil-tolerant and no-double-semicolon
+// behaviour when driven straight from the manifest search_paths.
+BOOST_AUTO_TEST_CASE(lua_inject_tolerates_nil_and_semi_paths) {
+    if (!fake_ready()) return;
+    auto root = unique_root("inject_nil_path");
+    make_package(
+        root, "fake.test",
+        fake_manifest("fake.test", "fake_entry_ok", "fake.test.iface", "",
+                      "lua:\n"
+                      "  namespace: fake\n"
+                      "  search_paths:\n"
+                      "    - lua/?.lua\n"),
+        true);
+    PluginHost host;
+    std::string err;
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("consumer", "fake.test"));
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+
+    auto L = make_lua();
+    BOOST_REQUIRE(L);
+    lua_getglobal(L.get(), "package");
+    lua_pushnil(L.get());
+    lua_setfield(L.get(), -2, "path");
+    lua_settop(L.get(), 0);
+    host.inject_lua_paths(L.get());
+    auto abs_pattern =
+        (root / "fake.test" / "lua" / "?.lua").lexically_normal().string();
+    BOOST_TEST(lua_package_field(L.get(), "path").find(abs_pattern) !=
+               std::string::npos);
+
+    lua_getglobal(L.get(), "package");
+    lua_pushlstring(L.get(), "/preset/?.lua;", 14);
+    lua_setfield(L.get(), -2, "path");
+    lua_settop(L.get(), 0);
+    host.inject_lua_paths(L.get());
+    BOOST_TEST(lua_package_field(L.get(), "path").find(";;") ==
+               std::string::npos);
+    fs::remove_all(root);
+}
+
+// With only the current_service_id hook installed, a plugin's post request is
+// reported as a failure and neither the task function nor the destroyer runs.
+BOOST_AUTO_TEST_CASE(post_to_service_without_hook_reports_failure) {
+    if (!fake_ready()) return;
+    auto root = unique_root("post_no_hook");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginHost host;
+    LuaServiceHooks current_only;
+    current_only.current_service_id = [] { return std::string("svc.a"); };
+    host.set_lua_service_hooks(current_only);
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("consumer", "fake.test"));
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
+    auto symbols = load_fake_symbols(root / "fake.test" / "bin" / "libfake.so");
+    BOOST_REQUIRE(symbols.host_api);
+
+    static int fn_calls = 0;
+    static int destroy_calls = 0;
+    fn_calls = 0;
+    destroy_calls = 0;
+    void (*fn)(void*) = [](void*) { ++fn_calls; };
+    void (*dfn)(void*) = [](void*) { ++destroy_calls; };
+    BOOST_CHECK_EQUAL(symbols.host_api->lua_post_to_service(nullptr, "svc.a",
+                                                            fn, nullptr, dfn),
+                      -1);
+    BOOST_CHECK_EQUAL(fn_calls, 0);
+    BOOST_CHECK_EQUAL(destroy_calls, 0);
+    fs::remove_all(root);
+}
+
+// Shutting down after create_all but before start_all keeps the loaded
+// instance in the loaded state (no shutdown callback for a non-started
+// instance).
+BOOST_AUTO_TEST_CASE(shutdown_after_create_keeps_loaded_state) {
+    if (!fake_ready()) return;
+    auto root = unique_root("shutdown_loaded");
+    make_package(root, "fake.test", fake_manifest("fake.test"), true);
+    PluginHost host;
+    std::string err;
+    PluginConfig cfg;
+    cfg.directory = root.string();
+    cfg.instances.push_back(decl("m", "fake.test"));
+    host.scan(root.string());
+    BOOST_REQUIRE(host.catalog(err));
+    BOOST_REQUIRE(host.plan_and_resolve(cfg, err));
+    BOOST_REQUIRE(host.load_all(err));
+    BOOST_REQUIRE(host.create_all(err));
+    BOOST_REQUIRE(host.find_instance("m")->state == State::loaded);
+    host.shutdown();
+    BOOST_CHECK(host.find_instance("m")->state == State::loaded);
+    fs::remove_all(root);
+}
+
+// get_binding degrades to an empty interface name when the bound instance
+// carries no usable package. A package with an empty provides list never
+// reaches the catalog at all since the interface-declaration validation
+// (see EmptyProvidesCatalogRejected in tests/plugin), so this case covers
+// that rejection plus the optional-instance package-null arm.
+BOOST_AUTO_TEST_CASE(get_binding_empty_interface_variants) {
+    if (!fake_ready()) return;
+    auto root = unique_root("binding_no_catalog");
+    make_package(root, "noprovides",
+                 fake_manifest("noprovides.test", "fake_entry_ok", ""), true);
+    PluginHost host;
+    std::string err;
+    host.scan(root.string());
+    // Empty provides list: a catalog rejection, leaving nothing to bind.
+    BOOST_CHECK(!host.catalog(err));
+    BOOST_CHECK_NE(err.find("must declare at least one"), std::string::npos);
+    fs::remove_all(root);
+
+    // A binding whose instance resolved against a package that was never
+    // scanned: the instance exists but carries no package at all, so the
+    // interface name degrades to empty.
+    auto root2 = unique_root("binding_pkg_null");
+    make_package(root2, "good", fake_manifest("good.test"), true);
+    PluginHost host2;
+    host2.scan(root2.string());
+    BOOST_REQUIRE(host2.catalog(err));
+
+    PluginConfig cfg2;
+    cfg2.directory = root2.string();
+    cfg2.instances.push_back(decl("ghost", "no.such.package", false));
+    cfg2.bindings.push_back(binding("b2", "ghost"));
+    BOOST_REQUIRE(host2.plan_and_resolve(cfg2, err));
+    auto info2 = host2.get_binding("b2");
+    BOOST_REQUIRE(info2.has_value());
+    BOOST_CHECK_EQUAL(info2->interface_name, std::string());
+    fs::remove_all(root2);
 }

@@ -100,7 +100,7 @@ BOOST_AUTO_TEST_CASE(collect_secret_paths_walks_properties) {
 BOOST_AUTO_TEST_CASE(object_required_fields_enforced) {
     json schema = {{"type", "object"},
                    {"required", json::array({"host", "port"})}};
-    BOOST_CHECK(!validate_config(schema, json{{"host", "x"}}).empty());
+    BOOST_CHECK((!validate_config(schema, json{{"host", "x"}}).empty()));
     BOOST_CHECK(
         validate_config(schema, json{{"host", "x"}, {"port", 1}}).empty());
 }
@@ -124,7 +124,7 @@ BOOST_AUTO_TEST_CASE(additional_properties_strict_rejects_unknown_keys) {
         {"additionalProperties", false}};
 
     // Exact key match passes.
-    BOOST_CHECK(validate_config(schema, json{{"userid", "123"}}).empty());
+    BOOST_CHECK((validate_config(schema, json{{"userid", "123"}}).empty()));
 
     // Typo-only payload: "required" fires first with a clear message.
     auto err = validate_config(schema, json{{"user_id", 123}});
@@ -145,11 +145,12 @@ BOOST_AUTO_TEST_CASE(additional_properties_lenient_by_default) {
     // Explicit true: lenient.
     json lenient = schema;
     lenient["additionalProperties"] = true;
-    BOOST_CHECK(validate_config(lenient, json{{"a", 1}, {"extra", 1}}).empty());
+    BOOST_CHECK(
+        (validate_config(lenient, json{{"a", 1}, {"extra", 1}}).empty()));
     // Non-bool value: leniently ignored.
     json weird = schema;
     weird["additionalProperties"] = "nope";
-    BOOST_CHECK(validate_config(weird, json{{"a", 1}, {"extra", 1}}).empty());
+    BOOST_CHECK((validate_config(weird, json{{"a", 1}, {"extra", 1}}).empty()));
 }
 
 BOOST_AUTO_TEST_CASE(additional_properties_recursive_into_nested_objects) {
@@ -209,4 +210,54 @@ BOOST_AUTO_TEST_CASE(non_numeric_length_bounds_ignored) {
     BOOST_CHECK(validate_config(schema, json("any length")).empty());
     json arr = {{"type", "array"}, {"maxItems", "lots"}};
     BOOST_CHECK(validate_config(arr, json::array({1, 2, 3, 4, 5})).empty());
+}
+
+// Wrong-typed schema keywords are skipped (not fatal): "required" that is not
+// an array, "properties" that is not an object, "enum" that is not an array,
+// "minItems" that is not a number, and a string schema without "maxLength".
+BOOST_AUTO_TEST_CASE(wrong_typed_keywords_are_lenient) {
+    json required_scalar = {{"type", "object"}, {"required", "oops"}};
+    BOOST_CHECK(validate_config(required_scalar, json::object()).empty());
+
+    json properties_scalar = {{"type", "object"}, {"properties", "oops"}};
+    BOOST_CHECK((validate_config(properties_scalar, json{{"a", 1}}).empty()));
+
+    json enum_scalar = {{"enum", "oops"}};
+    BOOST_CHECK(validate_config(enum_scalar, json("a")).empty());
+
+    json minitems_scalar = {{"type", "array"}, {"minItems", "oops"}};
+    BOOST_CHECK(validate_config(minitems_scalar, json::array({1})).empty());
+
+    // minLength present but no maxLength keyword: the maxLength block is
+    // skipped entirely.
+    json min_only = {{"type", "string"}, {"minLength", 1}};
+    BOOST_CHECK(validate_config(min_only, json("ab")).empty());
+}
+
+// Strict mode (additionalProperties=false) without a usable "properties"
+// object: nothing to compare keys against, so the strict check is skipped.
+BOOST_AUTO_TEST_CASE(strict_mode_without_properties_is_skipped) {
+    // No "properties" keyword at all.
+    json strict_no_props = {{"type", "object"},
+                            {"additionalProperties", false}};
+    BOOST_CHECK((validate_config(strict_no_props, json{{"a", 1}}).empty()));
+
+    // "properties" present but not an object.
+    json strict_bad_props = {{"type", "object"},
+                             {"additionalProperties", false},
+                             {"properties", "oops"}};
+    BOOST_CHECK((validate_config(strict_bad_props, json{{"a", 1}}).empty()));
+}
+
+// apply_defaults and collect_secret_paths both bail out when the schema's
+// "properties" keyword is not an object.
+BOOST_AUTO_TEST_CASE(defaults_and_secret_paths_ignore_bad_properties) {
+    json bad_props_schema = {{"properties", "oops"}};
+    json val = json::object();
+    apply_defaults(bad_props_schema, val);
+    BOOST_CHECK(val.empty());
+
+    std::vector<std::string> paths;
+    collect_secret_paths(json{{"properties", "oops"}}, "", paths);
+    BOOST_CHECK(paths.empty());
 }

@@ -29,7 +29,9 @@ Level g_global_level = Level::Info;
 thread_local ServiceContext g_service_context;
 
 const char* level_name(Level level) {
-    switch (level) {
+    switch (level) {  // GCOVR_EXCL_BR_LINE (defensive: switch fallback arm;
+                      // all five enum cases are exercised and a stray value
+                      // lands in the excluded defensive return below)
         case Level::Debug:
             return "DEBUG";
         case Level::Info:
@@ -184,7 +186,8 @@ void set_service_context(std::string service_id, std::string service_name,
     g_service_context.trace_id = std::move(trace_id);
 }
 
-void clear_service_context() { g_service_context = {}; }
+void clear_service_context() { g_service_context = {}; }  // GCOVR_EXCL_BR_LINE
+// (compiler artifact: member-wise move-assign arcs of the aggregate)
 
 ConsoleSink::ConsoleSink(bool use_stderr) : use_stderr_(use_stderr) {}
 

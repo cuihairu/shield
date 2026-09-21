@@ -167,3 +167,28 @@ BOOST_AUTO_TEST_CASE(PanicHandlerAbortsAfterForensics) {
     BOOST_CHECK(captured.find("death-boom-msg") != std::string::npos);
 }
 #endif  // !_WIN32
+
+// --- In-process: coroutine thread and deep-stack context dump --------------
+
+// The panic context dump must label a coroutine (non-main) thread as
+// "coroutine" and cap its value enumeration at 16 slots. Driving the writer
+// on a coroutine thread with a 20-value stack exercises both arms of the
+// main/coroutine selection and the cap comparison.
+BOOST_AUTO_TEST_CASE(ForensicsCoroutineThreadAndDeepStack) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base);
+    lua_State* L = lua.lua_state();
+    // lua_newthread pushes the new thread onto L; the registry slot keeps it
+    // anchored for the duration of the call.
+    lua_State* co = lua_newthread(L);
+    BOOST_REQUIRE(co != nullptr);
+    for (int i = 0; i < 20; ++i) {
+        lua_pushinteger(co, i);
+    }
+    BOOST_CHECK_EQUAL(lua_gettop(co), 20);
+    // The writer restores the stack it was handed; the ctx line (with the
+    // "coroutine" label and the capped dump) goes to the sink (stderr).
+    (void)write_lua_panic_forensics(co, stderr);
+    BOOST_CHECK_EQUAL(lua_gettop(co), 20);
+    lua_pop(L, 1);  // pop the thread, leaving the main state balanced
+}

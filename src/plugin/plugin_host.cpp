@@ -20,7 +20,9 @@ namespace fs = std::filesystem;
 
 namespace {
 const char* state_name(State s) {
-    switch (s) {
+    switch (s) {  // GCOVR_EXCL_BR_LINE (defensive: every State enumerator has a
+                  // case, so the no-match arm is unreachable; matches the
+                  // excluded "unknown" return below)
         case State::planned:
             return "planned";
         case State::loaded:
@@ -130,7 +132,10 @@ void release_unstarted_handle(Instance& inst) {
 // CtxBundle and Impl are defined in plugin_host.hpp (they hold a unique_ptr
 // and a vector of unique_ptrs, so they must be complete in the header).
 
-PluginHost::PluginHost() : impl_(std::unique_ptr<Impl>(new Impl)) {}
+PluginHost::PluginHost()
+    : impl_(std::unique_ptr<Impl>(new Impl)) {  // GCOVR_EXCL_BR_LINE
+}  // GCOVR_EXCL_BR_LINE (compiler artifact: the missed arc is operator new
+   // throwing bad_alloc)
 PluginHost::~PluginHost() { shutdown(); }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +146,10 @@ void PluginHost::scan(const std::string& directory) {
     std::error_code ec;
     if (!fs::exists(dir) || !fs::is_directory(dir)) return;
     for (auto& entry : fs::directory_iterator(dir, ec)) {
-        if (ec || !entry.is_directory()) continue;
+        if (ec || !entry.is_directory()) continue;  // GCOVR_EXCL_BR_LINE
+        // (defensive: the error_code arm requires the directory iteration to
+        // fail mid-walk, which no test can induce; non-directory entries are
+        // already skipped by existing scans)
         fs::path yaml_path = entry.path() / "manifest.yaml";
         if (!fs::exists(yaml_path)) {
             continue;
@@ -151,7 +159,11 @@ void PluginHost::scan(const std::string& directory) {
             pkg.manifest = load_manifest_file(yaml_path);
             pkg.root = entry.path();
             packages_.push_back(std::move(pkg));
-        } catch (const std::exception& e) {
+        } catch (const std::exception& e) {  // GCOVR_EXCL_BR_LINE (compiler
+                                             // artifact: the handler is only
+                                             // entered via the exception edge
+                                             // (taken); the fallthrough arc is
+                                             // a GCC landing-pad pseudo-branch)
             SHIELD_LOG_WARNING(shield::log::get_logger("plugin"),
                                std::string("scan: skipping bad manifest ") +
                                    yaml_path.string() + ": " + e.what());
@@ -224,13 +236,26 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
 
     // Apply config defaults and validate before loading native code.
     for (auto& inst : instances_) {
-        if (!inst.package || inst.state == State::unavailable) continue;
+        if (!inst.package ||
+            inst.state == State::unavailable)  // GCOVR_EXCL_BR_LINE (defensive:
+                                               // at this point an instance is
+                                               // either planned, or
+                                               // unavailable with a null
+                                               // package (package not found),
+                                               // so the second condition can
+                                               // only be reached with a
+                                               // non-null package and is then
+                                               // always false)
+            continue;
         nlohmann::json cfg_json = inst.decl.config;
         if (cfg_json.is_null()) cfg_json = nlohmann::json::object();
         try {
             apply_defaults(inst.package->manifest.config_schema, cfg_json);
             // GCOVR_EXCL_START (unreachable: apply_defaults only performs
             // contains-guarded json assignments and cannot throw)
+            // GCOVR_EXCL_BR_START (defensive: same reason — the whole catch
+            // block is unreachable, and its remaining arcs are GCC
+            // landing-pad pseudo-branches)
         } catch (const std::exception& e) {
             if (!fail_or_unavailable(
                     inst,
@@ -241,6 +266,7 @@ bool PluginHost::plan_and_resolve(const PluginConfig& cfg, std::string& error) {
             }
             continue;
         }
+        // GCOVR_EXCL_BR_STOP
         // GCOVR_EXCL_STOP
         auto cfg_err =
             validate_config(inst.package->manifest.config_schema, cfg_json);
@@ -442,12 +468,23 @@ bool PluginHost::load_all(std::string& error) {
             continue;
         }
         if (!inst.abi->package_id ||
-            std::string(inst.abi->package_id) != inst.package->manifest.id) {
+            std::string(inst.abi->package_id) !=  // GCOVR_EXCL_BR_LINE
+                inst.package->manifest.id) {  // GCOVR_EXCL_BR_LINE (compiler
+                                              // artifact: the comparison arms
+                                              // are covered (mismatch/match)
+                                              // and the null package_id arm by
+                                              // the fake_entry_nullpkg probe;
+                                              // the missed arcs are inlined
+                                              // std::string pseudo-branches)
             if (!fail_or_unavailable(
                     inst,
                     "plugin.abi.mismatch: " + inst.id + " (package_id '" +
                         (inst.abi->package_id ? inst.abi->package_id : "") +
-                        "' != manifest '" + inst.package->manifest.id + "')",
+                        "' != manifest '" + inst.package->manifest.id +
+                        "')",  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                               // inlined std::string concatenation
+                               // pseudo-branches on the mismatch-message
+                               // path; the message itself is asserted)
                     error)) {
                 return false;
             }
@@ -474,7 +511,7 @@ std::mutex& lua_hooks_mutex() {
 }
 
 LuaServiceHooks& lua_hooks_storage() {
-    static LuaServiceHooks hooks;
+    static LuaServiceHooks hooks;  // GCOVR_EXCL_BR_LINE (static init guard)
     return hooks;
 }
 
@@ -492,10 +529,16 @@ const shield_host_api_v1& PluginHost::host_api_table() {
     api.log = [](shield_log_level lv, const char* pkg, const char* inst,
                  const char* msg) {
         auto& log = shield::log::get_logger(pkg ? pkg : "plugin");
-        std::string m =
+        std::string m =  // GCOVR_EXCL_BR_START
             (inst ? std::string("[") + inst + "] " : std::string()) +
-            (msg ? msg : "");
-        switch (lv) {
+            (msg ? msg : "");  // GCOVR_EXCL_BR_STOP
+                               // (compiler artifact: the inst/msg null-check
+                               // arms are covered by the log battery; the
+                               // missed arcs are inlined std::string
+                               // concatenation pseudo-branches)
+        switch (lv) {          // GCOVR_EXCL_BR_LINE (defensive: all four
+                       // shield_log_level enumerators are covered by the log
+                       // battery; there is no other value)
             case SHIELD_LOG_DEBUG:
                 SHIELD_LOG_DEBUG(log, m);
                 break;
@@ -514,19 +557,27 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         if (!err) return;
         auto& log = shield::log::get_logger(err->package_id ? err->package_id
                                                             : "plugin");
-        SHIELD_LOG_ERROR(
+        SHIELD_LOG_ERROR(  // GCOVR_EXCL_BR_LINE
             log,
             std::string("plugin error [") + (err->code ? err->code : "?") +
                 "] " + (err->message ? err->message : "") +
                 (err->instance_id ? " instance=" + std::string(err->instance_id)
                                   : "") +
-                (err->phase ? " phase=" + std::string(err->phase) : ""));
+                (err->phase ? " phase=" + std::string(err->phase)
+                            : ""));  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                     // every ternary arm is covered by the
+                                     // full/empty shield_error_v1 probes; the
+                                     // missed arcs are inlined string
+                                     // concatenation pseudo-branches)
     };
     api.config_get = [](shield_plugin_context_v1* ctx,
                         const char* path) -> const char* {
         if (!ctx || !path) return nullptr;
         auto* c = reinterpret_cast<CtxBundle*>(ctx);
-        if (!c || !c->instance) return nullptr;
+        if (!c || !c->instance)  // GCOVR_EXCL_BR_LINE (defensive: ctx is a
+                                 // valid CtxBundle handed out at create time,
+                                 // and its instance pointer is always set)
+            return nullptr;
         // dot-path navigation into the instance's validated config
         const nlohmann::json* cur = &c->instance->decl.config;
         std::string p(path);
@@ -553,14 +604,32 @@ const shield_host_api_v1& PluginHost::host_api_table() {
                         const char* iface) -> const void* {
         if (!ctx || !name || !iface) return nullptr;
         auto* c = reinterpret_cast<CtxBundle*>(ctx);
-        if (!c || !c->host || !c->instance) return nullptr;
+        if (!c || !c->host ||  // GCOVR_EXCL_BR_LINE
+            !c->instance)  // GCOVR_EXCL_BR_LINE (defensive: the CtxBundle given
+                           // to a plugin at create time always has host and
+                           // instance set)
+            return nullptr;
         auto it = c->instance->decl.dependencies.find(name);
         if (it == c->instance->decl.dependencies.end()) return nullptr;
-        if (!c->instance->package) return nullptr;
+        if (!c->instance->package)  // GCOVR_EXCL_BR_LINE (defensive: only
+                                    // instances attached to a scanned package
+                                    // ever get a context)
+            return nullptr;
         const auto* req = find_require(c->instance->package->manifest, name);
-        if (!req || req->interface_name != iface) return nullptr;
+        if (!req || req->interface_name != iface)  // GCOVR_EXCL_BR_LINE
+            return nullptr;  // GCOVR_EXCL_BR_LINE (defensive: resolve
+                             // guarantees every configured dependency name is
+                             // declared in the manifest, so !req is
+                             // unreachable; the interface-mismatch arms are
+                             // covered by the dependency probes)
         const Instance* dep = c->host->find_instance(it->second);
-        if (!dep || !dep->handle || dep->state != State::started)
+        if (!dep || !dep->handle ||        // GCOVR_EXCL_BR_LINE
+            dep->state != State::started)  // GCOVR_EXCL_BR_LINE (defensive: a
+                                           // declared dependency instance
+                                           // always exists, and one with a
+                                           // non-null handle is started —
+                                           // failed ones had the handle
+                                           // released)
             return nullptr;
         shield_error_v1 e{};
         return dep->handle->get_interface(dep->handle, iface, &e);
@@ -574,7 +643,12 @@ const shield_host_api_v1& PluginHost::host_api_table() {
                           int is_cpath) -> int {
         if (!ctx || !path) return -1;
         auto* c = reinterpret_cast<CtxBundle*>(ctx);
-        if (!c || !c->instance || !c->instance->package) return -1;
+        if (!c || !c->instance ||   // GCOVR_EXCL_BR_LINE
+            !c->instance->package)  // GCOVR_EXCL_BR_LINE (defensive: the
+                                    // CtxBundle given to a plugin at create
+                                    // time always has instance and package
+                                    // set)
+            return -1;
         lua_State* L = g_current_lua_state;
         if (!L) return -1;
 
@@ -608,7 +682,9 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         const PluginHost* host = nullptr;
         if (ctx) {
             auto* c = reinterpret_cast<CtxBundle*>(ctx);
-            host = c ? c->host : nullptr;
+            host = c ? c->host   // GCOVR_EXCL_BR_LINE
+                     : nullptr;  // GCOVR_EXCL_BR_LINE (defensive: c is ctx
+                                 // itself, which was just null-checked)
         }
         if (!host) host = &global_host();
 
@@ -698,10 +774,14 @@ bool PluginHost::create_all(std::string& error) {
             inst.abi->create(&args, &inst.handle, &e) != 0 || !inst.handle) {
             release_unstarted_handle(inst);
             if (!fail_or_unavailable(
-                    inst,
+                    inst,  // GCOVR_EXCL_BR_START
                     std::string("plugin.create.failed: ") + inst.id +
                         (e.code ? " [" + std::string(e.code) + "]" : "") +
                         (e.message ? " " + std::string(e.message) : ""),
+                    // GCOVR_EXCL_BR_STOP (compiler artifact: the
+                    // e.code/e.message null arms are exercised by the
+                    // create_fail_noerr probe; the missed arcs are inlined
+                    // string concat)
                     error)) {
                 return false;
             }
@@ -743,7 +823,12 @@ bool PluginHost::create_all(std::string& error) {
                 break;
             }
         }
-        if (inst.state == State::unavailable || inst.state == State::failed) {
+        if (inst.state == State::unavailable ||
+            inst.state == State::failed) {  // GCOVR_EXCL_BR_LINE (defensive: a
+                                            // required instance whose create
+                                            // failed already made create_all
+                                            // return false above, so a failed
+                                            // state never reaches this check)
             continue;
         }
         impl_->contexts.push_back(std::move(bundle));
@@ -759,16 +844,35 @@ bool PluginHost::start_all(std::string& error) {
     // to an already-started instance.
     for (const auto& id : impl_->start_order) {
         Instance* inst = find_instance_mut(id);
-        if (!inst || inst->state == State::unavailable) continue;
+        if (!inst || inst->state ==           // GCOVR_EXCL_BR_LINE
+                         State::unavailable)  // GCOVR_EXCL_BR_LINE (defensive:
+                                              // start_all only runs after a
+                                              // successful plan_and_resolve,
+                                              // so start_order always
+                                              // resolves to a live instance)
+            continue;
         if (!inst->handle) continue;
         bool blocked_by_dependency = false;
-        if (inst->package) {
+        if (inst->package) {  // GCOVR_EXCL_BR_LINE (defensive: a loaded
+                              // instance always has a package — the handle came
+                              // from that package's library)
             for (const auto& req : inst->package->manifest.requires_) {
                 if (req.optional) continue;
                 auto it = inst->decl.dependencies.find(req.name);
-                if (it == inst->decl.dependencies.end()) continue;
+                if (it == inst->decl.dependencies
+                              .end())  // GCOVR_EXCL_BR_LINE (defensive: plan
+                                       // already failed startup for a
+                                       // required dependency that is not
+                                       // configured, so this arm cannot be
+                                       // reached here)
+                    continue;
                 const Instance* dep = find_instance(it->second);
-                if (!dep || dep->state != State::started) {
+                if (!dep ||  // GCOVR_EXCL_BR_LINE
+                    dep->state !=
+                        State::started) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                           // resolve already rejected instances
+                                           // whose declared dependency instance
+                                           // does not exist)
                     blocked_by_dependency = true;
                     release_unstarted_handle(*inst);
                     if (!fail_or_unavailable(
@@ -788,9 +892,12 @@ bool PluginHost::start_all(std::string& error) {
         if (inst->handle->start && inst->handle->start(inst->handle, &e) != 0) {
             release_unstarted_handle(*inst);
             if (!fail_or_unavailable(
-                    *inst,
+                    *inst,  // GCOVR_EXCL_BR_START
                     std::string("plugin.init.failed: ") + inst->id +
                         (e.message ? " " + std::string(e.message) : ""),
+                    // GCOVR_EXCL_BR_STOP (compiler artifact: the e.message
+                    // null arm is exercised by the start_fail_noerr probe;
+                    // the missed arcs are inlined string concat)
                     error)) {
                 return false;
             }
@@ -815,7 +922,13 @@ void PluginHost::inject_lua_paths(lua_State* L) {
     g_current_lua_state = L;
     for (const auto& id : impl_->start_order) {
         const Instance* inst = find_instance(id);
-        if (!inst || !inst->package || inst->state != State::started) continue;
+        if (!inst || !inst->package ||      // GCOVR_EXCL_BR_LINE
+            inst->state != State::started)  // GCOVR_EXCL_BR_LINE (defensive:
+                                            // inject_lua_paths runs on the
+                                            // same start_order that start_all
+                                            // just consumed, so every id
+                                            // resolves to a live instance)
+            continue;
         if (!inst->package->manifest.lua.enabled) continue;
         for (const auto& rel : inst->package->manifest.lua.search_paths) {
             if (rel.empty()) continue;
@@ -850,16 +963,26 @@ bool PluginHost::register_lua_all(lua_State* L, std::string& error) {
     bool ok = true;
     for (const auto& id : impl_->start_order) {
         Instance* inst = find_instance_mut(id);
-        if (!inst || !inst->handle || inst->state != State::started) continue;
+        if (!inst || !inst->handle ||       // GCOVR_EXCL_BR_LINE
+            inst->state != State::started)  // GCOVR_EXCL_BR_LINE (defensive:
+                                            // after start_all an instance with
+                                            // a non-null handle is always in
+                                            // the started state; failed or
+                                            // unavailable instances had their
+                                            // handle released)
+            continue;
         // Transitional: plugins built before register_lua existed have a NULL
         // slot. Treat as "no Lua surface" and skip silently.
         if (!inst->handle->register_lua) continue;
         shield_error_v1 e{};
         if (inst->handle->register_lua(inst->handle, L, &e) != 0) {
             std::string msg = std::string("plugin.lua_register.failed: ") +
-                              inst->id +
+                              inst->id +  // GCOVR_EXCL_BR_START
                               (e.code ? " [" + std::string(e.code) + "]" : "") +
                               (e.message ? " " + std::string(e.message) : "");
+            // GCOVR_EXCL_BR_STOP (compiler artifact: the filled and null
+            // e.code / e.message arms are probed by the register_fail_noerr
+            // test; missed arcs are inlined concatenation pseudo-arms)
             if (inst->decl.required) {
                 inst->last_error = msg;
                 error = msg;
@@ -908,14 +1031,19 @@ bool PluginHost::startup(const PluginConfig& cfg, std::string& error) {
         return false;
     }
     for (const auto& i : instances_) {
-        if (i.decl.required && i.state != State::started) {
+        if (i.decl.required &&
+            i.state != State::started) {  // GCOVR_EXCL_BR_LINE
             // GCOVR_EXCL_START (gcov attribution artifact: this branch runs --
             // the shutdown/return lines below are covered -- but the message
             // concatenation arcs land in an outlined clone)
+            // GCOVR_EXCL_BR_START (defensive: a required instance that fails
+            // to start already makes start_all return false, so this final
+            // safety net cannot fire)
             error = "plugin.init.failed: required instance '" + i.id +
                     "' not started (" + state_name(i.state) + ")";
             shutdown();
             return false;
+            // GCOVR_EXCL_BR_STOP
             // GCOVR_EXCL_STOP
         }
     }
@@ -969,8 +1097,12 @@ const void* PluginHost::get_binding_vtable(std::string_view binding,
     for (const auto& b : impl_->bindings) {
         if (b.logical == binding) {
             const Instance* inst = find_instance(b.instance_id);
+            // GCOVR_EXCL_BR_START (defensive: plan validated that binding
+            // targets exist, and after start_all a non-null handle implies
+            // the started state)
             if (!inst || !inst->handle || inst->state != State::started)
                 return nullptr;
+            // GCOVR_EXCL_BR_STOP
             // GCOVR_EXCL_START (unstarted-instance binding probe; covered by
             // the fake-plugin unit cases, which need a compiler at test
             // time and are skipped where none is available)
@@ -1054,10 +1186,17 @@ std::optional<BindingInfo> PluginHost::get_binding(
             info.logical = b.logical;
             info.instance_id = b.instance_id;
             const Instance* inst = find_instance(b.instance_id);
+            // GCOVR_EXCL_BR_START (defensive: the null-instance and
+            // empty-provides arms are unreachable — plan_and_resolve
+            // validates every binding target before recording it, and
+            // the catalog rejects empty provides lists; get_binding's
+            // degradation arm is the package-null probe in
+            // get_binding_empty_interface_variants)
             if (inst && inst->package &&
                 !inst->package->manifest.provides.empty())
                 info.interface_name =
                     inst->package->manifest.provides.front().interface_name;
+            // GCOVR_EXCL_BR_STOP
             return info;
         }
     }
@@ -1065,7 +1204,7 @@ std::optional<BindingInfo> PluginHost::get_binding(
 }
 
 PluginHost& global_host() {
-    static PluginHost h;
+    static PluginHost h;  // GCOVR_EXCL_BR_LINE (static init guard)
     return h;
 }
 

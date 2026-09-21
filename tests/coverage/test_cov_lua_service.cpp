@@ -2118,3 +2118,1389 @@ BOOST_AUTO_TEST_CASE(ShutdownAllBudgetForcesRemainingServices) {
     BOOST_CHECK_LT(elapsed.count(), 900);
     BOOST_CHECK_EQUAL(manager.pending_task_count_total(), 0u);
 }
+
+// ---------------------------------------------------------------------------
+// valid_name arms exercised through spawn's service-name validation: the
+// reserved "shield." prefix, illegal characters, the 64-byte cap (both sides
+// of the boundary), and a name using every allowed character class.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(SpawnNameValidationArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string plain = write_script("cov_name_plain.lua", "return {}\n");
+
+    auto reserved = manager.spawn(plain, opts_for("shield.reserved"));
+    BOOST_CHECK(!reserved.success);
+    BOOST_CHECK(reserved.error_message.find("invalid service name") !=
+                std::string::npos);
+
+    auto spaced = manager.spawn(plain, opts_for("bad name!"));
+    BOOST_CHECK(!spaced.success);
+    BOOST_CHECK(spaced.error_message.find("invalid service name") !=
+                std::string::npos);
+
+    // Characters sorting past 'z' enter the lowercase range check but fail
+    // its upper bound (the lowercase arm's tail edge).
+    auto past_z = manager.spawn(plain, opts_for("bad{name|"));
+    BOOST_CHECK(!past_z.success);
+    BOOST_CHECK(past_z.error_message.find("invalid service name") !=
+                std::string::npos);
+
+    const std::string too_long(65, 'a');
+    auto oversized = manager.spawn(plain, opts_for(too_long));
+    BOOST_CHECK(!oversized.success);
+
+    // Exactly 64 characters is still inside the cap.
+    const std::string at_cap(64, 'b');
+    auto boundary = manager.spawn(plain, opts_for(at_cap));
+    BOOST_REQUIRE(boundary.success);
+    manager.exit(boundary.service_id, "cleanup");
+
+    // Every allowed character class in one name: upper, lower, digit,
+    // underscore, dot, dash.
+    auto ok = manager.spawn(plain, opts_for("Svc_1.a-b"));
+    BOOST_REQUIRE(ok.success);
+    manager.exit(ok.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// register_name / unregister_name arms: the no-dispatch-context error shapes
+// (with and without the error out-param) run on the test thread; the name
+// validation arms, the same-owner re-register, the conflicting-owner refusal,
+// the unknown-name unregister and unregistering the service's own published
+// name run inside a live dispatch context via shield.register/unregister.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(RegisterNameArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    std::string err;
+    BOOST_CHECK(!manager.register_name("cov.any", &err));
+    BOOST_CHECK_EQUAL(err, "register requires current service context");
+    BOOST_CHECK(!manager.register_name("cov.any"));
+    err.clear();
+    BOOST_CHECK(!manager.unregister_name("cov.any", &err));
+    BOOST_CHECK_EQUAL(err, "unregister requires current service context");
+    BOOST_CHECK(!manager.unregister_name("cov.any"));
+
+    const std::string module =
+        write_script("cov_reg_arms.lua",
+                     "local M = {}\n"
+                     "function M.try_reg(ctx, name)\n"
+                     "  local ok, e = shield.register(name)\n"
+                     "  return ok, e and e.message or ''\n"
+                     "end\n"
+                     "function M.try_unreg(ctx, name)\n"
+                     "  local ok, e = shield.unregister(name)\n"
+                     "  return ok, e and e.message or ''\n"
+                     "end\n"
+                     "return M\n");
+    auto svc = manager.spawn(module, opts_for("cov_reg_arms_svc"));
+    BOOST_REQUIRE(svc.success);
+    auto other = manager.spawn(module, opts_for("cov_reg_other_svc"));
+    BOOST_REQUIRE(other.success);
+
+    // Names failing valid_name: empty, illegal character, over the cap and
+    // the reserved "shield." prefix.
+    const std::string too_long(65, 'n');
+    for (const std::string& bad : {std::string(""), std::string("has space"),
+                                   too_long, std::string("shield.x")}) {
+        CallResult cr = manager.call(svc.service_id, "try_reg",
+                                     nlohmann::json::array({bad}), 2000);
+        BOOST_REQUIRE(cr.success);
+        BOOST_CHECK(!cr.values[0].get<bool>());
+        BOOST_CHECK(cr.values[1].get<std::string>().find(
+                        "invalid service name") != std::string::npos);
+    }
+
+    // A legal alias registers, and a same-owner re-register succeeds.
+    for (int i = 0; i < 2; ++i) {
+        CallResult cr = manager.call(svc.service_id, "try_reg",
+                                     nlohmann::json::array({"nick.2-x"}), 2000);
+        BOOST_REQUIRE(cr.success);
+        BOOST_CHECK(cr.values[0].get<bool>());
+    }
+    BOOST_CHECK_EQUAL(manager.query_service("nick.2-x"), svc.service_id);
+
+    // Another owner registering the same alias is refused.
+    CallResult clash = manager.call(other.service_id, "try_reg",
+                                    nlohmann::json::array({"nick.2-x"}), 2000);
+    BOOST_REQUIRE(clash.success);
+    BOOST_CHECK(!clash.values[0].get<bool>());
+    BOOST_CHECK(clash.values[1].get<std::string>().find("already exists") !=
+                std::string::npos);
+
+    // Unregistering an unknown name reports failure.
+    CallResult missing =
+        manager.call(other.service_id, "try_unreg",
+                     nlohmann::json::array({"cov.nope"}), 2000);
+    BOOST_REQUIRE(missing.success);
+    BOOST_CHECK(!missing.values[0].get<bool>());
+    BOOST_CHECK(missing.values[1].get<std::string>().find("not found") !=
+                std::string::npos);
+
+    // A service may unregister its own published service name.
+    CallResult own =
+        manager.call(svc.service_id, "try_unreg",
+                     nlohmann::json::array({"cov_reg_arms_svc"}), 2000);
+    BOOST_REQUIRE(own.success);
+    BOOST_CHECK(own.values[0].get<bool>());
+    BOOST_CHECK(manager.query_service("cov_reg_arms_svc").empty());
+
+    // The null out-param arms of the in-dispatch guards: the Lua binding
+    // always passes an error table, so only a direct C++ call inside a live
+    // dispatch context (a fork task on the owner actor) can reach them.
+    bool null_guards[4] = {true, true, true, true};
+    std::atomic<bool> null_guards_done{false};
+    manager.enqueue_forked_task(other.service_id, [&] {
+        null_guards[0] = manager.register_name("bad name", nullptr);
+        null_guards[1] = manager.register_name("nick.2-x", nullptr);
+        null_guards[2] = manager.unregister_name("cov.nope", nullptr);
+        null_guards[3] = manager.unregister_name("nick.2-x", nullptr);
+        null_guards_done = true;
+    });
+    for (int i = 0; i < 200 && !null_guards_done.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    BOOST_CHECK(null_guards_done.load());
+    BOOST_CHECK(!null_guards[0]);
+    BOOST_CHECK(!null_guards[1]);
+    BOOST_CHECK(!null_guards[2]);
+    BOOST_CHECK(!null_guards[3]);
+
+    manager.exit(other.service_id, "cleanup");
+    manager.exit(svc.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// on_init return-value combinations: (nil, msg) and false report failure,
+// the message must be a string to be surfaced, a non-boolean/non-nil first
+// value counts as success.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(OnInitFailureCombinations) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module = write_script(
+        "cov_init_ret.lua",
+        "local M = {}\n"
+        "function M.on_init(args)\n"
+        "  local cfg = (args and args.config) or {}\n"
+        "  local tc = cfg.test_case or ''\n"
+        "  if tc == 'nil_msg' then return nil, 'init said no' end\n"
+        "  if tc == 'false_only' then return false end\n"
+        "  if tc == 'false_num' then return false, 42 end\n"
+        "  if tc == 'nil_num' then return nil, 42 end\n"
+        "  if tc == 'nil_only' then return nil end\n"
+        "  if tc == 'truthy' then return 'sounds fine' end\n"
+        "  return true\n"
+        "end\n"
+        "return M\n");
+
+    auto nil_msg = manager.spawn(
+        module,
+        opts_for("cov_init_nil_msg", {{"config", {{"test_case", "nil_msg"}}}}));
+    BOOST_CHECK(!nil_msg.success);
+    BOOST_CHECK(nil_msg.error_message.find("init said no") !=
+                std::string::npos);
+
+    auto false_only = manager.spawn(
+        module, opts_for("cov_init_false",
+                         {{"config", {{"test_case", "false_only"}}}}));
+    BOOST_CHECK(!false_only.success);
+    BOOST_CHECK(false_only.error_message.find("on_init returned false") !=
+                std::string::npos);
+
+    auto false_num = manager.spawn(
+        module, opts_for("cov_init_false_num",
+                         {{"config", {{"test_case", "false_num"}}}}));
+    BOOST_CHECK(!false_num.success);
+    BOOST_CHECK(false_num.error_message.find("on_init returned false") !=
+                std::string::npos);
+
+    auto nil_num = manager.spawn(
+        module,
+        opts_for("cov_init_nil_num", {{"config", {{"test_case", "nil_num"}}}}));
+    BOOST_CHECK(!nil_num.success);
+    BOOST_CHECK(nil_num.error_message.find("on_init returned nil") !=
+                std::string::npos);
+
+    // A bare `return nil` (single null value) is a silent success — only
+    // (nil, msg) with a trailing message reports failure.
+    auto nil_only = manager.spawn(
+        module, opts_for("cov_init_nil_only",
+                         {{"config", {{"test_case", "nil_only"}}}}));
+    BOOST_CHECK(nil_only.success);
+    manager.exit(nil_only.service_id, "cleanup");
+
+    auto truthy = manager.spawn(
+        module,
+        opts_for("cov_init_truthy", {{"config", {{"test_case", "truthy"}}}}));
+    BOOST_CHECK(truthy.success);
+    manager.exit(truthy.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// spawn rpc.routes option handling: a non-object rpc, a routes-less rpc
+// object, parse failures (bad direction, missing binding), a missing handler
+// with a trailing good route (for_each early exit), foreign-owned routes
+// skipped silently, and a fully compiled owned c2s + s2c table.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(SpawnRpcRouteArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module =
+        write_script("cov_rpc_mod.lua",
+                     "local M = {}\n"
+                     "function M.handle_ping(ctx) return 'pong' end\n"
+                     "return M\n");
+
+    auto not_object =
+        manager.spawn(module, opts_for("cov_rpc_a", {{"rpc", "nope"}}));
+    BOOST_CHECK(not_object.success);
+    manager.exit(not_object.service_id, "cleanup");
+
+    auto no_routes = manager.spawn(
+        module, opts_for("cov_rpc_b", {{"rpc", nlohmann::json::object()}}));
+    BOOST_CHECK(no_routes.success);
+    manager.exit(no_routes.service_id, "cleanup");
+
+    auto bad_direction = manager.spawn(
+        module,
+        opts_for(
+            "cov_rpc_c",
+            {{"rpc",
+              {{"routes",
+                nlohmann::json::array({nlohmann::json{
+                    {"id", 5}, {"direction", "warp"}, {"binding", "x"}}})}}}}));
+    BOOST_CHECK(!bad_direction.success);
+    BOOST_CHECK(bad_direction.error_message.find("rpc.routes for") !=
+                std::string::npos);
+
+    auto no_binding = manager.spawn(
+        module, opts_for("cov_rpc_c2",
+                         {{"rpc",
+                           {{"routes", nlohmann::json::array(
+                                           {nlohmann::json{{"id", 6}}})}}}}));
+    BOOST_CHECK(!no_binding.success);
+    BOOST_CHECK(no_binding.error_message.find("binding is required") !=
+                std::string::npos);
+
+    // The failing route comes first; the good route behind it must hit the
+    // "already failed" early exit inside the compile loop.
+    auto handler_missing = manager.spawn(
+        module,
+        opts_for(
+            "cov_rpc_d",
+            {{"rpc",
+              {{"routes",
+                nlohmann::json::array(
+                    {nlohmann::json{{"id", 3},
+                                    {"direction", "c2s"},
+                                    {"binding", "nope"},
+                                    {"owner_service", "cov_rpc_d"}},
+                     nlohmann::json{{"id", 4},
+                                    {"direction", "c2s"},
+                                    {"binding", "handle_ping"},
+                                    {"owner_service", "cov_rpc_d"}}})}}}}));
+    BOOST_CHECK(!handler_missing.success);
+    BOOST_CHECK(handler_missing.error_message.find(
+                    "rpc binding compile failed") != std::string::npos);
+    BOOST_CHECK(handler_missing.error_message.find("handler_missing") !=
+                std::string::npos);
+
+    // The compile loop stores descriptors in an unordered_map, so the visit
+    // order is unspecified. Two failing routes guarantee that whichever
+    // route is visited second sees the error from the first and takes the
+    // "already failed" early exit, regardless of the hash order.
+    auto double_missing = manager.spawn(
+        module,
+        opts_for(
+            "cov_rpc_d2",
+            {{"rpc",
+              {{"routes",
+                nlohmann::json::array(
+                    {nlohmann::json{{"id", 31},
+                                    {"direction", "c2s"},
+                                    {"binding", "nope1"},
+                                    {"owner_service", "cov_rpc_d2"}},
+                     nlohmann::json{{"id", 32},
+                                    {"direction", "c2s"},
+                                    {"binding", "nope2"},
+                                    {"owner_service", "cov_rpc_d2"}}})}}}}));
+    BOOST_CHECK(!double_missing.success);
+    BOOST_CHECK(double_missing.error_message.find("handler_missing") !=
+                std::string::npos);
+
+    // Routes owned by another service are neither compiled nor fatal.
+    auto foreign = manager.spawn(
+        module,
+        opts_for("cov_rpc_e",
+                 {{"rpc",
+                   {{"routes", nlohmann::json::array({nlohmann::json{
+                                   {"id", 7},
+                                   {"direction", "c2s"},
+                                   {"binding", "nope"},
+                                   {"owner_service", "other_svc"}}})}}}}));
+    BOOST_CHECK(foreign.success);
+    manager.exit(foreign.service_id, "cleanup");
+
+    // Owned c2s + s2c routes compile; the c2s handler resolves.
+    auto full = manager.spawn(
+        module,
+        opts_for(
+            "cov_rpc_f",
+            {{"rpc",
+              {{"routes",
+                nlohmann::json::array(
+                    {nlohmann::json{{"id", 8},
+                                    {"direction", "c2s"},
+                                    {"binding", "handle_ping"},
+                                    {"owner_service", "cov_rpc_f"}},
+                     nlohmann::json{{"id", 9},
+                                    {"direction", "s2c"},
+                                    {"binding", "push_xy"},
+                                    {"owner_service", "cov_rpc_f"}}})}}}}));
+    BOOST_REQUIRE(full.success);
+    CallResult cr = manager.call(full.service_id, "handle_ping",
+                                 nlohmann::json::array(), 2000);
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0].get<std::string>(), "pong");
+    manager.exit(full.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// exit() arm coverage: unknown ids are a no-op, a foreign-thread exit with
+// a deadline the actor meets goes through the monitor-down wait, and an
+// on_exit that outlives the deadline takes the hung teardown (registry
+// dropped, VM parked, nothing joined).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ExitUnknownAndHungTeardown) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string slow_exit =
+        write_script("cov_hang_exit.lua",
+                     "local M = {}\n"
+                     "function M.on_exit(reason)\n"
+                     "    local start = shield.monotonic()\n"
+                     "    while shield.monotonic() - start < 1200 do end\n"
+                     "end\n"
+                     "return M\n");
+    const std::string plain = write_script("cov_hang_plain.lua", "return {}\n");
+
+    // Unknown service: no-op.
+    manager.exit("cov_ghost_svc", "x");
+
+    auto healthy = manager.spawn(plain, opts_for("cov_hang_healthy"));
+    BOOST_REQUIRE(healthy.success);
+    manager.exit(healthy.service_id, "cleanup",
+                 std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    BOOST_CHECK(manager.query_service("cov_hang_healthy").empty());
+
+    auto hung = manager.spawn(slow_exit, opts_for("cov_hang_svc"));
+    BOOST_REQUIRE(hung.success);
+    const auto begin = std::chrono::steady_clock::now();
+    manager.exit(
+        hung.service_id, "stuck",
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(80));
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - begin);
+    BOOST_CHECK_GE(waited.count(), 80);
+    // The hung teardown dropped the registry entry without touching the VM.
+    BOOST_CHECK(manager.query_service("cov_hang_svc").empty());
+    BOOST_CHECK(!manager.service_vm(hung.service_id));
+
+    // Let the stuck on_exit unwind and its actor quit before the manager is
+    // destroyed (the graveyard join would otherwise wait for it here).
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+}
+
+// ---------------------------------------------------------------------------
+// forked-task queue arms: the empty-id borrow path, the rollback scan
+// walking past another service's queued task, and the cancel scan doing the
+// same.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ForkQueueBorrowAndScanArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // With a live service present, an empty owner id borrows its actor and
+    // the task runs.
+    const std::string plain =
+        write_script("cov_fork_borrow.lua", "return {}\n");
+    auto host = manager.spawn(plain, opts_for("cov_fork_borrow_svc"));
+    BOOST_REQUIRE(host.success);
+    std::atomic<int> borrowed{0};
+    const uint64_t borrow_id = manager.enqueue_forked_task(
+        "", [&borrowed]() { borrowed.fetch_add(1); });
+    BOOST_CHECK_NE(borrow_id, 0u);
+    BOOST_CHECK(wait_until([&]() { return borrowed.load() >= 1; },
+                           std::chrono::seconds(2)));
+
+    const std::string stall =
+        write_script("cov_fork_scan.lua",
+                     "local M = {}\n"
+                     "function M.stall(ctx)\n"
+                     "  local t = shield.monotonic()\n"
+                     "  while shield.monotonic() - t < 500 do end\n"
+                     "  return 'stalled'\n"
+                     "end\n"
+                     "return M\n");
+    auto a = manager.spawn(stall, opts_for("cov_fork_scan_a"));
+    auto b = manager.spawn(stall, opts_for("cov_fork_scan_b"));
+    BOOST_REQUIRE(a.success);
+    BOOST_REQUIRE(b.success);
+
+    // Keep both actors busy so the queued tasks are not picked up.
+    BOOST_CHECK(manager.send(a.service_id, "stall", nlohmann::json::array()));
+    BOOST_CHECK(manager.send(b.service_id, "stall", nlohmann::json::array()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    manager.enqueue_forked_task(a.service_id, [] {});
+    manager.enqueue_forked_task(b.service_id, [] {});
+    BOOST_CHECK_GE(manager.pending_task_count(a.service_id), 1u);
+    BOOST_CHECK_GE(manager.pending_task_count(b.service_id), 1u);
+
+    // The rollback scan for an unknown owner walks past A's queued task.
+    BOOST_CHECK_EQUAL(manager.enqueue_forked_task("cov_no_such_service", [] {}),
+                      0u);
+    BOOST_CHECK_EQUAL(manager.pending_task_count("cov_no_such_service"), 0u);
+
+    // Cancelling A walks past B's queued task.
+    manager.cancel_forked_tasks_for_service(a.service_id);
+    BOOST_CHECK_EQUAL(manager.pending_task_count(a.service_id), 0u);
+    BOOST_CHECK_GE(manager.pending_task_count(b.service_id), 1u);
+    manager.cancel_forked_tasks_for_service(b.service_id);
+
+    // Let both stalls finish so the actors are idle again.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult ra = manager.call(a.service_id, "stall",
+                                         nlohmann::json::array(), 1000);
+            CallResult rb = manager.call(b.service_id, "stall",
+                                         nlohmann::json::array(), 1000);
+            return ra.success && rb.success;
+        },
+        std::chrono::seconds(3)));
+    manager.exit(a.service_id, "cleanup");
+    manager.exit(b.service_id, "cleanup");
+    manager.exit(host.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// call_with_session: a null initiate, a failing initiate with and without a
+// message, and the happy path completed from another thread (including the
+// timeout<=0 default and the {message} object error payload).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(CallWithSessionAndSyncCompletion) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    auto null_initiate = manager.call_with_session(nullptr, 100);
+    BOOST_CHECK(!null_initiate.success);
+    BOOST_CHECK_EQUAL(null_initiate.error_message, "call dispatch failed");
+
+    auto failing = manager.call_with_session(
+        [](uint64_t, std::string& error) {
+            error = "no route";
+            return false;
+        },
+        100);
+    BOOST_CHECK(!failing.success);
+    BOOST_CHECK_EQUAL(failing.error_message, "no route");
+
+    auto failing_silent = manager.call_with_session(
+        [](uint64_t, std::string&) { return false; }, 100);
+    BOOST_CHECK(!failing_silent.success);
+    BOOST_CHECK_EQUAL(failing_silent.error_message, "call dispatch failed");
+
+    // Happy path: the initiate schedules the completion on a helper thread;
+    // timeout_ms <= 0 takes the 5000ms default.
+    std::thread completer;
+    auto ok = manager.call_with_session(
+        [&](uint64_t session, std::string&) {
+            completer = std::thread([&manager, session]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                manager.complete_call(session, true,
+                                      nlohmann::json::array({7}));
+            });
+            return true;
+        },
+        0);
+    completer.join();
+    BOOST_REQUIRE(ok.success);
+    BOOST_REQUIRE_EQUAL(ok.values.size(), 1u);
+    BOOST_CHECK_EQUAL(ok.values[0].get<int>(), 7);
+
+    // A failure whose payload is [{message=...}] surfaces the message.
+    std::thread failing_completer;
+    auto failed = manager.call_with_session(
+        [&](uint64_t session, std::string&) {
+            failing_completer = std::thread([&manager, session]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                manager.complete_call(
+                    session, false,
+                    nlohmann::json::array({nlohmann::json{
+                        {"message", "obj boom"}, {"code", 3}}}));
+            });
+            return true;
+        },
+        250);
+    failing_completer.join();
+    BOOST_CHECK(!failed.success);
+    BOOST_CHECK_EQUAL(failed.error_message, "obj boom");
+
+    // An empty error array carries no message: the generic fallback wins.
+    std::thread empty_err_completer;
+    auto empty_err = manager.call_with_session(
+        [&](uint64_t session, std::string&) {
+            empty_err_completer = std::thread([&manager, session]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                manager.complete_call(session, false, nlohmann::json::array());
+            });
+            return true;
+        },
+        250);
+    empty_err_completer.join();
+    BOOST_CHECK(!empty_err.success);
+    BOOST_CHECK_EQUAL(empty_err.error_message, "call failed");
+
+    // A non-string object payload without "message" is dumped verbatim.
+    std::thread dump_completer;
+    auto dumped = manager.call_with_session(
+        [&](uint64_t session, std::string&) {
+            dump_completer = std::thread([&manager, session]() {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                manager.complete_call(
+                    session, false,
+                    nlohmann::json::array({nlohmann::json{{"code", 7}}}));
+            });
+            return true;
+        },
+        250);
+    dump_completer.join();
+    BOOST_CHECK(!dumped.success);
+    BOOST_CHECK_EQUAL(dumped.error_message, "{\"code\":7}");
+}
+
+// ---------------------------------------------------------------------------
+// Proxied (remotely originated) call sessions: unknown/non-proxied session
+// no-ops, the abandon path, completion routed through the hook from
+// complete_call and finish_proxied_call (with and without a hook
+// installed), dispatch_remote_call validation failures, a live proxied
+// dispatch whose handler completion reaches the hook, the deadline scan
+// expiring a proxied session, and the armed expiry driver firing.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ProxiedSessionLifecycle) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    std::atomic<int> hook_ok{0};
+    std::atomic<int> hook_fail{0};
+    std::atomic<uint64_t> last_ok_session{0};
+    std::atomic<uint64_t> last_fail_session{0};
+    manager.set_proxied_call_hook(
+        [&](uint64_t session, bool ok, const nlohmann::json&) {
+            if (ok) {
+                hook_ok.fetch_add(1);
+                last_ok_session.store(session);
+            } else {
+                hook_fail.fetch_add(1);
+                last_fail_session.store(session);
+            }
+        });
+
+    // Unknown sessions are no-ops / false.
+    manager.abandon_proxied_call(888888);
+    BOOST_CHECK(
+        !manager.finish_proxied_call(888888, true, nlohmann::json::array()));
+
+    // Abandoning a real proxied session drops it.
+    const uint64_t p1 = manager.begin_proxied_call(1000);
+    BOOST_CHECK_NE(p1, 0u);
+    manager.abandon_proxied_call(p1);
+
+    // A proxied session completed through complete_call routes to the hook.
+    const uint64_t p2 = manager.begin_proxied_call(1000);
+    manager.complete_call(
+        p2, false,
+        nlohmann::json::array({nlohmann::json{{"message", "px fail"}}}));
+    BOOST_CHECK_EQUAL(hook_fail.load(), 1);
+    BOOST_CHECK_EQUAL(last_fail_session.load(), p2);
+
+    // finish_proxied_call with the hook installed.
+    const uint64_t p3 = manager.begin_proxied_call(1000);
+    BOOST_CHECK(
+        manager.finish_proxied_call(p3, true, nlohmann::json::array({"v"})));
+    BOOST_CHECK_EQUAL(hook_ok.load(), 1);
+
+    // Without a hook the completion still succeeds.
+    manager.set_proxied_call_hook(nullptr);
+    const uint64_t p4 = manager.begin_proxied_call(1000);
+    BOOST_CHECK(manager.finish_proxied_call(p4, true, nlohmann::json::array()));
+    manager.set_proxied_call_hook(
+        [&](uint64_t session, bool ok, const nlohmann::json&) {
+            if (ok) {
+                hook_ok.fetch_add(1);
+                last_ok_session.store(session);
+            } else {
+                hook_fail.fetch_add(1);
+                last_fail_session.store(session);
+            }
+        });
+
+    // dispatch_remote_call validation failures (error out-param both ways).
+    std::string derr;
+    BOOST_CHECK_EQUAL(
+        manager.dispatch_remote_call("cov_ghost_svc", "",
+                                     nlohmann::json::array(), 500, nullptr),
+        0u);
+    BOOST_CHECK_EQUAL(
+        manager.dispatch_remote_call("cov_ghost_svc", "m",
+                                     nlohmann::json("not-array"), 500, &derr),
+        0u);
+    BOOST_CHECK_EQUAL(
+        manager.dispatch_remote_call("cov_ghost_svc", "m",
+                                     nlohmann::json::array(), 500, &derr),
+        0u);
+    BOOST_CHECK(!derr.empty());
+
+    // A live dispatch: the callee handler completion reaches the hook.
+    const std::string module =
+        write_script("cov_proxied_target.lua",
+                     "local M = {}\n"
+                     "function M.echo(ctx, v) return v end\n"
+                     "return M\n");
+    auto target = manager.spawn(module, opts_for("cov_proxied_target_svc"));
+    BOOST_REQUIRE(target.success);
+    const uint64_t d1 = manager.dispatch_remote_call(
+        target.service_id, "echo", nlohmann::json::array({"hi"}), 2000, &derr);
+    BOOST_CHECK_NE(d1, 0u);
+    BOOST_CHECK(wait_until(
+        [&]() { return hook_ok.load() >= 2 && last_ok_session.load() == d1; },
+        std::chrono::seconds(2)));
+
+    // The deadline scan expires proxied sessions into the hook.
+    const uint64_t p5 = manager.begin_proxied_call(1000);
+    BOOST_CHECK_EQUAL(manager.check_call_timeouts(INT64_MAX), 1);
+    BOOST_CHECK_GE(hook_fail.load(), 2);
+    BOOST_CHECK_EQUAL(last_fail_session.load(), p5);
+
+    // The armed expiry driver fires on its own fuse.
+    const uint64_t p6 = manager.begin_proxied_call(1000);
+    manager.schedule_proxied_call_timeout(p6, 60);
+    BOOST_CHECK(wait_until(
+        [&]() {
+            return last_fail_session.load() == p6 && hook_fail.load() >= 3;
+        },
+        std::chrono::seconds(2)));
+
+    manager.shutdown_all("done");
+}
+
+// ---------------------------------------------------------------------------
+// Suspend/resume primitive arms not exercised elsewhere: a not-yet-due
+// deadline survives the timeout scan, a timeout_ms <= 0 suspend takes the
+// 5000ms default, and a continuation error carrying a non-string object
+// keeps the generic error message.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(SuspendResumeExtraArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine);
+
+    // A pending call whose deadline is in the future is not collected.
+    lua_State* co_future = make_coro(lua, "return ...");
+    const uint64_t s_future = manager.suspend_for_call(co_future, 60000);
+    BOOST_CHECK_NE(s_future, 0u);
+    BOOST_CHECK_EQUAL(manager.check_call_timeouts(0), 0);
+    manager.resume_caller(s_future, true, nlohmann::json::array());
+
+    // timeout_ms <= 0 takes the 5000ms default deadline.
+    lua_State* co_default = make_coro(lua, "return ...");
+    const uint64_t s_default = manager.suspend_for_call(co_default, 0);
+    BOOST_CHECK_NE(s_default, 0u);
+    manager.resume_caller(s_default, true, nlohmann::json::array());
+
+    // A continuation error whose payload is a table (not a string).
+    lua_State* co_obj = make_coro(lua, "error({code=7})");
+    const uint64_t s_obj = manager.suspend_for_call(co_obj, 10000);
+    manager.resume_caller(s_obj, true, nlohmann::json::array());
+}
+
+// ---------------------------------------------------------------------------
+// Registry-read inspect projections: unknown-service errors (with and
+// without the error out-param), a service without timers, and a service
+// holding one repeating + one one-shot timer.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(InspectRegistryReadArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string timer_module =
+        write_script("cov_inspect_timers.lua",
+                     "local M = {}\n"
+                     "function M.on_init()\n"
+                     "  shield.timer(5000, function() end)\n"
+                     "  shield.timer_once(60000, function() end)\n"
+                     "  return true\n"
+                     "end\n"
+                     "return M\n");
+    const std::string plain =
+        write_script("cov_inspect_plain.lua", "return {}\n");
+
+    auto timed = manager.spawn(timer_module, opts_for("cov_inspect_timed"));
+    BOOST_REQUIRE(timed.success);
+    auto bare = manager.spawn(plain, opts_for("cov_inspect_bare"));
+    BOOST_REQUIRE(bare.success);
+
+    std::string err;
+    BOOST_CHECK(!manager.timer_inspect("cov_ghost_svc", &err));
+    BOOST_CHECK(!err.empty());
+    BOOST_CHECK(!manager.timer_inspect("cov_ghost_svc", nullptr));
+
+    auto none = manager.timer_inspect(bare.service_id, &err);
+    BOOST_REQUIRE(none.has_value());
+    BOOST_CHECK_EQUAL((*none)["timers"].get<int>(), 0);
+    BOOST_CHECK(!none->contains("next_fire_ms_left"));
+
+    auto report = manager.timer_inspect(timed.service_id, &err);
+    BOOST_REQUIRE(report.has_value());
+    BOOST_CHECK_EQUAL((*report)["timers"].get<int>(), 2);
+    BOOST_CHECK_EQUAL((*report)["repeating"].get<int>(), 1);
+    BOOST_CHECK_EQUAL((*report)["once"].get<int>(), 1);
+    BOOST_CHECK_EQUAL((*report)["intervals_ms"].size(), 2u);
+    BOOST_CHECK(report->contains("next_fire_ms_left"));
+
+    BOOST_CHECK(!manager.pending_calls_inspect("cov_ghost_svc", &err));
+    BOOST_CHECK(!manager.pending_calls_inspect("cov_ghost_svc", nullptr));
+
+    // Ghost service: the not-published guards of the three owner-thread
+    // projections, with the error write and the null out-param.
+    err.clear();
+    BOOST_CHECK(!manager.inspect_refs("cov_ghost_svc", 4, 1000, &err));
+    BOOST_CHECK(!err.empty());
+    BOOST_CHECK(!manager.inspect_refs("cov_ghost_svc", 4, 1000, nullptr));
+    err.clear();
+    BOOST_CHECK(!manager.inspect_memory("cov_ghost_svc", &err));
+    BOOST_CHECK(!err.empty());
+    BOOST_CHECK(!manager.inspect_memory("cov_ghost_svc", nullptr));
+    err.clear();
+    BOOST_CHECK(!manager.inspect_coroutines("cov_ghost_svc", &err));
+    BOOST_CHECK(!err.empty());
+    BOOST_CHECK(!manager.inspect_coroutines("cov_ghost_svc", nullptr));
+
+    auto pending = manager.pending_calls_inspect(timed.service_id, &err);
+    BOOST_REQUIRE(pending.has_value());
+    BOOST_CHECK_EQUAL((*pending)["pending_calls"].get<int>(), 0);
+
+    manager.exit(bare.service_id, "cleanup");
+    manager.exit(timed.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Inspect report caps: 33 concurrent calls truncate pending_calls_inspect
+// at 32 entries, 33 live coroutines truncate inspect_coroutines, and 33
+// active timers cap the timer interval list at 32.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(InspectCapsTruncated) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string target_module =
+        write_script("cov_cap_target.lua",
+                     "local M = {}\n"
+                     "function M.slow(ctx) shield.sleep(600) return 'x' end\n"
+                     "function M.hold(ctx, ms)\n"
+                     "  shield.fork(function() shield.sleep(ms) end)\n"
+                     "  return true\n"
+                     "end\n"
+                     "return M\n");
+    const std::string caller_module =
+        write_script("cov_cap_caller.lua",
+                     "local M = {}\n"
+                     "function M.make_calls(ctx, n, target)\n"
+                     "  for i = 1, n do\n"
+                     "    shield.fork(function() shield.call_timeout(9000, "
+                     "target, 'slow') end)\n"
+                     "  end\n"
+                     "  return true\n"
+                     "end\n"
+                     "function M.make_coros(ctx, n)\n"
+                     "  for i = 1, n do\n"
+                     "    shield.fork(function() shield.sleep(1500) end)\n"
+                     "  end\n"
+                     "  return true\n"
+                     "end\n"
+                     "function M.make_timers(ctx, n)\n"
+                     "  for i = 1, n do\n"
+                     "    shield.timer(60000, function() end)\n"
+                     "  end\n"
+                     "  return true\n"
+                     "end\n"
+                     "return M\n");
+    auto target = manager.spawn(target_module, opts_for("cov_cap_target_svc"));
+    BOOST_REQUIRE(target.success);
+    auto caller = manager.spawn(caller_module, opts_for("cov_cap_caller_svc"));
+    BOOST_REQUIRE(caller.success);
+
+    // 33 suspended calls from the caller service.
+    BOOST_CHECK(
+        manager.send(caller.service_id, "make_calls",
+                     nlohmann::json::array({33, "cov_cap_target_svc"})));
+    bool saw_33 = wait_until(
+        [&]() {
+            auto pending =
+                manager.pending_calls_inspect(caller.service_id, nullptr);
+            return pending.has_value() &&
+                   (*pending)["pending_calls"].get<int>() >= 33;
+        },
+        std::chrono::seconds(2));
+    BOOST_CHECK(saw_33);
+    auto pending = manager.pending_calls_inspect(caller.service_id, nullptr);
+    BOOST_REQUIRE(pending.has_value());
+    BOOST_CHECK((*pending)["truncated"].get<bool>());
+    BOOST_CHECK_EQUAL((*pending)["calls"].size(), 32u);
+    // The callee's own projection stays empty: the waits belong to the
+    // caller (per-caller_service filtering arm).
+    auto target_pending =
+        manager.pending_calls_inspect(target.service_id, nullptr);
+    BOOST_REQUIRE(target_pending.has_value());
+    BOOST_CHECK_EQUAL((*target_pending)["pending_calls"].get<int>(), 0);
+
+    // Drain: the callee answers after 600ms and all callers resume.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            auto left =
+                manager.pending_calls_inspect(caller.service_id, nullptr);
+            return left.has_value() && (*left)["pending_calls"].get<int>() == 0;
+        },
+        std::chrono::seconds(4)));
+
+    // 33 live suspended coroutines. A foreign service's sleeper stays live
+    // underneath: the caller's projection must skip it (owner filter).
+    BOOST_CHECK(
+        manager.send(target.service_id, "hold", nlohmann::json::array({4000})));
+    BOOST_CHECK(manager.send(caller.service_id, "make_coros",
+                             nlohmann::json::array({33})));
+    bool saw_coros = wait_until(
+        [&]() {
+            auto coros = manager.inspect_coroutines(caller.service_id, nullptr);
+            return coros.has_value() && (*coros)["total"].get<int>() >= 33;
+        },
+        std::chrono::seconds(2));
+    BOOST_CHECK(saw_coros);
+    auto coros = manager.inspect_coroutines(caller.service_id, nullptr);
+    BOOST_REQUIRE(coros.has_value());
+    BOOST_CHECK((*coros)["truncated"].get<bool>());
+    BOOST_CHECK_EQUAL((*coros)["entries"].size(), 32u);
+    BOOST_CHECK_EQUAL((*coros)["by_status"]["suspended"].get<int>(), 33);
+
+    // Drain the sleepers.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            auto left = manager.inspect_coroutines(caller.service_id, nullptr);
+            return left.has_value() && (*left)["total"].get<int>() == 0;
+        },
+        std::chrono::seconds(4)));
+
+    // Drain the foreign sleeper as well so the timer teardown assertion at
+    // the end sees no outstanding sleep timers.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            auto left = manager.inspect_coroutines(target.service_id, nullptr);
+            return left.has_value() && (*left)["total"].get<int>() == 0;
+        },
+        std::chrono::seconds(6)));
+
+    // 33 repeating timers: the interval list caps at 32.
+    BOOST_CHECK(manager.send(caller.service_id, "make_timers",
+                             nlohmann::json::array({33})));
+    bool saw_timers = wait_until(
+        [&]() {
+            auto timers = manager.timer_inspect(caller.service_id, nullptr);
+            return timers.has_value() && (*timers)["timers"].get<int>() >= 33;
+        },
+        std::chrono::seconds(2));
+    BOOST_CHECK(saw_timers);
+    auto timers = manager.timer_inspect(caller.service_id, nullptr);
+    BOOST_REQUIRE(timers.has_value());
+    BOOST_CHECK_EQUAL((*timers)["timers"].get<int>(), 33);
+    BOOST_CHECK_EQUAL((*timers)["repeating"].get<int>(), 33);
+    BOOST_CHECK_EQUAL((*timers)["intervals_ms"].size(), 32u);
+
+    // Cancelling the service tears down all 33 timer drivers.
+    manager.exit(caller.service_id, "cleanup");
+    BOOST_CHECK_EQUAL(manager.active_actor_timer_count(), 0u);
+    manager.exit(target.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Owner-thread inspect round trips while the owning actor is busy: each
+// projection fails with its dispatch-timeout error inside the 2s budget and
+// a with_refs snapshot records refs_error; once the actor is idle again all
+// projections succeed (including the argument clamps).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(InspectOwnerBusyTimeoutsAndHappyPaths) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module =
+        write_script("cov_busy_inspect.lua",
+                     "local M = {}\n"
+                     "function M.stall_long(ctx)\n"
+                     "  local t = shield.monotonic()\n"
+                     "  while shield.monotonic() - t < 15000 do end\n"
+                     "  return 'stalled'\n"
+                     "end\n"
+                     "function M.ping(ctx) return 'pong' end\n"
+                     "return M\n");
+    auto svc = manager.spawn(module, opts_for("cov_busy_inspect_svc"));
+    BOOST_REQUIRE(svc.success);
+
+    // Keep the owner busy for the whole timeout section.
+    BOOST_CHECK(
+        manager.send(svc.service_id, "stall_long", nlohmann::json::array()));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    std::string err;
+    BOOST_CHECK(!manager.inspect_refs(svc.service_id, 4, 1000, &err));
+    BOOST_CHECK(err.find("refs dispatch timeout") != std::string::npos);
+    err.clear();
+    BOOST_CHECK(!manager.inspect_memory(svc.service_id, &err));
+    BOOST_CHECK(err.find("memory dispatch timeout") != std::string::npos);
+    err.clear();
+    BOOST_CHECK(!manager.inspect_coroutines(svc.service_id, &err));
+    BOOST_CHECK(err.find("coroutines dispatch timeout") != std::string::npos);
+
+    // The null out-param arms of the same busy-owner guards.
+    BOOST_CHECK(!manager.inspect_refs(svc.service_id, 4, 1000, nullptr));
+    BOOST_CHECK(!manager.inspect_memory(svc.service_id, nullptr));
+    BOOST_CHECK(!manager.inspect_coroutines(svc.service_id, nullptr));
+
+    // A with_refs capture still stores its gauges; the failed walk is
+    // recorded on the snapshot instead of failing the capture.
+    auto busy_snap = manager.capture_inspect_snapshot(svc.service_id,
+                                                      "busy_snap", true, &err);
+    BOOST_REQUIRE(busy_snap.has_value());
+    BOOST_CHECK((*busy_snap)["refs"].is_null());
+
+    // Wait for the stall to end.
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult cr = manager.call(svc.service_id, "ping",
+                                         nlohmann::json::array(), 500);
+            return cr.success;
+        },
+        std::chrono::seconds(20)));
+
+    // Happy paths, including both sides of the argument clamps.
+    auto refs = manager.inspect_refs(svc.service_id, 4, 1000, &err);
+    BOOST_REQUIRE(refs.has_value());
+    BOOST_CHECK((*refs)["nodes_visited"].get<int>() > 0);
+    auto clamped_low = manager.inspect_refs(svc.service_id, 0, 0, nullptr);
+    BOOST_CHECK(clamped_low.has_value());
+    auto clamped_high =
+        manager.inspect_refs(svc.service_id, 99, 999999, nullptr);
+    BOOST_CHECK(clamped_high.has_value());
+    auto mem = manager.inspect_memory(svc.service_id, &err);
+    BOOST_REQUIRE(mem.has_value());
+    BOOST_CHECK((*mem)["gc"].contains("mode"));
+    BOOST_CHECK((*mem).contains("retainers"));
+    auto coros = manager.inspect_coroutines(svc.service_id, &err);
+    BOOST_REQUIRE(coros.has_value());
+    BOOST_CHECK_EQUAL((*coros)["total"].get<int>(), 0);
+
+    // Auto-named and named captures; a same-name capture replaces.
+    auto auto_named =
+        manager.capture_inspect_snapshot(svc.service_id, "", false, nullptr);
+    BOOST_REQUIRE(auto_named.has_value());
+    BOOST_CHECK((*auto_named)["name"].get<std::string>().find("snap-") == 0u);
+    auto first =
+        manager.capture_inspect_snapshot(svc.service_id, "keep", false, &err);
+    BOOST_REQUIRE(first.has_value());
+    auto replaced = manager.capture_inspect_snapshot(svc.service_id, "keep",
+                                                     false, nullptr);
+    BOOST_REQUIRE(replaced.has_value());
+
+    // Ring eviction: nine more auto captures push the oldest sample out.
+    for (int i = 0; i < 9; ++i) {
+        BOOST_CHECK(
+            manager.capture_inspect_snapshot(svc.service_id, "", false, nullptr)
+                .has_value());
+    }
+
+    // Diff error shapes.
+    err.clear();
+    BOOST_CHECK(
+        !manager.diff_inspect_snapshots("cov_ghost_svc", "a", "b", &err));
+    BOOST_CHECK(err.find("no snapshots for service") != std::string::npos);
+    BOOST_CHECK(
+        !manager.diff_inspect_snapshots("cov_ghost_svc", "a", "b", nullptr));
+    err.clear();
+    BOOST_CHECK(
+        !manager.diff_inspect_snapshots(svc.service_id, "keep", "zzz", &err));
+    BOOST_CHECK(err.find("unknown snapshot name") != std::string::npos);
+    BOOST_CHECK(!manager.diff_inspect_snapshots(svc.service_id, "zzz", "keep",
+                                                nullptr));
+
+    manager.exit(svc.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot capture/diff over a mutating module table: refs summaries ride
+// on named captures and the diff reports added / delta / removed top
+// tables, plus a mixed sampled/unsampled diff reporting null refs.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(SnapshotCaptureDiffArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module =
+        write_script("cov_snap_mod.lua",
+                     "local M = {}\n"
+                     "M.data = {}\n"
+                     "for i = 1, 40 do M.data[i] = i end\n"
+                     "function M.add_big(ctx)\n"
+                     "  M.big = {}\n"
+                     "  for i = 1, 60 do M.big[i] = i end\n"
+                     "  return true\n"
+                     "end\n"
+                     "function M.grow_data(ctx)\n"
+                     "  for i = 41, 70 do M.data[i] = i end\n"
+                     "  return true\n"
+                     "end\n"
+                     "function M.drop_big(ctx) M.big = nil return true end\n"
+                     "return M\n");
+    auto svc = manager.spawn(module, opts_for("cov_snap_svc"));
+    BOOST_REQUIRE(svc.success);
+
+    std::string err;
+    BOOST_CHECK(
+        !manager.capture_inspect_snapshot("cov_ghost_svc", "x", false, &err));
+    BOOST_CHECK(!err.empty());
+    BOOST_CHECK(!manager.capture_inspect_snapshot("cov_ghost_svc", "x", false,
+                                                  nullptr));
+
+    auto refs_a =
+        manager.capture_inspect_snapshot(svc.service_id, "refsA", true, &err);
+    BOOST_REQUIRE(refs_a.has_value());
+    BOOST_CHECK(!(*refs_a)["refs"].is_null());
+
+    BOOST_REQUIRE(
+        manager.call(svc.service_id, "add_big", nlohmann::json::array(), 2000)
+            .success);
+    BOOST_REQUIRE(
+        manager.call(svc.service_id, "grow_data", nlohmann::json::array(), 2000)
+            .success);
+    auto refs_b = manager.capture_inspect_snapshot(svc.service_id, "refsB",
+                                                   true, nullptr);
+    BOOST_REQUIRE(refs_b.has_value());
+
+    auto grown =
+        manager.diff_inspect_snapshots(svc.service_id, "refsA", "refsB", &err);
+    BOOST_REQUIRE(grown.has_value());
+    bool added_big = false;
+    bool delta_data = false;
+    for (const auto& t : (*grown)["delta"]["refs"]["top_tables"]) {
+        const std::string path = t["path"].get<std::string>();
+        const std::string change = t["change"].get<std::string>();
+        if (change == "added" && path.find("big") != std::string::npos) {
+            added_big = true;
+        }
+        if (change == "delta" && path.find("data") != std::string::npos) {
+            delta_data = true;
+        }
+    }
+    BOOST_CHECK(added_big);
+    BOOST_CHECK(delta_data);
+
+    // A sampled end against an unsampled one reports null refs.
+    auto plain_snap =
+        manager.capture_inspect_snapshot(svc.service_id, "", false, nullptr);
+    BOOST_REQUIRE(plain_snap.has_value());
+    auto mixed = manager.diff_inspect_snapshots(
+        svc.service_id, "refsA", (*plain_snap)["name"].get<std::string>(),
+        &err);
+    BOOST_REQUIRE(mixed.has_value());
+    BOOST_CHECK((*mixed)["delta"]["refs"].is_null());
+
+    BOOST_REQUIRE(
+        manager.call(svc.service_id, "drop_big", nlohmann::json::array(), 2000)
+            .success);
+    auto refs_c =
+        manager.capture_inspect_snapshot(svc.service_id, "refsC", true, &err);
+    BOOST_REQUIRE(refs_c.has_value());
+    auto shrunk =
+        manager.diff_inspect_snapshots(svc.service_id, "refsB", "refsC", &err);
+    BOOST_REQUIRE(shrunk.has_value());
+    bool removed_big = false;
+    bool delta_again = false;
+    for (const auto& t : (*shrunk)["delta"]["refs"]["top_tables"]) {
+        const std::string path = t["path"].get<std::string>();
+        const std::string change = t["change"].get<std::string>();
+        if (change == "removed" && path.find("big") != std::string::npos) {
+            removed_big = true;
+        }
+        if (change == "delta" && path.find("data") != std::string::npos) {
+            delta_again = true;
+        }
+    }
+    BOOST_CHECK(removed_big);
+    BOOST_CHECK(delta_again);
+
+    // Unknown snapshot name without the error out-param.
+    BOOST_CHECK(!manager.diff_inspect_snapshots(svc.service_id, "zzz", "refsC",
+                                                nullptr));
+
+    manager.exit(svc.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// exec_lua error shapes and both GC collector modes sampled by
+// inspect_memory: a generational-mode service skips the incremental restore
+// while a default service reports incremental.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ExecLuaArmsAndGcModes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    nlohmann::json result;
+    std::string err;
+    BOOST_CHECK(!manager.exec_lua("cov_ghost_svc", "return 1"));
+    BOOST_CHECK(!manager.exec_lua("cov_ghost_svc", "return 1", &result, &err));
+    BOOST_CHECK_EQUAL(err, "Service not found: cov_ghost_svc");
+
+    const std::string plain = write_script("cov_exec_plain.lua", "return {}\n");
+    auto svc = manager.spawn(plain, opts_for("cov_exec_svc"));
+    BOOST_REQUIRE(svc.success);
+
+    // exec_lua must run on the owning actor: drive it through fork tasks.
+    std::atomic<int> good{0};
+    std::atomic<int> bad{0};
+    manager.enqueue_forked_task(svc.service_id, [&]() {
+        nlohmann::json r;
+        if (manager.exec_lua(svc.service_id, "return 6 * 7", &r) &&
+            r.is_array() && r.size() == 1u && r[0] == 42) {
+            good.fetch_add(1);
+        }
+    });
+    manager.enqueue_forked_task(svc.service_id, [&]() {
+        nlohmann::json r;
+        std::string e;
+        if (!manager.exec_lua(svc.service_id, "error('exec boom')", &r, &e) &&
+            e.find("exec boom") != std::string::npos) {
+            bad.fetch_add(1);
+        }
+    });
+    BOOST_CHECK(
+        wait_until([&]() { return good.load() == 1 && bad.load() == 1; },
+                   std::chrono::seconds(2)));
+
+    // Generational mode set in on_init survives to the inspect sample.
+    const std::string gen_module =
+        write_script("cov_gc_gen.lua",
+                     "local M = {}\n"
+                     "function M.on_init()\n"
+                     "  collectgarbage('generational')\n"
+                     "  return true\n"
+                     "end\n"
+                     "return M\n");
+    auto gen = manager.spawn(gen_module, opts_for("cov_gc_gen_svc"));
+    BOOST_REQUIRE(gen.success);
+    auto gen_mem = manager.inspect_memory(gen.service_id, &err);
+    BOOST_REQUIRE(gen_mem.has_value());
+    BOOST_CHECK_EQUAL((*gen_mem)["gc"]["mode"].get<std::string>(),
+                      "generational");
+
+    auto default_mem = manager.inspect_memory(svc.service_id, &err);
+    BOOST_REQUIRE(default_mem.has_value());
+    BOOST_CHECK_EQUAL((*default_mem)["gc"]["mode"].get<std::string>(),
+                      "incremental");
+
+    manager.exit(gen.service_id, "cleanup");
+    manager.exit(svc.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// send / send_system / send_call_request validation arms with the error
+// out-param left null, the recently-exited target message, and the
+// post-shutdown "runtime is stopping" guards.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(SendValidationNullErrorArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module =
+        write_script("cov_send_mod.lua",
+                     "local M = {}\n"
+                     "function M.echo(ctx, v) return v end\n"
+                     "return M\n");
+    auto svc = manager.spawn(module, opts_for("cov_send_svc"));
+    BOOST_REQUIRE(svc.success);
+
+    // Validation failures with error == nullptr.
+    BOOST_CHECK(!manager.send(svc.service_id, "", nlohmann::json::array()));
+    BOOST_CHECK(!manager.send(svc.service_id, std::string(129, 'm'),
+                              nlohmann::json::array()));
+    BOOST_CHECK(
+        !manager.send(svc.service_id, "on_init", nlohmann::json::array()));
+    const std::string huge(5 << 20, 'x');
+    BOOST_CHECK(
+        !manager.send(svc.service_id, "echo", nlohmann::json::array({huge})));
+    BOOST_CHECK(!manager.send(svc.service_id, "echo",
+                              nlohmann::json::array({"<unsupported>"})));
+    BOOST_CHECK(
+        !manager.send_system("cov_ghost_svc", "", nlohmann::json::array()));
+    // The unknown-target guard with a valid method and a null out-param.
+    BOOST_CHECK(
+        !manager.send_system("cov_ghost_svc", "m", nlohmann::json::array()));
+    BOOST_CHECK(!manager.send_call_request(
+        "cov_ghost_svc", "m", nlohmann::json::array(), 1, nullptr));
+
+    // manager.call to an unknown target: the post-lock lookup miss reports
+    // "service not found", and a timeout_ms of 0 takes the 5000ms default.
+    auto ghost_call =
+        manager.call("cov_ghost_svc", "m", nlohmann::json::array());
+    BOOST_CHECK(!ghost_call.success);
+    BOOST_CHECK(ghost_call.error_message.find("service not found") !=
+                std::string::npos);
+    auto live_call =
+        manager.call(svc.service_id, "echo", nlohmann::json::array({"x"}), 0);
+    BOOST_REQUIRE(live_call.success);
+    BOOST_CHECK_EQUAL(live_call.values[0].get<std::string>(), "x");
+
+    // A recently exited target reports "service dead".
+    auto victim = manager.spawn(module, opts_for("cov_send_victim"));
+    BOOST_REQUIRE(victim.success);
+    manager.exit(victim.service_id, "cleanup");
+    std::string err;
+    BOOST_CHECK(!manager.send("cov_send_victim", "echo",
+                              nlohmann::json::array(), &err));
+    BOOST_CHECK(err.find("service dead") != std::string::npos);
+
+    // After shutdown_all the stopping guards fire.
+    manager.shutdown_all("stopping-test");
+    err.clear();
+    BOOST_CHECK(
+        !manager.send("cov_send_svc", "echo", nlohmann::json::array(), &err));
+    BOOST_CHECK_EQUAL(err, "runtime is stopping");
+    err.clear();
+    BOOST_CHECK(!manager.send_system("cov_send_svc", "echo",
+                                     nlohmann::json::array(), &err));
+    BOOST_CHECK_EQUAL(err, "runtime is stopping");
+    BOOST_CHECK(
+        !manager.send_system("cov_send_svc", "echo", nlohmann::json::array()));
+    auto stopped = manager.call_with_session(nullptr, 10);
+    BOOST_CHECK(!stopped.success);
+    BOOST_CHECK_EQUAL(stopped.error_message, "runtime is stopping");
+    BOOST_CHECK(!manager.spawn(module, "{}").success);
+    BOOST_CHECK(!manager.enqueue_async_spawn(1, module,
+                                             opts_for("cov_after_shutdown")));
+}
+
+// ---------------------------------------------------------------------------
+// RefsWalker pointer dedup: a function and a table each stored under two
+// module fields are counted once.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(RefsWalkerSharedValues) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module = write_script("cov_refs_shared.lua",
+                                            "local function shared_fn() end\n"
+                                            "local M = {}\n"
+                                            "M.f1 = shared_fn\n"
+                                            "M.f2 = shared_fn\n"
+                                            "M.t1 = {x = 1}\n"
+                                            "M.t2 = M.t1\n"
+                                            "return M\n");
+    auto svc = manager.spawn(module, opts_for("cov_refs_shared_svc"));
+    BOOST_REQUIRE(svc.success);
+
+    std::string err;
+    auto refs = manager.inspect_refs(svc.service_id, 4, 1000, &err);
+    BOOST_REQUIRE(refs.has_value());
+    BOOST_CHECK_EQUAL((*refs)["counts"]["functions"].get<int>(), 1);
+    // M itself counts as a table, and t1/t2 dedup to one more.
+    BOOST_CHECK_EQUAL((*refs)["counts"]["tables"].get<int>(), 2);
+    BOOST_REQUIRE_EQUAL((*refs)["top_tables"].size(), 2u);
+    BOOST_CHECK_EQUAL((*refs)["top_tables"][0]["path"].get<std::string>(), "M");
+    BOOST_CHECK((*refs)["top_tables"][1]["path"].get<std::string>().rfind(
+                    "M.t", 0) == 0);
+
+    manager.exit(svc.service_id, "cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// shield.exit reason shapes from a handler: the no-arg form records the
+// "normal" default, the named form the custom reason; both drive the exit
+// once the handler returns.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(RequestExitReasonArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module = write_script(
+        "cov_exit_reason.lua",
+        "local M = {}\n"
+        "function M.go_noarg(ctx) shield.exit() return true end\n"
+        "function M.go_named(ctx) shield.exit('custom') return true end\n"
+        "return M\n");
+
+    auto noarg = manager.spawn(module, opts_for("cov_exit_noarg_svc"));
+    BOOST_REQUIRE(noarg.success);
+    auto cr = manager.call(noarg.service_id, "go_noarg",
+                           nlohmann::json::array(), 2000);
+    BOOST_CHECK(cr.success);
+    BOOST_CHECK(wait_until(
+        [&]() { return manager.query_service("cov_exit_noarg_svc").empty(); },
+        std::chrono::seconds(2)));
+
+    auto named = manager.spawn(module, opts_for("cov_exit_named_svc"));
+    BOOST_REQUIRE(named.success);
+    cr = manager.call(named.service_id, "go_named", nlohmann::json::array(),
+                      2000);
+    BOOST_CHECK(cr.success);
+    BOOST_CHECK(wait_until(
+        [&]() { return manager.query_service("cov_exit_named_svc").empty(); },
+        std::chrono::seconds(2)));
+}

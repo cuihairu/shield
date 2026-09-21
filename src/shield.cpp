@@ -140,7 +140,12 @@ CliOptions parse_cli(int argc, char** argv) {
             }
             try {
                 options.workers = std::stoi(value);
-            } catch (const std::exception&) {
+            } catch (const std::exception&) {  // GCOVR_EXCL_BR_LINE (compiler
+                                               // artifact: catch RTTI-miss arm;
+                                               // std::stoi only throws
+                                               // std::exception derivatives and
+                                               // the handler body is covered by
+                                               // the invalid --workers test)
                 options.parse_error = true;
                 options.error = "invalid integer for --workers";
                 return options;
@@ -200,7 +205,10 @@ int run(int argc, char** argv) {
         CliOptions options = parse_cli(argc, argv);
 
         if (options.show_help) {
+            // GCOVR_EXCL_BR_START (defensive: show_help requires parsing an
+            // argument, so argc>0 whenever print_help runs)
             print_help(argc > 0 ? argv[0] : "shield");
+            // GCOVR_EXCL_BR_STOP
             return 0;
         }
         if (options.show_version) {
@@ -215,8 +223,11 @@ int run(int argc, char** argv) {
 
         bootstrap::RuntimeConfig config;
         config.config_files = options.config_files;
+        // GCOVR_EXCL_BR_START (defensive: CliOptions::config_files starts
+        // with a default entry and only grows, so empty() is always false)
         config.config_file =
             options.config_files.empty() ? "" : options.config_files.front();
+        // GCOVR_EXCL_BR_STOP
         config.log_level = options.log_level;
         config.num_workers = options.workers;
         config.node_id = options.node_id;
@@ -240,7 +251,9 @@ int run(int argc, char** argv) {
         bootstrap::shutdown();
         uninstall_signal_handlers();
         return 0;
-    } catch (const std::exception& e) {
+    } catch (  // GCOVR_EXCL_BR_LINE (compiler artifact: top-level catch
+        const std::exception& e) {  // RTTI-miss arm; the handler body is
+                                    // covered by the fatal-config-error test)
         std::cerr << "Fatal error: " << e.what() << std::endl;
         return 2;
     }

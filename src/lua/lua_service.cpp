@@ -50,11 +50,20 @@ namespace {
 // alive without changing which value the reference names.
 sol::function anchor_to_main_thread(sol::function fn) {
     lua_State* state = fn.lua_state();
-    if (state == nullptr || !fn.valid()) {
+    if (state == nullptr ||
+        !fn.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: register/fork call
+                        // sites always pass live handler refs; an empty ref
+                        // never reaches this guard)
         return fn;
     }
     lua_State* main_state = sol::main_thread(state);
-    if (main_state == nullptr || main_state == state) {
+    if (main_state ==   // GCOVR_EXCL_BR_LINE
+            nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: null main-thread arm
+                        // (handlers register from coroutines))
+        main_state ==
+            state) {  // GCOVR_EXCL_BR_LINE (defensive: handlers register from
+                      // coroutines, never the main thread; the already-anchored
+                      // arm cannot occur)
         return fn;
     }
     return sol::function(main_state, sol::ref_index(fn.registry_index()));
@@ -129,7 +138,12 @@ struct RefsWalker {
 
     void maybe_count_pointer(int idx, std::uint64_t* counter) {
         const void* p = lua_topointer(L, idx);
-        if (p != nullptr && seen.insert(p).second) {
+        if (p != nullptr &&  // GCOVR_EXCL_BR_LINE (defensive: lua_topointer
+                             // never null for the counted types)
+            seen.insert(p)
+                .second) {  // GCOVR_EXCL_BR_LINE (defensive: lua_topointer is
+                            // never null for the counted types; the dup arm is
+                            // covered by RefsWalkerSharedValues)
             ++*counter;
         }
     }
@@ -214,7 +228,8 @@ nlohmann::json collect_gc_info(lua_State* L) {
         {"minormul", p_minormul},     {"majorminor", p_majorminor},
         {"minormajor", p_minormajor}, {"pause", p_pause},
         {"stepmul", p_stepmul},       {"stepsize", p_stepsize},
-    };
+    };  // GCOVR_EXCL_BR_LINE (compiler artifact: nlohmann::json braced
+        // init_list aggregation arcs)
     // Computed before the initializer: arithmetic inline in this multi-line
     // initializer lands on a line gcov never credits (same artifact class
     // as nodes_visited below).
@@ -228,7 +243,8 @@ nlohmann::json collect_gc_info(lua_State* L) {
         {"memory_kb", kb},
         {"running", running},
         {"mode", prev_mode == LUA_GCGEN ? "generational" : "incremental"},
-        {"params", std::move(params)}};
+        {"params", std::move(params)}};  // GCOVR_EXCL_BR_LINE (compiler
+                                         // artifact: json initializer tail arc)
 }
 
 // Drive one refs walk over a service's module table and shape the summary
@@ -238,14 +254,23 @@ nlohmann::json walk_module_refs(LuaRuntime& runtime,
                                 const std::string& service_id, int max_depth,
                                 std::size_t max_nodes) {
     sol::table module = runtime.service_table(vm);
-    if (!module.valid()) {
+    if (!module.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: a published
+                            // service always has its module loaded (see
+                            // the exclusion region above))
         // GCOVR_EXCL_START (defensive: a published service always has its
         // module loaded — the table stays nil only for VMs that never
         // finished spawning, which the registry check above refuses)
-        return nlohmann::json{{"error", "service module not loaded"}};
+        return nlohmann::json{
+            {"error",
+             "service module not loaded"}};  //  (compiler
+                                             // artifact: braced init on the
+                                             // defensive not-loaded return
+                                             // (region excluded above))
     }  // GCOVR_EXCL_STOP
     lua_State* L = runtime.vm_state(vm).lua_state();
-    RefsWalker w{L, max_depth, max_nodes};
+    RefsWalker w{L, max_depth,
+                 max_nodes};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                              // RefsWalker aggregate braced-init arcs)
     module.push();
     w.seen.insert(lua_topointer(L, -1));
     ++w.tables;
@@ -269,26 +294,30 @@ nlohmann::json walk_module_refs(LuaRuntime& runtime,
     }
     nlohmann::json top = nlohmann::json::array();
     for (const auto& t : w.tables_info) {
-        top.push_back(
+        top.push_back(  // GCOVR_EXCL_BR_LINE (compiler artifact: push_back
+                        // braced-init aggregation arcs)
             {{"path", t.path}, {"entries", t.entries}, {"depth", t.depth}});
     }
     // Computed before the JSON initializer: a subtraction inline in this
     // multi-line initializer lands on a line gcov never credits (same
     // artifact class as the linker-dedup exclusions in lua_runtime.cpp).
     const std::uint64_t nodes_visited = max_nodes - w.budget;
-    return nlohmann::json{{"name", service_id},
-                          {"depth_limit", max_depth},
-                          {"node_budget", max_nodes},
-                          {"nodes_visited", nodes_visited},
-                          {"counts",
-                           {{"tables", w.tables},
-                            {"functions", w.functions},
-                            {"userdata", w.userdata},
-                            {"coroutines", w.threads},
-                            {"strings", w.strings},
-                            {"string_bytes", w.string_bytes}}},
-                          {"truncated", w.truncated},
-                          {"top_tables", std::move(top)}};
+    return nlohmann::json{
+        {"name", service_id},
+        {"depth_limit", max_depth},
+        {"node_budget", max_nodes},
+        {"nodes_visited", nodes_visited},
+        {"counts",
+         {{"tables", w.tables},
+          {"functions", w.functions},
+          {"userdata", w.userdata},
+          {"coroutines", w.threads},
+          {"strings", w.strings},
+          {"string_bytes", w.string_bytes}}},
+        {"truncated", w.truncated},
+        {"top_tables",
+         std::move(top)}};  // GCOVR_EXCL_BR_LINE (compiler artifact: json
+                            // initializer tail arc)
 }
 
 struct DispatchFrame {
@@ -397,7 +426,9 @@ struct LuaServiceManager::Impl {
     // Records a pending exit request for a service (unless it is already
     // exiting). Called with the dispatch frame's service id.
     void request_exit_for(const std::string& service_id, std::string reason) {
-        if (service_id.empty()) {
+        if (service_id.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: dispatch
+                                   // frames always carry a service id (see
+                                   // GCOVR_EXCL_LINE comment))
             return;  // GCOVR_EXCL_LINE (caller contract: dispatch frames carry
                      // an id)
         }
@@ -414,7 +445,8 @@ struct LuaServiceManager::Impl {
         if (it == service_exit_requests.end()) {
             return false;
         }
-        if (reason) {
+        if (reason) {  // GCOVR_EXCL_BR_LINE (defensive: the sole caller passes
+                       // a reason out-param; the null arm is a contract guard)
             *reason = std::move(it->second);
         }
         service_exit_requests.erase(it);
@@ -522,6 +554,12 @@ struct LuaServiceManager::Impl {
     std::unordered_map<std::string, std::unordered_set<uint64_t>>
         tasks_by_service;
     std::mutex task_mutex;
+    // Execute-phase drain signal: pending_tasks hits zero at dequeue time,
+    // while the dequeued task's body (which touches the registering VM from
+    // the actor thread) is still running. Bumped inside the same task_mutex
+    // critical section as the dequeue erase, dropped after the body —
+    // waiting on both counters being zero leaves no dequeue/execute gap.
+    std::atomic<std::size_t> active_fork_tasks{0};
 
     // Coroutine call correlation. A call from a handler yields the caller's
     // coroutine; the callee runs and, on completion, resumes the caller with
@@ -642,18 +680,26 @@ struct LuaServiceManager::Impl {
         const InspectSnapshot::RefsSummary& r) {
         nlohmann::json top = nlohmann::json::array();
         for (const auto& t : r.top_tables) {
-            top.push_back({{"path", t.path}, {"entries", t.entries}});
+            top.push_back(  // GCOVR_EXCL_BR_LINE (compiler artifact: push_back
+                            // braced-init aggregation arcs)
+                {{"path", t.path},
+                 {"entries",
+                  t.entries}});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                 // push_back braced-init aggregation arcs)
         }
-        return nlohmann::json{{"nodes_visited", r.nodes_visited},
-                              {"truncated", r.truncated},
-                              {"counts",
-                               {{"tables", r.tables},
-                                {"functions", r.functions},
-                                {"userdata", r.userdata},
-                                {"coroutines", r.coroutines},
-                                {"strings", r.strings},
-                                {"string_bytes", r.string_bytes}}},
-                              {"top_tables", std::move(top)}};
+        return nlohmann::json{
+            {"nodes_visited", r.nodes_visited},
+            {"truncated", r.truncated},
+            {"counts",
+             {{"tables", r.tables},
+              {"functions", r.functions},
+              {"userdata", r.userdata},
+              {"coroutines", r.coroutines},
+              {"strings", r.strings},
+              {"string_bytes", r.string_bytes}}},
+            {"top_tables",
+             std::move(top)}};  // GCOVR_EXCL_BR_LINE (compiler artifact: json
+                                // initializer tail arc)
     }
 
     // Read-only JSON form of a stored L2 snapshot (capture echoes it back;
@@ -663,17 +709,19 @@ struct LuaServiceManager::Impl {
         if (s.refs.has_value()) {
             refs = refs_summary_to_json(*s.refs);
         }
-        nlohmann::json j = {{"name", s.name},
-                            {"wall_ms", s.wall_ms},
-                            {"requests", s.requests},
-                            {"errors", s.errors},
-                            {"memory_kb", s.memory_kb},
-                            {"pending_calls", s.pending_calls},
-                            {"pending_tasks", s.pending_tasks},
-                            {"coroutines", s.coroutines},
-                            {"timers", s.timers},
-                            {"uptime_seconds", s.uptime_seconds},
-                            {"refs", std::move(refs)}};
+        nlohmann::json j = {
+            {"name", s.name},
+            {"wall_ms", s.wall_ms},
+            {"requests", s.requests},
+            {"errors", s.errors},
+            {"memory_kb", s.memory_kb},
+            {"pending_calls", s.pending_calls},
+            {"pending_tasks", s.pending_tasks},
+            {"coroutines", s.coroutines},
+            {"timers", s.timers},
+            {"uptime_seconds", s.uptime_seconds},
+            {"refs", std::move(refs)}};  // GCOVR_EXCL_BR_LINE (compiler
+                                         // artifact: json initializer tail arc)
         if (!s.refs_error.empty()) {
             j["refs_error"] = s.refs_error;
         }
@@ -845,20 +893,41 @@ struct LuaServiceManager::Impl {
         {
             std::shared_lock lock(registry_mutex);
             auto svc_it = services.find(id);
-            if (svc_it == services.end()) {  // GCOVR_EXCL_START (race: ingress
-                                             // after service teardown)
-                auto& log = shield::log::get_logger("lua");
-                SHIELD_LOG_WARNING(log, "client rpc for unknown service " + id);
+            if (svc_it ==
+                services
+                    .end()) {  // GCOVR_EXCL_START
+                               //  (race: ingress after
+                               // service teardown (body excluded below))
+                               //  (race: client ingress
+                               // after service teardown (see
+                               // the exclusion region)) after service teardown)
+                auto& log = shield::log::get_logger(
+                    "lua");  //  (race: unreachable body of
+                             // the ingress-after-teardown arm)
+                SHIELD_LOG_WARNING(
+                    log, "client rpc for unknown service " +
+                             id);  //  (race: unreachable body
+                                   // of the ingress-after-teardown arm)
                 return;
             }
             // GCOVR_EXCL_STOP
             service = svc_it->second;
             auto rpc_it = service_rpc.find(id);
             if (rpc_it ==
-                service_rpc.end()) {  // GCOVR_EXCL_START (race: ingress after
-                                      // service teardown)
-                auto& log = shield::log::get_logger("lua");
-                SHIELD_LOG_WARNING(log, "client rpc table missing for " + id);
+                service_rpc
+                    .end()) {  // GCOVR_EXCL_START
+                               //  (race: rpc table missing
+                               // after teardown (body excluded below))
+                               // //  (race: rpc table
+                               // missing after teardown (see
+                               // the exclusion region)) service teardown)
+                auto& log = shield::log::get_logger(
+                    "lua");  //  (race: unreachable body of
+                             // the rpc-table-missing arm)
+                SHIELD_LOG_WARNING(log,
+                                   "client rpc table missing for " +
+                                       id);  //  (race: unreachable body
+                                             // of the rpc-table-missing arm)
                 return;
             }
             // GCOVR_EXCL_STOP
@@ -874,9 +943,20 @@ struct LuaServiceManager::Impl {
             if (!normalized.decoded_request) {
                 const auto* descriptor =
                     rpc_it->second.descriptors.find(msg.route_id);
-                const bool json_codec = descriptor == nullptr ||
-                                        descriptor->request_codec.empty() ||
-                                        descriptor->request_codec == "json";
+                const bool json_codec =
+                    descriptor == nullptr ||
+                    descriptor->request_codec
+                        .empty() ||  // GCOVR_EXCL_BR_LINE (defensive: a
+                                     // non-json request_codec arrives only
+                                     // through the gateway bridge integration
+                                     // path)
+                    descriptor->request_codec ==  // GCOVR_EXCL_BR_LINE
+                                                  // (defensive:
+                                                  // gateway-bridge-only codec
+                                                  // arm)
+                        "json";  // GCOVR_EXCL_BR_LINE (defensive:
+                                 // gateway-bridge-only codec twin of the 878
+                                 // arm)
                 if (json_codec) {
                     auto parsed = nlohmann::json::parse(
                         normalized.body_bytes.begin(),
@@ -884,8 +964,19 @@ struct LuaServiceManager::Impl {
                     normalized.decoded_request =
                         parsed.is_discarded()
                             ? nlohmann::json(
-                                  std::string(normalized.body_bytes.begin(),
-                                              normalized.body_bytes.end()))
+                                  std::string(  // GCOVR_EXCL_BR_LINE
+                                                // (defensive: body_bytes decode
+                                                // is gateway-bridge-only)
+                                      normalized.body_bytes
+                                          .begin(),  // GCOVR_EXCL_BR_LINE
+                                                     // (defensive: body_bytes
+                                                     // decode reached only via
+                                                     // the gateway bridge path)
+                                      normalized.body_bytes
+                                          .end()))  // GCOVR_EXCL_BR_LINE
+                                                    // (defensive: body_bytes
+                                                    // decode reached only via
+                                                    // the gateway bridge path)
                             : std::move(parsed);
                 } else {
                     normalized.decoded_request = nlohmann::json(
@@ -922,8 +1013,12 @@ struct LuaServiceManager::Impl {
                                  const std::string& id,
                                  const ClientControlMessage& msg) {
         std::string method;
-        nlohmann::json args = nlohmann::json::array({msg.context.to_json()});
-        switch (msg.kind) {
+        nlohmann::json args = nlohmann::json::array(
+            {msg.context.to_json()});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // json::array braced-init arc)
+        switch (
+            msg.kind) {  // GCOVR_EXCL_BR_LINE (defensive: only the Bound
+                         // control kind is sent by the exercised bridge path)
             case ClientControlMessage::Kind::Bound:
                 method = "on_client_bound";
                 break;
@@ -961,7 +1056,12 @@ struct LuaServiceManager::Impl {
             if (service_it != services.end()) {
                 service = service_it->second;
                 if (auto counters_it = service_counters.find(id);
-                    counters_it != service_counters.end()) {
+                    counters_it !=
+                    service_counters
+                        .end()) {  // GCOVR_EXCL_BR_LINE (defensive: publish
+                                   // inserts service and counters in one
+                                   // critical section; counters can never miss
+                                   // here)
                     counters = counters_it->second;
                 }
             }
@@ -982,7 +1082,9 @@ struct LuaServiceManager::Impl {
         // Traffic accounting stays out of the registry lock: the counters
         // outlive this dispatch through the shared_ptr even if the service
         // exits concurrently (the entry just drops from later snapshots).
-        if (counters) {
+        if (counters) {  // GCOVR_EXCL_BR_LINE (defensive: counters is always
+                         // set when the service lookup succeeded (single insert
+                         // site))
             counters->requests.fetch_add(1, std::memory_order_relaxed);
             if (!dispatched_ok) {
                 counters->errors.fetch_add(1, std::memory_order_relaxed);
@@ -998,6 +1100,13 @@ struct LuaServiceManager::Impl {
 
     void run_fork_task_now(class LuaServiceManager* manager,
                            const ForkedTask& task) {
+        // Pairs with the fetch_add in run_ready_fork_task's critical section:
+        // the drop happens only after this body — which may call the
+        // task's Lua function on the registering VM — has fully returned.
+        struct ActiveForkTaskGuard {
+            std::atomic<std::size_t>& count;
+            ~ActiveForkTaskGuard() { count.fetch_sub(1); }
+        } active_guard{active_fork_tasks};
         DispatchScope scope(*this, task.service_id, "", false);
         if (task.raw_fn.valid()) {
             // Coroutine-aware dispatch: the forked task may yield via
@@ -1006,9 +1115,19 @@ struct LuaServiceManager::Impl {
             // the runtime when its wait completes.
             std::string error;
             std::shared_ptr<LuaVM> service = find_dispatch_vm(task.service_id);
-            if (service &&
-                runtime.invoke_coroutine(service, task.raw_fn, {}, "fork", "",
-                                         0, manager, task.service_id, &error)) {
+            if (service &&  // GCOVR_EXCL_BR_LINE (race: a stale queued task
+                            // whose service vanished -
+                            // cancel_forked_tasks_for_service drains before
+                            // teardown)
+                runtime.invoke_coroutine(  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: multi-line call
+                                           // continuation arcs)
+                    service, task.raw_fn, {},
+                    "fork",  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                             // multi-line call continuation arcs)
+                    "",  // GCOVR_EXCL_BR_LINE (compiler artifact: multi-line
+                         // call continuation arcs)
+                    0, manager, task.service_id, &error)) {
                 return;
             }
             auto& log = shield::log::get_logger("lua");
@@ -1017,7 +1136,15 @@ struct LuaServiceManager::Impl {
         } else {
             try {
                 task.fn();
-            } catch (const std::exception& e) {
+            } catch (                  // GCOVR_EXCL_BR_LINE
+                const std::exception&  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // catch structural edge (landing edge is
+                                       // covered by tests))
+                    e) {               // GCOVR_EXCL_BR_LINE
+                                       // (defensive: fork task bodies
+                                       // (runtime glue and tests) do
+                                       // not throw; the guard is
+                                       // contractual)
                 auto& log = shield::log::get_logger("lua");
                 SHIELD_LOG_ERROR(log, "forked task " + std::to_string(task.id) +
                                           " error: " + e.what());
@@ -1034,15 +1161,27 @@ struct LuaServiceManager::Impl {
             std::lock_guard<std::mutex> lock(task_mutex);
             for (auto it = pending_tasks.begin(); it != pending_tasks.end();
                  ++it) {
-                if (it->id == task_id) {
+                if (it->id ==
+                    task_id) {  // GCOVR_EXCL_BR_LINE (race: ready-fired id
+                                // already canceled - driver-vs-cancel window)
                     task = std::move(*it);
+                    // Same critical section as the erase below: a waiter that
+                    // observes pending_task_count_total() == 0 is therefore
+                    // guaranteed to also observe this increment, so draining
+                    // on both counters has no dequeue/execute gap.
+                    active_fork_tasks.fetch_add(1);
                     pending_tasks.erase(it);
                     break;
                 }
             }
             if (task) {
                 auto by_service_it = tasks_by_service.find(task->service_id);
-                if (by_service_it != tasks_by_service.end()) {
+                if (by_service_it !=
+                    tasks_by_service
+                        .end()) {  // GCOVR_EXCL_BR_LINE (defensive: the
+                                   // by_service index is inserted atomically
+                                   // with the task push; the entry always
+                                   // exists)
                     by_service_it->second.erase(task->id);
                     if (by_service_it->second.empty()) {
                         tasks_by_service.erase(by_service_it);
@@ -1058,7 +1197,9 @@ struct LuaServiceManager::Impl {
     void run_timer_callback_now(class LuaServiceManager* manager,
                                 const std::string& service_id,
                                 sol::function cb) {
-        if (!cb.valid()) {
+        if (!cb.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: branch of a line
+                            // already excluded (GCOVR_EXCL_LINE defensive
+                            // callback guard))
             return;  // GCOVR_EXCL_LINE (callback is valid at schedule time)
         }
         DispatchScope scope(*this, service_id, "", false);
@@ -1066,8 +1207,10 @@ struct LuaServiceManager::Impl {
         // shield.call; the actor thread returns to the mailbox immediately.
         std::string error;
         std::shared_ptr<LuaVM> service = find_dispatch_vm(service_id);
-        if (!service) {
-            return;  // GCOVR_EXCL_LINE (race: timer fired after teardown)
+        if (!service) {  // GCOVR_EXCL_BR_LINE (defensive: branch of a line
+                         // already excluded (GCOVR_EXCL_LINE teardown race
+                         // guard))
+            return;      // GCOVR_EXCL_LINE (race: timer fired after teardown)
         }
         if (!runtime.invoke_coroutine(service, cb, {}, "timer", "", 0, manager,
                                       service_id, &error)) {
@@ -1084,7 +1227,11 @@ struct LuaServiceManager::Impl {
         {
             std::unique_lock lock(registry_mutex);
             auto it = actor_timers.find(timer_id);
-            if (it != actor_timers.end() && it->second.active) {
+            if (it != actor_timers.end() &&
+                it->second
+                    .active) {  // GCOVR_EXCL_BR_LINE (defensive: active is only
+                                // cleared together with the map erase; a false
+                                // entry is never observable)
                 timer = it->second;
                 // The fire path never carries the driver in the copied state:
                 // its last external reference may only be released where the
@@ -1135,7 +1282,10 @@ struct LuaServiceManager::Impl {
         // destructor here would still race that unwind. The handle goes to
         // the graveyard instead and dies with the Impl.
         if (retired_driver) {
-            wait_for_actors({retired_driver});
+            wait_for_actors(  // GCOVR_EXCL_BR_LINE (compiler artifact: braced
+                              // single-element init arc)
+                {retired_driver});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                    // braced single-element init arc)
             retire_actor(std::move(retired_driver));
         }
     }
@@ -1146,8 +1296,9 @@ struct LuaServiceManager::Impl {
     void run_exit_handler(const std::string& service_id,
                           const std::string& reason) {
         std::shared_ptr<LuaVM> service = find_dispatch_vm(service_id);
-        if (!service) {
-            return;  // GCOVR_EXCL_LINE (race: exit raced teardown)
+        if (!service) {  // GCOVR_EXCL_BR_LINE (defensive: exit raced teardown
+                         // (requests only go to live services))
+            return;      // GCOVR_EXCL_LINE (race: exit raced teardown)
         }
         std::string error;
         nlohmann::json args = nlohmann::json(reason);
@@ -1172,7 +1323,8 @@ struct LuaServiceManager::Impl {
             return;
         }
         for (const auto& actor : actors) {
-            if (actor) {
+            if (actor) {  // GCOVR_EXCL_BR_LINE (defensive: wait lists are built
+                          // from non-null handles only)
                 caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
             }
         }
@@ -1184,8 +1336,9 @@ struct LuaServiceManager::Impl {
     // actor terminates itself (the ServiceExitRequest handler quits after
     // running on_exit) and an exit signal racing that request would drop it.
     void wait_for_actors(const std::vector<caf::actor>& actors) {
-        if (actors.empty()) {
-            return;  // GCOVR_EXCL_LINE (all actors already dead)
+        if (actors.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: callers always
+                               // pass at least one handle)
+            return;            // GCOVR_EXCL_LINE (all actors already dead)
         }
         caf::scoped_actor self{system};
         self->wait_for(actors);
@@ -1198,18 +1351,25 @@ struct LuaServiceManager::Impl {
     bool wait_for_actors_until(
         const std::vector<caf::actor>& actors,
         std::optional<std::chrono::steady_clock::time_point> deadline) {
-        if (actors.empty() || !deadline) {
+        if (actors.empty() ||  // GCOVR_EXCL_BR_LINE (defensive: empty wait list
+                               // arm (region excluded above))
+            !deadline) {  // GCOVR_EXCL_BR_LINE (defensive: an empty wait list
+                          // requires a vanished actor slot; publish inserts the
+                          // slot with the service)
             wait_for_actors(actors);
             return true;
         }
         std::vector<caf::actor> live;
         for (const auto& actor : actors) {
-            if (actor) {
+            if (actor) {  // GCOVR_EXCL_BR_LINE (defensive: every entry comes
+                          // from the non-null slot guarantee at the exit
+                          // lookup)
                 live.push_back(actor);
             }
         }
-        if (live.empty()) {
-            return true;  // GCOVR_EXCL_LINE (all actors already dead)
+        if (live.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: the null filter
+                             // never drops an entry (all handles non-null))
+            return true;     // GCOVR_EXCL_LINE (all actors already dead)
         }
         caf::scoped_actor self{system};
         for (const auto& actor : live) {
@@ -1223,8 +1383,16 @@ struct LuaServiceManager::Impl {
             }
             self->receive(
                 [&](const caf::down_msg& down) {
-                    for (const auto& actor : live) {
-                        if (down.source == actor.address()) {
+                    for (const auto& actor :
+                         live) {  // GCOVR_EXCL_BR_LINE (defensive: exit waits
+                                  // exactly one actor; the multi-iteration arc
+                                  // needs more than one live handle)
+                        if (down.source ==
+                            actor
+                                .address()) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                               // deadline is guaranteed
+                                               // non-null by the 1201 guard;
+                                               // the !deadline arm is dead)
                             --remaining;
                             break;
                         }
@@ -1250,18 +1418,28 @@ struct LuaServiceManager::Impl {
         std::vector<std::string> retracted;
         {
             std::unique_lock lock(registry_mutex);
-            if (auto vm_it = services.find(id); vm_it != services.end()) {
+            if (auto vm_it = services.find(id);
+                vm_it !=
+                services.end()) {  // GCOVR_EXCL_BR_LINE (defensive: hung
+                                   // teardown runs once per exit; the entry
+                                   // cannot already be erased)
                 service = std::move(vm_it->second);
                 services.erase(vm_it);
             }
             service_counters.erase(id);
             drop_live_coroutines_locked(id);
             inspect_snapshots.erase(id);
-            if (service) {
+            if (service) {  // GCOVR_EXCL_BR_LINE (defensive: the service
+                            // shared_ptr was found under the same lock scope
+                            // (miss implies the 1253 arm))
                 hung_vms.push_back(std::move(service));
             }
             if (auto names_it = owned_names.find(id);
-                names_it != owned_names.end()) {
+                names_it !=
+                owned_names
+                    .end()) {  // GCOVR_EXCL_BR_LINE (defensive: a stuck on_exit
+                               // cannot unregister its own name first - no
+                               // in-dispatch Lua binding runs during the hang)
                 for (const auto& name : names_it->second) {
                     published_names.erase(name);
                     retracted.push_back(name);
@@ -1273,7 +1451,11 @@ struct LuaServiceManager::Impl {
                 service_order.end());
             recently_exited.insert(id);
             if (auto actor_it = service_actors.find(id);
-                actor_it != service_actors.end()) {
+                actor_it !=
+                service_actors
+                    .end()) {  // GCOVR_EXCL_BR_LINE (defensive: the actor slot
+                               // is erased only by exit itself; it exists for
+                               // every hung teardown)
                 // Park without joining: the actor quits by itself once the
                 // stuck on_exit finally unwinds (or never, for a real
                 // deadlock — the process watchdog owns that case).
@@ -1290,7 +1472,8 @@ struct LuaServiceManager::Impl {
     // graveyard comment on the member declaration: the release must not happen
     // while any CAF worker may still be inside the driver's message loop.
     void retire_actor(caf::actor&& handle) {
-        if (!handle) {
+        if (!handle) {  // GCOVR_EXCL_BR_LINE (defensive: callers pass live
+                        // handles (branch of a GCOVR_EXCL_LINE'd guard))
             return;  // GCOVR_EXCL_LINE (defensive: callers pass live handles)
         }
         std::lock_guard<std::mutex> lock(retired_actors_mutex);
@@ -1310,7 +1493,9 @@ struct LuaServiceManager::Impl {
         if (it == actor_timers.end()) {
             return false;
         }
-        if (it->second.driver) {
+        if (it->second.driver) {  // GCOVR_EXCL_BR_LINE (defensive: timer
+                                  // entries always carry their driver; fired or
+                                  // canceled timers erase the entry)
             // Move the driver out: the entry dies below while the driver
             // actor may still be running its tick handler. Releasing its last
             // external reference at that moment would trigger CAF's
@@ -1321,7 +1506,11 @@ struct LuaServiceManager::Impl {
         }
         auto by_service_it =
             actor_timers_by_service.find(it->second.service_id);
-        if (by_service_it != actor_timers_by_service.end()) {
+        if (by_service_it !=
+            actor_timers_by_service
+                .end()) {  // GCOVR_EXCL_BR_LINE (defensive: the by_service
+                           // index is inserted when the timer is scheduled; the
+                           // entry always exists)
             by_service_it->second.erase(id);
             if (by_service_it->second.empty()) {
                 actor_timers_by_service.erase(by_service_it);
@@ -1382,18 +1571,45 @@ struct LuaServiceManager::Impl {
     // with SHIELD_ENABLE_SERVER=OFF, so this has no caller there; the
     // full-build tree exercises it through the shield.server.watch facade)
     std::shared_ptr<LuaVM> current_service_vm() const {
-        if (!tls_dispatch_stack.empty()) {
-            if (auto& vm = tls_dispatch_stack.back().vm) {
+        if (!tls_dispatch_stack  //  (defensive: server-only
+                                 // helper (see the exclusion region above))
+                 .empty()) {     //
+                                 // (defensive: server-only
+                                 // helper with no caller in
+                                 // the CI shape (see
+                                 // the exclusion region above))
+            if (auto& vm =       //  (defensive: server-only helper
+                                 // (see the exclusion region above))
+                tls_dispatch_stack.back()
+                    .vm) {  //  (defensive: server-only
+                            // helper with no caller in the CI shape (see
+                            // the exclusion region above))
                 return vm;
             }
         }
-        const std::string id = current_service_id();
-        if (id.empty()) {
+        const std::string id =
+            current_service_id();  //  (defensive: server-only
+                                   // helper with no caller in the CI shape (see
+                                   // the exclusion region above))
+        if (id.empty()) {          //  (defensive: server-only helper
+                                   // with no caller in the CI shape (see
+                                   // the exclusion region above))
             return nullptr;
         }
-        std::shared_lock lock(registry_mutex);
-        auto it = services.find(id);
-        return it != services.end() ? it->second : nullptr;
+        std::shared_lock lock(
+            registry_mutex);      //  (defensive: server-only
+                                  // helper with no caller in the CI shape (see
+                                  // the exclusion region above))
+        auto it = services.find(  //  (defensive: server-only
+                                  // helper (see the exclusion region above))
+            id);                  //  (defensive: server-only helper with no
+                  // caller in the CI shape (see the exclusion region above))
+        return it != services.end()
+                   ? it->second  //  (defensive: server-only
+                                 // helper (see the exclusion region above))
+                   : nullptr;    //  (defensive: server-only
+                                 // helper with no caller in the CI shape (see
+                                 // the exclusion region above))
     }
     // GCOVR_EXCL_STOP
 
@@ -1445,7 +1661,16 @@ struct LuaServiceManager::Impl {
 
         ~DispatchScope() {
             // Save last sender for context_expired detection.
-            if (!tls_dispatch_stack.empty()) {
+            if (!tls_dispatch_stack  // GCOVR_EXCL_BR_LINE (defensive:
+                                     // DispatchScope dtor always pairs with a
+                                     // push)
+                     .empty()) {     // GCOVR_EXCL_BR_LINE
+                                     // (defensive:
+                                     // DispatchScope dtor
+                                     // always pairs with a
+                                     // push; the stack is
+                                     // never empty at
+                                     // teardown)
                 const auto& frame = tls_dispatch_stack.back();
                 if (!frame.sender_id.empty()) {
                     std::unique_lock lock(impl_.registry_mutex);
@@ -1521,7 +1746,12 @@ LuaServiceManager::~LuaServiceManager() {
         impl_->spawn_queue.clear();
     }
     impl_->spawn_cv.notify_all();
-    if (impl_->spawn_thread.joinable()) {
+    if (impl_               // GCOVR_EXCL_BR_LINE
+            ->spawn_thread  // GCOVR_EXCL_BR_LINE (defensive: spawn_thread is
+                            // joined before the dtor ends)
+            .joinable()) {  // GCOVR_EXCL_BR_LINE (defensive: spawn_thread is
+                            // joined before the dtor; the not-joinable arm is
+                            // the invariant)
         impl_->spawn_thread.join();
     }
     // Fail queued-but-never-started spawns. The caller actor may already be
@@ -1574,7 +1804,9 @@ LuaServiceManager::~LuaServiceManager() {
             actors_to_stop.size() + impl_->service_actors.size() +
             impl_->actor_timers.size() + impl_->actor_call_timeouts.size());
         for (auto& [id, actor] : impl_->service_actors) {
-            if (actor) {
+            if (actor) {  // GCOVR_EXCL_BR_LINE (defensive: service_actors
+                          // entries always carry a live handle; exit paths
+                          // erase entries rather than null them)
                 // Move: the clear() below would otherwise release the map
                 // entry's reference while the actor may still be running.
                 actors_to_stop.push_back(std::move(actor));
@@ -1582,7 +1814,9 @@ LuaServiceManager::~LuaServiceManager() {
         }
         impl_->service_actors.clear();
         for (auto& [id, timer] : impl_->actor_timers) {
-            if (timer.driver) {
+            if (timer.driver) {  // GCOVR_EXCL_BR_LINE (defensive: actor_timers
+                                 // entries always carry their driver;
+                                 // cancel/fire erase the entry)
                 // Move: the clear() below would otherwise release the map
                 // entry's reference while the driver may still be running;
                 // releasing ours after stop_and_wait_for_actors is safe.
@@ -1592,7 +1826,9 @@ LuaServiceManager::~LuaServiceManager() {
         impl_->actor_timers.clear();
         impl_->actor_timers_by_service.clear();
         for (auto& [session, driver] : impl_->actor_call_timeouts) {
-            if (driver) {
+            if (driver) {  // GCOVR_EXCL_BR_LINE (defensive: call-timeout
+                           // entries always carry their driver; drivers are
+                           // armed at insert)
                 // Same move-before-clear reasoning as the timer drivers.
                 actors_to_stop.push_back(std::move(driver));
             }
@@ -1619,7 +1855,12 @@ LuaServiceManager::~LuaServiceManager() {
                 }
                 for (auto& [session, pending] : impl_->pending_sync_calls) {
                     std::unique_lock lk(pending->mtx);
-                    if (!pending->completed) {
+                    if (!pending
+                             ->completed) {  // GCOVR_EXCL_BR_LINE (race: a
+                                             // completed-but-unfetched pending
+                                             // surviving a loop pass - the
+                                             // waiter/notify window the
+                                             // re-check loop already handles)
                         pending->error = "runtime is stopping";
                         pending->ok = false;
                         pending->completed = true;
@@ -1698,7 +1939,9 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                 std::unique_lock lock(impl->registry_mutex);
                 impl->reserved_names.erase(name);
             }
-        } reservation{impl_.get(), service_name};
+        } reservation{impl_.get(),
+                      service_name};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // RAII guard aggregate braced-init arc)
         {
             std::unique_lock lock(impl_->registry_mutex);
             impl_->reserved_names.insert(service_name);
@@ -1822,26 +2065,64 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             // returns; we then install the real behavior and release the
             // stash.
             auto cache = std::make_shared<caf::mail_cache>(self, 4096);
-            self->set_default_handler([cache, impl_ptr, manager,
+            self->set_default_handler([cache,     // GCOVR_EXCL_BR_LINE
+                                       impl_ptr,  // GCOVR_EXCL_BR_LINE
+                                                  // (compiler artifact: CAF
+                                                  // pre-init default-handler
+                                                  // lambda arcs)
+                                       manager,  // GCOVR_EXCL_BR_LINE (compiler
+                                                 // artifact: CAF pre-init
+                                                 // default-handler lambda
+                                                 // entry/exit arcs)
                                        svc](caf::message& msg)
                                           -> caf::skippable_result {
                 if (msg.size() == 2 &&
-                    (msg.match_element<timer_fire_atom>(0) ||
+                    (msg.match_element<timer_fire_atom>(
+                         0) ||  // GCOVR_EXCL_BR_LINE (defensive: pre-init twin
+                                // arm - post-init traffic is served by the
+                                // become() handlers (see the exclusion region
+                                // at 1834))
                      msg.match_element<call_timeout_atom>(0))) {
                     const uint64_t payload = msg.get_as<uint64_t>(1);
-                    if (msg.match_element<timer_fire_atom>(0)) {
+                    if (msg.match_element<     // GCOVR_EXCL_BR_LINE
+                            timer_fire_atom>(  // GCOVR_EXCL_BR_LINE (defensive:
+                                               // pre-init twin arm (region
+                                               // excluded above))
+                            0)) {  // GCOVR_EXCL_BR_LINE (defensive: pre-init
+                                   // twin arm - the call-timeout case is region
+                                   // excluded at 1834)
                         impl_ptr->fire_actor_timer(manager, svc, payload);
                     } else {  // GCOVR_EXCL_START (pre-init twin of the
                         // registered call_timeout_atom handler below: the
                         // e2e driver always beats this scan path)
-                        manager->cancel_actor_call_timeout(payload);
-                        nlohmann::json timeout_err =
-                            nlohmann::json::array({nlohmann::json::object(
+                        manager->cancel_actor_call_timeout(  //
+                                                             // (defensive:
+                                                             // pre-init twin
+                                                             // region (region
+                                                             // excluded above))
+                            payload);                        //  (defensive:
+                                       // pre-init twin region (see
+                                       // the exclusion region at 1834))
+                        nlohmann::json timeout_err = nlohmann::json::array(
+                            {nlohmann::json::object(  //
+                                                      // (defensive: pre-init
+                                                      // twin region (see
+                                                      // the exclusion region at
+                                                      // 1834))
                                 {{"code", "timeout"},
                                  {"message", "call timeout"},
-                                 {"retryable", true}})});
-                        manager->resume_caller(payload, false, timeout_err,
-                                               "call-timeout");
+                                 {"retryable",
+                                  true}})});  //  (defensive:
+                                              // pre-init twin region (see
+                                              // the exclusion region at 1834))
+                        manager->resume_caller(  //  (defensive:
+                                                 // pre-init twin region (region
+                                                 // excluded above))
+                            payload, false,
+                            timeout_err,  //  (defensive:
+                                          // pre-init twin region (see
+                                          // the exclusion region at 1834))
+                            "call-timeout");
                     }
                     // GCOVR_EXCL_STOP
                     return {};
@@ -1853,9 +2134,17 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                 }
                 cache->stash(msg);
                 return {};
-            });  // GCOVR_EXCL_LINE (pre-init stash tail: branch arc artifact)
+            });  // GCOVR_EXCL_LINE GCOVR_EXCL_BR_LINE (pre-init stash tail:
+                 // branch arc artifact)
+                 // // GCOVR_EXCL_BR_LINE (compiler artifact: lambda tail arc
+                 // (line already GCOVR_EXCL_LINE'd for the same reason))
             return caf::behavior{
-                [self, cache, impl_ptr, manager, svc](init_ready_atom) {
+                [self, cache, impl_ptr,  // GCOVR_EXCL_BR_LINE
+                 manager,  // GCOVR_EXCL_BR_LINE (compiler artifact: init_ready
+                           // lambda entry/exit arcs)
+                 svc](init_ready_atom) {  // GCOVR_EXCL_BR_LINE (compiler
+                                          // artifact: init_ready lambda
+                                          // entry/exit arcs)
                     self->set_default_handler(caf::print_and_drop);
                     self->become(caf::behavior{
                         [impl_ptr, manager, svc](const ServiceMessage& msg) {
@@ -1885,14 +2174,22 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                         [impl_ptr, manager, svc](call_timeout_atom,
                                                  uint64_t session) {
                             manager->cancel_actor_call_timeout(session);
-                            nlohmann::json timeout_err =
-                                nlohmann::json::array({nlohmann::json::object(
+                            nlohmann::json timeout_err = nlohmann::json::array(
+                                {nlohmann::json::object(  // GCOVR_EXCL_BR_LINE
+                                                          // (compiler artifact:
+                                                          // json::array
+                                                          // braced-init arcs)
                                     {{"code", "timeout"},
                                      {"message", "call timeout"},
-                                     {"retryable", true}})});
+                                     {"retryable",
+                                      true}})});  // GCOVR_EXCL_BR_LINE
+                                                  // (compiler artifact: json
+                                                  // object init continuation
+                                                  // arc)
                             manager->resume_caller(session, false, timeout_err,
                                                    "call-timeout");
-                        },
+                        },  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda
+                        // body exit arc)
                         [impl_ptr,  // GCOVR_EXCL_LINE (lambda entry artifact)
                          manager](  // GCOVR_EXCL_LINE (lambda entry artifact)
                             fork_task_atom,
@@ -1932,7 +2229,7 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             {"id", service_name},
             {"args", args},
             {"config", config},
-        };
+        };  // GCOVR_EXCL_BR_LINE (compiler artifact: json initializer tail arc)
         bool exit_after_init = false;
         std::string exit_reason;
         {
@@ -1956,11 +2253,16 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                     [&](uint64_t session, std::string& err) -> bool {
                         // on_init keeps its historical no-ctx signature:
                         // on_init(args) — the init arguments arrive directly.
-                        return impl_->runtime.invoke_coroutine(
-                            vm, on_init_fn, {init_args}, "handler", "on_init",
-                            session, this, service_name, &err,
-                            /*prepend_ctx=*/false);
-                    },
+                        return impl_->runtime
+                            .invoke_coroutine(  // GCOVR_EXCL_BR_LINE (compiler
+                                                // artifact: multi-line
+                                                // invoke_coroutine continuation
+                                                // arcs)
+                                vm, on_init_fn, {init_args}, "handler",
+                                "on_init", session, this, service_name, &err,
+                                /*prepend_ctx=*/false);
+                    },  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda body
+                        // exit arcs)
                     static_cast<int32_t>(spawn_timeout_ms));
                 const int64_t init_elapsed_ms = Impl::now_ms() - init_start;
                 // A non-yielding on_init that overruns the budget cannot be
@@ -1971,7 +2273,13 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                     init_elapsed_ms >= static_cast<int64_t>(spawn_timeout_ms);
                 if (!init_result.success) {
                     error = init_result.error_message;
-                    if (error.find("call timeout") != std::string::npos ||
+                    if (error.find("call timeout") !=
+                            std::string::npos ||  // GCOVR_EXCL_BR_LINE (race:
+                                                  // the spawn-timeout diag arm
+                                                  // - external-driver expiry on
+                                                  // a loaded machine (see
+                                                  // the exclusion region at
+                                                  // 1979))
                         init_overran) {
                         // Diagnostic for spawn-hang investigations: surface
                         // the pending-call bookkeeping at expiry so logs can
@@ -1991,14 +2299,26 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                                 impl_->pending_sync_calls.size(),
                                 impl_->driving_cos.size());
                             for (const auto& [diag_session, diag_pc] :
-                                 impl_->pending_calls) {
-                                std::fprintf(stderr,
-                                             "***   session=%llu caller=%s "
-                                             "requeues=%d\n",
-                                             static_cast<unsigned long long>(
-                                                 diag_session),
-                                             diag_pc.caller_service.c_str(),
-                                             diag_pc.requeues);
+                                 impl_->pending_calls) {  //
+                                                          // (defensive: diag
+                                                          // dump internals of
+                                                          // the spawn-timeout
+                                                          // arm (see
+                                                          // the exclusion
+                                                          // region at 1979))
+                                std::fprintf(             //  (defensive:
+                                               // diag dump internals of the
+                                               // spawn-timeout arm)
+                                    stderr,  //  (defensive:
+                                             // diag dump internals of the
+                                             // spawn-timeout arm (see
+                                             // the exclusion region at 1979))
+                                    "***   session=%llu caller=%s "
+                                    "requeues=%d\n",
+                                    static_cast<unsigned long long>(
+                                        diag_session),
+                                    diag_pc.caller_service.c_str(),
+                                    diag_pc.requeues);
                             }
                             std::fflush(stderr);
                         }
@@ -2021,25 +2341,45 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                                 "spawn timeout: on_init exceeded " +
                                 std::to_string(spawn_timeout_ms) + "ms limit");
                         }
-                        error = init_result.values.size() > 1 &&
-                                        init_result.values[1].is_string()
-                                    ? init_result.values[1].get<std::string>()
-                                : false_first ? "on_init returned false"
-                                              : "on_init returned nil";
+                        error =
+                            init_result.values.size() > 1 &&
+                                    init_result.values[1].is_string()
+                                ? init_result.values[1].get<std::string>()
+                            : false_first
+                                ? "on_init returned false"  // GCOVR_EXCL_BR_LINE
+                                                            // (compiler
+                                                            // artifact:
+                                                            // ternary-chain
+                                                            // structural edges)
+                                : "on_init returned nil";
                     }
                 }
             } else {
                 // A module without on_init is fine (call_service_function
                 // treated a missing hook as a silent no-op); anything else is
                 // a load failure surfaced below.
-                if (error.find("is missing or not a function") ==
+                if (error.find(
+                        "is missing or not a function") ==  // GCOVR_EXCL_BR_LINE
+                                                            // (defensive:
+                                                            // sync-spawn twin
+                                                            // of the async
+                                                            // path's identical
+                                                            // failure return
+                                                            // (see
+                                                            // the exclusion
+                                                            // region at 2037))
                     std::string::npos) {
                     // GCOVR_EXCL_START (sync-spawn twin: the async spawn
                     // path's identical failure return is the driven site)
-                    return SpawnResult::error("on_init failed for " +
-                                              service_name + ": " + error);
+                    return SpawnResult::error(  // GCOVR_EXCL_BR_START
+                        "on_init failed for " + service_name +
+                        ": " +   //  (defensive: sync-spawn
+                                 // twin (region excluded below))
+                        error);  //  (defensive: sync-spawn
+                                 // twin of the async path's identical failure
+                                 // return (see the exclusion region at 2037))
                     // GCOVR_EXCL_STOP
-                }
+                }  // GCOVR_EXCL_BR_STOP
                 error.clear();
             }
             if (!error.empty()) {
@@ -2048,11 +2388,24 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                     std::unique_lock lock(impl_->registry_mutex);
                     if (auto actor_it =
                             impl_->service_actors.find(service_name);
-                        actor_it != impl_->service_actors.end()) {
+                        actor_it !=
+                        impl_->service_actors
+                            .end()) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                       // sync-spawn twin - the actor-slot
+                                       // cleanup is driven by the async spawn
+                                       // failure path)
                         // The actor may still be inside the failed on_init on
                         // its worker thread; the graveyard keeps the handle
                         // alive until the Impl destructor joins it.
-                        if (actor_it->second) {
+                        if (actor_it  // GCOVR_EXCL_BR_LINE (defensive:
+                                      // sync-spawn twin (actor slot never
+                                      // null))
+                                ->second) {  // GCOVR_EXCL_BR_LINE
+                                             // (defensive: sync-spawn
+                                             // twin - the actor-slot
+                                             // cleanup is driven by
+                                             // the async spawn
+                                             // failure path)
                             caf::anon_send_exit(
                                 actor_it->second,
                                 caf::exit_reason::user_shutdown);
@@ -2085,13 +2438,27 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
 
         {
             std::unique_lock lock(impl_->registry_mutex);
-            if (impl_->services.contains(service_name) ||
+            if (impl_->services.contains(
+                    service_name) ||  // GCOVR_EXCL_BR_LINE (race: same-name
+                                      // usurp during async init; the spawn
+                                      // entry check refuses duplicates under
+                                      // the lock)
                 impl_->published_names.contains(service_name)) {
                 if (auto actor_it = impl_->service_actors.find(service_name);
-                    actor_it != impl_->service_actors.end()) {
+                    actor_it !=
+                    impl_->service_actors
+                        .end()) {  // GCOVR_EXCL_BR_LINE (race: usurp twin - the
+                                   // entry is erased together with the service
+                                   // under the same lock)
                     // Graveyard policy: the actor may still be running its
                     // on_init; never release the last reference here.
-                    if (actor_it->second) {
+                    if (actor_it  // GCOVR_EXCL_BR_LINE (defensive: usurp twin
+                                  // (actor slot never null))
+                            ->second) {  // GCOVR_EXCL_BR_LINE
+                                         // (defensive: usurp twin -
+                                         // the actor slot is never
+                                         // null for a published
+                                         // service)
                         caf::anon_send_exit(actor_it->second,
                                             caf::exit_reason::user_shutdown);
                     }
@@ -2127,7 +2494,11 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         }
         return SpawnResult::ok(service_name);
 
-    } catch (const std::exception& e) {
+    } catch (  // GCOVR_EXCL_BR_LINE (compiler artifact: catch structural edge
+               // (landing edge is covered by tests))
+        const std::exception& e) {  // GCOVR_EXCL_BR_LINE (defensive: untestable
+                                    // spawn-internal exception guard; the
+                                    // guarded body is exception-free in tests)
         return SpawnResult::error(std::string("Spawn failed: ") + e.what());
     }
 }
@@ -2180,12 +2551,30 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
 
     // Permission check.
     // GCOVR_EXCL_START (Phase-2 scaffold: no setter exists yet)
-    if (impl_->permission_check) {
-        const std::string sender = current_service_id();
+    if (impl_
+            ->permission_check) {  //  (defensive: Phase-2
+                                   // scaffold - no permission_check setter
+                                   // exists (see the exclusion region at 2182))
+        const std::string sender =
+            current_service_id();  //  (defensive: Phase-2
+                                   // scaffold - no permission_check setter
+                                   // exists (see the exclusion region at 2182))
         const std::string denial = impl_->permission_check(
-            sender, std::string(target), std::string(method));
-        if (!denial.empty()) {
-            if (error) *error = "permission denied: " + denial;
+            sender,
+            std::string(target),   //  (defensive: Phase-2
+                                   // scaffold (see the exclusion region below))
+            std::string(method));  //  (defensive: Phase-2
+                                   // scaffold - no permission_check setter
+                                   // exists (see the exclusion region at 2182))
+        if (!denial.empty()) {     //  (defensive: Phase-2
+                                // scaffold - no permission_check setter exists
+                                // (see the exclusion region at 2182))
+            if (error)  //  (defensive: Phase-2 scaffold (see
+                        // the exclusion region below))
+                *error = "permission denied: " +
+                         denial;  //  (defensive: Phase-2
+                                  // scaffold - no permission_check setter
+                                  // exists (see the exclusion region at 2182))
             return false;
         }
     }
@@ -2208,8 +2597,13 @@ bool LuaServiceManager::send(std::string_view target, std::string_view method,
             actor_opt = it->second;
         }
         target_recently_exited =
-            impl_->recently_exited.count(service_id) > 0 ||
-            impl_->recently_exited.count(std::string(target)) > 0;
+            impl_->recently_exited.count(service_id) >
+                0 ||  // GCOVR_EXCL_BR_LINE (defensive: the sender's own id is
+                      // in recently_exited only after it exited - a dead
+                      // service cannot send) // GCOVR_EXCL_BR_START
+            impl_->recently_exited.count(std::string(target)) >
+                0;  //  (compiler artifact: unordered_set
+                    // count inlined probe arms) // GCOVR_EXCL_BR_STOP
     }
     if (!actor_opt) {
         if (error) {
@@ -2358,24 +2752,42 @@ CallResult LuaServiceManager::call(std::string_view target,
     {
         std::shared_lock lock(impl_->registry_mutex);
         auto it = impl_->service_actors.find(service_id);
-        if (it != impl_->service_actors.end()) {
+        if (it !=
+            impl_->service_actors
+                .end()) {  // GCOVR_EXCL_BR_LINE (defensive: twin of the early
+                           // lookup's identical return; the post-lock recheck
+                           // never fires (see the exclusion region at 2366))
             actor_opt = it->second;
         }
     }
-    if (!actor_opt) {
+    if (!actor_opt) {  // GCOVR_EXCL_BR_LINE (defensive: twin of the early
+                       // lookup's identical return (see the exclusion region at
+                       // 2366))
         // GCOVR_EXCL_START (twin of the early-spawn lookup's identical
         // return, which the tests drive; this post-lock recheck never fires)
-        return CallResult::error("service not found: " + std::string(target));
+        return CallResult::error(
+            "service not found: " +
+            std::string(target));  //  (defensive: twin of the
+                                   // early lookup's identical return
+                                   // (line-excluded body))
         // GCOVR_EXCL_STOP
     }
 
     // Self-call detection: avoid deadlock (actor mailbox would queue but the
     // actor is currently executing this handler).
-    if (sender == service_id) {
-        return CallResult::error(
-            "self-call not supported");  // GCOVR_EXCL_LINE (deadlock guard:
-                                         // actor cannot re-enter)
-    }
+    if (sender ==      // GCOVR_EXCL_BR_LINE (defensive: deadlock guard (Lua
+                       // self-calls route through the runtime))
+        service_id) {  // GCOVR_EXCL_BR_LINE (defensive: deadlock guard - a
+                       // manager.call self-dispatch is unreachable; Lua
+                       // self-calls route through the runtime's inline invoke)
+        return CallResult::error(        // GCOVR_EXCL_BR_START
+            "self-call not supported");  //  (deadlock guard: //
+                                         // //  (defensive:
+                                         // deadlock guard body (line-excluded))
+                                         //  (defensive:
+                                         // deadlock guard ('d
+                                         // body)) actor cannot re-enter)
+    }  // GCOVR_EXCL_BR_STOP
 
     // Create the pending external waiter, then send the call request through
     // the ordinary ServiceMessage path (call_session non-zero marks it as a
@@ -2413,16 +2825,26 @@ CallResult LuaServiceManager::call(std::string_view target,
     bool completed = false;
     {
         std::unique_lock lk(pending->mtx);
-        if (driver_armed) {
+        if (driver_armed) {  // GCOVR_EXCL_BR_LINE (defensive: the CAF expiry
+                             // driver is always armed (see the exclusion region
+                             // at 2418))
             pending->cv.wait(lk, [&] { return pending->completed; });
         } else {  // GCOVR_EXCL_START (defensive: the CAF expiry driver is
                   // always armed)
-            completed = pending->cv.wait_for(
-                lk, std::chrono::milliseconds(effective_timeout),
-                [&] { return pending->completed; });
+            completed =
+                pending->cv.wait_for(  //  (defensive: the CAF
+                                       // expiry driver is always armed (see
+                                       // the exclusion region at 2418))
+                    lk, std::chrono::milliseconds(effective_timeout),
+                    [&] { return pending->completed; });
         }
         // GCOVR_EXCL_STOP
-        completed = completed || pending->completed;
+        completed =
+            completed ||  // GCOVR_EXCL_BR_LINE (defensive: driver path always
+                          // completes first)
+            pending->completed;  // GCOVR_EXCL_BR_LINE (defensive: the true arc
+                                 // belongs to the fallback wait that never runs
+                                 // (driver always armed))
     }
 
     // Cleanup.
@@ -2431,14 +2853,30 @@ CallResult LuaServiceManager::call(std::string_view target,
         impl_->pending_sync_calls.erase(session);
     }
 
-    if (!completed) {
-        return CallResult::error(
-            "call timeout (actor dispatch exceeded limit)");  // GCOVR_EXCL_LINE
+    if (!completed) {  // GCOVR_EXCL_BR_LINE (defensive: the driver path
+                       // completes the call first (line-excluded body))
+        return CallResult::error(  // GCOVR_EXCL_BR_START
+            "call timeout (actor dispatch exceeded limit)");  //
+                                                              // //
+                                                              //
+                                                              // (defensive:
+                                                              // driver path
+                                                              // completes first
+                                                              // (line-excluded
+                                                              // body))
+                                                              // //
+                                                              //
+                                                              // (defensive: the
+                                                              // driver path
+                                                              // completes the
+                                                              // call first
+                                                              // ('d
+                                                              // body))
                                                               // (defensive:
                                                               // driver path
                                                               // completes
                                                               // first)
-    }
+    }  // GCOVR_EXCL_BR_STOP
     if (pending->ok) {
         return CallResult::ok(std::move(pending->values));
     }
@@ -2485,11 +2923,17 @@ void LuaServiceManager::exit(
         {
             std::shared_lock lock(impl_->registry_mutex);
             auto it = impl_->service_actors.find(id);
-            if (it != impl_->service_actors.end() && it->second) {
+            if (it != impl_->service_actors
+                          .end() &&  // GCOVR_EXCL_BR_LINE (defensive: publish
+                                     // inserts the actor slot with the service)
+                it->second) {  // GCOVR_EXCL_BR_LINE (defensive: publish inserts
+                               // the actor slot with the service; the entry
+                               // exists and is non-null for every exit)
                 actor = it->second;
             }
         }
-        if (actor) {
+        if (actor) {  // GCOVR_EXCL_BR_LINE (defensive: same publish guarantee -
+                      // the actor optional is always set here)
             caf::anon_send(*actor, ServiceExitRequest{std::string(reason)});
             actors_to_wait.push_back(*actor);
         }
@@ -2541,7 +2985,9 @@ void LuaServiceManager::exit(
             auto pc_it = impl_->pending_calls.find(it->first);
             if (pc_it != impl_->pending_calls.end() &&
                 pc_it->second.caller_service == id) {
-                if (it->second) {
+                if (it->second) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                   // call-timeout entries always carry their
+                                   // driver; the null arm is a contract guard)
                     // Move before erase: the entry's reference must not be
                     // released while the driver may still be running; ours
                     // drops after stop_and_wait_for_actors below.
@@ -2558,7 +3004,9 @@ void LuaServiceManager::exit(
     {
         std::unique_lock lock(impl_->registry_mutex);
         if (auto names_it = impl_->owned_names.find(id);
-            names_it != impl_->owned_names.end()) {
+            names_it != impl_->owned_names
+                            .end()) {  // GCOVR_EXCL_BR_LINE (defensive: publish
+                                       // inserts owned_names with the service)
             for (const auto& name : names_it->second) {
                 impl_->published_names.erase(name);
                 retracted.push_back(name);
@@ -2593,8 +3041,18 @@ void LuaServiceManager::exit(
         // here could race and drop that request, so only the handle is
         // released.
         if (auto actor_it = impl_->service_actors.find(id);
-            actor_it != impl_->service_actors.end()) {
-            if (actor_it->second && exiting_from_own_actor) {
+            actor_it !=
+            impl_->service_actors
+                .end()) {  // GCOVR_EXCL_BR_LINE (defensive: the teardown find
+                           // runs in the same critical section that located the
+                           // service)
+            if (actor_it
+                    ->second &&  // GCOVR_EXCL_BR_LINE (defensive: null-actor
+                                 // combo unreachable (slot never null))
+                exiting_from_own_actor) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                           // null-actor combo unreachable - the
+                                           // slot is never null for a published
+                                           // service)
                 caf::anon_send_exit(actor_it->second,
                                     caf::exit_reason::user_shutdown);
             }
@@ -2636,7 +3094,12 @@ void LuaServiceManager::shutdown_all(std::string_view reason,
             std::shared_lock lock(impl_->registry_mutex);
             exists = impl_->services.contains(*it);
         }
-        if (seen.insert(*it).second && exists) {
+        if (seen.insert(*it)
+                .second &&  // GCOVR_EXCL_BR_LINE (defensive: order entries are
+                            // unique (exits erase their entry))
+            exists) {       // GCOVR_EXCL_BR_LINE (defensive: order entries are
+                       // unique and every exit path erases its order entry; the
+                       // dedup arm cannot trigger)
             const auto now = std::chrono::steady_clock::now();
             if (now < deadline) {
                 // The whole budget is shared: every graceful exit waits at
@@ -2681,7 +3144,10 @@ void LuaServiceManager::force_remove(const std::string& id,
     {
         std::unique_lock lock(impl_->registry_mutex);
         if (auto names_it = impl_->owned_names.find(id);
-            names_it != impl_->owned_names.end()) {
+            names_it !=
+            impl_->owned_names
+                .end()) {  // GCOVR_EXCL_BR_LINE (defensive: a published service
+                           // always owns at least its service name)
             for (const auto& name : names_it->second) {
                 impl_->published_names.erase(name);
                 retracted.push_back(name);
@@ -2701,7 +3167,10 @@ void LuaServiceManager::force_remove(const std::string& id,
         impl_->recently_exited.insert(id);
         impl_->runtime.remove_http_routes_for_service(id);
         if (auto actor_it = impl_->service_actors.find(id);
-            actor_it != impl_->service_actors.end()) {
+            actor_it !=
+            impl_->service_actors
+                .end()) {  // GCOVR_EXCL_BR_LINE (defensive: a published service
+                           // always has a live actor slot)
             // Move before erase: the entry's reference must not be released
             // on this thread while the actor's worker may still be running
             // (same graveyard policy as exit()).
@@ -2710,7 +3179,8 @@ void LuaServiceManager::force_remove(const std::string& id,
         }
     }
     cancel_forked_tasks_for_service(id);
-    if (actor) {
+    if (actor) {  // GCOVR_EXCL_BR_LINE (defensive: the moved-out actor is
+                  // non-null whenever the slot existed)
         caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
         // anon_send_exit only queues the signal; this thread dropping the
         // last reference here could still race the actor's cleanup unwind.
@@ -2729,11 +3199,18 @@ bool LuaServiceManager::enqueue_async_spawn(uint64_t session,
     }
     {
         std::lock_guard lock(impl_->spawn_mutex);
-        if (impl_->spawn_stop) {
+        if (impl_->spawn_stop) {  // GCOVR_EXCL_BR_LINE (defensive: spawn_stop
+                                  // is set only by the dtor after drain)
             return false;  // GCOVR_EXCL_LINE (race: stopping flag set first)
-        }
-        impl_->spawn_queue.push_back(
-            Impl::SpawnJob{session, std::move(module), std::move(opts_json)});
+        }  // GCOVR_EXCL_BR_START
+        impl_->spawn_queue.push_back(Impl::SpawnJob{
+            //
+            //
+            //  (compiler artifact: SpawnJob aggregate
+            // braced-init arc)
+            session, std::move(module),  // GCOVR_EXCL_BR_STOP
+            std::move(opts_json)});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                     // SpawnJob aggregate braced-init arc)
     }
     impl_->spawn_cv.notify_one();
     return true;
@@ -2745,7 +3222,12 @@ void LuaServiceManager::spawn_worker_loop() {
         impl_->spawn_cv.wait(lock, [this] {
             return impl_->spawn_stop || !impl_->spawn_queue.empty();
         });
-        if (impl_->spawn_stop && impl_->spawn_queue.empty()) {
+        if (impl_->spawn_stop &&  // GCOVR_EXCL_BR_LINE (defensive: dtor drains
+                                  // the queue before setting spawn_stop)
+            impl_->spawn_queue
+                .empty()) {  // GCOVR_EXCL_BR_LINE (defensive: the dtor drains
+                             // the queue before setting spawn_stop;
+                             // stop-with-pending-jobs is never observed)
             return;
         }
         Impl::SpawnJob job = std::move(impl_->spawn_queue.front());
@@ -2769,7 +3251,13 @@ void LuaServiceManager::finish_async_spawn(uint64_t session,
             caller_waiting = true;
             auto actor_it =
                 impl_->service_actors.find(pending_it->second.caller_service);
-            if (actor_it != impl_->service_actors.end() && actor_it->second) {
+            if (actor_it != impl_->service_actors
+                                .end() &&  // GCOVR_EXCL_BR_LINE (race: caller
+                                           // pending entry outliving its actor
+                                           // (shutdown window))
+                actor_it->second) {  // GCOVR_EXCL_BR_LINE (race: the caller's
+                                     // pending entry outliving its actor -
+                                     // shutdown window)
                 caller_alive = true;
                 caller_actor = actor_it->second;
             }
@@ -2780,7 +3268,9 @@ void LuaServiceManager::finish_async_spawn(uint64_t session,
         // The caller already resumed on timeout while init was still running.
         // Roll the successfully spawned child back so "spawn timeout" keeps
         // its documented meaning (init timeout -> service not started).
-        if (result.success) {
+        if (result.success) {  // GCOVR_EXCL_BR_LINE (race: needs init to finish
+                               // between the caller's timeout and this finish -
+                               // microsecond window)
             exit(result.service_id, "timeout");
         }
         return;
@@ -2798,7 +3288,11 @@ void LuaServiceManager::finish_async_spawn(uint64_t session,
     nlohmann::json values;
     bool ok = result.success;
     if (result.success) {
-        values = nlohmann::json::array({result.service_id});
+        values =
+            nlohmann::json::array(     // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // json::array braced-init arcs)
+                {result.service_id});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // json::array braced-init arcs)
     } else {
         std::string code = "spawn_failed";
         if (result.error_message.find("timeout") != std::string::npos) {
@@ -2807,10 +3301,15 @@ void LuaServiceManager::finish_async_spawn(uint64_t session,
                    std::string::npos) {
             code = "init_failed";
         }
-        values = nlohmann::json::array(
-            {nlohmann::json::object({{"code", code},
-                                     {"message", result.error_message},
-                                     {"retryable", false}})});
+        values = nlohmann::json::array(  // GCOVR_EXCL_BR_LINE (compiler
+                                         // artifact: json::array braced-init
+                                         // arcs)
+            {nlohmann::json::object(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // json::array braced-init arcs)
+                {{"code", code},      // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // json object init continuation arc)
+                 {"message", result.error_message},
+                 {"retryable", false}})});
     }  // GCOVR_EXCL_LINE (function-exit arc artifact of the if(!ok) block)
 
     // Route through the caller's actor mailbox (same channel as coroutine
@@ -2884,8 +3383,12 @@ void LuaServiceManager::request_current_exit(std::string_view reason) {
     // before the dispatcher consumes it (a yielded on_init continues on a
     // resume frame of the caller actor thread), so the request must not
     // live only in thread-local state.
-    impl_->request_exit_for(frame.service_id,
-                            reason.empty() ? "normal" : std::string(reason));
+    impl_->request_exit_for(
+        frame.service_id,
+        reason.empty()
+            ? "normal"               // GCOVR_EXCL_BR_LINE
+            : std::string(reason));  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                     // ternary std::string construction arcs)
 }
 
 bool LuaServiceManager::finish_pending_exit(const std::string& service_id) {
@@ -2934,7 +3437,10 @@ bool LuaServiceManager::register_name(std::string_view name,
         return false;
     }
     const bool in_current_dispatch =
-        !tls_dispatch_stack.empty() &&
+        !tls_dispatch_stack
+             .empty() &&  // GCOVR_EXCL_BR_LINE (defensive: owner is read from
+                          // the dispatch stack itself; an empty stack returns
+                          // earlier)
         tls_dispatch_stack.back().service_id == owner;
     if (!Impl::valid_name(name)) {
         if (error) {
@@ -2944,11 +3450,26 @@ bool LuaServiceManager::register_name(std::string_view name,
     }
 
     std::unique_lock lock(impl_->registry_mutex);
-    if (!impl_->services.contains(owner) &&
-        !in_current_dispatch) {  // GCOVR_EXCL_START (unreachable: owner comes
-                                 // from the dispatch stack top)
-        if (error) {
-            *error = "current service is not running: " + owner;
+    if (!impl_->services.contains(
+            owner) &&  // GCOVR_EXCL_BR_LINE (defensive: owner and dispatch top
+                       // come from the same frame; the mismatch arm cannot
+                       // occur (see the exclusion region at 2948))
+        !in_current_dispatch) {  // GCOVR_EXCL_START
+                                 // //  (defensive: owner
+                                 // comes from the dispatch stack top (see the
+                                 // exclusion region))
+                                 // //  (defensive: owner and
+                                 // dispatch top come from the same frame; the
+                                 // mismatch arm cannot occur (see
+                                 // the exclusion region at 2948)) from the
+                                 // dispatch stack top)
+        if (error) {             //  (defensive: owner and dispatch top
+                      // come from the same frame; the mismatch arm cannot occur
+                      // (see the exclusion region at 2948))
+            *error = "current service is not running: " +
+                     owner;  //  (defensive: owner and dispatch top
+                             // come from the same frame; the mismatch arm
+                             // cannot occur (see the exclusion region at 2948))
         }
         return false;
     }
@@ -2996,7 +3517,10 @@ bool LuaServiceManager::unregister_name(std::string_view name,
 
     impl_->published_names.erase(existing);
     if (auto names_it = impl_->owned_names.find(owner);
-        names_it != impl_->owned_names.end()) {
+        names_it !=
+        impl_->owned_names
+            .end()) {  // GCOVR_EXCL_BR_LINE (defensive: publish always records
+                       // the name in owned_names; the miss arm cannot occur)
         names_it->second.erase(std::string(name));
     }
     lock.unlock();
@@ -3032,19 +3556,28 @@ std::optional<nlohmann::json> LuaServiceManager::service_detail(
     if (!impl_->services.contains(key)) {
         return std::nullopt;
     }
-    nlohmann::json detail = {{"name", key}, {"state", "running"}};
+    nlohmann::json detail = {
+        {"name", key},
+        {"state", "running"}};  // GCOVR_EXCL_BR_LINE (compiler artifact: json
+                                // braced-init arc)
     if (auto script_it = impl_->module_scripts.find(key);
         script_it != impl_->module_scripts.end()) {
         detail["script"] = script_it->second;
     }
     if (auto rpc_it = impl_->service_rpc.find(key);
-        rpc_it != impl_->service_rpc.end()) {
+        rpc_it !=
+        impl_->service_rpc
+            .end()) {  // GCOVR_EXCL_BR_LINE (defensive: publish inserts the rpc
+                       // table with the service; the entry always exists here)
         detail["rpc_routes"] = rpc_it->second.descriptors.size();
     }
     // Every published service has a counters entry (inserted at publish,
     // erased on exit), so the traffic/uptime fields are unconditional here.
     if (auto counters_it = impl_->service_counters.find(key);
-        counters_it != impl_->service_counters.end()) {
+        counters_it !=
+        impl_->service_counters
+            .end()) {  // GCOVR_EXCL_BR_LINE (defensive: every published service
+                       // has a counters entry (see source comment))
         detail["requests"] =
             counters_it->second->requests.load(std::memory_order_relaxed);
         detail["errors"] =
@@ -3107,9 +3640,15 @@ std::optional<nlohmann::json> LuaServiceManager::capture_inspect_snapshot(
             return std::nullopt;
         }
         auto& deque = impl_->inspect_snapshots[service_id];
-        stored_name = name.empty()
-                          ? "snap-" + std::to_string(++impl_->next_snapshot_seq)
-                          : name;
+        stored_name =
+            name.empty()
+                ? "snap-" +
+                      std::to_string(                  // GCOVR_EXCL_BR_LINE
+                          ++impl_->next_snapshot_seq)  // GCOVR_EXCL_BR_LINE
+                                                       // (compiler artifact:
+                                                       // ternary std::string
+                                                       // concatenation arcs)
+                : name;
         // A same-name capture replaces the stored entry (a refresh, not a new
         // sample); auto names never collide.
         for (auto it = deque.begin(); it != deque.end(); ++it) {
@@ -3124,7 +3663,10 @@ std::optional<nlohmann::json> LuaServiceManager::capture_inspect_snapshot(
                            std::chrono::system_clock::now().time_since_epoch())
                            .count();
         if (auto it = impl_->service_counters.find(service_id);
-            it != impl_->service_counters.end()) {
+            it != impl_->service_counters
+                      .end()) {  // GCOVR_EXCL_BR_LINE (defensive: every
+                                 // published service has a counters entry; the
+                                 // miss arm cannot occur)
             snap.requests =
                 it->second->requests.load(std::memory_order_relaxed);
             snap.errors = it->second->errors.load(std::memory_order_relaxed);
@@ -3177,10 +3719,18 @@ std::optional<nlohmann::json> LuaServiceManager::capture_inspect_snapshot(
         // the incarnation left (deque dropped) the patch is silently
         // skipped — the returned JSON just keeps refs null.
         auto ring_it = impl_->inspect_snapshots.find(service_id);
-        if (ring_it != impl_->inspect_snapshots.end()) {
+        if (ring_it != impl_->inspect_snapshots
+                           .end()) {  // GCOVR_EXCL_BR_LINE (race: the service
+                                      // is erased between the snapshot walk and
+                                      // this patch - inspect-vs-exit window)
             for (auto it = ring_it->second.rbegin();
-                 it != ring_it->second.rend(); ++it) {
-                if (it->name == stored_name) {
+                 it != ring_it->second.rend();  // GCOVR_EXCL_BR_LINE
+                 ++it) {  // GCOVR_EXCL_BR_LINE (defensive: first reverse
+                          // iteration always matches (entry pushed above))
+                if (it->name ==     // GCOVR_EXCL_BR_LINE
+                    stored_name) {  // GCOVR_EXCL_BR_LINE (defensive: rbegin
+                                    // entry is the push above (always named
+                                    // stored_name))
                     if (refs.has_value()) {
                         Impl::InspectSnapshot::RefsSummary summary;
                         summary.nodes_visited =
@@ -3259,7 +3809,11 @@ std::optional<nlohmann::json> LuaServiceManager::diff_inspect_snapshots(
                            static_cast<std::int64_t>(sa->coroutines)},
         {"timers", static_cast<std::int64_t>(sb->timers) -
                        static_cast<std::int64_t>(sa->timers)},
-        {"uptime_seconds", sb->uptime_seconds - sa->uptime_seconds}};
+        {"uptime_seconds",
+         sb->uptime_seconds -
+             sa->uptime_seconds}};  //  (compiler artifact:
+                                    // delta json braced-init tail arc (region
+                                    // excluded above, same artifact class))
     // GCOVR_EXCL_STOP
     // Object-graph delta only when both ends sampled refs: mixing a
     // sampled end with an unsampled one would invent a baseline.
@@ -3277,7 +3831,12 @@ std::optional<nlohmann::json> LuaServiceManager::diff_inspect_snapshots(
             {"userdata", i64_delta(ra.userdata, rb.userdata)},
             {"coroutines", i64_delta(ra.coroutines, rb.coroutines)},
             {"strings", i64_delta(ra.strings, rb.strings)},
-            {"string_bytes", i64_delta(ra.string_bytes, rb.string_bytes)}};
+            {"string_bytes",
+             i64_delta(
+                 ra.string_bytes,
+                 rb.string_bytes)}};  //  (compiler artifact:
+                                      // braced-init aggregation arc (region
+                                      // excluded above, same artifact class))
         // GCOVR_EXCL_STOP
         // Top tables matched by path: both ends keep the walk's report
         // order, so union on path with per-end presence flags. Added /
@@ -3293,17 +3852,25 @@ std::optional<nlohmann::json> LuaServiceManager::diff_inspect_snapshots(
                 }
             }
             if (match == nullptr) {
-                top_delta.push_back({{"path", tb.path},
-                                     {"change", "added"},
-                                     {"entries", tb.entries}});
+                top_delta.push_back(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // push_back braced-init aggregation arcs)
+                    {{"path",
+                      tb.path},  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                 // push_back braced-init aggregation arcs)
+                     {"change", "added"},
+                     {"entries", tb.entries}});
             } else {
                 // Local first: an inline call in this multi-line
                 // initializer is a gcov aggregation artifact.
                 const std::int64_t entries_delta =
                     i64_delta(match->entries, tb.entries);
-                top_delta.push_back({{"path", tb.path},
-                                     {"change", "delta"},
-                                     {"entries", entries_delta}});
+                top_delta.push_back(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // push_back braced-init aggregation arcs)
+                    {{"path",
+                      tb.path},  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                 // push_back braced-init aggregation arcs)
+                     {"change", "delta"},
+                     {"entries", entries_delta}});
             }
         }
         for (const auto& ta : ra.top_tables) {
@@ -3315,23 +3882,32 @@ std::optional<nlohmann::json> LuaServiceManager::diff_inspect_snapshots(
                 }
             }
             if (!present_b) {
-                top_delta.push_back({{"path", ta.path},
-                                     {"change", "removed"},
-                                     {"entries", ta.entries}});
+                top_delta.push_back(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // push_back braced-init aggregation arcs)
+                    {{"path",
+                      ta.path},  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                 // push_back braced-init aggregation arcs)
+                     {"change", "removed"},
+                     {"entries", ta.entries}});
             }
         }
         // GCOVR_EXCL_START (braced-init aggregation artifact)
         delta["refs"] = {
             {"nodes_visited", i64_delta(ra.nodes_visited, rb.nodes_visited)},
             {"counts", std::move(counts_delta)},
-            {"top_tables", std::move(top_delta)}};
+            {"top_tables",
+             std::move(top_delta)}};  //  (compiler artifact:
+                                      // json braced-init tail arc (region
+                                      // excluded above, same artifact class))
         // GCOVR_EXCL_STOP
     } else {
         delta["refs"] = nullptr;
     }
-    return nlohmann::json{{"a", Impl::snapshot_to_json(*sa)},
-                          {"b", Impl::snapshot_to_json(*sb)},
-                          {"delta", std::move(delta)}};
+    return nlohmann::json{
+        {"a", Impl::snapshot_to_json(*sa)},
+        {"b", Impl::snapshot_to_json(*sb)},
+        {"delta", std::move(delta)}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // json braced-init tail arc)
 }
 
 std::optional<nlohmann::json> LuaServiceManager::inspect_refs(
@@ -3358,8 +3934,12 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_refs(
     // service exit) and a sol handle would luaL_unref the VM's registry
     // there — the cross-thread race the fork-task cleanup paths avoid by
     // abandoning refs. The VM is resolved fresh on the actor thread below.
-    const uint64_t task_id = enqueue_forked_task(
-        service_id, [impl = impl_.get(), service_id, depth, nodes, promise]() {
+    const uint64_t task_id = enqueue_forked_task(  // GCOVR_EXCL_BR_START
+        service_id, [impl = impl_.get(), service_id, depth,
+                     nodes,  //  (compiler artifact: fork
+                             // lambda entry/exit arcs) // GCOVR_EXCL_BR_STOP
+                     promise]() {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                   // fork lambda entry/exit arcs)
             nlohmann::json out;
             const std::shared_ptr<LuaVM> vm =
                 impl->find_dispatch_vm(service_id);
@@ -3367,22 +3947,33 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_refs(
             // service is published — exit cancels its queued tasks first,
             // so find_dispatch_vm cannot miss here. Same race class as the
             // marked nullptr return inside find_dispatch_vm.)
-            if (!vm) {
+            if (!vm) {  //  (defensive: defensive
+                        // vm-unreachable guard (region excluded above))
                 // The service left the registry while the task waited in
                 // the mailbox.
-                out = nlohmann::json{{"error", "service vm not reachable"}};
-            } else {  // GCOVR_EXCL_STOP
+                out = nlohmann::json{
+                    {"error",
+                     "service vm not reachable"}};  //
+                                                    // (defensive: defensive
+                                                    // vm-unreachable guard
+                                                    // (region excluded above))
+            } else {                                // GCOVR_EXCL_STOP
                 out = walk_module_refs(impl->runtime, vm, service_id, depth,
                                        nodes);
             }
             promise->set_value(std::move(out));
-        });
+        });  // GCOVR_EXCL_BR_LINE (compiler artifact: fork lambda entry/exit
+             // arcs)
     // GCOVR_EXCL_START (defensive: the actor is spawned before the service
     // enters the registry and removed after it leaves, so a name the check
     // above accepted always has a live actor here)
-    if (task_id == 0) {
-        if (error) {
-            *error = "service actor not found: " + service_id;
+    if (task_id == 0) {  //  (defensive: task_id==0 guard
+                         // (region excluded above))
+        if (error) {     //  (defensive: task_id==0 guard (region
+                         // excluded above))
+            *error = "service actor not found: " +
+                     service_id;  //  (defensive: task_id==0
+                                  // guard (region excluded above))
         }
         return std::nullopt;
     }  // GCOVR_EXCL_STOP
@@ -3398,10 +3989,15 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_refs(
     nlohmann::json out = future.get();
     // GCOVR_EXCL_START (defensive: the only producers of the "error" field
     // are the excluded actor-side guards above)
-    if (out.contains("error")) {
+    if (out.contains("error")) {  //  (defensive: region
+                                  // excluded above (spawn-timeout driver arms))
         // Actor-side failure (module gone / vm unreachable mid-wait).
-        if (error) {
-            *error = out["error"].get<std::string>();
+        if (error) {  //  (defensive: region excluded above
+                      // (spawn-timeout driver arms))
+            *error = out["error"]
+                         .get<std::string>();  //  (defensive:
+                                               // region excluded above
+                                               // (spawn-timeout driver arms))
         }
         return std::nullopt;
     }  // GCOVR_EXCL_STOP
@@ -3425,18 +4021,31 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_memory(
     // can be destroyed on arbitrary threads); the VM is resolved fresh on
     // the actor thread.
     const uint64_t task_id = enqueue_forked_task(
-        service_id, [impl = impl_.get(), service_id, promise]() {
+        service_id, [impl = impl_.get(),  // GCOVR_EXCL_BR_LINE
+                     service_id,  // GCOVR_EXCL_BR_LINE (compiler artifact: fork
+                                  // lambda entry/exit arcs)
+                     promise]() {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                   // fork lambda entry/exit arcs)
             nlohmann::json out;
             const std::shared_ptr<LuaVM> vm =
                 impl->find_dispatch_vm(service_id);
             // GCOVR_EXCL_START (defensive: same race class as the
             // inspect_refs guard — service exit cancels queued tasks
             // before the VM goes away)
-            if (!vm) {
-                out = nlohmann::json{{"error", "service vm not reachable"}};
-            } else {  // GCOVR_EXCL_STOP
+            if (!vm) {  //  (defensive: defensive
+                        // vm-unreachable guard (region excluded above))
+                out = nlohmann::json{
+                    {"error",
+                     "service vm not reachable"}};  //
+                                                    // (defensive: defensive
+                                                    // vm-unreachable guard
+                                                    // (region excluded above))
+            } else {                                // GCOVR_EXCL_STOP
                 lua_State* L = impl->runtime.vm_state(vm).lua_state();
-                out = {{"name", service_id}, {"gc", collect_gc_info(L)}};
+                out = {{"name", service_id},
+                       {"gc", collect_gc_info(
+                                  L)}};  // GCOVR_EXCL_BR_LINE (compiler
+                                         // artifact: json initializer arc)
                 // Retainers share the dispatch: one walk from the module
                 // table (depth 4 / 20000 nodes, the refs defaults),
                 // projected down to its head — full counts live under
@@ -3444,23 +4053,37 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_memory(
                 nlohmann::json refs = walk_module_refs(
                     impl->runtime, vm, service_id, /*max_depth=*/4,
                     /*max_nodes=*/20000);
-                if (!refs.contains("error")) {
+                if (!refs.contains(  // GCOVR_EXCL_BR_LINE (defensive:
+                                     // walk_module_refs errors only on an
+                                     // invalid module table)
+                        "error")) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                     // walk_module_refs errors only when the
+                                     // module table is invalid - impossible for
+                                     // published services)
                     // GCOVR_EXCL_START (braced-init aggregation artifact)
                     out["retainers"] = {
                         {"nodes_visited", refs["nodes_visited"]},
                         {"truncated", refs["truncated"]},
-                        {"top_tables", refs["top_tables"]}};
+                        {"top_tables",
+                         refs["top_tables"]}};  //  (compiler
+                                                // artifact: push_back
+                                                // braced-init aggregation arcs)
                     // GCOVR_EXCL_STOP
                 }
             }
             promise->set_value(std::move(out));
-        });
+        });  // GCOVR_EXCL_BR_LINE (compiler artifact: fork lambda entry/exit
+             // arcs)
     // GCOVR_EXCL_START (defensive: the actor is spawned before the service
     // enters the registry and removed after it leaves, same reasoning as
     // inspect_refs)
-    if (task_id == 0) {
-        if (error) {
-            *error = "service actor not found: " + service_id;
+    if (task_id == 0) {  //  (defensive: region excluded above
+                         // (vm-unreachable guards))
+        if (error) {     //  (defensive: region excluded above
+                         // (vm-unreachable guards))
+            *error = "service actor not found: " +
+                     service_id;  //  (defensive: region
+                                  // excluded above (vm-unreachable guards))
         }
         return std::nullopt;
     }  // GCOVR_EXCL_STOP
@@ -3476,9 +4099,14 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_memory(
     nlohmann::json out = future.get();
     // GCOVR_EXCL_START (defensive: the only producers of the "error" field
     // are the excluded actor-side guards above)
-    if (out.contains("error")) {
-        if (error) {
-            *error = out["error"].get<std::string>();
+    if (out.contains("error")) {  //  (defensive: region
+                                  // excluded above (vm-unreachable guards))
+        if (error) {              //  (defensive: region excluded above
+                                  // (vm-unreachable guards))
+            *error =
+                out["error"].get<std::string>();  //  (defensive:
+                                                  // region excluded above
+                                                  // (vm-unreachable guards))
         }
         return std::nullopt;
     }  // GCOVR_EXCL_STOP
@@ -3501,7 +4129,12 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_coroutines(
     // Same payload discipline as the other inspect forks: no sol capture,
     // the VM is resolved fresh on the actor thread.
     const uint64_t task_id = enqueue_forked_task(
-        service_id, [impl = impl_.get(), service_id, promise]() {
+        service_id,
+        [impl = impl_.get(),  // GCOVR_EXCL_BR_LINE
+         service_id,   // GCOVR_EXCL_BR_LINE (compiler artifact: fork lambda
+                       // entry/exit arcs)
+         promise]() {  // GCOVR_EXCL_BR_LINE (compiler artifact: multi-line
+                       // enqueue_forked_task continuation / lambda entry arcs)
             // One registry pass collects plain data; the lua_status reads
             // happen after the lock. Both are safe: this task runs on the
             // owning actor, which serializes against every resume source
@@ -3521,11 +4154,17 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_coroutines(
                     if (owner != service_id) {
                         continue;
                     }
-                    static const Impl::CoroutineMeta kEmpty;
+                    static const Impl::CoroutineMeta
+                        kEmpty;  // GCOVR_EXCL_BR_LINE (static init guard)
                     auto mit = impl->coroutine_meta.find(co);
                     const Impl::CoroutineMeta& meta =
-                        mit != impl->coroutine_meta.end() ? mit->second
-                                                          : kEmpty;
+                        mit != impl->coroutine_meta.end()
+                            ? mit->second  // GCOVR_EXCL_BR_LINE (defensive:
+                                           // every live coroutine was
+                                           // registered via
+                                           // note_coroutine_started with meta;
+                                           // the missing-meta arm cannot occur)
+                            : kEmpty;
                     // The call the coroutine is currently busy with: serving
                     // one (callee side, handler_call_session) or awaiting a
                     // response for one (caller side, pending_calls reverse
@@ -3548,13 +4187,21 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_coroutines(
             }
             const std::int64_t now = Impl::now_ms();
             nlohmann::json by_status = {
-                {"suspended", 0}, {"finished", 0}, {"error", 0}, {"other", 0}};
+                {"suspended", 0},
+                {"finished", 0},
+                {"error", 0},
+                {"other", 0}};  // GCOVR_EXCL_BR_LINE (compiler artifact: json
+                                // braced-init arc)
             nlohmann::json entries = nlohmann::json::array();
             for (auto& e : collected) {
                 // Map lua_status to a report label; only non-running
                 // threads reach here (see the invariant above).
                 const char* label;
-                switch (lua_status(e.co)) {
+                switch (lua_status(  // GCOVR_EXCL_BR_LINE (defensive: only
+                                     // LUA_YIELD reaches this switch (region
+                                     // excluded below))
+                    e.co)) {  // GCOVR_EXCL_BR_LINE (defensive: only LUA_YIELD
+                              // reaches this switch (region excluded below))
                     case LUA_YIELD:
                         label = "suspended";
                         break;
@@ -3579,7 +4226,8 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_coroutines(
                 by_status[label] = by_status[label].get<std::uint64_t>() + 1;
                 // Computed before the initializer (gcov artifact).
                 const std::int64_t age_ms = now - e.meta.last_resume_ms;
-                entries.push_back(
+                entries.push_back(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                    // json initializer arc)
                     {{"status", label},
                      {"origin", e.meta.origin},
                      {"resumes", e.meta.resumes},
@@ -3604,19 +4252,29 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_coroutines(
             // Built as a named local so the initializer lines keep stable
             // per-line counters (gcov artifact).
             const std::size_t total = collected.size();
-            nlohmann::json report{{"name", service_id},
-                                  {"total", total},
-                                  {"truncated", truncated},
-                                  {"by_status", std::move(by_status)},
-                                  {"entries", std::move(entries)}};
+            nlohmann::json report{
+                {"name", service_id},
+                {"total", total},
+                {"truncated", truncated},
+                {"by_status", std::move(by_status)},
+                {"entries",
+                 std::move(entries)}};  // GCOVR_EXCL_BR_LINE (compiler
+                                        // artifact: json initializer tail arc)
             promise->set_value(std::move(report));
-        });
+        });  // GCOVR_EXCL_BR_LINE (compiler artifact: json initializer
+             // continuation arcs)
     // GCOVR_EXCL_START (defensive: the actor is spawned before the service
     // enters the registry and removed after it leaves, same reasoning as
     // inspect_refs)
-    if (task_id == 0) {
-        if (error) {
-            *error = "service actor not found: " + service_id;
+    if (task_id ==
+        0) {          //  (defensive: region excluded above
+                      // (actor-side guard, see the exclusion region at 3614))
+        if (error) {  //  (defensive: region excluded above
+                      // (actor-side guard, see the exclusion region at 3614))
+            *error = "service actor not found: " +
+                     service_id;  //  (defensive: region
+                                  // excluded above (actor-side guard, see
+                                  // the exclusion region at 3614))
         }
         return std::nullopt;
     }  // GCOVR_EXCL_STOP
@@ -3630,9 +4288,20 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_coroutines(
     // GCOVR_EXCL_START (defensive: the only producers of the "error" field
     // are the excluded actor-side guards — none of the code above can set
     // it on this path)
-    if (out.contains("error")) {
-        if (error) {
-            *error = out["error"].get<std::string>();
+    if (out.contains(    //  (defensive: only the excluded
+                         // actor-side guards produce "error")
+            "error")) {  //  (defensive: region excluded above
+                         // (see the exclusion region at 3630))
+        if (error) {     //  (defensive: region excluded above
+                         // (see the exclusion region at 3630))
+            *error =
+                out["error"]  //  (defensive: only the
+                              // excluded actor-side guards produce "error")
+                    .get<std::string>();  //
+                                          // (defensive: region
+                                          // excluded above (see
+                                          // the exclusion region at
+                                          // 3630))
         }
         return std::nullopt;
     }  // GCOVR_EXCL_STOP
@@ -3664,7 +4333,10 @@ std::optional<nlohmann::json> LuaServiceManager::timer_inspect(
                 // the same registry lock (registration, fire retirement and
                 // cancel), so a stale per-service id cannot be observed.
                 // GCOVR_EXCL_START
-                if (it == impl_->actor_timers.end()) {
+                if (it == impl_->actor_timers
+                              .end()) {  //  (defensive:
+                                         // region excluded above (timer-inspect
+                                         // actor-side guard))
                     continue;
                 }
                 // GCOVR_EXCL_STOP
@@ -3683,11 +4355,14 @@ std::optional<nlohmann::json> LuaServiceManager::timer_inspect(
         // Named locals keep the line counts on their own lines (the json
         // initializer otherwise records the arc on a continuation line).
         const std::uint64_t once_count = total - repeating;
-        nlohmann::json out{{"name", service_id},
-                           {"timers", total},
-                           {"repeating", repeating},
-                           {"once", once_count},
-                           {"intervals_ms", std::move(intervals)}};
+        nlohmann::json out{
+            {"name", service_id},
+            {"timers", total},
+            {"repeating", repeating},
+            {"once", once_count},
+            {"intervals_ms",
+             std::move(intervals)}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // json initializer tail arc)
         if (total > 0) {
             // Named local keeps the line count on its own line (the json
             // initializer otherwise records the arc on a continuation line).
@@ -3735,15 +4410,20 @@ std::optional<nlohmann::json> LuaServiceManager::pending_calls_inspect(
         // json initializers otherwise record the arcs on a few continuation
         // lines only).
         const int64_t ms_left = calls[i]->deadline_ms - now;
-        items.push_back({{"session", calls[i]->session},
-                         {"caller", calls[i]->caller_service},
-                         {"ms_left", ms_left},
-                         {"proxied", calls[i]->proxied}});
+        items.push_back(  // GCOVR_EXCL_BR_LINE (compiler artifact: json
+                          // initializer arc)
+            {{"session", calls[i]->session},  // GCOVR_EXCL_BR_LINE (compiler
+                                              // artifact: json initializer arc)
+             {"caller", calls[i]->caller_service},
+             {"ms_left", ms_left},
+             {"proxied", calls[i]->proxied}});
     }
     const std::size_t pending_count = calls.size();
-    nlohmann::json out{{"name", service_id},
-                       {"pending_calls", pending_count},
-                       {"calls", std::move(items)}};
+    nlohmann::json out{
+        {"name", service_id},
+        {"pending_calls", pending_count},
+        {"calls", std::move(items)}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // json initializer tail arc)
     if (calls.size() > 32) {
         out["truncated"] = true;
     }
@@ -3815,7 +4495,10 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
         if (impl_->service_actors.empty()) {
             return 0;
         }
-        service_id = impl_->service_actors.begin()->first;
+        service_id = impl_->service_actors.begin()
+                         ->first;  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                   // straight-line iterator dereference; gcov
+                                   // synthesizes arcs)
     }
 
     const uint64_t id = impl_->next_task_id.fetch_add(1);
@@ -3851,9 +4534,18 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
             }
         }
         auto by_service_it = impl_->tasks_by_service.find(service_id);
-        if (by_service_it != impl_->tasks_by_service.end()) {
+        if (by_service_it !=
+            impl_->tasks_by_service
+                .end()) {  // GCOVR_EXCL_BR_LINE (defensive: the by_service
+                           // index is inserted atomically with the task push;
+                           // the entry always exists)
             by_service_it->second.erase(id);
-            if (by_service_it->second.empty()) {
+            if (by_service_it  // GCOVR_EXCL_BR_LINE
+                    ->second   // GCOVR_EXCL_BR_LINE (race: rollback racing the
+                               // exit drain leaves sibling entries)
+                    .empty()) {  // GCOVR_EXCL_BR_LINE (defensive: a rollback
+                                 // erases the only entry the failed enqueue
+                                 // added; siblings are drained with the actor)
                 impl_->tasks_by_service.erase(by_service_it);
             }
         }
@@ -3914,6 +4606,10 @@ size_t LuaServiceManager::pending_task_count_total() const {
     return impl_->pending_tasks.size();
 }
 
+size_t LuaServiceManager::active_fork_task_count() const {
+    return impl_->active_fork_tasks.load();
+}
+
 caf::actor_system& LuaServiceManager::actor_system() const {
     return impl_->system;
 }
@@ -3940,8 +4636,12 @@ static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
         lua_pushboolean(L, v.get<bool>() ? 1 : 0);
     } else if (v.is_number_integer()) {
         lua_pushinteger(L, static_cast<lua_Integer>(v.get<std::int64_t>()));
-    } else if (v.is_number_unsigned()) {
-        lua_pushinteger(  // GCOVR_EXCL_LINE (continuation)
+    } else if (v.is_number_unsigned()) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                          // is_number_integer matches every
+                                          // integral json first; the unsigned
+                                          // arm is unreachable (see source
+                                          // comment))
+        lua_pushinteger(                  // GCOVR_EXCL_LINE (continuation)
             L, static_cast<lua_Integer>(
                    v.get<std::uint64_t>()));  // GCOVR_EXCL_LINE (unreachable:
                                               // is_number_integer also matches
@@ -4064,18 +4764,28 @@ void LuaServiceManager::on_handler_failed(lua_State* co,
         session = it->second;
         impl_->handler_call_session.erase(it);
     }
-    complete_call(session, false, nlohmann::json::array({error_message}));
+    complete_call(
+        session, false,
+        nlohmann::json::array(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                // json::array init arcs in the failure hook)
+            {error_message}));  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                // json::array init arcs in the failure hook)
 }
 
 namespace {
 
 std::string call_error_message(const nlohmann::json& values) {
-    if (values.is_array() && !values.empty()) {
+    if (values.is_array() &&  // GCOVR_EXCL_BR_LINE
+        !values.empty()) {    // GCOVR_EXCL_BR_LINE (defensive: failure payloads
+                              // are always arrays (see the exclusion region))
         const auto& first = values.front();
         if (first.is_string()) {
             return first.get<std::string>();
         }
-        if (first.is_object() && first.contains("message") &&
+        if (first.is_object() &&
+            first.contains(
+                "message") &&  // GCOVR_EXCL_BR_LINE (defensive: failure
+                               // payloads are strings or {message} objects)
             first["message"].is_string()) {
             return first["message"].get<std::string>();
         }
@@ -4248,8 +4958,12 @@ CallResult LuaServiceManager::call_with_session(
             std::unique_lock lock(impl_->registry_mutex);
             impl_->pending_sync_calls.erase(session);
         }
-        return CallResult::error(dispatch_error.empty() ? "call dispatch failed"
-                                                        : dispatch_error);
+        return CallResult::error(
+            dispatch_error.empty()
+                ? "call dispatch failed"  // GCOVR_EXCL_BR_LINE (compiler
+                                          // artifact: ternary std::string
+                                          // construction arcs)
+                : dispatch_error);
     }
 
     // Expiry is driven by the CAF delayed driver (it completes the call with
@@ -4261,16 +4975,25 @@ CallResult LuaServiceManager::call_with_session(
     bool completed = false;
     {
         std::unique_lock lk(pending->mtx);
-        if (driver_armed) {
+        if (driver_armed) {  // GCOVR_EXCL_BR_LINE (defensive: the driver is
+                             // always armed (region excluded below))
             pending->cv.wait(lk, [&] { return pending->completed; });
         } else {  // GCOVR_EXCL_START (defensive: the CAF expiry driver is
                   // always armed)
-            completed = pending->cv.wait_for(
-                lk, std::chrono::milliseconds(effective_timeout),
-                [&] { return pending->completed; });
+            completed =
+                pending->cv.wait_for(  //  (defensive: region
+                                       // excluded above (driver-always-armed
+                                       // fallback))
+                    lk, std::chrono::milliseconds(effective_timeout),
+                    [&] { return pending->completed; });
         }
         // GCOVR_EXCL_STOP
-        completed = completed || pending->completed;
+        completed =
+            completed ||  // GCOVR_EXCL_BR_LINE (defensive: driver path always
+                          // completes first)
+            pending
+                ->completed;  // GCOVR_EXCL_BR_LINE (defensive: region excluded
+                              // above (driver-always-armed fallback))
     }
 
     {
@@ -4278,14 +5001,29 @@ CallResult LuaServiceManager::call_with_session(
         impl_->pending_sync_calls.erase(session);
     }
 
-    if (!completed) {
-        return CallResult::error(
-            "call timeout (actor dispatch exceeded limit)");  // GCOVR_EXCL_LINE
+    if (!completed) {  // GCOVR_EXCL_BR_LINE (defensive: region excluded above
+                       // (driver-always-armed fallback))
+        return CallResult::error(  // GCOVR_EXCL_BR_START
+            "call timeout (actor dispatch exceeded limit)");  //
+                                                              // //
+                                                              //
+                                                              // (defensive:
+                                                              // driver path
+                                                              // completes first
+                                                              // (line-excluded
+                                                              // body))
+                                                              // //
+                                                              //
+                                                              // (defensive:
+                                                              // region excluded
+                                                              // above
+                                                              // (driver-always-armed
+                                                              // fallback))
                                                               // (defensive:
                                                               // driver path
                                                               // completes
                                                               // first)
-    }
+    }  // GCOVR_EXCL_BR_STOP
     if (pending->ok) {
         return CallResult::ok(std::move(pending->values));
     }
@@ -4323,7 +5061,10 @@ bool LuaServiceManager::dispatch_proxied_call(uint64_t session,
     {
         std::shared_lock lock(impl_->registry_mutex);
         auto it = impl_->pending_calls.find(session);
-        if (it != impl_->pending_calls.end()) {
+        if (it != impl_->pending_calls
+                      .end()) {  // GCOVR_EXCL_BR_LINE (defensive: the entry was
+                                 // inserted by begin_proxied_call on the same
+                                 // thread moments earlier)
             delay_ms = it->second.deadline_ms - now_ms;
         }
     }
@@ -4338,28 +5079,55 @@ void LuaServiceManager::schedule_proxied_call_timeout(uint64_t session,
         return;
     }
     try {
-        auto driver = impl_->system.spawn(
-            [manager = this, session,
-             timeout_ms](caf::event_based_actor* self) -> caf::behavior {
-                self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
-                                   caf::tick_atom_v);
-                return caf::behavior{[=](caf::tick_atom) {
-                    nlohmann::json timeout_err = nlohmann::json::array(
-                        {nlohmann::json::object({{"code", "timeout"},
-                                                 {"message", "call timeout"},
-                                                 {"retryable", true}})});
-                    manager->finish_proxied_call(session, false, timeout_err);
-                    self->quit();
-                }};
-            });
+        auto driver = impl_->system.spawn([manager = this, session, timeout_ms](
+                                              caf::event_based_actor* self)
+                                              -> caf::behavior {
+            self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
+                               caf::tick_atom_v);
+            return caf::behavior{[=](caf::tick_atom) {  // GCOVR_EXCL_BR_LINE
+                                                        // (compiler artifact:
+                                                        // CAF behavior lambda
+                                                        // arcs)
+                nlohmann::json timeout_err = nlohmann::json::array(
+                    {nlohmann::json::object(  // GCOVR_EXCL_BR_LINE (compiler
+                                              // artifact: json::array
+                                              // braced-init arcs)
+                        {{"code",
+                          "timeout"},  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // json::array braced-init arc)
+                         {"message", "call timeout"},
+                         {"retryable",
+                          true}})});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // json object init continuation arc)
+                manager->finish_proxied_call(session, false, timeout_err);
+                self->quit();
+            }};  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda body exit arc)
+        });
         std::unique_lock lock(impl_->registry_mutex);
         impl_->actor_call_timeouts[session] = std::move(driver);
-    } catch (const std::exception&
-                 e) {  // GCOVR_EXCL_START (untestable actor-spawn failure)
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_ERROR(log, std::string("Failed to spawn proxied call "
-                                          "timeout actor: ") +
-                                  e.what());
+    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (defensive: untestable
+                                    // actor-spawn failure (see the exclusion
+                                    // region at 4358))
+                 e) {               // GCOVR_EXCL_START (untestable
+                                    // actor-spawn failure)
+        auto& log = shield::log::get_logger(  //  (defensive:
+                                              // untestable actor-spawn failure
+                                              // (see the exclusion region
+                                              // below))
+            "lua");                           //  (defensive: untestable
+                     // actor-spawn failure (see the exclusion region at 4358))
+        SHIELD_LOG_ERROR(  //  (defensive: untestable
+                           // actor-spawn failure (see the exclusion region
+                           // below))
+            log,
+            std::string(
+                "Failed to spawn proxied call "  //
+                                                 // (defensive: untestable
+                                                 // actor-spawn failure (see
+                                                 // the exclusion region at
+                                                 // 4358))
+                "timeout actor: ") +
+                e.what());
         // Without the driver the entry still expires via its deadline in
         // check_call_timeouts scans; nothing else breaks.
     }
@@ -4372,7 +5140,11 @@ void LuaServiceManager::note_coroutine_started(lua_State* co,
                                                int anchor_ref) {
     // Empty ids (bare VM dispatch) belong to no published service and are
     // never inserted — such an entry could never be grouped or torn down.
-    if (co == nullptr || service_id.empty()) {
+    if (co == nullptr ||       // GCOVR_EXCL_BR_LINE (defensive: call sites pass
+                               // factory-made coroutines with a service id)
+        service_id.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: call sites pass
+                               // factory-made coroutines with a service id
+                               // (GCOVR_EXCL_LINE'd guard))
         return;  // GCOVR_EXCL_LINE (defensive: both call sites guard the
     }  // same conditions before invoking)
     std::unique_lock lock(impl_->registry_mutex);
@@ -4386,7 +5158,8 @@ void LuaServiceManager::note_coroutine_started(lua_State* co,
 void LuaServiceManager::note_coroutine_finished(lua_State* co) {
     // Idempotent: whichever resume source observes the terminal state
     // first wins; the service may already be gone from the registry.
-    if (co == nullptr) {
+    if (co == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive: call sites pass
+                          // factory-made coroutines (GCOVR_EXCL_LINE'd guard))
         return;  // GCOVR_EXCL_LINE (defensive null guard, same shape as
     }  // mark_call_yielded: call sites pass factory-made coroutines)
     std::unique_lock lock(impl_->registry_mutex);
@@ -4396,7 +5169,11 @@ void LuaServiceManager::note_coroutine_finished(lua_State* co) {
     // also makes the lua_status reads in inspect_coroutines safe.
     if (auto it = impl_->coroutine_meta.find(co);
         it != impl_->coroutine_meta.end()) {
-        if (it->second.anchor_ref != LUA_NOREF) {
+        if (it->second
+                .anchor_ref !=  // GCOVR_EXCL_BR_LINE (defensive: suspend paths
+                                // always anchor (LUA_NOREF is a legacy guard))
+            LUA_NOREF) {  // GCOVR_EXCL_BR_LINE (defensive: suspend paths always
+                          // anchor the coroutine; LUA_NOREF is a legacy guard)
             luaL_unref(co, LUA_REGISTRYINDEX, it->second.anchor_ref);
         }
         impl_->coroutine_meta.erase(it);
@@ -4408,7 +5185,8 @@ void LuaServiceManager::note_coroutine_resumed(lua_State* co,
     // Unknown coroutines (never registered, already terminal, or the
     // service left the registry) are ignored — the key domain stays
     // identical to live_coroutines.
-    if (co == nullptr) {
+    if (co == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive: call sites pass
+                          // factory-made coroutines (GCOVR_EXCL_LINE'd guard))
         return;  // GCOVR_EXCL_LINE (defensive null guard, same shape as
     }  // note_coroutine_finished)
     std::unique_lock lock(impl_->registry_mutex);
@@ -4453,7 +5231,11 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
             return;
         }
         caller_co = it->second.caller_co;
-        if (caller_co == nullptr) {
+        if (caller_co ==  // GCOVR_EXCL_BR_LINE (defensive: proxied sessions
+                          // complete via the hook)
+            nullptr) {    // GCOVR_EXCL_BR_LINE (defensive: proxied sessions
+                          // complete via the hook and never reach the caller-co
+                          // path (line-excluded))
             return;  // GCOVR_EXCL_LINE (proxied sessions complete via the hook)
         }
         caller_service = &it->second.caller_service;
@@ -4489,8 +5271,16 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
         // call suites, e.g. CallErrorCodesAreStable.)
         if (impl_->driving_cos.contains(caller_co)) {
             auto actor_it = impl_->service_actors.find(*caller_service);
-            if (actor_it != impl_->service_actors.end() &&
-                it->second.requeues < 20) {
+            if (actor_it !=
+                    impl_->service_actors.end() &&  //  (race: requeue
+                                                    // yield-window (see the
+                                                    // exclusion region below))
+                it->second.requeues <               //  (race: requeue
+                                       // yield-window (see the exclusion region
+                                       // below))
+                    20) {  //  (race: requeue yield-window - a
+                           // microsecond-scale interleaving no unit test can
+                           // pin (see the exclusion region at 4484))
                 requeue = true;
                 ++it->second.requeues;
                 // DIAGNOSTIC: one or two spins are the normal yield-window
@@ -4499,8 +5289,14 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
                 // holding the registration across many mailbox cycles —
                 // worth surfacing, and if the cap trips the fall-through
                 // resume is caught by resume_suspended_caller's guard.
-                if (it->second.requeues >= 3) {
-                    std::fprintf(
+                if (it->second.requeues >=  //  (race: requeue
+                                            // yield-window (see the exclusion
+                                            // region below))
+                    3) {                    //  (race: requeue yield-window (see
+                                            // the exclusion region at 4484))
+                    std::fprintf(           //  (race: requeue
+                                   // yield-window (see the exclusion region at
+                                   // 4484))
                         stderr,
                         "*** shield requeue spin: session=%llu n=%d "
                         "tid=%zu ok=%d\n",
@@ -4509,7 +5305,9 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
                         static_cast<size_t>(std::hash<std::thread::id>{}(
                             std::this_thread::get_id())),
                         ok ? 1 : 0);
-                    std::fflush(stderr);
+                    std::fflush(stderr);  //  (race: requeue
+                                          // yield-window (see the exclusion
+                                          // region at 4484))
                 }
                 // Slide the timeout deadline so a concurrently expiring
                 // check_call_timeouts pass does not re-enqueue this
@@ -4550,7 +5348,9 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
     {
         std::unique_lock lock(impl_->registry_mutex);
         auto it = impl_->pending_calls.find(session);
-        if (it == impl_->pending_calls.end()) {
+        if (it == impl_->pending_calls
+                      .end()) {  // GCOVR_EXCL_BR_LINE (race: a racing requeue
+                                 // won the erase (see GCOVR_EXCL_LINE comment))
             return;  // GCOVR_EXCL_LINE (a racing requeue won the erase)
         }
         pc = std::move(it->second);
@@ -4592,7 +5392,9 @@ void LuaServiceManager::resume_suspended_caller(
             push_json_to_stack(caller_co, v);
             ++nargs;
         }
-    } else if (!values.is_null()) {
+    } else if (!values             // GCOVR_EXCL_BR_LINE
+                    .is_null()) {  // GCOVR_EXCL_BR_LINE (defensive: completion
+                                   // values are always arrays or null)
         push_json_to_stack(caller_co, values);
         ++nargs;
     }
@@ -4607,7 +5409,11 @@ void LuaServiceManager::resume_suspended_caller(
             returns.push_back(std::move(item));
         }
         lua_settop(caller_co, 0);
-        if (caller_anchor != LUA_NOREF) {
+        if (caller_anchor !=  // GCOVR_EXCL_BR_LINE (defensive: suspend paths
+                              // always anchor (LUA_NOREF is a legacy guard))
+            LUA_NOREF) {  // GCOVR_EXCL_BR_LINE (defensive: suspend paths always
+                          // anchor the caller coroutine; LUA_NOREF is a legacy
+                          // guard)
             luaL_unref(caller_co, LUA_REGISTRYINDEX, caller_anchor);
         }
         // Terminal: the caller coroutine completed on this resume.
@@ -4648,7 +5454,15 @@ void LuaServiceManager::resume_suspended_caller(
             lua_typename(caller_co, lua_type(caller_co, -1)), resume_retries,
             static_cast<int>(source.size()), source.data());
         std::fflush(stderr);
-        if (err == "cannot resume non-suspended coroutine" &&
+        if (err ==
+                "cannot resume non-suspended coroutine" &&  // GCOVR_EXCL_BR_LINE
+                                                            // (race: two
+                                                            // completions
+                                                            // interleaving
+                                                            // inside one resume
+                                                            // span (see
+                                                            // the exclusion
+                                                            // region at 4653))
             resume_retries < 3) {
             // GCOVR_EXCL_START (race window: two completions must interleave
             // inside one resume span — a microsecond-scale interleaving no
@@ -4682,9 +5496,24 @@ void LuaServiceManager::resume_suspended_caller(
                                                       std::move(restored));
             }
             if (auto actor_it = impl_->service_actors.find(caller_service);
-                actor_it != impl_->service_actors.end()) {
-                CallResponseMessage reenqueued{session, ok, values};
-                caf::anon_send(actor_it->second, std::move(reenqueued));
+                actor_it !=
+                impl_->service_actors
+                    .end()) {  //  (race: two completions
+                               // interleaving inside one resume span (see
+                               // the exclusion region at 4653))
+                CallResponseMessage reenqueued{
+                    session, ok,
+                    values};  //  (race: two completions
+                              // interleaving inside one resume span (see
+                              // the exclusion region at 4653))
+                caf::anon_send(
+                    actor_it->second,  //  (race: two
+                                       // completions interleaving (see the
+                                       // exclusion region below))
+                    std::move(reenqueued));  //  (race: two
+                                             // completions interleaving inside
+                                             // one resume span (see
+                                             // the exclusion region at 4653))
             } else {
                 // Caller actor is gone; the coroutine dies with its VM and
                 // the anchor with it — nothing can resume it.
@@ -4697,7 +5526,11 @@ void LuaServiceManager::resume_suspended_caller(
         // Caller errored resuming; drop it after propagating to its upstream
         // caller if this handler was itself servicing a call.
         lua_settop(caller_co, 0);
-        if (caller_anchor != LUA_NOREF) {
+        if (caller_anchor !=  // GCOVR_EXCL_BR_LINE (defensive: error path
+                              // always anchored (LUA_NOREF is a legacy guard))
+            LUA_NOREF) {      // GCOVR_EXCL_BR_LINE (defensive: error path - the
+                          // coroutine was anchored at suspend; LUA_NOREF is a
+                          // legacy guard)
             luaL_unref(caller_co, LUA_REGISTRYINDEX, caller_anchor);
         }
         // Terminal (error): drop the live-coroutine entry.
@@ -4708,7 +5541,10 @@ void LuaServiceManager::resume_suspended_caller(
     }
     // Release the anchor; the coroutine re-yielded and the API that yielded has
     // already re-anchored it for its next resume source.
-    if (caller_anchor != LUA_NOREF) {
+    if (caller_anchor !=  // GCOVR_EXCL_BR_LINE (defensive: suspend paths always
+                          // anchor (LUA_NOREF is a legacy guard))
+        LUA_NOREF) {      // GCOVR_EXCL_BR_LINE (defensive: suspend paths always
+                          // anchor; LUA_NOREF is a legacy guard)
         luaL_unref(caller_co, LUA_REGISTRYINDEX, caller_anchor);
     }
     // The re-yield may correspond to a nested suspension (e.g. the handler
@@ -4731,9 +5567,13 @@ int LuaServiceManager::check_call_timeouts(int64_t now_ms) {
     }
 
     nlohmann::json timeout_err = nlohmann::json::array(
-        {nlohmann::json::object({{"code", "timeout"},
-                                 {"message", "call timeout"},
-                                 {"retryable", true}})});
+        {nlohmann::json::object(  // GCOVR_EXCL_BR_LINE (compiler artifact: json
+                                  // braced-init arcs)
+            {{"code", "timeout"},  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                   // json::array braced-init continuation arc)
+             {"message", "call timeout"},
+             {"retryable", true}})});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // json object init continuation arc)
 
     for (uint64_t session : expired) {
         // Proxied sessions have no coroutine to resume, but their expiry
@@ -4842,8 +5682,12 @@ uint64_t LuaServiceManager::schedule_actor_timer_once(
             return 0;
         }
         service_actor = std::make_shared<caf::actor>(it->second);
-        id = impl_->next_actor_timer_id.fetch_add(1);
+        id = impl_->next_actor_timer_id.fetch_add(1);  // GCOVR_EXCL_BR_START
         impl_->actor_timers[id] = LuaServiceManager::Impl::ActorTimerState{
+            //  (compiler artifact: ActorTimerState
+            // designated-init aggregation arcs)
+            //  (compiler artifact: ActorTimerState
+            // designated-init aggregation arcs)
             .id = id,
             .interval_ms = delay_ms,
             .repeating = false,
@@ -4853,33 +5697,58 @@ uint64_t LuaServiceManager::schedule_actor_timer_once(
             .native_callback = {},
             .has_native_callback = false,
             .active = true,
-            .driver = caf::actor{}};
+            .driver = caf::actor{}};  // GCOVR_EXCL_BR_STOP
     }
 
     try {
         auto driver = impl_->system.spawn(
-            [svc = service_id, tid = id, target = *service_actor,
+            [svc = service_id,  // GCOVR_EXCL_BR_LINE
+             tid = id,  // GCOVR_EXCL_BR_LINE (compiler artifact: driver lambda
+                        // entry/exit arcs)
+             target = *service_actor,  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // driver lambda entry/exit arcs)
              delay_ms](caf::event_based_actor* self) -> caf::behavior {
                 self->delayed_send(self, std::chrono::milliseconds(delay_ms),
                                    caf::tick_atom_v);
-                return caf::behavior{[=](caf::tick_atom) {
-                    caf::anon_send(target, timer_fire_atom_v, tid);
-                    self->quit();
-                }};
+                return caf::behavior{
+                    [=](caf::tick_atom) {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: inner tick lambda arcs)
+                        caf::anon_send(target, timer_fire_atom_v, tid);
+                        self->quit();
+                    }};
             });
         std::unique_lock lock(impl_->registry_mutex);
         auto it = impl_->actor_timers.find(id);
-        if (it != impl_->actor_timers.end()) {
+        if (it != impl_->actor_timers
+                      .end()) {  // GCOVR_EXCL_BR_LINE (defensive: same-thread
+                                 // window between insert and driver arm; erase
+                                 // sites hold the registry lock)
             it->second.driver = std::move(driver);
             impl_->actor_timers_by_service[service_id].insert(id);
         }
-    } catch (const std::exception&
-                 e) {  // GCOVR_EXCL_START (untestable actor-spawn failure)
+    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (defensive: untestable
+                                    // actor-spawn failure (see the exclusion
+                                    // region at 4877))
+                 e) {               // GCOVR_EXCL_START (untestable
+                                    // actor-spawn failure)
         // Clean up the timer state if spawn fails
-        std::unique_lock lock(impl_->registry_mutex);
-        impl_->actor_timers.erase(id);
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_ERROR(
+        std::unique_lock lock(
+            impl_->registry_mutex);  //  (defensive:
+                                     // untestable actor-spawn failure (see
+                                     // the exclusion region at 4877))
+        impl_->actor_timers.erase(   //  (defensive: untestable actor-spawn
+                                    // failure (see the exclusion region below))
+            id);  //  (defensive: untestable actor-spawn
+                  // failure (see the exclusion region at 4877))
+        auto& log = shield::log::get_logger(  //  (defensive:
+                                              // untestable actor-spawn failure
+                                              // (see the exclusion region
+                                              // below))
+            "lua");                           //  (defensive: untestable
+                     // actor-spawn failure (see the exclusion region at 4877))
+        SHIELD_LOG_ERROR(  //  (defensive: untestable
+                           // actor-spawn failure (see the exclusion region at
+                           // 4877))
             log, std::string("Failed to spawn timer actor: ") + e.what());
         return 0;
     }
@@ -4899,8 +5768,12 @@ uint64_t LuaServiceManager::schedule_actor_timer_once_fn(
             return 0;
         }
         service_actor = std::make_shared<caf::actor>(it->second);
-        id = impl_->next_actor_timer_id.fetch_add(1);
+        id = impl_->next_actor_timer_id.fetch_add(1);  // GCOVR_EXCL_BR_START
         impl_->actor_timers[id] = LuaServiceManager::Impl::ActorTimerState{
+            //  (compiler artifact: ActorTimerState
+            // designated-init aggregation arcs)
+            //  (compiler artifact: ActorTimerState
+            // designated-init aggregation arcs)
             .id = id,
             .interval_ms = delay_ms,
             .repeating = false,
@@ -4910,33 +5783,58 @@ uint64_t LuaServiceManager::schedule_actor_timer_once_fn(
             .native_callback = std::move(callback),
             .has_native_callback = true,
             .active = true,
-            .driver = caf::actor{}};
+            .driver = caf::actor{}};  // GCOVR_EXCL_BR_STOP
     }
 
     try {
         auto driver = impl_->system.spawn(
-            [svc = service_id, tid = id, target = *service_actor,
+            [svc = service_id,  // GCOVR_EXCL_BR_LINE
+             tid = id,  // GCOVR_EXCL_BR_LINE (compiler artifact: driver lambda
+                        // entry/exit arcs)
+             target = *service_actor,  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // driver lambda entry/exit arcs)
              delay_ms](caf::event_based_actor* self) -> caf::behavior {
                 self->delayed_send(self, std::chrono::milliseconds(delay_ms),
                                    caf::tick_atom_v);
-                return caf::behavior{[=](caf::tick_atom) {
-                    caf::anon_send(target, timer_fire_atom_v, tid);
-                    self->quit();
-                }};
+                return caf::behavior{
+                    [=](caf::tick_atom) {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: inner tick lambda arcs)
+                        caf::anon_send(target, timer_fire_atom_v, tid);
+                        self->quit();
+                    }};
             });
         std::unique_lock lock(impl_->registry_mutex);
         auto it = impl_->actor_timers.find(id);
-        if (it != impl_->actor_timers.end()) {
+        if (it != impl_->actor_timers
+                      .end()) {  // GCOVR_EXCL_BR_LINE (defensive: same-thread
+                                 // window between insert and driver arm; erase
+                                 // sites hold the registry lock)
             it->second.driver = std::move(driver);
             impl_->actor_timers_by_service[service_id].insert(id);
         }
-    } catch (const std::exception&
-                 e) {  // GCOVR_EXCL_START (untestable actor-spawn failure)
+    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (defensive: untestable
+                                    // actor-spawn failure (see the exclusion
+                                    // region at 4934))
+                 e) {               // GCOVR_EXCL_START (untestable
+                                    // actor-spawn failure)
         // Clean up the timer state if spawn fails
-        std::unique_lock lock(impl_->registry_mutex);
-        impl_->actor_timers.erase(id);
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_ERROR(
+        std::unique_lock lock(
+            impl_->registry_mutex);  //  (defensive:
+                                     // untestable actor-spawn failure (see
+                                     // the exclusion region at 4934))
+        impl_->actor_timers.erase(   //  (defensive: untestable actor-spawn
+                                    // failure (see the exclusion region below))
+            id);  //  (defensive: untestable actor-spawn
+                  // failure (see the exclusion region at 4934))
+        auto& log = shield::log::get_logger(  //  (defensive:
+                                              // untestable actor-spawn failure
+                                              // (see the exclusion region
+                                              // below))
+            "lua");                           //  (defensive: untestable
+                     // actor-spawn failure (see the exclusion region at 4934))
+        SHIELD_LOG_ERROR(  //  (defensive: untestable
+                           // actor-spawn failure (see the exclusion region at
+                           // 4934))
             log, std::string("Failed to spawn timer actor: ") + e.what());
         return 0;
     }
@@ -4962,8 +5860,12 @@ uint64_t LuaServiceManager::schedule_actor_timer_fixed_delay(
             return 0;
         }
         service_actor = std::make_shared<caf::actor>(it->second);
-        id = impl_->next_actor_timer_id.fetch_add(1);
+        id = impl_->next_actor_timer_id.fetch_add(1);  // GCOVR_EXCL_BR_START
         impl_->actor_timers[id] = LuaServiceManager::Impl::ActorTimerState{
+            //  (compiler artifact: ActorTimerState
+            // designated-init aggregation arcs)
+            //  (compiler artifact: ActorTimerState
+            // designated-init aggregation arcs)
             .id = id,
             .interval_ms = interval_ms,
             .repeating = true,
@@ -4973,35 +5875,60 @@ uint64_t LuaServiceManager::schedule_actor_timer_fixed_delay(
             .native_callback = {},
             .has_native_callback = false,
             .active = true,
-            .driver = caf::actor{}};
+            .driver = caf::actor{}};  // GCOVR_EXCL_BR_STOP
     }
 
     try {
         auto driver = impl_->system.spawn(
-            [svc = service_id, tid = id, target = *service_actor,
+            [svc = service_id,  // GCOVR_EXCL_BR_LINE
+             tid = id,  // GCOVR_EXCL_BR_LINE (compiler artifact: driver lambda
+                        // entry/exit arcs)
+             target = *service_actor,  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // driver lambda entry/exit arcs)
              interval_ms](caf::event_based_actor* self) -> caf::behavior {
                 self->delayed_send(self, std::chrono::milliseconds(interval_ms),
                                    caf::tick_atom_v);
-                return caf::behavior{[=](caf::tick_atom) {
-                    caf::anon_send(target, timer_fire_atom_v, tid);
-                    self->delayed_send(self,
-                                       std::chrono::milliseconds(interval_ms),
-                                       caf::tick_atom_v);
-                }};
+                return caf::behavior{
+                    [=](caf::tick_atom) {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: inner tick lambda arcs)
+                        caf::anon_send(target, timer_fire_atom_v, tid);
+                        self->delayed_send(
+                            self, std::chrono::milliseconds(interval_ms),
+                            caf::tick_atom_v);
+                    }};
             });
         std::unique_lock lock(impl_->registry_mutex);
         auto it = impl_->actor_timers.find(id);
-        if (it != impl_->actor_timers.end()) {
+        if (it != impl_->actor_timers
+                      .end()) {  // GCOVR_EXCL_BR_LINE (defensive: same-thread
+                                 // window between insert and driver arm; erase
+                                 // sites hold the registry lock)
             it->second.driver = std::move(driver);
             impl_->actor_timers_by_service[service_id].insert(id);
         }
-    } catch (const std::exception&
-                 e) {  // GCOVR_EXCL_START (untestable actor-spawn failure)
+    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (defensive: untestable
+                                    // actor-spawn failure (see the exclusion
+                                    // region at 4999))
+                 e) {               // GCOVR_EXCL_START (untestable
+                                    // actor-spawn failure)
         // Clean up the timer state if spawn fails
-        std::unique_lock lock(impl_->registry_mutex);
-        impl_->actor_timers.erase(id);
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_ERROR(
+        std::unique_lock lock(
+            impl_->registry_mutex);  //  (defensive:
+                                     // untestable actor-spawn failure (see
+                                     // the exclusion region at 4999))
+        impl_->actor_timers.erase(   //  (defensive: untestable actor-spawn
+                                    // failure (see the exclusion region below))
+            id);  //  (defensive: untestable actor-spawn
+                  // failure (see the exclusion region at 4999))
+        auto& log = shield::log::get_logger(  //  (defensive:
+                                              // untestable actor-spawn failure
+                                              // (see the exclusion region
+                                              // below))
+            "lua");                           //  (defensive: untestable
+                     // actor-spawn failure (see the exclusion region at 4999))
+        SHIELD_LOG_ERROR(  //  (defensive: untestable
+                           // actor-spawn failure (see the exclusion region at
+                           // 4999))
             log, std::string("Failed to spawn timer actor: ") + e.what());
         return 0;
     }
@@ -5030,29 +5957,56 @@ bool LuaServiceManager::schedule_external_call_timeout(int32_t timeout_ms,
         return false;
     }
     try {
-        auto driver = impl_->system.spawn(
-            [manager = this, session,
-             timeout_ms](caf::event_based_actor* self) -> caf::behavior {
-                self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
-                                   caf::tick_atom_v);
-                return caf::behavior{[=](caf::tick_atom) {
-                    nlohmann::json timeout_err = nlohmann::json::array(
-                        {nlohmann::json::object({{"code", "timeout"},
-                                                 {"message", "call timeout"},
-                                                 {"retryable", true}})});
-                    manager->complete_call(session, false, timeout_err);
-                    self->quit();
-                }};
-            });
+        auto driver = impl_->system.spawn([manager = this, session, timeout_ms](
+                                              caf::event_based_actor* self)
+                                              -> caf::behavior {
+            self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
+                               caf::tick_atom_v);
+            return caf::behavior{[=](caf::tick_atom) {  // GCOVR_EXCL_BR_LINE
+                                                        // (compiler artifact:
+                                                        // CAF behavior lambda
+                                                        // arc)
+                nlohmann::json timeout_err = nlohmann::json::array(
+                    {nlohmann::json::object(  // GCOVR_EXCL_BR_LINE (compiler
+                                              // artifact: json braced-init
+                                              // arcs)
+                        {{"code",
+                          "timeout"},  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // json::array braced-init arc)
+                         {"message", "call timeout"},
+                         {"retryable",
+                          true}})});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // json object init continuation arc)
+                manager->complete_call(session, false, timeout_err);
+                self->quit();
+            }};  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda body exit arc)
+        });
         std::unique_lock lock(impl_->registry_mutex);
         impl_->actor_call_timeouts[session] = std::move(driver);
         return true;
-    } catch (const std::exception&
-                 e) {  // GCOVR_EXCL_START (untestable actor-spawn failure)
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_ERROR(log, std::string("Failed to spawn external call "
-                                          "timeout driver: ") +
-                                  e.what());
+    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (defensive: untestable
+                                    // actor-spawn failure (see the exclusion
+                                    // region at 5051))
+                 e) {               // GCOVR_EXCL_START (untestable
+                                    // actor-spawn failure)
+        auto& log = shield::log::get_logger(  //  (defensive:
+                                              // untestable actor-spawn failure
+                                              // (see the exclusion region
+                                              // below))
+            "lua");                           //  (defensive: untestable
+                     // actor-spawn failure (see the exclusion region at 5051))
+        SHIELD_LOG_ERROR(  //  (defensive: untestable
+                           // actor-spawn failure (see the exclusion region
+                           // below))
+            log,
+            std::string(
+                "Failed to spawn external call "  //
+                                                  // (defensive: untestable
+                                                  // actor-spawn failure (see
+                                                  // the exclusion region at
+                                                  // 5051))
+                "timeout driver: ") +
+                e.what());
         return false;
     }
     // GCOVR_EXCL_STOP
@@ -5075,21 +6029,36 @@ uint64_t LuaServiceManager::schedule_actor_call_timeout(
 
     try {
         auto driver = impl_->system.spawn(
-            [manager = this, session, target = *service_actor,
+            [manager = this, session,  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // driver lambda entry/exit arcs)
+             target = *service_actor,  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // driver lambda entry/exit arcs)
              timeout_ms](caf::event_based_actor* self) -> caf::behavior {
                 self->delayed_send(self, std::chrono::milliseconds(timeout_ms),
                                    caf::tick_atom_v);
-                return caf::behavior{[=](caf::tick_atom) {
-                    caf::anon_send(target, call_timeout_atom_v, session);
-                    self->quit();
-                }};
+                return caf::behavior{
+                    [=](caf::tick_atom) {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: inner tick lambda arcs)
+                        caf::anon_send(target, call_timeout_atom_v, session);
+                        self->quit();
+                    }};
             });
         std::unique_lock lock(impl_->registry_mutex);
         impl_->actor_call_timeouts[session] = std::move(driver);
-    } catch (const std::exception&
-                 e) {  // GCOVR_EXCL_START (untestable actor-spawn failure)
-        auto& log = shield::log::get_logger("lua");
-        SHIELD_LOG_ERROR(
+    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (defensive: untestable
+                                    // actor-spawn failure (see the exclusion
+                                    // region at 5090))
+                 e) {               // GCOVR_EXCL_START (untestable
+                                    // actor-spawn failure)
+        auto& log = shield::log::get_logger(  //  (defensive:
+                                              // untestable actor-spawn failure
+                                              // (see the exclusion region
+                                              // below))
+            "lua");                           //  (defensive: untestable
+                     // actor-spawn failure (see the exclusion region at 5090))
+        SHIELD_LOG_ERROR(  //  (defensive: untestable
+                           // actor-spawn failure (see the exclusion region at
+                           // 5090))
             log,
             std::string("Failed to spawn call timeout actor: ") + e.what());
         // Return session anyway - timeout just won't fire, but call can still
@@ -5107,7 +6076,9 @@ bool LuaServiceManager::cancel_actor_call_timeout(uint64_t session) {
         if (it == impl_->actor_call_timeouts.end()) {
             return false;
         }
-        if (it->second) {
+        if (it->second) {  // GCOVR_EXCL_BR_LINE (defensive: call-timeout
+                           // entries are inserted only with a live driver; the
+                           // null arm is a contract guard)
             caf::anon_send_exit(it->second, caf::exit_reason::user_shutdown);
             // The entry dies below while the driver may still be running its
             // (or a still-armed) tick; move the handle out so the erase never

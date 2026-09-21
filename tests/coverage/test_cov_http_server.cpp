@@ -544,4 +544,106 @@ BOOST_AUTO_TEST_CASE(ClientAbortDuringLargeWriteClosesSession) {
 }
 #endif
 
+BOOST_AUTO_TEST_CASE(ConnectionHeaderValueVariants) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    auto server = make_server(port);
+    // HTTP/1.0 + a non-keep-alive token: the token lookup misses, so the
+    // connection must close.
+    server.get("/v1-close", [](const HttpRequest&) {
+        HttpResponse r = text_response("v1-close");
+        r.set(http::field::connection, "close");
+        return r;
+    });
+    // HTTP/1.0 + a long (> SSO) value containing the keep-alive token: the
+    // connection stays open and the lowercased copy is heap-allocated.
+    server.get("/v1-long", [](const HttpRequest&) {
+        HttpResponse r = text_response("v1-long");
+        r.set(http::field::connection,
+              "keep-alive, timeout=5, max=1000-batched-requests");
+        return r;
+    });
+    // HTTP/1.1 + a non-close token: keep-alive is the default and the
+    // "close" token lookup misses.
+    server.get("/v11-ka", [](const HttpRequest&) {
+        HttpResponse r = text_response("v11-ka");
+        r.set(http::field::connection, "keep-alive");
+        return r;
+    });
+    // HTTP/1.1 + a long value containing "close".
+    server.get("/v11-long", [](const HttpRequest&) {
+        HttpResponse r = text_response("v11-long");
+        r.set(http::field::connection, "close-after-this-whole-response!!!");
+        return r;
+    });
+    // HTTP/1.1 + an empty header value: the token loop never runs.
+    server.get("/v11-empty", [](const HttpRequest&) {
+        HttpResponse r = text_response("v11-empty");
+        r.set(http::field::connection, "");
+        return r;
+    });
+    server.start();
+    BOOST_REQUIRE(server.is_running());
+
+    // (a) HTTP/1.0 + "close": response, then EOF.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /v1-close HTTP/1.0\r\nHost: t\r\n\r\n");
+        const auto resp = c.read_all();
+        BOOST_CHECK(resp.find("200") != std::string::npos);
+        BOOST_CHECK(resp.find("v1-close") != std::string::npos);
+    }
+
+    // (b) HTTP/1.0 + long keep-alive value: two requests on one socket.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /v1-long HTTP/1.0\r\nHost: t\r\n\r\n");
+        const auto first = c.read_response_keepalive();
+        BOOST_CHECK(first.find("200") != std::string::npos);
+        BOOST_CHECK(first.find("v1-long") != std::string::npos);
+        c.send_request("GET /v1-long HTTP/1.0\r\nHost: t\r\n\r\n");
+        BOOST_CHECK(c.read_response_keepalive().find("v1-long") !=
+                    std::string::npos);
+        c.close();
+    }
+
+    // (c) HTTP/1.1 + "keep-alive": the socket stays open for a second round.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /v11-ka HTTP/1.1\r\nHost: t\r\n\r\n");
+        BOOST_CHECK(c.read_response_keepalive().find("v11-ka") !=
+                    std::string::npos);
+        c.send_request("GET /v11-ka HTTP/1.1\r\nHost: t\r\n\r\n");
+        BOOST_CHECK(c.read_response_keepalive().find("v11-ka") !=
+                    std::string::npos);
+        c.close();
+    }
+
+    // (d) HTTP/1.1 + long "close" value: response, then EOF.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /v11-long HTTP/1.1\r\nHost: t\r\n\r\n");
+        const auto resp = c.read_all();
+        BOOST_CHECK(resp.find("200") != std::string::npos);
+        BOOST_CHECK(resp.find("v11-long") != std::string::npos);
+    }
+
+    // (e) HTTP/1.1 + empty value: token lookup runs on an empty string.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /v11-empty HTTP/1.1\r\nHost: t\r\n\r\n");
+        BOOST_CHECK(c.read_response_keepalive().find("v11-empty") !=
+                    std::string::npos);
+        c.close();
+    }
+
+    server.stop();
+}
+
 BOOST_AUTO_TEST_SUITE_END()

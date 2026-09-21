@@ -302,3 +302,59 @@ BOOST_AUTO_TEST_CASE(rotating_sink_unopenable_file_is_silent,
     }  // dtor flush again
     BOOST_CHECK(true);  // reached without throwing
 }
+
+// ---------------------------------------------------------------------------
+// Branch-coverage additions (purely additive).
+// ---------------------------------------------------------------------------
+
+// A record that carries a file but a zero line omits the location suffix:
+// the file-non-empty && line>0 conjunction takes the line<=0 arm. Routed
+// through a file sink so format_record (not just the collector) sees it.
+BOOST_FIXTURE_TEST_CASE(record_with_file_but_zero_line_omits_location,
+                        LoggerReset) {
+    auto sink = attach_collector();
+    auto dir = temp_dir();
+    const auto path = dir / "nolocation.log";
+    log_ns::Logger::add_sink(log_ns::make_file_sink(path.string()));
+    auto& lg = log_ns::get_logger("cov.fileline");
+
+    lg.log(log_ns::Level::Info, "no location", "cov_location.cpp", 0,
+           "some_function");
+    lg.log(log_ns::Level::Info, "with location", "cov_location.cpp", 42,
+           "some_function");
+
+    BOOST_REQUIRE_EQUAL(sink->records.size(), 2u);
+    BOOST_CHECK_EQUAL(sink->records[0].message, "no location");
+    BOOST_CHECK_EQUAL(sink->records[0].file, "cov_location.cpp");
+    BOOST_CHECK_EQUAL(sink->records[0].line, 0);
+    BOOST_CHECK_EQUAL(sink->records[1].message, "with location");
+    BOOST_CHECK_EQUAL(sink->records[1].line, 42);
+
+    log_ns::Logger::shutdown();  // flush + close the file sink
+    const auto data = read_file(path);
+    BOOST_CHECK(data.find("no location") != std::string::npos);
+    BOOST_CHECK(data.find("no location (") == std::string::npos);
+    BOOST_CHECK(data.find("(cov_location.cpp:42)") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+// A bare filename (no directory component) has an empty parent path, so the
+// constructor skips parent-directory creation and still writes.
+BOOST_AUTO_TEST_CASE(rotating_sink_bare_filename_skips_parent_creation,
+                     *boost::unit_test::timeout(10)) {
+#ifdef _WIN32
+    const long pid = static_cast<long>(_getpid());
+#else
+    const long pid = static_cast<long>(::getpid());
+#endif
+    const std::string bare =
+        "shield_cov_logger_bare_" + std::to_string(pid) + ".log";
+    {
+        auto sink = log_ns::make_rotating_sink(bare, 4096, 1);
+        sink->write(make_record(log_ns::Level::Info, "cov.bare", "written"));
+        sink->flush();
+    }  // dtor flush
+    BOOST_CHECK(fs::exists(bare));
+    BOOST_CHECK(read_file(bare).find("written") != std::string::npos);
+    fs::remove(bare);
+}

@@ -295,6 +295,162 @@ return M
     manager.shutdown_all("done");
 }
 
+// The remaining two verbs of the httpd helper set (PATCH via
+// method_from_string's final arm, DELETE), a handler-supplied Content-Type
+// header (which must not be overwritten by the default content-type logic), and
+// a 204 response (which must not gain a content-type at all).
+BOOST_AUTO_TEST_CASE(PatchDeleteVerbsAndExplicitContentType) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const char* script = R"lua(
+local M = {}
+function M.on_init()
+    shield.httpd.patch("/patched", function(req)
+        return { status = 200, body = "patched-ok" }
+    end)
+    shield.httpd.delete("/gone", function(req)
+        return { status = 200, body = "gone-ok" }
+    end)
+    shield.httpd.get("/csv", function(req)
+        return {
+            status = 200,
+            headers = { ["Content-Type"] = "text/csv" },
+            body = "a,b\n1,2",
+        }
+    end)
+    shield.httpd.get("/nocontent", function(req)
+        return { status = 204 }
+    end)
+end
+return M
+)lua";
+    const std::string module = write_script("cov_httpd_verbs.lua", script);
+    auto svc = manager.spawn(
+        module, R"({"name":"cov_httpd_verbs","args":{},"config":{}})");
+    BOOST_REQUIRE_MESSAGE(svc.success, "spawn failed: " + svc.error_message);
+    BOOST_REQUIRE_EQUAL(runtime.http_route_count(), 4u);
+
+    shield::net::HttpServer server;
+    LuaHttpBridge bridge(runtime, manager);
+    bridge.attach(server);
+
+    // PATCH reaches the handler through method_from_string's own arm.
+    {
+        auto resp = bridge.handle(make_request("PATCH", "/patched"));
+        BOOST_CHECK_EQUAL(resp.result_int(), 200);
+        BOOST_CHECK_EQUAL(resp.body(), "patched-ok");
+    }
+
+    // DELETE likewise.
+    {
+        auto resp = bridge.handle(make_request("DELETE", "/gone"));
+        BOOST_CHECK_EQUAL(resp.result_int(), 200);
+        BOOST_CHECK_EQUAL(resp.body(), "gone-ok");
+    }
+
+    // An explicit Content-Type header wins over the default json/text/plain.
+    {
+        auto resp = bridge.handle(make_request("GET", "/csv"));
+        BOOST_CHECK_EQUAL(resp.result_int(), 200);
+        BOOST_CHECK_EQUAL(
+            std::string(resp.base()[boost::beast::http::field::content_type]),
+            "text/csv");
+        BOOST_CHECK_EQUAL(resp.body(), "a,b\n1,2");
+    }
+
+    // 204: no content-type is injected and the body stays empty.
+    {
+        auto resp = bridge.handle(make_request("GET", "/nocontent"));
+        BOOST_CHECK_EQUAL(resp.result_int(), 204);
+        BOOST_CHECK(resp.base().find(boost::beast::http::field::content_type) ==
+                    resp.base().end());
+        BOOST_CHECK(resp.body().empty());
+    }
+
+    bridge.detach();
+    manager.shutdown_all("done");
+}
+
+// A route whose registering service never spawned (or already exited) is
+// found in the route table but cannot be dispatched: enqueue returns no task
+// and the bridge answers 503.
+BOOST_AUTO_TEST_CASE(RouteWithoutRunningServiceReturns503) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    // Register a route directly against the runtime table for a service the
+    // manager has never spawned. The handler is never invoked, so a function
+    // from an unrelated state suffices.
+    sol::state standalone;
+    standalone.open_libraries(sol::lib::base);
+    sol::function handler = standalone.safe_script("return function() end",
+                                                   sol::script_pass_on_error);
+    BOOST_REQUIRE(handler.valid());
+    auto vm = runtime.create_vm();
+    std::string error;
+    BOOST_CHECK(runtime.register_http_route(vm, "ghost_svc", "GET", "/ghost",
+                                            handler, &error));
+
+    shield::net::HttpServer server;
+    LuaHttpBridge bridge(runtime, manager);
+    bridge.attach(server);
+
+    auto resp = bridge.handle(make_request("GET", "/ghost"));
+    BOOST_CHECK_EQUAL(resp.result_int(), 503);
+    BOOST_CHECK(resp.body().find("ghost_svc") != std::string::npos);
+
+    bridge.detach();
+    // Drop the route while the handler's state is still alive.
+    runtime.remove_http_routes_for_service("ghost_svc");
+    BOOST_CHECK_EQUAL(runtime.http_route_count(), 0u);
+    manager.shutdown_all("done");
+}
+
+// A handler that suspends longer than the bridge's dispatch timeout produces
+// a 504 while the handler coroutine keeps running in its own service.
+BOOST_AUTO_TEST_CASE(SlowHandlerTimesOutWith504) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const char* script = R"lua(
+local M = {}
+function M.on_init()
+    shield.httpd.get("/slow", function(req)
+        shield.sleep(3000)
+        return { status = 200, body = "finally" }
+    end)
+end
+return M
+)lua";
+    const std::string module = write_script("cov_httpd_slow.lua", script);
+    auto svc = manager.spawn(
+        module, R"({"name":"cov_httpd_slow","args":{},"config":{}})");
+    BOOST_REQUIRE_MESSAGE(svc.success, "spawn failed: " + svc.error_message);
+
+    shield::net::HttpServer server;
+    LuaHttpBridge bridge(runtime, manager);
+    bridge.attach(server);
+
+    auto resp = bridge.handle(make_request("GET", "/slow"));
+    BOOST_CHECK_EQUAL(resp.result_int(), 504);
+    BOOST_CHECK(resp.body().find("cov_httpd_slow") != std::string::npos);
+
+    // The handler stays suspended for the remaining ~1s of its sleep; give
+    // it time to finish before tearing the service down, mirroring the
+    // graceful-shutdown ordering in production.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+
+    bridge.detach();
+    manager.shutdown_all("done");
+}
+
 // A bridge constructed before any server exists subscribes to route
 // registrations with server_ == nullptr, so the service's registration takes
 // the !server_ early-return inside register_on_server; attach() replays the

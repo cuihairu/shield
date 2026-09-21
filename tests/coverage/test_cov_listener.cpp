@@ -269,6 +269,31 @@ BOOST_AUTO_TEST_CASE(PerIpLimitRejectsSecondClient) {
     io.run_for(100ms);
 }
 
+BOOST_AUTO_TEST_CASE(PerIpLimitBelowLimitAllowsConnection) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    TcpListener listener(io, port, callbacks);
+    listener.set_max_per_ip(2);
+    listener.start();
+
+    // Both connections come from 127.0.0.1; the second one finds an existing
+    // IP entry below the limit and must be accepted (no rejection recorded).
+    Client c1, c2;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(100ms);
+    BOOST_REQUIRE(c2.connect(port));
+    io.run_for(200ms);
+    BOOST_CHECK_EQUAL(listener.session_count(), 2u);
+    BOOST_CHECK_EQUAL(listener.last_rejection_reason(), "");
+
+    c1.close();
+    c2.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
 BOOST_AUTO_TEST_CASE(BroadcastReachesAllSessions) {
     boost::asio::io_context io;
     const auto port = reserve_ephemeral_port(io);

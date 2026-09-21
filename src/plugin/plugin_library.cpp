@@ -17,7 +17,9 @@ PluginLibrary::PluginLibrary(PluginLibrary&& other) noexcept
 }
 
 PluginLibrary& PluginLibrary::operator=(PluginLibrary&& other) noexcept {
-    if (this != &other) {
+    if (this != &other) {  // GCOVR_EXCL_BR_LINE (defensive: move
+                           // self-assignment guard; no caller ever move-assigns
+                           // a library to itself)
         close();
         handle_ = other.handle_;
         other.handle_ = nullptr;
@@ -39,7 +41,11 @@ PluginLibrary PluginLibrary::load(const std::string& path, std::string& error) {
     lib.handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (!lib.handle_) {
         const char* msg = dlerror();
-        error = msg ? std::string(msg) : "dlopen failed";
+        // GCOVR_EXCL_BR_LINE (defensive: on dlopen failure dlerror() is
+        // guaranteed to return a message; NULL would require an allocation
+        // failure. Remaining missed arcs are inlined std::string
+        // construction pseudo-branches)
+        error = msg ? std::string(msg) : "dlopen failed";  // GCOVR_EXCL_BR_LINE
     }
 #endif
     return lib;

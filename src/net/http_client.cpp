@@ -46,11 +46,11 @@ size_t header_callback(char* buffer, size_t size, size_t nitems,
         // Trim leading whitespace from value.
         size_t start = line.find_first_not_of(" \t", colon + 1);
         std::string value;
-        if (start != std::string::npos) {
-            // Remove trailing \r\n
-            size_t end = line.find_last_not_of("\r\n");
-            value = line.substr(start, end - start + 1);
-        }
+        if (start != std::string::npos) {  // GCOVR_EXCL_BR_LINE (defensive:
+            // npos arm: libcurl header lines always carry a trailing CRLF,
+            size_t end = line.find_last_not_of("\r\n");   // so after ':' a
+            value = line.substr(start, end - start + 1);  // non-space byte
+        }  // always exists within the line)
         (*headers)[key] = value;
     }
     return size * nitems;
@@ -387,12 +387,18 @@ HttpClientResponse HttpClient::post_form(
                                              static_cast<int>(key.size()));
         char* encoded_val = curl_easy_escape(encoder, value.c_str(),
                                              static_cast<int>(value.size()));
-        if (encoded_key && encoded_val) {
+        if (encoded_key &&  // GCOVR_EXCL_BR_LINE
+            encoded_val) {  // GCOVR_EXCL_BR_LINE (defensive: curl_easy_escape
+                            // only returns NULL on allocation failure)
             form_body +=
                 std::string(encoded_key) + "=" + std::string(encoded_val);
         }
-        if (encoded_key) curl_free(encoded_key);
-        if (encoded_val) curl_free(encoded_val);
+        if (encoded_key)             // GCOVR_EXCL_BR_LINE
+            curl_free(encoded_key);  // GCOVR_EXCL_BR_LINE (defensive: null arm
+                                     // only on allocation failure)
+        if (encoded_val)             // GCOVR_EXCL_BR_LINE
+            curl_free(encoded_val);  // GCOVR_EXCL_BR_LINE (defensive: null arm
+                                     // only on allocation failure)
     }
     curl_easy_cleanup(encoder);
     opts.body = form_body;

@@ -311,6 +311,11 @@ private:
             body = "{\"ok\":true}";
             ctype = "text/plain";
             extra_ct = "Content-Type: " + ctype + "\r\n";
+        } else if (path.find("arrjson") != std::string::npos) {
+            // Same heuristic, array form: body starts with '['.
+            body = "[1,2,3]";
+            ctype = "text/plain";
+            extra_ct = "Content-Type: " + ctype + "\r\n";
         } else if (path.find("noct") != std::string::npos) {
             // No Content-Type header at all; JSON detected from the body.
             body = "{\"x\":1}";
@@ -1295,6 +1300,20 @@ BOOST_AUTO_TEST_CASE(ClientIdentityBranches) {
     BOOST_CHECK_EQUAL(bare_data->session_id, 0u);
 }
 
+// A negative session_id fails the non-negative guard on the session_id
+// chain, and a non-integer epoch fails the type guard on the epoch chain;
+// both identities fall back to 0 while the marker still materializes.
+BOOST_AUTO_TEST_CASE(ClientContextFromJsonNegativeIds) {
+    const nlohmann::json j =
+        nlohmann::json::object({{"__shield_client_ref", true},
+                                {"session_id", -7},
+                                {"session_epoch", "soon"}});
+    const auto data = shield::lua::ClientContextData::from_json(j);
+    BOOST_REQUIRE(data.has_value());
+    BOOST_CHECK_EQUAL(data->session_id, 0u);
+    BOOST_CHECK_EQUAL(data->session_epoch, 0u);
+}
+
 // ---------------------------------------------------------------------------
 // HTTP + HTTPD + plugin introspection APIs.
 // ---------------------------------------------------------------------------
@@ -1478,6 +1497,98 @@ BOOST_AUTO_TEST_CASE(HttpAndPluginApis) {
         "assert(b ~= nil and b.instance_id == 'cov_inst')\n"
         "assert(b.interface == 'cov.iface')\n"
         "assert(shield.plugin.binding('missing') == nil)"));
+}
+
+// The http convenience wrappers without an options table: each wrapper's
+// optional-opts arm runs its defaults, and the response parser's array
+// heuristic ('[' body with a non-JSON content type) turns on data. Partial
+// auth_basic tables exercise the user/password guards independently.
+BOOST_AUTO_TEST_CASE(HttpWrappersWithoutOptionsAndArrayHeuristic) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    MiniHttpServer server;
+    BOOST_REQUIRE_GE(server.port(), 1024);
+    const std::string base =
+        "http://127.0.0.1:" + std::to_string(server.port()) + "/";
+    lua["base_url"] = base;
+
+    {
+        std::error_code mk_ec;
+        std::filesystem::create_directories("/tmp/opencode", mk_ec);
+        std::ofstream up("/tmp/opencode/cov_upload.bin", std::ios::trunc);
+        up << "upload-payload";
+    }
+
+    // request() with no opts at all.
+    BOOST_CHECK(
+        run_script(lua,
+                   "local r = shield.http.request(base_url .. 'plain')\n"
+                   "assert(r.status == 200 and r.body == 'plain')"));
+
+    // post/put/delete/patch with a body but no opts table.
+    BOOST_CHECK(run_script(
+        lua,
+        "local p = shield.http.post(base_url .. 'plain', 'raw-body')\n"
+        "assert(p.status == 200)\n"
+        "local pu = shield.http.put(base_url .. 'plain', 'raw-body')\n"
+        "assert(pu.status == 200)\n"
+        "local d = shield.http.delete(base_url .. 'plain')\n"
+        "assert(d.status == 200)\n"
+        "local pa = shield.http.patch(base_url .. 'plain', 'raw-body')\n"
+        "assert(pa.status == 200)"));
+
+    // json family with a payload but no opts table.
+    BOOST_CHECK(run_script(
+        lua,
+        "local j = shield.http.json(base_url .. 'plain', {a = 1})\n"
+        "assert(j.status == 200)\n"
+        "local jp = shield.http.json_post(base_url .. 'plain', {a = 1})\n"
+        "assert(jp.status == 200)\n"
+        "local jt = shield.http.json_put(base_url .. 'plain', {a = 1})\n"
+        "assert(jt.status == 200)\n"
+        "local jpa = shield.http.json_patch(base_url .. 'plain', {a = 1})\n"
+        "assert(jpa.status == 200)"));
+
+    // upload without a fields table; post_form with a non-string key
+    // (the key guard skips it, the string entry still goes out).
+    BOOST_CHECK(
+        run_script(lua,
+                   "local files = {{field_name = 'f', file_path = "
+                   "'/tmp/opencode/cov_upload.bin'}}\n"
+                   "local u = shield.http.upload(base_url .. 'plain', "
+                   "files)\n"
+                   "assert(u.status == 200)\n"
+                   "local pf = shield.http.post_form(base_url .. 'plain', "
+                   "{[3] = 'skipped-key', k = 'v'})\n"
+                   "assert(pf.status == 200)"));
+
+    // Array-form JSON heuristic: '['-leading body with a plain content type.
+    BOOST_CHECK(run_script(
+        lua,
+        "local r = shield.http.get(base_url .. 'arrjson')\n"
+        "assert(r.status == 200 and r.data ~= nil)\n"
+        "assert(r.data[1] == 1 and r.data[2] == 2 and r.data[3] == 3)"));
+
+    // Options table without a timeout (default timeout arm) and with only
+    // one half of the auth_basic pair.
+    BOOST_CHECK(run_script(lua,
+                           "local h = shield.http.get(base_url .. 'plain',\n"
+                           "  {headers = {['X-A'] = 'b'}})\n"
+                           "assert(h.status == 200)\n"
+                           "local u1 = shield.http.get(base_url .. 'plain',\n"
+                           "  {auth_basic = {user = 'u'}})\n"
+                           "assert(u1.status == 200)\n"
+                           "local u2 = shield.http.get(base_url .. 'plain',\n"
+                           "  {auth_basic = {password = 'p'}})\n"
+                           "assert(u2.status == 200)"));
 }
 #endif  // !_WIN32
 

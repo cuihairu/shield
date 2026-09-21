@@ -1497,4 +1497,111 @@ BOOST_AUTO_TEST_CASE(ExternalStopTransitionsServerToShutdown) {
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// Round-6 additions: branch-coverage gaps — log-level parsing, the
+// config-file fallback arms, listener host whitelist, a protocol-less TCP
+// listener, and the shutdown watchdog budget.
+// ---------------------------------------------------------------------------
+
+// rc.log_level "error" exercises the last comparison arm of
+// parse_log_level (both call sites in initialize_impl parse it).
+BOOST_AUTO_TEST_CASE(ErrorLogLevelIsParsed) {
+    fs::path script = echo_script("shield_cov_boot_lvl_err.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n  - name: main\n    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    rc.log_level = "error";
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
+// With no config_files and an explicitly emptied config_file, no config file
+// is loaded at all: the fallback push_back is skipped and runtime validation
+// rejects the run at the missing app.name.
+BOOST_AUTO_TEST_CASE(NoConfigFilesFailsValidation) {
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_file.clear();
+    rc.log_level = "error";
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    force_shutdown();
+}
+
+// Whitelisted listener hosts (0.0.0.0, "*", "::", localhost) each take the
+// matching short-circuit arm of the bind-warning condition; the warning
+// itself stays covered by FullStackInitializeAndShutdown's non-local host.
+// Every TCP listener must declare a protocol section since raw-frame ingress
+// was removed (bf9cdd7), so each actor carries one here.
+BOOST_AUTO_TEST_CASE(WhitelistedHostsSkipBindWarning) {
+    fs::path script = echo_script("shield_cov_boot_hosts.lua");
+    const uint16_t port_all = free_port();
+    const uint16_t port_star = free_port();
+    const uint16_t port_v6 = free_port();
+    const uint16_t port_local = free_port();
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: gw_all\n    script: " +
+        script.string() +
+        "\n    network:\n      tcp: \"0.0.0.0:" + std::to_string(port_all) +
+        "\"\n      protocol:\n        name: cov\n"
+        "  - name: gw_star\n    script: " +
+        script.string() +
+        "\n    network:\n      tcp: \"*:" + std::to_string(port_star) +
+        "\"\n      protocol:\n        name: cov\n"
+        "  - name: gw_v6\n    script: " +
+        script.string() +
+        "\n    network:\n      tcp: \":::" + std::to_string(port_v6) +
+        "\"\n      protocol:\n        name: cov\n"
+        "  - name: gw_local\n    script: " +
+        script.string() +
+        "\n    network:\n      tcp: \"localhost:" + std::to_string(port_local) +
+        "\"\n      protocol:\n        name: cov\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
+// A TCP listener without a network.protocol section is a config error, not
+// a silent raw-frame listener: initialize refuses before any listener is
+// created (the "requires network.protocol" validation arm).
+BOOST_AUTO_TEST_CASE(TcpListenerWithoutProtocolSection) {
+    fs::path script = echo_script("shield_cov_boot_noproto.lua");
+    uint16_t port = free_port();
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: raw_gw\n    script: " +
+        script.string() +
+        "\n    network:\n      tcp: 127.0.0.1:" + std::to_string(port) + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
+// shutdown.timeout.total: 0 disables the total-budget watchdog thread.
+BOOST_AUTO_TEST_CASE(ShutdownTotalBudgetZeroSkipsWatchdog) {
+    fs::path script = echo_script("shield_cov_boot_nobudget.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "shutdown:\n"
+        "  timeout:\n"
+        "    total: 0\n"
+        "actors:\n  - name: main\n    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    rc.log_level = "error";
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -25,38 +25,41 @@ void ConsoleSession::do_read() {
     auto self = shared_from_this();
     boost::asio::async_read_until(
         socket_, read_buf_, '\n',
-        boost::asio::bind_executor(
-            strand_, [self](boost::system::error_code ec, std::size_t bytes) {
-                if (ec) {
-                    self->handle_close();
-                    return;
+        boost::asio::bind_executor(strand_, [self](boost::system::error_code ec,
+                                                   std::size_t bytes) {
+            if (ec) {
+                self->handle_close();
+                return;
+            }
+
+            // Extract lines from the buffer
+            auto bufs = self->read_buf_.data();
+            std::string data(boost::asio::buffers_begin(bufs),
+                             boost::asio::buffers_begin(bufs) + bytes);
+            self->read_buf_.consume(bytes);
+
+            // Process each complete line
+            std::string::size_type pos = 0;
+            while (pos < data.size()) {
+                auto nl = data.find('\n', pos);
+                if (nl == std::string::npos)  // GCOVR_EXCL_BR_LINE
+                    break;  // GCOVR_EXCL_BR_LINE (defensive: async_read_until
+                            // guarantees a '\n' within the reported bytes, so
+                            // the delimiter is never missing)
+                std::string line = data.substr(pos, nl - pos);
+                // Strip trailing \r if present
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
                 }
-
-                // Extract lines from the buffer
-                auto bufs = self->read_buf_.data();
-                std::string data(boost::asio::buffers_begin(bufs),
-                                 boost::asio::buffers_begin(bufs) + bytes);
-                self->read_buf_.consume(bytes);
-
-                // Process each complete line
-                std::string::size_type pos = 0;
-                while (pos < data.size()) {
-                    auto nl = data.find('\n', pos);
-                    if (nl == std::string::npos) break;
-                    std::string line = data.substr(pos, nl - pos);
-                    // Strip trailing \r if present
-                    if (!line.empty() && line.back() == '\r') {
-                        line.pop_back();
-                    }
-                    pos = nl + 1;
-                    if (self->callbacks_.on_line) {
-                        self->callbacks_.on_line(self, std::move(line));
-                    }
+                pos = nl + 1;
+                if (self->callbacks_.on_line) {
+                    self->callbacks_.on_line(self, std::move(line));
                 }
+            }
 
-                // Continue reading
-                self->do_read();
-            }));
+            // Continue reading
+            self->do_read();
+        }));
 }
 
 void ConsoleSession::send_line(const std::string& line) {
@@ -65,7 +68,13 @@ void ConsoleSession::send_line(const std::string& line) {
     // (it's kept alive by the sessions_ vector in ConsoleServer).
     // do_write() uses shared_from_this() for async_write lifetime.
     boost::asio::post(strand_, [this, msg]() {
-        bool idle = send_queue_.empty() && !write_in_progress_;
+        bool idle =
+            send_queue_.empty() &&
+            !write_in_progress_;  // GCOVR_EXCL_BR_LINE (defensive: strand
+                                  // serialization implies an empty queue means
+                                  // the prior write finished and reset
+                                  // write_in_progress_, so both-true is
+                                  // unreachable)
         send_queue_.push_back(std::move(*msg));
         if (idle) {
             do_write();

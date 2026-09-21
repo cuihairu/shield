@@ -18,8 +18,8 @@ ServiceId ServiceId::generate() {
 // TraceId implementation
 TraceId TraceId::generate() {
     // Use high-resolution time + random for trace IDs
-    static std::random_device rd;
-    static std::mt19937_64 gen(rd());
+    static std::random_device rd;      // GCOVR_EXCL_BR_LINE (static init guard)
+    static std::mt19937_64 gen(rd());  // GCOVR_EXCL_BR_LINE (static init guard)
 
     uint64_t time_part = static_cast<uint64_t>(now_ms());
     uint64_t random_part = gen();

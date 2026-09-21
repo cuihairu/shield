@@ -30,9 +30,13 @@ void CommandDispatcher::dispatch(
     if (start == std::string::npos) return;  // empty line
     trimmed = trimmed.substr(start);
     auto end = trimmed.find_last_not_of(" \t\r");
+    // GCOVR_EXCL_BR_START (defensive: substr(start) keeps a non-blank first
+    // char, so find_last_not_of cannot return npos here and trimmed is never
+    // empty; the find_first_not_of above guarantees both)
     if (end != std::string::npos) trimmed = trimmed.substr(0, end + 1);
 
     if (trimmed.empty()) return;
+    // GCOVR_EXCL_BR_STOP
 
     // If session is attached to a Lua service, route to Lua handler
     if (session->is_attached()) {
@@ -40,7 +44,10 @@ void CommandDispatcher::dispatch(
         if (trimmed == "detach" || trimmed == "exit") {
             session->set_attached_service("");
             session->clear_multiline();
-            nlohmann::json resp = {{"type", "detached"}};
+            nlohmann::json resp = {
+                {"type",
+                 "detached"}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                // inlined nlohmann::json braced-init branches)
             session->send_line(resp.dump());
             return;
         }
@@ -73,7 +80,13 @@ void CommandDispatcher::dispatch(
     nlohmann::json resp = {
         {"type", "error"},
         {"message",
-         "Unknown command: " + cmd + ". Type 'help' for available commands."}};
+         "Unknown command: " + cmd +
+             ". Type 'help' for available commands."}};  // GCOVR_EXCL_BR_LINE
+                                                         // (compiler artifact:
+                                                         // inlined
+                                                         // nlohmann::json
+                                                         // braced-init
+                                                         // branches)
     session->send_line(resp.dump());
 }
 

@@ -38,10 +38,13 @@ bool RpcDescriptorTable::merge(const RpcDescriptorTable& other,
     for (const auto& [id, descriptor] : other.descriptors_) {
         if (!add(descriptor)) {
             if (error) {
+                // GCOVR_EXCL_BR_START (compiler artifact: concat internals;
+                // name.empty() ternary arms covered by merge tests)
                 *error = "rpc route conflict: id " + std::to_string(id) +
                          (descriptor.name.empty()
                               ? ""
                               : " (name '" + descriptor.name + "')");
+                // GCOVR_EXCL_BR_STOP
             }
             return false;
         }

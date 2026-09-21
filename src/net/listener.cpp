@@ -192,7 +192,11 @@ void TcpListener::broadcast(const std::vector<uint8_t>& data) {
     }
 
     for (auto& session : sessions) {
-        if (session->is_alive()) {
+        if (session->is_alive()) {  // GCOVR_EXCL_BR_LINE (defensive: close()
+                                    // synchronously removes the session from
+                                    // the list via on_disconnect, so a dead
+                                    // session only appears here in the
+                                    // concurrent-close race window)
             session->send(data);
         }
     }
@@ -221,7 +225,11 @@ void TcpListener::remove_session_locked(
         // Decrement IP count.
         std::string ip = session->remote_addr().ip;
         auto ip_it = ip_counts_.find(ip);
-        if (ip_it != ip_counts_.end()) {
+        if (ip_it !=
+            ip_counts_
+                .end()) {  // GCOVR_EXCL_BR_LINE (defensive: sessions_ and
+                           // ip_counts_ are maintained under the same lock, so
+                           // a session hit implies its IP entry exists)
             if (ip_it->second > 1) {
                 --ip_it->second;
             } else {

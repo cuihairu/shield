@@ -627,6 +627,120 @@ BOOST_AUTO_TEST_CASE(SendMessageEncodesThroughPipeline) {
     BOOST_CHECK_EQUAL(packets.load(), 0);
 }
 
+BOOST_AUTO_TEST_CASE(SendPathsWithNullErrorOutParam) {
+    // Every synchronous failure path also has to work when the caller does
+    // not pass an error out-param at all.
+    SocketPair p;
+    SessionCallbacks cbs;
+    auto closed = std::make_shared<TcpSession>(21, std::move(p.server), cbs);
+    closed->close("early");
+    BOOST_CHECK(!closed->send(bytes("x")));
+    DecodedBody msg;
+    BOOST_CHECK(!closed->send_message(msg));
+
+    // send() queue-full rejection with a null error out-param.
+    SocketPair p2;
+    auto full =
+        std::make_shared<TcpSession>(22, std::move(p2.server), cbs, 0, 1);
+    BOOST_CHECK(full->send(bytes("a")));
+    BOOST_CHECK(!full->send(bytes("b")));
+
+    // send_message() queue-full rejection with a null error out-param.
+    SocketPair p3;
+    SessionCallbacks cbs3;
+    cbs3.create_protocol_pipeline = [] { return make_json_pipeline(); };
+    auto full_msg =
+        std::make_shared<TcpSession>(23, std::move(p3.server), cbs3, 0, 1);
+    BOOST_CHECK(full_msg->send(bytes("a")));
+    msg.route_id = 1001;
+    BOOST_CHECK(!full_msg->send_message(msg));
+
+    // send_message() without a pipeline and without an error out-param.
+    SocketPair p4;
+    SessionCallbacks none;  // no create_protocol_pipeline
+    auto bare = std::make_shared<TcpSession>(24, std::move(p4.server), none);
+    BOOST_CHECK(!bare->send_message(msg));
+
+    closed->close("done");
+    full->close("done");
+    full_msg->close("done");
+    bare->close("done");
+}
+
+BOOST_AUTO_TEST_CASE(SendMessageQueuedBehindInFlightWrite) {
+    SocketPair p;
+    SessionCallbacks cbs;
+    cbs.create_protocol_pipeline = [] { return make_json_pipeline(); };
+    auto session = std::make_shared<TcpSession>(25, std::move(p.server), cbs);
+    session->start();
+
+    // The 8 MiB write stays in flight (the client never reads), so the
+    // strand is busy when send_message enqueues behind it: the queued
+    // lambda must see send_in_progress_ already set and skip the kick.
+    std::vector<std::uint8_t> big(8u * 1024 * 1024, 'x');
+    BOOST_CHECK(session->send(big));
+    p.io.run_for(80ms);
+
+    DecodedBody msg;
+    msg.route_id = 1001;
+    msg.message = nlohmann::json{{"uid", 1}};
+    BOOST_CHECK(session->send_message(msg));
+    BOOST_CHECK(session->is_alive());
+    p.io.run_for(100ms);
+
+    session->close("done");
+    p.io.run_for(100ms);
+    BOOST_CHECK(!session->is_alive());
+}
+
+BOOST_AUTO_TEST_CASE(StartAfterCloseIsANoOp) {
+    SocketPair p;
+
+    std::atomic<int> disconnects{0};
+    SessionCallbacks cbs;
+    cbs.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
+        ++disconnects;
+    };
+
+    auto session = std::make_shared<TcpSession>(26, std::move(p.server), cbs);
+    session->close("before-start");
+    BOOST_CHECK_EQUAL(disconnects.load(), 1);
+
+    // start() on a closed session must bail out of do_receive() without
+    // arming a read or firing any callback again.
+    session->start();
+    p.io.run_for(100ms);
+    BOOST_CHECK(!session->is_alive());
+    BOOST_CHECK_EQUAL(disconnects.load(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(PipelineDispatchWithoutOnPacketCallback) {
+    SocketPair p;
+
+    SessionCallbacks cbs;
+    cbs.create_protocol_pipeline = [] { return make_json_pipeline(); };
+    // No on_packet callback: dispatched results are dropped, the connection
+    // stays up and the read loop keeps running.
+    auto session = std::make_shared<TcpSession>(27, std::move(p.server), cbs);
+    session->start();
+    BOOST_CHECK(session->has_protocol_pipeline());
+
+    auto local = make_json_pipeline();
+    write_client(p.client,
+                 encode_packet(*local, R"({"route":"login","payload":{}})"));
+    p.io.run_for(200ms);
+    BOOST_CHECK(session->is_alive());
+
+    // A second frame proves the receive loop was re-armed.
+    write_client(p.client,
+                 encode_packet(*local, R"({"route":"fwd","payload":{}})"));
+    p.io.run_for(200ms);
+    BOOST_CHECK(session->is_alive());
+
+    session->close("normal");
+    p.io.run_for(100ms);
+}
+
 BOOST_AUTO_TEST_CASE(SendMessageEmptyBodyEncodesAsEmptyFrame) {
     SocketPair p;
 

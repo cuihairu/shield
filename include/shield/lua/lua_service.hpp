@@ -114,6 +114,12 @@ public:
     // Total forked tasks still pending across all services (drain signal).
     size_t pending_task_count_total() const;
 
+    // Forked tasks currently executing on their actor thread (dequeued but
+    // not yet finished). pending_task_count_total() drops to zero at dequeue
+    // time while the task body still touches the registering VM — wait for
+    // both counters to drain before destroying that VM.
+    size_t active_fork_task_count() const;
+
     // The actor system every service actor lives on. Bootstrap uses it to
     // spawn one gateway actor per listener (see gateway_actor.hpp).
     caf::actor_system& actor_system() const;

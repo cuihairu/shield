@@ -10,7 +10,8 @@ namespace shield::bootstrap {
 
 // Global starter registry
 static std::vector<std::unique_ptr<Starter>>& starters() {
-    static std::vector<std::unique_ptr<Starter>> registry;
+    static std::vector<std::unique_ptr<Starter>>
+        registry;  // GCOVR_EXCL_BR_LINE (static init guard)
     return registry;
 }
 
@@ -29,7 +30,9 @@ bool run_starters(Phase phase) {
     auto& log = shield::log::get_logger("starter");
 
     std::string phase_name;
-    switch (phase) {
+    switch (phase) {  // GCOVR_EXCL_BR_LINE (defensive: switch covers every
+                      // Phase enumerator; the zero arc is the unreachable
+                      // implicit-default arm)
         case Phase::PRE_INIT:
             phase_name = "PRE_INIT";
             break;

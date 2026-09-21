@@ -575,6 +575,55 @@ return M
         std::chrono::seconds(3)));
 }
 
+// Fire-and-forget bind with no manager at all (bare registry deployment):
+// the bind still applies and completes, only the actor notification is
+// skipped.
+BOOST_AUTO_TEST_CASE(BindWithoutManagerSkipsNotifyOnly) {
+    auto registry = std::make_shared<GatewaySessionRegistry>();
+    auto stats = std::make_shared<GatewayStats>();
+    GatewayDeps deps{"gw", registry, stats, s2c_table(), nullptr};
+
+    auto session = make_session(33, auth_binding());
+    registry->add(session, session->binding());
+
+    ClientBindRequest request;
+    request.call_session = 0;  // no waiter either
+    request.context = context_of(session);
+    request.player_id = "player-33";
+    request.target_service = "player";
+    handle_client_bind(deps, request);
+
+    BOOST_CHECK_EQUAL(stats->binds_ok.load(), 1u);
+    BOOST_CHECK_EQUAL(stats->binds_epoch_expired.load(), 0u);
+    BOOST_CHECK_EQUAL(session->target_service(), "player");
+    BOOST_CHECK_EQUAL(session->epoch(), 1u);
+}
+
+// A close for a session whose binding has no target service (never bound
+// past the listener default, or already invalidated) skips the Unbound
+// notify but still invalidates, deregisters and closes the socket.
+BOOST_AUTO_TEST_CASE(CloseWithEmptyTargetBindingSkipsUnboundNotify) {
+    auto registry = std::make_shared<GatewaySessionRegistry>();
+    auto stats = std::make_shared<GatewayStats>();
+    GatewayDeps deps{"gw", registry, stats, s2c_table(), nullptr};
+
+    shield::net::SessionBinding bare;
+    bare.target_service = "";
+    bare.gateway_name = "gw";
+    auto session = make_session(34, bare);
+    registry->add(session, bare);
+
+    ClientCloseRequest request;
+    request.context = context_of(session);
+    request.reason = "cleanup";
+    handle_client_close(deps, request);
+
+    BOOST_CHECK(!session->is_alive());
+    BOOST_CHECK_EQUAL(session->close_reason(), "cleanup");
+    BOOST_CHECK_EQUAL(stats->close_requests.load(), 1u);
+    BOOST_CHECK_EQUAL(registry->size(), 0u);
+}
+
 // -- spawn_gateway_actor ------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(SpawnedActorHandlesAllThreeMessageTypes) {

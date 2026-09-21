@@ -1839,4 +1839,23 @@ BOOST_AUTO_TEST_CASE(InspectPendingCallsTruncation) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
 
+// Branch coverage: a fourth lua.snapshot argument trips the args.size() > 3
+// guard (usage is surfaced before any registry access), complementing the
+// three-argument "not refs" shape covered in LuaSnapshotAndDiffCommands.
+BOOST_AUTO_TEST_CASE(SnapshotUsageOnFourthArgument) {
+    ConsoleHarness harness;
+    shield::console::CommandDispatcher dispatcher;
+    shield::console::LuaCommands cmds(*manager, *runtime);
+    cmds.register_all(dispatcher);
+
+    dispatcher.dispatch(harness.session, "lua.snapshot svc base refs extra");
+    std::string line = harness.read_line();
+    BOOST_REQUIRE(!line.empty());
+    auto resp = nlohmann::json::parse(line);
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("Usage") !=
+                std::string::npos);
+    BOOST_CHECK(harness.session->multiline_buffer().empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

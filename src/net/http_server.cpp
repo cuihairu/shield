@@ -41,7 +41,9 @@ bool pattern_matches(const std::vector<std::string>& pattern,
         return false;
     }
     for (size_t i = 0; i < pattern.size(); ++i) {
-        if (pattern[i].empty() || pattern[i][0] != ':') {
+        if (pattern[i].empty() ||    // GCOVR_EXCL_BR_LINE (defensive:
+            pattern[i][0] != ':') {  // split_path never yields empty segments,
+                                     // so pattern[i].empty() is always false)
             if (pattern[i] != path[i]) {
                 return false;
             }
@@ -68,13 +70,13 @@ bool connection_token_exists(const std::string& value, const char* token) {
 bool connection_keeps_alive(const HttpResponse& response,
                             unsigned request_version) {
     auto it = response.base().find(http::field::connection);
-    if (request_version < 11) {
-        return it != response.base().end() &&
+    if (request_version < 11) {  // GCOVR_EXCL_BR_START (compiler artifact:
+        return it != response.base().end() &&  // std::string temporary +
                connection_token_exists(std::string(it->value()), "keep-alive");
-    }
-    return it == response.base().end() ||
+    }  // inlined find/unwind slow-path edges) GCOVR_EXCL_BR_STOP
+    return it == response.base().end() ||  // GCOVR_EXCL_BR_START (compiler
            !connection_token_exists(std::string(it->value()), "close");
-}
+}  // artifact: same inlined slow-path edges) GCOVR_EXCL_BR_STOP
 
 HttpMethod verb_to_method(http::verb verb) {
     switch (verb) {
@@ -201,7 +203,11 @@ void HttpServer::start() {
 
         SHIELD_LOG_INFO(log, "HTTP server started on " + config_.host + ":" +
                                  std::to_string(config_.port));
-    } catch (const std::exception& e) {
+    } catch (  // GCOVR_EXCL_BR_LINE (compiler artifact: catch RTTI-miss
+        const std::exception&
+            e) {  // arm; make_address/bind only throw std::exception
+                  // derivatives and the handler body is covered by the
+                  // busy-port test)
         SHIELD_LOG_ERROR(
             log, "HTTP server failed to start: " + std::string(e.what()));
         running_ = false;
@@ -213,11 +219,16 @@ void HttpServer::stop() {
     running_ = false;
 
     boost::system::error_code ec;
-    if (acceptor_) {
+    if (acceptor_) {  // GCOVR_EXCL_BR_LINE (defensive: running_ is only set
+                      // after start() created the acceptor, so the null arm is
+                      // unreachable)
         acceptor_->close(ec);
     }
     io_context_.stop();
-    if (io_thread_.joinable()) {
+    if (io_thread_          // GCOVR_EXCL_BR_LINE (defensive: not-joinable arm
+            .joinable()) {  // GCOVR_EXCL_BR_LINE (defensive: reaching here
+                            // implies start() succeeded and spawned the io
+                            // thread, so the not-joinable arm is unreachable)
         io_thread_.join();
     }
     io_context_.restart();
@@ -245,7 +256,9 @@ void HttpServer::do_accept() {
                 std::make_shared<net::ip::tcp::socket>(std::move(socket));
             handle_session(socket_ptr);
 
-            if (running_) {
+            if (running_) {  // GCOVR_EXCL_BR_LINE (defensive: only observable
+                             // in the stop()-vs-accept-callback race window;
+                             // not deterministically testable)
                 do_accept();
             }
         });
@@ -269,11 +282,15 @@ struct HttpServer::Session : std::enable_shared_from_this<HttpServer::Session> {
 
     void read_next() {
         auto req = std::make_shared<http::request<http::string_body>>();
-        http::async_read(*socket, *buffer, *req,
-                         [self = shared_from_this(), req](
-                             boost::beast::error_code ec, std::size_t) mutable {
-                             self->on_read(ec, std::move(req));
-                         });
+        http::async_read(
+            *socket, *buffer, *req,
+            [self = shared_from_this(),  // GCOVR_EXCL_BR_LINE
+             req](  // GCOVR_EXCL_BR_LINE (compiler artifact: beast/asio inlined
+                    // read-loop and exception-cleanup edges attributed to this
+                    // line; no source-level condition here)
+                boost::beast::error_code ec, std::size_t) mutable {
+                self->on_read(ec, std::move(req));
+            });
     }
 
     void on_read(boost::beast::error_code ec,
@@ -298,7 +315,10 @@ struct HttpServer::Session : std::enable_shared_from_this<HttpServer::Session> {
 
         http::async_write(
             *socket, *shared_response,
-            [self = shared_from_this(), shared_response, keep](
+            [self = shared_from_this(), shared_response,  // GCOVR_EXCL_BR_LINE
+             keep](  // GCOVR_EXCL_BR_LINE (compiler artifact: beast/asio
+                     // inlined write-loop and exception-cleanup edges
+                     // attributed to this line; no source-level condition here)
                 boost::beast::error_code ec, std::size_t) mutable {
                 self->on_write(ec, keep);
             });

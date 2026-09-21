@@ -1161,3 +1161,294 @@ BOOST_AUTO_TEST_CASE(SubtreeJsonEmptyPathReturnsEmptyObject) {
     // Missing paths also produce the empty-object document.
     BOOST_CHECK_EQUAL(shield::config::subtree_json(c, "nope"), "{}");
 }
+
+// -------------------------------------------------------- null error sink
+// Every `if (error)` guard along the validation paths also has a false arm
+// (the null sink); each case below drives one distinct failure path so those
+// arms execute while validation still reports failure via the return value.
+
+BOOST_AUTO_TEST_CASE(ValidateNullErrorSinkRejectsInvalidConfigs) {
+    const auto valid_opts = RuntimeValidationOptions{};
+    const auto rejects = [](const std::string& yaml,
+                            const RuntimeValidationOptions& opts) {
+        shield::config::reset_config();
+        shield::config::global_config().load_yaml_string(yaml);
+        BOOST_CHECK_MESSAGE(
+            !shield::config::validate_runtime_config(opts, nullptr),
+            "expected rejection with null error sink: " << yaml);
+    };
+
+    // Top-level sections: optional-module guard, app.name, log, lua.
+    rejects("app:\n  name: o\ncluster:\n  enabled: true\n", no_actors());
+    rejects("", no_actors());
+    rejects("app: 42", no_actors());
+    rejects("app:\n  name: \"\"\n", no_actors());
+    rejects(std::string("app:\n  name: ") + std::string(65, 'a') + "\n",
+            no_actors());
+    rejects("app:\n  name: l\nlog:\n  level: verbose\n", no_actors());
+    rejects("app:\n  name: m\nlua:\n  vm:\n    mode: shared\n", no_actors());
+    rejects("app:\n  name: m\nlua:\n  cache:\n    max_size: 0\n", no_actors());
+    rejects("app:\n  name: m\nlua:\n  cache:\n    max_size: abc\n",
+            no_actors());
+    rejects("app:\n  name: m\nlua:\n  cache:\n    ttl_seconds: 99999\n",
+            no_actors());
+
+    // Actors section: presence, per-actor shape, name, script, instances.
+    rejects("app:\n  name: a\n", valid_opts);
+    rejects("app:\n  name: a\nactors: []\n", valid_opts);
+    rejects("app:\n  name: a\nactors:\n  - 42\n", valid_opts);
+    rejects("app:\n  name: a\nactors:\n  - script: " + g_script_abs + "\n",
+            valid_opts);
+    rejects("app:\n  name: a\nactors:\n  - name: \"\"\n    script: " +
+                g_script_abs + "\n",
+            valid_opts);
+    rejects(
+        "app:\n  name: a\nactors:\n  - name: w\n    script: " + g_script_abs +
+            "\n  - name: w\n    script: " + g_script_abs + "\n",
+        valid_opts);
+    rejects("app:\n  name: a\nactors:\n  - name: a1\n", valid_opts);
+    rejects("app:\n  name: a\nactors:\n  - name: a1\n    script: \"\"\n",
+            valid_opts);
+    rejects("app:\n  name: a\nactors:\n  - name: a1\n    script: " +
+                g_script_abs + "\n    instances: -1\n",
+            valid_opts);
+    rejects(
+        "app:\n  name: a\nactors:\n  - name: a\n    script: "
+        "cov_missing_9.lua\n",
+        valid_opts);
+
+    // Actor network: shape, unsupported transports, listener address,
+    // protocol wiring, instances interaction, rpc section.
+    rejects(actor_cfg("    network: 42\n"), valid_opts);
+    rejects(actor_cfg("    network:\n      udp: \"0.0.0.0:9000\"\n"),
+            valid_opts);
+    rejects(actor_cfg("    network:\n      tcp:\n        a: 1\n"), valid_opts);
+    rejects(actor_cfg("    network:\n      tcp: nohostport\n"), valid_opts);
+    rejects(actor_cfg("    network:\n      tcp: \"127.0.0.1:abc\"\n"),
+            valid_opts);
+    rejects(actor_cfg("    network:\n      tcp: \"127.0.0.1:18001\"\n"),
+            valid_opts);
+    rejects(actor_cfg("    network:\n      protocol: 42\n"), valid_opts);
+    rejects(actor_cfg("    instances: 2\n    network:\n      tcp: "
+                      "\"127.0.0.1:18001\"\n      protocol:\n"
+                      "        envelope:\n          type: lenprefix\n"
+                      "        body:\n          codec: json\n"),
+            valid_opts);
+    rejects(actor_cfg("    rpc: 42\n"), valid_opts);
+    rejects(actor_cfg("    restart:\n      policy: sometimes\n"), valid_opts);
+
+    // network.protocol validators reached through the actor pipeline.
+    rejects(actor_cfg("    network:\n      tcp: \"127.0.0.1:18400\"\n      "
+                      "protocol: {}\n"),
+            valid_opts);
+    rejects(proto_cfg("        name:\n          k: v\n"), valid_opts);
+    rejects(proto_cfg("        body: 42\n"), valid_opts);
+    rejects(proto_cfg("        body:\n          codec: bogus\n"), valid_opts);
+    rejects(proto_cfg("        body:\n          codec: raw\n          "
+                      "catalog:\n            k: v\n"),
+            valid_opts);
+    rejects(proto_cfg("        body:\n          codec: raw\n          "
+                      "provider: \"\"\n"),
+            valid_opts);
+    rejects(proto_cfg("        body:\n          codec: raw\n          "
+                      "provider:\n            k: v\n"),
+            valid_opts);
+    rejects(proto_cfg("        envelope: 42\n"), valid_opts);
+    rejects(proto_cfg("        envelope:\n          type:\n            "
+                      "k: v\n"),
+            valid_opts);
+    rejects(proto_cfg("        envelope:\n          type: lenprefix\n"
+                      "          length_includes_header: 123\n"),
+            valid_opts);
+    rejects(proto_cfg("        envelope:\n          type: lenprefix\n"
+                      "          delimiter: \"\"\n"),
+            valid_opts);
+    rejects(proto_cfg("        envelope:\n          type: lenprefix\n"
+                      "          delimiter:\n            k: v\n"),
+            valid_opts);
+    rejects(proto_cfg("        routing: 42\n"), valid_opts);
+    rejects(proto_cfg("        routing:\n          source: none\n"
+                      "          lazy_decode: 5\n"),
+            valid_opts);
+    rejects(proto_cfg("        routes: []\n"), valid_opts);
+
+    // shutdown.timeout cross-field checks.
+    rejects(
+        "app:\n  name: s\nshutdown:\n  timeout:\n    total: 100\n"
+        "    service_drain: 200\n",
+        no_actors());
+    rejects(
+        "app:\n  name: s\nshutdown:\n  timeout:\n    total: 100\n"
+        "    service_stop: 500\n",
+        no_actors());
+    rejects(
+        "app:\n  name: s\nshutdown:\n  timeout:\n    total: 100\n"
+        "    plugin_shutdown: 500\n",
+        no_actors());
+
+    shield::config::reset_config();
+}
+
+// The rpc.routes failure paths also run against a null error sink: each
+// rejection below drives the `if (error)` false arm of one
+// validate_actor_rpc_routes check while the return value still reports it.
+
+BOOST_AUTO_TEST_CASE(ValidateNullErrorSinkRejectsInvalidRpcRoutes) {
+    const auto opts = RuntimeValidationOptions{};
+    const std::string prefix = "    rpc:\n      routes:\n";
+    const std::string r1 = prefix + "        - id: 1\n          binding: b\n";
+    const auto rejects = [&](const std::string& yaml) {
+        shield::config::reset_config();
+        shield::config::global_config().load_yaml_string(yaml);
+        BOOST_CHECK_MESSAGE(
+            !shield::config::validate_runtime_config(opts, nullptr),
+            "expected rejection with null error sink: " << yaml);
+    };
+
+    // routes must be an array.
+    rejects(actor_cfg("    rpc:\n      routes: 42\n"));
+    // Each sequence item must be a map.
+    rejects(actor_cfg(prefix + "        - 42\n"));
+    // id is required (missing key throws) and must parse as a positive int.
+    rejects(actor_cfg(prefix + "        - name: noid\n"
+                               "          binding: b\n"));
+    rejects(actor_cfg(prefix + "        - id: 0\n"
+                               "          binding: b\n"));
+    // Duplicate ids are rejected.
+    rejects(actor_cfg(r1 + "        - id: 1\n          binding: c\n"));
+    // binding is the one required string and must not be empty.
+    rejects(actor_cfg(prefix + "        - id: 1\n          name: nb\n"));
+    rejects(actor_cfg(prefix + "        - id: 1\n          binding: \"\"\n"));
+    // Removed addressing keys are rejected outright.
+    rejects(actor_cfg(r1 + "          schema_id: 42\n"));
+    // Optional boolean keys must be booleans.
+    rejects(actor_cfg(r1 + "          requires_auth: 7\n"));
+    rejects(actor_cfg(r1 + "          lazy_decode: 7\n"));
+    // Optional string keys must be strings.
+    rejects(actor_cfg(prefix + "        - id: 1\n"
+                               "          name: n1\n"
+                               "          owner_service:\n"
+                               "            k: v\n"
+                               "          binding: b\n"));
+    // Duplicate non-empty names are rejected.
+    rejects(actor_cfg(prefix + "        - id: 1\n"
+                               "          name: dup\n"
+                               "          binding: b\n"
+                               "        - id: 2\n"
+                               "          name: dup\n"
+                               "          binding: c\n"));
+
+    shield::config::reset_config();
+}
+
+// An absolute script path that does not exist must fall through every
+// resolution step and be reported by the resolve loop.
+
+BOOST_AUTO_TEST_CASE(ValidateAbsoluteMissingScriptFallsThroughToError) {
+    expect_invalid(
+        "app:\n  name: r\nactors:\n  - name: a\n    script: "
+        "/nonexistent/cov_abs_missing.lua\n",
+        RuntimeValidationOptions{}, "does not exist");
+}
+
+// lua.script_path hit and miss: a miss must be reported, not silently
+// accepted.
+
+BOOST_AUTO_TEST_CASE(ValidateLuaScriptPathMissReported) {
+    expect_invalid(
+        "app:\n  name: r\nlua:\n  script_path: cov_cfg_tmp/lua_scripts\n"
+        "actors:\n  - name: a\n    script: cov_missing_lp.lua\n",
+        RuntimeValidationOptions{}, "does not exist");
+}
+
+// Duplicate-route detection keys on non-empty names only: two nameless
+// routes are distinguished by id.
+
+BOOST_AUTO_TEST_CASE(ValidateRouteEmptyNameSkipsDuplicateCheck) {
+    expect_valid(actor_cfg("    rpc:\n      routes:\n"
+                           "        - id: 1\n          binding: b1\n          "
+                           "name: \"\"\n"
+                           "        - id: 2\n          binding: b2\n          "
+                           "name: \"\"\n"),
+                 RuntimeValidationOptions{});
+}
+
+// The remaining two restart.policy values are accepted.
+
+BOOST_AUTO_TEST_CASE(ValidateRestartPolicyOnFailureAndNeverAccepted) {
+    const auto opts = RuntimeValidationOptions{};
+    expect_valid(actor_cfg("    restart:\n      policy: on-failure\n"), opts);
+    expect_valid(actor_cfg("    restart:\n      policy: never\n"), opts);
+}
+
+// info and error complete the accepted log.level set.
+
+BOOST_AUTO_TEST_CASE(ValidateLogLevelInfoAndErrorAccepted) {
+    const auto opts = no_actors();
+    expect_valid("app:\n  name: l\nlog:\n  level: info\n", opts);
+    expect_valid("app:\n  name: l\nlog:\n  level: error\n", opts);
+}
+
+// A lua.vm block without a mode key keeps the default mode.
+
+BOOST_AUTO_TEST_CASE(ValidateLuaVmWithoutModeIsValid) {
+    expect_valid("app:\n  name: v\nlua:\n  vm: {}\n", no_actors());
+}
+
+// Each actor network int-range bound rejects its own key, driving every
+// link of the five-way range-check chain.
+
+BOOST_AUTO_TEST_CASE(ValidateNetworkIntRangeBounds) {
+    const auto opts = RuntimeValidationOptions{};
+    const std::string base =
+        "    network:\n      tcp: \"127.0.0.1:18500\"\n      protocol:\n"
+        "        envelope:\n          type: lenprefix\n"
+        "        body:\n          codec: json\n";
+    expect_invalid(actor_cfg(base + "      max_connections_per_ip: 0\n"), opts,
+                   "max_connections_per_ip must be between");
+    expect_invalid(actor_cfg(base + "      max_frame_size: 0\n"), opts,
+                   "max_frame_size must be between");
+    expect_invalid(actor_cfg(base + "      max_session_send_queue: -1\n"), opts,
+                   "max_session_send_queue must be between");
+    expect_invalid(actor_cfg(base + "      read_idle_timeout: 86400001\n"),
+                   opts, "read_idle_timeout must be between");
+}
+
+// shutdown without a timeout key is accepted (nothing to cross-check).
+
+BOOST_AUTO_TEST_CASE(ValidateShutdownWithoutTimeoutIsValid) {
+    expect_valid("app:\n  name: s\nshutdown: {}\n", no_actors());
+}
+
+// subtree_json dotted paths: descending two levels, a scalar segment, a
+// leading dot, and a null-valued key all behave as documented.
+
+BOOST_AUTO_TEST_CASE(SubtreeJsonDottedPathAndEdgeCases) {
+    Config c;
+    BOOST_REQUIRE(
+        c.load_yaml_string("l1:\n  l2:\n    leaf: 7\ns: "
+                           "str\nn:\n"));
+    BOOST_CHECK_NE(shield::config::subtree_json(c, "l1.l2").find("leaf"),
+                   std::string::npos);
+    BOOST_CHECK_NE(shield::config::subtree_json(c, "l1.l2.leaf").find("7"),
+                   std::string::npos);
+    // A scalar stops the walk: any deeper path yields the empty document.
+    BOOST_CHECK_EQUAL(shield::config::subtree_json(c, "s.x"), "{}");
+    // An empty segment (leading dot) is undefined.
+    BOOST_CHECK_EQUAL(shield::config::subtree_json(c, ".x"), "{}");
+    // A null-valued key is treated as missing.
+    BOOST_CHECK_EQUAL(shield::config::subtree_json(c, "n"), "{}");
+}
+
+// An rpc block without routes leaves the descriptor source empty.
+
+BOOST_AUTO_TEST_CASE(RuntimeActorsRpcWithoutRoutes) {
+    shield::config::reset_config();
+    BOOST_CHECK(shield::config::global_config().load_yaml_string(
+        "app:\n  name: ra\nactors:\n  - name: a\n    script: " + g_script_abs +
+        "\n    rpc: {}\n"));
+    const auto actors = shield::config::runtime_actors();
+    BOOST_REQUIRE_EQUAL(actors.size(), 1U);
+    BOOST_CHECK_EQUAL(actors[0].rpc_routes_json, "[]");
+    shield::config::reset_config();
+}

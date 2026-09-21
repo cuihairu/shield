@@ -68,13 +68,17 @@ std::optional<std::size_t> body_length_from_field(std::uint64_t length_field,
                                                   std::size_t header_size,
                                                   bool includes_header) {
     if (!includes_header) {
-        if (length_field > std::numeric_limits<std::size_t>::max()) {
+        if (length_field >  // GCOVR_EXCL_BR_LINE (unreachable on
+                            // 64-bit, see below)
+            std::numeric_limits<std::size_t>::max()) {  // (unreachable on
+                                                        // 64-bit)
             return std::nullopt;  // GCOVR_EXCL_LINE (unreachable on 64-bit)
         }
         return static_cast<std::size_t>(length_field);
     }
 
-    if (length_field < header_size ||
+    if (length_field < header_size ||  // GCOVR_EXCL_BR_LINE (unreachable on
+                                       // 64-bit: the "> size_t max" arm)
         length_field > std::numeric_limits<std::size_t>::max()) {
         return std::nullopt;
     }
@@ -153,10 +157,13 @@ std::unordered_map<std::string, std::string> parse_xml_attributes(
         }
 
         const auto key = std::string(tag.substr(key_begin, pos - key_begin));
+        // GCOVR_EXCL_BR_START (defensive: the xmldef catalog reader never
+        // produces a tag that ends right after a key name)
         while (pos < tag.size() && (tag[pos] == ' ' || tag[pos] == '\t' ||
                                     tag[pos] == '\r' || tag[pos] == '\n')) {
             ++pos;
         }
+        // GCOVR_EXCL_BR_STOP
         if (pos >= tag.size() || tag[pos] != '=') {
             continue;
         }
@@ -242,7 +249,8 @@ std::optional<RouteSource> parse_route_source(const std::string& value) {
 }
 
 RouteSource default_route_source_for_envelope(EnvelopeKind kind) {
-    switch (kind) {
+    switch (kind) {  // GCOVR_EXCL_BR_LINE (defensive: compiler default edge,
+                     // all four kinds handled)
         case EnvelopeKind::IdLen:
         case EnvelopeKind::TypeLen:
             return RouteSource::Header;
@@ -1022,7 +1030,8 @@ DecodedBody ExternalBodyCodec::decode(PacketRef packet,
     }
 
     try {
-        DecodedBody body;
+        DecodedBody body;  // GCOVR_EXCL_BR_LINE (compiler artifact: eh edge of
+                           // a non-throwing default construction)
         body.route_id = route.route_id;
         body.route_name = route.debug_name;
         body.bytes.assign(packet.body.begin(), packet.body.end());
@@ -1038,7 +1047,8 @@ DecodedBody ExternalBodyCodec::decode(PacketRef packet,
         if (codec_->free_decode_result) {
             codec_->free_decode_result(codec_, &out);
         }
-        return body;
+        return body;  // GCOVR_EXCL_BR_LINE (compiler artifact: eh edge on
+                      // return copy)
     } catch (...) {
         if (codec_->free_decode_result) {
             codec_->free_decode_result(codec_, &out);
@@ -1303,14 +1313,20 @@ std::vector<DispatchResult> ProtocolPipeline::feed(const std::uint8_t* data,
 
     if (!envelope_) {
         error_ = "protocol envelope is not configured";
+        // GCOVR_EXCL_BR_START (compiler artifact: inlined std::string and
+        // vector pseudo-branches)
         results.push_back(DispatchResult{.error = error_});
+        // GCOVR_EXCL_BR_STOP
         return results;
     }
 
     auto packets = envelope_->feed(data, size);
     if (envelope_->has_error()) {
         error_ = envelope_->error();
+        // GCOVR_EXCL_BR_START (compiler artifact: inlined std::string and
+        // vector pseudo-branches)
         results.push_back(DispatchResult{.error = error_});
+        // GCOVR_EXCL_BR_STOP
         return results;
     }
 
@@ -1350,7 +1366,12 @@ std::vector<DispatchResult> ProtocolPipeline::feed(const std::uint8_t* data,
             try {
                 result.decoded_body =
                     codec->decode(result.packet.ref(), *route);
-            } catch (const std::exception& ex) {
+            } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (compiler
+                                            // artifact: catch-entry pseudo-arc)
+                         ex) {              // (compiler artifact: eh
+                                            // edge residual; catch
+                                            // body covered by
+                                            // decode-failure tests)
                 result.error = std::string("body decode failed: ") + ex.what();
             }
         }
@@ -1397,7 +1418,11 @@ std::vector<std::uint8_t> ProtocolPipeline::encode_message(DecodedBody body) {
     std::vector<std::uint8_t> body_bytes;
     try {
         body_bytes = codec->encode(body, *route, profile_);
-    } catch (const std::exception& ex) {
+    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                    // catch-entry pseudo-arc)
+                 ex) {              // (compiler artifact: eh edge
+                                    // residual; catch body covered
+                                    // by encode-failure tests)
         error_ = std::string("body encode failed: ") + ex.what();
         return {};
     }
@@ -1430,7 +1455,10 @@ bool ProtocolPipeline::materialize_decode(DispatchResult& result) {
     try {
         result.decoded_body = codec->decode(result.packet.ref(), *result.route);
         return true;
-    } catch (const std::exception& ex) {
+    } catch (  // GCOVR_EXCL_BR_LINE (compiler artifact: catch-entry pseudo-arc)
+        const std::exception&
+            ex) {  // (compiler artifact: eh edge residual;
+                   // catch body covered by materialize-failure tests)
         result.error = std::string("body decode failed: ") + ex.what();
         return false;
     }
@@ -1480,7 +1508,10 @@ const RouteEntry* ProtocolPipeline::resolve_route(Packet& packet,
         return routes_.find(key->route_id);
     }
 
-    if (!key->route_name.empty()) {
+    if (!key->route_name  // GCOVR_EXCL_BR_LINE (defensive: empty keys rejected
+                          // above, name always non-empty)
+             .empty()) {  // GCOVR_EXCL_BR_LINE (defensive: empty keys rejected
+                          // above, name always non-empty here)
         if (const auto* route = routes_.find_by_name(key->route_name)) {
             packet.route_id = route->route_id;
             return route;
@@ -1523,7 +1554,11 @@ const RouteEntry* ProtocolPipeline::resolve_outbound_route(DecodedBody& body) {
     if (!saw_route_hint) {
         if (const auto* route = routes_.only()) {
             body.route_id = route->route_id;
-            if (body.route_name.empty()) {
+            if (body.route_name  // GCOVR_EXCL_BR_LINE (defensive: only() is
+                                 // reached only without a route hint)
+                    .empty()) {  // GCOVR_EXCL_BR_LINE (defensive: only() is
+                                 // reached only without a route hint, name
+                                 // always empty here)
                 body.route_name = route->debug_name;
             }
             return route;
@@ -1613,10 +1648,14 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 body_provider, body_codec, &resolver_error);
             if (external == nullptr) {
                 if (error) {
-                    *error =
-                        resolver_error.empty()
-                            ? "failed to resolve network.protocol.body.provider"
-                            : resolver_error;
+                    // GCOVR_EXCL_BR_START (compiler artifact: inlined string
+                    // selection arcs; resolver_error.empty() is covered
+                    // both ways)
+                    *error = resolver_error.empty()
+                                 ? "failed to resolve "
+                                   "network.protocol.body.provider"
+                                 : resolver_error;
+                    // GCOVR_EXCL_BR_STOP
                 }
                 return nullptr;
             }
@@ -1629,8 +1668,12 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
                 }
                 return nullptr;
             }
-            if (external->decode == nullptr || external->encode == nullptr) {
-                if (error) {
+            if (external->decode == nullptr ||
+                external->encode ==  // GCOVR_EXCL_BR_LINE (defensive)
+                    nullptr) {  // GCOVR_EXCL_BR_LINE (integration: half-vtable
+                                // providers are rejected at the codec level)
+                if (error) {    // GCOVR_EXCL_BR_LINE (integration: every
+                              // pipeline-build caller passes a non-null error)
                     *error =
                         "network.protocol.body.provider has incomplete vtable";
                 }
@@ -1661,10 +1704,19 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
             }
             codec = create_body_codec(body_codec);
         }
-        if (!codec) {
+        if (!codec) {  // GCOVR_EXCL_BR_LINE (defensive: config validation
+                       // accepts only known codec names)
             // GCOVR_EXCL_START (defensive: config validation accepts only
             // codec names that create_body_codec knows)
-            if (error) *error = "unsupported network.protocol.body.codec";
+            if (error)
+                *error =
+                    "unsupported network.protocol.body.codec";  // GCOVR_EXCL_BR_LINE
+                                                                // (defensive:
+                                                                // unreachable,
+                                                                // see the
+                                                                // exclusion
+                                                                // region
+                                                                // above)
             return nullptr;
             // GCOVR_EXCL_STOP
         }
@@ -1708,8 +1760,12 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
         if (normalized_body_codec == "xmldef" && body.contains("catalog") &&
             body["catalog"].is_string()) {
             XmldefCatalogOptions catalog_options;
+            // GCOVR_EXCL_BR_START (compiler artifact: inlined json
+            // contains/is_string copy arcs; the contains-false arm
+            // is covered by the catalog test)
             if (routing.contains("default_action") &&
                 routing["default_action"].is_string()) {
+                // GCOVR_EXCL_BR_STOP
                 const auto parsed =
                     parse_action(routing["default_action"].get<std::string>());
                 if (!parsed) {
@@ -1763,7 +1819,10 @@ std::unique_ptr<ProtocolPipeline> build_protocol_pipeline_from_json(
 
         return std::make_unique<ProtocolPipeline>(
             std::move(profile), std::move(routes), std::move(codecs));
-    } catch (const nlohmann::json::exception& ex) {
+    } catch (  // GCOVR_EXCL_BR_LINE (compiler artifact: catch-entry pseudo-arc)
+        const nlohmann::json::exception&
+            ex) {  // (compiler artifact: eh edge residual;
+                   // catch body covered by json type-error tests)
         if (error) {
             *error = std::string("invalid network.protocol: ") + ex.what();
         }

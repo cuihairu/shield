@@ -71,12 +71,17 @@ struct RawHttpClient {
         std::string response;
         char buf[4096];
         auto deadline = std::chrono::steady_clock::now() + timeout;
+        // Non-blocking reads with an explicit would_block retry: the peer's
+        // FIN (HTTP/1.0 close) leaves socket.available() == 0, so gating on
+        // available() would spin until the deadline instead of detecting EOF.
+        socket.non_blocking(true, ec);
         while (std::chrono::steady_clock::now() < deadline) {
-            if (!socket.available()) {
+            std::size_t n = socket.read_some(boost::asio::buffer(buf), ec);
+            if (ec == boost::asio::error::would_block ||
+                ec == boost::asio::error::try_again) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
-            std::size_t n = socket.read_some(boost::asio::buffer(buf), ec);
             if (ec || n == 0) break;
             response.append(buf, n);
         }
@@ -1323,6 +1328,22 @@ BOOST_AUTO_TEST_CASE(StartedPluginInstanceInHealthAndMetrics) {
     response = client.get("/ops/metrics");
     BOOST_REQUIRE(!response.empty());
     BOOST_CHECK(RawHttpClient::body(response).find("shield_plugin_instances") ==
+                std::string::npos);
+}
+
+// Branch coverage: a 'code' field that is present but not a string trips
+// the second half of the body-validation disjunction ({"code": 123}),
+// complementing the missing-field and valid-string shapes above.
+BOOST_AUTO_TEST_CASE(EvalRejectsNonStringCode) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response =
+        client.post_auth("/ops/eval", R"({"code": 123})", "cov-token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 400);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "error");
+    BOOST_CHECK(resp["message"].get<std::string>().find("missing 'code'") !=
                 std::string::npos);
 }
 

@@ -111,6 +111,32 @@ BOOST_AUTO_TEST_CASE(CliParseErrors) {
     BOOST_CHECK_EQUAL(run_args({"--node-id", "cov-node"}), 1);
 }
 
+BOOST_AUTO_TEST_CASE(NullAndEmptyArgvEntriesAreHandled) {
+    // argv[0] == nullptr falls back to the "shield" usage name.
+    {
+        std::vector<char*> argv{nullptr, const_cast<char*>("--help")};
+        BOOST_CHECK_EQUAL(shield::run(2, argv.data()), 0);
+    }
+    // An empty argv[0] falls back likewise.
+    {
+        char empty_name[] = "";
+        std::vector<char*> argv{empty_name, const_cast<char*>("--help")};
+        BOOST_CHECK_EQUAL(shield::run(2, argv.data()), 0);
+    }
+    // A null argument slot mid-list parses as an empty unknown argument.
+    {
+        std::vector<char*> argv{const_cast<char*>("shield"), nullptr,
+                                const_cast<char*>("--help")};
+        BOOST_CHECK_EQUAL(shield::run(3, argv.data()), 1);
+    }
+    // A null value slot after --config is a missing-value parse error.
+    {
+        std::vector<char*> argv{const_cast<char*>("shield"),
+                                const_cast<char*>("--config"), nullptr};
+        BOOST_CHECK_EQUAL(shield::run(3, argv.data()), 1);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(CheckConfigSucceeds) {
     fs::path cfg = minimal_config();
     BOOST_CHECK_EQUAL(run_args({"--config", cfg.string(), "--log-level",

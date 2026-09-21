@@ -193,8 +193,8 @@ BOOST_AUTO_TEST_CASE(CallHttpHandlerInvalidAndLuaError) {
     BOOST_REQUIRE(route2.has_value());
     nlohmann::json desc2;
     std::string error2;
-    BOOST_CHECK(fx.runtime.call_http_handler(*route2, {{"path", "/x"}}, desc2,
-                                             &error2));
+    BOOST_CHECK((fx.runtime.call_http_handler(*route2, {{"path", "/x"}}, desc2,
+                                              &error2)));
     BOOST_CHECK(desc2.contains("lua_error"));
     BOOST_CHECK(desc2["lua_error"].get<std::string>().find("http kaput") !=
                 std::string::npos);

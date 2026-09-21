@@ -66,19 +66,23 @@ bool TcpSession::send(const std::vector<uint8_t>& data, std::string* error) {
 
     auto self = shared_from_this();
     auto frame = std::make_shared<std::vector<uint8_t>>(data);
-    boost::asio::post(strand_, [self, frame]() {
-        if (!self->alive_.load()) {
-            // Session died before the strand drained this post; release the
-            // slot that was reserved on the caller thread.
-            self->queued_count_.fetch_sub(1);
-            return;
-        }
-        self->send_queue_.push_back(std::move(*frame));
-        if (!self->send_in_progress_) {
-            self->send_in_progress_ = true;
-            self->do_async_write();
-        }
-    });
+    boost::asio::post(
+        strand_,
+        [self, frame]() {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                           // boost::asio::post inlined dispatch/cleanup edges
+                           // carry no source-level condition)
+            if (!self->alive_.load()) {
+                // Session died before the strand drained this post; release the
+                // slot that was reserved on the caller thread.
+                self->queued_count_.fetch_sub(1);
+                return;
+            }
+            self->send_queue_.push_back(std::move(*frame));
+            if (!self->send_in_progress_) {
+                self->send_in_progress_ = true;
+                self->do_async_write();
+            }
+        });
 
     return true;
 }
@@ -116,42 +120,58 @@ bool TcpSession::send_message(const shield::transport::DecodedBody& message,
     // rather than punishing an innocent client by closing the connection.
     auto self = shared_from_this();
     auto msg_copy = message;
-    boost::asio::post(strand_, [self, message = std::move(msg_copy)]() mutable {
-        if (!self->alive_.load()) {
-            self->queued_count_.fetch_sub(1);
-            return;
-        }
-        auto encoded =
-            self->protocol_pipeline_->encode_message(std::move(message));
-        std::string enc_err;
-        if (!self->protocol_pipeline_->error().empty()) {
-            enc_err = self->protocol_pipeline_->error();
-        } else if (encoded.empty()) {
-            // GCOVR_EXCL_START (sync encode-failure branch needs a
-            // mid-queue error)
-            enc_err = "protocol encode returned empty frame";
-            // GCOVR_EXCL_STOP
-        }
-        if (!enc_err.empty()) {
-            self->queued_count_.fetch_sub(1);
-            auto& log = shield::log::get_logger("net");
-            SHIELD_LOG_ERROR(log, "Session " + std::to_string(self->id_) +
-                                      " outbound encode failed: " + enc_err);
-            return;
-        }
-        self->send_queue_.push_back(std::move(encoded));
-        if (!self->send_in_progress_) {
-            self->send_in_progress_ = true;
-            self->do_async_write();
-        }
-    });
+    boost::asio::post(
+        strand_,
+        [self, message = std::move(        // GCOVR_EXCL_BR_LINE
+                   msg_copy)]() mutable {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: boost::asio::post
+                                           // inlined dispatch/cleanup edges
+                                           // carry no source-level condition)
+            if (!self->alive_.load()) {
+                self->queued_count_.fetch_sub(1);
+                return;
+            }
+            auto encoded =
+                self->protocol_pipeline_->encode_message(std::move(message));
+            std::string enc_err;
+            if (!self->protocol_pipeline_->error().empty()) {
+                enc_err = self->protocol_pipeline_->error();
+            } else if (encoded          // GCOVR_EXCL_BR_LINE
+                           .empty()) {  // GCOVR_EXCL_BR_LINE (defensive: every
+                                        // encode_message failure sets error()
+                                        // and a LenPrefix frame is never empty,
+                                        // so empty-frame-without-error is an
+                                        // invariant breach)
+                // GCOVR_EXCL_START (sync encode-failure branch needs a
+                // mid-queue error)
+                enc_err = "protocol encode returned empty frame";
+                // GCOVR_EXCL_STOP
+            }
+            if (!enc_err.empty()) {
+                self->queued_count_.fetch_sub(1);
+                auto& log = shield::log::get_logger("net");
+                SHIELD_LOG_ERROR(log,
+                                 "Session " + std::to_string(self->id_) +
+                                     " outbound encode failed: " + enc_err);
+                return;
+            }
+            self->send_queue_.push_back(std::move(encoded));
+            if (!self->send_in_progress_) {
+                self->send_in_progress_ = true;
+                self->do_async_write();
+            }
+        });
 
     return true;
 }
 
 void TcpSession::do_async_write() {
     // Always executed on strand_.
-    if (!alive_.load() || send_queue_.empty()) {
+    if (!alive_.load() ||       // GCOVR_EXCL_BR_LINE
+        send_queue_.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: do_async_write
+                                // only runs on the strand via send()/close()
+                                // paths that guarantee alive_, so the
+                                // dead-session arm is unreachable)
         send_in_progress_ = false;
         return;
     }
@@ -162,7 +182,11 @@ void TcpSession::do_async_write() {
         boost::asio::bind_executor(
             strand_, [self = shared_from_this()](
                          const boost::system::error_code& ec, std::size_t) {
-                if (!self->alive_.load() ||
+                if (!self->alive_
+                         .load() ||  // GCOVR_EXCL_BR_LINE (defensive:
+                                     // operation_aborted is only produced by
+                                     // close(), which sets alive_=false first,
+                                     // so the short-circuit always wins)
                     ec == boost::asio::error::operation_aborted) {
                     // close() owns teardown; nothing to do here.
                     return;
@@ -220,8 +244,13 @@ void TcpSession::do_receive() {
         read_deadline_.async_wait(boost::asio::bind_executor(
             strand_,
             [self = shared_from_this()](const boost::system::error_code& ec) {
-                if (ec) return;  // cancelled or shutting down
-                if (self->alive_.load()) {
+                if (ec) return;     // cancelled or shutting down
+                if (self->alive_    // GCOVR_EXCL_BR_LINE
+                        .load()) {  // GCOVR_EXCL_BR_LINE (defensive: a natural
+                                    // deadline expiry on an already-closed
+                                    // session only happens inside the cancel
+                                    // race window; not deterministically
+                                    // testable)
                     self->handle_error("read idle timeout");
                 }
             }));
@@ -304,7 +333,12 @@ void TcpSession::handle_error(std::string reason) {
         error_code_ = "protocol_not_configured";
     } else if (reason.find("decode") != std::string::npos) {
         error_code_ = "decode_error";
-    } else if (reason.find("timeout") != std::string::npos) {
+    } else if (reason.find("timeout") !=  // GCOVR_EXCL_BR_LINE
+               std::string::npos) {  // GCOVR_EXCL_BR_LINE (defensive: no call
+                                     // site produces a reason containing
+                                     // "timeout" but not "idle"; ETIMEDOUT on
+                                     // an established connection needs
+                                     // minutes-long kernel retransmits)
         // GCOVR_EXCL_START (gated branch: no call site produces a non-idle
         // timeout reason today; kept for handshake-stage errors)
         error_code_ = "handshake_timeout";

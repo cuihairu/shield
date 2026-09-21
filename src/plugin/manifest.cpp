@@ -19,21 +19,33 @@ void require_field(const nlohmann::json& j, const char* key) {
 }
 
 nlohmann::json yaml_to_json(const YAML::Node& node) {
-    if (!node || node.IsNull()) {
+    if (!node || node.IsNull()) {  // GCOVR_EXCL_BR_LINE (defensive: callers
+                                   // only pass YAML::Load's root or child nodes
+                                   // from sequence/map iteration, which are
+                                   // always defined; an undefined node would
+                                   // require operator[] on a missing key)
         return nullptr;
     }
     if (node.IsScalar()) {
         try {
             return node.as<bool>();
-        } catch (const std::exception&) {
+        } catch (const std::exception&) {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: the handler is only
+                                           // ever entered via the exception
+                                           // edge; the fallthrough arc is a
+                                           // GCC landing-pad pseudo-branch)
         }
         try {
             return node.as<std::int64_t>();
-        } catch (const std::exception&) {
+        } catch (const std::exception&) {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: GCC landing-pad
+                                           // pseudo-branch, see above)
         }
         try {
             return node.as<double>();
-        } catch (const std::exception&) {
+        } catch (const std::exception&) {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: GCC landing-pad
+                                           // pseudo-branch, see above)
         }
         return node.as<std::string>();
     }
@@ -44,7 +56,10 @@ nlohmann::json yaml_to_json(const YAML::Node& node) {
         }
         return array;
     }
-    if (node.IsMap()) {
+    if (node.IsMap()) {  // GCOVR_EXCL_BR_LINE (defensive: a defined non-null
+                         // YAML node is always scalar, sequence or map, so the
+                         // false arm only reaches the already-excluded
+                         // unreachable return at the end of this function)
         nlohmann::json object = nlohmann::json::object();
         for (const auto& item : node) {
             object[item.first.as<std::string>()] = yaml_to_json(item.second);

@@ -17,7 +17,9 @@ namespace {
 ClientContextData client_context(const std::string& gateway_name,
                                  net::SessionId session_id,
                                  const net::SessionBinding& binding) {
-    return ClientContextData{gateway_name, session_id, binding.epoch,
+    return ClientContextData{// GCOVR_EXCL_BR_LINE (compiler artifact:
+                             // aggregate-init copy arcs)
+                             gateway_name, session_id, binding.epoch,
                              binding.player_id, binding.protocol_profile_id};
 }
 

@@ -1,13 +1,12 @@
 // Tests for PluginHost pipeline: scan/catalog/plan/resolve/load/create/start.
 #define BOOST_TEST_MODULE shield_plugin_host
 #include <boost/test/included/unit_test.hpp>
-
-#include "shield/plugin/plugin_host.hpp"
-#include "shield/plugin/plugin_library.hpp"
-
 #include <filesystem>
 #include <fstream>
 #include <string>
+
+#include "shield/plugin/plugin_host.hpp"
+#include "shield/plugin/plugin_library.hpp"
 
 namespace fs = std::filesystem;
 using namespace shield::plugin;
@@ -85,15 +84,24 @@ std::string make_manifest(std::string id,
                           std::string config_schema = kDefaultConfigSchema) {
     std::string manifest =
         "schema_version: 1\n"
-        "id: " + id + "\n"
-        "name: " + id + "\n"
+        "id: " +
+        id +
+        "\n"
+        "name: " +
+        id +
+        "\n"
         "version: 1.0.0\n"
         "kind: test\n"
         "entry: shield_plugin_get_v1\n"
         "library:\n"
-        "  linux: bin/" + minimal_library_name() + "\n"
-        "  macos: bin/" + minimal_library_name() + "\n"
-        "  windows: bin/" + minimal_library_name() + "\n";
+        "  linux: bin/" +
+        minimal_library_name() +
+        "\n"
+        "  macos: bin/" +
+        minimal_library_name() +
+        "\n"
+        "  windows: bin/" +
+        minimal_library_name() + "\n";
     if (provides.empty()) {
         manifest += "provides: []\n";
     } else {
@@ -125,7 +133,8 @@ fs::path make_minimal_package() {
     return root;
 }
 
-fs::path make_runtime_package(const std::string& root_name = "shield_plugin_runtime_test") {
+fs::path make_runtime_package(
+    const std::string& root_name = "shield_plugin_runtime_test") {
     fs::path root = unique_root(root_name);
     fs::create_directories(root / "minimal.test" / "bin");
     std::ofstream(root / "minimal.test" / "manifest.yaml")
@@ -144,7 +153,8 @@ struct MinimalPluginCounters {
     void (*reset_counts)() = nullptr;
 };
 
-MinimalPluginCounters load_minimal_plugin_counters(const fs::path& library_path) {
+MinimalPluginCounters load_minimal_plugin_counters(
+    const fs::path& library_path) {
     MinimalPluginCounters counters;
     std::string err;
     counters.lib = PluginLibrary::load(library_path.string(), err);
@@ -212,7 +222,8 @@ BOOST_AUTO_TEST_CASE(scan_ignores_directories_without_manifest_yaml) {
 BOOST_AUTO_TEST_CASE(catalog_rejects_duplicate_id) {
     auto root = make_minimal_package();
     fs::create_directories(root / "minimal.test.dup");
-    std::ofstream(root / "minimal.test.dup" / "manifest.yaml") << kMinimalManifest;
+    std::ofstream(root / "minimal.test.dup" / "manifest.yaml")
+        << kMinimalManifest;
     PluginHost host;
     host.scan(root.string());
     std::string err;
@@ -383,23 +394,19 @@ BOOST_AUTO_TEST_CASE(resolve_detects_cycle) {
     fs::create_directories(root / "a" / "bin");
     fs::create_directories(root / "b" / "bin");
     std::ofstream(root / "a" / "manifest.yaml")
-        << make_manifest(
-               "a",
-               "iface.a",
-               "  - name: b\n"
-               "    interface: iface.b\n"
-               "    optional: false\n",
-               "config_schema:\n"
-               "  type: object\n");
+        << make_manifest("a", "iface.a",
+                         "  - name: b\n"
+                         "    interface: iface.b\n"
+                         "    optional: false\n",
+                         "config_schema:\n"
+                         "  type: object\n");
     std::ofstream(root / "b" / "manifest.yaml")
-        << make_manifest(
-               "b",
-               "iface.b",
-               "  - name: a\n"
-               "    interface: iface.a\n"
-               "    optional: false\n",
-               "config_schema:\n"
-               "  type: object\n");
+        << make_manifest("b", "iface.b",
+                         "  - name: a\n"
+                         "    interface: iface.a\n"
+                         "    optional: false\n",
+                         "config_schema:\n"
+                         "  type: object\n");
 
     PluginHost host;
     host.scan(root.string());
@@ -407,8 +414,14 @@ BOOST_AUTO_TEST_CASE(resolve_detects_cycle) {
     BOOST_REQUIRE(host.catalog(err));
     PluginConfig cfg;
     cfg.directory = root.string();
-    InstanceDecl ia; ia.id = "ia"; ia.package = "a"; ia.dependencies["b"] = "ib";
-    InstanceDecl ib; ib.id = "ib"; ib.package = "b"; ib.dependencies["a"] = "ia";
+    InstanceDecl ia;
+    ia.id = "ia";
+    ia.package = "a";
+    ia.dependencies["b"] = "ib";
+    InstanceDecl ib;
+    ib.id = "ib";
+    ib.package = "b";
+    ib.dependencies["a"] = "ia";
     cfg.instances.push_back(ia);
     cfg.instances.push_back(ib);
     BOOST_CHECK(!host.plan_and_resolve(cfg, err));
@@ -437,7 +450,8 @@ BOOST_AUTO_TEST_CASE(load_create_start_pipeline_and_binding_access) {
         const Instance* inst = host.find_instance("m");
         BOOST_REQUIRE(inst);
         BOOST_CHECK(inst->state == State::started);
-        auto* iface = host.get_by_binding<MinimalTestInterface>("minimal.default");
+        auto* iface =
+            host.get_by_binding<MinimalTestInterface>("minimal.default");
         BOOST_REQUIRE(iface != nullptr);
         BOOST_CHECK_EQUAL(iface->marker, 0x5A17);
         host.shutdown();
@@ -494,8 +508,7 @@ BOOST_AUTO_TEST_CASE(required_start_failure_rolls_back_started_dependencies) {
     auto root = unique_root("shield_plugin_required_start_failure_test");
     fs::create_directories(root / "minimal.test" / "bin");
     std::ofstream(root / "minimal.test" / "manifest.yaml")
-        << make_manifest("minimal.test",
-                         "minimal.test.iface",
+        << make_manifest("minimal.test", "minimal.test.iface",
                          "  - name: dep\n"
                          "    interface: minimal.test.iface\n"
                          "    optional: true\n");
@@ -538,12 +551,12 @@ BOOST_AUTO_TEST_CASE(required_start_failure_rolls_back_started_dependencies) {
     fs::remove_all(root);
 }
 
-BOOST_AUTO_TEST_CASE(declared_dependency_is_injected_and_wrong_interface_is_blocked) {
+BOOST_AUTO_TEST_CASE(
+    declared_dependency_is_injected_and_wrong_interface_is_blocked) {
     auto root = unique_root("shield_plugin_dependency_test");
     fs::create_directories(root / "minimal.test" / "bin");
     std::ofstream(root / "minimal.test" / "manifest.yaml")
-        << make_manifest("minimal.test",
-                         "minimal.test.iface",
+        << make_manifest("minimal.test", "minimal.test.iface",
                          "  - name: dep\n"
                          "    interface: minimal.test.iface\n"
                          "    optional: true\n");
@@ -564,8 +577,9 @@ BOOST_AUTO_TEST_CASE(declared_dependency_is_injected_and_wrong_interface_is_bloc
         consumer.id = "consumer";
         consumer.package = "minimal.test";
         consumer.dependencies["dep"] = "dep";
-        consumer.config = nlohmann::json{{"require_dependency", true},
-                                         {"wrong_interface_must_be_blocked", true}};
+        consumer.config =
+            nlohmann::json{{"require_dependency", true},
+                           {"wrong_interface_must_be_blocked", true}};
         cfg.instances.push_back(consumer);
 
         std::string err;
@@ -576,7 +590,8 @@ BOOST_AUTO_TEST_CASE(declared_dependency_is_injected_and_wrong_interface_is_bloc
     fs::remove_all(root);
 }
 
-BOOST_AUTO_TEST_CASE(required_register_lua_failure_is_reported_without_stopping_instance) {
+BOOST_AUTO_TEST_CASE(
+    required_register_lua_failure_is_reported_without_stopping_instance) {
     auto root = make_runtime_package("shield_plugin_lua_failure_required_test");
     {
         PluginHost host;
@@ -595,7 +610,8 @@ BOOST_AUTO_TEST_CASE(required_register_lua_failure_is_reported_without_stopping_
         BOOST_CHECK(host.find_instance("m")->state == State::started);
 
         err.clear();
-        BOOST_CHECK(!host.register_lua_all(reinterpret_cast<lua_State*>(0x1), err));
+        BOOST_CHECK(
+            !host.register_lua_all(reinterpret_cast<lua_State*>(0x1), err));
         BOOST_TEST(err.find("plugin.lua_register.failed") != std::string::npos);
         BOOST_REQUIRE(host.find_instance("m"));
         BOOST_CHECK(host.find_instance("m")->state == State::started);
@@ -621,12 +637,30 @@ BOOST_AUTO_TEST_CASE(optional_register_lua_failure_is_recorded_and_skipped) {
 
         std::string err;
         BOOST_REQUIRE_MESSAGE(host.startup(cfg, err), err);
-        BOOST_CHECK(host.register_lua_all(reinterpret_cast<lua_State*>(0x1), err));
+        BOOST_CHECK(
+            host.register_lua_all(reinterpret_cast<lua_State*>(0x1), err));
         const Instance* inst = host.find_instance("m");
         BOOST_REQUIRE(inst);
         BOOST_CHECK(inst->state == State::started);
-        BOOST_TEST(inst->last_error.find("plugin.lua_register.failed") != std::string::npos);
+        BOOST_TEST(inst->last_error.find("plugin.lua_register.failed") !=
+                   std::string::npos);
         host.shutdown();
     }
     fs::remove_all(root);
+}
+
+// Resolve guards of PluginLibrary: resolving on an unloaded library returns
+// null, and so does resolving a null symbol name on a loaded one.
+BOOST_AUTO_TEST_CASE(plugin_library_resolve_guards) {
+    PluginLibrary unloaded;
+    BOOST_CHECK(!unloaded.is_loaded());
+    BOOST_CHECK(unloaded.resolve("any_symbol") == nullptr);
+
+    auto so = fs::path(SHIELD_TEST_PLUGINS_DIR) / "minimal.test" / "bin" /
+              minimal_library_name();
+    std::string err;
+    PluginLibrary lib = PluginLibrary::load(so.string(), err);
+    BOOST_REQUIRE_MESSAGE(lib.is_loaded(), err);
+    BOOST_CHECK(lib.resolve(nullptr) == nullptr);
+    BOOST_CHECK(lib.resolve("shield_plugin_get_v1") != nullptr);
 }
