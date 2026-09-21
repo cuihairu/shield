@@ -132,14 +132,26 @@ jobs:
         shell: bash
         run: ctest --test-dir build --build-config Release --output-on-failure
 
-      # A test that dies on a signal leaves a .ips crash report (signed
-      # frames for the crashing thread) under DiagnosticReports; dump the
-      # shield ones so a platform-only crash is debuggable from CI logs.
+      # boost.test catches SIGSEGV and exits gracefully, so macOS never
+      # writes a .ips crash report. Re-run the failed suites natively with
+      # --catch_system_errors=no to let the signal through, then dump the
+      # reports (signed frames for the crashing thread) from DiagnosticReports.
       - name: Collect crash reports
         if: failure() && runner.os == 'macOS'
         shell: bash
         run: |
           dir="$HOME/Library/Logs/DiagnosticReports"
+          ctest --test-dir build --build-config Release 2>&1 |
+            sed -n 's|^[0-9]*/[0-9]* Test #[0-9]*: \([A-Za-z0-9_]*\) .*\*\*\*Failed.*|\1|p' |
+            sort -u |
+            while IFS= read -r t; do
+              bin=$(find build -name "$t" -type f | head -1)
+              if [ -n "$bin" ]; then
+                echo "native rerun (expect a crash): $t"
+                "$bin" --catch_system_errors=no || true
+              fi
+            done
+          sleep 10
           ls -la "$dir" 2>/dev/null || true
           found=0
           while IFS= read -r f; do
