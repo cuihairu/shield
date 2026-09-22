@@ -22,6 +22,7 @@
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
 #include "shield/plugin/plugin_library.hpp"
+#include "shield/plugin/pool_stats.h"
 
 namespace shield::config {
 class Config;
@@ -181,6 +182,26 @@ PluginConfig load_plugin_config();
 // parse_plugin_config(Config) above.
 PluginConfig parse_plugin_config_json(std::string_view json_text);
 
+// Outcome of one instance's pool-stats collection. See
+// docs/plugin-pool-stats.md.
+enum class PoolStatsStatus {
+    ok,                 // stats valid
+    unavailable,        // get_stats returned 1 (pool not initialized, etc.)
+    unsupported_state,  // get_stats returned 2 (or any >2)
+    error,              // get_stats returned <0; see error_code/message
+};
+
+struct PoolStatsResult {
+    std::string instance_id;  // e.g. "primary_db"
+    std::string plugin_id;    // e.g. "database.mysql"
+    std::string pool_name;    // pool within the instance; "main" for v1
+    PoolStatsStatus status = PoolStatsStatus::unavailable;
+    int raw_status_code = 0;    // original get_stats return value
+    std::string error_code;     // host-generated, mapped from raw_status_code
+    std::string error_message;  // host-generated generic description
+    shield_pool_stats stats{};  // valid only when status == ok
+};
+
 // ---------------------------------------------------------------------------
 // PluginHost
 // ---------------------------------------------------------------------------
@@ -246,6 +267,12 @@ public:
     std::vector<PackageInfo> list_packages() const;
     std::vector<InstanceInfo> list_instances() const;
     std::optional<BindingInfo> get_binding(std::string_view name) const;
+
+    // --- pool observability ---
+    // Append one PoolStatsResult per STARTED instance whose manifest declares
+    // shield.pool.stats.v1. Instances without the declaration are skipped.
+    // Returns false only on hard errors (e.g. null host state).
+    bool collect_pool_stats(std::vector<PoolStatsResult>& out) const;
 
 private:
     // Resolve a binding name to a raw interface vtable pointer (used by the

@@ -33,6 +33,7 @@
 #include "shield/plugin/abi.h"
 #include "shield/plugin/cache.h"
 #include "shield/plugin/host_api.h"
+#include "shield/plugin/pool_stats.h"
 #include "shield/plugin/redis.h"
 #include "shield_lua_plugin_binding.hpp"
 
@@ -312,6 +313,36 @@ struct cache_instance {
     const shield_redis_v1* redis_driver = nullptr;
     void* redis_handle = nullptr;  // opaque handle from redis_driver->connect()
 };
+
+// shield.pool.stats.v1: redis++ does not expose live idle/in_use counters, so
+// only the configured cap is reported and every other field stays at the
+// host's -1 sentinel (unknown semantics from docs/plugin-pool-stats.md).
+int cache_pool_get_stats(struct shield_plugin_instance_v1* self,
+                         struct shield_pool_stats* out) {
+    auto* inst = reinterpret_cast<cache_instance*>(self);
+    if (!out) return -1;
+    out->max_size = inst->pool_size > 0 ? inst->pool_size : -1;
+    out->size = -1;
+    out->idle = -1;
+    out->in_use = -1;
+    out->waiters = -1;
+    out->acquire_timeout_total = -1;
+    out->acquire_total = -1;
+    out->create_total = -1;
+    out->destroy_total = -1;
+    out->eviction_total = -1;
+    out->health_check_failures_total = -1;
+    out->last_error_epoch_ms = -1;
+    return 0;
+}
+
+const shield_pool_stats_v1& cache_pool_stats_vtable() {
+    static const shield_pool_stats_v1 v{
+        sizeof(shield_pool_stats_v1),
+        &cache_pool_get_stats,
+    };
+    return v;
+}
 
 // Process-wide registry: instance_id -> cache_instance*. The callable Lua
 // table's __call metamethod resolves binding -> instance_id, then looks up
@@ -910,11 +941,13 @@ int cache_create(const shield_plugin_create_args_v1* args,
 
     inst->shell.struct_size = sizeof(shield_plugin_instance_v1);
     inst->shell.instance_id = inst->instance_id.c_str();
-    inst->shell.get_interface = [](shield_plugin_instance_v1*,
+    inst->shell.get_interface = [](shield_plugin_instance_v1* self,
                                    const char* iface,
                                    shield_error_v1*) -> const void* {
         if (iface && std::strcmp(iface, SHIELD_CACHE_INTERFACE) == 0)
             return &cache_vtable();
+        if (iface && std::strcmp(iface, SHIELD_POOL_STATS_INTERFACE) == 0)
+            return &cache_pool_stats_vtable();
         return nullptr;
     };
     inst->shell.start = [](shield_plugin_instance_v1* self,

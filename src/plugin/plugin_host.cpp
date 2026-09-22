@@ -127,6 +127,40 @@ void release_unstarted_handle(Instance& inst) {
     }
     inst.handle = nullptr;
 }
+
+// Sentinel-fill a shield_pool_stats so unset fields read as "unknown".
+void sentinel_fill_pool_stats(shield_pool_stats& s) {
+    s.struct_size = sizeof(shield_pool_stats);
+    s.max_size = -1;
+    s.size = -1;
+    s.idle = -1;
+    s.in_use = -1;
+    s.waiters = -1;
+    s.acquire_timeout_total = -1;
+    s.acquire_total = -1;
+    s.create_total = -1;
+    s.destroy_total = -1;
+    s.eviction_total = -1;
+    s.health_check_failures_total = -1;
+    s.last_error_epoch_ms = -1;
+}
+
+// Map a get_stats return code to (status, error_code). error_message stays
+// generic (filled by the caller); v1 has no plugin-side error channel.
+struct PoolStatsStatusMapping {
+    PoolStatsStatus status;
+    const char* code;
+};
+PoolStatsStatusMapping map_pool_stats_rc(int rc) {
+    if (rc == 0) return {PoolStatsStatus::ok, ""};
+    if (rc == 1)
+        return {PoolStatsStatus::unavailable, "pool_stats_unavailable"};
+    if (rc > 0) {
+        return {PoolStatsStatus::unsupported_state,
+                "pool_stats_unsupported_state"};
+    }
+    return {PoolStatsStatus::error, "pool_stats_internal_error"};
+}
 }  // namespace
 
 // CtxBundle and Impl are defined in plugin_host.hpp (they hold a unique_ptr
@@ -1201,6 +1235,60 @@ std::optional<BindingInfo> PluginHost::get_binding(
         }
     }
     return std::nullopt;
+}
+
+bool PluginHost::collect_pool_stats(std::vector<PoolStatsResult>& out) const {
+    for (const auto& inst : instances_) {
+        if (!inst.package ||  // GCOVR_EXCL_BR_LINE (defensive: every instance
+                              // that reaches start carries its resolved
+                              // package from plan_and_resolve)
+            inst.state != State::started ||
+            !inst.handle) {  // GCOVR_EXCL_BR_LINE (defensive: start_all marks
+                             // started only after a successful start, which
+                             // implies a live handle)
+            continue;
+        }
+        // Manifest is authoritative for discovery: undeclared instances are
+        // not collected even if they serve the vtable.
+        if (!provides_interface(inst.package, SHIELD_POOL_STATS_INTERFACE)) {
+            continue;
+        }
+        shield_error_v1 e{};
+        const auto* vt =
+            static_cast<const shield_pool_stats_v1*>(inst.handle->get_interface(
+                inst.handle, SHIELD_POOL_STATS_INTERFACE, &e));
+        // Defensive: start_all fails fast when a declared vtable is missing,
+        // so a started instance always serves one — unreachable via the
+        // public API.
+        if (vt == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive, see above)
+            continue;         // GCOVR_EXCL_LINE (defensive, see above)
+        }
+        if (vt->struct_size < sizeof(shield_pool_stats_v1) ||
+            vt->get_stats == nullptr) {
+            continue;
+        }
+
+        PoolStatsResult r;
+        r.instance_id = inst.id;
+        r.plugin_id = inst.package->manifest.id;
+        r.pool_name = "main";
+
+        shield_pool_stats stats{};
+        sentinel_fill_pool_stats(stats);
+        int rc = vt->get_stats(inst.handle, &stats);
+        r.raw_status_code = rc;
+        auto m = map_pool_stats_rc(rc);
+        r.status = m.status;
+        r.error_code = m.code;
+        if (r.status == PoolStatsStatus::error) {
+            r.error_message = "pool stats collection failed";
+        } else if (r.status == PoolStatsStatus::unavailable) {
+            r.error_message = "pool stats temporarily unavailable";
+        }
+        r.stats = stats;
+        out.push_back(std::move(r));
+    }
+    return true;
 }
 
 PluginHost& global_host() {

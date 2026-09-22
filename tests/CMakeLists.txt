@@ -191,6 +191,20 @@ add_test(NAME test_plugin_host COMMAND test_plugin_host)
 set_tests_properties(test_plugin_host PROPERTIES LABELS "plugin" TIMEOUT 15)
 shield_copy_runtime_dlls(test_plugin_host)
 
+# Pool stats collection (shield.pool.stats.v1)
+add_executable(test_pool_stats plugin/test_pool_stats.cpp)
+target_link_libraries(test_pool_stats
+    PRIVATE shield_plugin nlohmann_json::nlohmann_json
+            Boost::unit_test_framework Boost::headers)
+target_include_directories(test_pool_stats PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(test_pool_stats PRIVATE
+    SHIELD_TEST_PLUGINS_DIR="${CMAKE_BINARY_DIR}/test_plugins"
+    SHIELD_MINIMAL_TEST_PLUGIN_LIBRARY="${_shield_minimal_plugin_filename}")
+add_dependencies(test_pool_stats shield_minimal_test_plugin)
+add_test(NAME test_pool_stats COMMAND test_pool_stats)
+set_tests_properties(test_pool_stats PROPERTIES LABELS "plugin" TIMEOUT 15)
+shield_copy_runtime_dlls(test_pool_stats)
+
 if(SHIELD_BUILD_PLUGIN_PROTOBUF)
     find_package(Protobuf CONFIG REQUIRED)
     add_executable(test_protocol_protobuf_plugin

@@ -19,6 +19,8 @@ provides:
       - hash
       - ttl
       - counter
+  - interface: shield.pool.stats.v1
+    capabilities: []
 requires:
   - name: redis
     interface: shield.redis.v1
