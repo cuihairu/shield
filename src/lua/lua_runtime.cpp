@@ -25,6 +25,7 @@
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/lua/player_ref_box.hpp"
+#include "shield/lua/profile_sampler.hpp"
 #include "shield/plugin/plugin_host.hpp"
 
 namespace shield::lua {
@@ -1485,6 +1486,12 @@ bool LuaRuntime::invoke_coroutine(
             driving = std::make_unique<LuaServiceManager::DrivingGuard>(
                 *manager, co, "init-drive");
         }
+        // Arm the brand-new handler coroutine before its first drive: Lua
+        // 5.5 does not propagate hooks to new threads, and this coroutine
+        // was created after install — the count hook would never see it.
+        // No-op (one thread_local read) while no sampling session is on
+        // this owner thread.
+        ProfileSampler::sweep_active();
         const int status = lua_resume(co, L, 0, &nres);
         if (status == LUA_OK) {
             // Terminal: this resume observed the coroutine complete.

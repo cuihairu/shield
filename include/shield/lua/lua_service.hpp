@@ -335,14 +335,21 @@ public:
     // exits mid-session. See docs/superpowers/plans/
     // 2026-09-22-ops-profile-v1.md.
 
-    /// @brief Start a sampling session on `service_id`. Fails (false +
-    /// `error`) when the service is unpublished or a session is already
-    /// active (any service). The session auto-stops after
-    /// config.duration_ms.
-    bool profile_start(const std::string& service_id,
-                       ProfileSessionConfig config,
-                       std::shared_ptr<std::promise<nlohmann::json>> done,
-                       std::string* error);
+    /// @brief Outcome of a profile_start attempt; maps 1:1 to HTTP
+    /// semantics (started / 404 / 409 / 404-gone).
+    enum class ProfileStartResult {
+        kStarted,
+        kServiceNotFound,
+        kSessionActive,
+        kDispatchLost,  ///< actor vanished between check and enqueue
+    };
+
+    /// @brief Start a sampling session on `service_id`. Fails when the
+    /// service is unpublished or a session is already active (any
+    /// service). The session auto-stops after config.duration_ms.
+    ProfileStartResult profile_start(
+        const std::string& service_id, ProfileSessionConfig config,
+        std::shared_ptr<std::promise<nlohmann::json>> done);
 
     /// @brief Stop the active session (manual stop path; the duration
     /// expiry drives the same code). Fails when no session is active.

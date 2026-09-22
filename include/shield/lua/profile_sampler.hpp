@@ -20,9 +20,10 @@ namespace shield::lua {
 
 /// @brief Owner-thread sampling session bound to one VM.
 ///
-/// The active sampler is found by the C hook through a thread_local
-/// pointer: the hook fires while the owner thread executes bytecode, so
-/// the TLS lookup can never cross threads.
+/// The active sampler is found by the C hook through a process-global
+/// atomic slot: the manager arbitrates at most one session per process,
+/// and CAF does not pin an actor to one OS thread, so a thread_local slot
+/// would be published by one worker and read as null by the next.
 class ProfileSampler {
 public:
     /// Owner-thread collection of this service's live coroutines (plain
@@ -56,11 +57,22 @@ public:
     /// lua_sethook; never call it directly.
     static void sampler_hook(lua_State* L, lua_Debug* ar);
 
+    /// @brief Re-arm hooks on this thread's live coroutines, when a
+    /// sampler is active on this thread. Called at the coroutine drive
+    /// points (invoke_coroutine / resume_suspended_caller): Lua 5.5 does
+    /// not propagate hooks to coroutines created after install, handler
+    /// coroutines are brand-new per message, and the main state itself
+    /// never executes bytecode in a coroutine-driven service — so the
+    /// in-hook sweep would never fire. One thread_local read when no
+    /// session is active.
+    static void sweep_active();
+
     /// @brief True while this sampler is the thread's active one.
     static bool active_on_this_thread();
 
 private:
-    static void record_current_stack(lua_State* L);
+    static void record_current_stack(ProfileSampler* self, lua_State* L);
+    void sweep_once();
 
     lua_State* main_L_;
     ProfileSession& session_;

@@ -1,5 +1,6 @@
 #include "shield/lua/profile_sampler.hpp"
 
+#include <atomic>
 #include <cstddef>
 
 // This tree's lua.h carries no extern "C" guard — the C++ entry point is
@@ -10,11 +11,14 @@ namespace shield::lua {
 
 namespace {
 
-// The hook fires while the owner thread is executing bytecode, so the
-// thread_local lookup can never cross threads. At most one sampling
-// session exists per process (manager-side arbitration), hence at most
-// one sampler per thread.
-thread_local ProfileSampler* t_active_sampler = nullptr;
+// The hook fires while some CAF worker thread executes bytecode of the
+// sampled VM. CAF does not pin an actor to one OS thread — successive
+// messages of the same service run on whatever worker picks them up — so a
+// thread_local slot would be published on one worker and read as null on
+// the next. The manager arbitrates at most one sampling session per
+// process, hence one global slot; the only writer is the install/uninstall
+// fork task, and the hook-side reads observe it atomically.
+std::atomic<ProfileSampler*> g_active_sampler{nullptr};
 
 constexpr int kMaxHookDepthFallback = 64;
 
@@ -24,19 +28,17 @@ ProfileSampler::ProfileSampler(ProfileSession& session, CoProvider co_provider)
     : session_(session), co_provider_(std::move(co_provider)) {}
 
 ProfileSampler::~ProfileSampler() {
-    // Defensive: an uninstall that never ran must not leave the TLS slot
+    // Defensive: an uninstall that never ran must not leave the slot
     // dangling. Hooks themselves die with the VM.
-    if (t_active_sampler == this) {
-        t_active_sampler = nullptr;
-    }
+    ProfileSampler* expected = this;
+    g_active_sampler.compare_exchange_strong(expected, nullptr);
 }
 
-void ProfileSampler::record_current_stack(lua_State* L) {
+void ProfileSampler::record_current_stack(ProfileSampler* self, lua_State* L) {
     lua_Debug ar;
     std::vector<ProfileFrame> frames;
     const std::size_t max_depth =
-        t_active_sampler ? t_active_sampler->session_.config().max_depth
-                         : kMaxHookDepthFallback;
+        self ? self->session_.config().max_depth : kMaxHookDepthFallback;
     frames.reserve(8);
     for (int level = 0; level < static_cast<int>(max_depth); ++level) {
         if (lua_getstack(L, level, &ar) == 0) {
@@ -56,51 +58,68 @@ void ProfileSampler::record_current_stack(lua_State* L) {
         f.tail = ar.istailcall != 0;
         frames.push_back(std::move(f));
     }
-    if (t_active_sampler != nullptr && !frames.empty()) {
-        t_active_sampler->session_.add_sample(frames);
+    if (self != nullptr && !frames.empty()) {
+        self->session_.add_sample(frames);
     }
 }
 
 void ProfileSampler::sampler_hook(lua_State* L, lua_Debug* /*ar*/) {
-    ProfileSampler* self = t_active_sampler;
+    ProfileSampler* self = g_active_sampler.load(std::memory_order_acquire);
     if (self == nullptr) {
         // Stale hook without an active sampler (should not happen: hooks
         // are cleared on uninstall before the sampler dies). Disarm.
         lua_sethook(L, nullptr, 0, 0);
         return;
     }
-    record_current_stack(L);
+    record_current_stack(self, L);
 
-    // Periodic re-arm sweep: coroutines created since install (Lua 5.5
-    // does not propagate hooks to new threads — Task 1 spike) pick the
-    // hook up here. The provider collects under the registry lock and the
-    // sweep runs back on the owner thread, mirroring inspect_coroutines'
-    // safety argument (the owner thread serializes against every resume
-    // source, so no coroutine is being driven right now).
+    // Periodic re-arm sweep for main-state bytecode execution (exec_lua and
+    // friends). Coroutine-driven services never run main-state bytecode —
+    // their new handler coroutines are armed at the drive points instead
+    // (sweep_once at invoke_coroutine / resume_suspended_caller).
     ++self->hits_;
-    if (self->hits_ % kRescanEvery == 0 && self->co_provider_) {
-        for (lua_State* co : self->co_provider_()) {
-            if (co != nullptr && lua_gethook(co) != &sampler_hook) {
-                lua_sethook(co, &sampler_hook, LUA_MASKCOUNT,
-                            static_cast<int>(self->session_.config().interval));
-            }
+    if (self->hits_ % kRescanEvery == 0) {
+        self->sweep_once();
+    }
+}
+
+void ProfileSampler::sweep_once() {
+    // The provider collects under the registry lock and the sweep runs on
+    // the driving thread, mirroring inspect_coroutines' safety argument
+    // (the driving thread holds the actor's execution, so no coroutine of
+    // this service is running elsewhere right now).
+    if (!co_provider_) {  // GCOVR_EXCL_BR_LINE (defensive: both production
+                          // (service provider) and test providers are always
+                          // set; a default-constructed provider is unreachable)
+        return;
+    }
+    for (lua_State* co : co_provider_()) {
+        if (co != nullptr && lua_gethook(co) != &sampler_hook) {
+            lua_sethook(co, &sampler_hook, LUA_MASKCOUNT,
+                        static_cast<int>(session_.config().interval));
         }
     }
 }
 
+void ProfileSampler::sweep_active() {
+    if (g_active_sampler.load(std::memory_order_acquire) != nullptr) {
+        g_active_sampler.load(std::memory_order_relaxed)->sweep_once();
+    }
+}
+
 bool ProfileSampler::active_on_this_thread() {
-    return t_active_sampler != nullptr;
+    return g_active_sampler.load(std::memory_order_acquire) != nullptr;
 }
 
 void ProfileSampler::install(lua_State* main_L) {
-    // Save, then arm, then publish — a hook firing between sethook and
-    // the TLS publish would find no sampler and disarm itself.
+    // Save, then arm, then publish — a hook firing between sethook and the
+    // publish would find no sampler and disarm itself.
     saved_hook_ = lua_gethook(main_L);
     saved_mask_ = lua_gethookmask(main_L);
     saved_count_ = lua_gethookcount(main_L);
     main_L_ = main_L;
 
-    t_active_sampler = this;
+    g_active_sampler.store(this, std::memory_order_release);
     lua_sethook(main_L_, &sampler_hook, LUA_MASKCOUNT,
                 static_cast<int>(session_.config().interval));
 
@@ -119,7 +138,7 @@ void ProfileSampler::install(lua_State* main_L) {
 void ProfileSampler::uninstall(lua_State* main_L) {
     // Unpublish first so a hook firing mid-teardown finds nothing and
     // disarms itself instead of recording into a dying session.
-    t_active_sampler = nullptr;
+    g_active_sampler.store(nullptr, std::memory_order_release);
     if (main_L != nullptr) {
         lua_sethook(main_L, saved_hook_, saved_mask_, saved_count_);
     }

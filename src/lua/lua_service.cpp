@@ -502,6 +502,13 @@ struct LuaServiceManager::Impl {
         }
         auto profile = std::move(profile_session);
         profile_session.reset();
+        // Kill the duration driver if the install task already spawned it:
+        // a live driver idles until its delayed tick and keeps the actor
+        // system's teardown waiting for the whole duration.
+        if (profile->duration_driver) {
+            caf::anon_send_exit(profile->duration_driver,
+                                caf::exit_reason::user_shutdown);
+        }
         if (profile->done) {
             profile->done->set_value(nlohmann::json{
                 {"abandoned", true},
@@ -4330,14 +4337,11 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_coroutines(
     return out;
 }
 
-bool LuaServiceManager::profile_start(
+LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
     const std::string& service_id, ProfileSessionConfig config,
-    std::shared_ptr<std::promise<nlohmann::json>> done, std::string* error) {
+    std::shared_ptr<std::promise<nlohmann::json>> done) {
     if (!done) {
-        if (error) {
-            *error = "profile_start requires a promise";
-        }
-        return false;
+        return ProfileStartResult::kDispatchLost;
     }
     const uint64_t duration_ms = config.duration_ms;
     std::shared_ptr<LuaVM> service;
@@ -4346,17 +4350,10 @@ bool LuaServiceManager::profile_start(
         std::unique_lock lock(impl_->registry_mutex);
         auto it = impl_->services.find(service_id);
         if (it == impl_->services.end()) {
-            if (error) {
-                *error = "service not published: " + service_id;
-            }
-            return false;
+            return ProfileStartResult::kServiceNotFound;
         }
         if (impl_->profile_session.has_value()) {
-            if (error) {
-                *error = "profile session active on service: " +
-                         impl_->profile_session->service_id;
-            }
-            return false;
+            return ProfileStartResult::kSessionActive;
         }
         service = it->second;
         session = std::make_shared<ProfileSession>(std::move(config));
@@ -4424,10 +4421,7 @@ bool LuaServiceManager::profile_start(
         if (settle) {
             settle->set_value(std::move(abandoned));
         }
-        if (error) {
-            *error = "service actor not found: " + service_id;
-        }
-        return false;
+        return ProfileStartResult::kDispatchLost;
     }
 
     // Duration expiry driver: a one-shot actor firing profile_stop after
@@ -4469,13 +4463,9 @@ bool LuaServiceManager::profile_start(
         // stop it now (settle path or uninstall task).
         std::string stop_error;
         (void)profile_stop(service_id, &stop_error);
-        if (error) {
-            *error = std::string("profile duration driver spawn failed: ") +
-                     e.what();
-        }
-        return false;
+        return ProfileStartResult::kDispatchLost;
     }  // GCOVR_EXCL_STOP
-    return true;
+    return ProfileStartResult::kStarted;
 }
 
 bool LuaServiceManager::profile_stop(const std::string& service_id,
@@ -4505,6 +4495,13 @@ bool LuaServiceManager::profile_stop(const std::string& service_id,
         }
     }
     if (taken) {
+        // Kill the duration driver here: it would otherwise idle until its
+        // delayed tick and keep the actor system alive for the whole
+        // duration (the actor_system teardown waits for it).
+        if (taken->duration_driver) {
+            caf::anon_send_exit(taken->duration_driver,
+                                caf::exit_reason::user_shutdown);
+        }
         nlohmann::json abandoned = {
             {"abandoned", true},
             {"service", taken->service_id},
@@ -4532,6 +4529,14 @@ bool LuaServiceManager::profile_stop(const std::string& service_id,
                 state = std::make_shared<Impl::ProfileSessionState>(
                     std::move(*impl->profile_session));
                 impl->profile_session.reset();
+            }
+            // Kill the duration driver before anything else: left alive it
+            // idles until its delayed tick and keeps the actor system's
+            // teardown waiting for the whole duration. anon_send_exit must
+            // not run under the registry lock.
+            if (state->duration_driver) {
+                caf::anon_send_exit(state->duration_driver,
+                                    caf::exit_reason::user_shutdown);
             }
             if (state->sampler && service) {
                 state->sampler->uninstall(impl->runtime.vm_main_state(service));
@@ -5636,6 +5641,10 @@ void LuaServiceManager::resume_suspended_caller(
     // Resume bookkeeping for lua.inspect <svc> coroutines: this C++ resume
     // source is the coroutine's most recent driver.
     note_coroutine_resumed(caller_co, source);
+    // Arm the resumed coroutine in case it was created after the sampling
+    // install (Lua 5.5 does not propagate hooks to new threads); one
+    // thread_local read when no sampling session is on this owner thread.
+    ProfileSampler::sweep_active();
     lua_pushboolean(caller_co, ok ? 1 : 0);
     int nargs = 1;
     if (values.is_array()) {

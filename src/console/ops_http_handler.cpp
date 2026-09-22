@@ -159,18 +159,40 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
         SHIELD_LOG_INFO(log,
                         "/ops/eval disabled (opt in via http.eval_enabled=true "
                         "+ http.eval_token)");
-        return;
+    } else {
+        eval_token_ = shield::config::get("http.eval_token", "");
+        if (eval_token_.empty()) {
+            auto& log = shield::log::get_logger("ops");
+            SHIELD_LOG_ERROR(log,
+                             "/ops/eval NOT registered: http.eval_enabled=true "
+                             "requires a non-empty http.eval_token");
+        } else {
+            server.post("/ops/eval",
+                        [this](const auto& req) { return handle_eval(req); });
+        }
     }
-    eval_token_ = shield::config::get("http.eval_token", "");
-    if (eval_token_.empty()) {
+
+    // /ops/profile exposes code locations and hit counts only (no payload,
+    // no keys), but it still drives service VMs: same opt-in + token
+    // discipline as /ops/eval, with a start cooldown on top.
+    if (shield::config::get("http.profile_enabled", "false") != "true") {
         auto& log = shield::log::get_logger("ops");
-        SHIELD_LOG_ERROR(log,
-                         "/ops/eval NOT registered: http.eval_enabled=true "
-                         "requires a non-empty http.eval_token");
+        SHIELD_LOG_INFO(log,
+                        "/ops/profile disabled (opt in via "
+                        "http.profile_enabled=true + http.profile_token)");
         return;
     }
-    server.post("/ops/eval",
-                [this](const auto& req) { return handle_eval(req); });
+    profile_token_ = shield::config::get("http.profile_token", "");
+    if (profile_token_.empty()) {
+        auto& log = shield::log::get_logger("ops");
+        SHIELD_LOG_ERROR(
+            log,
+            "/ops/profile NOT registered: http.profile_enabled=true requires "
+            "a non-empty http.profile_token");
+        return;
+    }
+    server.post("/ops/profile",
+                [this](const auto& req) { return handle_profile(req); });
 }
 
 bool OpsHttpHandler::token_matches(const std::string& provided,
@@ -807,6 +829,162 @@ shield::net::HttpResponse OpsHttpHandler::handle_eval(
                                // nlohmann::json braced-init branches)
     }
     return make_error_response(400, error);
+}
+
+shield::net::HttpResponse OpsHttpHandler::handle_profile(
+    const shield::net::HttpRequest& req) {
+    // Bearer token gate (same shape as /ops/eval, separate token).
+    auto auth_it = req.find(boost::beast::http::field::authorization);
+    std::string provided;
+    if (auth_it != req.end()) {
+        provided = std::string(auth_it->value());
+    }
+    constexpr char kBearerPrefix[] = "Bearer ";
+    if (provided.rfind(kBearerPrefix, 0) == 0) {
+        provided = provided.substr(sizeof(kBearerPrefix) - 1);
+    }
+    if (!token_matches(provided, profile_token_)) {
+        return make_error_response(401, "unauthorized");
+    }
+
+    nlohmann::json body;
+    try {
+        body = nlohmann::json::parse(req.body());
+    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                    // catch-entry pseudo-arc)
+                 e) {
+        return make_error_response(400, "invalid JSON body");
+    }
+    if (!body.contains("action") || !body["action"].is_string()) {
+        return make_error_response(400, "missing 'action' field");
+    }
+    const std::string action = body["action"].get<std::string>();
+
+    // status: pure registry read, always answers.
+    if (action == "status") {
+        nlohmann::json data;
+        if (auto info = lua_mgr_.profile_status()) {
+            data = {{"active", true},
+                    {"service", info->service_id},
+                    {"elapsed_ms", info->elapsed_ms},
+                    {"duration_ms", info->duration_ms}};
+        } else {
+            data = {{"active", false}};
+        }
+        return make_json_response(200, {{"type", "result"}, {"data", data}});
+    }
+
+    if (action == "start") {
+        if (!body.contains("service") || !body["service"].is_string()) {
+            return make_error_response(400, "missing 'service' field");
+        }
+        const std::string service = body["service"].get<std::string>();
+
+        shield::lua::ProfileSessionConfig config;
+        config.service = service;
+        if (body.contains("duration_ms")) {
+            if (!body["duration_ms"].is_number_unsigned() ||
+                body["duration_ms"] == 0 ||
+                body["duration_ms"].get<uint64_t>() > 60000) {
+                return make_error_response(400, "duration_ms must be 1..60000");
+            }
+            config.duration_ms = body["duration_ms"].get<uint64_t>();
+        }
+        if (body.contains("interval")) {
+            if (!body["interval"].is_number_unsigned() ||
+                body["interval"] == 0) {
+                return make_error_response(400, "interval must be >= 1");
+            }
+            config.interval = body["interval"].get<uint64_t>();
+        }
+
+        // Start cooldown (http.profile_cooldown_seconds, default 10):
+        // rate-limits sessions beyond the manager's single-session 409.
+        int cooldown_s = 10;
+        try {
+            cooldown_s = std::stoi(
+                shield::config::get("http.profile_cooldown_seconds", "10"));
+        } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (compiler
+                                        // artifact: catch-entry pseudo-arc)
+                     e) {
+            cooldown_s = 10;  // non-numeric config: keep the default
+        }
+        if (cooldown_s < 0) {
+            cooldown_s = 0;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        {
+            std::lock_guard lock(profile_mu_);
+            if (profile_started_once_ &&
+                now - last_profile_start_ < std::chrono::seconds(cooldown_s)) {
+                return make_error_response(429,
+                                           "profile start cooldown active");
+            }
+        }
+
+        auto promise = std::make_shared<std::promise<nlohmann::json>>();
+        auto report = promise->get_future().share();
+        const auto result = lua_mgr_.profile_start(service, config, promise);
+        switch (result) {
+            case shield::lua::LuaServiceManager::ProfileStartResult::
+                kServiceNotFound:
+            case shield::lua::LuaServiceManager::ProfileStartResult::
+                kDispatchLost:
+                return make_error_response(404,
+                                           "service not found: " + service);
+            case shield::lua::LuaServiceManager::ProfileStartResult::
+                kSessionActive:
+                return make_error_response(409, "profile session active");
+            case shield::lua::LuaServiceManager::ProfileStartResult::kStarted:
+                break;
+        }
+        {
+            std::lock_guard lock(profile_mu_);
+            profile_report_ = std::move(report);
+            last_profile_start_ = now;
+            profile_started_once_ = true;
+        }
+        return make_json_response(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                    // inlined nlohmann::json braced-init
+                                    // branches)
+            200, {{"type", "result"},
+                  {"data",
+                   {{"started", true},
+                    {"service", service},
+                    {"duration_ms", config.duration_ms},
+                    {"interval", config.interval}}}});
+    }
+
+    if (action == "stop" || action == "report") {
+        // Both end the session and return the report (report is the
+        // read-named alias; a later start re-arms from scratch).
+        auto info = lua_mgr_.profile_status();
+        if (!info) {
+            return make_error_response(409, "no active profile session");
+        }
+        std::string stop_error;
+        if (!lua_mgr_.profile_stop(info->service_id, &stop_error)) {
+            // The session ended between the status read and the stop (exit
+            // cleanup or duration expiry owns the promise now).
+            return make_error_response(409, "no active profile session");
+        }
+        std::shared_future<nlohmann::json> report;
+        {
+            std::lock_guard lock(profile_mu_);
+            report = profile_report_;
+        }
+        if (report.valid() && report.wait_for(std::chrono::seconds(2)) ==
+                                  std::future_status::ready) {
+            return make_json_response(  // GCOVR_EXCL_BR_LINE (compiler
+                                        // artifact: inlined nlohmann::json
+                                        // braced-init branches)
+                200, {{"type", "result"}, {"data", report.get()}});
+        }
+        return make_error_response(504,
+                                   "profile dispatch timeout (owner busy)");
+    }
+
+    return make_error_response(400, "unknown action: " + action);
 }
 
 shield::net::HttpResponse OpsHttpHandler::make_json_response(

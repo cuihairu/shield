@@ -162,6 +162,16 @@ struct OpsFixture {
         shield::config::global_config().set("http.eval_token",
                                             std::string("cov-token"));
 
+        // /ops/profile follows the same opt-in discipline; the default
+        // cooldown of 10s is switched off here so consecutive-case sessions
+        // don't rate-limit each other (the 429 case flips it back on).
+        shield::config::global_config().set("http.profile_enabled",
+                                            std::string("true"));
+        shield::config::global_config().set("http.profile_token",
+                                            std::string("prof-token"));
+        shield::config::global_config().set("http.profile_cooldown_seconds",
+                                            std::string("0"));
+
         port = free_port();
         shield::net::HttpServerConfig cfg;
         cfg.host = "127.0.0.1";
@@ -866,6 +876,302 @@ BOOST_AUTO_TEST_CASE(EvalWithoutTokenNotRegistered) {
 
     // Restore for later cases in this suite.
     cfg.set("http.eval_token", std::string("cov-token"));
+}
+
+BOOST_AUTO_TEST_CASE(ProfileDisabledByDefault) {
+    // Same independent-server pattern as EvalDisabledByDefault: flipping
+    // http.profile_enabled off must leave the route unregistered (404).
+    auto& cfg = shield::config::global_config();
+    cfg.set("http.profile_enabled", std::string("false"));
+
+    uint16_t p2 = free_port();
+    shield::net::HttpServerConfig scfg;
+    scfg.host = "127.0.0.1";
+    scfg.port = p2;
+    shield::net::HttpServer server2(scfg);
+    shield::console::OpsHttpHandler handler2(*manager, *runtime);
+    handler2.register_routes(server2);
+    server2.start();
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", p2);
+    std::string response = client.post_auth(
+        "/ops/profile", R"({"action":"status"})", "prof-token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 404);
+
+    cfg.set("http.profile_enabled", std::string("true"));
+}
+
+BOOST_AUTO_TEST_CASE(ProfileWithoutTokenNotRegistered) {
+    // profile_enabled=true with an empty token refuses to register.
+    auto& cfg = shield::config::global_config();
+    cfg.set("http.profile_token", std::string(""));
+
+    uint16_t p3 = free_port();
+    shield::net::HttpServerConfig scfg;
+    scfg.host = "127.0.0.1";
+    scfg.port = p3;
+    shield::net::HttpServer server3(scfg);
+    shield::console::OpsHttpHandler handler3(*manager, *runtime);
+    handler3.register_routes(server3);
+    server3.start();
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", p3);
+    std::string response =
+        client.post_auth("/ops/profile", R"({"action":"status"})", "");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 404);
+    response =
+        client.post_auth("/ops/profile", R"({"action":"status"})", "anything");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 404);
+
+    cfg.set("http.profile_token", std::string("prof-token"));
+}
+
+BOOST_AUTO_TEST_CASE(ProfileAuthGate) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response =
+        client.post_auth("/ops/profile", R"({"action":"status"})", "");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 401);
+    response = client.post_auth("/ops/profile", R"({"action":"status"})",
+                                "wrong-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 401);
+}
+
+BOOST_AUTO_TEST_CASE(ProfileRequestValidation) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    const auto post = [&](const std::string& body) {
+        return RawHttpClient::status_code(
+            client.post_auth("/ops/profile", body, "prof-token"));
+    };
+    BOOST_CHECK_EQUAL(post("this is not json"), 400);
+    BOOST_CHECK_EQUAL(post(R"({})"), 400);                  // no action
+    BOOST_CHECK_EQUAL(post(R"({"action":"nope"})"), 400);   // unknown
+    BOOST_CHECK_EQUAL(post(R"({"action":"start"})"), 400);  // no service
+    BOOST_CHECK_EQUAL(
+        post(R"({"action":"start","service":"s","duration_ms":0})"), 400);
+    BOOST_CHECK_EQUAL(
+        post(R"({"action":"start","service":"s","duration_ms":60001})"), 400);
+    BOOST_CHECK_EQUAL(post(R"({"action":"start","service":"s","interval":0})"),
+                      400);
+}
+
+BOOST_AUTO_TEST_CASE(ProfileStopWithoutSession409) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response =
+        client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
+    response = client.post_auth("/ops/profile", R"({"action":"report"})",
+                                "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
+    // status always answers, also with no session.
+    response = client.post_auth("/ops/profile", R"({"action":"status"})",
+                                "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["data"]["active"] == false);
+}
+
+BOOST_AUTO_TEST_CASE(ProfileUnknownService404) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.post_auth(
+        "/ops/profile", R"({"action":"start","service":"nope.svc"})",
+        "prof-token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 404);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "error");
+}
+
+// A service whose on_burn method runs a long count loop: sampling and
+// uninstall fork tasks serialize after it (fork-task FIFO), so a start ->
+// burn -> stop sequence samples the loop deterministically.
+static const fs::path kBurnSvcDir =
+    fs::temp_directory_path() / "shield_cov_ops_profile";
+static const char* kBurnScript =
+    "local M = {}\n"
+    "function M.on_init() end\n"
+    "function M.on_burn()\n"
+    "  local s = 0\n"
+    "  for i = 1, 30000000 do s = s + i end\n"
+    "  return s\n"
+    "end\n"
+    "return M\n";
+
+static std::string spawn_burn_service(shield::lua::LuaServiceManager& manager,
+                                      const std::string& name) {
+    fs::create_directories(kBurnSvcDir);
+    std::ofstream(kBurnSvcDir / (name + ".lua")) << kBurnScript;
+    auto spawned =
+        manager.spawn((kBurnSvcDir / (name + ".lua")).string(),
+                      R"({"name":")" + name + R"(","args":{},"config":{}})");
+    BOOST_REQUIRE(spawned.success);
+    return name;
+}
+
+BOOST_AUTO_TEST_CASE(ProfileHappyPathStartStatusStop) {
+    const std::string svc = spawn_burn_service(*manager, "prof_happy_svc");
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    std::string response = client.post_auth(
+        "/ops/profile",
+        R"({"action":"start","service":"prof_happy_svc","duration_ms":60000,)"
+        R"("interval":1000})",
+        "prof-token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["data"]["started"] == true);
+    BOOST_CHECK_EQUAL(resp["data"]["service"], "prof_happy_svc");
+    BOOST_CHECK_EQUAL(resp["data"]["duration_ms"], 60000);
+
+    response = client.post_auth("/ops/profile", R"({"action":"status"})",
+                                "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+    resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["data"]["active"] == true);
+    BOOST_CHECK_EQUAL(resp["data"]["service"], "prof_happy_svc");
+
+    // Burn while the session is armed: the on_burn message is queued after
+    // the install fork task, so the loop runs with the count hook in place.
+    std::string err;
+    BOOST_REQUIRE(manager->send_system("prof_happy_svc", "on_burn",
+                                       nlohmann::json::array(), &err));
+
+    response =
+        client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+    resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "result");
+    BOOST_CHECK(resp["data"]["total_samples"].is_number_unsigned());
+    BOOST_CHECK(resp["data"]["total_samples"] > 0U);
+    BOOST_CHECK(resp["data"]["frames"].is_array());
+    BOOST_CHECK(!resp["data"]["frames"].empty());
+
+    response = client.post_auth("/ops/profile", R"({"action":"status"})",
+                                "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+    resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["data"]["active"] == false);
+
+    manager->shutdown_all("done");
+}
+
+BOOST_AUTO_TEST_CASE(ProfileDuplicateStart409) {
+    spawn_burn_service(*manager, "prof_dup_svc");
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.post_auth(
+        "/ops/profile", R"({"action":"start","service":"prof_dup_svc"})",
+        "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+
+    // Any second start (same or other service) hits the single-session 409.
+    response = client.post_auth(
+        "/ops/profile", R"({"action":"start","service":"prof_dup_svc"})",
+        "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
+
+    // The first session still works: status names it, stop ends it.
+    response = client.post_auth("/ops/profile", R"({"action":"status"})",
+                                "prof-token");
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["data"]["active"] == true);
+    response =
+        client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+
+    manager->shutdown_all("done");
+}
+
+BOOST_AUTO_TEST_CASE(ProfileStartCooldown429) {
+    auto& cfg = shield::config::global_config();
+    cfg.set("http.profile_cooldown_seconds", std::string("60"));
+    spawn_burn_service(*manager, "prof_cd_svc");
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    std::string response = client.post_auth(
+        "/ops/profile", R"({"action":"start","service":"prof_cd_svc"})",
+        "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+    // The cooldown is checked before the manager arbitration: an immediate
+    // second start is 429, not 409.
+    response = client.post_auth("/ops/profile",
+                                R"({"action":"start","service":"prof_cd_svc"})",
+                                "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 429);
+
+    cfg.set("http.profile_cooldown_seconds", std::string("0"));
+    response =
+        client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+
+    manager->shutdown_all("done");
+}
+
+BOOST_AUTO_TEST_CASE(ProfileStopAfterNaturalExpiry409) {
+    spawn_burn_service(*manager, "prof_exp_svc");
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.post_auth(
+        "/ops/profile",
+        R"({"action":"start","service":"prof_exp_svc","duration_ms":200})",
+        "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+
+    // Let the duration driver expire the session, then a manual stop finds
+    // nothing: 409, and status agrees.
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    response =
+        client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
+    response = client.post_auth("/ops/profile", R"({"action":"status"})",
+                                "prof-token");
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["data"]["active"] == false);
+
+    manager->shutdown_all("done");
+}
+
+BOOST_AUTO_TEST_CASE(ProfileOwnerBusy504) {
+    spawn_burn_service(*manager, "prof_busy_svc");
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.post_auth(
+        "/ops/profile",
+        R"({"action":"start","service":"prof_busy_svc","duration_ms":60000,
+            "interval":100000})",
+        "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+
+    // Occupy the owner with a slow fork task: the uninstall (queued behind
+    // it) cannot run within the HTTP bounded wait -> 504.
+    manager->enqueue_forked_task("prof_busy_svc", [] {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+    });
+    response =
+        client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 504);
+
+    // Let the queue drain; the uninstall lands after the sleeper and the
+    // report promise is fulfilled (dropped here) — a second stop then sees
+    // no session.
+    std::this_thread::sleep_for(std::chrono::seconds(4));
+    response =
+        client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
+
+    manager->shutdown_all("done");
 }
 
 // ---------------------------------------------------------------------------
