@@ -4375,23 +4375,26 @@ std::optional<nlohmann::json> LuaServiceManager::timer_inspect(
 
 std::optional<nlohmann::json> LuaServiceManager::pending_calls_inspect(
     const std::string& service_id, std::string* error) {
-    std::vector<const Impl::PendingCall*> calls;
-    {
-        std::shared_lock lock(impl_->registry_mutex);
-        if (!impl_->services.contains(service_id)) {
-            if (error) {
-                *error = "service not published: " + service_id;
-            }
-            return std::nullopt;
+    // The whole projection stays under the registry lock: it collects raw
+    // PendingCall pointers, and completion/timeout paths erase pending_calls
+    // entries on other threads — sorting or reading the pointers after
+    // unlocking would race that erase (use-after-free, SIGSEGV under load).
+    // Same whole-function-lock shape as timer_inspect.
+    std::shared_lock lock(impl_->registry_mutex);
+    if (!impl_->services.contains(service_id)) {
+        if (error) {
+            *error = "service not published: " + service_id;
         }
-        for (const auto& [session, pending] : impl_->pending_calls) {
-            // The wait belongs to this service when its caller (or, for a
-            // proxied remote call, the receiving incarnation) is it. The
-            // caller_service stamp is taken at call entry inside the
-            // caller's dispatch scope.
-            if (pending.caller_service == service_id) {
-                calls.push_back(&pending);
-            }
+        return std::nullopt;
+    }
+    std::vector<const Impl::PendingCall*> calls;
+    for (const auto& [session, pending] : impl_->pending_calls) {
+        // The wait belongs to this service when its caller (or, for a
+        // proxied remote call, the receiving incarnation) is it. The
+        // caller_service stamp is taken at call entry inside the
+        // caller's dispatch scope.
+        if (pending.caller_service == service_id) {
+            calls.push_back(&pending);
         }
     }
     const int64_t now = Impl::now_ms();
