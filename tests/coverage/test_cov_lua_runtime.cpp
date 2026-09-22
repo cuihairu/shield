@@ -1277,19 +1277,29 @@ BOOST_AUTO_TEST_CASE(CallHttpHandlerGuardsWithoutErrorOut) {
     runtime.remove_http_routes_for_service("cov.g6");
 
     // A route whose VM is gone: error = nullptr must not be dereferenced.
-    auto vm2 = runtime.create_vm();
-    sol::state_view lua2(runtime.vm_state(vm2).lua_state());
-    lua2.script("function gone(ctx, req) return {} end");
-    BOOST_CHECK(runtime.register_http_route(vm2, "cov.g6gone", "GET",
-                                            "/g6-gone", lua2["gone"]));
-    auto route4 = runtime.find_http_route("GET", "/g6-gone", nullptr);
-    BOOST_REQUIRE(route4.has_value());
-    // The route still holds a sol::function into vm2's state; abandoning it
-    // lets the route outlive the VM without a dangling luaL_unref running
-    // when the route table entry is erased below (the reference's
-    // destructor must never touch a closed lua_State).
-    route4->handler->abandon();
-    vm2.reset();
+    // Everything holding a sol reference into vm2's lua_State — including
+    // the sol::state_view, which is not a pure view: it owns registry
+    // references for the registry and globals tables — must be destroyed
+    // while the VM is still open, so no destructor ever runs against a
+    // closed state. Only the route copy (a weak VM handle plus the
+    // abandoned handler) may outlive the scope.
+    std::optional<HttpRouteRegistration> route4;
+    {
+        auto vm2 = runtime.create_vm();
+        {
+            sol::state_view lua2(runtime.vm_state(vm2).lua_state());
+            lua2.script("function gone(ctx, req) return {} end");
+            BOOST_CHECK(runtime.register_http_route(vm2, "cov.g6gone", "GET",
+                                                    "/g6-gone", lua2["gone"]));
+        }
+        route4 = runtime.find_http_route("GET", "/g6-gone", nullptr);
+        BOOST_REQUIRE(route4.has_value());
+        // The route still holds a sol::function into vm2's state; abandoning
+        // it lets the route outlive the VM without a dangling luaL_unref
+        // running when the route table entry is erased below (the
+        // reference's destructor must never touch a closed lua_State).
+        route4->handler->abandon();
+    }
     nlohmann::json desc4;
     BOOST_CHECK(!runtime.call_http_handler(*route4, {{"path", "/g6-gone"}},
                                            desc4, nullptr));
