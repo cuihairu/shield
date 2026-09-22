@@ -883,7 +883,7 @@ sol::object json_to_lua(sol::state_view lua, const nlohmann::json& j) {
 // Convert a Lua object into nlohmann::json (recursive). Tables with
 // 1..N integer keys become arrays; otherwise objects. Nested tables work.
 nlohmann::json lua_to_json(const sol::object& obj) {
-    if (!obj.valid() || obj.get_type() == sol::type::nil) return nullptr;
+    if (!obj.valid() || obj.get_type() == sol::type::lua_nil) return nullptr;
     switch (obj.get_type()) {
         case sol::type::boolean:
             return obj.as<bool>();
