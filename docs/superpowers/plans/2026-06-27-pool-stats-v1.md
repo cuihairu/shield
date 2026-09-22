@@ -708,13 +708,36 @@ git commit -m "feat(cache.redis): serve shield.pool.stats.v1"
 
 ## Phase B (follow-up, after Phase A freezes the ABI)
 
-Each remaining plugin implements the vtable using Task 7 as the template. Per plugin, first read its pool internals, then fill the real fields where the driver exposes them and `-1` where it does not:
+**Status: COMPLETE (4/5 committed, 2026-09-22).** Each plugin implements the
+vtable using Task 7 (cache.redis) as the template, filling real fields where
+the driver exposes them and `-1` (unknown) where it does not:
 
-- **mysql** (`shield_db_mysql.cpp`) — mysqlx session pool; expose configured `pool_size` + any mysqlx pool stats the driver offers.
-- **postgresql** (`shield_db_pgsql.cpp`) — libpq connection pool.
-- **sqlite** (`shield_db_sqlite.cpp`) — *note: SQLite is embedded, there is no connection pool* (see `shield_db_sqlite.cpp:305`). Either skip (don't declare the interface) or report `max_size=1, size=1` as a degenerate single-connection "pool". Recommend: **do not implement** for sqlite.
-- **mongodb** (`shield_doc_mongodb.cpp`) — mongocxx has a native `mongocxx::pool`; expose its `min`/`max` size.
-- **queue.redis** / **leaderboard.redis** — same redis++ pool as cache.redis; same field limitations.
+- **mysql** (`shield_db_mysql.cpp`) — DONE. Self-managed pool (`pool_mu` +
+  `free_list` + `current_size`): reports real `max_size`/`size`/`idle`/
+  `in_use` read under the pool lock; cumulative counters untracked → `-1`.
+- **postgresql** (`shield_db_pgsql.cpp`) — DONE. Same self-managed-pool
+  shape as mysql; same four real gauges.
+- **sqlite** (`shield_db_sqlite.cpp`) — not implemented (per the
+  recommendation below: no connection pool, interface not declared).
+- **mongodb** (`shield_doc_mongodb.cpp`) — implementation written but NOT
+  committed: reports `-1` except `max_size`, mirrored from the URI's
+  explicit `maxPoolSize` param when set (`mongocxx::uri::max_pool_size()`).
+  Blocked locally: vcpkg's mongo-c-driver port fails to configure on this
+  host (TRY_COMPILE incompatibility with CMake 4.2), so the change cannot
+  be compiled or tested here; the optional-plugins CI does not build
+  mongodb either. To be committed once a build+test path exists.
+- **queue.redis** / **leaderboard.redis** — DONE. Neither keeps a
+  persistent pool (one fresh `sw::redis::Redis` connection per
+  operation/call), so `get_stats` reports all `-1` (unknown) rather than a
+  fabricated pool shape.
+
+Validation: new `test_plugin_pool_stats_real` dlopens each built plugin
+.so and pins the contract (create → get_interface non-null → `struct_size`
+≥ v1 → `get_stats` returns 0 → gauge value domain), enabled per CMake
+build switch. NOTE: the plan's "same redis++ pool as cache.redis"
+assumption did not hold for queue/leaderboard — both use the
+single-connection `Redis(opts)` constructor, not the pooled
+`Redis(pool_opts, opts)` overload cache.redis uses.
 
 Each becomes its own commit: `feat(<plugin>): serve shield.pool.stats.v1`.
 
