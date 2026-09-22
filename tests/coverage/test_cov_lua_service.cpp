@@ -3078,7 +3078,7 @@ BOOST_AUTO_TEST_CASE(InspectOwnerBusyTimeoutsAndHappyPaths) {
                      "local M = {}\n"
                      "function M.stall_long(ctx)\n"
                      "  local t = shield.monotonic()\n"
-                     "  while shield.monotonic() - t < 15000 do end\n"
+                     "  while shield.monotonic() - t < 20000 do end\n"
                      "  return 'stalled'\n"
                      "end\n"
                      "function M.ping(ctx) return 'pong' end\n"
