@@ -66,11 +66,12 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
    单次 hook 成本 = 一次栈展开（`lua_getstack`+`lua_getinfo`，典型栈深
    < 32），按需短时会话下开销可接受；profile 本就是显式启用的诊断行为。
 
-2. **hook 的作用域与协程覆盖。** handler 执行跑在协程上（M4 协程化）。
-   start 时对 main `lua_State` sethook，并枚举 live 协程注册表逐个补装
-   （`lua.inspect coroutines` 已有枚举通道）；此后新建协程的继承语义以
-   Task 1 核实结论为准（Lua 5.4+ 新建线程继承创建者 hook，5.5 需实测
-   确认）——若继承成立则新协程零处理，否则 stop 前周期性补装兜底。
+2. **hook 的作用域与协程覆盖（Task 1 实测定案）。** handler 执行跑在
+   协程上（M4 协程化）。start 时对 main `lua_State` sethook，并枚举
+   live 协程注册表逐个补装（`lua.inspect coroutines` 已有枚举通道）。
+   **Lua 5.5 实测新建协程不继承创建者 hook**——因此采样 hook 每 K 次
+   触发（默认 K=100）对 live 协程做一次补装扫描（扫描本身在 owner
+   线程 hook 本体内运行，开销可忽略；短命协程的采样盲区可接受）。
    **不修改** 任何现有 hook 用户（全仓库当前无 `lua_sethook` 使用，
    已核实，采样器是唯一 owner）。
 
@@ -151,21 +152,28 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 
 ## Phase A
 
-### Task 1: Lua 5.5 debug hook 语义核实（spike）
+### Task 1: Lua 5.5 debug hook 语义核实（spike）✅ 已完成（2026-09-22，lua5.5 5.5.0 实测，脚本验证后已删除）
 
-**Files:** 无产物代码；结论回写本 Task。
+- [x] **Step 1:** 一次性脚本验证四组语义（结论见 Step 2）。
+- [x] **Step 2:** 实测结论（全部以 5.5.0 运行时为准）：
 
-- [ ] **Step 1:** 写一次性验证（临时测试或独立脚本，验证后删除）：在
-  Lua 5.5（仓库 vcpkg 版本）确认
-  (a) `lua_sethook(L, fn, LUA_MASKCOUNT, n)` 对 main L 生效且 count hook
-  触发频率与 count 值的关系；
-  (b) 已存在协程逐个 sethook 可行；`lua_newthread` 新建协程是否继承
-  创建者 hook（决定「新协程零处理」还是「周期补装兜底」）；
-  (c) hook 内 `lua_getstack`/`lua_getinfo`（`>Sl`/`>n`）取 name 的
-  覆盖面（C 函数边界、尾调用、`what` 为 "main"/"Lua"/"C" 的分支）；
-  (d) hook 内禁止 yield/长阻塞的边界确认。
-- [ ] **Step 2:** 结论写入本 Task 下方（继承语义一锤定音；name 缺失时
-  的降级表示 = `?` + source:linedefined）。
+  | 语义点 | 实测结论 |
+  |---|---|
+  | (a) count hook | 可用；mask `""` + count=N 时触发频率≈每 N 条指令（10000 次循环 count=100 → 208 次采样）；count=0 不触发 |
+  | (b1) 新建协程继承 | **不继承**（协程内 co_hits=0）——与 5.4 「新线程继承 hook」的文档口径相反。**设计定案：周期补装兜底**（见决策 2 修订） |
+  | (b2) 已存在/未启动协程 sethook | 可行且生效（co_hits=2173） |
+  | (b3) 挂起中协程补装 | 可行，resume 后触发（co_hits=4347）——补装方案成立 |
+  | (b1-fix) hook 内周期扫描 | 每 K 次触发扫一次 live 协程的方案在 hook 本体内可行 |
+  | (c1) 具名函数 name | 正常取得（`name="workloop"`） |
+  | (c2) name 缺失场景 | main chunk `name=nil`；**局部赋值的匿名函数可被推断出 name**（`local anon = function()…` → `name="anon"`）——降级场景比预期少 |
+  | (c3) 尾调用 | **尾调用帧 `name=nil`** 且 `istailcall=true` 可标注（`getinfo` 的 `t` 选项在 5.5 存在，大写 `T` 无效）——`return foo(...)` 风格下 name 降级是常态 |
+  | (d1) hook 内 yield | 被拒绝：`attempt to yield across a C-call boundary`（hook 只做采样记录，绝不 yield/长阻塞） |
+  | (d2) hook 内栈枚举 | `lua_getstack`/`getinfo` 全深度枚举完整可用 |
+
+  **对设计的直接影响：** 聚合 key 采用 `what|name?|source:line`（name 缺失
+  用 `?` + source:linedefined，为 main chunk 与尾调用帧的常态路径）；帧
+  结构附带 `tail`（istailcall）可选标注；hook 单次成本 = 一次受限深度栈
+  展开，与既有设计一致。
 
 ### Task 2: ProfileSession 纯逻辑（聚合树 + 报告）
 
