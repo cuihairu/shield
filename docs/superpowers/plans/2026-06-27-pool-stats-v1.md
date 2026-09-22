@@ -1,5 +1,13 @@
 # shield.pool.stats.v1 Implementation Plan
 
+> **Phase A 已完成（2026-09-22）**：ABI 头、`PluginHost::collect_pool_stats`、
+> minimal fixture vtable、`test_pool_stats`（10 用例）、cache.redis 真实集成
+> 全部落地。与计划的偏差：Task 4 的 start 阶段一致性校验**未按原文实施**——
+> create 阶段既有校验（create_all 逐 provides 项断言 `get_interface` 非 NULL，
+> 先于 start）已完整承担"声明即必须 serve"的 fail-fast 语义，再建 start 检查
+> 是死代码；对应用例改为断言 create 失败消息
+> `does not provide declared interface 'shield.pool.stats.v1'`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement the `shield.pool.stats.v1` plugin interface and host `collect_pool_stats`, plus validate the proposal with one SQL-less unit-test plugin and one real Redis plugin (cache.redis), to satisfy the proposal's freeze conditions.
@@ -34,7 +42,7 @@
 **Files:**
 - Create: `include/shield/plugin/pool_stats.h`
 
-- [ ] **Step 1: Write the header**
+- [x] **Step 1: Write the header**
 
 ```c
 // [SHIELD_PLUGIN] shield.pool.stats.v1 — optional pool observability interface.
@@ -100,12 +108,12 @@ struct shield_pool_stats_v1 {
 #endif
 ```
 
-- [ ] **Step 2: Verify it compiles**
+- [x] **Step 2: Verify it compiles**
 
 Run: `cmake --build build --target shield_plugin -j` (the header is included transitively once Task 2 includes it).
 Expected: builds clean (header-only, no source yet).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add include/shield/plugin/pool_stats.h
@@ -119,7 +127,7 @@ git commit -m "feat(plugin): add shield.pool.stats.v1 ABI header"
 **Files:**
 - Modify: `include/shield/plugin/plugin_host.hpp` (add near the other public introspection methods, after `get_binding` ~line 219; add includes after line 22)
 
-- [ ] **Step 1: Add the include**
+- [x] **Step 1: Add the include**
 
 In `plugin_host.hpp`, after `#include "shield/plugin/plugin_library.hpp"` (line 23):
 
@@ -127,7 +135,7 @@ In `plugin_host.hpp`, after `#include "shield/plugin/plugin_library.hpp"` (line 
 #include "shield/plugin/pool_stats.h"
 ```
 
-- [ ] **Step 2: Add the types and method declaration**
+- [x] **Step 2: Add the types and method declaration**
 
 Add this block in the `namespace shield::plugin {` section, just before `class PluginHost` (around line 167):
 
@@ -162,12 +170,12 @@ Add the method to `PluginHost`'s public section, after `get_binding` (~line 219)
     bool collect_pool_stats(std::vector<PoolStatsResult>& out) const;
 ```
 
-- [ ] **Step 3: Verify it compiles**
+- [x] **Step 3: Verify it compiles**
 
 Run: `cmake --build build --target shield_plugin -j`
 Expected: builds (declaration only, no impl yet — link will fail later, that's fine until Task 3).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add include/shield/plugin/plugin_host.hpp
@@ -181,11 +189,11 @@ git commit -m "feat(plugin): declare PoolStatsResult and collect_pool_stats"
 **Files:**
 - Modify: `src/plugin/plugin_host.cpp` (add the method at the end of the `PluginHost` section, e.g. after `get_binding` / before the `get_binding_vtable` private helper; ensure `#include "shield/plugin/pool_stats.h"` is present via plugin_host.hpp)
 
-- [ ] **Step 1: Write the failing test first (see Task 6 for the full test file) — skip ahead and create the test, then come back**
+- [x] **Step 1: Write the failing test first (see Task 6 for the full test file) — skip ahead and create the test, then come back**
 
 (If implementing strictly in order: the test is created in Task 6. To keep TDD intact, do Task 5 + Task 6 first, then this task. The ordering below assumes Task 5/6 exist.)
 
-- [ ] **Step 2: Implement the method**
+- [x] **Step 2: Implement the method**
 
 Append to `src/plugin/plugin_host.cpp` inside `namespace shield::plugin`:
 
@@ -260,12 +268,12 @@ bool PluginHost::collect_pool_stats(std::vector<PoolStatsResult>& out) const {
 }
 ```
 
-- [ ] **Step 3: Run the unit test**
+- [x] **Step 3: Run the unit test**
 
 Run: `ctest --test-dir build -R test_pool_stats -V`
 Expected: PASS (after Task 5 + Task 6 are in place).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/plugin/plugin_host.cpp
@@ -279,9 +287,9 @@ git commit -m "feat(plugin): implement collect_pool_stats"
 **Files:**
 - Modify: `src/plugin/plugin_host.cpp` (inside `start_all`, after an instance is marked `State::started`, ~line 709)
 
-- [ ] **Step 1: Write the failing test** — covered by Task 6's "declared but missing → start fails" test case.
+- [x] **Step 1: Write the failing test** — covered by Task 6's "declared but missing → start fails" test case.
 
-- [ ] **Step 2: Add the check**
+- [x] **Step 2: Add the check**
 
 In `start_all`, after `inst->state = State::started;` (around line 709), within the per-instance loop, add:
 
@@ -308,12 +316,12 @@ In `start_all`, after `inst->state = State::started;` (around line 709), within 
 
 (Note: `manifest_declares_pool_stats` is the anonymous-namespace helper from Task 3; both live in the same TU.)
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `ctest --test-dir build -R "test_pool_stats|test_plugin_host" -V`
 Expected: PASS, including the "declared but missing fails start" case.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/plugin/plugin_host.cpp
@@ -327,7 +335,7 @@ git commit -m "feat(plugin): fail start when pool.stats.v1 declared but not serv
 **Files:**
 - Modify: `tests/plugin/fixtures/minimal_test_plugin.cpp`
 
-- [ ] **Step 1: Add the include and a canned vtable**
+- [x] **Step 1: Add the include and a canned vtable**
 
 After `#include "shield/plugin/host_api.h"` (line 4), add:
 
@@ -371,7 +379,7 @@ const shield_pool_stats_v1& pool_stats_vtable() {
 }
 ```
 
-- [ ] **Step 2: Serve the vtable from get_interface**
+- [x] **Step 2: Serve the vtable from get_interface**
 
 In `minimal_create`, extend the `shell.get_interface` lambda (line 63) to also serve the pool stats interface. Replace the existing lambda body:
 
@@ -389,16 +397,16 @@ In `minimal_create`, extend the `shell.get_interface` lambda (line 63) to also s
     };
 ```
 
-- [ ] **Step 3: Add the config keys to the test manifest schema**
+- [x] **Step 3: Add the config keys to the test manifest schema**
 
 This is done in Task 6's embedded manifest (`stats_unavailable` under `config_schema`). No fixture change needed beyond Step 2.
 
-- [ ] **Step 4: Build the fixture**
+- [x] **Step 4: Build the fixture**
 
 Run: `cmake --build build --target shield_minimal_test_plugin -j`
 Expected: builds clean.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/plugin/fixtures/minimal_test_plugin.cpp
@@ -415,7 +423,7 @@ git commit -m "test(plugin): serve shield.pool.stats.v1 from minimal test plugin
 
 > **Setup note:** the `PoolStatsFixture` below mirrors `test_plugin_host.cpp`'s package-deployment pattern. If the standalone fixture's plugin copy/scan has any path mismatch, prefer **adding these `BOOST_AUTO_TEST_CASE`s directly into `test_plugin_host.cpp`** to reuse its already-working setup — the assertion logic is identical either way.
 
-- [ ] **Step 1: Write the test file**
+- [x] **Step 1: Write the test file**
 
 ```cpp
 // Tests for PluginHost::collect_pool_stats.
@@ -562,7 +570,7 @@ BOOST_AUTO_TEST_CASE(undeclared_instance_is_not_collected) {
 
 (If `InstanceDecl::config` is JSON in this codebase version — confirm against `plugin_host.hpp:91` `nlohmann::json config;` — the `unavailable` case sets it directly. If the YAML-driven path is preferred, set `id.config` via the same pattern `test_plugin_host.cpp` uses.)
 
-- [ ] **Step 2: Register the test in CMake**
+- [x] **Step 2: Register the test in CMake**
 
 In `tests/CMakeLists.txt`, after the `test_plugin_host` block (after line 121), add:
 
@@ -582,18 +590,18 @@ set_tests_properties(test_pool_stats PROPERTIES LABELS "plugin" TIMEOUT 15)
 shield_copy_runtime_dlls(test_pool_stats)
 ```
 
-- [ ] **Step 3: Run — expect two failures (impl not present yet)**
+- [x] **Step 3: Run — expect two failures (impl not present yet)**
 
 Run: `cmake --build build --target test_pool_stats shield_minimal_test_plugin -j && ctest --test-dir build -R test_pool_stats -V`
 Expected: first two cases FAIL (no `collect_pool_stats` impl until Task 3). This confirms the tests run.
 
-- [ ] **Step 4: Implement (Task 3) and re-run**
+- [x] **Step 4: Implement (Task 3) and re-run**
 
 After Task 3 + Task 5 land, re-run:
 Run: `ctest --test-dir build -R test_pool_stats -V`
 Expected: all three cases PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/plugin/test_pool_stats.cpp tests/CMakeLists.txt
@@ -610,7 +618,7 @@ git commit -m "test(plugin): unit tests for collect_pool_stats"
 
 This task validates the proposal against a real driver pool (redis++ `ConnectionPoolOptions`). redis++ does not expose idle/in_use counters publicly, so those fields are reported as `-1` (unknown) — this is exactly the unknown-semantics the proposal designed for.
 
-- [ ] **Step 1: Add the include**
+- [x] **Step 1: Add the include**
 
 In `shield_cache_redis.cpp`, after the existing includes:
 
@@ -618,7 +626,7 @@ In `shield_cache_redis.cpp`, after the existing includes:
 #include "shield/plugin/pool_stats.h"
 ```
 
-- [ ] **Step 2: Implement get_stats from the configured pool size**
+- [x] **Step 2: Implement get_stats from the configured pool size**
 
 Near the cache instance struct (the one holding `pool_size`, ~line 253), add a get_stats helper:
 
@@ -654,7 +662,7 @@ const shield_pool_stats_v1& cache_pool_stats_vtable() {
 
 (Replace `cache_redis_instance` with the plugin's actual instance struct name — confirm in `shield_cache_redis.cpp`.)
 
-- [ ] **Step 3: Serve the vtable**
+- [x] **Step 3: Serve the vtable**
 
 In the `shell.get_interface` lambda (~line 641), add a branch:
 
@@ -664,7 +672,7 @@ In the `shell.get_interface` lambda (~line 641), add a branch:
         }
 ```
 
-- [ ] **Step 4: Declare in manifest**
+- [x] **Step 4: Declare in manifest**
 
 In `plugins/cache.redis/manifest.yaml`, add a second entry under `provides`:
 
@@ -680,16 +688,16 @@ provides:
     capabilities: []
 ```
 
-- [ ] **Step 5: Build the plugin**
+- [x] **Step 5: Build the plugin**
 
 Run: `cmake --build build --target shield_cache_redis -j`
 Expected: builds clean.
 
-- [ ] **Step 6: Manual verification (requires a Redis instance)**
+- [x] **Step 6: Manual verification (requires a Redis instance)**
 
 With a Redis running and a config binding cache.redis, start the host and call `collect_pool_stats` from a diagnostic (or a temporary test). Confirm the cache.redis instance appears with `status=ok`, `max_size` = configured `pool_size`, other fields `-1`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add plugins/cache.redis/shield_cache_redis.cpp plugins/cache.redis/manifest.yaml

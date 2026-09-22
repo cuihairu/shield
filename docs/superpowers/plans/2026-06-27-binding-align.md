@@ -1,5 +1,13 @@
 # Lua 数据访问 binding 对齐 Implementation Plan
 
+> **已完成（2026-09-22 核实归档）**：host_api `binding_instance_id`、8 家数据插件
+> （mysql / sqlite / postgresql / mongodb / cache.redis / queue.redis /
+> leaderboard.redis / redis.driver）的 `__call` → binding 解析全部落地，统一走
+> `plugins/_shared/shield_lua_plugin_binding.hpp`（软失败 nil + module_unavailable）。
+> 与计划的偏差：Task 3 的单测未建独立 `test_plugin_binding` 目标，由
+> `tests/plugin/test_plugin_lua_facade.cpp` 承担（直载 .so + host stub，覆盖
+> binding 解析与缺失降级）；Task 2 的 fixture test namespace 方案被门面测试取代。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 7 个数据插件的 Lua `__call` 从 `instance_id` 改为 binding 逻辑名——业务 Lua 传 binding，host 经全局 `plugins.bindings` 解析到 instance，插件再查自己 registry。落实 `docs/plugin-system.md` "为什么用 binding 而非 instance_id" 的设计决策。
@@ -35,7 +43,7 @@
 - Modify: `include/shield/plugin/host_api.h`（在 `lua_add_path` 之后，`};` 之前）
 - Modify: `src/plugin/plugin_host.cpp`（`host_api_table()` 内）
 
-- [ ] **Step 1: 在 host_api.h 加函数指针**
+- [x] **Step 1: 在 host_api.h 加函数指针**
 
 在 `shield_host_api_v1` 的 `lua_add_path` 之后追加：
 
@@ -50,7 +58,7 @@
                                        const char* binding_name);
 ```
 
-- [ ] **Step 2: host 填充该函数**
+- [x] **Step 2: host 填充该函数**
 
 在 `plugin_host.cpp` 的 `host_api_table()` 内（紧接 `api.lua_add_path = ...` 之后）：
 
@@ -71,12 +79,12 @@
 
 > **Implementation note:** `host_api_table()` 当前返回一个静态/单例表（`plugin_host.cpp:237`）。若该表是 process-wide static，`g_host_for_api()` 需指向当前活跃的 `PluginHost`（单进程单 host，用 `global_host()` 即可）。若 `host_api_table()` 已是 per-`PluginHost`，直接捕获 `this`。实现时确认 `host_api_table()` 的存储方式后二选一——推荐用 `&global_host()` 保持与现有 process-wide host 假设一致。
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cmake --build build --target shield_plugin -j`
 Expected: 编译通过（host_api 新增一个函数指针槽，host 填充，暂无消费者）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add include/shield/plugin/host_api.h src/plugin/plugin_host.cpp
@@ -92,7 +100,7 @@ git commit -m "feat(plugin): expose binding_instance_id via host_api"
 
 为测试 binding 解析，给 minimal 插件加一个 callable namespace `shield.test.data`，其 `__call(binding)` 经 `host_api->binding_instance_id` 解析，返回一个带 instance_id 标记的 proxy（table）。
 
-- [ ] **Step 1: 存 host_api 到全局 + 注册 test namespace**
+- [x] **Step 1: 存 host_api 到全局 + 注册 test namespace**
 
 在 `minimal_test_plugin.cpp` 的匿名 namespace 顶部加：
 
@@ -148,12 +156,12 @@ const shield_host_api_v1* g_host_api = nullptr;  // set in minimal_create
 
 需在 fixture 顶部 include sol2（`#include <sol/sol.hpp>`）——确认 tests 已有 sol2 可用（shield_lua 用 sol2，fixture link 时需加）。
 
-- [ ] **Step 2: 编译 fixture**
+- [x] **Step 2: 编译 fixture**
 
 Run: `cmake --build build --target shield_minimal_test_plugin -j`
 Expected: 编译通过（若 sol2 未链接到 fixture，需在 tests/CMakeLists.txt 给 `shield_minimal_test_plugin` 加 sol2 依赖）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/plugin/fixtures/minimal_test_plugin.cpp tests/CMakeLists.txt
@@ -168,7 +176,7 @@ git commit -m "test(plugin): minimal plugin serves shield.test.data(binding)"
 - Create: `tests/plugin/test_plugin_binding.cpp`
 - Modify: `tests/CMakeLists.txt`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 复用 `test_plugin_host.cpp` 的 fixture 模式（内嵌 manifest + 部署 minimal plugin + PluginHost startup）。manifest 的 `provides` 含 `minimal.test.iface`，配置 `plugins.bindings` 含 `test.default -> <instance_id>`。
 
@@ -203,14 +211,14 @@ BOOST_AUTO_TEST_CASE(unknown_binding_returns_empty) {
 
 > **Harness note:** 若在单测里驱动完整 Lua VM（`shield.test.data(...)`)太重，先直接断言 `PluginHost::binding_instance_id`（Task 1 的 host 侧），它就是 `host_api->binding_instance_id` 的后端。完整 Lua `__call` 路径留到 lua_api 集成测试（`tests/lua_api/`）。
 
-- [ ] **Step 2: 注册 CMake target** — 仿 `test_plugin_host` 的 block（`tests/CMakeLists.txt:111-121`），改名 `test_plugin_binding`，link `shield_plugin`。
+- [x] **Step 2: 注册 CMake target** — 仿 `test_plugin_host` 的 block（`tests/CMakeLists.txt:111-121`），改名 `test_plugin_binding`，link `shield_plugin`。
 
-- [ ] **Step 3: 跑测试**
+- [x] **Step 3: 跑测试**
 
 Run: `cmake --build build --target test_plugin_binding -j && ctest --test-dir build -R test_plugin_binding -V`
 Expected: 两个 case PASS。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/plugin/test_plugin_binding.cpp tests/CMakeLists.txt
@@ -226,7 +234,7 @@ git commit -m "test(plugin): binding_instance_id resolution"
 
 mysql 是 SQL 类模板。其余 SQL（postgresql / sqlite）+ 文档（mongodb）+ Redis 三件套按此模板。
 
-- [ ] **Step 1: 存 host_api 到插件全局**
+- [x] **Step 1: 存 host_api 到插件全局**
 
 在 mysql cpp 匿名 namespace 加 `const shield_host_api_v1* g_host_api = nullptr;`。在 `mysql_create`（:1059）`inst->host = args->host_api` 附近加：
 
@@ -234,7 +242,7 @@ mysql 是 SQL 类模板。其余 SQL（postgresql / sqlite）+ 文档（mongodb�
     if (args && args->host_api) g_host_api = args->host_api;
 ```
 
-- [ ] **Step 2: __call 改 binding**
+- [x] **Step 2: __call 改 binding**
 
 把 `register_lua_impl`（:1018）的 `__call` lambda 参数从 `instance_id` 改为 `binding`，先解析：
 
@@ -255,12 +263,12 @@ mysql 是 SQL 类模板。其余 SQL（postgresql / sqlite）+ 文档（mongodb�
             });
 ```
 
-- [ ] **Step 3: 编译 + smoke**
+- [x] **Step 3: 编译 + smoke**
 
 Run: `cmake --build build --target shield_db_mysql -j`
 Expected: 编译通过。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add plugins/mysql/shield_db_mysql.cpp
@@ -276,7 +284,7 @@ git commit -m "feat(mysql): Lua __call 用 binding 而非 instance_id"
 
 同 Task 4 模式（:615 的 `__call`）。Redis 三件套（cache/queue/leaderboard）共用此模板。
 
-- [ ] **Step 1-4:** 同 Task 4（存 g_host_api、改 `__call(binding)`、编译、commit）。
+- [x] **Step 1-4:** 同 Task 4（存 g_host_api、改 `__call(binding)`、编译、commit）。
 
 ```bash
 git commit -m "feat(cache.redis): Lua __call 用 binding 而非 instance_id"
@@ -288,11 +296,11 @@ git commit -m "feat(cache.redis): Lua __call 用 binding 而非 instance_id"
 
 按 Task 4（SQL/文档类）或 Task 5（Redis 类）模板，逐一改 `__call` + 存 g_host_api：
 
-- [ ] postgresql（`shield_db_pgsql.cpp`）
-- [ ] sqlite（`shield_db_sqlite.cpp`）
-- [ ] mongodb（`shield_doc_mongodb.cpp`）
-- [ ] queue.redis（`shield_queue_redis.cpp`）
-- [ ] leaderboard.redis（`shield_leaderboard_redis.cpp`）
+- [x] postgresql（`shield_db_pgsql.cpp`）
+- [x] sqlite（`shield_db_sqlite.cpp`）
+- [x] mongodb（`shield_doc_mongodb.cpp`）
+- [x] queue.redis（`shield_queue_redis.cpp`）
+- [x] leaderboard.redis（`shield_leaderboard_redis.cpp`）
 
 每个一个 commit：`feat(<plugin>): Lua __call 用 binding 而非 instance_id`。
 
