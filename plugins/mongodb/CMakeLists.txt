@@ -27,9 +27,18 @@ target_include_directories(shield_doc_mongodb
 )
 
 find_package(mongocxx REQUIRED)
+# vcpkg installs mongocxx with its default static linkage, so accept either
+# spelling of the imported target depending on how the dependency was built.
+if(TARGET mongo::mongocxx_shared)
+    set(shield_mongocxx_target mongo::mongocxx_shared)
+elseif(TARGET mongo::mongocxx_static)
+    set(shield_mongocxx_target mongo::mongocxx_static)
+else()
+    message(FATAL_ERROR "mongo::mongocxx (shared or static) not provided by find_package(mongocxx)")
+endif()
 target_link_libraries(shield_doc_mongodb
     PRIVATE
-        mongo::mongocxx_shared
+        ${shield_mongocxx_target}
         sol2::sol2
         ${LUA_LIBRARIES}
 )

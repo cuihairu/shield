@@ -14,19 +14,23 @@
 #include <bsoncxx/builder/basic/document.hpp>
 #include <bsoncxx/document/value.hpp>
 #include <bsoncxx/document/view.hpp>
-#include <bsoncxx/exception.hpp>
+#include <bsoncxx/exception/exception.hpp>
 #include <bsoncxx/json.hpp>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mongocxx/client.hpp>
 #include <mongocxx/client_session.hpp>
 #include <mongocxx/database.hpp>
-#include <mongocxx/exception.hpp>
+#include <mongocxx/exception/bulk_write_exception.hpp>
+#include <mongocxx/exception/exception.hpp>
+#include <mongocxx/exception/logic_error.hpp>
+#include <mongocxx/exception/operation_exception.hpp>
 #include <mongocxx/instance.hpp>
 #include <mongocxx/pool.hpp>
 #include <mutex>
@@ -38,7 +42,18 @@
 #include "shield/plugin/abi.h"
 #include "shield/plugin/document.h"
 #include "shield/plugin/host_api.h"
+#include "shield/plugin/pool_stats.h"
 #include "shield_lua_plugin_binding.hpp"
+
+// The C ABI connection handle. Defined at global scope to complete the
+// opaque struct forward-declared in shield/plugin/document.h — the vtable
+// below assigns these functions to ABI-declared function pointers, so both
+// must name the same type.
+struct shield_doc_conn {
+    std::string database_name;
+    std::unique_ptr<mongocxx::client> client;
+    std::unique_ptr<mongocxx::client_session> session;  // non-null when in tx
+};
 
 // ---------------------------------------------------------------------------
 // Process-wide mongocxx initialization.
@@ -164,10 +179,8 @@ struct pool_guard {
     pool_guard& operator=(pool_guard&&) noexcept = default;
     ~pool_guard() = default;
 
-    mongocxx::client* operator->() const {
-        return entry ? entry->get() : nullptr;
-    }
-    mongocxx::client* get() const { return entry ? entry->get() : nullptr; }
+    mongocxx::client* operator->() const { return entry ? &**entry : nullptr; }
+    mongocxx::client* get() const { return entry ? &**entry : nullptr; }
     explicit operator bool() const { return get() != nullptr; }
 };
 
@@ -196,20 +209,29 @@ pool_guard acquire_client(mongo_instance* inst, std::string* err) {
 // becomes an empty document. Throws bsoncxx::exception on parse failure.
 bsoncxx::document::value json_to_doc(const char* json) {
     if (!json || !json[0]) return bsoncxx::builder::basic::make_document();
-    return bsoncxx::json::parse(std::string(json));
+    return bsoncxx::from_json(std::string(json));
 }
 
 // Parse into an array (for insert_many / aggregate pipeline).
 bsoncxx::document::value json_to_array_doc(const char* json) {
-    // bsoncxx::json::parse handles arrays too; we just need a view.
+    // bsoncxx::from_json handles arrays too; we just need a view.
     if (!json || !json[0]) return bsoncxx::builder::basic::make_document();
-    return bsoncxx::json::parse(std::string(json));
+    return bsoncxx::from_json(std::string(json));
 }
 
 // Serialize a bsoncxx view back to canonical JSON. Used to fill cursor and
 // inserted_id strings.
 std::string doc_to_json(const bsoncxx::document::view& view) {
     return bsoncxx::to_json(view);
+}
+
+// Serialize a single BSON value (the _id handed back by insert/update
+// results) as canonical JSON. mongocxx 4.x returns these as typed values
+// rather than embedded documents, so wrap one in a document for to_json.
+std::string id_to_json(bsoncxx::types::bson_value::view v) {
+    using bsoncxx::builder::basic::kvp;
+    return bsoncxx::to_json(
+        bsoncxx::builder::basic::make_document(kvp("_id", v)).view());
 }
 
 // ---------------------------------------------------------------------------
@@ -225,14 +247,13 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 
 // Map mongocxx/bsoncxx exceptions to stable error codes. Conservative
 // mapping: anything we don't recognize is "db_query_failed" — a catch-all
-// that still signals failure to the caller.
+// that still signals failure to the caller. Connection timeouts surface as
+// operation_exception in mongocxx 4.x (the dedicated
+// connection_timeout_exception type was removed).
 const char* map_exception(const std::exception& e) {
-    if (dynamic_cast<const mongocxx::connection_timeout_exception*>(&e))
-        return "connection_failed";
     if (dynamic_cast<const mongocxx::operation_exception*>(&e))
         return "db_query_failed";
-    if (dynamic_cast<const mongocxx::logic_exception*>(&e))
-        return "plugin_error";
+    if (dynamic_cast<const mongocxx::logic_error*>(&e)) return "plugin_error";
     if (dynamic_cast<const mongocxx::bulk_write_exception*>(&e))
         return "db_query_failed";
     if (dynamic_cast<const bsoncxx::exception*>(&e))
@@ -252,13 +273,7 @@ const char* map_exception(const std::exception& e) {
 // The pool is still used if available (acquire_client). The C ABI consumer
 // gets a pooled client for the duration of a single call.
 // ---------------------------------------------------------------------------
-struct shield_doc_conn {
-    std::string database_name;
-    std::unique_ptr<mongocxx::client> client;
-    std::unique_ptr<mongocxx::client_session> session;  // non-null when in tx
-};
-
-const char* dup_string(const std::string& s) {
+char* dup_string(const std::string& s) {
     char* p = static_cast<char*>(std::malloc(s.size() + 1));
     if (!p) return nullptr;
     std::memcpy(p, s.c_str(), s.size() + 1);
@@ -444,12 +459,8 @@ int doc_insert_one(shield_doc_conn* conn, const char* collection,
         auto res = coll.insert_one(doc.view());
         out->success = 1;
         if (res) {
-            out->inserted_count = static_cast<int64_t>(res->inserted_count());
-            auto id = res->inserted_id();
-            if (id) {
-                out->inserted_id_json =
-                    dup_string(doc_to_json(id.get_document().value));
-            }
+            out->inserted_count = res->result().inserted_count();
+            out->inserted_id_json = dup_string(id_to_json(res->inserted_id()));
         }
         return 0;
     } catch (const std::exception& e) {
@@ -474,12 +485,12 @@ int doc_insert_many(shield_doc_conn* conn, const char* collection,
             nlohmann::json::parse(docs_json_array ? docs_json_array : "[]");
         std::vector<bsoncxx::document::value> docs;
         for (auto& d : parsed) {
-            docs.push_back(bsoncxx::json::parse(d.dump()));
+            docs.push_back(bsoncxx::from_json(d.dump()));
         }
         auto res = coll.insert_many(docs);
         out->success = 1;
         if (res) {
-            out->inserted_count = static_cast<int64_t>(res->inserted_count());
+            out->inserted_count = res->result().inserted_count();
         }
         return 0;
     } catch (const std::exception& e) {
@@ -518,7 +529,7 @@ int doc_update_one(shield_doc_conn* conn, const char* collection,
                 auto id = res->upserted_id();
                 if (id) {
                     out->upserted_id_json =
-                        dup_string(doc_to_json(id.get_document().value));
+                        dup_string(id_to_json(id->get_value()));
                 }
             }
         }
@@ -640,7 +651,7 @@ int doc_aggregate(shield_doc_conn* conn, const char* collection,
             nlohmann::json::parse(pipeline_json ? pipeline_json : "[]");
         std::vector<bsoncxx::document::value> stages;
         for (auto& s : parsed) {
-            stages.push_back(bsoncxx::json::parse(s.dump()));
+            stages.push_back(bsoncxx::from_json(s.dump()));
         }
         (void)opts_json;
         mongocxx::pipeline p;
@@ -692,7 +703,8 @@ int doc_create_index(shield_doc_conn* conn, const char* collection,
         }
         auto res = coll.create_index(keys.view(), opts);
         out->success = 1;
-        out->inserted_id_json = dup_string(res);  // reuse as "name created"
+        out->inserted_id_json = dup_string(
+            bsoncxx::to_json(res.view()));  // reply as "name created"
         return 0;
     } catch (const std::exception& e) {
         out->error_code = map_exception(e);
@@ -962,7 +974,7 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                 auto coll = client->database(resolve_database(inst))
                                 .collection(collection);
                 auto filter_doc =
-                    bsoncxx::json::parse(lua_to_json_string(filter_obj));
+                    bsoncxx::from_json(lua_to_json_string(filter_obj));
                 auto cursor = session ? coll.find(*session, filter_doc.view())
                                       : coll.find(filter_doc.view());
                 nlohmann::json docs = nlohmann::json::array();
@@ -991,7 +1003,7 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                 auto coll = client->database(resolve_database(inst))
                                 .collection(collection);
                 auto filter_doc =
-                    bsoncxx::json::parse(lua_to_json_string(filter_obj));
+                    bsoncxx::from_json(lua_to_json_string(filter_obj));
                 auto maybe = session
                                  ? coll.find_one(*session, filter_doc.view())
                                  : coll.find_one(filter_doc.view());
@@ -1019,16 +1031,17 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
             try {
                 auto coll = client->database(resolve_database(inst))
                                 .collection(collection);
-                auto doc = bsoncxx::json::parse(lua_to_json_string(doc_obj));
+                auto doc = bsoncxx::from_json(lua_to_json_string(doc_obj));
                 auto res = session ? coll.insert_one(*session, doc.view())
                                    : coll.insert_one(doc.view());
                 auto t = lua.create_table();
                 t["inserted_count"] =
-                    res ? static_cast<int64_t>(res->inserted_count()) : 0;
-                if (res && res->inserted_id()) {
+                    res ? static_cast<int64_t>(res->result().inserted_count())
+                        : 0;
+                if (res) {
                     t["inserted_id"] = json_to_lua(
-                        lua, nlohmann::json::parse(bsoncxx::to_json(
-                                 res->inserted_id().get_document().value)));
+                        lua,
+                        nlohmann::json::parse(id_to_json(res->inserted_id())));
                 }
                 results.push_back(sol::make_object(lua, true));
                 results.push_back(t);
@@ -1052,13 +1065,14 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                 auto arr = lua_to_json(docs_obj);
                 std::vector<bsoncxx::document::value> docs;
                 for (auto& d : arr) {
-                    docs.push_back(bsoncxx::json::parse(d.dump()));
+                    docs.push_back(bsoncxx::from_json(d.dump()));
                 }
                 auto res = session ? coll.insert_many(*session, docs)
                                    : coll.insert_many(docs);
                 auto t = lua.create_table();
                 t["inserted_count"] =
-                    res ? static_cast<int64_t>(res->inserted_count()) : 0;
+                    res ? static_cast<int64_t>(res->result().inserted_count())
+                        : 0;
                 results.push_back(sol::make_object(lua, true));
                 results.push_back(t);
                 return results;
@@ -1088,21 +1102,19 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                 }
                 auto res =
                     session
-                        ? coll.update_one(*session,
-                                          bsoncxx::json::parse(
-                                              lua_to_json_string(filter_obj))
-                                              .view(),
-                                          bsoncxx::json::parse(
-                                              lua_to_json_string(update_obj))
-                                              .view(),
-                                          opts)
-                        : coll.update_one(bsoncxx::json::parse(
-                                              lua_to_json_string(filter_obj))
-                                              .view(),
-                                          bsoncxx::json::parse(
-                                              lua_to_json_string(update_obj))
-                                              .view(),
-                                          opts);
+                        ? coll.update_one(
+                              *session,
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view(),
+                              bsoncxx::from_json(lua_to_json_string(update_obj))
+                                  .view(),
+                              opts)
+                        : coll.update_one(
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view(),
+                              bsoncxx::from_json(lua_to_json_string(update_obj))
+                                  .view(),
+                              opts);
                 auto t = lua.create_table();
                 if (res) {
                     t["matched_count"] =
@@ -1111,8 +1123,8 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                         static_cast<int64_t>(res->modified_count());
                     if (res->upserted_count() > 0 && res->upserted_id()) {
                         t["upserted_id"] = json_to_lua(
-                            lua, nlohmann::json::parse(bsoncxx::to_json(
-                                     res->upserted_id().get_document().value)));
+                            lua, nlohmann::json::parse(id_to_json(
+                                     res->upserted_id()->get_value())));
                     }
                 }
                 results.push_back(sol::make_object(lua, true));
@@ -1137,19 +1149,17 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                                 .collection(collection);
                 auto res =
                     session
-                        ? coll.update_many(*session,
-                                           bsoncxx::json::parse(
-                                               lua_to_json_string(filter_obj))
-                                               .view(),
-                                           bsoncxx::json::parse(
-                                               lua_to_json_string(update_obj))
-                                               .view())
-                        : coll.update_many(bsoncxx::json::parse(
-                                               lua_to_json_string(filter_obj))
-                                               .view(),
-                                           bsoncxx::json::parse(
-                                               lua_to_json_string(update_obj))
-                                               .view());
+                        ? coll.update_many(
+                              *session,
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view(),
+                              bsoncxx::from_json(lua_to_json_string(update_obj))
+                                  .view())
+                        : coll.update_many(
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view(),
+                              bsoncxx::from_json(lua_to_json_string(update_obj))
+                                  .view());
                 auto t = lua.create_table();
                 if (res) {
                     t["matched_count"] =
@@ -1179,13 +1189,13 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                                 .collection(collection);
                 auto res =
                     session
-                        ? coll.delete_one(*session,
-                                          bsoncxx::json::parse(
-                                              lua_to_json_string(filter_obj))
-                                              .view())
-                        : coll.delete_one(bsoncxx::json::parse(
-                                              lua_to_json_string(filter_obj))
-                                              .view());
+                        ? coll.delete_one(
+                              *session,
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view())
+                        : coll.delete_one(
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view());
                 auto t = lua.create_table();
                 if (res) {
                     t["deleted_count"] =
@@ -1213,13 +1223,13 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                                 .collection(collection);
                 auto res =
                     session
-                        ? coll.delete_many(*session,
-                                           bsoncxx::json::parse(
-                                               lua_to_json_string(filter_obj))
-                                               .view())
-                        : coll.delete_many(bsoncxx::json::parse(
-                                               lua_to_json_string(filter_obj))
-                                               .view());
+                        ? coll.delete_many(
+                              *session,
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view())
+                        : coll.delete_many(
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view());
                 auto t = lua.create_table();
                 if (res) {
                     t["deleted_count"] =
@@ -1246,14 +1256,14 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                 auto coll = client->database(resolve_database(inst))
                                 .collection(collection);
                 auto count =
-                    session ? coll.count_documents(
-                                  *session, bsoncxx::json::parse(
-                                                lua_to_json_string(filter_obj))
-                                                .view())
-                            : coll.count_documents(
-                                  bsoncxx::json::parse(
-                                      lua_to_json_string(filter_obj))
-                                      .view());
+                    session
+                        ? coll.count_documents(
+                              *session,
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view())
+                        : coll.count_documents(
+                              bsoncxx::from_json(lua_to_json_string(filter_obj))
+                                  .view());
                 results.push_back(sol::make_object(lua, true));
                 results.push_back(
                     sol::make_object(lua, static_cast<int64_t>(count)));
@@ -1278,7 +1288,7 @@ sol::table make_session_proxy(sol::state_view lua, mongo_instance* inst,
                 mongocxx::pipeline p;
                 auto arr = lua_to_json(pipeline_obj);
                 for (auto& s_doc : arr) {
-                    p.append_stage(bsoncxx::json::parse(s_doc.dump()).view());
+                    p.append_stage(bsoncxx::from_json(s_doc.dump()).view());
                 }
                 auto cursor =
                     session ? coll.aggregate(*session, p) : coll.aggregate(p);
@@ -1322,7 +1332,7 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                 auto coll = g.get()
                                 ->database(resolve_database(inst))
                                 .collection(collection);
-                auto filter_doc = bsoncxx::json::parse(
+                auto filter_doc = bsoncxx::from_json(
                     filter_obj.valid() ? lua_to_json_string(filter_obj) : "{}");
                 auto cursor = coll.find(filter_doc.view());
                 nlohmann::json docs = nlohmann::json::array();
@@ -1358,7 +1368,7 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                 auto coll = g.get()
                                 ->database(resolve_database(inst))
                                 .collection(collection);
-                auto filter_doc = bsoncxx::json::parse(
+                auto filter_doc = bsoncxx::from_json(
                     filter_obj.valid() ? lua_to_json_string(filter_obj) : "{}");
                 auto maybe = coll.find_one(filter_doc.view());
                 results.push_back(sol::make_object(lua, true));
@@ -1394,15 +1404,16 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                 auto coll = g.get()
                                 ->database(resolve_database(inst))
                                 .collection(collection);
-                auto doc = bsoncxx::json::parse(lua_to_json_string(doc_obj));
+                auto doc = bsoncxx::from_json(lua_to_json_string(doc_obj));
                 auto res = coll.insert_one(doc.view());
                 auto t = lua.create_table();
                 t["inserted_count"] =
-                    res ? static_cast<int64_t>(res->inserted_count()) : 0;
-                if (res && res->inserted_id()) {
+                    res ? static_cast<int64_t>(res->result().inserted_count())
+                        : 0;
+                if (res) {
                     t["inserted_id"] = json_to_lua(
-                        lua, nlohmann::json::parse(bsoncxx::to_json(
-                                 res->inserted_id().get_document().value)));
+                        lua,
+                        nlohmann::json::parse(id_to_json(res->inserted_id())));
                 }
                 results.push_back(sol::make_object(lua, true));
                 results.push_back(t);
@@ -1435,12 +1446,13 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                 auto arr = lua_to_json(docs_obj);
                 std::vector<bsoncxx::document::value> docs;
                 for (auto& d : arr) {
-                    docs.push_back(bsoncxx::json::parse(d.dump()));
+                    docs.push_back(bsoncxx::from_json(d.dump()));
                 }
                 auto res = coll.insert_many(docs);
                 auto t = lua.create_table();
                 t["inserted_count"] =
-                    res ? static_cast<int64_t>(res->inserted_count()) : 0;
+                    res ? static_cast<int64_t>(res->result().inserted_count())
+                        : 0;
                 results.push_back(sol::make_object(lua, true));
                 results.push_back(t);
                 return results;
@@ -1478,8 +1490,8 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                         opts.upsert(o["upsert"].get<bool>());
                 }
                 auto res = coll.update_one(
-                    bsoncxx::json::parse(lua_to_json_string(filter_obj)).view(),
-                    bsoncxx::json::parse(lua_to_json_string(update_obj)).view(),
+                    bsoncxx::from_json(lua_to_json_string(filter_obj)).view(),
+                    bsoncxx::from_json(lua_to_json_string(update_obj)).view(),
                     opts);
                 auto t = lua.create_table();
                 if (res) {
@@ -1489,8 +1501,8 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                         static_cast<int64_t>(res->modified_count());
                     if (res->upserted_count() > 0 && res->upserted_id()) {
                         t["upserted_id"] = json_to_lua(
-                            lua, nlohmann::json::parse(bsoncxx::to_json(
-                                     res->upserted_id().get_document().value)));
+                            lua, nlohmann::json::parse(id_to_json(
+                                     res->upserted_id()->get_value())));
                     }
                 }
                 results.push_back(sol::make_object(lua, true));
@@ -1523,9 +1535,8 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                                 ->database(resolve_database(inst))
                                 .collection(collection);
                 auto res = coll.update_many(
-                    bsoncxx::json::parse(lua_to_json_string(filter_obj)).view(),
-                    bsoncxx::json::parse(lua_to_json_string(update_obj))
-                        .view());
+                    bsoncxx::from_json(lua_to_json_string(filter_obj)).view(),
+                    bsoncxx::from_json(lua_to_json_string(update_obj)).view());
                 auto t = lua.create_table();
                 if (res) {
                     t["matched_count"] =
@@ -1562,8 +1573,7 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                                 ->database(resolve_database(inst))
                                 .collection(collection);
                 auto res = coll.delete_one(
-                    bsoncxx::json::parse(lua_to_json_string(filter_obj))
-                        .view());
+                    bsoncxx::from_json(lua_to_json_string(filter_obj)).view());
                 auto t = lua.create_table();
                 if (res) {
                     t["deleted_count"] =
@@ -1598,8 +1608,7 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                                 ->database(resolve_database(inst))
                                 .collection(collection);
                 auto res = coll.delete_many(
-                    bsoncxx::json::parse(lua_to_json_string(filter_obj))
-                        .view());
+                    bsoncxx::from_json(lua_to_json_string(filter_obj)).view());
                 auto t = lua.create_table();
                 if (res) {
                     t["deleted_count"] =
@@ -1634,9 +1643,9 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                                 ->database(resolve_database(inst))
                                 .collection(collection);
                 auto count = coll.count_documents(
-                    bsoncxx::json::parse(filter_obj.valid()
-                                             ? lua_to_json_string(filter_obj)
-                                             : "{}")
+                    bsoncxx::from_json(filter_obj.valid()
+                                           ? lua_to_json_string(filter_obj)
+                                           : "{}")
                         .view());
                 results.push_back(sol::make_object(lua, true));
                 results.push_back(
@@ -1670,7 +1679,7 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                 mongocxx::pipeline p;
                 auto arr = lua_to_json(pipeline_obj);
                 for (auto& s_doc : arr) {
-                    p.append_stage(bsoncxx::json::parse(s_doc.dump()).view());
+                    p.append_stage(bsoncxx::from_json(s_doc.dump()).view());
                 }
                 auto cursor = coll.aggregate(p);
                 nlohmann::json docs = nlohmann::json::array();
@@ -1706,7 +1715,7 @@ sol::table make_instance_proxy(sol::state_view lua, mongo_instance* inst) {
                 auto coll = g.get()
                                 ->database(resolve_database(inst))
                                 .collection(collection);
-                auto keys = bsoncxx::json::parse(lua_to_json_string(keys_obj));
+                auto keys = bsoncxx::from_json(lua_to_json_string(keys_obj));
                 mongocxx::options::index opts;
                 if (opts_obj.valid() &&
                     opts_obj.get_type() == sol::type::table) {
@@ -1900,6 +1909,46 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
     return 0;
 }
 
+// shield.pool.stats.v1 — mongocxx::pool exposes only the URI-configured
+// pool bounds (maxPoolSize / minPoolSize query params); live occupancy is
+// not observable through the C++ driver, so those gauges stay -1 (unknown).
+// max_size mirrors the URI only when explicitly set; the driver default
+// (which we don't parse) reads as unknown.
+int mongo_pool_get_stats(struct shield_plugin_instance_v1* self,
+                         struct shield_pool_stats* out) {
+    auto* inst = reinterpret_cast<mongo_instance*>(self);
+    if (!inst || !out) return -1;
+    out->max_size = -1;
+    out->size = -1;
+    out->idle = -1;
+    out->in_use = -1;
+    out->waiters = -1;
+    out->acquire_timeout_total = -1;
+    out->acquire_total = -1;
+    out->create_total = -1;
+    out->destroy_total = -1;
+    out->eviction_total = -1;
+    out->health_check_failures_total = -1;
+    out->last_error_epoch_ms = -1;
+    if (inst->pool) {
+        if (auto mx = inst->uri_config.max_pool_size()) {
+            if (*mx >= 0 && *mx <= static_cast<int64_t>(
+                                       std::numeric_limits<int32_t>::max())) {
+                out->max_size = static_cast<int32_t>(*mx);
+            }
+        }
+    }
+    return 0;
+}
+
+const shield_pool_stats_v1& mongo_pool_stats_vtable() {
+    static const shield_pool_stats_v1 v{
+        sizeof(shield_pool_stats_v1),
+        &mongo_pool_get_stats,
+    };
+    return v;
+}
+
 // ---------------------------------------------------------------------------
 // v1 ABI: create / shutdown.
 // ---------------------------------------------------------------------------
@@ -1937,6 +1986,8 @@ int mongo_create(const shield_plugin_create_args_v1* args,
                                    shield_error_v1*) -> const void* {
         if (iface && std::strcmp(iface, SHIELD_DOCUMENT_INTERFACE) == 0)
             return &doc_vtable();
+        if (iface && std::strcmp(iface, SHIELD_POOL_STATS_INTERFACE) == 0)
+            return &mongo_pool_stats_vtable();
         return nullptr;
     };
     inst->shell.start = [](shield_plugin_instance_v1*, shield_error_v1*) {
