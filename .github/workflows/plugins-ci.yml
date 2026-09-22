@@ -34,13 +34,13 @@ jobs:
         include:
           - os: ubuntu-24.04
             compiler: gcc
-            timeout_minutes: 60
+            timeout_minutes: 90
           - os: macos-latest
             compiler: clang
-            timeout_minutes: 60
+            timeout_minutes: 90
           - os: windows-latest
             compiler: msvc
-            timeout_minutes: 90
+            timeout_minutes: 150
             build_parallel: 2
 
     steps:
@@ -92,6 +92,12 @@ jobs:
       # Configure with all optional plugins enabled
       - name: Configure
         shell: bash
+        env:
+          # ports-overlay carries an in-repo copy of the mongo-c-driver port
+          # including upstream's cmake-4.4.patch: the pinned vcpkg commit
+          # (vcpkgGitCommitId / builtin-baseline) predates that fix, and its
+          # TRY_COMPILE CMAKE_FLAGS form fails to configure under CMake 4.
+          VCPKG_OVERLAY_PORTS: ${{ github.workspace }}/ports-overlay
         run: |
           CMAKE_ARGS=(
             -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
@@ -109,6 +115,7 @@ jobs:
             -DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON
             -DSHIELD_BUILD_DB_PLUGIN_MYSQL=ON
             -DSHIELD_BUILD_DB_PLUGIN_POSTGRESQL=ON
+            -DSHIELD_BUILD_PLUGIN_MONGODB=ON
           )
 
           if [ "$RUNNER_OS" == "Windows" ]; then
