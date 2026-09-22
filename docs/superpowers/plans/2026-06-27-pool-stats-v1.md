@@ -708,7 +708,7 @@ git commit -m "feat(cache.redis): serve shield.pool.stats.v1"
 
 ## Phase B (follow-up, after Phase A freezes the ABI)
 
-**Status: COMPLETE (4/5 committed, 2026-09-22).** Each plugin implements the
+**Status: COMPLETE (5/5 committed, 2026-09-22).** Each plugin implements the
 vtable using Task 7 (cache.redis) as the template, filling real fields where
 the driver exposes them and `-1` (unknown) where it does not:
 
@@ -719,13 +719,15 @@ the driver exposes them and `-1` (unknown) where it does not:
   shape as mysql; same four real gauges.
 - **sqlite** (`shield_db_sqlite.cpp`) — not implemented (per the
   recommendation below: no connection pool, interface not declared).
-- **mongodb** (`shield_doc_mongodb.cpp`) — implementation written but NOT
-  committed: reports `-1` except `max_size`, mirrored from the URI's
-  explicit `maxPoolSize` param when set (`mongocxx::uri::max_pool_size()`).
-  Blocked locally: vcpkg's mongo-c-driver port fails to configure on this
-  host (TRY_COMPILE incompatibility with CMake 4.2), so the change cannot
-  be compiled or tested here; the optional-plugins CI does not build
-  mongodb either. To be committed once a build+test path exists.
+- **mongodb** (`shield_doc_mongodb.cpp`) — DONE. Reports `-1` except
+  `max_size`, mirrored from the URI's explicit `maxPoolSize` param when set
+  (`mongocxx::uri::max_pool_size()`). Unblocked with a `VCPKG_OVERLAY_PORTS`
+  port carrying upstream's `cmake-4.4.patch` (the builtin-baseline snapshot
+  predates it; its TRY_COMPILE CMAKE_FLAGS form breaks under CMake 4).
+  This was also the plugin's first-ever compile, which pulled the mongo-cxx
+  3.x → 4.x API migration (removed exception headers, `pool::entry::get`,
+  `bsoncxx::json::parse`, result count accessors, `element::get_document`)
+  and a static-target fallback for `mongo::mongocxx_shared`.
 - **queue.redis** / **leaderboard.redis** — DONE. Neither keeps a
   persistent pool (one fresh `sw::redis::Redis` connection per
   operation/call), so `get_stats` reports all `-1` (unknown) rather than a
