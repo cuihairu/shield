@@ -17,6 +17,8 @@ provides:
     capabilities:
       - streams
       - consumer-group
+  - interface: shield.pool.stats.v1
+    capabilities: []
 requires:
   - name: redis
     interface: shield.redis.v1
