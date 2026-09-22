@@ -145,6 +145,18 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       LoadFailures / LoadScriptOnDirectoryFails 全灭。已改为
       luaL_loadfile + lua_pcall 保护式（失败返回 false，永不 raise），
       并补了执行期 error 分支用例。
-- [ ] xmldef 工具链/文档适配：xmldef descriptor 的 `schema_id` 是其
-      descriptor 系统内部概念，与 codec ABI 无关；xmldef 实施时 catalog
-      导出的路由需适配收敛后的 ABI（只产出 `schema_name`）
+- [x] xmldef 工具链/文档适配完成（2026-09-22）：runtime 侧经核查无需
+      改动——catalog 解析器与 `route_entry_from_descriptor` 两条编译
+      路径均已只产出 `schema_name`（显式覆盖 ∨ 路由名同名约定），
+      代码里残余的 `schema_id` 全部是「已删键报错」路径。文档面把
+      数字 `schema_id` 从 descriptor 契约的全部导出面移除：
+      xmldef-descriptor-spec.md（源模型 `schema` attr、语义字段、
+      Required Checks、Method/Route IR、debug.json 要求、
+      route_constants.json 示例、稳定性规则改 `schema_name`；Route
+      节写明边界——数字编号只是具体 schema 系统内部概念，不进
+      descriptor 契约与 codec ABI）；xmldef-phase1-implementation.md
+      （methods/routes/route_constants 示例、decode 元字段改
+      `__xmldef_schema_name`）；xmldef-toolchain-design.md（IR 字段、
+      Descriptor Registry 映射、Current Gap 现状注记）；
+      xmldef-unity-generator-spec.md（必需 descriptor 字段
+      schema name）

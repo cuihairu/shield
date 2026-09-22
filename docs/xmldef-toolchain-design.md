@@ -174,7 +174,7 @@ descriptor.bin / descriptor.debug.json
 - `methods`
 - `route_table`
 - `direction` (`client_to_server` / `server_to_client` / `bidirectional`)
-- `schema_id`
+- `schema_name`（codec 唯一寻址键，见 [protocol-codec-plugins.md](protocol-codec-plugins.md)「Schema 寻址收敛」）
 - `field definitions`
 - `codegen hints`
 
@@ -243,7 +243,7 @@ runtime 启动时加载 `descriptor.bin`，建立：
 
 - `route_id -> method descriptor`
 - `method full name -> route_id`
-- `schema_id -> type descriptor`
+- `schema_name -> type descriptor`
 - `route_id -> request/response schema`
 
 这个 registry 属于 runtime shared state，不属于 Lua service 自己。
@@ -494,7 +494,9 @@ socket.Send(rawBytes);
 
 当前仓库状态与本文目标之间的差距是：
 
-- 已有：`xmldef` route catalog 加载
+- 已有：`xmldef` route catalog 加载（已按收敛后 ABI 导出：路由只产出
+  `schema_name`，显式 `request_schema` 覆盖 ∨ 路由名同名约定；
+  descriptor 侧不得再引入 codec 可见的 `schema_id` 数字寻址）
 - 未有：真实 body schema decode
 - 未有：descriptor compiler
 - 未有：generator plugin contract

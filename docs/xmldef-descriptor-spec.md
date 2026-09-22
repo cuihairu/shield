@@ -84,8 +84,7 @@ protocol/
            name="Avatar.move"
            direction="client_to_server"
            request="avatar.MoveRequest"
-           response=""
-           schema="33"/>
+           response=""/>
 </protocol>
 ```
 
@@ -98,9 +97,14 @@ protocol/
 - `direction`
 - `request_type`
 - `response_type?`
-- `schema_id?`
 - `target_hint?`
 - `binding_hint?`
+
+schema 寻址不再单独设字段：schema 的定位就是 `request_type` 指向的
+类型图节点；导出到 host 路由表时按收敛后的 codec ABI 只产出
+`schema_name`（见下方 Route 一节与
+[protocol-codec-plugins.md](protocol-codec-plugins.md) 的「Schema
+寻址收敛」）。
 
 ### Type Definition
 
@@ -129,7 +133,6 @@ protocol/
 
 - `route_id` 唯一
 - `method full_name` 唯一
-- `schema_id` 在 package 内唯一或满足显式命名空间约束
 - `request_type` / `response_type` 引用存在
 - 字段 ID 在 struct 内唯一
 - 字段名在 struct 内唯一
@@ -266,7 +269,6 @@ type_ref {
 
 - `method_id: uint16`
 - `route_id: uint32`
-- `schema_id: uint16`
 - `module_id: uint16`
 - `full_name: string`
 - `short_name: string`
@@ -287,7 +289,14 @@ type_ref {
 - `method_id: uint16`
 - `full_name: string`
 - `direction`
-- `schema_id`
+- `schema_name: string`
+
+`schema_name` 是 codec 管线的唯一寻址键，在编译期解析：显式
+`request_schema` 覆盖优先，否则取 `full_name`（同名约定）。这与 host
+侧 `RouteEntry.schema_name` 的收敛规则一致，catalog 导出的路由只
+产出这个名字，不再暴露 `schema_id` 一类的数字寻址——那类 id 即使
+存在于具体 schema 系统（如 protobuf 文件号）内部，也只是该系统的
+私有概念，不进入 descriptor 通用契约，也不进入 codec ABI。
 
 ## Canonical Ordering
 
@@ -343,7 +352,7 @@ type_ref {
 
 - 可完全表达 binary descriptor 的语义内容
 - 字段名明确
-- 不丢失 `route_id` / `schema_id` / `direction`
+- 不丢失 `route_id` / `schema_name` / `direction`
 - 可供 generator 无损读取
 
 ### route_constants.json
@@ -360,7 +369,7 @@ type_ref {
     {
       "route_id": 4097,
       "name": "Avatar.move",
-      "schema_id": 33,
+      "schema_name": "Avatar.move",
       "direction": "client_to_server"
     }
   ]
@@ -420,7 +429,6 @@ generator 侧最少要能拿到：
 - `type_id`
 - `method_id`
 - `route_id`
-- `schema_id`
 - struct `field_id`
 
 删除只能：

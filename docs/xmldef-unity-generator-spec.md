@@ -44,7 +44,7 @@ Unity generator 依赖以下 descriptor 字段：
 - code namespace
 - method full name
 - route id
-- schema id
+- schema name
 - direction
 - request type
 - response type

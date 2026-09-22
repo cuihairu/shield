@@ -246,7 +246,6 @@ map：
 {
   "method_id": 1,
   "route_id": 4097,
-  "schema_id": 33,
   "module_id": 1,
   "full_name": "Avatar.move",
   "short_name": "move",
@@ -271,9 +270,14 @@ map：
   "method_id": 1,
   "full_name": "Avatar.move",
   "direction": "client_to_server",
-  "schema_id": 33
+  "schema_name": "Avatar.move"
 }
 ```
+
+`schema_name` 直传 host `RouteEntry.schema_name`（显式 `request_schema`
+覆盖优先，否则 `full_name` 同名约定）。收敛后的 codec ABI 只见这个
+名字；descriptor 不向管线暴露 `schema_id` 一类的数字寻址，那类编号
+只是具体 schema 系统的内部概念。
 
 ### route_constants.json
 
@@ -288,13 +292,13 @@ Phase 1 同时输出简化 route 表：
     {
       "route_id": 4097,
       "name": "Avatar.move",
-      "schema_id": 65,
+      "schema_name": "Avatar.move",
       "direction": "client_to_server"
     },
     {
       "route_id": 4098,
       "name": "Login.reqAuth",
-      "schema_id": 33,
+      "schema_name": "Login.reqAuth",
       "direction": "client_to_server"
     }
   ]
@@ -575,7 +579,6 @@ Phase 1 同时输出简化 route 表：
     {
       "method_id": 1,
       "route_id": 4098,
-      "schema_id": 33,
       "module_id": 2,
       "full_name": "Login.reqAuth",
       "short_name": "reqAuth",
@@ -591,7 +594,6 @@ Phase 1 同时输出简化 route 表：
     {
       "method_id": 2,
       "route_id": 4097,
-      "schema_id": 65,
       "module_id": 3,
       "full_name": "Avatar.move",
       "short_name": "move",
@@ -611,14 +613,14 @@ Phase 1 同时输出简化 route 表：
       "method_id": 2,
       "full_name": "Avatar.move",
       "direction": "client_to_server",
-      "schema_id": 65
+      "schema_name": "Avatar.move"
     },
     {
       "route_id": 4098,
       "method_id": 1,
       "full_name": "Login.reqAuth",
       "direction": "client_to_server",
-      "schema_id": 33
+      "schema_name": "Login.reqAuth"
     }
   ]
 }
@@ -714,7 +716,7 @@ Phase 1 decode 后给 Lua 的 `DecodedBody.message` 形状统一为 object：
 {
   "__xmldef_method": "Avatar.move",
   "__xmldef_route_id": 4097,
-  "__xmldef_schema_id": 33,
+  "__xmldef_schema_name": "Avatar.move",
   "entity_id": 7,
   "x": 10,
   "y": 20,
