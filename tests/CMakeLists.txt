@@ -477,7 +477,8 @@ if(SHIELD_BUILD_DB_PLUGIN_MYSQL
     foreach(_ps IN
             ITEMS "MYSQL:SHIELD_BUILD_DB_PLUGIN_MYSQL:shield_db_mysql"
                   "POSTGRESQL:SHIELD_BUILD_DB_PLUGIN_POSTGRESQL:shield_db_pgsql"
-                  "QUEUE_REDIS:SHIELD_BUILD_PLUGIN_QUEUE_REDIS:shield_queue_redis")
+                  "QUEUE_REDIS:SHIELD_BUILD_PLUGIN_QUEUE_REDIS:shield_queue_redis"
+                  "LEADERBOARD_REDIS:SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS:shield_leaderboard_redis")
         string(REPLACE ":" ";" _ps_parts "${_ps}")
         list(GET _ps_parts 0 _ps_name)
         list(GET _ps_parts 1 _ps_switch)

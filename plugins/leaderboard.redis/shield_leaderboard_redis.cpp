@@ -40,6 +40,7 @@
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
 #include "shield/plugin/leaderboard.h"
+#include "shield/plugin/pool_stats.h"
 #include "shield/plugin/redis.h"
 #include "shield_lua_plugin_binding.hpp"
 
@@ -1046,6 +1047,37 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
     return 0;
 }
 
+// shield.pool.stats.v1 — the Lua proxy opens one fresh Redis connection per
+// call (open_redis()), so there is no persistent pool to observe: every
+// gauge is -1 (unknown). Reporting a fabricated pool shape would mislead
+// dashboards.
+int lb_pool_get_stats(struct shield_plugin_instance_v1* self,
+                      struct shield_pool_stats* out) {
+    (void)self;
+    if (!out) return -1;
+    out->max_size = -1;
+    out->size = -1;
+    out->idle = -1;
+    out->in_use = -1;
+    out->waiters = -1;
+    out->acquire_timeout_total = -1;
+    out->acquire_total = -1;
+    out->create_total = -1;
+    out->destroy_total = -1;
+    out->eviction_total = -1;
+    out->health_check_failures_total = -1;
+    out->last_error_epoch_ms = -1;
+    return 0;
+}
+
+const shield_pool_stats_v1& lb_pool_stats_vtable() {
+    static const shield_pool_stats_v1 v{
+        sizeof(shield_pool_stats_v1),
+        &lb_pool_get_stats,
+    };
+    return v;
+}
+
 int lb_create(const shield_plugin_create_args_v1* args,
               shield_plugin_instance_v1** out, shield_error_v1* err) {
     (void)err;
@@ -1063,6 +1095,8 @@ int lb_create(const shield_plugin_create_args_v1* args,
                                    shield_error_v1*) -> const void* {
         if (iface && std::strcmp(iface, SHIELD_LEADERBOARD_INTERFACE) == 0)
             return &lb_vtable();
+        if (iface && std::strcmp(iface, SHIELD_POOL_STATS_INTERFACE) == 0)
+            return &lb_pool_stats_vtable();
         return nullptr;
     };
     inst->shell.start = [](shield_plugin_instance_v1* self,

@@ -17,6 +17,8 @@ provides:
     capabilities:
       - sorted-set
       - multi-field
+  - interface: shield.pool.stats.v1
+    capabilities: []
 requires:
   - name: redis
     interface: shield.redis.v1
