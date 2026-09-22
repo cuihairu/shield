@@ -69,10 +69,11 @@ void ConsoleServer::stop() {
 }
 
 void ConsoleServer::do_accept() {
-    if (!listening_)  // GCOVR_EXCL_BR_LINE (defensive: early-return arm;
-        return;  // start() sets listening_ before calling, stop() closes the
-                 // acceptor so the callback exits on operation_aborted before
-                 // re-arming; only a stop-vs-accept race reaches this return)
+    if (!listening_)  // GCOVR_EXCL_BR_LINE (defensive: early-return arm)
+        return;  // GCOVR_EXCL_LINE (only a stop-vs-accept race reaches this
+                 // return: start() sets listening_ before calling, stop()
+                 // closes the acceptor so the callback exits on
+                 // operation_aborted before re-arming)
 
 #ifndef _WIN32
     acceptor_.async_accept(

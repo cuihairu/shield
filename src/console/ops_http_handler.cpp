@@ -749,15 +749,14 @@ shield::net::HttpResponse OpsHttpHandler::handle_config(
 shield::net::HttpResponse OpsHttpHandler::handle_eval(
     const shield::net::HttpRequest& req) {
     // Bearer token gate. Accept only "Authorization: Bearer <token>".
+    // Written as a plain if instead of a ternary: the inlined string
+    // constructions of the ternary arms produced pseudo line entries the
+    // counters never landed on (coverage artifact).
     auto auth_it = req.find(boost::beast::http::field::authorization);
-    std::string provided =
-        auth_it == req.end()
-            ? ""  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined header-value
-                  // string construction)
-            : std::string(
-                  auth_it->value());  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                      // inlined nlohmann::json braced-init
-                                      // branches)
+    std::string provided;
+    if (auth_it != req.end()) {
+        provided = std::string(auth_it->value());
+    }
     constexpr char kBearerPrefix[] = "Bearer ";
     if (provided.rfind(kBearerPrefix, 0) == 0) {
         provided = provided.substr(sizeof(kBearerPrefix) - 1);

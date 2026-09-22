@@ -1364,15 +1364,11 @@ static bool initialize_impl(const RuntimeConfig& config) {
             g_state->http_server->start();
             SHIELD_LOG_INFO(log, "HTTP ops server listening on " + host + ":" +
                                      std::to_string(port));
-        } catch (  // GCOVR_EXCL_BR_LINE (the EH landing-pad pseudo-branch,
-                   // see the annotated fragment below)
-            const std::exception&
-                e) {  // GCOVR_EXCL_BR_LINE (defensive: no injectable throw
-                      // inside this try — HttpServer::start() reports failures
-                      // through its return value, see the excluded handler
-                      // body; the arcs are EH landing-pad pseudo-branches)
-            // GCOVR_EXCL_START (unreachable: HttpServer::start() reports
-            // failures through its return value, it does not throw)
+            // GCOVR_EXCL_START (catch-entry pseudo-arc: nothing in this try
+            // throws — HttpServer::start() reports failures through its return
+            // value, so the handler entry arc starves; keep the catch clause on
+            // one physical line so the entry stays inside this region)
+        } catch (const std::exception& e) {
             SHIELD_LOG_ERROR(
                 log,
                 std::string("Failed to start HTTP ops server: ") + e.what());

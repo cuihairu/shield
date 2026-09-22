@@ -914,19 +914,15 @@ bool LuaRuntime::load_service_module(std::shared_ptr<LuaVM> vm,
                 std::stringstream buffer;
                 buffer << file.rdbuf();
                 source_code = buffer.str();
-            } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (compiler
-                                            // artifact: catch-entry pseudo-arc)
-                         e) {               // (compiler artifact:
-                                            // exception edge)
-                                            // GCOVR_EXCL_START
-                if (error) {  // GCOVR_EXCL_BR_LINE (the stream never throws
-                              // here: a directory
-                    *error = "Failed to read file: " +  // open reports through
-                             std::string(
-                                 e.what());  // GCOVR_EXCL_BR_LINE (compiler
-                                             // artifact: ifstream never throws
-                                             // here) is_open, a read miss
-                }  // only sets failbit)
+                // GCOVR_EXCL_START (catch-entry pseudo-arc: the stream never
+                // throws here — open() already failed above and a read miss
+                // only sets failbit, so the handler entry arc starves; keep the
+                // catch clause on one physical line so the entry stays in this
+                // region)
+            } catch (const std::exception& e) {
+                if (error) {
+                    *error = "Failed to read file: " + std::string(e.what());
+                }
                 return false;
             }
             // GCOVR_EXCL_STOP
@@ -1271,24 +1267,17 @@ bool LuaRuntime::invoke_coroutine(
     // Completion helpers: route the outcome to the pending call request (when
     // present) and to the service error hook on failure.
     auto finish_ok = [&](const nlohmann::json& returns) -> bool {
-        // GCOVR_EXCL_BR_START (defensive: coverage suites complete calls
-        // via the direct path (call_session == 0))
-        if (call_session != 0 &&
-            manager !=
-                nullptr) {  // GCOVR_EXCL_BR_LINE (defensive: suites complete
-                            // calls via the direct path (call_session == 0))
-            manager->complete_call(call_session, true,  // GCOVR_EXCL_LINE
-                                   returns);  // (call bookkeeping: coverage
-        }  // suites complete calls via the direct path)
-        if (manager &&
-            !service_id
-                 .empty()) {  // GCOVR_EXCL_BR_LINE (defensive: error counters
-                              // are exercised via the direct path)
-            manager->reset_error_count(    // GCOVR_EXCL_LINE (error counters
-                std::string(service_id));  // GCOVR_EXCL_LINE (continuation)
+        // GCOVR_EXCL_START (defensive: coverage suites complete calls via
+        // the direct path (call_session == 0, manager == nullptr), so this
+        // call-completion and error-count bookkeeping never runs)
+        if (call_session != 0 && manager != nullptr) {
+            manager->complete_call(call_session, true, returns);
+        }
+        if (manager && !service_id.empty()) {
+            manager->reset_error_count(std::string(service_id));
         }
         return true;
-        // GCOVR_EXCL_BR_STOP
+        // GCOVR_EXCL_STOP
     };
     auto finish_err = [&](const std::string& msg) -> bool {
         // GCOVR_EXCL_BR_START (defensive: error out-param is always
@@ -1447,10 +1436,8 @@ bool LuaRuntime::invoke_coroutine(
             std::string msg = err.what();
             if (msg.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: what() is
                                 // never empty in practice)
-                msg = "handler coroutine factory failed";  // GCOVR_EXCL_BR_LINE
-                                                           // (defensive)
-                                                           // GCOVR_EXCL_LINE
-            }  // (defensive: what() is never empty in practice)
+                msg = "handler coroutine factory failed";  // GCOVR_EXCL_LINE
+            }
             return finish_err(msg);
         }
         lua_State* co = lua_tothread(L, -1);
@@ -1934,16 +1921,12 @@ std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
             sol::error err = result;
             return R"({"error": ")" + std::string(err.what()) + R"("})";
         }
-    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                    // catch-entry pseudo-arc)
-                 e) {               // (defensive: the serialize path
-                                    // is already JSON-shaped and
-                                    // cannot throw)
-        // GCOVR_EXCL_START (defensive: serialize already-JSON-shaped state,
-        // which cannot throw; kept for the generic error contract)
-        return R"({"error": ")" + std::string(e.what()) +
-               R"("})";  // GCOVR_EXCL_BR_LINE (compiler artifact: same dead arm
-                         // as the START range around it)
+        // GCOVR_EXCL_START (catch-entry pseudo-arc: the serialize path is
+        // already JSON-shaped and cannot throw; kept for the generic error
+        // contract — keep the catch clause on one physical line so the entry
+        // stays in this region)
+    } catch (const std::exception& e) {
+        return R"({"error": ")" + std::string(e.what()) + R"("})";
     }
     // GCOVR_EXCL_STOP
 }

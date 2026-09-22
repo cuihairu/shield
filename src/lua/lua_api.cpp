@@ -1218,21 +1218,23 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
             // reference would dangle (mirror of anchor_to_main_thread in
             // lua_service.cpp).
             lua_State* fn_state = fn.lua_state();
-            lua_State* fn_main =  // GCOVR_EXCL_BR_LINE (defensive: sol's
-                                  // function conversion always hands a live
-                                  // lua_State, so fn_state is never null)
-                fn_state == nullptr
-                    ? nullptr  // GCOVR_EXCL_BR_LINE (defensive: never null)
-                    : sol::main_thread(
-                          fn_state);  // GCOVR_EXCL_BR_LINE (defensive: sol
-                                      // function conversion always hands a live
-                                      // lua_State)
-            // Branch-only exclusions on the two arms the suites cannot
-            // reach: fn_state == nullptr (guarded above) and a sol::function
-            // holding LUA_NOREF (a converted Lua function always has a
-            // registry reference). Both semantic paths run — the coroutine
-            // fork re-anchors (ForkAnchorsInsideHandlerAndFromMainThread)
-            // and the main-thread fork skips it.
+            // Written as a plain if instead of a ternary: the ternary's
+            // multi-line arms produced pseudo line entries the counters
+            // never landed on (coverage artifact).
+            lua_State* fn_main = nullptr;
+            if (fn_state != nullptr) {  // GCOVR_EXCL_BR_LINE (defensive: sol's
+                                        // function conversion always hands a
+                                        // live lua_State, so this arm never
+                                        // runs)
+                fn_main = sol::main_thread(fn_state);
+            }
+            // Branch-only exclusions on the arms the suites cannot reach:
+            // fn_state == nullptr (guarded above), fn_main == fn_state (a
+            // sol::function holding LUA_NOREF — a converted Lua function
+            // always has a registry reference), and a sol::function holding
+            // LUA_NOREF. Both semantic paths run — the coroutine fork
+            // re-anchors (ForkAnchorsInsideHandlerAndFromMainThread) and the
+            // main-thread fork skips it.
             if (fn_main != nullptr &&
                 fn_main != fn_state &&  // GCOVR_EXCL_BR_LINE (defensive: see
                                         // note above)

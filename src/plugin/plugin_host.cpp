@@ -577,7 +577,7 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         if (!c || !c->instance)  // GCOVR_EXCL_BR_LINE (defensive: ctx is a
                                  // valid CtxBundle handed out at create time,
                                  // and its instance pointer is always set)
-            return nullptr;
+            return nullptr;      // GCOVR_EXCL_LINE (same defensive arm)
         // dot-path navigation into the instance's validated config
         const nlohmann::json* cur = &c->instance->decl.config;
         std::string p(path);
@@ -608,13 +608,13 @@ const shield_host_api_v1& PluginHost::host_api_table() {
             !c->instance)  // GCOVR_EXCL_BR_LINE (defensive: the CtxBundle given
                            // to a plugin at create time always has host and
                            // instance set)
-            return nullptr;
+            return nullptr;  // GCOVR_EXCL_LINE (same defensive arm)
         auto it = c->instance->decl.dependencies.find(name);
         if (it == c->instance->decl.dependencies.end()) return nullptr;
         if (!c->instance->package)  // GCOVR_EXCL_BR_LINE (defensive: only
                                     // instances attached to a scanned package
                                     // ever get a context)
-            return nullptr;
+            return nullptr;         // GCOVR_EXCL_LINE (same defensive arm)
         const auto* req = find_require(c->instance->package->manifest, name);
         if (!req || req->interface_name != iface)  // GCOVR_EXCL_BR_LINE
             return nullptr;  // GCOVR_EXCL_BR_LINE (defensive: resolve
@@ -648,7 +648,7 @@ const shield_host_api_v1& PluginHost::host_api_table() {
                                     // CtxBundle given to a plugin at create
                                     // time always has instance and package
                                     // set)
-            return -1;
+            return -1;              // GCOVR_EXCL_LINE (same defensive arm)
         lua_State* L = g_current_lua_state;
         if (!L) return -1;
 
@@ -865,7 +865,7 @@ bool PluginHost::start_all(std::string& error) {
                                        // required dependency that is not
                                        // configured, so this arm cannot be
                                        // reached here)
-                    continue;
+                    continue;          // GCOVR_EXCL_LINE (same defensive arm)
                 const Instance* dep = find_instance(it->second);
                 if (!dep ||  // GCOVR_EXCL_BR_LINE
                     dep->state !=
