@@ -45,6 +45,7 @@
 #include "shield/plugin/abi.h"
 #include "shield/plugin/database.h"
 #include "shield/plugin/host_api.h"
+#include "shield/plugin/pool_stats.h"
 #include "shield_db_mapper.hpp"
 #include "shield_lua_plugin_binding.hpp"
 
@@ -1128,6 +1129,38 @@ void drain_pool(pgsql_instance* inst) {
     }
 }
 
+// shield.pool.stats.v1 — real gauges from the per-instance pool. The driver
+// tracks capacity/usage but no cumulative counters, so those stay -1
+// (unknown), matching the ABI's sentinel semantics.
+int pg_pool_get_stats(struct shield_plugin_instance_v1* self,
+                      struct shield_pool_stats* out) {
+    auto* inst = reinterpret_cast<pgsql_instance*>(self);
+    if (!inst || !out) return -1;
+    std::lock_guard lk(inst->pool_mu);
+    int idle = static_cast<int>(inst->free_list.size());
+    out->max_size = inst->pool_size;
+    out->size = inst->current_size;
+    out->idle = idle;
+    out->in_use = inst->current_size - idle;
+    out->waiters = -1;
+    out->acquire_timeout_total = -1;
+    out->acquire_total = -1;
+    out->create_total = -1;
+    out->destroy_total = -1;
+    out->eviction_total = -1;
+    out->health_check_failures_total = -1;
+    out->last_error_epoch_ms = -1;
+    return 0;
+}
+
+const shield_pool_stats_v1& pg_pool_stats_vtable() {
+    static const shield_pool_stats_v1 v{
+        sizeof(shield_pool_stats_v1),
+        &pg_pool_get_stats,
+    };
+    return v;
+}
+
 int pg_create(const shield_plugin_create_args_v1* args,
               shield_plugin_instance_v1** out, shield_error_v1* err) {
     (void)err;
@@ -1146,6 +1179,8 @@ int pg_create(const shield_plugin_create_args_v1* args,
                                    shield_error_v1*) -> const void* {
         if (iface && std::strcmp(iface, SHIELD_DATABASE_INTERFACE) == 0)
             return &db_vtable();
+        if (iface && std::strcmp(iface, SHIELD_POOL_STATS_INTERFACE) == 0)
+            return &pg_pool_stats_vtable();
         return nullptr;
     };
     inst->shell.start = [](shield_plugin_instance_v1*, shield_error_v1*) {

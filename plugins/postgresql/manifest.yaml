@@ -17,6 +17,8 @@ provides:
     capabilities:
       - sql
       - transactions
+  - interface: shield.pool.stats.v1
+    capabilities: []
 requires: []
 lua:
   namespace: database.postgresql
