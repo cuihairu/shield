@@ -453,3 +453,41 @@ if(SHIELD_BUILD_DB_PLUGIN_SQLITE
     set_tests_properties(test_plugin_lua_facade PROPERTIES LABELS "plugin" TIMEOUT 60)
     shield_copy_runtime_dlls(test_plugin_lua_facade)
 endif()
+
+# ---------------------------------------------------------------------------
+# test_plugin_pool_stats_real — shield.pool.stats.v1 contract against the
+# real plugin .so files (see the test header). Same per-switch macro pattern
+# as test_plugin_lua_facade above.
+# ---------------------------------------------------------------------------
+if(SHIELD_BUILD_DB_PLUGIN_MYSQL
+   OR SHIELD_BUILD_DB_PLUGIN_POSTGRESQL
+   OR SHIELD_BUILD_PLUGIN_MONGODB
+   OR SHIELD_BUILD_PLUGIN_QUEUE_REDIS
+   OR SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS)
+    add_executable(test_plugin_pool_stats_real
+                   plugin/test_plugin_pool_stats_real.cpp)
+    target_link_libraries(test_plugin_pool_stats_real
+        PRIVATE
+            shield_plugin
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_plugin_pool_stats_real
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+    foreach(_ps IN
+            ITEMS "MYSQL:SHIELD_BUILD_DB_PLUGIN_MYSQL:shield_db_mysql")
+        string(REPLACE ":" ";" _ps_parts "${_ps}")
+        list(GET _ps_parts 0 _ps_name)
+        list(GET _ps_parts 1 _ps_switch)
+        list(GET _ps_parts 2 _ps_target)
+        if(${_ps_switch})
+            target_compile_definitions(test_plugin_pool_stats_real PRIVATE
+                "SHIELD_FACADE_${_ps_name}_LIBRARY=\"$<TARGET_FILE:${_ps_target}>\"")
+            add_dependencies(test_plugin_pool_stats_real ${_ps_target})
+        endif()
+    endforeach()
+
+    add_test(NAME test_plugin_pool_stats_real COMMAND test_plugin_pool_stats_real)
+    set_tests_properties(test_plugin_pool_stats_real PROPERTIES LABELS "plugin" TIMEOUT 30)
+    shield_copy_runtime_dlls(test_plugin_pool_stats_real)
+endif()
