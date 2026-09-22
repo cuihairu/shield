@@ -117,6 +117,30 @@ set_tests_properties(test_console_server PROPERTIES
 )
 shield_copy_runtime_dlls(test_console_server)
 
+# /ops/profile sampling session: aggregation tree & report (pure logic).
+add_executable(test_ops_profile lua_api/test_ops_profile.cpp)
+target_link_libraries(test_ops_profile
+    PRIVATE
+        shield_bootstrap
+        Boost::unit_test_framework
+        Boost::headers
+        nlohmann_json::nlohmann_json
+        # shield_lua links Lua PRIVATE, so the sampler tests link it here.
+        ${LUA_LIBRARIES}
+)
+target_include_directories(test_ops_profile
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${LUA_INCLUDE_DIR}
+)
+add_test(NAME test_ops_profile COMMAND test_ops_profile)
+set_tests_properties(test_ops_profile PROPERTIES
+    LABELS "console;ops"
+    TIMEOUT 30
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+shield_copy_runtime_dlls(test_ops_profile)
+
 # Lua API test matrix (LAPI-001 ~ LAPI-010).
 add_subdirectory(lua_api)
 

@@ -537,6 +537,8 @@ add_library(shield_lua STATIC
     src/lua/lua_gateway_bridge.cpp
     src/lua/gateway_actor.cpp
     src/lua/lua_http_bridge.cpp
+    src/lua/profile_session.cpp
+    src/lua/profile_sampler.cpp
 )
 
 target_include_directories(shield_lua

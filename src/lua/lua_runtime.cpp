@@ -1993,6 +1993,13 @@ void LuaRuntime::set_global(std::shared_ptr<LuaVM> vm, std::string_view name,
     lua[name] = std::string(value);
 }
 
+lua_State* LuaRuntime::vm_main_state(std::shared_ptr<LuaVM> vm) {
+    if (!vm || !vm->state()) {
+        return nullptr;
+    }
+    return vm->state()->lua_state();
+}
+
 bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
                           nlohmann::json* result, std::string* error) {
     if (!vm || !vm->state()) {  // GCOVR_EXCL_BR_LINE (defensive: Impl::state()

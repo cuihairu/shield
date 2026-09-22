@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "shield/lua/clock.hpp"
+#include "shield/lua/profile_session.hpp"
 
 // Lua C type forward declaration (declared in the global namespace; the
 // runtime headers pull in the real definition, only the pointer is needed in
@@ -323,6 +325,38 @@ public:
     // actor vanished, or the owner never picked the task up in time.
     std::optional<nlohmann::json> inspect_coroutines(
         const std::string& service_id, std::string* error);
+
+    // ---- /ops/profile sampling channel (owner-thread; ops is the only
+    // consumer, no business Lua API). At most one session process-wide,
+    // arbitrated under the registry lock. All VM work runs as forked
+    // tasks; results travel back via the caller-provided promise,
+    // fulfilled exactly once: with the report JSON on stop (manual or
+    // duration expiry), or with {"abandoned": true, ...} if the service
+    // exits mid-session. See docs/superpowers/plans/
+    // 2026-09-22-ops-profile-v1.md.
+
+    /// @brief Start a sampling session on `service_id`. Fails (false +
+    /// `error`) when the service is unpublished or a session is already
+    /// active (any service). The session auto-stops after
+    /// config.duration_ms.
+    bool profile_start(const std::string& service_id,
+                       ProfileSessionConfig config,
+                       std::shared_ptr<std::promise<nlohmann::json>> done,
+                       std::string* error);
+
+    /// @brief Stop the active session (manual stop path; the duration
+    /// expiry drives the same code). Fails when no session is active.
+    /// The report arrives via the promise given at start.
+    bool profile_stop(const std::string& service_id, std::string* error);
+
+    /// @brief Read-only projection of the active session (nullopt when
+    /// none), registry-locked like the other observability projections.
+    struct ProfileStatusInfo {
+        std::string service_id;
+        std::uint64_t elapsed_ms = 0;
+        std::uint64_t duration_ms = 0;
+    };
+    std::optional<ProfileStatusInfo> profile_status() const;
 
     // Enqueue a forked task to be executed by the owning service actor. The
     // task captures the owning service ID so it can be cancelled on service

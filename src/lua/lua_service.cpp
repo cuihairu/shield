@@ -34,6 +34,7 @@
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_constants.hpp"
 #include "shield/lua/lua_runtime.hpp"
+#include "shield/lua/profile_sampler.hpp"
 #include "shield/plugin/plugin_host.hpp"
 #include "shield/transport/rpc_descriptor.hpp"
 
@@ -487,6 +488,29 @@ struct LuaServiceManager::Impl {
         }
     }
 
+    // Settle an active /ops/profile session whose service is leaving:
+    // fulfill the promise as abandoned (the caller's 2s wait ends with an
+    // honest answer instead of a timeout) and drop the state. The sampler
+    // dies without an uninstall pass — in hung_service_teardown the VM is
+    // parked (its lua_State is untouchable) and on the other paths the VM
+    // dies with the hooks on it; a count hook on an undriven VM never
+    // fires. Must hold the registry mutex. Unlike the drop_* helpers this
+    // does not run on the owner thread, so it never calls uninstall().
+    void abandon_profile_session_locked(const std::string& id) {
+        if (!profile_session || profile_session->service_id != id) {
+            return;
+        }
+        auto profile = std::move(profile_session);
+        profile_session.reset();
+        if (profile->done) {
+            profile->done->set_value(nlohmann::json{
+                {"abandoned", true},
+                {"service", profile->service_id},
+                {"total_samples",
+                 profile->session ? profile->session->total_samples() : 0}});
+        }
+    }
+
     // RAII over the init_vms entry: spawn registers the VM before on_init
     // starts; the guard erases it on every exit path (success, rollback,
     // exception). It also drops a pending exit request that on_init recorded
@@ -674,6 +698,23 @@ struct LuaServiceManager::Impl {
     static constexpr std::size_t kInspectSnapshotsPerService = 8;
     std::map<std::string, std::deque<InspectSnapshot>> inspect_snapshots;
     std::uint64_t next_snapshot_seq = 0;
+
+    // /ops/profile sampling session: at most one process-wide (the
+    // session's service_id gates start/stop matching). Guarded by the
+    // registry mutex like every other observability field. `sampler` is
+    // created by the install fork task on the owner thread and destroyed
+    // by the uninstall task (or the exit cleanup) — the unique_ptr is
+    // only ever dereferenced on the owning actor thread, while the
+    // optional's presence bit is registry-lock data.
+    struct ProfileSessionState {
+        std::string service_id;
+        std::shared_ptr<ProfileSession> session;
+        std::unique_ptr<ProfileSampler> sampler;
+        std::shared_ptr<std::promise<nlohmann::json>> done;
+        caf::actor duration_driver;
+        std::chrono::steady_clock::time_point started_at;
+    };
+    std::optional<ProfileSessionState> profile_session;
 
     // Read-only JSON form of the refs summary (null when not captured).
     static nlohmann::json refs_summary_to_json(
@@ -1429,6 +1470,7 @@ struct LuaServiceManager::Impl {
             service_counters.erase(id);
             drop_live_coroutines_locked(id);
             inspect_snapshots.erase(id);
+            abandon_profile_session_locked(id);
             if (service) {  // GCOVR_EXCL_BR_LINE (defensive: the service
                             // shared_ptr was found under the same lock scope
                             // (miss implies the 1253 arm))
@@ -2994,6 +3036,7 @@ void LuaServiceManager::exit(
         impl_->service_counters.erase(id);
         impl_->drop_live_coroutines_locked(id);
         impl_->inspect_snapshots.erase(id);
+        impl_->abandon_profile_session_locked(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
@@ -3135,6 +3178,7 @@ void LuaServiceManager::force_remove(const std::string& id,
         impl_->service_counters.erase(id);
         impl_->drop_live_coroutines_locked(id);
         impl_->inspect_snapshots.erase(id);
+        impl_->abandon_profile_session_locked(id);
         impl_->services.erase(id);
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
@@ -4284,6 +4328,249 @@ std::optional<nlohmann::json> LuaServiceManager::inspect_coroutines(
         return std::nullopt;
     }  // GCOVR_EXCL_STOP
     return out;
+}
+
+bool LuaServiceManager::profile_start(
+    const std::string& service_id, ProfileSessionConfig config,
+    std::shared_ptr<std::promise<nlohmann::json>> done, std::string* error) {
+    if (!done) {
+        if (error) {
+            *error = "profile_start requires a promise";
+        }
+        return false;
+    }
+    const uint64_t duration_ms = config.duration_ms;
+    std::shared_ptr<LuaVM> service;
+    std::shared_ptr<ProfileSession> session;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        auto it = impl_->services.find(service_id);
+        if (it == impl_->services.end()) {
+            if (error) {
+                *error = "service not published: " + service_id;
+            }
+            return false;
+        }
+        if (impl_->profile_session.has_value()) {
+            if (error) {
+                *error = "profile session active on service: " +
+                         impl_->profile_session->service_id;
+            }
+            return false;
+        }
+        service = it->second;
+        session = std::make_shared<ProfileSession>(std::move(config));
+        impl_->profile_session = Impl::ProfileSessionState{
+            .service_id = service_id,
+            .session = session,
+            .sampler = nullptr,
+            .done = std::move(done),
+            .duration_driver = {},
+            .started_at = std::chrono::steady_clock::now(),
+        };
+    }
+
+    // Install task: resolve the main state on the owner thread, arm the
+    // count hook (main state + live coroutines), and publish the sampler
+    // under the registry lock. Fork-task FIFO ordering guarantees install
+    // runs before any later stop task on the same service.
+    const uint64_t task_id = enqueue_forked_task(
+        service_id, [impl = impl_.get(), service, service_id,
+                     session]() {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                   // fork lambda entry/exit arcs)
+            lua_State* main_L =
+                service ? impl->runtime.vm_main_state(service) : nullptr;
+            auto provider = [impl, service_id]() -> std::vector<lua_State*> {
+                std::vector<lua_State*> cos;
+                {
+                    std::shared_lock lock(impl->registry_mutex);
+                    for (const auto& [co, owner] : impl->live_coroutines) {
+                        if (owner == service_id) {
+                            cos.push_back(co);
+                        }
+                    }
+                }
+                return cos;
+            };
+            auto sampler =
+                std::make_unique<ProfileSampler>(*session, std::move(provider));
+            {
+                std::unique_lock lock(impl->registry_mutex);
+                if (!impl->profile_session ||
+                    impl->profile_session->service_id != service_id) {
+                    return;  // exited/stopped before install was picked up
+                }
+                impl->profile_session->sampler = std::move(sampler);
+                if (main_L != nullptr) {
+                    impl->profile_session->sampler->install(main_L);
+                }
+            }
+        });
+    if (task_id == 0) {
+        // The actor vanished between the registry check and the enqueue.
+        nlohmann::json abandoned = {{"abandoned", true},
+                                    {"service", service_id},
+                                    {"reason", "actor gone"},
+                                    {"total_samples", 0}};
+        std::shared_ptr<std::promise<nlohmann::json>> settle;
+        {
+            std::unique_lock lock(impl_->registry_mutex);
+            if (impl_->profile_session &&
+                impl_->profile_session->service_id == service_id) {
+                settle = impl_->profile_session->done;
+                impl_->profile_session.reset();
+            }
+        }
+        if (settle) {
+            settle->set_value(std::move(abandoned));
+        }
+        if (error) {
+            *error = "service actor not found: " + service_id;
+        }
+        return false;
+    }
+
+    // Duration expiry driver: a one-shot actor firing profile_stop after
+    // duration_ms (same delayed_send pattern as the call-timeout driver).
+    // Not cancelled on manual stop — the tick finds no session and quits.
+    try {
+        auto driver = impl_->system.spawn(
+            [manager = this, service_id,
+             duration_ms](caf::event_based_actor* self) -> caf::behavior {
+                self->delayed_send(self,
+                                   std::chrono::milliseconds(
+                                       static_cast<std::int64_t>(duration_ms)),
+                                   caf::tick_atom_v);
+                return caf::behavior{
+                    [=](caf::tick_atom) {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: CAF behavior lambda
+                                           // arc)
+                        std::string stop_error;
+                        (void)manager->profile_stop(service_id, &stop_error);
+                        self->quit();
+                    }};
+            });
+        std::unique_lock lock(impl_->registry_mutex);
+        if (impl_->profile_session &&
+            impl_->profile_session->service_id == service_id) {
+            impl_->profile_session->duration_driver = std::move(driver);
+        }
+        // Else: the session ended before the driver registered — quit it.
+        // anon_send_exit must run without the registry lock held.
+        else {
+            lock.unlock();
+            caf::anon_send_exit(driver, caf::exit_reason::user_shutdown);
+        }
+    } catch (const std::exception&
+                 e) {  // GCOVR_EXCL_START (defensive: untestable
+                       // actor-spawn failure, same exclusion class as the
+                       // call-timeout driver at schedule_external_call_timeout)
+        // A session that can never auto-stop must not be left armed:
+        // stop it now (settle path or uninstall task).
+        std::string stop_error;
+        (void)profile_stop(service_id, &stop_error);
+        if (error) {
+            *error = std::string("profile duration driver spawn failed: ") +
+                     e.what();
+        }
+        return false;
+    }  // GCOVR_EXCL_STOP
+    return true;
+}
+
+bool LuaServiceManager::profile_stop(const std::string& service_id,
+                                     std::string* error) {
+    std::shared_ptr<Impl::ProfileSessionState> taken;
+    std::shared_ptr<LuaVM> service;
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        if (!impl_->profile_session ||
+            impl_->profile_session->service_id != service_id) {
+            if (error) {
+                *error = "no active profile session on service: " + service_id;
+            }
+            return false;
+        }
+        if (!impl_->profile_session->sampler) {
+            // Install task not picked up yet (or refused): treat as not
+            // started and settle the promise as abandoned rather than
+            // leaving the caller waiting.
+            taken = std::make_shared<Impl::ProfileSessionState>(
+                std::move(*impl_->profile_session));
+            impl_->profile_session.reset();
+        }
+        auto sit = impl_->services.find(service_id);
+        if (sit != impl_->services.end()) {
+            service = sit->second;  // keeps the VM alive for the uninstall
+        }
+    }
+    if (taken) {
+        nlohmann::json abandoned = {
+            {"abandoned", true},
+            {"service", taken->service_id},
+            {"reason", "stop before install"},
+            {"total_samples",
+             taken->session ? taken->session->total_samples() : 0}};
+        if (taken->done) {
+            taken->done->set_value(std::move(abandoned));
+        }
+        return true;
+    }
+
+    // Normal path: uninstall runs as a fork task so the hook removal and
+    // the report export happen on the owner thread, serialized after any
+    // in-flight hook hit.
+    const uint64_t task_id = enqueue_forked_task(
+        service_id, [impl = impl_.get(), service, service_id]() {
+            std::shared_ptr<Impl::ProfileSessionState> state;
+            {
+                std::unique_lock lock(impl->registry_mutex);
+                if (!impl->profile_session ||
+                    impl->profile_session->service_id != service_id) {
+                    return;  // exit cleanup already settled the promise
+                }
+                state = std::make_shared<Impl::ProfileSessionState>(
+                    std::move(*impl->profile_session));
+                impl->profile_session.reset();
+            }
+            if (state->sampler && service) {
+                state->sampler->uninstall(impl->runtime.vm_main_state(service));
+            }
+            const uint64_t elapsed_ms = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - state->started_at)
+                    .count());
+            if (state->done && state->session) {
+                state->done->set_value(
+                    state->session->finish_report(elapsed_ms));
+            }
+        });
+    if (task_id == 0) {
+        // The service left between the state check and the enqueue; the
+        // exit cleanup owns the promise now.
+        if (error) {
+            *error = "service actor not found: " + service_id;
+        }
+        return false;
+    }
+    return true;
+}
+
+std::optional<LuaServiceManager::ProfileStatusInfo>
+LuaServiceManager::profile_status() const {
+    std::shared_lock lock(impl_->registry_mutex);
+    if (!impl_->profile_session) {
+        return std::nullopt;
+    }
+    const auto& state = *impl_->profile_session;
+    return ProfileStatusInfo{
+        .service_id = state.service_id,
+        .elapsed_ms = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - state.started_at)
+                .count()),
+        .duration_ms = state.session ? state.session->config().duration_ms : 0,
+    };
 }
 
 std::optional<nlohmann::json> LuaServiceManager::timer_inspect(

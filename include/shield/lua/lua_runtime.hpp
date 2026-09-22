@@ -297,6 +297,15 @@ public:
     void set_global(std::shared_ptr<LuaVM> vm, std::string_view name,
                     std::string_view value);
 
+    /// @brief Owner-thread main lua_State* of an opaque VM.
+    ///
+    /// Resolve channel for the /ops/profile sampler (the only consumer):
+    /// LuaVM is private to the runtime TU, so the manager's forked task
+    /// resolves the main state through here before arming the hook. The
+    /// pointer is valid only on the owning service actor thread and only
+    /// while the service lives — never dereference it elsewhere.
+    lua_State* vm_main_state(std::shared_ptr<LuaVM> vm);
+
     // Clear script cache
     void clear_cache();
 
