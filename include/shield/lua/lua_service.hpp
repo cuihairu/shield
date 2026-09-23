@@ -390,8 +390,10 @@ public:
     // suspend_for_call: anchor the current handler's coroutine and register a
     // pending call wait keyed by a fresh session id. The Lua caller then
     // coroutine.yield()s; the runtime resumes it via resume_caller once the
-    // callee completes (or on timeout).
-    uint64_t suspend_for_call(lua_State* caller_co, int32_t timeout_ms);
+    // callee completes (or on timeout). callee feeds the slow-call tracker
+    // (only read when the process-wide gate is armed).
+    uint64_t suspend_for_call(lua_State* caller_co, int32_t timeout_ms,
+                              std::string_view callee = {});
 
     // Driving-phase registration for coroutine resume sources (see
     // resume_caller): held across a lua_resume span, it makes a completion

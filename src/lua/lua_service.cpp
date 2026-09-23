@@ -35,6 +35,7 @@
 #include "shield/lua/lua_constants.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/profile_sampler.hpp"
+#include "shield/lua/slow_calls.hpp"
 #include "shield/plugin/plugin_host.hpp"
 #include "shield/transport/rpc_descriptor.hpp"
 
@@ -640,6 +641,12 @@ struct LuaServiceManager::Impl {
         // mailbox self-loop is microsecond-scale), and the guard must stay
         // armed when that spin trips its cap and falls through.
         int resume_retries = 0;
+        // Phase B slow-call metering: the begin stamp (steady ms) taken in
+        // suspend_for_call when the process-wide gate was armed, else 0 —
+        // the completion path treats 0 as "never metered". callee rides
+        // along so resume_caller needs no second lookup at completion.
+        uint64_t begin_ms = 0;
+        std::string callee;
     };
     std::atomic<uint64_t> next_call_session{1};
     std::unordered_map<uint64_t, PendingCall>
@@ -5081,7 +5088,8 @@ static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
 }
 
 uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
-                                             int32_t timeout_ms) {
+                                             int32_t timeout_ms,
+                                             std::string_view callee) {
     const uint64_t session = impl_->next_call_session.fetch_add(1);
     Impl::PendingCall pc;
     pc.session = session;
@@ -5095,6 +5103,14 @@ uint64_t LuaServiceManager::suspend_for_call(lua_State* caller_co,
                          .count() +
                      (timeout_ms > 0 ? timeout_ms : 5000);
     pc.caller_service = current_service_id();
+    // Phase B: meter the span only when the process-wide gate is armed.
+    // The stamp and the callee ride on the PendingCall so the completion
+    // path pays neither a gate re-check round trip nor a second lookup;
+    // begin_ms == 0 marks the call as never metered.
+    if (SlowCallRing::instance().enabled()) {
+        pc.begin_ms = static_cast<uint64_t>(Impl::now_ms());
+        pc.callee.assign(callee.data(), callee.size());
+    }
     const std::string service = pc.caller_service;
     {
         std::unique_lock lock(impl_->registry_mutex);
@@ -5724,6 +5740,17 @@ void LuaServiceManager::resume_caller(uint64_t session, bool ok,
         }
         pc = std::move(it->second);
         impl_->pending_calls.erase(it);
+    }
+
+    // Phase B slow-call tracking: the completed span measures against the
+    // process-wide threshold. The call-timeout branch keeps its own
+    // semantics and log — a deadline expiry is not a slow-call sample.
+    // (pc.begin_ms == 0 means the call was never metered; the ring
+    // re-checks the gate itself.)
+    if (pc.begin_ms != 0 && source != "call-timeout") {
+        SlowCallRing::instance().maybe_record(pc.begin_ms,
+                                              std::move(pc.caller_service),
+                                              std::move(pc.callee), ok);
     }
 
     // Cancel the CAF call-timeout driver (if any) now that the call has

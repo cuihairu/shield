@@ -110,6 +110,10 @@ shield_coverage_test(test_cov_http_bridge2 shield_lua shield_core shield_net CAF
 # the file, so the suite itself builds everywhere).
 shield_coverage_test(test_cov_lua_panic shield_lua shield_core CAF::core CAF::io)
 
+# Slow-call ring (Phase B of /ops/profile): pure storage, drives stack-local
+# instances so the singleton stays clean for the integration suites.
+shield_coverage_test(test_cov_slow_calls shield_lua shield_core CAF::core CAF::io)
+
 # Cluster data plane (M4): only exists in cluster builds, same gating as the
 # integration suites in tests/cluster.
 if(SHIELD_ENABLE_CLUSTER)

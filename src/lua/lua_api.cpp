@@ -448,7 +448,8 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
             }
 
             lua_State* co = state;
-            const uint64_t session = manager->suspend_for_call(co, timeout_ms);
+            const uint64_t session =
+                manager->suspend_for_call(co, timeout_ms, module);
             if (!manager->enqueue_async_spawn(
                     session, std::move(module),
                     options.dump())) {  // GCOVR_EXCL_START (defensive: stopping
@@ -695,7 +696,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                 lua_State* co = state;  // GCOVR_EXCL_LINE (continuation)
                 const uint64_t session =
                     manager->suspend_for_call(co,  // GCOVR_EXCL_LINE
-                                              timeout_ms);
+                                              timeout_ms, target_id);
                 manager->complete_call(  // GCOVR_EXCL_LINE (continuation)
                     session, false,
                     nlohmann::json::array(  // GCOVR_EXCL_LINE (continuation)
@@ -729,7 +730,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             if (remote.is_remote) {
                 lua_State* co = state;
                 const uint64_t session =
-                    manager->suspend_for_call(co, timeout_ms);
+                    manager->suspend_for_call(co, timeout_ms, target_id);
                 if (!remote.error_code.empty()) {
                     manager->complete_call(
                         session, false,
@@ -775,7 +776,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                 // stable error table.
                 lua_State* co = state;
                 const uint64_t session =
-                    manager->suspend_for_call(co, timeout_ms);
+                    manager->suspend_for_call(co, timeout_ms, target_id);
                 manager->complete_call(
                     session, false,
                     nlohmann::json::array(  // GCOVR_EXCL_BR_LINE (compiler
@@ -791,7 +792,8 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                 return session;
             }
             lua_State* co = state;
-            const uint64_t session = manager->suspend_for_call(co, timeout_ms);
+            const uint64_t session =
+                manager->suspend_for_call(co, timeout_ms, target_id);
 
             // Build and queue the call-request message.
             std::string send_error;
@@ -1477,7 +1479,7 @@ void register_client_api(sol::table& shield, LuaServiceManager* manager) {
             // asynchronously so the wrapper's coroutine.yield() always gets
             // exactly one resume.
             const uint64_t session =
-                manager->suspend_for_call(state, timeout_ms);
+                manager->suspend_for_call(state, timeout_ms, target_service);
             caf::actor gateway = manager->gateway_actor(data.gateway_address);
             if (gateway == nullptr) {
                 // GCOVR_EXCL_BR_START (compiler artifact: nlohmann
