@@ -46,6 +46,23 @@ uint16_t free_port() {
     return acc.local_endpoint().port();
 }
 
+// Opt-in per-request forensics (SHIELD_OPS_HTTP_TRACE=1). A hung request
+// used to leave nothing in the boost log (its output only flushes when the
+// 600s ctest kill lands), so the raw client annotates each phase straight
+// to stderr — unbuffered, and therefore visible even mid-hang.
+bool http_trace() {
+    static const bool on = std::getenv("SHIELD_OPS_HTTP_TRACE") != nullptr;
+    return on;
+}
+
+void trace_phase(const char* what, long long ms, const char* detail = "") {
+    if (http_trace()) {
+        std::fprintf(stderr, "[http-trace] %-12s %6lldms %s\n", what, ms,
+                     detail);
+        std::fflush(stderr);
+    }
+}
+
 // Minimal HTTP/1.0 client: one fresh connection per request, read to EOF.
 struct RawHttpClient {
     std::string host;
@@ -60,15 +77,27 @@ struct RawHttpClient {
                         std::chrono::milliseconds timeout) {
         boost::asio::io_context io;
         boost::asio::ip::tcp::socket socket(io);
+        const auto t0 = std::chrono::steady_clock::now();
+        auto since = [t0] {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - t0)
+                .count();
+        };
         try {
             socket.connect(boost::asio::ip::tcp::endpoint(
                 boost::asio::ip::make_address(host), port));
-        } catch (...) {
+        } catch (const std::exception& e) {
+            trace_phase("connect", since(), e.what());
             return {};
         }
+        trace_phase("connect", since());
         boost::system::error_code ec;
         boost::asio::write(socket, boost::asio::buffer(raw), ec);
-        if (ec) return {};
+        if (ec) {
+            trace_phase("write", since(), ec.message().c_str());
+            return {};
+        }
+        trace_phase("write", since());
 
         std::string response;
         char buf[4096];
@@ -77,6 +106,7 @@ struct RawHttpClient {
         // FIN (HTTP/1.0 close) leaves socket.available() == 0, so gating on
         // available() would spin until the deadline instead of detecting EOF.
         socket.non_blocking(true, ec);
+        bool got_first = false;
         while (std::chrono::steady_clock::now() < deadline) {
             std::size_t n = socket.read_some(boost::asio::buffer(buf), ec);
             if (ec == boost::asio::error::would_block ||
@@ -84,11 +114,23 @@ struct RawHttpClient {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
-            if (ec || n == 0) break;
+            if (ec || n == 0) {
+                trace_phase(ec ? "read-err" : "eof", since(),
+                            ec ? ec.message().c_str() : "");
+                break;
+            }
+            if (!got_first) {
+                got_first = true;
+                trace_phase("first-byte", since());
+            }
             response.append(buf, n);
+        }
+        if (!got_first) {
+            trace_phase("DEADLINE", since(), "no bytes at all");
         }
         boost::system::error_code ignore;
         socket.close(ignore);
+        trace_phase("done", since(), std::to_string(response.size()).c_str());
         return response;
     }
 
@@ -981,19 +1023,27 @@ BOOST_AUTO_TEST_CASE(ProfileRequestValidation) {
         post(R"({"action":"start","service":"s","interval":"x"})"), 400);
 }
 
-BOOST_AUTO_TEST_CASE(ProfileStopWithoutSession409) {
+BOOST_AUTO_TEST_CASE(ProfileStopWithoutSessionReportsSlowCalls) {
     RawHttpClient client;
     client.connect_target("127.0.0.1", port);
+    // stop/report are decoupled from the sampling session: with none
+    // live they still answer — session meta plus the slow-call ring —
+    // instead of 409ing.
     std::string response = client.post_profile(R"({"action":"stop"})");
     BOOST_REQUIRE(!response.empty());
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
     response = client.post_profile(R"({"action":"report"})");
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
-    // status always answers, also with no session.
-    response = client.post_profile(R"({"action":"status"})");
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
     auto resp = nlohmann::json::parse(RawHttpClient::body(response));
     BOOST_CHECK(resp["data"]["active"] == false);
+    BOOST_CHECK(resp["data"]["slow_calls"]["recent"].is_array());
+    BOOST_CHECK(resp["data"]["slow_calls"].contains("total_recorded"));
+    // status always answers, also with no session.
+    response = client.post_profile(R"({"action":"status"})");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["data"]["active"] == false);
+    BOOST_CHECK(resp["data"]["slow_calls"]["recent"].is_array());
 }
 
 BOOST_AUTO_TEST_CASE(ProfileUnknownService404) {
@@ -1286,10 +1336,14 @@ BOOST_AUTO_TEST_CASE(ProfileStopAfterNaturalExpiry409) {
     BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
 
     // Let the duration driver expire the session, then a manual stop finds
-    // nothing: 409, and status agrees.
+    // nothing: it answers with session meta plus the ring (decoupled from
+    // the sampling session), and status agrees.
     std::this_thread::sleep_for(std::chrono::milliseconds(700));
     response = client.post_profile(R"({"action":"stop"})");
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    auto expired = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(expired["data"]["active"] == false);
+    BOOST_CHECK(expired["data"]["slow_calls"]["recent"].is_array());
     response = client.post_profile(R"({"action":"status"})");
     auto resp = nlohmann::json::parse(RawHttpClient::body(response));
     BOOST_CHECK(resp["data"]["active"] == false);
@@ -1338,10 +1392,12 @@ BOOST_AUTO_TEST_CASE(ProfileOwnerBusy504) {
 
     // Let the queue drain; the uninstall lands after the sleeper and the
     // report promise is fulfilled (dropped here) — a second stop then sees
-    // no session.
+    // no session and answers with session meta plus the ring.
     std::this_thread::sleep_for(std::chrono::seconds(4));
     response = client.post_profile(R"({"action":"stop"})");
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    auto drained = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(drained["data"]["active"] == false);
 
     manager->shutdown_all("done");
 }
@@ -1823,6 +1879,108 @@ BOOST_AUTO_TEST_CASE(EvalRejectsNonStringCode) {
     BOOST_CHECK(resp["type"] == "error");
     BOOST_CHECK(resp["message"].get<std::string>().find("missing 'code'") !=
                 std::string::npos);
+}
+
+// Slow-call metering (Phase B): the ring arms inside register_routes from
+// http.slow_call_threshold_ms (non-numeric config logs and stays off, a
+// real value arms the sticky process-wide gate), and a real cross-service
+// call whose callee sleeps past the threshold must surface through the
+// profile status slow_calls section. Registered last: the sticky gate is
+// on from here on, but later cases don't make slow calls.
+BOOST_AUTO_TEST_CASE(SlowCallGateArmsViaEndpointAndRecordsSlowSpan) {
+    auto& cfg = shield::config::global_config();
+
+    // Throwaway servers so the fixture's own registration stays untouched.
+    cfg.set("http.slow_call_threshold_ms", std::string("bogus"));
+    shield::net::HttpServerConfig scfg;
+    scfg.host = "127.0.0.1";
+    {
+        scfg.port = free_port();
+        shield::net::HttpServer srv(scfg);
+        shield::console::OpsHttpHandler arm(*manager, *runtime);
+        arm.register_routes(srv);  // stoull throws: logged, gate untouched
+        srv.start();
+        srv.stop();
+    }
+    cfg.set("http.slow_call_threshold_ms", std::string("20"));
+    {
+        scfg.port = free_port();
+        shield::net::HttpServer srv(scfg);
+        shield::console::OpsHttpHandler arm(*manager, *runtime);
+        arm.register_routes(srv);  // arms the sticky gate at 20ms
+        srv.start();
+        srv.stop();
+    }
+
+    // callee sleeps 120ms per request; caller shield.calls it.
+    const fs::path dir = fs::temp_directory_path() / "scg";
+    fs::create_directories(dir);
+    std::ofstream(dir / "scg_callee.lua")
+        << "local M = {}\n"
+           "function M.req(ctx) shield.sleep(120) return 'ok' end\n"
+           "return M\n";
+    std::ofstream(dir / "scg_caller.lua")
+        << "local M = {}\n"
+           "function M.kick(ctx, target)\n"
+           "  local ok = shield.call_timeout(10000, target, 'req')\n"
+           "  return ok\n"
+           "end\n"
+           "function M.kick_fast(ctx, target)\n"
+           "  local ok = shield.call_timeout(50, target, 'req')\n"
+           "  return ok\n"
+           "end\n"
+           "return M\n";
+    auto callee =
+        manager->spawn((dir / "scg_callee.lua").string(),
+                       R"({"name":"scg_callee_svc","args":{},"config":{}})");
+    BOOST_REQUIRE(callee.success);
+    auto caller =
+        manager->spawn((dir / "scg_caller.lua").string(),
+                       R"({"name":"scg_caller_svc","args":{},"config":{}})");
+    BOOST_REQUIRE(caller.success);
+
+    std::string send_err;
+    BOOST_CHECK(manager->send(caller.service_id, "kick",
+                              nlohmann::json::array({callee.service_id}),
+                              &send_err));
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+
+    // A second callee slow enough to always blow the 50ms budget: the
+    // call-timeout completion resumes the caller through the timeout
+    // path, which must NOT land in the ring.
+    std::ofstream(dir / "scg_timeout_callee.lua")
+        << "local M = {}\n"
+           "function M.req(ctx) shield.sleep(500) return 'late' end\n"
+           "return M\n";
+    auto slow_callee = manager->spawn(
+        (dir / "scg_timeout_callee.lua").string(),
+        R"({"name":"scg_timeout_callee","args":{},"config":{}})");
+    BOOST_REQUIRE(slow_callee.success);
+    BOOST_CHECK(manager->send(caller.service_id, "kick_fast",
+                              nlohmann::json::array({slow_callee.service_id}),
+                              &send_err));
+    std::this_thread::sleep_for(std::chrono::milliseconds(900));
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.post_profile(R"({"action":"status"})");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    auto& sc = resp["data"]["slow_calls"];
+    BOOST_CHECK(sc["recent"].is_array());
+    BOOST_REQUIRE(!sc["recent"].empty());
+    // Newest first: the span just recorded leads.
+    BOOST_CHECK(sc["recent"][0]["caller"] == "scg_caller_svc");
+    BOOST_CHECK(sc["recent"][0]["callee"] == "scg_callee_svc");
+    BOOST_CHECK(sc["recent"][0]["ok"] == true);
+    BOOST_CHECK(sc["recent"][0]["elapsed_ms"] >= 20);
+    // The timed-out call is absent: timeout completions never record.
+    for (const auto& rec : sc["recent"]) {
+        BOOST_CHECK(rec["callee"] != "scg_timeout_callee");
+    }
+
+    manager->shutdown_all("done");
+    cfg.set("http.slow_call_threshold_ms", std::string("0"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

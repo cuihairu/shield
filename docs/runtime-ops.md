@@ -50,7 +50,7 @@ HTTP ops 服务端安全基线：
 - 已启用的 `/ops/eval` 要求 `Authorization: Bearer <token>`（常量时间比较），未授权请求返回 401。
 - eval 代码运行在受限 VM 中：`os.execute`/`os.exit`/`os.getenv`/`os.remove`/`os.rename`/`os.setlocale`、`io` 库、`require`/`package` 均被移除（`os.time`/`os.date`/`os.clock` 保留）。
 
-注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/ops/health` 探针（进程内读取、不经 Lua actor 往返，actor 网格卡死时仍可应答）、`/ops/metrics` Prometheus 导出与 `/ops/services/:name` 服务详情（含流量/uptime/timers/pending_calls/pending_tasks/coroutines/memory_kb 统计）已提供（P0）；console 侧 L2 受限 inspect（`lua.inspect`/`lua.snapshot`/`lua.diff`）已提供；`/ops/profile` 已立项（采样式热点分析 + 慢调用追踪，见 `docs/superpowers/plans/2026-09-22-ops-profile-v1.md`），消息延迟剖面另行立项评估。
+注意：这些能力当前编译在 `shield_bootstrap` 而非 `shield_ops` 空壳 target 内；模块归属对齐是后续工作。轻量 `/ops/health` 探针（进程内读取、不经 Lua actor 往返，actor 网格卡死时仍可应答）、`/ops/metrics` Prometheus 导出与 `/ops/services/:name` 服务详情（含流量/uptime/timers/pending_calls/pending_tasks/coroutines/memory_kb 统计）已提供（P0）；console 侧 L2 受限 inspect（`lua.inspect`/`lua.snapshot`/`lua.diff`）已提供；`/ops/profile`（采样式热点分析 + 慢调用追踪）已提供，见下文 [Profile](#profile)；消息延迟剖面另行立项评估。
 
 ## shield_ops 默认策略
 
@@ -93,7 +93,7 @@ profile controls
 | `/ops/metrics` | GET | 指标导出（Prometheus 格式，已提供） |
 | `/ops/services` | GET | 服务列表 |
 | `/ops/services/:name` | GET | 服务详情（已提供） |
-| `/ops/profile` | POST | 启动/停止 profile（已立项：[实施计划](superpowers/plans/2026-09-22-ops-profile-v1.md)，尚未提供） |
+| `/ops/profile` | POST | 采样式热点分析与慢调用追踪的启动/停止/查询（已提供，见 [Profile](#profile)） |
 | `/ops/config` | GET | 当前配置快照 |
 
 如果启用了 Lua 诊断控制台，管理面还可以额外暴露只读 Lua 观测能力，例如：
@@ -249,6 +249,45 @@ P0 实测口径：注册表内只读快照，走 `""-id` forked task（与 `/ops
 ```
 
 `requests`/`errors` 为该服务本轮生命周期的累计流量（spawn 归零、exit 移除）；`uptime_seconds` 自 publish 起单调计时（respawn 重计）；`timers` 为该服务当前活跃 actor timer 数；`pending_calls` 为以该服务名义挂起在协程 call 上的条目数（caller 侧瞬时值）；`pending_tasks` 为已入队但尚未被其 actor 取走的 fork 任务数（瞬时值）；`coroutines` 为该服务当前挂起或活跃的 handler coroutine 数（工厂启动时登记、终态 resume 或 teardown 时擦除）；`memory_kb` 为该服务 Lua VM 堆占用 KB——owner 线程在 dispatch 退出采样 `lua_gc(GCCOUNT)`（O(1)），语义为采样值而非实时读取（绝不跨线程触碰 lua_State），Lua allocator 视角、非进程 RSS；`script` 仅配置态 runtime actor 有记录，spawn 服务可缺省。
+
+### Profile
+
+```
+POST /ops/profile   {"action": "status" | "start" | "stop" | "report", ...}
+```
+
+采样式热点分析与慢调用追踪共用这一个入口，两者独立工作：采样会话回答"时间花在服务内哪里"，慢调用环形缓冲回答"哪些跨服务调用慢"。需要 `http.profile_enabled=true` + 非空 `http.profile_token` 才注册路由（`Bearer` 令牌鉴权，时序安全比较）；未启用时端点 404。
+
+动作语义：
+
+- `status`：纯注册表读，总是应答。`active`/`service`/`elapsed_ms`/`duration_ms` 描述采样会话；`slow_calls` 段始终附带。
+- `start`：`service` 必填，`duration_ms`（1..60000，默认见下）与 `interval`（>=1）可选。单会话管理器 + `http.profile_cooldown_seconds`（默认 10s）双重限流；409=会话已在跑，429=冷却中，404=服务不存在。
+- `stop`/`report`：结束会话并返回聚合树（`report` 是 `stop` 的只读命名别名）。慢调用计量与采样会话解耦：没有活跃采样会话时 `report` 仍以 `active=false` + `slow_calls` 段应答，而不是 409。
+- 聚合结果包含树形命中计数（模块/函数/行）与耗时分布；无 payload、无密钥数据。
+
+`slow_calls` 段（status/report 均附带）：
+
+```json
+{
+  "recent": [
+    {"caller": "auth", "callee": "db", "elapsed_ms": 42, "ok": true, "at": 1727000000}
+  ],
+  "total_recorded": 3
+}
+```
+
+`recent` 为最近样本、新者在前、至多 16 条；进程级环形缓冲容量 64，超出淘汰最旧；`total_recorded` 累计计数（不受环形覆盖影响）。`elapsed_ms` 从 call 挂起计到 resume 回来，`ok=false` 表示调用以失败收场（非超时路径）；`at` 为记录时刻的 unix 秒。
+
+配置键：
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `http.profile_enabled` | `false` | 注册 `/ops/profile` 路由的总开关 |
+| `http.profile_token` | 空 | `Bearer` 令牌；enabled 但为空则拒绝注册 |
+| `http.profile_cooldown_seconds` | `10` | 两次 `start` 之间的最小间隔 |
+| `http.slow_call_threshold_ms` | `0` | 慢调用阈值；`0`=不计量。随端点构造置位，进程内不回收（sticky）——置位前已挂起的调用不计入，避免半程样本 |
+
+开销边界：gate 关闭时调用热路径只付一次 relaxed 原子读；gate 开启时每次跨服务调用在挂起/完成各记一个时间戳，仅超过阈值的完成落入互斥锁保护的环形缓冲。采样器开销为按 interval 触发的 Lua debug hook（见 `docs/superpowers/plans/2026-09-22-ops-profile-v1.md`）。
 
 ## ops 安全
 

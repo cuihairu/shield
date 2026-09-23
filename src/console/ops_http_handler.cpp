@@ -11,6 +11,7 @@
 
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/lua/slow_calls.hpp"
 #include "shield/plugin/plugin_host.hpp"
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -41,6 +42,32 @@ double process_uptime_seconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                          kProcessStart)
         .count();
+}
+
+/// The slow_calls section attached to /ops/profile status and report:
+/// up to 16 newest samples plus the cumulative count that survives ring
+/// wrap. Metering is decoupled from the sampling session, so this is
+/// meaningful even while no session is live.
+nlohmann::json slow_calls_section() {
+    const auto snap = shield::lua::SlowCallRing::instance().snapshot();
+    nlohmann::json recent = nlohmann::json::array();
+    const std::size_t take = std::min<std::size_t>(snap.recent.size(), 16);
+    for (std::size_t i = 0; i < take; ++i) {
+        const auto& rec = snap.recent[i];
+        recent.push_back(  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                           // nlohmann::json braced-init branches)
+            {{"caller", rec.caller},
+             {"callee", rec.callee},
+             {"elapsed_ms", rec.elapsed_ms},
+             {"ok", rec.ok},
+             {"at", rec.at}});
+    }
+    // GCOVR_EXCL_START (compiler artifact: inlined nlohmann::json
+    // braced-init branches)
+    nlohmann::json section = {{"recent", recent},
+                              {"total_recorded", snap.total_recorded}};
+    // GCOVR_EXCL_STOP
+    return section;
 }
 
 /// Prometheus label-value escaping (backslash, quote, newline).
@@ -193,6 +220,26 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
     }
     server.post("/ops/profile",
                 [this](const auto& req) { return handle_profile(req); });
+
+    // Phase B slow-call metering arms with the endpoint (the only reader
+    // of the ring), at a fixed threshold for the process lifetime: the
+    // gate is sticky by design — a call suspended while armed must always
+    // find its completion path still metering, so it never disarms (see
+    // SlowCallRing's class note). Zero config keeps the gate closed.
+    const std::string slow_ms =
+        shield::config::get("http.slow_call_threshold_ms", "0");
+    if (slow_ms != "0") {
+        try {
+            shield::lua::SlowCallRing::instance().enable(
+                static_cast<uint64_t>(std::stoull(slow_ms)));
+        } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (compiler
+                                        // artifact: catch-entry pseudo-arc)
+                     e) {
+            auto& log = shield::log::get_logger("ops");
+            SHIELD_LOG_ERROR(log, "http.slow_call_threshold_ms not a number: " +
+                                      slow_ms + " (slow-call metering off)");
+        }
+    }
 }
 
 bool OpsHttpHandler::token_matches(const std::string& provided,
@@ -874,6 +921,7 @@ shield::net::HttpResponse OpsHttpHandler::handle_profile(
             data = {{"active", false}};  // GCOVR_EXCL_BR_LINE (compiler
                                          // artifact: braced-init arcs)
         }
+        data["slow_calls"] = slow_calls_section();
         return make_json_response(  // GCOVR_EXCL_BR_LINE (compiler
                                     // artifact: inline call throw arc)
             200, {{"type", "result"},
@@ -972,7 +1020,16 @@ shield::net::HttpResponse OpsHttpHandler::handle_profile(
         // read-named alias; a later start re-arms from scratch).
         auto info = lua_mgr_.profile_status();
         if (!info) {
-            return make_error_response(409, "no active profile session");
+            // Slow-call metering is decoupled from the sampling session:
+            // with no session live, report still answers — session meta
+            // plus whatever the ring holds — instead of 409ing.
+            return make_json_response(  // GCOVR_EXCL_BR_LINE (compiler
+                                        // artifact: inlined nlohmann::json
+                                        // braced-init branches)
+                200,
+                {{"type", "result"},
+                 {"data",
+                  {{"active", false}, {"slow_calls", slow_calls_section()}}}});
         }
         std::string stop_error;
         if (!lua_mgr_.profile_stop(  // GCOVR_EXCL_BR_LINE (race: the session
@@ -998,10 +1055,13 @@ shield::net::HttpResponse OpsHttpHandler::handle_profile(
                                // which always stores a valid shared_future)
             report.wait_for(std::chrono::seconds(2)) ==
                 std::future_status::ready) {
+            auto data = report.get();
+            data["active"] = true;
+            data["slow_calls"] = slow_calls_section();
             return make_json_response(  // GCOVR_EXCL_BR_LINE (compiler
                                         // artifact: inlined nlohmann::json
                                         // braced-init branches)
-                200, {{"type", "result"}, {"data", report.get()}});
+                200, {{"type", "result"}, {"data", data}});
         }
         return make_error_response(504,
                                    "profile dispatch timeout (owner busy)");
