@@ -255,45 +255,45 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 
 ## Phase B：慢调用追踪
 
-### Task 6: SlowCallRing + resume_caller 打点
+### Task 6: SlowCallRing + resume_caller 打点 ✅ 已完成（2026-09-23，35dad70）
 
 **Files:** Create `include/shield/lua/slow_calls.hpp`；Modify
 `src/lua/lua_service.cpp`（resume_caller）
 
-- [ ] **Step 1:** `SlowCallRing`：`maybe_record(begin_time, callee, ok)`
+- [x] **Step 1:** `SlowCallRing`：`maybe_record(begin_time, callee, ok)`
   （gate 未置位时一次 relaxed load 返回）；容量 64 环形、`std::mutex`；
   `snapshot()` 返回按时间倒序副本。配置：`http.slow_call_threshold_ms`
   （默认 0 = 关）。gate 由 ops 端点启动时置位（配置非零即置位，进程
   生命周期内不回收——避免 gate 抖动）。
-- [ ] **Step 2:** 打点接入：call 挂起点已有 session 注册
+- [x] **Step 2:** 打点接入：call 挂起点已有 session 注册
   （`suspend_for_call`），在其记录 begin 时戳（仅 gate 置位时）；
   `resume_caller` 完成路径计算 elapsed，超阈值记录
   `{caller, callee, elapsed_ms, ok, at}`。call_timeout 失败路径不记录
   （超时已有独立语义与日志）。
-- [ ] **Step 3:** 单测：gate 关闭零记录、超阈值记录、环形覆盖最旧、
+- [x] **Step 3:** 单测：gate 关闭零记录、超阈值记录、环形覆盖最旧、
   snapshot 一致性、阈值边界（== 阈值记/不记，取「≥ 记录」并写死用例）。
 
-### Task 7: 报告集成 + 文档同步
+### Task 7: 报告集成 + 文档同步 ✅ 已完成（2026-09-23，9a2b35f）
 
-- [ ] **Step 1:** `POST /ops/profile` 的 `status`/`report` 附带
+- [x] **Step 1:** `POST /ops/profile` 的 `status`/`report` 附带
   `slow_calls` 段（`snapshot()` 前 16 条 + `total_recorded` 累计）；
   slow call 会话与采样会话解耦（无采样会话时 report action 亦可只取
   slow_calls——action 语义：无活动/已完成采样会话时 report 返回仅含
   meta 与 slow_calls 的报告）。
-- [ ] **Step 2:** `docs/runtime-ops.md`：端点表行改「已提供」；新增
+- [x] **Step 2:** `docs/runtime-ops.md`：端点表行改「已提供」；新增
   「### Profile」小节（四 action 请求/响应 JSON 示例、配置键表：
   `http.profile_enabled/profile_token/profile_interval/profile_cooldown_seconds/
   slow_call_threshold_ms`、安全基线对照、开销与边界声明：按需短时、
   单会话、挂起协程不计入、消息延迟剖面留后续另立项）；
   「可观测性现状」状态行同步。
-- [ ] **Step 3:** `docs/roadmap.md` shield_ops 段同步落地口径
+- [x] **Step 3:** `docs/roadmap.md` shield_ops 段同步落地口径
   （P0 完成 + 本计划边界）。
 
-### Task 8: Phase B 验收
+### Task 8: Phase B 验收 ✅ 已完成（2026-09-23，1dcf699 收口；CI 35911259752 三平台绿 + Optional Plugins 35911259834 三平台绿；插件树验收用 CI 等价——本地 build-plugins 树 vcpkg mongo-c-driver 依赖腐烂与本计划无关）
 
-- [ ] **Step 1:** 全量测试（含新增）两树绿 + clang-format + 覆盖率
+- [x] **Step 1:** 全量测试（含新增）两树绿 + clang-format + 覆盖率
   双 100% 维持；提交推送等 CI 三平台绿。
-- [ ] **Step 2:** 记忆沉淀：Lua 5.5 hook 继承结论（若与 5.4 文档口径
+- [x] **Step 2:** 记忆沉淀：Lua 5.5 hook 继承结论（若与 5.4 文档口径
   有差异）与采样器 owner 线程模式，写入 memory。
 
 ---
