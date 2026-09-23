@@ -4445,6 +4445,7 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
             };
             auto sampler =
                 std::make_unique<ProfileSampler>(*session, std::move(provider));
+            ProfileSampler* sampler_ptr = nullptr;
             {
                 std::unique_lock lock(impl->registry_mutex);
                 if (!impl->profile_session ||
@@ -4455,13 +4456,22 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
                     return;  // exited/stopped before install was picked up
                 }
                 impl->profile_session->sampler = std::move(sampler);
-                if (main_L != nullptr) {  // GCOVR_EXCL_BR_LINE (defensive:
-                    // main_L comes from the still-alive captured service)
-                    // clang-format off
-                    impl->profile_session->sampler->install(  // GCOVR_EXCL_BR_LINE (compiler artifact: inline install call throw arc)
-                        main_L);  // GCOVR_EXCL_BR_LINE
-                    // clang-format on
-                }
+                sampler_ptr = impl->profile_session->sampler.get();
+            }
+            // Hooks go on outside the registry lock: ProfileSampler::install
+            // enumerates live coroutines through the provider, which takes
+            // this same mutex shared. unique-then-shared on one thread is a
+            // recursive acquisition glibc tolerates but the macOS/Windows
+            // rwlock implementations deadlock on — the CI hangs in
+            // ProfileHappyPathStartStatusStop came from exactly this
+            // recursion (2026-09-23).
+            if (main_L != nullptr &&       // GCOVR_EXCL_BR_LINE (defensive:
+                                           // main_L comes from the still-alive
+                                           // captured service)
+                sampler_ptr != nullptr) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                           // published above; only a stale
+                                           // install race can null it)
+                sampler_ptr->install(main_L);
             }
         });  // GCOVR_EXCL_BR_LINE (compiler artifact: install lambda tail arcs)
     if (task_id == 0) {  // GCOVR_EXCL_BR_LINE (race: actor-gone rollback
