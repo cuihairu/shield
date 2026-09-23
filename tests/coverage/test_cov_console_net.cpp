@@ -425,6 +425,10 @@ BOOST_AUTO_TEST_CASE(SessionStateHelpers) {
     // Explicit close() from the server side.
     captured->close();
     BOOST_CHECK(wait_until([&] { return !captured->is_alive(); }));
+    // A repeat close() is idempotent: the second alive_.exchange(false)
+    // sees false and returns without touching the socket again.
+    captured->close();
+    BOOST_CHECK(!captured->is_alive());
 
     client.close();
     server.stop();
