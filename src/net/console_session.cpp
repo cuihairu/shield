@@ -106,10 +106,11 @@ void ConsoleSession::do_write() {
 void ConsoleSession::close() {
     auto self = shared_from_this();
     boost::asio::post(strand_, [self]() {
-        // GCOVR_EXCL_BR_LINE (CI-only artifact: GCC inlines this lambda so
+        // GCOVR_EXCL_BR_START (CI-only artifact: GCC inlines this lambda so
         // a pseudo-arc of the idempotent double-close guard lands here; the
         // real arms are driven by the double-close suite)
         if (!self->alive_.exchange(false)) return;
+        // GCOVR_EXCL_BR_STOP
         boost::system::error_code ec;
         self->socket_.close(ec);
     });
