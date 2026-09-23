@@ -942,8 +942,16 @@ bool LuaRuntime::load_service_module(std::shared_ptr<LuaVM> vm,
             }
         }
 
-        // Load and execute the source code
-        sol::load_result loaded = lua.load(source_code, path_str);
+        // Load and execute the source code. The chunkname carries the '@'
+        // file prefix (what luaL_loadfile would pass): with a bare path Lua
+        // takes the *string* truncation for short_src — head kept, tail cut —
+        // which drops the script file name once the path exceeds LUA_IDSIZE
+        // (60). Every Windows runner temp path does (C:\Users\... ≈ 62
+        // chars), and profile hotspot attribution then cannot see the
+        // service file at all (ProfileHappyPathStartStatusStop, 2026-09-23).
+        // The '@' prefix routes the name through the file truncation, which
+        // keeps the tail — the file name survives any path length.
+        sol::load_result loaded = lua.load(source_code, "@" + path_str);
         if (!loaded.valid()) {
             sol::error err = loaded;
             if (error) {

@@ -57,17 +57,22 @@ void ProfileSampler::record_current_stack(ProfileSampler* self, lua_State* L) {
         f.what = ar.what ? ar.what : "";  // GCOVR_EXCL_BR_LINE (defensive:
                                           // lua_getinfo always fills what)
         f.name = ar.name ? ar.name : "";
-        // File chunks keep the full chunk name: short_src is truncated at
-        // LUA_IDSIZE (60), which cuts the chunk name off on long temp dirs
-        // and breaks hotspot attribution. String chunks keep short_src —
-        // their ar.source embeds the whole chunk text.
-        f.source =  // GCOVR_EXCL_BR_LINE (defensive: short_src is never
-            ar.source[0] == '/' ? ar.source
-            : ar.short_src[0] != '\0'  // empty; the first keyword line
-                                       // carries the defensive reason
-                ? ar.short_src         // GCOVR_EXCL_BR_LINE
-                : "?";                 // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                       // continuation arms)
+        // short_src truncates at LUA_IDSIZE (60). The spawn loader passes
+        // the script path with the '@' file prefix (load_service_module), so
+        // the file truncation applies — tail kept, the script file name
+        // survives Windows-sized temp paths (C:\Users\... ≈ 62 chars). An
+        // unprefixed path would take the *string* truncation instead (head
+        // kept, tail cut) and lose the file name entirely — that was the
+        // ProfileHappyPathStartStatusStop Windows failure of 2026-09-23.
+        // exec_lua uses the '=' literal prefix; dostring-style chunks embed
+        // their source text, which short_src renders as [string "..."].
+        f.source = ar.short_src[0] != '\0'  // GCOVR_EXCL_BR_LINE (defensive:
+                                            // short_src is never empty; the
+                                            // first keyword line carries the
+                                            // defensive reason)
+                       ? ar.short_src
+                       : "?";  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                               // continuation arms)
         f.line = ar.currentline;
         f.tail = ar.istailcall != 0;
         frames.push_back(std::move(f));
