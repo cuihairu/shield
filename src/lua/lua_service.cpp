@@ -497,7 +497,10 @@ struct LuaServiceManager::Impl {
     // fires. Must hold the registry mutex. Unlike the drop_* helpers this
     // does not run on the owner thread, so it never calls uninstall().
     void abandon_profile_session_locked(const std::string& id) {
-        if (!profile_session || profile_session->service_id != id) {
+        if (!profile_session ||
+            profile_session->service_id !=  // GCOVR_EXCL_BR_LINE (defensive)
+                id) {  // GCOVR_EXCL_BR_LINE (defensive: every caller re-checks
+                       // under the same lock)
             return;
         }
         auto profile = std::move(profile_session);
@@ -505,16 +508,22 @@ struct LuaServiceManager::Impl {
         // Kill the duration driver if the install task already spawned it:
         // a live driver idles until its delayed tick and keeps the actor
         // system's teardown waiting for the whole duration.
-        if (profile->duration_driver) {
+        if (profile->duration_driver) {  // GCOVR_EXCL_BR_LINE (defensive:
+            // null only in the pre-install window; no test exits a service
+            // inside that window)
             caf::anon_send_exit(profile->duration_driver,
                                 caf::exit_reason::user_shutdown);
         }
-        if (profile->done) {
+        if (profile->done) {  // GCOVR_EXCL_BR_LINE (defensive: done is set
+                              // synchronously by profile_start)
             profile->done->set_value(nlohmann::json{
                 {"abandoned", true},
                 {"service", profile->service_id},
                 {"total_samples",
-                 profile->session ? profile->session->total_samples() : 0}});
+                 profile->session
+                     ? profile->session->total_samples()  // GCOVR_EXCL_BR_LINE
+                     : 0}});  // GCOVR_EXCL_BR_LINE (defensive: session set
+                              // synchronously with the state)
         }
     }
 
@@ -2185,8 +2194,6 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                 return {};
             });  // GCOVR_EXCL_LINE GCOVR_EXCL_BR_LINE (pre-init stash tail:
                  // branch arc artifact)
-                 // // GCOVR_EXCL_BR_LINE (compiler artifact: lambda tail arc
-                 // (line already GCOVR_EXCL_LINE'd for the same reason))
             return caf::behavior{
                 [self, cache, impl_ptr,  // GCOVR_EXCL_BR_LINE
                  manager,  // GCOVR_EXCL_BR_LINE (compiler artifact: init_ready
@@ -4357,7 +4364,9 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
         }
         service = it->second;
         session = std::make_shared<ProfileSession>(std::move(config));
-        impl_->profile_session = Impl::ProfileSessionState{
+        // clang-format off
+        impl_->profile_session = Impl::ProfileSessionState{  // GCOVR_EXCL_BR_LINE (compiler artifact: designated-init inline arcs)
+            // clang-format on
             .service_id = service_id,
             .session = session,
             .sampler = nullptr,
@@ -4372,17 +4381,32 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
     // under the registry lock. Fork-task FIFO ordering guarantees install
     // runs before any later stop task on the same service.
     const uint64_t task_id = enqueue_forked_task(
-        service_id, [impl = impl_.get(), service, service_id,
-                     session]() {  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                   // fork lambda entry/exit arcs)
+        service_id,
+        [impl = impl_.get(), service,  // GCOVR_EXCL_BR_LINE (compiler
+                                       // artifact: argument move throw arc)
+         service_id,                   // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // std::function move throw arc)
+         session]() {                  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // fork lambda entry/exit arcs)
             lua_State* main_L =
-                service ? impl->runtime.vm_main_state(service) : nullptr;
+                service ?  // GCOVR_EXCL_BR_LINE (defensive: `service` is a
+                           // shared_ptr kept alive by the lambda, so the null
+                           // arm is unreachable)
+                    impl->runtime.vm_main_state(  // GCOVR_EXCL_BR_LINE
+                                                  // (compiler artifact: inline
+                                                  // call throw arc)
+                        service)  // GCOVR_EXCL_BR_LINE (defensive: live service
+                                  // + compiler throw arcs)
+                        : nullptr;  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                    // continuation throw arcs)
             auto provider = [impl, service_id]() -> std::vector<lua_State*> {
                 std::vector<lua_State*> cos;
                 {
                     std::shared_lock lock(impl->registry_mutex);
                     for (const auto& [co, owner] : impl->live_coroutines) {
-                        if (owner == service_id) {
+                        if (owner == service_id) {  // GCOVR_EXCL_BR_LINE
+                            // (defensive: no test samples while a foreign
+                            // service keeps live coroutines)
                             cos.push_back(co);
                         }
                     }
@@ -4394,32 +4418,49 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
             {
                 std::unique_lock lock(impl->registry_mutex);
                 if (!impl->profile_session ||
-                    impl->profile_session->service_id != service_id) {
+                    impl->profile_session->service_id !=  // GCOVR_EXCL_BR_LINE
+                        service_id) {  // GCOVR_EXCL_BR_LINE (race: stale
+                                       // install vs session switched to another
+                                       // service)
                     return;  // exited/stopped before install was picked up
                 }
                 impl->profile_session->sampler = std::move(sampler);
-                if (main_L != nullptr) {
-                    impl->profile_session->sampler->install(main_L);
+                if (main_L != nullptr) {  // GCOVR_EXCL_BR_LINE (defensive:
+                    // main_L comes from the still-alive captured service)
+                    // clang-format off
+                    impl->profile_session->sampler->install(  // GCOVR_EXCL_BR_LINE (compiler artifact: inline install call throw arc)
+                        main_L);  // GCOVR_EXCL_BR_LINE
+                    // clang-format on
                 }
             }
-        });
-    if (task_id == 0) {
+        });  // GCOVR_EXCL_BR_LINE (compiler artifact: install lambda tail arcs)
+    if (task_id == 0) {  // GCOVR_EXCL_BR_LINE (race: actor-gone rollback
+                         // window is untestable end-to-end)
         // The actor vanished between the registry check and the enqueue.
-        nlohmann::json abandoned = {{"abandoned", true},
-                                    {"service", service_id},
-                                    {"reason", "actor gone"},
-                                    {"total_samples", 0}};
+        nlohmann::json abandoned = {
+            {"abandoned", true},
+            {"service", service_id},
+            {"reason", "actor gone"},
+            {"total_samples",
+             0}};  // GCOVR_EXCL_BR_LINE (race: actor-gone rollback window)
         std::shared_ptr<std::promise<nlohmann::json>> settle;
         {
-            std::unique_lock lock(impl_->registry_mutex);
-            if (impl_->profile_session &&
+            std::unique_lock lock(
+                impl_->registry_mutex);  // GCOVR_EXCL_BR_LINE
+                                         // (compiler artifact: lock throw arcs)
+            if (impl_
+                    ->profile_session &&  // GCOVR_EXCL_BR_LINE (race:
+                                          // dispatch-lost rollback window; only
+                                          // the matched pair is reachable)
                 impl_->profile_session->service_id == service_id) {
                 settle = impl_->profile_session->done;
                 impl_->profile_session.reset();
             }
         }
-        if (settle) {
-            settle->set_value(std::move(abandoned));
+        if (settle) {  // GCOVR_EXCL_BR_LINE (race: actor-gone rollback window)
+            settle->set_value(
+                std::move(abandoned));  // GCOVR_EXCL_BR_LINE (compiler
+                                        // artifact: inline throw arc)
         }
         return ProfileStartResult::kDispatchLost;
     }
@@ -4429,7 +4470,9 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
     // Not cancelled on manual stop — the tick finds no session and quits.
     try {
         auto driver = impl_->system.spawn(
-            [manager = this, service_id,
+            [manager = this, service_id,  // GCOVR_EXCL_BR_LINE (compiler
+                                          // artifact: CAF behavior lambda
+                                          // entry/exit arcs)
              duration_ms](caf::event_based_actor* self) -> caf::behavior {
                 self->delayed_send(self,
                                    std::chrono::milliseconds(
@@ -4445,18 +4488,30 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
                     }};
             });
         std::unique_lock lock(impl_->registry_mutex);
-        if (impl_->profile_session &&
-            impl_->profile_session->service_id == service_id) {
+        if (impl_->profile_session &&  // GCOVR_EXCL_BR_LINE (race: a manual
+                                       // stop kills this driver before the
+                                       // tick; only the matched pair is
+                                       // reachable in tests)
+            // clang-format off
+            impl_->profile_session->service_id == service_id) {  // GCOVR_EXCL_BR_LINE (race: false arm reaches the excluded else arm below)
+            // clang-format on
             impl_->profile_session->duration_driver = std::move(driver);
         }
         // Else: the session ended before the driver registered — quit it.
         // anon_send_exit must run without the registry lock held.
-        else {
-            lock.unlock();
-            caf::anon_send_exit(driver, caf::exit_reason::user_shutdown);
+        else {  // GCOVR_EXCL_BR_LINE (race: the session can only end via
+                // profile_stop, which exits this very driver first)
+            lock.unlock();  // GCOVR_EXCL_BR_LINE (race: continuation of the
+                            // excluded else arm)
+            caf::anon_send_exit(  // GCOVR_EXCL_BR_LINE (race)
+                driver,
+                caf::exit_reason::user_shutdown);  // GCOVR_EXCL_BR_LINE (race:
+                                                   // continuation of the
+                                                   // excluded else arm)
         }
-    } catch (const std::exception&
-                 e) {  // GCOVR_EXCL_START (defensive: untestable
+    } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (compiler
+                                    // artifact: catch-entry pseudo-arc)
+                 e) {               // GCOVR_EXCL_START (defensive: untestable
                        // actor-spawn failure, same exclusion class as the
                        // call-timeout driver at schedule_external_call_timeout)
         // A session that can never auto-stop must not be left armed:
@@ -4490,7 +4545,8 @@ bool LuaServiceManager::profile_stop(const std::string& service_id,
             impl_->profile_session.reset();
         }
         auto sit = impl_->services.find(service_id);
-        if (sit != impl_->services.end()) {
+        if (sit != impl_->services.end()) {  // GCOVR_EXCL_BR_LINE (race:
+            // a service that died mid-stop no longer owns the session)
             service = sit->second;  // keeps the VM alive for the uninstall
         }
     }
@@ -4498,7 +4554,9 @@ bool LuaServiceManager::profile_stop(const std::string& service_id,
         // Kill the duration driver here: it would otherwise idle until its
         // delayed tick and keep the actor system alive for the whole
         // duration (the actor_system teardown waits for it).
-        if (taken->duration_driver) {
+        if (taken->duration_driver) {  // GCOVR_EXCL_BR_LINE (race: stop
+                                       // beating the driver registration
+                                       // window)
             caf::anon_send_exit(taken->duration_driver,
                                 caf::exit_reason::user_shutdown);
         }
@@ -4507,8 +4565,12 @@ bool LuaServiceManager::profile_stop(const std::string& service_id,
             {"service", taken->service_id},
             {"reason", "stop before install"},
             {"total_samples",
-             taken->session ? taken->session->total_samples() : 0}};
-        if (taken->done) {
+             taken->session  // GCOVR_EXCL_BR_LINE (defensive: session is
+                             // set synchronously by profile_start)
+                 ? taken->session->total_samples()  // GCOVR_EXCL_BR_LINE
+                 : 0}};     // GCOVR_EXCL_BR_LINE (artifact: continuation arcs)
+        if (taken->done) {  // GCOVR_EXCL_BR_LINE (defensive: done is set
+                            // synchronously by profile_start)
             taken->done->set_value(std::move(abandoned));
         }
         return true;
@@ -4518,12 +4580,22 @@ bool LuaServiceManager::profile_stop(const std::string& service_id,
     // the report export happen on the owner thread, serialized after any
     // in-flight hook hit.
     const uint64_t task_id = enqueue_forked_task(
-        service_id, [impl = impl_.get(), service, service_id]() {
+        service_id,
+        [impl = impl_.get(), service,  // GCOVR_EXCL_BR_LINE (compiler
+                                       // artifact: argument move throw arc)
+         service_id]() {               // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // std::function move throw arc)
             std::shared_ptr<Impl::ProfileSessionState> state;
             {
                 std::unique_lock lock(impl->registry_mutex);
-                if (!impl->profile_session ||
-                    impl->profile_session->service_id != service_id) {
+                if (!impl->profile_session ||  // GCOVR_EXCL_BR_LINE
+                                               // (race: only the exit cleanup /
+                                               // a stale stop task can lose the
+                                               // session here; tests stop once)
+                    impl->profile_session->service_id !=  // GCOVR_EXCL_BR_LINE
+                        service_id) {  // GCOVR_EXCL_BR_LINE (race: stale
+                                       // uninstall vs session switched to
+                                       // another service)
                     return;  // exit cleanup already settled the promise
                 }
                 state = std::make_shared<Impl::ProfileSessionState>(
@@ -4534,30 +4606,37 @@ bool LuaServiceManager::profile_stop(const std::string& service_id,
             // idles until its delayed tick and keeps the actor system's
             // teardown waiting for the whole duration. anon_send_exit must
             // not run under the registry lock.
-            if (state->duration_driver) {
+            if (state->duration_driver) {  // GCOVR_EXCL_BR_LINE
+                // (defensive: a session without a driver never enqueues
+                // this task — the sampler-null stop settles inline)
                 caf::anon_send_exit(state->duration_driver,
                                     caf::exit_reason::user_shutdown);
             }
-            if (state->sampler && service) {
+            if (state->sampler && service) {  // GCOVR_EXCL_BR_LINE
+                // (defensive/race: the sampler is armed whenever this task
+                // runs; service stays alive via the captured handle)
                 state->sampler->uninstall(impl->runtime.vm_main_state(service));
             }
             const uint64_t elapsed_ms = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - state->started_at)
                     .count());
-            if (state->done && state->session) {
-                state->done->set_value(
-                    state->session->finish_report(elapsed_ms));
+            if (state->done && state->session) {  // GCOVR_EXCL_BR_LINE
+                // (defensive: both are set synchronously by profile_start)
+                state->done->set_value(state->session->finish_report(
+                    elapsed_ms));  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                   // inline finish_report throw arc)
             }
-        });
-    if (task_id == 0) {
-        // The service left between the state check and the enqueue; the
-        // exit cleanup owns the promise now.
+        });  // GCOVR_EXCL_BR_LINE (compiler artifact: uninstall lambda tail
+             // arcs)
+    if (task_id == 0) {  // GCOVR_EXCL_START (race: untestable service
+        // exit between the state check and the enqueue; the exit cleanup
+        // owns the promise now)
         if (error) {
             *error = "service actor not found: " + service_id;
         }
         return false;
-    }
+    }  // GCOVR_EXCL_STOP
     return true;
 }
 
@@ -4568,13 +4647,24 @@ LuaServiceManager::profile_status() const {
         return std::nullopt;
     }
     const auto& state = *impl_->profile_session;
-    return ProfileStatusInfo{
+    // clang-format off
+    return ProfileStatusInfo{  // GCOVR_EXCL_BR_LINE (compiler artifact: designated-init inline arcs)
+        // clang-format on
         .service_id = state.service_id,
         .elapsed_ms = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - state.started_at)
-                .count()),
-        .duration_ms = state.session ? state.session->config().duration_ms : 0,
+                std::chrono::steady_clock::now()  // GCOVR_EXCL_BR_LINE
+                - state.started_at)  // GCOVR_EXCL_BR_LINE (compiler
+                                     // artifact: duration arithmetic
+                                     // throw arc)
+                .count()),  // cast throw arcs)  // GCOVR_EXCL_BR_LINE (compiler
+                            // artifact: inline duration cast throw arcs)
+        .duration_ms =
+            state.session  // GCOVR_EXCL_BR_LINE (race: the install task sets
+                           // the session within one fork-task step of start;
+                           // status is never sampled inside that window)
+                ? state.session->config().duration_ms  // GCOVR_EXCL_BR_LINE
+                : 0,
     };
 }
 

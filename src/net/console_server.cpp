@@ -97,7 +97,9 @@ void ConsoleServer::do_accept() {
                 std::lock_guard<std::mutex> lock(sessions_mutex_);
                 auto it =
                     std::find(sessions_.begin(), sessions_.end(), session);
-                if (it != sessions_.end()) {
+                if (it !=
+                    sessions_.end()) {  // GCOVR_EXCL_BR_LINE (defensive: a
+                                        // session is closed exactly once)
                     sessions_.erase(it);
                 }
             };

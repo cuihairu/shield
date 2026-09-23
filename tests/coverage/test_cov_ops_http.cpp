@@ -4,9 +4,11 @@
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -951,14 +953,21 @@ BOOST_AUTO_TEST_CASE(ProfileRequestValidation) {
     };
     BOOST_CHECK_EQUAL(post("this is not json"), 400);
     BOOST_CHECK_EQUAL(post(R"({})"), 400);                  // no action
+    BOOST_CHECK_EQUAL(post(R"({"action":123})"), 400);      // action not string
     BOOST_CHECK_EQUAL(post(R"({"action":"nope"})"), 400);   // unknown
     BOOST_CHECK_EQUAL(post(R"({"action":"start"})"), 400);  // no service
+    BOOST_CHECK_EQUAL(post(R"({"action":"start","service":123})"),
+                      400);  // not a string
     BOOST_CHECK_EQUAL(
         post(R"({"action":"start","service":"s","duration_ms":0})"), 400);
     BOOST_CHECK_EQUAL(
         post(R"({"action":"start","service":"s","duration_ms":60001})"), 400);
+    BOOST_CHECK_EQUAL(
+        post(R"({"action":"start","service":"s","duration_ms":"x"})"), 400);
     BOOST_CHECK_EQUAL(post(R"({"action":"start","service":"s","interval":0})"),
                       400);
+    BOOST_CHECK_EQUAL(
+        post(R"({"action":"start","service":"s","interval":"x"})"), 400);
 }
 
 BOOST_AUTO_TEST_CASE(ProfileStopWithoutSession409) {
@@ -994,14 +1003,16 @@ BOOST_AUTO_TEST_CASE(ProfileUnknownService404) {
 // A service whose on_burn method runs a long count loop: sampling and
 // uninstall fork tasks serialize after it (fork-task FIFO), so a start ->
 // burn -> stop sequence samples the loop deterministically.
-static const fs::path kBurnSvcDir =
-    fs::temp_directory_path() / "shield_cov_ops_profile";
+// Directory name kept short: luaO_chunkname truncates short_src at
+// LUA_IDSIZE (60), and the service name must stay inside that budget on
+// long temp dirs (Windows runner temp alone is ~39 chars).
+static const fs::path kBurnSvcDir = fs::temp_directory_path() / "phs";
 static const char* kBurnScript =
     "local M = {}\n"
     "function M.on_init() end\n"
     "function M.on_burn()\n"
     "  local s = 0\n"
-    "  for i = 1, 30000000 do s = s + i end\n"
+    "  for i = 1, 10000000 do s = s + i end\n"
     "  return s\n"
     "end\n"
     "return M\n";
@@ -1047,6 +1058,18 @@ BOOST_AUTO_TEST_CASE(ProfileHappyPathStartStatusStop) {
     BOOST_REQUIRE(manager->send_system("prof_happy_svc", "on_burn",
                                        nlohmann::json::array(), &err));
 
+    // Wait until the burn actually finished (a fork task queued behind it
+    // only runs once the handler returned). The stop request waits at most
+    // 2s for the uninstall — on a coverage build the interpreter needs
+    // longer than that to chew the loop, so stopping mid-burn would flake
+    // into a 504.
+    std::promise<void> burned;
+    BOOST_REQUIRE(manager->enqueue_forked_task("prof_happy_svc", [&burned] {
+        burned.set_value();
+    }) != 0);
+    BOOST_CHECK(burned.get_future().wait_for(std::chrono::seconds(60)) ==
+                std::future_status::ready);
+
     response =
         client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
     BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
@@ -1056,6 +1079,19 @@ BOOST_AUTO_TEST_CASE(ProfileHappyPathStartStatusStop) {
     BOOST_CHECK(resp["data"]["total_samples"] > 0U);
     BOOST_CHECK(resp["data"]["frames"].is_array());
     BOOST_CHECK(!resp["data"]["frames"].empty());
+
+    // Hotspot attribution: the top-ranked frame must land in the fixture
+    // script's busy loop (on_burn), and each level is ranked by hits.
+    const auto& top = resp["data"]["frames"][0];
+    // short_src is wrapped as [string "..."] and chunkid-truncated, so the
+    // match stops before the ".lua" suffix.
+    BOOST_CHECK(top["source"].get<std::string>().find("prof_happy_svc") !=
+                std::string::npos);
+    const auto& frames = resp["data"]["frames"];
+    for (std::size_t i = 1; i < frames.size(); ++i) {
+        BOOST_CHECK(frames[i - 1]["hits"].get<uint64_t>() >=
+                    frames[i]["hits"].get<uint64_t>());
+    }
 
     response = client.post_auth("/ops/profile", R"({"action":"status"})",
                                 "prof-token");
@@ -1119,6 +1155,105 @@ BOOST_AUTO_TEST_CASE(ProfileStartCooldown429) {
     manager->shutdown_all("done");
 }
 
+BOOST_AUTO_TEST_CASE(ProfileNegativeCooldownClampedToZero) {
+    // A negative http.profile_cooldown_seconds is clamped to 0 (no
+    // cooldown), so an immediate second start reaches the manager's
+    // single-session arbitration (409) instead of the 429 gate.
+    auto& cfg = shield::config::global_config();
+    cfg.set("http.profile_cooldown_seconds", std::string("-5"));
+    spawn_burn_service(*manager, "prof_negcd_svc");
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    std::string response = client.post_auth(
+        "/ops/profile", R"({"action":"start","service":"prof_negcd_svc"})",
+        "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+    response = client.post_auth(
+        "/ops/profile", R"({"action":"start","service":"prof_negcd_svc"})",
+        "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 409);
+
+    cfg.set("http.profile_cooldown_seconds", std::string("0"));
+    response =
+        client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+
+    manager->shutdown_all("done");
+}
+
+// Manager-level profile API paths the HTTP surface cannot reach: the null
+// promise guard, stopping a service that owns no session (with and without
+// an error out-param), and the stop racing an install task that has not
+// run yet (sampler still absent -> the session settles as abandoned).
+BOOST_AUTO_TEST_CASE(ProfileManagerDirectCallPaths) {
+    // Null promise is rejected up front.
+    BOOST_CHECK(
+        manager->profile_start("svc", {}, nullptr) ==
+        shield::lua::LuaServiceManager::ProfileStartResult::kDispatchLost);
+
+    // No session anywhere: stopping any name fails, with or without an
+    // error out-param.
+    BOOST_CHECK(!manager->profile_stop("prof_none_svc", nullptr));
+    std::string err;
+    BOOST_CHECK(!manager->profile_stop("prof_none_svc", &err));
+    BOOST_CHECK(!err.empty());
+
+    spawn_burn_service(*manager, "prof_mdl_svc");
+    shield::lua::ProfileSessionConfig config;
+    config.service = "prof_mdl_svc";
+    // Occupy the owner BEFORE starting: the install fork task (enqueued by
+    // profile_start) queues behind the sleeper, so the stop below
+    // deterministically sees no sampler yet and settles the start's
+    // promise as abandoned instead of leaving the caller waiting on a
+    // session that never armed.
+    manager->enqueue_forked_task("prof_mdl_svc", [] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    });
+    auto promise = std::make_shared<std::promise<nlohmann::json>>();
+    auto report = promise->get_future().share();
+    BOOST_REQUIRE(manager->profile_start("prof_mdl_svc", config, promise) ==
+                  shield::lua::LuaServiceManager::ProfileStartResult::kStarted);
+
+    // With a session live, stopping a different service still fails.
+    BOOST_CHECK(!manager->profile_stop("prof_other_svc", nullptr));
+
+    // A second start while the first session is live (its install task
+    // still queued behind the sleeper) is rejected by the arbitration.
+    auto promise2 = std::make_shared<std::promise<nlohmann::json>>();
+    BOOST_REQUIRE(
+        manager->profile_start("prof_mdl_svc", config, promise2) ==
+        shield::lua::LuaServiceManager::ProfileStartResult::kSessionActive);
+    BOOST_CHECK(manager->profile_stop("prof_mdl_svc", nullptr));
+    BOOST_REQUIRE(report.wait_for(std::chrono::seconds(10)) ==
+                  std::future_status::ready);
+    auto data = report.get();
+    BOOST_CHECK(data["abandoned"] == true);
+    BOOST_CHECK_EQUAL(data["service"], "prof_mdl_svc");
+
+    // The session is gone; a repeat stop fails again. The sleeper and the
+    // (now stale, no-op) install task keep the actor busy for a while; the
+    // next section uses a different actor and shutdown_all waits without a
+    // budget, so the leftover drain costs wall time but not correctness.
+    BOOST_CHECK(!manager->profile_stop("prof_mdl_svc", nullptr));
+    std::this_thread::sleep_for(std::chrono::milliseconds(700));
+
+    // A service exit while a session is live fulfills the promise as
+    // abandoned instead of hanging the caller's wait.
+    spawn_burn_service(*manager, "prof_ab_svc");
+    config.service = "prof_ab_svc";
+    auto promise3 = std::make_shared<std::promise<nlohmann::json>>();
+    auto report3 = promise3->get_future().share();
+    BOOST_REQUIRE(manager->profile_start("prof_ab_svc", config, promise3) ==
+                  shield::lua::LuaServiceManager::ProfileStartResult::kStarted);
+    manager->shutdown_all("done");
+    BOOST_REQUIRE(report3.wait_for(std::chrono::seconds(10)) ==
+                  std::future_status::ready);
+    auto abandoned = report3.get();
+    BOOST_CHECK(abandoned["abandoned"] == true);
+    BOOST_CHECK_EQUAL(abandoned["service"], "prof_ab_svc");
+}
+
 BOOST_AUTO_TEST_CASE(ProfileStopAfterNaturalExpiry409) {
     spawn_burn_service(*manager, "prof_exp_svc");
     RawHttpClient client;
@@ -1139,6 +1274,31 @@ BOOST_AUTO_TEST_CASE(ProfileStopAfterNaturalExpiry409) {
                                 "prof-token");
     auto resp = nlohmann::json::parse(RawHttpClient::body(response));
     BOOST_CHECK(resp["data"]["active"] == false);
+
+    manager->shutdown_all("done");
+}
+
+BOOST_AUTO_TEST_CASE(ProfileIdleServiceZeroSamples) {
+    // Semantics anchor: sampling is hook-driven, so an idle service (no
+    // message, no bytecode) accumulates nothing — a suspended/not-running
+    // VM is invisible to the sampler, not sampled as "in some default
+    // frame".
+    spawn_burn_service(*manager, "prof_idle_svc");
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.post_auth(
+        "/ops/profile",
+        R"({"action":"start","service":"prof_idle_svc","duration_ms":60000})",
+        "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    response =
+        client.post_auth("/ops/profile", R"({"action":"stop"})", "prof-token");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["data"]["total_samples"] == 0U);
+    BOOST_CHECK(resp["data"]["frames"].empty());
 
     manager->shutdown_all("done");
 }

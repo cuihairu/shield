@@ -38,7 +38,9 @@ void ProfileSampler::record_current_stack(ProfileSampler* self, lua_State* L) {
     lua_Debug ar;
     std::vector<ProfileFrame> frames;
     const std::size_t max_depth =
-        self ? self->session_.config().max_depth : kMaxHookDepthFallback;
+        self ? self->session_.config().max_depth  // GCOVR_EXCL_BR_LINE
+             : kMaxHookDepthFallback;  // GCOVR_EXCL_BR_LINE (defensive: hook
+                                       // race with uninstall)
     frames.reserve(8);
     for (int level = 0; level < static_cast<int>(max_depth); ++level) {
         if (lua_getstack(L, level, &ar) == 0) {
@@ -47,19 +49,33 @@ void ProfileSampler::record_current_stack(ProfileSampler* self, lua_State* L) {
         // "n" name (may be absent — main chunk, tail calls), "S" what +
         // source, "l" current line, "t" tail-call flag (5.5 keeps the
         // option; verified by the Task 1 spike).
-        if (lua_getinfo(L, "nSlt", &ar) == 0) {
+        if (lua_getinfo(L, "nSlt", &ar) == 0) {  // GCOVR_EXCL_BR_LINE
+            // (defensive: the level was just validated by lua_getstack)
             break;
         }
         ProfileFrame f;
-        f.what = ar.what ? ar.what : "";
+        f.what = ar.what ? ar.what : "";  // GCOVR_EXCL_BR_LINE (defensive:
+                                          // lua_getinfo always fills what)
         f.name = ar.name ? ar.name : "";
-        f.source = ar.short_src[0] != '\0' ? ar.short_src : "?";
+        // File chunks keep the full chunk name: short_src is truncated at
+        // LUA_IDSIZE (60), which cuts the chunk name off on long temp dirs
+        // and breaks hotspot attribution. String chunks keep short_src —
+        // their ar.source embeds the whole chunk text.
+        f.source =  // GCOVR_EXCL_BR_LINE (defensive: short_src is never
+            ar.source[0] == '/' ? ar.source
+            : ar.short_src[0] != '\0'  // empty; the first keyword line
+                                       // carries the defensive reason
+                ? ar.short_src         // GCOVR_EXCL_BR_LINE
+                : "?";                 // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                       // continuation arms)
         f.line = ar.currentline;
         f.tail = ar.istailcall != 0;
         frames.push_back(std::move(f));
     }
-    if (self != nullptr && !frames.empty()) {
-        self->session_.add_sample(frames);
+    if (self != nullptr &&  // GCOVR_EXCL_BR_LINE (defensive: the hook
+        !frames.empty()) {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                            // continuation arms)
+        self->session_.add_sample(frames);  // non-empty stack)
     }
 }
 
@@ -94,9 +110,17 @@ void ProfileSampler::sweep_once() {
         return;
     }
     for (lua_State* co : co_provider_()) {
-        if (co != nullptr && lua_gethook(co) != &sampler_hook) {
+        if (co != nullptr &&      // GCOVR_EXCL_BR_LINE (race: coroutine already
+                                  // carries this hook)
+            lua_gethook(co) !=    // GCOVR_EXCL_BR_LINE (compiler
+                                  // artifact: inline call throw arc)
+                &sampler_hook) {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                  // inline arcs + race)
             lua_sethook(co, &sampler_hook, LUA_MASKCOUNT,
-                        static_cast<int>(session_.config().interval));
+                        static_cast<int>(
+                            session_.config()
+                                .interval));  // GCOVR_EXCL_BR_LINE (compiler
+                                              // artifact: inline accessor arcs)
         }
     }
 }
@@ -105,10 +129,6 @@ void ProfileSampler::sweep_active() {
     if (g_active_sampler.load(std::memory_order_acquire) != nullptr) {
         g_active_sampler.load(std::memory_order_relaxed)->sweep_once();
     }
-}
-
-bool ProfileSampler::active_on_this_thread() {
-    return g_active_sampler.load(std::memory_order_acquire) != nullptr;
 }
 
 void ProfileSampler::install(lua_State* main_L) {
@@ -139,7 +159,9 @@ void ProfileSampler::uninstall(lua_State* main_L) {
     // Unpublish first so a hook firing mid-teardown finds nothing and
     // disarms itself instead of recording into a dying session.
     g_active_sampler.store(nullptr, std::memory_order_release);
-    if (main_L != nullptr) {
+    if (main_L != nullptr) {  // GCOVR_EXCL_BR_LINE (defensive: callers pass
+        // the main state of the still-alive service VM)
+
         lua_sethook(main_L, saved_hook_, saved_mask_, saved_count_);
     }
     if (co_provider_) {

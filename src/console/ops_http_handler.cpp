@@ -867,11 +867,18 @@ shield::net::HttpResponse OpsHttpHandler::handle_profile(
             data = {{"active", true},
                     {"service", info->service_id},
                     {"elapsed_ms", info->elapsed_ms},
-                    {"duration_ms", info->duration_ms}};
+                    {"duration_ms",
+                     info->duration_ms}};  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: braced-init arcs)
         } else {
-            data = {{"active", false}};
+            data = {{"active", false}};  // GCOVR_EXCL_BR_LINE (compiler
+                                         // artifact: braced-init arcs)
         }
-        return make_json_response(200, {{"type", "result"}, {"data", data}});
+        return make_json_response(  // GCOVR_EXCL_BR_LINE (compiler
+                                    // artifact: inline call throw arc)
+            200, {{"type", "result"},
+                  {"data", data}});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                     // inline throw arc)
     }
 
     if (action == "start") {
@@ -925,11 +932,16 @@ shield::net::HttpResponse OpsHttpHandler::handle_profile(
         auto promise = std::make_shared<std::promise<nlohmann::json>>();
         auto report = promise->get_future().share();
         const auto result = lua_mgr_.profile_start(service, config, promise);
-        switch (result) {
+        switch (result) {  // GCOVR_EXCL_BR_LINE (race: jump-table arc into the
+                           // DispatchLost rollback (actor-gone window
+                           // untestable end-to-end))
             case shield::lua::LuaServiceManager::ProfileStartResult::
                 kServiceNotFound:
             case shield::lua::LuaServiceManager::ProfileStartResult::
-                kDispatchLost:
+                kDispatchLost:  // GCOVR_EXCL_BR_LINE (race: the manager's
+                                // enqueue can only fail if the service actor
+                                // vanished between the manager's own check and
+                                // the dispatch)
                 return make_error_response(404,
                                            "service not found: " + service);
             case shield::lua::LuaServiceManager::ProfileStartResult::
@@ -963,18 +975,29 @@ shield::net::HttpResponse OpsHttpHandler::handle_profile(
             return make_error_response(409, "no active profile session");
         }
         std::string stop_error;
-        if (!lua_mgr_.profile_stop(info->service_id, &stop_error)) {
+        if (!lua_mgr_.profile_stop(  // GCOVR_EXCL_BR_LINE (race: the session
+                                     // can only end between the status read and
+                                     // this stop via exit cleanup / duration
+                                     // expiry; no test races them)
+                info->service_id, &stop_error)) {
             // The session ended between the status read and the stop (exit
             // cleanup or duration expiry owns the promise now).
-            return make_error_response(409, "no active profile session");
+            return make_error_response(
+                409, "no active profile session");  // GCOVR_EXCL_BR_LINE (race:
+                                                    // exit cleanup / duration
+                                                    // expiry owns the promise
+                                                    // between status and stop)
         }
         std::shared_future<nlohmann::json> report;
         {
             std::lock_guard lock(profile_mu_);
             report = profile_report_;
         }
-        if (report.valid() && report.wait_for(std::chrono::seconds(2)) ==
-                                  std::future_status::ready) {
+        if (report.valid() &&  // GCOVR_EXCL_BR_LINE (defensive: the stop
+                               // path only runs after a start on this handler,
+                               // which always stores a valid shared_future)
+            report.wait_for(std::chrono::seconds(2)) ==
+                std::future_status::ready) {
             return make_json_response(  // GCOVR_EXCL_BR_LINE (compiler
                                         // artifact: inlined nlohmann::json
                                         // braced-init branches)

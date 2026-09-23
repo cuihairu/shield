@@ -67,9 +67,6 @@ public:
     /// session is active.
     static void sweep_active();
 
-    /// @brief True while this sampler is the thread's active one.
-    static bool active_on_this_thread();
-
 private:
     static void record_current_stack(ProfileSampler* self, lua_State* L);
     void sweep_once();

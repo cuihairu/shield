@@ -1,5 +1,7 @@
 #define BOOST_TEST_MODULE OpsProfileTests
+#include <algorithm>
 #include <boost/test/unit_test.hpp>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -406,6 +408,133 @@ BOOST_AUTO_TEST_CASE(RescanSweepInvokesCoProvider) {
     sampler.uninstall(vm.L);
 
     BOOST_TEST(provider_calls >= 2);
+}
+
+/// A hook left behind without an active sampler (the uninstall always
+/// clears them; this guards the defensive self-disarm) must notice the
+/// null slot, disarm itself, and record nothing.
+BOOST_AUTO_TEST_CASE(StaleHookDisarmsItselfWithoutSampler) {
+    ProfileSession session({});  // default config; never sampled into
+    ProfileSampler sampler(session, {});
+    (void)sampler;  // the slot stays null — no install()
+
+    BareVM vm;
+    lua_sethook(vm.L, &ProfileSampler::sampler_hook, LUA_MASKCOUNT, 1);
+    do_chunk(vm.L,
+             "local s = 0 "
+             "for i = 1, 100000 do s = s + i end");
+    // The stale hook disarmed itself on the first hit.
+    BOOST_CHECK(lua_gethook(vm.L) == nullptr);
+    BOOST_TEST(session.total_samples() == 0U);
+}
+
+/// The provider may yield null entries (a racing teardown can drop a
+/// coroutine between collection and use) and coroutines whose hook was
+/// cleared since install: both must be tolerated — null skipped, hookless
+/// re-armed by the periodic sweep.
+BOOST_AUTO_TEST_CASE(SweepSkipsNullEntriesAndRearmsClearedHooks) {
+    BareVM vm;
+    BOOST_REQUIRE(vm.L != nullptr);
+
+    do_chunk(vm.L,
+             "profile_co = coroutine.create(function(n) "
+             "  local s = 0 "
+             "  for i = 1, n do s = s + i end "
+             "  coroutine.yield(s) "
+             "  for i = 1, n do s = s + i end "
+             "  return s "
+             "end) "
+             "local ok = coroutine.resume(profile_co, 1000) "
+             "assert(ok)");
+    lua_getglobal(vm.L, "profile_co");
+    lua_State* co = lua_tothread(vm.L, -1);
+    lua_pop(vm.L, 1);
+    BOOST_REQUIRE(co != nullptr);
+    // Drop the coroutine's hook after the resume: only a sweep can arm it
+    // again.
+    lua_sethook(co, nullptr, 0, 0);
+
+    ProfileSessionConfig cfg;
+    cfg.service = "gw";
+    cfg.interval = 50;
+    ProfileSession session(cfg);
+    ProfileSampler sampler(
+        session, [co] { return std::vector<lua_State*>{nullptr, co}; });
+    sampler.install(vm.L);
+    // Main-state bytecode drives the rescan sweep, which must skip the
+    // null entry and re-arm the cleared coroutine.
+    do_chunk(vm.L,
+             "local ok = coroutine.resume(profile_co, 500000) assert(ok)");
+    sampler.uninstall(vm.L);
+    BOOST_TEST(session.total_samples() > 0U);
+    const auto report = session.finish_report(0);
+    // The re-armed coroutine's anonymous body must appear in the tree.
+    bool saw_co_frame = false;
+    for (const auto& node : report["frames"]) {
+        if (tree_has_anon_lua_frame(node)) {
+            saw_co_frame = true;
+        }
+    }
+    BOOST_TEST(saw_co_frame);
+}
+
+/// A sampler built without a provider still samples the main state and
+/// tears down cleanly — sweeps and the uninstall simply have no
+/// coroutines to touch.
+BOOST_AUTO_TEST_CASE(InstallUninstallWithoutProviderTolerated) {
+    BareVM vm;
+    BOOST_REQUIRE(vm.L != nullptr);
+
+    ProfileSessionConfig cfg;
+    cfg.service = "gw";
+    ProfileSession session(cfg);
+    ProfileSampler sampler(session, {});
+    sampler.install(vm.L);
+    do_chunk(vm.L,
+             "local s = 0 "
+             "for i = 1, 500000 do s = s + i end");
+    sampler.uninstall(vm.L);
+    BOOST_TEST(session.total_samples() > 0U);
+}
+
+/// Stacks deeper than max_depth are truncated at the cap (the loop's
+/// exit arm), not sampled unbounded.
+BOOST_AUTO_TEST_CASE(DeepStackIsTruncatedAtMaxDepth) {
+    BareVM vm;
+    BOOST_REQUIRE(vm.L != nullptr);
+
+    ProfileSessionConfig cfg;
+    cfg.service = "gw";
+    cfg.interval = 50;
+    cfg.max_depth = 4;
+    ProfileSession session(cfg);
+    ProfileSampler sampler(session, [] { return std::vector<lua_State*>{}; });
+    sampler.install(vm.L);
+    do_chunk(vm.L,
+             "local function dive(n) "
+             "  if n <= 0 then return 0 end "
+             "  return 1 + dive(n - 1) "
+             "end "
+             "return dive(60)");
+    sampler.uninstall(vm.L);
+
+    // The sampler itself truncates at the cap, so every recorded chain is
+    // at most max_depth deep (the session never sees an oversized sample).
+    BOOST_TEST(session.total_samples() > 0U);
+    const auto report = session.finish_report(0);
+    BOOST_TEST(report["dropped_samples"] == 0U);
+    // No recorded chain is deeper than the cap.
+    std::function<std::size_t(const nlohmann::json&)> depth =
+        [&](const nlohmann::json& node) -> std::size_t {
+        std::size_t deepest = 1;
+        for (const auto& child : node["children"]) {
+            deepest = std::max(deepest, 1 + depth(child));
+        }
+        return deepest;
+    };
+    for (const auto& node : report["frames"]) {
+        BOOST_TEST(depth(node) <= 4U);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

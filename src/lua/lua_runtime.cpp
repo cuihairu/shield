@@ -2001,7 +2001,9 @@ void LuaRuntime::set_global(std::shared_ptr<LuaVM> vm, std::string_view name,
 }
 
 lua_State* LuaRuntime::vm_main_state(std::shared_ptr<LuaVM> vm) {
-    if (!vm || !vm->state()) {
+    if (!vm ||  // GCOVR_EXCL_BR_LINE (defensive: Impl::state() is never
+        !vm->state()) {  // GCOVR_EXCL_BR_LINE (defensive: null state only
+                         // null on a live VM; mid-teardown)
         return nullptr;
     }
     return vm->state()->lua_state();

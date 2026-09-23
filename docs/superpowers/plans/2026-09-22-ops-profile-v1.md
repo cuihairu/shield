@@ -180,17 +180,17 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 **Files:** Create `include/shield/console/profile_session.hpp`、
 `src/console/profile_session.cpp`
 
-- [ ] **Step 1:** 数据结构：`ProfileSessionConfig{service, duration_ms,
+- [x] **Step 1:** 数据结构：`ProfileSessionConfig{service, duration_ms,
   interval, max_depth=64, max_nodes=20000}`；
   `ProfileAggNode{key(source|line|name), hits, children}`；
   `ProfileReport{config 镜像, total_samples, elapsed_ms, dropped_samples,
   truncated_frames, root children 树, started_at/stopped_at}`。
-- [ ] **Step 2:** `add_sample(frames)`：自栈顶向下同前缀共享累加；节点
+- [x] **Step 2:** `add_sample(frames)`：自栈顶向下同前缀共享累加；节点
   预算超限时样本计入 `truncated_frames`（不丢样本总数，丢展开深度）；
   超深截断（> max_depth）计入 `dropped_samples` 的深度截断子计数。
-- [ ] **Step 3:** `to_json()`：报告树按 hits 降序、每节点
+- [x] **Step 3:** `to_json()`：报告树按 hits 降序、每节点
   `{source, line, name, hits, pct, children}`；`pct` = hits/total_samples。
-- [ ] **Step 4:** 单测（`test_ops_profile.cpp` 前半）：空会话、单栈重复
+- [x] **Step 4:** 单测（`test_ops_profile.cpp` 前半）：空会话、单栈重复
   累加合并、前缀共享、深度截断、节点预算、JSON 形状与 pct 和≈1。
 
 ### Task 3: ProfileSessionRegistry（owner 线程装卸 + 生命周期）
@@ -198,19 +198,19 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 **Files:** Create `include/shield/console/profile_registry.hpp`、
 `src/console/profile_registry.cpp`；Modify service teardown 落点
 
-- [ ] **Step 1:** registry：`start(service, config, promise)`——全局单
+- [x] **Step 1:** registry：`start(service, config, promise)`——全局单
   会话检查（active → refuse）、 incarnation 记录；`on_service_exit(name)`
   ——擦除会话（正在等 promise 的 stop/report 由 bounded wait 超时兜底，
   registry 擦除时以 `abandoned` 结果 fulfill，绝不悬垂 promise）。
-- [ ] **Step 2:** owner 线程装卸（fork task 函数体）：install = 对
+- [x] **Step 2:** owner 线程装卸（fork task 函数体）：install = 对
   main L sethook + live 协程补装（按 Task 1 结论处理新协程）；每样本
   写 session 的聚合树（owner 线程私有）；uninstall = 恢复原 hook 状态
   （install 时先 `lua_gethook` 保存）、逐协程恢复、聚合树移交 promise。
-- [ ] **Step 3:** duration 自停：install 时向该 service 注册一次性
+- [x] **Step 3:** duration 自停：install 时向该 service 注册一次性
   actor timer（复用 `timer_once` 的 actor timer 通道）触发 uninstall；
   手动 stop 与自停竞态以 registry 单会话状态机仲裁（先到者执行，后者
   no-op）。
-- [ ] **Step 4:** teardown 清理接入：服务 exit/respawn 路径调用
+- [x] **Step 4:** teardown 清理接入：服务 exit/respawn 路径调用
   `on_service_exit`（实现时确认与 lua.snapshot incarnation 清除同位）；
   单测：start 后 exit service → registry 空且 promise 收到 abandoned。
 
@@ -219,22 +219,22 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 **Files:** Modify `include/shield/console/ops_http_handler.hpp`、
 `src/console/ops_http_handler.cpp`
 
-- [ ] **Step 1:** 路由注册与 opt-in：`http.profile_enabled == "true"`
+- [x] **Step 1:** 路由注册与 opt-in：`http.profile_enabled == "true"`
   且 `http.profile_token` 非空才 `server.post("/ops/profile", ...)`；
   否则启动日志说明原因（两种禁用原因分别成句），路由不注册（404 语义
   同 `/ops/eval`）。
-- [ ] **Step 2:** 鉴权与限速：Bearer 校验复用 `token_matches`（401）；
+- [x] **Step 2:** 鉴权与限速：Bearer 校验复用 `token_matches`（401）；
   冷却内 start 429；已有会话时 start 409；`stop` 无会话 409；
   `status` 恒 200（active/false + 剩余时长 + 目标 service）。
-- [ ] **Step 3:** action 分发：`start{service, duration_ms(默认 5000,
+- [x] **Step 3:** action 分发：`start{service, duration_ms(默认 5000,
   上限 60000), interval}` → 经 manager 查 service 存在（404
   `service not found`，口径同 `/ops/services/:name`）→ enqueue fork task
   install；`stop` / `report` → fork task uninstall + `promise.wait_for(2s)`
   → 200 报告或 504 `profile dispatch timeout (owner busy)`；
   `status` 纯 registry 读。
-- [ ] **Step 4:** 响应统一 `type`/`data` 信封；错误对象走既有
+- [x] **Step 4:** 响应统一 `type`/`data` 信封；错误对象走既有
   `{"type":"error","error":{code,message}}` 形态（与现有端点一致）。
-- [ ] **Step 5:** 用例：未启用 404（路由未注册断言）、启用但空 token
+- [x] **Step 5:** 用例：未启用 404（路由未注册断言）、启用但空 token
   拒绝启动（日志断言）、401（无/错 token）、409（重复 start、无会话
   stop）、429（冷却内）、404（未知 service）、start→status→report
   幸福路径（fixture 忙循环 service，报告 `total_samples > 0`）、
@@ -242,11 +242,11 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 
 ### Task 5: 集成测试 + Phase A 验收
 
-- [ ] **Step 1:** 集成用例（真 Lua VM）：service 跑计数忙循环 →
+- [x] **Step 1:** 集成用例（真 Lua VM）：service 跑计数忙循环 →
   start(1s) → report 断言：`total_samples > 0`、热点帧落在忙循环函数
   （source/linedefined 匹配 fixture 脚本）、`pct` 降序、空闲对照
   service 采样 `total_samples == 0`（挂起不采样的语义锚）。
-- [ ] **Step 2:** 全量验收：build-cov 与 build-plugins 两树重编 +
+- [x] **Step 2:** 全量验收：build-cov 与 build-plugins 两树重编 +
   全量测试绿；clang-format；覆盖率按 build-cov 口径维持双 100%
   （新增分支全测，不可测臂按 GCOVR 标注规则豁免并写论证）；提交推送，
   等 CI 三平台绿（不打 tag、不发 release）。
