@@ -1771,7 +1771,17 @@ BOOST_AUTO_TEST_CASE(InspectPendingCallsTruncation) {
     std::string err;
     bool flooded = false;
     std::uint64_t peak = 0;
-    for (int i = 0; i < 2000 && !flooded; ++i) {
+    // Bounded by wall time, not by poll count: inspect only takes the
+    // registry shared lock, so 2000 back-to-back polls can drain in a few
+    // milliseconds — on a slower CAF scheduler (macOS runner) that ran out
+    // before the flood messages even reached the actor (peak=0,
+    // 2026-09-23). The pool stays above 35 for roughly the first child
+    // sleep (~300ms), so a 2ms poll cadence inside a 15s ceiling
+    // oversamples that window comfortably.
+    const auto flood_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    for (int i = 0;
+         !flooded && std::chrono::steady_clock::now() < flood_deadline; ++i) {
         auto d = manager->pending_calls_inspect(busy_svc.service_id, &err);
         const auto n =
             d.has_value() ? (*d)["pending_calls"].get<std::uint64_t>() : 0u;
@@ -1782,6 +1792,9 @@ BOOST_AUTO_TEST_CASE(InspectPendingCallsTruncation) {
         // wait per child on_init sleep, so the pool stays above 33 through
         // both the direct inspect and the console projection below.
         flooded = n >= 35u;
+        if (!flooded) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
     }
     BOOST_REQUIRE_MESSAGE(
         flooded, "expected 33+ pending waits, peak=" << peak << " err=" << err);
