@@ -136,6 +136,11 @@ jobs:
           # at the default log level the flushed lines carry no per-case
           # attribution (just a bare failure count from teardown).
           BOOST_TEST_LOG_LEVEL: test_suite
+          # Raw HTTP client per-request phase trace (connect/write/eof/
+          # read-err/deadline) on every platform's main run, so a hung
+          # suite carries per-request attribution even when the native
+          # re-run below cannot reproduce the hang.
+          SHIELD_OPS_HTTP_TRACE: "1"
         run: ctest --test-dir build --build-config Release --output-on-failure
 
       # boost.test catches SIGSEGV and exits gracefully, so macOS never

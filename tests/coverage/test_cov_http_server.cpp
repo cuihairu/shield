@@ -5,6 +5,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -359,6 +360,58 @@ BOOST_AUTO_TEST_CASE(DefaultHandlerCatchesUnmatchedRoutes) {
     BOOST_CHECK(resp.find("200") != std::string::npos);
     BOOST_CHECK(resp.find("default:/whatever") != std::string::npos);
     c.close();
+
+    server.stop();
+}
+
+BOOST_AUTO_TEST_CASE(ThrowingHandlerAnswers500AndServerSurvives) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    auto server = make_server(port);
+    server.get("/boom", [](const HttpRequest&) -> HttpResponse {
+        throw std::runtime_error("boom route exploded");
+    });
+    server.get("/boom-nonstd", [](const HttpRequest&) -> HttpResponse {
+        throw 42;  // not a std::exception: exercises the catch(...) arm
+    });
+    server.get("/ok",
+               [](const HttpRequest&) { return text_response("alive"); });
+    server.start();
+    BOOST_REQUIRE(server.is_running());
+
+    // std::exception route: the server answers 500 with the uniform body.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /boom HTTP/1.0\r\nHost: t\r\n\r\n");
+        const auto resp = c.read_all();
+        BOOST_CHECK(resp.find("500") != std::string::npos);
+        BOOST_CHECK(resp.find("handler_exception") != std::string::npos);
+        c.close();
+    }
+
+    // Non-std exception route: still a 500, not a dead connection.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /boom-nonstd HTTP/1.0\r\nHost: t\r\n\r\n");
+        const auto resp = c.read_all();
+        BOOST_CHECK(resp.find("500") != std::string::npos);
+        BOOST_CHECK(resp.find("handler_exception") != std::string::npos);
+        c.close();
+    }
+
+    // The io thread survived both throws: a normal route still serves.
+    {
+        RawClient c;
+        BOOST_REQUIRE(c.connect(port));
+        c.send_request("GET /ok HTTP/1.0\r\nHost: t\r\n\r\n");
+        const auto resp = c.read_all();
+        BOOST_CHECK(resp.find("200") != std::string::npos);
+        BOOST_CHECK(resp.find("alive") != std::string::npos);
+        c.close();
+    }
 
     server.stop();
 }

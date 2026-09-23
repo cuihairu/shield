@@ -95,6 +95,16 @@ HttpMethod verb_to_method(http::verb verb) {
     }
 }
 
+// Uniform 500 answer for a handler that threw; the exception text goes to
+// the log, never back to the client.
+HttpResponse handler_error_response() {
+    HttpResponse response;
+    response.result(http::status::internal_server_error);
+    response.set(http::field::content_type, "application/json");
+    response.body() = R"({"error":"handler_exception"})";
+    return response;
+}
+
 }  // namespace
 
 HttpServer::HttpServer(const HttpServerConfig& config) : config_(config) {}
@@ -164,16 +174,31 @@ HttpResponse HttpServer::dispatch(const HttpRequest& req) const {
     }
 
     auto handler = match_route(verb_to_method(req.method()), path);
-    if (handler) {
-        response = (*handler)(req);
-    } else if (default_handler_) {
-        auto def = default_handler_;
-        response = def(req);
-    } else {
-        response.result(http::status::not_found);
-        response.set(http::field::content_type, "application/json");
-        response.body() =
-            R"({"error":"not_found","message":"route not found"})";
+    // A throwing handler must never unwind through the async_read callback
+    // into io_context_.run(): that kills the io thread and leaves the
+    // server deaf while still "running". Answer 500 and keep serving.
+    try {
+        if (handler) {
+            response = (*handler)(req);
+        } else if (default_handler_) {
+            auto def = default_handler_;
+            response = def(req);
+        } else {
+            response.result(http::status::not_found);
+            response.set(http::field::content_type, "application/json");
+            response.body() =
+                R"({"error":"not_found","message":"route not found"})";
+        }
+    } catch (const std::exception& e) {
+        auto& log = shield::log::get_logger("http");
+        SHIELD_LOG_ERROR(log,
+                         "HTTP handler error on " + path + ": " + e.what());
+        response = handler_error_response();
+    } catch (...) {
+        auto& log = shield::log::get_logger("http");
+        SHIELD_LOG_ERROR(log,
+                         "HTTP handler threw a non-std exception on " + path);
+        response = handler_error_response();
     }
 
     if (response.base().find(http::field::content_type) ==
@@ -258,10 +283,20 @@ void HttpServer::do_accept() {
                 // GCOVR_EXCL_STOP
             } else {
                 // A failed accept carries no socket: only arm the session
-                // chain when the handshake handed us one.
-                auto socket_ptr =
-                    std::make_shared<net::ip::tcp::socket>(std::move(socket));
-                handle_session(socket_ptr);
+                // chain when the handshake handed us one. Session setup
+                // allocates; letting an exception escape would kill
+                // io_context_.run() and deafen the server, so the guard is
+                // belt-and-braces.
+                // GCOVR_EXCL_START (defensive: only allocation failures can
+                // unwind here; no deterministic test driver exists)
+                try {
+                    auto socket_ptr = std::make_shared<net::ip::tcp::socket>(
+                        std::move(socket));
+                    handle_session(socket_ptr);
+                } catch (...) {
+                    // Swallow: the connection dies, the server lives.
+                }
+                // GCOVR_EXCL_STOP
             }
 
             if (running_) {  // GCOVR_EXCL_BR_LINE (defensive: only observable
