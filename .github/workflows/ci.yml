@@ -130,6 +130,12 @@ jobs:
 
       - name: Test
         shell: bash
+        env:
+          # Per-case enter/leave timings in the boost log: a suite that
+          # blows ctest's 600s timeout still flushes what it printed, and
+          # at the default log level the flushed lines carry no per-case
+          # attribution (just a bare failure count from teardown).
+          BOOST_TEST_LOG_LEVEL: test_suite
         run: ctest --test-dir build --build-config Release --output-on-failure
 
       # boost.test catches SIGSEGV and exits gracefully, so macOS never

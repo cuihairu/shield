@@ -1892,6 +1892,29 @@ LuaServiceManager::~LuaServiceManager() {
             }
         }
         impl_->actor_call_timeouts.clear();
+
+        // A manager dying with an active /ops/profile session must take
+        // the session's duration driver with it: the driver idles until
+        // its delayed tick and nothing after this dtor waits on it — the
+        // actor system (which outlives the manager) would wait out the
+        // whole session duration in its own teardown. Same settle shape
+        // as abandon_profile_session_locked (the exit paths' helper);
+        // like that helper this never uninstalls: the sampler dies with
+        // the state and a firing hook self-disarms on the null slot.
+        if (impl_->profile_session) {
+            auto profile = std::move(impl_->profile_session);
+            impl_->profile_session.reset();
+            if (profile->duration_driver) {  // GCOVR_EXCL_BR_LINE (race:
+                // null only inside profile_start's spawn-to-register
+                // window — the same pre-install window class the
+                // abandon helper excludes)
+                actors_to_stop.push_back(std::move(profile->duration_driver));
+            }
+            profile->done->set_value(nlohmann::json{
+                {"abandoned", true},
+                {"service", profile->service_id},
+                {"total_samples", profile->session->total_samples()}});
+        }
     }
     impl_->stop_and_wait_for_actors(actors_to_stop);
     // Drop the joined drivers into the graveyard rather than destructing the
