@@ -243,18 +243,26 @@ void HttpServer::do_accept() {
     acceptor_->async_accept(
         net::make_strand(io_context_),
         [this](boost::beast::error_code ec, net::ip::tcp::socket socket) {
-            if (ec) {
-                if (ec != net::error::operation_aborted) {
-                    auto& log = shield::log::get_logger("http");
-                    SHIELD_LOG_ERROR(log, "HTTP accept error: " + ec.message());
-                }
-                return;
+            if (ec == net::error::operation_aborted) {
+                return;  // stop() closed the acceptor: stand down
             }
-
-            // Handle the session in a strand for thread safety.
-            auto socket_ptr =
-                std::make_shared<net::ip::tcp::socket>(std::move(socket));
-            handle_session(socket_ptr);
+            if (ec) {  // GCOVR_EXCL_BR_LINE (defensive: transient accept
+                       // errors — ECONNABORTED on the BSD stacks when a
+                       // queued connection is reset before accept, EMFILE
+                       // under fd pressure — cannot be driven determin-
+                       // istically from a test; the arm only logs and
+                       // falls through to the re-arm below)
+                // GCOVR_EXCL_START (defensive: see the branch note above)
+                auto& log = shield::log::get_logger("http");
+                SHIELD_LOG_ERROR(log, "HTTP accept error: " + ec.message());
+                // GCOVR_EXCL_STOP
+            } else {
+                // A failed accept carries no socket: only arm the session
+                // chain when the handshake handed us one.
+                auto socket_ptr =
+                    std::make_shared<net::ip::tcp::socket>(std::move(socket));
+                handle_session(socket_ptr);
+            }
 
             if (running_) {  // GCOVR_EXCL_BR_LINE (defensive: only observable
                              // in the stop()-vs-accept-callback race window;

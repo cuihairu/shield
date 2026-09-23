@@ -142,19 +142,22 @@ jobs:
       # writes a .ips crash report. Re-run the failed suites natively with
       # --catch_system_errors=no to let the signal through, then dump the
       # reports (signed frames for the crashing thread) from DiagnosticReports.
+      # Suites that blew the ctest timeout re-run too (***Timeout matches):
+      # a hang re-produces natively, and SHIELD_OPS_HTTP_TRACE makes the raw
+      # HTTP client annotate every request phase straight to stderr.
       - name: Collect crash reports
         if: failure() && runner.os == 'macOS'
         shell: bash
         run: |
           dir="$HOME/Library/Logs/DiagnosticReports"
           ctest --test-dir build --build-config Release > /tmp/ctest.log 2>&1 || true
-          sed -n 's|^[0-9]*/[0-9]* Test #[0-9]*: \([A-Za-z0-9_]*\) .*\*\*\*Failed.*|\1|p' /tmp/ctest.log |
+          sed -n 's|^[0-9]*/[0-9]* Test #[0-9]*: \([A-Za-z0-9_]*\) .*\*\*\*\(Failed\|Timeout\).*|\1|p' /tmp/ctest.log |
             sort -u |
             while IFS= read -r t; do
               bin=$(find build -name "$t" -type f | head -1)
               if [ -n "$bin" ]; then
                 echo "native rerun (expect a crash): $t"
-                "$bin" --catch_system_errors=no || true
+                SHIELD_OPS_HTTP_TRACE=1 perl -e "alarm 300; exec @ARGV" "$bin" --catch_system_errors=no || true
               fi
             done
           sleep 10
@@ -166,6 +169,24 @@ jobs:
             cat "$f"
           done < <(find "$dir" -name 'test_cov_*' -mmin -30 -type f 2>/dev/null)
           [ "$found" -eq 1 ] || echo "no shield crash reports found"
+
+      # Windows twin of the macOS forensic step: no .ips there, but the
+      # native re-run prints the fatal-error site and (trace on) the exact
+      # request phase that starved, straight into this step's log.
+      - name: Rerun failed suites natively
+        if: failure() && runner.os == 'Windows'
+        shell: bash
+        run: |
+          ctest --test-dir build --build-config Release > /tmp/ctest.log 2>&1 || true
+          sed -n 's|^[0-9]*/[0-9]* Test #[0-9]*: \([A-Za-z0-9_]*\) .*\*\*\*\(Failed\|Timeout\).*|\1|p' /tmp/ctest.log |
+            sort -u |
+            while IFS= read -r t; do
+              bin=$(find build -name "$t.exe" -type f | head -1)
+              if [ -n "$bin" ]; then
+                echo "native rerun: $t"
+                SHIELD_OPS_HTTP_TRACE=1 perl -e "alarm 300; exec @ARGV" "$bin" || true
+              fi
+            done
 
   # 集群模块 (Linux, SHIELD_ENABLE_CLUSTER=ON): 构建 cluster 路径并运行
   # cluster 标签测试。主 build 矩阵不带 cluster，此 job 补上该编译路径。
