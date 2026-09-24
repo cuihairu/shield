@@ -1224,6 +1224,29 @@ BOOST_AUTO_TEST_CASE(ProfileNegativeCooldownClampedToZero) {
     manager->shutdown_all("done");
 }
 
+BOOST_AUTO_TEST_CASE(ProfileNonNumericCooldownKeepsDefault) {
+    // A non-numeric http.profile_cooldown_seconds throws inside stoi; the
+    // handler catches and keeps the default 10s cooldown instead of
+    // failing the start.
+    auto& cfg = shield::config::global_config();
+    cfg.set("http.profile_cooldown_seconds", std::string("not-a-number"));
+    spawn_burn_service(*manager, "prof_badcde_svc");
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    std::string response = client.post_profile(
+        R"({"action":"start","service":"prof_badcde_svc"})");
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["data"]["started"] == true);
+
+    cfg.set("http.profile_cooldown_seconds", std::string("0"));
+    response = client.post_profile(R"({"action":"stop"})");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+
+    manager->shutdown_all("done");
+}
+
 // Manager-level profile API paths the HTTP surface cannot reach: the null
 // promise guard, stopping a service that owns no session (with and without
 // an error out-param), and the stop racing an install task that has not

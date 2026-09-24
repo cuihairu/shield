@@ -114,6 +114,16 @@ BOOST_AUTO_TEST_CASE(ServiceHandleLuaBindings) {
 }
 
 // ---------------------------------------------------------------------------
+// vm_main_state: the /ops/profile resolve channel's null guard.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(VmMainStateNullVm) {
+    LuaRuntime runtime;
+    // A null VM handle resolves to nullptr — the fork task that arms the
+    // sampler hook guards on this before dereferencing.
+    BOOST_CHECK(runtime.vm_main_state(nullptr) == nullptr);
+}
+
+// ---------------------------------------------------------------------------
 // LuaRuntime::load_script (success / failure paths).
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LoadScriptFile) {
