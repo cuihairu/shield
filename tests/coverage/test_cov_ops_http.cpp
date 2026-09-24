@@ -1240,6 +1240,14 @@ BOOST_AUTO_TEST_CASE(ProfileNonNumericCooldownKeepsDefault) {
     auto resp = nlohmann::json::parse(RawHttpClient::body(response));
     BOOST_CHECK(resp["data"]["started"] == true);
 
+    // The "keeps default" half of the contract: the fallback is the 10s
+    // default, not 0 — an immediate second start must hit the cooldown gate
+    // (429), mirroring the negative-cooldown case where a clamp to 0 lets it
+    // through to the single-session 409 instead.
+    response = client.post_profile(
+        R"({"action":"start","service":"prof_badcde_svc"})");
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 429);
+
     cfg.set("http.profile_cooldown_seconds", std::string("0"));
     response = client.post_profile(R"({"action":"stop"})");
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
