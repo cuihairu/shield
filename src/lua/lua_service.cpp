@@ -4497,7 +4497,8 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
             settle->set_value(std::move(abandoned));
         }
         return ProfileStartResult::kDispatchLost;
-    }  // GCOVR_EXCL_STOP
+    }
+    // GCOVR_EXCL_STOP
 
     // Duration expiry driver: a one-shot actor firing profile_stop after
     // duration_ms (same delayed_send pattern as the call-timeout driver).
@@ -4688,9 +4689,11 @@ LuaServiceManager::profile_status() const {
         .service_id = state.service_id,
         .elapsed_ms = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
+                // GCOVR_EXCL_START (compiler artifact: now() throw arc — a
+                // bare line entry that never executes; the real coverable
+                // work of this expression lives on the surrounding lines)
                 std::chrono::steady_clock::now()  // GCOVR_EXCL_BR_LINE
-                                                  // GCOVR_EXCL_LINE (compiler
-                                                  // artifact: now() throw arc)
+                // GCOVR_EXCL_STOP
                 - state.started_at)  // GCOVR_EXCL_BR_LINE (compiler
                                      // artifact: duration arithmetic
                                      // throw arc)
