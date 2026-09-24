@@ -8,9 +8,11 @@ namespace shield::lua {
 ProfileSession::ProfileSession(ProfileSessionConfig config)
     : config_(std::move(config)),
       root_(std::make_unique<Node>()),
-      started_at_(std::chrono::duration<double>(
+      // clang-format off
+      started_at_(std::chrono::duration<double>(  // GCOVR_EXCL_LINE (compiler artifact: now() throw arc)
                       std::chrono::system_clock::now().time_since_epoch())
                       .count()) {}
+// clang-format on
 
 std::string ProfileSession::frame_key(const ProfileFrame& f) {
     // name-degraded frames (main chunk, tail calls) aggregate under "?" —
@@ -38,7 +40,10 @@ nlohmann::json ProfileSession::export_node(const Node& node,
         {"line", node.frame.line},
         {"tail", node.frame.tail},
         {"hits", node.hits},
-        {"pct", total_samples == 0 ? 0.0
+        {"pct", total_samples == 0 ? 0.0  // GCOVR_EXCL_LINE (defensive:
+                                          // divide-by-zero guard — a session
+                                          // with no samples never reaches
+                                          // export_node)
                                    : static_cast<double>(node.hits) * 100.0 /
                                          static_cast<double>(total_samples)},
         {"children", nlohmann::json::array()}};  // GCOVR_EXCL_BR_LINE (compiler
@@ -97,10 +102,12 @@ void ProfileSession::add_sample(const std::vector<ProfileFrame>& frames) {
 
 nlohmann::json ProfileSession::finish_report(uint64_t elapsed_ms) {
     finished_ = true;
+    // clang-format off
     const double stopped_at =
-        std::chrono::duration<double>(
+        std::chrono::duration<double>(  // GCOVR_EXCL_LINE (compiler artifact: now() throw arc)
             std::chrono::system_clock::now().time_since_epoch())
             .count();
+    // clang-format on
 
     nlohmann::json frames = nlohmann::json::array();
     std::vector<const Node*> kids;

@@ -4477,33 +4477,27 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
     if (task_id == 0) {  // GCOVR_EXCL_BR_LINE (race: actor-gone rollback
                          // window is untestable end-to-end)
         // The actor vanished between the registry check and the enqueue.
-        nlohmann::json abandoned = {
-            {"abandoned", true},
-            {"service", service_id},
-            {"reason", "actor gone"},
-            {"total_samples",
-             0}};  // GCOVR_EXCL_BR_LINE (race: actor-gone rollback window)
+        // GCOVR_EXCL_START (race: enqueue only fails after the actor
+        // vanished, and a vanished actor cannot own a live session — the
+        // rollback below is unreachable end-to-end)
+        nlohmann::json abandoned = {{"abandoned", true},
+                                    {"service", service_id},
+                                    {"reason", "actor gone"},
+                                    {"total_samples", 0}};
         std::shared_ptr<std::promise<nlohmann::json>> settle;
         {
-            std::unique_lock lock(
-                impl_->registry_mutex);  // GCOVR_EXCL_BR_LINE
-                                         // (compiler artifact: lock throw arcs)
-            if (impl_
-                    ->profile_session &&  // GCOVR_EXCL_BR_LINE (race:
-                                          // dispatch-lost rollback window; only
-                                          // the matched pair is reachable)
+            std::unique_lock lock(impl_->registry_mutex);
+            if (impl_->profile_session &&
                 impl_->profile_session->service_id == service_id) {
                 settle = impl_->profile_session->done;
                 impl_->profile_session.reset();
             }
         }
-        if (settle) {  // GCOVR_EXCL_BR_LINE (race: actor-gone rollback window)
-            settle->set_value(
-                std::move(abandoned));  // GCOVR_EXCL_BR_LINE (compiler
-                                        // artifact: inline throw arc)
+        if (settle) {
+            settle->set_value(std::move(abandoned));
         }
         return ProfileStartResult::kDispatchLost;
-    }
+    }  // GCOVR_EXCL_STOP
 
     // Duration expiry driver: a one-shot actor firing profile_stop after
     // duration_ms (same delayed_send pattern as the call-timeout driver).
@@ -4541,13 +4535,12 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
         // anon_send_exit must run without the registry lock held.
         else {  // GCOVR_EXCL_BR_LINE (race: the session can only end via
                 // profile_stop, which exits this very driver first)
-            lock.unlock();  // GCOVR_EXCL_BR_LINE (race: continuation of the
-                            // excluded else arm)
-            caf::anon_send_exit(  // GCOVR_EXCL_BR_LINE (race)
-                driver,
-                caf::exit_reason::user_shutdown);  // GCOVR_EXCL_BR_LINE (race:
-                                                   // continuation of the
-                                                   // excluded else arm)
+            // GCOVR_EXCL_START (race: rollback send for a session that
+            // ended before this driver registered — only profile_stop can
+            // end a session, and it exits this very driver first)
+            lock.unlock();
+            caf::anon_send_exit(driver, caf::exit_reason::user_shutdown);
+            // GCOVR_EXCL_STOP
         }
     } catch (const std::exception&  // GCOVR_EXCL_BR_LINE (compiler
                                     // artifact: catch-entry pseudo-arc)
@@ -4559,7 +4552,8 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
         std::string stop_error;
         (void)profile_stop(service_id, &stop_error);
         return ProfileStartResult::kDispatchLost;
-    }  // GCOVR_EXCL_STOP
+    }
+    // GCOVR_EXCL_STOP
     return ProfileStartResult::kStarted;
 }
 
@@ -4636,7 +4630,8 @@ bool LuaServiceManager::profile_stop(const std::string& service_id,
                         service_id) {  // GCOVR_EXCL_BR_LINE (race: stale
                                        // uninstall vs session switched to
                                        // another service)
-                    return;  // exit cleanup already settled the promise
+                    return;  // GCOVR_EXCL_LINE (race: exit cleanup already
+                             // settled the promise)
                 }
                 state = std::make_shared<Impl::ProfileSessionState>(
                     std::move(*impl->profile_session));
@@ -4694,6 +4689,8 @@ LuaServiceManager::profile_status() const {
         .elapsed_ms = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now()  // GCOVR_EXCL_BR_LINE
+                                                  // GCOVR_EXCL_LINE (compiler
+                                                  // artifact: now() throw arc)
                 - state.started_at)  // GCOVR_EXCL_BR_LINE (compiler
                                      // artifact: duration arithmetic
                                      // throw arc)

@@ -927,7 +927,7 @@ shield::net::HttpResponse OpsHttpHandler::handle_profile(
             200, {{"type", "result"},
                   {"data", data}});  // GCOVR_EXCL_BR_LINE (compiler artifact:
                                      // inline throw arc)
-    }
+    }  // GCOVR_EXCL_LINE (compiler artifact: block-end attribution)
 
     if (action == "start") {
         if (!body.contains("service") || !body["service"].is_string()) {
@@ -1037,13 +1037,13 @@ shield::net::HttpResponse OpsHttpHandler::handle_profile(
                                      // this stop via exit cleanup / duration
                                      // expiry; no test races them)
                 info->service_id, &stop_error)) {
+            // GCOVR_EXCL_START (race: the session can only end between the
+            // status read and this stop via exit cleanup / duration expiry;
+            // no test races them)
             // The session ended between the status read and the stop (exit
             // cleanup or duration expiry owns the promise now).
-            return make_error_response(
-                409, "no active profile session");  // GCOVR_EXCL_BR_LINE (race:
-                                                    // exit cleanup / duration
-                                                    // expiry owns the promise
-                                                    // between status and stop)
+            return make_error_response(409, "no active profile session");
+            // GCOVR_EXCL_STOP
         }
         std::shared_future<nlohmann::json> report;
         {
@@ -1062,7 +1062,7 @@ shield::net::HttpResponse OpsHttpHandler::handle_profile(
                                         // artifact: inlined nlohmann::json
                                         // braced-init branches)
                 200, {{"type", "result"}, {"data", data}});
-        }
+        }  // GCOVR_EXCL_LINE (compiler artifact: block-end attribution)
         return make_error_response(504,
                                    "profile dispatch timeout (owner busy)");
     }

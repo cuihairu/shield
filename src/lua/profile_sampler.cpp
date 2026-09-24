@@ -51,7 +51,7 @@ void ProfileSampler::record_current_stack(ProfileSampler* self, lua_State* L) {
         // option; verified by the Task 1 spike).
         if (lua_getinfo(L, "nSlt", &ar) == 0) {  // GCOVR_EXCL_BR_LINE
             // (defensive: the level was just validated by lua_getstack)
-            break;
+            break;  // GCOVR_EXCL_LINE (defensive: see above)
         }
         ProfileFrame f;
         f.what = ar.what ? ar.what : "";  // GCOVR_EXCL_BR_LINE (defensive:
@@ -112,7 +112,7 @@ void ProfileSampler::sweep_once() {
     if (!co_provider_) {  // GCOVR_EXCL_BR_LINE (defensive: both production
                           // (service provider) and test providers are always
                           // set; a default-constructed provider is unreachable)
-        return;
+        return;           // GCOVR_EXCL_LINE (defensive: see above)
     }
     for (lua_State* co : co_provider_()) {
         if (co != nullptr &&      // GCOVR_EXCL_BR_LINE (race: coroutine already
@@ -121,11 +121,11 @@ void ProfileSampler::sweep_once() {
                                   // artifact: inline call throw arc)
                 &sampler_hook) {  // GCOVR_EXCL_BR_LINE (compiler artifact:
                                   // inline arcs + race)
+            // GCOVR_EXCL_START (compiler artifact: inline accessor arcs on
+            // config())
             lua_sethook(co, &sampler_hook, LUA_MASKCOUNT,
-                        static_cast<int>(
-                            session_.config()
-                                .interval));  // GCOVR_EXCL_BR_LINE (compiler
-                                              // artifact: inline accessor arcs)
+                        static_cast<int>(session_.config().interval));
+            // GCOVR_EXCL_STOP
         }
     }
 }

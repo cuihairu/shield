@@ -103,7 +103,8 @@ HttpResponse handler_error_response() {
     response.set(http::field::content_type, "application/json");
     response.body() = R"({"error":"handler_exception"})";
     return response;
-}
+}  // GCOVR_EXCL_LINE (compiler artifact: line-table entry for the function
+   // epilogue; the 500 path itself is exercised)
 
 }  // namespace
 
