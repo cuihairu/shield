@@ -1089,6 +1089,16 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
         const int ref = luaL_ref(co, LUA_REGISTRYINDEX);
         const std::string service_id = manager->current_service_id();
         auto resume_fn = [co, ref, manager, service_id]() {
+            // Keep the service VM alive for the whole continuation: a
+            // terminal error can trip the consecutive-error panic
+            // threshold, whose exit() erases the service from the registry
+            // — without this handle the VM's last reference dies with
+            // invoke_error_hook's frame and lua_close runs before the tail
+            // luaL_unref below (SIGSEGV in lua_rawgeti, observed by
+            // SleepContinuationErrorsCountTowardPanic when the 10th sleep
+            // error panics the service).
+            std::shared_ptr<LuaVM> vm_keepalive =
+                manager->service_vm(service_id);
             int nres = 0;
             // Driving-phase registration: a call completion arriving
             // while this guard is held is re-enqueued by resume_caller
