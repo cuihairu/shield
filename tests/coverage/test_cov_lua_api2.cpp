@@ -1092,34 +1092,19 @@ BOOST_AUTO_TEST_CASE(ForkAnchorsInsideHandlerAndFromMainThread) {
                             sol::lib::table, sol::lib::string, sol::lib::os,
                             sol::lib::math);
     register_full_shield_api(main_lua, &manager, &runtime);
-    // Two-stage assertion: the type check's message builds from type(id)
-    // (always a string — the concatenation itself cannot fail), so a
-    // non-number fork return reports its real type instead of blowing up
-    // while building the message (the Windows failure of 2026-09-23 died
-    // inside 'fork returned ' .. tostring(id) with "attempt to concatenate
-    // a string value", which standard semantics cannot produce — the value
-    // check below only runs after the type is confirmed, so its tostring
-    // is always safe too). The id is stashed globally so the C++ side can
-    // cross-check the raw VM tag when the script fails.
+    // The main chunk must END right after the fork: the borrowed actor
+    // enters this bare VM from another thread as soon as it picks the task
+    // up, and a lua_State must never be entered from two OS threads at
+    // once — the Windows CI failure of 2026-09-23 ("attempt to concatenate
+    // a string value" from a plain integer id) was exactly that race
+    // stomping a TValue's tag while the chunk was still mid-assert. The id
+    // is stashed globally and asserted from C++ after the drain below,
+    // when the VM is idle again.
     auto fork_result = main_lua.safe_script(
         "local id = shield.fork(function() end)\n"
-        "_G.__fork_id = id\n"
-        "assert(type(id) == 'number',\n"
-        "  'fork returned type ' .. type(id))\n"
-        "assert(id > 0, 'fork returned ' .. tostring(id))",
+        "_G.__fork_id = id\n",
         sol::script_pass_on_error);
-    if (!fork_result.valid()) {
-        const sol::error e = fork_result;
-        std::fprintf(stderr, "lua error: %s\n", e.what());
-        // Cross-check from C++: ask the VM directly which tag the stashed
-        // value carries, bypassing all Lua-side error formatting.
-        sol::object fid = main_lua["_G"]["__fork_id"];
-        std::fprintf(stderr, "fork_id from C++: sol_type=%d lua_name=%s\n",
-                     static_cast<int>(fid.get_type()),
-                     lua_typename(main_lua.lua_state(),
-                                  static_cast<int>(fid.get_type())));
-    }
-    BOOST_CHECK(fork_result.valid());
+    BOOST_REQUIRE(fork_result.valid());
     // Drain the execute phase too: pending_task_count_total() hits zero at
     // dequeue time, while the task body — which runs main_lua's function on
     // the borrowed actor thread — may still be in flight. Destroying
@@ -1130,6 +1115,19 @@ BOOST_AUTO_TEST_CASE(ForkAnchorsInsideHandlerAndFromMainThread) {
                    manager.active_fork_task_count() == 0;
         },
         std::chrono::seconds(10)));
+
+    // The VM is idle now: read the stashed id back and assert the fork
+    // contract (a positive task id) directly from C++, naming the real
+    // type via lua_typename should it ever regress.
+    sol::object fork_id = main_lua["_G"]["__fork_id"];
+    sol::type fork_id_type = fork_id.get_type();
+    BOOST_CHECK_MESSAGE(
+        fork_id_type == sol::type::number,
+        "fork id type: " << lua_typename(main_lua.lua_state(),
+                                         static_cast<int>(fork_id_type)));
+    if (fork_id_type == sol::type::number) {
+        BOOST_CHECK(fork_id.as<lua_Integer>() > 0);
+    }
 }
 
 // shield.config parses exponent-notation floats when the whole string is
