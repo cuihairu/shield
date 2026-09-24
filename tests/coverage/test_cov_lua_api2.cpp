@@ -1092,10 +1092,34 @@ BOOST_AUTO_TEST_CASE(ForkAnchorsInsideHandlerAndFromMainThread) {
                             sol::lib::table, sol::lib::string, sol::lib::os,
                             sol::lib::math);
     register_full_shield_api(main_lua, &manager, &runtime);
-    BOOST_CHECK(run_script(main_lua,
-                           "local id = shield.fork(function() end)\n"
-                           "assert(type(id) == 'number' and id > 0,\n"
-                           "  'fork returned ' .. tostring(id))"));
+    // Two-stage assertion: the type check's message builds from type(id)
+    // (always a string — the concatenation itself cannot fail), so a
+    // non-number fork return reports its real type instead of blowing up
+    // while building the message (the Windows failure of 2026-09-23 died
+    // inside 'fork returned ' .. tostring(id) with "attempt to concatenate
+    // a string value", which standard semantics cannot produce — the value
+    // check below only runs after the type is confirmed, so its tostring
+    // is always safe too). The id is stashed globally so the C++ side can
+    // cross-check the raw VM tag when the script fails.
+    auto fork_result = main_lua.safe_script(
+        "local id = shield.fork(function() end)\n"
+        "_G.__fork_id = id\n"
+        "assert(type(id) == 'number',\n"
+        "  'fork returned type ' .. type(id))\n"
+        "assert(id > 0, 'fork returned ' .. tostring(id))",
+        sol::script_pass_on_error);
+    if (!fork_result.valid()) {
+        const sol::error e = fork_result;
+        std::fprintf(stderr, "lua error: %s\n", e.what());
+        // Cross-check from C++: ask the VM directly which tag the stashed
+        // value carries, bypassing all Lua-side error formatting.
+        sol::object fid = main_lua["_G"]["__fork_id"];
+        std::fprintf(stderr, "fork_id from C++: sol_type=%d lua_name=%s\n",
+                     static_cast<int>(fid.get_type()),
+                     lua_typename(main_lua.lua_state(),
+                                  static_cast<int>(fid.get_type())));
+    }
+    BOOST_CHECK(fork_result.valid());
     // Drain the execute phase too: pending_task_count_total() hits zero at
     // dequeue time, while the task body — which runs main_lua's function on
     // the borrowed actor thread — may still be in flight. Destroying
