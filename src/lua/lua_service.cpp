@@ -1784,7 +1784,13 @@ LuaServiceManager::LuaServiceManager(LuaRuntime& runtime,
     // so plugins re-enter Lua on the owning service actor instead of
     // touching a lua_State from plugin threads.
     shield::plugin::LuaServiceHooks hooks;
+    // GCOVR_EXCL_START (hook body: fires only when a plugin calls
+    // lua_current_service_id -- an integration path unreachable by the
+    // coverage tree, which builds with every plugin OFF; the wrapped
+    // current_service_id() itself is exercised directly by the manager
+    // suites)
     hooks.current_service_id = [this]() { return current_service_id(); };
+    // GCOVR_EXCL_STOP
     hooks.post_to_service = [this](const std::string& service_id,
                                    std::function<void()> fn) {
         // Hook body: fires only when a plugin calls lua_post_to_service;

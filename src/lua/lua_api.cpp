@@ -1258,14 +1258,14 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
             }
             uint64_t task_id = manager->enqueue_forked_task(
                 service_id,
+                // GCOVR_EXCL_START (unreachable: shield.fork always hands a
+                // valid raw_fn, so the actor dispatches through the coroutine
+                // path and never runs this plain error wrapper)
                 []() {
-                    // GCOVR_EXCL_START (unreachable: shield.fork always hands
-                    // a valid raw_fn, so the actor dispatches through the
-                    // coroutine path and never runs this plain wrapper)
                     auto& log = shield::log::get_logger("lua");
                     SHIELD_LOG_ERROR(log, "task error: fork body missing");
-                    // GCOVR_EXCL_STOP
-                },    // GCOVR_EXCL_LINE (continuation)
+                },
+                // GCOVR_EXCL_STOP
                 fn);  // raw_fn for coroutine wrapping
             results.push_back(sol::make_object(lua, task_id));
             return results;

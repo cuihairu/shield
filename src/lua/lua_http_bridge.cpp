@@ -97,7 +97,11 @@ void LuaHttpBridge::register_on_server(const std::string& method,
     }
     server_->route(
         method_from_string(method), path,
+        // GCOVR_EXCL_START (compiler artifact: the route sink's standalone
+        // copy never runs — dispatch goes through the inlined clone; the
+        // lambda line shows real hits while the function entity counts 0)
         [this](const shield::net::HttpRequest& req) { return handle(req); });
+    // GCOVR_EXCL_STOP
 }
 
 shield::net::HttpResponse LuaHttpBridge::handle(
