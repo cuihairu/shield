@@ -1,5 +1,35 @@
 # TODO
 
+## 测试质量 + 防回退收口（2026-09-25，全部完成）
+
+覆盖率三维度 100%（line/branch/function）后的质量收口，不追加数字：
+
+- [x] 弱测试扫描与加强（12 处）：gateway_bridge 6 处 CHECK(true)→
+      registry/is_alive/binding 真断言；logger 2 处（ConsoleSink 重定向
+      rdbuf 断流分流+Error 升级、RotatingFileSink 残留断言）；
+      caf_bridge 析构后 service_manager==nullptr + respawn；
+      http_client cleanup 后真请求；global_manager start/stop 幂等后
+      data 存活断言
+- [x] RegistrationStubs「被 mock 掉真实逻辑」修复（20a0158）：测试
+      自声明在 namespace shield::lua::api 内链接到 1396 行空 stub 而非
+      968 行真实现；两 namespace 各自声明，stub 照调保函数分母，
+      monotonic() 真断言（>0 且单调不减）
+- [x] 函数门禁防假绿核对：902 实体按 basename 逐文件核对
+      line-rate=1.0 零缺口，与 CI 分母一致；「自声明链错实现」全仓库
+      仅 RegistrationStubs 一处；make_error 唯一定义
+- [x] ci-fix-report.html 误提交移除（21f6ec1）+ .gitignore 防再犯
+- [x] test_global_manager 纳入 CI（7453b32）：tests/CMakeLists 注释
+      声称 cluster job 经 global 标签运行它，但从未开
+      SHIELD_ENABLE_GLOBAL——测试资产空转；cluster job 补开该开关 +
+      label 加 global；本地 Release 树预验证全绿；coverage 维度不开
+      （避免 shield_global 进函数分母）
+- [x] Windows /proc 平台分支修复（3881f97）：unopenable-path 用例在
+      Windows 把 /proc 解析到盘根真创建成功致 !exists 必败；Windows
+      改用 C:\Windows\win.ini\x.log
+
+验收：全量 91/91 绿，三维 100%（11550/10854/902），CI 双 run 全绿
+（含 Cluster/Coverage/Windows）。
+
 ## Schema 寻址收敛（已设计待实施）
 
 背景与设计理由见 `docs/protocol-codec-plugins.md` 的「Schema 寻址收敛」一节。
