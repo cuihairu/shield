@@ -41,6 +41,8 @@ Shield 当前文档以 [文档地图](documentation-map.md) 为入口。读者�
 | 目标 | 阅读入口 |
 | --- | --- |
 | 第一次启动项目 | [快速上手](quickstart.md) |
+| 看产品化差距与已补齐项 | [产品化差距评估](product-gap.md) |
+| 看架构是否合理 | [架构评估](architecture-review.md) |
 | 判断文档优先级 | [文档地图](documentation-map.md) |
 | 理解模块边界 | [架构总纲](architecture.md) |
 | 编写 Lua service | [Lua API 契约](lua-api.md) |

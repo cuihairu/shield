@@ -1,5 +1,59 @@
 # TODO
 
+## 产品化 + 架构安全默认值（2026-09-25 本轮，进行中）
+
+背景与差距清单见 `docs/product-gap.md`（对照 skynet 的产品化评估）与
+`docs/architecture-review.md`（九维架构评估，结论服务产品化）。优先级基准：
+**新用户 10 分钟跑通一个最小游戏服务端**。
+
+- [x] 架构评估文档 `docs/architecture-review.md`：九维逐项判断（进程线程/
+      网络协议/会话状态/存储持久化/定时调度/热更新/扩展点/容错监控/横向扩展），
+      风险清单（严重度 + file:line），必须/过度/欠缺分析
+- [x] 产品化差距文档 `docs/product-gap.md`：8 维对照 skynet，top-3 挡路项
+      排序（默认配置可观测、模板工程、启动脚本与文档线性化）
+- [x] P0-1 默认配置可观测：config/app.yaml 增加 echo actor
+      （scripts/echo.lua，TCP 0.0.0.0:7900，idlen+json，echo id=1 →
+      echo_result id=100，无认证）+ 默认配置真实启动 acceptance 测试
+      （tests/acceptance/test_default_config_boot.cpp，ops 端点 hermetic
+      化补丁后按原始文件启动并完成 TCP 回包闭环）
+- [x] P0-2 模板工程一条命令生成：templates/minimal_game/（config+scripts+
+      README，<APP_NAME> 占位符）+ scripts/new_project.sh（生成 + 自动
+      --check-config 自检）+ ctest 锚定（shield_new_project_scaffold，
+      POSIX 平台）
+- [x] P0-3a build.sh 环境预检：cmake ≥ 3.30 / C++23 编译器探测（-std=c++23
+      试编译）/ ninja / VCPKG_ROOT，缺失给一行修复指引，不再让 vcpkg 的
+      二级错误（"unable to find Ninja"）背锅
+- [x] P0-3b 客户端样例 scripts/client_demo.py：stdlib-only idlen+json
+      客户端，打通 echo / hello_world login，quickstart 的"连接验证"步骤
+- [x] P0-3c quickstart.md 重写为线性 10 分钟路径（前置矩阵 → 构建 → 启动 →
+      连接验证 → 脚手架 → hello_world → FAQ）；tutorial-game-backend.md
+      头部改为显式指向已验证路径；Dockerfile 过时 EXPOSE 注释对齐实际
+      （echo 7900；http ops 默认 127.0.0.1 的容器口径说明）
+- [x] 架构 P0 安全默认值 1：max_frame_size 默认从「0=不限」改为
+      「0=16MiB 默认上限」（kDefaultMaxFrameSize；5 处封包检查点统一走
+      effective_max_frame_size），异常长度前缀不再能驱动服务端按其分配
+- [x] 架构 P0 安全默认值 2：accepted socket 统一 TCP_NODELAY（游戏小包
+      低延迟；best-effort 不影响建连）
+- [x] 架构 P0 诚实性：lua.sandbox.allow_os/allow_io 从死配置键变为真实
+      开关（VM 创建期条件 open io/os 库；未设置=历史行为开放，随仓库分发
+      的默认配置声明 false）+ SandboxGatesOsAndIoLibraries 测试
+- [ ] 全量构建 + ctest 全绿验证（91 + 新增 3 个测试），逐块 commit + push
+
+## Phase 1 候选（下一步，均为文档/低风险改动）
+
+- [ ] DB 使用纪律文档 + 示例：同步 ABI 下 DB 调用必须隔离进专职 service
+      （业务经 shield.call 访问）+ 超时配置；见 architecture-review.md §4
+- [ ] /ops/metrics 口径文档（字段、语义、granularity）
+- [ ] net.threads 默认值评估与调优指引（当前默认单线程 legacy 模式）
+- [ ] 顶号/重连语义在 gateway.md 显式化（epoch CAS 的时序细节）
+
+## Phase 2 候选（另行立项）
+
+- [ ] DB ABI 异步入口（callback/future + 协程恢复）
+- [ ] 连接级限流/黑名单（runtime-security.md 草案落地）
+- [ ] blue-green 热更新落地（runtime-lua-vm.md 设计稿）
+- [ ] TLS（network.tls 配置面）
+
 ## 测试质量 + 防回退收口（2026-09-25，全部完成）
 
 覆盖率三维度 100%（line/branch/function）后的质量收口，不追加数字：
