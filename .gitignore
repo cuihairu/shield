@@ -107,6 +107,7 @@ logs/
 未命名*.txt
 scratch_*
 draft_*
+ci-fix-report.html
 *.gcno
 *.gcda
 *.gcov
