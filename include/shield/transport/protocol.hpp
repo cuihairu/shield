@@ -116,12 +116,19 @@ private:
     std::unordered_map<std::string, std::uint32_t> route_names_;
 };
 
+/// Default frame payload cap applied when EnvelopeConfig::max_frame_size is
+/// 0 (unset). A game-protocol frame larger than this is a bug or an attack
+/// (a hostile length prefix must not be able to drive allocation); senders
+/// that legitimately need more must chunk or set an explicit larger value.
+inline constexpr std::size_t kDefaultMaxFrameSize = 16 * 1024 * 1024;
+
 struct EnvelopeConfig {
     Endian endian = Endian::Big;
     std::uint8_t length_bytes = 0;
     std::uint8_t route_id_bytes = 0;
     bool length_includes_header = false;
     std::uint8_t delimiter = '\n';
+    /// 0 = kDefaultMaxFrameSize (16 MiB), NOT unlimited.
     std::size_t max_frame_size = 0;
     RouteSource route_source = RouteSource::Body;
 };
@@ -142,6 +149,13 @@ public:
     virtual void reset();
 
 protected:
+    /// Effective frame limit: the explicitly configured value, or the safe
+    /// default when unset (0 never means unlimited).
+    std::size_t effective_max_frame_size() const {
+        return config_.max_frame_size > 0 ? config_.max_frame_size
+                                          : kDefaultMaxFrameSize;
+    }
+
     EnvelopeConfig config_;
     std::vector<std::uint8_t> buffer_;
     std::string error_;

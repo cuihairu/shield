@@ -189,7 +189,7 @@
 
 `actors[].network.protocol` 绑定 session 固定使用的 `ProtocolProfile`，只描述 wire 形态（envelope、body codec、限制）。客户端 RPC 路由的唯一静态来源是 **`actors[].rpc.routes`**：每个 actor 声明自己的 descriptor 条目（`id`/`name`/`binding`/`direction`/`owner_service`/`requires_auth`/`action`/`lazy_decode` 与 schema 元数据，字段契约见 [protocol-routing-design.md](protocol-routing-design.md)）。config 校验单 actor 的字段与唯一性；bootstrap 把所有 actor 的条目合并为全局 descriptor 表（跨 actor 的 `id`/`name` 冲突导致启动失败）并注入 listener pipeline；每个 Lua service 在 spawn 时只编译 `owner_service == 自身` 的条目，c2s/bidi 的 `binding` 解析不到模块函数即 spawn 失败（`handler_missing`）。**`network.protocol.routes` 内联路由已删除**，配置中出现即报错（pre-1.0 不做兼容读）。
 
-`actors[].network.max_frame_size` 是 listener 级默认单帧上限。未显式设置 `protocol.envelope.max_frame_size` 时，profile 继承该值；显式设置时以 envelope 值为准。
+`actors[].network.max_frame_size` 是 listener 级默认单帧上限。未显式设置 `protocol.envelope.max_frame_size` 时，profile 继承该值；显式设置时以 envelope 值为准。两级均未设置时**不是无限**：取传输层默认上限 16 MiB（`kDefaultMaxFrameSize`，见 `include/shield/transport/protocol.hpp`）——异常/恶意的长度前缀不应能驱动服务端按其分配缓冲；业务确实需要更大单帧时显式配置。
 
 协议配置只包含固定 wire/profile 部件：
 

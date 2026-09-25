@@ -296,6 +296,56 @@ BOOST_AUTO_TEST_CASE(CacheConfigDefaults) {
     BOOST_CHECK_EQUAL(cfg.ttl_seconds, 0);
 }
 
+// lua.sandbox.allow_os / allow_io gate the os and io standard libraries at
+// VM creation. Unset keys keep the historical behavior (open); the shipped
+// default config declares both false.
+BOOST_AUTO_TEST_CASE(SandboxGatesOsAndIoLibraries) {
+    auto& config = shield::config::global_config();
+    config.set("lua.sandbox.allow_os", false);
+    config.set("lua.sandbox.allow_io", false);
+    {
+        LuaRuntime runtime;
+        auto vm = runtime.create_vm();
+        sol::state& lua = runtime.vm_state(vm);
+        BOOST_CHECK_MESSAGE(!lua["os"].valid(),
+                            "os library must be absent when allow_os=false");
+        BOOST_CHECK_MESSAGE(!lua["io"].valid(),
+                            "io library must be absent when allow_io=false");
+        // Business-relevant base libraries stay available either way.
+        BOOST_CHECK(lua["string"].valid());
+        BOOST_CHECK(lua["table"].valid());
+        BOOST_CHECK(lua["math"].valid());
+        BOOST_CHECK(lua["coroutine"].valid());
+        // API registration must tolerate the missing os table (the AD-07
+        // business-clock hook installs on os only when the table exists).
+        std::string reg_error;
+        BOOST_CHECK_MESSAGE(runtime.register_api(vm, &reg_error),
+                            "register_api must succeed without the os "
+                            "library: "
+                                << reg_error);
+    }
+    config.set("lua.sandbox.allow_os", true);
+    config.set("lua.sandbox.allow_io", true);
+    {
+        LuaRuntime runtime;
+        auto vm = runtime.create_vm();
+        sol::state& lua = runtime.vm_state(vm);
+        BOOST_CHECK(lua["os"].valid());
+        BOOST_CHECK(lua["io"].valid());
+        std::string reg_error;
+        BOOST_CHECK(runtime.register_api(vm, &reg_error));
+        // With the table present the clock hooks are installed (exec_lua
+        // wraps returns in a JSON array — one element per return value).
+        nlohmann::json result;
+        std::string error;
+        BOOST_CHECK(
+            runtime.exec_lua(vm, "return type(os.time)", &result, &error));
+        BOOST_REQUIRE(result.is_array());
+        BOOST_REQUIRE_EQUAL(result.size(), 1u);
+        BOOST_CHECK_EQUAL(result[0].get<std::string>(), "function");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // call_service_function error paths.
 // ---------------------------------------------------------------------------

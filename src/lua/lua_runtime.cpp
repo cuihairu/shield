@@ -193,12 +193,28 @@ class LuaVM {
 public:
     LuaVM() : state_(std::make_shared<sol::state>()) {
         // GCOVR_EXCL_STOP
+        // Sandbox: lua.sandbox.allow_os / allow_io gate the os and io
+        // standard libraries. Unset keys keep the historical behavior
+        // (libraries available) so existing deployments that omit the
+        // section are not silently changed; the shipped default config
+        // declares both false, so a fresh checkout runs sandboxed.
+        const bool allow_os =
+            shield::config::get_bool("lua.sandbox.allow_os", true);
+        const bool allow_io =
+            shield::config::get_bool("lua.sandbox.allow_io", true);
+
         state_->open_libraries(  // GCOVR_EXCL_LINE (line-continuation
             sol::lib::base,      // GCOVR_EXCL_LINE artifact across args)
             sol::lib::package,   // GCOVR_EXCL_LINE (line-continuation artifact)
             sol::lib::string,    // GCOVR_EXCL_LINE (line-continuation artifact)
             sol::lib::table,     // GCOVR_EXCL_LINE (line-continuation artifact)
-            sol::lib::math, sol::lib::io, sol::lib::os, sol::lib::coroutine);
+            sol::lib::math, sol::lib::coroutine);
+        if (allow_io) {
+            state_->open_libraries(sol::lib::io);
+        }
+        if (allow_os) {
+            state_->open_libraries(sol::lib::os);
+        }
         install_panic_handler(state_);
 
         // Set Lua module search path from configuration
@@ -705,8 +721,8 @@ void LuaRuntime::restrict_vm(std::shared_ptr<LuaVM> vm) {
     // os: keep time/date/clock (business-clock hooks live there); drop the
     // process- and host-control functions.
     sol::table os_table = state["os"];
-    if (os_table.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: create_vm always
-                             // opens the os library)
+    if (os_table.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: absent when the
+                             // VM was created with lua.sandbox.allow_os=false)
         os_table["execute"] = sol::nil;
         os_table["exit"] = sol::nil;
         os_table["getenv"] = sol::nil;

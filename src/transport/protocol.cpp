@@ -534,8 +534,7 @@ std::vector<Packet> LenPrefixEnvelope::feed(const std::uint8_t* data,
             break;
         }
         const auto total_len = payload_len + header_size;
-        if (config_.max_frame_size > 0 &&
-            payload_len > config_.max_frame_size) {
+        if (payload_len > effective_max_frame_size()) {
             error_ = "lenprefix frame too large";
             buffer_.clear();
             break;
@@ -646,8 +645,7 @@ std::vector<Packet> IdLenEnvelope::feed(const std::uint8_t* data,
             break;
         }
         const auto total_len = payload_len + header_size;
-        if (config_.max_frame_size > 0 &&
-            payload_len > config_.max_frame_size) {
+        if (payload_len > effective_max_frame_size()) {
             error_ = "idlen frame too large";
             buffer_.clear();
             break;
@@ -767,8 +765,7 @@ std::vector<Packet> TypeLenEnvelope::feed(const std::uint8_t* data,
             break;
         }
         const auto total_len = payload_len + header_size;
-        if (config_.max_frame_size > 0 &&
-            payload_len > config_.max_frame_size) {
+        if (payload_len > effective_max_frame_size()) {
             error_ = "typed_len frame too large";
             buffer_.clear();
             break;
@@ -855,8 +852,7 @@ std::vector<Packet> DelimiterEnvelope::feed(const std::uint8_t* data,
         const auto delimiter = static_cast<std::uint8_t>(config_.delimiter);
         const auto it = std::find(buffer_.begin(), buffer_.end(), delimiter);
         if (it == buffer_.end()) {
-            if (config_.max_frame_size > 0 &&
-                buffer_.size() > config_.max_frame_size) {
+            if (buffer_.size() > effective_max_frame_size()) {
                 error_ = "delimiter frame too large";
                 buffer_.clear();
             }
@@ -865,7 +861,7 @@ std::vector<Packet> DelimiterEnvelope::feed(const std::uint8_t* data,
 
         const auto body_len =
             static_cast<std::size_t>(std::distance(buffer_.begin(), it));
-        if (config_.max_frame_size > 0 && body_len > config_.max_frame_size) {
+        if (body_len > effective_max_frame_size()) {
             error_ = "delimiter frame too large";
             buffer_.clear();
             break;

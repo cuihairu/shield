@@ -37,7 +37,8 @@ public:
     /// @brief Set max connections per IP (0 = unlimited)
     void set_max_per_ip(size_t max) { max_per_ip_ = max; }
 
-    /// @brief Set max frame payload size in bytes (0 = unlimited)
+    /// @brief Set max frame payload size in bytes (0 = transport-layer
+    ///        default cap of 16 MiB, see kDefaultMaxFrameSize)
     void set_max_frame_size(size_t max) { max_frame_size_ = max; }
 
     /// @brief Set max queued send messages per session (0 = unlimited)
@@ -85,7 +86,7 @@ private:
     mutable std::shared_mutex sessions_mutex_;
     size_t max_connections_ = 0;         // 0 = unlimited
     size_t max_per_ip_ = 0;              // 0 = unlimited
-    size_t max_frame_size_ = 0;          // 0 = unlimited
+    size_t max_frame_size_ = 0;          // 0 = kDefaultMaxFrameSize (16 MiB)
     size_t max_send_queue_ = 0;          // 0 = unlimited (queued message count)
     uint32_t read_idle_timeout_ms_ = 0;  // 0 = disabled
     std::unordered_map<std::string, size_t> ip_counts_;

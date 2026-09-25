@@ -28,6 +28,11 @@ TcpSession::TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
     auto endpoint = socket_.remote_endpoint();
     remote_addr_.ip = endpoint.address().to_string();
     remote_addr_.port = endpoint.port();
+    // Game traffic is small request/response frames; Nagle's algorithm only
+    // adds latency there. Best-effort: a failure to set the option must not
+    // prevent the session from starting.
+    boost::system::error_code nodelay_ec;
+    socket_.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
     if (callbacks_.create_protocol_pipeline) {
         protocol_pipeline_ = callbacks_.create_protocol_pipeline();
     }

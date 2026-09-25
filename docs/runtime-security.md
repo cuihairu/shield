@@ -1,8 +1,17 @@
 # 安全运行时语义
 
-> 状态：设计草案，非当前实现契约。
+> 状态：部分实现 + 部分设计草案。
 >
-> 本文描述的 sandbox 资源限制、permissions 权限矩阵、`network.tls`、`rate_limit` 等配置项**在当前 `RuntimeActorConfig` 中均未实现**（见 `include/shield/config/config.hpp`），属于 Phase 2+ 安全加固方向。若与 [配置语义](runtime-config.md) 或 [Lua API 契约](lua-api.md) 冲突，以那两份文档为准。
+> **已实现**：`lua.sandbox.allow_os` / `lua.sandbox.allow_io`（全局级
+> VM 标准库开关，见 [配置语义](runtime-config.md)；未设置时保持历史
+> 行为=开放，随仓库分发的默认配置声明两者为 false）。
+>
+> **未实现（Phase 2+ 草案）**：下文 per-actor sandbox 资源限制
+> （max_instructions/allowed_modules 等）、permissions 权限矩阵、
+> `network.tls`、`rate_limit`——这些在当前 `RuntimeActorConfig` 中均
+> 未实现（见 `include/shield/config/config.hpp`）。若与
+> [配置语义](runtime-config.md) 或 [Lua API 契约](lua-api.md) 冲突，
+> 以那两份文档为准。
 
 本文档包含 Shield 安全机制相关的运行时语义决策。
 
