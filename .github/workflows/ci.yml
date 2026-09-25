@@ -196,6 +196,9 @@ jobs:
   # 集群模块 (Linux, SHIELD_ENABLE_CLUSTER=ON): 构建 cluster 路径并运行
   # cluster 标签测试。主 build 矩阵不带 cluster，此 job 补上该编译路径。
   # 可选的 shield_player 模块同样在此编译路径开启（player 标签测试一并跑）。
+  # shield_global（SHIELD_ENABLE_GLOBAL=ON）也在此验证：tests/CMakeLists
+  # 对 test_global_manager 的注释声称 CI 经由 global 标签运行它，这是该
+  # 模块与其测试唯一的编译执行通道。
   cluster:
     name: Cluster
     runs-on: ubuntu-26.04
@@ -243,12 +246,13 @@ jobs:
           -DSHIELD_ENABLE_CLUSTER=ON
           -DSHIELD_ENABLE_PLAYER=ON
           -DSHIELD_ENABLE_SERVER=ON
+          -DSHIELD_ENABLE_GLOBAL=ON
 
       - name: Build
         run: cmake --build build-cluster --parallel $(nproc)
 
       - name: Test
-        run: ctest --test-dir build-cluster --build-config Release -L "cluster|player|server" --output-on-failure
+        run: ctest --test-dir build-cluster --build-config Release -L "cluster|player|server|global" --output-on-failure
 
   # 覆盖率 (Linux, gcov + gcovr): 在 Debug + coverage 构建下运行全部测试
   # 套件并统计 src/ 行覆盖率；低于 98% 时失败。必须跑全量而不是只跑
