@@ -307,18 +307,25 @@ BOOST_AUTO_TEST_CASE(apply_sinks_with_nothing_enabled_falls_back_to_console,
     BOOST_CHECK(sink->records.empty());
 }
 
-// A RotatingFileSink pointed at a path whose parent cannot be created (under
-// /proc) never opens its file; write/flush are silent no-ops.
+// A RotatingFileSink pointed at a path whose parent can never be created
+// never opens its file; write/flush are silent no-ops. The unopenable path
+// is platform-specific: /proc is a read-only procfs on POSIX, while Windows
+// would happily create "<drive>:\proc\..." -- there a path through an
+// existing *file* (win.ini) can never be created or opened either.
 BOOST_AUTO_TEST_CASE(rotating_sink_unopenable_file_is_silent,
                      *boost::unit_test::timeout(10)) {
+#ifdef _WIN32
+    const std::string bad_path = "C:\\Windows\\win.ini\\x.log";
+#else
     const std::string bad_path = "/proc/no-such-dir/x.log";
+#endif
     {
         auto sink = log_ns::make_rotating_sink(bad_path, 32, 1);
         BOOST_CHECK(sink != nullptr);
         sink->write(make_record(log_ns::Level::Info, "cov.rotbad", "dropped"));
         sink->flush();
-        // The sink never opened its file, so nothing was ever created under
-        // /proc -- the writes were dropped, not buffered somewhere.
+        // The sink never opened its file, so nothing was ever created at the
+        // path -- the writes were dropped, not buffered somewhere.
         BOOST_CHECK(!std::filesystem::exists(bad_path));
     }  // dtor flush again
     BOOST_CHECK(!std::filesystem::exists(bad_path));
