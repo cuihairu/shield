@@ -35,8 +35,16 @@
 
 using namespace shield::lua;
 
-// Defined in lua_api.cpp but not declared in the public header; declare it
-// here so the table-based overload gets covered too.
+// lua_api.cpp defines TWO same-signature table-based register_timer_api
+// overloads, neither declared in the public header: the real registration
+// directly under namespace shield::lua (the one register_full_shield_api
+// calls), and a deliberate no-op stub under namespace shield::lua::api.
+// Declare both -- placing the declaration in the wrong namespace would
+// silently link the test against the stub instead of the real body.
+namespace shield::lua {
+void register_timer_api(sol::table& shield, LuaServiceManager* manager,
+                        LuaRuntime* runtime);
+}
 namespace shield::lua::api {
 void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                         LuaRuntime* runtime);
@@ -645,12 +653,20 @@ BOOST_AUTO_TEST_CASE(RegistrationStubs) {
     sol::state lua;
     lua.open_libraries(sol::lib::base);
     sol::table table = lua.create_table();
+    // The api-namespace overload is a deliberate no-op stub: the real
+    // registration path is register_full_shield_api, which calls the
+    // namespace-level overload below.
     api::register_timer_api(table, nullptr, nullptr);
-    // The manager-free stub table still serves the capture-free clock:
-    // monotonic() must return a positive, monotonically non-decreasing pair.
-    // (now()/at()/every() dereference the manager pointer and are call-only
-    // from a live service; calling them here would be UB by design.)
-    const sol::function monotonic = table["monotonic"];
+    // The real namespace-level overload registers the timer API for real.
+    // now()/timer_once()/every() capture the manager pointer and stay
+    // call-only from a live service (calling them with nullptr here would be
+    // UB by design), but monotonic() is capture-free and callable
+    // immediately: it must return a positive, monotonically non-decreasing
+    // millisecond clock. The function is fetched raw: sol's lazy proxy
+    // conversion loses the entry for plain create_table members, while
+    // raw_get reads it back.
+    register_timer_api(table, nullptr, nullptr);
+    const sol::function monotonic = table.raw_get<sol::function>("monotonic");
     BOOST_CHECK(monotonic.valid());
     const int64_t t1 = monotonic();
     const int64_t t2 = monotonic();
