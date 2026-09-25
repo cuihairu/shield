@@ -1,7 +1,19 @@
 # Tutorial: Multiplayer Game Backend
 
-This tutorial is a **target design sketch** for the refactored Shield runtime. It
-is not a currently verified runnable guide.
+This tutorial is a **target design sketch** for the Shield runtime. It is not a
+currently verified runnable guide — do NOT copy from here expecting it to boot.
+
+**Verified runnable paths** (use these instead):
+
+| 目标 | 入口 |
+| --- | --- |
+| 10 分钟线性上手（构建 → 启动 → 连接验证） | [快速上手](quickstart.md) |
+| 一条命令生成自己的最小工程 | `scripts/new_project.sh <dir>` |
+| 完整客户端 RPC 闭环（认证/绑定/转发，带真实 TCP e2e 测试） | `examples/hello_world/` |
+
+本文的价值在于讲解"为什么这样设计"（单一 target、bind 切换、私有转发），
+代码片段是示意口径，字段与 API 以 [Lua API 契约](lua-api.md) 与
+[配置运行时语义](runtime-config.md) 为准。
 
 ## Target Structure
 

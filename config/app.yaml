@@ -29,6 +29,35 @@ actors:
     instances: 1
     required: true
 
+  # 最小可观测服务：无认证 echo 闭环（c2s echo id=1 → s2c echo_result
+  # id=100，idlen + JSON）。启动后即可连接 0.0.0.0:7900 验证，
+  # 帧格式与示例客户端见 scripts/client_demo.py。
+  - name: echo
+    script: ../scripts/echo.lua
+    instances: 1
+    required: true
+    network:
+      tcp: "0.0.0.0:7900"
+      protocol:
+        envelope:
+          type: "idlen"
+          route_id_bytes: 2
+          length_bytes: 2
+          endian: "big"
+        body:
+          codec: "json"
+    rpc:
+      routes:
+        - id: 1
+          name: "echo"
+          binding: "echo"
+          direction: "c2s"
+          requires_auth: false
+        - id: 100
+          name: "echo_result"
+          binding: "echo_result"
+          direction: "s2c"
+
 # Plugin system v1 is enabled by the runtime, but the default config declares no
 # plugin instances so a fresh checkout boots without external provider DLLs.
 # See config/app-with-sqlite.yaml for an optional SQLite-backed example.

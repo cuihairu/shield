@@ -71,8 +71,10 @@ COPY scripts/ /app/scripts/
 RUN chown -R shield:shield /app
 USER shield
 
-# Default ports: TCP 8080, UDP 8081, HTTP 8082, WS 8083
-EXPOSE 8080 8081 8082 8083
+# Default config surface: echo game listener on TCP 7900; HTTP ops binds
+# 127.0.0.1:8080 (container-local by design — mount a config with
+# http.host: "0.0.0.0" and add a -p mapping to expose it).
+EXPOSE 7900
 
 ENTRYPOINT ["/app/shield"]
 CMD ["--config", "/app/config/app.yaml"]

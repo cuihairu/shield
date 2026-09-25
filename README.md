@@ -33,15 +33,18 @@ host discovery are covered by smoke tests.
 
 ## Quick Start
 
-Prerequisites:
+The fastest path (with environment preflight, ~10 minutes after the first
+dependency build — see [docs/quickstart.md](docs/quickstart.md) for the full
+linear guide):
 
-- CMake 3.30 or newer.
-- A C++23 compiler.
-- vcpkg with the repository manifest dependencies installed through the CMake
-  toolchain.
-- Ninja is recommended on Linux and macOS.
+```bash
+./build.sh release          # preflight + configure + build (vcpkg deps: 20-40 min first time)
+./build/bin/shield --config config/app.yaml   # starts the echo listener on :7900
+python3 scripts/client_demo.py                # in another terminal: one RPC round trip
+./scripts/new_project.sh ~/my_game            # scaffold your own minimal project
+```
 
-Configure, build, and run the test suite:
+The long way, with the test suite:
 
 ```bash
 cmake -S . -B build \
@@ -56,28 +59,23 @@ cmake --build build --config Release
 ctest --test-dir build --build-config Release --output-on-failure
 ```
 
-Check the default no-plugin runtime config:
+Prerequisites: CMake 3.30+, a C++23 compiler (gcc 13 / clang 17 / MSVC
+19.38+), vcpkg via `VCPKG_ROOT` (Ninja recommended on Linux and macOS).
+`./build.sh` checks all of these and prints a one-line fix for anything
+missing.
+
+Config validation without booting:
 
 ```bash
 ./build/bin/shield --check-config --config config/app.yaml
-```
-
-Check the bundled hello-world startup config:
-
-```bash
 ./build/bin/shield --check-config --config examples/hello_world/config/app.yaml
 ```
 
-Run the default runtime until interrupted:
-
-```bash
-./build/bin/shield --config config/app.yaml
-```
-
 The default `config/app.yaml` intentionally declares no plugin instances, so a
-fresh checkout can boot without provider DLLs. For an optional SQLite-backed
-example, build with `-DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON` and use
-`config/app-with-sqlite.yaml`.
+fresh checkout can boot without provider DLLs; it does declare an observable
+echo service (TCP :7900) so a fresh run has something to talk to. For an
+optional SQLite-backed example, build with
+`-DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON` and use `config/app-with-sqlite.yaml`.
 
 ## Target Positioning
 

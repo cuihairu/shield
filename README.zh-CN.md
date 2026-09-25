@@ -32,14 +32,17 @@ cd build-cov && gcovr -r . --exclude-directories '^(?\.)' --filter '\.\./src/'
 
 ## 快速开始
 
-前置要求：
+最快路径（带环境预检；首次依赖构建后约 10 分钟跑通，完整线性指南见
+[docs/quickstart.md](docs/quickstart.md)）：
 
-- CMake 3.30 或更新版本。
-- 支持 C++23 的编译器。
-- vcpkg，并通过 CMake toolchain 使用仓库 manifest 依赖。
-- Linux 和 macOS 推荐使用 Ninja。
+```bash
+./build.sh release          # 预检 + 配置 + 构建（首次 vcpkg 依赖 20-40 分钟）
+./build/bin/shield --config config/app.yaml   # 启动，echo 监听 :7900
+python3 scripts/client_demo.py                # 另开终端：一次真实 RPC 回包
+./scripts/new_project.sh ~/my_game            # 一条命令生成自己的最小工程
+```
 
-配置、构建并运行测试：
+完整流程（含测试套件）：
 
 ```bash
 cmake -S . -B build \
@@ -54,25 +57,21 @@ cmake --build build --config Release
 ctest --test-dir build --build-config Release --output-on-failure
 ```
 
-检查默认的无插件运行时配置：
+前置要求：CMake 3.30+、C++23 编译器（gcc 13 / clang 17 / MSVC 19.38+）、
+`VCPKG_ROOT` 指向 vcpkg（Linux/macOS 推荐 Ninja）。`./build.sh` 会逐项
+预检并给出缺失项的一行修复指引。
+
+不启动只校验配置：
 
 ```bash
 ./build/bin/shield --check-config --config config/app.yaml
-```
-
-检查仓库内置 hello-world 启动配置：
-
-```bash
 ./build/bin/shield --check-config --config examples/hello_world/config/app.yaml
 ```
 
-运行默认 runtime，直到手动中断：
-
-```bash
-./build/bin/shield --config config/app.yaml
-```
-
-默认 `config/app.yaml` 不声明任何插件实例，因此 fresh checkout 不需要 provider DLL 也能启动。需要 SQLite 插件示例时，用 `-DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON` 构建，并使用 `config/app-with-sqlite.yaml`。
+默认 `config/app.yaml` 不声明任何插件实例（fresh checkout 不需要 provider
+DLL 也能启动），并声明了一个可观测的 echo 服务（TCP :7900），首次启动就有
+端口可连。需要 SQLite 插件示例时，用 `-DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON`
+构建，并使用 `config/app-with-sqlite.yaml`。
 
 ## 目标定位
 

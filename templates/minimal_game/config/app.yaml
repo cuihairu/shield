@@ -1,0 +1,58 @@
+# <APP_NAME> - 由 scripts/new_project.sh 生成的最小游戏服务端配置
+#
+# 运行方式（在 shield 仓库根目录）：
+#   ./build/bin/shield --config <本目录>/app.yaml
+#
+# 帧格式（idlen 封包）：[route_id:2B 大端][length:2B 大端][JSON body]。
+# 一个无认证的 echo 闭环：c2s echo (id=1) → s2c echo_result (id=100)。
+
+app:
+  name: "<APP_NAME>"
+  version: "0.1.0"
+
+log:
+  level: "info"
+  console: true
+
+lua:
+  # 沙箱默认关闭 os/io 标准库；业务确实需要时再显式打开
+  sandbox:
+    allow_os: false
+    allow_io: false
+
+actors:
+  - name: "echo"
+    script: "../scripts/echo.lua"
+    instances: 1
+    required: true
+    network:
+      tcp: "0.0.0.0:8100"
+      protocol:
+        envelope:
+          type: "idlen"
+          route_id_bytes: 2
+          length_bytes: 2
+          endian: "big"
+        body:
+          codec: "json"
+    rpc:
+      routes:
+        - id: 1
+          name: "echo"
+          binding: "echo"
+          direction: "c2s"
+          requires_auth: false
+        - id: 100
+          name: "echo_result"
+          binding: "echo_result"
+          direction: "s2c"
+
+# 运维面（可选，删掉即关闭）
+console:
+  enabled: true
+  socket_path: /tmp/<APP_NAME>-console.sock
+
+http:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8080

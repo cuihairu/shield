@@ -53,6 +53,50 @@ set_tests_properties(test_client_rpc_e2e PROPERTIES
 )
 shield_copy_runtime_dlls(test_client_rpc_e2e)
 
+# Default-config boot acceptance: the shipped config/app.yaml boots into an
+# observable state — the echo listener answers a real TCP round trip on the
+# port declared in the shipped file (ops endpoints are patched hermetic).
+add_executable(test_default_config_boot
+    acceptance/test_default_config_boot.cpp)
+target_link_libraries(test_default_config_boot
+    PRIVATE
+        shield_bootstrap
+        shield_lua
+        Boost::unit_test_framework
+        Boost::headers
+)
+target_include_directories(test_default_config_boot
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+)
+target_compile_definitions(test_default_config_boot
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME test_default_config_boot COMMAND test_default_config_boot)
+set_tests_properties(test_default_config_boot PROPERTIES
+    LABELS "acceptance"
+    TIMEOUT 120
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+shield_copy_runtime_dlls(test_default_config_boot)
+
+# Scaffold smoke (POSIX shells only): scripts/new_project.sh generates a
+# project whose config passes the runtime's own --check-config validation
+# (the script runs it as its final step, so "next steps" output implies the
+# generated config validated).
+if(NOT WIN32)
+add_test(NAME shield_new_project_scaffold
+    COMMAND ${CMAKE_COMMAND}
+        "-DCOMMAND_UNDER_TEST=bash;${CMAKE_SOURCE_DIR}/scripts/new_project.sh;${CMAKE_BINARY_DIR}/scaffold-smoke;--force;--shield-bin;$<TARGET_FILE:shield>"
+        -DEXPECTED_EXIT_CODE=0
+        -DEXPECTED_OUTPUT_REGEX=next steps
+        -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
+)
+set_tests_properties(shield_new_project_scaffold PROPERTIES
+    LABELS "acceptance"
+    TIMEOUT 60
+)
+endif()
+
 # Header-first protocol routing tests - verifies route-id based forwarding and
 # lazy body decode primitives used by protocol profiles.
 add_executable(test_protocol_routing transport/test_protocol_routing.cpp)
