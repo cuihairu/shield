@@ -646,7 +646,19 @@ BOOST_AUTO_TEST_CASE(RegistrationStubs) {
     lua.open_libraries(sol::lib::base);
     sol::table table = lua.create_table();
     api::register_timer_api(table, nullptr, nullptr);
-    BOOST_CHECK(true);
+    // The manager-free stub table still serves the capture-free clock:
+    // monotonic() must return a positive, monotonically non-decreasing pair.
+    // (now()/at()/every() dereference the manager pointer and are call-only
+    // from a live service; calling them here would be UB by design.)
+    lua["shield"] = table;
+    const auto result =
+        lua.safe_script("t1 = shield.monotonic(); t2 = shield.monotonic()",
+                        sol::script_pass_on_error);
+    BOOST_CHECK(result.valid());
+    const int64_t t1 = lua["t1"];
+    const int64_t t2 = lua["t2"];
+    BOOST_CHECK(t1 > 0);
+    BOOST_CHECK_GE(t2, t1);
 }
 
 // ---------------------------------------------------------------------------

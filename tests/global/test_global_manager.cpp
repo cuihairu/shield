@@ -845,8 +845,17 @@ BOOST_AUTO_TEST_CASE(StopIsIdempotentAndStartIsIdempotent) {
     GlobalManager gm(default_config());
     gm.start();
     gm.start();
+    // Double start leaves the data plane serving (no double tick thread).
+    gm.data_set("cov_idem", "v1", 0);
+    std::string out;
+    BOOST_CHECK(gm.data_get("cov_idem", &out));
+    BOOST_CHECK_EQUAL(out, "v1");
     gm.stop();
     gm.stop();
+    // Double stop tears the tick thread down once; the in-memory data plane
+    // stays readable and the value survives.
+    BOOST_CHECK(gm.data_get("cov_idem", &out));
+    BOOST_CHECK_EQUAL(out, "v1");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

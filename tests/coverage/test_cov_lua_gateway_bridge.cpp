@@ -161,6 +161,9 @@ public:
     // Test-side read helpers (not part of the Session interface).
     std::string target_service() const { return binding_.target_service; }
     uint32_t epoch() const { return binding_.epoch; }
+    const std::vector<shield::transport::DecodedBody>& sent_messages() const {
+        return sent_messages_;
+    }
 
 private:
     shield::net::SessionId id_;
@@ -218,14 +221,14 @@ BOOST_AUTO_TEST_CASE(NullSessionsShortCircuit) {
     caf::actor_system system(cfg);
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
-    LuaGatewayBridge bridge(
-        manager, "cov_ghost_auth",
-        std::make_shared<shield::lua::GatewaySessionRegistry>());
+    auto registry = std::make_shared<shield::lua::GatewaySessionRegistry>();
+    LuaGatewayBridge bridge(manager, "cov_ghost_auth", registry);
 
     bridge.on_connect(nullptr);
     bridge.on_packet(nullptr, shield::transport::DispatchResult{});
     bridge.on_disconnect(nullptr, "gone");
-    BOOST_CHECK(true);
+    // Null sessions short-circuit before touching the registry.
+    BOOST_CHECK_EQUAL(registry->size(), 0u);
 }
 
 // on_connect against a missing auth service: the initial binding is
@@ -267,7 +270,9 @@ BOOST_AUTO_TEST_CASE(NullRegistrySkipsRegistration) {
     BOOST_CHECK_EQUAL(session->binding().target_service, "cov_ghost_auth");
 
     bridge.on_disconnect(session, "cov_null_registry");
-    BOOST_CHECK(true);
+    // The bridge only deregisters: the socket close stays with the listener,
+    // so the session must still be alive here.
+    BOOST_CHECK(session->is_alive());
 }
 
 // on_packet rejection branches: not-ok packet, drop, forward-raw, unknown
@@ -317,7 +322,11 @@ BOOST_AUTO_TEST_CASE(OnPacketRejectionBranches) {
     auth_req.requires_auth = true;
     bridge.on_packet(session, make_packet(0x2002, &auth_req));
 
-    BOOST_CHECK(true);
+    // Every rejection above is a bare return: nothing is sent back, the
+    // session stays alive, and its (empty) binding is untouched.
+    BOOST_CHECK(session->sent_messages().empty());
+    BOOST_CHECK(session->is_alive());
+    BOOST_CHECK_EQUAL(session->binding().target_service, "");
 }
 
 // A valid route on a session whose binding carries no target service hits
@@ -340,7 +349,9 @@ BOOST_AUTO_TEST_CASE(OnPacketEmptyTargetWarning) {
     route.direction = shield::transport::RouteDirection::Bidirectional;
     route.requires_auth = false;
     bridge.on_packet(session, make_packet(0x3001, &route));
-    BOOST_CHECK(true);
+    // Empty-target rejection sends nothing and leaves the session alone.
+    BOOST_CHECK(session->sent_messages().empty());
+    BOOST_CHECK(session->is_alive());
 }
 
 // The bound target resolves to a service name with no actor: the delivery
@@ -363,7 +374,11 @@ BOOST_AUTO_TEST_CASE(ClientIngressTargetActorMissing) {
     route.direction = shield::transport::RouteDirection::ClientToServer;
     route.requires_auth = false;
     bridge.on_packet(session, make_packet(0x5001, &route));
-    BOOST_CHECK(true);
+    // Delivery failure only warns: nothing reaches the client, the session
+    // stays alive, and the binding is preserved for the actor's kick path.
+    BOOST_CHECK(session->sent_messages().empty());
+    BOOST_CHECK(session->is_alive());
+    BOOST_CHECK_EQUAL(session->binding().target_service, "cov_dead_target");
 }
 
 // Happy path end to end: on_connect delivers Bound to the live auth service,
@@ -535,7 +550,8 @@ BOOST_AUTO_TEST_CASE(OnDisconnectEmptyBindingSkipsNotify) {
         110, shield::net::RemoteAddress{"127.0.0.1", 6010});
     bridge.on_disconnect(fresh, "cov_fresh");
     BOOST_CHECK_EQUAL(registry->size(), 0u);
-    BOOST_CHECK(true);
+    // The empty-binding early return never touches the socket.
+    BOOST_CHECK(fresh->is_alive());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

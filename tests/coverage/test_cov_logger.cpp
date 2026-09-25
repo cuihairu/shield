@@ -197,17 +197,34 @@ BOOST_FIXTURE_TEST_CASE(records_below_global_level_are_filtered, LoggerReset) {
 // ConsoleSink: stderr sink, stdout sink, and the level>=Error escalation to
 // stderr, plus flush().
 BOOST_FIXTURE_TEST_CASE(console_sink_writes_and_flushes, LoggerReset) {
-    log_ns::ConsoleSink err_sink(true);
-    err_sink.write(
-        make_record(log_ns::Level::Warning, "cov.console", "to cerr"));
+    // Route the global streams into memory so the sink's stream selection is
+    // asserted, not just "reached without deadlocking": use_stderr sends
+    // everything to stderr, and a stdout sink still escalates Level::Error
+    // to stderr.
+    std::ostringstream out_buf, err_buf;
+    auto* orig_out = std::cout.rdbuf(out_buf.rdbuf());
+    auto* orig_err = std::cerr.rdbuf(err_buf.rdbuf());
+    {
+        log_ns::ConsoleSink err_sink(true);
+        err_sink.write(
+            make_record(log_ns::Level::Warning, "cov.console", "to cerr"));
 
-    log_ns::ConsoleSink out_sink(false);
-    out_sink.write(make_record(log_ns::Level::Info, "cov.console", "to cout"));
-    out_sink.write(
-        make_record(log_ns::Level::Error, "cov.console", "error to cerr"));
-    out_sink.flush();
-    err_sink.flush();
-    BOOST_CHECK(true);  // reached without deadlocking/crashing
+        log_ns::ConsoleSink out_sink(false);
+        out_sink.write(
+            make_record(log_ns::Level::Info, "cov.console", "to cout"));
+        out_sink.write(
+            make_record(log_ns::Level::Error, "cov.console", "error to cerr"));
+        out_sink.flush();
+        err_sink.flush();
+    }
+    std::cout.rdbuf(orig_out);
+    std::cerr.rdbuf(orig_err);
+
+    BOOST_CHECK(out_buf.str().find("to cout") != std::string::npos);
+    BOOST_CHECK(err_buf.str().find("to cerr") != std::string::npos);
+    BOOST_CHECK(err_buf.str().find("error to cerr") != std::string::npos);
+    BOOST_CHECK(out_buf.str().find("error to cerr") == std::string::npos);
+    BOOST_CHECK(err_buf.str().find("to cout") == std::string::npos);
 }
 
 // A FileSink pointed at an unopenable path silently drops writes/flushes.
@@ -294,13 +311,17 @@ BOOST_AUTO_TEST_CASE(apply_sinks_with_nothing_enabled_falls_back_to_console,
 // /proc) never opens its file; write/flush are silent no-ops.
 BOOST_AUTO_TEST_CASE(rotating_sink_unopenable_file_is_silent,
                      *boost::unit_test::timeout(10)) {
+    const std::string bad_path = "/proc/no-such-dir/x.log";
     {
-        auto sink =
-            log_ns::make_rotating_sink("/proc/no-such-dir/x.log", 32, 1);
+        auto sink = log_ns::make_rotating_sink(bad_path, 32, 1);
+        BOOST_CHECK(sink != nullptr);
         sink->write(make_record(log_ns::Level::Info, "cov.rotbad", "dropped"));
         sink->flush();
+        // The sink never opened its file, so nothing was ever created under
+        // /proc -- the writes were dropped, not buffered somewhere.
+        BOOST_CHECK(!std::filesystem::exists(bad_path));
     }  // dtor flush again
-    BOOST_CHECK(true);  // reached without throwing
+    BOOST_CHECK(!std::filesystem::exists(bad_path));
 }
 
 // ---------------------------------------------------------------------------

@@ -374,6 +374,13 @@ BOOST_AUTO_TEST_CASE(GlobalCleanupRunsLast) {
     // Re-initialize so any framework teardown that logs still has a working
     // curl global state.
     shield::net::HttpClient::initialize();
+
+    // The re-initialized globals actually serve requests: a refused
+    // connection yields a clean error result, not a crash or an empty OK.
+    auto r = HttpClient::get(
+        "http://127.0.0.1:" + std::to_string(dead_port()) + "/", 2);
+    BOOST_CHECK(!r.error.empty());
+    BOOST_CHECK_EQUAL(r.status_code, 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

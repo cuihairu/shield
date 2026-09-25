@@ -116,10 +116,18 @@ BOOST_AUTO_TEST_CASE(CafActorMappingCleanedOnDestruction) {
         auto result = manager.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
                                     opts_for("caf_destructor").dump());
         BOOST_REQUIRE(result.success);
-        // manager goes out of scope; no crash expected
     }
-    // If we reach here, destruction was clean
-    BOOST_CHECK(true);
+    // Destruction was clean: the manager unbound itself from the runtime (a
+    // stale pointer here would dangle into the next spawn), and the actor
+    // mappings died with it -- the same system accepts a fresh manager
+    // re-spawning the same service name.
+    BOOST_CHECK(runtime.service_manager() == nullptr);
+
+    LuaServiceManager manager2(runtime, system);
+    auto respawn = manager2.spawn(TEST_SCRIPTS_DIR + "messaging_service.lua",
+                                  opts_for("caf_destructor").dump());
+    BOOST_CHECK(respawn.success);
+    manager2.shutdown_all("shutdown_test");
 }
 
 BOOST_AUTO_TEST_CASE(LuaApiUnchangedWithCafSystem) {

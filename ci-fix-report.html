@@ -1,0 +1,552 @@
+<title>三平台 CI 修复档案</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap">
+<style>
+  :root {
+    --paper: #f3f5f8;
+    --card: #ffffff;
+    --ink: #1b2531;
+    --muted: #5a6a7c;
+    --line: #d9dfe7;
+    --accent: #2c5f8f;
+    --accent-wash: #e7eef5;
+    --crash: #a63a32;
+    --crash-wash: #f8ebe9;
+    --ok: #2e7d4f;
+    --ok-wash: #e9f3ed;
+    --amber: #8a6116;
+    --amber-wash: #f6efdd;
+    /* 终端块在两个主题下恒暗 —— 取证材料的原生介质 */
+    --code-bg: #131a24;
+    --code-ink: #dce5ef;
+    --code-mut: #7f8ea3;
+    --code-line: #26303e;
+    --code-add: #7cc29a;
+    --code-del: #e08a80;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #10161d;
+      --card: #17202a;
+      --ink: #e3eaf2;
+      --muted: #93a3b6;
+      --line: #2a3542;
+      --accent: #71a5d6;
+      --accent-wash: #1b2a39;
+      --crash: #e28d83;
+      --crash-wash: #332120;
+      --ok: #7cc29a;
+      --ok-wash: #16281e;
+      --amber: #d3af6a;
+      --amber-wash: #2b2415;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #10161d;
+    --card: #17202a;
+    --ink: #e3eaf2;
+    --muted: #93a3b6;
+    --line: #2a3542;
+    --accent: #71a5d6;
+    --accent-wash: #1b2a39;
+    --crash: #e28d83;
+    --crash-wash: #332120;
+    --ok: #7cc29a;
+    --ok-wash: #16281e;
+    --amber: #d3af6a;
+    --amber-wash: #2b2415;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0 20px;
+    padding-block: 40px 64px;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 15.5px;
+    line-height: 1.8;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 880px; margin: 0 auto; }
+
+  .mono {
+    font-family: "IBM Plex Mono", "Noto Sans SC", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- 报头 ---------- */
+  .eyebrow {
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  h1 {
+    font-family: "Archivo", "Noto Sans SC", sans-serif;
+    font-weight: 800;
+    font-size: clamp(30px, 5.4vw, 42px);
+    line-height: 1.25;
+    letter-spacing: 0.01em;
+    margin: 10px 0 12px;
+    text-wrap: balance;
+  }
+  .dek { color: var(--muted); font-size: 16.5px; max-width: 40em; margin: 0 0 20px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 0 0 8px; list-style: none; }
+  .chips li {
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 12px;
+    padding: 4px 11px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--muted);
+    background: var(--card);
+  }
+  .chips li.good { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+
+  /* ---------- 案件索引 ---------- */
+  .index {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 12px;
+    margin: 34px 0 8px;
+  }
+  .index a {
+    display: block;
+    text-decoration: none;
+    color: inherit;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px 12px;
+  }
+  .index a:hover { border-color: var(--accent); }
+  .idx-platform {
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+  }
+  .idx-name { font-weight: 700; font-size: 15px; margin: 4px 0 2px; }
+  .idx-cause { color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .idx-meta {
+    margin-top: 10px;
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 11.5px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .idx-dot { color: var(--ok); }
+
+  /* ---------- 章节 ---------- */
+  section.case {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 26px 28px 22px;
+    margin-top: 26px;
+  }
+  @media (max-width: 560px) { section.case { padding: 20px 18px 16px; } }
+
+  .case-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px 14px;
+    margin-bottom: 6px;
+  }
+  .case-title {
+    font-family: "Archivo", "Noto Sans SC", sans-serif;
+    font-weight: 800;
+    font-size: 21px;
+    margin: 0;
+  }
+  .case-platform {
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 13px;
+    color: var(--accent);
+    letter-spacing: 0.06em;
+  }
+  .commit {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 1px 8px;
+  }
+  .stamp {
+    margin-left: auto;
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--ok);
+    border: 2px solid color-mix(in srgb, var(--ok) 55%, transparent);
+    border-radius: 6px;
+    padding: 3px 10px;
+    transform: rotate(-1.5deg);
+    white-space: nowrap;
+  }
+  .case-sub { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+
+  .blk { margin: 18px 0 0; }
+  .blk > .label {
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    color: var(--crash);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .blk.fix > .label { color: var(--ok); }
+  .blk.note > .label { color: var(--amber); }
+
+  .term {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--code-line);
+    border-radius: 10px;
+    padding: 13px 16px;
+    overflow-x: auto;
+    font-family: "IBM Plex Mono", "Noto Sans SC", ui-monospace, monospace;
+    font-size: 12.8px;
+    line-height: 1.75;
+    margin: 8px 0 0;
+    white-space: pre;
+  }
+  .term .mut { color: var(--code-mut); }
+  .term .del { color: var(--code-del); }
+  .term .add { color: var(--code-add); }
+  .term .hd { color: var(--code-mut); }
+
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+    background: var(--accent-wash);
+    color: var(--accent);
+    border-radius: 5px;
+    padding: 1.5px 6px;
+  }
+  .term code { background: none; color: inherit; padding: 0; }
+
+  .callout {
+    border-left: 3px solid var(--amber);
+    background: var(--amber-wash);
+    border-radius: 0 8px 8px 0;
+    padding: 12px 16px;
+    margin: 12px 0 0;
+    font-size: 14.5px;
+  }
+  .callout b { color: var(--amber); }
+
+  ol.ubs { margin: 8px 0 0; padding-left: 22px; }
+  ol.ubs li { margin-bottom: 9px; }
+  ol.ubs li b { color: var(--crash); }
+
+  /* ---------- 表格 ---------- */
+  .tbl-wrap { overflow-x: auto; margin-top: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.8px; min-width: 560px; }
+  th {
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-align: left;
+    color: var(--muted);
+    border-bottom: 2px solid var(--line);
+    padding: 8px 12px;
+    white-space: nowrap;
+  }
+  td { border-bottom: 1px solid var(--line); padding: 9px 12px; vertical-align: top; }
+  td.num { font-family: "IBM Plex Mono", monospace; font-size: 12.8px; white-space: nowrap; }
+  .pass {
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ok);
+    white-space: nowrap;
+  }
+
+  section.plain { margin-top: 34px; }
+  section.plain h2 {
+    font-family: "Archivo", "Noto Sans SC", sans-serif;
+    font-weight: 700;
+    font-size: 23px;
+    margin: 0 0 6px;
+  }
+  .lede { color: var(--muted); margin: 0 0 6px; }
+
+  .mem { margin: 10px 0 0; padding-left: 20px; }
+  .mem li { margin-bottom: 7px; }
+  .mem .mono { font-size: 13px; color: var(--accent); }
+
+  footer {
+    margin-top: 44px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    font-family: "IBM Plex Mono", "Noto Sans SC", monospace;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+  }
+</style>
+
+<div class="page">
+
+  <header>
+    <div class="eyebrow">shield · C++ / Lua 运行时 · 2026-09-21 → 09-22</div>
+    <h1>三平台 CI 修复档案</h1>
+    <p class="dek">三起平台各异的语言运行时崩溃——macOS 的析构悬垂、Linux 的锁外裸指针、Windows 的跨线程拽栈——三个独立根因,三次提交,全部闭环。</p>
+    <ul class="chips">
+      <li>3 commits</li>
+      <li>main @ 6e30d72</li>
+      <li class="good">CI 全绿 × 2 runs</li>
+      <li class="good">覆盖率分支 100%</li>
+      <li>无 tag / 无 release</li>
+    </ul>
+  </header>
+
+  <nav class="index" aria-label="案件索引">
+    <a href="#case1">
+      <div class="idx-platform">CASE 1 · macOS arm64</div>
+      <div class="idx-name">对已关闭状态析构 sol 引用</div>
+      <div class="idx-cause">state_view 隐持 registry 引用,VM 关闭后作用域收尾 unref → 崩在 0x9</div>
+      <div class="idx-meta"><span>f3d2a75</span><span class="idx-dot">● 已闭环</span></div>
+    </a>
+    <a href="#case2">
+      <div class="idx-platform">CASE 2 · Linux</div>
+      <div class="idx-name">诊断接口锁外裸指针</div>
+      <div class="idx-cause">pending_calls_inspect 在共享锁外 sort / 读条目,与并发 erase 构成 UAF</div>
+      <div class="idx-meta"><span>fc3b4ea</span><span class="idx-dot">● 已闭环</span></div>
+    </a>
+    <a href="#case3">
+      <div class="idx-platform">CASE 3 · Windows</div>
+      <div class="idx-name">对被驱动协程 settop 拽栈</div>
+      <div class="idx-cause">被拒 resume 的重投臂把另一线程正在执行的栈顶拽到栈底 → SegFault</div>
+      <div class="idx-meta"><span>6e30d72</span><span class="idx-dot">● 已闭环</span></div>
+    </a>
+  </nav>
+
+  <!-- ================= 案一 ================= -->
+  <section class="case" id="case1">
+    <div class="case-head">
+      <h2 class="case-title">案一</h2>
+      <span class="case-platform">macOS arm64 · test_cov_lua_runtime</span>
+      <span class="commit">f3d2a75</span>
+      <span class="stamp">已修复 · CI 验证</span>
+    </div>
+    <p class="case-sub">1/90 用例崩溃;崩溃点在测试方法自身的栈帧里,而不在被测代码。</p>
+
+    <div class="blk">
+      <div class="label">症状 · .ips 指纹</div>
+      <div class="term"><span class="hd">Exception Type:</span> EXC_BAD_ACCESS (KERN_INVALID_ADDRESS)
+<span class="hd">fault addr:</span> 0x9
+<span class="hd">stack:</span> luaH_getint ← lua_rawgeti ← luaL_unref ← test_method
+<span class="hd">x10:</span> absentkey   <span class="mut">; ltable.c 的哨兵节点</span></div>
+    </div>
+
+    <div class="blk">
+      <div class="label">根因</div>
+      <p style="margin:6px 0 0"><code>sol::state_view</code> 并非纯视图——构造即持有 <code>reg</code> 与 <code>global</code> 两个 registry 引用,析构时各跑一次 <code>luaL_unref</code>。用例第 4 段 <code>vm2.reset()</code> 关闭 VM 后,<code>sol::state_view lua2</code> 仍存活到作用域收尾才析构,对已关闭状态执行 unref。平台差异:Linux glibc 释放后内存仍映射,悬垂读静默存活;macOS arm64 释放即不可访问,registry 指针读出 NULL,读 <code>Table::lsizenode</code>(偏移 9)恰好就是崩溃地址 <b>0x9</b>。</p>
+      <div class="term"><span class="hd">// state_view.hpp:110 —— 构造即取两个引用</span>
+state_view(lua_State* Ls) : L(Ls), reg(Ls, LUA_REGISTRYINDEX), global(Ls, global_tag) {}</div>
+    </div>
+
+    <div class="blk fix">
+      <div class="label">修复</div>
+      <p style="margin:6px 0 0">凡测试要在 VM 生命周期内关闭它:把所有引用该状态的 sol 对象——state_view、function、table、proxy 链——收进内层作用域先析构,再 reset VM;越界的只留 weak 句柄与 <code>abandon()</code> 过的 handler。</p>
+    </div>
+
+    <div class="blk note">
+      <div class="label">排障注</div>
+      <p style="margin:6px 0 0">CI 是 Release/NDEBUG,sol2 安全宏与 Debug 不同——本地 Debug 树复现不了,须另建 Release 树;sol2 探针一度打错 vcpkg 包含路径(实际读取的是仓库根 <code>vcpkg_installed/</code> 而非构建树内的),靠 <code>.o.ddi.d</code> 依赖文件定位真实包含路径后取证才生效。</p>
+    </div>
+  </section>
+
+  <!-- ================= 案二 ================= -->
+  <section class="case" id="case2">
+    <div class="case-head">
+      <h2 class="case-title">案二</h2>
+      <span class="case-platform">Linux · test_cov_lua_service</span>
+      <span class="commit">fc3b4ea</span>
+      <span class="stamp">已修复 · CI 验证</span>
+    </div>
+    <p class="case-sub">最小的一案,但同样属于"诊断路径自己成为崩溃源"的家族。</p>
+
+    <div class="blk">
+      <div class="label">根因</div>
+      <p style="margin:6px 0 0"><code>pending_calls_inspect</code>(挂起调用诊断接口)在 <code>shared_lock</code> 之外用裸指针 sort / 逐条读取,与并发的 <code>pending_calls.erase</code> 构成 use-after-free。</p>
+    </div>
+
+    <div class="blk fix">
+      <div class="label">修复</div>
+      <p style="margin:6px 0 0">整函数持 <code>std::shared_lock</code>,sort 与读指针全部移入锁内,与同文件 <code>timer_inspect</code> 的既有形态对齐。</p>
+    </div>
+  </section>
+
+  <!-- ================= 案三 ================= -->
+  <section class="case" id="case3">
+    <div class="case-head">
+      <h2 class="case-title">案三</h2>
+      <span class="case-platform">Windows · test_cov_lua_service</span>
+      <span class="commit">6e30d72</span>
+      <span class="stamp">已修复 · CI 验证</span>
+    </div>
+    <p class="case-sub">本案主轮次:33 路并发压出的跨线程竞态,修复过程中还纠正了一版"看起来更安全"的半成品方案。</p>
+
+    <div class="blk">
+      <div class="label">症状 · 日志指纹(节选)</div>
+      <div class="term"><span class="hd">CI:</span> run 35676872571 · windows-latest Test step · exit 8
+*** resume_diag: FAIL co=…1608 status=2 lstat=2 top=3 errtype=string …
+*** resume_diag: FAIL co=…C368 status=2 lstat=0 top=1 errtype=string …
+*** shield resume requeue: co=…C368 session=… retries=1 src=call-response
+<span class="del">Segmentation fault</span></div>
+      <p style="margin:8px 0 0;font-size:14px;color:var(--muted)">触发用例 <code>InspectCapsTruncated</code>:33 路并发 <code>call_timeout(9000)</code> 打向同一 target,target 端 <code>shield.sleep(600)</code> 后同时响应,期间 inspect 轮询。两条 FAIL 分属两个协程,requeue 打印之后立即崩溃。</p>
+    </div>
+
+    <div class="blk">
+      <div class="label">语义判定</div>
+      <p style="margin:6px 0 0"><code>lua_resume</code> 返回 "cannot resume non-suspended coroutine" 当且仅当<b>另一线程正持该协程帧</b>。kernel 拒绝时会弹掉本次推送的参数、把这条消息压到协程栈顶——此后本线程对该协程的任何 <code>lua_*</code> 触碰都是跨线程竞态:读到的是驱动线程的活跃栈顶,MSVC 下直接崩,glibc 下静默幸存。</p>
+    </div>
+
+    <div class="blk">
+      <div class="label">根因 · 同臂四处 UB</div>
+      <ol class="ubs">
+        <li><b>lua_settop(co, 0) 清场(元凶)</b>——把栈顶拽到栈底,驱动线程的 <code>ci-&gt;func</code> 相对寻址随即越界;日志里 requeue 打印后立即崩,位置吻合。</li>
+        <li><b>诊断打印跨线程读 lua_status / lua_gettop</b>——被拒协程的栈正被别的线程驱动,读它本身就是数据竞争。</li>
+        <li><b>service_actors 查找在锁外裸读</b> unordered_map。</li>
+        <li><b>retry 耗尽时对可能仍被驱动的协程做终局拆除</b>(luaL_unref + note_coroutine_finished)。</li>
+      </ol>
+    </div>
+
+    <div class="blk fix">
+      <div class="label">修复</div>
+      <p style="margin:6px 0 0">清场语义保留,实现从无界拽栈换成<b>有界弹槽</b>——紧随被拒 resume 执行,弹掉的正是 kernel 刚压入栈顶的拒绝消息:</p>
+      <div class="term"><span class="del">-  lua_settop(caller_co, 0);   <span class="mut">// 清场:无界拽栈,Windows SegFault</span></span>
+<span class="add">+  lua_pop(caller_co, 1);      <span class="mut">// 有界弹槽:单槽指针递减,内存安全</span></span></div>
+      <p style="margin:10px 0 0">之后的分类只读互斥锁保护的书:non-suspended → 锁内恢复挂起条目 + 经 caller actor 邮箱重投(retry 预算耗尽也只丢弃等待,绝不拆除);dead / 续体错误 → 协程确由本线程终结,原有的 settop / unref / note_coroutine_finished 拆除合法。</p>
+    </div>
+
+    <div class="blk">
+      <div class="label">必要的清场 · 修复中的反复</div>
+      <div class="callout"><b>第一版"只删 settop、完全不碰"同样错。</b><code>YieldWindowDropWithoutCallerActor</code> 随即转红 <span class="mono">[0 != 42]</span>:被拒时 kernel 压入的消息残留帧内,而测试续体用 <code>lua_gettop</code> 收全栈打 payload——消息把返回值整体顶错一位。结论:清场是必要语义,"弹 1 槽"不是可选项而是唯一既满足清场又内存安全的实现。</div>
+    </div>
+
+    <div class="blk fix">
+      <div class="label">验证</div>
+      <div class="term"><span class="hd">$</span> InspectCapsTruncated ×20        <span class="add">→ 20/20 通过</span>
+<span class="hd">$</span> YieldWindowDropWithoutCallerActor ×5  <span class="add">→ 5/5 通过</span>
+<span class="hd">$</span> test_cov_lua_service / test_cov_lua_runtime  <span class="add">→ 全绿</span></div>
+    </div>
+  </section>
+
+  <!-- ================= 验证矩阵 ================= -->
+  <section class="plain">
+    <h2>验证矩阵</h2>
+    <p class="lede">三个根因各自独立,验证树也各司其职:Release 树钉 NDEBUG 路径,覆盖率树守门槛,CI 做最终裁决。</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>验证面</th><th>配置</th><th>内容</th><th>结果</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="num">build-relasan</td>
+            <td>Release + ASan(NDEBUG,CI 同构)</td>
+            <td>InspectCapsTruncated ×20;YieldWindowDrop ×5;两套件全量</td>
+            <td class="pass">全绿</td>
+          </tr>
+          <tr>
+            <td class="num">build-cov</td>
+            <td>Debug + gcov</td>
+            <td>全量重链后 88/88 套件;gcovr 行 ≥98 / 分支 100%(提交后字节,分支 10450/10450)</td>
+            <td class="pass">通过</td>
+          </tr>
+          <tr>
+            <td class="num">build-asan</td>
+            <td>Debug + ASan</td>
+            <td>树内可运行套件</td>
+            <td class="pass">全绿</td>
+          </tr>
+          <tr>
+            <td class="num">CI 35683830536</td>
+            <td>三平台 Build + Coverage + Cluster + Quality + Docker</td>
+            <td>全部 job,含此前红面的 windows-latest Test</td>
+            <td class="pass">success</td>
+          </tr>
+          <tr>
+            <td class="num">CI 35683830513</td>
+            <td>Plugins 三平台</td>
+            <td>全部 job</td>
+            <td class="pass">success</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="blk note">
+      <div class="label">覆盖率门槛插曲</div>
+      <p style="margin:6px 0 0">提交时 pre-commit 的 clang-format 钩子重排了 <code>lua_service.cpp</code>——提交后 gcno 戳已变,而未重链的陈旧测试二进制在全量 ctest 里把旧 stamp 的 gcda 覆盖进同一文件,<code>gcov</code> 报 <code>stamp mismatch with notes file</code>,gcovr 随即以 SanityCheckError 崩溃。处置:全量重链 → 清 gcda → 全量 ctest → gcovr 100% 分支门槛通过。结论沉淀:验证"提交后的字节"必须以全量重链起手。</p>
+    </div>
+  </section>
+
+  <!-- ================= 成果与沉淀 ================= -->
+  <section class="plain">
+    <h2>成果与沉淀</h2>
+    <p class="lede">三案独立提交,零 tag / 零 release;顺带完成全仓 lua_resume 调用点审计,确认无同族残余。</p>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>提交</th><th>内容</th><th>平台</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="num">f3d2a75</td>
+            <td>fix(test): VM-gone 用例先析构全部 sol 引用再关 VM</td>
+            <td>macOS</td>
+          </tr>
+          <tr>
+            <td class="num">fc3b4ea</td>
+            <td>fix(lua): pending_calls_inspect 全程持 registry 锁</td>
+            <td>Linux</td>
+          </tr>
+          <tr>
+            <td class="num">6e30d72</td>
+            <td>fix(lua): 被拒 resume 重投臂禁触驱动中协程——settop 改有界 pop</td>
+            <td>Windows</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="blk">
+      <div class="label" style="color:var(--accent)">调用点审计</div>
+      <p style="margin:6px 0 0">全仓 4 处 <code>lua_resume</code>:init-drive、client-rpc、sleep-timer 三处均在 actor / 驱动线程上执行且 DrivingGuard 全程持有;唯一跨线程路径(call 完成路由经 <code>resume_caller → resume_suspended_caller</code>)即本案修复点。同族竞态无残余。</p>
+    </div>
+
+    <div class="blk note">
+      <div class="label">经验入库</div>
+      <ul class="mem">
+        <li><span class="mono">sol-stateview-owns-registry-refs</span> — state_view 隐持两引用;0x9 指纹;Release-only 路径须 Release 树复现</li>
+        <li><span class="mono">resume-reject-cross-thread-rules</span> — 被拒 resume 即他线程持帧:禁 settop(0)、禁读栈,只许弹 1 槽 + 锁内簿记 + 重投;retry 耗尽只丢弃不拆除</li>
+        <li><span class="mono">gcov-clone-artifact-exclusions</span>(增补)— clang-format 提交钩子本身构成库源改动;验证提交后字节须全量重链起手</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <span>shield · main @ 6e30d72</span>
+    <span>2026-09-22</span>
+    <span>报告由修复会话生成</span>
+  </footer>
+
+</div>
