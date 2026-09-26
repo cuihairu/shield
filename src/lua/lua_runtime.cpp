@@ -719,10 +719,14 @@ void LuaRuntime::restrict_vm(std::shared_ptr<LuaVM> vm) {
     sol::state& state = *vm->state();
 
     // os: keep time/date/clock (business-clock hooks live there); drop the
-    // process- and host-control functions.
-    sol::table os_table = state["os"];
-    if (os_table.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: absent when the
-                             // VM was created with lua.sandbox.allow_os=false)
+    // process- and host-control functions. The optional-based read: os is
+    // genuinely absent when the VM was created with lua.sandbox.allow_os
+    // =false, and constructing sol::table from a nil proxy trips sol2's
+    // Debug type check (SOL_SAFE) before a .valid() guard could run.
+    sol::optional<sol::table> os_opt =
+        state["os"].get<sol::optional<sol::table>>();
+    if (os_opt) {
+        sol::table os_table = *os_opt;
         os_table["execute"] = sol::nil;
         os_table["exit"] = sol::nil;
         os_table["getenv"] = sol::nil;

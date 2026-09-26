@@ -323,6 +323,11 @@ BOOST_AUTO_TEST_CASE(SandboxGatesOsAndIoLibraries) {
                             "register_api must succeed without the os "
                             "library: "
                                 << reg_error);
+        // The console-eval restriction path takes the same absent-os arm
+        // without raising (sol2's Debug type check rejects sol::table
+        // construction from nil — read as optional instead).
+        runtime.restrict_vm(vm);
+        BOOST_CHECK(!lua["os"].valid());
     }
     config.set("lua.sandbox.allow_os", true);
     config.set("lua.sandbox.allow_io", true);
@@ -343,6 +348,14 @@ BOOST_AUTO_TEST_CASE(SandboxGatesOsAndIoLibraries) {
         BOOST_REQUIRE(result.is_array());
         BOOST_REQUIRE_EQUAL(result.size(), 1u);
         BOOST_CHECK_EQUAL(result[0].get<std::string>(), "function");
+        // The os-present arm of restrict_vm: business clock functions stay,
+        // host-control functions are dropped.
+        runtime.restrict_vm(vm);
+        BOOST_CHECK(lua["os"]["time"].valid());
+        BOOST_CHECK(lua["os"]["date"].valid());
+        BOOST_CHECK(lua["os"]["clock"].valid());
+        BOOST_CHECK(!lua["os"]["execute"].valid());
+        BOOST_CHECK(!lua["os"]["getenv"].valid());
     }
 }
 

@@ -4928,8 +4928,12 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     // for real CPU-time measurement (e.g. busy-wait loops).
     // Skipped entirely when the os library is sandboxed away
     // (lua.sandbox.allow_os=false): there is no table to hook, and business
-    // code cannot reach os.time in the first place.
-    if (sol::table os_t = lua["os"]; os_t.valid()) {
+    // code cannot reach os.time in the first place. Note the optional-based
+    // read: constructing sol::table from a nil proxy trips sol2's Debug
+    // type check before .valid() could run.
+    if (sol::optional<sol::table> os_opt =
+            lua["os"].get<sol::optional<sol::table>>()) {
+        sol::table os_t = *os_opt;
         sol::function orig_time = os_t["time"];
         sol::function orig_date = os_t["date"];
         // os.time(): no-arg → business clock seconds; with table → original.

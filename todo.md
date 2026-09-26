@@ -40,6 +40,14 @@
 - [x] 全量构建 + ctest 全绿验证（91 + 新增 3 个测试用例，93/93），逐块
       commit + push（7b395c2 安全默认值 / b1c4cbb 产品化三件套 /
       f337072 评估文档与 todo 重排）
+- [x] CI Coverage（Debug 构建）红修复：sol2 在 Debug 下开启安全检查，
+      `sol::table` 从 nil proxy（os 被 sandbox 关闭时）构造即触发
+      "(type check failed in constructor)" panic-abort，`.valid()` 守卫
+      来不及执行——本地 Release（NDEBUG）编译掉该检查故全绿。两处
+      （lua_api.cpp AD-07 os 钩子、lua_runtime.cpp restrict_vm）改为
+      `get<sol::optional<sol::table>>()` nil 容忍读取；SandboxGates 测试
+      补 restrict_vm 双臂真覆盖（替换原 GCOVR 分支豁免）；本地 Debug
+      树复现配置验证 + 全量回归
 
 ## Phase 1 候选（下一步，均为文档/低风险改动）
 
