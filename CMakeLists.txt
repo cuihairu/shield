@@ -698,6 +698,15 @@ add_test(NAME shield_config_default_check
         -DEXPECTED_OUTPUT_REGEX=initialized
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
+# --check-config performs a full bootstrap, so it really binds every port the
+# config declares (echo 7900, http ops 8080) plus the console socket. Every
+# test that boots the shipped config — or the scaffold template, which shares
+# the 8080 ops port — must therefore hold this lock or they collide under
+# `ctest -j`. See also the test_default_config_boot property in
+# tests/CMakeLists.txt.
+set_tests_properties(shield_config_default_check PROPERTIES
+    RESOURCE_LOCK fixed_ports
+)
 add_test(NAME shield_config_overlay_check
     COMMAND ${CMAKE_COMMAND}
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/overlay-base.yaml;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/overlay-override.yaml"

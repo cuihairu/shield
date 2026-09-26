@@ -1660,13 +1660,15 @@ BOOST_AUTO_TEST_CASE(InspectTimersAndCallsDetail) {
     BOOST_REQUIRE(items.is_array());
     BOOST_REQUIRE(!items.empty());
     // Both waits were issued by cov_l2_busy; neither is proxied; both are
-    // still far from their deadlines (5s default vs a ~600ms sleep).
+    // still in flight with a full 5s budget left (ms_left = deadline - now,
+    // so a wait inspected in the issuing millisecond reports exactly 5000 —
+    // the upper bound is the budget, hence <= and not <).
     bool nap_seen = false;
     for (const auto& c : items) {
         BOOST_CHECK_EQUAL(c["caller"], "cov_l2_busy");
         BOOST_CHECK(c["proxied"] == false);
         BOOST_CHECK_GT(c["ms_left"].get<int64_t>(), 0);
-        BOOST_CHECK_LT(c["ms_left"].get<int64_t>(), 5000);
+        BOOST_CHECK_LE(c["ms_left"].get<int64_t>(), 5000);
         nap_seen = true;
     }
     BOOST_CHECK(nap_seen);

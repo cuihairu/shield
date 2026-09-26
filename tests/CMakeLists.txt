@@ -76,6 +76,12 @@ set_tests_properties(test_default_config_boot PROPERTIES
     LABELS "acceptance"
     TIMEOUT 120
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    # The shipped echo listener is deliberately kept on its declared port
+    # 7900 (that is what this test asserts), so it cannot be made hermetic by
+    # port patching the way the ops endpoint is. Hold the same lock as
+    # shield_config_default_check, which boots the same config, so the two
+    # never bind 7900 concurrently under `ctest -j`.
+    RESOURCE_LOCK fixed_ports
 )
 shield_copy_runtime_dlls(test_default_config_boot)
 
@@ -94,6 +100,12 @@ add_test(NAME shield_new_project_scaffold
 set_tests_properties(shield_new_project_scaffold PROPERTIES
     LABELS "acceptance"
     TIMEOUT 60
+    # The generated project is validated with a real --check-config, so it
+    # binds the template's fixed ports (echo 8100, http ops 8080). 8080 is
+    # also the shipped config's ops port — share the lock so the two never
+    # race. The generated console socket is <APP_NAME>-scoped, so it needs
+    # no extra isolation.
+    RESOURCE_LOCK fixed_ports
 )
 endif()
 

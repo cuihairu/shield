@@ -49,6 +49,29 @@
       补 restrict_vm 双臂真覆盖（替换原 GCOVR 分支豁免）；本地 Debug
       树复现配置验证 + 全量回归
 
+## 回归修复（2026-09-26）
+
+接手首轮全量回归抓到 2 个真实缺陷，均与 CI 串行跑法无关（`ctest -j` 暴露）：
+
+- [x] 固定端口测试并行互撞（`shield_config_default_check` Failed）：
+      `--check-config` 走**完整** bootstrap，会真绑配置声明的所有端口
+      （echo 7900 / http ops 8080 / console socket），不是纯 YAML 校验。
+      `test_default_config_boot` 按设计**保留**shipped 端口 7900（那正是它
+      的断言），ops 端点才做 hermetic 化；两者并发时 7900 撞
+      "Address already in use"。`shield_new_project_scaffold` 与默认配置
+      共享 8080，同样互撞。三者统一挂 CTest `RESOURCE_LOCK fixed_ports`
+      ——只串行化这 3 个，其余 90 个测试保持并行。
+- [x] `ms_left` 断言差一（`test_cov_lua_commands` InspectTimersAndCallsDetail）：
+      `ms_left = deadline_ms - now`，deadline 是「发起时刻 + 5000」；若检查
+      落在发起的同一毫秒，读数**恰好** 5000。原 `< 5000` 把这个合法值判失败
+      （CI 串行时机器负载低、极少命中，`-j` 下必现）。改为 `<= 5000` 并
+      注释写清等号来源，保留下界 `> 0`（仍在途）与上界（预算未被改写）。
+- [x] 验证：Release 与 Debug 双树各 93/93 绿；`-j 8` 连跑 4 次全绿
+      （修复前必现失败）。
+- [x] docs/deployment.md 重写（构建产物/容器端口口径/systemd/停机预算/
+      观测接入/多实例边界）：修正了草稿里 `build-release/bin/shield` 的
+      事实错误——`build.sh` 固定用 `build/`，不存在 build-release 目录。
+
 ## Phase 1 候选（2026-09-26 完成，均为文档/低风险改动）
 
 - [x] DB 使用纪律文档 + 示例：docs/db-discipline.md——同步 ABI 硬规则
