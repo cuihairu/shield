@@ -1461,7 +1461,14 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                             std::string entry;
                             try {
                                 entry = deny[i].as<std::string>();
-                            } catch (const std::exception&) {
+                            } catch (
+                                const std::exception&) {  // GCOVR_EXCL_BR_LINE
+                                                          // (compiler artifact:
+                                                          // catch blocks have
+                                                          // no non-exception
+                                                          // entry edge; the
+                                                          // exception arm
+                                                          // is covered)
                                 if (error) {
                                     *error = entry_path + " must be a string";
                                 }
