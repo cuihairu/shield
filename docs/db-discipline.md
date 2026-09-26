@@ -2,8 +2,9 @@
 
 > 本文是**硬规则**，不是风格建议。来源：`docs/architecture-review.md` §4 的
 > 【高】风险结论——`shield.database.v1` ABI 全同步阻塞（database.h 全表无
-> callback/future 参数），异步入口是 Phase 2 立项；在异步入口落地之前，本文
-> 规则把"一次慢查询卡全服"这类事故挡在代码评审层。
+> callback/future 参数），异步入口已立项（[DB 异步 ABI 立项](db-async-design.md)，
+> 未实现）；在它落地之前，本文规则把"一次慢查询卡全服"这类事故挡在代码
+> 评审层。
 
 ## 为什么有这份纪律
 
@@ -177,5 +178,6 @@ local ok, profile = shield.call("db_player", "load_profile", uid)  -- ✗ 热路
 
 - 运维/管理端冷路径（GM 工具、离线批处理）可以放宽规则 2 的超时要求，但
   规则 1（专职 service）与超时配置本身仍然强制。
-- Phase 2 异步 ABI（callback/future + 协程恢复）落地后，本文规则降级为
-  "推荐"：届时阻塞不再卡 VM，但连接池与超时纪律仍然适用于任何同步路径。
+- Phase 2 异步 ABI（协程恢复式，[DB 异步 ABI 立项](db-async-design.md)）落地
+  后，本文规则降级为"推荐"：届时阻塞不再卡 VM，但连接池与超时纪律仍然适用
+  于任何同步路径。

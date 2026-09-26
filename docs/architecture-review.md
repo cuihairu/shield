@@ -108,7 +108,9 @@ connect/disconnect/ping/query/execute/begin/commit/rollback/free_result）。
   把"DB 调用必须放进独立 service / 必须配超时"写成硬规则。**建议两步走：
   (a) 立即在文档写明使用纪律 + 示例（把 DB 封装进专职 service，业务经
   shield.call 访问）；(b) Phase 2 给 ABI 加异步入口（callback 或 future +
-  协程恢复）**。这不是重构，是补一个已知缺口。
+  协程恢复）**。这不是重构，是补一个已知缺口。(a) 已完成（
+  [DB 使用纪律](db-discipline.md)）；(b) 已立项（
+  [DB 异步 ABI 立项](db-async-design.md)，协程恢复式，未实现）。
 
 ## 5. 定时器与任务调度
 
@@ -207,7 +209,7 @@ API 先稳定、后换分布式后端，顺序正确。风险仅在预期管理�
 1. 安全默认值：max_frame_size 默认无限（本轮修）；TCP_NODELAY（本轮修）；
    连接限流 + 地址黑名单（本轮修，见 §2 已解决项）
 2. sandbox 开关声明未实现（本轮修——产品诚实性）
-3. DB 异步路径（先文档纪律，Phase 2 ABI 扩展）
+3. DB 异步路径（纪律文档已落地；[异步入口已立项](db-async-design.md)，实现待排期）
 4. 热更新 blue-green 落地（P2 另立项）
 5. net.threads 默认值与调优文档（本轮文档带出）
 

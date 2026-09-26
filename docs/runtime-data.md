@@ -71,4 +71,5 @@ C ABI 契约见 `include/shield/plugin/database.h`（SQL）；其余接口的 vt
 - [Lua API 契约](lua-api.md) —— `shield.<plugin-namespace>(binding)` 各数据插件方法的权威定义。
 - [插件系统 v1](plugin-system.md) —— 插件 ABI、instance、get_interface、register_lua 机制。
 - [Plugin Pool Stats](plugin-pool-stats.md) —— 连接池统一观测接口。
+- [DB 异步 ABI 立项](db-async-design.md) —— 协程恢复式异步入口（草案，未实现）。
 - [插件参考](plugins/index.md) —— 各数据库/Redis 插件的配置与能力。

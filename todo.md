@@ -141,7 +141,13 @@ ingress rate limit（token bucket，messages/second + burst）+ accept 时
 
 ## Phase 2 候选（另行立项）
 
-- [ ] DB ABI 异步入口（callback/future + 协程恢复）
+- [x] DB ABI 异步入口立项文档（2026-09-26 完成）：docs/db-async-design.md
+      ——协程恢复式（复用 shield.call 挂起/恢复机器 + 插件 worker 池 +
+      host_api 尾部追加 lua_suspend_current/lua_resume_session 两原语）；
+      备选否决理由、事务硬规则（tx body 内禁止任意让出）、超时≠取消
+      （毒化连接）语义、M1-M4 里程碑与未决问题。
+- [ ] DB 异步入口实现（db-async-design.md M1-M4：host 原语 → sqlite
+      端到端 → mysql/postgresql → tx + 指标 + 文档降级）
 - [x] 连接级限流/黑名单（runtime-security.md 草案落地）——2026-09-26
       完成，见上方「连接级限流」节（7779971 限流 + 本次黑名单）
 - [ ] blue-green 热更新落地（runtime-lua-vm.md 设计稿）

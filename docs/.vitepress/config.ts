@@ -130,6 +130,7 @@ export default defineConfig({
           { text: '基础组件边界（草案）', link: '/runtime-primitives' },
           { text: '实体与组件草案', link: '/runtime-entity' },
           { text: '游戏状态持久化与回档', link: '/runtime-persistence' },
+          { text: 'DB 异步 ABI 立项（草案）', link: '/db-async-design' },
           { text: 'Schema 设计（合并稿）', link: '/schema-design' },
           { text: 'Xmldef Toolchain Design', link: '/xmldef-toolchain-design' },
           { text: 'Xmldef Descriptor Spec', link: '/xmldef-descriptor-spec' },
