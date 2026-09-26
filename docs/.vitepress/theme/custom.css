@@ -1,0 +1,59 @@
+/* shield palette — shield-logo.svg 主色 #b11964 玫红
+ *   #b11964  brand（链接、按钮、feature 图标）
+ *   #96154f  hover
+ *   #7a1040  active / 标题强调
+ *   #e85a9b  暗色模式提亮
+ * 其余沿用 VitePress 默认中性色，避免整站被染色。
+ */
+:root {
+  --vp-c-brand-1: #b11964;
+  --vp-c-brand-2: #96154f;
+  --vp-c-brand-3: #7a1040;
+  --vp-c-brand-soft: rgba(177,25,100, 0.13);
+
+  --vp-button-brand-bg: #b11964;
+  --vp-button-brand-hover-bg: #96154f;
+  --vp-button-brand-active-bg: #7a1040;
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(
+    115deg,
+    #7a1040 8%,
+    #b11964 52%,
+    #e85a9b 96%
+  );
+
+  --vp-custom-outline: #b11964;
+
+  .VPFeature .icon {
+    border-radius: 10px;
+    background-color: var(--vp-c-brand-soft);
+    color: var(--vp-c-brand-1);
+  }
+}
+
+/* 暗色：亮色系主色压暗会发闷，整体提一档 */
+.dark {
+  --vp-c-brand-1: #e85a9b;
+  --vp-c-brand-2: #b11964;
+  --vp-c-brand-3: #e85a9b;
+  --vp-c-brand-soft: rgba(232,90,155, 0.16);
+
+  --vp-button-brand-bg: #b11964;
+  --vp-button-brand-hover-bg: #e85a9b;
+  --vp-button-brand-active-bg: #96154f;
+
+  --vp-home-hero-name-background: linear-gradient(
+    115deg,
+    #e85a9b 8%,
+    #b11964 52%,
+    #7a1040 96%
+  );
+
+  --vp-custom-outline: #e85a9b;
+}
+
+/* 行内代码沿用品牌色，替掉默认蓝 */
+code {
+  color: var(--vp-c-brand-1);
+}

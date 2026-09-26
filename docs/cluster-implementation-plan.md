@@ -60,7 +60,7 @@ Lua: shield.send / shield.call("node-b:room", ...)
 
 每个里程碑独立可合入、独立有价值、不破坏单节点路径。
 
-### M1 心跳调度 + 诚实状态（无网络，半天）✅ 已落地（2026-09）
+### M1 心跳调度 + 诚实状态（无网络，半天） [已落地（2026-09]
 
 - bootstrap 启动低频定时线程（`std::jthread` + `heartbeat_interval_ms` 节拍）
   调用 `ClusterManager::tick()`；`stop()` 时收线。
@@ -76,7 +76,7 @@ Lua: shield.send / shield.call("node-b:room", ...)
   自驱动、route cache、`parse_remote_target`、注入式投递接缝）；CI 新增
   `SHIELD_ENABLE_CLUSTER=ON` 的 Cluster job（`ctest -L cluster`）。
 
-### M2 transport：握手 + 心跳（CAF middleman，2~3 天）✅ 已落地（2026-09）
+### M2 transport：握手 + 心跳（CAF middleman，2~3 天） [已落地（2026-09]
 
 - `ClusterTransport` 以 CAF actor 形态实现：
   - 服务端：`middleman().publish(actor, port)` 绑定 `cluster.listen`；
@@ -106,7 +106,7 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
   双 `caf::actor_system` 真实 BASP 集成测试（握手、心跳保活、杀对端
   即 offline、同端口重启重连且新 epoch 清路由）。
 
-### M3 路由学习（1 天）✅ 已落地（2026-09）
+### M3 路由学习（1 天） [已落地（2026-09]
 
 - 通告源 ✅：`LuaServiceManager::set_name_change_notifier(fn)` 观察每一次
   已提交的发布变更（spawn 发布、`shield.register`/`unregister`、on_init
@@ -129,7 +129,7 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
   清除）；`test_cov_lua_service2` 补 2 例钩子生命周期（spawn/register/
   unregister/exit 事件序列、on_init 失败回滚只收回 on_init 发布的名字）。
 
-### M4 跨节点 send/call 投递（2~4 天，最大项）✅ 已落地（2026-09）
+### M4 跨节点 send/call 投递（2~4 天，最大项） [已落地（2026-09]
 
 - `RemoteSendFn` 实装 ✅：签名扩为
   `(target_node, service_id, method, args_json, call_session, timeout_ms, error*)`；

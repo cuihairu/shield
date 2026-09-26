@@ -152,7 +152,7 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 
 ## Phase A
 
-### Task 1: Lua 5.5 debug hook 语义核实（spike）✅ 已完成（2026-09-22，lua5.5 5.5.0 实测，脚本验证后已删除）
+### Task 1: Lua 5.5 debug hook 语义核实（spike） [已完成（2026-09-22，lua5.5 5.5.0 实测，脚本验证后已删除]
 
 - [x] **Step 1:** 一次性脚本验证四组语义（结论见 Step 2）。
 - [x] **Step 2:** 实测结论（全部以 5.5.0 运行时为准）：
@@ -255,7 +255,7 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 
 ## Phase B：慢调用追踪
 
-### Task 6: SlowCallRing + resume_caller 打点 ✅ 已完成（2026-09-23，35dad70）
+### Task 6: SlowCallRing + resume_caller 打点 [已完成（2026-09-23，35dad70]
 
 **Files:** Create `include/shield/lua/slow_calls.hpp`；Modify
 `src/lua/lua_service.cpp`（resume_caller）
@@ -273,7 +273,7 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 - [x] **Step 3:** 单测：gate 关闭零记录、超阈值记录、环形覆盖最旧、
   snapshot 一致性、阈值边界（== 阈值记/不记，取「≥ 记录」并写死用例）。
 
-### Task 7: 报告集成 + 文档同步 ✅ 已完成（2026-09-23，9a2b35f）
+### Task 7: 报告集成 + 文档同步 [已完成（2026-09-23，9a2b35f]
 
 - [x] **Step 1:** `POST /ops/profile` 的 `status`/`report` 附带
   `slow_calls` 段（`snapshot()` 前 16 条 + `total_recorded` 累计）；
@@ -289,7 +289,7 @@ stop（或 duration 到时自停）时经 `std::promise` 一次性移交。慢�
 - [x] **Step 3:** `docs/roadmap.md` shield_ops 段同步落地口径
   （P0 完成 + 本计划边界）。
 
-### Task 8: Phase B 验收 ✅ 已完成（2026-09-23，1dcf699 收口；CI 35911259752 三平台绿 + Optional Plugins 35911259834 三平台绿；插件树验收用 CI 等价——本地 build-plugins 树 vcpkg mongo-c-driver 依赖腐烂与本计划无关）
+### Task 8: Phase B 验收 [已完成（2026-09-23，1dcf699 收口；CI 35911259752 三平台绿 + Optional Plugins 35911259834 三平台绿；插件树验收用 CI 等价——本地 build-plugins 树 vcpkg mongo-c-driver 依赖腐烂与本计划无关]
 
 - [x] **Step 1:** 全量测试（含新增）两树绿 + clang-format + 覆盖率
   双 100% 维持；提交推送等 CI 三平台绿。
