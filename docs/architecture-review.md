@@ -68,8 +68,10 @@ delimiter），线头 `route_id` + 纯业务体；codec 走 C ABI 插件
 - 【中】全代码库无 `TCP_NODELAY`（src/net/ 零命中）。Nagle 开着，小包回路
   延迟对回合制/实时游戏是可感知劣化。asio socket 默认即 Nagle on。建议 accept
   后统一 `set_option(tcp::no_delay(true))`。
-- 【中】无连接级限流/黑名单。runtime-security.md 已诚实标注 Phase 2+。公网
-  前必须补，单机内网可接受。
+- ~~【中】无连接级限流/黑名单。~~ **已解决（2026-09-26）**：
+  `network.rate_limit`（每连接令牌桶，按解码后消息计费、超限丢帧不断连）
+  与 `network.blocklist.deny`（accept 时按地址/CIDR 拒绝、启动期校验条目）
+  均已落地，语义见 [安全运行时语义](runtime-security.md)。
 
 ## 3. 会话与状态管理
 
@@ -203,7 +205,7 @@ API 先稳定、后换分布式后端，顺序正确。风险仅在预期管理�
 
 **欠缺**（按优先级）：
 1. 安全默认值：max_frame_size 默认无限（本轮修）；TCP_NODELAY（本轮修）；
-   连接限流（Phase 2，已声明）
+   连接限流 + 地址黑名单（本轮修，见 §2 已解决项）
 2. sandbox 开关声明未实现（本轮修——产品诚实性）
 3. DB 异步路径（先文档纪律，Phase 2 ABI 扩展）
 4. 热更新 blue-green 落地（P2 另立项）

@@ -108,6 +108,23 @@ void TcpListener::do_accept() {
             return;
         }
 
+        auto remote_ep = socket_.remote_endpoint();
+        std::string remote_ip = remote_ep.address().to_string();
+
+        // Blocked addresses are rejected first: no session object, no
+        // per-session state, and the connection-count bookkeeping below is
+        // never touched for them.
+        if (blocklist_.blocked(remote_ep.address())) {
+            last_rejection_ = "blocked_ip";
+            auto& log = shield::log::get_logger("net");
+            SHIELD_LOG_WARNING(log, "Connection rejected: address blocked (" +
+                                        remote_ip + ")");
+            boost::system::error_code close_ec;
+            socket_.close(close_ec);
+            do_accept();
+            return;
+        }
+
         // Check connection limit.
         {
             std::unique_lock lock(sessions_mutex_);
@@ -125,8 +142,6 @@ void TcpListener::do_accept() {
         }
 
         // Check per-IP limit.
-        auto remote_ep = socket_.remote_endpoint();
-        std::string remote_ip = remote_ep.address().to_string();
         {
             std::unique_lock lock(sessions_mutex_);
             if (max_per_ip_ > 0) {

@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "shield/net/ip_blocklist.hpp"
 #include "shield/net/session.hpp"
 
 namespace shield::net {
@@ -52,6 +53,14 @@ public:
     void set_rate_limit(uint32_t per_second, uint32_t burst) {
         rate_limit_per_second_ = per_second;
         rate_limit_burst_ = burst;
+    }
+
+    /// @brief Install the address blocklist evaluated at accept time.
+    ///        Rejected peers never get a session object.
+    /// @return false when an entry is malformed; the previous list is kept.
+    bool set_blocklist(const std::vector<std::string>& entries,
+                       std::string* error = nullptr) {
+        return blocklist_.set_rules(entries, error);
     }
 
     /// @brief Get last rejection reason
@@ -98,6 +107,9 @@ private:
     uint32_t read_idle_timeout_ms_ = 0;  // 0 = disabled
     uint32_t rate_limit_per_second_ = 0;  // 0 = unlimited
     uint32_t rate_limit_burst_ = 0;       // 0 = same as the rate
+    // Accept-time address blocklist. Consulted before a session is built, so
+    // a blocked peer costs one address comparison and nothing else.
+    IpBlocklist blocklist_;
     std::unordered_map<std::string, size_t> ip_counts_;
     std::string last_rejection_;
     bool listening_ = false;

@@ -69,6 +69,9 @@ shield_coverage_test(test_cov_config shield_config)
 # shield_net
 shield_coverage_test(test_cov_session shield_net)
 shield_coverage_test(test_cov_listener shield_net)
+# Header-only (boost::asio::ip only); linked against shield_net for the
+# include path, but the blocklist itself has no library-side symbols.
+shield_coverage_test(test_cov_ip_blocklist shield_net)
 shield_coverage_test(test_cov_http_server shield_net)
 shield_coverage_test(test_cov_http_client shield_net)
 shield_coverage_test(test_cov_console_net POSIX_ONLY shield_net shield_bootstrap)

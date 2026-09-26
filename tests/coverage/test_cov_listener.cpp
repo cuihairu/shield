@@ -294,6 +294,105 @@ BOOST_AUTO_TEST_CASE(PerIpLimitBelowLimitAllowsConnection) {
     io.run_for(100ms);
 }
 
+// A blocked address is rejected at accept: no session object is created and
+// the listener records the dedicated reason.
+BOOST_AUTO_TEST_CASE(BlockedAddressIsRejectedAtAccept) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    TcpListener listener(io, port, callbacks);
+    // The test client connects over loopback, so deny 127.0.0.1.
+    BOOST_REQUIRE(listener.set_blocklist({"127.0.0.1"}));
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(200ms);
+
+    BOOST_CHECK(wait_until(
+        [&] { return listener.last_rejection_reason() == "blocked_ip"; }));
+    // Rejected before a session exists: no per-session state was allocated.
+    BOOST_CHECK_EQUAL(listener.session_count(), 0u);
+
+    c1.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
+// A CIDR rule blocks the loopback range the test clients come from.
+BOOST_AUTO_TEST_CASE(BlockedCidrRejectsAtAccept) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    TcpListener listener(io, port, callbacks);
+    BOOST_REQUIRE(listener.set_blocklist({"127.0.0.0/8"}));
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(200ms);
+
+    BOOST_CHECK(wait_until(
+        [&] { return listener.last_rejection_reason() == "blocked_ip"; }));
+    BOOST_CHECK_EQUAL(listener.session_count(), 0u);
+
+    c1.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
+// A blocklist that does not cover the peer leaves the connection alone.
+BOOST_AUTO_TEST_CASE(UnrelatedBlocklistAllowsConnection) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    TcpListener listener(io, port, callbacks);
+    // Documentation-range addresses: never the loopback test client.
+    BOOST_REQUIRE(listener.set_blocklist({"203.0.113.7", "2001:db8::/32"}));
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(200ms);
+
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+    BOOST_CHECK_EQUAL(listener.last_rejection_reason(), "");
+
+    c1.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
+// A malformed rule set is refused outright and the previous one survives, so
+// a bad edit cannot silently disable an in-force blocklist.
+BOOST_AUTO_TEST_CASE(BlocklistSetFailureKeepsPreviousRules) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    TcpListener listener(io, port, callbacks);
+    BOOST_REQUIRE(listener.set_blocklist({"127.0.0.1"}));
+
+    std::string error;
+    BOOST_CHECK(!listener.set_blocklist({"198.51.100.0/24", "bogus"}, &error));
+    BOOST_CHECK(error.find("not an IP address") != std::string::npos);
+
+    // The original 127.0.0.1 rule is still the one in force.
+    listener.start();
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(200ms);
+    BOOST_CHECK(wait_until(
+        [&] { return listener.last_rejection_reason() == "blocked_ip"; }));
+
+    c1.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
 BOOST_AUTO_TEST_CASE(BroadcastReachesAllSessions) {
     boost::asio::io_context io;
     const auto port = reserve_ephemeral_port(io);

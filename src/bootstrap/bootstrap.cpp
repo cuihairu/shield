@@ -1239,6 +1239,29 @@ static bool initialize_impl(const RuntimeConfig& config) {
             listener->set_rate_limit(actor.rate_limit_per_second,
                                      actor.rate_limit_burst);
         }
+        if (!actor.blocklist_deny.empty()) {
+            // Entries were already parsed by the config layer with the very
+            // parser the listener uses, so a failure here would mean the two
+            // disagree. Kept as a hard startup failure because silently
+            // serving without the configured deny rules is the worse
+            // outcome, but the arm is not reachable through the CLI.
+            std::string blocklist_error;
+            if (!listener->set_blocklist(  // GCOVR_EXCL_BR_LINE (defensive:
+                                           // config layer already parsed these
+                                           // entries with this same parser)
+                    actor.blocklist_deny, &blocklist_error)) {
+                SHIELD_LOG_ERROR(  // GCOVR_EXCL_BR_LINE (defensive: unreachable
+                                   // via the CLI, see the comment above)
+                    log, "Invalid address blocklist for actor '" + actor.name +
+                             "': " + blocklist_error);
+                return false;
+            }
+            SHIELD_LOG_INFO(
+                log, "Address blocklist active for actor '" + actor.name +
+                         "' with " +
+                         std::to_string(actor.blocklist_deny.size()) +
+                         " rule(s)");
+        }
         listener->start();
         SHIELD_LOG_INFO(log, "TCP gateway listener started for actor '" +
                                  actor.name + "' on " + actor.network_tcp);

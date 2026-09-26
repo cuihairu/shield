@@ -4,14 +4,15 @@
 >
 > **已实现**：`lua.sandbox.allow_os` / `lua.sandbox.allow_io`（全局级
 > VM 标准库开关，见 [配置语义](runtime-config.md)；未设置时保持历史
-> 行为=开放，随仓库分发的默认配置声明两者为 false）。
+> 行为=开放，随仓库分发的默认配置声明两者为 false）；网关层连接级
+> `rate_limit`（令牌桶）与 `blocklist.deny`（accept 时按地址/CIDR 拒绝，
+> 见下文「速率限制」与「地址黑名单」）。
 >
 > **未实现（Phase 2+ 草案）**：下文 per-actor sandbox 资源限制
 > （max_instructions/allowed_modules 等）、permissions 权限矩阵、
-> `network.tls`、`rate_limit`——这些在当前 `RuntimeActorConfig` 中均
-> 未实现（见 `include/shield/config/config.hpp`）。若与
-> [配置语义](runtime-config.md) 或 [Lua API 契约](lua-api.md) 冲突，
-> 以那两份文档为准。
+> `network.tls`——这些在当前 `RuntimeActorConfig` 中均未实现（见
+> `include/shield/config/config.hpp`）。若与 [配置语义](runtime-config.md)
+> 或 [Lua API 契约](lua-api.md) 冲突，以那两份文档为准。
 
 本文档包含 Shield 安全机制相关的运行时语义决策。
 
@@ -114,33 +115,67 @@ network:
 
 | 层级 | 作用 | 存储 | 适用场景 |
 |------|------|------|----------|
-| 网关层 `rate_limit` | 按客户端 IP/连接限流 | 内存 | 防刷、防 DDoS |
+| 网关层 `rate_limit` | 按连接限流（每连接一个令牌桶） | 内存 | 防刷、防 DDoS |
 | 业务层 `shield.rate_limiter()` | 按业务 key 限流 | Redis | 全服限流、API 限流 |
 
 ```yaml
 actors:
   - name: gateway
     script: scripts/auth.lua
-    rate_limit:
-      requests_per_second: 1000    # 每秒请求数
-      burst_size: 100              # 突发大小
-      per_client: true             # 按客户端限制
+    network:
+      tcp: "0.0.0.0:8001"
+      rate_limit:
+        messages_per_second: 1000   # 每秒补充的令牌数（0 = 不限流）
+        burst: 100                  # 桶深度（0 = 等于 messages_per_second）
 ```
 
-Lua 层实现：
+语义要点：
 
-```lua
--- spawn 期编译的 c2s RPC 绑定(ctx 由 dispatch 前置)
-function M.move(ctx, client, request)
-    -- 网关层限流：按客户端身份检查
-    if not check_rate_limit(client:session_id()) then
-        return  -- 超限帧直接丢弃（不回写错误帧）
-    end
+- **令牌桶，每连接一个**，随连接创建、由 listener 下发给 `TcpSession`。
+  桶初始为满（可立即通过 `burst` 条），之后按 `messages_per_second`
+  连续补充；补充是**惰性**的（按经过时间折算），空闲连接不占任何定时器。
+- **按解码后的消息计费**，不是按 TCP 读事件。把多帧打包进一个 TCP 段
+  不能绕过预算——批量投递与逐条投递消耗同样的令牌。
+- **超限帧直接丢弃，不回写错误帧，连接保持存活**：客户端突发超预算不应
+  丢失会话。丢弃计数可经 `Session::rate_limited_count()` 观测。
+- `messages_per_second` 为 0（未配置）即关闭该闸门，历史行为不变。
+- 取值范围：`messages_per_second` 与 `burst` 均为 `0..1000000`，启动期
+  校验，越界直接 fail-fast。
 
-    -- 处理消息
-    process_move(ctx, client, request)
-end
+业务层若需按玩家/业务 key 的全服配额，仍用 `shield.rate_limiter()`；两者
+不互相替代。
+
+### 地址黑名单（网关层）
+
+黑名单在 **accept 时**判定：被拒绝的对端不会创建任何 session 对象，
+也不进入连接数/IP 计数，成本只有一次地址比较。
+
+```yaml
+actors:
+  - name: gateway
+    script: scripts/auth.lua
+    network:
+      tcp: "0.0.0.0:8001"
+      blocklist:
+        deny:
+          - 203.0.113.7        # 精确地址
+          - 198.51.100.0/24    # IPv4 CIDR
+          - "2001:db8::/32"    # IPv6 CIDR
 ```
+
+语义要点：
+
+- 条目是**纯地址**或 **CIDR**（`地址/前缀长度`），IPv4/IPv6 都支持。
+- **按地址族分表**：v4 地址只与 v4 规则比对，v6 同理，跨族永不误伤。
+- **启动期解析并校验**：写错的条目是启动错误（`--check-config` 即可
+  发现），而不是在事故当天才发现「规则没生效」。安装失败时**保留原有
+  规则集**，不会因为一个错字把正在生效的黑名单清空。
+- 拒绝时记录 `last_rejection_reason() == "blocked_ip"`，并打 WARNING 日志。
+- 空列表/未配置 = 不启用。
+
+限流与黑名单的分工：**黑名单挡特定来源**（已知的攻击源/刷子），
+**限流挡总量**（合法但嘈杂的客户端）。两者都按连接生效，都不替代业务层
+的 `shield.rate_limiter()`。
 
 ## 敏感数据保护
 

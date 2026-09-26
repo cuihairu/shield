@@ -16,6 +16,7 @@
 #include <unordered_set>
 
 #include "shield/log/logger.hpp"
+#include "shield/net/ip_blocklist.hpp"
 
 namespace shield::log {
 class Logger;
@@ -1435,6 +1436,49 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                         return false;
                     }
                 }
+                // Accept-time address blocklist. Every entry is parsed here
+                // so a typo is a startup error, not a silently missing deny
+                // rule discovered during an incident.
+                if (const YAML::Node blocklist = network["blocklist"]) {
+                    if (!blocklist.IsMap()) {
+                        if (error) {
+                            *error = network_path + ".blocklist must be a map";
+                        }
+                        return false;
+                    }
+                    if (const YAML::Node deny = blocklist["deny"]) {
+                        if (!deny.IsSequence()) {
+                            if (error) {
+                                *error = network_path +
+                                         ".blocklist.deny must be an array";
+                            }
+                            return false;
+                        }
+                        for (std::size_t i = 0; i < deny.size(); ++i) {
+                            const std::string entry_path =
+                                network_path + ".blocklist.deny[" +
+                                std::to_string(i) + "]";
+                            std::string entry;
+                            try {
+                                entry = deny[i].as<std::string>();
+                            } catch (const std::exception&) {
+                                if (error) {
+                                    *error = entry_path + " must be a string";
+                                }
+                                return false;
+                            }
+                            shield::net::Rule rule;
+                            std::string parse_error;
+                            if (!shield::net::parse_blocklist_entry(
+                                    entry, &rule, &parse_error)) {
+                                if (error) {
+                                    *error = entry_path + ": " + parse_error;
+                                }
+                                return false;
+                            }
+                        }
+                    }
+                }
             }
 
             if (actor["rpc"] &&  // GCOVR_EXCL_BR_LINE (compiler artifact:
@@ -1553,6 +1597,12 @@ std::vector<RuntimeActorConfig> runtime_actors() {
                     scalar_int(rate_limit, "messages_per_second").value_or(0));
                 item.rate_limit_burst = static_cast<uint32_t>(
                     scalar_int(rate_limit, "burst").value_or(0));
+            }
+            if (const YAML::Node blocklist = network["blocklist"]) {
+                if (const YAML::Node deny = blocklist["deny"]) {
+                    item.blocklist_deny =
+                        yaml_to_json(deny).get<std::vector<std::string>>();
+                }
             }
             if (network["protocol"]) {
                 item.network_protocol_enabled = true;

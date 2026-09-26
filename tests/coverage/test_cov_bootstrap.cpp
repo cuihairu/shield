@@ -1628,4 +1628,31 @@ BOOST_AUTO_TEST_CASE(RateLimitWiredToListener) {
     BOOST_CHECK(!shield::bootstrap::is_initialized());
 }
 
+// Actor with network.blocklist.deny: bootstrap installs the deny rules and
+// the listener comes up with them active.
+BOOST_AUTO_TEST_CASE(BlocklistWiredToListener) {
+    fs::path script = echo_script("shield_cov_boot_blocklist.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: blocked\n    script: " +
+        script.string() +
+        "\n    network:\n"
+        "      tcp: 127.0.0.1:" +
+        std::to_string(free_port()) +
+        "\n      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      blocklist:\n"
+        "        deny:\n"
+        "          - 203.0.113.7\n"
+        "          - 198.51.100.0/24\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    rc.log_level = "error";
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    BOOST_CHECK(shield::bootstrap::is_initialized());
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

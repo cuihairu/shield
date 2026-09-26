@@ -46,6 +46,10 @@ struct RuntimeActorConfig {
     // that refills at messages_per_second.
     uint32_t rate_limit_per_second = 0;  // 0 = disabled
     uint32_t rate_limit_burst = 0;  // bucket depth; 0 = default to the rate
+    /// `network.blocklist.deny` entries, evaluated at accept time before a
+    /// session object exists. Each is a plain address ("203.0.113.7") or a
+    /// CIDR block ("198.51.100.0/24"); both IPv4 and IPv6 are accepted.
+    std::vector<std::string> blocklist_deny;
     std::string network_protocol_json = "{}";
     bool network_protocol_enabled = false;
     /// JSON array of this actor's `rpc.routes` (client RPC descriptors).

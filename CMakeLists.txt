@@ -368,7 +368,10 @@ target_include_directories(shield_config
 
 target_link_libraries(shield_config
     PUBLIC shield_base shield_log
-    PRIVATE yaml-cpp::yaml-cpp
+    # yaml-cpp parses configs; Boost::asio is header-only here and is pulled in
+    # for the address blocklist validator (shield/net/ip_blocklist.hpp), which
+    # config-time validation shares with the accept path.
+    PRIVATE yaml-cpp::yaml-cpp Boost::asio
 )
 
 # -----------------------------------------------------------------------------

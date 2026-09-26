@@ -75,7 +75,8 @@
 ## 连接级限流（2026-09-26 完成）
 
 Phase 2 候选里的 `runtime-security.md` 草案落地：网关层 per-connection
-ingress rate limit（token bucket，messages/second + burst）。
+ingress rate limit（token bucket，messages/second + burst）+ accept 时
+地址黑名单（address/CIDR）。
 
 - [x] 配置面（config.hpp / config.cpp / bootstrap.cpp）：
       `RuntimeActorConfig` 新增 `rate_limit_per_second` / `rate_limit_burst`；
@@ -96,6 +97,26 @@ ingress rate limit（token bucket，messages/second + burst）。
       验证配置真落到 listener。
 - [x] 覆盖率：新代码全覆盖；CI gate `--fail-under-line 98 --fail-under-branch 100`
       通过（100% line / 100% branch / 100% function）。
+
+### 地址黑名单（2026-09-26 完成，审核后落地）
+
+- [x] `include/shield/net/ip_blocklist.hpp`（header-only，config 与 net
+      两侧共用同一解析器、无链接环）：`parse_blocklist_entry`（纯地址或
+      CIDR，v4/v6，前后空白容忍）/ `IpBlocklist`（v4/v6 分表、shared_mutex、
+      安装期原子替换——坏条目保留旧规则集）。
+- [x] 配置面：`network.blocklist.deny` 数组；校验复用同一解析器
+      （typo = 启动错误，报错带 `deny[i]` 下标与原因）；deny 缺省/空均合法。
+- [x] accept 路径：listener 在**建 session 之前**判 `blocked()`——被拒对端
+      不占连接数/IP 计数，`last_rejection_reason() == "blocked_ip"` +
+      WARNING 日志。
+- [x] 测试：`test_cov_ip_blocklist`（18 用例：精确/字节对齐与非对齐 CIDR/
+      v6 族隔离/解析错误矩阵/原子替换/空白容忍）；`test_cov_listener`
+      4 个 accept 用例（拒绝/段拒绝/放行/坏安装保留旧规则）；
+      `test_cov_config` 校验矩阵 + null error sink 扩展；
+      `test_cov_bootstrap` `BlocklistWiredToListener`。
+- [x] 文档：runtime-security.md「速率限制/地址黑名单」两节重写为已实现
+      语义；architecture-review.md §2 风险关闭；runtime-network.md 配置表
+      补两键。
 
 ## Phase 1 候选（2026-09-26 完成，均为文档/低风险改动）
 
@@ -121,7 +142,8 @@ ingress rate limit（token bucket，messages/second + burst）。
 ## Phase 2 候选（另行立项）
 
 - [ ] DB ABI 异步入口（callback/future + 协程恢复）
-- [ ] 连接级限流/黑名单（runtime-security.md 草案落地）
+- [x] 连接级限流/黑名单（runtime-security.md 草案落地）——2026-09-26
+      完成，见上方「连接级限流」节（7779971 限流 + 本次黑名单）
 - [ ] blue-green 热更新落地（runtime-lua-vm.md 设计稿）
 - [ ] TLS（network.tls 配置面）
 

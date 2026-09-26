@@ -188,6 +188,8 @@ actor 原子替换当前 session 的 target 绑定并写入 `player_id`:
 | `read_idle_timeout` | 读空闲超时 |
 | `write_idle_timeout` | 写空闲超时 |
 | `handshake_timeout` | 握手超时 |
+| `rate_limit` | 每连接入站令牌桶（`messages_per_second` + `burst`），超限丢帧不断连 |
+| `blocklist.deny` | accept 时按地址/CIDR 拒绝，被拒对端不建 session |
 
 `ClientEgress` 被接受只表示进入 Gateway 写回流程，不表示客户端已经收到。队列满、session stale、Gateway 不可达等情况返回明确错误；runtime 不做无界缓存或隐式重试。
 

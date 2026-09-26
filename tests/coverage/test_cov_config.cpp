@@ -112,6 +112,17 @@ std::string proto_cfg(const std::string& block) {
         block);
 }
 
+// Actor whose network block carries `block` (6-space indent, sibling of tcp).
+// The protocol block is always present: a tcp endpoint without one is
+// rejected earlier, which would mask whatever `block` is testing.
+std::string net_cfg(const std::string& block) {
+    return actor_cfg(
+        "    network:\n      tcp: \"127.0.0.1:18112\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n" +
+        block);
+}
+
 }  // namespace
 
 BOOST_GLOBAL_FIXTURE(GlobalFixture);
@@ -1278,6 +1289,20 @@ BOOST_AUTO_TEST_CASE(ValidateNullErrorSinkRejectsInvalidConfigs) {
             valid_opts);
     rejects(proto_cfg("        routes: []\n"), valid_opts);
 
+    // network.blocklist / rate_limit rejections also go through the same
+    // guarded error writes.
+    rejects(net_cfg("      blocklist: 42\n"), valid_opts);
+    rejects(net_cfg("      blocklist:\n        deny: 203.0.113.7\n"),
+            valid_opts);
+    rejects(net_cfg("      blocklist:\n        deny:\n          - [a, b]\n"),
+            valid_opts);
+    rejects(net_cfg("      blocklist:\n        deny:\n          - bogus\n"),
+            valid_opts);
+    rejects(net_cfg("      rate_limit: 42\n"), valid_opts);
+    rejects(net_cfg("      rate_limit:\n        messages_per_second: -1\n"),
+            valid_opts);
+    rejects(net_cfg("      rate_limit:\n        burst: 1000001\n"), valid_opts);
+
     // shutdown.timeout cross-field checks.
     rejects(
         "app:\n  name: s\nshutdown:\n  timeout:\n    total: 100\n"
@@ -1584,5 +1609,234 @@ BOOST_AUTO_TEST_CASE(RateLimitBurstRange) {
     std::string error;
     BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
     BOOST_CHECK(error.find("burst must be between") != std::string::npos);
+    shield::config::reset_config();
+}
+
+// blocklist.deny entries are surfaced verbatim to the listener.
+BOOST_AUTO_TEST_CASE(BlocklistDenyParsedIntoRuntimeActor) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: bl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19105\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      blocklist:\n"
+        "        deny:\n"
+        "          - 203.0.113.7\n"
+        "          - 198.51.100.0/24\n"
+        "          - \"2001:db8::/32\"\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    const auto actors = shield::config::runtime_actors();
+    BOOST_REQUIRE_EQUAL(actors.size(), 1U);
+    BOOST_REQUIRE_EQUAL(actors[0].blocklist_deny.size(), 3U);
+    BOOST_CHECK_EQUAL(actors[0].blocklist_deny[0], "203.0.113.7");
+    BOOST_CHECK_EQUAL(actors[0].blocklist_deny[1], "198.51.100.0/24");
+    BOOST_CHECK_EQUAL(actors[0].blocklist_deny[2], "2001:db8::/32");
+    shield::config::reset_config();
+}
+
+// A blocklist block with no deny key is valid and yields an empty list.
+BOOST_AUTO_TEST_CASE(BlocklistWithoutDenyKeyIsValid) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: bl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19113\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      blocklist: {}\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    BOOST_CHECK(shield::config::runtime_actors()[0].blocklist_deny.empty());
+    shield::config::reset_config();
+}
+
+// An actor without blocklist.deny gets an empty list (the gate is off).
+BOOST_AUTO_TEST_CASE(BlocklistAbsentYieldsEmptyDenyList) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: bl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19106\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    BOOST_CHECK(shield::config::runtime_actors()[0].blocklist_deny.empty());
+    shield::config::reset_config();
+}
+
+// A blocklist block must be a map.
+BOOST_AUTO_TEST_CASE(BlocklistRejectsNonMap) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: bl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19107\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      blocklist: nope\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("blocklist must be a map") != std::string::npos);
+    shield::config::reset_config();
+}
+
+// blocklist.deny must be an array.
+BOOST_AUTO_TEST_CASE(BlocklistRejectsNonSequenceDeny) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: bl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19108\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      blocklist:\n        deny: 203.0.113.7\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("blocklist.deny must be an array") !=
+                std::string::npos);
+    shield::config::reset_config();
+}
+
+// A non-string deny entry is reported with its index.
+BOOST_AUTO_TEST_CASE(BlocklistRejectsNonStringDenyEntry) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: bl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19109\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      blocklist:\n"
+        "        deny:\n"
+        "          - 203.0.113.7\n"
+        "          - [nested, list]\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("blocklist.deny[1]") != std::string::npos);
+    shield::config::reset_config();
+}
+
+// A malformed deny entry is a startup error, not a silently missing rule.
+BOOST_AUTO_TEST_CASE(BlocklistRejectsMalformedAddress) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: bl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19110\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      blocklist:\n"
+        "        deny:\n"
+        "          - 203.0.113.7\n"
+        "          - not-an-ip\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("blocklist.deny[1]") != std::string::npos);
+    BOOST_CHECK(error.find("not an IP address") != std::string::npos);
+    shield::config::reset_config();
+}
+
+// An out-of-range prefix is rejected with the parser's reason.
+BOOST_AUTO_TEST_CASE(BlocklistRejectsOutOfRangePrefix) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: bl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19111\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      blocklist:\n"
+        "        deny:\n"
+        "          - 203.0.113.0/33\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("prefix length out of range") != std::string::npos);
+    shield::config::reset_config();
+}
+
+// An empty deny list is valid and installs no rules.
+BOOST_AUTO_TEST_CASE(BlocklistEmptyDenyListIsValid) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: bl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19112\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      blocklist:\n        deny: []\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    BOOST_CHECK(shield::config::runtime_actors()[0].blocklist_deny.empty());
     shield::config::reset_config();
 }
