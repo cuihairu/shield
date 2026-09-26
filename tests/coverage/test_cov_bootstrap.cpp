@@ -1604,4 +1604,28 @@ BOOST_AUTO_TEST_CASE(ShutdownTotalBudgetZeroSkipsWatchdog) {
     BOOST_CHECK(!shield::bootstrap::is_initialized());
 }
 
+// Actor with network.rate_limit: bootstrap wires the limit into the listener.
+BOOST_AUTO_TEST_CASE(RateLimitWiredToListener) {
+    fs::path script = echo_script("shield_cov_boot_ratelimit.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: ratelimited\n    script: " +
+        script.string() +
+        "\n    network:\n"
+        "      tcp: 127.0.0.1:" +
+        std::to_string(free_port()) +
+        "\n      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      rate_limit:\n        messages_per_second: 100\n"
+        "        burst: 10\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    rc.log_level = "error";
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    BOOST_CHECK(shield::bootstrap::is_initialized());
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

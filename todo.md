@@ -72,6 +72,31 @@
       观测接入/多实例边界）：修正了草稿里 `build-release/bin/shield` 的
       事实错误——`build.sh` 固定用 `build/`，不存在 build-release 目录。
 
+## 连接级限流（2026-09-26 完成）
+
+Phase 2 候选里的 `runtime-security.md` 草案落地：网关层 per-connection
+ingress rate limit（token bucket，messages/second + burst）。
+
+- [x] 配置面（config.hpp / config.cpp / bootstrap.cpp）：
+      `RuntimeActorConfig` 新增 `rate_limit_per_second` / `rate_limit_burst`；
+      YAML 键 `network.rate_limit.messages_per_second` + `burst`；
+      范围校验（0=禁用 / 1..1e6），burst=0 意为「等于 rate」。
+- [x] 监听器/会话（listener.hpp&cpp / session.hpp&cpp）：
+      `TokenBucket` 类（惰性回填，无定时器线程）；
+      `TcpListener::set_rate_limit()` 透传到每个新 `TcpSession`；
+      `TcpSession::do_receive()` 里 `protocol_pipeline_->feed()` 结果遍历时
+      `rate_limiter_.try_acquire()`，**按解码后消息**计费（批量读一个
+      TCP 段里的多帧不能绕过预算）。
+- [x] 观测：`Session::rate_limited_count()` 纯虚，`TcpSession` 实现返回
+      `TokenBucket::limited_count()`；`test_cov_session` 新增 5 个用例
+      覆盖 token bucket 逻辑、会话级丢包、无限制通行。
+- [x] 配置层测试：`test_cov_config` 新增 5 个用例覆盖 rate_limit 解析、
+      类型/范围校验、非 map 拒绝、零 burst 默认值。
+- [x] Bootstrap 集成测试：`test_cov_bootstrap` 新增 `RateLimitWiredToListener`
+      验证配置真落到 listener。
+- [x] 覆盖率：新代码全覆盖；CI gate `--fail-under-line 98 --fail-under-branch 100`
+      通过（100% line / 100% branch / 100% function）。
+
 ## Phase 1 候选（2026-09-26 完成，均为文档/低风险改动）
 
 - [x] DB 使用纪律文档 + 示例：docs/db-discipline.md——同步 ABI 硬规则

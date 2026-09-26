@@ -54,6 +54,12 @@ struct GlobalFixture {
     }
 };
 
+RuntimeValidationOptions with_actors() {
+    RuntimeValidationOptions opts;
+    opts.require_actors = true;
+    return opts;
+}
+
 RuntimeValidationOptions no_actors() {
     RuntimeValidationOptions opts;
     opts.require_actors = false;
@@ -1450,5 +1456,133 @@ BOOST_AUTO_TEST_CASE(RuntimeActorsRpcWithoutRoutes) {
     const auto actors = shield::config::runtime_actors();
     BOOST_REQUIRE_EQUAL(actors.size(), 1U);
     BOOST_CHECK_EQUAL(actors[0].rpc_routes_json, "[]");
+    shield::config::reset_config();
+}
+
+// rate_limit config parsing: valid map with messages_per_second and burst.
+BOOST_AUTO_TEST_CASE(RateLimitValidConfig) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: rl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19100\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      rate_limit:\n        messages_per_second: 100\n"
+        "        burst: 10\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    const auto actors = shield::config::runtime_actors();
+    BOOST_REQUIRE_EQUAL(actors.size(), 1U);
+    BOOST_CHECK_EQUAL(actors[0].rate_limit_per_second, 100u);
+    BOOST_CHECK_EQUAL(actors[0].rate_limit_burst, 10u);
+    shield::config::reset_config();
+}
+
+// rate_limit with zero burst defaults to the rate at bootstrap time.
+BOOST_AUTO_TEST_CASE(RateLimitZeroBurstDefaultsToRate) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: rl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19101\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      rate_limit:\n        messages_per_second: 50\n"
+        "        burst: 0\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    const auto actors = shield::config::runtime_actors();
+    BOOST_REQUIRE_EQUAL(actors.size(), 1U);
+    BOOST_CHECK_EQUAL(actors[0].rate_limit_per_second, 50u);
+    BOOST_CHECK_EQUAL(actors[0].rate_limit_burst,
+                      0u);  // stored as 0, resolved at bootstrap
+    shield::config::reset_config();
+}
+
+// rate_limit must be a map.
+BOOST_AUTO_TEST_CASE(RateLimitRejectsNonMap) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: rl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19102\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      rate_limit: not_a_map\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("rate_limit must be a map") != std::string::npos);
+    shield::config::reset_config();
+}
+
+// rate_limit messages_per_second range validation.
+BOOST_AUTO_TEST_CASE(RateLimitMessagesPerSecondRange) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: rl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19103\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      rate_limit:\n        messages_per_second: 1000001\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("messages_per_second must be between") !=
+                std::string::npos);
+    shield::config::reset_config();
+}
+
+// rate_limit burst range validation.
+BOOST_AUTO_TEST_CASE(RateLimitBurstRange) {
+    shield::config::reset_config();
+    auto& g = shield::config::global_config();
+    const std::string yaml =
+        "app:\n  name: rl\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:19104\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      rate_limit:\n        messages_per_second: 100\n"
+        "        burst: 1000001\n";
+    BOOST_REQUIRE(g.load_yaml_string(yaml));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("burst must be between") != std::string::npos);
     shield::config::reset_config();
 }

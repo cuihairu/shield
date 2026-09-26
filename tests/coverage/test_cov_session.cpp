@@ -766,4 +766,175 @@ BOOST_AUTO_TEST_CASE(SendMessageEmptyBodyEncodesAsEmptyFrame) {
     p.io.run_for(100ms);
 }
 
+// ---------------------------------------------------------------------------
+// Per-connection ingress rate limit (token bucket).
+// ---------------------------------------------------------------------------
+
+// A disabled bucket (rate 0) admits everything and never counts a drop.
+BOOST_AUTO_TEST_CASE(TokenBucketDisabledAdmitsEverything) {
+    shield::net::TokenBucket bucket(0, 0);
+    BOOST_CHECK(!bucket.enabled());
+    for (int i = 0; i < 1000; ++i) {
+        BOOST_REQUIRE(bucket.try_acquire());
+    }
+    BOOST_CHECK_EQUAL(bucket.limited_count(), 0u);
+    BOOST_CHECK_EQUAL(bucket.available(), 0u);  // no depth when disabled
+}
+
+// A bucket starts full: the whole burst is admitted back to back, the next
+// message is dropped, and the drop is counted.
+BOOST_AUTO_TEST_CASE(TokenBucketAdmitsBurstThenDrops) {
+    shield::net::TokenBucket bucket(10, 3);
+    BOOST_CHECK(bucket.enabled());
+    BOOST_CHECK_EQUAL(bucket.available(), 3u);
+    for (int i = 0; i < 3; ++i) {
+        BOOST_REQUIRE_MESSAGE(bucket.try_acquire(), "burst message " << i);
+    }
+    BOOST_CHECK_EQUAL(bucket.available(), 0u);
+    BOOST_CHECK(!bucket.try_acquire());
+    BOOST_CHECK(!bucket.try_acquire());
+    BOOST_CHECK_EQUAL(bucket.limited_count(), 2u);
+}
+
+// burst == 0 means "one second's worth": the bucket depth falls back to the
+// sustained rate, so a plain "N per second" config needs no second knob.
+BOOST_AUTO_TEST_CASE(TokenBucketZeroBurstDefaultsToRate) {
+    shield::net::TokenBucket bucket(4, 0);
+    BOOST_CHECK(bucket.enabled());
+    BOOST_CHECK_EQUAL(bucket.available(), 4u);
+    for (int i = 0; i < 4; ++i) {
+        BOOST_REQUIRE(bucket.try_acquire());
+    }
+    BOOST_CHECK(!bucket.try_acquire());
+    BOOST_CHECK_EQUAL(bucket.limited_count(), 1u);
+}
+
+// Refill is lazy: after the bucket drains, waiting long enough to earn the
+// rate back admits exactly that many more messages. The bucket depth (burst)
+// caps how many tokens can accumulate, so a burst=1 bucket never holds more
+// than one token regardless of idle time.
+BOOST_AUTO_TEST_CASE(TokenBucketRefillsOverTime) {
+    // 20/s with burst 1: one message admitted, drained, then ~1 token per 50ms
+    // but capped at burst=1.
+    shield::net::TokenBucket bucket(20, 1);
+    BOOST_REQUIRE(bucket.try_acquire());
+    BOOST_REQUIRE(!bucket.try_acquire());
+
+    std::this_thread::sleep_for(120ms);   // ~2.4 tokens earned, but depth=1
+    BOOST_REQUIRE(bucket.try_acquire());  // 1 admitted
+    BOOST_CHECK(!bucket.try_acquire());   // bucket empty again
+
+    std::this_thread::sleep_for(200ms);  // ~4 more tokens earned
+    int admitted = 0;
+    for (int i = 0; i < 10 && bucket.try_acquire(); ++i) {
+        ++admitted;
+    }
+    // With burst=1, we can only ever admit 1 at a time after waiting
+    BOOST_CHECK_GE(admitted, 1);
+    BOOST_CHECK_LE(admitted, 3);
+    // A long idle stretch cannot overfill the bucket past its depth.
+    std::this_thread::sleep_for(150ms);
+    BOOST_CHECK_LE(bucket.available(), 1u);
+}
+
+// Higher burst allows banking idle time into a larger admission burst.
+BOOST_AUTO_TEST_CASE(TokenBucketRefillsWithBurst) {
+    // 10/s with burst 5: can bank up to 5 tokens during idle.
+    shield::net::TokenBucket bucket(10, 5);
+    BOOST_REQUIRE(bucket.try_acquire());   // start with 5, now 4
+    BOOST_REQUIRE(bucket.try_acquire());   // 3
+    BOOST_REQUIRE(bucket.try_acquire());   // 2
+    BOOST_REQUIRE(bucket.try_acquire());   // 1
+    BOOST_REQUIRE(bucket.try_acquire());   // 0
+    BOOST_REQUIRE(!bucket.try_acquire());  // drained, limited=1
+    BOOST_CHECK_EQUAL(bucket.limited_count(), 1u);
+
+    std::this_thread::sleep_for(600ms);  // ~6 tokens at 10/s, capped at 5
+    int admitted = 0;
+    for (int i = 0; i < 10 && bucket.try_acquire(); ++i) {
+        ++admitted;
+    }
+    // Should admit all 5 banked tokens
+    BOOST_CHECK_EQUAL(admitted, 5);
+    // The loop exits when try_acquire() fails on the 6th attempt
+    BOOST_CHECK(!bucket.try_acquire());
+    // Initial drain (1) + loop exit failure (1) + explicit check (1) = 3
+    BOOST_CHECK_EQUAL(bucket.limited_count(), 3u);
+}
+
+// End to end through a real session: the limiter drops over-budget messages
+// before dispatch, the connection stays alive, and the drop is observable.
+BOOST_AUTO_TEST_CASE(SessionRateLimitDropsOverBudgetMessages) {
+    SocketPair p;
+
+    std::atomic<int> packets{0};
+    std::atomic<bool> disconnected{false};
+    SessionCallbacks cbs;
+    cbs.create_protocol_pipeline = [] { return make_json_pipeline(); };
+    cbs.on_packet = [&](std::shared_ptr<Session>, const DispatchResult&) {
+        ++packets;
+    };
+    cbs.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
+        disconnected = true;
+    };
+
+    // 1/s, burst 5: the first five frames pass, the rest are dropped.
+    auto session = std::make_shared<TcpSession>(30, std::move(p.server), cbs, 0,
+                                                0, 0, 1, 5);
+    BOOST_CHECK_EQUAL(session->rate_limited_count(), 0u);
+    session->start();
+
+    auto local = make_json_pipeline();
+    std::vector<std::uint8_t> wire;
+    for (int i = 0; i < 8; ++i) {
+        auto f = encode_packet(*local, R"({"route":"login","payload":{"seq":)" +
+                                           std::to_string(i) + "}}");
+        wire.insert(wire.end(), f.begin(), f.end());
+    }
+    write_client(p.client, wire);
+    p.io.run_for(200ms);
+
+    BOOST_CHECK_EQUAL(packets.load(), 5);
+    BOOST_CHECK_EQUAL(session->rate_limited_count(), 3u);
+    // Over-budget frames are dropped, not fatal: the session survives.
+    BOOST_CHECK(session->is_alive());
+    BOOST_CHECK(!disconnected.load());
+
+    session->close("normal");
+    p.io.run_for(100ms);
+}
+
+// A session with no rate limit configured drops nothing, however fast the
+// client writes.
+BOOST_AUTO_TEST_CASE(SessionWithoutRateLimitDropsNothing) {
+    SocketPair p;
+
+    std::atomic<int> packets{0};
+    SessionCallbacks cbs;
+    cbs.create_protocol_pipeline = [] { return make_json_pipeline(); };
+    cbs.on_packet = [&](std::shared_ptr<Session>, const DispatchResult&) {
+        ++packets;
+    };
+
+    auto session = std::make_shared<TcpSession>(31, std::move(p.server), cbs);
+    session->start();
+
+    auto local = make_json_pipeline();
+    std::vector<std::uint8_t> wire;
+    for (int i = 0; i < 20; ++i) {
+        auto f = encode_packet(*local, R"({"route":"login","payload":{"seq":)" +
+                                           std::to_string(i) + "}}");
+        wire.insert(wire.end(), f.begin(), f.end());
+    }
+    write_client(p.client, wire);
+    p.io.run_for(200ms);
+
+    BOOST_CHECK_EQUAL(packets.load(), 20);
+    BOOST_CHECK_EQUAL(session->rate_limited_count(), 0u);
+    BOOST_CHECK(session->is_alive());
+
+    session->close("normal");
+    p.io.run_for(100ms);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

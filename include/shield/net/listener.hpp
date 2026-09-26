@@ -47,6 +47,13 @@ public:
     /// @brief Set per-session read idle timeout in ms (0 = disabled)
     void set_read_idle_timeout(uint32_t ms) { read_idle_timeout_ms_ = ms; }
 
+    /// @brief Set the per-connection ingress rate limit handed to every
+    ///        session this listener creates (0 = unlimited).
+    void set_rate_limit(uint32_t per_second, uint32_t burst) {
+        rate_limit_per_second_ = per_second;
+        rate_limit_burst_ = burst;
+    }
+
     /// @brief Get last rejection reason
     std::string last_rejection_reason() const { return last_rejection_; }
 
@@ -89,6 +96,8 @@ private:
     size_t max_frame_size_ = 0;          // 0 = kDefaultMaxFrameSize (16 MiB)
     size_t max_send_queue_ = 0;          // 0 = unlimited (queued message count)
     uint32_t read_idle_timeout_ms_ = 0;  // 0 = disabled
+    uint32_t rate_limit_per_second_ = 0;  // 0 = unlimited
+    uint32_t rate_limit_burst_ = 0;       // 0 = same as the rate
     std::unordered_map<std::string, size_t> ip_counts_;
     std::string last_rejection_;
     bool listening_ = false;

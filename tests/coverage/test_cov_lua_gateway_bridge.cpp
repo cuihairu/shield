@@ -120,6 +120,7 @@ public:
         return alive_ ? "" : "session_closed";
     }
     bool has_protocol_pipeline() const override { return false; }
+    uint64_t rate_limited_count() const override { return 0; }
     std::string_view protocol_codec_name() const override { return {}; }
     bool send_message(const shield::transport::DecodedBody& message,
                       std::string* error) override {

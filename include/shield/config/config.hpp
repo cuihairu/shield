@@ -40,6 +40,12 @@ struct RuntimeActorConfig {
     size_t max_frame_size = 0;
     size_t max_session_send_queue = 0;  // 0 = unlimited (messages per session)
     uint32_t read_idle_timeout_ms = 0;  // 0 = disabled
+    // Per-connection ingress rate limit (token bucket, one bucket per
+    // session). 0 messages_per_second disables the gate entirely; otherwise
+    // each session starts with a full bucket of rate_limit_burst messages
+    // that refills at messages_per_second.
+    uint32_t rate_limit_per_second = 0;  // 0 = disabled
+    uint32_t rate_limit_burst = 0;  // bucket depth; 0 = default to the rate
     std::string network_protocol_json = "{}";
     bool network_protocol_enabled = false;
     /// JSON array of this actor's `rpc.routes` (client RPC descriptors).

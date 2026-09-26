@@ -115,6 +115,7 @@ public:
         return alive_ ? "" : "session_closed";
     }
     bool has_protocol_pipeline() const override { return protocol_enabled_; }
+    uint64_t rate_limited_count() const override { return 0; }
     std::string_view protocol_codec_name() const override {
         return protocol_enabled_ ? std::string_view(protocol_codec_)
                                  : std::string_view{};

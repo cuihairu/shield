@@ -1235,6 +1235,10 @@ static bool initialize_impl(const RuntimeConfig& config) {
         if (actor.read_idle_timeout_ms > 0) {
             listener->set_read_idle_timeout(actor.read_idle_timeout_ms);
         }
+        if (actor.rate_limit_per_second > 0) {
+            listener->set_rate_limit(actor.rate_limit_per_second,
+                                     actor.rate_limit_burst);
+        }
         listener->start();
         SHIELD_LOG_INFO(log, "TCP gateway listener started for actor '" +
                                  actor.name + "' on " + actor.network_tcp);

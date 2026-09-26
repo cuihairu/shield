@@ -1,6 +1,7 @@
 // [SHIELD_NET] Session implementation
 #include "shield/net/session.hpp"
 
+#include <algorithm>
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/post.hpp>
@@ -8,6 +9,7 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/write.hpp>
 #include <chrono>
+#include <cmath>
 #include <shared_mutex>
 #include <unordered_map>
 
@@ -15,16 +17,55 @@
 
 namespace shield::net {
 
+TokenBucket::TokenBucket(uint32_t rate_per_second, uint32_t burst)
+    : rate_per_second_(rate_per_second),
+      // A zero burst means "no separate burst knob": the plain
+      // "N messages per second" reading, where the bucket holds one second's
+      // worth of traffic.
+      burst_(burst > 0 ? static_cast<double>(burst)
+                       : static_cast<double>(rate_per_second)),
+      tokens_(burst > 0 ? static_cast<double>(burst)
+                        : static_cast<double>(rate_per_second)),
+      last_refill_(std::chrono::steady_clock::now()) {}
+
+bool TokenBucket::try_acquire() {
+    if (!enabled()) {
+        return true;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    // Lazy refill: credit the elapsed time at the sustained rate, capped at
+    // the bucket depth. Disabled buckets returned above, so rate_per_second_
+    // is non-zero here and the division is safe.
+    refill_credit_ +=
+        std::chrono::duration<double>(now - last_refill_).count() *
+        static_cast<double>(rate_per_second_);
+    last_refill_ = now;
+    if (refill_credit_ >= 1.0) {
+        const double whole = std::floor(refill_credit_);
+        refill_credit_ -= whole;
+        tokens_ = std::min(burst_, tokens_ + whole);
+    }
+    if (tokens_ < 1.0) {
+        ++limited_count_;
+        return false;
+    }
+    tokens_ -= 1.0;
+    return true;
+}
+
 TcpSession::TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
                        SessionCallbacks callbacks, size_t max_frame_size,
-                       size_t max_send_queue, uint32_t read_idle_timeout_ms)
+                       size_t max_send_queue, uint32_t read_idle_timeout_ms,
+                       uint32_t rate_limit_per_second,
+                       uint32_t rate_limit_burst)
     : id_(id),
       socket_(std::move(socket)),
       strand_(boost::asio::make_strand(socket_.get_executor())),
       callbacks_(std::move(callbacks)),
       max_send_queue_(max_send_queue),
       read_deadline_(socket_.get_executor()),
-      read_idle_timeout_ms_(read_idle_timeout_ms) {
+      read_idle_timeout_ms_(read_idle_timeout_ms),
+      rate_limiter_(rate_limit_per_second, rate_limit_burst) {
     auto endpoint = socket_.remote_endpoint();
     remote_addr_.ip = endpoint.address().to_string();
     remote_addr_.port = endpoint.port();
@@ -300,6 +341,14 @@ void TcpSession::do_receive() {
                             return;
                         }
                         if (result.should_drop()) {
+                            continue;
+                        }
+                        // Per-connection ingress rate limit. Charged per
+                        // decoded message (not per TCP read), so batching
+                        // many frames into one segment cannot be used to
+                        // slip past the budget. Over-budget messages are
+                        // dropped silently and the connection stays open.
+                        if (!self->rate_limiter_.try_acquire()) {
                             continue;
                         }
                         if (result.action ==

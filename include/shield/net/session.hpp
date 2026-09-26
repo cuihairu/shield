@@ -44,6 +44,50 @@ constexpr const char* SHUTDOWN = "shutdown";
 /// replace the binding unconditionally (used when invalidating a session).
 inline constexpr uint32_t kAnyEpoch = 0xFFFFFFFFu;
 
+/// @brief Per-connection ingress rate limiter (token bucket).
+///
+/// One bucket per session, created by the listener from the owning actor's
+/// `network.rate_limit` config. Every decoded ingress message costs one token;
+/// a message arriving with an empty bucket is counted as rate-limited and
+/// dropped before dispatch (the connection stays open — a client that bursts
+/// past its budget must not lose its session, see runtime-security.md).
+///
+/// The bucket starts full so a burst of up to `burst` messages is admitted
+/// immediately, then refills continuously at `rate_per_second`. Refill is
+/// computed lazily on each try_acquire() from an elapsed-time delta, so an
+/// idle session costs nothing and there is no timer thread.
+class TokenBucket {
+public:
+    /// @param rate_per_second Sustained refill rate (0 = disabled; every
+    ///                       try_acquire() then returns true).
+    /// @param burst Bucket depth; 0 is normalized to the rate so a plain
+    ///              "N per second" config needs no second knob.
+    TokenBucket(uint32_t rate_per_second, uint32_t burst);
+
+    /// @brief Disabled buckets admit everything.
+    bool enabled() const { return rate_per_second_ > 0; }
+
+    /// @brief Spend one token. False means the message must be dropped.
+    bool try_acquire();
+
+    /// @brief Number of messages rejected since construction.
+    uint64_t limited_count() const { return limited_count_; }
+
+    /// @brief Current token count (fractional part truncated). Test/diagnostic
+    ///        accessor; the value is only meaningful on the owning strand.
+    uint32_t available() const { return static_cast<uint32_t>(tokens_); }
+
+private:
+    uint32_t rate_per_second_ = 0;
+    double burst_ = 0;
+    double tokens_ = 0;
+    // Accumulated refill credit in seconds; keeping the remainder means a slow
+    // drip of low-rate buckets still refills exactly, with no drift.
+    double refill_credit_ = 0;
+    std::chrono::steady_clock::time_point last_refill_;
+    uint64_t limited_count_ = 0;
+};
+
 /// @brief Single-target binding of a live session. The gateway keeps exactly
 /// one target service per session: the listener's auth entry service before
 /// login, the player service after. Every successful apply_binding()
@@ -86,6 +130,11 @@ public:
 
     /// @brief Whether this session is bound to a protocol pipeline.
     virtual bool has_protocol_pipeline() const = 0;
+
+    /// @brief Number of ingress messages dropped by the per-connection rate
+    /// limiter since the session started. Always 0 when the limit is
+    /// disabled. Exposed for ops/metrics and diagnostics.
+    virtual uint64_t rate_limited_count() const = 0;
 
     /// @brief Enqueue a structured business message for asynchronous encode
     /// and send through the bound protocol pipeline. Encoding runs on the
@@ -149,9 +198,14 @@ public:
     ///                        backpressure kicks in (0 = unlimited).
     /// @param read_idle_timeout_ms Close the session if no data arrives for
     ///                              this many milliseconds (0 = disabled).
+    /// @param rate_limit_per_second Per-connection ingress rate limit
+    ///                              (0 = unlimited).
+    /// @param rate_limit_burst Ingress burst allowance (0 = same as the rate).
     TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
                SessionCallbacks callbacks, size_t max_frame_size = 0,
-               size_t max_send_queue = 0, uint32_t read_idle_timeout_ms = 0);
+               size_t max_send_queue = 0, uint32_t read_idle_timeout_ms = 0,
+               uint32_t rate_limit_per_second = 0,
+               uint32_t rate_limit_burst = 0);
 
     SessionId id() const override { return id_; }
     RemoteAddress remote_addr() const override { return remote_addr_; }
@@ -160,6 +214,9 @@ public:
               std::string* error = nullptr) override;
     bool has_protocol_pipeline() const override {
         return protocol_pipeline_ != nullptr;
+    }
+    uint64_t rate_limited_count() const override {
+        return rate_limiter_.limited_count();
     }
     bool send_message(const shield::transport::DecodedBody& message,
                       std::string* error = nullptr) override;
@@ -258,6 +315,10 @@ private:
         boost::asio::any_io_executor>
         read_deadline_;
     uint32_t read_idle_timeout_ms_ = 0;
+
+    // Per-connection ingress rate limit. Only touched from strand_ handlers
+    // (the do_receive completion), so it needs no extra synchronization.
+    TokenBucket rate_limiter_;
 };
 
 }  // namespace shield::net

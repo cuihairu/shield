@@ -1410,6 +1410,31 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                                         error)) {
                     return false;
                 }
+                // Per-connection ingress rate limit (token bucket).
+                // messages_per_second is 0 (disabled) or >= 1; burst is
+                // 0 (default to the rate) or >= 1, and may not exceed the
+                // rate's own upper bound so a typo cannot allocate a
+                // pathological bucket depth.
+                if (const YAML::Node rate_limit = network["rate_limit"]) {
+                    if (!rate_limit
+                             .IsMap()) {  // GCOVR_EXCL_BR_LINE (error path:
+                                          // non-map rate_limit rejected)
+                        if (error) {  // GCOVR_EXCL_BR_LINE (error path: same
+                                      // branch)
+                            *error = network_path + ".rate_limit must be a map";
+                        }
+                        return false;
+                    }
+                    const std::string rate_path = network_path + ".rate_limit";
+                    if (!validate_int_range(rate_limit, "messages_per_second",
+                                            rate_path.c_str(), 0, 1000000,
+                                            error) ||
+                        !validate_int_range(rate_limit, "burst",
+                                            rate_path.c_str(), 0, 1000000,
+                                            error)) {
+                        return false;
+                    }
+                }
             }
 
             if (actor["rpc"] &&  // GCOVR_EXCL_BR_LINE (compiler artifact:
@@ -1522,6 +1547,12 @@ std::vector<RuntimeActorConfig> runtime_actors() {
             if (network["read_idle_timeout"]) {
                 item.read_idle_timeout_ms = static_cast<uint32_t>(
                     scalar_int(network, "read_idle_timeout").value_or(0));
+            }
+            if (const YAML::Node rate_limit = network["rate_limit"]) {
+                item.rate_limit_per_second = static_cast<uint32_t>(
+                    scalar_int(rate_limit, "messages_per_second").value_or(0));
+                item.rate_limit_burst = static_cast<uint32_t>(
+                    scalar_int(rate_limit, "burst").value_or(0));
             }
             if (network["protocol"]) {
                 item.network_protocol_enabled = true;
