@@ -43,6 +43,10 @@ libmariadb 依赖树很小（zlib + openssl），构建与 CI 时长远轻于 my
 | `password` | string | 否 | — | 登录密码。标记为 `secret`，日志和 dashboard 会脱敏。 |
 | `connect_timeout_ms` | integer | 否 | `5000` | 建立 TCP 连接 + 协议握手的超时，单位毫秒，范围 100-60000。 |
 | `query_timeout_ms` | integer | 否 | `5000` | 单条 SQL 执行超时，单位毫秒，范围 100-300000。 |
+| `pool_size` | integer | 否 | `4` | 每实例连接池容量，范围 1-64。 |
+| `acquire_timeout_ms` | integer | 否 | `10000` | 池耗尽时等待归还的时长，单位毫秒，范围 100-120000。 |
+| `async` | boolean | 否 | `true` | `query` / `query_one` / `execute` 走实例 worker 池异步执行（连接 acquire 也在 worker 上）：协程内调用挂起等待完成，同 service 其他消息继续处理。设为 `false` 退回同步入口（调用即阻塞到 SQL 结束）。见 docs/db-async-design.md。 |
+| `call_timeout_ms` | integer | 否 | `0` | 异步入口的调用方挂起预算。`0` 表示 `query_timeout_ms + 500`。超时返回 `{code="timeout", retryable=true}`；迟到的真实结果会被丢弃（不投递），不会覆盖超时结果。范围 0-300000。 |
 
 ### 完整 app.yaml 示例
 

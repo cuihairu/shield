@@ -25,14 +25,21 @@
 // and every PGconn is PQfinish()'d. If a query detects CONNECTION_BAD
 // the conn is PQfinish()'d on release instead of being returned to the
 // free-list, so the next acquire grows a fresh connection.
+//
+// Lua async entry (docs/db-async-design.md M3): inside a coroutine dispatch
+// query/query_one/execute suspend the caller and the acquire + statement run
+// on the instance worker pool; "async: false" (or any non-coroutine context)
+// keeps the synchronous inline behaviour below.
 
 #include <libpq-fe.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -40,12 +47,14 @@
 #include <queue>
 #include <sol/sol.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/database.h"
 #include "shield/plugin/host_api.h"
 #include "shield/plugin/pool_stats.h"
+#include "shield_db_async_shim.hpp"
 #include "shield_db_mapper.hpp"
 #include "shield_lua_plugin_binding.hpp"
 
@@ -266,8 +275,12 @@ const shield_database_v1& db_vtable() {
 
             if (args->connect_timeout_ms > 0) {
                 char buf[16];
-                double secs = args->connect_timeout_ms / 1000.0;
-                std::snprintf(buf, sizeof(buf), "%.3f", secs);
+                // libpq's connect_timeout is whole seconds (an integer
+                // string); a fractional value is a hard parse error that
+                // fails the connect immediately. Round sub-second budgets
+                // up to libpq's 1-second floor.
+                const int secs = (args->connect_timeout_ms + 999) / 1000;
+                std::snprintf(buf, sizeof(buf), "%d", secs);
                 if (!conninfo.empty()) conninfo.push_back(' ');
                 conninfo += "connect_timeout=";
                 conninfo += buf;
@@ -358,6 +371,16 @@ const shield_database_v1& db_vtable() {
 // ---------------------------------------------------------------------------
 namespace {
 
+// One queued async SQL task: submitted on the actor thread by the proxy's
+// __db_submit closure (after the caller coroutine suspended), executed on the
+// instance's worker pool, completed via host_api->lua_resume_session.
+struct pg_task {
+    uint64_t session = 0;
+    std::string method;  // "query" | "query_one" | "execute" (run mode)
+    std::string sql;
+    nlohmann::json params = nlohmann::json::array();
+};
+
 struct pgsql_instance {
     shield_plugin_instance_v1 shell;
     const shield_host_api_v1* host_api = nullptr;
@@ -372,6 +395,13 @@ struct pgsql_instance {
     int connect_timeout_ms = 5000;
     int query_timeout_ms = 5000;
     int pool_size = 4;
+    // Async path (docs/db-async-design.md M3): inside a coroutine dispatch
+    // the proxy methods suspend the caller and the SQL runs on the worker
+    // pool below; "async: false" (and every non-coroutine context) keeps the
+    // original inline synchronous behavior.
+    bool async_enabled = true;  // from config "async"
+    int call_timeout_ms = 0;    // from config "call_timeout_ms"; 0 ->
+                                // query_timeout_ms + 500 (design doc default)
 
     // Pool state. free_list holds healthy PGconn* ready for reuse.
     // current_size counts every connection we've ever handed out and not
@@ -380,6 +410,18 @@ struct pgsql_instance {
     std::condition_variable pool_cv;
     std::queue<PGconn*> free_list;
     int current_size = 0;
+
+    // Worker pool (M3): acquire_conn runs ON a worker, so a pool exhausted
+    // by concurrent holders suspends callers instead of blocking the actor
+    // thread. Sized to the connection pool (capped), started lazily on the
+    // first async submit. shutdown() closes the intake and joins the workers
+    // BEFORE the connection pool is drained.
+    std::mutex worker_mu;
+    std::condition_variable worker_cv;
+    std::deque<pg_task> worker_tasks;
+    bool worker_stop = false;
+    bool worker_started = false;
+    std::vector<std::thread> workers;
 };
 
 // Process-wide registry: instance_id -> pgsql_instance*. The callable Lua
@@ -441,6 +483,13 @@ void parse_instance_config(pgsql_instance* inst, const char* config_json) {
         if (j.contains("pool_size") && j["pool_size"].is_number_integer()) {
             inst->pool_size = j["pool_size"].get<int>();
         }
+        if (j.contains("async") && j["async"].is_boolean()) {
+            inst->async_enabled = j["async"].get<bool>();
+        }
+        if (j.contains("call_timeout_ms") &&
+            j["call_timeout_ms"].is_number_integer()) {
+            inst->call_timeout_ms = j["call_timeout_ms"].get<int>();
+        }
     } catch (...) {
         // Malformed JSON shouldn't happen (host validated), ignore quietly.
     }
@@ -468,8 +517,10 @@ std::string build_conninfo(const pgsql_instance* inst) {
     append("password", inst->password);
     if (inst->connect_timeout_ms > 0) {
         char buf[16];
-        double secs = inst->connect_timeout_ms / 1000.0;
-        std::snprintf(buf, sizeof(buf), "%.3f", secs);
+        // Integer seconds — libpq rejects fractional connect_timeout with a
+        // hard parse error (see the sync path above for the rounding rule).
+        const int secs = (inst->connect_timeout_ms + 999) / 1000;
+        std::snprintf(buf, sizeof(buf), "%d", secs);
         append("connect_timeout", buf);
     }
     return s;
@@ -798,13 +849,18 @@ sol::object run_statement(
 sol::table make_handle_proxy(sol::state_view lua, pgsql_instance* inst,
                              PGconn* conn, bool* conn_bad);
 
+// Forward decls — the async machinery lives after drain_pool (bottom of the
+// pool section); the proxy's __db_submit closure below uses both.
+int caller_timeout_ms(const pgsql_instance* inst);
+void submit_async(pgsql_instance* inst, pg_task task);
+
 // Build a per-instance proxy table. Each method acquires from the pool,
 // runs the statement, and returns the conn via RAII.
 sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
     auto proxy = lua.create_table();
 
     proxy.set_function(
-        "query",
+        "__sync_query",
         [inst](sol::this_state s, std::string sql,
                sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -828,7 +884,7 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
         });
 
     proxy.set_function(
-        "query_one",
+        "__sync_query_one",
         [inst](sol::this_state s, std::string sql,
                sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -852,7 +908,7 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
         });
 
     proxy.set_function(
-        "execute",
+        "__sync_execute",
         [inst](sol::this_state s, std::string sql,
                sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -998,6 +1054,75 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             return results;
         });
 
+    // Async entry (docs/db-async-design.md M3): register the suspension via
+    // the host primitive, then hand the task to the worker pool. Suspend
+    // happens BEFORE enqueue so a fast worker completion always finds its
+    // session (the host's yield-window guard handles the requeue). Returns
+    // the session id, or 0 when the caller must run synchronously.
+    proxy.set_function(
+        "__db_submit",
+        [inst](sol::this_state s, std::string method, std::string sql,
+               sol::optional<sol::table> params) -> uint64_t {
+            if (!inst->async_enabled || inst->host_api == nullptr ||
+                inst->host_api->lua_suspend_current == nullptr ||
+                inst->host_api->lua_resume_session == nullptr) {
+                return 0;
+            }
+            pg_task task;
+            task.method = std::move(method);
+            task.sql = std::move(sql);
+            // Positional params (Lua sequence 1..N), mirroring the sync
+            // path's numeric-key bind. Type order matters: bool before int,
+            // or sol folds booleans into integers.
+            if (params && params->valid()) {
+                for (auto& kv : *params) {
+                    if (kv.first.get_type() != sol::type::number) continue;
+                    const sol::object& v = kv.second;
+                    if (v.is<bool>()) {
+                        task.params.push_back(v.as<bool>());
+                    } else if (v.is<lua_Integer>()) {
+                        task.params.push_back(v.as<lua_Integer>());
+                    } else if (v.is<double>()) {
+                        task.params.push_back(v.as<double>());
+                    } else if (v.is<std::string>()) {
+                        task.params.push_back(v.as<std::string>());
+                    } else {
+                        task.params.push_back(nullptr);
+                    }
+                }
+            }
+            std::string tag = "db:postgresql:" + task.method;
+            uint64_t session = inst->host_api->lua_suspend_current(
+                inst->ctx, s, caller_timeout_ms(inst), tag.c_str());
+            if (session == 0) return 0;
+            task.session = session;
+            submit_async(inst, std::move(task));
+            return session;
+        });
+
+    // Wrap the sync methods with the shared submit-and-yield shim. If the
+    // shim source fails to load (should be impossible — it is a string
+    // constant), fall back to exposing the sync methods directly.
+    sol::load_result shim =
+        lua.load(shield::plugins::kDbAsyncShimLua, "=db_async_shim");
+    bool shim_ok = shim.valid();
+    if (shim_ok) {
+        sol::function_result r = shim(proxy, proxy["__db_submit"]);
+        shim_ok = r.valid();
+    }
+    if (!shim_ok) {
+        if (inst->host_api != nullptr && inst->host_api->log != nullptr) {
+            inst->host_api->log(SHIELD_LOG_WARN, "database.postgresql",
+                                inst->instance_id.c_str(),
+                                "async shim failed to install; sync proxy");
+        }
+        for (const char* m : {"query", "query_one", "execute"}) {
+            std::string key = std::string("__sync_") + m;
+            sol::object fn = proxy[key];
+            proxy[m] = fn;
+        }
+    }
+
     return proxy;
 }
 
@@ -1129,6 +1254,242 @@ void drain_pool(pgsql_instance* inst) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Async entry (docs/db-async-design.md M3).
+//
+// Inside a coroutine dispatch query/query_one/execute suspend the caller via
+// the host's lua_suspend_current primitive and the SQL — including the pool
+// acquire — runs on the instance worker pool below. This section never touches
+// a lua_State: it speaks JSON in both directions, and the host's resume
+// converts the payload back into Lua values.
+// ---------------------------------------------------------------------------
+
+// Caller-side suspend budget (design doc: query_timeout_ms + 500ms slack
+// unless explicitly overridden).
+int caller_timeout_ms(const pgsql_instance* inst) {
+    return inst->call_timeout_ms > 0 ? inst->call_timeout_ms
+                                     : inst->query_timeout_ms + 500;
+}
+
+// JSON params bound as text (the worker twin of collect_lua_params — libpq
+// parses them per-column via PQexecParams). storage must outlive the call.
+struct json_params {
+    std::vector<std::string> storage;
+    std::vector<const char*> ptrs;
+};
+
+json_params make_json_params(const nlohmann::json& params) {
+    json_params out;
+    if (!params.is_array()) return out;
+    out.storage.reserve(params.size());
+    out.ptrs.reserve(params.size());
+    for (const auto& v : params) {
+        if (v.is_null()) {
+            out.storage.emplace_back();
+            out.ptrs.push_back(nullptr);
+        } else if (v.is_boolean()) {
+            out.storage.push_back(v.get<bool>() ? "t" : "f");
+            out.ptrs.push_back(out.storage.back().c_str());
+        } else if (v.is_number_integer()) {
+            out.storage.push_back(std::to_string(v.get<int64_t>()));
+            out.ptrs.push_back(out.storage.back().c_str());
+        } else if (v.is_number_float()) {
+            out.storage.push_back(std::to_string(v.get<double>()));
+            out.ptrs.push_back(out.storage.back().c_str());
+        } else {
+            out.storage.push_back(v.get<std::string>());
+            out.ptrs.push_back(out.storage.back().c_str());
+        }
+    }
+    return out;
+}
+
+// JSON twin of pg_cell_to_lua: rely on the field's OID only to distinguish
+// "definitely integer" (INT2/INT4/INT8/OID) from "definitely float"
+// (FLOAT4/FLOAT8/NUMERIC) and boolean (BOOL) from text. NULL stays null.
+nlohmann::json pg_cell_to_json(PGresult* res, int row, int col) {
+    if (PQgetisnull(res, row, col)) return nullptr;
+    const char* v = PQgetvalue(res, row, col);
+    if (!v) return nullptr;
+    Oid t = PQftype(res, col);
+    std::string s = v;
+    // Numeric types: INT2=21, INT4=23, INT8=20, OID=26.
+    if (t == 21 || t == 23 || t == 20 || t == 26) {
+        try {
+            return nlohmann::json(std::strtoll(v, nullptr, 10));
+        } catch (...) {
+            // fall through to text
+        }
+    }
+    if (t == 16) {
+        // boolean — libpq renders 't'/'f'.
+        return nlohmann::json(s == "t");
+    }
+    if (t == 700 || t == 701 || t == 1700) {
+        try {
+            return nlohmann::json(std::stod(s));
+        } catch (...) {
+            // fall through to text
+        }
+    }
+    return nlohmann::json(std::move(s));
+}
+
+nlohmann::json pg_row_to_json(PGresult* res, int r) {
+    nlohmann::json row = nlohmann::json::object();
+    int n = PQnfields(res);
+    for (int c = 0; c < n; ++c) {
+        const char* name = PQfname(res, c);
+        row[name ? name : "_"] = pg_cell_to_json(res, r, c);
+    }
+    return row;
+}
+
+// Worker-thread statement runner: the JSON twin of run_statement — same three
+// modes, same result shapes (query -> array of row objects, query_one -> row
+// object or null, execute -> {affected}).
+bool run_statement_json(PGconn* conn, const std::string& sql,
+                        const nlohmann::json& params, const std::string& mode,
+                        nlohmann::json* out, std::string* err_code,
+                        std::string* err_msg) {
+    json_params jp = make_json_params(params);
+    std::string rewritten = rewrite_placeholders(sql.c_str());
+    PGresult* res =
+        PQexecParams(conn, rewritten.c_str(), static_cast<int>(jp.ptrs.size()),
+                     nullptr, jp.ptrs.data(), nullptr, nullptr, 0);
+    if (!res) {
+        // Out of memory on libpq side — conn is almost certainly toast.
+        *err_code = "connection_lost";
+        *err_msg = "postgresql: PQexecParams returned NULL";
+        return false;
+    }
+    ExecStatusType status = PQresultStatus(res);
+    if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
+        const char* sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+        *err_code = map_sqlstate(sqlstate);
+        const char* m = PQresultErrorMessage(res);
+        *err_msg = m && m[0] ? m : "postgresql: query failed";
+        PQclear(res);
+        return false;
+    }
+
+    if (mode == "execute") {
+        char* affected = PQcmdTuples(res);
+        *out = nlohmann::json::object(
+            {{"affected",
+              affected && affected[0]
+                  ? static_cast<int64_t>(std::strtoll(affected, nullptr, 10))
+                  : 0}});
+    } else if (mode == "query_one") {
+        // if/else, not a ternary: mixed json/nullptr arms fail to compile.
+        if (PQntuples(res) > 0) {
+            *out = pg_row_to_json(res, 0);
+        } else {
+            *out = nullptr;  // no rows
+        }
+    } else {  // "query"
+        nlohmann::json rows = nlohmann::json::array();
+        int n = PQntuples(res);
+        for (int r = 0; r < n; ++r) {
+            rows.push_back(pg_row_to_json(res, r));
+        }
+        *out = std::move(rows);
+    }
+    PQclear(res);
+    return true;
+}
+
+// Worker body: drain tasks until stopped. THE M3 POINT — acquire_conn runs
+// here, on the worker: a pool exhausted by concurrent holders (sync callers,
+// transactions) suspends the calling coroutine instead of blocking the actor
+// thread, and the acquire wait is bounded by connect_timeout_ms.
+void worker_loop(pgsql_instance* inst) {
+    std::unique_lock lk(inst->worker_mu);
+    while (true) {
+        inst->worker_cv.wait(lk, [&] {
+            return inst->worker_stop || !inst->worker_tasks.empty();
+        });
+        if (inst->worker_tasks.empty()) {
+            if (inst->worker_stop) return;
+            continue;
+        }
+        pg_task task = std::move(inst->worker_tasks.front());
+        inst->worker_tasks.pop_front();
+        lk.unlock();
+
+        std::string acquire_err;
+        pool_guard guard = acquire_conn(inst, &acquire_err);
+        bool ok = false;
+        nlohmann::json result;
+        std::string err_code = "connection_failed";
+        std::string err_msg = std::move(acquire_err);
+        if (guard.get()) {
+            err_code.clear();
+            err_msg.clear();
+            ok = run_statement_json(guard.get(), task.sql, task.params,
+                                    task.method, &result, &err_code, &err_msg);
+        }
+
+        // Payload = the VALUES array only — resume_suspended_caller pushes
+        // the ok boolean itself, so the shim sees (ok, result...) from
+        // [result] and (false, err_table) from [{code, message}].
+        nlohmann::json payload =
+            ok ? nlohmann::json::array({result})
+               : nlohmann::json::array({nlohmann::json::object(
+                     {{"code", err_code}, {"message", err_msg}})});
+        std::string payload_str = payload.dump();
+        if (inst->host_api != nullptr &&
+            inst->host_api->lua_resume_session != nullptr) {
+            int claim_rc = inst->host_api->lua_resume_session(
+                inst->ctx, task.session, ok ? 1 : 0, payload_str.c_str());
+            if (claim_rc != 0) {
+                // The caller timed out or the service exited while the SQL
+                // ran: the completion is dropped by the host. Real result
+                // discarded — poison the connection so it is never reused.
+                guard.bad = true;
+                if (inst->host_api->log != nullptr) {
+                    std::string msg =
+                        "async completion rejected for session " +
+                        std::to_string(task.session) +
+                        " (caller timeout or service gone); connection "
+                        "discarded";
+                    inst->host_api->log(SHIELD_LOG_WARN, "database.postgresql",
+                                        inst->instance_id.c_str(), msg.c_str());
+                }
+            }
+        }
+
+        lk.lock();
+    }
+}
+
+// Worker pool size: never more than the connection pool (extra workers would
+// only queue on acquire), hard-capped so thread counts stay sane.
+int worker_count(const pgsql_instance* inst) {
+    int n = inst->pool_size > 0 ? inst->pool_size : 1;
+    return std::min(n, 8);
+}
+
+// Submit one task: lazily start the worker pool, enqueue, wake. Runs on the
+// actor thread right after the caller suspended — the task may therefore
+// complete before the shim reaches coroutine.yield(); the host's
+// yield-window guard requeues that completion over the actor mailbox.
+void submit_async(pgsql_instance* inst, pg_task task) {
+    {
+        std::lock_guard lk(inst->worker_mu);
+        if (!inst->worker_started) {
+            inst->worker_started = true;
+            int n = worker_count(inst);
+            inst->workers.reserve(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i) {
+                inst->workers.emplace_back(worker_loop, inst);
+            }
+        }
+        inst->worker_tasks.push_back(std::move(task));
+    }
+    inst->worker_cv.notify_all();
+}
+
 // shield.pool.stats.v1 — real gauges from the per-instance pool. The driver
 // tracks capacity/usage but no cumulative counters, so those stay -1
 // (unknown), matching the ABI's sentinel semantics.
@@ -1191,6 +1552,17 @@ int pg_create(const shield_plugin_create_args_v1* args,
         // points at the enclosing pgsql_instance. Standard C-ABI pattern.
         auto* inst = reinterpret_cast<pgsql_instance*>(self);
         unregister_instance(inst->instance_id);
+        // Close the worker intake, drain in-flight tasks (each bounded by
+        // its own acquire/query timeouts), and only then drain the pool —
+        // the design doc's shutdown ordering.
+        {
+            std::lock_guard lk(inst->worker_mu);
+            inst->worker_stop = true;
+        }
+        inst->worker_cv.notify_all();
+        for (auto& t : inst->workers) {
+            if (t.joinable()) t.join();
+        }
         drain_pool(inst);
         delete inst;
     };

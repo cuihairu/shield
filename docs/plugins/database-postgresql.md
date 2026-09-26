@@ -41,8 +41,11 @@ cmake --build build
 | `database` | string | 是 | — | 数据库名。 |
 | `username` | string | 是 | — | 登录用户名。 |
 | `password` | string | 否 | — | 登录密码。标记为 `secret`，日志和 dashboard 会脱敏。 |
-| `connect_timeout_ms` | integer | 否 | `5000` | 连接超时（秒级精度，libpq 的 `connect_timeout` 单位是秒），范围 100-60000。 |
+| `connect_timeout_ms` | integer | 否 | `5000` | 连接超时（秒级精度，libpq 的 `connect_timeout` 单位是秒），范围 100-60000。池耗尽时等待归还的时长也复用该值。 |
 | `query_timeout_ms` | integer | 否 | `5000` | 单条 SQL 超时，范围 100-300000。 |
+| `pool_size` | integer | 否 | `4` | 每实例连接池容量，范围 1-256。 |
+| `async` | boolean | 否 | `true` | `query` / `query_one` / `execute` 走实例 worker 池异步执行（连接 acquire 也在 worker 上）：协程内调用挂起等待完成，同 service 其他消息继续处理。设为 `false` 退回同步入口（调用即阻塞到 SQL 结束）。见 docs/db-async-design.md。 |
+| `call_timeout_ms` | integer | 否 | `0` | 异步入口的调用方挂起预算。`0` 表示 `query_timeout_ms + 500`。超时返回 `{code="timeout", retryable=true}`；迟到的真实结果会被丢弃（不投递），不会覆盖超时结果。范围 0-300000。 |
 
 ### 完整 app.yaml 示例
 
@@ -98,7 +101,7 @@ int  (*ping)(struct shield_db_conn* conn);
 | `disconnect` | 调用 `PQfinish`。`NULL` 安全。 |
 | `ping` | 执行 `SELECT 1`，成功返回 1。 |
 
-注意 libpq 的 `connect_timeout` 单位是**秒**（不是毫秒），插件内部把 `connect_timeout_ms` 除以 1000 转换。`query_timeout_ms` 不直接对应 libpq 选项——业务侧需要时可以通过 `SET statement_timeout` 在会话级设置。
+注意 libpq 的 `connect_timeout` 单位是**秒**（不是毫秒，且必须是整数——小数会被 libpq 直接判为解析错误），插件内部把 `connect_timeout_ms` 向上取整为整秒转换。`query_timeout_ms` 不直接对应 libpq 选项——业务侧需要时可以通过 `SET statement_timeout` 在会话级设置。
 
 ### query vs execute
 

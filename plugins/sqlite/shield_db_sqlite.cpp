@@ -28,6 +28,7 @@
 #include "shield/plugin/abi.h"
 #include "shield/plugin/database.h"
 #include "shield/plugin/host_api.h"
+#include "shield_db_async_shim.hpp"
 #include "shield_db_mapper.hpp"
 #include "shield_lua_plugin_binding.hpp"
 
@@ -810,38 +811,9 @@ sol::table make_handle_proxy(sol::state_view lua, sqlite3* db);
 
 // Async shim installed over the instance proxy: query/query_one/execute
 // become submit-and-yield wrappers around the __sync_* implementations.
-// Both call shapes work — colon (db:query(sql, params)) and dot
-// (db.query(sql, params)). session == 0 (async disabled, main thread, host
-// without the resume slots) falls back to the synchronous implementation
-// inline, so callers always get the documented (ok, ...) contract.
-const char* kAsyncShim = R"lua(
-local proxy = ...
-local submit = proxy.__db_submit
-local function wrap(method)
-    local sync = proxy['__sync_' .. method]
-    proxy[method] = function(a, b, c)
-        local sql, params
-        if a == proxy then
-            sql, params = b, c
-        else
-            sql, params = a, b
-        end
-        local session = submit(method, sql, params)
-        if session == 0 then
-            return sync(sql, params)
-        end
-        local r = table.pack(coroutine.yield())
-        if not r[1] then
-            return false, r[2]
-        end
-        return true, table.unpack(r, 2, r.n)
-    end
-end
-wrap('query')
-wrap('query_one')
-wrap('execute')
-return proxy
-)lua";
+// The shim source is shared with the mysql/postgresql drivers — see
+// plugins/_shared/shield_db_async_shim.hpp for the contract.
+constexpr const char* kAsyncShim = shield::plugins::kDbAsyncShimLua;
 
 // Build a per-instance proxy table that opens a fresh connection per call.
 sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {

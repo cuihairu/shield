@@ -566,6 +566,50 @@ if(SHIELD_BUILD_DB_PLUGIN_SQLITE)
 endif()
 
 # ---------------------------------------------------------------------------
+# test_db_net_async — DB-async M3 end-to-end for the network drivers
+# (docs/db-async-design.md): the real mysql/postgresql plugin .so files
+# through a real PluginHost. No database server needed — a silent accept-only
+# TCP peer makes the connect phase stall, which is enough to exercise the
+# async machinery around the driver (see the test header). Only exists when
+# at least one of the two drivers is built.
+# ---------------------------------------------------------------------------
+if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR SHIELD_BUILD_DB_PLUGIN_POSTGRESQL)
+    add_executable(test_db_net_async plugin/test_db_net_async.cpp)
+    target_link_libraries(test_db_net_async
+        PRIVATE
+            shield_plugin
+            shield_lua
+            shield_core
+            CAF::core
+            CAF::io
+            sol2::sol2
+            ${LUA_LIBRARIES}
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_db_net_async
+        PRIVATE ${CMAKE_SOURCE_DIR}/include ${LUA_INCLUDE_DIR})
+    foreach(_net IN
+            ITEMS "MYSQL:SHIELD_BUILD_DB_PLUGIN_MYSQL:shield_db_mysql:SHIELD_NET_MYSQL_LIBRARY"
+                  "POSTGRESQL:SHIELD_BUILD_DB_PLUGIN_POSTGRESQL:shield_db_pgsql:SHIELD_NET_PGSQL_LIBRARY")
+        string(REPLACE ":" ";" _net_parts "${_net}")
+        list(GET _net_parts 0 _net_name)
+        list(GET _net_parts 1 _net_switch)
+        list(GET _net_parts 2 _net_target)
+        list(GET _net_parts 3 _net_macro)
+        if(${_net_switch})
+            target_compile_definitions(test_db_net_async PRIVATE
+                "${_net_macro}=\"$<TARGET_FILE:${_net_target}>\"")
+            add_dependencies(test_db_net_async ${_net_target})
+        endif()
+    endforeach()
+    target_compile_definitions(test_db_net_async PRIVATE
+        SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    add_test(NAME test_db_net_async COMMAND test_db_net_async)
+    set_tests_properties(test_db_net_async PROPERTIES LABELS "plugin" TIMEOUT 240)
+    shield_copy_runtime_dlls(test_db_net_async)
+endif()
+
+# ---------------------------------------------------------------------------
 # test_plugin_pool_stats_real — shield.pool.stats.v1 contract against the
 # real plugin .so files (see the test header). Same per-switch macro pattern
 # as test_plugin_lua_facade above.

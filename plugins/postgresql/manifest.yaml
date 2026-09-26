@@ -60,3 +60,22 @@ config_schema:
       default: 4
       minimum: 1
       maximum: 256
+    async:
+      type: boolean
+      default: true
+      description: >-
+        query / query_one / execute suspend the calling coroutine and run on
+        the instance worker pool (pool acquire included), so the service keeps
+        dispatching other messages. false restores the synchronous inline
+        entry. See docs/db-async-design.md.
+    call_timeout_ms:
+      type: integer
+      default: 0
+      minimum: 0
+      maximum: 300000
+      description: >-
+        Caller-side suspend budget for the async entry. 0 means
+        query_timeout_ms + 500. On timeout the caller resumes with
+        {code="timeout", retryable=true}; the late real result is dropped, not
+        delivered over the timeout error.
+
