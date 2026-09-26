@@ -7,7 +7,7 @@
 <details>
 <summary>实现快照（点击展开）</summary>
 
-当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/now`、coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、timer/fork/on_init 回调统一协程 dispatch（`invoke_coroutine`，挂起与错误路由到 `on_error` 均与 handler 一致）、TCP gateway listener 到 Lua handler 的 bootstrap 桥接、HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
+当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/claim/now`、coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、timer/fork/on_init 回调统一协程 dispatch（`invoke_coroutine`，挂起与错误路由到 `on_error` 均与 handler 一致）、TCP gateway listener 到 Lua handler 的 bootstrap 桥接、HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
 
 - HTTP 服务端 Lua 路由（`shield.httpd.*`）已接入 bootstrap：路由保存于运行时注册表，由 `LuaHttpBridge` 镜像进 `HttpServer`，请求派发到注册服务的 actor 线程执行。
 - `on_shutdown(ctx)` 和单 VM 内部 `shield.event` 已定义为目标契约，但当前源码尚未实现。
@@ -309,6 +309,20 @@ local ok, err = shield.unregister("gateway.public")
 ```
 
 注销当前 service 拥有的 name。
+
+---
+
+### shield.claim(name)
+
+```lua
+local ok, err = shield.claim("gateway.public")
+```
+
+蓝绿热更新交接：当前 service **原子接管**一个已存在的 name（原 owner
+继续运行，负责 drain 后退出；name 变更通知以新 owner 触发）。已拥有该
+name 时幂等成功（无变更、不触发通知）。与 register/unregister 同一
+调度上下文规则：只能在自己 service 的 handler 里调用。语义与时序见
+[Lua VM 语义 · Blue-Green](runtime-lua-vm.md)。
 
 ---
 

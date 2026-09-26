@@ -95,6 +95,11 @@ function M.unregister_name(ctx, name)
     return ok, err and err.code or nil, err and err.message or nil
 end
 
+function M.claim_name(ctx, name)
+    local ok, err = shield.claim(name)
+    return ok, err and err.code or nil, err and err.message or nil
+end
+
 function M.names_snapshot(ctx)
     return shield.names()
 end

@@ -49,6 +49,7 @@
 | `spawn_failed` | spawn | 其他未分类 spawn 失败（含当前 name 冲突/非法名的返回码） | 否 | ✅ spawn 默认错误码 |
 | `register_failed` | register | 发布本地 name 失败（name 冲突或非法） | 否 | ✅ register 返回 |
 | `unregister_failed` | unregister | 注销本地 name 失败 | 否 | ✅ unregister 返回 |
+| `claim_failed` | claim | 蓝绿交接接管 name 失败（name 不存在/非法、无调度上下文） | 否 | ✅ claim 返回 |
 | `timeout` | call | 调用超时（默认 5s） | 是 | ✅ |
 | `method_not_found` | call | 目标服务没有该方法 | 否 | ✅ |
 | `handler_error` | call | 目标服务 method 抛出未捕获异常 | 否 | ✅ call 返回 |

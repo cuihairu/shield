@@ -427,6 +427,29 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                             return results;
                         });
 
+    // Blue-green handover: the replacement service atomically takes over an
+    // existing name from its current owner (which then drains and exits).
+    // Same dispatch-context rule as register/unregister: the claiming
+    // service calls this in its own handler.
+    shield.set_function(
+        "claim",
+        [manager](sol::this_state state,
+                  std::string name) -> sol::variadic_results {
+            sol::state_view lua(state);
+            sol::variadic_results results;
+
+            std::string error;
+            if (!manager->claim_name(name, &error)) {
+                results.push_back(sol::make_object(lua, false));
+                results.push_back(make_error(state, "claim_failed", error));
+                return results;
+            }
+
+            results.push_back(sol::make_object(lua, true));
+            results.push_back(sol::make_object(lua, sol::nil));
+            return results;
+        });
+
     // Coroutine-aware spawn primitive. Suspends the caller's coroutine and
     // queues the blocking part (VM creation + module load + on_init) onto the
     // manager's spawn worker thread; the caller is resumed with

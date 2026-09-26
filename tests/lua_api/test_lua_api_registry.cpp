@@ -224,4 +224,56 @@ BOOST_AUTO_TEST_CASE(LAPI_003_08_UnregisterName) {
     BOOST_CHECK_EQUAL(cr.values[1].get<std::string>(), "unregister_failed");
 }
 
+// Blue-green handover: the replacement service atomically claims the
+// production name from the running old service, which then drains and
+// exits without retracting the name. Resolutions never see a gap.
+BOOST_AUTO_TEST_CASE(LAPI_003_09_BlueGreenClaimHandover) {
+    caf::actor_system_config cfg;
+
+    caf::actor_system system(cfg);
+
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    auto blue = spawn_service(manager, "bg.blue");
+    BOOST_REQUIRE(blue.success);
+    // Blue publishes the production name it owns for this scenario.
+    CallResult publish = manager.call(blue.service_id, "register_name",
+                                      nlohmann::json::array({"bg.production"}));
+    BOOST_REQUIRE(publish.success);
+    BOOST_CHECK_EQUAL(manager.query_service("bg.production"), blue.service_id);
+
+    auto green = spawn_service(manager, "bg.green");
+    BOOST_REQUIRE(green.success);
+
+    // Green claims the production name: atomic ownership transfer.
+    CallResult claim = manager.call(green.service_id, "claim_name",
+                                    nlohmann::json::array({"bg.production"}));
+    BOOST_REQUIRE(claim.success);
+    BOOST_CHECK_EQUAL(claim.values[0].get<bool>(), true);
+    BOOST_CHECK(claim.values[1].is_null());
+    BOOST_CHECK_EQUAL(manager.query_service("bg.production"), green.service_id);
+
+    // Re-claim by the current owner is an idempotent success.
+    CallResult reclaim = manager.call(green.service_id, "claim_name",
+                                      nlohmann::json::array({"bg.production"}));
+    BOOST_REQUIRE(reclaim.success);
+    BOOST_CHECK_EQUAL(reclaim.values[0].get<bool>(), true);
+    BOOST_CHECK_EQUAL(manager.query_service("bg.production"), green.service_id);
+
+    // Blue exits; the production name must survive its exit cleanup.
+    manager.exit(blue.service_id, "blue_green_upgrade");
+    BOOST_CHECK(manager.query_service("bg.blue").empty());
+    BOOST_CHECK_EQUAL(manager.query_service("bg.production"), green.service_id);
+
+    // A claim of an unknown name fails with a stable error.
+    CallResult missing = manager.call(green.service_id, "claim_name",
+                                      nlohmann::json::array({"bg.nothere"}));
+    BOOST_REQUIRE(missing.success);
+    BOOST_CHECK_EQUAL(missing.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(missing.values[1].get<std::string>(), "claim_failed");
+    BOOST_CHECK_EQUAL(missing.values[2].get<std::string>(),
+                      "service name not found: bg.nothere");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -196,6 +196,16 @@ public:
     bool register_name(std::string_view name, std::string* error = nullptr);
     bool unregister_name(std::string_view name, std::string* error = nullptr);
 
+    // Blue-green handover: atomically transfer ownership of an existing
+    // name to the current service (the blue-green replacement claims the
+    // production name, then the old owner drains and exits). Idempotent
+    // success when the caller already owns the name (no change, hence no
+    // notification). The previous owner keeps running; the name-change
+    // notifier fires with the new owner so the old service (or an observer)
+    // learns the handover happened. Must be called from the claiming
+    // service's own dispatch context, like register_name.
+    bool claim_name(std::string_view name, std::string* error = nullptr);
+
     // Observe service-name publication changes (spawn publish, register/
     // unregister, service exit retraction). The notifier receives
     // (name, service_id); an empty service_id means the name was retracted.

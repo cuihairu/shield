@@ -66,10 +66,17 @@
 
 ### 实现 API
 
+name 所有权转移用 **`shield.claim(name)`**（原子接管，见
+[Lua API 契约](lua-api.md#shieldclaimname)）。注意不能用
+`unregister + register` 拼——register 只把 **当前** service 注册为 owner，
+旧 service 无法替新 service 注册名字，且先注销再注册会让 name 出现解析
+空窗。claim 由**新 service 在自己的 handler 里调用**，registry 锁内原子
+换 owner，全程无空窗：
+
 ```lua
--- 1. Spawn new service
+-- 1. 编排方 spawn 新代码（临时名字，spawn 时自动注册）
 local new_handle, err = shield.spawn("player", {
-    name = "player.1.new",  -- 临时名称
+    name = "player.1.new",
     args = {
         migration_data = get_migration_data(),  -- 迁移数据
     },
@@ -88,20 +95,26 @@ local ok, err = shield.call(new_handle, "migrate", {
 
 if not ok then
     shield.log.error("migration failed: " .. err.message)
-    shield.call(new_handle, "shutdown")
+    shield.send(new_handle, "shutdown")  -- 业务自清理
     return
 end
 
--- 3. Switch name binding
-shield.unregister("player.1")
-shield.register("player.1", new_handle)
+-- 3. 新 service 原子接管生产 name（在它自己的 migrate handler 里：
+--    function M.migrate(ctx, state)
+--        ... 导入状态 ...
+--        return shield.claim("player.1")
+--    end）
+--    claim 成功即生效：后续按 name 的 send/call 全部落到新 service。
+--    旧 service 收到 name 变更通知（或由编排方显式通知）进入 drain。
 
 -- 4. Old service draining
+--    actor 模型天然串行：旧 service 把在途消息处理完即可退出；
+--    drain 期间不再接新业务（业务侧用 M.draining 挡新增请求）。
 M.draining = true
-wait_for_pending_requests()  -- 等待待处理请求完成
 
--- 5. Old service exit
-shield.exit("upgraded")
+-- 5. Old service exit（旧 service 自己的 handler 里）
+shield.exit("upgraded")   -- 退出清理只收回它仍拥有的名字，"player.1"
+                          -- 已归新 service，不受影响
 ```
 
 ### 状态迁移

@@ -165,6 +165,9 @@ BOOST_AUTO_TEST_CASE(RegisterNameGuards) {
 
     BOOST_CHECK(!manager.unregister_name("cov2_alias", &error));
     BOOST_CHECK(error.find("current service context") != std::string::npos);
+
+    BOOST_CHECK(!manager.claim_name("cov2_alias", &error));
+    BOOST_CHECK(error.find("current service context") != std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +600,115 @@ BOOST_AUTO_TEST_CASE(NameChangeNotifierObservesLifecycle) {
     BOOST_CHECK(retracted);
     BOOST_CHECK(manager.query_service("cov8_notifier_svc").empty());
     BOOST_CHECK(manager.query_service("cov8.alias").empty());
+}
+
+// ---------------------------------------------------------------------------
+// Blue-green handover: claim_name atomically transfers a published name to
+// the claiming service; the old owner exits without retracting it. The
+// idempotent re-claim commits no change and fires no notification.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ClaimNameTransfersOwnershipAtomically) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    std::mutex mutex;
+    std::vector<std::pair<std::string, std::string>> events;
+    auto snapshot = [&]() {
+        std::lock_guard lock(mutex);
+        return events;
+    };
+    manager.set_name_change_notifier(
+        [&](const std::string& name, const std::string& service_id) {
+            std::lock_guard lock(mutex);
+            events.emplace_back(name, service_id);
+        });
+
+    const std::string path = write_script(
+        "cov9_claim.lua",
+        "local M = {}\n"
+        "function M.on_init(args)\n"
+        "  local config = (args and args.config) or {}\n"
+        "  if config.register_alias then "
+        "shield.register(config.register_alias) end\n"
+        "end\n"
+        "function M.claim_name(ctx, name)\n"
+        "  local ok, err = shield.claim(name)\n"
+        "  return ok, err and err.code or nil, err and err.message or nil\n"
+        "end\n"
+        "return M\n");
+
+    nlohmann::json blue_opts = {
+        {"name", "cov9_blue"},
+        {"args", nlohmann::json::object()},
+        {"config", nlohmann::json{{"register_alias", "cov9.prod"}}},
+    };
+    auto blue = manager.spawn(path, blue_opts.dump());
+    BOOST_REQUIRE(blue.success);
+    auto green = manager.spawn(path, opts_for("cov9_green"));
+    BOOST_REQUIRE(green.success);
+
+    // Empty the spawn-time events so the handover assertions below read
+    // only what claim commits.
+    {
+        std::lock_guard lock(mutex);
+        events.clear();
+    }
+
+    // Green claims the production name from blue: one committed change.
+    auto cr = manager.call(green.service_id, "claim_name",
+                           nlohmann::json::array({"cov9.prod"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), true);
+    BOOST_CHECK(cr.values[1].is_null());
+    BOOST_CHECK_EQUAL(manager.query_service("cov9.prod"), green.service_id);
+    {
+        auto got = snapshot();
+        BOOST_REQUIRE_EQUAL(got.size(), 1u);
+        BOOST_CHECK_EQUAL(got[0].first, "cov9.prod");
+        BOOST_CHECK_EQUAL(got[0].second, green.service_id);
+    }
+
+    // Re-claim by the current owner: success, no change, no event.
+    cr = manager.call(green.service_id, "claim_name",
+                      nlohmann::json::array({"cov9.prod"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), true);
+    BOOST_CHECK_EQUAL(manager.query_service("cov9.prod"), green.service_id);
+    BOOST_CHECK_EQUAL(snapshot().size(), 1u);
+
+    // Unknown name and invalid name fail with stable errors.
+    cr = manager.call(green.service_id, "claim_name",
+                      nlohmann::json::array({"cov9.nothere"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(cr.values[1].get<std::string>(), "claim_failed");
+    BOOST_CHECK_EQUAL(cr.values[2].get<std::string>(),
+                      "service name not found: cov9.nothere");
+
+    cr = manager.call(green.service_id, "claim_name",
+                      nlohmann::json::array({"bad alias"}));
+    BOOST_REQUIRE(cr.success);
+    BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), false);
+    BOOST_CHECK_EQUAL(cr.values[1].get<std::string>(), "claim_failed");
+    BOOST_CHECK_EQUAL(cr.values[2].get<std::string>(),
+                      "invalid service name: bad alias");
+
+    // Blue exits; its own name is retracted but the claimed name survives.
+    manager.exit(blue.service_id, "cov9_upgrade_done");
+    const bool blue_retracted = wait_until(
+        [&] {
+            auto got = snapshot();
+            for (const auto& [name, service_id] : got) {
+                if (name == "cov9_blue" && service_id.empty()) return true;
+            }
+            return false;
+        },
+        std::chrono::milliseconds(5000));
+    BOOST_CHECK(blue_retracted);
+    BOOST_CHECK(manager.query_service("cov9_blue").empty());
+    BOOST_CHECK_EQUAL(manager.query_service("cov9.prod"), green.service_id);
 }
 
 // ---------------------------------------------------------------------------

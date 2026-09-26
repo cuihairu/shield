@@ -150,7 +150,14 @@ ingress rate limit（token bucket，messages/second + burst）+ accept 时
       端到端 → mysql/postgresql → tx + 指标 + 文档降级）
 - [x] 连接级限流/黑名单（runtime-security.md 草案落地）——2026-09-26
       完成，见上方「连接级限流」节（7779971 限流 + 本次黑名单）
-- [ ] blue-green 热更新落地（runtime-lua-vm.md 设计稿）
+- [x] blue-green 热更新落地——2026-09-26 完成：设计稿的
+      `unregister + register(handle)` 序列在现有原语下不可实现
+      （register 只认当前 service；先注销再注册有解析空窗），落地为
+      **`shield.claim(name)`** 原子接管（LuaServiceManager::claim_name：
+      registry 锁内换 owner + name 变更通知；幂等再 claim 无通知不报错；
+      旧 owner 退出不影响已接管 name）。测试：registry 蓝绿交接用例 +
+      coverage 通知/守卫/幂等/错误矩阵；runtime-lua-vm.md 实现 API 节
+      改为 claim 时序；lua-api.md / runtime-errors.md（claim_failed）对齐
 - [ ] TLS（network.tls 配置面）
 
 ## 测试质量 + 防回退收口（2026-09-25，全部完成）

@@ -3597,6 +3597,64 @@ bool LuaServiceManager::unregister_name(std::string_view name,
     return true;
 }
 
+bool LuaServiceManager::claim_name(std::string_view name, std::string* error) {
+    const std::string claimer = current_service_id();
+    if (claimer.empty()) {
+        if (error) {
+            *error = "claim requires current service context";
+        }
+        return false;
+    }
+    if (!Impl::valid_name(name)) {
+        if (error) {
+            *error = "invalid service name: " + std::string(name);
+        }
+        return false;
+    }
+
+    std::unique_lock lock(impl_->registry_mutex);
+    if (!impl_->services.contains(claimer)) {
+        if (error) {
+            *error = "current service is not running: " + claimer;
+        }
+        return false;
+    }
+    auto existing = impl_->published_names.find(std::string(name));
+    if (existing == impl_->published_names.end()) {
+        if (error) {
+            *error = "service name not found: " + std::string(name);
+        }
+        return false;
+    }
+    const std::string previous_owner = existing->second;
+    if (previous_owner == claimer) {
+        // Already the owner: idempotent no-op (no committed change, so no
+        // name-change notification), still success so a retried handover
+        // sequence does not fail on re-claim.
+        return true;
+    }
+    if (!impl_->services.contains(previous_owner)) {
+        // GCOVR_EXCL_START (defensive: exit cleanup retracts owned names
+        // under the same lock, so a dead owner observable here cannot be
+        // scheduled deterministically)
+        if (error) {
+            *error = "previous owner is not running: " + previous_owner;
+        }
+        return false;
+        // GCOVR_EXCL_STOP
+    }
+
+    existing->second = claimer;
+    impl_->owned_names[claimer].insert(std::string(name));
+    if (auto names_it = impl_->owned_names.find(previous_owner);
+        names_it != impl_->owned_names.end()) {
+        names_it->second.erase(std::string(name));
+    }
+    lock.unlock();
+    impl_->notify_name_change(std::string(name), claimer);
+    return true;
+}
+
 void LuaServiceManager::set_name_change_notifier(
     std::function<void(const std::string&, const std::string&)> fn) {
     impl_->name_change_notifier = std::move(fn);
