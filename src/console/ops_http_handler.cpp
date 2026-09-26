@@ -12,6 +12,7 @@
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
 #include "shield/lua/slow_calls.hpp"
+#include "shield/net/listener.hpp"
 #include "shield/plugin/plugin_host.hpp"
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -375,6 +376,51 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
         }
         prom_emit_group(out, "shield_plugin_instances", "gauge",
                         "Plugin instances by lifecycle state", samples);
+    }
+
+    // Gateway view: accept/rejection/rate-limit counters and active sessions
+    // aggregated over every live TCP listener, broken down by listen port.
+    {
+        std::vector<std::pair<std::string, double>> accept_samples;
+        std::vector<std::pair<std::string, double>> rejection_samples;
+        std::vector<std::pair<std::string, double>> active_samples;
+        std::vector<std::pair<std::string, double>> rate_limited_samples;
+        std::map<std::string, double> rejections;
+        for (const auto* listener :
+             shield::net::ListenerRegistry::instance().snapshot()) {
+            const std::string port =
+                std::to_string(static_cast<unsigned>(listener->port()));
+            accept_samples.emplace_back(
+                "port=\"" + port + "\"",
+                static_cast<double>(listener->accepts_total()));
+            rejections["port=\"" + port + "\",reason=\"blocked_ip\""] +=
+                static_cast<double>(listener->blocked_rejects_total());
+            rejections["port=\"" + port + "\",reason=\"connection_limit\""] +=
+                static_cast<double>(listener->conn_limit_rejects_total());
+            rejections["port=\"" + port + "\",reason=\"ip_limit\""] +=
+                static_cast<double>(listener->ip_limit_rejects_total());
+            active_samples.emplace_back(
+                "port=\"" + port + "\"",
+                static_cast<double>(listener->session_count()));
+            rate_limited_samples.emplace_back(
+                "port=\"" + port + "\"",
+                static_cast<double>(listener->rate_limited_messages_total()));
+        }
+        for (const auto& [labels, value] : rejections) {
+            rejection_samples.emplace_back(labels, value);
+        }
+        prom_emit_group(out, "shield_gateway_connections_total", "counter",
+                        "Connections that completed the TCP accept step",
+                        accept_samples);
+        prom_emit_group(out, "shield_gateway_rejections_total", "counter",
+                        "Connections rejected at accept time by reason",
+                        rejection_samples);
+        prom_emit_group(out, "shield_gateway_active_sessions", "gauge",
+                        "Live gateway sessions", active_samples);
+        prom_emit_group(
+            out, "shield_gateway_rate_limited_messages_total", "counter",
+            "Ingress messages dropped by the per-connection rate limit",
+            rate_limited_samples);
     }
 
     // Service count + per-service traffic: the metrics that need the actor

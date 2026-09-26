@@ -27,6 +27,7 @@
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/http_server.hpp"
+#include "shield/net/listener.hpp"
 #include "shield/plugin/plugin_host.hpp"
 
 namespace {
@@ -2012,6 +2013,73 @@ BOOST_AUTO_TEST_CASE(SlowCallGateArmsViaEndpointAndRecordsSlowSpan) {
 
     manager->shutdown_all("done");
     cfg.set("http.slow_call_threshold_ms", std::string("0"));
+}
+
+BOOST_AUTO_TEST_CASE(GatewayMetricsEmittedFromListenerRegistry) {
+    // A live TcpListener (registered on construction) shows up in
+    // /ops/metrics with port-labeled gateway counters; after destruction
+    // its samples are gone again.
+    const uint16_t gw_port = free_port();
+    const std::string port_label = "port=\"" + std::to_string(gw_port) + "\"";
+
+    boost::asio::io_context io;
+    auto listener = std::make_unique<shield::net::TcpListener>(
+        io, gw_port, shield::net::SessionCallbacks{});
+    listener->start();
+
+    // One connection, driven through the accept loop.
+    {
+        boost::asio::ip::tcp::socket socket(io);
+        boost::system::error_code ec;
+        socket.connect(boost::asio::ip::tcp::endpoint(
+                           boost::asio::ip::address_v4::loopback(), gw_port),
+                       ec);
+        BOOST_REQUIRE(!ec);
+        io.run_for(std::chrono::milliseconds(150));
+    }
+    BOOST_CHECK_EQUAL(listener->accepts_total(), 1u);
+    BOOST_CHECK_EQUAL(listener->session_count(), 1u);
+
+    {
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", port);
+        std::string response =
+            client.get("/ops/metrics", std::chrono::milliseconds(9000));
+        BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+        const std::string body = RawHttpClient::body(response);
+        BOOST_CHECK(body.find("shield_gateway_connections_total{" + port_label +
+                              "} 1") != std::string::npos);
+        BOOST_CHECK(body.find("shield_gateway_active_sessions{" + port_label +
+                              "} 1") != std::string::npos);
+        BOOST_CHECK(body.find("shield_gateway_rejections_total{" + port_label +
+                              ",reason=\"blocked_ip\"} 0") !=
+                    std::string::npos);
+        BOOST_CHECK(body.find("shield_gateway_rate_limited_messages_total{" +
+                              port_label + "} 0") != std::string::npos);
+        BOOST_CHECK(body.find("# TYPE shield_gateway_connections_total "
+                              "counter") != std::string::npos);
+    }
+
+    // Destruction unregisters: the port's samples disappear from the scrape.
+    listener->stop();
+    listener.reset();
+
+    {
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", port);
+        bool gone = false;
+        for (int i = 0; i < 100 && !gone; ++i) {
+            std::string response =
+                client.get("/ops/metrics", std::chrono::milliseconds(9000));
+            gone = RawHttpClient::body(response).find(port_label) ==
+                   std::string::npos;
+            if (!gone) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        }
+        BOOST_CHECK_MESSAGE(gone,
+                            "destroyed listener still present in metrics");
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

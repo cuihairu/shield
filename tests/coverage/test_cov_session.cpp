@@ -868,12 +868,15 @@ BOOST_AUTO_TEST_CASE(SessionRateLimitDropsOverBudgetMessages) {
     SocketPair p;
 
     std::atomic<int> packets{0};
+    std::atomic<int> drop_callbacks{0};
     std::atomic<bool> disconnected{false};
     SessionCallbacks cbs;
     cbs.create_protocol_pipeline = [] { return make_json_pipeline(); };
     cbs.on_packet = [&](std::shared_ptr<Session>, const DispatchResult&) {
         ++packets;
     };
+    // The listener chains this callback into its cumulative counter.
+    cbs.on_rate_limited = [&] { ++drop_callbacks; };
     cbs.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
         disconnected = true;
     };
@@ -896,6 +899,8 @@ BOOST_AUTO_TEST_CASE(SessionRateLimitDropsOverBudgetMessages) {
 
     BOOST_CHECK_EQUAL(packets.load(), 5);
     BOOST_CHECK_EQUAL(session->rate_limited_count(), 3u);
+    // Every drop also fired the listener-facing callback, exactly once.
+    BOOST_CHECK_EQUAL(drop_callbacks.load(), 3);
     // Over-budget frames are dropped, not fatal: the session survives.
     BOOST_CHECK(session->is_alive());
     BOOST_CHECK(!disconnected.load());

@@ -137,7 +137,10 @@ actors:
 - **按解码后的消息计费**，不是按 TCP 读事件。把多帧打包进一个 TCP 段
   不能绕过预算——批量投递与逐条投递消耗同样的令牌。
 - **超限帧直接丢弃，不回写错误帧，连接保持存活**：客户端突发超预算不应
-  丢失会话。丢弃计数可经 `Session::rate_limited_count()` 观测。
+  丢失会话。丢弃计数可经 `Session::rate_limited_count()` 观测，listener 级
+  累计（跨会话单调）进 `/ops/metrics` 的
+  `shield_gateway_rate_limited_messages_total`（口径见
+  [运维运行时语义](runtime-ops.md)）。
 - `messages_per_second` 为 0（未配置）即关闭该闸门，历史行为不变。
 - 取值范围：`messages_per_second` 与 `burst` 均为 `0..1000000`，启动期
   校验，越界直接 fail-fast。
@@ -172,6 +175,9 @@ actors:
   规则集**，不会因为一个错字把正在生效的黑名单清空。
 - 拒绝时记录 `last_rejection_reason() == "blocked_ip"`，并打 WARNING 日志。
 - 空列表/未配置 = 不启用。
+- 拒绝与放行的观测走 `/ops/metrics`：`shield_gateway_rejections_total{
+  port,reason}`（blocked_ip / connection_limit / ip_limit）与
+  `shield_gateway_connections_total`、`shield_gateway_active_sessions`。
 
 限流与黑名单的分工：**黑名单挡特定来源**（已知的攻击源/刷子），
 **限流挡总量**（合法但嘈杂的客户端）。两者都按连接生效，都不替代业务层

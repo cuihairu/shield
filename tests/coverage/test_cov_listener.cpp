@@ -20,6 +20,7 @@ namespace {
 using boost::asio::ip::tcp;
 using namespace std::chrono_literals;
 
+using shield::net::ListenerRegistry;
 using shield::net::Session;
 using shield::net::SessionCallbacks;
 using shield::net::SessionId;
@@ -228,6 +229,8 @@ BOOST_AUTO_TEST_CASE(ConnectionLimitRejectsSecondClient) {
         return listener.last_rejection_reason() == "connection_limit";
     }));
     BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+    BOOST_CHECK_EQUAL(listener.accepts_total(), 2u);
+    BOOST_CHECK_EQUAL(listener.conn_limit_rejects_total(), 1u);
     // The rejected socket was closed by the server: the read side sees EOF.
     boost::asio::streambuf buf;
     boost::system::error_code ec;
@@ -262,6 +265,7 @@ BOOST_AUTO_TEST_CASE(PerIpLimitRejectsSecondClient) {
     BOOST_CHECK(wait_until(
         [&] { return listener.last_rejection_reason() == "ip_limit"; }));
     BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+    BOOST_CHECK_EQUAL(listener.ip_limit_rejects_total(), 1u);
 
     c1.close();
     c2.close();
@@ -314,6 +318,11 @@ BOOST_AUTO_TEST_CASE(BlockedAddressIsRejectedAtAccept) {
         [&] { return listener.last_rejection_reason() == "blocked_ip"; }));
     // Rejected before a session exists: no per-session state was allocated.
     BOOST_CHECK_EQUAL(listener.session_count(), 0u);
+    // Counters: one accepted TCP connection, one blocklist rejection.
+    BOOST_CHECK_EQUAL(listener.accepts_total(), 1u);
+    BOOST_CHECK_EQUAL(listener.blocked_rejects_total(), 1u);
+    BOOST_CHECK_EQUAL(listener.conn_limit_rejects_total(), 0u);
+    BOOST_CHECK_EQUAL(listener.ip_limit_rejects_total(), 0u);
 
     c1.close();
     listener.stop();
@@ -542,5 +551,38 @@ BOOST_AUTO_TEST_CASE(AcceptErrorWhileListeningIsLogged) {
     io.run_for(100ms);
 }
 #endif
+
+// Listening listeners register for the /ops/metrics gateway view; a failed
+// bind never registers, and destruction unregisters.
+BOOST_AUTO_TEST_CASE(ListenerRegistryLifecycle) {
+    const auto present = [](uint16_t port) {
+        for (const auto* l : ListenerRegistry::instance().snapshot()) {
+            if (l->port() == port) return true;
+        }
+        return false;
+    };
+
+    boost::asio::io_context io;
+    const auto bound_port = reserve_ephemeral_port(io);
+    TcpListener listening(io, bound_port, {});
+    BOOST_CHECK(present(bound_port));
+
+    // A listener whose bind fails never enters the registry.
+    const auto held_port = reserve_ephemeral_port(io);
+    tcp::acceptor holder(io, tcp::endpoint(tcp::v4(), held_port));
+    TcpListener failed(io, held_port, {});
+    BOOST_CHECK(!failed.is_open());
+    BOOST_CHECK(!present(held_port));
+
+    // Destruction unregisters.
+    const auto scoped_port = reserve_ephemeral_port(io);
+    {
+        TcpListener scoped(io, scoped_port, {});
+        BOOST_CHECK(present(scoped_port));
+    }
+    BOOST_CHECK(!present(scoped_port));
+
+    BOOST_CHECK(present(bound_port));
+}
 
 BOOST_AUTO_TEST_SUITE_END()

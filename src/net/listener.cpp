@@ -69,7 +69,10 @@ TcpListener::TcpListener(boost::asio::io_context& io_context, uint16_t port,
     // GCOVR_EXCL_STOP
 
     listening_ = true;
+    ListenerRegistry::instance().add(this);
 }  // GCOVR_EXCL_LINE (uncalled exit clone)
+
+TcpListener::~TcpListener() { ListenerRegistry::instance().remove(this); }
 
 void TcpListener::start() {
     if (!listening_) {
@@ -111,10 +114,13 @@ void TcpListener::do_accept() {
         auto remote_ep = socket_.remote_endpoint();
         std::string remote_ip = remote_ep.address().to_string();
 
+        accepts_total_.fetch_add(1, std::memory_order_relaxed);
+
         // Blocked addresses are rejected first: no session object, no
         // per-session state, and the connection-count bookkeeping below is
         // never touched for them.
         if (blocklist_.blocked(remote_ep.address())) {
+            blocked_rejects_total_.fetch_add(1, std::memory_order_relaxed);
             last_rejection_ = "blocked_ip";
             auto& log = shield::log::get_logger("net");
             SHIELD_LOG_WARNING(log, "Connection rejected: address blocked (" +
@@ -129,6 +135,8 @@ void TcpListener::do_accept() {
         {
             std::unique_lock lock(sessions_mutex_);
             if (max_connections_ > 0 && sessions_.size() >= max_connections_) {
+                conn_limit_rejects_total_.fetch_add(1,
+                                                    std::memory_order_relaxed);
                 last_rejection_ = "connection_limit";
                 auto& log = shield::log::get_logger("net");
                 SHIELD_LOG_WARNING(log, "Connection rejected: limit reached (" +
@@ -147,6 +155,8 @@ void TcpListener::do_accept() {
             if (max_per_ip_ > 0) {
                 auto it = ip_counts_.find(remote_ip);
                 if (it != ip_counts_.end() && it->second >= max_per_ip_) {
+                    ip_limit_rejects_total_.fetch_add(
+                        1, std::memory_order_relaxed);
                     last_rejection_ = "ip_limit";
                     auto& log = shield::log::get_logger("net");
                     SHIELD_LOG_WARNING(
@@ -170,6 +180,15 @@ void TcpListener::do_accept() {
             on_session_close(session, std::string(reason));
             if (user_disconnect) {
                 user_disconnect(std::move(session), reason);
+            }
+        };
+        // Cumulative rate-limit counter for the /ops/metrics gateway view:
+        // kept at the listener so it survives session exit.
+        auto user_rate_limited = callbacks.on_rate_limited;
+        callbacks.on_rate_limited = [this, user_rate_limited] {
+            rate_limited_total_.fetch_add(1, std::memory_order_relaxed);
+            if (user_rate_limited) {
+                user_rate_limited();
             }
         };
         auto session = std::make_shared<TcpSession>(

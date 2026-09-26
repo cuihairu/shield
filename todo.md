@@ -117,6 +117,16 @@ ingress rate limit（token bucket，messages/second + burst）+ accept 时
 - [x] 文档：runtime-security.md「速率限制/地址黑名单」两节重写为已实现
       语义；architecture-review.md §2 风险关闭；runtime-network.md 配置表
       补两键。
+- [x] 网关观测收口（2026-09-26）：TcpListener 原子计数（accepts/
+      blocked/conn_limit/ip_limit 拒绝）+ `SessionCallbacks.on_rate_limited`
+      链式回调驱动的 listener 级限流累计计数（跨会话单调，
+      Prometheus-clean）；ListenerRegistry（listener 构造注册/析构注销，
+      bind 失败不注册）→ `/ops/metrics` 新增
+      `shield_gateway_connections_total` / `rejections_total{port,reason}` /
+      `active_sessions` / `rate_limited_messages_total`（port 标签分 listener）。
+      测试：listener 计数断言 + registry 生命周期 + ops 端到端 scrape +
+      session 丢帧回调恰好一次。runtime-ops.md 指标表 /
+      runtime-security.md 补观测口径。
 
 ## Phase 1 候选（2026-09-26 完成，均为文档/低风险改动）
 

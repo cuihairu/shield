@@ -349,6 +349,9 @@ void TcpSession::do_receive() {
                         // slip past the budget. Over-budget messages are
                         // dropped silently and the connection stays open.
                         if (!self->rate_limiter_.try_acquire()) {
+                            if (self->callbacks_.on_rate_limited) {
+                                self->callbacks_.on_rate_limited();
+                            }
                             continue;
                         }
                         if (result.action ==

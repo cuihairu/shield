@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "shield/net/ip_blocklist.hpp"
+#include "shield/net/listener_registry.hpp"
 #include "shield/net/session.hpp"
 
 namespace shield::net {
@@ -22,6 +23,10 @@ class TcpListener {
 public:
     TcpListener(boost::asio::io_context& io_context, uint16_t port,
                 SessionCallbacks callbacks);
+
+    /// @brief Unregister from the process-wide listener registry. Does not
+    ///        stop accepting or close sessions — call stop() first.
+    ~TcpListener();
 
     /// @brief Start accepting connections
     void start();
@@ -76,6 +81,35 @@ public:
         return sessions_.size();
     }
 
+    /// @brief Gateway observability: connections that completed the TCP
+    ///        accept step, including ones rejected right after by the
+    ///        blocklist or the connection limits.
+    uint64_t accepts_total() const {
+        return accepts_total_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Peers rejected by the accept-time address blocklist.
+    uint64_t blocked_rejects_total() const {
+        return blocked_rejects_total_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Peers rejected because the connection limit was reached.
+    uint64_t conn_limit_rejects_total() const {
+        return conn_limit_rejects_total_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Peers rejected because the per-IP limit was reached.
+    uint64_t ip_limit_rejects_total() const {
+        return ip_limit_rejects_total_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Ingress messages dropped by the per-connection rate limit
+    ///        across every session this listener ever created (cumulative,
+    ///        survives session exit — a Prometheus-clean counter).
+    uint64_t rate_limited_messages_total() const {
+        return rate_limited_total_.load(std::memory_order_relaxed);
+    }
+
     /// @brief Find session by ID
     std::shared_ptr<Session> find_session(SessionId id) const;
 
@@ -113,6 +147,14 @@ private:
     std::unordered_map<std::string, size_t> ip_counts_;
     std::string last_rejection_;
     bool listening_ = false;
+
+    // Gateway observability counters (relaxed: stats-only, no ordering
+    // expectations across listeners or with the session map).
+    std::atomic<uint64_t> accepts_total_{0};
+    std::atomic<uint64_t> blocked_rejects_total_{0};
+    std::atomic<uint64_t> conn_limit_rejects_total_{0};
+    std::atomic<uint64_t> ip_limit_rejects_total_{0};
+    std::atomic<uint64_t> rate_limited_total_{0};
 
     static std::atomic<SessionId> g_next_session_id;
 };

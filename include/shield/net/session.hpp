@@ -186,6 +186,9 @@ struct SessionCallbacks {
     std::function<void(std::shared_ptr<Session>,
                        const shield::transport::DispatchResult&)>
         on_packet;
+    // Called once per ingress message dropped by the per-connection rate
+    // limit (runs on the session's IO strand; keep it cheap).
+    std::function<void()> on_rate_limited;
     std::function<std::unique_ptr<shield::transport::ProtocolPipeline>()>
         create_protocol_pipeline;
 };

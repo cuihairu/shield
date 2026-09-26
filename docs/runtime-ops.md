@@ -187,6 +187,10 @@ P0 导出 Prometheus 0.0.4 文本格式（`Content-Type: text/plain; version=0.0
 |------|------|------|
 | `shield_uptime_seconds` | gauge | 进程 uptime |
 | `shield_plugin_instances{state}` | gauge | 插件实例按生命周期状态（planned/loaded/started/unavailable/failed/stopped） |
+| `shield_gateway_connections_total{port}` | counter | 完成 TCP accept 的连接数（含随后被黑名单/限连拒绝的） |
+| `shield_gateway_rejections_total{port,reason}` | counter | accept 阶段拒绝数，`reason` ∈ blocked_ip / connection_limit / ip_limit |
+| `shield_gateway_active_sessions{port}` | gauge | 网关活跃会话数（瞬时值） |
+| `shield_gateway_rate_limited_messages_total{port}` | counter | 被每连接 ingress 限流丢弃的消息数（listener 级累计，会话退出不影响单调性） |
 | `shield_services` | gauge | 已注册 Lua 服务数（actor 往返，500ms 超时省略） |
 | `shield_service_requests_total{service}` | counter | 服务收到的消息数（send/call/system 合流，按服务本轮生命周期累计，respawn 归零） |
 | `shield_service_errors_total{service}` | counter | 服务 handler 失败数（口径同上） |
