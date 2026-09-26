@@ -32,3 +32,13 @@ config_schema:
       default: 5000
       minimum: 1
       maximum: 300000
+    async:
+      type: boolean
+      default: true
+      description: Serve query/query_one/execute through the worker thread and suspend the calling coroutine (false = synchronous entry)
+    call_timeout_ms:
+      type: integer
+      default: 0
+      minimum: 0
+      maximum: 300000
+      description: Caller-side suspend budget for async entry; 0 means query_timeout_ms + 500ms slack

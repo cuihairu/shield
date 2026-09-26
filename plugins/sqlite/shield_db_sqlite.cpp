@@ -12,14 +12,17 @@
 
 #include <sqlite3.h>
 
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <sol/sol.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "shield/plugin/abi.h"
@@ -268,6 +271,16 @@ const shield_database_v1& db_vtable() {
 // ---------------------------------------------------------------------------
 namespace {
 
+// One queued async SQL task: submitted on the actor thread by the proxy's
+// __db_submit closure (after the caller coroutine suspended), executed on the
+// instance's worker thread, completed via host_api->lua_resume_session.
+struct sqlite_task {
+    uint64_t session = 0;
+    std::string method;  // "query" | "query_one" | "execute" (run mode)
+    std::string sql;
+    nlohmann::json params = nlohmann::json::array();
+};
+
 struct sqlite_instance {
     shield_plugin_instance_v1 shell;
     const shield_host_api_v1* host_api = nullptr;
@@ -275,6 +288,22 @@ struct sqlite_instance {
     std::string instance_id;
     std::string database_path = ":memory:";  // from config "database"
     int query_timeout_ms = 5000;             // from config "query_timeout_ms"
+    // Async path (docs/db-async-design.md M2): inside a coroutine dispatch the
+    // proxy methods suspend the caller and the SQL runs on the worker thread
+    // below; "async: false" (and every non-coroutine context) keeps the
+    // original inline synchronous behavior.
+    bool async_enabled = true;  // from config "async"
+    int call_timeout_ms = 0;    // from config "call_timeout_ms"; 0 ->
+                                // query_timeout_ms + 500 (design doc default)
+    // Single worker thread, started lazily on the first async submit. The
+    // task queue + stop flag live under worker_mu; shutdown() closes the
+    // queue and joins the thread BEFORE the instance is deleted.
+    std::mutex worker_mu;
+    std::condition_variable worker_cv;
+    std::deque<sqlite_task> worker_tasks;
+    bool worker_stop = false;
+    bool worker_started = false;
+    std::thread worker_thread;
 };
 
 // Process-wide registry: instance_id -> sqlite_instance*. The callable Lua
@@ -317,6 +346,13 @@ void parse_instance_config(sqlite_instance* inst, const char* config_json) {
         if (j.contains("query_timeout_ms") &&
             j["query_timeout_ms"].is_number_integer()) {
             inst->query_timeout_ms = j["query_timeout_ms"].get<int>();
+        }
+        if (j.contains("async") && j["async"].is_boolean()) {
+            inst->async_enabled = j["async"].get<bool>();
+        }
+        if (j.contains("call_timeout_ms") &&
+            j["call_timeout_ms"].is_number_integer()) {
+            inst->call_timeout_ms = j["call_timeout_ms"].get<int>();
         }
     } catch (...) {
         // Malformed JSON shouldn't happen (host validated), ignore quietly.
@@ -537,16 +573,282 @@ sol::object run_statement(
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Async path (docs/db-async-design.md M2). The proxy methods hand SQL to a
+// per-instance worker thread and suspend the calling coroutine; completion
+// travels back through host_api->lua_resume_session. The worker never touches
+// a lua_State — it speaks JSON in both directions, and the host's resume
+// converts the payload back into Lua values.
+// ---------------------------------------------------------------------------
+
+// Caller-side suspend budget (design doc: query_timeout_ms + 500ms slack
+// unless explicitly overridden).
+int caller_timeout_ms(const sqlite_instance* inst) {
+    return inst->call_timeout_ms > 0 ? inst->call_timeout_ms
+                                     : inst->query_timeout_ms + 500;
+}
+
+// JSON twin of row_to_lua: column-name keyed object. NULL columns become
+// JSON null (the host pushes Lua nil for them, matching the sync shape).
+nlohmann::json row_to_json(sqlite3_stmt* stmt) {
+    nlohmann::json row = nlohmann::json::object();
+    int n = sqlite3_column_count(stmt);
+    for (int c = 0; c < n; ++c) {
+        const char* name = sqlite3_column_name(stmt, c);
+        switch (sqlite3_column_type(stmt, c)) {
+            case SQLITE_INTEGER:
+                row[name] = sqlite3_column_int64(stmt, c);
+                break;
+            case SQLITE_FLOAT:
+                row[name] = sqlite3_column_double(stmt, c);
+                break;
+            case SQLITE_TEXT: {
+                const unsigned char* t = sqlite3_column_text(stmt, c);
+                int sz = sqlite3_column_bytes(stmt, c);
+                // if/else, not a ternary: mixed std::string/json arms fail
+                // to compile.
+                if (t) {
+                    row[name] = std::string(reinterpret_cast<const char*>(t),
+                                            static_cast<size_t>(sz));
+                } else {
+                    row[name] = nullptr;
+                }
+                break;
+            }
+            case SQLITE_BLOB: {
+                const char* b =
+                    static_cast<const char*>(sqlite3_column_blob(stmt, c));
+                int sz = sqlite3_column_bytes(stmt, c);
+                if (b) {
+                    row[name] = std::string(b, static_cast<size_t>(sz));
+                } else {
+                    row[name] = nullptr;
+                }
+                break;
+            }
+            default:
+                row[name] = nullptr;  // SQLITE_NULL
+                break;
+        }
+    }
+    return row;
+}
+
+// Worker-thread statement runner: the JSON twin of run_statement — same
+// three modes, same result shapes (query -> array of row objects,
+// query_one -> row object or null, execute -> {affected, last_insert_id}).
+bool run_statement_json(sqlite3* db, const std::string& sql,
+                        const nlohmann::json& params, const std::string& mode,
+                        nlohmann::json* out, std::string* err_code,
+                        std::string* err_msg) {
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        *err_code = map_sqlite_error(rc);
+        *err_msg = sqlite3_errmsg(db);
+        return false;
+    }
+    // Positional bind, 1..N of a JSON array (mirrors bind_lua_param's type
+    // mapping).
+    if (params.is_array()) {
+        int idx = 1;
+        for (const auto& v : params) {
+            int brc = SQLITE_OK;
+            if (v.is_boolean()) {
+                brc = sqlite3_bind_int(stmt, idx, v.get<bool>() ? 1 : 0);
+            } else if (v.is_number_integer()) {
+                brc = sqlite3_bind_int64(stmt, idx, v.get<int64_t>());
+            } else if (v.is_number_float()) {
+                brc = sqlite3_bind_double(stmt, idx, v.get<double>());
+            } else if (v.is_string()) {
+                const auto& s = v.get_ref<const std::string&>();
+                brc = sqlite3_bind_text(stmt, idx, s.data(),
+                                        static_cast<int>(s.size()),
+                                        SQLITE_TRANSIENT);
+            } else {
+                brc = sqlite3_bind_null(stmt, idx);
+            }
+            if (brc != SQLITE_OK) {
+                sqlite3_finalize(stmt);
+                *err_code = map_sqlite_error(brc);
+                *err_msg = sqlite3_errmsg(db);
+                return false;
+            }
+            ++idx;
+        }
+    }
+
+    bool ok = false;
+    if (mode == "execute") {
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_DONE || rc == SQLITE_ROW) {
+            *out = nlohmann::json::object(
+                {{"affected", sqlite3_changes(db)},
+                 {"last_insert_id", sqlite3_last_insert_rowid(db)}});
+            ok = true;
+        } else {
+            *err_code = map_sqlite_error(rc);
+            *err_msg = sqlite3_errmsg(db);
+        }
+    } else if (mode == "query_one") {
+        rc = sqlite3_step(stmt);
+        if (rc == SQLITE_ROW) {
+            *out = row_to_json(stmt);
+            ok = true;
+        } else if (rc == SQLITE_DONE) {
+            *out = nullptr;  // no rows
+            ok = true;
+        } else {
+            *err_code = map_sqlite_error(rc);
+            *err_msg = sqlite3_errmsg(db);
+        }
+    } else {  // "query"
+        nlohmann::json rows = nlohmann::json::array();
+        while (true) {
+            rc = sqlite3_step(stmt);
+            if (rc == SQLITE_ROW) {
+                rows.push_back(row_to_json(stmt));
+            } else if (rc == SQLITE_DONE) {
+                *out = std::move(rows);
+                ok = true;
+                break;
+            } else {
+                *err_code = map_sqlite_error(rc);
+                *err_msg = sqlite3_errmsg(db);
+                break;
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+// Worker body: drain tasks until stopped. Each task runs the SQL on a fresh
+// connection (same semantics as the sync path) and completes the suspended
+// caller through the host's resume primitive — safe from any thread, the
+// host routes it over the caller actor's mailbox.
+void worker_loop(sqlite_instance* inst) {
+    std::unique_lock lk(inst->worker_mu);
+    while (true) {
+        inst->worker_cv.wait(lk, [&] {
+            return inst->worker_stop || !inst->worker_tasks.empty();
+        });
+        if (inst->worker_tasks.empty()) {
+            if (inst->worker_stop) return;
+            continue;
+        }
+        sqlite_task task = std::move(inst->worker_tasks.front());
+        inst->worker_tasks.pop_front();
+        lk.unlock();
+
+        std::string open_err;
+        sqlite3* db = open_connection(inst, &open_err);
+        bool ok = false;
+        nlohmann::json result;
+        std::string err_code = "connection_failed";
+        std::string err_msg = open_err;
+        if (db) {
+            err_code.clear();
+            err_msg.clear();
+            ok = run_statement_json(db, task.sql, task.params, task.method,
+                                    &result, &err_code, &err_msg);
+            // sqlite keeps no pool: per-call open/close means the
+            // design-doc's "poison the connection" rule degenerates to
+            // plain close — a timed-out worker's connection is never
+            // reused, which is the invariant the rule protects.
+            sqlite3_close(db);
+        }
+
+        // Payload = the VALUES array only — resume_suspended_caller pushes
+        // the ok boolean itself, so the shim sees (ok, result...) from
+        // [result] and (false, err_table) from [{code, message}].
+        nlohmann::json payload =
+            ok ? nlohmann::json::array({result})
+               : nlohmann::json::array({nlohmann::json::object(
+                     {{"code", err_code}, {"message", err_msg}})});
+        std::string payload_str = payload.dump();
+        if (inst->host_api != nullptr &&
+            inst->host_api->lua_resume_session != nullptr) {
+            int claim_rc = inst->host_api->lua_resume_session(
+                inst->ctx, task.session, ok ? 1 : 0, payload_str.c_str());
+            if (claim_rc != 0 && inst->host_api->log != nullptr) {
+                // The caller timed out or the service exited while the SQL
+                // ran: the completion is dropped by the host. Real result
+                // discarded — the caller must not see stale rows.
+                std::string msg =
+                    "async completion rejected for session " +
+                    std::to_string(task.session) +
+                    " (caller timeout or service gone); connection discarded";
+                inst->host_api->log(SHIELD_LOG_WARN, "database.sqlite",
+                                    inst->instance_id.c_str(), msg.c_str());
+            }
+        }
+
+        lk.lock();
+    }
+}
+
+// Submit one task: lazily start the worker, enqueue, wake it. Runs on the
+// actor thread right after the caller suspended — the task may therefore
+// complete before the shim reaches coroutine.yield(); the host's
+// yield-window guard requeues that completion over the actor mailbox.
+void submit_async(sqlite_instance* inst, sqlite_task task) {
+    {
+        std::lock_guard lk(inst->worker_mu);
+        if (!inst->worker_started) {
+            inst->worker_started = true;
+            inst->worker_thread = std::thread(worker_loop, inst);
+        }
+        inst->worker_tasks.push_back(std::move(task));
+    }
+    inst->worker_cv.notify_one();
+}
+
 // Build a per-call proxy table bound to a specific sqlite3* handle. Used by
 // transaction() so the callback's tx:execute/tx:query share one connection.
 sol::table make_handle_proxy(sol::state_view lua, sqlite3* db);
+
+// Async shim installed over the instance proxy: query/query_one/execute
+// become submit-and-yield wrappers around the __sync_* implementations.
+// Both call shapes work — colon (db:query(sql, params)) and dot
+// (db.query(sql, params)). session == 0 (async disabled, main thread, host
+// without the resume slots) falls back to the synchronous implementation
+// inline, so callers always get the documented (ok, ...) contract.
+const char* kAsyncShim = R"lua(
+local proxy = ...
+local submit = proxy.__db_submit
+local function wrap(method)
+    local sync = proxy['__sync_' .. method]
+    proxy[method] = function(a, b, c)
+        local sql, params
+        if a == proxy then
+            sql, params = b, c
+        else
+            sql, params = a, b
+        end
+        local session = submit(method, sql, params)
+        if session == 0 then
+            return sync(sql, params)
+        end
+        local r = table.pack(coroutine.yield())
+        if not r[1] then
+            return false, r[2]
+        end
+        return true, table.unpack(r, 2, r.n)
+    end
+end
+wrap('query')
+wrap('query_one')
+wrap('execute')
+return proxy
+)lua";
 
 // Build a per-instance proxy table that opens a fresh connection per call.
 sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
     auto proxy = lua.create_table();
 
     proxy.set_function(
-        "query",
+        "__sync_query",
         [inst](sol::this_state s, std::string sql,
                sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -574,7 +876,7 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
         });
 
     proxy.set_function(
-        "query_one",
+        "__sync_query_one",
         [inst](sol::this_state s, std::string sql,
                sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -602,7 +904,7 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
         });
 
     proxy.set_function(
-        "execute",
+        "__sync_execute",
         [inst](sol::this_state s, std::string sql,
                sol::optional<sol::table> params) -> sol::variadic_results {
             sol::state_view lua(s);
@@ -717,6 +1019,76 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
             }
             return results;
         });
+
+    // Async entry (docs/db-async-design.md M2): register the suspension via
+    // the host primitive, then hand the task to the worker thread. Suspend
+    // happens BEFORE enqueue so a fast worker completion always finds its
+    // session (the host's yield-window guard handles the requeue). Returns
+    // the session id, or 0 when the caller must run synchronously.
+    proxy.set_function(
+        "__db_submit",
+        [inst](sol::this_state s, std::string method, std::string sql,
+               sol::optional<sol::table> params) -> uint64_t {
+            if (!inst->async_enabled || inst->host_api == nullptr ||
+                inst->host_api->lua_suspend_current == nullptr ||
+                inst->host_api->lua_resume_session == nullptr) {
+                return 0;
+            }
+            sqlite_task task;
+            task.method = std::move(method);
+            task.sql = std::move(sql);
+            // Positional params (Lua sequence 1..N), mirroring the sync
+            // path's numeric-key bind. Type order matters: bool before int,
+            // or sol folds booleans into integers.
+            if (params && params->valid()) {
+                for (auto& kv : *params) {
+                    if (kv.first.get_type() != sol::type::number) continue;
+                    const sol::object& v = kv.second;
+                    if (v.is<bool>()) {
+                        task.params.push_back(v.as<bool>());
+                    } else if (v.is<lua_Integer>()) {
+                        task.params.push_back(
+                            static_cast<int64_t>(v.as<lua_Integer>()));
+                    } else if (v.is<double>()) {
+                        task.params.push_back(v.as<double>());
+                    } else if (v.is<std::string>()) {
+                        task.params.push_back(v.as<std::string>());
+                    } else {
+                        task.params.push_back(nullptr);
+                    }
+                }
+            }
+            std::string tag = "db:sqlite:" + task.method;
+            uint64_t session = inst->host_api->lua_suspend_current(
+                inst->ctx, s, caller_timeout_ms(inst), tag.c_str());
+            if (session == 0) {
+                return 0;  // not suspendable here — caller runs sync
+            }
+            task.session = session;
+            submit_async(inst, std::move(task));
+            return session;
+        });
+
+    // Install the shim. Failure is impossible for static source, but a
+    // fallback keeps the module usable synchronously if it ever trips.
+    sol::load_result shim = lua.load(kAsyncShim, "=db_async_shim");
+    bool shim_ok = shim.valid();
+    if (shim_ok) {
+        sol::function_result r = shim(proxy, proxy["__db_submit"]);
+        shim_ok = r.valid();
+    }
+    if (!shim_ok) {
+        if (inst->host_api != nullptr && inst->host_api->log != nullptr) {
+            inst->host_api->log(SHIELD_LOG_WARN, "database.sqlite",
+                                inst->instance_id.c_str(),
+                                "async shim failed to install; sync proxy");
+        }
+        for (const char* m : {"query", "query_one", "execute"}) {
+            std::string key = std::string("__sync_") + m;
+            sol::object fn = proxy[key];
+            proxy[m] = fn;
+        }
+    }
 
     return proxy;
 }
@@ -852,6 +1224,17 @@ int sqlite_create(const shield_plugin_create_args_v1* args,
         // shell is the first member of sqlite_instance (offset 0), so self
         // points at the enclosing sqlite_instance. Standard C-ABI pattern.
         auto* inst = reinterpret_cast<sqlite_instance*>(self);
+        // Drain the async worker BEFORE the instance dies: stop the queue,
+        // wake, join. In-flight SQL still finishes; its completion goes to
+        // the host, which drops it (caller gone) — never a use-after-free.
+        {
+            std::lock_guard<std::mutex> lk(inst->worker_mu);
+            inst->worker_stop = true;
+        }
+        inst->worker_cv.notify_all();
+        if (inst->worker_thread.joinable()) {
+            inst->worker_thread.join();
+        }
         unregister_instance(inst->instance_id);
         delete inst;
     };

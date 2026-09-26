@@ -32,12 +32,14 @@ cmake --build build
 
 ## 配置 Schema
 
-`manifest.yaml` 中声明的 `config_schema` 只暴露两个字段，SQLite 不需要 host/port/user/password。
+`manifest.yaml` 中声明的 `config_schema` 只暴露四个字段，SQLite 不需要 host/port/user/password。
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |------|------|------|--------|------|
 | `database` | string | 否 | `:memory:` | 数据库文件路径。`:memory:` 表示纯内存数据库（进程退出即销毁）；填普通路径则落盘。支持 URI 形式（如 `file:test.db?mode=ro`），因为连接时启用了 `SQLITE_OPEN_URI`。 |
 | `query_timeout_ms` | integer | 否 | `5000` | 单条 SQL 的 busy timeout，对应 `sqlite3_busy_timeout`。单位毫秒，范围 1-300000。遇到 `SQLITE_BUSY` 时驱动会自动重试到超时。 |
+| `async` | boolean | 否 | `true` | `query` / `query_one` / `execute` 走 worker 线程异步执行：协程内调用会挂起等待完成，同 service 其他消息继续处理。设为 `false` 退回同步入口（调用即阻塞到 SQL 结束）。见 docs/db-async-design.md。 |
+| `call_timeout_ms` | integer | 否 | `0` | 异步入口的调用方挂起预算。`0` 表示 `query_timeout_ms + 500`。超时返回 `{code="timeout", retryable=true}`；迟到的真实结果会被丢弃（不投递），不会覆盖超时结果。范围 0-300000。 |
 
 ### 完整 app.yaml 示例
 

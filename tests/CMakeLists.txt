@@ -535,6 +535,37 @@ if(SHIELD_BUILD_DB_PLUGIN_SQLITE
 endif()
 
 # ---------------------------------------------------------------------------
+# test_db_sqlite_async — DB-async M2 end-to-end (docs/db-async-design.md):
+# the real sqlite plugin .so through a real PluginHost, async round trips
+# with responsiveness/timing assertions, caller timeout + late-completion
+# rejection, async:false sync fallback, shutdown drain. Only exists when the
+# sqlite plugin is built.
+# ---------------------------------------------------------------------------
+if(SHIELD_BUILD_DB_PLUGIN_SQLITE)
+    add_executable(test_db_sqlite_async plugin/test_db_sqlite_async.cpp)
+    target_link_libraries(test_db_sqlite_async
+        PRIVATE
+            shield_plugin
+            shield_lua
+            shield_core
+            CAF::core
+            CAF::io
+            sol2::sol2
+            ${LUA_LIBRARIES}
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_db_sqlite_async
+        PRIVATE ${CMAKE_SOURCE_DIR}/include ${LUA_INCLUDE_DIR})
+    target_compile_definitions(test_db_sqlite_async PRIVATE
+        SHIELD_SQLITE_LIBRARY="$<TARGET_FILE:shield_database_sqlite>"
+        SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    add_dependencies(test_db_sqlite_async shield_database_sqlite)
+    add_test(NAME test_db_sqlite_async COMMAND test_db_sqlite_async)
+    set_tests_properties(test_db_sqlite_async PROPERTIES LABELS "plugin" TIMEOUT 300)
+    shield_copy_runtime_dlls(test_db_sqlite_async)
+endif()
+
+# ---------------------------------------------------------------------------
 # test_plugin_pool_stats_real — shield.pool.stats.v1 contract against the
 # real plugin .so files (see the test header). Same per-switch macro pattern
 # as test_plugin_lua_facade above.
