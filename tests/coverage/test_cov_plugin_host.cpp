@@ -1101,6 +1101,85 @@ BOOST_AUTO_TEST_CASE(chain_success_host_api_battery) {
     BOOST_CHECK_EQUAL(pc.fn_calls, 1);
     BOOST_CHECK_EQUAL(pc.destroy_calls, 5);
 
+    // --- lua_suspend_current / lua_resume_session (DB-async entries) ---
+    // Guards fire before any hook: NULL L and hookless storage fall back to
+    // the sync-fallback / rejected conventions from host_api.h.
+    BOOST_CHECK_EQUAL(api->lua_suspend_current(nullptr, nullptr, 100, "t"), 0u);
+    BOOST_CHECK_NE(api->lua_resume_session(nullptr, 0, 1, "[true]"), 0);
+    // Hookless storage with valid arguments reaches the hook-missing arms:
+    // suspend reports the sync fallback (0), resume declines (non-zero).
+    int hookless_L_storage = 0;
+    BOOST_CHECK_EQUAL(
+        api->lua_suspend_current(
+            nullptr, reinterpret_cast<struct lua_State*>(&hookless_L_storage),
+            100, "t"),
+        0u);
+    BOOST_CHECK_NE(api->lua_resume_session(nullptr, 42, 1, "[true]"), 0);
+
+    struct SuspendSink {
+        lua_State* seen_L = nullptr;
+        int32_t seen_timeout = 0;
+        std::string seen_tag;
+        uint64_t session = 77;
+        uint64_t suspend(lua_State* L, int32_t timeout,
+                         const std::string& tag) {
+            seen_L = L;
+            seen_timeout = timeout;
+            seen_tag = tag;
+            return session;
+        }
+    };
+    SuspendSink ssink;
+    int resume_calls = 0;
+    uint64_t resume_session_arg = 0;
+    bool resume_ok_arg = true;
+    std::string resume_json_arg = "untouched";
+    bool resume_result = true;
+    LuaServiceHooks db_hooks;
+    db_hooks.suspend_current = [&ssink](lua_State* L, int32_t timeout,
+                                        const std::string& tag) {
+        return ssink.suspend(L, timeout, tag);
+    };
+    db_hooks.resume_session = [&](uint64_t s, bool ok, const std::string& j) {
+        ++resume_calls;
+        resume_session_arg = s;
+        resume_ok_arg = ok;
+        resume_json_arg = j;
+        return resume_result;
+    };
+    hook_host.set_lua_service_hooks(db_hooks);
+
+    // Forwarding: L / timeout / tag ride through; NULL tag becomes "".
+    int fake_L_storage = 0;
+    auto* fake_L = reinterpret_cast<struct lua_State*>(&fake_L_storage);
+    BOOST_CHECK_EQUAL(
+        api->lua_suspend_current(nullptr, fake_L, 250, "db:sqlite:query"),
+        ssink.session);
+    BOOST_CHECK(ssink.seen_L == fake_L);
+    BOOST_CHECK_EQUAL(ssink.seen_timeout, 250);
+    BOOST_CHECK_EQUAL(ssink.seen_tag, "db:sqlite:query");
+    api->lua_suspend_current(nullptr, fake_L, 10, nullptr);
+    BOOST_CHECK_EQUAL(ssink.seen_tag, "");
+
+    // Resume forwarding: hook accepts -> 0, hook declines -> non-zero.
+    resume_result = true;
+    BOOST_CHECK_EQUAL(api->lua_resume_session(nullptr, ssink.session, 1,
+                                              R"([true,{"rows":1}])"),
+                      0);
+    BOOST_CHECK_EQUAL(resume_calls, 1);
+    BOOST_CHECK_EQUAL(resume_session_arg, ssink.session);
+    BOOST_CHECK(resume_ok_arg);
+    BOOST_CHECK_EQUAL(resume_json_arg, R"([true,{"rows":1}])");
+    resume_result = false;
+    BOOST_CHECK_NE(api->lua_resume_session(nullptr, ssink.session, 0, nullptr),
+                   0);
+    BOOST_CHECK_EQUAL(resume_calls, 2);
+    BOOST_CHECK(!resume_ok_arg);
+    BOOST_CHECK(resume_json_arg.empty());  // NULL json arrives as ""
+    // Session 0 is rejected at the gate: no hook call, still non-zero.
+    BOOST_CHECK_NE(api->lua_resume_session(nullptr, 0, 1, "[true]"), 0);
+    BOOST_CHECK_EQUAL(resume_calls, 2);
+
     LuaServiceHooks empty_id_hooks;
     empty_id_hooks.current_service_id = [] { return std::string(); };
     hook_host.set_lua_service_hooks(empty_id_hooks);

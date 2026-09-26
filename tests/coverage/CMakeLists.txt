@@ -109,6 +109,11 @@ shield_coverage_test(test_cov_lua_runtime3 shield_lua shield_core CAF::core CAF:
 shield_coverage_test(test_cov_lua_service2 shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_http_bridge2 shield_lua shield_core shield_net CAF::core CAF::io)
 
+# DB-async host primitives (docs/db-async-design.md M1): the
+# lua_suspend_current / lua_resume_session entries driven end-to-end through
+# the host_api vtable against a live service actor.
+shield_coverage_test(test_cov_lua_db_async shield_lua shield_core CAF::core CAF::io)
+
 # Panic forensics + abort semantics (the death test is #ifndef _WIN32 inside
 # the file, so the suite itself builds everywhere).
 shield_coverage_test(test_cov_lua_panic shield_lua shield_core CAF::core CAF::io)
@@ -149,6 +154,8 @@ endif()
 # Suites that compile fake plugins at test time need the shield include tree;
 # pass it from the build configuration instead of a hardcoded source path.
 target_compile_definitions(test_cov_lua_service
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_definitions(test_cov_lua_db_async
     PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_definitions(test_cov_bootstrap
     PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

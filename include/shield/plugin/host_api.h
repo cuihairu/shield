@@ -105,6 +105,38 @@ struct shield_host_api_v1 {
                                const char* service_id,
                                void (*fn)(void* user_data), void* user_data,
                                void (*destroy_fn)(void* user_data));
+
+    // Suspend the calling Lua coroutine until lua_resume_session delivers the
+    // completion — the async entry behind plugin DB proxies (a worker pool
+    // runs the blocking driver while the owning actor keeps processing
+    // messages). Returns a non-zero session id, or 0 when the caller is not
+    // inside a coroutine (the plugin falls back to running the work inline),
+    // L is NULL, or no Lua runtime is attached. Suspending does not yield by
+    // itself: after a non-zero return the plugin's Lua frame must yield (e.g.
+    // coroutine.yield()) so the owning actor can keep working. `timeout_ms`
+    // bounds the suspend; on expiry the session completes as a failure with
+    // the stable {code="timeout"} error. Timeout is NOT cancellation: a late
+    // lua_resume_session is rejected (non-zero return) and the backing
+    // resource must be treated as poisoned. `tag` (may be NULL) labels the
+    // span for slow-call metrics, e.g. "db:sqlite:query".
+    uint64_t (*lua_suspend_current)(struct shield_plugin_context_v1* ctx,
+                                    struct lua_State* L, int32_t timeout_ms,
+                                    const char* tag);
+
+    // Complete a session created by lua_suspend_current. Safe from any
+    // thread: the completion routes through the caller actor's mailbox, so
+    // the resume always runs on the thread that owns the coroutine.
+    // `result_json` is a JSON array of completion values — (true, v...) on
+    // success, (false, {code=..., message=...}) on failure; NULL means an
+    // empty array, and a malformed payload completes the session as a
+    // failure (the plugin learns via the non-zero return that its real
+    // result was dropped). Returns 0 when this call claimed the session;
+    // non-zero when the session was already finished or absent (timeout,
+    // service exit, or a racing completion) — the caller must treat any
+    // backing resource as poisoned.
+    int (*lua_resume_session)(struct shield_plugin_context_v1* ctx,
+                              uint64_t session, int ok,
+                              const char* result_json);
 };
 
 #ifdef __cplusplus

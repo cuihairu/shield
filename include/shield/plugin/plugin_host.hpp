@@ -30,17 +30,27 @@ class Config;
 
 namespace shield::plugin {
 
-// Hooks backing the host_api lua_current_service_id / lua_post_to_service
-// slots. shield_lua registers these when a LuaServiceManager exists so
-// plugins can re-enter Lua on the owning service actor instead of touching
-// lua_State from plugin threads. shield_plugin does not link shield_lua;
-// the dependency is inverted through these std::function hooks.
+// Hooks backing the host_api lua_current_service_id / lua_post_to_service /
+// lua_suspend_current / lua_resume_session slots. shield_lua registers these
+// when a LuaServiceManager exists so plugins can re-enter Lua on the owning
+// service actor (or park a coroutine on it) instead of touching lua_State
+// from plugin threads. shield_plugin does not link shield_lua; the
+// dependency is inverted through these std::function hooks.
 struct LuaServiceHooks {
     // Current dispatch service id (empty when outside a dispatch).
     std::function<std::string()> current_service_id;
     // Post a task to a service actor. Returns task id, 0 on failure.
     std::function<uint64_t(const std::string&, std::function<void()>)>
         post_to_service;
+    // Suspend the calling coroutine (host_api.h lua_suspend_current). L is
+    // never NULL here — the plugin_host gate rejects that before the hook
+    // runs. Returns session id, 0 when L is the main thread (sync fallback).
+    std::function<uint64_t(struct lua_State*, int32_t, const std::string&)>
+        suspend_current;
+    // Complete a suspended session (host_api.h lua_resume_session). Returns
+    // true when this call claimed the session; false when it was already
+    // finished or absent (the caller must poison its backing resource).
+    std::function<bool(uint64_t, bool, const std::string&)> resume_session;
 };
 
 // ---------------------------------------------------------------------------

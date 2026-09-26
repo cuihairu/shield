@@ -780,6 +780,32 @@ const shield_host_api_v1& PluginHost::host_api_table() {
         }
         return 0;
     };
+    api.lua_suspend_current = [](shield_plugin_context_v1*, lua_State* L,
+                                 int32_t timeout_ms,
+                                 const char* tag) -> uint64_t {
+        if (!L) return 0;
+        LuaServiceHooks hooks;
+        {
+            std::lock_guard lock(lua_hooks_mutex());
+            hooks = lua_hooks_storage();
+        }
+        if (!hooks.suspend_current) return 0;
+        return hooks.suspend_current(L, timeout_ms, tag ? tag : "");
+    };
+    api.lua_resume_session = [](shield_plugin_context_v1*, uint64_t session,
+                                int ok, const char* result_json) -> int {
+        if (session == 0) return 1;
+        LuaServiceHooks hooks;
+        {
+            std::lock_guard lock(lua_hooks_mutex());
+            hooks = lua_hooks_storage();
+        }
+        if (!hooks.resume_session) return 1;
+        return hooks.resume_session(session, ok != 0,
+                                    result_json ? result_json : "")
+                   ? 0
+                   : 1;
+    };
     return api;
 }
 
