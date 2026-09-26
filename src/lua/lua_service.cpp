@@ -3613,12 +3613,17 @@ bool LuaServiceManager::claim_name(std::string_view name, std::string* error) {
     }
 
     std::unique_lock lock(impl_->registry_mutex);
+    // GCOVR_EXCL_START (defensive: the current service context is only set
+    // while that service is alive in the map, and teardown to removal runs
+    // on the same actor thread — a claimer observable here as gone cannot
+    // be scheduled deterministically)
     if (!impl_->services.contains(claimer)) {
         if (error) {
             *error = "current service is not running: " + claimer;
         }
         return false;
     }
+    // GCOVR_EXCL_STOP
     auto existing = impl_->published_names.find(std::string(name));
     if (existing == impl_->published_names.end()) {
         if (error) {
@@ -3633,21 +3638,28 @@ bool LuaServiceManager::claim_name(std::string_view name, std::string* error) {
         // sequence does not fail on re-claim.
         return true;
     }
+    // GCOVR_EXCL_START (defensive: exit cleanup retracts owned names
+    // under the same lock, so a dead owner observable here cannot be
+    // scheduled deterministically)
     if (!impl_->services.contains(previous_owner)) {
-        // GCOVR_EXCL_START (defensive: exit cleanup retracts owned names
-        // under the same lock, so a dead owner observable here cannot be
-        // scheduled deterministically)
         if (error) {
             *error = "previous owner is not running: " + previous_owner;
         }
         return false;
-        // GCOVR_EXCL_STOP
     }
+    // GCOVR_EXCL_STOP
 
     existing->second = claimer;
     impl_->owned_names[claimer].insert(std::string(name));
     if (auto names_it = impl_->owned_names.find(previous_owner);
-        names_it != impl_->owned_names.end()) {
+        names_it != impl_->owned_names.end()) {  // GCOVR_EXCL_BR_LINE
+                                                 // (defensive: a published
+                                                 // name always has a
+                                                 // matching owned_names
+                                                 // entry — registration,
+                                                 // claim and exit cleanup
+                                                 // migrate both under the
+                                                 // same lock)
         names_it->second.erase(std::string(name));
     }
     lock.unlock();

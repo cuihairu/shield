@@ -942,4 +942,45 @@ BOOST_AUTO_TEST_CASE(SessionWithoutRateLimitDropsNothing) {
     p.io.run_for(100ms);
 }
 
+// Drops still count on the session even when nobody listens via
+// on_rate_limited (a listener without a user-facing callback wraps this).
+BOOST_AUTO_TEST_CASE(SessionRateLimitedWithoutUserCallback) {
+    SocketPair p;
+
+    std::atomic<int> packets{0};
+    std::atomic<bool> disconnected{false};
+    SessionCallbacks cbs;
+    cbs.create_protocol_pipeline = [] { return make_json_pipeline(); };
+    cbs.on_packet = [&](std::shared_ptr<Session>, const DispatchResult&) {
+        ++packets;
+    };
+    // Deliberately no cbs.on_rate_limited.
+    cbs.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
+        disconnected = true;
+    };
+
+    // 1/s, burst 5: the first five frames pass, the rest are dropped.
+    auto session = std::make_shared<TcpSession>(32, std::move(p.server), cbs, 0,
+                                                0, 0, 1, 5);
+    session->start();
+
+    auto local = make_json_pipeline();
+    std::vector<std::uint8_t> wire;
+    for (int i = 0; i < 8; ++i) {
+        auto f = encode_packet(*local, R"({"route":"login","payload":{"seq":)" +
+                                           std::to_string(i) + "}}");
+        wire.insert(wire.end(), f.begin(), f.end());
+    }
+    write_client(p.client, wire);
+    p.io.run_for(200ms);
+
+    BOOST_CHECK_EQUAL(packets.load(), 5);
+    BOOST_CHECK_EQUAL(session->rate_limited_count(), 3u);
+    BOOST_CHECK(session->is_alive());
+    BOOST_CHECK(!disconnected.load());
+
+    session->close("normal");
+    p.io.run_for(100ms);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

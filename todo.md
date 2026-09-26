@@ -1,5 +1,47 @@
 # TODO
 
+## 覆盖率口径纠偏（2026-09-26）
+
+**重要**：此前 todo 与 CI 记录的「三维 100%」是**陈旧 `.gcda` 累加**造成的
+假象——gcovr 按源码行号合并计数，多次增量编译后旧二进制的历史计数会挂在
+已经不存在的行号上，把数字抬高。清空 `.gcda` 或从零重建后真实值出现缺口，
+**CI 的 `--fail-under-branch 100` 本应长期是红的**。缺口集中在 0deff15 的
+`claim_name` 路径与 5581ddf 网关可观测性的 `on_rate_limited` 链接臂。
+
+复现口径（务必照做，否则数字不可信）：
+
+```bash
+rm -rf build-cov   # 或 find build-cov -name '*.gcda' -delete 后重跑全部用例
+cmake -B build-cov -G Ninja ... -DSHIELD_ENABLE_COVERAGE=ON
+cmake --build build-cov -j 16 && ctest --test-dir build-cov --build-config Debug
+```
+
+- [x] `claim_name`「当前服务未运行」「旧 owner 已死」两臂按 `register_name` /
+      `unregister_name` 既有先例标注不可达（同一 lock 下退出清理先回收名字，
+      死 owner / 已摘除的 claimer 不可观测）
+- [x] `claim_name` 移交后从旧 owner `owned_names` 摘名一支按「发布必记名」
+      不变量标注（与 `unregister_name` 同款）
+- [x] `claim_name` 三个 `if (error)` 空 out-param 臂**补真测试**（不豁免）：
+      关键点是这些守卫需要**活的 dispatch 上下文**（`current_service_id()`
+      只在 owner actor 跑 handler 时有值），因此走 `enqueue_forked_task`
+      往 owner actor 上投任务——Lua 绑定恒传 error table，name-change
+      notifier 又是锁外回调（会在「requires current service context」
+      提前返回），两者都够不着这几臂
+- [x] `on_rate_limited` 链接两臂（5581ddf 引入）：
+      listener 侧 `ListenerChainsRateLimitedCallback`（调用方回调仍被调用 +
+      listener 累计计数一致且不随 session 消失）与
+      `ListenerCounterWithoutUserRateLimitedCallback`（该钩子纯可选，未安装
+      时计数照常）；session 侧 `SessionRateLimitedWithoutUserCallback`
+      （未安装钩子时丢帧仍计数、连接仍存活）
+- [x] config.cpp blocklist 的 `GCOVR_EXCL_BR_LINE` 标记：内联深嵌套下
+      clang-format 会把 `catch (...)` 拆行、标记失效；标记需与 `catch` 同行
+      才生效（b5cdc43 已修）
+
+验收（`rm -rf build-cov` 从零重建 + 全部 94 用例，Release/Debug/覆盖率三树）：
+line 11723/11723、branch 11055/11055、function 857/857；CI 门禁
+`--fail-under-line 98 --fail-under-branch 100 --fail-under-function 100`
+退出码 0。
+
 ## 产品化 + 架构安全默认值（2026-09-25 本轮，已完成含 CI 红修复）
 
 背景与差距清单见 `docs/product-gap.md`（对照 skynet 的产品化评估）与

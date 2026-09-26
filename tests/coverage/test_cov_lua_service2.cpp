@@ -168,6 +168,9 @@ BOOST_AUTO_TEST_CASE(RegisterNameGuards) {
 
     BOOST_CHECK(!manager.claim_name("cov2_alias", &error));
     BOOST_CHECK(error.find("current service context") != std::string::npos);
+
+    // nullptr error-pointer callers take the same guard arms.
+    BOOST_CHECK(!manager.claim_name("cov2_alias", nullptr));
 }
 
 // ---------------------------------------------------------------------------
@@ -709,6 +712,63 @@ BOOST_AUTO_TEST_CASE(ClaimNameTransfersOwnershipAtomically) {
     BOOST_CHECK(blue_retracted);
     BOOST_CHECK(manager.query_service("cov9_blue").empty());
     BOOST_CHECK_EQUAL(manager.query_service("cov9.prod"), green.service_id);
+}
+
+// ---------------------------------------------------------------------------
+// claim_name's error out-param is optional: drive the invalid-name and
+// unknown-name guard arms with a null error pointer.
+//
+// These guards need a *live dispatch context* (current_service_id() is only
+// set while the owner actor is running a handler), so the calls are made from
+// a fork task queued onto that actor — the same seam the register/unregister
+// null-guard arms use. A name-change notifier would NOT work: it fires from
+// plain callback code after the registry lock is released, so the claim would
+// bail out early on the "requires current service context" guard instead.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ClaimNameGuardArmsWithNullErrorPointer) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov9n_register.lua",
+                     "local M = {}\n"
+                     "function M.on_init(args)\n"
+                     "  local config = (args and args.config) or {}\n"
+                     "  if config.register_alias then "
+                     "shield.register(config.register_alias) end\n"
+                     "end\n"
+                     "return M\n");
+
+    auto svc = manager.spawn(
+        path, opts_for("cov9n_own",
+                       {{"config",
+                         nlohmann::json{{"register_alias", "cov9n.prod"}}}}));
+    BOOST_REQUIRE(svc.success);
+
+    std::atomic<bool> checked{false};
+    std::atomic<bool> invalid_rejected{false};
+    std::atomic<bool> unknown_rejected{false};
+    std::atomic<bool> reclaim_accepted{false};
+    manager.enqueue_forked_task(svc.service_id, [&] {
+        // Runs on the owner actor: a live claim context.
+        invalid_rejected = !manager.claim_name("bad alias", nullptr);
+        unknown_rejected = !manager.claim_name("cov9n.nothere", nullptr);
+        // Re-claiming a name the caller already owns still succeeds with a
+        // null out-param (the idempotent arm).
+        reclaim_accepted = manager.claim_name("cov9n.prod", nullptr);
+        checked = true;
+    });
+
+    BOOST_CHECK(wait_until([&] { return checked.load(); },
+                           std::chrono::milliseconds(5000)));
+    BOOST_CHECK(invalid_rejected.load());
+    BOOST_CHECK(unknown_rejected.load());
+    BOOST_CHECK(reclaim_accepted.load());
+    // The failed claims committed nothing; the name still resolves to its
+    // original owner.
+    BOOST_CHECK_EQUAL(manager.query_service("cov9n.prod"), svc.service_id);
 }
 
 // ---------------------------------------------------------------------------

@@ -5,11 +5,13 @@
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "shield/net/listener.hpp"
+#include "shield/transport/protocol.hpp"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -25,9 +27,59 @@ using shield::net::Session;
 using shield::net::SessionCallbacks;
 using shield::net::SessionId;
 using shield::net::TcpListener;
+using shield::transport::BodyCodecRegistry;
+using shield::transport::DecodedBody;
+using shield::transport::DispatchResult;
+using shield::transport::EnvelopeKind;
+using shield::transport::JsonBodyCodec;
+using shield::transport::Packet;
+using shield::transport::ProtocolPipeline;
+using shield::transport::ProtocolProfile;
+using shield::transport::RouteAction;
+using shield::transport::RouteDirection;
+using shield::transport::RouteEntry;
+using shield::transport::RoutePolicy;
+using shield::transport::RouteSource;
+using shield::transport::RouteTable;
 
 std::vector<std::uint8_t> bytes(std::string_view s) {
     return {s.begin(), s.end()};
+}
+
+// LenPrefix envelope + JSON body routes: route 1001 "login" decodes locally.
+// Mirrors the pipeline helper in test_cov_session.cpp so listener-created
+// sessions can ingest real frames.
+std::unique_ptr<ProtocolPipeline> make_json_pipeline() {
+    RouteTable routes;
+    routes.add(RouteEntry{
+        .route_id = 1001,
+        .direction = RouteDirection::ClientToServer,
+        .debug_name = "login",
+        .policy = RoutePolicy{.action = RouteAction::DecodeLocal,
+                              .lazy_decode = true},
+    });
+
+    BodyCodecRegistry codecs;
+    codecs.add(1, std::make_unique<JsonBodyCodec>());
+
+    ProtocolProfile profile;
+    profile.envelope_kind = EnvelopeKind::LenPrefix;
+    profile.default_codec_id = 1;
+    profile.route_source = RouteSource::Body;
+    profile.decode_body_route = true;
+    profile.unknown_route_action = RouteAction::Drop;
+
+    return std::make_unique<ProtocolPipeline>(
+        std::move(profile), std::move(routes), std::move(codecs));
+}
+
+std::vector<std::uint8_t> encode_packet(ProtocolPipeline& pipe,
+                                        std::string_view body) {
+    Packet packet;
+    packet.body = bytes(body);
+    auto encoded = pipe.encode(packet.ref());
+    BOOST_REQUIRE(pipe.error().empty());
+    return encoded;
 }
 
 // Bind an ephemeral port, read it back, then release. The listener under test
@@ -396,6 +448,103 @@ BOOST_AUTO_TEST_CASE(BlocklistSetFailureKeepsPreviousRules) {
     io.run_for(200ms);
     BOOST_CHECK(wait_until(
         [&] { return listener.last_rejection_reason() == "blocked_ip"; }));
+
+    c1.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
+// End to end through a listener-created session: over-budget frames are
+// dropped before dispatch, charge the listener's cumulative counter, and
+// fire the chained user callback — exactly once per dropped frame.
+BOOST_AUTO_TEST_CASE(ListenerChainsRateLimitedCallback) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    std::atomic<int> packets{0};
+    std::atomic<int> drop_callbacks{0};
+    std::atomic<bool> disconnected{false};
+
+    SessionCallbacks callbacks;
+    callbacks.create_protocol_pipeline = [] { return make_json_pipeline(); };
+    callbacks.on_packet = [&](std::shared_ptr<Session>, const DispatchResult&) {
+        ++packets;
+    };
+    callbacks.on_rate_limited = [&] { ++drop_callbacks; };
+    callbacks.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
+        disconnected = true;
+    };
+
+    TcpListener listener(io, port, callbacks);
+    // 1/s sustained with burst 5: the first five frames pass, the rest are
+    // dropped. Refill is lazy at 1 token/s, and all 8 frames drain from one
+    // TCP segment in well under that, so the split is deterministic.
+    listener.set_rate_limit(1, 5);
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(150ms);
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+
+    auto local = make_json_pipeline();
+    std::vector<std::uint8_t> wire;
+    for (int i = 0; i < 8; ++i) {
+        auto f = encode_packet(*local, R"({"route":"login","payload":{"seq":)" +
+                                           std::to_string(i) + "}}");
+        wire.insert(wire.end(), f.begin(), f.end());
+    }
+    c1.send(wire);
+    io.run_for(200ms);
+
+    BOOST_CHECK_EQUAL(packets.load(), 5);
+    BOOST_CHECK_EQUAL(drop_callbacks.load(), 3);
+    BOOST_CHECK_EQUAL(listener.rate_limited_messages_total(), 3u);
+    // Drops are not fatal: the session stays on the listener.
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+    BOOST_CHECK(!disconnected.load());
+
+    c1.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
+// Same drop path with no user-facing on_rate_limited: the wrapper still
+// charges the listener's cumulative counter (the skip-user-callback arm).
+BOOST_AUTO_TEST_CASE(ListenerCounterWithoutUserRateLimitedCallback) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    std::atomic<int> packets{0};
+    SessionCallbacks callbacks;
+    callbacks.create_protocol_pipeline = [] { return make_json_pipeline(); };
+    callbacks.on_packet = [&](std::shared_ptr<Session>, const DispatchResult&) {
+        ++packets;
+    };
+    // Deliberately no callbacks.on_rate_limited.
+
+    TcpListener listener(io, port, callbacks);
+    listener.set_rate_limit(1, 5);
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(150ms);
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+
+    auto local = make_json_pipeline();
+    std::vector<std::uint8_t> wire;
+    for (int i = 0; i < 8; ++i) {
+        auto f = encode_packet(*local, R"({"route":"login","payload":{"seq":)" +
+                                           std::to_string(i) + "}}");
+        wire.insert(wire.end(), f.begin(), f.end());
+    }
+    c1.send(wire);
+    io.run_for(200ms);
+
+    BOOST_CHECK_EQUAL(packets.load(), 5);
+    BOOST_CHECK_EQUAL(listener.rate_limited_messages_total(), 3u);
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
 
     c1.close();
     listener.stop();

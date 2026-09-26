@@ -1461,7 +1461,7 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                             std::string entry;
                             try {
                                 entry = deny[i].as<std::string>();
-                            } catch (
+                            } catch (  // GCOVR_EXCL_BR_LINE (catch entry edge)
                                 const std::exception&) {  // GCOVR_EXCL_BR_LINE
                                                           // (compiler artifact:
                                                           // catch blocks have
