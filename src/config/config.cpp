@@ -191,6 +191,60 @@ bool validate_int_range(const YAML::Node& node, const char* key,
                         const char* path, int min_value, int max_value,
                         std::string* error);
 
+// Accept-time address blocklist: every deny entry is parsed here so a typo
+// fails startup instead of silently dropping the rule during an incident.
+// Lives at namespace scope (rather than inline in validate_runtime_config)
+// so the error-path comments fit the line budget after clang-format.
+bool validate_blocklist_deny(const YAML::Node& network,
+                             const std::string& network_path,
+                             std::string* error) {
+    const YAML::Node blocklist = network["blocklist"];
+    if (!blocklist) {
+        return true;
+    }
+    if (!blocklist.IsMap()) {
+        if (error) {
+            *error = network_path + ".blocklist must be a map";
+        }
+        return false;
+    }
+    const YAML::Node deny = blocklist["deny"];
+    if (!deny) {
+        return true;
+    }
+    if (!deny.IsSequence()) {
+        if (error) {
+            *error = network_path + ".blocklist.deny must be an array";
+        }
+        return false;
+    }
+    for (std::size_t i = 0; i < deny.size(); ++i) {
+        const std::string entry_path =
+            network_path + ".blocklist.deny[" + std::to_string(i) + "]";
+        std::string entry;
+        try {
+            entry = deny[i].as<std::string>();
+        } catch (const std::exception&) {  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: catch blocks have no
+                                           // non-exception entry edge; the
+                                           // exception arm is covered)
+            if (error) {
+                *error = entry_path + " must be a string";
+            }
+            return false;
+        }
+        shield::net::Rule rule;
+        std::string parse_error;
+        if (!shield::net::parse_blocklist_entry(entry, &rule, &parse_error)) {
+            if (error) {
+                *error = entry_path + ": " + parse_error;
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 bool validate_protocol_string_enum(const YAML::Node& node, const char* key,
                                    const std::string& path,
                                    std::initializer_list<const char*> allowed,
@@ -1439,52 +1493,8 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                 // Accept-time address blocklist. Every entry is parsed here
                 // so a typo is a startup error, not a silently missing deny
                 // rule discovered during an incident.
-                if (const YAML::Node blocklist = network["blocklist"]) {
-                    if (!blocklist.IsMap()) {
-                        if (error) {
-                            *error = network_path + ".blocklist must be a map";
-                        }
-                        return false;
-                    }
-                    if (const YAML::Node deny = blocklist["deny"]) {
-                        if (!deny.IsSequence()) {
-                            if (error) {
-                                *error = network_path +
-                                         ".blocklist.deny must be an array";
-                            }
-                            return false;
-                        }
-                        for (std::size_t i = 0; i < deny.size(); ++i) {
-                            const std::string entry_path =
-                                network_path + ".blocklist.deny[" +
-                                std::to_string(i) + "]";
-                            std::string entry;
-                            try {
-                                entry = deny[i].as<std::string>();
-                            } catch (
-                                const std::exception&) {  // GCOVR_EXCL_BR_LINE
-                                                          // (compiler artifact:
-                                                          // catch blocks have
-                                                          // no non-exception
-                                                          // entry edge; the
-                                                          // exception arm
-                                                          // is covered)
-                                if (error) {
-                                    *error = entry_path + " must be a string";
-                                }
-                                return false;
-                            }
-                            shield::net::Rule rule;
-                            std::string parse_error;
-                            if (!shield::net::parse_blocklist_entry(
-                                    entry, &rule, &parse_error)) {
-                                if (error) {
-                                    *error = entry_path + ": " + parse_error;
-                                }
-                                return false;
-                            }
-                        }
-                    }
+                if (!validate_blocklist_deny(network, network_path, error)) {
+                    return false;
                 }
             }
 

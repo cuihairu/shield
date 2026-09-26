@@ -1250,11 +1250,15 @@ static bool initialize_impl(const RuntimeConfig& config) {
                                            // config layer already parsed these
                                            // entries with this same parser)
                     actor.blocklist_deny, &blocklist_error)) {
-                SHIELD_LOG_ERROR(  // GCOVR_EXCL_BR_LINE (defensive: unreachable
-                                   // via the CLI, see the comment above)
-                    log, "Invalid address blocklist for actor '" + actor.name +
-                             "': " + blocklist_error);
+                // GCOVR_EXCL_START (unreachable through any entry point: the
+                // config layer parses these exact strings with this exact
+                // parser and fails startup first, so the listener cannot
+                // disagree. Kept as defense in depth because serving without
+                // the configured deny rules is the worse failure.)
+                SHIELD_LOG_ERROR(log, "Invalid address blocklist for actor '" +
+                                          actor.name + "': " + blocklist_error);
                 return false;
+                // GCOVR_EXCL_STOP
             }
             SHIELD_LOG_INFO(
                 log, "Address blocklist active for actor '" + actor.name +

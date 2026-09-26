@@ -168,6 +168,12 @@ BOOST_AUTO_TEST_CASE(RegisterNameGuards) {
 
     BOOST_CHECK(!manager.claim_name("cov2_alias", &error));
     BOOST_CHECK(error.find("current service context") != std::string::npos);
+
+    // Same guards with a null error out-param: every rejection path must be
+    // callable without one.
+    BOOST_CHECK(!manager.register_name("cov2_alias", nullptr));
+    BOOST_CHECK(!manager.unregister_name("cov2_alias", nullptr));
+    BOOST_CHECK(!manager.claim_name("cov2_alias", nullptr));
 }
 
 // ---------------------------------------------------------------------------
@@ -677,6 +683,27 @@ BOOST_AUTO_TEST_CASE(ClaimNameTransfersOwnershipAtomically) {
     BOOST_CHECK_EQUAL(cr.values[0].get<bool>(), true);
     BOOST_CHECK_EQUAL(manager.query_service("cov9.prod"), green.service_id);
     BOOST_CHECK_EQUAL(snapshot().size(), 1u);
+
+    // The null out-param arms of the in-dispatch guards: the Lua binding
+    // always passes an error table, so only a direct C++ call inside a live
+    // dispatch context (a fork task on the owner actor) can reach them.
+    bool null_claim[3] = {true, true, true};
+    std::atomic<bool> null_claim_done{false};
+    manager.enqueue_forked_task(green.service_id, [&] {
+        null_claim[0] = manager.claim_name("bad alias", nullptr);
+        null_claim[1] = manager.claim_name("cov9.nothere", nullptr);
+        null_claim[2] = manager.claim_name("cov9.prod", nullptr);
+        null_claim_done = true;
+    });
+    for (int i = 0; i < 200 && !null_claim_done.load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    BOOST_REQUIRE(null_claim_done.load());
+    // Invalid name and unknown name both reject; re-claiming a name the
+    // caller already owns still succeeds.
+    BOOST_CHECK(!null_claim[0]);
+    BOOST_CHECK(!null_claim[1]);
+    BOOST_CHECK(null_claim[2]);
 
     // Unknown name and invalid name fail with stable errors.
     cr = manager.call(green.service_id, "claim_name",

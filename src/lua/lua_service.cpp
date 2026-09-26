@@ -3613,11 +3613,18 @@ bool LuaServiceManager::claim_name(std::string_view name, std::string* error) {
     }
 
     std::unique_lock lock(impl_->registry_mutex);
-    if (!impl_->services.contains(claimer)) {
+    if (!impl_->services.contains(  // GCOVR_EXCL_BR_LINE (defensive: the
+                                    // claimer and the dispatch top come from
+                                    // the same frame, so a running claimer is
+                                    // always registered; same invariant
+                                    // register_name guards at its own check)
+            claimer)) {
+        // GCOVR_EXCL_START (unreachable: see the note on the condition above)
         if (error) {
             *error = "current service is not running: " + claimer;
         }
         return false;
+        // GCOVR_EXCL_STOP
     }
     auto existing = impl_->published_names.find(std::string(name));
     if (existing == impl_->published_names.end()) {
@@ -3633,10 +3640,12 @@ bool LuaServiceManager::claim_name(std::string_view name, std::string* error) {
         // sequence does not fail on re-claim.
         return true;
     }
-    if (!impl_->services.contains(previous_owner)) {
-        // GCOVR_EXCL_START (defensive: exit cleanup retracts owned names
-        // under the same lock, so a dead owner observable here cannot be
-        // scheduled deterministically)
+    if (!impl_->services.contains(  // GCOVR_EXCL_BR_LINE (defensive: exit
+                                    // cleanup retracts owned names under this
+                                    // same lock, so a dead previous owner
+                                    // cannot be observed here)
+            previous_owner)) {
+        // GCOVR_EXCL_START (unreachable: see the note on the condition above)
         if (error) {
             *error = "previous owner is not running: " + previous_owner;
         }
@@ -3647,7 +3656,12 @@ bool LuaServiceManager::claim_name(std::string_view name, std::string* error) {
     existing->second = claimer;
     impl_->owned_names[claimer].insert(std::string(name));
     if (auto names_it = impl_->owned_names.find(previous_owner);
-        names_it != impl_->owned_names.end()) {
+        names_it !=
+        impl_->owned_names
+            .end()) {  // GCOVR_EXCL_BR_LINE (defensive: publishing a name
+                       // always records it in owned_names, so the miss arm
+                       // cannot occur; same invariant unregister_name
+                       // guards at its own cleanup)
         names_it->second.erase(std::string(name));
     }
     lock.unlock();

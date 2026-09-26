@@ -1,5 +1,41 @@
 # TODO
 
+## 覆盖率口径纠偏（2026-09-26）
+
+**重要**：此前 todo 与 CI 记录的「三维 100%」是**陈旧 `.gcda` 累加**造成的
+假象——gcovr 按源码行号合并计数，多次增量编译后旧二进制的历史计数会挂在
+已经不存在的行号上，把数字抬高。清空 `.gcda` 或从零重建后真实值为
+line 11698/11703、branch 11014/11024，**CI 的 `--fail-under-branch 100`
+本应长期是红的**。缺口集中在 0deff15 新增的 `claim_name` / blocklist 路径。
+
+复现口径（务必照做，否则数字不可信）：
+
+```bash
+rm -rf build-cov   # 或 find build-cov -name '*.gcda' -delete 后重跑全部测试
+cmake -B build-cov -G Ninja ... -DSHIELD_ENABLE_COVERAGE=ON -DINSTALL_GIT_HOOKS=OFF
+cmake --build build-cov -j 16 && ctest --test-dir build-cov --build-config Debug
+```
+
+- [x] `claim_name`「当前服务未运行」臂按 `register_name` 既有先例标注
+      不可达（GCOVR_EXCL_BR_LINE + EXCL_START/STOP，同一 lock 下退出清理
+      先回收名字，死 owner 不可观测）
+- [x] `claim_name` 移交后从旧 owner `owned_names` 摘名一支按
+      `unregister_name` 同款不变量标注（发布必记名，miss 臂不可能）
+- [x] `claim_name` 三个 `if (error)` 空 out-param 臂**补真测试**（不豁免）：
+      沿用既有 `enqueue_forked_task` 手法——Lua 绑定恒传 error table，
+      只有在活 dispatch 上下文（owner actor 上的 fork task）里直接调
+      C++ 才够得着
+- [x] config.cpp blocklist 校验从 `validate_runtime_config` 内联深嵌套
+      抽成命名空间级 `validate_blocklist_deny` 助手：嵌套过深导致
+      clang-format 把 `catch (...)` 与 `GCOVR_EXCL_BR_LINE` 拆到两行、
+      标记失效（这正是上一轮标记没生效的原因）
+- [x] bootstrap blocklist 失败臂：上一轮用 `GCOVR_EXCL_BR_LINE`（只排分支，
+      不排行）导致 1253/1257 两行仍计入分母；改用 EXCL_START/STOP
+
+验收（clean rebuild + 全部 94 用例）：line 11704/11704、branch 11014/11014、
+function 862/862，CI 门禁 `--fail-under-line 98 --fail-under-branch 100
+--fail-under-function 100` 退出码 0。
+
 ## 产品化 + 架构安全默认值（2026-09-25 本轮，已完成含 CI 红修复）
 
 背景与差距清单见 `docs/product-gap.md`（对照 skynet 的产品化评估）与
