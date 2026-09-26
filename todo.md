@@ -1,6 +1,6 @@
 # TODO
 
-## 产品化 + 架构安全默认值（2026-09-25 本轮，进行中）
+## 产品化 + 架构安全默认值（2026-09-25 本轮，已完成含 CI 红修复）
 
 背景与差距清单见 `docs/product-gap.md`（对照 skynet 的产品化评估）与
 `docs/architecture-review.md`（九维架构评估，结论服务产品化）。优先级基准：
@@ -49,13 +49,26 @@
       补 restrict_vm 双臂真覆盖（替换原 GCOVR 分支豁免）；本地 Debug
       树复现配置验证 + 全量回归
 
-## Phase 1 候选（下一步，均为文档/低风险改动）
+## Phase 1 候选（2026-09-26 完成，均为文档/低风险改动）
 
-- [ ] DB 使用纪律文档 + 示例：同步 ABI 下 DB 调用必须隔离进专职 service
-      （业务经 shield.call 访问）+ 超时配置；见 architecture-review.md §4
-- [ ] /ops/metrics 口径文档（字段、语义、granularity）
-- [ ] net.threads 默认值评估与调优指引（当前默认单线程 legacy 模式）
-- [ ] 顶号/重连语义在 gateway.md 显式化（epoch CAS 的时序细节）
+- [x] DB 使用纪律文档 + 示例：docs/db-discipline.md——同步 ABI 硬规则
+      （DB 调用隔离进专职 service、业务经 shield.call/call_timeout 访问、
+      call_timeout < query_timeout、pool 才是并发闸门）+ 完整正反例 +
+      观测止损（pending_calls）；入口挂 index.md / runtime-persistence.md；
+      见 architecture-review.md §4（Phase 2 异步 ABI 落地后降级为推荐）
+- [x] /ops/metrics 口径补全：runtime-ops.md 指标表后新增「抓取口径」——
+      单进程口径、gauge 瞬时采样 vs counter 单调、服务级 counter respawn
+      归零与 rate 断点、shield_services 500ms 超时省略语义、抓取间隔 ≥5s
+- [x] net.threads 默认值评估与调优指引：runtime-config.md 新增评估小节——
+      结论维持默认 0（小规模确定性优先、改默认动存量语义、net 线程不跑
+      业务 Lua 故保守无隐藏成本）；何时调大（千连接/TLS 终结/ops 隔离）、
+      2–4 取值、strand 安全性、验证方法
+- [x] 顶号/重连语义在 gateway.md 显式化：「顶号与重连的时序语义」节——
+      epoch CAS 确切语义（kAnyEpoch 哨兵仅失效用）、三检查点一不查
+      （bind CAS / egress 相等 / close 无条件；ingress 快照不校验+回包侧
+      兜底）、kick 四步顺序保证（Unbound 先于失效先于关 socket）与
+      disconnect 空绑定防双通知、重连=新 session 新 epoch（唯一性归
+      player 模块）、在途窗口速查表
 
 ## Phase 2 候选（另行立项）
 

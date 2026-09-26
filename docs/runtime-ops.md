@@ -210,6 +210,26 @@ P0 导出 Prometheus 0.0.4 文本格式（`Content-Type: text/plain; version=0.0
 
 `shield_requests_total`、`shield_request_duration_seconds` 等聚合请求量/时延指标不在当前范围，留后续。
 
+抓取口径（granularity）：
+
+- **单进程口径**。所有指标只描述被抓取的这个 shield 进程；多节点聚合由
+  外部监控系统（Prometheus federation / remote write）负责，运行时不提供
+  跨进程聚合。
+- **gauge 是抓取时刻的瞬时采样**：`pending_calls` / `pending_tasks` /
+  `coroutines` / `timers` / `memory_kb` / global 族 / cluster 连接数都是
+  读取瞬间的值，不做窗口平均；短促尖峰可能被稀疏抓取漏掉，告警阈值应基于
+  连续多个样本。
+- **counter 单调**（进程生命周期内不减、不重置）：`requests_total` /
+  `errors_total` / cache hits/misses / cluster reconnects / tx/rx 计数。
+  注意服务级 counter 的归属是"服务本轮生命周期"——respawn 后同名服务从
+  0 重新累计，rate 计算要容忍断点（配合 `shield_service_uptime_seconds`
+  的重计可识别 respawn 边界）。
+- **`shield_services` 是唯一经 actor 网格的族**：500ms 超时即整族省略
+  （其余族进程内直读，永远在场）；抓取方应把该族的缺失视为"网格忙/卡"
+  信号而不是抓取失败。
+- **抓取间隔建议 ≥5s**：内存采样点在 owner 线程 dispatch 退出（非抓取
+  时刻实时），更密的抓取只会重复读到同一采样值。
+
 ### 服务列表
 
 ```

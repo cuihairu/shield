@@ -337,6 +337,36 @@ actors:
 
 验证失败时拒绝启动，输出字段路径和原因。
 
+## net.threads 默认值评估与调优
+
+`net.threads` 未配置或 `0` 时，全部客户端面 I/O（游戏 TCP 监听、HTTP ops、
+console）跑在**单个** net 线程的一个 `io_context` 上（legacy 模式，
+bootstrap.cpp：空列表才退化单线程；`N > 0` 时开 N 线程跑同一 `io_context`）。
+
+**评估结论（2026-09）：维持默认 0，不改默认值。** 理由：
+
+- 产品目标是小规模开箱即用：中小规模（数百连接、无 TLS 卸载）单线程绰绰
+  有余，且是并发行为最可预测的形态（所有 socket 事件串行）。
+- 静默改默认值会改变所有存量部署的并发语义，收益不成比例；调优是上量后的
+  显式动作。
+- 业务 Lua 永远不在 net 线程执行（bridge 只做 framing + CAF 转发，handler
+  跑在 CAF actor 线程），所以调大 N 不改变任何业务并发语义，只增加 socket
+  层并行度——默认保守没有隐藏成本。
+
+**何时调大**（满足其一）：
+
+- 在线连接数持续上千，或单帧吞吐大（接近 `max_frame_size` 的流量）；
+- 服务端做 TLS 终结（加解密占用 net 线程）；
+- 抓取 `/ops/metrics`、console 往返在客户端高峰期明显变慢（三者共用一个
+  io_context，`N ≥ 2` 即可把 ops/console 与客户端流量隔离到不同线程）。
+
+**取值建议**：2 起步；按核数 2–4；超过物理核数无收益。会话读写在
+per-session strand 上串行（session.hpp），多线程 `io_context::run` 安全；
+写队列与 idle timer 同在 strand，无跨线程额外锁。
+
+**验证**：调整后压测观察 `/ops/metrics`（抓取延迟）与客户端 RTT；口径见
+[runtime-ops.md](runtime-ops.md)。
+
 ## 环境变量展开（未实现）
 
 > `${VAR}` / `${VAR:default}` 展开为目标契约，当前配置加载器不会处理这些占位符——插件会拿到字面量字符串。实现前请勿在配置中使用。

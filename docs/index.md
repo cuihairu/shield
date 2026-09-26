@@ -48,7 +48,7 @@ Shield 当前文档以 [文档地图](documentation-map.md) 为入口。读者�
 | 编写 Lua service | [Lua API 契约](lua-api.md) |
 | 配置运行时 | [配置运行时语义](runtime-config.md) |
 | 了解运维与 Lua 诊断控制台设计 | [运维语义](runtime-ops.md) / [Lua 诊断控制台设计](ops-lua-console.md) |
-| 使用数据库、缓存、队列等后端 | [插件参考](plugins/index.md) |
+| 使用数据库、缓存、队列等后端 | [插件参考](plugins/index.md) / [DB 使用纪律](db-discipline.md) |
 | 开发第三方插件 | [插件系统 v1](plugin-system.md) |
 | 查看当前阶段 | [路线图](roadmap.md) |
 | 跟进 `xmldef` 设计草案 | [Xmldef Toolchain Design](xmldef-toolchain-design.md) |

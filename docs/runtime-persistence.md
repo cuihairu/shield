@@ -578,6 +578,10 @@ CREATE TABLE rollback_audit (
 
 ## 保存路径
 
+> 同步 ABI 下的 DB 调用纪律（专职 service 隔离、超时配置、正反例）见
+> [DB 使用纪律](db-discipline.md)——一次慢查询卡死共享 service 是本节所有
+> 模式的前置风险。
+
 ### 同步强保存
 
 请求成功前必须写入 DB 或可靠日志。

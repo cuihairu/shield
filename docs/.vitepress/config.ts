@@ -96,6 +96,7 @@ export default defineConfig({
           { text: '启动流程', link: '/runtime-bootstrap' },
           { text: '安全语义', link: '/runtime-security' },
           { text: '网关设计', link: '/gateway' },
+          { text: 'DB 使用纪律', link: '/db-discipline' },
           { text: 'Starter 系统', link: '/starter-system' },
         ],
       },
