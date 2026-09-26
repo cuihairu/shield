@@ -37,7 +37,9 @@
 - [x] 架构 P0 诚实性：lua.sandbox.allow_os/allow_io 从死配置键变为真实
       开关（VM 创建期条件 open io/os 库；未设置=历史行为开放，随仓库分发
       的默认配置声明 false）+ SandboxGatesOsAndIoLibraries 测试
-- [ ] 全量构建 + ctest 全绿验证（91 + 新增 3 个测试），逐块 commit + push
+- [x] 全量构建 + ctest 全绿验证（91 + 新增 3 个测试用例，93/93），逐块
+      commit + push（7b395c2 安全默认值 / b1c4cbb 产品化三件套 /
+      f337072 评估文档与 todo 重排）
 
 ## Phase 1 候选（下一步，均为文档/低风险改动）
 
