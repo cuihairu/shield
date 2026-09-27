@@ -19,6 +19,8 @@
 #include "shield/bootstrap/bootstrap.hpp"
 #include "shield/bootstrap/starter.hpp"
 #include "shield/config/config.hpp"
+#include "shield/net/listener.hpp"
+#include "shield/net/listener_registry.hpp"
 #ifdef SHIELD_ENABLE_SERVER
 #include "shield/server/server_manager.hpp"
 #endif
@@ -1652,6 +1654,67 @@ BOOST_AUTO_TEST_CASE(BlocklistWiredToListener) {
     BOOST_REQUIRE(shield::bootstrap::initialize(rc));
     BOOST_CHECK(shield::bootstrap::is_initialized());
     shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
+// Actor with network.tls enabled and loadable fixture material: bootstrap
+// builds the server context and the live listener reports itself as TLS.
+BOOST_AUTO_TEST_CASE(TlsWiredToListener) {
+    fs::path script = echo_script("shield_cov_boot_tls.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: tls_gw\n    script: " +
+        script.string() +
+        "\n    network:\n"
+        "      tcp: 127.0.0.1:" +
+        std::to_string(free_port()) +
+        "\n      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      tls:\n"
+        "        enabled: true\n"
+        "        cert_file: " +
+        (fs::path(SHIELD_SOURCE_DIR) / "tests/net/fixtures/tls/localhost.crt")
+            .string() +
+        "\n        key_file: " +
+        (fs::path(SHIELD_SOURCE_DIR) / "tests/net/fixtures/tls/localhost.key")
+            .string() +
+        "\n        handshake_timeout_ms: 4000\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    rc.log_level = "error";
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    const auto listeners = shield::net::ListenerRegistry::instance().snapshot();
+    BOOST_REQUIRE_EQUAL(listeners.size(), 1U);
+    BOOST_CHECK(listeners[0]->tls_enabled());
+    BOOST_CHECK_EQUAL(listeners[0]->tls_handshakes_total(), 0u);
+    BOOST_CHECK_EQUAL(listeners[0]->tls_handshake_failures_total(), 0u);
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
+// Enabled TLS with unloadable material fails startup loud and clear: a
+// config that asks for TLS must never come up as plaintext.
+BOOST_AUTO_TEST_CASE(TlsSetupFailureAbortsStartup) {
+    fs::path script = echo_script("shield_cov_boot_tlsfail.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: tls_gw\n    script: " +
+        script.string() +
+        "\n    network:\n"
+        "      tcp: 127.0.0.1:" +
+        std::to_string(free_port()) +
+        "\n      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n"
+        "      tls:\n"
+        "        enabled: true\n"
+        "        cert_file: tests/net/fixtures/tls/no-such-cert.pem\n"
+        "        key_file: tests/net/fixtures/tls/no-such-key.pem\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    rc.log_level = "error";
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
     BOOST_CHECK(!shield::bootstrap::is_initialized());
 }
 

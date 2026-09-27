@@ -69,6 +69,11 @@ shield_coverage_test(test_cov_config shield_config)
 # shield_net
 shield_coverage_test(test_cov_session shield_net)
 shield_coverage_test(test_cov_listener shield_net)
+# TLS (docs/tls-design.md): context factory failure arms + loopback handshake
+# matrix against the self-signed fixtures in tests/net/fixtures/tls.
+shield_coverage_test(test_cov_tls shield_net)
+target_compile_definitions(test_cov_tls
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 # Header-only (boost::asio::ip only); linked against shield_net for the
 # include path, but the blocklist itself has no library-side symbols.
 shield_coverage_test(test_cov_ip_blocklist shield_net)
@@ -80,8 +85,14 @@ shield_coverage_test(test_cov_console_net POSIX_ONLY shield_net shield_bootstrap
 shield_coverage_test(test_cov_root_commands POSIX_ONLY shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_lua_commands POSIX_ONLY shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_ops_http shield_bootstrap shield_net shield_plugin)
+# The TLS metrics case resolves the self-signed fixtures via the source tree.
+target_compile_definitions(test_cov_ops_http
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 shield_coverage_test(test_cov_starter shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_bootstrap shield_bootstrap shield_net shield_plugin)
+# The TLS wiring cases resolve the self-signed fixtures via the source tree.
+target_compile_definitions(test_cov_bootstrap
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 shield_coverage_test(test_cov_bootstrap2 shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_shield shield_bootstrap shield_net shield_plugin)
 if(SHIELD_ENABLE_SERVER)

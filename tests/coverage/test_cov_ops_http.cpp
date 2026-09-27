@@ -28,6 +28,7 @@
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/http_server.hpp"
 #include "shield/net/listener.hpp"
+#include "shield/net/tls_context.hpp"
 #include "shield/plugin/plugin_host.hpp"
 
 namespace {
@@ -2193,6 +2194,76 @@ BOOST_AUTO_TEST_CASE(GatewayMetricsEmittedFromListenerRegistry) {
         BOOST_CHECK_MESSAGE(gone,
                             "destroyed listener still present in metrics");
     }
+}
+
+BOOST_AUTO_TEST_CASE(GatewayTlsMetricsEmittedFromListenerRegistry) {
+    // docs/tls-design.md: TLS handshake counters ride the gateway block of
+    // /ops/metrics, broken down by listen port, and only TLS-enabled
+    // listeners contribute samples.
+    namespace ssl = boost::asio::ssl;
+    const auto fixture_dir =
+        std::filesystem::path(SHIELD_SOURCE_DIR) / "tests/net/fixtures/tls";
+    const uint16_t gw_port = free_port();
+    const std::string port_label = "port=\"" + std::to_string(gw_port) + "\"";
+
+    std::shared_ptr<boost::asio::ssl::context> tls_ctx;
+    std::string tls_error;
+    BOOST_REQUIRE(shield::net::make_tls_server_context(
+        (fixture_dir / "localhost.crt").string(),
+        (fixture_dir / "localhost.key").string(), tls_ctx, &tls_error));
+
+    boost::asio::io_context io;
+    auto listener = std::make_unique<shield::net::TcpListener>(
+        io, gw_port, shield::net::SessionCallbacks{});
+    listener->set_tls(tls_ctx, 5000);
+    listener->start();
+    std::thread io_thread([&io] { io.run(); });
+
+    // One verified loopback handshake; the client is fully synchronous on
+    // its own io_context, so it never races the listener io thread.
+    {
+        ssl::context client_ctx(ssl::context::tls_client);
+        client_ctx.load_verify_file((fixture_dir / "localhost.crt").string());
+        client_ctx.set_verify_mode(ssl::verify_peer);
+        boost::asio::io_context client_io;
+        ssl::stream<boost::asio::ip::tcp::socket> client(client_io, client_ctx);
+        boost::system::error_code ec;
+        client.lowest_layer().connect(
+            boost::asio::ip::tcp::endpoint(
+                boost::asio::ip::address_v4::loopback(), gw_port),
+            ec);
+        BOOST_REQUIRE(!ec);
+        client.handshake(ssl::stream_base::client, ec);
+        BOOST_REQUIRE(!ec);
+    }
+    bool handshaken = false;
+    for (int i = 0; i < 100 && !handshaken; ++i) {
+        handshaken = listener->tls_handshakes_total() == 1;
+        if (!handshaken) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    BOOST_CHECK(handshaken);
+
+    {
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", port);
+        std::string response =
+            client.get("/ops/metrics", std::chrono::milliseconds(9000));
+        BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
+        const std::string body = RawHttpClient::body(response);
+        BOOST_CHECK(body.find("shield_gateway_tls_handshakes_total{" +
+                              port_label + "} 1") != std::string::npos);
+        BOOST_CHECK(body.find("shield_gateway_tls_handshake_failures_total{" +
+                              port_label + "} 0") != std::string::npos);
+        BOOST_CHECK(body.find("# TYPE shield_gateway_tls_handshakes_total "
+                              "counter") != std::string::npos);
+    }
+
+    listener->stop();
+    listener.reset();
+    io.stop();
+    io_thread.join();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -211,3 +211,23 @@ TCP 是第一版必需传输。每条 TCP listener 必须绑定 `network.protoco
 adapter,但必须复用同一 session 单一 target 绑定、header `route_id`、
 `ClientIngress/ClientEgress` 和 epoch 校验语义,不得为不同 transport 发明不同 Lua
 客户端 API。
+
+## TLS（network.tls）
+
+客户端面 listener 支持 per-actor TLS（配置 schema、握手与热更新取舍见
+[TLS 设计](tls-design.md)）：
+
+- `network.tls.enabled`（缺省 false）+ `cert_file` / `key_file`（PEM）+
+  `handshake_timeout_ms`（缺省 10000，范围 1–600000）。未配置或 disabled
+  时 listener 行为与过去完全一致；
+- enabled 是 fail-loud：config 层校验字段形态，bootstrap 层真正加载证书
+  （缺文件、坏 PEM、公私钥不匹配都会让启动失败），绝不带病回落明文；
+- 一个端口要么全 TLS 要么全明文，不做降级/嗅探；TLS 握手失败或超时的
+  连接被直接关闭，不产生 session；
+- `blocklist` 与连接数限制仍然先于握手生效，被拒对端不付出握手成本；
+- 最低协议 TLS 1.2、禁压缩；服务端主动关闭不发 TLS close_notify（断开
+  语义由帧协议层表达）；
+- 观测：/ops/metrics gateway 块导出
+  `shield_gateway_tls_handshakes_total` 与
+  `shield_gateway_tls_handshake_failures_total`（按 `port` 标签，纯明文
+  部署不输出这两个族）。

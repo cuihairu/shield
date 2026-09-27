@@ -80,4 +80,6 @@ Shield 当前口径是单节点优先、Lua-first、插件化后端能力。核�
 
 DB 使用纪律见 [DB 使用纪律](db-discipline.md)（异步入口落地后规则 1/2 已降级为推荐，3–6 仍硬）；协程恢复式异步入口的设计与里程碑状态以 [DB 异步入口](db-async-design.md) 为专项入口（已实现，M1–M4）。
 
+客户端面 TLS（`network.tls` 配置面、握手/超时语义、证书加载与热更新取舍）以 [TLS 设计](tls-design.md) 为专项入口（已实现 v1），运行时使用口径见 [网络运行时语义](runtime-network.md) 的 TLS 一节。
+
 如果后续需要讨论 Lua primitives、cosocket 风格出站 I/O、CAF adapter 复用边界与 `auth-first` 的否定结论，可参考后置草案 [基础组件与运行时适配边界](runtime-primitives.md)。

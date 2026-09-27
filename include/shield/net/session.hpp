@@ -20,13 +20,20 @@
 
 namespace shield::net {
 
+class SessionStream;
+
+}  // namespace shield::net
+
+namespace shield::net {
+
 /// @brief Session ID
 using SessionId = uint64_t;
 
 /// @brief Remote address
 struct RemoteAddress {
     std::string ip;
-    uint16_t port;
+    // 0 when unknown (peer disconnected before the session was adopted).
+    uint16_t port = 0;
 
     std::string to_string() const { return ip + ":" + std::to_string(port); }
 };
@@ -210,6 +217,19 @@ public:
                uint32_t rate_limit_per_second = 0,
                uint32_t rate_limit_burst = 0);
 
+    /// @brief Transport-agnostic construction. The TLS accept path hands in
+    /// a TlsStream whose handshake the listener already completed; the plain
+    /// constructor above wraps its socket in a PlainStream and delegates here.
+    TcpSession(SessionId id, std::unique_ptr<SessionStream> stream,
+               SessionCallbacks callbacks, size_t max_frame_size = 0,
+               size_t max_send_queue = 0, uint32_t read_idle_timeout_ms = 0,
+               uint32_t rate_limit_per_second = 0,
+               uint32_t rate_limit_burst = 0);
+
+    /// @brief Out-of-line so the unique_ptr<SessionStream> member's deleter
+    /// only instantiates where SessionStream is complete (session.cpp).
+    ~TcpSession() override;
+
     SessionId id() const override { return id_; }
     RemoteAddress remote_addr() const override { return remote_addr_; }
 
@@ -279,7 +299,9 @@ private:
     void handle_error(std::string reason);
 
     SessionId id_;
-    boost::asio::ip::tcp::socket socket_;
+    // Connection transport (plain TCP or post-handshake TLS). All socket IO
+    // goes through it; see session_stream.hpp.
+    std::unique_ptr<SessionStream> stream_;
     // All per-session async work (read / write / idle timer completion) runs
     // on this strand, so TcpSession members touched only from strand handlers
     // need no further synchronization.

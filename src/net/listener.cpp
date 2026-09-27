@@ -1,16 +1,111 @@
 // [SHIELD_NET] Listener implementation
 #include "shield/net/listener.hpp"
 
+#include <boost/asio/bind_executor.hpp>
 #include <boost/asio/buffer.hpp>
+#include <boost/asio/steady_timer.hpp>
 #ifdef _WIN32
 #include <WinSock2.h>
 #endif
+#include <atomic>
+#include <chrono>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
 
 #include "shield/log/logger.hpp"
 
 namespace shield::net {
+
+// Per-connection TLS handshake state machine (docs/tls-design.md). Heap-owned
+// and self-referential: it lives exactly as long as its pending completions.
+// Everything runs on a dedicated per-connection strand so the timer expiry
+// and the handshake completion can never race each other, whichever thread
+// of the net pool they land on. First side to settle wins: it closes the
+// socket, records the counter and logs; the other side observes `settled`
+// and walks away.
+//
+// Defined in shield::net rather than an anonymous namespace: TcpListener
+// declares it a friend by name, and the anonymous-namespace spelling would be
+// a different type.
+struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
+    TlsHandshakeState(TcpListener* owner, std::unique_ptr<TlsStream> tls_stream,
+                      std::shared_ptr<TcpListener::HandshakeCounters> counters,
+                      std::string peer_ip)
+        : listener(owner),
+          stream(std::move(tls_stream)),
+          strand(
+              boost::asio::make_strand(stream->lowest_socket().get_executor())),
+          deadline(strand),
+          counters(std::move(counters)),
+          remote_ip(std::move(peer_ip)) {}
+
+    void run(uint32_t timeout_ms) {
+        auto self = shared_from_this();
+        deadline.expires_after(std::chrono::milliseconds(timeout_ms));
+        deadline.async_wait(boost::asio::bind_executor(
+            strand, [self](const boost::system::error_code& ec) {
+                self->on_timeout(ec);
+            }));
+        stream->raw().async_handshake(
+            boost::asio::ssl::stream_base::server,
+            boost::asio::bind_executor(
+                strand, [self](const boost::system::error_code& ec) {
+                    self->on_handshake(ec);
+                }));
+    }
+
+    void on_timeout(const boost::system::error_code& ec) {
+        if (ec) {
+            return;  // cancelled: the handshake side owns the outcome
+        }
+        settle("TLS handshake timeout");
+    }
+
+    void on_handshake(const boost::system::error_code& ec) {
+        try {
+            deadline.cancel();
+        } catch (...) {  // GCOVR_EXCL_LINE (cancel does not throw)
+        }  // GCOVR_EXCL_LINE
+        if (ec == boost::asio::error::operation_aborted) {
+            return;  // listener teardown path; the timeout side owns teardown
+        }
+        if (ec) {
+            settle("TLS handshake failed: " + ec.message());
+            return;
+        }
+        settled.store(true, std::memory_order_release);
+        counters->handshakes.fetch_add(1, std::memory_order_relaxed);
+        listener->adopt_connection(std::move(stream), remote_ip);
+    }
+
+    /// @brief Record the failure/timeout, close the peer and log. Exactly one
+    /// caller reaches here per state (the other observed `settled` or was
+    /// cancelled).
+    void settle(const std::string& why) {
+        const bool already_settled =
+            settled.exchange(true, std::memory_order_acq_rel);
+        if (already_settled) {  // GCOVR_EXCL_BR_LINE (defensive: the strand
+                                // serializes both completions, so the
+                                // double-settle arm is only reachable in the
+                                // timer/handshake completion race window)
+            return;
+        }
+        counters->failures.fetch_add(1, std::memory_order_relaxed);
+        auto& log = shield::log::get_logger("net");
+        SHIELD_LOG_WARNING(log, why + " (" + remote_ip + ")");
+        boost::system::error_code close_ec;
+        stream->lowest_socket().close(close_ec);
+    }
+
+    TcpListener* listener;
+    std::unique_ptr<TlsStream> stream;
+    boost::asio::strand<boost::asio::any_io_executor> strand;
+    boost::asio::steady_timer deadline;
+    std::shared_ptr<TcpListener::HandshakeCounters> counters;
+    std::string remote_ip;
+    std::atomic<bool> settled{false};
+};
 
 std::atomic<SessionId> TcpListener::g_next_session_id{1};
 
@@ -170,45 +265,67 @@ void TcpListener::do_accept() {
             }
         }
 
-        // Create session
-        SessionId id = g_next_session_id.fetch_add(1);
-        SessionCallbacks callbacks = callbacks_;
-        auto user_disconnect = callbacks.on_disconnect;
-        callbacks.on_disconnect = [this, user_disconnect](
-                                      std::shared_ptr<Session> session,
-                                      std::string_view reason) {
-            on_session_close(session, std::string(reason));
-            if (user_disconnect) {
-                user_disconnect(std::move(session), reason);
-            }
-        };
-        // Cumulative rate-limit counter for the /ops/metrics gateway view:
-        // kept at the listener so it survives session exit.
-        auto user_rate_limited = callbacks.on_rate_limited;
-        callbacks.on_rate_limited = [this, user_rate_limited] {
-            rate_limited_total_.fetch_add(1, std::memory_order_relaxed);
-            if (user_rate_limited) {
-                user_rate_limited();
-            }
-        };
-        auto session = std::make_shared<TcpSession>(
-            id, std::move(socket_), std::move(callbacks), max_frame_size_,
-            max_send_queue_, read_idle_timeout_ms_, rate_limit_per_second_,
-            rate_limit_burst_);
-
-        // Store session
-        {
-            std::unique_lock lock(sessions_mutex_);
-            sessions_[id] = session;
-            ++ip_counts_[remote_ip];
+        // Branch on transport before any per-connection state exists: a TLS
+        // listener runs the handshake outside the accept loop (parallel
+        // re-accept below keeps the pipeline full), a plain listener builds
+        // the session immediately. Both paths share the accept tail.
+        if (tls_context_ != nullptr) {
+            begin_tls_handshake(std::move(socket_), std::move(remote_ip));
+        } else {
+            adopt_connection(std::make_unique<PlainStream>(std::move(socket_)),
+                             remote_ip);
         }
-
-        // Start session
-        session->start();
 
         // Accept next
         do_accept();
     });
+}
+
+void TcpListener::adopt_connection(std::unique_ptr<SessionStream> stream,
+                                   std::string remote_ip) {
+    // Create session
+    SessionId id = g_next_session_id.fetch_add(1);
+    SessionCallbacks callbacks = callbacks_;
+    auto user_disconnect = callbacks.on_disconnect;
+    callbacks.on_disconnect = [this, user_disconnect](
+                                  std::shared_ptr<Session> session,
+                                  std::string_view reason) {
+        on_session_close(session, std::string(reason));
+        if (user_disconnect) {
+            user_disconnect(std::move(session), reason);
+        }
+    };
+    // Cumulative rate-limit counter for the /ops/metrics gateway view:
+    // kept at the listener so it survives session exit.
+    auto user_rate_limited = callbacks.on_rate_limited;
+    callbacks.on_rate_limited = [this, user_rate_limited] {
+        rate_limited_total_.fetch_add(1, std::memory_order_relaxed);
+        if (user_rate_limited) {
+            user_rate_limited();
+        }
+    };
+    auto session = std::make_shared<TcpSession>(
+        id, std::move(stream), std::move(callbacks), max_frame_size_,
+        max_send_queue_, read_idle_timeout_ms_, rate_limit_per_second_,
+        rate_limit_burst_);
+
+    // Store session
+    {
+        std::unique_lock lock(sessions_mutex_);
+        sessions_[id] = session;
+        ++ip_counts_[remote_ip];
+    }
+
+    // Start session
+    session->start();
+}
+
+void TcpListener::begin_tls_handshake(boost::asio::ip::tcp::socket socket,
+                                      std::string remote_ip) {
+    auto stream = std::make_unique<TlsStream>(std::move(socket), *tls_context_);
+    auto state = std::make_shared<TlsHandshakeState>(
+        this, std::move(stream), tls_counters_, std::move(remote_ip));
+    state->run(tls_handshake_timeout_ms_);
 }
 
 std::shared_ptr<Session> TcpListener::find_session(SessionId id) const {

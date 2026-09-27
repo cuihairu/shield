@@ -471,6 +471,33 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             out, "shield_gateway_rate_limited_messages_total", "counter",
             "Ingress messages dropped by the per-connection rate limit",
             rate_limited_samples);
+        // TLS handshake counters (docs/tls-design.md). Plaintext-only
+        // deployments emit no samples for these groups at all.
+        std::vector<std::pair<std::string, double>> tls_handshake_samples;
+        std::vector<std::pair<std::string, double>>
+            tls_handshake_failure_samples;
+        for (const auto* listener :
+             shield::net::ListenerRegistry::instance().snapshot()) {
+            if (!listener->tls_enabled()) {
+                continue;
+            }
+            const std::string port =
+                std::to_string(static_cast<unsigned>(listener->port()));
+            tls_handshake_samples.emplace_back(
+                "port=\"" + port + "\"",
+                static_cast<double>(listener->tls_handshakes_total()));
+            tls_handshake_failure_samples.emplace_back(
+                "port=\"" + port + "\"",
+                static_cast<double>(listener->tls_handshake_failures_total()));
+        }
+        prom_emit_group(out, "shield_gateway_tls_handshakes_total", "counter",
+                        "TLS handshakes that completed successfully",
+                        tls_handshake_samples);
+        prom_emit_group(out, "shield_gateway_tls_handshake_failures_total",
+                        "counter",
+                        "TLS handshakes that failed or timed out "
+                        "(no session was built)",
+                        tls_handshake_failure_samples);
     }
 
     // Service count + per-service traffic: the metrics that need the actor

@@ -224,6 +224,37 @@ bool validate_protocol_string_enum(const YAML::Node& node, const char* key,
     }
 }
 
+// Required non-empty string scalar (used for network.tls cert/key paths,
+// docs/tls-design.md). Unlike the validate_* helpers above, absence is an
+// error: the callers only invoke this when the feature is enabled.
+bool validate_non_empty_string(const YAML::Node& node, const char* key,
+                               const std::string& path, std::string* error) {
+    if (!node ||  // GCOVR_EXCL_BR_LINE (defensive: call sites guard the node)
+        !node[key]) {  // GCOVR_EXCL_BR_LINE (missing key: covered)
+        if (error) {
+            *error = path + "." + key + " is required";
+        }
+        return false;
+    }
+    try {
+        if (node[key].as<std::string>().empty()) {
+            if (error) {
+                *error = path + "." + key + " must not be empty";
+            }
+            return false;
+        }
+        return true;
+    } catch (                     // GCOVR_EXCL_BR_LINE (catch entry edge)
+        const std::exception&) {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                  // catch blocks have no non-exception entry
+                                  // edge; the exception arm is covered)
+        if (error) {
+            *error = path + "." + key + " must be a string";
+        }
+        return false;
+    }
+}
+
 bool validate_protocol_route_action(const YAML::Node& node, const char* key,
                                     const std::string& path,
                                     std::string* error) {
@@ -1486,6 +1517,55 @@ bool validate_runtime_config(const RuntimeValidationOptions& options,
                         }
                     }
                 }
+
+                // Per-actor TLS surface (docs/tls-design.md). Absent or
+                // disabled means "behave exactly as before"; enabled means
+                // the paths must at least be well-formed here and must load
+                // for real at bootstrap -- a listener never falls back to
+                // plaintext by accident.
+                if (const YAML::Node tls = network["tls"]) {
+                    if (!tls.IsMap()) {  // GCOVR_EXCL_BR_LINE (error path:
+                                         // non-map tls rejected)
+                        if (error) {     // GCOVR_EXCL_BR_LINE (error path)
+                            *error = network_path + ".tls must be a map";
+                        }
+                        return false;
+                    }
+                    const std::string tls_path = network_path + ".tls";
+                    bool enabled = false;
+                    if (const YAML::Node enabled_node = tls["enabled"]) {
+                        try {
+                            enabled = enabled_node.as<bool>();
+                        } catch (  // GCOVR_EXCL_BR_LINE (catch entry edge)
+                            const std::exception&) {  // GCOVR_EXCL_BR_LINE
+                                                      // (compiler artifact:
+                                                      // catch blocks have no
+                                                      // non-exception entry
+                                                      // edge)
+                            // A silently-disabled TLS on a typo'd value would
+                            // be a plaintext fallback, so this is an error.
+                            if (error) {
+                                *error = tls_path +
+                                         ".enabled must be a "
+                                         "boolean";
+                            }
+                            return false;
+                        }
+                    }
+                    if (enabled) {
+                        if (!validate_non_empty_string(tls, "cert_file",
+                                                       tls_path, error) ||
+                            !validate_non_empty_string(tls, "key_file",
+                                                       tls_path, error)) {
+                            return false;
+                        }
+                        if (!validate_int_range(tls, "handshake_timeout_ms",
+                                                tls_path.c_str(), 1, 600000,
+                                                error)) {
+                            return false;
+                        }
+                    }
+                }
             }
 
             if (actor["rpc"] &&  // GCOVR_EXCL_BR_LINE (compiler artifact:
@@ -1615,6 +1695,23 @@ std::vector<RuntimeActorConfig> runtime_actors() {
                 item.network_protocol_enabled = true;
                 item.network_protocol_json =
                     yaml_to_json(network["protocol"]).dump();
+            }
+            if (const YAML::Node tls = network["tls"]) {
+                item.network_tls_enabled =
+                    scalar_bool_default(tls, "enabled", false);
+                if (item.network_tls_enabled) {
+                    // Validation guarantees presence and non-emptiness for an
+                    // enabled block; handshake_timeout_ms falls back to the
+                    // documented default when omitted.
+                    item.network_tls_cert_file =
+                        tls["cert_file"].as<std::string>();
+                    item.network_tls_key_file =
+                        tls["key_file"].as<std::string>();
+                    item.network_tls_handshake_timeout_ms =
+                        static_cast<uint32_t>(
+                            scalar_int(tls, "handshake_timeout_ms")
+                                .value_or(10000));
+                }
             }
         }
         if (const YAML::Node rpc = actor["rpc"]) {

@@ -1840,3 +1840,243 @@ BOOST_AUTO_TEST_CASE(BlocklistEmptyDenyListIsValid) {
     BOOST_CHECK(shield::config::runtime_actors()[0].blocklist_deny.empty());
     shield::config::reset_config();
 }
+
+// --- network.tls (docs/tls-design.md) ----------------------------------------
+
+namespace {
+
+// A config whose gateway actor declares `network.tls` with the given block
+// appended after the protocol node.
+// Pure string builder: must not touch the global config. A reset here would
+// destroy the Config that the calling test case already holds a reference to
+// (the object expression of g.load_yaml_string(tls_cfg(...)) binds before the
+// argument resets), leaving the load to run on freed memory. Cases isolate
+// themselves with reset_config() at the end instead.
+std::string tls_cfg(const std::string& tls_block, const std::string& port) {
+    const std::string yaml =
+        "app:\n  name: tls\nactors:\n"
+        "  - name: a\n    script: " +
+        g_script_abs +
+        "\n"
+        "    instances: 1\n"
+        "    network:\n"
+        "      tcp: \"127.0.0.1:" +
+        port +
+        "\"\n"
+        "      protocol:\n        envelope: {type: lenprefix}\n"
+        "        body: {codec: json}\n" +
+        tls_block;
+    return yaml;
+}
+
+}  // namespace
+
+// Full enabled block with explicit timeout parses into the actor config.
+BOOST_AUTO_TEST_CASE(TlsValidConfigParses) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        enabled: true\n"
+                                   "        cert_file: certs/server.crt\n"
+                                   "        key_file: certs/server.key\n"
+                                   "        handshake_timeout_ms: 2500\n",
+                                   "19120")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    const auto actors = shield::config::runtime_actors();
+    BOOST_REQUIRE_EQUAL(actors.size(), 1U);
+    BOOST_CHECK_EQUAL(actors[0].network_tls_enabled, true);
+    BOOST_CHECK_EQUAL(actors[0].network_tls_cert_file, "certs/server.crt");
+    BOOST_CHECK_EQUAL(actors[0].network_tls_key_file, "certs/server.key");
+    BOOST_CHECK_EQUAL(actors[0].network_tls_handshake_timeout_ms, 2500u);
+    shield::config::reset_config();
+}
+
+// Omitted handshake_timeout_ms keeps the documented 10s default.
+BOOST_AUTO_TEST_CASE(TlsDefaultHandshakeTimeout) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        enabled: true\n"
+                                   "        cert_file: certs/server.crt\n"
+                                   "        key_file: certs/server.key\n",
+                                   "19121")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    BOOST_CHECK_EQUAL(
+        shield::config::runtime_actors()[0].network_tls_handshake_timeout_ms,
+        10000u);
+    shield::config::reset_config();
+}
+
+// Zero-regression anchor: an actor without network.tls keeps the exact
+// pre-TLS field shape.
+BOOST_AUTO_TEST_CASE(TlsAbsentKeepsDefaults) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(g.load_yaml_string(tls_cfg("", "19122")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    const auto& actor = shield::config::runtime_actors()[0];
+    BOOST_CHECK_EQUAL(actor.network_tls_enabled, false);
+    BOOST_CHECK(actor.network_tls_cert_file.empty());
+    BOOST_CHECK(actor.network_tls_key_file.empty());
+    BOOST_CHECK_EQUAL(actor.network_tls_handshake_timeout_ms, 10000u);
+    shield::config::reset_config();
+}
+
+// enabled: false skips the path requirements entirely.
+BOOST_AUTO_TEST_CASE(TlsDisabledSkipsPathValidation) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        enabled: false\n",
+                                   "19123")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    BOOST_CHECK_EQUAL(shield::config::runtime_actors()[0].network_tls_enabled,
+                      false);
+    shield::config::reset_config();
+}
+
+// A tls block without an enabled key at all defaults to disabled.
+BOOST_AUTO_TEST_CASE(TlsWithoutEnabledKeyDefaultsToDisabled) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        cert_file: certs/server.crt\n"
+                                   "        key_file: certs/server.key\n",
+                                   "19123")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
+                          error);
+    BOOST_CHECK_EQUAL(shield::config::runtime_actors()[0].network_tls_enabled,
+                      false);
+    shield::config::reset_config();
+}
+
+BOOST_AUTO_TEST_CASE(TlsRejectsNonMap) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(g.load_yaml_string(tls_cfg("      tls: 42\n", "19124")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("tls must be a map") != std::string::npos);
+    // error is optional: null must still produce the rejection.
+    BOOST_REQUIRE(g.load_yaml_string(tls_cfg("      tls: 42\n", "19124")));
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts));
+    shield::config::reset_config();
+}
+
+// An enabled block without cert_file is a config error, never a silent
+// plaintext fallback.
+BOOST_AUTO_TEST_CASE(TlsEnabledRequiresCertFile) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        enabled: true\n"
+                                   "        key_file: certs/server.key\n",
+                                   "19125")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("tls.cert_file is required") != std::string::npos);
+    // Null error out-param takes the same rejection path.
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts));
+    shield::config::reset_config();
+}
+
+BOOST_AUTO_TEST_CASE(TlsEnabledRequiresKeyFile) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        enabled: true\n"
+                                   "        cert_file: certs/server.crt\n",
+                                   "19126")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("tls.key_file is required") != std::string::npos);
+    shield::config::reset_config();
+}
+
+BOOST_AUTO_TEST_CASE(TlsRejectsEmptyCertPath) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        enabled: true\n"
+                                   "        cert_file: \"\"\n"
+                                   "        key_file: certs/server.key\n",
+                                   "19127")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("tls.cert_file must not be empty") !=
+                std::string::npos);
+    // Null error out-param takes the same rejection path.
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts));
+    shield::config::reset_config();
+}
+
+BOOST_AUTO_TEST_CASE(TlsRejectsNonStringCertPath) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        enabled: true\n"
+                                   "        cert_file: [1, 2]\n"
+                                   "        key_file: certs/server.key\n",
+                                   "19128")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("tls.cert_file must be a string") !=
+                std::string::npos);
+    // Null error out-param takes the same rejection path.
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts));
+    shield::config::reset_config();
+}
+
+// A typo'd enabled value must fail loudly: silently treating it as false
+// would bring the listener up as plaintext.
+BOOST_AUTO_TEST_CASE(TlsRejectsNonBoolEnabled) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        enabled: 3\n"
+                                   "        cert_file: certs/server.crt\n"
+                                   "        key_file: certs/server.key\n",
+                                   "19129")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("tls.enabled must be a boolean") !=
+                std::string::npos);
+    // Null error out-param takes the same rejection path.
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts));
+    shield::config::reset_config();
+}
+
+BOOST_AUTO_TEST_CASE(TlsHandshakeTimeoutRange) {
+    auto& g = shield::config::global_config();
+    BOOST_REQUIRE(
+        g.load_yaml_string(tls_cfg("      tls:\n"
+                                   "        enabled: true\n"
+                                   "        cert_file: certs/server.crt\n"
+                                   "        key_file: certs/server.key\n"
+                                   "        handshake_timeout_ms: 0\n",
+                                   "19130")));
+    RuntimeValidationOptions opts = with_actors();
+    std::string error;
+    BOOST_CHECK(!shield::config::validate_runtime_config(opts, &error));
+    BOOST_CHECK(error.find("handshake_timeout_ms must be between") !=
+                std::string::npos);
+    shield::config::reset_config();
+}

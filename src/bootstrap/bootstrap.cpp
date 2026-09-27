@@ -49,6 +49,7 @@
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/console_server.hpp"
 #include "shield/net/listener.hpp"
+#include "shield/net/tls_context.hpp"
 #include "shield/shield.hpp"
 #include "shield/transport/protocol.hpp"
 #include "shield/transport/rpc_descriptor.hpp"
@@ -1219,6 +1220,29 @@ static bool initialize_impl(const RuntimeConfig& config) {
             SHIELD_LOG_ERROR(log, "Failed to start TCP listener for actor '" +
                                       actor.name + "' on " + actor.network_tcp);
             return false;
+        }
+        if (actor.network_tls_enabled) {
+            // Fail loud: a config that asks for TLS must never come up as a
+            // plaintext listener, so a context that cannot be built (missing
+            // file, bad PEM, key mismatch) aborts startup here.
+            std::shared_ptr<boost::asio::ssl::context> tls_context;
+            std::string tls_error;
+            if (!shield::net::make_tls_server_context(
+                    actor.network_tls_cert_file, actor.network_tls_key_file,
+                    tls_context, &tls_error)) {
+                SHIELD_LOG_ERROR(log, "TLS setup failed for actor '" +
+                                          actor.name + "': " + tls_error);
+                return false;
+            }
+            listener->set_tls(std::move(tls_context),
+                              actor.network_tls_handshake_timeout_ms);
+            SHIELD_LOG_INFO(
+                log,
+                "TLS enabled for actor '" + actor.name +
+                    "' (minimum protocol TLS 1.2, handshake "
+                    "timeout " +
+                    std::to_string(actor.network_tls_handshake_timeout_ms) +
+                    " ms)");
         }
         if (actor.max_connections > 0) {
             listener->set_max_connections(actor.max_connections);

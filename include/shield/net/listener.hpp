@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -15,8 +16,11 @@
 #include "shield/net/ip_blocklist.hpp"
 #include "shield/net/listener_registry.hpp"
 #include "shield/net/session.hpp"
+#include "shield/net/session_stream.hpp"
 
 namespace shield::net {
+
+struct TlsHandshakeState;
 
 /// @brief TCP Listener
 class TcpListener {
@@ -32,6 +36,9 @@ public:
     void start();
 
     /// @brief Stop accepting connections
+    /// @note In-flight TLS handshakes are not force-closed here; each one
+    ///       carries its own deadline and self-closes, so io_context::run()
+    ///       drains within handshake_timeout_ms of the last accept.
     void stop();
 
     /// @brief Get listen port
@@ -66,6 +73,31 @@ public:
     bool set_blocklist(const std::vector<std::string>& entries,
                        std::string* error = nullptr) {
         return blocklist_.set_rules(entries, error);
+    }
+
+    /// @brief Serve TLS on this listener: every accepted connection runs a
+    /// server-side handshake (bounded by @p handshake_timeout_ms) before a
+    /// session exists, and failed/timed-out handshakes never produce one.
+    /// A listener without set_tls() serves plaintext exactly as before.
+    /// Call before start(); enabling mid-flight only affects later accepts.
+    void set_tls(std::shared_ptr<boost::asio::ssl::context> context,
+                 uint32_t handshake_timeout_ms) {
+        tls_context_ = std::move(context);
+        tls_handshake_timeout_ms_ = handshake_timeout_ms;
+    }
+
+    /// @brief True when set_tls() installed a context (this port is pure
+    ///        TLS: plaintext peers are rejected, never downgraded).
+    bool tls_enabled() const { return tls_context_ != nullptr; }
+
+    /// @brief TLS handshakes that completed successfully on this listener.
+    uint64_t tls_handshakes_total() const {
+        return tls_counters_->handshakes.load(std::memory_order_relaxed);
+    }
+
+    /// @brief TLS handshakes that failed or timed out (no session built).
+    uint64_t tls_handshake_failures_total() const {
+        return tls_counters_->failures.load(std::memory_order_relaxed);
     }
 
     /// @brief Get last rejection reason
@@ -120,7 +152,19 @@ public:
     bool kick_session(SessionId id, std::string reason);
 
 private:
+    friend struct TlsHandshakeState;
+
     void do_accept();
+
+    /// @brief Shared accept tail for both transports: wrap callbacks, build
+    /// the session around @p stream, register it and start it.
+    void adopt_connection(std::unique_ptr<SessionStream> stream,
+                          std::string remote_ip);
+
+    /// @brief Hand the accepted socket to the per-connection handshake state
+    /// machine (heap-owned; completes independently of the accept loop).
+    void begin_tls_handshake(boost::asio::ip::tcp::socket socket,
+                             std::string remote_ip);
 
     void remove_session_locked(const std::shared_ptr<Session>& session);
 
@@ -155,6 +199,19 @@ private:
     std::atomic<uint64_t> conn_limit_rejects_total_{0};
     std::atomic<uint64_t> ip_limit_rejects_total_{0};
     std::atomic<uint64_t> rate_limited_total_{0};
+
+    // TLS state. tls_context_ is null for a plaintext listener. The
+    // handshake counters live behind a shared_ptr so in-flight per-connection
+    // handshake states can bump them even if the listener is being torn down
+    // underneath them.
+    struct HandshakeCounters {
+        std::atomic<uint64_t> handshakes{0};
+        std::atomic<uint64_t> failures{0};
+    };
+    std::shared_ptr<boost::asio::ssl::context> tls_context_;
+    uint32_t tls_handshake_timeout_ms_ = 0;  // 0 = TLS disabled
+    std::shared_ptr<HandshakeCounters> tls_counters_ =
+        std::make_shared<HandshakeCounters>();
 
     static std::atomic<SessionId> g_next_session_id;
 };

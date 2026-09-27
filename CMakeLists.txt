@@ -263,6 +263,7 @@ find_package(
              url
              unit_test_framework
              dll)
+find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
 
 # Set output directories
@@ -454,6 +455,8 @@ target_link_libraries(shield_transport
 # -----------------------------------------------------------------------------
 add_library(shield_net STATIC
     src/net/session.cpp
+    src/net/session_stream.cpp
+    src/net/tls_context.cpp
     src/net/listener.cpp
     src/net/http_server.cpp
     src/net/http_client.cpp
@@ -467,8 +470,12 @@ target_include_directories(shield_net
         ${CMAKE_CURRENT_BINARY_DIR}/include
 )
 
+# OpenSSL is PUBLIC: the TLS headers (session_stream.hpp / listener.hpp pull in
+# boost/asio/ssl.hpp) are part of shield_net's public surface, so every
+# consumer compiles against the OpenSSL headers too.
 target_link_libraries(shield_net
-    PUBLIC shield_base shield_log shield_config shield_transport
+    PUBLIC shield_base shield_log shield_config shield_transport OpenSSL::SSL
+           OpenSSL::Crypto
     PRIVATE Boost::asio Boost::beast
 )
 

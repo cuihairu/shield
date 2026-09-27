@@ -6,13 +6,15 @@
 > VM 标准库开关，见 [配置语义](runtime-config.md)；未设置时保持历史
 > 行为=开放，随仓库分发的默认配置声明两者为 false）；网关层连接级
 > `rate_limit`（令牌桶）与 `blocklist.deny`（accept 时按地址/CIDR 拒绝，
-> 见下文「速率限制」与「地址黑名单」）。
+> 见下文「速率限制」与「地址黑名单」）；客户端面 TLS
+> （`network.tls`，见下文「TLS 支持」与 [TLS 设计](tls-design.md)）。
 >
 > **未实现（Phase 2+ 草案）**：下文 per-actor sandbox 资源限制
 > （max_instructions/allowed_modules 等）、permissions 权限矩阵、
-> `network.tls`——这些在当前 `RuntimeActorConfig` 中均未实现（见
-> `include/shield/config/config.hpp`）。若与 [配置语义](runtime-config.md)
-> 或 [Lua API 契约](lua-api.md) 冲突，以那两份文档为准。
+> mTLS 客户端证书校验——见 `include/shield/config/config.hpp` 与
+> [TLS 设计](tls-design.md) 的 M2 清单。若与
+> [配置语义](runtime-config.md) 或 [Lua API 契约](lua-api.md) 冲突，
+> 以那两份文档为准。
 
 本文档包含 Shield 安全机制相关的运行时语义决策。
 
@@ -97,17 +99,29 @@ end
 
 连接限制参数见 [网络语义](runtime-network.md#网络背压与限制)。
 
-### TLS/DTLS 支持
+### TLS 支持
+
+客户端面 listener 的 TLS 已实现（v1），配置挂在 actor 的 `network` 下：
 
 ```yaml
-network:
-  tcp: "0.0.0.0:8001"
-  tls:
-    enabled: true
-    cert: "certs/server.crt"
-    key: "certs/server.key"
-    ca: "certs/ca.crt"             # 客户端证书验证（可选）
+actors:
+  - name: gateway
+    script: scripts/auth.lua
+    network:
+      tcp: "0.0.0.0:8001"
+      protocol: { ... }
+      tls:
+        enabled: true
+        cert_file: "certs/server.crt"
+        key_file: "certs/server.key"
+        handshake_timeout_ms: 10000   # 可选，缺省 10000
 ```
+
+fail-loud 双层校验：config 层校验字段形态，bootstrap 层真正加载证书
+（缺文件、坏 PEM、公私钥不匹配 = 启动失败），绝不带病回落明文。一个
+端口要么全 TLS 要么全明文；握手失败/超时的连接被关闭且不产生 session；
+`blocklist` 与连接数限制先于握手生效。DTLS（UDP）与 mTLS 客户端证书
+校验（v1 不做 `ca` 加载）属后续里程碑，见 [TLS 设计](tls-design.md)。
 
 ### 速率限制（网关层）
 

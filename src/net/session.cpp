@@ -5,15 +5,14 @@
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/post.hpp>
-#include <boost/asio/read.hpp>
 #include <boost/asio/strand.hpp>
-#include <boost/asio/write.hpp>
 #include <chrono>
 #include <cmath>
 #include <shared_mutex>
 #include <unordered_map>
 
 #include "shield/log/logger.hpp"
+#include "shield/net/session_stream.hpp"
 
 namespace shield::net {
 
@@ -58,26 +57,48 @@ TcpSession::TcpSession(SessionId id, boost::asio::ip::tcp::socket socket,
                        size_t max_send_queue, uint32_t read_idle_timeout_ms,
                        uint32_t rate_limit_per_second,
                        uint32_t rate_limit_burst)
+    : TcpSession(id, std::make_unique<PlainStream>(std::move(socket)),
+                 std::move(callbacks), max_frame_size, max_send_queue,
+                 read_idle_timeout_ms, rate_limit_per_second,
+                 rate_limit_burst) {}
+
+TcpSession::TcpSession(SessionId id, std::unique_ptr<SessionStream> stream,
+                       SessionCallbacks callbacks, size_t max_frame_size,
+                       size_t max_send_queue, uint32_t read_idle_timeout_ms,
+                       uint32_t rate_limit_per_second,
+                       uint32_t rate_limit_burst)
     : id_(id),
-      socket_(std::move(socket)),
-      strand_(boost::asio::make_strand(socket_.get_executor())),
+      stream_(std::move(stream)),
+      strand_(
+          boost::asio::make_strand(stream_->lowest_socket().get_executor())),
       callbacks_(std::move(callbacks)),
       max_send_queue_(max_send_queue),
-      read_deadline_(socket_.get_executor()),
+      read_deadline_(strand_),
       read_idle_timeout_ms_(read_idle_timeout_ms),
       rate_limiter_(rate_limit_per_second, rate_limit_burst) {
-    auto endpoint = socket_.remote_endpoint();
-    remote_addr_.ip = endpoint.address().to_string();
-    remote_addr_.port = endpoint.port();
+    // One-time handover: from here on every stream completion (read / write)
+    // serializes on strand_, exactly as before the transport abstraction.
+    stream_->set_executor(strand_);
+    auto& socket = stream_->lowest_socket();
+    // The peer may already be gone by the time the (TLS) handshake handler
+    // adopts the connection; a disconnected socket must not throw here.
+    boost::system::error_code endpoint_ec;
+    const auto endpoint = socket.remote_endpoint(endpoint_ec);
+    if (!endpoint_ec) {
+        remote_addr_.ip = endpoint.address().to_string();
+        remote_addr_.port = endpoint.port();
+    }
     // Game traffic is small request/response frames; Nagle's algorithm only
-    // adds latency there. Best-effort: a failure to set the option must not
-    // prevent the session from starting.
+    // adds latency there (also under TLS record framing). Best-effort: a
+    // failure to set the option must not prevent the session from starting.
     boost::system::error_code nodelay_ec;
-    socket_.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
+    socket.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
     if (callbacks_.create_protocol_pipeline) {
         protocol_pipeline_ = callbacks_.create_protocol_pipeline();
     }
 }
+
+TcpSession::~TcpSession() = default;
 
 void TcpSession::start() {
     if (callbacks_.on_connect) {
@@ -223,28 +244,27 @@ void TcpSession::do_async_write() {
     }
 
     auto& front = send_queue_.front();
-    boost::asio::async_write(
-        socket_, boost::asio::buffer(front),
-        boost::asio::bind_executor(
-            strand_, [self = shared_from_this()](
-                         const boost::system::error_code& ec, std::size_t) {
-                if (!self->alive_
-                         .load() ||  // GCOVR_EXCL_BR_LINE (defensive:
-                                     // operation_aborted is only produced by
-                                     // close(), which sets alive_=false first,
-                                     // so the short-circuit always wins)
-                    ec == boost::asio::error::operation_aborted) {
-                    // close() owns teardown; nothing to do here.
-                    return;
-                }
-                if (ec) {
-                    self->handle_error("send error: " + ec.message());
-                    return;
-                }
-                self->queued_count_.fetch_sub(1);
-                self->send_queue_.pop_front();
-                self->do_async_write();
-            }));
+    stream_->async_write(
+        boost::asio::buffer(front),
+        [self = shared_from_this()](const boost::system::error_code& ec,
+                                    std::size_t) {
+            if (!self->alive_
+                     .load() ||  // GCOVR_EXCL_BR_LINE (defensive:
+                                 // operation_aborted is only produced by
+                                 // close(), which sets alive_=false first,
+                                 // so the short-circuit always wins)
+                ec == boost::asio::error::operation_aborted) {
+                // close() owns teardown; nothing to do here.
+                return;
+            }
+            if (ec) {
+                self->handle_error("send error: " + ec.message());
+                return;
+            }
+            self->queued_count_.fetch_sub(1);
+            self->send_queue_.pop_front();
+            self->do_async_write();
+        });
 }
 
 void TcpSession::close(std::string reason) {
@@ -252,7 +272,12 @@ void TcpSession::close(std::string reason) {
     if (!alive_.compare_exchange_strong(expected, false)) return;
 
     boost::system::error_code ec;
-    socket_.close(ec);  // aborts pending async_read_some / async_write
+    // Hard close on the lowest layer; no TLS close_notify (documented in
+    // docs/tls-design.md: server-initiated teardown is expressed at the
+    // frame-protocol level, and waiting for a peer close_notify would add a
+    // suspension path and timeout surface). Aborts pending read/write on
+    // both transports.
+    stream_->lowest_socket().close(ec);
     try {
         read_deadline_.cancel();
     } catch (...) {  // GCOVR_EXCL_LINE (cancel does not throw)
@@ -302,81 +327,77 @@ void TcpSession::do_receive() {
             }));
     }
 
-    socket_.async_read_some(
+    stream_->async_read_some(
         boost::asio::buffer(receive_buffer_),
-        boost::asio::bind_executor(
-            strand_,
-            [self = shared_from_this()](const boost::system::error_code& ec,
-                                        std::size_t bytes_read) {
-                if (self->read_idle_timeout_ms_ > 0) {
-                    try {
-                        self->read_deadline_.cancel();
-                    } catch (...) {  // GCOVR_EXCL_LINE (cancel does not throw)
-                    }  // GCOVR_EXCL_LINE
+        [self = shared_from_this()](const boost::system::error_code& ec,
+                                    std::size_t bytes_read) {
+            if (self->read_idle_timeout_ms_ > 0) {
+                try {
+                    self->read_deadline_.cancel();
+                } catch (...) {  // GCOVR_EXCL_LINE (cancel does not throw)
+                }  // GCOVR_EXCL_LINE
+            }
+            if (ec) {
+                if (ec == boost::asio::error::operation_aborted) {
+                    return;  // close() in progress
                 }
-                if (ec) {
-                    if (ec == boost::asio::error::operation_aborted) {
-                        return;  // close() in progress
-                    }
-                    self->handle_error("receive error: " + ec.message());
+                self->handle_error("receive error: " + ec.message());
+                return;
+            }
+
+            self->receive_buffer_.resize(bytes_read);
+
+            if (self->protocol_pipeline_) {
+                auto results = self->protocol_pipeline_->feed(
+                    self->receive_buffer_.data(), self->receive_buffer_.size());
+                if (!self->protocol_pipeline_->error().empty()) {
+                    self->handle_error("protocol decode error: " +
+                                       self->protocol_pipeline_->error());
                     return;
                 }
 
-                self->receive_buffer_.resize(bytes_read);
-
-                if (self->protocol_pipeline_) {
-                    auto results = self->protocol_pipeline_->feed(
-                        self->receive_buffer_.data(),
-                        self->receive_buffer_.size());
-                    if (!self->protocol_pipeline_->error().empty()) {
-                        self->handle_error("protocol decode error: " +
-                                           self->protocol_pipeline_->error());
+                for (auto& result : results) {
+                    if (!result.ok()) {
+                        self->handle_error("protocol dispatch error: " +
+                                           result.error);
                         return;
                     }
-
-                    for (auto& result : results) {
-                        if (!result.ok()) {
-                            self->handle_error("protocol dispatch error: " +
-                                               result.error);
-                            return;
-                        }
-                        if (result.should_drop()) {
-                            continue;
-                        }
-                        // Per-connection ingress rate limit. Charged per
-                        // decoded message (not per TCP read), so batching
-                        // many frames into one segment cannot be used to
-                        // slip past the budget. Over-budget messages are
-                        // dropped silently and the connection stays open.
-                        if (!self->rate_limiter_.try_acquire()) {
-                            if (self->callbacks_.on_rate_limited) {
-                                self->callbacks_.on_rate_limited();
-                            }
-                            continue;
-                        }
-                        if (result.action ==
-                                shield::transport::RouteAction::DecodeLocal &&
-                            !self->protocol_pipeline_->materialize_decode(
-                                result)) {
-                            self->handle_error("protocol decode error: " +
-                                               result.error);
-                            return;
-                        }
-                        if (self->callbacks_.on_packet) {
-                            self->callbacks_.on_packet(self->shared_from_this(),
-                                                       result);
-                        }
+                    if (result.should_drop()) {
+                        continue;
                     }
-                } else {
-                    // No protocol pipeline: raw-byte ingress is not
-                    // supported (it silently dropped everything), so
-                    // reject the session with a stable error code.
-                    self->handle_error("protocol_not_configured");
-                    return;
+                    // Per-connection ingress rate limit. Charged per
+                    // decoded message (not per TCP read), so batching
+                    // many frames into one segment cannot be used to
+                    // slip past the budget. Over-budget messages are
+                    // dropped silently and the connection stays open.
+                    if (!self->rate_limiter_.try_acquire()) {
+                        if (self->callbacks_.on_rate_limited) {
+                            self->callbacks_.on_rate_limited();
+                        }
+                        continue;
+                    }
+                    if (result.action ==
+                            shield::transport::RouteAction::DecodeLocal &&
+                        !self->protocol_pipeline_->materialize_decode(result)) {
+                        self->handle_error("protocol decode error: " +
+                                           result.error);
+                        return;
+                    }
+                    if (self->callbacks_.on_packet) {
+                        self->callbacks_.on_packet(self->shared_from_this(),
+                                                   result);
+                    }
                 }
+            } else {
+                // No protocol pipeline: raw-byte ingress is not
+                // supported (it silently dropped everything), so
+                // reject the session with a stable error code.
+                self->handle_error("protocol_not_configured");
+                return;
+            }
 
-                self->do_receive();
-            }));
+            self->do_receive();
+        });
 }
 
 void TcpSession::handle_error(std::string reason) {

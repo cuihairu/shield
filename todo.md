@@ -210,7 +210,19 @@ ingress rate limit（token bucket，messages/second + burst）+ accept 时
       旧 owner 退出不影响已接管 name）。测试：registry 蓝绿交接用例 +
       coverage 通知/守卫/幂等/错误矩阵；runtime-lua-vm.md 实现 API 节
       改为 claim 时序；lua-api.md / runtime-errors.md（claim_failed）对齐
-- [ ] TLS（network.tls 配置面）
+- [x] TLS（network.tls 配置面）——2026-09-27 完成，设计见
+      docs/tls-design.md（M1 已落地）：per-actor `network.tls`
+      （enabled/cert_file/key_file/handshake_timeout_ms，未配则行为不变）；
+      config 校验 + bootstrap 加载证书双层 fail-loud，绝不带病回落明文；
+      SessionStream 抽象（TcpSession 持流接口，Plain/Tls 两实现，原
+      socket 构造保留零调用方扰动）；accept 路径 blocklist/限流先于
+      握手，握手失败/超时关连接不建 session，计数经 ListenerRegistry
+      进 /ops/metrics（shield_gateway_tls_handshakes_total/_failures）；
+      一个端口全 TLS 或全明文，无降级；v1 不做热更新（atomic context
+      swap 路径已预留）。测试：config 校验 11 臂 + context 单元 +
+      bootstrap 接线/fail-loud + 自签证书回环握手矩阵（成功帧往返/
+      明文拒绝/超时/blocklist 优先），附带修复 session 采纳竞态下
+      remote_endpoint 抛异常（对端提前断开不再炸 io 线程）
 
 ## 测试质量 + 防回退收口（2026-09-25，全部完成）
 

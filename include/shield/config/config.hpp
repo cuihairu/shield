@@ -52,6 +52,14 @@ struct RuntimeActorConfig {
     std::vector<std::string> blocklist_deny;
     std::string network_protocol_json = "{}";
     bool network_protocol_enabled = false;
+    /// Per-actor TLS for the client-facing listener (docs/tls-design.md).
+    /// network_tls_enabled == false (the default, and the shape when the
+    /// actor declares no `network.tls` at all) leaves the listener exactly
+    /// as it was before TLS existed.
+    bool network_tls_enabled = false;
+    std::string network_tls_cert_file;
+    std::string network_tls_key_file;
+    uint32_t network_tls_handshake_timeout_ms = 10000;
     /// JSON array of this actor's `rpc.routes` (client RPC descriptors).
     /// "[]" when the actor declares none.
     std::string rpc_routes_json = "[]";
