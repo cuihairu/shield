@@ -115,3 +115,9 @@ ci-fix-report.html
 *.gcda.*
 *.gcno.*
 build-cov/
+
+# test_cov_config GlobalFixture cwd artifacts (removed at teardown; ignored so
+# a crashed/hung run can't leave them dirtying git status)
+/cov_local.yaml
+/cov_cfg_cwd_s.lua
+/cov_cfg_tmp/
