@@ -1837,8 +1837,9 @@ BOOST_AUTO_TEST_CASE(StartedPluginInstanceInHealthAndMetrics) {
     // to "started" — the only state the health probe counts — then shut
     // the host down and scrape again with an empty instance table: the
     // grouped plugin emitter skips the whole family instead of emitting
-    // headers with no samples. Kept last alongside the required-plugin
-    // case: the scan/plan here resets the shared instance table.
+    // headers with no samples. Kept alongside the required-plugin and
+    // pool-stats cases: the scan/plan here resets the shared instance
+    // table, and each of them restores that empty state on the way out.
     BOOST_REQUIRE(fs::exists("test_plugins/minimal.test/manifest.yaml"));
     auto& host = shield::plugin::global_host();
     std::string err;
@@ -1895,6 +1896,118 @@ BOOST_AUTO_TEST_CASE(StartedPluginInstanceInHealthAndMetrics) {
     BOOST_REQUIRE(!response.empty());
     BOOST_CHECK(RawHttpClient::body(response).find("shield_plugin_instances") ==
                 std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(PoolStatsMetricsExportGates) {
+    // /ops/metrics pool block: each gauge family is emitted only where the
+    // driver's stats are meaningful. The fixture serves three shapes:
+    //   cov_pool    — ok status, real pool gauges, async fields left at the
+    //                 -1 sentinel  → trio exported, async families skipped.
+    //   cov_legacy  — ok status, pool gauges -1, real async gauges (the
+    //                 sqlite shape) → trio skipped, async families exported.
+    //   cov_unavail — non-ok status → skipped entirely, no label anywhere.
+    // Deploys its own package dir (manifest declaring shield.pool.stats.v1)
+    // around the prebuilt minimal .so — under the id the .so's ABI block
+    // exports (load_all cross-checks manifest id against abi->package_id);
+    // startup() resets the shared host first, so the case neither sees nor
+    // leaves scan residue for the other shared-host cases.
+    const fs::path dir = fs::temp_directory_path() / "shield_cov_ops_poolstats";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "poolstats.test" / "bin");
+    std::ofstream(dir / "poolstats.test" / "manifest.yaml")
+        << "schema_version: 1\n"
+           "id: minimal.test\n"
+           "name: Minimal\n"
+           "version: 1.0.0\n"
+           "kind: test\n"
+           "entry: shield_plugin_get_v1\n"
+           "library:\n"
+           "  linux: bin/libshield_minimal_test_plugin.so\n"
+           "  macos: bin/libshield_minimal_test_plugin.dylib\n"
+           "  windows: bin/libshield_minimal_test_plugin.dll\n"
+           "provides:\n"
+           "  - interface: minimal.test.iface\n"
+           "  - interface: shield.pool.stats.v1\n"
+           "requires: []\n"
+           "config_schema:\n"
+           "  type: object\n"
+           "  properties:\n"
+           "    stats_unavailable:\n"
+           "      type: boolean\n"
+           "    stats_legacy_no_pool:\n"
+           "      type: boolean\n";
+    fs::copy_file(
+        "test_plugins/minimal.test/bin/libshield_minimal_test_plugin.so",
+        dir / "poolstats.test" / "bin" / "libshield_minimal_test_plugin.so",
+        fs::copy_options::overwrite_existing);
+
+    auto& host = shield::plugin::global_host();
+    std::string err;
+    shield::plugin::PluginConfig pc;
+    pc.directory = dir.string();
+    const std::vector<std::pair<std::string, nlohmann::json>> decls = {
+        {"cov_pool", {}},
+        {"cov_legacy", {{"stats_legacy_no_pool", true}}},
+        {"cov_unavail", {{"stats_unavailable", true}}},
+    };
+    for (const auto& [id, conf] : decls) {
+        shield::plugin::InstanceDecl decl;
+        decl.id = id;
+        decl.package = "minimal.test";
+        decl.required = false;
+        decl.config = conf;
+        pc.instances.push_back(std::move(decl));
+    }
+    // startup() (not the staged scan/catalog/plan/load/create/start) so the
+    // shared host is reset first: scan() only ever appends, and the package
+    // left scanned by the preceding case shares this manifest's id — a
+    // duplicate would fail the next catalog() call anywhere in the suite.
+    BOOST_REQUIRE_MESSAGE(host.startup(pc, err), err);
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.get("/ops/metrics");
+    BOOST_REQUIRE(!response.empty());
+    std::string body = RawHttpClient::body(response);
+
+    const std::string pool_labels =
+        "plugin=\"minimal.test\",instance=\"cov_pool\"";
+    const std::string legacy_labels =
+        "plugin=\"minimal.test\",instance=\"cov_legacy\"";
+    // Real pool gauges → trio exported with values; sentinel async gauges →
+    // async families omit this instance entirely.
+    BOOST_CHECK(body.find("shield_plugin_pool_size{" + pool_labels) !=
+                std::string::npos);
+    BOOST_CHECK(body.find("shield_plugin_pool_in_use{" + pool_labels) !=
+                std::string::npos);
+    BOOST_CHECK(body.find("shield_plugin_pool_idle{" + pool_labels) !=
+                std::string::npos);
+    BOOST_CHECK(body.find("shield_plugin_db_pending_async{" + pool_labels) ==
+                std::string::npos);
+    BOOST_CHECK(body.find("shield_plugin_db_holding{" + pool_labels) ==
+                std::string::npos);
+    // Sentinel pool gauges → trio omitted; real async gauges → exported.
+    BOOST_CHECK(body.find("shield_plugin_pool_size{" + legacy_labels) ==
+                std::string::npos);
+    BOOST_CHECK(body.find("shield_plugin_pool_in_use{" + legacy_labels) ==
+                std::string::npos);
+    BOOST_CHECK(body.find("shield_plugin_pool_idle{" + legacy_labels) ==
+                std::string::npos);
+    BOOST_CHECK(body.find("shield_plugin_db_pending_async{" + legacy_labels) !=
+                std::string::npos);
+    BOOST_CHECK(body.find("shield_plugin_db_holding{" + legacy_labels) !=
+                std::string::npos);
+    // Non-ok status never reaches the emitters: the id appears nowhere.
+    BOOST_CHECK(body.find("cov_unavail") == std::string::npos);
+
+    // Restore the shared host to the empty-table state the remaining cases
+    // expect (same teardown as the case above).
+    host.shutdown(100);
+    shield::plugin::PluginConfig empty_pc;
+    empty_pc.directory = dir.string();
+    BOOST_REQUIRE_MESSAGE(host.plan_and_resolve(empty_pc, err), err);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
 }
 
 // Branch coverage: a 'code' field that is present but not a string trips

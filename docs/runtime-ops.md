@@ -187,6 +187,8 @@ P0 导出 Prometheus 0.0.4 文本格式（`Content-Type: text/plain; version=0.0
 |------|------|------|
 | `shield_uptime_seconds` | gauge | 进程 uptime |
 | `shield_plugin_instances{state}` | gauge | 插件实例按生命周期状态（planned/loaded/started/unavailable/failed/stopped） |
+| `shield_plugin_pool_size` / `shield_plugin_pool_in_use` / `shield_plugin_pool_idle` | gauge | 插件连接池快照，标签 `plugin`/`instance`（`shield.pool.stats.v1` 采集，见 [Plugin Pool Stats](plugin-pool-stats.md)）；报 `-1`（无池/未知）的字段不导出 |
+| `shield_plugin_db_pending_async` / `shield_plugin_db_holding` | gauge | 插件 DB 异步入口的在途调用数 / 打开事务持有连接数，标签同上；`-1` 不导出 |
 | `shield_gateway_connections_total{port}` | counter | 完成 TCP accept 的连接数（含随后被黑名单/限连拒绝的） |
 | `shield_gateway_rejections_total{port,reason}` | counter | accept 阶段拒绝数，`reason` ∈ blocked_ip / connection_limit / ip_limit |
 | `shield_gateway_active_sessions{port}` | gauge | 网关活跃会话数（瞬时值） |

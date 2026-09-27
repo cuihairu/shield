@@ -143,6 +143,8 @@ void sentinel_fill_pool_stats(shield_pool_stats& s) {
     s.eviction_total = -1;
     s.health_check_failures_total = -1;
     s.last_error_epoch_ms = -1;
+    s.pending_async = -1;
+    s.holding = -1;
 }
 
 // Map a get_stats return code to (status, error_code). error_message stays

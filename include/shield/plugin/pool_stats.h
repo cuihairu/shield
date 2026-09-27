@@ -52,6 +52,12 @@ struct shield_pool_stats {
     int64_t health_check_failures_total;
 
     int64_t last_error_epoch_ms;  // 0 = none, -1 = unknown
+
+    // DB async (docs/db-async-design.md M4); -1 = unknown / not applicable.
+    // Tail-appended per the struct_size rule above: an older plugin that
+    // leaves them unset keeps the host's -1 sentinel.
+    int32_t pending_async;  // in-flight async calls (queued + running)
+    int32_t holding;        // connections held by open transactions
 };
 
 // C++ host helper (like database.h): constexpr interface_name + vtable.

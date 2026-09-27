@@ -78,6 +78,6 @@ Shield 当前口径是单节点优先、Lua-first、插件化后端能力。核�
 
 协议分层术语、`ProtocolProfile` 模型和当前支持矩阵，以 [Protocol Routing Design](protocol-routing-design.md) 为专项入口。协议 codec 插件 ABI、默认内置边界和 protobuf 优先落地范围见 [Protocol Codec Plugins](protocol-codec-plugins.md)。
 
-DB 同步阻塞的使用纪律（硬规则）见 [DB 使用纪律](db-discipline.md)；协程恢复式异步入口的方向与里程碑以 [DB 异步 ABI 立项](db-async-design.md) 为专项入口（草案，未实现）。
+DB 使用纪律见 [DB 使用纪律](db-discipline.md)（异步入口落地后规则 1/2 已降级为推荐，3–6 仍硬）；协程恢复式异步入口的设计与里程碑状态以 [DB 异步入口](db-async-design.md) 为专项入口（已实现，M1–M4）。
 
 如果后续需要讨论 Lua primitives、cosocket 风格出站 I/O、CAF adapter 复用边界与 `auth-first` 的否定结论，可参考后置草案 [基础组件与运行时适配边界](runtime-primitives.md)。

@@ -1,8 +1,8 @@
 # Plugin Pool Stats
 
-> 状态：**草案 / proposal——尚未冻结。**
+> 状态：**已实现 / v1 冻结。**
 >
-> 本接口尚未经真实插件验证。**冻结条件**：至少一个 SQL 插件（mysql / postgresql / sqlite）和一个 Redis 或 Mongo 插件能用本 vtable 表达真实池指标，且 host 采集 + ops/Prometheus 消费三方需求跑通。冻结前字段与签名可能调整。
+> 冻结条件已满足：SQL 插件（mysql / postgresql / sqlite）、mongodb 与 redis 三插件（cache / queue / leaderboard）都用本 vtable 表达真实池指标；host 采集（`PluginHost::collect_pool_stats`）与 `/ops/metrics` Prometheus 消费端已跑通。DB 异步入口（[db-async-design.md](db-async-design.md)）落地后按 struct_size 尾部追加规则新增 `pending_async` / `holding` 两字段——旧插件不填即保留 host 的 -1 哨兵，ABI 不破。
 
 ## 动机
 
@@ -57,6 +57,10 @@ struct shield_pool_stats {
 
     // --- Last error ---
     int64_t  last_error_epoch_ms; // epoch ms of last pool-level error; 0 = none, -1 = unknown
+
+    // --- DB async（docs/db-async-design.md M4；尾部追加，遵守 struct_size 规则）---
+    int32_t  pending_async; // 在途异步调用数（已入队 + 执行中）；-1 = 不跟踪
+    int32_t  holding;       // 被打开事务持有的连接数；-1 = 不跟踪
 };
 
 struct shield_pool_stats_v1 {
@@ -96,6 +100,8 @@ host 必须校验 vtable 的 `struct_size` 至少覆盖 `get_stats` 字段，且
 | `eviction_total` | 累计 | 健康检查失败被驱逐累计 |
 | `health_check_failures_total` | 累计 | 健康检查失败累计（连接通常一旦不健康即被驱逐，故用累计而非"当前不健康数"） |
 | `last_error_epoch_ms` | 瞬时 | 最近 pool 级错误 epoch 毫秒；0 = 无，-1 = 未知 |
+| `pending_async` | 瞬时 | 异步 DB 入口在途调用数（入队 + worker 执行中）；-1 = 不跟踪 |
+| `holding` | 瞬时 | 打开的事务正在持有的连接数（异步 tx body 挂起期间计入）；-1 = 不跟踪 |
 
 **快照语义**：
 
@@ -129,11 +135,11 @@ provides:
 
 预期会实现的：mysql / postgresql（SQL 连接池）、mongodb（mongocxx client 池）、cache.redis / queue.redis / leaderboard.redis（redis 连接池）。各插件按自身真实能力暴露字段，驱动不暴露的字段置 `-1`（unknown）。
 
-**SQLite 不实现本接口**：SQLite 是嵌入式引擎，**没有连接池**（每次调用打开一个文件连接，见 `plugins/sqlite/shield_db_sqlite.cpp`），不属于"有可观测连接池的插件"。其余无池插件（health / matchmaking / auth / metrics 等）同样不实现。
+**SQLite 实现本接口，但池字段全部为 `-1`**：SQLite 是嵌入式引擎，**没有连接池**（每次调用打开一个文件连接，见 `plugins/sqlite/shield_db_sqlite.cpp`），`max_size` / `size` / `idle` / `in_use` 等池 gauge 按"不适用"报 `-1`（不为凑接口而伪造数据）。异步入口落地后它有真实可观测对象——`pending_async`（在途异步调用）与 `holding`（挂起事务持有的 sqlite3 句柄数）是真实值。其余无池且无异步入口的插件（health / matchmaking / auth / metrics 等）不实现本接口。
 
 ## host 侧采集
 
-`PluginHost` 只遍历 manifest 声明了 `shield.pool.stats.v1` 的 started instances，对每个调 `get_interface("shield.pool.stats.v1")` 校验并取得 vtable，再调用 `get_stats`。聚合 API（本文档定义签名，实现后续）：
+`PluginHost` 只遍历 manifest 声明了 `shield.pool.stats.v1` 的 started instances，对每个调 `get_interface("shield.pool.stats.v1")` 校验并取得 vtable，再调用 `get_stats`。聚合 API 已实现（`include/shield/plugin/plugin_host.hpp` 声明，`src/plugin/plugin_host.cpp` 实现），签名如下：
 
 ```cpp
 // Per-instance collection outcome. status encodes the get_stats return code,
@@ -176,14 +182,14 @@ bool PluginHost::collect_pool_stats(std::vector<PoolStatsResult>& out);
 - **单 pool per instance**：v1 假设一个 instance 一个主池，返回单条快照。读写分离主从池、Redis pub/sub 专用连接、multi-tenant / replica pool 等多池场景留待 **v2**：届时 `get_stats` 改为枚举多个命名池，`PoolStatsResult.pool_name` 已为此预留。
 - **只读观测**：不提供控制能力（手动驱逐、缩容）；若需要，后续单独立接口（YAGNI，当前不做）。
 
-## 消费者（deferred）
+## 消费者（已落地）
 
-`shield_ops` 官方可选模块（含 metrics exporter、`/ops/*` 端点）目前仍是未实现的 deferred 方向（见 [运维语义](runtime-ops.md)）。因此本接口**先定义 ABI 与 host 采集 API，消费端留待 ops module 落地时接入**，预期形态：
+`shield_ops` 模块的 `GET /ops/metrics`（`src/console/ops_http_handler.cpp`）消费本接口，导出为 Prometheus gauge，标签 `plugin` / `instance`：
 
-- `GET /ops/pools` —— 返回所有 instance 的池快照 JSON。
-- Prometheus exporter —— 将累计计数导出为 `shield_pool_*` 指标。**unknown 字段（-1）不导出对应指标**，避免 -1 进入告警计算；若需暴露字段可用性，可导出配套 `*_known` gauge（1=有效 / 0=unknown）。
+- `shield_plugin_pool_size` / `shield_plugin_pool_in_use` / `shield_plugin_pool_idle`
+- `shield_plugin_db_pending_async` / `shield_plugin_db_holding`
 
-在 ops module 落地前，C++ 侧可通过 `collect_pool_stats` 直接诊断。
+**unknown 字段（-1）不导出对应指标**，避免 -1 进入告警计算——sqlite 没有池，它的池 gauge 缺席、异步 gauge 在场；驱动不跟踪的累计计数器同理暂不出现在导出里，待驱动真实跟踪后随字段一并接入。C++ 侧仍可直接调 `collect_pool_stats` 诊断。
 
 ## 与其他接口的关系
 

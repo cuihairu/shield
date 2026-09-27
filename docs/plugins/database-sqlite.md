@@ -7,7 +7,7 @@
 ## 包信息
 
 - **包 ID**: `database.sqlite`
-- **接口**: [`shield.database.v1`](/plugin-system#interface-model)
+- **接口**: [`shield.database.v1`](/plugin-system#interface-model)、[`shield.pool.stats.v1`](/plugin-pool-stats)（SQLite 无池，池 gauge 按 `-1` 报不适用；异步入口的 `pending_async` / `holding` 报真实值）
 - **Capabilities**: `sql`, `transactions`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_DB_PLUGIN_SQLITE`
@@ -38,7 +38,7 @@ cmake --build build
 |------|------|------|--------|------|
 | `database` | string | 否 | `:memory:` | 数据库文件路径。`:memory:` 表示纯内存数据库（进程退出即销毁）；填普通路径则落盘。支持 URI 形式（如 `file:test.db?mode=ro`），因为连接时启用了 `SQLITE_OPEN_URI`。 |
 | `query_timeout_ms` | integer | 否 | `5000` | 单条 SQL 的 busy timeout，对应 `sqlite3_busy_timeout`。单位毫秒，范围 1-300000。遇到 `SQLITE_BUSY` 时驱动会自动重试到超时。 |
-| `async` | boolean | 否 | `true` | `query` / `query_one` / `execute` 走 worker 线程异步执行：协程内调用会挂起等待完成，同 service 其他消息继续处理。设为 `false` 退回同步入口（调用即阻塞到 SQL 结束）。见 docs/db-async-design.md。 |
+| `async` | boolean | 否 | `true` | `query` / `query_one` / `execute` / `transaction` 走 worker 线程异步执行：协程内调用会挂起等待完成，同 service 其他消息继续处理（事务 body 内的语句同样挂起）。设为 `false` 退回同步入口（调用即阻塞到 SQL 结束）。见 [DB 异步入口](/db-async-design)。 |
 | `call_timeout_ms` | integer | 否 | `0` | 异步入口的调用方挂起预算。`0` 表示 `query_timeout_ms + 500`。超时返回 `{code="timeout", retryable=true}`；迟到的真实结果会被丢弃（不投递），不会覆盖超时结果。范围 0-300000。 |
 
 ### 完整 app.yaml 示例
@@ -193,9 +193,17 @@ local db = shield.database.sqlite("database.default")   -- 通过 binding 逻辑
 local ok, row = db:query_one(
     "SELECT player_id, nickname FROM players WHERE player_id = ?",
     { player_id })
+
+-- 事务：协程内异步形态，body 挂起期间事务独占它的 sqlite3 句柄
+local ok, n = db:transaction(function(tx)
+    local ok2, r = tx:execute(
+        "UPDATE players SET gold = gold - ? WHERE player_id = ?", { 10, pid })
+    if not ok2 then return false, r end
+    return true, r.affected
+end)
 ```
 
-具体 API 契约见 [Lua API](/lua-api)。插件 Lua proxy 支持 `query`、`query_one`、`execute`、`transaction`。
+具体 API 契约见 [Lua API](/lua-api) 的 Database（SQL）一节。插件 Lua proxy 支持 `query`、`query_one`、`execute`、`transaction`；协程派发内默认异步挂起，非协程上下文或 `async: false` 回退同步。SQLite 没有连接池，异步执行统一走实例的单一 worker 线程（事务语句因此天然串行）；事务挂起期间 `pool.holding` 计入它持有的句柄，`/ops/metrics` 的 `shield_plugin_db_pending_async` / `shield_plugin_db_holding` 可观测。
 
 ## 平台特性
 
@@ -215,7 +223,7 @@ SQLite 在 WAL 模式下支持多读单写。当写冲突发生时，驱动会�
 业务侧应当：
 
 - 单进程写，避免多连接并发写同一数据库文件。
-- 长事务期间不要并发起 `query`，避免触发 `SQLITE_BUSY`。
+- 长事务期间避免其他 service 并发写同一数据库文件，触发 `SQLITE_BUSY`。异步事务挂起期间写锁照旧持有——事务 body **内**同协程的池级 `db:query` 已被运行时 raise（见 [Lua API](/lua-api) 事务契约），但 body 外其他 service 的并发写仍由 `busy_timeout` 兜底。
 - 考虑在 schema 里 `PRAGMA journal_mode=WAL;` 提升并发读性能（SQLite 插件本身不强制设置）。
 
 ### 只读模式

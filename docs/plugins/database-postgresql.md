@@ -7,7 +7,7 @@
 ## 包信息
 
 - **包 ID**: `database.postgresql`
-- **接口**: [`shield.database.v1`](/plugin-system#interface-model)
+- **接口**: [`shield.database.v1`](/plugin-system#interface-model)、[`shield.pool.stats.v1`](/plugin-pool-stats)
 - **Capabilities**: `sql`, `transactions`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_DB_PLUGIN_POSTGRESQL`
@@ -44,7 +44,7 @@ cmake --build build
 | `connect_timeout_ms` | integer | 否 | `5000` | 连接超时（秒级精度，libpq 的 `connect_timeout` 单位是秒），范围 100-60000。池耗尽时等待归还的时长也复用该值。 |
 | `query_timeout_ms` | integer | 否 | `5000` | 单条 SQL 超时，范围 100-300000。 |
 | `pool_size` | integer | 否 | `4` | 每实例连接池容量，范围 1-256。 |
-| `async` | boolean | 否 | `true` | `query` / `query_one` / `execute` 走实例 worker 池异步执行（连接 acquire 也在 worker 上）：协程内调用挂起等待完成，同 service 其他消息继续处理。设为 `false` 退回同步入口（调用即阻塞到 SQL 结束）。见 docs/db-async-design.md。 |
+| `async` | boolean | 否 | `true` | `query` / `query_one` / `execute` / `transaction` 走实例 worker 池异步执行（连接 acquire 与 BEGIN 也在 worker 上）：协程内调用挂起等待完成，同 service 其他消息继续处理；事务 body 内的语句挂在被持有的那条连接上，跑在事务专用串行 lane。设为 `false` 退回同步入口（调用即阻塞到 SQL 结束）。见 [DB 异步入口](/db-async-design)。 |
 | `call_timeout_ms` | integer | 否 | `0` | 异步入口的调用方挂起预算。`0` 表示 `query_timeout_ms + 500`。超时返回 `{code="timeout", retryable=true}`；迟到的真实结果会被丢弃（不投递），不会覆盖超时结果。范围 0-300000。 |
 
 ### 完整 app.yaml 示例
@@ -210,14 +210,17 @@ local ok, row = db:query_one(
     { player_id })
 
 local ok, err = db:transaction(function(tx)
-    tx:execute("UPDATE wallet SET gold = gold - ? WHERE player_id = ?",
-               { amount, pid })
+    local ok2, r = tx:execute(
+        "UPDATE wallet SET gold = gold - ? WHERE player_id = ?",
+        { amount, pid })
+    if not ok2 then return false, r end  -- 首返回值 false → ROLLBACK
     tx:execute("INSERT INTO logs(uid, action) VALUES(?, ?)",
                { pid, "debit" })
+    return true, r.affected              -- → COMMIT，值透传给外层
 end)
 ```
 
-具体 API 契约见 [Lua API](/lua-api)。
+具体 API 契约见 [Lua API](/lua-api) 的 Database（SQL）一节。协程派发内这些调用默认异步挂起（`async` 开关），返回形状与同步路径一致；异步事务挂起期间独占一条池连接（`/ops/metrics` 的 `shield_plugin_db_holding`），body 内只允许 `tx:` 的 SQL 方法（池级调用会被运行时 raise）。
 
 ## 平台特性
 
@@ -227,10 +230,16 @@ end)
 
 ### LISTEN / NOTIFY（未支持）
 
-PostgreSQL 提供 `LISTEN/NOTIFY` 实现进程间通知，但本插件基于 `PQexec` 同步执行，**没有实现**异步监听。如果业务需要 NOTIFY，可以：
+PostgreSQL 提供 `LISTEN/NOTIFY` 实现进程间通知，但本插件的执行模型是 `PQexec` 阻塞调用（异步入口只是把它挪到 worker 线程上），**没有实现**事件循环式的通知监听。如果业务需要 NOTIFY，可以：
 
 - 单独建一个长连接，用 `PQexec` 发 `LISTEN channel`，然后用业务自己的循环调用 `PQconsumeInput` + `PQnotifies` 轮询。
 - 等待后续 v1.x 在 `shield.queue.v1` 之上提供 PostgreSQL NOTIFY 适配。
+
+### 连接池与 worker 池
+
+Lua 路径（`shield.database.postgresql(binding)` 的 proxy 方法）的连接池在**插件实例内部自治**：free-list + `pool_size`（容量）+ 池耗尽时按 `connect_timeout_ms` 等待归还；取出的连接经 lazy health check（`PQstatus`），坏连接 `PQfinish` 丢弃、下次 acquire 补新。`async` 开启时另有一组 worker 线程（数量 = min(`pool_size`, 8)，首用懒建）承接 acquire 与语句执行；异步事务的语句/提交/回滚跑在单条串行 tx lane 上。C vtable 路径仍是 per-call `connect`/`disconnect`，不走池也不走 worker。
+
+池与异步入口的实时指标经 [`shield.pool.stats.v1`](/plugin-pool-stats) 上报，`/ops/metrics` 导出 `shield_plugin_pool_*` 与 `shield_plugin_db_pending_async` / `shield_plugin_db_holding`。
 
 ### SSL
 
@@ -283,19 +292,16 @@ plugins/database.postgresql/
 
 ### 运行时依赖
 
-| 平台 | 依赖 |
-|------|------|
-| Windows | `libpq.dll` 及其传递依赖（OpenSSL 等） |
-| Linux | `libpq.so.5`、`libssl`、`libcrypto` |
-| macOS | `libpq.dylib`（可通过 Postgres.app 或 vcpkg 提供） |
+| 平台 | 驱动形态 |
+|------|----------|
+| 全平台 | vcpkg 端口 `libpq` 以**静态库**链接进插件产物（Linux 为 `libpq.a`，`ldd libshield_db_pgsql.so` 只剩系统库），运行时不需要随包驱动 DLL/SO |
 
-Linux 下 `libpq` 通常作为系统包提供（`apt install libpq5` 或 `yum install postgresql-libs`），但建议使用 vcpkg 版本以确保与编译时头文件一致。
+启用 `database-postgresql` feature 时 vcpkg manifest mode 自动处理构建期依赖与链接，部署目录里只有插件本身。
 
 ### 跨平台注意事项
 
-- Windows 下 PostgreSQL 官方提供的安装包与 vcpkg 构建的 libpq 可能 ABI 不一致，不要混用。
+- 驱动统一走 vcpkg 构建（静态链接），不与系统包/Postgres.app 的动态 libpq 混用，避免构建期头库不一致。
 - 容器化部署时，确保 PostgreSQL 客户端证书（如使用 SSL 客户端证书认证）挂载到正确路径，libpq 默认读取 `~/.postgresql/`。
-- macOS 上 Postgres.app 自带的 libpq 可以直接使用，但需要把 `/Applications/Postgres.app/Contents/Versions/latest/lib` 加入库搜索路径，建议改用 vcpkg 简化。
 
 ## 相关链接
 

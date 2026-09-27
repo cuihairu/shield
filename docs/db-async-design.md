@@ -1,7 +1,9 @@
-# DB 异步 ABI 立项（协程恢复式异步入口）
+# DB 异步入口（协程恢复式）
 
-> 状态：**立项草案，未实现**。本文是 DB 异步路径的唯一设计依据；在对应
-> 里程碑落地前，[DB 使用纪律](db-discipline.md)仍是硬规则。来源：
+> 状态：**已实现（M1–M4 全部落地）**。本文是 DB 异步路径的设计依据，
+> 里程碑状态见文末；[DB 使用纪律](db-discipline.md)已按「兼容与迁移」一节的
+> 计划完成降级（规则 1/2 → 推荐，3–6 仍硬）。Lua 面的权威使用契约在
+> [Lua API](lua-api.md) 的 Database（SQL）一节。来源：
 > [架构评审](architecture-review.md) §4 的【高】风险结论——
 > `shield.database.v1` 全同步阻塞，慢查询卡死发起 service 的整个 VM；
 > 评审建议两步走的第 (b) 步。
@@ -99,18 +101,30 @@ end
 |------|------|
 | 协程 dispatch 内调用 | 挂起协程，SQL 进 worker 池，actor 线程继续处理后续消息；结果按完成顺序恢复（不保序跨调用） |
 | 非协程上下文 | 同步执行（现状语义），阻塞调用线程 |
-| 调用方超时 | `suspend` 的 timeout 触发 → 协程以 `db_timeout` 类错误恢复；**不是取消**——worker 里阻塞的原生调用继续跑到驱动返回（见下条） |
+| 调用方超时 | `suspend` 的 timeout 触发 → 协程恢复为 `false, { code = "timeout", retryable = true }`；**不是取消**——worker 里阻塞的原生调用继续跑到驱动返回（见下条） |
 | 超时后 worker 完成 | resume 返回"session 不存在"→ worker **毒化连接**（销毁不回池，与 vtable transport-error 纪律一致），记 WARNING |
 | service 在途退出 | drain 窗口内未完成的 session 按现有 shield.call 退出语义完成（失败恢复）；worker 任务照常跑完，连接正常回收 |
-| 停机 | 插件 shutdown 先关 worker 池入队口、drain 在途任务，再关连接池 |
+| 停机 | 插件 shutdown 先关 worker 池入队口、drain 在途任务与未结束事务（ROLLBACK 后释放），再关连接池 |
 
 ### 事务
 
 `transaction` 的异步形态纳入本设计，附带一条硬规则：**tx body 内除
-tx proxy 的 SQL 方法外不允许任何让出**（禁止 `shield.call` / `sleep` /
-客户端 RPC）。tx proxy 只暴露 `query` / `execute`，业务拿不到其他可让出
-API，连接持有时长 = 各条 SQL 往返之和，由单条超时封顶；`pool.holding`
-gauge 暴露持有水位。违反规则的写法在评审层打回（纪律文档同步）。
+tx proxy 的 SQL 方法外不允许任何让出**。落地形状：
+
+- tx proxy 暴露 `query` / `query_one` / `execute` 三个 SQL 方法——比原
+  设计多一个 `query_one`，为的是与池入口方法集对称（池入口能做的 SQL
+  读写在 body 内都能做），它同样只是 SQL，不扩大让出面。业务拿不到
+  其他可让出 API，连接持有时长 = 各条 SQL 往返之和，由单条超时封顶。
+- 硬规则的**运行时牙齿**：body 内从同一协程调池级
+  `db:query` / `db:query_one` / `db:execute` 或嵌套 `db:transaction`
+  立即 raise（VM 级弱键协程标记，见 shim）。`shield.call` / `sleep` /
+  客户端 RPC 挡不住所有函数引用，仍是**评审层**打回（纪律文档同步）。
+- 调用方超时不泄漏连接：插件自动把 ROLLBACK 排进该事务的串行队列。
+  token 绑定的任务（body 语句 / COMMIT / ROLLBACK）跑在**单条 tx lane
+  线程**上保证同连接串行；BEGIN 与池语句留在通用 worker——否则池被
+  持有耗尽时，一个 `acquire` 挂在 lane 前会饿死其他事务的 COMMIT。
+- `pool.holding` gauge 暴露持有水位（`/ops/metrics`
+  `shield_plugin_db_holding`）。
 
 ### 超时配置
 
@@ -122,9 +136,10 @@ gauge 暴露持有水位。违反规则的写法在评审层打回（纪律文�
 
 ## 观测
 
-- 复用 `shield.pool.stats.v1`（池容量/使用/等待已有），新增实例级
-  `pending_async`（在途异步调用数）与 `pool.holding`（事务连接持有数）
-  两个 gauge，进 `/ops/metrics`。
+- 复用 `shield.pool.stats.v1`（池容量/使用/等待已有），尾部追加实例级
+  `pending_async`（在途异步调用数）与 `holding`（事务连接持有数）
+  两个 gauge，已进 `/ops/metrics`（`shield_plugin_db_pending_async` /
+  `shield_plugin_db_holding`，见 [Plugin Pool Stats](plugin-pool-stats.md)）。
 - 复用 `SlowCallRing`（shield.call 慢调用环），tag 用 `db:<driver>:<method>`，
   慢 SQL 与慢 call 同一观测口径。
 
@@ -136,9 +151,10 @@ gauge 暴露持有水位。违反规则的写法在评审层打回（纪律文�
   既有脚本在协程 dispatch 内从"阻塞 VM"透明变为"挂起协程"——对正确代码
   不可见，收益是该 service 的其他消息不再排队。逃生口：实例 config
   `async: false` 一键退回全同步（灰度/排障用）。
-- 落地后 [DB 使用纪律](db-discipline.md)降级：规则 1/2（专职 service 隔离）
-  从"硬规则"变"推荐"，规则 3-5（超时、池匹配、热点读不走 DB）对同步与
-  异步路径都继续强制。
+- 落地后 [DB 使用纪律](db-discipline.md)已按本条降级：规则 1/2（专职
+  service 隔离）从"硬规则"变"推荐"，规则 3–5（超时、池匹配、热点读不走
+  DB）对同步与异步路径都继续强制，另补规则 6（事务 body 硬规则，运行时
+  强制池级调用、评审强制 `shield.call`/`sleep`）。
 
 ## 非目标
 
@@ -148,25 +164,26 @@ gauge 暴露持有水位。违反规则的写法在评审层打回（纪律文�
 
 ## 里程碑
 
-| 阶段 | 交付 | 验收 |
-|------|------|------|
-| M1 host 原语 | `lua_suspend_current` / `lua_resume_session` + 假插件单测（挂起/恢复/超时/双 completion 拒绝/service 退出） | 全部路径有测试；yield 窗口竞态复用 shield.call 既有守卫不新增 |
-| M2 sqlite 端到端 | sqlite 插件 Lua shim + worker 池；actor 级真查询 round-trip 测试（补上现状缺口：当前无任何 db:query 穿 actor 的测试） | 协程内挂起期间同 service 可处理其他消息（时序断言）；超时毒化连接；`async: false` 退回同步 |
-| M3 mysql/postgresql | 两驱动接入（连接池跨协程持有的审计） | 池耗尽时挂起而非阻塞 actor（acquire 移入 worker） |
-| M4 收口 | tx 异步形态 + `pending_async`/`pool.holding` 指标 + 三文档更新（lua-api.md 契约、runtime-data.md、db-discipline.md 降级） | CI Coverage 全绿；文档口径一致 |
+| 阶段 | 交付 | 验收 | 状态 |
+|------|------|------|------|
+| M1 host 原语 | `lua_suspend_current` / `lua_resume_session` + 假插件单测（挂起/恢复/超时/双 completion 拒绝/service 退出） | 全部路径有测试；yield 窗口竞态复用 shield.call 既有守卫不新增 | ✅ `dc2700a` |
+| M2 sqlite 端到端 | sqlite 插件 Lua shim + worker 池；actor 级真查询 round-trip 测试（补上现状缺口：当前无任何 db:query 穿 actor 的测试） | 协程内挂起期间同 service 可处理其他消息（时序断言）；超时毒化连接；`async: false` 退回同步 | ✅ `46634f5` |
+| M3 mysql/postgresql | 两驱动接入（连接池跨协程持有的审计） | 池耗尽时挂起而非阻塞 actor（acquire 移入 worker） | ✅ `d2b68ef` |
+| M4 收口 | tx 异步形态 + `pending_async`/`pool.holding` 指标 + 三文档更新（lua-api.md 契约、runtime-data.md、db-discipline.md 降级） | CI Coverage 全绿；文档口径一致 | ✅ |
 
-## 未决问题
+## 未决问题（落地时定稿）
 
-1. M1 期 spike：插件自带 Lua shim 的加载时机与 `__db_submit` 的注册方式
-   （`lua_add_path` + `require` vs register_lua 内联 script）——两者皆可行，
-   M2 定稿。
-2. `async: false` 灰度键是否需要 service 级粒度（实例级够用的可能性大）。
-3. M3 期确认 libmariadb/libpq 是否有值得用的非阻塞 API（有的话 worker 池
-   可减线程，但接口语义不变，不阻塞本设计）。
+1. **shim 形态**：M2 定稿为**编译期内联**——共享 C++ 头
+   `plugins/_shared/shield_db_async_shim.hpp` 里的 Lua 字符串常量，proxy
+   创建时 `lua.load` 执行；不走 `lua_add_path` + `require` 文件方案。
+   三驱动 `#include` 同一头文件，物理上无法漂移。
+2. **`async: false` 粒度**：实例级够用，未做 service 级键。
+3. **非阻塞驱动 API**：未采用——worker 仍阻塞式调用原生驱动，接口语义
+   不变；libmariadb/libpq 的非阻塞路径留作后续减线程优化，另立项。
 
 ## 相关文档
 
-- [DB 使用纪律](db-discipline.md) —— 同步路径硬规则；本设计落地后降级口径见「兼容与迁移」。
+- [DB 使用纪律](db-discipline.md) —— 已按「兼容与迁移」降级后的使用纪律（同步回退路径仍全文适用）。
 - [数据访问架构](runtime-data.md) —— 插件自治边界、binding 语义、接口分类。
 - [插件系统 v1](plugin-system.md) —— host_api、register_lua、ABI 稳定性规则。
 - [运行时语义：定时器与任务](runtime-service.md) —— 协程化 dispatch 与 shield.call 机器。

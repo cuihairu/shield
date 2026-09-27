@@ -45,13 +45,23 @@ bool config_true(minimal_instance* inst, const char* key) {
 // "stats_vtable_short" / "stats_no_fn" serve structurally invalid vtables
 // (collect_pool_stats must skip them); "stats_vtable_null" makes
 // get_interface return NULL (start must fail when the manifest declares the
-// interface).
+// interface); "stats_legacy_no_pool" serves the sqlite async shape: pool
+// gauges left at the -1 sentinel, async gauges real.
 int minimal_pool_get_stats(struct shield_plugin_instance_v1* self,
                            struct shield_pool_stats* out) {
     auto* inst = reinterpret_cast<minimal_instance*>(self);
     if (!out) return -1;
     if (config_true(inst, "stats_unavailable")) {
         return 1;  // unavailable
+    }
+    if (config_true(inst, "stats_legacy_no_pool")) {
+        out->max_size = -1;
+        out->size = -1;
+        out->idle = -1;
+        out->in_use = -1;
+        out->pending_async = 1;
+        out->holding = 1;
+        return 0;
     }
     if (config_true(inst, "stats_unsupported")) {
         return 2;  // unsupported_state

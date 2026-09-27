@@ -325,6 +325,19 @@ void lua_str(LuaServiceManager& manager, LuaRuntime& runtime,
     }
 }
 
+// Find one instance's pool-stats sample (nullptr when not collected). The
+// returned pointer is only valid until the next call — callers re-poll.
+const shield::plugin::PoolStatsResult* find_pool_stats(
+    const std::string& instance_id) {
+    static std::vector<shield::plugin::PoolStatsResult> scratch;
+    scratch.clear();
+    shield::plugin::global_host().collect_pool_stats(scratch);
+    for (const auto& r : scratch) {
+        if (r.instance_id == instance_id) return &r;
+    }
+    return nullptr;
+}
+
 // A coroutine parked inside the plugin shim, plus its cleanup plumbing.
 struct ParkedCall {
     std::atomic<bool> parked{false};
@@ -378,17 +391,45 @@ std::string query_body(const std::string& slot) {
            "end\n";
 }
 
-// Run `db:query(sql)` in a fresh coroutine on the service actor. Returns as
-// soon as the coroutine has yielded into the shim (or fallen back to sync).
-// binding and sql are copied by value: the task outlives this frame.
-void park_query(LuaServiceManager& manager, LuaRuntime& runtime,
-                const std::string& service_id, const char* ns,
-                const std::string& binding, const std::string& sql,
-                const std::string& slot, ParkedCall& out) {
+// The M4 transaction probe body: db:transaction over the __tx_* protocol.
+// Against the silent peer __tx_begin never completes, so the body must never
+// run — the outcome table distinguishes a begin failure from a body failure.
+std::string tx_begin_body(const std::string& slot) {
+    return "local db, sql = ...\n"
+           "_G." +
+           slot +
+           " = nil\n"
+           "_G." +
+           slot +
+           "_body_ran = nil\n"
+           "local ok, err = db:transaction(function(tx)\n"
+           "    _G." +
+           slot +
+           "_body_ran = true\n"
+           "    return true\n"
+           "end)\n"
+           "if ok then\n"
+           "    _G." +
+           slot +
+           " = {ok = true}\n"
+           "else\n"
+           "    _G." +
+           slot +
+           " = {ok = false, code = err and err.code or nil}\n"
+           "end\n";
+}
+
+// Run `body` (a chunk taking (db, sql) as varargs) in a fresh coroutine on
+// the service actor. Returns as soon as the coroutine has yielded into the
+// shim (or fallen back to sync). binding, body and sql are copied by value:
+// the task outlives this frame.
+void park_body(LuaServiceManager& manager, LuaRuntime& runtime,
+               const std::string& service_id, const char* ns,
+               const std::string& binding, const std::string& body,
+               const std::string& sql, ParkedCall& out) {
     const std::string sid = service_id;
     const std::string b = binding;
     const std::string q = sql;
-    const std::string body = query_body(slot);
     (void)manager.enqueue_forked_task(sid, [&, sid, ns, b, q, body] {
         g_park_error.clear();  // diagnostics report THIS park, not a stale one
         auto vm = manager.service_vm(sid);
@@ -442,6 +483,15 @@ void park_query(LuaServiceManager& manager, LuaRuntime& runtime,
         }
         out.parked = true;
     });
+}
+
+// Run `db:query(sql)` in a parked coroutine (the M3 probe body).
+void park_query(LuaServiceManager& manager, LuaRuntime& runtime,
+                const std::string& service_id, const char* ns,
+                const std::string& binding, const std::string& sql,
+                const std::string& slot, ParkedCall& out) {
+    park_body(manager, runtime, service_id, ns, binding, query_body(slot), sql,
+              out);
 }
 
 void unref_parked(LuaServiceManager& manager, LuaRuntime& runtime,
@@ -671,6 +721,137 @@ void AsyncFalseRunsSynchronouslyInsideCoroutineImpl(const char* ns,
                          "type(_G.__db_out.code) == 'string'"));
 }
 
+// ---------------------------------------------------------------------------
+// M4: the async transaction's begin rides the worker path too. Against the
+// silent peer __tx_begin's acquire+connect stalls, the caller parks inside
+// the shim, the actor stays responsive, and the driver's eventual failure
+// surfaces through db:transaction as (false, {code=...}) — with the body
+// never having run (no token, no body execution).
+// ---------------------------------------------------------------------------
+
+void TxBeginFailureRoundTripImpl(const char* ns, const char* prefix) {
+    if (!ensure_net_host().api) {
+        BOOST_TEST_MESSAGE("net plugin fixture unavailable; skipping");
+        return;
+    }
+
+    ServiceFixture fx(std::string(prefix) + "_net_tx");
+    const std::string binding = std::string(prefix) + ".long";
+
+    ParkedCall call;
+    park_body(fx.manager, fx.runtime, fx.service_id, ns, binding,
+              tx_begin_body("__tx_out"), "SELECT 1 AS v", call);
+    BOOST_CHECK(wait_until([&] { return call.parked || call.failed; },
+                           std::chrono::milliseconds(5000)));
+    BOOST_TEST_MESSAGE("park error: " << g_park_error);
+    BOOST_REQUIRE(call.parked.load());
+
+    std::atomic<bool> side_ran{false};
+    fx.manager.enqueue_forked_task(fx.service_id, [&] { side_ran = true; });
+
+    BOOST_REQUIRE(wait_until_lua(
+        fx.manager, fx.runtime, fx.service_id,
+        "type(_G.__tx_out) == 'table' and _G.__tx_out.ok == false and "
+        "type(_G.__tx_out.code) == 'string' and _G.__tx_out.code ~= ''",
+        std::chrono::milliseconds(20000)));
+    BOOST_CHECK(side_ran.load());
+    // Begin failed before any token existed — the body never ran.
+    BOOST_CHECK(lua_bool(fx.manager, fx.runtime, fx.service_id,
+                         "_G.__tx_out_body_ran == nil"));
+
+    unref_parked(fx.manager, fx.runtime, fx.service_id, call);
+}
+
+// ---------------------------------------------------------------------------
+// M4 gauges: while a tx begin is stalled on the connect the instance reports
+// pending_async >= 1 and holding == 0 (nothing held — begin hasn't
+// succeeded); after the failure drains, pending_async returns to 0.
+// ---------------------------------------------------------------------------
+
+void TxGaugesPendingAsyncWhileParkedImpl(const char* ns, const char* prefix) {
+    if (!ensure_net_host().api) {
+        BOOST_TEST_MESSAGE("net plugin fixture unavailable; skipping");
+        return;
+    }
+
+    ServiceFixture fx(std::string(prefix) + "_net_tx_gauge");
+    const std::string binding = std::string(prefix) + ".long";
+    const std::string instance = std::string(prefix) + "_long";
+
+    ParkedCall call;
+    park_body(fx.manager, fx.runtime, fx.service_id, ns, binding,
+              tx_begin_body("__tx_out"), "SELECT 1 AS v", call);
+    BOOST_CHECK(wait_until([&] { return call.parked || call.failed; },
+                           std::chrono::milliseconds(5000)));
+    BOOST_REQUIRE(call.parked.load());
+
+    BOOST_CHECK(wait_until(
+        [&] {
+            const auto* s = find_pool_stats(instance);
+            return s && s->status == shield::plugin::PoolStatsStatus::ok &&
+                   s->stats.pending_async >= 1 && s->stats.holding == 0;
+        },
+        std::chrono::milliseconds(5000)));
+
+    BOOST_REQUIRE(wait_until_lua(
+        fx.manager, fx.runtime, fx.service_id,
+        "type(_G.__tx_out) == 'table' and _G.__tx_out.ok == false",
+        std::chrono::milliseconds(20000)));
+    BOOST_CHECK(wait_until(
+        [&] {
+            const auto* s = find_pool_stats(instance);
+            return s && s->stats.pending_async == 0 && s->stats.holding == 0;
+        },
+        std::chrono::milliseconds(5000)));
+
+    unref_parked(fx.manager, fx.runtime, fx.service_id, call);
+}
+
+// ---------------------------------------------------------------------------
+// M4 caller timeout on the tx begin: the 150ms budget expires while the
+// connect still stalls; db:transaction surfaces the timeout error (the body
+// never ran), and the late driver failure's completion is rejected — after
+// the driver gives up, pending_async drains back to 0 with no held tx.
+// ---------------------------------------------------------------------------
+
+void TxCallerTimeoutRejectedBeginImpl(const char* ns, const char* prefix) {
+    if (!ensure_net_host().api) {
+        BOOST_TEST_MESSAGE("net plugin fixture unavailable; skipping");
+        return;
+    }
+
+    ServiceFixture fx(std::string(prefix) + "_net_tx_to");
+    const std::string binding = std::string(prefix) + ".short";
+    const std::string instance = std::string(prefix) + "_short";
+
+    ParkedCall call;
+    park_body(fx.manager, fx.runtime, fx.service_id, ns, binding,
+              tx_begin_body("__tx_out"), "SELECT 1 AS v", call);
+    BOOST_CHECK(wait_until([&] { return call.parked || call.failed; },
+                           std::chrono::milliseconds(5000)));
+    BOOST_REQUIRE(call.parked.load());
+
+    BOOST_REQUIRE(wait_until_lua(fx.manager, fx.runtime, fx.service_id,
+                                 "type(_G.__tx_out) == 'table' and "
+                                 "_G.__tx_out.ok == false and "
+                                 "_G.__tx_out.code == 'timeout'",
+                                 std::chrono::milliseconds(5000)));
+    BOOST_CHECK(lua_bool(fx.manager, fx.runtime, fx.service_id,
+                         "_G.__tx_out_body_ran == nil"));
+
+    // 8s covers the slowest driver give-up in the fixture (6s); the rejected
+    // begin completion needs no token cleanup, so the gauges just drain.
+    std::this_thread::sleep_for(std::chrono::milliseconds(8000));
+    BOOST_CHECK(wait_until(
+        [&] {
+            const auto* s = find_pool_stats(instance);
+            return s && s->stats.pending_async == 0 && s->stats.holding == 0;
+        },
+        std::chrono::milliseconds(5000)));
+
+    unref_parked(fx.manager, fx.runtime, fx.service_id, call);
+}
+
 #ifdef SHIELD_NET_MYSQL_LIBRARY
 constexpr const char* kMysqlNs = "shield.database.mysql";
 constexpr const char* kMysqlPrefix = "mysql";
@@ -686,6 +867,15 @@ BOOST_AUTO_TEST_CASE(MysqlPoolExhaustionSuspendsCallers) {
 }
 BOOST_AUTO_TEST_CASE(MysqlAsyncFalseRunsSynchronouslyInsideCoroutine) {
     AsyncFalseRunsSynchronouslyInsideCoroutineImpl(kMysqlNs, kMysqlPrefix);
+}
+BOOST_AUTO_TEST_CASE(MysqlTxBeginFailureRoundTrip) {
+    TxBeginFailureRoundTripImpl(kMysqlNs, kMysqlPrefix);
+}
+BOOST_AUTO_TEST_CASE(MysqlTxGaugesPendingAsyncWhileParked) {
+    TxGaugesPendingAsyncWhileParkedImpl(kMysqlNs, kMysqlPrefix);
+}
+BOOST_AUTO_TEST_CASE(MysqlTxCallerTimeoutRejectedBegin) {
+    TxCallerTimeoutRejectedBeginImpl(kMysqlNs, kMysqlPrefix);
 }
 #endif  // SHIELD_NET_MYSQL_LIBRARY
 
@@ -704,6 +894,15 @@ BOOST_AUTO_TEST_CASE(PostgresqlPoolExhaustionSuspendsCallers) {
 }
 BOOST_AUTO_TEST_CASE(PostgresqlAsyncFalseRunsSynchronouslyInsideCoroutine) {
     AsyncFalseRunsSynchronouslyInsideCoroutineImpl(kPgNs, kPgPrefix);
+}
+BOOST_AUTO_TEST_CASE(PostgresqlTxBeginFailureRoundTrip) {
+    TxBeginFailureRoundTripImpl(kPgNs, kPgPrefix);
+}
+BOOST_AUTO_TEST_CASE(PostgresqlTxGaugesPendingAsyncWhileParked) {
+    TxGaugesPendingAsyncWhileParkedImpl(kPgNs, kPgPrefix);
+}
+BOOST_AUTO_TEST_CASE(PostgresqlTxCallerTimeoutRejectedBegin) {
+    TxCallerTimeoutRejectedBeginImpl(kPgNs, kPgPrefix);
 }
 #endif  // SHIELD_NET_PGSQL_LIBRARY
 

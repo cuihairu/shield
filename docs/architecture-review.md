@@ -109,8 +109,9 @@ connect/disconnect/ping/query/execute/begin/commit/rollback/free_result）。
   (a) 立即在文档写明使用纪律 + 示例（把 DB 封装进专职 service，业务经
   shield.call 访问）；(b) Phase 2 给 ABI 加异步入口（callback 或 future +
   协程恢复）**。这不是重构，是补一个已知缺口。(a) 已完成（
-  [DB 使用纪律](db-discipline.md)）；(b) 已立项（
-  [DB 异步 ABI 立项](db-async-design.md)，协程恢复式，未实现）。
+  [DB 使用纪律](db-discipline.md)）；(b) 已落地（
+  [DB 异步入口](db-async-design.md)，协程恢复式，M1–M4；纪律文档已按落地
+  计划同步降级——Lua 面不再全同步，C vtable 保持同步原语不变）。
 
 ## 5. 定时器与任务调度
 
@@ -209,7 +210,7 @@ API 先稳定、后换分布式后端，顺序正确。风险仅在预期管理�
 1. 安全默认值：max_frame_size 默认无限（本轮修）；TCP_NODELAY（本轮修）；
    连接限流 + 地址黑名单（本轮修，见 §2 已解决项）
 2. sandbox 开关声明未实现（本轮修——产品诚实性）
-3. DB 异步路径（纪律文档已落地；[异步入口已立项](db-async-design.md)，实现待排期）
+3. DB 异步路径（已落地：纪律文档 + [协程恢复式异步入口](db-async-design.md) M1–M4）
 4. 热更新 blue-green 落地（P2 另立项）
 5. net.threads 默认值与调优文档（本轮文档带出）
 
@@ -219,7 +220,7 @@ API 先稳定、后换分布式后端，顺序正确。风险仅在预期管理�
 | --- | --- | --- |
 | 本轮 P0 | 安全默认值（frame 上限/NODELAY）+ sandbox 开关实现 + 默认配置可观测 + 模板工程 + 上手路径线性化（详见 product-gap.md） | 全部是小改动大收益的"默认值/诚实性"问题；不动架构骨架 |
 | Phase 1 | DB 使用纪律文档与示例；metrics 口径文档；net.threads 调优指引；限流设计 | 文档与低风险改动为主，先把已知坑标出来 |
-| Phase 2 | DB ABI 异步入口；连接级限流；blue-green 热更新落地；TLS | 各自独立立项，均有既有设计稿或文档位次；按产品反馈排期 |
+| Phase 2 | DB ABI 异步入口（已落地，M1–M4）；连接级限流；blue-green 热更新落地；TLS | 各自独立立项，均有既有设计稿或文档位次；按产品反馈排期 |
 
 **明确不做**（本轮）：改用多进程模型、引入 ORM/事件总线/中间件（已删除方向）、
 把 CAF 暴露给业务、为覆盖率而重构。架构骨架与产品定位当前匹配，评估结论是

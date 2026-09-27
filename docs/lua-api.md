@@ -656,18 +656,42 @@ db_game:query("SELECT * FROM players WHERE id = ?", { pid })
 ```lua
 local db = shield.database.mysql("database.default")
 
--- SQL CRUD
+-- SQL CRUD（协程派发内挂起让位，见"执行模型"）
 local ok, rows   = db:query("SELECT * FROM users WHERE id = ?", { uid })
-local ok, row    = db:query_one("SELECT * FROM users WHERE id = ?", { uid })
+local ok, row    = db:query_one("SELECT * FROM users WHERE id = ?", { uid })  -- 无行时 ok=true, row=nil
 local ok, result = db:execute("UPDATE users SET name = ? WHERE id = ?", { name, uid })
+-- result = { affected = N }（sqlite / mysql 还带 last_insert_id）
 
--- 事务
-local ok, result = db:transaction(function(tx)
-    local ok, updated = tx:execute("UPDATE users SET gold = gold - ? WHERE id = ?", { 10, uid })
-    if not ok then return false, updated end
-    return true, updated
+-- 事务：body 收 tx 句柄；成功时第二个返回值是 body 的首返回值，不是错误表
+local ok, updated = db:transaction(function(tx)
+    local ok2, n = tx:execute("UPDATE users SET gold = gold - ? WHERE id = ?", { 10, uid })
+    if not ok2 then return false, n end  -- 首返回值 false → ROLLBACK
+    return true, n                        -- → COMMIT，n 透传给外层
 end)
 ```
+
+**执行模型**（三驱动一致，机制见 [DB 异步入口](db-async-design.md)）：
+
+| 规则 | 说明 |
+| --- | --- |
+| 异步挂起 | **协程派发内**的 `query` / `query_one` / `execute` / `transaction` 挂起当前协程，SQL（含连接池 acquire）在插件 worker 线程执行，service 继续处理其他消息。`db:query(...)` 冒号与 `db.query(...)` 点号两种调用形状等价 |
+| 同步回退 | 非协程上下文（如 `on_init`）、实例配置 `async: false`、或 host 缺异步原语时，回退为同步内联执行——返回形状不变，但按原语义阻塞 VM |
+| 挂起预算 | 调用方挂起时长上限 = 实例 `call_timeout_ms`（未配置默认 `query_timeout_ms + 500`）；显式配成 ≥ `query_timeout_ms` 时启动告警 |
+| 超时形状 | 预算到期返回 `false, { code = "timeout", retryable = true }`。**超时不等于取消**：worker 上的执行照常结束，迟到完成被丢弃（插件负责回收连接与资源，并发 WARN 日志） |
+| 可观测 | 在途异步调用与事务持连经 `shield.pool.stats.v1` 上报：`/ops/metrics` 的 `shield_plugin_db_pending_async` / `shield_plugin_db_holding` |
+
+**事务契约**：
+
+| 规则 | 说明 |
+| --- | --- |
+| 返回形状 | 成功返回 `true, <body 返回 values...>`（body 无返回值时仅 `true`）；**只有首值为 `false` 时第二值才是 `{code, message}` 错误表** |
+| 显式回滚 | body 首返回值为 `false` → ROLLBACK，`false, { code = "transaction_rolled_back", message = "callback returned false" }` |
+| body 抛错 | body raise → 先 ROLLBACK，`false, { code = "transaction_rolled_back", message = "callback raised an error" }` |
+| COMMIT 失败 | 提交本身失败（死锁、连接断）返回驱动错误码，如 `transaction_aborted` |
+| tx 句柄方法 | `tx:query` / `tx:query_one` / `tx:execute`，返回形状与池入口完全一致，语句跑在本事务持有的那条连接上 |
+| 硬规则（运行时强制） | body 内从同一协程调用**池级** `db:query` / `db:query_one` / `db:execute` 或嵌套 `db:transaction` 立即 raise——异步事务挂起期间独占一条连接，body 内可让出的点必须都有超时硬顶 |
+| 硬规则（评审级） | body 内 `shield.call` / `shield.sleep` 禁止：那会在持连期间引入无界挂起点。运行时挡不住所有函数引用，这条留在代码评审 |
+| 超时回收 | 调用方预算到期时，插件自动把 ROLLBACK 排进该事务的串行队列，连接照常回池；对已终止事务的后续 token 操作返回 `transaction_closed` |
 
 **可用 namespace**：
 

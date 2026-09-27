@@ -378,6 +378,56 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
                         "Plugin instances by lifecycle state", samples);
     }
 
+    // Plugin data pools: gauges collected through the shield.pool.stats.v1
+    // interface. Fields a driver leaves at the -1 "unknown / not applicable"
+    // sentinel are omitted rather than exported (sqlite has no pool, but its
+    // async gauges are real).
+    {
+        std::vector<shield::plugin::PoolStatsResult> pools;
+        shield::plugin::global_host().collect_pool_stats(pools);
+        std::vector<std::pair<std::string, double>> size_samples;
+        std::vector<std::pair<std::string, double>> in_use_samples;
+        std::vector<std::pair<std::string, double>> idle_samples;
+        std::vector<std::pair<std::string, double>> pending_async_samples;
+        std::vector<std::pair<std::string, double>> holding_samples;
+        for (const auto& p : pools) {
+            if (p.status != shield::plugin::PoolStatsStatus::ok) continue;
+            const std::string labels = "plugin=\"" + prom_escape(p.plugin_id) +
+                                       "\",instance=\"" +
+                                       prom_escape(p.instance_id) + "\"";
+            if (p.stats.size >= 0) {
+                size_samples.emplace_back(labels,
+                                          static_cast<double>(p.stats.size));
+                in_use_samples.emplace_back(
+                    labels, static_cast<double>(p.stats.in_use));
+                idle_samples.emplace_back(labels,
+                                          static_cast<double>(p.stats.idle));
+            }
+            if (p.stats.pending_async >= 0) {
+                pending_async_samples.emplace_back(
+                    labels, static_cast<double>(p.stats.pending_async));
+            }
+            if (p.stats.holding >= 0) {
+                holding_samples.emplace_back(
+                    labels, static_cast<double>(p.stats.holding));
+            }
+        }
+        prom_emit_group(out, "shield_plugin_pool_size", "gauge",
+                        "Live connections in the plugin data pool",
+                        size_samples);
+        prom_emit_group(out, "shield_plugin_pool_in_use", "gauge",
+                        "Pool connections currently checked out",
+                        in_use_samples);
+        prom_emit_group(out, "shield_plugin_pool_idle", "gauge",
+                        "Pool connections idle in the free list", idle_samples);
+        prom_emit_group(out, "shield_plugin_db_pending_async", "gauge",
+                        "In-flight async DB calls (queued + running)",
+                        pending_async_samples);
+        prom_emit_group(out, "shield_plugin_db_holding", "gauge",
+                        "Connections held by open async transactions",
+                        holding_samples);
+    }
+
     // Gateway view: accept/rejection/rate-limit counters and active sessions
     // aggregated over every live TCP listener, broken down by listen port.
     {

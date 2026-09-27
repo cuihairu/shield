@@ -62,14 +62,18 @@ Lua 业务 ──shield.database.mysql("database.default"):<method>(...)──�
 
 C ABI 契约见 `include/shield/plugin/database.h`（SQL）；其余接口的 vtable 头在同目录。每个插件在 `manifest.yaml` 的 `provides.interface` 声明自己实现的接口。
 
+## 异步执行模型
+
+SQL 三驱动（mysql / postgresql / sqlite）的 `query` / `query_one` / `execute` / `transaction` 在**协程派发内默认异步**：调用挂起本协程，SQL（含连接池 acquire）在插件 worker 线程上执行，service 继续处理其他消息，actor 不被阻塞。非协程上下文或实例配置 `async: false` 走同步回退（行为与落地前完全一致）。权威契约（超时、错误形状、事务 body 规则）见 [Lua API](lua-api.md) 与 [DB 异步入口](db-async-design.md)；使用纪律见 [DB 使用纪律](db-discipline.md)。
+
 ## 连接池与可观测性
 
-池逻辑归插件，带来高内聚与驱动隔离，但代价是池指标分散。`shield.pool.stats.v1` 是一个**可选实现**的观测接口，让 host 统一采集各插件池快照（容量、使用、等待、生命周期、健康），供 ops/metrics 消费。详见 [Plugin Pool Stats](plugin-pool-stats.md)。
+池逻辑归插件，带来高内聚与驱动隔离，但代价是池指标分散。`shield.pool.stats.v1` 是一个**可选实现**的观测接口，让 host 统一采集各插件池快照（容量、使用、等待、生命周期、健康），`/ops/metrics` 已消费（`shield_plugin_pool_*`）。异步入口又经它尾部追加两个 gauge：`shield_plugin_db_pending_async`（在途异步调用）与 `shield_plugin_db_holding`（打开的事务持有的连接数），mysql / postgresql / sqlite 三驱动均报真实值。详见 [Plugin Pool Stats](plugin-pool-stats.md)。
 
 ## 相关文档
 
 - [Lua API 契约](lua-api.md) —— `shield.<plugin-namespace>(binding)` 各数据插件方法的权威定义。
 - [插件系统 v1](plugin-system.md) —— 插件 ABI、instance、get_interface、register_lua 机制。
 - [Plugin Pool Stats](plugin-pool-stats.md) —— 连接池统一观测接口。
-- [DB 异步 ABI 立项](db-async-design.md) —— 协程恢复式异步入口（草案，未实现）。
+- [DB 异步入口](db-async-design.md) —— 协程恢复式异步入口（已落地）。
 - [插件参考](plugins/index.md) —— 各数据库/Redis 插件的配置与能力。

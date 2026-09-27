@@ -7,7 +7,7 @@
 ## 包信息
 
 - **包 ID**: `database.mysql`
-- **接口**: [`shield.database.v1`](/plugin-system#interface-model)
+- **接口**: [`shield.database.v1`](/plugin-system#interface-model)、[`shield.pool.stats.v1`](/plugin-pool-stats)
 - **Capabilities**: `sql`, `transactions`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_DB_PLUGIN_MYSQL`
@@ -45,7 +45,7 @@ libmariadb 依赖树很小（zlib + openssl），构建与 CI 时长远轻于 my
 | `query_timeout_ms` | integer | 否 | `5000` | 单条 SQL 执行超时，单位毫秒，范围 100-300000。 |
 | `pool_size` | integer | 否 | `4` | 每实例连接池容量，范围 1-64。 |
 | `acquire_timeout_ms` | integer | 否 | `10000` | 池耗尽时等待归还的时长，单位毫秒，范围 100-120000。 |
-| `async` | boolean | 否 | `true` | `query` / `query_one` / `execute` 走实例 worker 池异步执行（连接 acquire 也在 worker 上）：协程内调用挂起等待完成，同 service 其他消息继续处理。设为 `false` 退回同步入口（调用即阻塞到 SQL 结束）。见 docs/db-async-design.md。 |
+| `async` | boolean | 否 | `true` | `query` / `query_one` / `execute` / `transaction` 走实例 worker 池异步执行（连接 acquire 与 BEGIN 也在 worker 上）：协程内调用挂起等待完成，同 service 其他消息继续处理；事务 body 内的语句挂在被持有的那条连接上，跑在事务专用串行 lane。设为 `false` 退回同步入口（调用即阻塞到 SQL 结束）。见 [DB 异步入口](/db-async-design)。 |
 | `call_timeout_ms` | integer | 否 | `0` | 异步入口的调用方挂起预算。`0` 表示 `query_timeout_ms + 500`。超时返回 `{code="timeout", retryable=true}`；迟到的真实结果会被丢弃（不投递），不会覆盖超时结果。范围 0-300000。 |
 
 ### 完整 app.yaml 示例
@@ -61,7 +61,7 @@ plugins:
       required: true
       config:
         host: "10.0.0.10"
-        port: 33060
+        port: 3306
         database: "game"
         username: "shield_app"
         password: "${DB_MAIN_PASSWORD}"
@@ -72,7 +72,7 @@ plugins:
       required: false
       config:
         host: "10.0.0.11"
-        port: 33060
+        port: 3306
         database: "audit"
         username: "shield_audit"
         password: "${DB_AUDIT_PASSWORD}"
@@ -159,7 +159,7 @@ if (!db) return;
 
 shield_db_connect_args args{};
 args.host = "10.0.0.10";
-args.port = 33060;
+args.port = 3306;
 args.user = "shield_app";
 args.password = std::getenv("DB_MAIN_PASSWORD");
 args.database = "game";
@@ -203,33 +203,31 @@ local ok, rows = db:query(
     "SELECT player_id, nickname FROM players WHERE level > ?",
     { 10 })
 local ok, err = db:transaction(function(tx)
-    tx:execute("UPDATE wallet SET gold = gold - ? WHERE player_id = ?",
-               { amount, pid })
+    local ok2, r = tx:execute(
+        "UPDATE wallet SET gold = gold - ? WHERE player_id = ?",
+        { amount, pid })
+    if not ok2 then return false, r end  -- 首返回值 false → ROLLBACK
     tx:execute("INSERT INTO logs(uid, action) VALUES(?, ?)",
                { pid, "debit" })
+    return true, r.affected              -- → COMMIT，值透传给外层
 end)
 ```
 
-具体 API 契约见 [Lua API](/lua-api)。
+具体 API 契约见 [Lua API](/lua-api) 的 Database（SQL）一节。协程派发内这些调用默认异步挂起（`async` 开关），返回形状与同步路径一致。
 
 ## 平台特性
 
-### X Protocol vs 经典协议
+### 协议选择：经典 MySQL 协议
 
-MySQL Connector/C++ 同时支持经典协议和 X Protocol，但 **Shield 的 MySQL 插件当前只使用 X DevAPI**（即 `mysqlx::Session`），对应 X Protocol（默认端口 33060）。原因：
+插件基于 **libmariadb 的经典 MySQL 协议客户端**（`mysql_*` / `mysql_stmt_*` C API，默认端口 3306），不是 X DevAPI / X Protocol：
 
-- X DevAPI 的参数绑定、流式 result set、CRUD API 更现代化。
-- `getAutoIncrementValue()` 等 API 直接可用，不需要再发额外 SQL。
-
-业务部署时需要：
-
-- 在 `my.cnf` 启用 `mysqlx` 插件（MySQL 8.0+ 默认启用）。
-- 开放 `mysqlx_port`（默认 33060）。
-- 用户账号需要有 X Protocol 权限。
+- 经典协议同时被 MySQL 与 MariaDB 服务器支持，一份客户端两种服务端。
+- 所有 SQL 走二进制协议的 prepared statement（`mysql_stmt_*`），`?` 参数是绑定进去的，不做字符串拼接。
+- 不需要在 `my.cnf` 启用 `mysqlx` 插件，也不需要 X Protocol 权限；打通 3306（或实例配置的 `port`）即可。
 
 ### 连接字符集
 
-X DevAPI 在握手阶段协商字符集。建议 MySQL 服务端配置 `utf8mb4` 作为默认字符集：
+插件在建连时强制客户端字符集 `utf8mb4`（`MYSQL_SET_CHARSET_NAME`）。建议 MySQL 服务端也配置 `utf8mb4` 作为默认字符集：
 
 ```ini
 [mysqld]
@@ -237,31 +235,30 @@ character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
 ```
 
-插件当前不暴露客户端字符集覆盖选项——业务侧如果需要特殊字符集，可以通过 `SET NAMES` 显式设置。
+插件不暴露客户端字符集覆盖选项——业务侧如果需要特殊字符集，可以通过 `SET NAMES` 显式设置。
 
 ### SSL 选项
 
-当前 v1 ABI 没有暴露 SSL 选项字段。如果业务需要 SSL 连接，建议：
+libmariadb 支持 `MYSQL_OPT_SSL_*` 系列选项，但当前插件实例 config 未暴露 SSL 字段（v1 ABI 的 `shield_db_connect_args.extra_json` 也不解析）。需要加密链路时，现阶段可在服务端前置 TLS 代理（如 stunnel / 云厂 SSL 终结），或等后续把 SSL 选项加进实例 config。
 
-- 在 MySQL 服务端强制 SSL（`REQUIRE SSL`）。
-- 等待后续 v1.x 扩展 `shield_db_connect_args.extra_json` 支持 SSL 配置。
+### 连接池与 worker 池
 
-### 连接池
+Lua 路径（`shield.database.mysql(binding)` 的 proxy 方法）的连接池在**插件实例内部自治**：free-list + `pool_size`（容量）+ `acquire_timeout_ms`（耗尽时等待归还的时长），坏连接用完即弃、由下次 acquire 补新。`async` 开启时另有一组 worker 线程（数量 = min(`pool_size`, 8)，首用懒建）承接 acquire 与语句执行；异步事务的语句/提交/回滚跑在单条串行 tx lane 上。C vtable 路径仍是 per-call `connect`/`disconnect`，不走池也不走 worker。
 
-`shield.database.v1` 只提供连接工厂，**不实现连接池**。host 的 `shield::data::DatabasePool` 在此 vtable 之上构建池化逻辑（详见 [数据语义](/runtime-data)）。业务侧不应直接持有 `shield_db_conn*` 长期不开释，应当用完即 `disconnect`，让池回收。
+池与异步入口的实时指标经 [`shield.pool.stats.v1`](/plugin-pool-stats) 上报，`/ops/metrics` 导出 `shield_plugin_pool_*`（容量/使用/空闲）与 `shield_plugin_db_pending_async` / `shield_plugin_db_holding`。
 
 ## 错误处理
 
-`shield_db_result.success` 为 0 时，`error_code` 来自对 `mysqlx::Error::what()` 字符串的模式匹配。这是 v1 的临时实现，后续可能改为读取 mysqlx 内部错误码做精确映射。
+`shield_db_result.success` 为 0 时，`error_code` 由 `map_mysql_error` 映射：**优先按数值错误码**（服务端 MySQL/MariaDB errno，如 1062/1213；客户端 `CR_*`，如 `CR_SERVER_GONE_ERROR`），数值码未覆盖时按错误消息关键字兜底匹配。
 
-| `error_code` | 触发条件 | 错误消息关键字 |
+| `error_code` | 触发条件 | 错误码 / 关键字 |
 |--------------|----------|----------------|
 | `connection_lost` | 连接断开、服务器宕机 | `Lost connection`, `server has gone away` |
 | `connection_timeout` | 查询或连接超时 | `timeout`, `timed out` |
 | `syntax_error` | SQL 语法错误 | `syntax`, `SQL syntax` |
 | `constraint_violation` | 主键冲突、外键、CHECK | `Duplicate`, `foreign key`, `constraint` |
 | `transaction_aborted` | 死锁 | `Deadlock` |
-| `db_query_failed` | 兜底 | 其他所有 `mysqlx::Error` |
+| `db_query_failed` | 兜底 | 其他所有驱动错误（未命中以上规则） |
 
 业务侧重试策略建议：
 
@@ -286,24 +283,22 @@ plugins/database.mysql/
 
 ### 运行时依赖
 
-| 平台 | 依赖 |
-|------|------|
-| Windows | `mysqlcppconn.dll` 及其传递依赖（protobuf、icu、openssl 等） |
-| Linux | `libmysqlcppconn.so`、`libprotobuf`、`libicuuc`、`libssl` |
-| macOS | `libmysqlcppconn.dylib` 及同样传递依赖 |
+| 平台 | 驱动形态 |
+|------|----------|
+| 全平台 | vcpkg 端口 `libmariadb` 以**静态库**链接进插件产物（Linux 为 `libmariadb.a`，`ldd libshield_db_mysql.so` 只剩系统库），运行时不需要随包驱动 DLL/SO |
 
-vcpkg manifest mode 会自动把这些 DLL/DYLIB 部署到可执行目录。Linux 下建议用 `ldd` 确认链接关系，必要时调整 `LD_LIBRARY_PATH` 或安装到系统路径。
+这是启用 `database-mysql` feature 时 vcpkg manifest mode 自动处理的：构建期解析依赖、链接进 `.so`/`.dll`，部署目录里只有插件本身。
 
 ### 跨平台注意事项
 
-- MySQL Connector/C++ 在某些 Linux 发行版上对 OpenSSL 版本敏感，建议统一使用 vcpkg 安装而非系统包。
-- Windows 下 vcpkg 构建的 mysql-connector-cpp 可能与官方 MySQL Installer 的运行时不兼容，不要混用。
-- 容器化部署时，确保 MySQL 侧的 `mysqlx_port` 已在 firewall/security group 放行。
+- 驱动统一走 vcpkg 构建，不要用系统包与 vcpkg 版本混链（静态链接下不存在运行时抢注，但构建期头/库不一致会出 ABI 问题）。
+- 容器化部署时，确保 MySQL/MariaDB 服务端经典协议端口（默认 3306，实例 `port` 配置）已在 firewall/security group 放行。
+- 服务端账号按 MySQL 与 MariaDB 任一发行版授权即可，插件对两者都兼容。
 
 ## 相关链接
 
 - [插件系统](/plugin-system) — Shield 插件 v1 设计、ABI 契约
 - [Shield 数据语义](/runtime-data) — 连接池配置、事务规则、错误处理
-- [MySQL Connector/C++ 文档](https://dev.mysql.com/doc/connector-cpp/en/)
-- [MySQL X DevAPI 用户指南](https://dev.mysql.com/doc/x-devapi-userguide/en/)
-- [MySQL X Plugin 配置](https://dev.mysql.com/doc/refman/8.0/en/x-plugin.html)
+- [DB 使用纪律](/db-discipline) — 超时、池匹配、事务 body 规则
+- [MariaDB Connector/C 文档](https://mariadb-corporation.github.io/mariadb-connector-c/)
+- [MySQL 服务端错误码参考](https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html)

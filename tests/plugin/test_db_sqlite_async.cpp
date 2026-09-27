@@ -220,6 +220,41 @@ bool lua_bool(LuaServiceManager& manager, LuaRuntime& runtime,
     return value;
 }
 
+// One-shot string probe (diagnostics: what a failed wait actually sees).
+void lua_str(LuaServiceManager& manager, LuaRuntime& runtime,
+             const std::string& service_id, const std::string& expr,
+             std::string* out) {
+    std::atomic<bool> done{false};
+    manager.enqueue_forked_task(service_id, [&] {
+        auto vm = manager.service_vm(service_id);
+        if (vm) {
+            nlohmann::json r;
+            std::string e;
+            if (runtime.exec_lua(vm, "return " + expr, &r, &e) &&
+                r.is_array() && !r.empty() && r[0].is_string()) {
+                *out = r[0].get<std::string>();
+            }
+        }
+        done = true;
+    });
+    while (!done.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+}
+
+// Find one instance's pool-stats sample (nullptr when not collected). The
+// returned pointer is only valid until the next call — callers re-poll.
+const shield::plugin::PoolStatsResult* find_pool_stats(
+    const std::string& instance_id) {
+    static std::vector<shield::plugin::PoolStatsResult> scratch;
+    scratch.clear();
+    shield::plugin::global_host().collect_pool_stats(scratch);
+    for (const auto& r : scratch) {
+        if (r.instance_id == instance_id) return &r;
+    }
+    return nullptr;
+}
+
 // A coroutine parked inside the plugin shim, plus its cleanup plumbing.
 struct ParkedCall {
     std::atomic<bool> parked{false};
@@ -265,16 +300,18 @@ else
 end
 )lua";
 
-// Run `db:query(sql)` in a fresh coroutine on the service actor. Returns as
-// soon as the coroutine has yielded into the shim (or fallen back to sync).
-// binding and sql are copied by value: the task outlives this frame.
-void park_query(LuaServiceManager& manager, LuaRuntime& runtime,
-                const std::string& service_id, const std::string& binding,
-                const std::string& sql, ParkedCall& out) {
+// Run `body` (a chunk taking (db, sql) as varargs) in a fresh coroutine on
+// the service actor. Returns as soon as the coroutine has yielded into the
+// shim (or fallen back to sync). binding, body and sql are copied by value:
+// the task outlives this frame.
+void park_body(LuaServiceManager& manager, LuaRuntime& runtime,
+               const std::string& service_id, const std::string& binding,
+               const std::string& body, const std::string& sql,
+               ParkedCall& out) {
     const std::string sid = service_id;
     const std::string b = binding;
     const std::string q = sql;
-    (void)manager.enqueue_forked_task(sid, [&, sid, b, q] {
+    (void)manager.enqueue_forked_task(sid, [&, sid, b, q, body] {
         g_park_error.clear();  // diagnostics report THIS park, not a stale one
         auto vm = manager.service_vm(sid);
         if (!vm) {
@@ -296,7 +333,7 @@ void park_query(LuaServiceManager& manager, LuaRuntime& runtime,
         // Stack: the proxy. Hand it plus the query body to a fresh coroutine.
         lua_State* co = lua_newthread(main_L);
         out.co_ref = luaL_ref(main_L, LUA_REGISTRYINDEX);  // refs + pops co
-        if (luaL_loadstring(main_L, kQueryBody) != LUA_OK) {
+        if (luaL_loadstring(main_L, body.c_str()) != LUA_OK) {
             const char* e = lua_tostring(main_L, -1);
             g_park_error = "body load failed: " + std::string(e ? e : "?");
             lua_pop(main_L, 1);
@@ -327,6 +364,13 @@ void park_query(LuaServiceManager& manager, LuaRuntime& runtime,
         }
         out.parked = true;
     });
+}
+
+// Run `db:query(sql)` in a parked coroutine (the M2 probe body).
+void park_query(LuaServiceManager& manager, LuaRuntime& runtime,
+                const std::string& service_id, const std::string& binding,
+                const std::string& sql, ParkedCall& out) {
+    park_body(manager, runtime, service_id, binding, kQueryBody, sql, out);
 }
 
 void unref_parked(LuaServiceManager& manager, LuaRuntime& runtime,
@@ -618,6 +662,307 @@ BOOST_AUTO_TEST_CASE(AsyncFalseRunsSynchronouslyInsideCoroutine) {
                          "type(_G.__db_out) == 'table' and "
                          "_G.__db_out.ok == true and _G.__db_out.n == 1 and "
                          "_G.__db_out.first.v == 7"));
+}
+
+// ---------------------------------------------------------------------------
+// M4: the async transaction. One parked coroutine drives a full tx over the
+// __tx_* protocol — commit visibility, rollback on explicit false, rollback
+// on body error, the hard rule's runtime teeth (pool-level call and nested
+// transaction inside a body raise), and forwarded return values. Everything
+// crosses the suspend/resume boundary; the file-backed shapes instance makes
+// post-tx visibility observable from separate per-call connections.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(AsyncTransactionCommitRollbackAndHardRules) {
+    if (!ensure_sqlite_host()) {
+        BOOST_TEST_MESSAGE("sqlite plugin fixture unavailable; skipping");
+        return;
+    }
+
+    ServiceFixture fx("sqlite_async_tx");
+
+    const char* body = R"lua(
+local db = ...
+local T = {}
+_G.__tx_out = T
+db:execute('DROP TABLE IF EXISTS txm')
+local ok, err = db:execute('CREATE TABLE txm(k INTEGER PRIMARY KEY, v TEXT)')
+if not ok then T.setup = err and err.code return end
+T.setup = 'ok'
+
+-- commit: the body sees its own rows; after COMMIT so does everyone else
+ok, err = db:transaction(function(tx)
+    local iok = tx:execute('INSERT INTO txm(k, v) VALUES (1, ?)', {'a'})
+    if not iok then return false end
+    local qok, qres = tx:query('SELECT COUNT(*) AS n FROM txm')
+    if not qok then return false end
+    if qres[1].n ~= 1 then return false end
+    return true
+end)
+T.commit_ok = ok
+-- On success the tx forwards the body's return values, so `err` here is the
+-- body's `true` — only index it when it actually is an error table.
+T.commit_err = (type(err) == 'table' and err.code) or nil
+local cok, cres = db:query_one('SELECT COUNT(*) AS n FROM txm')
+T.after_commit = cok and cres and cres.n or -1
+
+-- explicit false -> user rollback
+ok, err = db:transaction(function(tx)
+    tx:execute('INSERT INTO txm(k, v) VALUES (2, ?)', {'b'})
+    return false
+end)
+T.rb_false_ok = ok
+T.rb_false_code = (type(err) == 'table' and err.code) or nil
+local fok, fres = db:query_one('SELECT COUNT(*) AS n FROM txm')
+T.after_rb_false = fok and fres and fres.n or -1
+
+-- body error -> rollback
+ok, err = db:transaction(function(tx)
+    tx:execute('INSERT INTO txm(k, v) VALUES (3, ?)', {'c'})
+    error('boom')
+end)
+T.rb_err_ok = ok
+T.rb_err_code = (type(err) == 'table' and err.code) or nil
+local eok, eres = db:query_one('SELECT COUNT(*) AS n FROM txm')
+T.after_rb_err = eok and eres and eres.n or -1
+
+-- hard rule: pool-level call and nested transaction inside a body raise.
+-- Both raise BEFORE any yield, so a plain pcall catches them.
+ok = db:transaction(function(tx)
+    local pok, perr = pcall(db.query, db, 'SELECT 1 AS v')
+    T.pool_raised = not pok
+    T.pool_msg = tostring(perr)
+    local nok, nerr = pcall(db.transaction, db, function() return true end)
+    T.nested_raised = not nok
+    T.nested_msg = tostring(nerr)
+    return false
+end)
+T.hard_rule_tx_ok = ok
+
+-- success forwards the body's return values
+local okf, ret = db:transaction(function(tx) return 'ret' end)
+T.fwd_ok = okf
+T.fwd_val = tostring(ret)
+T.done = true
+)lua";
+
+    ParkedCall call;
+    park_body(fx.manager, fx.runtime, fx.service_id, "db.shapes", body, "",
+              call);
+    BOOST_CHECK(wait_until([&] { return call.parked || call.failed; },
+                           std::chrono::milliseconds(5000)));
+    BOOST_TEST_MESSAGE("park error: " << g_park_error);
+    BOOST_REQUIRE(call.parked.load());
+
+    BOOST_CHECK(wait_until_lua(fx.manager, fx.runtime, fx.service_id,
+                               "_G.__tx_out and _G.__tx_out.done == true",
+                               std::chrono::milliseconds(30000)));
+    // exec_lua stringifies tables, so each field is asserted in Lua directly.
+    std::string probe;
+    {
+        std::atomic<bool> done{false};
+        fx.manager.enqueue_forked_task(fx.service_id, [&] {
+            auto vm = fx.manager.service_vm(fx.service_id);
+            if (vm) {
+                nlohmann::json r;
+                std::string e;
+                if (fx.runtime.exec_lua(
+                        vm,
+                        "(function() local t = _G.__tx_out or {} local s = {} "
+                        "for k, v in pairs(t) do s[#s + 1] = k .. '=' .. "
+                        "tostring(v) end return table.concat(s, ' ') end)()",
+                        &r, &e) &&
+                    r.is_array() && !r.empty() && r[0].is_string()) {
+                    probe = r[0].get<std::string>();
+                }
+            }
+            done = true;
+        });
+        while (!done.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    BOOST_TEST_MESSAGE("tx out: [" << probe << "]");
+    auto f = [&](const std::string& expr) {
+        return lua_bool(fx.manager, fx.runtime, fx.service_id, expr);
+    };
+    BOOST_CHECK(f("_G.__tx_out.setup == 'ok'"));
+    BOOST_CHECK(f("_G.__tx_out.commit_ok == true"));
+    BOOST_CHECK(f("tonumber(_G.__tx_out.after_commit) == 1"));
+    BOOST_CHECK(f("_G.__tx_out.rb_false_ok == false"));
+    BOOST_CHECK(f("_G.__tx_out.rb_false_code == 'transaction_rolled_back'"));
+    BOOST_CHECK(f("tonumber(_G.__tx_out.after_rb_false) == 1"));
+    BOOST_CHECK(f("_G.__tx_out.rb_err_ok == false"));
+    BOOST_CHECK(f("_G.__tx_out.rb_err_code == 'transaction_rolled_back'"));
+    BOOST_CHECK(f("tonumber(_G.__tx_out.after_rb_err) == 1"));
+    BOOST_CHECK(f("_G.__tx_out.pool_raised == true"));
+    BOOST_CHECK(
+        f("_G.__tx_out.pool_msg and "
+          "_G.__tx_out.pool_msg:find('forbidden', 1, true) ~= nil"));
+    BOOST_CHECK(f("_G.__tx_out.nested_raised == true"));
+    BOOST_CHECK(
+        f("_G.__tx_out.nested_msg and "
+          "_G.__tx_out.nested_msg:find('forbidden', 1, true) ~= nil"));
+    BOOST_CHECK(f("_G.__tx_out.hard_rule_tx_ok == false"));
+    BOOST_CHECK(f("_G.__tx_out.fwd_ok == true"));
+    BOOST_CHECK(f("_G.__tx_out.fwd_val == 'ret'"));
+
+    unref_parked(fx.manager, fx.runtime, fx.service_id, call);
+}
+
+// ---------------------------------------------------------------------------
+// M4 gauges: while a transaction body is parked on the slow statement the
+// instance reports pending_async == 1 and holding == 1 (the open tx's handle
+// is checked out); sqlite has no pool, so the pool gauges stay -1. Both
+// return to 0 once the tx commits.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(AsyncTransactionGaugesWhileParked) {
+    if (!ensure_sqlite_host()) {
+        BOOST_TEST_MESSAGE("sqlite plugin fixture unavailable; skipping");
+        return;
+    }
+
+    ServiceFixture fx("sqlite_async_tx_gauge");
+
+    const char* body = R"lua(
+local db, sql = ...
+_G.__tx_gauge = nil
+local ok, err = db:transaction(function(tx)
+    local qok = tx:query(sql)
+    return qok
+end)
+if ok then
+    _G.__tx_gauge = 'ok'
+else
+    _G.__tx_gauge = 'fail:' .. tostring(err and err.code)
+end
+)lua";
+
+    ParkedCall call;
+    park_body(fx.manager, fx.runtime, fx.service_id, "db.long", body, kSlowSql,
+              call);
+    BOOST_CHECK(wait_until([&] { return call.parked || call.failed; },
+                           std::chrono::milliseconds(5000)));
+    BOOST_TEST_MESSAGE("park error: " << g_park_error);
+    BOOST_REQUIRE(call.parked.load());
+
+    // After BEGIN completes the tx holds its handle for the slow statement's
+    // full ~650ms — a wide, pollable window.
+    const bool gauges_seen = wait_until(
+        [&] {
+            const auto* s = find_pool_stats("sqlite_async_long");
+            return s && s->status == shield::plugin::PoolStatsStatus::ok &&
+                   s->stats.pending_async == 1 && s->stats.holding == 1;
+        },
+        std::chrono::milliseconds(5000));
+    if (!gauges_seen) {
+        if (const auto* s = find_pool_stats("sqlite_async_long")) {
+            BOOST_TEST_MESSAGE("gauge probe: pending_async="
+                               << s->stats.pending_async
+                               << " holding=" << s->stats.holding);
+        } else {
+            BOOST_TEST_MESSAGE("gauge probe: instance not collected");
+        }
+    }
+    BOOST_CHECK(gauges_seen);
+    // No pool on sqlite: the pool gauges hold the -1 sentinel.
+    if (const auto* s = find_pool_stats("sqlite_async_long")) {
+        BOOST_CHECK_EQUAL(s->stats.size, -1);
+        BOOST_CHECK_EQUAL(s->stats.in_use, -1);
+    }
+
+    const bool committed = wait_until_lua(fx.manager, fx.runtime, fx.service_id,
+                                          "_G.__tx_gauge == 'ok'",
+                                          std::chrono::milliseconds(30000));
+    if (!committed) {
+        std::string probe;
+        lua_str(fx.manager, fx.runtime, fx.service_id,
+                "tostring(_G.__tx_gauge)", &probe);
+        BOOST_TEST_MESSAGE("tx gauge probe: [" << probe << "]");
+    }
+    BOOST_REQUIRE(committed);
+    BOOST_CHECK(wait_until(
+        [&] {
+            const auto* s = find_pool_stats("sqlite_async_long");
+            return s && s->stats.pending_async == 0 && s->stats.holding == 0;
+        },
+        std::chrono::milliseconds(5000)));
+
+    unref_parked(fx.manager, fx.runtime, fx.service_id, call);
+}
+
+// ---------------------------------------------------------------------------
+// M4 caller timeout inside a tx body: the 150ms budget expires mid-statement;
+// the body sees the timeout error, returns false, and the shim queues the
+// rollback behind the still-running statement on the single worker. The
+// rollback call itself exceeds its budget too, so the tx surfaces the timeout
+// error — and once the statement finishes, the queued rollback runs anyway
+// and both gauges drain to 0 (the rejected-resume cleanup leaves no leak).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(AsyncTransactionCallerTimeoutRollsBack) {
+    if (!ensure_sqlite_host()) {
+        BOOST_TEST_MESSAGE("sqlite plugin fixture unavailable; skipping");
+        return;
+    }
+
+    ServiceFixture fx("sqlite_async_tx_to");
+
+    const char* body = R"lua(
+local db, sql = ...
+_G.__tx_to = nil
+local ok, err = db:transaction(function(tx)
+    tx:execute('CREATE TABLE IF NOT EXISTS to_t(k INTEGER)')
+    tx:execute('INSERT INTO to_t VALUES (1)')
+    local qok = tx:query(sql)
+    if not qok then return false end
+    return true
+end)
+if ok then
+    _G.__tx_to = 'committed'
+else
+    _G.__tx_to = 'fail:' .. tostring(err and err.code)
+end
+)lua";
+
+    ParkedCall call;
+    park_body(fx.manager, fx.runtime, fx.service_id, "db.short", body, kSlowSql,
+              call);
+    BOOST_CHECK(wait_until([&] { return call.parked || call.failed; },
+                           std::chrono::milliseconds(5000)));
+    BOOST_TEST_MESSAGE("park error: " << g_park_error);
+    BOOST_REQUIRE(call.parked.load());
+
+    // The tx is open and holding a handle while the slow statement runs.
+    BOOST_CHECK(wait_until(
+        [&] {
+            const auto* s = find_pool_stats("sqlite_async_short");
+            return s && s->stats.holding >= 1;
+        },
+        std::chrono::milliseconds(2000)));
+
+    // Timeout mid-body -> rollback attempt -> that too times out (the slow
+    // statement still owns the worker), so the tx surfaces the timeout.
+    const bool got_timeout = wait_until_lua(
+        fx.manager, fx.runtime, fx.service_id, "_G.__tx_to == 'fail:timeout'",
+        std::chrono::milliseconds(5000));
+    if (!got_timeout) {
+        std::string probe;
+        lua_str(fx.manager, fx.runtime, fx.service_id, "tostring(_G.__tx_to)",
+                &probe);
+        BOOST_TEST_MESSAGE("tx timeout probe: [" << probe << "]");
+    }
+    BOOST_REQUIRE(got_timeout);
+
+    // The late statement finishes; the queued rollback then runs on the
+    // worker (its completion is rejected — the caller is gone) and every
+    // gauge drains.
+    BOOST_CHECK(wait_until(
+        [&] {
+            const auto* s = find_pool_stats("sqlite_async_short");
+            return s && s->stats.pending_async == 0 && s->stats.holding == 0;
+        },
+        std::chrono::milliseconds(10000)));
+
+    unref_parked(fx.manager, fx.runtime, fx.service_id, call);
 }
 
 // ---------------------------------------------------------------------------
