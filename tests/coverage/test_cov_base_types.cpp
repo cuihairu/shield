@@ -246,13 +246,19 @@ BOOST_AUTO_TEST_CASE(OkAndErrorStates) {
 }
 
 BOOST_AUTO_TEST_CASE(MapTransformsAndPropagates) {
+    // One shared closure for both calls: distinct lambdas would instantiate
+    // map<lambda> twice, and each instantiation only ever runs one arm of
+    // the internal is_ok() branch — the always-zero sibling records then
+    // mask both source lines in the merged coverage view.
+    const auto twice = [](const int& v) { return v * 2; };
+
     Result<int> ok(5);
-    auto doubled = ok.map([](const int& v) { return v * 2; });
+    auto doubled = ok.map(twice);
     BOOST_CHECK(doubled.is_ok());
     BOOST_CHECK_EQUAL(doubled.value(), 10);
 
     Result<int> err(Error("internal", "boom"));
-    auto carried = err.map([](const int& v) { return v * 2; });
+    auto carried = err.map(twice);
     BOOST_CHECK(carried.is_error());
     BOOST_CHECK_EQUAL(carried.error().code(), "internal");
 }

@@ -29,7 +29,12 @@ public:
     /// which is all the session needs (endpoint, options, hard close).
     using LowestLayer = boost::asio::ip::tcp::socket::lowest_layer_type;
 
-    virtual ~SessionStream() = default;
+    // Compiler artifact: this line defines the abstract base's deleting-dtor
+    // D0 (unreachable — deletion dispatches through the concrete stream's
+    // vtable entry, never through the abstract class's own) next to the
+    // base-object dtor D2 that the suites exercise dozens of times; the
+    // always-zero D0 blocks would mask the line.
+    virtual ~SessionStream() = default;  // GCOVR_EXCL_LINE
 
     /// @brief Lowest-layer socket (endpoint queries, options, hard close).
     virtual LowestLayer& lowest_socket() = 0;

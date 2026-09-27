@@ -1,5 +1,51 @@
 # TODO
 
+## 头文件层覆盖收口（2026-09-27）
+
+CI gate 只统计 `src/`（filter `../src/`），`include/shield/**` 的内联/模板
+代码不在测量面内。用现存 gcda 对 include/ 做诊断（`gcovr --filter
+'../include/' --txt-metric line`）：528 行 517 执行（97%），缺口集中在
+4 个头文件 11 行，本轮全部收口：
+
+- [x] **真缺口补真测试**（不删防御分支、不 mock、不造假用例）：
+      - `base/result.hpp` map() 两臂：此前测试用两个**不同闭包**调 map，
+        模板按闭包类型实例化，每个实例化只走一个分支——兄弟实例化的恒 0
+        记录在 gcovr 行视图里互相掩蔽（**新伪影形态：模板多实例化单臂
+        掩蔽**，裸 gcov 可见各实例化 `#####` 错位）。修法与同文件
+        and_then 既有风格一致：共享一个闭包，单实例化走双臂
+      - `net/session_stream.hpp` `transport_name()`（75/110）：8cd43fb
+        引入的诊断 API 全库零调用点；test_cov_session / test_cov_tls 各加
+        一条契约用例（"tcp"/"tls" 标签 + 基类引用多态分发一致）
+      - `net/ip_blocklist.hpp` v6 非字节对齐前缀（126-127 的
+        `prefix_matches_bytes<unsigned char,16>` 实例化）：既有 v4 /20
+        用例只覆盖 4 字节数组实例化；加 `2001:db8::/33` 边界用例。
+        62-63 空白条目臂：`set_rules` 自己 trim 跳过空条目，parser 的
+        文档化空白契约（no-op + 零值 Rule）只有直调
+        `parse_blocklist_entry` 才可达——补直调用例（error 出参不被
+        触碰也在断言内）
+- [x] **不可达臂 / 编译器伪影按登记口径标注**（理由在注释里）：
+      - ip_blocklist.hpp `blocked()` 的 `!is_v4() && !is_v6()` 臂：
+        boost address 是 v4/v6 判别联合，构造上不可达 →
+        GCOVR_EXCL_START/STOP
+      - session_stream.hpp 基类析构行（`= default`）：一行挂抽象基类
+        deleting-dtor D0（删除经派生类 vtable 分发，抽象类自身 D0 不可达）
+        与每个测试都在跑的 base-object D2 → GCOVR_EXCL_LINE（与
+        session.cpp `TcpSession::~TcpSession` 同族，gcovr --json 可见
+        D2 计 51 次）
+      - base/byte_buffer.hpp `hex_dump` 闭括号行：出口/清理块挂闭括号
+        恒 0，函数本体全路径已执行（含 `...` 截断分支）→
+        GCOVR_EXCL_LINE（catch 闭括号同族）
+- [x] 实测（build-cov 清 `.gcda` + 全部 97 用例）：src/ 门禁
+      line=100 / branch 11385/11385 / function=100 EXIT=0；
+      include/ 口径 **520/520 = 100%**（3 行按登记排除后出测量面）
+
+注意：include/ 层目前**不在 CI gate 测量面内**（gate 参数未动）；本节
+数字是诊断口径。若未来把 include/ 纳入 gate：inline 头文件代码在每个
+包含它的 TU 里都有一份实例，但 gcovr 跨 gcda 合并按行求和，专用套件
+覆盖后其余 TU 的零副本**不会**掩蔽行（本轮实证：parse_blocklist_entry
+存在于 5 个 TU，仅 62-63 因从未被执行而报缺）；真正的坑是模板多实例化
+单臂掩蔽（一条测试内的多个闭包即触发，见上）。
+
 ## 覆盖率口径纠偏（2026-09-26）
 
 **重要**：此前 todo 与 CI 记录的「三维 100%」是**陈旧 `.gcda` 累加**造成的

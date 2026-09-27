@@ -242,4 +242,40 @@ BOOST_AUTO_TEST_CASE(TextualLookupIgnoresGarbage) {
     BOOST_CHECK(!list.blocked("999.1.1.1"));
 }
 
+// The parser's documented blank-entry contract: an empty or whitespace-only
+// entry is a no-op success with a zero-initialized rule. set_rules filters
+// blanks itself, so only a direct parser call takes this arm.
+BOOST_AUTO_TEST_CASE(ParserAcceptsBlankEntriesDirectly) {
+    Rule rule;
+    std::string error = "sentinel";
+    BOOST_CHECK(parse_blocklist_entry("", &rule, &error));
+    BOOST_CHECK_EQUAL(rule.prefix_len, 0u);
+    // Success must not touch the error out-param.
+    BOOST_CHECK_EQUAL(error, "sentinel");
+
+    Rule blank;
+    BOOST_CHECK(parse_blocklist_entry(" \t ", &blank, nullptr));
+    BOOST_CHECK_EQUAL(blank.prefix_len, 0u);
+
+    // A real entry parses through the same path.
+    BOOST_CHECK(parse_blocklist_entry("203.0.113.7", &rule, &error));
+    BOOST_CHECK(rule.addr.is_v4());
+    BOOST_CHECK_EQUAL(rule.prefix_len, 32u);
+    BOOST_CHECK_EQUAL(error, "sentinel");
+}
+
+// A v6 prefix that is not a whole number of bytes exercises the partial-byte
+// mask inside the 16-byte array instantiation (the v4 /20 case covers the
+// 4-byte one).
+BOOST_AUTO_TEST_CASE(Ipv6NonByteAlignedPrefix) {
+    IpBlocklist list;
+    BOOST_REQUIRE(list.set_rules({"2001:db8::/33"}));
+    // A /33 pins the top bit of the third group: 2001:db8:7fff:... is in,
+    // 2001:db8:8000:: is the first address outside.
+    BOOST_CHECK(list.blocked("2001:db8::"));
+    BOOST_CHECK(list.blocked("2001:db8:7fff:ffff:ffff:ffff:ffff:ffff"));
+    BOOST_CHECK(!list.blocked("2001:db8:8000::"));
+    BOOST_CHECK(!list.blocked("2001:db9::"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "shield/net/session.hpp"
+#include "shield/net/session_stream.hpp"
 #include "shield/transport/protocol.hpp"
 
 namespace {
@@ -981,6 +982,18 @@ BOOST_AUTO_TEST_CASE(SessionRateLimitedWithoutUserCallback) {
 
     session->close("normal");
     p.io.run_for(100ms);
+}
+
+// SessionStream contract on the plain path: the transport tag is "tcp" and
+// the stream wraps the socket it was handed (lowest_socket exposes it live).
+BOOST_AUTO_TEST_CASE(PlainStreamTransportTag) {
+    SocketPair p;
+    shield::net::PlainStream stream(std::move(p.client));
+    BOOST_CHECK_EQUAL(stream.transport_name(), "tcp");
+    BOOST_CHECK(stream.lowest_socket().is_open());
+
+    shield::net::SessionStream& base = stream;
+    BOOST_CHECK_EQUAL(base.transport_name(), "tcp");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

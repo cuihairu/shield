@@ -218,7 +218,11 @@ public:
     ///        only tested against v4 rules and vice versa.
     bool blocked(const boost::asio::ip::address& address) const {
         if (!address.is_v4() && !address.is_v6()) {
+            // GCOVR_EXCL_START (defensive: boost::asio::ip::address is a
+            // v4/v6 discriminated union, so this arm is unreachable by
+            // construction; kept as a guard against future address kinds)
             return false;
+            // GCOVR_EXCL_STOP
         }
         std::shared_lock lock(mutex_);
         const auto& rules = address.is_v4() ? v4_rules_ : v6_rules_;

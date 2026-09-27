@@ -450,4 +450,17 @@ BOOST_AUTO_TEST_CASE(SessionToleratesDisconnectedPeerAtAdoption) {
     BOOST_CHECK(disconnected.load());
 }
 
+// SessionStream contract on the TLS path: the transport tag is "tls" and the
+// wrapped stream is reachable for the listener-side handshake.
+BOOST_AUTO_TEST_CASE(TlsStreamTransportTag) {
+    boost::asio::io_context io;
+    auto ctx = make_fixture_context();
+    BOOST_REQUIRE(ctx);
+    shield::net::TlsStream stream(tcp::socket(io), *ctx);
+    BOOST_CHECK_EQUAL(stream.transport_name(), "tls");
+
+    shield::net::SessionStream& base = stream;
+    BOOST_CHECK_EQUAL(base.transport_name(), "tls");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

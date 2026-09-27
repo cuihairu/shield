@@ -126,7 +126,9 @@ public:
             result += "...";
         }
         return result;
-    }
+    }  // GCOVR_EXCL_LINE (compiler artifact: the exit/cleanup block on this
+       // closing brace never attributes a count; hex_dump itself is fully
+       // exercised — all branches — by the CovByteBuffer cases)
 
 private:
     std::vector<uint8_t> data_;
