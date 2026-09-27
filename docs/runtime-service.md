@@ -309,8 +309,8 @@ end
 ```lua
 function M.on_shutdown(ctx)
     -- ctx.reason: 关闭原因，如 "stopping"、"signal"、"check_config"
-    -- ctx.deadline_ms: runtime monotonic deadline
-    -- ctx.timeout_ms: 本 service 的 drain 预算
+    -- ctx.deadline_ms: drain 共享截止（业务 Clock，与 shield.now() 同源）
+    -- ctx.timeout_ms: 本 service 进入 hook 时的剩余 drain 预算
 
     M.draining = true
 
@@ -334,14 +334,14 @@ end
 - 运行时已经停止 accept/readiness，不再接收新的外部入口。
 - hook 必须受 `shutdown.timeout.service_drain` 和 `ctx.deadline_ms` 约束。
 - 超时、返回失败或抛错只记录并继续关闭；随后仍调用 `on_exit(reason)`。
-- shutdown drain 期间不允许 spawn 新 service；是否允许处理已有 mailbox 由 runtime drain 策略控制。
+- shutdown drain 期间不允许 spawn 新 service；`shield.spawn` 会返回失败。已有 mailbox 中的消息（含其他服务的 `shield.call`）仍会正常处理。
 
 `on_shutdown` 与 `prepare_shutdown` 的边界：
 
 - `on_shutdown` 是 runtime hook，由 bootstrap shutdown 流程统一触发。
 - `prepare_shutdown` 如果业务需要，可以作为普通 method 显式 `shield.call`，不属于保留 hook。
 
-实现状态：目标契约，当前源码尚未实现该 hook 调度。
+实现状态：已实现。bootstrap shutdown 在停止 accept/readiness 之后调用 `drain_all`：按 spawn 逆序在各 service 的 actor 线程上运行 `on_shutdown`，整个 drain 阶段共享 `shutdown.timeout.service_drain` 预算（`ctx.timeout_ms` 为进入本 hook 时的剩余预算，预算耗尽后剩余 hook 跳过并记 WARN）；超时被放弃的 hook 不中断，由随后的 `shutdown_all` 统一收尾。
 
 **on_exit(reason)**
 

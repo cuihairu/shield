@@ -113,6 +113,19 @@ public:
     void shutdown_all(std::string_view reason = "stopping",
                       int64_t stop_budget_ms = 0);
 
+    // Graceful drain phase (on_shutdown contract, docs/lua-api.md): call
+    // every service's on_shutdown(ctx) in reverse spawn order, each on its
+    // own actor thread. `drain_budget_ms` bounds the whole phase with a
+    // shared deadline — ctx.timeout_ms carries the remaining budget at each
+    // hook's turn, and once it is exhausted the remaining hooks are skipped
+    // with a warning. Hooks may shield.call / shield.sleep within the
+    // budget; spawn is rejected while draining. Hook errors and timeouts are
+    // logged and the drain continues. <= 0 makes the phase a no-op. The
+    // draining state stays latched afterwards: shutdown_all follows
+    // immediately in the shutdown sequence.
+    void drain_all(std::string_view reason = "stopping",
+                   int64_t drain_budget_ms = 0);
+
     // Total forked tasks still pending across all services (drain signal).
     size_t pending_task_count_total() const;
 

@@ -228,6 +228,31 @@ ingress rate limit（token bucket，messages/second + burst）+ accept 时
       明文拒绝/超时/blocklist 优先），附带修复 session 采纳竞态下
       remote_endpoint 抛异常（对端提前断开不再炸 io 线程）
 
+## 服务停机 hook on_shutdown（2026-09-27 完成）
+
+- [x] on_shutdown(ctx) drain 调度（lua-api.md/runtime-service.md 目标契约
+      落地）：bootstrap shutdown 在停止 accept/readiness（console/HTTP ops/
+      listener + net 线程收尾）之后、shutdown_all 之前调用
+      LuaServiceManager::drain_all("stopping", shutdown.timeout.service_drain)；
+      按 spawn 逆序（依赖图未实现前的反向顺序）在各 service actor 线程上
+      运行 on_shutdown（新增 ServiceDrainRequest CAF 消息 + run_drain_handler，
+      复用 invoke_coroutine 协程 dispatch——hook 内 shield.call/sleep 可用，
+      in_exit=false 与 on_exit 的 call guard 区分）；整段共享 drain 预算
+      （对齐 shutdown_all 共享 deadline 模式），ctx={reason, deadline_ms,
+      timeout_ms（进入本 hook 时的剩余预算）}，deadline_ms 取业务 Clock
+      （与 shield.now() 同源，文档示例的 `ctx.deadline_ms - shield.now()`
+      算术成立——原文档写 InfraClock 与示例矛盾，按可实现口径修正文档）；
+      预算耗尽剩余 hook 跳过记 WARN；hook 抛错/超时记日志继续；缺失 hook
+      立即 no-op（默认配置零回归）；超时被放弃的 hook 不中断，由
+      shutdown_all 统一收尾（complete_call 对已擦除 session 安全 drop，
+      不再另设 expiry driver——有界等待即超时权威，免嗅探错误串）；
+      drain 期间 spawn 拒绝（spawn()/enqueue_async_spawn 双守卫，
+      draining 原子置位后保持 latched）。测试：
+      tests/coverage/test_cov_lua_shutdown.cpp（6 用例：逆序+ctx 形状/
+      缺失 no-op/报错继续/超时放弃+跳过+预算有界/drain 中 spawn 拒绝/
+      零预算惰性）；docs/lua-api.md、runtime-service.md、
+      runtime-config.md 实现状态翻转
+
 ## 测试质量 + 防回退收口（2026-09-25，全部完成）
 
 覆盖率三维度 100%（line/branch/function）后的质量收口，不追加数字：

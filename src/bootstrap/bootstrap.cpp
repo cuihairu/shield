@@ -1535,9 +1535,10 @@ void shutdown() {
             .detach();
     }
 
-    // service_drain: give in-flight forked tasks a bounded window to finish
-    // before tearing services down (on_shutdown(ctx) is still a target
-    // contract; draining pending tasks is its current stand-in).
+    // service_drain (pre-drain settle): give in-flight forked tasks a
+    // bounded window to finish before the on_shutdown hooks run below —
+    // hooks themselves may fork, and those later tasks are torn down with
+    // the services, not awaited here.
     if (drain_budget_ms > 0 &&  // GCOVR_EXCL_BR_LINE (integration: suites shut
                                 // down with a positive drain budget)
         g_state->lua_services) {  // GCOVR_EXCL_BR_LINE (defensive: lua_services
@@ -1625,6 +1626,19 @@ void shutdown() {
     // joins on each actor's down message, so no handler can still
     // dereference the manager once this returns.
     exit_gateway_actors_and_wait();
+
+    // Graceful service drain (on_shutdown contract, docs/lua-api.md):
+    // accept/readiness are stopped above (console, HTTP ops, listeners and
+    // net threads are down) but every VM is still alive, so the hooks may
+    // shield.call / shield.sleep within the shared service_drain budget.
+    // Runs in reverse spawn order; hook errors and timeouts log and
+    // continue. shutdown_all follows and takes the exit path.
+    if (drain_budget_ms > 0 &&  // GCOVR_EXCL_BR_LINE (integration: suites shut
+                                // down with a positive drain budget)
+        g_state->lua_services) {  // GCOVR_EXCL_BR_LINE (defensive: same null
+                                  // arm as the shutdown_all call below)
+        g_state->lua_services->drain_all("stopping", drain_budget_ms);
+    }
 
     // Shutdown actor system (which stops all actors)
     if (g_state->lua_services) {  // GCOVR_EXCL_BR_LINE (defensive: shutdown

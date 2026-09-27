@@ -167,7 +167,7 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| `service_drain` | runtime shutdown drain 阶段预算；用于调用 service `on_shutdown(ctx)` |
+| `service_drain` | runtime shutdown drain 阶段预算（整段共享）；按 spawn 逆序调用 service `on_shutdown(ctx)`，预算耗尽后剩余 hook 跳过并记 WARN；<= 0 关闭该阶段 |
 | `service_stop` | final stop 阶段预算；用于调用 service `on_exit(reason)` 并释放 VM |
 | `plugin_shutdown` | 插件 instance shutdown 预算；插件关闭在 service drain/stop 之后 |
 | `total` | 整体 shutdown 最大预算，必须覆盖所有分段 |

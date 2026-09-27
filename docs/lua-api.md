@@ -7,10 +7,10 @@
 <details>
 <summary>实现快照（点击展开）</summary>
 
-当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置启动、`on_init/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/claim/now`、coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、timer/fork/on_init 回调统一协程 dispatch（`invoke_coroutine`，挂起与错误路由到 `on_error` 均与 handler 一致）、TCP gateway listener 到 Lua handler 的 bootstrap 桥接、HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
+当前源码已跑通单节点 Lua service 路径，包括 `actors` 配置启动、`on_init/on_shutdown/on_exit/on_error/on_panic`、`shield.spawn/exit/self/sender/names/query/register/unregister/claim/now`、coroutine-aware `shield.call/call_timeout` 与 handler 内 `shield.sleep`、`shield.timer_once/timer/cancel_timer/fork`、`shield.config`、`shield.log.*`、插件 Lua API（由各插件 `register_lua` 注册到 `shield.<namespace>`，详见 "Plugin-provided APIs"）、`on_exit` call guard、call timeout（CAF `call_timeout_atom`）、timer/fork/on_init 回调统一协程 dispatch（`invoke_coroutine`，挂起与错误路由到 `on_error` 均与 handler 一致）、TCP gateway listener 到 Lua handler 的 bootstrap 桥接、HTTP 客户端（`shield.http.*`）以及 `shield_cluster` 的静态 peer/route cache 快照 API。
 
 - HTTP 服务端 Lua 路由（`shield.httpd.*`）已接入 bootstrap：路由保存于运行时注册表，由 `LuaHttpBridge` 镜像进 `HttpServer`，请求派发到注册服务的 actor 线程执行。
-- `on_shutdown(ctx)` 和单 VM 内部 `shield.event` 已定义为目标契约，但当前源码尚未实现。
+- `on_shutdown(ctx)` 已实现（`shutdown.timeout.service_drain` 预算内的 graceful drain，见下文）；单 VM 内部 `shield.event` 仍为目标契约，当前源码尚未实现。
 
 </details>
 
@@ -110,8 +110,9 @@ end
 ```lua
 function M.on_shutdown(ctx)
     -- ctx.reason: "stopping" | "signal" | "check_config" | ...
-    -- ctx.deadline_ms: runtime monotonic deadline (InfraClock, not adjustable)
-    -- ctx.timeout_ms: 本 service drain 预算
+    -- ctx.deadline_ms: drain 共享截止（业务 Clock，与 shield.now() 同源，
+    --   ctx.deadline_ms - shield.now() 即本 hook 剩余预算）
+    -- ctx.timeout_ms: 本 service drain 预算（进入本 hook 时的剩余预算）
 end
 ```
 
@@ -124,7 +125,7 @@ end
 - 缺失 `on_shutdown` 视为 no-op
 - 不提供 `on_ready` 广播；service ready 定义为 `on_init` 成功并 publish name，application ready 由 bootstrap 在 required actors 启动完且 accept 开启前后判定
 
-> **实现状态**：目标契约，当前源码尚未实现 `on_shutdown` 调度；当前 `shutdown.timeout.service_drain` 只是配置契约预留。
+> **实现状态**：已实现。bootstrap shutdown 在停止 accept/readiness 之后、`shutdown_all` 之前调用 `LuaServiceManager::drain_all("stopping", shutdown.timeout.service_drain)`：按 spawn 逆序逐个 service 的 actor 线程运行 `on_shutdown`（依赖图未实现前的反向顺序），整个 drain 阶段共享 `service_drain` 预算（`ctx.timeout_ms` 为进入本 hook 时的剩余预算，预算耗尽后剩余 hook 跳过并记 WARN）；hook 抛错/超时只记日志并继续；缺失 `on_shutdown` 为立即 no-op。drain 期间 `spawn` 被拒绝（`shield.spawn` 返回失败），`shield.call/sleep` 可用；被超时放弃的 hook 不中断，由随后的 `shutdown_all` 统一收尾。
 
 ---
 

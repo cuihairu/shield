@@ -152,6 +152,20 @@ struct ServiceExitRequest {
     std::string reason;
 };
 
+/// Graceful-drain request for a service actor, sent by manager.drain_all
+/// during the shutdown drain phase (on_shutdown contract, docs/lua-api.md).
+/// Like every other VM touch the hook executes on the owning actor thread;
+/// completion routes back to the draining thread through the ordinary call
+/// protocol (complete_call on call_session), so the hook may shield.call /
+/// shield.sleep within its budget. The actor does not quit on this message —
+/// shutdown_all's exit request follows separately.
+struct ServiceDrainRequest {
+    std::string reason;         ///< ctx.reason ("stopping", ...)
+    int64_t deadline_ms = 0;    ///< ctx.deadline_ms (shared drain deadline)
+    int64_t timeout_ms = 0;     ///< ctx.timeout_ms (remaining budget)
+    uint64_t call_session = 0;  ///< waiter session (0 = nobody waiting)
+};
+
 }  // namespace shield::lua
 
 // Allow the JSON-bearing types to be passed as CAF messages within a single
@@ -165,6 +179,7 @@ CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientControlMessage)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientBindRequest)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ClientCloseRequest)
 CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ServiceExitRequest)
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::lua::ServiceDrainRequest)
 
 // -- CAF type ID block --------------------------------------------------------
 //
@@ -183,6 +198,7 @@ CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientControlMessage))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientBindRequest))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ClientCloseRequest))
 CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ServiceExitRequest))
+CAF_ADD_TYPE_ID(shield_lua, (shield::lua::ServiceDrainRequest))
 
 // Lightweight tag messages: atom + uint64_t payload.
 // timer_fire_atom replaces kind="timer" (payload = timer_id).

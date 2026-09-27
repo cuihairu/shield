@@ -554,6 +554,10 @@ struct LuaServiceManager::Impl {
 
     std::atomic<bool> stopping{
         false};  // set by shutdown_all, checked by send/call/spawn
+    // set by drain_all, checked by spawn paths (no spawn during the
+    // on_shutdown drain); deliberately NOT checked by send/call so drain
+    // hooks can flush state through shield.call
+    std::atomic<bool> draining{false};
 
     // Observer for name publication changes (set once at bootstrap, before
     // any spawn; read without the registry lock, invoked outside of it).
@@ -1376,6 +1380,142 @@ struct LuaServiceManager::Impl {
         (void)runtime.call_service_function(service, "on_exit", args, &error);
     }
 
+    // Runs the service's on_shutdown handler on the actor thread (the
+    // ServiceDrainRequest handler). Unlike on_exit this is coroutine-aware:
+    // the hook may shield.call / shield.sleep within its budget, and the
+    // completion routes back to the draining thread through the ordinary
+    // call protocol. A missing hook is an immediate no-op success so the
+    // drain phase adds no latency for services that do not implement it
+    // (a non-function entry counts as absent — the field carries no
+    // semantics and shutdown must not fail over it).
+    void run_drain_handler(class LuaServiceManager* manager,
+                           const std::string& service_id,
+                           const ServiceDrainRequest& req) {
+        // complete_call drops unknown sessions safely, so routing the
+        // outcome unconditionally is fine even in the (defensive) vanished-
+        // VM arm below.
+        auto complete = [&](bool ok, const nlohmann::json& values) {
+            manager->complete_call(req.call_session, ok, values);
+        };
+        std::shared_ptr<LuaVM> service = find_dispatch_vm(service_id);
+        if (!service) {  // GCOVR_EXCL_BR_LINE (defensive: drain requests only
+                         // go to live services; the VM cannot be reaped while
+                         // its actor is still processing the drain)
+            // GCOVR_EXCL_START (defensive: see the branch above)
+            complete(false,
+                     nlohmann::json::array({"service vanished before drain"}));
+            return;
+            // GCOVR_EXCL_STOP
+        }
+        sol::function fn;
+        std::string error;
+        if (!runtime.resolve_service_method(service, "on_shutdown", &fn,
+                                            &error)) {
+            complete(true, nlohmann::json::array());
+            return;
+        }
+        nlohmann::json ctx = {
+            {"reason", req.reason},
+            {"deadline_ms", req.deadline_ms},
+            {"timeout_ms", req.timeout_ms},
+        };  // GCOVR_EXCL_LINE (compiler artifact: json initializer tail
+            // blocks never execute on the success path)
+        // in_exit = false: unlike on_exit, the drain hook may shield.call /
+        // shield.sleep within its budget (that is the whole point of the
+        // graceful drain phase).
+        DispatchScope scope(*this, service_id, "", /*in_exit=*/false);
+        std::string invoke_error;
+        // Hook errors route through invoke_coroutine's finish_err: the
+        // session completes with the error (the drain loop logs it and
+        // continues) and the service error hook observes it like any other
+        // handler failure.
+        // GCOVR_EXCL_LINE: compiler artifact — the temporary-cleanup blocks
+        // on this multi-line call's first line never execute.
+        (void)runtime.invoke_coroutine(  // GCOVR_EXCL_LINE
+            service, fn, {ctx}, "hook", "on_shutdown", req.call_session,
+            manager, service_id, &invoke_error, /*prepend_ctx=*/false);
+    }
+
+    // Waits out one service's on_shutdown drain on the calling (shutdown)
+    // thread: registers a PendingSyncCall waiter, asks the service actor to
+    // run the hook, and blocks until completion or the shared drain
+    // deadline. A timeout abandons the wait — the hook keeps running, and
+    // its completion later drops safely in complete_call (which no longer
+    // finds the session); the stuck actor itself is torn down by
+    // shutdown_all right after, never by this path. No expiry driver is
+    // armed on purpose: this bounded wait IS the timeout authority, and
+    // classifying the outcome locally (ok / error / timeout) beats sniffing
+    // the driver's error string.
+    void drain_one(const std::string& id, const std::string& reason,
+                   std::chrono::steady_clock::time_point deadline) {
+        std::optional<caf::actor> actor;
+        {
+            std::shared_lock lock(registry_mutex);
+            auto it = service_actors.find(id);
+            if (it != service_actors.end()) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                               // the false arc would need the
+                                               // service's actor to vanish
+                                               // mid-drain, which no path does)
+                actor = it->second;
+            }
+        }
+        if (!actor) {  // GCOVR_EXCL_BR_LINE (defensive: drain requests only
+                       // go to live services; nothing reaps an actor during
+                       // the drain phase)
+            return;    // GCOVR_EXCL_LINE (race: service already gone)
+        }
+        const auto remaining_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now())
+                .count();
+        const uint64_t session = next_call_session.fetch_add(1);
+        auto pending = std::make_shared<PendingSyncCall>();
+        pending->session = session;
+        {
+            std::unique_lock lock(registry_mutex);
+            pending_sync_calls[session] = pending;
+        }
+        ServiceDrainRequest req;
+        req.reason = reason;
+        // ctx.deadline_ms rides the business clock (shield.now()'s clock) so
+        // the documented `ctx.deadline_ms - shield.now()` arithmetic works.
+        req.deadline_ms = clock_now_ms() + remaining_ms;
+        req.timeout_ms = remaining_ms;
+        req.call_session = session;
+        caf::anon_send(*actor, std::move(req));
+
+        bool completed = false;
+        {
+            std::unique_lock lk(pending->mtx);
+            completed = pending->cv.wait_until(
+                lk, deadline, [&] { return pending->completed; });
+            completed =
+                completed ||  // GCOVR_EXCL_BR_LINE (compiler artifact: the
+                              // short-circuit pseudo-arc keying on this line)
+                pending->completed;  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                     // the re-check arc belongs to the race
+                                     // window above)
+        }
+        {
+            std::unique_lock lock(registry_mutex);
+            pending_sync_calls.erase(session);  // no-op when complete_call
+                                                // already erased it
+        }
+        auto& log = shield::log::get_logger("lua");
+        if (!completed) {
+            SHIELD_LOG_WARNING(log, "on_shutdown timed out for '" + id +
+                                        "'; abandoning the hook (shutdown "
+                                        "continues)");
+            return;
+        }
+        if (pending->ok) {
+            SHIELD_LOG_INFO(log, "on_shutdown drained '" + id + "'");
+            return;
+        }
+        SHIELD_LOG_ERROR(
+            log, "on_shutdown failed for '" + id + "': " + pending->error);
+    }
+
     static int64_t now_ms() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::steady_clock::now().time_since_epoch())
@@ -2074,6 +2214,11 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
     if (impl_->stopping.load()) {
         return SpawnResult::error("runtime is stopping");
     }
+    if (impl_->draining.load()) {
+        // on_shutdown contract (docs/lua-api.md): no spawn during drain.
+        return SpawnResult::error(
+            "runtime is draining: spawn is rejected during on_shutdown");
+    }
     try {
         // Parse options
         nlohmann::json opts = nlohmann::json::parse(opts_json);
@@ -2390,6 +2535,17 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                             // thread with a direct VM call.
                             impl_ptr->run_exit_handler(svc, req.reason);
                             self->quit(caf::exit_reason::user_shutdown);
+                        },
+                        [impl_ptr, manager,
+                         svc](const ServiceDrainRequest& req) {
+                            // Graceful drain from the shutdown thread
+                            // (manager.drain_all): on_shutdown runs here on
+                            // the actor thread like every other VM touch and
+                            // completes through the ordinary call protocol.
+                            // The actor does NOT quit — shutdown_all's exit
+                            // request follows separately once the whole drain
+                            // phase is over.
+                            impl_ptr->run_drain_handler(manager, svc, req);
                         },
                     });
                     cache->unstash();
@@ -3295,6 +3451,43 @@ void LuaServiceManager::shutdown_all(std::string_view reason,
     }
 }
 
+void LuaServiceManager::drain_all(std::string_view reason,
+                                  int64_t drain_budget_ms) {
+    if (drain_budget_ms <= 0) {
+        return;  // no budget: the drain phase is inert (<= 0 is documented
+                 // as "feature off")
+    }
+    impl_->draining.store(true);
+    // The whole phase shares one deadline (same pattern as shutdown_all's
+    // graceful budget): each hook gets the remaining budget as
+    // ctx.timeout_ms, so one slow on_shutdown cannot starve the services
+    // queued behind it.
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(drain_budget_ms);
+    std::vector<std::string> order;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        order = impl_->service_order;
+    }
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
+        const auto remaining_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now())
+                .count();
+        if (remaining_ms <= 0) {
+            auto& log = shield::log::get_logger("lua");
+            SHIELD_LOG_WARNING(
+                log, "on_shutdown drain budget exhausted; skipping the " +
+                         std::to_string(std::distance(it, order.rend())) +
+                         " remaining service(s)");
+            break;
+        }
+        impl_->drain_one(*it, std::string(reason), deadline);
+    }
+    // draining stays latched: shutdown_all (which sets stopping) follows
+    // immediately in the shutdown sequence, so nothing unsets it.
+}
+
 void LuaServiceManager::force_remove(const std::string& id,
                                      const std::string& reason) {
     (void)reason;
@@ -3355,6 +3548,12 @@ bool LuaServiceManager::enqueue_async_spawn(uint64_t session,
                                             std::string module,
                                             std::string opts_json) {
     if (impl_->stopping.load()) {
+        return false;
+    }
+    if (impl_->draining.load()) {
+        // on_shutdown contract: no spawn during drain (shield.spawn from a
+        // drain hook fails; the hook observes the failure like any spawn
+        // failure).
         return false;
     }
     {

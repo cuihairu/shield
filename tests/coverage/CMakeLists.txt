@@ -112,6 +112,8 @@ shield_coverage_test(test_cov_lua_runtime shield_lua shield_core CAF::core CAF::
 shield_coverage_test(test_cov_lua_service shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service3 shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service4 shield_lua shield_core CAF::core CAF::io)
+# on_shutdown drain phase (drain_all) — see docs/lua-api.md.
+shield_coverage_test(test_cov_lua_shutdown shield_lua shield_core CAF::core CAF::io)
 
 # Round-2 coverage suites (same modules, deeper branches).
 shield_coverage_test(test_cov_lua_api2 shield_lua shield_core shield_net CAF::core CAF::io)
