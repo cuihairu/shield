@@ -89,7 +89,10 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
                                 // serializes both completions, so the
                                 // double-settle arm is only reachable in the
                                 // timer/handshake completion race window)
+            // GCOVR_EXCL_START (defensive: see the branch above — no test
+            // can reach this arm deterministically)
             return;
+            // GCOVR_EXCL_STOP
         }
         counters->failures.fetch_add(1, std::memory_order_relaxed);
         auto& log = shield::log::get_logger("net");

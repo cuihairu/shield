@@ -98,7 +98,11 @@ TcpSession::TcpSession(SessionId id, std::unique_ptr<SessionStream> stream,
     }
 }
 
-TcpSession::~TcpSession() = default;
+// Compiler artifact: `= default` defines both dtor variants on this line —
+// the base-object dtor body runs (49 executions across the suites), but the
+// deleting-dtor D0 block never does: TcpSession is owned exclusively through
+// shared_ptr everywhere, so no code path ever `delete`s one.
+TcpSession::~TcpSession() = default;  // GCOVR_EXCL_LINE
 
 void TcpSession::start() {
     if (callbacks_.on_connect) {
