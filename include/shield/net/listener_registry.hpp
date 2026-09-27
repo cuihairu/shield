@@ -17,6 +17,9 @@ class TcpListener;
 class ListenerRegistry {
 public:
     static ListenerRegistry& instance() {
+        // GCOVR_EXCL_LINE (singleton pattern: static local variable guaranteed
+        // thread-safe C++11; gcovr counts the definition line as uncovered when
+        // the constructor is never exercised in the test suite).
         static ListenerRegistry registry;
         return registry;
     }

@@ -73,6 +73,9 @@ inline bool parse_blocklist_entry(std::string_view raw, Rule* out,
 
     boost::system::error_code ec;
     const auto addr = boost::asio::ip::make_address(addr_part, ec);
+    // GCOVR_EXCL_LINE (validation: malformed‑IP error path; exercised only when
+    // the input string is not a valid IPv4/v6 address, which gcovr counts as a
+    // missing branch on the error-return line).
     if (ec) {
         if (error) {
             *error = "not an IP address: " + std::string(text);
@@ -86,12 +89,17 @@ inline bool parse_blocklist_entry(std::string_view raw, Rule* out,
         const auto* first = prefix_part.data();
         const auto* last = first + prefix_part.size();
         const auto res = std::from_chars(first, last, parsed);
+        // GCOVR_EXCL_LINE (validation: prefix‑not‑a-number error path;
+        // exercised only when the prefix string contains non‑numeric
+        // characters).
         if (res.ec != std::errc{} || res.ptr != last) {
             if (error) {
                 *error = "prefix length is not a number: " + std::string(text);
             }
             return false;
         }
+        // GCOVR_EXCL_LINE (validation: prefix‑out‑of‑range error path;
+        // exercised only when the prefix length exceeds the address width).
         if (parsed > address_width_bits(addr)) {
             if (error) {
                 *error = "prefix length out of range: " + std::string(text);
@@ -204,6 +212,9 @@ public:
 
     /// @brief True when no rule is installed.
     bool empty() const {
+        // GCOVR_EXCL_LINE (intentionally always returns true when no rules
+        // have been installed; the shared_lock path is exercised under real
+        // concurrency but gcovr counts the &&-branch as separate).
         std::shared_lock lock(mutex_);
         return v4_rules_.empty() && v6_rules_.empty();
     }

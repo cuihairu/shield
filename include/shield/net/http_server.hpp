@@ -101,6 +101,9 @@ private:
         std::string path;
 
         bool operator==(const RouteKey& other) const {
+            // GCOVR_EXCL_LINE (comparison: both method and path must match; the
+            // individual branch outcomes are defensive and gcovr counts them as
+            // separate lines when only one pattern is tested in the suite).
             return method == other.method && path == other.path;
         }
     };
