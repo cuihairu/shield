@@ -198,8 +198,12 @@ ingress rate limit（token bucket，messages/second + burst）+ accept 时
       host_api 尾部追加 lua_suspend_current/lua_resume_session 两原语）；
       备选否决理由、事务硬规则（tx body 内禁止任意让出）、超时≠取消
       （毒化连接）语义、M1-M4 里程碑与未决问题。
-- [ ] DB 异步入口实现（db-async-design.md M1-M4：host 原语 → sqlite
-      端到端 → mysql/postgresql → tx + 指标 + 文档降级）
+- [x] DB 异步入口实现（2026-09-26~09-27 完成，db-async-design.md
+      M1-M4）：M1 host 原语 lua_suspend_current/lua_resume_session
+      挂起-恢复（dc2700a）→ M2 sqlite Lua shim + worker 线程 +
+      端到端时序测试（46634f5）→ M3 mysql/postgresql 接入，acquire
+      移入 worker + 共享 shim（d2b68ef）→ M4 tx 异步形态 +
+      pending/holding 指标 + 文档降级收口（10133a1）。
 - [x] 连接级限流/黑名单（runtime-security.md 草案落地）——2026-09-26
       完成，见上方「连接级限流」节（7779971 限流 + 本次黑名单）
 - [x] blue-green 热更新落地——2026-09-26 完成：设计稿的
