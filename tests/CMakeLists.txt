@@ -571,9 +571,12 @@ endif()
 # through a real PluginHost. No database server needed — a silent accept-only
 # TCP peer makes the connect phase stall, which is enough to exercise the
 # async machinery around the driver (see the test header). Only exists when
-# at least one of the two drivers is built.
+# at least one of the two drivers is built. The accept-only peer is written
+# against POSIX sockets (arpa/inet.h / netnetinet/in.h / sys/socket.h), so
+# Windows builds skip the target until it gets a winsock port.
 # ---------------------------------------------------------------------------
-if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR SHIELD_BUILD_DB_PLUGIN_POSTGRESQL)
+if((SHIELD_BUILD_DB_PLUGIN_MYSQL OR SHIELD_BUILD_DB_PLUGIN_POSTGRESQL)
+   AND NOT WIN32)
     add_executable(test_db_net_async plugin/test_db_net_async.cpp)
     target_link_libraries(test_db_net_async
         PRIVATE
