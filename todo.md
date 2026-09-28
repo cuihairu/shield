@@ -558,3 +558,50 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       Descriptor Registry 映射、Current Gap 现状注记）；
       xmldef-unity-generator-spec.md（必需 descriptor 字段
       schema name）
+
+## 覆盖率巡检：可选模块全表面实测（2026-09-28，GLOBAL=ON 轮）
+
+把 build-cov 临时开 `SHIELD_ENABLE_GLOBAL=ON` 实测了默认树的结构性盲区
+（门禁/Coverage job 只测默认开关，可选模块 TU 从不编译 = gcovr 永远看不
+见），实测后已撤销回 OFF。本轮发现与处置：
+
+- [x] **test_lua_api_global 真实分支整套烂掉且无人知（双根因，已修）**：
+  1) 真 bug（src/lua/lua_api.cpp kGlobalOrchestration 编排 chunk）：`make_exclusive`
+     先建 `ttl` 字段、随后 `function lock:ttl()` 方法把字段覆盖成方法 →
+     `try_acquire`/`extend` 把 function 传给 `prim.lock_try` 第 4 参 → sol2
+     "expected number, received function"，mutex/spinlock/distributed_mutex
+     三组用例确定性红 + 级联 SIGFPE。修法：字段改 `_ttl`（公开读法
+     `lock:ttl()` 是文档化 API，docs/runtime-global.md:238，保持不动）。
+  2) rot 根因（tests/lua_api/CMakeLists.txt）：`shield_lua_api_test` 统一打
+     label "lua_api"，GLOBAL 块没加 "global" 标签 → CI Cluster job
+     （`ctest -L "cluster|player|server|global"`，四开关全开）编译了真实
+     分支但从不执行；Coverage job（默认树）只跑 stub 分支。已补 label，
+     该套件自此进 CI Cluster job 真实执行（本地 GLOBAL-on 13/13 绿）。
+- [x] **已补测（真用例，无 mock）**：tests/global/test_global_manager.cpp
+  +2 用例（PriorityAndBroadcastQueueCounts、RateLimitSuite/
+  KeyCountAndPurgeCoverBothBackends）——上轮巡检确认的 4 个未覆盖函数
+  （priority_queue_count / broadcast_queue_count / rate_limit_key_count /
+  rate_limit_purge，含未知名 no-op 臂与双后端分叉）全数收口；
+  test_cov_root_commands.cpp 新增 GlobalCommandsReportManagerSnapshot
+  （真 GlobalManager 挂 set_global，root.global / root.status 数据臂 +
+  build_global_status_json 全身）；test_cov_ops_http.cpp ServiceStatsMetrics
+  扩展（manager 挂载下 /ops/metrics global 段、/ops/status global JSON、
+  /ops/health global check 三路断言）。GLOBAL-on 形态下 console/ 三文件
+  （global_status / ops_http_handler / root_commands）line+branch 实测
+  100%；braced-init 归因伪影按仓内双标记惯例登记（GCOVR_EXCL_LINE
+  GCOVR_EXCL_BR_LINE，理由注明 fixture 已真实驱动）。
+- [ ] **GLOBAL-on 实测余量（下一轮收口清单，行数为 GLOBAL-on 实测口径）**：
+  src/lua/lua_api.cpp global facade 深层错误臂（93 行 / 221 分支记录缺失，
+  register_global_api 尾段：rw_write_extend、reliable/data/rate 的 error 臂；
+  line 94% / branch 89%）；src/global/global_manager.cpp 方法级错误臂长尾
+  （32 行 / 130 分支记录，line 97% / branch 87%）；
+  src/bootstrap/bootstrap.cpp GLOBAL gated 装配行 + 分支（bootstrap 套件
+  未装 global 配置，9 行 / 20 分支记录）。
+- [ ] **可选模块未测量 TU（默认树门禁结构性盲区，本轮未动）**：
+  cluster（cluster_manager 450 行 + transport 623 行 + cluster_status）、
+  server（server_manager 352 行 + server_status 30 行）、
+  player（player_manager 267 行）、src/main.cpp（main() 入口，无 gcda 可测）。
+  若要收口需 CI 增设 GLOBAL/CLUSTER=ON 的覆盖率 job（提案，未实施）；
+  或沿用本轮做法本地开开关实测、余量登记。注意 GLOBAL=ON 会在共享 TU
+  制造跨 TU lambda 克隆槽位伪影（d612c0b 现象），收口时按 clone-artifact
+  标记惯例处理。

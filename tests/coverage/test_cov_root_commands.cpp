@@ -22,6 +22,9 @@
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/cluster/cluster_transport.hpp"
 #endif
+#ifdef SHIELD_ENABLE_GLOBAL
+#include "shield/global/global_manager.hpp"
+#endif
 #ifdef SHIELD_ENABLE_SERVER
 #include "shield/server/server_manager.hpp"
 #endif
@@ -584,6 +587,60 @@ BOOST_AUTO_TEST_CASE(ServerCommandsReportManagerSnapshot) {
     }
 
     shield::server::ServerManager::set_global(nullptr);
+}
+#endif
+
+#ifdef SHIELD_ENABLE_GLOBAL
+// With a global manager installed, root.global and root.status surface the
+// capability-store snapshot (same read-only shape as the server case above).
+BOOST_AUTO_TEST_CASE(GlobalCommandsReportManagerSnapshot) {
+    shield::global::GlobalManager gm(shield::global::GlobalConfig{});
+    // One data round trip so the snapshot's hit rate divides real lookups.
+    gm.data_set("cov", "1", 0);
+    std::string value;
+    BOOST_CHECK(gm.data_get("cov", &value));
+    // Cache + per-family registry state so every snapshot accessor reads
+    // non-trivial state (cache counters, rwlock/queue/scheduler counts).
+    std::string cached;
+    BOOST_CHECK(gm.cache_get("cov", 60000, &cached));  // miss -> fill
+    BOOST_CHECK(gm.cache_get("cov", 60000, &cached));  // hit
+    BOOST_CHECK(gm.rw_write_acquire("cov_rw", "owner", 60000) ==
+                shield::global::LockStatus::kOk);
+    gm.queue_push("cov_q", "x");
+    gm.delay_push("cov_dq", "x", 0);
+    gm.priority_push("cov_pq", "x", 1);
+    gm.broadcast_push("cov_bq", "x");
+    gm.reliable_push("cov_rq", "x");
+    std::string error;
+    BOOST_CHECK(
+        gm.sched_register("interval", "cov_task", "1000", "svc", &error));
+    shield::global::GlobalManager::set_global(&gm);
+
+    {
+        ConsoleHarness harness;
+        shield::console::CommandDispatcher dispatcher;
+        shield::console::RootCommands root(*manager);
+        root.register_all(dispatcher);
+
+        dispatcher.dispatch(harness.session, "root.global");
+        std::string line = harness.read_line();
+        BOOST_REQUIRE(!line.empty());
+        auto resp = nlohmann::json::parse(line);
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK_EQUAL(resp["data"]["data"]["keys"], 1u);
+        BOOST_CHECK(resp["data"]["queues"].is_object());
+        BOOST_CHECK(resp["data"]["locks"].is_object());
+
+        dispatcher.dispatch(harness.session, "root.status");
+        line = harness.read_line(std::chrono::milliseconds(8000));
+        BOOST_REQUIRE(!line.empty());
+        resp = nlohmann::json::parse(line);
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK(resp["data"]["global"].is_object());
+        BOOST_CHECK_EQUAL(resp["data"]["global"]["data"]["keys"], 1u);
+    }
+
+    shield::global::GlobalManager::set_global(nullptr);
 }
 #endif
 

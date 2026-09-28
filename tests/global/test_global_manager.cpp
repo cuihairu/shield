@@ -23,6 +23,7 @@ using shield::global::LockStatus;
 using shield::global::NackResult;
 using shield::global::parse_cron;
 using shield::global::RankEntry;
+using shield::global::RateLimitConfig;
 using shield::global::ReliableDelivery;
 using shield::global::SchedInfo;
 using shield::global::validate_global_config;
@@ -621,6 +622,27 @@ BOOST_AUTO_TEST_CASE(DelayQueueScheduling) {
     BOOST_CHECK_EQUAL(gm.delay_ready("missing"), 0u);
 }
 
+BOOST_AUTO_TEST_CASE(PriorityAndBroadcastQueueCounts) {
+    GlobalManager gm(default_config());
+    std::string out;
+    gm.priority_push("p2", "low", 20);
+    gm.priority_push("p1", "high", 5);
+    BOOST_CHECK(gm.priority_pop("p1", &out) && out == "high");
+    BOOST_CHECK_EQUAL(gm.priority_length("p2"), 1u);
+    BOOST_CHECK_EQUAL(gm.priority_queue_count(), 2u);
+    gm.priority_purge("p2");
+    BOOST_CHECK_EQUAL(gm.priority_queue_count(), 1u);
+
+    const auto first = gm.broadcast_push("b", "one");
+    const auto second = gm.broadcast_push("b", "two");
+    BOOST_CHECK_EQUAL(second, first + 1);
+    gm.broadcast_push("b2", "other");
+    BOOST_CHECK_EQUAL(gm.broadcast_history_size("b"), 2u);
+    BOOST_CHECK_EQUAL(gm.broadcast_queue_count(), 2u);
+    gm.broadcast_purge("b2");
+    BOOST_CHECK_EQUAL(gm.broadcast_queue_count(), 1u);
+}
+
 BOOST_AUTO_TEST_CASE(ReliableAckAndNackRequeue) {
     GlobalManager gm(default_config());
     gm.reliable_configure("r", 3);
@@ -696,6 +718,45 @@ BOOST_AUTO_TEST_CASE(ReliableConfigureKeepsDefaultOnInvalid) {
     // Third nack hits the default cap of 3.
     BOOST_CHECK(gm.reliable_nack("r", delivery.delivery_id, 0) ==
                 NackResult::kDead);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Rate limiters
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(RateLimitSuite)
+
+// key_count / purge are the introspection pair behind /ops global status;
+// both backends keep separate per-key state, so exercise each shape.
+BOOST_AUTO_TEST_CASE(KeyCountAndPurgeCoverBothBackends) {
+    GlobalManager gm(default_config());
+    RateLimitConfig bucket;
+    bucket.rate = 10.0;
+    bucket.burst = 5.0;
+    gm.rate_limit_configure("rl_bucket", bucket);
+    BOOST_CHECK(gm.rate_limit_allow("rl_bucket", "a", 1.0).allowed);
+    BOOST_CHECK(gm.rate_limit_allow("rl_bucket", "b", 1.0).allowed);
+    BOOST_CHECK_EQUAL(gm.rate_limit_key_count("rl_bucket"), 2u);
+
+    RateLimitConfig sliding;
+    sliding.sliding = true;
+    sliding.window_ms = 60000;
+    sliding.max_requests = 10;
+    gm.rate_limit_configure("rl_window", sliding);
+    for (const char* key : {"x", "y", "z"}) {
+        BOOST_CHECK(gm.rate_limit_allow("rl_window", key, 1.0).allowed);
+    }
+    BOOST_CHECK_EQUAL(gm.rate_limit_key_count("rl_window"), 3u);
+    BOOST_CHECK_EQUAL(gm.rate_limit_key_count("rl_missing"), 0u);
+
+    gm.rate_limit_purge("rl_bucket");
+    gm.rate_limit_purge("rl_missing");  // no-op arm: unknown limiter name
+    BOOST_CHECK_EQUAL(gm.rate_limit_key_count("rl_bucket"), 0u);
+    // Post-purge consumption starts from a fresh full bucket.
+    BOOST_CHECK(gm.rate_limit_allow("rl_bucket", "a", 5.0).allowed);
+    BOOST_CHECK_EQUAL(gm.rate_limit_key_count("rl_bucket"), 1u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -3097,18 +3097,21 @@ local function make_exclusive(name, opts, registry)
   opts = opts or {}
   local lock = {
     name = name,
-    ttl = opts.ttl or 0,
+    -- Field stays private (`_ttl`): the `ttl` name is the public reader
+    -- method below, and a same-named field would be overwritten by the
+    -- method definition (self.ttl would pass a function to lock_try).
+    _ttl = opts.ttl or 0,
     retry = opts.retry or 20,
     _owner = registry .. ':' .. name .. ':' .. tostring({}),
   }
   function lock:try_acquire()
-    return prim.lock_try(registry, name, self._owner, self.ttl)
+    return prim.lock_try(registry, name, self._owner, self._ttl)
   end
   function lock:release()
     return prim.lock_release(registry, name, self._owner)
   end
   function lock:extend(ttl)
-    return prim.lock_extend(registry, name, self._owner, ttl or self.ttl)
+    return prim.lock_extend(registry, name, self._owner, ttl or self._ttl)
   end
   function lock:owner()
     return prim.lock_info(registry, name)

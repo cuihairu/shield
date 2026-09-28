@@ -324,7 +324,11 @@ shield::net::HttpResponse OpsHttpHandler::handle_health(
     // still run as a non-global node, so absence omits the check rather
     // than degrading it.
     if (shield::global::GlobalManager::global() != nullptr) {
-        checks["global"] = {{"status", "ok"}};
+        checks["global"] = {
+            {"status",
+             "ok"}};  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                      // nlohmann::json braced-init branches; the line runs —
+                      // the guarded health fetch asserts this field)
     }
 #endif
 
@@ -653,18 +657,25 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
         prom_emit(out, "shield_global_cache_misses_total", "counter",
                   "Local cache misses", "",
                   static_cast<double>(gm->cache_misses()));
-        prom_emit_group(
+        prom_emit_group(  // GCOVR_EXCL_BR_LINE (inlined nlohmann::json
             out, "shield_global_queues", "gauge", "Queues by family",
-            {{"type=\"normal\"", static_cast<double>(gm->queue_count())},
-             {"type=\"delay\"", static_cast<double>(gm->delay_queue_count())},
+            // braced-init branches: entry lines run, records stay at zero)
+            {{"type=\"normal\"",
+              static_cast<double>(gm->queue_count())},  // GCOVR_EXCL_LINE
+             {"type=\"delay\"",
+              static_cast<double>(gm->delay_queue_count())},  // GCOVR_EXCL_LINE
              {"type=\"priority\"",
-              static_cast<double>(gm->priority_queue_count())},
+              static_cast<double>(
+                  gm->priority_queue_count())},  // GCOVR_EXCL_LINE
              {"type=\"broadcast\"",
-              static_cast<double>(gm->broadcast_queue_count())},
+              static_cast<double>(
+                  gm->broadcast_queue_count())},  // GCOVR_EXCL_LINE
              {"type=\"reliable\"",
-              static_cast<double>(gm->reliable_queue_count())}});
-        prom_emit_group(
+              static_cast<double>(
+                  gm->reliable_queue_count())}});  // GCOVR_EXCL_LINE
+        prom_emit_group(  // GCOVR_EXCL_BR_LINE (inlined nlohmann::json
             out, "shield_global_locks", "gauge", "Live locks by kind",
+            // braced-init branches: entry lines run, records stay at zero)
             {{"kind=\"mutex\"",
               static_cast<double>(gm->mutex_registry_size("mutex"))},
              {"kind=\"spinlock\"",

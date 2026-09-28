@@ -86,5 +86,10 @@ if(SHIELD_ENABLE_GLOBAL)
     target_compile_definitions(test_lua_api_global
         PRIVATE SHIELD_ENABLE_GLOBAL)
     target_link_libraries(test_lua_api_global PRIVATE shield_global)
+    # CI's cluster job runs `-L "cluster|player|server|global"`; without
+    # this label the enabled branch was compiled there but never executed
+    # (the coverage job only runs the stub branch), which is how a field/
+    # method collision in the lock facade stayed invisible to every gate.
+    set_property(TEST test_lua_api_global APPEND PROPERTY LABELS global)
     set_tests_properties(test_lua_api_global PROPERTIES TIMEOUT 180)
 endif()

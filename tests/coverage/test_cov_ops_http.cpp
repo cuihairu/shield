@@ -19,6 +19,9 @@
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
 #endif
+#ifdef SHIELD_ENABLE_GLOBAL
+#include "shield/global/global_manager.hpp"
+#endif
 #ifdef SHIELD_ENABLE_SERVER
 #include "shield/server/server_manager.hpp"
 #endif
@@ -405,6 +408,29 @@ BOOST_AUTO_TEST_CASE(ServiceStatsMetrics) {
     }
     BOOST_CHECK(detail_ok);
 
+#ifdef SHIELD_ENABLE_GLOBAL
+    // The metrics export also carries the global capability section (and
+    // /ops/status its JSON twin) once a manager is installed; park one so
+    // those gated branches are observable (accessor-only: no start()).
+    // Cache + per-family registry state keep every export gauge non-zero.
+    shield::global::GlobalManager gm(shield::global::GlobalConfig{});
+    gm.data_set("cov", "1", 0);
+    std::string cached;
+    BOOST_CHECK(gm.cache_get("cov", 60000, &cached));  // miss -> fill
+    BOOST_CHECK(gm.cache_get("cov", 60000, &cached));  // hit
+    BOOST_CHECK(gm.rw_write_acquire("cov_rw", "owner", 60000) ==
+                shield::global::LockStatus::kOk);
+    gm.queue_push("cov_q", "x");
+    gm.delay_push("cov_dq", "x", 0);
+    gm.priority_push("cov_pq", "x", 1);
+    gm.broadcast_push("cov_bq", "x");
+    gm.reliable_push("cov_rq", "x");
+    std::string sched_error;
+    BOOST_CHECK(
+        gm.sched_register("interval", "cov_task", "1000", "svc", &sched_error));
+    shield::global::GlobalManager::set_global(&gm);
+#endif
+
     // /ops/metrics exposes the counters and the per-incarnation gauges.
     bool metrics_ok = false;
     std::string metrics_body;
@@ -423,12 +449,31 @@ BOOST_AUTO_TEST_CASE(ServiceStatsMetrics) {
                          "\"cov_traffic_svc\"} 0") != std::string::npos &&
                      metrics_body.find(
                          "shield_service_uptime_seconds{"
-                         "service=\"cov_traffic_svc\"} ") != std::string::npos;
+                         "service=\"cov_traffic_svc\"} ") != std::string::npos
+#ifdef SHIELD_ENABLE_GLOBAL
+                     && metrics_body.find("shield_global_data_keys 1") !=
+                            std::string::npos
+#endif
+            ;
         if (!metrics_ok) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     }
     BOOST_CHECK(metrics_ok);
+#ifdef SHIELD_ENABLE_GLOBAL
+    {
+        std::string response =
+            client.get("/ops/status", std::chrono::milliseconds(9000));
+        auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK_EQUAL(resp["data"]["global"]["data"]["keys"], 1u);
+        std::string health =
+            client.get("/ops/health", std::chrono::milliseconds(9000));
+        auto hj = nlohmann::json::parse(RawHttpClient::body(health));
+        BOOST_CHECK_EQUAL(hj["data"]["checks"]["global"]["status"], "ok");
+        shield::global::GlobalManager::set_global(nullptr);
+    }
+#endif
     BOOST_CHECK(metrics_body.find("# TYPE shield_service_requests_total "
                                   "counter") != std::string::npos);
     BOOST_CHECK(metrics_body.find("# TYPE shield_service_uptime_seconds "

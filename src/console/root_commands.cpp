@@ -459,12 +459,22 @@ void RootCommands::cmd_global(shield::net::ConsoleSession& session,
 #ifdef SHIELD_ENABLE_GLOBAL
     nlohmann::json global = build_global_status_json();
     if (global.is_null()) {
-        nlohmann::json resp = {{"type", "error"},
-                               {"message", "Global not enabled"}};
+        nlohmann::json resp = {
+            {"type", "error"},
+            {"message", "Global not enabled"}};  // GCOVR_EXCL_BR_LINE
+                                                 // (compiler
+                                                 // artifact: inlined
+                                                 // nlohmann::json
+                                                 // braced-init
+                                                 // branches)
         session.send_line(resp.dump());
         return;
     }
-    nlohmann::json resp = {{"type", "result"}, {"data", global}};
+    nlohmann::json resp = {{"type", "result"},
+                           {"data", global}};  // GCOVR_EXCL_BR_LINE (compiler
+                                               // artifact: inlined
+                                               // nlohmann::json braced-init
+                                               // branches)
     session.send_line(resp.dump());
 #else
     nlohmann::json resp = {
