@@ -1,0 +1,51 @@
+# Shield Kickstart - 一键体验配置
+#
+# 四件套：Lua 业务脚本 + SQLite 持久化 + health.http 健康端点 + metrics.prometheus 指标端点。
+# 插件目录 bin/plugins 由 CMake 插件目标在构建期产出（bin/plugins/<package.id>/，
+# manifest 的 library 路径相对包根解析），因此本目录假定从仓库根目录以
+#   ./build/bin/kickstart --config examples/kickstart/config/app.yaml
+# 运行（plugins.directory 相对当前工作目录解析）。
+
+app:
+  name: "kickstart"
+  version: "1.0.0"
+
+log:
+  level: "info"
+  console: true
+
+actors:
+  # 单 actor：定时心跳写 SQLite（异步挂起），并把每次写入打到日志。
+  # 无 network 段 = 纯内部服务（hello_world 的 player/room 同形）。
+  - name: "game"
+    script: "../scripts/game.lua"
+    instances: 1
+
+# 插件系统 v1：显式 instances + bindings（手册见 docs/plugin-system.md）。
+# database.sqlite 通过 binding 逻辑名 database.default 被 Lua 访问：
+#   local db = shield.database.sqlite("database.default")
+plugins:
+  directory: "build/bin/plugins"
+  instances:
+    - id: "db.main"
+      package: "database.sqlite"
+      required: true
+      config:
+        database: "kickstart.db"
+
+    - id: "health.main"
+      package: "health.http"
+      required: true
+      config:
+        bind_address: "127.0.0.1"
+        port: 8086
+
+    - id: "metrics.main"
+      package: "metrics.prometheus"
+      required: true
+      config:
+        bind_address: "127.0.0.1"
+        port: 8087
+
+  bindings:
+    database.default: "db.main"

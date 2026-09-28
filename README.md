@@ -82,6 +82,14 @@ plugins: `scripts/lib/jwt.lua` (HS256 over the `shield.crypto` primitives,
 API table in `docs/lua-api.md`) is the reference implementation and
 `plugins/auth_jwt` is deprecated pending removal.
 
+The plugin system (manifest-first discovery, explicit instances + bindings,
+stable C ABI) is specified in `docs/plugin-system.md`, including the matrix of
+all 16 official plugin packages. To run the full stack in one process — a Lua
+business script writing to SQLite plus live `/health` and Prometheus
+endpoints — see `examples/kickstart/` (three commands, ~10 minutes). To start
+a new plugin package, run `tools/new_plugin.sh <name>`: it scaffolds the
+manifest, CMake wiring, a v1 ABI stub, and a passing lifecycle test.
+
 ## Target Positioning
 
 - C++ owns runtime infrastructure: actor scheduling, networking, Lua binding,

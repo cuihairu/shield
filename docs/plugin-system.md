@@ -29,7 +29,7 @@
 | 请求级生命周期 | v1 只定义进程级 `init` / `shutdown`。worker/request 生命周期后续再加。 |
 | 插件间任意互调 | v1 不提供全局 `find_plugin` 或裸 vtable 强转。插件通过声明依赖拿到 host 注入的接口。 |
 | 自动配置 / Starter 编排 | v1 不引入 Spring Boot Starter 式的"声明聚合 + 自动配置"层。starter 模式适合标准化 Web 业务（CRUD/REST），不适合游戏后端的异构部署、多实例与高事故代价场景。详见 [Design Rationale](#design-rationale)。 |
-| Auto-discovery | v1 不扫描 plugin 目录自动创建实例。隐式实例违背 Explicit Wiring，破坏可审计性。需要快速起步时用 `examples/` 模板项目 copy。 |
+| Auto-discovery | v1 不扫描 plugin 目录自动创建实例。隐式实例违背 Explicit Wiring，破坏可审计性。快速起步走 `examples/kickstart/`（三条命令跑通四件套全链路）与 `tools/new_plugin.sh`（新包脚手架），见 [第三方插件开发指引](#第三方插件开发指引)。 |
 | 沙箱 | v1 不隔离 native 插件的内存、线程或系统调用权限。 |
 | 多套插件配置入口 | 不为插件系统引入额外 TOML/INI/专用 YAML 文件。运行时配置只来自 Shield 主配置的 `plugins` 子树。 |
 
@@ -99,7 +99,7 @@ Starter 模式（Spring Boot 风格的"声明聚合 + 自动配置"）在游戏�
 
 Auto-discovery（扫描目录自动创建实例）的问题更严重：隐式实例违背 Explicit Wiring 核心原则，"哪些实例在跑"变成不可预测的状态，调试时无法从配置反推运行态，还有安全风险（恶意放置的 plugin 目录被自动加载）。
 
-需要快速起步时，正确做法是提供 `examples/` 模板项目（含完整 explicit yaml），用户 copy 后修改，而不是引入配置自动展开层。
+需要快速起步时，正确做法是提供模板项目（`examples/kickstart/`，含完整 explicit yaml，三条命令跑通）和插件脚手架（`tools/new_plugin.sh`），用户 copy 后修改，而不是引入配置自动展开层。
 
 ### 为什么不支持基础设施热加载
 
@@ -500,6 +500,31 @@ plugins:
 
 面向业务的 Redis 能力不直接暴露连接，而是落到具体 provider：`cache.redis`、`queue.redis`、`leaderboard.redis`。这些 provider 不各自建连——它们通过 manifest `requires` + `plugins.instances[].dependencies` 依赖 `redis.driver`（`shield.redis.v1`），共享驱动实例的连接池（当前为 Phase 2 可选依赖双路径，见 [redis.driver](plugins/redis-driver.md)）。
 
+## 官方插件矩阵
+
+仓库 `plugins/` 目录随附 16 个官方插件包，全部遵循本文的 manifest / C ABI / `register_lua` 契约。构建默认全关，按需用对应 CMake option 开启（产物 staging 到 `bin/plugins/<package.id>/`）：
+
+| Package | 接口 | CMake 开关 | Lua namespace | 说明 |
+| --- | --- | --- | --- | --- |
+| `database.sqlite` | `shield.database.v1` | `SHIELD_BUILD_DB_PLUGIN_SQLITE` | `shield.database.sqlite` | 内嵌 SQLite；异步路径（M2/M4）+ 事务。kickstart 示例即用它。 |
+| `database.mysql` | `shield.database.v1` | `SHIELD_BUILD_DB_PLUGIN_MYSQL` | `shield.database.mysql` | MySQL X DevAPI。 |
+| `database.postgresql` | `shield.database.v1` | `SHIELD_BUILD_DB_PLUGIN_POSTGRESQL` | `shield.database.postgresql` | libpq。 |
+| `database.mongodb` | `shield.document.v1` | `SHIELD_BUILD_PLUGIN_MONGODB` | `shield.database.mongodb` | 文档库（find/aggregate/transaction）。 |
+| `cache.redis` | `shield.cache.v1` | `SHIELD_BUILD_PLUGIN_CACHE_REDIS` | `shield.cache.redis` | 依赖 `redis.driver` 连接池。 |
+| `queue.redis` | `shield.queue.v1` | `SHIELD_BUILD_PLUGIN_QUEUE_REDIS` | `shield.queue.redis` | pub/sub，依赖 `redis.driver`。 |
+| `leaderboard.redis` | `shield.leaderboard.v1` | `SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS` | `shield.leaderboard.redis` | ZSET 排行榜，依赖 `redis.driver`。 |
+| `redis.driver` | `shield.redis.v1` | `SHIELD_BUILD_PLUGIN_REDIS_DRIVER` | — | 基础设施包：共享连接池 driver，供上层 Redis provider 依赖，业务一般不直接绑。 |
+| `health.http` | `shield.health.v1` | `SHIELD_BUILD_PLUGIN_HEALTH` | — | HTTP 健康端点（`/health`、`/ready`），内嵌 beast 监听。 |
+| `metrics.prometheus` | `shield.metrics.v1` | `SHIELD_BUILD_PLUGIN_METRIC` | — | Prometheus 文本端点；Lua 注册面规划中（无注册者时返回空 body）。 |
+| `matchmaking.elo` | `shield.matchmaking.v1` | `SHIELD_BUILD_PLUGIN_MATCHMAKING` | — | ELO 匹配。 |
+| `protocol.protobuf` | `shield.protocol.codec.v1` | `SHIELD_BUILD_PLUGIN_PROTOBUF` | — | BodyCodec provider，见 [Protocol Codec Plugins](protocol-codec-plugins.md)。 |
+| `protocol.msgpack` | `shield.protocol.codec.v1` | `SHIELD_BUILD_PLUGIN_MSGPACK` | — | 同上。 |
+| `protocol.flatbuffers` | `shield.protocol.codec.v1` | `SHIELD_BUILD_PLUGIN_FLATBUFFERS` | — | 同上。 |
+| `protocol.json` | `shield.protocol.codec.v1` | `SHIELD_BUILD_PLUGIN_JSON` | — | 同上。 |
+| `auth.jwt` | `shield.auth.v1` | `SHIELD_BUILD_PLUGIN_AUTH` | — | **已弃用（2026-09-28）**：认证属业务语义，参考实现改为 Lua 层 `scripts/lib/jwt.lua`（基于 `shield.crypto` 原语）；过渡期保留，新项目勿采用。 |
+
+接口与实现的对应关系是声明式匹配：manifest `provides` 声明 interface，`plugins.instances` 选择 package，`plugins.bindings` 把逻辑名绑到 instance——业务代码只认逻辑名（见 [Plugin Lua Bindings](#plugin-lua-bindings) 的 binding 规则）。
+
 ## Protocol Codec Plugins
 
 协议 codec 插件是插件系统 v1 的普通 provider，不享有自动发现或自动启用特权。它们通过 `shield.protocol.codec.v1` 暴露 codec 能力，由 `network.protocol.body.provider` 显式引用 binding。
@@ -775,6 +800,53 @@ int my_register_lua(shield_plugin_instance_v1* self,
 | `metrics.prometheus` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 | `health.http` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 | `matchmaking.elo` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
+
+## 第三方插件开发指引
+
+### 脚手架：tools/new_plugin.sh
+
+新插件包从脚手架开始，一条命令生成可构建、可测试的完整骨架：
+
+```bash
+tools/new_plugin.sh inventory_events
+# -> plugins/inventory_events/{manifest.yaml, inventory_events.h,
+#    shield_inventory_events.cpp, CMakeLists.txt, test/test_abi.cpp}
+```
+
+生成物：
+
+| 文件 | 内容 |
+| --- | --- |
+| `manifest.yaml` | schema v1 完整 manifest（`_` 折叠为 `.` 的 package id、三平台 library 路径、一个可用的 `shield.echo.v1` demo interface、`config_schema`）。 |
+| `<name>.h` | demo interface 头文件（vtable + interface 名宏），替换成真实接口契约时保持 vtable 只追加。 |
+| `shield_<name>.cpp` | 完整 v1 ABI 桩：instance shell 首成员结构、`create/start/shutdown/get_interface/register_lua`（空 Lua 面返回 0）+ `shield_error_v1` 填充范例。 |
+| `CMakeLists.txt` | MODULE 库 + `bin/plugins/<package.id>/` staging（manifest 同步拷贝）+ POSIX ABI 冒烟测试（Windows 挂起，与既有 scaffold 惯例一致）。 |
+| `test/test_abi.cpp` | dlopen → `get_v1` → ABI guard → `create/start/get_interface` echo 往返 → `shutdown` 的 Boost.Test 用例。 |
+
+脚本同时完成构建接线：在根 `CMakeLists.txt` 的 `add_subdirectory(plugins)` 守卫 if() 前插入 `option(SHIELD_BUILD_PLUGIN_<UPPER> ... OFF)` 并把该 OR 链接上新选项（只开新选项也能配置 plugins 树），再向 `plugins/CMakeLists.txt` 追加守卫的 `add_subdirectory(<name>)`。验证路径：
+
+```bash
+cmake -B build -DSHIELD_BUILD_PLUGIN_<UPPER>=ON
+cmake --build build --target test_<name>_abi
+ctest --test-dir build -R test_<name>_abi
+```
+
+### 手写契约清单
+
+不用脚手架时，第三方包必须满足的完整清单（每条在本文对应章节展开）：
+
+1. `manifest.yaml`：`schema_version: 1`、唯一 package id、三平台相对 library 路径、至少一个 `provides` interface。
+2. 二进制入口：`SHIELD_PLUGIN_EXPORT const shield_plugin_abi_v1* shield_plugin_get_v1(void)`，`package_id` 与 manifest 一致。
+3. instance shell（`shield_plugin_instance_v1`）必须是实例结构体**首成员**；`register_lua` 必须提供（无 Lua 面就 `return 0`）。
+4. 跨界只说 C ABI：不链 host 静态库（`shield_net` 等），不跨边界传 STL/异常/C++ 对象；与 host 的全部交互走 `args->host_api`。
+5. 配置：`config_schema` 声明契约，host 在 resolve 阶段应用默认值并校验；业务校验留在 `create`/`start`。
+6. 依赖：manifest `requires` 声明 + 实例 `dependencies` 绑定，不做全局查找。
+7. Lua 面：callable namespace（`shield.<package.id>`），`__call` 接收 **binding 逻辑名**（不得收 instance_id），解析失败软失败 `nil, { code = "module_unavailable" }`。
+8. 库形态：MODULE 共享库，staging 目录与 manifest `library` 路径一致（相对 package root）。
+
+### 一键体验参考
+
+`examples/kickstart/` 是官方插件四件套（Lua 业务脚本 + `database.sqlite` + `health.http` + `metrics.prometheus`）的最小可跑组合，三条命令跑通全链路（构建 → curl 健康/指标 → 改 Lua 验证数据落库），是显式 instances + bindings 配置的权威范例。快速起步的正确姿势：copy kickstart 改配置，或用脚手架起新包——而不是给 host 添加隐式装配行为。
 
 ## Current Rules
 
