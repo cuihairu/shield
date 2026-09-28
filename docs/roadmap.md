@@ -150,7 +150,11 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 - 高级数据 mapper。
 - Schema 工具链。
-- Lua runtime primitives / cosocket 风格出站 I/O（如 `shield.buffer` / `shield.crypto` / `shield.socket` / `shield.stream` / `shield.tls`）。
+- Lua runtime primitives / cosocket 风格出站 I/O（如 `shield.buffer` / `shield.socket` /
+  `shield.stream` / `shield.tls`）。
+- `shield.crypto` 一期切片已落地（2026-09-28，AD-08：编解码 / SHA-256 /
+  HMAC-SHA256 / `random_bytes` / `constant_time_compare`），作为业务层自建认证的原语基础；
+  二期（KDF / 对称加密 / 非对称 / JWKS）仍在 Later。
 
 说明：
 

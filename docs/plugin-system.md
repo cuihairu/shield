@@ -493,7 +493,7 @@ plugins:
 | `shield.health.v1` | health contributor。 |
 | `shield.protocol.codec.v1` | 网络协议 `BodyCodec` provider，例如 protobuf、msgpack、xmldef-native。 |
 | `shield.redis.v1` | 共享 Redis 连接池 driver（typed 命令 + pipeline + raw command），供上层 Redis 插件依赖。 |
-| `shield.auth.v1` | JWT 认证 provider（`plugins/auth_jwt` 提供；注意：认证/JWT 不作为官方插件发布口径见 [架构](architecture.md)，该包与接口保留在源码树供自建参考，不进入官方插件清单）。 |
+| `shield.auth.v1` | **已弃用（2026-09-28）**：认证/JWT 属业务语义，不放 C++ 插件层。参考实现改为 Lua 层 `scripts/lib/jwt.lua`（HS256，基于 `shield.crypto` 原语，API 表见 [lua-api.md](lua-api.md)）；`plugins/auth_jwt` 保留一个过渡期后移除，新项目勿采用。 |
 | `shield.matchmaking.v1` | 匹配 provider（ELO 评分，`plugins/matchmaking_elo` 提供）。 |
 
 `shield.document.v1` 与 `shield.database.v1` 并列而非继承：文档库的 filter / aggregation / _id 语义与 SQL 差距过大，强行套用 SQL 接口（query/execute/last_insert_id）会丢掉文档库的核心价值。两个接口可以由不同 package 各自提供。

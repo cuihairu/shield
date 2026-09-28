@@ -34,6 +34,7 @@
 #include "shield/log/logger.hpp"
 #include "shield/lua/client_identity.hpp"
 #include "shield/lua/lua_constants.hpp"
+#include "shield/lua/lua_crypto.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/lua/player_ref_box.hpp"
@@ -4912,6 +4913,7 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_log_api(shield, manager);
     register_client_api(shield, manager);
     register_http_api(shield, manager, runtime);
+    register_crypto_api(shield);
     register_plugin_api(shield);
 
 #ifdef SHIELD_ENABLE_CLUSTER

@@ -167,6 +167,16 @@ socket bytes
 
 ---
 
+## AD-08：密码学只提供原语，认证语义在 Lua 业务层
+
+**决策**：runtime 提供**密码学原语库**（`shield.crypto`：base64/base64url/hex 编解码、SHA-256、HMAC-SHA256、安全随机字节、常数时间比较），**不提供认证/签名等业务语义**。JWT 这类"签发什么 claim、何时过期、哪个 issuer 被接受"的决策属于业务，放在 Lua 层（`scripts/lib/jwt.lua` 为参考实现）。原 C++ 插件 `plugins/auth_jwt` 随之弃用，保留一个过渡期后移除。
+
+**理由**：认证策略是业务语义，会随产品形态变化（多租户 issuer、refresh token、非对称签名、密钥轮换），而 C++ 插件是 ABI 冻结的二进制边界——每种策略都塞进插件层等于把业务决策写进 ABI。原语是稳定面：算法与编码格式变化慢、可独立测试（RFC 向量），且实现可直接用已有依赖（OpenSSL 已在依赖树内），无需自研。分层后"换认证方案"是改 Lua，不是发新二进制；runtime 也不必为每种 token 形态维护插件 API 版本。
+
+**实现状态**（2026-09-28 落地）：`include/shield/lua/lua_crypto.hpp` + `src/lua/lua_crypto.cpp`，由 `register_full_shield_api` 装配；`shield_lua` 显式链接 `OpenSSL::Crypto`。API 表见 [lua-api.md](lua-api.md)。`scripts/lib/jwt.lua`（HS256，RFC 7519）为纯 Lua 参考实现，只用原语拼装，自带最小 JSON 编解码。`plugins/auth_jwt/manifest.yaml` 标 `deprecated`（不删，兼容既有部署）。
+
+---
+
 ## 决策与本仓库其他文档的关系
 
 | 决策 | 影响文档 |
@@ -178,3 +188,4 @@ socket bytes
 | AD-05 | gateway.md、protocol-routing-design.md、lua-api.md、runtime-messaging.md |
 | AD-06 | runtime-network.md、runtime-player.md、gateway.md、lua-api.md |
 | AD-07 | runtime-timer.md、lua-api.md |
+| AD-08 | lua-api.md、plugin-system.md、architecture.md |

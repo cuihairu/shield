@@ -188,6 +188,10 @@
 - 若未来推进 primitives，也应作为高级能力或后置阶段能力，而不是当前默认推荐路径。
 - JWT/Auth 不是基础组件层中心能力，也不作为 Shield 官方插件发布；应由业务层基于基础原语或外部服务实现。
 
+后续执行（2026-09-28，AD-08）：`shield.crypto` 一期切片已落地（编解码 / SHA-256 /
+HMAC-SHA256 / `random_bytes` / `constant_time_compare`），让上述“业务层基于基础原语”句式可行；
+参考实现为 Lua 层 `scripts/lib/jwt.lua`，`plugins/auth_jwt` 标弃用（保留一个过渡期）。其余 primitives（`shield.buffer` / `socket` / `stream` / `tls`）仍为后置方向。
+
 ### OD-016 Server State Machine and API Surface
 
 状态：closed。权威文档见 [服务器状态运行时语义](runtime-server.md) 和 [官方可选模块契约](optional-modules.md)。

@@ -621,6 +621,67 @@ off()
 
 ---
 
+## Crypto API
+
+`shield.crypto` 提供密码学**原语**（C++/OpenSSL 实现）。分层裁定：runtime 只提供原语，业务语义（JWT/会话签名等）在 Lua 层组合——参考实现 `scripts/lib/jwt.lua`（HS256，见下）。
+
+所有函数接收/返回 Lua string（字节透明）；哈希与 HMAC 返回**原始摘要**（需要文本形式时用 `hex_encode` / `base64url_encode` 组合）。
+
+**编解码**：
+
+| API | 说明 |
+| --- | --- |
+| `shield.crypto.base64_encode(data)` | 标准 base64（RFC 4648 §4，带 `=` 填充） |
+| `shield.crypto.base64_decode(data)` | 标准/base64url 字母表均可；非法字符/长度抛 Lua error |
+| `shield.crypto.base64url_encode(data)` | URL-safe 字母表（`-_`），**无填充**（JWT segment 形态） |
+| `shield.crypto.base64url_decode(data)` | 接受无填充与标准填充输入 |
+| `shield.crypto.hex_encode(data)` | 小写十六进制 |
+| `shield.crypto.hex_decode(data)` | 大小写均可；奇数长度/非法字符抛 error |
+
+**摘要 / MAC / 随机**：
+
+| API | 说明 |
+| --- | --- |
+| `shield.crypto.sha256(data)` | SHA-256，返回 32 字节原始摘要 |
+| `shield.crypto.hmac_sha256(key, data)` | HMAC-SHA256，返回 32 字节原始 MAC |
+| `shield.crypto.random_bytes(n)` | 密码学安全随机字节（`RAND_bytes`）；`n=0` 返回空串，`n<0` 或 `n>1MiB` 抛 error |
+| `shield.crypto.constant_time_compare(a, b)` | 常数时间内容比较；长度不等直接 `false`（长度本身不设防，内容比较设防） |
+
+**正确性锚点**：base64/base64url 用 RFC 4648 向量、SHA-256 用 RFC 6234 向量、HMAC-SHA256 用 RFC 4231 TC1–TC4 锁定（`tests/coverage/test_cov_lua_crypto.cpp`）。
+
+### jwt.lua —— 业务层认证参考实现
+
+`scripts/lib/jwt.lua` 是纯 Lua 的 HS256 JWT（RFC 7519）参考实现，完全由 `shield.crypto` 原语拼成，展示"业务层自建认证"的正确姿势（runtime 不含 JWT 语义；C++ 插件层的 `plugins/auth_jwt` 已因此弃用）：
+
+```lua
+local jwt = dofile("scripts/lib/jwt.lua")
+
+-- 签发：claims 表 + 共享密钥
+local token = jwt.sign(
+    { sub = "player_1", iss = "gate", exp = os.time() + 3600 },
+    "shared-secret")
+
+-- 校验：通过返回 claims，失败返回 nil, code, message
+local claims, code = jwt.verify(token, "shared-secret",
+                                { issuer = "gate" })
+if not claims then
+    -- code ∈ "malformed" | "unsupported_alg" | "bad_signature"
+    --      | "expired" | "not_yet_valid" | "bad_issuer" | "bad_audience"
+    shield.log.warn("token rejected: " .. code)
+end
+```
+
+| verify 选项 | 说明 |
+| --- | --- |
+| `now` | 覆盖当前时间（unix 秒；默认 `os.time()`，受业务时钟挂钩影响） |
+| `leeway` | exp/nbf 容差秒数（默认 0） |
+| `issuer` | 校验 `iss` 精确匹配 |
+| `audience` | 校验 `aud`（string 或 array 形态均可） |
+
+安全语义：签名用 `constant_time_compare` 比较；`alg` 钉死 HS256（`alg:"none"`/算法混淆 token 在信任任何 claim 之前即拒绝）；`exp`/`nbf` 齐全；头/载荷 JSON 编解码内置于该文件（对象键排序输出，token 字节可复现）。
+
+---
+
 ## Plugin-provided APIs
 
 数据库、缓存、消息队列、监控、健康检查、匹配等后端能力由插件提供。认证/JWT 属于业务层策略，不作为 Shield 官方插件发布。插件的 Lua 绑定跟随插件目录，通过 `register_lua` 钩子注册到 `shield.<namespace>`。host 端 `src/lua/lua_api.cpp` 不感知任何具体插件 API。

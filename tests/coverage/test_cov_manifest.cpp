@@ -4,12 +4,17 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 #include "shield/plugin/plugin_host.hpp"
 
 using namespace shield::plugin;
 using json = nlohmann::json;
 namespace fs = std::filesystem;
+
+#ifndef SHIELD_SOURCE_DIR
+#define SHIELD_SOURCE_DIR "."
+#endif
 
 namespace {
 
@@ -203,6 +208,36 @@ BOOST_AUTO_TEST_CASE(load_manifest_wrong_schema_version_throws) {
                     std::string::npos);
     }
     fs::remove_all(path.parent_path());
+}
+
+// Every in-tree plugin manifest must actually parse — the deprecation note
+// added to plugins/auth_jwt/manifest.yaml is YAML that only fails at load time
+// if it is malformed, and nothing else in the suite reads the real files.
+BOOST_AUTO_TEST_CASE(in_tree_manifests_parse) {
+    const fs::path plugins_dir =
+        fs::path(std::string(SHIELD_SOURCE_DIR)) / "plugins";
+    std::vector<fs::path> manifests;
+    for (const auto& entry : fs::directory_iterator(plugins_dir)) {
+        if (fs::is_directory(entry)) {
+            const fs::path candidate = entry.path() / "manifest.yaml";
+            if (fs::exists(candidate)) {
+                manifests.push_back(candidate);
+            }
+        }
+    }
+    BOOST_CHECK(!manifests.empty());
+    for (const auto& path : manifests) {
+        const Manifest m = load_manifest_file(path);
+        BOOST_CHECK_EQUAL(m.schema_version, 1);
+        BOOST_CHECK(!m.id.empty());
+        BOOST_CHECK(!m.provides.empty());
+    }
+    // The auth.jwt manifest stays loadable (transition period) and announces
+    // the deprecation in its description (AD-08).
+    const Manifest jwt =
+        load_manifest_file(plugins_dir / "auth_jwt" / "manifest.yaml");
+    BOOST_CHECK_EQUAL(jwt.id, std::string("auth.jwt"));
+    BOOST_CHECK(jwt.description.find("DEPRECATED") != std::string::npos);
 }
 
 // load_manifest_file refuses files that are not named manifest.yaml.

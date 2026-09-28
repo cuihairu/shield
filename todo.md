@@ -1,5 +1,46 @@
 # TODO
 
+## 认证业务语义出插件层：原语库 shield.crypto + Lua 层 jwt.lua（2026-09-28 完成）
+
+架构纠正（插件矩阵分层）：`auth_jwt` 做成 C++ 插件是错位的——JWT 签发/校验是业务
+决策（多租户 issuer、refresh token、密钥轮换都会变），而插件是 ABI 冻结的二进制边界。
+runtime 只给稳定原语，业务语义留给 Lua（落已 AD-08）。
+
+- [x] **原语库 `shield.crypto`**（`include/shield/lua/lua_crypto.hpp` +
+      `src/lua/lua_crypto.cpp`，`register_full_shield_api` 装配，
+      `shield_lua` 显式链 `OpenSSL::Crypto`）：base64 /
+      base64url / hex 编解码、`sha256`、`hmac_sha256`、
+      `random_bytes`（1 MiB 上限）、`constant_time_compare`（
+      OpenSSL `CRYPTO_memcmp`）。编解码本地自写
+      （而非 `EVP_DecodeBlock` / BIO）：前者填充数量语义
+      不严、后者带新行处理，两者都比 ~30 行
+      RFC 4648 参考实现难用正确。哈希/MAC/随机走
+      OpenSSL，不自开实现。
+- [x] **`scripts/lib/jwt.lua`**（HS256 / RFC 7519 参考实现）：只用
+      原语拼装，自带最小 JSON 编解码（保持自包含，
+      不扩 runtime API 面）；`alg` 钉死 HS256（`alg:none` / 算法混淆
+      在信任任何 claim 前拒绝）、签名常数时间比较、
+      `exp`/`nbf`（带 leeway）/`iss`/`aud`（string 与 array 双形）校验、
+      `verify` 失败返回 `nil, code, message`。
+- [x] **`plugins/auth_jwt` 标弃用**（不物理删除，保留一个过渡期）：
+      manifest 加 `deprecated` 块 + description 前缀（manifest 解析仅
+      `require_field("id")` + `.value()`，未知键忽略，无破坏）；
+      plugin-system.md 接口矩阵标已弃用 + 替代路径；README 提醒。
+- [x] **测试**：`tests/coverage/test_cov_lua_crypto.cpp` 12 用例——RFC 4648
+      §4/§5 向量 + 往返、RFC 6234 SHA-256（空串/"abc"/百万 'a'）、
+      RFC 4231 HMAC TC1–TC4、hex/base64 非法输入拒绝、random_bytes
+      边界、jwt 签发/校验交叉验证（签名用 C++ OpenSSL
+      独立算得后比对，不自证）、claim 嵌套/数组、七类
+      拒绝码矩阵、`register_full_shield_api` 生产注册路径。
+- [x] **文档**：`docs/lua-api.md` 新增 Crypto API 表 + jwt.lua 用法；
+      `docs/architecture-decisions.md` 新增 AD-08（原语/语义分层裁定）；
+      `docs/runtime-primitives.md` 落档一期实现状态与
+      **命名口径差异**（文档建议 `digest`/`hmac`/
+      `timing_safe_equal` 算法无关名，实落为算法专名
+      `sha256`/`hmac_sha256`，加 SHA-512 是新增函数而非既有函数语义扩张）；
+      `open-decisions.md` OD-015 后续执行注、`roadmap.md` Later 记一期切片。
+- [x] 门禁：五树 ctest 全绿 + 覆盖率六口径全绿（见下）。
+
 ## 头文件层覆盖收口（2026-09-27）
 
 CI gate 只统计 `src/`（filter `../src/`），`include/shield/**` 的内联/模板

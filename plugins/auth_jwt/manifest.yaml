@@ -3,7 +3,18 @@ id: auth.jwt
 name: JWT Authentication
 version: 1.0.0
 kind: auth
-description: HS256 JWT provider for shield.auth.v1 (OpenSSL HMAC-SHA256)
+# DEPRECATED (2026-09-28): authentication/token semantics belong to the Lua
+# business layer, not C++ plugins. Superseded by scripts/lib/jwt.lua built on
+# shield.crypto primitives (API table in docs/lua-api.md). Kept in-tree for
+# one transition period as a reference; do not adopt for new projects.
+deprecated:
+  since: "2026-09-28"
+  reason: business-layer auth does not belong in a C++ plugin
+  replacement: scripts/lib/jwt.lua (HS256 over shield.crypto primitives)
+  removal: pending
+description: |
+  [DEPRECATED] HS256 JWT provider for shield.auth.v1 (OpenSSL HMAC-SHA256).
+  Replaced by the Lua-layer scripts/lib/jwt.lua on shield.crypto primitives.
 documentation:
   url: https://cuihairu.github.io/shield/plugins/
   description: HS256 JWT provider for the shield.auth.v1 interface (OpenSSL HMAC-SHA256); not part of the official plugin catalog

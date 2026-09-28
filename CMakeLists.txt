@@ -543,6 +543,7 @@ endif()
 add_library(shield_lua STATIC
     src/lua/lua_service.cpp
     src/lua/lua_api.cpp
+    src/lua/lua_crypto.cpp
     src/lua/lua_runtime.cpp
     src/lua/lua_gateway_bridge.cpp
     src/lua/gateway_actor.cpp
@@ -569,6 +570,8 @@ target_compile_definitions(shield_lua
 target_link_libraries(shield_lua
     PUBLIC shield_base shield_core
     PRIVATE shield_log shield_config shield_net shield_plugin
+    # OpenSSL::Crypto backs the shield.crypto Lua primitives (lua_crypto.cpp).
+    PRIVATE OpenSSL::Crypto
     PRIVATE ${LUA_LIBRARIES} sol2::sol2
 )
 

@@ -62,6 +62,9 @@ shield_coverage_test(test_cov_rpc_descriptor shield_transport)
 shield_coverage_test(test_cov_logger shield_log)
 shield_coverage_test(test_cov_plugin_config shield_plugin shield_config)
 shield_coverage_test(test_cov_manifest shield_plugin)
+# Parses the real in-tree plugin manifests (incl. auth_jwt's deprecation note).
+target_compile_definitions(test_cov_manifest
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 shield_coverage_test(test_cov_schema_validator shield_plugin)
 shield_coverage_test(test_cov_plugin_host shield_plugin)
 shield_coverage_test(test_cov_config shield_config)
@@ -114,6 +117,10 @@ shield_coverage_test(test_cov_lua_service3 shield_lua shield_core CAF::core CAF:
 shield_coverage_test(test_cov_lua_service4 shield_lua shield_core CAF::core CAF::io)
 # on_shutdown drain phase (drain_all) — see docs/lua-api.md.
 shield_coverage_test(test_cov_lua_shutdown shield_lua shield_core CAF::core CAF::io)
+# shield.crypto primitives (RFC vectors) + scripts/lib/jwt.lua reference impl.
+shield_coverage_test(test_cov_lua_crypto shield_lua shield_core CAF::core CAF::io)
+target_compile_definitions(test_cov_lua_crypto PRIVATE
+    SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 # Round-2 coverage suites (same modules, deeper branches).
 shield_coverage_test(test_cov_lua_api2 shield_lua shield_core shield_net CAF::core CAF::io)

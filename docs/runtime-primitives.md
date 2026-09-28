@@ -173,6 +173,31 @@ Shield 适合借鉴这种“cosocket 风格”，但不应照搬 `ngx.*` 命名�
 - Lua API 不应命名成 `shield.openssl.*`
 - 底层是否用 OpenSSL 属于实现细节
 
+实现状态（2026-09-28 部分落地，AD-08）：
+
+已实现并有 RFC 向量测试的一期切片（API 表见
+[lua-api.md](lua-api.md)）：
+
+- `base64_encode` / `base64_decode` / `base64url_encode` /
+  `base64url_decode` / `hex_encode` / `hex_decode`
+- `sha256` / `hmac_sha256`
+- `random_bytes`
+- `constant_time_compare`
+
+**命名口径与上文的差异（有意为之）**：上文建议的 `digest` / `hmac` /
+`timing_safe_equal` 是算法无关名，本轮落地为**算法专名** `sha256` /
+`hmac_sha256` / `constant_time_compare`。理由：算法是签名的一部分，
+`digest(data, "sha512")` 这类字符串算法名把错误推迟到运行期（拼错算法
+名得到空摘要或抛错），而专名让"加 SHA-512 / SHA-3"是**新增函数**而不
+是既有函数的语义扩张——旧调用点语义不变，也不需要为算法选择引入额外
+参数与错误分支。`constant_time_compare` 沿用 OpenSSL `CRYPTO_memcmp`
+的既有名而非 `timing_safe_equal`，因为它的行为（长度不等直接 false、
+长度本身不设防）需要在名字上就说清。
+
+仍为后置（未实现）：`random_uuid`、`hkdf`、`pbkdf2`、
+`aes_gcm_encrypt` / `aes_gcm_decrypt`、非对称签名验签、证书解析、
+JWKS。
+
 #### `shield.socket`
 
 职责：
@@ -406,20 +431,26 @@ CAF 不应直接复用以下 Lua 表面 API：
 截至当前文档版本：
 
 - `shield.http` 已存在
-- transport 中旧的 OpenSSL 帧级加密实现片段已删除（`shield.crypto` 是后续官方原语层）
-- JWT/Auth 不作为 Shield 官方插件发布
+- transport 中旧的 OpenSSL 帧级加密实现片段已删除
+- `shield.crypto` 已落地一期切片（见上“实现状态”）：
+  编解码 + SHA-256 / HMAC-SHA256 + `random_bytes` +
+  `constant_time_compare`
+- JWT/Auth 不作为 Shield 官方插件发布；参考实现改为
+  Lua 层 `scripts/lib/jwt.lua`（AD-08）
 
 但以下能力尚未作为稳定基础组件正式冻结并实现：
 
 - `shield.buffer`
 - `shield.encoding`
-- `shield.crypto`
 - `shield.socket`
 - `shield.tls`
 - `shield.stream`
 - `shield.codec` 统一 Lua 表面
+- `shield.crypto` 的二期（KDF / 对称加密 / 非对称 / 证书 / JWKS）
 
-因此本文是**后置分层草案**，不是当前实现完成声明，也不是当前公开 API 承诺。
+因此本文除 `shield.crypto` 一期切片外仍是**后置分层
+草案**，不是当前实现完成声明，也不是当前公开
+API 承诺。
 
 ## 若未来推进，推荐顺序
 
