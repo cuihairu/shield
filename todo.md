@@ -38,6 +38,14 @@ CI gate 只统计 `src/`（filter `../src/`），`include/shield/**` 的内联/�
 - [x] 实测（build-cov 清 `.gcda` + 全部 97 用例）：src/ 门禁
       line=100 / branch 11385/11385 / function=100 EXIT=0；
       include/ 口径 **520/520 = 100%**（3 行按登记排除后出测量面）
+- [x] **维持复核（2026-09-28，清 `.gcda` 复跑全部用例）**：五树 ctest 全绿
+      （build 97 / net 99 / plug 99 / dbg 97 / cov 97），src/ 门禁
+      line=100 / branch 11385/11385 / function=100 EXIT=0，include/ 诊断
+      520/520 = 100%——与收口轮数字一致，无新可达缺口。
+      本地构建环境备注：本地 vcpkg-tool 仓已变为单提交 snapshot（不含
+      vcpkg.json builtin-baseline 对象），manifest install 会失败；本地
+      五树 configure 加 `-DVCPKG_MANIFEST_INSTALL=OFF` 复用已装
+      `vcpkg_installed/` 即可（CI 不受影响，CI 用 vcpkgGitCommitId 自取）
 
 注意：include/ 层目前**不在 CI gate 测量面内**（gate 参数未动）；本节
 数字是诊断口径。若未来把 include/ 纳入 gate：inline 头文件代码在每个
