@@ -89,8 +89,14 @@ shield_coverage_test(test_cov_root_commands POSIX_ONLY shield_bootstrap shield_n
 shield_coverage_test(test_cov_lua_commands POSIX_ONLY shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_ops_http shield_bootstrap shield_net shield_plugin)
 # The TLS metrics case resolves the self-signed fixtures via the source tree.
+# The pool-stats export case stages the minimal test plugin into a scratch
+# package; the staged module's filename is platform-dependent (.so/.dylib/
+# .dll), so pass it through instead of hardcoding one suffix.
 target_compile_definitions(test_cov_ops_http
-    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    PRIVATE
+        SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+        SHIELD_MINIMAL_TEST_PLUGIN_LIBRARY="${_shield_minimal_plugin_filename}")
+add_dependencies(test_cov_ops_http shield_minimal_test_plugin)
 shield_coverage_test(test_cov_starter shield_bootstrap shield_net shield_plugin)
 shield_coverage_test(test_cov_bootstrap shield_bootstrap shield_net shield_plugin)
 # The TLS wiring cases resolve the self-signed fixtures via the source tree.

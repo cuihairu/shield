@@ -1937,10 +1937,13 @@ BOOST_AUTO_TEST_CASE(PoolStatsMetricsExportGates) {
            "      type: boolean\n"
            "    stats_legacy_no_pool:\n"
            "      type: boolean\n";
-    fs::copy_file(
-        "test_plugins/minimal.test/bin/libshield_minimal_test_plugin.so",
-        dir / "poolstats.test" / "bin" / "libshield_minimal_test_plugin.so",
-        fs::copy_options::overwrite_existing);
+    // Staged module filename is platform-dependent (tests/CMakeLists.txt
+    // exports the same name test_plugin_host loads by); the manifest above
+    // declares the matching per-platform path.
+    const fs::path plugin_lib = SHIELD_MINIMAL_TEST_PLUGIN_LIBRARY;
+    fs::copy_file(fs::path("test_plugins/minimal.test/bin") / plugin_lib,
+                  dir / "poolstats.test" / "bin" / plugin_lib,
+                  fs::copy_options::overwrite_existing);
 
     auto& host = shield::plugin::global_host();
     std::string err;
