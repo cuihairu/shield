@@ -1926,7 +1926,13 @@ BOOST_AUTO_TEST_CASE(TlsAbsentKeepsDefaults) {
     std::string error;
     BOOST_REQUIRE_MESSAGE(shield::config::validate_runtime_config(opts, &error),
                           error);
-    const auto& actor = shield::config::runtime_actors()[0];
+    // Copy first: runtime_actors() returns by value, so binding a reference
+    // to the temporary's element would dangle at the end of this statement
+    // (macOS allocators hand back zeroed memory; libstdc++ happens to keep
+    // the stale bytes, which is why this only failed there).
+    const auto actors = shield::config::runtime_actors();
+    BOOST_REQUIRE_EQUAL(actors.size(), 1U);
+    const auto& actor = actors[0];
     BOOST_CHECK_EQUAL(actor.network_tls_enabled, false);
     BOOST_CHECK(actor.network_tls_cert_file.empty());
     BOOST_CHECK(actor.network_tls_key_file.empty());
