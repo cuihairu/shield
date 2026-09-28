@@ -261,10 +261,13 @@ public:
     std::string get_user_data(std::string_view key) const override {
         std::lock_guard<std::mutex> lock(user_data_mutex_);
         auto it = user_data_.find(std::string(key));
-        // GCOVR_EXCL_LINE (data‑access: key‑not‑found path is defensive; always
-        // exercised when a key has never been set, which gcovr counts as a
-        // missing branch on the ternary expression).
+        // GCOVR_EXCL_BR_START (compiler artifact: with hit and miss both
+        // driven, raw gcov shows the ternary arms themselves taken while
+        // the trailing fallthrough/away pair gcc emits for the std::string
+        // return path never executes under any input; not a source-level
+        // branch)
         return it != user_data_.end() ? it->second : "";
+        // GCOVR_EXCL_BR_STOP
     }
 
     SessionBinding binding() const override {
@@ -287,8 +290,6 @@ public:
         binding_.target_service = std::move(target_service);
         binding_.player_id = std::move(player_id);
         ++binding_.epoch;
-        // GCOVR_EXCL_LINE (out‑nullptr path: callers always pass &out in
-        // existing tests; the branch where out is nullptr is defensive).
         if (out != nullptr) {
             *out = binding_;
         }

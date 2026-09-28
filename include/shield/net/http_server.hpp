@@ -101,10 +101,12 @@ private:
         std::string path;
 
         bool operator==(const RouteKey& other) const {
-            // GCOVR_EXCL_LINE (comparison: both method and path must match; the
-            // individual branch outcomes are defensive and gcovr counts them as
-            // separate lines when only one pattern is tested in the suite).
+            // GCOVR_EXCL_BR_START (comparison false-arms need two distinct
+            // RouteKeys colliding into the same hash bucket; the hasher is
+            // private, so such a collision is not deterministically
+            // constructible through the public routing API)
             return method == other.method && path == other.path;
+            // GCOVR_EXCL_BR_STOP
         }
     };
 

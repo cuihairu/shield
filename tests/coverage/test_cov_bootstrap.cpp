@@ -1647,7 +1647,8 @@ BOOST_AUTO_TEST_CASE(BlocklistWiredToListener) {
         "      blocklist:\n"
         "        deny:\n"
         "          - 203.0.113.7\n"
-        "          - 198.51.100.0/24\n");
+        "          - 198.51.100.0/24\n"
+        "          - \" \\t203.0.113.9\\t \"\n");
     shield::bootstrap::RuntimeConfig rc;
     rc.config_files = {cfg.string()};
     rc.log_level = "error";

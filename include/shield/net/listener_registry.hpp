@@ -17,10 +17,11 @@ class TcpListener;
 class ListenerRegistry {
 public:
     static ListenerRegistry& instance() {
-        // GCOVR_EXCL_LINE (singleton pattern: static local variable guaranteed
-        // thread-safe C++11; gcovr counts the definition line as uncovered when
-        // the constructor is never exercised in the test suite).
-        static ListenerRegistry registry;
+        // Thread-safe magic static: the init-guard branch code is emitted per
+        // TU, so a TU that looks the registry up exactly once per process
+        // never takes the already-initialized arm in its own copy. Singleton
+        // identity (same instance to every caller) is covered by tests.
+        static ListenerRegistry registry;  // GCOVR_EXCL_BR_LINE (init guard)
         return registry;
     }
 

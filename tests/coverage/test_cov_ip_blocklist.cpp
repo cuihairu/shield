@@ -139,6 +139,41 @@ BOOST_AUTO_TEST_CASE(WhitespaceAndBlankEntriesAreTolerated) {
     BOOST_REQUIRE(list.set_rules({"  203.0.113.7  ", "", "   "}));
     BOOST_CHECK_EQUAL(list.size(), 1u);
     BOOST_CHECK(list.blocked("203.0.113.7"));
+
+    // Tab padding is stripped from both ends as well (YAML block scalars
+    // indent with tabs just as often as with spaces).
+    IpBlocklist tabs;
+    BOOST_REQUIRE(tabs.set_rules({" \t 203.0.113.7 \t "}));
+    BOOST_CHECK_EQUAL(tabs.size(), 1u);
+    BOOST_CHECK(tabs.blocked("203.0.113.7"));
+    // A tab-only entry is blank, not a rule.
+    IpBlocklist tab_blanks;
+    BOOST_REQUIRE(tab_blanks.set_rules({"\t", "\t\t"}));
+    BOOST_CHECK(tab_blanks.empty());
+    BOOST_CHECK_EQUAL(tab_blanks.size(), 0u);
+}
+
+// Production callers (config validation, bootstrap install, listener apply)
+// always pass a non-null error out-param: a rejected config edit must name
+// the offending entry. The parser contract also allows a null out-param,
+// which reports purely through the return value.
+BOOST_AUTO_TEST_CASE(ParserRejectsWithoutErrorOutParam) {
+    Rule rule;
+    BOOST_CHECK(!parse_blocklist_entry("garbage", &rule, nullptr));
+    BOOST_CHECK(!parse_blocklist_entry("203.0.113.7/abc", &rule, nullptr));
+    BOOST_CHECK(!parse_blocklist_entry("203.0.113.7/33", &rule, nullptr));
+}
+
+// empty() consults both family tables: rules in the v6 table alone still
+// clear it (a v6-only deny list is anything but a no-op).
+BOOST_AUTO_TEST_CASE(V6OnlyRulesAreNotEmpty) {
+    IpBlocklist list;
+    BOOST_REQUIRE(list.set_rules({"::1"}));
+    BOOST_CHECK(!list.empty());
+    BOOST_CHECK_EQUAL(list.size(), 1u);
+    BOOST_CHECK(list.blocked("::1"));
+    list.clear();
+    BOOST_CHECK(list.empty());
 }
 
 // A malformed entry is rejected and the previous rule set survives intact:

@@ -258,6 +258,15 @@ BOOST_AUTO_TEST_CASE(LifecycleAndMetadataAccessors) {
     BOOST_CHECK_EQUAL(out.player_id, "");
     BOOST_CHECK_EQUAL(out.epoch, 2u);
 
+    // The out out-param is optional: callers that only need the CAS side
+    // effect omit it, and a stale epoch still refuses without one.
+    BOOST_CHECK(!session->apply_binding("GateService", "player-10", 99));
+    BOOST_CHECK(session->apply_binding("GateService", "player-10",
+                                       shield::net::kAnyEpoch));
+    BOOST_CHECK_EQUAL(session->binding().target_service, "GateService");
+    BOOST_CHECK_EQUAL(session->binding().player_id, "player-10");
+    BOOST_CHECK_EQUAL(session->binding().epoch, 3u);
+
     // start fires on_connect
     session->start();
     p.io.run_for(100ms);

@@ -18,7 +18,12 @@ public:
         : code_(std::move(code)),
           message_(std::move(message)),
           retryable_(retryable),
-          detail_(detail ? *detail : "") {}
+          // Branch records are per-TU: the detail-present arm is exercised
+          // by the coverage suite, but every lib TU constructs Error with
+          // the default nullopt detail, so its own copy of this ternary can
+          // never take that arm. Registered branch-only (line stays in the
+          // line metric).
+          detail_(detail ? *detail : "") {}  // GCOVR_EXCL_BR_LINE
 
     // Accessors
     const std::string& code() const { return code_; }

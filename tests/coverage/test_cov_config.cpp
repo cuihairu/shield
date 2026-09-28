@@ -1630,7 +1630,8 @@ BOOST_AUTO_TEST_CASE(BlocklistDenyParsedIntoRuntimeActor) {
         "        deny:\n"
         "          - 203.0.113.7\n"
         "          - 198.51.100.0/24\n"
-        "          - \"2001:db8::/32\"\n";
+        "          - \"2001:db8::/32\"\n"
+        "          - \" \\t203.0.113.8\\t \"\n";
     BOOST_REQUIRE(g.load_yaml_string(yaml));
     RuntimeValidationOptions opts = with_actors();
     std::string error;
@@ -1638,10 +1639,13 @@ BOOST_AUTO_TEST_CASE(BlocklistDenyParsedIntoRuntimeActor) {
                           error);
     const auto actors = shield::config::runtime_actors();
     BOOST_REQUIRE_EQUAL(actors.size(), 1U);
-    BOOST_REQUIRE_EQUAL(actors[0].blocklist_deny.size(), 3U);
+    BOOST_REQUIRE_EQUAL(actors[0].blocklist_deny.size(), 4U);
     BOOST_CHECK_EQUAL(actors[0].blocklist_deny[0], "203.0.113.7");
     BOOST_CHECK_EQUAL(actors[0].blocklist_deny[1], "198.51.100.0/24");
     BOOST_CHECK_EQUAL(actors[0].blocklist_deny[2], "2001:db8::/32");
+    // Surfaced verbatim: the tab padding reaches the listener untrimmed (the
+    // listener strips it at install time via the shared parser).
+    BOOST_CHECK_EQUAL(actors[0].blocklist_deny[3], " \t203.0.113.8\t ");
     shield::config::reset_config();
 }
 

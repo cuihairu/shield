@@ -47,12 +47,32 @@ CI gate 只统计 `src/`（filter `../src/`），`include/shield/**` 的内联/�
       五树 configure 加 `-DVCPKG_MANIFEST_INSTALL=OFF` 复用已装
       `vcpkg_installed/` 即可（CI 不受影响，CI 用 vcpkgGitCommitId 自取）
 
-注意：include/ 层目前**不在 CI gate 测量面内**（gate 参数未动）；本节
-数字是诊断口径。若未来把 include/ 纳入 gate：inline 头文件代码在每个
-包含它的 TU 里都有一份实例，但 gcovr 跨 gcda 合并按行求和，专用套件
-覆盖后其余 TU 的零副本**不会**掩蔽行（本轮实证：parse_blocklist_entry
-存在于 5 个 TU，仅 62-63 因从未被执行而报缺）；真正的坑是模板多实例化
-单臂掩蔽（一条测试内的多个闭包即触发，见上）。
+- [x] **纳入门禁（2026-09-28）**：ci.yml coverage job filter 扩为
+      `../src/` + `../include/shield/`，阈值 98/100/100 不动。实测
+      （清 `.gcda` 五树全量）：五树 ctest 全绿（97/99/99/97/97）；
+      src/ 门禁 line=100 / branch 11385/11385 / function=100 EXIT=0；
+      **include/ line 522/522、branch 192/192、function=100 全
+      EXIT=0**；合并口径 11577/11577 = 100%。
+      真正的门槛是**分支记录按 TU 槽位跟踪、不跨 gcda 合并**（行覆盖
+      合并、分支不合并——任一 TU 的零分支槽位即报 missing，哪怕 test
+      TU 已双臂覆盖，裸 gcov 实锤）。lib TU 固定调用模式留下的槽位
+      测试无法驱动 → 6 处 GCOVR_EXCL_BR_* 分支口径登记（error.hpp 4 参
+      ctor detail 三元 / lua_service.hpp SpawnResult::ok 聚合返回 /
+      http_server.hpp RouteKey::operator== / listener_registry.hpp
+      magic-static 守卫 / session.hpp get_user_data 三元 / ip_blocklist.hpp
+      blocked() 判别联合守卫；c0a0266 写在注释行上的 4 个标记不生效，
+      已纠正到代码行）。真缺口补真测试 8 个测试文件：uint16 过末读、
+      空白条目 tab 变体、parser error 出参 nullptr 契约、v6-only 规则
+      非空、tab 填充规则过 listener、config/bootstrap deny 列表 tab
+      条目贯通断言、apply_binding 无出参 + kAnyEpoch、SpawnResult
+      工厂、DispatchResult should_drop 真值表。
+
+注意（2026-09-28 修正）：inline 头文件代码在每个包含它的 TU 里都有
+一份实例；**行覆盖**跨 gcda 合并按行求和，专用套件覆盖后其余 TU 的
+零副本**不会**掩蔽行（实证：parse_blocklist_entry 存在于 5 个 TU）。
+但**分支记录不合并**——这是纳入 gate 的真正门槛（见上纳入门禁节）；
+模板多实例化单臂掩蔽（一条测试内的多个闭包即触发，见上）仍是行口径
+的坑。
 
 ## 覆盖率口径纠偏（2026-09-26）
 

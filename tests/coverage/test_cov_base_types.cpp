@@ -95,6 +95,14 @@ BOOST_AUTO_TEST_CASE(ReadPastEndReturnsZeroWithoutAdvancing) {
     small.write_uint8(3);
     BOOST_CHECK_EQUAL(small.read_uint32(), 0u);
     BOOST_CHECK_EQUAL(small.read_uint16(), 0x0201u);  // host order
+
+    // uint16 needs two bytes: a single byte is an over-long read, and the
+    // next smaller read still succeeds.
+    ByteBuffer tiny;
+    tiny.write_uint8(0x42);
+    BOOST_CHECK_EQUAL(tiny.read_uint16(), 0u);
+    BOOST_CHECK_EQUAL(tiny.read_position(), 0u);
+    BOOST_CHECK_EQUAL(tiny.read_uint8(), 0x42);
 }
 
 BOOST_AUTO_TEST_CASE(SetReadPositionAndClear) {

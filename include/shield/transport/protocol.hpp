@@ -341,9 +341,6 @@ struct DispatchResult {
         return action == RouteAction::ForwardRaw;
     }
     bool should_drop() const {
-        // GCOVR_EXCL_LINE (branch: action==Drop && error.empty(); gcovr counts
-        // the &&-expression's two sub-branches as separate lines; in practice
-        // action and error are always set by the pipeline feed path).
         return action == RouteAction::Drop && error.empty();
     }
     bool decoded() const { return decoded_body.has_value(); }

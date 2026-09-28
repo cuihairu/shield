@@ -40,7 +40,15 @@ struct SpawnResult {
     std::string service_id;
     std::string error_message;
 
-    static SpawnResult ok(std::string id) { return {true, std::move(id), ""}; }
+    static SpawnResult ok(std::string id) {
+        // GCOVR_EXCL_BR_START (compiler artifact: the aggregate-init's
+        // codegen branches on this return are single-call-site — the only
+        // production caller is the spawn success path in lua_service.cpp,
+        // whose copy never takes the string move/copy alternates; the
+        // factories themselves are covered directly by the coverage suite)
+        return {true, std::move(id), ""};
+        // GCOVR_EXCL_BR_STOP
+    }
 
     static SpawnResult error(std::string msg) {
         return {false, "", std::move(msg)};

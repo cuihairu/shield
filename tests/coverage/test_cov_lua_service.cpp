@@ -178,6 +178,20 @@ return M
 // ---------------------------------------------------------------------------
 // spawn: option validation and early failures.
 // ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(SpawnResultFactories) {
+    // The factory helpers are plain value constructors: both outcomes report
+    // their fields without touching a runtime.
+    const auto ok = SpawnResult::ok("echo");
+    BOOST_CHECK(ok.success);
+    BOOST_CHECK_EQUAL(ok.service_id, "echo");
+    BOOST_CHECK_EQUAL(ok.error_message, "");
+
+    const auto err = SpawnResult::error("boom");
+    BOOST_CHECK(!err.success);
+    BOOST_CHECK_EQUAL(err.service_id, "");
+    BOOST_CHECK_EQUAL(err.error_message, "boom");
+}
+
 BOOST_AUTO_TEST_CASE(SpawnOptionErrors) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);

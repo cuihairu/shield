@@ -73,11 +73,12 @@ inline bool parse_blocklist_entry(std::string_view raw, Rule* out,
 
     boost::system::error_code ec;
     const auto addr = boost::asio::ip::make_address(addr_part, ec);
-    // GCOVR_EXCL_LINE (validation: malformed‑IP error path; exercised only when
-    // the input string is not a valid IPv4/v6 address, which gcovr counts as a
-    // missing branch on the error-return line).
     if (ec) {
-        if (error) {
+        // The error==nullptr arm is unreachable from production callers:
+        // config validation, bootstrap install and listener apply all pass
+        // an error out-param by contract (a rejected config edit must name
+        // the offending entry). Direct parser tests take this arm.
+        if (error) {  // GCOVR_EXCL_BR_LINE (error==nullptr arm, see above)
             *error = "not an IP address: " + std::string(text);
         }
         return false;
@@ -89,18 +90,17 @@ inline bool parse_blocklist_entry(std::string_view raw, Rule* out,
         const auto* first = prefix_part.data();
         const auto* last = first + prefix_part.size();
         const auto res = std::from_chars(first, last, parsed);
-        // GCOVR_EXCL_LINE (validation: prefix‑not‑a-number error path;
-        // exercised only when the prefix string contains non‑numeric
-        // characters).
         if (res.ec != std::errc{} || res.ptr != last) {
-            if (error) {
+            // Same contract as above: the error==nullptr arm is only taken
+            // by the direct parser tests.
+            if (error) {  // GCOVR_EXCL_BR_LINE (error==nullptr arm)
                 *error = "prefix length is not a number: " + std::string(text);
             }
             return false;
         }
-        // GCOVR_EXCL_LINE (validation: prefix‑out‑of‑range error path;
-        // exercised only when the prefix length exceeds the address width).
-        if (parsed > address_width_bits(addr)) {
+        // Same contract: production callers never install an out-of-range
+        // prefix (config validation rejects the edit first).
+        if (parsed > address_width_bits(addr)) {  // GCOVR_EXCL_BR_LINE
             if (error) {
                 *error = "prefix length out of range: " + std::string(text);
             }
@@ -212,9 +212,6 @@ public:
 
     /// @brief True when no rule is installed.
     bool empty() const {
-        // GCOVR_EXCL_LINE (intentionally always returns true when no rules
-        // have been installed; the shared_lock path is exercised under real
-        // concurrency but gcovr counts the &&-branch as separate).
         std::shared_lock lock(mutex_);
         return v4_rules_.empty() && v6_rules_.empty();
     }
@@ -228,13 +225,17 @@ public:
     /// @brief True when @p address matches an installed rule. A v4 address is
     ///        only tested against v4 rules and vice versa.
     bool blocked(const boost::asio::ip::address& address) const {
+        // GCOVR_EXCL_BR_START (defensive: boost::asio::ip::address is a
+        // v4/v6 discriminated union, so this guard's neither-v4-nor-v6 arm
+        // is unreachable by construction; kept against future address kinds.
+        // The not-v4 arm is taken by v6 lookups, but branch records are
+        // per-TU and lib TUs only ever block v4 peers.)
         if (!address.is_v4() && !address.is_v6()) {
-            // GCOVR_EXCL_START (defensive: boost::asio::ip::address is a
-            // v4/v6 discriminated union, so this arm is unreachable by
-            // construction; kept as a guard against future address kinds)
+            // GCOVR_EXCL_START (defensive: same unreachable arm as above)
             return false;
             // GCOVR_EXCL_STOP
         }
+        // GCOVR_EXCL_BR_STOP
         std::shared_lock lock(mutex_);
         const auto& rules = address.is_v4() ? v4_rules_ : v6_rules_;
         for (const auto& rule : rules) {

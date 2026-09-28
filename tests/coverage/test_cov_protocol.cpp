@@ -3461,4 +3461,26 @@ BOOST_AUTO_TEST_CASE(BuildFailurePathsTolerantOfNullErrorOutParam) {
         R"({"routes":[]})", ProtocolBuildOptions{}, nullptr));
 }
 
+// should_drop() means "a silent protocol-level drop": only a Drop action with
+// no error text qualifies. A Drop with an error text is a loud failure (callers
+// surface the error), and any other action is not a drop at all.
+BOOST_AUTO_TEST_CASE(DispatchResultShouldDropTruthTable) {
+    using shield::transport::RouteAction;
+
+    shield::transport::DispatchResult drop;
+    BOOST_CHECK(drop.action == RouteAction::Drop);
+    BOOST_CHECK(drop.should_drop());
+
+    shield::transport::DispatchResult failed;
+    failed.action = RouteAction::Drop;
+    failed.error = "decode failed";
+    BOOST_CHECK(!failed.should_drop());
+    BOOST_CHECK(!failed.ok());
+
+    shield::transport::DispatchResult forward;
+    forward.action = RouteAction::ForwardRaw;
+    BOOST_CHECK(!forward.should_drop());
+    BOOST_CHECK(forward.should_forward_raw());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

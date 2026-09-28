@@ -404,6 +404,31 @@ BOOST_AUTO_TEST_CASE(BlockedCidrRejectsAtAccept) {
     io.run_for(100ms);
 }
 
+// Whitespace-padded entries install cleanly: the listener trims each entry
+// before parsing, so a tab-indented deny rule denies exactly its address.
+BOOST_AUTO_TEST_CASE(TabPaddedBlocklistRuleIsApplied) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    TcpListener listener(io, port, callbacks);
+    BOOST_REQUIRE(listener.set_blocklist({" \t127.0.0.1\t "}));
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(200ms);
+
+    BOOST_CHECK(wait_until(
+        [&] { return listener.last_rejection_reason() == "blocked_ip"; }));
+    BOOST_CHECK_EQUAL(listener.session_count(), 0u);
+    BOOST_CHECK_EQUAL(listener.blocked_rejects_total(), 1u);
+
+    c1.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
 // A blocklist that does not cover the peer leaves the connection alone.
 BOOST_AUTO_TEST_CASE(UnrelatedBlocklistAllowsConnection) {
     boost::asio::io_context io;
