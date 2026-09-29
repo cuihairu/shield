@@ -446,4 +446,157 @@ function M.stub_probe(ctx)
     return codes
 end
 
+-- ---------------------------------------------------------------------------
+-- error/raw arms: the facade branches the round-trip matrices never hit
+-- ---------------------------------------------------------------------------
+
+-- Data facade error and raw-value arms. The "raw:*" keys must be seeded by
+-- the C++ side (gm.data_set with bytes that are not JSON) before this runs:
+-- the Lua facade never writes non-JSON itself, so the raw-read arms only
+-- exist for values planted behind its back.
+function M.data_error_matrix(ctx)
+    local g = shield.global()
+    local results = {}
+
+    -- decr error arm: incr's error is covered by data_roundtrip.
+    g:set("txt", "hello", 0)
+    local _, derr = g:decr("txt", 1)
+    results.decr_error = derr and derr.code
+
+    -- mset error arm: empty key rejected by the manager.
+    local mok, merr = g:mset({[""] = 1})
+    results.mset_ok = mok == true
+    results.mset_error = merr and merr.code
+
+    -- get_cached miss arm (never-seen key): reports nil.
+    results.get_cached_miss = g:get_cached("never_cached", 0) == nil
+
+    -- raw non-JSON bytes planted by the C++ side: get/mget/get_cached must
+    -- hand them back verbatim instead of failing the JSON decode.
+    results.raw_get = g:get("raw:1")
+    results.raw_mget = g:mget("raw:2")[1]
+    results.raw_cached = g:get_cached("raw:3", 0)
+
+    -- scheduler.get on an unknown task reports nil (no error).
+    results.sched_missing = shield.scheduler():get("no_such_task") == nil
+
+    return results
+end
+
+-- Rank facade validation and miss arms plus the populated-board reads the
+-- round-trip matrix drives only in one shape.
+function M.rank_error_matrix(ctx)
+    local results = {}
+    local _, bad = shield.rank(123)
+    results.bad_name = bad and bad.code
+
+    local b = shield.rank("errboard")
+    -- Miss arms all report nil; encode the nil-ness explicitly (a nil
+    -- assignment would drop the key from the results table).
+    results.score_nonstring = b:score(99) == nil
+    results.score_miss = b:score("ghost") == nil
+    results.position_nonstring = b:position({}) == nil
+    results.position_miss = b:position("ghost") == nil
+
+    b:update("a", 10)
+    b:update("b", 20)
+    b:update("c", 30)
+    local top = b:top(2)
+    results.top_count = #top
+    results.top_first = top[1].uid
+    results.range_count = #b:range(1, 3)
+    results.rbs_count = #b:range_by_score(15, 100)
+    local mid = b:around("b", 2)
+    results.above_count = #mid.above
+    results.below_count = #mid.below
+    results.around_nonstring = b:around(42, 2) == nil
+    return results
+end
+
+-- Every factory's module_unavailable arm. The C++ side drops the
+-- process-wide manager (GlobalManager::set_global(nullptr)) before this
+-- call and restores it after.
+function M.module_unavailable_matrix(ctx)
+    local codes = {}
+    local function probe(name, fn)
+        local _, err = fn()
+        codes[name] = type(err) == 'table' and err.code or tostring(err)
+    end
+    probe('global', function() return shield.global() end)
+    probe('mutex', function() return shield.mutex("m") end)
+    probe('spinlock', function() return shield.spinlock("m") end)
+    probe('rwlock', function() return shield.rwlock("m") end)
+    probe('distributed_mutex', function()
+        return shield.distributed_mutex("m")
+    end)
+    probe('distributed_rwlock', function()
+        return shield.distributed_rwlock("m")
+    end)
+    probe('rank', function() return shield.rank("b") end)
+    probe('queue', function() return shield.queue("q") end)
+    probe('delay_queue', function() return shield.delay_queue("q") end)
+    probe('priority_queue', function() return shield.priority_queue("q") end)
+    probe('broadcast_queue', function() return shield.broadcast_queue("q") end)
+    probe('reliable_queue', function() return shield.reliable_queue("q") end)
+    probe('scheduler', function() return shield.scheduler() end)
+    probe('rate_limiter', function() return shield.rate_limiter("r") end)
+    return codes
+end
+
+-- The raw primitives' not-found/decode arms (the chunk never surfaces
+-- them through the waiting facades).
+function M.primitive_error_matrix(ctx)
+    local prim = rawget(_G, '__shield_global_primitives')
+    local results = {}
+    -- rw_write_extend: the held-lock extend (true) and a lock nobody
+    -- holds (the manager's expired/unknown arm, false).
+    results.extend_held = prim.rw_write_extend('primx', 'o1', 60000)
+    results.extend_unknown = prim.rw_write_extend('prim_none', 'o1', 100)
+    results.nack_unknown = prim.rel_nack('primq', 987654, 0)
+    results.ack_unknown = prim.rel_ack('primq', 987654)
+    -- decode fallback: invalid JSON reports nil.
+    results.decode_bad = prim.decode('{nope') == nil
+    return results
+end
+
+-- rate_limiter's argument and wait-attach failure arms. Nulling the
+-- chunk's attacher arranges exactly the broken-impl state the arm
+-- defends against.
+function M.rate_error_matrix(ctx)
+    local results = {}
+    local _, bad = shield.rate_limiter(123)
+    results.bad_name = bad and bad.code
+    __shield_global_impl.attach_rate_wait = nil
+    local _, attach_err = shield.rate_limiter('broken_wait')
+    results.attach_failed = attach_err and attach_err.code
+    return results
+end
+
+-- The lock/queue factories' invalid-arguments arms: same arrangement,
+-- the chunk's maker entries removed so the C++ factory sees a failed
+-- dispatch.
+function M.maker_error_matrix(ctx)
+    local results = {}
+    __shield_global_impl.make_mutex = nil
+    local _, merr = shield.mutex('nm')
+    results.mutex = merr and merr.code
+    __shield_global_impl.make_queue = nil
+    local _, qerr = shield.queue('nq')
+    results.queue = qerr and qerr.code
+    return results
+end
+
+-- Scheduler registration validation arms the bad_register helper does
+-- not cover: empty task name and a schedule that is neither a cron
+-- string nor an ms number.
+function M.sched_invalid_matrix(ctx)
+    local s = shield.scheduler()
+    local results = {}
+    local _, e1 = s:cron('', '* * * * *', function() end)
+    results.empty_name = e1 and e1.code
+    local _, e2 = s:interval('t2', true, function() end)
+    results.bad_schedule = e2 and e2.code
+    return results
+end
+
 return M

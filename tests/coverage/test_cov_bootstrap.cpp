@@ -24,6 +24,9 @@
 #ifdef SHIELD_ENABLE_SERVER
 #include "shield/server/server_manager.hpp"
 #endif
+#ifdef SHIELD_ENABLE_GLOBAL
+#include "shield/global/global_manager.hpp"
+#endif
 
 namespace {
 
@@ -1495,6 +1498,89 @@ BOOST_AUTO_TEST_CASE(ExternalStopTransitionsServerToShutdown) {
     probe_ptr->observed_shutdown = false;
     shield::bootstrap::shutdown();
     BOOST_CHECK(probe_ptr->observed_shutdown);
+    force_shutdown();
+}
+#endif
+
+#ifdef SHIELD_ENABLE_GLOBAL
+// An invalid `global:` block fails initialization up front: the global
+// config is parsed and validated before anything is installed.
+BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidGlobalConfig) {
+    fs::path script = echo_script("shield_cov_boot_badglobal.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "global:\n"
+        "  cache:\n"
+        "    max_size: 0\n"
+        "actors:\n  - name: main\n    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    force_shutdown();
+}
+
+// A global-enabled runtime wires the scheduler tick through the
+// system-message channel. Three once-tasks registered from on_init:
+//   live_fire (100ms)  — delivered to the live service, observed via
+//                        global data (the fire callback's success arm);
+//   self_exit (200ms)  — the callback requests the service's exit;
+//   post_exit (300ms)  — fires after the service is gone, must be
+//                        dropped by the fire callback's gone-service arm
+//                        (the task disappears, its flag never appears).
+BOOST_AUTO_TEST_CASE(GlobalSchedulerDeliversAndDropsThroughBootstrap) {
+    fs::path script =
+        write_file(fs::temp_directory_path() / "shield_cov_boot_global.lua",
+                   "local M = {}\n"
+                   "function M.on_init(args)\n"
+                   "  local s = shield.scheduler()\n"
+                   "  s:once('live_fire', 100, function()\n"
+                   "    shield.global():set('boot_fired', true, 0)\n"
+                   "  end)\n"
+                   "  s:once('self_exit', 200, function()\n"
+                   "    shield.exit('scheduler_done')\n"
+                   "  end)\n"
+                   "  s:once('post_exit', 300, function()\n"
+                   "    shield.global():set('never_seen', true, 0)\n"
+                   "  end)\n"
+                   "  return true\n"
+                   "end\n"
+                   "return M\n");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "global:\n"
+        "  scheduler:\n"
+        "    tick_ms: 20\n"
+        "actors:\n  - name: glo\n    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    force_shutdown();
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    auto* gm = shield::global::GlobalManager::global();
+    BOOST_REQUIRE(gm != nullptr);
+
+    // live_fire delivers through the channel and its callback runs.
+    bool fired = false;
+    for (int i = 0; i < 150 && !fired; ++i) {
+        std::string value;
+        fired = gm->data_get("boot_fired", &value);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    BOOST_CHECK(fired);
+
+    // post_exit outlives its service: dropped at fire time.
+    bool dropped = false;
+    for (int i = 0; i < 250 && !dropped; ++i) {
+        dropped = !gm->sched_get("post_exit").has_value();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    BOOST_CHECK(dropped);
+    std::string value;
+    BOOST_CHECK(!gm->data_get("never_seen", &value));
+
+    shield::bootstrap::shutdown();
     force_shutdown();
 }
 #endif

@@ -648,7 +648,8 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
   （global_status / ops_http_handler / root_commands）line+branch 实测
   100%；braced-init 归因伪影按仓内双标记惯例登记（GCOVR_EXCL_LINE
   GCOVR_EXCL_BR_LINE，理由注明 fixture 已真实驱动）。
-- [ ] **GLOBAL-on 实测余量（下一轮收口清单，行数为 GLOBAL-on 实测口径）**：
+- [x] **GLOBAL-on 实测余量（下一轮收口清单，行数为 GLOBAL-on 实测口径）**
+  （已收口，见「GLOBAL-on 余量收口」节）：
   src/lua/lua_api.cpp global facade 深层错误臂（93 行 / 221 分支记录缺失，
   register_global_api 尾段：rw_write_extend、reliable/data/rate 的 error 臂；
   line 94% / branch 89%）；src/global/global_manager.cpp 方法级错误臂长尾
@@ -702,3 +703,36 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
    - `test_cov_lua_service2` 并发 spawn 用例定时脆弱（已改原子屏障 + 不变量断言）
 
 **验收**：五树 ctest 98/100/100/98/98 全 EXIT=0；include/ 三口径 EXIT=0；src/ 红行经 txt 逐行核实全部位于并行会话未提交的两 plugin 文件；单提交 push，禁 tag/release。
+
+## GLOBAL-on 余量收口（2026-09-29，清单项「GLOBAL-on 实测余量」执行轮）
+
+按 L651 清单逐项收口：GLOBAL=ON 重配（build-cov）→ 清 gcda → 全量 ctest → 逐文件 gcovr txt（line 口径，`--exclude-unreachable-branches --exclude-throw-branches -j 4`）；可补真臂的补测试，结构性不可达的按仓内标记惯例登记；收口后回退 GLOBAL=OFF + 全树 gcda 清理重编 + 五树门禁。
+
+**实测前后（GLOBAL=on line 口径）**：
+
+| 文件 | 前 | 后 |
+|---|---|---|
+| src/lua/lua_api.cpp | 93 行缺失（94%，branch 89%） | 1722/1722 **100%** |
+| src/global/global_manager.cpp | 32 行缺失（97%，branch 87%） | 1159/1159 **100%** |
+| src/bootstrap/bootstrap.cpp | 9 行缺失（98%） | 483/483 **100%** |
+
+**本轮补测（全真臂，无 mock，共 27 项）**：
+- `tests/lua_api/scripts/global_service.lua` +7 方法：data_error_matrix（decr/mset 空 key/get_cached miss/裸非 JSON 字节）、rank_error_matrix（bad_name/非串 score·position/miss/top/range/range_by_score/around）、module_unavailable_matrix（14 个工厂在 set_global(nullptr) 下全 module_unavailable）、primitive_error_matrix（rw_write_extend 持有者不符/未知 id、rel_ack·nack 未知、decode 坏 JSON）、rate_error_matrix（bad_name、attach_sched 被摘除→attach_failed）、maker_error_matrix（make_mutex/make_queue 被摘除→invalid_argument）、sched_invalid_matrix（空名/坏 schedule）
+- `tests/lua_api/test_lua_api_global.cpp` +7 用例（LAPI_GL_15…21，含 21 号无服务上下文注册被拒——fresh sol::state 全 API 装配走 context check）
+- `tests/global/test_global_manager.cpp` ErrorArmSuite +11 用例：cron step 非数字、惰性过期联动清缓存（318-320）、rw 写锁 ttl 簿记+同 owner 重入刷新（655）+stale-writer 复位、rank 未知 uid/board、broadcast 未知 name/group、reliable 未知 delivery、无 fire 回调 tick 存活（run_count 语义=起火尝试数）、once 起火即 done、resume 按 cron 重算 next_run、限流滑窗尾部裁剪+fixed 新 key、stop 落在 fire 回调中→循环顶停机臂（1627）
+- `tests/coverage/test_cov_bootstrap.cpp` +2 用例：invalid global config fail-fast（596-597）、scheduler 经 bootstrap 全链路投递+服务退场丢任务
+
+**甄别记录（arc 级对照源码的要点）**：
+- bootstrap 596-597：config 校验顺序是 actors 先于 global 块（485 行），invalid-global 用例必须先放合法 actor 才能命中 global fail-fast
+- global_manager 318-320：data 惰性过期联动清缓存副本，需先 cache_get 灌缓存、再让 data 过期后 data_get
+- global_manager 655：实为同 owner 重入加锁的 ttl 刷新体（首轮曾误判为 stale-writer 复位行，按 gcovr 行号重新对表修正；stale-writer 复位块在 645-649 且早已覆盖）
+- global_manager 1627：tick 循环顶部停机检查，与 wait 后检查构成竞态双臂——stop 落在回调执行中时线程必然回到循环顶命中本臂，可确定性驱动
+- lua_api 4236 / 4243-4248：DispatchScope 所有构造点均不带 vm，current_service_vm() 直解析成功 → vm 兜底与 module_tbl invalid 链防御性不可达
+- Lua 侧坑：results 表对 nil 值必须以 `== nil` 布尔编码（`t.field = nil` 会删键，C++ 侧 nlohmann const operator[] 读缺失键即断言）
+- cron 退役臂（1657）甄别过程：sched_trigger 不走再武装（只 ++run_count+fire）；sched_resume 的重算不查 0；能秒级起火的 cron 必然在地平线内再匹配，唯一 >2 年间隔形态（2/29 型）无法在测试墙钟内起火 → 结构性不可测
+
+**结构性/伪影登记（GCOVR 标记，理由均在代码注释）**：
+- `src/lua/lua_api.cpp`：4011 闭行 fn-close 伪影（EXCL_LINE）；4235-4236 vm 兜底（EXCL_START/STOP）；4242-4248 module_tbl invalid 链（EXCL_START/STOP）
+- `src/global/global_manager.cpp`：113-114 empty-field 防御臂（循环头已拒空组件，BR+LINE）；405/789 fn-close 伪影（LINE）；1093-1094 空桶 continue（排空 level 即抹除的不变量，BR+LINE）；1655/1657 cron 退役臂——**真臂非防御**，仅 Feb-29 型 ≥2 年跨度 schedule 可达，单元测试墙钟预算内结构性不可测（BR+LINE+注释注明）
+
+**验收**：GLOBAL=on 全量 ctest EXIT=0，三文件 line 口径 100%（上表）；回退 GLOBAL=off 重编后五树门禁全绿（ctest EXIT 0/0/0/0/0 + 六 gcovr 口径 EXIT 全 0——首跑 src/ 三口径红为 ON 轮孤儿 `CMakeFiles/shield_global.dir` 的 gcno 幻影行（有 gcno 无 gcda 报全零），删孤儿目标目录后复跑即绿）；禁 tag/release。

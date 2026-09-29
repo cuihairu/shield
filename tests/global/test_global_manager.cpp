@@ -2,6 +2,7 @@
 // GlobalConfig: no global config store, no Lua, no bootstrap. Config
 // parsing tests opt in via global_config().set().
 #define BOOST_TEST_MODULE GlobalManagerTests
+#include <atomic>
 #include <boost/test/unit_test.hpp>
 #include <chrono>
 #include <cstdint>
@@ -917,6 +918,255 @@ BOOST_AUTO_TEST_CASE(StopIsIdempotentAndStartIsIdempotent) {
     // stays readable and the value survives.
     BOOST_CHECK(gm.data_get("cov_idem", &out));
     BOOST_CHECK_EQUAL(out, "v1");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Error arms: the failure tails the happy-path matrices above never enter.
+// Every arm here is driven by a real two-step scenario (an expired entry,
+// an unknown id, a drained window) — no mocks.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(ErrorArmSuite)
+
+// cron "*/a": the step text must be numeric (minute-field parse arm).
+BOOST_AUTO_TEST_CASE(CronStepMustBeNumeric) {
+    CronFields fields;
+    std::string error;
+    BOOST_CHECK(!parse_cron("*/a * * * *", &fields, &error));
+    BOOST_CHECK_NE(error.find("step is not a number"), std::string::npos);
+}
+
+// Expired entries are erased in place on read across every read path:
+// data_get, data_incr_by (fresh 0 afterwards), data_mget (mixed unknown
+// and live), and the local cache (expired cache entry erased then
+// refilled from the live value; a ttl=0 refill records no expiry).
+BOOST_AUTO_TEST_CASE(ExpiredEntriesErasedOnRead) {
+    GlobalManager gm(default_config());
+    gm.data_set("k1", "1", 30);
+    gm.data_set("k2", "2", 30);
+    gm.data_set("k3", "3", 0);
+    gm.data_set("ck", "v", 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+
+    std::string out;
+    BOOST_CHECK(!gm.data_get("k1", &out));  // erase-on-read arm
+
+    std::int64_t n = 0;
+    std::string error;
+    BOOST_CHECK(gm.data_incr_by("k2", 5, &n, &error));  // fresh after expiry
+    BOOST_CHECK_EQUAL(n, 5);
+
+    auto mget = gm.data_mget({"nope", "k3"});
+    BOOST_REQUIRE_EQUAL(mget.size(), 2u);
+    BOOST_CHECK(!mget[0].has_value());
+    BOOST_REQUIRE(mget[1].has_value());
+    BOOST_CHECK_EQUAL(*mget[1], "3");
+
+    // Expired cache entry: erased on read, refilled from live data.
+    BOOST_CHECK(gm.cache_get("ck", 30, &out));  // fill (30ms expiry)
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    BOOST_CHECK(gm.cache_get("ck", 30, &out));  // expire+refill arm
+    BOOST_CHECK_EQUAL(out, "v");
+    BOOST_CHECK(gm.cache_get("ck", 0, &out));  // hit with default-ttl entry
+
+    // A zero configured default ttl records no expiry on refill.
+    GlobalConfig no_ttl_cfg;
+    no_ttl_cfg.cache_default_ttl_ms = 0;
+    GlobalManager no_ttl(no_ttl_cfg);
+    no_ttl.data_set("nk", "x", 0);
+    BOOST_CHECK(no_ttl.cache_get("nk", 0, &out));
+    BOOST_CHECK_EQUAL(out, "x");
+    BOOST_CHECK(no_ttl.cache_get("nk", 0, &out));  // hit, never expires
+
+    // A data expiry must also drop the cached copy: cache the key first,
+    // let the data expire, then the read erases data and cache together.
+    gm.data_set("cx", "v", 30);
+    BOOST_CHECK(gm.cache_get("cx", 60000, &out));  // cached copy exists
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    BOOST_CHECK(!gm.data_get("cx", &out));  // data gone, cache dropped
+    BOOST_CHECK(!gm.cache_get("cx", 0, &out));
+}
+
+// Write-lock TTL bookkeeping: acquiring with a ttl records the write
+// expiry; a live owner can extend, an expired or unknown lock cannot;
+// read-release on an unknown lock is kNotOwner.
+BOOST_AUTO_TEST_CASE(RwWriteTtlAndUnknownArms) {
+    GlobalManager gm(default_config());
+    BOOST_CHECK(gm.rw_write_acquire("w", "o", 60000) == LockStatus::kOk);
+    // Reentrant acquire by the live owner refreshes the recorded expiry.
+    BOOST_CHECK(gm.rw_write_acquire("w", "o", 60000) == LockStatus::kOk);
+    BOOST_CHECK(gm.rw_write_extend("w", "o", 60000));    // live owner: true
+    BOOST_CHECK(!gm.rw_write_extend("never", "o", 10));  // unknown: false
+    BOOST_CHECK(gm.rw_write_release("w", "o") == LockStatus::kOk);
+
+    // Expired write lock: extend refuses.
+    BOOST_CHECK(gm.rw_write_acquire("w2", "o", 40) == LockStatus::kOk);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    BOOST_CHECK(!gm.rw_write_extend("w2", "o", 40000));
+
+    // A stale writer is reset in place: a fresh acquire takes over with a
+    // new owner, a new expiry, and no readers.
+    BOOST_CHECK(gm.rw_write_acquire("w3", "o1", 40) == LockStatus::kOk);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    BOOST_CHECK(gm.rw_write_acquire("w3", "o2", 60000) == LockStatus::kOk);
+    BOOST_CHECK(gm.rw_write_release("w3", "o2") == LockStatus::kOk);
+    BOOST_CHECK(gm.rw_read_release("never", "o") == LockStatus::kNotOwner);
+}
+
+// Rank misses: score/position of an unknown uid (or on an unknown board)
+// report nullopt — the facade turns both into nil.
+BOOST_AUTO_TEST_CASE(RankUnknownUidArms) {
+    GlobalManager gm(default_config());
+    gm.rank_update("b", "a", 1.0);
+    BOOST_CHECK(!gm.rank_score("b", "ghost").has_value());
+    BOOST_CHECK(!gm.rank_position("b", "ghost").has_value());
+    BOOST_CHECK(!gm.rank_score("noboard", "a").has_value());
+}
+
+// Broadcast surfaces with unknown names/groups: since replays nothing
+// and returns 0; commit on an unknown pair is a no-op.
+BOOST_AUTO_TEST_CASE(BroadcastUnknownNameAndGroupArms) {
+    GlobalManager gm(default_config());
+    std::vector<std::string> rows;
+    BOOST_CHECK_EQUAL(gm.broadcast_since("noboard", "g", &rows), 0u);
+    BOOST_CHECK(rows.empty());
+    gm.broadcast_configure("b", 10);
+    BOOST_CHECK(gm.broadcast_push("b", "p1") > 0);
+    BOOST_CHECK_EQUAL(gm.broadcast_since("b", "nogroup", &rows), 0u);
+    gm.broadcast_commit("noboard", "g", 1);  // unknown name: no-op
+    gm.broadcast_commit("b", "nogroup", 1);  // unknown group: no-op
+}
+
+// Reliable queue with an unknown delivery id: ack rejects, nack reports
+// kNotFound (the facade's "not_found" string arm).
+BOOST_AUTO_TEST_CASE(ReliableUnknownDeliveryArms) {
+    GlobalManager gm(default_config());
+    BOOST_CHECK(!gm.reliable_ack("q", 12345));
+    BOOST_CHECK(gm.reliable_nack("q", 12345, 0) == NackResult::kNotFound);
+    gm.reliable_push("q", "p");
+    ReliableDelivery d;
+    BOOST_REQUIRE(gm.reliable_pop("q", &d));
+    BOOST_CHECK(!gm.reliable_ack("q", d.delivery_id + 999));
+    BOOST_CHECK(gm.reliable_nack("q", d.delivery_id + 999, 0) ==
+                NackResult::kNotFound);
+}
+
+// A scheduler ticking without a fire callback must survive: fire_task
+// returns at the no-callback guard and the tick loop keeps counting
+// attempts (run_count tallies fire attempts, not delivered callbacks).
+BOOST_AUTO_TEST_CASE(TicksWithoutFireCallbackAreDropped) {
+    GlobalConfig config;
+    config.scheduler_tick_ms = 10;
+    GlobalManager gm(config);  // no set_task_fire_fn
+    std::string error;
+    BOOST_CHECK(gm.sched_register("interval", "nofn", "10", "svc", &error));
+    gm.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    gm.stop();
+    auto info = gm.sched_get("nofn");
+    BOOST_REQUIRE(info.has_value());
+    BOOST_CHECK_GE(info->run_count, 1u);  // ticks ran, nothing delivered
+    BOOST_CHECK(!info->paused);
+    BOOST_CHECK(!info->done);
+}
+
+// A once task that fires through a live callback completes: done is set
+// on the delivering tick and the task never fires again.
+BOOST_AUTO_TEST_CASE(OnceTaskMarksDoneAfterFire) {
+    GlobalConfig config;
+    config.scheduler_tick_ms = 10;
+    GlobalManager gm(config);
+    std::atomic<int> fires{0};
+    gm.set_task_fire_fn([&fires](const std::string&, const std::string&) {
+        ++fires;
+        return true;
+    });
+    std::string error;
+    BOOST_CHECK(gm.sched_register("once", "one", "20", "svc", &error));
+    gm.start();
+    BOOST_CHECK(wait_until([&] { return fires.load() >= 1; }, 2000));
+    gm.stop();
+    auto info = gm.sched_get("one");
+    BOOST_REQUIRE(info.has_value());
+    BOOST_CHECK(info->done);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    BOOST_CHECK_EQUAL(fires.load(), 1);
+}
+
+// Stopping while a fire callback is still running: the tick thread
+// finishes the delivery, wraps to the loop head, and exits at the stop
+// check there. (The check after the wait is the twin arm that catches a
+// stop landing while the thread is parked in the wait.)
+BOOST_AUTO_TEST_CASE(StopDuringFireCallbackExitsAtLoopTop) {
+    GlobalConfig config;
+    config.scheduler_tick_ms = 10;
+    GlobalManager gm(config);
+    std::atomic<bool> in_callback{false};
+    gm.set_task_fire_fn([&in_callback](const std::string&, const std::string&) {
+        in_callback = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        return true;
+    });
+    std::string error;
+    BOOST_CHECK(gm.sched_register("interval", "slow", "10", "svc", &error));
+    gm.start();
+    BOOST_CHECK(wait_until([&] { return in_callback.load(); }, 2000));
+    gm.stop();  // lands mid-callback; join waits for the loop-top exit
+    auto info = gm.sched_get("slow");
+    BOOST_REQUIRE(info.has_value());
+    BOOST_CHECK(!info->done);
+}
+
+// Resuming a paused cron task recomputes its next run from the cron
+// expression instead of keeping the stale pre-pause schedule.
+BOOST_AUTO_TEST_CASE(ResumeRearmsCronNextRun) {
+    GlobalConfig config;
+    config.scheduler_tick_ms = 10;
+    GlobalManager gm(config);
+    std::string error;
+    BOOST_CHECK(gm.sched_register("cron", "c", "* * * * *", "svc", &error));
+    BOOST_CHECK(gm.sched_pause("c"));
+    BOOST_CHECK(gm.sched_resume("c"));
+    auto resumed = gm.sched_get("c");
+    BOOST_REQUIRE(resumed.has_value());
+    BOOST_CHECK(resumed->next_run_ms > GlobalManager::now_ms());
+}
+
+// Rate limiter tails: unknown limiter allow/remaining, the sliding
+// window's age-out trim (on allow and on the query-only remaining
+// copy), and a fresh fixed-window key reporting the full burst.
+BOOST_AUTO_TEST_CASE(RateLimitWindowTails) {
+    GlobalManager gm(default_config());
+    // Unknown limiter: allow denies with a zeroed result, remaining is 0.
+    auto none = gm.rate_limit_allow("nolimit", "k", 1);
+    BOOST_CHECK(!none.allowed);
+    BOOST_CHECK_EQUAL(gm.rate_limit_remaining("nolimit", "k"), 0.0);
+
+    RateLimitConfig sliding;
+    sliding.sliding = true;
+    sliding.window_ms = 40;
+    sliding.max_requests = 5;
+    gm.rate_limit_configure("sl", sliding);
+    for (int i = 0; i < 3; ++i) {
+        BOOST_CHECK(gm.rate_limit_allow("sl", "u", 1).allowed);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(70));
+    // Aged hits trim on allow: the window is effectively empty again.
+    auto trimmed = gm.rate_limit_allow("sl", "u", 1);
+    BOOST_CHECK(trimmed.allowed);
+    BOOST_CHECK_EQUAL(trimmed.remaining, 4.0);
+    // Query-only path trims a copy (the stored window stays untouched).
+    std::this_thread::sleep_for(std::chrono::milliseconds(70));
+    BOOST_CHECK_EQUAL(gm.rate_limit_remaining("sl", "u"), 5.0);
+
+    // Fixed window: a key with no bucket yet reports the full burst.
+    RateLimitConfig fixed;
+    fixed.rate = 10;
+    fixed.burst = 4;
+    gm.rate_limit_configure("fx", fixed);
+    BOOST_CHECK_EQUAL(gm.rate_limit_remaining("fx", "fresh"), 4.0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

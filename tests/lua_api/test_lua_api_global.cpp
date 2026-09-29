@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "shield/caf_initializer.hpp"
+#include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 
@@ -563,6 +564,161 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_11_RateLimiterMatrix) {
     BOOST_CHECK_EQUAL(v["sliding3"], true);
     BOOST_CHECK_EQUAL(v["sliding4"], false);
     BOOST_CHECK_EQUAL(v["sliding_fresh"], 3);
+}
+
+// Data-facade error and raw arms: the decr twin of the incr error,
+// the mset empty-key rejection, the get_cached miss, and the raw
+// non-JSON reads. The raw keys are planted directly into the store
+// (bytes no Lua facade would write) so the JSON-decode fallback arms
+// hand the bytes back verbatim.
+BOOST_AUTO_TEST_CASE(LAPI_GL_15_DataErrorAndRawArms) {
+    GlobalWorld world;
+    auto svc = world.spawn("gl_dataerr");
+    BOOST_REQUIRE(svc.success);
+    // Raw bytes behind the facade's back: get/mget/get_cached must each
+    // return them unwrapped instead of failing the decode.
+    world.gm.data_set("raw:1", "not json", 0);
+    world.gm.data_set("raw:2", "{also not", 0);
+    world.gm.data_set("raw:3", "\x01\x02", 0);
+    CallResult r = call(world.manager, svc.service_id, "data_error_matrix",
+                        nlohmann::json::array());
+    if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
+    BOOST_REQUIRE(r.success);
+    const nlohmann::json& v = r.values[0];
+    BOOST_CHECK_EQUAL(v["decr_error"], "invalid_value");
+    BOOST_CHECK_EQUAL(v["mset_ok"], false);
+    BOOST_CHECK_EQUAL(v["mset_error"], "invalid_argument");
+    BOOST_CHECK_EQUAL(v["get_cached_miss"], true);
+    BOOST_CHECK_EQUAL(v["raw_get"], "not json");
+    BOOST_CHECK_EQUAL(v["raw_mget"], "{also not");
+    BOOST_CHECK_EQUAL(v["raw_cached"], "\x01\x02");
+    BOOST_CHECK_EQUAL(v["sched_missing"], true);
+}
+
+// Rank validation and miss arms, plus the populated-board reads
+// (top/range/range_by_score/around with entries on both sides).
+BOOST_AUTO_TEST_CASE(LAPI_GL_16_RankErrorArms) {
+    GlobalWorld world;
+    auto svc = world.spawn("gl_rankerr");
+    BOOST_REQUIRE(svc.success);
+    CallResult r = call(world.manager, svc.service_id, "rank_error_matrix",
+                        nlohmann::json::array());
+    if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
+    BOOST_REQUIRE(r.success);
+    const nlohmann::json& v = r.values[0];
+    BOOST_CHECK_EQUAL(v["bad_name"], "invalid_argument");
+    BOOST_CHECK_EQUAL(v["score_nonstring"], true);
+    BOOST_CHECK_EQUAL(v["score_miss"], true);
+    BOOST_CHECK_EQUAL(v["position_nonstring"], true);
+    BOOST_CHECK_EQUAL(v["position_miss"], true);
+    BOOST_CHECK_EQUAL(v["top_count"], 2);
+    BOOST_CHECK_EQUAL(v["top_first"], "c");
+    BOOST_CHECK_EQUAL(v["range_count"], 3);
+    BOOST_CHECK_EQUAL(v["rbs_count"], 2);
+    BOOST_CHECK_EQUAL(v["above_count"], 1);
+    BOOST_CHECK_EQUAL(v["below_count"], 1);
+    BOOST_CHECK_EQUAL(v["around_nonstring"], true);
+}
+
+// Every factory's module_unavailable arm under a live GLOBAL build: the
+// process-wide pointer dropped for the duration of one call. The stub
+// build covers the same code shape; this covers the real factories.
+BOOST_AUTO_TEST_CASE(LAPI_GL_17_ModuleUnavailableArms) {
+    GlobalWorld world;
+    auto svc = world.spawn("gl_modunavail");
+    BOOST_REQUIRE(svc.success);
+    shield::global::GlobalManager::set_global(nullptr);
+    CallResult r = call(world.manager, svc.service_id,
+                        "module_unavailable_matrix", nlohmann::json::array());
+    shield::global::GlobalManager::set_global(&world.gm);
+    if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
+    BOOST_REQUIRE(r.success);
+    for (auto& [name, code] : r.values[0].items()) {
+        BOOST_CHECK_EQUAL(code, "module_unavailable");
+    }
+}
+
+// Raw primitive arms the waiting facades never surface: rw_write_extend
+// on held and unknown locks, reliable ack/nack on unknown delivery ids,
+// and the JSON decode fallback.
+BOOST_AUTO_TEST_CASE(LAPI_GL_18_PrimitiveArms) {
+    GlobalWorld world;
+    auto svc = world.spawn("gl_primerr");
+    BOOST_REQUIRE(svc.success);
+    // Hold the write lock the extend-success arm extends.
+    BOOST_CHECK(world.gm.rw_write_acquire("primx", "o0", 60000) ==
+                shield::global::LockStatus::kOk);
+    CallResult r = call(world.manager, svc.service_id, "primitive_error_matrix",
+                        nlohmann::json::array());
+    if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
+    BOOST_REQUIRE(r.success);
+    const nlohmann::json& v = r.values[0];
+    // Owner o1 differs from the holder: extend reports the manager's
+    // not-owned/expired arm; the unknown lock likewise.
+    BOOST_CHECK_EQUAL(v["extend_held"], false);
+    BOOST_CHECK_EQUAL(v["extend_unknown"], false);
+    BOOST_CHECK_EQUAL(v["nack_unknown"], "not_found");
+    BOOST_CHECK_EQUAL(v["ack_unknown"], false);
+    BOOST_CHECK_EQUAL(v["decode_bad"], true);
+}
+
+// rate_limiter's argument and broken-attacher arms, and the lock/queue
+// factories' invalid-arguments arms (maker entries removed from the
+// chunk's impl table — the exact state the arms defend against).
+BOOST_AUTO_TEST_CASE(LAPI_GL_19_RateAndMakerErrorArms) {
+    GlobalWorld world;
+    auto svc = world.spawn("gl_rateerr");
+    BOOST_REQUIRE(svc.success);
+    CallResult rate = call(world.manager, svc.service_id, "rate_error_matrix",
+                           nlohmann::json::array());
+    if (!rate.success) BOOST_TEST_MESSAGE("call error: " << rate.error_message);
+    BOOST_REQUIRE(rate.success);
+    BOOST_CHECK_EQUAL(rate.values[0]["bad_name"], "invalid_argument");
+    BOOST_CHECK_EQUAL(rate.values[0]["attach_failed"], "invalid_argument");
+    // Fresh service VM: each VM runs the chunk once, so the makers the
+    // matrix nils are intact until the script itself removes them.
+    CallResult maker = call(world.manager, svc.service_id, "maker_error_matrix",
+                            nlohmann::json::array());
+    if (!maker.success)
+        BOOST_TEST_MESSAGE("call error: " << maker.error_message);
+    BOOST_REQUIRE(maker.success);
+    BOOST_CHECK_EQUAL(maker.values[0]["mutex"], "invalid_argument");
+    BOOST_CHECK_EQUAL(maker.values[0]["queue"], "invalid_argument");
+}
+
+// Scheduler registration validation: empty task name and a schedule that
+// is neither a cron string nor an ms number.
+BOOST_AUTO_TEST_CASE(LAPI_GL_20_SchedInvalidArms) {
+    GlobalWorld world;
+    auto svc = world.spawn("gl_schederr");
+    BOOST_REQUIRE(svc.success);
+    CallResult r = call(world.manager, svc.service_id, "sched_invalid_matrix",
+                        nlohmann::json::array());
+    if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
+    BOOST_REQUIRE(r.success);
+    BOOST_CHECK_EQUAL(r.values[0]["empty_name"], "invalid_argument");
+    BOOST_CHECK_EQUAL(r.values[0]["bad_schedule"], "invalid_argument");
+}
+
+// Registering a task outside any service dispatch (a bare VM with the
+// full API, no active service context) must be rejected with the
+// service-context error — the chunk's waiting facades normally make
+// this state unreachable.
+BOOST_AUTO_TEST_CASE(LAPI_GL_21_TaskWithoutServiceContextRejected) {
+    GlobalWorld world;
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::math,
+                       sol::lib::table, sol::lib::os, sol::lib::coroutine);
+    register_full_shield_api(lua, &world.manager, &world.runtime);
+    lua.safe_script(
+        "local s = shield.scheduler()\n"
+        "local _, err = s:cron('orphan', '* * * * *', function() end)\n"
+        "out = {rejected = err ~= nil,\n"
+        "       message = err and err.message or ''}\n");
+    const bool rejected = lua["out"]["rejected"];
+    const std::string message = lua["out"]["message"];
+    BOOST_CHECK(rejected);
+    BOOST_CHECK(message.find("service context") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
