@@ -439,6 +439,204 @@ BOOST_AUTO_TEST_CASE(JwtRejections) {
                            "assert(code == 'malformed', tostring(code))\n"));
 }
 
+// json_escape: quotes, backslashes and control characters survive the
+// sign -> payload-segment -> verify round trip, and the emitted JSON carries
+// the documented forms (named escapes for the JSON six, \u00xx for the
+// other control bytes). Deterministic bytes: claims key insertion order must
+// not leak into the token (keys are emitted sorted).
+BOOST_AUTO_TEST_CASE(JwtJsonEscapeEncoding) {
+    CryptoState s;
+    BOOST_CHECK(run_script(s.lua, R"lua(
+local sub = 'a"b\\c' .. string.char(10, 9, 0, 8, 12, 13, 1)
+local token = jwt.sign({sub = sub}, 'k')
+local enc = shield.crypto.base64url_decode(token:match('^.-%.(.-)%.'))
+local bs = string.char(92)
+assert(enc:find(bs .. '"', 1, true), enc)
+assert(enc:find(bs .. bs, 1, true), enc)
+assert(enc:find(bs .. 'n', 1, true), enc)
+assert(enc:find(bs .. 't', 1, true), enc)
+assert(enc:find(bs .. 'b', 1, true), enc)
+assert(enc:find(bs .. 'f', 1, true), enc)
+assert(enc:find(bs .. 'r', 1, true), enc)
+assert(enc:find(bs .. 'u0000', 1, true), enc)
+assert(enc:find(bs .. 'u0001', 1, true), enc)
+local back = jwt.verify(token, 'k')
+assert(back and back.sub == sub, tostring(back))
+-- Determinism: insertion order must not change the token bytes.
+local t1 = {b = 1}; t1.a = 2
+local t2 = {a = 2}; t2.b = 1
+assert(jwt.sign(t1, 'k') == jwt.sign(t2, 'k'))
+)lua"));
+}
+
+// json_encode_value numeric arms: integers below 2^53 emit via %d, other
+// numbers via %.14g (exponent form once 15+ digits), and non-finite numbers
+// or non-serializable values are hard errors instead of silent corruption.
+BOOST_AUTO_TEST_CASE(JwtJsonNumberEncoding) {
+    CryptoState s;
+    BOOST_CHECK(run_script(s.lua, R"lua(
+local function payload_of(v)
+    local tok = jwt.sign(v, 'k')
+    return shield.crypto.base64url_decode(tok:match('^.-%.(.-)%.'))
+end
+assert(payload_of({n = 42}):find('"n":42', 1, true))
+assert(payload_of({n = 1.5}):find('"n":1.5', 1, true))
+-- 1e16 is integral but >= 2^53: emitted via %.14g in exponent form.
+assert(payload_of({n = 1e16}):find('"n":1e+16', 1, true))
+assert(payload_of({n = 9007199254740991}):find('"n":9007199254740991', 1, true))
+local claims = jwt.verify(jwt.sign({n = 1.5, m = 1e16, big = 9007199254740991}, 'k'), 'k')
+assert(claims.n == 1.5 and claims.m == 1e16 and claims.big == 9007199254740991)
+local _, err = pcall(jwt.sign, {n = 0 / 0}, 'k')
+assert(err and err:find('non-finite', 1, true), tostring(err))
+_, err = pcall(jwt.sign, {n = math.huge}, 'k')
+assert(err)
+_, err = pcall(jwt.sign, {n = -math.huge}, 'k')
+assert(err)
+_, err = pcall(jwt.sign, {f = print}, 'k')
+assert(err and err:find('cannot encode function', 1, true), tostring(err))
+)lua"));
+}
+
+// json_decode escape paths, driven with attacker-shaped payloads whose
+// signatures are recomputed through shield.crypto (so verification gets past
+// the signature gate and exercises the parser): simple escapes, \uXXXX in
+// all four UTF-8 width classes including surrogate pairs, empty containers,
+// literals, and whitespace tolerance.
+BOOST_AUTO_TEST_CASE(JwtJsonDecodeEscapes) {
+    CryptoState s;
+    BOOST_CHECK(run_script(s.lua, R"lua(
+local function forge(payload)
+    local h = shield.crypto.base64url_encode('{"alg":"HS256","typ":"JWT"}')
+    local p = shield.crypto.base64url_encode(payload)
+    local si = h .. '.' .. p
+    return si .. '.' ..
+        shield.crypto.base64url_encode(shield.crypto.hmac_sha256('k', si))
+end
+-- simple escapes: \" \\ \/ \b \f \n \r \t
+local claims = jwt.verify(forge('{"s":"a\\"b\\\\c\\/d\\be\\ff\\ng\\rh\\ti"}'), 'k')
+assert(claims.s == 'a"b\\c/d' ..
+    string.char(8) .. 'e' .. string.char(12) .. 'f' .. string.char(10) ..
+    'g' .. string.char(13) .. 'h' .. string.char(9) .. 'i',
+    tostring(claims and claims.s))
+-- \uXXXX widths: 1-byte (A), 2-byte (é), 3-byte (中), 4-byte via pair (😀)
+claims = jwt.verify(forge('{"w":"\\u0041\\u00e9\\u4e2d\\ud83d\\ude00"}'), 'k')
+assert(claims.w == 'A' ..
+    string.char(0xC3, 0xA9) .. string.char(0xE4, 0xB8, 0xAD) ..
+    string.char(0xF0, 0x9F, 0x98, 0x80),
+    tostring(claims and claims.w))
+-- literals, empty containers, whitespace forms.
+claims = jwt.verify(forge(
+    '{ "flag" : true , "off" : false , "gone" : null , "o" : { } ,' ..
+    ' "a" : [ ] , "n" : 7 }'), 'k')
+assert(claims.flag == true and claims.off == false and claims.gone == nil)
+assert(next(claims.o) == nil and #claims.a == 0 and claims.n == 7)
+)lua"));
+}
+
+// json_decode malformed arms, again with valid signatures so the failures
+// come from the parser: bad escape characters, truncated and non-hex \u
+// escapes, unterminated strings, trailing content, bad numbers, and a
+// payload that decodes to a non-table JSON value.
+BOOST_AUTO_TEST_CASE(JwtJsonDecodeMalformed) {
+    CryptoState s;
+    BOOST_CHECK(run_script(s.lua, R"lua(
+local function forge(payload)
+    local h = shield.crypto.base64url_encode('{"alg":"HS256","typ":"JWT"}')
+    local p = shield.crypto.base64url_encode(payload)
+    local si = h .. '.' .. p
+    return si .. '.' ..
+        shield.crypto.base64url_encode(shield.crypto.hmac_sha256('k', si))
+end
+local function malformed(payload)
+    local _, code, msg = jwt.verify(forge(payload), 'k')
+    assert(code == 'malformed',
+        payload .. ' -> ' .. tostring(code) .. ' ' .. tostring(msg))
+    return msg
+end
+malformed('{"s":"\\q"}')          -- unknown escape letter
+malformed('{"s":"\\u0"}')         -- truncated \\u escape
+malformed('{"s":"\\u00Z1"}')      -- non-hex \\u escape
+malformed('{"s":"abc')            -- unterminated string
+malformed('{} trailing')          -- content after the top-level value
+malformed('{"n":-}')              -- number with no digits
+local msg = malformed('999')      -- decodes to a number, not a table
+assert(msg:find('payload', 1, true), msg)
+)lua"));
+}
+
+// verify() input guards the earlier matrix does not touch (empty / missing
+// key, typed-wrong exp/nbf with valid signatures) and the sign() header
+// override path (custom header keeps working tokens: alg is defaulted back
+// to HS256 so verify's pin still accepts it).
+BOOST_AUTO_TEST_CASE(JwtVerifyKeyAndTypedClaimArms) {
+    CryptoState s;
+    BOOST_CHECK(run_script(s.lua, R"lua(
+local function forge(payload)
+    local h = shield.crypto.base64url_encode('{"alg":"HS256","typ":"JWT"}')
+    local p = shield.crypto.base64url_encode(payload)
+    local si = h .. '.' .. p
+    return si .. '.' ..
+        shield.crypto.base64url_encode(shield.crypto.hmac_sha256('k', si))
+end
+local token = jwt.sign({sub = 'p1'}, 'k')
+local _, code = jwt.verify(token, '')
+assert(code == 'malformed', tostring(code))
+_, code = jwt.verify(token)
+assert(code == 'malformed', tostring(code))
+_, code = jwt.verify(forge('{"exp":"9"}'), 'k')
+assert(code == 'malformed', tostring(code))
+_, code = jwt.verify(forge('{"nbf":"x"}'), 'k')
+assert(code == 'malformed', tostring(code))
+-- sign() opts.header override: typ/kid pass through, alg defaults back.
+local tok2 = jwt.sign({sub = 'p2'}, 'k',
+                      {header = {typ = 'JWT+X', kid = 'k1'}})
+local hdr = shield.crypto.base64url_decode(tok2:match('^(.-)%.'))
+assert(hdr:find('"alg":"HS256"', 1, true), hdr)
+assert(hdr:find('"kid":"k1"', 1, true), hdr)
+assert(jwt.verify(tok2, 'k').sub == 'p2')
+)lua"));
+}
+
+// Claims whose keys are not consecutive integers degrade to a JSON object --
+// and the values must survive that degradation. Regression pin: the object
+// encoder used to collect tostring(k) and then look the value up with the
+// string form, so a numeric key (a sparse array such as {[1]='a',[3]='c'})
+// resolved to nil and the claim was silently emitted as null. Also pins the
+// total ordering for keys that share a string form (1 and "1" coexist in one
+// Lua table) and sign()'s argument guards.
+BOOST_AUTO_TEST_CASE(JwtNonArrayObjectKeysAndSignGuards) {
+    CryptoState s;
+    BOOST_CHECK(run_script(s.lua, R"lua(
+local function payload_of(v)
+    local tok = jwt.sign(v, 'k')
+    return shield.crypto.base64url_decode(tok:match('^.-%.(.-)%.'))
+end
+-- Sparse numeric keys: object fallback, values intact.
+assert(payload_of({[1] = 'a', [3] = 'c'}) == '{"1":"a","3":"c"}',
+    payload_of({[1] = 'a', [3] = 'c'}))
+assert(payload_of({[2] = 'b'}) == '{"2":"b"}')
+assert(payload_of({[7] = true}) == '{"7":true}')
+local claims = jwt.verify(jwt.sign({[1] = 'a', [3] = 'c'}, 'k'), 'k')
+assert(claims and claims['1'] == 'a' and claims['3'] == 'c', tostring(claims))
+-- Two distinct keys with the same string form: both emitted, order stable.
+local collide = {[1] = 'num', ['1'] = 'str'}
+assert(payload_of(collide) == '{"1":"num","1":"str"}', payload_of(collide))
+assert(jwt.sign(collide, 'k') == jwt.sign(collide, 'k'), 'not deterministic')
+-- Plain string claims keep the documented sorted order.
+assert(payload_of({b = 2, a = 1, C = 3}) == '{"C":3,"a":1,"b":2}')
+-- Nested objects degrade the same way.
+assert(payload_of({meta = {[2] = 'x', name = 'n'}}) ==
+    '{"meta":{"2":"x","name":"n"}}')
+-- sign() input guards.
+local ok, err = pcall(jwt.sign, 'not-a-table', 'k')
+assert(not ok and err:find('claims must be a table', 1, true), tostring(err))
+ok, err = pcall(jwt.sign, {}, '')
+assert(not ok and err:find('key must be a non', 1, true), tostring(err))
+ok, err = pcall(jwt.sign, {}, 42)
+assert(not ok and err:find('key must be a non', 1, true), tostring(err))
+)lua"));
+}
+
 // The production registration path (register_full_shield_api) must expose the
 // same shield.crypto table — this covers the call site in lua_api.cpp.
 BOOST_AUTO_TEST_CASE(RegisteredViaFullShieldApi) {

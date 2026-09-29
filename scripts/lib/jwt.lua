@@ -80,11 +80,22 @@ local function json_encode_value(v)
             return "[" .. table.concat(parts, ",") .. "]"
         end
         local keys = {}
-        for k in pairs(v) do keys[#keys + 1] = tostring(k) end
-        table.sort(keys)
+        for k in pairs(v) do keys[#keys + 1] = k end
+        -- Sort the *original* keys by their string form rather than sorting
+        -- the stringified forms: a numeric key (a sparse array that degraded
+        -- to an object, e.g. {[1]='a',[3]='c'}) must be looked up with its
+        -- own key, otherwise v["1"] is nil and the claim silently encodes as
+        -- null. Distinct keys can share a string form (1 and "1" coexist in
+        -- one Lua table), so break that tie by type to keep the order total
+        -- and the emitted token bytes deterministic.
+        table.sort(keys, function(a, b)
+            local ka, kb = tostring(a), tostring(b)
+            if ka ~= kb then return ka < kb end
+            return type(a) < type(b)
+        end)
         local parts = {}
         for _, k in ipairs(keys) do
-            parts[#parts + 1] = '"' .. json_escape(k) .. '":' ..
+            parts[#parts + 1] = '"' .. json_escape(tostring(k)) .. '":' ..
                                      json_encode_value(v[k])
         end
         return "{" .. table.concat(parts, ",") .. "}"

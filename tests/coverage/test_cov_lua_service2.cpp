@@ -434,8 +434,10 @@ BOOST_AUTO_TEST_CASE(PendingCoroutineCallSurvivesManagerTeardown) {
 }
 
 // ---------------------------------------------------------------------------
-// Round-6: a second spawn of the same name while the first is still running
-// its (slow) on_init observes the name reservation and fails.
+// Round-6: two spawns of the same name released from a common start barrier.
+// Exactly one of them owns the name; the other is rejected while the owner is
+// still inside its (slow) on_init, because the name stays reserved for the
+// whole init phase.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(ConcurrentDuplicateSpawnHitsReservation) {
     caf::actor_system_config cfg;
@@ -449,25 +451,49 @@ BOOST_AUTO_TEST_CASE(ConcurrentDuplicateSpawnHitsReservation) {
                      "function M.on_init() shield.sleep(800) end\n"
                      "return M\n");
 
-    std::atomic<bool> first_done{false};
+    // Start barrier: both callers are released together so the two registry
+    // entries really race. A fixed sleep cannot promise that (on a loaded box
+    // the second thread may not even be scheduled yet, which is how this case
+    // used to fail with the *first* spawn losing). Which of the two wins is
+    // deliberately unasserted.
+    std::atomic<int> parked{0};
+    std::atomic<bool> go{false};
+    auto racer = [&](SpawnResult* out) {
+        parked.fetch_add(1);
+        while (!go.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        *out = manager.spawn(path, opts_for("cov6_dup"));
+    };
+
     SpawnResult first;
-    std::thread spawner([&]() {
-        first = manager.spawn(path, opts_for("cov6_dup"));
-        first_done = true;
-    });
-
-    // Wait until the first spawn is inside its slow on_init, then race a
-    // second spawn of the same name: it must observe the reservation.
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
-    SpawnResult second = manager.spawn(path, opts_for("cov6_dup"));
-
+    SpawnResult second;
+    std::thread spawner([&]() { racer(&first); });
+    // Release only once the spawner is parked: from here on both threads are
+    // live and call spawn concurrently.
+    while (parked.load(std::memory_order_acquire) < 1) {
+        std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+    racer(&second);
     spawner.join();
-    BOOST_REQUIRE(first_done.load());
-    BOOST_REQUIRE_MESSAGE(first.success, first.error_message);
-    BOOST_CHECK(!second.success);
-    BOOST_CHECK(second.error_message.find("reserved") != std::string::npos);
 
-    manager.exit(first.service_id, "done");
+    BOOST_REQUIRE_MESSAGE(first.success != second.success,
+                          "both calls ran init (a=" << first.success << ", b="
+                                                    << second.success << ")");
+    const SpawnResult& winner = first.success ? first : second;
+    const SpawnResult& loser = first.success ? second : first;
+    // The loser is turned away by the entry guard while the winner is still
+    // initializing ("reserved"). Both calls can only slip past that guard
+    // together if the check-to-insert window is preempted, in which case the
+    // publish-time double check reports "already exists" - still exactly one
+    // owner, so both codes are accepted here.
+    BOOST_CHECK(loser.error_message.find("reserved") != std::string::npos ||
+                loser.error_message.find("already exists") !=
+                    std::string::npos);
+    BOOST_CHECK_EQUAL(manager.query_service("cov6_dup"), winner.service_id);
+
+    manager.exit(winner.service_id, "done");
 }
 
 // ---------------------------------------------------------------------------

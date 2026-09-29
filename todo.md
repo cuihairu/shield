@@ -41,6 +41,64 @@ runtime 只给稳定原语，业务语义留给 Lua（落已 AD-08）。
       `open-decisions.md` OD-015 后续执行注、`roadmap.md` Later 记一期切片。
 - [x] 门禁：五树 ctest 全绿 + 覆盖率六口径全绿（见下）。
 
+## jwt.lua 配套测试补全（2026-09-29）
+
+上轮 13 用例后复核 jwt.lua 全文，私有 JSON 编解码与 verify 的安全相关
+路径仍有整片真空（jwt.lua 是 Lua 文件不进 gcovr 测量面，无门禁倒逼，
+只能靠配套用例钉住）。`test_cov_lua_crypto.cpp` 13 -> 19 用例，全部
+经 jwt.sign/jwt.verify 端到端驱动（新用例用 C++ raw string 写 Lua 源，
+避开三层转义）：
+
+- [x] **JwtJsonEscapeEncoding**：`json_escape` 全臂（`"`、`\\`、`\b`/
+      `\f`/`\n`/`\r`/`\t` 命名形 + 未命名控制字节 `\u0000`/`\u0001`）——
+      载荷段字节断言 + 含控制字符 claims 的 sign→verify 往返；键排序
+      确定性（两次不同插入序的表产出相同 token 字节）。
+- [x] **JwtJsonNumberEncoding**：整数 `%d`（含 2^53-1 边界）、小数与
+      指数形 `%.14g`（1e16 ≥ 2^53 走 `1e+16`）、NaN/±inf 编码硬错、
+      function 值类型硬错。勘误记档：2.5e15 整数且 <2^53 走 `%d` 而非
+      `%.14g`（首版断言预期写错，实测行为正确）。
+- [x] **JwtJsonDecodeEscapes**：攻击者形状载荷（用 shield.crypto 重算
+      HS256 伪造合法签名，越过签名门专打解析器）——简单转义七件、
+      `\uXXXX` 四档 UTF-8 宽度（1/2/3 字节 + 代理对
+      `😀` → U+1F600 四字节形）、true/false/null 字面量、
+      空对象/空数组、空白容忍。
+- [x] **JwtJsonDecodeMalformed**：未知转义字母、截断/非十六进制 `\u`、
+      未闭合字符串、顶层后尾随内容、无数字数字（`{"n":-}`）、可解码但
+      非表载荷（`999` → "undecodable payload"）——全部经 malformed 码返回。
+- [x] **JwtVerifyKeyAndTypedClaimArms**：空 key / 缺 key 守卫、
+      exp/nbf 类型错（`"exp":"9"` 带合法签名 → malformed）、sign 的
+      opts.header 覆盖臂（typ/kid 透传 + alg 回填 HS256，verify 钉死
+      仍接受）。
+- [x] **JwtNonArrayObjectKeysAndSignGuards**：复核对象分支时挖出的
+      **真 bug 修复 + 回归钉**——非连续整数键的表（稀疏数组
+      `{[1]='a',[3]='c'}`）降级成 JSON 对象，而编码器收集的是
+      `tostring(k)` 再用**字符串**键回查 `v[k]`，数值键因此取到 nil，
+      claim 被静默编码成 `null`（丢值，往返后无任何报错）。修法＝排序
+      并回查**原键**、比较器按字符串形排序并用 type 破同形平局（1 与
+      "1" 可共存于一张 Lua 表，需要全序保证 token 字节确定性）；普通
+      字符串键输出逐字节不变。顺带钉住 sign() 的 claims/key 参数守卫。
+      修复前该用例对旧 jwt.lua 精确复现 `{"1":null,"3":null}`。
+- [x] 门禁：五树 ctest 全绿 + 覆盖率六口径全绿（仅测试文件 + jwt.lua，
+      src/ 无改动）。
+
+## 并发 spawn 竞态用例的去定时脆弱（2026-09-29）
+
+`test_cov_lua_service2/ConcurrentDuplicateSpawnHitsReservation` 在多会话
+高负载（本机 load 60+）下门禁红：`fatal error: ... service name already
+reserved: cov6_dup`——**首个** spawn 输了竞争。病因是用固定 250ms 睡眠
+当同步屏障：机器被别的会话占满时 spawner 线程根本没被调度，第二个
+spawn 先到并占有名字。附带问题：**并发从未真发生**（两次调用相隔
+250ms），用例名与意图不符——它实际测的是"名字在 on_init 期间被预留"，
+而预留窗口（整个 init 阶段）远比 250ms 宽。
+
+- [x] 改起跑屏障（`parked` + `go` 两原子自旋同步）：两个调用同时释放、
+      真正并发；断言改为与角色无关的**不变量**（恰好一个成功、败者被
+      入口守卫拒绝、胜者可 query 到），不再假设"第一个必胜"。败者错误码
+      接受 `reserved`（init 期间被预留）与 `already exists`（check→
+      insert 窗口被抢占双双进入时，publish 处的二次检查兜底），两种
+      结局都证明"同名只有一个属主"。
+- [x] 门禁：五树 ctest 全绿（并入本轮门禁一起跑）。
+
 ## 头文件层覆盖收口（2026-09-27）
 
 CI gate 只统计 `src/`（filter `../src/`），`include/shield/**` 的内联/模板
@@ -605,3 +663,42 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
   或沿用本轮做法本地开开关实测、余量登记。注意 GLOBAL=ON 会在共享 TU
   制造跨 TU lambda 克隆槽位伪影（d612c0b 现象），收口时按 clone-artifact
   标记惯例处理。
+
+## 覆盖率巡检续：不可测余量台账（2026-09-29，61f696c）
+
+本轮巡检在干净文件上（排除并行会话在飞的 `plugin_host.hpp`/`plugin_host.cpp`/`plugin_config.cpp` 三文件）完成，五树 ctest 全绿（build 98 / build-net 100 / build-plug 100 / build-dbg 98 / build-cov 98），覆盖率六口径全绿（clean files 100%）。
+
+**不可测/已登记余量（按实测口径）：**
+
+1. **并行会话在飞的 plugin 文件（本轮排除，待合并后补测）**：
+   - `src/plugin/plugin_config.cpp`：line 96%（45-46），branch 84%（44-46），function 96%
+   - `src/plugin/plugin_host.cpp`：line 93%（180-267, 1184-1185），branch 91%（175-267, 1183-1184），function 93%
+
+2. **可选模块 TU 结构性盲区（默认树门禁不编译，无 gcda）**：
+   - cluster：`cluster_manager.cpp` 450 行、`transport` 623 行、`cluster_status.cpp` —— 需 `SHIELD_ENABLE_CLUSTER=ON`
+   - server：`server_manager.cpp` 352 行、`server_status.cpp` 30 行 —— 需 `SHIELD_ENABLE_SERVER=ON`
+   - player：`player_manager.cpp` 267 行 —— 需 `SHIELD_ENABLE_PLAYER=ON`
+   - `src/main.cpp`：main() 入口，无 gcda 可测
+   - 建议：CI 增设 `GLOBAL=ON` / `CLUSTER=ON` 覆盖率 job
+
+3. **GLOBAL-on 形态下的真实余量（本轮开 GLOBAL=ON 实测）**：
+   - `src/lua/lua_api.cpp` global facade 深层错误臂：93 行 / 221 分支记录（rw_write_extend、reliable/data/rate error 臂）
+   - `src/global/global_manager.cpp` 方法级错误臂：32 行 / 130 分支记录
+   - `src/bootstrap/bootstrap.cpp` GLOBAL gated 装配：9 行 / 20 分支记录
+
+4. **已登记 GCOVR_EXCL 伪影（理由在代码注释）**：
+   - `include/shield/base/byte_buffer.hpp` hex_dump 闭括号行（GCOVR_EXCL_LINE）
+   - `include/shield/net/session_stream.hpp` 基类析构行=default（GCOVR_EXCL_LINE，D0 不可达）
+   - `include/shield/net/ip_blocklist.hpp` `!is_v4() && !is_v6()` 判别联合守卫（GCOVR_EXCL_START/STOP）
+   - `src/config/config.cpp` 内联 catch 深嵌套分支（GCOVR_EXCL_BR_LINE，clang-format 同行标记）
+   - `src/console/ops_http_handler.cpp` braced-init 分支伪影（GCOVR_EXCL_LINE GCOVR_EXCL_BR_LINE，fixture 已真实驱动）
+   - `src/console/root_commands.cpp` braced-init 分支伪影（同理）
+   - `src/lua/lua_api.cpp` clone 槽位分支（跨 TU lambda 伪影，GLOBAL=ON 时出现）
+   - `src/lua/lua_runtime.cpp` / `lua_service.cpp` / `lua_http_bridge.cpp` / `bootstrap.cpp` / `shield.cpp` 共计 ~27 个 clone 槽位函数
+
+5. **已修复并回归钉住的真 bug**：
+   - `src/lua/lua_api.cpp:3100` `lock:ttl` 字段被方法覆盖导致 sol2 类型错误（字段改 `_ttl`）
+   - `tests/lua_api/test_lua_api_global.cpp` label 缺失导致 CI Cluster job 不执行真实分支（已补 "global" label）
+   - `test_cov_lua_service2` 并发 spawn 用例定时脆弱（已改原子屏障 + 不变量断言）
+
+**验收**：五树 ctest 98/100/100/98/98 全 EXIT=0；include/ 三口径 EXIT=0；src/ 红行经 txt 逐行核实全部位于并行会话未提交的两 plugin 文件；单提交 push，禁 tag/release。
