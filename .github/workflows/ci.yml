@@ -354,6 +354,106 @@ jobs:
             build-cov/coverage.xml
             build-cov/coverage*.html
 
+  # 可选模块覆盖率 (Linux, 四开关 + gcov): 上面的 Coverage job 走默认配置,
+  # cluster/server/player/global TU 被 #ifdef 掉根本不编译——默认树门禁的
+  # 结构性盲区 (todo.md「可选模块未测量 TU」条)。此 job 开
+  # GLOBAL/CLUSTER/PLAYER/SERVER=ON 全量构建跑全量 ctest，再对这些 TU 及
+  # GLOBAL 共享 TU（lua_api/global_manager/bootstrap）做 gcovr line 口径
+  # 收口，TOTAL 低于 100% 即失败。branch 口径未收口（九文件 branch
+  # TOTAL 实测 93%，真臂缺口登记在 todo.md 台账），故只 gate line。
+  # src/main.cpp 不进过滤器：main() 入口全文已 GCOVR_EXCL 排除且
+  # 无 gcda（结构不可测，台账见 todo.md）。
+  coverage-optional:
+    name: Coverage (Optional Modules)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+          python3 -m pip install gcovr==8.6
+
+      - name: Export GHA cache credentials
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Cache vcpkg installed
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/build-cov-opt/vcpkg_installed
+          key: vcpkg-installed-coverage-opt-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-installed-coverage-opt-
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+        with:
+          vcpkgGitCommitId: 'a0b1c8d3a477c1cb4813d8e127a56961707ca42b'
+
+      - name: Configure (coverage, optional modules enabled)
+        run: >
+          cmake -B build-cov-opt -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
+          -DSHIELD_BUILD_TESTS=ON
+          -DSHIELD_BUILD_EXAMPLES=OFF
+          -DSHIELD_ENABLE_COVERAGE=ON
+          -DSHIELD_ENABLE_CLUSTER=ON
+          -DSHIELD_ENABLE_PLAYER=ON
+          -DSHIELD_ENABLE_SERVER=ON
+          -DSHIELD_ENABLE_GLOBAL=ON
+
+      - name: Build tests
+        run: cmake --build build-cov-opt --parallel $(nproc)
+
+      - name: Run all test suites (serial, coverage build)
+        working-directory: build-cov-opt
+        run: ctest --build-config Debug --output-on-failure
+
+      - name: Collect optional-module line coverage
+        shell: bash
+        run: |
+          cd build-cov-opt
+          gcovr -r . \
+            --exclude-directories '^\.(?!$)' \
+            --filter '\.\./src/cluster/' \
+            --filter '\.\./src/player/' \
+            --filter '\.\./src/server/' \
+            --filter '\.\./src/console/cluster_status\.cpp' \
+            --filter '\.\./src/console/server_status\.cpp' \
+            --filter '\.\./src/lua/lua_api\.cpp' \
+            --filter '\.\./src/global/global_manager\.cpp' \
+            --filter '\.\./src/bootstrap/bootstrap\.cpp' \
+            --txt coverage-optional.txt \
+            --txt-metric line \
+            --exclude-unreachable-branches \
+            --exclude-throw-branches \
+            --gcov-ignore-parse-errors negative_hits.warn \
+            --fail-under-line 100
+          TOTAL=$(grep -E '^TOTAL' coverage-optional.txt)
+          echo "### Optional-module line coverage (four switches ON)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$TOTAL" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-optional-report
+          path: build-cov-opt/coverage-optional.txt
+
   # Docker 构建 (仅 main 分支)
   docker:
     name: Docker Build

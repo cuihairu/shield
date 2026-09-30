@@ -656,14 +656,13 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
   （32 行 / 130 分支记录，line 97% / branch 87%）；
   src/bootstrap/bootstrap.cpp GLOBAL gated 装配行 + 分支（bootstrap 套件
   未装 global 配置，9 行 / 20 分支记录）。
-- [ ] **可选模块未测量 TU（默认树门禁结构性盲区，本轮未动）**：
-  cluster（cluster_manager 450 行 + transport 623 行 + cluster_status）、
-  server（server_manager 352 行 + server_status 30 行）、
-  player（player_manager 267 行）、src/main.cpp（main() 入口，无 gcda 可测）。
-  若要收口需 CI 增设 GLOBAL/CLUSTER=ON 的覆盖率 job（提案，未实施）；
-  或沿用本轮做法本地开开关实测、余量登记。注意 GLOBAL=ON 会在共享 TU
-  制造跨 TU lambda 克隆槽位伪影（d612c0b 现象），收口时按 clone-artifact
-  标记惯例处理。
+- [x] **可选模块未测量 TU（默认树门禁结构性盲区）**（已收口，见
+  「可选模块三口径实测 + CI 覆盖率 job」节）：四开关（GLOBAL/CLUSTER/
+  PLAYER/SERVER=ON）本地三口径实测，cluster/server/player 四 TU 与
+  console 两状态文件 line 全 100%，GLOBAL 三 TU 四开关口径亦 100%；
+  src/main.cpp 结构不可测（GCOVR_EXCL 全文排除 + 无 gcda）；
+  CI 已增设 coverage-optional job（四开关 + gcovr line --fail-under-line 100，
+  九文件过滤）封死盲区，branch 余量（93%）登记待后续轮。
 
 ## 覆盖率巡检续：不可测余量台账（2026-09-29，61f696c）
 
@@ -736,3 +735,109 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
 - `src/global/global_manager.cpp`：113-114 empty-field 防御臂（循环头已拒空组件，BR+LINE）；405/789 fn-close 伪影（LINE）；1093-1094 空桶 continue（排空 level 即抹除的不变量，BR+LINE）；1655/1657 cron 退役臂——**真臂非防御**，仅 Feb-29 型 ≥2 年跨度 schedule 可达，单元测试墙钟预算内结构性不可测（BR+LINE+注释注明）
 
 **验收**：GLOBAL=on 全量 ctest EXIT=0，三文件 line 口径 100%（上表）；回退 GLOBAL=off 重编后五树门禁全绿（ctest EXIT 0/0/0/0/0 + 六 gcovr 口径 EXIT 全 0——首跑 src/ 三口径红为 ON 轮孤儿 `CMakeFiles/shield_global.dir` 的 gcno 幻影行（有 gcno 无 gcda 报全零），删孤儿目标目录后复跑即绿）；禁 tag/release。
+
+## 四开关口径收割（2026-09-30，1eabc77）
+
+按 gcovr 口径盘点剩余缺口：四开关（GLOBAL/CLUSTER/PLAYER/SERVER=ON）重配
+build-cov → 清 gcda → 全量 ctest → 逐文件 gcovr txt（line 口径）。可选四 TU
+既有套件已全 100%（cluster_manager 262 / cluster_transport 323 /
+player_manager 184 / server_manager 223 行），真缺口在 console 侧。
+
+**实测前后（四开关 line 口径）**：
+
+| 文件 | 前 | 后 |
+|---|---|---|
+| src/console/ops_http_handler.cpp | 22 行缺失（96%） | 684/684 **100%** |
+| src/console/global_status.cpp | 3 行缺失（90%） | 29/29 **100%** |
+
+**补测（真臂，无 mock）**：
+- test_cov_ops_http.cpp +2 用例：MetricsEndpointIncludesClusterTransportStats
+  （挂真实 ClusterTransport——ctor 惰性不绑端口——读 stats() 零值计数族 +
+  adopted 节点 state=online 指标，驱动 712-727+729 transport prom 段与
+  668/671/674 队列族折行槽）；HealthEndpointClusterDegradedCounts
+  （两 peer：一 adopt 一 peer_down → online=1/down=1/degraded，驱动 311/313
+  health 两计数臂）
+
+**测试防脆（3 处）**：
+- test_cov_ops_http.cpp ProfileOwnerBusy504：enqueue 后 100ms 调度让步
+  （满载下 stop 先于占位任务调度会 200≠504）
+- test_lua_api_global.cpp LAPI_GL_03：释放延迟 120→400ms、超时 120→2000ms、
+  下限 100→80（四开关树服务启动变慢吃进 120ms 窗口导致 waited_ms<100）
+- test_cluster_transport.cpp PeerDown 用例：wait_online 改为
+  wait_until(reconnects>=1 && live_connections==1)（对端红拨的入站心跳可
+  抢先翻 Online，epoch 刷新与 M5 计数只属于本端 adoption）
+
+**标记登记（理由在代码注释，均 ≤80 列）**：
+- ops_http_handler 668/671/674：clang-format 折行后 EXCL 落第二行，裸
+  static_cast 开行是四开关新增克隆槽伪影
+- global_status 30/42/45：hit_rate 三元 / ranks / normal 队列条目，
+  braced-init 归因伪影（fixture 真驱动，行记录留零）
+
+**验收**：四开关 ctest 101/101 全绿；六文件 gcovr line 全 100%（ops
+684/684、global_status 29/29、可选四 TU 不变）；单提交 push（1eabc77），
+CI 双工作流全绿（CI 1h5m6s + Optional Plugins 1h12m44s）；回退 OFF 后
+五树门禁全绿（2026-09-30 本轮补跑：ctest EXIT 0/0/0/0/0 + 六口径 EXIT
+全 0——首跑 include/ 三口径红为 ON 轮孤儿**测试**目标目录
+（tests/CMakeFiles/test_player_manager 等 5 个，refs=0 核实后删）的
+gcno 幻影行，删后复跑即绿；孤儿目录教训从 shield_* 库目录扩展到
+tests/ 目标目录）；禁 tag/release。
+
+## 可选模块三口径实测 + CI 覆盖率 job（2026-09-30，收口清单项「可选模块未测量 TU」执行轮）
+
+四开关（GLOBAL/CLUSTER/PLAYER/SERVER=ON）build-cov → 清 gcda → 全量
+ctest → gcovr line/branch/function 三口径实测（txt + JSON）。九文件
+（可选六 TU + GLOBAL 三共享 TU）line 口径全 100%，无新增标记需要
+（clone 槽 / braced-init 伪影在 line 口径无残留；既有标记存量见下）。
+
+**三口径台账（四开关实测，line=可执行行/命中）：**
+
+| 文件 | line | branch | function |
+|---|---|---|---|
+| src/cluster/cluster_manager.cpp | 262/262 100% | 231/244 94% | 33/33 |
+| src/cluster/cluster_transport.cpp | 323/323 100% | 294/379 77% | 25/25 |
+| src/console/cluster_status.cpp | 26/26 100% | 26/28 92% | 1/1 |
+| src/console/server_status.cpp | 16/16 100% | 22/24 91% | 1/1 |
+| src/player/player_manager.cpp | 184/184 100% | 147/163 90% | 20/20 |
+| src/server/server_manager.cpp | 223/223 100% | 155/165 93% | 33/33 |
+| src/lua/lua_api.cpp（四开关口径） | 2283/2283 100% | 2686/2803 95% | 244/255 |
+| src/global/global_manager.cpp | 1159/1159 100% | 933/1007 92% | 114/114 |
+| src/bootstrap/bootstrap.cpp（四开关口径） | 597/597 100% | 494/518 95% | 34/36 |
+| src/main.cpp | 0/0 --%（无 gcda） | — | — |
+| **TOTAL（line）** | **5073/5073 100%** | 4988/5331 93% | 506/519 |
+
+**结构性不可测**：src/main.cpp——`add_executable(shield src/main.cpp)`
+入口，测试二进制不链接不执行，全量 ctest 后无 gcda；已
+GCOVR_EXCL_START/STOP 全文排除（先前轮），CI job 过滤器显式不含。
+
+**function 口径缺 13 项均为伪影类**（line 100% 下函数体行已执行）：
+bootstrap 2 个 lambda 入口（293/769，fn-close 伪影，L651 先例类）；
+lua_api 11 个 `register_*_api` 函数条目（535/984/1220/1288/1621/1632/
+2333/2789/3563/3706/5018，sol wrapper 入口归因伪影）。不作为验收面。
+
+**branch 余量（登记，后续轮收口）**：cluster_transport 77% 最大（85 条
+分支记录缺失：connect_tick 重连 / envelope 转发与各 handler 错误臂），
+cluster_manager 94% / player 90% / server 93% / 两 console 状态 91-92% /
+global_manager 92% / lua_api 95% / bootstrap 95%。
+
+**测量陷阱（本轮甄别实录，防复发）**：共享 build-cov 被并行会话翻开关
+（13:34 PLAYER/SERVER=OFF 全 OFF 窗口）后，条件编译测试的 stub 分支 .o
+在后续 ON 重配中被 ninja 判定为最新（.ninja_log 与重配交错），仅 relink
+不重编——test_lua_api_global 以 stub 分支跑出 0.31s/1 用例，造成
+lua_api -430 行 / global_manager -38 行的假缺口。甄别法：`strings
+bin/<t> | grep <启用分支用例名>` 或跑二进制看 "Running N test cases"
+（stub=1）；修法 touch 测试源强制重编后全量重测，假缺口全部归零。
+**测量前必验条件编译测试二进制的分支**，尤其共享树多会话翻开关后。
+
+**CI 落地（本条提案，已实施）**：ci.yml 增设 `coverage-optional`
+（Coverage (Optional Modules)）job：四开关 + SHIELD_ENABLE_COVERAGE=ON
+Debug 构建 → 全量 ctest → gcovr line 口径九文件过滤（cluster/player/
+server 全目录 + console 两状态文件 + GLOBAL 三 TU）+
+`--fail-under-line 100`；不 gate branch（真臂长尾另轮）；main.cpp
+不进过滤器（无 gcda + 全文 EXCL，防 gcno 幻影口径差异）。
+
+**验收**：四开关 ctest 101/101（test_cov_cpp_lua_api 高负载 spawn 超时
+SegFault 一次，单测补跑通过后 gcda 合并重测）；九文件 line 100%
+（上表）；回退四开关 OFF 后五树门禁全绿（ctest EXIT 0/0/0/0/0 + 六
+gcovr 口径 EXIT 全 0；首跑 include/ 三口径红为 ON 轮孤儿测试目标目录
+gcno 幻影行，删 5 个 refs=0 孤儿目录复跑即绿，详见上节验收）；单提交 push +
+CI 三 job 观察（含新 coverage-optional 首跑）；禁 tag/release。
