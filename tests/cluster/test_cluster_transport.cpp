@@ -442,19 +442,29 @@ BOOST_AUTO_TEST_CASE(PeerDownMarksOfflineAndRestartReconnectsWithNewEpoch) {
                           "restarted transport failed: " << error);
     BOOST_CHECK_EQUAL(bound, port_b);
 
-    wait_online(*a->manager, "node-b");
+    // Liveness has three independent sources, so wait_online alone is not
+    // enough here: both sides dial, and the peer's own redial can win the
+    // race — its inbound heartbeats flip us back Online (on_heartbeat)
+    // well before our own dial lands. The epoch refresh and the M5 counters
+    // below both belong to *our* adoption (HelloAck over our own
+    // connection), so wait for that invariant and only then read them.
+    BOOST_REQUIRE_MESSAGE(
+        wait_until(
+            [&] {
+                const auto s = a->transport->stats();
+                return s.reconnects >= 1u && s.live_connections == 1u;
+            },
+            std::chrono::milliseconds(10000)),
+        "node-a never reconnected after the peer drop: "
+            << a->transport->stats().reconnects << " reconnects, "
+            << a->transport->stats().live_connections << " live");
+
     const uint64_t second_epoch = a->manager->find_node("node-b")->epoch;
     BOOST_CHECK_NE(first_epoch, second_epoch);
     BOOST_CHECK_EQUAL(a->manager->query_remote("node-b", "room.public"), "");
 
     // The restarted side also learned node-a again (it dials too).
     wait_online(*reborn, "node-a");
-
-    // M5: node-a's redial after the drop counts as a reconnect, and the
-    // live connection count is back to exactly one.
-    const auto stats_a = a->transport->stats();
-    BOOST_CHECK_GE(stats_a.reconnects, 1u);
-    BOOST_CHECK_EQUAL(stats_a.live_connections, 1u);
 
     // Tear down in dependency order: transport actors first (their CAF
     // systems and managers must stay alive underneath them).

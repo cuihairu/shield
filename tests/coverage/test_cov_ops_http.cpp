@@ -18,6 +18,7 @@
 #include "shield/caf_initializer.hpp"
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
+#include "shield/cluster/cluster_transport.hpp"
 #endif
 #ifdef SHIELD_ENABLE_GLOBAL
 #include "shield/global/global_manager.hpp"
@@ -1461,10 +1462,13 @@ BOOST_AUTO_TEST_CASE(ProfileOwnerBusy504) {
     BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(response), 200);
 
     // Occupy the owner with a slow fork task: the uninstall (queued behind
-    // it) cannot run within the HTTP bounded wait -> 504.
+    // it) cannot run within the HTTP bounded wait -> 504. The settle wait
+    // gives the scheduler time to pick the fork up — under load the stop
+    // request can otherwise reach an idle owner first and answer 200.
     manager->enqueue_forked_task("prof_busy_svc", [] {
         std::this_thread::sleep_for(std::chrono::seconds(3));
     });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     response = client.post_profile(R"({"action":"stop"})");
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 504);
 
@@ -1616,6 +1620,100 @@ BOOST_AUTO_TEST_CASE(StatusEndpointIncludesClusterBlock) {
                           "online");
         BOOST_CHECK(resp["data"]["cluster"]["nodes"][0]["heartbeat_age_ms"]
                         .is_number());
+    }
+
+    shield::cluster::set_global_cluster_manager(nullptr);
+    cluster.stop();
+}
+
+// With a transport registered beside the manager, /ops/metrics carries the
+// M5 counter families (connections/reconnects/messages/heartbeats) next to
+// the per-state node gauge. An un-started transport keeps the fixture
+// hermetic: the ctor only stores state, so stats() reads zeroed counters
+// and no port is bound.
+BOOST_AUTO_TEST_CASE(MetricsEndpointIncludesClusterTransportStats) {
+    shield::cluster::ClusterConfig config;
+    config.enabled = true;
+    config.node_id = "cov-ops";
+    config.listen_address = "127.0.0.1:0";
+    // The dial target must be a configured peer: on_handshake drops
+    // unknown addresses, and an empty node table makes prom_emit_group
+    // skip the gauge entirely.
+    config.peers = {"127.0.0.1:59996"};
+    shield::cluster::ClusterManager cluster(config);
+    cluster.start();
+    cluster.on_handshake("127.0.0.1:59996", "node-t", 7);
+    shield::cluster::ClusterTransport transport(*system, cluster, config);
+    shield::cluster::set_global_cluster_manager(&cluster);
+    shield::cluster::set_global_cluster_transport(&transport);
+
+    {
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", port);
+        std::string response =
+            client.get("/ops/metrics", std::chrono::milliseconds(9000));
+        BOOST_REQUIRE(!response.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+        const std::string& body = RawHttpClient::body(response);
+        // Node gauge reflects the adopted (online) peer.
+        BOOST_CHECK(body.find("shield_cluster_nodes{state=\"online\"} 1") !=
+                    std::string::npos);
+        // Transport families with the fresh transport's zeroed counters.
+        BOOST_CHECK(body.find("shield_cluster_transport_connections") !=
+                    std::string::npos);
+        BOOST_CHECK(body.find("shield_cluster_transport_reconnects_total") !=
+                    std::string::npos);
+        BOOST_CHECK(
+            body.find("shield_cluster_transport_messages_total{direction="
+                      "\"tx\"} 0") != std::string::npos);
+        BOOST_CHECK(
+            body.find("shield_cluster_transport_messages_total{direction="
+                      "\"rx\"} 0") != std::string::npos);
+        BOOST_CHECK(
+            body.find("shield_cluster_transport_heartbeats_total{direction="
+                      "\"tx\"} 0") != std::string::npos);
+        BOOST_CHECK(
+            body.find("shield_cluster_transport_heartbeats_total{direction="
+                      "\"rx\"} 0") != std::string::npos);
+    }
+
+    shield::cluster::set_global_cluster_transport(nullptr);
+    shield::cluster::set_global_cluster_manager(nullptr);
+    cluster.stop();
+}
+
+// Health over a mixed cluster: an adopted (online) peer plus a dropped
+// (offline) peer roll up into the degraded status with both counters set.
+BOOST_AUTO_TEST_CASE(HealthEndpointClusterDegradedCounts) {
+    shield::cluster::ClusterConfig config;
+    config.enabled = true;
+    config.node_id = "cov-ops";
+    config.listen_address = "127.0.0.1:0";
+    config.peers = {"127.0.0.1:59997", "127.0.0.1:59998"};
+    shield::cluster::ClusterManager cluster(config);
+    cluster.start();
+    cluster.on_handshake("127.0.0.1:59997", "node-x", 3);
+    cluster.on_handshake("127.0.0.1:59998", "node-y", 4);
+    cluster.on_peer_down("127.0.0.1:59998");
+    shield::cluster::set_global_cluster_manager(&cluster);
+
+    {
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", port);
+        std::string response =
+            client.get("/ops/health", std::chrono::milliseconds(9000));
+        BOOST_REQUIRE(!response.empty());
+        // The degraded verdict maps onto the status code (ok -> 200,
+        // degraded -> 503); the body envelope is unchanged either way.
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 503);
+        auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+        BOOST_CHECK(resp["type"] == "result");
+        BOOST_CHECK_EQUAL(resp["data"]["status"], "degraded");
+        const auto& cluster_check = resp["data"]["checks"]["cluster"];
+        BOOST_REQUIRE(!cluster_check.is_null());
+        BOOST_CHECK_EQUAL(cluster_check["status"], "degraded");
+        BOOST_CHECK_EQUAL(cluster_check["nodes_online"], 1u);
+        BOOST_CHECK_EQUAL(cluster_check["nodes_down"], 1u);
     }
 
     shield::cluster::set_global_cluster_manager(nullptr);

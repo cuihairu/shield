@@ -217,22 +217,28 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_03_AcquireWaitsForContendedLock) {
     GlobalWorld world;
     BOOST_CHECK(world.gm.mutex_acquire("mutex", "wait_lock", "cpp-owner", 0) ==
                 shield::global::LockStatus::kOk);
-    // Free the lock while the Lua acquire loop is polling.
+    // Free the lock while the Lua acquire loop is polling. The release
+    // delay must dwarf service-boot jitter (the four-switch tree boots
+    // measurably slower): a late-starting waiter would find the lock
+    // already free and defeat the elapsed-time floor below.
     std::thread releaser([&] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
         world.gm.mutex_release("mutex", "wait_lock", "cpp-owner");
     });
     auto svc = world.spawn("gl_wait");
     BOOST_REQUIRE(svc.success);
     CallResult r = call(world.manager, svc.service_id, "lock_wait",
-                        nlohmann::json::array({120}));
+                        nlohmann::json::array({2000}));
     releaser.join();
     if (!r.success) BOOST_TEST_MESSAGE("call error: " << r.error_message);
     BOOST_REQUIRE(r.success);
     const nlohmann::json& v = r.values[0];
     // The acquire eventually succeeded and observed real elapsed time.
+    // The floor sits far below the release delay so it holds even when
+    // boot eats into the delay, while a genuinely instant acquire
+    // (contention never observed) still fails it.
     BOOST_CHECK_EQUAL(v["ok"], true);
-    BOOST_CHECK(v["waited_ms"].get<std::int64_t>() >= 100);
+    BOOST_CHECK(v["waited_ms"].get<std::int64_t>() >= 80);
 }
 
 BOOST_AUTO_TEST_CASE(LAPI_GL_04_AcquireTimesOut) {

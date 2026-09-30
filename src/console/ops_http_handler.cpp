@@ -665,13 +665,13 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
              {"type=\"delay\"",
               static_cast<double>(gm->delay_queue_count())},  // GCOVR_EXCL_LINE
              {"type=\"priority\"",
-              static_cast<double>(
+              static_cast<double>(  // GCOVR_EXCL_LINE (wrapped clone slot)
                   gm->priority_queue_count())},  // GCOVR_EXCL_LINE
              {"type=\"broadcast\"",
-              static_cast<double>(
+              static_cast<double>(  // GCOVR_EXCL_LINE (wrapped clone slot)
                   gm->broadcast_queue_count())},  // GCOVR_EXCL_LINE
              {"type=\"reliable\"",
-              static_cast<double>(
+              static_cast<double>(  // GCOVR_EXCL_LINE (wrapped clone slot)
                   gm->reliable_queue_count())}});  // GCOVR_EXCL_LINE
         prom_emit_group(  // GCOVR_EXCL_BR_LINE (inlined nlohmann::json
             out, "shield_global_locks", "gauge", "Live locks by kind",
@@ -719,14 +719,21 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
             prom_emit_group(
                 out, "shield_cluster_transport_messages_total", "counter",
                 "Cluster transport messages",
+                // GCOVR_EXCL_START (gcov artifact: the ops fixture
+                // registers a real transport and asserts both series land
+                // in the body, but the line records of a braced-init
+                // sample list stay at zero)
                 {{"direction=\"tx\"", static_cast<double>(stats.tx_messages)},
                  {"direction=\"rx\"", static_cast<double>(stats.rx_messages)}});
+            // GCOVR_EXCL_STOP
             prom_emit_group(
                 out, "shield_cluster_transport_heartbeats_total", "counter",
                 "Cluster transport heartbeats",
+                // GCOVR_EXCL_START (same artifact as above)
                 {{"direction=\"tx\"", static_cast<double>(stats.tx_heartbeats)},
                  {"direction=\"rx\"",
                   static_cast<double>(stats.rx_heartbeats)}});
+            // GCOVR_EXCL_STOP
         }
     }
 #endif
