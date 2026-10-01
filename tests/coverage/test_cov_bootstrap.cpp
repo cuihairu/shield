@@ -433,6 +433,11 @@ BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
 
     uint16_t gw_port = free_port();
     uint16_t warn_port = free_port();
+    // rc.node_id below implicitly enables the cluster subsystem (bootstrap
+    // seeds cluster.node_id from it), whose default listen address is
+    // 0.0.0.0:9000 — pin it to a free loopback port so foreign processes
+    // cannot collide with the bind.
+    uint16_t cluster_port = free_port();
 
     std::string yaml;
     yaml += "app:\n  name: cov\n";
@@ -441,6 +446,8 @@ BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     yaml += "console:\n  enabled: true\n  socket_path: " +
             (console_dir / "console.sock").string() + "\n";
     yaml += "http:\n  enabled: true\n  host: 127.0.0.1\n  port: \"0\"\n";
+    yaml +=
+        "cluster:\n  listen: 127.0.0.1:" + std::to_string(cluster_port) + "\n";
     yaml += "actors:\n";
     // Resolved through the config file's directory (source_dir).
     yaml += "  - name: srcsvc\n    script: echo_src.lua\n";

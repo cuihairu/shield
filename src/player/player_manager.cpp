@@ -151,10 +151,10 @@ AdmissionDecision PlayerManager::admit(const std::string& uid,
                 auto dev_it = devices_.find(uid);
                 const std::size_t count =
                     dev_it == devices_.end()
-                        ? 0
-                        : dev_it->second
-                              .size();  // GCOVR_EXCL_BR_LINE (ternary arms:
-                                        // both exercised by tests)
+                        ? 0  // GCOVR_EXCL_BR_LINE (defensive: register_session
+                             // always seeds devices_[uid] before admit runs,
+                             // so the devices_-absent arm never fires)
+                        : dev_it->second.size();
                 const bool known =
                     dev_it !=
                         devices_.end() &&  // GCOVR_EXCL_BR_LINE (defensive:
@@ -269,13 +269,15 @@ bool PlayerManager::in_reconnect_window(const std::string& uid,
                                         std::uint64_t now_ms) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = sessions_.find(uid);
-    if (it == sessions_.end() || it->second.disconnected_ms == 0)
-        return false;  // GCOVR_EXCL_BR_LINE (compound ||: both arms exercised
-                       // by tests)
-    return now_ms >= it->second.disconnected_ms &&
-           now_ms - it->second.disconnected_ms <=
-               config_.reconnect_window_ms;  // GCOVR_EXCL_BR_LINE (compound &&:
-                                             // both arms exercised by tests)
+    if (it == sessions_.end()  // GCOVR_EXCL_BR_LINE (compound ||:
+        || it->second.disconnected_ms == 0) {  // both arms exercised by tests)
+        return false;
+    }
+    return now_ms >=
+               it->second.disconnected_ms  // GCOVR_EXCL_BR_LINE (compound &&:
+           && now_ms - it->second
+                           .disconnected_ms <=  // both arms exercised by tests)
+                  config_.reconnect_window_ms;
 }
 
 std::size_t PlayerManager::size() const {

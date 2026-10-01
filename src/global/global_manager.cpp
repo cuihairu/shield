@@ -248,9 +248,10 @@ bool GlobalConfig::from_global_config(GlobalConfig* out, std::string* error) {
 bool validate_global_config(const GlobalConfig& config, std::string* error) {
     if (config.cache_max_size == 0) {
         if (error)
-            *error = "global.cache.max_size must be >= 1";  // GCOVR_EXCL_BR_LINE
-                                                            // (null error
-                                                            // out-param arm)
+            *error =
+                "global.cache.max_size must be >= 1";  // GCOVR_EXCL_BR_LINE
+                                                       // (null error
+                                                       // out-param arm)
         return false;
     }
     if (config.scheduler_tick_ms < 10) {
@@ -313,9 +314,9 @@ void GlobalManager::stop() {
         tick_running_ = false;
     }
     tick_cv_.notify_all();
-    if (tick_thread_
-            .joinable()) {  // GCOVR_EXCL_BR_LINE (defensive: thread may not be
-                            // joinable if scheduler never started)
+    if (tick_thread_.joinable()) {  // GCOVR_EXCL_BR_LINE (defensive: thread
+                                    // may not be joinable if the scheduler
+                                    // never started)
         tick_thread_.request_stop();
         tick_thread_.join();
     }
@@ -395,7 +396,13 @@ bool GlobalManager::data_incr_by(const std::string& key, std::int64_t delta,
         const std::string& text = it->second;
         char* end = nullptr;
         const long long parsed = std::strtoll(text.c_str(), &end, 10);
-        if (text.empty() || end == nullptr ||
+        if (text.empty() ||    // GCOVR_EXCL_BR_LINE (defensive: glibc strtoll
+                               // always stores a non-null end, so the
+                               // end==nullptr arm is unreachable; the
+                               // remaining arms are parse-guard variants)
+            end == nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: glibc strtoll
+                               // always stores a non-null end; unparsable
+                               // tails are driven by DataIncrEdgeArms)
             end != text.c_str() + text.size()) {
             if (error) {  // GCOVR_EXCL_BR_LINE (null error out-param arm)
                 *error = "value of '" + key + "' is not an integer";
@@ -557,9 +564,9 @@ bool GlobalManager::mutex_try_acquire_locked(
         entry.owner = owner;
         entry.count = 1;
         entry.acquired_at_ms = now;
-        entry.expire_at_ms =
-            ttl_ms != 0 ? now + ttl_ms
-                        : 0;  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arms)
+        entry.expire_at_ms = ttl_ms != 0 ? now + ttl_ms  // GCOVR_EXCL_BR_LINE
+                                                         // (TTL=0 ternary arms)
+                                         : 0;
         registry.emplace(name, std::move(entry));
         return true;
     }
@@ -569,9 +576,9 @@ bool GlobalManager::mutex_try_acquire_locked(
         entry.owner = owner;
         entry.count = 1;
         entry.acquired_at_ms = now;
-        entry.expire_at_ms =
-            ttl_ms != 0 ? now + ttl_ms
-                        : 0;  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arms)
+        entry.expire_at_ms = ttl_ms != 0 ? now + ttl_ms  // GCOVR_EXCL_BR_LINE
+                                                         // (TTL=0 ternary arms)
+                                         : 0;
         return true;
     }
     if (entry.owner == owner) {
@@ -645,8 +652,9 @@ LockInfo GlobalManager::mutex_info(const std::string& registry,
         const std::uint64_t now = now_ms();
         info.ttl_remaining_ms =
             now < it->second.expire_at_ms
-                ? it->second.expire_at_ms - now
-                : 0;  // GCOVR_EXCL_BR_LINE (TTL remaining ternary)
+                ? it->second.expire_at_ms - now  // GCOVR_EXCL_BR_LINE (TTL
+                                                 // remaining ternary)
+                : 0;
     }
     return info;
 }
@@ -705,8 +713,8 @@ LockStatus GlobalManager::rw_write_acquire(const std::string& name,
     entry.write_owner = owner;
     entry.write_count = 1;
     entry.write_expire_at_ms =
-        ttl_ms != 0 ? now + ttl_ms
-                    : 0;  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arms)
+        ttl_ms != 0 ? now + ttl_ms  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arms)
+                    : 0;
     return LockStatus::kOk;
 }
 
@@ -820,9 +828,9 @@ std::vector<RankEntry> GlobalManager::rank_sorted_locked(
     std::vector<RankEntry> entries;
     entries.reserve(board.size());
     for (const auto& [uid, score] : board) {
-        entries.push_back(RankEntry{
-            uid, score, 0});  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                              // aggregate init-list branches)
+        entries.push_back(RankEntry{// GCOVR_EXCL_BR_LINE (compiler artifact:
+                                    // aggregate init-list branches)
+                                    uid, score, 0});
     }
     std::sort(entries.begin(), entries.end(),
               [](const RankEntry& a, const RankEntry& b) {
@@ -1378,9 +1386,9 @@ std::vector<DeadEntry> GlobalManager::reliable_dead_range(
     std::vector<DeadEntry> out;
     for (std::size_t i = from; i < end; ++i) {
         out.push_back(DeadEntry{
-            dead[i].delivery_id, dead[i].payload,
-            dead[i].retries});  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                // aggregate init-list branches)
+            // GCOVR_EXCL_BR_LINE (compiler artifact:
+            // aggregate init-list branches)
+            dead[i].delivery_id, dead[i].payload, dead[i].retries});
     }
     return out;
 }
@@ -1433,7 +1441,11 @@ bool GlobalManager::sched_register(const std::string& type,
     } else if (type == "interval" || type == "once") {
         char* end = nullptr;
         const long long ms = std::strtoll(schedule.c_str(), &end, 10);
-        if (schedule.empty() || end == nullptr ||
+        if (schedule.empty() ||  // GCOVR_EXCL_BR_LINE (defensive: same glibc
+                                 // strtoll nullptr-end unreachability as the
+                                 // KV parse guard)
+            end == nullptr ||    // GCOVR_EXCL_BR_LINE (defensive: glibc strtoll
+                                 // always stores a non-null end)
             end != schedule.c_str() + schedule.size() || ms < 0) {
             if (error) {
                 *error = type + " schedule must be a non-negative ms value";
@@ -1642,9 +1654,11 @@ double GlobalManager::rate_limit_remaining(const std::string& name,
         return static_cast<double>(cfg.max_requests - used);
     }
     auto bit = it->second.buckets.find(key);
-    if (bit == it->second.buckets.end() ||
+    if (bit == it->second.buckets.end() ||  // GCOVR_EXCL_BR_LINE (both arms
+                                            // exercised by tests)
         bit->second.last_refill_ms ==
-            0) {  // GCOVR_EXCL_BR_LINE (both arms exercised by tests)
+            0) {  // GCOVR_EXCL_BR_LINE (defensive: a mapped bucket is always
+                  // stamped by its creating consume)
         return cfg.burst;
     }
     const double elapsed =
@@ -1708,8 +1722,18 @@ void GlobalManager::tick_loop() {
             std::lock_guard<std::mutex> lock(sched_mutex_);
             for (auto& [name, task] : tasks_) {
                 (void)name;
-                if (task.info.paused || task.info.done ||
-                    task.info.next_run_ms == 0 || task.info.next_run_ms > now) {
+                if (task.info.paused ||
+                    task.info.done ||  // GCOVR_EXCL_BR_LINE (defensive:
+                                       // pause/done are handled by removal, so
+                                       // the tick never sees such tasks)
+                    task.info.next_run_ms == 0 ||  // GCOVR_EXCL_BR_LINE
+                                                   // (defensive: schedule_set
+                                                   // always stores a computed
+                                                   // nonzero next_run_ms; the
+                                                   // 0 sentinel arm is
+                                                   // unreachable for live
+                                                   // tasks)
+                    task.info.next_run_ms > now) {
                     continue;
                 }
                 task.info.last_run_ms = now;

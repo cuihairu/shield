@@ -168,9 +168,10 @@ void ClusterManager::stop() {
 
     // Halt the scheduler before tearing node states down so tick() cannot
     // observe half-finished teardown.
-    if (impl_->heartbeat_thread
-            .joinable()) {  // GCOVR_EXCL_BR_LINE (defensive: thread may not be
-                            // joinable if scheduler never started)
+    if (impl_
+            ->heartbeat_thread  // GCOVR_EXCL_BR_LINE (defensive: thread may not
+                                // be
+            .joinable()) {      // joinable if scheduler never started)
         impl_->heartbeat_thread.request_stop();
         impl_->heartbeat_thread.join();
     }

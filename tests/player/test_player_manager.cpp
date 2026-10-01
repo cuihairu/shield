@@ -375,6 +375,32 @@ BOOST_AUTO_TEST_CASE(MarkDisconnectedTwiceReturnsFalse) {
     BOOST_CHECK(!mgr.in_reconnect_window("u1", 2000 + 30001));
 }
 
+// admit() with kMulti policy on a fresh uid: the session lookup misses and
+// admit returns kAllow before any device-quota logic runs (the devices_ map
+// is only populated together with the session in register_session).
+BOOST_AUTO_TEST_CASE(AdmitMultiFreshUidCountsZeroDevices) {
+    PlayerConfig config = default_config();
+    config.multi_device = MultiDevicePolicy::kMulti;
+    config.max_devices = 2;
+    PlayerManager mgr(config);
+    // Fresh uid, no prior registration: devices_ map has no entry.
+    auto d = mgr.admit("u-fresh", "dev-1", 1000);
+    BOOST_CHECK(d.kind == AdmissionDecision::Kind::kAllow);
+    BOOST_CHECK(d.code.empty());
+    // The session can now be registered.
+    mgr.register_session(make_ref("u-fresh"), "dev-1", SessionState::kReady,
+                         1000);
+    BOOST_CHECK_EQUAL(mgr.size(), 1u);
+}
+
+// Branch-coverage: in_reconnect_window() with an unknown uid exercises the
+// first arm of the compound OR (it == sessions_.end()).
+BOOST_AUTO_TEST_CASE(InReconnectWindowUnknownUidReturnsFalse) {
+    PlayerManager mgr(default_config());
+    // No session registered: the sessions_ lookup fails immediately.
+    BOOST_CHECK(!mgr.in_reconnect_window("ghost", 1000));
+}
+
 BOOST_AUTO_TEST_CASE(MarkReconnectedWhileLiveReturnsFalse) {
     PlayerManager mgr(default_config());
     mgr.register_session(make_ref("u1"), "dev-1", SessionState::kReady, 1000);

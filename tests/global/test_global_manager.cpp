@@ -623,6 +623,27 @@ BOOST_AUTO_TEST_CASE(DelayQueueScheduling) {
     BOOST_CHECK_EQUAL(gm.delay_ready("missing"), 0u);
 }
 
+// True-arm edges behind the branch long-tail: delay_pop on a queue that was
+// never created, and on a queued item whose due time is still ahead; the
+// rank window guards (from==0, to<from); rank_clear on a board that never
+// existed.
+BOOST_AUTO_TEST_CASE(RankAndDelayTrueArmEdges) {
+    GlobalManager gm(default_config());
+    gm.rank_update("rb", "a", 1.0);
+    BOOST_CHECK(gm.rank_range("no-such-board", 1, 5).empty());  // absent board
+    BOOST_CHECK(gm.rank_range("rb", 0, 10).empty());            // from == 0
+    BOOST_CHECK(gm.rank_range("rb", 5, 3).empty());             // to < from
+    gm.rank_clear("never-created-board");                       // absent no-op
+    std::string out;
+    BOOST_CHECK(!gm.delay_pop("no-such-queue", &out));
+    gm.delay_push("drain", "x", 0);
+    BOOST_CHECK(gm.delay_pop("drain", &out));
+    BOOST_CHECK(!gm.delay_pop("drain", &out));  // exists but empty
+    gm.delay_push("future", "x", 600000);
+    BOOST_CHECK(!gm.delay_pop("future", &out));  // not yet due
+    BOOST_CHECK_EQUAL(gm.delay_pending("future"), 1u);
+}
+
 BOOST_AUTO_TEST_CASE(PriorityAndBroadcastQueueCounts) {
     GlobalManager gm(default_config());
     std::string out;
@@ -1210,6 +1231,18 @@ BOOST_AUTO_TEST_CASE(CronDomRestrictedFallsBackToDow) {
     // From Monday 01:00 the dom (31st) never matches, so the next hit is the
     // following Monday.
     BOOST_CHECK_EQUAL(cron_next(fields, monday + kHour), monday + 7 * kDay);
+}
+
+// Both day sides restricted and the first candidate that lands on the 31st
+// needs no dow rescue: the dom operand short-circuits the OR. The start is
+// placed right after a Monday (Oct 28 2026) so no Monday precedes the
+// 31st — the Oct 31 hit decides via dom_ok alone.
+BOOST_AUTO_TEST_CASE(CronDomRestrictedDomMatchesShortCircuits) {
+    CronFields fields;
+    const std::uint64_t monday = 1789344000000ULL;  // 2026-09-14, Monday.
+    BOOST_REQUIRE(parse_cron("0 0 31 * 1", &fields, nullptr));
+    const std::uint64_t wed = monday + 44 * kDay;  // 2026-10-28, Wednesday.
+    BOOST_CHECK_EQUAL(cron_next(fields, wed), wed + 3 * kDay);
 }
 
 BOOST_AUTO_TEST_CASE(ValidateWithNullErrorPointers) {

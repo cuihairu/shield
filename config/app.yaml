@@ -4,6 +4,13 @@ app:
   name: shield
   version: "0.1.0"
 
+# The transport/subsystem listen port is pinned explicitly: starting the
+# node with --node-id implicitly enables the cluster subsystem, whose
+# default listen address (0.0.0.0:9000) collides with common dev-stack
+# services on developer machines.
+cluster:
+  listen: 127.0.0.1:19000
+
 log:
   level: info
   console: true

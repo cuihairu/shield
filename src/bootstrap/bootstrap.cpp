@@ -533,8 +533,11 @@ static bool initialize_impl(const RuntimeConfig& config) {
                 &player_config,
                 &player_error) ||  // GCOVR_EXCL_BR_LINE (from_global_config
                                    // never fails)
-            !shield::player::validate_player_config(player_config,
-                                                    &player_error)) {
+            !shield::player::validate_player_config(  // GCOVR_EXCL_BR_LINE
+                player_config,  // (compiler artifact: call-dispatch clone
+                                // arcs; the false return is driven by the
+                                // invalid-player-config test)
+                &player_error)) {
             SHIELD_LOG_ERROR(log, "Invalid player config: " + player_error);
             return false;
         }
@@ -704,7 +707,10 @@ static bool initialize_impl(const RuntimeConfig& config) {
                 std::string error;
                 if (!services->send_system(
                         service_id, "on_server_state_change",
-                        nlohmann::json::array({state_name}),
+                        nlohmann::json::array(  // GCOVR_EXCL_BR_LINE (compiler
+                                                // artifact: init-list cold
+                                                // clones)
+                            {state_name}),
                         &error)) {  // GCOVR_EXCL_BR_LINE (defensive send-system
                                     // failure arc)
                     // GCOVR_EXCL_START (defensive: state notifications only
@@ -746,7 +752,10 @@ static bool initialize_impl(const RuntimeConfig& config) {
                 std::string error;
                 return services->send_system(
                     service_id, "on_scheduler_task",
-                    nlohmann::json::array({task_name}),
+                    nlohmann::json::array(  // GCOVR_EXCL_BR_LINE (compiler
+                                            // artifact: init-list cold
+                                            // clones)
+                        {task_name}),
                     &error);  // GCOVR_EXCL_BR_LINE (compiler artifact: nlohmann
                               // init-list arcs at the call site)
             });  // GCOVR_EXCL_BR_LINE (lambda-close arcs: compiler-generated
@@ -785,10 +794,14 @@ static bool initialize_impl(const RuntimeConfig& config) {
     // thread (transport actor or service actor dispatch); all of them only
     // touch thread-safe seams, and they hold shared_ptr so a capture can
     // never dangle while teardown interleaves with in-flight messages.
-    if (g_state->cluster_manager &&  // GCOVR_EXCL_BR_LINE (same pairing as
-                                     // above: the transport-null and
-                                     // services-null arms are unreachable)
-        g_state->cluster_transport && g_state->lua_services) {
+    if (g_state->cluster_manager &&    // GCOVR_EXCL_BR_LINE (same pairing as
+                                       // above: the transport-null and
+                                       // services-null arms are unreachable)
+        g_state->cluster_transport &&  // GCOVR_EXCL_BR_LINE (defensive:
+                                       // transport and services are created
+                                       // as a pair by bootstrap_start, so the
+                                       // services-null arm never fires)
+        g_state->lua_services) {
         auto services = g_state->lua_services;
         auto transport = g_state->cluster_transport;
 

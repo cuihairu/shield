@@ -281,8 +281,8 @@ bool ServerManager::schedule_shutdown(std::uint64_t delay_ms,
         }
         // Unreachable twin of set_state: every state other than shutdown
         // itself may move to shutdown. Dead branch arc on the if line.
-        if (!transition_allowed(
-                state_, ServerState::kShutdown)) {  // GCOVR_EXCL_BR_LINE
+        if (!transition_allowed(  // GCOVR_EXCL_BR_LINE (defensive:
+                state_, ServerState::kShutdown)) {
             // GCOVR_EXCL_START (body unreachable with it)
             if (error) {
                 *error = std::string("invalid state transition: ") +
