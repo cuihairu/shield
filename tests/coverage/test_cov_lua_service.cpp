@@ -25,7 +25,6 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <thread>
 
 #include "shield/caf_initializer.hpp"
@@ -735,10 +734,10 @@ BOOST_AUTO_TEST_CASE(TimerSchedulerGuards) {
     LuaServiceManager manager(runtime, system);
 
     // A valid Lua callback bound to an unknown service is rejected too.
-    sol::state lua;
-    lua.open_libraries(sol::lib::base);
-    lua.safe_script("cov_cb = function() end");
-    sol::function cb = lua["cov_cb"];
+    shd::state lua;
+    lua.open_libraries(shd::lib::base);
+    lua.script("cov_cb = function() end");
+    shd::function cb = lua["cov_cb"];
     BOOST_CHECK(cb.valid());
     BOOST_CHECK_EQUAL(
         manager.schedule_actor_timer_once(10, cb, "cov_no_such_service"), 0u);
@@ -748,15 +747,15 @@ BOOST_AUTO_TEST_CASE(TimerSchedulerGuards) {
 
     // Invalid callbacks and unknown services are rejected without scheduling.
     BOOST_CHECK_EQUAL(
-        manager.schedule_actor_timer_once(10, sol::function{}, "cov_any"), 0u);
-    BOOST_CHECK_EQUAL(manager.schedule_actor_timer_once(10, sol::function{},
+        manager.schedule_actor_timer_once(10, shd::function{}, "cov_any"), 0u);
+    BOOST_CHECK_EQUAL(manager.schedule_actor_timer_once(10, shd::function{},
                                                         "cov_no_such_service"),
                       0u);
     BOOST_CHECK_EQUAL(manager.schedule_actor_timer_once_fn(
                           10, [] {}, "cov_no_such_service"),
                       0u);
     BOOST_CHECK_EQUAL(manager.schedule_actor_timer_fixed_delay(
-                          10, sol::function{}, "cov_any"),
+                          10, shd::function{}, "cov_any"),
                       0u);
     BOOST_CHECK_EQUAL(manager.schedule_actor_call_timeout(0, "cov_any", 1), 1u);
     BOOST_CHECK_EQUAL(
@@ -1121,8 +1120,8 @@ namespace {
 
 // Create a coroutine on the given state whose body is `body` (a Lua function
 // string fragment) and return its lua_State*.
-lua_State* make_coro(sol::state& lua, const std::string& body) {
-    lua.safe_script("cov_coro_body = function(...) " + body + " end");
+lua_State* make_coro(shd::state& lua, const std::string& body) {
+    lua.script("cov_coro_body = function(...) " + body + " end");
     lua_State* co = lua_newthread(lua.lua_state());
     lua_getglobal(co, "cov_coro_body");
     return co;
@@ -1136,8 +1135,8 @@ BOOST_AUTO_TEST_CASE(SuspendResumePrimitives) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::coroutine);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::string, shd::lib::coroutine);
 
     // Caller session whose service no longer exists: complete_call routes
     // through "caller service not found" and still resumes the coroutine.
@@ -1163,7 +1162,7 @@ BOOST_AUTO_TEST_CASE(SuspendResumePrimitives) {
     lua_State* co_plain = make_coro(lua, "cov_ok, cov_plain = ... return 0");
     uint64_t s_plain = manager.suspend_for_call(co_plain, 10000);
     manager.resume_caller(s_plain, true, nlohmann::json::array({marker}));
-    sol::table plain_tbl = lua["cov_plain"];
+    shd::table plain_tbl = lua["cov_plain"];
     BOOST_CHECK(plain_tbl.valid());
     BOOST_CHECK(plain_tbl["__shield_client_ref"].valid());
 
@@ -1175,7 +1174,7 @@ BOOST_AUTO_TEST_CASE(SuspendResumePrimitives) {
     lua_State* co_ctx = make_coro(lua, "cov_ok, cov_ctx = ... return 0");
     uint64_t s_ctx = manager.suspend_for_call(co_ctx, 10000);
     manager.resume_caller(s_ctx, true, nlohmann::json::array({marker}));
-    sol::table ctx_tbl = lua["cov_ctx"];
+    shd::table ctx_tbl = lua["cov_ctx"];
     BOOST_CHECK(ctx_tbl.valid());
     BOOST_CHECK_EQUAL(ctx_tbl["sid"].get_or(0), 4242);
 
@@ -1184,7 +1183,7 @@ BOOST_AUTO_TEST_CASE(SuspendResumePrimitives) {
     lua_State* co_boom = make_coro(lua, "cov_ok, cov_boom = ... return 0");
     uint64_t s_boom = manager.suspend_for_call(co_boom, 10000);
     manager.resume_caller(s_boom, true, nlohmann::json::array({marker}));
-    sol::table boom_tbl = lua["cov_boom"];
+    shd::table boom_tbl = lua["cov_boom"];
     BOOST_CHECK(boom_tbl.valid());
     BOOST_CHECK(boom_tbl["__shield_client_ref"].valid());
 
@@ -1280,8 +1279,8 @@ BOOST_AUTO_TEST_CASE(YieldWindowDropWithoutCallerActor) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine);
     g_parked_gate.store(0);
     g_parked_body_running.store(false);
 
@@ -2842,8 +2841,8 @@ BOOST_AUTO_TEST_CASE(SuspendResumeExtraArms) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine);
 
     // A pending call whose deadline is in the future is not collected.
     lua_State* co_future = make_coro(lua, "return ...");

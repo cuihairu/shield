@@ -37,7 +37,7 @@ bool run_script(shd::state& lua, const std::string& code) {
     auto result = lua.script(code);
     if (!result.valid()) {
         const shd::error e = result.get_error();
-        std::fprintf(stderr, "lua error: %s\n", e.what().c_str());
+        std::fprintf(stderr, "lua error: %s\n", e.what());
         return false;
     }
     return true;

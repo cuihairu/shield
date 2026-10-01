@@ -20,7 +20,6 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <shared_mutex>
-#include <sol/sol.hpp>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -50,7 +49,7 @@ namespace {
 // registry is shared across all threads of one global_State, so re-refering
 // the same registry entry from the main thread keeps the stored pointer
 // alive without changing which value the reference names.
-sol::function anchor_to_main_thread(sol::function fn) {
+shd::function anchor_to_main_thread(shd::function fn) {
     lua_State* state = fn.lua_state();
     if (state == nullptr ||
         !fn.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: register/fork call
@@ -58,7 +57,7 @@ sol::function anchor_to_main_thread(sol::function fn) {
                         // never reaches this guard)
         return fn;
     }
-    lua_State* main_state = sol::main_thread(state);
+    lua_State* main_state = shd::main_thread(state);
     if (main_state ==   // GCOVR_EXCL_BR_LINE
             nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: null main-thread arm
                         // (handlers register from coroutines))
@@ -68,7 +67,7 @@ sol::function anchor_to_main_thread(sol::function fn) {
                       // arm cannot occur)
         return fn;
     }
-    return sol::function(main_state, sol::ref_index(fn.registry_index()));
+    return shd::function(main_state, shd::ref_index(fn.registry_index()));
 }
 
 // L2 refs walker (lua.inspect <svc> refs): a bounded DFS over the service
@@ -255,7 +254,7 @@ nlohmann::json walk_module_refs(LuaRuntime& runtime,
                                 const std::shared_ptr<LuaVM>& vm,
                                 const std::string& service_id, int max_depth,
                                 std::size_t max_nodes) {
-    sol::table module = runtime.service_table(vm);
+    shd::table module = runtime.service_table(vm);
     if (!module.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: a published
                             // service always has its module loaded (see
                             // the exclusion region above))
@@ -393,7 +392,7 @@ struct LuaServiceManager::Impl {
     // VM's lua_State).
     struct ServiceRpcState {
         shield::transport::RpcDescriptorTable descriptors;
-        std::unordered_map<std::uint32_t, sol::function> handlers;
+        std::unordered_map<std::uint32_t, shd::function> handlers;
     };
     std::unordered_map<std::string, ServiceRpcState> service_rpc;
 
@@ -592,7 +591,7 @@ struct LuaServiceManager::Impl {
         uint64_t id;
         std::string service_id;
         std::function<void()> fn;
-        sol::function raw_fn;  // original Lua function, for coroutine wrapping
+        shd::function raw_fn;  // original Lua function, for coroutine wrapping
     };
     std::atomic<uint64_t> next_task_id{1};
     std::vector<ForkedTask> pending_tasks;
@@ -845,7 +844,7 @@ struct LuaServiceManager::Impl {
         // owns the actual schedule.
         int64_t next_fire_ms = 0;
         std::string service_id;
-        sol::function raw_callback;
+        shd::function raw_callback;
         std::function<void()> native_callback;
         bool has_native_callback = false;
         bool active = true;
@@ -962,7 +961,7 @@ struct LuaServiceManager::Impl {
                                  const std::string& id,
                                  const ClientIngress& msg) {
         std::shared_ptr<LuaVM> service;
-        sol::function handler;
+        shd::function handler;
         ClientIngress normalized = msg;
         {
             std::shared_lock lock(registry_mutex);
@@ -1270,7 +1269,7 @@ struct LuaServiceManager::Impl {
 
     void run_timer_callback_now(class LuaServiceManager* manager,
                                 const std::string& service_id,
-                                sol::function cb) {
+                                shd::function cb) {
         if (!cb.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: branch of a line
                             // already excluded (GCOVR_EXCL_LINE defensive
                             // callback guard))
@@ -1407,7 +1406,7 @@ struct LuaServiceManager::Impl {
             return;
             // GCOVR_EXCL_STOP
         }
-        sol::function fn;
+        shd::function fn;
         std::string error;
         if (!runtime.resolve_service_method(service, "on_shutdown", &fn,
                                             &error)) {
@@ -2074,7 +2073,7 @@ LuaServiceManager::~LuaServiceManager() {
 
     // Cancel pending timer/fork callbacks for every owned service
     // before this manager's state (and the service VMs it owns) is destroyed.
-    // Without this cleanup the actor_timers' sol::function/std::function
+    // Without this cleanup the actor_timers' shd::function/std::function
     // callbacks would be released after the owning lua_State is already
     // closed.
     std::vector<std::string> service_ids;
@@ -2337,7 +2336,7 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                                                    descriptor.route_id);
                         return;
                     }
-                    sol::function handler;
+                    shd::function handler;
                     if (!impl_->runtime.resolve_service_method(
                             vm, descriptor.binding, &handler, &rpc_error)) {
                         rpc_error = "route " +
@@ -2580,7 +2579,7 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             // timeout budget bounds the whole wait.
             Impl::SpawnInitFlag spawn_init_flag;
             t_in_spawn_init = true;
-            sol::function on_init_fn;
+            shd::function on_init_fn;
             if (impl_->runtime.resolve_service_method(vm, "on_init",
                                                       &on_init_fn, &error)) {
                 // An on_init that never yields (busy loop / pure sync code)
@@ -3272,7 +3271,7 @@ void LuaServiceManager::exit(
     }
 
     // Cancel forked tasks / timers / coroutines BEFORE erasing the service
-    // VM. These hold sol::function / std::function callbacks that reference
+    // VM. These hold shd::function / std::function callbacks that reference
     // the service's lua_State; releasing them after the VM is destroyed
     // would luaL_unref on a closed state.
     cancel_forked_tasks_for_service(id);
@@ -5246,12 +5245,12 @@ LuaServiceManager::service_stats() const {
 uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
                                                 std::function<void()> task) {
     return enqueue_forked_task(std::move(service_id), std::move(task),
-                               sol::function{});
+                               shd::function{});
 }
 
 uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
                                                 std::function<void()> task,
-                                                sol::function raw_fn) {
+                                                shd::function raw_fn) {
     // Stored in pending_tasks for a lifetime that outlives the registering
     // coroutine: keep the reference's lua_State on the main thread (see
     // anchor_to_main_thread).
@@ -5281,7 +5280,7 @@ uint64_t LuaServiceManager::enqueue_forked_task(std::string service_id,
     // Route the fork to the owning service actor. The actor stashes every
     // message until on_init completes (see spawn), so a fork scheduled during
     // on_init runs serially after init — no Lua VM race. The callback itself
-    // is looked up by id in pending_tasks, so the sol::function never crosses
+    // is looked up by id in pending_tasks, so the shd::function never crosses
     // the CAF message boundary.
     std::shared_lock lock(impl_->registry_mutex);
     auto it = impl_->service_actors.find(service_id);
@@ -6180,7 +6179,7 @@ void LuaServiceManager::resume_suspended_caller(
         nlohmann::json returns = nlohmann::json::array();
         for (int i = 0; i < nres; ++i) {
             nlohmann::json item;
-            sol::stack_object so(sol::state_view(caller_co), i + 1);
+            shd::stack_object so(shd::state_view(caller_co), i + 1);
             lua_to_json(so, &item);
             returns.push_back(std::move(item));
         }
@@ -6461,7 +6460,7 @@ int64_t LuaServiceManager::clock_now_seconds() const {
 }
 
 uint64_t LuaServiceManager::schedule_actor_timer_once(
-    int64_t delay_ms, sol::function callback, const std::string& service_id) {
+    int64_t delay_ms, shd::function callback, const std::string& service_id) {
     if (!callback.valid()) {
         return 0;
     }
@@ -6574,7 +6573,7 @@ uint64_t LuaServiceManager::schedule_actor_timer_once_fn(
             .repeating = false,
             .next_fire_ms = Impl::now_ms() + delay_ms,
             .service_id = service_id,
-            .raw_callback = sol::function{},
+            .raw_callback = shd::function{},
             .native_callback = std::move(callback),
             .has_native_callback = true,
             .active = true,
@@ -6638,7 +6637,7 @@ uint64_t LuaServiceManager::schedule_actor_timer_once_fn(
 }
 
 uint64_t LuaServiceManager::schedule_actor_timer_fixed_delay(
-    int64_t interval_ms, sol::function callback,
+    int64_t interval_ms, shd::function callback,
     const std::string& service_id) {
     if (!callback.valid()) {
         return 0;

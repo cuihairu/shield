@@ -9,12 +9,12 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <sol/forward.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "shield/lua/binding.hpp"
 #include "shield/lua/clock.hpp"
 #include "shield/lua/profile_session.hpp"
 
@@ -408,7 +408,7 @@ public:
     // Overload that also stores the raw Lua function for coroutine wrapping.
     uint64_t enqueue_forked_task(std::string service_id,
                                  std::function<void()> task,
-                                 sol::function raw_fn);
+                                 shd::function raw_fn);
 
     // Get the number of pending forked tasks for a service.
     size_t pending_task_count(const std::string& service_id) const;
@@ -623,13 +623,13 @@ public:
     int64_t clock_now_seconds() const;
 
     // CAF-backed timer helpers used by the Lua API when a service actor exists.
-    uint64_t schedule_actor_timer_once(int64_t delay_ms, sol::function callback,
+    uint64_t schedule_actor_timer_once(int64_t delay_ms, shd::function callback,
                                        const std::string& service_id);
     uint64_t schedule_actor_timer_once_fn(int64_t delay_ms,
                                           std::function<void()> callback,
                                           const std::string& service_id);
     uint64_t schedule_actor_timer_fixed_delay(int64_t interval_ms,
-                                              sol::function callback,
+                                              shd::function callback,
                                               const std::string& service_id);
     bool cancel_actor_timer(uint64_t id);
     size_t active_actor_timer_count() const;

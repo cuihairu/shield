@@ -9,7 +9,6 @@
 #include <caf/actor_system_config.hpp>
 #include <cstdio>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 
 #include "shield/caf_initializer.hpp"
 #include "shield/lua/lua_api.hpp"
@@ -44,9 +43,9 @@ struct BareVm {
 // unknown session/service).
 BOOST_AUTO_TEST_CASE(BareVmSyncSuccessRoutesThroughFinishOk) {
     BareVm fx;
-    sol::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
+    shd::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
     lua.script("function add(ctx, a, b) return a + b, 'tail' end");
-    sol::function fn = lua["add"];
+    shd::function fn = lua["add"];
 
     std::string error;
     const bool ok = fx.runtime.invoke_coroutine(fx.vm, fn, {2, 3}, "handler",
@@ -67,9 +66,9 @@ BOOST_AUTO_TEST_CASE(BareVmSyncErrorRoutesThroughFinishErr) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
+    shd::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
     lua.script("function boom() error('kaput') end");
-    sol::function fn = lua["boom"];
+    shd::function fn = lua["boom"];
 
     std::string error;
     BOOST_CHECK(!fx.runtime.invoke_coroutine(fx.vm, fn, {}, "timer", "boom", 0,
@@ -91,12 +90,12 @@ BOOST_AUTO_TEST_CASE(BareVmSyncErrorRoutesThroughFinishErr) {
 // handler synchronously without ctx.
 BOOST_AUTO_TEST_CASE(FactoryFailureDegradePaths) {
     BareVm fx;
-    sol::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
+    shd::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
     lua.script(R"lua(
         function plain(x) return (x or 0) + 1 end
         __shield_run_handler = function() error('factory kaput') end
     )lua");
-    sol::function fn = lua["plain"];
+    shd::function fn = lua["plain"];
 
     std::string error;
     BOOST_CHECK(!fx.runtime.invoke_coroutine(
@@ -118,12 +117,12 @@ BOOST_AUTO_TEST_CASE(FactoryFailureDegradePaths) {
 // handler still runs synchronously.
 BOOST_AUTO_TEST_CASE(FactoryReturnsNonThreadPaths) {
     BareVm fx;
-    sol::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
+    shd::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
     lua.script(R"lua(
         function plain() return 'ok' end
         __shield_run_handler = function(handler, args) return {} end
     )lua");
-    sol::function fn = lua["plain"];
+    shd::function fn = lua["plain"];
 
     std::string error;
     BOOST_CHECK(!fx.runtime.invoke_coroutine(fx.vm, fn, {}, "handler", "plain",
@@ -145,8 +144,8 @@ BOOST_AUTO_TEST_CASE(HandlerNotFunctionOnFactoryVm) {
     auto vm = runtime.create_vm();
     register_full_shield_api(runtime.vm_state(vm), &manager, &runtime);
 
-    sol::state_view lua(runtime.vm_state(vm).lua_state());
-    sol::object nil_fn = sol::make_object(lua, sol::nil);
+    shd::state_view lua(runtime.vm_state(vm).lua_state());
+    shd::function nil_fn = shd::make_object(lua, shd::nil);
     std::string error;
     BOOST_CHECK(!runtime.invoke_coroutine(vm, nil_fn, {}, "handler", "m", 0,
                                           nullptr, "", &error, true));
@@ -154,7 +153,7 @@ BOOST_AUTO_TEST_CASE(HandlerNotFunctionOnFactoryVm) {
 }
 
 // resolve_service_method on a VM that never loaded a service module reports
-// "service module not loaded" (the service table is sol::nil).
+// "service module not loaded" (the service table is shd::nil).
 BOOST_AUTO_TEST_CASE(CallServiceMethodWithoutModuleFails) {
     BareVm fx;
     nlohmann::json returns;
@@ -164,11 +163,11 @@ BOOST_AUTO_TEST_CASE(CallServiceMethodWithoutModuleFails) {
     BOOST_CHECK(error == "service module not loaded");
 }
 
-// An HTTP route whose handler sol::function went invalid reports "handler is
+// An HTTP route whose handler shd::function went invalid reports "handler is
 // not callable"; a Lua-level handler error surfaces as out_desc["lua_error"].
 BOOST_AUTO_TEST_CASE(CallHttpHandlerInvalidAndLuaError) {
     BareVm fx;
-    sol::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
+    shd::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
     lua.script("function bad_handler(ctx, req) error('http kaput') end");
 
     std::string reg_err;
@@ -206,7 +205,7 @@ BOOST_AUTO_TEST_CASE(CallHttpHandlerInvalidAndLuaError) {
 // before any conversion is attempted.
 BOOST_AUTO_TEST_CASE(CallHttpHandlerNonTableReturnRejectedByShapeGuard) {
     BareVm fx;
-    sol::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
+    shd::state_view lua(fx.runtime.vm_state(fx.vm).lua_state());
     lua.script("function num_handler(ctx, req) return 42 end");
 
     std::string reg_err;

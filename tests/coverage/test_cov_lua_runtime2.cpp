@@ -11,7 +11,6 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <thread>
 
 #include "shield/caf_initializer.hpp"
@@ -51,12 +50,12 @@ BOOST_AUTO_TEST_CASE(ServiceHandleMetamethods) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
-    auto res = lua.safe_script(R"lua(
+    auto res = lua.script(R"lua(
         local h1 = shield._make_handle('meta_a')
         local h2 = shield._make_handle('meta_a')
         local h3 = shield._make_handle('meta_b')
@@ -68,11 +67,10 @@ BOOST_AUTO_TEST_CASE(ServiceHandleMetamethods) {
         local diff = (h1 == h3)
         assert(type(same) == 'boolean' and type(diff) == 'boolean')
         assert(shield._make_handle('x'):valid() == true)
-    )lua",
-                               sol::script_pass_on_error);
+    )lua");
     BOOST_CHECK(res.valid());
     if (!res.valid()) {
-        const sol::error err = res;
+        const shd::error err = res;
         std::fprintf(stderr, "lua error: %s\n", err.what());
     }
 }
@@ -87,9 +85,9 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeBranches) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     LuaPackEncoder::Config config;
@@ -97,7 +95,7 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeBranches) {
 
     // Integer-keyed map entries.
     {
-        sol::object value = lua.script("return {[1] = 'a', [300] = 2.5}");
+        shd::object value = lua.script("return {[1] = 'a', [300] = 2.5}");
         std::vector<uint8_t> bytes;
         BOOST_CHECK(encoder.encode(lua, value, bytes));
     }
@@ -105,7 +103,7 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeBranches) {
     // ServiceHandle userdata traverses the table-iteration path of the
     // encoder (usertypes behave as tables with an empty sequence part).
     {
-        sol::object handle =
+        shd::object handle =
             lua.script("return shield._make_handle('pack_svc')");
         LuaPackEncoder enc2{LuaPackEncoder::Config{}};
         std::vector<uint8_t> bytes;
@@ -115,7 +113,7 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeBranches) {
 
     // Functions cannot be encoded.
     {
-        sol::object fn = lua.script("return function() end");
+        shd::object fn = lua.script("return function() end");
         std::vector<uint8_t> bytes;
         BOOST_CHECK(!encoder.encode(lua, fn, bytes));
         BOOST_CHECK(!encoder.error().empty());
@@ -126,18 +124,18 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeBranches) {
         LuaPackEncoder::Config shallow;
         shallow.max_nesting_depth = 2;
         LuaPackEncoder shallow_encoder(shallow);
-        sol::object deep = lua.script("return {{{1}}}");
+        shd::object deep = lua.script("return {{{1}}}");
         std::vector<uint8_t> bytes;
         BOOST_CHECK(!shallow_encoder.encode(lua, deep, bytes));
     }
 
     // Long strings use the String tag; short ones ShortString.
     {
-        sol::object short_str = lua.script("return 's'");
+        shd::object short_str = lua.script("return 's'");
         std::vector<uint8_t> b1;
         BOOST_CHECK(encoder.encode(lua, short_str, b1));
 
-        sol::object long_str = lua.script("return string.rep('x', 300)");
+        shd::object long_str = lua.script("return string.rep('x', 300)");
         std::vector<uint8_t> b2;
         BOOST_CHECK(encoder.encode(lua, long_str, b2));
     }
@@ -147,20 +145,20 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeBranches) {
 // LuaPack decoder round-trip and truncated input.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LuaPackDecodeRoundTrip) {
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
 
     LuaPackEncoder encoder(LuaPackEncoder::Config{});
     LuaPackDecoder decoder;
 
-    sol::object value =
+    shd::object value =
         lua.script("return {1, 2.5, 'three', true, nil, {k = 'v'}}");
     std::vector<uint8_t> bytes;
     BOOST_REQUIRE(encoder.encode(lua, value, bytes));
 
     size_t consumed = 0;
-    sol::object decoded = decoder.decode(lua, bytes, consumed);
+    shd::object decoded = decoder.decode(lua, bytes, consumed);
     BOOST_CHECK(decoded.valid());
     BOOST_CHECK_GT(consumed, 0u);
 
@@ -180,8 +178,8 @@ BOOST_AUTO_TEST_CASE(VmForStateBranches) {
     BOOST_CHECK(runtime.vm_for_state(nullptr) == nullptr);
 
     // Unknown live state.
-    sol::state alien;
-    alien.open_libraries(sol::lib::base);
+    shd::state alien;
+    alien.open_libraries(shd::lib::base);
     BOOST_CHECK(runtime.vm_for_state(alien.lua_state()) == nullptr);
 }
 
@@ -193,11 +191,13 @@ BOOST_AUTO_TEST_CASE(RegisterHttpRouteGuardsAndSink) {
     auto vm = runtime.create_vm();
 
     // Nil handler is rejected.
-    sol::state standalone;
-    standalone.open_libraries(sol::lib::base);
-    sol::function nil_handler = standalone.script("return nil");
-    sol::function handler =
-        standalone.script("return function(req) return 'ok' end");
+    shd::state standalone;
+    standalone.open_libraries(shd::lib::base);
+    shd::function nil_handler(
+        standalone.script("return nil").get<shd::object>(0));
+    shd::function handler(
+        standalone.script("return function(req) return 'ok' end")
+            .get<shd::object>(0));
     std::string error;
     BOOST_CHECK(!runtime.register_http_route(vm, "svc", "GET", "/a",
                                              nil_handler, &error));
@@ -217,7 +217,7 @@ BOOST_AUTO_TEST_CASE(RegisterHttpRouteGuardsAndSink) {
 
     runtime.set_http_route_sink({});
     // The /sink handler is bound to the standalone state above; drop the
-    // route before teardown so ~LuaRuntime never releases a sol::function
+    // route before teardown so ~LuaRuntime never releases a shd::function
     // reference on an already-closed lua_State.
     runtime.remove_http_routes_for_service("svc");
 }
@@ -234,9 +234,10 @@ BOOST_AUTO_TEST_CASE(CallHttpHandlerVmGone) {
                               {"headers", nlohmann::json::object()},
                               {"body", ""}};
 
-    sol::state standalone;
-    standalone.open_libraries(sol::lib::base);
-    sol::function h = standalone.script("return function() return 'x' end");
+    shd::state standalone;
+    standalone.open_libraries(shd::lib::base);
+    shd::function h(standalone.script("return function() return 'x' end")
+                        .get<shd::object>(0));
 
     std::string err;
     nlohmann::json desc;
@@ -336,9 +337,9 @@ BOOST_AUTO_TEST_CASE(PackServiceHandleAndStringKeys) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     LuaPackEncoder::Config config;
@@ -614,22 +615,22 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeErrorAndHandleBranches) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     LuaPackEncoder encoder{LuaPackEncoder::Config{}};
 
     {
-        sol::object bad_keys = lua.script("return {[true] = 1}");
+        shd::object bad_keys = lua.script("return {[true] = 1}");
         std::vector<uint8_t> bytes;
         BOOST_CHECK(!encoder.encode(lua, bad_keys, bytes));
         BOOST_CHECK(encoder.error().find("map keys") != std::string::npos);
     }
 
     {
-        sol::object nested =
+        shd::object nested =
             lua.script("return {h = shield._make_handle('cov3.pack')}");
         std::vector<uint8_t> bytes;
         BOOST_CHECK(encoder.encode(lua, nested, bytes));
@@ -668,7 +669,7 @@ return M
 // call_service_function failure shapes that leave the message slot empty or
 // non-string on the bare stack: (false), (nil, table) and (nil, nil). Each
 // must produce a described error string instead of raising through
-// sol::as<std::string> (which would now abort via at_panic).
+// shd::as<std::string> (which would now abort via at_panic).
 BOOST_AUTO_TEST_CASE(CallServiceFunctionEmptyMessageShapes) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
@@ -726,10 +727,11 @@ BOOST_AUTO_TEST_CASE(CallHttpHandlerBadParamsReportsError) {
     LuaRuntime runtime;
 
     // Placeholder handler from a standalone state: never invoked.
-    sol::state standalone;
-    standalone.open_libraries(sol::lib::base);
-    sol::function handler =
-        standalone.script("return function(req) return 'x' end");
+    shd::state standalone;
+    standalone.open_libraries(shd::lib::base);
+    shd::function handler(
+        standalone.script("return function(req) return 'x' end")
+            .get<shd::object>(0));
 
     auto vm = runtime.create_vm();
     BOOST_CHECK(
@@ -754,14 +756,14 @@ BOOST_AUTO_TEST_CASE(CallHttpHandlerBadParamsReportsError) {
 
 // LuaPack rejects map keys whose encoded form exceeds the string budget.
 BOOST_AUTO_TEST_CASE(LuaPackEncodeOversizedMapKeyFails) {
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::string);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::string);
 
     LuaPackEncoder::Config config;
     config.max_string_length = 1024;
     LuaPackEncoder encoder(config);
 
-    sol::object value = lua.script("return {[string.rep('k', 2048)] = 1}");
+    shd::object value = lua.script("return {[string.rep('k', 2048)] = 1}");
     std::vector<uint8_t> bytes;
     BOOST_CHECK(!encoder.encode(lua, value, bytes));
     BOOST_CHECK(!encoder.error().empty());

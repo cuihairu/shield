@@ -10,9 +10,9 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -37,25 +37,25 @@ namespace {
 // registry is shared across all threads of one global_State, so re-refering
 // the same registry entry from the main thread keeps the pointer alive
 // without changing which value the reference names.
-sol::function anchor_to_main_thread(sol::function fn) {
+shd::function anchor_to_main_thread(shd::function fn) {
     lua_State* state = fn.lua_state();
     if (state == nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: callers verify
                              // handler.valid() first, see below)
         !fn.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: both callers verify
-                        // handler.valid() first, and a live sol::function
+                        // handler.valid() first, and a live shd::function
                         // always carries a lua_State)
         return fn;  // GCOVR_EXCL_LINE (defensive: anchored fns are always live)
     }
-    lua_State* main_state = sol::main_thread(state);
+    lua_State* main_state = shd::main_thread(state);
     if (main_state ==   // GCOVR_EXCL_BR_LINE (defensive: never null)
-            nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: sol::main_thread never
+            nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: shd::main_thread never
                         // returns null for a live state)
         main_state ==
-            state) {  // GCOVR_EXCL_BR_LINE (defensive: sol::main_thread never
+            state) {  // GCOVR_EXCL_BR_LINE (defensive: shd::main_thread never
                       // returns null for a live state)
         return fn;
     }
-    return sol::function(main_state, sol::ref_index(fn.registry_index()));
+    return shd::function(main_state, shd::ref_index(fn.registry_index()));
 }
 }  // namespace
 
@@ -97,7 +97,7 @@ std::string write_lua_panic_forensics(lua_State* L, std::FILE* sink) {
     // on its stack when the unprotected error crossed the C boundary.
     {
         std::string dump =
-            std::string(sol::main_thread(L) == L ? "main" : "coroutine") +
+            std::string(shd::main_thread(L) == L ? "main" : "coroutine") +
             " depth=" + std::to_string(lua_gettop(L)) + " [";
         for (int i = 1; i <= lua_gettop(L) && i <= 16; ++i) {
             if (i > 1) dump += ", ";
@@ -142,7 +142,7 @@ int shield_lua_panic(lua_State* L) {
 }
 // GCOVR_EXCL_STOP
 
-void install_panic_handler(const std::shared_ptr<sol::state>& state) {
+void install_panic_handler(const std::shared_ptr<shd::state>& state) {
     lua_atpanic(state->lua_state(), shield_lua_panic);
 }
 }  // namespace
@@ -151,11 +151,11 @@ void install_panic_handler(const std::shared_ptr<sol::state>& state) {
 // ServiceHandle Implementation
 // ============================================================================
 
-void ServiceHandle::register_usertype(sol::state& lua) {
+void ServiceHandle::register_usertype(shd::state_view lua) {
     lua.new_usertype<ServiceHandle>(
         "ServiceHandle",
         // Prevent direct construction from Lua
-        "new", sol::no_constructor,
+        "new", shd::no_constructor,
 
         // Methods
         // GCOVR_EXCL_START (wrappers are deduplicated by the linker into
@@ -166,7 +166,7 @@ void ServiceHandle::register_usertype(sol::state& lua) {
 
         // GCOVR_EXCL_START (linker dedup artifact)
         // Metamethods
-        sol::meta_function::to_string,
+        shd::meta_function::to_string,
         [](const ServiceHandle& h) {
             // GCOVR_EXCL_STOP
             return "<ServiceHandle: " + h.id() +
@@ -175,7 +175,7 @@ void ServiceHandle::register_usertype(sol::state& lua) {
 
         // GCOVR_EXCL_START (linker dedup artifact)
         // Equality by service ID
-        sol::meta_function::equal_to,
+        shd::meta_function::equal_to,
         [](const ServiceHandle& a, const ServiceHandle& b) {
             // GCOVR_EXCL_STOP
             return a.id() == b.id();  // GCOVR_EXCL_LINE (linker dedup artifact)
@@ -191,7 +191,7 @@ void ServiceHandle::register_usertype(sol::state& lua) {
 // lands in an uncalled clone on some gcc builds)
 class LuaVM {
 public:
-    LuaVM() : state_(std::make_shared<sol::state>()) {
+    LuaVM() : state_(std::make_shared<shd::state>()) {
         // GCOVR_EXCL_STOP
         // Sandbox: lua.sandbox.allow_os / allow_io gate the os and io
         // standard libraries. Unset keys keep the historical behavior
@@ -204,16 +204,16 @@ public:
             shield::config::get_bool("lua.sandbox.allow_io", true);
 
         state_->open_libraries(  // GCOVR_EXCL_LINE (line-continuation
-            sol::lib::base,      // GCOVR_EXCL_LINE artifact across args)
-            sol::lib::package,   // GCOVR_EXCL_LINE (line-continuation artifact)
-            sol::lib::string,    // GCOVR_EXCL_LINE (line-continuation artifact)
-            sol::lib::table,     // GCOVR_EXCL_LINE (line-continuation artifact)
-            sol::lib::math, sol::lib::coroutine);
+            shd::lib::base,      // GCOVR_EXCL_LINE artifact across args)
+            shd::lib::package,   // GCOVR_EXCL_LINE (line-continuation artifact)
+            shd::lib::string,    // GCOVR_EXCL_LINE (line-continuation artifact)
+            shd::lib::table,     // GCOVR_EXCL_LINE (line-continuation artifact)
+            shd::lib::math, shd::lib::coroutine);
         if (allow_io) {
-            state_->open_libraries(sol::lib::io);
+            state_->open_libraries(shd::lib::io);
         }
         if (allow_os) {
-            state_->open_libraries(sol::lib::os);
+            state_->open_libraries(shd::lib::os);
         }
         install_panic_handler(state_);
 
@@ -223,13 +223,13 @@ public:
         (*state_)["package"]["path"] = module_path;
     }
 
-    std::shared_ptr<sol::state> state() { return state_; }
-    sol::table& service_table() { return service_table_; }
-    void service_table(sol::table table) { service_table_ = std::move(table); }
+    std::shared_ptr<shd::state> state() { return state_; }
+    shd::table& service_table() { return service_table_; }
+    void service_table(shd::table table) { service_table_ = std::move(table); }
 
 private:
-    std::shared_ptr<sol::state> state_;
-    sol::table service_table_ = sol::nil;
+    std::shared_ptr<shd::state> state_;
+    shd::table service_table_ = shd::nil;
 };
 
 // Script cache entry
@@ -240,7 +240,7 @@ struct ScriptCacheEntry {
 };
 
 struct LuaRuntime::Impl {
-    std::shared_ptr<sol::state> default_state;
+    std::shared_ptr<shd::state> default_state;
     LuaServiceManager* service_manager = nullptr;
 
     // Script cache
@@ -258,9 +258,9 @@ struct LuaRuntime::Impl {
     // Entries are lazily pruned when the weak_ptr expires.
     std::unordered_map<lua_State*, std::weak_ptr<LuaVM>> vms_by_state;
 
-    Impl() : default_state(std::make_shared<sol::state>()) {
-        default_state->open_libraries(sol::lib::base, sol::lib::string,
-                                      sol::lib::table, sol::lib::math);
+    Impl() : default_state(std::make_shared<shd::state>()) {
+        default_state->open_libraries(shd::lib::base, shd::lib::string,
+                                      shd::lib::table, shd::lib::math);
         install_panic_handler(default_state);
 
         // Load cache configuration
@@ -444,7 +444,7 @@ bool LuaRuntime::register_http_route(std::shared_ptr<LuaVM> vm,
                                      const std::string& service_id,
                                      const std::string& method,
                                      const std::string& path,
-                                     sol::function handler,
+                                     shd::function handler,
                                      std::string* error) {
     if (service_id.empty()) {
         if (error) {
@@ -480,7 +480,7 @@ bool LuaRuntime::register_http_route(std::shared_ptr<LuaVM> vm,
     entry.vm = vm;
     // Routes outlive the registering coroutine: keep the handler's lua_State
     // on the main thread (see anchor_to_main_thread above).
-    entry.handler = std::make_shared<sol::function>(
+    entry.handler = std::make_shared<shd::function>(
         anchor_to_main_thread(std::move(handler)));
 
     std::function<void(const std::string&, const std::string&)> sink;
@@ -574,13 +574,13 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
     }
 
     try {
-        sol::state& lua = *vm->state();
-        sol::table t = lua.create_table();
+        shd::state& lua = *vm->state();
+        shd::table t = lua.create_table();
         t["method"] = request_json.value("method", "");
         t["path"] = request_json.value("path", "");
         t["query"] = request_json.value("query", "");
         t["body"] = request_json.value("body", "");
-        sol::table params_t = lua.create_table();
+        shd::table params_t = lua.create_table();
         if (request_json.contains("params")) {
             for (auto it = request_json["params"].begin();
                  it != request_json["params"].end(); ++it) {
@@ -588,7 +588,7 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
             }
         }
         t["params"] = params_t;
-        sol::table headers_t = lua.create_table();
+        shd::table headers_t = lua.create_table();
         if (request_json.contains("headers")) {
             for (auto it = request_json["headers"].begin();
                  it != request_json["headers"].end(); ++it) {
@@ -599,20 +599,20 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
 
         // Invoke the handler through an explicitly protected call: with
         // NDEBUG (release), SOL_SAFE_FUNCTION_OBJECTS is off and
-        // sol::function::operator() is a bare lua_call — a handler error
+        // shd::function::operator() is a bare lua_call — a handler error
         // would reach the panic handler (which aborts) instead of the
         // lua_error field below. The checked read of the result also keeps
         // SOL_SAFE_FUNCTION_OBJECTS from replacing the handler's error text
         // with a sol panic message when an errored result is converted.
-        sol::protected_function handler_pf = *route.handler;
+        shd::protected_function handler_pf = *route.handler;
         auto handler_result = handler_pf(t);
         if (!handler_result.valid()) {
-            const sol::error err = handler_result;
+            const shd::error err = handler_result;
             out_desc = nlohmann::json::object();
             out_desc["lua_error"] = std::string(err.what());
             return true;
         }
-        sol::object result = handler_result;
+        shd::object result = handler_result;
         out_desc = nlohmann::json::object();
         out_desc["status"] = 200;
         out_desc["json_body"] = false;
@@ -620,7 +620,7 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
         if (!result.valid() ||  // GCOVR_EXCL_BR_LINE (defensive: handler
                                 // validity was already checked)
             result ==
-                sol::nil) {  // GCOVR_EXCL_BR_LINE (defensive:
+                shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive:
                              // handler_result.valid() was already checked
                              // above, so the converted object is always valid)
             out_desc["status"] = 204;
@@ -631,7 +631,7 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
             out_desc["body"] = result.as<std::string>();
             return true;
         }
-        if (!result.is<sol::table>()) {
+        if (!result.is<shd::table>()) {
             if (error) {  // GCOVR_EXCL_BR_LINE (integration: every suite call
                           // passes a non-null error out-param)
                 *error = "handler must return a table, string, or nil";
@@ -639,8 +639,8 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
             return false;
         }
 
-        sol::table resp = result.as<sol::table>();
-        sol::object status = resp["status"];
+        shd::table resp = result.as<shd::table>();
+        shd::object status = resp["status"];
         if (status.valid() &&
             status.is<double>()) {  // GCOVR_EXCL_BR_LINE (defensive: a table
                                     // index always yields a valid object, so
@@ -649,19 +649,19 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
                                     // response-field-shapes test)
             out_desc["status"] = static_cast<std::int64_t>(status.as<double>());
         }
-        sol::object headers = resp["headers"];
-        if (headers.valid() && headers.is<sol::table>()) {
+        shd::object headers = resp["headers"];
+        if (headers.valid() && headers.is<shd::table>()) {
             nlohmann::json h = nlohmann::json::object();
-            for (const auto& [k, v] : headers.as<sol::table>()) {
-                sol::object key = k;
-                sol::object value = v;
+            for (const auto& [k, v] : headers.as<shd::table>()) {
+                shd::object key = k;
+                shd::object value = v;
                 if (key.is<std::string>() && value.is<std::string>()) {
                     h[key.as<std::string>()] = value.as<std::string>();
                 }
             }
             out_desc["headers"] = std::move(h);
         }
-        sol::object body = resp["body"];
+        shd::object body = resp["body"];
         if (body.valid()) {
             if (body.is<std::string>()) {
                 out_desc["body"] = body.as<std::string>();
@@ -680,7 +680,7 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
     } catch (const std::exception& e) {  // GCOVR_EXCL_BR_LINE (compiler
         // artifact: the catch body is only ever entered via the exception
         // edge, never by fallthrough)
-        // No sol::error arm: the handler runs through an explicitly
+        // No shd::error arm: the handler runs through an explicitly
         // protected call (errors arrive via the checked result above), and
         // every throwing conversion in this block is guarded by an is<>
         // check. This catch remains for allocation failures and similar
@@ -699,16 +699,16 @@ std::shared_ptr<LuaVM> LuaRuntime::create_vm() {
     return vm;
 }
 
-sol::state& LuaRuntime::vm_state(const std::shared_ptr<LuaVM>& vm) {
+shd::state& LuaRuntime::vm_state(const std::shared_ptr<LuaVM>& vm) {
     return *vm->state();
 }
 
 // GCOVR_EXCL_START (server-only helper: the CI coverage shape builds with
 // SHIELD_ENABLE_SERVER=OFF, so this has no caller there; the full-build tree
 // exercises it through the shield.server.watch facade)
-sol::table LuaRuntime::service_table(const std::shared_ptr<LuaVM>& vm) const {
+shd::table LuaRuntime::service_table(const std::shared_ptr<LuaVM>& vm) const {
     if (!vm) {
-        return sol::nil;
+        return shd::nil;
     }
     return vm->service_table();
 }
@@ -716,29 +716,27 @@ sol::table LuaRuntime::service_table(const std::shared_ptr<LuaVM>& vm) const {
 
 void LuaRuntime::restrict_vm(std::shared_ptr<LuaVM> vm) {
     if (!vm) return;
-    sol::state& state = *vm->state();
+    shd::state& state = *vm->state();
 
     // os: keep time/date/clock (business-clock hooks live there); drop the
-    // process- and host-control functions. The optional-based read: os is
-    // genuinely absent when the VM was created with lua.sandbox.allow_os
-    // =false, and constructing sol::table from a nil proxy trips sol2's
-    // Debug type check (SOL_SAFE) before a .valid() guard could run.
-    sol::optional<sol::table> os_opt =
-        state["os"].get<sol::optional<sol::table>>();
-    if (os_opt) {
-        sol::table os_table = *os_opt;
-        os_table["execute"] = sol::nil;
-        os_table["exit"] = sol::nil;
-        os_table["getenv"] = sol::nil;
-        os_table["remove"] = sol::nil;
-        os_table["rename"] = sol::nil;
-        os_table["setlocale"] = sol::nil;
+    // process- and host-control functions. Guarded read: os is genuinely
+    // absent when the VM was created with lua.sandbox.allow_os =false, so
+    // the accessor is validated before the table view is taken.
+    shd::accessor os_acc = state["os"];
+    if (os_acc.valid() && os_acc.is<shd::table>()) {
+        shd::table os_table = os_acc.get<shd::table>();
+        os_table["execute"] = shd::nil;
+        os_table["exit"] = shd::nil;
+        os_table["getenv"] = shd::nil;
+        os_table["remove"] = shd::nil;
+        os_table["rename"] = shd::nil;
+        os_table["setlocale"] = shd::nil;
     }
     // io: eval diagnostics need no file or process IO.
-    state["io"] = sol::nil;
+    state["io"] = shd::nil;
     // require/package: snippets cannot pull modules off the local disk.
-    state["require"] = sol::nil;
-    state["package"] = sol::nil;
+    state["require"] = shd::nil;
+    state["package"] = shd::nil;
 }
 
 bool LuaRuntime::load_script(std::shared_ptr<LuaVM> vm,
@@ -761,19 +759,26 @@ bool LuaRuntime::load_script(std::shared_ptr<LuaVM> vm,
     return true;
 }
 
-bool lua_to_json(const sol::object& value, nlohmann::json* out) {
+bool lua_to_json(const shd::object& value, nlohmann::json* out) {
     if (!out) {
         return true;
     }
 
     if (!value.valid() ||     // GCOVR_EXCL_BR_LINE (defensive: always valid)
-        value == sol::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service-table
+        value == shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service-table
                               // index always yields a valid object)
         *out = nullptr;
         return true;
     }
     if (value.is<bool>()) {
         *out = value.as<bool>();
+        return true;
+    }
+    // Check string BEFORE number: lua_isnumber() returns true for strings
+    // that look like numbers (e.g. "8194"), but we want to preserve the
+    // original string type in JSON (sol2 parity: is<string> has priority).
+    if (value.is<std::string>()) {
+        *out = value.as<std::string>();
         return true;
     }
     if (value.is<double>()) {
@@ -791,20 +796,16 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
         }
         return true;
     }
-    if (value.is<std::string>()) {
-        *out = value.as<std::string>();
-        return true;
-    }
     // Client identity userdata travels through message payloads in its
     // marker form (the inverse of the json_to_lua materialization).
     if (value.is<ClientContextBox>()) {
-        *out = value.as<const ClientContextBox&>().data.to_json();
+        *out = sol_box_context_marker(value);
         return true;
     }
     if (value.is<ClientRefBox>()) {
         // GCOVR_EXCL_START (ClientRefBox values only flow through decode on
         // the player-enabled client path; coverage suites do not build one)
-        *out = value.as<const ClientRefBox&>().data.to_json();
+        *out = sol_box_context_marker(value);
         return true;
         // GCOVR_EXCL_STOP
     }
@@ -812,27 +813,22 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
     // PlayerRef userdata travels in its marker form (the inverse of the
     // json_to_lua materialization).
     if (value.is<PlayerRefBox>()) {
-        const auto& d = value.as<const PlayerRefBox&>().data;
-        *out = nlohmann::json{{"__shield_player_ref", true},
-                              {"uid", d.uid},
-                              {"node_id", d.node_id},
-                              {"service_id", d.service_id},
-                              {"epoch", d.epoch}};
+        *out = sol_box_player_marker(value);
         return true;
     }
 #endif
-    if (!value.is<sol::table>()) {
+    if (!value.is<shd::table>()) {
         *out = "<unsupported>";
         return false;
     }
 
-    sol::table table = value.as<sol::table>();
+    shd::table table = value.as<shd::table>();
     bool array_like = true;
     std::size_t max_index = 0;
     std::size_t entry_count = 0;
     for (const auto& [key, _] : table) {
         ++entry_count;
-        sol::object key_obj = key;
+        shd::object key_obj = key;
         if (!key_obj.is<int>()) {
             array_like = false;
             break;
@@ -866,7 +862,7 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
     nlohmann::json object = nlohmann::json::object();
     bool all_supported = true;
     for (const auto& [key, val] : table) {
-        sol::object key_obj = key;
+        shd::object key_obj = key;
         std::string object_key;
         if (key_obj.is<std::string>()) {
             object_key = key_obj.as<std::string>();
@@ -887,7 +883,7 @@ bool lua_to_json(const sol::object& value, nlohmann::json* out) {
 }
 
 // Convenience wrapper that returns the JSON value directly.
-nlohmann::json lua_to_json(const sol::object& value) {
+nlohmann::json lua_to_json(const shd::object& value) {
     nlohmann::json result;
     if (!lua_to_json(value, &result)) {
         return "<unsupported>";
@@ -899,7 +895,7 @@ bool LuaRuntime::load_service_module(std::shared_ptr<LuaVM> vm,
                                      std::string_view script_path,
                                      std::string* error) {
     try {
-        sol::state& lua = *vm->state();
+        shd::state& lua = *vm->state();
         const std::string path_str(script_path);
 
         // Try to load from cache
@@ -971,40 +967,40 @@ bool LuaRuntime::load_service_module(std::shared_ptr<LuaVM> vm,
         // service file at all (ProfileHappyPathStartStatusStop, 2026-09-23).
         // The '@' prefix routes the name through the file truncation, which
         // keeps the tail — the file name survives any path length.
-        sol::load_result loaded = lua.load(source_code, "@" + path_str);
+        shd::load_result loaded = lua.load(source_code, "@" + path_str);
         if (!loaded.valid()) {
-            sol::error err = loaded;
+            shd::error err = loaded;
             if (error) {
                 *error = err.what();
             }
             return false;
         }
 
-        sol::protected_function chunk = loaded;
-        sol::protected_function_result result = chunk();
+        shd::protected_function chunk = loaded;
+        shd::protected_function_result result = chunk();
         if (!result.valid()) {
-            sol::error err = result;
+            shd::error err = result;
             if (error) {
                 *error = err.what();
             }
             return false;
         }
 
-        sol::object module = result;
-        if (!module.is<sol::table>()) {
+        shd::object module = result;
+        if (!module.is<shd::table>()) {
             if (error) {
                 *error = "service module must return a table";
             }
             return false;
         }
 
-        vm->service_table(module.as<sol::table>());
+        vm->service_table(module.as<shd::table>());
         return true;
     } catch (const std::exception& e) {  // GCOVR_EXCL_BR_LINE (compiler
                                          // artifact: catch-entry pseudo-arc)
                                          // GCOVR_EXCL_START (unreachable:
         if (error) {  // GCOVR_EXCL_BR_LINE (the module type was checked above
-                      // and as<sol::table>
+                      // and as<shd::table>
             *error = e.what();  // GCOVR_EXCL_BR_LINE (compiler artifact) is the
                                 // only remaining throwing call)
         }
@@ -1018,7 +1014,7 @@ namespace {
 // Stringify a non-string (false, nil) hook-failure message slot. Runs on the
 // bare stack with no active pcall, so this must never raise: unsupported
 // values degrade to "<unsupported>" through lua_to_json's own fallback.
-void describe_hook_message(std::string_view func_name, const sol::object& obj,
+void describe_hook_message(std::string_view func_name, const shd::object& obj,
                            std::string* out) {
     if (out == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive) GCOVR_EXCL_START
                            // (defensive: both callers pass a
@@ -1038,7 +1034,7 @@ bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
                                        const nlohmann::json& args,
                                        std::string* error) {
     try {
-        sol::table& service = vm->service_table();
+        shd::table& service = vm->service_table();
         if (!service.valid()) {
             if (error) {  // GCOVR_EXCL_BR_LINE (integration: every suite call
                           // passes a non-null error out-param)
@@ -1047,48 +1043,48 @@ bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
             return false;
         }
 
-        sol::object value = service[std::string(func_name)];
+        shd::object value = service[std::string(func_name)];
         if (!value.valid() ||  // GCOVR_EXCL_BR_LINE (defensive: a service table
                                // index always yields a valid (nil) object)
             value ==
-                sol::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service table
+                shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service table
                              // index always yields a valid (nil) object, so
                              // !value.valid() never fires; the missing-name arm
                              // is covered by the call-service-function tests)
             return true;
         }
-        if (!value.is<sol::protected_function>()) {
+        if (!value.is<shd::protected_function>()) {
             if (error) {
                 *error = std::string(func_name) + " is not a function";
             }
             return false;
         }
 
-        sol::state_view lua(*vm->state());
-        sol::protected_function func = value.as<sol::protected_function>();
-        sol::protected_function_result result = func(json_to_lua(lua, args));
+        shd::state_view lua(*vm->state());
+        shd::protected_function func = value.as<shd::protected_function>();
+        shd::protected_function_result result = func(json_to_lua(lua, args));
         if (!result.valid()) {
-            sol::error err = result;
+            shd::error err = result;
             if (error) {
                 *error = err.what();
             }
             return false;
         }
 
-        sol::object first = result.get<sol::object>(0);
+        shd::object first = result.get<shd::object>(0);
         // The message slot is host-read on the bare stack (no active pcall):
         // a bare as<std::string> on a non-string raises an unprotected
         // luaL_error that long-jumps past the catch below into at_panic, so
         // the type is checked first and anything else is stringified through
         // the shared Lua->JSON conversion.
         if (first.is<bool>() && !first.as<bool>()) {
-            sol::object second = result.get<sol::object>(1);
+            shd::object second = result.get<shd::object>(1);
             if (error) {
                 if (second.valid() &&  // GCOVR_EXCL_BR_LINE (defensive:
-                                       // result.get<sol::object> always yields
+                                       // result.get<shd::object> always yields
                                        // a valid object)
-                    second != sol::nil) {  // GCOVR_EXCL_BR_LINE (defensive:
-                                           // result.get<sol::object> always
+                    second != shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                           // result.get<shd::object> always
                                            // yields a valid object, so
                                            // !second.valid() never fires)
                     if (second.is<std::string>()) {
@@ -1104,14 +1100,14 @@ bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
             }
             return false;
         }
-        if (first == sol::nil && result.return_count() > 1) {
-            sol::object second = result.get<sol::object>(1);
+        if (first == shd::nil && result.return_count() > 1) {
+            shd::object second = result.get<shd::object>(1);
             if (error) {
                 if (second.valid() &&  // GCOVR_EXCL_BR_LINE (defensive:
-                                       // result.get<sol::object> always yields
+                                       // result.get<shd::object> always yields
                                        // a valid object)
                     second !=
-                        sol::nil) {  // GCOVR_EXCL_BR_LINE (defensive: same arm
+                        shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: same arm
                                      // as the first message slot above - a
                                      // stack get is always valid)
                     if (second.is<std::string>()) {
@@ -1148,10 +1144,10 @@ bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
 
 bool LuaRuntime::resolve_service_method(std::shared_ptr<LuaVM> vm,
                                         std::string_view method_name,
-                                        sol::function* out,
+                                        shd::function* out,
                                         std::string* error) {
     try {
-        sol::table& service = vm->service_table();
+        shd::table& service = vm->service_table();
         if (!service.valid()) {  // GCOVR_EXCL_BR_LINE (defensive: dispatch
                                  // never sees an unloaded module)
                                  // GCOVR_EXCL_START (defensive: dispatch only
@@ -1166,15 +1162,15 @@ bool LuaRuntime::resolve_service_method(std::shared_ptr<LuaVM> vm,
             return false;
         }  // GCOVR_EXCL_STOP
 
-        sol::object value = service[std::string(method_name)];
+        shd::object value = service[std::string(method_name)];
         if (!value.valid() ||  // GCOVR_EXCL_BR_LINE (defensive: a service table
                                // index always yields a valid object)
-            value == sol::nil ||  // GCOVR_EXCL_BR_LINE (defensive: a service
+            value == shd::nil ||  // GCOVR_EXCL_BR_LINE (defensive: a service
                                   // table index always yields a valid object,
                                   // so the validity arm never fires; the
                                   // missing / not-a-function / success arms are
                                   // covered by the resolve tests)
-            !value.is<sol::protected_function>()) {
+            !value.is<shd::protected_function>()) {
             if (error) {
                 *error = "method '" + std::string(method_name) +
                          "' is missing or not a function";
@@ -1182,7 +1178,7 @@ bool LuaRuntime::resolve_service_method(std::shared_ptr<LuaVM> vm,
             return false;
         }
         if (out != nullptr) {
-            *out = value.as<sol::protected_function>();
+            *out = value.as<shd::protected_function>();
         }
         return true;
     } catch (const std::exception& e) {  // GCOVR_EXCL_BR_LINE (compiler
@@ -1205,7 +1201,7 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
                                      nlohmann::json* returns,
                                      std::string* error) {
     try {
-        sol::table& service = vm->service_table();
+        shd::table& service = vm->service_table();
         if (!service.valid()) {
             if (error) {
                 *error = "service module not loaded";
@@ -1213,11 +1209,11 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
             return false;
         }
 
-        sol::object value = service[std::string(method_name)];
+        shd::object value = service[std::string(method_name)];
         if (!value.valid() ||  // GCOVR_EXCL_BR_LINE (defensive: a service table
                                // index always yields a valid (nil) object)
             value ==
-                sol::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service table
+                shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service table
                              // index always yields a valid (nil) object, so
                              // !value.valid() never fires; the missing-method
                              // arm is covered by the call-service-method tests)
@@ -1226,7 +1222,7 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
             }
             return false;
         }
-        if (!value.is<sol::protected_function>()) {
+        if (!value.is<shd::protected_function>()) {
             if (error) {
                 *error = std::string(method_name) + " is not a function";
             }
@@ -1240,17 +1236,17 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
             return false;
         }
 
-        sol::state_view lua(*vm->state());
-        std::vector<sol::object> lua_args;
+        shd::state_view lua(*vm->state());
+        std::vector<shd::object> lua_args;
         lua_args.reserve(args.size());
         for (const auto& arg : args) {
             lua_args.push_back(json_to_lua(lua, arg));
         }
 
-        sol::protected_function func = value.as<sol::protected_function>();
-        sol::protected_function_result result = func(sol::as_args(lua_args));
+        shd::protected_function func = value.as<shd::protected_function>();
+        shd::protected_function_result result = func(shd::as_args(lua_args));
         if (!result.valid()) {
-            sol::error err = result;
+            shd::error err = result;
             if (error) {
                 *error = err.what();
             }
@@ -1261,7 +1257,7 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
             *returns = nlohmann::json::array();
             for (int i = 0; i < result.return_count(); ++i) {
                 nlohmann::json item;
-                if (!lua_to_json(result.get<sol::object>(i), &item)) {
+                if (!lua_to_json(result.get<shd::object>(i), &item)) {
                     if (error) {
                         *error = "unsupported return value from " +
                                  std::string(method_name);
@@ -1288,7 +1284,7 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
 // GCOVR_EXCL_STOP
 
 bool LuaRuntime::invoke_coroutine(
-    std::shared_ptr<LuaVM> vm, sol::function handler,
+    std::shared_ptr<LuaVM> vm, shd::function handler,
     const std::vector<nlohmann::json>& args, const std::string& error_type,
     const std::string& method_label, uint64_t call_session,
     LuaServiceManager* manager, std::string_view service_id, std::string* error,
@@ -1346,7 +1342,7 @@ bool LuaRuntime::invoke_coroutine(
         // only - the body runs, the throw arcs never fire)
 
     try {
-        sol::state_view lua(*vm->state());
+        shd::state_view lua(*vm->state());
         lua_State* L = lua.lua_state();
 
         // Plain synchronous execution with the same completion routing as the
@@ -1355,19 +1351,19 @@ bool LuaRuntime::invoke_coroutine(
         // factory. The degrade path never passes ctx: it mirrors the
         // historical synchronous dispatch signature.
         auto run_sync = [&](bool with_ctx) -> bool {
-            std::vector<sol::object> call_args;
+            std::vector<shd::object> call_args;
             if (with_ctx) {
-                sol::table ctx = lua.create_table();
+                shd::table ctx = lua.create_table();
                 call_args.push_back(ctx);
             }
             for (const auto& arg : args) {
                 call_args.push_back(json_to_lua(lua, arg));
             }
-            sol::protected_function handler_pf = handler;
-            sol::protected_function_result fr =
-                handler_pf(sol::as_args(call_args));
+            shd::protected_function handler_pf = handler;
+            shd::protected_function_result fr =
+                handler_pf(shd::as_args(call_args));
             if (!fr.valid()) {
-                sol::error err = fr;
+                shd::error err = fr;
                 std::string msg = err.what();
                 // GCOVR_EXCL_START (defensive: sol error messages always
                 // carry a "[string ...]:N:" position prefix, so msg is never
@@ -1386,13 +1382,13 @@ bool LuaRuntime::invoke_coroutine(
             nlohmann::json returns = nlohmann::json::array();
             for (int i = 0; i < fr.return_count(); ++i) {
                 nlohmann::json item;
-                lua_to_json(fr.get<sol::object>(i), &item);
+                lua_to_json(fr.get<shd::object>(i), &item);
                 returns.push_back(std::move(item));
             }
             return finish_ok(returns);
         };
 
-        sol::function factory = lua["__shield_run_handler"];
+        shd::function factory = lua["__shield_run_handler"];
         if (!factory.valid()) {
             // Bare VM without the shield API: the handler cannot yield, so
             // this degrades to a plain synchronous call with the same
@@ -1406,20 +1402,20 @@ bool LuaRuntime::invoke_coroutine(
         // Dispatch ctx table: sender / trace / deadline from the active
         // dispatch scope (nil when unset). Hooks with a no-ctx signature
         // (on_init receives (args) directly) pass prepend_ctx = false.
-        sol::table args_table = lua.create_table();
+        shd::table args_table = lua.create_table();
         int arg_count = 0;
         if (prepend_ctx) {
-            sol::table ctx = lua.create_table();
+            shd::table ctx = lua.create_table();
             if (manager != nullptr) {
                 std::string sender = manager->current_sender_id();
                 ctx["sender"] =
-                    sender.empty() ? sol::nil : sol::make_object(lua, sender);
+                    sender.empty() ? shd::nil : shd::make_object(lua, sender);
                 std::string trace = manager->current_trace_id();
                 ctx["trace"] =
                     trace.empty()
-                        ? sol::nil  // GCOVR_EXCL_BR_LINE (integration: see the
+                        ? shd::nil  // GCOVR_EXCL_BR_LINE (integration: see the
                                     // annotated continuation below)
-                        : sol::make_object(
+                        : shd::make_object(
                               lua,
                               trace);  // GCOVR_EXCL_BR_LINE (integration: the
                                        // only caller, client ingress dispatch,
@@ -1427,9 +1423,9 @@ bool LuaRuntime::invoke_coroutine(
                 int64_t deadline = manager->current_deadline_ms();
                 ctx["deadline"] =
                     deadline <= 0
-                        ? sol::nil  // GCOVR_EXCL_BR_LINE (integration: see the
+                        ? shd::nil  // GCOVR_EXCL_BR_LINE (integration: see the
                                     // annotated continuation below)
-                        : sol::make_object(
+                        : shd::make_object(
                               lua,
                               deadline);  // GCOVR_EXCL_BR_LINE (integration:
                                           // the only caller, client ingress
@@ -1439,7 +1435,7 @@ bool LuaRuntime::invoke_coroutine(
             ++arg_count;
         }
         for (const auto& arg : args) {
-            sol::object value = json_to_lua(lua, arg);
+            shd::object value = json_to_lua(lua, arg);
             ++arg_count;
             // table::add(nil) appends at objlen+1, which after a deleted
             // slot reuses the hole and shifts every later argument left; a
@@ -1455,13 +1451,13 @@ bool LuaRuntime::invoke_coroutine(
         // re-anchored by whichever API suspended it. A factory failure
         // degrades to synchronous dispatch instead of throwing through the
         // runtime.
-        sol::protected_function factory_pf = lua["__shield_run_handler"];
-        sol::protected_function_result fr = factory_pf(handler, args_table);
+        shd::protected_function factory_pf = lua["__shield_run_handler"];
+        shd::protected_function_result fr = factory_pf(handler, args_table);
         if (!fr.valid()) {
             if (degrade_on_factory_failure) {
                 return run_sync(false);
             }
-            sol::error err = fr;
+            shd::error err = fr;
             std::string msg = err.what();
             if (msg.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: what() is
                                 // never empty in practice)
@@ -1529,7 +1525,7 @@ bool LuaRuntime::invoke_coroutine(
             nlohmann::json returns = nlohmann::json::array();
             for (int i = 0; i < nres; ++i) {
                 nlohmann::json item;
-                sol::stack_object so(sol::state_view(co), i + 1);
+                shd::stack_object so(shd::state_view(co), i + 1);
                 lua_to_json(so, &item);
                 returns.push_back(std::move(item));
             }
@@ -1659,18 +1655,18 @@ bool LuaRuntime::call_service_method_coroutine(
         // only)
 
     try {
-        sol::table& service = vm->service_table();
+        shd::table& service = vm->service_table();
         if (!service.valid()) {
             const std::string msg = "service module not loaded";
             if (error) *error = msg;
             complete_call_failure(msg);
             return false;
         }
-        sol::object value = service[std::string(method_name)];
+        shd::object value = service[std::string(method_name)];
         if (!value.valid() ||  // GCOVR_EXCL_BR_LINE (defensive: a service table
                                // index always yields a valid (nil) object)
             value ==
-                sol::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service table
+                shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service table
                              // index always yields a valid (nil) object, so
                              // !value.valid() never fires; the missing-method
                              // arm is covered by the fallback-combos test)
@@ -1680,7 +1676,7 @@ bool LuaRuntime::call_service_method_coroutine(
             complete_call_failure(msg);
             return false;
         }
-        if (!value.is<sol::protected_function>()) {
+        if (!value.is<shd::protected_function>()) {
             const std::string msg =
                 std::string(method_name) + " is not a function";
             if (error) *error = msg;
@@ -1694,14 +1690,14 @@ bool LuaRuntime::call_service_method_coroutine(
             return false;
         }
 
-        sol::state_view lua(*vm->state());
+        shd::state_view lua(*vm->state());
         if (!lua["__shield_run_handler"].valid()) {
             // No coroutine factory registered (e.g. a VM without the full
             // shield API). Fall back to a plain synchronous dispatch.
             return fallback_dispatch();
         }
 
-        sol::protected_function handler = value.as<sol::protected_function>();
+        shd::protected_function handler = value.as<shd::protected_function>();
         std::vector<nlohmann::json> arg_vec(args.begin(), args.end());
         return invoke_coroutine(vm, handler, arg_vec, "handler",
                                 std::string(method_name), call_session, manager,
@@ -1725,16 +1721,16 @@ bool LuaRuntime::call_service_method_coroutine(
 }
 
 bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
-                                   sol::function handler,
+                                   shd::function handler,
                                    const ClientIngress& ingress,
                                    std::string* error,
                                    LuaServiceManager* manager,
                                    std::string_view service_id) {
     try {
-        sol::state_view lua(*vm->state());
+        shd::state_view lua(*vm->state());
         lua_State* L = lua.lua_state();
 
-        sol::function factory = lua["__shield_run_handler"];
+        shd::function factory = lua["__shield_run_handler"];
         if (!factory.valid()) {
             // No coroutine factory registered (a VM without the full shield
             // API): client RPC requires coroutine-aware dispatch.
@@ -1753,39 +1749,39 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
         // Build args (ctx, client, request): the dispatch ctx table first,
         // then the client identity (the marker materializes as the read-only
         // ClientContext userdata inside json_to_lua), then the request value.
-        sol::table ctx = lua.create_table();
+        shd::table ctx = lua.create_table();
         if (manager != nullptr) {
             std::string sender = manager->current_sender_id();
             ctx["sender"] =
                 sender.empty()
-                    ? sol::nil  // GCOVR_EXCL_BR_LINE (integration: see the
+                    ? shd::nil  // GCOVR_EXCL_BR_LINE (integration: see the
                                 // annotated continuation below)
-                    : sol::make_object(
+                    : shd::make_object(
                           lua, sender);  // GCOVR_EXCL_BR_LINE (integration: the
                                          // only caller, client ingress
                                          // dispatch, never injects a sender)
             std::string trace = manager->current_trace_id();
             ctx["trace"] =
                 trace.empty()
-                    ? sol::nil  // GCOVR_EXCL_BR_LINE (integration: see the
+                    ? shd::nil  // GCOVR_EXCL_BR_LINE (integration: see the
                                 // annotated continuation below)
-                    : sol::make_object(
+                    : shd::make_object(
                           lua, trace);  // GCOVR_EXCL_BR_LINE (integration: the
                                         // only caller, client ingress dispatch,
                                         // never injects a trace id)
             int64_t deadline = manager->current_deadline_ms();
             ctx["deadline"] =
                 deadline <= 0
-                    ? sol::nil  // GCOVR_EXCL_BR_LINE (integration: see the
+                    ? shd::nil  // GCOVR_EXCL_BR_LINE (integration: see the
                                 // annotated continuation below)
-                    : sol::make_object(
+                    : shd::make_object(
                           lua,
                           deadline);  // GCOVR_EXCL_BR_LINE (integration: the
                                       // only caller, client ingress dispatch,
                                       // never injects a deadline)
         }
 
-        sol::table args_table = lua.create_table();
+        shd::table args_table = lua.create_table();
         args_table.add(ctx);
         args_table.add(json_to_lua(lua, ingress.context.to_json()));
         args_table.add(json_to_lua(lua, *ingress.decoded_request));
@@ -1798,31 +1794,31 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
         // rejection (or a guard error) drops the frame with a warning — the
         // same shape as a gateway ingress validation failure — and never
         // reaches the handler.
-        sol::object guard_obj = lua["__shield_player_guard"];
-        if (guard_obj.valid() && guard_obj.is<sol::function>()) {
+        shd::object guard_obj = lua["__shield_player_guard"];
+        if (guard_obj.valid() && guard_obj.is<shd::function>()) {
             // GCOVR_EXCL_START (player client guard: requires
             // SHIELD_ENABLE_PLAYER plus a live player session that installed
             // __shield_player_guard; the coverage suites do not wire one up)
             std::string route_name =
                 "route_" + std::to_string(ingress.route_id);
-            sol::object names_obj = lua["shield"]["_client_route_names"];
-            if (names_obj.valid() && names_obj.is<sol::table>()) {
-                sol::object name = names_obj.as<sol::table>().get<sol::object>(
+            shd::object names_obj = lua["shield"]["_client_route_names"];
+            if (names_obj.valid() && names_obj.is<shd::table>()) {
+                shd::object name = names_obj.as<shd::table>().get<shd::object>(
                     static_cast<std::int64_t>(ingress.route_id));
                 if (name.valid() && name.is<std::string>()) {
                     route_name = name.as<std::string>();
                 }
             }
-            sol::protected_function guard =
-                guard_obj.as<sol::protected_function>();
-            sol::protected_function_result gr =
+            shd::protected_function guard =
+                guard_obj.as<shd::protected_function>();
+            shd::protected_function_result gr =
                 guard(ctx, args_table[2], route_name, args_table[3]);
             bool allowed = false;
             std::string reject_code;
             if (gr.valid() && gr.return_count() > 0) {
                 allowed = gr.get<bool>(0);
                 if (!allowed && gr.return_count() > 1 &&
-                    gr.get<sol::object>(1).is<std::string>()) {
+                    gr.get<shd::object>(1).is<std::string>()) {
                     reject_code = gr.get<std::string>(1);
                 }
             }
@@ -1839,8 +1835,8 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
         // GCOVR_EXCL_STOP
 #endif
 
-        sol::protected_function factory_pf = lua["__shield_run_handler"];
-        sol::protected_function_result fr = factory_pf(handler, args_table);
+        shd::protected_function factory_pf = lua["__shield_run_handler"];
+        shd::protected_function_result fr = factory_pf(handler, args_table);
         if (!fr.valid()) {
             if (error) *error = "handler coroutine factory failed";
             return false;
@@ -1916,22 +1912,22 @@ bool LuaRuntime::invoke_hook(std::shared_ptr<LuaVM> vm, const char* hook_name,
     if (!vm) {
         return false;
     }
-    sol::table& service = vm->service_table();
+    shd::table& service = vm->service_table();
     if (!service.valid()) {
         return false;
     }
-    sol::object hook_fn = service[hook_name];
-    if (!hook_fn.is<sol::protected_function>()) {
+    shd::object hook_fn = service[hook_name];
+    if (!hook_fn.is<shd::protected_function>()) {
         return false;
     }
-    sol::state_view lua(vm->state()->lua_state());
-    sol::table ctx = lua.create_table();
+    shd::state_view lua(vm->state()->lua_state());
+    shd::table ctx = lua.create_table();
     ctx["type"] = error_type;
     ctx["method"] = method_name;
-    sol::protected_function fn = hook_fn.as<sol::protected_function>();
+    shd::protected_function fn = hook_fn.as<shd::protected_function>();
     auto result = fn(err_or_reason, ctx);
     if (!result.valid()) {
-        sol::error err = result;
+        shd::error err = result;
         auto& log = shield::log::get_logger("lua");
         SHIELD_LOG_ERROR(
             log, std::string(hook_name) + " hook failed: " + err.what());
@@ -1944,7 +1940,7 @@ std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
                                       std::string_view func_name,
                                       std::string_view args) {
     try {
-        sol::protected_function func = (*vm->state())[std::string(func_name)];
+        shd::protected_function func = (*vm->state())[std::string(func_name)];
         if (!func.valid()) {
             return R"({"error": "function not found"})";
         }
@@ -1953,7 +1949,7 @@ std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
         if (result.valid()) {
             return R"({"ok": true})";
         } else {
-            sol::error err = result;
+            shd::error err = result;
             return R"({"error": ")" + std::string(err.what()) + R"("})";
         }
         // GCOVR_EXCL_START (catch-entry pseudo-arc: the serialize path is
@@ -2005,8 +2001,8 @@ LuaServiceManager* LuaRuntime::service_manager() const {
 
 std::string LuaRuntime::get_global(std::shared_ptr<LuaVM> vm,
                                    std::string_view name) {
-    sol::state& lua = *vm->state();
-    sol::object value = lua[name];
+    shd::state& lua = *vm->state();
+    shd::object value = lua[name];
 
     if (value.is<std::string>()) {
         return value.as<std::string>();
@@ -2024,7 +2020,7 @@ std::string LuaRuntime::get_global(std::shared_ptr<LuaVM> vm,
 
 void LuaRuntime::set_global(std::shared_ptr<LuaVM> vm, std::string_view name,
                             std::string_view value) {
-    sol::state& lua = *vm->state();
+    shd::state& lua = *vm->state();
     lua[name] = std::string(value);
 }
 
@@ -2045,7 +2041,7 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
         return false;
     }
 
-    sol::state& lua = *vm->state();
+    shd::state& lua = *vm->state();
     lua_State* L = lua.lua_state();
 
     // Compile
@@ -2077,11 +2073,11 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
     int nresults = lua_gettop(L) - base + 1;
     if (result && nresults > 0) {
         *result = nlohmann::json::array();
-        sol::state_view sv(L);
+        shd::state_view sv(L);
         for (int i = base; i <= lua_gettop(L); ++i) {
-            sol::stack_object so(sv, i);
-            sol::object obj = so;
-            if (obj.is<sol::lua_nil_t>()) {
+            shd::stack_object so(sv, i);
+            shd::object obj = so;
+            if (obj.is<shd::nil_t>()) {
                 result->push_back(nullptr);
             } else if (obj.is<bool>()) {
                 result->push_back(obj.as<bool>());
@@ -2144,7 +2140,7 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
 
 LuaPackEncoder::LuaPackEncoder(const Config& config) : config_(config) {}
 
-bool LuaPackEncoder::encode(sol::state_view lua, const sol::object& value,
+bool LuaPackEncoder::encode(shd::state_view lua, const shd::object& value,
                             std::vector<uint8_t>& out_bytes) {
     out_bytes.clear();
     error_.clear();
@@ -2158,7 +2154,7 @@ bool LuaPackEncoder::encode(sol::state_view lua, const sol::object& value,
     return encode_value(lua, value, out_bytes, 0);
 }
 
-bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
+bool LuaPackEncoder::encode_value(shd::state_view lua, const shd::object& value,
                                   std::vector<uint8_t>& out, size_t depth) {
     if (depth > config_.max_nesting_depth) {
         error_ = "max nesting depth exceeded";
@@ -2166,7 +2162,7 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
     }
 
     if (!value.valid() ||     // GCOVR_EXCL_BR_LINE (defensive: always valid)
-        value == sol::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service-table
+        value == shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service-table
                               // index always yields a valid object)
         out.push_back(static_cast<uint8_t>(TypeTag::Nil));
         return true;
@@ -2226,8 +2222,8 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
         return true;
     }
 
-    if (value.is<sol::table>()) {
-        sol::table table = value.as<sol::table>();
+    if (value.is<shd::table>()) {
+        shd::table table = value.as<shd::table>();
 
         // Check if it's an array-like table
         bool array_like = true;
@@ -2236,7 +2232,7 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
 
         for (const auto& [key, _] : table) {
             ++entry_count;
-            sol::object key_obj = key;
+            shd::object key_obj = key;
             if (!key_obj.is<int>()) {
                 array_like = false;
                 break;
@@ -2282,7 +2278,7 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
         }
 
         for (const auto& [key, val] : table) {
-            sol::object key_obj = key;
+            shd::object key_obj = key;
             if (key_obj.is<std::string>() || key_obj.is<int>()) {
                 if (!encode_value(lua, key_obj, out, depth + 1)) {
                     return false;
@@ -2318,7 +2314,7 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
         // For Phase 1, encode service ID as string (deferred: proper node+id
         // encoding)
         return encode_value(
-            lua, sol::make_object(lua, id), out,
+            lua, shd::make_object(lua, id), out,
             depth + 1);  // GCOVR_EXCL_BR_LINE (defensive: same excluded case -
                          // no suite producer encodes a ServiceHandle)
         // GCOVR_EXCL_STOP
@@ -2336,7 +2332,7 @@ bool LuaPackEncoder::encode_value(sol::state_view lua, const sol::object& value,
 
 LuaPackDecoder::LuaPackDecoder() : error_("") {}
 
-sol::object LuaPackDecoder::decode(sol::state_view lua,
+shd::object LuaPackDecoder::decode(shd::state_view lua,
                                    const std::vector<uint8_t>& bytes,
                                    size_t& out_bytes_consumed) {
     out_bytes_consumed = 0;
@@ -2344,20 +2340,20 @@ sol::object LuaPackDecoder::decode(sol::state_view lua,
 
     if (bytes.size() < 4) {
         error_ = "invalid LuaPack header: too short";
-        return sol::make_object(lua, sol::nil);
+        return shd::make_object(lua, shd::nil);
     }
 
     // Check magic
     if (bytes[0] != LuaPackEncoder::MAGIC_HIGH ||
         bytes[1] != LuaPackEncoder::MAGIC_LOW) {
         error_ = "invalid LuaPack magic bytes";
-        return sol::make_object(lua, sol::nil);
+        return shd::make_object(lua, shd::nil);
     }
 
     // Check version
     if (bytes[2] != LuaPackEncoder::VERSION) {
         error_ = "unsupported LuaPack version";
-        return sol::make_object(lua, sol::nil);
+        return shd::make_object(lua, shd::nil);
     }
 
     out_bytes_consumed = 4;  // Skip header
@@ -2365,14 +2361,14 @@ sol::object LuaPackDecoder::decode(sol::state_view lua,
                         out_bytes_consumed);
 }
 
-sol::object LuaPackDecoder::decode_value(sol::state_view lua,
+shd::object LuaPackDecoder::decode_value(shd::state_view lua,
                                          const uint8_t* data, size_t size,
                                          size_t& out_consumed) {
     out_consumed = 0;
 
     if (size == 0) {
         error_ = "unexpected end of data";
-        return sol::make_object(lua, sol::nil);
+        return shd::make_object(lua, shd::nil);
     }
 
     uint8_t tag = data[0];
@@ -2380,18 +2376,18 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua,
 
     switch (tag) {
         case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Nil):
-            return sol::make_object(lua, sol::nil);
+            return shd::make_object(lua, shd::nil);
 
         case static_cast<uint8_t>(LuaPackEncoder::TypeTag::False):
-            return sol::make_object(lua, false);
+            return shd::make_object(lua, false);
 
         case static_cast<uint8_t>(LuaPackEncoder::TypeTag::True):
-            return sol::make_object(lua, true);
+            return shd::make_object(lua, true);
 
         case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Integer):
             if (size < 9) {
                 error_ = "truncated integer";
-                return sol::make_object(lua, sol::nil);
+                return shd::make_object(lua, shd::nil);
             }
             {
                 int64_t val = 0;
@@ -2399,13 +2395,13 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua,
                     val |= static_cast<int64_t>(data[1 + i]) << (i * 8);
                 }
                 out_consumed = 9;
-                return sol::make_object(lua, val);
+                return shd::make_object(lua, val);
             }
 
         case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Number):
             if (size < 9) {
                 error_ = "truncated number";
-                return sol::make_object(lua, sol::nil);
+                return shd::make_object(lua, shd::nil);
             }
             {
                 // Read double in little-endian using explicit bit manipulation
@@ -2416,29 +2412,29 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua,
                 double val;
                 std::memcpy(&val, &bits, sizeof(double));
                 out_consumed = 9;
-                return sol::make_object(lua, val);
+                return shd::make_object(lua, val);
             }
 
         case static_cast<uint8_t>(LuaPackEncoder::TypeTag::ShortString):
             if (size < 2) {
                 error_ = "truncated short string";
-                return sol::make_object(lua, sol::nil);
+                return shd::make_object(lua, shd::nil);
             }
             {
                 uint8_t len = data[1];
                 if (size < 2 + len) {
                     error_ = "truncated short string data";
-                    return sol::make_object(lua, sol::nil);
+                    return shd::make_object(lua, shd::nil);
                 }
                 std::string str(reinterpret_cast<const char*>(data + 2), len);
                 out_consumed = 2 + len;
-                return sol::make_object(lua, str);
+                return shd::make_object(lua, str);
             }
 
         case static_cast<uint8_t>(LuaPackEncoder::TypeTag::String):
             if (size < 5) {
                 error_ = "truncated string length";
-                return sol::make_object(lua, sol::nil);
+                return shd::make_object(lua, shd::nil);
             }
             {
                 uint32_t len = 0;
@@ -2447,33 +2443,33 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua,
                 }
                 if (size < 5 + len) {
                     error_ = "truncated string data";
-                    return sol::make_object(lua, sol::nil);
+                    return shd::make_object(lua, shd::nil);
                 }
                 std::string str(reinterpret_cast<const char*>(data + 5), len);
                 out_consumed = 5 + len;
-                return sol::make_object(lua, str);
+                return shd::make_object(lua, str);
             }
 
         case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Array):
             if (size < 5) {
                 error_ = "truncated array length";
-                return sol::make_object(lua, sol::nil);
+                return shd::make_object(lua, shd::nil);
             }
             {
                 uint32_t count = 0;
                 for (int i = 0; i < 4; ++i) {
                     count |= static_cast<uint32_t>(data[1 + i]) << (i * 8);
                 }
-                sol::table arr = lua.create_table();
+                shd::table arr = lua.create_table();
                 out_consumed = 5;
                 const uint8_t* elem_data = data + 5;
                 size_t elem_size = size - 5;
                 for (uint32_t i = 0; i < count; ++i) {
                     size_t elem_consumed = 0;
-                    sol::object elem =
+                    shd::object elem =
                         decode_value(lua, elem_data, elem_size, elem_consumed);
                     if (!error_.empty()) {
-                        return sol::make_object(lua, sol::nil);
+                        return shd::make_object(lua, shd::nil);
                     }
                     arr[i + 1] = elem;  // Lua arrays are 1-based
                     elem_data += elem_consumed;
@@ -2486,46 +2482,46 @@ sol::object LuaPackDecoder::decode_value(sol::state_view lua,
         case static_cast<uint8_t>(LuaPackEncoder::TypeTag::Map):
             if (size < 5) {
                 error_ = "truncated map count";
-                return sol::make_object(lua, sol::nil);
+                return shd::make_object(lua, shd::nil);
             }
             {
                 uint32_t count = 0;
                 for (int i = 0; i < 4; ++i) {
                     count |= static_cast<uint32_t>(data[1 + i]) << (i * 8);
                 }
-                sol::table map = lua.create_table();
+                shd::table map = lua.create_table();
                 out_consumed = 5;
                 const uint8_t* entry_data = data + 5;
                 size_t entry_size = size - 5;
                 for (uint32_t i = 0; i < count; ++i) {
                     size_t key_consumed = 0;
-                    sol::object key =
+                    shd::object key =
                         decode_value(lua, entry_data, entry_size, key_consumed);
                     if (!error_.empty()) {
-                        return sol::make_object(lua, sol::nil);
+                        return shd::make_object(lua, shd::nil);
                     }
                     entry_data += key_consumed;
                     entry_size -= key_consumed;
                     out_consumed += key_consumed;
 
                     size_t val_consumed = 0;
-                    sol::object val =
+                    shd::object val =
                         decode_value(lua, entry_data, entry_size, val_consumed);
                     if (!error_.empty()) {
-                        return sol::make_object(lua, sol::nil);
+                        return shd::make_object(lua, shd::nil);
                     }
                     entry_data += val_consumed;
                     entry_size -= val_consumed;
                     out_consumed += val_consumed;
 
-                    map[key] = val;
+                    map.raw_set(key, val);
                 }
                 return map;
             }
 
         default:
             error_ = "unknown type tag: " + std::to_string(tag);
-            return sol::make_object(lua, sol::nil);
+            return shd::make_object(lua, shd::nil);
     }
 }
 

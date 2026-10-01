@@ -186,10 +186,11 @@ BOOST_AUTO_TEST_CASE(ServiceNotRunningYields503) {
 
     // The handler is never invoked (dispatch fails first), so a function
     // from an unrelated state is fine as a placeholder.
-    sol::state standalone;
-    standalone.open_libraries(sol::lib::base);
-    sol::function handler =
-        standalone.script("return function(req) return 'x' end");
+    shd::state standalone;
+    standalone.open_libraries(shd::lib::base);
+    shd::function handler(
+        standalone.script("return function(req) return 'x' end")
+            .get<shd::object>(0));
     auto vm = runtime.create_vm();
     BOOST_CHECK(runtime.register_http_route(vm, "ghost_service", "GET",
                                             "/ghost", handler));
@@ -204,7 +205,7 @@ BOOST_AUTO_TEST_CASE(ServiceNotRunningYields503) {
 
     bridge.detach();
     // Drop the route before the registering VM and the standalone state
-    // backing its handler are destroyed: route entries hold sol::function
+    // backing its handler are destroyed: route entries hold shd::function
     // references bound to those states, and releasing them from
     // ~LuaRuntime would touch already-closed lua_States.
     runtime.remove_http_routes_for_service("ghost_service");

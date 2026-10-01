@@ -45,6 +45,73 @@
 
 namespace shield::lua {
 
+// B1 binding seam (removed in B2): sol2-side adapters over the canonical shd
+// converters so this TU's registered lambdas keep their call shapes. The
+// ServiceHandle userdata is a shd usertype since B1, so the handle read goes
+// through the shd view of the value.
+namespace {
+sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
+    lua_State* L = lua.lua_state();
+    shd::object o = shield::lua::json_to_lua(shd::state_view(L), value);
+    o.push();
+    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
+    sol::object r(sol::stack_reference(L, i));
+    lua_pop(L, 1);
+    return r;
+}
+
+bool lua_to_json(const sol::object& value, nlohmann::json* out) {
+    lua_State* L = value.lua_state();
+    value.push();
+    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
+    const bool ok = shield::lua::lua_to_json(shd::object(L, i), out);
+    lua_pop(L, 1);
+    return ok;
+}
+
+nlohmann::json lua_to_json(const sol::object& value) {
+    nlohmann::json result;
+    if (!lua_to_json(value, &result)) {
+        return "<unsupported>";
+    }
+    return result;
+}
+
+// Bridge a sol2-dispatched function argument into the shd registry-ref
+// world (timer/fork/httpd handlers cross into the B1 runtime here; B2
+// removes the seam with the rest of the sol surface).
+sol::table to_sol_table(const shd::table& t) {
+    if (!t.valid()) return sol::table();
+    lua_State* L = t.state();
+    const int i = t.push();
+    sol::table r(sol::stack_reference(L, i));
+    lua_pop(L, 1);
+    return r;
+}
+
+shd::function to_shd_function(const sol::function& f) {
+    lua_State* L = f.lua_state();
+    f.push();
+    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
+    shd::function r(L, i);
+    lua_pop(L, 1);
+    return r;
+}
+
+// sol-side construction of the shd ServiceHandle userdata (B2 folds this
+// into the converted call sites).
+sol::object make_service_handle_object(sol::state_view lua,
+                                       ServiceHandle handle) {
+    lua_State* L = lua.lua_state();
+    shd::object o = shd::make_userdata<ServiceHandle>(
+        shd::state_view(L), "ServiceHandle", std::move(handle));
+    const int i = o.push();
+    sol::object r(sol::stack_reference(L, i));
+    lua_pop(L, 1);
+    return r;
+}
+}  // namespace
+
 sol::table make_error(sol::this_state state, std::string code,
                       std::string message, bool retryable = false,
                       sol::object detail = sol::nil) {
@@ -143,7 +210,11 @@ static bool client_arg_to_data(const sol::object& object,
     return false;
 }
 
-sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
+// B1 binding seam: the canonical converter signature is shd (declared in
+// lua_api.hpp, defined below as a thin wrapper); this renamed body keeps the
+// B2 sol2 materialization internals (PlayerRefBox) unchanged until B2
+// rewrites them in place.
+sol::object json_to_lua_sol(sol::state_view lua, const nlohmann::json& value) {
     if (value.is_null()) {
         return sol::make_object(lua, sol::nil);
     }
@@ -169,7 +240,7 @@ sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
         sol::table table = lua.create_table();
         int index = 1;
         for (const auto& item : value) {
-            table[index++] = json_to_lua(lua, item);
+            table[index++] = json_to_lua_sol(lua, item);
         }
         return sol::make_object(lua, table);
     }
@@ -224,11 +295,76 @@ sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
         }
         sol::table table = lua.create_table();
         for (const auto& [key, item] : value.items()) {
-            table[key] = json_to_lua(lua, item);
+            table[key] = json_to_lua_sol(lua, item);
         }
         return sol::make_object(lua, table);
     }
     return sol::make_object(lua, sol::nil);
+}
+
+// Canonical (shd) converter: wraps the sol2 body above. The B2 phase folds
+// the body in and removes this bridge.
+// Sol2-created Box userdata is a pointer box (sol2 usertype storage); the
+// shd raw-value read would misinterpret it. Field extraction stays on the
+// sol side until B2 folds the materializers into shd.
+nlohmann::json sol_box_context_marker(const shd::object& value) {
+    lua_State* L = value.state();
+    value.push();
+    const int i = lua_gettop(L);  // absolute slot
+    if (shd::detail::is_shd_raw_userdata(L, i)) {
+        // shd-created payload: raw T in place, read directly.
+        const shd::stack_object raw(L, i);
+        if (raw.is<ClientContextBox>()) {
+            const auto d = raw.as<const ClientContextBox&>().data;
+            lua_pop(L, 1);
+            return d.to_json();
+        }
+        const auto d = raw.as<const ClientRefBox&>().data;
+        lua_pop(L, 1);
+        return d.to_json();
+    }
+    // sol2-created payload: pointer-box layout, read on the sol side.
+    sol::object so(sol::stack_reference(L, i));
+    lua_pop(L, 1);
+    if (so.is<ClientContextBox>()) {
+        return so.as<const ClientContextBox&>().data.to_json();
+    }
+    return so.as<const ClientRefBox&>().data.to_json();
+}
+
+nlohmann::json sol_box_player_marker(const shd::object& value) {
+    lua_State* L = value.state();
+    value.push();
+    const int i = lua_gettop(L);  // absolute slot
+    if (shd::detail::is_shd_raw_userdata(L, i)) {
+        const shd::stack_object raw(L, i);
+        const auto d = raw.as<const PlayerRefBox&>().data;
+        lua_pop(L, 1);
+        return nlohmann::json{{"__shield_player_ref", true},
+                              {"uid", d.uid},
+                              {"node_id", d.node_id},
+                              {"service_id", d.service_id},
+                              {"epoch", d.epoch}};
+    }
+    sol::object so(sol::stack_reference(L, i));
+    lua_pop(L, 1);
+    const auto& d = so.as<const PlayerRefBox&>().data;
+    return nlohmann::json{{"__shield_player_ref", true},
+                          {"uid", d.uid},
+                          {"node_id", d.node_id},
+                          {"service_id", d.service_id},
+                          {"epoch", d.epoch}};
+}
+
+shd::object json_to_lua(shd::state_view lua, const nlohmann::json& value) {
+    lua_State* L = lua.lua_state();
+    sol::object o =
+        json_to_lua_sol(sol::state_view(L), value);  // canonical body
+    o.push();
+    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
+    shd::object r(L, i);
+    lua_pop(L, 1);
+    return r;
 }
 
 nlohmann::json lua_table_to_json(const sol::table& table) {
@@ -259,7 +395,8 @@ nlohmann::json lua_table_to_json(const sol::table& table) {
             nlohmann::json::array();  // GCOVR_EXCL_BR_LINE (compiler artifact:
                                       // nlohmann construction arcs)
         for (std::size_t i = 1; i <= max_index; ++i) {
-            array.push_back(lua_to_json(table[static_cast<int>(i)]));
+            array.push_back(
+                lua_to_json(sol::object(table[static_cast<int>(i)])));
         }
         return array;  // GCOVR_EXCL_BR_LINE (compiler artifact: return arc)
     }  // GCOVR_EXCL_LINE
@@ -283,20 +420,25 @@ nlohmann::json lua_table_to_json(const sol::table& table) {
 nlohmann::json variadic_to_json_array(sol::variadic_args args) {
     nlohmann::json values = nlohmann::json::array();
     for (const auto& arg : args) {
-        values.push_back(lua_to_json(arg));
+        values.push_back(lua_to_json(sol::object(arg)));
     }
     return values;
 }  // GCOVR_EXCL_LINE
 
 // Helper to extract service ID from ServiceHandle or string
 std::string extract_service_id(const sol::object& target) {
-    if (target.is<ServiceHandle>()) {
-        return target.as<ServiceHandle>().id();
+    lua_State* L = target.lua_state();
+    target.push();
+    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
+    shd::object so(L, i);
+    std::string id;
+    if (so.is<ServiceHandle>()) {
+        id = so.as<ServiceHandle>().id();
+    } else if (so.is<std::string>()) {
+        id = so.as<std::string>();
     }
-    if (target.is<std::string>()) {
-        return target.as<std::string>();
-    }
-    return "";
+    lua_pop(L, 1);
+    return id;
 }
 
 void register_service_api(sol::table& shield, LuaServiceManager* manager) {
@@ -334,7 +476,7 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
 
             // Return ServiceHandle userdata instead of string
             ServiceHandle handle(result.service_id);
-            results.push_back(sol::make_object(lua, handle));
+            results.push_back(make_service_handle_object(lua, handle));
             results.push_back(sol::make_object(lua, sol::nil));
             return results;
         });
@@ -358,7 +500,7 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                 return sol::make_object(lua, sol::nil);
             }
             ServiceHandle handle(service_id);
-            return sol::make_object(lua, handle);
+            return make_service_handle_object(lua, handle);
         });
 
     shield.set_function("names",
@@ -383,7 +525,7 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
             const auto service = manager->query_service(name);
             if (!service.empty()) {
                 ServiceHandle handle(service);
-                results.push_back(sol::make_object(lua, handle));
+                results.push_back(make_service_handle_object(lua, handle));
                 results.push_back(sol::make_object(lua, sol::nil));
                 return results;
             }
@@ -501,7 +643,7 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
            std::string service_id) -> sol::object {
             sol::state_view lua(state);
             ServiceHandle handle(std::move(service_id));
-            return sol::make_object(lua, handle);
+            return make_service_handle_object(lua, handle);
         });
 
     // Business-triggered panic: invoke on_panic(reason, {type="explicit"})
@@ -746,7 +888,8 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             }
             nlohmann::json json_args = nlohmann::json::array();
             for (std::size_t i = 1; i <= arg_count; ++i) {
-                json_args.push_back(lua_to_json(args[static_cast<int>(i)]));
+                json_args.push_back(
+                    lua_to_json(sol::object(args[static_cast<int>(i)])));
             }
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -1046,9 +1189,10 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                                                         // arcs at the call
                                                         // boundary)
                               delay_ms,
-                              callback,  // GCOVR_EXCL_BR_LINE (compiler
-                                         // artifact: sol::function copy
-                                         // arcs at the call boundary)
+                              to_shd_function(
+                                  callback),  // GCOVR_EXCL_BR_LINE (compiler
+                                              // artifact: sol::function copy
+                                              // arcs at the call boundary)
                               service_id);
             results.push_back(sol::make_object(lua, id));
             return results;
@@ -1086,9 +1230,10 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                                                                // at the call
                                                                // boundary)
                               interval_ms,
-                              callback,  // GCOVR_EXCL_BR_LINE (compiler
-                                         // artifact: sol::function copy arcs at
-                                         // the call boundary)
+                              to_shd_function(
+                                  callback),  // GCOVR_EXCL_BR_LINE (compiler
+                                              // artifact: sol::function copy
+                                              // arcs at the call boundary)
                               service_id);
             results.push_back(sol::make_object(lua, id));
             return results;
@@ -1304,7 +1449,7 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
                     SHIELD_LOG_ERROR(log, "task error: fork body missing");
                 },
                 // GCOVR_EXCL_STOP
-                fn);  // raw_fn for coroutine wrapping
+                to_shd_function(fn));  // raw_fn for coroutine wrapping
             results.push_back(sol::make_object(lua, task_id));
             return results;
         });
@@ -1453,26 +1598,35 @@ void register_gateway_api(LuaRuntime& runtime) { (void)runtime; }
 // ClientContext / ClientRef usertypes plus the __shield_make_client_context
 // materializer used by json_to_lua and by the coroutine resume path. No
 // constructor is exported: identity userdata is created by the runtime only.
-void register_client_identity_api(sol::state& lua) {
+void register_client_identity_api(sol::state_view lua) {
+    lua_State* L = lua.lua_state();
+    shd::state_view shd_lua(L);
+
+    // Register with shd first (creates shd metatables with proper __gc)
+    shd::register_type_name<ClientContextBox>("shd.ClientContext");
+    shd::register_type_name<ClientRefBox>("shd.ClientRef");
+    shd::new_usertype<ClientContextBox>(shd_lua, "shd.ClientContext", "new",
+                                        shd::no_constructor);
+    shd::new_usertype<ClientRefBox>(shd_lua, "shd.ClientRef", "new",
+                                    shd::no_constructor);
+
+    // Register with sol2 for sol2-based APIs (e.g., the `ref` property)
     sol::usertype<ClientContextBox> context_type =
         lua.new_usertype<ClientContextBox>("ClientContext",
                                            sol::no_constructor);
     bind_identity_properties(context_type);
-    context_type.set("ref",  // GCOVR_EXCL_LINE (gcov clone artifact)
-                     [](const ClientContextBox& box,  // GCOVR_EXCL_LINE
-                        sol::this_state s) {
-                         return sol::make_object(s, ClientRefBox{box.data});
-                     });
+    context_type.set("ref", [](const ClientContextBox& box, sol::this_state s) {
+        return sol::make_object(s, ClientRefBox{box.data});
+    });
     sol::usertype<ClientRefBox> ref_type =
         lua.new_usertype<ClientRefBox>("ClientRef", sol::no_constructor);
     bind_identity_properties(ref_type);
 
 #ifdef SHIELD_ENABLE_PLAYER
-    // Read-only PlayerRef value userdata. It crosses services as the
-    // __shield_player_ref marker JSON (see lua_to_json / json_to_lua).
-    // Record-like access (ref.uid) is the documented Lua face, so the
-    // accessors are registered as sol2 properties — a plain set() with a
-    // unary lambda would expose them as methods (obj:uid()).
+    shd::register_type_name<PlayerRefBox>("shd.PlayerRef");
+    shd::new_usertype<PlayerRefBox>(shd_lua, "shd.PlayerRef", "new",
+                                    shd::no_constructor);
+
     sol::usertype<PlayerRefBox> player_ref_type =
         lua.new_usertype<PlayerRefBox>("PlayerRef", sol::no_constructor);
     player_ref_type.set("uid", sol::property([](const PlayerRefBox& box) {
@@ -1490,21 +1644,39 @@ void register_client_identity_api(sol::state& lua) {
                         }));
 #endif
 
+    // Mirror sol2 metatables under their plain names so shd::object::is<Box>()
+    // also sees sol2-created values (mirrored metatable = identity only; the
+    // payload layout is still sol2's, and reads go through the B1 adapter).
+    // Register the plain names AFTER the shd.* ones so push() keeps pairing
+    // with the shd-native metatable (names.front()).
+    shd::register_type_name<ClientContextBox>("ClientContext");
+    shd::register_type_name<ClientRefBox>("ClientRef");
+#ifdef SHIELD_ENABLE_PLAYER
+    shd::register_type_name<PlayerRefBox>("PlayerRef");
+#endif
+    auto mirror = [&](auto&& probe_value, const char* name) {
+        sol::object probe = sol::make_object(lua, probe_value);
+        probe.push();
+        const int i = lua_gettop(L);
+        lua_getmetatable(L, i);
+        lua_setfield(L, LUA_REGISTRYINDEX, name);
+        lua_pop(L, 1);
+    };
+    mirror(ClientContextBox{}, "ClientContext");
+    mirror(ClientRefBox{}, "ClientRef");
+#ifdef SHIELD_ENABLE_PLAYER
+    mirror(PlayerRefBox{}, "PlayerRef");
+#endif
+
     lua.set_function(
         "__shield_make_client_context",
         [](sol::this_state s, std::uint64_t session_id,
            std::uint32_t session_epoch, std::string player_id,
            std::string gateway_address, std::string protocol_profile_id) {
-            return sol::make_object(  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                      // aggregate-init copy arcs)
-                // GCOVR_EXCL_BR_START (compiler artifact: aggregate-init
-                // copy arcs)
+            return sol::make_object(
                 s, ClientContextBox{ClientContextData{
-                       // GCOVR_EXCL_BR_LINE (compiler artifact: aggregate-init
-                       // copy arcs)
                        std::move(gateway_address), session_id, session_epoch,
                        std::move(player_id), std::move(protocol_profile_id)}});
-            // GCOVR_EXCL_BR_STOP
         });
 }
 
@@ -1655,8 +1827,9 @@ void register_client_api(sol::table& shield, LuaServiceManager* manager) {
 // Registers one shield.client_rpc.<name> helper bound to a server-to-client
 // descriptor route. Called per service VM at spawn time (after the
 // descriptor table is compiled).
-void register_client_rpc_helper(sol::state& lua, LuaServiceManager* manager,
+void register_client_rpc_helper(lua_State* L, LuaServiceManager* manager,
                                 std::string_view name, uint32_t route_id) {
+    sol::state_view lua(L);
     sol::table shield = lua["shield"];
     sol::table client_rpc = shield["client_rpc"];
     // Reverse map for the player client_message guard (route_id -> name);
@@ -3021,7 +3194,7 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
                     vm = manager->service_vm(service_id);
                 }
                 // GCOVR_EXCL_STOP
-                module_tbl = runtime->service_table(vm);
+                module_tbl = to_sol_table(runtime->service_table(vm));
             }
             // GCOVR_EXCL_START (defensive: every dispatch context resolves
             // a vm whose module loaded — load failures never reach the
@@ -4339,7 +4512,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                     // GCOVR_EXCL_STOP
                     if (vm) {  // GCOVR_EXCL_BR_LINE (defensive: a null vm here
                                // means the service module is gone)
-                        module_tbl = runtime->service_table(vm);
+                        module_tbl = to_sol_table(runtime->service_table(vm));
                     }
                 }
                 // Defensive: the context check above already rejects
@@ -4900,7 +5073,7 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
         }
         std::string error;
         if (!runtime->register_http_route(vm, service_id, method, path,
-                                          std::move(handler), &error)) {
+                                          to_shd_function(handler), &error)) {
             throw sol::error("shield.httpd registration failed: " + error);
         }
         sol::state_view lua(state);
@@ -5012,13 +5185,14 @@ void register_plugin_api(sol::table& shield) {
     shield["plugin"] = plugin;
 }
 
-void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
+void register_full_shield_api(lua_State* L, LuaServiceManager* manager,
                               LuaRuntime* runtime) {
+    sol::state_view lua(L);
     // Initialize HTTP client (libcurl global state).
     shield::net::HttpClient::initialize();
 
-    // Register usertypes
-    ServiceHandle::register_usertype(lua);
+    // Register usertypes (ServiceHandle is a shd usertype since B1)
+    ServiceHandle::register_usertype(shd::state_view(L));
     register_client_identity_api(lua);
 
     auto shield = lua.create_table();

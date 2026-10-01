@@ -232,10 +232,10 @@ BOOST_AUTO_TEST_CASE(TimerFireGuards, *boost::unit_test::timeout(30)) {
                       opts_for("cov_lsvc4_quick_impl"));
     BOOST_REQUIRE(svc.success);
 
-    // Invalid callback: schedule directly with a nil sol::function.
-    sol::state scratch;
-    scratch.open_libraries(sol::lib::base);
-    sol::function nil_fn = scratch["nope"];
+    // Invalid callback: schedule directly with a nil shd::function.
+    shd::state scratch;
+    scratch.open_libraries(shd::lib::base);
+    shd::function nil_fn = scratch["nope"];
     manager.schedule_actor_timer_once(20, nil_fn, svc.service_id);
 
     // A timer on a live service still fires after the invalid one.

@@ -132,8 +132,8 @@ BOOST_AUTO_TEST_CASE(ProxiedCallPrimitives) {
     // A non-proxied (caller-side) session: abandon is a no-op — the entry
     // stays put and is later dropped by complete_call on its no-caller-actor
     // cleanup path (a bare VM caller has an empty caller_service).
-    sol::state scratch;
-    scratch.open_libraries(sol::lib::base);
+    shd::state scratch;
+    scratch.open_libraries(shd::lib::base);
     const uint64_t caller_session =
         manager.suspend_for_call(scratch.lua_state(), 60000);
     BOOST_CHECK_NE(caller_session, 0u);

@@ -712,11 +712,11 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_20_SchedInvalidArms) {
 // this state unreachable.
 BOOST_AUTO_TEST_CASE(LAPI_GL_21_TaskWithoutServiceContextRejected) {
     GlobalWorld world;
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::math,
-                       sol::lib::table, sol::lib::os, sol::lib::coroutine);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::string, shd::lib::math,
+                       shd::lib::table, shd::lib::os, shd::lib::coroutine);
     register_full_shield_api(lua, &world.manager, &world.runtime);
-    lua.safe_script(
+    lua.script(
         "local s = shield.scheduler()\n"
         "local _, err = s:cron('orphan', '* * * * *', function() end)\n"
         "out = {rejected = err ~= nil,\n"

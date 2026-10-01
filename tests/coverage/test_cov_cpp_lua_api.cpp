@@ -41,6 +41,8 @@ using namespace shield::lua;
 // calls), and a deliberate no-op stub under namespace shield::lua::api.
 // Declare both -- placing the declaration in the wrong namespace would
 // silently link the test against the stub instead of the real body.
+// B2 note: lua_api.cpp internals are still sol2-based, so these direct
+// declarations keep the sol2 shape until that batch.
 namespace shield::lua {
 void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                         LuaRuntime* runtime);
@@ -567,10 +569,10 @@ function M.ping(ctx) return "child_pong" end
 return M
 )lua";
 
-bool run_script(sol::state& lua, const std::string& code) {
-    auto result = lua.safe_script(code, sol::script_pass_on_error);
+bool run_script(shd::state& lua, const std::string& code) {
+    auto result = lua.script(code);
     if (!result.valid()) {
-        const sol::error e = result;
+        const shd::error e = result;
         std::fprintf(stderr, "lua error: %s\n", e.what());
         return false;
     }
@@ -590,34 +592,34 @@ BOOST_AUTO_TEST_SUITE(CovCppLuaApi)
 // Direct json_to_lua conversion branches.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(JsonToLuaTypeBranches) {
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::table, sol::lib::string);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::table, shd::lib::string);
 
     lua["v_nil"] = json_to_lua(lua, nlohmann::json());
     BOOST_CHECK(run_script(lua, "assert(v_nil == nil)"));
 
     lua["v_bool"] = json_to_lua(lua, nlohmann::json(true));
-    BOOST_CHECK(lua["v_bool"].get_type() == sol::type::boolean);
+    BOOST_CHECK(lua["v_bool"].get_type() == shd::type::boolean);
 
     lua["v_int"] = json_to_lua(lua, nlohmann::json(42));
-    BOOST_CHECK(lua["v_int"].get_type() == sol::type::number);
+    BOOST_CHECK(lua["v_int"].get_type() == shd::type::number);
 
     lua["v_uint"] = json_to_lua(lua, nlohmann::json(18000000000000000000ULL));
-    BOOST_CHECK(lua["v_uint"].get_type() == sol::type::number);
+    BOOST_CHECK(lua["v_uint"].get_type() == shd::type::number);
 
     lua["v_float"] = json_to_lua(lua, nlohmann::json(1.5));
-    BOOST_CHECK(lua["v_float"].get_type() == sol::type::number);
+    BOOST_CHECK(lua["v_float"].get_type() == shd::type::number);
 
     lua["v_str"] = json_to_lua(lua, nlohmann::json("hello"));
-    BOOST_CHECK(lua["v_str"].get_type() == sol::type::string);
+    BOOST_CHECK(lua["v_str"].get_type() == shd::type::string);
 
     lua["v_arr"] = json_to_lua(lua, nlohmann::json::parse("[1,[2,3]]"));
-    BOOST_CHECK(lua["v_arr"].get_type() == sol::type::table);
+    BOOST_CHECK(lua["v_arr"].get_type() == shd::type::table);
     BOOST_CHECK(run_script(lua, "assert(#v_arr == 2 and #v_arr[2] == 2)"));
 
     lua["v_obj"] =
         json_to_lua(lua, nlohmann::json::parse(R"({"a":1,"b":"x"})"));
-    BOOST_CHECK(lua["v_obj"].get_type() == sol::type::table);
+    BOOST_CHECK(lua["v_obj"].get_type() == shd::type::table);
     BOOST_CHECK(run_script(lua, "assert(v_obj.a == 1 and v_obj.b == 'x')"));
 
     // Client-identity marker in a VM without the identity factory installed
@@ -626,7 +628,7 @@ BOOST_AUTO_TEST_CASE(JsonToLuaTypeBranches) {
         shield::lua::ClientContextData{"gw-1", 1, 3, "player-1", "json"}
             .to_json();
     lua["v_marker"] = json_to_lua(lua, marker);
-    BOOST_CHECK(lua["v_marker"].get_type() == sol::type::table);
+    BOOST_CHECK(lua["v_marker"].get_type() == shd::type::table);
     BOOST_CHECK(run_script(lua, "assert(v_marker.player_id == 'player-1')"));
 
     // A marker-shaped object with a wrong flag value is NOT an identity:
@@ -634,7 +636,7 @@ BOOST_AUTO_TEST_CASE(JsonToLuaTypeBranches) {
     nlohmann::json fake = nlohmann::json::object(
         {{"__shield_client_ref", false}, {"session_id", 1}});
     lua["v_fake"] = json_to_lua(lua, fake);
-    BOOST_CHECK(lua["v_fake"].get_type() == sol::type::table);
+    BOOST_CHECK(lua["v_fake"].get_type() == shd::type::table);
 }
 
 // ---------------------------------------------------------------------------
@@ -651,13 +653,19 @@ BOOST_AUTO_TEST_CASE(RegistrationStubs) {
     api::register_log_api(runtime);
     api::register_gateway_api(runtime);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base);
-    sol::table table = lua.create_table();
+    shd::state lua;
+    lua.open_libraries(shd::lib::base);
+    // B2 note: register_timer_api is still sol2-based, so the two direct
+    // calls go through a sol2 table view of the same table; the read-back
+    // stays on the shd side.
+    shd::table table = lua.create_table();
+    sol::state_view sv(lua.lua_state());
+    sol::table stable(sv.lua_state(), table.push());
+    lua_pop(lua.lua_state(), 1);
     // The api-namespace overload is a deliberate no-op stub: the real
     // registration path is register_full_shield_api, which calls the
     // namespace-level overload below.
-    api::register_timer_api(table, nullptr, nullptr);
+    api::register_timer_api(stable, nullptr, nullptr);
     // The real namespace-level overload registers the timer API for real.
     // now()/timer_once()/every() capture the manager pointer and stay
     // call-only from a live service (calling them with nullptr here would be
@@ -666,8 +674,9 @@ BOOST_AUTO_TEST_CASE(RegistrationStubs) {
     // millisecond clock. The function is fetched raw: sol's lazy proxy
     // conversion loses the entry for plain create_table members, while
     // raw_get reads it back.
-    register_timer_api(table, nullptr, nullptr);
-    const sol::function monotonic = table.raw_get<sol::function>("monotonic");
+    register_timer_api(stable, nullptr, nullptr);
+    const shd::function monotonic =
+        table.raw_get("monotonic").as<shd::function>();
     BOOST_CHECK(monotonic.valid());
     const int64_t t1 = monotonic();
     const int64_t t2 = monotonic();
@@ -686,9 +695,9 @@ BOOST_AUTO_TEST_CASE(MainThreadApiSurface) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     // self outside a service context -> nil.
@@ -1168,9 +1177,9 @@ BOOST_AUTO_TEST_CASE(RuntimeStoppingCodes) {
     auto b = manager.spawn(script_b, opts_for("cov_stop_b").dump());
     BOOST_REQUIRE(b.success);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os);
     register_full_shield_api(lua, &manager, &runtime);
 
     manager.shutdown_all("cov_stopping");
@@ -1220,9 +1229,9 @@ BOOST_AUTO_TEST_CASE(ClientIdentityBranches) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os);
     register_full_shield_api(lua, &manager, &runtime);
 
     // Full marker -> ClientContext userdata, plus ref() -> ClientRef.
@@ -1268,18 +1277,18 @@ BOOST_AUTO_TEST_CASE(ClientIdentityBranches) {
     // plain table (from_json returns nullopt).
     const nlohmann::json not_object = nlohmann::json::array({1, 2});
     lua["bad1"] = json_to_lua(lua, not_object);
-    BOOST_CHECK(lua["bad1"].get_type() == sol::type::table);
+    BOOST_CHECK(lua["bad1"].get_type() == shd::type::table);
 
     const nlohmann::json flag_false = nlohmann::json::object(
         {{"__shield_client_ref", false}, {"session_id", 1}});
     lua["bad2"] = json_to_lua(lua, flag_false);
-    BOOST_CHECK(lua["bad2"].get_type() == sol::type::table);
+    BOOST_CHECK(lua["bad2"].get_type() == shd::type::table);
     BOOST_CHECK(run_script(lua, "assert(bad2.session_id == 1)"));
 
     const nlohmann::json flag_wrong_type =
         nlohmann::json::object({{"__shield_client_ref", "yes"}});
     lua["bad3"] = json_to_lua(lua, flag_wrong_type);
-    BOOST_CHECK(lua["bad3"].get_type() == sol::type::table);
+    BOOST_CHECK(lua["bad3"].get_type() == shd::type::table);
 
     // Field-level type guards: wrong-typed fields fall back to defaults but
     // the marker is still materialized.
@@ -1350,9 +1359,9 @@ BOOST_AUTO_TEST_CASE(HttpAndPluginApis) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     MiniHttpServer server;
@@ -1535,9 +1544,9 @@ BOOST_AUTO_TEST_CASE(HttpWrappersWithoutOptionsAndArrayHeuristic) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     MiniHttpServer server;

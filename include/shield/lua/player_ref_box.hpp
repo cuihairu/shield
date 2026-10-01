@@ -30,4 +30,15 @@ struct PlayerRefBox {
 
 }  // namespace shield::lua
 
+// shd usertype markers (only when player module is enabled).
+template <>
+struct shd::is_usertype_value<shield::lua::PlayerRefBox> : std::true_type {};
+
+// Registered by sol2 in B1 (register_client_identity_api). Stays shd-native
+// for the same reason as the client identity boxes: sol2's payload layout is
+// usertype_storage<T>, not a bare T* box, so foreign-layout shd pushes are
+// unreadable from both worlds.
+template <>
+struct shd::is_foreign_usertype<shield::lua::PlayerRefBox> : std::false_type {};
+
 #endif  // SHIELD_ENABLE_PLAYER

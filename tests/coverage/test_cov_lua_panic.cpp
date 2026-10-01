@@ -15,7 +15,6 @@
 #include <cstdio>
 #include <cstring>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <string>
 
 #ifndef _WIN32
@@ -41,8 +40,8 @@ BOOST_GLOBAL_FIXTURE(CafInitFixture);
 // --- In-process: the forensics writer, both error-object arms -------------
 
 BOOST_AUTO_TEST_CASE(ForensicsStringErrorObject) {
-    sol::state lua;
-    lua.open_libraries(sol::lib::base);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base);
     lua_State* L = lua.lua_state();
     lua_pushliteral(L, "boom-string-msg");
     const std::string detail = write_lua_panic_forensics(L, stderr);
@@ -54,8 +53,8 @@ BOOST_AUTO_TEST_CASE(ForensicsStringErrorObject) {
 }
 
 BOOST_AUTO_TEST_CASE(ForensicsNonStringErrorObject) {
-    sol::state lua;
-    lua.open_libraries(sol::lib::base);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base);
     lua_State* L = lua.lua_state();
     lua_createtable(L, 0, 0);
     const std::string detail = write_lua_panic_forensics(L, stderr);
@@ -128,7 +127,7 @@ BOOST_AUTO_TEST_CASE(PanicHandlerAbortsAfterForensics) {
             // address space is single-threaded and safe to initialize in.
             LuaRuntime runtime;
             auto vm = runtime.create_vm();
-            sol::state& lua = runtime.vm_state(vm);
+            shd::state& lua = runtime.vm_state(vm);
             lua.script("function __cov_death() error('death-boom-msg') end");
             lua_State* L = lua.lua_state();
             lua_getglobal(L, "__cov_death");
@@ -175,8 +174,8 @@ BOOST_AUTO_TEST_CASE(PanicHandlerAbortsAfterForensics) {
 // on a coroutine thread with a 20-value stack exercises both arms of the
 // main/coroutine selection and the cap comparison.
 BOOST_AUTO_TEST_CASE(ForensicsCoroutineThreadAndDeepStack) {
-    sol::state lua;
-    lua.open_libraries(sol::lib::base);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base);
     lua_State* L = lua.lua_state();
     // lua_newthread pushes the new thread onto L; the registry slot keeps it
     // anchored for the duration of the call.

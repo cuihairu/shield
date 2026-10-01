@@ -6,7 +6,8 @@
 
 #include <memory>
 #include <nlohmann/json_fwd.hpp>
-#include <sol/forward.hpp>
+
+#include "shield/lua/binding.hpp"
 
 namespace shield::net {
 class Session;
@@ -24,7 +25,8 @@ void register_shield_api(LuaRuntime& runtime);
 /// @brief Convert JSON values into Lua values using Shield's runtime rules.
 /// Special transport/runtime marker objects may map to userdata instead of
 /// plain tables.
-sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value);
+/// (sol2 surface lives in the B2 phase; the canonical converter is shd.)
+shd::object json_to_lua(shd::state_view lua, const nlohmann::json& value);
 
 /// @brief Convert Lua values to JSON.
 /// This is the primary conversion function with error handling via return
@@ -33,21 +35,30 @@ sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value);
 /// @param out Output parameter for the resulting JSON value (set to nullptr on
 /// nil)
 /// @return true if conversion succeeded, false if unsupported type
-bool lua_to_json(const sol::object& value, nlohmann::json* out);
+bool lua_to_json(const shd::object& value, nlohmann::json* out);
 
 /// @brief Convenience wrapper for lua_to_json that returns the value directly.
 /// Returns nullptr for nil values and "<unsupported>" string for unsupported
 /// types. Prefer the output-parameter version for better error handling.
-nlohmann::json lua_to_json(const sol::object& value);
+nlohmann::json lua_to_json(const shd::object& value);
+
+/// @brief B1 seam (B2 removes): marker JSON for a sol2-created identity Box
+/// userdata. Sol2 stores usertype payload as a pointer box, so field access
+/// must stay on the sol side; shd only identifies the metatable.
+nlohmann::json sol_box_context_marker(const shd::object& value);
+
+/// @brief B1 seam (B2 removes): marker JSON for a sol2-created PlayerRefBox.
+nlohmann::json sol_box_player_marker(const shd::object& value);
 
 /// @brief Register one shield.client_rpc.<name> helper bound to a
 /// server-to-client descriptor route. Called per service VM at spawn time,
-/// after the descriptor table is compiled.
-void register_client_rpc_helper(sol::state& lua, LuaServiceManager* manager,
+/// after the descriptor table is compiled. (Takes the raw state so both
+/// binding surfaces can call it.)
+void register_client_rpc_helper(lua_State* lua, LuaServiceManager* manager,
                                 std::string_view name, uint32_t route_id);
 
 /// @brief Full API registration (internal use)
-void register_full_shield_api(sol::state& lua,
+void register_full_shield_api(lua_State* lua,
                               LuaServiceManager* manager = nullptr,
                               LuaRuntime* runtime = nullptr);
 

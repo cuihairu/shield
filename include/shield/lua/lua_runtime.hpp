@@ -5,12 +5,12 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
-#include <sol/sol.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "shield/core/service_message.hpp"
+#include "shield/lua/binding.hpp"
 
 namespace shield::lua {
 
@@ -20,6 +20,15 @@ class LuaServiceManager;
 
 /// @brief Opaque ServiceHandle userdata for Lua
 /// This prevents direct string manipulation of service IDs
+class ServiceHandle;
+}  // namespace shield::lua
+
+// Values of this type push into Lua as usertype userdata (sol2 parity).
+template <>
+struct shd::is_usertype_value<shield::lua::ServiceHandle> : std::true_type {};
+
+namespace shield::lua {
+
 class ServiceHandle {
 public:
     explicit ServiceHandle(std::string service_id)
@@ -35,7 +44,7 @@ public:
     bool valid() const { return !service_id_.empty(); }
 
     // Lua userdata operations
-    static void register_usertype(sol::state& lua);
+    static void register_usertype(shd::state_view lua);
 
 private:
     std::string service_id_;
@@ -78,14 +87,14 @@ public:
     /// @param value Value to encode
     /// @param out_bytes Output buffer
     /// @return true if encoding succeeded
-    bool encode(sol::state_view lua, const sol::object& value,
+    bool encode(shd::state_view lua, const shd::object& value,
                 std::vector<uint8_t>& out_bytes);
 
     // Get last error message
     std::string error() const { return error_; }
 
 private:
-    bool encode_value(sol::state_view lua, const sol::object& value,
+    bool encode_value(shd::state_view lua, const shd::object& value,
                       std::vector<uint8_t>& out, size_t depth);
 
     Config config_;
@@ -102,14 +111,14 @@ public:
     /// @param bytes Input bytes
     /// @param out_bytes_consumed Number of bytes consumed
     /// @return Decoded Lua value or nil on error
-    sol::object decode(sol::state_view lua, const std::vector<uint8_t>& bytes,
+    shd::object decode(shd::state_view lua, const std::vector<uint8_t>& bytes,
                        size_t& out_bytes_consumed);
 
     // Get last error message
     std::string error() const { return error_; }
 
 private:
-    sol::object decode_value(sol::state_view lua, const uint8_t* data,
+    shd::object decode_value(shd::state_view lua, const uint8_t* data,
                              size_t size, size_t& out_consumed);
 
     std::string error_;
@@ -132,7 +141,7 @@ struct HttpRouteRegistration {
     std::string method;       // "GET", "POST", ...
     std::string path;         // Route pattern; ":name" matches a segment
     std::weak_ptr<LuaVM> vm;  // Handler's VM (liveness guard)
-    std::shared_ptr<sol::function> handler;  // Bound to that VM
+    std::shared_ptr<shd::function> handler;  // Bound to that VM
 };
 
 /// @brief Lua runtime manager
@@ -152,13 +161,13 @@ public:
     // sol state of a VM created by create_vm. Lets the service manager
     // publish generated per-VM helpers (e.g. s2c client_rpc closures)
     // without depending on the LuaVM definition.
-    sol::state& vm_state(const std::shared_ptr<LuaVM>& vm);
+    shd::state& vm_state(const std::shared_ptr<LuaVM>& vm);
 
     // Module table a VM loaded via load_service_module. Lets the optional
     // shield_server module install state-change forwarders on the business
     // module without depending on the LuaVM definition. Returns an invalid
     // table when no module was loaded.
-    sol::table service_table(const std::shared_ptr<LuaVM>& vm) const;
+    shd::table service_table(const std::shared_ptr<LuaVM>& vm) const;
 
     // Remove host-access capabilities (os.execute family, the io library,
     // require, and package) from a VM. Intended for VMs that serve untrusted
@@ -190,7 +199,7 @@ public:
     // compilation so dispatch can assume handlers exist.
     bool resolve_service_method(std::shared_ptr<LuaVM> vm,
                                 std::string_view method_name,
-                                sol::function* out = nullptr,
+                                shd::function* out = nullptr,
                                 std::string* error = nullptr);
 
     // Dispatch a service method with JSON-array arguments and collect all
@@ -224,7 +233,7 @@ public:
     // service error hook with error_type "client_rpc". The request value
     // travels inside ingress.decoded_request (canonical message, JSON-decoded
     // body, or raw bytes as a JSON string — normalized by the dispatcher).
-    bool invoke_client_rpc(std::shared_ptr<LuaVM> vm, sol::function handler,
+    bool invoke_client_rpc(std::shared_ptr<LuaVM> vm, shd::function handler,
                            const ClientIngress& ingress, std::string* error,
                            LuaServiceManager* manager = nullptr,
                            std::string_view service_id = "");
@@ -239,7 +248,7 @@ public:
     // service error hook with the given error_type and returns false with
     // *error set. A VM without the factory falls back to a plain synchronous
     // call (the handler cannot yield there).
-    bool invoke_coroutine(std::shared_ptr<LuaVM> vm, sol::function handler,
+    bool invoke_coroutine(std::shared_ptr<LuaVM> vm, shd::function handler,
                           const std::vector<nlohmann::json>& args,
                           const std::string& error_type,
                           const std::string& method_label,
@@ -320,7 +329,7 @@ public:
     bool register_http_route(std::shared_ptr<LuaVM> vm,
                              const std::string& service_id,
                              const std::string& method, const std::string& path,
-                             sol::function handler,
+                             shd::function handler,
                              std::string* error = nullptr);
 
     /// Resolve the runtime-managed VM for a raw lua_State (nullptr if the

@@ -94,11 +94,11 @@ BOOST_AUTO_TEST_CASE(RouteTableRegistrationAndLookup) {
     // (safe_script: the unprotected script() path has misbehaved on
     // macOS/Release runners.)
     BOOST_TEST_CHECKPOINT("creating standalone state");
-    sol::state standalone;
-    standalone.open_libraries(sol::lib::base);
+    shd::state standalone;
+    standalone.open_libraries(shd::lib::base);
     BOOST_TEST_CHECKPOINT("compiling handler");
-    sol::function handler = standalone.safe_script("return function() end",
-                                                   sol::script_pass_on_error);
+    shd::function handler = standalone.script("return function() end")
+                                .template get<shd::function>(0);
     BOOST_REQUIRE(handler.valid());
     BOOST_TEST_CHECKPOINT("handler ready");
 
@@ -146,7 +146,7 @@ BOOST_AUTO_TEST_CASE(RouteTableRegistrationAndLookup) {
     // The registered handlers reference `standalone`, which is destroyed
     // before `runtime` (declaration order). Drop every remaining route
     // while the state is still alive, mirroring what service teardown
-    // does in production; otherwise the sol::function destructors in the
+    // does in production; otherwise the shd::function destructors in the
     // route table unref against a closed lua_State (crash on macOS and
     // Windows, silent UB on Linux).
     runtime.remove_http_routes_for_service("svc_b");
@@ -386,10 +386,10 @@ BOOST_AUTO_TEST_CASE(RouteWithoutRunningServiceReturns503) {
     // Register a route directly against the runtime table for a service the
     // manager has never spawned. The handler is never invoked, so a function
     // from an unrelated state suffices.
-    sol::state standalone;
-    standalone.open_libraries(sol::lib::base);
-    sol::function handler = standalone.safe_script("return function() end",
-                                                   sol::script_pass_on_error);
+    shd::state standalone;
+    standalone.open_libraries(shd::lib::base);
+    shd::function handler = standalone.script("return function() end")
+                                .template get<shd::function>(0);
     BOOST_REQUIRE(handler.valid());
     auto vm = runtime.create_vm();
     std::string error;
