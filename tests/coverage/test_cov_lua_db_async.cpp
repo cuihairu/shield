@@ -22,7 +22,6 @@
 #include <functional>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <sstream>
 #include <string>
 #include <thread>

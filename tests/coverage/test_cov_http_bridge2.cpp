@@ -13,7 +13,6 @@
 #include <fstream>
 #include <future>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <thread>
 #include <unordered_map>
 

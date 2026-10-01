@@ -44,7 +44,6 @@
 #include <functional>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 #include <vector>

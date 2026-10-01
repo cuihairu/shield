@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <thread>
 
 #include "shield/caf_initializer.hpp"

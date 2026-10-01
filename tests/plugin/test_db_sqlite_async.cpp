@@ -29,7 +29,6 @@
 #include <fstream>
 #include <functional>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 
