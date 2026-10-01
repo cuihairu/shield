@@ -14,10 +14,12 @@
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
 #include <cstdio>
-#include <sol/sol.hpp>
+#include <sol/sol.hpp>  // B0 seam: only the register_full_shield_api test below
+                        // still drives the sol2-based lua_api surface.
 #include <string>
 
 #include "shield/caf_initializer.hpp"
+#include "shield/lua/binding.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_crypto.hpp"
 #include "shield/lua/lua_runtime.hpp"
@@ -31,11 +33,11 @@ using namespace shield::lua;
 
 namespace {
 
-bool run_script(sol::state& lua, const std::string& code) {
-    auto result = lua.safe_script(code, sol::script_pass_on_error);
+bool run_script(shd::state& lua, const std::string& code) {
+    auto result = lua.script(code);
     if (!result.valid()) {
-        const sol::error e = result;
-        std::fprintf(stderr, "lua error: %s\n", e.what());
+        const shd::error e = result.get_error();
+        std::fprintf(stderr, "lua error: %s\n", e.what().c_str());
         return false;
     }
     return true;
@@ -74,15 +76,15 @@ std::string cpp_hmac_sha256(const std::string& key, const std::string& data) {
 
 // Lua state with shield.crypto registered and jwt.lua loaded as global "jwt".
 struct CryptoState {
-    sol::state lua;
+    shd::state lua;
 
     CryptoState() {
-        lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::math,
-                           sol::lib::table, sol::lib::os);
-        sol::table shield = lua.create_table();
+        lua.open_libraries(shd::lib::base | shd::lib::string | shd::lib::math |
+                           shd::lib::table | shd::lib::os);
+        shd::table shield = lua.create_table();
         shield::lua::register_crypto_api(shield);
         lua["shield"] = shield;
-        sol::object jwt = lua.script_file(std::string(SHIELD_SOURCE_DIR) +
+        shd::object jwt = lua.script_file(std::string(SHIELD_SOURCE_DIR) +
                                           "/scripts/lib/jwt.lua");
         lua["jwt"] = jwt;
     }
@@ -343,14 +345,14 @@ BOOST_AUTO_TEST_CASE(JwtSignVerifyRoundTripAndCrossCheck) {
     BOOST_CHECK(ok);
 
     // Cross-check the signature bytes from C++.
-    const sol::object tok = s.lua["token"];
+    const shd::object tok = s.lua["token"];
     const std::string token = tok.as<std::string>();
     const size_t first = token.find('.');
     const size_t second = token.find('.', first + 1);
     BOOST_REQUIRE(first != std::string::npos && second != std::string::npos);
     const std::string signing_input = token.substr(0, second);
     const std::string sig = token.substr(second + 1);
-    const sol::function b64url = s.lua["shield"]["crypto"]["base64url_encode"];
+    const shd::function b64url = s.lua["shield"]["crypto"]["base64url_encode"];
     const std::string expected =
         b64url(cpp_hmac_sha256("secret", signing_input));
     BOOST_CHECK_EQUAL(sig, expected);
@@ -649,10 +651,18 @@ BOOST_AUTO_TEST_CASE(RegisteredViaFullShieldApi) {
     lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::math,
                        sol::lib::table, sol::lib::os, sol::lib::coroutine);
     register_full_shield_api(lua, &manager, &runtime);
-    BOOST_CHECK(run_script(lua,
-                           "assert(type(shield.crypto) == 'table')\n"
-                           "assert(shield.crypto.hex_encode('a') == '61')\n"
-                           "assert(#shield.crypto.sha256('x') == 32)\n"));
+    // sol2 path: register_full_shield_api is still sol2-based until the
+    // lua_api migration batch; run_script above takes the thin layer's state.
+    auto result = lua.safe_script(
+        "assert(type(shield.crypto) == 'table')\n"
+        "assert(shield.crypto.hex_encode('a') == '61')\n"
+        "assert(#shield.crypto.sha256('x') == 32)\n",
+        sol::script_pass_on_error);
+    if (!result.valid()) {
+        std::fprintf(stderr, "lua error: %s\n",
+                     result.get<sol::error>().what());
+    }
+    BOOST_CHECK(result.valid());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

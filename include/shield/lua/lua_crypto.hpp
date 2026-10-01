@@ -8,12 +8,14 @@
 // no place in this table.
 #pragma once
 
-#include <sol/forward.hpp>
+namespace shd {
+class table;
+}
 
 namespace shield::lua {
 
 /// @brief Register shield.crypto (codec + hash/random primitives) onto the
 /// shield table. Called once per VM from register_full_shield_api.
-void register_crypto_api(sol::table& shield);
+void register_crypto_api(shd::table& shield);
 
 }  // namespace shield::lua

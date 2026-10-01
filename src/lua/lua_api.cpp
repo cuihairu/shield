@@ -32,6 +32,7 @@
 
 #include "shield/core/service_message.hpp"
 #include "shield/log/logger.hpp"
+#include "shield/lua/binding.hpp"
 #include "shield/lua/client_identity.hpp"
 #include "shield/lua/lua_constants.hpp"
 #include "shield/lua/lua_crypto.hpp"
@@ -1823,7 +1824,8 @@ std::uint64_t player_ref_epoch(const sol::table& t) {
                       // bool/string/double/positive-int shapes)
         return static_cast<std::uint64_t>(
             v.as<int>());  // GCOVR_EXCL_BR_LINE (compiler artifact: sol2 as<>
-                           // bad_cast dispatch clones)
+                           // bad_cast dispatch clones) / GCOVR_EXCL_LINE (gcov
+                           // line granularity: closing paren line not counted)
     return 0;
 }
 
@@ -5029,7 +5031,19 @@ void register_full_shield_api(sol::state& lua, LuaServiceManager* manager,
     register_log_api(shield, manager);
     register_client_api(shield, manager);
     register_http_api(shield, manager, runtime);
-    register_crypto_api(shield);
+    {
+        // B0 migration seam: register_crypto_api now binds through the thin
+        // shd layer (shield/lua/binding.hpp) instead of sol2. sol2's table
+        // push() puts the same underlying Lua table on the stack, so the
+        // shd::table registry reference below mutates the table this
+        // function hands to scripts. The bridge disappears when this file
+        // itself migrates off sol2.
+        lua_State* crypto_state = shield.lua_state();
+        shield.push();
+        shd::table crypto_target(crypto_state, -1);
+        lua_pop(crypto_state, 1);
+        register_crypto_api(crypto_target);
+    }
     register_plugin_api(shield);
 
 #ifdef SHIELD_ENABLE_CLUSTER

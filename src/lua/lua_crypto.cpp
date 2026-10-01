@@ -15,9 +15,10 @@
 #include <openssl/rand.h>
 
 #include <cstdint>
-#include <sol/sol.hpp>
 #include <stdexcept>
 #include <string>
+
+#include "shield/lua/binding.hpp"
 
 namespace shield::lua {
 namespace {
@@ -153,10 +154,8 @@ std::string random_bytes_impl(int n) {
 
 }  // namespace
 
-void register_crypto_api(sol::table& shield) {
-    sol::state_view lua = shield.lua_state();
-    sol::table crypto = lua.create_table();
-    shield["crypto"] = crypto;
+void register_crypto_api(shd::table& shield) {
+    shd::table crypto = shield.create_table("crypto");
 
     // --- codecs -----------------------------------------------------------
     // All encoders take/return Lua strings (byte-transparent); the hash and
