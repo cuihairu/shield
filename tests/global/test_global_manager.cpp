@@ -1170,3 +1170,488 @@ BOOST_AUTO_TEST_CASE(RateLimitWindowTails) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// Branch closure: the remaining error/edge arms of every domain, each driven
+// by a real two-step scenario (unknown id, expired window, ttl=0 shape,
+// long payload, zero cost). No mocks, no injected clocks.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(BranchClosureSuite)
+
+// cron rejection paths with a null error out-param, plus the character-class
+// arms below '0' (a leading '-' in a step or a range bound) and the
+// whitespace splitter's tab / collapsed-run arms.
+BOOST_AUTO_TEST_CASE(CronParserEdgeArms) {
+    CronFields fields;
+    std::string error;
+    BOOST_CHECK(!parse_cron("60 * * * *", &fields, nullptr));
+    BOOST_CHECK(!parse_cron("* * * *", &fields, nullptr));
+    // "*/-1": the step text starts below '0', so the numeric scan rejects it
+    // through the first comparison rather than the second.
+    BOOST_CHECK(!parse_cron("*/-1 * * * *", &fields, &error));
+    BOOST_CHECK_NE(error.find("step is not a number"), std::string::npos);
+    // "1--2": split at the first dash, so the high bound is "-2".
+    BOOST_CHECK(!parse_cron("1--2 * * * *", &fields, &error));
+    BOOST_CHECK_NE(error.find("bound is not a number"), std::string::npos);
+    // Tabs separate fields and a whitespace run collapses: still 5 fields.
+    BOOST_CHECK(parse_cron("\t*\t*\t*  \t*\t*", &fields, nullptr));
+    // An explicit range (both bounds scanned) parses.
+    BOOST_CHECK(parse_cron("0 0 31 * 1", &fields, &error));
+}
+
+// Both day sides restricted and the dom side not matching: the dow
+// operand decides the match (the standard-cron OR fallback).
+BOOST_AUTO_TEST_CASE(CronDomRestrictedFallsBackToDow) {
+    CronFields fields;
+    // 2026-09-14 00:00:00 UTC is a Monday (dow = 1).
+    const std::uint64_t monday = 1789344000000ULL;
+    BOOST_REQUIRE(parse_cron("0 0 31 * 1", &fields, nullptr));
+    // From Monday 01:00 the dom (31st) never matches, so the next hit is the
+    // following Monday.
+    BOOST_CHECK_EQUAL(cron_next(fields, monday + kHour), monday + 7 * kDay);
+}
+
+BOOST_AUTO_TEST_CASE(ValidateWithNullErrorPointers) {
+    GlobalConfig zero_cache;
+    zero_cache.cache_max_size = 0;
+    BOOST_CHECK(!validate_global_config(zero_cache, nullptr));
+    GlobalConfig tiny_tick;
+    tiny_tick.scheduler_tick_ms = 9;
+    BOOST_CHECK(!validate_global_config(tiny_tick, nullptr));
+    BOOST_CHECK(validate_global_config(default_config(), nullptr));
+}
+
+BOOST_AUTO_TEST_CASE(StopWithoutStartIsANoOp) {
+    GlobalManager gm(default_config());
+    // stop() on a manager whose tick thread never started.
+    gm.stop();
+    BOOST_CHECK_EQUAL(gm.sched_active_count(), 0u);
+}
+
+// data_incr_by across all three shapes: a key with no expiry stamp, a key
+// with a live expiry, and a key holding a non-integer value; with and
+// without the error out-param.
+BOOST_AUTO_TEST_CASE(DataIncrEdgeArms) {
+    GlobalManager gm(default_config());
+    gm.data_set("forever", "10", 0);    // no expiry stamp at all
+    gm.data_set("later", "20", 60000);  // live expiry stamp
+    gm.data_set("text", "abc", 0);      // unparsable value
+
+    std::int64_t n = 0;
+    BOOST_CHECK(gm.data_incr_by("later", 1, &n, nullptr));  // live stamp
+    BOOST_CHECK_EQUAL(n, 21);
+    BOOST_CHECK(gm.data_incr_by("forever", 1, &n, nullptr));  // no stamp
+    BOOST_CHECK_EQUAL(n, 11);
+    // Unparsable payload: rejected, with and without an error string.
+    BOOST_CHECK(!gm.data_incr_by("text", 1, &n, nullptr));
+    std::string error;
+    BOOST_CHECK(!gm.data_incr_by("text", 1, &n, &error));
+    BOOST_CHECK_NE(error.find("not an integer"), std::string::npos);
+    // Null out-param on a healthy increment.
+    BOOST_CHECK(gm.data_incr_by("forever", 2, nullptr, nullptr));
+    std::string value;
+    BOOST_REQUIRE(gm.data_get("forever", &value));
+    BOOST_CHECK_EQUAL(value, "13");
+}
+
+// mset rejects an empty key with a null error string; cache reads run
+// without an out-param on both the miss-fill and the hit path; invalidate
+// of an uncached key is a silent no-op.
+BOOST_AUTO_TEST_CASE(MsetAndCacheOutParamArms) {
+    GlobalManager gm(default_config());
+    BOOST_CHECK(!gm.data_mset({{"", "v"}}, 0, nullptr));
+    BOOST_CHECK_EQUAL(gm.data_size(), 0u);
+    std::string error;
+    BOOST_CHECK(!gm.data_mset({{"ok", "v"}, {"", "w"}}, 0, &error));
+    BOOST_CHECK_NE(error.find("must not be empty"), std::string::npos);
+
+    gm.data_set("c", "cached", 0);
+    BOOST_CHECK(gm.cache_get("c", 1000, nullptr));  // miss-fill, no out
+    BOOST_CHECK(gm.cache_get("c", 1000, nullptr));  // hit, no out
+    gm.cache_invalidate("ghost");                   // not cached: a no-op
+    BOOST_CHECK_EQUAL(gm.cache_size(), 1u);
+    gm.cache_invalidate("c");
+    BOOST_CHECK_EQUAL(gm.cache_size(), 0u);
+}
+
+// Exclusive locks: the stale-holder reclaim path with and without a TTL,
+// extend's three rejection reasons, the spinlock registry select, an
+// unknown name, and an expired TTL reported as zero remaining.
+BOOST_AUTO_TEST_CASE(MutexTtlArms) {
+    GlobalManager gm(default_config());
+    BOOST_CHECK(gm.mutex_acquire("default", "m", "o", 30) == LockStatus::kOk);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    // The stale holder lost the lock; re-acquiring without a TTL stores 0.
+    BOOST_CHECK(gm.mutex_acquire("default", "m", "o2", 0) == LockStatus::kOk);
+    auto info = gm.mutex_info("default", "m");
+    BOOST_REQUIRE(info.exists);
+    BOOST_CHECK_EQUAL(info.ttl_remaining_ms, 0u);
+    BOOST_CHECK_EQUAL(info.owner, "o2");
+
+    // extend: unknown name, foreign owner, and an expired lock.
+    BOOST_CHECK(!gm.mutex_extend("default", "ghost", "o", 1000));
+    BOOST_CHECK(!gm.mutex_extend("default", "m", "other", 1000));
+    gm.mutex_release("default", "m", "o2");
+    BOOST_CHECK(gm.mutex_acquire("default", "exp", "o", 20) == LockStatus::kOk);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    BOOST_CHECK(!gm.mutex_extend("default", "exp", "o", 1000));
+
+    // The spinlock registry is a separate table selected by name.
+    BOOST_CHECK(gm.mutex_acquire("spinlock", "m", "o", 0) == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(gm.mutex_registry_size("spinlock"), 1u);
+    BOOST_CHECK(gm.mutex_info("spinlock", "m").exists);
+    // No TTL on the live lock: the remaining TTL stays 0.
+    BOOST_CHECK_EQUAL(gm.mutex_info("spinlock", "m").ttl_remaining_ms, 0u);
+    BOOST_CHECK(gm.mutex_extend("spinlock", "m", "o", 5000));
+    BOOST_CHECK(gm.mutex_info("spinlock", "m").ttl_remaining_ms > 0);
+    BOOST_CHECK(!gm.mutex_info("default", "ghost").exists);
+
+    // Extend stamps a fresh TTL, and drops it when asked for no expiry.
+    BOOST_CHECK(gm.mutex_acquire("default", "m2", "x", 0) == LockStatus::kOk);
+    BOOST_CHECK(gm.mutex_extend("default", "m2", "x", 1000));
+    BOOST_CHECK(gm.mutex_info("default", "m2").ttl_remaining_ms > 0);
+    BOOST_CHECK(gm.mutex_extend("default", "m2", "x", 0));
+    BOOST_CHECK_EQUAL(gm.mutex_info("default", "m2").ttl_remaining_ms, 0u);
+}
+
+// The same TTL shapes on the rwlock registry, plus the unknown-name and
+// no-expiry info arms.
+BOOST_AUTO_TEST_CASE(RwLockTtlArms) {
+    GlobalManager gm(default_config());
+    BOOST_CHECK(gm.rw_write_acquire("w", "o", 20) == LockStatus::kOk);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // The stale writer is reclaimed with no expiry stamped.
+    BOOST_CHECK(gm.rw_write_acquire("w", "o2", 0) == LockStatus::kOk);
+    auto info = gm.rwlock_info("w");
+    BOOST_REQUIRE(info.exists);
+    BOOST_CHECK_EQUAL(info.write_owner, "o2");
+    BOOST_CHECK_EQUAL(info.write_ttl_remaining_ms, 0u);
+
+    // extend: unknown lock, foreign owner, then a live lock (with and
+    // without a TTL stamp).
+    BOOST_CHECK(!gm.rw_write_extend("ghost", "o", 1000));
+    BOOST_CHECK(!gm.rw_write_extend("w", "other", 1000));
+    BOOST_CHECK(gm.rw_write_extend("w", "o2", 1000));
+    BOOST_CHECK(gm.rwlock_info("w").write_ttl_remaining_ms > 0);
+    BOOST_CHECK(gm.rw_write_extend("w", "o2", 0));
+    BOOST_CHECK_EQUAL(gm.rwlock_info("w").write_ttl_remaining_ms, 0u);
+    // An expired write lock reports zero remaining TTL.
+    BOOST_CHECK(gm.rw_write_acquire("short", "o", 20) == LockStatus::kOk);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    BOOST_CHECK_EQUAL(gm.rwlock_info("short").write_ttl_remaining_ms, 0u);
+    BOOST_CHECK(!gm.rwlock_info("ghost").exists);
+    BOOST_CHECK(gm.rw_write_release("ghost", "o") == LockStatus::kNotOwner);
+}
+
+// Leaderboard edges: a top window wider than the board, from=0 and an
+// inverted range on a known board, unknown boards for count/remove, and a
+// heap-length uid (long enough to leave the small-string buffer).
+BOOST_AUTO_TEST_CASE(RankEdgeArms) {
+    GlobalManager gm(default_config());
+    gm.rank_update("b", "alice", 30.0);
+    gm.rank_update("b", "a-very-long-identifier", 20.0);
+    // A top window at least as wide as the board needs no resize.
+    BOOST_CHECK_EQUAL(gm.rank_top("b", 10).size(), 2u);
+    BOOST_CHECK_EQUAL(gm.rank_range("b", 0, 5).size(), 0u);
+    BOOST_CHECK_EQUAL(gm.rank_range("b", 3, 1).size(), 0u);
+    BOOST_CHECK_EQUAL(gm.rank_range("b", 1, 5).size(), 2u);
+    BOOST_CHECK_EQUAL(gm.rank_count("nobody"), 0u);
+    BOOST_CHECK(!gm.rank_remove("nobody", "alice"));
+    BOOST_CHECK_EQUAL(gm.rank_score("nobody", "alice").has_value(), false);
+    // Around a long uid that is absent from the board: no target.
+    auto around = gm.rank_around("b", "nobody-here", 1);
+    BOOST_CHECK(!around.target.has_value());
+    auto found = gm.rank_around("b", "a-very-long-identifier", 1);
+    BOOST_REQUIRE(found.target.has_value());
+    BOOST_CHECK_EQUAL(found.target->score, 20.0);
+}
+
+// Queue pops and delay-queue reads without an out-param, plus a delay
+// queue whose head is still in the future.
+BOOST_AUTO_TEST_CASE(QueueAndDelayArms) {
+    GlobalManager gm(default_config());
+    gm.queue_push("q", "payload");
+    BOOST_CHECK(gm.queue_pop("q", nullptr));  // discards the value
+    BOOST_CHECK(!gm.queue_pop("q", nullptr));
+
+    gm.priority_push("p", "low", 5);
+    BOOST_CHECK(gm.priority_pop("p", nullptr));
+    gm.priority_push("p", "high", 1);
+    std::string value;
+    BOOST_REQUIRE(gm.priority_pop("p", &value));
+    BOOST_CHECK_EQUAL(value, "high");
+
+    // Head not due yet: neither the pop nor the ready counter sees it.
+    gm.delay_push("d", "later", 60000);
+    BOOST_CHECK(!gm.delay_pop("d", nullptr));
+    BOOST_CHECK_EQUAL(gm.delay_ready("d"), 0u);
+    BOOST_CHECK_EQUAL(gm.delay_pending("d"), 1u);
+    // A ready item pops without an out-param.
+    gm.delay_push_at("d", "now", GlobalManager::now_ms());
+    BOOST_CHECK(gm.delay_pop("d", nullptr));
+    BOOST_CHECK(!gm.delay_pop("d", nullptr));
+    BOOST_CHECK_EQUAL(gm.delay_pending("ghost"), 0u);
+}
+
+// Broadcast cursors: peeking without a sink and committing an older
+// sequence number (the cursor never moves backwards).
+BOOST_AUTO_TEST_CASE(BroadcastCursorArms) {
+    GlobalManager gm(default_config());
+    gm.broadcast_push("b", "one");
+    const std::uint64_t second = gm.broadcast_push("b", "two");
+    // Attaching starts the group at the queue head (last assigned seq), so
+    // a null sink reports nothing new.
+    BOOST_CHECK_EQUAL(gm.broadcast_attach("b", "g"), second);
+    BOOST_CHECK_EQUAL(gm.broadcast_since("b", "g", nullptr), 0u);
+    // A stale commit never moves the cursor backwards, a newer one does.
+    gm.broadcast_commit("b", "g", 1);
+    BOOST_CHECK_EQUAL(gm.broadcast_since("b", "g", nullptr), 0u);
+    gm.broadcast_commit("b", "g", 5);
+    BOOST_CHECK_EQUAL(gm.broadcast_since("b", "g", nullptr), 0u);
+    // A group created by commit replays everything past its cursor, and
+    // skips what it already consumed.
+    gm.broadcast_commit("b", "late", 0);
+    std::vector<std::string> replayed;
+    BOOST_CHECK_EQUAL(gm.broadcast_since("b", "late", &replayed), second);
+    BOOST_REQUIRE_EQUAL(replayed.size(), 2u);
+    BOOST_CHECK_EQUAL(replayed[0], "one");
+    gm.broadcast_commit("b", "mid", 1);
+    std::vector<std::string> partial;
+    BOOST_CHECK_EQUAL(gm.broadcast_since("b", "mid", &partial), second);
+    BOOST_REQUIRE_EQUAL(partial.size(), 1u);
+    BOOST_CHECK_EQUAL(partial[0], "two");
+}
+
+// Reliable queues: a long payload through pop (heap path) with and without
+// an out-param, dead-letter paging for an unknown queue, purging a queue
+// that does not exist, and the inflight/dead counters of a foreign name.
+BOOST_AUTO_TEST_CASE(ReliableQueueArms) {
+    GlobalManager gm(default_config());
+    const std::string payload = "a-payload-far-longer-than-the-inline-buffer";
+    gm.reliable_push("r", payload);
+    BOOST_CHECK(gm.reliable_pop("r", nullptr));
+    BOOST_CHECK_EQUAL(gm.reliable_inflight("r"), 1u);
+
+    gm.reliable_configure("d", 1);
+    gm.reliable_push("d", payload);
+    ReliableDelivery delivery;
+    BOOST_REQUIRE(gm.reliable_pop("d", &delivery));
+    BOOST_CHECK_EQUAL(delivery.payload, payload);
+    BOOST_CHECK(gm.reliable_nack("d", delivery.delivery_id, 0) ==
+                NackResult::kDead);
+    BOOST_CHECK_EQUAL(gm.reliable_dead_size("d"), 1u);
+    auto dead = gm.reliable_dead_range("d", 0, 10);
+    BOOST_REQUIRE_EQUAL(dead.size(), 1u);
+    BOOST_CHECK_EQUAL(dead[0].payload, payload);
+    // Foreign names report empty everywhere and purge is a silent no-op.
+    BOOST_CHECK_EQUAL(gm.reliable_dead_size("ghost"), 0u);
+    BOOST_CHECK(gm.reliable_dead_range("ghost", 0, 10).empty());
+    BOOST_CHECK_EQUAL(gm.reliable_inflight("ghost"), 0u);
+    gm.reliable_dead_purge("ghost");
+    gm.reliable_dead_purge("d");
+    BOOST_CHECK_EQUAL(gm.reliable_dead_size("d"), 0u);
+}
+
+// Scheduler registration failures with a null error string: an
+// unmatchable cron, a malformed interval amount, and a duplicate name.
+BOOST_AUTO_TEST_CASE(SchedRegisterFailureArms) {
+    GlobalManager gm(default_config());
+    BOOST_CHECK(!gm.sched_register("cron", "t", "0 0 31 2 *", "svc", nullptr));
+    BOOST_CHECK(!gm.sched_register("interval", "t", "abc", "svc", nullptr));
+    BOOST_CHECK(!gm.sched_register("interval", "t", "", "svc", nullptr));
+    BOOST_CHECK(gm.sched_register("interval", "t", "100", "svc", nullptr));
+    BOOST_CHECK(!gm.sched_register("interval", "t", "100", "svc", nullptr));
+    BOOST_CHECK_EQUAL(gm.sched_list().size(), 1u);
+    BOOST_CHECK(gm.sched_remove("t"));
+}
+
+// Resume arms: a live task (nothing to re-arm), a paused interval task
+// (re-armed from now), and a paused once-task that already ran (nothing to
+// re-arm). sched_active_count counts only neither-paused-nor-done tasks.
+BOOST_AUTO_TEST_CASE(SchedPauseResumeArms) {
+    GlobalManager gm(default_config());
+    BOOST_REQUIRE(
+        gm.sched_register("interval", "live", "60000", "svc", nullptr));
+    BOOST_REQUIRE(
+        gm.sched_register("interval", "paused", "60000", "svc", nullptr));
+    BOOST_REQUIRE(gm.sched_register("once", "done", "10", "svc", nullptr));
+    BOOST_CHECK(!gm.sched_pause("ghost"));
+    BOOST_CHECK(!gm.sched_resume("ghost"));
+
+    gm.set_task_fire_fn(
+        [](const std::string&, const std::string&) { return true; });
+    gm.start();
+    BOOST_CHECK(wait_until([&] { return gm.sched_get("done")->done; }, 500));
+    gm.stop();
+
+    // A live (never paused) task resumes without re-arming.
+    auto live = gm.sched_get("live");
+    BOOST_REQUIRE(live.has_value());
+    BOOST_CHECK(gm.sched_resume("live"));
+    BOOST_CHECK_EQUAL(gm.sched_get("live")->next_run_ms, live->next_run_ms);
+
+    // A paused interval task re-arms from now.
+    BOOST_CHECK(gm.sched_pause("paused"));
+    BOOST_CHECK_EQUAL(gm.sched_active_count(), 1u);  // live only
+    BOOST_CHECK(gm.sched_resume("paused"));
+    BOOST_CHECK(gm.sched_get("paused")->next_run_ms >= GlobalManager::now_ms());
+    BOOST_CHECK_EQUAL(gm.sched_active_count(), 2u);  // live + paused again
+
+    // A paused once-task that already ran keeps its cleared next_run.
+    BOOST_CHECK(gm.sched_pause("done"));
+    BOOST_CHECK(gm.sched_resume("done"));
+    BOOST_CHECK_EQUAL(gm.sched_get("done")->next_run_ms, 0u);
+    BOOST_CHECK_EQUAL(gm.sched_active_count(), 2u);
+}
+
+// Rate limiter arms: a zero-cost request, a zero refill rate (no retry
+// hint), and a query for a key that has no bucket yet.
+BOOST_AUTO_TEST_CASE(RateLimitCostArms) {
+    GlobalManager gm(default_config());
+    RateLimitConfig cfg;
+    cfg.rate = 1000.0;
+    cfg.burst = 2.0;
+    gm.rate_limit_configure("c", cfg);
+    // cost == 0 skips the consume branch and reports the full bucket.
+    auto zero = gm.rate_limit_allow("c", "k", 0.0);
+    BOOST_CHECK(!zero.allowed);
+    BOOST_CHECK_EQUAL(zero.remaining, 2.0);
+    BOOST_CHECK_EQUAL(zero.retry_after_ms, 0u);
+    BOOST_CHECK(gm.rate_limit_allow("c", "k", 1.0).allowed);
+    BOOST_CHECK(gm.rate_limit_allow("c", "k", 1.0).allowed);
+    // Drained bucket with a zero refill rate: denied, no retry hint.
+    RateLimitConfig frozen;
+    frozen.rate = 0.0;
+    frozen.burst = 1.0;
+    gm.rate_limit_configure("z", frozen);
+    BOOST_CHECK(gm.rate_limit_allow("z", "k", 1.0).allowed);
+    auto denied = gm.rate_limit_allow("z", "k", 1.0);
+    BOOST_CHECK(!denied.allowed);
+    BOOST_CHECK_EQUAL(denied.retry_after_ms, 0u);
+    // A configured limiter with an unknown key still reports the burst.
+    BOOST_CHECK_EQUAL(gm.rate_limit_remaining("c", "never-used"), 2.0);
+}
+
+// TTL=0 arms across data, cache, mutex, rwlock: the ternary branches
+// that stamp expire_at_ms = 0 vs now + ttl_ms.
+BOOST_AUTO_TEST_CASE(TtlZeroArms) {
+    GlobalManager gm(default_config());
+
+    // data_set with ttl=0 stores no expiry.
+    gm.data_set("k", "v", 0);
+    std::string value;
+    BOOST_CHECK(gm.data_get("k", &value));
+    BOOST_CHECK_EQUAL(value, "v");
+
+    // cache_get with effective_ttl=0 records no expiry (config default).
+    GlobalConfig no_ttl_cfg;
+    no_ttl_cfg.cache_default_ttl_ms = 0;
+    GlobalManager no_ttl(no_ttl_cfg);
+    no_ttl.data_set("nk", "x", 0);
+    BOOST_CHECK(no_ttl.cache_get("nk", 0, &value));
+    BOOST_CHECK_EQUAL(value, "x");
+    // Hit path with default ttl=0 never expires.
+    BOOST_CHECK(no_ttl.cache_get("nk", 0, &value));
+
+    // mutex_acquire with ttl=0: expire_at_ms = 0 (no expiry).
+    BOOST_CHECK(gm.mutex_acquire("mutex", "m1", "o", 0) == LockStatus::kOk);
+    auto info = gm.mutex_info("mutex", "m1");
+    BOOST_REQUIRE(info.exists);
+    BOOST_CHECK_EQUAL(info.ttl_remaining_ms, 0u);
+    // extend with ttl=0 drops the TTL.
+    BOOST_CHECK(gm.mutex_extend("mutex", "m1", "o", 1000));
+    BOOST_CHECK(gm.mutex_info("mutex", "m1").ttl_remaining_ms > 0);
+    BOOST_CHECK(gm.mutex_extend("mutex", "m1", "o", 0));
+    BOOST_CHECK_EQUAL(gm.mutex_info("mutex", "m1").ttl_remaining_ms, 0u);
+
+    // rw_write_acquire with ttl=0: write_expire_at_ms = 0.
+    BOOST_CHECK(gm.rw_write_acquire("rw1", "o", 0) == LockStatus::kOk);
+    auto rw_info = gm.rwlock_info("rw1");
+    BOOST_REQUIRE(rw_info.exists);
+    BOOST_CHECK_EQUAL(rw_info.write_ttl_remaining_ms, 0u);
+    // rw_write_extend with ttl=0 drops the TTL.
+    BOOST_CHECK(gm.rw_write_extend("rw1", "o", 1000));
+    BOOST_CHECK(gm.rwlock_info("rw1").write_ttl_remaining_ms > 0);
+    BOOST_CHECK(gm.rw_write_extend("rw1", "o", 0));
+    BOOST_CHECK_EQUAL(gm.rwlock_info("rw1").write_ttl_remaining_ms, 0u);
+}
+
+// Null error out-params on sched_register rejection paths.
+BOOST_AUTO_TEST_CASE(SchedRegisterNullErrorArms) {
+    GlobalManager gm(default_config());
+    // Unmatchable cron with null error.
+    BOOST_CHECK(!gm.sched_register("cron", "t1", "0 0 31 2 *", "svc", nullptr));
+    // Malformed interval with null error.
+    BOOST_CHECK(!gm.sched_register("interval", "t2", "abc", "svc", nullptr));
+    // Empty interval with null error.
+    BOOST_CHECK(!gm.sched_register("interval", "t3", "", "svc", nullptr));
+    // Duplicate name with null error.
+    BOOST_CHECK(gm.sched_register("interval", "t4", "100", "svc", nullptr));
+    BOOST_CHECK(!gm.sched_register("interval", "t4", "100", "svc", nullptr));
+    BOOST_CHECK(gm.sched_remove("t4"));
+}
+
+// fire_task with null callback (no set_task_fire_fn) returns early.
+BOOST_AUTO_TEST_CASE(FireTaskNullCallback) {
+    // The default tick interval is 250ms; drive the loop at 10ms so due
+    // ticks arrive quickly once the loop is scheduled.
+    GlobalConfig config;
+    config.scheduler_tick_ms = 10;
+    GlobalManager gm(config);  // no set_task_fire_fn
+    std::string error;
+    BOOST_CHECK(gm.sched_register("interval", "t", "10", "svc", &error));
+    gm.start();
+    // The tick loop runs but fire_task returns at the null-callback guard.
+    // Poll instead of a fixed sleep: on a loaded box the fresh tick thread
+    // can stay unscheduled far past any fixed window, while run_count
+    // increments on the first due tick the loop does get.
+    BOOST_CHECK(wait_until(
+        [&] {
+            auto live = gm.sched_get("t");
+            return live.has_value() && live->run_count >= 1u;
+        },
+        3000));
+    gm.stop();
+    auto info = gm.sched_get("t");
+    BOOST_REQUIRE(info.has_value());
+    // run_count increments on every tick attempt even without callback.
+    BOOST_CHECK_GE(info->run_count, 1u);
+    BOOST_CHECK(!info->paused);
+    BOOST_CHECK(!info->done);
+}
+
+// Scheduler tick_loop: the stop check at loop top and after wait both fire.
+BOOST_AUTO_TEST_CASE(TickLoopStopChecks) {
+    GlobalConfig config;
+    config.scheduler_tick_ms = 10;
+    GlobalManager gm(config);
+    gm.set_task_fire_fn(
+        [](const std::string&, const std::string&) { return true; });
+    std::string error;
+    BOOST_CHECK(gm.sched_register("interval", "t", "1000000", "svc", &error));
+    gm.start();
+    // Stop immediately: the thread is either at loop top or in the wait.
+    gm.stop();
+    // The task remains registered and not done.
+    BOOST_CHECK(gm.sched_get("t").has_value());
+    auto info = gm.sched_get("t");
+    BOOST_REQUIRE(info.has_value());
+    BOOST_CHECK(!info->done);
+    BOOST_CHECK(!info->paused);
+}
+
+// cron_next retire arm (no match within horizon) is already excluded in
+// source; here we just verify the ternary at line 179 (day_matches OR).
+BOOST_AUTO_TEST_CASE(CronDayMatchesOrFallback) {
+    CronFields f;
+    // Both sides restricted, OR fallback: match on dow when dom doesn't.
+    BOOST_REQUIRE(parse_cron("0 0 31 * 1", &f, nullptr));
+    // 2026-09-14 00:00:00 UTC is a Monday (dow = 1).
+    const std::uint64_t monday = 1789344000000ULL;
+    // From Monday 01:00 the dom (31st) never matches, so the next hit is the
+    // following Monday (dow side).
+    BOOST_CHECK_EQUAL(cron_next(f, monday + kHour), monday + 7 * kDay);
+}
+
+BOOST_AUTO_TEST_SUITE_END()

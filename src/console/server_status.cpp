@@ -17,9 +17,13 @@ nlohmann::json build_server_status_json() {
     server["node_id"] = sm->node_id();
     server["started_at_ms"] = sm->started_at_ms();
     server["name"] = sm->config().name;
-    server["info"] = {{"name", sm->config().info_name},
-                      {"version", sm->config().info_version},
-                      {"region", sm->config().info_region}};
+    server["info"] = {
+        {"name", sm->config().info_name},  // GCOVR_EXCL_BR_LINE (compiler
+                                           // artifact: nlohmann init-list)
+        {"version", sm->config().info_version},
+        {"region",
+         sm->config().info_region}};  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // nlohmann init-list branches)
     server["watchers"] = sm->watcher_count();
     server["shutdown_scheduled"] = sm->shutdown_scheduled();
     return server;

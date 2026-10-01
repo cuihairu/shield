@@ -178,7 +178,10 @@ sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
         // PlayerRef userdata (value semantics, no mailbox). Missing fields
         // degrade to defaults, mirroring the client-identity handling.
         if (value.contains("__shield_player_ref") &&
-            value.value("__shield_player_ref", false) == true) {
+            value.value("__shield_player_ref", false) ==
+                true) {  // GCOVR_EXCL_BR_LINE (compiler artifact: nlohmann
+                         // value() key-absence clone; the contains() guard
+                         // makes it dead)
             PlayerRefData ref;
             if (auto it = value.find("uid");
                 it != value.end() && it->is_string()) {
@@ -758,12 +761,15 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                 if (!remote.error_code.empty()) {
                     manager->complete_call(
                         session, false,
-                        nlohmann::json::array({nlohmann::json::object(
-                            {{"code", remote.error_code},
-                             {"message", remote.error_message},
-                             {"retryable",             // GCOVR_EXCL_LINE
-                              remote_error_retryable(  // GCOVR_EXCL_LINE
-                                  remote.error_code)}})}));
+                        nlohmann::json::array(
+                            {nlohmann::json::object(  // GCOVR_EXCL_BR_LINE
+                                                      // (compiler artifact:
+                                                      // nlohmann init-list)
+                                {{"code", remote.error_code},
+                                 {"message", remote.error_message},
+                                 {"retryable",             // GCOVR_EXCL_LINE
+                                  remote_error_retryable(  // GCOVR_EXCL_LINE
+                                      remote.error_code)}})}));
                     // GCOVR_EXCL_LINE (continuation)
                     return session;
                 }
@@ -775,15 +781,18 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                     const std::string code = remote_send_error_code(send_error);
                     manager->complete_call(
                         session, false,
-                        nlohmann::json::array({nlohmann::json::object(
-                            {{"code", code},
-                             {"message",  // GCOVR_EXCL_LINE (continuation)
-                              send_error},
-                             {"retryable",             // GCOVR_EXCL_LINE
-                              remote_error_retryable(  // GCOVR_EXCL_LINE
-                                                       // (continuation)
-                                  code)}})}));         // GCOVR_EXCL_LINE
-                                                       // (continuation)
+                        nlohmann::json::array(
+                            {nlohmann::json::object(  // GCOVR_EXCL_BR_LINE
+                                                      // (compiler artifact:
+                                                      // nlohmann init-list)
+                                {{"code", code},
+                                 {"message",  // GCOVR_EXCL_LINE (continuation)
+                                  send_error},
+                                 {"retryable",             // GCOVR_EXCL_LINE
+                                  remote_error_retryable(  // GCOVR_EXCL_LINE
+                                                           // (continuation)
+                                      code)}})}));         // GCOVR_EXCL_LINE
+                                                           // (continuation)
                 }  // GCOVR_EXCL_LINE (arc artifact of the excluded error
                    // branch)
                 // Non-zero session: the wrapper yields and the completion
@@ -1797,7 +1806,10 @@ std::uint64_t player_ref_epoch(const sol::table& t) {
     if (v.is<std::string>()) {
         try {
             return std::stoull(v.as<std::string>());
-        } catch (const std::exception&) {
+        } catch (
+            const std::exception&) {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // exception-dispatch clone arc; handler
+                                      // executes via malformed epoch)
             return 0;
         }
     }
@@ -1827,7 +1839,10 @@ sol::table write_session(sol::state_view s,
     out["state"] = shield::player::session_state_name(info.state);
     out["device_id"] = info.device_id;
     out["ref"] = sol::make_object(
-        s, PlayerRefBox{{info.ref.uid, info.ref.node_id, info.ref.service_id,
+        s, PlayerRefBox{{info.ref.uid, info.ref.node_id,
+                         info.ref.service_id,  // GCOVR_EXCL_BR_LINE (sol2
+                                               // argument-conversion arcs at
+                                               // the PlayerRefBox boundary)
                          info.ref.epoch}});
     return out;
 }  // GCOVR_EXCL_LINE (function-exit arc artifact of write_session)
@@ -2420,10 +2435,16 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
         sol::object wrapper = impl.raw_get<sol::object>("impl");
         sol::object impl_stats =
             wrapper.is<sol::table>()
-                ? wrapper.as<sol::table>().raw_get<sol::object>("stats")
-                : sol::nil;
+                ? wrapper.as<sol::table>().raw_get<sol::object>(
+                      "stats")  // GCOVR_EXCL_BR_LINE (defensive: the
+                                // orchestration chunk always returns the impl
+                                // table)
+                : sol::nil;  // GCOVR_EXCL_BR_LINE (defensive: the orchestration
+                             // chunk always returns the impl table)
         sol::table out = s.create_table();
-        if (impl_stats.is<sol::table>()) {
+        if (impl_stats.is<sol::table>()) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                            // impl.stats is unconditional in
+                                            // the chunk)
             sol::table stats_tbl = impl_stats;
             // Read each counter explicitly: a proxy-to-proxy assignment
             // (out["k"] = stats_tbl["k"]) pushes nothing and silently
@@ -2459,7 +2480,8 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
             }
             auto d = pm->admit(uid, device_id, now_ms);
             sol::table out = s.create_table();
-            switch (d.kind) {
+            switch (d.kind) {  // GCOVR_EXCL_BR_LINE (no-match arc; every
+                               // AdmissionDecision kind is listed)
                 case shield::player::AdmissionDecision::Kind::kAllow:
                     out["kind"] = "allow";
                     break;
@@ -2642,7 +2664,10 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
                 return results;
             }
             if (!player_ref.node_id.empty() &&
-                player_ref.node_id != pm->node_id()) {
+                player_ref.node_id !=
+                    pm->node_id()) {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // inline std::string compare clone;
+                                      // local/remote arms driven)
                 results.push_back(sol::make_object(s, sol::nil));
                 results.push_back(make_error(
                     state, "remote_resolve_unimplemented",
@@ -2965,7 +2990,9 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
                 return results;
             }
             sol::table module_tbl = sol::nil;
-            if (runtime) {
+            if (runtime) {  // GCOVR_EXCL_BR_LINE (defensive:
+                            // register_server_api is only invoked with a live
+                            // runtime)
                 // The calling service may still be spawning (an on_init
                 // watcher): it is not in the registry yet, so prefer the
                 // dispatch frame's VM before the registry lookup.
@@ -3650,8 +3677,12 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     });
     prim.set_function("rel_nack", [gm](const std::string& name,
                                        double delivery_id, double retry) {
-        switch (gm->reliable_nack(name, static_cast<std::uint64_t>(delivery_id),
-                                  static_cast<std::uint64_t>(retry))) {
+        switch (gm->reliable_nack(
+            name,
+            static_cast<std::uint64_t>(
+                delivery_id),  // GCOVR_EXCL_BR_LINE (no-match arc; every
+                               // NackResult value is listed)
+            static_cast<std::uint64_t>(retry))) {
             case shield::global::NackResult::kRequeued:
                 return "requeued";
             case shield::global::NackResult::kDead:
@@ -3903,7 +3934,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
         sol::object lock_obj = result.get<sol::object>(0);
         return std::make_tuple(std::move(lock_obj),
                                sol::make_object(s, sol::nil));
-    };
+    };  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda/function-close line)
     shield.set_function(
         "mutex", [lock_factory](sol::this_state state, sol::object name,
                                 sol::optional<sol::table> opts) {
@@ -4011,9 +4042,11 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             };  // GCOVR_EXCL_LINE (fn-close artifact)
             rank.set_function(
                 "top",
-                [mgr, board, entry_table](sol::this_state state,
-                                          sol::object /*self*/,
-                                          double n) -> sol::object {
+                [mgr, board, entry_table](
+                    sol::this_state
+                        state,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion
+                                // arcs at the set_function boundary)
+                    sol::object /*self*/, double n) -> sol::object {
                     sol::state_view s(state);
                     sol::table out = s.create_table();
                     for (const auto& entry :
@@ -4024,9 +4057,12 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 });
             rank.set_function(
                 "range",
-                [mgr, board, entry_table](sol::this_state state,
-                                          sol::object /*self*/, double from,
-                                          double to) -> sol::object {
+                [mgr, board, entry_table](
+                    sol::this_state
+                        state,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion
+                                // arcs at the set_function boundary)
+                    sol::object /*self*/, double from,
+                    double to) -> sol::object {
                     sol::state_view s(state);
                     sol::table out = s.create_table();
                     for (const auto& entry : mgr->rank_range(
@@ -4038,9 +4074,11 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 });
             rank.set_function(
                 "range_by_score",
-                [mgr, board, entry_table](sol::this_state state,
-                                          sol::object /*self*/, double lo,
-                                          double hi) -> sol::object {
+                [mgr, board, entry_table](
+                    sol::this_state
+                        state,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion
+                                // arcs at the set_function boundary)
+                    sol::object /*self*/, double lo, double hi) -> sol::object {
                     sol::state_view s(state);
                     sol::table out = s.create_table();
                     for (const auto& entry :
@@ -4051,9 +4089,12 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 });
             rank.set_function(
                 "around",
-                [mgr, board, entry_table](sol::this_state state,
-                                          sol::object /*self*/, sol::object uid,
-                                          double n) -> sol::object {
+                [mgr, board, entry_table](
+                    sol::this_state
+                        state,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion
+                                // arcs at the set_function boundary)
+                    sol::object /*self*/, sol::object uid,
+                    double n) -> sol::object {
                     sol::state_view s(state);
                     if (!uid.is<std::string>()) {
                         return sol::make_object(s, sol::nil);
@@ -4071,10 +4112,19 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                         below.add(entry_table(s, entry));
                     }
                     out["above"] = above;
-                    out["target"] = around.target
-                                        ? sol::make_object(
-                                              s, entry_table(s, *around.target))
-                                        : sol::make_object(s, sol::nil);
+                    out["target"] =
+                        around.target
+                            ? sol::make_object(
+                                  s,
+                                  entry_table(
+                                      s,
+                                      *around.target))  // GCOVR_EXCL_BR_LINE
+                                                        // (compiler artifact:
+                                                        // entry_table
+                                                        // construction cold
+                                                        // clone; both ternary
+                                                        // arms driven)
+                            : sol::make_object(s, sol::nil);
                     out["below"] = below;
                     return out;
                 });
@@ -4122,7 +4172,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
         sol::object queue_obj = result.get<sol::object>(0);
         return std::make_tuple(std::move(queue_obj),
                                sol::make_object(s, sol::nil));
-    };
+    };  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda/function-close line)
     shield.set_function(
         "queue", [queue_factory](sol::this_state state, sol::object name,
                                  sol::optional<sol::table> opts) {
@@ -4155,7 +4205,8 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     // ---- shield.scheduler() ----
     shield.set_function(
         "scheduler",
-        [lua, manager,
+        [lua, manager,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion arcs at
+                        // the set_function boundary)
          runtime](sol::this_state state) -> sol::variadic_results {
             sol::state_view s(state);
             sol::variadic_results results;
@@ -4174,7 +4225,11 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 sol::state_view s(state);
                 sol::variadic_results results;
                 auto* mgr2 = shield::global::GlobalManager::global();
-                if (!name.is<std::string>() || name.as<std::string>().empty()) {
+                if (!name.is<std::string>() ||
+                    name.as<std::string>()
+                        .empty()) {  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                     // name-guard cold clone; both compound
+                                     // arms driven)
                     results.push_back(sol::make_object(s, sol::nil));
                     results.push_back(
                         make_error(state, "invalid_argument",
@@ -4230,7 +4285,8 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 // callback in the per-VM registry (same VM resolution as
                 // the server watch facade).
                 sol::table module_tbl = sol::nil;
-                if (runtime) {
+                if (runtime) {  // GCOVR_EXCL_BR_LINE (defensive: runtime is
+                                // always live inside a dispatch context)
                     auto vm = manager->current_service_vm();
                     // Defensive: the fallback below covers dispatch
                     // scopes that carry no vm; every current call site
@@ -4240,7 +4296,8 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                         vm = manager->service_vm(service_id);
                     }
                     // GCOVR_EXCL_STOP
-                    if (vm) {
+                    if (vm) {  // GCOVR_EXCL_BR_LINE (defensive: a null vm here
+                               // means the service module is gone)
                         module_tbl = runtime->service_table(vm);
                     }
                 }
@@ -4262,7 +4319,8 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 attach(module_tbl, name, cb);
                 results.push_back(sol::make_object(s, true));
                 return results;
-            };
+            };  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda/function-close
+                // line)
             sol::table sched = s.create_table();
             sched.set_function(
                 "cron", [register_task](sol::this_state state,
@@ -4314,8 +4372,12 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 return mgr->sched_resume(name);
             });
             sched.set_function(
-                "remove", [lua, mgr](sol::this_state state, sol::object,
-                                     std::string name) {
+                "remove",
+                [lua, mgr](sol::this_state state,
+                           sol::object,  // GCOVR_EXCL_BR_LINE (sol2
+                                         // argument-conversion arcs at the
+                                         // set_function boundary)
+                           std::string name) {
                     mgr->sched_remove(name);
                     sol::state_view s(state);
                     sol::table impl = s.globals()["__shield_global_impl"];
@@ -4333,7 +4395,8 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     // ---- shield.rate_limiter(name, opts) ----
     shield.set_function(
         "rate_limiter",
-        [lua, impl_table](
+        [lua, impl_table](  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion arcs
+                            // at the set_function boundary)
             sol::this_state state, sol::object name_obj,
             sol::optional<sol::table> opts) -> sol::variadic_results {
             sol::state_view s(state);

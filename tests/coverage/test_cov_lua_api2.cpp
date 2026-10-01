@@ -23,13 +23,17 @@
 #include <thread>
 
 #include "shield/caf_initializer.hpp"
+#include "shield/cluster/cluster_manager.hpp"
 #include "shield/config/config.hpp"
 #include "shield/core/service_message.hpp"
+#include "shield/global/global_manager.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
 #include "shield/net/session.hpp"
+#include "shield/player/player_manager.hpp"
 #include "shield/plugin/plugin_host.hpp"
+#include "shield/server/server_manager.hpp"
 
 using namespace shield::lua;
 
@@ -1226,4 +1230,661 @@ BOOST_AUTO_TEST_CASE(HttpdWithoutRuntimeThrows) {
                    "end)\n"
                    "assert(ok == false)\n"
                    "assert(tostring(err):find('not available', 1, true))"));
+}
+
+// ---------------------------------------------------------------------------
+// Round-7 additions (branch coverage): player-ref marker decode and the
+// table-ref epoch shapes, cluster remote-send error classification, player
+// manager uid bindings, node_info/stats/setup optionals, server shutdown
+// delay validation and watcher attachment, global data ttl/delta variants,
+// rank batch-update filtering and around windows, scheduler pause/status,
+// and the distributed-lock factory argument shapes.
+// ---------------------------------------------------------------------------
+
+// No cluster manager installed: shield.cluster.node_id() degrades to nil and
+// a qualified target is treated as an ordinary local miss.
+BOOST_AUTO_TEST_CASE(ClusterNodeIdNilWithoutGlobalManager) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+    shield::cluster::set_global_cluster_manager(nullptr);
+
+    BOOST_CHECK(run_script(
+        lua,
+        "assert(shield.cluster.node_id() == nil)\n"
+        // A "node:service" target without a cluster namespace resolves as
+        // a plain local miss (service_not_found), not a cluster error.
+        "local ok, err = shield.send('cov2-b:echo', 'm', 1)\n"
+        "assert(ok == false)\n"
+        "assert(err.code == 'service_not_found', err.code)"));
+}
+
+// The __shield_player_ref JSON marker materializes as a read-only ref with
+// defaults for missing fields: string members ignore non-strings and the
+// epoch only accepts non-negative integers.
+BOOST_AUTO_TEST_CASE(PlayerRefMarkerDecodeDefaults) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::player::PlayerManager pm(shield::player::PlayerConfig{});
+    shield::player::PlayerManager::set_global(&pm);
+
+    // A session the decoded ref resolves against.
+    shield::player::PlayerRef pr;
+    pr.uid = "u1";
+    pr.service_id = "svc_u1";
+    pr.epoch = 7;
+    pm.register_session(pr, "dev-1", shield::player::SessionState::kReady,
+                        1000);
+
+    // Full marker with an integer epoch resolves to the session.
+    lua["cov2_ref_full"] = json_to_lua(
+        sol::state_view(lua),
+        nlohmann::json::parse(
+            R"({"__shield_player_ref": true, "uid": "u1",)"
+            R"("node_id": "", "service_id": "svc_u1", "epoch": 42})"));
+    BOOST_CHECK(run_script(
+        lua,
+        "local info, err = shield.player.resolve(cov2_ref_full)\n"
+        "assert(info ~= nil, err and (err.code .. ' ' .. err.message) or\n"
+        "  'resolve returned nothing')"));
+
+    // Sparse and malformed markers degrade: empty uid is rejected by
+    // resolve with the stable code.
+    for (const char* marker_json :
+         {R"({"__shield_player_ref": true})",
+          R"({"__shield_player_ref": true, "uid": 42})",
+          R"({"__shield_player_ref": true, "epoch": -3})",
+          R"({"__shield_player_ref": true, "epoch": 3.5})"}) {
+        lua["cov2_ref_odd"] = json_to_lua(sol::state_view(lua),
+                                          nlohmann::json::parse(marker_json));
+        BOOST_CHECK(
+            run_script(lua,
+                       "local info, err = shield.player.resolve(cov2_ref_odd)\n"
+                       "assert(info == nil)\n"
+                       "assert(err.code == 'invalid_player_ref', err.code)"));
+    }
+
+    // Odd-typed node_id/service_id fields fail their is_string guards and
+    // degrade to the empty default: the ref stays local and resolves.
+    for (const char* marker_json :
+         {R"({"__shield_player_ref": true, "uid": "u1", "node_id": 42})",
+          R"({"__shield_player_ref": true, "uid": "u1", "service_id": 42})"}) {
+        lua["cov2_ref_oddfield"] = json_to_lua(
+            sol::state_view(lua), nlohmann::json::parse(marker_json));
+        BOOST_CHECK(run_script(lua,
+                               "local info, err = "
+                               "shield.player.resolve(cov2_ref_oddfield)\n"
+                               "assert(info ~= nil, err and err.code or\n"
+                               "  'odd-field ref did not resolve')"));
+    }
+
+    shield::player::PlayerManager::set_global(nullptr);
+}
+
+// register_session's table-ref path decodes the epoch from a decimal string
+// (the canonical wire shape), accepts a plain integer, and degrades
+// malformed epochs to zero; unknown-uid marks fail, and resolving a ref
+// that names a foreign node reports the stable P0 code.
+BOOST_AUTO_TEST_CASE(PlayerRegisterSessionEpochShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::player::PlayerManager pm(shield::player::PlayerConfig{});
+    shield::player::PlayerManager::set_global(&pm);
+
+    BOOST_CHECK(run_script(
+        lua,
+        "local M = shield.player.manager\n"
+        // Decimal-string epoch (the stoull path).
+        "M.register_session({uid = 'u1', service_id = 'svc_u1',\n"
+        "  node_id = '', epoch = '42'}, 'dev-1', 'ready', 1000)\n"
+        // Integer epoch.
+        "M.register_session({uid = 'u2', service_id = 'svc_u2',\n"
+        "  epoch = 43}, 'dev-1', 'ready', 1000)\n"
+        // Malformed string epoch degrades to zero; the session still lands.
+        "M.register_session({uid = 'u3', service_id = 'svc_u3',\n"
+        "  epoch = 'not-a-number'}, 'dev-1', 'ready', 1000)\n"
+        // Fractional epoch hits neither numeric view.
+        "M.register_session({uid = 'u4', service_id = 'svc_u4',\n"
+        "  epoch = 3.5}, 'dev-1', 'ready', 1000)\n"
+        // Missing epoch entirely.
+        "M.register_session({uid = 'u5', service_id = 'svc_u5'}, 'dev-1',\n"
+        "  'ready', 1000)\n"
+        // Boolean epoch: neither numeric view accepts it, degrades to zero.
+        "M.register_session({uid = 'u6', service_id = 'svc_u6',\n"
+        "  epoch = true}, 'dev-1', 'ready', 1000)\n"
+        "assert(M.size() == 6, M.size())\n"
+        // Unknown-uid marks fail.
+        "assert(M.mark_disconnected('ghost', 1100) == false)\n"
+        "assert(M.mark_reconnected('ghost', 1100) == false)\n"
+        // A ref naming a foreign node is rejected with the P0 code.
+        "local info, err = shield.player.resolve({uid = 'u1',\n"
+        "  node_id = 'far-node'})\n"
+        "assert(info == nil)\n"
+        "assert(err.code == 'remote_resolve_unimplemented', err.code)"));
+
+    shield::player::PlayerManager::set_global(nullptr);
+}
+
+// node_info() without a player manager reports the empty locality; stats()
+// reads the orchestration counters through the wrapper table; setup()
+// without an options table runs the bare-module arm.
+BOOST_AUTO_TEST_CASE(PlayerNodeInfoStatsAndSetupShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+    shield::player::PlayerManager::set_global(nullptr);
+
+    BOOST_CHECK(run_script(
+        lua,
+        "local ni = shield.player.node_info()\n"
+        "assert(ni.node_id == '')\n"
+        "assert(ni.epoch == '0')\n"
+        "local st = shield.player.stats()\n"
+        "assert(type(st) == 'table')\n"
+        "assert(st.rejected_not_ready ~= nil)\n"
+        "local r, err = shield.player.setup({})\n"
+        "if r == nil then assert(err.code == 'setup_invalid', err.code) end"));
+}
+
+// Remote send classification: a Suspect node fails resolution with the
+// retryable node_suspect code, and a transport-seam failure carrying the
+// suspect text maps through the same stable code.
+BOOST_AUTO_TEST_CASE(ClusterRemoteSendSuspectAndSeamError) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    shield::cluster::ClusterConfig cc;
+    cc.enabled = true;
+    cc.node_id = "cov2-a";
+    cc.peers = {"127.0.0.1:39011"};
+    cc.suspect_timeout_ms = 1;
+
+    // Resolution-time failure: the peer handshake goes online, the suspect
+    // window lapses, and tick() degrades the node to Suspect.
+    shield::cluster::ClusterManager suspect_cm(cc);
+    suspect_cm.start();
+    suspect_cm.on_handshake("127.0.0.1:39011", "cov2-b", 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    (void)suspect_cm.tick();
+    BOOST_CHECK_EQUAL(suspect_cm.check_node_reachable("cov2-b"),
+                      "node_suspect");
+    shield::cluster::set_global_cluster_manager(&suspect_cm);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    BOOST_CHECK(
+        run_script(lua,
+                   "local ok, err = shield.send('cov2-b:echo', 'm', 1)\n"
+                   "assert(ok == false)\n"
+                   "assert(err.code == 'node_suspect', err.code)\n"
+                   "assert(err.retryable == true)"));
+
+    suspect_cm.stop();
+    shield::cluster::set_global_cluster_manager(nullptr);
+
+    // Seam-time failure: the node is online so resolution passes, but the
+    // transport seam reports the suspect text, which maps to the same code.
+    shield::cluster::ClusterManager seam_cm(cc);
+    seam_cm.start();
+    seam_cm.set_remote_send_fn([](const std::string&, const std::string&,
+                                  const std::string&, const std::string&,
+                                  uint64_t, int32_t, std::string* error) {
+        if (error) *error = "node_suspect: transport seam down";
+        return false;
+    });
+    seam_cm.on_handshake("127.0.0.1:39011", "cov2-b", 1);
+    seam_cm.on_routes("cov2-b", 1, {{"echo", "svc_cov2_b"}});
+    shield::cluster::set_global_cluster_manager(&seam_cm);
+
+    BOOST_CHECK(
+        run_script(lua,
+                   "local ok, err = shield.send('cov2-b:echo', 'm', 1)\n"
+                   "assert(ok == false)\n"
+                   "assert(err.code == 'node_suspect', err.code)\n"
+                   "assert(err.retryable == true)"));
+
+    seam_cm.stop();
+    shield::cluster::set_global_cluster_manager(nullptr);
+}
+
+// Global data optionals: the present and absent arms of the ttl and delta
+// parameters across set/incr/decr/mset/get_cached, plus mset's non-string
+// key skip.
+BOOST_AUTO_TEST_CASE(GlobalDataTtlDeltaAndBatchArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::global::GlobalManager gm(shield::global::GlobalConfig{});
+    shield::global::GlobalManager::set_global(&gm);
+
+    BOOST_CHECK(run_script(lua,
+                           "local g = assert(shield.global())\n"
+                           "g:set('cov2_k1', 'v1', 250)\n"
+                           "g:set('cov2_k2', 'v2')\n"
+                           "assert(g:incr('cov2_c1') == 1)\n"
+                           "g:incr('cov2_c1', 5)\n"
+                           "g:decr('cov2_c1')\n"
+                           "g:decr('cov2_c1', 3)\n"
+                           "g:mset({cov2_a = '1', cov2_b = '2'}, 100)\n"
+                           "g:mset({cov2_c = '3'})\n"
+                           "g:mset({[9] = 'skipped', cov2_ok = 'y'})\n"
+                           "assert(g:get('cov2_k1') == 'v1')\n"
+                           "assert(g:get('cov2_ok') == 'y')\n"
+                           "assert(g:get_cached('cov2_k2', 100) == 'v2')\n"
+                           "assert(g:get_cached('cov2_k2') == 'v2')\n"));
+
+    shield::global::GlobalManager::set_global(nullptr);
+}
+
+// Rank batch updates skip malformed entries (non-string uid, non-number
+// score); around() anchors on an existing uid and returns no target for
+// an unknown one.
+BOOST_AUTO_TEST_CASE(RankMupdateSkipsMalformedAndAroundWindow) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::global::GlobalManager gm(shield::global::GlobalConfig{});
+    shield::global::GlobalManager::set_global(&gm);
+
+    BOOST_CHECK(run_script(
+        lua,
+        "local b = assert(shield.rank('cov2_board'))\n"
+        "assert(b:mupdate({u1 = 1.5, [2] = 9.9, u3 = 'x',\n"
+        "  ['a-very-long-identifier-beyond-fifteen'] = 2.5}) == true)\n"
+        "assert(b:count() == 2, b:count())\n"
+        "local near = b:around('u1', 3)\n"
+        "assert(near.target ~= nil)\n"
+        "local miss = b:around('nobody-here', 3)\n"
+        "assert(miss.target == nil)\n"));
+
+    shield::global::GlobalManager::set_global(nullptr);
+}
+
+// Scheduler bindings without a dispatch context: name validation rejects
+// non-string and empty task names before anything else, a host-registered
+// task pauses/resumes through the bindings, and get() reports the paused
+// status.
+BOOST_AUTO_TEST_CASE(SchedulerNameValidationPauseAndGet) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::global::GlobalManager gm(shield::global::GlobalConfig{});
+    std::string sched_error;
+    BOOST_REQUIRE(gm.sched_register("cron", "cov2_t1", "* * * * *", "svc_cov2",
+                                    &sched_error));
+    shield::global::GlobalManager::set_global(&gm);
+
+    BOOST_CHECK(
+        run_script(lua,
+                   "local s = assert(shield.scheduler())\n"
+                   "local ok1, err1 = s:cron(42, '* * * * *', function() end)\n"
+                   "assert(ok1 == nil)\n"
+                   "assert(err1.code == 'invalid_argument', err1.code)\n"
+                   "local ok2, err2 = s:cron('', '* * * * *', function() end)\n"
+                   "assert(ok2 == nil)\n"
+                   "assert(err2.code == 'invalid_argument', err2.code)\n"
+                   "assert(s:pause('cov2_t1') == true)\n"
+                   "local info = assert(s:get('cov2_t1'))\n"
+                   "assert(info.status == 'paused', info.status)\n"
+                   "assert(s:resume('cov2_t1') == true)\n"
+                   "assert(s:get('cov2_t1').status == 'active')\n"));
+
+    shield::global::GlobalManager::set_global(nullptr);
+}
+
+// The distributed-lock factory argument shapes: name only, name + options,
+// a non-string name, and no name at all — every shape runs the name
+// ternary arms without throwing.
+BOOST_AUTO_TEST_CASE(DistributedMutexFactoryArgShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::global::GlobalManager gm(shield::global::GlobalConfig{});
+    shield::global::GlobalManager::set_global(&gm);
+
+    BOOST_CHECK(
+        run_script(lua,
+                   "local m1 = shield.distributed_mutex('cov2_m1')\n"
+                   "assert(m1 ~= nil)\n"
+                   "local m2 = shield.distributed_mutex('cov2_m2',\n"
+                   "  {ttl_ms = 5000})\n"
+                   "assert(m2 ~= nil)\n"
+                   "assert(pcall(shield.distributed_mutex, 42,\n"
+                   "  {ttl_ms = 100}))\n"
+                   "assert(pcall(shield.distributed_mutex, nil))\n"
+                   "local rw = shield.distributed_rwlock('cov2_rw',\n"
+                   "  {ttl_ms = 100})\n"
+                   "assert(rw ~= nil)\n"
+                   // An opts table whose metatable errors on index makes
+                   // the two-argument maker fail: invalid lock arguments.
+                   "local bad = setmetatable({},\n"
+                   "  {__index = function() error('opts boom') end})\n"
+                   "local r, e = shield.distributed_mutex('cov2_m4', bad)\n"
+                   "assert(r == nil)\n"
+                   "assert(e.code == 'invalid_argument',\n"
+                   "  e and e.code or 'no error')\n"));
+
+    shield::global::GlobalManager::set_global(nullptr);
+}
+
+// shield.server shutdown delay validation (above 2^53 rejected, a valid
+// delay schedules the handover, a second schedule is refused) and unwatch
+// of unknown ids through both numeric views.
+BOOST_AUTO_TEST_CASE(ServerShutdownDelayAndUnwatchShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::server::ServerManager sm(shield::server::ServerConfig{});
+    shield::server::ServerManager::set_global(&sm);
+
+    BOOST_CHECK(run_script(
+        lua,
+        "local ok, err = shield.server.shutdown(10000000000000000)\n"
+        "assert(ok == nil)\n"
+        "assert(err.code == 'invalid_argument', err.code)\n"
+        "local ok2, err2 = shield.server.shutdown(1500)\n"
+        "assert(ok2 == true, err2 and err2.code)\n"
+        "local ok3, err3 = shield.server.shutdown(1500)\n"
+        "assert(ok3 == nil)\n"
+        "assert(err3.code == 'shutdown_already_scheduled', err3.code)\n"
+        "assert(shield.server.unwatch(77) == true)\n"
+        "assert(shield.server.unwatch(88.0) == true)\n"
+        // Non-numeric id: both numeric views miss, id stays 0.
+        "assert(shield.server.unwatch('zzz') == true)\n"
+        // Watch from the main thread lacks the dispatch context.
+        "local w, werr = shield.server.watch(function() end)\n"
+        "assert(w == nil)\n"
+        "assert(werr.code == 'invalid_argument', werr.code)"));
+
+    sm.stop();  // join the shutdown timer before the manager dies
+    shield::server::ServerManager::set_global(nullptr);
+}
+
+// A watcher registered from on_init (the spawning dispatch context)
+// attaches through the runtime and lands in the server manager.
+BOOST_AUTO_TEST_CASE(ServerWatchInsideOnInit) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    shield::server::ServerManager sm(shield::server::ServerConfig{});
+    shield::server::ServerManager::set_global(&sm);
+
+    const std::string path =
+        write_script("cov12_watcher.lua",
+                     "local M = {}\n"
+                     "local w_ok, w_err\n"
+                     "function M.on_init()\n"
+                     "  w_ok, w_err = shield.server.watch(function(state)\n"
+                     "    return true\n"
+                     "  end)\n"
+                     "  return true\n"
+                     "end\n"
+                     "function M.get_watch(ctx)\n"
+                     "  return w_ok, w_err and w_err.code or nil\n"
+                     "end\n"
+                     "return M\n");
+    auto svc = manager.spawn(path, opts_for("cov12_watcher").dump());
+    BOOST_REQUIRE(svc.success);
+
+    auto res =
+        manager.call(svc.service_id, "get_watch", nlohmann::json::array());
+    BOOST_REQUIRE(res.success);
+    BOOST_REQUIRE(res.values.size() >= 2u);
+    BOOST_CHECK(!res.values[0].is_null());  // a watch id came back
+    BOOST_CHECK(res.values[1].is_null());   // no error
+    BOOST_CHECK_EQUAL(sm.watcher_count(), 1u);
+
+    manager.exit(svc.service_id, "done");
+    sm.stop();
+    shield::server::ServerManager::set_global(nullptr);
+}
+
+// shield.cluster.node_id() reports the registered manager's id (both the
+// short and the long heap-copy shapes), an empty id degrades to nil, and
+// without a manager the binding returns nil.
+BOOST_AUTO_TEST_CASE(ClusterNodeIdShapes) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    // No global manager: nullopt arm.
+    BOOST_CHECK(run_script(lua, "assert(shield.cluster.node_id() == nil)\n"));
+
+    shield::cluster::ClusterConfig cc;
+    cc.enabled = true;
+    cc.node_id = "cov2-node-with-a-very-long-identifier-beyond-ssobound";
+    shield::cluster::ClusterManager cm(cc);
+    shield::cluster::set_global_cluster_manager(&cm);
+    BOOST_CHECK(run_script(
+        lua,
+        "assert(shield.cluster.node_id() ==\n"
+        "  'cov2-node-with-a-very-long-identifier-beyond-ssobound')\n"));
+
+    // Live manager with an empty id: empty() arm of the guard.
+    shield::cluster::ClusterConfig empty_cc;
+    empty_cc.enabled = true;
+    empty_cc.node_id = "";
+    shield::cluster::ClusterManager empty_cm(empty_cc);
+    shield::cluster::set_global_cluster_manager(&empty_cm);
+    BOOST_CHECK(run_script(lua, "assert(shield.cluster.node_id() == nil)\n"));
+
+    shield::cluster::set_global_cluster_manager(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Round-8 additions (branch coverage for remaining gaps):
+// ---------------------------------------------------------------------------
+
+// json_to_lua: the __shield_player_ref marker's "== true" false arm.
+// When the key is absent, value() returns false, so the == true check fails
+// and the marker is treated as a plain table. This exercises the false arm.
+BOOST_AUTO_TEST_CASE(PlayerRefMarkerFalseArm) {
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+
+    // Marker without __shield_player_ref key: falls through to plain table.
+    const nlohmann::json plain = nlohmann::json::parse(R"({"uid": "u1"})");
+    sol::object obj = json_to_lua(lua, plain);
+    BOOST_CHECK(obj.is<sol::table>());
+    BOOST_CHECK(obj.as<sol::table>()["uid"].as<std::string>() == "u1");
+
+    // Marker with __shield_player_ref = false (explicit false): false arm.
+    const nlohmann::json explicit_false =
+        nlohmann::json::parse(R"({"__shield_player_ref": false, "uid": "u1"})");
+    sol::object obj2 = json_to_lua(lua, explicit_false);
+    BOOST_CHECK(obj2.is<sol::table>());
+    BOOST_CHECK(obj2.as<sol::table>()["uid"].as<std::string>() == "u1");
+    BOOST_CHECK(obj2.as<sol::table>()["__shield_player_ref"].as<bool>() ==
+                false);
+}
+
+// json_to_lua: player-ref marker field is_string false arms (uid, node_id,
+// service_id). Non-string values degrade to empty defaults; the ref still
+// resolves locally if uid is valid.
+BOOST_AUTO_TEST_CASE(PlayerRefMarkerFieldTypeCoercion) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::player::PlayerManager pm(shield::player::PlayerConfig{});
+    shield::player::PlayerManager::set_global(&pm);
+
+    // Seed a session with known uid.
+    shield::player::PlayerRef pr;
+    pr.uid = "u-coerce";
+    pr.service_id = "svc-coerce";
+    pr.epoch = 1;
+    pm.register_session(pr, "dev-1", shield::player::SessionState::kReady,
+                        1000);
+
+    // node_id as number -> degrades to empty string; resolves locally.
+    lua["ref_num_node"] = json_to_lua(
+        sol::state_view(lua),
+        nlohmann::json::parse(
+            R"({"__shield_player_ref": true, "uid": "u-coerce", "node_id": 123})"));
+    BOOST_CHECK(run_script(
+        lua,
+        "local info, err = shield.player.resolve(ref_num_node)\n"
+        "assert(info ~= nil, err and err.code or 'resolve failed')"));
+
+    // service_id as number -> degrades to empty string; resolves locally.
+    lua["ref_num_svc"] = json_to_lua(
+        sol::state_view(lua),
+        nlohmann::json::parse(
+            R"({"__shield_player_ref": true, "uid": "u-coerce", "service_id": 456})"));
+    BOOST_CHECK(run_script(
+        lua,
+        "local info, err = shield.player.resolve(ref_num_svc)\n"
+        "assert(info ~= nil, err and err.code or 'resolve failed')"));
+
+    // uid as number -> degrades to empty string; resolve rejects with
+    // invalid_player_ref.
+    lua["ref_num_uid"] = json_to_lua(
+        sol::state_view(lua),
+        nlohmann::json::parse(
+            R"({"__shield_player_ref": true, "uid": 789, "service_id": "svc"})"));
+    BOOST_CHECK(
+        run_script(lua,
+                   "local info, err = shield.player.resolve(ref_num_uid)\n"
+                   "assert(info == nil)\n"
+                   "assert(err.code == 'invalid_player_ref', err.code)"));
+
+    shield::player::PlayerManager::set_global(nullptr);
+}
+
+// player_ref_epoch: the is<int>() false arm (non-integer numeric view,
+// e.g., boolean or nil) degrades to 0. This is the catch-all after
+// is<string>(), is<uint64_t>(), and is<int>() all fail.
+BOOST_AUTO_TEST_CASE(PlayerRefEpochNonIntNumericDegradesToZero) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    sol::state lua;
+    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
+                       sol::lib::string, sol::lib::os, sol::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shield::player::PlayerManager pm(shield::player::PlayerConfig{});
+    shield::player::PlayerManager::set_global(&pm);
+
+    // Boolean epoch: neither is<uint64_t> nor is<int> accepts it -> 0.
+    // Session still lands (epoch 0 is valid).
+    BOOST_CHECK(run_script(lua,
+                           "local M = shield.player.manager\n"
+                           "M.register_session({uid = 'u-bool', service_id = "
+                           "'svc', epoch = true},\n"
+                           "  'dev-1', 'ready', 1000)\n"
+                           "assert(M.size() == 1, M.size())"));
+
+    // Nil epoch field (missing): all numeric views miss -> 0.
+    BOOST_CHECK(run_script(
+        lua,
+        "M.register_session({uid = 'u-nil', service_id = 'svc'}, 'dev-1',\n"
+        "  'ready', 1000)\n"
+        "assert(M.size() == 2, M.size())"));
+
+    shield::player::PlayerManager::set_global(nullptr);
+}
+
+// shield.server.watch: the runtime-null guard arm. The binding is only
+// invoked with a live runtime, so this arm is defensive and marked.
+// We cannot manufacture a null-runtime call path; the marker stands as
+// instruction-level evidence.
+
+// shield.server.unwatch: the watch_id.is<double>() arm. Already exercised
+// in ServerShutdownDelayAndUnwatchShapes with unwatch(88.0) -> double arm.
+// No additional test needed.
+
+// shield.global rank around: the around.target ternary arms. Already
+// exercised in RankMupdateSkipsMalformedAndAroundWindow with both existing
+// and unknown uids -> both arms covered. No additional test needed.
+
+// shield.global register_task: the name guard compound arms. Already
+// exercised in SchedulerNameValidationPauseAndGet with non-string (42) and
+// empty string ('') -> both arms covered. No additional test needed.
 }

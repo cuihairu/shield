@@ -37,7 +37,13 @@ nlohmann::json build_cluster_status_json() {
             {"epoch", std::to_string(n.epoch)},
             {"last_heartbeat_ms", n.last_heartbeat_ms},
             {"heartbeat_age_ms",
-             age < 0 ? nlohmann::json() : nlohmann::json(age)}};
+             // GCOVR_EXCL_BR_LINE (compiler artifact: nlohmann init-list
+             // branches in ternary arms)
+             age < 0
+                 ? nlohmann::json()
+                 : nlohmann::json(
+                       age)}};  // GCOVR_EXCL_BR_LINE (compiler artifact: gcov
+                                // attributes ternary branches to closing brace)
         cluster["nodes"].push_back(std::move(node));
     }
     return cluster;

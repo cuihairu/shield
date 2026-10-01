@@ -9,11 +9,13 @@
 #include <thread>
 
 #include "shield/cluster/cluster_manager.hpp"
+#include "shield/config/config.hpp"
 
 using shield::cluster::ClusterConfig;
 using shield::cluster::ClusterManager;
 using shield::cluster::node_state_name;
 using shield::cluster::NodeState;
+using shield::cluster::parse_cluster_config;
 
 namespace {
 
@@ -455,6 +457,128 @@ BOOST_AUTO_TEST_CASE(EarlyRoutesUnderPlaceholderKeyDoNotLeak) {
     mgr.on_handshake(kPeerB, "node-b", 5);
     BOOST_CHECK_EQUAL(mgr.query_remote(kPeerB, "early.svc"), "");
     BOOST_CHECK_EQUAL(mgr.query_remote("node-b", "early.svc"), "");
+}
+
+// Branch-coverage arms: the Suspect-but-young tick, idempotent start/stop,
+// never-beat heartbeat age, unknown-service route queries, offline-restore
+// via heartbeat, and the peers-string parser's empty/whitespace segments.
+BOOST_AUTO_TEST_CASE(SuspectNodeInsideOfflineWindowStaysSuspect) {
+    // Single-peer config: a never-handshaked peer degrades on its own
+    // clock, which would add a second transition to the tick counts under
+    // assertion here.
+    auto cfg = two_peer_config();
+    cfg.peers.resize(1);
+    cfg.suspect_timeout_ms = 40;
+    cfg.offline_timeout_ms = 5000;
+    ClusterManager mgr(cfg);
+    mgr.start();
+    mgr.on_handshake(kPeerA, "node-a", 3);
+    // Degradation only happens on a tick: past the suspect window the
+    // first tick takes Online -> Suspect.
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    BOOST_CHECK_EQUAL(mgr.tick(), 1);
+    BOOST_CHECK(mgr.find_node("node-a")->state == NodeState::Suspect);
+    BOOST_CHECK(wait_for_state(mgr, "node-a", NodeState::Suspect,
+                               std::chrono::milliseconds(100)));
+    // A tick while the suspect entry is still inside the offline window
+    // changes nothing (the degrade condition reads the same clock).
+    BOOST_CHECK_EQUAL(mgr.tick(), 0);
+    BOOST_CHECK(mgr.find_node("node-a")->state == NodeState::Suspect);
+    mgr.stop();
+}
+
+BOOST_AUTO_TEST_CASE(StopWithoutStartAndDoubleStartAreNoOps) {
+    ClusterManager mgr(two_peer_config());
+    // stop() without start(): no scheduler thread to join.
+    mgr.stop();
+    mgr.start();
+    mgr.start();  // second start() is a no-op
+    BOOST_CHECK(mgr.find_node(kPeerA) != nullptr);
+    mgr.stop();
+    // stop() retires every node entry; reachability names the state.
+    BOOST_CHECK_EQUAL(mgr.check_node_reachable(kPeerA), "node_removed");
+}
+
+BOOST_AUTO_TEST_CASE(HeartbeatAgeNeverBeatIsNegative) {
+    ClusterManager mgr(two_peer_config());
+    // A configured-but-never-handshaked peer has no heartbeat stamp: the
+    // age is negative (status surfaces null for exactly this case).
+    BOOST_CHECK_EQUAL(mgr.heartbeat_age_ms(*mgr.find_node(kPeerA)), -1);
+    mgr.on_handshake(kPeerA, "node-a", 5);
+    BOOST_CHECK_GE(mgr.heartbeat_age_ms(*mgr.find_node("node-a")), 0);
+}
+
+BOOST_AUTO_TEST_CASE(QueryRemoteUnknownServiceOnKnownNodeIsEmpty) {
+    ClusterManager mgr(two_peer_config());
+    mgr.register_route("node-b", "room.public", "sid-1");
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-b", "room.public"), "sid-1");
+    // Known node, unknown service: empty hit (not a node miss).
+    BOOST_CHECK_EQUAL(mgr.query_remote("node-b", "never.published"), "");
+    BOOST_CHECK_EQUAL(mgr.query_remote("ghost", "room.public"), "");
+}
+
+BOOST_AUTO_TEST_CASE(HeartbeatRestoresOfflineNode) {
+    ClusterManager mgr(two_peer_config());
+    mgr.on_handshake(kPeerB, "node-b", 9);
+    mgr.on_peer_down(kPeerB);
+    BOOST_CHECK(mgr.find_node("node-b")->state == NodeState::Offline);
+    // A heartbeat from a confirmed-offline node brings it straight back.
+    mgr.on_heartbeat("node-b");
+    BOOST_CHECK(mgr.find_node("node-b")->state == NodeState::Online);
+}
+
+BOOST_AUTO_TEST_CASE(ParsePeersStringSkipsEmptyAndBlankSegments) {
+    // parse_cluster_config() reads the section out of the YAML tree, so the
+    // peers scalar has to land through load_yaml_string (cfg.set() does not
+    // produce the shape get_string_array/has() expect on the peers path).
+    auto& cfg = shield::config::global_config();
+    cfg.load_yaml_string(
+        "cluster:\n"
+        "  node_id: cfg-node\n"
+        "  peers: \" , 127.0.0.1:21001 ,,\t, 127.0.0.1:21002 , \"\n");
+    const auto cc = parse_cluster_config();
+    BOOST_CHECK_EQUAL(cc.node_id, "cfg-node");
+    BOOST_REQUIRE_EQUAL(cc.peers.size(), 2u);
+    BOOST_CHECK_EQUAL(cc.peers[0], "127.0.0.1:21001");
+    BOOST_CHECK_EQUAL(cc.peers[1], "127.0.0.1:21002");
+    shield::config::reset_config();
+}
+
+// parse_cluster_config: explicit trailing comma (no segment after it) hits
+// the !current.empty() false arc at the end of the loop.
+BOOST_AUTO_TEST_CASE(ParsePeersStringTrailingComma) {
+    auto& cfg = shield::config::global_config();
+    cfg.load_yaml_string(
+        "cluster:\n"
+        "  node_id: cfg-node\n"
+        "  peers: \"127.0.0.1:21001,127.0.0.1:21002,\"\n");
+    const auto cc = parse_cluster_config();
+    BOOST_CHECK_EQUAL(cc.node_id, "cfg-node");
+    BOOST_REQUIRE_EQUAL(cc.peers.size(), 2u);
+    BOOST_CHECK_EQUAL(cc.peers[0], "127.0.0.1:21001");
+    BOOST_CHECK_EQUAL(cc.peers[1], "127.0.0.1:21002");
+    shield::config::reset_config();
+}
+
+// build_cluster_status_json: a never-handshaked peer (Connecting state)
+// has heartbeat_age_ms == -1, which surfaces as null in the JSON (the
+// ternary's false arm: age < 0 ? nlohmann::json() : nlohmann::json(age)).
+BOOST_AUTO_TEST_CASE(ClusterStatusJsonConnectingPeerHasNullHeartbeatAge) {
+    auto cfg = two_peer_config();
+    cfg.peers.resize(1);
+    ClusterManager mgr(cfg);
+    mgr.start();  // peers enter Connecting placeholder state
+
+    const auto json = shield::console::build_cluster_status_json();
+    BOOST_REQUIRE(json.contains("nodes"));
+    BOOST_REQUIRE_EQUAL(json["nodes"].size(), 1u);
+    const auto& node = json["nodes"][0];
+    BOOST_CHECK_EQUAL(node["node_id"], kPeerA);
+    BOOST_CHECK_EQUAL(node["state"], "connecting");
+    // heartbeat_age_ms is null for Connecting (never beat).
+    BOOST_CHECK(node["heartbeat_age_ms"].is_null());
+
+    mgr.stop();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -296,4 +296,108 @@ BOOST_AUTO_TEST_CASE(RefEqualityIsValueBased) {
     BOOST_CHECK(!(a == b));
 }
 
+// Branch-coverage arms below: null error out-params on the reject paths,
+// short-circuit edges of the reconnect-window clock comparisons, and the
+// live-session policy switches for entries whose reconnect window lapsed.
+BOOST_AUTO_TEST_CASE(ParseRejectsBadMultiDeviceWithNullError) {
+    auto& cfg = shield::config::global_config();
+    cfg.set("player.multi_device", std::string("whatever"));
+    PlayerConfig config;
+    BOOST_CHECK(!PlayerConfig::from_global_config(&config, nullptr));
+    cfg.set("player.multi_device", std::string("single"));
+}
+
+BOOST_AUTO_TEST_CASE(ParseRejectsBadOnSaveErrorWithNullError) {
+    auto& cfg = shield::config::global_config();
+    cfg.set("player.persistence.on_save_error", std::string("explode"));
+    PlayerConfig config;
+    BOOST_CHECK(!PlayerConfig::from_global_config(&config, nullptr));
+    cfg.set("player.persistence.on_save_error", std::string("log"));
+}
+
+BOOST_AUTO_TEST_CASE(ValidateZeroMaxDevicesWithNullError) {
+    PlayerConfig config = default_config();
+    config.multi_device = MultiDevicePolicy::kMulti;
+    config.max_devices = 0;
+    BOOST_CHECK(!validate_player_config(config, nullptr));
+    config.max_devices = 1;
+    BOOST_CHECK(validate_player_config(config, nullptr));
+}
+
+BOOST_AUTO_TEST_CASE(AdmitAfterWindowExpiryUnderKickOldAllowsFresh) {
+    PlayerConfig config = default_config();
+    config.multi_device = MultiDevicePolicy::kKickOld;
+    PlayerManager mgr(config);
+    mgr.register_session(make_ref("u1"), "dev-1", SessionState::kReady, 1000);
+    BOOST_CHECK(mgr.mark_disconnected("u1", 2000));
+    // Beyond the reconnect window: the entry is neither live nor restorable,
+    // so the kick-old branch falls through to a fresh allow.
+    auto d = mgr.admit("u1", "dev-2", 2000 + 30001);
+    BOOST_CHECK(d.kind == AdmissionDecision::Kind::kAllow);
+}
+
+BOOST_AUTO_TEST_CASE(AdmitAfterWindowExpiryUnderMultiAllowsFresh) {
+    PlayerConfig config = default_config();
+    config.multi_device = MultiDevicePolicy::kMulti;
+    config.max_devices = 2;
+    PlayerManager mgr(config);
+    mgr.register_session(make_ref("u1"), "dev-1", SessionState::kReady, 1000);
+    BOOST_CHECK(mgr.mark_disconnected("u1", 2000));
+    auto d = mgr.admit("u1", "dev-2", 2000 + 30001);
+    BOOST_CHECK(d.kind == AdmissionDecision::Kind::kAllow);
+}
+
+// A timestamp before the disconnect stamp means the local clock went
+// backwards: neither the restore window nor the reconnect check may treat
+// the entry as restorable.
+BOOST_AUTO_TEST_CASE(ClockBeforeDisconnectStampIsNotRestorable) {
+    PlayerManager mgr(default_config());
+    mgr.register_session(make_ref("u1"), "dev-1", SessionState::kReady, 1000);
+    BOOST_CHECK(mgr.mark_disconnected("u1", 2000));
+
+    // admit(): in-window check must reject the backwards stamp ...
+    auto d = mgr.admit("u1", "dev-1", 1000);
+    BOOST_CHECK(d.kind == AdmissionDecision::Kind::kAllow);
+    // ... in_reconnect_window(): same comparison, same verdict ...
+    BOOST_CHECK(!mgr.in_reconnect_window("u1", 1000));
+    // ... and mark_reconnected(): the window check fails on the stamp too.
+    BOOST_CHECK(!mgr.mark_reconnected("u1", 1000));
+}
+
+BOOST_AUTO_TEST_CASE(MarkDisconnectedTwiceReturnsFalse) {
+    PlayerManager mgr(default_config());
+    mgr.register_session(make_ref("u1"), "dev-1", SessionState::kReady, 1000);
+    BOOST_CHECK(mgr.mark_disconnected("u1", 2000));
+    // Already-disconnected sessions do not restamp: the first stamp wins
+    // (the reconnect window is anchored there, so a later stamp would
+    // extend it).
+    BOOST_CHECK(!mgr.mark_disconnected("u1", 3000));
+    BOOST_CHECK(!mgr.in_reconnect_window("u1", 2000 + 30001));
+}
+
+BOOST_AUTO_TEST_CASE(MarkReconnectedWhileLiveReturnsFalse) {
+    PlayerManager mgr(default_config());
+    mgr.register_session(make_ref("u1"), "dev-1", SessionState::kReady, 1000);
+    // A live session (never disconnected) cannot "reconnect".
+    BOOST_CHECK(!mgr.mark_reconnected("u1", 2000));
+    BOOST_CHECK(mgr.get("u1")->state == SessionState::kReady);
+}
+
+BOOST_AUTO_TEST_CASE(AdmitMultiReturningKnownDeviceReoccupiesSlot) {
+    PlayerConfig config = default_config();
+    config.multi_device = MultiDevicePolicy::kMulti;
+    config.max_devices = 2;
+    PlayerManager mgr(config);
+    mgr.register_session(make_ref("u1"), "dev-1", SessionState::kReady, 1000);
+    mgr.register_session(make_ref("u1"), "dev-2", SessionState::kReady, 1100);
+    // Quota is full, but dev-1 is a known device: it re-occupies its slot
+    // instead of tripping too_many_devices.
+    auto d = mgr.admit("u1", "dev-1", 1200);
+    BOOST_CHECK(d.kind == AdmissionDecision::Kind::kAllow);
+    // A brand-new device with the quota full is rejected.
+    auto d2 = mgr.admit("u1", "dev-3", 1300);
+    BOOST_CHECK(d2.kind == AdmissionDecision::Kind::kReject);
+    BOOST_CHECK_EQUAL(d2.code, "too_many_devices");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -973,6 +973,47 @@ BOOST_AUTO_TEST_CASE(ClusterCommandsReportManagerSnapshot) {
     cluster.stop();
 }
 
+// A configured peer that never completed a handshake has no heartbeat
+// stamp: the status snapshot reports its age as null while handshaked
+// peers carry numeric ages.
+BOOST_AUTO_TEST_CASE(ClusterStatusNullAgeForNeverBeatenPeer) {
+    shield::cluster::ClusterConfig config;
+    config.enabled = true;
+    config.node_id = "cov-root-age";
+    config.listen_address = "127.0.0.1:0";
+    config.peers = {"127.0.0.1:59998", "127.0.0.1:59999"};
+    shield::cluster::ClusterManager cluster(config);
+    cluster.start();
+    // Only the first peer handshakes; the second stays a Connecting
+    // placeholder with last_heartbeat_ms == 0.
+    cluster.on_handshake("127.0.0.1:59998", "node-b", 12);
+    shield::cluster::set_global_cluster_manager(&cluster);
+
+    {
+        ConsoleHarness harness;
+        shield::console::CommandDispatcher dispatcher;
+        shield::console::RootCommands root(*manager);
+        root.register_all(dispatcher);
+
+        dispatcher.dispatch(harness.session, "root.status");
+        std::string line = harness.read_line(std::chrono::milliseconds(8000));
+        BOOST_REQUIRE(!line.empty());
+        auto resp = nlohmann::json::parse(line);
+        BOOST_REQUIRE_EQUAL(resp["data"]["cluster"]["nodes"].size(), 2u);
+        for (const auto& node : resp["data"]["cluster"]["nodes"]) {
+            if (node["node_id"] == "node-b") {
+                BOOST_CHECK(node["heartbeat_age_ms"].is_number());
+            } else {
+                // Never-beaten placeholder: age surfaced as null.
+                BOOST_CHECK(node["heartbeat_age_ms"].is_null());
+            }
+        }
+    }
+
+    shield::cluster::set_global_cluster_manager(nullptr);
+    cluster.stop();
+}
+
 // With a transport registered, root.cluster carries the M5 counter block.
 // A solo transport (no peers) keeps every counter at zero, so the JSON
 // shape is checked deterministically without a network.

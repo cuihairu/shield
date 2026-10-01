@@ -210,6 +210,39 @@ BOOST_AUTO_TEST_CASE(InitializeWithOptionalActorFailureAndDoubleInit) {
     shield::bootstrap::shutdown();
 }
 
+BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidPlayerMultiDevice) {
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "player:\n  multi_device: whatever\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    force_shutdown();
+}
+
+BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidServerManager) {
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "server_manager:\n  name: \"\"\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    force_shutdown();
+}
+
+BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidGlobalCache) {
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "global:\n  cache:\n    max_size: 0\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    force_shutdown();
+}
+
 BOOST_AUTO_TEST_CASE(InitializeLegacySingleNetThread) {
     fs::path script = echo_script("shield_cov_boot_legacy.lua");
     uint16_t port = free_port();
@@ -1498,6 +1531,47 @@ BOOST_AUTO_TEST_CASE(ExternalStopTransitionsServerToShutdown) {
     probe_ptr->observed_shutdown = false;
     shield::bootstrap::shutdown();
     BOOST_CHECK(probe_ptr->observed_shutdown);
+    force_shutdown();
+}
+#endif
+
+#ifdef SHIELD_ENABLE_PLAYER
+// A `player:` block that parses but fails validation fails initialization
+// up front. `multi_device: multi` with `max_devices: 0` is the one shape
+// PlayerConfig::from_global_config accepts and validate_player_config
+// rejects, so this drives the validation operand of the bootstrap guard
+// (the parse operand's short-circuit arc is covered by a malformed
+// `multi_device` value).
+BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidPlayerValidation) {
+    fs::path script = echo_script("shield_cov_boot_badplayer_val.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "player:\n"
+        "  multi_device: multi\n"
+        "  max_devices: 0\n"
+        "actors:\n  - name: main\n    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    force_shutdown();
+}
+
+// The parse operand's own failure: an unknown `multi_device` value never
+// reaches validation.
+BOOST_AUTO_TEST_CASE(InitializeFailsOnInvalidPlayerParse) {
+    fs::path script = echo_script("shield_cov_boot_badplayer_parse.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "player:\n"
+        "  multi_device: bogus\n"
+        "actors:\n  - name: main\n    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
     force_shutdown();
 }
 #endif

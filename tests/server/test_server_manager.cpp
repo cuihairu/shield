@@ -533,4 +533,33 @@ BOOST_AUTO_TEST_CASE(NotificationsWithoutNotifyFnKeepWatchers) {
     BOOST_CHECK_EQUAL(mgr.watcher_count(), 0u);
 }
 
+// Branch-coverage arms: null error out-params on every reject path, the
+// stop-request-free immediate shutdown, and a redundant schedule after the
+// handover already happened.
+BOOST_AUTO_TEST_CASE(RejectPathsWithNullErrorPointers) {
+    // Overlong info field, no error out-param (28).
+    ServerConfig config;
+    config.name = std::string(65, 'x');
+    BOOST_CHECK(!validate_server_config(config, nullptr));
+    // Empty name, no error out-param (77).
+    ServerConfig empty;
+    empty.name.clear();
+    BOOST_CHECK(!validate_server_config(empty, nullptr));
+    // Illegal migration, no error out-param (165).
+    ServerManager mgr(default_config());
+    BOOST_CHECK(!mgr.set_state(ServerState::kMaintenance, nullptr));
+    // Redundant schedule after handover, no error out-param (273).
+    BOOST_CHECK(mgr.schedule_shutdown(0, nullptr));
+    BOOST_CHECK(!mgr.schedule_shutdown(0, nullptr));
+}
+
+BOOST_AUTO_TEST_CASE(ImmediateShutdownWithoutStopRequestFn) {
+    // The stop-request hook is optional: an immediate shutdown with no hook
+    // installed still migrates state and reports success (326 null arm).
+    ServerManager mgr(default_config());
+    BOOST_CHECK(mgr.schedule_shutdown(0, nullptr));
+    BOOST_CHECK(mgr.state() == ServerState::kShutdown);
+    BOOST_CHECK(mgr.shutdown_scheduled());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

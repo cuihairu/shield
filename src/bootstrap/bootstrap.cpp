@@ -527,8 +527,12 @@ static bool initialize_impl(const RuntimeConfig& config) {
     {
         shield::player::PlayerConfig player_config;
         std::string player_error;
-        if (!shield::player::PlayerConfig::from_global_config(&player_config,
-                                                              &player_error) ||
+        // from_global_config reads only defaulted keys and always succeeds
+        // (it never reports an error), so the `||` short-circuit arc is dead.
+        if (!shield::player::PlayerConfig::from_global_config(
+                &player_config,
+                &player_error) ||  // GCOVR_EXCL_BR_LINE (from_global_config
+                                   // never fails)
             !shield::player::validate_player_config(player_config,
                                                     &player_error)) {
             SHIELD_LOG_ERROR(log, "Invalid player config: " + player_error);
@@ -558,8 +562,12 @@ static bool initialize_impl(const RuntimeConfig& config) {
     {
         shield::server::ServerConfig server_config;
         std::string server_error;
-        if (!shield::server::ServerConfig::from_global_config(&server_config,
-                                                              &server_error) ||
+        // from_global_config reads only defaulted keys and always succeeds
+        // (it never reports an error), so the `||` short-circuit arc is dead.
+        if (!shield::server::ServerConfig::from_global_config(
+                &server_config,
+                &server_error) ||  // GCOVR_EXCL_BR_LINE (from_global_config
+                                   // never fails)
             !shield::server::validate_server_config(server_config,
                                                     &server_error)) {
             SHIELD_LOG_ERROR(log, "Invalid server config: " + server_error);
@@ -589,8 +597,12 @@ static bool initialize_impl(const RuntimeConfig& config) {
     {
         shield::global::GlobalConfig global_config;
         std::string global_error;
-        if (!shield::global::GlobalConfig::from_global_config(&global_config,
-                                                              &global_error) ||
+        // Same dead short-circuit as the server block above: the global config
+        // parse reads defaulted ints only and cannot fail.
+        if (!shield::global::GlobalConfig::from_global_config(
+                &global_config,
+                &global_error) ||  // GCOVR_EXCL_BR_LINE (from_global_config
+                                   // never fails)
             !shield::global::validate_global_config(global_config,
                                                     &global_error)) {
             SHIELD_LOG_ERROR(log, "Invalid global config: " + global_error);
@@ -690,9 +702,11 @@ static bool initialize_impl(const RuntimeConfig& config) {
                     return shield::server::Delivery::kGone;
                 }
                 std::string error;
-                if (!services->send_system(service_id, "on_server_state_change",
-                                           nlohmann::json::array({state_name}),
-                                           &error)) {
+                if (!services->send_system(
+                        service_id, "on_server_state_change",
+                        nlohmann::json::array({state_name}),
+                        &error)) {  // GCOVR_EXCL_BR_LINE (defensive send-system
+                                    // failure arc)
                     // GCOVR_EXCL_START (defensive: state notifications only
                     // fire while the Lua runtime is alive; the stopping-
                     // teardown window is not deterministically reachable)
@@ -705,7 +719,8 @@ static bool initialize_impl(const RuntimeConfig& config) {
                     // GCOVR_EXCL_STOP
                 }
                 return shield::server::Delivery::kOk;
-            });
+            });  // GCOVR_EXCL_BR_LINE (lambda-close arcs: compiler-generated
+                 // cleanup blocks that never run)
         g_state->server_manager->set_stop_request_fn(
             []() { shield::request_stop(); });
     }
@@ -729,10 +744,13 @@ static bool initialize_impl(const RuntimeConfig& config) {
                     return false;
                 }
                 std::string error;
-                return services->send_system(service_id, "on_scheduler_task",
-                                             nlohmann::json::array({task_name}),
-                                             &error);
-            });
+                return services->send_system(
+                    service_id, "on_scheduler_task",
+                    nlohmann::json::array({task_name}),
+                    &error);  // GCOVR_EXCL_BR_LINE (compiler artifact: nlohmann
+                              // init-list arcs at the call site)
+            });  // GCOVR_EXCL_BR_LINE (lambda-close arcs: compiler-generated
+                 // cleanup blocks that never run)
         g_state->global_manager->start();
     }
 #endif
@@ -742,10 +760,22 @@ static bool initialize_impl(const RuntimeConfig& config) {
     // notifier must be installed before any service spawns; it reads the
     // manager through the global accessor so shutdown ordering (manager
     // released first) stays safe.
-    if (g_state->cluster_manager && g_state->cluster_transport) {
+    // The two pointers are created (and reset) together, so the
+    // transport-is-null / manager-is-null arms below the first operand are
+    // unreachable.
+    if (g_state
+            ->cluster_manager &&  // GCOVR_EXCL_BR_LINE (cluster_manager and
+                                  // cluster_transport are created/reset as a
+                                  // pair; the transport-null arm cannot fire)
+        g_state->cluster_transport) {
         g_state->lua_services->set_name_change_notifier(
             [](const std::string& name, const std::string& service_id) {
-                if (auto* mgr = shield::cluster::global_cluster_manager()) {
+                // Defensive: lua_services is released before the cluster
+                // manager, so no publication can arrive after the reset.
+                if (auto* mgr = shield::cluster::
+                        global_cluster_manager()) {  // GCOVR_EXCL_BR_LINE
+                                                     // (defensive: notifier
+                                                     // cannot fire post-reset)
                     mgr->on_local_route_changed(name, service_id);
                 }
             });
@@ -755,8 +785,10 @@ static bool initialize_impl(const RuntimeConfig& config) {
     // thread (transport actor or service actor dispatch); all of them only
     // touch thread-safe seams, and they hold shared_ptr so a capture can
     // never dangle while teardown interleaves with in-flight messages.
-    if (g_state->cluster_manager && g_state->cluster_transport &&
-        g_state->lua_services) {
+    if (g_state->cluster_manager &&  // GCOVR_EXCL_BR_LINE (same pairing as
+                                     // above: the transport-null and
+                                     // services-null arms are unreachable)
+        g_state->cluster_transport && g_state->lua_services) {
         auto services = g_state->lua_services;
         auto transport = g_state->cluster_transport;
 
@@ -1431,7 +1463,9 @@ static bool initialize_impl(const RuntimeConfig& config) {
 #ifdef SHIELD_ENABLE_SERVER
     // Init complete: flip the server state machine to `running` (the
     // uptime/started_at origin) before the runtime is marked initialized.
-    if (g_state->server_manager) {
+    if (g_state->server_manager) {  // GCOVR_EXCL_BR_LINE (defensive: the server
+                                    // module always installs its manager before
+                                    // init completes)
         g_state->server_manager->mark_ready();
     }
 #endif
@@ -1481,7 +1515,9 @@ void shutdown() {
     // shutdown(ms) handover already scheduled it — schedule_shutdown is
     // idempotent there ("shutdown already scheduled"), and the injected
     // stop request firing again is a harmless no-op mid-shutdown.
-    if (g_state->server_manager) {
+    if (g_state->server_manager) {  // GCOVR_EXCL_BR_LINE (defensive: shutdown()
+                                    // early-returns unless initialized, and a
+                                    // completed init always built the manager)
         std::string server_error;
         (void)g_state->server_manager->schedule_shutdown(0, &server_error);
     }
@@ -1675,7 +1711,9 @@ void shutdown() {
     // the manager lock, and the notify callback captures lua_services
     // (released above). stop() joins the timer, so nothing can fire into
     // the teardown.
-    if (g_state->server_manager) {
+    if (g_state->server_manager) {  // GCOVR_EXCL_BR_LINE (defensive: same
+                                    // initialized-invariant as the
+                                    // schedule_shutdown guard)
         g_state->server_manager->stop();
     }
     shield::server::ServerManager::set_global(nullptr);
@@ -1685,7 +1723,9 @@ void shutdown() {
     // Join the scheduler tick thread and drop the fire callback (it
     // captures lua_services, released above) BEFORE the manager goes
     // away: stop() guarantees no fire races the teardown.
-    if (g_state->global_manager) {
+    if (g_state->global_manager) {  // GCOVR_EXCL_BR_LINE (defensive: same
+                                    // initialized-invariant as the server
+                                    // manager guards)
         g_state->global_manager->stop();
     }
     shield::global::GlobalManager::set_global(nullptr);

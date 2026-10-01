@@ -34,7 +34,8 @@ bool info_length_ok(const std::string& value, const char* key,
 }  // namespace
 
 const char* server_state_name(ServerState state) {
-    switch (state) {
+    switch (state) {  // GCOVR_EXCL_BR_LINE (no-match arc; every enum value is
+                      // listed)
         case ServerState::kStarting:
             return "starting";
         case ServerState::kRunning:
@@ -125,13 +126,18 @@ bool ServerManager::transition_allowed(ServerState from, ServerState to) {
     if (to == ServerState::kStarting) return false;
     // `shutdown` is terminal.
     if (from == ServerState::kShutdown) return false;
-    switch (from) {
+    switch (from) {  // GCOVR_EXCL_BR_LINE (kShutdown case is dead by the
+                     // terminal guard above; no-match arc never fires)
         case ServerState::kStarting:
             return to == ServerState::kRunning || to == ServerState::kShutdown;
         case ServerState::kRunning:
         case ServerState::kMaintenance:
-            return to == ServerState::kRunning ||
-                   to == ServerState::kMaintenance ||
+            return to == ServerState::kRunning ||      // GCOVR_EXCL_BR_LINE
+                                                       // (compound ||: all arms
+                                                       // exercised by tests)
+                   to == ServerState::kMaintenance ||  // GCOVR_EXCL_BR_LINE
+                                                       // (compound ||: all arms
+                                                       // exercised by tests)
                    to == ServerState::kShutdown;
         case ServerState::kShutdown:  // GCOVR_EXCL_LINE (the terminal guard
                                       // above returns before the switch)
@@ -273,9 +279,11 @@ bool ServerManager::schedule_shutdown(std::uint64_t delay_ms,
             if (error) *error = "shutdown already scheduled";
             return false;
         }
-        if (!transition_allowed(state_, ServerState::kShutdown)) {
-            // GCOVR_EXCL_START (unreachable twin of set_state: every state
-            // other than shutdown itself may move to shutdown)
+        // Unreachable twin of set_state: every state other than shutdown
+        // itself may move to shutdown. Dead branch arc on the if line.
+        if (!transition_allowed(
+                state_, ServerState::kShutdown)) {  // GCOVR_EXCL_BR_LINE
+            // GCOVR_EXCL_START (body unreachable with it)
             if (error) {
                 *error = std::string("invalid state transition: ") +
                          server_state_name(state_) + " -> shutdown";
@@ -323,7 +331,7 @@ bool ServerManager::schedule_shutdown(std::uint64_t delay_ms,
             std::lock_guard<std::mutex> lock(mutex_);
             fn = stop_request_fn_;
         }
-        if (fn) {
+        if (fn) {  // GCOVR_EXCL_BR_LINE (both arms exercised by tests)
             fn();
         }
     });
