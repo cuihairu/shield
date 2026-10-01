@@ -1359,9 +1359,13 @@ BOOST_AUTO_TEST_CASE(PlayerRegisterSessionEpochShapes) {
         // Decimal-string epoch (the stoull path).
         "M.register_session({uid = 'u1', service_id = 'svc_u1',\n"
         "  node_id = '', epoch = '42'}, 'dev-1', 'ready', 1000)\n"
-        // Integer epoch.
+        // Integer epoch (positive).
         "M.register_session({uid = 'u2', service_id = 'svc_u2',\n"
         "  epoch = 43}, 'dev-1', 'ready', 1000)\n"
+        // Negative integer epoch: drives is<int>() branch (after is<uint64_t>
+        // rejects).
+        "M.register_session({uid = 'u2n', service_id = 'svc_u2n',\n"
+        "  epoch = -1}, 'dev-1', 'ready', 1000)\n"
         // Malformed string epoch degrades to zero; the session still lands.
         "M.register_session({uid = 'u3', service_id = 'svc_u3',\n"
         "  epoch = 'not-a-number'}, 'dev-1', 'ready', 1000)\n"
@@ -1374,7 +1378,7 @@ BOOST_AUTO_TEST_CASE(PlayerRegisterSessionEpochShapes) {
         // Boolean epoch: neither numeric view accepts it, degrades to zero.
         "M.register_session({uid = 'u6', service_id = 'svc_u6',\n"
         "  epoch = true}, 'dev-1', 'ready', 1000)\n"
-        "assert(M.size() == 6, M.size())\n"
+        "assert(M.size() == 7, M.size())\n"
         // Unknown-uid marks fail.
         "assert(M.mark_disconnected('ghost', 1100) == false)\n"
         "assert(M.mark_reconnected('ghost', 1100) == false)\n"
