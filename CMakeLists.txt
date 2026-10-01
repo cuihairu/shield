@@ -495,6 +495,9 @@ if(SHIELD_ENABLE_CLUSTER)
             ${PROJECT_SOURCE_DIR}/include
             ${CMAKE_CURRENT_BINARY_DIR}/include
     )
+    target_compile_definitions(shield_cluster
+        PUBLIC SHIELD_ENABLE_CLUSTER
+    )
     target_link_libraries(shield_cluster
         PUBLIC shield_base shield_log shield_config CAF::core CAF::io
     )

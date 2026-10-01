@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 
+#include "console/cluster_status.hpp"
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/config/config.hpp"
 
@@ -569,6 +570,7 @@ BOOST_AUTO_TEST_CASE(ClusterStatusJsonConnectingPeerHasNullHeartbeatAge) {
     ClusterManager mgr(cfg);
     mgr.start();  // peers enter Connecting placeholder state
 
+    shield::cluster::set_global_cluster_manager(&mgr);
     const auto json = shield::console::build_cluster_status_json();
     BOOST_REQUIRE(json.contains("nodes"));
     BOOST_REQUIRE_EQUAL(json["nodes"].size(), 1u);
@@ -578,6 +580,7 @@ BOOST_AUTO_TEST_CASE(ClusterStatusJsonConnectingPeerHasNullHeartbeatAge) {
     // heartbeat_age_ms is null for Connecting (never beat).
     BOOST_CHECK(node["heartbeat_age_ms"].is_null());
 
+    shield::cluster::set_global_cluster_manager(nullptr);
     mgr.stop();
 }
 

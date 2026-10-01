@@ -1763,16 +1763,17 @@ BOOST_AUTO_TEST_CASE(PlayerRefMarkerFalseArm) {
     const nlohmann::json plain = nlohmann::json::parse(R"({"uid": "u1"})");
     sol::object obj = json_to_lua(lua, plain);
     BOOST_CHECK(obj.is<sol::table>());
-    BOOST_CHECK(obj.as<sol::table>()["uid"].as<std::string>() == "u1");
+    sol::table t1 = obj.as<sol::table>();
+    BOOST_CHECK(t1.get<sol::object>("uid").as<std::string>() == "u1");
 
     // Marker with __shield_player_ref = false (explicit false): false arm.
     const nlohmann::json explicit_false =
         nlohmann::json::parse(R"({"__shield_player_ref": false, "uid": "u1"})");
     sol::object obj2 = json_to_lua(lua, explicit_false);
     BOOST_CHECK(obj2.is<sol::table>());
-    BOOST_CHECK(obj2.as<sol::table>()["uid"].as<std::string>() == "u1");
-    BOOST_CHECK(obj2.as<sol::table>()["__shield_player_ref"].as<bool>() ==
-                false);
+    sol::table t2 = obj2.as<sol::table>();
+    BOOST_CHECK(t2.get<sol::object>("uid").as<std::string>() == "u1");
+    BOOST_CHECK(t2.get<sol::object>("__shield_player_ref").as<bool>() == false);
 }
 
 // json_to_lua: player-ref marker field is_string false arms (uid, node_id,
@@ -1864,6 +1865,7 @@ BOOST_AUTO_TEST_CASE(PlayerRefEpochNonIntNumericDegradesToZero) {
     // Nil epoch field (missing): all numeric views miss -> 0.
     BOOST_CHECK(run_script(
         lua,
+        "local M = shield.player.manager\n"
         "M.register_session({uid = 'u-nil', service_id = 'svc'}, 'dev-1',\n"
         "  'ready', 1000)\n"
         "assert(M.size() == 2, M.size())"));
@@ -1887,4 +1889,3 @@ BOOST_AUTO_TEST_CASE(PlayerRefEpochNonIntNumericDegradesToZero) {
 // shield.global register_task: the name guard compound arms. Already
 // exercised in SchedulerNameValidationPauseAndGet with non-string (42) and
 // empty string ('') -> both arms covered. No additional test needed.
-}

@@ -375,11 +375,12 @@ if(SHIELD_ENABLE_CLUSTER)
     target_link_libraries(test_cluster_manager
         PRIVATE
             shield_cluster
+            shield_bootstrap
             Boost::unit_test_framework
             Boost::headers
     )
     target_include_directories(test_cluster_manager
-        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+        PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME test_cluster_manager COMMAND test_cluster_manager)
     set_tests_properties(test_cluster_manager PROPERTIES
         # "coverage" so cluster-enabled coverage builds measure the cluster
