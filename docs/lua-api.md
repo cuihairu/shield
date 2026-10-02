@@ -935,7 +935,7 @@ client:gateway()            -- gateway actor 名(egress 回程地址)
 client:ref()                -- 仅 ClientContext:派生可传递的 ClientRef
 ```
 
-userdata 不可由 Lua 构造(`sol::no_constructor`),也不可变;作为 service 消息参数
+userdata 不可由 Lua 构造(`no_constructor`),也不可变;作为 service 消息参数
 传出时自动序列化回标记形态,在对端 VM 中再次物化。
 
 ### shield.client.bind / close

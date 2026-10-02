@@ -34,10 +34,10 @@ struct PlayerRefBox {
 template <>
 struct shd::is_usertype_value<shield::lua::PlayerRefBox> : std::true_type {};
 
-// Registered by sol2 in B1 (register_client_identity_api). Stays shd-native
-// for the same reason as the client identity boxes: sol2's payload layout is
-// usertype_storage<T>, not a bare T* box, so foreign-layout shd pushes are
-// unreadable from both worlds.
+// Registered in B1 (register_client_identity_api). Stays shd-native
+// for the same reason as the client identity boxes: the legacy payload is a
+// usertype_storage<T> header, not a bare T* box, so foreign-layout shd
+// pushes are unreadable from both worlds.
 template <>
 struct shd::is_foreign_usertype<shield::lua::PlayerRefBox> : std::false_type {};
 

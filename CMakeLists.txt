@@ -169,13 +169,13 @@ set(CMAKE_PREFIX_PATH
 # Explicitly add vcpkg's include and lib directories to compiler search paths.
 # Use NO_SYSTEM_FROM_IMPORTED to prevent VS generators from placing the path
 # under /external:I (which can interfere with __has_include / macro detection
-# in header-only libraries like sol2).
+# in header-only libraries).
 include_directories(SYSTEM "${VCPKG_INSTALLED_DIR}/include")
 link_directories("${VCPKG_INSTALLED_DIR}/lib")
 link_directories("${VCPKG_INSTALLED_DIR}/debug/lib")
 
 # Ensure vcpkg include is a normal (non-external) search path for all targets.
-# This is needed because VS 2026's /external:I can break sol2's
+# This is needed because VS 2026's /external:I can break
 # __has_include(<lua.hpp>) detection.
 if(MSVC)
     add_compile_options("/I${VCPKG_INSTALLED_DIR}/include")
@@ -238,7 +238,6 @@ endif()
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Lua REQUIRED)
-find_package(sol2 CONFIG REQUIRED)
 find_package(redis++ CONFIG REQUIRED)
 find_package(CAF CONFIG REQUIRED)
 
@@ -575,7 +574,7 @@ target_link_libraries(shield_lua
     PRIVATE shield_log shield_config shield_net shield_plugin
     # OpenSSL::Crypto backs the shield.crypto Lua primitives (lua_crypto.cpp).
     PRIVATE OpenSSL::Crypto
-    PRIVATE ${LUA_LIBRARIES} sol2::sol2
+    PRIVATE ${LUA_LIBRARIES}
 )
 
 if(SHIELD_ENABLE_CLUSTER)
@@ -623,7 +622,7 @@ target_include_directories(shield_bootstrap
 target_link_libraries(shield_bootstrap
     PUBLIC shield_base CAF::core CAF::io
     PRIVATE shield_log shield_config shield_core shield_lua shield_net shield_plugin
-    PRIVATE nlohmann_json::nlohmann_json ${LUA_LIBRARIES} sol2::sol2
+    PRIVATE nlohmann_json::nlohmann_json ${LUA_LIBRARIES}
 )
 
 target_include_directories(shield_bootstrap

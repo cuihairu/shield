@@ -63,7 +63,7 @@ shield_lua / shield_net / shield_plugin / shield_cluster
 规则：
 
 - `shield_ops` 只能读取只读快照或通过 owner 线程执行受控 inspect 任务。
-- `shield_ops` 不能直接持有或跨线程操作 `sol::state` / `lua_State*`。
+- `shield_ops` 不能直接持有或跨线程操作 `shd::state` / `lua_State*`。
 - `shield_lua` 拥有 Lua VM inspect provider 的语义与实现。
 - `shield_ops` 不能通过 console 反向改写 core 语义。
 

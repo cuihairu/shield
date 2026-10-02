@@ -1,6 +1,6 @@
-// [SHIELD_LUA] Thin Lua C API binding layer (shd) — sol2 replacement.
+// [SHIELD_LUA] Thin Lua C API binding layer (shd).
 //
-// Design notes (why this exists): sol2 was dropped from the dependency set;
+// Design notes (why this exists): a prior binding dependency was dropped;
 // this header implements the subset of binding semantics the Shield Lua
 // surface actually uses, directly on the Lua C API:
 //   * registry-ref object/table/function model (copyable, GC-safe),
@@ -15,7 +15,7 @@
 // Deliberately NOT implemented (no call site needs it): coroutine ownership
 // (the runtime drives lua_resume directly), inheritance hierarchies.
 //
-// Error discipline mirrors sol2 closely enough for the Lua tests: argument
+// Error discipline is tuned for the Lua tests: argument
 // and index conversion failures raise a Lua error inside the protected call
 // (the script sees a runtime error; the host sees a !valid() result).
 #pragma once
@@ -43,15 +43,15 @@ namespace shd {
 // ---- usertype marker ------------------------------------------------------
 
 // Opt-in marker for host types that carry a registered shd usertype. A value
-// of such a type pushes as userdata with its registered metatable (sol2
-// parity for `tbl["k"] = handle` and make_object(state, box)). Specialize
+// of such a type pushes as userdata with its registered metatable
+// (parity for `tbl["k"] = handle` and make_object(state, box)). Specialize
 // this in the same header that defines the type; unrelated class types
 // (nlohmann::json, view wrappers) deliberately stay unmarked so a missing
 // push path fails at compile time instead of pushing a zeroed userdata.
 template <typename T>
 struct is_usertype_value : std::false_type {};
 
-// Marker for usertypes registered by a foreign binding (sol2 in B1).
+// Marker for usertypes registered by a foreign binding (not shd).
 // These types use pointer-box layout (heap-allocated payload) and share the
 // foreign metatable. shd::push will allocate on the heap and use the
 // foreign metatable so __gc works correctly.
@@ -86,7 +86,7 @@ inline constexpr std::nullopt_t nullopt = std::nullopt;
 // ---- this_state -----------------------------------------------------------
 
 // Lightweight carrier handed to set_function lambdas that need the raw
-// lua_State* (sol2-compatible shape: constructible from lua_State*).
+// lua_State* (compatible shape: constructible from lua_State*).
 struct this_state {
     lua_State* L;
     this_state(lua_State* l) : L(l) {}
@@ -115,7 +115,7 @@ inline constexpr equal_to_t equal_to{};
 struct no_constructor_t {};
 inline constexpr no_constructor_t no_constructor{};
 
-// sol::property parity: wraps a lambda evaluated on read (value
+// Property parity: wraps a lambda evaluated on read (value
 // semantics), bound by new_usertype into the usertype's property table.
 template <typename F>
 struct property_fn {
@@ -128,8 +128,8 @@ property_fn<F> property(F&& f) {
 
 // ---- stack_object -----------------------------------------------------------
 
-// Non-owning view of a value at a fixed stack position (sol2
-// stack_reference parity). The index is absolutized on construction; the
+// Non-owning view of a value at a fixed stack position.
+// The index is absolutized on construction; the
 // view is only valid while that stack slot still holds the value. Defined
 // in full after the detail conversion traits.
 class object;
@@ -167,8 +167,8 @@ class state;
 template <typename T, typename... Args>
 void new_usertype(state_view sv, const std::string& name, Args&&... args);
 
-// Range wrapper expanding a container as successive call arguments (sol2
-// sol::as_args parity); defined after variadic_results.
+// Range wrapper expanding a container as successive call arguments (as_args
+// parity); defined after variadic_results.
 template <typename Container>
 struct as_args_t;
 
@@ -224,8 +224,8 @@ D& usertype_as(lua_State* L, int idx);
 
 // Install a __gc metamethod for a specific type T that handles both
 // shd-created (raw T in-place, tagged with uservalue[1]=type name) and
-// sol2-created (boxed) userdata. The original sol2 __gc is preserved
-// under the key "__sol2_gc" in the metatable.
+// foreign-created (boxed) userdata. The original __gc is preserved
+// under the key "__shd_prev_gc" in the metatable.
 template <typename T>
 inline void install_dual_layout_gc(lua_State* L, const char* type_name) {
     luaL_getmetatable(L, type_name);
@@ -233,10 +233,10 @@ inline void install_dual_layout_gc(lua_State* L, const char* type_name) {
         lua_pop(L, 1);
         return;
     }
-    // Save original __gc under "__sol2_gc"
+    // Save original __gc under "__shd_prev_gc"
     lua_getfield(L, -1, "__gc");
     if (!lua_isnil(L, -1)) {
-        lua_setfield(L, -2, "__sol2_gc");
+        lua_setfield(L, -2, "__shd_prev_gc");
     } else {
         lua_pop(L, 1);
     }
@@ -254,9 +254,9 @@ inline void install_dual_layout_gc(lua_State* L, const char* type_name) {
             if (p) p->~T();
             return 0;
         }
-        // sol2 layout: call original sol2 __gc
+        // foreign-box layout: call the preserved original __gc
         lua_getmetatable(L, 1);
-        lua_getfield(L, -1, "__sol2_gc");
+        lua_getfield(L, -1, "__shd_prev_gc");
         if (lua_isfunction(L, -1)) {
             lua_pushvalue(L, 1);  // userdata as argument
             lua_call(L, 1, 0);
@@ -295,7 +295,7 @@ inline bool stack_check(lua_State* L, int idx) {
     if constexpr (std::is_same_v<T, bool>) {
         return lua_isboolean(L, idx) != 0;
     } else if constexpr (std::is_integral_v<T>) {
-        // Integer binds accept only true Lua integers (sol2 parity: a float
+        // Integer binds accept only true Lua integers (a float
         // argument is a type error, not a silent truncation).
         return lua_isinteger(L, idx) != 0;
     } else if constexpr (std::is_floating_point_v<T>) {
@@ -388,7 +388,7 @@ T unpack_arg(lua_State* L, int& idx) {
         return protected_function(L, i);
     } else if constexpr (is_optional<D>::value) {
         const int i = idx++;
-        // sol2 parity: an optional parameter accepts absent arguments too
+        // An optional parameter accepts absent arguments too
         // (slots past the top are LUA_TNONE, not nil).
         if (lua_isnoneornil(L, i)) return D();
         using V = typename D::value_type;
@@ -459,8 +459,8 @@ class accessor;
 
 // ---- stack_object (full definition) ----------------------------------------
 
-// Non-owning view of a value at a fixed stack position (sol2
-// stack_reference parity). The index is absolutized on construction; the
+// Non-owning view of a value at a fixed stack position.
+// The index is absolutized on construction; the
 // view is only valid while that stack slot still holds the value.
 class stack_object {
 public:
@@ -551,7 +551,7 @@ struct is_ref_type<nil_t> : std::true_type {};
 // shd type identity is metatable identity: is<T>() on a userdata compares its
 // metatable against the metatable stored under each registered name. shd
 // new_usertype<T> records the name automatically; a usertype registered by a
-// different binding surface (the B2 sol2 surface registers ClientContext and
+// different binding surface (the legacy surface registers ClientContext and
 // friends) records itself via register_type_name<T> plus a registry mirror of
 // its metatable under that name. The per-state lookup keeps a global name
 // list correct across many VMs.
@@ -585,8 +585,8 @@ bool usertype_is(lua_State* L, const int idx) {
     lua_pop(L, 1);  // the value's metatable
     if (!ok) return false;
     // shd-created payloads carry an authoritative type tag in uservalue 1
-    // (B1 dual-world seam): sol2 shares one generic metatable across
-    // unregistered boxes, so when a tag is present it decides.
+    // (B1 dual-world seam): a foreign binding shares one generic metatable
+    // across unregistered boxes, so when a tag is present it decides.
     if (lua_getiuservalue(L, idx, 1) == LUA_TSTRING) {
         const char* tag = lua_tostring(L, -1);
         ok = false;
@@ -635,9 +635,9 @@ void push(lua_State* L, const T& v) {
         throw std::runtime_error("shd: unregistered usertype");  // unreachable
     }
     if constexpr (is_foreign_usertype<T>::value) {
-        // Foreign usertype (sol2-registered): use pointer-box layout to match
-        // the foreign metatable's __gc expectation. Allocate on heap, store
-        // pointer in userdata, attach the foreign metatable.
+        // Foreign usertype (registered outside shd): use pointer-box layout to
+        // match the foreign metatable's __gc expectation. Allocate on heap,
+        // store pointer in userdata, attach the foreign metatable.
         auto* heap = new T(v);
         auto** p = static_cast<T**>(lua_newuserdatauv(L, sizeof(T*), 0));
         *p = heap;
@@ -645,7 +645,7 @@ void push(lua_State* L, const T& v) {
         lua_setmetatable(L, -2);
         // No uservalue tag: is_shd_raw_userdata will return false, so the
         // foreign path in sol_box_context_marker will be taken (which uses
-        // sol::object to read the pointer-box layout).
+        // a plain object to read the pointer-box layout).
     } else {
         // Native shd usertype: value storage with type-name tag in uservalue 1.
         auto* p = static_cast<T*>(lua_newuserdatauv(L, sizeof(T), 1));
@@ -659,10 +659,10 @@ void push(lua_State* L, const T& v) {
 
 // Layout tag for the B1 dual-world seam: shd-created usertype userdata
 // carries its type name in uservalue 1 with the payload raw (T in place),
-// while sol2-created boxes store the payload in a sol-internal box layout
-// with no uservalues. The mirrored metatables give identity only (sol2 uses
-// one generic metatable for unregistered boxes), so the tag distinguishes
-// both layout and exact type.
+// while foreign-created boxes store the payload in a binding-internal box
+// layout with no uservalues. The mirrored metatables give identity only (the
+// legacy binding shares one generic metatable for unregistered boxes), so the
+// tag distinguishes both layout and exact type.
 inline bool is_shd_raw_userdata(lua_State* L, int idx) {
     if (lua_type(L, idx) != LUA_TUSERDATA) return false;
     const int t = lua_getiuservalue(L, idx, 1);
@@ -727,17 +727,17 @@ public:
 
     lua_State* state() const { return L_; }
     int ref_index() const { return ref_; }
-    // sol2 naming aliases used by runtime/service call sites.
+    // Alternative naming aliases used by runtime/service call sites.
     lua_State* lua_state() const { return L_; }
     int registry_index() const { return ref_; }
     // LUA_REFNIL is what luaL_ref yields for a nil value: the reference
-    // exists but denotes nil, so valid() must reject it (sol2 parity:
+    // exists but denotes nil, so valid() must reject it (parity:
     // `lua["missing"].valid()` is false).
     bool valid() const {
         return L_ != nullptr && ref_ != LUA_NOREF && ref_ != LUA_REFNIL;
     }
 
-    // Drop the reference without luaL_unref (sol2 abandon parity): the
+    // Drop the reference without luaL_unref (abandon parity): the
     // caller may not be on the VM's owner thread, so the registry entry is
     // deliberately leaked — it dies with the VM.
     void abandon() {
@@ -772,9 +772,9 @@ public:
     object(lua_State* L, int idx) : detail::ref_base(L, idx) {}
     object(lua_State* L, ref_index_tag r) : detail::ref_base(L, r) {}
     // nil literal: an invalid reference reads as nil everywhere (is_nil(),
-    // nil-on-push), matching sol::object(sol::lua_nil) semantics.
+    // nil-on-push), matching an object built from the nil literal.
     object(nil_t) {}
-    // Reference-type values convert to object implicitly (sol2 parity): a
+    // Reference-type values convert to object implicitly (parity): a
     // table/function/protected_function ref becomes an owned object ref.
     // Reference-type conversions (defined after all ref types complete).
     object(const table& t);
@@ -891,7 +891,7 @@ public:
             lua_pop(L_, 1);
             return o;
         } else if constexpr (detail::is_optional<D0>::value) {
-            // sol2 optional parity: nil (or a type mismatch) yields an empty
+            // Parity: nil (or a type mismatch) yields an empty
             // optional instead of throwing; anything else reads as V. Without
             // this branch std::optional is a class type and would misroute
             // into the usertype branch below.
@@ -902,7 +902,7 @@ public:
                              !std::is_same_v<D0, std::string>) {
             // Registered usertype: read the userdata payload. A non-userdata
             // or foreign-usertype value here is caller error (is<> guards
-            // the runtime call sites); sol2 parity treats it the same way.
+            // the runtime call sites); behavior parity treats it the same way.
             const int i = push();
             if constexpr (std::is_reference_v<T>) {
                 // Reference return: bind directly to the userdata on the stack
@@ -943,16 +943,16 @@ public:
     accessor operator[](const std::string& k) const;
     accessor operator[](const char* k) const;
 
-    // Reference views of the same value (sol2 parity): a generic object
+    // Reference views of the same value (parity): a generic object
     // converts to the reference type its value actually carries. Unchecked,
-    // like sol2 — the caller asked for the view explicitly. Out-of-line: the
+    // by design — the caller asked for the view explicitly. Out-of-line: the
     // reference classes complete after this one.
     operator table() const;
     operator function() const;
     operator protected_function() const;
 
-    // Implicit conversion to the host types stack_read supports (sol2
-    // parity for `std::string s = obj;` style call sites).
+    // Implicit conversion to the host types stack_read supports
+    // (parity for `std::string s = obj;` style call sites).
     template <typename T,
               typename = std::enable_if_t<detail::is_stack<T>::value>>
     operator T() const {
@@ -991,11 +991,11 @@ public:
     function(lua_State* L, ref_index_tag r) : detail::ref_base(L, r) {}
     // nil literal: an invalid function (callers check valid() before use).
     function(nil_t) {}
-    // Cross-conversion (sol2 parity): protected_function and function share
+    // Cross-conversion (parity): protected_function and function share
     // the same underlying registry reference. Defined after
     // protected_function completes.
     function(const protected_function& pf);
-    // Adopt whatever the object references (sol2 function-from-object
+    // Adopt whatever the object references (function-from-object
     // parity; a non-function ref errors at call time, not construction).
     function(const object& o) : detail::ref_base(o) {}
 
@@ -1038,7 +1038,7 @@ inline void push(lua_State* L, const function& f) {
 // Key accessor proxy: `tbl["k"] = v` writes through; reading converts. Holds
 // its own registry reference to the containing table so it stays valid even
 // Reference equality through Lua: two objects are equal when lua_rawequal
-// holds for the values they reference (sol2 object==object parity).
+// holds for the values they reference (object==object parity).
 inline bool operator==(const object& a, const object& b) {
     if (!a.valid() || !b.valid()) return !a.valid() && !b.valid();
     const int i = a.push();
@@ -1085,7 +1085,7 @@ public:
     bool valid() const { return value().valid(); }
     shd::type get_type() const { return value().get_type(); }
 
-    // Read with a fallback (sol2 accessor::get_or parity): nil/missing keys
+    // Read with a fallback (accessor::get_or parity): nil/missing keys
     // yield the default; present values convert.
     template <typename T>
     T get_or(T def) const {
@@ -1099,7 +1099,7 @@ public:
         return value().as<T>();
     }
 
-    // sol2 accessor parity alias.
+    // Accessor parity alias.
     template <typename T>
     T get() const {
         return value().as<T>();
@@ -1123,7 +1123,7 @@ public:
     // Out-of-line: protected_function is defined later in this header.
     operator protected_function() const;
 
-    // Implicit read to host stack types (bool/string/number; sol2 parity for
+    // Implicit read to host stack types (bool/string/number; parity for
     // `bool b = lua["flag"];` call sites). Reference/const-qualified targets
     // normalize inside value().as<T>.
     template <typename T,
@@ -1233,7 +1233,7 @@ public:
         lua_pop(L_, 1);
         return o;
     }
-    // Convert-on-read form (sol2 raw_get<T> parity): the proxy conversion to
+    // Convert-on-read form (raw_get<T> parity): the proxy conversion to
     // table/function silently yields an invalid reference for a wrong-typed
     // entry, which is why the timer test reads create_table members this way.
     template <typename T>
@@ -1336,7 +1336,7 @@ public:
         return static_cast<std::size_t>(n);
     }
 
-    // Append a value at the end of the sequence part (sol2 add parity).
+    // Append a value at the end of the sequence part (add parity).
     void add(const object& v) const {
         const int i = push();
         v.push();
@@ -1371,7 +1371,7 @@ private:
     void push_closure(F&& f);
 };
 
-// Range-for iterator over a table's key/value pairs (sol2 iterates tables
+// Range-for iterator over a table's key/value pairs (tables iterate
 // as pairs of objects; order follows lua_next traversal). Owns its registry
 // reference to the table, so the iteration survives the table proxy going
 // out of scope — but not mutation of the table during the loop.
@@ -1480,7 +1480,7 @@ struct closure_traits<R (C::*)(Args...) const> {
 
 // Raw C-API pass-through: a callable taking (lua_State*) and returning the
 // result count bypasses argument unpacking and result pushing entirely
-// (sol2 lua_CFunction parity). The thunk's exception guard still applies.
+// (lua_CFunction parity). The thunk's exception guard still applies.
 template <>
 struct closure_traits<int (*)(lua_State*)> {
     using ret = int;
@@ -1515,7 +1515,7 @@ int closure_thunk(lua_State* L) {
         static_cast<const std::function<int(lua_State*)>*>(
             lua_touserdata(L, lua_upvalueindex(1)));
     // C++ exceptions must never cross the lua_pcall boundary: convert them
-    // to Lua errors like sol2 does. The catch handlers COMPLETE (freeing the
+    // to Lua errors. The catch handlers COMPLETE (freeing the
     // exception objects) before luaL_error longjmps out — calling lua_error
     // inside a handler would skip the exception cleanup and leak it.
     // msgbuf is a POD array on purpose: longjmp may skip its "destruction",
@@ -1576,7 +1576,7 @@ void table::push_closure(F&& f) {
 
 // ---- state ----------------------------------------------------------------
 
-// Library masks for open_libraries (sol2-compatible subset).
+// Library masks for open_libraries (compatible subset).
 namespace lib {
 inline constexpr int base = 1 << 0;
 inline constexpr int package = 1 << 1;
@@ -1593,13 +1593,13 @@ inline constexpr int jit = 1 << 11;
 inline constexpr int count = 12;
 }  // namespace lib
 
-// Loading/script error container (sol2-compatible shape: what()).
+// Loading/script error container (compatible shape: what()).
 class error {
 public:
     error() = default;
     explicit error(std::string msg) : msg_(std::move(msg)) {}
     // const char* (not std::string) so `fprintf(..., "%s", e.what())` keeps
-    // working exactly as it did under sol2.
+    // working unchanged for existing call sites.
     const char* what() const noexcept { return msg_.c_str(); }
     explicit operator bool() const { return !msg_.empty(); }
 
@@ -1711,7 +1711,7 @@ public:
             ref_ = luaL_ref(L_, LUA_REGISTRYINDEX);
         }
     }
-    // Cross-conversion (sol2 parity): a plain function reference upgrades to
+    // Cross-conversion (parity): a plain function reference upgrades to
     // a protected call wrapper.
     protected_function(const function& f);
     protected_function(lua_State* L, int idx) : detail::ref_base(L, idx) {}
@@ -1829,7 +1829,7 @@ inline int push_result(lua_State* L, int base, variadic_results&& v) {
 }
 }  // namespace detail
 
-// sol::variadic_args parity: the remaining stack arguments of a
+// variadic_args parity: the remaining stack arguments of a
 // set_function callback as a cheap stack-backed range.
 class variadic_args {
 public:
@@ -1882,8 +1882,8 @@ private:
     int end_;
 };
 
-// Range wrapper: expands a container as successive call arguments (sol2
-// sol::as_args parity). The call machinery counts pushed values (not
+// Range wrapper: expands a container as successive call arguments (as_args
+// parity). The call machinery counts pushed values (not
 // argument packs), so an as_args argument contributes container.size()
 // arguments to the protected call.
 template <typename Container>
@@ -1903,7 +1903,7 @@ void push(lua_State* L, const as_args_t<Container>& a) {
 }  // namespace detail
 
 // Result of state_view::load: holds the compiled chunk (or the error
-// message) as an owned object plus the load status (sol2 load_result
+// message) as an owned object plus the load status (load_result
 // parity: valid() / convertible to error / to protected_function).
 class load_result {
 public:
@@ -1966,7 +1966,7 @@ public:
             L_, g, std::variant<std::string, std::int64_t>(std::string(k)));
     }
 
-    // sol2 state::set_function parity: expose a global function.
+    // set_function parity: expose a global function.
     template <typename F>
     void set_function(const std::string& name, F&& f) {
         table g = globals();
@@ -2012,7 +2012,7 @@ public:
         return load_protected(path, std::string());
     }
 
-    // Compile a chunk without running it (sol2 state::load parity). The
+    // Compile a chunk without running it (state::load parity). The
     // result converts to protected_function for execution or to error on a
     // syntax failure.
     load_result load(const std::string& code,
@@ -2062,7 +2062,7 @@ public:
         }
     }
 
-    // sol2-style variadic form: open_libraries(lib::base, lib::string, ...).
+    // Variadic form: open_libraries(lib::base, lib::string, ...).
     // A single-argument call resolves to the int overload above.
     template <typename... Libs>
     void open_libraries(Libs... libs) const {
@@ -2071,7 +2071,7 @@ public:
         open_libraries(mask);
     }
 
-    // sol2 state::new_usertype parity (forwards to the free function).
+    // state::new_usertype parity (forwards to the free function).
     template <typename T, typename... Args>
     void new_usertype(const std::string& name, Args&&... args) const {
         shd::new_usertype<T>(*this, name, std::forward<Args>(args)...);
@@ -2100,9 +2100,9 @@ protected:
     }
 };
 
-// sol2 state::safe_script parity: run `code`; on failure, feed the error
+// state::safe_script parity: run `code`; on failure, feed the error
 // result through the caller's handler and return its result. Successful
-// runs pass the result through the handler unchanged (sol2 semantics the
+// runs pass the result through the handler unchanged (semantics the
 // Shield call sites rely on via their shape-casting handlers).
 template <typename F>
 protected_function_result safe_script(state_view sv, const std::string& code,
@@ -2118,7 +2118,7 @@ public:
             throw std::runtime_error("shd::state: lua state allocation failed");
     }
     explicit state(lua_State* existing) : state_view(existing), owned_(false) {}
-    // sol2 parity: a state converts to its raw lua_State*.
+    // Parity: a state converts to its raw lua_State*.
     operator lua_State*() const { return L_; }
     state(const state&) = delete;
     state& operator=(const state&) = delete;
@@ -2365,7 +2365,7 @@ void bind_usertype_entry(lua_State* L, int /*methods*/, int mt, const char* key,
 }
 
 // __index dispatch: methods table first, then property getters (evaluated
-// on access, mirroring sol::property).
+// on access, mirroring property semantics).
 inline int usertype_index_thunk(lua_State* L) {
     // Upvalue 1 = methods table, upvalue 2 = property table.
     lua_pushvalue(L, lua_upvalueindex(1));
@@ -2401,7 +2401,7 @@ void bind_usertype_pairs(lua_State* L, int methods, int mt, K&& k, V&& v,
     bind_usertype_pairs<T>(L, methods, mt, std::forward<Rest>(rest)...);
 }
 
-// Register a C++ type as a Lua userdata type (sol2 new_usertype parity for
+// Register a C++ type as a Lua userdata type (new_usertype parity for
 // the subset Shield uses): methods go through __index, metamethods onto the
 // metatable, "new" may be pinned to no_constructor, and the type name
 // resolves to the methods table in the globals.
@@ -2434,7 +2434,7 @@ void new_usertype(state_view sv, const std::string& name, Args&&... args) {
     lua_pop(L, 2);  // methods table + metatable (both leak per call otherwise)
 }
 
-// Create a userdata instance of a registered usertype (sol2
+// Create a userdata instance of a registered usertype (
 // make_object<T>(...) parity for usertyped values).
 template <typename T, typename... A>
 object make_userdata(state_view sv, const std::string& type_name, A&&... a) {
@@ -2468,7 +2468,7 @@ inline object make_object(lua_State* L, nil_t) {
 inline object make_object(lua_State* L, const char* v) {
     return make_object(L, std::string(v));
 }
-// state_view conveniences (sol::make_object(state_view, ...) parity).
+// state_view conveniences (make_object(state_view, ...) parity).
 template <typename T>
 object make_object(state_view sv, T&& v) {
     return make_object(sv.lua_state(), std::forward<T>(v));

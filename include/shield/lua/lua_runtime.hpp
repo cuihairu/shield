@@ -23,7 +23,7 @@ class LuaServiceManager;
 class ServiceHandle;
 }  // namespace shield::lua
 
-// Values of this type push into Lua as usertype userdata (sol2 parity).
+// Values of this type push into Lua as usertype userdata (parity).
 template <>
 struct shd::is_usertype_value<shield::lua::ServiceHandle> : std::true_type {};
 

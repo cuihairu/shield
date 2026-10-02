@@ -67,8 +67,8 @@ using StopRequestFn = std::function<void()>;
 
 /// Process-wide server state singleton. Plain C++ state behind one mutex —
 /// no CAF messages. Watchers are keyed by (watch id, service id); the C++
-/// registry never holds Lua closures so shield_server does not link sol2
-/// (OD-016).
+/// registry never holds Lua closures so shield_server does not link the Lua
+/// binding layer (OD-016).
 class ServerManager {
 public:
     explicit ServerManager(ServerConfig config);

@@ -5395,8 +5395,8 @@ caf::actor LuaServiceManager::gateway_actor(
     return it != impl_->gateway_actors.end() ? it->second : caf::actor{};
 }
 
-// Push a JSON value onto a raw lua_State using the C API (avoids sol2
-// stack-residue quirks when targeting a specific coroutine thread).
+// Push a JSON value onto a raw lua_State using the C API (avoids
+// binding-layer stack residue when targeting a specific coroutine thread).
 static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
     if (v.is_null()) {
         lua_pushnil(L);

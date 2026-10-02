@@ -24,7 +24,7 @@
 | `shield_plugin` | manifest/catalog、instance、binding、C ABI host、`register_lua` 分发 | `shield_base`, `shield_log`, `shield_config`, Lua |
 | `shield_transport` | 协议管线与 RPC descriptor 表 | `shield_base`, `shield_log` |
 | `shield_net` | listener、session、connection 管理 | `shield_base`, `shield_log`, `shield_config`, `shield_transport`, Asio/Beast |
-| `shield_lua` | Lua VM、Lua API binding、Lua service loader | `shield_base`, `shield_log`, `shield_config`, `shield_core`, `shield_net`, `shield_plugin`, Lua/sol2 |
+| `shield_lua` | Lua VM、Lua API binding、Lua service loader | `shield_base`, `shield_log`, `shield_config`, `shield_core`, `shield_net`, `shield_plugin`, Lua |
 | `shield_bootstrap` | Starter、`shield::run` | selected runtime modules |
 | `shield` | CLI/runtime executable | `shield_bootstrap` |
 
@@ -40,7 +40,7 @@ Optional:
 
 `shield_core` 禁止依赖：
 
-- Lua / sol2。
+- Lua。
 - Boost.Asio / Beast。
 - Redis / MySQL / PostgreSQL。
 - yaml-cpp。

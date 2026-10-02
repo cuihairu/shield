@@ -3,8 +3,8 @@
 #include <atomic>
 #include <cstddef>
 
-// This tree's lua.h carries no extern "C" guard — the C++ entry point is
-// lua.hpp (same include discipline as sol2).
+// lua.h itself carries no extern "C" guard; lua.hpp provides the C++
+// entry point (include lua.hpp from C++ translation units).
 #include <lua.hpp>
 
 namespace shield::lua {

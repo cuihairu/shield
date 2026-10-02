@@ -323,7 +323,7 @@ BOOST_AUTO_TEST_CASE(SandboxGatesOsAndIoLibraries) {
                             "library: "
                                 << reg_error);
         // The console-eval restriction path takes the same absent-os arm
-        // without raising (sol2's Debug type check rejects shd::table
+        // without raising (a strict Debug type check rejects shd::table
         // construction from nil — read as optional instead).
         runtime.restrict_vm(vm);
         BOOST_CHECK(!lua["os"].valid());

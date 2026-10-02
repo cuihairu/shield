@@ -3,8 +3,8 @@
 // rwlock / spinlock; the distributed_* twins share the same seams),
 // leaderboards, queues (normal / delay / reliable) and the cron/interval/
 // once scheduler. Plain C++ singletons behind per-domain mutexes — no CAF,
-// no sol2; the Lua facade lives in shield_lua, task callbacks are injected
-// as std::function so shield_global never links shield_lua.
+// no Lua binding; the Lua facade lives in shield_lua, task callbacks are
+// injected as std::function so shield_global never links shield_lua.
 //
 // P0 backend is process memory (the runtime-global.md Redis backend needs
 // atomic primitives the data-plugin vtables do not expose yet; the seam is

@@ -21,18 +21,18 @@ struct ClientRefBox {
 
 }  // namespace shield::lua
 
-// Values of these types push into Lua as usertype userdata (sol2 parity).
+// Values of these types push into Lua as usertype userdata (parity).
 template <>
 struct shd::is_usertype_value<shield::lua::ClientContextBox> : std::true_type {
 };
 template <>
 struct shd::is_usertype_value<shield::lua::ClientRefBox> : std::true_type {};
 
-// These usertypes are registered by sol2 in B1 (register_client_identity_api).
-// They must stay shd-native (raw T + type-name tag + shd metatable): sol2
-// stores usertype payloads as a usertype_storage<T> header object, so a
-// shd-built bare T* box with a sol2 metatable still fails sol2's own
-// extraction. sol2-created values are read through the B1 adapter
+// These usertypes are registered in B1 (register_client_identity_api).
+// They must stay shd-native (raw T + type-name tag + shd metatable): a foreign
+// binding stores usertype payloads as a usertype_storage<T> header, so a
+// shd-built bare T* box under a foreign metatable fails the foreign
+// extraction. Foreign-created values are read through the B1 adapter
 // (sol_box_context_marker), which routes by the layout tag.
 template <>
 struct shd::is_foreign_usertype<shield::lua::ClientContextBox>

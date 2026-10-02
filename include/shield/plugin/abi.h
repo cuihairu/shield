@@ -34,9 +34,9 @@ extern "C" {
 #endif
 
 #ifdef _WIN32
-  #define SHIELD_PLUGIN_EXPORT __declspec(dllexport)
+#define SHIELD_PLUGIN_EXPORT __declspec(dllexport)
 #else
-  #define SHIELD_PLUGIN_EXPORT __attribute__((visibility("default")))
+#define SHIELD_PLUGIN_EXPORT __attribute__((visibility("default")))
 #endif
 
 // Bumped on any backward-incompatible layout change of the structs below.
@@ -50,8 +50,8 @@ struct shield_error_v1;
 struct shield_plugin_context_v1;
 
 // Opaque forward declaration of Lua's C state type. abi.h does NOT include
-// lua.h (plugins that need the full definition include it themselves or use
-// sol2). Registering Lua bindings requires only passing the pointer through.
+// lua.h (plugins that need the full definition include it themselves).
+// Registering Lua bindings requires only passing the pointer through.
 struct lua_State;
 
 // Unified instance shell. The host only ever interacts with a plugin
@@ -59,8 +59,8 @@ struct lua_State;
 // plugin's internal state. The concrete struct embedded behind this shell
 // is plugin-defined.
 struct shield_plugin_instance_v1 {
-    uint32_t struct_size;          // == sizeof(plugin's concrete instance)
-    const char* instance_id;       // matches the id in plugins.instances[]
+    uint32_t struct_size;     // == sizeof(plugin's concrete instance)
+    const char* instance_id;  // matches the id in plugins.instances[]
 
     // Return the vtable for a requested interface, or NULL if this instance
     // does not provide it. `err` receives a structured error when NULL is
@@ -79,14 +79,13 @@ struct shield_plugin_instance_v1 {
 
     // Register Lua bindings for this instance in the given Lua VM. Called once
     // per Lua VM, AFTER start() succeeds AND that VM is initialized.
-    // Plugins use sol2 (sol::state_view(L)) to register methods/tables under
+    // Plugins register methods/tables under
     // shield.<namespace>. L is guaranteed non-NULL when called; if the host
     // runs without a Lua runtime, this callback is skipped entirely (so the
     // plugin may still assume L is valid if invoked).
     // Returns 0 on success; non-zero reports a structured error via `err`.
     int (*register_lua)(struct shield_plugin_instance_v1* self,
-                        struct lua_State* L,
-                        struct shield_error_v1* err);
+                        struct lua_State* L, struct shield_error_v1* err);
 };
 
 // Arguments passed to the plugin's create() entry. The host fills these in
@@ -112,10 +111,10 @@ struct shield_plugin_create_args_v1 {
 
 // The per-package ABI table returned by shield_plugin_get_v1().
 struct shield_plugin_abi_v1 {
-    uint32_t abi_version;          // must == SHIELD_PLUGIN_ABI_VERSION
-    uint32_t struct_size;          // host checks >= minimum it knows
-    const char* package_id;        // must match manifest "id"
-    const char* package_version;   // human-readable, e.g. "1.0.0"
+    uint32_t abi_version;         // must == SHIELD_PLUGIN_ABI_VERSION
+    uint32_t struct_size;         // host checks >= minimum it knows
+    const char* package_id;       // must match manifest "id"
+    const char* package_version;  // human-readable, e.g. "1.0.0"
 
     // Construct an instance. On success returns 0 and writes *out. On failure
     // returns non-zero and fills `err` (if non-NULL).

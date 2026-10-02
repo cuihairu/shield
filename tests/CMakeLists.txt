@@ -503,7 +503,6 @@ if(SHIELD_BUILD_DB_PLUGIN_SQLITE
     target_link_libraries(test_plugin_lua_facade
         PRIVATE
             shield_plugin
-            sol2::sol2
             ${LUA_LIBRARIES}
             Boost::unit_test_framework
             Boost::headers)
@@ -551,7 +550,6 @@ if(SHIELD_BUILD_DB_PLUGIN_SQLITE)
             shield_core
             CAF::core
             CAF::io
-            sol2::sol2
             ${LUA_LIBRARIES}
             Boost::unit_test_framework
             Boost::headers)
@@ -586,7 +584,6 @@ if((SHIELD_BUILD_DB_PLUGIN_MYSQL OR SHIELD_BUILD_DB_PLUGIN_POSTGRESQL)
             shield_core
             CAF::core
             CAF::io
-            sol2::sol2
             ${LUA_LIBRARIES}
             Boost::unit_test_framework
             Boost::headers)

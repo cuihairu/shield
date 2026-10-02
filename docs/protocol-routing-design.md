@@ -40,7 +40,7 @@ descriptor 明确“哪个 route 由哪个 actor 的哪个 Lua 方法处理”�
 | `ProtocolProfile` | Gateway/transport | envelope、header `route_id` 格式、传输限制 | body route、Lua handler、schema 实现 |
 | `RpcDescriptor` | descriptor/bootstrap | `route_id`、direction、`binding`、`owner_service`、auth/policy 元数据 | ServiceAddress、socket、live session |
 | Session 单一 target 绑定 | Gateway | target service、player_id、epoch、profile [M2] | 全局 service registry、业务 handler |
-| 每 VM RPC 表 | target Service | 本服务拥有的 route -> 已编译 `sol::function` | socket、listener、session 所有权 |
+| 每 VM RPC 表 | target Service | 本服务拥有的 route -> 已编译 `shd::function` | socket、listener、session 所有权 |
 | `ClientContext` / `ClientRef` | Service adapter | 可信 client identity 和 Gateway 回包地址 [M2] | 裸连接句柄、frame、codec 实现 |
 
 ## Descriptor 是唯一静态来源
