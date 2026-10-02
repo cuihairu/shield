@@ -115,6 +115,17 @@ inline constexpr equal_to_t equal_to{};
 struct no_constructor_t {};
 inline constexpr no_constructor_t no_constructor{};
 
+// sol::property parity: wraps a lambda evaluated on read (value
+// semantics), bound by new_usertype into the usertype's property table.
+template <typename F>
+struct property_fn {
+    F f;
+};
+template <typename F>
+property_fn<F> property(F&& f) {
+    return property_fn<F>{std::forward<F>(f)};
+}
+
 // ---- stack_object -----------------------------------------------------------
 
 // Non-owning view of a value at a fixed stack position (sol2
@@ -146,6 +157,7 @@ class object;
 class function;
 class accessor;
 class variadic_results;
+class variadic_args;
 class stack_object;
 class protected_function;
 class protected_function_result;
@@ -342,6 +354,11 @@ struct args_count<Head, Rest...>
     : std::integral_constant<int, 1 + args_count<Rest...>::value> {};
 
 template <typename T>
+struct is_optional : std::false_type {};
+template <typename V>
+struct is_optional<std::optional<V>> : std::true_type {};
+
+template <typename T>
 T unpack_arg(lua_State* L, int& idx) {
     // Reference/const-qualified argument shapes normalize to D here; the
     // returned D converts back to T at the return statement.
@@ -352,6 +369,31 @@ T unpack_arg(lua_State* L, int& idx) {
     } else if constexpr (std::is_same_v<D, lua_State*>) {
         (void)idx;
         return L;
+    } else if constexpr (std::is_same_v<D, variadic_args>) {
+        const int from = idx;
+        const int to = lua_gettop(L) + 1;
+        idx = to;
+        return variadic_args(L, from, to);
+    } else if constexpr (std::is_same_v<D, object>) {
+        const int i = idx++;
+        return object(L, i);
+    } else if constexpr (std::is_same_v<D, table>) {
+        const int i = idx++;
+        return table(L, i);
+    } else if constexpr (std::is_same_v<D, function>) {
+        const int i = idx++;
+        return function(L, i);
+    } else if constexpr (std::is_same_v<D, protected_function>) {
+        const int i = idx++;
+        return protected_function(L, i);
+    } else if constexpr (is_optional<D>::value) {
+        const int i = idx++;
+        // sol2 parity: an optional parameter accepts absent arguments too
+        // (slots past the top are LUA_TNONE, not nil).
+        if (lua_isnoneornil(L, i)) return D();
+        using V = typename D::value_type;
+        int j = i;
+        return D(unpack_arg<V>(L, j));
     } else {
         const int i = idx++;
         if (!stack_check<D>(L, i)) {
@@ -451,7 +493,9 @@ public:
             // userdata/table/function at this stack slot qualifies.
             return lua_type(L_, idx_) != LUA_TNONE &&
                    lua_type(L_, idx_) != LUA_TNIL;
-        } else if constexpr (std::is_class_v<D>) {
+        } else if constexpr (std::is_class_v<D> &&
+                             !std::is_same_v<D, std::string> &&
+                             !std::is_same_v<D, const char*>) {
             return detail::usertype_is<D>(L_, idx_);
         } else {
             return detail::stack_check<D>(L_, idx_);
@@ -467,7 +511,9 @@ public:
             return function(L_, idx_);
         } else if constexpr (std::is_same_v<D, object>) {
             return object(L_, idx_);
-        } else if constexpr (std::is_class_v<D>) {
+        } else if constexpr (std::is_class_v<D> &&
+                             !std::is_same_v<D, std::string> &&
+                             !std::is_same_v<D, const char*>) {
             if constexpr (std::is_reference_v<T>) {
                 // Reference return: bind directly to the userdata on the stack.
                 // The caller must ensure the stack slot remains valid.
@@ -844,6 +890,14 @@ public:
             object o(L_, i);
             lua_pop(L_, 1);
             return o;
+        } else if constexpr (detail::is_optional<D0>::value) {
+            // sol2 optional parity: nil (or a type mismatch) yields an empty
+            // optional instead of throwing; anything else reads as V. Without
+            // this branch std::optional is a class type and would misroute
+            // into the usertype branch below.
+            using V = typename D0::value_type;
+            if (!is<V>()) return D0{};
+            return D0{as<V>()};
         } else if constexpr (std::is_class_v<D0> &&
                              !std::is_same_v<D0, std::string>) {
             // Registered usertype: read the userdata payload. A non-userdata
@@ -915,8 +969,12 @@ private:
 
 namespace detail {
 inline void push(lua_State* L, const object& o) {
+    // Registry refs are shared across the VM's threads, so push the value
+    // onto the CALLER's state L — never o's own thread: a value anchored on
+    // the main thread pushed here (coroutine C closures) would land on the
+    // wrong stack and the closure would report more returns than it pushed.
     if (o.valid()) {
-        o.push();
+        lua_rawgeti(L, LUA_REGISTRYINDEX, o.ref_index());
     } else {
         lua_pushnil(L);
     }
@@ -970,7 +1028,7 @@ public:
 namespace detail {
 inline void push(lua_State* L, const function& f) {
     if (f.valid()) {
-        f.push();
+        lua_rawgeti(L, LUA_REGISTRYINDEX, f.ref_index());  // see push(object)
     } else {
         lua_pushnil(L);
     }
@@ -1164,6 +1222,7 @@ public:
         k.push();
         detail::push(L_, std::forward<T>(v));
         lua_rawset(L_, i);
+        lua_pop(L_, 1);  // push() left the table copy on the stack
     }
 
     object raw_get(const std::string& k) const {
@@ -1211,6 +1270,7 @@ public:
         lua_pushlstring(L_, k.data(), k.size());
         detail::push(L_, std::forward<T>(v));
         lua_settable(L_, i);
+        lua_pop(L_, 1);  // push() left the table copy on the stack
     }
     template <typename T>
     void raw_set(const std::string& k, T&& v) {
@@ -1218,6 +1278,7 @@ public:
         lua_pushlstring(L_, k.data(), k.size());
         detail::push(L_, std::forward<T>(v));
         lua_rawset(L_, i);
+        lua_pop(L_, 1);  // push() left the table copy on the stack
     }
     template <typename T>
     void raw_set(std::int64_t k, T&& v) {
@@ -1225,6 +1286,7 @@ public:
         lua_pushinteger(L_, k);
         detail::push(L_, std::forward<T>(v));
         lua_rawset(L_, i);
+        lua_pop(L_, 1);  // push() left the table copy on the stack
     }
     template <typename T>
     void set(std::int64_t k, T&& v) {
@@ -1232,15 +1294,16 @@ public:
         lua_pushinteger(L_, k);
         detail::push(L_, std::forward<T>(v));
         lua_settable(L_, i);
+        lua_pop(L_, 1);  // push() left the table copy on the stack
     }
 
     // -- function registration ---------------------------------------------
     template <typename F>
     void set_function(const std::string& name, F&& f) {
         const int i = push();
-        lua_pushlstring(L_, name.data(), name.size());
         push_closure(std::forward<F>(f));
-        lua_settable(L_, i);
+        lua_setfield(L_, i, name.c_str());
+        lua_pop(L_, 1);  // push() left the table copy on the stack
     }
 
     // Create a fresh table nested in this one.
@@ -1251,7 +1314,7 @@ public:
         lua_pushlstring(L_, name.data(), name.size());
         lua_pushvalue(L_, -2);
         lua_settable(L_, i);
-        lua_pop(L_, 1);
+        lua_pop(L_, 2);  // nested table copy + push()'s table copy
         return t;
     }
     table create_table(std::int64_t idx_key) {
@@ -1261,7 +1324,7 @@ public:
         lua_pushinteger(L_, idx_key);
         lua_pushvalue(L_, -2);
         lua_settable(L_, i);
-        lua_pop(L_, 1);
+        lua_pop(L_, 2);  // nested table copy + push()'s table copy
         return t;
     }
 
@@ -1362,7 +1425,7 @@ private:
 namespace detail {
 inline void push(lua_State* L, const table& t) {
     if (t.valid()) {
-        t.push();
+        lua_rawgeti(L, LUA_REGISTRYINDEX, t.ref_index());  // see push(object)
     } else {
         lua_pushnil(L);
     }
@@ -1595,7 +1658,9 @@ public:
             return D(L_, idx);
         } else if constexpr (std::is_same_v<D, object>) {
             return object(L_, idx);
-        } else if constexpr (std::is_class_v<D>) {
+        } else if constexpr (std::is_class_v<D> &&
+                             !std::is_same_v<D, std::string> &&
+                             !std::is_same_v<D, const char*>) {
             auto* p = static_cast<D*>(lua_touserdata(L_, idx));
             return *p;
         } else {
@@ -1764,6 +1829,59 @@ inline int push_result(lua_State* L, int base, variadic_results&& v) {
 }
 }  // namespace detail
 
+// sol::variadic_args parity: the remaining stack arguments of a
+// set_function callback as a cheap stack-backed range.
+class variadic_args {
+public:
+    class ref {
+    public:
+        ref(lua_State* L, int idx) : L_(L), idx_(idx) {}
+        template <typename T>
+        T as() const {
+            return stack_object(L_, idx_).as<T>();
+        }
+        operator object() const { return object(L_, idx_); }
+        shd::type get_type() const { return stack_object(L_, idx_).get_type(); }
+        bool is_nil() const { return get_type() == shd::type::nil; }
+        bool valid() const { return L_ != nullptr; }
+        lua_State* state() const { return L_; }
+        int stack_index() const { return idx_; }
+
+    private:
+        lua_State* L_;
+        int idx_;
+    };
+
+    class iterator {
+    public:
+        iterator(lua_State* L, int idx) : cur_(L, idx), idx_(idx) {}
+        ref operator*() const { return cur_; }
+        iterator& operator++() {
+            ++idx_;
+            cur_ = ref(cur_.state(), idx_);
+            return *this;
+        }
+        bool operator!=(const iterator& o) const { return idx_ != o.idx_; }
+
+    private:
+        ref cur_;
+        int idx_;
+    };
+
+    variadic_args() : L_(nullptr), begin_(0), end_(0) {}
+    variadic_args(lua_State* L, int begin, int end)
+        : L_(L), begin_(begin), end_(end) {}
+    int size() const { return end_ - begin_; }
+    iterator begin() const { return iterator(L_, begin_); }
+    iterator end() const { return iterator(L_, end_); }
+    ref operator[](int i) const { return ref(L_, begin_ + i); }
+
+private:
+    lua_State* L_;
+    int begin_;
+    int end_;
+};
+
 // Range wrapper: expands a container as successive call arguments (sol2
 // sol::as_args parity). The call machinery counts pushed values (not
 // argument packs), so an as_args argument contributes container.size()
@@ -1846,6 +1964,13 @@ public:
         table g = globals();
         return accessor(
             L_, g, std::variant<std::string, std::int64_t>(std::string(k)));
+    }
+
+    // sol2 state::set_function parity: expose a global function.
+    template <typename F>
+    void set_function(const std::string& name, F&& f) {
+        table g = globals();
+        g.set_function(name, std::forward<F>(f));
     }
     accessor operator[](const std::string& k) const {
         table g = globals();
@@ -1974,6 +2099,17 @@ protected:
         return protected_function_result(L_, run, base, count);
     }
 };
+
+// sol2 state::safe_script parity: run `code`; on failure, feed the error
+// result through the caller's handler and return its result. Successful
+// runs pass the result through the handler unchanged (sol2 semantics the
+// Shield call sites rely on via their shape-casting handlers).
+template <typename F>
+protected_function_result safe_script(state_view sv, const std::string& code,
+                                      F&& handler) {
+    protected_function_result r = sv.script(code);
+    return handler(sv.lua_state(), std::move(r));
+}
 
 class state : public state_view {
 public:
@@ -2218,6 +2354,42 @@ void bind_usertype_entry(lua_State* L, int methods, int /*mt*/, const char* key,
                          F&& f) {
     detail::push_usertype_callable<T>(L, methods, key, std::forward<F>(f));
 }
+template <typename T, typename F>
+void bind_usertype_entry(lua_State* L, int /*methods*/, int mt, const char* key,
+                         property_fn<F> p) {
+    // Properties live on the metatable's property table; the usertype
+    // __index thunk (installed by new_usertype) evaluates them on read.
+    lua_getfield(L, mt, "__shd_props");
+    detail::push_usertype_callable<T>(L, lua_gettop(L), key, std::move(p.f));
+    lua_pop(L, 1);
+}
+
+// __index dispatch: methods table first, then property getters (evaluated
+// on access, mirroring sol::property).
+inline int usertype_index_thunk(lua_State* L) {
+    // Upvalue 1 = methods table, upvalue 2 = property table.
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_pushvalue(L, 2);  // key
+    lua_gettable(L, -2);
+    lua_remove(L, -2);
+    if (!lua_isnil(L, -1)) return 1;
+    lua_pop(L, 1);
+    lua_pushvalue(L, lua_upvalueindex(2));
+    if (lua_istable(L, -1)) {
+        lua_pushvalue(L, 2);
+        lua_gettable(L, -2);
+        lua_remove(L, -2);
+        if (lua_isfunction(L, -1)) {
+            lua_pushvalue(L, 1);  // self
+            lua_call(L, 1, 1);
+            return 1;
+        }
+        return 1;  // top: nil or a stale non-function; treat as miss
+    }
+    lua_pop(L, 1);
+    lua_pushnil(L);
+    return 1;
+}
 
 template <typename T>
 void bind_usertype_pairs(lua_State* /*L*/, int /*methods*/, int /*mt*/) {}
@@ -2243,8 +2415,8 @@ void new_usertype(state_view sv, const std::string& name, Args&&... args) {
     const int methods = lua_gettop(L);
     lua_newtable(L);
     const int mt = lua_gettop(L);
-    lua_pushvalue(L, methods);
-    lua_setfield(L, mt, "__index");
+    lua_newtable(L);
+    lua_setfield(L, mt, "__shd_props");  // property table (may stay empty)
     lua_pushcfunction(L, &detail::usertype_gc_thunk<T>);
     lua_setfield(L, mt, "__gc");
     // Register the metatable under the type name so push_userdata can
@@ -2252,9 +2424,14 @@ void new_usertype(state_view sv, const std::string& name, Args&&... args) {
     lua_pushvalue(L, mt);
     lua_setfield(L, LUA_REGISTRYINDEX, name.c_str());
     bind_usertype_pairs<T>(L, methods, mt, std::forward<Args>(args)...);
+    // __index dispatches methods table then property getters.
+    lua_pushvalue(L, methods);
+    lua_getfield(L, mt, "__shd_props");
+    lua_pushcclosure(L, &usertype_index_thunk, 2);
+    lua_setfield(L, mt, "__index");
     lua_pushvalue(L, methods);
     lua_setglobal(L, name.c_str());
-    lua_pop(L, 1);  // the metatable
+    lua_pop(L, 2);  // methods table + metatable (both leak per call otherwise)
 }
 
 // Create a userdata instance of a registered usertype (sol2
