@@ -25,7 +25,6 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 #include <vector>
@@ -166,10 +165,10 @@ struct CafInitFixture {
 };
 BOOST_GLOBAL_FIXTURE(CafInitFixture);
 
-bool run_script(sol::state& lua, const std::string& code) {
-    auto result = lua.safe_script(code, sol::script_pass_on_error);
+bool run_script(shd::state& lua, const std::string& code) {
+    const shd::protected_function_result result = lua.script(code);
     if (!result.valid()) {
-        const sol::error e = result;
+        const shd::error e = result;
         BOOST_TEST_MESSAGE("lua error: " << e.what());
         return false;
     }
@@ -438,9 +437,9 @@ BOOST_AUTO_TEST_CASE(ClusterLuaApiPaths) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
+                       shd::lib::string | shd::lib::os | shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     // No global manager: every accessor degrades honestly.
@@ -507,9 +506,9 @@ BOOST_AUTO_TEST_CASE(PlayerLuaApiPrimitives) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
+                       shd::lib::string | shd::lib::os | shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     shield::player::PlayerConfig config;
@@ -644,7 +643,7 @@ BOOST_AUTO_TEST_CASE(PlayerLuaApiPrimitives) {
         shield::lua::PlayerRefBox box;
         box.data.uid = "u-box";
         box.data.service_id = "player_u-box";
-        lua["__box_ref"] = sol::make_object(lua, box);
+        lua["__box_ref"] = shd::make_object(lua, box);
         BOOST_CHECK(run_script(lua, R"lua(
             local ok, snap = shield.player.resolve(__box_ref)
             assert(ok and ok.uid == 'u-box')
@@ -688,9 +687,9 @@ BOOST_AUTO_TEST_CASE(ServerLuaApiPrimitives) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
+                       shd::lib::string | shd::lib::os | shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     shield::server::ServerConfig config;
@@ -1001,9 +1000,9 @@ BOOST_AUTO_TEST_CASE(LuaRemoteSendPaths) {
     cluster.manager->register_route("node-b", "svc", "sid-1");
     shield::cluster::set_global_cluster_manager(cluster.manager.get());
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
+                       shd::lib::string | shd::lib::os | shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
 
     // Remote send success: the envelope leaves with the resolved service id.
@@ -1341,9 +1340,9 @@ BOOST_AUTO_TEST_CASE(ServiceManagerGapPaths) {
 
     // The call wrapper's raw-message -> stable-code seam, driven directly
     // (the resume path feeds it non-table payloads).
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::coroutine, sol::lib::table,
-                       sol::lib::string, sol::lib::os, sol::lib::math);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
+                       shd::lib::string | shd::lib::os | shd::lib::math);
     register_full_shield_api(lua, &manager, &runtime);
     BOOST_CHECK(
         run_script(lua,

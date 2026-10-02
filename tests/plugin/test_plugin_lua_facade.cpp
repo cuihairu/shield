@@ -16,8 +16,8 @@
 #define BOOST_TEST_MODULE shield_plugin_lua_facade
 
 #include <boost/test/unit_test.hpp>
-#include <sol/sol.hpp>
 
+#include "shield/lua/binding.hpp"
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
 #include "shield/plugin/plugin_library.hpp"
@@ -61,8 +61,8 @@ void facade_soft_failure(const char* library_path, const char* lua_namespace,
     BOOST_REQUIRE_EQUAL(abi->create(&args, &inst, &cerr), 0);
     BOOST_REQUIRE(inst != nullptr);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::table);
+    shd::state lua;
+    lua.open_libraries(shd::lib::base | shd::lib::string | shd::lib::table);
     shield_error_v1 rerr{};
     BOOST_CHECK_EQUAL(inst->register_lua(inst, lua.lua_state(), &rerr), 0);
 
@@ -73,7 +73,7 @@ void facade_soft_failure(const char* library_path, const char* lua_namespace,
          pos = expanded.find(placeholder)) {
         expanded.replace(pos, placeholder.size(), real);
     }
-    lua.safe_script(expanded);
+    lua.script(expanded);
 
     inst->shutdown(inst);
 }
