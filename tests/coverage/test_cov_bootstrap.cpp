@@ -417,6 +417,7 @@ BOOST_AUTO_TEST_CASE(XmldefCatalogRemovedAfterProbeFailsPerConnectionBuild) {
     fs::remove_all(work);
 }
 
+#ifdef SHIELD_ENABLE_CLUSTER
 BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     // --- scripts resolved via source_dir and lua.script_path ---
     fs::path work = base_dir("shield_cov_boot_full");
@@ -525,6 +526,7 @@ BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     shield::bootstrap::shutdown();
     BOOST_CHECK(!shield::bootstrap::is_initialized());
 }
+#endif  // SHIELD_ENABLE_CLUSTER
 
 BOOST_AUTO_TEST_CASE(BootstrapRunDelegatesToShieldRun) {
     char arg0[] = "shield";

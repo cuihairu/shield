@@ -130,6 +130,13 @@ target_compile_definitions(test_cov_lua_crypto PRIVATE
 
 # Round-2 coverage suites (same modules, deeper branches).
 shield_coverage_test(test_cov_lua_api2 shield_lua shield_core shield_net CAF::core CAF::io)
+if(SHIELD_ENABLE_PLAYER)
+    # PlayerLuaApiPrimitives cases are guarded in the .cpp; keep the define
+    # aligned with the library's private build shape so the player
+    # PlayerManager cases still compile in when the module is built.
+    target_compile_definitions(test_cov_lua_api2 PRIVATE SHIELD_ENABLE_PLAYER)
+    target_link_libraries(test_cov_lua_api2 PRIVATE shield_player)
+endif()
 shield_coverage_test(test_cov_lua_runtime2 shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_runtime3 shield_lua shield_core CAF::core CAF::io)
 shield_coverage_test(test_cov_lua_service2 shield_lua shield_core CAF::core CAF::io)
@@ -175,6 +182,10 @@ set_tests_properties(test_cov_ops_http PROPERTIES TIMEOUT 600)
 # POSIX_ONLY: not defined on Windows, where set_tests_properties would fail.
 if(NOT WIN32)
     set_tests_properties(test_cov_lua_commands PROPERTIES TIMEOUT 300)
+    # RecentlyExitedTombstoneCapClearsSet spawns and exits 4097 named services
+    # to cross the tombstone cap, which costs ~90s of CPU on its own — the
+    # default 120s budget leaves no headroom once the machine is loaded.
+    set_tests_properties(test_cov_lua_service2 PROPERTIES TIMEOUT 600)
 endif()
 
 # Suites that compile fake plugins at test time need the shield include tree;

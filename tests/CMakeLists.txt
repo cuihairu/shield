@@ -56,6 +56,9 @@ shield_copy_runtime_dlls(test_client_rpc_e2e)
 # Default-config boot acceptance: the shipped config/app.yaml boots into an
 # observable state — the echo listener answers a real TCP round trip on the
 # port declared in the shipped file (ops endpoints are patched hermetic).
+# Disabled in module-off builds: the shipped config declares a cluster:
+# section, which the module-off bootstrap legitimately rejects.
+if(SHIELD_ENABLE_CLUSTER)
 add_executable(test_default_config_boot
     acceptance/test_default_config_boot.cpp)
 target_link_libraries(test_default_config_boot
@@ -84,6 +87,7 @@ set_tests_properties(test_default_config_boot PROPERTIES
     RESOURCE_LOCK fixed_ports
 )
 shield_copy_runtime_dlls(test_default_config_boot)
+endif()
 
 # Scaffold smoke (POSIX shells only): scripts/new_project.sh generates a
 # project whose config passes the runtime's own --check-config validation

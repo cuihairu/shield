@@ -698,6 +698,7 @@ add_test(NAME shield_cli_unknown_argument
         -DEXPECTED_OUTPUT_REGEX=unknown
         -P ${CMAKE_SOURCE_DIR}/cmake/AssertCommand.cmake
 )
+if(SHIELD_ENABLE_CLUSTER)
 add_test(NAME shield_config_default_check
     COMMAND ${CMAKE_COMMAND}
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/config/app.yaml"
@@ -714,6 +715,7 @@ add_test(NAME shield_config_default_check
 set_tests_properties(shield_config_default_check PROPERTIES
     RESOURCE_LOCK fixed_ports
 )
+endif()
 add_test(NAME shield_config_overlay_check
     COMMAND ${CMAKE_COMMAND}
         "-DCOMMAND_UNDER_TEST=$<TARGET_FILE:shield>;--check-config;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/overlay-base.yaml;--config;${CMAKE_SOURCE_DIR}/tests/fixtures/config/overlay-override.yaml"

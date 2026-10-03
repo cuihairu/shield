@@ -1242,6 +1242,7 @@ BOOST_AUTO_TEST_CASE(HttpdWithoutRuntimeThrows) {
 // and the distributed-lock factory argument shapes.
 // ---------------------------------------------------------------------------
 
+#ifdef SHIELD_ENABLE_CLUSTER
 // No cluster manager installed: shield.cluster.node_id() degrades to nil and
 // a qualified target is treated as an ordinary local miss.
 BOOST_AUTO_TEST_CASE(ClusterNodeIdNilWithoutGlobalManager) {
@@ -1265,7 +1266,9 @@ BOOST_AUTO_TEST_CASE(ClusterNodeIdNilWithoutGlobalManager) {
         "assert(ok == false)\n"
         "assert(err.code == 'service_not_found', err.code)"));
 }
+#endif  // SHIELD_ENABLE_CLUSTER
 
+#ifdef SHIELD_ENABLE_PLAYER
 // The __shield_player_ref JSON marker materializes as a read-only ref with
 // defaults for missing fields: string members ignore non-strings and the
 // epoch only accepts non-negative integers.
@@ -1418,7 +1421,9 @@ BOOST_AUTO_TEST_CASE(PlayerNodeInfoStatsAndSetupShapes) {
         "local r, err = shield.player.setup({})\n"
         "if r == nil then assert(err.code == 'setup_invalid', err.code) end"));
 }
+#endif  // SHIELD_ENABLE_PLAYER
 
+#ifdef SHIELD_ENABLE_CLUSTER
 // Remote send classification: a Suspect node fails resolution with the
 // retryable node_suspect code, and a transport-seam failure carrying the
 // suspect text maps through the same stable code.
@@ -1484,7 +1489,9 @@ BOOST_AUTO_TEST_CASE(ClusterRemoteSendSuspectAndSeamError) {
     seam_cm.stop();
     shield::cluster::set_global_cluster_manager(nullptr);
 }
+#endif  // SHIELD_ENABLE_CLUSTER
 
+#ifdef SHIELD_ENABLE_GLOBAL
 // Global data optionals: the present and absent arms of the ttl and delta
 // parameters across set/incr/decr/mset/get_cached, plus mset's non-string
 // key skip.
@@ -1520,7 +1527,9 @@ BOOST_AUTO_TEST_CASE(GlobalDataTtlDeltaAndBatchArms) {
 
     shield::global::GlobalManager::set_global(nullptr);
 }
+#endif  // SHIELD_ENABLE_GLOBAL
 
+#ifdef SHIELD_ENABLE_GLOBAL
 // Rank batch updates skip malformed entries (non-string uid, non-number
 // score); around() anchors on an existing uid and returns no target for
 // an unknown one.
@@ -1551,7 +1560,9 @@ BOOST_AUTO_TEST_CASE(RankMupdateSkipsMalformedAndAroundWindow) {
 
     shield::global::GlobalManager::set_global(nullptr);
 }
+#endif  // SHIELD_ENABLE_GLOBAL
 
+#ifdef SHIELD_ENABLE_GLOBAL
 // Scheduler bindings without a dispatch context: name validation rejects
 // non-string and empty task names before anything else, a host-registered
 // task pauses/resumes through the bindings, and get() reports the paused
@@ -1590,7 +1601,9 @@ BOOST_AUTO_TEST_CASE(SchedulerNameValidationPauseAndGet) {
 
     shield::global::GlobalManager::set_global(nullptr);
 }
+#endif  // SHIELD_ENABLE_GLOBAL
 
+#ifdef SHIELD_ENABLE_GLOBAL
 // The distributed-lock factory argument shapes: name only, name + options,
 // a non-string name, and no name at all — every shape runs the name
 // ternary arms without throwing.
@@ -1632,7 +1645,9 @@ BOOST_AUTO_TEST_CASE(DistributedMutexFactoryArgShapes) {
 
     shield::global::GlobalManager::set_global(nullptr);
 }
+#endif  // SHIELD_ENABLE_GLOBAL
 
+#ifdef SHIELD_ENABLE_SERVER
 // shield.server shutdown delay validation (above 2^53 rejected, a valid
 // delay schedules the handover, a second schedule is refused) and unwatch
 // of unknown ids through both numeric views.
@@ -1672,7 +1687,9 @@ BOOST_AUTO_TEST_CASE(ServerShutdownDelayAndUnwatchShapes) {
     sm.stop();  // join the shutdown timer before the manager dies
     shield::server::ServerManager::set_global(nullptr);
 }
+#endif  // SHIELD_ENABLE_SERVER
 
+#ifdef SHIELD_ENABLE_SERVER
 // A watcher registered from on_init (the spawning dispatch context)
 // attaches through the runtime and lands in the server manager.
 BOOST_AUTO_TEST_CASE(ServerWatchInsideOnInit) {
@@ -1713,7 +1730,9 @@ BOOST_AUTO_TEST_CASE(ServerWatchInsideOnInit) {
     sm.stop();
     shield::server::ServerManager::set_global(nullptr);
 }
+#endif  // SHIELD_ENABLE_SERVER
 
+#ifdef SHIELD_ENABLE_CLUSTER
 // shield.cluster.node_id() reports the registered manager's id (both the
 // short and the long heap-copy shapes), an empty id degrades to nil, and
 // without a manager the binding returns nil.
@@ -1751,11 +1770,13 @@ BOOST_AUTO_TEST_CASE(ClusterNodeIdShapes) {
 
     shield::cluster::set_global_cluster_manager(nullptr);
 }
+#endif  // SHIELD_ENABLE_CLUSTER
 
 // ---------------------------------------------------------------------------
 // Round-8 additions (branch coverage for remaining gaps):
 // ---------------------------------------------------------------------------
 
+#ifdef SHIELD_ENABLE_PLAYER
 // json_to_lua: the __shield_player_ref marker's "== true" false arm.
 // When the key is absent, value() returns false, so the == true check fails
 // and the marker is treated as a plain table. This exercises the false arm.
@@ -1840,7 +1861,9 @@ BOOST_AUTO_TEST_CASE(PlayerRefMarkerFieldTypeCoercion) {
 
     shield::player::PlayerManager::set_global(nullptr);
 }
+#endif  // SHIELD_ENABLE_PLAYER
 
+#ifdef SHIELD_ENABLE_PLAYER
 // player_ref_epoch: the is<int>() false arm (non-integer numeric view,
 // e.g., boolean or nil) degrades to 0. This is the catch-all after
 // is<string>(), is<uint64_t>(), and is<int>() all fail.
@@ -1877,6 +1900,7 @@ BOOST_AUTO_TEST_CASE(PlayerRefEpochNonIntNumericDegradesToZero) {
 
     shield::player::PlayerManager::set_global(nullptr);
 }
+#endif  // SHIELD_ENABLE_PLAYER
 
 // shield.server.watch: the runtime-null guard arm. The binding is only
 // invoked with a live runtime, so this arm is defensive and marked.
