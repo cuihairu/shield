@@ -2548,9 +2548,13 @@ end
 -- second lifecycle, no inheritance, no on_* prefix. opts carries only the
 -- non-hook options (instance_script/instance_routes); an explicit hook
 -- function in opts wins over the same-named module method.
+-- Base-library only on purpose: this loop runs at REGISTRATION time (the
+-- chunk executes once per VM inside register_player_api), and a host VM
+-- may have opened nothing beyond the base library — table.insert would
+-- fail there and abort the registration. Length-append needs no library.
 local ALL_HOOKS = {}
-for _, name in ipairs(REQUIRED) do table.insert(ALL_HOOKS, name) end
-for _, name in ipairs(OPTIONAL) do table.insert(ALL_HOOKS, name) end
+for _, name in ipairs(REQUIRED) do ALL_HOOKS[#ALL_HOOKS + 1] = name end
+for _, name in ipairs(OPTIONAL) do ALL_HOOKS[#ALL_HOOKS + 1] = name end
 
 local Base = {}
 function Base.setup(M, opts)
@@ -2576,13 +2580,22 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
     sol::state_view lua(shield.lua_state());
 
     // Run the orchestration chunk once per VM; it returns the impl table.
-    sol::object impl_obj = lua.safe_script(
-        kPlayerOrchestration,
-        [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
+    // The conversion is validity-guarded: sol2's implicit
+    // protected_function_result -> object conversion type-panics (and, in
+    // plain C++ registration code outside any lua_pcall, aborts the
+    // process) when the chunk failed. A failed run degrades to an empty
+    // impl table; shield.player.setup then reports its setup_invalid
+    // error through the normal protected-call path.
+    sol::protected_function_result run = lua.safe_script(
+        kPlayerOrchestration,  // GCOVR_EXCL_LINE (gcov clone artifact: the
+                               // argument-load line is emitted only into an
+                               // outlined clone that is never called; the
+                               // call itself is counted on the closing line)
+        [](lua_State*,         // GCOVR_EXCL_LINE (gcov clone artifact)
            sol::protected_function_result
                pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
         -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
-    sol::table impl = impl_obj;
+    sol::table impl = run.valid() ? run.get<sol::table>() : lua.create_table();
 
     auto player = lua.create_table();
 

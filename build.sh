@@ -79,13 +79,17 @@ echo "Build type: $BUILD_TYPE"
 echo "Build dir:  $BUILD_DIR"
 echo ""
 
-# Configure
+# Configure. SHIELD_ENABLE_CLUSTER is required: the `run` step below boots
+# the shipped config/app.yaml, which declares a `cluster:` section (pinned
+# listen port for --node-id flows) — a module-off binary rejects that
+# config at validation.
 cmake -B "$BUILD_DIR" \
     $TOOLCHAIN \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     -DSHIELD_BUILD_TESTS=ON \
-    -DSHIELD_BUILD_EXAMPLES=ON
+    -DSHIELD_BUILD_EXAMPLES=ON \
+    -DSHIELD_ENABLE_CLUSTER=ON
 
 # Build
 cmake --build "$BUILD_DIR" --config "$BUILD_TYPE" -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"

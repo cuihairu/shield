@@ -38,7 +38,10 @@ RUN vcpkg install --triplet x64-linux
 # Copy source
 COPY . .
 
-# Build
+# Build. SHIELD_ENABLE_CLUSTER is required: the image's runtime config is
+# the shipped config/app.yaml, which declares a `cluster:` section (the
+# pinned listen port for --node-id flows), and a module-off binary rejects
+# that config at validation.
 RUN cmake -B build \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
@@ -47,6 +50,7 @@ RUN cmake -B build \
     -DSHIELD_GIT_COMMIT_HASH="${SHIELD_GIT_COMMIT_HASH}" \
     -DSHIELD_BUILD_TESTS=OFF \
     -DSHIELD_BUILD_EXAMPLES=OFF \
+    -DSHIELD_ENABLE_CLUSTER=ON \
     && cmake --build build --config Release \
     && ./build/bin/shield --check-config --config config/app.yaml
 

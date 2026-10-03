@@ -405,6 +405,20 @@ void TcpSession::do_receive() {
 }
 
 void TcpSession::handle_error(std::string reason) {
+    // First error wins: alive_ == false means close() already ran and this
+    // is a late I/O completion racing teardown, so the error_code_ the
+    // first error recorded must stand. Windows IOCP completes a pending
+    // WSARecv with WSAECONNABORTED (not operation_aborted) after close(),
+    // so the receive call site's abort filter does not always catch it and
+    // the idle-timeout code would otherwise be overwritten with
+    // "session_closed".
+    if (!alive_.load())  // GCOVR_EXCL_BR_LINE (defensive: the post-close
+                         // arm only fires inside the platform completion
+                         // race; POSIX completions in that window arrive
+                         // as operation_aborted and are filtered at the
+                         // receive call site, so no suite case drives it)
+        return;  // GCOVR_EXCL_LINE (defensive: same arm as the condition
+                 // above, only reachable when a completion races close())
     auto& log = shield::log::get_logger("net");
     SHIELD_LOG_ERROR(log,
                      "Session " + std::to_string(id_) + " error: " + reason);
