@@ -561,6 +561,17 @@ target_include_directories(shield_lua
         ${LUA_INCLUDE_DIR}
 )
 
+# sol2 feature flags for the remaining sol2 consumer (lua_api.cpp, B2 seam).
+# SOL_NO_NIL=0 is REQUIRED on macOS: sol2's version.hpp defaults the nil
+# constant OFF when __MAC_OS_X_VERSION_MAX_ALLOWED is defined (always set
+# there, to avoid clashing with Objective-C `nil`), so `sol::nil` does not
+# exist unless the flag is forced on. Linux leaves it at the default ON.
+target_compile_definitions(shield_lua
+    PUBLIC
+        SOL_NO_LUA_HPP=0
+        SOL_NO_NIL=0
+)
+
 target_link_libraries(shield_lua
     PUBLIC shield_base shield_core
     PRIVATE shield_log shield_config shield_net shield_plugin
