@@ -1003,7 +1003,10 @@ public:
     function(const protected_function& pf);
     // Adopt whatever the object references (function-from-object
     // parity; a non-function ref errors at call time, not construction).
-    function(const object& o) : detail::ref_base(o) {}
+    // explicit: object also converts via operator function() above, and a
+    // copy-initialization (`shd::function f = obj;`) with both paths viable
+    // is ambiguous to clang (GCC picks the conversion operator silently).
+    explicit function(const object& o) : detail::ref_base(o) {}
 
     // Protected call with variadic args; returns the first result or nil.
     // Argument count is measured from the stack (not sizeof...(Args)):
