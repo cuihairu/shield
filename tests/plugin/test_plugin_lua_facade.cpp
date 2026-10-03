@@ -6,6 +6,13 @@
 // official facade plugin: no bare nil, no thrown error on a missing
 // binding or on a no-arg call.
 //
+// The resolving half of the same contract (redis.driver): when the host
+// resolver maps the logical binding to THIS instance, __call must return
+// the per-instance proxy table with its full method surface. Like the
+// soft-failure cases this needs no backend — the driver connects lazily on
+// first method CALL, so asserting the method presence exercises the whole
+// binding -> instance -> proxy resolution chain without a redis server.
+//
 // The test dlopens each plugin .so directly — no PluginHost pipeline and
 // no backend connection: create() only builds the instance record and
 // register_lua() only installs the namespace table, so the failure paths
@@ -35,10 +42,12 @@ const char* absent_binding(shield_plugin_context_v1*, const char*) {
 }
 
 // One plugin fixture: load the .so, create an instance wired to the
-// absent-binding host, install the Lua namespace, then run `script`
-// with its "NS(" placeholder rewritten to the real namespace name.
-void facade_soft_failure(const char* library_path, const char* lua_namespace,
-                         const char* script) {
+// caller's binding-resolver host, install the Lua namespace, then run
+// `script` with its "NS(" placeholder rewritten to the real namespace name.
+void facade_run(const char* library_path, const char* lua_namespace,
+                const char* script,
+                const char* (*resolver)(shield_plugin_context_v1*,
+                                        const char*)) {
     std::string err;
     PluginLibrary lib = PluginLibrary::load(library_path, err);
     BOOST_REQUIRE_MESSAGE(lib.is_loaded(), err);
@@ -51,7 +60,7 @@ void facade_soft_failure(const char* library_path, const char* lua_namespace,
     BOOST_CHECK_EQUAL(abi->abi_version, SHIELD_PLUGIN_ABI_VERSION);
 
     shield_host_api_v1 host_api{};
-    host_api.binding_instance_id = &absent_binding;
+    host_api.binding_instance_id = resolver;
     shield_plugin_create_args_v1 args{};
     args.host_api = &host_api;
     args.instance_id = "facade_test";
@@ -78,6 +87,12 @@ void facade_soft_failure(const char* library_path, const char* lua_namespace,
     inst->shutdown(inst);
 }
 
+// The documented soft-failure input: resolver always reports "absent".
+void facade_soft_failure(const char* library_path, const char* lua_namespace,
+                         const char* script) {
+    facade_run(library_path, lua_namespace, script, &absent_binding);
+}
+
 // Shared Lua assertions: the namespace fails soft for a missing binding
 // and for a no-arg call, and reports the binding back in the error table.
 const char* kSoftFailureScript = R"(
@@ -90,6 +105,36 @@ const char* kSoftFailureScript = R"(
     local p2, err2 = NS()
     assert(p2 == nil, "no-arg call must fail soft, not throw")
     assert(err2.code == "module_unavailable")
+)";
+
+// Resolving host for the redis.driver case: "redis-main" maps to the
+// instance the fixture created ("facade_test"); everything else stays
+// absent so the same script also re-checks the soft-failure arm through
+// the resolving namespace.
+const char* resolving_binding(shield_plugin_context_v1*, const char* binding) {
+    if (binding && std::string(binding) == "redis-main") return "facade_test";
+    return nullptr;
+}
+
+const char* kResolvingScript = R"(
+    local proxy, err = NS("redis-main")
+    assert(proxy ~= nil, "expected proxy, got error: " .. tostring(err))
+    assert(type(proxy) == "table", "proxy is " .. type(proxy))
+
+    -- The driver's documented proxy surface (redis-driver docs): the ten
+    -- typed command methods. Presence only — calling would need a server.
+    local methods = { "get", "set", "del", "hget", "hset", "hgetall",
+                      "zadd", "zrange", "command", "pipeline" }
+    for _, m in ipairs(methods) do
+        assert(type(proxy[m]) == "function",
+               "proxy." .. m .. " is " .. type(proxy[m]))
+    end
+
+    -- The same namespace still fails soft for an unresolvable binding.
+    local p2, err2 = NS("ghost.binding")
+    assert(p2 == nil, "unresolvable binding must fail soft")
+    assert(err2.code == "module_unavailable", "wrong code: " ..
+           tostring(err2 and err2.code))
 )";
 
 }  // namespace
@@ -147,5 +192,13 @@ BOOST_AUTO_TEST_CASE(LeaderboardRedisFacadeSoftFailure) {
 BOOST_AUTO_TEST_CASE(RedisDriverFacadeSoftFailure) {
     facade_soft_failure(SHIELD_FACADE_REDIS_DRIVER_LIBRARY, "shield.redis",
                         kSoftFailureScript);
+}
+
+// The resolving arm: host maps "redis-main" -> the created instance, so
+// __call builds and returns the real per-instance proxy (no server needed —
+// method presence only).
+BOOST_AUTO_TEST_CASE(RedisDriverFacadeResolvesBinding) {
+    facade_run(SHIELD_FACADE_REDIS_DRIVER_LIBRARY, "shield.redis",
+               kResolvingScript, &resolving_binding);
 }
 #endif
