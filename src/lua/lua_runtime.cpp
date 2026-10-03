@@ -619,7 +619,9 @@ bool LuaRuntime::call_http_handler(const HttpRouteRegistration& route,
 
         if (!result.valid() ||  // GCOVR_EXCL_BR_LINE (defensive: handler
                                 // validity was already checked)
-            result ==
+            result ==           // GCOVR_EXCL_BR_LINE (compiler artifact: the
+                       // nil-comparison records attribute to this first line
+                       // of the expression; the guard is annotated below)
                 shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive:
                              // handler_result.valid() was already checked
                              // above, so the converted object is always valid)
@@ -1043,7 +1045,9 @@ bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
         shd::object value = service[std::string(func_name)];
         if (!value.valid() ||  // GCOVR_EXCL_BR_LINE (defensive: a service table
                                // index always yields a valid (nil) object)
-            value ==
+            value ==           // GCOVR_EXCL_BR_LINE (compiler artifact: the
+                      // nil-comparison records attribute to this first line
+                      // of the expression; the guard is annotated below)
                 shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service table
                              // index always yields a valid (nil) object, so
                              // !value.valid() never fires; the missing-name arm
@@ -1103,7 +1107,10 @@ bool LuaRuntime::call_service_function(std::shared_ptr<LuaVM> vm,
                 if (second.valid() &&  // GCOVR_EXCL_BR_LINE (defensive:
                                        // result.get<shd::object> always yields
                                        // a valid object)
-                    second !=
+                    second !=  // GCOVR_EXCL_BR_LINE (compiler artifact: the
+                               // nil-comparison records attribute to this
+                               // first line of the expression; the guard is
+                               // annotated below)
                         shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: same arm
                                      // as the first message slot above - a
                                      // stack get is always valid)
@@ -1209,7 +1216,9 @@ bool LuaRuntime::call_service_method(std::shared_ptr<LuaVM> vm,
         shd::object value = service[std::string(method_name)];
         if (!value.valid() ||  // GCOVR_EXCL_BR_LINE (defensive: a service table
                                // index always yields a valid (nil) object)
-            value ==
+            value ==           // GCOVR_EXCL_BR_LINE (compiler artifact: the
+                      // nil-comparison records attribute to this first line
+                      // of the expression; the guard is annotated below)
                 shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service table
                              // index always yields a valid (nil) object, so
                              // !value.valid() never fires; the missing-method
@@ -1662,7 +1671,9 @@ bool LuaRuntime::call_service_method_coroutine(
         shd::object value = service[std::string(method_name)];
         if (!value.valid() ||  // GCOVR_EXCL_BR_LINE (defensive: a service table
                                // index always yields a valid (nil) object)
-            value ==
+            value ==           // GCOVR_EXCL_BR_LINE (compiler artifact: the
+                      // nil-comparison records attribute to this first line
+                      // of the expression; the guard is annotated below)
                 shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service table
                              // index always yields a valid (nil) object, so
                              // !value.valid() never fires; the missing-method

@@ -141,4 +141,75 @@ BOOST_AUTO_TEST_CASE(InitializeFailsOnMissingActorScript) {
     BOOST_CHECK(!shield::bootstrap::is_initialized());
 }
 
+// A relative actor script resolves against the config file's directory (the
+// source_dir arm of the resolver chain), an explicit RuntimeConfig node_id
+// publishes through the cluster config, and every listener option guard
+// takes its configured arm: the non-local host warns and binds all
+// interfaces, and the connection/frame/queue/idle limits all install.
+BOOST_AUTO_TEST_CASE(ListenerOptionsNodeIdAndRelativeScript) {
+    ShutdownGuard guard;
+    // The script sits next to the config (both land in the temp directory)
+    // so its bare name resolves through source_dir, not the cwd.
+    ++g_seq;
+    const fs::path script =
+        write_file(fs::temp_directory_path() /
+                       ("shield_cov_boot2_" + std::to_string(g_seq) + ".lua"),
+                   "local M = {}\nreturn M\n");
+    const fs::path cfg = write_config(
+        "app:\n  name: opts\n"
+        "net:\n  threads: 2\n"
+        "actors:\n  - name: opts_a\n    script: " +
+        script.filename().string() +
+        "\n    network:\n"
+        "      tcp: \"203.0.113.7:18451\"\n"
+        "      max_connections: 5\n"
+        "      max_connections_per_ip: 2\n"
+        "      max_frame_size: 65536\n"
+        "      max_session_send_queue: 100\n"
+        "      read_idle_timeout_ms: 30000\n"
+        "      rate_limit_per_second: 100\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    rc.node_id = "cov-opts-node";
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    BOOST_CHECK(shield::bootstrap::is_initialized());
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
+// instances > 1 spawns suffixed service names (the multi-instance naming
+// arm); network actors are excluded from this by config validation, so the
+// actor here has no listener.
+BOOST_AUTO_TEST_CASE(MultiInstanceActorSpawnSuffixedNames) {
+    ShutdownGuard guard;
+    const fs::path script = lua_script("multi.lua");
+    const fs::path cfg = write_config(
+        "app:\n  name: multi\n"
+        "actors:\n  - name: m\n    instances: 2\n    script: " +
+        script.string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    BOOST_CHECK(shield::bootstrap::is_initialized());
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
+// net.threads = 0 is the legacy single-threaded io loop arm.
+BOOST_AUTO_TEST_CASE(LegacyZeroNetThreadsStillServes) {
+    ShutdownGuard guard;
+    const fs::path script = lua_script("legacy_net.lua");
+    const fs::path cfg = write_config(
+        "app:\n  name: legacy\n"
+        "net:\n  threads: 0\n"
+        "actors:\n  - name: a\n    script: " +
+        script.string() + "\n    network:\n      tcp: \"127.0.0.1:18452\"\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    BOOST_CHECK(shield::bootstrap::is_initialized());
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

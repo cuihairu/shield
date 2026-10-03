@@ -759,4 +759,51 @@ BOOST_AUTO_TEST_CASE(ListenerRegistryLifecycle) {
     BOOST_CHECK(present(bound_port));
 }
 
+// The frame/send-queue/idle-timeout setters take effect on sessions created
+// afterwards: the short read-idle deadline fires with the stable error code
+// when a connected client sends nothing, and the deadline cancellation on
+// teardown drives the cancelled arm of the deadline handler.
+BOOST_AUTO_TEST_CASE(OptionSettersDriveReadIdleExpiry) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    std::atomic<int> connects{0};
+    std::atomic<int> disconnects{0};
+    std::atomic<SessionId> last_id{0};
+
+    SessionCallbacks callbacks;
+    callbacks.on_connect = [&](std::shared_ptr<Session> s) {
+        ++connects;
+        last_id = s->id();
+    };
+    callbacks.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
+        ++disconnects;
+    };
+
+    TcpListener listener(io, port, callbacks);
+    listener.set_max_frame_size(8192);
+    listener.set_max_send_queue(64);
+    listener.set_read_idle_timeout(80);
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(50ms);
+    BOOST_CHECK_EQUAL(connects.load(), 1);
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+
+    auto session = listener.find_session(last_id.load());
+    BOOST_REQUIRE(session != nullptr);
+    BOOST_CHECK(session->is_alive());
+
+    // No traffic: the idle deadline expires naturally and closes the session.
+    io.run_for(300ms);
+    BOOST_CHECK(wait_until([&] { return disconnects.load() == 1; }));
+    BOOST_CHECK(wait_until([&] { return listener.session_count() == 0; }));
+    BOOST_CHECK_EQUAL(session->error_code(), "read idle timeout");
+
+    listener.stop();
+    io.run_for(100ms);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

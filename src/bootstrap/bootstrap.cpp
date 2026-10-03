@@ -1401,7 +1401,12 @@ static bool initialize_impl(const RuntimeConfig& config) {
             g_state->console_server->set_on_line(
                 [dispatcher = g_state->console_dispatcher.get()](
                     std::shared_ptr<shield::net::ConsoleSession> session,
-                    std::string line) { dispatcher->dispatch(session, line); });
+                    std::string line) {  // GCOVR_EXCL_BR_LINE (compiler
+                                         // artifact: lambda-entry
+                                         // pseudo-branch; the body runs through
+                                         // the console line dispatch tests)
+                    dispatcher->dispatch(session, line);
+                });
 
             g_state->console_server->start();
             SHIELD_LOG_INFO(log, "Console server listening on " + sock_path);
