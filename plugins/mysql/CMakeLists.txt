@@ -8,10 +8,11 @@
 # PluginHost's scan() finds the manifest and load() maps the library.
 #
 # This plugin owns its Lua autonomy: register_lua() builds the callable
-# shield.database.mysql namespace from this DLL, not from the host. sol2 and
-# Lua are therefore PRIVATE dependencies — their symbols must NOT leak into
-# the host process (sol2 is header-only but needs Lua's headers at compile
-# time and lua52/53/luajit import library at link time).
+# shield.database.mysql namespace from this DLL, not from the host. The Lua
+# bindings go through the header-only shd layer (shield/lua/binding.hpp) and
+# Lua stays a PRIVATE dependency — its symbols must NOT leak into the host
+# process (headers at compile time, lua52/53/luajit import library at link
+# time).
 add_library(shield_db_mysql MODULE shield_db_mysql.cpp)
 
 target_include_directories(shield_db_mysql
@@ -20,7 +21,6 @@ target_include_directories(shield_db_mysql
         ${PROJECT_SOURCE_DIR}/plugins/_shared
         ${PROJECT_SOURCE_DIR}/plugins/mysql
         ${LUA_INCLUDE_DIR}
-        ${SOL2_INCLUDE_DIRS}
 )
 
 find_package(unofficial-libmariadb CONFIG REQUIRED)
@@ -29,7 +29,6 @@ find_package(unofficial-libmariadb CONFIG REQUIRED)
 target_link_libraries(shield_db_mysql
     PRIVATE
         unofficial::libmariadb
-        sol2::sol2
         ${LUA_LIBRARIES}
 )
 

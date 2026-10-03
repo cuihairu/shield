@@ -24,9 +24,10 @@
 //     file referenced from three different plugin manifests.
 #pragma once
 
-#include <sol/sol.hpp>
 #include <string>
 #include <string_view>
+
+#include "shield/lua/binding.hpp"
 
 namespace shield::plugins {
 
@@ -312,35 +313,35 @@ end
 //
 // Thread-safety: each lua_State is single-threaded by Shield's contract
 // (one VM per service), so no lock is needed around the registry access.
-inline bool apply_db_mapper_api(sol::state_view lua, sol::table proxy) {
-    // sol2 3.5 dropped state_view::valid(); a null lua_State is the only
-    // invalid state a state_view can represent.
+inline bool apply_db_mapper_api(shd::state_view lua, shd::table proxy) {
+    // A null lua_State is the only invalid state a state_view can represent.
     if (lua.lua_state() == nullptr || !proxy.valid()) return false;
+    lua_State* L = lua.lua_state();
+    constexpr const char* kCacheKey = "__shield_db_mapper_apply";
 
-    sol::table reg = lua.registry();
-    sol::optional<sol::protected_function> cached =
-        reg.get<sol::optional<sol::protected_function>>(
-            "__shield_db_mapper_apply");
+    shd::protected_function apply_fn;
+    lua_pushlstring(L, kCacheKey, std::strlen(kCacheKey));
+    lua_rawget(L, LUA_REGISTRYINDEX);
+    if (lua_isfunction(L, -1)) {
+        apply_fn = shd::protected_function(L, lua_gettop(L));
+    }
+    lua_pop(L, 1);
 
-    sol::protected_function apply_fn;
-    if (cached && cached->valid()) {
-        apply_fn = *cached;
-    } else {
-        // Compile the chunk once. lua.load() is unambiguous compared to
-        // safe_script's many overloads. The chunk returns a function
-        // (closure over local helpers) that we then invoke with the proxy.
-        sol::load_result load_res =
-            lua.load(std::string(kDbMapperLuaScript), "shield_db_mapper",
-                     sol::load_mode::text);
-        // load_result::get_type() is gone in sol2 3.5. A successful load
-        // always pushes the compiled chunk (a function); a failed load is
-        // covered by valid(), so the old type check was redundant.
+    if (!apply_fn.valid()) {
+        // Compile the chunk once. The chunk returns a function (closure
+        // over local helpers) that we then invoke with the proxy.
+        shd::load_result load_res =
+            lua.load(std::string(kDbMapperLuaScript), "shield_db_mapper");
         if (!load_res.valid()) {
             return false;
         }
-        apply_fn = load_res.get<sol::protected_function>();
-        // Cache for subsequent proxies on the same VM.
-        reg["__shield_db_mapper_apply"] = apply_fn;
+        apply_fn = load_res;
+        // Cache for subsequent proxies on the same VM (registry slot under
+        // the cache key; the reference-holding apply_fn keeps the chunk
+        // alive independently).
+        lua_pushlstring(L, kCacheKey, std::strlen(kCacheKey));
+        apply_fn.push();
+        lua_rawset(L, LUA_REGISTRYINDEX);
     }
 
     auto call_res = apply_fn(proxy);

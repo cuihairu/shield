@@ -13,7 +13,6 @@ target_include_directories(shield_redis_driver
         ${PROJECT_SOURCE_DIR}/plugins/_shared
         ${PROJECT_SOURCE_DIR}/plugins/redis.driver
         ${LUA_INCLUDE_DIR}
-        ${SOL2_INCLUDE_DIRS}
 )
 
 find_package(redis++ CONFIG REQUIRED)
@@ -27,7 +26,6 @@ endif()
 target_link_libraries(shield_redis_driver
     PRIVATE
         ${SHIELD_REDISPP_TARGET}
-        sol2::sol2
         ${LUA_LIBRARIES}
 )
 

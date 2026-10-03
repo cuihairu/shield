@@ -21,12 +21,12 @@
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "shield/lua/binding.hpp"
 #include "shield/plugin/abi.h"
 #include "shield/plugin/database.h"
 #include "shield/plugin/host_api.h"
@@ -438,7 +438,7 @@ sqlite3* open_connection(const sqlite_instance* inst, std::string* err_msg) {
 
 // Build a Lua error table {code=..., message=...} matching the shape used by
 // the host's shield.database.* facade.
-sol::table make_error_table(sol::state_view lua, const char* code,
+shd::table make_error_table(shd::state_view lua, const char* code,
                             const std::string& msg) {
     auto t = lua.create_table();
     t["code"] = code;
@@ -453,9 +453,9 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 //   double           -> FLOAT
 //   string           -> TEXT
 //   anything else    -> NULL (with a soft warning in *err_msg if provided)
-int bind_lua_param(sqlite3_stmt* stmt, int idx, const sol::object& v,
+int bind_lua_param(sqlite3_stmt* stmt, int idx, const shd::object& v,
                    std::string* err_msg) {
-    if (!v.valid() || v == sol::lua_nil) {
+    if (!v.valid() || v == shd::nil) {
         return sqlite3_bind_null(stmt, idx);
     }
     // Boolean first — sol casts bool to int otherwise.
@@ -484,7 +484,7 @@ int bind_lua_param(sqlite3_stmt* stmt, int idx, const sol::object& v,
 }
 
 // Convert the current row of `stmt` into a Lua table keyed by column name.
-sol::table row_to_lua(sol::state_view lua, sqlite3_stmt* stmt) {
+shd::table row_to_lua(shd::state_view lua, sqlite3_stmt* stmt) {
     auto row = lua.create_table();
     int n = sqlite3_column_count(stmt);
     for (int c = 0; c < n; ++c) {
@@ -499,12 +499,12 @@ sol::table row_to_lua(sol::state_view lua, sqlite3_stmt* stmt) {
                 break;
             case SQLITE_TEXT: {
                 const unsigned char* t = sqlite3_column_text(stmt, c);
-                // Split into branches: a ternary of std::string vs sol::lua_nil
+                // Split into branches: a ternary of std::string vs shd::nil
                 // is ambiguous under sol2 3.5.
                 if (t) {
                     row[name] = std::string(reinterpret_cast<const char*>(t));
                 } else {
-                    row[name] = sol::lua_nil;
+                    row[name] = shd::nil;
                 }
                 break;
             }
@@ -515,12 +515,12 @@ sol::table row_to_lua(sol::state_view lua, sqlite3_stmt* stmt) {
                     row[name] = std::string(static_cast<const char*>(b),
                                             static_cast<size_t>(sz));
                 } else {
-                    row[name] = sol::lua_nil;
+                    row[name] = shd::nil;
                 }
                 break;
             }
             default:
-                row[name] = sol::lua_nil;  // SQLITE_NULL
+                row[name] = shd::nil;  // SQLITE_NULL
                 break;
         }
     }
@@ -536,25 +536,25 @@ sol::table row_to_lua(sol::state_view lua, sqlite3_stmt* stmt) {
 //   query        -> sequence table {row1, row2, ...}
 //   query_one    -> single row table or nil
 //   execute      -> table {affected=N, last_insert_id=M}
-sol::object run_statement(
-    sol::state_view lua, sqlite3* db, const std::string& sql,
-    sol::optional<sol::table> params,
+shd::object run_statement(
+    shd::state_view lua, sqlite3* db, const std::string& sql,
+    std::optional<shd::table> params,
     const char* mode,  // "query" | "query_one" | "execute"
-    bool* ok, sol::table* err_out) {
+    bool* ok, shd::table* err_out) {
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
         *ok = false;
         *err_out =
             make_error_table(lua, map_sqlite_error(rc), sqlite3_errmsg(db));
-        return sol::lua_nil;
+        return shd::nil;
     }
     // Bind parameters (Lua sequence table 1..N). Collect positional values
     // first to avoid any iterator invalidation from stack work during bind.
     if (params && params->valid()) {
-        std::vector<sol::object> positional;
-        for (auto& kv : *params) {
-            if (kv.first.get_type() != sol::type::number) continue;
+        std::vector<shd::object> positional;
+        for (const auto& kv : *params) {
+            if (kv.first.get_type() != shd::type::number) continue;
             positional.push_back(kv.second);
         }
         for (size_t i = 0; i < positional.size(); ++i) {
@@ -567,12 +567,12 @@ sol::object run_statement(
                 *err_out = make_error_table(
                     lua, map_sqlite_error(brc),
                     bind_err.empty() ? sqlite3_errmsg(db) : bind_err);
-                return sol::lua_nil;
+                return shd::nil;
             }
         }
     }
 
-    sol::object result = sol::lua_nil;
+    shd::object result = shd::nil;
     if (std::strcmp(mode, "execute") == 0) {
         // Step once; we don't collect rows for DML.
         rc = sqlite3_step(stmt);
@@ -581,7 +581,7 @@ sol::object run_statement(
             *ok = false;
             *err_out =
                 make_error_table(lua, map_sqlite_error(rc), sqlite3_errmsg(db));
-            return sol::lua_nil;
+            return shd::nil;
         }
         auto t = lua.create_table();
         t["affected"] = static_cast<lua_Integer>(sqlite3_changes(db));
@@ -593,13 +593,13 @@ sol::object run_statement(
         if (rc == SQLITE_ROW) {
             result = row_to_lua(lua, stmt);
         } else if (rc == SQLITE_DONE) {
-            result = sol::object(sol::lua_nil);  // no rows
+            result = shd::object(shd::nil);  // no rows
         } else {
             sqlite3_finalize(stmt);
             *ok = false;
             *err_out =
                 make_error_table(lua, map_sqlite_error(rc), sqlite3_errmsg(db));
-            return sol::lua_nil;
+            return shd::nil;
         }
     } else {  // "query"
         auto rows = lua.create_table();
@@ -615,7 +615,7 @@ sol::object run_statement(
                 *ok = false;
                 *err_out = make_error_table(lua, map_sqlite_error(rc),
                                             sqlite3_errmsg(db));
-                return sol::lua_nil;
+                return shd::nil;
             }
         }
         result = rows;
@@ -974,7 +974,7 @@ void submit_async(sqlite_instance* inst, sqlite_task task) {
 
 // Build a per-call proxy table bound to a specific sqlite3* handle. Used by
 // transaction() so the callback's tx:execute/tx:query share one connection.
-sol::table make_handle_proxy(sol::state_view lua, sqlite3* db);
+shd::table make_handle_proxy(shd::state_view lua, sqlite3* db);
 
 // Async shim installed over the instance proxy: query/query_one/execute
 // become submit-and-yield wrappers around the __sync_* implementations.
@@ -983,29 +983,29 @@ sol::table make_handle_proxy(sol::state_view lua, sqlite3* db);
 constexpr const char* kAsyncShim = shield::plugins::kDbAsyncShimLua;
 
 // Build a per-instance proxy table that opens a fresh connection per call.
-sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
+shd::table make_instance_proxy(shd::state_view lua, sqlite_instance* inst) {
     auto proxy = lua.create_table();
 
     proxy.set_function(
         "__sync_query",
-        [inst](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string open_err;
             sqlite3* db = open_connection(inst, &open_err);
             if (!db) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "connection_failed", open_err));
                 return results;
             }
             bool ok = false;
-            sol::table err;
-            sol::object rows =
+            shd::table err;
+            shd::object rows =
                 run_statement(lua, db, sql, params, "query", &ok, &err);
             sqlite3_close(db);
-            results.push_back(sol::make_object(lua, ok));
+            results.push_back(shd::make_object(lua, ok));
             if (ok) {
                 results.push_back(rows);
             } else {
@@ -1016,24 +1016,24 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
 
     proxy.set_function(
         "__sync_query_one",
-        [inst](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string open_err;
             sqlite3* db = open_connection(inst, &open_err);
             if (!db) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "connection_failed", open_err));
                 return results;
             }
             bool ok = false;
-            sol::table err;
-            sol::object row =
+            shd::table err;
+            shd::object row =
                 run_statement(lua, db, sql, params, "query_one", &ok, &err);
             sqlite3_close(db);
-            results.push_back(sol::make_object(lua, ok));
+            results.push_back(shd::make_object(lua, ok));
             if (ok) {
                 results.push_back(row);  // row or nil
             } else {
@@ -1044,24 +1044,24 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
 
     proxy.set_function(
         "__sync_execute",
-        [inst](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string open_err;
             sqlite3* db = open_connection(inst, &open_err);
             if (!db) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "connection_failed", open_err));
                 return results;
             }
             bool ok = false;
-            sol::table err;
-            sol::object res =
+            shd::table err;
+            shd::object res =
                 run_statement(lua, db, sql, params, "execute", &ok, &err);
             sqlite3_close(db);
-            results.push_back(sol::make_object(lua, ok));
+            results.push_back(shd::make_object(lua, ok));
             if (ok) {
                 results.push_back(res);
             } else {
@@ -1075,14 +1075,14 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
     // lands here when async is off (or the host lacks the primitives).
     proxy.set_function(
         "__sync_transaction",
-        [inst](sol::this_state s,
-               sol::protected_function callback) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s,
+               shd::protected_function callback) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string open_err;
             sqlite3* db = open_connection(inst, &open_err);
             if (!db) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "connection_failed", open_err));
                 return results;
@@ -1095,23 +1095,23 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
                 std::string msg = begin_err ? begin_err : "BEGIN failed";
                 sqlite3_free(begin_err);
                 sqlite3_close(db);
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "db_query_failed", msg));
                 return results;
             }
 
             // tx proxy shares this db handle.
-            sol::table tx = make_handle_proxy(lua, db);
-            sol::protected_function_result cb_res = callback(tx);
+            shd::table tx = make_handle_proxy(lua, db);
+            shd::protected_function_result cb_res = callback(tx);
             bool commit = cb_res.valid();
             bool user_abort = false;
 
             if (cb_res.valid()) {
                 // A boolean `false` first return is treated as user-initiated
                 // rollback (matches the host facade's contract).
-                sol::optional<bool> first = cb_res.get<sol::optional<bool>>(0);
-                if (first && !*first) {
+                shd::object first = cb_res.get(0);
+                if (first.is<bool>() && !first.as<bool>()) {
                     commit = false;
                     user_abort = true;
                 }
@@ -1125,7 +1125,7 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
 
             if (trc != SQLITE_OK) {
                 sqlite3_close(db);
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(
                     lua, map_sqlite_error(trc),
                     tx_msg.empty()
@@ -1138,7 +1138,7 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
 
             if (!cb_res.valid()) {
                 // Lua callback threw — report as soft failure after rollback.
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(lua,
                                                    "transaction_rolled_back",
                                                    "callback raised an error"));
@@ -1147,17 +1147,17 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
 
             if (user_abort) {
                 // Callback explicitly returned false — propagate its returns.
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(
                     lua, "transaction_rolled_back", "callback returned false"));
                 return results;
             }
 
             // Success: forward the callback's return values.
-            results.push_back(sol::make_object(lua, true));
+            results.push_back(shd::make_object(lua, true));
             int n_returns = cb_res.return_count();
             for (int i = 0; i < n_returns; ++i) {
-                results.push_back(cb_res.get<sol::object>(i));
+                results.push_back(cb_res.get<shd::object>(i));
             }
             return results;
         });
@@ -1169,8 +1169,9 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
     // the session id, or 0 when the caller must run synchronously.
     proxy.set_function(
         "__db_submit",
-        [inst](sol::this_state s, std::string method, std::string sql,
-               sol::optional<sol::table> params) -> uint64_t {
+        [inst](shd::this_state s, std::string method,
+               std::optional<std::string> sql,
+               std::optional<shd::table> params) -> uint64_t {
             if (!inst->async_enabled || inst->host_api == nullptr ||
                 inst->host_api->lua_suspend_current == nullptr ||
                 inst->host_api->lua_resume_session == nullptr) {
@@ -1203,15 +1204,15 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
             task.tx_token = tx_token;
             if (task.kind == task_kind::stmt ||
                 task.kind == task_kind::tx_stmt) {
-                task.sql = std::move(sql);
+                task.sql = sql ? std::move(*sql) : std::string();
             }
             // Positional params (Lua sequence 1..N), mirroring the sync
             // path's numeric-key bind. Type order matters: bool before int,
             // or sol folds booleans into integers.
             if (params && params->valid()) {
-                for (auto& kv : *params) {
-                    if (kv.first.get_type() != sol::type::number) continue;
-                    const sol::object& v = kv.second;
+                for (const auto& kv : *params) {
+                    if (kv.first.get_type() != shd::type::number) continue;
+                    const shd::object& v = kv.second;
                     if (v.is<bool>()) {
                         task.params.push_back(v.as<bool>());
                     } else if (v.is<lua_Integer>()) {
@@ -1238,10 +1239,14 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
 
     // Install the shim. Failure is impossible for static source, but a
     // fallback keeps the module usable synchronously if it ever trips.
-    sol::load_result shim = lua.load(kAsyncShim, "=db_async_shim");
+    shd::load_result shim = lua.load(kAsyncShim, "=db_async_shim");
     bool shim_ok = shim.valid();
     if (shim_ok) {
-        sol::function_result r = shim(proxy, proxy["__db_submit"]);
+        // load_result is not directly callable in shd: route through the
+        // protected_function conversion so a shim error is a failed result,
+        // not a C++ exception.
+        shd::protected_function shim_fn = shim;
+        shd::protected_function_result r = shim_fn(proxy, proxy["__db_submit"]);
         shim_ok = r.valid();
     }
     if (!shim_ok) {
@@ -1252,7 +1257,7 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
         }
         for (const char* m : {"query", "query_one", "execute", "transaction"}) {
             std::string key = std::string("__sync_") + m;
-            sol::object fn = proxy[key];
+            shd::object fn = proxy[key];
             proxy[m] = fn;
         }
     }
@@ -1261,51 +1266,51 @@ sol::table make_instance_proxy(sol::state_view lua, sqlite_instance* inst) {
 }
 
 // Proxy whose methods reuse a shared sqlite3* (used inside transactions).
-sol::table make_handle_proxy(sol::state_view lua, sqlite3* db) {
+shd::table make_handle_proxy(shd::state_view lua, sqlite3* db) {
     auto proxy = lua.create_table();
 
     proxy.set_function(
         "query",
-        [db](sol::this_state s, std::string sql,
-             sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [db](shd::this_state s, std::string sql,
+             std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             bool ok = false;
-            sol::table err;
-            sol::object rows =
+            shd::table err;
+            shd::object rows =
                 run_statement(lua, db, sql, params, "query", &ok, &err);
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? rows : err);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? rows : shd::object(err));
             return results;
         });
 
     proxy.set_function(
         "query_one",
-        [db](sol::this_state s, std::string sql,
-             sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [db](shd::this_state s, std::string sql,
+             std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             bool ok = false;
-            sol::table err;
-            sol::object row =
+            shd::table err;
+            shd::object row =
                 run_statement(lua, db, sql, params, "query_one", &ok, &err);
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? row : err);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? row : shd::object(err));
             return results;
         });
 
     proxy.set_function(
         "execute",
-        [db](sol::this_state s, std::string sql,
-             sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [db](shd::this_state s, std::string sql,
+             std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             bool ok = false;
-            sol::table err;
-            sol::object res =
+            shd::table err;
+            shd::object res =
                 run_statement(lua, db, sql, params, "execute", &ok, &err);
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? res : err);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? res : shd::object(err));
             return results;
         });
 
@@ -1324,14 +1329,16 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
         }
         return 1;
     }
-    sol::state_view lua(L);
+    shd::state_view lua(L);
 
     // Build the callable namespace shield.database.sqlite.
-    auto shield = lua["shield"].get_or_create<sol::table>();
-    auto database = shield["database"].get_or_create<sol::table>();
+    shd::table shield =
+        shield::plugins::get_or_create_global_subtable(lua, "shield");
+    shd::table database =
+        shield::plugins::get_or_create_subtable(shield, "database");
 
-    sol::object existing = database["sqlite"];
-    if (!existing.is<sol::table>()) {
+    shd::object existing = database["sqlite"];
+    if (!existing.is<shd::table>()) {
         auto* owner = reinterpret_cast<sqlite_instance*>(self);
         auto ns = lua.create_table();
         auto mt = lua.create_table();
@@ -1339,10 +1346,10 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
             "__call",
             [host_api = owner ? owner->host_api : nullptr,
              ctx = owner ? owner->ctx : nullptr](
-                sol::this_state s, sol::table /*self*/,
-                sol::optional<std::string> binding) -> sol::variadic_results {
-                sol::state_view lua(s);
-                sol::variadic_results results;
+                shd::this_state s, shd::table /*self*/,
+                std::optional<std::string> binding) -> shd::variadic_results {
+                shd::state_view lua(s);
+                shd::variadic_results results;
                 std::string logical = binding.value_or("");
                 auto* inst = shield::plugins::resolve_lua_binding(
                     host_api, ctx, logical, find_instance);
@@ -1351,14 +1358,14 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
                                                              logical);
                     return results;
                 }
-                sol::table proxy = make_instance_proxy(lua, inst);
+                shd::table proxy = make_instance_proxy(lua, inst);
                 // Attach the shared mapper / register_mapper / entity DSL.
                 // Failure here is non-fatal — the proxy keeps its C++ methods.
                 shield::plugins::apply_db_mapper_api(lua, proxy);
-                results.push_back(sol::make_object(lua, proxy));
+                results.push_back(shd::make_object(lua, proxy));
                 return results;
             });
-        ns[sol::metatable_key] = mt;
+        shield::plugins::set_metatable(ns, mt);
         database["sqlite"] = ns;
     }
 

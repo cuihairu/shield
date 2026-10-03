@@ -46,12 +46,12 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <queue>
-#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "shield/lua/binding.hpp"
 #include "shield/plugin/abi.h"
 #include "shield/plugin/database.h"
 #include "shield/plugin/host_api.h"
@@ -725,7 +725,7 @@ pool_guard acquire_conn(pgsql_instance* inst, std::string* err) {
 
 // Build a Lua error table {code=..., message=...} matching the shape used by
 // the host's shield.database.* facade.
-sol::table make_error_table(sol::state_view lua, const char* code,
+shd::table make_error_table(shd::state_view lua, const char* code,
                             const std::string& msg) {
     auto t = lua.create_table();
     t["code"] = code;
@@ -734,7 +734,7 @@ sol::table make_error_table(sol::state_view lua, const char* code,
 }
 
 // Build a Lua error table from a PGresult (pulls SQLSTATE + primary message).
-sol::table make_error_from_result(sol::state_view lua, PGresult* res) {
+shd::table make_error_from_result(shd::state_view lua, PGresult* res) {
     const char* sqlstate =
         res ? PQresultErrorField(res, PG_DIAG_SQLSTATE) : nullptr;
     const char* msg = res ? PQresultErrorMessage(res) : nullptr;
@@ -748,36 +748,36 @@ sol::table make_error_from_result(sol::state_view lua, PGresult* res) {
 // returns everything as text via PQgetvalue; we rely on the field's OID
 // (PQftype) only to distinguish "definitely integer" (INT2/INT4/INT8/OID)
 // from "definitely float" (FLOAT4/FLOAT8/NUMERIC) from text. NULL stays nil.
-sol::object pg_cell_to_lua(sol::state_view lua, PGresult* res, int row,
+shd::object pg_cell_to_lua(shd::state_view lua, PGresult* res, int row,
                            int col) {
-    if (PQgetisnull(res, row, col)) return sol::lua_nil;
+    if (PQgetisnull(res, row, col)) return shd::nil;
     const char* v = PQgetvalue(res, row, col);
-    if (!v) return sol::lua_nil;
+    if (!v) return shd::nil;
     Oid t = PQftype(res, col);
     std::string s = v;
     // Numeric types: INT2=21, INT4=23, INT8=20, OID=26. BOOL=16.
     if (t == 21 || t == 23 || t == 20 || t == 26) {
         try {
-            return sol::make_object(
+            return shd::make_object(
                 lua, static_cast<lua_Integer>(std::strtoll(v, nullptr, 10)));
         } catch (...) { /* fall through */
         }
     }
     if (t == 16) {
         // boolean — libpq renders 't'/'f'.
-        return sol::make_object(lua, s == "t");
+        return shd::make_object(lua, s == "t");
     }
     if (t == 700 || t == 701 || t == 1700) {
         try {
-            return sol::make_object(lua, std::stod(s));
+            return shd::make_object(lua, std::stod(s));
         } catch (...) { /* fall through */
         }
     }
-    return sol::make_object(lua, s);
+    return shd::make_object(lua, s);
 }
 
 // Build a Lua row table from a PGresult at row `r`, keyed by column name.
-sol::table pg_row_to_lua(sol::state_view lua, PGresult* res, int r) {
+shd::table pg_row_to_lua(shd::state_view lua, PGresult* res, int r) {
     auto row = lua.create_table();
     int n = PQnfields(res);
     for (int c = 0; c < n; ++c) {
@@ -794,21 +794,21 @@ struct lua_params {
     std::vector<const char*> ptrs;  // points into storage
 };
 
-lua_params collect_lua_params(sol::optional<sol::table> params,
+lua_params collect_lua_params(std::optional<shd::table> params,
                               std::string* err_msg) {
     lua_params out;
     if (!params || !params->valid()) return out;
     // Iterate once, copying values so later binding can't invalidate them.
-    std::vector<sol::object> positional;
-    for (auto& kv : *params) {
-        if (kv.first.get_type() != sol::type::number) continue;
+    std::vector<shd::object> positional;
+    for (const auto& kv : *params) {
+        if (kv.first.get_type() != shd::type::number) continue;
         positional.push_back(kv.second);
     }
     out.storage.reserve(positional.size());
     out.ptrs.reserve(positional.size());
     for (size_t i = 0; i < positional.size(); ++i) {
-        const sol::object& v = positional[i];
-        if (!v.valid() || v == sol::lua_nil) {
+        const shd::object& v = positional[i];
+        if (!v.valid() || v == shd::nil) {
             out.storage.emplace_back();
             out.ptrs.push_back(nullptr);
         } else if (v.is<bool>()) {
@@ -839,11 +839,11 @@ lua_params collect_lua_params(sol::optional<sol::table> params,
 //   "query_one" -> single row table or nil
 //   "execute"   -> table {affected=N}
 // On error, *ok is set to false and *err_out receives an error table.
-sol::object run_statement(
-    sol::state_view lua, PGconn* conn, const std::string& sql,
-    sol::optional<sol::table> params,
+shd::object run_statement(
+    shd::state_view lua, PGconn* conn, const std::string& sql,
+    std::optional<shd::table> params,
     const char* mode,  // "query" | "query_one" | "execute"
-    bool* ok, sol::table* err_out, bool* conn_bad) {
+    bool* ok, shd::table* err_out, bool* conn_bad) {
     std::string bind_err;
     lua_params lp = collect_lua_params(params, &bind_err);
 
@@ -858,7 +858,7 @@ sol::object run_statement(
         *conn_bad = true;
         *err_out = make_error_table(lua, "connection_lost",
                                     "postgresql: PQexecParams returned NULL");
-        return sol::lua_nil;
+        return shd::nil;
     }
 
     ExecStatusType status = PQresultStatus(res);
@@ -867,10 +867,10 @@ sol::object run_statement(
         if (PQstatus(conn) == CONNECTION_BAD) *conn_bad = true;
         PQclear(res);
         *ok = false;
-        return sol::lua_nil;
+        return shd::nil;
     }
 
-    sol::object result = sol::lua_nil;
+    shd::object result = shd::nil;
     if (std::strcmp(mode, "execute") == 0) {
         char* affected = PQcmdTuples(res);
         auto t = lua.create_table();
@@ -883,7 +883,7 @@ sol::object run_statement(
         if (PQntuples(res) > 0) {
             result = pg_row_to_lua(lua, res, 0);
         } else {
-            result = sol::object(sol::lua_nil);  // no rows
+            result = shd::object(shd::nil);  // no rows
         }
     } else {  // "query"
         auto rows = lua.create_table();
@@ -900,7 +900,7 @@ sol::object run_statement(
 
 // Forward decl: the transaction callback gets a handle-proxy bound to a
 // single checked-out connection so all of its statements share the tx.
-sol::table make_handle_proxy(sol::state_view lua, pgsql_instance* inst,
+shd::table make_handle_proxy(shd::state_view lua, pgsql_instance* inst,
                              PGconn* conn, bool* conn_bad);
 
 // Forward decls — the async machinery lives after drain_pool (bottom of the
@@ -910,78 +910,78 @@ void submit_async(pgsql_instance* inst, pg_task task);
 
 // Build a per-instance proxy table. Each method acquires from the pool,
 // runs the statement, and returns the conn via RAII.
-sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
+shd::table make_instance_proxy(shd::state_view lua, pgsql_instance* inst) {
     auto proxy = lua.create_table();
 
     proxy.set_function(
         "__sync_query",
-        [inst](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string err;
             pool_guard g = acquire_conn(inst, &err);
             if (!g.get()) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "connection_failed", err));
                 return results;
             }
             bool ok = false, conn_bad = false;
-            sol::table err_t;
-            sol::object rows = run_statement(lua, g.get(), sql, params, "query",
+            shd::table err_t;
+            shd::object rows = run_statement(lua, g.get(), sql, params, "query",
                                              &ok, &err_t, &conn_bad);
             g.bad = conn_bad;  // let pool_guard PQfinish dead conns
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? rows : err_t);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? rows : shd::object(err_t));
             return results;
         });
 
     proxy.set_function(
         "__sync_query_one",
-        [inst](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string err;
             pool_guard g = acquire_conn(inst, &err);
             if (!g.get()) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "connection_failed", err));
                 return results;
             }
             bool ok = false, conn_bad = false;
-            sol::table err_t;
-            sol::object row = run_statement(
+            shd::table err_t;
+            shd::object row = run_statement(
                 lua, g.get(), sql, params, "query_one", &ok, &err_t, &conn_bad);
             g.bad = conn_bad;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? row : err_t);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? row : shd::object(err_t));
             return results;
         });
 
     proxy.set_function(
         "__sync_execute",
-        [inst](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string err;
             pool_guard g = acquire_conn(inst, &err);
             if (!g.get()) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "connection_failed", err));
                 return results;
             }
             bool ok = false, conn_bad = false;
-            sol::table err_t;
-            sol::object res = run_statement(lua, g.get(), sql, params,
+            shd::table err_t;
+            shd::object res = run_statement(lua, g.get(), sql, params,
                                             "execute", &ok, &err_t, &conn_bad);
             g.bad = conn_bad;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? res : err_t);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? res : shd::object(err_t));
             return results;
         });
 
@@ -990,14 +990,14 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
     // lands here when async is off (or the host lacks the primitives).
     proxy.set_function(
         "__sync_transaction",
-        [inst](sol::this_state s,
-               sol::protected_function callback) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s,
+               shd::protected_function callback) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string err;
             pool_guard g = acquire_conn(inst, &err);
             if (!g.get()) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "connection_failed", err));
                 return results;
@@ -1011,12 +1011,12 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
                     conn_bad = true;
                 } else {
                     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-                        sol::table err_t = make_error_from_result(lua, res);
+                        shd::table err_t = make_error_from_result(lua, res);
                         if (PQstatus(g.get()) == CONNECTION_BAD)
                             conn_bad = true;
                         PQclear(res);
                         g.bad = conn_bad;
-                        results.push_back(sol::make_object(lua, false));
+                        results.push_back(shd::make_object(lua, false));
                         results.push_back(err_t);
                         return results;
                     }
@@ -1026,9 +1026,9 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
 
             // Build the tx proxy sharing this conn.
             bool tx_conn_bad = false;
-            sol::table tx = make_handle_proxy(lua, inst, g.get(), &tx_conn_bad);
+            shd::table tx = make_handle_proxy(lua, inst, g.get(), &tx_conn_bad);
 
-            sol::protected_function_result cb_res = callback(tx);
+            shd::protected_function_result cb_res = callback(tx);
             bool commit = cb_res.valid();
             bool user_abort = false;
             bool saw_error = false;
@@ -1036,8 +1036,8 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             if (cb_res.valid()) {
                 // A boolean `false` first return is treated as user-initiated
                 // rollback (matches the host facade's contract).
-                sol::optional<bool> first = cb_res.get<sol::optional<bool>>(0);
-                if (first && !*first) {
+                shd::object first = cb_res.get(0);
+                if (first.is<bool>() && !first.as<bool>()) {
                     commit = false;
                     user_abort = true;
                 }
@@ -1080,7 +1080,7 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             g.bad = conn_bad;
 
             if (!tx_ok) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, tx_err_code, tx_err_msg));
                 return results;
@@ -1088,7 +1088,7 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
 
             if (saw_error) {
                 // Callback raised — soft failure after successful rollback.
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(lua,
                                                    "transaction_rolled_back",
                                                    "callback raised an error"));
@@ -1096,17 +1096,17 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             }
 
             if (user_abort) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(
                     lua, "transaction_rolled_back", "callback returned false"));
                 return results;
             }
 
             // Success: forward the callback's return values.
-            results.push_back(sol::make_object(lua, true));
+            results.push_back(shd::make_object(lua, true));
             int n_returns = cb_res.return_count();
             for (int i = 0; i < n_returns; ++i) {
-                results.push_back(cb_res.get<sol::object>(i));
+                results.push_back(cb_res.get<shd::object>(i));
             }
             return results;
         });
@@ -1120,8 +1120,9 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
     // __tx_* transaction protocol forms.
     proxy.set_function(
         "__db_submit",
-        [inst](sol::this_state s, std::string method, std::string sql,
-               sol::optional<sol::table> params) -> uint64_t {
+        [inst](shd::this_state s, std::string method,
+               std::optional<std::string> sql,
+               std::optional<shd::table> params) -> uint64_t {
             if (!inst->async_enabled || inst->host_api == nullptr ||
                 inst->host_api->lua_suspend_current == nullptr ||
                 inst->host_api->lua_resume_session == nullptr) {
@@ -1154,15 +1155,15 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
             task.tx_token = tx_token;
             if (task.kind == pg_task_kind::stmt ||
                 task.kind == pg_task_kind::tx_stmt) {
-                task.sql = std::move(sql);
+                task.sql = sql ? std::move(*sql) : std::string();
             }
             // Positional params (Lua sequence 1..N), mirroring the sync
             // path's numeric-key bind. Type order matters: bool before int,
             // or sol folds booleans into integers.
             if (params && params->valid()) {
-                for (auto& kv : *params) {
-                    if (kv.first.get_type() != sol::type::number) continue;
-                    const sol::object& v = kv.second;
+                for (const auto& kv : *params) {
+                    if (kv.first.get_type() != shd::type::number) continue;
+                    const shd::object& v = kv.second;
                     if (v.is<bool>()) {
                         task.params.push_back(v.as<bool>());
                     } else if (v.is<lua_Integer>()) {
@@ -1187,11 +1188,15 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
     // Wrap the sync methods with the shared submit-and-yield shim. If the
     // shim source fails to load (should be impossible — it is a string
     // constant), fall back to exposing the sync methods directly.
-    sol::load_result shim =
+    shd::load_result shim =
         lua.load(shield::plugins::kDbAsyncShimLua, "=db_async_shim");
     bool shim_ok = shim.valid();
     if (shim_ok) {
-        sol::function_result r = shim(proxy, proxy["__db_submit"]);
+        // load_result is not directly callable in shd: route through the
+        // protected_function conversion so a shim error is a failed result,
+        // not a C++ exception.
+        shd::protected_function shim_fn = shim;
+        shd::protected_function_result r = shim_fn(proxy, proxy["__db_submit"]);
         shim_ok = r.valid();
     }
     if (!shim_ok) {
@@ -1202,7 +1207,7 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
         }
         for (const char* m : {"query", "query_one", "execute", "transaction"}) {
             std::string key = std::string("__sync_") + m;
-            sol::object fn = proxy[key];
+            shd::object fn = proxy[key];
             proxy[m] = fn;
         }
     }
@@ -1214,58 +1219,58 @@ sol::table make_instance_proxy(sol::state_view lua, pgsql_instance* inst) {
 // Methods don't acquire from the pool — they run statements directly on
 // `conn`. `*conn_bad` is shared with the transaction() lambda so the
 // caller knows whether COMMIT is still safe.
-sol::table make_handle_proxy(sol::state_view lua, pgsql_instance* /*inst*/,
+shd::table make_handle_proxy(shd::state_view lua, pgsql_instance* /*inst*/,
                              PGconn* conn, bool* conn_bad) {
     auto proxy = lua.create_table();
 
     proxy.set_function(
         "query",
         [conn, conn_bad](
-            sol::this_state s, std::string sql,
-            sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+            shd::this_state s, std::string sql,
+            std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             bool ok = false, cd = false;
-            sol::table err_t;
-            sol::object rows = run_statement(lua, conn, sql, params, "query",
+            shd::table err_t;
+            shd::object rows = run_statement(lua, conn, sql, params, "query",
                                              &ok, &err_t, &cd);
             if (cd) *conn_bad = true;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? rows : err_t);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? rows : shd::object(err_t));
             return results;
         });
 
     proxy.set_function(
         "query_one",
         [conn, conn_bad](
-            sol::this_state s, std::string sql,
-            sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+            shd::this_state s, std::string sql,
+            std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             bool ok = false, cd = false;
-            sol::table err_t;
-            sol::object row = run_statement(lua, conn, sql, params, "query_one",
+            shd::table err_t;
+            shd::object row = run_statement(lua, conn, sql, params, "query_one",
                                             &ok, &err_t, &cd);
             if (cd) *conn_bad = true;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? row : err_t);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? row : shd::object(err_t));
             return results;
         });
 
     proxy.set_function(
         "execute",
         [conn, conn_bad](
-            sol::this_state s, std::string sql,
-            sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+            shd::this_state s, std::string sql,
+            std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             bool ok = false, cd = false;
-            sol::table err_t;
-            sol::object res = run_statement(lua, conn, sql, params, "execute",
+            shd::table err_t;
+            shd::object res = run_statement(lua, conn, sql, params, "execute",
                                             &ok, &err_t, &cd);
             if (cd) *conn_bad = true;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? res : err_t);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? res : shd::object(err_t));
             return results;
         });
 
@@ -1284,14 +1289,16 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
         }
         return 1;
     }
-    sol::state_view lua(L);
+    shd::state_view lua(L);
 
     // Build the callable namespace shield.database.postgresql.
-    auto shield = lua["shield"].get_or_create<sol::table>();
-    auto database = shield["database"].get_or_create<sol::table>();
+    shd::table shield =
+        shield::plugins::get_or_create_global_subtable(lua, "shield");
+    shd::table database =
+        shield::plugins::get_or_create_subtable(shield, "database");
 
-    sol::object existing = database["postgresql"];
-    if (!existing.is<sol::table>()) {
+    shd::object existing = database["postgresql"];
+    if (!existing.is<shd::table>()) {
         auto* owner = reinterpret_cast<pgsql_instance*>(self);
         auto ns = lua.create_table();
         auto mt = lua.create_table();
@@ -1299,10 +1306,10 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
             "__call",
             [host_api = owner ? owner->host_api : nullptr,
              ctx = owner ? owner->ctx : nullptr](
-                sol::this_state s, sol::table /*self*/,
-                sol::optional<std::string> binding) -> sol::variadic_results {
-                sol::state_view lua(s);
-                sol::variadic_results results;
+                shd::this_state s, shd::table /*self*/,
+                std::optional<std::string> binding) -> shd::variadic_results {
+                shd::state_view lua(s);
+                shd::variadic_results results;
                 std::string logical = binding.value_or("");
                 auto* inst = shield::plugins::resolve_lua_binding(
                     host_api, ctx, logical, find_instance);
@@ -1311,12 +1318,12 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
                                                              logical);
                     return results;
                 }
-                sol::table proxy = make_instance_proxy(lua, inst);
+                shd::table proxy = make_instance_proxy(lua, inst);
                 shield::plugins::apply_db_mapper_api(lua, proxy);
-                results.push_back(sol::make_object(lua, proxy));
+                results.push_back(shd::make_object(lua, proxy));
                 return results;
             });
-        ns[sol::metatable_key] = mt;
+        shield::plugins::set_metatable(ns, mt);
         database["postgresql"] = ns;
     }
 

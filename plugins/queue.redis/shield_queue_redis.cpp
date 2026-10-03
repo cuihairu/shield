@@ -25,11 +25,11 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 #include <unordered_map>
 
+#include "shield/lua/binding.hpp"
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
 #include "shield/plugin/pool_stats.h"
@@ -268,7 +268,7 @@ struct lua_subscription {
     // via the raw command() escape hatch.
     const shield_redis_v1* redis_driver = nullptr;
     void* redis_handle = nullptr;
-    sol::protected_function callback;
+    shd::protected_function callback;
     std::thread worker;
     std::atomic<bool> running{false};
     std::string channel;
@@ -279,7 +279,7 @@ struct lua_subscription {
     std::string service_id;
 
     lua_subscription(std::shared_ptr<sw::redis::Redis> r,
-                     sol::protected_function cb, const std::string& ch,
+                     shd::protected_function cb, const std::string& ch,
                      std::string owner_service_id)
         : redis(std::move(r)),
           callback(std::move(cb)),
@@ -288,7 +288,7 @@ struct lua_subscription {
           service_id(std::move(owner_service_id)) {}
 
     lua_subscription(const shield_redis_v1* drv, void* handle,
-                     sol::protected_function cb, const std::string& ch,
+                     shd::protected_function cb, const std::string& ch,
                      std::string owner_service_id)
         : redis_driver(drv),
           redis_handle(handle),
@@ -577,7 +577,7 @@ void parse_instance_config(queue_instance* inst, const char* config_json) {
     }
 }
 
-sol::table make_error_table(sol::state_view lua, const char* code,
+shd::table make_error_table(shd::state_view lua, const char* code,
                             const std::string& msg) {
     auto t = lua.create_table();
     t["code"] = code;
@@ -585,8 +585,8 @@ sol::table make_error_table(sol::state_view lua, const char* code,
     return t;
 }
 
-bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
-    if (!v.valid() || v == sol::lua_nil) {
+bool lua_to_message(const shd::object& v, std::string* out, std::string* err) {
+    if (!v.valid() || v == shd::nil) {
         if (err) *err = "message is nil";
         return false;
     }
@@ -610,21 +610,21 @@ bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
             return false;
         }
     }
-    if (v.is<sol::table>()) {
+    if (v.is<shd::table>()) {
         try {
-            std::function<nlohmann::json(sol::object)> encode;
-            encode = [&encode](sol::object o) -> nlohmann::json {
-                if (!o.valid() || o == sol::lua_nil) return nullptr;
+            std::function<nlohmann::json(shd::object)> encode;
+            encode = [&encode](shd::object o) -> nlohmann::json {
+                if (!o.valid() || o == shd::nil) return nullptr;
                 if (o.is<bool>()) return o.as<bool>();
                 if (o.is<lua_Integer>()) return o.as<lua_Integer>();
                 if (o.is<double>()) return o.as<double>();
                 if (o.is<std::string>()) return o.as<std::string>();
-                if (o.is<sol::table>()) {
-                    sol::table t = o.as<sol::table>();
+                if (o.is<shd::table>()) {
+                    shd::table t = o.as<shd::table>();
                     bool sequence = true;
                     int max_index = 0;
-                    for (auto& kv : t) {
-                        if (kv.first.get_type() != sol::type::number) {
+                    for (const auto& kv : t) {
+                        if (kv.first.get_type() != shd::type::number) {
                             sequence = false;
                             break;
                         }
@@ -639,7 +639,7 @@ bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
                         nlohmann::json arr = nlohmann::json::array();
                         std::vector<nlohmann::json> tmp(
                             static_cast<size_t>(max_index), nullptr);
-                        for (auto& kv : t) {
+                        for (const auto& kv : t) {
                             int idx =
                                 static_cast<int>(kv.first.as<lua_Integer>());
                             tmp[static_cast<size_t>(idx - 1)] =
@@ -649,11 +649,11 @@ bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
                         return arr;
                     }
                     nlohmann::json obj = nlohmann::json::object();
-                    for (auto& kv : t) {
+                    for (const auto& kv : t) {
                         std::string key;
-                        if (kv.first.get_type() == sol::type::string)
+                        if (kv.first.get_type() == shd::type::string)
                             key = kv.first.as<std::string>();
-                        else if (kv.first.get_type() == sol::type::number)
+                        else if (kv.first.get_type() == shd::type::number)
                             key = std::to_string(kv.first.as<lua_Integer>());
                         else
                             continue;
@@ -675,18 +675,18 @@ bool lua_to_message(const sol::object& v, std::string* out, std::string* err) {
 }
 
 // Lua proxy — Streams-based publish/subscribe
-sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
+shd::table make_instance_proxy(shd::state_view lua, queue_instance* inst) {
     auto proxy = lua.create_table();
 
     proxy.set_function(
         "publish",
-        [inst](sol::this_state s, std::string channel,
-               sol::object message) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string channel,
+               shd::object message) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string msg, msg_err;
             if (!lua_to_message(message, &msg, &msg_err)) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "invalid_message", msg_err));
                 return results;
@@ -711,9 +711,9 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                         : (err.message ? err.message : "XADD failed");
                 if (out) inst->redis_driver->free_value(out);
                 if (ok) {
-                    results.push_back(sol::make_object(lua, true));
+                    results.push_back(shd::make_object(lua, true));
                 } else {
-                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(shd::make_object(lua, false));
                     results.push_back(
                         make_error_table(lua, "redis_command_failed", emsg));
                 }
@@ -722,16 +722,16 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
             std::string conn_err;
             auto redis = inst->make_redis(&conn_err);
             if (!redis) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "connection_failed", conn_err));
                 return results;
             }
             try {
                 redis->command("XADD", channel, "*", "payload", msg);
-                results.push_back(sol::make_object(lua, true));
+                results.push_back(shd::make_object(lua, true));
             } catch (const std::exception& e) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "redis_command_failed", e.what()));
             }
@@ -740,14 +740,14 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
 
     proxy.set_function(
         "subscribe",
-        [inst](sol::this_state s, std::string channel,
-               sol::protected_function callback) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string channel,
+               shd::protected_function callback) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             {
                 std::lock_guard<std::mutex> lk(inst->subs_mu);
                 if (inst->subs.find(channel) != inst->subs.end()) {
-                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(shd::make_object(lua, false));
                     results.push_back(make_error_table(
                         lua, "already_subscribed",
                         "channel already has a subscriber; unsubscribe first"));
@@ -761,7 +761,7 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                 owner = inst->host_api->lua_current_service_id(inst->ctx);
             }
             if (!owner || !owner[0]) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error_table(lua, "invalid_context",
                                      "subscribe must be called from a service "
@@ -776,7 +776,7 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                 std::string grp_err;
                 if (!ensure_group_driver(inst->redis_driver, inst->redis_handle,
                                          channel, &grp_err)) {
-                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(shd::make_object(lua, false));
                     results.push_back(
                         make_error_table(lua, "redis_command_failed", grp_err));
                     return results;
@@ -785,7 +785,7 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                 std::string conn_err;
                 redis = inst->make_redis(&conn_err);
                 if (!redis) {
-                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(shd::make_object(lua, false));
                     results.push_back(
                         make_error_table(lua, "connection_failed", conn_err));
                     return results;
@@ -794,7 +794,7 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                 try {
                     ensure_group(*redis, channel, kGroupName);
                 } catch (const std::exception& e) {
-                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(shd::make_object(lua, false));
                     results.push_back(make_error_table(
                         lua, "redis_command_failed", e.what()));
                     return results;
@@ -854,7 +854,7 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                                               if (!s || !s->running.load())
                                                   return;
                                               try {
-                                                  sol::protected_function_result
+                                                  shd::protected_function_result
                                                       r = s->callback(
                                                           s->channel,
                                                           d->payload);
@@ -887,17 +887,17 @@ sol::table make_instance_proxy(sol::state_view lua, queue_instance* inst) {
                 std::lock_guard<std::mutex> lk(inst->subs_mu);
                 inst->subs[channel] = std::move(sub);
             }
-            results.push_back(sol::make_object(lua, true));
+            results.push_back(shd::make_object(lua, true));
             return results;
         });
 
     proxy.set_function("unsubscribe",
-                       [inst](sol::this_state s,
-                              std::string channel) -> sol::variadic_results {
-                           sol::state_view lua(s);
-                           sol::variadic_results results;
+                       [inst](shd::this_state s,
+                              std::string channel) -> shd::variadic_results {
+                           shd::state_view lua(s);
+                           shd::variadic_results results;
                            inst->stop_one(channel);
-                           results.push_back(sol::make_object(lua, true));
+                           results.push_back(shd::make_object(lua, true));
                            return results;
                        });
 
@@ -922,11 +922,12 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
         }
         return 1;
     }
-    sol::state_view lua(L);
-    auto shield = lua["shield"].get_or_create<sol::table>();
-    auto queue = shield["queue"].get_or_create<sol::table>();
-    sol::object existing = queue["redis"];
-    if (!existing.is<sol::table>()) {
+    shd::state_view lua(L);
+    shd::table shield =
+        shield::plugins::get_or_create_global_subtable(lua, "shield");
+    shd::table queue = shield::plugins::get_or_create_subtable(shield, "queue");
+    shd::object existing = queue["redis"];
+    if (!existing.is<shd::table>()) {
         auto ns = lua.create_table();
         auto mt = lua.create_table();
         const shield_host_api_v1* host_api = current->host_api;
@@ -934,10 +935,10 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
         mt.set_function(
             "__call",
             [host_api, ctx](
-                sol::this_state s, sol::table,
-                sol::optional<std::string> binding) -> sol::variadic_results {
-                sol::state_view lua(s);
-                sol::variadic_results results;
+                shd::this_state s, shd::table,
+                std::optional<std::string> binding) -> shd::variadic_results {
+                shd::state_view lua(s);
+                shd::variadic_results results;
                 std::string logical = binding.value_or("");
                 auto* inst = shield::plugins::resolve_lua_binding(
                     host_api, ctx, logical, find_instance);
@@ -947,10 +948,10 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
                     return results;
                 }
                 results.push_back(
-                    sol::make_object(lua, make_instance_proxy(lua, inst)));
+                    shd::make_object(lua, make_instance_proxy(lua, inst)));
                 return results;
             });
-        ns[sol::metatable_key] = mt;
+        shield::plugins::set_metatable(ns, mt);
         queue["redis"] = ns;
     }
     return 0;

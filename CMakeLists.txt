@@ -249,7 +249,6 @@ if(NOT MSVC)
   endforeach()
 endif()
 
-find_path(SOL2_INCLUDE_DIRS "sol/sol.hpp")
 
 find_package(
   Boost REQUIRED
@@ -560,13 +559,6 @@ target_include_directories(shield_lua
         ${PROJECT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_BINARY_DIR}/include
         ${LUA_INCLUDE_DIR}
-        ${SOL2_INCLUDE_DIRS}
-)
-
-target_compile_definitions(shield_lua
-    PUBLIC
-        SOL_NO_LUA_HPP=0
-        SOL_NO_NIL=0
 )
 
 target_link_libraries(shield_lua

@@ -42,12 +42,12 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <queue>
-#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "shield/lua/binding.hpp"
 #include "shield/plugin/abi.h"
 #include "shield/plugin/database.h"
 #include "shield/plugin/host_api.h"
@@ -1417,7 +1417,7 @@ const shield_pool_stats_v1& mysql_pool_stats_vtable() {
 // Build a Lua error table {code=..., message=...} matching the shape used by
 // the host's shield.database.* facade.
 // ---------------------------------------------------------------------------
-sol::table make_error_table(sol::state_view lua, const char* code,
+shd::table make_error_table(shd::state_view lua, const char* code,
                             const std::string& msg) {
     auto t = lua.create_table();
     t["code"] = code;
@@ -1440,7 +1440,7 @@ struct lua_params {
 // bool -> 0/1; integer and number bind natively; strings bind as text;
 // anything else falls back to its stringified form (mirroring the sqlite
 // plugin's tolerant bind behaviour).
-lua_params make_lua_params(const std::vector<sol::object>& values) {
+lua_params make_lua_params(const std::vector<shd::object>& values) {
     lua_params p;
     size_t n = values.size();
     p.binds.resize(n);
@@ -1450,10 +1450,10 @@ lua_params make_lua_params(const std::vector<sol::object>& values) {
     p.lengths.resize(n, 0);
     p.nulls.resize(n, 0);
     for (size_t i = 0; i < n; ++i) {
-        const sol::object& v = values[i];
+        const shd::object& v = values[i];
         MYSQL_BIND& b = p.binds[i];
         b.is_null = &p.nulls[i];
-        if (!v.valid() || v == sol::lua_nil) {
+        if (!v.valid() || v == shd::nil) {
             p.nulls[i] = 1;
             b.buffer_type = MYSQL_TYPE_NULL;
             continue;
@@ -1503,13 +1503,13 @@ lua_params make_lua_params(const std::vector<sol::object>& values) {
 }
 
 // Convert result row `r` into a Lua table keyed by column name.
-sol::table row_to_lua(sol::state_view lua, const stmt_result& res, int r) {
+shd::table row_to_lua(shd::state_view lua, const stmt_result& res, int r) {
     auto t = lua.create_table();
     for (int c = 0; c < res.col_count; ++c) {
         const std::string& name = res.col_names[c];
         switch (res.kinds[r][c]) {
             case kCellNull:
-                t[name] = sol::lua_nil;
+                t[name] = shd::nil;
                 break;
             case kCellInt:
                 t[name] = static_cast<lua_Integer>(res.ints[r][c]);
@@ -1526,17 +1526,17 @@ sol::table row_to_lua(sol::state_view lua, const stmt_result& res, int r) {
 }
 
 // Collect positional params from a Lua table (sequence keys 1..N) in order.
-// sol::table iteration order is unspecified, so we bucket by numeric key
+// shd::table iteration order is unspecified, so we bucket by numeric key
 // first and then sort by index before binding.
-std::vector<sol::object> collect_positional(
-    const sol::optional<sol::table>& params) {
-    std::vector<sol::object> out;
+std::vector<shd::object> collect_positional(
+    const std::optional<shd::table>& params) {
+    std::vector<shd::object> out;
     if (!params || !params->valid()) return out;
     // Gather (index, value) pairs where the key is a positive integer.
-    std::map<lua_Integer, sol::object> bucket;
-    for (auto& kv : *params) {
+    std::map<lua_Integer, shd::object> bucket;
+    for (const auto& kv : *params) {
         auto k = kv.first;
-        if (k.get_type() != sol::type::number) continue;
+        if (k.get_type() != shd::type::number) continue;
         lua_Integer idx = k.as<lua_Integer>();
         if (idx >= 1) bucket[idx] = kv.second;
     }
@@ -1552,11 +1552,11 @@ std::vector<sol::object> collect_positional(
 // On error, *ok is set to false and *err_out receives an error table. The
 // `broken` flag is set when the error looks like a connection-lost so the
 // caller can drop the pooled connection.
-sol::object run_statement(sol::state_view lua, MYSQL* mysql,
+shd::object run_statement(shd::state_view lua, MYSQL* mysql,
                           const std::string& sql,
-                          const sol::optional<sol::table>& params,
+                          const std::optional<shd::table>& params,
                           const char* mode,  // "query"|"query_one"|"execute"
-                          bool* ok, sol::table* err_out, bool* broken) {
+                          bool* ok, shd::table* err_out, bool* broken) {
     stmt_error err;
     stmt_result res;
     if (!exec_typed(mysql, sql.c_str(),
@@ -1568,7 +1568,7 @@ sol::object run_statement(sol::state_view lua, MYSQL* mysql,
                        err.code == "connection_timeout");
         }
         *err_out = make_error_table(lua, err.code.c_str(), err.msg);
-        return sol::lua_nil;
+        return shd::nil;
     }
     if (broken) *broken = false;
 
@@ -1583,13 +1583,13 @@ sol::object run_statement(sol::state_view lua, MYSQL* mysql,
     if (!res.has_rows) {
         // Query on a statement that produced no result set.
         *ok = true;
-        if (std::strcmp(mode, "query_one") == 0) return sol::lua_nil;
-        return sol::make_object(lua, lua.create_table());
+        if (std::strcmp(mode, "query_one") == 0) return shd::nil;
+        return shd::make_object(lua, lua.create_table());
     }
 
     if (std::strcmp(mode, "query_one") == 0) {
         *ok = true;
-        if (res.row_count == 0) return sol::lua_nil;
+        if (res.row_count == 0) return shd::nil;
         return row_to_lua(lua, res, 0);
     }
 
@@ -1604,7 +1604,7 @@ sol::object run_statement(sol::state_view lua, MYSQL* mysql,
 }
 
 // Forward decl — make_handle_proxy is used by transaction().
-sol::table make_handle_proxy(sol::state_view lua, MYSQL* sess,
+shd::table make_handle_proxy(shd::state_view lua, MYSQL* sess,
                              mysql_instance* inst);
 
 // Execute a transaction-control statement (BEGIN/COMMIT/ROLLBACK) on a
@@ -1622,19 +1622,19 @@ bool run_tx_sql(MYSQL* mysql, const char* sql, const char** code,
 
 // Build the per-instance proxy. Each top-level method acquires a connection
 // from the pool (pool_guard returns it on scope exit).
-sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
+shd::table make_instance_proxy(shd::state_view lua, mysql_instance* inst) {
     auto proxy = lua.create_table();
 
     proxy.set_function(
         "__sync_query",
-        [inst](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string acquire_err;
             auto guard = acquire_session(inst, &acquire_err);
             if (!guard || !*guard) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(
                     lua, "connection_failed",
                     acquire_err.empty() ? std::string("pool acquire failed")
@@ -1643,25 +1643,25 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             }
             bool ok = false;
             bool broken = false;
-            sol::table err;
-            sol::object rows = run_statement(lua, guard->sess, sql, params,
+            shd::table err;
+            shd::object rows = run_statement(lua, guard->sess, sql, params,
                                              "query", &ok, &err, &broken);
             guard->broken = broken;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? rows : err);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? rows : shd::object(err));
             return results;
         });
 
     proxy.set_function(
         "__sync_query_one",
-        [inst](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string acquire_err;
             auto guard = acquire_session(inst, &acquire_err);
             if (!guard || !*guard) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(
                     lua, "connection_failed",
                     acquire_err.empty() ? std::string("pool acquire failed")
@@ -1670,25 +1670,25 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             }
             bool ok = false;
             bool broken = false;
-            sol::table err;
-            sol::object row = run_statement(lua, guard->sess, sql, params,
+            shd::table err;
+            shd::object row = run_statement(lua, guard->sess, sql, params,
                                             "query_one", &ok, &err, &broken);
             guard->broken = broken;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? row : err);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? row : shd::object(err));
             return results;
         });
 
     proxy.set_function(
         "__sync_execute",
-        [inst](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string acquire_err;
             auto guard = acquire_session(inst, &acquire_err);
             if (!guard || !*guard) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(
                     lua, "connection_failed",
                     acquire_err.empty() ? std::string("pool acquire failed")
@@ -1697,12 +1697,12 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             }
             bool ok = false;
             bool broken = false;
-            sol::table err;
-            sol::object res = run_statement(lua, guard->sess, sql, params,
+            shd::table err;
+            shd::object res = run_statement(lua, guard->sess, sql, params,
                                             "execute", &ok, &err, &broken);
             guard->broken = broken;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? res : err);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? res : shd::object(err));
             return results;
         });
 
@@ -1711,14 +1711,14 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
     // lands here when async is off (or the host lacks the primitives).
     proxy.set_function(
         "__sync_transaction",
-        [inst](sol::this_state s,
-               sol::protected_function callback) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [inst](shd::this_state s,
+               shd::protected_function callback) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             std::string acquire_err;
             auto guard = acquire_session(inst, &acquire_err);
             if (!guard || !*guard) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(
                     lua, "connection_failed",
                     acquire_err.empty() ? std::string("pool acquire failed")
@@ -1733,21 +1733,21 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
                 if (!run_tx_sql(guard->sess, "START TRANSACTION", &code,
                                 &msg)) {
                     guard->broken = true;
-                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(shd::make_object(lua, false));
                     results.push_back(make_error_table(lua, code, msg));
                     return results;
                 }
             }
 
             // tx proxy shares this connection.
-            sol::table tx = make_handle_proxy(lua, guard->sess, inst);
-            sol::protected_function_result cb_res = callback(tx);
+            shd::table tx = make_handle_proxy(lua, guard->sess, inst);
+            shd::protected_function_result cb_res = callback(tx);
             bool commit = cb_res.valid();
             bool user_abort = false;
 
             if (cb_res.valid()) {
-                sol::optional<bool> first = cb_res.get<sol::optional<bool>>(0);
-                if (first && !*first) {
+                shd::object first = cb_res.get(0);
+                if (first.is<bool>() && !first.as<bool>()) {
                     commit = false;
                     user_abort = true;
                 }
@@ -1761,7 +1761,7 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
                 // deadlock during commit. Mark broken so the pool drops it.
                 if (!run_tx_sql(guard->sess, tx_sql, &code, &msg)) {
                     guard->broken = true;
-                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(shd::make_object(lua, false));
                     results.push_back(make_error_table(lua, code, msg));
                     return results;
                 }
@@ -1769,7 +1769,7 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
 
             if (!cb_res.valid()) {
                 // Lua callback threw — we already rolled back.
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(lua,
                                                    "transaction_rolled_back",
                                                    "callback raised an error"));
@@ -1777,17 +1777,17 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             }
 
             if (user_abort) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error_table(
                     lua, "transaction_rolled_back", "callback returned false"));
                 return results;
             }
 
             // Success: forward the callback's return values.
-            results.push_back(sol::make_object(lua, true));
+            results.push_back(shd::make_object(lua, true));
             int n_returns = cb_res.return_count();
             for (int i = 0; i < n_returns; ++i) {
-                results.push_back(cb_res.get<sol::object>(i));
+                results.push_back(cb_res.get<shd::object>(i));
             }
             return results;
         });
@@ -1801,8 +1801,9 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
     // __tx_* transaction protocol forms.
     proxy.set_function(
         "__db_submit",
-        [inst](sol::this_state s, std::string method, std::string sql,
-               sol::optional<sol::table> params) -> uint64_t {
+        [inst](shd::this_state s, std::string method,
+               std::optional<std::string> sql,
+               std::optional<shd::table> params) -> uint64_t {
             if (!inst->async_enabled || inst->host_api == nullptr ||
                 inst->host_api->lua_suspend_current == nullptr ||
                 inst->host_api->lua_resume_session == nullptr) {
@@ -1835,15 +1836,15 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
             task.tx_token = tx_token;
             if (task.kind == task_kind::stmt ||
                 task.kind == task_kind::tx_stmt) {
-                task.sql = std::move(sql);
+                task.sql = sql ? std::move(*sql) : std::string();
             }
             // Positional params (Lua sequence 1..N), mirroring the sync
             // path's numeric-key bind. Type order matters: bool before int,
             // or sol folds booleans into integers.
             if (params && params->valid()) {
-                for (auto& kv : *params) {
-                    if (kv.first.get_type() != sol::type::number) continue;
-                    const sol::object& v = kv.second;
+                for (const auto& kv : *params) {
+                    if (kv.first.get_type() != shd::type::number) continue;
+                    const shd::object& v = kv.second;
                     if (v.is<bool>()) {
                         task.params.push_back(v.as<bool>());
                     } else if (v.is<lua_Integer>()) {
@@ -1868,11 +1869,15 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
     // Wrap the sync methods with the shared submit-and-yield shim. If the
     // shim source fails to load (should be impossible — it is a string
     // constant), fall back to exposing the sync methods directly.
-    sol::load_result shim =
+    shd::load_result shim =
         lua.load(shield::plugins::kDbAsyncShimLua, "=db_async_shim");
     bool shim_ok = shim.valid();
     if (shim_ok) {
-        sol::function_result r = shim(proxy, proxy["__db_submit"]);
+        // load_result is not directly callable in shd: route through the
+        // protected_function conversion so a shim error is a failed result,
+        // not a C++ exception.
+        shd::protected_function shim_fn = shim;
+        shd::protected_function_result r = shim_fn(proxy, proxy["__db_submit"]);
         shim_ok = r.valid();
     }
     if (!shim_ok) {
@@ -1883,7 +1888,7 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
         }
         for (const char* m : {"query", "query_one", "execute", "transaction"}) {
             std::string key = std::string("__sync_") + m;
-            sol::object fn = proxy[key];
+            shd::object fn = proxy[key];
             proxy[m] = fn;
         }
     }
@@ -1894,58 +1899,58 @@ sol::table make_instance_proxy(sol::state_view lua, mysql_instance* inst) {
 // Proxy whose methods reuse the transaction's connection (used inside
 // transactions). The MYSQL* is owned by transaction()'s pool_guard, which
 // outlives the tx table.
-sol::table make_handle_proxy(sol::state_view lua, MYSQL* sess,
+shd::table make_handle_proxy(shd::state_view lua, MYSQL* sess,
                              mysql_instance* /*inst*/) {
     auto proxy = lua.create_table();
 
     proxy.set_function(
         "query",
-        [sess](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [sess](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             bool ok = false;
             bool broken = false;
-            sol::table err;
-            sol::object rows = run_statement(lua, sess, sql, params, "query",
+            shd::table err;
+            shd::object rows = run_statement(lua, sess, sql, params, "query",
                                              &ok, &err, &broken);
             (void)broken;  // tx connection lifecycle is owned by transaction()
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? rows : err);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? rows : shd::object(err));
             return results;
         });
 
     proxy.set_function(
         "query_one",
-        [sess](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [sess](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             bool ok = false;
             bool broken = false;
-            sol::table err;
-            sol::object row = run_statement(lua, sess, sql, params, "query_one",
+            shd::table err;
+            shd::object row = run_statement(lua, sess, sql, params, "query_one",
                                             &ok, &err, &broken);
             (void)broken;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? row : err);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? row : shd::object(err));
             return results;
         });
 
     proxy.set_function(
         "execute",
-        [sess](sol::this_state s, std::string sql,
-               sol::optional<sol::table> params) -> sol::variadic_results {
-            sol::state_view lua(s);
-            sol::variadic_results results;
+        [sess](shd::this_state s, std::string sql,
+               std::optional<shd::table> params) -> shd::variadic_results {
+            shd::state_view lua(s);
+            shd::variadic_results results;
             bool ok = false;
             bool broken = false;
-            sol::table err;
-            sol::object res = run_statement(lua, sess, sql, params, "execute",
+            shd::table err;
+            shd::object res = run_statement(lua, sess, sql, params, "execute",
                                             &ok, &err, &broken);
             (void)broken;
-            results.push_back(sol::make_object(lua, ok));
-            results.push_back(ok ? res : err);
+            results.push_back(shd::make_object(lua, ok));
+            results.push_back(ok ? res : shd::object(err));
             return results;
         });
 
@@ -1964,14 +1969,16 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
         }
         return 1;
     }
-    sol::state_view lua(L);
+    shd::state_view lua(L);
 
     // Build the callable namespace shield.database.mysql.
-    auto shield = lua["shield"].get_or_create<sol::table>();
-    auto database = shield["database"].get_or_create<sol::table>();
+    shd::table shield =
+        shield::plugins::get_or_create_global_subtable(lua, "shield");
+    shd::table database =
+        shield::plugins::get_or_create_subtable(shield, "database");
 
-    sol::object existing = database["mysql"];
-    if (!existing.is<sol::table>()) {
+    shd::object existing = database["mysql"];
+    if (!existing.is<shd::table>()) {
         auto* owner = reinterpret_cast<mysql_instance*>(self);
         auto ns = lua.create_table();
         auto mt = lua.create_table();
@@ -1979,10 +1986,10 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
             "__call",
             [host_api = owner ? owner->host_api : nullptr,
              ctx = owner ? owner->ctx : nullptr](
-                sol::this_state s, sol::table /*self*/,
-                sol::optional<std::string> binding) -> sol::variadic_results {
-                sol::state_view lua(s);
-                sol::variadic_results results;
+                shd::this_state s, shd::table /*self*/,
+                std::optional<std::string> binding) -> shd::variadic_results {
+                shd::state_view lua(s);
+                shd::variadic_results results;
                 std::string logical = binding.value_or("");
                 auto* inst = shield::plugins::resolve_lua_binding(
                     host_api, ctx, logical, find_instance);
@@ -1991,12 +1998,12 @@ int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
                                                              logical);
                     return results;
                 }
-                sol::table proxy = make_instance_proxy(lua, inst);
+                shd::table proxy = make_instance_proxy(lua, inst);
                 shield::plugins::apply_db_mapper_api(lua, proxy);
-                results.push_back(sol::make_object(lua, proxy));
+                results.push_back(shd::make_object(lua, proxy));
                 return results;
             });
-        ns[sol::metatable_key] = mt;
+        shield::plugins::set_metatable(ns, mt);
         database["mysql"] = ns;
     }
 

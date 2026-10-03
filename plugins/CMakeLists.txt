@@ -3,21 +3,6 @@
 # Each subdirectory builds a runtime-loadable shared library implementing
 # a v1 plugin C ABI (shield_plugin_get_v1). Plugins are mutually independent.
 
-# The database/cache/queue/leaderboard driver plugins still register Lua
-# bindings through sol2; they move off it in the driver migration batch.
-# Resolve sol2 here rather than at the top level so core builds no longer
-# require the package.
-if(SHIELD_BUILD_DB_PLUGIN_MYSQL OR
-   SHIELD_BUILD_DB_PLUGIN_POSTGRESQL OR
-   SHIELD_BUILD_DB_PLUGIN_SQLITE OR
-   SHIELD_BUILD_PLUGIN_MONGODB OR
-   SHIELD_BUILD_PLUGIN_REDIS_DRIVER OR
-   SHIELD_BUILD_PLUGIN_CACHE_REDIS OR
-   SHIELD_BUILD_PLUGIN_QUEUE_REDIS OR
-   SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS)
-    find_package(sol2 CONFIG REQUIRED)
-endif()
-
 # --- Database plugins ---
 
 if(SHIELD_BUILD_DB_PLUGIN_MYSQL)

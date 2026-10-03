@@ -5,10 +5,11 @@
 # PluginHost's scan() finds the manifest and load() maps the library.
 #
 # This plugin is fully Lua-autonomous: register_lua() installs the callable
-# shield.database.mongodb namespace from this DLL, not from the host. sol2
-# and Lua are PRIVATE dependencies — their symbols must NOT leak into the
-# host process (sol2 is header-only but needs Lua headers at compile time
-# and lua52/53/luajit import library at link time).
+# shield.database.mongodb namespace from this DLL, not from the host. The
+# Lua bindings go through the header-only shd layer (shield/lua/binding.hpp)
+# and Lua stays a PRIVATE dependency — its symbols must NOT leak into the
+# host process (headers at compile time, lua52/53/luajit import library at
+# link time).
 #
 # mongocxx (and its C dependency libmongoc) are PRIVATELY linked here as
 # well: the host never links mongo-cxx-driver, so the BSON/Mongo types stay
@@ -23,7 +24,6 @@ target_include_directories(shield_doc_mongodb
         ${PROJECT_SOURCE_DIR}/plugins/_shared
         ${PROJECT_SOURCE_DIR}/plugins/mongodb
         ${LUA_INCLUDE_DIR}
-        ${SOL2_INCLUDE_DIRS}
 )
 
 find_package(mongocxx REQUIRED)
@@ -39,7 +39,6 @@ endif()
 target_link_libraries(shield_doc_mongodb
     PRIVATE
         ${shield_mongocxx_target}
-        sol2::sol2
         ${LUA_LIBRARIES}
 )
 
