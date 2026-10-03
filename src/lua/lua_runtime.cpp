@@ -803,11 +803,8 @@ bool lua_to_json(const shd::object& value, nlohmann::json* out) {
         return true;
     }
     if (value.is<ClientRefBox>()) {
-        // GCOVR_EXCL_START (ClientRefBox values only flow through decode on
-        // the player-enabled client path; coverage suites do not build one)
         *out = sol_box_context_marker(value);
         return true;
-        // GCOVR_EXCL_STOP
     }
 #ifdef SHIELD_ENABLE_PLAYER
     // PlayerRef userdata travels in its marker form (the inverse of the

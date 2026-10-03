@@ -27,9 +27,11 @@
 #include "shield/config/config.hpp"
 #include "shield/core/service_message.hpp"
 #include "shield/global/global_manager.hpp"
+#include "shield/lua/client_identity.hpp"
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
+#include "shield/lua/player_ref_box.hpp"
 #include "shield/net/session.hpp"
 #include "shield/player/player_manager.hpp"
 #include "shield/plugin/plugin_host.hpp"
@@ -469,7 +471,10 @@ BOOST_AUTO_TEST_CASE(ClientPrimitivesWithoutGateway) {
         "local ctx = __shield_make_client_context(1, 0, 'p1', 'ghost_gw', "
         "'json')\n"
         "assert(shield._client_egress(ctx, 7, {k = 'v'}) == false)\n"
-        "assert(shield._client_egress(ref_marker, 7, 'bytes') == false)"));
+        "assert(shield._client_egress(ref_marker, 7, 'bytes') == false)\n"
+        // A non-client first argument never yields identity data, so the
+        // request is rejected before the gateway lookup.
+        "assert(shield._client_egress(nil, 7, 'bytes') == false)"));
 }
 
 // ---------------------------------------------------------------------------
@@ -500,11 +505,22 @@ BOOST_AUTO_TEST_CASE(ClientContextMarkerRoundTrip) {
                            "assert(ctx:player_id() == 'player-42')\n"
                            "assert(ctx:gateway() == 'cov_gw')\n"
                            "assert(ctx:protocol_profile_id() == 'json')\n"
-                           "local ref = ctx:ref()\n"
-                           "assert(ref:session_id() == 4242)"));
+                           "cov_ref = ctx:ref()\n"
+                           "assert(cov_ref:session_id() == 4242)"));
 
     // And back: the userdata serializes to the identical marker shape.
     BOOST_CHECK(lua_to_json(lua["ctx"]) == marker);
+
+    // The sol-created ref from ctx:ref() is a pointer box (sol usertype
+    // layout); it serializes through the sol-side reader to the same marker.
+    BOOST_CHECK(lua_to_json(lua["cov_ref"]) == marker);
+
+    // A shd-created context (raw payload plus the uservalue type-name tag)
+    // round-trips through the shd reader to the same marker.
+    shd::object shd_ctx = shd::make_object(
+        shd::state_view(lua), ClientContextBox{ClientContextData{
+                                  "cov_gw", 4242, 1, "player-42", "json"}});
+    BOOST_CHECK(lua_to_json(shd_ctx) == marker);
 }
 
 // ---------------------------------------------------------------------------
@@ -1339,6 +1355,31 @@ BOOST_AUTO_TEST_CASE(PlayerRefMarkerDecodeDefaults) {
     shield::player::PlayerManager::set_global(nullptr);
 }
 
+// The shd-created PlayerRefBox (raw payload plus the uservalue type-name
+// tag) serializes through the shd reader to the same marker JSON the sol
+// reader produces.
+BOOST_AUTO_TEST_CASE(PlayerRefBoxShdMarkerRoundTrip) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
+    register_full_shield_api(lua, &manager, &runtime);
+
+    shd::object boxed = shd::make_object(
+        shd::state_view(lua),
+        PlayerRefBox{PlayerRefData{"u-shd", "dev-1", "svc-shd", 7}});
+    const nlohmann::json expected{{"__shield_player_ref", true},
+                                  {"uid", "u-shd"},
+                                  {"node_id", "dev-1"},
+                                  {"service_id", "svc-shd"},
+                                  {"epoch", std::uint64_t{7}}};
+    BOOST_CHECK(lua_to_json(boxed) == expected);
+}
+
 // register_session's table-ref path decodes the epoch from a decimal string
 // (the canonical wire shape), accepts a plain integer, and degrades
 // malformed epochs to zero; unknown-uid marks fail, and resolving a ref
@@ -1366,8 +1407,8 @@ BOOST_AUTO_TEST_CASE(PlayerRegisterSessionEpochShapes) {
         // Integer epoch (positive).
         "M.register_session({uid = 'u2', service_id = 'svc_u2',\n"
         "  epoch = 43}, 'dev-1', 'ready', 1000)\n"
-        // Negative integer epoch: drives is<int>() branch (after is<uint64_t>
-        // rejects).
+        // Negative integer epoch: is<uint64_t>() accepts it (wrap-around to
+        // 2^64-1), so the is<int> arm in player_ref_epoch never runs.
         "M.register_session({uid = 'u2n', service_id = 'svc_u2n',\n"
         "  epoch = -1}, 'dev-1', 'ready', 1000)\n"
         // Malformed string epoch degrades to zero; the session still lands.

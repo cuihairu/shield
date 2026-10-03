@@ -497,7 +497,11 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                            // artifact: gcov attributes
                                            // init-list branches to the first
                                            // element line)
-                        false, "",
+                        // Compiler artifact: an executed aggregate
+                        // init-list gets its counts on the neighboring
+                        // element lines only, so this middle line always
+                        // reports zero; it is excluded from the line metric.
+                        false, "",            // GCOVR_EXCL_LINE (init-list)
                         "service_not_found",  // GCOVR_EXCL_BR_LINE (compiler
                                               // artifact: aggregate init-list
                                               // branches)
@@ -534,7 +538,11 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                            // artifact: gcov attributes
                                            // init-list branches to the first
                                            // element line)
-                        false, "",
+                        // Compiler artifact: an executed aggregate
+                        // init-list gets its counts on the neighboring
+                        // element lines only, so this middle line always
+                        // reports zero; it is excluded from the line metric.
+                        false, "",            // GCOVR_EXCL_LINE (init-list)
                         "service_not_found",  // GCOVR_EXCL_BR_LINE (compiler
                                               // artifact: aggregate init-list
                                               // branches)

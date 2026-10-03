@@ -96,7 +96,7 @@ shd::function to_shd_function(const sol::function& f) {
     shd::function r(L, i);
     lua_pop(L, 1);
     return r;
-}
+}  // GCOVR_EXCL_LINE (function-exit arc artifact of to_shd_function)
 
 // sol-side construction of the shd ServiceHandle userdata (B2 folds this
 // into the converted call sites).
@@ -346,7 +346,7 @@ nlohmann::json sol_box_player_marker(const shd::object& value) {
                               {"node_id", d.node_id},
                               {"service_id", d.service_id},
                               {"epoch", d.epoch}};
-    }
+    }  // GCOVR_EXCL_LINE (block-close artifact: the branch exits via return)
     sol::object so(sol::stack_reference(L, i));
     lua_pop(L, 1);
     const auto& d = so.as<const PlayerRefBox&>().data;
@@ -1993,14 +1993,12 @@ std::uint64_t player_ref_epoch(const sol::table& t) {
         }
     }
     if (v.is<std::uint64_t>()) return v.as<std::uint64_t>();
-    if (v.is<int>())  // GCOVR_EXCL_BR_LINE (defensive: is<int> only wins for
-                      // negative lua_integer shapes after the is<uint64_t>
-                      // range check above; tests drive the
-                      // bool/string/double/positive-int shapes)
+    if (v.is<int>())  // GCOVR_EXCL_BR_LINE (unreachable defensive arm: sol2
+                      // is<uint64_t>() above accepts the whole Lua-integer
+                      // domain, including negatives, so is<int>() never wins;
+                      // tests drive string/bool/double/negative-int shapes)
         return static_cast<std::uint64_t>(
-            v.as<int>());  // GCOVR_EXCL_BR_LINE (compiler artifact: sol2 as<>
-                           // bad_cast dispatch clones) / GCOVR_EXCL_LINE (gcov
-                           // line granularity: closing paren line not counted)
+            v.as<int>());  // GCOVR_EXCL_BR_LINE + GCOVR_EXCL_LINE (unreachable)
     return 0;
 }
 
