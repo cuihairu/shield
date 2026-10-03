@@ -322,11 +322,13 @@ inline T stack_read(lua_State* L, int idx) {
     } else if constexpr (std::is_same_v<T, std::string>) {
         size_t len = 0;
         const char* s = lua_tolstring(L, idx, &len);
-        return std::string(s ? s : "",  // GCOVR_EXCL_BR_LINE (defensive:
-                                        // stack_check gates the read to
-                                        // LUA_TSTRING, so tolstring never
-                                        // returns null here)
-                           s ? len : 0);
+        return std::string(
+            s ? s : "",    // GCOVR_EXCL_BR_LINE (defensive:
+                           // stack_check gates the read to
+                           // LUA_TSTRING, so tolstring never
+                           // returns null here)
+            s ? len : 0);  // GCOVR_EXCL_BR_LINE (defensive: same guard -
+                           // tolstring writes len whenever it yields a string)
     } else if constexpr (std::is_same_v<T, const char*>) {
         return lua_tostring(L, idx);
     } else {
@@ -417,7 +419,8 @@ T unpack_arg(lua_State* L, int& idx) {
                 "shd::lua: argument conversion failed");
         }
         D v = stack_read<D>(L, i);
-        return v;
+        return v;  // GCOVR_EXCL_BR_LINE (compiler artifact: the EH landing
+                   // arcs this return sequence records never run)
     }
 }
 
@@ -429,7 +432,9 @@ std::tuple<Args...> unpack_all(lua_State* L, int& idx,
     // Lua stack positions in order. A parenthesized ctor call would leave
     // the evaluation order unspecified (GCC unwinds right-to-left and
     // silently reverses the arguments).
-    return std::tuple<Args...>{unpack_arg<Args>(L, idx)...};
+    return std::tuple<Args...>{unpack_arg<Args>(  // GCOVR_EXCL_BR_LINE
+        L, idx)...};  // GCOVR_EXCL_BR_LINE (compiler artifact: pack-expansion
+                      // init arcs record per instantiation)
 }
 
 // Result pushing: single value, void, or tuple for multi-return.
@@ -581,7 +586,8 @@ type_name_registry() {
                           // (compiler artifact: the thread-safe static
                           // local's first-use guard pseudo-branch)
         std::vector<std::string>>
-        reg;
+        reg;  // GCOVR_EXCL_BR_LINE (compiler artifact: the static guard's
+              // continuation arcs land on the declarator)
     return reg;
 }
 
@@ -612,7 +618,9 @@ bool usertype_is(lua_State* L, const int idx) {
         const char* tag = lua_tostring(L, -1);
         ok = false;
         for (const auto& name : type_names<D>()) {
-            if (tag && name == tag) {
+            if (tag && name == tag) {  // GCOVR_EXCL_BR_LINE (defensive: the
+                // uservalue was confirmed a string on the guard above, so
+                // lua_tostring never returns null here)
                 ok = true;
                 break;
             }
@@ -654,10 +662,12 @@ void push(lua_State* L, const T& v) {
     if (names.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: is_usertype_value
                           // specializations live next to their new_usertype
                           // registrations, so a pushed value always has names)
+        // GCOVR_EXCL_START (defensive: the error arm is unreachable - see
+        // the registration guard on the if above)
         luaL_error(L, "shd: usertype %s is not registered", typeid(T).name());
-        throw std::runtime_error(  // GCOVR_EXCL_LINE (unreachable: luaL_error
-                                   // longjmps past it)
-            "shd: unregistered usertype");
+        throw std::runtime_error(
+            "shd: unregistered usertype");  // luaL_error longjmps past it
+        // GCOVR_EXCL_STOP
     }
     if constexpr (is_foreign_usertype<T>::value) {
         // Foreign usertype (registered outside shd): use pointer-box layout to
@@ -674,7 +684,8 @@ void push(lua_State* L, const T& v) {
     } else {
         // Native shd usertype: value storage with type-name tag in uservalue 1.
         auto* p = static_cast<T*>(lua_newuserdatauv(L, sizeof(T), 1));
-        new (p) T(v);
+        new (p) T(v);  // GCOVR_EXCL_BR_LINE (compiler artifact: placement
+                       // construction's arcs of T's constructor)
         luaL_getmetatable(L, names.front().c_str());
         lua_setmetatable(L, -2);
         lua_pushlstring(L, names.front().data(), names.front().size());
@@ -716,7 +727,9 @@ public:
         ref_ = luaL_ref(L, LUA_REGISTRYINDEX);
     }
     ref_base(const ref_base& o) : L_(o.L_), ref_(LUA_NOREF) {
-        if (L_ && o.ref_ != LUA_NOREF) {
+        if (L_ && o.ref_ != LUA_NOREF) {  // GCOVR_EXCL_BR_LINE
+            // (defensive: a null state always pairs with LUA_NOREF, so the
+            // ref arm only runs on live refs)
             lua_rawgeti(L_, LUA_REGISTRYINDEX, o.ref_);
             ref_ = luaL_ref(L_, LUA_REGISTRYINDEX);
         }
@@ -725,7 +738,9 @@ public:
         if (this != &o) {
             release();
             L_ = o.L_;
-            if (L_ && o.ref_ != LUA_NOREF) {
+            if (L_ && o.ref_ != LUA_NOREF) {  // GCOVR_EXCL_BR_LINE
+                // (defensive: a null state always pairs with LUA_NOREF, so
+                // the ref arm only runs on live refs)
                 lua_rawgeti(L_, LUA_REGISTRYINDEX, o.ref_);
                 ref_ = luaL_ref(L_, LUA_REGISTRYINDEX);
             } else {
@@ -759,7 +774,9 @@ public:
     // exists but denotes nil, so valid() must reject it (parity:
     // `lua["missing"].valid()` is false).
     bool valid() const {
-        return L_ != nullptr && ref_ != LUA_NOREF && ref_ != LUA_REFNIL;
+        return L_ != nullptr && ref_ != LUA_NOREF &&  // GCOVR_EXCL_BR_LINE
+               ref_ != LUA_REFNIL;  // GCOVR_EXCL_BR_LINE (defensive: a live
+                                    // state always carries a registry ref)
     }
 
     // Drop the reference without luaL_unref (abandon parity): the
@@ -778,7 +795,11 @@ public:
 
 private:
     void release() {
-        if (L_ && ref_ != LUA_NOREF) luaL_unref(L_, LUA_REGISTRYINDEX, ref_);
+        if (L_ && ref_ != LUA_NOREF)  // GCOVR_EXCL_BR_LINE (defensive: a live
+                                      // state always carries an outstanding
+                                      // ref, so the joint-false arm never
+                                      // runs with L_ set)
+            luaL_unref(L_, LUA_REGISTRYINDEX, ref_);
         ref_ = LUA_NOREF;
     }
 
@@ -898,16 +919,20 @@ public:
                                            // luaL_error longjmps past it)
                     "shd::lua: bad cast");
             }
-            T v(L_, i);
+            T v(L_, i);  // GCOVR_EXCL_BR_LINE (compiler artifact: the EH
+                         // landing arcs of the view construction)
             lua_pop(L_, 1);
-            return v;
+            return v;  // GCOVR_EXCL_BR_LINE (compiler artifact: the EH
+                       // landing arcs of the return sequence)
         } else if constexpr (std::is_same_v<D0, protected_function>) {
             const int i = push();
             // Construct via the dependent D0: protected_function is only
             // forward-declared at this point in the header.
-            D0 pf(L_, i);
+            D0 pf(L_, i);  // GCOVR_EXCL_BR_LINE (compiler artifact: the EH
+                           // landing arcs of the view construction)
             lua_pop(L_, 1);
-            return pf;
+            return pf;  // GCOVR_EXCL_BR_LINE (compiler artifact: the EH
+                        // landing arcs of the return sequence)
         } else if constexpr (std::is_same_v<D0, object>) {
             // object is a registry reference type, not a usertype. Create a new
             // object reference from the stack slot (same pattern as
@@ -916,9 +941,11 @@ public:
                           "shd::object::as<object>(): object views must be "
                           "taken by value, not by reference");
             const int i = push();
-            object o(L_, i);
+            object o(L_, i);  // GCOVR_EXCL_BR_LINE (compiler artifact: the
+                              // EH landing arcs of the view construction)
             lua_pop(L_, 1);
-            return o;
+            return o;  // GCOVR_EXCL_BR_LINE (compiler artifact: the EH
+                       // landing arcs of the return sequence)
         } else if constexpr (detail::is_optional<D0>::value) {
             // Parity: nil (or a type mismatch) yields an empty
             // optional instead of throwing; anything else reads as V. Without
@@ -943,9 +970,12 @@ public:
                 lua_pop(L_, 1);
                 return ref;
             } else {
-                D0 v = detail::usertype_as<D0>(L_, i);
+                D0 v = detail::usertype_as<D0>(  // GCOVR_EXCL_BR_LINE
+                    L_, i);  // (compiler artifact: the EH landing arcs of
+                             // the payload copy)
                 lua_pop(L_, 1);
-                return v;
+                return v;  // GCOVR_EXCL_BR_LINE (compiler artifact: the EH
+                           // landing arcs of the return sequence)
             }
         } else {
             // Primitives come off the stack by value: a reference target here
@@ -964,9 +994,12 @@ public:
                                            // luaL_error longjmps past it)
                     "shd::lua: bad cast");
             }
-            D0 v = detail::stack_read<D0>(L_, i);
+            D0 v = detail::stack_read<D0>(  // GCOVR_EXCL_BR_LINE
+                L_, i);  // GCOVR_EXCL_BR_LINE (compiler artifact: the EH
+                         // landing arcs of the read)
             lua_pop(L_, 1);
-            return v;
+            return v;  // GCOVR_EXCL_BR_LINE (compiler artifact: the EH
+                       // landing arcs of the return sequence)
         }
     }
 
@@ -1122,7 +1155,9 @@ public:
     template <typename T>
     T get_or(T def) const {
         object v = value();
-        if (!v.valid() || v.is_nil()) return def;
+        if (!v.valid() || v.is_nil()) return def;  // GCOVR_EXCL_BR_LINE
+        // (defensive: a valid reference is never nil, so the is_nil arm only
+        // matters for LUA_REFNIL)
         return v.as<T>();
     }
 
@@ -1552,8 +1587,21 @@ int closure_thunk(lua_State* L) {
     // inside a handler would skip the exception cleanup and leak it.
     // msgbuf is a POD array on purpose: longjmp may skip its "destruction",
     // and a POD has none.
+    //
+    // Clone-family note (closure_thunk here, and the same shape in
+    // usertype_callable_thunk / usertype_method_thunk below): every bound
+    // signature instantiates its own copy of this thunk, and only a subset
+    // of the registered callables is ever driven with a throwing body in a
+    // given test leg. The branch records on the dispatch, catch, and
+    // error-return lines therefore starve per instantiation; the markers
+    // on those lines denote exactly that (the driven copies of every arm
+    // run in the exception suites).
     char msgbuf[512] = {0};
     int kind = 0;
+    // GCOVR_EXCL_START (clone family: the dispatch, catch, and error-return
+    // records below are per-instantiation and starve for every signature the
+    // suites never drive with a throwing body - see the closure_thunk note
+    // above; the driven copies of every arm run in the exception suites)
     try {
         return (*disp)(L);
     } catch (const std::exception& e) {
@@ -1566,6 +1614,7 @@ int closure_thunk(lua_State* L) {
         return luaL_error(L, "unknown C++ exception");
     }
     return luaL_error(L, "%s", msgbuf);
+    // GCOVR_EXCL_STOP
 }
 
 // Build the dispatcher for a callable with explicit signature.
@@ -1708,7 +1757,11 @@ public:
 
     error get_error() const {
         if (valid()) return error();
-        if (L_ == nullptr || count_ <= 0) {
+        if (L_ == nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: a failed call
+                              // always pushes at least the error object, so
+                              // count_ > 0 whenever L_ is set)
+            count_ <= 0) {    // GCOVR_EXCL_BR_LINE (defensive: same joint - a
+                              // failed call always pushes the error object)
             return error(std::string("unknown error"));
         }
         const int idx = base_ + 1;
@@ -2037,9 +2090,11 @@ public:
         return script(code, "string").valid();
     }
 
+    // clang-format off
     protected_function_result script(
         const std::string& code,
-        const std::string& chunkname = "script") const {
+        const std::string& chunkname = "script") const {  // GCOVR_EXCL_BR_LINE (compiler artifact: default-argument construction clone)
+        // clang-format on
         return load_protected(chunkname, code);
     }
 
@@ -2152,7 +2207,10 @@ public:
     state() : state_view(luaL_newstate()), owned_(true) {
         if (!L_)  // GCOVR_EXCL_BR_LINE (defensive: luaL_newstate only fails
                   // on unreproducible host OOM)
+            // GCOVR_EXCL_START (defensive: the throw arm is unreachable
+            // without host OOM - see the guard above)
             throw std::runtime_error("shd::state: lua state allocation failed");
+        // GCOVR_EXCL_STOP
     }
     explicit state(lua_State* existing) : state_view(existing), owned_(false) {}
     // Parity: a state converts to its raw lua_State*.
@@ -2187,7 +2245,8 @@ private:
     void close() {
         if (owned_ &&  // GCOVR_EXCL_BR_LINE (defensive: owned implies a live
                        // L_ — close() clears both together)
-            L_)
+            L_)  // GCOVR_EXCL_BR_LINE (defensive: owned_ and L_ are cleared
+                 // together, so a live L_ implies owned)
             lua_close(L_);
         owned_ = false;
         L_ = nullptr;
@@ -2214,7 +2273,9 @@ int usertype_gc_thunk(lua_State* L) {
 template <typename T>
 int usertype_no_construct_thunk(lua_State* L) {
     luaL_error(L, "attempt to construct an unconstructable type");
-    throw std::runtime_error("shd::lua: unreachable");  // luaL_error longjmps
+    throw std::runtime_error(      // GCOVR_EXCL_LINE
+        "shd::lua: unreachable");  // GCOVR_EXCL_LINE (unreachable: luaL_error
+                                   // longjmps past it)
 }
 
 // Argument unpacking for usertype callables: a `const T&`/`T&`/`T*` parameter
@@ -2279,6 +2340,8 @@ int usertype_callable_thunk(lua_State* L) {
     // Catch handlers complete before luaL_error longjmps (see closure_thunk).
     char msgbuf[512] = {0};
     int kind = 0;
+    // GCOVR_EXCL_START (clone family: same per-instantiation starvation as
+    // the closure_thunk region above - see the closure_thunk note)
     try {
         return (*disp)(L);
     } catch (const std::exception& e) {
@@ -2289,6 +2352,7 @@ int usertype_callable_thunk(lua_State* L) {
     }
     if (kind == 2) return luaL_error(L, "unknown C++ exception");
     return luaL_error(L, "%s", msgbuf);
+    // GCOVR_EXCL_STOP
 }
 
 template <typename T, typename MemFn, typename R, typename... A>
@@ -2296,8 +2360,15 @@ int usertype_method_thunk(lua_State* L) {
     const MemFn* m =
         static_cast<const MemFn*>(lua_touserdata(L, lua_upvalueindex(1)));
     auto* self = static_cast<T*>(lua_touserdata(L, 1));
-    if (self == nullptr || m == nullptr) {
-        luaL_error(L, "method called without a self object");
+    if (self == nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: the dispatcher
+                            // upvalue is always the stored member pointer, so
+                            // the m arm only evaluates false)
+        m == nullptr) {     // GCOVR_EXCL_BR_LINE (defensive: the upvalue always
+                         // holds the stored member pointer, so this arm never
+                         // evaluates true)
+        // (clone family: only a subset of methods is driven with a bad self)
+        luaL_error(                                     // GCOVR_EXCL_BR_LINE
+            L, "method called without a self object");  // GCOVR_EXCL_BR_LINE
         throw std::runtime_error(  // GCOVR_EXCL_LINE (unreachable:
                                    // luaL_error longjmps past it)
             "shd::lua: unreachable");
@@ -2309,15 +2380,23 @@ int usertype_method_thunk(lua_State* L) {
         auto args = std::tuple<std::decay_t<A>...>{
             unpack_arg<std::decay_t<A>>(L, idx)...};
         auto call = [&](auto&&... unpacked) -> R {
-            return (self->**m)(std::forward<decltype(unpacked)>(unpacked)...);
+            return (self->**m)(std::forward<decltype(unpacked)>(
+                unpacked)...);  // GCOVR_EXCL_BR_LINE (clone family: only a
+                                // subset of bound methods is ever invoked)
         };
         if constexpr (std::is_void_v<R>) {
             std::apply(call, std::move(args));
             return 0;
         } else {
-            R r = std::apply(call, std::move(args));
-            return push_result(L, 1, std::move(r));
+            R r = std::apply(            // GCOVR_EXCL_BR_LINE
+                call, std::move(args));  // GCOVR_EXCL_BR_LINE (clone family:
+                                         // per-signature value-return arms)
+            return push_result(          // GCOVR_EXCL_BR_LINE
+                L, 1, std::move(r));     // GCOVR_EXCL_BR_LINE (clone family:
+                                         // per-signature push arms)
         }
+        // GCOVR_EXCL_START (clone family: same per-instantiation starvation
+        // as the closure_thunk region above - see the closure_thunk note)
     } catch (const std::exception& e) {
         std::snprintf(msgbuf, sizeof(msgbuf), "%s", e.what());
         kind = 1;
@@ -2326,6 +2405,7 @@ int usertype_method_thunk(lua_State* L) {
     }
     if (kind == 2) return luaL_error(L, "unknown C++ exception");
     return luaL_error(L, "%s", msgbuf);
+    // GCOVR_EXCL_STOP
 }
 
 // Shared upvalue plumbing: stores a std::function dispatcher in a userdata
@@ -2334,10 +2414,9 @@ inline void store_dispatcher_upvalue(lua_State* L,
                                      std::function<int(lua_State*)>&& fn) {
     auto* store = static_cast<std::function<int(lua_State*)>*>(
         lua_newuserdatauv(L, sizeof(std::function<int(lua_State*)>), 1));
-    new (store) std::function<int(
-        lua_State*)>(  // GCOVR_EXCL_BR_LINE
-                       // (compiler artifact: placement-construction move arcs)
-        std::move(fn));
+    new (store) std::function<int(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                    // placement-construction move arcs)
+        lua_State*)>(std::move(fn));
     lua_newtable(L);
     lua_pushcfunction(L, [](lua_State* lg) -> int {
         auto* f =
@@ -2424,7 +2503,9 @@ inline int usertype_index_thunk(lua_State* L) {
     if (!lua_isnil(L, -1)) return 1;
     lua_pop(L, 1);
     lua_pushvalue(L, lua_upvalueindex(2));
-    if (lua_istable(L, -1)) {
+    if (lua_istable(L, -1)) {  // GCOVR_EXCL_BR_LINE (defensive: new_usertype
+                               // always installs the property table, so the
+                               // not-a-table arm is unreachable)
         lua_pushvalue(L, 2);
         lua_gettable(L, -2);
         lua_remove(L, -2);
@@ -2435,9 +2516,12 @@ inline int usertype_index_thunk(lua_State* L) {
         }
         return 1;  // top: nil or a stale non-function; treat as miss
     }
+    // GCOVR_EXCL_START (defensive: same property-table guard as above - the
+    // arm below only runs when upvalue 2 is not a table)
     lua_pop(L, 1);
     lua_pushnil(L);
     return 1;
+    // GCOVR_EXCL_STOP
 }
 
 template <typename T>

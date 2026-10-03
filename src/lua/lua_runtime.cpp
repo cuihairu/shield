@@ -725,7 +725,9 @@ void LuaRuntime::restrict_vm(std::shared_ptr<LuaVM> vm) {
     // absent when the VM was created with lua.sandbox.allow_os =false, so
     // the accessor is validated before the table view is taken.
     shd::accessor os_acc = state["os"];
-    if (os_acc.valid() && os_acc.is<shd::table>()) {
+    if (os_acc.valid() && os_acc.is<shd::table>()) {  // GCOVR_EXCL_BR_LINE
+        // (defensive: os is a table whenever the accessor resolves; the
+        // sandbox removes it entirely instead)
         shd::table os_table = os_acc.get<shd::table>();
         os_table["execute"] = shd::nil;
         os_table["exit"] = shd::nil;

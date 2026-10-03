@@ -4,10 +4,12 @@
 #define BOOST_TEST_MODULE CovBootstrap2
 #include <boost/asio.hpp>
 #include <boost/test/unit_test.hpp>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -162,11 +164,12 @@ BOOST_AUTO_TEST_CASE(ListenerOptionsNodeIdAndRelativeScript) {
         script.filename().string() +
         "\n    network:\n"
         "      tcp: \"203.0.113.7:18451\"\n"
+        "      protocol:\n        body:\n          codec: json\n"
         "      max_connections: 5\n"
         "      max_connections_per_ip: 2\n"
         "      max_frame_size: 65536\n"
         "      max_session_send_queue: 100\n"
-        "      read_idle_timeout_ms: 30000\n"
+        "      read_idle_timeout: 30000\n"
         "      rate_limit_per_second: 100\n");
     shield::bootstrap::RuntimeConfig rc;
     rc.config_files = {cfg.string()};
@@ -203,7 +206,9 @@ BOOST_AUTO_TEST_CASE(LegacyZeroNetThreadsStillServes) {
         "app:\n  name: legacy\n"
         "net:\n  threads: 0\n"
         "actors:\n  - name: a\n    script: " +
-        script.string() + "\n    network:\n      tcp: \"127.0.0.1:18452\"\n");
+        script.string() +
+        "\n    network:\n      tcp: \"127.0.0.1:18452\"\n"
+        "      protocol:\n        body:\n          codec: json\n");
     shield::bootstrap::RuntimeConfig rc;
     rc.config_files = {cfg.string()};
     BOOST_REQUIRE(shield::bootstrap::initialize(rc));
@@ -211,5 +216,79 @@ BOOST_AUTO_TEST_CASE(LegacyZeroNetThreadsStillServes) {
     shield::bootstrap::shutdown();
     BOOST_CHECK(!shield::bootstrap::is_initialized());
 }
+
+// A relative actor script that is neither absolute nor next to the config
+// resolves against the process working directory (the exists() arm of the
+// resolver chain shared by bootstrap and lua_service).
+BOOST_AUTO_TEST_CASE(RelativeScriptResolvesAgainstCwd) {
+    ShutdownGuard guard;
+    ++g_seq;
+    const fs::path script =
+        fs::current_path() /
+        ("shield_cov_boot2_" + std::to_string(g_seq) + "_cwd.lua");
+    write_file(script, "local M = {}\nreturn M\n");
+    const fs::path cfg = write_config(
+        "app:\n  name: cwd\n"
+        "actors:\n  - name: a\n    script: " +
+        script.filename().string() + "\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+    BOOST_CHECK(shield::bootstrap::is_initialized());
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    std::error_code ec;
+    fs::remove(script, ec);
+}
+
+// A console client drives the line dispatcher wired in initialize(): connect
+// to the unix socket, send a command line, and read the JSON reply. The tcp
+// actor keeps an io thread alive for the console server (a console-only
+// config starts no net threads).
+#ifndef _WIN32  // unix-domain console socket: POSIX only
+BOOST_AUTO_TEST_CASE(ConsoleLineDispatchesCommand) {
+    ShutdownGuard guard;
+    const fs::path script = lua_script("console_line.lua");
+    const fs::path sock =
+        fs::temp_directory_path() /
+        ("shield_cov_boot2_" + std::to_string(::getpid()) + "_line.sock");
+    std::error_code ec;
+    fs::remove(sock, ec);
+    const fs::path cfg = write_config(
+        "app:\n  name: consline\n"
+        "console:\n  enabled: true\n  socket_path: " +
+        sock.string() + "\n" +
+        "actors:\n  - name: a\n    script: " + script.string() +
+        "\n    network:\n      tcp: \"127.0.0.1:18461\"\n"
+        "      protocol:\n        body:\n          codec: json\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_REQUIRE(shield::bootstrap::initialize(rc));
+
+    namespace local = boost::asio::local;
+    boost::asio::io_context io;
+    local::stream_protocol::socket client(io);
+    boost::system::error_code connect_ec;
+    client.connect(local::stream_protocol::endpoint(sock.string()), connect_ec);
+    BOOST_REQUIRE(!connect_ec);
+    boost::asio::write(client, boost::asio::buffer(std::string("help\n")));
+    std::vector<char> reply(512);
+    boost::system::error_code read_ec;
+    std::size_t n = 0;
+    client.async_read_some(
+        boost::asio::buffer(reply),
+        [&](const boost::system::error_code& e, std::size_t got) {
+            read_ec = e;
+            n = got;
+        });
+    io.run_for(std::chrono::seconds(3));
+    BOOST_CHECK(!read_ec);
+    BOOST_CHECK_GT(n, 0u);
+    shield::bootstrap::shutdown();
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    std::error_code ec2;
+    fs::remove(sock, ec2);
+}
+#endif  // !_WIN32
 
 BOOST_AUTO_TEST_SUITE_END()

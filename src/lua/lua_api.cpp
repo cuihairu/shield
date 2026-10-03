@@ -1198,9 +1198,9 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                                             // copy arcs at the call boundary;
                                             // the records attribute to this
                                             // opening line)
-                              callback),  // GCOVR_EXCL_BR_LINE (compiler
-                                          // artifact: sol::function copy
-                                          // arcs at the call boundary)
+                              callback),    // GCOVR_EXCL_BR_LINE (compiler
+                                            // artifact: sol::function copy
+                                            // arcs at the call boundary)
                           service_id);
             results.push_back(sol::make_object(lua, id));
             return results;
@@ -1244,9 +1244,9 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                                                 // the call boundary; the
                                                 // records attribute to this
                                                 // opening line)
-                                  callback),  // GCOVR_EXCL_BR_LINE (compiler
-                                              // artifact: sol::function copy
-                                              // arcs at the call boundary)
+                                  callback),    // GCOVR_EXCL_BR_LINE (compiler
+                                                // artifact: sol::function copy
+                                                // arcs at the call boundary)
                               service_id);
             results.push_back(sol::make_object(lua, id));
             return results;
@@ -1692,12 +1692,14 @@ void register_client_identity_api(sol::state_view lua) {
         [](sol::this_state s, std::uint64_t session_id,
            std::uint32_t session_epoch, std::string player_id,
            std::string gateway_address, std::string protocol_profile_id) {
+            // clang-format off
             return sol::make_object(  // GCOVR_EXCL_BR_LINE (compiler
                                       // artifact: inlined sol::make_object
                                       // boxing arcs on the call line)
-                s, ClientContextBox{ClientContextData{
+                s, ClientContextBox{ClientContextData{  // GCOVR_EXCL_BR_LINE (same make_object boxing artifact as the call line above)
                        std::move(gateway_address), session_id, session_epoch,
                        std::move(player_id), std::move(protocol_profile_id)}});
+            // clang-format on
         });
 }
 

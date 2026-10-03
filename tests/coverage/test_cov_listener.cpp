@@ -800,7 +800,7 @@ BOOST_AUTO_TEST_CASE(OptionSettersDriveReadIdleExpiry) {
     io.run_for(300ms);
     BOOST_CHECK(wait_until([&] { return disconnects.load() == 1; }));
     BOOST_CHECK(wait_until([&] { return listener.session_count() == 0; }));
-    BOOST_CHECK_EQUAL(session->error_code(), "read idle timeout");
+    BOOST_CHECK_EQUAL(session->error_code(), "read_idle_timeout");
 
     listener.stop();
     io.run_for(100ms);

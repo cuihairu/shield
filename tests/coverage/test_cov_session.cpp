@@ -350,6 +350,29 @@ BOOST_AUTO_TEST_CASE(ReadIdleTimeoutClosesSession) {
 #endif
 }
 
+BOOST_AUTO_TEST_CASE(ReadIdleCancelOnClose) {
+    SocketPair p;
+
+    std::atomic<bool> disconnected{false};
+    SessionCallbacks cbs;
+    cbs.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
+        disconnected = true;
+    };
+
+    auto session =
+        std::make_shared<TcpSession>(37, std::move(p.server), cbs, 0, 0, 60000);
+    session->start();
+
+    // Let do_receive arm the read deadline, then close: close() cancels the
+    // timer, so the wait handler runs with the cancelled (ec) arm rather
+    // than the idle-timeout arm.
+    p.io.run_for(50ms);
+    session->close("cancel before idle");
+    p.io.run_for(100ms);
+    BOOST_CHECK(!session->is_alive());
+    BOOST_CHECK(disconnected.load());
+}
+
 BOOST_AUTO_TEST_CASE(ClientEofClosesSession) {
     SocketPair p;
 
