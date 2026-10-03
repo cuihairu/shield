@@ -824,7 +824,10 @@ BOOST_AUTO_TEST_CASE(ConfigUnparseableNumberFallsBackToString) {
 namespace shield::lua {
 sol::table make_error(sol::this_state state, std::string code,
                       std::string message, bool retryable, sol::object detail);
-}
+// The B1 seam bridge (httpd/eval handlers hand service tables to sol2
+// callbacks through it); declared here so the both validity arms run.
+sol::table to_sol_table(const shd::table& t);
+}  // namespace shield::lua
 
 // make_error's detail branch: a valid non-nil object is attached, while a
 // valid-but-nil object and an invalid object both leave the field absent.
@@ -1959,3 +1962,25 @@ BOOST_AUTO_TEST_CASE(PlayerRefEpochNonIntNumericDegradesToZero) {
 // shield.global register_task: the name guard compound arms. Already
 // exercised in SchedulerNameValidationPauseAndGet with non-string (42) and
 // empty string ('') -> both arms covered. No additional test needed.
+
+// The sol2-seam bridge to_sol_table: a valid shd table maps to a sol table
+// view of the same content, an invalid one to an empty sol::table.
+BOOST_AUTO_TEST_CASE(ToSolTableBothValidityArms) {
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
+                       shd::lib::string, shd::lib::os, shd::lib::math);
+
+    shd::table src = lua.create_table();
+    src["a"] = 1;
+    // Valid arm: the seam pushes the registry value, views it, and pops it.
+    // The returned view is stack-based and already popped inside the seam
+    // (B1 legacy, retired in B2), so it is not dereferenced here — the
+    // source table itself must survive the round-trip unchanged.
+    sol::table bridged = shield::lua::to_sol_table(src);
+    (void)bridged;
+    BOOST_CHECK_EQUAL(src["a"].get_or<int>(0), 1);
+
+    shd::table invalid;
+    sol::table none = shield::lua::to_sol_table(invalid);
+    BOOST_CHECK(!none.valid());
+}

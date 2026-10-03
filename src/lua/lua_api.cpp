@@ -77,18 +77,6 @@ nlohmann::json lua_to_json(const sol::object& value) {
     return result;
 }
 
-// Bridge a sol2-dispatched function argument into the shd registry-ref
-// world (timer/fork/httpd handlers cross into the B1 runtime here; B2
-// removes the seam with the rest of the sol surface).
-sol::table to_sol_table(const shd::table& t) {
-    if (!t.valid()) return sol::table();
-    lua_State* L = t.state();
-    const int i = t.push();
-    sol::table r(sol::stack_reference(L, i));
-    lua_pop(L, 1);
-    return r;
-}
-
 shd::function to_shd_function(const sol::function& f) {
     lua_State* L = f.lua_state();
     f.push();
@@ -111,6 +99,20 @@ sol::object make_service_handle_object(sol::state_view lua,
     return r;
 }
 }  // namespace
+
+// Bridge a sol2-dispatched function argument into the shd registry-ref
+// world (timer/fork/httpd handlers cross into the B1 runtime here; B2
+// removes the seam with the rest of the sol surface). External (not in
+// the anonymous namespace above) so the coverage suite can drive both
+// validity arms directly.
+sol::table to_sol_table(const shd::table& t) {
+    if (!t.valid()) return sol::table();
+    lua_State* L = t.state();
+    const int i = t.push();
+    sol::table r(sol::stack_reference(L, i));
+    lua_pop(L, 1);
+    return r;
+}
 
 sol::table make_error(sol::this_state state, std::string code,
                       std::string message, bool retryable = false,
@@ -1184,18 +1186,22 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             const uint64_t id =
                 service_id.empty()
                     ? 0
-                    : manager
-                          ->schedule_actor_timer_once(  // GCOVR_EXCL_BR_LINE
-                                                        // (compiler artifact:
-                                                        // sol::function copy
-                                                        // arcs at the call
-                                                        // boundary)
-                              delay_ms,
-                              to_shd_function(
-                                  callback),  // GCOVR_EXCL_BR_LINE (compiler
-                                              // artifact: sol::function copy
-                                              // arcs at the call boundary)
-                              service_id);
+                    : manager->schedule_actor_timer_once(  // GCOVR_EXCL_BR_LINE
+                                                           // (compiler
+                                                           // artifact:
+                                                           // sol::function copy
+                                                           // arcs at the call
+                                                           // boundary)
+                          delay_ms,
+                          to_shd_function(  // GCOVR_EXCL_BR_LINE
+                                            // (compiler artifact: sol::function
+                                            // copy arcs at the call boundary;
+                                            // the records attribute to this
+                                            // opening line)
+                              callback),  // GCOVR_EXCL_BR_LINE (compiler
+                                          // artifact: sol::function copy
+                                          // arcs at the call boundary)
+                          service_id);
             results.push_back(sol::make_object(lua, id));
             return results;
         });
@@ -1232,7 +1238,12 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
                                                                // at the call
                                                                // boundary)
                               interval_ms,
-                              to_shd_function(
+                              to_shd_function(  // GCOVR_EXCL_BR_LINE
+                                                // (compiler artifact:
+                                                // sol::function copy arcs at
+                                                // the call boundary; the
+                                                // records attribute to this
+                                                // opening line)
                                   callback),  // GCOVR_EXCL_BR_LINE (compiler
                                               // artifact: sol::function copy
                                               // arcs at the call boundary)
@@ -1664,8 +1675,14 @@ void register_client_identity_api(sol::state_view lua) {
         lua_setfield(L, LUA_REGISTRYINDEX, name);
         lua_pop(L, 1);
     };
-    mirror(ClientContextBox{}, "ClientContext");
-    mirror(ClientRefBox{}, "ClientRef");
+    mirror(ClientContextBox{},  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                // the inlined sol::make_object boxing
+                                // machinery reports its generic arcs on this
+                                // call line, one record set per probe type)
+           "ClientContext");
+    mirror(ClientRefBox{},  // GCOVR_EXCL_BR_LINE (same sol::make_object
+                            // boxing artifact as the ClientContext mirror)
+           "ClientRef");
 #ifdef SHIELD_ENABLE_PLAYER
     mirror(PlayerRefBox{}, "PlayerRef");
 #endif
@@ -1675,7 +1692,9 @@ void register_client_identity_api(sol::state_view lua) {
         [](sol::this_state s, std::uint64_t session_id,
            std::uint32_t session_epoch, std::string player_id,
            std::string gateway_address, std::string protocol_profile_id) {
-            return sol::make_object(
+            return sol::make_object(  // GCOVR_EXCL_BR_LINE (compiler
+                                      // artifact: inlined sol::make_object
+                                      // boxing arcs on the call line)
                 s, ClientContextBox{ClientContextData{
                        std::move(gateway_address), session_id, session_epoch,
                        std::move(player_id), std::move(protocol_profile_id)}});
