@@ -143,7 +143,11 @@ inline lua_State* main_thread(lua_State* L) {
     lua_rawgeti(L, LUA_REGISTRYINDEX, LUA_RIDX_MAINTHREAD);
     lua_State* main = lua_tothread(L, -1);
     lua_pop(L, 1);
-    return main != nullptr ? main : L;
+    return main != nullptr ? main :  // GCOVR_EXCL_BR_LINE (defensive:
+                                     // LUA_RIDX_MAINTHREAD always holds the
+                                     // live main thread on luaL_newstate VMs,
+                                     // so the null arm never fires)
+               L;
 }
 
 // ---- stack push/traits ----------------------------------------------------
@@ -318,7 +322,11 @@ inline T stack_read(lua_State* L, int idx) {
     } else if constexpr (std::is_same_v<T, std::string>) {
         size_t len = 0;
         const char* s = lua_tolstring(L, idx, &len);
-        return std::string(s ? s : "", s ? len : 0);
+        return std::string(s ? s : "",  // GCOVR_EXCL_BR_LINE (defensive:
+                                        // stack_check gates the read to
+                                        // LUA_TSTRING, so tolstring never
+                                        // returns null here)
+                           s ? len : 0);
     } else if constexpr (std::is_same_v<T, const char*>) {
         return lua_tostring(L, idx);
     } else {
@@ -404,7 +412,9 @@ T unpack_arg(lua_State* L, int& idx) {
                        host_type_name<D>(), luaL_typename(L, i));
             // luaL_error longjmps into lua_pcall; the throw below is
             // unreachable and only satisfies the return type.
-            throw std::runtime_error("shd::lua: argument conversion failed");
+            throw std::runtime_error(  // GCOVR_EXCL_LINE (unreachable:
+                                       // luaL_error longjmps past it)
+                "shd::lua: argument conversion failed");
         }
         D v = stack_read<D>(L, i);
         return v;
@@ -566,7 +576,12 @@ struct is_ref_type<nil_t> : std::true_type {};
 // the function template). Key is std::type_index, value is vector of names.
 inline std::unordered_map<std::type_index, std::vector<std::string>>&
 type_name_registry() {
-    static std::unordered_map<std::type_index, std::vector<std::string>> reg;
+    static std::unordered_map<
+        std::type_index,  // GCOVR_EXCL_BR_LINE
+                          // (compiler artifact: the thread-safe static
+                          // local's first-use guard pseudo-branch)
+        std::vector<std::string>>
+        reg;
     return reg;
 }
 
@@ -636,9 +651,13 @@ namespace detail {
 template <typename T, typename = std::enable_if_t<is_usertype_value<T>::value>>
 void push(lua_State* L, const T& v) {
     const auto& names = type_names<T>();
-    if (names.empty()) {
+    if (names.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: is_usertype_value
+                          // specializations live next to their new_usertype
+                          // registrations, so a pushed value always has names)
         luaL_error(L, "shd: usertype %s is not registered", typeid(T).name());
-        throw std::runtime_error("shd: unregistered usertype");  // unreachable
+        throw std::runtime_error(  // GCOVR_EXCL_LINE (unreachable: luaL_error
+                                   // longjmps past it)
+            "shd: unregistered usertype");
     }
     if constexpr (is_foreign_usertype<T>::value) {
         // Foreign usertype (registered outside shd): use pointer-box layout to
@@ -875,7 +894,9 @@ public:
                 luaL_error(L_, "bad cast (%s expected, got %s)",
                            std::is_same_v<T, table> ? "table" : "function",
                            luaL_typename(L_, i));
-                throw std::runtime_error("shd::lua: bad cast");  // unreachable
+                throw std::runtime_error(  // GCOVR_EXCL_LINE (unreachable:
+                                           // luaL_error longjmps past it)
+                    "shd::lua: bad cast");
             }
             T v(L_, i);
             lua_pop(L_, 1);
@@ -939,7 +960,9 @@ public:
                 luaL_error(L_, "bad cast (%s expected, got %s)",
                            detail::host_type_name<D0>(), luaL_typename(L_, i));
                 // luaL_error longjmps into the enclosing pcall; unreachable.
-                throw std::runtime_error("shd::lua: bad cast");
+                throw std::runtime_error(  // GCOVR_EXCL_LINE (unreachable:
+                                           // luaL_error longjmps past it)
+                    "shd::lua: bad cast");
             }
             D0 v = detail::stack_read<D0>(L_, i);
             lua_pop(L_, 1);
@@ -1569,7 +1592,8 @@ void table::push_closure(F&& f) {
     using traits = detail::closure_traits<std::decay_t<F>>;
     auto* store = static_cast<std::function<int(lua_State*)>*>(
         lua_newuserdatauv(L_, sizeof(std::function<int(lua_State*)>), 1));
-    new (store)
+    new (store)  // GCOVR_EXCL_BR_LINE (compiler artifact: the placement
+                 // construction's std::function move arcs)
         std::function<int(lua_State*)>(traits::make(std::forward<F>(f)));
     lua_newtable(L_);  // metatable guarding the userdata lifetime
     lua_pushcfunction(L_, [](lua_State* L) -> int {
@@ -1918,7 +1942,10 @@ class load_result {
 public:
     load_result() = default;
     load_result(lua_State* L, int status, int slot) : status_(status) {
-        if (L != nullptr) value_ = object(L, slot);
+        if (L != nullptr)  // GCOVR_EXCL_BR_LINE (defensive: load() always
+                           // passes its live state; the null arm has no
+                           // reachable constructor)
+            value_ = object(L, slot);
     }
 
     bool valid() const { return status_ == LUA_OK; }
@@ -2123,7 +2150,8 @@ protected_function_result safe_script(state_view sv, const std::string& code,
 class state : public state_view {
 public:
     state() : state_view(luaL_newstate()), owned_(true) {
-        if (!L_)
+        if (!L_)  // GCOVR_EXCL_BR_LINE (defensive: luaL_newstate only fails
+                  // on unreproducible host OOM)
             throw std::runtime_error("shd::state: lua state allocation failed");
     }
     explicit state(lua_State* existing) : state_view(existing), owned_(false) {}
@@ -2157,7 +2185,10 @@ public:
 
 private:
     void close() {
-        if (owned_ && L_) lua_close(L_);
+        if (owned_ &&  // GCOVR_EXCL_BR_LINE (defensive: owned implies a live
+                       // L_ — close() clears both together)
+            L_)
+            lua_close(L_);
         owned_ = false;
         L_ = nullptr;
     }
@@ -2174,7 +2205,9 @@ namespace detail {
 
 template <typename T>
 int usertype_gc_thunk(lua_State* L) {
-    if (auto* p = static_cast<T*>(lua_touserdata(L, 1))) p->~T();
+    if (auto* p = static_cast<T*>(lua_touserdata(L, 1)))  // GCOVR_EXCL_BR_LINE
+        // (defensive: __gc only fires for actual userdata payloads)
+        p->~T();
     return 0;
 }
 
@@ -2198,7 +2231,9 @@ struct self_unpack {
             auto* p = static_cast<Ptr>(lua_touserdata(L, i));
             if (p == nullptr) {
                 luaL_error(L, "bad self argument #%d", i);
-                throw std::runtime_error("shd::lua: unreachable");
+                throw std::runtime_error(  // GCOVR_EXCL_LINE (unreachable:
+                                           // luaL_error longjmps past it)
+                    "shd::lua: unreachable");
             }
             if constexpr (std::is_pointer_v<U>) {
                 return p;
@@ -2263,7 +2298,9 @@ int usertype_method_thunk(lua_State* L) {
     auto* self = static_cast<T*>(lua_touserdata(L, 1));
     if (self == nullptr || m == nullptr) {
         luaL_error(L, "method called without a self object");
-        throw std::runtime_error("shd::lua: unreachable");
+        throw std::runtime_error(  // GCOVR_EXCL_LINE (unreachable:
+                                   // luaL_error longjmps past it)
+            "shd::lua: unreachable");
     }
     char msgbuf[512] = {0};
     int kind = 0;
@@ -2297,7 +2334,10 @@ inline void store_dispatcher_upvalue(lua_State* L,
                                      std::function<int(lua_State*)>&& fn) {
     auto* store = static_cast<std::function<int(lua_State*)>*>(
         lua_newuserdatauv(L, sizeof(std::function<int(lua_State*)>), 1));
-    new (store) std::function<int(lua_State*)>(std::move(fn));
+    new (store) std::function<int(
+        lua_State*)>(  // GCOVR_EXCL_BR_LINE
+                       // (compiler artifact: placement-construction move arcs)
+        std::move(fn));
     lua_newtable(L);
     lua_pushcfunction(L, [](lua_State* lg) -> int {
         auto* f =
@@ -2449,7 +2489,9 @@ template <typename T, typename... A>
 object make_userdata(state_view sv, const std::string& type_name, A&&... a) {
     lua_State* L = sv.lua_state();
     auto* p = static_cast<T*>(lua_newuserdatauv(L, sizeof(T), 1));
-    new (p) T(std::forward<A>(a)...);
+    new (p) T(std::forward<A>(a)...);  // GCOVR_EXCL_BR_LINE (compiler
+                                       // artifact: placement-construction
+                                       // arcs of T's constructor)
     luaL_getmetatable(L, type_name.c_str());
     lua_setmetatable(L, -2);
     lua_pushlstring(L, type_name.data(), type_name.size());
