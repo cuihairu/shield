@@ -332,6 +332,7 @@ nlohmann::json sol_box_context_marker(const shd::object& value) {
     return so.as<const ClientRefBox&>().data.to_json();
 }
 
+#ifdef SHIELD_ENABLE_PLAYER
 nlohmann::json sol_box_player_marker(const shd::object& value) {
     lua_State* L = value.state();
     value.push();
@@ -355,6 +356,7 @@ nlohmann::json sol_box_player_marker(const shd::object& value) {
                           {"service_id", d.service_id},
                           {"epoch", d.epoch}};
 }
+#endif  // SHIELD_ENABLE_PLAYER
 
 shd::object json_to_lua(shd::state_view lua, const nlohmann::json& value) {
     lua_State* L = lua.lua_state();
@@ -2011,6 +2013,31 @@ shield::player::PlayerRef player_ref_from_table(const sol::table& t) {
     return ref;
 }  // GCOVR_EXCL_LINE (function-exit arc artifact of player_ref_from_table)
 
+// Reads a shd-created PlayerRefBox (B1 dual-layout: raw payload plus the
+// uservalue type-name tag) into a PlayerRef. Sol-created boxes keep the
+// sol usertype layout and stay on the caller's sol branch; foreign shd
+// boxes fail the tag check and fall through to invalid_player_ref.
+bool player_ref_from_shd_box(const sol::object& ref,
+                             shield::player::PlayerRef& out) {
+    lua_State* L = ref.lua_state();
+    ref.push();
+    const int slot = lua_gettop(L);
+    bool ok = false;
+    if (shd::detail::is_shd_raw_userdata(L, slot)) {
+        const shd::stack_object raw(L, slot);
+        if (raw.is<PlayerRefBox>()) {
+            const PlayerRefData& d = raw.as<const PlayerRefBox&>().data;
+            out.uid = d.uid;
+            out.node_id = d.node_id;
+            out.service_id = d.service_id;
+            out.epoch = d.epoch;
+            ok = true;
+        }
+    }
+    lua_pop(L, 1);
+    return ok;
+}
+
 // Shared snapshot shape for get/resolve: flat read-only fields plus a
 // materialized PlayerRef under `ref`.
 sol::table write_session(sol::state_view s,
@@ -2837,6 +2864,11 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
                 player_ref.node_id = d.node_id;
                 player_ref.service_id = d.service_id;
                 player_ref.epoch = d.epoch;
+            } else if (player_ref_from_shd_box(ref, player_ref)) {
+                // shd-created PlayerRefBox (B1 dual-layout): raw payload read
+                // on the shd side. Must run before the table check — sol2's
+                // is<sol::table>() also accepts userdata, so an shd box would
+                // otherwise fall into the table branch and read garbage.
             } else if (ref.is<sol::table>()) {
                 player_ref = player_ref_from_table(ref);
             } else {

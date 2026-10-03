@@ -373,19 +373,22 @@ T unpack_arg(lua_State* L, int& idx) {
         const int from = idx;
         const int to = lua_gettop(L) + 1;
         idx = to;
-        return variadic_args(L, from, to);
+        // Construct via the dependent D: the target class (defined later in
+        // this header) is incomplete here, and clang checks non-dependent
+        // constructions eagerly at the definition.
+        return D(L, from, to);
     } else if constexpr (std::is_same_v<D, object>) {
         const int i = idx++;
-        return object(L, i);
+        return D(L, i);
     } else if constexpr (std::is_same_v<D, table>) {
         const int i = idx++;
-        return table(L, i);
+        return D(L, i);
     } else if constexpr (std::is_same_v<D, function>) {
         const int i = idx++;
-        return function(L, i);
+        return D(L, i);
     } else if constexpr (std::is_same_v<D, protected_function>) {
         const int i = idx++;
-        return protected_function(L, i);
+        return D(L, i);
     } else if constexpr (is_optional<D>::value) {
         const int i = idx++;
         // An optional parameter accepts absent arguments too
@@ -506,11 +509,13 @@ public:
     T as() const {
         using D = std::remove_const_t<std::remove_reference_t<T>>;
         if constexpr (std::is_same_v<D, table>) {
-            return table(L_, idx_);
+            // Construct via the dependent D (see unpack_arg): the class is
+            // incomplete at this point in the header for some targets.
+            return D(L_, idx_);
         } else if constexpr (std::is_same_v<D, function>) {
-            return function(L_, idx_);
+            return D(L_, idx_);
         } else if constexpr (std::is_same_v<D, object>) {
-            return object(L_, idx_);
+            return D(L_, idx_);
         } else if constexpr (std::is_class_v<D> &&
                              !std::is_same_v<D, std::string> &&
                              !std::is_same_v<D, const char*>) {
@@ -527,8 +532,9 @@ public:
             return detail::stack_read<D>(L_, idx_);
         }
     }
-
-    operator object() const;
+    // No operator object(): object(const stack_object&) below is the single
+    // conversion path. Both a converting constructor and a conversion
+    // operator would make stack_object -> object ambiguous on clang/MSVC.
 
 private:
     lua_State* L_;
@@ -876,7 +882,9 @@ public:
             return v;
         } else if constexpr (std::is_same_v<D0, protected_function>) {
             const int i = push();
-            protected_function pf(L_, i);
+            // Construct via the dependent D0: protected_function is only
+            // forward-declared at this point in the header.
+            D0 pf(L_, i);
             lua_pop(L_, 1);
             return pf;
         } else if constexpr (std::is_same_v<D0, object>) {
@@ -980,8 +988,6 @@ inline void push(lua_State* L, const object& o) {
     }
 }
 }  // namespace detail
-
-inline stack_object::operator object() const { return object(L_, idx_); }
 
 // Referenced Lua function (callable via protected call).
 class function : public detail::ref_base {
