@@ -11,7 +11,7 @@ Shield 的配置模型是**启动时一次性装配**：YAML 多文件深合并 
 | 配置从哪来 | 磁盘 YAML（`config/app*.yaml`）+ CLI 覆盖（`--config` 多文件按序、`--node-id` 注入） |
 | 怎么下发/热更新 | **没有热更新**。`reload_config()` 是桩，恒返回 `true`（src/config/config.cpp:1796） |
 | 版本管理 | **没有配置版本号/hash/世代**。`app.version`、`server_manager.info.version` 是业务自报展示字段，不参与变更比对 |
-| 客户端怎么应用 | **不适用**。传输层/gateway 无任何配置推送消息；游戏客户端 SDK 是独立实现、不在本仓库（docs/engine-sdk-design.md） |
+| 客户端怎么应用 | **不适用**。传输层/gateway 无任何配置推送消息；游戏客户端 SDK 按设计为分引擎独立实现（docs/engine-sdk-design.md:48 "实现仓库按引擎切分"）、整体尚在提案阶段（同文 :3 "状态：设计提案"），不在本仓库（无 unity/ unreal/ cocos/ 目录） |
 | 失败回滚 | 启动期失败 = 拒绝启动（`return false`，进程退出，无部分启动）；运行期配置不可变，无需回滚 |
 
 ## 1. 模块清单
@@ -115,7 +115,7 @@ validate_runtime_config（config.cpp:1115-1638）
 6. **`source_dir` 被最后加载文件覆盖**：`impl_->source_dir` 每次 `load_yaml` 重写（config.cpp:885-892），actor 脚本相对路径解析 `existing_script_path` 跟随**最后**一份配置文件的目录（config.cpp:762-763、1593）——多文件叠加 + 相对 script 路径时容易踩。
 7. **校验只发生在启动**：`Config::set` 无校验路径（唯一调用方是受控的 node_id 注入）；若未来暴露 Lua/ops 写入口，校验缺口会立即出现。
 8. **插件段不进 flatten 消费**：`load_plugin_config()` 直接读 `Config` 对象（plugin_config.cpp:83-86），同样启动期一次读定；插件 DLL 内部另有 manifest `schema_version`（必须为 1，src/plugin/manifest.cpp:77-81）——那是插件 ABI 版本，与配置版本无关。
-9. **`lua.vm.*` 仅在启动时校验**：`lua.vm.mode` 只在启动时校验"必须是 per_service"（config.cpp:1189-1205），仅作为启动合法性检查；`lua.vm.max_vms` / `max_memory_mb` 在配置层被读取并记录在 YAML 中，但在运行期零消费方——不参与任何 VM 资源限制（grep src/ 实测，零命中）。三个键的改动不改变任何运行期行为；VM 资源上限目前不由配置驱动，上限由 CAF 运行时自行管理。实证：`grep -rn "lua.vm.max_vms\\|lua.vm.max_memory_mb" src/ --include="*.cpp" --include="*.hpp" --include="*.h"` 返回无命中。
+9. **`lua.vm.*` 仅在启动时校验**：`lua.vm.mode` 只在启动时校验"必须是 per_service"（config.cpp:1189-1205），仅作为启动合法性检查；`lua.vm.max_vms` / `max_memory_mb` 在配置层被读取并记录在 YAML 中，但在运行期零消费方——不参与任何 VM 资源限制（grep src/ 实测，零命中）。三个键的改动不改变任何运行期行为；VM 资源上限目前不由配置驱动（grep src/ 实测零消费，未发现任何实现层上限）。实证：`grep -rn "lua.vm.max_vms\\|lua.vm.max_memory_mb" src/ --include="*.cpp" --include="*.hpp" --include="*.h"` 返回无命中。
 
 ## 6. 若要演进（现状依据，非建议实施）
 
