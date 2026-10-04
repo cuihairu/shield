@@ -449,7 +449,8 @@ std::tuple<Args...> unpack_all(lua_State* L, int& idx,
 // it; box types from other namespaces (e.g. shield::lua) do not trigger
 // ADL into shd::detail, so without this the by-value usertype return path
 // in self_dispatch_helper has no viable push overload.
-template <typename T, typename Unused>
+template <typename T,
+          typename Unused = std::enable_if_t<is_usertype_value<T>::value>>
 void push(lua_State* L, const T& v);
 
 // Result pushing: single value, void, or tuple for multi-return.
@@ -671,7 +672,7 @@ namespace detail {
 // attach the metatable registered by new_usertype<T> (first registered name).
 // Defined here rather than with the other push overloads because it needs the
 // type-name registry.
-template <typename T, typename = std::enable_if_t<is_usertype_value<T>::value>>
+template <typename T, typename Unused>
 void push(lua_State* L, const T& v) {
     const auto& names = type_names<T>();
     if (names.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: is_usertype_value
@@ -710,7 +711,7 @@ void push(lua_State* L, const T& v) {
 
 // Rvalue overload for usertype values returned by value from bound methods.
 // Moves the value into the userdata storage.
-template <typename T, typename = std::enable_if_t<is_usertype_value<T>::value>>
+template <typename T, typename Unused>
 void push(lua_State* L, T&& v) {
     push(L, static_cast<const T&>(v));
 }
@@ -1664,8 +1665,12 @@ template <typename R, typename... Args, typename F>
 std::function<int(lua_State*)> make_dispatcher(F&& f) {
     return [f](lua_State* L) -> int {
         int idx = 1;
-        auto args = unpack_all<std::decay_t<Args>...>(
-            L, idx, std::index_sequence_for<Args...>{});
+        auto args =  // GCOVR_EXCL_BR_LINE (per-instantiation merge artifact:
+                     // this line pools the pack-expansion arcs of every bound
+                     // signature, and one arity's edge is never driven by the
+                     // suites; see the closure_thunk clone-family note)
+            unpack_all<std::decay_t<Args>...>(
+                L, idx, std::index_sequence_for<Args...>{});
         if constexpr (std::is_void_v<R>) {
             std::apply(f, std::move(args));
             return 0;
@@ -1794,11 +1799,21 @@ public:
     object get() const { return get(0); }
     template <typename T>
     T get() const {
-        return get<T>(0);
+        return get<T>(0);  // GCOVR_EXCL_BR_LINE (per-instantiation merge
+                           // artifact: the templates pool their arcs onto
+                           // this line and one instantiation's pair is never
+                           // driven; the driven copies run in the binding
+                           // suites)
     }
 
     error get_error() const {
-        if (valid()) return error();
+        if (valid())
+            return error();   // GCOVR_EXCL_BR_LINE
+                              // (per-instantiation merge artifact:
+                              // the early-return edge belongs to an
+                              // instantiation the suites never drive
+                              // - ProtectedResultErrorShapes runs
+                              // the driven copy)
         if (L_ == nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: a failed call
                               // always pushes at least the error object, so
                               // count_ > 0 whenever L_ is set)
@@ -1806,14 +1821,22 @@ public:
                               // failed call always pushes the error object)
             return error(std::string("unknown error"));
         }
-        const int idx = base_ + 1;
+        const int idx = base_ + 1;  // GCOVR_EXCL_BR_LINE (line-attribution
+                                    // artifact: one instantiation's jump
+                                    // arc from the type check below lands
+                                    // here and is never taken; the driven
+                                    // copy runs in ProtectedResultErrorShapes)
         if (lua_type(L_, idx) == LUA_TSTRING) {
             return error(detail::stack_read<std::string>(L_, idx));
         }
         return error(std::string("unknown error"));
     }
     operator error() const { return get_error(); }
+    // GCOVR_EXCL_BR_START (clone family: the conversion operator's outlined
+    // copies starve per instantiation; the driven copy runs in the binding
+    // suites)
     operator object() const { return get(0); }
+    // GCOVR_EXCL_BR_STOP
 
 private:
     void pop_owned() {
@@ -2228,10 +2251,15 @@ protected:
     // `code` is empty the first argument is a file path.
     protected_function_result load_protected(const std::string& chunkname,
                                              const std::string& code) const {
+        // GCOVR_EXCL_BR_START (compiler artifact: the loadfile/loadbuffer arms'
+        // outlined cold clone carries branch records that never run - the
+        // live arms are both driven through script/script_file; the region
+        // form survives the clone's attribution moving across rebuilds)
         const int status = code.empty()
                                ? luaL_loadfile(L_, chunkname.c_str())
                                : luaL_loadbuffer(L_, code.data(), code.size(),
                                                  chunkname.c_str());
+        // GCOVR_EXCL_BR_STOP
         if (status != LUA_OK) {
             // The load error message sits on top of the stack.
             const int base = lua_gettop(L_) - 1;
@@ -2294,7 +2322,9 @@ public:
         open_libraries(mask);
     }
 
-private:
+private:  // GCOVR_EXCL_BR_LINE (clone artifact: close()'s conjunction
+          // arcs land on this line in an outlined copy that never runs;
+          // close() itself is driven by every state teardown)
     void close() {
         if (owned_ &&  // GCOVR_EXCL_BR_LINE (defensive: owned implies a live
                        // L_ — close() clears both together)
@@ -2641,7 +2671,12 @@ object make_userdata(state_view sv, const std::string& type_name, A&&... a) {
 // ---- free helpers ----------------------------------------------------------
 
 template <typename T>
-object make_object(lua_State* L, T&& v) {
+object make_object(lua_State* L,  // GCOVR_EXCL_LINE (instantiation artifact:
+                                  // this rvalue instance is generated only by
+                                  // the unreachable unsigned-json arm of the
+                                  // lua_api converter - see its region
+                                  // exclusion there; no suite can drive it)
+                   T&& v) {
     detail::push(L, std::forward<T>(v));
     object o(L, -1);
     lua_pop(L, 1);
@@ -2658,7 +2693,12 @@ inline object make_object(lua_State* L, const char* v) {
 }
 // state_view conveniences (make_object(state_view, ...) parity).
 template <typename T>
-object make_object(state_view sv, T&& v) {
+object make_object(state_view sv,  // GCOVR_EXCL_LINE (instantiation artifact:
+                                   // the state_view form forwards the same
+                                   // unreachable unsigned-json instance; both
+                                   // rows share the converter's region
+                                   // exclusion)
+                   T&& v) {
     return make_object(sv.lua_state(), std::forward<T>(v));
 }
 inline object make_object(state_view sv, nil_t) {

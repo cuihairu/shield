@@ -1376,6 +1376,29 @@ BOOST_AUTO_TEST_CASE(PlayerRefBoxShdMarkerRoundTrip) {
                                   {"service_id", "svc-shd"},
                                   {"epoch", std::uint64_t{7}}};
     BOOST_CHECK(lua_to_json(boxed) == expected);
+
+    // The lvalue box drives the const-ref push path (the rvalue forwarding
+    // overload delegates through the same type-name registry), and the
+    // unsigned boxes confirm the integral make_object entries on both the
+    // lua_State* and state_view forms.
+    PlayerRefBox boxed_lv{"u-lv", "dev-lv", "svc-lv", 3};
+    lua_newtable(lua);
+    shd::table t(lua, lua_gettop(lua));
+    t.set("box", boxed_lv);
+    shd::object n1 = shd::make_object(lua, std::uint64_t{42});
+    shd::object n2 = shd::make_object(shd::state_view(lua), std::uint64_t{42});
+    const nlohmann::json expected_lv{
+        {"box", nlohmann::json{{"__shield_player_ref", true},
+                               {"uid", "u-lv"},
+                               {"node_id", "dev-lv"},
+                               {"service_id", "svc-lv"},
+                               {"epoch", std::uint64_t{3}}}}};
+    BOOST_CHECK(lua_to_json(t) == expected_lv);
+    BOOST_CHECK(n1.is<std::uint64_t>() &&
+                n1.as<std::uint64_t>() == std::uint64_t{42});
+    BOOST_CHECK(n2.is<std::uint64_t>() &&
+                n2.as<std::uint64_t>() == std::uint64_t{42});
+    lua_pop(lua, 1);
 }
 
 // register_session's table-ref path decodes the epoch from a decimal string

@@ -1063,6 +1063,20 @@ BOOST_AUTO_TEST_CASE(AsyncSpawnOutcomes) {
         [&]() { return manager.query_service("cov_child_to").empty(); },
         std::chrono::seconds(3)));
 
+    // A zero budget is deterministic on both sides: any business-failing
+    // on_init reports an instant spawn timeout (the elapsed measurement is
+    // always >= 0), while a true-returning on_init completes the spawn — the
+    // suspended caller's timeout driver falls back to its default budget.
+    BOOST_REQUIRE(
+        manager
+            .call(parent.service_id, "spawn_child",
+                  nlohmann::json::array({ok_child, "cov_child_zero", 0}), 1000)
+            .success);
+    BOOST_CHECK(wait_state(3, "ok"));
+    BOOST_CHECK_EQUAL(manager.query_service("cov_child_zero"),
+                      "cov_child_zero");
+    manager.exit("cov_child_zero", "cleanup");
+
     // Caller exits while the child initializes: the child still completes.
     // Use send (not call) so the parent stays suspended while we exit it;
     // a sync call would queue behind the suspended handler and only return
