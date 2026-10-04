@@ -2,7 +2,7 @@
 
 本文是 Shield 重构后的 Lua 用户 API 契约。运行时语义细节仍由各 `runtime-*.md` 文档展开；当示例或旧源码与本文冲突时，以本文为准。
 
-> **当前状态**：本文冻结 Phase 1 Lua API 契约；源码需要按本文补齐实现和测试。
+> **当前状态**：Phase 1 契约已实现，细节以各节实现快照为准。
 
 <details>
 <summary>实现快照（点击展开）</summary>
@@ -170,7 +170,7 @@ end
 
 **panic 策略**：
 
-`on_error` 不改变服务状态。Phase 1 的 panic 策略固定为：同一 service 连续 handler/timer/fork 未捕获错误达到 `limits.max_errors_before_panic` 时进入 panic；未配置时默认 10。
+`on_error` 不改变服务状态。Phase 1 的 panic 策略固定为：同一 service 连续 handler/timer/fork 未捕获错误达到固定阈值 10（`kDefaultMaxErrorsBeforePanic`，当前无配置键）时进入 panic。
 
 > **实现快照**：`on_error` / `on_panic` hook 已实现。当 handler 抛错时，`call_service_method_coroutine` 调用 `LuaRuntime::invoke_hook` 触发 service table 上的 `on_error(err, context)`；timer callback 错误通过 CAF actor 调度触发；fork task 错误通过 CAF actor 调度 `fork_task_atom` 触发。连续未捕获错误达到 `kDefaultMaxErrorsBeforePanic`（默认 10）时触发 `on_panic(reason, context)` 并 `exit("panic")`。成功执行后错误计数重置。`OnErrorHookCalledOnHandlerThrow` 测试覆盖。
 
@@ -215,7 +215,7 @@ local h, err = shield.spawn("player", {
 | `module` | string | actor 类型或脚本别名，由 `actors[].name` 映射 |
 | `opts.name` | string | 可选 service name，本 runtime 内唯一 |
 | `opts.args` | table | 传给 `on_init(args).args` 的业务参数 |
-| `opts.timeout` | number | 覆盖 spawn timeout，单位 ms |
+| `opts.timeout` | number | 覆盖 spawn timeout，单位 ms；`<= 0` 不回退默认值，行为见实现快照 |
 
 **返回值**：
 
@@ -230,6 +230,8 @@ local h, err = shield.spawn("player", {
 `shield.spawn` 是"同步语义、异步实现"。在 handler 协程（含 fork task 协程）中调用时走 `_coro_spawn`：caller 经 `suspend_for_call` + `coroutine.yield()` 挂起，VM 创建、module 加载和 `on_init` 在专用 spawn worker 线程（单线程串行）上执行，完成后经 `CallResponseMessage` 路由回 caller actor 恢复协程——慢 `on_init` 不会阻塞 caller 的 service actor。VM 主线程（如 `on_init` 内）调用时保持同步路径（`_sync_spawn`）。
 
 spawn 期间 name 处于 reserved 状态：同名 spawn 立即失败（`service name already reserved`），`shield.query` 在 publish 前不可见；`on_init` 失败回滚 name（`init_failed`）。挂起超时按 `opts.timeout`（默认 10000ms）以 `{code="spawn_timeout"}` 恢复 caller，且成功但超时的子 service 会被补偿退出（reason `"timeout"`）。超时判定仍是事后测量，`on_init` 本身不会被抢占中断。
+
+`opts.timeout <= 0` 时不回退默认值：Lua 侧 `0` 为 truthy，会直接穿过 `opts.timeout or 10000` 默认表达式进入 C++。C++ `spawn` 预算取 0 后 `init_overran`（耗时 ≥ 预算）恒真——`on_init` 业务失败统一报 `spawn timeout: on_init exceeded 0ms limit`（`on_init` 成功则正常返回），同步与协程路径皆然；协程路径 caller 的挂起超时另有 C++ 地板 5000ms（`timeout_ms > 0 ? timeout_ms : 5000`）。
 
 测试覆盖见 `test_lua_api_spawn.cpp`。
 
@@ -486,7 +488,7 @@ local task = shield.fork(function()
 end)
 ```
 
-返回 numeric task id。fork task 属于当前 service，当前通过 `lua_pcall` 执行，不是 coroutine；service exit 时自动取消尚未执行的 task。
+返回 numeric task id。fork task 属于当前 service，以协程派发执行（`invoke_coroutine`），task 体内可用 `shield.sleep` / `shield.call` 挂起；service exit 时自动取消尚未执行的 task。
 
 ---
 

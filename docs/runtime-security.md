@@ -97,7 +97,7 @@ end
 
 ### 连接限制
 
-连接限制参数见 [网络语义](runtime-network.md#网络背压与限制)。
+连接限制参数见 [网络语义](runtime-network.md#背压与限制)。
 
 ### TLS 支持
 
@@ -300,14 +300,16 @@ end
 
 ### 服务间认证
 
-服务间调用默认信任（同一进程内），跨节点时可选认证：
+服务间调用默认信任（同一进程内）。跨节点认证**未实现**：
 
 ```yaml
 cluster:
   auth:
-    type: token                    # token | mtls
-    token: ${CLUSTER_TOKEN}
+    type: token                    # token | mtls（未实现）
+    token: ${CLUSTER_TOKEN}        # 未实现
 ```
+
+上面这段 `cluster.auth` 配置当前没有任何消费者——不会做 token/mTLS 服务间认证；`${VAR}` 环境变量展开同样未实现（配置加载器不处理占位符，插件会拿到字面量字符串，见 [配置语义](runtime-config.md#环境变量展开未实现)）。实现前的行为：`cluster` 段本身受 optional module 规则约束（未启用 `shield_cluster` 时出现即拒绝启动）；即使启用，`auth` 子键也会被静默忽略（`parse_cluster_config` 只读取 `node_id` / `listen` / `peers` / 心跳与判定超时等键）。
 
 ## 审计日志
 

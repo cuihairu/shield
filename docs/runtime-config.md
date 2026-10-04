@@ -8,7 +8,7 @@
 
 - YAML 只做声明式绑定，不承载业务逻辑。
 - 最小 runtime schema 只覆盖单节点 runtime 必需能力。
-- 配置驱动 Lua service、网络监听、插件实例/binding、日志和 bootstrap timeout；每个配置段必须有明确 owner。
+- 配置驱动 Lua service、网络监听、插件实例/binding 和日志；每个配置段必须有明确 owner。（`bootstrap.timeout` 等启动期超时键未实现，见下文 schema 说明。）
 - 不在 core 中提供服务发现、Prometheus、健康检查、DI、注解或条件装配配置；插件系统使用独立 `plugins` 子树。
 - optional module 的配置由对应模块自己验证；未启用模块时，出现对应 optional 配置段必须启动失败，不能由 core 静默忽略。
 
@@ -35,21 +35,17 @@
   },
   "log": {
     "level": "info",
-    "format": "text",
     "console": true,
     "file": {
       "enabled": false,
       "path": "logs/shield.log",
       "max_size_mb": 100,
-      "max_files": 10,
-      "rotation": "size"
+      "max_files": 10
     }
   },
   "lua": {
     "vm": {
-      "mode": "per_service",
-      "max_vms": 10000,
-      "max_memory_mb": 64
+      "mode": "per_service"
     },
     "sandbox": {
       "allow_os": false,
@@ -74,21 +70,11 @@
         "max_connections": 10000,
         "max_frame_size": 65536
       },
-      "transport": "default",
       "options": {
         "route_table": "login_routes"
       },
       "restart": {
-        "policy": "on-failure",
-        "max_retries": 5,
-        "initial_delay": 1000,
-        "max_delay": 30000,
-        "multiplier": 2
-      },
-      "limits": {
-        "max_coroutines": 1000,
-        "max_pending_calls": 1000,
-        "max_timers": 10000
+        "policy": "on-failure"
       }
     },
     {
@@ -163,6 +149,16 @@
 }
 ```
 
+上面 `bootstrap` 段（`timeout.*` / `retry.*`）**未实现**：bootstrap 没有阶段超时和插件重试机制，这些键没有任何消费者，配置中出现不会生效（见 [启动流程](runtime-bootstrap.md)）。
+
+以下 schema 键**未实现**（已从示例中移除；无消费者，配置中出现不会生效，不应使用）：
+
+- `log.format`——logger 输出为单一固定文本格式（`<timestamp_ms> [LEVEL] <logger>: <msg>`，见 `src/log/logger.cpp` 的 `format_record`），无可配置的格式项；
+- `log.file.rotation`——轮转只按大小触发，由 `log.file.max_size_mb`（写满即轮转，`log.file.max_files` 控制保留份数）驱动；
+- `lua.vm.max_vms` / `lua.vm.max_memory_mb`——`lua.vm` 下当前只有 `mode` 被读取校验；
+- `actors[].transport`、`actors[].limits.*`——完全未被读取；
+- `actors[].restart.max_retries` / `initial_delay` / `max_delay` / `multiplier`——重启配置中当前只有 `policy` 被读取校验。
+
 `shutdown.timeout` 语义：
 
 | 字段 | 说明 |
@@ -182,8 +178,8 @@
 | `required` | 否 | 启动失败是否导致 runtime 启动失败，默认 true |
 | `network` | 否 | gateway 类 service 的 listener 配置 |
 | `options` | 否 | 传给 `on_init(args).config` 的业务配置 |
-| `restart` | 否 | 服务异常退出后的重启策略 |
-| `limits` | 否 | 单 service 资源限制 |
+| `restart` | 否 | 服务异常退出后的重启策略；当前只有 `policy` 被读取校验（`always`/`on-failure`/`never`），重试次数与退避字段未实现 |
+| `limits` | 否 | 未实现——当前无任何消费者，配置不生效 |
 
 `actors[].network` 声明的是 Gateway 边界 owner，不是暴露客户端业务回调的 Lua service。它持有 listener、live session 和 session 的单一 target 绑定；业务 Lua 不接收通用消息回调（入站只经 spawn 期编译的 RPC 绑定 `handler(ctx, client, request)` 到达 target），也不获得裸连接句柄。第一版 TCP listener 仍要求 `instances: 1`，确保每个 live session 只有一个 Gateway owner。
 
@@ -319,14 +315,23 @@ actors:
 | `lua.cache.enabled` | 可选，默认 `true` |
 | `lua.cache.max_size` | 可选，默认 `100`，范围 `1-10000` |
 | `lua.cache.ttl_seconds` | 可选，默认 `0`，范围 `0-86400` |
+| `lua.sandbox.allow_os` / `lua.sandbox.allow_io` | 可选布尔，**缺省 `true`（fail-open：未配置即开放 os/io 标准库）**；生产环境必须显式声明为 `false`（仓库 `config/app.yaml` 即如此） |
 | `actors` | 至少一个 actor |
 | `actors[].name` | 必填，本配置内唯一 |
 | `actors[].script` | 必填，文件必须存在 |
 | `actors[].instances` | `>= 0` |
 | `actors[].restart.policy` | `always`、`on-failure`、`never` |
 | `actors[].network.*` | 监听地址必须是 `host:port` |
-| `actors[].network.tcp` | Phase 1 要求 `instances == 1` |
+| `actors[].network.tcp` | Phase 1 要求 `instances == 1`；必须同时声明 `network.protocol`，否则拒绝启动 |
+| `actors[].network.max_connections` / `max_connections_per_ip` | 可选，范围 `1-10000000` |
+| `actors[].network.max_frame_size` | 可选，范围 `1-16777216`（16 MiB） |
+| `actors[].network.max_session_send_queue` | 可选，范围 `0-1000000` |
+| `actors[].network.read_idle_timeout` | 可选，范围 `0-86400000`（毫秒；`0` 关闭读空闲检测） |
+| `actors[].network.rate_limit.*` | `messages_per_second`、`burst` 均为 `0-1000000`；必须为 map |
+| `actors[].network.blocklist.deny` | 必须为数组；每个条目启动期按地址/CIDR 解析校验，非法条目拒绝启动 |
+| `actors[].network.tls` | 必须为 map；`enabled` 可选布尔，缺省 `false`；`enabled: true` 时 `cert_file` / `key_file` 必填非空，`handshake_timeout_ms` 范围 `1-600000`，缺省 `10000` |
 | `actors[].network.udp/kcp/websocket` | Phase 1 拒绝启动；这些 transport 属于 deferred extension |
+| `actors[].rpc.routes` | 存在时必须是数组，每项必须是 map：`id` 必填整数且 `>= 1`、单 actor 内唯一；`binding` 必填且非空；`direction` 限定 `c2s`/`client_to_server`/`s2c`/`server_to_client`/`bidi`/`bidirectional`；`action` 限定 `decode_local`/`forward_raw`/`drop`；`requires_auth` / `lazy_decode` 出现必须是布尔；`name` 非空时单 actor 内唯一；出现 `schema_id` / `response_schema` 直接拒绝（已删除键） |
 | `net.threads` | 可选，默认 `0`（单 I/O 线程），范围 `0-64` |
 | `plugins.directory` | 可选；路径必须是字符串 |
 | `plugins.instances[].id` | 必填，本配置内唯一 |
@@ -412,11 +417,11 @@ shield --config config/app.yaml --config config/production.yaml
 
 ## 热更新
 
-Phase 1 只承诺极少量本地热更新：
+配置文件热重载当前未实现（`reload_config()` 是直接返回 true 的空实现，没有配置文件热重载入口）；下表描述各配置项的现状：
 
 | 配置项 | 热更新 | 行为 |
 | --- | --- | --- |
-| `log.level` | 是 | 立即生效 |
+| `log.level` | 否 | 配置文件热重载未实现（`reload_config()` 是返回 true 的空实现）；运行期改日志级别走 console 命令 `root.log.level`，改完立即生效 |
 | `log.console` / `log.file` | 否 | Phase 1 需要重启 |
 | `plugins.*` | 否 | Phase 1 需要重启；不支持热加载/热卸载插件 |
 | `actors[].instances` | 否 | Phase 1 需要重启 |

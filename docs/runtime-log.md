@@ -4,8 +4,8 @@
 
 ## 设计原则
 
-- 日志是结构化数据，不是纯文本。
-- 日志包含上下文信息（service、request_id）。
+- 日志是结构化数据，不是纯文本。（设计目标；当前实现为单行文本格式，见下文「日志格式」。）
+- 日志包含上下文信息（service_id 前缀、trace_id）。
 - 日志级别语义明确。
 - 日志不影响业务逻辑（不抛错、不阻塞）。
 - 敏感数据不写入日志。
@@ -39,17 +39,21 @@ shield.log.error("message")
 shield.log.info(string.format("player %s login from %s", uid, ip))
 shield.log.error(string.format("db query failed: %s", err))
 
--- 带上下文的日志
-shield.log.info("player login", {
+-- 传 table：整体序列化为 JSON 形态写入（单参数）
+shield.log.info({
+    event = "player_login",
     uid = uid,
     ip = ip,
-    time = shield.now(),
 })
 ```
 
+注意：`shield.log.*` 绑定只接受**单个参数**（`src/lua/lua_api.cpp` 的 `register_log_api`）。`shield.log.info("msg", { ... })` 这种两参调用未实现——第二个参数会被静默丢弃。带上下文时请把上下文并入唯一的 table 参数（消息文本可用 `event`/`msg` 字段承载）。
+
 ## 日志格式
 
-### 结构化日志格式
+### 结构化日志格式（目标态，未实现）
+
+以下 JSON 形态是设计目标；当前实现没有 JSON 结构化输出，唯一实现是下文的单行文本格式（`src/log/logger.cpp` 的 `format_record`）。
 
 ```json
 {
@@ -58,7 +62,7 @@ shield.log.info("player login", {
   "message": "player login",
   "service": "gateway",
   "service_id": 1,
-  "request_id": "req-12345",
+  "trace_id": "req-12345",
   "node_id": "node-1",
   "context": {
     "uid": "user123",
@@ -67,67 +71,77 @@ shield.log.info("player login", {
 }
 ```
 
-### 文本格式（控制台输出）
+### 文本格式（当前唯一实现）
+
+`format_record` 输出的单行文本：
 
 ```txt
-2026-06-10 12:00:00.123 [INFO] [gateway:1] player login uid=user123 ip=192.168.1.100
+<epoch毫秒> [LEVEL] <logger名>: <消息正文> [(文件:行号)][ trace=<trace_id>]
+```
+
+示例：
+
+```txt
+1760000000123 [INFO] lua: [gateway] {"event":"player_login","uid":"user123"}
+1760000000456 [ERROR] bootstrap: Failed to load config: app.yaml (/home/…/src/bootstrap/bootstrap.cpp:424) trace=t-1a2b3c
 ```
 
 字段说明：
 
-- `timestamp`: ISO 8601 格式，UTC 时区
-- `level`: 日志级别（大写）
-- `service`: 服务名称
-- `service_id`: 服务 ID
-- `request_id`: 请求追踪 ID（如有）
-- `context`: 附加上下文（key=value 格式）
+- `timestamp`: epoch 毫秒整数（非 ISO 8601）
+- `level`: 日志级别（大写：DEBUG/INFO/WARN/ERROR/FATAL）
+- `logger名`: logger 实例名；Lua 侧 `shield.log.*` 固定走 `lua` logger
+- 消息正文：Lua 侧为参数的 JSON 形态序列化，服务内执行时自动加 `[service_id] ` 前缀（见下文「上下文注入」）
+- `(文件:行号)` / `trace=<id>`：仅在有值时附带；文件是宏传入的 `__FILE__`（绝对路径，如 `(/home/…/src/bootstrap/bootstrap.cpp:424)`）
 
 ## 上下文注入
 
-日志系统自动注入以下上下文：
+当前实现的自动注入只有两项：
 
-| 字段 | 来源 | 说明 |
+| 字段 | 来源 | 形态 |
 |------|------|------|
-| `service` | 当前 service | 服务名称 |
-| `service_id` | 当前 service | 服务 ID |
-| `node_id` | 配置 | 节点 ID |
-| `request_id` | 消息追踪 | 请求 ID（call/send 时生成） |
+| `trace_id` | 消息追踪（call/send 路径生成与传播） | 行尾 ` trace=<id>` |
+| `service_id` | Lua 侧当前 service | 消息正文前的 `[service_id] ` 前缀（Lua binding 注入；C++ 直写日志无此前缀） |
 
-Lua 中不需要手动传入这些字段。
+`service` 名称、`node_id`、`request_id` 作为独立自动注入字段未实现。
 
 ## 日志配置
 
-完整配置 schema 见 [配置语义](runtime-config.md#完整配置-schema) 中 `log` 部分。
+完整配置 schema 见 [配置语义](runtime-config.md#phase-1-schema) 中 `log` 部分。
 
 ### 输出目标
 
-支持多输出目标，每个目标可独立配置级别和格式：
+`log.targets` 多输出目标**未实现**（无任何代码读取该键）。实际 sink 固定为两类，由 bootstrap 加载配置后重建（`src/bootstrap/bootstrap.cpp` 的 `apply_sinks`）：
+
+- console sink：`log.console`（默认 `true`）
+- rotating file sink（可选）：`log.file.enabled`（默认 `false`）、`log.file.path`（默认 `logs/shield.log`）
+
+全局只有一份级别开关（`log.level`），不支持按目标独立设级别或按 service 过滤：
 
 ```yaml
 log:
-  targets:
-    - type: stdout
-      format: text
-      level: info
-    - type: file
-      path: "logs/error.log"
-      level: error               # 只记录 error
-    - type: file
-      path: "logs/debug.log"
-      level: debug
-      services: ["gateway"]      # 只记录 gateway 的 debug
+  level: info
+  console: true
+  file:
+    enabled: true
+    path: "logs/shield.log"
+    max_size_mb: 100
+    max_files: 10
 ```
 
 ## 日志轮转
 
 ### 按大小轮转
 
+唯一实现的轮转方式（`src/log/logger.cpp` 的 `RotatingFileSink`）：超过 `max_size_mb` 即轮转。
+
 ```yaml
 log:
   file:
-    rotation: size
-    max_size: 100                # 100MB
-    max_files: 10                # 保留 10 个文件
+    enabled: true
+    path: "logs/shield.log"
+    max_size_mb: 100             # 单文件上限（MB），默认 100
+    max_files: 10                # 保留副本数，默认 10
 ```
 
 文件命名：
@@ -137,38 +151,17 @@ logs/shield.log          # 当前文件
 logs/shield.log.1        # 最近轮转
 logs/shield.log.2
 ...
-logs/shield.log.10       # 最旧
+logs/shield.log.N        # 最旧（N = max_files）
 ```
 
-### 按日期轮转
+### 按日期轮转（未实现）
 
-```yaml
-log:
-  file:
-    rotation: daily
-    max_files: 30                # 保留 30 天
-    compress: true
-```
-
-文件命名：
-
-```txt
-logs/shield.log                  # 当前文件
-logs/shield.log.2026-06-09.gz   # 昨天
-logs/shield.log.2026-06-08.gz   # 前天
-```
+`rotation: daily` / `compress` / `.gz` 均未实现——不存在按日期轮转，也没有压缩。只支持上文的按大小轮转与固定数量副本。
 
 ## 性能考虑
 
-- 日志写入是异步的，不阻塞业务线程。
-- 日志缓冲区默认 8KB，满时批量写入。
-- 高频日志场景可调整缓冲区大小：
-
-```yaml
-log:
-  buffer_size: 65536             # 64KB 缓冲区
-  flush_interval: 1000           # 最长 1 秒刷新一次
-```
+- 日志写入是**同步**的：每条日志在调用线程内写完所有 sink（全局互斥锁串行，`src/log/logger.cpp` 的 `Logger::log`）。没有异步队列、没有缓冲区，也不存在 `log.buffer_size` / `log.flush_interval` 配置键。
+- 高频日志路径的开销主要是字符串拼接与 I/O；文件 sink 每条 flush。
 
 ## 敏感数据处理
 
@@ -203,7 +196,8 @@ shield.log.debug("password length: " .. #password)
 ### 格式
 
 ```lua
-shield.log.error("db query failed", {
+shield.log.error({
+    msg = "db query failed",
     error = err.message,
     code = err.code,
     query = "SELECT * FROM users",  -- 不记录参数（可能含敏感数据）
@@ -219,8 +213,9 @@ local ok, err = pcall(function()
 end)
 
 if not ok then
-    shield.log.error("operation failed", {
-        error = err,
+    shield.log.error({
+        msg = "operation failed",
+        error = tostring(err),
         stack = debug.traceback(),  -- Lua 堆栈
     })
 end
@@ -228,11 +223,11 @@ end
 
 ## 审计日志
 
-重要业务操作单独记录审计日志：
+`log.audit` 配置段**未实现**（零消费：全仓无任何 `log.audit` 读取者，也没有独立的审计日志通道）。当前只能通过普通日志（可选文件 sink）自行约定审计事件的记录方式。以下为契约草案：
 
 ```yaml
 log:
-  audit:
+  audit:                         # 未实现
     enabled: true
     path: "logs/audit.log"
     events:
@@ -260,10 +255,10 @@ log:
 
 ## ops 集成
 
-日志统计暴露给 ops：
+`GET /ops/logs/stats` **未实现**——ops HTTP 路由表（`src/console/ops_http_handler.cpp` 的 `register_routes`）没有注册该路由，请求返回 404。日志侧也不维护按级别计数或 recent errors 环形缓冲。以下为契约草案：
 
 ```json
-GET /ops/logs/stats
+GET /ops/logs/stats   // 未实现
 
 {
   "total": 123456,
@@ -285,27 +280,27 @@ GET /ops/logs/stats
 
 ## 与外部日志系统集成
 
-### ELK Stack
+**目标态，当前不可达**：以下示例都基于 `log.targets`，而 `log.targets` 未实现（无代码读取）。当前只有 console 与可选文件 sink，外部集成属于可选扩展——外部系统只能直接读文件/控制台再自行采集。
+
+### ELK Stack（目标态，未实现）
 
 ```yaml
 log:
-  targets:
+  targets:                       # 未实现
     - type: elasticsearch
       hosts: ["http://localhost:9200"]
       index: "shield-logs"
       level: info
 ```
 
-### Loki
+### Loki（目标态，未实现）
 
 ```yaml
 log:
-  targets:
+  targets:                       # 未实现
     - type: loki
       url: "http://localhost:3100/loki/api/v1/push"
       labels:
         app: shield
         env: production
 ```
-
-当前最小契约只要求文件和控制台输出；外部集成属于可选扩展。

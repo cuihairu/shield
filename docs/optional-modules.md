@@ -98,7 +98,7 @@ shield_core
 | `shield_global` | 跨进程共享数据、分布式锁、排行榜、队列、限流器、调度 | `shield.global()`、`shield.mutex()`、`shield.rank()` 等 | `global` | 数据插件 binding，可选 `shield_cluster` | 插件 namespace 仍可独立使用 |
 | `shield_player` | 认证、重连、离线消息、PlayerSession、PlayerManager | `shield.player.*`、`PlayerSession`、player hooks | `player`、`player_manager` | `shield_net`、`shield_lua`、数据插件 binding，可选 `shield_global` | gateway 回调和普通 service 语义仍可独立工作 |
 | `shield_server` | 服务器状态机、维护模式、关闭交接、状态通知、运行时信息 | `shield.server.*` 门面、ServerManager 进程级单例 | `server_manager` | `shield_core`，可读 `shield_player` / `shield_cluster` 只读快照 | bootstrap 和 service 运行路径不依赖它 |
-| `shield_ops` | metrics、health、console、profile、diagnostics | HTTP/admin endpoints；不提供业务 Lua API | `ops` | runtime snapshot、module status | runtime 正常运行不依赖任何 ops 入口 |
+| `shield_ops` | metrics、health、console、profile、diagnostics | HTTP/admin endpoints；不提供业务 Lua API | `ops`（**未实现**，见 [`shield_ops` 配置 owner](#shield_ops)） | runtime snapshot、module status | runtime 正常运行不依赖任何 ops 入口 |
 
 ## 跨模块协作矩阵
 
@@ -314,7 +314,7 @@ Lua 诊断控制台与 Lua 内存观测属于 `shield_ops` 的 `console` / `diag
 
 ### 配置 owner
 
-- `ops`
+- `ops`（**未实现**：bootstrap 硬编码 `ops_enabled = false`，配置中出现任何 `ops:` 段都会在运行时校验阶段失败并拒绝启动；全仓没有任何 `ops.*` 配置读取者。实际运维面由 `http:`（`http.enabled`/`http.host`/`http.port`/`http.eval_*`/`http.profile_*`）与 `console:`（`console.enabled`/`console.socket_path`）门控，实现于 `shield_bootstrap` 而非 `shield_ops` target）
 
 ### 语义 owner
 

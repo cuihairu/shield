@@ -8,16 +8,18 @@
 
 C++：
 
+现实现（`include/shield/lua/lua_runtime.hpp`）：
+
 ```cpp
 class ServiceHandle {
 public:
-  ServiceId id() const;
-  NodeId node() const;
-  bool valid() const;
+  explicit ServiceHandle(std::string service_id);
+  const std::string& id() const;  // 返回服务名字符串
+  uint32_t node() const;          // 单节点 runtime 恒为 0（local）
+  bool valid() const;             // 即 service_id 非空
 
 private:
-  ServiceAddress address_;
-  uint64_t node_epoch_;
+  std::string service_id_;
 };
 ```
 
@@ -40,9 +42,11 @@ tostring(h)
 - `ServiceHandle` 不拥有 service，只是可路由引用。
 - 路由时必须通过 `ServiceRegistry` 二次解析。
 - stale handle 可能存在，调用时返回 `service_dead` 或 `node_offline`。
-- name 不是 handle 身份字段，只能作为 debug 信息。
+- handle 的唯一身份字段就是服务名字符串 `service_id_`；`id()` 返回该字符串。
 
 ## ServiceId 与集群地址
+
+> 实现状态：本节的 `ServiceId = uint64_t`、`ServiceAddress`、`RouteKey` 为预留契约，当前源码中不存在这些类型；现实现中 handle 身份是服务名字符串（见上）。
 
 `ServiceId` 是本地 service id，不把 node id packed 进 public `ServiceId`。
 
@@ -99,6 +103,7 @@ local h2, err = shield.query("gateway.main")
 
 shield.register("gateway.public")
 shield.unregister("gateway.public")
+shield.claim("gateway.public")    -- 蓝绿接管已发布的 name
 ```
 
 名称规则：
@@ -130,10 +135,24 @@ shield.spawn("worker_pool", { name = "worker.pool" })
 round-robin、hash、按房间路由等能力应由显式 pool service 实现，不放进 core registry。
 
 单节点 CAF service runtime 维护 published name 表，支持默认 service name、
-`shield.query`、`shield.register`、`shield.unregister`、`shield.names` 和
-service exit 自动清理 owned names。spawn 的 name reserve/publish 状态机与
-opaque `ServiceHandle` userdata 已实现；ServiceId 单调分配和 stale handle
-语义属于后续契约。
+`shield.query`、`shield.register`、`shield.unregister`、`shield.claim`、
+`shield.names` 和 service exit 自动清理 owned names。spawn 的 name
+reserve/publish 状态机与 opaque `ServiceHandle` userdata 已实现；ServiceId
+单调分配和 stale handle 语义属于后续契约。
+
+## shield.claim（蓝绿接管）
+
+实现状态：已实现。`shield.claim(name)` 用于蓝绿热更新交接——当前 service 原子接管一个已发布的 name（`lua_service.cpp` 的 `claim_name`，`shield.claim` 已在 `lua_api.cpp` 注册）。
+
+语义：
+
+- 在 registry 锁内完成 owner 迁移：`published_names[name]` 从原 owner 改指当前 service，同时迁移双方 `owned_names` 集合。
+- 接管成功后以新 owner 触发 name 变更通知（`notify_name_change`），依赖该通知的路由缓存据此失效。
+- 幂等：当前 service 已是该 name 的 owner 时直接返回成功——视为无变更，不触发通知。
+- 失败条件：无当前 service 上下文、name 非法或不存在、原 owner 已不运行，返回 `claim_failed`。
+- 原 owner 继续运行，由业务自行 drain 后退出；退出清理只 retract 仍归属它的 names（被接管的 name 不受影响）。
+
+只能在自己 service 的 handler 里调用（与 register/unregister 同一调度上下文规则）。详细描述见 [Lua API 契约](lua-api.md) 的 `shield.claim`。
 
 ## 心跳与离线清理
 
@@ -141,22 +160,26 @@ opaque `ServiceHandle` userdata 已实现；ServiceId 单调分配和 stale hand
 
 远端 IPC/cluster 节点需要 heartbeat 和 lease。
 
-状态机：
+状态机（`cluster_manager` 的 `NodeState`：connecting/online/suspect/offline/removed）：
 
 ```txt
-online -> suspect -> offline -> removed
-online -> offline   // TCP/IPC 明确断开时直接进入 offline
-offline -> removed  // tombstone 过期后清理
+connecting -> offline   // 握手在 offline_timeout 内未完成
+online -> suspect       // 距上次心跳超过 suspect_timeout_ms
+suspect -> offline      // 距上次心跳超过 offline_timeout_ms
+suspect/offline -> online  // 收到心跳即恢复
+online -> offline       // TCP/IPC 连接明确断开
+removed                 // ClusterManager 停止时统一置位（无 offline 后的定时清理）
 ```
 
-默认值：
+默认值（`cluster.heartbeat_interval_ms` / `cluster.suspect_timeout_ms` / `cluster.offline_timeout_ms` 可配置）：
 
 ```txt
-heartbeat_interval = 2s
-suspect_after      = 3 次未收到心跳，约 6s
-offline_after      = 5 次未收到心跳，约 10s
-remove_after       = offline 后 60s
+heartbeat_interval_ms = 5000
+suspect_timeout_ms    = 15000   // 距上次心跳超过该时长进入 suspect
+offline_timeout_ms    = 30000   // 距上次心跳超过该时长进入 offline
 ```
+
+超时阈值按经过时间判定，不是"连续 N 次未收到心跳"；当前没有 `remove_after`（offline 后 60s tombstone）语义。
 
 进入 `offline` 后：
 
@@ -164,7 +187,6 @@ remove_after       = offline 后 60s
 - pending call 返回 `node_offline`。
 - 清理该 node 的 remote name cache。
 - 清理该 node 的 remote route cache。
-- 保留 tombstone 到 `remove_after`。
 
 heartbeat 放在 `shield_cluster`，不进入 `shield_core`。
 
@@ -214,7 +236,7 @@ validate opts
 -> init failed/timeout: stop service, rollback name, return error
 ```
 
-默认 `spawn_timeout` 为 10s，可由配置和 opts 覆盖。
+默认 `spawn_timeout` 为 10s，可由 spawn opts 的 `timeout` 字段覆盖；当前没有对应的配置键。
 
 spawn 相关错误码见 [错误码参考](runtime-errors.md#一消息与服务错误)。
 
@@ -235,7 +257,7 @@ me:valid()
 - 只能在 service coroutine 中调用。
 - 返回值是 immutable userdata。
 - 多次调用返回等价 handle。
-- handle 身份不包含 name。
+- handle 身份就是本 service 的服务名字符串：`id()` 返回它，`node()` 恒为 `0`，`valid()` 即非空。
 - 当前 service 注册名通过 `shield.names()` 查询。
 
 ```lua
@@ -282,7 +304,7 @@ function M.on_init(args)
     -- args 结构：
     -- {
     --   name = "service_name",           -- 服务名称
-    --   id = 123,                         -- 服务 ID
+    --   id = "service_name",              -- 服务 ID（当前等于服务名字符串）
     --   config = { ... },                 -- 服务自定义配置（来自 YAML）
     --   args = { ... },                   -- spawn 时传入的参数
     -- }
@@ -353,12 +375,14 @@ end
 
 | reason | 说明 |
 |--------|------|
-| `"normal"` | 正常退出（调用 `shield.exit("normal")`） |
+| `"normal"` | 正常退出（调用 `shield.exit("normal")`，或 `shield.exit()` 缺省） |
 | `"panic"` | 致命错误（on_panic 触发） |
 | `"timeout"` | 初始化超时 |
 | `"stopping"` | 运行时正在停止 |
-| `"kicked"` | 被其他服务踢出 |
-| `"upgraded"` | 热更新替换 |
+| `"kicked"` | 预留值：服务退出不产生该 reason（`kicked` 仅作为玩家会话关闭原因存在） |
+| `"upgraded"` | 预留值：热更新替换，当前运行时不产生 |
+
+当前运行时实际产生的 reason 为 `normal`（含 `shield.exit` 传入的自定义字符串）、`panic`、`timeout`、`stopping`。
 
 ```lua
 function M.on_exit(reason)
@@ -382,8 +406,9 @@ end
 function M.on_error(err, context)
     -- err: 错误信息
     -- context: {
-    --   type = "handler" | "timer" | "fork" | "sleep",
-    --   method = "method_name",  -- 仅 handler 错误
+    --   type = "handler" | "timer" | "fork" | "sleep" | "hook" | "client_rpc",
+    --   method = "method_name",  -- handler 错误为 method 名；hook 错误为 hook 名；
+    --                            -- client_rpc 错误为 route_id；sleep 错误为空
     -- }
 
     shield.log.error(string.format(
@@ -402,6 +427,9 @@ end
 | handler | 方法抛出异常 | 继续运行 | 返回错误给 caller |
 | timer | callback 抛出异常 | 继续运行 | timer_once 结束，timer 停止 |
 | fork | 协程抛出异常 | 继续运行 | fork 协程结束 |
+| sleep | sleep 恢复后协程继续执行出错 | 继续运行 | 该协程结束 |
+| hook | `on_shutdown` hook 抛出异常 | 继续运行（drain 记录错误后继续） | 本次 hook 以失败结束 |
+| client_rpc | 客户端 RPC handler 抛出异常 | 继续运行 | 该次 RPC 以错误结束 |
 
 **on_panic(reason, context)**
 
@@ -409,10 +437,12 @@ end
 
 ```lua
 function M.on_panic(reason, context)
-    -- reason: panic 原因
+    -- reason: panic 原因（explicit 触发为业务传入字符串；
+    --          阈值触发固定为 "consecutive errors reached limit"）
     -- context: {
-    --   type = "init" | "vm" | "threshold" | "explicit",
-    --   error = err,  -- 原始错误（如有）
+    --   type = "explicit" | "handler" | "timer" | "fork" | "sleep" | "hook" | "client_rpc",
+    --   method = "method_name",  -- 阈值触发时复用 on_error 的 method 分类
+    --                            -- （explicit 触发时为空）；context 无 error 字段
     -- }
 
     shield.log.error(string.format(
@@ -427,24 +457,27 @@ function M.on_panic(reason, context)
 end
 ```
 
-触发条件：
+触发条件（当前实现只有两个生产者）：
 
 | context.type | 触发时机 | 说明 |
 |-------------|----------|------|
-| `"init"` | `on_init` 返回失败或抛异常 | 服务无法启动 |
-| `"vm"` | Lua VM 内部错误 | 不可恢复 |
-| `"threshold"` | 连续未捕获错误达到阈值 | 防止错误循环 |
-| `"explicit"` | 业务调用 `shield.panic("reason")` | 主动触发 |
+| `"explicit"` | 业务调用 `shield.panic("reason")` | 主动触发，`reason` 为业务传入字符串 |
+| `"handler"`/`"timer"`/`"fork"`/`"sleep"`/`"hook"`/`"client_rpc"` | 连续未捕获错误达到阈值（10 次） | 防止错误循环；`type` 复用 `on_error` 的错误来源分类 |
+
+不存在 `"init"`/`"vm"` 生产者：`on_init` 失败只把错误返回给 spawner（`shield.spawn` 返回 `nil, Error`），不触发 `on_panic`。
 
 **连续错误阈值：**
 
+阈值当前硬编码为 10（`kDefaultMaxErrorsBeforePanic`），仅在 handler 成功时清零，没有 60 秒窗口语义。下面的 `panic_threshold` 配置键没有对应解析实现，属预留值：
+
 ```yaml
+# 未实现（预留）：panic_threshold 键当前无解析，不会生效
 actors:
   - name: gateway
     script: scripts/auth.lua
     panic_threshold:
-      consecutive_errors: 10      # 连续 10 次 on_error 后触发 on_panic
-      window: 60000               # 统计窗口 60 秒
+      consecutive_errors: 10      # 预留：当前硬编码 10，不可配置
+      window: 60000               # 预留：当前无统计窗口语义
 ```
 
 **完整错误处理流程：**
@@ -452,21 +485,18 @@ actors:
 ```
 错误发生
   │
-  ├─ handler/timer/fork/sleep 续延异常
+  ├─ handler/timer/fork/sleep/hook/client_rpc 异常
   │   ├─ 调用 on_error（仅上报）
-  │   ├─ 检查连续错误计数
+  │   ├─ 检查连续错误计数（阈值 10，handler 成功时清零）
   │   │   ├─ 未达阈值 → 继续运行
   │   │   └─ 达到阈值 → 触发 on_panic → 服务退出
   │   └─ 出错单元独立处理（timer 停止、fork 结束）
   │
   ├─ on_init 失败
-  │   └─ 直接触发 on_panic → 服务退出
+  │   └─ 不触发 on_panic：错误返回给 spawner，服务不启动
   │
   └─ 服务退出后
-      └─ 重启策略决定是否重启
-          ├─ on-failure → 重启
-          ├─ always → 重启
-          └─ never → 不重启
+      └─ 重启策略决定是否重启（当前未实现，见「服务重启策略」）
 ```
 
 ### 业务 method
@@ -614,20 +644,23 @@ stop accept / readiness
 
 ## 服务重启策略
 
+实现状态：**仅校验策略字段，重启机制未实现**。当前配置解析只校验 `restart.policy` 的取值（always/on-failure/never），没有重启执行器：服务退出后不会自动重启，`max_retries`/退避/`ops` 的 `last_restart` 暴露均为预留设计。本节以下内容是目标行为设计稿。
+
 服务异常退出时的重启策略。
 
 ### 配置
 
 ```yaml
+# 实现状态：仅 restart.policy 取值被校验；其余字段无解析、无执行器
 actors:
   - name: gateway
     script: scripts/auth.lua
     restart:
-      policy: on-failure          # always | on-failure | never
-      max_retries: 5              # 最大重试次数（0 = 无限）
-      initial_delay: 1000         # 初始重试延迟（ms）
-      max_delay: 30000            # 最大重试延迟（ms）
-      multiplier: 2               # 退避倍数
+      policy: on-failure          # always | on-failure | never（仅取值校验）
+      max_retries: 5              # 预留：最大重试次数（0 = 无限）
+      initial_delay: 1000         # 预留：初始重试延迟（ms）
+      max_delay: 30000            # 预留：最大重试延迟（ms）
+      multiplier: 2               # 预留：退避倍数
 ```
 
 ### 策略说明
@@ -692,15 +725,18 @@ retry 5: 30s (达到 max_delay)
 
 ## 服务依赖管理
 
+实现状态：**未实现**。`depends_on` 配置键当前全库无解析，拓扑排序、循环依赖检测、按依赖顺序启动均未实现（本节是设计稿）。运行时依赖按需通过 `shield.call` 处理，这一部分是真实可用的。
+
 服务启动时可以声明依赖关系，确保被依赖的服务先启动。
 
 ### 配置
 
 ```yaml
+# 未实现（预留）：depends_on 键当前无解析
 actors:
   - name: gateway
     script: scripts/auth.lua
-    depends_on:                # 依赖的服务
+    depends_on:                # 预留：依赖的服务
       - player_manager
       - server_manager
 
@@ -761,21 +797,22 @@ end
 
 | 资源 | 默认值 | 说明 |
 |------|--------|------|
-| `max_coroutines_per_service` | 1000 | 单个 service 的最大 coroutine 数 |
-| `max_pending_calls_per_service` | 1000 | 单个 service 的待响应 call 数 |
 | `max_timers_per_service` | 10000 | 单个 service 的 timer 数 |
 | `max_message_size` | 1MB | 单条消息最大体积 |
 | `max_fork_tasks_per_service` | 1000 | 单个 service 的 fork task 数 |
 
-超过限制时返回结构化错误，不允许无限增长。错误码见 [错误码参考](runtime-errors.md#二资源限制错误)。
+实现状态：上表三项已实现（均为硬编码常量）。原表中的 `max_coroutines_per_service` 与 `max_pending_calls_per_service` 两行已删除——当前实现没有 coroutine 数与 pending call 数上限检查（`coroutine_limit` 只有错误码映射，没有生产者；pending call 无上限检查）。
+
+超过已实现的限制时返回结构化错误，不允许无限增长。错误码见 [错误码参考](runtime-errors.md#二资源限制错误)。
 
 配置示例：
 
 ```yaml
+# 未接线（预留）：limits 配置键当前无解析，以下覆盖不会生效
 actors:
   - name: gateway
     script: scripts/auth.lua
-    limits:                          # 可选覆盖默认值
+    limits:                          # 预留：当前无解析
       max_coroutines: 2000
       max_pending_calls: 2000
       max_timers: 20000

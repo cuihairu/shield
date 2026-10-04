@@ -16,7 +16,7 @@
 - 需要支持个人玩家回档、分服回档还是全服回档。
 - 事务边界是单玩家、单房间、单公会，还是跨服务、跨分片。
 
-Shield 当前的数据访问由插件系统 v1 和各数据插件提供；连接池与驱动由插件 instance 自治，不提供 ORM、业务 mapper、跨 service 事务或回档语义。游戏状态持久化应由业务 service、`shield_player` persistence adapter 或未来独立模块在数据插件 binding 之上实现。
+Shield 当前的数据访问由插件系统 v1 和各数据插件提供；连接池与驱动由插件 instance 自治，不提供全功能 ORM——三个 SQL 插件在每个 proxy 上挂载轻量的 `mapper` / `register_mapper` / `entity` DSL（见 `plugins/_shared/shield_db_mapper.hpp`）；业务 mapper、跨 service 事务与回档语义由业务层负责。游戏状态持久化应由业务 service、`shield_player` persistence adapter 或未来独立模块在数据插件 binding 之上实现。
 
 不要把本文里的“游戏状态快照”和 `RuntimeSnapshot` 混淆。`RuntimeSnapshot` 是 ops/diagnostics 的只读运行时观测数据，不参与业务存档、恢复或回档。
 
@@ -578,9 +578,12 @@ CREATE TABLE rollback_audit (
 
 ## 保存路径
 
-> 同步 ABI 下的 DB 调用纪律（专职 service 隔离、超时配置、正反例）见
-> [DB 使用纪律](db-discipline.md)——一次慢查询卡死共享 service 是本节所有
-> 模式的前置风险。
+> DB 异步挂起入口已落地且默认开启：三 SQL 插件在协程内把调用挂起
+> （`lua_suspend_current` / `lua_resume_session`），SQL 在插件 worker 上执行，
+> 一次慢查询默认不再卡死共享 service 的 actor 线程。仅同步回退路径
+> （instance 配置 `async: false`，或 main thread 等不可挂起上下文内联执行）
+> 仍需旧的调用纪律——专职 service 隔离、超时配置、正反例见
+> [DB 使用纪律](db-discipline.md)。
 
 ### 同步强保存
 
@@ -797,7 +800,7 @@ reserve asset
 | Shield 层 | 建议职责 |
 | --- | --- |
 | 数据插件 | 提供 SQL、文档、cache、queue、leaderboard 等底层后端能力；连接池、超时和驱动错误归插件 instance |
-| `shield_player` | 拥有玩家 persistence adapter、自动保存、玩家回档 hook 的未来扩展 |
+| `shield_player` | **已实现**：persistence adapter（`player.persistence.binding/fields`）与自动保存（登出触发 + 定时保存，`save_interval_ms` 默认 60000ms，按白名单字段调用业务 `player_save`）。**未来扩展**：玩家回档 hook |
 | 业务 Lua service | 定义状态结构、dirty 标记、快照序列化和业务 op log |
 | `shield_global` | 提供排行榜、队列、锁等派生能力，不作为存档真相源 |
 | `shield_ops` | 展示保存延迟、失败队列、dirty 数量、checkpoint 状态，不执行业务回档 |

@@ -130,13 +130,13 @@ Auto-discovery（扫描目录自动创建实例）的问题更严重：隐式实
 
 | 场景 | Spring Boot Starter 适用 | Shield Explicit Wiring 适用 |
 | --- | --- | --- |
-| 标准 CRUD 业务 | ✅ | — |
-| REST API 服务 | ✅ | — |
-| 内部管理后端 | ✅ | — |
-| 游戏后端 | — | ✅ |
-| 高异构性部署 | — | ✅ |
-| 多实例精细控制 | — | ✅ |
-| 高事故代价生产环境 | — | ✅ |
+| 标准 CRUD 业务 | 适用 | — |
+| REST API 服务 | 适用 | — |
+| 内部管理后端 | 适用 | — |
+| 游戏后端 | — | 适用 |
+| 高异构性部署 | — | 适用 |
+| 多实例精细控制 | — | 适用 |
+| 高事故代价生产环境 | — | 适用 |
 
 Spring Boot Starter 的"约定优于配置"哲学建立在"大部分项目都用同一套"的前提上。游戏后端不满足这个前提——每个游戏的栈都不一样。
 
@@ -173,7 +173,7 @@ plugins/
       shield_doc_mongodb.dll
       libshield_doc_mongodb.so
     lua/
-      shield_mongodb.lua
+      init.lua
   cache.redis/
     manifest.yaml
     bin/
@@ -315,7 +315,7 @@ scan -> catalog -> plan -> resolve -> load -> create -> start -> lua_init -> lua
 | `lua_register` | host 拿到一个 Lua state 后，遍历所有已 `started` 的实例，依次调用 `register_lua(self, L, err)`，插件把自身 API 注册到该 VM 的 `shield.<namespace>`。多 VM 场景下每个 VM 都会执行一次。 |
 | `stop` | 进程退出时按依赖反序调用 `shutdown`。 |
 
-> 实现说明：上表是语义阶段，与代码方法的对应关系是 `scan / catalog / plan_and_resolve（plan + resolve 合并）/ load_all / create_all / start_all`；`lua_init` 和 `lua_register` 是独立方法而非 `start_all` 的延续，仅在 host 配置了 Lua runtime 时调用，纯 C++ 运行模式下跳过。
+> 实现说明：上表是语义阶段，与代码方法的对应关系是 `scan / catalog / plan_and_resolve（plan + resolve 合并）/ load_all / create_all / start_all`；Lua 两个阶段对应 `PluginHost::inject_lua_paths` / `PluginHost::register_lua_all`（`src/plugin/plugin_host.hpp`）两个方法，而非 `start_all` 的延续，且不在 `startup()` 内部调用——由 `LuaRuntime::register_api` 在每个 Lua VM 创建时调用，仅在 host 配置了 Lua runtime 时执行，纯 C++ 运行模式下跳过。
 
 `lua_init` 和 `lua_register` 只在 host 配置了 Lua runtime 时触发；纯 C++ 运行模式下这两个阶段跳过，`register_lua` 钩子不会被调用。
 
@@ -513,7 +513,7 @@ plugins:
 | `cache.redis` | `shield.cache.v1` | `SHIELD_BUILD_PLUGIN_CACHE_REDIS` | `shield.cache.redis` | 依赖 `redis.driver` 连接池。 |
 | `queue.redis` | `shield.queue.v1` | `SHIELD_BUILD_PLUGIN_QUEUE_REDIS` | `shield.queue.redis` | pub/sub，依赖 `redis.driver`。 |
 | `leaderboard.redis` | `shield.leaderboard.v1` | `SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS` | `shield.leaderboard.redis` | ZSET 排行榜，依赖 `redis.driver`。 |
-| `redis.driver` | `shield.redis.v1` | `SHIELD_BUILD_PLUGIN_REDIS_DRIVER` | — | 基础设施包：共享连接池 driver，供上层 Redis provider 依赖，业务一般不直接绑。 |
+| `redis.driver` | `shield.redis.v1` | `SHIELD_BUILD_PLUGIN_REDIS_DRIVER` | `shield.redis` | 基础设施包：共享连接池 driver，供上层 Redis provider 依赖，也可直接 `shield.redis(binding)` 调用。 |
 | `health.http` | `shield.health.v1` | `SHIELD_BUILD_PLUGIN_HEALTH` | — | HTTP 健康端点（`/health`、`/ready`），内嵌 beast 监听。 |
 | `metrics.prometheus` | `shield.metrics.v1` | `SHIELD_BUILD_PLUGIN_METRIC` | — | Prometheus 文本端点；Lua 注册面规划中（无注册者时返回空 body）。 |
 | `matchmaking.elo` | `shield.matchmaking.v1` | `SHIELD_BUILD_PLUGIN_MATCHMAKING` | — | ELO 匹配。 |
@@ -628,7 +628,7 @@ typedef struct shield_error_v1 {
 | 入口符号缺失 | `plugin.entry.missing` |
 | init 失败 | `plugin.init.failed` |
 
-多 provider 路由允许软拒绝语义：如果某接口方法是 selector/dispatcher 类型，插件可以返回 `SHIELD_DECLINED` 表示“不处理，让下一个候选处理”。真正错误返回 `SHIELD_ERROR` 并携带 `shield_error_v1`。
+多 provider 路由规划软拒绝语义：如果某接口方法是 selector/dispatcher 类型，插件可以返回 `SHIELD_DECLINED` 表示“不处理，让下一个候选处理”。真正错误返回 `SHIELD_ERROR` 并携带 `shield_error_v1`。**未实现（目标契约）**：`SHIELD_DECLINED` / `SHIELD_ERROR` 两个宏当前源码尚未定义，软拒绝语义保留待实现。
 
 ## Lua Introspection
 
@@ -738,11 +738,9 @@ C 侧实现：`register_lua` 创建 `shield.database.mongodb` 这个 table，met
 
 ```
 plugins/mongodb/
-├── shield_doc_mongodb.cpp        # C ABI 实现
-├── lua_bindings.cpp              # register_lua：创建 namespace + 方法
-├── lua/                          # 可选：纯 Lua 业务封装
-│   ├── init.lua
-│   └── shield_mongodb.lua
+├── shield_doc_mongodb.cpp        # C ABI 实现 + register_lua（创建 namespace + 方法）
+├── lua/                          # 纯 Lua 封装（经 manifest lua.search_paths 注入 package.path）
+│   └── init.lua
 ├── manifest.yaml
 └── CMakeLists.txt
 ```
@@ -750,7 +748,7 @@ plugins/mongodb/
 带 `lua/` 目录的插件，host 启动时：
 
 1. 扫描 manifest 的 `lua.search_paths` 字段，把 `<plugin_dir>/lua/?.lua` 注入 `package.path`（在 `lua_init` 阶段）。
-2. 调用 `register_lua`，插件自行决定是否 `require "shield_mongodb"` 加载业务封装。
+2. 调用 `register_lua`，插件自行决定是否加载 `lua/` 下的业务封装（mongodb 当前仅 `init.lua`，由 `register_lua` 注入 helper，业务无需显式 `require`）。
 
 ### register_lua 示例（插件侧）
 
@@ -791,10 +789,10 @@ int my_register_lua(shield_plugin_instance_v1* self,
 | 实现 | 文件 |
 | --- | --- |
 | `register_lua_all(L)` | `src/plugin/plugin_host.cpp` — 遍历 started 实例，调用 `register_lua` |
-| `lua_state` host_api 回调 | `src/plugin/plugin_host.cpp` — 返回 `LuaRuntime::raw_state()` |
+| `lua_state` host_api 回调 | `src/plugin/plugin_host.cpp` — 返回 thread-local `g_current_lua_state`（仅在 `inject_lua_paths` / `register_lua_all` 注入期间非空，其余时刻为 NULL） |
 | `lua_add_path` host_api 回调 | `src/plugin/plugin_host.cpp` — 改写 `package.path` |
-| Manifest 解析 `lua` 字段 | `src/plugin/manifest.cpp` — 加 `PluginLuaMeta` |
-| Bootstrap 时序 | `src/bootstrap/bootstrap.cpp` — `start_all` → `lua_init` → `register_lua_all` |
+| Manifest 解析 `lua` 字段 | `src/plugin/manifest.cpp` — 填充 `Manifest::LuaMeta`（定义于 `include/shield/plugin/plugin_host.hpp`） |
+| Bootstrap 时序 | `src/bootstrap/bootstrap.cpp` — 仅调 `global_host().startup()`（scan → … → `start_all`，不含 Lua 阶段）；Lua 阶段由每个 Lua VM 创建时 `LuaRuntime::register_api`（`src/lua/lua_runtime.cpp`）调 `inject_lua_paths` + `register_lua_all` |
 
 ### 当前 namespace 列表
 
@@ -807,6 +805,7 @@ int my_register_lua(shield_plugin_instance_v1* self,
 | `cache.redis` | `shield.cache.redis` | get / set / del / incr / hget / hset |
 | `queue.redis` | `shield.queue.redis` | publish / subscribe / unsubscribe |
 | `leaderboard.redis` | `shield.leaderboard.redis` | set_entry / get_rank / top_n / remove_entry |
+| `redis.driver` | `shield.redis` | `shield.redis(binding)` 返回连接池代理：get / set / del / hget / hset / hgetall / zadd / zrange / command / pipeline |
 | `metrics.prometheus` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 | `health.http` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 | `matchmaking.elo` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |

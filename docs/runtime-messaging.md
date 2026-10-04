@@ -104,15 +104,19 @@ struct ClientEgress {
 
 ### 客户端 RPC 状态码
 
-| 状态码 | 说明 |
-|--------|------|
-| `client_rpc.not_authenticated` | 未认证 session 访问需认证 RPC |
-| `client_rpc.route_not_found` | 未知 route_id |
-| `client_rpc.direction_rejected` | 方向不匹配 |
-| `client_rpc.epoch_expired` | session epoch 过期 |
-| `client_rpc.handler_missing` | 目标 VM 缺少 handler binding |
+当前只有 `client_rpc.epoch_expired` 是真实回传的结构化状态码，其余各项没有结构化错误回传：
+
+| 状态码 | 说明 | 当前实现 |
+|--------|------|----------|
+| `client_rpc.not_authenticated` | 未认证 session 访问需认证 RPC | 未回传结构化码：记 WARN 并丢弃消息 |
+| `client_rpc.route_not_found` | 未知 route_id | 未回传结构化码：WARN + 计数（egress_route_not_found） |
+| `client_rpc.direction_rejected` | 方向不匹配 | 未回传结构化码：WARN + 计数（egress_direction_rejected） |
+| `client_rpc.epoch_expired` | session epoch 过期 | 已实现的结构化状态码 |
+| `client_rpc.handler_missing` | 目标 VM 缺少 handler binding | 非 RPC 回传码：spawn 期绑定失败时的错误文本 |
 
 ## MessagePayload
+
+实现状态：本节的 `MessagePayload`/`PayloadCodec`/`LuaRequestPayload` 结构当前不存在于源码，属于格式规格预留。消息路径实际使用 `nlohmann::json` 序列化（只校验 1MB 消息大小与 unsupported 值，无嵌套深度检查）。`LuaPackEncoder`/`LuaPackDecoder` 存在但当前只被测试引用，未接入消息路径；`encode_failed` 仅由 unsupported 类型映射产生。
 
 core 中 payload 是不可变二进制 buffer。
 
@@ -167,6 +171,8 @@ map table: string/integer key
 本地消息也需要序列化，不直接传 Lua 对象指针。优化只能共享 immutable `ByteBuffer`，不能改变语义。
 
 ## LuaPack 序列化格式
+
+> 实现状态：LuaPack 是 Shield 内置的二进制序列化格式规格，但当前**未接入消息路径**（消息实际用 JSON 序列化）；编码器/解码器实现存在，只被测试引用。本节按格式规格阅读。
 
 LuaPack 是 Shield 内置的二进制序列化格式，用于消息编码。
 
@@ -251,11 +257,12 @@ key 必须是 string 或 integer 类型。
 
 ### 嵌套深度限制
 
-默认最大嵌套深度 64 层，超过返回 `encode_failed` 错误。
+默认最大嵌套深度 64 层，超过返回 `encode_failed` 错误（该行为属于 LuaPack 编码器规格；当前消息路径不经过它，JSON 路径无嵌套深度检查）。
 
 配置：
 
 ```yaml
+# 未接线（预留）：codec 配置键当前无解析
 actors:
   - name: gateway
     script: scripts/auth.lua
@@ -316,8 +323,10 @@ local ok, err = shield.send(target, "event", data, {
 优先级为后续设计项，当前 CAF actor mailbox 不保证消息排序。
 
 当前实现状态：Phase 1 已支持单节点本地 service name 字符串路由，消息通过
-CAF actor 异步投递到目标 service。`shield.call` 同步调用通过 CAF actor + 条件
-变量阻塞等待实现。非 reentrant self-send 已实现。
+CAF actor 异步投递到目标 service。`shield.call` 是 coroutine-aware 的：
+Lua 侧经 `_coro_call` + `coroutine.yield` 挂起 caller 协程，默认超时
+5000ms，由超时 sweep 扫描过期 pending call 并恢复 caller（条件变量只用于
+外部非协程上下文的同步等待路径）。非 reentrant self-send 已实现。
 
 ## shield.call 返回格式
 
@@ -364,9 +373,11 @@ local ok, allowed, reason = shield.call("auth", "check", uid)
 response payload 需要保存 `argc`，以保留 trailing nil。
 
 当前实现状态：本地 `shield.call` 已返回 `true, ...callee_returns` 或
-`false, Error`，支持业务返回 `false` 与 runtime 错误区分。当前仍是同步
-method dispatch，不会挂起 Lua coroutine；timeout、late response、pending
-registry 和 trailing nil 保留仍是后续实现项。
+`false, Error`，支持业务返回 `false` 与 runtime 错误区分。method dispatch
+已协程化：caller 协程在 call 处挂起，runtime 维护 pending call registry，
+超时 sweep 恢复 caller 并返回 `timeout` 错误；返回值经
+`table.pack`/`table.unpack` 保留 trailing nil。late response（已超时或未知
+session 的迟到响应）被直接丢弃。
 
 ## call 超时
 
@@ -391,17 +402,16 @@ local ok, value = shield.call_timeout(30000, "db.player", "get", uid)
 - 超时后 caller 恢复 `false, Error{ code = "timeout" }`。
 - pending call 从 registry 移除。
 - callee 不会被自动取消。
-- late response 被丢弃，并计入 ops 指标。
+- late response 被丢弃（对未知 session 的迟到响应直接丢弃，当前不计入任何 ops 指标）。
 - timeout 必须传递到 envelope deadline。
 
-错误对象：
+错误对象（`make_error` 只产出 code/message/retryable/detail 字段）：
 
 ```lua
 {
   code = "timeout",
   message = "call timeout",
-  source = "runtime",
-  retryable = false,
+  retryable = true,
 }
 ```
 

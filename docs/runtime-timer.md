@@ -38,28 +38,30 @@ timer(interval_ms)
 - `delay_ms >= 0`。
 - `interval_ms > 0`。
 - **时间分层（AD-07）**：定时器**触发**基于 monotonic clock（InfraClock，不可拨），与 CAF `delayed_send` 一致。Lua 业务读取的 `shield.now()` / `os.time()`（无参）/ `os.date()`（无参）走可注入的 wall-clock `Clock`（LuaClock，测试可拨）。`os.clock()` 不接入（保持真实 CPU 时间）。参见 [架构决策 AD-07](architecture-decisions.md)。
-- 周期 timer 使用 fixed-delay 语义。
+- 周期 timer 使用固定节拍（fixed-cadence）语义：下一拍按「上一拍触发时刻 + interval_ms」推进，与 callback 执行时长无关。
 
-fixed-delay：
+fixed-cadence：
 
 ```txt
-callback 执行完成后，再等待 interval_ms 安排下一次
+driver actor 在派发本拍 fire 后立即续排下一拍 delayed_send，
+下一拍时刻 = 本拍触发时刻 + interval_ms
 ```
 
-不使用 fixed-rate，避免 callback 慢时堆积。
+- callback 执行变慢不会平移节拍基准，也不会把落下的拍补发堆积——已经过去的节拍不追补。
+- 实际触发时刻相对理论节拍的漂移上限为 fire 消息的派发延迟（驱动侧记录的 `next_fire_ms` 每拍推进为「当前时刻 + interval_ms」，注释原话：drift equals the fire-dispatch lag）。
+- 不使用 fixed-rate，避免慢 callback 触发补发堆积——动机不变，只是节拍基准固定，不随 callback 结束时间平移。
 
 ## timer 错误语义
 
 timer callback 抛错：
 
-- `timer_once` 记录错误后结束。
-- `timer` 记录错误并停止该周期 timer。
-- 不让未捕获异常反复刷屏。
-- 错误通过 `invoke_error_hook` 路由到 service 的 `on_error(err, context)` hook，`context.type = "timer"`。
-- 连续错误达到阈值时触发 `on_panic` 并 `exit("panic")`。
-- 错误进入 `shield_ops` 统计（Phase 2）。
+- 错误通过 `invoke_error_hook` 路由到 service 的 `on_error(err, context)` hook，`context.type = "timer"`，并记录一条 `timer error: ...` ERROR 日志。
+- `timer_once` 记录错误后结束（单次触发，fire 后条目即移除）。
+- `timer` 记录错误后**继续按节拍触发，不会自动停止**——实现里没有「出错即停」逻辑；能让它停下的是显式 `cancel_timer`、service exit（自动取消 owned timers）或下面的 panic 退出。
+- 连续错误达到阈值（`kDefaultMaxErrorsBeforePanic`，当前为 10 次；一次成功 dispatch 会把计数清零）时触发 `on_panic` 并 `exit("panic")`。
+- 错误进入 `shield_ops` 统计（Phase 2，尚未实现）。
 
-如业务希望周期 timer 永不停止，需要自己 `pcall`。
+由于周期 timer 出错不停，业务希望某些错误不触发 `on_error` 刷屏/计数时，才需要自己 `pcall`。
 
 ## shield.sleep
 

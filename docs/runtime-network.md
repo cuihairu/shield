@@ -39,13 +39,13 @@ SessionBinding {
   player_id?
   gateway_name
   protocol_profile_id
-  session_epoch
+  epoch
 }
 ```
 
 规则：
 
-- `session_id` 只在当前 Gateway 内定位连接；`session_epoch` 区分断线重连前后的 owner。
+- `session_id` 只在当前 Gateway 内定位连接；`epoch` 区分断线重连前后的 owner（`SessionBinding.epoch`，见 `include/shield/net/session.hpp`；CAF 消息 `ClientContextData` 与 Lua 侧 `ClientContext`/`ClientRef` 属性仍叫 `session_epoch`）。
 - `player_id` 由认证结果写入，是可信身份，不从客户端业务 body 读取。
 - 登录前 target 是认证入口服务；认证成功后由 Gateway actor 以
   compare-and-set 的 epoch 原子替换 target 与 `player_id`（见
@@ -184,10 +184,10 @@ actor 原子替换当前 session 的 target 绑定并写入 `player_id`:
 | `max_connections_per_ip` | 单 IP 最大连接数 |
 | `max_frame_size` | 单 frame 最大字节数 |
 | `max_session_send_queue` | 单 session 待写队列上限 |
-| `max_decode_errors` | 连续协议错误上限 |
-| `read_idle_timeout` | 读空闲超时 |
-| `write_idle_timeout` | 写空闲超时 |
-| `handshake_timeout` | 握手超时 |
+| `max_decode_errors` | 未实现——没有这个配置键，也没有「连续协议错误达到上限即断连」的计数逻辑 |
+| `read_idle_timeout` | 读空闲超时（毫秒，`0` 关闭；超时以 `read_idle_timeout` 错误码关闭 session） |
+| `write_idle_timeout` | 未实现——没有写空闲超时，只有 `read_idle_timeout` |
+| `handshake_timeout` | 没有独立的传输层键；唯一实现是 `network.tls.handshake_timeout_ms`（缺省 `10000`，范围 `1-600000`），见下文「TLS（network.tls）」 |
 | `rate_limit` | 每连接入站令牌桶（`messages_per_second` + `burst`），超限丢帧不断连 |
 | `blocklist.deny` | accept 时按地址/CIDR 拒绝，被拒对端不建 session |
 

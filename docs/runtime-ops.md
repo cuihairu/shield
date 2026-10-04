@@ -396,6 +396,8 @@ cluster.offline_timeout_ms    = 30000  # Suspect：超过该时长无心跳 -> O
 
 无 offline -> removed 自动转移：`Removed` 状态只在 `ClusterManager::stop()` 停机时对全部节点统一置入，运行期不发生。
 
+节点观测入口：`/ops/status` 的 `cluster` 块提供节点列表、状态与 `heartbeat_age_ms`（见上文）。heartbeat RTT、miss 计数、offline tombstone、因 node offline 失败的 pending call 统计均未实现。
+
 ## 数据流
 
 ```text

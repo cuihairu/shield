@@ -1,6 +1,6 @@
 # Lua 诊断控制台设计
 
-本文定义 `shield_ops` 下 Lua 诊断控制台与 Lua 内存观测能力的设计边界。它是 `shield_ops` 的专项设计稿，服务于后续实现 `local admin socket` / `console` / `Lua inspect` 观测面，不代表这些能力已经进入当前最小运行路径。
+本文定义 `shield_ops` 下 Lua 诊断控制台与 Lua 内存观测能力的设计边界。它是 `shield_ops` 的专项设计稿，覆盖 `local admin socket` / `console` / `Lua inspect` 观测面；各层能力的实现状态见文末「当前状态」一节（控制台本体、L1/L2 与 eval 均已落地）。
 
 如果与总纲或运维主文档冲突，以 [架构总纲](architecture.md) 和 [运维运行时语义](runtime-ops.md) 为准。
 
@@ -63,7 +63,7 @@ shield_lua / shield_net / shield_plugin / shield_cluster
 规则：
 
 - `shield_ops` 只能读取只读快照或通过 owner 线程执行受控 inspect 任务。
-- `shield_ops` 不能直接持有或跨线程操作 `shd::state` / `lua_State*`。
+- `shield_ops` 不能跨线程操作业务 service 的 `shd::state` / `lua_State*`。例外是 console 自有的沙箱 VM：语法检查用临时 `luaL_newstate`，`eval` 在 console 线程创建自己的 VM 并同步执行——这些 `lua_State` 为 console 线程单线程私有，从不与任何 actor 或其他线程共享。
 - `shield_lua` 拥有 Lua VM inspect provider 的语义与实现。
 - `shield_ops` 不能通过 console 反向改写 core 语义。
 
@@ -298,13 +298,13 @@ lua.exec <service>
 
 ### 安全策略
 
-`lua.eval` 默认必须满足：
+`lua.eval` 默认必须满足（括号内为当前实现状态）：
 
-- 仅在 `ops.lua_console.eval_enabled=true` 时可用
+- 仅在 eval 显式开启时可用（当前 console `eval` 仅受 `console.enabled` 门控；`ops.lua_console.*` / `ops.console.*` 配置键全仓不存在；token/开关门控目前只存在于 HTTP `/ops/eval`——`http.eval_enabled` + `http.eval_token`）
 - 默认仅允许 `localhost` 或 local admin socket
 - 需要独立权限，不与普通只读命令共用最低权限
-- 必须有执行超时
-- 必须有输出大小上限
+- 必须有执行超时（当前 console `eval` 没有执行超时；`attach` 对目标 service 的单次执行等待有 5s 超时）
+- 必须有输出大小上限（当前 console `eval` 没有输出上限）
 - 默认禁止文件系统 / OS / 网络相关危险能力
 
 ### 生产环境策略
@@ -497,6 +497,7 @@ ops:
 - `ops.lua_console.*` 负责 Lua 诊断能力。
 - `eval_enabled` 必须独立于 `inspect_enabled`。
 - `endpoint` 的 scheme 决定传输（`unix://` 默认 / `tcp://` opt-in）；客户端默认从 `discovery_file` 读取实际 endpoint。
+- 实现状态：本节为配置草案，以上 `ops.console.*` / `ops.lua_console.*` 配置键当前均未接线（源码无解析）；console 入口当前只使用 `console.enabled` 门控。
 
 ## 命令返回形态
 
@@ -571,14 +572,6 @@ top_tables:
 - **诊断控制台本体：已实现**，两层架构详见 [diagnostics-console.md](diagnostics-console.md)——Root 层 `root.*` 只读观测命令（status/services/service/plugins/config/cluster/server/global/log.level）与 Script 层 `attach` REPL / `eval` 沙箱（含 HTTP `/ops/eval`，token 门控）。
 - **L1 只读快照：已落地**。`/ops/services/:name` 与 `/ops/metrics` 暴露 runtime 计数器与瞬时 gauge（requests/errors/uptime/timers/pending_calls/pending_tasks/coroutines/memory_kb，见 [运维运行时语义](runtime-ops.md)）。`coroutines` 经协程生命周期埋点采集（handler 工厂启动登记、终态 resume 与服务 teardown 擦除）；`memory_kb` 在 owner 线程 dispatch 退出采样 `lua_gc(GCCOUNT)`（O(1)，不跨线程触碰 lua_State）。
 - **L2 受限 inspect：已全量落地**。`lua.inspect <service> summary|timers|pending_calls`（registry 锁内只读投影，console 线程零 Lua 触碰、零 actor 往返）、`lua.inspect <service> memory`（owner 线程一次 dispatch：GC 采样——total_bytes/memory_kb、running、模式与六个 collector 参数——加 retainers 头，depth 4 / 20000 节点同 refs 默认，fork task + 2s bounded wait）、`lua.inspect <service> coroutines`（owner 线程枚举 live 协程注册表：lua_status 分类 + 每协程 origin/resumes/last_resume/waiting_call 记账，32 条上限带 truncated）、`lua.inspect <service> refs [depth]`（owner 线程受限对象图遍历：fork task 投递 + 2s bounded wait，depth∈[1,8]、节点预算即时间预算，输出 counts/top_tables/truncated）、`lua.snapshot <service> [name] [refs]`（L1 gauge 快照，重名覆盖、每服务环形保留最近 8 份、随 incarnation teardown 清除；`refs` 参数附加对象图摘要，owner 忙记 `refs_error` 不阻塞采集）、`lua.diff <service> <a> <b>`（逐字段 delta，负向变化如实呈现；两端均有对象图摘要时附 counts/top_tables 按 path 匹配的 refs delta）。已在 console 命令面可用（L1 数据源即上条）。
-- **Phase C 的 `lua.eval`/`lua.exec` 语义已由 `attach` REPL 与 `eval` 承载**（先于 L1/L2 完整落地，因带 token 门控与超时约束）。
+- **Phase C 的 `lua.eval`/`lua.exec` 语义已由 `attach` REPL 与 `eval` 承载**。门控与超时现状：console `eval` 仅受 `console.enabled` 门控，没有执行超时与输出上限；token 门控（`http.eval_enabled` + `http.eval_token`）与超时约束目前只存在于 HTTP `/ops/eval`；`attach` 对目标 service 的单次执行等待有 5s 超时。
 
-这份文档冻结的是方向和边界，不声明当前源码已经实现：
-
-- `shield_ops`
-- local admin socket
-- Lua inspect provider
-- Lua snapshot/diff
-- Lua eval
-
-后续实现时，源码、测试和配置校验应向本文与 `runtime-ops.md` 收敛。
+上文列出的 `shield_ops`、local admin socket（console 默认 AF_UNIX socket）、Lua inspect provider（`lua.inspect`/`lua.snapshot`/`lua.diff`）、Lua snapshot/diff 与 Lua eval 均已在当前源码中实现并注册（console 命令面：`root.*` 只读命令 + `attach`/`eval`/`lua.*`；HTTP 面：`/ops/*` + `/ops/eval`）。本文继续作为这些能力的边界与语义参照，后续修订时源码、测试和配置校验应向本文与 `runtime-ops.md` 收敛。

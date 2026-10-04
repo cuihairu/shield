@@ -7,7 +7,7 @@
 - 启动顺序明确，依赖关系单向。
 - 启动失败快速失败，输出清晰错误。
 - 关闭顺序与启动相反，确保资源释放。
-- 每个阶段有超时保护。
+- 每个阶段有超时保护（当前仅 shutdown 阶段实现了超时预算；启动阶段没有阶段超时，见「启动超时」）。
 
 ## 启动流程
 
@@ -25,7 +25,7 @@ shield::run(argc, argv)
   │
   ├─ 2. 加载配置
   │     - 读取 YAML 配置文件
-  │     - 环境变量替换 ${VAR:default}
+  │     - （环境变量替换 ${VAR:default} 未实现——配置加载器不处理占位符）
   │     - 多配置文件合并（--config 可多次指定）
   │     - 配置验证（必填项、类型、范围）
   │     - 失败：输出错误，exit(1)
@@ -44,11 +44,12 @@ shield::run(argc, argv)
   │     - 创建 caf::actor_system（scheduler 线程数来自 --workers）
   │     - 失败：输出错误，exit(1)
   │
-  ├─ 6. 初始化数据层（如配置）
-  │     - 初始化数据库连接池
-  │     - 初始化 Redis 连接池
-  │     - 测试连接
-  │     - 失败：输出错误，exit(1)
+  ├─ 6. 加载插件（外部连接由插件自身建立）
+  │     - bootstrap 不建数据库/Redis 连接池；数据层连接归插件实例所有
+  │     - Redis driver 在插件 start 时建连接池并 ping（required 插件
+  │       连接失败即启动失败）；MySQL 连接池按需建连（启动时不做
+  │       连接测试，失败在首次查询时暴露）
+  │     - required 插件 create/start 失败：输出错误，exit(1)
   │
   ├─ 7. 初始化网络层（如配置）
   │     - 创建 shield_transport
@@ -62,11 +63,14 @@ shield::run(argc, argv)
   │     - 配置非法、本地监听失败、节点身份冲突：exit(1)
   │     - 远端连接失败：可退化为单节点，但必须标记 unhealthy
   │
-  ├─ 9. 初始化运维层（仅启用 shield_ops 时）
-  │     - 创建 shield_ops
-  │     - 启动 HTTP 端点
-  │     - 管理端口绑定失败或配置非法：exit(1)
-  │     - metrics exporter 后端短暂失败：可标记 unhealthy
+  ├─ 9. 启动运维入口（配置门控，非模块开关）
+  │     - console.enabled = true 时启动 console server
+  │       （Unix socket，默认 /tmp/shield-console.sock）
+  │     - http.enabled = true 时启动 HTTP ops server
+  │       （默认绑定 127.0.0.1:8080）
+  │     - 没有 shield_ops 模块开关：bootstrap 硬编码 ops_enabled = false，
+  │       配置中出现 `ops:` 段会因 optional module 校验直接拒绝启动
+  │     - 端口/socket 绑定失败：记 ERROR 日志并继续启动（不 exit）
   │
   ├─ 10. 启动系统服务
   │      - 启动 bootstrap 服务（如有）
@@ -92,7 +96,7 @@ shield::run(argc, argv)
 |------|------|
 | SIGINT | Ctrl+C |
 | SIGTERM | kill 命令 |
-| shield.shutdown() | Lua API 主动关闭 |
+| `shield.server.shutdown(delay_ms)` | Lua API 主动关闭（`shield_server` 模块；经 ServerManager 停机交接后触发 runtime 停止，`delay_ms` 为延迟毫秒） |
 
 Windows 下使用 `SetConsoleCtrlHandler` 替代信号。
 
@@ -121,38 +125,40 @@ Phase 1 参数：
 
 ## 启动超时
 
-每个阶段有独立超时，配置见 [配置语义](runtime-config.md#完整配置-schema) 中 `bootstrap.timeout` 部分。
+**未实现。** bootstrap 没有阶段超时机制：`bootstrap.timeout.*` 配置键没有任何消费者（schema 中的示例键是规划面，见 [配置语义](runtime-config.md#phase-1-schema) 的标注）。启动卡住的阶段不会被计时中断，也不会触发「清理已初始化资源后 exit(1)」。
 
-超时后：
-
-- 输出超时阶段和已耗时。
-- 尝试清理已初始化的资源。
-- exit(1)。
+关闭侧的 `shutdown.timeout.*` 是已实现的，见「关闭超时」。
 
 ## 启动日志
 
-启动过程输出关键节点日志：
+启动过程按实际实现输出以下关键节点日志（logger 为 `bootstrap`，行格式为 `<timestamp_ms> [LEVEL] <logger>: <message>`；带条件标注的行只在对应功能启用时出现）：
 
 ```txt
-[INFO] Shield starting...
-[INFO] Config loaded: config/app.yaml
-[INFO] Log level: info
-[INFO] Database connected: localhost:3306/game
-[INFO] Redis connected: localhost:6379
-[INFO] Network listening: TCP 0.0.0.0:8001
-[INFO] Cluster: node-1, listening 0.0.0.0:9000
-[INFO] Ops: http://127.0.0.1:9090
-[INFO] Service spawned: gateway (id=1)
-[INFO] Service spawned: player (id=2)
-[INFO] Shield started (pid=12345, uptime=0s)
+<ts> [INFO] bootstrap: Shield runtime initializing...
+<ts> [INFO] bootstrap: Config loaded: config/app.yaml
+<ts> [INFO] bootstrap: File logging enabled: logs/shield.log          （log.file.enabled）
+<ts> [INFO] bootstrap: Plugin system started
+<ts> [INFO] bootstrap: CAF actor system initialized
+<ts> [INFO] bootstrap: Cluster transport listening on port 9000       （cluster 启用时）
+<ts> [INFO] bootstrap: Service spawned: gateway
+<ts> [INFO] bootstrap: TCP gateway listener started for actor 'gateway' on 0.0.0.0:8001
+<ts> [INFO] bootstrap: TLS enabled for actor 'gateway' (minimum protocol TLS 1.2, handshake timeout 10000 ms)   （network.tls）
+<ts> [INFO] bootstrap: Address blocklist active for actor 'gateway' with 2 rule(s)                              （blocklist）
+<ts> [INFO] bootstrap: Console server listening on /tmp/shield-console.sock   （console.enabled）
+<ts> [INFO] bootstrap: HTTP ops server listening on 127.0.0.1:8080            （http.enabled）
+<ts> [INFO] bootstrap: Shield runtime initialized
 ```
 
-启动失败日志：
+`Service spawned:` 后面是 spawn 返回的 service id（配置了 `name` 的 actor 即该名字；未命名的 service id 形如 `<module>:<hash>`）。此外还有可选子系统初始化成功的日志（`Player subsystem initialized` / `Server subsystem initialized` / `Global subsystem initialized`）。
+
+启动失败日志（均为实际存在的文案）：
 
 ```txt
-[ERROR] Failed to load config: config/app.yaml not found
-[ERROR] Database connection failed: Connection refused
-[WARN]  Cluster peer connection failed, running standalone unhealthy
+<ts> [ERROR] bootstrap: Failed to load config: config/app.yaml
+<ts> [ERROR] bootstrap: Invalid config: <字段路径与原因>
+<ts> [ERROR] bootstrap: Plugin startup failed: <插件错误，如 plugin.create.failed: ...>
+<ts> [ERROR] bootstrap: Failed to spawn actor 'player': <错误原因>
+<ts> [ERROR] bootstrap: Failed to start TCP listener for actor 'gateway': <错误原因>
 ```
 
 ## 关闭流程
@@ -205,7 +211,7 @@ Phase 1 参数：
 
 ## 关闭超时
 
-配置见 [配置语义](runtime-config.md#完整配置-schema) 中 `shutdown.timeout` 部分。
+配置见 [配置语义](runtime-config.md#phase-1-schema) 中 `shutdown.timeout` 部分。
 
 超时后强制退出，输出未释放资源的警告。
 
@@ -248,26 +254,12 @@ bootstrap:
 
 数据库连接失败时：
 
-- 如果服务依赖数据库，启动失败。
-- 如果服务不依赖数据库，可继续运行。
+- required 插件（如 `redis.driver`）在插件 start 阶段建池并 ping，失败即启动失败。
+- MySQL 等懒建连插件首次使用时才连接，启动不受影响，调用时返回错误。
 
 ## 优雅重启
 
-支持 SIGUSR1 触发优雅重启（Linux）：
-
-```bash
-kill -USR1 <pid>
-```
-
-行为：
-
-1. 停止接受新连接。
-2. 等待现有连接完成。
-3. 重新加载配置（仅热更新项）。
-4. 重新绑定网络监听。
-5. 恢复接受新连接。
-
-不支持热更新的配置项需要完整重启。
+本节描述的能力尚未实现：进程只注册了 SIGINT/SIGTERM 两个停止信号（Windows 用 `SetConsoleCtrlHandler`），没有 SIGUSR1 处理器，也不存在「不重启进程的优雅重启」流程；配置文件热重载同样未实现（见 [配置语义](runtime-config.md#热更新)）。需要变更配置或代码时，走完整停止 + 重新启动。
 
 ## 进程退出码
 

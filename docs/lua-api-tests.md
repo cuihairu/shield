@@ -100,7 +100,9 @@ Harness 要求：
 
 `tests/lua_api/test_lua_api_spawn.cpp`（scripts: `spawn_parent.lua`、
 `spawn_child.lua`、`spawn_fail_child.lua`、`spawn_in_init_parent.lua`、
-`spawn_panic_service.lua`、`spawn_watcher.lua`）。
+`spawn_panic_service.lua`、`spawn_watcher.lua`、`spawn_opts_shape.lua`；
+其中 `spawn_opts_shape.lua` 由 `SpawnOptsTableWithMixedKeysStillSpawns`
+使用，覆盖 opts table 混合键形状，无矩阵编号）。
 
 | Case | 设置 | 操作 | 断言 |
 | --- | --- | --- | --- |
@@ -172,6 +174,8 @@ Harness 要求：
 
 ## LAPI-010A Local Event API
 
+> **未实现（目标契约）**：`shield.event` 当前源码尚未实现（全仓无注册点，无对应测试），本组用例为目标契约预留，实现后按本表补齐。
+
 | Case | 设置 | 操作 | 断言 |
 | --- | --- | --- | --- |
 | LAPI-010A-01 | 当前 service 注册 listener | `shield.event.emit(name, payload)` | listener 在同一 VM 内同步收到 payload |
@@ -183,6 +187,8 @@ Harness 要求：
 ## LAPI-011 Player Lifecycle
 
 适用前提：`shield_player` 已启用。未启用时整个 LAPI-011 矩阵跳过，且 `shield.player.*` 调用应返回 `module_unavailable`。
+
+> **编号口径**：本文矩阵编号与测试源码的 `BOOST_AUTO_TEST_CASE` 编号两套自成体系，不一一对应，以源码为准（`tests/lua_api/test_lua_api_player.cpp`）。例如源码 `LAPI_011_18/19/20` 是 `shield.player.Base` 用例（对应本文 -32/-33），并非本文 -18~-20 的 resolve 用例（resolve 错误矩阵由 `LAPI_011_08_ResolveErrorMatrix` 覆盖），且源码无 `LAPI_011_11~14`、`LAPI_011_21~33` 同号用例。legacy 矩阵（LAPI-010）同理：源码 `LAPI_010_04_OldOnMessageEntryIsNotDispatched` / `LAPI_010_05_OldDiApiUnavailable` 对应本文 -05/-06（错位一号），`tests/lua_api/test_lua_api_config.cpp` 另复用 `LAPI_010_01~03` 前缀（`shield.config` 子系统）。
 
 | Case | 设置 | 操作 | 断言 |
 | --- | --- | --- | --- |
@@ -238,16 +244,16 @@ Harness 要求：
 
 | Case | 延迟原因 |
 | --- | --- |
-| ~~LAPI-005-06~~ | ~~call timeout 未实现~~ 已实现：call timeout 由 CAF delayed `call_timeout_atom` 驱动，LAPI-005-06 覆盖协程 timeout + 同步调用 ✅ |
-| ~~LAPI-005-07~~ | ~~late response 丢弃~~ call timeout 已实现，超时后 caller 已 resume；callee 返回时 `resume_caller` 在 `pending_calls` 中找不到 session，静默丢弃。行为正确 ✅ |
-| ~~LAPI-005-08~~ | ~~nested call~~ 协程路径支持：caller yield 后 CAF actor 处理 callee 消息，`CallApiFromLuaWrapsRuntimeResult` 测试覆盖嵌套 call ✅ |
+| ~~LAPI-005-06~~ | ~~call timeout 未实现~~ 已实现：call timeout 由 CAF delayed `call_timeout_atom` 驱动，LAPI-005-06 覆盖协程 timeout + 同步调用 |
+| ~~LAPI-005-07~~ | ~~late response 丢弃~~ call timeout 已实现，超时后 caller 已 resume；callee 返回时 `resume_caller` 在 `pending_calls` 中找不到 session，静默丢弃。行为正确 |
+| ~~LAPI-005-08~~ | ~~nested call~~ 协程路径支持：caller yield 后 CAF actor 处理 callee 消息，`CallApiFromLuaWrapsRuntimeResult` 测试覆盖嵌套 call |
 | LAPI-006-04 | trace id 传播：消息字段携带通道已实现（send/call 会把 `current_trace_id` 写入消息），但 runtime 当前不生成 trace id，`ctx.trace` 恒返回 nil。trace id 生成与完整链路传播属于 Phase 2+ |
 | ~~LAPI-006-05~~ | ~~deadline 可见性~~ 读取/传播通道已实现：`ctx.deadline` 从 dispatch context 读取，字段随消息传播；但 runtime 当前不为 call 赋值 deadline，`ctx.deadline` 恒返回 nil。deadline 赋值策略属于 Phase 2+ |
-| ~~LAPI-007-04~~ | ~~`on_error` hook 调用~~ 已实现：`invoke_hook` 调用 service table 上的 `on_error`，`OnErrorHookCalledOnHandlerThrow` 测试覆盖 ✅ |
-| ~~LAPI-007-05~~ | ~~`shield.sleep` coroutine 语义~~ 已由 LAPI-007-08 覆盖 ✅ |
-| LAPI-008-02/03/06 | 缺失 binding / 目标 instance unavailable 的 `module_unavailable` 需要插件 mock harness 覆盖 |
+| ~~LAPI-007-04~~ | ~~`on_error` hook 调用~~ 已实现：`invoke_hook` 调用 service table 上的 `on_error`，`OnErrorHookCalledOnHandlerThrow` 测试覆盖 |
+| ~~LAPI-007-05~~ | ~~`shield.sleep` coroutine 语义~~ 已由 LAPI-007-08 覆盖 |
+| ~~LAPI-008-02/03/06~~ | ~~缺失 binding / 目标 instance unavailable 的 `module_unavailable` 需要插件 mock harness 覆盖~~ 已覆盖：`tests/plugin/test_plugin_lua_facade.cpp` 用 fake host resolver（`binding_instance_id` 恒报 absent）逐插件固定软失败形状——`shield.<ns>("ghost.binding")` → `nil, {code="module_unavailable"}`（含 no-arg 调用）；namespace 侧 resolver 解析不到 instance 即返回该形状 |
 | LAPI-008-04 | SQL error 路径需要由 SQL 插件测试或统一 mock 插件覆盖 |
 | LAPI-008-07 | subscribe then exit：需要 queue plugin mock/集成测试覆盖订阅生命周期 |
-| ~~LAPI-009-01~05~~ | ~~Gateway session 模拟~~ 已覆盖：connect/message/disconnect/queue_full/stale_send 共 6 个测试 ✅ |
+| ~~LAPI-009-01~05~~ | ~~Gateway session 模拟~~ 已覆盖：connect/message/disconnect/queue_full/stale_send 共 6 个测试 |
 | LAPI-009-real-session | 真实 TCP session → `ClientContext`/`ClientRef` 的闭环 | `tests/acceptance/test_client_rpc_e2e.cpp`（M6）：真实 TCP 客户端 login→bind→move→s2c 回包 |
-| ~~LAPI-002-06~~ | ~~`on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit`~~ 已实现：`_is_in_exit()` + Lua wrapper guard，`OnExitCallGuard` 测试覆盖 ✅ |
+| ~~LAPI-002-06~~ | ~~`on_exit` 中调用 `shield.call` 返回 `api_not_allowed_in_exit`~~ 已实现：`_is_in_exit()` + Lua wrapper guard，`OnExitCallGuard` 测试覆盖 |
