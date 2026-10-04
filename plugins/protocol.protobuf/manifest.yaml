@@ -27,5 +27,3 @@ config_schema:
   properties:
     descriptor_set:
       type: string
-    json:
-      type: object

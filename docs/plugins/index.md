@@ -37,6 +37,17 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 | [health.http](/plugins/health-http) | `shield.health.v1` | Kubernetes 兼容的健康检查端点 |
 | [matchmaking.elo](/plugins/matchmaking-elo) | `shield.matchmaking.v1` | ELO 匹配算法 |
 
+### 协议编解码
+
+| 包 ID | 接口 | 说明 |
+|-------|------|------|
+| [protocol.json](/plugins/protocol-json) | `shield.protocol.codec.v1` | JSON 编解码，内置 json 的可选校验替身（per-route payload schema） |
+| [protocol.msgpack](/plugins/protocol-msgpack) | `shield.protocol.codec.v1` | MessagePack 二进制编解码 + 同一套 schema 校验 |
+| [protocol.flatbuffers](/plugins/protocol-flatbuffers) | `shield.protocol.codec.v1` | FlatBuffers `.fbs` schema 驱动，二进制 ↔ JSON 桥接 |
+| [protocol.protobuf](/plugins/protocol-protobuf) | `shield.protocol.codec.v1` | Protobuf `FileDescriptorSet` 驱动，跨语言 schema 演进 |
+
+四个 codec 插件都通过监听器的 `network.protocol.body.provider` 启用（`body.codec` 决定内置 `raw`/`json` 或插件 codec），插件边界、错误码与校验语义见 [Protocol Codec Plugins](/protocol-codec-plugins)。
+
 ### 认证（已弃用，不在官方清单）
 
 **认证/JWT 属于业务语义，不是官方插件**（[AD-08](/architecture-decisions)）。runtime 只提供密码学原语 `shield.crypto`（[API 表](/lua-api#crypto-api)），签发什么 claim、何时过期、接受哪个 issuer 由业务自己定——参考实现是 Lua 层的 `scripts/lib/jwt.lua`（HS256，纯 Lua 拼原语）。仓库里保留的 `plugins/auth_jwt` 已标 `deprecated`，仅供既有部署过渡，新项目勿采用。

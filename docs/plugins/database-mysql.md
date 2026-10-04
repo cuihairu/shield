@@ -40,6 +40,7 @@ libmariadb 依赖树很小（zlib + openssl），构建与 CI 时长远轻于 my
 | `port` | integer | 否 | `3306` | 经典 MySQL 协议端口。 |
 | `database` | string | 是 | — | 默认 schema 名。 |
 | `username` | string | 是 | — | 登录用户名。 |
+| `user` | string | 否 | — | `username` 的别名（两者同时配置时 `user` 生效）。新配置请统一用 `username`。 |
 | `password` | string | 否 | — | 登录密码。标记为 `secret`，日志和 dashboard 会脱敏。 |
 | `connect_timeout_ms` | integer | 否 | `5000` | 建立 TCP 连接 + 协议握手的超时，单位毫秒，范围 100-60000。 |
 | `query_timeout_ms` | integer | 否 | `5000` | 单条 SQL 执行超时，单位毫秒，范围 100-300000。 |
