@@ -25,7 +25,7 @@ void register_shield_api(LuaRuntime& runtime);
 /// @brief Convert JSON values into Lua values using Shield's runtime rules.
 /// Special transport/runtime marker objects may map to userdata instead of
 /// plain tables.
-/// (sol2 surface lives in the B2 phase; the canonical converter is shd.)
+/// Canonical converter on the shd surface.
 shd::object json_to_lua(shd::state_view lua, const nlohmann::json& value);
 
 /// @brief Convert Lua values to JSON.
@@ -42,13 +42,13 @@ bool lua_to_json(const shd::object& value, nlohmann::json* out);
 /// types. Prefer the output-parameter version for better error handling.
 nlohmann::json lua_to_json(const shd::object& value);
 
-/// @brief B1 seam (B2 removes): marker JSON for a sol2-created identity Box
-/// userdata. Sol2 stores usertype payload as a pointer box, so field access
-/// must stay on the sol side; shd only identifies the metatable.
-nlohmann::json sol_box_context_marker(const shd::object& value);
+/// @brief Marker JSON for a box-wrapped client-identity
+/// userdata. The payload travels inside a userdata box, so field access
+/// must go through the box accessor; shd only identifies the metatable.
+nlohmann::json box_context_marker(const shd::object& value);
 
-/// @brief B1 seam (B2 removes): marker JSON for a sol2-created PlayerRefBox.
-nlohmann::json sol_box_player_marker(const shd::object& value);
+/// @brief Marker JSON for a box-wrapped PlayerRefBox.
+nlohmann::json box_player_marker(const shd::object& value);
 
 /// @brief Register one shield.client_rpc.<name> helper bound to a
 /// server-to-client descriptor route. Called per service VM at spawn time,

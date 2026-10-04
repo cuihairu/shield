@@ -173,7 +173,7 @@ REPL/eval/lua.inspect/snapshot/diff）；配置错误启动期 fail-fast；
 **风险**：
 - 【中】**声明与实现不符：sandbox**。config/app.yaml 声明
   `lua.sandbox.allow_os/allow_io: false`，但 VM 启动**无条件** open 了
-  `sol::lib::io` 与 `sol::lib::os`（src/lua/lua_runtime.cpp:194-202），
+  `shd::lib::io` 与 `shd::lib::os`（src/lua/lua_runtime.cpp:194-202），
   runtime-security.md 也自认未实现。对产品这是诚实性问题：**配置键声明了
   却不生效**比"没有沙箱"更糟（用户以为关了，实际开着）。建议：实现该开关
   （按配置条件 open，成本低）或删键。倾向前者——脚本来自策划/外包的团队

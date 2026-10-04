@@ -142,7 +142,8 @@ BOOST_AUTO_TEST_CASE(HandlerNotFunctionOnFactoryVm) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
     auto vm = runtime.create_vm();
-    register_full_shield_api(runtime.vm_state(vm), &manager, &runtime);
+    register_full_shield_api(runtime.vm_state(vm).lua_state(), &manager,
+                             &runtime);
 
     shd::state_view lua(runtime.vm_state(vm).lua_state());
     shd::function nil_fn = shd::make_object(lua, shd::nil);

@@ -33,7 +33,7 @@ struct shd::is_usertype_value<shield::lua::ClientRefBox> : std::true_type {};
 // binding stores usertype payloads as a usertype_storage<T> header, so a
 // shd-built bare T* box under a foreign metatable fails the foreign
 // extraction. Foreign-created values are read through the B1 adapter
-// (sol_box_context_marker), which routes by the layout tag.
+// (box_context_marker), which routes by the layout tag.
 template <>
 struct shd::is_foreign_usertype<shield::lua::ClientContextBox>
     : std::false_type {};

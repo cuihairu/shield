@@ -780,14 +780,14 @@ bool lua_to_json(const shd::object& value, nlohmann::json* out) {
     }
     // Check string BEFORE number: lua_isnumber() returns true for strings
     // that look like numbers (e.g. "8194"), but we want to preserve the
-    // original string type in JSON (sol2 parity: is<string> has priority).
+    // original string type in JSON (legacy parity: is<string> has priority).
     if (value.is<std::string>()) {
         *out = value.as<std::string>();
         return true;
     }
     if (value.is<double>()) {
-        // sol2's is<int64_t>() accepts any Lua number when
-        // SOL_NUMBER_PRECISION_CHECKS is off (the default), so checking it
+        // The legacy binding's is<int64_t>() accepts any Lua number when
+        // the legacy default did not check precision, so checking it
         // first would let as<int64_t>() truncate floats (e.g. 3.14 -> 3).
         // Read as double, then only round-trip through int64_t when the
         // value is a whole number so the JSON keeps its original type.
@@ -803,18 +803,18 @@ bool lua_to_json(const shd::object& value, nlohmann::json* out) {
     // Client identity userdata travels through message payloads in its
     // marker form (the inverse of the json_to_lua materialization).
     if (value.is<ClientContextBox>()) {
-        *out = sol_box_context_marker(value);
+        *out = box_context_marker(value);
         return true;
     }
     if (value.is<ClientRefBox>()) {
-        *out = sol_box_context_marker(value);
+        *out = box_context_marker(value);
         return true;
     }
 #ifdef SHIELD_ENABLE_PLAYER
     // PlayerRef userdata travels in its marker form (the inverse of the
     // json_to_lua materialization).
     if (value.is<PlayerRefBox>()) {
-        *out = sol_box_player_marker(value);
+        *out = box_player_marker(value);
         return true;
     }
 #endif
@@ -1974,7 +1974,8 @@ std::string LuaRuntime::call_function(std::shared_ptr<LuaVM> vm,
 
 bool LuaRuntime::register_api(std::shared_ptr<LuaVM> vm, std::string* error) {
     // Register all shield.* API functions
-    register_full_shield_api(*vm->state(), impl_->service_manager, this);
+    register_full_shield_api(vm->state()->lua_state(), impl_->service_manager,
+                             this);
 
     // Inject plugin Lua search paths and dispatch register_lua on every
     // started plugin instance. Each VM gets its own bindings; the host uses
@@ -2092,12 +2093,12 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
             } else if (obj.is<bool>()) {
                 result->push_back(obj.as<bool>());
             } else if (obj.is<double>()) {
-                // sol2's is<int64_t>() accepts any Lua number when
-                // SOL_NUMBER_PRECISION_CHECKS is off (the default), so checking
-                // it first would let as<int64_t>() truncate floats (e.g. 2.5 ->
-                // 2). Read as double, then only round-trip through int64_t when
-                // the value is a whole number so the JSON keeps its original
-                // type. Mirrors lua_to_json above.
+                // The legacy binding's is<int64_t>() accepts any Lua number
+                // when SOL_NUMBER_PRECISION_CHECKS is off (the default), so
+                // checking it first would let as<int64_t>() truncate floats
+                // (e.g. 2.5 -> 2). Read as double, then only round-trip through
+                // int64_t when the value is a whole number so the JSON keeps
+                // its original type. Mirrors lua_to_json above.
                 const double d = obj.as<double>();
                 const auto as_int = static_cast<std::int64_t>(d);
                 if (static_cast<double>(as_int) == d) {

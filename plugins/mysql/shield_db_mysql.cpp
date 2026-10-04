@@ -1459,7 +1459,8 @@ lua_params make_lua_params(const std::vector<shd::object>& values) {
             continue;
         }
         if (v.is<bool>()) {
-            // Integer first — sol2 would otherwise coerce to double.
+            // Integer first — zero-arg is<number> probes would otherwise coerce
+            // to double.
             p.ints[i] = v.as<bool>() ? 1 : 0;
             b.buffer_type = MYSQL_TYPE_LONGLONG;
             b.buffer = &p.ints[i];
@@ -1809,7 +1810,7 @@ shd::table make_instance_proxy(shd::state_view lua, mysql_instance* inst) {
                 inst->host_api->lua_resume_session == nullptr) {
                 return 0;
             }
-            // The tx token arrives as the 4th Lua argument. sol2 3.5 misbinds
+            // The tx token arrives as the 4th Lua argument. the facade misbinds
             // this trailing integer (the bound parameter comes through
             // nil/0 even though the raw stack slot holds it), so read the
             // call's own frame directly.

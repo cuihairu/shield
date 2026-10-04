@@ -255,12 +255,12 @@ line 11723/11723、branch 11055/11055、function 857/857；CI 门禁
 - [x] 全量构建 + ctest 全绿验证（91 + 新增 3 个测试用例，93/93），逐块
       commit + push（7b395c2 安全默认值 / b1c4cbb 产品化三件套 /
       f337072 评估文档与 todo 重排）
-- [x] CI Coverage（Debug 构建）红修复：sol2 在 Debug 下开启安全检查，
-      `sol::table` 从 nil proxy（os 被 sandbox 关闭时）构造即触发
+- [x] CI Coverage（Debug 构建）红修复：绑定层在 Debug 下开启安全检查，
+      从 nil proxy（os 被 sandbox 关闭时）构造 table 即触发
       "(type check failed in constructor)" panic-abort，`.valid()` 守卫
       来不及执行——本地 Release（NDEBUG）编译掉该检查故全绿。两处
       （lua_api.cpp AD-07 os 钩子、lua_runtime.cpp restrict_vm）改为
-      `get<sol::optional<sol::table>>()` nil 容忍读取；SandboxGates 测试
+      `get<shd::optional<shd::table>>()` nil 容忍读取；SandboxGates 测试
       补 restrict_vm 双臂真覆盖（替换原 GCOVR 分支豁免）；本地 Debug
       树复现配置验证 + 全量回归
 
@@ -573,7 +573,7 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
       暂无证据指向同类，先不动。
       线索勘误存档（2026-09-19 重读 ac48657 attempt-1 完整日志）：
       该次 Windows job 实为两个独立失败——smoke 的 nil panic（requeue
-      spin cap 触顶 → 旧 throw 式 panic handler 的 sol::error 逃逸
+      spin cap 触顶 → 旧 throw 式 panic handler 的绑定层异常逃逸
       actor → on_init 超时；c2ce720 后将以 abort+forensics 确定性
       暴露）与 08:48 `DuplicateListenerPortFails` 段错误，与本条目
       (a)(b)(c) 同根；"`[C]: in global 'error'` 携带 nil" 系误读
@@ -596,7 +596,7 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
 - [x] `load_script`（lua_runtime.cpp）的 sol `script_file` throw 式 API
       已消除（2026-09-19）：c2ce720 的 panic-abort 语义让它从"清理项"
       变成承重 bug——NDEBUG 下 script_file 退化为 luaL_dofile，加载
-      失败直达 at_panic（原 throw 设计靠 catch(sol::error) 兜住，abort
+      失败直达 at_panic（原 throw 设计靠绑定层 catch 兜住，abort
       设计下直接 SIGABRT），三平台 Release 矩阵的 LoadScriptFile /
       LoadFailures / LoadScriptOnDirectoryFails 全灭。已改为
       luaL_loadfile + lua_pcall 保护式（失败返回 false，永不 raise），
@@ -626,7 +626,7 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
 - [x] **test_lua_api_global 真实分支整套烂掉且无人知（双根因，已修）**：
   1) 真 bug（src/lua/lua_api.cpp kGlobalOrchestration 编排 chunk）：`make_exclusive`
      先建 `ttl` 字段、随后 `function lock:ttl()` 方法把字段覆盖成方法 →
-     `try_acquire`/`extend` 把 function 传给 `prim.lock_try` 第 4 参 → sol2
+     `try_acquire`/`extend` 把 function 传给 `prim.lock_try` 第 4 参 → 绑定层报
      "expected number, received function"，mutex/spinlock/distributed_mutex
      三组用例确定性红 + 级联 SIGFPE。修法：字段改 `_ttl`（公开读法
      `lock:ttl()` 是文档化 API，docs/runtime-global.md:238，保持不动）。
@@ -697,7 +697,7 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
    - `src/lua/lua_runtime.cpp` / `lua_service.cpp` / `lua_http_bridge.cpp` / `bootstrap.cpp` / `shield.cpp` 共计 ~27 个 clone 槽位函数
 
 5. **已修复并回归钉住的真 bug**：
-   - `src/lua/lua_api.cpp:3100` `lock:ttl` 字段被方法覆盖导致 sol2 类型错误（字段改 `_ttl`）
+   - `src/lua/lua_api.cpp:3100` `lock:ttl` 字段被方法覆盖导致绑定层类型错误（字段改 `_ttl`）
    - `tests/lua_api/test_lua_api_global.cpp` label 缺失导致 CI Cluster job 不执行真实分支（已补 "global" label）
    - `test_cov_lua_service2` 并发 spawn 用例定时脆弱（已改原子屏障 + 不变量断言）
 
@@ -717,7 +717,7 @@ ABI 只暴露 route_name，不暴露 host 内部路由概念。**
 
 **本轮补测（全真臂，无 mock，共 27 项）**：
 - `tests/lua_api/scripts/global_service.lua` +7 方法：data_error_matrix（decr/mset 空 key/get_cached miss/裸非 JSON 字节）、rank_error_matrix（bad_name/非串 score·position/miss/top/range/range_by_score/around）、module_unavailable_matrix（14 个工厂在 set_global(nullptr) 下全 module_unavailable）、primitive_error_matrix（rw_write_extend 持有者不符/未知 id、rel_ack·nack 未知、decode 坏 JSON）、rate_error_matrix（bad_name、attach_sched 被摘除→attach_failed）、maker_error_matrix（make_mutex/make_queue 被摘除→invalid_argument）、sched_invalid_matrix（空名/坏 schedule）
-- `tests/lua_api/test_lua_api_global.cpp` +7 用例（LAPI_GL_15…21，含 21 号无服务上下文注册被拒——fresh sol::state 全 API 装配走 context check）
+- `tests/lua_api/test_lua_api_global.cpp` +7 用例（LAPI_GL_15…21，含 21 号无服务上下文注册被拒——fresh state 全 API 装配走 context check）
 - `tests/global/test_global_manager.cpp` ErrorArmSuite +11 用例：cron step 非数字、惰性过期联动清缓存（318-320）、rw 写锁 ttl 簿记+同 owner 重入刷新（655）+stale-writer 复位、rank 未知 uid/board、broadcast 未知 name/group、reliable 未知 delivery、无 fire 回调 tick 存活（run_count 语义=起火尝试数）、once 起火即 done、resume 按 cron 重算 next_run、限流滑窗尾部裁剪+fixed 新 key、stop 落在 fire 回调中→循环顶停机臂（1627）
 - `tests/coverage/test_cov_bootstrap.cpp` +2 用例：invalid global config fail-fast（596-597）、scheduler 经 bootstrap 全链路投递+服务退场丢任务
 
@@ -868,7 +868,7 @@ CI 三 job 观察（含新 coverage-optional 首跑）；禁 tag/release。
 
 - **cluster_transport.cpp**（77%→100%）：connect_tick 下发/重连臂、握手完成匹配循环、心跳广播、envelope 转发与 call_begin/call_dispatch/reply_handler 三桥、send_envelope/complete_proxied_call 聚合初始化——均为编译器聚合初始化伪影或结构性防御臂（已标记）；真实可达臂（connect_tick、handshake、heartbeat、envelope 路径）既有套件已全覆盖。
 - **global_manager.cpp**（92%→99%）：data_incr_by 解析复合条件、cache_get TTL=0 三元、mutex/rwlock TTL=0 三元、rank_range 复合条件、delay_pop 复合条件、broadcast_since null out-param、reliable_pop 复合条件+聚合初始化、reliable_dead_range 聚合初始化、tick_loop cron 退役臂（Feb-29 型 ≥2 年跨度，结构性不可测）——可达臂（TTL=0 三元、复合条件）既有测试已双臂覆盖，剩余为防御/伪影已标记。
-- **lua_api.cpp**（95%→98.9%）：PlayerRef marker 解码三元、cluster node_id/epoch lambda、player_ref_epoch 捕获异常臂、stats 读取链、remote resolve 节点归属、watch VM 兜底、lock/queue/sched 工厂三元与短路、register_task 参数守卫——绝大多数为 sol2 参数转换边界伪影（已有标记存量）或工厂 lambda 编译器克隆槽伪影；真实可达分支（如 remote resolve、参数守卫）既有 test_cov_lua_api2 套件覆盖。
+- **lua_api.cpp**（95%→98.9%）：PlayerRef marker 解码三元、cluster node_id/epoch lambda、player_ref_epoch 捕获异常臂、stats 读取链、remote resolve 节点归属、watch VM 兜底、lock/queue/sched 工厂三元与短路、register_task 参数守卫——绝大多数为参数转换边界伪影（已有标记存量）或工厂 lambda 编译器克隆槽伪影；真实可达分支（如 remote resolve、参数守卫）既有 test_cov_lua_api2 套件覆盖。
 - **cluster_manager.cpp**（94%→100%）：stop joinable 守卫、query_remote 三元、parse_peers 空段——均为防御/边界臂已标记。
 - **bootstrap.cpp**（95%→98.5%）：player/server config from_global_config 短路（永不失败）、server state_change/scheduler task send_system 防御臂、cluster_transport/manager/services 三指针同存活断言——均为防御/聚合初始化伪影已标记。
 - **player_manager.cpp**（90%→99.3%）：admit 多设备策略三元/复合条件、in_reconnect_window 复合条件——真实可达，既有用例已覆盖，标记确认双臂。

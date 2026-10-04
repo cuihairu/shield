@@ -53,7 +53,7 @@ BOOST_AUTO_TEST_CASE(ServiceHandleMetamethods) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     auto res = lua.script(R"lua(
         local h1 = shield._make_handle('meta_a')
@@ -88,7 +88,7 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeBranches) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     LuaPackEncoder::Config config;
     LuaPackEncoder encoder(config);
@@ -340,7 +340,7 @@ BOOST_AUTO_TEST_CASE(PackServiceHandleAndStringKeys) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     LuaPackEncoder::Config config;
     LuaPackEncoder encoder(config);
@@ -618,7 +618,7 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeErrorAndHandleBranches) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     LuaPackEncoder encoder{LuaPackEncoder::Config{}};
 

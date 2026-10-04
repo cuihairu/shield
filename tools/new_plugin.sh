@@ -158,10 +158,12 @@ void shutdown(shield_plugin_instance_v1* self) {
 
 int register_lua(shield_plugin_instance_v1* self, struct lua_State* L,
                  shield_error_v1* err) {
-    // No Lua surface yet. To add one: include <sol/sol.hpp>, then
-    //   sol::state_view lua(L);
-    //   sol::table ns = lua["shield"].get_or_create<sol::table>("$ID");
-    //   ns.set_function("ping", [] { return std::string("pong"); });
+    // No Lua surface yet. To add one: include
+    // "plugins/_shared/shield_lua_plugin_binding.hpp", then
+    //   shd::state_view lua(L);
+    //   shd::table shield = shield::plugins::get_or_create_global_subtable(
+    //       lua, "shield");
+    //   shield::plugins::get_or_create_subtable(shield, "$ID");
     (void)self;
     (void)L;
     (void)err;

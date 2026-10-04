@@ -1128,7 +1128,7 @@ shd::table make_instance_proxy(shd::state_view lua, pgsql_instance* inst) {
                 inst->host_api->lua_resume_session == nullptr) {
                 return 0;
             }
-            // The tx token arrives as the 4th Lua argument. sol2 3.5 misbinds
+            // The tx token arrives as the 4th Lua argument. the facade misbinds
             // this trailing integer (the bound parameter comes through
             // nil/0 even though the raw stack slot holds it), so read the
             // call's own frame directly.

@@ -1147,6 +1147,19 @@ public:
         (void)L;
     }
 
+    // Write-through for same-type assignment (`tbl["a"] = other["b"]`):
+    // without this, the implicit copy assignment (a better match than the
+    // template below for accessor-typed RHS) would copy the (owner, key)
+    // pair without touching the Lua table, silently dropping the
+    // assignment (player["defaults"] = impl["defaults"] wrote nothing).
+    // Three non-template overloads cover every RHS form (prvalue / lvalue /
+    // const lvalue); each ties the deduced template on conversion sequence
+    // and wins the non-template tie-break, so accessor-typed RHS always
+    // writes through instead of recursing into the generic push path.
+    accessor& operator=(const accessor& other) { return assign_write(other); }
+    accessor& operator=(accessor& other) { return assign_write(other); }
+    accessor& operator=(accessor&& other) { return assign_write(other); }
+
     template <typename T>
     accessor& operator=(T&& v) {
         lua_State* L = owner_.state();
@@ -1240,6 +1253,13 @@ public:
     }
 
 private:
+    // Shared writer for the accessor-typed operators above: re-read the
+    // referenced value and write it through this accessor's slot.
+    accessor& assign_write(const accessor& other) {
+        *this = other.value();
+        return *this;
+    }
+
     void push_key(lua_State* L) const {
         if (key_.index() == 0) {
             const auto& s = std::get<0>(key_);

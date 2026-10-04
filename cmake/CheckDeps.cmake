@@ -9,7 +9,6 @@ function(check_shield_core_deps target)
     # Forbidden libraries for shield_core
     set(forbidden
         "Lua::Lua"
-        "sol2"
         "Boost::asio"
         "Boost::beast"
         "hiredis"

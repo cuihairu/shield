@@ -99,7 +99,7 @@ target_link_libraries(shield_bootstrap
 CI 应至少检查：
 
 - `shield_core` link libraries 不包含 Lua、Redis、Beast、yaml-cpp、Boost.Log。
-- `include/shield/core/**` 不 include `sol/sol.hpp`、`lua.hpp`、`boost/asio`、`yaml-cpp`。
+- `include/shield/core/**` 不 include `lua.hpp`、`boost/asio`、`yaml-cpp`。
 - public API 不出现 `caf::actor`。
 - 被删除旧模块不能再被任何 target 引用。
 - `shield` executable 不直接链接旧 `shield_extensions` 总包。

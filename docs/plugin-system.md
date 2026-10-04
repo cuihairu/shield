@@ -351,8 +351,8 @@ typedef struct shield_plugin_instance_v1 {
 
     void (*shutdown)(shield_plugin_instance_v1* self);
 
-    // host 在每个 Lua VM 初始化后调用一次，插件用 sol2 把自身 API 注册到
-    // shield.<namespace>。没有 Lua 绑定的插件也必须提供此字段
+    // host 在每个 Lua VM 初始化后调用一次，插件用 shd 绑定层把自身
+    // API 注册到 shield.<namespace>。没有 Lua 绑定的插件也必须提供此字段
     // （直接 return 0 即可）。纯 C++ 运行模式会跳过此回调；被调用时 L 非 NULL。
     int (*register_lua)(shield_plugin_instance_v1* self,
                         struct lua_State* L,
@@ -686,7 +686,7 @@ local binding = shield.plugin.binding("database.default")
 
 - host 在 `lua_register` 阶段遍历所有已 `started` 的实例，按依赖拓扑启动顺序调用。
 - `L` 是 host 的 Lua state，保证非 NULL（除非 host 跳过 Lua runtime，此时整个阶段跳过，`register_lua` 不被调用）。
-- 插件用 sol2（`sol::state_view(L)`）创建 namespace、注册方法。
+- 插件用 shd 绑定层（`shd::state_view(L)`）创建 namespace、注册方法。
 - 返回 0 成功；非 0 视为 `register_lua` 失败，host 上报结构化错误。
 
 ### namespace 与多实例
@@ -758,19 +758,29 @@ plugins/mongodb/
 int my_register_lua(shield_plugin_instance_v1* self,
                     lua_State* L,
                     shield_error_v1* err) {
-    sol::state_view lua(L);
-    sol::table shield = lua["shield"].get_or_create<sol::table>();
-    sol::table mongodb = shield["database"].get_or_create<sol::table>()
-                              ["mongodb"].get_or_create<sol::table>();
+    shd::state_view lua(L);
+    shd::table shield =
+        shield::plugins::get_or_create_global_subtable(lua, "shield");
+    shd::table database =
+        shield::plugins::get_or_create_subtable(shield, "database");
 
-    // callable table: mongo(binding) -> proxy
-    mongodb.set_function(sol::call,
-        [](std::string binding) -> sol::table {
+    // callable table: mongodb(binding) -> proxy
+    auto ns = lua.create_table();
+    auto mt = lua.create_table();
+    mt.set_function(
+        "__call",
+        [](shd::this_state s, shd::table /*self*/,
+           std::optional<std::string> binding) -> shd::variadic_results {
             // 经 PluginHost 解析 binding，拿到目标 instance 的
             // shield_document_v1* + shield_doc_conn*
             // 构造 proxy table，注册 find/insert_one/... 方法
-            return make_proxy(resolve_binding(binding));
+            shd::variadic_results results;
+            results.push_back(
+                shd::make_object(s, make_proxy(binding.value_or(""))));
+            return results;
         });
+    shield::plugins::set_metatable(ns, mt);
+    database["mongodb"] = ns;
 
     return 0;
 }

@@ -715,7 +715,7 @@ BOOST_AUTO_TEST_CASE(LAPI_GL_21_TaskWithoutServiceContextRejected) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::string, shd::lib::math,
                        shd::lib::table, shd::lib::os, shd::lib::coroutine);
-    register_full_shield_api(lua, &world.manager, &world.runtime);
+    register_full_shield_api(lua.lua_state(), &world.manager, &world.runtime);
     lua.script(
         "local s = shield.scheduler()\n"
         "local _, err = s:cron('orphan', '* * * * *', function() end)\n"

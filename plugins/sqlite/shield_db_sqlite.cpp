@@ -500,7 +500,7 @@ shd::table row_to_lua(shd::state_view lua, sqlite3_stmt* stmt) {
             case SQLITE_TEXT: {
                 const unsigned char* t = sqlite3_column_text(stmt, c);
                 // Split into branches: a ternary of std::string vs shd::nil
-                // is ambiguous under sol2 3.5.
+                // is ambiguous under the facade.
                 if (t) {
                     row[name] = std::string(reinterpret_cast<const char*>(t));
                 } else {
@@ -1177,7 +1177,7 @@ shd::table make_instance_proxy(shd::state_view lua, sqlite_instance* inst) {
                 inst->host_api->lua_resume_session == nullptr) {
                 return 0;
             }
-            // The tx token arrives as the 4th Lua argument. sol2 3.5 misbinds
+            // The tx token arrives as the 4th Lua argument. the facade misbinds
             // this trailing integer (the bound parameter comes through
             // nil/0 even though the raw stack slot holds it), so read the
             // call's own frame directly.

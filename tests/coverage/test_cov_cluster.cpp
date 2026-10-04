@@ -440,7 +440,7 @@ BOOST_AUTO_TEST_CASE(ClusterLuaApiPaths) {
     shd::state lua;
     lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
                        shd::lib::string | shd::lib::os | shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     // No global manager: every accessor degrades honestly.
     BOOST_CHECK(
@@ -509,7 +509,7 @@ BOOST_AUTO_TEST_CASE(PlayerLuaApiPrimitives) {
     shd::state lua;
     lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
                        shd::lib::string | shd::lib::os | shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::player::PlayerConfig config;
     config.enabled = true;
@@ -690,7 +690,7 @@ BOOST_AUTO_TEST_CASE(ServerLuaApiPrimitives) {
     shd::state lua;
     lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
                        shd::lib::string | shd::lib::os | shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::server::ServerConfig config;
     config.name = "cov-server";
@@ -1003,7 +1003,7 @@ BOOST_AUTO_TEST_CASE(LuaRemoteSendPaths) {
     shd::state lua;
     lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
                        shd::lib::string | shd::lib::os | shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     // Remote send success: the envelope leaves with the resolved service id.
     scripted.outcome = true;
@@ -1343,7 +1343,7 @@ BOOST_AUTO_TEST_CASE(ServiceManagerGapPaths) {
     shd::state lua;
     lua.open_libraries(shd::lib::base | shd::lib::coroutine | shd::lib::table |
                        shd::lib::string | shd::lib::os | shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
     BOOST_CHECK(
         run_script(lua,
                    "assert(shield._call_error_code('service not found: x') == "

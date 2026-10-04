@@ -7,6 +7,10 @@
 > 与计划的偏差：Task 3 的单测未建独立 `test_plugin_binding` 目标，由
 > `tests/plugin/test_plugin_lua_facade.cpp` 承担（直载 .so + host stub，覆盖
 > binding 解析与缺失降级）；Task 2 的 fixture test namespace 方案被门面测试取代。
+>
+> **绑定层（2026-10 迁移后）**：本文成稿时绑定层为另一实现，现已整体迁至
+> `shd` 绑定层（`shield/lua/binding.hpp`）。为免读者照抄失效 API，下文代码
+> 片段已同步为现行 `shd` 形态，仅作历史记录与对照。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -14,7 +18,7 @@
 
 **Architecture:** `host_api.h` 新增 `binding_instance_id(ctx, binding)`（复用 `PluginHost::binding_instance_id`，`plugin_host.cpp:875`）；插件 create 时把全局 `host_api` 存到插件全局/捕获；`__call(binding)` 调 `host_api->binding_instance_id(nullptr, binding)` 得 instance_id，再 `find_instance(instance_id)` 构造 proxy；binding 缺失返回 `nil, module_unavailable`。
 
-**Tech Stack:** C++20, CMake + vcpkg, Boost.Test, sol2, plugin v1 ABI。
+**Tech Stack:** C++20, CMake + vcpkg, Boost.Test, `shd` Lua 绑定层, plugin v1 ABI。
 
 **Reference:** `docs/plugin-system.md` §"为什么 Lua 访问用 binding 而非 instance_id"（决策 + 规则）；`docs/lua-api.md` §"Plugin-provided APIs"。
 
@@ -129,37 +133,37 @@ const shield_host_api_v1* g_host_api = nullptr;  // set in minimal_create
             return -1;
         }
         if (!L || !g_host_api) return 0;
-        sol::state_view lua(L);
-        auto shield = lua["shield"].get_or_create<sol::table>();
-        auto test = shield["test"].get_or_create<sol::table>();
-        if (!test["data"].is<sol::table>()) {
+        shd::state_view lua(L);
+        auto shield = lua["shield"].get_or_create<shd::table>();
+        auto test = shield["test"].get_or_create<shd::table>();
+        if (!test["data"].is<shd::table>()) {
             auto ns = lua.create_table();
             auto mt = lua.create_table();
             mt.set_function("__call",
-                [](sol::this_state s, sol::table /*self*/,
-                   std::string binding) -> sol::object {
-                    sol::state_view lua(s);
+                [](shd::this_state s, shd::table /*self*/,
+                   std::string binding) -> shd::object {
+                    shd::state_view lua(s);
                     const char* id = g_host_api->binding_instance_id(nullptr,
                                                                      binding.c_str());
-                    if (!id) return sol::nil;
-                    sol::table proxy = lua.create_table();
+                    if (!id) return shd::nil;
+                    shd::table proxy = lua.create_table();
                     proxy["instance_id"] = id;
                     proxy["binding"] = binding;
-                    return sol::make_object(lua, proxy);
+                    return shd::make_object(lua, proxy);
                 });
-            ns[sol::metatable_key] = mt;
+            shield::plugins::set_metatable(ns, mt);
             test["data"] = ns;
         }
         return 0;
     };
 ```
 
-需在 fixture 顶部 include sol2（`#include <sol/sol.hpp>`）——确认 tests 已有 sol2 可用（shield_lua 用 sol2，fixture link 时需加）。
+需在 fixture 顶部 include 绑定层头文件（`shield/lua/binding.hpp`）——确认 tests 的 fixture link 时带上 `shield_lua`（绑定层由它提供）。
 
 - [x] **Step 2: 编译 fixture**
 
 Run: `cmake --build build --target shield_minimal_test_plugin -j`
-Expected: 编译通过（若 sol2 未链接到 fixture，需在 tests/CMakeLists.txt 给 `shield_minimal_test_plugin` 加 sol2 依赖）。
+Expected: 编译通过（若绑定层未链接到 fixture，需在 tests/CMakeLists.txt 给 `shield_minimal_test_plugin` 加 `shield_lua` 依赖）。
 
 - [x] **Step 3: Commit**
 
@@ -248,18 +252,18 @@ mysql 是 SQL 类模板。其余 SQL（postgresql / sqlite）+ 文档（mongodb�
 
 ```cpp
         mt.set_function("__call",
-            [](sol::this_state s, sol::table /*self*/,
-               std::string binding) -> sol::object {
-                sol::state_view lua(s);
-                if (!g_host_api) return sol::nil;
+            [](shd::this_state s, shd::table /*self*/,
+               std::string binding) -> shd::object {
+                shd::state_view lua(s);
+                if (!g_host_api) return shd::nil;
                 const char* id = g_host_api->binding_instance_id(nullptr,
                                                                  binding.c_str());
-                if (!id) return sol::nil;  // binding 未配置 → nil (module_unavailable 由 proxy 缺失体现)
+                if (!id) return shd::nil;  // binding 未配置 → nil (module_unavailable 由 proxy 缺失体现)
                 auto* inst = find_instance(id);
-                if (!inst) return sol::nil;
-                sol::table proxy = make_instance_proxy(lua, inst);
+                if (!inst) return shd::nil;
+                shd::table proxy = make_instance_proxy(lua, inst);
                 shield::plugins::apply_db_mapper_api(lua, proxy);
-                return sol::make_object(lua, proxy);
+                return shd::make_object(lua, proxy);
             });
 ```
 
@@ -309,7 +313,7 @@ git commit -m "feat(cache.redis): Lua __call 用 binding 而非 instance_id"
 ## Self-Review
 
 - **Spec coverage:** plugin-system.md 规则 1（业务只用 binding）→ Task 4-6 改 `__call`；规则 5（缺失 binding → module_unavailable）→ `__call` 返回 nil；规则 4（instance_id 只在配置/诊断）→ 业务路径不再传 instance_id；host_api 暴露 resolve → Task 1；测试 → Task 2/3。✓
-- **Placeholder scan:** Task 1 的 `g_host_for_api()` 标注了实现确认点（host_api_table 存储方式）；Task 2 的 sol2 include 标注了 fixture 链接确认；Task 3 给了降级路径（直接测 binding_instance_id）。其余代码具体。✓
+- **Placeholder scan:** Task 1 的 `g_host_for_api()` 标注了实现确认点（host_api_table 存储方式）；Task 2 的绑定层 include 标注了 fixture 链接确认；Task 3 给了降级路径（直接测 binding_instance_id）。其余代码具体。✓
 - **Type consistency:** `binding_instance_id(ctx, binding) -> const char*` 签名在 Task 1/2/4 一致；`g_host_api` 全局在 Task 2/4/5/6 一致；`find_instance(id)` 复用现有。✓
 
 ---

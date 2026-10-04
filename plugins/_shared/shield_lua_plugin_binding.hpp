@@ -35,7 +35,7 @@ inline void set_metatable(shd::table& obj, const shd::table& mt) {
     lua_pop(L, 1);  // obj.push()'s copy (lua_setmetatable consumed mt's)
 }
 
-// get_or_create<sol::table>() parity for the callable-namespace install
+// get_or_create<table>() parity for the callable-namespace install
 // pattern: read the key, return the existing table, or create + store a
 // fresh one. Never clobbers a populated namespace.
 inline shd::table get_or_create_global_subtable(shd::state_view lua,

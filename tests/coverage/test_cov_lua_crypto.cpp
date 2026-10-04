@@ -14,8 +14,6 @@
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
 #include <cstdio>
-#include <sol/sol.hpp>  // B0 seam: only the register_full_shield_api test below
-                        // still drives the sol2-based lua_api surface.
 #include <string>
 
 #include "shield/caf_initializer.hpp"
@@ -647,20 +645,17 @@ BOOST_AUTO_TEST_CASE(RegisteredViaFullShieldApi) {
     LuaRuntime runtime;
     LuaServiceManager manager(runtime, system);
 
-    sol::state lua;
-    lua.open_libraries(sol::lib::base, sol::lib::string, sol::lib::math,
-                       sol::lib::table, sol::lib::os, sol::lib::coroutine);
-    register_full_shield_api(lua, &manager, &runtime);
-    // sol2 path: register_full_shield_api is still sol2-based until the
-    // lua_api migration batch; run_script above takes the thin layer's state.
-    auto result = lua.safe_script(
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::string, shd::lib::math,
+                       shd::lib::table, shd::lib::os, shd::lib::coroutine);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
+    auto result = lua.script(
         "assert(type(shield.crypto) == 'table')\n"
         "assert(shield.crypto.hex_encode('a') == '61')\n"
-        "assert(#shield.crypto.sha256('x') == 32)\n",
-        sol::script_pass_on_error);
+        "assert(#shield.crypto.sha256('x') == 32)\n");
     if (!result.valid()) {
-        std::fprintf(stderr, "lua error: %s\n",
-                     result.get<sol::error>().what());
+        const shd::error e = result.get_error();
+        std::fprintf(stderr, "lua error: %s\n", e.what());
     }
     BOOST_CHECK(result.valid());
 }

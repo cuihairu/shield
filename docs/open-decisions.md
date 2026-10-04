@@ -203,7 +203,7 @@ HMAC-SHA256 / `random_bytes` / `constant_time_compare`），让上述“业务�
 - `starting → running` 由 bootstrap init complete 自动触发（`mark_ready`），不暴露为 API。
 - 配置段只有 `server_manager.{name, info.{name,version,region}}`，全可选；删除草稿的 `enabled`（启用只由编译开关决定）、`state`（初始状态恒为 starting）、`on_state_change`（通知开关由 watch 注册行为表达）字段。
 - 状态观察者注册为 `shield.server:watch(fn)`；投递必须走 system 消息通道（`send_system`）——普通 `send()` 静默拒绝 `on_` 前缀方法，而状态通知方法名属于保留前缀域。回调签名带 dispatch ctx（`fn(ctx, new_state)`），与 handler dispatch 规则一致。
-- 否决"C++ 注册表持有 `sol::function`"方案：会让纯 C++ 的 ServerManager 链接 sol2，破坏可单测性。C++ 注册表只存 `{watch_id, service_id}`；观察者回调由每 VM 的编排层持有并安装转发 handler，观察者 service 退出时按判活自动注销。
+- 否决"C++ 注册表持有 Lua 回调对象"方案：会让纯 C++ 的 ServerManager 链接脚本绑定层，破坏可单测性。C++ 注册表只存 `{watch_id, service_id}`；观察者回调由每 VM 的编排层持有并安装转发 handler，观察者 service 退出时按判活自动注销。
 
 ### OD-017 Server Shutdown Handover and Maintenance Boundary
 
