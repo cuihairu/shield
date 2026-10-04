@@ -171,7 +171,7 @@ tx proxy 的 SQL 方法外不允许任何让出**。落地形状：
 | M3 mysql/postgresql | 两驱动接入（连接池跨协程持有的审计） | 池耗尽时挂起而非阻塞 actor（acquire 移入 worker） | ✅ `d2b68ef` |
 | M4 收口 | tx 异步形态 + `pending_async`/`pool.holding` 指标 + 三文档更新（lua-api.md 契约、runtime-data.md、db-discipline.md 降级） | CI Coverage 全绿；文档口径一致 | ✅ |
 
-## 未决问题（落地时定稿）
+## 未决问题（落地时定稿记录）
 
 1. **shim 形态**：M2 定稿为**编译期内联**——共享 C++ 头
    `plugins/_shared/shield_db_async_shim.hpp` 里的 Lua 字符串常量，proxy

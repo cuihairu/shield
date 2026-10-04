@@ -121,11 +121,11 @@ socket bytes
 
 **预登录路由**：认证前 session 尚未绑定 PlayerService，预登录 RPC（login、token 验证等）目标为 AuthService，使用同样的 route_id → handler 机制。认证成功后 Gateway 原子切换 session.target = PlayerService。
 
-**出站路径**：codegen 生成的 server-to-client helper 已绑定 route_id 和 response_schema。业务只传 ClientContext + 业务参数。helper 编码 body_bytes 后 CAF 发送 ClientEgress 到 Gateway，Gateway 把 route_id 写入 wire header，body_bytes 作为 body。
+**出站路径**：codegen 生成的 server-to-client helper 已绑定 route_id；出站 encode 按目标 s2c 路由自己的 schema 类型名寻址（同名约定或该路由的 `request_schema` 覆盖，同 route_id 回包被出站 direction 校验拒绝）。业务只传 ClientContext + 业务参数。helper 编码 body_bytes 后 CAF 发送 ClientEgress 到 Gateway，Gateway 把 route_id 写入 wire header，body_bytes 作为 body。
 
-**codec 与路由无关**：codec 是 session 级固定的（`src/transport/protocol.cpp:1669,1719`），不按 route 选择。`codec_for_route()` 忽略 route，恒返回 default_codec_id（`src/transport/protocol.cpp:1510-1517`）。
+**codec 与路由无关**：codec 是 session 级固定的（`src/transport/protocol.cpp` 监听器构建期解析 vtable 并加入 `codecs_`），不按 route 选择。`codec_for_route()` 忽略 route，恒返回 default_codec_id（`src/transport/protocol.cpp:1520-1524`）。
 
-**RPC 描述符**：每个客户端 RPC 在编译期由描述符定义 route_id、full_name、direction、request_schema、response_schema、binding_hint。目标 Service 启动时编译为 `route_id → cached Lua handler` 映射。route_name 只用于日志和调试，不进入 wire。
+**RPC 描述符**：每个客户端 RPC 在编译期由描述符定义 route_id、name、direction、binding、request_schema、request_codec（`schema_id` / `response_schema` / `binding_hint` 已移除，配置出现即报错；schema 寻址收敛为「路由名同名约定 + `request_schema` 显式覆盖」）。目标 Service 启动时编译为 `route_id → cached Lua handler` 映射。name 只用于日志和调试，不进入 wire。
 
 **请求、响应与 push 边界**：
 

@@ -1,6 +1,6 @@
 # 重构路线图
 
-Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的描述不再作为当前口径。
+重构设计阶段已收口：本路线图 Phase 0-5 与官方可选模块 P0 均已落地。旧文档中“Phase 1-7 全部完成”的口径对应更早一代架构，与本路线图的 refactor 范围不同。
 
 说明：以下勾选表示对应源码路径已经进入当前 refactor 验证范围；文档边界冻结但源码仍未完成的事项保持未勾选。
 
@@ -16,7 +16,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 2. [x] **CAF Service runtime 闭环**：Lua Service 的 spawn、mailbox、send、call、exit 全部落到 CAF actor；legacy Mailbox / worker thread / pump_once / 同步调用 fallback 已删除，`LuaServiceManager` 构造时必须绑定 `caf::actor_system`。
 3. [x] **Service call 语义**：使用 CAF request/reply 驱动 Lua coroutine yield/resume，禁止跨 VM 同步重入。（M4：统一 call_session 协程路径 + C++ 外部等待者；timer/fork 回调协程化；`SyncCallMessage` 与 CV 阻塞已删除）
 4. [x] **客户端内部消息类别**：CAF behavior 接入结构化 `ClientIngress`、`ClientEgress` 与 client lifecycle control，禁止把所有 envelope 压成字符串或普通 Lua method。（M2/M3）
-5. [x] **RPC descriptor 与 binding**：compiled descriptor 定义 `route_id, direction, request_schema, response_schema, binding_hint`；每个目标 VM 启动时编译 `route_id -> cached Lua handler`，缺失或重复 binding 直接启动失败。（M1：`actors[].rpc.routes` 为唯一静态来源，`network.protocol.routes` 出现即报错）
+5. [x] **RPC descriptor 与 binding**：compiled descriptor 定义 `route_id, name, direction, binding, request_schema, request_codec`（`schema_id` / `response_schema` / `binding_hint` 已移除：schema 寻址收敛为「路由名同名约定 + `request_schema` 显式覆盖」，配置出现即报错）；每个目标 VM 启动时编译 `route_id -> cached Lua handler`，缺失或重复 binding 直接启动失败。（M1：`actors[].rpc.routes` 为唯一静态来源，`network.protocol.routes` 出现即报错）
 6. [x] **Session 绑定**：Gateway 维护 session 绑定（target ServiceHandle、player_id、epoch、protocol profile）。认证前 target = AuthService，认证后原子切换 target = PlayerService。room/scene/map 动态路由由 PlayerService 私有状态管理。（M2：`SessionBinding` CAS `apply_binding`，epoch 递增使旧引用失效）
 7. [x] **入站路径**：Gateway 只读 header `route_id`，经轻量路由表校验后投递 `ClientIngress` 到 session.target；目标 actor 命中 handler 后按 RPC schema 解 body。删除 Gateway 提前 decode、Lua 通用客户端回调和二次 route dispatch。（M3：`on_client_message` JSON 压平回调与 body 藏 route 分支已删除）
 8. [x] **出站注册方法**：生成的 server-to-client RPC helper 构造 `ClientEgress`；Gateway 校验 session 后把 `route_id` 写入 header。删除通用 session 发送和 route/payload envelope。（M2/M6：`shield.client_rpc.<name>` helper；header-route envelope（idlen/typelen）下 json body 为纯业务数据，不再写 `{route, route_id, payload}` 包装）
@@ -116,7 +116,7 @@ Shield 仍处于重构设计阶段。旧文档中“Phase 1-7 全部完成”的
 
 ## Phase 5: 官方可选模块
 
-以下内容不属于当前 refactor core，但属于官方可选模块或扩展方向，可以在最小 runtime 稳定后推进：
+以下内容不属于当前 refactor core，但属于官方可选模块或扩展方向。五个模块的 P0 均已落地（见上文 optional modules 快照与 runtime-*.md），下列条目按原设计列出以保留演进脉络：
 
 - `shield_cluster`：多进程/多机器通信、节点心跳、远端路由 cache、可选服务发现。
 - `shield_global`：跨进程数据、分布式锁、排行榜、队列、限流器。

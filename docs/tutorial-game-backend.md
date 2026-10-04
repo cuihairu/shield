@@ -192,6 +192,7 @@ return M
 - HTTP endpoints, Prometheus, service discovery, and multi-node deployment are
   outside this tutorial's core scope.
 
-This page should become a runnable tutorial only after module-table Lua services,
-`shield.spawn`, network callbacks, and the final startup entrypoint are
-implemented and tested.
+The prerequisites this tutorial depends on — module-table Lua services,
+`shield.spawn`, network callbacks, and the startup entrypoint — are all
+implemented and tested (see the [roadmap](roadmap.md) Phase 2-3 status);
+the steps below walk through the templates and examples in this repository.

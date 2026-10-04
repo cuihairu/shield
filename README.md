@@ -4,7 +4,7 @@ English | [简体中文](README.zh-CN.md)
 
 [![CI](https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/shield/actions/workflows/ci.yml)
 [![C++23](https://img.shields.io/badge/C++-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
-[![Lua 5.4](https://img.shields.io/badge/Lua-5.4-blue.svg)](https://www.lua.org/)
+[![Lua 5.5](https://img.shields.io/badge/Lua-5.5-blue.svg)](https://www.lua.org/)
 [![Coverage](https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/shield)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
@@ -14,16 +14,16 @@ actor-based, Lua-first game server runtime**.
 ## Test Coverage
 
 The per-module suites under `tests/coverage/` keep `src/` at **98%+ line
-coverage** (measured with gcc `--coverage` + gcovr). The CI `Coverage` job
+coverage** (measured with gcc `--coverage` + gcovr 8.6). The CI `Coverage` job
 reruns them on every push, uploads the report to
-[Codecov](https://codecov.io/gh/cuihairu/shield), and fails when coverage
-drops below 97%:
+[Codecov](https://codecov.io/gh/cuihairu/shield), and fails when line coverage
+drops below 98% or branch/function coverage drops below 100%:
 
 ```bash
 cmake -S . -B build-cov -G Ninja   -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"   -DCMAKE_BUILD_TYPE=Debug -DSHIELD_BUILD_TESTS=ON   -DSHIELD_BUILD_EXAMPLES=OFF -DSHIELD_ENABLE_COVERAGE=ON
 cmake --build build-cov
 ctest --test-dir build-cov -L coverage --output-on-failure
-cd build-cov && gcovr -r . --exclude-directories '^(?\.)' --filter '\.\./src/'
+cd build-cov && gcovr -r . --exclude-directories '^\.(?!$)' --filter '\.\./src/' --fail-under-line 98 --fail-under-branch 100 --fail-under-function 100
 ```
 
 This repository is not a stable release yet, but the minimal single-node runtime
@@ -217,9 +217,9 @@ run local registry and messaging smoke tests, and initialize the plugin host
 without linking provider libraries into the core executable.
 
 Some documented APIs remain target contracts or partial implementations. In
-particular, the hello-world TCP gateway currently verifies listener startup and
-gateway event routing, but full Lua `SessionHandle` userdata integration for a
-manual interactive client is still deferred.
+particular, the hello-world TCP gateway verifies listener startup and gateway
+event routing; session state (target service, player_id, epoch) lives in the
+C++ `SessionBinding` layer and is not exposed to Lua as a userdata.
 
 ## Docker Build
 

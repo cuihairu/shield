@@ -52,7 +52,7 @@ Lua/C++ message -> RouteResolver -> BodyCodec -> Envelope
 
 ## Plugin Interface
 
-建议新增 C ABI interface：`shield.protocol.codec.v1`。
+已实现的 C ABI interface：`shield.protocol.codec.v1`（头文件 `include/shield/plugin/protocol_codec.h`，落地插件见各 [插件参考页](/plugins/index)）。
 
 接口命名遵循插件系统 v1 的 provider 模型：
 
@@ -145,8 +145,8 @@ typedef struct shield_protocol_codec_v1 {
 | `route_name` | decode/encode | host 编译期解析好的最终 schema 类型名（见下节）。 |
 | `payload` | decode | inbound body bytes。 |
 | `message_json` | encode | canonical JSON message。 |
-| `out_message_json` | decode | 解码后的 canonical JSON message。 |
-| `out_payload` | encode | 编码后的 body bytes。 |
+| `decode_result.message_json` | decode | 解码后的 canonical JSON message。 |
+| `encode_result.payload` | encode | 编码后的 body bytes。 |
 
 错误规则：
 
@@ -219,7 +219,7 @@ codec 插件不得自行实现寻址 fallback，也不得读取 `route_name`
 
 ## Core Adapter
 
-核心侧应新增一个很薄的适配器，例如 `ExternalBodyCodec`：
+核心侧的薄适配器 `ExternalBodyCodec` 已实现（`src/transport/protocol.cpp`，由 `src/bootstrap/bootstrap.cpp` 装配）：
 
 ```text
 ExternalBodyCodec

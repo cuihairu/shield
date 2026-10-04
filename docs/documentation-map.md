@@ -64,8 +64,8 @@ Shield 当前口径是单节点优先、Lua-first、插件化后端能力。核�
 | 权威契约 | 总纲、Lua API、配置、错误码、插件系统和测试矩阵。 |
 | 核心运行时 | 服务、消息、定时器、Lua VM、网络、数据、日志、启动、安全和 gateway。 |
 | 插件参考 | 官方插件和第三方插件开发说明。 |
-| 官方可选模块 | cluster/global/player/server/ops 等不属于 core 的扩展语义。 |
-| 工程参考 | 目录结构、CMake、CAF 映射、性能、最佳实践和教程。 |
+| 官方可选模块 | cluster/global/player/server/ops 等不属于 core 的扩展语义，含 cluster 实现方案（已落地实施记录）。 |
+| 工程参考 | 目录结构、CMake、CAF 映射、性能、最佳实践和教程，含引擎 SDK 设计（已评审拍板）。 |
 | 草案与归档 | schema 工具链、xmldef toolchain、xmldef descriptor/compiler/runtime spec、Unity generator spec、基础组件/运行时适配边界、实体模式、持久化与回档等未来方向或业务模式参考。 |
 
 当前 `xmldef` 专项草案建议阅读顺序：

@@ -2,7 +2,7 @@
 
 本文是 Shield 的**总架构蓝图**。它回答的不是“先做哪一阶段”，而是“最终要落成什么样的系统、模块边界如何划分、公共契约由谁拥有、哪些旧设计被永久删除”。
 
-当前源码仍保留旧架构残留，因此本文描述的是**目标终态**，不是“源码已经全部实现”的声明。本文以「CAF 是唯一 actor runtime 底座」为架构口径。
+本文描述的是当前架构的**实际形态**（早期架构残留已随 Phase 1 重构删净，见[路线图](roadmap)）。本文以「CAF 是唯一 actor runtime 底座」为架构口径。
 
 更细的运行时语义、Lua API、配置 schema、错误码和可选模块细节分别见对应专题文档；但模块边界、依赖方向、对象归属和扩展规则以本文为总纲。
 
@@ -92,7 +92,7 @@ Shield 的最终目标是一个**Lua 优先、单节点最小部署清晰、可�
 
 | 模块 | 负责 | 对 Lua / 用户可见 | 明确不负责 |
 | --- | --- | --- | --- |
-| `shield_lua` | Lua VM 生命周期、Lua service loader、`shield.*` 绑定，以及基础组件 Lua 表面（如未来的 `shield.buffer` / `shield.crypto` / `shield.socket`） | 主 Lua API 契约 | 网络监听、DB 驱动、cluster 路由 |
+| `shield_lua` | Lua VM 生命周期、Lua service loader、`shield.*` 绑定，以及基础组件 Lua 表面（`shield.crypto` 一期已落地；`shield.buffer` / `shield.socket` 仍为未来方向） | 主 Lua API 契约 | 网络监听、DB 驱动、cluster 路由 |
 | `shield_net` | 连接生命周期、live session、listener、网络背压 | runtime 内部 session 能力 | RPC handler、玩家状态、Lua session 发送 API |
 | `shield_transport` | 协议管线（envelope 定界、body codec、route 校验）与 RPC descriptor 表；UDP/KCP/WebSocket 适配为后续 transport extension | 通常不直接暴露给 Lua | service 语义、业务路由 |
 | `shield_plugin` | 插件 manifest/catalog、实例生命周期、binding 解析、C ABI / Lua 注册分发 | `shield.plugin.*` introspection、插件自注册的 `shield.<namespace>` | 具体数据库/Redis 驱动、业务数据模型 |
@@ -149,7 +149,7 @@ CAF
 - Lua-facing API 与 CAF adapter 只共享纯原语，不共享对象模型
 - `auth` 不应成为 core 中心抽象，`crypto` 才是更合理的基础层
 
-这条线当前已降为后置草案，不属于当前主路径。详见 [基础组件与运行时适配边界](runtime-primitives.md)。
+这条线的一期原语已落地：`shield.crypto`（base64/hex 编解码、sha256、hmac_sha256、random_bytes、constant_time_compare；JWT 等业务语义在 Lua 层组合，见 [Lua API](lua-api#crypto-api)）。其余（`buffer`/`socket`/`stream`/`http` 原语、OAuth 等应用层）仍是后置草案，不属于当前主路径。详见 [基础组件与运行时适配边界](runtime-primitives.md)。
 
 ## 公共契约所有权
 

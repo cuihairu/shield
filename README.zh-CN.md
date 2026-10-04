@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/shield/actions/workflows/ci.yml)
 [![C++23](https://img.shields.io/badge/C++-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
-[![Lua 5.4](https://img.shields.io/badge/Lua-5.4-blue.svg)](https://www.lua.org/)
+[![Lua 5.5](https://img.shields.io/badge/Lua-5.5-blue.svg)](https://www.lua.org/)
 [![Coverage](https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/shield)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
@@ -13,10 +13,10 @@ Shield 是一个正在重构中的**单节点优先、受 Skynet 启发、基于
 ## 测试覆盖率
 
 `tests/coverage/` 下的分模块测试套件将 `src/` 的**行覆盖率**维持在
-**98% 以上**（使用 gcc `--coverage` + gcovr 度量）。CI 的 `Coverage`
+**98% 以上**（使用 gcc `--coverage` + gcovr 8.6 度量）。CI 的 `Coverage`
 任务在每次推送时重新运行这些套件，将报告上传至
-[Codecov](https://codecov.io/gh/cuihairu/shield)，并在覆盖率低于
-97% 时失败：
+[Codecov](https://codecov.io/gh/cuihairu/shield)，并在行覆盖率低于 98%、
+分支/函数覆盖率低于 100% 时失败：
 
 ```bash
 cmake -S . -B build-cov -G Ninja \
@@ -25,7 +25,7 @@ cmake -S . -B build-cov -G Ninja \
   -DSHIELD_BUILD_EXAMPLES=OFF -DSHIELD_ENABLE_COVERAGE=ON
 cmake --build build-cov
 ctest --test-dir build-cov -L coverage --output-on-failure
-cd build-cov && gcovr -r . --exclude-directories '^(?\.)' --filter '\.\./src/'
+cd build-cov && gcovr -r . --exclude-directories '^\.(?!$)' --filter '\.\./src/' --fail-under-line 98 --fail-under-branch 100 --fail-under-function 100
 ```
 
 本仓库还不是稳定发布版本，但最小单节点运行路径已经可以启动：配置加载、Lua service 启动、本地 service registry、`send` / `call`、定时器、TCP listener 启动校验和插件宿主发现都有 smoke test 覆盖。
@@ -175,7 +175,7 @@ return M
 
 当前实现重点是 Phase 1 单节点路径。runtime 已能加载配置、启动 Lua module-table service、校验 TCP listener 启动、本地 registry 和消息 smoke test，并在 core executable 不链接 provider 库的前提下初始化插件宿主。
 
-部分文档 API 仍是目标契约或部分实现。尤其是 hello-world TCP gateway 目前验证的是 listener 启动和 gateway event routing；面向手动交互客户端的 Lua `SessionHandle` userdata 完整接入仍是后续事项。
+部分文档 API 仍是目标契约或部分实现。尤其是 hello-world TCP gateway 验证的是 listener 启动和 gateway event routing；会话状态（目标服务、player_id、epoch）当前只存在于 C++ 的 `SessionBinding` 层，未以 userdata 暴露给 Lua。
 
 ## Docker 构建
 
