@@ -67,7 +67,8 @@ shd::table make_error(shd::this_state state, std::string code,
                                  // passes a detail object)
     }
     return err;
-}
+}  // GCOVR_EXCL_LINE (gcov epilogue artifact: block of the trailing brace never
+   // accounts)
 
 // Map a raw call-failure message to the stable call error code (shared by
 // the coroutine call wrapper's string-shaping and the _coro_call pre-dispatch
