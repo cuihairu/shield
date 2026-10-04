@@ -33,12 +33,12 @@ CAF 底层已支持远程 Actor 通信（通过 middleman），`shield_cluster` 
 
 | 能力 | CAF 提供 | shield_cluster 补充 |
 |------|----------|---------------------|
-| 远程 Actor 通信 | ✅ | 封装为 Shield 服务语义 |
-| 连接管理 | ✅ | 节点生命周期管理 |
-| 消息路由 | ✅ | 服务名路由、路由 cache |
-| 节点发现 | ❌ | Phase 1 仅支持静态配置 |
-| 负载均衡 | ❌ | 不进入 Phase 1 |
-| 心跳状态 | ❌ | online/suspect/offline/removed 状态模型已有；降级循环由 M1 心跳调度线程驱动，心跳交换由 M2 transport 承担（握手后按节拍互发 HeartbeatMsg，可把 suspect/offline 拉回 online） |
+| 远程 Actor 通信 | 提供 | 封装为 Shield 服务语义 |
+| 连接管理 | 提供 | 节点生命周期管理 |
+| 消息路由 | 提供 | 服务名路由、路由 cache |
+| 节点发现 | 不提供 | Phase 1 仅支持静态配置 |
+| 负载均衡 | 不提供 | 不进入 Phase 1 |
+| 心跳状态 | 不提供 | online/suspect/offline/removed 状态模型已有；降级循环由 M1 心跳调度线程驱动，心跳交换由 M2 transport 承担（握手后按节拍互发 HeartbeatMsg，可把 suspect/offline 拉回 online） |
 
 ### Phase 1 实现策略
 

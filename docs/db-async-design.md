@@ -166,10 +166,10 @@ tx proxy 的 SQL 方法外不允许任何让出**。落地形状：
 
 | 阶段 | 交付 | 验收 | 状态 |
 |------|------|------|------|
-| M1 host 原语 | `lua_suspend_current` / `lua_resume_session` + 假插件单测（挂起/恢复/超时/双 completion 拒绝/service 退出） | 全部路径有测试；yield 窗口竞态复用 shield.call 既有守卫不新增 | ✅ `dc2700a` |
-| M2 sqlite 端到端 | sqlite 插件 Lua shim + worker 池；actor 级真查询 round-trip 测试（补上现状缺口：当前无任何 db:query 穿 actor 的测试） | 协程内挂起期间同 service 可处理其他消息（时序断言）；超时毒化连接；`async: false` 退回同步 | ✅ `46634f5` |
-| M3 mysql/postgresql | 两驱动接入（连接池跨协程持有的审计） | 池耗尽时挂起而非阻塞 actor（acquire 移入 worker） | ✅ `d2b68ef` |
-| M4 收口 | tx 异步形态 + `pending_async`/`pool.holding` 指标 + 三文档更新（lua-api.md 契约、runtime-data.md、db-discipline.md 降级） | CI Coverage 全绿；文档口径一致 | ✅ |
+| M1 host 原语 | `lua_suspend_current` / `lua_resume_session` + 假插件单测（挂起/恢复/超时/双 completion 拒绝/service 退出） | 全部路径有测试；yield 窗口竞态复用 shield.call 既有守卫不新增 | 已完成 `dc2700a` |
+| M2 sqlite 端到端 | sqlite 插件 Lua shim + worker 池；actor 级真查询 round-trip 测试（补上现状缺口：当前无任何 db:query 穿 actor 的测试） | 协程内挂起期间同 service 可处理其他消息（时序断言）；超时毒化连接；`async: false` 退回同步 | 已完成 `46634f5` |
+| M3 mysql/postgresql | 两驱动接入（连接池跨协程持有的审计） | 池耗尽时挂起而非阻塞 actor（acquire 移入 worker） | 已完成 `d2b68ef` |
+| M4 收口 | tx 异步形态 + `pending_async`/`pool.holding` 指标 + 三文档更新（lua-api.md 契约、runtime-data.md、db-discipline.md 降级） | CI Coverage 全绿；文档口径一致 | 已完成 |
 
 ## 未决问题（落地时定稿记录）
 

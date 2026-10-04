@@ -20,11 +20,11 @@ session 单目标绑定、分层可 mock 的时间。主要问题不在骨架，
 | 网络层与协议 | 合理 | max_frame_size 默认无限（高）、无 TCP_NODELAY（中） |
 | 会话与状态管理 | 合理且必须 | — |
 | 数据存储与持久化 | 分层合理，执行欠缺 | DB ABI 全同步阻塞（高） |
-| 定时器与任务调度 | 合理且优秀 | — |
-| 热更新与重启策略 | 诚实欠缺 | blue-green 只有设计稿（中） |
+| 定时器与任务调度 | 合理 | — |
+| 热更新与重启策略 | 欠缺（已标注） | blue-green 只有设计稿（中） |
 | 扩展点 | 合理 | manifest 仪式感偏重（低） |
-| 容错与监控 | 良好，超出同类默认 | 进程级 abort 粒度粗（已接受的设计） |
-| 横向扩展能力 | 诚实的 P0 | global 仅进程内（已声明，低） |
+| 容错与监控 | 良好 | 进程级 abort 粒度粗（已接受的设计） |
+| 横向扩展能力 | P0（口径已声明） | global 仅进程内（已声明，低） |
 
 ---
 
@@ -39,7 +39,7 @@ service actor；boost::asio `io_context` + 专属 net 线程承载客户端面�
 绑架。
 
 **判断：合理**。单节点优先的游戏服不需要多进程；actor 模型 + 每 service 单线程
-执行语义给了业务最值钱的东西——**状态无锁确定性**。skynet 同构（worker 线程
+执行语义给了业务**状态无锁的确定性**。skynet 同构（worker 线程
 + socket 线程）。
 
 **风险**：
@@ -84,7 +84,7 @@ one-player-one-service（每玩家一个 Lua VM）。
 会话竞态"，这是游戏服特有的正确性问题（切房/重连/顶号）；CAS 语义 + 出站方向
 强制（同 route_id 回包被 `egress_direction_rejected` 拒绝，有测试锚点）把"协
 议方向写错"变成显式失败。one-player-one-service 换来的是玩家状态无锁——这正
-是 skynet 的核心卖点，Shield 保留得干净。
+是 skynet 的核心模型，Shield 原样保留。
 
 **风险**：无重大。顶号/重连语义细节（踢旧连接的时序）建议后续在 gateway 文档
 中显式化，属文档项。
@@ -120,9 +120,9 @@ connect/disconnect/ping/query/execute/begin/commit/rollback/free_result）。
 `shield.sleep`/timer callback/fork task/客户端 RPC handler 全部协程化，可在其
 中 sleep/call 而不阻塞 actor；pending_calls 带超时与 requeue 计数。
 
-**判断：合理且优秀**。协程化的阻塞语义是 skynet 系最难做对的部分，Shield 把
+**判断：合理**。协程化的阻塞语义是 skynet 系最难做对的部分，Shield 把
 "handler 里可以睡"做成了默认路径而不是高级特性；业务钟可 mock 让"活动开服/
-跨天"类逻辑可测——这是超出 skynet 基线的设计（skynet 无此分层）。
+跨天"类逻辑可测（skynet 无此分层）。
 
 **风险**：无结构性风险。看门狗 `_Exit(70)` 的硬切在极端场景丢日志，已有
 forensics 弥补，可接受。
@@ -134,7 +134,7 @@ forensics 弥补，可接受。
 on_error → 连续错误计数（阈值 10）→ on_panic → `exit("panic")`；进程级
 `lua_atpanic` = forensics 转储 + abort（lua_panic.hpp）。
 
-**判断：诚实欠缺**。skynet 的 `clear` 热更新是它的招牌；Shield 用 blue-green
+**判断：欠缺**。skynet 的 `clear` 热更新是它的招牌；Shield 用 blue-green
 替代原地打补丁，模型上更适合 one-VM-per-service（状态随实例走，无代码/状态
 纠缠），**但当前只有设计稿**。对产品化而言这是 P2：新用户 10 分钟不需要它，
 运维期一定会要。落地前文档必须保持当前的不承诺口径（现状做到了）。
@@ -166,9 +166,9 @@ REPL/eval/lua.inspect/snapshot/diff）；配置错误启动期 fail-fast；
 `--check-config` 离线校验；bootstrap 拆除顺序经 ASan 实证修过三类悬垂
 （todo.md 存档）。
 
-**判断：良好，超出同类默认水平**。skynet 默认只有 debug console；Shield 的
-默认监控面（health/metrics/inspect/snapshot）已经是"运维可用"而非"开发调试"
-水准。拆除顺序的工程 rigor（monitor + down_msg + 5s 兜底阀）是少见的扎实。
+**判断：良好**。skynet 默认只有 debug console；Shield 的
+默认监控面（health/metrics/inspect/snapshot）覆盖运维可用面而不只是开发调试。
+拆除顺序有三层兜底（monitor + down_msg + 5s 阀）。
 
 **风险**：
 - 【中】**声明与实现不符：sandbox**。config/app.yaml 声明
@@ -186,7 +186,7 @@ REPL/eval/lua.inspect/snapshot/diff）；配置错误启动期 fail-fast；
 global 模块当前为**进程内 P0 后端**（内存 KV/锁/排行榜/队列/cron），Redis
 后端声明 Phase 2。
 
-**判断：诚实的 P0**。单节点优先是明示的产品定位，global 先给单进程语义让
+**判断：P0 范围清晰**。单节点优先是明示的产品定位，global 先给单进程语义让
 API 先稳定、后换分布式后端，顺序正确。风险仅在预期管理：文档已写清
 （global_manager.hpp 注释 + roadmap），可接受。
 

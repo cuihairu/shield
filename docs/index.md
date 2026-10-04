@@ -33,7 +33,7 @@ features:
     details: 架构、Lua API、配置、错误码和插件 ABI 以权威文档为准，示例只作为使用参考。
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.5"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.5"/><path d="M16.75 4.5v5.5"/><path d="M14 7.25h5.5"/><path d="M4.5 16.5h5.5"/></svg>'
     title: 可选模块
-    details: cluster、global、player、server、ops 等能力按路线图推进，不属于默认最小运行路径。
+    details: cluster、global、player、server、ops 等可选模块编译开关默认关闭，不属于默认最小运行路径。
 footer: Apache License 2.0
 ---
 
@@ -41,7 +41,7 @@ footer: Apache License 2.0
 
 Shield 当前文档以 [文档地图](documentation-map.md) 为入口。读者应先区分权威契约、运行时语义、参考文档和草案归档，再进入具体专题。
 
-当前实现路径以单节点 Lua service、配置验证、网络 gateway、插件系统 v1 和官方插件为主。官方可选模块按 [路线图](roadmap.md) 推进；旧 DI/IoC、annotations、events、middleware chain、旧插件 v0 等方向不再作为兼容目标。
+当前实现路径以单节点 Lua service、配置验证、网络 gateway、插件系统 v1 和官方插件为主。官方可选模块 P0 已落地（见 [路线图](roadmap.md)）；旧 DI/IoC、annotations、events、middleware chain、旧插件 v0 等方向不再作为兼容目标。
 
 ## 快速入口
 

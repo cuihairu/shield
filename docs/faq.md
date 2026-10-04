@@ -2,7 +2,7 @@
 
 ## Shield 当前是什么状态？
 
-处于重构设计阶段。文档描述目标边界和 API 方向，源码仍包含旧架构遗留模块。
+重构设计阶段已收口：路线图 Phase 0-5 与官方可选模块 P0 已落地。文档描述目标边界和 API 方向。
 
 ## Shield 是分布式框架吗？
 
@@ -22,11 +22,11 @@ HTTP 不进入 `shield_core` 第一版，也不作为业务 gateway 的默认 tr
 
 ## `examples/hello_world/` 可以直接运行吗？
 
-目前最小路径已可验证：`include/shield/shield.hpp`、`shield::run(argc, argv)`、CLI/config smoke tests、默认 Phase 1 配置、`examples/hello_world` 构建启动路径和 Lua 业务消息验收均已落地。真实多节点、UDP/KCP/WebSocket、官方可选模块和真实后端压力验证仍按路线图推进。
+目前最小路径已可验证：`include/shield/shield.hpp`、`shield::run(argc, argv)`、CLI/config smoke tests、默认 Phase 1 配置、`examples/hello_world` 构建启动路径和 Lua 业务消息验收均已落地。真实多节点规模验证、UDP/KCP/WebSocket 与真实后端压力验证仍按路线图推进。
 
 ## 和 Skynet 的关系是什么？
 
-Shield 参考 Skynet 的服务、消息和 Lua-first 思路，但使用 C++20 和 CAF 作为内部实现基础。Shield 不复制 Skynet harbor、snax、sharedata 等机制。
+Shield 参考 Skynet 的服务、消息和 Lua-first 思路，但使用 C++23 和 CAF 作为内部实现基础。Shield 不复制 Skynet harbor、snax、sharedata 等机制。
 
 ## 旧文档里的 `/health`、`/status`、Prometheus 怎么办？
 

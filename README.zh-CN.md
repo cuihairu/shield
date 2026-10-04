@@ -8,7 +8,7 @@
 [![Coverage](https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/shield)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Shield 是一个正在重构中的**单节点优先、受 Skynet 启发、基于 Actor、Lua 优先的游戏服务器运行时**。
+Shield 是一个**单节点优先、受 Skynet 启发、基于 Actor、Lua 优先的游戏服务器运行时**（路线图 Phase 0-5 与官方可选模块 P0 已落地）。
 
 ## 测试覆盖率
 
@@ -155,8 +155,6 @@ return M
 
 玩家、avatar、client 生命周期不是 core service hook。启用 `shield_player` 后，`PlayerSession`、`PlayerRef`、玩家 ready 状态、登录、断线、重连、登出和保存钩子由该可选模块负责；`avatar` 或 `character` 仍是挂在玩家会话上的业务数据，不是 Shield 核心对象。
 
-当前的源代码树仍然包含来自先前更广泛架构的模块。在重构期间，文档应首先描述目标边界；实现工作应随后删除、合并或降级不再属于 `shield_core` 或第一方运行时模块的模块。
-
 ## 文档
 
 权威设计契约：
@@ -173,7 +171,7 @@ return M
 
 ## 当前状态
 
-当前实现重点是 Phase 1 单节点路径。runtime 已能加载配置、启动 Lua module-table service、校验 TCP listener 启动、本地 registry 和消息 smoke test，并在 core executable 不链接 provider 库的前提下初始化插件宿主。
+重构主干已收口（路线图 Phase 0-5 与官方可选模块 P0 落地）。runtime 已能加载配置、启动 Lua module-table service、校验 TCP listener 启动、本地 registry 和消息 smoke test，并在 core executable 不链接 provider 库的前提下初始化插件宿主。
 
 部分文档 API 仍是目标契约或部分实现。尤其是 hello-world TCP gateway 验证的是 listener 启动和 gateway event routing；会话状态（目标服务、player_id、epoch）当前只存在于 C++ 的 `SessionBinding` 层，未以 userdata 暴露给 Lua。
 

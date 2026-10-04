@@ -172,14 +172,14 @@ function M.on_enter_room(uid)
 end
 
 -- 反例 2:无超时的裸 call —— 慢查询期间调用方协程无限挂起
-local ok, profile = shield.call("db_player", "load_profile", uid)  -- ✗ 热路径
+local ok, profile = shield.call("db_player", "load_profile", uid)  -- 反例：热路径
 -- 强一致写路径也应用 call_timeout 盖住 query_timeout
 
 -- 反例 3:每玩家一个 DB service —— 连接数 = 玩家数,打穿连接池
--- config: instances: N × player_service + 每 service 都拿 binding    -- ✗
+-- config: instances: N × player_service + 每 service 都拿 binding    -- 反例
 
 -- 反例 4:把 conn/tx 对象跨 service 传递 —— 绑定在调用 service 的
--- 同步执行上下文上,跨 service 传等于把阻塞传染给对方              -- ✗
+-- 同步执行上下文上,跨 service 传等于把阻塞传染给对方              -- 反例
 ```
 
 ## 观测与止损

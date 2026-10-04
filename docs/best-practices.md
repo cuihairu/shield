@@ -1,8 +1,6 @@
 # 最佳实践
 
-本文基于重构后的目标设计，仍属于设计阶段建议。
-
-具体 API 返回值和调度语义见 [运行时语义决策稿](./runtime-semantics.md)。
+本文的 API 与语义均已实现；具体返回值和调度语义见 [Lua API 契约](lua-api.md) 与 [运行时语义](./runtime-semantics.md)。
 
 ## 服务拆分
 

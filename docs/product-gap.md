@@ -10,14 +10,14 @@
 
 | 维度 | 现状评级 | 一句话结论 |
 | --- | --- | --- |
-| 一条命令起服务 | 🟡 半达标 | `./build.sh run` 存在，但首次构建要过 vcpkg 源码编译这道墙 |
-| 默认配置零改动可跑 | 🟡 半达标 | 能跑但"跑了个寂寞"：无游戏端口，无可观测行为 |
-| 示例/模板工程 | 🟡 半达标 | hello_world 示例质量高且有 e2e 测试；缺"生成我自己的工程" |
-| 安装与部署脚本 | 🟢 基本达标 | build.sh/build.bat/Dockerfile 齐备；缺环境预检 |
-| 日志与监控默认可用 | 🟢 达标 | console + /ops/* HTTP 默认开启，超出 skynet 默认水平 |
-| 热更新与运维命令 | 🟡 部分 | 运维命令丰富；热更新只有设计稿（诚实标注） |
-| 文档与上手路径 | 🟡 半达标 | 契约文档扎实；但 10 分钟线性路径不存在，tutorial 自称未验证 |
-| 错误提示友好度 | 🟡 半达标 | 配置错误 fail-fast 优秀；环境错误裸奔 |
+| 一条命令起服务 | 半达标 | `./build.sh run` 存在，但首次构建要过 vcpkg 源码编译这道墙 |
+| 默认配置零改动可跑 | 半达标 | 能跑但"跑了个寂寞"：无游戏端口，无可观测行为 |
+| 示例/模板工程 | 半达标 | hello_world 带真实 TCP e2e 测试；缺"生成我自己的工程" |
+| 安装与部署脚本 | 基本达标 | build.sh/build.bat/Dockerfile 齐备；缺环境预检 |
+| 日志与监控默认可用 | 达标 | console + /ops/* HTTP 默认开启（skynet 默认仅一个 debug console） |
+| 热更新与运维命令 | 部分 | 运维命令覆盖 REPL/快照/diff；热更新只有设计稿（文末范围表） |
+| 文档与上手路径 | 半达标 | 契约文档齐；但 10 分钟线性路径不存在，tutorial 自称未验证 |
+| 错误提示友好度 | 半达标 | 配置错误 fail-fast 带逐键报错；环境错误无预检 |
 
 ---
 
@@ -39,7 +39,7 @@
   8083` 注释与默认配置实际行为不符（见下节）。
 
 **skynet 对照**：`git clone && make && ./skynet examples/config.lua`——一个
-make，一两分钟，无包管理器、无网络依赖（deps 佚在树内）。
+make，一两分钟，无包管理器、无网络依赖（deps 在树内）。
 
 **评级：挡路（top-3 之内，落在"启动脚本与文档"项）**。无法把依赖树砍到 skynet
 那么小（CAF/asio 是既定架构决策），所以补齐方向是：build.sh 环境预检 + 可操作
@@ -96,7 +96,7 @@ Dockerfile（构建期自检 --check-config，运行期非 root 用户，这两�
 
 ## 5. 日志与监控默认开箱可用
 
-**现状**：这是**超出预期的一项**。默认配置 console 日志开启；HTTP ops 默认开启
+**现状**：默认配置 console 日志开启；HTTP ops 默认开启
 且路由齐全：`/ops/health` `/ops/status` `/ops/metrics` `/ops/services[/:name]`
 `/ops/plugins` `/ops/config`，另有显式 opt-in 的 `/ops/eval` `/ops/profile`
 （src/console/ops_http_handler.cpp:163-221）；Unix console 默认开启，命令面覆盖
@@ -120,7 +120,7 @@ debug console（node 监听）。
 Shield 的 one-VM-per-service 模型在原理上不需要原地打补丁（换服务实例即可），
 但 blue-green 未落地前，这个差距是真实存在的。
 
-**评级：欠缺但已诚实标注**（roadmap 有位次，不藏）。**不进 top-3**——新用户
+**评级：欠缺**（roadmap 有位次，blue-green 未落地前差距真实存在）。**不进 top-3**——新用户
 前 10 分钟不需要热更新，先不为此写代码。
 
 ## 7. 文档与上手路径
@@ -145,12 +145,12 @@ Shield 的 one-VM-per-service 模型在原理上不需要原地打补丁（换�
 
 ## 8. 错误提示是否对新人友好
 
-**现状**：**配置侧优秀**——启动期 fail-fast，逐键报错，`--check-config` 可离
+**现状**：配置侧成体系——启动期 fail-fast，逐键报错，`--check-config` 可离
 线校验，CI 锚定；Lua 脚本加载错误走保护路径带 traceback（load_script 已修，
 NDEBUG 下不再直达 abort）。
 
-**差距**：**环境侧裸奔**——cmake 版本不够、编译器不支持 C++23、VCPKG_ROOT 未
-设、网络抓包失败，全都以工具链原始报错砸到用户脸上，且互相级联（见第 1 节的
+**差距**：环境侧没有预检——cmake 版本不够、编译器不支持 C++23、VCPKG_ROOT 未
+设、网络下载失败，用户看到的都是工具链原始报错，且互相级联（见第 1 节的
 Ninja 误报）。
 
 **评级：半达标**。补齐方向：build.sh 预检（版本探测 + 每项缺失给出"装什么"

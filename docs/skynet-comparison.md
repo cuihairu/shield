@@ -16,7 +16,7 @@ Shield 参考 Skynet 的服务模型，但目标不是复制 Skynet，也不是�
 
 | 维度 | Skynet | Shield 重构目标 |
 | --- | --- | --- |
-| 运行时语言 | C + Lua | C++20 + Lua |
+| 运行时语言 | C + Lua | C++23 + Lua |
 | Actor 基础 | 自行开发 | CAF 内部实现 |
 | 用户 API | `skynet.*` | `shield.*` |
 | 配置 | Lua 配置 | YAML 声明式配置 |

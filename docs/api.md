@@ -1,6 +1,6 @@
 # API 说明
 
-Shield 的 API 仍处于重构设计阶段。权威契约分布在以下文档，本页仅作导航，不再内联摘要——摘要会随契约演进过时，且曾包含已废弃的 `shield.db:*` / `shield.redis:*` 旧形式（数据访问现统一走插件 namespace `shield.database.*`，见 lua-api.md）。
+Shield 的权威契约分布在以下文档，本页仅作导航，不再内联摘要——摘要会随契约演进过时，且曾包含已废弃的 `shield.db:*` / `shield.redis:*` 旧形式（数据访问现统一走插件 namespace `shield.database.*`，见 lua-api.md）。
 
 ## 文档导航
 
@@ -14,9 +14,9 @@ Shield 的 API 仍处于重构设计阶段。权威契约分布在以下文档�
 ## 实现状态
 
 - `examples/hello_world/` 是用户参考示例，不作为 API 正确性的唯一验收。
-- `include/`、`src/`、`tests/` 反映当前实现状态，但仍含旧架构遗留模块。
+- `include/`、`src/`、`tests/` 反映当前实现状态。
 - API 稳定前，不维护按模块展开的完整 API 手册。
-- 当前源码中的 Lua 绑定与目标契约仍有差距，以代码为准；旧的 `shield.service`、冒号式 DB/Redis 调用和 `on_message(src, type, data)` 不再进入重构目标。
+- Lua 绑定已按契约实现（`shield.event` 等个别项标为目标契约，见 lua-api.md 各节实现快照）；旧的 `shield.service`、冒号式 DB/Redis 调用和 `on_message(src, type, data)` 已废弃。
 
 ## C++ API 目标
 
@@ -30,4 +30,4 @@ int main(int argc, char** argv) {
 }
 ```
 
-该入口尚未稳定。当前源码仍使用 CLI command 入口。
+该入口已实现：`src/main.cpp` 与 `examples/hello_world/main.cpp` 均直接调用 `shield::run(argc, argv)`。

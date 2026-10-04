@@ -8,8 +8,9 @@ English | [简体中文](README.zh-CN.md)
 [![Coverage](https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/shield)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Shield is an actively refactored **single-node-first, Skynet-inspired,
-actor-based, Lua-first game server runtime**.
+Shield is a **single-node-first, Skynet-inspired,
+actor-based, Lua-first game server runtime** (roadmap Phases 0-5 and the
+official optional modules' P0 are landed).
 
 ## Test Coverage
 
@@ -20,7 +21,10 @@ reruns them on every push, uploads the report to
 drops below 98% or branch/function coverage drops below 100%:
 
 ```bash
-cmake -S . -B build-cov -G Ninja   -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"   -DCMAKE_BUILD_TYPE=Debug -DSHIELD_BUILD_TESTS=ON   -DSHIELD_BUILD_EXAMPLES=OFF -DSHIELD_ENABLE_COVERAGE=ON
+cmake -S . -B build-cov -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+  -DCMAKE_BUILD_TYPE=Debug -DSHIELD_BUILD_TESTS=ON \
+  -DSHIELD_BUILD_EXAMPLES=OFF -DSHIELD_ENABLE_COVERAGE=ON
 cmake --build build-cov
 ctest --test-dir build-cov -L coverage --output-on-failure
 cd build-cov && gcovr -r . --exclude-directories '^\.(?!$)' --filter '\.\./src/' --fail-under-line 98 --fail-under-branch 100 --fail-under-function 100
@@ -184,11 +188,6 @@ Player/avatar/client lifecycle is not a core service hook. When enabled,
 disconnect, reconnect, logout, and save hooks. `avatar` or `character` remains
 game data attached to a player session, not a Shield core object.
 
-The current source tree still contains modules from the previous broader
-architecture. During the refactor, documentation should describe the target
-boundary first; implementation work should then remove, merge, or demote modules
-that no longer belong to `shield_core` or first-party runtime modules.
-
 ## Documentation
 
 Authoritative design contracts:
@@ -211,7 +210,8 @@ authoritative contracts above, the authoritative contracts win.
 
 ## Current Status
 
-The Phase 1 single-node path is the current implementation focus. The runtime
+The refactor mainline is landed (roadmap Phases 0-5 and the official optional
+modules' P0). The runtime
 can load config, start Lua module-table services, validate TCP listener startup,
 run local registry and messaging smoke tests, and initialize the plugin host
 without linking provider libraries into the core executable.

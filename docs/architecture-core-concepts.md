@@ -1,6 +1,6 @@
 # 核心设计理念
 
-本文解释重构后的设计原则。当前仍是设计阶段，不代表源码已经全部调整到位。
+本文解释重构后的设计原则；实现已按此收口（见 [路线图](roadmap.md)），个别条目的落地状态以各处标注为准。
 
 具体运行时语义、API 返回值、ID、registry、payload、timer、Lua VM、ops 和 cluster 预留规则见 [运行时语义决策稿](./runtime-semantics.md)。
 

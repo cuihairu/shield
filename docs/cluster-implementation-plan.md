@@ -22,13 +22,13 @@ remote name 不进 core registry；业务 Lua 不感知 CAF middleman；
 
 | 能力 | 现状 | 差距 |
 | --- | --- | --- |
-| 状态机数据结构 | ✅ `cluster_manager.cpp` | 只缺驱动方 |
-| 配置解析 | ✅ `parse_cluster_config()` | 无 |
-| transport | ❌ 不连接、不监听 | 全部 |
-| 心跳/降级 | ❌ `tick()` 无调用方 | 调度循环 + 心跳来源 |
-| 路由学习 | ❌ `register_route()` 无调用方 | 本地通告 + peer 交换 |
-| 投递 | ❌ `set_remote_send_fn()` 无注入方 | envelope + 远端派发 + call 回包 |
-| Lua 寻址 | ❌ `shield.send/call` 无远程分支；`parse_remote_target()` 零调用方 | send/call 入口接线 |
+| 状态机数据结构 | 已落地：`cluster_manager.cpp` | 只缺驱动方 |
+| 配置解析 | 已落地：`parse_cluster_config()` | 无 |
+| transport | 未落地：不连接、不监听 | 全部 |
+| 心跳/降级 | 未落地：`tick()` 无调用方 | 调度循环 + 心跳来源 |
+| 路由学习 | 未落地：`register_route()` 无调用方 | 本地通告 + peer 交换 |
+| 投递 | 未落地：`set_remote_send_fn()` 无注入方 | envelope + 远端派发 + call 回包 |
+| Lua 寻址 | 未落地：`shield.send/call` 无远程分支；`parse_remote_target()` 零调用方 | send/call 入口接线 |
 
 可复用的既有接缝（设计已留好，本方案只是填充）：
 `RemoteSendFn` 注入点、`register_route()` cache、`parse_remote_target()`
@@ -60,13 +60,13 @@ Lua: shield.send / shield.call("node-b:room", ...)
 
 每个里程碑独立可合入、独立有价值、不破坏单节点路径。
 
-### M1 心跳调度 + 诚实状态（无网络，半天） [已落地（2026-09）]
+### M1 心跳调度 + 状态降级（无网络，半天） [已落地（2026-09）]
 
 - bootstrap 启动低频定时线程（`std::jthread` + `heartbeat_interval_ms` 节拍）
   调用 `ClusterManager::tick()`；`stop()` 时收线。
   实现落点：线程内聚在 `ClusterManager::start()/stop()` 内部（bootstrap 两条
   收线路径都只需调 `stop()`，无需各自管理线程）。
-- 效果：transport 缺席时 peer 会经 `online → suspect → offline` 诚实降级，
+- 效果：transport 缺席时 peer 会经 `online → suspect → offline` 逐级降级，
   `/ops/status` 与 `shield.cluster.nodes()` 不再报告虚假健康，满足
   optional-modules "持续暴露 unhealthy" 契约的前半段。
 - 附带修复：`node_epoch` 经 Lua 返回的精度问题（返回 string 或截断为
@@ -108,21 +108,21 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
 
 ### M3 路由学习（1 天） [已落地（2026-09）]
 
-- 通告源 ✅：`LuaServiceManager::set_name_change_notifier(fn)` 观察每一次
+- 通告源 已落地：`LuaServiceManager::set_name_change_notifier(fn)` 观察每一次
   已提交的发布变更（spawn 发布、`shield.register`/`unregister`、on_init
   失败回滚、服务退出收回；空 `service_id` = 收回），在 registry 锁外回调；
   bootstrap 注入到 `ClusterManager::on_local_route_changed()`。
   `lua_service.cpp` 零 cluster 依赖（无 ifdef）。
-- 交换 ✅（与原计划偏离，实测更稳）：放弃增量 `route_announce`，改为
+- 交换 已落地（与原计划偏离，实测更稳）：放弃增量 `route_announce`，改为
   **完整表随每个心跳捎带**（`RoutesMsg`）+ **握手完成后立即补发一次**。
   理由：幂等（丢包/乱序自愈）、无需撤销协议（空表自然传播"服务已全部
   下线"）、实现面小（Phase 1 服务名量级小，全量表成本可忽略）。
-- 接收 ✅：`on_routes()` 要求节点已采纳且 epoch 匹配（stale 实例的表
+- 接收 已落地：`on_routes()` 要求节点已采纳且 epoch 匹配（stale 实例的表
   静默丢弃），整桶替换；`on_peer_down`/新 epoch 再握手继续清整桶。
-- 效果 ✅：`shield.cluster.query()` 从"必然失败"变为可命中远端真实发布
+- 效果 已落地：`shield.cluster.query()` 从"必然失败"变为可命中远端真实发布
   （收敛延迟：握手后 ≤ 一个心跳周期），且与"节点不可达"错误可区分。
   注意：只完成名字解析，投递仍是 M4。
-- 测试 ✅：manager 单测扩至 18 例（本地路由表发布/收回快照、`on_routes`
+- 测试 已落地：manager 单测扩至 18 例（本地路由表发布/收回快照、`on_routes`
   整桶替换 + epoch 校验 + 未知节点丢弃 + 空 service_id 过滤、占位键早期
   路由不泄漏进采纳身份）；transport 集成测试扩至 3 例（握手前发布 →
   握手后即命中、运行中发布/收回随心跳传播、对端断连 → offline + 路由
@@ -131,7 +131,7 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
 
 ### M4 跨节点 send/call 投递（2~4 天，最大项） [已落地（2026-09）]
 
-- `RemoteSendFn` 实装 ✅：签名扩为
+- `RemoteSendFn` 实装 已落地：签名扩为
   `(target_node, service_id, method, args_json, call_session, timeout_ms, error*)`；
   bootstrap 注入并桥接 `ClusterTransport::send_envelope()`（按已采纳节点查
   活连接，miss 即 `node_offline`）；wire 类型
@@ -139,13 +139,13 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
   timeout_ms}` / `EnvelopeReplyMsg{call_session, ok, payload_json,
   error_code, error_message}`（载荷保持 JSON 字符串，与计划草案等价，
   `timeout_ms` 为 M4 新增：携带 caller 剩余预算，供 callee slack 推导）。
-- 目标节点 ✅：envelope → 本地派发路径。call 在 callee 侧落成
+- 目标节点 已落地：envelope → 本地派发路径。call 在 callee 侧落成
   **proxied 会话**（与原计划的偏离点，为解决 call-session 撞号）：
   本地分配的 session 占用与本地 call 同一张 pending_calls 表
   （`caller_co=nullptr`、`proxied=true`），完全复用本地派发/完成/超时
   机制，完成时经 hook 原路回 `EnvelopeReplyMsg`；两侧 session 独立编号
   （caller 的 `call_session` 只作为回包关联键），不存在跨节点撞号。
-- Lua 接线 ✅：唯一改动 `lua_api.cpp`（`lua_service.cpp` 保持零 cluster
+- Lua 接线 已落地：唯一改动 `lua_api.cpp`（`lua_service.cpp` 保持零 cluster
   依赖）。`shield.send/call/call_timeout` 入口 `resolve_remote_target()`：
   **本地名字命中优先**（命中即绝不重解释为 `node:service`）→
   `parse_remote_target` + node 非本节点 → 可达性预检 + route 解析 →
@@ -154,15 +154,15 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
   yield 前恢复协程的隐患）；主线程同步路径新增
   `LuaServiceManager::call_with_session()`（复用 pending_sync_calls 的
   阻塞-CV 语义）。
-- 超时语义 ✅（与本地同形 + 兜底）：caller 侧沿用既有 CAF 超时驱动；
+- 超时语义 已落地（与本地同形 + 兜底）：caller 侧沿用既有 CAF 超时驱动；
   callee 侧 proxied 会话由直达 hook 的自足驱动兜底（caller 剩余超时 +
   30s slack），caller 消失/对端断连都不会泄漏条目。
-- 不可达语义 ✅：peer 非 Online → 预检立即失败，错误码复用
+- 不可达语义 已落地：peer 非 Online → 预检立即失败，错误码复用
   `node_not_found`/`node_suspect`/`node_offline`/`node_removed`
   （`check_node_reachable()`），`node_offline`/`node_suspect` 带
   retryable；对端断连清路由后为 `service_not_found`；对端派发失败的
   错误码经 `EnvelopeReplyMsg` 原样透传。
-- 测试 ✅：transport 集成测试扩至 6 例——新增 3 例挂真实 Lua 服务
+- 测试 已落地：transport 集成测试扩至 6 例——新增 3 例挂真实 Lua 服务
   管理器的双节点端到端（caller 服务 `shield.call("node-b:echo_svc")`
   协程全链路 + 主线程 `call_with_session` + 单向 send 落地验证；
   node-b transport 停机 → offline 清路由 → call 立即失败且错误码为
@@ -170,7 +170,7 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
   50ms 预算 → caller 得 `timeout`，callee 迟到完成对过期会话无害；
   callee 注销名字 → `service_not_found`）。manager 单测同步覆盖扩展后
   `send_remote` 签名（session/timeout/error 透传）。
-- 覆盖率 ✅：两种构建形态（cluster ON/OFF）行覆盖率均 ≥98%，CI
+- 覆盖率 已落地：两种构建形态（cluster ON/OFF）行覆盖率均 ≥98%，CI
   Coverage 门槛提升为 `--fail-under-line 98`。cluster 构建下
   `test_cluster_manager`/`test_cluster_transport` 计入 `coverage` 标签；
   新增 `tests/coverage/test_cov_cluster.cpp`（仅 cluster 构建注册）覆盖
@@ -191,9 +191,9 @@ struct heartbeat { std::string node_id; uint64_t epoch; uint64_t seq; };
 ### M5 观测收尾（半天） [已落地（2026-09）]
 
 - `/ops/status` cluster 块补充：连接数、重连计数、收发消息计数、最近
-  一次心跳时延。✅
+  一次心跳时延。已落地
 - console `root.cluster` 命令同步；`runtime-cluster.md` 把"未实现"清单
-  翻转为已实现，并撤销 optional-modules.md 的实现状态注记。✅
+  翻转为已实现，并撤销 optional-modules.md 的实现状态注记。已落地
 
 M5 落地形态：计数器挂在 transport 侧的 `TransportSideState`（actor 线程
 与 facade 线程共写的 `std::atomic`），`ClusterTransport::stats()` 无锁快
@@ -231,16 +231,16 @@ wire 格式（真 RTT 需 HeartbeatMsg 回显，超出 Phase 1）。三个出口
 
 ## 7. 风险与开放问题
 
-1. **CAF middleman 接合** ✅ M2 打样已验证：publish/`connect_atom` 异步拨号
+1. **CAF middleman 接合** 已落地：M2 打样已验证：publish/`connect_atom` 异步拨号
    可行；踩坑实录——`remote_actor()` 内部 `infinite` 超时会卡死重连循环
    （已改带超时的异步拨号）；`anon_send` 不携带 sender，hello/ack 必须用
    `self->send` 才能让对端回包；集群 wire 类型必须在 `actor_system` 构造前
    注册，否则 CAF 直接 CAF_CRITICAL。
-2. **call 回包与协程恢复** ✅ M4 化解：callee 侧以 proxied 会话把进来的
+2. **call 回包与协程恢复** 已落地：M4 化解：callee 侧以 proxied 会话把进来的
    call 变成"本地 call"，复用同一张 pending_calls 表与同一条完成路径，
    caller 协程只在 yield 后被响应消息恢复；两侧 session 独立编号规避
    撞号，退路方案（只交付单向 send）未启用。
-3. **降级可见性** ✅ M2 后失效：peer 视图即真实连接视图（握手成功才
+3. **降级可见性** 已落地：M2 后失效：peer 视图即真实连接视图（握手成功才
    `online`），不存在假象期；看板语义与真实状态一致。
 4. **开放问题**：`cluster.listen` 需要鉴权/加密（Phase 2）；多网卡
    advertise 地址（`hello` 载荷是否携带可达地址）在静态 peers 下暂不需要。

@@ -2,7 +2,7 @@
 
 本文档汇总 Shield runtime error 的稳定错误码，是错误码的权威来源。业务错误不由本文档统一分配。
 
-实现快照：以下错误码中，标记 ✅ 的已在代码中使用并有测试覆盖；标记 ⚠️ 的在代码中使用但错误码字符串可能不完全匹配；标记 ❌ 的属于 Phase 2+，当前未实现。
+实现快照：以下错误码中，标记为『已实现』的已在代码中使用并有测试覆盖；标记为『部分』的在代码中使用但错误码字符串可能不完全匹配；标记为『未实现』的属于 Phase 2+，当前未实现。
 
 ## 错误对象结构
 
@@ -31,31 +31,31 @@
 
 | 错误码 | 来源 | 说明 | retryable | 状态 |
 |--------|------|------|-----------|------|
-| `invalid_target` | send/call | 目标格式错误（非 handle 且非合法 name） | 否 | ✅ |
-| `invalid_method` | send/call | 方法名非法（空、过长、含非法字符） | 否 | ✅ send 检查空/超长/on_ 前缀 |
-| `invalid_service_module` | spawn | Lua 文件未返回合法 service module table | 否 | ✅ |
-| `script_load_failed` | spawn | Lua 文件语法错误、load 失败或顶层代码抛错 | 否 | ✅ |
-| `invalid_name` | spawn | 服务名不合法（格式、长度、保留前缀） | 否 | ⚠️ 当前统一返回 `spawn_failed` |
-| `name_conflict` | spawn | 服务名已被占用 | 否 | ⚠️ 当前统一返回 `spawn_failed` |
-| `encode_failed` | send/call | 消息编码失败（类型不支持、嵌套过深、循环引用） | 否 | ✅ send 检测 unsupported 类型 |
-| `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | ✅ send 检查 |
-| `service_not_found` | send/call | 目标服务不存在（name 未注册或 handle 已失效） | 是 | ✅ send 和 call 均返回 |
-| `service_dead` | send/call | 目标服务已停止 | 否 | ✅ send/call 区分 service_not_found 和 service_dead |
-| `node_offline` | send/call | 目标节点离线（集群场景） | 是 | ✅ ClusterManager.check_node_reachable 返回 offline/suspect/removed |
-| `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | ✅ spawn 返回 init_failed 错误码 |
-| `spawn_timeout` | spawn | 服务初始化超过 `spawn_timeout`（默认 10s） | 否 | ✅ on_init 超时检测 |
-| `runtime_stopping` | send/call/spawn | 运行时正在关闭 | 否 | ✅ send/call/spawn 检查 |
-| `permission_denied` | send/call/spawn | 权限不足 | 否 | ✅ permission_check 钩子 |
-| `spawn_failed` | spawn | 其他未分类 spawn 失败（含当前 name 冲突/非法名的返回码） | 否 | ✅ spawn 默认错误码 |
-| `register_failed` | register | 发布本地 name 失败（name 冲突或非法） | 否 | ✅ register 返回 |
-| `unregister_failed` | unregister | 注销本地 name 失败 | 否 | ✅ unregister 返回 |
-| `claim_failed` | claim | 蓝绿交接接管 name 失败（name 不存在/非法、无调度上下文） | 否 | ✅ claim 返回 |
-| `timeout` | call | 调用超时（默认 5s） | 是 | ✅ |
-| `method_not_found` | call | 目标服务没有该方法 | 否 | ✅ |
-| `handler_error` | call | 目标服务 method 抛出未捕获异常 | 否 | ✅ call 返回 |
-| `context_expired` | context | handler 已返回，`shield.sender/trace/deadline` 上下文失效 | 否 | ✅ 当前返回 nil（设计决策：handler 外读取 sender 返回 nil，不抛错） |
-| `api_not_allowed_in_exit` | exit hook | 在 `on_exit` 中调用了会挂起的 API | 否 | ✅ |
-| `legacy_api_removed` | legacy API | 调用了已删除的旧 API | 否 | ✅ |
+| `invalid_target` | send/call | 目标格式错误（非 handle 且非合法 name） | 否 | 已实现 |
+| `invalid_method` | send/call | 方法名非法（空、过长、含非法字符） | 否 | 已实现 send 检查空/超长/on_ 前缀 |
+| `invalid_service_module` | spawn | Lua 文件未返回合法 service module table | 否 | 已实现 |
+| `script_load_failed` | spawn | Lua 文件语法错误、load 失败或顶层代码抛错 | 否 | 已实现 |
+| `invalid_name` | spawn | 服务名不合法（格式、长度、保留前缀） | 否 | 部分 当前统一返回 `spawn_failed` |
+| `name_conflict` | spawn | 服务名已被占用 | 否 | 部分 当前统一返回 `spawn_failed` |
+| `encode_failed` | send/call | 消息编码失败（类型不支持、嵌套过深、循环引用） | 否 | 已实现 send 检测 unsupported 类型 |
+| `message_too_large` | send/call | 消息体积超过 `max_message_size`（默认 1MB） | 否 | 已实现 send 检查 |
+| `service_not_found` | send/call | 目标服务不存在（name 未注册或 handle 已失效） | 是 | 已实现 send 和 call 均返回 |
+| `service_dead` | send/call | 目标服务已停止 | 否 | 已实现 send/call 区分 service_not_found 和 service_dead |
+| `node_offline` | send/call | 目标节点离线（集群场景） | 是 | 已实现 ClusterManager.check_node_reachable 返回 offline/suspect/removed |
+| `init_failed` | spawn | `on_init` 返回失败或抛出异常 | 否 | 已实现 spawn 返回 init_failed 错误码 |
+| `spawn_timeout` | spawn | 服务初始化超过 `spawn_timeout`（默认 10s） | 否 | 已实现 on_init 超时检测 |
+| `runtime_stopping` | send/call/spawn | 运行时正在关闭 | 否 | 已实现 send/call/spawn 检查 |
+| `permission_denied` | send/call/spawn | 权限不足 | 否 | 已实现 permission_check 钩子 |
+| `spawn_failed` | spawn | 其他未分类 spawn 失败（含当前 name 冲突/非法名的返回码） | 否 | 已实现 spawn 默认错误码 |
+| `register_failed` | register | 发布本地 name 失败（name 冲突或非法） | 否 | 已实现 register 返回 |
+| `unregister_failed` | unregister | 注销本地 name 失败 | 否 | 已实现 unregister 返回 |
+| `claim_failed` | claim | 蓝绿交接接管 name 失败（name 不存在/非法、无调度上下文） | 否 | 已实现 claim 返回 |
+| `timeout` | call | 调用超时（默认 5s） | 是 | 已实现 |
+| `method_not_found` | call | 目标服务没有该方法 | 否 | 已实现 |
+| `handler_error` | call | 目标服务 method 抛出未捕获异常 | 否 | 已实现 call 返回 |
+| `context_expired` | context | handler 已返回，`shield.sender/trace/deadline` 上下文失效 | 否 | 已实现 当前返回 nil（设计决策：handler 外读取 sender 返回 nil，不抛错） |
+| `api_not_allowed_in_exit` | exit hook | 在 `on_exit` 中调用了会挂起的 API | 否 | 已实现 |
+| `legacy_api_removed` | legacy API | 调用了已删除的旧 API | 否 | 已实现 |
 
 ## 二、资源限制错误
 
@@ -63,11 +63,11 @@
 
 | 错误码 | 说明 | 默认上限 | 状态 |
 |--------|------|----------|------|
-| `coroutine_limit` | 单个 service coroutine 数超限 | 1000 | ✅ call_service_method_coroutine 检查 |
-| `pending_call_limit` | 单个 service 待响应 call 数超限 | 1000 | ✅ suspend_for_call 检查 |
-| `timer_limit` | 单个 service timer 数超限 | 10000 | ✅ timer_once/timer 返回 nil+error |
-| `timer_not_found` | cancel_timer 目标不存在或已完成 | — | ✅ cancel_timer 返回 false+error |
-| `fork_limit` | 单个 service fork task 数超限 | 1000 | ✅ fork 返回 nil+error |
+| `coroutine_limit` | 单个 service coroutine 数超限 | 1000 | 已实现 call_service_method_coroutine 检查 |
+| `pending_call_limit` | 单个 service 待响应 call 数超限 | 1000 | 已实现 suspend_for_call 检查 |
+| `timer_limit` | 单个 service timer 数超限 | 10000 | 已实现 timer_once/timer 返回 nil+error |
+| `timer_not_found` | cancel_timer 目标不存在或已完成 | — | 已实现 cancel_timer 返回 false+error |
+| `fork_limit` | 单个 service fork task 数超限 | 1000 | 已实现 fork 返回 nil+error |
 
 ## 三、数据插件错误
 
@@ -75,20 +75,20 @@
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|
-| `module_unavailable` | 对应插件、binding 或 instance 不可用 | 否 | ✅ |
-| `database_error` | 未分类的数据库执行失败 | 视具体驱动 | ✅ (代码中使用 `database_error`) |
-| `db_query_failed` | 未分类的数据库执行失败 | 视具体驱动 | ✅ DB query/execute 返回 |
-| `connection_lost` | 数据库连接丢失 | 是 | ✅ MySQL error msg 映射 |
-| `connection_timeout` | 建立连接超时 | 是 | ✅ MySQL timeout msg 映射 |
-| `query_timeout` | 查询超时 | 是 | ✅ 由 connection_timeout 覆盖（同一异常路径） |
-| `syntax_error` | SQL 语法错误 | 否 | ✅ MySQL syntax msg 映射 |
-| `constraint_violation` | 约束违反（唯一键、外键等） | 否 | ✅ MySQL Duplicate/constraint msg 映射 |
-| `transaction_aborted` | 事务中止 | 是 | ✅ MySQL Deadlock msg 映射 |
-| `transaction_closed` | 事务 callback 结束后继续使用 tx 句柄 | 否 | ✅ Lua transaction guard |
-| `pool_exhausted` | 连接池耗尽 | 是 | ✅ acquire 失败返回 |
-| `mapper_unsafe_sql` | Lua mapper 使用 `${}` 原样替换或多语句 SQL | 否 | ✅ Lua mapper guard |
-| `mapper_invalid_statement` | Lua mapper statement 类型不支持 | 否 | ✅ Lua mapper guard |
-| `entity_invalid_row` | Lua entity helper 缺少可写字段 | 否 | ✅ Lua entity guard |
+| `module_unavailable` | 对应插件、binding 或 instance 不可用 | 否 | 已实现 |
+| `database_error` | 未分类的数据库执行失败 | 视具体驱动 | 已实现 (代码中使用 `database_error`) |
+| `db_query_failed` | 未分类的数据库执行失败 | 视具体驱动 | 已实现 DB query/execute 返回 |
+| `connection_lost` | 数据库连接丢失 | 是 | 已实现 MySQL error msg 映射 |
+| `connection_timeout` | 建立连接超时 | 是 | 已实现 MySQL timeout msg 映射 |
+| `query_timeout` | 查询超时 | 是 | 已实现 由 connection_timeout 覆盖（同一异常路径） |
+| `syntax_error` | SQL 语法错误 | 否 | 已实现 MySQL syntax msg 映射 |
+| `constraint_violation` | 约束违反（唯一键、外键等） | 否 | 已实现 MySQL Duplicate/constraint msg 映射 |
+| `transaction_aborted` | 事务中止 | 是 | 已实现 MySQL Deadlock msg 映射 |
+| `transaction_closed` | 事务 callback 结束后继续使用 tx 句柄 | 否 | 已实现 Lua transaction guard |
+| `pool_exhausted` | 连接池耗尽 | 是 | 已实现 acquire 失败返回 |
+| `mapper_unsafe_sql` | Lua mapper 使用 `${}` 原样替换或多语句 SQL | 否 | 已实现 Lua mapper guard |
+| `mapper_invalid_statement` | Lua mapper statement 类型不支持 | 否 | 已实现 Lua mapper guard |
+| `entity_invalid_row` | Lua entity helper 缺少可写字段 | 否 | 已实现 Lua entity guard |
 
 ## 四、缓存 / 队列 / Redis provider 错误
 
@@ -96,14 +96,14 @@ Redis 系插件 namespace（如 `shield.cache.redis(...)`、`shield.queue.redis(
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|
-| `module_unavailable` | 对应插件、binding 或 instance 不可用 | 否 | ✅ |
-| `redis_error` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ (代码中使用 `redis_error`) |
-| `redis_command_failed` | 未分类的 Redis 命令失败 | 视具体驱动 | ✅ Redis 操作返回 |
-| `connection_lost` | Redis 连接丢失 | 是 | ✅ redis++ ClosedError/IoError 映射 |
-| `connection_timeout` | 建立连接超时 | 是 | ✅ redis++ TimeoutError 映射 |
-| `command_timeout` | 命令执行超时 | 是 | ✅ redis++ TimeoutError 映射 |
-| `wrong_type` | Redis 类型错误 | 否 | ✅ redis++ ReplyError(WRONGTYPE) 映射 |
-| `pool_exhausted` | 连接池耗尽 | 是 | ✅ acquire 失败返回 |
+| `module_unavailable` | 对应插件、binding 或 instance 不可用 | 否 | 已实现 |
+| `redis_error` | 未分类的 Redis 命令失败 | 视具体驱动 | 已实现 (代码中使用 `redis_error`) |
+| `redis_command_failed` | 未分类的 Redis 命令失败 | 视具体驱动 | 已实现 Redis 操作返回 |
+| `connection_lost` | Redis 连接丢失 | 是 | 已实现 redis++ ClosedError/IoError 映射 |
+| `connection_timeout` | 建立连接超时 | 是 | 已实现 redis++ TimeoutError 映射 |
+| `command_timeout` | 命令执行超时 | 是 | 已实现 redis++ TimeoutError 映射 |
+| `wrong_type` | Redis 类型错误 | 否 | 已实现 redis++ ReplyError(WRONGTYPE) 映射 |
+| `pool_exhausted` | 连接池耗尽 | 是 | 已实现 acquire 失败返回 |
 
 ## 五、网络错误
 
@@ -111,13 +111,13 @@ Redis 系插件 namespace（如 `shield.cache.redis(...)`、`shield.queue.redis(
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|
-| `session_closed` | session 已关闭，handle stale | 否 | ✅ TcpSession::send/send_message 返回 |
-| `session_send_queue_full` | session 发送队列已满 | 是 | ✅ TcpSession::send/send_message 返回 |
-| `handshake_timeout` | 握手超时 | 否 | ✅ TcpSession::handle_error 映射 |
-| `decode_error` | 协议解码错误 | 否 | ✅ TcpSession::handle_error 映射 |
-| `protocol_not_configured` | session 未绑定协议管线时收到入站字节(TCP 必须带 `network.protocol`) | 否 | ✅ TcpSession::handle_error 映射 |
-| `connection_limit` | 连接数达到上限 | 是 | ✅ TcpListener::do_accept 检查 |
-| `ip_limit` | 单 IP 连接数达到上限 | 否 | ✅ TcpListener::do_accept 检查 |
+| `session_closed` | session 已关闭，handle stale | 否 | 已实现 TcpSession::send/send_message 返回 |
+| `session_send_queue_full` | session 发送队列已满 | 是 | 已实现 TcpSession::send/send_message 返回 |
+| `handshake_timeout` | 握手超时 | 否 | 已实现 TcpSession::handle_error 映射 |
+| `decode_error` | 协议解码错误 | 否 | 已实现 TcpSession::handle_error 映射 |
+| `protocol_not_configured` | session 未绑定协议管线时收到入站字节(TCP 必须带 `network.protocol`) | 否 | 已实现 TcpSession::handle_error 映射 |
+| `connection_limit` | 连接数达到上限 | 是 | 已实现 TcpListener::do_accept 检查 |
+| `ip_limit` | 单 IP 连接数达到上限 | 否 | 已实现 TcpListener::do_accept 检查 |
 
 ## 六、shield_player 错误
 
@@ -128,22 +128,22 @@ Redis 系插件 namespace（如 `shield.cache.redis(...)`、`shield.queue.redis(
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|
-| `module_unavailable` | SHIELD_ENABLE_PLAYER 未编译;每个 `shield.player.*` 入口都返回 | 否 | ✅ register_player_stub_api |
-| `setup_invalid` | setup 缺少必填钩子或参数形状非法 | 否 | ✅ impl.setup 校验 |
-| `auth_failed` | auth hook 拒绝,或未产出非空 string player_id | 否 | ✅ impl.authenticate 第 1 步 |
-| `anonymous_disabled` | auth 结果带 anonymous 但配置未开启 | 否 | ✅ impl.authenticate 第 2 步 |
-| `spectator_disabled` | auth 结果带 spectator 但配置未开启 | 否 | ✅ impl.authenticate 第 2 步 |
-| `already_online` | PlayerManager admit:该 uid 已有在线会话(默认单设备踢旧) | 否 | ✅ PlayerManager::admit |
-| `too_many_devices` | multi 设备策略下超出 player.max_devices | 否 | ✅ PlayerManager::admit |
-| `instance_script_required` | authenticate 未配置 opts.instance_script 无法 spawn 实例 | 否 | ✅ impl.authenticate 第 4 步 |
-| `invalid_player_ref` | push/resolve 目标既不是 uid 字符串也不是合法 PlayerRef | 否 | ✅ impl.push / resolve |
-| `player_not_found` | resolve:ref 已失效;push:uid 不由本服务承载 | 否 | ✅ PlayerManager::get / impl.push |
-| `remote_resolve_unimplemented` | resolve 收到跨节点 ref(P0 仅本地) | 否 | ✅ resolve |
-| `not_ready` | client_message guard:会话未到 ready,消息丢帧 + 计数 | 否 | ✅ `__shield_player_guard` |
-| `rejected` | client_message 业务 hook 拒绝且未给 code 时的兜底 | 否 | ✅ `__shield_player_guard` |
-| `offline_queue_full` | 离线队列超过 player.message_queue_limit(默认 64) | 是 | ✅ impl.push |
-| `push_route_not_found` | push 目标 route 无 s2c helper | 否 | ✅ impl.push |
-| `persistence_save_failed` | player_save 抛错;按 player.on_save_error 记 warn 或 panic | 是 | ✅ defaults.save |
+| `module_unavailable` | SHIELD_ENABLE_PLAYER 未编译;每个 `shield.player.*` 入口都返回 | 否 | 已实现 register_player_stub_api |
+| `setup_invalid` | setup 缺少必填钩子或参数形状非法 | 否 | 已实现 impl.setup 校验 |
+| `auth_failed` | auth hook 拒绝,或未产出非空 string player_id | 否 | 已实现 impl.authenticate 第 1 步 |
+| `anonymous_disabled` | auth 结果带 anonymous 但配置未开启 | 否 | 已实现 impl.authenticate 第 2 步 |
+| `spectator_disabled` | auth 结果带 spectator 但配置未开启 | 否 | 已实现 impl.authenticate 第 2 步 |
+| `already_online` | PlayerManager admit:该 uid 已有在线会话(默认单设备踢旧) | 否 | 已实现 PlayerManager::admit |
+| `too_many_devices` | multi 设备策略下超出 player.max_devices | 否 | 已实现 PlayerManager::admit |
+| `instance_script_required` | authenticate 未配置 opts.instance_script 无法 spawn 实例 | 否 | 已实现 impl.authenticate 第 4 步 |
+| `invalid_player_ref` | push/resolve 目标既不是 uid 字符串也不是合法 PlayerRef | 否 | 已实现 impl.push / resolve |
+| `player_not_found` | resolve:ref 已失效;push:uid 不由本服务承载 | 否 | 已实现 PlayerManager::get / impl.push |
+| `remote_resolve_unimplemented` | resolve 收到跨节点 ref(P0 仅本地) | 否 | 已实现 resolve |
+| `not_ready` | client_message guard:会话未到 ready,消息丢帧 + 计数 | 否 | 已实现 `__shield_player_guard` |
+| `rejected` | client_message 业务 hook 拒绝且未给 code 时的兜底 | 否 | 已实现 `__shield_player_guard` |
+| `offline_queue_full` | 离线队列超过 player.message_queue_limit(默认 64) | 是 | 已实现 impl.push |
+| `push_route_not_found` | push 目标 route 无 s2c helper | 否 | 已实现 impl.push |
+| `persistence_save_failed` | player_save 抛错;按 player.on_save_error 记 warn 或 panic | 是 | 已实现 defaults.save |
 
 ## 七、shield_server 错误
 
@@ -153,11 +153,11 @@ Redis 系插件 namespace（如 `shield.cache.redis(...)`、`shield.queue.redis(
 
 | 错误码 | 说明 | retryable | 状态 |
 |--------|------|-----------|------|
-| `module_unavailable` | SHIELD_ENABLE_SERVER 未编译或模块未初始化;每个 `shield.server.*` 入口都返回 | 否 | ✅ register_server_stub_api |
-| `invalid_state` | `set_state` 参数不是 starting/running/maintenance/shutdown 之一 | 否 | ✅ impl.set_state |
-| `invalid_state_transition` | 状态机不允许的迁移(如 starting→maintenance、shutdown 后任何迁移) | 否 | ✅ impl.set_state |
-| `shutdown_already_scheduled` | `shutdown` 重复调用;不重复计时 | 否 | ✅ impl.shutdown |
-| `invalid_argument` | `shutdown` 参数不是 ≥0 的整数 | 否 | ✅ impl.shutdown |
+| `module_unavailable` | SHIELD_ENABLE_SERVER 未编译或模块未初始化;每个 `shield.server.*` 入口都返回 | 否 | 已实现 register_server_stub_api |
+| `invalid_state` | `set_state` 参数不是 starting/running/maintenance/shutdown 之一 | 否 | 已实现 impl.set_state |
+| `invalid_state_transition` | 状态机不允许的迁移(如 starting→maintenance、shutdown 后任何迁移) | 否 | 已实现 impl.set_state |
+| `shutdown_already_scheduled` | `shutdown` 重复调用;不重复计时 | 否 | 已实现 impl.shutdown |
+| `invalid_argument` | `shutdown` 参数不是 ≥0 的整数 | 否 | 已实现 impl.shutdown |
 
 ## 八、错误处理建议
 
