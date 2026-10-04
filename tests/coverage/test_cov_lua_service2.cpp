@@ -4,10 +4,15 @@
 // edge cases.
 #define BOOST_TEST_MODULE CovLuaService2
 #include <atomic>
+#if defined(__GLIBC__)
+#include <execinfo.h>
+#include <unistd.h>
+#endif
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
 #include <chrono>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -63,6 +68,36 @@ struct CafInitFixture {
     CafInitFixture() { initialize_caf_types(); }
 };
 BOOST_GLOBAL_FIXTURE(CafInitFixture);
+
+// The opt-leg CI flake aborts inside the C library ("free(): invalid
+// pointer" after every case already passed) and the runner log holds no
+// stack, so the aborting call site was never observable. Install a
+// fd-writing backtrace for the fatal signals: the next occurrence — local
+// or CI — reports where the abort was raised. The handler restores the
+// default disposition and re-raises, keeping the signal identity (ctest
+// exit status, core-dump behavior) unchanged.
+#if defined(__GLIBC__)
+void fatal_signal_backtrace(int sig) {
+    const char marker[] = "\n=== fatal-signal backtrace ===\n";
+    ssize_t ignored = ::write(2, marker, sizeof(marker) - 1);
+    (void)ignored;
+    void* frames[64];
+    int depth = ::backtrace(frames, 64);
+    ::backtrace_symbols_fd(frames, depth, 2);
+    ::signal(sig, SIG_DFL);
+    ::raise(sig);
+}
+
+struct FatalSignalTraceInstall {
+    FatalSignalTraceInstall() {
+        ::signal(SIGABRT, fatal_signal_backtrace);
+        ::signal(SIGSEGV, fatal_signal_backtrace);
+        ::signal(SIGBUS, fatal_signal_backtrace);
+        ::signal(SIGFPE, fatal_signal_backtrace);
+    }
+};
+FatalSignalTraceInstall g_fatal_signal_trace;
+#endif  // __GLIBC__
 
 }  // namespace
 
