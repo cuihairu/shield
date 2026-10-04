@@ -32,8 +32,10 @@ Optional:
 
 | Target | 默认 | 说明 |
 | --- | --- | --- |
-| `shield_cluster` | OFF | 跨进程/多机器通信 |
-| `shield_global` | OFF | Redis-based global helpers |
+| `shield_cluster` | OFF | 跨进程/多机器通信（心跳/transport/路由学习/跨节点投递） |
+| `shield_global` | OFF | 全局 KV、锁、排行榜、队列、限流、调度器（P0 进程内 `GlobalManager`，Redis 后端留 Phase 2+） |
+| `shield_player` | OFF | 玩家 setup 状态机、多设备裁决、重连窗口、离线推送（P0 已落地） |
+| `shield_server` | OFF | 服务器状态机、维护模式、关闭交接、ops 快照（P0 已落地） |
 | `shield_ops` | OFF | diagnostics、metrics、health、console、profile |
 
 ## 禁止依赖

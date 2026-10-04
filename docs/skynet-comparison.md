@@ -17,7 +17,7 @@ Shield 参考 Skynet 的服务模型，但目标不是复制 Skynet，也不是�
 | 维度 | Skynet | Shield 重构目标 |
 | --- | --- | --- |
 | 运行时语言 | C + Lua | C++20 + Lua |
-| Actor 基础 | 自研 | CAF 内部实现 |
+| Actor 基础 | 自行开发 | CAF 内部实现 |
 | 用户 API | `skynet.*` | `shield.*` |
 | 配置 | Lua 配置 | YAML 声明式配置 |
 | 平台 | 以 Unix-like 为主 | Windows / macOS / Linux |
@@ -49,7 +49,7 @@ Shield 的目标不是重新实现 Skynet 的底层 actor runtime，而是用 CA
 
 | 层级 | Skynet | CAF | Shield 决策 |
 | --- | --- | --- | --- |
-| actor 调度 | Skynet 自研 | CAF scheduler | 使用 CAF |
+| actor 调度 | Skynet 自行开发 | CAF scheduler | 使用 CAF |
 | actor/message | Skynet service/message | CAF actor/message | 使用 CAF，隐藏 handle |
 | async send | `skynet.send` | `send` / `anon_send` | 封装成 `shield.send` |
 | sync call | `skynet.call` + Lua coroutine yield | `request` + continuation | 封装成 coroutine-aware `shield.call` |

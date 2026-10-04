@@ -363,7 +363,7 @@ plugins/matchmaking.elo/
 
 `try_match` 返回的 `match.server_address` 当前为 `nullptr`，业务层应在拿到匹配结果后：
 
-1. 调用游戏服分配服务（自研或 Kubernetes 自定义调度）。
+1. 调用游戏服分配服务（自行开发或 Kubernetes 自定义调度）。
 2. 把分配到的地址通知客户端。
 3. 持久化对局记录（用业务层的数据库，不是 matchmaking 插件）。
 

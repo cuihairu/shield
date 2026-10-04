@@ -896,7 +896,7 @@ v1 的强约束：
 
 | 问题 | 候选方向 |
 | --- | --- |
-| schema 校验实现 | 当前已有自研最小子集；后续决定是否扩展或替换为现成 JSON Schema validator。 |
+| schema 校验实现 | 当前已有自行开发最小子集；后续决定是否扩展或替换为现成 JSON Schema validator。 |
 | 插件包版本约束 | v1 可先只支持精确 package id，不做 semver range。 |
 | 可选实例失败策略 | 当前设计为 `unavailable`，是否允许 binding 自动 fallback 到候选列表需另定。 |
 | Windows/Linux 库命名 | 是否要求 manifest 显式写全，还是允许按约定推导。 |

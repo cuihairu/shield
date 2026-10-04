@@ -77,7 +77,7 @@ body 是纯业务 JSON，不含路由字段——`scripts/client_demo.py` 全文
 python3 scripts/client_demo.py --port 8100
 ```
 
-脚手架内容：`config/app.yaml`（echo 监听 8001）+ `scripts/echo.lua` +
+脚手架内容：`config/app.yaml`（echo 监听 8100）+ `scripts/echo.lua` +
 README。生成时自动跑 `--check-config` 自检。
 
 ## 5. 进阶：完整客户端 RPC 闭环
@@ -91,7 +91,7 @@ cmake -B build-examples -S . -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DSHIELD_BUILD_TESTS=OFF -DSHIELD_BUILD_EXAMPLES=ON
 cmake --build build-examples --target hello_world
 ./build-examples/bin/hello_world --config examples/hello_world/config/app.yaml
-python3 scripts/client_demo.py --port 8100 --message '{"player_id":"p1"}'
+python3 scripts/client_demo.py --port 8001 --message '{"player_id":"p1"}'
 ```
 
 登录回包是 route 100 `login_result`。示例带真实 TCP e2e 测试

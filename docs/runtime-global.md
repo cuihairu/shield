@@ -2,7 +2,7 @@
 
 > 状态：P0 已落地（`SHIELD_ENABLE_GLOBAL=ON`；测试矩阵 `tests/lua_api/test_lua_api_global.cpp`）。
 >
-> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/广播/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数为 Phase 2+ 形态，进程内版本语义对齐"Redis 不可用"降级行为）；`shield.priority_queue` 与 `shield.broadcast_queue` 已实现（前者进程内多级队列，值越小越优先、同优先级 FIFO；后者进程内为有界 history + 每组 cursor，实时回调分发发生在推送方 VM，离线组在重新 subscribe 时按序补发——跨进程实时广播 Pub/Sub 留 Phase 2+）；Redis 后端尚未实现（见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
+> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/广播/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数均为 Phase 2+ 形态；P0 两种算法全程进程内计算，零 Redis 调用，不存在"Redis 不可用"降级语义）；`shield.priority_queue` 与 `shield.broadcast_queue` 已实现（前者进程内多级队列，值越小越优先、同优先级 FIFO；后者进程内为有界 history + 每组 cursor，实时回调分发发生在推送方 VM，离线组在重新 subscribe 时按序补发——跨进程实时广播 Pub/Sub 留 Phase 2+）；Redis 后端尚未实现（见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
 
 本文档包含 Shield 跨进程共享数据、分布式锁、排行榜、消息队列等全局能力的运行时语义决策。
 
@@ -37,8 +37,10 @@ shield.scheduler()            -- 定时任务调度
 | `shield.mutex()` | 本地 | 互斥锁 | 内存 | 纳秒 |
 | `shield.rwlock()` | 本地 | 读写锁 | 内存 | 纳秒 |
 | `shield.spinlock()` | 本地 | 自旋锁 | 内存 | 纳秒 |
-| `shield.distributed_mutex()` | 分布式 | 互斥锁 | Redis | 毫秒 |
-| `shield.distributed_rwlock()` | 分布式 | 读写锁 | Redis | 毫秒 |
+| `shield.distributed_mutex()` | 分布式 | 互斥锁 | 进程内存（P0；Redis 后端留 Phase 2+） | 纳秒级（P0 与本地锁同层） |
+| `shield.distributed_rwlock()` | 分布式 | 读写锁 | 进程内存（P0；Redis 后端留 Phase 2+） | 纳秒级（P0 与本地锁同层） |
+
+> P0 实现状态：`shield.distributed_mutex()` / `shield.distributed_rwlock()` 直接走本地锁工厂，与 `shield.mutex()` / `shield.rwlock()` 共享同一进程内 registry——"跨进程"由部署形态决定，后端本身不做跨进程协调。
 
 ### 通用锁接口
 

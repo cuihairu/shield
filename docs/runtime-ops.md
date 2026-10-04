@@ -93,8 +93,10 @@ profile controls
 | `/ops/metrics` | GET | 指标导出（Prometheus 格式，已提供） |
 | `/ops/services` | GET | 服务列表 |
 | `/ops/services/:name` | GET | 服务详情（已提供） |
+| `/ops/plugins` | GET | 插件实例列表（`id`/`package`/`state`/`required`，已提供） |
+| `/ops/config` | GET | 单键查询（`?key=<key>`），非全量快照；不带 key 时返回提示文本 `"Use ?key=<key> to query"`，键不存在返回 `null` |
+| `/ops/eval` | POST | 受限 VM 远程代码执行；opt-in——需 `http.eval_enabled: true` 且非空 `http.eval_token`，否则路由不注册（请求 404），见上文安全基线 |
 | `/ops/profile` | POST | 采样式热点分析与慢调用追踪的启动/停止/查询（已提供，见 [Profile](#profile)） |
-| `/ops/config` | GET | 当前配置快照 |
 
 如果启用了 Lua 诊断控制台，管理面还可以额外暴露只读 Lua 观测能力，例如：
 
@@ -146,32 +148,43 @@ checks 按编译开关与运行时状态裁剪：
 GET /ops/status
 ```
 
-响应：
+响应（实际 payload）：
 
 ```json
 {
-  "app": { "name": "my_game", "version": "1.0.0" },
-  "runtime": {
-    "uptime": 3600,
-    "pid": 12345,
-    "node_id": "node-1"
+  "services": ["gateway", "room_1"],
+  "plugins": [
+    { "id": "db.default", "package": "sqlite", "state": "started", "required": true }
+  ],
+  "cluster": {
+    "node_id": "node-1",
+    "node_epoch": "1",
+    "nodes": [
+      { "node_id": "node-2", "address": "10.0.0.2:9000", "state": "online",
+        "epoch": "1", "last_heartbeat_ms": 123456, "heartbeat_age_ms": 1200 }
+    ]
   },
-  "services": {
-    "total": 10,
-    "by_type": {
-      "gateway": 1,
-      "player": 5,
-      "room": 4
-    }
+  "server": {
+    "state": "running",
+    "uptime_seconds": 3600.5,
+    "name": "s1",
+    "watchers": 0,
+    "shutdown_scheduled": false
   },
-  "resources": {
-    "lua_vms": 10,
-    "connections": 1500,
-    "pending_calls": 5,
-    "timers": 20
+  "global": {
+    "data": { "keys": 42 },
+    "cache": { "size": 10, "hits": 100, "misses": 3, "hit_rate": 0.97 },
+    "queues": { "normal": 0, "delay": 0, "priority": 0, "broadcast": 0, "reliable": 0 }
   }
 }
 ```
+
+字段口径：
+
+- `services`：已发布服务名的字符串数组（经 actor 网格的 forked task，2 秒超时时整字段置为字符串 `"timeout"`，HTTP 状态仍为 200）。
+- `plugins`：插件实例数组，每项含 `id`/`package`/`state`/`required`。
+- `cluster`/`server`/`global` 为条件性块：分别在 `CLUSTER=ON` 且 ClusterManager 已初始化、`SERVER=ON` 且 ServerManager 已初始化、`GLOBAL=ON` 且 GlobalManager 存在（global 快照非 `null`）时才出现。
+- 无 `app`/`runtime`/`resources` 块；进程 uptime 等信息在 `/ops/health` 与 `/ops/metrics` 中。
 
 ### 指标导出
 
@@ -349,33 +362,39 @@ CAF actor handle
 
 ## 配置示例
 
+`ops:` 配置段**未实现**：bootstrap 硬编码 `ops_enabled = false`，配置中出现任何 `ops:` 段都会在运行时校验阶段失败并拒绝启动（`optional module config 'ops' requires shield_ops`），全仓也没有任何 `ops.*` 配置读取者。实际运维面由 `http:` 与 `console:` 键门控（实现于 `shield_bootstrap`）：
+
 ```yaml
-ops:
-  enabled: true
-  bind: "127.0.0.1:9090"  # 仅本地访问
-  metrics: true
-  health: true
-  profile: false  # 生产环境默认关闭
-  console: false  # 生产环境默认关闭
-  auth:           # 远程访问鉴权（可选）
-    type: token
-    token: ${OPS_TOKEN}
+http:
+  enabled: true                # 默认 false；总开关
+  host: "127.0.0.1"            # 默认 127.0.0.1（环回）
+  port: 8080                   # 默认 8080
+  eval_enabled: false          # 默认 false；/ops/eval 注册开关
+  eval_token: ""               # 默认空；eval_enabled=true 时必须非空
+  profile_enabled: false       # 默认 false；/ops/profile 注册开关
+  profile_token: ""            # 默认空；profile_enabled=true 时必须非空
+  profile_cooldown_seconds: 10 # 默认 10
+  slow_call_threshold_ms: 0    # 默认 0（不计量）
+
+console:
+  enabled: false               # 默认 false；Unix socket 诊断控制台开关
+  socket_path: "/tmp/shield-console.sock"  # 默认路径
 ```
 
 ## 节点状态与心跳
 
 本地 service 不做 per-service heartbeat；其存活与清理由 runtime 的 service stop/exit、registry 注销和 handle 失效流程维护。
 
-IPC / cluster 节点状态由链路 heartbeat 驱动：`online -> suspect -> offline -> removed`。默认建议：
+IPC / cluster 节点状态由链路 heartbeat 驱动：`online -> suspect -> offline`。判定是**时间窗语义**（自最近一次心跳/连接起点的经过时长与阈值比较），不是 miss 计数。实际默认值（配置键 `cluster.*`，`ClusterManager` 启动时读取）：
 
 ```text
-heartbeat_interval = 2s
-suspect_after      = 3 missed heartbeats
-offline_after      = 5 missed heartbeats
-remove_after       = 60s after offline
+cluster.heartbeat_interval_ms = 5000   # 心跳周期，下限 clamp 到 50ms
+cluster.suspect_timeout_ms    = 15000  # Online：超过该时长无心跳 -> Suspect
+cluster.offline_timeout_ms    = 30000  # Suspect：超过该时长无心跳 -> Offline
+                                       # Connecting：握手超过该时长 -> Offline
 ```
 
-`shield_ops` 应暴露当前 node 列表与状态、最近一次 heartbeat 时间、heartbeat RTT 与 miss 计数、offline 节点 tombstone、因 node offline 失败的 pending call 数量。
+无 offline -> removed 自动转移：`Removed` 状态只在 `ClusterManager::stop()` 停机时对全部节点统一置入，运行期不发生。
 
 ## 数据流
 
