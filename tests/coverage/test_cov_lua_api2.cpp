@@ -18,7 +18,6 @@
 #include <fstream>
 #include <functional>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 
@@ -210,7 +209,7 @@ BOOST_AUTO_TEST_CASE(SyncCallErrorCodes) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     // Main-thread shield.call / shield.call_timeout are frozen to an explicit
     // error code (M4: calls only run inside coroutines).
@@ -378,7 +377,7 @@ BOOST_AUTO_TEST_CASE(PluginQueryApiWithLiveInstance) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::plugin::PluginConfig pc;
     pc.directory = (workdir / "test_plugins").string();
@@ -436,7 +435,7 @@ BOOST_AUTO_TEST_CASE(ClientPrimitivesWithoutGateway) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     // Main-coroutine guard: bind refuses before touching any state.
     BOOST_CHECK(
@@ -490,7 +489,7 @@ BOOST_AUTO_TEST_CASE(ClientContextMarkerRoundTrip) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     const nlohmann::json marker =
         shield::lua::ClientContextData{"cov_gw", 4242, 1, "player-42", "json"}
@@ -555,7 +554,7 @@ BOOST_AUTO_TEST_CASE(ServiceHandleMetaMethods) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     BOOST_CHECK(run_script(lua,
                            "local a = shield._make_handle('svc.a')\n"
@@ -576,7 +575,7 @@ BOOST_AUTO_TEST_CASE(HttpdWithNullManagerThrows) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, nullptr, &runtime);
+    register_full_shield_api(lua.lua_state(), nullptr, &runtime);
 
     BOOST_CHECK(run_script(lua,
                            "local ok, err = pcall(function()\n"
@@ -682,7 +681,7 @@ BOOST_AUTO_TEST_CASE(MainThreadSpawnAndConfigEdges) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     const std::string module_path =
         write_script("cov4_spawn_target.lua", "local M = {}\nreturn M\n");
@@ -803,7 +802,7 @@ BOOST_AUTO_TEST_CASE(ConfigUnparseableNumberFallsBackToString) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::config::global_config().set("cov6.zzz", std::string("zzz"));
     BOOST_CHECK(run_script(lua, "assert(shield.config('cov6.zzz') == 'zzz')"));
@@ -819,14 +818,9 @@ BOOST_AUTO_TEST_CASE(ConfigUnparseableNumberFallsBackToString) {
 // ---------------------------------------------------------------------------
 
 // Direct declaration (the definition's default arguments are not repeated).
-// B2 note: lua_api.cpp internals are still sol2-based, so this direct
-// declaration keeps the sol2 shape until that batch.
 namespace shield::lua {
-sol::table make_error(sol::this_state state, std::string code,
-                      std::string message, bool retryable, sol::object detail);
-// The B1 seam bridge (httpd/eval handlers hand service tables to sol2
-// callbacks through it); declared here so the both validity arms run.
-sol::table to_sol_table(const shd::table& t);
+shd::table make_error(shd::this_state state, std::string code,
+                      std::string message, bool retryable, shd::object detail);
 }  // namespace shield::lua
 
 // make_error's detail branch: a valid non-nil object is attached, while a
@@ -836,7 +830,7 @@ BOOST_AUTO_TEST_CASE(MakeErrorDetailAndErrorCodeShim) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua);
+    register_full_shield_api(lua.lua_state());
 
     BOOST_CHECK(run_script(lua,
                            "assert(shield._call_error_code('x service dead "
@@ -846,25 +840,26 @@ BOOST_AUTO_TEST_CASE(MakeErrorDetailAndErrorCodeShim) {
 
     // Valid non-nil detail: attached to the error table.
     {
-        sol::object detail = sol::make_object(lua, "extra-context");
-        sol::table err = shield::lua::make_error(
-            sol::this_state(lua.lua_state()), "code_a", "msg_a", false, detail);
+        shd::object detail =
+            shd::make_object(shd::state_view(lua), "extra-context");
+        shd::table err = shield::lua::make_error(
+            shd::this_state(lua.lua_state()), "code_a", "msg_a", false, detail);
         BOOST_CHECK_EQUAL(err["code"].get<std::string>(), "code_a");
         BOOST_CHECK_EQUAL(err["detail"].get<std::string>(), "extra-context");
     }
     // Valid but nil detail: no detail field.
     {
-        sol::object detail(sol::lua_nil);
-        sol::table err = shield::lua::make_error(
-            sol::this_state(lua.lua_state()), "code_b", "msg_b", true, detail);
+        shd::object detail(shd::nil);
+        shd::table err = shield::lua::make_error(
+            shd::this_state(lua.lua_state()), "code_b", "msg_b", true, detail);
         BOOST_CHECK_EQUAL(err["code"].get<std::string>(), "code_b");
         BOOST_CHECK(!err["detail"].valid());
     }
     // Invalid object detail: no detail field either.
     {
-        sol::object detail{};
-        sol::table err = shield::lua::make_error(
-            sol::this_state(lua.lua_state()), "code_c", "msg_c", false, detail);
+        shd::object detail{};
+        shd::table err = shield::lua::make_error(
+            shd::this_state(lua.lua_state()), "code_c", "msg_c", false, detail);
         BOOST_CHECK_EQUAL(err["code"].get<std::string>(), "code_c");
         BOOST_CHECK(!err["detail"].valid());
     }
@@ -882,7 +877,7 @@ BOOST_AUTO_TEST_CASE(SyncSendErrorMatrix) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     const std::string callee_path = write_script(
         "cov7_callee.lua",
@@ -925,7 +920,7 @@ BOOST_AUTO_TEST_CASE(ClientContextMaterializerGuardArms) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, nullptr, nullptr);
+    register_full_shield_api(lua.lua_state(), nullptr, nullptr);
 
     const nlohmann::json marker =
         shield::lua::ClientContextData{"ghost_gw", 7, 3, "p1", "json"}
@@ -973,7 +968,7 @@ BOOST_AUTO_TEST_CASE(SparseIntegerKeyedArgSentAsObject) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     const std::string callee_path = write_script(
         "cov8_callee.lua",
@@ -1116,7 +1111,7 @@ BOOST_AUTO_TEST_CASE(ForkAnchorsInsideHandlerAndFromMainThread) {
     main_lua.open_libraries(shd::lib::base, shd::lib::coroutine,
                             shd::lib::table, shd::lib::string, shd::lib::os,
                             shd::lib::math);
-    register_full_shield_api(main_lua, &manager, &runtime);
+    register_full_shield_api(main_lua.lua_state(), &manager, &runtime);
     // The main chunk must END right after the fork: the borrowed actor
     // enters this bare VM from another thread as soon as it picks the task
     // up, and a lua_State must never be entered from two OS threads at
@@ -1160,7 +1155,7 @@ BOOST_AUTO_TEST_CASE(ConfigExponentNotationParsesAsFloat) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua);
+    register_full_shield_api(lua.lua_state());
 
     shield::config::global_config().set("cov11.exponent", std::string("1E3"));
     BOOST_CHECK(
@@ -1175,7 +1170,7 @@ BOOST_AUTO_TEST_CASE(ClientBindEmptyFieldGuards) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, nullptr, nullptr);
+    register_full_shield_api(lua.lua_state(), nullptr, nullptr);
 
     BOOST_CHECK(
         run_script(lua,
@@ -1201,7 +1196,7 @@ BOOST_AUTO_TEST_CASE(RegisterClientRpcHelperGuardArms) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, nullptr);
+    register_full_shield_api(lua.lua_state(), &manager, nullptr);
 
     // Fresh state: the helper creates the reverse-name table (valid-arm).
     register_client_rpc_helper(lua, &manager, "push_msg", 41);
@@ -1241,7 +1236,7 @@ BOOST_AUTO_TEST_CASE(HttpdWithoutRuntimeThrows) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, nullptr);
+    register_full_shield_api(lua.lua_state(), &manager, nullptr);
 
     BOOST_CHECK(
         run_script(lua,
@@ -1273,7 +1268,7 @@ BOOST_AUTO_TEST_CASE(ClusterNodeIdNilWithoutGlobalManager) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
     shield::cluster::set_global_cluster_manager(nullptr);
 
     BOOST_CHECK(run_script(
@@ -1300,7 +1295,7 @@ BOOST_AUTO_TEST_CASE(PlayerRefMarkerDecodeDefaults) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::player::PlayerManager pm(shield::player::PlayerConfig{});
     shield::player::PlayerManager::set_global(&pm);
@@ -1370,7 +1365,7 @@ BOOST_AUTO_TEST_CASE(PlayerRefBoxShdMarkerRoundTrip) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shd::object boxed = shd::make_object(
         shd::state_view(lua),
@@ -1396,7 +1391,7 @@ BOOST_AUTO_TEST_CASE(PlayerRegisterSessionEpochShapes) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::player::PlayerManager pm(shield::player::PlayerConfig{});
     shield::player::PlayerManager::set_global(&pm);
@@ -1451,7 +1446,7 @@ BOOST_AUTO_TEST_CASE(PlayerNodeInfoStatsAndSetupShapes) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
     shield::player::PlayerManager::set_global(nullptr);
 
     BOOST_CHECK(run_script(
@@ -1497,7 +1492,7 @@ BOOST_AUTO_TEST_CASE(ClusterRemoteSendSuspectAndSeamError) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     BOOST_CHECK(
         run_script(lua,
@@ -1548,7 +1543,7 @@ BOOST_AUTO_TEST_CASE(GlobalDataTtlDeltaAndBatchArms) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::global::GlobalManager gm(shield::global::GlobalConfig{});
     shield::global::GlobalManager::set_global(&gm);
@@ -1586,7 +1581,7 @@ BOOST_AUTO_TEST_CASE(RankMupdateSkipsMalformedAndAroundWindow) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::global::GlobalManager gm(shield::global::GlobalConfig{});
     shield::global::GlobalManager::set_global(&gm);
@@ -1620,7 +1615,7 @@ BOOST_AUTO_TEST_CASE(SchedulerNameValidationPauseAndGet) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::global::GlobalManager gm(shield::global::GlobalConfig{});
     std::string sched_error;
@@ -1660,7 +1655,7 @@ BOOST_AUTO_TEST_CASE(DistributedMutexFactoryArgShapes) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::global::GlobalManager gm(shield::global::GlobalConfig{});
     shield::global::GlobalManager::set_global(&gm);
@@ -1704,7 +1699,7 @@ BOOST_AUTO_TEST_CASE(ServerShutdownDelayAndUnwatchShapes) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::server::ServerManager sm(shield::server::ServerConfig{});
     shield::server::ServerManager::set_global(&sm);
@@ -1789,7 +1784,7 @@ BOOST_AUTO_TEST_CASE(ClusterNodeIdShapes) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     // No global manager: nullopt arm.
     BOOST_CHECK(run_script(lua, "assert(shield.cluster.node_id() == nil)\n"));
@@ -1858,7 +1853,7 @@ BOOST_AUTO_TEST_CASE(PlayerRefMarkerFieldTypeCoercion) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::player::PlayerManager pm(shield::player::PlayerConfig{});
     shield::player::PlayerManager::set_global(&pm);
@@ -1920,7 +1915,7 @@ BOOST_AUTO_TEST_CASE(PlayerRefEpochNonIntNumericDegradesToZero) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     shield::player::PlayerManager pm(shield::player::PlayerConfig{});
     shield::player::PlayerManager::set_global(&pm);
@@ -1962,25 +1957,3 @@ BOOST_AUTO_TEST_CASE(PlayerRefEpochNonIntNumericDegradesToZero) {
 // shield.global register_task: the name guard compound arms. Already
 // exercised in SchedulerNameValidationPauseAndGet with non-string (42) and
 // empty string ('') -> both arms covered. No additional test needed.
-
-// The sol2-seam bridge to_sol_table: a valid shd table maps to a sol table
-// view of the same content, an invalid one to an empty sol::table.
-BOOST_AUTO_TEST_CASE(ToSolTableBothValidityArms) {
-    shd::state lua;
-    lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
-                       shd::lib::string, shd::lib::os, shd::lib::math);
-
-    shd::table src = lua.create_table();
-    src["a"] = 1;
-    // Valid arm: the seam pushes the registry value, views it, and pops it.
-    // The returned view is stack-based and already popped inside the seam
-    // (B1 legacy, retired in B2), so it is not dereferenced here — the
-    // source table itself must survive the round-trip unchanged.
-    sol::table bridged = shield::lua::to_sol_table(src);
-    (void)bridged;
-    BOOST_CHECK_EQUAL(src["a"].get_or<int>(0), 1);
-
-    shd::table invalid;
-    sol::table none = shield::lua::to_sol_table(invalid);
-    BOOST_CHECK(!none.valid());
-}

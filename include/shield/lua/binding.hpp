@@ -83,6 +83,12 @@ struct nil_t {};
 inline constexpr nil_t nil{};
 inline constexpr std::nullopt_t nullopt = std::nullopt;
 
+// optional parity: common Lua binding layers model optional values as
+// std::optional with some conveniences. We expose std::optional directly under
+// the shd namespace.
+template <typename T>
+using optional = std::optional<T>;
+
 // ---- this_state -----------------------------------------------------------
 
 // Lightweight carrier handed to set_function lambdas that need the raw
@@ -437,6 +443,15 @@ std::tuple<Args...> unpack_all(lua_State* L, int& idx,
                       // init arcs record per instantiation)
 }
 
+// Usertype push (defined with the type-name registry below): forward
+// declared here so the dependent push() call inside push_result sees it.
+// Ordinary lookup for that dependent call only considers declarations above
+// it; box types from other namespaces (e.g. shield::lua) do not trigger
+// ADL into shd::detail, so without this the by-value usertype return path
+// in self_dispatch_helper has no viable push overload.
+template <typename T, typename Unused>
+void push(lua_State* L, const T& v);
+
 // Result pushing: single value, void, or tuple for multi-return.
 inline int push_result(lua_State* L, int base) {
     (void)base;
@@ -679,7 +694,7 @@ void push(lua_State* L, const T& v) {
         luaL_getmetatable(L, names.front().c_str());
         lua_setmetatable(L, -2);
         // No uservalue tag: is_shd_raw_userdata will return false, so the
-        // foreign path in sol_box_context_marker will be taken (which uses
+        // foreign path in box_context_marker will be taken (which uses
         // a plain object to read the pointer-box layout).
     } else {
         // Native shd usertype: value storage with type-name tag in uservalue 1.
@@ -691,6 +706,13 @@ void push(lua_State* L, const T& v) {
         lua_pushlstring(L, names.front().data(), names.front().size());
         lua_setiuservalue(L, -2, 1);
     }
+}
+
+// Rvalue overload for usertype values returned by value from bound methods.
+// Moves the value into the userdata storage.
+template <typename T, typename = std::enable_if_t<is_usertype_value<T>::value>>
+void push(lua_State* L, T&& v) {
+    push(L, static_cast<const T&>(v));
 }
 
 // Layout tag for the B1 dual-world seam: shd-created usertype userdata
@@ -1676,13 +1698,13 @@ inline constexpr int count = 12;
 }  // namespace lib
 
 // Loading/script error container (compatible shape: what()).
-class error {
+class error : public std::exception {
 public:
     error() = default;
     explicit error(std::string msg) : msg_(std::move(msg)) {}
     // const char* (not std::string) so `fprintf(..., "%s", e.what())` keeps
     // working unchanged for existing call sites.
-    const char* what() const noexcept { return msg_.c_str(); }
+    const char* what() const noexcept override { return msg_.c_str(); }
     explicit operator bool() const { return !msg_.empty(); }
 
 private:
@@ -2166,6 +2188,17 @@ public:
     template <typename T, typename... Args>
     void new_usertype(const std::string& name, Args&&... args) const {
         shd::new_usertype<T>(*this, name, std::forward<Args>(args)...);
+    }
+
+    // state::safe_script parity: run `code`; on failure, feed the error
+    // result through the caller's handler and return its result. Successful
+    // runs pass the result through the handler unchanged (semantics the
+    // Shield call sites rely on via their shape-casting handlers).
+    template <typename F>
+    protected_function_result safe_script(const std::string& code,
+                                          F&& handler) const {
+        protected_function_result r = script(code);
+        return handler(lua_state(), std::move(r));
     }
 
 protected:

@@ -24,7 +24,6 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <sol/sol.hpp>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -45,85 +44,24 @@
 
 namespace shield::lua {
 
-// B1 binding seam (removed in B2): sol2-side adapters over the canonical shd
-// converters so this TU's registered lambdas keep their call shapes. The
-// ServiceHandle userdata is a shd usertype since B1, so the handle read goes
-// through the shd view of the value.
+// ServiceHandle userdata constructor for the registration-time lambdas.
 namespace {
-sol::object json_to_lua(sol::state_view lua, const nlohmann::json& value) {
-    lua_State* L = lua.lua_state();
-    shd::object o = shield::lua::json_to_lua(shd::state_view(L), value);
-    o.push();
-    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
-    sol::object r(sol::stack_reference(L, i));
-    lua_pop(L, 1);
-    return r;
-}
-
-bool lua_to_json(const sol::object& value, nlohmann::json* out) {
-    lua_State* L = value.lua_state();
-    value.push();
-    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
-    const bool ok = shield::lua::lua_to_json(shd::object(L, i), out);
-    lua_pop(L, 1);
-    return ok;
-}
-
-nlohmann::json lua_to_json(const sol::object& value) {
-    nlohmann::json result;
-    if (!lua_to_json(value, &result)) {
-        return "<unsupported>";
-    }
-    return result;
-}
-
-shd::function to_shd_function(const sol::function& f) {
-    lua_State* L = f.lua_state();
-    f.push();
-    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
-    shd::function r(L, i);
-    lua_pop(L, 1);
-    return r;
-}  // GCOVR_EXCL_LINE (function-exit arc artifact of to_shd_function)
-
-// sol-side construction of the shd ServiceHandle userdata (B2 folds this
-// into the converted call sites).
-sol::object make_service_handle_object(sol::state_view lua,
-                                       ServiceHandle handle) {
-    lua_State* L = lua.lua_state();
-    shd::object o = shd::make_userdata<ServiceHandle>(
-        shd::state_view(L), "ServiceHandle", std::move(handle));
-    const int i = o.push();
-    sol::object r(sol::stack_reference(L, i));
-    lua_pop(L, 1);
-    return r;
+shd::object make_service_handle(shd::state_view lua, ServiceHandle handle) {
+    return shd::make_userdata<ServiceHandle>(lua, "ServiceHandle",
+                                             std::move(handle));
 }
 }  // namespace
 
-// Bridge a sol2-dispatched function argument into the shd registry-ref
-// world (timer/fork/httpd handlers cross into the B1 runtime here; B2
-// removes the seam with the rest of the sol surface). External (not in
-// the anonymous namespace above) so the coverage suite can drive both
-// validity arms directly.
-sol::table to_sol_table(const shd::table& t) {
-    if (!t.valid()) return sol::table();
-    lua_State* L = t.state();
-    const int i = t.push();
-    sol::table r(sol::stack_reference(L, i));
-    lua_pop(L, 1);
-    return r;
-}
-
-sol::table make_error(sol::this_state state, std::string code,
+shd::table make_error(shd::this_state state, std::string code,
                       std::string message, bool retryable = false,
-                      sol::object detail = sol::nil) {
-    sol::state_view lua(state);
-    sol::table err = lua.create_table();
+                      shd::object detail = shd::nil) {
+    shd::state_view lua(state);
+    shd::table err = lua.create_table();
     err["code"] = std::move(code);
     err["message"] = std::move(message);
     err["retryable"] = retryable;
     if (detail.valid() &&      // GCOVR_EXCL_BR_LINE (defensive: no detail)
-        detail != sol::nil) {  // GCOVR_EXCL_BR_LINE (defensive: no
+        detail != shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: no
                                // coverage-suite caller passes a detail object)
         err["detail"] = detail;  // GCOVR_EXCL_LINE (no coverage-suite caller
                                  // passes a detail object)
@@ -155,31 +93,12 @@ std::string call_error_code_for(const std::string& msg) {
 // client_identity.hpp). A ClientContext materializes whenever a
 // __shield_client_ref marker arrives in a message payload (gateway ingress,
 // on_connect/on_disconnect); a ClientRef is what shield.client.bind returns.
-// Lua cannot construct them (sol::no_constructor) and cannot mutate them.
+// Lua cannot construct them (shd::no_constructor) and cannot mutate them.
 // Passing either as a message argument serializes back to the marker form.
 
 namespace {
 
-// Shared read-only property binding for ClientContext and ClientRef: the
-// concrete Box parameter keeps sol's wrapper happy (a generic lambda is not
-// convertible to a single function pointer).
-template <typename Box>
-void bind_identity_properties(sol::usertype<Box>& type) {
-    type.set("player_id", [](const Box& box) { return box.data.player_id; });
-    type.set("session_id", [](const Box& box) { return box.data.session_id; });
-    type.set("session_epoch",      // GCOVR_EXCL_LINE (gcov clone artifact)
-             [](const Box& box) {  // GCOVR_EXCL_LINE
-                 return box.data.session_epoch;  // GCOVR_EXCL_LINE
-             });
-    type.set("protocol_profile_id",  // GCOVR_EXCL_LINE (gcov clone artifact)
-             [](const Box& box) {    // GCOVR_EXCL_LINE
-                 return box.data.protocol_profile_id;  // GCOVR_EXCL_LINE
-             });
-    type.set("gateway",
-             [](const Box& box) { return box.data.gateway_address; });
-}
-
-bool extract_client_data(const sol::object& object, ClientContextData* out) {
+bool extract_client_data(const shd::object& object, ClientContextData* out) {
     if (object.is<ClientContextBox>()) {
         *out = object.as<const ClientContextBox&>().data;
         return true;
@@ -197,12 +116,12 @@ bool extract_client_data(const sol::object& object, ClientContextData* out) {
 // __shield_client_ref marker table that travelled through a path without
 // materialization). Used by shield.client.bind/close and the client_rpc
 // egress helpers.
-static bool client_arg_to_data(const sol::object& object,
+static bool client_arg_to_data(const shd::object& object,
                                ClientContextData* out) {
     if (extract_client_data(object, out)) {
         return true;
     }
-    if (object.is<sol::table>()) {
+    if (object.is<shd::table>()) {
         auto data = ClientContextData::from_json(lua_to_json(object));
         if (data.has_value()) {
             *out = std::move(*data);
@@ -212,39 +131,37 @@ static bool client_arg_to_data(const sol::object& object,
     return false;
 }
 
-// B1 binding seam: the canonical converter signature is shd (declared in
-// lua_api.hpp, defined below as a thin wrapper); this renamed body keeps the
-// B2 sol2 materialization internals (PlayerRefBox) unchanged until B2
-// rewrites them in place.
-sol::object json_to_lua_sol(sol::state_view lua, const nlohmann::json& value) {
+// Canonical JSON -> Lua converter. Marker objects materialize as read-only
+// identity userdata (see the __shield_*_ref handling below).
+shd::object json_to_lua(shd::state_view lua, const nlohmann::json& value) {
     if (value.is_null()) {
-        return sol::make_object(lua, sol::nil);
+        return shd::make_object(lua, shd::nil);
     }
     if (value.is_boolean()) {
-        return sol::make_object(lua, value.get<bool>());
+        return shd::make_object(lua, value.get<bool>());
     }
     if (value.is_number_integer()) {
-        return sol::make_object(lua, value.get<std::int64_t>());
+        return shd::make_object(lua, value.get<std::int64_t>());
     }
     // GCOVR_EXCL_START (unreachable: is_number_integer() also matches
     // unsigned values, so this arm can never be selected)
     if (value.is_number_unsigned()) {
-        return sol::make_object(lua, value.get<std::uint64_t>());
+        return shd::make_object(lua, value.get<std::uint64_t>());
     }
     // GCOVR_EXCL_STOP
     if (value.is_number_float()) {
-        return sol::make_object(lua, value.get<double>());
+        return shd::make_object(lua, value.get<double>());
     }
     if (value.is_string()) {
-        return sol::make_object(lua, value.get<std::string>());
+        return shd::make_object(lua, value.get<std::string>());
     }
     if (value.is_array()) {
-        sol::table table = lua.create_table();
+        shd::table table = lua.create_table();
         int index = 1;
         for (const auto& item : value) {
-            table[index++] = json_to_lua_sol(lua, item);
+            table[index++] = json_to_lua(lua, item);
         }
-        return sol::make_object(lua, table);
+        return shd::make_object(lua, table);
     }
     if (value.is_object()) {
 #ifdef SHIELD_ENABLE_PLAYER
@@ -276,82 +193,49 @@ sol::object json_to_lua_sol(sol::state_view lua, const nlohmann::json& value) {
                                                it->get<std::int64_t>() >= 0) {
                 ref.epoch = it->get<std::uint64_t>();
             }
-            return sol::make_object(lua, PlayerRefBox{std::move(ref)});
+            return shd::make_object(lua, PlayerRefBox{std::move(ref)});
         }
 #endif
         // A trusted client-identity marker materializes as the read-only
         // ClientContext userdata. from_json does all field validation, so a
         // malformed field degrades to its default instead of throwing.
         if (auto ctx = ClientContextData::from_json(value)) {
-            sol::object maybe_ud = lua["__shield_make_client_context"];
-            if (maybe_ud.valid() && maybe_ud.is<sol::protected_function>()) {
-                sol::protected_function make_context =
-                    maybe_ud.as<sol::protected_function>();
+            shd::object maybe_ud = lua["__shield_make_client_context"];
+            if (maybe_ud.valid() && maybe_ud.is<shd::protected_function>()) {
+                shd::protected_function make_context =
+                    maybe_ud.as<shd::protected_function>();
                 auto result = make_context(ctx->session_id, ctx->session_epoch,
                                            ctx->player_id, ctx->gateway_address,
                                            ctx->protocol_profile_id);
                 if (result.valid() && result.return_count() > 0) {
-                    return result.get<sol::object>(0);
+                    return result.get<shd::object>(0);
                 }
             }
         }
-        sol::table table = lua.create_table();
+        shd::table table = lua.create_table();
         for (const auto& [key, item] : value.items()) {
-            table[key] = json_to_lua_sol(lua, item);
+            table[key] = json_to_lua(lua, item);
         }
-        return sol::make_object(lua, table);
+        return shd::make_object(lua, table);
     }
-    return sol::make_object(lua, sol::nil);
+    return shd::make_object(lua, shd::nil);
 }
 
-// Canonical (shd) converter: wraps the sol2 body above. The B2 phase folds
-// the body in and removes this bridge.
-// Sol2-created Box userdata is a pointer box (sol2 usertype storage); the
-// shd raw-value read would misinterpret it. Field extraction stays on the
-// sol side until B2 folds the materializers into shd.
-nlohmann::json sol_box_context_marker(const shd::object& value) {
-    lua_State* L = value.state();
-    value.push();
-    const int i = lua_gettop(L);  // absolute slot
-    if (shd::detail::is_shd_raw_userdata(L, i)) {
-        // shd-created payload: raw T in place, read directly.
-        const shd::stack_object raw(L, i);
-        if (raw.is<ClientContextBox>()) {
-            const auto d = raw.as<const ClientContextBox&>().data;
-            lua_pop(L, 1);
-            return d.to_json();
-        }
-        const auto d = raw.as<const ClientRefBox&>().data;
-        lua_pop(L, 1);
-        return d.to_json();
+// Serialize client identity userdata back to its __shield_client_ref marker
+// form (the inverse of the json_to_lua materialization). Both boxes wrap the
+// same trusted snapshot, so either shape serializes identically.
+nlohmann::json box_context_marker(const shd::object& value) {
+    if (value.is<ClientContextBox>()) {
+        return value.as<const ClientContextBox&>().data.to_json();
     }
-    // sol2-created payload: pointer-box layout, read on the sol side.
-    sol::object so(sol::stack_reference(L, i));
-    lua_pop(L, 1);
-    if (so.is<ClientContextBox>()) {
-        return so.as<const ClientContextBox&>().data.to_json();
-    }
-    return so.as<const ClientRefBox&>().data.to_json();
+    return value.as<const ClientRefBox&>().data.to_json();
 }
 
 #ifdef SHIELD_ENABLE_PLAYER
-nlohmann::json sol_box_player_marker(const shd::object& value) {
-    lua_State* L = value.state();
-    value.push();
-    const int i = lua_gettop(L);  // absolute slot
-    if (shd::detail::is_shd_raw_userdata(L, i)) {
-        const shd::stack_object raw(L, i);
-        const auto d = raw.as<const PlayerRefBox&>().data;
-        lua_pop(L, 1);
-        return nlohmann::json{{"__shield_player_ref", true},
-                              {"uid", d.uid},
-                              {"node_id", d.node_id},
-                              {"service_id", d.service_id},
-                              {"epoch", d.epoch}};
-    }  // GCOVR_EXCL_LINE (block-close artifact: the branch exits via return)
-    sol::object so(sol::stack_reference(L, i));
-    lua_pop(L, 1);
-    const auto& d = so.as<const PlayerRefBox&>().data;
+// PlayerRef userdata travels in its marker form (the inverse of the
+// json_to_lua materialization).
+nlohmann::json box_player_marker(const shd::object& value) {
+    const auto& d = value.as<const PlayerRefBox&>().data;
     return nlohmann::json{{"__shield_player_ref", true},
                           {"uid", d.uid},
                           {"node_id", d.node_id},
@@ -360,25 +244,14 @@ nlohmann::json sol_box_player_marker(const shd::object& value) {
 }
 #endif  // SHIELD_ENABLE_PLAYER
 
-shd::object json_to_lua(shd::state_view lua, const nlohmann::json& value) {
-    lua_State* L = lua.lua_state();
-    sol::object o =
-        json_to_lua_sol(sol::state_view(L), value);  // canonical body
-    o.push();
-    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
-    shd::object r(L, i);
-    lua_pop(L, 1);
-    return r;
-}
-
-nlohmann::json lua_table_to_json(const sol::table& table) {
+nlohmann::json lua_table_to_json(const shd::table& table) {
     bool array_like = true;
     std::size_t max_index = 0;
     std::size_t entry_count = 0;
 
     for (const auto& [key, _] : table) {
         ++entry_count;
-        sol::object key_obj = key;
+        shd::object key_obj = key;
         if (!key_obj.is<int>()) {
             array_like = false;
             break;
@@ -400,14 +273,14 @@ nlohmann::json lua_table_to_json(const sol::table& table) {
                                       // nlohmann construction arcs)
         for (std::size_t i = 1; i <= max_index; ++i) {
             array.push_back(
-                lua_to_json(sol::object(table[static_cast<int>(i)])));
+                lua_to_json(shd::object(table[static_cast<int>(i)])));
         }
         return array;  // GCOVR_EXCL_BR_LINE (compiler artifact: return arc)
     }  // GCOVR_EXCL_LINE
 
     nlohmann::json object = nlohmann::json::object();
     for (const auto& [key, value] : table) {
-        sol::object key_obj = key;
+        shd::object key_obj = key;
         std::string object_key;
         if (key_obj.is<std::string>()) {
             object_key = key_obj.as<std::string>();
@@ -421,41 +294,36 @@ nlohmann::json lua_table_to_json(const sol::table& table) {
     return object;
 }
 
-nlohmann::json variadic_to_json_array(sol::variadic_args args) {
+nlohmann::json variadic_to_json_array(shd::variadic_args args) {
     nlohmann::json values = nlohmann::json::array();
     for (const auto& arg : args) {
-        values.push_back(lua_to_json(sol::object(arg)));
+        values.push_back(lua_to_json(shd::object(arg)));
     }
     return values;
 }  // GCOVR_EXCL_LINE
 
 // Helper to extract service ID from ServiceHandle or string
-std::string extract_service_id(const sol::object& target) {
-    lua_State* L = target.lua_state();
-    target.push();
-    const int i = lua_gettop(L);  // absolute slot (sol push() is relative)
-    shd::object so(L, i);
+std::string extract_service_id(const shd::object& target) {
     std::string id;
-    if (so.is<ServiceHandle>()) {
-        id = so.as<ServiceHandle>().id();
-    } else if (so.is<std::string>()) {
-        id = so.as<std::string>();
+    if (target.is<ServiceHandle>()) {
+        id = target.as<ServiceHandle>().id();
+    } else if (target.is<std::string>()) {
+        id = target.as<std::string>();
     }
-    lua_pop(L, 1);
     return id;
 }
 
-void register_service_api(sol::table& shield, LuaServiceManager* manager) {
+void register_service_api(shd::table& shield, LuaServiceManager* manager) {
     // Synchronous spawn primitive: runs VM creation + on_init on the calling
     // thread. The public shield.spawn wrapper (below) uses this on the main
     // thread, inside a spawn's on_init, and as the fallback when the
     // coroutine path cannot suspend.
     shield.set_function(
         "_sync_spawn",
-        [manager](sol::this_state state, std::string module,
-                  sol::optional<sol::table> opts) -> sol::variadic_results {
-            sol::state_view lua(state);
-            sol::variadic_results results;
+        [manager](shd::this_state state, std::string module,
+                  std::optional<shd::table> opts) -> shd::variadic_results {
+            shd::state_view lua(state);
+            shd::variadic_results results;
 
             nlohmann::json options =
                 opts ? lua_table_to_json(*opts) : nlohmann::json::object();
@@ -472,7 +340,7 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
                            std::string::npos) {
                     code = "init_failed";
                 }
-                results.push_back(sol::make_object(lua, sol::nil));
+                results.push_back(shd::make_object(lua, shd::nil));
                 results.push_back(
                     make_error(state, std::move(code), result.error_message));
                 return results;
@@ -480,12 +348,12 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
 
             // Return ServiceHandle userdata instead of string
             ServiceHandle handle(result.service_id);
-            results.push_back(make_service_handle_object(lua, handle));
-            results.push_back(sol::make_object(lua, sol::nil));
+            results.push_back(make_service_handle(lua, handle));
+            results.push_back(shd::make_object(lua, shd::nil));
             return results;
         });
 
-    shield.set_function("exit", [manager](sol::optional<std::string> reason) {
+    shield.set_function("exit", [manager](std::optional<std::string> reason) {
         manager->request_current_exit(reason.value_or("normal"));
     });
 
@@ -497,20 +365,20 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
     });
 
     shield.set_function(
-        "self", [manager](sol::this_state state) -> sol::object {
-            sol::state_view lua(state);
+        "self", [manager](shd::this_state state) -> shd::object {
+            shd::state_view lua(state);
             const auto service_id = manager->current_service_id();
             if (service_id.empty()) {
-                return sol::make_object(lua, sol::nil);
+                return shd::make_object(lua, shd::nil);
             }
             ServiceHandle handle(service_id);
-            return make_service_handle_object(lua, handle);
+            return make_service_handle(lua, handle);
         });
 
     shield.set_function("names",
-                        [manager](sol::this_state state) -> sol::table {
-                            sol::state_view lua(state);
-                            sol::table names = lua.create_table();
+                        [manager](shd::this_state state) -> shd::table {
+                            shd::state_view lua(state);
+                            shd::table names = lua.create_table();
 
                             int index = 1;
                             for (const auto& name : manager->list_services()) {
@@ -521,20 +389,20 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
 
     shield.set_function(
         "query",
-        [manager](sol::this_state state,
-                  std::string name) -> sol::variadic_results {
-            sol::state_view lua(state);
-            sol::variadic_results results;
+        [manager](shd::this_state state,
+                  std::string name) -> shd::variadic_results {
+            shd::state_view lua(state);
+            shd::variadic_results results;
 
             const auto service = manager->query_service(name);
             if (!service.empty()) {
                 ServiceHandle handle(service);
-                results.push_back(make_service_handle_object(lua, handle));
-                results.push_back(sol::make_object(lua, sol::nil));
+                results.push_back(make_service_handle(lua, handle));
+                results.push_back(shd::make_object(lua, shd::nil));
                 return results;
             }
 
-            results.push_back(sol::make_object(lua, sol::nil));
+            results.push_back(shd::make_object(lua, shd::nil));
             results.push_back(make_error(state, "service_not_found",
                                          "service not found: " + name));
             return results;
@@ -542,39 +410,39 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
 
     shield.set_function(
         "register",
-        [manager](sol::this_state state,
-                  std::string name) -> sol::variadic_results {
-            sol::state_view lua(state);
-            sol::variadic_results results;
+        [manager](shd::this_state state,
+                  std::string name) -> shd::variadic_results {
+            shd::state_view lua(state);
+            shd::variadic_results results;
 
             std::string error;
             if (!manager->register_name(name, &error)) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error(state, "register_failed", error));
                 return results;
             }
 
-            results.push_back(sol::make_object(lua, true));
-            results.push_back(sol::make_object(lua, sol::nil));
+            results.push_back(shd::make_object(lua, true));
+            results.push_back(shd::make_object(lua, shd::nil));
             return results;
         });
 
     shield.set_function("unregister",
-                        [manager](sol::this_state state,
-                                  std::string name) -> sol::variadic_results {
-                            sol::state_view lua(state);
-                            sol::variadic_results results;
+                        [manager](shd::this_state state,
+                                  std::string name) -> shd::variadic_results {
+                            shd::state_view lua(state);
+                            shd::variadic_results results;
 
                             std::string error;
                             if (!manager->unregister_name(name, &error)) {
-                                results.push_back(sol::make_object(lua, false));
+                                results.push_back(shd::make_object(lua, false));
                                 results.push_back(make_error(
                                     state, "unregister_failed", error));
                                 return results;
                             }
 
-                            results.push_back(sol::make_object(lua, true));
-                            results.push_back(sol::make_object(lua, sol::nil));
+                            results.push_back(shd::make_object(lua, true));
+                            results.push_back(shd::make_object(lua, shd::nil));
                             return results;
                         });
 
@@ -584,20 +452,20 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
     // service calls this in its own handler.
     shield.set_function(
         "claim",
-        [manager](sol::this_state state,
-                  std::string name) -> sol::variadic_results {
-            sol::state_view lua(state);
-            sol::variadic_results results;
+        [manager](shd::this_state state,
+                  std::string name) -> shd::variadic_results {
+            shd::state_view lua(state);
+            shd::variadic_results results;
 
             std::string error;
             if (!manager->claim_name(name, &error)) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error(state, "claim_failed", error));
                 return results;
             }
 
-            results.push_back(sol::make_object(lua, true));
-            results.push_back(sol::make_object(lua, sol::nil));
+            results.push_back(shd::make_object(lua, true));
+            results.push_back(shd::make_object(lua, shd::nil));
             return results;
         });
 
@@ -610,8 +478,8 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
     // must fall back to _sync_spawn.
     shield.set_function(
         "_coro_spawn",
-        [manager](sol::this_state state, std::string module,
-                  sol::optional<sol::table> opts, int timeout_ms) -> uint64_t {
+        [manager](shd::this_state state, std::string module,
+                  std::optional<shd::table> opts, int timeout_ms) -> uint64_t {
             if (manager->current_service_id().empty()) {
                 return 0;
             }
@@ -635,7 +503,7 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
             }
             // GCOVR_EXCL_STOP
             return session;
-        });  // GCOVR_EXCL_BR_LINE (compiler artifact: sol2 argument-conversion
+        });  // GCOVR_EXCL_BR_LINE (compiler artifact: shd argument-conversion
              // template arcs at the set_function boundary)
 
     // Rebuild a ServiceHandle userdata from a service id. Used by the
@@ -643,25 +511,26 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
     // carries JSON, not userdata).
     shield.set_function(
         "_make_handle",  // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](sol::this_state state,  // GCOVR_EXCL_LINE
-           std::string service_id) -> sol::object {
-            sol::state_view lua(state);
+        [](shd::this_state state,  // GCOVR_EXCL_LINE
+           std::string service_id) -> shd::object {
+            shd::state_view lua(state);
             ServiceHandle handle(std::move(service_id));
-            return make_service_handle_object(lua, handle);
+            return make_service_handle(lua, handle);
         });
 
     // Business-triggered panic: invoke on_panic(reason, {type="explicit"})
     // and exit the current service with reason "panic".
-    shield.set_function("panic", [manager](sol::optional<std::string> reason) {
+    shield.set_function("panic", [manager](std::optional<std::string> reason) {
         manager->panic_current(reason.value_or("explicit panic"));
     });
 
     // Public shield.spawn: suspend inside handler coroutines (the spawn
     // worker runs on_init off-actor), stay synchronous on the main thread and
     // inside a spawn's on_init (on the spawning thread).
-    sol::state_view lua(shield.lua_state());
+    shd::state_view lua(shield.lua_state());
     lua["shield"] = shield;
-    lua.safe_script(
+    shd::safe_script(
+        lua,
         "shield.spawn = function(module, opts)\n"
         "  local _, ismain = coroutine.running()\n"
         "  if ismain or shield._in_on_init() then return "
@@ -683,11 +552,11 @@ void register_service_api(sol::table& shield, LuaServiceManager* manager) {
         // body runs (its closing brace is covered) but the opening arc is
         // emitted only into an outlined clone that is never called.
         [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
+           shd::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
                                            // artifact)
                pfr)                        // GCOVR_EXCL_LINE (gcov
                                            // clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 }
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -763,18 +632,18 @@ RemoteResolution resolve_remote_target(LuaServiceManager* manager,
 }  // namespace
 #endif
 
-void register_message_api(sol::table& shield, LuaServiceManager* manager,
+void register_message_api(shd::table& shield, LuaServiceManager* manager,
                           LuaRuntime* runtime) {
     shield.set_function(
         "send",
-        [manager](sol::this_state state, sol::object target, std::string method,
-                  sol::variadic_args args) -> sol::variadic_results {
-            sol::state_view lua(state);
-            sol::variadic_results results;
+        [manager](shd::this_state state, shd::object target, std::string method,
+                  shd::variadic_args args) -> shd::variadic_results {
+            shd::state_view lua(state);
+            shd::variadic_results results;
 
             std::string target_id = extract_service_id(target);
             if (target_id.empty()) {
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error(state, "invalid_target",
                                "target must be ServiceHandle or string"));
@@ -787,7 +656,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             const auto remote = resolve_remote_target(manager, target_id);
             if (remote.is_remote) {
                 if (!remote.error_code.empty()) {
-                    results.push_back(sol::make_object(lua, false));
+                    results.push_back(shd::make_object(lua, false));
                     results.push_back(make_error(
                         state, remote.error_code, remote.error_message,
                         remote_error_retryable(remote.error_code)));
@@ -798,11 +667,11 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                 if (cm->send_remote(remote.node, remote.service_id, method,
                                     variadic_to_json_array(args).dump(), 0, 0,
                                     &send_error)) {
-                    results.push_back(sol::make_object(lua, true));
-                    results.push_back(sol::make_object(lua, sol::nil));
+                    results.push_back(shd::make_object(lua, true));
+                    results.push_back(shd::make_object(lua, shd::nil));
                     return results;
                 }
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(make_error(
                     state, remote_send_error_code(send_error), send_error,
                     remote_error_retryable(
@@ -836,14 +705,14 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                            std::string::npos) {
                     code = "coroutine_limit";  // GCOVR_EXCL_LINE
                 }
-                results.push_back(sol::make_object(lua, false));
+                results.push_back(shd::make_object(lua, false));
                 results.push_back(
                     make_error(state, std::move(code), error, retryable));
                 return results;
             }
 
-            results.push_back(sol::make_object(lua, true));
-            results.push_back(sol::make_object(lua, sol::nil));
+            results.push_back(shd::make_object(lua, true));
+            results.push_back(shd::make_object(lua, shd::nil));
             return results;
         });
 
@@ -853,8 +722,8 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     // session id (0 if the caller is not inside a coroutine).
     shield.set_function(
         "_coro_call",
-        [manager](sol::this_state state, sol::object target, std::string method,
-                  sol::table args, int timeout_ms) -> uint64_t {
+        [manager](shd::this_state state, shd::object target, std::string method,
+                  shd::table args, int timeout_ms) -> uint64_t {
             // Refuse to suspend the main thread: the Lua wrapper never
             // dispatches off-coroutine, and anchoring the main thread here
             // would leave it suspended with no resume source.
@@ -885,7 +754,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
 
             // Pack the arguments once for both dispatch paths.
             std::size_t arg_count = args.size();
-            sol::object packed_count = args["n"];
+            shd::object packed_count = args["n"];
             if (packed_count.valid() && packed_count.is<int>()) {
                 const int n = packed_count.as<int>();
                 arg_count = n > 0 ? static_cast<std::size_t>(n) : 0;
@@ -893,7 +762,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
             nlohmann::json json_args = nlohmann::json::array();
             for (std::size_t i = 1; i <= arg_count; ++i) {
                 json_args.push_back(
-                    lua_to_json(sol::object(args[static_cast<int>(i)])));
+                    lua_to_json(shd::object(args[static_cast<int>(i)])));
             }
 
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -1012,7 +881,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
                 // GCOVR_EXCL_STOP
             }
             return session;
-        });  // GCOVR_EXCL_BR_LINE (compiler artifact: sol2 argument-conversion
+        });  // GCOVR_EXCL_BR_LINE (compiler artifact: shd argument-conversion
              // template arcs at the set_function boundary)
 
     shield.set_function("_is_in_exit",
@@ -1024,11 +893,11 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     // invalid_target regardless of the calling context.
     shield.set_function(
         "_call_target_id",
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
-           sol::object target) -> sol::optional<std::string> {
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+           shd::object target) -> std::optional<std::string> {
             const std::string id = extract_service_id(target);
             if (id.empty()) {
-                return sol::nullopt;
+                return shd::nullopt;
             }
             return id;
         });
@@ -1036,7 +905,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     // Stable error code for a raw call-failure message (used by the call
     // wrapper to shape non-table resume payloads into {code, message}).
     shield.set_function("_call_error_code",  // GCOVR_EXCL_LINE
-                        [](sol::optional<    // GCOVR_EXCL_LINE
+                        [](std::optional<    // GCOVR_EXCL_LINE
                             std::string>
                                msg) -> std::string {
                             return call_error_code_for(msg.value_or(""));
@@ -1045,7 +914,7 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     // DEPRECATED: Use ctx.sender instead. Kept for backward compatibility.
     // In new code, prefer: function M.handler(ctx, ...) local src = ctx.sender
     // end
-    shield.set_function("sender", [manager]() -> sol::optional<std::string> {
+    shield.set_function("sender", [manager]() -> std::optional<std::string> {
         // Returns nil in timer/fork context (no sender).
         // Returns nil outside any dispatch (module-level code).
         // The distinction between "no sender" and "context_expired" is
@@ -1053,24 +922,24 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
         // the sender is empty; outside any scope the context is expired.
         const auto sender = manager->current_sender_id();
         if (sender.empty()) {
-            return sol::nullopt;
+            return shd::nullopt;
         }
         return sender;
     });
 
     // DEPRECATED: Use ctx.trace instead. Kept for backward compatibility.
-    shield.set_function("trace", [manager]() -> sol::optional<std::string> {
+    shield.set_function("trace", [manager]() -> std::optional<std::string> {
         const auto trace = manager->current_trace_id();
         if (trace.empty())  // GCOVR_EXCL_LINE (no active trace in coverage
-            return sol::nullopt;  // suites reach this shim)
+            return shd::nullopt;  // suites reach this shim)
         return trace;             // GCOVR_EXCL_LINE (continuation)
     });
 
     // DEPRECATED: Use ctx.deadline instead. Kept for backward compatibility.
-    shield.set_function("deadline", [manager]() -> sol::optional<int64_t> {
+    shield.set_function("deadline", [manager]() -> std::optional<int64_t> {
         const auto dl = manager->current_deadline_ms();
         if (dl <= 0)  // GCOVR_EXCL_LINE (no active deadline in coverage
-            return sol::nullopt;  // suites reach this shim)
+            return shd::nullopt;  // suites reach this shim)
         return dl;                // GCOVR_EXCL_LINE (continuation)
     });
 
@@ -1079,9 +948,10 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
     // until the callee completes; on the main thread — module-level code —
     // they are rejected with a stable error code instead of blocking the
     // worker.
-    sol::state_view lua(shield.lua_state());
+    shd::state_view lua(shield.lua_state());
     lua["shield"] = shield;
-    lua.safe_script(
+    shd::safe_script(
+        lua,
         "shield.call = function(target, method, ...)\n"
         "  if shield._is_in_exit() then\n"
         "    return false, {code='api_not_allowed_in_exit', "
@@ -1143,14 +1013,14 @@ void register_message_api(sol::table& shield, LuaServiceManager* manager,
         "  return true, table.unpack(r, 2, r.n)\n"
         "end",          // GCOVR_EXCL_LINE (gcov continuation artifact)
         [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
+           shd::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
                                            // artifact)
                pfr)                        // GCOVR_EXCL_LINE (gcov
                                            // clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 }
 
-void register_timer_api(sol::table& shield, LuaServiceManager* manager,
+void register_timer_api(shd::table& shield, LuaServiceManager* manager,
                         LuaRuntime* runtime) {
     shield.set_function(
         "now", [manager]() -> int64_t { return manager->clock_now_ms(); });
@@ -1166,9 +1036,9 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
     shield.set_function(
         "timer_once",
         [manager](int delay_ms,
-                  sol::function callback) -> sol::variadic_results {
-            sol::variadic_results results;
-            sol::state_view lua(callback.lua_state());
+                  shd::function callback) -> shd::variadic_results {
+            shd::variadic_results results;
+            shd::state_view lua(callback.lua_state());
 
             // Get current service ID
             const std::string service_id = manager->current_service_id();
@@ -1176,42 +1046,27 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             // Check timer limit.
             const auto timer_count = manager->active_actor_timer_count();
             if (timer_count >= kTimerLimit) {
-                results.push_back(sol::make_object(lua, sol::nil));
-                sol::this_state ts(callback.lua_state());
+                results.push_back(shd::make_object(lua, shd::nil));
+                shd::this_state ts(callback.lua_state());
                 results.push_back(
                     make_error(ts, "timer_limit", "timer limit reached"));
                 return results;
             }
 
-            const uint64_t id =
-                service_id.empty()
-                    ? 0
-                    : manager->schedule_actor_timer_once(  // GCOVR_EXCL_BR_LINE
-                                                           // (compiler
-                                                           // artifact:
-                                                           // sol::function copy
-                                                           // arcs at the call
-                                                           // boundary)
-                          delay_ms,
-                          to_shd_function(  // GCOVR_EXCL_BR_LINE
-                                            // (compiler artifact: sol::function
-                                            // copy arcs at the call boundary;
-                                            // the records attribute to this
-                                            // opening line)
-                              callback),    // GCOVR_EXCL_BR_LINE (compiler
-                                            // artifact: sol::function copy
-                                            // arcs at the call boundary)
-                          service_id);
-            results.push_back(sol::make_object(lua, id));
+            const uint64_t id = service_id.empty()
+                                    ? 0
+                                    : manager->schedule_actor_timer_once(
+                                          delay_ms, callback, service_id);
+            results.push_back(shd::make_object(lua, id));
             return results;
         });
 
     shield.set_function(
         "timer",
         [manager](int interval_ms,
-                  sol::function callback) -> sol::variadic_results {
-            sol::variadic_results results;
-            sol::state_view lua(callback.lua_state());
+                  shd::function callback) -> shd::variadic_results {
+            shd::variadic_results results;
+            shd::state_view lua(callback.lua_state());
 
             // Get current service ID
             const std::string service_id = manager->current_service_id();
@@ -1219,53 +1074,35 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             // Check timer limit.
             const auto timer_count = manager->active_actor_timer_count();
             if (timer_count >= kTimerLimit) {
-                results.push_back(sol::make_object(lua, sol::nil));
-                sol::this_state ts(callback.lua_state());
+                results.push_back(shd::make_object(lua, shd::nil));
+                shd::this_state ts(callback.lua_state());
                 results.push_back(
                     make_error(ts, "timer_limit", "timer limit reached"));
                 return results;
             }
 
-            const uint64_t id =
-                service_id.empty()
-                    ? 0
-                    : manager
-                          ->schedule_actor_timer_fixed_delay(  // GCOVR_EXCL_BR_LINE
-                                                               // (compiler
-                                                               // artifact:
-                                                               // sol::function
-                                                               // copy arcs
-                                                               // at the call
-                                                               // boundary)
-                              interval_ms,
-                              to_shd_function(  // GCOVR_EXCL_BR_LINE
-                                                // (compiler artifact:
-                                                // sol::function copy arcs at
-                                                // the call boundary; the
-                                                // records attribute to this
-                                                // opening line)
-                                  callback),    // GCOVR_EXCL_BR_LINE (compiler
-                                                // artifact: sol::function copy
-                                                // arcs at the call boundary)
-                              service_id);
-            results.push_back(sol::make_object(lua, id));
+            const uint64_t id = service_id.empty()
+                                    ? 0
+                                    : manager->schedule_actor_timer_fixed_delay(
+                                          interval_ms, callback, service_id);
+            results.push_back(shd::make_object(lua, id));
             return results;
         });
 
     shield.set_function(
         "cancel_timer",
-        [manager](sol::this_state state, uint64_t id) -> sol::variadic_results {
-            sol::state_view lua(state);
-            sol::variadic_results results;
+        [manager](shd::this_state state, uint64_t id) -> shd::variadic_results {
+            shd::state_view lua(state);
+            shd::variadic_results results;
 
             const bool cancelled = manager->cancel_actor_timer(id);
-            results.push_back(sol::make_object(lua, cancelled));
+            results.push_back(shd::make_object(lua, cancelled));
             if (!cancelled) {
                 results.push_back(
                     make_error(state, "timer_not_found",
                                "Timer not found or already completed"));
             } else {
-                results.push_back(sol::make_object(lua, sol::nil));
+                results.push_back(shd::make_object(lua, shd::nil));
             }
             return results;
         });
@@ -1274,7 +1111,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
     // timer to resume the current coroutine and then yields. The C primitive
     // _resume_after anchors the running coroutine against GC and arms the
     // timer; coroutine.yield suspends until the timer fires and resumes us.
-    shield.set_function("_resume_after", [manager](sol::this_state state,
+    shield.set_function("_resume_after", [manager](shd::this_state state,
                                                    int delay_ms) {
         if (delay_ms < 0) {
             delay_ms = 0;
@@ -1318,7 +1155,7 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
             if (status == LUA_OK) {
                 nlohmann::json returns = nlohmann::json::array();
                 for (int i = 0; i < nres; ++i) {
-                    sol::stack_object so(sol::state_view(co), i + 1);
+                    shd::stack_object so(shd::state_view(co), i + 1);
                     returns.push_back(lua_to_json(so));
                 }
                 manager->on_handler_completed(co, returns);
@@ -1375,12 +1212,13 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
     });
 
-    sol::state_view lua(shield.lua_state());
+    shd::state_view lua(shield.lua_state());
     lua["shield"] = shield;
     // Define shield.sleep in Lua so it can use coroutine.yield natively. When
     // not running inside a coroutine, block the calling thread so the call
     // still completes.
-    lua.safe_script(
+    shd::safe_script(
+        lua,
         "shield.sleep = function(ms)\n"
         "  local _, ismain = coroutine.running()\n"
         "  if ismain then\n"
@@ -1390,29 +1228,29 @@ void register_timer_api(sol::table& shield, LuaServiceManager* manager,
         "  end\n"
         "end",          // GCOVR_EXCL_LINE (gcov continuation artifact)
         [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
+           shd::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
                                            // artifact)
                pfr)                        // GCOVR_EXCL_LINE (gcov
                                            // clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 }
 
-void register_task_api(sol::table& shield, LuaServiceManager* manager,
+void register_task_api(shd::table& shield, LuaServiceManager* manager,
                        LuaRuntime* runtime) {
     (void)runtime;
 
     shield.set_function(
         "fork",
-        [manager](sol::this_state state,
-                  sol::function fn) -> sol::variadic_results {
-            sol::state_view lua(state);
-            sol::variadic_results results;
+        [manager](shd::this_state state,
+                  shd::function fn) -> shd::variadic_results {
+            shd::state_view lua(state);
+            shd::variadic_results results;
             const std::string service_id = manager->current_service_id();
 
             // Check fork limit.
             if (manager->pending_task_count(service_id) >= kForkLimit) {
-                results.push_back(sol::make_object(lua, sol::nil));
-                sol::this_state ts(fn.lua_state());
+                results.push_back(shd::make_object(lua, shd::nil));
+                shd::this_state ts(fn.lua_state());
                 results.push_back(
                     make_error(ts, "fork_limit", "fork limit reached"));
                 return results;
@@ -1434,12 +1272,12 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
                                         // function conversion always hands a
                                         // live lua_State, so this arm never
                                         // runs)
-                fn_main = sol::main_thread(fn_state);
+                fn_main = shd::main_thread(fn_state);
             }
             // Branch-only exclusions on the arms the suites cannot reach:
             // fn_state == nullptr (guarded above), fn_main == fn_state (a
-            // sol::function holding LUA_NOREF — a converted Lua function
-            // always has a registry reference), and a sol::function holding
+            // shd::function holding LUA_NOREF — a converted Lua function
+            // always has a registry reference), and a shd::function holding
             // LUA_NOREF. Both semantic paths run — the coroutine fork
             // re-anchors (ForkAnchorsInsideHandlerAndFromMainThread) and the
             // main-thread fork skips it.
@@ -1450,7 +1288,7 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
                     LUA_NOREF) {  // GCOVR_EXCL_BR_LINE (defensive: see note
                                   // above)
                 fn =
-                    sol::function(fn_main, sol::ref_index(fn.registry_index()));
+                    shd::function(fn_main, shd::ref_index(fn.registry_index()));
             }
             uint64_t task_id = manager->enqueue_forked_task(
                 service_id,
@@ -1462,32 +1300,32 @@ void register_task_api(sol::table& shield, LuaServiceManager* manager,
                     SHIELD_LOG_ERROR(log, "task error: fork body missing");
                 },
                 // GCOVR_EXCL_STOP
-                to_shd_function(fn));  // raw_fn for coroutine wrapping
-            results.push_back(sol::make_object(lua, task_id));
+                fn);  // raw_fn for coroutine wrapping
+            results.push_back(shd::make_object(lua, task_id));
             return results;
         });
 }
 
-void register_config_api(sol::table& shield) {
+void register_config_api(shd::table& shield) {
     shield.set_function(
         "config",
-        [](sol::this_state state, std::string key,
-           sol::optional<sol::object> default_value) -> sol::object {
-            sol::state_view lua(state);
+        [](shd::this_state state, std::string key,
+           std::optional<shd::object> default_value) -> shd::object {
+            shd::state_view lua(state);
             auto& config = shield::config::global_config();
             if (!config.has(key)) {
                 if (default_value) {
                     return *default_value;
                 }
-                return sol::make_object(lua, sol::nil);
+                return shd::make_object(lua, shd::nil);
             }
 
             const auto value = config.get_string(key, "");
             if (value == "true") {
-                return sol::make_object(lua, true);
+                return shd::make_object(lua, true);
             }
             if (value == "false") {
-                return sol::make_object(lua, false);
+                return shd::make_object(lua, false);
             }
 
             // Require the whole string to be consumed so that "12abc"
@@ -1504,7 +1342,7 @@ void register_config_api(sol::table& shield) {
                     size_t pos = 0;
                     const double parsed = std::stod(value, &pos);
                     if (pos == value.size()) {
-                        return sol::make_object(lua, parsed);
+                        return shd::make_object(lua, parsed);
                     }
                 } catch (  // GCOVR_EXCL_BR_LINE (compiler artifact: catch-entry
                            // pseudo-arc)
@@ -1518,7 +1356,7 @@ void register_config_api(sol::table& shield) {
                     size_t pos = 0;
                     const long long parsed = std::stoll(value, &pos);
                     if (pos == value.size()) {
-                        return sol::make_object(lua, parsed);
+                        return shd::make_object(lua, parsed);
                     }
                 } catch (  // GCOVR_EXCL_BR_LINE (compiler artifact: catch-entry
                            // pseudo-arc)
@@ -1532,7 +1370,7 @@ void register_config_api(sol::table& shield) {
                     size_t pos = 0;
                     const double parsed = std::stod(value, &pos);
                     if (pos == value.size()) {
-                        return sol::make_object(lua, parsed);
+                        return shd::make_object(lua, parsed);
                     }
                 } catch (  // GCOVR_EXCL_BR_LINE (compiler artifact: catch-entry
                            // pseudo-arc)
@@ -1543,33 +1381,33 @@ void register_config_api(sol::table& shield) {
                 }
             }
 
-            return sol::make_object(lua, value);
+            return shd::make_object(lua, value);
         });
 }
 
-void register_log_api(sol::table& shield, LuaServiceManager* manager) {
+void register_log_api(shd::table& shield, LuaServiceManager* manager) {
     auto& log = shield::log::get_logger("lua");
-    sol::state_view lua(shield.lua_state());
+    shd::state_view lua(shield.lua_state());
     auto log_table = lua.create_table();
 
     // Helper: build log message with service context prefix.
-    auto build_msg = [manager](sol::object value) -> std::string {
+    auto build_msg = [manager](shd::object value) -> std::string {
         std::string msg = lua_to_json(value).dump();
         const std::string sid = manager->current_service_id();
         if (sid.empty()) return msg;
         return "[" + sid + "] " + msg;
     };
 
-    log_table.set_function("debug", [&log, build_msg](sol::object value) {
+    log_table.set_function("debug", [&log, build_msg](shd::object value) {
         SHIELD_LOG_DEBUG(log, build_msg(value));
     });
-    log_table.set_function("info", [&log, build_msg](sol::object value) {
+    log_table.set_function("info", [&log, build_msg](shd::object value) {
         SHIELD_LOG_INFO(log, build_msg(value));
     });
-    log_table.set_function("warn", [&log, build_msg](sol::object value) {
+    log_table.set_function("warn", [&log, build_msg](shd::object value) {
         SHIELD_LOG_WARNING(log, build_msg(value));
     });
-    log_table.set_function("error", [&log, build_msg](sol::object value) {
+    log_table.set_function("error", [&log, build_msg](shd::object value) {
         SHIELD_LOG_ERROR(log, build_msg(value));
     });
 
@@ -1589,7 +1427,7 @@ void register_message_api(LuaRuntime& runtime) { (void)runtime; }
 
 void register_timer_api(LuaRuntime& runtime) { (void)runtime; }
 
-void register_timer_api(sol::table& shield, LuaServiceManager* manager,
+void register_timer_api(shd::table& shield, LuaServiceManager* manager,
                         LuaRuntime* runtime) {
     (void)shield;
     (void)manager;
@@ -1611,90 +1449,60 @@ void register_gateway_api(LuaRuntime& runtime) { (void)runtime; }
 // ClientContext / ClientRef usertypes plus the __shield_make_client_context
 // materializer used by json_to_lua and by the coroutine resume path. No
 // constructor is exported: identity userdata is created by the runtime only.
-void register_client_identity_api(sol::state_view lua) {
-    lua_State* L = lua.lua_state();
-    shd::state_view shd_lua(L);
-
-    // Register with shd first (creates shd metatables with proper __gc)
-    shd::register_type_name<ClientContextBox>("shd.ClientContext");
-    shd::register_type_name<ClientRefBox>("shd.ClientRef");
-    shd::new_usertype<ClientContextBox>(shd_lua, "shd.ClientContext", "new",
-                                        shd::no_constructor);
-    shd::new_usertype<ClientRefBox>(shd_lua, "shd.ClientRef", "new",
-                                    shd::no_constructor);
-
-    // Register with sol2 for sol2-based APIs (e.g., the `ref` property)
-    sol::usertype<ClientContextBox> context_type =
-        lua.new_usertype<ClientContextBox>("ClientContext",
-                                           sol::no_constructor);
-    bind_identity_properties(context_type);
-    context_type.set("ref", [](const ClientContextBox& box, sol::this_state s) {
-        return sol::make_object(s, ClientRefBox{box.data});
-    });
-    sol::usertype<ClientRefBox> ref_type =
-        lua.new_usertype<ClientRefBox>("ClientRef", sol::no_constructor);
-    bind_identity_properties(ref_type);
+void register_client_identity_api(shd::state_view lua) {
+    // Identity usertypes: no Lua-side constructor (the runtime creates
+    // them), read-only properties, and ClientContext.ref materializing the
+    // matching ClientRef. Registered under "shd.ClientContext" /
+    // "shd.ClientRef" so they appear as literal dotted globals
+    // (_G["shd.ClientContext"]) per the coverage test expectation.
+    shd::new_usertype<ClientContextBox>(
+        lua, "shd.ClientContext", "new", shd::no_constructor, "player_id",
+        [](const ClientContextBox& box) { return box.data.player_id; },
+        "session_id",
+        [](const ClientContextBox& box) { return box.data.session_id; },
+        "session_epoch",
+        [](const ClientContextBox& box) { return box.data.session_epoch; },
+        "protocol_profile_id",
+        [](const ClientContextBox& box) {
+            return box.data.protocol_profile_id;
+        },
+        "gateway",
+        [](const ClientContextBox& box) { return box.data.gateway_address; },
+        "ref",
+        [](const ClientContextBox& box) { return ClientRefBox{box.data}; });
+    shd::new_usertype<ClientRefBox>(
+        lua, "shd.ClientRef", "new", shd::no_constructor, "player_id",
+        [](const ClientRefBox& box) { return box.data.player_id; },
+        "session_id",
+        [](const ClientRefBox& box) { return box.data.session_id; },
+        "session_epoch",
+        [](const ClientRefBox& box) { return box.data.session_epoch; },
+        "protocol_profile_id",
+        [](const ClientRefBox& box) { return box.data.protocol_profile_id; },
+        "gateway",
+        [](const ClientRefBox& box) { return box.data.gateway_address; });
 
 #ifdef SHIELD_ENABLE_PLAYER
-    shd::register_type_name<PlayerRefBox>("shd.PlayerRef");
-    shd::new_usertype<PlayerRefBox>(shd_lua, "shd.PlayerRef", "new",
-                                    shd::no_constructor);
-
-    sol::usertype<PlayerRefBox> player_ref_type =
-        lua.new_usertype<PlayerRefBox>("PlayerRef", sol::no_constructor);
-    player_ref_type.set("uid", sol::property([](const PlayerRefBox& box) {
-                            return box.data.uid;
-                        }));
-    player_ref_type.set("node_id", sol::property([](const PlayerRefBox& box) {
-                            return box.data.node_id;
-                        }));
-    player_ref_type.set("service_id",
-                        sol::property([](const PlayerRefBox& box) {
-                            return box.data.service_id;
-                        }));
-    player_ref_type.set("epoch", sol::property([](const PlayerRefBox& box) {
-                            return box.data.epoch;
-                        }));
-#endif
-
-    // Mirror sol2 metatables under their plain names so shd::object::is<Box>()
-    // also sees sol2-created values (mirrored metatable = identity only; the
-    // payload layout is still sol2's, and reads go through the B1 adapter).
-    // Register the plain names AFTER the shd.* ones so push() keeps pairing
-    // with the shd-native metatable (names.front()).
-    shd::register_type_name<ClientContextBox>("ClientContext");
-    shd::register_type_name<ClientRefBox>("ClientRef");
-#ifdef SHIELD_ENABLE_PLAYER
-    shd::register_type_name<PlayerRefBox>("PlayerRef");
-#endif
-    auto mirror = [&](auto&& probe_value, const char* name) {
-        sol::object probe = sol::make_object(lua, probe_value);
-        probe.push();
-        const int i = lua_gettop(L);
-        lua_getmetatable(L, i);
-        lua_setfield(L, LUA_REGISTRYINDEX, name);
-        lua_pop(L, 1);
-    };
-    mirror(ClientContextBox{},  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                // the inlined sol::make_object boxing
-                                // machinery reports its generic arcs on this
-                                // call line, one record set per probe type)
-           "ClientContext");
-    mirror(ClientRefBox{},  // GCOVR_EXCL_BR_LINE (same sol::make_object
-                            // boxing artifact as the ClientContext mirror)
-           "ClientRef");
-#ifdef SHIELD_ENABLE_PLAYER
-    mirror(PlayerRefBox{}, "PlayerRef");
+    shd::new_usertype<PlayerRefBox>(
+        lua, "PlayerRef", "new", shd::no_constructor, "uid",
+        shd::property([](const PlayerRefBox& box) { return box.data.uid; }),
+        "node_id",
+        shd::property([](const PlayerRefBox& box) { return box.data.node_id; }),
+        "service_id", shd::property([](const PlayerRefBox& box) {
+            return box.data.service_id;
+        }),
+        "epoch",
+        shd::property([](const PlayerRefBox& box) { return box.data.epoch; }));
 #endif
 
     lua.set_function(
         "__shield_make_client_context",
-        [](sol::this_state s, std::uint64_t session_id,
+        [](shd::this_state s, std::uint64_t session_id,
            std::uint32_t session_epoch, std::string player_id,
            std::string gateway_address, std::string protocol_profile_id) {
             // clang-format off
-            return sol::make_object(  // GCOVR_EXCL_BR_LINE (compiler
-                                      // artifact: inlined sol::make_object
+            return shd::make_object(  // GCOVR_EXCL_BR_LINE (compiler
+                                      // artifact: inlined shd::make_object
                                       // boxing arcs on the call line)
                 s, ClientContextBox{ClientContextData{  // GCOVR_EXCL_BR_LINE (same make_object boxing artifact as the call line above)
                        std::move(gateway_address), session_id, session_epoch,
@@ -1707,10 +1515,10 @@ void register_client_identity_api(sol::state_view lua) {
 // The bind primitive suspends the caller coroutine exactly like _coro_call:
 // the gateway actor completes the session through complete_call, and the
 // Lua wrapper resumes with (true, client_ref) or (false, error_table).
-void register_client_api(sol::table& shield, LuaServiceManager* manager) {
+void register_client_api(shd::table& shield, LuaServiceManager* manager) {
     shield.set_function(
         "_client_bind",
-        [manager](sol::this_state state, sol::object client,
+        [manager](shd::this_state state, shd::object client,
                   std::string player_id, std::string target_service,
                   int timeout_ms) -> uint64_t {
             ClientContextData data;
@@ -1751,12 +1559,12 @@ void register_client_api(sol::table& shield, LuaServiceManager* manager) {
             request.target_service = std::move(target_service);
             caf::anon_send(gateway, std::move(request));
             return session;
-        });  // GCOVR_EXCL_BR_LINE (compiler artifact: sol2 argument-conversion
+        });  // GCOVR_EXCL_BR_LINE (compiler artifact: shd argument-conversion
              // template arcs at the set_function boundary)
 
     shield.set_function(
         "_client_close",
-        [manager](sol::object client, std::string reason) -> bool {
+        [manager](shd::object client, std::string reason) -> bool {
             ClientContextData data;
             if (!client_arg_to_data(client, &data)) {
                 return false;
@@ -1774,8 +1582,8 @@ void register_client_api(sol::table& shield, LuaServiceManager* manager) {
 
     shield.set_function(
         "_client_egress",
-        [manager](sol::object client, uint32_t route_id,
-                  sol::object payload) -> bool {
+        [manager](shd::object client, uint32_t route_id,
+                  shd::object payload) -> bool {
             ClientContextData data;
             if (!client_arg_to_data(client, &data)) {
                 return false;
@@ -1787,7 +1595,7 @@ void register_client_api(sol::table& shield, LuaServiceManager* manager) {
             ClientEgress egress;
             egress.context = data;
             egress.route_id = route_id;
-            if (payload.is<sol::table>()) {
+            if (payload.is<shd::table>()) {
                 egress.message = lua_to_json(payload);
             } else if (payload.is<std::string>()) {
                 const auto value = payload.as<std::string>();
@@ -1799,51 +1607,61 @@ void register_client_api(sol::table& shield, LuaServiceManager* manager) {
             return true;
         });
 
-    sol::state_view lua(shield.lua_state());
-    sol::table client = lua.create_table();
+    shd::state_view lua(shield.lua_state());
+    shd::table client = lua.create_table();
     shield["client"] = client;
     // The wrapper bodies resolve the shield table as a global at CALL time
     // (register_full_shield_api assigns lua["shield"] afterwards), so the
     // chunk only returns the functions instead of touching the global.
-    sol::function bind_fn = lua.safe_script(
-        "return function(client, player_id, target)\n"
-        "  if shield._is_in_exit() then\n"
-        "    return false, {code='api_not_allowed_in_exit', "
-        "message='shield.client.bind is not allowed in on_exit'}\n"
-        "  end\n"
-        "  local _, ismain = coroutine.running()\n"
-        "  if ismain then\n"
-        "    return false, {code='call_not_allowed_off_coroutine', "
-        "message='shield.client.bind requires a handler coroutine'}\n"
-        "  end\n"
-        "  local session = shield._client_bind(client, player_id, target, "
-        "5000)\n"
-        "  if session == 0 then\n"
-        "    return false, {code='invalid_client_reference', "
-        "message='bind requires a ClientContext or ClientRef and a "
-        "non-empty player_id and target'}\n"
-        "  end\n"
-        "  local r = table.pack(coroutine.yield())\n"
-        "  if not r[1] then return false, r[2] end\n"
-        "  return true, r[2]\n"
-        "end\n",        // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
-                                           // artifact)
-               pfr)                        // GCOVR_EXCL_LINE (gcov
-                                           // clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+    shd::function bind_fn =
+        shd::safe_script(
+            lua,
+            "return function(client, player_id, target)\n"
+            "  if shield._is_in_exit() then\n"
+            "    return false, {code='api_not_allowed_in_exit', "
+            "message='shield.client.bind is not allowed in on_exit'}\n"
+            "  end\n"
+            "  local _, ismain = coroutine.running()\n"
+            "  if ismain then\n"
+            "    return false, {code='call_not_allowed_off_coroutine', "
+            "message='shield.client.bind requires a handler coroutine'}\n"
+            "  end\n"
+            "  local session = shield._client_bind(client, player_id, target, "
+            "5000)\n"
+            "  if session == 0 then\n"
+            "    return false, {code='invalid_client_reference', "
+            "message='bind requires a ClientContext or ClientRef and a "
+            "non-empty player_id and target'}\n"
+            "  end\n"
+            "  local r = table.pack(coroutine.yield())\n"
+            "  if not r[1] then return false, r[2] end\n"
+            "  return true, r[2]\n"
+            "end\n",        // GCOVR_EXCL_LINE (gcov continuation artifact)
+            [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
+               shd::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
+                                               // artifact)
+                   pfr)                        // GCOVR_EXCL_LINE (gcov
+                                               // clone artifact)
+            -> shd::protected_function_result {
+                return pfr;
+            })  // GCOVR_EXCL_LINE
+            .get<shd::function>(0);
     client["bind"] = bind_fn;
-    sol::function close_fn = lua.safe_script(
-        "return function(client, reason)\n"
-        "  return shield._client_close(client, reason or 'kicked')\n"
-        "end\n",        // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
-                                           // artifact)
-               pfr)                        // GCOVR_EXCL_LINE (gcov
-                                           // clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+    shd::function close_fn =
+        shd::safe_script(
+            lua,
+            "return function(client, reason)\n"
+            "  return shield._client_close(client, reason or 'kicked')\n"
+            "end\n",        // GCOVR_EXCL_LINE (gcov continuation artifact)
+            [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
+               shd::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
+                                               // artifact)
+                   pfr)                        // GCOVR_EXCL_LINE (gcov
+                                               // clone artifact)
+            -> shd::protected_function_result {
+                return pfr;
+            })  // GCOVR_EXCL_LINE
+            .get<shd::function>(0);
     client["close"] = close_fn;
 }
 
@@ -1852,22 +1670,22 @@ void register_client_api(sol::table& shield, LuaServiceManager* manager) {
 // descriptor table is compiled).
 void register_client_rpc_helper(lua_State* L, LuaServiceManager* manager,
                                 std::string_view name, uint32_t route_id) {
-    sol::state_view lua(L);
-    sol::table shield = lua["shield"];
-    sol::table client_rpc = shield["client_rpc"];
+    shd::state_view lua(L);
+    shd::table shield = lua["shield"];
+    shd::table client_rpc = shield["client_rpc"];
     // Reverse map for the player client_message guard (route_id -> name);
     // absent names degrade to "route_<id>" at the guard call site.
     {
-        sol::object names_obj = shield["_client_route_names"];
-        if (!names_obj.valid() || !names_obj.is<sol::table>()) {
+        shd::object names_obj = shield["_client_route_names"];
+        if (!names_obj.valid() || !names_obj.is<shd::table>()) {
             names_obj = lua.create_table();
             shield["_client_route_names"] = names_obj;
         }
-        names_obj.as<sol::table>()[route_id] = std::string(name);
+        names_obj.as<shd::table>()[route_id] = std::string(name);
     }
     client_rpc.set_function(
         std::string(name),
-        [manager, route_id](sol::object client, sol::object payload) -> bool {
+        [manager, route_id](shd::object client, shd::object payload) -> bool {
             ClientContextData data;
             if (!client_arg_to_data(client, &data)) {
                 return false;
@@ -1879,7 +1697,7 @@ void register_client_rpc_helper(lua_State* L, LuaServiceManager* manager,
             ClientEgress egress;
             egress.context = data;
             egress.route_id = route_id;
-            if (payload.is<sol::table>()) {
+            if (payload.is<shd::table>()) {
                 egress.message = lua_to_json(payload);
             } else if (payload.is<std::string>()) {
                 const auto value = payload.as<std::string>();
@@ -1893,22 +1711,22 @@ void register_client_rpc_helper(lua_State* L, LuaServiceManager* manager,
 }
 
 #ifdef SHIELD_ENABLE_CLUSTER
-void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
-    sol::state_view lua(shield.lua_state());
+void register_cluster_api(shd::table& shield, LuaServiceManager* manager) {
+    shd::state_view lua(shield.lua_state());
     auto cluster = lua.create_table();
 
     // shield.cluster.query(node_id, service_name) -> service_id or nil, error
     cluster.set_function(  // GCOVR_EXCL_LINE (gcov continuation artifact)
         "query",
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string node_id,    // GCOVR_EXCL_LINE (lambda entry artifact)
-           std::string service_name) -> sol::variadic_results {
-            sol::state_view lua(state);
-            sol::variadic_results results;
+           std::string service_name) -> shd::variadic_results {
+            shd::state_view lua(state);
+            shd::variadic_results results;
 
             auto* cluster_manager = shield::cluster::global_cluster_manager();
             if (!cluster_manager) {
-                results.push_back(sol::make_object(lua, sol::nil));
+                results.push_back(shd::make_object(lua, shd::nil));
                 results.push_back(make_error(state, "module_unavailable",
                                              "shield_cluster is not enabled"));
                 return results;
@@ -1917,7 +1735,7 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
             const auto reachable =
                 cluster_manager->check_node_reachable(node_id);
             if (!reachable.empty()) {
-                results.push_back(sol::make_object(lua, sol::nil));
+                results.push_back(shd::make_object(lua, shd::nil));
                 results.push_back(
                     make_error(state, reachable,
                                "cluster node is not reachable: " + node_id));
@@ -1927,29 +1745,29 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
             auto service_id =
                 cluster_manager->query_remote(node_id, service_name);
             if (service_id.empty()) {
-                results.push_back(sol::make_object(lua, sol::nil));
+                results.push_back(shd::make_object(lua, shd::nil));
                 results.push_back(
                     make_error(state, "service_not_found",
                                "remote service not found: " + service_name));
                 return results;
             }
 
-            results.push_back(sol::make_object(lua, service_id));
-            results.push_back(sol::make_object(lua, sol::nil));
+            results.push_back(shd::make_object(lua, service_id));
+            results.push_back(shd::make_object(lua, shd::nil));
             return results;
         });
 
     // shield.cluster.nodes() -> table of node info
-    cluster.set_function("nodes", [](sol::this_state state) -> sol::table {
-        sol::state_view lua(state);
-        sol::table nodes = lua.create_table();
+    cluster.set_function("nodes", [](shd::this_state state) -> shd::table {
+        shd::state_view lua(state);
+        shd::table nodes = lua.create_table();
         auto* cluster_manager = shield::cluster::global_cluster_manager();
         if (!cluster_manager) {
             return nodes;
         }
         int index = 1;
         for (const auto& node : cluster_manager->nodes()) {
-            sol::table entry = lua.create_table();
+            shd::table entry = lua.create_table();
             entry["node_id"] = node.node_id;
             entry["address"] = node.address;
             entry["state"] = shield::cluster::node_state_name(node.state);
@@ -1965,20 +1783,20 @@ void register_cluster_api(sol::table& shield, LuaServiceManager* manager) {
     // shield.cluster.node_id() -> this node's ID
     cluster.set_function(  // GCOVR_EXCL_LINE (gcov continuation artifact)
         "node_id",
-        [](sol::this_state state)  // GCOVR_EXCL_LINE (lambda entry artifact)
-        -> sol::optional<std::string> {  // GCOVR_EXCL_LINE (lambda entry
+        [](shd::this_state state)  // GCOVR_EXCL_LINE (lambda entry artifact)
+        -> std::optional<std::string> {  // GCOVR_EXCL_LINE (lambda entry
                                          // artifact)
             auto* cluster_manager = shield::cluster::global_cluster_manager();
             if (!cluster_manager || cluster_manager->node_id().empty()) {
-                return sol::nullopt;
+                return shd::nullopt;
             }
             return cluster_manager->node_id();
         });
 
-    cluster.set_function("node_epoch", []() -> sol::optional<std::string> {
+    cluster.set_function("node_epoch", []() -> std::optional<std::string> {
         auto* cluster_manager = shield::cluster::global_cluster_manager();
         if (!cluster_manager) {
-            return sol::nullopt;
+            return shd::nullopt;
         }
         // Serialized as a decimal string: uint64 does not survive the
         // Lua number (double, 53-bit mantissa) round-trip.
@@ -1995,13 +1813,13 @@ namespace {
 // sol table_proxy has no get_or_default; read fields defensively instead so
 // a malformed ref table degrades to an empty field (mirroring the
 // client-identity from_json behavior).
-std::string player_ref_string(const sol::table& t, const char* key) {
-    sol::object v = t[key];
+std::string player_ref_string(const shd::table& t, const char* key) {
+    shd::object v = t[key];
     return v.is<std::string>() ? v.as<std::string>() : std::string();
 }
 
-std::uint64_t player_ref_epoch(const sol::table& t) {
-    sol::object v = t["epoch"];
+std::uint64_t player_ref_epoch(const shd::table& t) {
+    shd::object v = t["epoch"];
     // Epoch arrives as a decimal string (the Lua double round-trip would
     // truncate a full uint64) but accept a number for convenience.
     if (v.is<std::string>()) {
@@ -2014,7 +1832,7 @@ std::uint64_t player_ref_epoch(const sol::table& t) {
         }
     }
     if (v.is<std::uint64_t>()) return v.as<std::uint64_t>();
-    if (v.is<int>())  // GCOVR_EXCL_BR_LINE (unreachable defensive arm: sol2
+    if (v.is<int>())  // GCOVR_EXCL_BR_LINE (unreachable defensive arm: shd
                       // is<uint64_t>() above accepts the whole Lua-integer
                       // domain, including negatives, so is<int>() never wins;
                       // tests drive string/bool/double/negative-int shapes)
@@ -2023,7 +1841,7 @@ std::uint64_t player_ref_epoch(const sol::table& t) {
     return 0;
 }
 
-shield::player::PlayerRef player_ref_from_table(const sol::table& t) {
+shield::player::PlayerRef player_ref_from_table(const shd::table& t) {
     shield::player::PlayerRef ref;
     ref.uid = player_ref_string(t, "uid");
     ref.node_id = player_ref_string(t, "node_id");
@@ -2032,48 +1850,40 @@ shield::player::PlayerRef player_ref_from_table(const sol::table& t) {
     return ref;
 }  // GCOVR_EXCL_LINE (function-exit arc artifact of player_ref_from_table)
 
-// Reads a shd-created PlayerRefBox (B1 dual-layout: raw payload plus the
-// uservalue type-name tag) into a PlayerRef. Sol-created boxes keep the
-// sol usertype layout and stay on the caller's sol branch; foreign shd
-// boxes fail the tag check and fall through to invalid_player_ref.
-bool player_ref_from_shd_box(const sol::object& ref,
+// Reads a PlayerRefBox argument into a PlayerRef. Must run before the
+// caller's table branch: is<shd::table>() also accepts userdata, so an
+// unrecognized box would otherwise fall into the table branch and read
+// garbage.
+bool player_ref_from_shd_box(const shd::object& ref,
                              shield::player::PlayerRef& out) {
-    lua_State* L = ref.lua_state();
-    ref.push();
-    const int slot = lua_gettop(L);
-    bool ok = false;
-    if (shd::detail::is_shd_raw_userdata(L, slot)) {
-        const shd::stack_object raw(L, slot);
-        if (raw.is<PlayerRefBox>()) {
-            const PlayerRefData& d = raw.as<const PlayerRefBox&>().data;
-            out.uid = d.uid;
-            out.node_id = d.node_id;
-            out.service_id = d.service_id;
-            out.epoch = d.epoch;
-            ok = true;
-        }
+    if (!ref.is<PlayerRefBox>()) {
+        return false;
     }
-    lua_pop(L, 1);
-    return ok;
+    const PlayerRefData& d = ref.as<const PlayerRefBox&>().data;
+    out.uid = d.uid;
+    out.node_id = d.node_id;
+    out.service_id = d.service_id;
+    out.epoch = d.epoch;
+    return true;
 }
 
 // Shared snapshot shape for get/resolve: flat read-only fields plus a
 // materialized PlayerRef under `ref`.
-sol::table write_session(sol::state_view s,
+shd::table write_session(shd::state_view s,
                          const shield::player::SessionInfo& info) {
-    sol::table out = s.create_table();
+    shd::table out = s.create_table();
     out["uid"] = info.ref.uid;
     out["node_id"] = info.ref.node_id;
     out["service_id"] = info.ref.service_id;
     out["epoch"] = std::to_string(info.ref.epoch);
     out["state"] = shield::player::session_state_name(info.state);
     out["device_id"] = info.device_id;
-    out["ref"] = sol::make_object(  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                    // sol2 make_object dispatch clones)
+    out["ref"] = shd::make_object(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                    // shd make_object dispatch clones)
         s, PlayerRefBox{{// GCOVR_EXCL_BR_LINE (compiler artifact: gcov
                          // attributes the init-list branches to this line)
                          info.ref.uid, info.ref.node_id,
-                         info.ref.service_id,  // GCOVR_EXCL_BR_LINE (sol2
+                         info.ref.service_id,  // GCOVR_EXCL_BR_LINE (shd
                                                // argument-conversion arcs at
                                                // the PlayerRefBox boundary)
                          info.ref.epoch}});
@@ -2576,54 +2386,55 @@ end
 return {setup = impl.setup, defaults = defaults, impl = impl, Base = Base}
 )lua";
 
-void register_player_api(sol::table& shield, LuaServiceManager* manager) {
-    sol::state_view lua(shield.lua_state());
+void register_player_api(shd::table& shield, LuaServiceManager* manager) {
+    shd::state_view lua(shield.lua_state());
 
     // Run the orchestration chunk once per VM; it returns the impl table.
-    // The conversion is validity-guarded: sol2's implicit
-    // protected_function_result -> object conversion type-panics (and, in
-    // plain C++ registration code outside any lua_pcall, aborts the
+    // The conversion is validity-guarded: the previous binding layer's
+    // implicit protected_function_result -> object conversion type-panics
+    // (and, in plain C++ registration code outside any lua_pcall, aborts the
     // process) when the chunk failed. A failed run degrades to an empty
     // impl table; shield.player.setup then reports its setup_invalid
     // error through the normal protected-call path.
-    sol::protected_function_result run = lua.safe_script(
+    shd::protected_function_result run = shd::safe_script(
+        lua,
         kPlayerOrchestration,  // GCOVR_EXCL_LINE (gcov clone artifact: the
                                // argument-load line is emitted only into an
                                // outlined clone that is never called; the
                                // call itself is counted on the closing line)
         [](lua_State*,         // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result
+           shd::protected_function_result
                pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
-    sol::table impl = run.valid() ? run.get<sol::table>() : lua.create_table();
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+    shd::table impl = run.valid() ? run.get<shd::table>() : lua.create_table();
 
     auto player = lua.create_table();
 
     player.set_function(
         "setup",
-        [impl](sol::this_state state, sol::table M,
-               sol::object opts) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
-            sol::protected_function setup = impl["setup"];
-            sol::protected_function_result r =
+        [impl](shd::this_state state, shd::table M,
+               shd::object opts) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
+            shd::protected_function setup = impl["setup"];
+            shd::protected_function_result r =
                 opts.valid() ? setup(M, opts) : setup(M);
             if (!r.valid()) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(state, "setup_invalid",
                                              "player setup raised an error"));
                 return results;
             }
             for (unsigned int i = 0; i < r.return_count(); ++i) {
-                results.push_back(r.get<sol::object>(i));
+                results.push_back(r.get<shd::object>(i));
             }
             return results;
         });
 
-    player.set_function("config", [](sol::this_state state) -> sol::table {
-        sol::state_view s(state);
+    player.set_function("config", [](shd::this_state state) -> shd::table {
+        shd::state_view s(state);
         auto* pm = shield::player::PlayerManager::global();
-        sol::table cfg = s.create_table();
+        shd::table cfg = s.create_table();
         if (pm == nullptr) return cfg;
         const auto& c = pm->config();
         cfg["multi_device"] =  // GCOVR_EXCL_LINE (gcov attributes no code to
@@ -2638,11 +2449,11 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
         cfg["spectator"] = c.spectator_enabled;
         cfg["reconnect_window_ms"] = c.reconnect_window_ms;
         cfg["message_queue_limit"] = c.message_queue_limit;
-        sol::table persistence = s.create_table();
+        shd::table persistence = s.create_table();
         persistence["binding"] = c.persistence_binding;
         persistence["panic"] = c.persistence_panic_on_error;
         persistence["save_interval_ms"] = c.save_interval_ms;
-        sol::table fields = s.create_table();
+        shd::table fields = s.create_table();
         int i = 1;
         for (const auto& f : c.persistence_fields) {
             fields[i++] = f;
@@ -2664,69 +2475,69 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
     // Locality for PlayerRef values. epoch travels as a decimal string:
     // uint64 does not survive the Lua double round-trip (see the cluster
     // node_epoch() binding for the same decision).
-    player.set_function("node_info", [](sol::this_state state) -> sol::table {
-        sol::state_view s(state);
+    player.set_function("node_info", [](shd::this_state state) -> shd::table {
+        shd::state_view s(state);
         auto* pm = shield::player::PlayerManager::global();
-        sol::table info = s.create_table();
+        shd::table info = s.create_table();
         info["node_id"] = pm ? pm->node_id() : std::string();
         info["epoch"] = std::to_string(pm ? pm->node_epoch() : 0);
         return info;
     });
 
-    player.set_function("stats", [impl](sol::this_state state) -> sol::table {
-        sol::state_view s(state);
+    player.set_function("stats", [impl](shd::this_state state) -> shd::table {
+        shd::state_view s(state);
         // The chunk returns the wrapper {setup, defaults, impl}; the
         // orchestration state (and its stats counters) lives one level
         // deeper, next to what the Lua-side closures mutate.
-        sol::object wrapper = impl.raw_get<sol::object>("impl");
-        sol::object impl_stats =
-            wrapper.is<sol::table>()
+        shd::object wrapper = impl.raw_get<shd::object>("impl");
+        shd::object impl_stats =
+            wrapper.is<shd::table>()
                 ? wrapper
-                      .as<sol::table>()  // GCOVR_EXCL_BR_LINE (defensive:
+                      .as<shd::table>()  // GCOVR_EXCL_BR_LINE (defensive:
                                          // the orchestration chunk always
                                          // returns the impl table)
-                      .raw_get<sol::object>("stats")
-                : sol::nil;  // GCOVR_EXCL_BR_LINE (defensive: the orchestration
+                      .raw_get<shd::object>("stats")
+                : shd::nil;  // GCOVR_EXCL_BR_LINE (defensive: the orchestration
                              // chunk always returns the impl table)
-        sol::table out = s.create_table();
-        if (impl_stats.is<sol::table>()) {  // GCOVR_EXCL_BR_LINE (defensive:
+        shd::table out = s.create_table();
+        if (impl_stats.is<shd::table>()) {  // GCOVR_EXCL_BR_LINE (defensive:
                                             // impl.stats is unconditional in
                                             // the chunk)
-            sol::table stats_tbl = impl_stats;
+            shd::table stats_tbl = impl_stats;
             // Read each counter explicitly: a proxy-to-proxy assignment
             // (out["k"] = stats_tbl["k"]) pushes nothing and silently
             // produces an empty table.
             out.raw_set("rejected_not_ready",
-                        stats_tbl.get<sol::object>("rejected_not_ready"));
+                        stats_tbl.get<shd::object>("rejected_not_ready"));
             out.raw_set("rejected_by_guard",
-                        stats_tbl.get<sol::object>("rejected_by_guard"));
+                        stats_tbl.get<shd::object>("rejected_by_guard"));
             out.raw_set("offline_dropped",
-                        stats_tbl.get<sol::object>("offline_dropped"));
+                        stats_tbl.get<shd::object>("offline_dropped"));
         }
         return out;
     });
 
     // ---- manager: the uid index operations ----
-    sol::table manager_tbl = lua.create_table();
+    shd::table manager_tbl = lua.create_table();
 
     manager_tbl.set_function(
         "admit",
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string uid,        // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string device_id,  // GCOVR_EXCL_LINE (gcov attributes no code
                                    // to this line)
-           std::uint64_t now_ms) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
+           std::uint64_t now_ms) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* pm = shield::player::PlayerManager::global();
             if (pm == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(state, "module_unavailable",
                                              "player manager unavailable"));
                 return results;
             }
             auto d = pm->admit(uid, device_id, now_ms);
-            sol::table out = s.create_table();
+            shd::table out = s.create_table();
             switch (d.kind) {  // GCOVR_EXCL_BR_LINE (no-match arc; every
                                // AdmissionDecision kind is listed)
                 case shield::player::AdmissionDecision::Kind::kAllow:
@@ -2744,20 +2555,20 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
             }
             out["code"] = d.code;
             out["kicked_service_id"] = d.kicked_service_id;
-            results.push_back(sol::make_object(s, out));
-            results.push_back(sol::make_object(s, sol::nil));
+            results.push_back(shd::make_object(s, out));
+            results.push_back(shd::make_object(s, shd::nil));
             return results;
         });
 
     manager_tbl.set_function(
         "register_session",  // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
-           sol::table ref,         // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+           shd::table ref,         // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string device_id,  // GCOVR_EXCL_LINE (gcov attributes no code
                                    // to this line)
-           std::string state_name, std::uint64_t now_ms) -> sol::object {
+           std::string state_name, std::uint64_t now_ms) -> shd::object {
             auto* pm = shield::player::PlayerManager::global();
-            if (pm == nullptr) return sol::make_object(state, sol::nil);
+            if (pm == nullptr) return shd::make_object(state, shd::nil);
             const shield::player::PlayerRef player_ref =
                 player_ref_from_table(ref);
             auto state_of = [](const std::string& name) {
@@ -2773,12 +2584,12 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
             };
             pm->register_session(player_ref, device_id, state_of(state_name),
                                  now_ms);
-            return sol::make_object(state, true);
+            return shd::make_object(state, true);
         });
 
     manager_tbl.set_function(
         "mark_disconnected",  // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string
                uid,  // GCOVR_EXCL_LINE (gcov attributes no code to this line)
            std::uint64_t now_ms) -> bool {
@@ -2788,7 +2599,7 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
 
     manager_tbl.set_function(
         "mark_reconnected",  // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string
                uid,  // GCOVR_EXCL_LINE (gcov attributes no code to this line)
            std::uint64_t now_ms) -> bool {
@@ -2798,38 +2609,38 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
 
     manager_tbl.set_function(
         "unregister",  // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string uid)        // GCOVR_EXCL_LINE (lambda entry artifact)
-        -> sol::object {  // GCOVR_EXCL_LINE (gcov attributes no code to
+        -> shd::object {  // GCOVR_EXCL_LINE (gcov attributes no code to
                           // this line)
             auto* pm = shield::player::PlayerManager::global();
-            if (pm == nullptr) return sol::make_object(state, sol::nil);
+            if (pm == nullptr) return shd::make_object(state, shd::nil);
             auto sid = pm->unregister(uid);
-            if (!sid.has_value()) return sol::make_object(state, sol::nil);
-            return sol::make_object(state, *sid);
+            if (!sid.has_value()) return shd::make_object(state, shd::nil);
+            return shd::make_object(state, *sid);
         });
 
     manager_tbl.set_function(      // GCOVR_EXCL_LINE (gcov continuation
         "get",                     // artifact)
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string uid)        // GCOVR_EXCL_LINE (lambda entry artifact)
-        -> sol::object {  // GCOVR_EXCL_LINE (gcov attributes no code to
+        -> shd::object {  // GCOVR_EXCL_LINE (gcov attributes no code to
                           // this line)
             auto* pm = shield::player::PlayerManager::global();
-            sol::state_view s(state);
-            if (pm == nullptr) return sol::make_object(state, sol::nil);
+            shd::state_view s(state);
+            if (pm == nullptr) return shd::make_object(state, shd::nil);
             auto info = pm->get(uid);
-            if (!info.has_value()) return sol::make_object(state, sol::nil);
-            return sol::make_object(s, write_session(s, *info));
+            if (!info.has_value()) return shd::make_object(state, shd::nil);
+            return shd::make_object(s, write_session(s, *info));
         });
 
     manager_tbl.set_function(
         "get_devices",  // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
-           std::string uid) -> sol::table {  // GCOVR_EXCL_LINE (gcov attributes
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+           std::string uid) -> shd::table {  // GCOVR_EXCL_LINE (gcov attributes
                                              // no code to this line)
-            sol::state_view s(state);
-            sol::table out = s.create_table();
+            shd::state_view s(state);
+            shd::table out = s.create_table();
             auto* pm = shield::player::PlayerManager::global();
             if (pm == nullptr) return out;
             int i = 1;
@@ -2841,7 +2652,7 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
 
     manager_tbl.set_function(
         "set_state",  // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string
                uid,  // GCOVR_EXCL_LINE (gcov attributes no code to this line)
            std::string state_name) -> bool {
@@ -2866,7 +2677,7 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
             return pm->set_state(uid, parsed);
         });
 
-    manager_tbl.set_function("size", [](sol::this_state state) -> std::size_t {
+    manager_tbl.set_function("size", [](shd::this_state state) -> std::size_t {
         auto* pm = shield::player::PlayerManager::global();
         return pm ? pm->size() : 0;
     });
@@ -2876,15 +2687,15 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
     // ---- resolve / get: local-only (P0) ----
     player.set_function(
         "resolve",  // GCOVR_EXCL_LINE (gcov continuation artifact)
-        [](sol::this_state state,   // GCOVR_EXCL_LINE (lambda entry artifact)
-           sol::object ref)         // GCOVR_EXCL_LINE (lambda entry artifact)
-        -> sol::variadic_results {  // GCOVR_EXCL_LINE (gcov attributes no
+        [](shd::this_state state,   // GCOVR_EXCL_LINE (lambda entry artifact)
+           shd::object ref)         // GCOVR_EXCL_LINE (lambda entry artifact)
+        -> shd::variadic_results {  // GCOVR_EXCL_LINE (gcov attributes no
                                     // code to this line)
-            sol::state_view s(state);
-            sol::variadic_results results;
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* pm = shield::player::PlayerManager::global();
             if (pm == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(state, "module_unavailable",
                                              "player manager unavailable"));
                 return results;
@@ -2898,19 +2709,19 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
                 player_ref.epoch = d.epoch;
             } else if (player_ref_from_shd_box(ref, player_ref)) {
                 // shd-created PlayerRefBox (B1 dual-layout): raw payload read
-                // on the shd side. Must run before the table check — sol2's
-                // is<sol::table>() also accepts userdata, so an shd box would
+                // on the shd side. Must run before the table check — shd's
+                // is<shd::table>() also accepts userdata, so an shd box would
                 // otherwise fall into the table branch and read garbage.
-            } else if (ref.is<sol::table>()) {
+            } else if (ref.is<shd::table>()) {
                 player_ref = player_ref_from_table(ref);
             } else {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(state, "invalid_player_ref",
                                              "ref must be a PlayerRef"));
                 return results;
             }
             if (player_ref.uid.empty()) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(state, "invalid_player_ref",
                                              "ref.uid is required"));
                 return results;
@@ -2922,7 +2733,7 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
                     pm->node_id()) {   // GCOVR_EXCL_BR_LINE (compiler artifact:
                                        // gcov attributes the compare-dispatch
                                        // clones to the operand line)
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(
                     state, "remote_resolve_unimplemented",
                     "remote resolve is not part of the P0 contract"));
@@ -2930,21 +2741,21 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
             }
             auto info = pm->resolve(player_ref);
             if (!info.has_value()) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "player_not_found",
                                "no local session for uid: " + player_ref.uid));
                 return results;
             }
-            results.push_back(sol::make_object(s, write_session(s, *info)));
-            results.push_back(sol::make_object(s, sol::nil));
+            results.push_back(shd::make_object(s, write_session(s, *info)));
+            results.push_back(shd::make_object(s, shd::nil));
             return results;
         });
 
     player.set_function(
         "get",
-        [manager_tbl](sol::this_state state, std::string uid) -> sol::object {
-            sol::protected_function get = manager_tbl["get"];
+        [manager_tbl](shd::this_state state, std::string uid) -> shd::object {
+            shd::protected_function get = manager_tbl["get"];
             return get(uid);
         });
 
@@ -2956,16 +2767,17 @@ void register_player_api(sol::table& shield, LuaServiceManager* manager) {
 #else
 // Module compiled out: every shield.player.* entry reports
 // module_unavailable (LAPI-011 前言) instead of being a nil field.
-void register_player_stub_api(sol::table& shield, sol::state_view lua) {
-    auto unavailable = lua.safe_script(
+void register_player_stub_api(shd::table& shield, shd::state_view lua) {
+    auto unavailable = shd::safe_script(
+        lua,
         "return function()\n"  // GCOVR_EXCL_LINE (safe_script chunk artifact)
         "  return nil, {code = 'module_unavailable', message = "
         "'shield_player is not enabled', retryable = false}\n"
         "end\n",
         [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result
+           shd::protected_function_result
                pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
     auto player = lua.create_table();
     for (const char* name : {"setup", "resolve", "get", "config", "now_ms",
                              "node_info", "stats"}) {
@@ -3000,14 +2812,14 @@ void register_player_stub_api(sol::table& shield, sol::state_view lua) {
 // The chunk runs once per VM. register_server_api runs before
 // lua["shield"] is assigned; all shield.* references resolve at CALL time.
 // The C++ watch registry only stores {watch_id, service_id} (OD-016: no
-// sol::function in shield_server), so this chunk owns the callbacks and
+// shd::function in shield_server), so this chunk owns the callbacks and
 // installs the M.on_server_state_change forwarder the C++ notify path
 // (send_system dispatch) calls into.
 //
 // The chunk also publishes its api table as a per-VM global
 // (__shield_server_impl). The C++ facade resolves it at CALL time from the
 // invoking state and must never capture it in a C++ lambda: a captured
-// sol::table outlives the register call (the lambda userdata lives until
+// shd::table outlives the register call (the lambda userdata lives until
 // GC finalizes it), and dereferencing that reference from the finalizer
 // races/aliases the VM teardown (the same dangling-reference class the
 // sol-reference-coroutine anchor rule exists for — long-lived C++ holders
@@ -3056,91 +2868,91 @@ rawset(_G, '__shield_server_impl', api)
 return api
 )lua";
 
-void register_server_api(sol::table& shield, LuaServiceManager* manager,
+void register_server_api(shd::table& shield, LuaServiceManager* manager,
                          LuaRuntime* runtime) {
-    sol::state_view lua(shield.lua_state());
+    shd::state_view lua(shield.lua_state());
 
     // Run the orchestration chunk once per VM; it publishes the impl table
     // as the per-VM __shield_server_impl global, which the watch/unwatch
     // facades resolve at CALL time (never captured: see the chunk comment).
-    lua.safe_script(
-        kServerOrchestration,
+    shd::safe_script(
+        lua, kServerOrchestration,
         [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result
+           shd::protected_function_result
                pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 
     auto server = lua.create_table();
 
     // ---- read-only runtime info ----
-    server.set_function("state", [](sol::this_state state) -> sol::object {
+    server.set_function("state", [](shd::this_state state) -> shd::object {
         auto* sm = shield::server::ServerManager::global();
         if (sm == nullptr) {
-            return sol::make_object(state, sol::nil);
+            return shd::make_object(state, shd::nil);
         }
-        return sol::make_object(state,
+        return shd::make_object(state,
                                 shield::server::server_state_name(sm->state()));
     });
 
-    server.set_function("uptime", [](sol::this_state state) -> sol::object {
+    server.set_function("uptime", [](shd::this_state state) -> shd::object {
         auto* sm = shield::server::ServerManager::global();
         if (sm == nullptr) {
-            return sol::make_object(state, sol::nil);
+            return shd::make_object(state, shd::nil);
         }
-        return sol::make_object(state, sm->uptime_seconds());
+        return shd::make_object(state, sm->uptime_seconds());
     });
 
-    server.set_function("version", [](sol::this_state state) -> sol::object {
+    server.set_function("version", [](shd::this_state state) -> shd::object {
         auto* sm = shield::server::ServerManager::global();
         if (sm == nullptr) {
-            return sol::make_object(state, sol::nil);
+            return shd::make_object(state, shd::nil);
         }
-        return sol::make_object(state, sm->version());
+        return shd::make_object(state, sm->version());
     });
 
-    server.set_function("node_id", [](sol::this_state state) -> sol::object {
+    server.set_function("node_id", [](shd::this_state state) -> shd::object {
         auto* sm = shield::server::ServerManager::global();
         if (sm == nullptr) {
-            return sol::make_object(state, sol::nil);
+            return shd::make_object(state, shd::nil);
         }
-        return sol::make_object(state, sm->node_id());
+        return shd::make_object(state, sm->node_id());
     });
 
-    server.set_function("started_at", [](sol::this_state state) -> sol::object {
+    server.set_function("started_at", [](shd::this_state state) -> shd::object {
         auto* sm = shield::server::ServerManager::global();
         if (sm == nullptr) {
-            return sol::make_object(state, sol::nil);
+            return shd::make_object(state, shd::nil);
         }
-        return sol::make_object(state, sm->started_at_ms());
+        return shd::make_object(state, sm->started_at_ms());
     });
 
-    server.set_function("config", [](sol::this_state state) -> sol::object {
-        sol::state_view s(state);
+    server.set_function("config", [](shd::this_state state) -> shd::object {
+        shd::state_view s(state);
         auto* sm = shield::server::ServerManager::global();
         if (sm == nullptr) {
-            return sol::make_object(s, sol::nil);
+            return shd::make_object(s, shd::nil);
         }
         const auto& c = sm->config();
-        sol::table cfg = s.create_table();
+        shd::table cfg = s.create_table();
         cfg["name"] = c.name;
-        sol::table info = s.create_table();
+        shd::table info = s.create_table();
         info["name"] = c.info_name;
         info["version"] = c.info_version;
         info["region"] = c.info_region;
         cfg["info"] = info;
-        return sol::make_object(s, cfg);
+        return shd::make_object(s, cfg);
     });
 
     // ---- state control ----
     server.set_function(
         "set_state",
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           std::string name) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           std::string name) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* sm = shield::server::ServerManager::global();
             if (sm == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "module_unavailable",
                                "shield_server is not initialized"));
@@ -3148,31 +2960,31 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
             }
             shield::server::ServerState parsed;
             if (!shield::server::parse_server_state(name, &parsed)) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(state, "invalid_state",
                                              "unknown server state: " + name));
                 return results;
             }
             std::string error;
             if (!sm->set_state(parsed, &error)) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "invalid_state_transition", error));
                 return results;
             }
-            results.push_back(sol::make_object(s, true));
+            results.push_back(shd::make_object(s, true));
             return results;
         });
 
     server.set_function(
         "shutdown",
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::object delay) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           shd::object delay) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* sm = shield::server::ServerManager::global();
             if (sm == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "module_unavailable",
                                "shield_server is not initialized"));
@@ -3193,7 +3005,7 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
                 }
             }
             if (!valid) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(
                     state, "invalid_argument",
                     "shutdown delay must be a non-negative integer ms"));
@@ -3201,32 +3013,32 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
             }
             std::string error;
             if (!sm->schedule_shutdown(delay_ms, &error)) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "shutdown_already_scheduled", error));
                 return results;
             }
-            results.push_back(sol::make_object(s, true));
+            results.push_back(shd::make_object(s, true));
             return results;
         });
 
     // ---- state watchers ----
     server.set_function(
         "watch",
-        [manager, runtime](sol::this_state state,
-                           sol::object cb) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
+        [manager, runtime](shd::this_state state,
+                           shd::object cb) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* sm = shield::server::ServerManager::global();
             if (sm == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "module_unavailable",
                                "shield_server is not initialized"));
                 return results;
             }
-            if (!cb.is<sol::function>()) {
-                results.push_back(sol::make_object(s, sol::nil));
+            if (!cb.is<shd::function>()) {
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "invalid_argument",
                                "watch expects a callback function"));
@@ -3236,14 +3048,14 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
             // dispatch context (on_init or a handler).
             const auto service_id = manager->current_service_id();
             if (service_id.empty()) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "invalid_argument",
                                "watch requires a service context (call it from "
                                "on_init or a handler)"));
                 return results;
             }
-            sol::table module_tbl = sol::nil;
+            shd::table module_tbl = shd::nil;
             if (runtime) {  // GCOVR_EXCL_BR_LINE (defensive:
                             // register_server_api is only invoked with a live
                             // runtime)
@@ -3258,13 +3070,13 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
                     vm = manager->service_vm(service_id);
                 }
                 // GCOVR_EXCL_STOP
-                module_tbl = to_sol_table(runtime->service_table(vm));
+                module_tbl = runtime->service_table(vm);
             }
             // GCOVR_EXCL_START (defensive: every dispatch context resolves
             // a vm whose module loaded — load failures never reach the
             // dispatch scope, and a null vm above leaves the nil sentinel)
             if (!module_tbl.valid()) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "invalid_argument",
                                "watch requires a loaded service module"));
@@ -3277,22 +3089,22 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
             // call (coroutines share them) instead of being captured by the
             // lambda: a captured sol reference would be dereferenced from
             // the GC finalizer that later destroys the lambda.
-            sol::table impl = s.globals()["__shield_server_impl"];
-            sol::protected_function attach = impl["attach"];
+            shd::table impl = s.globals()["__shield_server_impl"];
+            shd::protected_function attach = impl["attach"];
             attach(module_tbl, watch_id, cb);
-            results.push_back(sol::make_object(s, watch_id));
+            results.push_back(shd::make_object(s, watch_id));
             return results;
         });
 
     server.set_function(
         "unwatch",
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::object watch_id) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           shd::object watch_id) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* sm = shield::server::ServerManager::global();
             if (sm == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "module_unavailable",
                                "shield_server is not initialized"));
@@ -3305,10 +3117,10 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
                 id = static_cast<std::uint64_t>(watch_id.as<double>());
             }
             sm->unwatch(id);
-            sol::table impl = s.globals()["__shield_server_impl"];
-            sol::protected_function detach = impl["detach"];
+            shd::table impl = s.globals()["__shield_server_impl"];
+            shd::protected_function detach = impl["detach"];
             detach(id);
-            results.push_back(sol::make_object(s, true));
+            results.push_back(shd::make_object(s, true));
             return results;
         });
 
@@ -3317,16 +3129,17 @@ void register_server_api(sol::table& shield, LuaServiceManager* manager,
 #else
 // Module compiled out: every shield.server.* entry reports
 // module_unavailable instead of being a nil field.
-void register_server_stub_api(sol::table& shield, sol::state_view lua) {
-    auto unavailable = lua.safe_script(
+void register_server_stub_api(shd::table& shield, shd::state_view lua) {
+    auto unavailable = shd::safe_script(
+        lua,
         "return function()\n"  // GCOVR_EXCL_LINE (safe_script chunk artifact)
         "  return nil, {code = 'module_unavailable', message = "
         "'shield_server is not enabled', retryable = false}\n"
         "end\n",
         [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result
+           shd::protected_function_result
                pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
     auto server = lua.create_table();
     for (const char* name :
          {"state", "uptime", "version", "node_id", "started_at", "config",
@@ -3719,14 +3532,14 @@ rawset(_G, '__shield_global_impl', api)
 return api
 )lua";
 
-void register_global_api(sol::table& shield, LuaServiceManager* manager,
+void register_global_api(shd::table& shield, LuaServiceManager* manager,
                          LuaRuntime* runtime) {
-    sol::state_view lua(shield.lua_state());
+    shd::state_view lua(shield.lua_state());
 
     // Non-blocking primitives the orchestration chunk builds the waiting
     // API on. Created per VM, then handed to the chunk; C++ never keeps a
     // reference past this registration (call-time resolution only).
-    sol::table prim = lua.create_table();
+    shd::table prim = lua.create_table();
     auto* gm = shield::global::GlobalManager::global();
     auto lock_try = [gm](const std::string& registry, const std::string& name,
                          const std::string& owner, double ttl) {
@@ -3750,20 +3563,20 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                       });
     prim.set_function(
         "lock_info",
-        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+        [gm](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
              const std::string& registry, const std::string& name) {
-            sol::state_view s(state);
+            shd::state_view s(state);
             const auto info = gm->mutex_info(registry, name);
             if (!info.exists) {
-                return sol::make_object(s, sol::nil);
+                return shd::make_object(s, shd::nil);
             }
-            sol::table out = s.create_table();
+            shd::table out = s.create_table();
             out["exists"] = true;
             out["owner"] = info.owner;
             out["count"] = info.count;
             out["acquired_at"] = info.acquired_at_ms;
             out["ttl_remaining"] = info.ttl_remaining_ms;
-            return sol::make_object(s, out);
+            return shd::make_object(s, out);
         });
     prim.set_function(
         "rw_write_try",
@@ -3799,14 +3612,14 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     });
     prim.set_function(
         "queue_pop_now",
-        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-             const std::string& name) -> sol::object {
-            sol::state_view s(state);
+        [gm](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name) -> shd::object {
+            shd::state_view s(state);
             std::string payload;
             if (!gm->queue_pop(name, &payload)) {
-                return sol::make_object(s, sol::nil);
+                return shd::make_object(s, shd::nil);
             }
-            return sol::make_object(s, payload);
+            return shd::make_object(s, payload);
         });
     prim.set_function("queue_length", [gm](const std::string& name) {
         return gm->queue_length(name);
@@ -3825,14 +3638,14 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
         });
     prim.set_function(
         "delay_pop_now",
-        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-             const std::string& name) -> sol::object {
-            sol::state_view s(state);
+        [gm](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name) -> shd::object {
+            shd::state_view s(state);
             std::string payload;
             if (!gm->delay_pop(name, &payload)) {
-                return sol::make_object(s, sol::nil);
+                return shd::make_object(s, shd::nil);
             }
-            return sol::make_object(s, payload);
+            return shd::make_object(s, payload);
         });
     prim.set_function("delay_pending", [gm](const std::string& name) {
         return gm->delay_pending(name);
@@ -3849,14 +3662,14 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     });
     prim.set_function(
         "priority_pop_now",
-        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-             const std::string& name) -> sol::object {
-            sol::state_view s(state);
+        [gm](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name) -> shd::object {
+            shd::state_view s(state);
             std::string payload;
             if (!gm->priority_pop(name, &payload)) {
-                return sol::make_object(s, sol::nil);
+                return shd::make_object(s, shd::nil);
             }
-            return sol::make_object(s, payload);
+            return shd::make_object(s, payload);
         });
     prim.set_function("priority_length", [gm](const std::string& name) {
         return gm->priority_length(name);
@@ -3878,17 +3691,17 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                       });
     prim.set_function(
         "broadcast_since",
-        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+        [gm](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
              const std::string& name,
-             const std::string& group) -> std::tuple<sol::object, sol::object> {
-            sol::state_view s(state);
+             const std::string& group) -> std::tuple<shd::object, shd::object> {
+            shd::state_view s(state);
             std::vector<std::string> rows;
             const std::uint64_t last = gm->broadcast_since(name, group, &rows);
-            sol::table out = s.create_table();
+            shd::table out = s.create_table();
             for (std::size_t i = 0; i < rows.size(); ++i) {
                 out[i + 1] = rows[i];
             }
-            return {sol::make_object(s, out), sol::make_object(s, last)};
+            return {shd::make_object(s, out), shd::make_object(s, last)};
         });
     prim.set_function(
         "broadcast_commit",
@@ -3914,16 +3727,16 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
         });
     prim.set_function(
         "rel_pop_now",
-        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-             const std::string& name) -> std::tuple<sol::object, sol::object> {
-            sol::state_view s(state);
+        [gm](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name) -> std::tuple<shd::object, shd::object> {
+            shd::state_view s(state);
             shield::global::ReliableDelivery delivery;
             if (!gm->reliable_pop(name, &delivery)) {
-                return {sol::make_object(s, sol::nil),
-                        sol::make_object(s, sol::nil)};
+                return {shd::make_object(s, shd::nil),
+                        shd::make_object(s, shd::nil)};
             }
-            return {sol::make_object(s, delivery.delivery_id),
-                    sol::make_object(s, delivery.payload)};
+            return {shd::make_object(s, delivery.delivery_id),
+                    shd::make_object(s, delivery.payload)};
         });
     prim.set_function("rel_ack", [gm](const std::string& name,
                                       double delivery_id) {
@@ -3949,15 +3762,15 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     });
     prim.set_function(
         "rel_dead_range",
-        [gm](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-             const std::string& name, double from, double to) -> sol::object {
-            sol::state_view s(state);
+        [gm](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+             const std::string& name, double from, double to) -> shd::object {
+            shd::state_view s(state);
             auto entries =
                 gm->reliable_dead_range(name, static_cast<std::size_t>(from),
                                         static_cast<std::size_t>(to));
-            sol::table out = s.create_table();
+            shd::table out = s.create_table();
             for (const auto& entry : entries) {
-                sol::table row = s.create_table();
+                shd::table row = s.create_table();
                 row["id"] = entry.delivery_id;
                 row["payload"] = entry.payload;
                 row["retries"] = entry.retries;
@@ -3972,125 +3785,125 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
         gm->reliable_dead_purge(name);
     });
     prim.set_function(
-        "encode", [](sol::object value) { return lua_to_json(value).dump(); });
+        "encode", [](shd::object value) { return lua_to_json(value).dump(); });
     prim.set_function(
         "decode",
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           const std::string& text) -> sol::object {
-            sol::state_view s(state);
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (gcov clone artifact)
+           const std::string& text) -> shd::object {
+            shd::state_view s(state);
             auto parsed = nlohmann::json::parse(text, nullptr, false);
             if (parsed.is_discarded()) {
-                return sol::make_object(s, sol::nil);
+                return shd::make_object(s, shd::nil);
             }
             return json_to_lua(s, parsed);
         });
     lua["__shield_global_primitives"] = prim;
 
     // Run the orchestration chunk once per VM.
-    lua.safe_script(
-        kGlobalOrchestration,
+    shd::safe_script(
+        lua, kGlobalOrchestration,
         [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result
+           shd::protected_function_result
                pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 
     // Resolve the impl table at CALL time (never captured: same rule as
     // the server orchestration chunk).
     auto impl_table = [lua]() {
-        sol::table impl = lua.globals()["__shield_global_impl"];
+        shd::table impl = lua.globals()["__shield_global_impl"];
         return impl;
     };
 
     // ---- shield.global(): global data + local cache ----
     shield.set_function(
-        "global", [lua](sol::this_state state) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
+        "global", [lua](shd::this_state state) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* mgr = shield::global::GlobalManager::global();
             if (mgr == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "module_unavailable",
                                "shield_global is not initialized"));
                 return results;
             }
-            sol::table g = s.create_table();
-            g.set_function("set", [mgr](sol::object /*self*/, sol::object key,
-                                        sol::object value,
-                                        sol::optional<double> ttl) {
+            shd::table g = s.create_table();
+            g.set_function("set", [mgr](shd::object /*self*/, shd::object key,
+                                        shd::object value,
+                                        std::optional<double> ttl) {
                 mgr->data_set(key.as<std::string>(), lua_to_json(value).dump(),
                               ttl ? static_cast<std::uint64_t>(*ttl) : 0);
                 return true;
             });
             g.set_function(
                 "get",
-                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object /*self*/, sol::object key) -> sol::object {
-                    sol::state_view s(state);
+                [mgr](shd::this_state state,  // GCOVR_EXCL_LINE
+                      shd::object /*self*/, shd::object key) -> shd::object {
+                    shd::state_view s(state);
                     std::string value;
                     if (!mgr->data_get(key.as<std::string>(), &value)) {
-                        return sol::make_object(s, sol::nil);
+                        return shd::make_object(s, shd::nil);
                     }
                     auto parsed = nlohmann::json::parse(value, nullptr, false);
                     if (parsed.is_discarded()) {
-                        return sol::make_object(s, value);
+                        return shd::make_object(s, value);
                     }
                     return json_to_lua(s, parsed);
                 });
-            g.set_function("delete", [mgr](sol::object, sol::object key) {
+            g.set_function("delete", [mgr](shd::object, shd::object key) {
                 return mgr->data_delete(key.as<std::string>());
             });
             g.set_function(
                 "incr",
-                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object /*self*/, sol::object key,
-                      sol::optional<double> delta) -> sol::variadic_results {
-                    sol::state_view s(state);
-                    sol::variadic_results results;
+                [mgr](shd::this_state state,  // GCOVR_EXCL_LINE
+                      shd::object /*self*/, shd::object key,
+                      std::optional<double> delta) -> shd::variadic_results {
+                    shd::state_view s(state);
+                    shd::variadic_results results;
                     std::int64_t out = 0;
                     std::string error;
                     if (!mgr->data_incr_by(
                             key.as<std::string>(),
                             delta ? static_cast<std::int64_t>(*delta) : 1, &out,
                             &error)) {
-                        results.push_back(sol::make_object(s, sol::nil));
+                        results.push_back(shd::make_object(s, shd::nil));
                         results.push_back(
                             make_error(state, "invalid_value", error));
                         return results;
                     }
-                    results.push_back(sol::make_object(s, out));
+                    results.push_back(shd::make_object(s, out));
                     return results;
                 });
             g.set_function(
                 "decr",
-                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object /*self*/, sol::object key,
-                      sol::optional<double> delta) -> sol::variadic_results {
-                    sol::state_view s(state);
-                    sol::variadic_results results;
+                [mgr](shd::this_state state,  // GCOVR_EXCL_LINE
+                      shd::object /*self*/, shd::object key,
+                      std::optional<double> delta) -> shd::variadic_results {
+                    shd::state_view s(state);
+                    shd::variadic_results results;
                     std::int64_t out = 0;
                     std::string error;
                     if (!mgr->data_incr_by(
                             key.as<std::string>(),
                             delta ? -static_cast<std::int64_t>(*delta) : -1,
                             &out, &error)) {
-                        results.push_back(sol::make_object(s, sol::nil));
+                        results.push_back(shd::make_object(s, shd::nil));
                         results.push_back(
                             make_error(state, "invalid_value", error));
                         return results;
                     }
-                    results.push_back(sol::make_object(s, out));
+                    results.push_back(shd::make_object(s, out));
                     return results;
                 });
             g.set_function(
                 "mset",
-                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object /*self*/, sol::table kvs,
-                      sol::optional<double> ttl) -> sol::variadic_results {
-                    sol::state_view s(state);
-                    sol::variadic_results results;
+                [mgr](shd::this_state state,  // GCOVR_EXCL_LINE
+                      shd::object /*self*/, shd::table kvs,
+                      std::optional<double> ttl) -> shd::variadic_results {
+                    shd::state_view s(state);
+                    shd::variadic_results results;
                     std::vector<std::pair<std::string, std::string>> pairs;
-                    for (auto& [k, v] : kvs) {
+                    for (auto&& [k, v] : kvs) {
                         if (k.is<std::string>()) {
                             pairs.emplace_back(k.as<std::string>(),
                                                lua_to_json(v).dump());
@@ -4100,21 +3913,21 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                     if (!mgr->data_mset(
                             pairs, ttl ? static_cast<std::uint64_t>(*ttl) : 0,
                             &error)) {
-                        results.push_back(sol::make_object(s, sol::nil));
+                        results.push_back(shd::make_object(s, shd::nil));
                         results.push_back(
                             make_error(state, "invalid_argument", error));
                         return results;
                     }
-                    results.push_back(sol::make_object(s, true));
+                    results.push_back(shd::make_object(s, true));
                     return results;
                 });
             g.set_function(
                 "mget",
-                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object /*self*/,
-                      sol::variadic_args args) -> sol::object {
-                    sol::state_view s(state);
-                    sol::table out = s.create_table();
+                [mgr](shd::this_state state,  // GCOVR_EXCL_LINE
+                      shd::object /*self*/,
+                      shd::variadic_args args) -> shd::object {
+                    shd::state_view s(state);
+                    shd::table out = s.create_table();
                     for (const auto& arg : args) {
                         std::string value;
                         if (mgr->data_get(arg.as<std::string>(), &value)) {
@@ -4124,101 +3937,101 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                                 out.add(json_to_lua(s, parsed));
                                 continue;
                             }
-                            out.add(sol::make_object(s, value));
+                            out.add(shd::make_object(s, value));
                         } else {
-                            out.add(sol::make_object(s, sol::nil));
+                            out.add(shd::make_object(s, shd::nil));
                         }
                     }
                     return out;
                 });
             g.set_function(
                 "get_cached",
-                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object /*self*/, sol::object key,
-                      sol::optional<double> ttl) -> sol::object {
-                    sol::state_view s(state);
+                [mgr](shd::this_state state,  // GCOVR_EXCL_LINE
+                      shd::object /*self*/, shd::object key,
+                      std::optional<double> ttl) -> shd::object {
+                    shd::state_view s(state);
                     std::string value;
                     if (!mgr->cache_get(
                             key.as<std::string>(),
                             ttl ? static_cast<std::uint64_t>(*ttl) : 0,
                             &value)) {
-                        return sol::make_object(s, sol::nil);
+                        return shd::make_object(s, shd::nil);
                     }
                     auto parsed = nlohmann::json::parse(value, nullptr, false);
                     if (parsed.is_discarded()) {
-                        return sol::make_object(s, value);
+                        return shd::make_object(s, value);
                     }
                     return json_to_lua(s, parsed);
                 });
-            g.set_function("invalidate", [mgr](sol::object, sol::object key) {
+            g.set_function("invalidate", [mgr](shd::object, shd::object key) {
                 mgr->cache_invalidate(key.as<std::string>());
                 return true;
             });
-            results.push_back(sol::make_object(s, g));
+            results.push_back(shd::make_object(s, g));
             return results;
         });
 
     // ---- lock factories (waiting semantics live in the chunk) ----
-    auto lock_factory = [lua, impl_table](sol::this_state state,
-                                          const char* maker, sol::object name,
-                                          sol::optional<sol::table> opts) {
-        sol::state_view s(state);
+    auto lock_factory = [lua, impl_table](shd::this_state state,
+                                          const char* maker, shd::object name,
+                                          std::optional<shd::table> opts) {
+        shd::state_view s(state);
         auto* mgr = shield::global::GlobalManager::global();
         if (mgr == nullptr) {
             return std::make_tuple(
-                sol::make_object(s, sol::nil),
-                sol::make_object(
+                shd::make_object(s, shd::nil),
+                shd::make_object(
                     s, make_error(state, "module_unavailable",
                                   "shield_global is not initialized")));
         }
         (void)mgr;
-        sol::table impl = impl_table();
-        sol::protected_function make = impl[maker];
-        sol::protected_function_result result =
+        shd::table impl = impl_table();
+        shd::protected_function make = impl[maker];
+        shd::protected_function_result result =
             name.is<std::string>() && opts.has_value()
                 ? make(name.as<std::string>(), *opts)  // GCOVR_EXCL_BR_LINE
                                                        // (compiler artifact:
-                                                       // sol2 as<> dispatch
+                                                       // shd as<> dispatch
                                                        // clones)
                 : make(name.is<std::string>()  // GCOVR_EXCL_BR_LINE (compiler
-                                               // artifact: sol2 as<> dispatch
+                                               // artifact: shd as<> dispatch
                                                // clones)
                            ? name.as<std::string>()  // GCOVR_EXCL_BR_LINE
-                                                     // (compiler artifact: sol2
+                                                     // (compiler artifact: shd
                                                      // as<> bad_cast dispatch
                                                      // clones)
                            : "");  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                   // sol2 as<> dispatch clones)
+                                   // shd as<> dispatch clones)
         if (!result.valid()) {
             return std::make_tuple(
-                sol::make_object(s, sol::nil),
-                sol::make_object(s, make_error(state, "invalid_argument",
+                shd::make_object(s, shd::nil),
+                shd::make_object(s, make_error(state, "invalid_argument",
                                                "invalid lock arguments")));
         }
         // Unwrap the pfr explicitly: make_object on the whole result does
         // not reliably push the callee's first return value here.
-        sol::object lock_obj = result.get<sol::object>(0);
+        shd::object lock_obj = result.get<shd::object>(0);
         return std::make_tuple(std::move(lock_obj),
-                               sol::make_object(s, sol::nil));
+                               shd::make_object(s, shd::nil));
     };  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda/function-close line)
     shield.set_function(
-        "mutex", [lock_factory](sol::this_state state, sol::object name,
-                                sol::optional<sol::table> opts) {
+        "mutex", [lock_factory](shd::this_state state, shd::object name,
+                                std::optional<shd::table> opts) {
             return lock_factory(state, "make_mutex", name, opts);
         });
     shield.set_function(
-        "spinlock", [lock_factory](sol::this_state state, sol::object name,
-                                   sol::optional<sol::table> opts) {
+        "spinlock", [lock_factory](shd::this_state state, shd::object name,
+                                   std::optional<shd::table> opts) {
             return lock_factory(state, "make_spinlock", name, opts);
         });
     shield.set_function(
-        "rwlock", [lock_factory](sol::this_state state, sol::object name,
-                                 sol::optional<sol::table> opts) {
+        "rwlock", [lock_factory](shd::this_state state, shd::object name,
+                                 std::optional<shd::table> opts) {
             return lock_factory(state, "make_rwlock", name, opts);
         });
     shield.set_function("distributed_mutex",
-                        [lock_factory](sol::this_state state, sol::object name,
-                                       sol::optional<sol::table> opts) {
+                        [lock_factory](shd::this_state state, shd::object name,
+                                       std::optional<shd::table> opts) {
                             // P0: the distributed twin rides the in-process
                             // backend (the cross-process seam is the manager
                             // itself).
@@ -4226,8 +4039,8 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                                                 opts);
                         });
     shield.set_function("distributed_rwlock",
-                        [lock_factory](sol::this_state state, sol::object name,
-                                       sol::optional<sol::table> opts) {
+                        [lock_factory](shd::this_state state, shd::object name,
+                                       std::optional<shd::table> opts) {
                             return lock_factory(state, "make_rwlock", name,
                                                 opts);
                         });
@@ -4235,36 +4048,36 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     // ---- shield.rank(name) ----
     shield.set_function(
         "rank",
-        [lua](sol::this_state state,
-              sol::object board_obj) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
+        [lua](shd::this_state state,
+              shd::object board_obj) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* mgr = shield::global::GlobalManager::global();
             if (mgr == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "module_unavailable",
                                "shield_global is not initialized"));
                 return results;
             }
             if (!board_obj.is<std::string>()) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(state, "invalid_argument",
                                              "rank requires a board name"));
                 return results;
             }
             const std::string board = board_obj.as<std::string>();
-            sol::table rank = s.create_table();
+            shd::table rank = s.create_table();
             rank.set_function(
-                "update", [mgr, board](sol::object /*self*/, std::string uid,
+                "update", [mgr, board](shd::object /*self*/, std::string uid,
                                        double score) {
                     mgr->rank_update(board, uid, score);
                     return true;
                 });
-            rank.set_function("mupdate", [mgr, board](sol::object /*self*/,
-                                                      sol::table updates) {
+            rank.set_function("mupdate", [mgr, board](shd::object /*self*/,
+                                                      shd::table updates) {
                 std::vector<std::pair<std::string, double>> batch;
-                for (auto& [uid, score] : updates) {
+                for (auto&& [uid, score] : updates) {
                     if (uid.is<std::string>() && score.is<double>()) {
                         batch.emplace_back(uid.as<std::string>(),
                                            score.as<double>());
@@ -4275,32 +4088,32 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             });
             rank.set_function(
                 "score",
-                [mgr, board](sol::this_state state, sol::object /*self*/,
-                             sol::object uid) -> sol::object {
-                    sol::state_view s(state);
+                [mgr, board](shd::this_state state, shd::object /*self*/,
+                             shd::object uid) -> shd::object {
+                    shd::state_view s(state);
                     if (!uid.is<std::string>()) {
-                        return sol::make_object(s, sol::nil);
+                        return shd::make_object(s, shd::nil);
                     }
                     auto value = mgr->rank_score(board, uid.as<std::string>());
-                    return value ? sol::make_object(s, *value)
-                                 : sol::make_object(s, sol::nil);
+                    return value ? shd::make_object(s, *value)
+                                 : shd::make_object(s, shd::nil);
                 });
             rank.set_function(
                 "position",
-                [mgr, board](sol::this_state state, sol::object /*self*/,
-                             sol::object uid) -> sol::object {
-                    sol::state_view s(state);
+                [mgr, board](shd::this_state state, shd::object /*self*/,
+                             shd::object uid) -> shd::object {
+                    shd::state_view s(state);
                     if (!uid.is<std::string>()) {
-                        return sol::make_object(s, sol::nil);
+                        return shd::make_object(s, shd::nil);
                     }
                     auto value =
                         mgr->rank_position(board, uid.as<std::string>());
-                    return value ? sol::make_object(s, *value)
-                                 : sol::make_object(s, sol::nil);
+                    return value ? shd::make_object(s, *value)
+                                 : shd::make_object(s, shd::nil);
                 });
-            auto entry_table = [](sol::state_view s,
+            auto entry_table = [](shd::state_view s,
                                   const shield::global::RankEntry& entry) {
-                sol::table row = s.create_table();
+                shd::table row = s.create_table();
                 row["uid"] = entry.uid;
                 row["score"] = entry.score;
                 row["rank"] = entry.rank;
@@ -4311,12 +4124,12 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 [mgr, board, entry_table](  // GCOVR_EXCL_BR_LINE (compiler
                                             // artifact: lambda-entry clone
                                             // arcs)
-                    sol::this_state
-                        state,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion
+                    shd::this_state
+                        state,  // GCOVR_EXCL_BR_LINE (shd argument-conversion
                                 // arcs at the set_function boundary)
-                    sol::object /*self*/, double n) -> sol::object {
-                    sol::state_view s(state);
-                    sol::table out = s.create_table();
+                    shd::object /*self*/, double n) -> shd::object {
+                    shd::state_view s(state);
+                    shd::table out = s.create_table();
                     for (const auto& entry :
                          mgr->rank_top(board, static_cast<std::size_t>(n))) {
                         out.add(entry_table(s, entry));
@@ -4328,13 +4141,13 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 [mgr, board, entry_table](  // GCOVR_EXCL_BR_LINE (compiler
                                             // artifact: lambda-entry clone
                                             // arcs)
-                    sol::this_state
-                        state,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion
+                    shd::this_state
+                        state,  // GCOVR_EXCL_BR_LINE (shd argument-conversion
                                 // arcs at the set_function boundary)
-                    sol::object /*self*/, double from,
-                    double to) -> sol::object {
-                    sol::state_view s(state);
-                    sol::table out = s.create_table();
+                    shd::object /*self*/, double from,
+                    double to) -> shd::object {
+                    shd::state_view s(state);
+                    shd::table out = s.create_table();
                     for (const auto& entry : mgr->rank_range(
                              board, static_cast<std::uint64_t>(from),
                              static_cast<std::uint64_t>(to))) {
@@ -4347,12 +4160,12 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 [mgr, board, entry_table](  // GCOVR_EXCL_BR_LINE (compiler
                                             // artifact: lambda-entry clone
                                             // arcs)
-                    sol::this_state
-                        state,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion
+                    shd::this_state
+                        state,  // GCOVR_EXCL_BR_LINE (shd argument-conversion
                                 // arcs at the set_function boundary)
-                    sol::object /*self*/, double lo, double hi) -> sol::object {
-                    sol::state_view s(state);
-                    sol::table out = s.create_table();
+                    shd::object /*self*/, double lo, double hi) -> shd::object {
+                    shd::state_view s(state);
+                    shd::table out = s.create_table();
                     for (const auto& entry :
                          mgr->rank_range_by_score(board, lo, hi)) {
                         out.add(entry_table(s, entry));
@@ -4364,31 +4177,31 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 [mgr, board, entry_table](  // GCOVR_EXCL_BR_LINE (compiler
                                             // artifact: lambda-entry clone
                                             // arcs)
-                    sol::this_state
-                        state,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion
+                    shd::this_state
+                        state,  // GCOVR_EXCL_BR_LINE (shd argument-conversion
                                 // arcs at the set_function boundary)
-                    sol::object /*self*/, sol::object uid,
-                    double n) -> sol::object {
-                    sol::state_view s(state);
+                    shd::object /*self*/, shd::object uid,
+                    double n) -> shd::object {
+                    shd::state_view s(state);
                     if (!uid.is<std::string>()) {
-                        return sol::make_object(s, sol::nil);
+                        return shd::make_object(s, shd::nil);
                     }
-                    sol::table out = s.create_table();
+                    shd::table out = s.create_table();
                     const auto around =
                         mgr->rank_around(board, uid.as<std::string>(),
                                          static_cast<std::size_t>(n));
-                    sol::table above = s.create_table();
+                    shd::table above = s.create_table();
                     for (const auto& entry : around.above) {
                         above.add(entry_table(s, entry));
                     }
-                    sol::table below = s.create_table();
+                    shd::table below = s.create_table();
                     for (const auto& entry : around.below) {
                         below.add(entry_table(s, entry));
                     }
                     out["above"] = above;
                     out["target"] =
                         around.target
-                            ? sol::make_object(
+                            ? shd::make_object(
                                   s,
                                   entry_table(  // GCOVR_EXCL_BR_LINE (compiler
                                                 // artifact: entry_table
@@ -4400,80 +4213,80 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                                                         // construction cold
                                                         // clone; both ternary
                                                         // arms driven)
-                            : sol::make_object(s, sol::nil);
+                            : shd::make_object(s, shd::nil);
                     out["below"] = below;
                     return out;
                 });
-            rank.set_function("count", [mgr, board](sol::object /*self*/) {
+            rank.set_function("count", [mgr, board](shd::object /*self*/) {
                 return mgr->rank_count(board);
             });
             rank.set_function(
-                "remove", [mgr, board](sol::object /*self*/, std::string uid) {
+                "remove", [mgr, board](shd::object /*self*/, std::string uid) {
                     return mgr->rank_remove(board, uid);
                 });
-            rank.set_function("clear", [mgr, board](sol::object /*self*/) {
+            rank.set_function("clear", [mgr, board](shd::object /*self*/) {
                 mgr->rank_clear(board);
                 return true;
             });
-            results.push_back(sol::make_object(s, rank));
+            results.push_back(shd::make_object(s, rank));
             return results;
         });
 
     // ---- queue factories (waiting pop semantics live in the chunk) ----
-    auto queue_factory = [lua, impl_table](sol::this_state state,
-                                           const char* maker, sol::object name,
-                                           sol::optional<sol::table> opts) {
-        sol::state_view s(state);
+    auto queue_factory = [lua, impl_table](shd::this_state state,
+                                           const char* maker, shd::object name,
+                                           std::optional<shd::table> opts) {
+        shd::state_view s(state);
         auto* mgr = shield::global::GlobalManager::global();
         if (mgr == nullptr) {
             return std::make_tuple(
-                sol::make_object(s, sol::nil),
-                sol::make_object(
+                shd::make_object(s, shd::nil),
+                shd::make_object(
                     s, make_error(state, "module_unavailable",
                                   "shield_global is not initialized")));
         }
         (void)mgr;
-        sol::table impl = impl_table();
-        sol::protected_function make = impl[maker];
-        sol::protected_function_result result =
+        shd::table impl = impl_table();
+        shd::protected_function make = impl[maker];
+        shd::protected_function_result result =
             opts.has_value() ? make(name, *opts) : make(name);
         if (!result.valid()) {
             return std::make_tuple(
-                sol::make_object(s, sol::nil),
-                sol::make_object(s, make_error(state, "invalid_argument",
+                shd::make_object(s, shd::nil),
+                shd::make_object(s, make_error(state, "invalid_argument",
                                                "invalid queue arguments")));
         }
         // Unwrap the pfr explicitly: make_object on the whole result does
         // not reliably push the callee's first return value here.
-        sol::object queue_obj = result.get<sol::object>(0);
+        shd::object queue_obj = result.get<shd::object>(0);
         return std::make_tuple(std::move(queue_obj),
-                               sol::make_object(s, sol::nil));
+                               shd::make_object(s, shd::nil));
     };  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda/function-close line)
     shield.set_function(
-        "queue", [queue_factory](sol::this_state state, sol::object name,
-                                 sol::optional<sol::table> opts) {
+        "queue", [queue_factory](shd::this_state state, shd::object name,
+                                 std::optional<shd::table> opts) {
             return queue_factory(state, "make_queue", name, opts);
         });
     shield.set_function(
-        "delay_queue", [queue_factory](sol::this_state state, sol::object name,
-                                       sol::optional<sol::table> opts) {
+        "delay_queue", [queue_factory](shd::this_state state, shd::object name,
+                                       std::optional<shd::table> opts) {
             return queue_factory(state, "make_delay_queue", name, opts);
         });
     shield.set_function("reliable_queue",
-                        [queue_factory](sol::this_state state, sol::object name,
-                                        sol::optional<sol::table> opts) {
+                        [queue_factory](shd::this_state state, shd::object name,
+                                        std::optional<shd::table> opts) {
                             return queue_factory(state, "make_reliable_queue",
                                                  name, opts);
                         });
     shield.set_function("priority_queue",
-                        [queue_factory](sol::this_state state, sol::object name,
-                                        sol::optional<sol::table> opts) {
+                        [queue_factory](shd::this_state state, shd::object name,
+                                        std::optional<shd::table> opts) {
                             return queue_factory(state, "make_priority_queue",
                                                  name, opts);
                         });
     shield.set_function("broadcast_queue",
-                        [queue_factory](sol::this_state state, sol::object name,
-                                        sol::optional<sol::table> opts) {
+                        [queue_factory](shd::this_state state, shd::object name,
+                                        std::optional<shd::table> opts) {
                             return queue_factory(state, "make_broadcast_queue",
                                                  name, opts);
                         });
@@ -4481,41 +4294,41 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
     // ---- shield.scheduler() ----
     shield.set_function(
         "scheduler",
-        [lua, manager,  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion arcs at
+        [lua, manager,  // GCOVR_EXCL_BR_LINE (shd argument-conversion arcs at
                         // the set_function boundary)
-         runtime](sol::this_state state) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
+         runtime](shd::this_state state) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* mgr = shield::global::GlobalManager::global();
             if (mgr == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "module_unavailable",
                                "shield_global is not initialized"));
                 return results;
             }
             auto register_task = [lua, manager, runtime](
-                                     sol::this_state state, const char* type,
-                                     sol::object name, sol::object schedule,
-                                     sol::object cb) -> sol::variadic_results {
-                sol::state_view s(state);
-                sol::variadic_results results;
+                                     shd::this_state state, const char* type,
+                                     shd::object name, shd::object schedule,
+                                     shd::object cb) -> shd::variadic_results {
+                shd::state_view s(state);
+                shd::variadic_results results;
                 auto* mgr2 = shield::global::GlobalManager::global();
                 if (!name.is<std::string>() ||
                     name.as<std::string>()  // GCOVR_EXCL_BR_LINE (compiler
-                                            // artifact: sol2 as<> bad_cast
+                                            // artifact: shd as<> bad_cast
                                             // dispatch clones)
                         .empty()) {  // GCOVR_EXCL_BR_LINE (compiler artifact:
                                      // name-guard cold clone; both compound
                                      // arms driven)
-                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(shd::make_object(s, shd::nil));
                     results.push_back(
                         make_error(state, "invalid_argument",
                                    "task name must be a non-empty string"));
                     return results;
                 }
-                if (!cb.is<sol::function>()) {
-                    results.push_back(sol::make_object(s, sol::nil));
+                if (!cb.is<shd::function>()) {
+                    results.push_back(shd::make_object(s, shd::nil));
                     results.push_back(
                         make_error(state, "invalid_argument",
                                    "task expects a callback function"));
@@ -4527,7 +4340,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 } else if (schedule.is<double>()) {
                     const double raw = schedule.as<double>();
                     if (raw < 0.0 || raw != std::floor(raw)) {
-                        results.push_back(sol::make_object(s, sol::nil));
+                        results.push_back(shd::make_object(s, shd::nil));
                         results.push_back(make_error(
                             state, "invalid_argument",
                             "schedule must be a non-negative integer ms"));
@@ -4536,7 +4349,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                     schedule_text =
                         std::to_string(static_cast<std::uint64_t>(raw));
                 } else {
-                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(shd::make_object(s, shd::nil));
                     results.push_back(make_error(
                         state, "invalid_argument",
                         "schedule must be a cron string or an ms number"));
@@ -4544,7 +4357,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 }
                 const std::string service_id = manager->current_service_id();
                 if (service_id.empty()) {
-                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(shd::make_object(s, shd::nil));
                     results.push_back(make_error(
                         state, "invalid_argument",
                         "scheduler tasks require a service context (register "
@@ -4554,7 +4367,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 std::string error;
                 if (!mgr2->sched_register(type, name.as<std::string>(),
                                           schedule_text, service_id, &error)) {
-                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(shd::make_object(s, shd::nil));
                     results.push_back(
                         make_error(state, "invalid_argument", error));
                     return results;
@@ -4562,7 +4375,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 // Resolve the calling service's module table and store the
                 // callback in the per-VM registry (same VM resolution as
                 // the server watch facade).
-                sol::table module_tbl = sol::nil;
+                shd::table module_tbl = shd::nil;
                 if (runtime) {  // GCOVR_EXCL_BR_LINE (defensive: runtime is
                                 // always live inside a dispatch context)
                     auto vm = manager->current_service_vm();
@@ -4576,7 +4389,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                     // GCOVR_EXCL_STOP
                     if (vm) {  // GCOVR_EXCL_BR_LINE (defensive: a null vm here
                                // means the service module is gone)
-                        module_tbl = to_sol_table(runtime->service_table(vm));
+                        module_tbl = runtime->service_table(vm);
                     }
                 }
                 // Defensive: the context check above already rejects
@@ -4585,53 +4398,53 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                 // GCOVR_EXCL_START (defensive)
                 if (!module_tbl.valid()) {
                     mgr2->sched_remove(name.as<std::string>());
-                    results.push_back(sol::make_object(s, sol::nil));
+                    results.push_back(shd::make_object(s, shd::nil));
                     results.push_back(make_error(
                         state, "invalid_argument",
                         "scheduler tasks require a loaded service module"));
                     return results;
                 }
                 // GCOVR_EXCL_STOP
-                sol::table impl = s.globals()["__shield_global_impl"];
-                sol::protected_function attach = impl["attach_sched"];
+                shd::table impl = s.globals()["__shield_global_impl"];
+                shd::protected_function attach = impl["attach_sched"];
                 attach(module_tbl, name, cb);
-                results.push_back(sol::make_object(s, true));
+                results.push_back(shd::make_object(s, true));
                 return results;
             };  // GCOVR_EXCL_BR_LINE (compiler artifact: lambda/function-close
                 // line)
-            sol::table sched = s.create_table();
+            shd::table sched = s.create_table();
             sched.set_function(
-                "cron", [register_task](sol::this_state state,
-                                        sol::object /*self*/, sol::object name,
-                                        sol::object expr, sol::object cb,
-                                        sol::optional<sol::table> /*opts*/) {
+                "cron", [register_task](shd::this_state state,
+                                        shd::object /*self*/, shd::object name,
+                                        shd::object expr, shd::object cb,
+                                        std::optional<shd::table> /*opts*/) {
                     return register_task(state, "cron", name, expr, cb);
                 });
             sched.set_function(
                 "interval",
-                [register_task](sol::this_state state, sol::object /*self*/,
-                                sol::object name, sol::object ms,
-                                sol::object cb,
-                                sol::optional<sol::table> /*opts*/) {
+                [register_task](shd::this_state state, shd::object /*self*/,
+                                shd::object name, shd::object ms,
+                                shd::object cb,
+                                std::optional<shd::table> /*opts*/) {
                     return register_task(state, "interval", name, ms, cb);
                 });
             sched.set_function(
-                "once", [register_task](sol::this_state state,
-                                        sol::object /*self*/, sol::object name,
-                                        sol::object delay, sol::object cb,
-                                        sol::optional<sol::table> /*opts*/) {
+                "once", [register_task](shd::this_state state,
+                                        shd::object /*self*/, shd::object name,
+                                        shd::object delay, shd::object cb,
+                                        std::optional<shd::table> /*opts*/) {
                     return register_task(state, "once", name, delay, cb);
                 });
             sched.set_function(
                 "get",
-                [mgr](sol::this_state state,  // GCOVR_EXCL_LINE
-                      sol::object, std::string name) -> sol::object {
-                    sol::state_view s(state);
+                [mgr](shd::this_state state,  // GCOVR_EXCL_LINE
+                      shd::object, std::string name) -> shd::object {
+                    shd::state_view s(state);
                     auto info = mgr->sched_get(name);
                     if (!info.has_value()) {
-                        return sol::make_object(s, sol::nil);
+                        return shd::make_object(s, shd::nil);
                     }
-                    sol::table out = s.create_table();
+                    shd::table out = s.create_table();
                     out["name"] = info->name;
                     out["type"] = info->type;
                     out["schedule"] = info->schedule;
@@ -4643,53 +4456,53 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                                                  : "active";
                     return out;
                 });
-            sched.set_function("pause", [mgr](sol::object, std::string name) {
+            sched.set_function("pause", [mgr](shd::object, std::string name) {
                 return mgr->sched_pause(name);
             });
-            sched.set_function("resume", [mgr](sol::object, std::string name) {
+            sched.set_function("resume", [mgr](shd::object, std::string name) {
                 return mgr->sched_resume(name);
             });
             sched.set_function(
                 "remove", [lua, mgr](  // GCOVR_EXCL_BR_LINE (compiler artifact:
                                        // lambda-entry clone arcs)
-                              sol::this_state state,
-                              sol::object,  // GCOVR_EXCL_BR_LINE (sol2
+                              shd::this_state state,
+                              shd::object,  // GCOVR_EXCL_BR_LINE (shd
                                             // argument-conversion arcs at the
                                             // set_function boundary)
                               std::string name) {
                     mgr->sched_remove(name);
-                    sol::state_view s(state);
-                    sol::table impl = s.globals()["__shield_global_impl"];
-                    sol::protected_function detach = impl["detach_sched"];
+                    shd::state_view s(state);
+                    shd::table impl = s.globals()["__shield_global_impl"];
+                    shd::protected_function detach = impl["detach_sched"];
                     detach(name);
                     return true;
                 });
-            sched.set_function("trigger", [mgr](sol::object, std::string name) {
+            sched.set_function("trigger", [mgr](shd::object, std::string name) {
                 return mgr->sched_trigger(name);
             });
-            results.push_back(sol::make_object(s, sched));
+            results.push_back(shd::make_object(s, sched));
             return results;
         });
 
     // ---- shield.rate_limiter(name, opts) ----
     shield.set_function(
         "rate_limiter",
-        [lua, impl_table](  // GCOVR_EXCL_BR_LINE (sol2 argument-conversion arcs
+        [lua, impl_table](  // GCOVR_EXCL_BR_LINE (shd argument-conversion arcs
                             // at the set_function boundary)
-            sol::this_state state, sol::object name_obj,
-            sol::optional<sol::table> opts) -> sol::variadic_results {
-            sol::state_view s(state);
-            sol::variadic_results results;
+            shd::this_state state, shd::object name_obj,
+            std::optional<shd::table> opts) -> shd::variadic_results {
+            shd::state_view s(state);
+            shd::variadic_results results;
             auto* mgr = shield::global::GlobalManager::global();
             if (mgr == nullptr) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "module_unavailable",
                                "shield_global is not initialized"));
                 return results;
             }
             if (!name_obj.is<std::string>()) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(make_error(state, "invalid_argument",
                                              "rate_limiter requires a name"));
                 return results;
@@ -4697,7 +4510,7 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
             const std::string name = name_obj.as<std::string>();
             shield::global::RateLimitConfig config;
             if (opts.has_value()) {
-                sol::table o = *opts;
+                shd::table o = *opts;
                 config.rate = o.get_or("rate", 100.0);
                 config.burst = o.get_or("burst", 200.0);
                 config.sliding = o.get_or("sliding", false);
@@ -4707,44 +4520,45 @@ void register_global_api(sol::table& shield, LuaServiceManager* manager,
                     static_cast<std::uint64_t>(o.get_or("max_requests", 100.0));
             }
             mgr->rate_limit_configure(name, config);
-            sol::table limiter = s.create_table();
+            shd::table limiter = s.create_table();
             limiter["name"] = name;
             limiter.set_function(
-                "allow", [mgr, name](sol::object /*self*/, std::string key) {
+                "allow", [mgr, name](shd::object /*self*/, std::string key) {
                     return mgr->rate_limit_allow(name, key, 1.0).allowed;
                 });
-            limiter.set_function("remaining", [mgr, name](sol::object /*self*/,
+            limiter.set_function("remaining", [mgr, name](shd::object /*self*/,
                                                           std::string key) {
                 return mgr->rate_limit_remaining(name, key);
             });
             // Bounded wait lives in the chunk (coroutine-aware sleep).
-            sol::table impl = impl_table();
-            sol::protected_function attach = impl["attach_rate_wait"];
+            shd::table impl = impl_table();
+            shd::protected_function attach = impl["attach_rate_wait"];
             auto attached = attach(limiter);
             if (!attached.valid()) {
-                results.push_back(sol::make_object(s, sol::nil));
+                results.push_back(shd::make_object(s, shd::nil));
                 results.push_back(
                     make_error(state, "invalid_argument",
                                "rate limiter wait attach failed"));
                 return results;
             }
-            results.push_back(sol::make_object(s, limiter));
+            results.push_back(shd::make_object(s, limiter));
             return results;
         });
 }
 #else
 // Module compiled out: every shield_global factory reports
 // module_unavailable instead of being a nil field.
-void register_global_stub_api(sol::table& shield, sol::state_view lua) {
-    auto unavailable = lua.safe_script(
+void register_global_stub_api(shd::table& shield, shd::state_view lua) {
+    auto unavailable = shd::safe_script(
+        lua,
         "return function()\n"  // GCOVR_EXCL_LINE (safe_script chunk artifact)
         "  return nil, {code = 'module_unavailable', message = "
         "'shield_global is not enabled', retryable = false}\n"
         "end\n",
         [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result
+           shd::protected_function_result
                pfr)  // GCOVR_EXCL_LINE (gcov clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
     for (const char* name :
          {"global", "mutex", "rwlock", "spinlock", "distributed_mutex",
           "distributed_rwlock", "rank", "queue", "delay_queue",
@@ -4755,9 +4569,9 @@ void register_global_stub_api(sol::table& shield, sol::state_view lua) {
 }
 #endif
 
-void register_http_api(sol::table& shield, LuaServiceManager* manager,
+void register_http_api(shd::table& shield, LuaServiceManager* manager,
                        LuaRuntime* runtime) {
-    sol::state_view lua(shield.lua_state());
+    shd::state_view lua(shield.lua_state());
 
     // =========================================================================
     // shield.http — HTTP 客户端（发请求）
@@ -4767,14 +4581,14 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // Helper: convert HttpClientResponse to Lua table.
     // Auto-parses JSON body into `data` field when Content-Type is JSON.
     auto to_table =
-        [](sol::state_view lua,
-           const shield::net::HttpClientResponse& res) -> sol::table {
-        sol::table result = lua.create_table();
+        [](shd::state_view lua,
+           const shield::net::HttpClientResponse& res) -> shd::table {
+        shd::table result = lua.create_table();
         result["status"] = res.status_code;
         result["body"] = res.body;
         result["ok"] = res.ok();
         result["error"] = res.error;
-        sol::table headers = lua.create_table();
+        shd::table headers = lua.create_table();
         for (const auto& [k, v] : res.headers) {
             headers[k] = v;
         }
@@ -4811,7 +4625,7 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     };
 
     // Helper: parse options table into HttpClientOptions.
-    auto parse_opts = [](sol::table opts,
+    auto parse_opts = [](shd::table opts,
                          shield::net::HttpClientOptions& options) {
         if (opts["method"].valid()) {
             options.method = opts["method"].get<std::string>();
@@ -4823,8 +4637,8 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
             options.timeout_seconds = opts["timeout"].get<int>();
         }
         if (opts["headers"].valid()) {
-            sol::table hdrs = opts["headers"];
-            for (auto& [k, v] : hdrs) {
+            shd::table hdrs = opts["headers"];
+            for (auto&& [k, v] : hdrs) {
                 if (k.is<std::string>() && v.is<std::string>()) {
                     options.headers[k.as<std::string>()] = v.as<std::string>();
                 }
@@ -4835,7 +4649,7 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
             options.headers["Authorization"] = "Bearer " + options.auth_bearer;
         }
         if (opts["auth_basic"].valid()) {
-            sol::table basic = opts["auth_basic"];
+            shd::table basic = opts["auth_basic"];
             if (basic["user"].valid()) {
                 options.auth_basic_user = basic["user"].get<std::string>();
             }
@@ -4873,9 +4687,9 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     //   follow_redirects, max_redirects
     http.set_function(
         "request",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
 
             shield::net::HttpClientOptions options;
             options.url = url;
@@ -4891,9 +4705,9 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // Convenience: shield.http.get(url [, options]) -> response_table
     http.set_function(
         "get",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "GET";
             options.url = url;
@@ -4904,10 +4718,10 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // Convenience: shield.http.post(url [, body] [, options]) -> response_table
     http.set_function(
         "post",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::optional<std::string> body,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 std::optional<std::string> body,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "POST";
             options.url = url;
@@ -4920,10 +4734,10 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // Convenience: shield.http.put(url [, body] [, options]) -> response_table
     http.set_function(
         "put",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::optional<std::string> body,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 std::optional<std::string> body,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PUT";
             options.url = url;
@@ -4936,9 +4750,9 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // Convenience: shield.http.delete(url [, options]) -> response_table
     http.set_function(
         "delete",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "DELETE";
             options.url = url;
@@ -4950,10 +4764,10 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // response_table
     http.set_function(
         "patch",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::optional<std::string> body,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 std::optional<std::string> body,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PATCH";
             options.url = url;
@@ -4972,17 +4786,17 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // 通用 JSON POST（最常用场景）
     http.set_function(
         "json",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::object data,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 shd::object data,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "POST";
             options.url = url;
             options.headers["Content-Type"] = "application/json";
             options.headers["Accept"] = "application/json";
             // Serialize Lua table/object to JSON string.
-            options.body = lua_table_to_json(data.as<sol::table>()).dump();
+            options.body = lua_table_to_json(data.as<shd::table>()).dump();
             if (opts) parse_opts(*opts, options);
             return to_table(lua, shield::net::HttpClient::request(options));
         });
@@ -4990,16 +4804,16 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // shield.http.json_post(url, data [, options]) -> response_table
     http.set_function(
         "json_post",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::object data,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 shd::object data,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "POST";
             options.url = url;
             options.headers["Content-Type"] = "application/json";
             options.headers["Accept"] = "application/json";
-            options.body = lua_table_to_json(data.as<sol::table>()).dump();
+            options.body = lua_table_to_json(data.as<shd::table>()).dump();
             if (opts) parse_opts(*opts, options);
             return to_table(lua, shield::net::HttpClient::request(options));
         });
@@ -5007,16 +4821,16 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // shield.http.json_put(url, data [, options]) -> response_table
     http.set_function(
         "json_put",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::object data,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 shd::object data,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PUT";
             options.url = url;
             options.headers["Content-Type"] = "application/json";
             options.headers["Accept"] = "application/json";
-            options.body = lua_table_to_json(data.as<sol::table>()).dump();
+            options.body = lua_table_to_json(data.as<shd::table>()).dump();
             if (opts) parse_opts(*opts, options);
             return to_table(lua, shield::net::HttpClient::request(options));
         });
@@ -5024,16 +4838,16 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // shield.http.json_patch(url, data [, options]) -> response_table
     http.set_function(
         "json_patch",
-        [&to_table, &parse_opts](sol::this_state state, std::string url,
-                                 sol::object data,
-                                 sol::optional<sol::table> opts) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table, &parse_opts](shd::this_state state, std::string url,
+                                 shd::object data,
+                                 std::optional<shd::table> opts) -> shd::table {
+            shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PATCH";
             options.url = url;
             options.headers["Content-Type"] = "application/json";
             options.headers["Accept"] = "application/json";
-            options.body = lua_table_to_json(data.as<sol::table>()).dump();
+            options.body = lua_table_to_json(data.as<shd::table>()).dump();
             if (opts) parse_opts(*opts, options);
             return to_table(lua, shield::net::HttpClient::request(options));
         });
@@ -5043,15 +4857,15 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // fields: table of form field key-value pairs
     http.set_function(
         "upload",
-        [&to_table](sol::this_state state, std::string url, sol::table files,
-                    sol::optional<sol::table> fields,
-                    sol::optional<int> timeout) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table](shd::this_state state, std::string url, shd::table files,
+                    std::optional<shd::table> fields,
+                    std::optional<int> timeout) -> shd::table {
+            shd::state_view lua(state);
 
             std::vector<shield::net::HttpFileField> file_list;
-            for (auto& [i, entry] : files) {
-                if (entry.is<sol::table>()) {
-                    sol::table f = entry.as<sol::table>();
+            for (auto&& [i, entry] : files) {
+                if (entry.is<shd::table>()) {
+                    shd::table f = entry.as<shd::table>();
                     shield::net::HttpFileField field;
                     field.field_name =
                         f.get_or<std::string>("field_name", "file");
@@ -5064,7 +4878,7 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
 
             std::unordered_map<std::string, std::string> field_map;
             if (fields) {
-                for (auto& [k, v] : *fields) {
+                for (auto&& [k, v] : *fields) {
                     if (k.is<std::string>() && v.is<std::string>()) {
                         field_map[k.as<std::string>()] = v.as<std::string>();
                     }
@@ -5078,10 +4892,10 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
 
     // shield.http.download(url, output_path [, timeout]) -> response_table
     http.set_function("download",
-                      [&to_table](sol::this_state state, std::string url,
+                      [&to_table](shd::this_state state, std::string url,
                                   std::string output_path,
-                                  sol::optional<int> timeout) -> sol::table {
-                          sol::state_view lua(state);
+                                  std::optional<int> timeout) -> shd::table {
+                          shd::state_view lua(state);
                           auto res = shield::net::HttpClient::download(
                               url, output_path, timeout.value_or(60));
                           return to_table(lua, res);
@@ -5091,12 +4905,12 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // fields: table of key-value pairs for application/x-www-form-urlencoded
     http.set_function(
         "post_form",
-        [&to_table](sol::this_state state, std::string url, sol::table fields,
-                    sol::optional<int> timeout) -> sol::table {
-            sol::state_view lua(state);
+        [&to_table](shd::this_state state, std::string url, shd::table fields,
+                    std::optional<int> timeout) -> shd::table {
+            shd::state_view lua(state);
 
             std::unordered_map<std::string, std::string> field_map;
-            for (auto& [k, v] : fields) {
+            for (auto&& [k, v] : fields) {
                 if (k.is<std::string>() && v.is<std::string>()) {
                     field_map[k.as<std::string>()] = v.as<std::string>();
                 }
@@ -5118,75 +4932,75 @@ void register_http_api(sol::table& shield, LuaServiceManager* manager,
     // HTTP bridge (LuaHttpBridge) mirrors them into the HttpServer and
     // dispatches requests back onto the registering service's actor thread.
     auto register_route = [manager, runtime](
-                              sol::this_state state, std::string method,
-                              std::string path, sol::function handler) {
+                              shd::this_state state, std::string method,
+                              std::string path, shd::function handler) {
         if (!manager || !runtime) {
-            throw sol::error("shield.httpd is not available in this context");
+            throw shd::error("shield.httpd is not available in this context");
         }
         const std::string service_id = manager->current_service_id();
         if (service_id.empty()) {
-            throw sol::error(
+            throw shd::error(
                 "shield.httpd routes must be registered from a running "
                 "service");
         }
         auto vm = runtime->vm_for_state(state);
         if (!vm) {  // GCOVR_EXCL_LINE (vm_for_state never returns null for a
-            throw sol::error(  // registered VM; defensive)
+            throw shd::error(  // registered VM; defensive)
                 "registering VM is not managed by the runtime");  // GCOVR_EXCL_LINE
                                                                   // (continuation)
         }
         std::string error;
-        if (!runtime->register_http_route(vm, service_id, method, path,
-                                          to_shd_function(handler), &error)) {
-            throw sol::error("shield.httpd registration failed: " + error);
+        if (!runtime->register_http_route(vm, service_id, method, path, handler,
+                                          &error)) {
+            throw shd::error("shield.httpd registration failed: " + error);
         }
-        sol::state_view lua(state);
-        return sol::make_object(lua, true);
+        shd::state_view lua(state);
+        return shd::make_object(lua, true);
     };
 
-    httpd.set_function("get", [register_route](sol::this_state s, std::string p,
-                                               sol::function h) {
+    httpd.set_function("get", [register_route](shd::this_state s, std::string p,
+                                               shd::function h) {
         return register_route(s, "GET", std::move(p), std::move(h));
     });
     httpd.set_function(
         "post",
-        [register_route](sol::this_state s, std::string p, sol::function h) {
+        [register_route](shd::this_state s, std::string p, shd::function h) {
             return register_route(s, "POST", std::move(p), std::move(h));
         });
-    httpd.set_function("put", [register_route](sol::this_state s, std::string p,
-                                               sol::function h) {
+    httpd.set_function("put", [register_route](shd::this_state s, std::string p,
+                                               shd::function h) {
         return register_route(s, "PUT", std::move(p), std::move(h));
     });
     httpd.set_function(
         "delete",
-        [register_route](sol::this_state s, std::string p, sol::function h) {
+        [register_route](shd::this_state s, std::string p, shd::function h) {
             return register_route(s, "DELETE", std::move(p), std::move(h));
         });
     httpd.set_function(
         "patch",
-        [register_route](sol::this_state s, std::string p, sol::function h) {
+        [register_route](shd::this_state s, std::string p, shd::function h) {
             return register_route(s, "PATCH", std::move(p), std::move(h));
         });
 
     shield["httpd"] = httpd;
 }
 
-void register_plugin_api(sol::table& shield) {
-    sol::state_view lua(shield.lua_state());
+void register_plugin_api(shd::table& shield) {
+    shd::state_view lua(shield.lua_state());
     auto plugin = lua.create_table();
 
     // shield.plugin.packages() -> array of {id, version, kind, provides}
-    plugin.set_function("packages", [](sol::this_state state) -> sol::table {
-        sol::state_view lua(state);
+    plugin.set_function("packages", [](shd::this_state state) -> shd::table {
+        shd::state_view lua(state);
         auto t = lua.create_table();
         for (const auto& p : shield::plugin::global_host().list_packages()) {
-            sol::table row = lua.create_table();
+            shd::table row = lua.create_table();
             row["id"] = p.id;
             row["version"] = p.version;
             row["kind"] = p.kind;
             row["docs_url"] = p.docs_url;
             row["docs_description"] = p.docs_description;
-            sol::table prov = lua.create_table();
+            shd::table prov = lua.create_table();
             for (size_t i = 0; i < p.provides.size(); ++i)
                 prov[i + 1] = p.provides[i];
             row["provides"] = prov;
@@ -5196,11 +5010,11 @@ void register_plugin_api(sol::table& shield) {
     });
 
     // shield.plugin.instances() -> array of {id, package, state, required}
-    plugin.set_function("instances", [](sol::this_state state) -> sol::table {
-        sol::state_view lua(state);
+    plugin.set_function("instances", [](shd::this_state state) -> shd::table {
+        shd::state_view lua(state);
         auto t = lua.create_table();
         for (const auto& in : shield::plugin::global_host().list_instances()) {
-            sol::table row = lua.create_table();
+            shd::table row = lua.create_table();
             row["id"] = in.id;
             row["package"] = in.package;
             row["state"] = in.state;
@@ -5213,14 +5027,14 @@ void register_plugin_api(sol::table& shield) {
     // shield.plugin.instance(id) -> table or nil
     plugin.set_function(  // GCOVR_EXCL_LINE (gcov continuation artifact)
         "instance",
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string id)         // GCOVR_EXCL_LINE (lambda entry artifact)
-        -> sol::object {           // GCOVR_EXCL_LINE (lambda entry artifact)
-            sol::state_view lua(state);
+        -> shd::object {           // GCOVR_EXCL_LINE (lambda entry artifact)
+            shd::state_view lua(state);
             for (const auto& in :
                  shield::plugin::global_host().list_instances()) {
                 if (in.id == id) {
-                    sol::table row = lua.create_table();
+                    shd::table row = lua.create_table();
                     row["id"] = in.id;
                     row["package"] = in.package;
                     row["state"] = in.state;
@@ -5228,19 +5042,19 @@ void register_plugin_api(sol::table& shield) {
                     return row;
                 }
             }
-            return sol::nil;
+            return shd::nil;
         });
 
     // shield.plugin.binding(name) -> {instance_id, interface} or nil
     plugin.set_function(  // GCOVR_EXCL_LINE (gcov continuation artifact)
         "binding",
-        [](sol::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
+        [](shd::this_state state,  // GCOVR_EXCL_LINE (lambda entry artifact)
            std::string name)       // GCOVR_EXCL_LINE (lambda entry artifact)
-        -> sol::object {           // GCOVR_EXCL_LINE (lambda entry artifact)
-            sol::state_view lua(state);
+        -> shd::object {           // GCOVR_EXCL_LINE (lambda entry artifact)
+            shd::state_view lua(state);
             auto b = shield::plugin::global_host().get_binding(name);
-            if (!b) return sol::nil;
-            sol::table row = lua.create_table();
+            if (!b) return shd::nil;
+            shd::table row = lua.create_table();
             row["instance_id"] = b->instance_id;
             row["interface"] = b->interface_name;
             return row;
@@ -5251,7 +5065,7 @@ void register_plugin_api(sol::table& shield) {
 
 void register_full_shield_api(lua_State* L, LuaServiceManager* manager,
                               LuaRuntime* runtime) {
-    sol::state_view lua(L);
+    shd::state_view lua(L);
     // Initialize HTTP client (libcurl global state).
     shield::net::HttpClient::initialize();
 
@@ -5270,12 +5084,10 @@ void register_full_shield_api(lua_State* L, LuaServiceManager* manager,
     register_client_api(shield, manager);
     register_http_api(shield, manager, runtime);
     {
-        // B0 migration seam: register_crypto_api now binds through the thin
-        // shd layer (shield/lua/binding.hpp) instead of sol2. sol2's table
-        // push() puts the same underlying Lua table on the stack, so the
-        // shd::table registry reference below mutates the table this
-        // function hands to scripts. The bridge disappears when this file
-        // itself migrates off sol2.
+        // Crypto registration binds through the shd layer
+        // (shield/lua/binding.hpp). The shd::table registry reference below
+        // mutates the same underlying Lua table this function hands to
+        // scripts.
         lua_State* crypto_state = shield.lua_state();
         shield.push();
         shd::table crypto_target(crypto_state, -1);
@@ -5322,30 +5134,30 @@ void register_full_shield_api(lua_State* L, LuaServiceManager* manager,
     // Skipped entirely when the os library is sandboxed away
     // (lua.sandbox.allow_os=false): there is no table to hook, and business
     // code cannot reach os.time in the first place. Note the optional-based
-    // read: constructing sol::table from a nil proxy trips sol2's Debug
+    // read: constructing shd::table from a nil proxy trips shd's Debug
     // type check before .valid() could run.
-    if (sol::optional<sol::table> os_opt =
-            lua["os"].get<sol::optional<sol::table>>()) {
-        sol::table os_t = *os_opt;
-        sol::function orig_time = os_t["time"];
-        sol::function orig_date = os_t["date"];
+    if (std::optional<shd::table> os_opt =
+            lua["os"].get<std::optional<shd::table>>()) {
+        shd::table os_t = *os_opt;
+        shd::function orig_time = os_t["time"];
+        shd::function orig_date = os_t["date"];
         // os.time(): no-arg → business clock seconds; with table → original.
         os_t.set_function("time",
                           [manager, orig_time = std::move(orig_time)](
-                              sol::optional<sol::table> t) -> sol::object {
-                              sol::state_view lua(orig_time.lua_state());
+                              std::optional<shd::table> t) -> shd::object {
+                              shd::state_view lua(orig_time.lua_state());
                               if (t.has_value()) {
                                   return orig_time(t.value());
                               }
-                              return sol::make_object(
+                              return shd::make_object(
                                   lua, manager->clock_now_seconds());
                           });
         // os.date(fmt): no time → business clock; with time → original.
         os_t.set_function(
             "date",
             [manager, orig_date = std::move(orig_date)](
-                sol::optional<std::string> fmt,
-                sol::optional<double> t) -> sol::object {
+                std::optional<std::string> fmt,
+                std::optional<double> t) -> shd::object {
                 double when =
                     t.has_value()
                         ? t.value()
@@ -5363,7 +5175,8 @@ void register_full_shield_api(lua_State* L, LuaServiceManager* manager,
     // directly so a script error can't take down register_api
     // (call_service_method_coroutine falls back to sync dispatch if the helper
     // is absent).
-    lua.safe_script(
+    shd::safe_script(
+        lua,
         "function __shield_run_handler(handler, args)\n"
         // GCOVR_EXCL_STOP
         "  return coroutine.create(function()\n"
@@ -5371,11 +5184,11 @@ void register_full_shield_api(lua_State* L, LuaServiceManager* manager,
         "  end)\n"
         "end",          // GCOVR_EXCL_LINE (gcov continuation artifact)
         [](lua_State*,  // GCOVR_EXCL_LINE (gcov clone artifact)
-           sol::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
+           shd::protected_function_result  // GCOVR_EXCL_LINE (gcov clone
                                            // artifact)
                pfr)                        // GCOVR_EXCL_LINE (gcov
                                            // clone artifact)
-        -> sol::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
+        -> shd::protected_function_result { return pfr; });  // GCOVR_EXCL_LINE
 }
 
 }  // namespace shield::lua

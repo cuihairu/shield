@@ -361,7 +361,7 @@ BOOST_AUTO_TEST_CASE(StateMoveKeepsStolenVmAlive) {
 BOOST_AUTO_TEST_CASE(NoConstructThunksRaise) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::string);
-    shield::lua::register_full_shield_api(lua);
+    shield::lua::register_full_shield_api(lua.lua_state());
 
     // The identity usertypes register under their literal dotted names
     // (_G["shd.ClientContext"], a single global key, not a nested shd

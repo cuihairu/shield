@@ -17,7 +17,6 @@
 #include <fstream>
 #include <functional>
 #include <memory>
-#include <sol/sol.hpp>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -41,14 +40,12 @@ using namespace shield::lua;
 // calls), and a deliberate no-op stub under namespace shield::lua::api.
 // Declare both -- placing the declaration in the wrong namespace would
 // silently link the test against the stub instead of the real body.
-// B2 note: lua_api.cpp internals are still sol2-based, so these direct
-// declarations keep the sol2 shape until that batch.
 namespace shield::lua {
-void register_timer_api(sol::table& shield, LuaServiceManager* manager,
+void register_timer_api(shd::table& shield, LuaServiceManager* manager,
                         LuaRuntime* runtime);
 }
 namespace shield::lua::api {
-void register_timer_api(sol::table& shield, LuaServiceManager* manager,
+void register_timer_api(shd::table& shield, LuaServiceManager* manager,
                         LuaRuntime* runtime);
 }
 
@@ -655,13 +652,8 @@ BOOST_AUTO_TEST_CASE(RegistrationStubs) {
 
     shd::state lua;
     lua.open_libraries(shd::lib::base);
-    // B2 note: register_timer_api is still sol2-based, so the two direct
-    // calls go through a sol2 table view of the same table; the read-back
-    // stays on the shd side.
     shd::table table = lua.create_table();
-    sol::state_view sv(lua.lua_state());
-    sol::table stable(sv.lua_state(), table.push());
-    lua_pop(lua.lua_state(), 1);
+    shd::table stable = table;  // same underlying Lua table, ref-counted
     // The api-namespace overload is a deliberate no-op stub: the real
     // registration path is register_full_shield_api, which calls the
     // namespace-level overload below.
@@ -671,8 +663,8 @@ BOOST_AUTO_TEST_CASE(RegistrationStubs) {
     // call-only from a live service (calling them with nullptr here would be
     // UB by design), but monotonic() is capture-free and callable
     // immediately: it must return a positive, monotonically non-decreasing
-    // millisecond clock. The function is fetched raw: sol's lazy proxy
-    // conversion loses the entry for plain create_table members, while
+    // millisecond clock. The function is fetched raw via raw_get because
+    // the accessor view would alias the pre-registration table state.
     // raw_get reads it back.
     register_timer_api(stable, nullptr, nullptr);
     const shd::function monotonic =
@@ -698,7 +690,7 @@ BOOST_AUTO_TEST_CASE(MainThreadApiSurface) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     // self outside a service context -> nil.
     BOOST_CHECK(run_script(lua, "assert(shield.self() == nil)"));
@@ -1180,7 +1172,7 @@ BOOST_AUTO_TEST_CASE(RuntimeStoppingCodes) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     manager.shutdown_all("cov_stopping");
 
@@ -1232,7 +1224,7 @@ BOOST_AUTO_TEST_CASE(ClientIdentityBranches) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     // Full marker -> ClientContext userdata, plus ref() -> ClientRef.
     nlohmann::json marker =
@@ -1362,7 +1354,7 @@ BOOST_AUTO_TEST_CASE(HttpAndPluginApis) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     MiniHttpServer server;
     BOOST_REQUIRE_GE(server.port(), 1024);
@@ -1547,7 +1539,7 @@ BOOST_AUTO_TEST_CASE(HttpWrappersWithoutOptionsAndArrayHeuristic) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
                        shd::lib::string, shd::lib::os, shd::lib::math);
-    register_full_shield_api(lua, &manager, &runtime);
+    register_full_shield_api(lua.lua_state(), &manager, &runtime);
 
     MiniHttpServer server;
     BOOST_REQUIRE_GE(server.port(), 1024);
