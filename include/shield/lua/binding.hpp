@@ -20,11 +20,13 @@
 // (the script sees a runtime error; the host sees a !valid() result).
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <functional>
 #include <lua.hpp>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <stdexcept>
@@ -610,9 +612,30 @@ type_name_registry() {
     return reg;
 }
 
+// Serializes all registry access: service VM setup (and therefore
+// register_type_name) runs concurrently on spawn workers and caller threads,
+// so registration races registration and registration races lookups on
+// actor threads. An unlocked vector here corrupted heap state that only
+// surfaced when the process tore down.
+inline std::mutex& type_name_mutex() {
+    static std::mutex m;  // GCOVR_EXCL_BR_LINE (compiler artifact: the
+                          // thread-safe static local's first-use guard
+                          // pseudo-branch)
+    return m;
+}
+
 template <typename T>
 std::vector<std::string>& type_names() {
     return type_name_registry()[std::type_index(typeid(T))];
+}
+
+// Read side: snapshot under the registry lock. Usertype checks run on actor
+// threads while another service VM may be mid-setup, so returning a
+// reference would race push_back's reallocation.
+template <typename T>
+std::vector<std::string> type_names_snapshot() {
+    std::lock_guard lock(type_name_mutex());
+    return type_names<T>();
 }
 namespace detail {
 
@@ -621,8 +644,9 @@ bool usertype_is(lua_State* L, const int idx) {
     if (lua_type(L, idx) != LUA_TUSERDATA || lua_getmetatable(L, idx) == 0) {
         return false;
     }
+    const std::vector<std::string> names = type_names_snapshot<D>();
     bool ok = false;
-    for (const auto& name : type_names<D>()) {
+    for (const auto& name : names) {
         luaL_getmetatable(L, name.c_str());
         ok = lua_rawequal(L, -1, -2) != 0;
         lua_pop(L, 1);
@@ -639,7 +663,7 @@ bool usertype_is(lua_State* L, const int idx) {
         // gcovr 8.x; the tag-present arm drives the real boxes)
         const char* tag = lua_tostring(L, -1);
         ok = false;
-        for (const auto& name : type_names<D>()) {
+        for (const auto& name : names) {
             if (tag && name == tag) {  // GCOVR_EXCL_BR_LINE (defensive: the
                 // uservalue was confirmed a string on the guard above, so
                 // lua_tostring never returns null here)
@@ -669,7 +693,14 @@ D& usertype_as(lua_State* L, const int idx) {
 
 template <typename T>
 void register_type_name(const std::string& name) {
-    type_names<T>().push_back(name);
+    std::lock_guard lock(type_name_mutex());
+    auto& names = type_names<T>();
+    // Dedup: every service VM setup re-registers the same names; without
+    // this the per-check lookup lists grow with the number of spawned
+    // services.
+    if (std::find(names.begin(), names.end(), name) == names.end()) {
+        names.push_back(name);
+    }
 }
 
 namespace detail {
@@ -680,7 +711,7 @@ namespace detail {
 // type-name registry.
 template <typename T, typename Unused>
 void push(lua_State* L, const T& v) {
-    const auto& names = type_names<T>();
+    const std::vector<std::string> names = type_names_snapshot<T>();
     if (names.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: is_usertype_value
                           // specializations live next to their new_usertype
                           // registrations, so a pushed value always has names)

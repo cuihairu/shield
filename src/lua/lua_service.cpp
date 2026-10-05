@@ -2233,6 +2233,17 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
             service_name +=
                 std::to_string(std::hash<std::string_view>{}(module));
         }
+        if (!Impl::valid_name(service_name)) {
+            return SpawnResult::error("invalid service name: " + service_name);
+        }
+
+        // Check and reserve in ONE critical section. A split window (checks
+        // under one lock, insert under a later one) let two concurrent spawns
+        // of the same name both pass: the second insert was a silent no-op,
+        // and both threads ran VM setup — including the process-global API
+        // registration — concurrently. The publish-time double check still
+        // kept a single owner, but the overlap raced global binding state and
+        // surfaced as exit-time heap corruption on loaded coverage runs.
         {
             std::unique_lock lock(impl_->registry_mutex);
             if (impl_->services.contains(service_name)) {
@@ -2247,16 +2258,14 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
                 return SpawnResult::error("service name already reserved: " +
                                           service_name);
             }
-        }
-        if (!Impl::valid_name(service_name)) {
-            return SpawnResult::error("invalid service name: " + service_name);
+            impl_->reserved_names.insert(service_name);
         }
 
-        // Reserve the name for the whole init phase: concurrent spawns with
-        // the same name fail fast, while query_service still cannot see the
-        // name until it is published after a successful on_init. The guard
-        // rolls the reservation back on every failure path; the success path
-        // clears it under the publish lock below.
+        // The name stays reserved for the whole init phase: concurrent spawns
+        // with the same name fail fast, while query_service still cannot see
+        // the name until it is published after a successful on_init. The
+        // guard rolls the reservation back on every failure path; the success
+        // path clears it under the publish lock below.
         struct NameReservation {
             Impl* impl;
             std::string name;
@@ -2271,10 +2280,6 @@ SpawnResult LuaServiceManager::spawn(std::string_view module,
         } reservation{impl_.get(),
                       service_name};  // GCOVR_EXCL_BR_LINE (compiler artifact:
                                       // RAII guard aggregate braced-init arc)
-        {
-            std::unique_lock lock(impl_->registry_mutex);
-            impl_->reserved_names.insert(service_name);
-        }
 
         const std::string script_path = impl_->resolve_module(module);
 

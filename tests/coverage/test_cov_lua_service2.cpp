@@ -538,13 +538,16 @@ BOOST_AUTO_TEST_CASE(ConcurrentDuplicateSpawnHitsReservation) {
     const SpawnResult& winner = first.success ? first : second;
     const SpawnResult& loser = first.success ? second : first;
     // The loser is turned away by the entry guard while the winner is still
-    // initializing ("reserved"). Both calls can only slip past that guard
-    // together if the check-to-insert window is preempted, in which case the
-    // publish-time double check reports "already exists" - still exactly one
-    // owner, so both codes are accepted here.
-    BOOST_CHECK(loser.error_message.find("reserved") != std::string::npos ||
-                loser.error_message.find("already exists") !=
-                    std::string::npos);
+    // initializing. Check and reservation share one critical section, so the
+    // guard cannot be slipped: an earlier revision split them and a preempted
+    // window let both calls run VM setup concurrently, which raced the
+    // process-global type-name registry and corrupted the heap (observed as
+    // an exit-time free() of a garbage pointer after "*** No errors
+    // detected" on loaded coverage runs).
+    BOOST_CHECK_MESSAGE(
+        loser.error_message.find("reserved") != std::string::npos,
+        "loser was not turned away at the reservation (" << loser.error_message
+                                                         << ")");
     BOOST_CHECK_EQUAL(manager.query_service("cov6_dup"), winner.service_id);
 
     manager.exit(winner.service_id, "done");
