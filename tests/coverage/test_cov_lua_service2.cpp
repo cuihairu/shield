@@ -6,6 +6,7 @@
 #include <atomic>
 #if defined(__GLIBC__)
 #include <execinfo.h>
+#include <ucontext.h>
 #include <unistd.h>
 #endif
 #include <boost/test/unit_test.hpp>
@@ -13,6 +14,7 @@
 #include <caf/actor_system_config.hpp>
 #include <chrono>
 #include <csignal>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -77,10 +79,24 @@ BOOST_GLOBAL_FIXTURE(CafInitFixture);
 // default disposition and re-raises, keeping the signal identity (ctest
 // exit status, core-dump behavior) unchanged.
 #if defined(__GLIBC__)
-void fatal_signal_backtrace(int sig) {
+void fatal_signal_backtrace(int sig, siginfo_t* info, void* uctx) {
     const char marker[] = "\n=== fatal-signal backtrace ===\n";
     ssize_t ignored = ::write(2, marker, sizeof(marker) - 1);
     (void)ignored;
+    // The observed exit-phase crash is free() fed a garbage pointer (the
+    // kernel reports general protection fault at __libc_free reading the
+    // chunk header). Surface both the faulting address and rdi — the free()
+    // argument — so the occurrence yields the pointer value itself, not
+    // just the call site.
+    auto* uc = static_cast<ucontext_t*>(uctx);
+    long rdi = uc ? uc->uc_mcontext.gregs[REG_RDI] : -1;
+    char regs[160];
+    int n = ::snprintf(regs, sizeof(regs), "si_addr=%p signo=%d rdi=0x%lx\n",
+                       info ? info->si_addr : nullptr, sig, rdi);
+    if (n > 0) {
+        ssize_t ignored2 = ::write(2, regs, static_cast<size_t>(n));
+        (void)ignored2;
+    }
     void* frames[64];
     int depth = ::backtrace(frames, 64);
     ::backtrace_symbols_fd(frames, depth, 2);
@@ -90,10 +106,14 @@ void fatal_signal_backtrace(int sig) {
 
 struct FatalSignalTraceInstall {
     FatalSignalTraceInstall() {
-        ::signal(SIGABRT, fatal_signal_backtrace);
-        ::signal(SIGSEGV, fatal_signal_backtrace);
-        ::signal(SIGBUS, fatal_signal_backtrace);
-        ::signal(SIGFPE, fatal_signal_backtrace);
+        struct sigaction sa{};
+        sa.sa_sigaction = fatal_signal_backtrace;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+        ::sigaction(SIGABRT, &sa, nullptr);
+        ::sigaction(SIGSEGV, &sa, nullptr);
+        ::sigaction(SIGBUS, &sa, nullptr);
+        ::sigaction(SIGFPE, &sa, nullptr);
     }
 };
 FatalSignalTraceInstall g_fatal_signal_trace;
