@@ -641,6 +641,14 @@ BOOST_AUTO_TEST_CASE(UsertypeThunkExceptionArms) {
         shd::make_userdata<CovBoom>(lua, "CovBoom", CovBoom{});
     lua["boombox"] = boombox;
 
+    // Idempotence: re-registering the same name must not grow the type-name
+    // registry, so the is<>/tag lookup loops stay one entry per alias. This
+    // also drives the already-present arm of register_type_name's dedup
+    // check on this coverage-only instantiation (the production types get
+    // it from every repeat VM setup; CovBoom registers once per process).
+    shd::register_type_name<CovBoom>("CovBoom");
+    BOOST_CHECK_EQUAL(shd::type_names_snapshot<CovBoom>().size(), 1u);
+
     // A registered-but-different usertype: the name loop finds no match, so
     // usertype_is reports false at the metatable stage.
     BOOST_CHECK(!boombox.is<CovBox>());
