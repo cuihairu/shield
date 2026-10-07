@@ -15,13 +15,8 @@
   --vp-button-brand-hover-bg: #96154f;
   --vp-button-brand-active-bg: #7a1040;
 
-  --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: linear-gradient(
-    115deg,
-    #7a1040 8%,
-    #b11964 52%,
-    #e85a9b 96%
-  );
+  /* hero 名纯品牌色：不设 name-color/name-background，回落 --vp-c-brand-1
+     纯色（2026-10 主题审核批：字体渐变全站禁用） */
 
   --vp-custom-outline: #b11964;
 
@@ -43,13 +38,6 @@
   --vp-button-brand-hover-bg: #e85a9b;
   --vp-button-brand-active-bg: #96154f;
 
-  --vp-home-hero-name-background: linear-gradient(
-    115deg,
-    #e85a9b 8%,
-    #b11964 52%,
-    #7a1040 96%
-  );
-
   --vp-custom-outline: #e85a9b;
 }
 
@@ -57,3 +45,10 @@
 code {
   color: var(--vp-c-brand-1);
 }
+
+/* hero 名用纯品牌色,不用 VitePress 默认渐变名 */
+:root {
+  --vp-home-hero-name-color: var(--vp-c-brand-1);
+  --vp-home-hero-name-background: transparent;
+}
+
