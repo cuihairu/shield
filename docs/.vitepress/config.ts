@@ -48,6 +48,7 @@ export default defineConfig({
           { text: '开放决策', link: '/open-decisions' },
           { text: '常见问题', link: '/faq' },
           { text: '部署指南', link: '/deployment' },
+          { text: '崩溃采集', link: '/crash-reporting' },
           { text: '开发指南', link: '/development-guide' },
         ],
       },

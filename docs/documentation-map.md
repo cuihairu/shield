@@ -82,4 +82,6 @@ DB 使用纪律见 [DB 使用纪律](db-discipline.md)（异步入口落地后�
 
 客户端面 TLS（`network.tls` 配置面、握手/超时语义、证书加载与热更新取舍）以 [TLS 设计](tls-design.md) 为专项入口（已实现 v1），运行时使用口径见 [网络运行时语义](runtime-network.md) 的 TLS 一节。
 
+崩溃采集（Crashpad 选型、handler 初始化点、dump 落盘、符号分离、上传留位默认关）以 [崩溃采集](crash-reporting.md) 为专项入口。
+
 如果后续需要讨论 Lua primitives、cosocket 风格出站 I/O、CAF adapter 复用边界与 `auth-first` 的否定结论，可参考后置草案 [基础组件与运行时适配边界](runtime-primitives.md)。
