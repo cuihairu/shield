@@ -37,7 +37,10 @@ find_package(ZLIB REQUIRED)
 
 # Collect .cc/.h from one crashpad directory, dropping platform-specific
 # and test files by filename pattern (win/mac/ios/fuchsia/android/cros are
-# not part of the Linux source set upstream builds either).
+# not part of the Linux source set upstream builds either). Test files come
+# in both spellings: *_test.cc and test_*.cc (test_modules.cc,
+# test_output_stream.cc) — the latter needs gtest headers that non-test
+# builds do not carry.
 function(shield_crashpad_glob outvar dir)
   file(GLOB entries LIST_DIRECTORIES false
        "${CRASHPAD_ROOT}/${dir}/*.cc"
@@ -46,7 +49,7 @@ function(shield_crashpad_glob outvar dir)
   foreach(f IN LISTS entries)
     get_filename_component(name "${f}" NAME)
     if(name MATCHES
-           "(_test.*|_fuzzer.*|_win|_mac|_ios|_tvos|_fuchsia|_android|_cros)\\.(cc|h)$")
+           "(^test_.*|_test.*|_fuzzer.*|_win|_mac|_ios|_tvos|_fuchsia|_android|_cros)\\.(cc|h)$")
       continue()
     endif()
     list(APPEND acc "${f}")
@@ -107,7 +110,7 @@ file(GLOB_RECURSE CRASHPAD_MINI_CHROMIUM_SOURCES
 list(FILTER CRASHPAD_MINI_CHROMIUM_SOURCES EXCLUDE REGEX
      "/(apple|mac|win|fuchsia)/")
 list(FILTER CRASHPAD_MINI_CHROMIUM_SOURCES EXCLUDE REGEX
-     "(_test.*|_win|_mac|_apple|_fuchsia)\\.(cc|h)$")
+     "(^test_.*|_test.*|_win|_mac|_apple|_fuchsia)\\.(cc|h)$")
 
 add_library(crashpad_client STATIC
     ${CRASHPAD_SOURCES}
