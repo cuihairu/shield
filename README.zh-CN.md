@@ -73,6 +73,17 @@ DLL 也能启动），并声明了一个可观测的 echo 服务（TCP :7900）�
 端口可连。需要 SQLite 插件示例时，用 `-DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON`
 构建，并使用 `config/app-with-sqlite.yaml`。
 
+认证/令牌语义属于 Lua 业务层，而不是 C++ 插件：`scripts/lib/jwt.lua`
+（基于 `shield.crypto` 原语的 HS256，API 表见 `docs/lua-api.md`）是参考
+实现；`plugins/auth_jwt` 已废弃、待移除。
+
+插件系统（manifest 优先的发现机制、显式实例 + binding、稳定 C ABI）在
+`docs/plugin-system.md` 中规约，包含全部 16 个官方插件包的矩阵。要在单
+进程内跑通全栈——Lua 业务脚本写 SQLite，同时提供实时的 `/health` 与
+Prometheus 端点——见 `examples/kickstart/`（三条命令，约 10 分钟）。要新
+建插件包，运行 `tools/new_plugin.sh <name>`：它会生成 manifest、CMake
+接线、v1 ABI 桩和一个可通过的生命周期测试。
+
 ## 目标定位
 
 - C++ 负责运行时基础设施：Actor 调度、网络、Lua 绑定、定时器、配置、日志和插件宿主。
@@ -116,7 +127,7 @@ Shield 核心不提供：
 | `shield_base` | 共享值类型，如 Result、Error、ByteBuffer、时间和 ID |
 | `shield_lua` | Lua VM 管理和 `shield.*` 绑定 |
 | `shield_net` | 客户端连接（Phase 1 仅 TCP；UDP/KCP/WebSocket 延后）、会话管理 |
-| `shield_transport` | 可选的字节流适配，如帧或加密 |
+| `shield_transport` | 协议管线（信封分帧、包体编解码、路由校验）与 RPC 描述符表 |
 | `shield_plugin` | 插件 manifest/catalog、实例、binding、C ABI 和插件 Lua 注册 |
 | `shield_config` | YAML 配置加载 |
 | `shield_log` | 运行时日志 |
