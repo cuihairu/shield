@@ -121,3 +121,6 @@ build-cov/
 /cov_local.yaml
 /cov_cfg_cwd_s.lua
 /cov_cfg_tmp/
+
+# crashpad minidump output (default crash.dump_dir, docs/crash-reporting.md)
+/crash/

@@ -109,6 +109,13 @@ BOOST_AUTO_TEST_CASE(CliParseErrors) {
     BOOST_CHECK_EQUAL(run_args({"--workers", "-3"}), 1);
     // --node-id parses but requires the cluster build.
     BOOST_CHECK_EQUAL(run_args({"--node-id", "cov-node"}), 1);
+#ifndef SHIELD_ENABLE_CRASHPAD
+    // --crash-test only exists in crashpad builds; this coverage tree
+    // builds without it and must reject the flag with a parse error.
+    // (Crashpad builds skip this check: running it here would actually
+    // crash the test binary — that is what the CI crashpad job asserts.)
+    BOOST_CHECK_EQUAL(run_args({"--crash-test"}), 1);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(NullAndEmptyArgvEntriesAreHandled) {

@@ -67,8 +67,11 @@ RUN groupadd -r shield && useradd -r -g shield -d /app -s /sbin/nologin shield
 
 WORKDIR /app
 
-# Copy binary and runtime files
+# Copy binary and runtime files. crashpad_handler must sit next to the
+# shield binary: the crash collector resolves it via /proc/self/exe unless
+# crash.handler_path is configured (docs/crash-reporting.md).
 COPY --from=builder /build/build/bin/shield /app/shield
+COPY --from=builder /build/build/bin/crashpad_handler /app/crashpad_handler
 COPY config/ /app/config/
 COPY scripts/ /app/scripts/
 

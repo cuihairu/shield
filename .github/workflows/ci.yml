@@ -51,6 +51,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       # 安装依赖
       - name: Install dependencies (Linux)
@@ -207,6 +209,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Install dependencies
         run: |
@@ -266,6 +270,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Install dependencies
         run: |
@@ -304,6 +310,7 @@ jobs:
           -DSHIELD_BUILD_TESTS=ON
           -DSHIELD_BUILD_EXAMPLES=OFF
           -DSHIELD_ENABLE_COVERAGE=ON
+          -DSHIELD_ENABLE_CRASHPAD=OFF
 
       - name: Build tests
         run: cmake --build build-cov --parallel $(nproc)
@@ -371,6 +378,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Install dependencies
         run: |
@@ -413,6 +422,7 @@ jobs:
           -DSHIELD_ENABLE_PLAYER=ON
           -DSHIELD_ENABLE_SERVER=ON
           -DSHIELD_ENABLE_GLOBAL=ON
+          -DSHIELD_ENABLE_CRASHPAD=OFF
 
       - name: Build tests
         run: cmake --build build-cov-opt --parallel $(nproc)
@@ -455,6 +465,111 @@ jobs:
           path: build-cov-opt/coverage-optional.txt
 
   # Docker 构建 (仅 main 分支)
+  # 崩溃采集验收（docs/crash-reporting.md）：RelWithDebInfo 构建产物跑
+  # --crash-test 空指针样例，断言 minidump 落盘，且 dump_syms +
+  # minidump-stackwalk 还原的调用栈含故意崩溃帧。minidump 与符号化栈
+  # 作为 artifact 归档。
+  crashpad:
+    name: Crashpad (crash-test)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+
+      - name: Export GHA cache credentials
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Cache vcpkg installed
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/build-crash/vcpkg_installed
+          key: vcpkg-installed-crashpad-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-installed-crashpad-
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+        with:
+          vcpkgGitCommitId: 'a0b1c8d3a477c1cb4813d8e127a56961707ca42b'
+
+      - name: Configure (RelWithDebInfo, symbols for the stack walk)
+        run: >
+          cmake -B build-crash -G Ninja
+          -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
+          -DSHIELD_BUILD_TESTS=OFF
+          -DSHIELD_BUILD_EXAMPLES=OFF
+          -DSHIELD_ENABLE_CLUSTER=ON
+
+      - name: Build
+        run: cmake --build build-crash --parallel $(nproc)
+
+      - name: Run crash-test and collect the minidump
+        run: |
+          set +e
+          ./build-crash/bin/shield --config config/app.yaml --crash-test
+          code=$?
+          set -e
+          echo "crash-test exit code: $code"
+          if [ "$code" -eq 0 ]; then
+            echo "::error::--crash-test exited 0; expected a crash exit"
+            exit 1
+          fi
+          # The handler writes the minidump after the client dies; poll
+          # for it instead of assuming it is already there.
+          dump=""
+          for i in $(seq 1 30); do
+            dump=$(find crash -name '*.dmp' 2>/dev/null | head -1)
+            [ -n "$dump" ] && break
+            sleep 1
+          done
+          if [ -z "$dump" ]; then
+            echo "::error::no minidump found in crash/"
+            exit 1
+          fi
+          echo "minidump: $dump"
+          echo "DUMP_PATH=$dump" >> "$GITHUB_ENV"
+
+      - name: Symbolize the stack (dump_syms + minidump-stackwalk)
+        run: |
+          cargo install --locked dump_syms minidump-stackwalk
+          tools/symbolize-crash.sh build-crash/bin/shield "$DUMP_PATH" \
+            > symbolized-stack.txt
+          cat symbolized-stack.txt
+          grep -q 'crash_test_null_deref' symbolized-stack.txt || {
+            echo "::error::symbolized stack lacks the deliberate crash frame"
+            exit 1
+          }
+          grep -q 'shield::run' symbolized-stack.txt || {
+            echo "::error::symbolized stack lacks the shield::run frame"
+            exit 1
+          }
+
+      - name: Upload acceptance artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: crashpad-acceptance
+          path: |
+            crash/*.dmp
+            symbolized-stack.txt
+          if-no-files-found: error
+
   docker:
     name: Docker Build
     runs-on: ubuntu-26.04
@@ -467,6 +582,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

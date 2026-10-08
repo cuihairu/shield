@@ -5,6 +5,10 @@
 #include "shield/bootstrap/starter.hpp"
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
+
+#ifdef SHIELD_ENABLE_CRASHPAD
+#include "shield/crash/crash.hpp"
+#endif
 #include "shield/plugin/plugin_host.hpp"
 #include "shield/plugin/protocol_codec.h"
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -455,6 +459,14 @@ static bool initialize_impl(const RuntimeConfig& config) {
             SHIELD_LOG_INFO(log, "File logging enabled: " + file_path);
         }
     }
+
+#ifdef SHIELD_ENABLE_CRASHPAD
+    // Crash collector (docs/crash-reporting.md): the earliest point where
+    // both the config files and the logger are ready, before validation
+    // and subsystem starters, so the rest of bootstrap runs under its
+    // protection. Degrades to an ERROR log, never blocks startup.
+    shield::crash::initialize();
+#endif
 
     shield::config::RuntimeValidationOptions validation_options;
 #ifdef SHIELD_ENABLE_CLUSTER

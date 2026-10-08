@@ -13,6 +13,11 @@
 #include "shield/bootstrap/bootstrap.hpp"
 #include "shield/version.hpp"
 
+#ifdef SHIELD_ENABLE_CRASHPAD
+#include "shield/crash/crash.hpp"
+#include "shield/log/logger.hpp"
+#endif
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -30,6 +35,7 @@ struct CliOptions {
     bool show_help = false;
     bool show_version = false;
     bool check_config = false;
+    bool crash_test = false;
     bool has_node_id = false;
     std::string node_id;
     bool parse_error = false;
@@ -170,6 +176,17 @@ CliOptions parse_cli(int argc, char** argv) {
             options.check_config = true;
             continue;
         }
+        if (arg == "--crash-test") {
+#ifdef SHIELD_ENABLE_CRASHPAD
+            options.crash_test = true;
+            continue;
+#else
+            options.parse_error = true;
+            options.error =
+                "--crash-test requires a build with SHIELD_ENABLE_CRASHPAD";
+            return options;
+#endif
+        }
 
         options.parse_error = true;
         options.error = "unknown argument: " + arg;
@@ -244,6 +261,20 @@ int run(int argc, char** argv) {
             uninstall_signal_handlers();
             return 0;
         }
+
+#ifdef SHIELD_ENABLE_CRASHPAD
+        if (options.crash_test) {
+            // Acceptance path (docs/crash-reporting.md): after a fully
+            // initialized runtime, log one last line and deliberately
+            // dereference a null pointer; the crashpad handler must leave
+            // a minidump in the configured crash.dump_dir.
+            auto& log = shield::log::get_logger("crash");
+            SHIELD_LOG_ERROR(log,
+                             "crash-test: deliberately dereferencing a null "
+                             "pointer; expect a minidump in crash.dump_dir");
+            shield::crash::crash_test_null_deref();
+        }
+#endif
 
         std::cout << "Shield runtime running (press Ctrl+C to stop)"
                   << std::endl;

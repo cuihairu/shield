@@ -132,6 +132,21 @@ option(SHIELD_BUILD_PLUGIN_MSGPACK "Build the MessagePack protocol codec plugin 
 option(SHIELD_BUILD_PLUGIN_FLATBUFFERS "Build the FlatBuffers protocol codec plugin (shield.protocol.codec.v1)" OFF)
 option(SHIELD_BUILD_PLUGIN_JSON "Build the JSON protocol codec plugin (shield.protocol.codec.v1)" OFF)
 
+# Crash reporting (docs/crash-reporting.md): in-process Crashpad client +
+# standalone crashpad_handler executable, both built from the third_party/
+# submodules. Coverage builds keep this OFF so the gcovr filter surface and
+# its gates stay byte-identical to the pre-crashpad baseline.
+option(SHIELD_ENABLE_CRASHPAD "Enable Crashpad crash reporting (optional)" ON)
+# The crashpad.cmake source set is POSIX/Linux-only for now; other build
+# matrix platforms (macOS/Windows) keep the pre-crashpad build until their
+# source sets are added (docs/crash-reporting.md, non-goals).
+if(SHIELD_ENABLE_CRASHPAD AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(STATUS
+        "SHIELD_ENABLE_CRASHPAD: Linux-only source set, disabling on "
+        "${CMAKE_SYSTEM_NAME}")
+    set(SHIELD_ENABLE_CRASHPAD OFF)
+endif()
+
 # Ensure config directory exists and create a minimal default config if missing.
 file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/config")
 if(NOT EXISTS "${CMAKE_SOURCE_DIR}/config/app.yaml")
@@ -263,6 +278,11 @@ find_package(
              dll)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
+
+# Crashpad client library + handler executable (submodule sources).
+if(SHIELD_ENABLE_CRASHPAD)
+    include(cmake/crashpad.cmake)
+endif()
 
 # Set output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -639,6 +659,16 @@ endif()
 if(SHIELD_ENABLE_GLOBAL)
     target_link_libraries(shield_bootstrap PRIVATE shield_global)
     target_compile_definitions(shield_bootstrap PRIVATE SHIELD_ENABLE_GLOBAL)
+endif()
+
+if(SHIELD_ENABLE_CRASHPAD)
+    target_sources(shield_bootstrap PRIVATE src/crash/crash.cpp)
+    target_link_libraries(shield_bootstrap PRIVATE crashpad_client)
+    # PUBLIC (not PRIVATE like the module switches): test targets link
+    # shield_bootstrap and gate their --crash-test assertions on the same
+    # define, so crashpad builds skip the rejection check that would
+    # otherwise crash the test binary.
+    target_compile_definitions(shield_bootstrap PUBLIC SHIELD_ENABLE_CRASHPAD)
 endif()
 
 # -----------------------------------------------------------------------------

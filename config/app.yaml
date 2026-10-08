@@ -15,6 +15,15 @@ log:
   level: info
   console: true
 
+# 崩溃采集（Crashpad，docs/crash-reporting.md）：独立 crashpad_handler
+# 进程捕获崩溃写 minidump 到本地目录。enabled 缺省 false（测试夹具
+# 不配即不启用）；产品面显式开启。上传留位默认关，外发属数据外发。
+crash:
+  enabled: true
+  dump_dir: ""            # 空 = ./crash（相对运行目录；容器内 /app/crash）
+  handler_path: ""        # 空 = shield 可执行同目录的 crashpad_handler
+  upload_url: ""          # 留位：非空仅记告警占位，不外发
+
 lua:
   vm:
     mode: per_service

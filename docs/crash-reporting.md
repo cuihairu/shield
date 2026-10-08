@@ -94,9 +94,13 @@ shield 进程                             crashpad_handler 进程（独立）
 ## 独立 handler 进程打包
 
 - CMake 目标：静态库 `crashpad_client` + 可执行 `crashpad_handler`
-  （胶水 `cmake/crashpad.cmake`，源集按 Linux/POSIX 排除 win/mac/ios/fuchsia
-  与 `*_test.cc`，include 根 = crashpad 与 mini_chromium 目录，define
-  `CRASHPAD_LSS_SOURCE_EMBEDDED`）。
+  （胶水 `cmake/crashpad.cmake`，源集按 Linux/POSIX 排除 win/mac/ios/tvos/
+  fuchsia 与 `*_test.cc`，include 根 = crashpad、mini_chromium、仓根
+  （lss 路径）+ crashpad 上游 compat 层（`compat/linux` 的 signal.h
+  include_next shim 补 glibc 缺的 `SS_AUTODISARM`/`SA_EXPOSE_TAGBITS`、
+  `compat/non_win` 提供 windows.h 形状的 minidump 头），define
+  `CRASHPAD_LSS_SOURCE_EMBEDDED`；非 Linux 平台自动 OFF（mac/win 构建矩阵
+  零回归，见「非目标」）。
 - 产物布局：`build/bin/shield` 与 `build/bin/crashpad_handler` 同目录。
 - 查找顺序：`crash.handler_path` 显式配置 → 缺省取 shield 自身可执行
   所在目录（`/proc/self/exe` 推导）拼 `crashpad_handler` → 都没有则降级
@@ -115,8 +119,8 @@ shield 进程                             crashpad_handler 进程（独立）
 | --- | --- |
 | 构建留 -g | 推荐 `RelWithDebInfo`（-O2 -g）；验收/CI job 用它构建 |
 | 生成符号 | `dump_syms build/bin/shield > shield.sym`（DWARF → file+line 级） |
-| 还原栈 | `minidump-stackwalk crash/<id>.dmp --symbols-path <sym目录>` |
-| 一条命令 | `tools/symbolize-crash.sh <minidump>`（打包上述两步 + 帧过滤） |
+| 还原栈 | `minidump-stackwalk crash/<id>.dmp --symbols-path <sym目录>`（sym 需摆 breakpad 布局 `<module>/<debug-id>/<module>.sym`，脚本已代劳） |
+| 一条命令 | `tools/symbolize-crash.sh build/bin/shield crash/<id>.dmp [sym目录]`（dump_syms + 摆布局 + stackwalk 一步完成） |
 | Release 镜像 | 当前 Dockerfile Release 无 DWARF，但**有 symtab → 函数级调用栈仍可还原**；镜像保持不带符号（分离原则），需要 file+line 时用构建机 RelWithDebInfo 归档的 `.sym` |
 | 归档 | `.sym` 按二进制 commit hash 命名归档（`SHIELD_GIT_COMMIT_HASH` 已注入版本串，dump 注解同样带版本，见下） |
 
