@@ -97,7 +97,33 @@ roadmap「Later」清单第三刀（KDF → AEAD → 非对称 → JWKS）。一
 - [x] 文档：`docs/lua-api.md` crypto 表新增「非对称签名验签（二期）」节，
       正确性锚点行并入 RFC 8032。
 
-JWKS / EdDSA JWT 再后置（依赖本切片原语）。
+- [x] JWKS / EdDSA JWT 后置依赖已随本切片解除 → 切片 4 启动（见下）。
+
+## shield.crypto 二期切片 4：EdDSA JWT + JWKS（2026-10-09 完成）
+
+roadmap「Later」清单第四刀（KDF → AEAD → 非对称 → JWKS）。前三刀均已落地，
+切片 3 的 Ed25519 原语解除本刀依赖。范围：`scripts/lib/jwt.lua` 增
+`alg=EdDSA` 签发/校验 + JWKS 公钥集助手；`auth_jwt` 插件面不动。
+
+- [x] **jwt.lua EdDSA**：`alg=EdDSA`（Ed25519）签发/校验，复用
+      `shield.crypto.ed25519_sign/verify/public_key`；`opts.alg` 覆盖
+      header.alg（默认 HS256）；`opts.kid` 入 header + verify 侧 pin
+      （`bad_kid`）；EdDSA key 必须 32 字节（seed 签 / 公钥验），不符
+      `malformed`；签名段 b64 解码失败 `malformed`、验签不过
+      `bad_signature`；alg 钉调用方（`opts.alg`），header.alg ≠ alg →
+      `unsupported_alg`（算法混淆双向 + `alg:none` 均拒）。
+- [x] **jwt.lua JWKS**：`jwks_build(keys)`（`{kid, seed}` → OKP/Ed25519
+      文档，`x` = b64url 公钥）+ `jwks_parse(doc)`（返回
+      `{kid, public_key}`；非 OKP/非 Ed25519 跳过；声称 Ed25519 但 x 坏
+      → 整文档 `malformed`）。
+- [x] **测试**：`test_cov_lua_crypto.cpp` 31→40 用例——RFC 8037 A.1
+      向量逐字节锁定（d/x 交叉锁 RFC 8032 TEST 1 + A.1 签名）、EdDSA
+      往返 + C++ 直签交叉核验 + kid pin、EdDSA 拒绝矩阵（篡改/错钥/
+      63B 签名/坏 b64/算法混淆双向/kid/31B 公钥/expired/bad_issuer）、
+      EdDSA key 尺寸护栏、HS256 kid 往返、JWKS A.1 构造/解析、JWKS
+      解析错误 + 跳过矩阵、JWKS build 护栏、JWKS→JWT 全链路往返。
+- [x] **文档**：`docs/lua-api.md` jwt.lua 节更新为 HS256+EdDSA+JWKS
+      （用法/错误码表/安全语义/JWKS 小节）。
 
 ## 认证业务语义出插件层：原语库 shield.crypto + Lua 层 jwt.lua（2026-09-28 完成）
 

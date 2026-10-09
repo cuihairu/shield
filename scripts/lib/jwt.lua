@@ -1,10 +1,12 @@
--- jwt.lua — HS256 JSON Web Token reference implementation (RFC 7519).
+-- jwt.lua — HS256 + EdDSA (Ed25519) JSON Web Token reference implementation
+-- (RFC 7519), with RFC 7517 JWKS key-set helpers for the EdDSA side.
 --
 -- Layering note (docs/architecture-decisions.md): the runtime ships only
 -- cryptographic PRIMITIVES (shield.crypto, C++/OpenSSL backed); token
 -- semantics belong to the Lua business layer. This file is the worked
--- example: HS256 sign/verify composed from shield.crypto.base64url_* +
--- shield.crypto.hmac_sha256 + shield.crypto.constant_time_compare.
+-- example: HS256 from shield.crypto.base64url_* + hmac_sha256 +
+-- constant_time_compare, EdDSA from shield.crypto.ed25519_sign/verify
+-- (32-byte raw keys), JWKS documents from ed25519_public_key.
 --
 -- Usage:
 --   local jwt = dofile("scripts/lib/jwt.lua")
@@ -12,13 +14,22 @@
 --                          "shared-secret")
 --   local claims, code, msg = jwt.verify(token, "shared-secret",
 --                                        { issuer = "gate" })
+--   -- EdDSA: seed signs, raw public key verifies, kid travels in the header
+--   local token = jwt.sign(claims, seed, { alg = "EdDSA", kid = "k1" })
+--   local claims = jwt.verify(token, pub, { alg = "EdDSA", kid = "k1" })
+--   local doc = jwt.jwks_build({ { kid = "k1", seed = seed } })
+--   local keys = jwt.jwks_parse(doc)  -- { { kid = "k1", public_key = pub } }
 --
 -- verify() returns the claims table on success, or nil plus a short error
--- code ("malformed" | "unsupported_alg" | "bad_signature" | "expired" |
--- "not_yet_valid" | "bad_issuer" | "bad_audience") and a human message.
--- Security notes: signatures are compared in constant time; the alg header
--- is pinned to HS256 (an "alg":"none" or key-confusion token is rejected
--- before any claim is trusted); exp/nbf honour an optional leeway.
+-- code ("malformed" | "unsupported_alg" | "bad_kid" | "bad_signature" |
+-- "expired" | "not_yet_valid" | "bad_issuer" | "bad_audience") and a human
+-- message.
+-- Security notes: signatures are compared in constant time (HS256) or via
+-- the constant-time primitive (Ed25519); the alg header is pinned to the
+-- caller-accepted algorithm (opts.alg, default HS256 — an "alg":"none" or
+-- cross-algorithm token is rejected before any claim is trusted); an opts.kid
+-- pin rejects tokens whose header kid differs; exp/nbf honour an optional
+-- leeway.
 
 local jwt = {}
 
@@ -264,8 +275,13 @@ local function json_decode(s)
 end
 
 -- ---------------------------------------------------------------------------
--- HS256 sign / verify
+-- Sign / verify (HS256 and EdDSA)
 -- ---------------------------------------------------------------------------
+
+-- Algorithms this implementation can both produce and verify. The verify
+-- side pins the token's alg header to the CALLER-ACCEPTED algorithm, so a
+-- header the caller did not ask for can never select the key interpretation.
+local kAlgs = { HS256 = true, EdDSA = true }
 
 local function b64url_encode(raw)
     return shield.crypto.base64url_encode(raw)
@@ -286,34 +302,66 @@ local function json_decode_segment(seg)
 end
 
 -- jwt.sign(claims, key [, opts]) -> token
--- opts.header overrides the default {alg="HS256", typ="JWT"} header (claims
--- inside it are still validated by verify to be HS256; anything else is a
--- claim-set the receiver will reject by default).
+-- opts.alg selects the algorithm: "HS256" (default; key = shared secret) or
+-- "EdDSA" (Ed25519; key = the 32-byte RFC 8032 seed). opts.kid travels in
+-- the header so verifiers can pin/pick keys. opts.header replaces the
+-- default {alg="HS256", typ="JWT"} header for extra fields (its alg, if
+-- any, is overridden by opts.alg).
 function jwt.sign(claims, key, opts)
     assert(type(claims) == "table", "claims must be a table")
     assert(type(key) == "string" and #key > 0,
            "key must be a non-empty string")
+    opts = type(opts) == "table" and opts or {}
     local header = { alg = "HS256", typ = "JWT" }
-    if opts and type(opts) == "table" and type(opts.header) == "table" then
+    if type(opts.header) == "table" then
         header = opts.header
         header.alg = header.alg or "HS256"
     end
+    if opts.alg ~= nil then header.alg = opts.alg end
+    if opts.kid ~= nil then
+        assert(type(opts.kid) == "string" and #opts.kid > 0,
+               "kid must be a non-empty string")
+        header.kid = opts.kid
+    end
+    -- Refuse to emit tokens under an algorithm this implementation cannot
+    -- verify back: the receiver pins opts.alg, so an exotic header.alg
+    -- would only become a far-side rejection — fail here instead.
+    if not kAlgs[header.alg] then
+        error("unsupported alg: " .. tostring(header.alg), 2)
+    end
     local signing_input = b64url_encode(json_encode(header)) .. "." ..
                               b64url_encode(json_encode(claims))
-    local sig = b64url_encode(shield.crypto.hmac_sha256(key, signing_input))
+    local sig
+    if header.alg == "EdDSA" then
+        assert(#key == 32, "EdDSA key must be the 32-byte RFC 8032 seed")
+        sig = b64url_encode(shield.crypto.ed25519_sign(key, signing_input))
+    else
+        sig = b64url_encode(shield.crypto.hmac_sha256(key, signing_input))
+    end
     return signing_input .. "." .. sig
 end
 
 -- jwt.verify(token, key [, opts]) -> claims | nil, code, message
--- opts: now (unix seconds override; default os.time()), leeway (seconds,
+-- opts: alg (the accepted algorithm, default "HS256" — with "EdDSA" the key
+-- is the 32-byte raw public key), kid (pin: reject tokens whose header kid
+-- differs), now (unix seconds override; default os.time()), leeway (seconds,
 -- default 0), issuer, audience.
 function jwt.verify(token, key, opts)
     opts = opts or {}
+    local alg = opts.alg or "HS256"
+    if not kAlgs[alg] then
+        return nil, "unsupported_alg",
+               "alg must be HS256 or EdDSA"
+    end
     if type(token) ~= "string" then
         return nil, "malformed", "token must be a string"
     end
     if type(key) ~= "string" or #key == 0 then
         return nil, "malformed", "key must be a non-empty string"
+    end
+    if alg == "EdDSA" and #key ~= 32 then
+        return nil, "malformed",
+               "EdDSA key must be the 32-byte raw public key"
     end
     local parts = {}
     for seg in (token .. "."):gmatch("([^.]*)%.") do
@@ -328,16 +376,33 @@ function jwt.verify(token, key, opts)
         return nil, "malformed", "undecodable header"
     end
     -- Pin the algorithm before trusting anything else: an unsigned
-    -- ("alg":"none") or algorithm-confusion token must never verify.
-    if header.alg ~= "HS256" then
-        return nil, "unsupported_alg", "only HS256 is supported"
+    -- ("alg":"none") or algorithm-confusion token must never verify, and
+    -- the caller's accepted algorithm decides — not the header.
+    if header.alg ~= alg then
+        return nil, "unsupported_alg", "only " .. alg .. " is supported"
+    end
+    if opts.kid ~= nil and header.kid ~= opts.kid then
+        return nil, "bad_kid", "kid mismatch"
     end
 
-    local expected = b64url_encode(
-                          shield.crypto.hmac_sha256(key,
-                                                    parts[1] .. "." .. parts[2]))
-    if not shield.crypto.constant_time_compare(parts[3], expected) then
-        return nil, "bad_signature", "signature mismatch"
+    if alg == "EdDSA" then
+        -- ed25519_verify answers false (never throws) for a malformed or
+        -- forged signature, exactly the shape this rejection path wants.
+        local raw_sig = b64url_decode(parts[3])
+        if not raw_sig then
+            return nil, "malformed", "undecodable signature"
+        end
+        if not shield.crypto.ed25519_verify(key, parts[1] .. "." .. parts[2],
+                                            raw_sig) then
+            return nil, "bad_signature", "signature mismatch"
+        end
+    else
+        local expected = b64url_encode(
+                             shield.crypto.hmac_sha256(
+                                 key, parts[1] .. "." .. parts[2]))
+        if not shield.crypto.constant_time_compare(parts[3], expected) then
+            return nil, "bad_signature", "signature mismatch"
+        end
     end
 
     local claims = json_decode_segment(parts[2])
@@ -383,6 +448,78 @@ function jwt.verify(token, key, opts)
         end
     end
     return claims
+end
+
+-- ---------------------------------------------------------------------------
+-- JWKS (RFC 7517 / RFC 8037): Ed25519 OKP key sets for issuing/rotating
+-- public keys.
+-- ---------------------------------------------------------------------------
+
+-- jwt.jwks_build(keys) -> jwks_json_document
+-- keys: non-empty array of { kid = <non-empty string>, seed = <32-byte
+-- RFC 8032 seed> }. Emits one OKP entry per key; x carries the derived raw
+-- public key (base64url, no padding), plus use="sig" and alg="EdDSA".
+function jwt.jwks_build(keys)
+    assert(type(keys) == "table" and #keys >= 1,
+           "keys must be a non-empty array")
+    local entries = {}
+    for i = 1, #keys do
+        local k = keys[i]
+        assert(type(k) == "table", "keys[" .. i .. "] must be a table")
+        assert(type(k.kid) == "string" and #k.kid > 0,
+               "keys[" .. i .. "].kid must be a non-empty string")
+        assert(type(k.seed) == "string" and #k.seed == 32,
+               "keys[" .. i .. "].seed must be the 32-byte RFC 8032 seed")
+        entries[#entries + 1] = {
+            kty = "OKP",
+            crv = "Ed25519",
+            x = b64url_encode(shield.crypto.ed25519_public_key(k.seed)),
+            kid = k.kid,
+            use = "sig",
+            alg = "EdDSA",
+        }
+    end
+    return json_encode({ keys = entries })
+end
+
+-- jwt.jwks_parse(doc) -> keys | nil, code, message
+-- doc: a JWKS JSON document (string) or an already-decoded table. Returns an
+-- array of { kid = string|nil, public_key = <32-byte raw public key> }.
+-- Entries this runtime cannot use (kty ~= "OKP" or crv ~= "Ed25519") are
+-- skipped — a mixed document from a real issuer stays parseable. A broken
+-- Ed25519 entry (missing/undecodable/short x) rejects the whole document as
+-- "malformed": a document that claims an Ed25519 key it cannot deliver is
+-- an error, not a gap.
+function jwt.jwks_parse(doc)
+    if type(doc) == "string" then
+        local ok, value = pcall(json_decode, doc)
+        if not ok or type(value) ~= "table" then
+            return nil, "malformed", "document is not a JSON object"
+        end
+        doc = value
+    end
+    if type(doc) ~= "table" or type(doc.keys) ~= "table" then
+        return nil, "malformed", "keys must be an array"
+    end
+    local out = {}
+    for i = 1, #doc.keys do
+        local e = doc.keys[i]
+        if type(e) ~= "table" then
+            return nil, "malformed", "keys[" .. i .. "] must be an object"
+        end
+        if e.kty == "OKP" and e.crv == "Ed25519" then
+            local raw = b64url_decode(e.x)
+            if type(raw) ~= "string" or #raw ~= 32 then
+                return nil, "malformed",
+                       "keys[" .. i .. "].x must decode to 32 bytes"
+            end
+            out[#out + 1] = {
+                kid = type(e.kid) == "string" and e.kid or nil,
+                public_key = raw,
+            }
+        end
+    end
+    return out
 end
 
 return jwt

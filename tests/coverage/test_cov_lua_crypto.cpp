@@ -2,9 +2,11 @@
 // scripts/lib/jwt.lua reference implementation built on it.
 //
 // Codec/hash correctness is pinned by RFC vectors: RFC 4648 (base64 and
-// base64url), RFC 6234 (SHA-256), RFC 4231 (HMAC-SHA256 test cases 1-4).
-// jwt.lua cases verify sign/verify round-trips, the alg-none pin, and the
-// exp/nbf/iss/aud validation matrix.
+// base64url), RFC 6234 (SHA-256), RFC 4231 (HMAC-SHA256 test cases 1-4),
+// RFC 8032 (Ed25519 §7.2/§7.3), RFC 8037 A.1 (Ed25519 JWK + signature).
+// jwt.lua cases verify sign/verify round-trips (HS256 and EdDSA), the alg
+// pin, the kid pin, the exp/nbf/iss/aud validation matrix, and the JWKS
+// build/parse helpers.
 #define BOOST_TEST_MODULE CovLuaCrypto
 
 #include <openssl/evp.h>
@@ -70,6 +72,30 @@ std::string cpp_hmac_sha256(const std::string& key, const std::string& data) {
          reinterpret_cast<const unsigned char*>(data.data()), data.size(), md,
          &len);
     return std::string(reinterpret_cast<const char*>(md), len);
+}
+
+// Independent C++-side Ed25519 (OpenSSL direct) used to cross-check what
+// jwt.sign produces from the same shield.crypto primitive.
+std::string cpp_ed25519_sign(const std::string& seed, const std::string& msg) {
+    EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(
+        EVP_PKEY_ED25519, nullptr,
+        reinterpret_cast<const unsigned char*>(seed.data()), seed.size());
+    BOOST_REQUIRE(pkey != nullptr);
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    BOOST_REQUIRE(ctx != nullptr);
+    BOOST_REQUIRE(EVP_DigestSignInit(ctx, nullptr, nullptr, nullptr, pkey) ==
+                  1);
+    size_t siglen = 64;
+    std::string sig(64, '\0');
+    BOOST_REQUIRE(
+        EVP_DigestSign(ctx, reinterpret_cast<unsigned char*>(sig.data()),
+                       &siglen,
+                       reinterpret_cast<const unsigned char*>(msg.data()),
+                       msg.size()) == 1);
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    sig.resize(siglen);
+    return sig;
 }
 
 // Lua state with shield.crypto registered and jwt.lua loaded as global "jwt".
@@ -1015,6 +1041,276 @@ BOOST_AUTO_TEST_CASE(Ed25519GuardArms) {
                            "', 1, true), tostring(err))";
         BOOST_CHECK_MESSAGE(run_script(s.lua, code), arm[1]);
     }
+}
+
+// ---------------------------------------------------------------------------
+// EdDSA JWT (RFC 8037): alg=Ed25519 sign/verify on top of the Ed25519
+// primitives, with kid support and JWKS key sets.
+// ---------------------------------------------------------------------------
+
+// RFC 8037 A.1: the JWK key material and the signature over the A.1 message
+// are pinned byte-for-byte. The A.1 private key is the RFC 8032 §7.2 TEST 1
+// seed, so decoding d and x must reproduce that seed and its public key —
+// this cross-locks the JWKS x value against the already-pinned RFC 8032
+// vector and guards against a mis-recorded base64url constant.
+BOOST_AUTO_TEST_CASE(JwtEdDSARfc8037A1Vector) {
+    CryptoState s;
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local d = shield.crypto.base64url_decode("
+        "'nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A')\n"
+        "assert(shield.crypto.hex_encode(d) == "
+        "'9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60')\n"
+        "local x = shield.crypto.base64url_decode("
+        "'11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo')\n"
+        "assert(shield.crypto.hex_encode(x) == "
+        "'d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a')"
+        "\n"));
+    // A.1 signature over "Example of Ed25519 Signing".
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local seed = shield.crypto.hex_decode("
+        "'9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60')\n"
+        "local sig = shield.crypto.ed25519_sign(seed, 'Example of Ed25519 "
+        "Signing')\n"
+        "assert(shield.crypto.hex_encode(sig) == "
+        "'98b9f04b732d7a2c33ca66150520f285832f714742030f7df358924d3b28b8ccb"
+        "6b4f227c7ed3ef56a8eac91a02b990827ae33f0c9f956ab62b7c38ac3736205')\n"));
+}
+
+// EdDSA sign -> verify round trip with a kid pin, plus a cross-language check:
+// the signature segment must equal Ed25519(seed, "header.payload") computed
+// here with OpenSSL directly, base64url-encoded (unpadded).
+BOOST_AUTO_TEST_CASE(JwtEdDSASignVerifyRoundTrip) {
+    CryptoState s;
+    const bool ok = run_script(
+        s.lua,
+        "local seed = shield.crypto.hex_decode("
+        "'9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60')\n"
+        "local pub = shield.crypto.ed25519_public_key(seed)\n"
+        "token = jwt.sign({sub = 'p1', iss = 'gate', exp = 100}, seed,\n"
+        "                 {alg = 'EdDSA', kid = 'k1'})\n"
+        "local h, p, sig = token:match('([^%.]+)%.([^%.]+)%.([^%.]+)')\n"
+        "assert(h and p and sig)\n"
+        "assert(shield.crypto.base64url_decode(h):find('EdDSA', 1, true))\n"
+        "assert(shield.crypto.base64url_decode(h):find('k1', 1, true))\n"
+        "local claims, code, msg = jwt.verify(token, pub, {alg = 'EdDSA', "
+        "kid = 'k1', now = 99})\n"
+        "assert(claims and claims.sub == 'p1' and claims.iss == 'gate', "
+        "tostring(code) .. ' ' .. tostring(msg))\n"
+        "claims = jwt.verify(token, pub, {alg = 'EdDSA', now = 99})\n"
+        "assert(claims and claims.sub == 'p1')\n");
+    BOOST_CHECK(ok);
+
+    // Cross-check the signature bytes from C++.
+    const std::string seed = bytes_from_hex(
+        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
+    const shd::object tok = s.lua["token"];
+    const std::string token = tok.as<std::string>();
+    const size_t first = token.find('.');
+    const size_t second = token.find('.', first + 1);
+    BOOST_REQUIRE(first != std::string::npos && second != std::string::npos);
+    const std::string signing_input = token.substr(0, second);
+    const std::string sig = token.substr(second + 1);
+    const shd::function b64url = s.lua["shield"]["crypto"]["base64url_encode"];
+    const std::string expected = b64url(cpp_ed25519_sign(seed, signing_input));
+    BOOST_CHECK_EQUAL(sig, expected);
+}
+
+// EdDSA rejection matrix: tampered payload, wrong key, short signature,
+// undecodable signature segment, algorithm confusion (both directions plus
+// alg=none), kid mismatch, wrong-size public key, and the claims arms.
+BOOST_AUTO_TEST_CASE(JwtEdDSARejections) {
+    CryptoState s;
+    BOOST_CHECK(run_script(s.lua, R"lua(
+local seed = shield.crypto.random_bytes(32)
+local pub = shield.crypto.ed25519_public_key(seed)
+local token = jwt.sign({sub = 'p1', exp = os.time() + 600}, seed, {alg = 'EdDSA'})
+local h, p, sig = token:match('([^%.]+)%.([^%.]+)%.([^%.]+)')
+-- Tampered payload -> bad_signature.
+local forged = h .. '.' ..
+    shield.crypto.base64url_encode('{\"sub\":\"p2\"}') .. '.' .. sig
+local claims, code = jwt.verify(forged, pub, {alg = 'EdDSA'})
+assert(not claims and code == 'bad_signature', tostring(code))
+-- Wrong key -> bad_signature.
+local other = shield.crypto.ed25519_public_key(shield.crypto.random_bytes(32))
+claims, code = jwt.verify(token, other, {alg = 'EdDSA'})
+assert(not claims and code == 'bad_signature', tostring(code))
+-- 63-byte signature -> bad_signature (ed25519_verify answers false).
+local raw = shield.crypto.base64url_decode(sig)
+claims, code = jwt.verify(h .. '.' .. p .. '.' ..
+    shield.crypto.base64url_encode(raw:sub(1, 63)), pub, {alg = 'EdDSA'})
+assert(not claims and code == 'bad_signature', tostring(code))
+-- Undecodable signature segment -> malformed.
+claims, code = jwt.verify(h .. '.' .. p .. '.!!!', pub, {alg = 'EdDSA'})
+assert(not claims and code == 'malformed', tostring(code))
+-- Algorithm confusion: HS256 token verified as EdDSA -> unsupported_alg.
+local hs = jwt.sign({sub = 'p1'}, 'k')
+claims, code = jwt.verify(hs, pub, {alg = 'EdDSA'})
+assert(not claims and code == 'unsupported_alg', tostring(code))
+-- EdDSA token verified as HS256 (the default) -> unsupported_alg.
+claims, code = jwt.verify(token, 'k')
+assert(not claims and code == 'unsupported_alg', tostring(code))
+-- alg:none with EdDSA -> unsupported_alg.
+local none = shield.crypto.base64url_encode('{\"alg\":\"none\",\"typ\":\"JWT\"}') .. '.' ..
+    shield.crypto.base64url_encode('{\"sub\":\"p1\"}') .. '.AA'
+claims, code = jwt.verify(none, pub, {alg = 'EdDSA'})
+assert(not claims and code == 'unsupported_alg', tostring(code))
+-- kid mismatch -> bad_kid.
+local kidded = jwt.sign({sub = 'p1'}, seed, {alg = 'EdDSA', kid = 'k1'})
+claims, code = jwt.verify(kidded, pub, {alg = 'EdDSA', kid = 'k2'})
+assert(not claims and code == 'bad_kid', tostring(code))
+-- Wrong-size public key -> malformed.
+claims, code = jwt.verify(token, string.rep('p', 31), {alg = 'EdDSA'})
+assert(not claims and code == 'malformed', tostring(code))
+-- Expired / bad issuer on an EdDSA token.
+local exp = jwt.sign({sub = 'p1', exp = 1000}, seed, {alg = 'EdDSA'})
+claims, code = jwt.verify(exp, pub, {alg = 'EdDSA', now = 1001})
+assert(not claims and code == 'expired', tostring(code))
+local iss = jwt.sign({sub = 'p1', iss = 'gate'}, seed, {alg = 'EdDSA'})
+claims, code = jwt.verify(iss, pub, {alg = 'EdDSA', issuer = 'other'})
+assert(not claims and code == 'bad_issuer', tostring(code))
+)lua"));
+}
+
+// EdDSA key-size guards on both sign (seed) and verify (public key).
+BOOST_AUTO_TEST_CASE(JwtEdDSAKeyGuards) {
+    CryptoState s;
+    const char* arms[][2] = {
+        {"pcall(jwt.sign, {sub='p1'}, string.rep('s',31), {alg='EdDSA'})",
+         "32-byte"},
+        {"pcall(jwt.sign, {sub='p1'}, string.rep('s',33), {alg='EdDSA'})",
+         "32-byte"},
+    };
+    for (const auto& arm : arms) {
+        std::string code = std::string("local ok, err = ") + arm[0] +
+                           "\nassert(not ok and err:find('" + arm[1] +
+                           "', 1, true), tostring(err))";
+        BOOST_CHECK_MESSAGE(run_script(s.lua, code), arm[1]);
+    }
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local token = jwt.sign({sub = 'p1'}, string.rep('s', 32), {alg = "
+        "'EdDSA'})\n"
+        "local _, code = jwt.verify(token, string.rep('p', 31), {alg = "
+        "'EdDSA'})\n"
+        "assert(code == 'malformed', tostring(code))\n"
+        "_, code = jwt.verify(token, string.rep('p', 33), {alg = 'EdDSA'})\n"
+        "assert(code == 'malformed', tostring(code))\n"));
+}
+
+// HS256 kid round trip: the pin works and a mismatch is rejected.
+BOOST_AUTO_TEST_CASE(JwtHs256KidRoundTrip) {
+    CryptoState s;
+    BOOST_CHECK(
+        run_script(s.lua,
+                   "local token = jwt.sign({sub = 'p1'}, 'k', {kid = 'k1'})\n"
+                   "local claims = jwt.verify(token, 'k', {kid = 'k1'})\n"
+                   "assert(claims and claims.sub == 'p1')\n"
+                   "local _, code = jwt.verify(token, 'k', {kid = 'k2'})\n"
+                   "assert(code == 'bad_kid', tostring(code))\n"));
+}
+
+// JWKS build from the A.1 seed: the document must carry the A.1 x value and
+// the OKP/Ed25519/kid fields, and parsing it back must return the A.1 public
+// key under the same kid.
+BOOST_AUTO_TEST_CASE(JwksRfc8037A1Vector) {
+    CryptoState s;
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local seed = shield.crypto.hex_decode("
+        "'9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60')\n"
+        "local doc = jwt.jwks_build({{kid = 'k1', seed = seed}})\n"
+        "assert(doc:find('\"x\":\"11qYAYKxCrfVS_"
+        "7TyWQHOg7hcvPapiMlrwIaaPcHURo\"', 1, true), doc)\n"
+        "assert(doc:find('\"kty\":\"OKP\"', 1, true), doc)\n"
+        "assert(doc:find('\"crv\":\"Ed25519\"', 1, true), doc)\n"
+        "assert(doc:find('\"kid\":\"k1\"', 1, true), doc)\n"
+        "local keys = jwt.jwks_parse(doc)\n"
+        "assert(#keys == 1)\n"
+        "assert(keys[1].kid == 'k1')\n"
+        "assert(shield.crypto.hex_encode(keys[1].public_key) == "
+        "'d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a')"
+        "\n"));
+}
+
+// JWKS parse errors and the skip matrix: non-JSON, missing/non-array keys,
+// non-object entries, missing/undecodable/wrong-size x all reject as
+// "malformed"; non-OKP and non-Ed25519 entries are skipped; an empty keys
+// array and a table input parse fine.
+BOOST_AUTO_TEST_CASE(JwksParseErrors) {
+    CryptoState s;
+    BOOST_CHECK(run_script(s.lua, R"lua(
+local function rej(doc, what)
+    local _, code, msg = jwt.jwks_parse(doc)
+    assert(not _ and code == 'malformed', what .. ' -> ' .. tostring(code))
+    return msg
+end
+rej('not json', 'not json')
+rej('{"keys": 42}', 'keys not array')
+rej('{"keys": [42]}', 'entry not object')
+rej('{"keys": [{"kty":"OKP","crv":"Ed25519"}]}', 'missing x')
+rej('{"keys": [{"kty":"OKP","crv":"Ed25519","x":"!!!"}]}', 'undecodable x')
+rej('{"keys": [{"kty":"OKP","crv":"Ed25519","x":"' .. string.rep('A', 44) .. '"}]}', 'x not 32 bytes')
+-- Non-Ed25519 entries are skipped, not errors.
+local keys = jwt.jwks_parse('{"keys": [{"kty":"RSA","n":"x","e":"AQAB"}]}')
+assert(#keys == 0)
+keys = jwt.jwks_parse('{"keys": [{"kty":"OKP","crv":"X25519","x":"' .. string.rep('A', 44) .. '"}]}')
+assert(#keys == 0)
+-- Empty keys array parses to an empty result.
+keys = jwt.jwks_parse('{"keys": []}')
+assert(#keys == 0)
+-- A table input (already-decoded document) works too.
+local seed = shield.crypto.hex_decode('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60')
+keys = jwt.jwks_parse({keys = {{kty = "OKP", crv = "Ed25519",
+    x = shield.crypto.base64url_encode(shield.crypto.ed25519_public_key(seed)),
+    kid = 'k9'}}})
+assert(#keys == 1 and keys[1].kid == 'k9')
+-- A missing kid comes back as nil, not an error.
+keys = jwt.jwks_parse('{"keys": [{"kty":"OKP","crv":"Ed25519","x":"' ..
+    shield.crypto.base64url_encode(shield.crypto.ed25519_public_key(seed)) .. '"}]}')
+assert(#keys == 1 and keys[1].kid == nil)
+)lua"));
+}
+
+// jwks_build argument guards: every assert is a real, reachable API surface.
+BOOST_AUTO_TEST_CASE(JwksBuildGuards) {
+    CryptoState s;
+    const char* arms[][2] = {
+        {"pcall(jwt.jwks_build, {})", "non-empty array"},
+        {"pcall(jwt.jwks_build, {42})", "must be a table"},
+        {"pcall(jwt.jwks_build, {{seed = string.rep('s', 32)}})", "kid"},
+        {"pcall(jwt.jwks_build, {{kid = 'k'}})", "seed"},
+        {"pcall(jwt.jwks_build, {{kid = 'k', seed = string.rep('s', 31)}})",
+         "seed"},
+        {"pcall(jwt.jwks_build, {{kid = 'k', seed = string.rep('s', 33)}})",
+         "seed"},
+        {"pcall(jwt.jwks_build, {{kid = '', seed = string.rep('s', 32)}})",
+         "kid"},
+    };
+    for (const auto& arm : arms) {
+        std::string code = std::string("local ok, err = ") + arm[0] +
+                           "\nassert(not ok and err:find('" + arm[1] +
+                           "', 1, true), tostring(err))";
+        BOOST_CHECK_MESSAGE(run_script(s.lua, code), arm[1]);
+    }
+}
+
+// Full JWKS flow: build a key set, parse it back, verify a token signed with
+// the seed using the parsed public key.
+BOOST_AUTO_TEST_CASE(JwksJwtRoundTrip) {
+    CryptoState s;
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local seed = shield.crypto.random_bytes(32)\n"
+        "local doc = jwt.jwks_build({{kid = 'k1', seed = seed}})\n"
+        "local keys = jwt.jwks_parse(doc)\n"
+        "assert(#keys == 1 and keys[1].kid == 'k1')\n"
+        "local token = jwt.sign({sub = 'p1'}, seed, {alg = 'EdDSA', kid = "
+        "'k1'})\n"
+        "local claims = jwt.verify(token, keys[1].public_key, {alg = 'EdDSA', "
+        "kid = 'k1'})\n"
+        "assert(claims and claims.sub == 'p1')\n"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

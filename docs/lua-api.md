@@ -625,7 +625,7 @@ off()
 
 ## Crypto API
 
-`shield.crypto` 提供密码学**原语**（C++/OpenSSL 实现）。分层裁定：runtime 只提供原语，业务语义（JWT/会话签名等）在 Lua 层组合——参考实现 `scripts/lib/jwt.lua`（HS256，见下）。
+`shield.crypto` 提供密码学**原语**（C++/OpenSSL 实现）。分层裁定：runtime 只提供原语，业务语义（JWT/会话签名等）在 Lua 层组合——参考实现 `scripts/lib/jwt.lua`（HS256 + EdDSA + JWKS，见下）。
 
 所有函数接收/返回 Lua string（字节透明）；哈希与 HMAC 返回**原始摘要**（需要文本形式时用 `hex_encode` / `base64url_encode` 组合）。
 
@@ -675,21 +675,26 @@ off()
 
 ### jwt.lua —— 业务层认证参考实现
 
-`scripts/lib/jwt.lua` 是纯 Lua 的 HS256 JWT（RFC 7519）参考实现，完全由 `shield.crypto` 原语拼成，展示"业务层自建认证"的正确姿势（runtime 不含 JWT 语义；C++ 插件层的 `plugins/auth_jwt` 已因此弃用）：
+`scripts/lib/jwt.lua` 是纯 Lua 的 JWT（RFC 7519）参考实现，支持 HS256 与 EdDSA（Ed25519）两种算法，并带 RFC 7517 JWKS 公钥集助手。完全由 `shield.crypto` 原语拼成，展示"业务层自建认证"的正确姿势（runtime 不含 JWT 语义；C++ 插件层的 `plugins/auth_jwt` 已因此弃用）：
 
 ```lua
 local jwt = dofile("scripts/lib/jwt.lua")
 
--- 签发：claims 表 + 共享密钥
+-- HS256 签发：claims 表 + 共享密钥
 local token = jwt.sign(
     { sub = "player_1", iss = "gate", exp = os.time() + 3600 },
     "shared-secret")
 
+-- EdDSA 签发：claims 表 + 32 字节 RFC 8032 seed，kid 随 header 走
+local token = jwt.sign(claims, seed, { alg = "EdDSA", kid = "k1" })
+
 -- 校验：通过返回 claims，失败返回 nil, code, message
 local claims, code = jwt.verify(token, "shared-secret",
                                 { issuer = "gate" })
+-- EdDSA 校验：key 是 32 字节原始公钥，alg 必须显式钉 EdDSA
+local claims = jwt.verify(token, pub, { alg = "EdDSA", kid = "k1" })
 if not claims then
-    -- code ∈ "malformed" | "unsupported_alg" | "bad_signature"
+    -- code ∈ "malformed" | "unsupported_alg" | "bad_kid" | "bad_signature"
     --      | "expired" | "not_yet_valid" | "bad_issuer" | "bad_audience"
     shield.log.warn("token rejected: " .. code)
 end
@@ -697,12 +702,30 @@ end
 
 | verify 选项 | 说明 |
 | --- | --- |
+| `alg` | 接受的算法（默认 `"HS256"`；EdDSA 传 `"EdDSA"`，key 为 32 字节原始公钥） |
+| `kid` | pin：header `kid` 不符即拒绝（`bad_kid`） |
 | `now` | 覆盖当前时间（unix 秒；默认 `os.time()`，受业务时钟挂钩影响） |
 | `leeway` | exp/nbf 容差秒数（默认 0） |
 | `issuer` | 校验 `iss` 精确匹配 |
 | `audience` | 校验 `aud`（string 或 array 形态均可） |
 
-安全语义：签名用 `constant_time_compare` 比较；`alg` 钉死 HS256（`alg:"none"`/算法混淆 token 在信任任何 claim 之前即拒绝）；`exp`/`nbf` 齐全；头/载荷 JSON 编解码内置于该文件（对象键排序输出，token 字节可复现）。
+安全语义：签名用 `constant_time_compare`（HS256）或 Ed25519 常数时间原语比较；`alg` 钉到调用方接受的算法（`opts.alg`，默认 HS256——`alg:"none"`/算法混淆 token 在信任任何 claim 之前即拒绝）；`opts.kid` pin 拒绝 header kid 不符的 token；`exp`/`nbf` 齐全；头/载荷 JSON 编解码内置于该文件（对象键排序输出，token 字节可复现）。
+
+#### JWKS 公钥集（RFC 7517 / RFC 8037）
+
+EdDSA 侧的公钥下发/轮换用 JWKS 文档（`kty=OKP`、`crv=Ed25519`、`x`、`kid`）：
+
+```lua
+-- 构造：keys 是非空数组，每项 { kid = <非空 string>, seed = <32 字节 seed> }
+local doc = jwt.jwks_build({ { kid = "k1", seed = seed } })
+-- doc 含 {"keys":[{"kty":"OKP","crv":"Ed25519","x":"<b64url 公钥>","kid":"k1","use":"sig","alg":"EdDSA"}]}
+
+-- 解析：返回 { { kid = string|nil, public_key = <32 字节原始公钥> }
+local keys = jwt.jwks_parse(doc)
+-- 非 OKP/非 Ed25519 条目跳过（混合文档可解析）；声称 Ed25519 但 x 坏 → 整文档 malformed
+```
+
+`jwks_build` 的 `seed` 经 `ed25519_public_key` 推导 `x`；`jwks_parse` 的 `public_key` 可直接喂给 `jwt.verify` 的 EdDSA 路径。
 
 ---
 
