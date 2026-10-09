@@ -40,6 +40,17 @@ roadmap「Later」清单项（`shield.crypto` 二期：KDF / 对称加密 / 非�
       database-sqlite feature，清单文件不动），`test_db_sqlite_async` 与
       facade 的 SQLITE 用例自此进入 CI ctest。Windows 腿不跟（z-applocal
       部署竞态家族），macOS 保持与 codec 插件同口径。
+- [x] 首轮 CI 即抓到第二层时序依赖（8dc5f02，2026-10-09）：CI release
+      runner 上 kSlowSql 只要 ~200ms（本地 release ~0.9s），对 db.short 的
+      150ms 预算只有 1.33x 边际——tx 超时用例被翻到「回滚抢在自己预算内
+      跑完 → shim 出 `transaction_rolled_back`」的合法分支，断言钉死
+      `fail:timeout` 即红。修法三件：断言改合法二值析取 + 排空后回滚证据
+      （tx 建的表必须不存在，两分支皆真）；超时前提用例（poisons /
+      shutdown-drains）改绑专配 30ms 预算的 `db.poison`——「语句远超预算」
+      由构造保证而非边际硬扛；kSlowSql 保持 2M 行不动（CTE 超线性，
+      4M 本地 release 已 ~5.6s，不能靠加长语句买边际）。教训：**测试若
+      依赖「A 在 B 之前/之后完成」，先问自己在最慢与最快的目标机上 A/B
+      的时序关系是否都成立——不成立就改断言为合法析取或把前提结构化。**
 
 ## shield.crypto 二期切片 2：AES-256-GCM AEAD（2026-10-09 完成）
 
