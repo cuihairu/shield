@@ -44,12 +44,14 @@ namespace {
 const std::string kTmpDir = "/tmp/shield_db_sqlite_async";
 
 // A recursive-CTE aggregate that keeps one sqlite worker busy for well over
-// a tenth of a second but under a second locally (~650ms for 2M rows; the
-// CTE is superlinear — 4M rows already takes ~5.6s), longer than the short
-// instance's 150ms caller timeout, shorter than the 3s drain waits in the
-// timeout and shutdown cases (the worker is single-threaded: a queued task
-// waits for the running one, and "timeout is not cancellation" means a
-// timed-out caller's SQL keeps the worker busy to the end).
+// a tenth of a second but under a second locally in release (~650ms for 2M
+// rows; the CTE is superlinear — 4M rows already takes ~5.6s), longer than
+// the short instance's 150ms caller timeout. Cases that must observe the
+// post-statement state wait on the pool gauges (pending_async / holding),
+// never on a fixed sleep: a Debug sqlite3 runs this CTE several times
+// slower, so wall-clock budgets would race the single worker ("timeout is
+// not cancellation" means a timed-out caller's SQL keeps the worker busy to
+// the end, and queued tasks wait for it).
 const char* kSlowSql =
     "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c "
     "WHERE x < 2000000) SELECT sum(x) AS total FROM c";
@@ -611,8 +613,21 @@ BOOST_AUTO_TEST_CASE(AsyncTimeoutPoisonsAndInstanceKeepsWorking) {
                                  "_G.__db_out.retryable == true"));
 
     // Let the worker finish the query and attempt the late completion; it
-    // must be dropped, not delivered over the timeout result.
-    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+    // must be dropped, not delivered over the timeout result. The drain is
+    // observed (pending_async back to 0), never timed: the statement's
+    // runtime varies with build and load (a Debug sqlite3 runs this CTE
+    // several times slower than release), so a fixed sleep here would race
+    // the worker and hand the follow-up query below its own timeout while
+    // the worker is still clogged.
+    BOOST_CHECK(wait_until(
+        [&] {
+            const auto* s = find_pool_stats("sqlite_async_short");
+            return s && s->status == shield::plugin::PoolStatsStatus::ok &&
+                   s->stats.pending_async == 0;
+        },
+        std::chrono::milliseconds(30000)));
+    // The late completion ran and was rejected: the timeout payload is
+    // still what the caller saw.
     BOOST_CHECK(lua_bool(fx.manager, fx.runtime, fx.service_id,
                          "type(_G.__db_out) == 'table' and "
                          "_G.__db_out.ok == false and "

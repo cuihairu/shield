@@ -19,21 +19,21 @@ roadmap「Later」清单项（`shield.crypto` 二期：KDF / 对称加密 / 非�
       单跑绿）。五树全量门禁受宿主机外部高负载干扰（load 峰值 87），
       非本改动失败项见下。
 
-## 门禁遗留：test_db_sqlite_async 预存在回归（2026-10-09 发现）
+## 门禁遗留：test_db_sqlite_async 预存在回归（2026-10-09 已解决）
 
-**非本批引入**：在纯 HEAD 树（git stash 移走 crypto 改动后重编）上
-`test_db_sqlite_async` 失败更重（5/15 用例崩，含 AsyncQueryRoundTrip /
-AsyncTimeoutPoisons / AsyncTransactionGaugesWhileParked /
-AsyncTransactionCallerTimeoutRollsBack），我的树上仅 1 个
-（AsyncTransactionCallerTimeoutRollsBack）。判定：B2 批次（58c7580 touch 了
-`plugins/sqlite/shield_db_sqlite.cpp`）引入的挂起/恢复挂点回归，映射
-[B2] 坑 29（门禁污染潜伏红）家族。CI 不覆盖（plugins 树），故未拦住。
+**根因是测试时序竞态，不是产品回归**。插桩定案（suspend/timeout/resume
+三点带时间戳）：Debug 构建的 sqlite3 跑 kSlowSql 递归 CTE 要 ~6.2s
+（release 仅 ~0.9s），而 `AsyncTimeoutPoisonsAndInstanceKeepsWorking` 在
+首个超时后 blind sleep 3s 就发起后续快查询——worker 还在跑被超时的语句
+（timeout is not cancellation），快查询入队后排在其后，150ms 预算先到，
+`__db_out` 落成 {timeout}；worker 空出来后快查询本身瞬间完成，但会话已被
+超时消费（claim-then-route 拒绝，行为完全符合设计）。先前 pure-HEAD 上
+5/15 用例崩同属此家族（慢机器/高负载放大），产品路径无一异常。
 
-- [ ] 根因：`AsyncTransactionCallerTimeoutRollsBack` 回滚后
-      `pending_async`/`holding` 未在 10s 内归零——慢语句占住单 worker，
-      超时触发的 ROLLBACK 入队后要等慢语句跑完（`run_task` 单线程串行），
-      测试窗口可能不足或 resume 失败路径的 gauge 递减有缺漏。需读
-      `shield_db_async_shim.hpp` + `lua_resume_session` 失败路径定论。
+- [x] 修复：poisons 用例的 3s blind sleep 换成 gauge 观测排空
+      （`pending_async == 0`，30s 上限），随后再断言超时载荷未被迟到完成
+      覆盖——比原断言更强（迟到 resume 必已尝试并拒绝）。kSlowSql 注释
+      同步改口径：等排空等 gauge，不等墙钟。默认树 104/104 全绿 ×3。
 - [ ] 判定期望：CI 不覆盖 plugin 测试，需把 `test_db_sqlite_async` 纳入
       某条 CI job（plugins-ci）或补最小复现，避免同类回归再次静默。
 
