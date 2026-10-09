@@ -663,7 +663,15 @@ off()
 | `shield.crypto.aead_aes256gcm_encrypt(key, nonce, plaintext, aad)` | AES-256-GCM（NIST SP 800-38D）认证加密；返回 combined `ciphertext‖tag`（16 字节 GCM tag 尾附）。`key` 必须 32 字节、`nonce` 12 字节（GCM 推荐长度），`aad` 允许空串；尺寸不符抛 error |
 | `shield.crypto.aead_aes256gcm_decrypt(key, nonce, combined, aad)` | 先验 tag（常数时间）再返回明文；key/nonce/tag/AAD 任一不符抛 error，**绝不返回未经认证的明文**；输入短于 16 字节 tag 抛 error |
 
-**正确性锚点**：base64/base64url 用 RFC 4648 向量、SHA-256 用 RFC 6234 向量、HMAC-SHA256 用 RFC 4231 TC1–TC4、PBKDF2 用 canonical SHA-256 向量组（iterations 1/2/4096 + 多块 40 字节例）、HKDF 用 RFC 5869 TC1–TC3、AES-256-GCM 用 NIST GCM 已知向量 + 认证失败拒绝矩阵锁定（`tests/coverage/test_cov_lua_crypto.cpp`）。
+**非对称签名验签（二期）**：
+
+| API | 说明 |
+| --- | --- |
+| `shield.crypto.ed25519_public_key(secret_key)` | 由 32 字节 RFC 8032 seed 推导 32 字节原始公钥；seed 尺寸不符抛 error |
+| `shield.crypto.ed25519_sign(secret_key, message)` | Ed25519（RFC 8032）确定性签名，返回 64 字节原始签名（无 nonce、无随机性：同 key 同 message 恒得同签名）。`secret_key` 必须 32 字节 seed，不符抛 error；message 任意长度（含空） |
+| `shield.crypto.ed25519_verify(public_key, message, signature)` | 验签，返回 boolean。`public_key` 必须 32 字节原始公钥（不符抛 error）；`signature` 非 64 字节或验签不过一律返回 `false`（不抛 error，JWT 式调用方直接映射为拒绝） |
+
+**正确性锚点**：base64/base64url 用 RFC 4648 向量、SHA-256 用 RFC 6234 向量、HMAC-SHA256 用 RFC 4231 TC1–TC4、PBKDF2 用 canonical SHA-256 向量组（iterations 1/2/4096 + 多块 40 字节例）、HKDF 用 RFC 5869 TC1–TC3、AES-256-GCM 用 NIST GCM 已知向量 + 认证失败拒绝矩阵锁定、Ed25519 用 RFC 8032 §7.2 TEST 1 + §7.3 EXAMPLE 逐字节锁定 + 篡改/错钥/坏长度拒绝矩阵（`tests/coverage/test_cov_lua_crypto.cpp`）。
 
 ### jwt.lua —— 业务层认证参考实现
 

@@ -61,6 +61,33 @@ roadmap「Later」清单项（`shield.crypto` 二期：KDF / 对称加密 / 非�
 
 非对称签名验签 / JWKS 再后置。
 
+## shield.crypto 二期切片 3：Ed25519 签名验签（2026-10-09 完成）
+
+roadmap「Later」清单第三刀（KDF → AEAD → 非对称 → JWKS）。一期模式照搬
+（OpenSSL one-shot EVP + 防御臂标记纪律 + RFC 向量锁定）。
+
+- [x] `shield.crypto.ed25519_public_key(secret_key)`：32 字节 RFC 8032
+      seed → 32 字节原始公钥（EVP_PKEY_get_raw_public_key）。
+- [x] `shield.crypto.ed25519_sign(secret_key, message)`：one-shot
+      EVP_DigestSign，确定性 64 字节原始签名（Ed25519 无 nonce 无随机性）。
+- [x] `shield.crypto.ed25519_verify(public_key, message, signature)`：
+      one-shot EVP_DigestVerify，boolean。**尺寸护栏分两侧**：key 尺寸不符
+      抛 error（调用方编程错，与 AEAD 护栏同口径）；signature 非 64 字节
+      返回 false（「不是合法签名」本身是验签答案，JWT 式调用方留在
+      非抛出路径）。OpenSSL 返回值三态：1=过 / 0=不过（篡改用例驱动、
+      保持计测）/ 负数=契约错（防御臂标记）。
+- [x] 防御臂纪律：全部防御 if 收成**单行条件 + 行内 BR 标记 + START/STOP
+      包 throw 体**——不再给多行 if 条件配行内标记（切片 2 的教训直接
+      前置应用：条件调用拆 `const int rc = ...;` 单行判）。
+- [x] 测试：RFC 8032 §7.2 TEST 1（空消息）+ §7.3 EXAMPLE（af82）逐字节
+      锁定（含 seed→公钥推导锁定）；随机密钥对往返 + 消息/签名/密钥三侧
+      篡改拒绝；63/65 字节签名 false 不抛矩阵；6 臂 pcall 护栏。
+      test_cov_lua_crypto 27→31 用例全绿。
+- [x] 文档：`docs/lua-api.md` crypto 表新增「非对称签名验签（二期）」节，
+      正确性锚点行并入 RFC 8032。
+
+JWKS / EdDSA JWT 再后置（依赖本切片原语）。
+
 ## 认证业务语义出插件层：原语库 shield.crypto + Lua 层 jwt.lua（2026-09-28 完成）
 
 架构纠正（插件矩阵分层）：`auth_jwt` 做成 C++ 插件是错位的——JWT 签发/校验是业务

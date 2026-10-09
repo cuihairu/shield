@@ -916,4 +916,105 @@ BOOST_AUTO_TEST_CASE(AeadAes256GcmGuardArms) {
         "shield.crypto.aead_aes256gcm_encrypt(k, n, 'x', ''), '') == 'x')"));
 }
 
+// ---------------------------------------------------------------------------
+// Ed25519 (RFC 8032 §7.2/§7.3): deterministic signatures over raw keys.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(Ed25519Rfc8032Vectors) {
+    CryptoState s;
+    // §7.2 TEST 1 (empty message): the seed derives the known public key,
+    // signing produces the exact 64-byte RFC signature, verify accepts it.
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local seed = shield.crypto.hex_decode("
+        "'9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60')\n"
+        "assert(shield.crypto.hex_encode("
+        "shield.crypto.ed25519_public_key(seed)) == "
+        "'d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a')\n"
+        "local sig = shield.crypto.ed25519_sign(seed, '')\n"
+        "assert(#sig == 64)\n"
+        "assert(shield.crypto.hex_encode(sig) == "
+        "'e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+        "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b')\n"
+        "assert(shield.crypto.ed25519_verify("
+        "shield.crypto.hex_decode("
+        "'d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'), "
+        "'', sig))"));
+    // §7.3 EXAMPLE (the SHA("abc") message, af82).
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local seed = shield.crypto.hex_decode("
+        "'c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7')\n"
+        "local pub = shield.crypto.hex_decode("
+        "'fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025')\n"
+        "local msg = shield.crypto.hex_decode('af82')\n"
+        "local sig = shield.crypto.ed25519_sign(seed, msg)\n"
+        "assert(shield.crypto.hex_encode(sig) == "
+        "'6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac"
+        "18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a')\n"
+        "assert(shield.crypto.ed25519_verify(pub, msg, sig))"));
+}
+
+BOOST_AUTO_TEST_CASE(Ed25519SignVerifyRoundTrip) {
+    CryptoState s;
+    // Fresh keypair, non-trivial message: sign → verify accepts; any change
+    // to the message or signature is rejected with false (never an error).
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local seed = shield.crypto.random_bytes(32)\n"
+        "local pub = shield.crypto.ed25519_public_key(seed)\n"
+        "assert(#pub == 32)\n"
+        "local msg = 'withdraw 100 credits to acct-771'\n"
+        "local sig = shield.crypto.ed25519_sign(seed, msg)\n"
+        "assert(#sig == 64)\n"
+        "assert(shield.crypto.ed25519_verify(pub, msg, sig))\n"
+        "assert(not shield.crypto.ed25519_verify(pub, msg .. 'x', sig))\n"
+        "local bad = sig:sub(1, 1) ~= '\\0' and "
+        "('\\0' .. sig:sub(2)) or ('\\1' .. sig:sub(2))\n"
+        "assert(not shield.crypto.ed25519_verify(pub, msg, bad))\n"
+        "assert(not shield.crypto.ed25519_verify(pub, '', sig))\n"
+        "local other = shield.crypto.ed25519_public_key("
+        "shield.crypto.random_bytes(32))\n"
+        "assert(not shield.crypto.ed25519_verify(other, msg, sig))"));
+}
+
+BOOST_AUTO_TEST_CASE(Ed25519SignatureLengthArms) {
+    CryptoState s;
+    // Malformed signature lengths answer false on the non-throwing path.
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local seed = shield.crypto.random_bytes(32)\n"
+        "local pub = shield.crypto.ed25519_public_key(seed)\n"
+        "local sig = shield.crypto.ed25519_sign(seed, 'm')\n"
+        "assert(not shield.crypto.ed25519_verify(pub, 'm', sig:sub(1, 63)))\n"
+        "assert(not shield.crypto.ed25519_verify(pub, 'm', sig .. 'x'))\n"
+        "assert(not shield.crypto.ed25519_verify(pub, 'm', ''))"));
+}
+
+BOOST_AUTO_TEST_CASE(Ed25519GuardArms) {
+    CryptoState s;
+    const char* arms[][2] = {
+        {"pcall(shield.crypto.ed25519_public_key, string.rep('k', 31))",
+         "secret key must be 32 bytes"},
+        {"pcall(shield.crypto.ed25519_public_key, string.rep('k', 33))",
+         "secret key must be 32 bytes"},
+        {"pcall(shield.crypto.ed25519_sign, string.rep('k', 31), 'm')",
+         "secret key must be 32 bytes"},
+        {"pcall(shield.crypto.ed25519_sign, string.rep('k', 33), 'm')",
+         "secret key must be 32 bytes"},
+        {"pcall(shield.crypto.ed25519_verify, string.rep('p', 31), 'm', "
+         "string.rep('s', 64))",
+         "public key must be 32 bytes"},
+        {"pcall(shield.crypto.ed25519_verify, string.rep('p', 33), 'm', "
+         "string.rep('s', 64))",
+         "public key must be 32 bytes"},
+    };
+    for (const auto& arm : arms) {
+        std::string code = std::string("local ok, err = ") + arm[0] +
+                           "\nassert(not ok and err:find('" + arm[1] +
+                           "', 1, true), tostring(err))";
+        BOOST_CHECK_MESSAGE(run_script(s.lua, code), arm[1]);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

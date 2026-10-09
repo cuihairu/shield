@@ -421,6 +421,143 @@ std::string aead_decrypt_impl(const std::string& key, const std::string& nonce,
     return out;
 }
 
+// --- asymmetric signatures (crypto phase 2) --------------------------------
+// Ed25519 (RFC 8032). One-shot EVP_DigestSign/EVP_DigestVerify — the only
+// mode OpenSSL supports for Ed25519 — over RAW keys: the secret key is the
+// 32-byte RFC 8032 seed, the public key the 32-byte raw form, signatures
+// are 64 bytes and deterministic (no nonce, no randomness). verify()
+// returns false for a malformed or forged signature — the JWT-style caller
+// maps that to a plain rejection — and raises only on a wrongly-sized key.
+
+constexpr size_t kEd25519SeedBytes = 32;
+constexpr size_t kEd25519PublicKeyBytes = 32;
+constexpr size_t kEd25519SignatureBytes = 64;
+
+std::string ed25519_public_key_impl(const std::string& secret_key) {
+    if (secret_key.size() != kEd25519SeedBytes) {
+        throw std::runtime_error(
+            "ed25519_public_key: secret key must be 32 bytes (RFC 8032 seed)");
+    }
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey(
+        EVP_PKEY_new_raw_private_key(
+            EVP_PKEY_ED25519, nullptr,
+            reinterpret_cast<const unsigned char*>(secret_key.data()),
+            kEd25519SeedBytes),
+        &EVP_PKEY_free);
+    if (pkey == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: raw private key allocation arm)
+        throw std::runtime_error("ed25519_public_key: key load failed");
+        // GCOVR_EXCL_STOP
+    }
+    std::string out(kEd25519PublicKeyBytes, '\0');
+    size_t pub_len = out.size();
+    const int exported = EVP_PKEY_get_raw_public_key(
+        pkey.get(), reinterpret_cast<unsigned char*>(out.data()), &pub_len);
+    if (exported != 1) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: raw public key export arm)
+        throw std::runtime_error("ed25519_public_key: export failed");
+        // GCOVR_EXCL_STOP
+    }
+    out.resize(pub_len);
+    return out;
+}
+
+std::string ed25519_sign_impl(const std::string& secret_key,
+                              const std::string& message) {
+    if (secret_key.size() != kEd25519SeedBytes) {
+        throw std::runtime_error(
+            "ed25519_sign: secret key must be 32 bytes (RFC 8032 seed)");
+    }
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey(
+        EVP_PKEY_new_raw_private_key(
+            EVP_PKEY_ED25519, nullptr,
+            reinterpret_cast<const unsigned char*>(secret_key.data()),
+            kEd25519SeedBytes),
+        &EVP_PKEY_free);
+    if (pkey == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: raw private key allocation arm)
+        throw std::runtime_error("ed25519_sign: key load failed");
+        // GCOVR_EXCL_STOP
+    }
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
+        EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+    if (ctx == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: digest context allocation arm)
+        throw std::runtime_error("ed25519_sign: context alloc failed");
+        // GCOVR_EXCL_STOP
+    }
+    const int init_ok =
+        EVP_DigestSignInit(ctx.get(), nullptr, nullptr, nullptr, pkey.get());
+    if (init_ok != 1) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: sign init contract arm)
+        throw std::runtime_error("ed25519_sign: init failed");
+        // GCOVR_EXCL_STOP
+    }
+    std::string sig(kEd25519SignatureBytes, '\0');
+    size_t sig_len = sig.size();
+    const int signed_ok = EVP_DigestSign(
+        ctx.get(), reinterpret_cast<unsigned char*>(sig.data()), &sig_len,
+        reinterpret_cast<const unsigned char*>(message.data()), message.size());
+    if (signed_ok != 1) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: sign contract arm)
+        throw std::runtime_error("ed25519_sign: sign failed");
+        // GCOVR_EXCL_STOP
+    }
+    sig.resize(sig_len);
+    return sig;
+}
+
+bool ed25519_verify_impl(const std::string& public_key,
+                         const std::string& message,
+                         const std::string& signature) {
+    if (public_key.size() != kEd25519PublicKeyBytes) {
+        throw std::runtime_error("ed25519_verify: public key must be 32 bytes");
+    }
+    // A signature with the wrong length is simply not a valid signature:
+    // answer false instead of raising, so verification stays on the
+    // non-throwing path a JWT-style caller wants.
+    if (signature.size() != kEd25519SignatureBytes) {
+        return false;
+    }
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey(
+        EVP_PKEY_new_raw_public_key(
+            EVP_PKEY_ED25519, nullptr,
+            reinterpret_cast<const unsigned char*>(public_key.data()),
+            kEd25519PublicKeyBytes),
+        &EVP_PKEY_free);
+    if (pkey == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: raw public key allocation arm)
+        throw std::runtime_error("ed25519_verify: key load failed");
+        // GCOVR_EXCL_STOP
+    }
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> ctx(
+        EVP_MD_CTX_new(), &EVP_MD_CTX_free);
+    if (ctx == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: digest context allocation arm)
+        throw std::runtime_error("ed25519_verify: context alloc failed");
+        // GCOVR_EXCL_STOP
+    }
+    const int init_ok =
+        EVP_DigestVerifyInit(ctx.get(), nullptr, nullptr, nullptr, pkey.get());
+    if (init_ok != 1) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: verify init contract arm)
+        throw std::runtime_error("ed25519_verify: init failed");
+        // GCOVR_EXCL_STOP
+    }
+    // 1 = valid, 0 = invalid (driven by the forgery cases), negative =
+    // OpenSSL contract error (defensive).
+    const int verdict = EVP_DigestVerify(
+        ctx.get(), reinterpret_cast<const unsigned char*>(signature.data()),
+        signature.size(),
+        reinterpret_cast<const unsigned char*>(message.data()), message.size());
+    if (verdict < 0) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: verify contract error arm)
+        throw std::runtime_error("ed25519_verify: verification failed");
+        // GCOVR_EXCL_STOP
+    }
+    return verdict == 1;
+}
+
 }  // namespace
 
 void register_crypto_api(shd::table& shield) {
@@ -566,6 +703,14 @@ void register_crypto_api(shd::table& shield) {
     // raises on any forgery. Both key and nonce sizes are enforced (32 / 12).
     crypto.set_function("aead_aes256gcm_encrypt", &aead_encrypt_impl);
     crypto.set_function("aead_aes256gcm_decrypt", &aead_decrypt_impl);
+
+    // --- asymmetric signatures (crypto phase 2) ----------------------------
+    // Ed25519 (RFC 8032) one-shot primitives. RAW 32-byte keys in and out;
+    // signatures are 64 bytes. verify() answers false (never throws) for a
+    // malformed or forged signature.
+    crypto.set_function("ed25519_public_key", &ed25519_public_key_impl);
+    crypto.set_function("ed25519_sign", &ed25519_sign_impl);
+    crypto.set_function("ed25519_verify", &ed25519_verify_impl);
 
     // Length difference leaks only the length (inherent to any such check);
     // content comparison runs in constant time via OpenSSL CRYPTO_memcmp.
