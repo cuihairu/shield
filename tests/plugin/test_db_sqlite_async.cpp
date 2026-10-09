@@ -968,13 +968,16 @@ end
 
     // The late statement finishes; the queued rollback then runs on the
     // worker (its completion is rejected — the caller is gone) and every
-    // gauge drains.
+    // gauge drains. Same discipline as the poisons case: the drain is
+    // observed, never timed — the 30s cap is a hang guard, not a budget
+    // (Debug sqlite3 stretches the slow statement ~7x, and a loaded host
+    // stretches it further).
     BOOST_CHECK(wait_until(
         [&] {
             const auto* s = find_pool_stats("sqlite_async_short");
             return s && s->stats.pending_async == 0 && s->stats.holding == 0;
         },
-        std::chrono::milliseconds(10000)));
+        std::chrono::milliseconds(30000)));
 
     unref_parked(fx.manager, fx.runtime, fx.service_id, call);
 }
