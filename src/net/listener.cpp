@@ -212,9 +212,15 @@ void TcpListener::do_accept() {
         // error_code overload: a peer that vanished between SYN and accept
         // completion leaves the socket dead (bad descriptor on macOS's
         // reactive service), and the throwing overload would abort the io
-        // loop out of this handler.
+        // loop out of this handler. The failure arm is defensive: on Linux
+        // an accepted socket is already established before the completion
+        // handler runs, so no test can make remote_endpoint() report an
+        // error deterministically — the arm only fires in a race window on
+        // reactive platforms.
         boost::system::error_code remote_ec;
         const auto remote_ep = socket_.remote_endpoint(remote_ec);
+        // GCOVR_EXCL_START (defensive: dead-peer-at-accept race window, see
+        // the comment above — not drivable from a test)
         if (remote_ec) {
             auto& log = shield::log::get_logger("net");
             SHIELD_LOG_WARNING(
@@ -225,6 +231,7 @@ void TcpListener::do_accept() {
             do_accept();
             return;
         }
+        // GCOVR_EXCL_STOP
         std::string remote_ip = remote_ep.address().to_string();
 
         accepts_total_.fetch_add(1, std::memory_order_relaxed);
