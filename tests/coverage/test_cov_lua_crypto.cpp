@@ -798,4 +798,122 @@ BOOST_AUTO_TEST_CASE(HkdfSha256GuardArms) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// crypto phase 2: AES-256-GCM AEAD.
+// Known-answer vectors are NIST GCM test cases (AES-256, 96-bit IV) and the
+// canonical "TLS-style" AES-256-GCM example; both are cross-checked here as
+// ciphertext‖tag hex.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(AeadAes256GcmKnownVectors) {
+    CryptoState s;
+    // NIST GCM test case 13 (AES-256, K=0x00*32, IV=0x00*12, P empty,
+    // A empty): tag only.
+    BOOST_CHECK(
+        run_script(s.lua,
+                   "local k = string.rep('\\0', 32)\n"
+                   "local n = string.rep('\\0', 12)\n"
+                   "assert(shield.crypto.hex_encode("
+                   "shield.crypto.aead_aes256gcm_encrypt(k, n, '', '')) == "
+                   "'530f8afbc74536b9a963b4f1c4cb738b')"));
+    // NIST GCM test case 14 (AES-256, zero K/IV, P = 0x00*16, A empty).
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local k = string.rep('\\0', 32)\n"
+        "local n = string.rep('\\0', 12)\n"
+        "assert(shield.crypto.hex_encode("
+        "shield.crypto.aead_aes256gcm_encrypt(k, n, string.rep('\\0', 16), "
+        "'')) == "
+        "'cea7403d4d606b6e074ec5d3baf39d18d0d1c8a799996bf0265b98b5d48ab9"
+        "19')"));
+    // Canonical AES-256-GCM reference (non-zero key/IV, 60-byte P, 20-byte
+    // AAD). Output is ciphertext(60) || tag(16).
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local k = shield.crypto.hex_decode("
+        "'feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308')\n"
+        "local n = shield.crypto.hex_decode('cafebabefacedbaddecaf888')\n"
+        "local aad = shield.crypto.hex_decode('feedfacedeadbeeffeedfacedead"
+        "beefabaddad2')\n"
+        "local p = shield.crypto.hex_decode("
+        "'d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72"
+        "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39')\n"
+        "assert(shield.crypto.hex_encode(shield.crypto.aead_aes256gcm_encrypt("
+        "k, n, p, aad)) == "
+        "'522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa8c"
+        "b08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f66276fc6ece0f4"
+        "e1768cddf8853bb2d551b')"));
+    // Round trip incl. the AAD binding (decrypt with the same AAD).
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local k = shield.crypto.random_bytes(32)\n"
+        "local n = shield.crypto.random_bytes(12)\n"
+        "local p = 'attack at dawn'\n"
+        "local aad = 'header'\n"
+        "local c = shield.crypto.aead_aes256gcm_encrypt(k, n, p, aad)\n"
+        "assert(shield.crypto.aead_aes256gcm_decrypt(k, n, c, aad) == p)"));
+}
+
+BOOST_AUTO_TEST_CASE(AeadAes256GcmRejectsForgery) {
+    CryptoState s;
+    // Tampered tag, tampered ciphertext, wrong AAD, wrong nonce, wrong key
+    // must all raise — never return plaintext.
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local k = string.rep('\\7', 32)\n"
+        "local n = shield.crypto.random_bytes(12)\n"
+        "local c = shield.crypto.aead_aes256gcm_encrypt(k, n, 'secret', "
+        "'aad')\n"
+        "local function raises(f) local ok = pcall(f) return not ok end\n"
+        "assert(raises(function() "
+        "shield.crypto.aead_aes256gcm_decrypt(k, n, c:sub(1, -2) .. "
+        "string.char((c:byte(-1) + 1) % 256), 'aad') end))\n"
+        "local bad = c:sub(1, 1) ~= '\\0' and "
+        "('\\0' .. c:sub(2)) or ('\\1' .. c:sub(2))\n"
+        "assert(raises(function() "
+        "shield.crypto.aead_aes256gcm_decrypt(k, n, bad, 'aad') end))\n"
+        "assert(raises(function() "
+        "shield.crypto.aead_aes256gcm_decrypt(k, n, c, 'other') end))\n"
+        "assert(raises(function() "
+        "shield.crypto.aead_aes256gcm_decrypt(k, "
+        "shield.crypto.random_bytes(12), c, 'aad') end))\n"
+        "assert(raises(function() "
+        "shield.crypto.aead_aes256gcm_decrypt(string.rep('\\9', 32), n, c, "
+        "'aad') end))"));
+}
+
+BOOST_AUTO_TEST_CASE(AeadAes256GcmGuardArms) {
+    CryptoState s;
+    const char* arms[][2] = {
+        {"pcall(shield.crypto.aead_aes256gcm_encrypt, string.rep('k', 31), "
+         "string.rep('n', 12), 'p', '')",
+         "key must be 32 bytes"},
+        {"pcall(shield.crypto.aead_aes256gcm_encrypt, string.rep('k', 32), "
+         "string.rep('n', 11), 'p', '')",
+         "nonce must be 12 bytes"},
+        {"pcall(shield.crypto.aead_aes256gcm_decrypt, string.rep('k', 33), "
+         "string.rep('n', 12), string.rep('x', 16), '')",
+         "key must be 32 bytes"},
+        {"pcall(shield.crypto.aead_aes256gcm_decrypt, string.rep('k', 32), "
+         "string.rep('n', 13), string.rep('x', 16), '')",
+         "nonce must be 12 bytes"},
+        {"pcall(shield.crypto.aead_aes256gcm_decrypt, string.rep('k', 32), "
+         "string.rep('n', 12), string.rep('x', 15), '')",
+         "shorter than the 16-byte tag"},
+    };
+    for (const auto& arm : arms) {
+        std::string code = std::string("local ok, err = ") + arm[0] +
+                           "\nassert(not ok and err:find('" + arm[1] +
+                           "', 1, true), tostring(err))";
+        BOOST_CHECK_MESSAGE(run_script(s.lua, code), arm[1]);
+    }
+    // Empty AAD is valid and round-trips.
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local k = shield.crypto.random_bytes(32)\n"
+        "local n = shield.crypto.random_bytes(12)\n"
+        "assert(shield.crypto.aead_aes256gcm_decrypt(k, n, "
+        "shield.crypto.aead_aes256gcm_encrypt(k, n, 'x', ''), '') == 'x')"));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

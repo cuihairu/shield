@@ -656,7 +656,14 @@ off()
 | `shield.crypto.pbkdf2_hmac_sha256(password, salt, iterations, dklen)` | PBKDF2-HMAC-SHA256（RFC 8018），口令哈希用；返回 `dklen` 字节原始派生钥。`iterations` 必须 1–1000 万、`salt` 非空、`dklen` 1–1024，越界抛 error；空口令合法。存库时 salt + iterations 随派生钥一起落，校验用 `constant_time_compare` |
 | `shield.crypto.hkdf_sha256(ikm, salt, info, length)` | HKDF-SHA256（RFC 5869），协商密钥按用途展开用；返回 `length` 字节原始输出。`ikm` 非空、`length` 1–8160（255×32 上限）；`salt`/`info` 允许空串（空 salt 按 RFC 取 32 字节零序列） |
 
-**正确性锚点**：base64/base64url 用 RFC 4648 向量、SHA-256 用 RFC 6234 向量、HMAC-SHA256 用 RFC 4231 TC1–TC4、PBKDF2 用 canonical SHA-256 向量组（iterations 1/2/4096 + 多块 40 字节例）、HKDF 用 RFC 5869 TC1–TC3 锁定（`tests/coverage/test_cov_lua_crypto.cpp`）。
+**AEAD（二期）**：
+
+| API | 说明 |
+| --- | --- |
+| `shield.crypto.aead_aes256gcm_encrypt(key, nonce, plaintext, aad)` | AES-256-GCM（NIST SP 800-38D）认证加密；返回 combined `ciphertext‖tag`（16 字节 GCM tag 尾附）。`key` 必须 32 字节、`nonce` 12 字节（GCM 推荐长度），`aad` 允许空串；尺寸不符抛 error |
+| `shield.crypto.aead_aes256gcm_decrypt(key, nonce, combined, aad)` | 先验 tag（常数时间）再返回明文；key/nonce/tag/AAD 任一不符抛 error，**绝不返回未经认证的明文**；输入短于 16 字节 tag 抛 error |
+
+**正确性锚点**：base64/base64url 用 RFC 4648 向量、SHA-256 用 RFC 6234 向量、HMAC-SHA256 用 RFC 4231 TC1–TC4、PBKDF2 用 canonical SHA-256 向量组（iterations 1/2/4096 + 多块 40 字节例）、HKDF 用 RFC 5869 TC1–TC3、AES-256-GCM 用 NIST GCM 已知向量 + 认证失败拒绝矩阵锁定（`tests/coverage/test_cov_lua_crypto.cpp`）。
 
 ### jwt.lua —— 业务层认证参考实现
 

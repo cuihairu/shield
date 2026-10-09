@@ -226,6 +226,9 @@ std::string hkdf_sha256_impl(const std::string& ikm, const std::string& salt,
                                       : static_cast<int>(salt.size());
     std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> ctx(
         EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr), &EVP_PKEY_CTX_free);
+    // GCOVR_EXCL_BR_START (defensive: HKDF context setup chain — OpenSSL
+    // contract arms cannot fire on valid input; region marker because the
+    // condition spans multiple lines)
     if (ctx == nullptr || EVP_PKEY_derive_init(ctx.get()) <= 0 ||
         EVP_PKEY_CTX_set_hkdf_md(ctx.get(), EVP_sha256()) <= 0 ||
         EVP_PKEY_CTX_set1_hkdf_salt(ctx.get(), salt_ptr, salt_len) <= 0 ||
@@ -236,21 +239,185 @@ std::string hkdf_sha256_impl(const std::string& ikm, const std::string& salt,
          EVP_PKEY_CTX_add1_hkdf_info(
              ctx.get(), reinterpret_cast<const unsigned char*>(info.data()),
              static_cast<int>(info.size())) <= 0)) {
-        // GCOVR_EXCL_BR_LINE (defensive arm)
         // GCOVR_EXCL_START (defensive: HKDF context setup contract arm)
         throw std::runtime_error("hkdf_sha256: context setup failed");
         // GCOVR_EXCL_STOP
     }
+    // GCOVR_EXCL_BR_STOP
     std::string out(static_cast<size_t>(length), '\0');
     size_t outlen = out.size();
     const int ok = EVP_PKEY_derive(
         ctx.get(), reinterpret_cast<unsigned char*>(out.data()), &outlen);
-    if (ok <= 0 ||
-        outlen != out.size()) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+    // GCOVR_EXCL_BR_START (defensive: EVP_PKEY_derive contract arms — the
+    // condition spans two lines)
+    if (ok <= 0 || outlen != out.size()) {
         // GCOVR_EXCL_START (defensive: EVP_PKEY_derive API contract arm)
         throw std::runtime_error("hkdf_sha256: derive failed");
         // GCOVR_EXCL_STOP
     }
+    // GCOVR_EXCL_BR_STOP
+    return out;
+}
+
+// --- AEAD (crypto phase 2) ------------------------------------------------
+// AES-256-GCM (NIST SP 800-38D). One-shot EVP_CIPHER path, key and nonce
+// sizes pinned: 32-byte key, 12-byte nonce (the GCM-recommended size), and
+// a 16-byte tag appended to the ciphertext (the "combined" form callers
+// store and transmit). Decrypt authenticates the tag in constant time and
+// never returns unauthenticated plaintext — a mismatch is an error.
+
+constexpr size_t kGcmKeyBytes = 32;
+constexpr size_t kGcmNonceBytes = 12;
+constexpr size_t kGcmTagBytes = 16;
+
+void check_gcm_key_nonce(const std::string& key, const std::string& nonce,
+                         const char* fn) {
+    if (key.size() != kGcmKeyBytes) {
+        throw std::runtime_error(std::string(fn) +
+                                 ": key must be 32 bytes (AES-256)");
+    }
+    if (nonce.size() != kGcmNonceBytes) {
+        throw std::runtime_error(
+            std::string(fn) +
+            ": nonce must be 12 bytes (GCM-recommended size)");
+    }
+}
+
+std::string aead_encrypt_impl(const std::string& key, const std::string& nonce,
+                              const std::string& plaintext,
+                              const std::string& aad) {
+    check_gcm_key_nonce(key, nonce, "aead_aes256gcm_encrypt");
+    std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(
+        EVP_CIPHER_CTX_new(), &EVP_CIPHER_CTX_free);
+    if (ctx == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: cipher context allocation arm)
+        throw std::runtime_error(
+            "aead_aes256gcm_encrypt: context alloc failed");
+        // GCOVR_EXCL_STOP
+    }
+    std::string out(plaintext.size() + kGcmTagBytes, '\0');
+    int len = 0;
+    int total = 0;
+    // GCOVR_EXCL_BR_START (defensive: EVP encrypt setup chain — OpenSSL
+    // contract arms cannot fire on valid input; region marker because the
+    // condition spans multiple lines)
+    bool ok =
+        EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr,
+                           nullptr) == 1 &&
+        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN,
+                            static_cast<int>(nonce.size()), nullptr) == 1 &&
+        EVP_EncryptInit_ex(
+            ctx.get(), nullptr, nullptr,
+            reinterpret_cast<const unsigned char*>(key.data()),
+            reinterpret_cast<const unsigned char*>(nonce.data())) == 1;
+    // GCOVR_EXCL_BR_STOP
+    if (ok && !aad.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: ok arm)
+        ok = EVP_EncryptUpdate(
+                 ctx.get(), nullptr, &len,
+                 reinterpret_cast<const unsigned char*>(aad.data()),
+                 static_cast<int>(aad.size())) == 1;
+    }
+    if (ok && !plaintext.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: ok arm)
+        ok = EVP_EncryptUpdate(
+                 ctx.get(), reinterpret_cast<unsigned char*>(out.data()), &len,
+                 reinterpret_cast<const unsigned char*>(plaintext.data()),
+                 static_cast<int>(plaintext.size())) == 1;
+        total += len;  // ciphertext bytes written so far (= plaintext length)
+    }
+    if (ok) {  // GCOVR_EXCL_BR_LINE (defensive: ok arm)
+        // Final writes any residual (0 for GCM) after the ciphertext.
+        ok =
+            EVP_EncryptFinal_ex(
+                ctx.get(), reinterpret_cast<unsigned char*>(out.data()) + total,
+                &len) == 1;
+        total += len;
+    }
+    if (!ok) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: EVP encrypt contract arm)
+        throw std::runtime_error("aead_aes256gcm_encrypt: encrypt failed");
+        // GCOVR_EXCL_STOP
+    }
+    // GCOVR_EXCL_BR_START (defensive: EVP get-tag contract arm — condition
+    // spans multiple lines)
+    if (EVP_CIPHER_CTX_ctrl(
+            ctx.get(), EVP_CTRL_GCM_GET_TAG, static_cast<int>(kGcmTagBytes),
+            reinterpret_cast<unsigned char*>(out.data()) + total) != 1) {
+        // GCOVR_EXCL_START (defensive: EVP get-tag contract arm)
+        throw std::runtime_error("aead_aes256gcm_encrypt: get tag failed");
+        // GCOVR_EXCL_STOP
+    }
+    // GCOVR_EXCL_BR_STOP
+    out.resize(static_cast<size_t>(total) + kGcmTagBytes);
+    return out;
+}
+
+std::string aead_decrypt_impl(const std::string& key, const std::string& nonce,
+                              const std::string& combined,
+                              const std::string& aad) {
+    check_gcm_key_nonce(key, nonce, "aead_aes256gcm_decrypt");
+    if (combined.size() < kGcmTagBytes) {
+        throw std::runtime_error(
+            "aead_aes256gcm_decrypt: input shorter than the 16-byte tag");
+    }
+    const size_t ct_len = combined.size() - kGcmTagBytes;
+    std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> ctx(
+        EVP_CIPHER_CTX_new(), &EVP_CIPHER_CTX_free);
+    if (ctx == nullptr) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: cipher context allocation arm)
+        throw std::runtime_error(
+            "aead_aes256gcm_decrypt: context alloc failed");
+        // GCOVR_EXCL_STOP
+    }
+    std::string out(ct_len, '\0');
+    int len = 0;
+    int total = 0;
+    // GCOVR_EXCL_BR_START (defensive: EVP decrypt setup chain — OpenSSL
+    // contract arms cannot fire on valid input; region marker because the
+    // condition spans multiple lines)
+    const bool ok =
+        EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, nullptr,
+                           nullptr) == 1 &&
+        EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_GCM_SET_IVLEN,
+                            static_cast<int>(nonce.size()), nullptr) == 1 &&
+        EVP_DecryptInit_ex(
+            ctx.get(), nullptr, nullptr,
+            reinterpret_cast<const unsigned char*>(key.data()),
+            reinterpret_cast<const unsigned char*>(nonce.data())) == 1 &&
+        (aad.empty() ||
+         EVP_DecryptUpdate(ctx.get(), nullptr, &len,
+                           reinterpret_cast<const unsigned char*>(aad.data()),
+                           static_cast<int>(aad.size())) == 1) &&
+        (ct_len == 0 ||
+         EVP_DecryptUpdate(
+             ctx.get(), reinterpret_cast<unsigned char*>(out.data()), &len,
+             reinterpret_cast<const unsigned char*>(combined.data()),
+             static_cast<int>(ct_len)) == 1);
+    // GCOVR_EXCL_BR_STOP
+    if (!ok) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: EVP decrypt contract arm)
+        throw std::runtime_error("aead_aes256gcm_decrypt: decrypt failed");
+        // GCOVR_EXCL_STOP
+    }
+    total += len;
+    // Tag verification is the authentication gate: a forged tag fails here
+    // and no plaintext escapes.
+    // GCOVR_EXCL_BR_START (defensive: SET_TAG contract arm — condition spans
+    // multiple lines; the DecryptFinal comparison below stays measured)
+    if (EVP_CIPHER_CTX_ctrl(
+            ctx.get(), EVP_CTRL_GCM_SET_TAG, static_cast<int>(kGcmTagBytes),
+            const_cast<unsigned char*>(
+                reinterpret_cast<const unsigned char*>(combined.data()) +
+                ct_len)) != 1 ||
+        // GCOVR_EXCL_BR_STOP
+        EVP_DecryptFinal_ex(
+            ctx.get(), reinterpret_cast<unsigned char*>(out.data()) + total,
+            &len) != 1) {
+        throw std::runtime_error(
+            "aead_aes256gcm_decrypt: authentication failed (bad key, nonce, "
+            "tag, or aad)");
+    }
+    total += len;
+    out.resize(static_cast<size_t>(total));
     return out;
 }
 
@@ -392,6 +559,13 @@ void register_crypto_api(shd::table& shield) {
     // Direct function bindings, same rationale as hmac_sha256 above.
     crypto.set_function("pbkdf2_hmac_sha256", &pbkdf2_hmac_sha256_impl);
     crypto.set_function("hkdf_sha256", &hkdf_sha256_impl);
+
+    // --- AEAD (crypto phase 2) --------------------------------------------
+    // Authenticated encryption for data at rest and in transit. Encrypt
+    // returns ciphertext‖tag; decrypt authenticates before returning and
+    // raises on any forgery. Both key and nonce sizes are enforced (32 / 12).
+    crypto.set_function("aead_aes256gcm_encrypt", &aead_encrypt_impl);
+    crypto.set_function("aead_aes256gcm_decrypt", &aead_decrypt_impl);
 
     // Length difference leaks only the length (inherent to any such check);
     // content comparison runs in constant time via OpenSSL CRYPTO_memcmp.

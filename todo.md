@@ -1,26 +1,61 @@
 # TODO
 
-## shield.crypto 二期切片 1：密钥派生原语（2026-10-09 进行中）
+## shield.crypto 二期切片 1：密钥派生原语（2026-10-09 完成）
 
 roadmap「Later」清单项（`shield.crypto` 二期：KDF / 对称加密 / 非对称 / JWKS）
 的第一刀。一期模式照搬（OpenSSL one-shot + 防御臂标记纪律 + RFC 向量锁定）。
 
-- [ ] **PBKDF2-HMAC-SHA256**（`shield.crypto.pbkdf2_hmac_sha256`，RFC 8018
+- [x] **PBKDF2-HMAC-SHA256**（`shield.crypto.pbkdf2_hmac_sha256`，RFC 8018
       §5.2）：口令哈希原语；守卫面 iterations 1–1000 万 / salt 非空 /
       dklen 1–1024，空口令合法；canonical SHA-256 向量组（iterations
       1/2/4096 + 多块 40 字节例）+ 守卫臂 pcall 矩阵 + 空口令 C++ 交叉核验。
-- [ ] **HKDF-SHA256**（`shield.crypto.hkdf_sha256`，RFC 5869）：协商密钥
+- [x] **HKDF-SHA256**（`shield.crypto.hkdf_sha256`，RFC 5869）：协商密钥
       按用途展开原语；守卫面 ikm 非空 / length 1–8160（255×32 上限）；
       salt/info 允许空串（空 salt 取 32 字节零序列）；RFC 5869 TC1–TC3
       全量锁定（含 82 字节多块展开）+ 守卫臂矩阵。
-- [ ] 文档：`docs/lua-api.md` crypto 表新增「密钥派生（二期）」节 +
+- [x] 文档：`docs/lua-api.md` crypto 表新增「密钥派生（二期）」节 +
       正确性锚点行补 RFC 8018 / RFC 5869。
-- [ ] 门禁：test_cov_lua_crypto 全绿 + 五树 ctest + 覆盖率口径（新守卫臂
-      全可达不引入豁免）。
+- [x] 提交 36c7782（crypto 一期 19 用例 + 新 5 = test_cov_lua_crypto 24/24
+      单跑绿）。五树全量门禁受宿主机外部高负载干扰（load 峰值 87），
+      非本改动失败项见下。
 
-后续切片（另行提交）：AES-256-GCM AEAD（`aead_aes256gcm_encrypt/decrypt`，
-combined ciphertext‖tag 形态，nonce 钉死 12 字节）；非对称签名验签 / JWKS
-再后置。
+## 门禁遗留：test_db_sqlite_async 预存在回归（2026-10-09 发现）
+
+**非本批引入**：在纯 HEAD 树（git stash 移走 crypto 改动后重编）上
+`test_db_sqlite_async` 失败更重（5/15 用例崩，含 AsyncQueryRoundTrip /
+AsyncTimeoutPoisons / AsyncTransactionGaugesWhileParked /
+AsyncTransactionCallerTimeoutRollsBack），我的树上仅 1 个
+（AsyncTransactionCallerTimeoutRollsBack）。判定：B2 批次（58c7580 touch 了
+`plugins/sqlite/shield_db_sqlite.cpp`）引入的挂起/恢复挂点回归，映射
+[B2] 坑 29（门禁污染潜伏红）家族。CI 不覆盖（plugins 树），故未拦住。
+
+- [ ] 根因：`AsyncTransactionCallerTimeoutRollsBack` 回滚后
+      `pending_async`/`holding` 未在 10s 内归零——慢语句占住单 worker，
+      超时触发的 ROLLBACK 入队后要等慢语句跑完（`run_task` 单线程串行），
+      测试窗口可能不足或 resume 失败路径的 gauge 递减有缺漏。需读
+      `shield_db_async_shim.hpp` + `lua_resume_session` 失败路径定论。
+- [ ] 判定期望：CI 不覆盖 plugin 测试，需把 `test_db_sqlite_async` 纳入
+      某条 CI job（plugins-ci）或补最小复现，避免同类回归再次静默。
+
+## shield.crypto 二期切片 2：AES-256-GCM AEAD（2026-10-09 完成）
+
+- [x] `shield.crypto.aead_aes256gcm_encrypt(key, nonce, plaintext, aad)`：
+      返回 combined `ciphertext‖tag`（16 字节 GCM tag 尾附），nonce 钉死
+      12 字节；`aad` 可空串。key 必须 32 字节、nonce 12 字节，越界抛 error。
+- [x] `shield.crypto.aead_aes256gcm_decrypt(key, nonce, combined, aad)`：
+      校验 tag 常数时间、失败抛 error（不返回部分明文）。
+- [x] 测试：NIST GCM 已知向量（TC13 空明文 / TC14 / canonical 非零密钥
+      60 字节例）+ 往返（含 AAD 绑定与空 AAD）+ 篡改 tag/密文/AAD/nonce/
+      密钥拒绝矩阵 + 守卫臂 pcall（5 臂）。
+- [x] 文档：`docs/lua-api.md` crypto 表新增「AEAD（二期）」节，正确性
+      锚点行并入 AES-256-GCM。
+- [x] 覆盖率门禁：CI 37895555333 因 KDF 多行 `||` 链的防御臂未入
+      GCOVR_EXCL_BR_LINE 标记而 99.9% 红 —— 教训固化：**多行布尔链一律
+      用 GCOVR_EXCL_BR_START/STOP 区间**，行内标记只对单行 if 生效
+      （同 [[shield-branch-batch-reflow-pitfall]]）；本地 build-cov-ci
+      以 CI 同参（CRASHPAD=OFF）+ gcovr 8.6 复跑 100% branch。
+
+非对称签名验签 / JWKS 再后置。
 
 ## 认证业务语义出插件层：原语库 shield.crypto + Lua 层 jwt.lua（2026-09-28 完成）
 
