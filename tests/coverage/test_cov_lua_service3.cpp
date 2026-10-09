@@ -90,11 +90,17 @@ BOOST_AUTO_TEST_CASE(ProxiedCallPrimitives) {
         [&](uint64_t session, bool ok, const nlohmann::json& values) {
             hook_fired = true;
             hook_session = session;
-            hook_ok = ok;
+            // hook_code must be written BEFORE hook_ok: the test's wait_until
+            // observes hook_ok == false (acquire) and then reads hook_code;
+            // the release on hook_ok publish makes the prior write visible.
+            // (A data race here surfaced as "[timeout != timeout]" on the
+            // Windows CI leg — torn std::string read while the writer was
+            // mid-assignment.)
             if (values.is_array() && !values.empty() && values[0].is_object() &&
                 values[0].contains("code")) {
                 hook_code = values[0]["code"].get<std::string>();
             }
+            hook_ok = ok;
         });
 
     // Unknown sessions: finishing and abandoning are honest no-ops.
