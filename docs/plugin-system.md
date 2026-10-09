@@ -515,7 +515,7 @@ plugins:
 | `leaderboard.redis` | `shield.leaderboard.v1` | `SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS` | `shield.leaderboard.redis` | ZSET 排行榜，依赖 `redis.driver`。 |
 | `redis.driver` | `shield.redis.v1` | `SHIELD_BUILD_PLUGIN_REDIS_DRIVER` | `shield.redis` | 基础设施包：共享连接池 driver，供上层 Redis provider 依赖，也可直接 `shield.redis(binding)` 调用。 |
 | `health.http` | `shield.health.v1` | `SHIELD_BUILD_PLUGIN_HEALTH` | — | HTTP 健康端点（`/health`、`/ready`），内嵌 beast 监听。 |
-| `metrics.prometheus` | `shield.metrics.v1` | `SHIELD_BUILD_PLUGIN_METRIC` | — | Prometheus 文本端点；Lua 注册面规划中（无注册者时返回空 body）。 |
+| `metrics.prometheus` | `shield.metrics.v1` | `SHIELD_BUILD_PLUGIN_METRIC` | `shield.metrics` | Prometheus 文本端点；Lua 面 `shield.metrics(binding)` 提供 counter / gauge / histogram 记录。 |
 | `matchmaking.elo` | `shield.matchmaking.v1` | `SHIELD_BUILD_PLUGIN_MATCHMAKING` | — | ELO 匹配。 |
 | `protocol.protobuf` | `shield.protocol.codec.v1` | `SHIELD_BUILD_PLUGIN_PROTOBUF` | — | BodyCodec provider，见 [Protocol Codec Plugins](protocol-codec-plugins.md)。 |
 | `protocol.msgpack` | `shield.protocol.codec.v1` | `SHIELD_BUILD_PLUGIN_MSGPACK` | — | 同上。 |
@@ -806,7 +806,7 @@ int my_register_lua(shield_plugin_instance_v1* self,
 | `queue.redis` | `shield.queue.redis` | publish / subscribe / unsubscribe |
 | `leaderboard.redis` | `shield.leaderboard.redis` | set_entry / get_rank / top_n / remove_entry |
 | `redis.driver` | `shield.redis` | `shield.redis(binding)` 返回连接池代理：get / set / del / hget / hset / hgetall / zadd / zrange / command / pipeline |
-| `metrics.prometheus` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
+| `metrics.prometheus` | `shield.metrics` | `shield.metrics(binding)` 返回记录代理：counter / gauge / histogram |
 | `health.http` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 | `matchmaking.elo` | 暂无 | 当前仅提供 C ABI，Lua 绑定未实现 |
 

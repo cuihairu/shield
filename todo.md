@@ -1,5 +1,44 @@
 # TODO
 
+## metric Lua 面：shield.metrics 脚本侧注册接口（2026-10-10 完成）
+
+roadmap「Later」候选里缺口最实的一项（`docs/lua-api.md` 规划表挂了数月的
+「`register_lua` 未实现」）。redis.driver / cache.redis 的 register_lua 先例
+模式照搬：插件自建进程内实例 registry，`register_lua` 装 `shield.<ns>`
+可调用命名空间（metatable `__call` + `resolve_lua_binding`）。
+
+- [x] **插件面**（`plugins/metric_prometheus/shield_metric_prometheus.cpp`）：
+      实例 registry（mutex+map，create 注册 / shutdown 注销）；
+      `shield.metrics(binding)` 返回记录代理，方法 counter / gauge /
+      histogram 与 C vtable 三方法一一对应，`(name, value[, labels])`
+      labels 为字符串键值表；成功返回 `true`，labels 非法返回
+      `false, { code = "invalid_labels", ... }`；binding 解析失败 soft-fail
+      （`nil, { code = "module_unavailable", ... }`，facade 合同 rule 5）。
+      namespace 定名 `shield.metrics`（不带 prometheus 后缀：换 statsd
+      等 exporter 业务代码不改，redis.driver → `shield.redis` 同例）。
+      冒号/点号双调用形状等价（首参 `std::optional<shd::table> self`
+      槽：冒号调 self=proxy、点号调缺槽，后续参数自然对齐；sqlite 的
+      Lua wrapper `a == proxy` 分流是同目标的老办法）。
+- [x] **facade 合同测试**（`test_plugin_lua_facade.cpp` +2 case）：soft-failure
+      臂走共享脚本；resolving 臂真调方法（内存 registry 无需服务器）——
+      方法面 presence、双形状等价、invalid_labels 错误表、soft-fail 复查
+      全钉住。CMake facade foreach 加 METRIC 项，直链套件补链 Lua。
+- [x] **kickstart 升级为真实演示**：app.yaml 加 `metrics.default` binding；
+      game.lua 心跳记 `kickstart_heartbeats_total{note=...}` +
+      `kickstart_last_heartbeat_id`；README 换掉「空 body 属预期」声明
+      （上轮走查时它还是「示例无指标注册者」，本批后是真实示例输出）。
+- [x] **文档 4 处**：metrics-prometheus.md「Lua（规划中）」节转正（含
+      错误语义与 soft-fail 契约）；lua-api.md 规划表删 metrics 行 +
+      Leaderboard 后新增「Metrics — shield.metrics」示例节；plugin-system.md
+      插件矩阵与 namespace 表两行转正；manifest 加 `lua:` 块。
+
+验收：facade 套件 3/3 绿（sqlite 1 + metric 2）；metric 直链套件 4/4 绿；
+实机 kickstart 真进程 Lua 心跳 → curl :8087/metrics 看到
+`kickstart_heartbeats_total{note="alive"} 2` + gauge，SIGTERM 优雅退出。
+宽网 `ctest -L plugin` 唯一红 `test_db_sqlite_async` 为负载假红惯犯
+（本机 load 77-85 时 6 case 超时，与本批改动零交集，CI Coverage job
+同测全绿）；冷却窗口重跑收口由 CI 三平台全量门禁覆盖。
+
 ## 验收打磨：实机走查抓出端点插件两真 bug（2026-10-10 完成）
 
 todo/路线图清空后按「验收打磨」口径实机走查（默认配置 boot → client_demo

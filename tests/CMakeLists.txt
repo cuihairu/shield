@@ -380,9 +380,10 @@ if(SHIELD_BUILD_PLUGIN_METRIC)
         PRIVATE
             Boost::system
             Boost::unit_test_framework
-            Boost::headers)
+            Boost::headers
+            ${LUA_LIBRARIES})
     target_include_directories(test_plugin_metric_prometheus
-        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+        PRIVATE ${CMAKE_SOURCE_DIR}/include ${LUA_INCLUDE_DIR})
     add_test(NAME test_plugin_metric_prometheus
              COMMAND test_plugin_metric_prometheus)
     set_tests_properties(test_plugin_metric_prometheus PROPERTIES
@@ -565,7 +566,8 @@ if(SHIELD_BUILD_DB_PLUGIN_SQLITE
                   "CACHE_REDIS:SHIELD_BUILD_PLUGIN_CACHE_REDIS:shield_cache_redis"
                   "QUEUE_REDIS:SHIELD_BUILD_PLUGIN_QUEUE_REDIS:shield_queue_redis"
                   "LEADERBOARD_REDIS:SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS:shield_leaderboard_redis"
-                  "REDIS_DRIVER:SHIELD_BUILD_PLUGIN_REDIS_DRIVER:shield_redis_driver")
+                  "REDIS_DRIVER:SHIELD_BUILD_PLUGIN_REDIS_DRIVER:shield_redis_driver"
+                  "METRIC:SHIELD_BUILD_PLUGIN_METRIC:shield_metric_prometheus")
         string(REPLACE ":" ";" _facade_parts "${_facade}")
         list(GET _facade_parts 0 _facade_name)
         list(GET _facade_parts 1 _facade_switch)

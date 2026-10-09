@@ -20,14 +20,17 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "shield/lua/binding.hpp"
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
 #include "shield/plugin/metrics.h"
+#include "shield_lua_plugin_binding.hpp"
 
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
@@ -146,6 +149,8 @@ struct metric_instance {
     shield_plugin_instance_v1 shell;
     std::string instance_id;
     metrics_config cfg;
+    const shield_host_api_v1* host_api = nullptr;
+    shield_plugin_context_v1* ctx = nullptr;
 
     std::mutex mu;
     // counter / gauge: latest value per series.
@@ -268,6 +273,32 @@ void accept_loop(metric_instance* inst) {
 }
 
 // ---------------------------------------------------------------------------
+// Process-wide instance registry (for Lua proxy resolution)
+// ---------------------------------------------------------------------------
+std::mutex& instances_mu() {
+    static std::mutex m;
+    return m;
+}
+std::map<std::string, metric_instance*>& instances_map() {
+    static std::map<std::string, metric_instance*> m;
+    return m;
+}
+
+void register_instance(metric_instance* inst) {
+    std::lock_guard<std::mutex> lk(instances_mu());
+    instances_map()[inst->instance_id] = inst;
+}
+void unregister_instance(const std::string& id) {
+    std::lock_guard<std::mutex> lk(instances_mu());
+    instances_map().erase(id);
+}
+metric_instance* find_instance(const std::string& id) {
+    std::lock_guard<std::mutex> lk(instances_mu());
+    auto it = instances_map().find(id);
+    return it == instances_map().end() ? nullptr : it->second;
+}
+
+// ---------------------------------------------------------------------------
 // v1 metrics vtable
 // ---------------------------------------------------------------------------
 const shield_metrics_v1& metric_vtable() {
@@ -383,6 +414,133 @@ const shield_metrics_v1& metric_vtable() {
 }
 
 // ---------------------------------------------------------------------------
+// Lua surface: shield.metrics(binding) -> per-instance proxy
+// ---------------------------------------------------------------------------
+
+// Flatten a labels table {route="echo"} into parallel key/value arrays.
+bool lua_labels_to_arrays(const shd::table& labels,
+                          std::vector<std::string>& keys,
+                          std::vector<std::string>& vals) {
+    for (const auto& kv : labels) {
+        if (!kv.first.is<std::string>() || !kv.second.is<std::string>()) {
+            return false;
+        }
+        keys.push_back(kv.first.as<std::string>());
+        vals.push_back(kv.second.as<std::string>());
+    }
+    return true;
+}
+
+// Build the per-instance Lua proxy: the three typed record methods
+// (counter / gauge / histogram), each (name, value[, labels]) with labels
+// as a string-keyed table. The leading optional self slot makes colon and
+// dot call shapes equivalent (proxy:counter("x", 1) == proxy.counter("x", 1),
+// same documented contract as the db facades). Argument-shape violations
+// raise a Lua error (the shared binding-layer discipline); a failing vtable
+// record returns false + error table.
+shd::table make_instance_proxy(shd::state_view lua, metric_instance* inst) {
+    auto proxy = lua.create_table();
+    const shield_metrics_v1& v = metric_vtable();
+    auto* session = reinterpret_cast<struct shield_metrics_session*>(inst);
+
+    // Shared body for the (name, value[, labels]) typed record methods.
+    auto make_record_fn = [&](int (*fn)(struct shield_metrics_session*,
+                                        const char*, double, const char* const*,
+                                        const char* const*, int)) {
+        return [session, fn](
+                   shd::this_state s, std::optional<shd::table> self,
+                   std::string name, double value,
+                   std::optional<shd::table> labels) -> shd::variadic_results {
+            (void)self;  // colon-call receiver; ignored
+            shd::state_view lua(s);
+            shd::variadic_results results;
+            std::vector<std::string> keys, vals;
+            if (labels.has_value() &&
+                !lua_labels_to_arrays(*labels, keys, vals)) {
+                results.push_back(shd::make_object(lua, false));
+                shd::table err = lua.create_table();
+                err["code"] = "invalid_labels";
+                err["message"] = "labels must be a string-keyed table";
+                results.push_back(shd::make_object(lua, err));
+                return results;
+            }
+            std::vector<const char*> kc, vc;
+            for (size_t i = 0; i < keys.size(); ++i) {
+                kc.push_back(keys[i].c_str());
+                vc.push_back(vals[i].c_str());
+            }
+            int rc = fn(
+                session, name.c_str(), value, kc.empty() ? nullptr : kc.data(),
+                vc.empty() ? nullptr : vc.data(), static_cast<int>(kc.size()));
+            results.push_back(shd::make_object(lua, rc == 0));
+            return results;
+        };
+    };
+
+    proxy.set_function("counter", make_record_fn(v.counter_inc));
+    proxy.set_function("gauge", make_record_fn(v.gauge_set));
+    proxy.set_function("histogram", make_record_fn(v.histogram_observe));
+    return proxy;
+}
+
+// register_lua: install the callable namespace shield.metrics.
+int register_lua_impl(shield_plugin_instance_v1* self, struct lua_State* L,
+                      shield_error_v1* err) {
+    if (!L) {
+        if (err) {
+            err->code = "plugin.lua_register.failed";
+            err->message = "metrics.prometheus: lua_State is null";
+        }
+        return 1;
+    }
+    auto* current = reinterpret_cast<metric_instance*>(self);
+    if (!current || !current->host_api ||
+        !current->host_api->binding_instance_id) {
+        if (err) {
+            err->code = "plugin.lua_register.failed";
+            err->message = "metrics.prometheus: host binding resolver is null";
+        }
+        return 1;
+    }
+    shd::state_view lua(L);
+
+    // Build the callable namespace shield.metrics.
+    shd::table shield =
+        shield::plugins::get_or_create_global_subtable(lua, "shield");
+
+    shd::object existing = shield["metrics"];
+    if (!existing.is<shd::table>()) {
+        auto ns = lua.create_table();
+        auto mt = lua.create_table();
+        const shield_host_api_v1* host_api = current->host_api;
+        shield_plugin_context_v1* ctx = current->ctx;
+        mt.set_function(
+            "__call",
+            [host_api, ctx](
+                shd::this_state s, shd::table /*self*/,
+                std::optional<std::string> binding) -> shd::variadic_results {
+                shd::state_view lua(s);
+                shd::variadic_results results;
+                std::string logical = binding.value_or("");
+                auto* inst = shield::plugins::resolve_lua_binding(
+                    host_api, ctx, logical, find_instance);
+                if (!inst) {
+                    shield::plugins::push_module_unavailable(results, lua,
+                                                             logical);
+                    return results;
+                }
+                results.push_back(
+                    shd::make_object(lua, make_instance_proxy(lua, inst)));
+                return results;
+            });
+        shield::plugins::set_metatable(ns, mt);
+        shield["metrics"] = ns;
+    }
+
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // v1 ABI entry
 // ---------------------------------------------------------------------------
 int metric_create(const struct shield_plugin_create_args_v1* args,
@@ -399,6 +557,9 @@ int metric_create(const struct shield_plugin_create_args_v1* args,
     }
     inst->instance_id = args->instance_id ? args->instance_id : "";
     inst->cfg = parse_config(args->config_json);
+    inst->host_api = args->host_api;
+    inst->ctx = args->ctx;
+    register_instance(inst);
 
     inst->shell.struct_size = sizeof(shield_plugin_instance_v1);
     inst->shell.instance_id = inst->instance_id.c_str();
@@ -433,12 +594,13 @@ int metric_create(const struct shield_plugin_create_args_v1* args,
         }
         return 0;
     };
-    // No Lua surface yet — empty register_lua satisfies the v1 ABI.
-    inst->shell.register_lua = [](shield_plugin_instance_v1*, struct lua_State*,
-                                  shield_error_v1*) { return 0; };
+    // Lua autonomy: register_lua installs the callable namespace
+    // shield.metrics(binding) with the typed record methods.
+    inst->shell.register_lua = &register_lua_impl;
     inst->shell.shutdown = [](struct shield_plugin_instance_v1* self) {
         auto* inst = reinterpret_cast<metric_instance*>(self);
         if (!inst) return;
+        unregister_instance(inst->instance_id);
         inst->running.store(false);
         boost::system::error_code ec;
         if (inst->acceptor) inst->acceptor->close(ec);

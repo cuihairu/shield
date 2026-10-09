@@ -897,6 +897,23 @@ local ok, rank = lb:get_rank("arena_1v1", "alice")
 local ok, top = lb:top_n("arena_1v1", 10)
 ```
 
+### Metrics — `shield.metrics`
+
+```lua
+local m = shield.metrics("metrics.default")
+
+-- (name, value[, labels])，labels 是字符串键值表；记录落在插件实例的
+-- 内存 registry，下一次 /metrics scrape 可见（exporter 细节见
+-- docs/plugins/metrics-prometheus.md）
+m:counter("kickstart_heartbeats_total", 1, { note = "alive" })
+m:gauge("kickstart_active_players", 42)
+m:histogram("kickstart_request_duration_ms", 12.5)
+```
+
+方法面与 `shield.metrics.v1` C vtable 一一对应（`counter` / `gauge` /
+`histogram`）。冒号与点号两种调用形状等价；成功返回 `true`，labels
+含非字符串键/值返回 `false, { code = "invalid_labels", ... }`。
+
 ### 其他插件
 
 当前已稳定接入 Lua 的插件 namespace，应以各插件文档和实际 `register_lua` 实现为准。
@@ -905,7 +922,6 @@ local ok, top = lb:top_n("arena_1v1", 10)
 
 | Namespace | 说明 | 当前状态 |
 | --- | --- | --- |
-| `shield.metrics.prometheus` | counter / gauge / histogram | 规划中，当前 `register_lua` 未实现 |
 | `shield.health.http` | 注册健康检查、查询状态 | 规划中，当前 `register_lua` 未实现 |
 | `shield.matchmaking.elo` | 匹配队列、ELO 评分 | 规划中，当前 `register_lua` 未实现 |
 

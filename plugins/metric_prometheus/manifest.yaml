@@ -19,6 +19,9 @@ provides:
       - gauge
       - histogram
 requires: []
+lua:
+  namespace: metrics
+  search_paths: []
 config_schema:
   type: object
   properties:

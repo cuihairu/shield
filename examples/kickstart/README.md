@@ -31,9 +31,10 @@ curl -s http://127.0.0.1:8086/health
 curl -s http://127.0.0.1:8086/ready
 
 # Prometheus 指标（metrics.prometheus）
-curl -s http://127.0.0.1:8087/metrics | head
-# 空 body 属预期：本示例没有指标注册者（shield.metrics.v1 的 Lua 面
-# 规划中，见 docs/plugin-system.md 插件矩阵）；端点本身已验证可达。
+curl -s http://127.0.0.1:8087/metrics
+# game.lua 每次心跳经 shield.metrics 记业务指标（Lua 面见 docs/lua-api.md）：
+#   kickstart_heartbeats_total{note="alive"} 3
+#   kickstart_last_heartbeat_id 3
 
 # 数据落库验证：Ctrl-C 停掉进程后看文件
 ls -la kickstart.db   # SQLite 文件在运行目录（plugins.directory 同级的 CWD）

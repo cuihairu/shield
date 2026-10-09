@@ -116,6 +116,13 @@ const char* resolving_binding(shield_plugin_context_v1*, const char* binding) {
     return nullptr;
 }
 
+// Same shape for the metrics.prometheus case.
+const char* resolving_metric_binding(shield_plugin_context_v1*,
+                                     const char* binding) {
+    if (binding && std::string(binding) == "metrics-main") return "facade_test";
+    return nullptr;
+}
+
 const char* kResolvingScript = R"(
     local proxy, err = NS("redis-main")
     assert(proxy ~= nil, "expected proxy, got error: " .. tostring(err))
@@ -135,6 +142,42 @@ const char* kResolvingScript = R"(
     assert(p2 == nil, "unresolvable binding must fail soft")
     assert(err2.code == "module_unavailable", "wrong code: " ..
            tostring(err2 and err2.code))
+)";
+
+// The metrics.prometheus resolving arm: recording lands in the plugin's
+// in-memory registry, so the typed methods run for real — no server and no
+// port needed. Pins the colon/dot call-shape equivalence and the
+// invalid-labels error table alongside the soft-failure arm.
+const char* kMetricResolvingScript = R"(
+    local proxy, err = NS("metrics-main")
+    assert(proxy ~= nil, "expected proxy, got error: " .. tostring(err))
+    assert(type(proxy) == "table", "proxy is " .. type(proxy))
+
+    -- The documented proxy surface: the three typed record methods.
+    local methods = { "counter", "gauge", "histogram" }
+    for _, m in ipairs(methods) do
+        assert(type(proxy[m]) == "function",
+               "proxy." .. m .. " is " .. type(proxy[m]))
+    end
+
+    -- Recording works through both call shapes.
+    assert(proxy:counter("lua_test_total", 1) == true)
+    assert(proxy.counter("lua_test_total", 2) == true)
+    assert(proxy:gauge("lua_test_depth", 9) == true)
+    assert(proxy:histogram("lua_test_ms", 1.5) == true)
+    assert(proxy:counter("lua_labeled_total", 1, { route = "echo" }) == true)
+
+    -- Non-string label keys/values are rejected with false + error table.
+    local ok, lerr = proxy:counter("lua_bad_total", 1, { 42 })
+    assert(ok == false, "non-string label must fail, not error")
+    assert(type(lerr) == "table", "expected error table")
+    assert(lerr.code == "invalid_labels", "wrong code: " ..
+           tostring(lerr and lerr.code))
+
+    -- The same namespace still fails soft for an unresolvable binding.
+    local p2, err2 = NS("ghost.binding")
+    assert(p2 == nil, "unresolvable binding must fail soft")
+    assert(err2.code == "module_unavailable")
 )";
 
 }  // namespace
@@ -200,5 +243,20 @@ BOOST_AUTO_TEST_CASE(RedisDriverFacadeSoftFailure) {
 BOOST_AUTO_TEST_CASE(RedisDriverFacadeResolvesBinding) {
     facade_run(SHIELD_FACADE_REDIS_DRIVER_LIBRARY, "shield.redis",
                kResolvingScript, &resolving_binding);
+}
+#endif
+
+#ifdef SHIELD_FACADE_METRIC_LIBRARY
+BOOST_AUTO_TEST_CASE(MetricPrometheusFacadeSoftFailure) {
+    facade_soft_failure(SHIELD_FACADE_METRIC_LIBRARY, "shield.metrics",
+                        kSoftFailureScript);
+}
+
+// The resolving arm runs the typed record methods for real (in-memory
+// registry): colon/dot shape equivalence and the invalid-labels error
+// table are pinned here, not just method presence.
+BOOST_AUTO_TEST_CASE(MetricPrometheusFacadeResolvesBinding) {
+    facade_run(SHIELD_FACADE_METRIC_LIBRARY, "shield.metrics",
+               kMetricResolvingScript, &resolving_metric_binding);
 }
 #endif

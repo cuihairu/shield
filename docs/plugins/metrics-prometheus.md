@@ -223,17 +223,22 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-### Lua（规划中）
+### Lua
 
-`metrics.prometheus` 当前 `register_lua` 是空实现。计划中的 namespace 约定：
+`register_lua` 安装 `shield.metrics(binding)` 可调用命名空间（namespace 名不带后端名：换 statsd 等其他 exporter 不需要改业务代码）。三个 typed 记录方法与 C vtable 一一对应：
 
 ```lua
--- 未来将注册到 shield.metrics.prometheus
-local m = shield.metrics.prometheus("metrics.main")
-m:inc("shield_http_requests_total", 1, { method = "GET", status = "200" })
-m:set("shield_active_players", 42)
-m:observe("shield_request_duration_seconds", 0.123, { handler = "login" })
+local m = shield.metrics("metrics.default")
+
+m:counter("shield_http_requests_total", 1, { method = "GET", status = "200" })
+m:gauge("shield_active_players", 42)
+m:histogram("shield_request_duration_seconds", 0.123, { handler = "login" })
 ```
+
+- `(name, value[, labels])`，labels 是字符串键值表（可选）。冒号与点号两种调用形状等价。
+- 成功返回 `true`；labels 含非字符串键/值返回 `false, { code = "invalid_labels", ... }`；参数形状错误（缺参、value 非数字）抛 Lua 错误（与其他插件面一致）。
+- binding 解析失败 soft-fail：`local m, err = shield.metrics("ghost")` 返回 `nil, { code = "module_unavailable", ... }`。
+- 记录落在插件实例的内存 registry，下一次 `/metrics` scrape 即可见（kickstart 示例的 `game.lua` 是权威用法）。
 
 ## 平台特性
 

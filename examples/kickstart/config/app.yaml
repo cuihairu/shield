@@ -49,3 +49,4 @@ plugins:
 
   bindings:
     database.default: "db.main"
+    metrics.default: "metrics.main"

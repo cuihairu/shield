@@ -10,9 +10,14 @@ set_target_properties(shield_metric_prometheus_obj PROPERTIES
 target_include_directories(shield_metric_prometheus_obj
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/plugins/_shared
         ${Boost_INCLUDE_DIRS}
+        ${LUA_INCLUDE_DIR}
 )
-target_link_libraries(shield_metric_prometheus_obj PRIVATE Boost::system)
+target_link_libraries(shield_metric_prometheus_obj
+    PRIVATE
+        Boost::system
+        ${LUA_LIBRARIES})
 
 add_library(shield_metric_prometheus MODULE
     $<TARGET_OBJECTS:shield_metric_prometheus_obj>
@@ -21,9 +26,13 @@ add_library(shield_metric_prometheus MODULE
 target_include_directories(shield_metric_prometheus
     PRIVATE
         ${Boost_INCLUDE_DIRS}
+        ${LUA_INCLUDE_DIR}
 )
 
-target_link_libraries(shield_metric_prometheus PRIVATE Boost::system)
+target_link_libraries(shield_metric_prometheus
+    PRIVATE
+        Boost::system
+        ${LUA_LIBRARIES})
 
 set_target_properties(shield_metric_prometheus PROPERTIES
     PREFIX ""
