@@ -209,7 +209,22 @@ void TcpListener::do_accept() {
             return;
         }
 
-        auto remote_ep = socket_.remote_endpoint();
+        // error_code overload: a peer that vanished between SYN and accept
+        // completion leaves the socket dead (bad descriptor on macOS's
+        // reactive service), and the throwing overload would abort the io
+        // loop out of this handler.
+        boost::system::error_code remote_ec;
+        const auto remote_ep = socket_.remote_endpoint(remote_ec);
+        if (remote_ec) {
+            auto& log = shield::log::get_logger("net");
+            SHIELD_LOG_WARNING(
+                log, std::string("Accepted connection already dead: ") +
+                         remote_ec.message());
+            boost::system::error_code close_ec;
+            socket_.close(close_ec);
+            do_accept();
+            return;
+        }
         std::string remote_ip = remote_ep.address().to_string();
 
         accepts_total_.fetch_add(1, std::memory_order_relaxed);
