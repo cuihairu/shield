@@ -154,7 +154,8 @@
   `shield.stream` / `shield.tls`）。
 - `shield.crypto` 一期切片已落地（2026-09-28，AD-08：编解码 / SHA-256 /
   HMAC-SHA256 / `random_bytes` / `constant_time_compare`），作为业务层自建认证的原语基础；
-  二期（KDF / 对称加密 / 非对称 / JWKS）仍在 Later。
+  二期四刀（KDF → 对称加密 → 非对称 → JWKS）已全部落地（2026-10-09）：
+  PBKDF2/HKDF、AES-256-GCM、Ed25519、JWT EdDSA + JWKS（`scripts/lib/jwt.lua`）。
 
 说明：
 
