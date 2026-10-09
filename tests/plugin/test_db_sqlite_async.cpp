@@ -43,15 +43,17 @@ namespace {
 
 const std::string kTmpDir = "/tmp/shield_db_sqlite_async";
 
-// A recursive-CTE aggregate that keeps one sqlite worker busy for well over
-// a tenth of a second but under a second locally in release (~650ms for 2M
-// rows; the CTE is superlinear — 4M rows already takes ~5.6s), longer than
-// the short instance's 150ms caller timeout. Cases that must observe the
-// post-statement state wait on the pool gauges (pending_async / holding),
-// never on a fixed sleep: a Debug sqlite3 runs this CTE several times
-// slower, so wall-clock budgets would race the single worker ("timeout is
-// not cancellation" means a timed-out caller's SQL keeps the worker busy to
-// the end, and queued tasks wait for it).
+// A recursive-CTE aggregate that keeps one sqlite worker busy well beyond
+// the tightest caller budget: ~200ms for 2M rows on CI release runners,
+// ~0.9s locally in release, several times that under Debug (the CTE is
+// superlinear — 4M rows already takes ~5.6s, so grow rows only with
+// measurements in hand). The timeout-premise cases bind to db.poison
+// (30ms budget) so "statement outlasts the budget" holds by construction;
+// cases that must observe the post-statement state wait on the pool gauges
+// (pending_async / holding), never on a fixed sleep: wall-clock budgets
+// would race the single worker ("timeout is not cancellation" means a
+// timed-out caller's SQL keeps the worker busy to the end, and queued
+// tasks wait for it).
 const char* kSlowSql =
     "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c "
     "WHERE x < 2000000) SELECT sum(x) AS total FROM c";
@@ -89,6 +91,10 @@ BOOST_GLOBAL_FIXTURE(CafInitFixture);
 // instances off the same package:
 //   db.long   — 30s caller budget (queries finish before any timeout)
 //   db.short  — 150ms caller budget (slow queries must time out)
+//   db.poison — 30ms caller budget: the timeout-premise cases bind here so
+//               "statement outlasts the budget" holds by construction
+//               (measured ~200ms for the slow CTE on CI release runners)
+//               instead of riding on a 1.3x margin over db.short
 //   db.shapes — file-backed (the shapes case needs cross-connection state)
 //   db.off    — async disabled (sync fallback)
 // ---------------------------------------------------------------------------
@@ -128,6 +134,8 @@ const shield_host_api_v1* ensure_sqlite_host() {
                  {{"database", ":memory:"}, {"call_timeout_ms", 30000}});
     add_instance("sqlite_async_short",
                  {{"database", ":memory:"}, {"call_timeout_ms", 150}});
+    add_instance("sqlite_async_poison",
+                 {{"database", ":memory:"}, {"call_timeout_ms", 30}});
     // The shapes scenario crosses per-call connections, so it needs a real
     // file (a :memory: database would forget the table between calls).
     // The timestamp suffix keeps reruns from tripping over a stale table.
@@ -149,6 +157,7 @@ const shield_host_api_v1* ensure_sqlite_host() {
     };
     add_binding("db.long", "sqlite_async_long");
     add_binding("db.short", "sqlite_async_short");
+    add_binding("db.poison", "sqlite_async_poison");
     add_binding("db.shapes", "sqlite_async_shapes");
     add_binding("db.off", "sqlite_async_off");
 
@@ -599,7 +608,7 @@ BOOST_AUTO_TEST_CASE(AsyncTimeoutPoisonsAndInstanceKeepsWorking) {
     ServiceFixture fx("sqlite_async_timeout");
 
     ParkedCall call;
-    park_query(fx.manager, fx.runtime, fx.service_id, "db.short", kSlowSql,
+    park_query(fx.manager, fx.runtime, fx.service_id, "db.poison", kSlowSql,
                call);
     BOOST_CHECK(wait_until([&] { return call.parked || call.failed; },
                            std::chrono::milliseconds(5000)));
@@ -621,7 +630,7 @@ BOOST_AUTO_TEST_CASE(AsyncTimeoutPoisonsAndInstanceKeepsWorking) {
     // the worker is still clogged.
     BOOST_CHECK(wait_until(
         [&] {
-            const auto* s = find_pool_stats("sqlite_async_short");
+            const auto* s = find_pool_stats("sqlite_async_poison");
             return s && s->status == shield::plugin::PoolStatsStatus::ok &&
                    s->stats.pending_async == 0;
         },
@@ -636,7 +645,7 @@ BOOST_AUTO_TEST_CASE(AsyncTimeoutPoisonsAndInstanceKeepsWorking) {
     // Poisoned-connection handling never wedges the instance: a fast query
     // right after still round-trips.
     ParkedCall after;
-    park_query(fx.manager, fx.runtime, fx.service_id, "db.short",
+    park_query(fx.manager, fx.runtime, fx.service_id, "db.poison",
                "SELECT 41 AS v", after);
     BOOST_CHECK(wait_until([&] { return after.parked || after.failed; },
                            std::chrono::milliseconds(5000)));
@@ -860,7 +869,8 @@ end
     BOOST_REQUIRE(call.parked.load());
 
     // After BEGIN completes the tx holds its handle for the slow statement's
-    // full ~650ms — a wide, pollable window.
+    // full runtime (~200ms on CI release runners, ~0.9s locally) — a wide,
+    // pollable window.
     const bool gauges_seen = wait_until(
         [&] {
             const auto* s = find_pool_stats("sqlite_async_long");
@@ -907,10 +917,12 @@ end
 // ---------------------------------------------------------------------------
 // M4 caller timeout inside a tx body: the 150ms budget expires mid-statement;
 // the body sees the timeout error, returns false, and the shim queues the
-// rollback behind the still-running statement on the single worker. The
-// rollback call itself exceeds its budget too, so the tx surfaces the timeout
-// error — and once the statement finishes, the queued rollback runs anyway
-// and both gauges drain to 0 (the rejected-resume cleanup leaves no leak).
+// rollback behind the still-running statement on the single worker. Whether
+// the rollback also misses its own budget depends on the host speed, so the
+// tx surfaces either 'timeout' (slow host) or 'transaction_rolled_back'
+// (fast host, rollback ran in time) — both correct; the case pins the
+// disjunction plus the rollback effect, not the machine lottery. Either way
+// the rollback executes and both gauges drain to 0 (no leak).
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(AsyncTransactionCallerTimeoutRollsBack) {
     if (!ensure_sqlite_host()) {
@@ -953,22 +965,27 @@ end
         },
         std::chrono::milliseconds(2000)));
 
-    // Timeout mid-body -> rollback attempt -> that too times out (the slow
-    // statement still owns the worker), so the tx surfaces the timeout.
-    const bool got_timeout = wait_until_lua(
-        fx.manager, fx.runtime, fx.service_id, "_G.__tx_to == 'fail:timeout'",
-        std::chrono::milliseconds(5000));
-    if (!got_timeout) {
-        std::string probe;
-        lua_str(fx.manager, fx.runtime, fx.service_id, "tostring(_G.__tx_to)",
-                &probe);
-        BOOST_TEST_MESSAGE("tx timeout probe: [" << probe << "]");
-    }
-    BOOST_REQUIRE(got_timeout);
+    // Timeout mid-body -> the shim queues a rollback behind the
+    // still-running statement. WHICH error the tx surfaces legitimately
+    // depends on the host speed: if the statement outlasts the rollback's
+    // own budget by a wide margin, the rollback times out too and the tx
+    // surfaces 'timeout'; on a fast host the statement can finish close to
+    // the caller budget, the rollback then runs in time and the shim
+    // surfaces 'transaction_rolled_back' ("callback returned false"). Both
+    // are correct shim outcomes, so pin the disjunction, not the machine
+    // lottery.
+    BOOST_CHECK(wait_until_lua(fx.manager, fx.runtime, fx.service_id,
+                               "_G.__tx_to ~= nil",
+                               std::chrono::milliseconds(30000)));
+    std::string probe;
+    lua_str(fx.manager, fx.runtime, fx.service_id, "tostring(_G.__tx_to)",
+            &probe);
+    BOOST_REQUIRE_MESSAGE(
+        probe == "fail:timeout" || probe == "fail:transaction_rolled_back",
+        "tx terminal value: " << probe);
 
-    // The late statement finishes; the queued rollback then runs on the
-    // worker (its completion is rejected — the caller is gone) and every
-    // gauge drains. Same discipline as the poisons case: the drain is
+    // The statement (and the queued rollback, whichever branch won) settle;
+    // every gauge drains. Same discipline as the poisons case: the drain is
     // observed, never timed — the 30s cap is a hang guard, not a budget
     // (Debug sqlite3 stretches the slow statement ~7x, and a loaded host
     // stretches it further).
@@ -978,6 +995,29 @@ end
             return s && s->stats.pending_async == 0 && s->stats.holding == 0;
         },
         std::chrono::milliseconds(30000)));
+
+    // Rollback proof, timing-independent: in both branches the rollback
+    // executed at the connection level (inline on the fast host, queued on
+    // the worker and completed before the drain on the slow host), so the
+    // tx's CREATE TABLE was undone — the table must not exist.
+    ParkedCall verify;
+    park_body(fx.manager, fx.runtime, fx.service_id, "db.short",
+              "local db = ...\n"
+              "local qok, qres = "
+              "db:query_one('SELECT COUNT(*) AS n FROM to_t')\n"
+              "_G.__to_t = qok and 'present' or 'absent'\n",
+              "", verify);
+    BOOST_CHECK(wait_until([&] { return verify.parked || verify.failed; },
+                           std::chrono::milliseconds(5000)));
+    BOOST_CHECK(wait_until_lua(fx.manager, fx.runtime, fx.service_id,
+                               "_G.__to_t ~= nil",
+                               std::chrono::milliseconds(30000)));
+    std::string table_probe;
+    lua_str(fx.manager, fx.runtime, fx.service_id, "tostring(_G.__to_t)",
+            &table_probe);
+    BOOST_REQUIRE_MESSAGE(table_probe == "absent",
+                          "rollback proof: " << table_probe);
+    unref_parked(fx.manager, fx.runtime, fx.service_id, verify);
 
     unref_parked(fx.manager, fx.runtime, fx.service_id, call);
 }
@@ -997,20 +1037,20 @@ BOOST_AUTO_TEST_CASE(ShutdownDrainsInFlightWorker) {
     ServiceFixture fx("sqlite_async_shutdown");
 
     ParkedCall call;
-    park_query(fx.manager, fx.runtime, fx.service_id, "db.short", kSlowSql,
+    park_query(fx.manager, fx.runtime, fx.service_id, "db.poison", kSlowSql,
                call);
     BOOST_CHECK(wait_until([&] { return call.parked || call.failed; },
                            std::chrono::milliseconds(5000)));
     BOOST_TEST_MESSAGE("park error: " << g_park_error);
     BOOST_REQUIRE(call.parked.load());
 
-    // Caller budget (150ms) expires while the SQL keeps running.
+    // Caller budget (30ms) expires while the SQL keeps running.
     BOOST_REQUIRE(wait_until_lua(fx.manager, fx.runtime, fx.service_id,
                                  "type(_G.__db_out) == 'table' and "
                                  "_G.__db_out.ok == false and "
                                  "_G.__db_out.code == 'timeout'"));
 
-    // Shutdown joins the worker mid-query (~650ms) and stops the instance.
+    // Shutdown joins the worker mid-query and stops the instance.
     const auto t0 = std::chrono::steady_clock::now();
     shield::plugin::global_host().shutdown();
     const auto drain_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
