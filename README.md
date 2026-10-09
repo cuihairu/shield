@@ -1,6 +1,6 @@
 # Shield
 
-English | [简体中文](README.zh-CN.md)
+English | [简体中文](README.zh.md)
 
 [![CI](https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/shield/actions/workflows/ci.yml)
 [![C++23](https://img.shields.io/badge/C++-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
