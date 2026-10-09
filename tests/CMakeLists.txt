@@ -372,6 +372,27 @@ if(SHIELD_BUILD_PLUGIN_HEALTH)
         RESOURCE_LOCK fixed_ports)
 endif()
 
+if(SHIELD_BUILD_PLUGIN_METRIC)
+    add_executable(test_plugin_metric_prometheus
+        plugin/test_plugin_metric_prometheus.cpp
+        $<TARGET_OBJECTS:shield_metric_prometheus_obj>)
+    target_link_libraries(test_plugin_metric_prometheus
+        PRIVATE
+            Boost::system
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_plugin_metric_prometheus
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_plugin_metric_prometheus
+             COMMAND test_plugin_metric_prometheus)
+    set_tests_properties(test_plugin_metric_prometheus PROPERTIES
+        LABELS "plugin"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        # Fixed probe port 18487 shared with the other fixed-port suites.
+        RESOURCE_LOCK fixed_ports)
+endif()
+
 if(SHIELD_BUILD_PLUGIN_FLATBUFFERS)
     find_package(flatbuffers CONFIG REQUIRED)
     add_executable(test_protocol_flatbuffers_plugin

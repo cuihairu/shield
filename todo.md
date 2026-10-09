@@ -24,13 +24,18 @@ kickstart 四件套走查抓出 health.http / metrics.prometheus 的三个问题
       均未开 `SHIELD_BUILD_PLUGIN_HEALTH/METRIC`。plugins-ci 补两开关
       （三平台编译 + health 套件进 `ctest -L plugin`），health_http
       CMake 拆 object+MODULE（protocol.json 同款）供测试直链。
-- [ ] 后续增量：metrics.prometheus 自身测试套件（counter/gauge/histogram
-      导出面 + 同款 shutdown 用例）+ kickstart 示例注册至少一条指标
-      （当前 /metrics 200 但空体，README「Prometheus 指标端点」承诺落空）。
+- [x] **metrics.prometheus 测试套件**（同批收口）：`tests/plugin/
+      test_plugin_metric_prometheus.cpp` 4 用例——counter 累加/gauge 后写
+      胜出/直方图 _sum·_count 的 Prometheus 文本格式逐行断言（含标签按键
+      排序）、record()/record_batch() 点形态 + TIMER 渲染为直方图、
+      404 文本体、空注册表 200 空体（kickstart 既有行为的回归钉，README
+      35 行已如实声明「空 body 属预期」——示例无需改）；metric 侧 CMake
+      同拆 object+MODULE；停机 poke 修复被「二进制正常退出」整体钉住。
 
 验收：新套件 build/build-plug 两树 4/4 绿（挂死修复后二进制正常退出）；
 真实 kickstart 进程 /health 返回合法 JSON、SIGTERM 1 秒内优雅退出、
-端口释放；两树 `ctest -R plugin` 7/7 绿。
+端口释放；两树 `ctest -R plugin` 8/8 绿（health 4 + metric 4 + 既有
+facade/host 套件）。
 
 ## shield.crypto 二期切片 1：密钥派生原语（2026-10-09 完成）
 
