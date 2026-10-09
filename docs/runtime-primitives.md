@@ -173,7 +173,7 @@ Shield 适合借鉴这种“cosocket 风格”，但不应照搬 `ngx.*` 命名�
 - Lua API 不应命名成 `shield.openssl.*`
 - 底层是否用 OpenSSL 属于实现细节
 
-实现状态（2026-09-28 部分落地，AD-08）：
+实现状态（一期 2026-09-28 落地、二期 2026-10-09 四刀全部落地，AD-08）：
 
 已实现并有 RFC 向量测试的一期切片（API 表见
 [lua-api.md](lua-api.md)）：
@@ -194,9 +194,19 @@ Shield 适合借鉴这种“cosocket 风格”，但不应照搬 `ngx.*` 命名�
 的既有名而非 `timing_safe_equal`，因为它的行为（长度不等直接 false、
 长度本身不设防）需要在名字上就说清。
 
-仍为后置（未实现）：`random_uuid`、`hkdf`、`pbkdf2`、
-`aes_gcm_encrypt` / `aes_gcm_decrypt`、非对称签名验签、证书解析、
-JWKS。
+已实现并有 RFC 向量测试的二期切片（2026-10-09 四刀全部落地，API 表见
+[lua-api.md](lua-api.md)）：
+
+- 密钥派生：`pbkdf2_hmac_sha256`（RFC 8018）、`hkdf_sha256`
+  （RFC 5869）
+- 对称 AEAD：`aead_aes256gcm_encrypt` / `aead_aes256gcm_decrypt`
+  （12 字节 nonce、16 字节 tag 尾附 combined 形）
+- 非对称签名验签：`ed25519_public_key` / `ed25519_sign` /
+  `ed25519_verify`（RFC 8032，64 字节确定性签名）
+- JWT/JWKS：`scripts/lib/jwt.lua` 的 `alg=EdDSA` 签发/校验与
+  `jwks_build` / `jwks_parse`（RFC 7517 / RFC 8037，OKP/Ed25519）
+
+仍为后置（未实现）：`random_uuid`、证书解析。
 
 #### `shield.socket`
 
@@ -446,9 +456,10 @@ CAF 不应直接复用以下 Lua 表面 API：
 - `shield.tls`
 - `shield.stream`
 - `shield.codec` 统一 Lua 表面
-- `shield.crypto` 的二期（KDF / 对称加密 / 非对称 / 证书 / JWKS）
+- `shield.crypto` 的证书解析（KDF / 对称加密 / 非对称 / JWKS 四刀
+  已于 2026-10-09 落地，见上文实现状态）
 
-因此本文除 `shield.crypto` 一期切片外仍是**后置分层
+因此本文除 `shield.crypto` 一期与二期切片外仍是**后置分层
 草案**，不是当前实现完成声明，也不是当前公开
 API 承诺。
 

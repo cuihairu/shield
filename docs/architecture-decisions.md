@@ -173,7 +173,7 @@ socket bytes
 
 **理由**：认证策略是业务语义，会随产品形态变化（多租户 issuer、refresh token、非对称签名、密钥轮换），而 C++ 插件是 ABI 冻结的二进制边界——每种策略都塞进插件层等于把业务决策写进 ABI。原语是稳定面：算法与编码格式变化慢、可独立测试（RFC 向量），且实现可直接用已有依赖（OpenSSL 已在依赖树内），无需自行开发。分层后"换认证方案"是改 Lua，不是发新二进制；runtime 也不必为每种 token 形态维护插件 API 版本。
 
-**实现状态**（2026-09-28 落地）：`include/shield/lua/lua_crypto.hpp` + `src/lua/lua_crypto.cpp`，由 `register_full_shield_api` 装配；`shield_lua` 显式链接 `OpenSSL::Crypto`。API 表见 [lua-api.md](lua-api.md)。`scripts/lib/jwt.lua`（HS256，RFC 7519）为纯 Lua 参考实现，只用原语拼装，自带最小 JSON 编解码。`plugins/auth_jwt/manifest.yaml` 标 `deprecated`（不删，兼容既有部署）。
+**实现状态**（2026-09-28 落地，2026-10-09 扩展）：`include/shield/lua/lua_crypto.hpp` + `src/lua/lua_crypto.cpp`，由 `register_full_shield_api` 装配；`shield_lua` 显式链接 `OpenSSL::Crypto`。API 表见 [lua-api.md](lua-api.md)。`scripts/lib/jwt.lua`（HS256 与 EdDSA 双算法 + RFC 7517 JWKS 公钥集助手）为纯 Lua 参考实现，只用原语拼装，自带最小 JSON 编解码；二期原语（PBKDF2/HKDF、AES-256-GCM、Ed25519）已于 2026-10-09 补齐。`plugins/auth_jwt/manifest.yaml` 标 `deprecated`（不删，兼容既有部署）。
 
 ---
 

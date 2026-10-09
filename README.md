@@ -82,9 +82,10 @@ optional SQLite-backed example, build with
 `-DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON` and use `config/app-with-sqlite.yaml`.
 
 Authentication/token semantics belong to the Lua business layer, not C++
-plugins: `scripts/lib/jwt.lua` (HS256 over the `shield.crypto` primitives,
-API table in `docs/lua-api.md`) is the reference implementation and
-`plugins/auth_jwt` is deprecated pending removal.
+plugins: `scripts/lib/jwt.lua` (HS256 and EdDSA signing with JWKS key sets
+over the `shield.crypto` primitives, API table in `docs/lua-api.md`) is the
+reference implementation and `plugins/auth_jwt` is deprecated pending
+removal.
 
 The plugin system (manifest-first discovery, explicit instances + bindings,
 stable C ABI) is specified in `docs/plugin-system.md`, including the matrix of

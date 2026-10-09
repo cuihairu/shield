@@ -74,8 +74,8 @@ DLL 也能启动），并声明了一个可观测的 echo 服务（TCP :7900）�
 构建，并使用 `config/app-with-sqlite.yaml`。
 
 认证/令牌语义属于 Lua 业务层，而不是 C++ 插件：`scripts/lib/jwt.lua`
-（基于 `shield.crypto` 原语的 HS256，API 表见 `docs/lua-api.md`）是参考
-实现；`plugins/auth_jwt` 已废弃、待移除。
+（基于 `shield.crypto` 原语的 HS256/EdDSA 签发校验与 JWKS 公钥集，
+API 表见 `docs/lua-api.md`）是参考实现；`plugins/auth_jwt` 已废弃、待移除。
 
 插件系统（manifest 优先的发现机制、显式实例 + binding、稳定 C ABI）在
 `docs/plugin-system.md` 中规约，包含全部 16 个官方插件包的矩阵。要在单

@@ -50,7 +50,7 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 
 ### 认证（已弃用，不在官方清单）
 
-**认证/JWT 属于业务语义，不是官方插件**（[AD-08](/architecture-decisions)）。runtime 只提供密码学原语 `shield.crypto`（[API 表](/lua-api#crypto-api)），签发什么 claim、何时过期、接受哪个 issuer 由业务自己定——参考实现是 Lua 层的 `scripts/lib/jwt.lua`（HS256，纯 Lua 拼原语）。仓库里保留的 `plugins/auth_jwt` 已标 `deprecated`，仅供既有部署过渡，新项目勿采用。
+**认证/JWT 属于业务语义，不是官方插件**（[AD-08](/architecture-decisions)）。runtime 只提供密码学原语 `shield.crypto`（[API 表](/lua-api#crypto-api)），签发什么 claim、何时过期、接受哪个 issuer 由业务自己定——参考实现是 Lua 层的 `scripts/lib/jwt.lua`（HS256/EdDSA 双算法 + JWKS 公钥集，纯 Lua 拼原语）。仓库里保留的 `plugins/auth_jwt` 已标 `deprecated`，仅供既有部署过渡，新项目勿采用。
 
 ## 加载机制
 
