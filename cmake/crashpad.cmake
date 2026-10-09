@@ -104,6 +104,15 @@ list(APPEND CRASHPAD_SOURCES
      "${CRASHPAD_ROOT}/util/net/http_transport_libcurl.cc"
      "${CRASHPAD_ROOT}/compat/linux/sys/mman_memfd_create.cc")
 
+# crashpad_info.cc references CRASHPAD_NOTE_REFERENCE, defined by this
+# assembly source (the .note.crashpad.info ELF section builder, upstream
+# BUILD.gn's client target on Linux). The link only pulls the referencing
+# object in when GetCrashpadInfo() is reachable (e.g. the handler in Debug
+# configurations), so missing it passed unnoticed in RelWithDebInfo trees.
+# Assembly files need the ASM language enabled alongside CXX.
+enable_language(ASM)
+list(APPEND CRASHPAD_SOURCES "${CRASHPAD_ROOT}/client/crashpad_info_note.S")
+
 file(GLOB_RECURSE CRASHPAD_MINI_CHROMIUM_SOURCES
      "${CRASHPAD_MINI_CHROMIUM_ROOT}/base/*.cc"
      "${CRASHPAD_MINI_CHROMIUM_ROOT}/base/*.h")
