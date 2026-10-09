@@ -1,5 +1,37 @@
 # TODO
 
+## 验收打磨：实机走查抓出端点插件两真 bug（2026-10-10 完成）
+
+todo/路线图清空后按「验收打磨」口径实机走查（默认配置 boot → client_demo
+回包 → ops 三端点 → SIGTERM 优雅停机 → 脚手架生成+自检+真启动+回包），
+kickstart 四件套走查抓出 health.http / metrics.prometheus 的三个问题：
+
+- [x] **health.http /health 返回畸形 JSON（真 bug）**：
+      `shield_health_http.cpp` 序列化写 `\"checks:[`（键名漏闭合引号），
+      所有 JSON 解析器必拒——端点对其唯一职责（k8s probe 解析）就是坏的。
+      修复 + 新测试套件 `tests/plugin/test_plugin_health_http.cpp`
+      （4 用例：合法 JSON+聚合状态回归锚——body 一律过 nlohmann 解析、
+      fail→503+message 逃逸、404 JSON、check_all vtable 面）。测法照
+      protocol.json 先例：插件源经 object lib 直链测试二进制。
+- [x] **health.http / metrics.prometheus 停机死锁（真 bug，实机证据）**：
+      accept 循环用同步阻塞 `accept()`，shutdown 从另一线程 `close()`
+      不会唤醒阻塞在 syscall 的线程 → `join()` 永久挂死。SIGTERM 一个
+      起 health 插件的真实 kickstart 进程必现卡死。修法：shutdown 在
+      close 后 poke 一条 loopback 连接让 accept 返回，循环见到
+      running=false 即退（poke 连接在循环里被 running 守卫丢弃，
+      不会落进 http::read 造成二次挂死）。两插件同修。
+- [x] **两插件 CI 零构建零测试（腐烂根因）**：ci.yml 与 plugins-ci.yml
+      均未开 `SHIELD_BUILD_PLUGIN_HEALTH/METRIC`。plugins-ci 补两开关
+      （三平台编译 + health 套件进 `ctest -L plugin`），health_http
+      CMake 拆 object+MODULE（protocol.json 同款）供测试直链。
+- [ ] 后续增量：metrics.prometheus 自身测试套件（counter/gauge/histogram
+      导出面 + 同款 shutdown 用例）+ kickstart 示例注册至少一条指标
+      （当前 /metrics 200 但空体，README「Prometheus 指标端点」承诺落空）。
+
+验收：新套件 build/build-plug 两树 4/4 绿（挂死修复后二进制正常退出）；
+真实 kickstart 进程 /health 返回合法 JSON、SIGTERM 1 秒内优雅退出、
+端口释放；两树 `ctest -R plugin` 7/7 绿。
+
 ## shield.crypto 二期切片 1：密钥派生原语（2026-10-09 完成）
 
 roadmap「Later」清单项（`shield.crypto` 二期：KDF / 对称加密 / 非对称 / JWKS）

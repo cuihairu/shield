@@ -8,16 +8,11 @@
 // As with health.http, does NOT link shield_net — embeds a minimal beast
 // listener to stay a leaf shared library.
 
-#include "shield/plugin/abi.h"
-#include "shield/plugin/metrics.h"
-#include "shield/plugin/host_api.h"
-
+#include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
-
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -29,6 +24,10 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "shield/plugin/abi.h"
+#include "shield/plugin/host_api.h"
+#include "shield/plugin/metrics.h"
 
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
@@ -55,8 +54,12 @@ std::string json_get_string(const std::string& j, const std::string& key) {
     ++p;
     std::string out;
     while (p < j.size() && j[p] != '"') {
-        if (j[p] == '\\' && p + 1 < j.size()) { out += j[p + 1]; p += 2; }
-        else { out += j[p++]; }
+        if (j[p] == '\\' && p + 1 < j.size()) {
+            out += j[p + 1];
+            p += 2;
+        } else {
+            out += j[p++];
+        }
     }
     return out;
 }
@@ -70,10 +73,16 @@ int json_get_int(const std::string& j, const std::string& key, int def) {
     ++p;
     while (p < j.size() && (j[p] == ' ' || j[p] == '\t')) ++p;
     bool neg = false;
-    if (p < j.size() && j[p] == '-') { neg = true; ++p; }
-    int v = 0; bool any = false;
+    if (p < j.size() && j[p] == '-') {
+        neg = true;
+        ++p;
+    }
+    int v = 0;
+    bool any = false;
     while (p < j.size() && j[p] >= '0' && j[p] <= '9') {
-        v = v * 10 + (j[p] - '0'); ++p; any = true;
+        v = v * 10 + (j[p] - '0');
+        ++p;
+        any = true;
     }
     return any ? (neg ? -v : v) : def;
 }
@@ -82,9 +91,11 @@ metrics_config parse_config(const char* config_json) {
     metrics_config c;
     if (!config_json) return c;
     std::string s(config_json);
-    c.bind_address = json_get_string(s, "bind_address"); if (c.bind_address.empty()) c.bind_address = "0.0.0.0";
+    c.bind_address = json_get_string(s, "bind_address");
+    if (c.bind_address.empty()) c.bind_address = "0.0.0.0";
     c.port = json_get_int(s, "port", c.port);
-    c.path = json_get_string(s, "path"); if (c.path.empty()) c.path = "/metrics";
+    c.path = json_get_string(s, "path");
+    if (c.path.empty()) c.path = "/metrics";
     return c;
 }
 
@@ -94,7 +105,8 @@ metrics_config parse_config(const char* config_json) {
 // ---------------------------------------------------------------------------
 using LabelVec = std::vector<std::pair<std::string, std::string>>;
 
-LabelVec normalize_labels(const char* const* keys, const char* const* vals, int n) {
+LabelVec normalize_labels(const char* const* keys, const char* const* vals,
+                          int n) {
     LabelVec out;
     out.reserve(n);
     for (int i = 0; i < n; ++i) {
@@ -151,10 +163,14 @@ struct metric_instance {
 
 const char* type_name(shield_metric_type t) {
     switch (t) {
-        case SHIELD_METRIC_COUNTER:   return "counter";
-        case SHIELD_METRIC_GAUGE:     return "gauge";
-        case SHIELD_METRIC_HISTOGRAM: return "histogram";
-        case SHIELD_METRIC_TIMER:     return "histogram";  // timers render as histograms
+        case SHIELD_METRIC_COUNTER:
+            return "counter";
+        case SHIELD_METRIC_GAUGE:
+            return "gauge";
+        case SHIELD_METRIC_HISTOGRAM:
+            return "histogram";
+        case SHIELD_METRIC_TIMER:
+            return "histogram";  // timers render as histograms
     }
     return "untyped";
 }
@@ -183,14 +199,19 @@ void render(std::ostringstream& os, metric_instance* inst) {
         double sum = p.first;
         uint64_t count = p.second;
         os << k.name << "_sum" << format_labels(k.labels) << " " << sum << "\n";
-        os << k.name << "_count" << format_labels(k.labels) << " " << count << "\n";
+        os << k.name << "_count" << format_labels(k.labels) << " " << count
+           << "\n";
     }
 }
 
 void handle_session(metric_instance* inst, tcp::socket socket) {
     beast::flat_buffer buf;
     http::request<http::string_body> req;
-    try { http::read(socket, buf, req); } catch (...) { return; }
+    try {
+        http::read(socket, buf, req);
+    } catch (...) {
+        return;
+    }
 
     http::response<http::string_body> res;
     res.version(req.version());
@@ -208,9 +229,25 @@ void handle_session(metric_instance* inst, tcp::socket socket) {
         res.body() = "not found\n";
     }
     res.prepare_payload();
-    try { http::write(socket, res); } catch (...) {}
+    try {
+        http::write(socket, res);
+    } catch (...) {
+    }
     beast::error_code ec;
     socket.shutdown(tcp::socket::shutdown_both, ec);
+}
+
+// A synchronous accept() blocked in the io thread is not interrupted by
+// closing the acceptor from another thread; poke one loopback connection so
+// accept returns and the loop can observe running == false.
+void poke_listener(const std::string& bind_address, unsigned short port,
+                   net::io_context& ioc) {
+    boost::system::error_code ec;
+    tcp::socket poke(ioc);
+    const std::string addr = (bind_address == "0.0.0.0" || bind_address == "::")
+                                 ? "127.0.0.1"
+                                 : bind_address;
+    poke.connect({net::ip::make_address(addr), port}, ec);
 }
 
 void accept_loop(metric_instance* inst) {
@@ -222,6 +259,10 @@ void accept_loop(metric_instance* inst) {
             if (!inst->running.load()) break;
             continue;
         }
+        // The shutdown poke below also lands here as a bare connection that
+        // never sends a request; handling it would block http::read, so
+        // drop it instead.
+        if (!inst->running.load()) break;
         handle_session(inst, std::move(socket));
     }
 }
@@ -236,8 +277,8 @@ const shield_metrics_v1& metric_vtable() {
         "prometheus",
         "1.0.0",
         // connect — no-op (listener started on instance->start())
-        [](const struct shield_metrics_config*,
-           char* err_buf, int err_buf_size) -> struct shield_metrics_session* {
+        [](const struct shield_metrics_config*, char* err_buf,
+           int err_buf_size) -> struct shield_metrics_session* {
             if (err_buf && err_buf_size > 0) err_buf[0] = '\0';
             return nullptr;
         },
@@ -249,7 +290,8 @@ const shield_metrics_v1& metric_vtable() {
             if (!inst || !point || !point->name) return -1;
             std::lock_guard<std::mutex> lock(inst->mu);
             SeriesKey k{point->name,
-                        normalize_labels(point->label_keys, point->label_values, point->label_count)};
+                        normalize_labels(point->label_keys, point->label_values,
+                                         point->label_count)};
             switch (point->type) {
                 case SHIELD_METRIC_COUNTER:
                     inst->counters[k] += point->value;
@@ -273,19 +315,26 @@ const shield_metrics_v1& metric_vtable() {
             auto* inst = reinterpret_cast<metric_instance*>(session);
             if (!inst || !points) return -1;
             for (int i = 0; i < count; ++i) {
-                // Reuse record lambda logic (inline to avoid dispatch overhead).
+                // Reuse record lambda logic (inline to avoid dispatch
+                // overhead).
                 const auto& point = points[i];
                 if (!point.name) continue;
                 std::lock_guard<std::mutex> lock(inst->mu);
-                SeriesKey k{point.name,
-                            normalize_labels(point.label_keys, point.label_values, point.label_count)};
+                SeriesKey k{point.name, normalize_labels(point.label_keys,
+                                                         point.label_values,
+                                                         point.label_count)};
                 switch (point.type) {
-                    case SHIELD_METRIC_COUNTER:   inst->counters[k] += point.value; break;
-                    case SHIELD_METRIC_GAUGE:     inst->gauges[k] = point.value; break;
+                    case SHIELD_METRIC_COUNTER:
+                        inst->counters[k] += point.value;
+                        break;
+                    case SHIELD_METRIC_GAUGE:
+                        inst->gauges[k] = point.value;
+                        break;
                     case SHIELD_METRIC_HISTOGRAM:
                     case SHIELD_METRIC_TIMER: {
                         auto& e = inst->histograms[k];
-                        e.first += point.value; e.second += 1;
+                        e.first += point.value;
+                        e.second += 1;
                         break;
                     }
                 }
@@ -293,9 +342,9 @@ const shield_metrics_v1& metric_vtable() {
             return 0;
         },
         // counter_inc
-        [](struct shield_metrics_session* session,
-           const char* name, double value,
-           const char* const* lk, const char* const* lv, int lc) -> int {
+        [](struct shield_metrics_session* session, const char* name,
+           double value, const char* const* lk, const char* const* lv,
+           int lc) -> int {
             auto* inst = reinterpret_cast<metric_instance*>(session);
             if (!inst || !name) return -1;
             std::lock_guard<std::mutex> lock(inst->mu);
@@ -304,9 +353,9 @@ const shield_metrics_v1& metric_vtable() {
             return 0;
         },
         // gauge_set
-        [](struct shield_metrics_session* session,
-           const char* name, double value,
-           const char* const* lk, const char* const* lv, int lc) -> int {
+        [](struct shield_metrics_session* session, const char* name,
+           double value, const char* const* lk, const char* const* lv,
+           int lc) -> int {
             auto* inst = reinterpret_cast<metric_instance*>(session);
             if (!inst || !name) return -1;
             std::lock_guard<std::mutex> lock(inst->mu);
@@ -315,15 +364,16 @@ const shield_metrics_v1& metric_vtable() {
             return 0;
         },
         // histogram_observe
-        [](struct shield_metrics_session* session,
-           const char* name, double value,
-           const char* const* lk, const char* const* lv, int lc) -> int {
+        [](struct shield_metrics_session* session, const char* name,
+           double value, const char* const* lk, const char* const* lv,
+           int lc) -> int {
             auto* inst = reinterpret_cast<metric_instance*>(session);
             if (!inst || !name) return -1;
             std::lock_guard<std::mutex> lock(inst->mu);
             SeriesKey k{name, normalize_labels(lk, lv, lc)};
             auto& e = inst->histograms[k];
-            e.first += value; e.second += 1;
+            e.first += value;
+            e.second += 1;
             return 0;
         },
         // flush — no-op (pull model)
@@ -341,7 +391,10 @@ int metric_create(const struct shield_plugin_create_args_v1* args,
     if (!args || !out) return 1;
     auto* inst = new (std::nothrow) metric_instance;
     if (!inst) {
-        if (err) { err->code = "plugin.create.failed"; err->message = "metrics.prometheus: oom"; }
+        if (err) {
+            err->code = "plugin.create.failed";
+            err->message = "metrics.prometheus: oom";
+        }
         return 1;
     }
     inst->instance_id = args->instance_id ? args->instance_id : "";
@@ -353,7 +406,8 @@ int metric_create(const struct shield_plugin_create_args_v1* args,
                                    const char* iface,
                                    struct shield_error_v1*) -> const void* {
         if (!self || !iface) return nullptr;
-        if (std::strcmp(iface, SHIELD_METRICS_INTERFACE) == 0) return &metric_vtable();
+        if (std::strcmp(iface, SHIELD_METRICS_INTERFACE) == 0)
+            return &metric_vtable();
         return nullptr;
     };
     inst->shell.start = [](struct shield_plugin_instance_v1* self,
@@ -371,7 +425,10 @@ int metric_create(const struct shield_plugin_create_args_v1* args,
             inst->running.store(true);
             inst->io_thread = std::thread(accept_loop, inst);
         } catch (const std::exception& ex) {
-            if (e) { e->code = "plugin.init.failed"; e->message = ex.what(); }
+            if (e) {
+                e->code = "plugin.init.failed";
+                e->message = ex.what();
+            }
             return 1;
         }
         return 0;
@@ -385,6 +442,10 @@ int metric_create(const struct shield_plugin_create_args_v1* args,
         inst->running.store(false);
         boost::system::error_code ec;
         if (inst->acceptor) inst->acceptor->close(ec);
+        // Without the poke, a blocked accept() never returns and shutdown
+        // joins forever (observed as a hung SIGTERM'd process).
+        poke_listener(inst->cfg.bind_address,
+                      static_cast<unsigned short>(inst->cfg.port), inst->ioc);
         if (inst->io_thread.joinable()) inst->io_thread.join();
         delete inst;
     };
@@ -394,8 +455,8 @@ int metric_create(const struct shield_plugin_create_args_v1* args,
 
 }  // namespace
 
-extern "C" SHIELD_PLUGIN_EXPORT
-const struct shield_plugin_abi_v1* shield_plugin_get_v1(void) {
+extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
+shield_plugin_get_v1(void) {
     static const struct shield_plugin_abi_v1 abi = {
         SHIELD_PLUGIN_ABI_VERSION,
         sizeof(shield_plugin_abi_v1),

@@ -8,17 +8,12 @@
 // linking the static shield_net would cause symbol clashes with the host.
 // We embed a minimal beast listener here.
 
-#include "shield/plugin/abi.h"
-#include "shield/plugin/health.h"
-#include "shield/plugin/host_api.h"
-
+#include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
-
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -31,6 +26,10 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "shield/plugin/abi.h"
+#include "shield/plugin/health.h"
+#include "shield/plugin/host_api.h"
 
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
@@ -58,17 +57,28 @@ std::string json_escape(const std::string& s) {
     out.reserve(s.size() + 2);
     for (char c : s) {
         switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
                     char buf[8];
                     std::snprintf(buf, sizeof(buf), "\\u%04x", c);
                     out += buf;
-                } else out += c;
+                } else
+                    out += c;
         }
     }
     return out;
@@ -87,8 +97,12 @@ std::string json_get_string(const std::string& j, const std::string& key) {
     ++p;
     std::string out;
     while (p < j.size() && j[p] != '"') {
-        if (j[p] == '\\' && p + 1 < j.size()) { out += j[p + 1]; p += 2; }
-        else { out += j[p++]; }
+        if (j[p] == '\\' && p + 1 < j.size()) {
+            out += j[p + 1];
+            p += 2;
+        } else {
+            out += j[p++];
+        }
     }
     return out;
 }
@@ -102,10 +116,16 @@ int json_get_int(const std::string& j, const std::string& key, int def) {
     ++p;
     while (p < j.size() && (j[p] == ' ' || j[p] == '\t')) ++p;
     bool neg = false;
-    if (p < j.size() && j[p] == '-') { neg = true; ++p; }
-    int v = 0; bool any = false;
+    if (p < j.size() && j[p] == '-') {
+        neg = true;
+        ++p;
+    }
+    int v = 0;
+    bool any = false;
     while (p < j.size() && j[p] >= '0' && j[p] <= '9') {
-        v = v * 10 + (j[p] - '0'); ++p; any = true;
+        v = v * 10 + (j[p] - '0');
+        ++p;
+        any = true;
     }
     return any ? (neg ? -v : v) : def;
 }
@@ -114,10 +134,13 @@ health_config parse_config(const char* config_json) {
     health_config c;
     if (!config_json) return c;
     std::string s(config_json);
-    c.bind_address  = json_get_string(s, "bind_address");  if (c.bind_address.empty())  c.bind_address  = "0.0.0.0";
-    c.port          = json_get_int(s, "port", c.port);
-    c.liveness_path = json_get_string(s, "liveness_path"); if (c.liveness_path.empty()) c.liveness_path = "/health";
-    c.readiness_path = json_get_string(s, "readiness_path"); if (c.readiness_path.empty()) c.readiness_path = "/ready";
+    c.bind_address = json_get_string(s, "bind_address");
+    if (c.bind_address.empty()) c.bind_address = "0.0.0.0";
+    c.port = json_get_int(s, "port", c.port);
+    c.liveness_path = json_get_string(s, "liveness_path");
+    if (c.liveness_path.empty()) c.liveness_path = "/health";
+    c.readiness_path = json_get_string(s, "readiness_path");
+    if (c.readiness_path.empty()) c.readiness_path = "/ready";
     return c;
 }
 
@@ -170,7 +193,8 @@ void handle_session(health_instance* inst, tcp::socket socket) {
     bool known = false;
     if (req.method() == http::verb::get) {
         std::string target = std::string(req.target());
-        if (target == inst->cfg.liveness_path || target == inst->cfg.readiness_path) {
+        if (target == inst->cfg.liveness_path ||
+            target == inst->cfg.readiness_path) {
             known = true;
 
             // Snapshot checks.
@@ -191,13 +215,16 @@ void handle_session(health_instance* inst, tcp::socket socket) {
                 int rc = e->check ? e->check(&r, e->user_data) : -1;
                 auto t1 = std::chrono::steady_clock::now();
                 int64_t latency_ms =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+                    std::chrono::duration_cast<std::chrono::milliseconds>(t1 -
+                                                                          t0)
+                        .count();
 
                 const char* status_str = "ok";
                 if (rc != 0 || r.status == SHIELD_HEALTH_FAIL) {
                     agg = SHIELD_HEALTH_FAIL;
                     status_str = "fail";
-                } else if (r.status == SHIELD_HEALTH_DEGRADED && agg != SHIELD_HEALTH_FAIL) {
+                } else if (r.status == SHIELD_HEALTH_DEGRADED &&
+                           agg != SHIELD_HEALTH_FAIL) {
                     agg = SHIELD_HEALTH_DEGRADED;
                     status_str = "degraded";
                 }
@@ -205,24 +232,27 @@ void handle_session(health_instance* inst, tcp::socket socket) {
                 item << "{\"name\":\"" << json_escape(e->name) << "\","
                      << "\"status\":\"" << status_str << "\","
                      << "\"latency_ms\":" << latency_ms;
-                if (r.message) item << ",\"message\":\"" << json_escape(r.message) << "\"";
+                if (r.message)
+                    item << ",\"message\":\"" << json_escape(r.message) << "\"";
                 item << "}";
                 items.push_back(item.str());
 
                 if (r.check_name) std::free(const_cast<char*>(r.check_name));
-                if (r.message)    std::free(const_cast<char*>(r.message));
+                if (r.message) std::free(const_cast<char*>(r.message));
             }
-            const char* agg_str = agg == SHIELD_HEALTH_OK ? "ok"
-                               : agg == SHIELD_HEALTH_DEGRADED ? "degraded" : "fail";
-            body << agg_str << "\",\"checks:[";
+            const char* agg_str = agg == SHIELD_HEALTH_OK         ? "ok"
+                                  : agg == SHIELD_HEALTH_DEGRADED ? "degraded"
+                                                                  : "fail";
+            body << agg_str << "\",\"checks\":[";
             for (size_t i = 0; i < items.size(); ++i) {
                 if (i) body << ",";
                 body << items[i];
             }
             body << "]}";
 
-            res.result(agg == SHIELD_HEALTH_FAIL ? http::status::service_unavailable
-                                                 : http::status::ok);
+            res.result(agg == SHIELD_HEALTH_FAIL
+                           ? http::status::service_unavailable
+                           : http::status::ok);
             res.body() = body.str();
             {
                 std::lock_guard<std::mutex> lock(inst->state_mu);
@@ -237,9 +267,23 @@ void handle_session(health_instance* inst, tcp::socket socket) {
     res.prepare_payload();
     try {
         http::write(socket, res);
-    } catch (...) {}
+    } catch (...) {
+    }
     beast::error_code ec;
     socket.shutdown(tcp::socket::shutdown_both, ec);
+}
+
+// A synchronous accept() blocked in the io thread is not interrupted by
+// closing the acceptor from another thread; poke one loopback connection so
+// accept returns and the loop can observe running == false.
+void poke_listener(const std::string& bind_address, unsigned short port,
+                   net::io_context& ioc) {
+    boost::system::error_code ec;
+    tcp::socket poke(ioc);
+    const std::string addr = (bind_address == "0.0.0.0" || bind_address == "::")
+                                 ? "127.0.0.1"
+                                 : bind_address;
+    poke.connect({net::ip::make_address(addr), port}, ec);
 }
 
 // Synchronous accept loop: one accept per iteration, hand off to
@@ -254,6 +298,10 @@ void accept_loop_sync(health_instance* inst) {
             if (!inst->running.load()) break;
             continue;
         }
+        // The shutdown poke below also lands here as a bare connection that
+        // never sends a request; handling it would block http::read, so
+        // drop it instead.
+        if (!inst->running.load()) break;
         handle_session(inst, std::move(socket));
     }
 }
@@ -263,14 +311,11 @@ void accept_loop_sync(health_instance* inst) {
 // ---------------------------------------------------------------------------
 const shield_health_v1& health_vtable() {
     static const shield_health_v1 v = {
-        sizeof(shield_health_v1),
-        SHIELD_HEALTH_INTERFACE,
-        "http",
-        "1.0.0",
+        sizeof(shield_health_v1), SHIELD_HEALTH_INTERFACE, "http", "1.0.0",
         // connect — starts the HTTP listener. Returns the instance as the
         // session handle.
-        [](const struct shield_health_config* cfg,
-           char* err_buf, int err_buf_size) -> struct shield_health_session* {
+        [](const struct shield_health_config* cfg, char* err_buf,
+           int err_buf_size) -> struct shield_health_session* {
             (void)cfg;  // real config is parsed at instance create() time
             // The connect() in v1 table is invoked at most once per instance;
             // but we can also lazy-start from start() below. For now we don't
@@ -316,22 +361,24 @@ const shield_health_v1& health_vtable() {
             return 0;
         },
         // get_status
-        [](struct shield_health_session* session) -> enum shield_health_status {
-            auto* inst = reinterpret_cast<health_instance*>(session);
-            if (!inst) return SHIELD_HEALTH_FAIL;
-            std::lock_guard<std::mutex> lock(inst->state_mu);
-            return inst->aggregated_status;
-        },
-        // free_result
-        [](struct shield_health_check_result* r) {
-            if (!r) return;
-            if (r->check_name) std::free(const_cast<char*>(r->check_name));
-            if (r->message)    std::free(const_cast<char*>(r->message));
-            r->check_name = nullptr;
-            r->message = nullptr;
-        },
-    };
-    return v;
+        [](struct shield_health_session* session)
+            ->enum shield_health_status{
+                auto* inst = reinterpret_cast<health_instance*>(session);
+    if (!inst) return SHIELD_HEALTH_FAIL;
+    std::lock_guard<std::mutex> lock(inst->state_mu);
+    return inst->aggregated_status;
+}
+,
+    // free_result
+    [](struct shield_health_check_result* r) {
+        if (!r) return;
+        if (r->check_name) std::free(const_cast<char*>(r->check_name));
+        if (r->message) std::free(const_cast<char*>(r->message));
+        r->check_name = nullptr;
+        r->message = nullptr;
+    },
+};  // namespace
+return v;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +390,10 @@ int health_create(const struct shield_plugin_create_args_v1* args,
     if (!args || !out) return 1;
     auto* inst = new (std::nothrow) health_instance;
     if (!inst) {
-        if (err) { err->code = "plugin.create.failed"; err->message = "health.http: oom"; }
+        if (err) {
+            err->code = "plugin.create.failed";
+            err->message = "health.http: oom";
+        }
         return 1;
     }
     inst->instance_id = args->instance_id ? args->instance_id : "";
@@ -355,7 +405,8 @@ int health_create(const struct shield_plugin_create_args_v1* args,
                                    const char* iface,
                                    struct shield_error_v1*) -> const void* {
         if (!self || !iface) return nullptr;
-        if (std::strcmp(iface, SHIELD_HEALTH_INTERFACE) == 0) return &health_vtable();
+        if (std::strcmp(iface, SHIELD_HEALTH_INTERFACE) == 0)
+            return &health_vtable();
         return nullptr;
     };
     // start — open the listener.
@@ -392,6 +443,10 @@ int health_create(const struct shield_plugin_create_args_v1* args,
         inst->running.store(false);
         boost::system::error_code ec;
         if (inst->acceptor) inst->acceptor->close(ec);
+        // Without the poke, a blocked accept() never returns and shutdown
+        // joins forever (observed as a hung SIGTERM'd process).
+        poke_listener(inst->cfg.bind_address,
+                      static_cast<unsigned short>(inst->cfg.port), inst->ioc);
         if (inst->io_thread.joinable()) inst->io_thread.join();
         {
             std::lock_guard<std::mutex> lock(inst->checks_mu);
@@ -405,8 +460,8 @@ int health_create(const struct shield_plugin_create_args_v1* args,
 
 }  // namespace
 
-extern "C" SHIELD_PLUGIN_EXPORT
-const struct shield_plugin_abi_v1* shield_plugin_get_v1(void) {
+extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
+shield_plugin_get_v1(void) {
     static const struct shield_plugin_abi_v1 abi = {
         SHIELD_PLUGIN_ABI_VERSION,
         sizeof(shield_plugin_abi_v1),

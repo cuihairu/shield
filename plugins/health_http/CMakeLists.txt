@@ -4,11 +4,25 @@
 # Embeds a minimal boost::beast HTTP listener (does NOT link shield_net).
 find_package(Boost REQUIRED COMPONENTS system)
 
-add_library(shield_health_http MODULE shield_health_http.cpp)
+# Object core so the plugin tests can link the plugin translation unit
+# directly (same structure as protocol.json) instead of dlopen'ing the module.
+add_library(shield_health_http_obj OBJECT shield_health_http.cpp)
+set_target_properties(shield_health_http_obj PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(shield_health_http_obj
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${Boost_INCLUDE_DIRS}
+)
+target_link_libraries(shield_health_http_obj PRIVATE Boost::system)
+
+add_library(shield_health_http MODULE
+    $<TARGET_OBJECTS:shield_health_http_obj>
+)
 
 target_include_directories(shield_health_http
     PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
         ${Boost_INCLUDE_DIRS}
 )
 

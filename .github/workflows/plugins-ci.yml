@@ -111,6 +111,11 @@ jobs:
             -DSHIELD_BUILD_PLUGIN_MSGPACK=ON
             -DSHIELD_BUILD_PLUGIN_FLATBUFFERS=ON
             -DSHIELD_BUILD_PLUGIN_JSON=ON
+            # Endpoint plugins: compiled AND tested on CI (health.http has a
+            # dedicated suite) so their embedded HTTP servers cannot silently
+            # rot the way an untested plugin does.
+            -DSHIELD_BUILD_PLUGIN_HEALTH=ON
+            -DSHIELD_BUILD_PLUGIN_METRIC=ON
             # DB plugins: compiled on CI so they cannot silently rot when a
             # dependency update breaks their API — the Lua facade soft-
             # failure contract test exercises each enabled plugin's .so.

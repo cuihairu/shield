@@ -349,6 +349,29 @@ if(SHIELD_BUILD_PLUGIN_JSON)
     shield_copy_runtime_dlls(test_protocol_json_plugin)
 endif()
 
+if(SHIELD_BUILD_PLUGIN_HEALTH)
+    add_executable(test_plugin_health_http
+        plugin/test_plugin_health_http.cpp
+        $<TARGET_OBJECTS:shield_health_http_obj>)
+    target_link_libraries(test_plugin_health_http
+        PRIVATE
+            nlohmann_json::nlohmann_json
+            Boost::system
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_plugin_health_http
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_plugin_health_http
+             COMMAND test_plugin_health_http)
+    set_tests_properties(test_plugin_health_http PROPERTIES
+        LABELS "plugin"
+        TIMEOUT 120
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        # All cases probe the plugin's fixed endpoint port 18486; hold the
+        # same lock as the other fixed-port suites under `ctest -j`.
+        RESOURCE_LOCK fixed_ports)
+endif()
+
 if(SHIELD_BUILD_PLUGIN_FLATBUFFERS)
     find_package(flatbuffers CONFIG REQUIRED)
     add_executable(test_protocol_flatbuffers_plugin
