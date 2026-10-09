@@ -12,9 +12,11 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/kdf.h>
 #include <openssl/rand.h>
 
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -152,6 +154,106 @@ std::string random_bytes_impl(int n) {
     return out;
 }  // GCOVR_EXCL_LINE (throw:false cleanup block, gcovr 8.6 artifact)
 
+// --- key derivation (crypto phase 2) --------------------------------------
+// PBKDF2-HMAC-SHA256 (RFC 8018 §5.2) and HKDF-SHA256 (RFC 5869), the account
+// password-hashing and key-expansion primitives. Same one-shot OpenSSL
+// convention as the digest wrappers: fixed algorithm, so the OpenSSL contract
+// arms stay defensive-only under the marker discipline described above.
+// Argument guards (iterations/length/salt bounds) are real API surface and
+// all driven by tests.
+
+constexpr int kMaxPbkdf2Iterations = 10'000'000;
+constexpr int kMaxPbkdf2KeyBytes = 1024;
+// RFC 5869 §2.3: HKDF-Expand output is capped at 255 * HashLen (32 for
+// SHA-256) = 8160 bytes.
+constexpr int kMaxHkdfOutputBytes = 255 * 32;
+
+std::string pbkdf2_hmac_sha256_impl(const std::string& password,
+                                    const std::string& salt, int iterations,
+                                    int dklen) {
+    if (iterations < 1) {
+        throw std::runtime_error("pbkdf2_hmac_sha256: iterations must be >= 1");
+    }
+    if (iterations > kMaxPbkdf2Iterations) {
+        throw std::runtime_error(
+            "pbkdf2_hmac_sha256: iterations exceeds 10000000 limit");
+    }
+    if (salt.empty()) {
+        throw std::runtime_error("pbkdf2_hmac_sha256: salt must not be empty");
+    }
+    if (dklen < 1) {
+        throw std::runtime_error(
+            "pbkdf2_hmac_sha256: derived key length must be >= 1");
+    }
+    if (dklen > kMaxPbkdf2KeyBytes) {
+        throw std::runtime_error(
+            "pbkdf2_hmac_sha256: derived key length exceeds 1024 limit");
+    }
+    std::string out(static_cast<size_t>(dklen), '\0');
+    const int ok = PKCS5_PBKDF2_HMAC(
+        password.data(), static_cast<int>(password.size()),
+        reinterpret_cast<const unsigned char*>(salt.data()),
+        static_cast<int>(salt.size()), iterations, EVP_sha256(), dklen,
+        reinterpret_cast<unsigned char*>(out.data()));
+    if (ok != 1) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: PKCS5_PBKDF2_HMAC API contract arm)
+        throw std::runtime_error("pbkdf2_hmac_sha256: PBKDF2 failed");
+        // GCOVR_EXCL_STOP
+    }
+    return out;
+}
+
+std::string hkdf_sha256_impl(const std::string& ikm, const std::string& salt,
+                             const std::string& info, int length) {
+    if (ikm.empty()) {
+        throw std::runtime_error("hkdf_sha256: ikm must not be empty");
+    }
+    if (length < 1) {
+        throw std::runtime_error("hkdf_sha256: output length must be >= 1");
+    }
+    if (length > kMaxHkdfOutputBytes) {
+        throw std::runtime_error(
+            "hkdf_sha256: output length exceeds RFC 5869 8160-byte limit");
+    }
+    // RFC 5869 §2.2: absent salt is replaced by HashLen zero octets —
+    // OpenSSL takes the salt verbatim, so supply the zero form here; empty
+    // info is simply not added (equivalent to the zero-length form).
+    const unsigned char zeros[EVP_MAX_MD_SIZE] = {0};
+    const unsigned char* salt_ptr =
+        salt.empty() ? zeros
+                     : reinterpret_cast<const unsigned char*>(salt.data());
+    const int salt_len = salt.empty() ? EVP_MD_size(EVP_sha256())
+                                      : static_cast<int>(salt.size());
+    std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> ctx(
+        EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr), &EVP_PKEY_CTX_free);
+    if (ctx == nullptr || EVP_PKEY_derive_init(ctx.get()) <= 0 ||
+        EVP_PKEY_CTX_set_hkdf_md(ctx.get(), EVP_sha256()) <= 0 ||
+        EVP_PKEY_CTX_set1_hkdf_salt(ctx.get(), salt_ptr, salt_len) <= 0 ||
+        EVP_PKEY_CTX_set1_hkdf_key(
+            ctx.get(), reinterpret_cast<const unsigned char*>(ikm.data()),
+            static_cast<int>(ikm.size())) <= 0 ||
+        (!info.empty() &&
+         EVP_PKEY_CTX_add1_hkdf_info(
+             ctx.get(), reinterpret_cast<const unsigned char*>(info.data()),
+             static_cast<int>(info.size())) <= 0)) {
+        // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: HKDF context setup contract arm)
+        throw std::runtime_error("hkdf_sha256: context setup failed");
+        // GCOVR_EXCL_STOP
+    }
+    std::string out(static_cast<size_t>(length), '\0');
+    size_t outlen = out.size();
+    const int ok = EVP_PKEY_derive(
+        ctx.get(), reinterpret_cast<unsigned char*>(out.data()), &outlen);
+    if (ok <= 0 ||
+        outlen != out.size()) {  // GCOVR_EXCL_BR_LINE (defensive arm)
+        // GCOVR_EXCL_START (defensive: EVP_PKEY_derive API contract arm)
+        throw std::runtime_error("hkdf_sha256: derive failed");
+        // GCOVR_EXCL_STOP
+    }
+    return out;
+}
+
 }  // namespace
 
 void register_crypto_api(shd::table& shield) {
@@ -280,6 +382,16 @@ void register_crypto_api(shd::table& shield) {
 
     crypto.set_function("random_bytes",
                         [](int n) { return random_bytes_impl(n); });
+
+    // --- key derivation (crypto phase 2) ----------------------------------
+    // PBKDF2-HMAC-SHA256 for password hashing (store salt + iterations with
+    // the derived key; verify via constant_time_compare), HKDF-SHA256 for
+    // expanding negotiated secrets into per-purpose keys. Both return RAW
+    // bytes like the digest functions above.
+
+    // Direct function bindings, same rationale as hmac_sha256 above.
+    crypto.set_function("pbkdf2_hmac_sha256", &pbkdf2_hmac_sha256_impl);
+    crypto.set_function("hkdf_sha256", &hkdf_sha256_impl);
 
     // Length difference leaks only the length (inherent to any such check);
     // content comparison runs in constant time via OpenSSL CRYPTO_memcmp.

@@ -649,7 +649,14 @@ off()
 | `shield.crypto.random_bytes(n)` | 密码学安全随机字节（`RAND_bytes`）；`n=0` 返回空串，`n<0` 或 `n>1MiB` 抛 error |
 | `shield.crypto.constant_time_compare(a, b)` | 常数时间内容比较；长度不等直接 `false`（长度本身不设防，内容比较设防） |
 
-**正确性锚点**：base64/base64url 用 RFC 4648 向量、SHA-256 用 RFC 6234 向量、HMAC-SHA256 用 RFC 4231 TC1–TC4 锁定（`tests/coverage/test_cov_lua_crypto.cpp`）。
+**密钥派生（二期）**：
+
+| API | 说明 |
+| --- | --- |
+| `shield.crypto.pbkdf2_hmac_sha256(password, salt, iterations, dklen)` | PBKDF2-HMAC-SHA256（RFC 8018），口令哈希用；返回 `dklen` 字节原始派生钥。`iterations` 必须 1–1000 万、`salt` 非空、`dklen` 1–1024，越界抛 error；空口令合法。存库时 salt + iterations 随派生钥一起落，校验用 `constant_time_compare` |
+| `shield.crypto.hkdf_sha256(ikm, salt, info, length)` | HKDF-SHA256（RFC 5869），协商密钥按用途展开用；返回 `length` 字节原始输出。`ikm` 非空、`length` 1–8160（255×32 上限）；`salt`/`info` 允许空串（空 salt 按 RFC 取 32 字节零序列） |
+
+**正确性锚点**：base64/base64url 用 RFC 4648 向量、SHA-256 用 RFC 6234 向量、HMAC-SHA256 用 RFC 4231 TC1–TC4、PBKDF2 用 canonical SHA-256 向量组（iterations 1/2/4096 + 多块 40 字节例）、HKDF 用 RFC 5869 TC1–TC3 锁定（`tests/coverage/test_cov_lua_crypto.cpp`）。
 
 ### jwt.lua —— 业务层认证参考实现
 

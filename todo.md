@@ -1,5 +1,27 @@
 # TODO
 
+## shield.crypto 二期切片 1：密钥派生原语（2026-10-09 进行中）
+
+roadmap「Later」清单项（`shield.crypto` 二期：KDF / 对称加密 / 非对称 / JWKS）
+的第一刀。一期模式照搬（OpenSSL one-shot + 防御臂标记纪律 + RFC 向量锁定）。
+
+- [ ] **PBKDF2-HMAC-SHA256**（`shield.crypto.pbkdf2_hmac_sha256`，RFC 8018
+      §5.2）：口令哈希原语；守卫面 iterations 1–1000 万 / salt 非空 /
+      dklen 1–1024，空口令合法；canonical SHA-256 向量组（iterations
+      1/2/4096 + 多块 40 字节例）+ 守卫臂 pcall 矩阵 + 空口令 C++ 交叉核验。
+- [ ] **HKDF-SHA256**（`shield.crypto.hkdf_sha256`，RFC 5869）：协商密钥
+      按用途展开原语；守卫面 ikm 非空 / length 1–8160（255×32 上限）；
+      salt/info 允许空串（空 salt 取 32 字节零序列）；RFC 5869 TC1–TC3
+      全量锁定（含 82 字节多块展开）+ 守卫臂矩阵。
+- [ ] 文档：`docs/lua-api.md` crypto 表新增「密钥派生（二期）」节 +
+      正确性锚点行补 RFC 8018 / RFC 5869。
+- [ ] 门禁：test_cov_lua_crypto 全绿 + 五树 ctest + 覆盖率口径（新守卫臂
+      全可达不引入豁免）。
+
+后续切片（另行提交）：AES-256-GCM AEAD（`aead_aes256gcm_encrypt/decrypt`，
+combined ciphertext‖tag 形态，nonce 钉死 12 字节）；非对称签名验签 / JWKS
+再后置。
+
 ## 认证业务语义出插件层：原语库 shield.crypto + Lua 层 jwt.lua（2026-09-28 完成）
 
 架构纠正（插件矩阵分层）：`auth_jwt` 做成 C++ 插件是错位的——JWT 签发/校验是业务

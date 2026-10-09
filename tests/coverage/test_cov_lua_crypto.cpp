@@ -660,4 +660,142 @@ BOOST_AUTO_TEST_CASE(RegisteredViaFullShieldApi) {
     BOOST_CHECK(result.valid());
 }
 
+// ---------------------------------------------------------------------------
+// crypto phase 2: key derivation.
+// PBKDF2-HMAC-SHA256 vectors are the canonical SHA-256 set (cross-checked
+// against RFC 8018 reference implementations, same vectors as the RFC 7914
+// §11 appendices). HKDF vectors are RFC 5869 test cases 1-3 verbatim.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(Pbkdf2HmacSha256RfcVectors) {
+    CryptoState s;
+    // P="password" S="salt" dkLen=32, iterations 1 / 2 / 4096.
+    BOOST_CHECK(run_script(s.lua,
+                           "assert(shield.crypto.hex_encode("
+                           "shield.crypto.pbkdf2_hmac_sha256('password', "
+                           "'salt', 1, 32)) == "
+                           "'120fb6cffcf8b32c43e7225256c4f837a86548c92ccc354"
+                           "80805987cb70be17b')"));
+    BOOST_CHECK(run_script(s.lua,
+                           "assert(shield.crypto.hex_encode("
+                           "shield.crypto.pbkdf2_hmac_sha256('password', "
+                           "'salt', 2, 32)) == "
+                           "'ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251d"
+                           "fd6e2d85a95474c43')"));
+    BOOST_CHECK(run_script(s.lua,
+                           "assert(shield.crypto.hex_encode("
+                           "shield.crypto.pbkdf2_hmac_sha256('password', "
+                           "'salt', 4096, 32)) == "
+                           "'c5e478d59288c841aa530db6845c4c8d962893a001ce4e1"
+                           "1a4963873aa98134a')"));
+    // Multi-block output (dkLen=40) with a longer password and salt.
+    BOOST_CHECK(run_script(
+        s.lua,
+        "assert(shield.crypto.hex_encode(shield.crypto.pbkdf2_hmac_sha256("
+        "'passwordPASSWORDpassword', "
+        "'saltSALTsaltSALTsaltSALTsaltSALTsalt', 4096, 40)) == "
+        "'348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1c"
+        "635518c7dac47e9')"));
+}
+
+BOOST_AUTO_TEST_CASE(Pbkdf2HmacSha256GuardArms) {
+    CryptoState s;
+    // Every argument guard is a real, reachable API surface.
+    const char* arms[][2] = {
+        // {code, expected error substring}
+        {"pcall(shield.crypto.pbkdf2_hmac_sha256, 'p', 's', 0, 32)",
+         "iterations must be >= 1"},
+        {"pcall(shield.crypto.pbkdf2_hmac_sha256, 'p', 's', -1, 32)",
+         "iterations must be >= 1"},
+        {"pcall(shield.crypto.pbkdf2_hmac_sha256, 'p', 's', 10000001, 32)",
+         "iterations exceeds 10000000 limit"},
+        {"pcall(shield.crypto.pbkdf2_hmac_sha256, 'p', '', 1, 32)",
+         "salt must not be empty"},
+        {"pcall(shield.crypto.pbkdf2_hmac_sha256, 'p', 's', 1, 0)",
+         "derived key length must be >= 1"},
+        {"pcall(shield.crypto.pbkdf2_hmac_sha256, 'p', 's', 1, 1025)",
+         "derived key length exceeds 1024 limit"},
+    };
+    for (const auto& arm : arms) {
+        std::string code = std::string("local ok, err = ") + arm[0] +
+                           "\nassert(not ok and err:find('" + arm[1] +
+                           "', 1, true), tostring(err))";
+        BOOST_CHECK_MESSAGE(run_script(s.lua, code), arm[1]);
+    }
+}
+
+// Empty password is valid PBKDF2 input; cross-check against an independent
+// C++-side OpenSSL call (same pattern as cpp_hmac_sha256 above).
+BOOST_AUTO_TEST_CASE(Pbkdf2HmacSha256EmptyPasswordCrossCheck) {
+    CryptoState s;
+    unsigned char dk[32];
+    BOOST_REQUIRE_EQUAL(
+        PKCS5_PBKDF2_HMAC("", 0, reinterpret_cast<const unsigned char*>("s"), 1,
+                          1, EVP_sha256(), sizeof(dk), dk),
+        1);
+    std::string expect = hex_from_cpp(
+        std::string(reinterpret_cast<const char*>(dk), sizeof(dk)));
+    BOOST_CHECK(run_script(
+        s.lua,
+        "assert(shield.crypto.hex_encode(shield.crypto.pbkdf2_hmac_sha256("
+        "'', 's', 1, 32)) == '" +
+            expect + "')"));
+}
+
+BOOST_AUTO_TEST_CASE(HkdfSha256Rfc5869Vectors) {
+    CryptoState s;
+    // Test case 1: IKM=0x0b x22, salt=0x00..0x0c, info=0xf0..0xf9, L=42.
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local ikm = string.rep('\\11', 22)\n"
+        "local salt = '\\0\\1\\2\\3\\4\\5\\6\\7\\8\\9\\10\\11\\12'\n"
+        "local info = '\\240\\241\\242\\243\\244\\245\\246\\247\\248\\249'\n"
+        "assert(shield.crypto.hex_encode(shield.crypto.hkdf_sha256(ikm, "
+        "salt, info, 42)) == "
+        "'3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34"
+        "007208d5b887185865')"));
+    // Test case 2: 80-byte ranges, L=82 (exercises multi-block expand).
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local function range(a, b) "
+        "local t = {} for i = a, b do t[#t + 1] = string.char(i) end "
+        "return table.concat(t) end\n"
+        "assert(shield.crypto.hex_encode(shield.crypto.hkdf_sha256("
+        "range(0, 79), range(96, 175), range(176, 255), 82)) == "
+        "'b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c59"
+        "045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71cc30c"
+        "58179ec3e87c14c01d5c1f3434f1d87')"));
+    // Test case 3: empty salt and empty info (zero-form salt path).
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local ikm = string.rep('\\11', 22)\n"
+        "assert(shield.crypto.hex_encode(shield.crypto.hkdf_sha256(ikm, '', "
+        "'', 42)) == "
+        "'8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d"
+        "201395faa4b61a96c8')"));
+    // Non-empty salt with empty info (skips the add1 call).
+    BOOST_CHECK(run_script(
+        s.lua,
+        "local ikm = string.rep('\\11', 22)\n"
+        "assert(#shield.crypto.hkdf_sha256(ikm, 'salt', '', 32) == 32)"));
+}
+
+BOOST_AUTO_TEST_CASE(HkdfSha256GuardArms) {
+    CryptoState s;
+    const char* arms[][2] = {
+        {"pcall(shield.crypto.hkdf_sha256, '', 's', '', 32)",
+         "ikm must not be empty"},
+        {"pcall(shield.crypto.hkdf_sha256, 'ikm', 's', '', 0)",
+         "output length must be >= 1"},
+        {"pcall(shield.crypto.hkdf_sha256, 'ikm', 's', '', 8161)",
+         "exceeds RFC 5869 8160-byte limit"},
+    };
+    for (const auto& arm : arms) {
+        std::string code = std::string("local ok, err = ") + arm[0] +
+                           "\nassert(not ok and err:find('" + arm[1] +
+                           "', 1, true), tostring(err))";
+        BOOST_CHECK_MESSAGE(run_script(s.lua, code), arm[1]);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
