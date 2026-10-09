@@ -34,8 +34,12 @@ roadmap「Later」清单项（`shield.crypto` 二期：KDF / 对称加密 / 非�
       （`pending_async == 0`，30s 上限），随后再断言超时载荷未被迟到完成
       覆盖——比原断言更强（迟到 resume 必已尝试并拒绝）。kSlowSql 注释
       同步改口径：等排空等 gauge，不等墙钟。默认树 104/104 全绿 ×3。
-- [ ] 判定期望：CI 不覆盖 plugin 测试，需把 `test_db_sqlite_async` 纳入
-      某条 CI job（plugins-ci）或补最小复现，避免同类回归再次静默。
+- [x] 判定期望收口（2026-10-09）：build job 的 Linux 腿开
+      `SHIELD_BUILD_DB_PLUGIN_SQLITE=ON` +
+      `VCPKG_MANIFEST_FEATURES=database-sqlite`（走 vcpkg.json 既有
+      database-sqlite feature，清单文件不动），`test_db_sqlite_async` 与
+      facade 的 SQLITE 用例自此进入 CI ctest。Windows 腿不跟（z-applocal
+      部署竞态家族），macOS 保持与 codec 插件同口径。
 
 ## shield.crypto 二期切片 2：AES-256-GCM AEAD（2026-10-09 完成）
 

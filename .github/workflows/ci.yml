@@ -110,6 +110,17 @@ jobs:
             -DSHIELD_BUILD_PLUGIN_MSGPACK=ON
           )
 
+          # SQLite DB plugin on the Linux leg only: pulls the sqlite3 port
+          # through the manifest's database-sqlite feature (vcpkg.json stays
+          # untouched) and brings test_db_sqlite_async + the SQLITE facade
+          # cases into this job's ctest run — the only CI channel that
+          # executes the sqlite plugin suites. Windows stays off (z-applocal
+          # deploy-race family) and macOS keeps parity with the codec plugins.
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            CMAKE_ARGS+=(-DSHIELD_BUILD_DB_PLUGIN_SQLITE=ON
+                         -DVCPKG_MANIFEST_FEATURES=database-sqlite)
+          fi
+
           if [ "$RUNNER_OS" == "Windows" ]; then
             CMAKE_ARGS+=(-G "Visual Studio 18 2026" -A x64)
           else
