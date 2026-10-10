@@ -8,7 +8,9 @@
 #include <random>
 #include <shared_mutex>
 #include <thread>
+#include <utility>
 
+#include "shield/cluster/node_discovery.hpp"
 #include "shield/config/config.hpp"
 #include "shield/log/logger.hpp"
 
@@ -35,6 +37,43 @@ struct ClusterManager::Impl {
     // Drives run_tick() at heartbeat_interval_ms; started by start(),
     // joined by stop().
     std::jthread heartbeat_thread;
+    // Discovery loop (optional). Declared after heartbeat_thread so it is
+    // destroyed first (its destructor joins the loop and unregisters this
+    // node) — no dangling callbacks into a half-torn-down manager.
+    std::unique_ptr<NodeDiscovery> discovery;
+
+    // Wire the discovery callbacks and run the loop. Idempotent: both
+    // NodeDiscovery::set_callbacks (overwrite) and start() (started flag)
+    // tolerate repeated calls, so start() and a post-start
+    // set_node_discovery() can share this path.
+    void start_discovery() {
+        if (!discovery) return;
+        auto* self = this;
+        discovery->set_callbacks(
+            [self](const DiscoveredNode& node) {
+                self->add_peer(node.address);
+            },
+            [self](const std::string& node_id) {
+                self->on_discovery_lost(node_id);
+            });
+        discovery->start();
+    }
+
+    // Discovery reported a vanished record: only live nodes degrade (the
+    // transport's on_peer_down already covers definitive connection loss).
+    void on_discovery_lost(const std::string& node_id) {
+        std::unique_lock lock(mutex);
+        auto it = nodes.find(node_id);
+        if (it == nodes.end()) return;  // never adopted (or already renamed)
+        if (it->second.state != NodeState::Online &&
+            it->second.state != NodeState::Connecting) {
+            return;  // Suspect/Offline/Removed: nothing to degrade
+        }
+        auto& log = shield::log::get_logger("cluster");
+        SHIELD_LOG_WARNING(log,
+                           "Discovery lost node " + node_id + ", now suspect");
+        it->second.state = NodeState::Suspect;
+    }
 
     static int64_t now_ms() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -94,6 +133,10 @@ struct ClusterManager::Impl {
     }
 
     void add_peer(const std::string& address) {
+        // Discovery and the static peer list can announce the same dial
+        // target; a second add_peer would reset an adopted node's entry
+        // (or fork it). One entry per address, first wins.
+        if (find_by_address(address) != nodes.end()) return;
         // Peers start in Connecting; the node_id is learned during the
         // handshake (on_handshake renames the entry).
         NodeInfo info;
@@ -160,11 +203,21 @@ void ClusterManager::start() {
                                  [] { return false; });
             }
         });
+
+    // Discovery last: its callbacks (add_peer / on_discovery_lost) only
+    // touch manager state, which is fully initialized by now.
+    impl_->start_discovery();
 }
 
 void ClusterManager::stop() {
     if (!impl_->running) return;
     impl_->running = false;
+
+    // Discovery first: resetting it unregisters this node and joins the
+    // loop, so no add_peer/on_discovery_lost callback can land during
+    // teardown. No manager lock is held here — the loop's callbacks take
+    // impl_->mutex themselves.
+    impl_->discovery.reset();
 
     // Halt the scheduler before tearing node states down so tick() cannot
     // observe half-finished teardown.
@@ -381,6 +434,18 @@ std::string ClusterManager::check_node_reachable(
 
 int ClusterManager::tick() { return impl_->run_tick(); }
 
+void ClusterManager::set_node_discovery(
+    std::unique_ptr<NodeDiscovery> discovery) {
+    impl_->discovery = std::move(discovery);
+    // Attached to an already-running manager: begin discovering now
+    // (start_discovery is a no-op without a discovery object).
+    if (impl_->running) impl_->start_discovery();
+}
+
+void ClusterManager::on_discovery_lost(const std::string& node_id) {
+    impl_->on_discovery_lost(node_id);
+}
+
 ClusterConfig parse_cluster_config() {
     auto& cfg = shield::config::global_config();
     ClusterConfig cc;
@@ -396,6 +461,30 @@ ClusterConfig parse_cluster_config() {
         static_cast<int>(cfg.get_int("cluster.suspect_timeout_ms", 15000));
     cc.offline_timeout_ms =
         static_cast<int>(cfg.get_int("cluster.offline_timeout_ms", 30000));
+
+    // Optional discovery section: only `type` gates the feature, the rest
+    // fall back to DiscoveryConfig defaults.
+    if (cfg.has("cluster.discovery.type")) {
+        cc.discovery.type = cfg.get_string("cluster.discovery.type", "");
+        cc.discovery.host =
+            cfg.get_string("cluster.discovery.host", cc.discovery.host);
+        cc.discovery.port = static_cast<int>(
+            cfg.get_int("cluster.discovery.port", cc.discovery.port));
+        cc.discovery.password =
+            cfg.get_string("cluster.discovery.password", cc.discovery.password);
+        cc.discovery.db = static_cast<int>(
+            cfg.get_int("cluster.discovery.db", cc.discovery.db));
+        cc.discovery.prefix =
+            cfg.get_string("cluster.discovery.prefix", cc.discovery.prefix);
+        cc.discovery.ttl_seconds = static_cast<int>(cfg.get_int(
+            "cluster.discovery.ttl_seconds", cc.discovery.ttl_seconds));
+        cc.discovery.heartbeat_interval_ms = static_cast<int>(
+            cfg.get_int("cluster.discovery.heartbeat_interval_ms",
+                        cc.discovery.heartbeat_interval_ms));
+        cc.discovery.scan_interval_ms =
+            static_cast<int>(cfg.get_int("cluster.discovery.scan_interval_ms",
+                                         cc.discovery.scan_interval_ms));
+    }
 
     // Parse peers list. Accept YAML sequences and comma/newline-separated
     // scalars.

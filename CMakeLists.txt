@@ -507,6 +507,7 @@ if(SHIELD_ENABLE_CLUSTER)
     add_library(shield_cluster STATIC
         src/cluster/cluster_manager.cpp
         src/cluster/cluster_transport.cpp
+        src/cluster/node_discovery.cpp
     )
     target_include_directories(shield_cluster
         PUBLIC
@@ -516,8 +517,17 @@ if(SHIELD_ENABLE_CLUSTER)
     target_compile_definitions(shield_cluster
         PUBLIC SHIELD_ENABLE_CLUSTER
     )
+    # Node discovery's Redis backend (redis++, same dual-form pick as the
+    # redis.driver plugin: vcpkg static-only builds export
+    # redis++::redis++_static, shared builds redis++::redis++).
+    if(TARGET redis++::redis++)
+        set(SHIELD_CLUSTER_REDISPP_TARGET redis++::redis++)
+    else()
+        set(SHIELD_CLUSTER_REDISPP_TARGET redis++::redis++_static)
+    endif()
     target_link_libraries(shield_cluster
         PUBLIC shield_base shield_log shield_config CAF::core CAF::io
+        PRIVATE ${SHIELD_CLUSTER_REDISPP_TARGET}
     )
     message(STATUS "shield_cluster: enabled")
 endif()

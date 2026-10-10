@@ -31,6 +31,21 @@ struct NodeInfo {
     uint64_t epoch = 0;  // node epoch for stale handle detection
 };
 
+/// @brief Service-discovery settings, parsed from the `cluster.discovery`
+/// config section. The manager itself stays transport-focused: discovery
+/// only feeds it peer addresses (see NodeDiscovery in node_discovery.hpp).
+struct DiscoveryConfig {
+    std::string type;  // "" (disabled), "redis"
+    std::string host = "127.0.0.1";
+    int port = 6379;
+    std::string password;
+    int db = 0;
+    std::string prefix = "shield:nodes";
+    int ttl_seconds = 10;
+    int heartbeat_interval_ms = 3000;  // registration renewal cadence
+    int scan_interval_ms = 3000;       // peer list refresh cadence
+};
+
 /// @brief Cluster configuration parsed from YAML
 struct ClusterConfig {
     bool enabled = false;
@@ -40,6 +55,7 @@ struct ClusterConfig {
     int heartbeat_interval_ms = 5000;
     int suspect_timeout_ms = 15000;
     int offline_timeout_ms = 30000;
+    DiscoveryConfig discovery;
 };
 
 /// @brief Callback for cross-node message delivery (M4). call_session != 0
@@ -49,6 +65,8 @@ using RemoteSendFn = std::function<bool(
     const std::string& target_node, const std::string& service_id,
     const std::string& method, const std::string& args_json,
     uint64_t call_session, int32_t timeout_ms, std::string* error)>;
+
+class NodeDiscovery;
 
 /// @brief Cluster manager: manages node connections, heartbeat, and routing.
 ///
@@ -170,6 +188,21 @@ public:
     /// @brief Process cluster tick (heartbeat, timeout checks)
     /// @return Number of state changes
     int tick();
+
+    // -- Node discovery (Phase 2) --------------------------------------------
+    // A NodeDiscovery loop publishes this node to a shared registry (Redis)
+    // and watches for peers. Discovered addresses enter the node table via
+    // the same path as configured peers (add_peer, Connecting -> the
+    // transport dials them); a vanished record degrades the node to Suspect.
+
+    /// @brief Attach a discovery source (ownership transfers). Attaching
+    /// before start() arms it for start(); attaching after start() begins
+    /// discovering immediately.
+    void set_node_discovery(std::unique_ptr<NodeDiscovery> discovery);
+
+    /// @brief A discovered node's registry record disappeared (TTL expiry
+    /// or graceful unregister): Online/Connecting nodes degrade to Suspect.
+    void on_discovery_lost(const std::string& node_id);
 
 private:
     struct Impl;

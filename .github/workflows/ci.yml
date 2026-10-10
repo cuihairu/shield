@@ -59,7 +59,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config redis-server
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
@@ -226,7 +226,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config redis-server
 
       - name: Export GHA cache credentials
         uses: actions/github-script@v9
@@ -287,7 +287,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config redis-server
           python3 -m pip install gcovr==8.6
 
       - name: Export GHA cache credentials
@@ -395,7 +395,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config redis-server
           python3 -m pip install gcovr==8.6
 
       - name: Export GHA cache credentials
@@ -494,7 +494,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config redis-server
 
       - name: Export GHA cache credentials
         uses: actions/github-script@v9

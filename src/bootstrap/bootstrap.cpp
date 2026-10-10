@@ -14,6 +14,7 @@
 #ifdef SHIELD_ENABLE_CLUSTER
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/cluster/cluster_transport.hpp"
+#include "shield/cluster/node_discovery.hpp"
 #endif
 #ifdef SHIELD_ENABLE_PLAYER
 #include "shield/player/player_manager.hpp"
@@ -525,6 +526,14 @@ static bool initialize_impl(const RuntimeConfig& config) {
         }
         g_state->cluster_manager =
             std::make_unique<shield::cluster::ClusterManager>(cluster_config);
+        // Optional discovery (cluster.discovery.type): attach before start
+        // so the first registration/scan rides the normal startup path.
+        // A null return (type "" or unknown) keeps static-peer-only mode.
+        if (auto discovery = shield::cluster::make_node_discovery(
+                cluster_config.discovery, cluster_config.node_id,
+                cluster_config.listen_address)) {
+            g_state->cluster_manager->set_node_discovery(std::move(discovery));
+        }
         g_state->cluster_manager->start();
         shield::cluster::set_global_cluster_manager(
             g_state->cluster_manager.get());

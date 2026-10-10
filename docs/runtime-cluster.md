@@ -136,8 +136,8 @@ Lua service
 | 方案 | 适用场景 | 外部依赖 | 配置方式 |
 |------|----------|----------|----------|
 | **静态配置** | 开发/测试/小型部署 | 无 | `cluster.peers` |
+| **Redis** | 小型部署/已有 Redis | Redis | `cluster.discovery.type: redis` |
 | 广播发现 | Phase 2+ | 无 | `cluster.discovery: broadcast` |
-| Redis | Phase 2+ | Redis | `cluster.discovery: redis` |
 | Kubernetes | Phase 2+ | K8s API | `cluster.discovery: kubernetes` |
 | Etcd/Consul | Phase 2+ | Etcd/Consul | `cluster.discovery: etcd` |
 
@@ -173,9 +173,11 @@ cluster:
 - 收到广播的节点自动建立连接
 - 节点离开时通过心跳超时检测
 
-### Redis 服务发现（Phase 2+）
+### Redis 服务发现（已实现）
 
 基于 Redis 的服务发现，适合小型游戏和已有 Redis 的项目。成本低、实现简单、可靠性足够。
+存储走 redis++（与 redis.driver 插件同款依赖），连接懒建立——配置了不可达的
+Redis 只会在日志里持续告警，不影响进程启动。
 
 ```yaml
 cluster:
@@ -183,14 +185,14 @@ cluster:
   listen: "0.0.0.0:9000"
   discovery:
     type: redis
-    redis:
-      host: "localhost"
-      port: 6379
-      password: ""
-      db: 0
-      prefix: "shield:nodes"    # Redis key 前缀
-      ttl: 10                   # 节点注册 TTL（秒）
-      heartbeat_interval: 3000  # 心跳间隔（ms）
+    host: "127.0.0.1"
+    port: 6379
+    password: ""              # 可选
+    db: 0
+    prefix: "shield:nodes"    # Redis key 前缀
+    ttl_seconds: 10           # 节点注册 TTL（秒）
+    heartbeat_interval_ms: 3000  # 注册续期间隔（ms）
+    scan_interval_ms: 3000       # 节点列表扫描间隔（ms）
 ```
 
 **工作原理：**
@@ -198,23 +200,34 @@ cluster:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  1. 节点启动                                             │
-│     - 连接 Redis                                        │
+│     - 懒连接 Redis（首次命令时才真正建连）                 │
 │     - 注册节点信息到 Redis                                │
 │     - 设置 TTL（默认 10 秒）                              │
 ├─────────────────────────────────────────────────────────┤
 │  2. 心跳续期                                             │
-│     - 每 3 秒续期一次                                    │
+│     - 每 heartbeat_interval_ms 续期一次                  │
 │     - 更新节点时间戳                                     │
 ├─────────────────────────────────────────────────────────┤
 │  3. 发现其他节点                                         │
 │     - 定期扫描 Redis 中的节点列表                         │
-│     - 建立连接                                           │
+│     - 新节点经 add_peer 进入 ClusterManager（Connecting） │
+│     - 由 ClusterTransport 的连接循环照常拨号              │
 ├─────────────────────────────────────────────────────────┤
 │  4. 节点下线                                             │
 │     - 正常关闭：主动删除 Redis key                        │
 │     - 异常崩溃：TTL 过期自动删除                           │
+│     - 记录消失：管理器把该节点降级为 Suspect               │
 └─────────────────────────────────────────────────────────┘
 ```
+
+**实现结构（`node_discovery.hpp/.cpp`）：**
+
+- `NodeDiscoveryBackend`：存储接缝（register/heartbeat/scan/unregister），
+  测试用内存 fake 替身，无需真实 Redis。
+- `NodeDiscovery`：注册/心跳/扫描循环，`scan` 失败时跳过本轮差分（不会把
+  全部已知节点误报掉线），发现回调注入地址、丢失回调降级 Suspect。
+- `make_node_discovery(cfg, node_id, listen)`：按 `discovery.type` 分派，
+  空/未知类型返回 nullptr（纯静态 peer 模式）。
 
 **Redis 数据结构：**
 
@@ -223,14 +236,11 @@ cluster:
 HSET shield:nodes:node-1
   addr "192.168.1.100:9000"
   status "online"
-  started_at "1234567890"
-  last_heartbeat "1234567893"
+  started_at "..."
+  last_heartbeat "..."
 
 # 节点列表（Set）
 SADD shield:nodes "node-1" "node-2" "node-3"
-
-# 节点计数
-GET shield:nodes:count  # "3"
 ```
 
 **优点：**
@@ -363,7 +373,6 @@ cluster:
 - 玩家迁移、全局锁、排行榜、跨节点配置推送。
 
 **后续扩展：**
-- Redis discovery。
 - Kubernetes 集成
 - Etcd/Consul 集成
 - 高级路由策略

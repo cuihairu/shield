@@ -439,6 +439,11 @@ BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     // 0.0.0.0:9000 — pin it to a free loopback port so foreign processes
     // cannot collide with the bind.
     uint16_t cluster_port = free_port();
+    // cluster.discovery.type: redis covers the bootstrap wiring arm; the
+    // port is intentionally closed (nobody listens), so the backend's
+    // register/heartbeat failures are logged and non-fatal. Short
+    // intervals keep the shutdown join bounded.
+    uint16_t dead_redis_port = free_port();
 
     std::string yaml;
     yaml += "app:\n  name: cov\n";
@@ -449,6 +454,9 @@ BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     yaml += "http:\n  enabled: true\n  host: 127.0.0.1\n  port: \"0\"\n";
     yaml +=
         "cluster:\n  listen: 127.0.0.1:" + std::to_string(cluster_port) + "\n";
+    yaml += "  discovery:\n    type: redis\n";
+    yaml += "    port: " + std::to_string(dead_redis_port) + "\n";
+    yaml += "    heartbeat_interval_ms: 50\n    scan_interval_ms: 50\n";
     yaml += "actors:\n";
     // Resolved through the config file's directory (source_dir).
     yaml += "  - name: srcsvc\n    script: echo_src.lua\n";

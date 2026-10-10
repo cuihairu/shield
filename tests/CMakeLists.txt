@@ -459,6 +459,25 @@ if(SHIELD_ENABLE_CLUSTER)
         # lua_api suite).
         WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
     shield_copy_runtime_dlls(test_cluster_transport)
+
+    # Node discovery (Phase 2): loop semantics against a fake backend plus
+    # the real redis++ backend against a self-spawned redis-server (random
+    # free port, spawned per case — the redis-server binary must be on
+    # PATH; the cases skip when it is not).
+    add_executable(test_node_discovery cluster/test_node_discovery.cpp)
+    target_link_libraries(test_node_discovery
+        PRIVATE
+            shield_cluster
+            Boost::unit_test_framework
+            Boost::headers
+    )
+    target_include_directories(test_node_discovery
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_node_discovery COMMAND test_node_discovery)
+    set_tests_properties(test_node_discovery PROPERTIES
+        LABELS "cluster;coverage"
+        TIMEOUT 120)
+    shield_copy_runtime_dlls(test_node_discovery)
 endif()
 
 # ---------------------------------------------------------------------------

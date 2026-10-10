@@ -1100,3 +1100,20 @@ CI 三 job 观察（含新 coverage-optional 首跑）；禁 tag/release。
 **备注**：branch 口径总计 99.03%（含九文件 98.95% + 全 src 其余 TU 补足），显著优于基线 93%；cluster_transport 从 77% 提至 100% 为最大改善。
 
 禁 tag/release/force push。
+
+## 批次：cluster Redis 服务发现切片 1（2026-10-10）
+
+**范围**：`NodeDiscoveryBackend` 接缝 + 注册/心跳/扫描循环 + redis++ 后端 + ClusterManager 集成（发现→add_peer→Connecting→transport 拨号；丢失→Suspect）+ bootstrap 接线 + 配置解析（`cluster.discovery.*` 扁平键）+ 文档。
+
+**验收证据**：
+- 五树门禁全绿：build 107/107、build-net 99/99、build-plug 101/101、build-dbg 97/97、build-cov 103/103（单任务串行，gcda 先清）。
+- gcovr 8.6（venv 对齐 CI，7.2 会假绿）optional-module 口径 TOTAL 5445/5445 **100%**；cluster 三文件 818/818 100%（cluster_manager 313、cluster_transport 352、node_discovery 153）。
+- test_node_discovery 13 例：fake backend 循环语义（注册/心跳续期/发现/丢失/后端故障不杀循环/stop 幂等）、manager 集成（dup 地址去重、adopt 后 Suspect、stop 注销）、配置解析、工厂分派、真实 redis-server 自起（随机端口 spawn，生命周期/TTL 过期/双节点端到端/closed-port 抛错）。
+- CI 两条腿（cluster、coverage-optional）apt 加 redis-server；测试自起随机端口实例，无固定端口。
+
+**坑（新指纹）**：
+- **NodeDiscovery 拥有 backend（unique_ptr）**：manager 测试里 `mgr.stop()` 析构 loop+backend 后，测试裸指针悬空，对已释放 mutex 加锁 → 永久阻塞（gdb 抓到 Thread 1 卡在 FakeBackend::mu）。修法：测试侧 shared_ptr 持有 + 转发适配器（SharedBackendHandle）。判别法：单线程卡 futex 且无 socket/子进程 → 先查 UAF 再查死锁。
+- bootstrap.cpp 需显式 include node_discovery.hpp（工厂声明在该头）。
+- gcovr 版本必须 8.6（本机 7.2 假绿）；venv 在 /home/cui/gate-work/venv86。
+
+禁 tag/release/force push。
