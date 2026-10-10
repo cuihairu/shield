@@ -915,14 +915,23 @@ add_test(NAME shield_source_boundary_check
 if(SHIELD_ENABLE_GLOBAL)
     add_library(shield_global STATIC
         src/global/global_manager.cpp
+        src/global/global_data_backend.cpp
     )
     target_include_directories(shield_global
         PUBLIC
             ${PROJECT_SOURCE_DIR}/include
             ${CMAKE_CURRENT_BINARY_DIR}/include
     )
+    # The data backend's Redis impl (redis++, same dual-form pick as the
+    # cluster discovery backend).
+    if(TARGET redis++::redis++)
+        set(SHIELD_GLOBAL_REDISPP_TARGET redis++::redis++)
+    else()
+        set(SHIELD_GLOBAL_REDISPP_TARGET redis++::redis++_static)
+    endif()
     target_link_libraries(shield_global
         PUBLIC shield_base shield_log shield_config
+        PRIVATE ${SHIELD_GLOBAL_REDISPP_TARGET}
     )
     message(STATUS "shield_global: enabled")
 endif()

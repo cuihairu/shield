@@ -550,6 +550,23 @@ if(SHIELD_ENABLE_GLOBAL)
         LABELS "global;coverage"
         TIMEOUT 120)
     shield_copy_runtime_dlls(test_global_manager)
+
+    add_executable(test_global_data_backend
+                   global/test_global_data_backend.cpp)
+    target_link_libraries(test_global_data_backend
+        PRIVATE
+            shield_global
+            shield_config
+            Boost::unit_test_framework
+            Boost::headers
+    )
+    target_include_directories(test_global_data_backend
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    add_test(NAME test_global_data_backend COMMAND test_global_data_backend)
+    set_tests_properties(test_global_data_backend PROPERTIES
+        LABELS "global;coverage"
+        TIMEOUT 120)
+    shield_copy_runtime_dlls(test_global_data_backend)
 endif()
 
 # Coverage-focused unit tests (one executable per src/ module).

@@ -455,6 +455,7 @@ jobs:
             --filter '\.\./src/console/server_status\.cpp' \
             --filter '\.\./src/lua/lua_api\.cpp' \
             --filter '\.\./src/global/global_manager\.cpp' \
+            --filter '\.\./src/global/global_data_backend\.cpp' \
             --filter '\.\./src/bootstrap/bootstrap\.cpp' \
             --txt coverage-optional.txt \
             --txt-metric line \

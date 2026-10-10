@@ -2,7 +2,7 @@
 
 > 状态：P0 已落地（`SHIELD_ENABLE_GLOBAL=ON`；测试矩阵 `tests/lua_api/test_lua_api_global.cpp`）。
 >
-> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/广播/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数均为 Phase 2+ 形态；P0 两种算法全程进程内计算，零 Redis 调用，不存在"Redis 不可用"降级语义）；`shield.priority_queue` 与 `shield.broadcast_queue` 已实现（前者进程内多级队列，值越小越优先、同优先级 FIFO；后者进程内为有界 history + 每组 cursor，实时回调分发发生在推送方 VM，离线组在重新 subscribe 时按序补发——跨进程实时广播 Pub/Sub 留 Phase 2+）；Redis 后端尚未实现（见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
+> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/广播/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数均为 Phase 2+ 形态；P0 两种算法全程进程内计算，零 Redis 调用，不存在"Redis 不可用"降级语义）；`shield.priority_queue` 与 `shield.broadcast_queue` 已实现（前者进程内多级队列，值越小越优先、同优先级 FIFO；后者进程内为有界 history + 每组 cursor，实时回调分发发生在推送方 VM，离线组在重新 subscribe 时按序补发——跨进程实时广播 Pub/Sub 留 Phase 2+）；KV 数据域的 Redis 后端已实现（`global.data_backend = redis`，见"配置"一节；锁/队列/排行/调度/限流的 Redis 后端仍为 Phase 2+，见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
 
 本文档包含 Shield 跨进程共享数据、分布式锁、排行榜、消息队列等全局能力的运行时语义决策。
 
@@ -212,6 +212,30 @@ global:
     max_size: 10000
     default_ttl: 60000
 ```
+
+#### 数据域 Redis 后端（已实现）
+
+KV 数据域支持把存储切到 Redis：`global.data_backend` 取 `""`（默认，进程内存）或 `"redis"`；选 `redis` 时 `global.redis.host` 必填，其余键可省：
+
+```yaml
+global:
+  data_backend: redis
+  redis:
+    host: 127.0.0.1
+    port: 6379          # 默认 6379
+    password: ""        # 默认空（不鉴权）
+    db: 0               # 默认 0
+    prefix: shield:global  # 键前缀，实际存储键为 `<prefix>:<key>`
+```
+
+实现语义（`GlobalDataBackend` 接缝，`src/global/global_data_backend.cpp`）：
+
+- **懒连接**：构造永不阻塞；首次命令才建立 redis++ 连接。连接失败时命令抛异常，向上传到 Lua 面（无静默降级——跨进程后端静默回退进程内存会造成脑裂）。
+- **TTL**：`set(key, value, ttl)` 的 `ttl` 经 PEXPIRE 下发（毫秒精度）；`ttl = 0` 表示永不过期，且会 PERSIST 清掉上次写入留下的 TTL（与进程内语义一致）。
+- **incr**：INCRBY；对非整数值 Redis 报错，映射为与进程内相同的错误串（`value of '...' is not an integer`）。
+- **mget/mset**：MGET / MSET（mset 再逐键 PEXPIRE）；`size()` 用 SCAN `prefix:*` 计数。
+- **缓存一致性**：本地缓存（LRU）留在 `GlobalManager` 委托层——写、删、incr 与惰性过期都会丢弃该键的缓存副本。本地缓存是按 TTL 有界的：Redis 后端下其他进程写入本进程不会立刻感知，缓存副本在自身 TTL 到期前可能短暂陈旧。
+- **隔离**：不同部署共用一个 Redis 实例时用不同 `prefix`。
 
 ---
 
@@ -1147,7 +1171,7 @@ GET /ops/scheduler
 
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
-| 全局数据 + 本地缓存 | P0 | 核心功能 |
+| 全局数据 + 本地缓存 | P0 | 核心功能；KV 数据域 Redis 后端已实现（`global.data_backend = redis`），本地缓存按 TTL 有界（跨进程写入存在短暂陈旧窗口） |
 | 分布式锁（重入、续期） | P0 | 全局操作必需 |
 | 排行榜 | P0 | 游戏标配 |
 | 普通队列 | P0 | 异步任务 |

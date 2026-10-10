@@ -241,6 +241,12 @@ bool GlobalConfig::from_global_config(GlobalConfig* out, std::string* error) {
         cfg.get_int("global.cache.default_ttl", 60000));
     out->scheduler_tick_ms = static_cast<std::uint64_t>(
         cfg.get_int("global.scheduler.tick_ms", 250));
+    out->data_backend = cfg.get_string("global.data_backend", "");
+    out->redis_host = cfg.get_string("global.redis.host", "");
+    out->redis_port = static_cast<int>(cfg.get_int("global.redis.port", 6379));
+    out->redis_password = cfg.get_string("global.redis.password", "");
+    out->redis_db = static_cast<int>(cfg.get_int("global.redis.db", 0));
+    out->redis_prefix = cfg.get_string("global.redis.prefix", "shield:global");
     (void)error;
     return true;
 }
@@ -262,11 +268,45 @@ bool validate_global_config(const GlobalConfig& config, std::string* error) {
                                                            // out-param arm)
         return false;
     }
+    if (config.data_backend != "redis" && !config.data_backend.empty()) {
+        if (error)
+            *error = "global.data_backend must be \"\" or \"redis\" (got \"" +
+                     config.data_backend +
+                     "\")";  // GCOVR_EXCL_BR_LINE (null error out-param arm)
+        return false;
+    }
+    if (config.data_backend == "redis" && config.redis_host.empty()) {
+        if (error)
+            *error =
+                "global.redis.host is required when global.data_backend "
+                "is redis";  // GCOVR_EXCL_BR_LINE (null error out-param
+                             // arm)
+        return false;
+    }
     return true;
 }
 
-GlobalManager::GlobalManager(GlobalConfig config)
-    : config_(std::move(config)) {}
+GlobalManager::GlobalManager(GlobalConfig config) : config_(std::move(config)) {
+    if (config_.data_backend == "redis") {
+        RedisDataBackendConfig redis;
+        redis.host = config_.redis_host;
+        redis.port = config_.redis_port;
+        redis.password = config_.redis_password;
+        redis.db = config_.redis_db;
+        redis.prefix = config_.redis_prefix;
+        data_backend_ = make_redis_data_backend(redis);
+    } else {
+        if (!config_.data_backend.empty()) {
+            // Validation rejects unknown values; direct construction falls
+            // back to process memory with a warning.
+            SHIELD_LOG_WARNING(
+                shield::log::get_logger("global"),
+                "Unknown global.data_backend: " + config_.data_backend +
+                    " (using process memory)");
+        }
+        data_backend_ = make_inprocess_data_backend();
+    }
+}
 
 GlobalManager::~GlobalManager() { stop(); }
 
@@ -325,137 +365,82 @@ void GlobalManager::stop() {
 }
 
 // ---- global data ----
+//
+// Every data_* method delegates to the GlobalDataBackend seam. The
+// data_mutex_ guards the delegation AND the local cache, so the manager's
+// view of a key cannot interleave with another thread's write (the backend
+// takes its own locks inside).
+
+void GlobalManager::set_data_backend(
+    std::unique_ptr<GlobalDataBackend> backend) {
+    if (!backend) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    data_backend_ = std::move(backend);
+}
 
 bool GlobalManager::data_get(const std::string& key, std::string* out) {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    auto it = data_.find(key);
-    if (it == data_.end()) {
-        return false;
+    const bool found = data_backend_->get(key, out);
+    if (!found) {
+        // A lazily expired entry must also drop the cached copy.
+        cache_drop_locked(key);
     }
-    auto exp = data_expire_.find(key);
-    if (exp != data_expire_.end() && exp->second <= now_ms()) {
-        data_.erase(it);
-        data_expire_.erase(exp);
-        // A lazy data expiry must also drop the cached copy.
-        auto idx = cache_index_.find(key);
-        if (idx != cache_index_.end()) {
-            cache_lru_.erase(idx->second);
-            cache_index_.erase(idx);
-            cache_expire_.erase(key);
-        }
-        return false;
-    }
-    if (out) {
-        *out = it->second;
-    }
-    return true;
+    return found;
 }
 
 void GlobalManager::data_set(const std::string& key, std::string value,
                              std::uint64_t ttl_ms) {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    data_[key] = std::move(value);
-    if (ttl_ms != 0) {
-        data_expire_[key] = now_ms() + ttl_ms;
-    } else {
-        data_expire_.erase(key);
-    }
+    data_backend_->set(key, std::move(value), ttl_ms);
     // Writes invalidate the cached copy (cache coherence contract).
-    auto idx = cache_index_.find(key);
-    if (idx != cache_index_.end()) {
-        cache_lru_.erase(idx->second);
-        cache_index_.erase(idx);
-        cache_expire_.erase(key);
-    }
+    cache_drop_locked(key);
 }
 
 bool GlobalManager::data_delete(const std::string& key) {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    const bool erased = data_.erase(key) != 0;
-    data_expire_.erase(key);
-    auto idx = cache_index_.find(key);
-    if (idx != cache_index_.end()) {
-        cache_lru_.erase(idx->second);
-        cache_index_.erase(idx);
-        cache_expire_.erase(key);
-    }
+    const bool erased = data_backend_->del(key);
+    cache_drop_locked(key);
     return erased;
 }
 
 bool GlobalManager::data_incr_by(const std::string& key, std::int64_t delta,
                                  std::int64_t* out, std::string* error) {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    auto exp = data_expire_.find(key);
-    if (exp != data_expire_.end() && exp->second <= now_ms()) {
-        data_.erase(key);
-        data_expire_.erase(exp);
+    if (!data_backend_->incr_by(key, delta, out, error)) {
+        return false;
     }
-    auto it = data_.find(key);
-    std::int64_t current = 0;
-    if (it != data_.end()) {
-        const std::string& text = it->second;
-        char* end = nullptr;
-        const long long parsed = std::strtoll(text.c_str(), &end, 10);
-        if (text.empty() ||    // GCOVR_EXCL_BR_LINE (defensive: glibc strtoll
-                               // always stores a non-null end, so the
-                               // end==nullptr arm is unreachable; the
-                               // remaining arms are parse-guard variants)
-            end == nullptr ||  // GCOVR_EXCL_BR_LINE (defensive: glibc strtoll
-                               // always stores a non-null end; unparsable
-                               // tails are driven by DataIncrEdgeArms)
-            end != text.c_str() + text.size()) {
-            if (error) {  // GCOVR_EXCL_BR_LINE (null error out-param arm)
-                *error = "value of '" + key + "' is not an integer";
-            }
-            return false;
-        }
-        current = static_cast<std::int64_t>(parsed);
-    }
-    current += delta;
-    data_[key] = std::to_string(current);
-    if (out) {  // GCOVR_EXCL_BR_LINE (null out-param arm)
-        *out = current;
-    }
+    // An increment is a write: drop the cached copy.
+    cache_drop_locked(key);
     return true;
 }
 
 std::vector<std::optional<std::string>> GlobalManager::data_mget(
     const std::vector<std::string>& keys) {
-    std::vector<std::optional<std::string>> values;
-    values.reserve(keys.size());
-    for (const auto& key : keys) {
-        std::string value;
-        if (data_get(key, &value)) {
-            values.emplace_back(std::move(value));
-        } else {
-            values.emplace_back();
-        }
-    }
-    return values;
-}  // GCOVR_EXCL_LINE (fn-close artifact)
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    return data_backend_->mget(keys);
+}
 
 bool GlobalManager::data_mset(
     const std::vector<std::pair<std::string, std::string>>& kvs,
     std::uint64_t ttl_ms, std::string* error) {
-    for (const auto& [key, value] : kvs) {
-        if (key.empty()) {
+    for (const auto& kv : kvs) {
+        if (kv.first.empty()) {
             if (error)
                 *error =
                     "mset key must not be empty";  // GCOVR_EXCL_BR_LINE (null
                                                    // error out-param arm)
             return false;
         }
-        (void)value;
     }
-    for (const auto& [key, value] : kvs) {
-        data_set(key, value, ttl_ms);
-    }
-    return true;
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    return data_backend_->mset(kvs, ttl_ms, error);
 }
 
 std::size_t GlobalManager::data_size() {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    return data_.size();
+    return data_backend_->size();
 }
 
 // ---- local cache ----
@@ -482,22 +467,18 @@ bool GlobalManager::cache_get(const std::string& key, std::uint64_t ttl_ms,
         }
     }
     ++cache_misses_;
-    // Miss: fill from the data domain (respecting its TTL too).
-    auto it = data_.find(key);
-    auto data_exp = data_expire_.find(key);
-    if (it == data_.end() ||
-        (data_exp != data_expire_.end() && data_exp->second <= now)) {
-        if (it != data_.end()) {
-            data_.erase(it);
-            data_expire_.erase(data_exp);
-        }
+    // Miss: fill from the backend. A cache entry for the key cannot exist
+    // here (an expired one was dropped above); the backend's lazy expiry
+    // already ran when its get() returned false.
+    std::string value;
+    if (!data_backend_->get(key, &value)) {
         return false;
     }
     const std::uint64_t effective_ttl =
         ttl_ms != 0 ? ttl_ms
                     : config_.cache_default_ttl_ms;  // GCOVR_EXCL_BR_LINE
                                                      // (TTL=0 ternary arms)
-    cache_lru_.emplace_front(key, it->second);
+    cache_lru_.emplace_front(key, value);
     cache_index_[key] = cache_lru_.begin();
     if (effective_ttl != 0) {
         cache_expire_[key] = now + effective_ttl;
@@ -511,19 +492,23 @@ bool GlobalManager::cache_get(const std::string& key, std::uint64_t ttl_ms,
         cache_lru_.pop_back();
     }
     if (out) {  // GCOVR_EXCL_BR_LINE (null out-param arm)
-        *out = it->second;
+        *out = value;
     }
     return true;
 }
 
-void GlobalManager::cache_invalidate(const std::string& key) {
-    std::lock_guard<std::mutex> lock(data_mutex_);
+void GlobalManager::cache_drop_locked(const std::string& key) {
     auto idx = cache_index_.find(key);
     if (idx != cache_index_.end()) {
         cache_lru_.erase(idx->second);
         cache_index_.erase(idx);
         cache_expire_.erase(key);
     }
+}
+
+void GlobalManager::cache_invalidate(const std::string& key) {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    cache_drop_locked(key);
 }
 
 void GlobalManager::cache_clear() {

@@ -1117,3 +1117,20 @@ CI 三 job 观察（含新 coverage-optional 首跑）；禁 tag/release。
 - gcovr 版本必须 8.6（本机 7.2 假绿）；venv 在 /home/cui/gate-work/venv86。
 
 禁 tag/release/force push。
+
+## 批次：shield_global 数据域 Redis 后端切片 1（2026-10-10）
+
+**范围**：`GlobalDataBackend` 接缝（include/shield/global/global_data_backend.hpp）+ 进程内实现（从 GlobalManager 数据域逐字抽取，含惰性过期与 incr 解析守卫）+ redis++ 实现（懒连接 / PEXPIRE / INCRBY / MGET-MSET / SCAN 计数）+ GlobalManager 委托层（缓存一致性留在 manager：写/删/incr/惰性过期均丢缓存副本）+ 配置（`global.data_backend` + `global.redis.*` 扁平键、validate 两臂）+ 测试 + 文档。锁/队列/排行/调度/限流的 Redis 后端留后续切片。
+
+**验收证据**：
+- test_global_data_backend 22 例全绿：进程内后端语义、manager 委托与缓存一致性（incr 落缓存丢副本为 P0 缺口修复）、配置解析与 validate 双臂、fake backend 全 7 方法路由（shared state 防 UAF）、真实 redis-server 自起（生命周期/TTL-服务器端过期/incr 非整数错误映射/mget-mset-size/前缀隔离/closed-port 抛错/manager Redis 端到端）。
+- test_global_manager 既有 76 例无回归。
+- 五树门禁全绿：build 107 / build-net 99 / build-plug 101 / build-dbg 97 / build-cov 104（ctest EXIT=0）。
+- gcovr 8.6 optional 口径（CI 过滤表新增 global_data_backend.cpp）**5598/5598 行 100% EXIT=0**（global_data_backend.cpp 167/167）。
+
+**坑（新指纹）**：
+- **redis++（vcpkg）OptionalString 不是 std::optional**：本 vcpkg 构建缺 REDIS_PLUS_PLUS_HAS_OPTIONAL，Optional<T> 是 cxx_utils.h 自带类（explicit operator bool + operator*）。mget 输出迭代器要接 vector<OptionalString> 再手转 std::optional，否则 `parse_reply<std::optional<string>>` 无匹配编译错。
+- **mget/mset 忘加键前缀的假象**：GET/PEXPIRE/SCAN 都 prefixed 而 MSET/MGET 透传裸键 → mget 自读自写全绿、size()（SCAN 带 prefix）恒 0。判别法：MONITOR 抓原始命令字节（`redis-cli monitor`），一眼看出哪些命令没走 prefixed()。
+- 单调性：缓存的 cache_get 填充路径现在持 data_mutex_ 调 backend->get，委托方法全程持锁——方向恒 manager→backend，无反向回调，无死锁环。
+
+禁 tag/release/force push。

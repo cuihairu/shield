@@ -6,10 +6,10 @@
 // no Lua binding; the Lua facade lives in shield_lua, task callbacks are
 // injected as std::function so shield_global never links shield_lua.
 //
-// P0 backend is process memory (the runtime-global.md Redis backend needs
-// atomic primitives the data-plugin vtables do not expose yet; the seam is
-// this class, so a cross-process backend can slot in without touching the
-// Lua surface).
+// P0 backend is process memory; the data domain (KV + TTL) also has a Redis
+// backend behind the GlobalDataBackend seam (`global.data_backend = redis`),
+// while locks / ranks / queues / scheduler / rate limiter stay in-process
+// (Phase 2+). The seam keeps the Lua surface untouched.
 #pragma once
 
 #include <condition_variable>
@@ -18,12 +18,15 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#include "shield/global/global_data_backend.hpp"
 
 namespace shield::global {
 
@@ -33,6 +36,15 @@ struct GlobalConfig {
     std::uint64_t cache_max_size = 10000;
     std::uint64_t cache_default_ttl_ms = 60000;
     std::uint64_t scheduler_tick_ms = 250;
+
+    /// Data-domain backend: "" (process memory, default) or "redis".
+    /// Anything else fails validation.
+    std::string data_backend;
+    std::string redis_host;
+    int redis_port = 6379;
+    std::string redis_password;
+    int redis_db = 0;
+    std::string redis_prefix = "shield:global";
 
     /// Reads the `global` section from the global config. Returns false
     /// with `error` set when a present section fails validation.
@@ -193,6 +205,10 @@ public:
     /// Stops the tick thread and drops the injected callbacks (bootstrap
     /// teardown; also run by the destructor).
     void stop();
+
+    /// Replaces the data-domain backend (test injection; the constructor
+    /// picks the backend from GlobalConfig). Ignored on null.
+    void set_data_backend(std::unique_ptr<GlobalDataBackend> backend);
 
     // ---- global data (JSON text values, optional TTL) ----
     bool data_get(const std::string& key, std::string* out);
@@ -426,6 +442,9 @@ private:
     };
 
     // Shared helpers (each domain lock must already be held).
+    /// Drops the key's cached copy (data_mutex_ must be held); part of the
+    /// cache-coherence contract shared by every data write / lazy expiry.
+    void cache_drop_locked(const std::string& key);
     bool mutex_try_acquire_locked(
         std::unordered_map<std::string, MutexEntry>& registry,
         const std::string& name, const std::string& owner,
@@ -438,9 +457,11 @@ private:
 
     GlobalConfig config_;
 
-    mutable std::mutex data_mutex_;
-    std::unordered_map<std::string, std::uint64_t> data_expire_;  // key -> ts
-    std::unordered_map<std::string, std::string> data_;
+    /// Data-domain storage (process memory by default). Every data_* method
+    /// delegates here; the local cache below is invalidated from the
+    /// delegation layer on writes and lazy expiries.
+    std::unique_ptr<GlobalDataBackend> data_backend_;
+    mutable std::mutex data_mutex_;  // guards the local cache below
     std::list<std::pair<std::string, std::string>> cache_lru_;  // front = hot
     std::unordered_map<std::string,
                        std::list<std::pair<std::string, std::string>>::iterator>
