@@ -242,6 +242,7 @@ bool GlobalConfig::from_global_config(GlobalConfig* out, std::string* error) {
     out->scheduler_tick_ms = static_cast<std::uint64_t>(
         cfg.get_int("global.scheduler.tick_ms", 250));
     out->data_backend = cfg.get_string("global.data_backend", "");
+    out->lock_backend = cfg.get_string("global.lock_backend", "");
     out->redis_host = cfg.get_string("global.redis.host", "");
     out->redis_port = static_cast<int>(cfg.get_int("global.redis.port", 6379));
     out->redis_password = cfg.get_string("global.redis.password", "");
@@ -283,6 +284,21 @@ bool validate_global_config(const GlobalConfig& config, std::string* error) {
                              // arm)
         return false;
     }
+    if (config.lock_backend != "redis" && !config.lock_backend.empty()) {
+        if (error)
+            *error = "global.lock_backend must be \"\" or \"redis\" (got \"" +
+                     config.lock_backend +
+                     "\")";  // GCOVR_EXCL_BR_LINE (null error out-param arm)
+        return false;
+    }
+    if (config.lock_backend == "redis" && config.redis_host.empty()) {
+        if (error)
+            *error =
+                "global.redis.host is required when global.lock_backend "
+                "is redis";  // GCOVR_EXCL_BR_LINE (null error out-param
+                             // arm)
+        return false;
+    }
     return true;
 }
 
@@ -305,6 +321,25 @@ GlobalManager::GlobalManager(GlobalConfig config) : config_(std::move(config)) {
                     " (using process memory)");
         }
         data_backend_ = make_inprocess_data_backend();
+    }
+    if (config_.lock_backend == "redis") {
+        RedisDataBackendConfig redis;
+        redis.host = config_.redis_host;
+        redis.port = config_.redis_port;
+        redis.password = config_.redis_password;
+        redis.db = config_.redis_db;
+        redis.prefix = config_.redis_prefix;
+        lock_backend_ = make_redis_lock_backend(redis);
+    } else {
+        if (!config_.lock_backend.empty()) {
+            // Validation rejects unknown values; direct construction falls
+            // back to process memory with a warning.
+            SHIELD_LOG_WARNING(
+                shield::log::get_logger("global"),
+                "Unknown global.lock_backend: " + config_.lock_backend +
+                    " (using process memory)");
+        }
+        lock_backend_ = make_inprocess_lock_backend();
     }
 }
 
@@ -534,46 +569,19 @@ std::uint64_t GlobalManager::cache_misses() {
 }
 
 // ---- exclusive locks ----
+//
+// Every mutex_* method delegates to the GlobalLockBackend seam. The
+// locks_mutex_ guards the delegation AND the read/write registries below, so
+// the manager's view of a lock cannot interleave with another thread's
+// write (the backend takes its own locks inside).
 
-bool GlobalManager::mutex_live(const MutexEntry& entry, std::uint64_t now) {
-    return entry.expire_at_ms == 0 || now < entry.expire_at_ms;
-}
-
-bool GlobalManager::mutex_try_acquire_locked(
-    std::unordered_map<std::string, MutexEntry>& registry,
-    const std::string& name, const std::string& owner, std::uint64_t ttl_ms) {
-    const std::uint64_t now = now_ms();
-    auto it = registry.find(name);
-    if (it == registry.end()) {
-        MutexEntry entry;
-        entry.owner = owner;
-        entry.count = 1;
-        entry.acquired_at_ms = now;
-        entry.expire_at_ms = ttl_ms != 0 ? now + ttl_ms  // GCOVR_EXCL_BR_LINE
-                                                         // (TTL=0 ternary arms)
-                                         : 0;
-        registry.emplace(name, std::move(entry));
-        return true;
+void GlobalManager::set_lock_backend(
+    std::unique_ptr<GlobalLockBackend> backend) {
+    if (!backend) {
+        return;
     }
-    MutexEntry& entry = it->second;
-    if (!mutex_live(entry, now)) {
-        // Lazy TTL expiry: the stale holder lost the lock.
-        entry.owner = owner;
-        entry.count = 1;
-        entry.acquired_at_ms = now;
-        entry.expire_at_ms = ttl_ms != 0 ? now + ttl_ms  // GCOVR_EXCL_BR_LINE
-                                                         // (TTL=0 ternary arms)
-                                         : 0;
-        return true;
-    }
-    if (entry.owner == owner) {
-        ++entry.count;
-        if (ttl_ms != 0) {  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arm)
-            entry.expire_at_ms = now + ttl_ms;
-        }
-        return true;
-    }
-    return false;
+    std::lock_guard<std::mutex> lock(locks_mutex_);
+    lock_backend_ = std::move(backend);
 }
 
 LockStatus GlobalManager::mutex_acquire(const std::string& registry,
@@ -581,25 +589,14 @@ LockStatus GlobalManager::mutex_acquire(const std::string& registry,
                                         const std::string& owner,
                                         std::uint64_t ttl_ms) {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    auto& table = registry == "spinlock" ? spinlocks_ : mutexes_;
-    return mutex_try_acquire_locked(table, name, owner, ttl_ms)
-               ? LockStatus::kOk
-               : LockStatus::kBusy;
+    return lock_backend_->mutex_acquire(registry, name, owner, ttl_ms);
 }
 
 LockStatus GlobalManager::mutex_release(const std::string& registry,
                                         const std::string& name,
                                         const std::string& owner) {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    auto& table = registry == "spinlock" ? spinlocks_ : mutexes_;
-    auto it = table.find(name);
-    if (it == table.end() || it->second.owner != owner) {
-        return LockStatus::kNotOwner;
-    }
-    if (--it->second.count == 0) {
-        table.erase(it);
-    }
-    return LockStatus::kOk;
+    return lock_backend_->mutex_release(registry, name, owner);
 }
 
 bool GlobalManager::mutex_extend(const std::string& registry,
@@ -607,48 +604,19 @@ bool GlobalManager::mutex_extend(const std::string& registry,
                                  const std::string& owner,
                                  std::uint64_t ttl_ms) {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    auto& table = registry == "spinlock" ? spinlocks_ : mutexes_;
-    auto it = table.find(name);
-    if (it == table.end() || it->second.owner != owner ||
-        !mutex_live(it->second, now_ms())) {
-        return false;
-    }
-    it->second.expire_at_ms =
-        ttl_ms != 0 ? now_ms() + ttl_ms
-                    : 0;  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arms)
-    return true;
+    return lock_backend_->mutex_extend(registry, name, owner, ttl_ms);
 }
 
 LockInfo GlobalManager::mutex_info(const std::string& registry,
                                    const std::string& name) const {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    const auto& table = registry == "spinlock" ? spinlocks_ : mutexes_;
-    auto it = table.find(name);
-    if (it == table.end()) {
-        return LockInfo{};  // GCOVR_EXCL_BR_LINE (compiler artifact: aggregate
-                            // init-list branches)
-    }
-    LockInfo info;
-    info.exists = true;
-    info.owner = it->second.owner;
-    info.count = it->second.count;
-    info.acquired_at_ms = it->second.acquired_at_ms;
-    if (it->second.expire_at_ms != 0) {
-        const std::uint64_t now = now_ms();
-        info.ttl_remaining_ms =
-            now < it->second.expire_at_ms
-                ? it->second.expire_at_ms - now  // GCOVR_EXCL_BR_LINE (TTL
-                                                 // remaining ternary)
-                : 0;
-    }
-    return info;
+    return lock_backend_->mutex_info(registry, name);
 }
 
 std::size_t GlobalManager::mutex_registry_size(
     const std::string& registry) const {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    const auto& table = registry == "spinlock" ? spinlocks_ : mutexes_;
-    return table.size();
+    return lock_backend_->mutex_registry_size(registry);
 }
 
 // ---- rwlocks ----

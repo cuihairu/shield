@@ -916,13 +916,14 @@ if(SHIELD_ENABLE_GLOBAL)
     add_library(shield_global STATIC
         src/global/global_manager.cpp
         src/global/global_data_backend.cpp
+        src/global/global_lock_backend.cpp
     )
     target_include_directories(shield_global
         PUBLIC
             ${PROJECT_SOURCE_DIR}/include
             ${CMAKE_CURRENT_BINARY_DIR}/include
     )
-    # The data backend's Redis impl (redis++, same dual-form pick as the
+    # The data/lock backends' Redis impl (redis++, same dual-form pick as the
     # cluster discovery backend).
     if(TARGET redis++::redis++)
         set(SHIELD_GLOBAL_REDISPP_TARGET redis++::redis++)

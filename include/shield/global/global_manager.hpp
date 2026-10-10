@@ -7,9 +7,11 @@
 // injected as std::function so shield_global never links shield_lua.
 //
 // P0 backend is process memory; the data domain (KV + TTL) also has a Redis
-// backend behind the GlobalDataBackend seam (`global.data_backend = redis`),
-// while locks / ranks / queues / scheduler / rate limiter stay in-process
-// (Phase 2+). The seam keeps the Lua surface untouched.
+// backend behind the GlobalDataBackend seam (`global.data_backend = redis`)
+// and the exclusive-lock domain (mutex / spinlock registries) has one behind
+// the GlobalLockBackend seam (`global.lock_backend = redis`), while ranks /
+// queues / scheduler / rate limiter stay in-process (Phase 2+). The seams
+// keep the Lua surface untouched.
 #pragma once
 
 #include <condition_variable>
@@ -27,6 +29,7 @@
 #include <vector>
 
 #include "shield/global/global_data_backend.hpp"
+#include "shield/global/global_lock_backend.hpp"
 
 namespace shield::global {
 
@@ -40,6 +43,9 @@ struct GlobalConfig {
     /// Data-domain backend: "" (process memory, default) or "redis".
     /// Anything else fails validation.
     std::string data_backend;
+    /// Exclusive-lock backend (mutex + spinlock registries): "" (process
+    /// memory, default) or "redis" (shares the global.redis.* keys).
+    std::string lock_backend;
     std::string redis_host;
     int redis_port = 6379;
     std::string redis_password;
@@ -77,24 +83,8 @@ bool parse_cron(const std::string& expression, CronFields* out,
 /// both are restricted the day matches if EITHER side allows it.
 std::uint64_t cron_next(const CronFields& fields, std::uint64_t from_ms);
 
-/// ---------------------------------------------------------------------------
-/// Locks. `owner` is an opaque token minted by the Lua facade (per lock
-/// object); reentrancy keys on it. TTL expiry is lazy: an expired lock is
-/// taken over by the next acquirer.
-/// ---------------------------------------------------------------------------
-enum class LockStatus {
-    kOk,        /// acquired (fresh or reentrant) / released / extended
-    kBusy,      /// another owner holds a live lock
-    kNotOwner,  /// release/extend by a non-holder (or no lock at all)
-};
-
-struct LockInfo {
-    bool exists = false;
-    std::string owner;
-    std::uint64_t count = 0;  /// reentrant hold count
-    std::uint64_t acquired_at_ms = 0;
-    std::uint64_t ttl_remaining_ms = 0;  /// 0 = no TTL / no lock
-};
+/// Exclusive-lock types (LockStatus / LockInfo) live with their seam in
+/// global_lock_backend.hpp; the read/write lock below stays in-process.
 
 struct RwLockInfo {
     bool exists = false;
@@ -209,6 +199,10 @@ public:
     /// Replaces the data-domain backend (test injection; the constructor
     /// picks the backend from GlobalConfig). Ignored on null.
     void set_data_backend(std::unique_ptr<GlobalDataBackend> backend);
+
+    /// Replaces the exclusive-lock backend (test injection; the constructor
+    /// picks the backend from GlobalConfig). Ignored on null.
+    void set_lock_backend(std::unique_ptr<GlobalLockBackend> backend);
 
     // ---- global data (JSON text values, optional TTL) ----
     bool data_get(const std::string& key, std::string* out);
@@ -387,12 +381,6 @@ public:
     void rate_limit_purge(const std::string& name);
 
 private:
-    struct MutexEntry {
-        std::string owner;
-        std::uint64_t count = 0;
-        std::uint64_t acquired_at_ms = 0;
-        std::uint64_t expire_at_ms = 0;  // 0 = no TTL
-    };
     struct RwLockEntry {
         std::string write_owner;
         std::uint64_t write_count = 0;
@@ -445,11 +433,6 @@ private:
     /// Drops the key's cached copy (data_mutex_ must be held); part of the
     /// cache-coherence contract shared by every data write / lazy expiry.
     void cache_drop_locked(const std::string& key);
-    bool mutex_try_acquire_locked(
-        std::unordered_map<std::string, MutexEntry>& registry,
-        const std::string& name, const std::string& owner,
-        std::uint64_t ttl_ms);
-    static bool mutex_live(const MutexEntry& entry, std::uint64_t now);
     std::vector<RankEntry> rank_sorted_locked(
         const std::unordered_map<std::string, double>& board);
     void fire_task(const SchedTask& task);
@@ -470,9 +453,10 @@ private:
     std::uint64_t cache_hits_ = 0;
     std::uint64_t cache_misses_ = 0;
 
+    /// Exclusive-lock storage (process memory by default); mutex_* methods
+    /// delegate here. locks_mutex_ also guards the read/write registries.
+    std::unique_ptr<GlobalLockBackend> lock_backend_;
     mutable std::mutex locks_mutex_;
-    std::unordered_map<std::string, MutexEntry> mutexes_;
-    std::unordered_map<std::string, MutexEntry> spinlocks_;
     std::unordered_map<std::string, RwLockEntry> rwlocks_;
 
     mutable std::mutex ranks_mutex_;
