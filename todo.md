@@ -1126,7 +1126,8 @@ CI 三 job 观察（含新 coverage-optional 首跑）；禁 tag/release。
 - test_global_data_backend 22 例全绿：进程内后端语义、manager 委托与缓存一致性（incr 落缓存丢副本为 P0 缺口修复）、配置解析与 validate 双臂、fake backend 全 7 方法路由（shared state 防 UAF）、真实 redis-server 自起（生命周期/TTL-服务器端过期/incr 非整数错误映射/mget-mset-size/前缀隔离/closed-port 抛错/manager Redis 端到端）。
 - test_global_manager 既有 76 例无回归。
 - 五树门禁全绿：build 107 / build-net 99 / build-plug 101 / build-dbg 97 / build-cov 104（ctest EXIT=0）。
-- gcovr 8.6 optional 口径（CI 过滤表新增 global_data_backend.cpp）**5598/5598 行 100% EXIT=0**（global_data_backend.cpp 167/167）。
+- gcovr 8.6 optional 口径（CI 过滤表新增 global_data_backend.cpp）**5598/5598 行 100% EXIT=0**（global_data_backend.cpp 167/167；fn-close 闭括号 epilogue 伪影已按仓内惯例 `GCOVR_EXCL_LINE` 登记）。
+- 提交 **88f75e2**，CI 三平台全绿（CI 15m58s / Optional Plugins 13m46s / Docs 51s）。
 
 **坑（新指纹）**：
 - **redis++（vcpkg）OptionalString 不是 std::optional**：本 vcpkg 构建缺 REDIS_PLUS_PLUS_HAS_OPTIONAL，Optional<T> 是 cxx_utils.h 自带类（explicit operator bool + operator*）。mget 输出迭代器要接 vector<OptionalString> 再手转 std::optional，否则 `parse_reply<std::optional<string>>` 无匹配编译错。
@@ -1134,3 +1135,21 @@ CI 三 job 观察（含新 coverage-optional 首跑）；禁 tag/release。
 - 单调性：缓存的 cache_get 填充路径现在持 data_mutex_ 调 backend->get，委托方法全程持锁——方向恒 manager→backend，无反向回调，无死锁环。
 
 禁 tag/release/force push。
+
+## 批次：shield_global 独占锁域 Redis 后端切片 2（2026-10-10）
+
+**范围**：`GlobalLockBackend` 接缝（include/shield/global/global_lock_backend.hpp；LockStatus/LockInfo 随接缝搬家）+ 进程内实现（mutex/spinlock 双注册表从 GlobalManager 逐字抽取：惰性 TTL 接管、重入计数、extend 三臂语义不变）+ redis++ 实现（每锁一个 HASH `<prefix>:lock:<registry>:<name>`（owner/count/acquired_at）+ 三段 Lua 脚本 acquire/release/extend；服务端 TTL 取代惰性接管，extend(0) 走 PERSIST）+ GlobalManager 委托层（locks_mutex_ 现在同时守 rwlocks_ 表与后端指针；读写锁域留进程内）+ 配置（`global.lock_backend` 复用 `global.redis.*`，validate 两臂）+ 测试 + 文档。读写锁/队列/排行/调度/限流的 Redis 后端留后续切片。
+
+**验收证据**：
+- test_global_lock_backend 20 例全绿：进程内 5 例（acquire/release 与重入计数、TTL 惰性接管并重置计数、extend 刷新与非持有/已死锁/清零三臂、info 形状、注册表隔离与计数）、manager 委托 4 例（未知后端回落、null 换入忽略、假后端全 5 方法路由、进程锁端到端）、配置 3 例（解析 + validate 两臂）、真实 redis-server 7 例（生命周期、重入计数与 TTL 刷新、服务端过期跨句柄可见、extend 含 PERSIST 永不过期、注册表与前缀隔离、closed-port 抛错、manager Redis 端到端）。
+- test_global_manager 既有 76 例无回归；test_lua_api_global 无回归。
+- 五树门禁全绿：build 107 / build-net 99 / build-plug 101 / build-dbg 97 / build-cov 105（ctest EXIT=0；build-cov 比上一批多 1 个，即新增的 test_global_lock_backend）。
+- gcovr 8.6 optional 口径（CI 过滤表新增 global_lock_backend.cpp）**5719/5719 行 100% EXIT=0**（global_lock_backend.cpp 152/152）。
+- 提交 **3a955e6**（接缝+两实现+委托+配置+测试+CI 过滤表）/ **7f92876**（覆盖率标记修复）/ **e0e2a3f**（文档），CI 三平台全绿（CI 18m30s / Optional Plugins 13m3s / Docs 1m0s）。
+
+**坑（新指纹）**：
+- **局部变量遮蔽同名成员函数**：`auto& table = table(registry);` 左值 table 遮蔽成员函数 → `error: use of 'table' before deduction of 'auto'`（release/extend/info 三处）。改名 table_ref 即解。
+- **GCOVR_EXCL_BR_LINE 只免分支不免行**：`parse_u64` 防御 `return 0;` 标了 BR 后 CI 仍报缺行（99.9% < 100%）。公共 API 不可达的防御臂要 `GCOVR_EXCL_LINE`（本批唯一缺口行即此，7f92876）。
+- **本地 gcovr 假错**：跑完 ctest 未先删 gcda 就调 gcovr → 陈旧 gcda 让 gcov 推导出 mangled 输出路径，`SanityCheckError: Output file /home/<file>##<hash>.gcov.json.gz doesn't exist`。纪律：删 gcda → 全量 ctest → 清 *.gcov 与 *.gcov.json.gz → gcovr（门禁脚本的既有顺序）。
+- **五树门禁易被外部负载打断或假红**：本轮 build 树 test_cov_cluster 在 load 69 下 5 秒等待预算超时（隔离复跑通过，低负载 107/107），r1/r2/r3 连续三次死在 build-net 编译阶段。判别：隔离复跑再判真假红；rc=1 时逐树看日志，别只看 rc。
+- redis++ 用法：`eval<long long>(script, {keys...}, {args...})`（initializer_list<StringView>）；`pttl` 返回 long long（-2 无键 / -1 无过期 / >0 ms）；懒连接构造不阻塞，首次命令才建连。
