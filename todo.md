@@ -1153,3 +1153,20 @@ CI 三 job 观察（含新 coverage-optional 首跑）；禁 tag/release。
 - **本地 gcovr 假错**：跑完 ctest 未先删 gcda 就调 gcovr → 陈旧 gcda 让 gcov 推导出 mangled 输出路径，`SanityCheckError: Output file /home/<file>##<hash>.gcov.json.gz doesn't exist`。纪律：删 gcda → 全量 ctest → 清 *.gcov 与 *.gcov.json.gz → gcovr（门禁脚本的既有顺序）。
 - **五树门禁易被外部负载打断或假红**：本轮 build 树 test_cov_cluster 在 load 69 下 5 秒等待预算超时（隔离复跑通过，低负载 107/107），r1/r2/r3 连续三次死在 build-net 编译阶段。判别：隔离复跑再判真假红；rc=1 时逐树看日志，别只看 rc。
 - redis++ 用法：`eval<long long>(script, {keys...}, {args...})`（initializer_list<StringView>）；`pttl` 返回 long long（-2 无键 / -1 无过期 / >0 ms）；懒连接构造不阻塞，首次命令才建连。
+
+## 批次：shield_global 读写锁域 Redis 后端切片 3（2026-10-11）
+
+**范围**：把最后一块进程内私有状态并入 `GlobalLockBackend` 接缝，锁域整体（独占锁双注册表 + 读写锁注册表）归一：RwLockInfo 随接缝搬家（include/shield/global/global_lock_backend.hpp）+ 7 个纯虚方法（rw_write_acquire/release/extend、rw_read_acquire/release、rwlock_info、rwlock_count）+ 进程内实现（rwlocks_ 表从 GlobalManager 逐字抽取；并修正条目泄漏——完全释放即擦条目）+ redis++ 实现（每把读写锁一个 HASH `<prefix>:lock:rw:<name>`，`wo`/`wc`/`we` + `r:<token>` 字段族，写获取/写释放/写续期/读获取/读释放五段 Lua 脚本；`we` 镜像进程内惰性截止，读到过期 `we` 即视为死写者重置含清遗留读持有；写者持有时 PEXPIRE 为崩溃兜底，读者独存后 PERSIST 保读持有不蒸发）+ GlobalManager 七个方法改委托 + 测试 + 文档翻转。队列/排行/调度/限流的 Redis 后端留后续切片。
+
+**验收证据**：
+- test_global_lock_backend 31 例 328 断言全绿：进程内 8 例（原 5 + 写基础与互斥、读者共享并阻塞写者、写 TTL 惰性重置与 extend 四臂）、manager 委托 4 例（假后端扩到 12 方法全路由）、配置 3 例、真实 redis-server 16 例（原 8 + 写生命周期、读者共享、服务端 TTL 过期、extend 含 PERSIST 永不过期、`we` 镜像 stale 重置、前缀隔离、closed-port、manager Redis 端到端）。
+- test_global_manager 76 例与 test_lua_api_global / test_cov_root_commands / test_cov_ops_http / test_cov_lua_api2 无回归（erase 语义改变后逐个复跑确认）。
+- 五树门禁 r6 全绿 rc=0：build 107 / build-net 99 / build-plug 101 / build-dbg 97 / build-cov 105。
+- gcovr 8.6 optional 口径 **5814/5814 行 100% EXIT=0**（上批 5719，净增 95 行）。
+- 提交 **a902af5**（接缝 + 两实现 + 委托 + 测试）。
+
+**坑（新指纹）**：
+- **语义搬家时挖出条目泄漏**：manager 原实现在写计数归零时只清 owner/expire 不删条目，读释放清空 readers 也不删条目 → rwlock_count 只增不减、rwlock_info.exists 完全释放后仍为真（注册表永不回收）。改为完全释放即擦条目（与 redis 删哈希、mutex 表 0 即删一致）；旧测试没锁死该行为（count 断言都在活锁时），故直接改语义、不动旧测试。
+- **改语义立刻制造死臂**：erase 之后「有注册表条目但无写者且无读者」不可达 → rw_write_acquire 的写者接管臂变死码，gcovr 报 global_lock_backend.cpp 98%（缺 206-211）。删臂并留注释解释为何无接管臂；Lua 侧同名臂保留（服务端 HASH 经手工注入/崩溃残留可达，不是死码）。
+- **进程内惰性截止需要服务端镜像字段**：独占锁靠 Redis 服务端 TTL 到期删键即等价，读写锁做不到——读者持有期间哈希必须永不过期（否则读持有中途蒸发），写者崩溃又需要到期兜底。解法是双时钟：`we` 镜像进程内截止时刻（脚本判 stale 优先用它，防时钟偏移或残留哈希造成「幽灵 busy」），PEXPIRE 只在写者持有期设置，读者独存与写释放归零都 PERSIST。
+- **不可达服务端状态靠 redis-cli 注入打测试**：`we` 过期而哈希仍存活的组合公共 API 造不出来（fork+execlp redis-cli HSET，退出码 0 视为成功，不可用则同 redis-server 缺失模式跳过），据此覆盖两段脚本的 stale 重置臂。
