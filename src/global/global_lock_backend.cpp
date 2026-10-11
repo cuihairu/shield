@@ -292,8 +292,8 @@ private:
         char* end = nullptr;
         const unsigned long long parsed = std::strtoull(text.c_str(), &end, 10);
         if (end == nullptr || end != text.c_str() + text.size()) {
-            return 0;  // GCOVR_EXCL_BR_LINE (defensive: values written by
-                       // our own scripts are always plain integers)
+            return 0;  // GCOVR_EXCL_LINE (defensive: values written by our
+                       // own scripts are always plain integers)
         }
         return static_cast<std::uint64_t>(parsed);
     }
