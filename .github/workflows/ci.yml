@@ -457,6 +457,7 @@ jobs:
             --filter '\.\./src/global/global_manager\.cpp' \
             --filter '\.\./src/global/global_data_backend\.cpp' \
             --filter '\.\./src/global/global_lock_backend\.cpp' \
+            --filter '\.\./src/global/global_rank_backend\.cpp' \
             --filter '\.\./src/bootstrap/bootstrap\.cpp' \
             --txt coverage-optional.txt \
             --txt-metric line \
