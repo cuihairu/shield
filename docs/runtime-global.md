@@ -2,7 +2,7 @@
 
 > 状态：P0 已落地（`SHIELD_ENABLE_GLOBAL=ON`；测试矩阵 `tests/lua_api/test_lua_api_global.cpp`）。
 >
-> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/广播/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数均为 Phase 2+ 形态；P0 两种算法全程进程内计算，零 Redis 调用，不存在"Redis 不可用"降级语义）；`shield.priority_queue` 与 `shield.broadcast_queue` 已实现（前者进程内多级队列，值越小越优先、同优先级 FIFO；后者进程内为有界 history + 每组 cursor，实时回调分发发生在推送方 VM，离线组在重新 subscribe 时按序补发——跨进程实时广播 Pub/Sub 留 Phase 2+）；KV 数据域的 Redis 后端已实现（`global.data_backend = redis`，见"配置"一节；锁/队列/排行/调度/限流的 Redis 后端仍为 Phase 2+，见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
+> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/广播/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数均为 Phase 2+ 形态；P0 两种算法全程进程内计算，零 Redis 调用，不存在"Redis 不可用"降级语义）；`shield.priority_queue` 与 `shield.broadcast_queue` 已实现（前者进程内多级队列，值越小越优先、同优先级 FIFO；后者进程内为有界 history + 每组 cursor，实时回调分发发生在推送方 VM，离线组在重新 subscribe 时按序补发——跨进程实时广播 Pub/Sub 留 Phase 2+）；KV 数据域与独占锁域的 Redis 后端已实现（`global.data_backend = redis` / `global.lock_backend = redis`，见"配置"一节；读写锁/队列/排行/调度/限流的 Redis 后端仍为 Phase 2+，见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
 
 本文档包含 Shield 跨进程共享数据、分布式锁、排行榜、消息队列等全局能力的运行时语义决策。
 
@@ -10,7 +10,7 @@
 
 ## 设计原则
 
-- 深度集成 Redis，封装常用游戏模式。（设计目标；P0 后端为进程内存，Redis 后端为 Phase 2+）
+- 深度集成 Redis，封装常用游戏模式。（设计目标；数据域与独占锁域 Redis 后端已落地，其余仍为 Phase 2+）
 - 命名空间分离，职责清晰。
 - 提供本地缓存，减少 Redis 压力。
 - 统一接口，底层可切换。
@@ -37,10 +37,10 @@ shield.scheduler()            -- 定时任务调度
 | `shield.mutex()` | 本地 | 互斥锁 | 内存 | 纳秒 |
 | `shield.rwlock()` | 本地 | 读写锁 | 内存 | 纳秒 |
 | `shield.spinlock()` | 本地 | 自旋锁 | 内存 | 纳秒 |
-| `shield.distributed_mutex()` | 分布式 | 互斥锁 | 进程内存（P0；Redis 后端留 Phase 2+） | 纳秒级（P0 与本地锁同层） |
+| `shield.distributed_mutex()` | 分布式 | 互斥锁 | 进程内存（默认）或 Redis（独占锁域，`global.lock_backend = redis`） | 纳秒级（进程内后端）；Redis 后端为网络往返级 |
 | `shield.distributed_rwlock()` | 分布式 | 读写锁 | 进程内存（P0；Redis 后端留 Phase 2+） | 纳秒级（P0 与本地锁同层） |
 
-> P0 实现状态：`shield.distributed_mutex()` / `shield.distributed_rwlock()` 直接走本地锁工厂，与 `shield.mutex()` / `shield.rwlock()` 共享同一进程内 registry——"跨进程"由部署形态决定，后端本身不做跨进程协调。
+> 实现状态：`shield.distributed_mutex()` 与 `shield.mutex()` / `shield.spinlock()` 共享独占锁域的 `GlobalLockBackend` 接缝（默认进程内 registry；`global.lock_backend = redis` 时切到 Redis，见"配置"一节）。`shield.distributed_rwlock()` 仍直接走本地读写锁实现（Redis 后端留 Phase 2+）——"跨进程"由部署形态与后端选择决定，进程内后端本身不做跨进程协调。
 
 ### 通用锁接口
 
@@ -237,6 +237,25 @@ global:
 - **缓存一致性**：本地缓存（LRU）留在 `GlobalManager` 委托层——写、删、incr 与惰性过期都会丢弃该键的缓存副本。本地缓存是按 TTL 有界的：Redis 后端下其他进程写入本进程不会立刻感知，缓存副本在自身 TTL 到期前可能短暂陈旧。
 - **隔离**：不同部署共用一个 Redis 实例时用不同 `prefix`。
 
+#### 独占锁域 Redis 后端（已实现）
+
+独占锁域（`shield.mutex` / `shield.spinlock` / `shield.distributed_mutex` 共享的注册表）同样支持切到 Redis：`global.lock_backend` 取 `""`（默认，进程内存）或 `"redis"`；选 `redis` 时与数据域共享 `global.redis.*` 键（`host` 必填）：
+
+```yaml
+global:
+  lock_backend: redis
+  # redis.* 键与数据域共用一套（host/port/password/db/prefix）
+```
+
+实现语义（`GlobalLockBackend` 接缝，`src/global/global_lock_backend.cpp`）：
+
+- **懒连接**：与数据域同规则——构造永不阻塞，首次命令才建连，失败抛异常上抛 Lua 面（无静默降级）。
+- **锁的表示**：每把独占锁是 `<prefix>:lock:<registry>:<name>` 一个 HASH（`owner` / `count` / `acquired_at`）；acquire/release/extend 各用一段短 Lua 脚本（EVAL）原子完成存在性检查、owner 比对与重入计数。
+- **TTL**：acquire 与同 owner 重入都会刷新 PEXPIRE（重入不缩短窗口）；`ttl = 0` 为永不过期，`extend` 传 0 走 PERSIST 清掉 TTL。
+- **过期**：服务端 TTL 到期删除 HASH 即锁释放——进程崩溃后锁随 TTL 自动消失，其他进程立即可取（无惰性接管中间态）。
+- **读写锁不在接缝内**：`shield.rwlock` / `shield.distributed_rwlock` 仍为进程内实现（Phase 2+）。
+- **隔离**：与数据域共用 `prefix`；锁键为 `<prefix>:lock:*`，与数据键 `<prefix>:<key>` 互不重叠。
+
 ---
 
 ## 二、分布式锁
@@ -281,18 +300,19 @@ local ok = l:try_acquire()
 
 ### 实现机制
 
-> P0 实现状态：锁后端为进程内 C++ 容器 + 互斥（`GlobalManager` 的 mutexes_/rwlocks_/spinlocks_ 表加 per-domain mutex），不使用 Redis，也没有任何 Lua 脚本。以下 Redis Lua 脚本与 Redis 数据结构均为 Phase 2+（Redis 后端）的设计意图，当前未实现。
+> 实现状态：独占锁域（mutex/spinlock/distributed_mutex 共享的注册表）走 `GlobalLockBackend` 接缝（`src/global/global_lock_backend.cpp`）：默认实现为进程内 C++ 容器 + 互斥（mutexes_/spinlocks_ 表加 per-domain mutex）；`global.lock_backend = redis` 时切到 redis++ 实现（每锁一个 HASH + 短 Lua 脚本，见下）。读写锁的 rwlocks_ 表仍留在 `GlobalManager` 进程内。以下为 Redis 实现的实际脚本与数据结构；公平锁的 Sorted Set 等待队列仍为 Phase 2+ 设计意图，未实现。
 
-**设计意图（Phase 2+）：** 所有锁操作使用 Lua 脚本保证原子性，避免竞态条件。
+**Redis 实现：** acquire / release / extend 各是一段短 Lua 脚本（EVAL）保证原子性，避免竞态条件。
 
-**Redis 数据结构：**
+**Redis 数据结构（实际实现）：**
 
 ```
-Hash: shield:lock:{name}
-  field: owner   → "node_id:service_id:coroutine_id"
-  field: count   → 重入计数（整数）
+Hash: <prefix>:lock:<registry>:<name>
+  field: owner        → 持有者 token（Lua 门面按锁对象铸造，重入以它为键）
+  field: count        → 重入计数（整数）
+  field: acquired_at  → 获取时间戳 ms（bookkeeping）
 
-Sorted Set: shield:lock:queue:{name}  （仅公平锁）
+Sorted Set: shield:lock:queue:{name}  （仅公平锁，Phase 2+ 设计意图，未实现）
   member → owner_id
   score  → 等待时间戳
 ```
@@ -300,61 +320,65 @@ Sorted Set: shield:lock:queue:{name}  （仅公平锁）
 **获取锁（Lua 脚本，原子）：**
 
 ```lua
--- KEYS[1] = shield:lock:{name}
--- ARGV[1] = owner_id, ARGV[2] = ttl_ms
-local owner = redis.call('HGET', KEYS[1], 'owner')
-if owner == false then
+-- KEYS[1] = <prefix>:lock:<registry>:<name>
+-- ARGV[1] = owner, ARGV[2] = ttl ms（"0" = 无 TTL）, ARGV[3] = now ms
+if redis.call('EXISTS', KEYS[1]) == 0 then
     -- 无主，直接获取
-    redis.call('HSET', KEYS[1], 'owner', ARGV[1], 'count', 1)
-    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+    redis.call('HSET', KEYS[1], 'owner', ARGV[1], 'count', '1',
+               'acquired_at', ARGV[3])
+    if ARGV[2] ~= '0' then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
     return 1
-elseif owner == ARGV[1] then
-    -- 同一 owner，可重入，count +1
-    redis.call('HINCRBY', KEYS[1], 'count', 1)
-    redis.call('PEXPIRE', KEYS[1], ARGV[2])
-    return 1
-else
-    -- 其他 owner 持有，获取失败
-    return 0
 end
+if redis.call('HGET', KEYS[1], 'owner') == ARGV[1] then
+    -- 同一 owner 可重入；重入同时刷新 TTL（重入不会缩短窗口）
+    redis.call('HINCRBY', KEYS[1], 'count', 1)
+    if ARGV[2] ~= '0' then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+    return 1
+end
+-- 其他 owner 持有，获取失败
+return 0
 ```
 
 **释放锁（Lua 脚本，原子）：**
 
 ```lua
--- KEYS[1] = shield:lock:{name}
--- ARGV[1] = owner_id
-local owner = redis.call('HGET', KEYS[1], 'owner')
-if owner ~= ARGV[1] then
-    -- 非持有者，释放失败
-    return 0
+-- KEYS[1] = <prefix>:lock:<registry>:<name>
+-- ARGV[1] = owner
+if redis.call('EXISTS', KEYS[1]) == 0 then
+    return -1  -- 锁不存在（含 TTL 到期已被服务端删除）
 end
-local count = redis.call('HINCRBY', KEYS[1], 'count', -1)
-if count <= 0 then
-    -- 重入归零，删除锁
-    redis.call('DEL', KEYS[1])
-    return 1
-else
-    return count
+if redis.call('HGET', KEYS[1], 'owner') ~= ARGV[1] then
+    return -1  -- 非持有者
 end
+local n = redis.call('HINCRBY', KEYS[1], 'count', -1)
+if n <= 0 then
+    redis.call('DEL', KEYS[1])  -- 重入归零，删除锁
+end
+return 1
 ```
 
 **续期锁（Lua 脚本，原子）：**
 
 ```lua
--- KEYS[1] = shield:lock:{name}
--- ARGV[1] = owner_id, ARGV[2] = ttl_ms
-local owner = redis.call('HGET', KEYS[1], 'owner')
-if owner ~= ARGV[1] then
+-- KEYS[1] = <prefix>:lock:<registry>:<name>
+-- ARGV[1] = owner, ARGV[2] = ttl ms（"0" = PERSIST 清掉 TTL）
+if redis.call('EXISTS', KEYS[1]) == 0 then
     return 0
 end
-redis.call('PEXPIRE', KEYS[1], ARGV[2])
+if redis.call('HGET', KEYS[1], 'owner') ~= ARGV[1] then
+    return 0
+end
+if ARGV[2] ~= '0' then
+    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+else
+    redis.call('PERSIST', KEYS[1])
+end
 return 1
 ```
 
 **TTL 与过期（P0 实际行为）：**
 
-锁默认无 TTL（`ttl = 0` = 永不过期），TTL 由创建时的 `opts.ttl` 指定。TTL 到期为**惰性接管**：没有后台清理线程，下一个获取者发现锁已过期即直接接管。进程崩溃后持锁永不释放（进程内状态随进程消亡），P0 也没有退出路径上的主动释放逻辑。跨进程"崩溃释放"依赖 Phase 2+ 的 Redis 后端。
+锁默认无 TTL（`ttl = 0` = 永不过期），TTL 由创建时的 `opts.ttl` 指定。进程内后端（默认）：TTL 到期为**惰性接管**——没有后台清理线程，下一个获取者发现锁已过期即直接接管；进程崩溃后持锁永不释放（进程内状态随进程消亡），也没有退出路径上的主动释放逻辑。Redis 后端（`global.lock_backend = redis`）：TTL 经 PEXPIRE 由 Redis 服务端到期，key 消失即无锁——进程崩溃后锁随 TTL 自动释放，跨进程立即可取，没有惰性接管的中间态。两种后端都无退出路径上的主动释放。
 
 **自动续期（未实现）：**
 
@@ -366,7 +390,7 @@ return 1
 
 ### 配置
 
-> 未接线：`lock:` 配置节在 P0 完全不被解析（锁参数只来自 Lua 工厂 opts）。P0 全局仅三键生效（`global.cache.max_size` / `global.cache.default_ttl` / `global.scheduler.tick_ms`，见文末"配置示例"总说明）。以下为 Phase 2+ 设计意图。
+> 未接线：`lock:` 配置节不被解析（锁参数只来自 Lua 工厂 opts）。全局生效的键为 `global.cache.max_size` / `global.cache.default_ttl` / `global.scheduler.tick_ms` / `global.data_backend` / `global.lock_backend`（与共享的 `global.redis.*`，见"配置"一节与文末"配置示例"总说明）。以下为 Phase 2+ 设计意图。
 
 ```yaml
 lock:
@@ -1172,7 +1196,7 @@ GET /ops/scheduler
 | 功能 | 优先级 | 说明 |
 |------|--------|------|
 | 全局数据 + 本地缓存 | P0 | 核心功能；KV 数据域 Redis 后端已实现（`global.data_backend = redis`），本地缓存按 TTL 有界（跨进程写入存在短暂陈旧窗口） |
-| 分布式锁（重入、续期） | P0 | 全局操作必需 |
+| 分布式锁（重入、续期） | P0 | 全局操作必需；独占锁域 Redis 后端已实现（`global.lock_backend = redis`），读写锁 Redis 后端留 Phase 2+ |
 | 排行榜 | P0 | 游戏标配 |
 | 普通队列 | P0 | 异步任务 |
 | 延迟队列 | P0 | 延迟奖励、定时任务 |
