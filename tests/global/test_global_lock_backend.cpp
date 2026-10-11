@@ -26,6 +26,7 @@ using shield::global::GlobalManager;
 using shield::global::LockInfo;
 using shield::global::LockStatus;
 using shield::global::RedisDataBackendConfig;
+using shield::global::RwLockInfo;
 using shield::global::validate_global_config;
 
 namespace {
@@ -142,6 +143,28 @@ RedisDataBackendConfig redis_cfg(const RedisServer& srv,
     cfg.port = srv.port;
     cfg.prefix = prefix;
     return cfg;
+}
+
+// Direct field write for states the public API cannot reach (a write
+// deadline in the past while the hash is still alive). False when the
+// redis-cli binary is unavailable (skip, same rule as redis-server).
+bool redis_cli_hset(int port, const std::string& key, const std::string& field,
+                    const std::string& value) {
+    const pid_t pid = ::fork();
+    if (pid < 0) return false;
+    if (pid == 0) {
+        const int devnull = ::open("/dev/null", O_WRONLY);
+        ::dup2(devnull, STDOUT_FILENO);
+        ::dup2(devnull, STDERR_FILENO);
+        const auto port_str = std::to_string(port);
+        ::execlp("redis-cli", "redis-cli", "-p", port_str.c_str(), "HSET",
+                 key.c_str(), field.c_str(), value.c_str(),
+                 static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 #endif  // _WIN32
 
@@ -288,6 +311,93 @@ BOOST_AUTO_TEST_CASE(LockRegistryIsolationAndSizes) {
     BOOST_CHECK_EQUAL(backend->mutex_registry_size("spinlock"), 0u);
 }
 
+BOOST_AUTO_TEST_CASE(RwLockWriteBasicsAndExclusion) {
+    auto backend = shield::global::make_inprocess_lock_backend();
+    BOOST_CHECK(!backend->rwlock_info("rw").exists);
+    BOOST_CHECK_EQUAL(backend->rwlock_count(), 0u);
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 0) == LockStatus::kOk);
+    // A second writer is busy; readers are busy while the writer holds.
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w2", 0) == LockStatus::kBusy);
+    BOOST_CHECK(backend->rw_read_acquire("rw", "r1") == LockStatus::kBusy);
+    // Reentrant write acquire counts up.
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 0) == LockStatus::kOk);
+    auto info = backend->rwlock_info("rw");
+    BOOST_CHECK(info.exists);
+    BOOST_CHECK_EQUAL(info.write_owner, "w1");
+    BOOST_CHECK_EQUAL(info.write_count, 2u);
+    BOOST_CHECK_EQUAL(info.write_ttl_remaining_ms, 0u);
+    BOOST_CHECK_EQUAL(info.readers, 0u);
+    // Releases decrement; the entry survives until the last release.
+    BOOST_CHECK(backend->rw_write_release("rw", "w2") == LockStatus::kNotOwner);
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kOk);
+    info = backend->rwlock_info("rw");
+    BOOST_CHECK(info.exists);
+    BOOST_CHECK_EQUAL(info.write_count, 1u);
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kOk);
+    BOOST_CHECK(!backend->rwlock_info("rw").exists);
+    // Releasing a released lock fails without resurrecting the entry.
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kNotOwner);
+    BOOST_CHECK_EQUAL(backend->rwlock_count(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(RwLockReadersShareAndBlockWriters) {
+    auto backend = shield::global::make_inprocess_lock_backend();
+    BOOST_CHECK(backend->rw_read_acquire("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK(backend->rw_read_acquire("rw", "r2") == LockStatus::kOk);
+    // Readers overlap; the info counts distinct tokens, not holds.
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 0) == LockStatus::kBusy);
+    auto info = backend->rwlock_info("rw");
+    BOOST_CHECK(info.exists);
+    BOOST_CHECK(info.write_owner.empty());
+    BOOST_CHECK_EQUAL(info.write_count, 0u);
+    BOOST_CHECK_EQUAL(info.readers, 2u);
+    // Reader holds are reentrant per token.
+    BOOST_CHECK(backend->rw_read_acquire("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(backend->rwlock_info("rw").readers, 2u);
+    // Releases decrement per token; the writer enters at zero readers.
+    BOOST_CHECK(backend->rw_read_release("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK(backend->rw_read_release("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK(backend->rw_read_release("rw", "r2") == LockStatus::kOk);
+    // Releasing a token with no hold (or on a missing lock) fails.
+    BOOST_CHECK(backend->rw_read_release("rw", "r1") == LockStatus::kNotOwner);
+    BOOST_CHECK(backend->rw_read_release("ghost", "r1") ==
+                LockStatus::kNotOwner);
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 0) == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(backend->rwlock_info("rw").readers, 0u);
+    BOOST_CHECK_EQUAL(backend->rwlock_count(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(RwLockWriterTtlStaleResetAndExtend) {
+    auto backend = shield::global::make_inprocess_lock_backend();
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 40) == LockStatus::kOk);
+    const auto info = backend->rwlock_info("rw");
+    BOOST_CHECK(info.write_ttl_remaining_ms > 0);
+    BOOST_CHECK(info.write_ttl_remaining_ms <= 40u);
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w2", 0) == LockStatus::kBusy);
+    BOOST_CHECK(backend->rw_read_acquire("rw", "r1") == LockStatus::kBusy);
+    // Lazy expiry: the stale writer loses the name to the next writer.
+    BOOST_CHECK(wait_until(
+        [&] {
+            return backend->rw_write_acquire("rw", "w2", 0) == LockStatus::kOk;
+        },
+        3000));
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kNotOwner);
+    BOOST_CHECK_EQUAL(backend->rwlock_info("rw").write_owner, "w2");
+    // Extend arms: a non-holder and a missing lock both fail.
+    BOOST_CHECK(!backend->rw_write_extend("rw", "w1", 1000));
+    BOOST_CHECK(!backend->rw_write_extend("ghost", "w2", 1000));
+    // An expired-but-registered writer no longer extends: it is dead.
+    BOOST_CHECK(backend->rw_write_acquire("t2", "w3", 40) == LockStatus::kOk);
+    std::this_thread::sleep_for(80ms);
+    BOOST_CHECK(!backend->rw_write_extend("t2", "w3", 1000));
+    // Extend with ttl 0 clears the deadline: the write hold is immortal.
+    BOOST_CHECK(backend->rw_write_extend("rw", "w2", 0));
+    std::this_thread::sleep_for(80ms);
+    BOOST_CHECK_EQUAL(backend->rwlock_info("rw").write_ttl_remaining_ms, 0u);
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w3", 0) == LockStatus::kBusy);
+    BOOST_CHECK(backend->rw_write_release("rw", "w2") == LockStatus::kOk);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------
@@ -338,10 +448,23 @@ struct FakeLockState {
     std::size_t extend_calls = 0;
     std::size_t info_calls = 0;
     std::size_t size_calls = 0;
+    std::size_t rw_write_acquire_calls = 0;
+    std::size_t rw_write_release_calls = 0;
+    std::size_t rw_write_extend_calls = 0;
+    std::size_t rw_read_acquire_calls = 0;
+    std::size_t rw_read_release_calls = 0;
+    std::size_t rwlock_info_calls = 0;
+    std::size_t rwlock_count_calls = 0;
     LockStatus next_acquire = LockStatus::kOk;
     LockStatus next_release = LockStatus::kOk;
     bool next_extend = true;
+    LockStatus next_rw_write_acquire = LockStatus::kOk;
+    LockStatus next_rw_write_release = LockStatus::kOk;
+    bool next_rw_write_extend = true;
+    LockStatus next_rw_read_acquire = LockStatus::kOk;
+    LockStatus next_rw_read_release = LockStatus::kOk;
     LockInfo info{};
+    RwLockInfo rw_info{};
 };
 
 class FakeLockBackend final : public GlobalLockBackend {
@@ -387,6 +510,55 @@ public:
         return 7;
     }
 
+    LockStatus rw_write_acquire(const std::string& /*name*/,
+                                const std::string& /*owner*/,
+                                std::uint64_t /*ttl_ms*/) override {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        ++state_->rw_write_acquire_calls;
+        return state_->next_rw_write_acquire;
+    }
+
+    LockStatus rw_write_release(const std::string& /*name*/,
+                                const std::string& /*owner*/) override {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        ++state_->rw_write_release_calls;
+        return state_->next_rw_write_release;
+    }
+
+    bool rw_write_extend(const std::string& /*name*/,
+                         const std::string& /*owner*/,
+                         std::uint64_t /*ttl_ms*/) override {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        ++state_->rw_write_extend_calls;
+        return state_->next_rw_write_extend;
+    }
+
+    LockStatus rw_read_acquire(const std::string& /*name*/,
+                               const std::string& /*owner*/) override {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        ++state_->rw_read_acquire_calls;
+        return state_->next_rw_read_acquire;
+    }
+
+    LockStatus rw_read_release(const std::string& /*name*/,
+                               const std::string& /*owner*/) override {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        ++state_->rw_read_release_calls;
+        return state_->next_rw_read_release;
+    }
+
+    RwLockInfo rwlock_info(const std::string& /*name*/) override {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        ++state_->rwlock_info_calls;
+        return state_->rw_info;
+    }
+
+    std::size_t rwlock_count() override {
+        std::lock_guard<std::mutex> lock(state_->mu);
+        ++state_->rwlock_count_calls;
+        return 9;
+    }
+
 private:
     std::shared_ptr<FakeLockState> state_;
 };
@@ -420,6 +592,39 @@ BOOST_AUTO_TEST_CASE(SetLockBackendRoutesEveryOp) {
     BOOST_CHECK_EQUAL(state->release_calls, 1u);
     state->next_release = LockStatus::kNotOwner;
     BOOST_CHECK(gm.mutex_release("mutex", "m1", "o1") == LockStatus::kNotOwner);
+
+    // rwlock ops route to the backend too, with semantics supplied by it.
+    state->rw_info.exists = true;
+    state->rw_info.write_owner = "rw-owner";
+    state->rw_info.write_count = 2;
+    state->rw_info.readers = 3;
+    BOOST_CHECK(gm.rw_write_acquire("rw", "o1", 100) == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(state->rw_write_acquire_calls, 1u);
+    state->next_rw_write_acquire = LockStatus::kBusy;
+    BOOST_CHECK(gm.rw_write_acquire("rw", "o2", 0) == LockStatus::kBusy);
+    BOOST_CHECK_EQUAL(state->rw_write_acquire_calls, 2u);
+    BOOST_CHECK(gm.rw_write_extend("rw", "o1", 100));
+    BOOST_CHECK_EQUAL(state->rw_write_extend_calls, 1u);
+    state->next_rw_write_extend = false;
+    BOOST_CHECK(!gm.rw_write_extend("rw", "o1", 100));
+    state->next_rw_read_acquire = LockStatus::kBusy;
+    BOOST_CHECK(gm.rw_read_acquire("rw", "r1") == LockStatus::kBusy);
+    BOOST_CHECK_EQUAL(state->rw_read_acquire_calls, 1u);
+    const auto rw = gm.rwlock_info("rw");
+    BOOST_CHECK(rw.exists);
+    BOOST_CHECK_EQUAL(rw.write_owner, "rw-owner");
+    BOOST_CHECK_EQUAL(rw.write_count, 2u);
+    BOOST_CHECK_EQUAL(rw.readers, 3u);
+    BOOST_CHECK_EQUAL(state->rwlock_info_calls, 1u);
+    BOOST_CHECK_EQUAL(gm.rwlock_count(), 9u);
+    BOOST_CHECK_EQUAL(state->rwlock_count_calls, 1u);
+    BOOST_CHECK(gm.rw_write_release("rw", "o1") == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(state->rw_write_release_calls, 1u);
+    state->next_rw_write_release = LockStatus::kNotOwner;
+    BOOST_CHECK(gm.rw_write_release("rw", "o1") == LockStatus::kNotOwner);
+    state->next_rw_read_release = LockStatus::kNotOwner;
+    BOOST_CHECK(gm.rw_read_release("rw", "r1") == LockStatus::kNotOwner);
+    BOOST_CHECK_EQUAL(state->rw_read_release_calls, 1u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -680,6 +885,244 @@ BOOST_AUTO_TEST_CASE(ManagerWithRedisLockConfigEndToEnd) {
     BOOST_CHECK(gm.mutex_acquire("mutex", "m1", "o2", 0) == LockStatus::kOk);
     BOOST_CHECK(gm.mutex_release("mutex", "m1", "o2") == LockStatus::kOk);
     BOOST_CHECK_EQUAL(gm.mutex_registry_size("mutex"), 0u);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ---------------------------------------------------------------------------
+// redis++ read/write locks against a self-spawned redis-server
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_SUITE(RedisRwLockSuite)
+
+BOOST_AUTO_TEST_CASE(RedisRwLockWriterLifecycle) {
+    const auto srv = spawn_redis_server();
+    if (!srv) {
+        BOOST_TEST_MESSAGE("redis-server unavailable; skipping");
+        return;
+    }
+    const std::string prefix =
+        "shield:gltest:" + std::to_string(::getpid()) + ":rwlife";
+    auto backend =
+        shield::global::make_redis_lock_backend(redis_cfg(*srv, prefix));
+    BOOST_CHECK(!backend->rwlock_info("rw").exists);
+    BOOST_CHECK_EQUAL(backend->rwlock_count(), 0u);
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 0) == LockStatus::kOk);
+    // A second writer is busy; readers are busy while the writer holds.
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w2", 0) == LockStatus::kBusy);
+    BOOST_CHECK(backend->rw_read_acquire("rw", "r1") == LockStatus::kBusy);
+    // Reentrant write acquire counts up.
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 0) == LockStatus::kOk);
+    auto info = backend->rwlock_info("rw");
+    BOOST_CHECK(info.exists);
+    BOOST_CHECK_EQUAL(info.write_owner, "w1");
+    BOOST_CHECK_EQUAL(info.write_count, 2u);
+    BOOST_CHECK_EQUAL(info.write_ttl_remaining_ms, 0u);
+    BOOST_CHECK_EQUAL(info.readers, 0u);
+    // Releases decrement; the hash survives until the last release.
+    BOOST_CHECK(backend->rw_write_release("rw", "w2") == LockStatus::kNotOwner);
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kOk);
+    info = backend->rwlock_info("rw");
+    BOOST_CHECK(info.exists);
+    BOOST_CHECK_EQUAL(info.write_count, 1u);
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kOk);
+    BOOST_CHECK(!backend->rwlock_info("rw").exists);
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kNotOwner);
+    BOOST_CHECK_EQUAL(backend->rwlock_count(), 0u);
+}
+
+BOOST_AUTO_TEST_CASE(RedisRwLockReadersShareAndBlockWriters) {
+    const auto srv = spawn_redis_server();
+    if (!srv) {
+        BOOST_TEST_MESSAGE("redis-server unavailable; skipping");
+        return;
+    }
+    const std::string prefix =
+        "shield:gltest:" + std::to_string(::getpid()) + ":rwread";
+    auto backend =
+        shield::global::make_redis_lock_backend(redis_cfg(*srv, prefix));
+    BOOST_CHECK(backend->rw_read_acquire("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK(backend->rw_read_acquire("rw", "r2") == LockStatus::kOk);
+    // Readers overlap; the info counts distinct tokens, not holds.
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 0) == LockStatus::kBusy);
+    auto info = backend->rwlock_info("rw");
+    BOOST_CHECK(info.exists);
+    BOOST_CHECK(info.write_owner.empty());
+    BOOST_CHECK_EQUAL(info.readers, 2u);
+    // Reader holds are reentrant per token.
+    BOOST_CHECK(backend->rw_read_acquire("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(backend->rwlock_info("rw").readers, 2u);
+    BOOST_CHECK(backend->rw_read_release("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK(backend->rw_read_release("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK(backend->rw_read_release("rw", "r2") == LockStatus::kOk);
+    // Releasing a token with no hold (or on a missing lock) fails.
+    BOOST_CHECK(backend->rw_read_release("rw", "r1") == LockStatus::kNotOwner);
+    BOOST_CHECK(backend->rw_read_release("ghost", "r1") ==
+                LockStatus::kNotOwner);
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 0) == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(backend->rwlock_info("rw").readers, 0u);
+    BOOST_CHECK_EQUAL(backend->rwlock_count(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(RedisRwLockWriterTtlExpiresServerSide) {
+    const auto srv = spawn_redis_server();
+    if (!srv) {
+        BOOST_TEST_MESSAGE("redis-server unavailable; skipping");
+        return;
+    }
+    const std::string prefix =
+        "shield:gltest:" + std::to_string(::getpid()) + ":rwttl";
+    auto backend =
+        shield::global::make_redis_lock_backend(redis_cfg(*srv, prefix));
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 300) == LockStatus::kOk);
+    BOOST_CHECK(backend->rwlock_info("rw").write_ttl_remaining_ms > 0);
+    // The expiry is server-side: a fresh backend handle sees it too.
+    auto other =
+        shield::global::make_redis_lock_backend(redis_cfg(*srv, prefix));
+    BOOST_CHECK(
+        wait_until([&] { return !other->rwlock_info("rw").exists; }, 3000));
+    BOOST_CHECK(other->rw_write_acquire("rw", "w2", 0) == LockStatus::kOk);
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kNotOwner);
+}
+
+BOOST_AUTO_TEST_CASE(RedisRwLockExtend) {
+    const auto srv = spawn_redis_server();
+    if (!srv) {
+        BOOST_TEST_MESSAGE("redis-server unavailable; skipping");
+        return;
+    }
+    const std::string prefix =
+        "shield:gltest:" + std::to_string(::getpid()) + ":rwext";
+    auto backend =
+        shield::global::make_redis_lock_backend(redis_cfg(*srv, prefix));
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 300) == LockStatus::kOk);
+    BOOST_CHECK(backend->rw_write_extend("rw", "w1", 3000));
+    // The original ttl would have lapsed by now.
+    std::this_thread::sleep_for(500ms);
+    BOOST_CHECK(backend->rwlock_info("rw").write_ttl_remaining_ms > 0);
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w2", 0) == LockStatus::kBusy);
+    // Extend arms: a non-holder and a missing lock both fail.
+    BOOST_CHECK(!backend->rw_write_extend("rw", "w2", 1000));
+    BOOST_CHECK(!backend->rw_write_extend("ghost", "w1", 1000));
+    // Extend with ttl 0 drops the expiry (PERSIST): the hold is immortal.
+    BOOST_CHECK(backend->rw_write_extend("rw", "w1", 0));
+    std::this_thread::sleep_for(600ms);
+    const auto info = backend->rwlock_info("rw");
+    BOOST_CHECK(info.exists);
+    BOOST_CHECK_EQUAL(info.write_ttl_remaining_ms, 0u);
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w2", 0) == LockStatus::kBusy);
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kOk);
+}
+
+BOOST_AUTO_TEST_CASE(RedisRwLockStaleDeadlineMirror) {
+    const auto srv = spawn_redis_server();
+    if (!srv) {
+        BOOST_TEST_MESSAGE("redis-server unavailable; skipping");
+        return;
+    }
+    const std::string prefix =
+        "shield:gltest:" + std::to_string(::getpid()) + ":rwstale";
+    auto backend =
+        shield::global::make_redis_lock_backend(redis_cfg(*srv, prefix));
+    // The `we` field mirrors the in-process deadline: when it reads stale
+    // while the hash is still alive (clock skew / crash leftovers), the
+    // scripts reset the writer body instead of reporting busy.
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w1", 5000) == LockStatus::kOk);
+    const std::string key = prefix + ":lock:rw:rw";
+    if (!redis_cli_hset(srv->port, key, "we",
+                        std::to_string(GlobalManager::now_ms() - 1000))) {
+        BOOST_TEST_MESSAGE("redis-cli unavailable; skipping");
+        return;
+    }
+    BOOST_CHECK(backend->rw_write_acquire("rw", "w2", 0) == LockStatus::kOk);
+    BOOST_CHECK(backend->rw_write_release("rw", "w1") == LockStatus::kNotOwner);
+    // Same mirror on the read path: the stale writer clears, its writer-era
+    // ttl is persisted away, and the reader registers.
+    BOOST_CHECK(backend->rw_write_acquire("rw2", "w3", 5000) ==
+                LockStatus::kOk);
+    if (!redis_cli_hset(srv->port, prefix + ":lock:rw:rw2", "we",
+                        std::to_string(GlobalManager::now_ms() - 1000))) {
+        BOOST_TEST_MESSAGE("redis-cli unavailable; skipping");
+        return;
+    }
+    BOOST_CHECK(backend->rw_read_acquire("rw2", "r1") == LockStatus::kOk);
+    const auto info = backend->rwlock_info("rw2");
+    BOOST_CHECK(info.exists);
+    BOOST_CHECK(info.write_owner.empty());
+    BOOST_CHECK_EQUAL(info.readers, 1u);
+    BOOST_CHECK_EQUAL(info.write_ttl_remaining_ms, 0u);
+    BOOST_CHECK(backend->rw_write_release("rw2", "w3") ==
+                LockStatus::kNotOwner);
+}
+
+BOOST_AUTO_TEST_CASE(RedisRwLockPrefixIsolation) {
+    const auto srv = spawn_redis_server();
+    if (!srv) {
+        BOOST_TEST_MESSAGE("redis-server unavailable; skipping");
+        return;
+    }
+    const std::string base =
+        "shield:gltest:" + std::to_string(::getpid()) + ":rwiso";
+    auto a =
+        shield::global::make_redis_lock_backend(redis_cfg(*srv, base + "a"));
+    auto b =
+        shield::global::make_redis_lock_backend(redis_cfg(*srv, base + "b"));
+    BOOST_CHECK_EQUAL(a->rwlock_count(), 0u);
+    BOOST_CHECK(a->rw_write_acquire("rw", "w1", 0) == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(a->rwlock_count(), 1u);
+    // Prefixes are isolated keyspaces on the same server.
+    BOOST_CHECK_EQUAL(b->rwlock_count(), 0u);
+    BOOST_CHECK(b->rw_write_acquire("rw", "w2", 0) == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(a->rwlock_info("rw").write_owner, "w1");
+    BOOST_CHECK_EQUAL(b->rwlock_info("rw").write_owner, "w2");
+    BOOST_CHECK_EQUAL(a->rwlock_count(), 1u);
+    BOOST_CHECK_EQUAL(b->rwlock_count(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(RedisRwLockClosedPortThrows) {
+    const int closed_port = probe_free_port();
+    BOOST_REQUIRE(closed_port > 0);
+    RedisDataBackendConfig config;
+    config.host = "127.0.0.1";
+    config.port = closed_port;
+    config.prefix = "shield:gltest:rwclosed";
+    auto backend = shield::global::make_redis_lock_backend(config);
+    BOOST_CHECK_THROW(backend->rw_write_acquire("rw", "w1", 0), std::exception);
+    BOOST_CHECK_THROW(backend->rwlock_count(), std::exception);
+}
+
+BOOST_AUTO_TEST_CASE(ManagerWithRedisRwLockEndToEnd) {
+    const auto srv = spawn_redis_server();
+    if (!srv) {
+        BOOST_TEST_MESSAGE("redis-server unavailable; skipping");
+        return;
+    }
+    GlobalConfig config;
+    config.lock_backend = "redis";
+    config.redis_host = "127.0.0.1";
+    config.redis_port = srv->port;
+    config.redis_prefix =
+        "shield:gltest:" + std::to_string(::getpid()) + ":rw_mgr";
+    GlobalManager gm(config);
+
+    BOOST_CHECK(gm.rw_write_acquire("rw", "w1", 0) == LockStatus::kOk);
+    BOOST_CHECK(gm.rw_write_acquire("rw", "w2", 0) == LockStatus::kBusy);
+    BOOST_CHECK(gm.rw_read_acquire("rw", "r1") == LockStatus::kBusy);
+    BOOST_CHECK(gm.rw_write_release("rw", "w1") == LockStatus::kOk);
+    // Readers enter once the writer is gone and block the next writer.
+    BOOST_CHECK(gm.rw_read_acquire("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK(gm.rw_read_acquire("rw", "r2") == LockStatus::kOk);
+    BOOST_CHECK(gm.rw_write_acquire("rw", "w2", 0) == LockStatus::kBusy);
+    const auto info = gm.rwlock_info("rw");
+    BOOST_CHECK(info.exists);
+    BOOST_CHECK(info.write_owner.empty());
+    BOOST_CHECK_EQUAL(info.readers, 2u);
+    BOOST_CHECK_EQUAL(gm.rwlock_count(), 1u);
+    BOOST_CHECK(gm.rw_read_release("rw", "r1") == LockStatus::kOk);
+    BOOST_CHECK(gm.rw_read_release("rw", "r2") == LockStatus::kOk);
+    BOOST_CHECK(gm.rw_write_acquire("rw", "w2", 0) == LockStatus::kOk);
+    BOOST_CHECK(gm.rw_write_release("rw", "w2") == LockStatus::kOk);
+    BOOST_CHECK_EQUAL(gm.rwlock_count(), 0u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

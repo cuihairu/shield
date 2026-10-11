@@ -83,16 +83,8 @@ bool parse_cron(const std::string& expression, CronFields* out,
 /// both are restricted the day matches if EITHER side allows it.
 std::uint64_t cron_next(const CronFields& fields, std::uint64_t from_ms);
 
-/// Exclusive-lock types (LockStatus / LockInfo) live with their seam in
-/// global_lock_backend.hpp; the read/write lock below stays in-process.
-
-struct RwLockInfo {
-    bool exists = false;
-    std::string write_owner;
-    std::uint64_t write_count = 0;
-    std::uint64_t write_ttl_remaining_ms = 0;
-    std::size_t readers = 0;  /// distinct reader tokens currently holding
-};
+/// Lock-domain types (LockStatus / LockInfo / RwLockInfo) live with their
+/// seam in global_lock_backend.hpp.
 
 /// ---------------------------------------------------------------------------
 /// Leaderboards: score desc, uid asc on ties (Redis ZSET order).
@@ -381,12 +373,6 @@ public:
     void rate_limit_purge(const std::string& name);
 
 private:
-    struct RwLockEntry {
-        std::string write_owner;
-        std::uint64_t write_count = 0;
-        std::uint64_t write_expire_at_ms = 0;
-        std::map<std::string, std::uint64_t> readers;  // token -> hold count
-    };
     struct DelayedItem {
         std::uint64_t id = 0;  // reliable delivery id; 0 for plain items
         std::string payload;
@@ -453,11 +439,10 @@ private:
     std::uint64_t cache_hits_ = 0;
     std::uint64_t cache_misses_ = 0;
 
-    /// Exclusive-lock storage (process memory by default); mutex_* methods
-    /// delegate here. locks_mutex_ also guards the read/write registries.
+    /// Lock-domain storage (process memory by default); mutex_* and rw_*
+    /// methods all delegate here.
     std::unique_ptr<GlobalLockBackend> lock_backend_;
     mutable std::mutex locks_mutex_;
-    std::unordered_map<std::string, RwLockEntry> rwlocks_;
 
     mutable std::mutex ranks_mutex_;
     std::unordered_map<std::string, std::unordered_map<std::string, double>>

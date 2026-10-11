@@ -625,153 +625,42 @@ LockStatus GlobalManager::rw_write_acquire(const std::string& name,
                                            const std::string& owner,
                                            std::uint64_t ttl_ms) {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    const std::uint64_t now = now_ms();
-    auto it = rwlocks_.find(name);
-    if (it == rwlocks_.end()) {
-        RwLockEntry entry;
-        entry.write_owner = owner;
-        entry.write_count = 1;
-        entry.write_expire_at_ms =
-            ttl_ms != 0 ? now + ttl_ms
-                        : 0;  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arms)
-        rwlocks_.emplace(name, std::move(entry));
-        return LockStatus::kOk;
-    }
-    RwLockEntry& entry = it->second;
-    const bool write_live =
-        entry.write_expire_at_ms == 0 || now < entry.write_expire_at_ms;
-    if (!write_live) {
-        // Stale writer: the lock body resets.
-        entry.write_owner = owner;
-        entry.write_count = 1;
-        entry.write_expire_at_ms =
-            ttl_ms != 0 ? now + ttl_ms
-                        : 0;  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arms)
-        entry.readers.clear();
-        return LockStatus::kOk;
-    }
-    if (!entry.write_owner.empty()) {
-        if (entry.write_owner == owner) {
-            ++entry.write_count;
-            if (ttl_ms != 0) {  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arm)
-                entry.write_expire_at_ms = now + ttl_ms;
-            }
-            return LockStatus::kOk;
-        }
-        return LockStatus::kBusy;
-    }
-    if (!entry.readers.empty()) {
-        return LockStatus::kBusy;
-    }
-    entry.write_owner = owner;
-    entry.write_count = 1;
-    entry.write_expire_at_ms =
-        ttl_ms != 0 ? now + ttl_ms  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arms)
-                    : 0;
-    return LockStatus::kOk;
+    return lock_backend_->rw_write_acquire(name, owner, ttl_ms);
 }
 
 LockStatus GlobalManager::rw_write_release(const std::string& name,
                                            const std::string& owner) {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    auto it = rwlocks_.find(name);
-    if (it == rwlocks_.end() || it->second.write_owner != owner) {
-        return LockStatus::kNotOwner;
-    }
-    if (--it->second.write_count == 0) {
-        it->second.write_owner.clear();
-        it->second.write_expire_at_ms = 0;
-    }
-    return LockStatus::kOk;
+    return lock_backend_->rw_write_release(name, owner);
 }
 
 bool GlobalManager::rw_write_extend(const std::string& name,
                                     const std::string& owner,
                                     std::uint64_t ttl_ms) {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    auto it = rwlocks_.find(name);
-    if (it == rwlocks_.end() || it->second.write_owner != owner) {
-        return false;
-    }
-    if (it->second.write_expire_at_ms != 0 &&
-        now_ms() >= it->second.write_expire_at_ms) {
-        return false;
-    }
-    it->second.write_expire_at_ms =
-        ttl_ms != 0 ? now_ms() + ttl_ms
-                    : 0;  // GCOVR_EXCL_BR_LINE (TTL=0 ternary arms)
-    return true;
+    return lock_backend_->rw_write_extend(name, owner, ttl_ms);
 }
 
 LockStatus GlobalManager::rw_read_acquire(const std::string& name,
                                           const std::string& owner) {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    const std::uint64_t now = now_ms();
-    auto it = rwlocks_.find(name);
-    if (it == rwlocks_.end()) {
-        RwLockEntry entry;
-        entry.readers[owner] = 1;
-        rwlocks_.emplace(name, std::move(entry));
-        return LockStatus::kOk;
-    }
-    RwLockEntry& entry = it->second;
-    const bool write_live =
-        entry.write_expire_at_ms == 0 || now < entry.write_expire_at_ms;
-    if (!write_live) {
-        entry.write_owner.clear();
-        entry.write_count = 0;
-        entry.write_expire_at_ms = 0;
-        entry.readers.clear();
-    }
-    if (!entry.write_owner.empty()) {
-        return LockStatus::kBusy;
-    }
-    ++entry.readers[owner];
-    return LockStatus::kOk;
+    return lock_backend_->rw_read_acquire(name, owner);
 }
 
 LockStatus GlobalManager::rw_read_release(const std::string& name,
                                           const std::string& owner) {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    auto it = rwlocks_.find(name);
-    if (it == rwlocks_.end()) {
-        return LockStatus::kNotOwner;
-    }
-    auto reader = it->second.readers.find(owner);
-    if (reader == it->second.readers.end()) {
-        return LockStatus::kNotOwner;
-    }
-    if (--reader->second == 0) {
-        it->second.readers.erase(reader);
-    }
-    return LockStatus::kOk;
+    return lock_backend_->rw_read_release(name, owner);
 }
 
 RwLockInfo GlobalManager::rwlock_info(const std::string& name) const {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    auto it = rwlocks_.find(name);
-    if (it == rwlocks_.end()) {
-        return RwLockInfo{};  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                              // aggregate init-list branches)
-    }
-    RwLockInfo info;
-    info.exists = true;
-    info.write_owner = it->second.write_owner;
-    info.write_count = it->second.write_count;
-    if (it->second.write_expire_at_ms != 0) {
-        const std::uint64_t now = now_ms();
-        info.write_ttl_remaining_ms =
-            now < it->second.write_expire_at_ms
-                ? it->second.write_expire_at_ms - now
-                : 0;  // GCOVR_EXCL_BR_LINE (TTL remaining ternary)
-    }
-    info.readers = it->second.readers.size();
-    return info;
+    return lock_backend_->rwlock_info(name);
 }
 
 std::size_t GlobalManager::rwlock_count() const {
     std::lock_guard<std::mutex> lock(locks_mutex_);
-    return rwlocks_.size();
+    return lock_backend_->rwlock_count();
 }
 
 // ---- leaderboards ----
