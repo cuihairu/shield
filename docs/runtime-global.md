@@ -2,7 +2,7 @@
 
 > 状态：P0 已落地（`SHIELD_ENABLE_GLOBAL=ON`；测试矩阵 `tests/lua_api/test_lua_api_global.cpp`）。
 >
-> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/广播/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数均为 Phase 2+ 形态；P0 两种算法全程进程内计算，零 Redis 调用，不存在"Redis 不可用"降级语义）；`shield.priority_queue` 与 `shield.broadcast_queue` 已实现（前者进程内多级队列，值越小越优先、同优先级 FIFO；后者进程内为有界 history + 每组 cursor，实时回调分发发生在推送方 VM，离线组在重新 subscribe 时按序补发——跨进程实时广播 Pub/Sub 留 Phase 2+）；KV 数据域与锁域（独占锁+读写锁）的 Redis 后端已实现（`global.data_backend = redis` / `global.lock_backend = redis`，见"配置"一节；队列/排行/调度/限流的 Redis 后端仍为 Phase 2+，见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
+> 本文仍是 `shield_global` 的边界契约；P0 已实现：`shield.global()`（KV + 本地缓存）、互斥/读写/自旋/分布式锁门面、`shield.rank()` 排行榜、普通/延迟/优先级/广播/可靠队列、`shield.scheduler()`（cron/interval/once 与 pause/resume/remove/trigger）、`shield.rate_limiter()`（`allow`/`remaining`/有界 `wait`；token_bucket 与 sliding_window 双算法）。P0 的"分布式"锁、可靠队列与限流器共享进程内 `GlobalManager` 后端（token_bucket 的 Redis 周期同步、sliding_window 的 Redis 计数均为 Phase 2+ 形态；P0 两种算法全程进程内计算，零 Redis 调用，不存在"Redis 不可用"降级语义）；`shield.priority_queue` 与 `shield.broadcast_queue` 已实现（前者进程内多级队列，值越小越优先、同优先级 FIFO；后者进程内为有界 history + 每组 cursor，实时回调分发发生在推送方 VM，离线组在重新 subscribe 时按序补发——跨进程实时广播 Pub/Sub 留 Phase 2+）；KV 数据域、锁域（独占锁+读写锁）与排行域的 Redis 后端已实现（`global.data_backend = redis` / `global.lock_backend = redis` / `global.rank_backend = redis`，见"配置"一节；队列/调度/限流的 Redis 后端仍为 Phase 2+，见文末范围表）。若与 [Lua API 契约](lua-api.md) 或 [配置语义](runtime-config.md) 冲突，以那两份文档为当前主线。
 
 本文档包含 Shield 跨进程共享数据、分布式锁、排行榜、消息队列等全局能力的运行时语义决策。
 
@@ -440,7 +440,7 @@ return 1
 
 ### 配置
 
-> 未接线：`lock:` 配置节不被解析（锁参数只来自 Lua 工厂 opts）。全局生效的键为 `global.cache.max_size` / `global.cache.default_ttl` / `global.scheduler.tick_ms` / `global.data_backend` / `global.lock_backend`（与共享的 `global.redis.*`，见"配置"一节与文末"配置示例"总说明）。以下为 Phase 2+ 设计意图。
+> 未接线：`lock:` 配置节不被解析（锁参数只来自 Lua 工厂 opts）。全局生效的键为 `global.cache.max_size` / `global.cache.default_ttl` / `global.scheduler.tick_ms` / `global.data_backend` / `global.lock_backend` / `global.rank_backend`（与共享的 `global.redis.*`，见"配置"一节与文末"配置示例"总说明）。以下为 Phase 2+ 设计意图。
 
 ```yaml
 lock:
@@ -558,7 +558,7 @@ Redis Hash: shield:rank:archive:{rank_name}:{YYYYMMDD}
 
 ### 配置
 
-> 未接线：`rank:` 配置节在 P0 完全不被解析（榜单无 max_members/归档配置可调）。P0 全局仅三键生效（见文末"配置示例"总说明）。以下为 Phase 2+ 设计意图。
+> 未接线：`rank:` 配置节在 P0 完全不被解析（榜单无 max_members/归档配置可调）。全局生效的键为 `global.cache.max_size` / `global.cache.default_ttl` / `global.scheduler.tick_ms` / `global.data_backend` / `global.lock_backend` / `global.rank_backend`（与共享的 `global.redis.*`，见文末"配置示例"总说明）。以下为 Phase 2+ 设计意图。
 
 ```yaml
 rank:
@@ -569,6 +569,26 @@ rank:
     archive_table: "rank_archive"
     archive_ttl: 2592000       # 归档保留天数（秒），默认 30 天
 ```
+
+#### 排行域 Redis 后端（已实现）
+
+排行域（`shield.rank(name)`）支持把榜单切到 Redis：`global.rank_backend` 取 `""`（默认，进程内存）或 `"redis"`；选 `redis` 时与数据域共享 `global.redis.*` 键（`host` 必填）：
+
+```yaml
+global:
+  rank_backend: redis
+  # redis.* 键与数据域共用一套（host/port/password/db/prefix）
+```
+
+实现语义（`GlobalRankBackend` 接缝，`src/global/global_rank_backend.cpp`）：
+
+- **懒连接**：与数据域/锁域同规则——构造永不阻塞，首次命令才建连，失败抛异常上抛 Lua 面（无静默降级）。
+- **榜单的表示**：每个榜单是 `<prefix>:rank:<board>` 一个 ZSET（member = uid，score 原样存储）；写路径（update/mupdate/remove/clear）与计数（count→ZCARD）是直发 ZSET 命令，无 Lua 脚本。
+- **排序**：板内契约是"分数降序、同分 uid 字典序升序"；ZSET 任一方向的遍历都给不出这个序（降序遍历是升序的精确反转，同分会变成 member 降序），因此查询（position/top/range/range_by_score/around）把整榜 ZRANGE 拉回后用与进程内实现相同的比较器排序——`rank` 字段始终是全榜 1 基全局名次，与后端选择无关。
+- **一致性**：两种后端的查询语义逐位一致（同分 tie-break、越界钳制、`range_by_score` 双闭区间、`around` 缺席成员返回空报告、无效窗口返回空）。`board_count` 数非空榜单——Redis 侧空 ZSET 自动删除，键数即非空榜数，与进程内"clear 后保留空榜壳（不计数）"的观察口径一致。
+- **隔离**：与数据域共用 `prefix`；榜单键为 `<prefix>:rank:*`，与数据键（`<prefix>:<key>`）、锁键（`<prefix>:lock:*`）互不重叠。
+
+> 实现状态：排行域整体走 `GlobalRankBackend` 接缝（`include/shield/global/global_rank_backend.hpp`）：默认实现为进程内 `map<board, map<uid, score>>` + 互斥（查询时排序，与 P0 `rank_sorted_locked` 同一算法）；`global.rank_backend = redis` 时切到 redis++ 实现（每榜一个 ZSET）。`rank:` 配置节仍不解析（见上文"配置"一节）。
 
 ---
 
@@ -875,10 +895,10 @@ g:publish("system_notice", { text = "Hello!" })
 ```yaml
 global:
   enabled: true                  # 未解析（模块由 SHIELD_ENABLE_GLOBAL 开关）
-  redis:                         # 未解析（Redis 后端为 Phase 2+）
-    inherit: true
-    db: 1
-    prefix: "shield:global:"
+  redis:                         # 生效（data/lock/rank 后端为 redis 时共用）
+    inherit: true                # 未解析
+    db: 1                        # 生效
+    prefix: "shield:global:"     # 生效（后端键前缀）
 
   cache:
     enabled: true                # 未解析
@@ -1247,7 +1267,7 @@ GET /ops/scheduler
 |------|--------|------|
 | 全局数据 + 本地缓存 | P0 | 核心功能；KV 数据域 Redis 后端已实现（`global.data_backend = redis`），本地缓存按 TTL 有界（跨进程写入存在短暂陈旧窗口） |
 | 分布式锁（重入、续期） | P0 | 全局操作必需；锁域 Redis 后端已实现（`global.lock_backend = redis`，独占锁 + 读写锁） |
-| 排行榜 | P0 | 游戏标配 |
+| 排行榜 | P0 | 游戏标配；排行域 Redis 后端已实现（`global.rank_backend = redis`，每榜一个 ZSET） |
 | 普通队列 | P0 | 异步任务 |
 | 延迟队列 | P0 | 延迟奖励、定时任务 |
 | 可靠队列 | P0 | 关键业务 |

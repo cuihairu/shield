@@ -243,6 +243,7 @@ bool GlobalConfig::from_global_config(GlobalConfig* out, std::string* error) {
         cfg.get_int("global.scheduler.tick_ms", 250));
     out->data_backend = cfg.get_string("global.data_backend", "");
     out->lock_backend = cfg.get_string("global.lock_backend", "");
+    out->rank_backend = cfg.get_string("global.rank_backend", "");
     out->redis_host = cfg.get_string("global.redis.host", "");
     out->redis_port = static_cast<int>(cfg.get_int("global.redis.port", 6379));
     out->redis_password = cfg.get_string("global.redis.password", "");
@@ -299,6 +300,21 @@ bool validate_global_config(const GlobalConfig& config, std::string* error) {
                              // arm)
         return false;
     }
+    if (config.rank_backend != "redis" && !config.rank_backend.empty()) {
+        if (error)
+            *error = "global.rank_backend must be \"\" or \"redis\" (got \"" +
+                     config.rank_backend +
+                     "\")";  // GCOVR_EXCL_BR_LINE (null error out-param arm)
+        return false;
+    }
+    if (config.rank_backend == "redis" && config.redis_host.empty()) {
+        if (error)
+            *error =
+                "global.redis.host is required when global.rank_backend "
+                "is redis";  // GCOVR_EXCL_BR_LINE (null error out-param
+                             // arm)
+        return false;
+    }
     return true;
 }
 
@@ -340,6 +356,25 @@ GlobalManager::GlobalManager(GlobalConfig config) : config_(std::move(config)) {
                     " (using process memory)");
         }
         lock_backend_ = make_inprocess_lock_backend();
+    }
+    if (config_.rank_backend == "redis") {
+        RedisDataBackendConfig redis;
+        redis.host = config_.redis_host;
+        redis.port = config_.redis_port;
+        redis.password = config_.redis_password;
+        redis.db = config_.redis_db;
+        redis.prefix = config_.redis_prefix;
+        rank_backend_ = make_redis_rank_backend(redis);
+    } else {
+        if (!config_.rank_backend.empty()) {
+            // Validation rejects unknown values; direct construction falls
+            // back to process memory with a warning.
+            SHIELD_LOG_WARNING(
+                shield::log::get_logger("global"),
+                "Unknown global.rank_backend: " + config_.rank_backend +
+                    " (using process memory)");
+        }
+        rank_backend_ = make_inprocess_rank_backend();
     }
 }
 
@@ -584,6 +619,15 @@ void GlobalManager::set_lock_backend(
     lock_backend_ = std::move(backend);
 }
 
+void GlobalManager::set_rank_backend(
+    std::unique_ptr<GlobalRankBackend> backend) {
+    if (!backend) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(ranks_mutex_);
+    rank_backend_ = std::move(backend);
+}
+
 LockStatus GlobalManager::mutex_acquire(const std::string& registry,
                                         const std::string& name,
                                         const std::string& owner,
@@ -664,192 +708,85 @@ std::size_t GlobalManager::rwlock_count() const {
 }
 
 // ---- leaderboards ----
-
-std::vector<RankEntry> GlobalManager::rank_sorted_locked(
-    const std::unordered_map<std::string, double>& board) {
-    std::vector<RankEntry> entries;
-    entries.reserve(board.size());
-    for (const auto& [uid, score] : board) {
-        entries.push_back(RankEntry{// GCOVR_EXCL_BR_LINE (compiler artifact:
-                                    // aggregate init-list branches)
-                                    uid, score, 0});
-    }
-    std::sort(entries.begin(), entries.end(),
-              [](const RankEntry& a, const RankEntry& b) {
-                  if (a.score != b.score) {
-                      return a.score > b.score;
-                  }
-                  return a.uid < b.uid;
-              });
-    for (std::size_t i = 0; i < entries.size(); ++i) {
-        entries[i].rank = i + 1;
-    }
-    return entries;
-}  // GCOVR_EXCL_LINE (fn-close artifact)
+//
+// Every rank_* method delegates to the GlobalRankBackend seam. ranks_mutex_
+// guards the delegation and backend swap, so a backend swap cannot race a
+// query in flight (the backend takes its own locks inside).
 
 void GlobalManager::rank_update(const std::string& board,
                                 const std::string& uid, double score) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    ranks_[board][uid] = score;
+    rank_backend_->rank_update(board, uid, score);
 }
 
 void GlobalManager::rank_mupdate(
     const std::string& board,
     const std::vector<std::pair<std::string, double>>& updates) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    auto& target = ranks_[board];
-    for (const auto& [uid, score] : updates) {
-        target[uid] = score;
-    }
+    rank_backend_->rank_mupdate(board, updates);
 }
 
 std::optional<double> GlobalManager::rank_score(const std::string& board,
                                                 const std::string& uid) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    auto it = ranks_.find(board);
-    if (it == ranks_.end()) {
-        return std::nullopt;
-    }
-    auto entry = it->second.find(uid);
-    if (entry == it->second.end()) {
-        return std::nullopt;
-    }
-    return entry->second;
+    return rank_backend_->rank_score(board, uid);
 }
 
 std::optional<std::uint64_t> GlobalManager::rank_position(
     const std::string& board, const std::string& uid) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    auto it = ranks_.find(board);
-    if (it == ranks_.end()) {
-        return std::nullopt;
-    }
-    const auto sorted = rank_sorted_locked(it->second);
-    for (const auto& entry : sorted) {
-        if (entry.uid == uid) {
-            return entry.rank;
-        }
-    }
-    return std::nullopt;
+    return rank_backend_->rank_position(board, uid);
 }
 
 std::vector<RankEntry> GlobalManager::rank_top(const std::string& board,
                                                std::size_t n) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    auto it = ranks_.find(board);
-    if (it == ranks_.end() || n == 0) {
-        return {};
-    }
-    auto sorted = rank_sorted_locked(it->second);
-    if (sorted.size() > n) {
-        sorted.resize(n);
-    }
-    return sorted;
+    return rank_backend_->rank_top(board, n);
 }
 
 std::vector<RankEntry> GlobalManager::rank_range(const std::string& board,
                                                  std::uint64_t from,
                                                  std::uint64_t to) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    auto it = ranks_.find(board);
-    if (it == ranks_.end() || from == 0 || to < from) {
-        return {};
-    }
-    const auto sorted = rank_sorted_locked(it->second);
-    const std::size_t begin = std::min<std::size_t>(
-        static_cast<std::size_t>(from - 1), sorted.size());
-    const std::size_t end =
-        std::min<std::size_t>(static_cast<std::size_t>(to), sorted.size());
-    return std::vector<RankEntry>(sorted.begin() + begin, sorted.begin() + end);
+    return rank_backend_->rank_range(board, from, to);
 }
 
 std::vector<RankEntry> GlobalManager::rank_range_by_score(
     const std::string& board, double lo, double hi) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    auto it = ranks_.find(board);
-    if (it == ranks_.end() || hi < lo) {
-        return {};
-    }
-    std::vector<RankEntry> out;
-    for (const auto& entry : rank_sorted_locked(it->second)) {
-        if (entry.score >= lo && entry.score <= hi) {
-            out.push_back(entry);
-        }
-    }
-    return out;
+    return rank_backend_->rank_range_by_score(board, lo, hi);
 }
 
 RankAround GlobalManager::rank_around(const std::string& board,
                                       const std::string& uid, std::size_t n) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    RankAround around;
-    auto it = ranks_.find(board);
-    if (it == ranks_.end()) {
-        return around;
-    }
-    const auto sorted = rank_sorted_locked(it->second);
-    std::size_t pos = sorted.size();
-    for (std::size_t i = 0; i < sorted.size(); ++i) {
-        if (sorted[i].uid == uid) {
-            pos = i;
-            break;
-        }
-    }
-    if (pos == sorted.size()) {
-        return around;
-    }
-    around.target = sorted[pos];
-    const std::size_t first = pos > n ? pos - n : 0;
-    around.above.assign(sorted.begin() + first, sorted.begin() + pos);
-    around.below.assign(sorted.begin() + pos + 1,
-                        sorted.begin() + std::min(pos + 1 + n, sorted.size()));
-    return around;
+    return rank_backend_->rank_around(board, uid, n);
 }
 
 std::size_t GlobalManager::rank_count(const std::string& board) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    auto it = ranks_.find(board);
-    return it == ranks_.end() ? 0 : it->second.size();
+    return rank_backend_->rank_count(board);
 }
 
 bool GlobalManager::rank_remove(const std::string& board,
                                 const std::string& uid) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    auto it = ranks_.find(board);
-    if (it == ranks_.end()) {
-        return false;
-    }
-    return it->second.erase(uid) != 0;
+    return rank_backend_->rank_remove(board, uid);
 }
 
 void GlobalManager::rank_clear(const std::string& board) {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    auto it = ranks_.find(board);
-    if (it != ranks_.end()) {
-        it->second.clear();
-    }
+    rank_backend_->rank_clear(board);
 }
 
 std::size_t GlobalManager::rank_board_count() {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    std::size_t non_empty = 0;
-    for (const auto& [board, entries] : ranks_) {
-        (void)board;
-        if (!entries.empty()) {
-            ++non_empty;
-        }
-    }
-    return non_empty;
+    return rank_backend_->rank_board_count();
 }
 
 std::size_t GlobalManager::rank_total_members() {
     std::lock_guard<std::mutex> lock(ranks_mutex_);
-    std::size_t total = 0;
-    for (const auto& [board, entries] : ranks_) {
-        (void)board;
-        total += entries.size();
-    }
-    return total;
+    return rank_backend_->rank_total_members();
 }
 
 // ---- normal queues ----

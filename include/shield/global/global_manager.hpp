@@ -7,11 +7,12 @@
 // injected as std::function so shield_global never links shield_lua.
 //
 // P0 backend is process memory; the data domain (KV + TTL) also has a Redis
-// backend behind the GlobalDataBackend seam (`global.data_backend = redis`)
-// and the exclusive-lock domain (mutex / spinlock registries) has one behind
-// the GlobalLockBackend seam (`global.lock_backend = redis`), while ranks /
-// queues / scheduler / rate limiter stay in-process (Phase 2+). The seams
-// keep the Lua surface untouched.
+// backend behind the GlobalDataBackend seam (`global.data_backend = redis`),
+// the lock domain (mutex / spinlock registries + rwlocks) has one behind the
+// GlobalLockBackend seam (`global.lock_backend = redis`) and the rank domain
+// has one behind the GlobalRankBackend seam (`global.rank_backend = redis`),
+// while queues / scheduler / rate limiter stay in-process (Phase 2+). The
+// seams keep the Lua surface untouched.
 #pragma once
 
 #include <condition_variable>
@@ -30,6 +31,7 @@
 
 #include "shield/global/global_data_backend.hpp"
 #include "shield/global/global_lock_backend.hpp"
+#include "shield/global/global_rank_backend.hpp"
 
 namespace shield::global {
 
@@ -46,6 +48,9 @@ struct GlobalConfig {
     /// Exclusive-lock backend (mutex + spinlock registries): "" (process
     /// memory, default) or "redis" (shares the global.redis.* keys).
     std::string lock_backend;
+    /// Rank backend (leaderboards): "" (process memory, default) or
+    /// "redis" (shares the global.redis.* keys).
+    std::string rank_backend;
     std::string redis_host;
     int redis_port = 6379;
     std::string redis_password;
@@ -83,23 +88,9 @@ bool parse_cron(const std::string& expression, CronFields* out,
 /// both are restricted the day matches if EITHER side allows it.
 std::uint64_t cron_next(const CronFields& fields, std::uint64_t from_ms);
 
-/// Lock-domain types (LockStatus / LockInfo / RwLockInfo) live with their
-/// seam in global_lock_backend.hpp.
-
-/// ---------------------------------------------------------------------------
-/// Leaderboards: score desc, uid asc on ties (Redis ZSET order).
-/// ---------------------------------------------------------------------------
-struct RankEntry {
-    std::string uid;
-    double score = 0.0;
-    std::uint64_t rank = 0;  // 1-based
-};
-
-struct RankAround {
-    std::vector<RankEntry> above;
-    std::optional<RankEntry> target;
-    std::vector<RankEntry> below;
-};
+/// Domain types (LockStatus / LockInfo / RwLockInfo / RankEntry /
+/// RankAround) live with their seams in global_lock_backend.hpp and
+/// global_rank_backend.hpp.
 
 /// ---------------------------------------------------------------------------
 /// Reliable queue delivery handle.
@@ -195,6 +186,10 @@ public:
     /// Replaces the exclusive-lock backend (test injection; the constructor
     /// picks the backend from GlobalConfig). Ignored on null.
     void set_lock_backend(std::unique_ptr<GlobalLockBackend> backend);
+
+    /// Replaces the rank backend (test injection; the constructor picks the
+    /// backend from GlobalConfig). Ignored on null.
+    void set_rank_backend(std::unique_ptr<GlobalRankBackend> backend);
 
     // ---- global data (JSON text values, optional TTL) ----
     bool data_get(const std::string& key, std::string* out);
@@ -419,8 +414,6 @@ private:
     /// Drops the key's cached copy (data_mutex_ must be held); part of the
     /// cache-coherence contract shared by every data write / lazy expiry.
     void cache_drop_locked(const std::string& key);
-    std::vector<RankEntry> rank_sorted_locked(
-        const std::unordered_map<std::string, double>& board);
     void fire_task(const SchedTask& task);
     void tick_loop();
 
@@ -444,9 +437,10 @@ private:
     std::unique_ptr<GlobalLockBackend> lock_backend_;
     mutable std::mutex locks_mutex_;
 
+    /// Rank-domain storage (process memory by default); every rank_* method
+    /// delegates here.
+    std::unique_ptr<GlobalRankBackend> rank_backend_;
     mutable std::mutex ranks_mutex_;
-    std::unordered_map<std::string, std::unordered_map<std::string, double>>
-        ranks_;
 
     mutable std::mutex queues_mutex_;
     std::unordered_map<std::string, std::deque<std::string>> queues_;

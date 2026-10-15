@@ -1170,3 +1170,19 @@ CI 三 job 观察（含新 coverage-optional 首跑）；禁 tag/release。
 - **改语义立刻制造死臂**：erase 之后「有注册表条目但无写者且无读者」不可达 → rw_write_acquire 的写者接管臂变死码，gcovr 报 global_lock_backend.cpp 98%（缺 206-211）。删臂并留注释解释为何无接管臂；Lua 侧同名臂保留（服务端 HASH 经手工注入/崩溃残留可达，不是死码）。
 - **进程内惰性截止需要服务端镜像字段**：独占锁靠 Redis 服务端 TTL 到期删键即等价，读写锁做不到——读者持有期间哈希必须永不过期（否则读持有中途蒸发），写者崩溃又需要到期兜底。解法是双时钟：`we` 镜像进程内截止时刻（脚本判 stale 优先用它，防时钟偏移或残留哈希造成「幽灵 busy」），PEXPIRE 只在写者持有期设置，读者独存与写释放归零都 PERSIST。
 - **不可达服务端状态靠 redis-cli 注入打测试**：`we` 过期而哈希仍存活的组合公共 API 造不出来（fork+execlp redis-cli HSET，退出码 0 视为成功，不可用则同 redis-server 缺失模式跳过），据此覆盖两段脚本的 stale 重置臂。
+
+## 批次：shield_global 排行域 Redis 后端切片 4（2026-10-11）
+
+**范围**：排行域整体并入新的 `GlobalRankBackend` 接缝（include/shield/global/global_rank_backend.hpp），镜像数据域/锁域模式：RankEntry/RankAround 随接缝搬家 + 13 个纯虚方法（update/mupdate/score/position/top/range/range_by_score/around/count/remove/clear/board_count/total_members）+ 进程内实现（boards_ 表从 GlobalManager 逐字抽取，排序逻辑抽出 order_entries 复用）+ redis++ 实现（每榜一个 ZSET `<prefix>:rank:<board>`，member = uid，score 原样；写路径与计数直发命令，查询拉整榜后按进程内同一比较器排序，无 Lua 脚本）+ GlobalManager 13 方法改委托（ranks_mutex_）+ `global.rank_backend` 配置键（解析/校验两臂/构造分发/set_rank_backend 换后端）+ 测试 + CI/gate 覆盖率过滤表 + 文档翻转。
+
+**验收证据**：
+- test_global_rank_backend 21 例全绿：进程内 5 例（tie-break 与重排、top/range 窗口钳制与无效臂、around 窗口与缺席成员、range_by_score 双闭区间与计数、mupdate）、manager 委托 4 例（未知后端回落、null 换入忽略、假后端全 13 方法路由、进程内端到端）、配置 3 例（解析 + validate 两臂）、真实 redis-server 9 例（基础与跨句柄可见、tie-break、窗口、around、range_by_score、remove/clear/计数/mupdate、前缀隔离、closed-port 抛错、manager Redis 端到端）。
+- test_global_manager 76 例与 test_lua_api_global 无回归。
+- gcovr 8.6 optional 口径（CI/gate 过滤表新增 global_rank_backend.cpp）100%。
+- 提交见 git log（feat(global): rank backend seam 批次）。
+
+**坑（新指纹）**：
+- **ZSET 任一方向遍历都给不出「分数降 + 同分 uid 升」**：降序遍历是升序的精确反转——升序是（分数升、同分 member 升），反转后同分变 member 降。「先升序拉取再整体反转」错得和 ZREVRANGE 一样（本批测试当场抓出：alice/carol 同分 30，反转后 carol 排前）。唯一正确做法：拉回后用进程内同一比较器在 C++ 排序；排行榜契约以进程内实现为准，Redis 只是存储。
+- **redis++ 的 Optional 不是 std::optional**（vcpkg 构建未定义 REDIS_PLUS_PLUS_OPTIONAL_STD）：zscore/zrevrank 返回 sw::redis::Optional<T>，与 std::optional 逐位同形（operator bool / operator*）但无隐式转换，需在调用点手工提升（`if (!x) return std::nullopt; return *x;`）——与 data 后端 OptionalString 的既有处理一致。
+- **Boost.Test 不能流式输出 std::optional**：BOOST_CHECK_EQUAL(opt, v) 连成功路径都实例化 print_helper → 编译错误上百行。断言必须先解包（`.value()` / 先 `BOOST_REQUIRE(has_value())` 再解引用），照 test_global_manager 的既有写法。
+- **改头文件后 ninja 未重链测试二进制的假红**：排序逻辑修复后重编仍报同一失败（旧二进制行为），touch 源文件强制全量重链后即绿——与既有「单点 ninja 留陈旧测试二进制」指纹同族，判别法：直接跑 bin/ 下二进制对照 ctest 结果。

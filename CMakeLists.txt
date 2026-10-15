@@ -917,6 +917,7 @@ if(SHIELD_ENABLE_GLOBAL)
         src/global/global_manager.cpp
         src/global/global_data_backend.cpp
         src/global/global_lock_backend.cpp
+        src/global/global_rank_backend.cpp
     )
     target_include_directories(shield_global
         PUBLIC
