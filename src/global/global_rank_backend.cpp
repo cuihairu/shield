@@ -56,7 +56,8 @@ std::vector<RankEntry> sorted_board(const Board& board) {
     }
     order_entries(entries);
     return entries;
-}
+}  // GCOVR_EXCL_LINE (gcov epilogue artifact: callers inline sorted_board,
+   // the outlined epilogue never runs)
 
 class InProcessRankBackend final : public GlobalRankBackend {
 public:
@@ -133,8 +134,10 @@ public:
             static_cast<std::size_t>(from - 1), sorted.size());
         const std::size_t end =
             std::min<std::size_t>(static_cast<std::size_t>(to), sorted.size());
-        return std::vector<RankEntry>(sorted.begin() + begin,
-                                      sorted.begin() + end);
+        return std::vector<RankEntry>(  // GCOVR_EXCL_LINE (compiler artifact:
+                                        // the split return credits the next
+                                        // physical line)
+            sorted.begin() + begin, sorted.begin() + end);
     }
 
     std::vector<RankEntry> rank_range_by_score(const std::string& board,

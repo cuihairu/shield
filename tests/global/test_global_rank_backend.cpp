@@ -590,6 +590,8 @@ BOOST_AUTO_TEST_CASE(RedisRankOrderingAndTieBreak) {
     BOOST_CHECK_EQUAL(backend->rank_position("b", "alice").value(), 2u);
     BOOST_CHECK_EQUAL(backend->rank_position("b", "carol").value(), 3u);
     BOOST_CHECK_EQUAL(backend->rank_position("b", "dave").value(), 4u);
+    // Off-board uid is not an error: no rank at all.
+    BOOST_CHECK(!backend->rank_position("b", "ghost").has_value());
     backend->rank_update("b", "dave", 99);
     BOOST_CHECK_EQUAL(backend->rank_position("b", "dave").value(), 1u);
     BOOST_CHECK_EQUAL(backend->rank_position("b", "bob").value(), 2u);

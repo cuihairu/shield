@@ -1186,3 +1186,15 @@ CI 三 job 观察（含新 coverage-optional 首跑）；禁 tag/release。
 - **redis++ 的 Optional 不是 std::optional**（vcpkg 构建未定义 REDIS_PLUS_PLUS_OPTIONAL_STD）：zscore/zrevrank 返回 sw::redis::Optional<T>，与 std::optional 逐位同形（operator bool / operator*）但无隐式转换，需在调用点手工提升（`if (!x) return std::nullopt; return *x;`）——与 data 后端 OptionalString 的既有处理一致。
 - **Boost.Test 不能流式输出 std::optional**：BOOST_CHECK_EQUAL(opt, v) 连成功路径都实例化 print_helper → 编译错误上百行。断言必须先解包（`.value()` / 先 `BOOST_REQUIRE(has_value())` 再解引用），照 test_global_manager 的既有写法。
 - **改头文件后 ninja 未重链测试二进制的假红**：排序逻辑修复后重编仍报同一失败（旧二进制行为），touch 源文件强制全量重链后即绿——与既有「单点 ninja 留陈旧测试二进制」指纹同族，判别法：直接跑 bin/ 下二进制对照 ctest 结果。
+
+---
+
+**CI 救援记录（2026-10-16 R1019PATROL，31h 静默后本席代修）**：
+
+- **根因**：dbf87e6「wip snapshot 2026-10-15 09:30」整体快照把排行批次（含未正式提交的 wip 改动）一次入仓，CI `Coverage (Optional Modules)` 在 100% 行覆盖门禁下报 99.9%，缺口 `src/global/global_rank_backend.cpp` 3 行（CI artifact 复现两份一致：run 38666017869 原跑 + rerun attempt 2）。仓内台账 :1181「100%」声明系本地实测口径，与 HEAD 实态失配（快照入仓前未重验 CI）。
+- **缺口逐行判别**（本机 build-cov-local 镜像 CI 配置复现，gcovr --json 逐行 count）：
+  - `:59` `sorted_board` 尾括号 count=0（函数体 57/58 count=20）——全调用点内联、outlined 副本 epilogue 零执行，**gcov 伪影**（同 lua_api.cpp:70 家族），`GCOVR_EXCL_LINE` 注释排除。
+  - 两行 `return`（原 :136-137）count 0/6——split 语句执行记在续行，**行归属伪影**，注释排除并 80 列内重排。
+  - `:279` redis 端 `rank_position` ghost-uid → `std::nullopt` **真缺口**——redis 套件镜像进程内套件漏了 ghost 断言，已补（RedisRankOrderingAndTieBreak 内 `BOOST_CHECK(!backend->rank_position("b", "ghost").has_value())`）。
+- **验收证据（与 CI 同参数同过滤表全量复跑）**：ctest 106/106 全绿；gcovr optional 过滤表 TOTAL **6036/6036 = 100%**、`global_rank_backend.cpp` 273/273 = 100%（2 行按登记排除），`--fail-under-line 100` 无错。clang-format --dry-run 两文件零违例。
+- **流程指纹（本机复现时踩到，与既有坑同族）**：`find … -name "*.gcda" -delete` 后 `cmake --build` 在高负载（load 77-85）下 cmake 重配中断会留下被清空的顶层 CMakeFiles/（对象全丢、build.ninja 残缺），ctest 随后跑的是**陈旧二进制**假绿（106/106 全绿但改动未进二进制）——判别法：构建结束必须核对 `NINJA_EXIT` 与对象文件存在性，再跑测试。
