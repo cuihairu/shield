@@ -9,16 +9,25 @@ English | [简体中文](README.zh.md)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 Shield is a **single-node-first, Skynet-inspired,
-actor-based, Lua-first game server runtime** (roadmap Phases 0-5 and the
-official optional modules' P0 are landed).
+actor-based, Lua-first game server runtime** (roadmap Phases 0-4 are landed;
+Phase 5 capabilities are partly implemented, with operational features still
+compiled in `shield_bootstrap` while the `shield_ops` CMake target is empty).
 
 ## Test Coverage
 
-The per-module suites under `tests/coverage/` keep `src/` at **98%+ line
-coverage** (measured with gcc `--coverage` + gcovr 8.6). The CI `Coverage` job
-reruns them on every push, uploads the report to
-[Codecov](https://codecov.io/gh/cuihairu/shield), and fails when line coverage
-drops below 98% or branch/function coverage drops below 100%:
+In a local GCC `--coverage` run with gcovr 8.6, `src/` measured **99% line
+coverage (17,130/17,131 lines)**. The command below checks only `src/`; that
+run measured 58.1% branch and 99.9% function coverage, so its 100% branch and
+function thresholds did not pass. CI uses a different configuration: it runs
+all tests, includes `include/shield/`, and excludes unreachable and throw
+branches. The analyzed local optional-modules-enabled build measured 99.3%
+branch and 99.1% function coverage with those CI parameters; those results also
+miss the 100% thresholds and do not establish that the CI gate passed. The CI
+Coverage job runs on `main` pushes and pull requests, runs all tests, and uploads
+its report to [Codecov](https://codecov.io/gh/cuihairu/shield). The badge above
+reports the uploaded Codecov status; it is not a separate local measurement.
+The commands below show the README-local suite and gcovr configuration, which
+differs from CI as described above:
 
 ```bash
 cmake -S . -B build-cov -G Ninja \
@@ -217,10 +226,12 @@ can load config, start Lua module-table services, validate TCP listener startup,
 run local registry and messaging smoke tests, and initialize the plugin host
 without linking provider libraries into the core executable.
 
-Some documented APIs remain target contracts or partial implementations. In
-particular, the hello-world TCP gateway verifies listener startup and gateway
-event routing; session state (target service, player_id, epoch) lives in the
-C++ `SessionBinding` layer and is not exposed to Lua as a userdata.
+Some documented APIs remain target contracts or partial implementations. The
+hello-world TCP gateway verifies listener startup and gateway event routing;
+the runtime also registers read-only `shd.ClientContext` and `shd.ClientRef`
+Lua userdata for client identity. These userdata expose selected identity
+fields and binding methods, while the socket and internal `SessionBinding`
+remain in C++.
 
 ## Docker Build
 

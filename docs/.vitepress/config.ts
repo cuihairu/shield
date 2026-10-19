@@ -6,6 +6,8 @@ export default defineConfig({
   title: 'Shield',
   description: 'Skynet 启发的 Lua 优先游戏服务器运行时',
   cleanUrls: true,
+  // Internal audit notes link directly to repository evidence outside the
+  // published docs root; keep them in the repo without treating them as pages.
   vite: {
     build: {
       // esbuild 0.25+ 对旧 target 的解构语法转换过于保守，目标浏览器其实都支持
@@ -154,5 +156,5 @@ export default defineConfig({
     },
   },
   // review/ 是审核底稿（含原始工具记录与未闭合标签），只留档不入站
-  srcExclude: ['review/**'],
+  srcExclude: ['review/**', 'analysis/**'],
 })

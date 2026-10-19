@@ -8,15 +8,20 @@
 [![Coverage](https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg)](https://codecov.io/gh/cuihairu/shield)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-Shield 是一个**单节点优先、受 Skynet 启发、基于 Actor、Lua 优先的游戏服务器运行时**（路线图 Phase 0-5 与官方可选模块 P0 已落地）。
+Shield 是一个**单节点优先、受 Skynet 启发、基于 Actor、Lua 优先的游戏服务器运行时**（路线图 Phase 0-4 已落地；Phase 5 能力部分实现，运维功能仍编译在 `shield_bootstrap` 中，`shield_ops` CMake target 目前为空）。
 
 ## 测试覆盖率
 
-`tests/coverage/` 下的分模块测试套件将 `src/` 的**行覆盖率**维持在
-**98% 以上**（使用 gcc `--coverage` + gcovr 8.6 度量）。CI 的 `Coverage`
-任务在每次推送时重新运行这些套件，将报告上传至
-[Codecov](https://codecov.io/gh/cuihairu/shield)，并在行覆盖率低于 98%、
-分支/函数覆盖率低于 100% 时失败：
+本机 GCC `--coverage` + gcovr 8.6 实测 `src/` **行覆盖率为 99%
+（17,130/17,131 行）**。下方命令只统计 `src/`；该次结果的分支覆盖率为
+58.1%、函数覆盖率为 99.9%，因此 100% 分支和函数门槛未通过。CI 使用不同
+配置：运行全部测试，统计范围还包括 `include/shield/`，并排除不可达分支和
+throw 分支。分析时启用可选模块的本机复用构建按 CI 参数统计，分支为
+99.3%、函数为 99.1%，同样未达到 100% 门槛；这些数字不代表 CI 门禁已通过。
+CI Coverage 任务在 `main` 分支 push 和 pull request 时运行全部测试并上传报告
+至 [Codecov](https://codecov.io/gh/cuihairu/shield)。上方徽章显示 Codecov 上传
+状态，不是独立的本机测量结果。下方是 README 本地套件及 gcovr 配置，与 CI
+参数的差异如上所述：
 
 ```bash
 cmake -S . -B build-cov -G Ninja \
@@ -182,9 +187,9 @@ return M
 
 ## 当前状态
 
-重构主干已收口（路线图 Phase 0-5 与官方可选模块 P0 落地）。runtime 已能加载配置、启动 Lua module-table service、校验 TCP listener 启动、本地 registry 和消息 smoke test，并在 core executable 不链接 provider 库的前提下初始化插件宿主。
+重构主干已收口（路线图 Phase 0-4 落地；Phase 5 可选能力按模块和实现边界分别核对）。运维 HTTP/console/profile 功能当前由 `shield_bootstrap` 承载，`shield_ops` CMake target 仍为空壳。runtime 已能加载配置、启动 Lua module-table service、校验 TCP listener 启动、本地 registry 和消息 smoke test，并在 core executable 不链接 provider 库的前提下初始化插件宿主。
 
-部分文档 API 仍是目标契约或部分实现。尤其是 hello-world TCP gateway 验证的是 listener 启动和 gateway event routing；会话状态（目标服务、player_id、epoch）当前只存在于 C++ 的 `SessionBinding` 层，未以 userdata 暴露给 Lua。
+部分文档 API 仍是目标契约或部分实现。hello-world TCP gateway 验证的是 listener 启动和 gateway event routing；运行时也注册了只读 `shd.ClientContext` 和 `shd.ClientRef` Lua userdata，用于客户端身份。userdata 暴露选定身份字段和绑定方法；socket 与内部 `SessionBinding` 仍由 C++ 管理。
 
 ## Docker 构建
 

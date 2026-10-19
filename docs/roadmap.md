@@ -1,6 +1,6 @@
 # 重构路线图
 
-重构设计阶段已收口：本路线图 Phase 0-5 与官方可选模块 P0 均已落地。旧文档中“Phase 1-7 全部完成”的口径对应更早一代架构，与本路线图的 refactor 范围不同。
+重构设计阶段已收口：Phase 0-4 已落地；Phase 5 的可选能力按模块和实现边界分别核对。运维 HTTP/console/profile 功能已有实现，但当前由 `shield_bootstrap` 承载，`shield_ops` CMake target 仍为空壳，因此不能将 `shield_ops` 模块本身标为已落地。旧文档中“Phase 1-7 全部完成”的口径对应更早一代架构，与本路线图的 refactor 范围不同。
 
 说明：以下勾选表示对应源码路径已经进入当前 refactor 验证范围；文档边界冻结但源码仍未完成的事项保持未勾选。
 
@@ -116,7 +116,7 @@
 
 ## Phase 5: 官方可选模块
 
-以下内容不属于当前 refactor core，但属于官方可选模块或扩展方向。五个模块的 P0 均已落地（见上文 optional modules 快照与 runtime-*.md），下列条目按原设计列出以保留演进脉络：
+以下内容不属于当前 refactor core，但属于官方可选模块或扩展方向。Cluster、global、player、server 的已实现范围见上文快照与 runtime-*.md；Ops 的运维功能部分已实现并由 bootstrap 承载，但 `shield_ops` target 为空，配置 owner `ops:` 也尚未接入。下列条目保留原设计并标明实际边界：
 
 - `shield_cluster`：多进程/多机器通信、节点心跳、远端路由 cache、可选服务发现。
 - `shield_global`：跨进程数据、分布式锁、排行榜、队列、限流器。
