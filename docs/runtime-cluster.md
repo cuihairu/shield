@@ -15,6 +15,19 @@
 - **已实现（握手/保活/路由学习/跨节点投递）**：`cluster.*` 配置解析；节点状态数据结构与快照查询；`shield.cluster.nodes()/node_id()/node_epoch()`；`/ops/status` cluster 块与 console 命令；bootstrap 生命周期接线；**心跳调度线程**（`start()` 起内部 `std::jthread` 按 `heartbeat_interval_ms` 驱动 `tick()` 降级，`stop()` 收线）；**CAF middleman transport**（M2）：绑定 `cluster.listen`、主动拨号全部静态 peers、hello/hello_ack 握手（协议版本 v1，身份采纳只在拨号侧完成）、按心跳节拍互发 `HeartbeatMsg`、连接断开即刻 offline 并清路由、带 2s 超时的异步重拨（对端重启可自愈，新 epoch 使旧路由失效）；**route 学习**（M3）：`LuaServiceManager` 名字变更钩子（spawn 发布/register/unregister/退出收回，bootstrap 注入）维护本节点发布表，完整表随每个心跳捎带广播（幂等、自愈，空表自然传播服务下线），握手后立即补发一次加速收敛；接收端要求节点已采纳且 epoch 匹配，整桶替换（stale 实例的表被静默丢弃）；**跨节点投递**（M4）：`EnvelopeMsg`/`EnvelopeReplyMsg` 数据面（详见 [Phase 1 实现范围](#phase-1-实现范围)），`shield.send/call` 对 `node:service` 形态的目标走 envelope 路径。双节点集成测试以两个真实 `caf::actor_system` 走 BASP 验证握手/保活/下线/重启重连/路由收敛与断连清除，并挂真实 Lua 服务管理器验证跨节点 send/call 全链路（`tests/cluster/test_cluster_transport.cpp`）。
 - **当前实际行为**：静态 peers 以 `connecting` 占位（临时以拨号地址为节点标识）；握手完成后改名为对端宣布的 `node_id` 并转为 `online`；此后心跳保活，超时按 `online → suspect → offline` 如实降级。对端进程退出会经连接断开事件直接置 `offline`（无 suspect 宽限）并清除其路由缓存；对端重启后自动重连，新 epoch 触发路由失效。`cluster.listen` 绑定失败视为致命错误，启动即失败。`shield.cluster.query(node, name)` 能命中对端真实发布的服务名（本地 `shield.register` 的每一次变更都会传播）；路由命中后 `shield.send`/`shield.call`/`shield.call_timeout` 可直接以 `"node:service"` 为目标完成真实跨节点投递。后续实现路线见 [cluster 实现方案](cluster-implementation-plan.md)。
 
+### Peer identity and envelope compatibility
+
+The transport binds each inbound `EnvelopeMsg` to the CAF actor handle recorded
+by the configured-peer handshake. The envelope's `source_node` must match the
+node identity announced on that connection; otherwise dispatch is rejected.
+Mismatched claims receive `peer_identity_mismatch`; traffic without a completed
+peer handshake is rejected as `peer_not_authenticated` when a reply route
+exists. This is static handshake identity binding only. The current wire
+protocol has no nonce or timestamp, so replay and message-age rejection are not
+provided. The handshake and `EnvelopeMsg` wire shape are unchanged, so v1 peers
+remain wire-compatible. This does not provide cryptographic authentication:
+PSK/HMAC or mTLS, along with replay protection, remains follow-up work.
+
 ## shield_cluster 定位
 
 `shield_cluster` 负责跨进程和跨机器通信，不属于 `shield_core`。

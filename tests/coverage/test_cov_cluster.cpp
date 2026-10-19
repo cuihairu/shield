@@ -395,8 +395,8 @@ BOOST_AUTO_TEST_CASE(TransportMalformedInjections) {
     // seams drop both silently.
     caf::anon_send(*proxy, HeartbeatMsg{"intruder", 5, 1});
     caf::anon_send(*proxy, RoutesMsg{"intruder", 5, {}});
-    // Envelopes: fire-and-forget hits the (failing) send bridge; a call
-    // envelope gets a reply that has nowhere to go.
+    // Envelopes from this anonymous, unregistered connection are rejected
+    // before either bridge runs; the call has no reply route.
     caf::anon_send(*proxy,
                    EnvelopeMsg{"intruder", "ghost", "echo", "[]", 0, 0});
     caf::anon_send(*proxy,
@@ -405,9 +405,8 @@ BOOST_AUTO_TEST_CASE(TransportMalformedInjections) {
     // is an honest no-op.
     caf::anon_send(*proxy, EnvelopeReplyMsg{777, true, "[]", "", ""});
 
-    BOOST_CHECK(wait_until([&] { return send_dispatched.load(); },
-                           std::chrono::milliseconds(5000)));
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    BOOST_CHECK(!send_dispatched.load());
     // Nothing was adopted: the peer table is still empty.
     BOOST_CHECK(manager->find_node("intruder") == nullptr);
 
@@ -925,20 +924,20 @@ BOOST_AUTO_TEST_CASE(EnvelopeUnknownServicePaths) {
     };
     b.transport->set_envelope_bridges(std::move(b_bridges));
 
-    // Inject envelopes straight at b's published transport actor. Each round
-    // waits for its own reply before the next injection, so exactly one
-    // reply is in flight at a time and reply_code has no cross-talk.
-    auto proxy = a.system->middleman().remote_actor("127.0.0.1", b.port);
-    BOOST_REQUIRE_MESSAGE(proxy, "could not reach b's transport actor");
+    // Send through a's transport so b sees the registered peer handshake
+    // identity on the envelope connection. Each round waits for its own
+    // reply before the next injection, so there is no reply cross-talk.
     auto inject = [&](uint64_t session) {
         reply_landed = false;
-        caf::anon_send(*proxy, EnvelopeMsg{"cov-a", "ghost_svc", "echo", "[]",
-                                           session, 1000});
+        std::string error;
+        BOOST_REQUIRE(a.transport->send_envelope("cov-b", "ghost_svc", "echo",
+                                                 "[]", session, 1000, &error));
         BOOST_CHECK(wait_until([&] { return reply_landed.load(); },
                                std::chrono::milliseconds(5000)));
     };
-    caf::anon_send(*proxy,
-                   EnvelopeMsg{"cov-a", "ghost_svc", "echo", "[]", 0, 0});
+    std::string send_error;
+    BOOST_REQUIRE(a.transport->send_envelope("cov-b", "ghost_svc", "echo", "[]",
+                                             0, 0, &send_error));
     BOOST_CHECK(wait_until([&] { return send_dispatched.load(); },
                            std::chrono::milliseconds(5000)));
 

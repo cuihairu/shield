@@ -45,6 +45,21 @@ using shield::cluster::NodeState;
 using shield::lua::LuaRuntime;
 using shield::lua::LuaServiceManager;
 
+BOOST_AUTO_TEST_CASE(EnvelopePeerIdentityAcceptsAuthenticatedPeer) {
+    BOOST_CHECK(shield::cluster::envelope_peer_error("node-a", "node-a") ==
+                nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(EnvelopePeerIdentityRejectsForgedClaim) {
+    BOOST_CHECK_EQUAL(shield::cluster::envelope_peer_error("node-a", "node-b"),
+                      "peer_identity_mismatch");
+}
+
+BOOST_AUTO_TEST_CASE(EnvelopePeerIdentityRejectsUnregisteredPeer) {
+    BOOST_CHECK_EQUAL(shield::cluster::envelope_peer_error("", "node-a"),
+                      "peer_not_authenticated");
+}
+
 namespace {
 
 // Mirror transport/manager logs to stderr so handshake failures are
@@ -579,7 +594,7 @@ BOOST_AUTO_TEST_CASE(RemoteCallAndSendRoundTripEndToEnd) {
     shield::cluster::set_global_cluster_manager(a->manager.get());
 
     auto callee = spawn_messaging(*b, "echo_impl", "echo_svc");
-    BOOST_REQUIRE(callee.success);
+    BOOST_REQUIRE_MESSAGE(callee.success, callee.error_message);
     auto caller = spawn_messaging(*a, "caller_impl", "");
     BOOST_REQUIRE(caller.success);
 
@@ -673,7 +688,7 @@ BOOST_AUTO_TEST_CASE(RemoteCallFailsFastWhenPeerTransportStops) {
     shield::cluster::set_global_cluster_manager(a->manager.get());
 
     auto callee = spawn_messaging(*b, "echo_impl", "echo_svc");
-    BOOST_REQUIRE(callee.success);
+    BOOST_REQUIRE_MESSAGE(callee.success, callee.error_message);
     auto caller = spawn_messaging(*a, "caller_impl", "");
     BOOST_REQUIRE(caller.success);
 
@@ -716,7 +731,7 @@ BOOST_AUTO_TEST_CASE(RemoteCallTimesOutWhileCalleeIsSlow) {
     shield::cluster::set_global_cluster_manager(a->manager.get());
 
     auto callee = spawn_messaging(*b, "echo_impl", "echo_svc");
-    BOOST_REQUIRE(callee.success);
+    BOOST_REQUIRE_MESSAGE(callee.success, callee.error_message);
     auto caller = spawn_messaging(*a, "caller_impl", "");
     BOOST_REQUIRE(caller.success);
 
@@ -1394,7 +1409,7 @@ BOOST_AUTO_TEST_CASE(LongIdentitiesWithHeavyPayloads) {
     // pre-published route->sid on node-b, and this makes that mapping real,
     // so sends addressed to the long id actually reach a live service.
     auto callee = spawn_messaging(*b, sid, route);
-    BOOST_REQUIRE(callee.success);
+    BOOST_REQUIRE_MESSAGE(callee.success, callee.error_message);
     auto caller = spawn_messaging(*a, "caller_impl", "");
     BOOST_REQUIRE(caller.success);
     wait_route(*a->manager, id_b, route);

@@ -67,6 +67,10 @@ struct TransportSideState {
     // Adopted node_id -> live connection handle (M4 data plane). Both nodes
     // dial each other, so the dialer-side adoption fills this on both ends.
     std::unordered_map<std::string, caf::actor> peers_by_node;
+    // Sender handles observed on inbound Hello messages. A peer can send its
+    // data-plane traffic over the connection it initiated, which is distinct
+    // from our own outbound connection to that same peer.
+    std::vector<std::pair<caf::actor, std::string>> inbound_peer_senders;
     // Guards proxied_calls AND bridges: bridges are installed on a foreign
     // thread and cleared by stop() while the actor keeps dispatching.
     std::mutex data_mutex;
@@ -170,6 +174,12 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                 break;
             }
         }
+        {
+            std::unique_lock lock(side->peers_mutex);
+            std::erase_if(side->inbound_peer_senders, [&dm](const auto& entry) {
+                return entry.first == dm.source;
+            });
+        }
     });
 
     return {
@@ -272,7 +282,8 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                connect_tick_atom_v);
         },
         // -- inbound handshake ---------------------------------------------
-        [self](const HelloMsg& hello) {  // GCOVR_EXCL_LINE (gcov attributes no
+        [self,
+         side](const HelloMsg& hello) {  // GCOVR_EXCL_LINE (gcov attributes no
                                          // code to this line)
             auto& log = shield::log::get_logger("cluster");
             SHIELD_LOG_DEBUG(log, "Hello from " + hello.node_id + " (epoch " +
@@ -294,7 +305,24 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                                // current_sender only null for
                                                // non-request messages; HelloMsg
                                                // is a request)
-                self->send(caf::actor_cast<caf::actor>(sender),
+                auto sender_actor = caf::actor_cast<caf::actor>(sender);
+                {
+                    std::unique_lock lock(side->peers_mutex);
+                    auto it =
+                        std::find_if(side->inbound_peer_senders.begin(),
+                                     side->inbound_peer_senders.end(),
+                                     [&sender_actor](const auto& entry) {
+                                         return entry.first == sender_actor;
+                                     });
+                    if (it == side->inbound_peer_senders.end()) {
+                        side->inbound_peer_senders.emplace_back(sender_actor,
+                                                                hello.node_id);
+                    } else {
+                        it->second = hello.node_id;
+                    }
+                }
+                self->monitor(sender_actor);
+                self->send(sender_actor,
                            HelloAckMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
                                        // aggregate init-list branches)
                                        self->state().self_node_id,
@@ -432,9 +460,54 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             self->state().manager->on_routes(routes.node_id, routes.epoch,
                                              entries);
         },
+        // -- outbound service envelope (M4) ---------------------------------
+        [self, side](dispatch_envelope_atom, const caf::actor& peer,
+                     const EnvelopeMsg& envelope) {
+            side->tx_messages.fetch_add(1, std::memory_order_relaxed);
+            // Send from the transport actor so the receiving transport can
+            // bind current_sender() to the peer's Hello handshake.
+            self->send(peer, envelope);
+        },
         // -- inbound service envelope (M4) ------------------------------------
         [self, side](const EnvelopeMsg& env) {
             side->rx_messages.fetch_add(1, std::memory_order_relaxed);
+            // Bind the claimed source identity to the CAF sender recorded by
+            // the configured-peer handshake.
+            std::string handshake_node;
+            auto sender = self->current_sender();
+            if (sender) {
+                std::shared_lock lock(side->peers_mutex);
+                for (const auto& [node_id, handle] : side->peers_by_node) {
+                    if (handle == sender) {
+                        handshake_node = node_id;
+                        break;
+                    }
+                }
+                if (handshake_node.empty()) {
+                    for (const auto& [handle, node_id] :
+                         side->inbound_peer_senders) {
+                        if (handle == sender) {
+                            handshake_node = node_id;
+                            break;
+                        }
+                    }
+                }
+            }
+            const char* reject_code =
+                envelope_peer_error(handshake_node, env.source_node);
+            if (reject_code) {
+                auto& log = shield::log::get_logger("cluster");
+                SHIELD_LOG_WARNING(
+                    log,
+                    std::string("Rejected cluster envelope: ") + reject_code);
+                if (env.call_session != 0 && !handshake_node.empty()) {
+                    reply_to(side, handshake_node,
+                             EnvelopeReplyMsg{
+                                 env.call_session, false, "", reject_code,
+                                 "cluster peer identity rejected"});
+                }
+                return;
+            }
             // Bridges are invoked OUTSIDE data_mutex (they re-enter the
             // transport from completion paths); snapshot each one under the
             // lock, then call.
@@ -712,11 +785,9 @@ bool ClusterTransport::send_envelope(const std::string& target_node,
         }
         handle = it->second;
     }
-    // Fire into the connection actor; BASP queues and delivers over TCP.
-    // source_node lets the callee route the reply back without a reverse
-    // lookup (both nodes dial each other, but source is authoritative).
-    impl_->side->tx_messages.fetch_add(1, std::memory_order_relaxed);
-    caf::anon_send(handle,
+    // Queue on our transport actor so the wire message carries its actor
+    // identity; the receiver binds that sender to the inbound Hello handshake.
+    caf::anon_send(impl_->actor, dispatch_envelope_atom_v, handle,
                    EnvelopeMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
                                // aggregate init-list branches)
                                impl_->manager->node_id(), service_id, method,

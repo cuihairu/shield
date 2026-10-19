@@ -90,6 +90,16 @@ struct EnvelopeReplyMsg {
     std::string error_message;
 };
 
+/// Validate the claimed envelope source against the identity announced on the
+/// CAF connection's peer handshake. Empty identity means no completed
+/// handshake.
+inline const char* envelope_peer_error(const std::string& handshake_node,
+                                       const std::string& claimed_node) {
+    if (handshake_node.empty()) return "peer_not_authenticated";
+    if (handshake_node != claimed_node) return "peer_identity_mismatch";
+    return nullptr;
+}
+
 template <class Inspector>
 bool inspect(Inspector& f, HelloMsg& x) {
     return f.object(x).fields(f.field("node_id", x.node_id),
@@ -163,6 +173,8 @@ CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::EnvelopeReplyMsg))
 CAF_ADD_ATOM(shield_cluster, shield::cluster,
              connect_tick_atom)                              // GCOVR_EXCL_LINE
 CAF_ADD_ATOM(shield_cluster, shield::cluster, hb_tick_atom)  // GCOVR_EXCL_LINE
+CAF_ADD_ATOM(shield_cluster, shield::cluster,
+             dispatch_envelope_atom)  // GCOVR_EXCL_LINE
 
 CAF_END_TYPE_ID_BLOCK(shield_cluster)
 

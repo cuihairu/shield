@@ -761,7 +761,7 @@ checked=122 unchecked=0
    220	        // Set Lua module search path from configuration
    212	## Current Status
    213	
-   214	The refactor mainline is landed (roadmap Phases 0-5 and the official optional
+   214	The refactor mainline is landed (roadmap Phases 0–5 and the official optional
    215	modules' P0). The runtime
    216	can load config, start Lua module-table services, validate TCP listener startup,
    217	run local registry and messaging smoke tests, and initialize the plugin host

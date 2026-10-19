@@ -220,11 +220,10 @@ authoritative contracts above, the authoritative contracts win.
 
 ## Current Status
 
-The refactor mainline is landed (roadmap Phases 0-5 and the official optional
-modules' P0). The runtime
-can load config, start Lua module-table services, validate TCP listener startup,
-run local registry and messaging smoke tests, and initialize the plugin host
-without linking provider libraries into the core executable.
+Roadmap Phases 0-4 are landed; Phase 5 capabilities are partly implemented.
+The runtime can load config, start Lua module-table services, validate TCP
+listener startup, run local registry and messaging smoke tests, and initialize
+the plugin host without linking provider libraries into the core executable.
 
 Some documented APIs remain target contracts or partial implementations. The
 hello-world TCP gateway verifies listener startup and gateway event routing;
