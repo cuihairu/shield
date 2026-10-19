@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+#include "shield/base/time.hpp"
+#include "shield/cluster/cluster_auth.hpp"
 #include "shield/cluster/cluster_messages.hpp"
 #include "shield/log/logger.hpp"
 
@@ -50,8 +52,10 @@ struct PeerLink {
     std::string address;  // dial target, "host:port"
     std::string host;
     uint16_t port = 0;
-    std::string node_id;   // announced identity, learned at handshake
-    caf::actor handle;     // invalid until the dial succeeds
+    std::string node_id;  // announced identity, learned at handshake
+    caf::actor handle;    // invalid until the dial succeeds
+    HelloMsg hello;
+    shield::base::TimePoint handshake_deadline{};
     bool dialing = false;  // a dial request is in flight
     // Set when a live connection to this peer dropped; the next successful
     // dial is then a reconnect (M5 counter), not the first connect.
@@ -67,6 +71,7 @@ struct TransportSideState {
     // Adopted node_id -> live connection handle (M4 data plane). Both nodes
     // dial each other, so the dialer-side adoption fills this on both ends.
     std::unordered_map<std::string, caf::actor> peers_by_node;
+    caf::actor outbound_actor;
     // Sender handles observed on inbound Hello messages. A peer can send its
     // data-plane traffic over the connection it initiated, which is distinct
     // from our own outbound connection to that same peer.
@@ -99,6 +104,7 @@ using SidePtr = std::shared_ptr<TransportSideState>;
 void reply_to(const SidePtr& side, const std::string& source_node,
               const EnvelopeReplyMsg& reply) {
     caf::actor handle;
+    caf::actor outbound;
     {
         std::shared_lock lock(side->peers_mutex);
         auto it = side->peers_by_node.find(source_node);
@@ -109,10 +115,20 @@ void reply_to(const SidePtr& side, const std::string& source_node,
             return;
         }
         handle = it->second;
+        outbound = side->outbound_actor;
     }
+    if (!outbound) return;
     side->tx_messages.fetch_add(1, std::memory_order_relaxed);
-    caf::anon_send(handle, reply);
+    caf::anon_send(outbound, dispatch_envelope_atom_v, LocalDispatch{}, handle,
+                   reply);
 }
+
+struct PendingHandshake {
+    caf::actor sender;
+    HelloMsg hello;
+    HelloAckMsg ack;
+    shield::base::TimePoint deadline;
+};
 
 struct transport_state {
     ClusterManager* manager = nullptr;
@@ -121,9 +137,58 @@ struct transport_state {
     int heartbeat_interval_ms = 5000;
     std::vector<PeerLink> peers;
     uint64_t hb_seq = 0;
+    ClusterAuthConfig auth;
+    std::vector<PendingHandshake> pending;
+    std::unordered_map<std::string, shield::base::TimePoint> seen_nonces;
 };
 
 using transport_actor = caf::stateful_actor<transport_state>;
+
+void bind_sender(const SidePtr& side, const caf::actor& sender,
+                 const std::string& node_id) {
+    std::unique_lock lock(side->peers_mutex);
+    auto& entries = side->inbound_peer_senders;
+    std::erase_if(entries,
+                  [&](const auto& entry) { return entry.first == sender; });
+    entries.emplace_back(sender, node_id);
+}
+
+std::string sender_identity(const SidePtr& side,
+                            const caf::strong_actor_ptr& sender) {
+    if (!sender) return {};
+    std::shared_lock lock(side->peers_mutex);
+    for (const auto& [handle, node] : side->inbound_peer_senders)
+        if (handle == sender) return node;
+    return {};
+}
+
+void reject_handshake(transport_actor* self, const SidePtr& side,
+                      caf::actor sender, const char* code, bool notify = true) {
+    // Revoke any previous identity before returning a deterministic error.
+    {
+        std::unique_lock lock(side->peers_mutex);
+        std::erase_if(side->inbound_peer_senders,
+                      [&](const auto& entry) { return entry.first == sender; });
+        std::erase_if(side->peers_by_node, [&](const auto& entry) {
+            return entry.second == sender;
+        });
+    }
+    auto& st = self->state();
+    std::erase_if(st.pending,
+                  [&](const auto& entry) { return entry.sender == sender; });
+    for (auto& peer : st.peers) {
+        if (peer.handle == sender) {
+            st.manager->on_peer_down(peer.address);
+            peer.handle = nullptr;
+            peer.node_id.clear();
+            peer.hello = {};
+        }
+    }
+    auto& log = shield::log::get_logger("cluster");
+    SHIELD_LOG_WARNING(log, std::string("Cluster handshake rejected: ") + code);
+    if (notify && sender)
+        self->send(sender, caf::make_error(caf::sec::runtime_error, code));
+}
 
 caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                              const ClusterConfig cfg, const SidePtr& side) {
@@ -132,6 +197,7 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
     st.self_node_id = cfg.node_id;
     st.self_epoch = manager->node_epoch();
     st.heartbeat_interval_ms = cfg.heartbeat_interval_ms;
+    st.auth = cfg.auth;
     for (const auto& address : cfg.peers) {
         // Split "host:port". Invalid entries are skipped and logged; the
         // manager still tracks them so they degrade honestly.
@@ -150,6 +216,14 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
     }
 
     auto& log = shield::log::get_logger("cluster");
+
+    // A peer's handshake failure must not invoke CAF's default error policy
+    // for the entire published transport, nor bounce errors indefinitely.
+    self->set_error_handler([self, side](caf::error&) {
+        auto sender = caf::actor_cast<caf::actor>(self->current_sender());
+        if (sender)
+            reject_handshake(self, side, sender, "auth_peer_rejected", false);
+    });
 
     self->set_down_handler([self, side](caf::down_msg& dm) {
         // The connection to a dialed peer died: definitive offline for that
@@ -171,9 +245,13 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                 peer.dropped = true;
                 peer.handle = nullptr;
                 peer.node_id.clear();
+                peer.hello = {};
                 break;
             }
         }
+        std::erase_if(st.pending, [&dm](const auto& entry) {
+            return entry.sender == dm.source;
+        });
         {
             std::unique_lock lock(side->peers_mutex);
             std::erase_if(side->inbound_peer_senders, [&dm](const auto& entry) {
@@ -187,7 +265,19 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
         [self, side](connect_tick_atom) {
             auto& st = self->state();
             auto& log = shield::log::get_logger("cluster");
+            const auto now = shield::base::now();
+            std::erase_if(st.pending, [now](const auto& entry) {
+                return now >= entry.deadline;
+            });
+            std::erase_if(st.seen_nonces, [now](const auto& entry) {
+                return now >= entry.second;
+            });
             for (auto& peer : st.peers) {
+                if (peer.handle && peer.node_id.empty() &&
+                    now >= peer.handshake_deadline) {
+                    reject_handshake(self, side, peer.handle,
+                                     "auth_handshake_timeout");
+                }
                 if (peer.handle ||  // GCOVR_EXCL_BR_LINE (defensive: dialing
                                     // guard serialises; handle and dialing are
                                     // mutually exclusive in a serialised
@@ -243,13 +333,20 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                 // Deliberately NOT anon_send: the hello must
                                 // carry our address as sender, or the peer
                                 // has nobody to ack to.
-                                self->send(
-                                    peer.handle,
-                                    HelloMsg{// GCOVR_EXCL_BR_LINE (compiler
-                                             // artifact: aggregate init-list
-                                             // branches)
-                                             st.self_node_id, st.self_epoch,
-                                             kClusterProtoVersion});
+                                peer.hello =
+                                    HelloMsg{st.self_node_id, st.self_epoch};
+                                peer.handshake_deadline =
+                                    shield::base::now() +
+                                    std::chrono::milliseconds(
+                                        st.auth.time_window_ms);
+                                if (st.auth.enabled) {
+                                    peer.hello.nonce = cluster_auth_nonce();
+                                    peer.hello.timestamp_ms =
+                                        shield::base::now_ms();
+                                    peer.hello.proof = cluster_auth_proof(
+                                        st.auth.token, "hello", peer.hello);
+                                }
+                                self->send(peer.handle, peer.hello);
                                 SHIELD_LOG_INFO(log, "Dialed peer " + addr);
                                 return;
                             }
@@ -281,135 +378,158 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             self->delayed_send(self, tick_interval(st.heartbeat_interval_ms),
                                connect_tick_atom_v);
         },
-        // -- inbound handshake ---------------------------------------------
-        [self,
-         side](const HelloMsg& hello) {  // GCOVR_EXCL_LINE (gcov attributes no
-                                         // code to this line)
-            auto& log = shield::log::get_logger("cluster");
-            SHIELD_LOG_DEBUG(log, "Hello from " + hello.node_id + " (epoch " +
-                                      std::to_string(hello.epoch) + ")");
-            if (hello.proto_version != kClusterProtoVersion) {
-                SHIELD_LOG_ERROR(log, "Peer protocol version mismatch: got " +
-                                          std::to_string(hello.proto_version) +
-                                          ", expected " +
-                                          std::to_string(kClusterProtoVersion));
+        // -- inbound handshake: Hello(A) -> Ack(B, proof(A)) -> Hello(proof(B))
+        [self, side](const HelloMsg& hello) {
+            auto& st = self->state();
+            auto sender = caf::actor_cast<caf::actor>(self->current_sender());
+            auto reject = [&](const char* code) {
+                reject_handshake(self, side, sender, code);
+            };
+            if (!sender) return;
+            if (hello.proto_version != kClusterProtoVersion)
+                return reject("peer_protocol_mismatch");
+            if (hello.node_id.empty() || hello.node_id == st.self_node_id ||
+                hello.epoch == 0)
+                return reject("peer_identity_invalid");
+            if (!st.auth.enabled) {
+                // Explicitly disabled authentication never silently accepts PSK
+                // mode.
+                if (!hello.nonce.empty() || !hello.proof.empty())
+                    return reject("auth_mode_mismatch");
+                bind_sender(side, sender, hello.node_id);
+                self->monitor(sender);
+                self->send(sender, HelloAckMsg{st.self_node_id, st.self_epoch});
                 return;
             }
-            // Reply over the inbound connection; the dialer adopts our
-            // identity from this ack. We adopt nothing here — our own
-            // adoption happens via our own dial (both sides dial). The ack
-            // must carry our address as sender too: the dialer matches it
-            // against the proxy it dialed.
-            if (auto sender =
-                    self->current_sender()) {  // GCOVR_EXCL_BR_LINE (defensive:
-                                               // current_sender only null for
-                                               // non-request messages; HelloMsg
-                                               // is a request)
-                auto sender_actor = caf::actor_cast<caf::actor>(sender);
-                {
-                    std::unique_lock lock(side->peers_mutex);
-                    auto it =
-                        std::find_if(side->inbound_peer_senders.begin(),
-                                     side->inbound_peer_senders.end(),
-                                     [&sender_actor](const auto& entry) {
-                                         return entry.first == sender_actor;
-                                     });
-                    if (it == side->inbound_peer_senders.end()) {
-                        side->inbound_peer_senders.emplace_back(sender_actor,
-                                                                hello.node_id);
-                    } else {
-                        it->second = hello.node_id;
-                    }
-                }
-                self->monitor(sender_actor);
-                self->send(sender_actor,
-                           HelloAckMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
-                                       // aggregate init-list branches)
-                                       self->state().self_node_id,
-                                       self->state().self_epoch,
-                                       kClusterProtoVersion});
+            if (!cluster_auth_fresh(hello.timestamp_ms, shield::base::now_ms(),
+                                    st.auth.time_window_ms))
+                return reject("auth_timestamp_expired");
+            if (hello.nonce.size() != 64 || hello.proof.size() != 64)
+                return reject("auth_proof_invalid");
+            if (!hello.response_nonce.empty()) {
+                auto it = std::find_if(st.pending.begin(), st.pending.end(),
+                                       [&](const auto& entry) {
+                                           return entry.sender == sender &&
+                                                  entry.ack.nonce ==
+                                                      hello.response_nonce;
+                                       });
+                if (it == st.pending.end()) return reject("auth_replay");
+                auto pending = std::move(*it);
+                st.pending.erase(it);  // Every challenge has exactly one
+                                       // verification attempt.
+                if (shield::base::now() >= pending.deadline)
+                    return reject("auth_challenge_expired");
+                auto expected = pending.hello;
+                expected.response_nonce = pending.ack.nonce;
+                if (hello.node_id != expected.node_id ||
+                    hello.epoch != expected.epoch ||
+                    hello.nonce != expected.nonce ||
+                    hello.timestamp_ms != expected.timestamp_ms ||
+                    !cluster_auth_equal(
+                        cluster_auth_proof(st.auth.token, "finish", expected,
+                                           pending.ack),
+                        hello.proof))
+                    return reject("auth_proof_invalid");
+                bind_sender(side, sender, hello.node_id);
+                return;
             }
+            if (!cluster_auth_equal(
+                    cluster_auth_proof(st.auth.token, "hello", hello),
+                    hello.proof))
+                return reject("auth_proof_invalid");
+            const auto now = shield::base::now();
+            std::erase_if(st.seen_nonces, [now](const auto& entry) {
+                return now >= entry.second;
+            });
+            std::erase_if(st.pending, [now](const auto& entry) {
+                return now >= entry.deadline;
+            });
+            if (st.seen_nonces.contains(hello.nonce))
+                return reject("auth_replay");
+            if (st.pending.size() >= 4096 || st.seen_nonces.size() >= 8192)
+                return reject("auth_capacity_exceeded");
+            HelloAckMsg ack{st.self_node_id, st.self_epoch};
+            ack.nonce = cluster_auth_nonce();
+            ack.response_nonce = hello.nonce;
+            ack.timestamp_ms = shield::base::now_ms();
+            ack.proof = cluster_auth_proof(st.auth.token, "ack", hello, ack);
+            st.seen_nonces.emplace(
+                hello.nonce,
+                now + std::chrono::milliseconds(2 * st.auth.time_window_ms));
+            std::erase_if(st.pending, [&](const auto& entry) {
+                return entry.sender == sender;
+            });
+            st.pending.push_back(
+                {sender, hello, ack,
+                 now + std::chrono::milliseconds(st.auth.time_window_ms)});
+            self->monitor(sender);
+            self->send(sender, ack);
         },
         // -- handshake completion (dialer side) ------------------------------
         [self, side](const HelloAckMsg& ack) {
             auto& st = self->state();
+            auto sender = caf::actor_cast<caf::actor>(self->current_sender());
+            if (!sender) return;
+            auto reject = [&](const char* code) {
+                reject_handshake(self, side, sender, code);
+            };
+            if (ack.proto_version != kClusterProtoVersion)
+                return reject("peer_protocol_mismatch");
+            auto it = std::find_if(
+                st.peers.begin(), st.peers.end(),
+                [&](const auto& peer) { return peer.handle == sender; });
+            if (it == st.peers.end()) return reject("peer_not_registered");
+            auto& peer = *it;
+            if (peer.hello.node_id.empty() || !peer.node_id.empty())
+                return reject("auth_replay");
+            if (ack.node_id.empty() || ack.node_id == st.self_node_id ||
+                ack.epoch == 0)
+                return reject("peer_identity_invalid");
+            if (shield::base::now() >= peer.handshake_deadline)
+                return reject("auth_challenge_expired");
+            if (st.auth.enabled) {
+                if (!cluster_auth_fresh(ack.timestamp_ms,
+                                        shield::base::now_ms(),
+                                        st.auth.time_window_ms))
+                    return reject("auth_timestamp_expired");
+                if (ack.response_nonce != peer.hello.nonce ||
+                    ack.nonce.size() != 64 ||
+                    !cluster_auth_equal(cluster_auth_proof(st.auth.token, "ack",
+                                                           peer.hello, ack),
+                                        ack.proof))
+                    return reject("auth_proof_invalid");
+                auto finish = peer.hello;
+                finish.response_nonce = ack.nonce;
+                finish.proof =
+                    cluster_auth_proof(st.auth.token, "finish", finish, ack);
+                // FIFO from this actor: finish is processed before
+                // routes/envelopes.
+                self->send(peer.handle, finish);
+            } else if (!ack.nonce.empty() || !ack.proof.empty()) {
+                return reject("auth_mode_mismatch");
+            }
+            peer.hello = {};
+            st.manager->on_handshake(peer.address, ack.node_id, ack.epoch);
+            peer.node_id = ack.node_id;
+            bind_sender(side, peer.handle, ack.node_id);
+            {
+                std::unique_lock lock(side->peers_mutex);
+                side->peers_by_node[ack.node_id] = peer.handle;
+            }
             auto& log = shield::log::get_logger("cluster");
-            SHIELD_LOG_DEBUG(log, "HelloAck from " + ack.node_id + " (epoch " +
-                                      std::to_string(ack.epoch) + ")");
-            if (ack.proto_version !=
-                kClusterProtoVersion) {  // GCOVR_EXCL_BR_LINE (defensive:
-                                         // protocol version negotiated at dial;
-                                         // mismatch only on version skew)
-                SHIELD_LOG_ERROR(log,
-                                 "Peer protocol version mismatch in ack: " +
-                                     std::to_string(ack.proto_version));
-                return;
-            }
-            // The ack's sender is exactly the proxy stored in one of the
-            // dialed entries (reply over the same connection).
-            bool matched = false;
-            if (auto sender =
-                    self->current_sender()) {  // GCOVR_EXCL_BR_LINE (defensive:
-                                               // current_sender only null for
-                                               // non-request messages; HelloAck
-                                               // is a reply)
-                for (auto& peer :
-                     st.peers) {  // GCOVR_EXCL_BR_LINE (compiler artifact: loop
-                                  // exit-false never fires; dial loop ensures
-                                  // match)
-                    if (peer.handle &&  // GCOVR_EXCL_BR_LINE (defensive: loop
-                                        // body guard; dial loop ensures handle
-                                        // matches sender)
-                        peer.handle == sender) {
-                        st.manager->on_handshake(peer.address, ack.node_id,
-                                                 ack.epoch);
-                        SHIELD_LOG_INFO(log, "Peer " + peer.address +
-                                                 " identified as " +
-                                                 ack.node_id);
-                        // Adopt into the data-plane routing table (M4).
-                        peer.node_id = ack.node_id;
-                        {
-                            std::unique_lock lock(side->peers_mutex);
-                            side->peers_by_node[ack.node_id] = peer.handle;
-                        }
-                        matched = true;
-                        // Publish our routes immediately so a joining peer
-                        // converges without waiting for a heartbeat tick.
-                        auto routes = st.manager->local_routes();
-                        std::vector<RouteEntry> entries;
-                        entries.reserve(routes.size());
-                        for (auto& [name, service_id] : routes) {
-                            entries.push_back(RouteEntry{// GCOVR_EXCL_BR_LINE
-                                                         // (compiler
-                                                         // artifact:
-                                                         // aggregate
-                                                         // init-list
-                                                         // branches)
-                                                         name, service_id});
-                        }
-                        caf::anon_send(
-                            peer.handle,
-                            RoutesMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
-                                      // aggregate init-list branches)
-                                      st.self_node_id, st.self_epoch,
-                                      std::move(entries)});
-                        break;
-                    }
-                }
-            }
-            // Defensive: an unmatched HelloAck means the sender wasn't one of
-            // our dialed proxies (e.g., a stray connection); this arm is
-            // extremely hard to hit in practice because the middleman only
-            // delivers to actors we've connected to.
-            if (!matched) {  // GCOVR_EXCL_BR_LINE (defensive: unmatched ack
-                             // requires a stray connection that bypassed the
-                             // dial loop)
-                SHIELD_LOG_WARNING(log, "HelloAck from " + ack.node_id +
-                                            " does not match any dialed peer");
-            }
+            SHIELD_LOG_INFO(
+                log, "Peer " + peer.address + " identified as " + ack.node_id);
+            std::vector<RouteEntry> entries;
+            for (auto& [name, service_id] : st.manager->local_routes())
+                entries.push_back({name, service_id});
+            self->send(peer.handle, RoutesMsg{st.self_node_id, st.self_epoch,
+                                              std::move(entries)});
         },
         // -- liveness --------------------------------------------------------
         [self, side](const HeartbeatMsg& hb) {
+            if (self->state().auth.enabled &&
+                sender_identity(side, self->current_sender()) != hb.node_id)
+                return;
             side->rx_heartbeats.fetch_add(1, std::memory_order_relaxed);
             self->state().manager->on_heartbeat(hb.node_id);
         },
@@ -428,28 +548,31 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                              name, service_id});
             }
             for (auto& peer : st.peers) {
-                if (!peer.handle)
+                if (!peer.handle || peer.node_id.empty())
                     continue;  // GCOVR_EXCL_BR_LINE (defensive: peers without
                                // handle are dialing or dropped; skip is
                                // correct)
-                caf::anon_send(
+                self->send(
                     peer.handle,
                     HeartbeatMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
                                  // aggregate init-list branches)
                                  st.self_node_id, st.self_epoch, st.hb_seq++});
                 side->tx_heartbeats.fetch_add(1, std::memory_order_relaxed);
-                caf::anon_send(
-                    peer.handle,
-                    RoutesMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
-                              // aggregate init-list branches)
-                              st.self_node_id, st.self_epoch, entries});
+                self->send(peer.handle,
+                           RoutesMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
+                                     // aggregate init-list branches)
+                                     st.self_node_id, st.self_epoch, entries});
             }
             self->delayed_send(self, tick_interval(st.heartbeat_interval_ms),
                                hb_tick_atom_v);
         },
         // -- inbound route table (M3) ----------------------------------------
-        [self](const RoutesMsg& routes) {  // GCOVR_EXCL_LINE (gcov attributes
+        [self,
+         side](const RoutesMsg& routes) {  // GCOVR_EXCL_LINE (gcov attributes
                                            // no code to this line)
+            if (self->state().auth.enabled &&
+                sender_identity(side, self->current_sender()) != routes.node_id)
+                return;
             // The manager seam takes pairs to keep cluster_manager.hpp
             // decoupled from the wire header.
             std::vector<std::pair<std::string, std::string>> entries;
@@ -461,8 +584,8 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                              entries);
         },
         // -- outbound service envelope (M4) ---------------------------------
-        [self, side](dispatch_envelope_atom, const caf::actor& peer,
-                     const EnvelopeMsg& envelope) {
+        [self, side](dispatch_envelope_atom, LocalDispatch,
+                     const caf::actor& peer, const EnvelopeMsg& envelope) {
             side->tx_messages.fetch_add(1, std::memory_order_relaxed);
             // Send from the transport actor so the receiving transport can
             // bind current_sender() to the peer's Hello handshake.
@@ -473,26 +596,8 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             side->rx_messages.fetch_add(1, std::memory_order_relaxed);
             // Bind the claimed source identity to the CAF sender recorded by
             // the configured-peer handshake.
-            std::string handshake_node;
-            auto sender = self->current_sender();
-            if (sender) {
-                std::shared_lock lock(side->peers_mutex);
-                for (const auto& [node_id, handle] : side->peers_by_node) {
-                    if (handle == sender) {
-                        handshake_node = node_id;
-                        break;
-                    }
-                }
-                if (handshake_node.empty()) {
-                    for (const auto& [handle, node_id] :
-                         side->inbound_peer_senders) {
-                        if (handle == sender) {
-                            handshake_node = node_id;
-                            break;
-                        }
-                    }
-                }
-            }
+            const auto handshake_node =
+                sender_identity(side, self->current_sender());
             const char* reject_code =
                 envelope_peer_error(handshake_node, env.source_node);
             if (reject_code) {
@@ -500,11 +605,12 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                 SHIELD_LOG_WARNING(
                     log,
                     std::string("Rejected cluster envelope: ") + reject_code);
-                if (env.call_session != 0 && !handshake_node.empty()) {
-                    reply_to(side, handshake_node,
-                             EnvelopeReplyMsg{
-                                 env.call_session, false, "", reject_code,
-                                 "cluster peer identity rejected"});
+                if (env.call_session != 0 && self->current_sender()) {
+                    self->send(
+                        caf::actor_cast<caf::actor>(self->current_sender()),
+                        EnvelopeReplyMsg{env.call_session, false, "",
+                                         reject_code,
+                                         "cluster peer identity rejected"});
                 }
                 return;
             }
@@ -629,7 +735,12 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             }
         },
         // -- inbound envelope reply (M4) --------------------------------------
-        [side](const EnvelopeReplyMsg& reply) {
+        [self](dispatch_envelope_atom, LocalDispatch, const caf::actor& peer,
+               const EnvelopeReplyMsg& reply) { self->send(peer, reply); },
+        [self, side](const EnvelopeReplyMsg& reply) {
+            if (self->state().auth.enabled &&
+                sender_identity(side, self->current_sender()).empty())
+                return;
             side->rx_messages.fetch_add(1, std::memory_order_relaxed);
             // Routes into the caller-side pending-call table, resuming the
             // suspended coroutine (unknown/expired sessions no-op there).
@@ -692,6 +803,15 @@ bool ClusterTransport::start(uint16_t* bound_port, std::string& error) {
     }
     auto& log = shield::log::get_logger("cluster");
 
+    if (impl_->config.auth.enabled &&
+        (impl_->config.auth.token.size() < 32 ||
+         impl_->config.auth.token.size() > 4096 ||
+         impl_->config.auth.time_window_ms < 1 ||
+         impl_->config.auth.time_window_ms > 300000)) {
+        error = "invalid cluster.auth token length or time_window_ms";
+        return false;
+    }
+
     // NOTE: init_cluster_caf_types() must have been called before the actor
     // system was constructed (CAF requirement), not here.
 
@@ -729,6 +849,16 @@ bool ClusterTransport::start(uint16_t* bound_port, std::string& error) {
     impl_->bound_port = *published;
     impl_->running = true;
 
+    {
+        std::unique_lock lock(impl_->side->peers_mutex);
+        impl_->side->outbound_actor = impl_->actor;
+    }
+    if (!impl_->config.auth.enabled)
+        SHIELD_LOG_WARNING(
+            log,
+            "Cluster authentication disabled: configure cluster.auth token "
+            "PSK; exposed ports trust self-reported identities");
+
     // Kick both loops.
     caf::anon_send(impl_->actor, connect_tick_atom_v);
     caf::anon_send(impl_->actor, hb_tick_atom_v);
@@ -756,6 +886,8 @@ void ClusterTransport::stop() {
     {
         std::unique_lock lock(impl_->side->peers_mutex);
         impl_->side->peers_by_node.clear();
+        impl_->side->inbound_peer_senders.clear();
+        impl_->side->outbound_actor = nullptr;
     }
     {
         std::lock_guard lock(impl_->side->data_mutex);
@@ -787,7 +919,8 @@ bool ClusterTransport::send_envelope(const std::string& target_node,
     }
     // Queue on our transport actor so the wire message carries its actor
     // identity; the receiver binds that sender to the inbound Hello handshake.
-    caf::anon_send(impl_->actor, dispatch_envelope_atom_v, handle,
+    caf::anon_send(impl_->actor, dispatch_envelope_atom_v, LocalDispatch{},
+                   handle,
                    EnvelopeMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
                                // aggregate init-list branches)
                                impl_->manager->node_id(), service_id, method,

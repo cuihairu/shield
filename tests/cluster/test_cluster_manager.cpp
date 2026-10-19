@@ -5,6 +5,8 @@
 #include <boost/test/unit_test.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -585,3 +587,59 @@ BOOST_AUTO_TEST_CASE(ClusterStatusJsonConnectingPeerHasNullHeartbeatAge) {
 }
 
 BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_CASE(ParseClusterAuthEnvironmentReferenceAndDisabledDefault) {
+    shield::config::reset_config();
+    auto& cfg = shield::config::global_config();
+    BOOST_REQUIRE(cfg.load_yaml_string("cluster: {node_id: cfg-node}"));
+    BOOST_CHECK(!parse_cluster_config().auth.enabled);
+    // Test-only value, never used as a deployment credential.
+    const char* name = "SHIELD_TEST_CLUSTER_PSK";
+#ifdef _WIN32
+    _putenv_s(name, "test-only-0123456789abcdef0123456789abcdef");
+#else
+    setenv(name, "test-only-0123456789abcdef0123456789abcdef", 1);
+#endif
+    BOOST_REQUIRE(cfg.load_yaml_string(
+        "cluster: {node_id: cfg-node, auth: {type: token, token: "
+        "'${SHIELD_TEST_CLUSTER_PSK}', time_window_ms: 1234}}"));
+    const auto auth = parse_cluster_config().auth;
+    BOOST_CHECK(auth.enabled);
+    BOOST_CHECK_EQUAL(auth.time_window_ms, 1234);
+    BOOST_CHECK_EQUAL(auth.token.size(), 42u);
+    BOOST_CHECK(cfg.to_json().find("test-only-") == std::string::npos);
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+    BOOST_CHECK_THROW(parse_cluster_config(), std::invalid_argument);
+    shield::config::reset_config();
+    BOOST_REQUIRE(shield::config::global_config().load_yaml_string(
+        "cluster: {node_id: cfg-node, auth: {type: none}}"));
+    BOOST_CHECK(!parse_cluster_config().auth.enabled);
+    shield::config::reset_config();
+}
+
+BOOST_AUTO_TEST_CASE(ParseClusterAuthRejectsInvalidConfiguration) {
+    for (const auto* auth :
+         {"{}", "null", "[]", "{type: mtls}", "{type: token}",
+          "{type: token, token: test-only-inline-value}",
+          "{type: token, token: '${BAD:default}'}",
+          "{type: token, token: '${1BAD}'}",
+          "{type: token, token: '${SHIELD_TEST_MISSING_PSK}'}",
+          "{type: none, token: '${IGNORED}'}",
+          "{type: none, time_window_ms: 0}",
+          "{type: none, time_window_ms: 300001}",
+          "{type: none, time_window_ms: bad}", "{type: none, typo: true}"}) {
+        shield::config::reset_config();
+        BOOST_REQUIRE(shield::config::global_config().load_yaml_string(
+            std::string("cluster: {node_id: cfg-node, auth: ") + auth + "}"));
+        BOOST_CHECK_THROW(parse_cluster_config(), std::invalid_argument);
+    }
+    shield::config::reset_config();
+    BOOST_REQUIRE(shield::config::global_config().load_yaml_string(
+        "cluster: {auth: {type: none}}"));
+    BOOST_CHECK_THROW(parse_cluster_config(), std::invalid_argument);
+    shield::config::reset_config();
+}

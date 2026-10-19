@@ -46,6 +46,12 @@ struct DiscoveryConfig {
     int scan_interval_ms = 3000;       // peer list refresh cadence
 };
 
+struct ClusterAuthConfig {
+    bool enabled = false;
+    std::string token;  // Resolved in memory from cluster.auth.token: ${VAR}.
+    int time_window_ms = 30000;
+};
+
 /// @brief Cluster configuration parsed from YAML
 struct ClusterConfig {
     bool enabled = false;
@@ -56,6 +62,7 @@ struct ClusterConfig {
     int suspect_timeout_ms = 15000;
     int offline_timeout_ms = 30000;
     DiscoveryConfig discovery;
+    ClusterAuthConfig auth;
 };
 
 /// @brief Callback for cross-node message delivery (M4). call_session != 0

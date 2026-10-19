@@ -64,7 +64,7 @@ CI 与 README 的实质差异：CI 在覆盖率树中运行全量 `ctest`，不�
 | TCP_NODELAY 缺失 | 已修（`7b395c2`） | session 接入时 best-effort 设置：[session.cpp](../../src/net/session.cpp#L91)。 |
 | DB ABI 同步阻塞 | 部分修（`dc2700a`, `46634d5`, `d2b68ef`, `10133a1`） | C vtable 保持同步 primitive，但 Lua SQLite/MySQL/PostgreSQL 可协程等待 worker；Redis/Mongo/global 路径不因此变异步。 |
 | sandbox 键无效 | 已修（`7b395c2`） | `allow_io/os` 条件开库并有测试：[lua_runtime.cpp](../../src/lua/lua_runtime.cpp#L196)。注意仍不是 CPU/内存隔离。 |
-| cluster 数据面缺节点认证/来源绑定 | 未修 | 收到 Envelope 后直接调用 dispatch，未对 `source_node` 做已认证连接绑定：[cluster_transport.cpp](../../src/cluster/cluster_transport.cpp#L435)。安全文档也说 `cluster.auth` 无消费者：[runtime-security.md](../runtime-security.md#L303)。 |
+| cluster 数据面缺节点认证/来源绑定 | 已修（PSK 挑战认证） | `cluster.auth` 已消费，完成 HMAC 双向挑战后绑定 CAF sender；Envelope 在 dispatch 前拒绝未认证/身份不符。四类入站集成测试覆盖正常、伪造 HMAC、nonce 重放和未握手 peer。认证默认关闭并告警；mTLS、流量加密及热轮换仍推迟，见 [服务间认证](../runtime-security.md#服务间认证)。 |
 | 外部存储可能阻塞 service actor | 未修 | Redis/global Lua API 仍同步访问后端；例如 [lua_api.cpp](../../src/lua/lua_api.cpp#L4071)、[global_rank_backend.cpp](../../src/global/global_rank_backend.cpp#L583)。 |
 | 每 service Lua 指令/内存/权限限额缺失 | 未修 | 当前 sandbox 只门控 `os/io`：[lua_runtime.cpp](../../src/lua/lua_runtime.cpp#L196)；安全文档列为未实现：[runtime-security.md](../runtime-security.md#L12)。 |
 | 持久化队列与 scheduler | 未修（按明确范围） | global 文档把 Redis 队列/scheduler 后端留在 Phase 2+：[runtime-global.md](../runtime-global.md#L760)。 |
@@ -74,7 +74,7 @@ CI 与 README 的实质差异：CI 在覆盖率树中运行全量 `ctest`，不�
 | cluster 文档内部发现能力口径矛盾 | 未修（文档） | 静态 peers 口径：[runtime-cluster.md](../runtime-cluster.md#L39)；后段又标 Redis 服务发现已实现：[runtime-cluster.md](../runtime-cluster.md#L176)。应区分实现代码是否接入 bootstrap。 |
 | README 称 client context 不暴露 userdata | 未修 | README 与已定义的 ClientContext/ClientRef userdata 冲突：[README.md](../../README.md#L220)、[architecture.md](../architecture.md#L184)。 |
 
-**闭环统计（13 项）**：已修 3 / 未修 9 / 部分修 1。已修例：`7b395c2` 将 frame cap 改成 16 MiB 默认（[protocol.hpp](../../include/shield/transport/protocol.hpp#L119)）；未修例：cluster 入站 Envelope 仍未校验来源节点（[cluster_transport.cpp](../../src/cluster/cluster_transport.cpp#L435)）；部分修例：DB 异步化目前只覆盖部分 provider/调用形态。
+**闭环统计（13 项）**：已修 4 / 未修 8 / 部分修 1。已修例：`7b395c2` 将 frame cap 改成 16 MiB 默认（[protocol.hpp](../../include/shield/transport/protocol.hpp#L119)）；新增已修例：cluster PSK 挑战认证与入站 Envelope 身份绑定（[cluster_transport.cpp](../../src/cluster/cluster_transport.cpp)）；部分修例：DB 异步化目前只覆盖部分 provider/调用形态。
 
 ## 3. 对标 Skynet（Skynet 官方资料，检索日期 2026-10-19）
 
@@ -97,7 +97,7 @@ CI 与 README 的实质差异：CI 在覆盖率树中运行全量 `ctest`，不�
 **Skynet 有、Shield 当前没有或选择不提供的能力（3 条）**：
 
 1. Skynet 的运行时服务模块/协议注册较自由，含 `skynet.register_protocol`、`skynet.dispatch` 与服务动态装载；Shield 客户端 RPC 固定 descriptor 路径，不提供通用 wire protocol 任意注册入口（`docs/gateway.md:37-47`）。
-2. Skynet 官方 harbor/cluster 支持其成熟的 harbor 地址/节点通信生态；Shield 当前 cluster 只实现静态 peer/可选 Redis discovery 的自身协议，且缺认证，不能视作 Skynet harbor 兼容替代（`docs/runtime-cluster.md:39-51`、`docs/runtime-security.md:303-312`）。
+2. Skynet 官方 harbor/cluster 支持其成熟的 harbor 地址/节点通信生态；Shield 当前 cluster 只实现静态 peer/可选 Redis discovery 的自身协议，已支持可选 PSK 认证但尚无传输加密，不能视作 Skynet harbor 兼容替代（`docs/runtime-cluster.md:39-51`、`docs/runtime-security.md:303-312`）。
 3. Skynet 支持 `skynet.coroutine` 对原生 Lua coroutine 的封装、fork/wakeup 等自由调度工具；Shield 暴露更受限的 `shield.sleep/call/fork` service 语义，不保证可替换 Skynet 的 coroutine API（官方 [`coroutine.lua`](https://github.com/cloudwu/skynet/blob/master/lualib/skynet/coroutine.lua)；Shield `docs/lua-api.md`）。
 
 对标条数：Shield 有 3 / Skynet 有 3（以上均为边界差异，不按行数或性能计）。
@@ -106,7 +106,7 @@ CI 与 README 的实质差异：CI 在覆盖率树中运行全量 `ctest`，不�
 
 | 严重度 | 缺口 | 证据 | 最小可证伪验收形态 |
 | --- | --- | --- | --- |
-| 高 | 集群端点缺认证，入站 envelope 的 `source_node` 未绑定握手 peer | [cluster_transport.cpp](../../src/cluster/cluster_transport.cpp#L435)、[runtime-security.md](../runtime-security.md#L303) | 从非 peer 连接提交伪造 `source_node` envelope；必须在派发前拒绝，合法配置 peer 的双节点 call/send 仍通过。 |
+| 已修（原高） | 集群 PSK 双向挑战认证及 Envelope 身份绑定已落地 | [cluster_transport.cpp](../../src/cluster/cluster_transport.cpp)、[服务间认证](../runtime-security.md#服务间认证) | `PskAuthenticatedInboundEnvelope` / `PskForgedHmacRejected` / `PskNonceReplayRejected` / `PskUnregisteredUnhandshakenPeerRejected`；mTLS、传输加密和热轮换不在本轮范围。 |
 | 高 | Redis/global 同步 I/O 可阻塞服务 actor | [lua_api.cpp](../../src/lua/lua_api.cpp#L4071)、[shield_redis_driver.cpp](../../plugins/redis.driver/shield_redis_driver.cpp#L300) | 用可控延迟 backend 阻塞一次操作，同时向同一 VM 投递 ping；ping 在操作等待期间仍由 coroutine 让出并按 deadline 返回。 |
 | 中高 | Lua 只有 os/io 全局开关，无每 service CPU/内存硬预算 | [lua_runtime.cpp](../../src/lua/lua_runtime.cpp#L196)、[runtime-security.md](../runtime-security.md#L12) | 单 service 无限循环/超额分配被预算机制终止或隔离；其他 service 在固定时限内仍响应。 |
 | 中 | `shield_ops` target 空壳，但 roadmap/README 将 optional P0 全部写为落地 | [CMakeLists.txt](../../CMakeLists.txt#L941)、[optional-modules.md](../optional-modules.md#L315) | `SHIELD_ENABLE_OPS=ON` 构建后能由该 target 提供文档列出的最小健康/metrics 接口测试；否则文档将其降格为 bootstrap 托管能力且调整完成声明。 |
@@ -121,7 +121,7 @@ CI 与 README 的实质差异：CI 在覆盖率树中运行全量 `ctest`，不�
 ## 5. 推进次序（已代决）
 
 1. 先收口事实与模块边界：修复 README、roadmap、architecture-review、runtime-security、runtime-cluster 的口径，并将 `shield_ops` 归属做成可验收的实现/target 或明确从“模块 P0 已落地”移除。
-2. 再做 cluster 身份认证与来源绑定；未完成前不把公网/不可信网段 cluster listener 视为可发布能力。
+2. cluster 身份认证与来源绑定已完成 PSK 实现；继续推进 mTLS/传输加密与凭证轮换，在此之前不把公网/不可信网段 cluster listener 视为可发布能力。
 3. 把 Redis 与 global 同步 I/O 迁到 worker + coroutine resume，并覆盖 MongoDB 与非协程调用者的策略。
 4. 为 Lua service 加 CPU/内存硬限额及隔离验收。
 5. 最后处理可选持久化队列/scheduler 与受控 blue-green 编排；先冻结恢复、重复执行和回滚语义再实现。

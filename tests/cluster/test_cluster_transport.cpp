@@ -11,16 +11,21 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
+#include <caf/binary_deserializer.hpp>
+#include <caf/binary_serializer.hpp>
 #include <caf/event_based_actor.hpp>
 #include <caf/init_global_meta_objects.hpp>
 #include <caf/io/middleman.hpp>
+#include <caf/scoped_actor.hpp>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -29,7 +34,9 @@
 #include <utility>
 #include <vector>
 
+#include "shield/base/time.hpp"
 #include "shield/caf_initializer.hpp"
+#include "shield/cluster/cluster_auth.hpp"
 #include "shield/cluster/cluster_manager.hpp"
 #include "shield/cluster/cluster_messages.hpp"
 #include "shield/cluster/cluster_transport.hpp"
@@ -61,6 +68,8 @@ BOOST_AUTO_TEST_CASE(EnvelopePeerIdentityRejectsUnregisteredPeer) {
 }
 
 namespace {
+
+const std::string kFakePsk = "test-only-psk-0123456789abcdef0123456789abcdef";
 
 // Mirror transport/manager logs to stderr so handshake failures are
 // diagnosable from the ctest output.
@@ -161,6 +170,8 @@ std::unique_ptr<Node> make_node(
     shield::cluster::init_cluster_caf_types();
     auto node = std::make_unique<Node>();
     node->config.enabled = true;
+    node->config.auth.enabled = true;
+    node->config.auth.token = kFakePsk;
     node->config.node_id = node_id;
     node->config.listen_address = "127.0.0.1:" + std::to_string(listen);
     node->config.peers = {"127.0.0.1:" + std::to_string(peer_port)};
@@ -399,6 +410,66 @@ void wait_route(ClusterManager& mgr, const std::string& peer_id,
         wait_until([&] { return !mgr.query_remote(peer_id, alias).empty(); },
                    std::chrono::milliseconds(5000)),
         "route for " << alias << " never converged on " << peer_id);
+}
+
+// Real BASP client in a separate CAF system. receive() deadlines make every
+// rejection assertion deterministic, including the absence of bridge dispatch.
+struct PskClient {
+    caf::actor_system_config config;
+    std::unique_ptr<caf::actor_system> system;
+    caf::actor remote;
+    std::unique_ptr<caf::scoped_actor> actor;
+
+    explicit PskClient(uint16_t port) {
+        config.load<caf::io::middleman>();
+        system = std::make_unique<caf::actor_system>(config);
+        auto proxy = system->middleman().remote_actor("127.0.0.1", port);
+        BOOST_REQUIRE(proxy);
+        remote = *proxy;
+        actor = std::make_unique<caf::scoped_actor>(*system);
+    }
+    template <class T>
+    void send(const T& msg) {
+        (*actor)->send(remote, msg);
+    }
+    template <class T>
+    T receive() {
+        T result{};
+        bool received = false;
+        (*actor)->receive(
+            [&](const T& msg) {
+                result = msg;
+                received = true;
+            },
+            caf::after(std::chrono::seconds(3)) >> [] {});
+        BOOST_REQUIRE_MESSAGE(received,
+                              "expected cluster response was not received");
+        return result;
+    }
+};
+
+void enable_psk(Node& node) {
+    node.config.auth.enabled = true;
+    node.config.auth.token = kFakePsk;
+}
+shield::cluster::HelloMsg psk_hello() {
+    shield::cluster::HelloMsg hello{"raw-peer", 42};
+    hello.nonce = shield::cluster::cluster_auth_nonce();
+    hello.timestamp_ms = shield::base::now_ms();
+    hello.proof = shield::cluster::cluster_auth_proof(kFakePsk, "hello", hello);
+    return hello;
+}
+shield::cluster::HelloMsg psk_finish(const shield::cluster::HelloMsg& hello,
+                                     const shield::cluster::HelloAckMsg& ack) {
+    auto finish = hello;
+    finish.response_nonce = ack.nonce;
+    finish.proof =
+        shield::cluster::cluster_auth_proof(kFakePsk, "finish", finish, ack);
+    return finish;
+}
+void expect_auth_error(PskClient& client, const char* expected) {
+    BOOST_CHECK(caf::to_string(client.receive<caf::error>()).find(expected) !=
+                std::string::npos);
 }
 
 }  // namespace
@@ -1469,3 +1540,221 @@ BOOST_AUTO_TEST_CASE(HelloAckMatchScanWithMismatch) {
 // Covered by RouteTableConvergesAndPurgesOnPeerDown which publishes
 // multiple routes and verifies convergence.
 BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_CASE(PskAuthenticatedInboundEnvelope) {
+    uint16_t a_port = 0, b_port = 0;
+    auto [a, b] = make_node_pair(a_port, b_port, true, enable_psk, enable_psk);
+    wait_online(*a->manager, "node-b");
+    wait_online(*b->manager, "node-a");
+    std::atomic<int> dispatched{0};
+    shield::cluster::EnvelopeBridges bridges;
+    bridges.send_dispatch = [&](const std::string&, const std::string&,
+                                const std::string&) {
+        ++dispatched;
+        return true;
+    };
+    b->transport->set_envelope_bridges(std::move(bridges));
+    std::string error;
+    BOOST_REQUIRE(a->transport->send_envelope("node-b", "svc", "echo", "[]", 0,
+                                              100, &error));
+    BOOST_REQUIRE(wait_until([&] { return dispatched.load() == 1; },
+                             std::chrono::seconds(3)));
+    // A valid PSK handshake still cannot claim another sender's identity.
+    PskClient client(b_port);
+    const auto hello = psk_hello();
+    client.send(hello);
+    const auto ack = client.receive<shield::cluster::HelloAckMsg>();
+    BOOST_CHECK(shield::cluster::cluster_auth_equal(
+        shield::cluster::cluster_auth_proof(kFakePsk, "ack", hello, ack),
+        ack.proof));
+    client.send(psk_finish(hello, ack));
+    client.send(
+        shield::cluster::EnvelopeMsg{"node-a", "svc", "echo", "[]", 7, 100});
+    BOOST_CHECK_EQUAL(
+        client.receive<shield::cluster::EnvelopeReplyMsg>().error_code,
+        "peer_identity_mismatch");
+    BOOST_CHECK_EQUAL(dispatched.load(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(PskForgedHmacRejected) {
+    const auto port = free_port();
+    auto node = make_node("victim", port, free_port(), enable_psk);
+    BOOST_REQUIRE(node);
+    PskClient client(port);
+    auto hello = psk_hello();
+    client.send(hello);
+    auto ack = client.receive<shield::cluster::HelloAckMsg>();
+    auto finish = psk_finish(hello, ack);
+    finish.proof[0] = finish.proof[0] == '0' ? '1' : '0';
+    client.send(finish);
+    expect_auth_error(client, "auth_proof_invalid");
+    client.send(
+        shield::cluster::EnvelopeMsg{"raw-peer", "svc", "echo", "[]", 1, 100});
+    BOOST_CHECK_EQUAL(
+        client.receive<shield::cluster::EnvelopeReplyMsg>().error_code,
+        "peer_not_authenticated");
+    // Initial HMAC verification has the same fail-closed behavior.
+    hello = psk_hello();
+    hello.proof.assign(64, '0');
+    client.send(hello);
+    expect_auth_error(client, "auth_proof_invalid");
+}
+
+BOOST_AUTO_TEST_CASE(PskNonceReplayRejected) {
+    const auto port = free_port();
+    auto node = make_node("victim", port, free_port(), enable_psk);
+    BOOST_REQUIRE(node);
+    PskClient client(port);
+    const auto hello = psk_hello();
+    client.send(hello);
+    const auto ack = client.receive<shield::cluster::HelloAckMsg>();
+    const auto finish = psk_finish(hello, ack);
+    client.send(finish);
+    client.send(
+        finish);  // Same receiver-issued nonce, consumed by the first finish.
+    expect_auth_error(client, "auth_replay");
+    client.send(
+        shield::cluster::EnvelopeMsg{"raw-peer", "svc", "echo", "[]", 2, 100});
+    BOOST_CHECK_EQUAL(
+        client.receive<shield::cluster::EnvelopeReplyMsg>().error_code,
+        "peer_not_authenticated");
+    // Initial nonce reuse is rejected even over a different connection.
+    PskClient second(port);
+    second.send(hello);
+    expect_auth_error(second, "auth_replay");
+}
+
+BOOST_AUTO_TEST_CASE(PskUnregisteredUnhandshakenPeerRejected) {
+    const auto port = free_port();
+    auto node = make_node("victim", port, free_port(), enable_psk);
+    BOOST_REQUIRE(node);
+    std::atomic<int> dispatched{0};
+    shield::cluster::EnvelopeBridges bridges;
+    bridges.send_dispatch = [&](const std::string&, const std::string&,
+                                const std::string&) {
+        ++dispatched;
+        return true;
+    };
+    node->transport->set_envelope_bridges(std::move(bridges));
+    PskClient client(port);
+    client.send(
+        shield::cluster::EnvelopeMsg{"raw-peer", "svc", "echo", "[]", 1, 100});
+    BOOST_CHECK_EQUAL(
+        client.receive<shield::cluster::EnvelopeReplyMsg>().error_code,
+        "peer_not_authenticated");
+    auto hello = psk_hello();
+    client.send(hello);
+    client.receive<shield::cluster::HelloAckMsg>();  // Challenge alone never
+                                                     // authenticates.
+    client.send(
+        shield::cluster::EnvelopeMsg{"raw-peer", "svc", "echo", "[]", 2, 100});
+    BOOST_CHECK_EQUAL(
+        client.receive<shield::cluster::EnvelopeReplyMsg>().error_code,
+        "peer_not_authenticated");
+    BOOST_CHECK_EQUAL(dispatched.load(), 0);
+    BOOST_CHECK(node->manager->find_node("raw-peer") == nullptr);
+}
+
+BOOST_AUTO_TEST_CASE(PskTimestampAndProtocolFailClosed) {
+    BOOST_CHECK(!shield::cluster::cluster_auth_fresh(
+        std::numeric_limits<int64_t>::min(), 1, 30000));
+    BOOST_CHECK(!shield::cluster::cluster_auth_fresh(
+        std::numeric_limits<int64_t>::max(), 1, 30000));
+    const auto port = free_port();
+    auto node = make_node("victim", port, free_port(), enable_psk);
+    BOOST_REQUIRE(node);
+    PskClient client(port);
+    auto hello = psk_hello();
+    hello.timestamp_ms -= 30001;
+    hello.proof = shield::cluster::cluster_auth_proof(kFakePsk, "hello", hello);
+    client.send(hello);
+    expect_auth_error(client, "auth_timestamp_expired");
+    hello = psk_hello();
+    hello.timestamp_ms += 60000;
+    client.send(hello);
+    expect_auth_error(client, "auth_timestamp_expired");
+    hello = psk_hello();
+    hello.proto_version = 1;
+    client.send(hello);
+    expect_auth_error(client, "peer_protocol_mismatch");
+    client.send(shield::cluster::HelloMsg{"raw-peer", 42});
+    expect_auth_error(client, "auth_timestamp_expired");
+}
+
+BOOST_AUTO_TEST_CASE(PskForgedAckCannotAdoptDialedPeer) {
+    // A configured address is insufficient: the Ack must prove knowledge of
+    // the key against this dial attempt's fresh challenge.
+    caf::core::init_global_meta_objects();
+    caf::io::middleman::init_global_meta_objects();
+    shield::cluster::init_cluster_caf_types();
+    caf::actor_system_config config;
+    config.load<caf::io::middleman>();
+    caf::actor_system system(config);
+    std::atomic<bool> rejected{false};
+    auto impostor =
+        system.spawn([&](caf::event_based_actor* self) -> caf::behavior {
+            return {[self](const shield::cluster::HelloMsg& hello) {
+                        auto sender =
+                            caf::actor_cast<caf::actor>(self->current_sender());
+                        if (!sender) return;
+                        shield::cluster::HelloAckMsg ack{"impostor", 99};
+                        ack.nonce = shield::cluster::cluster_auth_nonce();
+                        ack.response_nonce = hello.nonce;
+                        ack.timestamp_ms = shield::base::now_ms();
+                        ack.proof.assign(64, '0');
+                        self->send(sender, ack);
+                    },
+                    [&](const caf::error& error) {
+                        if (caf::to_string(error).find("auth_proof_invalid") !=
+                            std::string::npos)
+                            rejected = true;
+                    }};
+        });
+    auto published = system.middleman().publish(impostor, 0, "127.0.0.1");
+    BOOST_REQUIRE(published);
+    auto node = make_node("victim", free_port(), *published, enable_psk);
+    BOOST_REQUIRE(node);
+    BOOST_CHECK(
+        wait_until([&] { return rejected.load(); }, std::chrono::seconds(3)));
+    BOOST_CHECK(node->manager->find_node("impostor") == nullptr);
+    BOOST_CHECK_EQUAL(node->transport->stats().live_connections, 0u);
+    teardown_node(*node);
+    caf::anon_send_exit(impostor, caf::exit_reason::user_shutdown);
+}
+
+BOOST_AUTO_TEST_CASE(InternalDispatchMarkerCannotCrossWire) {
+    caf::byte_buffer bytes;
+    caf::binary_serializer writer(bytes);
+    shield::cluster::LocalDispatch marker;
+    BOOST_CHECK(!writer.apply(marker));
+    BOOST_CHECK(writer.get_error() == caf::sec::unsafe_type);
+    caf::binary_deserializer reader(bytes);
+    BOOST_CHECK(!reader.apply(marker));
+    BOOST_CHECK(reader.get_error() == caf::sec::unsafe_type);
+}
+
+BOOST_AUTO_TEST_CASE(ExplicitAuthDisabledModeAndModeMismatch) {
+    const auto port = free_port();
+    auto node = make_node("victim", port, free_port(), [](Node& n) {
+        n.config.auth.enabled = false;
+        n.config.auth.token.clear();
+    });
+    BOOST_REQUIRE(node);
+    std::atomic<int> dispatched{0};
+    shield::cluster::EnvelopeBridges bridges;
+    bridges.send_dispatch = [&](const std::string&, const std::string&,
+                                const std::string&) {
+        ++dispatched;
+        return true;
+    };
+    node->transport->set_envelope_bridges(std::move(bridges));
+    PskClient client(port);
+    client.send(psk_hello());
+    expect_auth_error(client, "auth_mode_mismatch");
+    client.send(shield::cluster::HelloMsg{"raw-peer", 42});
+    BOOST_CHECK(client.receive<shield::cluster::HelloAckMsg>().proof.empty());
+    client.send(
+        shield::cluster::EnvelopeMsg{"raw-peer", "svc", "echo", "[]", 0, 100});
+    BOOST_CHECK(wait_until([&] { return dispatched.load() == 1; },
+                           std::chrono::seconds(3)));
+}

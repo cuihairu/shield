@@ -300,16 +300,26 @@ end
 
 ### 服务间认证
 
-服务间调用默认信任（同一进程内）。跨节点认证**未实现**：
+服务间调用默认信任（同一进程内）。跨节点已实现 **PSK + HMAC-SHA256 双向挑战认证**（需编译启用 `shield_cluster`）：
 
 ```yaml
 cluster:
+  node_id: node-a
+  listen: 127.0.0.1:9000
   auth:
-    type: token                    # token | mtls（未实现）
-    token: ${CLUSTER_TOKEN}        # 未实现
+    type: token
+    token: ${CLUSTER_TOKEN}
+    time_window_ms: 30000
 ```
 
-上面这段 `cluster.auth` 配置当前没有任何消费者——不会做 token/mTLS 服务间认证；`${VAR}` 环境变量展开同样未实现（配置加载器不处理占位符，插件会拿到字面量字符串，见 [配置语义](runtime-config.md#环境变量展开未实现)）。实现前的行为：`cluster` 段本身受 optional module 规则约束（未启用 `shield_cluster` 时出现即拒绝启动）；即使启用，`auth` 子键也会被静默忽略（`parse_cluster_config` 只读取 `node_id` / `listen` / `peers` / 心跳与判定超时等键）。
+- `type: token` 消费现有 `cluster.auth.token`，PSK 只能写成完整的 `${VAR}` 环境变量引用（变量名为字母/下划线开头的字母、数字、下划线）；不支持默认值、嵌入展开或内联密钥。变量未设置、为空、长度不在 32–4096 字节，配置非法或 `type: mtls` 都拒绝启动。生产 PSK 应由密码学随机源生成，所有节点通过部署环境注入；不要提交、打印或复用测试值。解析后的 PSK 只保存在集群内存配置中，不写回可供 Lua/诊断读取的全局配置。其他配置键仍无通用环境变量展开，见 [配置语义](runtime-config.md#环境变量展开未实现)。
+- **未配置 `cluster.auth`，或显式 `auth: {type: none}`，关闭集群认证并在 transport 启动时打警告**。保留这一行为是为了兼容既有本地/可信网段部署；这两种配置只绑定自报身份，不能阻止接入端口者冒充节点，不能作为不可信网络的安全部署方式。`none` 不允许同时携带 `token`。
+- 协议版本为 **2**。`Hello(A)` 携带随机 nonce、UTC 毫秒时间戳、node_id/epoch 和初始 HMAC；接收方返回 `HelloAck(B, HMAC(A))`；发起方验证后返回 `Hello(HMAC(B))`。HMAC 使用有长度前缀且区分协议/阶段的完整双方 transcript，涵盖版本、身份、epoch、两个 nonce 和时间戳。nonce 为 OpenSSL `RAND_bytes` 生成的 256 位随机数，摘要以常量时间比较。接收方验证其发出的 B 后才记录该 CAF sender 的认证身份；发起方验证 Ack 后记录身份，并保证最终证明先于其数据消息发送。
+- 时间窗默认 30 秒，可通过 `time_window_ms` 设置为 1–300000 毫秒。跨机器新鲜度校验使用 `shield::base::now_ms()`（真实 UTC wall clock，允许窗口内时钟偏差）；本地挑战有效期及重放缓存使用 `shield::base::now()`（真实 steady clock），不受 Lua MockClock 影响。部署需同步系统时钟。每个 B 只允许一次验证尝试；初始 nonce 在两倍时间窗内也拒绝复用。过期/失败/无待验证挑战的证明全部拒绝；进程重启后旧证明不能回答新生成的随机 B。待验证挑战最多 4096 个、重放缓存最多 8192 项，满时拒绝新握手而不驱逐仍有效的 nonce。
+- Envelope 在服务派发前，将 `source_node` 与已完成握手的 CAF sender 绑定。未握手或身份已被撤销返回 `peer_not_authenticated`，自报身份不匹配返回 `peer_identity_mismatch`；call 返回该错误，send 丢弃并记录警告，不调用服务桥。握手拒绝通过 CAF runtime error 携带 `auth_proof_invalid`、`auth_replay`、`auth_timestamp_expired`、`auth_challenge_expired`、`auth_capacity_exceeded` 等代码；拒绝会撤销该 sender 的认证状态。启用 PSK 时，心跳、路由同步和调用回复也要求已认证 sender。
+- **默认且始终不自动降级**。认证模式不匹配、版本不匹配直接失败；版本 1 的旧二进制无法反序列化版本 2 的扩展消息，保持未认证并超时（日志 `auth_handshake_timeout`），需要协调升级。没有旧协议降级开关。显式 `type: none` 只关闭版本 2 的认证，风险如上，不能与 `token` 对端互通。
+
+**边界与升级路径**：PSK 验证的是同一信任组的密钥持有者；持有 PSK 的节点能声明组内任意 node_id，没有逐节点证书授权。BASP 后续业务流量没有加密或逐消息 MAC，主动中间人仍可转发握手并篡改后续明文，不能将本实现视作传输完整性/保密性保护。仅适用于受控主机/私网，必要时经受保护的隧道；不应直接暴露到公网。当前轮换方式是注入新环境变量值并协调重启所有节点，没有双密钥热轮换。mTLS 仍推迟：未来为集群 transport 引入证书链校验、节点证书身份授权和独立的证书轮换策略，再用于不可信网络。
 
 ## 审计日志
 

@@ -517,7 +517,14 @@ static bool initialize_impl(const RuntimeConfig& config) {
     }
 
 #ifdef SHIELD_ENABLE_CLUSTER
-    auto cluster_config = shield::cluster::parse_cluster_config();
+    shield::cluster::ClusterConfig cluster_config;
+    try {
+        cluster_config = shield::cluster::parse_cluster_config();
+    } catch (const std::exception& e) {
+        SHIELD_LOG_ERROR(log,
+                         std::string("Invalid cluster config: ") + e.what());
+        return false;
+    }
     if (cluster_config.enabled) {
         if (cluster_config.node_id.empty()) {
             SHIELD_LOG_ERROR(

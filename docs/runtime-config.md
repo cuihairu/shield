@@ -374,7 +374,7 @@ per-session strand 上串行（session.hpp），多线程 `io_context::run` 安�
 
 ## 环境变量展开（未实现）
 
-> `${VAR}` / `${VAR:default}` 展开为目标契约，当前配置加载器不会处理这些占位符——插件会拿到字面量字符串。实现前请勿在配置中使用。
+> 通用 `${VAR}` / `${VAR:default}` 展开仍为目标契约，配置加载器不会处理这些占位符，插件会拿到字面量字符串。唯一已实现的限定用途是 `cluster.auth.token`：由集群消费者严格解析完整 `${VAR}`，缺失/空值拒绝启动，不支持 default，见 [服务间认证](runtime-security.md#服务间认证)。其他键请勿使用。
 
 规划语义：
 

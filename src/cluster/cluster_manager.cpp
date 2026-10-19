@@ -4,9 +4,12 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <mutex>
+#include <nlohmann/json.hpp>
 #include <random>
 #include <shared_mutex>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -450,8 +453,16 @@ ClusterConfig parse_cluster_config() {
     auto& cfg = shield::config::global_config();
     ClusterConfig cc;
 
+    const auto cluster =
+        nlohmann::json::parse(shield::config::subtree_json(cfg, "cluster"));
+    const bool has_auth = cluster.is_object() && cluster.contains("auth");
     cc.enabled = cfg.has("cluster.node_id");
-    if (!cc.enabled) return cc;
+    if (!cc.enabled) {
+        if (has_auth)
+            throw std::invalid_argument(
+                "cluster.auth requires cluster.node_id");
+        return cc;
+    }
 
     cc.node_id = cfg.get_string("cluster.node_id", "");
     cc.listen_address = cfg.get_string("cluster.listen", "0.0.0.0:9000");
@@ -461,6 +472,59 @@ ClusterConfig parse_cluster_config() {
         static_cast<int>(cfg.get_int("cluster.suspect_timeout_ms", 15000));
     cc.offline_timeout_ms =
         static_cast<int>(cfg.get_int("cluster.offline_timeout_ms", 30000));
+
+    // Resolve only this secret reference, never copy the resolved PSK back to
+    // global_config (which is exposed through diagnostics / Lua).
+    if (has_auth) {
+        const auto& auth = cluster["auth"];
+        auto invalid = [](const char* reason) {
+            throw std::invalid_argument(std::string("cluster.auth: ") + reason);
+        };
+        if (!auth.is_object()) invalid("expected a map");
+        for (auto it = auth.begin(); it != auth.end(); ++it)
+            if (it.key() != "type" && it.key() != "token" &&
+                it.key() != "time_window_ms")
+                invalid("unknown option");
+        if (!auth.contains("type") || !auth["type"].is_string())
+            invalid("type must be token or none");
+        const auto type = auth["type"].get<std::string>();
+        if (type != "token" && type != "none")
+            invalid("unsupported type (mTLS is deferred)");
+        cc.auth.enabled = type == "token";
+        if (auth.contains("time_window_ms")) {
+            if (!auth["time_window_ms"].is_number_integer())
+                invalid("time_window_ms must be an integer");
+            const auto window = auth["time_window_ms"].get<int64_t>();
+            if (window < 1 || window > 300000)
+                invalid("time_window_ms must be 1..300000");
+            cc.auth.time_window_ms = static_cast<int>(window);
+        }
+        if (cc.auth.enabled) {
+            if (!auth.contains("token") || !auth["token"].is_string())
+                invalid("token must reference an environment variable");
+            const auto ref = auth["token"].get<std::string>();
+            if (ref.size() < 4 || ref.substr(0, 2) != "${" || ref.back() != '}')
+                invalid(
+                    "token must be exactly ${VAR}; inline secrets are "
+                    "forbidden");
+            const auto name = ref.substr(2, ref.size() - 3);
+            if (name.empty() ||
+                name.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklm"
+                                       "nopqrstuvwxyz0123456789_") !=
+                    std::string::npos ||
+                (name.front() >= '0' && name.front() <= '9'))
+                invalid("token must be exactly ${VAR}");
+            const char* value = std::getenv(name.c_str());
+            if (!value || !*value)
+                invalid("token environment variable is missing or empty");
+            const auto size = std::char_traits<char>::length(value);
+            if (size < 32 || size > 4096)
+                invalid("token must contain 32..4096 bytes");
+            cc.auth.token.assign(value, size);
+        } else if (auth.contains("token")) {
+            invalid("token cannot be supplied when type is none");
+        }
+    }
 
     // Optional discovery section: only `type` gates the feature, the rest
     // fall back to DiscoveryConfig defaults.

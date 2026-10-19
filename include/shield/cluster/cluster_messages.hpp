@@ -25,13 +25,21 @@ namespace shield::cluster {
 
 /// Bump on any wire-format change; peers with a different version refuse
 /// to complete the handshake and stay (degradable) in Connecting.
-constexpr uint32_t kClusterProtoVersion = 1;
+constexpr uint32_t kClusterProtoVersion = 2;
+
+// Unsafe local-only marker: CAF refuses to serialize/deserialize it. Prevents
+// remote callers from invoking the facade's internal forwarding behavior.
+struct LocalDispatch {};
 
 /// Dialer -> dialed peer right after a successful remote_actor connect.
 struct HelloMsg {
     std::string node_id;
     uint64_t epoch = 0;
     uint32_t proto_version = kClusterProtoVersion;
+    std::string nonce;
+    std::string response_nonce;
+    int64_t timestamp_ms = 0;
+    std::string proof;
 };
 
 /// Dialed peer -> dialer; the dialer adopts the announced identity.
@@ -39,6 +47,10 @@ struct HelloAckMsg {
     std::string node_id;
     uint64_t epoch = 0;
     uint32_t proto_version = kClusterProtoVersion;
+    std::string nonce;
+    std::string response_nonce;
+    int64_t timestamp_ms = 0;
+    std::string proof;
 };
 
 /// Periodic liveness proof on a dialed connection. A peer that stops
@@ -102,16 +114,20 @@ inline const char* envelope_peer_error(const std::string& handshake_node,
 
 template <class Inspector>
 bool inspect(Inspector& f, HelloMsg& x) {
-    return f.object(x).fields(f.field("node_id", x.node_id),
-                              f.field("epoch", x.epoch),
-                              f.field("proto_version", x.proto_version));
+    return f.object(x).fields(
+        f.field("node_id", x.node_id), f.field("epoch", x.epoch),
+        f.field("proto_version", x.proto_version), f.field("nonce", x.nonce),
+        f.field("response_nonce", x.response_nonce),
+        f.field("timestamp_ms", x.timestamp_ms), f.field("proof", x.proof));
 }
 
 template <class Inspector>
 bool inspect(Inspector& f, HelloAckMsg& x) {
-    return f.object(x).fields(f.field("node_id", x.node_id),
-                              f.field("epoch", x.epoch),
-                              f.field("proto_version", x.proto_version));
+    return f.object(x).fields(
+        f.field("node_id", x.node_id), f.field("epoch", x.epoch),
+        f.field("proto_version", x.proto_version), f.field("nonce", x.nonce),
+        f.field("response_nonce", x.response_nonce),
+        f.field("timestamp_ms", x.timestamp_ms), f.field("proof", x.proof));
 }
 
 template <class Inspector>
@@ -154,6 +170,8 @@ bool inspect(Inspector& f, HeartbeatMsg& x) {
 
 }  // namespace shield::cluster
 
+CAF_ALLOW_UNSAFE_MESSAGE_TYPE(shield::cluster::LocalDispatch)
+
 // -- CAF type ID block --------------------------------------------------------
 //
 // Starts right after the shield_lua block so the two custom blocks never
@@ -175,6 +193,8 @@ CAF_ADD_ATOM(shield_cluster, shield::cluster,
 CAF_ADD_ATOM(shield_cluster, shield::cluster, hb_tick_atom)  // GCOVR_EXCL_LINE
 CAF_ADD_ATOM(shield_cluster, shield::cluster,
              dispatch_envelope_atom)  // GCOVR_EXCL_LINE
+
+CAF_ADD_TYPE_ID(shield_cluster, (shield::cluster::LocalDispatch))
 
 CAF_END_TYPE_ID_BLOCK(shield_cluster)
 

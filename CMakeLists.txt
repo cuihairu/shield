@@ -505,6 +505,7 @@ target_compile_definitions(shield_net PUBLIC SHIELD_HAS_CURL)
 # -----------------------------------------------------------------------------
 if(SHIELD_ENABLE_CLUSTER)
     add_library(shield_cluster STATIC
+        src/cluster/cluster_auth.cpp
         src/cluster/cluster_manager.cpp
         src/cluster/cluster_transport.cpp
         src/cluster/node_discovery.cpp
@@ -527,7 +528,7 @@ if(SHIELD_ENABLE_CLUSTER)
     endif()
     target_link_libraries(shield_cluster
         PUBLIC shield_base shield_log shield_config CAF::core CAF::io
-        PRIVATE ${SHIELD_CLUSTER_REDISPP_TARGET}
+        PRIVATE ${SHIELD_CLUSTER_REDISPP_TARGET} OpenSSL::Crypto
     )
     message(STATUS "shield_cluster: enabled")
 endif()
