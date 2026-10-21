@@ -2,6 +2,7 @@
 
 [English](README.md) | 简体中文
 
+[![Status](https://img.shields.io/badge/status-in%20development-orange)](https://github.com/cuihairu/shield/releases)
 [![CI](https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg)](https://github.com/cuihairu/shield/actions/workflows/ci.yml)
 [![C++23](https://img.shields.io/badge/C++-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
 [![Lua 5.5](https://img.shields.io/badge/Lua-5.5-blue.svg)](https://www.lua.org/)
