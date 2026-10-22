@@ -4,12 +4,12 @@
 
 <p align="center">
 <a href="https://github.com/cuihairu/shield/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a>
-</p>
 <a href="https://github.com/cuihairu/shield/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg"></a>
 <a href="https://en.cppreference.com/w/cpp/23"><img alt="C++23" src="https://img.shields.io/badge/C++-23-blue.svg"></a>
 <a href="https://www.lua.org/"><img alt="Lua 5.5" src="https://img.shields.io/badge/Lua-5.5-blue.svg"></a>
 <a href="https://codecov.io/gh/cuihairu/shield"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg"></a>
 <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
+</p>
 
 Shield 是一个**单节点优先、受 Skynet 启发、基于 Actor、Lua 优先的游戏服务器运行时**（路线图 Phase 0-4 已落地；Phase 5 能力部分实现，运维功能仍编译在 `shield_bootstrap` 中，`shield_ops` CMake target 目前为空）。
 
