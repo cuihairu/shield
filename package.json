@@ -3,5 +3,10 @@
   "private": true,
   "devDependencies": {
     "postcss": "^8.5.23"
+  },
+  "pnpm": {
+    "overrides": {
+      "vite@<6.4.4": "6.4.4"
+    }
   }
 }
