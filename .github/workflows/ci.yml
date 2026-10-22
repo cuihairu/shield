@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Setup clang-format
         run: pip install clang-format
@@ -50,7 +50,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
@@ -71,7 +71,7 @@ jobs:
       # `x-gha` binary source (caches compiled packages across runs instead
       # of rebuilding yaml-cpp etc. from source every time).
       - name: Export GHA cache credentials
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
@@ -81,7 +81,7 @@ jobs:
       # cached by x-gha above). Do NOT cache the vcpkg source tree — it is
       # managed by run-vcpkg and caching it triggers git pathspec errors.
       - name: Cache vcpkg installed
-        uses: actions/cache@v5
+        uses: actions/cache@v6.1.0
         with:
           path: ${{ github.workspace }}/build/vcpkg_installed
           key: vcpkg-installed-${{ runner.os }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
@@ -90,7 +90,7 @@ jobs:
 
       # Setup vcpkg (pinned commit + x-gha binary caching).
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+        uses: lukka/run-vcpkg@v11.6
         env:
           VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
         with:
@@ -219,7 +219,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
@@ -229,14 +229,14 @@ jobs:
           sudo apt-get install -y build-essential cmake ninja-build pkg-config redis-server
 
       - name: Export GHA cache credentials
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Cache vcpkg installed
-        uses: actions/cache@v5
+        uses: actions/cache@v6.1.0
         with:
           path: ${{ github.workspace }}/build-cluster/vcpkg_installed
           key: vcpkg-installed-cluster-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
@@ -244,7 +244,7 @@ jobs:
             vcpkg-installed-cluster-
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+        uses: lukka/run-vcpkg@v11.6
         env:
           VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
         with:
@@ -280,7 +280,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
@@ -291,14 +291,14 @@ jobs:
           python3 -m pip install gcovr==8.6
 
       - name: Export GHA cache credentials
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Cache vcpkg installed
-        uses: actions/cache@v5
+        uses: actions/cache@v6.1.0
         with:
           path: ${{ github.workspace }}/build-cov/vcpkg_installed
           key: vcpkg-installed-coverage-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
@@ -306,7 +306,7 @@ jobs:
             vcpkg-installed-coverage-
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+        uses: lukka/run-vcpkg@v11.6
         env:
           VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
         with:
@@ -356,7 +356,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: build-cov/coverage.xml
@@ -364,7 +364,7 @@ jobs:
 
       - name: Upload coverage artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-report
           path: |
@@ -388,7 +388,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
@@ -399,14 +399,14 @@ jobs:
           python3 -m pip install gcovr==8.6
 
       - name: Export GHA cache credentials
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Cache vcpkg installed
-        uses: actions/cache@v5
+        uses: actions/cache@v6.1.0
         with:
           path: ${{ github.workspace }}/build-cov-opt/vcpkg_installed
           key: vcpkg-installed-coverage-opt-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
@@ -414,7 +414,7 @@ jobs:
             vcpkg-installed-coverage-opt-
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+        uses: lukka/run-vcpkg@v11.6
         env:
           VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
         with:
@@ -473,7 +473,7 @@ jobs:
 
       - name: Upload coverage artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-optional-report
           path: build-cov-opt/coverage-optional.txt
@@ -490,7 +490,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
@@ -500,14 +500,14 @@ jobs:
           sudo apt-get install -y build-essential cmake ninja-build pkg-config redis-server
 
       - name: Export GHA cache credentials
-        uses: actions/github-script@v9
+        uses: actions/github-script@v9.0.0
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Cache vcpkg installed
-        uses: actions/cache@v5
+        uses: actions/cache@v6.1.0
         with:
           path: ${{ github.workspace }}/build-crash/vcpkg_installed
           key: vcpkg-installed-crashpad-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
@@ -515,7 +515,7 @@ jobs:
             vcpkg-installed-crashpad-
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+        uses: lukka/run-vcpkg@v11.6
         env:
           VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
         with:
@@ -576,7 +576,7 @@ jobs:
           }
 
       - name: Upload acceptance artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: crashpad-acceptance
           path: |
@@ -595,15 +595,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v4.4.1
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -611,7 +611,7 @@ jobs:
 
       - name: Extract metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -620,7 +620,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@v7.4.0
         with:
           context: .
           platforms: linux/amd64
