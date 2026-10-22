@@ -2,12 +2,12 @@
 
 > 通过经典 MySQL 协议提供客户端-服务器模式的 SQL 数据库，适合需要持久化、高并发写、跨服共享数据的游戏后端。
 
-`database.mysql` 是 Shield 官方提供的 [`shield.database.v1`](/plugin-system#interface-model) 实现之一，基于 [MariaDB Connector/C](https://mariadb-corporation.github.io/mariadb-connector-c/)（libmariadb）——一个轻量的 C 语言 MySQL 协议客户端，可同时连接 MySQL 与 MariaDB 服务器。所有 SQL 通过二进制协议的 prepared statement 执行，参数与结果均为类型化绑定。
+`database.mysql` 是 Shield 官方提供的 `shield.database.v1` 实现之一，基于 [MariaDB Connector/C](https://mariadb-corporation.github.io/mariadb-connector-c/)（libmariadb）——一个轻量的 C 语言 MySQL 协议客户端，可同时连接 MySQL 与 MariaDB 服务器。所有 SQL 通过二进制协议的 prepared statement 执行，参数与结果均为类型化绑定。
 
 ## 包信息
 
 - **包 ID**: `database.mysql`
-- **接口**: [`shield.database.v1`](/plugin-system#interface-model)、[`shield.pool.stats.v1`](/plugin-pool-stats)
+- **接口**: `shield.database.v1`、[`shield.pool.stats.v1`](/zh/plugin-pool-stats)
 - **Capabilities**: `sql`, `transactions`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_DB_PLUGIN_MYSQL`
@@ -139,7 +139,7 @@ int (*rollback)(struct shield_db_conn* conn, struct shield_db_result* out_result
 
 ### shield_db_result 的内存所有权
 
-同 [SQLite 文档](/plugins/database-sqlite#shield-db-result-的内存所有权) 的规则：
+同 SQLite 文档 的规则：
 
 - `cells` 数组及其中每个字符串都由插件 `malloc` 分配。
 - host 必须在使用完后调用 `free_result`。
@@ -214,7 +214,7 @@ local ok, err = db:transaction(function(tx)
 end)
 ```
 
-具体 API 契约见 [Lua API](/lua-api) 的 Database（SQL）一节。协程派发内这些调用默认异步挂起（`async` 开关），返回形状与同步路径一致。
+具体 API 契约见 [Lua API](/zh/lua-api) 的 Database（SQL）一节。协程派发内这些调用默认异步挂起（`async` 开关），返回形状与同步路径一致。
 
 ## 平台特性
 
@@ -246,7 +246,7 @@ libmariadb 支持 `MYSQL_OPT_SSL_*` 系列选项，但当前插件实例 config 
 
 Lua 路径（`shield.database.mysql(binding)` 的 proxy 方法）的连接池在**插件实例内部自治**：free-list + `pool_size`（容量）+ `acquire_timeout_ms`（耗尽时等待归还的时长），坏连接用完即弃、由下次 acquire 补新。`async` 开启时另有一组 worker 线程（数量 = min(`pool_size`, 8)，首用懒建）承接 acquire 与语句执行；异步事务的语句/提交/回滚跑在单条串行 tx lane 上。C vtable 路径仍是 per-call `connect`/`disconnect`，不走池也不走 worker。
 
-池与异步入口的实时指标经 [`shield.pool.stats.v1`](/plugin-pool-stats) 上报，`/ops/metrics` 导出 `shield_plugin_pool_*`（容量/使用/空闲）与 `shield_plugin_db_pending_async` / `shield_plugin_db_holding`。
+池与异步入口的实时指标经 [`shield.pool.stats.v1`](/zh/plugin-pool-stats) 上报，`/ops/metrics` 导出 `shield_plugin_pool_*`（容量/使用/空闲）与 `shield_plugin_db_pending_async` / `shield_plugin_db_holding`。
 
 ## 错误处理
 
@@ -298,7 +298,7 @@ plugins/database.mysql/
 
 ## 相关链接
 
-- [插件系统](/plugin-system) — Shield 插件 v1 设计、ABI 契约
+- [插件系统](/zh/plugin-system) — Shield 插件 v1 设计、ABI 契约
 - [Shield 数据语义](/runtime-data) — 连接池配置、事务规则、错误处理
 - [DB 使用纪律](/db-discipline) — 超时、池匹配、事务 body 规则
 - [MariaDB Connector/C 文档](https://mariadb-corporation.github.io/mariadb-connector-c/)

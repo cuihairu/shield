@@ -2,14 +2,14 @@
 
 > 内置 JSON codec 的可选校验替身：不启用时内置 json 照旧生效，启用后获得 per-route payload schema 校验。
 
-`protocol.json` 是官方提供的 [`shield.protocol.codec.v1`](/plugin-system#interface-model) 之一，codec 名为 `json`。**不设置 `body.provider` 时核心内置 json 照旧生效，行为零变化**；显式把 provider 绑到本插件后，解码/编码语义与内置完全一致（含可选的顶层 `{"payload": ...}` 信封解包），额外获得在 ingress/egress 边界按路由校验 payload 形状的能力。
+`protocol.json` 是官方提供的 `shield.protocol.codec.v1` 之一，codec 名为 `json`。**不设置 `body.provider` 时核心内置 json 照旧生效，行为零变化**；显式把 provider 绑到本插件后，解码/编码语义与内置完全一致（含可选的顶层 `{"payload": ...}` 信封解包），额外获得在 ingress/egress 边界按路由校验 payload 形状的能力。
 
 **选型速览**：JSON 可读性最好、排障零成本、无额外协议运行时——开发期与配置型协议首选；要二进制体积选 [protocol.msgpack](/plugins/protocol-msgpack)，要跨语言强类型 schema 选 [protocol.protobuf](/plugins/protocol-protobuf)，要 flatc 工具链融合选 [protocol.flatbuffers](/plugins/protocol-flatbuffers)。
 
 ## 包信息
 
 - **包 ID**: `protocol.json`
-- **接口**: [`shield.protocol.codec.v1`](/protocol-codec-plugins)（capabilities: `json`）
+- **接口**: [`shield.protocol.codec.v1`](/zh/protocol-codec-plugins)（capabilities: `json`）
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_JSON`
 - **源码**: `plugins/protocol.json/`
@@ -37,7 +37,7 @@ cmake --build build
 | `require_schema` | boolean | 否 | `false` | `true` 时未配置 schema 的路由直接失败 `protocol.schema_not_found`；默认放行（无 schema = 无约束）。 |
 | `on_violation` | string | 否 | `reject` | `reject` 校验失败即拒绝；`warn` 记 host WARN 日志后放行（观察模式）。取值仅 `reject`/`warn`，其他值 create 失败。 |
 
-schema 校验复用 host 的最小 JSON-Schema 子集校验器（关键字集、`integer` 的 token 级语义、`additionalProperties` 仅布尔 false 强制等口径见 [Protocol Codec Plugins](/protocol-codec-plugins)），插件不自带第二套实现。schema 形状错误以 `schema evaluation error` 暴露为 decode/encode 失败，不会逃逸 C ABI。
+schema 校验复用 host 的最小 JSON-Schema 子集校验器（关键字集、`integer` 的 token 级语义、`additionalProperties` 仅布尔 false 强制等口径见 [Protocol Codec Plugins](/zh/protocol-codec-plugins)），插件不自带第二套实现。schema 形状错误以 `schema evaluation error` 暴露为 decode/encode 失败，不会逃逸 C ABI。
 
 ### 完整 app.yaml 示例
 
@@ -140,13 +140,13 @@ end
 
 ## 已知边界
 
-- Lua egress 不自动调用插件 encode：入站 decode 的结果直接成为 request table；业务侧主动出站仍需显式编码后经 `shield.client_rpc`（见 [Known Limitations](/protocol-codec-plugins)）。
+- Lua egress 不自动调用插件 encode：入站 decode 的结果直接成为 request table；业务侧主动出站仍需显式编码后经 `shield.client_rpc`（见 [Known Limitations](/zh/protocol-codec-plugins)）。
 - body 路由键提取（`route_key`）不能配外部 provider：body-route 协议配 `protocol.json` 在构建期报错；校验插件面向 header 路由（idlen/typelen）或单路由 profile。
 - codec 按监听器锁定（`actors[].network.protocol.body`），不支持 per-route / per-session 协商。
 
 ## 相关链接
 
-- [Protocol Codec Plugins](/protocol-codec-plugins) — codec 插件化边界、schema 寻址收敛、校验器关键字子集
-- [Protocol Routing Design](/protocol-routing-design) — 路由表、envelope、routing source
-- [插件系统](/plugin-system) — manifest、bootstrap pipeline、binding 解析
-- [Lua API](/lua-api) — handler 绑定与 `shield.client_rpc` 出站约定
+- [Protocol Codec Plugins](/zh/protocol-codec-plugins) — codec 插件化边界、schema 寻址收敛、校验器关键字子集
+- [Protocol Routing Design](/zh/protocol-routing-design) — 路由表、envelope、routing source
+- [插件系统](/zh/plugin-system) — manifest、bootstrap pipeline、binding 解析
+- [Lua API](/zh/lua-api) — handler 绑定与 `shield.client_rpc` 出站约定

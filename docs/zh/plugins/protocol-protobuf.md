@@ -2,14 +2,14 @@
 
 > Protobuf 编解码插件：`FileDescriptorSet` 驱动的 DynamicMessage 编解码，跨语言客户端与 schema 演进的首选。
 
-`protocol.protobuf` 是官方提供的 [`shield.protocol.codec.v1`](/protocol-codec-plugins) 之一，codec 名为 `protobuf`。create 时加载 `FileDescriptorSet` 描述符文件建立 `DescriptorPool` + `DynamicMessageFactory`，此后按路由的类型名动态解析 message——业务工程**不需要**生成或链接 C++ 桩代码，服务端零桩代码接入。需要通过 `body.provider` 绑定本插件启用。
+`protocol.protobuf` 是官方提供的 [`shield.protocol.codec.v1`](/zh/protocol-codec-plugins) 之一，codec 名为 `protobuf`。create 时加载 `FileDescriptorSet` 描述符文件建立 `DescriptorPool` + `DynamicMessageFactory`，此后按路由的类型名动态解析 message——业务工程**不需要**生成或链接 C++ 桩代码，服务端零桩代码接入。需要通过 `body.provider` 绑定本插件启用。
 
 **选型速览**：唯一自带正式 schema 演进模型（field number 兼容、跨语言代码生成）的选择，客户端是 Unity/UE/Go/Java 等多语言栈时的首选；客户端就是 Lua/JS、只想快速起步选 [protocol.json](/plugins/protocol-json)；要二进制体积但不要 schema 编译器选 [protocol.msgpack](/plugins/protocol-msgpack)；要 flatc 生态选 [protocol.flatbuffers](/plugins/protocol-flatbuffers)。
 
 ## 包信息
 
 - **包 ID**: `protocol.protobuf`
-- **接口**: [`shield.protocol.codec.v1`](/protocol-codec-plugins)（capabilities: `protobuf`）
+- **接口**: [`shield.protocol.codec.v1`](/zh/protocol-codec-plugins)（capabilities: `protobuf`）
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_PROTOBUF`
 - **源码**: `plugins/protocol.protobuf/`
@@ -129,14 +129,14 @@ req/resp 类型名不同的场景不需要 ABI 扩展：一条 c2s 路由 + 一�
 ## 已知边界
 
 - 只支持 binary protobuf payload，不做 gRPC、不做服务方法 RPC 语义。
-- Lua egress 不自动调用插件 encode：入站 decode 的结果直接成为 request table；业务侧主动出站仍需显式编码后经 `shield.client_rpc`（见 [Protocol Codec Plugins](/protocol-codec-plugins) Known Limitations）。
+- Lua egress 不自动调用插件 encode：入站 decode 的结果直接成为 request table；业务侧主动出站仍需显式编码后经 `shield.client_rpc`（见 [Protocol Codec Plugins](/zh/protocol-codec-plugins) Known Limitations）。
 - body-route 协议（`route_key`）不能配外部 provider，构建期报错；面向 header 路由或单路由 profile。
 - codec 按监听器锁定，不支持 per-route / per-session 协商；描述符集运行期只读，改 .proto 需重启。
 
 ## 相关链接
 
-- [Protocol Codec Plugins](/protocol-codec-plugins) — codec 插件化边界、schema 寻址收敛（`request_schema` 口径）
-- [Protocol Routing Design](/protocol-routing-design) — 路由表、envelope、routing source
+- [Protocol Codec Plugins](/zh/protocol-codec-plugins) — codec 插件化边界、schema 寻址收敛（`request_schema` 口径）
+- [Protocol Routing Design](/zh/protocol-routing-design) — 路由表、envelope、routing source
 - [protobuf 官方文档](https://protobuf.dev/programming-guides/proto3/) — proto3 语言指南
 - [protobuf JSON 映射](https://protobuf.dev/programming-guides/json/) — lowerCamelCase 字段名规范
-- [插件系统](/plugin-system) — manifest、bootstrap pipeline、binding 解析
+- [插件系统](/zh/plugin-system) — manifest、bootstrap pipeline、binding 解析

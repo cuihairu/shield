@@ -5,7 +5,7 @@
 ## 包信息
 
 - **包 ID**: `health.http`
-- **接口**: [`shield.health.v1`](/plugin-system#interface-model)
+- **接口**: `shield.health.v1`
 - **Capabilities**: `http`, `k8s_probes`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_HEALTH`
@@ -379,7 +379,7 @@ plugins/health.http/
 
 ## 相关链接
 
-- [插件系统](/plugin-system) — 接口模型、ABI 契约
-- [插件参考索引](/plugins/) — 全部官方插件
+- [插件系统](/zh/plugin-system) — 接口模型、ABI 契约
+- [插件参考索引](/zh/plugins/) — 全部官方插件
 - [Kubernetes Pod health checks](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/) — liveness/readiness/startup probe 文档
 - [boost::beast HTTP server 礓例](https://www.boost.org/doc/libs/release/libs/beast/doc/html/beast/quick_start/http_server.html)

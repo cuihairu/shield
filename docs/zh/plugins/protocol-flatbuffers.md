@@ -2,14 +2,14 @@
 
 > FlatBuffers 编解码插件：`.fbs` 文本 schema 驱动，二进制 ↔ JSON 桥接，flatc 工具链生态直通。
 
-`protocol.flatbuffers` 是官方提供的 [`shield.protocol.codec.v1`](/protocol-codec-plugins) 之一，codec 名为 `flatbuffers`。create 时从磁盘加载 `.fbs` 文本 schema；decode 把 FlatBuffers 二进制转成 JSON（`GenerateText`），encode 把 JSON 按 schema 解析成 FlatBuffers 二进制。需要通过 `body.provider` 绑定本插件启用。
+`protocol.flatbuffers` 是官方提供的 [`shield.protocol.codec.v1`](/zh/protocol-codec-plugins) 之一，codec 名为 `flatbuffers`。create 时从磁盘加载 `.fbs` 文本 schema；decode 把 FlatBuffers 二进制转成 JSON（`GenerateText`），encode 把 JSON 按 schema 解析成 FlatBuffers 二进制。需要通过 `body.provider` 绑定本插件启用。
 
 **选型速览**：价值在 flatc 工具链融合（`.fbs` 直接进 FlatBuffers 生态）与单 schema 强类型 encode；与 [protocol.protobuf](/plugins/protocol-protobuf) 相比没有 descriptor 预编译（本实现每次调用重新解析 schema 文本、经 JSON 桥接，非零拷贝路径），大流量场景先压测吞吐；只想快速起步选 [protocol.json](/plugins/protocol-json) / [protocol.msgpack](/plugins/protocol-msgpack)。
 
 ## 包信息
 
 - **包 ID**: `protocol.flatbuffers`
-- **接口**: [`shield.protocol.codec.v1`](/protocol-codec-plugins)（capabilities: `flatbuffers`, `fbs`）
+- **接口**: [`shield.protocol.codec.v1`](/zh/protocol-codec-plugins)（capabilities: `flatbuffers`, `fbs`）
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_FLATBUFFERS`
 - **源码**: `plugins/protocol.flatbuffers/`
@@ -121,13 +121,13 @@ end
 
 ## 已知边界
 
-- JSON 桥接实现：decode/encode 都经 JSON 文本中转，且每次调用重解析 schema——零拷贝是 FlatBuffers 库本身的能力，本插件的桥接路径不享受它（见 [Protocol Codec Plugins](/protocol-codec-plugins) Known Limitations）。
+- JSON 桥接实现：decode/encode 都经 JSON 文本中转，且每次调用重解析 schema——零拷贝是 FlatBuffers 库本身的能力，本插件的桥接路径不享受它（见 [Protocol Codec Plugins](/zh/protocol-codec-plugins) Known Limitations）。
 - `schema_dir` 的多文件目录语义不确定（取枚举到的第一个 `.fbs`），生产配置用 `schema` 显式指文件。
 - Lua egress 不自动调用插件 encode；body-route 协议（`route_key`）不能配外部 provider。
 - codec 按监听器锁定，不支持 per-route / per-session 协商。
 
 ## 相关链接
 
-- [Protocol Codec Plugins](/protocol-codec-plugins) — codec 插件化边界、ABI 形状、Known Limitations
+- [Protocol Codec Plugins](/zh/protocol-codec-plugins) — codec 插件化边界、ABI 形状、Known Limitations
 - [FlatBuffers 官方文档](https://flatbuffers.dev/flatbuffers_guide_writing_schema.html) — `.fbs` schema 语法
-- [插件系统](/plugin-system) — manifest、bootstrap pipeline、binding 解析
+- [插件系统](/zh/plugin-system) — manifest、bootstrap pipeline、binding 解析

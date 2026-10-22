@@ -8,15 +8,15 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 
 | 包 ID | 接口 | 说明 |
 |-------|------|------|
-| [database.sqlite](/plugins/database-sqlite) | `shield.database.v1` | 嵌入式 SQL 数据库，零部署 |
-| [database.mysql](/plugins/database-mysql) | `shield.database.v1` | MySQL X DevAPI |
-| [database.postgresql](/plugins/database-postgresql) | `shield.database.v1` | PostgreSQL (libpq) |
+| [database.sqlite](/zh/plugins/database-sqlite) | `shield.database.v1` | 嵌入式 SQL 数据库，零部署 |
+| [database.mysql](/zh/plugins/database-mysql) | `shield.database.v1` | MySQL X DevAPI |
+| [database.postgresql](/zh/plugins/database-postgresql) | `shield.database.v1` | PostgreSQL (libpq) |
 
 ### 文档数据库
 
 | 包 ID | 接口 | 说明 |
 |-------|------|------|
-| [database.mongodb](/plugins/database-mongodb) | `shield.document.v1` | MongoDB（mongocxx）文档型数据库，CRUD / 聚合 / 事务 |
+| [database.mongodb](/zh/plugins/database-mongodb) | `shield.document.v1` | MongoDB（mongocxx）文档型数据库，CRUD / 聚合 / 事务 |
 
 `shield.document.v1` 与 SQL 系的 `shield.database.v1` 是并列接口：前者面向文档、嵌套对象和聚合管道，后者面向固定表结构。同一个业务可以同时部署 SQL 数据库和 MongoDB，分别配置 binding。
 
@@ -24,17 +24,17 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 
 | 包 ID | 接口 | 说明 |
 |-------|------|------|
-| [redis.driver](/plugins/redis-driver) | `shield.redis.v1` | Redis 底层驱动，统一连接池与 typed 命令，被其他 Redis 插件依赖 |
-| [cache.redis](/plugins/cache-redis) | `shield.cache.v1` | Redis key-value、hash、TTL、counter |
+| [redis.driver](/zh/plugins/redis-driver) | `shield.redis.v1` | Redis 底层驱动，统一连接池与 typed 命令，被其他 Redis 插件依赖 |
+| [cache.redis](/zh/plugins/cache-redis) | `shield.cache.v1` | Redis key-value、hash、TTL、counter |
 | [queue.redis](/plugins/queue-redis) | `shield.queue.v1` | Redis Streams 消息队列（consumer group + ack） |
-| [leaderboard.redis](/plugins/leaderboard-redis) | `shield.leaderboard.v1` | Redis ZSET 排行榜，支持复合评分 |
+| [leaderboard.redis](/zh/plugins/leaderboard-redis) | `shield.leaderboard.v1` | Redis ZSET 排行榜，支持复合评分 |
 
 ### 平台服务
 
 | 包 ID | 接口 | 说明 |
 |-------|------|------|
-| [metrics.prometheus](/plugins/metrics-prometheus) | `shield.metrics.v1` | Prometheus 文本格式指标导出 |
-| [health.http](/plugins/health-http) | `shield.health.v1` | Kubernetes 兼容的健康检查端点 |
+| [metrics.prometheus](/zh/plugins/metrics-prometheus) | `shield.metrics.v1` | Prometheus 文本格式指标导出 |
+| [health.http](/zh/plugins/health-http) | `shield.health.v1` | Kubernetes 兼容的健康检查端点 |
 | [matchmaking.elo](/plugins/matchmaking-elo) | `shield.matchmaking.v1` | ELO 匹配算法 |
 
 ### 协议编解码
@@ -46,11 +46,11 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 | [protocol.flatbuffers](/plugins/protocol-flatbuffers) | `shield.protocol.codec.v1` | FlatBuffers `.fbs` schema 驱动，二进制 ↔ JSON 桥接 |
 | [protocol.protobuf](/plugins/protocol-protobuf) | `shield.protocol.codec.v1` | Protobuf `FileDescriptorSet` 驱动，跨语言 schema 演进 |
 
-四个 codec 插件都通过监听器的 `network.protocol.body.provider` 启用（`body.codec` 决定内置 `raw`/`json` 或插件 codec），插件边界、错误码与校验语义见 [Protocol Codec Plugins](/protocol-codec-plugins)。
+四个 codec 插件都通过监听器的 `network.protocol.body.provider` 启用（`body.codec` 决定内置 `raw`/`json` 或插件 codec），插件边界、错误码与校验语义见 [Protocol Codec Plugins](/zh/protocol-codec-plugins)。
 
 ### 认证（已弃用，不在官方清单）
 
-**认证/JWT 属于业务语义，不是官方插件**（[AD-08](/architecture-decisions)）。runtime 只提供密码学原语 `shield.crypto`（[API 表](/lua-api#crypto-api)），签发什么 claim、何时过期、接受哪个 issuer 由业务自己定——参考实现是 Lua 层的 `scripts/lib/jwt.lua`（HS256/EdDSA 双算法 + JWKS 公钥集，纯 Lua 拼原语）。仓库里保留的 `plugins/auth_jwt` 已标 `deprecated`，仅供既有部署过渡，新项目勿采用。
+**认证/JWT 属于业务语义，不是官方插件**（[AD-08](/architecture-decisions)）。runtime 只提供密码学原语 `shield.crypto`（API 表），签发什么 claim、何时过期、接受哪个 issuer 由业务自己定——参考实现是 Lua 层的 `scripts/lib/jwt.lua`（HS256/EdDSA 双算法 + JWKS 公钥集，纯 Lua 拼原语）。仓库里保留的 `plugins/auth_jwt` 已标 `deprecated`，仅供既有部署过渡，新项目勿采用。
 
 ## 加载机制
 
@@ -65,7 +65,7 @@ host 启动时按以下顺序处理插件：
 7. **lua_init** — 初始化 Lua 运行时
 8. **lua_register** — 对每个 Lua VM 按拓扑启动顺序调用已启动实例的 `register_lua(L)`
 
-完整 pipeline 见 [插件系统](/plugin-system#bootstrap-pipeline)。
+完整 pipeline 见 插件系统。
 
 ## 实例配置
 
@@ -314,7 +314,7 @@ host 启动时 `PluginHost::scan()` 自动发现并加载。
 - 只允许在 struct 末尾追加字段（host 用 `struct_size` 检测支持范围）
 - 禁止重新排序、删除、改变现有字段含义
 
-详细 ABI 契约见 [插件系统 - Binary ABI](/plugin-system#binary-abi)。
+详细 ABI 契约见 插件系统 - Binary ABI。
 
 ### SDK 分发路线图
 
@@ -350,6 +350,6 @@ target_include_directories(my_plugin PRIVATE ${SHIELD_SDK_INCLUDE_DIR})
 
 ## 相关文档
 
-- [插件系统](/plugin-system) — 完整设计、ABI 契约、bootstrap pipeline
-- [Lua API 契约](/lua-api) — 业务 Lua 调用约定
-- [目标目录结构](/directory-structure) — `plugins/` 在仓库中的位置
+- [插件系统](/zh/plugin-system) — 完整设计、ABI 契约、bootstrap pipeline
+- [Lua API 契约](/zh/lua-api) — 业务 Lua 调用约定
+- [目标目录结构](/zh/directory-structure) — `plugins/` 在仓库中的位置

@@ -5,7 +5,7 @@
 ## 包信息
 
 - **包 ID**: `leaderboard.redis`
-- **接口**: [`shield.leaderboard.v1`](/plugin-system#interface-model)
+- **接口**: `shield.leaderboard.v1`
 - **Capabilities**: `sorted-set`、`multi-field`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS`
@@ -367,7 +367,7 @@ board name 直接作为 Redis key，建议加前缀避免与业务其他 key 冲
 
 ## 相关链接
 
-- [插件系统](/plugin-system)
-- [插件参考索引](/plugins/)
+- [插件系统](/zh/plugin-system)
+- [插件参考索引](/zh/plugins/)
 - [Redis Sorted Set 文档](https://redis.io/docs/data-types/sorted-sets/)
 - [redis-plus-plus](https://github.com/sewenew/redis-plus-plus)

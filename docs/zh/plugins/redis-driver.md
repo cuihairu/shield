@@ -5,7 +5,7 @@
 ## 包信息
 
 - **包 ID**: `redis.driver`
-- **接口**: [`shield.redis.v1`](/plugin-system#interface-model)
+- **接口**: `shield.redis.v1`
 - **Capabilities**: `typed-command`、`pipeline`、`raw-command`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_REDIS_DRIVER`
@@ -639,10 +639,10 @@ config:
 
 ## 相关链接
 
-- [插件系统](/plugin-system)
-- [插件参考索引](/plugins/)
-- [cache.redis](/plugins/cache-redis)
+- [插件系统](/zh/plugin-system)
+- [插件参考索引](/zh/plugins/)
+- [cache.redis](/zh/plugins/cache-redis)
 - [queue.redis](/plugins/queue-redis)
-- [leaderboard.redis](/plugins/leaderboard-redis)
+- [leaderboard.redis](/zh/plugins/leaderboard-redis)
 - [Redis 官方文档](https://redis.io/docs/)
 - [redis-plus-plus](https://github.com/sewenew/redis-plus-plus)

@@ -2,12 +2,12 @@
 
 > 嵌入式单文件 SQL 数据库插件，零部署、零外部服务，适合开发、测试和单机存档型游戏场景。
 
-`database.sqlite` 是 Shield 官方提供的 [`shield.database.v1`](/plugin-system#interface-model) 实现之一，基于 [sqlite3](https://www.sqlite.org/) C API。它把数据库直接嵌进进程，没有独立的数据库服务，也不需要网络端口。对游戏服来说，典型用途是单服存档、配置表缓存、自动化测试 mock。
+`database.sqlite` 是 Shield 官方提供的 `shield.database.v1` 实现之一，基于 [sqlite3](https://www.sqlite.org/) C API。它把数据库直接嵌进进程，没有独立的数据库服务，也不需要网络端口。对游戏服来说，典型用途是单服存档、配置表缓存、自动化测试 mock。
 
 ## 包信息
 
 - **包 ID**: `database.sqlite`
-- **接口**: [`shield.database.v1`](/plugin-system#interface-model)、[`shield.pool.stats.v1`](/plugin-pool-stats)（SQLite 无池，池 gauge 按 `-1` 报不适用；异步入口的 `pending_async` / `holding` 报真实值）
+- **接口**: `shield.database.v1`、[`shield.pool.stats.v1`](/zh/plugin-pool-stats)（SQLite 无池，池 gauge 按 `-1` 报不适用；异步入口的 `pending_async` / `holding` 报真实值）
 - **Capabilities**: `sql`, `transactions`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_DB_PLUGIN_SQLITE`
@@ -203,7 +203,7 @@ local ok, n = db:transaction(function(tx)
 end)
 ```
 
-具体 API 契约见 [Lua API](/lua-api) 的 Database（SQL）一节。插件 Lua proxy 支持 `query`、`query_one`、`execute`、`transaction`；协程派发内默认异步挂起，非协程上下文或 `async: false` 回退同步。SQLite 没有连接池，异步执行统一走实例的单一 worker 线程（事务语句因此天然串行）；事务挂起期间 `pool.holding` 计入它持有的句柄，`/ops/metrics` 的 `shield_plugin_db_pending_async` / `shield_plugin_db_holding` 可观测。
+具体 API 契约见 [Lua API](/zh/lua-api) 的 Database（SQL）一节。插件 Lua proxy 支持 `query`、`query_one`、`execute`、`transaction`；协程派发内默认异步挂起，非协程上下文或 `async: false` 回退同步。SQLite 没有连接池，异步执行统一走实例的单一 worker 线程（事务语句因此天然串行）；事务挂起期间 `pool.holding` 计入它持有的句柄，`/ops/metrics` 的 `shield_plugin_db_pending_async` / `shield_plugin_db_holding` 可观测。
 
 ## 平台特性
 
@@ -223,7 +223,7 @@ SQLite 在 WAL 模式下支持多读单写。当写冲突发生时，驱动会�
 业务侧应当：
 
 - 单进程写，避免多连接并发写同一数据库文件。
-- 长事务期间避免其他 service 并发写同一数据库文件，触发 `SQLITE_BUSY`。异步事务挂起期间写锁照旧持有——事务 body **内**同协程的池级 `db:query` 已被运行时 raise（见 [Lua API](/lua-api) 事务契约），但 body 外其他 service 的并发写仍由 `busy_timeout` 兜底。
+- 长事务期间避免其他 service 并发写同一数据库文件，触发 `SQLITE_BUSY`。异步事务挂起期间写锁照旧持有——事务 body **内**同协程的池级 `db:query` 已被运行时 raise（见 [Lua API](/zh/lua-api) 事务契约），但 body 外其他 service 的并发写仍由 `busy_timeout` 兜底。
 - 考虑在 schema 里 `PRAGMA journal_mode=WAL;` 提升并发读性能（SQLite 插件本身不强制设置）。
 
 ### 只读模式
@@ -307,7 +307,7 @@ host 启动时会 `dlopen` / `LoadLibrary` 加载插件 shared library；sqlite3
 
 ## 相关链接
 
-- [插件系统](/plugin-system) — Shield 插件 v1 设计、ABI 契约、bootstrap pipeline
+- [插件系统](/zh/plugin-system) — Shield 插件 v1 设计、ABI 契约、bootstrap pipeline
 - [Shield 数据语义](/runtime-data) — 插件 namespace、binding、连接池归属和事务规则
 - [SQLite 官方文档](https://www.sqlite.org/docs.html)
 - [SQLite WAL 模式](https://www.sqlite.org/wal.html)

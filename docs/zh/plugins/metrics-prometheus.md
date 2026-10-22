@@ -5,7 +5,7 @@
 ## 包信息
 
 - **包 ID**: `metrics.prometheus`
-- **接口**: [`shield.metrics.v1`](/plugin-system#interface-model)
+- **接口**: `shield.metrics.v1`
 - **Capabilities**: `counter`, `gauge`, `histogram`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_METRIC`
@@ -336,8 +336,8 @@ rate(shield_request_duration_seconds_sum[5m])
 
 ## 相关链接
 
-- [插件系统](/plugin-system) — 接口模型、ABI 契约
-- [插件参考索引](/plugins/) — 全部官方插件
+- [插件系统](/zh/plugin-system) — 接口模型、ABI 契约
+- [插件参考索引](/zh/plugins/) — 全部官方插件
 - [Prometheus exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/) — 文本格式规范
 - [Prometheus best practices for naming](https://prometheus.io/docs/practices/naming/) — 指标命名约定
 - [boost::beast 文档](https://www.boost.org/doc/libs/release/libs/beast/) — HTTP 服务端实现基础

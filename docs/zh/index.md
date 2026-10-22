@@ -13,7 +13,7 @@ hero:
       link: /documentation-map
       theme: secondary
     - text: 插件参考
-      link: /plugins/
+      link: /zh/plugins/
       theme: secondary
 features:
   - icon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="24" height="24"><circle cx="12" cy="12" r="3.8"/><circle cx="12" cy="12" r="8.6" stroke-dasharray="3.2 3.4"/></svg>'

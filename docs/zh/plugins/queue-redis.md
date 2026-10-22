@@ -5,7 +5,7 @@
 ## 包信息
 
 - **包 ID**: `queue.redis`
-- **接口**: [`shield.queue.v1`](/plugin-system#interface-model)
+- **接口**: `shield.queue.v1`
 - **Capabilities**: `streams`、`consumer-group`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_QUEUE_REDIS`
@@ -271,7 +271,7 @@ Stream 数据持久化在 Redis 中，不受插件生命周期影响。`unsubscr
 
 ## 相关链接
 
-- [插件系统](/plugin-system)
-- [插件参考索引](/plugins/)
+- [插件系统](/zh/plugin-system)
+- [插件参考索引](/zh/plugins/)
 - [Redis Streams 文档](https://redis.io/docs/data-types/streams/)
 - [redis-plus-plus](https://github.com/sewenew/redis-plus-plus)

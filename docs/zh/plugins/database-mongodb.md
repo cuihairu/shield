@@ -1,6 +1,6 @@
 # MongoDB
 
-> 文档型数据库插件，基于 [mongo-cxx-driver](https://mongodb.github.io/mongo-cxx-driver/) 提供 [`shield.document.v1`](/plugin-system#interface-model) 实现，适合玩家背包、社交关系、运行日志、配置化物品等无固定 schema 的业务数据。
+> 文档型数据库插件，基于 [mongo-cxx-driver](https://mongodb.github.io/mongo-cxx-driver/) 提供 `shield.document.v1` 实现，适合玩家背包、社交关系、运行日志、配置化物品等无固定 schema 的业务数据。
 
 `database.mongodb` 与 SQL 系列插件（`database.sqlite` / `database.mysql` / `database.postgresql`）走不同的接口：SQL 系实现 `shield.database.v1`，本插件实现 `shield.document.v1`。两者并列、互不替代。业务侧按数据形态选择：固定表结构走 SQL 接口；文档/嵌套/聚合管道走 document 接口。
 
@@ -258,7 +258,7 @@ local ok, doc = mongo:find_one("players", filter)
 local hex = mongo.oid_hex(doc._id)  -- "507f1f77bcf86cd799439011"
 ```
 
-具体 API 契约（参数顺序、错误返回形态）见 [Lua API](/lua-api)。
+具体 API 契约（参数顺序、错误返回形态）见 [Lua API](/zh/lua-api)。
 
 ## 错误处理
 
@@ -324,8 +324,8 @@ host 启动时 `dlopen` / `LoadLibrary` 加载插件 shared library；mongocxx �
 
 ## 相关链接
 
-- [插件系统](/plugin-system) — Shield 插件 v1 设计、ABI 契约、bootstrap pipeline
-- [插件参考](/plugins/) — 官方插件清单（含其他数据库实现）
+- [插件系统](/zh/plugin-system) — Shield 插件 v1 设计、ABI 契约、bootstrap pipeline
+- [插件参考](/zh/plugins/) — 官方插件清单（含其他数据库实现）
 - [Shield 数据语义](/runtime-data) — 插件 namespace、binding 和数据访问架构
 - [mongo-cxx-driver 文档](https://mongodb.github.io/mongo-cxx-driver/)
 - [MongoDB 连接串语法](https://www.mongodb.com/docs/manual/reference/connection-string/)

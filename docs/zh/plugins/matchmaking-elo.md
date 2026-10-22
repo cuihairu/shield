@@ -5,7 +5,7 @@
 ## 包信息
 
 - **包 ID**: `matchmaking.elo`
-- **接口**: [`shield.matchmaking.v1`](/plugin-system#interface-model)
+- **接口**: `shield.matchmaking.v1`
 - **Capabilities**: `solo`, `party`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_MATCHMAKING`
@@ -369,7 +369,7 @@ plugins/matchmaking.elo/
 
 ## 相关链接
 
-- [插件系统](/plugin-system) — 接口模型、ABI 契约
-- [插件参考索引](/plugins/) — 全部官方插件
+- [插件系统](/zh/plugin-system) — 接口模型、ABI 契约
+- [插件参考索引](/zh/plugins/) — 全部官方插件
 - [ELO rating system](https://en.wikipedia.org/wiki/Elo_rating_system) — ELO 评分算法
 - [TrueSkill](https://www.microsoft.com/en-us/research/project/trueskill-ranking-system/) — 微软团队评分系统，复杂场景参考

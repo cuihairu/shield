@@ -2,12 +2,12 @@
 
 > 通过 libpq 提供企业级关系型数据库访问，适合复杂查询、强一致性约束、JSON/Array 等富类型场景。
 
-`database.postgresql` 是 Shield 官方提供的 [`shield.database.v1`](/plugin-system#interface-model) 实现之一，基于 [libpq](https://www.postgresql.org/docs/current/libpq.html)（PostgreSQL 官方 C 客户端库）。libpq 是 PostgreSQL 协议的参考实现，支持经典协议的所有特性，包括 SSL、SCRAM 认证、异步通知等。
+`database.postgresql` 是 Shield 官方提供的 `shield.database.v1` 实现之一，基于 [libpq](https://www.postgresql.org/docs/current/libpq.html)（PostgreSQL 官方 C 客户端库）。libpq 是 PostgreSQL 协议的参考实现，支持经典协议的所有特性，包括 SSL、SCRAM 认证、异步通知等。
 
 ## 包信息
 
 - **包 ID**: `database.postgresql`
-- **接口**: [`shield.database.v1`](/plugin-system#interface-model)、[`shield.pool.stats.v1`](/plugin-pool-stats)
+- **接口**: `shield.database.v1`、[`shield.pool.stats.v1`](/zh/plugin-pool-stats)
 - **Capabilities**: `sql`, `transactions`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_DB_PLUGIN_POSTGRESQL`
@@ -220,7 +220,7 @@ local ok, err = db:transaction(function(tx)
 end)
 ```
 
-具体 API 契约见 [Lua API](/lua-api) 的 Database（SQL）一节。协程派发内这些调用默认异步挂起（`async` 开关），返回形状与同步路径一致；异步事务挂起期间独占一条池连接（`/ops/metrics` 的 `shield_plugin_db_holding`），body 内只允许 `tx:` 的 SQL 方法（池级调用会被运行时 raise）。
+具体 API 契约见 [Lua API](/zh/lua-api) 的 Database（SQL）一节。协程派发内这些调用默认异步挂起（`async` 开关），返回形状与同步路径一致；异步事务挂起期间独占一条池连接（`/ops/metrics` 的 `shield_plugin_db_holding`），body 内只允许 `tx:` 的 SQL 方法（池级调用会被运行时 raise）。
 
 ## 平台特性
 
@@ -239,7 +239,7 @@ PostgreSQL 提供 `LISTEN/NOTIFY` 实现进程间通知，但本插件的执行�
 
 Lua 路径（`shield.database.postgresql(binding)` 的 proxy 方法）的连接池在**插件实例内部自治**：free-list + `pool_size`（容量）+ 池耗尽时按 `connect_timeout_ms` 等待归还；取出的连接经 lazy health check（`PQstatus`），坏连接 `PQfinish` 丢弃、下次 acquire 补新。`async` 开启时另有一组 worker 线程（数量 = min(`pool_size`, 8)，首用懒建）承接 acquire 与语句执行；异步事务的语句/提交/回滚跑在单条串行 tx lane 上。C vtable 路径仍是 per-call `connect`/`disconnect`，不走池也不走 worker。
 
-池与异步入口的实时指标经 [`shield.pool.stats.v1`](/plugin-pool-stats) 上报，`/ops/metrics` 导出 `shield_plugin_pool_*` 与 `shield_plugin_db_pending_async` / `shield_plugin_db_holding`。
+池与异步入口的实时指标经 [`shield.pool.stats.v1`](/zh/plugin-pool-stats) 上报，`/ops/metrics` 导出 `shield_plugin_pool_*` 与 `shield_plugin_db_pending_async` / `shield_plugin_db_holding`。
 
 ### SSL
 
@@ -305,7 +305,7 @@ plugins/database.postgresql/
 
 ## 相关链接
 
-- [插件系统](/plugin-system) — Shield 插件 v1 设计、ABI 契约
+- [插件系统](/zh/plugin-system) — Shield 插件 v1 设计、ABI 契约
 - [Shield 数据语义](/runtime-data) — 连接池配置、事务规则、错误处理
 - [PostgreSQL libpq 文档](https://www.postgresql.org/docs/current/libpq.html)
 - [PostgreSQL 错误码](https://www.postgresql.org/docs/current/errcodes-appendix.html)

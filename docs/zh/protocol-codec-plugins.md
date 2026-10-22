@@ -52,7 +52,7 @@ Lua/C++ message -> RouteResolver -> BodyCodec -> Envelope
 
 ## Plugin Interface
 
-已实现的 C ABI interface：`shield.protocol.codec.v1`（头文件 `include/shield/plugin/protocol_codec.h`，落地插件见各 [插件参考页](/plugins/index)）。
+已实现的 C ABI interface：`shield.protocol.codec.v1`（头文件 `include/shield/plugin/protocol_codec.h`，落地插件见各 [插件参考页](/zh/plugins/index)）。
 
 接口命名遵循插件系统 v1 的 provider 模型：
 

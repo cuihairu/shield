@@ -2,14 +2,14 @@
 
 > MessagePack 二进制编解码，与 protocol.json 同一套可选 per-route payload schema 校验，体积约为 JSON 的一半。
 
-`protocol.msgpack` 是官方提供的 [`shield.protocol.codec.v1`](/plugin-system#interface-model) 之一，codec 名为 `msgpack`。核心不再内置 msgpack codec——**必须**通过 `body.provider` 绑定本插件启用。decode 用 `from_msgpack`、encode 用 `to_msgpack`（nlohmann/json 内置 MessagePack 实现，无外部 msgpack-cxx 运行时依赖），并可在 ingress/egress 边界按路由校验 payload 形状。
+`protocol.msgpack` 是官方提供的 `shield.protocol.codec.v1` 之一，codec 名为 `msgpack`。核心不再内置 msgpack codec——**必须**通过 `body.provider` 绑定本插件启用。decode 用 `from_msgpack`、encode 用 `to_msgpack`（nlohmann/json 内置 MessagePack 实现，无外部 msgpack-cxx 运行时依赖），并可在 ingress/egress 边界按路由校验 payload 形状。
 
 **选型速览**：与 [protocol.json](/plugins/protocol-json) 语义同构但 wire 格式是二进制，适合对包体/带宽敏感、又不想引入 schema 编译器的场景；需要跨语言强类型 schema 演进选 [protocol.protobuf](/plugins/protocol-protobuf)，需要 flatc 工具链融合选 [protocol.flatbuffers](/plugins/protocol-flatbuffers)。
 
 ## 包信息
 
 - **包 ID**: `protocol.msgpack`
-- **接口**: [`shield.protocol.codec.v1`](/protocol-codec-plugins)（capabilities: `msgpack`）
+- **接口**: [`shield.protocol.codec.v1`](/zh/protocol-codec-plugins)（capabilities: `msgpack`）
 - **版本**: 1.1.0（schema 校验能力自 v1.1.0 起）
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_MSGPACK`
 - **源码**: `plugins/protocol.msgpack/`
@@ -42,7 +42,7 @@ CI 的 ci.yml 与 plugins-ci 工作流均以 `SHIELD_BUILD_PLUGIN_MSGPACK=ON` �
 | `require_schema` | boolean | 否 | `false` | `true` 时未配置 schema 的路由直接失败 `protocol.schema_not_found`；默认放行。 |
 | `on_violation` | string | 否 | `reject` | `reject` 校验失败即拒绝；`warn` 记 host WARN 日志后放行。取值仅 `reject`/`warn`。 |
 
-校验时机：decode 在 `from_msgpack` 之后、encode 在 `to_msgpack` 之前。校验器复用 host 的最小 JSON-Schema 子集校验器（口径见 [Protocol Codec Plugins](/protocol-codec-plugins)）。
+校验时机：decode 在 `from_msgpack` 之后、encode 在 `to_msgpack` 之前。校验器复用 host 的最小 JSON-Schema 子集校验器（口径见 [Protocol Codec Plugins](/zh/protocol-codec-plugins)）。
 
 **注意与 json 的差异**：msgpack 没有 `{"payload": ...}` 信封解包——schema 校验和交付给 Lua 的都是 `from_msgpack` 的整个结果。
 
@@ -135,12 +135,12 @@ create 期配置形状错误（互斥键、类型错误、`schemas_file` 打不�
 ## 已知边界
 
 - 无信封解包：顶层 `{"payload": ...}` 约定仅 json 路径存在。
-- Lua egress 不自动调用插件 encode（见 [Protocol Codec Plugins](/protocol-codec-plugins) Known Limitations）。
+- Lua egress 不自动调用插件 encode（见 [Protocol Codec Plugins](/zh/protocol-codec-plugins) Known Limitations）。
 - body-route 协议（`route_key`）不能配外部 provider，构建期报错；面向 header 路由或单路由 profile。
 - codec 按监听器锁定，不支持 per-route / per-session 协商。
 
 ## 相关链接
 
-- [Protocol Codec Plugins](/protocol-codec-plugins) — codec 插件化边界、校验器关键字子集、错误映射
+- [Protocol Codec Plugins](/zh/protocol-codec-plugins) — codec 插件化边界、校验器关键字子集、错误映射
 - [protocol.json](/plugins/protocol-json) — 同一套 schema 校验的 JSON 版
-- [插件系统](/plugin-system) — manifest、bootstrap pipeline、binding 解析
+- [插件系统](/zh/plugin-system) — manifest、bootstrap pipeline、binding 解析

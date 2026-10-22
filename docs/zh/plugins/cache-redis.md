@@ -5,7 +5,7 @@
 ## 包信息
 
 - **包 ID**: `cache.redis`
-- **接口**: [`shield.cache.v1`](/plugin-system#interface-model)
+- **接口**: `shield.cache.v1`
 - **Capabilities**: `kv`、`hash`、`ttl`、`counter`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_CACHE_REDIS`
@@ -277,7 +277,7 @@ cache 层对 `value` 完全透明，按字节存取。推荐使用 JSON 或 Mess
 
 ## 相关链接
 
-- [插件系统](/plugin-system)
-- [插件参考索引](/plugins/)
+- [插件系统](/zh/plugin-system)
+- [插件参考索引](/zh/plugins/)
 - [Redis 官方文档](https://redis.io/docs/)
 - [redis-plus-plus](https://github.com/sewenew/redis-plus-plus)
