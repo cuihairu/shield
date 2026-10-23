@@ -13,7 +13,7 @@ jobs:
   # 代码质量检查
   code-quality:
     name: Code Quality
-    runs-on: ubuntu-26.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-26.04' }}
     timeout-minutes: 10
 
     steps:
@@ -214,7 +214,7 @@ jobs:
   # 模块与其测试唯一的编译执行通道。
   cluster:
     name: Cluster
-    runs-on: ubuntu-26.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-26.04' }}
     timeout-minutes: 45
 
     steps:
@@ -275,7 +275,7 @@ jobs:
   # lua_api / transport / plugin 等其他标签的套件覆盖，漏跑会系统性低估。
   coverage:
     name: Coverage
-    runs-on: ubuntu-26.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-26.04' }}
     timeout-minutes: 45
 
     steps:
@@ -383,7 +383,7 @@ jobs:
   # 无 gcda（结构不可测，台账见 todo.md）。
   coverage-optional:
     name: Coverage (Optional Modules)
-    runs-on: ubuntu-26.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-26.04' }}
     timeout-minutes: 60
 
     steps:
@@ -485,7 +485,7 @@ jobs:
   # 作为 artifact 归档。
   crashpad:
     name: Crashpad (crash-test)
-    runs-on: ubuntu-26.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-26.04' }}
     timeout-minutes: 40
 
     steps:
@@ -586,7 +586,7 @@ jobs:
 
   docker:
     name: Docker Build
-    runs-on: ubuntu-26.04
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-26.04' }}
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     permissions:

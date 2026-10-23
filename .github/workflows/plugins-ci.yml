@@ -10,7 +10,7 @@ on:
 jobs:
   code-quality:
     name: Code Quality
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -159,7 +159,7 @@ jobs:
 
   docker-build:
     name: Docker Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     needs: build-plugins
     timeout-minutes: 30
     steps:
