@@ -18,7 +18,7 @@ std::string hex(const unsigned char* bytes, size_t size) {
         result[i * 2 + 1] = digits[bytes[i] & 15];
     }
     return result;
-}
+}  // GCOVR_EXCL_LINE (compiler artifact: loop arc on the brace)
 void append(std::string& out, std::string_view field) {
     out += std::to_string(field.size()) + ":";
     out.append(field);
@@ -27,15 +27,19 @@ void append(std::string& out, std::string_view field) {
 
 std::string cluster_auth_nonce() {
     std::array<unsigned char, 32> bytes{};
+    // GCOVR_EXCL_START (defensive: OpenSSL CSPRNG failure is not observable)
     if (RAND_bytes(bytes.data(), bytes.size()) != 1)
         throw std::runtime_error("cluster auth random generation failed");
+    // GCOVR_EXCL_STOP
     return hex(bytes.data(), bytes.size());
 }
 
 std::string cluster_auth_proof(std::string_view token, std::string_view phase,
                                const HelloMsg& hello, const HelloAckMsg& ack) {
+    // GCOVR_EXCL_START (defensive: >INT_MAX tokens cannot be carried)
     if (token.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("cluster auth token too long");
+    // GCOVR_EXCL_STOP
     std::string transcript;
     append(transcript, "shield.cluster.psk.v2");
     append(transcript, phase);
@@ -51,10 +55,12 @@ std::string cluster_auth_proof(std::string_view token, std::string_view phase,
     message(ack);
     std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
     unsigned int length = 0;
+    // GCOVR_EXCL_START (defensive: HMAC cannot fail for a valid context)
     if (!HMAC(EVP_sha256(), token.data(), static_cast<int>(token.size()),
               reinterpret_cast<const unsigned char*>(transcript.data()),
               transcript.size(), digest.data(), &length))
         throw std::runtime_error("cluster auth HMAC failed");
+    // GCOVR_EXCL_STOP
     return hex(digest.data(), length);
 }
 

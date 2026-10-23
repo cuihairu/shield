@@ -818,6 +818,51 @@ BOOST_AUTO_TEST_CASE(ManagerUnitGaps) {
     shield::config::reset_config();
 }
 
+// parse_cluster_config auth validation: a resolved environment token outside
+// the 32..4096 byte window is rejected with a precise reason.
+BOOST_AUTO_TEST_CASE(ParseClusterAuthTokenSizeArm) {
+    const char* env = "SHIELD_COV_CLUSTER_TOKEN";
+    setenv(env, "too-short", 1);
+    auto& cfg = shield::config::global_config();
+    BOOST_CHECK(
+        cfg.load_yaml_string("cluster:\n"
+                             "  node_id: cov-authtoken\n"
+                             "  auth:\n"
+                             "    type: token\n"
+                             "    token: ${SHIELD_COV_CLUSTER_TOKEN}\n"));
+    bool threw = false;
+    try {
+        (void)shield::cluster::parse_cluster_config();
+    } catch (const std::invalid_argument& e) {
+        threw = true;
+        BOOST_CHECK(std::string(e.what()).find("32..4096") !=
+                    std::string::npos);
+    }
+    BOOST_CHECK(threw);
+    unsetenv(env);
+    shield::config::reset_config();
+}
+
+// start() refuses an auth config whose token violates the length rule before
+// any CAF actor or listener exists.
+BOOST_AUTO_TEST_CASE(TransportStartRejectsInvalidAuth) {
+    caf::actor_system_config caf_config;
+    caf::actor_system system(caf_config);
+    ClusterConfig config;
+    config.enabled = true;
+    config.node_id = "cov-badauth";
+    config.listen_address = "127.0.0.1:0";
+    config.auth.enabled = true;
+    config.auth.token = "short";
+    config.auth.time_window_ms = 5000;
+    ClusterManager manager(config);
+    shield::cluster::ClusterTransport transport(system, manager, config);
+    std::string error;
+    uint16_t bound = 0;
+    BOOST_CHECK(!transport.start(&bound, error));
+    BOOST_CHECK(error.find("invalid cluster.auth") != std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // Inbound envelopes for unknown services: a fire-and-forget send is dropped,
 // a call envelope is answered with a service_not_found reply to the source.

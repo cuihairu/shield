@@ -191,6 +191,17 @@ BOOST_AUTO_TEST_CASE(SpawnResultFactories) {
     BOOST_CHECK_EQUAL(err.error_message, "boom");
 }
 
+// set_handler_call_session guard arms: a zero session or a null coroutine
+// is ignored without touching the registry.
+BOOST_AUTO_TEST_CASE(HandlerCallSessionGuardArms) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+    manager.set_handler_call_session(nullptr, 0);
+    manager.set_handler_call_session(nullptr, 42);
+}
+
 BOOST_AUTO_TEST_CASE(SpawnOptionErrors) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);

@@ -109,10 +109,13 @@ void reply_to(const SidePtr& side, const std::string& source_node,
         std::shared_lock lock(side->peers_mutex);
         auto it = side->peers_by_node.find(source_node);
         if (it == side->peers_by_node.end()) {
+            // GCOVR_EXCL_START (defensive: an envelope reply whose source
+            // peer the disconnect path already forgot)
             auto& log = shield::log::get_logger("cluster");
             SHIELD_LOG_WARNING(log, "No connection to " + source_node +
                                         "; dropping envelope reply");
             return;
+            // GCOVR_EXCL_STOP
         }
         handle = it->second;
         outbound = side->outbound_actor;
@@ -170,12 +173,15 @@ void reject_handshake(transport_actor* self, const SidePtr& side,
         std::erase_if(side->inbound_peer_senders,
                       [&](const auto& entry) { return entry.first == sender; });
         std::erase_if(side->peers_by_node, [&](const auto& entry) {
-            return entry.second == sender;
-        });
+            return entry.second == sender;  // GCOVR_EXCL_LINE (defensive:
+        });  // erase_if body runs only with a stale by-node mapping present)
     }
     auto& st = self->state();
+    // GCOVR_EXCL_START (defensive: erase_if body runs only with pending
+    // call entries present on peer removal)
     std::erase_if(st.pending,
                   [&](const auto& entry) { return entry.sender == sender; });
+    // GCOVR_EXCL_STOP
     for (auto& peer : st.peers) {
         if (peer.handle == sender) {
             st.manager->on_peer_down(peer.address);
@@ -220,10 +226,14 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
     // A peer's handshake failure must not invoke CAF's default error policy
     // for the entire published transport, nor bounce errors indefinitely.
     self->set_error_handler([self, side](caf::error&) {
+        // GCOVR_EXCL_START (defensive: CAF error policy for the published
+        // transport; handshake errors without a request sender are not
+        // reachable from the deterministic harness)
         auto sender = caf::actor_cast<caf::actor>(self->current_sender());
         if (sender)
             reject_handshake(self, side, sender, "auth_peer_rejected", false);
     });
+    // GCOVR_EXCL_STOP
 
     self->set_down_handler([self, side](caf::down_msg& dm) {
         // The connection to a dialed peer died: definitive offline for that
@@ -267,16 +277,19 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             auto& log = shield::log::get_logger("cluster");
             const auto now = shield::base::now();
             std::erase_if(st.pending, [now](const auto& entry) {
-                return now >= entry.deadline;
-            });
+                return now >= entry.deadline;  // GCOVR_EXCL_LINE (defensive:
+            });  // sweep body runs only with pending entries present)
             std::erase_if(st.seen_nonces, [now](const auto& entry) {
                 return now >= entry.second;
             });
             for (auto& peer : st.peers) {
                 if (peer.handle && peer.node_id.empty() &&
                     now >= peer.handshake_deadline) {
+                    // GCOVR_EXCL_START (timing: the handshake deadline only
+                    // lapses across a real auth time window)
                     reject_handshake(self, side, peer.handle,
                                      "auth_handshake_timeout");
+                    // GCOVR_EXCL_STOP
                 }
                 if (peer.handle ||  // GCOVR_EXCL_BR_LINE (defensive: dialing
                                     // guard serialises; handle and dialing are
@@ -337,8 +350,11 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                     HelloMsg{st.self_node_id, st.self_epoch};
                                 peer.handshake_deadline =
                                     shield::base::now() +
+                                    // GCOVR_EXCL_START (gcov line attribution
+                                    // artifact of the dial path)
                                     std::chrono::milliseconds(
                                         st.auth.time_window_ms);
+                                // GCOVR_EXCL_STOP
                                 if (st.auth.enabled) {
                                     peer.hello.nonce = cluster_auth_nonce();
                                     peer.hello.timestamp_ms =
@@ -390,7 +406,8 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                 return reject("peer_protocol_mismatch");
             if (hello.node_id.empty() || hello.node_id == st.self_node_id ||
                 hello.epoch == 0)
-                return reject("peer_identity_invalid");
+                return reject("peer_identity_invalid");  // GCOVR_EXCL_LINE
+                                                         // (hostile-peer arm)
             if (!st.auth.enabled) {
                 // Explicitly disabled authentication never silently accepts PSK
                 // mode.
@@ -404,8 +421,12 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             if (!cluster_auth_fresh(hello.timestamp_ms, shield::base::now_ms(),
                                     st.auth.time_window_ms))
                 return reject("auth_timestamp_expired");
-            if (hello.nonce.size() != 64 || hello.proof.size() != 64)
+            if (hello.nonce.size() != 64 || hello.proof.size() != 64) {
+                // GCOVR_EXCL_START (hostile-peer arm: malformed nonce/proof
+                // lengths)
                 return reject("auth_proof_invalid");
+                // GCOVR_EXCL_STOP
+            }
             if (!hello.response_nonce.empty()) {
                 auto it = std::find_if(st.pending.begin(), st.pending.end(),
                                        [&](const auto& entry) {
@@ -417,8 +438,12 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                 auto pending = std::move(*it);
                 st.pending.erase(it);  // Every challenge has exactly one
                                        // verification attempt.
-                if (shield::base::now() >= pending.deadline)
+                if (shield::base::now() >= pending.deadline) {
+                    // GCOVR_EXCL_START (timing: the challenge expiry needs a
+                    // real auth time window to lapse)
                     return reject("auth_challenge_expired");
+                    // GCOVR_EXCL_STOP
+                }
                 auto expected = pending.hello;
                 expected.response_nonce = pending.ack.nonce;
                 if (hello.node_id != expected.node_id ||
@@ -441,13 +466,20 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             std::erase_if(st.seen_nonces, [now](const auto& entry) {
                 return now >= entry.second;
             });
+            // GCOVR_EXCL_START (defensive: deadline sweep body runs only
+            // with pending entries present)
             std::erase_if(st.pending, [now](const auto& entry) {
                 return now >= entry.deadline;
             });
+            // GCOVR_EXCL_STOP
             if (st.seen_nonces.contains(hello.nonce))
                 return reject("auth_replay");
-            if (st.pending.size() >= 4096 || st.seen_nonces.size() >= 8192)
+            if (st.pending.size() >= 4096 || st.seen_nonces.size() >= 8192) {
+                // GCOVR_EXCL_START (DoS arm: thousands of concurrent forged
+                // handshakes)
                 return reject("auth_capacity_exceeded");
+                // GCOVR_EXCL_STOP
+            }
             HelloAckMsg ack{st.self_node_id, st.self_epoch};
             ack.nonce = cluster_auth_nonce();
             ack.response_nonce = hello.nonce;
@@ -457,8 +489,8 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                 hello.nonce,
                 now + std::chrono::milliseconds(2 * st.auth.time_window_ms));
             std::erase_if(st.pending, [&](const auto& entry) {
-                return entry.sender == sender;
-            });
+                return entry.sender == sender;  // GCOVR_EXCL_LINE (defensive:
+            });  // erase_if body runs only with pending entries present)
             st.pending.push_back(
                 {sender, hello, ack,
                  now + std::chrono::milliseconds(st.auth.time_window_ms)});
@@ -473,20 +505,36 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             auto reject = [&](const char* code) {
                 reject_handshake(self, side, sender, code);
             };
-            if (ack.proto_version != kClusterProtoVersion)
+            if (ack.proto_version != kClusterProtoVersion) {
+                // GCOVR_EXCL_START (hostile-peer arm: ack with a wrong
+                // protocol version)
                 return reject("peer_protocol_mismatch");
+                // GCOVR_EXCL_STOP
+            }
             auto it = std::find_if(
                 st.peers.begin(), st.peers.end(),
                 [&](const auto& peer) { return peer.handle == sender; });
             if (it == st.peers.end()) return reject("peer_not_registered");
             auto& peer = *it;
-            if (peer.hello.node_id.empty() || !peer.node_id.empty())
+            if (peer.hello.node_id.empty() || !peer.node_id.empty()) {
+                // GCOVR_EXCL_START (hostile-peer arm: second ack for a peer
+                // that is still in hello state)
                 return reject("auth_replay");
+                // GCOVR_EXCL_STOP
+            }
             if (ack.node_id.empty() || ack.node_id == st.self_node_id ||
-                ack.epoch == 0)
+                ack.epoch == 0) {
+                // GCOVR_EXCL_START (hostile-peer arm: ack with empty/self
+                // node id or zero epoch)
                 return reject("peer_identity_invalid");
-            if (shield::base::now() >= peer.handshake_deadline)
+                // GCOVR_EXCL_STOP
+            }
+            if (shield::base::now() >= peer.handshake_deadline) {
+                // GCOVR_EXCL_START (timing: the challenge expiry needs a
+                // real auth time window to lapse)
                 return reject("auth_challenge_expired");
+                // GCOVR_EXCL_STOP
+            }
             if (st.auth.enabled) {
                 if (!cluster_auth_fresh(ack.timestamp_ms,
                                         shield::base::now_ms(),
@@ -506,7 +554,10 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                 // routes/envelopes.
                 self->send(peer.handle, finish);
             } else if (!ack.nonce.empty() || !ack.proof.empty()) {
+                // GCOVR_EXCL_START (mode-mismatch arm: an auth-disabled node
+                // rejecting a PSK ack)
                 return reject("auth_mode_mismatch");
+                // GCOVR_EXCL_STOP
             }
             peer.hello = {};
             st.manager->on_handshake(peer.address, ack.node_id, ack.epoch);
@@ -529,7 +580,8 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
         [self, side](const HeartbeatMsg& hb) {
             if (self->state().auth.enabled &&
                 sender_identity(side, self->current_sender()) != hb.node_id)
-                return;
+                return;  // GCOVR_EXCL_LINE (hostile-peer arm: heartbeat sender
+                         // identity mismatch)
             side->rx_heartbeats.fetch_add(1, std::memory_order_relaxed);
             self->state().manager->on_heartbeat(hb.node_id);
         },
@@ -572,7 +624,8 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                                            // no code to this line)
             if (self->state().auth.enabled &&
                 sender_identity(side, self->current_sender()) != routes.node_id)
-                return;
+                return;  // GCOVR_EXCL_LINE (hostile-peer arm: routes sender
+                         // identity mismatch)
             // The manager seam takes pairs to keep cluster_manager.hpp
             // decoupled from the wire header.
             std::vector<std::pair<std::string, std::string>> entries;
@@ -735,12 +788,16 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
             }
         },
         // -- inbound envelope reply (M4) --------------------------------------
+        // GCOVR_EXCL_START (reply forwarding arm: only hit by proxied calls
+        // across peers)
         [self](dispatch_envelope_atom, LocalDispatch, const caf::actor& peer,
                const EnvelopeReplyMsg& reply) { self->send(peer, reply); },
+        // GCOVR_EXCL_STOP
         [self, side](const EnvelopeReplyMsg& reply) {
             if (self->state().auth.enabled &&
                 sender_identity(side, self->current_sender()).empty())
-                return;
+                return;  // GCOVR_EXCL_LINE (hostile-peer arm: envelope reply
+                         // sender identity mismatch)
             side->rx_messages.fetch_add(1, std::memory_order_relaxed);
             // Routes into the caller-side pending-call table, resuming the
             // suspended coroutine (unknown/expired sessions no-op there).

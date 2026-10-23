@@ -418,6 +418,31 @@ BOOST_AUTO_TEST_CASE(XmldefCatalogRemovedAfterProbeFailsPerConnectionBuild) {
 }
 
 #ifdef SHIELD_ENABLE_CLUSTER
+// An invalid cluster.auth section must abort initialize() through the
+// parse_cluster_config catch arm (log + return false), leaving the runtime
+// uninitialized instead of half-configured.
+BOOST_AUTO_TEST_CASE(InvalidClusterAuthAbortsInitialize) {
+    const char* env = "SHIELD_COV_BOOT_BAD_TOKEN";
+    setenv(env, "tiny", 1);  // violates the 32..4096 byte token rule
+    fs::path script = echo_script("shield_cov_boot_badauth.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: plain\n    script: " +
+        script.string() +
+        "\ncluster:\n"
+        "  node_id: cov-badauth\n"
+        "  auth:\n"
+        "    type: token\n"
+        "    token: ${SHIELD_COV_BOOT_BAD_TOKEN}\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    shield::bootstrap::shutdown();
+    unsetenv(env);
+}
+
 BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     // --- scripts resolved via source_dir and lua.script_path ---
     fs::path work = base_dir("shield_cov_boot_full");
