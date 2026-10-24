@@ -12,23 +12,23 @@ Shield 的单节点 actor/Lua 主干和客户端 TCP RPC 已有代码与集成�
 
 | 声明 | 结果 | 代码/测试证据与限定 |
 | --- | --- | --- |
-| Phase 0：边界/API 契约冻结 | 成立（文档性） | [roadmap.md](../roadmap.md#L39) 列出 core 非目标与 API 契约；CMake 有 core 依赖边界检查：[CMakeLists.txt](../../CMakeLists.txt#L904)。这是文档/静态边界完成，不证明所有设计决策永久无冲突。 |
-| Phase 1：目录/target 收敛 | 部分成立 | target 可见于 [CMakeLists.txt](../../CMakeLists.txt#L397) 与 [CMakeLists.txt](../../CMakeLists.txt#L623)；`shield_core` 不接 DB/Redis。物理目录仍保留旧分类，这是路线图明确取舍；`shield_ops` 空壳使模块归属并未收敛。 |
-| Phase 2：Lua 服务/API 主路径 | 成立（有界） | CAF service 消息类型见 [service_message.hpp](../../include/shield/core/service_message.hpp#L36)；coroutine call/timer 的实现和 LAPI 测试入口列于 [roadmap.md](../roadmap.md#L60)。结论只覆盖标注的单节点 API，不等于所有 Lua API 都完整。 |
-| Phase 3：入口和配置验证 | 成立（最小范围） | [`shield::run`](../../src/shield.cpp#L1) 是统一入口；UDP/KCP/WebSocket 配置拒绝见 [config.cpp](../../src/config/config.cpp#L1338)；CLI/config smoke tests 已注册于 tests CMake。 |
-| Phase 4：示例与验收 | 成立（限定范围） | 真实 TCP RPC acceptance 说明其验证 login→bind→move→s2c 且 body 无 route 字段：[test_client_rpc_e2e.cpp](../../tests/acceptance/test_client_rpc_e2e.cpp#L1)。hello-world 不代表全部生产部署形态。 |
-| Phase 5：官方 optional modules P0 全落地 | 部分成立 | Cluster/player/server/global 各有实现与测试路径；Ops health/metrics/console/profile 功能也存在，但编在 bootstrap；`shield_ops` target 本身只有 TODO：[CMakeLists.txt](../../CMakeLists.txt#L941)、[ops_http_handler.cpp](../../src/console/ops_http_handler.cpp#L1)。配置 owner 文档明确 `ops:` 未接入、运维面由 bootstrap 承载：[optional-modules.md](../optional-modules.md#L315)。因此能力部分落地，模块边界未落地。 |
+| Phase 0：边界/API 契约冻结 | 成立（文档性） | [roadmap.md](../roadmap.md#L39) 列出 core 非目标与 API 契约；CMake 有 core 依赖边界检查：[CMakeLists.txt](../../../CMakeLists.txt#L904)。这是文档/静态边界完成，不证明所有设计决策永久无冲突。 |
+| Phase 1：目录/target 收敛 | 部分成立 | target 可见于 [CMakeLists.txt](../../../CMakeLists.txt#L397) 与 [CMakeLists.txt](../../../CMakeLists.txt#L623)；`shield_core` 不接 DB/Redis。物理目录仍保留旧分类，这是路线图明确取舍；`shield_ops` 空壳使模块归属并未收敛。 |
+| Phase 2：Lua 服务/API 主路径 | 成立（有界） | CAF service 消息类型见 [service_message.hpp](../../../include/shield/core/service_message.hpp#L36)；coroutine call/timer 的实现和 LAPI 测试入口列于 [roadmap.md](../roadmap.md#L60)。结论只覆盖标注的单节点 API，不等于所有 Lua API 都完整。 |
+| Phase 3：入口和配置验证 | 成立（最小范围） | [`shield::run`](../../../src/shield.cpp#L1) 是统一入口；UDP/KCP/WebSocket 配置拒绝见 [config.cpp](../../../src/config/config.cpp#L1338)；CLI/config smoke tests 已注册于 tests CMake。 |
+| Phase 4：示例与验收 | 成立（限定范围） | 真实 TCP RPC acceptance 说明其验证 login→bind→move→s2c 且 body 无 route 字段：[test_client_rpc_e2e.cpp](../../../tests/acceptance/test_client_rpc_e2e.cpp#L1)。hello-world 不代表全部生产部署形态。 |
+| Phase 5：官方 optional modules P0 全落地 | 部分成立 | Cluster/player/server/global 各有实现与测试路径；Ops health/metrics/console/profile 功能也存在，但编在 bootstrap；`shield_ops` target 本身只有 TODO：[CMakeLists.txt](../../../CMakeLists.txt#L941)、[ops_http_handler.cpp](../../../src/console/ops_http_handler.cpp#L1)。配置 owner 文档明确 `ops:` 未接入、运维面由 bootstrap 承载：[optional-modules.md](../optional-modules.md#L315)。因此能力部分落地，模块边界未落地。 |
 | README：`src/` 覆盖率 98%+ | 成立（本机复跑） | 全量 106/106 通过后 gcovr 8.6 实测 `src/` 行覆盖率 99%（17,130/17,131 行）；branch/function 未同时过门槛，详见 §1.1。 |
-| README：gcc `--coverage` + gcovr 8.6 | 成立 | CMake 确实加 `--coverage`：[CMakeLists.txt](../../CMakeLists.txt#L240)；CI pin gcovr 8.6。本机安装至 `/tmp/shield-gcovr-8.6` 实际执行 8.6。 |
-| CI 每次 push 执行 Coverage | 部分成立 | workflow 仅对 `main` 的 push/PR 触发；Coverage job 对该事件运行全量 ctest，并上传 Codecov：[ci.yml](../../.github/workflows/ci.yml#L5)、[ci.yml](../../.github/workflows/ci.yml#L272)。README 把它描述成 coverage-focused suites；实际已不止 `-L coverage`。 |
-| CI 行覆盖门槛 98%、branch/function 100% | 成立（CI 配置） | [`ci.yml`](../../.github/workflows/ci.yml#L338) 同时统计 `src/` 与 `include/shield/`，并配置 98/100/100。CI 配置存在不等于本地这次门禁通过。 |
-| Codecov 上传/徽章 | 部分成立 | 上传步骤及 `fail_ci_if_error: true` 可查 [ci.yml](../../.github/workflows/ci.yml#L358)；徽章只展示上报状态，不是本地实测证据。 |
-| `shield_net` Phase 1 TCP | 成立 | TCP listener/session 接入 bootstrap；真实 TCP 客户端闭环见 [test_client_rpc_e2e.cpp](../../tests/acceptance/test_client_rpc_e2e.cpp#L1)。 |
-| UDP deferred | 成立 | 配置存在 `network.udp` 即失败：[config.cpp](../../src/config/config.cpp#L1340)。未找到该配置通往 UDP listener 的正式构建路径。 |
-| KCP deferred | 成立 | `network.kcp` 同一 fail-fast 分支拒绝：[config.cpp](../../src/config/config.cpp#L1340)。未发现可运行的 KCP transport target。 |
-| WebSocket deferred | 成立 | `network.websocket` 同一 fail-fast 分支拒绝：[config.cpp](../../src/config/config.cpp#L1343)。未发现 WebSocket listener 实现路径。 |
+| README：gcc `--coverage` + gcovr 8.6 | 成立 | CMake 确实加 `--coverage`：[CMakeLists.txt](../../../CMakeLists.txt#L240)；CI pin gcovr 8.6。本机安装至 `/tmp/shield-gcovr-8.6` 实际执行 8.6。 |
+| CI 每次 push 执行 Coverage | 部分成立 | workflow 仅对 `main` 的 push/PR 触发；Coverage job 对该事件运行全量 ctest，并上传 Codecov：[ci.yml](../../../.github/workflows/ci.yml#L5)、[ci.yml](../../../.github/workflows/ci.yml#L272)。README 把它描述成 coverage-focused suites；实际已不止 `-L coverage`。 |
+| CI 行覆盖门槛 98%、branch/function 100% | 成立（CI 配置） | [`ci.yml`](../../../.github/workflows/ci.yml#L338) 同时统计 `src/` 与 `include/shield/`，并配置 98/100/100。CI 配置存在不等于本地这次门禁通过。 |
+| Codecov 上传/徽章 | 部分成立 | 上传步骤及 `fail_ci_if_error: true` 可查 [ci.yml](../../../.github/workflows/ci.yml#L358)；徽章只展示上报状态，不是本地实测证据。 |
+| `shield_net` Phase 1 TCP | 成立 | TCP listener/session 接入 bootstrap；真实 TCP 客户端闭环见 [test_client_rpc_e2e.cpp](../../../tests/acceptance/test_client_rpc_e2e.cpp#L1)。 |
+| UDP deferred | 成立 | 配置存在 `network.udp` 即失败：[config.cpp](../../../src/config/config.cpp#L1340)。未找到该配置通往 UDP listener 的正式构建路径。 |
+| KCP deferred | 成立 | `network.kcp` 同一 fail-fast 分支拒绝：[config.cpp](../../../src/config/config.cpp#L1340)。未发现可运行的 KCP transport target。 |
+| WebSocket deferred | 成立 | `network.websocket` 同一 fail-fast 分支拒绝：[config.cpp](../../../src/config/config.cpp#L1343)。未发现 WebSocket listener 实现路径。 |
 | deferred 项无残留半成品 | 部分成立 | 没有可启用的 listener/target；保留的配置拒绝分支、设计文档和协议层通用 parser 是边界/基础设施，不等于完整协议实现。不能据此声称仓库里零相关代码。 |
-| README：ClientContext/ClientRef 未以 userdata 暴露 | **不成立** | README 仍写“not exposed to Lua as a userdata”：[README.md](../../README.md#L220)；代码注册了两类 userdata，公共契约亦定义：[architecture.md](../architecture.md#L184)、[lua-api.md](../lua-api.md#L986)。 |
+| README：ClientContext/ClientRef 未以 userdata 暴露 | **不成立** | README 仍写“not exposed to Lua as a userdata”：[README.md](../../../README.md#L220)；代码注册了两类 userdata，公共契约亦定义：[architecture.md](../architecture.md#L184)、[lua-api.md](../lua-api.md#L986)。 |
 
 ### 1.1 覆盖率与测试实跑
 
@@ -52,7 +52,7 @@ cd build-cov-local && PYTHONPATH=/tmp/shield-gcovr-8.6 python3 -m gcovr -r . --e
 
 CI 与 README 的实质差异：CI 在覆盖率树中运行全量 `ctest`，不是 `ctest -L coverage`；CI 把 `include/shield/` 加入覆盖统计，README 当前命令只 filter `src/`；README 的 gcovr 参数也未体现 CI 的 branch 排除与 `negative_hits.warn` 解析策略。故即使 `src/` 本机结果达标，也不能用它替代当前 CI 完整门禁结果。
 
-**声明统计（17 条，按上表逐行）**：成立 11 条 / 部分成立 5 条 / 不成立 1 条。成立例：TCP Phase 1 由真实 TCP acceptance 测试锚定（[test_client_rpc_e2e.cpp](../../tests/acceptance/test_client_rpc_e2e.cpp#L1)）；部分成立例：Ops 功能可用但 `shield_ops` 是空 target（[CMakeLists.txt](../../CMakeLists.txt#L941)）；不成立例：README 称 ClientContext/ClientRef 未以 userdata 暴露，与 binding/API 文档直接冲突（[README.md](../../README.md#L220)、[architecture.md](../architecture.md#L184)）。
+**声明统计（17 条，按上表逐行）**：成立 11 条 / 部分成立 5 条 / 不成立 1 条。成立例：TCP Phase 1 由真实 TCP acceptance 测试锚定（[test_client_rpc_e2e.cpp](../../../tests/acceptance/test_client_rpc_e2e.cpp#L1)）；部分成立例：Ops 功能可用但 `shield_ops` 是空 target（[CMakeLists.txt](../../../CMakeLists.txt#L941)）；不成立例：README 称 ClientContext/ClientRef 未以 userdata 暴露，与 binding/API 文档直接冲突（[README.md](../../../README.md#L220)、[architecture.md](../architecture.md#L184)）。
 
 ## 2. 上轮评审闭环（`fd1b490`）
 
@@ -60,21 +60,21 @@ CI 与 README 的实质差异：CI 在覆盖率树中运行全量 `ctest`，不�
 
 | 上轮问题 | 状态 | 当前证据 |
 | --- | --- | --- |
-| 无 frame 上限 | 已修（`7b395c2`） | 0 表示默认 16 MiB：[protocol.hpp](../../include/shield/transport/protocol.hpp#L119)。 |
-| TCP_NODELAY 缺失 | 已修（`7b395c2`） | session 接入时 best-effort 设置：[session.cpp](../../src/net/session.cpp#L91)。 |
+| 无 frame 上限 | 已修（`7b395c2`） | 0 表示默认 16 MiB：[protocol.hpp](../../../include/shield/transport/protocol.hpp#L119)。 |
+| TCP_NODELAY 缺失 | 已修（`7b395c2`） | session 接入时 best-effort 设置：[session.cpp](../../../src/net/session.cpp#L91)。 |
 | DB ABI 同步阻塞 | 部分修（`dc2700a`, `46634d5`, `d2b68ef`, `10133a1`） | C vtable 保持同步 primitive，但 Lua SQLite/MySQL/PostgreSQL 可协程等待 worker；Redis/Mongo/global 路径不因此变异步。 |
-| sandbox 键无效 | 已修（`7b395c2`） | `allow_io/os` 条件开库并有测试：[lua_runtime.cpp](../../src/lua/lua_runtime.cpp#L196)。注意仍不是 CPU/内存隔离。 |
+| sandbox 键无效 | 已修（`7b395c2`） | `allow_io/os` 条件开库并有测试：[lua_runtime.cpp](../../../src/lua/lua_runtime.cpp#L196)。注意仍不是 CPU/内存隔离。 |
 | cluster 数据面缺节点认证/来源绑定 | 已修（PSK 挑战认证） | `cluster.auth` 已消费，完成 HMAC 双向挑战后绑定 CAF sender；Envelope 在 dispatch 前拒绝未认证/身份不符。四类入站集成测试覆盖正常、伪造 HMAC、nonce 重放和未握手 peer。认证默认关闭并告警；mTLS、流量加密及热轮换仍推迟，见 [服务间认证](../runtime-security.md#服务间认证)。 |
-| 外部存储可能阻塞 service actor | 未修 | Redis/global Lua API 仍同步访问后端；例如 [lua_api.cpp](../../src/lua/lua_api.cpp#L4071)、[global_rank_backend.cpp](../../src/global/global_rank_backend.cpp#L583)。 |
-| 每 service Lua 指令/内存/权限限额缺失 | 未修 | 当前 sandbox 只门控 `os/io`：[lua_runtime.cpp](../../src/lua/lua_runtime.cpp#L196)；安全文档列为未实现：[runtime-security.md](../runtime-security.md#L12)。 |
+| 外部存储可能阻塞 service actor | 未修 | Redis/global Lua API 仍同步访问后端；例如 [lua_api.cpp](../../../src/lua/lua_api.cpp#L4071)、[global_rank_backend.cpp](../../../src/global/global_rank_backend.cpp#L583)。 |
+| 每 service Lua 指令/内存/权限限额缺失 | 未修 | 当前 sandbox 只门控 `os/io`：[lua_runtime.cpp](../../../src/lua/lua_runtime.cpp#L196)；安全文档列为未实现：[runtime-security.md](../runtime-security.md#L12)。 |
 | 持久化队列与 scheduler | 未修（按明确范围） | global 文档把 Redis 队列/scheduler 后端留在 Phase 2+：[runtime-global.md](../runtime-global.md#L760)。 |
 | Blue-green service replacement 编排 | 未修 | 只有设计/原语，无端到端升级编排：[runtime-lua-vm.md](../runtime-lua-vm.md#L67)。 |
 | 架构评估文档仍保留过时 frame/NODELAY/sandbox 风险 | 未修 | [`architecture-review.md`](../architecture-review.md#L17) 汇总与当前实现相冲突。 |
 | rate limiter Redis 存储描述错误 | 未修 | security 写 Redis：[runtime-security.md](../runtime-security.md#L128)，global 说明进程内：[runtime-global.md](../runtime-global.md#L760)。 |
 | cluster 文档内部发现能力口径矛盾 | 未修（文档） | 静态 peers 口径：[runtime-cluster.md](../runtime-cluster.md#L39)；后段又标 Redis 服务发现已实现：[runtime-cluster.md](../runtime-cluster.md#L176)。应区分实现代码是否接入 bootstrap。 |
-| README 称 client context 不暴露 userdata | 未修 | README 与已定义的 ClientContext/ClientRef userdata 冲突：[README.md](../../README.md#L220)、[architecture.md](../architecture.md#L184)。 |
+| README 称 client context 不暴露 userdata | 未修 | README 与已定义的 ClientContext/ClientRef userdata 冲突：[README.md](../../../README.md#L220)、[architecture.md](../architecture.md#L184)。 |
 
-**闭环统计（13 项）**：已修 4 / 未修 8 / 部分修 1。已修例：`7b395c2` 将 frame cap 改成 16 MiB 默认（[protocol.hpp](../../include/shield/transport/protocol.hpp#L119)）；新增已修例：cluster PSK 挑战认证与入站 Envelope 身份绑定（[cluster_transport.cpp](../../src/cluster/cluster_transport.cpp)）；部分修例：DB 异步化目前只覆盖部分 provider/调用形态。
+**闭环统计（13 项）**：已修 4 / 未修 8 / 部分修 1。已修例：`7b395c2` 将 frame cap 改成 16 MiB 默认（[protocol.hpp](../../../include/shield/transport/protocol.hpp#L119)）；新增已修例：cluster PSK 挑战认证与入站 Envelope 身份绑定（[cluster_transport.cpp](../../../src/cluster/cluster_transport.cpp)）；部分修例：DB 异步化目前只覆盖部分 provider/调用形态。
 
 ## 3. 对标 Skynet（Skynet 官方资料，检索日期 2026-10-19）
 
@@ -106,13 +106,13 @@ CI 与 README 的实质差异：CI 在覆盖率树中运行全量 `ctest`，不�
 
 | 严重度 | 缺口 | 证据 | 最小可证伪验收形态 |
 | --- | --- | --- | --- |
-| 已修（原高） | 集群 PSK 双向挑战认证及 Envelope 身份绑定已落地 | [cluster_transport.cpp](../../src/cluster/cluster_transport.cpp)、[服务间认证](../runtime-security.md#服务间认证) | `PskAuthenticatedInboundEnvelope` / `PskForgedHmacRejected` / `PskNonceReplayRejected` / `PskUnregisteredUnhandshakenPeerRejected`；mTLS、传输加密和热轮换不在本轮范围。 |
-| 高 | Redis/global 同步 I/O 可阻塞服务 actor | [lua_api.cpp](../../src/lua/lua_api.cpp#L4071)、[shield_redis_driver.cpp](../../plugins/redis.driver/shield_redis_driver.cpp#L300) | 用可控延迟 backend 阻塞一次操作，同时向同一 VM 投递 ping；ping 在操作等待期间仍由 coroutine 让出并按 deadline 返回。 |
-| 中高 | Lua 只有 os/io 全局开关，无每 service CPU/内存硬预算 | [lua_runtime.cpp](../../src/lua/lua_runtime.cpp#L196)、[runtime-security.md](../runtime-security.md#L12) | 单 service 无限循环/超额分配被预算机制终止或隔离；其他 service 在固定时限内仍响应。 |
-| 中 | `shield_ops` target 空壳，但 roadmap/README 将 optional P0 全部写为落地 | [CMakeLists.txt](../../CMakeLists.txt#L941)、[optional-modules.md](../optional-modules.md#L315) | `SHIELD_ENABLE_OPS=ON` 构建后能由该 target 提供文档列出的最小健康/metrics 接口测试；否则文档将其降格为 bootstrap 托管能力且调整完成声明。 |
+| 已修（原高） | 集群 PSK 双向挑战认证及 Envelope 身份绑定已落地 | [cluster_transport.cpp](../../../src/cluster/cluster_transport.cpp)、[服务间认证](../runtime-security.md#服务间认证) | `PskAuthenticatedInboundEnvelope` / `PskForgedHmacRejected` / `PskNonceReplayRejected` / `PskUnregisteredUnhandshakenPeerRejected`；mTLS、传输加密和热轮换不在本轮范围。 |
+| 高 | Redis/global 同步 I/O 可阻塞服务 actor | [lua_api.cpp](../../../src/lua/lua_api.cpp#L4071)、[shield_redis_driver.cpp](../../../plugins/redis.driver/shield_redis_driver.cpp#L300) | 用可控延迟 backend 阻塞一次操作，同时向同一 VM 投递 ping；ping 在操作等待期间仍由 coroutine 让出并按 deadline 返回。 |
+| 中高 | Lua 只有 os/io 全局开关，无每 service CPU/内存硬预算 | [lua_runtime.cpp](../../../src/lua/lua_runtime.cpp#L196)、[runtime-security.md](../runtime-security.md#L12) | 单 service 无限循环/超额分配被预算机制终止或隔离；其他 service 在固定时限内仍响应。 |
+| 中 | `shield_ops` target 空壳，但 roadmap/README 将 optional P0 全部写为落地 | [CMakeLists.txt](../../../CMakeLists.txt#L941)、[optional-modules.md](../optional-modules.md#L315) | `SHIELD_ENABLE_OPS=ON` 构建后能由该 target 提供文档列出的最小健康/metrics 接口测试；否则文档将其降格为 bootstrap 托管能力且调整完成声明。 |
 | 中 | Redis 业务限流的存储口径冲突 | [runtime-security.md](../runtime-security.md#L128)、[runtime-global.md](../runtime-global.md#L760) | 用配置/调用测试断言单实例内存状态；文档与实现一致声明“跨进程未实现”。 |
 | 中 | cluster 文档同时称仅静态 peers、又称 Redis discovery 已实现，范围不清 | [runtime-cluster.md](../runtime-cluster.md#L39)、[runtime-cluster.md](../runtime-cluster.md#L176) | bootstrap 集成测试以 Redis 临时实例发现一个未列入静态 peers 的节点；否则统一文档标成未接线/非当前路径。 |
-| 中 | 旧 architecture-review 和 README 保留过时安全/用户 API 结论 | [architecture-review.md](../architecture-review.md#L17)、[README.md](../../README.md#L220) | 对照代码更新两处表述；文档检查断言 frame 默认 16 MiB、TCP_NODELAY 开启且 client userdata 声明一致。 |
+| 中 | 旧 architecture-review 和 README 保留过时安全/用户 API 结论 | [architecture-review.md](../architecture-review.md#L17)、[README.md](../../../README.md#L220) | 对照代码更新两处表述；文档检查断言 frame 默认 16 MiB、TCP_NODELAY 开启且 client userdata 声明一致。 |
 | 低 | reliable/delayed queue 与 scheduler 未持久化，重启会丢进程内状态 | [runtime-global.md](../runtime-global.md#L760) | 启动临时 Redis，入队后杀进程再启动；消息可按声明的至少一次语义恢复且重复可识别。 |
 | 低 | 没有端到端 blue-green service replacement/rollback 流程 | [runtime-lua-vm.md](../runtime-lua-vm.md#L67) | 自动化用例启动 v2、迁移状态、原子切名、drain v1；故意令迁移失败并证明回滚后旧服务仍可接收请求。 |
 
