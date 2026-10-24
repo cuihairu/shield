@@ -3,12 +3,7 @@
 English | [简体中文](README.zh.md)
 
 <p align="center">
-<a href="https://github.com/cuihairu/shield/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a>
-<a href="https://github.com/cuihairu/shield/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg"></a>
-<a href="https://en.cppreference.com/w/cpp/23"><img alt="C++23" src="https://img.shields.io/badge/C++-23-blue.svg"></a>
-<a href="https://www.lua.org/"><img alt="Lua 5.5" src="https://img.shields.io/badge/Lua-5.5-blue.svg"></a>
-<a href="https://codecov.io/gh/cuihairu/shield"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg"></a>
-<a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
+<a href="https://github.com/cuihairu/shield/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://github.com/cuihairu/shield/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg"></a> <a href="https://en.cppreference.com/w/cpp/23"><img alt="C++23" src="https://img.shields.io/badge/C++-23-blue.svg"></a> <a href="https://www.lua.org/"><img alt="Lua 5.5" src="https://img.shields.io/badge/Lua-5.5-blue.svg"></a> <a href="https://codecov.io/gh/cuihairu/shield"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg"></a> <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
 </p>
 
 Shield is a **single-node-first, Skynet-inspired,
