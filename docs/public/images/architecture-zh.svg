@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1260" viewBox="0 0 1280 1260" role="img" aria-labelledby="title desc" xml:lang="zh-CN">
+<title id="title">Shield · Lua-first 游戏服务器运行时</title>
+<desc id="desc">Skynet 启发的 actor 模型、Lua-first 单节点优先运行时。自上而下：游戏逻辑（Lua 服务）、C++ 运行时核心（Lua VM、服务注册表、send/call、定时器、协程/CAF）、网络与传输（TCP 监听、网关）、插件系统 v1（manifest-first、稳定 C ABI、依赖注入）、官方插件（DB、Redis、Auth、Metrics/Health、Matchmaking、编解码）、可选模块（cluster/global/player/server/ops，默认 OFF）、外部后端（MySQL/PostgreSQL/SQLite/MongoDB/Redis/Prometheus）。右侧为运行时支撑（config、log、crash、console）与 xmldef 工具链。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:30px;font-weight:700}.sub{font-size:17px;fill:#435570}.band{font-size:16px;font-weight:700}.layer{font-size:18px;font-weight:700}.layerbody{font-size:13px;fill:#435570}.chip{font-size:15px;font-weight:700}.chipbody{font-size:12px;fill:#435570}.small{font-size:13px;fill:#52647b}.label{font-size:13px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke-linejoin:round}.control{stroke-dasharray:7 5}</style>
+<rect width="1280" height="1260" rx="20" fill="#f8fafc"/>
+<text x="40" y="46" class="title" text-anchor="start">Shield · Lua-first 游戏服务器运行时</text>
+<text x="40" y="78" class="sub" text-anchor="start">Skynet 启发 · actor 模型 · 单节点优先 · 小核心 · 契约先行 · 以代码与文档事实为准</text>
+
+<!-- 游戏逻辑 -->
+<g id="lua-services">
+<rect x="40" y="104" width="1010" height="100" rx="14" fill="#eef8f5" stroke="#86c9b3" stroke-width="1.5"/>
+<text x="60" y="130" class="layer" text-anchor="start">游戏逻辑 · Lua 服务</text>
+<text x="60" y="152" class="layerbody" text-anchor="start">业务以 Lua service 编写，经权威 Lua API 契约与运行时交互（示例为用法参考）</text>
+<g id="ls-a"><rect x="60" y="162" width="290" height="30" rx="8" fill="#fff" stroke="#86c9b3"/><text x="205" y="182" class="chip" text-anchor="middle">玩家会话 · 战斗 · 匹配逻辑</text></g>
+<g id="ls-b"><rect x="366" y="162" width="290" height="30" rx="8" fill="#fff" stroke="#86c9b3"/><text x="511" y="182" class="chip" text-anchor="middle">服务间 send / call 协作</text></g>
+<g id="ls-c"><rect x="672" y="162" width="330" height="30" rx="8" fill="#fff" stroke="#86c9b3"/><text x="837" y="182" class="chip" text-anchor="middle">定时器 · 协程 · 数据绑定</text></g>
+</g>
+
+<!-- C++ 运行时核心 -->
+<g id="core-runtime">
+<rect x="40" y="234" width="1010" height="120" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
+<text x="60" y="260" class="layer" text-anchor="start">C++ 运行时核心 · core</text>
+<text x="60" y="282" class="layerbody" text-anchor="start">小核心：只承载 service / message / timer / coroutine 语义；插件、运维、集群、玩家系统不反向进入</text>
+<g id="cr-luavm"><rect x="60" y="292" width="185" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="152" y="312" class="chip" text-anchor="middle">Lua VM</text><text x="152" y="330" class="chipbody" text-anchor="middle">Lua 5.5 · 服务托管</text></g>
+<g id="cr-registry"><rect x="261" y="292" width="185" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="353" y="312" class="chip" text-anchor="middle">服务注册表</text><text x="353" y="330" class="chipbody" text-anchor="middle">本地 service 目录</text></g>
+<g id="cr-msg"><rect x="462" y="292" width="185" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="554" y="312" class="chip" text-anchor="middle">send / call</text><text x="554" y="330" class="chipbody" text-anchor="middle">消息投递</text></g>
+<g id="cr-timer"><rect x="663" y="292" width="185" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="755" y="312" class="chip" text-anchor="middle">定时器</text><text x="755" y="330" class="chipbody" text-anchor="middle">延迟/周期任务</text></g>
+<g id="cr-coro"><rect x="864" y="292" width="166" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="947" y="312" class="chip" text-anchor="middle">协程 · CAF actor</text><text x="947" y="330" class="chipbody" text-anchor="middle">并发模型</text></g>
+</g>
+
+<!-- 网络与传输 -->
+<g id="net">
+<rect x="40" y="384" width="1010" height="110" rx="14" fill="#edf5ff" stroke="#93b9e3" stroke-width="1.5"/>
+<text x="60" y="410" class="layer" text-anchor="start">网络与传输 · net / transport</text>
+<text x="60" y="432" class="layerbody" text-anchor="start">TCP 监听器启动校验 · 网关 · 协议编解码边界（codec 插件）</text>
+<g id="n-tcp"><rect x="60" y="442" width="230" height="36" rx="8" fill="#fff" stroke="#93b9e3"/><text x="175" y="465" class="chip" text-anchor="middle">TCP 监听器</text></g>
+<g id="n-gw"><rect x="306" y="442" width="230" height="36" rx="8" fill="#fff" stroke="#93b9e3"/><text x="421" y="465" class="chip" text-anchor="middle">网络网关</text></g>
+<g id="n-codec"><rect x="552" y="442" width="230" height="36" rx="8" fill="#fff" stroke="#93b9e3"/><text x="667" y="465" class="chip" text-anchor="middle">协议编解码边界</text></g>
+<g id="n-trans"><rect x="798" y="442" width="232" height="36" rx="8" fill="#fff" stroke="#93b9e3"/><text x="914" y="465" class="chip" text-anchor="middle">传输层抽象</text></g>
+</g>
+
+<!-- 插件系统 v1 -->
+<g id="plugin-system">
+<rect x="40" y="524" width="1010" height="110" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+<text x="60" y="550" class="layer" text-anchor="start">插件系统 v1 · plugin</text>
+<text x="60" y="572" class="layerbody" text-anchor="start">后端能力经 manifest-first 插件包提供，稳定 C ABI，插件主机发现在冒烟测试覆盖</text>
+<g id="p-manifest"><rect x="60" y="582" width="230" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="175" y="605" class="chip" text-anchor="middle">manifest-first 清单</text></g>
+<g id="p-abi"><rect x="306" y="582" width="230" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="421" y="605" class="chip" text-anchor="middle">稳定 C ABI</text></g>
+<g id="p-instance"><rect x="552" y="582" width="230" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="667" y="605" class="chip" text-anchor="middle">显式实例 / binding</text></g>
+<g id="p-di"><rect x="798" y="582" width="232" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="914" y="605" class="chip" text-anchor="middle">依赖注入</text></g>
+</g>
+
+<!-- 官方插件 -->
+<g id="official-plugins">
+<rect x="40" y="664" width="1010" height="120" rx="14" fill="#fdf4ff" stroke="#f0abfc" stroke-width="1.5"/>
+<text x="60" y="690" class="layer" text-anchor="start">官方插件 · 可选编译（OFF 默认）</text>
+<text x="60" y="712" class="layerbody" text-anchor="start">数据库 / 缓存 / 队列 / 排行榜 / 鉴权 / 指标 / 健康 / 匹配 / 协议编解码</text>
+<g id="o-db"><rect x="60" y="722" width="245" height="46" rx="10" fill="#fff" stroke="#f0abfc"/><text x="182" y="742" class="chip" text-anchor="middle">DB 插件</text><text x="182" y="760" class="chipbody" text-anchor="middle">MySQL · PostgreSQL · SQLite · MongoDB</text></g>
+<g id="o-redis"><rect x="321" y="722" width="245" height="46" rx="10" fill="#fff" stroke="#f0abfc"/><text x="443" y="742" class="chip" text-anchor="middle">Redis 插件</text><text x="443" y="760" class="chipbody" text-anchor="middle">cache · queue · leaderboard · driver</text></g>
+<g id="o-auth"><rect x="582" y="722" width="200" height="46" rx="10" fill="#fff" stroke="#f0abfc"/><text x="682" y="742" class="chip" text-anchor="middle">Auth · 鉴权</text><text x="682" y="760" class="chipbody" text-anchor="middle">JWT</text></g>
+<g id="o-metric"><rect x="798" y="722" width="232" height="46" rx="10" fill="#fff" stroke="#f0abfc"/><text x="914" y="742" class="chip" text-anchor="middle">Metrics / Health</text><text x="914" y="760" class="chipbody" text-anchor="middle">Prometheus · HTTP 健康</text></g>
+<text x="60" y="782" class="small" text-anchor="start">Matchmaking（ELO）· 协议编解码（Protobuf / MessagePack / FlatBuffers / JSON）</text>
+</g>
+
+<!-- 可选模块 -->
+<g id="optional-modules">
+<rect x="40" y="814" width="1010" height="90" rx="14" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="60" y="840" class="layer" text-anchor="start" style="fill:#334155">官方可选模块 · 默认 OFF</text>
+<g id="om-cluster"><rect x="60" y="850" width="180" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="150" y="872" class="chip" text-anchor="middle">cluster · 集群</text></g>
+<g id="om-global"><rect x="252" y="850" width="180" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="342" y="872" class="chip" text-anchor="middle">global · 全局助手</text></g>
+<g id="om-player"><rect x="444" y="850" width="180" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="534" y="872" class="chip" text-anchor="middle">player · 玩家会话</text></g>
+<g id="om-server"><rect x="636" y="850" width="180" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="726" y="872" class="chip" text-anchor="middle">server · 服务状态</text></g>
+<g id="om-ops"><rect x="828" y="850" width="202" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="929" y="872" class="chip" text-anchor="middle">ops · 运维/诊断控制台</text></g>
+</g>
+
+<!-- 外部后端 -->
+<g id="backends">
+<rect x="40" y="934" width="1010" height="100" rx="14" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="60" y="960" class="layer" text-anchor="start" style="fill:#334155">外部后端 · 经插件接入</text>
+<g id="b-mysql"><rect x="60" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="135" y="996" class="chip" text-anchor="middle">MySQL</text></g>
+<g id="b-pg"><rect x="222" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="297" y="996" class="chip" text-anchor="middle">PostgreSQL</text></g>
+<g id="b-sqlite"><rect x="384" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="459" y="996" class="chip" text-anchor="middle">SQLite</text></g>
+<g id="b-mongo"><rect x="546" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="621" y="996" class="chip" text-anchor="middle">MongoDB</text></g>
+<g id="b-redis"><rect x="708" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="783" y="996" class="chip" text-anchor="middle">Redis</text></g>
+<g id="b-prom"><rect x="870" y="970" width="160" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="950" y="996" class="chip" text-anchor="middle">Prometheus</text></g>
+</g>
+
+<!-- 运行时支撑右栏 -->
+<g id="support">
+<rect x="1070" y="104" width="170" height="640" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+<text x="1155" y="130" class="band" text-anchor="middle">运行时支撑</text>
+<text x="1070" y="156" class="chipbody" text-anchor="start">C++ 基础设施</text>
+<g id="s-config"><rect x="1070" y="166" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="189" class="chip" text-anchor="middle">config</text></g>
+<g id="s-log"><rect x="1070" y="214" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="237" class="chip" text-anchor="middle">log</text></g>
+<g id="s-crash"><rect x="1070" y="262" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="285" class="chip" text-anchor="middle">crash · Crashpad</text></g>
+<g id="s-console"><rect x="1070" y="310" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="333" class="chip" text-anchor="middle">console · Lua 诊断</text></g>
+<g id="s-bootstrap"><rect x="1070" y="358" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="381" class="chip" text-anchor="middle">bootstrap</text></g>
+<text x="1070" y="416" class="chipbody" text-anchor="start">xmldef 工具链</text>
+<text x="1070" y="438" class="chipbody" text-anchor="start">描述符驱动 · 代码</text>
+<text x="1070" y="460" class="chipbody" text-anchor="start">生成 / Unity 生成器</text>
+<text x="1070" y="490" class="small" text-anchor="start">契约文档：架构、Lua API、配置、错误码、插件 ABI 由权威文档约束</text>
+</g>
+<path id="sup-arrow" d="M1070 372 H1052" class="edge" style="stroke:#c2410c;stroke-width:2" marker-end="url(#arrow)"/>
+<text x="1050" y="364" class="label" text-anchor="end" style="fill:#c2410c">配置/日志</text>
+
+<!-- 层间数据流 -->
+<path id="l1" d="M120 204 V234" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l2" d="M120 354 V384" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l3" d="M120 494 V524" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l4" d="M120 634 V664" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l5" d="M120 784 V814" class="edge control" style="stroke:#64748b;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l6" d="M120 904 V934" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<text x="132" y="218" class="label" text-anchor="start">Lua 调用</text>
+<text x="132" y="368" class="label" text-anchor="start">消息/会话</text>
+<text x="132" y="508" class="label" text-anchor="start">连接</text>
+<text x="132" y="648" class="label" text-anchor="start">能力调用</text>
+<text x="132" y="798" class="label" text-anchor="start">可选能力</text>
+<text x="132" y="918" class="label" text-anchor="start">后端</text>
+
+<!-- 图例 -->
+<text x="40" y="1078" class="small" text-anchor="start">虚线：可选/默认关闭 · 实线：数据流 · 冒烟测试覆盖：配置加载、Lua 服务启动、本地服务注册、send/call、定时器、TCP 监听启动校验、插件主机发现</text>
+<text x="40" y="1100" class="small" text-anchor="start">roadmap Phase 0-4 已落地；Phase 5 部分实现（运维能力仍在 shield_bootstrap，shield_ops 目标为空）</text>
+<text x="40" y="1122" class="small" text-anchor="start">小核心约束：core 聚焦 service/message/timer/coroutine；插件、ops、cluster、player 不反向进入 core</text>
+<text x="40" y="1144" class="small" text-anchor="start">契约先行：架构、Lua API、配置、错误码、插件 ABI 以权威文档为准；示例仅作用法参考</text>
+</svg>

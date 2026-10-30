@@ -34,6 +34,8 @@ features:
 footer: Apache License 2.0
 ---
 
+![Shield architecture diagram](/images/architecture-en.svg)
+
 ## Current Conventions
 
 Shield's current documentation enters through the [Documentation Map](documentation-map.md). Readers should first distinguish authoritative contracts, runtime semantics, reference documents, and draft archives before diving into a specific topic.

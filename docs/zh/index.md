@@ -37,6 +37,8 @@ features:
 footer: Apache License 2.0
 ---
 
+![Shield 架构图](/images/architecture-zh.svg)
+
 ## 当前口径
 
 Shield 当前文档以 [文档地图](documentation-map.md) 为入口。读者应先区分权威契约、运行时语义、参考文档和草案归档，再进入具体专题。

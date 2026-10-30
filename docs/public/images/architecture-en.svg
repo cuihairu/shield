@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1260" viewBox="0 0 1280 1260" role="img" aria-labelledby="title desc" xml:lang="en">
+<title id="title">Shield · Lua-first Game Server Runtime</title>
+<desc id="desc">Skynet-inspired actor-model, Lua-first, single-node-first runtime. Top-down: game logic (Lua services), C++ runtime core (Lua VM, service registry, send/call, timers, coroutines/CAF), network &amp; transport (TCP listener, gateway), plugin system v1 (manifest-first, stable C ABI, dependency injection), official plugins (DB, Redis, Auth, Metrics/Health, Matchmaking, codecs), optional modules (cluster/global/player/server/ops, OFF by default), external backends (MySQL/PostgreSQL/SQLite/MongoDB/Redis/Prometheus). Right rail is runtime support (config, log, crash, console) and the xmldef toolchain.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="context-stroke"/></marker></defs>
+<style>text{font-family:Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:#172b4d}.title{font-size:30px;font-weight:700}.sub{font-size:17px;fill:#435570}.band{font-size:16px;font-weight:700}.layer{font-size:18px;font-weight:700}.layerbody{font-size:13px;fill:#435570}.chip{font-size:15px;font-weight:700}.chipbody{font-size:12px;fill:#435570}.small{font-size:13px;fill:#52647b}.label{font-size:13px;fill:#435570;paint-order:stroke;stroke:#f8fafc;stroke-width:5px;stroke-linejoin:round}.edge{fill:none;stroke-linejoin:round}.control{stroke-dasharray:7 5}</style>
+<rect width="1280" height="1260" rx="20" fill="#f8fafc"/>
+<text x="40" y="46" class="title" text-anchor="start">Shield · Lua-first Game Server Runtime</text>
+<text x="40" y="78" class="sub" text-anchor="start">Skynet-inspired · actor model · single-node-first · small core · contract-first · grounded in code and docs</text>
+
+<g id="lua-services">
+<rect x="40" y="104" width="1010" height="100" rx="14" fill="#eef8f5" stroke="#86c9b3" stroke-width="1.5"/>
+<text x="60" y="130" class="layer" text-anchor="start">Game Logic · Lua Services</text>
+<text x="60" y="152" class="layerbody" text-anchor="start">Business logic as Lua services, interacting via the authoritative Lua API contract (examples are usage references only)</text>
+<g id="ls-a"><rect x="60" y="162" width="290" height="30" rx="8" fill="#fff" stroke="#86c9b3"/><text x="205" y="182" class="chip" text-anchor="middle">Player session · battle · matchmaking logic</text></g>
+<g id="ls-b"><rect x="366" y="162" width="290" height="30" rx="8" fill="#fff" stroke="#86c9b3"/><text x="511" y="182" class="chip" text-anchor="middle">Inter-service send / call</text></g>
+<g id="ls-c"><rect x="672" y="162" width="330" height="30" rx="8" fill="#fff" stroke="#86c9b3"/><text x="837" y="182" class="chip" text-anchor="middle">Timers · coroutines · data binding</text></g>
+</g>
+
+<g id="core-runtime">
+<rect x="40" y="234" width="1010" height="120" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
+<text x="60" y="260" class="layer" text-anchor="start">C++ Runtime Core · core</text>
+<text x="60" y="282" class="layerbody" text-anchor="start">Small core: service / message / timer / coroutine semantics only; plugins, ops, cluster, player never re-enter core</text>
+<g id="cr-luavm"><rect x="60" y="292" width="185" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="152" y="312" class="chip" text-anchor="middle">Lua VM</text><text x="152" y="330" class="chipbody" text-anchor="middle">Lua 5.5 · service hosting</text></g>
+<g id="cr-registry"><rect x="261" y="292" width="185" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="353" y="312" class="chip" text-anchor="middle">Service Registry</text><text x="353" y="330" class="chipbody" text-anchor="middle">local service directory</text></g>
+<g id="cr-msg"><rect x="462" y="292" width="185" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="554" y="312" class="chip" text-anchor="middle">send / call</text><text x="554" y="330" class="chipbody" text-anchor="middle">message delivery</text></g>
+<g id="cr-timer"><rect x="663" y="292" width="185" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="755" y="312" class="chip" text-anchor="middle">Timers</text><text x="755" y="330" class="chipbody" text-anchor="middle">delayed/periodic tasks</text></g>
+<g id="cr-coro"><rect x="864" y="292" width="166" height="46" rx="10" fill="#fff" stroke="#a5b4fc"/><text x="947" y="312" class="chip" text-anchor="middle">Coroutines · CAF actors</text><text x="947" y="330" class="chipbody" text-anchor="middle">concurrency model</text></g>
+</g>
+
+<g id="net">
+<rect x="40" y="384" width="1010" height="110" rx="14" fill="#edf5ff" stroke="#93b9e3" stroke-width="1.5"/>
+<text x="60" y="410" class="layer" text-anchor="start">Network &amp; Transport · net / transport</text>
+<text x="60" y="432" class="layerbody" text-anchor="start">TCP listener startup validation · gateway · protocol codec boundary (codec plugins)</text>
+<g id="n-tcp"><rect x="60" y="442" width="230" height="36" rx="8" fill="#fff" stroke="#93b9e3"/><text x="175" y="465" class="chip" text-anchor="middle">TCP Listener</text></g>
+<g id="n-gw"><rect x="306" y="442" width="230" height="36" rx="8" fill="#fff" stroke="#93b9e3"/><text x="421" y="465" class="chip" text-anchor="middle">Network Gateway</text></g>
+<g id="n-codec"><rect x="552" y="442" width="230" height="36" rx="8" fill="#fff" stroke="#93b9e3"/><text x="667" y="465" class="chip" text-anchor="middle">Protocol Codec Boundary</text></g>
+<g id="n-trans"><rect x="798" y="442" width="232" height="36" rx="8" fill="#fff" stroke="#93b9e3"/><text x="914" y="465" class="chip" text-anchor="middle">Transport Abstraction</text></g>
+</g>
+
+<g id="plugin-system">
+<rect x="40" y="524" width="1010" height="110" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+<text x="60" y="550" class="layer" text-anchor="start">Plugin System v1 · plugin</text>
+<text x="60" y="572" class="layerbody" text-anchor="start">Backend capabilities via manifest-first plugin packages, stable C ABI; plugin host discovery covered by smoke tests</text>
+<g id="p-manifest"><rect x="60" y="582" width="230" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="175" y="605" class="chip" text-anchor="middle">manifest-first</text></g>
+<g id="p-abi"><rect x="306" y="582" width="230" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="421" y="605" class="chip" text-anchor="middle">Stable C ABI</text></g>
+<g id="p-instance"><rect x="552" y="582" width="230" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="667" y="605" class="chip" text-anchor="middle">Explicit instances / bindings</text></g>
+<g id="p-di"><rect x="798" y="582" width="232" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="914" y="605" class="chip" text-anchor="middle">Dependency injection</text></g>
+</g>
+
+<g id="official-plugins">
+<rect x="40" y="664" width="1010" height="120" rx="14" fill="#fdf4ff" stroke="#f0abfc" stroke-width="1.5"/>
+<text x="60" y="690" class="layer" text-anchor="start">Official Plugins · optional build (OFF default)</text>
+<text x="60" y="712" class="layerbody" text-anchor="start">Database / cache / queue / leaderboard / auth / metrics / health / matchmaking / protocol codecs</text>
+<g id="o-db"><rect x="60" y="722" width="245" height="46" rx="10" fill="#fff" stroke="#f0abfc"/><text x="182" y="742" class="chip" text-anchor="middle">DB Plugins</text><text x="182" y="760" class="chipbody" text-anchor="middle">MySQL · PostgreSQL · SQLite · MongoDB</text></g>
+<g id="o-redis"><rect x="321" y="722" width="245" height="46" rx="10" fill="#fff" stroke="#f0abfc"/><text x="443" y="742" class="chip" text-anchor="middle">Redis Plugins</text><text x="443" y="760" class="chipbody" text-anchor="middle">cache · queue · leaderboard · driver</text></g>
+<g id="o-auth"><rect x="582" y="722" width="200" height="46" rx="10" fill="#fff" stroke="#f0abfc"/><text x="682" y="742" class="chip" text-anchor="middle">Auth</text><text x="682" y="760" class="chipbody" text-anchor="middle">JWT</text></g>
+<g id="o-metric"><rect x="798" y="722" width="232" height="46" rx="10" fill="#fff" stroke="#f0abfc"/><text x="914" y="742" class="chip" text-anchor="middle">Metrics / Health</text><text x="914" y="760" class="chipbody" text-anchor="middle">Prometheus · HTTP health</text></g>
+<text x="60" y="782" class="small" text-anchor="start">Matchmaking (ELO) · protocol codecs (Protobuf / MessagePack / FlatBuffers / JSON)</text>
+</g>
+
+<g id="optional-modules">
+<rect x="40" y="814" width="1010" height="90" rx="14" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="60" y="840" class="layer" text-anchor="start" style="fill:#334155">Official Optional Modules · OFF by default</text>
+<g id="om-cluster"><rect x="60" y="850" width="180" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="150" y="872" class="chip" text-anchor="middle">cluster</text></g>
+<g id="om-global"><rect x="252" y="850" width="180" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="342" y="872" class="chip" text-anchor="middle">global</text></g>
+<g id="om-player"><rect x="444" y="850" width="180" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="534" y="872" class="chip" text-anchor="middle">player</text></g>
+<g id="om-server"><rect x="636" y="850" width="180" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="726" y="872" class="chip" text-anchor="middle">server</text></g>
+<g id="om-ops"><rect x="828" y="850" width="202" height="34" rx="8" fill="#fff" stroke="#94a3b8"/><text x="929" y="872" class="chip" text-anchor="middle">ops</text></g>
+</g>
+
+<g id="backends">
+<rect x="40" y="934" width="1010" height="100" rx="14" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="60" y="960" class="layer" text-anchor="start" style="fill:#334155">External Backends · via plugins</text>
+<g id="b-mysql"><rect x="60" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="135" y="996" class="chip" text-anchor="middle">MySQL</text></g>
+<g id="b-pg"><rect x="222" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="297" y="996" class="chip" text-anchor="middle">PostgreSQL</text></g>
+<g id="b-sqlite"><rect x="384" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="459" y="996" class="chip" text-anchor="middle">SQLite</text></g>
+<g id="b-mongo"><rect x="546" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="621" y="996" class="chip" text-anchor="middle">MongoDB</text></g>
+<g id="b-redis"><rect x="708" y="970" width="150" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="783" y="996" class="chip" text-anchor="middle">Redis</text></g>
+<g id="b-prom"><rect x="870" y="970" width="160" height="42" rx="8" fill="#fff" stroke="#94a3b8"/><text x="950" y="996" class="chip" text-anchor="middle">Prometheus</text></g>
+</g>
+
+<g id="support">
+<rect x="1070" y="104" width="170" height="640" rx="14" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+<text x="1155" y="130" class="band" text-anchor="middle">Runtime Support</text>
+<text x="1070" y="156" class="chipbody" text-anchor="start">C++ infrastructure</text>
+<g id="s-config"><rect x="1070" y="166" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="189" class="chip" text-anchor="middle">config</text></g>
+<g id="s-log"><rect x="1070" y="214" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="237" class="chip" text-anchor="middle">log</text></g>
+<g id="s-crash"><rect x="1070" y="262" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="285" class="chip" text-anchor="middle">crash · Crashpad</text></g>
+<g id="s-console"><rect x="1070" y="310" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="333" class="chip" text-anchor="middle">console · Lua diagnostics</text></g>
+<g id="s-bootstrap"><rect x="1070" y="358" width="170" height="36" rx="8" fill="#fff" stroke="#fdba74"/><text x="1155" y="381" class="chip" text-anchor="middle">bootstrap</text></g>
+<text x="1070" y="416" class="chipbody" text-anchor="start">xmldef toolchain</text>
+<text x="1070" y="438" class="chipbody" text-anchor="start">descriptor-driven · code</text>
+<text x="1070" y="460" class="chipbody" text-anchor="start">generation / Unity generator</text>
+<text x="1070" y="490" class="small" text-anchor="start">Contracts: architecture, Lua API, config, error codes, plugin ABI governed by authoritative docs</text>
+</g>
+<path id="sup-arrow" d="M1070 372 H1052" class="edge" style="stroke:#c2410c;stroke-width:2" marker-end="url(#arrow)"/>
+<text x="1050" y="364" class="label" text-anchor="end" style="fill:#c2410c">config/log</text>
+
+<path id="l1" d="M120 204 V234" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l2" d="M120 354 V384" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l3" d="M120 494 V524" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l4" d="M120 634 V664" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l5" d="M120 784 V814" class="edge control" style="stroke:#64748b;stroke-width:2" marker-end="url(#arrow)"/>
+<path id="l6" d="M120 904 V934" class="edge" style="stroke:#475569;stroke-width:2" marker-end="url(#arrow)"/>
+<text x="132" y="218" class="label" text-anchor="start">Lua calls</text>
+<text x="132" y="368" class="label" text-anchor="start">msg/session</text>
+<text x="132" y="508" class="label" text-anchor="start">connection</text>
+<text x="132" y="648" class="label" text-anchor="start">capability</text>
+<text x="132" y="798" class="label" text-anchor="start">optional</text>
+<text x="132" y="918" class="label" text-anchor="start">backend</text>
+
+<text x="40" y="1078" class="small" text-anchor="start">Dashed: optional / OFF by default · Solid: data flow · Smoke-covered: config load, Lua service start, local service registry, send/call, timers, TCP listener start, plugin host discovery</text>
+<text x="40" y="1100" class="small" text-anchor="start">Roadmap Phase 0-4 landed; Phase 5 partly implemented (ops capabilities still in shield_bootstrap, shield_ops target empty)</text>
+<text x="40" y="1122" class="small" text-anchor="start">Small-core constraint: core focuses on service/message/timer/coroutine; plugin, ops, cluster, player never re-enter core</text>
+<text x="40" y="1144" class="small" text-anchor="start">Contract-first: architecture, Lua API, config, error codes, plugin ABI governed by authoritative docs; examples are usage references only</text>
+</svg>
