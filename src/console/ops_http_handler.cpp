@@ -6,6 +6,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -948,12 +949,28 @@ shield::net::HttpResponse OpsHttpHandler::handle_config(
                    nullptr}});  // GCOVR_EXCL_BR_LINE (compiler artifact:
                                 // inlined nlohmann::json braced-init branches)
     }
+    // Redact secret-bearing keys (passwords/tokens/credentials) so the
+    // unauthenticated /ops/config endpoint never echoes secrets. The key
+    // name is the only signal available here; keep to strong secret
+    // indicators so ordinary config keys are not masked.
+    static constexpr std::string_view kSecretNeedles[] = {
+        "password", "passwd", "secret",     "token",      "credential",
+        "api_key",  "apikey", "access_key", "private_key"};
+    bool is_secret = false;
+    for (std::string_view needle : kSecretNeedles) {
+        if (target.find(needle) != std::string::npos) {
+            is_secret = true;
+            break;
+        }
+    }
+    const std::string redacted =
+        is_secret ? std::string("***redacted***") : value;
     return make_json_response(  // GCOVR_EXCL_BR_LINE (compiler artifact:
                                 // inlined nlohmann::json braced-init branches)
         200,
         {{"type", "result"},
-         {"data", value}});  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
-                             // nlohmann::json braced-init branches)
+         {"data", redacted}});  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                // inlined nlohmann::json braced-init branches)
 }
 
 shield::net::HttpResponse OpsHttpHandler::handle_eval(

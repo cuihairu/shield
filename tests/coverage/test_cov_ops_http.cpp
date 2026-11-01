@@ -1553,6 +1553,16 @@ BOOST_AUTO_TEST_CASE(ConfigEndpointValueShapes) {
     // A key whose value serializes to an empty string yields null data.
     cfg.set("cov3.empty", std::string(""));
     BOOST_CHECK(get_data("/ops/config?key=cov3.empty").is_null());
+    // Secret-bearing keys are redacted so the unauthenticated endpoint never
+    // echoes credentials; a non-secret key keeps its value.
+    cfg.set("cov3.password", std::string("hunter2-secret"));
+    BOOST_CHECK_EQUAL(
+        get_data("/ops/config?key=cov3.password").get<std::string>(),
+        "***redacted***");
+    cfg.set("cov3.normal_key", std::string("visible-value"));
+    BOOST_CHECK_EQUAL(
+        get_data("/ops/config?key=cov3.normal_key").get<std::string>(),
+        "visible-value");
 }
 
 BOOST_AUTO_TEST_CASE(EvalEndpointBodyDiversity) {
