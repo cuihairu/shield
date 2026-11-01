@@ -3,13 +3,7 @@
 [English](README.md) | 简体中文
 
 <p align="center">
-  <a href="https://github.com/cuihairu/shield/releases"></a>
-<a href="https://github.com/cuihairu/shield/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg"></a>
-<a href="https://en.cppreference.com/w/cpp/23"></a>
-<a href="https://www.lua.org/"></a>
-<a href="https://codecov.io/gh/cuihairu/shield"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg"></a>
-<a href="LICENSE"></a> <a href="https://cuihairu.github.io/shield/zh//"></a>
-  <img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"> <img alt="C++23" src="https://img.shields.io/badge/C++-23-blue.svg"> <img alt="Lua 5.5" src="https://img.shields.io/badge/Lua-5.5-blue.svg"> <img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"> <img src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue" alt="docs">
+  <a href="https://github.com/cuihairu/shield/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://github.com/cuihairu/shield/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg"></a> <a href="https://codecov.io/gh/cuihairu/shield"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg"></a> <a href="https://en.cppreference.com/w/cpp/23"><img alt="C++23" src="https://img.shields.io/badge/C++-23-blue.svg"></a> <a href="https://www.lua.org/"><img alt="Lua 5.5" src="https://img.shields.io/badge/Lua-5.5-blue.svg"></a> <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a> <a href="https://cuihairu.github.io/shield/zh/"><img alt="文档" src="https://img.shields.io/badge/%E6%96%87%E6%A1%A3-blue"></a>
 </p>
 
 Shield 是一个**单节点优先、受 Skynet 启发、基于 Actor、Lua 优先的游戏服务器运行时**（路线图 Phase 0-4 已落地；Phase 5 能力部分实现，运维功能仍编译在 `shield_bootstrap` 中，`shield_ops` CMake target 目前为空）。
@@ -87,7 +81,7 @@ DLL 也能启动），并声明了一个可观测的 echo 服务（TCP :7900）�
 API 表见 `docs/lua-api.md`）是参考实现；`plugins/auth_jwt` 已废弃、待移除。
 
 插件系统（manifest 优先的发现机制、显式实例 + binding、稳定 C ABI）在
-`docs/plugin-system.md` 中规约，包含全部 16 个官方插件包的矩阵。要在单
+`docs/zh/plugin-system.md` 中规约，包含全部 16 个官方插件包的矩阵。要在单
 进程内跑通全栈——Lua 业务脚本写 SQLite，同时提供实时的 `/health` 与
 Prometheus 端点——见 `examples/kickstart/`（三条命令，约 10 分钟）。要新
 建插件包，运行 `tools/new_plugin.sh <name>`：它会生成 manifest、CMake
@@ -115,7 +109,7 @@ Shield 核心不提供：
 
 这些能力可能由用户构建或稍后作为可选扩展进行评估。它们不是当前核心契约的一部分。
 
-`shield.event` 只是单个 Lua service / 单个 Lua VM 内部的轻量解耦工具，不进入 mailbox、不序列化、不跨 service/VM/node，也不用于 application lifecycle 事件。
+`shield.event` 计划作为单个 Lua service / 单个 Lua VM 内部的轻量解耦工具（目标契约，尚未实现），不进入 mailbox、不序列化、不跨 service/VM/node，也不用于 application lifecycle 事件。
 
 ## 核心边界
 
@@ -179,13 +173,13 @@ return M
 
 权威设计契约：
 
-- [架构](docs/architecture.md)：模块边界、依赖方向、对象所有权和已删除的遗留方向。
-- [Lua API 契约](docs/lua-api.md)：目标 `shield.*` 用户 API。
-- [运行时语义](docs/runtime-semantics.md)：主题索引和实现顺序。
-- [配置语义](docs/runtime-config.md)：核心配置模式。
-- [可选模块契约](docs/optional-modules.md)：官方可选模块边界。
-- [路线图](docs/roadmap.md)：分阶段重构计划和当前范围。
-- [决策日志](docs/open-decisions.md)：已关闭的设计决定和任何新发现的开放问题，必须与权威文档同步。
+- [架构](docs/zh/architecture.md)：模块边界、依赖方向、对象所有权和已删除的遗留方向。
+- [Lua API 契约](docs/zh/lua-api.md)：目标 `shield.*` 用户 API。
+- [运行时语义](docs/zh/runtime-semantics.md)：主题索引和实现顺序。
+- [配置语义](docs/zh/runtime-config.md)：核心配置模式。
+- [可选模块契约](docs/zh/optional-modules.md)：官方可选模块边界。
+- [路线图](docs/zh/roadmap.md)：分阶段重构计划和当前范围。
+- [决策日志](docs/zh/open-decisions.md)：已关闭的设计决定和任何新发现的开放问题，必须与权威文档同步。
 
 补充文档，如 CMake 重构笔记、运维设计、模式草稿和历史重构摘要位于 `docs/` 下。如果它们与上述权威契约冲突，权威契约优先。
 

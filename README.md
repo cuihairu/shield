@@ -3,8 +3,7 @@
 English | [简体中文](README.zh.md)
 
 <p align="center">
-  <a href="https://github.com/cuihairu/shield/releases"></a> <a href="https://github.com/cuihairu/shield/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg"></a> <a href="https://en.cppreference.com/w/cpp/23"></a> <a href="https://www.lua.org/"></a> <a href="https://codecov.io/gh/cuihairu/shield"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg"></a> <a href="LICENSE"></a> <a href="https://cuihairu.github.io/shield//"></a>
-  <img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"> <img alt="C++23" src="https://img.shields.io/badge/C++-23-blue.svg"> <img alt="Lua 5.5" src="https://img.shields.io/badge/Lua-5.5-blue.svg"> <img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"> <img src="https://img.shields.io/badge/docs-blue" alt="docs">
+  <a href="https://github.com/cuihairu/shield/releases"><img alt="Status" src="https://img.shields.io/badge/status-in%20development-orange"></a> <a href="https://github.com/cuihairu/shield/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cuihairu/shield/actions/workflows/ci.yml/badge.svg"></a> <a href="https://codecov.io/gh/cuihairu/shield"><img alt="Coverage" src="https://codecov.io/gh/cuihairu/shield/branch/main/graph/badge.svg"></a> <a href="https://en.cppreference.com/w/cpp/23"><img alt="C++23" src="https://img.shields.io/badge/C++-23-blue.svg"></a> <a href="https://www.lua.org/"><img alt="Lua 5.5" src="https://img.shields.io/badge/Lua-5.5-blue.svg"></a> <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a> <a href="https://cuihairu.github.io/shield/"><img alt="docs" src="https://img.shields.io/badge/docs-blue"></a>
 </p>
 
 Shield is a **single-node-first, Skynet-inspired,
@@ -96,8 +95,9 @@ reference implementation and `plugins/auth_jwt` is deprecated pending
 removal.
 
 The plugin system (manifest-first discovery, explicit instances + bindings,
-stable C ABI) is specified in `docs/plugin-system.md`, including the matrix of
-all 16 official plugin packages. To run the full stack in one process — a Lua
+stable C ABI) is specified in `docs/zh/plugin-system.md`, including the matrix
+of all 16 official plugin packages. (Chinese; English translation pending) To
+run the full stack in one process — a Lua
 business script writing to SQLite plus live `/health` and Prometheus
 endpoints — see `examples/kickstart/` (three commands, ~10 minutes). To start
 a new plugin package, run `tools/new_plugin.sh <name>`: it scaffolds the
@@ -130,9 +130,10 @@ Shield core does not provide:
 These capabilities may be built by users or evaluated later as optional
 extensions. They are not part of the current core contract.
 
-`shield.event` is a deliberately small Lua helper for decoupling modules inside
-one service VM. It is not a mailbox, not serialized, not visible across
-services or VMs, and not used for application lifecycle events.
+`shield.event` is planned as a deliberately small Lua helper for decoupling
+modules inside one service VM (target contract; not yet implemented). It is
+not a mailbox, not serialized, not visible across services or VMs, and not
+used for application lifecycle events.
 
 ## Core Boundary
 
@@ -201,15 +202,19 @@ game data attached to a player session, not a Shield core object.
 
 Authoritative design contracts:
 
-- [Architecture](docs/architecture.md): module boundary, dependency direction,
-  object ownership, and removed legacy directions.
-- [Lua API Contract](docs/lua-api.md): target `shield.*` user API.
+- [Architecture](docs/zh/architecture.md): module boundary, dependency direction,
+  object ownership, and removed legacy directions. (Chinese; English
+  translation pending)
+- [Lua API Contract](docs/zh/lua-api.md): target `shield.*` user API. (Chinese;
+  English translation pending)
 - [Runtime Semantics](docs/runtime-semantics.md): topic index and implementation
   order.
-- [Configuration Semantics](docs/runtime-config.md): core configuration schema.
-- [Optional Module Contracts](docs/optional-modules.md): official optional module
-  boundaries.
-- [Roadmap](docs/roadmap.md): staged refactor plan and current scope.
+- [Configuration Semantics](docs/zh/runtime-config.md): core configuration
+  schema. (Chinese; English translation pending)
+- [Optional Module Contracts](docs/zh/optional-modules.md): official optional
+  module boundaries. (Chinese; English translation pending)
+- [Roadmap](docs/zh/roadmap.md): staged refactor plan and current scope.
+  (Chinese; English translation pending)
 - [Decision Log](docs/open-decisions.md): closed design decisions and any newly
   discovered open questions that must be synchronized with authority docs.
 

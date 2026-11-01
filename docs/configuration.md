@@ -1,6 +1,6 @@
 # Configuration Design
 
-This document only explains the configuration layering and does not re-define the schema. The authoritative source for Shield's current **core runtime configuration** is Runtime Config Semantics.
+This document only explains the configuration layering and does not re-define the schema. The authoritative source for Shield's current **core runtime configuration** is [Runtime Config Semantics](zh/runtime-config.md) (currently written in Chinese; English translation pending).
 
 The current source tree and historical configs may still contain legacy fields; those fields must not be treated as the current refactoring contract.
 
@@ -18,7 +18,7 @@ core only defines the configuration required by a single-node runtime:
 - `bootstrap`
 - `shutdown`
 
-Field-level rules, validation, hot-reload boundaries, and merge strategy are uniformly governed by runtime-config.md.
+Field-level rules, validation, hot-reload boundaries, and merge strategy are uniformly governed by [runtime-config.md](zh/runtime-config.md) (Chinese; English translation pending).
 
 ### Optional Module Schema
 
