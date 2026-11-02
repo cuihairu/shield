@@ -804,11 +804,14 @@ if(SHIELD_BUILD_PLUGIN_REDIS_DRIVER)
     # the live-allocation counter sees the driver's allocations. The wrappers
     # live in this TU; the rest of the binary (boost, libstdc++) also routes
     # through them, but only the delta around free_value is asserted.
-    target_link_options(test_redis_driver_free_value
-        PRIVATE
-            "-Wl,--wrap=malloc"
-            "-Wl,--wrap=calloc"
-            "-Wl,--wrap=free")
+    # Only GNU/Clang ld supports --wrap; MSVC rejects it.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(test_redis_driver_free_value
+            PRIVATE
+                "-Wl,--wrap=malloc"
+                "-Wl,--wrap=calloc"
+                "-Wl,--wrap=free")
+    endif()
     add_test(NAME test_redis_driver_free_value
              COMMAND test_redis_driver_free_value)
     set_tests_properties(test_redis_driver_free_value PROPERTIES

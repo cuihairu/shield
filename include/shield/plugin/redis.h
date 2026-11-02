@@ -98,11 +98,12 @@ typedef struct shield_redis_v1 {
 
     // --- Pipeline ---
     // Execute multiple commands in a single round-trip. out_array receives
-    // one shield_redis_value_v1* per command; out_count is set to the number
-    // of results. Caller must free_value() each out_array[i] individually,
-    // then free(out_array) itself.
+    // a heap-allocated array of shield_redis_value_v1* (one independently
+    // allocated node per command); out_count is set to the number of results.
+    // Caller must free_value() each out_array[i] individually, then free()
+    // the out_array pointer array itself.
     int (*pipeline)(void* inst, const shield_redis_command_v1* cmds,
-                    uint64_t count, shield_redis_value_v1** out_array,
+                    uint64_t count, shield_redis_value_v1*** out_array,
                     uint64_t* out_count, shield_error_v1* err);
 
     // --- Raw command (escape hatch) ---
@@ -113,7 +114,8 @@ typedef struct shield_redis_v1 {
 
     // --- Memory management ---
     // Release a value returned by any method above. Recursively frees nested
-    // arrays. Safe to call with NULL or on an already-freed value.
+    // arrays and the value node itself. Safe to call with NULL. Do not call
+    // twice on the same non-NULL pointer; the node is freed by this call.
     void (*free_value)(shield_redis_value_v1* value);
 } shield_redis_v1;
 

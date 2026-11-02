@@ -542,7 +542,7 @@ void init_vtable(shield_redis_v1* out) {
 
         // pipeline
         [](void* inst, const shield_redis_command_v1* cmds, uint64_t count,
-           shield_redis_value_v1** out_array, uint64_t* out_count,
+           shield_redis_value_v1*** out_array, uint64_t* out_count,
            shield_error_v1* err) -> int {
             if (!inst || !cmds || !out_array || !out_count) return -1;
             auto* ri = static_cast<redis_instance*>(inst);
@@ -563,14 +563,10 @@ void init_vtable(shield_redis_v1* out) {
                 // exec() returns QueuedReplies; use .get(idx) for each reply.
                 auto replies = pipe.exec();
                 *out_count = replies.size();
-                *out_array = static_cast<shield_redis_value_v1*>(
-                    std::calloc(replies.size(), sizeof(shield_redis_value_v1)));
+                *out_array = static_cast<shield_redis_value_v1**>(std::calloc(
+                    replies.size(), sizeof(shield_redis_value_v1*)));
                 for (size_t i = 0; i < replies.size(); ++i) {
-                    auto* val = reply_to_value(&replies.get(i));
-                    if (val) {
-                        (*out_array)[i] = *val;
-                        std::free(val);  // shallow copy into array
-                    }
+                    (*out_array)[i] = reply_to_value(&replies.get(i));
                 }
                 return 0;
             } catch (const std::exception& e) {
@@ -961,7 +957,7 @@ shd::table make_instance_proxy(shd::state_view lua, redis_instance* inst) {
                 cmds[i].argc = static_cast<uint64_t>(cmd_strings[i].size());
             }
 
-            shield_redis_value_v1* out_array = nullptr;
+            shield_redis_value_v1** out_array = nullptr;
             uint64_t out_count = 0;
             shield_error_v1 err{};
             int rc = v.pipeline(inst, cmds.data(),
@@ -971,7 +967,7 @@ shd::table make_instance_proxy(shd::state_view lua, redis_instance* inst) {
                 results.push_back(shd::make_object(lua, true));
                 auto tbl = lua.create_table();
                 for (uint64_t i = 0; i < out_count; ++i) {
-                    tbl[i + 1] = value_to_lua(lua, &out_array[i]);
+                    tbl[i + 1] = value_to_lua(lua, out_array[i]);
                 }
                 results.push_back(shd::make_object(lua, tbl));
             } else {
@@ -981,9 +977,9 @@ shd::table make_instance_proxy(shd::state_view lua, redis_instance* inst) {
                     err.message ? err.message : "pipeline failed"));
             }
             if (out_array) {
-                // Free each element, then the array.
+                // Free each heap-allocated value, then the pointer array.
                 for (uint64_t i = 0; i < out_count; ++i) {
-                    v.free_value(&out_array[i]);
+                    v.free_value(out_array[i]);
                 }
                 std::free(out_array);
             }

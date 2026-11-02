@@ -279,7 +279,7 @@ typedef struct shield_redis_v1 {
 
 | 方法 | 说明 |
 | --- | --- |
-| `free_value` | 释放 `get`/`hget`/`hgetall`/`zrange`/`pipeline`/`command` 返回的 `shield_redis_value_v1*`。重复 free 安全（内部置空）。 |
+| `free_value` | 释放 `get`/`hget`/`hgetall`/`zrange`/`pipeline`/`command` 返回的 `shield_redis_value_v1*`。递归释放嵌套内容并释放节点本身；`NULL` 安全，同一指针不可二次释放。`pipeline` 返回的 `out_array` 中每个元素均为独立堆分配，逐个 `free_value` 后再释放指针数组本身。 |
 
 ### 获取 vtable
 

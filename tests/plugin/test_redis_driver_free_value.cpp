@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "shield/plugin/abi.h"
 #include "shield/plugin/host_api.h"
@@ -186,3 +187,215 @@ BOOST_AUTO_TEST_CASE(free_value_single_string) {
     vt->free_value(s);
     BOOST_CHECK_EQUAL(g_live, baseline);
 }
+
+// pipeline() returns shield_redis_value_v1** (a heap-allocated array of
+// independently allocated value nodes). The ABI contract is:
+//   free_value(out_array[i]) for each element, then free(out_array).
+// This test pins that exact ownership shape so a flat inline-element array
+// cannot regress the ABI and trigger invalid frees / heap corruption.
+BOOST_AUTO_TEST_CASE(free_value_pipeline_contract) {
+    const shield_redis_v1* vt = driver_vtable();
+    const std::size_t baseline = g_live;
+    const std::size_t count = 3;
+
+    // Simulate the exact allocation shape produced by pipeline(): an array
+    // of pointers, each pointing to an independently allocated value node.
+    auto** out_array = static_cast<shield_redis_value_v1**>(
+        std::calloc(count, sizeof(shield_redis_value_v1*)));
+    out_array[0] = make_string("PING");
+    out_array[1] = make_array(0);  // empty reply
+    auto* nested = make_array(1);
+    set_item(nested, 0, make_string("nested"));
+    out_array[2] = nested;
+
+    // Exercise the documented pipeline free sequence exactly.
+    for (std::size_t i = 0; i < count; ++i) {
+        vt->free_value(out_array[i]);
+    }
+    std::free(out_array);
+
+    BOOST_CHECK_EQUAL(g_live, baseline);
+}
+
+// -- Real pipeline ABI integration -----------------------------------------
+// Spawns a local redis-server (when available, POSIX only) and exercises the
+// actual pipeline() implementation. This pins the end-to-end ownership
+// contract: each out_array[i] is independently allocated, freed by
+// free_value, then out_array itself is freed. The old flat-array bug caused
+// invalid free + double free here.
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace {
+
+struct redis_server {
+    int port = 0;
+    ::pid_t pid = -1;
+    ~redis_server() {
+        if (pid > 0) {
+            ::kill(pid, SIGTERM);
+            int status = 0;
+            ::waitpid(pid, &status, 0);
+        }
+    }
+};
+
+int probe_free_port() {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    socklen_t len = sizeof(addr);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    int port = ntohs(addr.sin_port);
+    ::close(fd);
+    return port;
+}
+
+bool tcp_accepts(int port) {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    const bool ok =
+        ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+    ::close(fd);
+    return ok;
+}
+
+std::unique_ptr<redis_server> spawn_redis_server() {
+    const int port = probe_free_port();
+    if (port <= 0) return nullptr;
+    const ::pid_t pid = ::fork();
+    if (pid < 0) return nullptr;
+    if (pid == 0) {
+        const auto port_str = std::to_string(port);
+        ::execlp("redis-server", "redis-server", "--port", port_str.c_str(),
+                 "--save", "", "--appendonly", "no", nullptr);
+        ::_exit(127);
+    }
+    for (int i = 0; i < 100; ++i) {
+        if (tcp_accepts(port)) {
+            auto srv = std::make_unique<redis_server>();
+            srv->port = port;
+            srv->pid = pid;
+            return srv;
+        }
+        ::usleep(50000);
+    }
+    ::kill(pid, SIGKILL);
+    ::waitpid(pid, nullptr, 0);
+    return nullptr;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(pipeline_abi_real_server_ownership_contract) {
+    const auto srv = spawn_redis_server();
+    if (!srv) {
+        BOOST_TEST_MESSAGE("redis-server unavailable; skipping");
+        return;
+    }
+
+    const auto* abi = shield_plugin_get_v1();
+    BOOST_REQUIRE(abi != nullptr);
+    shield_plugin_create_args_v1 args{};
+    args.instance_id = "free_value_pipeline_real";
+    const std::string config_json =
+        R"({"host":"127.0.0.1","port":)" + std::to_string(srv->port) + "}";
+    args.config_json = config_json.c_str();
+    shield_error_v1 err{};
+    shield_plugin_instance_v1* inst = nullptr;
+    BOOST_REQUIRE_EQUAL(abi->create(&args, &inst, &err), 0);
+    BOOST_REQUIRE(inst != nullptr);
+    BOOST_REQUIRE_EQUAL(inst->start(inst, &err), 0);
+    const auto* vt = static_cast<const shield_redis_v1*>(
+        inst->get_interface(inst, SHIELD_REDIS_V1, &err));
+    BOOST_REQUIRE(vt != nullptr);
+    BOOST_REQUIRE(vt->pipeline != nullptr);
+    BOOST_REQUIRE(vt->free_value != nullptr);
+
+    void* handle = vt->connect(vt, nullptr, nullptr, 0);
+    BOOST_REQUIRE(handle != nullptr);
+
+    const std::string k1 = "shield:test:p1:" + std::to_string(::getpid());
+    const std::string v1 = "value1";
+    const std::string k2 = "shield:test:p2:" + std::to_string(::getpid());
+    const std::string v2 = "value2";
+    const std::string set1[] = {"SET", k1, v1};
+    const std::string set2[] = {"SET", k2, v2};
+    const std::string get1[] = {"GET", k1};
+    const std::string get2[] = {"GET", k2};
+    const shield_redis_arg_v1 set1_args[] = {
+        {set1[0].data(), set1[0].size()},
+        {set1[1].data(), set1[1].size()},
+        {set1[2].data(), set1[2].size()},
+    };
+    const shield_redis_arg_v1 set2_args[] = {
+        {set2[0].data(), set2[0].size()},
+        {set2[1].data(), set2[1].size()},
+        {set2[2].data(), set2[2].size()},
+    };
+    const shield_redis_arg_v1 get1_args[] = {
+        {get1[0].data(), get1[0].size()},
+        {get1[1].data(), get1[1].size()},
+    };
+    const shield_redis_arg_v1 get2_args[] = {
+        {get2[0].data(), get2[0].size()},
+        {get2[1].data(), get2[1].size()},
+    };
+    const shield_redis_command_v1 cmds[] = {
+        {set1_args, 3},
+        {set2_args, 3},
+        {get1_args, 2},
+        {get2_args, 2},
+    };
+
+    shield_redis_value_v1** out_array = nullptr;
+    uint64_t out_count = 0;
+    const int rc = vt->pipeline(handle, cmds, 4, &out_array, &out_count, &err);
+    BOOST_REQUIRE_EQUAL(rc, 0);
+    BOOST_REQUIRE(out_array != nullptr);
+    BOOST_REQUIRE_EQUAL(out_count, 4u);
+
+    // Every element is an independently allocated value node.
+    for (uint64_t i = 0; i < out_count; ++i) {
+        BOOST_REQUIRE(out_array[i] != nullptr);
+    }
+    BOOST_REQUIRE(out_array[2] != nullptr);
+    BOOST_CHECK_EQUAL(out_array[2]->type, SHIELD_REDIS_STRING);
+    BOOST_CHECK_EQUAL(std::string(out_array[2]->str, out_array[2]->str_len),
+                      v1);
+    BOOST_REQUIRE(out_array[3] != nullptr);
+    BOOST_CHECK_EQUAL(out_array[3]->type, SHIELD_REDIS_STRING);
+    BOOST_CHECK_EQUAL(std::string(out_array[3]->str, out_array[3]->str_len),
+                      v2);
+
+    const std::size_t baseline = g_live;
+    // Exercise the exact documented ownership release sequence.
+    for (uint64_t i = 0; i < out_count; ++i) {
+        vt->free_value(out_array[i]);
+    }
+    std::free(out_array);
+    BOOST_CHECK_LT(g_live, baseline);
+
+    vt->disconnect(handle);
+    inst->shutdown(inst);
+}
+#endif  // _WIN32

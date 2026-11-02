@@ -174,3 +174,17 @@
 - [ ] **RACE-7 gateway close 缺 epoch 校验（P2）**：`src/lua/gateway_actor.cpp:210` `handle_client_close` 按 session_id 直接关会话，不像 `handle_client_egress`（:112）比对 `session_epoch`——持过期 ClientContext 的服务可关闭已 rebind 到别的 target 的会话。建议：close 前比对 `request.context.session_epoch == binding.epoch`（或文档化允许任意 epoch 并说明理由）。
 - [ ] **P3 force_remove timer 清理不对称**：`src/lua/lua_service.cpp:3495` `force_remove` 没有 `exit()`（:3282）的 per-service actor-timer / call-timeout 驱动清理；timers 只能等 manager 析构统一清。当前 force_remove 仅 shutdown 预算耗尽路径调用（:3433），窗口内 timer 触发走"服务已移除"错误臂，无实际 UAF；属防御性收口。
 - [ ] **P3 观察**：clang-tidy 既有警告（narrowing-conversions ×2、convert-member-functions-to-static ×3、inefficient-vector-operation ×2）非本批引入；同仓 JSON 深度防护面（`plugins/protocol.json` / `src/transport/protocol.cpp`）已随本批 commit 落地（见 `fix: reject over-deep json payloads at codec boundary` / `fix: depth-guard json plugin decode and encode`）。
+
+## 审核批次：8a191944d65e..HEAD（单提交 394351a Fix recursive Redis value freeing）
+- [x] 审核发现：**free_value 语义变更引入 heap corruption（回归）**——属实。pipeline 改为每元素独立堆分配（`shield_redis_value_v1***` 指针数组），Lua 绑定逐元素 `free_value(out_array[i])` 后释放指针数组（plugins/redis.driver/shield_redis_driver.cpp:565-570、:980-982）；真实 redis-server 集成测试钉住所有权契约（tests/plugin/test_redis_driver_free_value.cpp:246-346）。
+- [x] 审核发现：**free_value 不再幂等，违反文档契约**——属实。更新 redis.h 与 docs，明确"释放节点本身、同一指针不可二次释放、NULL 安全"（include/shield/plugin/redis.h:114-118、docs/zh/plugins/redis-driver.md:282）。
+- [x] 审核发现：**ABI 头契约与实现不一致**——属实。pipeline 签名改为 `shield_redis_value_v1***`（指针数组），契约改为"逐元素 free_value 后释放指针数组"，与实现一致（include/shield/plugin/redis.h:98-106）。
+- [x] 审核发现：**测试缺口——新测试未覆盖 pipeline 内联元素释放**——属实。新增 pipeline 所有权契约单测（指针数组 + 逐元素 free）与真实 redis-server 集成测试（tests/plugin/test_redis_driver_free_value.cpp:190-346）。
+- [x] 审核发现：**测试可移植性——`-Wl,--wrap=` 无平台护栏**——属实。`--wrap` 链接选项加 `CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"` 护栏（tests/CMakeLists.txt:807-813）。
+- 不属实：本轮 diff 其余部分整体未见问题——pipeline 路径即属本次回归（见前四条属实发现），不能以"未见问题"整段勾选。
+
+## 审核（8a191944d65e..HEAD，只审不改）— commit 394351a "Fix recursive Redis value freeing"
+- [x] 审核发现：free_value 语义被改成"释放节点本身"，pipeline 仍按旧契约对内联元素 free_value——属实。修为独立堆分配 + 逐元素 free_value，真实 server 测试钉住契约（plugins/redis.driver/shield_redis_driver.cpp:565-570、:980-982；tests/plugin/test_redis_driver_free_value.cpp:246-346）。
+- [x] 审核发现：公共 ABI 契约未随语义更新——属实。redis.h 同步更新 pipeline 签名/释放契约及 free_value 语义（include/shield/plugin/redis.h:98-118）。
+- [x] 审核发现：测试缺口——属实。新增 pipeline 所有权契约单测与真实 redis-server 集成测试（tests/plugin/test_redis_driver_free_value.cpp:190-346）。
+- [x] 审核发现：低危——free_value_contents 任意深度递归（栈深随 Redis 回复嵌套无上限）——属实，属既有对称暴露面，与 reply_to_value 一致，暂标注为接受（plugins/redis.driver/shield_redis_driver.cpp:258-272）。
