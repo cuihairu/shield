@@ -413,7 +413,12 @@ BOOST_AUTO_TEST_CASE(TransportMalformedInjections) {
     // M5: inbound frames counted on arrival (two envelopes + one reply, one
     // heartbeat), but nothing left — the envelope reply had no connection
     // to the announced source and dropped.
-    const auto stats = transport->stats();
+    // CI 定时抖动：轮询等待入站计数到齐，不再依赖固定 200ms 睡眠。
+    auto stats = transport->stats();
+    for (int i = 0; i < 150 && stats.rx_messages < 3u; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        stats = transport->stats();
+    }
     BOOST_CHECK_EQUAL(stats.live_connections, 0u);
     BOOST_CHECK_EQUAL(stats.tx_messages, 0u);
     BOOST_CHECK_GE(stats.rx_messages, 3u);

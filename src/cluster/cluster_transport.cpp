@@ -815,6 +815,9 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                const EnvelopeReplyMsg& reply) { self->send(peer, reply); },
         // GCOVR_EXCL_STOP
         [self, side](const EnvelopeReplyMsg& reply) {
+            // Inbound frames are counted on arrival, before any trust check:
+            // stats() must reflect every received frame, trusted or not.
+            side->rx_messages.fetch_add(1, std::memory_order_relaxed);
             // A reply may only be trusted when the sender completed a Hello
             // handshake (it then has a bound node identity). This no longer
             // depends on cluster auth: the old check ran only when auth was
@@ -848,7 +851,6 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                 side->outbound_sessions.erase(it);
                 reply_handler = side->bridges.reply_handler;
             }
-            side->rx_messages.fetch_add(1, std::memory_order_relaxed);
             // Routes into the caller-side pending-call table, resuming the
             // suspended coroutine (unknown/expired sessions no-op there).
             // Invoked outside data_mutex: the completion hook re-enters
