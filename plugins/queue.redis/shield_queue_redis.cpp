@@ -46,11 +46,23 @@ struct SubEntry {
     void* user_data;
 };
 
+// A consumer worker thread plus its own stop signal. The stop flag is the
+// only way to retire a worker before the whole connection goes down, and it
+// is checked between XREADGROUP BLOCK rounds so a stop is observed within
+// ~kBlockMs.
+struct shield_queue_worker {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> stop;
+};
+
 struct shield_queue_conn {
     std::shared_ptr<sw::redis::Redis> redis;
     std::unordered_map<std::string, SubEntry> subs;
     std::mutex subs_mu;
-    std::unordered_map<std::string, std::thread> workers;
+    std::unordered_map<std::string, shield_queue_worker> workers;
+    // Guards `workers` only. `subs_mu` guards the callback map; the two are
+    // never held together (subscribe/unsubscribe take them sequentially).
+    std::mutex workers_mu;
     std::atomic<bool> running{false};
 
     explicit shield_queue_conn(std::shared_ptr<sw::redis::Redis> r)
@@ -84,10 +96,14 @@ void ensure_group(sw::redis::Redis& redis, const std::string& stream,
     }
 }
 
-// Consumer thread: XREADGROUP loop for one channel/stream.
+// Consumer thread: XREADGROUP loop for one channel/stream. `stop` is the
+// worker's own retirement signal, checked alongside `running` between BLOCK
+// rounds. It exists so a single worker can be retired (re-subscribe /
+// unsubscribe) without tearing down the whole connection.
 void consumer_loop(shield_queue_conn* c, const std::string& channel,
-                   const std::string& consumer_name) {
-    while (c->running.load()) {
+                   const std::string& consumer_name,
+                   std::shared_ptr<std::atomic<bool>> stop) {
+    while (c->running.load() && !stop->load()) {
         try {
             // XREADGROUP GROUP <group> <consumer> COUNT <n> BLOCK <ms> STREAMS
             // <stream> >
@@ -194,8 +210,15 @@ const shield_queue_v1& queue_vtable() {
         [](shield_queue_conn* c) {
             if (!c) return;
             c->running.store(false);
-            for (auto& [ch, t] : c->workers) {
-                if (t.joinable()) t.join();
+            {
+                std::lock_guard<std::mutex> lock(c->workers_mu);
+                for (auto& [ch, w] : c->workers) {
+                    if (w.stop) w.stop->store(true);
+                }
+                for (auto& [ch, w] : c->workers) {
+                    if (w.thread.joinable()) w.thread.join();
+                }
+                c->workers.clear();
             }
             delete c;
         },
@@ -225,21 +248,41 @@ const shield_queue_v1& queue_vtable() {
                 }
                 // Consumer name: shield-<pointer>-<channel>
                 std::string consumer = "shield-" + ch;
-                // Stop existing worker for this channel if any
+                // Retire any existing worker for this channel. A re-subscribe
+                // must not leave a joinable std::thread in the map: erasing it
+                // without a join destroys a joinable thread (std::terminate),
+                // and two XREADGROUP loops on one consumer group would both
+                // deliver every message. Set the worker's stop flag and join
+                // it (observed within ~kBlockMs) before replacing.
+                shield_queue_worker old;
                 {
+                    std::lock_guard<std::mutex> lock(c->workers_mu);
                     auto it = c->workers.find(ch);
                     if (it != c->workers.end()) {
-                        // Worker will exit on next BLOCK timeout
+                        old = std::move(it->second);
                         c->workers.erase(it);
                     }
                 }
-                c->workers[ch] = std::thread(consumer_loop, c, ch, consumer);
+                if (old.thread.joinable()) {
+                    if (old.stop) old.stop->store(true);
+                    // subscribe never runs on the consumer thread itself, so
+                    // a self-join is impossible here.
+                    old.thread.join();
+                }
+                shield_queue_worker w;
+                w.stop = std::make_shared<std::atomic<bool>>(false);
+                w.thread = std::thread(consumer_loop, c, ch, consumer, w.stop);
+                {
+                    std::lock_guard<std::mutex> lock(c->workers_mu);
+                    c->workers[ch] = std::move(w);
+                }
                 return 0;
             } catch (...) {
                 return -1;
             }
         },
-        // unsubscribe — remove callback; worker exits on next loop iteration
+        // unsubscribe — remove callback and retire the worker (join before
+        // erase so the map never holds a joinable, destroyable thread)
         [](shield_queue_conn* c, const char* channel) -> int {
             if (!c || !channel) return -1;
             std::string ch(channel);
@@ -247,10 +290,18 @@ const shield_queue_v1& queue_vtable() {
                 std::lock_guard<std::mutex> lock(c->subs_mu);
                 c->subs.erase(ch);
             }
-            auto it = c->workers.find(ch);
-            if (it != c->workers.end()) {
-                if (it->second.joinable()) it->second.join();
-                c->workers.erase(it);
+            shield_queue_worker old;
+            {
+                std::lock_guard<std::mutex> lock(c->workers_mu);
+                auto it = c->workers.find(ch);
+                if (it != c->workers.end()) {
+                    old = std::move(it->second);
+                    c->workers.erase(it);
+                }
+            }
+            if (old.thread.joinable()) {
+                if (old.stop) old.stop->store(true);
+                old.thread.join();
             }
             return 0;
         },
