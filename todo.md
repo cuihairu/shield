@@ -158,3 +158,19 @@
 ## 批次：shield_global 独占锁域 Redis 后端切片 2
 ## 批次：shield_global 读写锁域 Redis 后端切片 3
 ## 批次：shield_global 排行域 Redis 后端切片 4
+## 代码深审 P2/P3 待办（2026-11-01）
+- [ ] **BUG-3 redis.driver free_value 浅释放（内存泄漏）**：`plugins/redis.driver/shield_redis_driver.cpp:577` 的 free_value 只深走 3 层；XREADGROUP / 深层嵌套回复（streams→entries→fields 达 5 层）的深层字符串不释放，driver 路径每读一批泄漏。改真递归（每层对 items 逐元素调自身）。
+- [ ] **RACE-2 lua_http_bridge 路由槽 UAF 窗口**：`src/lua/lua_http_bridge.cpp:71-78` attach 装 sink（捕获 this）、detach 清 sink；`src/lua/lua_runtime.cpp:498` 读 sink 与 detach 清空之间竞态——sink 拷贝先于清空、调用在 bridge 析构后 → 悬垂。sink 改存 weak / 经 manager 间接。
+- [ ] **BUG-2 _resume_after 定时器失败泄漏**：`src/lua/lua_api.cpp:1129` `_resume_after` 定时器失效/协程已死时不回收 continuation 资源。
+- [ ] **BUG-6 console_session send_line 裸 this 投递**：`src/net/console_session.cpp:65-70` send_line post 捕获裸 this；若会话在排队写完成前销毁 → UAF。改 weak_from_this 或保证会话生命周期。
+- [ ] **BUG-7 postgresql rewrite_placeholders 串字面量误改**：`plugins/postgresql/shield_db_pgsql.cpp:199` 把 SQL 中字符串字面量/注释里的 `?` 也改成 `$N` → 语义错乱。需字符串/注释感知。
+- [ ] **RACE-3/4 running_/listening_ 裸 bool**：`include/shield/net/http_server.hpp:147` running_、`include/shield/net/listener.hpp:193` listening_、`include/shield/net/console_server.hpp:63` listening_ 为非原子 bool 跨线程读写 → 改 std::atomic<bool>。
+- [ ] **RACE-5/6 acceptor close-vs-accept**：`src/net/listener.cpp:184/203` stop() 关 acceptor 与在途 async_accept 完成窗口（operation_aborted 判据已覆盖主路径，收口残余窗口）。
+- [ ] **BUG-9 lua_runtime 收窄转换**：`src/lua/lua_runtime.cpp:837/2251` 对 Lua 数值键 `as<int>()`——非整数/越界值截断。
+- [ ] **BUG-8 cache.redis incr_by 溢出**：`plugins/cache.redis/shield_cache_redis.cpp:694` INCRBY 无溢出/类型护栏。
+- [ ] **BUG-5 leaderboard 悬垂名字**：`plugins/leaderboard.redis/shield_leaderboard_redis.cpp:76` 场名/板名以外部指针存活期外引用。
+- [ ] **SEC-2 JWT 缺 exp 注**：`plugins/auth_jwt/shield_auth_jwt.cpp:275` `json_get_int(payload,"exp")` 缺 exp 时返回 0、`if (exp && ...)` 跳过过期检查 → 无 exp 令牌视为永不过期。改缺省拒绝或强制 exp。
+- [ ] **SEC-3 __shield_client_ref 自证标记无来源校验（P2）**：`src/core/service_message.cpp:31` `ClientContextData::from_json` 接受任意 `{"__shield_client_ref": true, ...}` 且身份字段（session_id/player_id/gateway_address/protocol_profile_id）照单全收，无来源校验；`src/lua/lua_api.cpp:203` `json_to_lua` 把它物化为受信 ClientContext。若某 handler 把不受信 payload 透传进 `client_arg_to_data`（`shield.client.bind/close`/`_client_egress`），调用方即控制会话身份 → 会话伪造。建议：物化路径限定为受信消息来源（gateway 产出），或给标记加网关签发的 nonce/签名。
+- [ ] **RACE-7 gateway close 缺 epoch 校验（P2）**：`src/lua/gateway_actor.cpp:210` `handle_client_close` 按 session_id 直接关会话，不像 `handle_client_egress`（:112）比对 `session_epoch`——持过期 ClientContext 的服务可关闭已 rebind 到别的 target 的会话。建议：close 前比对 `request.context.session_epoch == binding.epoch`（或文档化允许任意 epoch 并说明理由）。
+- [ ] **P3 force_remove timer 清理不对称**：`src/lua/lua_service.cpp:3495` `force_remove` 没有 `exit()`（:3282）的 per-service actor-timer / call-timeout 驱动清理；timers 只能等 manager 析构统一清。当前 force_remove 仅 shutdown 预算耗尽路径调用（:3433），窗口内 timer 触发走"服务已移除"错误臂，无实际 UAF；属防御性收口。
+- [ ] **P3 观察**：clang-tidy 既有警告（narrowing-conversions ×2、convert-member-functions-to-static ×3、inefficient-vector-operation ×2）非本批引入；同仓 JSON 深度防护面（`plugins/protocol.json` / `src/transport/protocol.cpp`）已随本批 commit 落地（见 `fix: reject over-deep json payloads at codec boundary` / `fix: depth-guard json plugin decode and encode`）。
