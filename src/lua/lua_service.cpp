@@ -5400,9 +5400,21 @@ caf::actor LuaServiceManager::gateway_actor(
     return it != impl_->gateway_actors.end() ? it->second : caf::actor{};
 }
 
+// Deepest JSON subtree converted to Lua. The DOM is guarded at the codec
+// boundary (kMaxJsonDepth there), so this cap is defense-in-depth: a deep
+// value that slips through a non-network path degrades to nil instead of
+// overflowing the C++ stack on this recursive conversion (which runs on the
+// no-recovery resume path).
+constexpr std::size_t kPushJsonMaxDepth = 512;
+
 // Push a JSON value onto a raw lua_State using the C API (avoids
 // binding-layer stack residue when targeting a specific coroutine thread).
-static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
+static void push_json_to_stack(lua_State* L, const nlohmann::json& v,
+                               std::size_t depth = 0) {
+    if (depth > kPushJsonMaxDepth) {
+        lua_pushnil(L);
+        return;
+    }
     if (v.is_null()) {
         lua_pushnil(L);
     } else if (v.is_boolean()) {
@@ -5428,7 +5440,7 @@ static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
         lua_createtable(L, static_cast<int>(v.size()), 0);
         int i = 1;
         for (const auto& el : v) {
-            push_json_to_stack(L, el);
+            push_json_to_stack(L, el, depth + 1);
             lua_rawseti(L, -2, i++);
         }
     } else if (v.is_object()) {
@@ -5459,7 +5471,7 @@ static void push_json_to_stack(lua_State* L, const nlohmann::json& v) {
         lua_createtable(L, 0, static_cast<int>(v.size()));
         for (auto it = v.begin(); it != v.end(); ++it) {
             lua_pushlstring(L, it.key().data(), it.key().size());
-            push_json_to_stack(L, it.value());
+            push_json_to_stack(L, it.value(), depth + 1);
             lua_rawset(L, -3);
         }
     } else {
