@@ -53,41 +53,70 @@ shield::net::HttpResponse error_response(int status, const std::string& what) {
 
 }  // namespace
 
+// Mutable route-slot state shared with the callbacks the bridge installs.
+// The route sink is copied by LuaRuntime::register_http_route and invoked
+// after that mutex is released, and per-route handlers sit in the HttpServer
+// route table until the server dies (bootstrap destroys the bridge first), so
+// both callback kinds can run after the LuaHttpBridge object is gone. They
+// hold this state by shared_ptr and treat server == nullptr as "detached"
+// instead of touching a freed bridge.
+struct LuaHttpBridgeState : std::enable_shared_from_this<LuaHttpBridgeState> {
+    LuaHttpBridgeState(LuaRuntime& runtime_in, LuaServiceManager& manager_in)
+        : runtime(runtime_in), manager(manager_in) {}
+
+    void register_on_server(const std::string& method, const std::string& path);
+    shield::net::HttpResponse handle(const shield::net::HttpRequest& req);
+
+    LuaRuntime& runtime;
+    LuaServiceManager& manager;
+    std::mutex server_mutex;
+    shield::net::HttpServer* server = nullptr;
+};
+
 LuaHttpBridge::LuaHttpBridge(LuaRuntime& runtime, LuaServiceManager& manager)
-    : runtime_(runtime), manager_(manager) {}
+    : state_(std::make_shared<LuaHttpBridgeState>(runtime, manager)) {}
 
 LuaHttpBridge::~LuaHttpBridge() { detach(); }
 
 void LuaHttpBridge::attach(shield::net::HttpServer& server) {
     {
-        std::lock_guard<std::mutex> lock(server_mutex_);
-        server_ = &server;
+        std::lock_guard<std::mutex> lock(state_->server_mutex);
+        state_->server = &server;
     }
     // Mirror routes registered before attach (service on_init phase).
-    for (const auto& route : runtime_.http_routes()) {
-        register_on_server(route.method, route.path);
+    for (const auto& route : state_->runtime.http_routes()) {
+        state_->register_on_server(route.method, route.path);
     }
-    // Late registrations (running services) flow through the sink.
-    runtime_.set_http_route_sink(
-        [this](const std::string& method, const std::string& path) {
-            register_on_server(method, path);
+    // Late registrations (running services) flow through the sink. The sink
+    // captures the shared state, not the bridge: a registration can already
+    // hold a sink copy when detach() runs and the bridge object is destroyed,
+    // and invoking that copy through raw `this` was a use-after-free; against
+    // the state it just sees server == nullptr and returns.
+    state_->runtime.set_http_route_sink(
+        [state = state_](const std::string& method, const std::string& path) {
+            state->register_on_server(method, path);
         });
 }
 
 void LuaHttpBridge::detach() {
-    runtime_.set_http_route_sink({});
-    std::lock_guard<std::mutex> lock(server_mutex_);
-    server_ = nullptr;
+    state_->runtime.set_http_route_sink({});
+    std::lock_guard<std::mutex> lock(state_->server_mutex);
+    state_->server = nullptr;
 }
 
-void LuaHttpBridge::register_on_server(const std::string& method,
-                                       const std::string& path) {
-    std::lock_guard<std::mutex> lock(server_mutex_);
+shield::net::HttpResponse LuaHttpBridge::handle(
+    const shield::net::HttpRequest& req) {
+    return state_->handle(req);
+}
+
+void LuaHttpBridgeState::register_on_server(const std::string& method,
+                                            const std::string& path) {
+    std::lock_guard<std::mutex> lock(server_mutex);
     // Branch-only exclusion: both arms are exercised (the early return by
     // RegistrationBeforeAttachHitsEarlyReturn /
     // PreAttachRegistrationReplayedByAttach, the fall-through by attach
     // replay), but gcov attributes one arm to an outlined clone.
-    if (!server_) {  // GCOVR_EXCL_BR_LINE (compiler artifact)
+    if (!server) {  // GCOVR_EXCL_BR_LINE (compiler artifact)
         // Detach race guard: a service thread may already be inside the
         // route sink when detach() completes; the sink is only ever
         // installed while a server is attached.
@@ -95,16 +124,22 @@ void LuaHttpBridge::register_on_server(const std::string& method,
         return;
         // GCOVR_EXCL_STOP
     }
-    server_->route(
+    server->route(
         method_from_string(method), path,
+        // Capture the owning state, not any `this`: per-route handlers stay
+        // in the server's route table past bridge destruction (bootstrap
+        // resets the bridge before HttpServer::stop()), so a raw bridge
+        // capture was a use-after-free window on teardown.
         // GCOVR_EXCL_START (compiler artifact: the route sink's standalone
         // copy never runs — dispatch goes through the inlined clone; the
         // lambda line shows real hits while the function entity counts 0)
-        [this](const shield::net::HttpRequest& req) { return handle(req); });
+        [state = shared_from_this()](const shield::net::HttpRequest& req) {
+            return state->handle(req);
+        });
     // GCOVR_EXCL_STOP
 }
 
-shield::net::HttpResponse LuaHttpBridge::handle(
+shield::net::HttpResponse LuaHttpBridgeState::handle(
     const shield::net::HttpRequest& req) {
     const std::string method(req.method_string());
     std::string target(req.target());
@@ -116,7 +151,7 @@ shield::net::HttpResponse LuaHttpBridge::handle(
     }
 
     std::vector<std::pair<std::string, std::string>> params;
-    auto route = runtime_.find_http_route(method, target, &params);
+    auto route = runtime.find_http_route(method, target, &params);
     if (!route) {
         return error_response(404, "route not found: " + method + " " + target);
     }
@@ -148,19 +183,19 @@ shield::net::HttpResponse LuaHttpBridge::handle(
     // GCOVR_EXCL_BR_START (compiler artifact: lambda-capture copy and
     // enqueue template arcs)
     const uint64_t task_id =
-        manager_.enqueue_forked_task(  // GCOVR_EXCL_BR_LINE (compiler artifact:
-                                       // lambda-capture copy / template arcs)
+        manager.enqueue_forked_task(  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // lambda-capture copy / template arcs)
             route->service_id,
-            [runtime = &runtime_, route = *route, request_json,
+            [runtime = &runtime, route = *route, request_json,
              promise]() {  // GCOVR_EXCL_BR_LINE (compiler artifact:
                            // lambda-capture copy / template arcs)
                 nlohmann::json desc;
                 std::string error;
-                // Capture the runtime (not `this`): the forked task may run
-                // on the service actor thread after the bridge is torn down
-                // (bootstrap resets http_bridge before lua services drain),
-                // and the runtime outlives that window. Calling through
-                // `this->runtime_` on a freed bridge was a use-after-free.
+                // Capture the runtime (not the bridge or this state): the
+                // forked task may run on the service actor thread after the
+                // bridge is torn down (bootstrap resets http_bridge before
+                // lua services drain), and the runtime outlives that window.
+                // Calling through the bridge was a use-after-free.
                 if (runtime->call_http_handler(route, request_json, desc,
                                                &error)) {
                     promise->set_value(std::move(desc));

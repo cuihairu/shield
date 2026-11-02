@@ -160,7 +160,7 @@
 ## 批次：shield_global 排行域 Redis 后端切片 4
 ## 代码深审 P2/P3 待办（2026-11-01）
 - [x] **BUG-3 redis.driver free_value 浅释放（内存泄漏）**：`plugins/redis.driver/shield_redis_driver.cpp:577` 的 free_value 只深走 3 层；XREADGROUP / 深层嵌套回复（streams→entries→fields 达 5 层）的深层字符串不释放，driver 路径每读一批泄漏。改真递归（每层对 items 逐元素调自身）。
-- [ ] **RACE-2 lua_http_bridge 路由槽 UAF 窗口**：`src/lua/lua_http_bridge.cpp:71-78` attach 装 sink（捕获 this）、detach 清 sink；`src/lua/lua_runtime.cpp:498` 读 sink 与 detach 清空之间竞态——sink 拷贝先于清空、调用在 bridge 析构后 → 悬垂。sink 改存 weak / 经 manager 间接。
+- [x] **RACE-2 lua_http_bridge 路由槽 UAF 窗口**：`src/lua/lua_http_bridge.cpp:71-78` attach 装 sink（捕获 this）、detach 清 sink；`src/lua/lua_runtime.cpp:498` 读 sink 与 detach 清空之间竞态——sink 拷贝先于清空、调用在 bridge 析构后 → 悬垂。sink 改存 weak / 经 manager 间接。**已修（2026-11-03）**：路由槽可变状态移入 `LuaHttpBridgeState`（`std::shared_ptr`），sink 与每路由 handler 均捕获 state（`enable_shared_from_this`）而非 bridge `this`——detach+析构后到达的注册/分发看到 `server==nullptr` 安全返回，bridge 仅剩 attach/detach/handle 门面；`test_cov_lua_http_bridge`/`test_cov_http_bridge2`/`test_cov_lua_runtime2` 全绿。
 - [ ] **BUG-2 _resume_after 定时器失败泄漏**：`src/lua/lua_api.cpp:1129` `_resume_after` 定时器失效/协程已死时不回收 continuation 资源。
 - [ ] **BUG-6 console_session send_line 裸 this 投递**：`src/net/console_session.cpp:65-70` send_line post 捕获裸 this；若会话在排队写完成前销毁 → UAF。改 weak_from_this 或保证会话生命周期。
 - [ ] **BUG-7 postgresql rewrite_placeholders 串字面量误改**：`plugins/postgresql/shield_db_pgsql.cpp:199` 把 SQL 中字符串字面量/注释里的 `?` 也改成 `$N` → 语义错乱。需字符串/注释感知。
