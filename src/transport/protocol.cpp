@@ -261,6 +261,50 @@ RouteSource default_route_source_for_envelope(EnvelopeKind kind) {
     return RouteSource::Body;  // GCOVR_EXCL_LINE (defensive: all kinds handled)
 }
 
+// Maximum nesting depth accepted for attacker-controlled JSON bodies. The
+// nlohmann DOM parser is iterative and survives arbitrarily deep input, but
+// every later walk over that DOM (dump(), json->lua conversion, structured
+// route extraction) recurses on the C++ stack and crashes on deep nesting.
+// Guard at the boundary so a deep frame never becomes a deep DOM.
+constexpr std::size_t kMaxJsonDepth = 512;
+
+// Non-recursive, string-aware depth pre-scan over raw JSON bytes. Returns
+// true iff the span is structurally a JSON value that never nests deeper than
+// max_depth. Braces inside quoted strings (including escaped quotes) are not
+// counted. Conservative on malformed input: unterminated strings and
+// unbalanced closers reject rather than guess.
+bool json_nesting_within(std::string_view bytes, std::size_t max_depth) {
+    std::size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (const char c : bytes) {
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+        } else if (c == '{' || c == '[') {
+            ++depth;
+            if (depth > max_depth) {
+                return false;
+            }
+        } else if (c == '}' || c == ']') {
+            if (depth == 0) {
+                return false;  // unbalanced closer
+            }
+            --depth;
+        }
+    }
+    return !in_string;  // unterminated string is not valid JSON
+}
+
 std::optional<BodyRouteKey> structured_route_key(const nlohmann::json& value) {
     if (!value.is_object()) {
         return std::nullopt;
@@ -962,6 +1006,12 @@ std::vector<std::uint8_t> PassthroughBodyCodec::encode(
 
 std::optional<BodyRouteKey> JsonBodyCodec::route_key(PacketRef packet) {
     try {
+        const std::string_view bytes(
+            reinterpret_cast<const char*>(packet.body.data()),
+            packet.body.size());
+        if (!json_nesting_within(bytes, kMaxJsonDepth)) {
+            return std::nullopt;  // reject deep nesting before building a DOM
+        }
         const auto json =
             nlohmann::json::parse(packet.body.begin(), packet.body.end());
         return structured_route_key(json);
@@ -971,6 +1021,11 @@ std::optional<BodyRouteKey> JsonBodyCodec::route_key(PacketRef packet) {
 }
 
 DecodedBody JsonBodyCodec::decode(PacketRef packet, const RouteEntry& route) {
+    const std::string_view bytes(
+        reinterpret_cast<const char*>(packet.body.data()), packet.body.size());
+    if (!json_nesting_within(bytes, kMaxJsonDepth)) {
+        throw std::runtime_error("json body exceeds maximum nesting depth");
+    }
     auto json = nlohmann::json::parse(packet.body.begin(), packet.body.end());
     return decode_structured_body(packet, route, std::move(json));
 }
