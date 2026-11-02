@@ -711,17 +711,24 @@ BOOST_AUTO_TEST_CASE(AcceptErrorWhileListeningIsLogged) {
     {
         FdExhaustion exhaustion;
         BOOST_REQUIRE(c.connect(port));
+        // accept() fails with EMFILE; the loop logs and re-arms rather than
+        // dying, so the listener stays open with no session accepted.
         io.run_for(300ms);
-        io.stop();
-        c.close();
     }
-
-    // The accept loop stopped on error; the listener stays marked open and
-    // sessions were never created.
     BOOST_CHECK(listener.is_open());
     BOOST_CHECK_EQUAL(listener.session_count(), 0u);
+    c.close();
+
+    // Once the fd pressure clears, the re-armed loop must accept again: this
+    // is the regression — the old code never re-armed on a transient error,
+    // so the listener stayed open but went permanently idle.
+    Client c2;
+    BOOST_REQUIRE(c2.connect(port));
+    io.run_for(300ms);
+    BOOST_CHECK_EQUAL(listener.session_count(), 1u);
+
+    c2.close();
     listener.stop();
-    io.restart();
     io.run_for(100ms);
 }
 #endif

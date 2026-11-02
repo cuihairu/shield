@@ -205,6 +205,12 @@ void TcpListener::do_accept() {
             if (ec != boost::asio::error::operation_aborted) {
                 auto& log = shield::log::get_logger("net");
                 SHIELD_LOG_ERROR(log, "Accept error: " + ec.message());
+                // Re-arm the accept loop. A transient accept failure
+                // (EMFILE / ENFILE / ECONNABORTED / ENOBUFS) must not kill
+                // the listener: without the re-arm the acceptor goes idle
+                // forever while the process keeps running. operation_aborted
+                // is the only permanent stop (issued by stop()).
+                do_accept();
             }
             return;
         }
