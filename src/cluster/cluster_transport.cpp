@@ -43,6 +43,14 @@ constexpr int kMinTickMs = 50;
 // mid-dial, so we talk to the middleman actor directly with a timeout.
 constexpr auto kDialTimeout = std::chrono::seconds(2);
 
+// Grace past the caller-side call timeout before a peer-binding entry is
+// reclaimed: covers scheduling and network delay so a legit reply that is
+// about to reach the caller-side timeout is still routable.
+constexpr int64_t kReplyGraceMs = 5000;
+// Caller-side default when timeout_ms <= 0 (mirrors LuaServiceManager's
+// suspend_for_call, which treats a non-positive timeout as 5000 ms).
+constexpr int32_t kDefaultCallTimeoutMs = 5000;
+
 std::chrono::milliseconds tick_interval(int heartbeat_interval_ms) {
     return std::chrono::milliseconds(
         std::max(heartbeat_interval_ms, kMinTickMs));
@@ -84,6 +92,19 @@ struct TransportSideState {
     // complete_proxied_call or callee-side expiry.
     std::unordered_map<uint64_t, std::pair<uint64_t, std::string>>
         proxied_calls;
+    // Caller-side peer binding for proxied calls: call_session -> (target
+    // node, deadline). An inbound envelope reply is only routed to the
+    // pending call when the reply sender's Hello identity matches the node
+    // the call was actually sent to; a forged reply from any other sender is
+    // dropped. Without this, a client that can reach the cluster port can
+    // guess the sequential call_session and inject a reply, since the old
+    // check only ran when cluster auth was enabled. Entries are reclaimed
+    // lazily once the caller-side timeout (plus a grace margin) lapses.
+    struct OutboundBinding {
+        std::string target_node;
+        int64_t deadline_ms = 0;
+    };
+    std::unordered_map<uint64_t, OutboundBinding> outbound_sessions;
     EnvelopeBridges bridges;
     // M5 observability counters. Touched from the actor thread and the
     // facade threads; admin endpoints read them without either mutex.
@@ -794,22 +815,44 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
                const EnvelopeReplyMsg& reply) { self->send(peer, reply); },
         // GCOVR_EXCL_STOP
         [self, side](const EnvelopeReplyMsg& reply) {
-            if (self->state().auth.enabled &&
-                sender_identity(side, self->current_sender()).empty())
+            // A reply may only be trusted when the sender completed a Hello
+            // handshake (it then has a bound node identity). This no longer
+            // depends on cluster auth: the old check ran only when auth was
+            // enabled, so a bare TCP client with no Hello at all could forge
+            // an envelope reply for a guessed call_session.
+            const std::string reply_sender =
+                sender_identity(side, self->current_sender());
+            if (reply_sender.empty())
                 return;  // GCOVR_EXCL_LINE (hostile-peer arm: envelope reply
                          // sender identity mismatch)
-            side->rx_messages.fetch_add(1, std::memory_order_relaxed);
-            // Routes into the caller-side pending-call table, resuming the
-            // suspended coroutine (unknown/expired sessions no-op there).
-            // Invoked outside data_mutex: the completion hook re-enters
-            // complete_proxied_call, which takes that mutex.
+            // Peer-bind the reply to the node the call was actually sent to.
+            // A forged reply from a connection that claimed a different
+            // node_id (or from a session that already timed out) is dropped
+            // here rather than resumed into the caller's coroutine.
             std::function<void(uint64_t, bool, const std::string&,
                                const std::string&, const std::string&)>
                 reply_handler;
             {
                 std::lock_guard lock(side->data_mutex);
+                auto it = side->outbound_sessions.find(reply.call_session);
+                if (it == side->outbound_sessions.end()) {
+                    return;  // unknown/expired session: no live caller
+                }
+                const auto now = shield::base::now_ms();
+                if (it->second.target_node != reply_sender ||
+                    it->second.deadline_ms <= now) {
+                    side->outbound_sessions.erase(it);  // forged or too late
+                    return;  // GCOVR_EXCL_LINE (hostile-peer arm: reply for a
+                             // different node than the call was sent to)
+                }
+                side->outbound_sessions.erase(it);
                 reply_handler = side->bridges.reply_handler;
             }
+            side->rx_messages.fetch_add(1, std::memory_order_relaxed);
+            // Routes into the caller-side pending-call table, resuming the
+            // suspended coroutine (unknown/expired sessions no-op there).
+            // Invoked outside data_mutex: the completion hook re-enters
+            // complete_proxied_call, which takes that mutex.
             // Defensive: bridges are installed by the bootstrap glue; a raw
             // transport without bridges has no reply_handler.
             if (reply_handler) {  // GCOVR_EXCL_BR_LINE (defensive: bridges may
@@ -949,6 +992,7 @@ void ClusterTransport::stop() {
     {
         std::lock_guard lock(impl_->side->data_mutex);
         impl_->side->proxied_calls.clear();
+        impl_->side->outbound_sessions.clear();
         impl_->side->bridges = {};
     }
 }
@@ -973,6 +1017,23 @@ bool ClusterTransport::send_envelope(const std::string& target_node,
             return false;
         }
         handle = it->second;
+    }
+    if (call_session != 0) {
+        // Record the peer binding so an inbound reply is only routed to this
+        // call when it comes from the node we sent it to. Reclaim entries for
+        // calls that timed out without a reply (their caller-side session is
+        // already gone, so any late reply is indistinguishable from a forgery).
+        // call_session == 0 is fire-and-forget: no reply is expected, so no
+        // binding is needed.
+        std::lock_guard lock(impl_->side->data_mutex);
+        const auto now = shield::base::now_ms();
+        std::erase_if(impl_->side->outbound_sessions, [now](const auto& entry) {
+            return entry.second.deadline_ms <= now;
+        });
+        const int32_t effective =
+            timeout_ms > 0 ? timeout_ms : kDefaultCallTimeoutMs;
+        impl_->side->outbound_sessions[call_session] = {
+            target_node, now + static_cast<int64_t>(effective) + kReplyGraceMs};
     }
     // Queue on our transport actor so the wire message carries its actor
     // identity; the receiver binds that sender to the inbound Hello handshake.
