@@ -6,6 +6,7 @@
 // the optional top-level {"payload": ...} envelope); routes with a schema
 // are validated against it before delivery.
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +14,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "shield/plugin/abi.h"
@@ -21,6 +23,49 @@
 #include "shield_payload_schema.hpp"
 
 namespace {
+
+// Maximum nesting depth accepted for attacker-controlled JSON payloads. The
+// nlohmann DOM parser survives arbitrarily deep input, but business.dump()
+// below recurses on the C++ stack and crashes on deep nesting. Guard at the
+// boundary so a deep payload never becomes a deep DOM.
+constexpr std::size_t kMaxJsonDepth = 512;
+
+// Non-recursive, string-aware depth pre-scan over raw JSON bytes. Returns
+// true iff the span is structurally a JSON value that never nests deeper than
+// max_depth. Braces inside quoted strings (including escaped quotes) are not
+// counted. Conservative on malformed input: unterminated strings and
+// unbalanced closers reject rather than guess.
+bool json_nesting_within(std::string_view bytes, std::size_t max_depth) {
+    std::size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (const char c : bytes) {
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (c == '\\') {
+                escaped = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+        } else if (c == '{' || c == '[') {
+            ++depth;
+            if (depth > max_depth) {
+                return false;
+            }
+        } else if (c == '}' || c == ']') {
+            if (depth == 0) {
+                return false;  // unbalanced closer
+            }
+            --depth;
+        }
+    }
+    return !in_string;  // unterminated string is not valid JSON
+}
 
 char* dup_string(const std::string& value) {
     auto* out = static_cast<char*>(std::malloc(value.size() + 1));
@@ -130,6 +175,12 @@ int json_decode(const shield_protocol_codec_v1* self,
         // An empty range throws, matching the built-in codec: unparseable
         // or missing bytes fail the decode.
         const auto* begin = reinterpret_cast<const char*>(args->payload);
+        if (!json_nesting_within(std::string_view(begin, size),
+                                 kMaxJsonDepth)) {
+            fill_error(err, "protocol.decode_failed",
+                       "json payload exceeds maximum nesting depth");
+            return -1;
+        }
         const auto message = nlohmann::json::parse(begin, begin + size);
         const auto business = unwrap_payload(message);
         if (enforce_payload_schema(inst, args->route_name, business,
@@ -173,6 +224,12 @@ int json_encode(const shield_protocol_codec_v1* self,
         nlohmann::json message = nlohmann::json::object();
         const auto size = static_cast<std::size_t>(args->message_json_size);
         if (args->message_json != nullptr && size > 0) {
+            if (!json_nesting_within(std::string_view(args->message_json, size),
+                                     kMaxJsonDepth)) {
+                fill_error(err, "protocol.encode_failed",
+                           "json input exceeds maximum nesting depth");
+                return -1;
+            }
             message = nlohmann::json::parse(args->message_json,
                                             args->message_json + size);
         }
