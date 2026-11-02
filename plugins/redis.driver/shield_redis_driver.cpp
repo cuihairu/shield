@@ -248,6 +248,40 @@ redis_instance* find_instance(const std::string& id) {
     return it == instances_map().end() ? nullptr : it->second;
 }
 
+// Release all contents owned by a node: its string and its items array,
+// recursing into each embedded child's contents. Does NOT free the node
+// itself — children live inline inside the parent's items array (shallow
+// copy from reply_to_value), so only the heap-allocated root is freed.
+// XREADGROUP and other raw replies nest arrays (streams -> entries ->
+// fields) far deeper than the old three-level walk; recursing to any depth
+// prevents deep strings and array nodes from leaking.
+void free_value_contents(shield_redis_value_v1* value) {
+    if (!value) return;
+    if (value->str) {
+        std::free(const_cast<char*>(value->str));
+        value->str = nullptr;
+    }
+    if (value->items) {
+        for (uint64_t i = 0; i < value->item_count; ++i) {
+            free_value_contents(&value->items[i]);
+        }
+        std::free(value->items);
+        value->items = nullptr;
+    }
+    value->str_len = 0;
+    value->item_count = 0;
+}
+
+// Release a value tree rooted at a heap-allocated node. The node returned by
+// the driver (reply_to_value allocates it with calloc) is freed after its
+// contents; nested nodes are embedded in parent items arrays and are handled
+// by the recursive content walk.
+void free_value_impl(shield_redis_value_v1* value) {
+    if (!value) return;
+    free_value_contents(value);
+    std::free(value);
+}
+
 // ---------------------------------------------------------------------------
 // v1 vtable — typed methods
 //
@@ -575,40 +609,7 @@ void init_vtable(shield_redis_v1* out) {
         },
 
         // free_value
-        [](shield_redis_value_v1* value) {
-            if (!value) return;
-            if (value->str) {
-                std::free(const_cast<char*>(value->str));
-                value->str = nullptr;
-            }
-            if (value->items) {
-                for (uint64_t i = 0; i < value->item_count; ++i) {
-                    // Recursive free for nested arrays.
-                    if (value->items[i].str) {
-                        std::free(const_cast<char*>(value->items[i].str));
-                    }
-                    if (value->items[i].items) {
-                        // One level of nesting is enough for typical Redis
-                        // responses; deeper nesting is freed recursively.
-                        for (uint64_t j = 0; j < value->items[i].item_count;
-                             ++j) {
-                            if (value->items[i].items[j].str) {
-                                std::free(const_cast<char*>(
-                                    value->items[i].items[j].str));
-                            }
-                            if (value->items[i].items[j].items) {
-                                std::free(value->items[i].items[j].items);
-                            }
-                        }
-                        std::free(value->items[i].items);
-                    }
-                }
-                std::free(value->items);
-                value->items = nullptr;
-            }
-            value->str_len = 0;
-            value->item_count = 0;
-        },
+        [](shield_redis_value_v1* value) { free_value_impl(value); },
     };
 }
 

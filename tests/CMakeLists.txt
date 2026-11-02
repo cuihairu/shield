@@ -771,3 +771,48 @@ if(SHIELD_BUILD_DB_PLUGIN_MYSQL
     set_tests_properties(test_plugin_pool_stats_real PROPERTIES LABELS "plugin" TIMEOUT 30)
     shield_copy_runtime_dlls(test_plugin_pool_stats_real)
 endif()
+
+# ---------------------------------------------------------------------------
+# test_redis_driver_free_value — free_value deep-release contract against
+# the redis.driver translation unit (object lib, no dlopen). Builds value
+# trees shaped like XREADGROUP replies (streams -> entries -> fields, five
+# array levels) and asserts every allocation the tree owns is released by a
+# single free_value call. Interposes malloc/calloc/free to count outstanding
+# live allocations so the old three-level walk fails the test by leaking the
+# deep string and array nodes.
+# ---------------------------------------------------------------------------
+if(SHIELD_BUILD_PLUGIN_REDIS_DRIVER)
+    # redis++ is found in the plugins scope; re-derive the static/shared pick
+    # here (directory-scoped variables do not cross subdirectory boundaries).
+    if(TARGET redis++::redis++)
+        set(SHIELD_REDISPP_TEST_TARGET redis++::redis++)
+    else()
+        set(SHIELD_REDISPP_TEST_TARGET redis++::redis++_static)
+    endif()
+    add_executable(test_redis_driver_free_value
+        plugin/test_redis_driver_free_value.cpp
+        $<TARGET_OBJECTS:shield_redis_driver_obj>)
+    target_link_libraries(test_redis_driver_free_value
+        PRIVATE
+            ${SHIELD_REDISPP_TEST_TARGET}
+            ${LUA_LIBRARIES}
+            Boost::unit_test_framework
+            Boost::headers)
+    target_include_directories(test_redis_driver_free_value
+        PRIVATE ${CMAKE_SOURCE_DIR}/include ${LUA_INCLUDE_DIR})
+    # Resolve malloc/calloc/free against the test's interposing wrappers so
+    # the live-allocation counter sees the driver's allocations. The wrappers
+    # live in this TU; the rest of the binary (boost, libstdc++) also routes
+    # through them, but only the delta around free_value is asserted.
+    target_link_options(test_redis_driver_free_value
+        PRIVATE
+            "-Wl,--wrap=malloc"
+            "-Wl,--wrap=calloc"
+            "-Wl,--wrap=free")
+    add_test(NAME test_redis_driver_free_value
+             COMMAND test_redis_driver_free_value)
+    set_tests_properties(test_redis_driver_free_value PROPERTIES
+        LABELS "plugin"
+        TIMEOUT 30)
+    shield_copy_runtime_dlls(test_redis_driver_free_value)
+endif()

@@ -159,7 +159,7 @@
 ## 批次：shield_global 读写锁域 Redis 后端切片 3
 ## 批次：shield_global 排行域 Redis 后端切片 4
 ## 代码深审 P2/P3 待办（2026-11-01）
-- [ ] **BUG-3 redis.driver free_value 浅释放（内存泄漏）**：`plugins/redis.driver/shield_redis_driver.cpp:577` 的 free_value 只深走 3 层；XREADGROUP / 深层嵌套回复（streams→entries→fields 达 5 层）的深层字符串不释放，driver 路径每读一批泄漏。改真递归（每层对 items 逐元素调自身）。
+- [x] **BUG-3 redis.driver free_value 浅释放（内存泄漏）**：`plugins/redis.driver/shield_redis_driver.cpp:577` 的 free_value 只深走 3 层；XREADGROUP / 深层嵌套回复（streams→entries→fields 达 5 层）的深层字符串不释放，driver 路径每读一批泄漏。改真递归（每层对 items 逐元素调自身）。
 - [ ] **RACE-2 lua_http_bridge 路由槽 UAF 窗口**：`src/lua/lua_http_bridge.cpp:71-78` attach 装 sink（捕获 this）、detach 清 sink；`src/lua/lua_runtime.cpp:498` 读 sink 与 detach 清空之间竞态——sink 拷贝先于清空、调用在 bridge 析构后 → 悬垂。sink 改存 weak / 经 manager 间接。
 - [ ] **BUG-2 _resume_after 定时器失败泄漏**：`src/lua/lua_api.cpp:1129` `_resume_after` 定时器失效/协程已死时不回收 continuation 资源。
 - [ ] **BUG-6 console_session send_line 裸 this 投递**：`src/net/console_session.cpp:65-70` send_line post 捕获裸 this；若会话在排队写完成前销毁 → UAF。改 weak_from_this 或保证会话生命周期。
