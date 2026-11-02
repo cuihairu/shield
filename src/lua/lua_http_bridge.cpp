@@ -151,12 +151,17 @@ shield::net::HttpResponse LuaHttpBridge::handle(
         manager_.enqueue_forked_task(  // GCOVR_EXCL_BR_LINE (compiler artifact:
                                        // lambda-capture copy / template arcs)
             route->service_id,
-            [this, route = *route, request_json,
+            [runtime = &runtime_, route = *route, request_json,
              promise]() {  // GCOVR_EXCL_BR_LINE (compiler artifact:
                            // lambda-capture copy / template arcs)
                 nlohmann::json desc;
                 std::string error;
-                if (runtime_.call_http_handler(route, request_json, desc,
+                // Capture the runtime (not `this`): the forked task may run
+                // on the service actor thread after the bridge is torn down
+                // (bootstrap resets http_bridge before lua services drain),
+                // and the runtime outlives that window. Calling through
+                // `this->runtime_` on a freed bridge was a use-after-free.
+                if (runtime->call_http_handler(route, request_json, desc,
                                                &error)) {
                     promise->set_value(std::move(desc));
                 } else {
