@@ -2,6 +2,7 @@
 
 #include <flatbuffers/flatbuffers.h>
 #include <flatbuffers/idl.h>
+#include <flatbuffers/reflection.h>
 #include <flatbuffers/util.h>
 
 #include <cstdint>
@@ -161,11 +162,56 @@ int flatbuffers_decode(const shield_protocol_codec_v1* self,
         return -1;
     }
 
-    // Generate JSON from binary
-    std::string json;
-    if (!GenerateText(parser, args->payload, &json)) {
+    // Verify the payload against the schema before any text generation.
+    // GenerateText walks the buffer through the schema's accessors with no
+    // bounds checks, so a truncated or hostile buffer would read out of
+    // bounds (crash / OOB leak / DoS). Serialize() materializes the parsed
+    // schema as a reflection buffer so the schema-driven reflection::Verify
+    // can walk every offset, string, vector and nested table with bounds
+    // checking; it returns false on any structural violation.
+    //
+    // The reflection verifier does not validate the leading root offset
+    // itself (a buffer of all zero bytes "verifies" as a table of empty
+    // fields), so check it explicitly: the root table offset must be
+    // non-zero and point inside the buffer.
+    if (args->payload_size < sizeof(flatbuffers::uoffset_t)) {
         fill_error(err, "protocol.decode_failed",
-                   "failed to convert FlatBuffers to JSON");
+                   "FlatBuffers payload is too small");
+        return -1;
+    }
+    const auto root_off =
+        flatbuffers::ReadScalar<flatbuffers::uoffset_t>(args->payload);
+    if (root_off == 0 ||
+        static_cast<std::uint64_t>(root_off) >= args->payload_size) {
+        fill_error(err, "protocol.decode_failed",
+                   "FlatBuffers payload has an invalid root offset");
+        return -1;
+    }
+    parser.Serialize();
+    const auto* schema = flatbuffers::GetRoot<reflection::Schema>(
+        parser.builder_.GetBufferPointer());
+    const auto* root = schema->root_table();
+    if (root == nullptr) {
+        fill_error(err, "protocol.decode_failed",
+                   "FlatBuffers schema has no root table");
+        return -1;
+    }
+    if (!flatbuffers::Verify(*schema, *root, args->payload,
+                             static_cast<size_t>(args->payload_size))) {
+        fill_error(err, "protocol.decode_failed",
+                   "FlatBuffers payload failed verification");
+        return -1;
+    }
+
+    // Generate JSON from binary. GenerateText returns nullptr on success or
+    // an error string (e.g. non-UTF-8 bytes in a String field); the check is
+    // success == null, so compare against nullptr rather than negating.
+    std::string json;
+    const char* gen_err = GenerateText(parser, args->payload, &json);
+    if (gen_err != nullptr) {
+        const std::string message =
+            std::string("failed to convert FlatBuffers to JSON: ") + gen_err;
+        fill_error(err, "protocol.decode_failed", message.c_str());
         return -1;
     }
 
