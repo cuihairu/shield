@@ -106,8 +106,10 @@ Lua 侧：`load`/`safe_script` 仅用于受信脚本（自仓 scripts/ 与 confi
 | 8 | P2 | gateway close 缺 epoch 校验（egress 有） | `src/lua/gateway_actor.cpp:210` | 📋 记 todo |
 | 9 | P3 | force_remove 漏 exit() 的 per-service timer 清理 | `src/lua/lua_service.cpp:3495` | 📋 记 todo |
 
-合计 **9 项**：P0×2、P1×4（全部当场修，6 项一问题一 commit）；P2×2、P3×1 记 todo。
-P2/P3 均经本仓源码逐条复核确认（非转述代理结论）。
+合计 **9 项主发现**：P0×2、P1×4（全部当场修，6 项一问题一 commit）；P2×2、P3×1 记 todo。
+上表 9 项均经本仓源码逐条复核确认（非转述代理结论）。
+
+并行深审代理另录 **11 项 P2/P3**（BUG-2/3/5/6/7/8/9、RACE-2/3/4/5/6、SEC-2，含 redis.driver 深层释放、路由槽 UAF、console_session 裸 this、postgresql 占位符改写误伤字面量、JWT 缺 exp、裸 bool 跨线程等），已记 `todo.md`「代码深审 P2/P3 待办（2026-11-01）」节，本报告不逐条复述（未逐条独立复核，以 todo 记录为准）。**全量口径：P0×2 + P1×4（已修 6）+ P2/P3×14（todo 14 = 本表 3 + 代理 11）。**
 
 ## 五、P0/P1 修复记录
 
@@ -143,7 +145,7 @@ P2/P3 均经本仓源码逐条复核确认（非转述代理结论）。
 | `2ee49f1` | fix: cap lua json push nesting depth |
 | `9fdbaed` | fix: bind cluster replies to outbound sessions |
 | `66e32cb` | docs: record code review p2 p3 findings |
-| `97c4f22` | docs: add code deep review report |
+| `99b0bd2` | docs: add code deep review report |
 
 一问题一 commit，信息英文短句、无 AI 痕迹；6 条 P0/P1 修复 + 2 条文档（报告 + todo）。
 
@@ -151,5 +153,5 @@ P2/P3 均经本仓源码逐条复核确认（非转述代理结论）。
 
 - 安全面：无硬编码密钥/命令注入/SQL 拼接/路径穿越/弱加密；反序列化面两处 P0（JSON 深度、FlatBuffers 越界）+ 一处 P0（集群回复伪造）已修。
 - 稳定性：P1×4（终止/失能/UAF/恒败）已修，回归测试落位。
-- 遗留：P2×2 + P3×1 记 todo（信任边界加固项，非可直接利用的线上缺陷）。
+- 遗留：P2/P3×14 记 todo（本报告逐条复核 3 项 + 并行代理 11 项，含信任边界加固/资源清理/竞态收口，均非可直接利用的线上缺陷）。
 - 门禁：四棵树编译 0 警告；全量 ctest 100/100；clang-format 0 违规；docs build 绿。
