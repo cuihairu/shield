@@ -200,6 +200,14 @@ void TcpListener::stop() {
 }
 
 void TcpListener::do_accept() {
+    // stop() may close the acceptor and clear listening_ while a previous
+    // accept completion is still draining (e.g. a rejection path that calls
+    // do_accept() again). The guard prevents re-arming the accept loop on a
+    // closed acceptor, which would otherwise spin on operation_aborted or
+    // re-submit an accept on a stopped listener.
+    if (!listening_) {
+        return;
+    }
     acceptor_.async_accept(socket_, [this](auto ec) {
         if (ec) {
             if (ec != boost::asio::error::operation_aborted) {
