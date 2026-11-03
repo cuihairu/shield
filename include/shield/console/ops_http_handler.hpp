@@ -24,6 +24,7 @@ namespace shield::console {
 /// - GET /ops/services - List all Lua services
 /// - GET /ops/plugins - List all plugins
 /// - GET /ops/config - Show config
+/// - GET / and /ops/dashboard - Embedded single-page ops dashboard
 /// - POST /ops/eval - Execute Lua code; opt-in and token-gated
 /// - POST /ops/profile - Sampling hotspot profiler; opt-in and token-gated
 ///
@@ -61,6 +62,8 @@ private:
     shield::net::HttpResponse handle_plugins(
         const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_config(
+        const shield::net::HttpRequest& req);
+    shield::net::HttpResponse handle_dashboard(
         const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_eval(const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_profile(

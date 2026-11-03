@@ -2422,4 +2422,46 @@ BOOST_AUTO_TEST_CASE(GatewayTlsMetricsEmittedFromListenerRegistry) {
     io_thread.join();
 }
 
+BOOST_AUTO_TEST_CASE(DashboardServesSelfContainedHtml) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    // "/" serves the embedded dashboard with an HTML content type.
+    std::string root = client.get("/", std::chrono::milliseconds(9000));
+    BOOST_REQUIRE(!root.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(root), 200);
+    BOOST_CHECK(root.find("text/html") != std::string::npos);
+    const std::string root_body = RawHttpClient::body(root);
+    BOOST_CHECK(root_body.find("<!DOCTYPE html>") == 0);
+    BOOST_CHECK(root_body.find("Shield Ops Dashboard") != std::string::npos);
+    // The page polls the real ops endpoints from the same origin.
+    BOOST_CHECK(root_body.find("/ops/health") != std::string::npos);
+    BOOST_CHECK(root_body.find("/ops/metrics") != std::string::npos);
+    BOOST_CHECK(root_body.find("/ops/status") != std::string::npos);
+
+    // Zero-dependency page: no external asset references (http/https src or
+    // stylesheet/script links); everything must be inline.
+    BOOST_CHECK(root_body.find("src=\"http") == std::string::npos);
+    BOOST_CHECK(root_body.find("href=\"http") == std::string::npos);
+    BOOST_CHECK(root_body.find("src=\"//") == std::string::npos);
+
+    // "/ops/dashboard" is the documented alias and serves the same bytes.
+    std::string alias =
+        client.get("/ops/dashboard", std::chrono::milliseconds(9000));
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(alias), 200);
+    BOOST_CHECK(RawHttpClient::body(alias) == root_body);
+
+    // Query strings must not confuse route matching (dispatch strips them).
+    std::string with_query =
+        client.get("/ops/dashboard?refresh=1", std::chrono::milliseconds(9000));
+    BOOST_REQUIRE_EQUAL(RawHttpClient::status_code(with_query), 200);
+    BOOST_CHECK(RawHttpClient::body(with_query) == root_body);
+
+    // Deeper paths under the dashboard are still unknown routes (exact
+    // route matching only): no wildcard leakage.
+    std::string nested =
+        client.get("/ops/dashboard/x", std::chrono::milliseconds(9000));
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(nested), 404);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
