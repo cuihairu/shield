@@ -879,7 +879,6 @@ struct ClusterTransport::Impl {
     caf::actor_system* system = nullptr;
     ClusterManager* manager = nullptr;
     ClusterConfig config;
-    caf::actor actor;
     uint16_t bound_port = 0;
     bool running = false;
     // Shared with the actor and with the facade methods below, which run on
@@ -917,8 +916,8 @@ bool ClusterTransport::start(uint16_t* bound_port, std::string& error) {
     // NOTE: init_cluster_caf_types() must have been called before the actor
     // system was constructed (CAF requirement), not here.
 
-    impl_->actor = impl_->system->spawn(transport_loop, impl_->manager,
-                                        impl_->config, impl_->side);
+    auto actor = impl_->system->spawn(transport_loop, impl_->manager,
+                                      impl_->config, impl_->side);
 
     // Publish on the configured listen address. "0.0.0.0" (or an empty host
     // part) publishes on all interfaces; port 0 lets the OS pick.
@@ -938,14 +937,12 @@ bool ClusterTransport::start(uint16_t* bound_port, std::string& error) {
                        // a concrete listen host)
             ? nullptr
             : host.c_str();
-    auto published =
-        impl_->system->middleman().publish(impl_->actor, port, bind_host);
+    auto published = impl_->system->middleman().publish(actor, port, bind_host);
     if (!published) {
         error = "cluster listen failed on " + impl_->config.listen_address +
                 ": " + caf::to_string(published.error());
         SHIELD_LOG_ERROR(log, error);
-        caf::anon_send_exit(impl_->actor, caf::exit_reason::user_shutdown);
-        impl_->actor = nullptr;
+        caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
         return false;
     }
     impl_->bound_port = *published;
@@ -953,7 +950,7 @@ bool ClusterTransport::start(uint16_t* bound_port, std::string& error) {
 
     {
         std::unique_lock lock(impl_->side->peers_mutex);
-        impl_->side->outbound_actor = impl_->actor;
+        impl_->side->outbound_actor = actor;
     }
     if (!impl_->config.auth.enabled)
         SHIELD_LOG_WARNING(
@@ -962,8 +959,8 @@ bool ClusterTransport::start(uint16_t* bound_port, std::string& error) {
             "PSK; exposed ports trust self-reported identities");
 
     // Kick both loops.
-    caf::anon_send(impl_->actor, connect_tick_atom_v);
-    caf::anon_send(impl_->actor, hb_tick_atom_v);
+    caf::anon_send(actor, connect_tick_atom_v);
+    caf::anon_send(actor, hb_tick_atom_v);
 
     if (bound_port) *bound_port = impl_->bound_port;
     return true;
@@ -976,9 +973,15 @@ void ClusterTransport::stop() {
     auto& log = shield::log::get_logger("cluster");
     SHIELD_LOG_INFO(log, "Cluster transport stopping");
 
-    impl_->system->middleman().unpublish(impl_->actor);
-    caf::anon_send_exit(impl_->actor, caf::exit_reason::user_shutdown);
-    impl_->actor = nullptr;
+    {
+        std::unique_lock lock(impl_->side->peers_mutex);
+        if (impl_->side->outbound_actor) {
+            impl_->system->middleman().unpublish(impl_->side->outbound_actor);
+            caf::anon_send_exit(impl_->side->outbound_actor,
+                                caf::exit_reason::user_shutdown);
+            impl_->side->outbound_actor = nullptr;
+        }
+    }
     impl_->bound_port = 0;
 
     // Drop data-plane state so later complete_proxied_call / send_envelope
@@ -1011,6 +1014,7 @@ bool ClusterTransport::send_envelope(const std::string& target_node,
                                      uint64_t call_session, int32_t timeout_ms,
                                      std::string* error) {
     caf::actor handle;
+    caf::actor publisher;
     {
         std::shared_lock lock(impl_->side->peers_mutex);
         auto it = impl_->side->peers_by_node.find(target_node);
@@ -1019,6 +1023,11 @@ bool ClusterTransport::send_envelope(const std::string& target_node,
             return false;
         }
         handle = it->second;
+        publisher = impl_->side->outbound_actor;
+    }
+    if (!publisher) {
+        if (error) *error = "node_offline";
+        return false;
     }
     if (call_session != 0) {
         // Record the peer binding so an inbound reply is only routed to this
@@ -1039,8 +1048,7 @@ bool ClusterTransport::send_envelope(const std::string& target_node,
     }
     // Queue on our transport actor so the wire message carries its actor
     // identity; the receiver binds that sender to the inbound Hello handshake.
-    caf::anon_send(impl_->actor, dispatch_envelope_atom_v, LocalDispatch{},
-                   handle,
+    caf::anon_send(publisher, dispatch_envelope_atom_v, LocalDispatch{}, handle,
                    EnvelopeMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
                                // aggregate init-list branches)
                                impl_->manager->node_id(), service_id, method,
