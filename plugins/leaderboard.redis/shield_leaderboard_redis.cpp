@@ -47,8 +47,17 @@
 // shield_leaderboard_conn is opaque in leaderboard.h; concrete layout here.
 // Defined at global scope so lambda-to-function-pointer conversion sees the
 // same type as the vtable declared in leaderboard.h.
+// Field names are owned by the config (std::string), never a borrowed
+// const char* from the caller's config table: the C vtable's create_board
+// and the Lua path both hand in caller-owned pointers that may be released
+// after the call returns, so a borrowed name would dangle on later use.
+struct BoardField {
+    std::string name;
+    shield_sort_direction dir;
+};
+
 struct BoardConfig {
-    std::vector<shield_leaderboard_field_def> field_defs;
+    std::vector<BoardField> field_defs;
     std::vector<int> field_bits;  // per-field bit widths
     bool primary_desc = true;     // direction of field 0 (drives top_n)
 };
@@ -81,8 +90,7 @@ double encode_composite(const BoardConfig& bc, const char* const* field_names,
     for (int i = 0; i < field_count; ++i) {
         if (!field_names || !field_names[i]) continue;
         for (size_t j = 0; j < bc.field_defs.size(); ++j) {
-            if (bc.field_defs[j].name &&
-                std::strcmp(bc.field_defs[j].name, field_names[i]) == 0) {
+            if (bc.field_defs[j].name == field_names[i]) {
                 ordered[j] = field_values[i];
                 break;
             }
@@ -125,7 +133,7 @@ BoardConfig materialize_board(const shield_leaderboard_config* config) {
     bc.field_bits.reserve(config->field_count);
     for (int i = 0; i < config->field_count; ++i) {
         const auto& src = config->field_defs[i];
-        bc.field_defs.push_back({src.name, src.dir});
+        bc.field_defs.push_back({src.name ? src.name : "", src.dir});
         // Bit width: derive from field name suffix "name:bits" if present,
         // otherwise default. Kept simple — production boards configure via
         // extra_json if they need per-field widths.
@@ -281,7 +289,7 @@ const shield_leaderboard_v1& lb_vtable() {
                 double* vals =
                     static_cast<double*>(std::calloc(n, sizeof(double)));
                 for (int i = 0; i < n; ++i) {
-                    names[i] = dup_string(bc.field_defs[i].name);
+                    names[i] = dup_string(bc.field_defs[i].name.c_str());
                     vals[i] = ordered[i];
                 }
                 out->field_names = names;
@@ -441,7 +449,7 @@ struct leaderboard_instance {
     int connect_timeout_ms = 5000;
     int command_timeout_ms = 5000;
     // Optional redis.driver dependency.
-    const shield_redis_v1* redis_driver = nullptr;
+    const shield_redis_v2* redis_driver = nullptr;
     void* redis_handle = nullptr;
 
     // Per-instance BoardConfig cache. Survives across calls (unlike the
@@ -566,10 +574,7 @@ std::string driver_err_msg(const shield_redis_value_v1* out,
 // release them on overwrite / board delete / instance shutdown.
 void free_board_config_names(BoardConfig& bc) {
     for (auto& fd : bc.field_defs) {
-        if (fd.name) {
-            std::free(const_cast<char*>(fd.name));
-            fd.name = nullptr;
-        }
+        fd.name.clear();
     }
 }
 
@@ -654,7 +659,7 @@ shd::table make_instance_proxy(shd::state_view lua,
                 dst.field_bits.clear();
                 dst.primary_desc = (parsed[0].second == SHIELD_SORT_DESC);
                 for (const auto& [name, dir] : parsed) {
-                    dst.field_defs.push_back({dup_string(name.c_str()), dir});
+                    dst.field_defs.push_back({name, dir});
                     dst.field_bits.push_back(kDefaultFieldBits);
                 }
             } catch (const std::exception& e) {
@@ -875,7 +880,7 @@ shd::table make_instance_proxy(shd::state_view lua,
                 auto fields = lua.create_table();
                 for (size_t i = 0;
                      i < bc.field_defs.size() && i < decoded.size(); ++i) {
-                    if (bc.field_defs[i].name) {
+                    if (!bc.field_defs[i].name.empty()) {
                         fields[bc.field_defs[i].name] = decoded[i];
                     }
                 }
@@ -971,7 +976,7 @@ shd::table make_instance_proxy(shd::state_view lua,
                     decode_composite(bc, score, decoded);
                     for (size_t i = 0;
                          i < bc.field_defs.size() && i < decoded.size(); ++i) {
-                        if (bc.field_defs[i].name) {
+                        if (!bc.field_defs[i].name.empty()) {
                             fields[bc.field_defs[i].name] = decoded[i];
                         }
                     }
@@ -1110,8 +1115,8 @@ int lb_create(const shield_plugin_create_args_v1* args,
         auto* li = reinterpret_cast<leaderboard_instance*>(self);
         // Try to get redis.driver dependency (optional).
         if (li->host_api && li->host_api->dependency) {
-            auto* drv = static_cast<const shield_redis_v1*>(
-                li->host_api->dependency(li->ctx, "redis", SHIELD_REDIS_V1));
+            auto* drv = static_cast<const shield_redis_v2*>(
+                li->host_api->dependency(li->ctx, "redis", SHIELD_REDIS_V2));
             if (drv && drv->connect) {
                 char err_buf[256] = {};
                 void* handle = drv->connect(drv, nullptr, err_buf,

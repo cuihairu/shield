@@ -861,3 +861,25 @@ if(SHIELD_BUILD_PLUGIN_CACHE_REDIS)
         LABELS "plugin" TIMEOUT 60)
     shield_copy_runtime_dlls(test_plugin_cache_redis_incrby)
 endif()
+
+# ---------------------------------------------------------------------------
+# test_plugin_leaderboard_names — BUG-5 regression: create_board must copy
+# the caller's field-name pointers rather than borrow them (the caller may
+# overwrite its stack buffer after create_board returns). Real redis-server.
+# ---------------------------------------------------------------------------
+if(SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS)
+    add_executable(test_plugin_leaderboard_names
+        plugin/test_plugin_leaderboard_names.cpp)
+    target_link_libraries(test_plugin_leaderboard_names
+        PRIVATE shield_plugin Boost::unit_test_framework Boost::headers)
+    target_include_directories(test_plugin_leaderboard_names
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_definitions(test_plugin_leaderboard_names PRIVATE
+        SHIELD_LEADERBOARD_LIBRARY="$<TARGET_FILE:shield_leaderboard_redis>")
+    add_dependencies(test_plugin_leaderboard_names shield_leaderboard_redis)
+    add_test(NAME test_plugin_leaderboard_names
+             COMMAND test_plugin_leaderboard_names)
+    set_tests_properties(test_plugin_leaderboard_names PROPERTIES
+        LABELS "plugin" TIMEOUT 60)
+    shield_copy_runtime_dlls(test_plugin_leaderboard_names)
+endif()
