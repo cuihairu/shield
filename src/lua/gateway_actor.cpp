@@ -216,6 +216,23 @@ void handle_client_close(GatewayDeps& deps, const ClientCloseRequest& request) {
                                std::to_string(request.context.session_id));
         return;
     }
+    // RACE-7: close carries the caller's client reference. Like egress, the
+    // context must still match the live binding — a stale reference (from a
+    // pre-rebind identity) must not be able to tear down a session that has
+    // since been rebound to another target. Without this check a service
+    // holding an old ClientContext could close a session out from under its
+    // current owner.
+    const net::SessionBinding binding = session->binding();
+    if (request.context.session_epoch != binding.epoch) {
+        ++deps.stats->close_stale_epoch;
+        SHIELD_LOG_WARNING(gateway_log(),
+                           "client close rejected: stale epoch " +
+                               std::to_string(request.context.session_epoch) +
+                               " (current " + std::to_string(binding.epoch) +
+                               ") for session " +
+                               std::to_string(request.context.session_id));
+        return;
+    }
     // Branch-only exclusion: ternary arm-construction arcs (compiler
     // artifacts); both arms run under CloseWithEmptyReasonUsesKickedDefault
     // and CloseInvalidatesRemovesAndKicks.
@@ -229,7 +246,6 @@ void handle_client_close(GatewayDeps& deps, const ClientCloseRequest& request) {
     // Tell the current target it is losing the client before the binding is
     // invalidated: the bridge's disconnect path only notifies a live target,
     // so the kick must deliver on_client_unbound itself.
-    const net::SessionBinding binding = session->binding();
     if (!binding.target_service.empty() && deps.manager != nullptr) {
         if (caf::actor target =
                 deps.manager->service_actor(binding.target_service);

@@ -49,6 +49,7 @@ struct GatewayStats {
     std::atomic<uint64_t> binds_ok{0};
     std::atomic<uint64_t> binds_epoch_expired{0};
     std::atomic<uint64_t> close_requests{0};
+    std::atomic<uint64_t> close_stale_epoch{0};  // close context trails binding
 };
 
 /// Live-session table for one gateway listener. The bridge callbacks (net

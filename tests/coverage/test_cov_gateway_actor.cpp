@@ -625,6 +625,50 @@ BOOST_AUTO_TEST_CASE(CloseWithEmptyTargetBindingSkipsUnboundNotify) {
     BOOST_CHECK_EQUAL(registry->size(), 0u);
 }
 
+// A close whose client reference trails the live binding (stale epoch, e.g.
+// a pre-rebind identity) is rejected: it must not tear down a session that
+// has since been rebound to another target (RACE-7).
+BOOST_AUTO_TEST_CASE(CloseWithStaleEpochIsRejected) {
+    auto registry = std::make_shared<GatewaySessionRegistry>();
+    auto stats = std::make_shared<GatewayStats>();
+    GatewayDeps deps{"gw", registry, stats, s2c_table(), nullptr};
+
+    auto session = make_session(35, auth_binding());
+    registry->add(session, session->binding());
+    // Rebind to "player" once: live epoch is now 1.
+    session->apply_binding("player", "player-35", shield::net::kAnyEpoch,
+                           nullptr);
+    BOOST_CHECK_EQUAL(session->epoch(), 1u);
+
+    // Stale reference from the pre-rebind identity (epoch 0).
+    ClientCloseRequest request;
+    request.context = context_of(session);
+    request.context.session_epoch = 0;
+    request.reason = "stale_kick";
+    handle_client_close(deps, request);
+
+    // Session untouched: still alive, still bound to player, still registered.
+    BOOST_CHECK(session->is_alive());
+    BOOST_CHECK_EQUAL(session->target_service(), "player");
+    BOOST_CHECK_EQUAL(session->close_count(), 0);
+    BOOST_CHECK_EQUAL(session->epoch(), 1u);
+    BOOST_CHECK_EQUAL(registry->size(), 1u);
+    BOOST_CHECK_EQUAL(stats->close_requests.load(), 1u);
+    BOOST_CHECK_EQUAL(stats->close_stale_epoch.load(), 1u);
+
+    // A current-epoch reference still closes normally.
+    ClientCloseRequest current;
+    current.context = context_of(session);
+    current.reason = "live_kick";
+    handle_client_close(deps, current);
+    BOOST_CHECK(!session->is_alive());
+    BOOST_CHECK_EQUAL(session->close_reason(), "live_kick");
+    BOOST_CHECK_EQUAL(session->close_count(), 1);
+    BOOST_CHECK_EQUAL(stats->close_requests.load(), 2u);
+    BOOST_CHECK_EQUAL(stats->close_stale_epoch.load(), 1u);
+    BOOST_CHECK_EQUAL(registry->size(), 0u);
+}
+
 // -- spawn_gateway_actor ------------------------------------------------------
 
 BOOST_AUTO_TEST_CASE(SpawnedActorHandlesAllThreeMessageTypes) {
