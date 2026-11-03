@@ -11,6 +11,12 @@
 - [x] **两插件 CI 零构建零测试（腐烂根因）**：ci.yml 与 plugins-ci.yml 均未开 `SHIELD_BUILD_PLUGIN_HEALTH/METRIC`。plugins-ci 补两开关 （三平台编译 + health 套件进 `ctest -L plugin`），health_http CMake 拆 object+MODULE（protocol.json 同款）供测试直链。
 - [x] **metrics.prometheus 测试套件**（同批收口）：`tests/plugin/ test_plugin_metric_prometheus.cpp` 4 用例——counter 累加/gauge 后写 胜出/直方图 _sum·_count 的 Prometheus 文本格式逐行断言（含标签按键 排序）、record()/record_batch() 点形态 + TIMER 渲染为直方图、 404 文本体、空注册表 200 空体（kickstart 既有行为的回归钉，README 35 行已如实声明「空 body 属预期」——示例无需改）；metric 侧 CMake 同拆 object+MODULE；停机 poke 修复被「二进制正常退出」整体钉住。
 > 验收：新套件 build/build-plug 两树 4/4 绿（挂死修复后二进制正常退出）；
+## ops 内嵌仪表盘
+- [x] **嵌入单页仪表盘**：`/` 与 `/ops/dashboard` 注册同一自包含 HTML（内联 CSS+JS、无外部资源、零框架），2s 轮询同源只读 `/ops/*` 端点，渲染 health / gateway·session 计数 / 每服务状态表 / 滚动指标曲线（canvas）/ 可选 profiler 面板。实现为一个 raw-string 常量，无文件系统或依赖足迹（src/console/ops_http_handler.cpp:161-530、:542-546、:1344-1357）。
+- [x] **测试**：`test_cov_ops_http` 新增 `DashboardServesSelfContainedHtml`——`/` 200 text/html、body 以 `<!DOCTYPE html>` 开头、引用 `/ops/health`·`/ops/metrics`·`/ops/status`、无外部 `http`/`//` 资源引用、`/ops/dashboard` 别名同字节、查询串不影响路由、深层路径 404 无通配泄漏（tests/coverage/test_cov_ops_http.cpp:2425-2465）。
+> 验收：已提交 1d6cbbd；`test_cov_ops_http` 全绿（含新用例，build 树）；
+## 依赖更新
+- [x] **postcss ^8.5.23 → ^8.5.32 + vite 补丁 pin**：`package.json` devDependencies 升 postcss；`pnpm-workspace.yaml` 加 `vite@<6.4.4: 6.4.4` overrides 消除依赖树内 vite 漂移；`pnpm-lock.yaml` 同步（含 rollup/postcss/@shikijs/vue 传递版本）。`pnpm install --lockfile-only --offline` 验证自洽（已提交 4ad06a1）。
 ## shield.crypto 二期切片 1：密钥派生原语
 - [x] **PBKDF2-HMAC-SHA256**（`shield.crypto.pbkdf2_hmac_sha256`，RFC 8018 §5.2）：口令哈希原语；守卫面 iterations 1–1000 万 / salt 非空 / dklen 1–1024，空口令合法；canonical SHA-256 向量组（iterations 1/2/4096 + 多块 40 字节例）+ 守卫臂 pcall 矩阵 + 空口令 C++ 交叉核验。
 - [x] **HKDF-SHA256**（`shield.crypto.hkdf_sha256`，RFC 5869）：协商密钥 按用途展开原语；守卫面 ikm 非空 / length 1–8160（255×32 上限）； salt/info 允许空串（空 salt 取 32 字节零序列）；RFC 5869 TC1–TC3 全量锁定（含 82 字节多块展开）+ 守卫臂矩阵。
@@ -214,10 +220,10 @@
 
 覆盖范围：`git diff 394351ab76c5..HEAD`，10 文件（redis.h / docs / shield_redis_driver.cpp / cluster_transport.cpp / lua_http_bridge.cpp/.hpp / CMakeLists.txt / test_cov_cluster.cpp / test_redis_driver_free_value.cpp / todo.md），+336/-61。逐文件审查完毕。
 
-- [x] 审核发现：**pipeline 的 out_array calloc 返回值未判空**——属实。非空回复下 calloc 失败改为抛 `bad_alloc` 并落入既有错误返回；测试插桩 calloc 强制失败钉住 `-1`/空输出/错误码——PENDING（plugins/redis.driver/shield_redis_driver.cpp:569-571、tests/plugin/test_redis_driver_free_value.cpp:407-422）。
-- [x] 审核发现：**pipeline 公共 ABI 破坏性签名变更未升版本（低危/兼容性）**——属实。冻结 v1 契约、接口升为 `shield.redis.v2`，driver 不再返回 v1 vtable，三个 Redis 上层消费者与 manifest/docs 同步；测试钉住 v1 请求必须为 NULL——PENDING（include/shield/plugin/redis.h:13-26、:38-39、plugins/redis.driver/shield_redis_driver.cpp:299、:1076、tests/plugin/test_redis_driver_free_value.cpp:342-349）。
-- [x] 审核发现：**测试缺口——pipeline 错误路径未覆盖**——属实（部分）。补齐可确定性构造的 `count==0` 与 calloc OOM 臂；`pipe.exec()`/`reply_to_value` 中途异常无注入面，不造假测试——PENDING（tests/plugin/test_redis_driver_free_value.cpp:381-424）。
-- [x] 审核发现：**测试缺口——http bridge 路由 handler 在 bridge 析构后被调用的场景未直接覆盖**——属实。新增 loopback socket 经真实 `HttpServer` accept/read/dispatch/route table 调用，并先后覆盖 bridge 存活与析构后两臂——PENDING（tests/coverage/test_cov_http_bridge2.cpp:390-445）。
+- [x] 审核发现：**pipeline 的 out_array calloc 返回值未判空**——属实。非空回复下 calloc 失败改为抛 `bad_alloc` 并落入既有错误返回；测试插桩 calloc 强制失败钉住 `-1`/空输出/错误码——已提交 b9f9fd0；`test_redis_driver_free_value` 5/5 绿（tests/plugin/test_redis_driver_free_value.cpp:381-424）。
+- [x] 审核发现：**pipeline 公共 ABI 破坏性签名变更未升版本（低危/兼容性）**——属实。冻结 v1 契约、接口升为 `shield.redis.v2`，driver 不再返回 v1 vtable，三个 Redis 上层消费者与 manifest/docs 同步；测试钉住 v1 请求必须为 NULL——已提交 b9f9fd0；`test_redis_driver_free_value` 5/5 绿（tests/plugin/test_redis_driver_free_value.cpp:342-349）。
+- [x] 审核发现：**测试缺口——pipeline 错误路径未覆盖**——属实（部分）。补齐可确定性构造的 `count==0` 与 calloc OOM 臂；`pipe.exec()`/`reply_to_value` 中途异常无注入面，不造假测试——已提交 b9f9fd0；`test_redis_driver_free_value` 5/5 绿（tests/plugin/test_redis_driver_free_value.cpp:381-424）。
+- [x] 审核发现：**测试缺口——http bridge 路由 handler 在 bridge 析构后被调用的场景未直接覆盖**——属实。新增 loopback socket 经真实 `HttpServer` accept/read/dispatch/route table 调用，并先后覆盖 bridge 存活与析构后两臂——已提交 cab3aed；`test_cov_http_bridge2` 7/7 绿（tests/coverage/test_cov_http_bridge2.cpp:390-445）。
 
 已核无问题部分：cluster_transport `rx_messages` 计数前移——两处入站 handler（:670 EnvelopeMsg、:820 EnvelopeReplyMsg）各自在到达时计数、互不重复，前移仅使被信任检查丢弃的伪造回复也被计入（语义符合"每帧都计数"），转发臂（LocalDispatch+peer）为出站路径不计数，无双重计数；`LuaHttpBridgeState` shared_ptr 生命周期——server 路由表/route sink 均在 lua_runtime/lua_services 之前销毁（bootstrap.cpp:1664-1668 vs :348-349），state 持有的 runtime/manager 引用及 forked task 捕获的 `&runtime` 均无悬垂窗口；`shared_from_this()` 调用点（attach 重放经 `state_`、sink 经拷贝）均在 shared_ptr 托管内，无 bad_weak_ptr；`register_on_server` 的 server 读/写均在 server_mutex 下，无数据竞争；`test_cov_cluster` 轮询等待有界（≤3s）无挂死；`free_value_pipeline_contract` 计数（baseline+7 → 释放 7）与集成测试 `BOOST_CHECK_LT(g_live, baseline)` 均自洽。
 
