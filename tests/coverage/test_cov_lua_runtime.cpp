@@ -173,6 +173,9 @@ BOOST_AUTO_TEST_CASE(LuaToJsonBranches) {
         t_bool_key = {[true] = 1, ok = 2}
         t_array = {1, 2, 3}
         t_object = {a = 1, b = 'x'}
+        -- Keys beyond INT_MAX must not be misread as a dense array index
+        -- (the old as<int>() truncated the 64-bit Lua integer).
+        t_huge_key = {[2^40] = 'huge', [2] = 'two'}
         n_int = 7
         n_float = 3.5
         s_val = 'str'
@@ -188,6 +191,10 @@ BOOST_AUTO_TEST_CASE(LuaToJsonBranches) {
                       "<unsupported>");
     BOOST_CHECK_EQUAL(lua_to_json(lua["t_bool_key"]).dump(), R"({"ok":2})");
     BOOST_CHECK_EQUAL(lua_to_json(lua["t_array"]).dump(), R"([1,2,3])");
+    // A table whose only integer keys exceed INT_MAX is an object, not an
+    // array; the old truncation could wrap 2^40 to 0 and confuse the count.
+    BOOST_CHECK_EQUAL(lua_to_json(lua["t_huge_key"]).dump(),
+                      R"({"1099511627776":"huge","2":"two"})");
     BOOST_CHECK_EQUAL(lua_to_json(lua["t_object"]).dump(),
                       R"({"a":1,"b":"x"})");
     BOOST_CHECK_EQUAL(lua_to_json(lua["n_int"]).get<int64_t>(), 7);

@@ -100,6 +100,14 @@ BOOST_AUTO_TEST_CASE(LuaPackEncodeBranches) {
         BOOST_CHECK(encoder.encode(lua, value, bytes));
     }
 
+    // A key beyond INT_MAX must encode as a map entry, not be misread as a
+    // dense-array index (the old as<int>() truncated the 64-bit Lua integer).
+    {
+        shd::object value = lua.script("return {[2^40] = 'huge', [2] = 'two'}");
+        std::vector<uint8_t> bytes;
+        BOOST_CHECK(encoder.encode(lua, value, bytes));
+    }
+
     // ServiceHandle userdata traverses the table-iteration path of the
     // encoder (usertypes behave as tables with an empty sequence part).
     {

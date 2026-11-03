@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <sstream>
@@ -834,8 +835,12 @@ bool lua_to_json(const shd::object& value, nlohmann::json* out) {
             array_like = false;
             break;
         }
-        const int index = key_obj.as<int>();
-        if (index <= 0) {
+        // Read the full Lua integer and reject anything that would be
+        // truncated by the int index below. Lua integers are 64-bit; a
+        // table key larger than INT_MAX is not a valid dense-array index
+        // and must not silently wrap to a small positive value.
+        const int64_t index = key_obj.as<int64_t>();
+        if (index <= 0 || index > std::numeric_limits<int>::max()) {
             array_like = false;
             break;
         }
@@ -868,7 +873,7 @@ bool lua_to_json(const shd::object& value, nlohmann::json* out) {
         if (key_obj.is<std::string>()) {
             object_key = key_obj.as<std::string>();
         } else if (key_obj.is<int>()) {
-            object_key = std::to_string(key_obj.as<int>());
+            object_key = std::to_string(key_obj.as<int64_t>());
         } else {
             continue;
         }
@@ -2248,8 +2253,8 @@ bool LuaPackEncoder::encode_value(shd::state_view lua, const shd::object& value,
                 array_like = false;
                 break;
             }
-            int index = key_obj.as<int>();
-            if (index <= 0) {
+            const int64_t index = key_obj.as<int64_t>();
+            if (index <= 0 || index > std::numeric_limits<int>::max()) {
                 array_like = false;
                 break;
             }
