@@ -16,6 +16,395 @@
 
 namespace {
 
+// Maximum nesting depth accepted for attacker-controlled msgpack payloads.
+// from_msgpack() builds a DOM iteratively, but the later dump() recurses on
+// the C++ stack and crashes on deep nesting. Guard at the boundary so a deep
+// frame never becomes a deep DOM. Aligns with the JSON codec guard (512).
+constexpr std::size_t kMaxMsgpackDepth = 512;
+
+// Read a big-endian unsigned integer of n bytes from p, advancing p.
+bool read_uint(const std::uint8_t*& p, const std::uint8_t* end,
+               std::uint64_t& value, std::size_t n) {
+    if (static_cast<std::size_t>(end - p) < n) {
+        return false;
+    }
+    value = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        value = (value << 8) | p[i];
+    }
+    p += n;
+    return true;
+}
+
+// Skip n bytes of opaque payload (str/bin/ext body), validating bounds.
+bool skip_bytes(const std::uint8_t*& p, const std::uint8_t* end,
+                std::uint64_t n) {
+    if (n > static_cast<std::uint64_t>(end - p)) {
+        return false;
+    }
+    p += static_cast<std::size_t>(n);
+    return true;
+}
+
+// Reject counts that would overflow a multiplication or a +1 (map pairs and
+// ext type bytes) instead of wrapping to a small value that lets the walker
+// under-count a hostile payload.
+bool count_within(std::uint64_t value, std::uint64_t multiplier = 1) {
+    return value <= std::numeric_limits<std::uint64_t>::max() / multiplier;
+}
+
+// Non-recursive walker over raw msgpack bytes. Returns true iff the span is
+// structurally a single msgpack value whose array/map nesting never exceeds
+// max_depth. Conservative on malformed input: truncated or invalid bytes
+// reject rather than guess. Scalars/str/bin are skipped, so the walk is
+// linear in the payload size and cannot recurse on the C++ stack.
+bool msgpack_nesting_within(const std::uint8_t* begin, const std::uint8_t* end,
+                            std::size_t max_depth) {
+    // Stack of (end-depth, remaining-container-items). We use a plain
+    // vector of frames; depth is bounded by max_depth so the stack can never
+    // grow past it.
+    struct Frame {
+        std::size_t depth;        // nesting depth of this container
+        std::uint64_t remaining;  // unread items (0 for scalar/leaf)
+    };
+    std::vector<Frame> stack;
+    const std::uint8_t* p = begin;
+
+    // The first value must be a complete value; the loop drives one frame
+    // until the container stack empties.
+    std::uint64_t pending = 1;  // items left in the current frame
+    std::size_t depth = 0;
+    for (;;) {
+        if (pending == 0) {
+            // Finished the current container: pop the parent frame.
+            if (stack.empty()) {
+                return p == end;  // top-level done
+            }
+            const auto parent = stack.back();
+            stack.pop_back();
+            depth = parent.depth;
+            pending = parent.remaining;
+            continue;
+        }
+        if (p >= end) {
+            return false;  // truncated
+        }
+        const std::uint8_t tag = *p++;
+
+        // Positive fixint (0x00-0x7f), negative fixint (0xe0-0xff), nil
+        // (0xc0), false/true (0xc2/0xc3) are all leaf scalars.
+        if (tag <= 0x7f || tag >= 0xe0) {
+            --pending;
+            continue;
+        }
+
+        switch (tag) {
+            case 0xc0:  // nil
+            case 0xc2:  // false
+            case 0xc3:  // true
+                --pending;
+                continue;
+
+            case 0xc4: {  // bin 8
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 1)) return false;
+                if (!skip_bytes(p, end, n)) return false;
+                --pending;
+                continue;
+            }
+            case 0xc5: {  // bin 16
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 2)) return false;
+                if (!skip_bytes(p, end, n)) return false;
+                --pending;
+                continue;
+            }
+            case 0xc6: {  // bin 32
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 4)) return false;
+                if (!skip_bytes(p, end, n)) return false;
+                --pending;
+                continue;
+            }
+
+            case 0xca: {  // float 32
+                if (!skip_bytes(p, end, 4)) return false;
+                --pending;
+                continue;
+            }
+            case 0xcb: {  // float 64
+                if (!skip_bytes(p, end, 8)) return false;
+                --pending;
+                continue;
+            }
+            case 0xcc: {  // uint 8
+                if (!skip_bytes(p, end, 1)) return false;
+                --pending;
+                continue;
+            }
+            case 0xcd: {  // uint 16
+                if (!skip_bytes(p, end, 2)) return false;
+                --pending;
+                continue;
+            }
+            case 0xce: {  // uint 32
+                if (!skip_bytes(p, end, 4)) return false;
+                --pending;
+                continue;
+            }
+            case 0xcf: {  // uint 64
+                if (!skip_bytes(p, end, 8)) return false;
+                --pending;
+                continue;
+            }
+            case 0xd0: {  // int 8
+                if (!skip_bytes(p, end, 1)) return false;
+                --pending;
+                continue;
+            }
+            case 0xd1: {  // int 16
+                if (!skip_bytes(p, end, 2)) return false;
+                --pending;
+                continue;
+            }
+            case 0xd2: {  // int 32
+                if (!skip_bytes(p, end, 4)) return false;
+                --pending;
+                continue;
+            }
+            case 0xd3: {  // int 64
+                if (!skip_bytes(p, end, 8)) return false;
+                --pending;
+                continue;
+            }
+            case 0xd4: {                                   // fixext 1
+                if (!skip_bytes(p, end, 2)) return false;  // type + 1 byte
+                --pending;
+                continue;
+            }
+            case 0xd5: {                                   // fixext 2
+                if (!skip_bytes(p, end, 3)) return false;  // type + 2 bytes
+                --pending;
+                continue;
+            }
+            case 0xd6: {                                   // fixext 4
+                if (!skip_bytes(p, end, 5)) return false;  // type + 4 bytes
+                --pending;
+                continue;
+            }
+            case 0xd7: {                                   // fixext 8
+                if (!skip_bytes(p, end, 9)) return false;  // type + 8 bytes
+                --pending;
+                continue;
+            }
+            case 0xd8: {                                    // fixext 16
+                if (!skip_bytes(p, end, 17)) return false;  // type + 16 bytes
+                --pending;
+                continue;
+            }
+            case 0xd9: {  // str 8
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 1)) return false;
+                if (!skip_bytes(p, end, n)) return false;
+                --pending;
+                continue;
+            }
+            case 0xda: {  // str 16
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 2)) return false;
+                if (!skip_bytes(p, end, n)) return false;
+                --pending;
+                continue;
+            }
+            case 0xdb: {  // str 32
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 4)) return false;
+                if (!skip_bytes(p, end, n)) return false;
+                --pending;
+                continue;
+            }
+            case 0xc7: {  // ext 8
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 1)) return false;
+                if (!count_within(n) || !skip_bytes(p, end, n + 1))
+                    return false;  // type + data
+                --pending;
+                continue;
+            }
+            case 0xc8: {  // ext 16
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 2)) return false;
+                if (!count_within(n) || !skip_bytes(p, end, n + 1))
+                    return false;
+                --pending;
+                continue;
+            }
+            case 0xc9: {  // ext 32
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 4)) return false;
+                if (!count_within(n) || !skip_bytes(p, end, n + 1))
+                    return false;
+                --pending;
+                continue;
+            }
+
+            case 0xdc: {  // array 16
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 2)) return false;
+                if (n == 0) {
+                    --pending;
+                    continue;
+                }
+                if (depth + 1 > max_depth) return false;
+                --pending;
+                stack.push_back({depth, pending});
+                depth = depth + 1;
+                pending = n;
+                continue;
+            }
+            case 0xdd: {  // array 32
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 4)) return false;
+                if (n == 0) {
+                    --pending;
+                    continue;
+                }
+                if (depth + 1 > max_depth) return false;
+                --pending;
+                stack.push_back({depth, pending});
+                depth = depth + 1;
+                pending = n;
+                continue;
+            }
+            case 0xde: {  // map 16
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 2)) return false;
+                if (n == 0) {
+                    --pending;
+                    continue;
+                }
+                if (!count_within(n, 2) || depth + 1 > max_depth) return false;
+                --pending;
+                stack.push_back({depth, pending});
+                depth = depth + 1;
+                pending = n * 2;  // key + value
+                continue;
+            }
+            case 0xdf: {  // map 32
+                std::uint64_t n = 0;
+                if (!read_uint(p, end, n, 4)) return false;
+                if (n == 0) {
+                    --pending;
+                    continue;
+                }
+                if (!count_within(n, 2) || depth + 1 > max_depth) return false;
+                --pending;
+                stack.push_back({depth, pending});
+                depth = depth + 1;
+                pending = n * 2;  // key + value
+                continue;
+            }
+
+            case 0xa0:
+            case 0xa1:
+            case 0xa2:
+            case 0xa3:
+            case 0xa4:
+            case 0xa5:
+            case 0xa6:
+            case 0xa7:
+            case 0xa8:
+            case 0xa9:
+            case 0xaa:
+            case 0xab:
+            case 0xac:
+            case 0xad:
+            case 0xae:
+            case 0xaf:
+            case 0xb0:
+            case 0xb1:
+            case 0xb2:
+            case 0xb3:
+            case 0xb4:
+            case 0xb5:
+            case 0xb6:
+            case 0xb7:
+            case 0xb8:
+            case 0xb9:
+            case 0xba:
+            case 0xbb:
+            case 0xbc:
+            case 0xbd:
+            case 0xbe:
+            case 0xbf: {  // fixstr 0x00-0x1f
+                const std::uint64_t n = static_cast<std::uint64_t>(tag & 0x1f);
+                if (!skip_bytes(p, end, n)) return false;
+                --pending;
+                continue;
+            }
+            case 0x90:
+            case 0x91:
+            case 0x92:
+            case 0x93:
+            case 0x94:
+            case 0x95:
+            case 0x96:
+            case 0x97:
+            case 0x98:
+            case 0x99:
+            case 0x9a:
+            case 0x9b:
+            case 0x9c:
+            case 0x9d:
+            case 0x9e:
+            case 0x9f: {  // fixarray 0x00-0x0f
+                const std::uint64_t n = static_cast<std::uint64_t>(tag & 0x0f);
+                if (n == 0) {
+                    --pending;
+                    continue;
+                }
+                if (depth + 1 > max_depth) return false;
+                --pending;
+                stack.push_back({depth, pending});
+                depth = depth + 1;
+                pending = n;
+                continue;
+            }
+            case 0x80:
+            case 0x81:
+            case 0x82:
+            case 0x83:
+            case 0x84:
+            case 0x85:
+            case 0x86:
+            case 0x87:
+            case 0x88:
+            case 0x89:
+            case 0x8a:
+            case 0x8b:
+            case 0x8c:
+            case 0x8d:
+            case 0x8e:
+            case 0x8f: {  // fixmap 0x00-0x0f
+                const std::uint64_t n = static_cast<std::uint64_t>(tag & 0x0f);
+                if (n == 0) {
+                    --pending;
+                    continue;
+                }
+                if (!count_within(n, 2) || depth + 1 > max_depth) return false;
+                --pending;
+                stack.push_back({depth, pending});
+                depth = depth + 1;
+                pending = n * 2;  // key + value
+                continue;
+            }
+
+            default:
+                return false;  // reserved/invalid tag (0xc1, etc.)
+        }
+    }
+}
+
 char* dup_string(const std::string& value) {
     auto* out = static_cast<char*>(std::malloc(value.size() + 1));
     if (out == nullptr) return nullptr;
@@ -115,6 +504,11 @@ int msgpack_decode(const shield_protocol_codec_v1* self,
         const std::uint8_t empty_payload[] = {0};
         const auto* begin = size == 0 ? empty_payload : args->payload;
         const auto* end = begin + size;
+        if (!msgpack_nesting_within(begin, end, kMaxMsgpackDepth)) {
+            fill_error(err, "protocol.decode_failed",
+                       "msgpack payload exceeds maximum nesting depth");
+            return -1;
+        }
         const auto message = nlohmann::json::from_msgpack(begin, end);
         auto* inst = static_cast<msgpack_instance*>(self->user_data);
         if (enforce_payload_schema(inst, args->route_name, message,
@@ -156,6 +550,42 @@ int msgpack_encode(const shield_protocol_codec_v1* self,
         nlohmann::json message = nlohmann::json::object();
         const auto size = static_cast<std::size_t>(args->message_json_size);
         if (args->message_json != nullptr && size > 0) {
+            // nlohmann's JSON parser is iterative, but to_msgpack() walks the
+            // DOM recursively; guard deep input the same way as decode so a
+            // hostile message cannot overflow the stack here either.
+            const char* begin = args->message_json;
+            const char* end = begin + size;
+            std::size_t depth = 0;
+            bool in_string = false;
+            bool escaped = false;
+            for (const char* it = begin; it != end; ++it) {
+                const char c = *it;
+                if (in_string) {
+                    if (escaped) {
+                        escaped = false;
+                    } else if (c == '\\') {
+                        escaped = true;
+                    } else if (c == '"') {
+                        in_string = false;
+                    }
+                    continue;
+                }
+                if (c == '"') {
+                    in_string = true;
+                } else if (c == '{' || c == '[') {
+                    if (++depth > kMaxMsgpackDepth) {
+                        fill_error(
+                            err, "protocol.encode_failed",
+                            "msgpack input exceeds maximum nesting depth");
+                        return -1;
+                    }
+                } else if (c == '}' || c == ']') {
+                    if (depth == 0) {
+                        break;  // let the parser report the unbalanced close
+                    }
+                    --depth;
+                }
+            }
             message = nlohmann::json::parse(args->message_json,
                                             args->message_json + size);
         }

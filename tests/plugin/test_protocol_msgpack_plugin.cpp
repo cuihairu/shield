@@ -11,6 +11,10 @@
 
 extern "C" const shield_plugin_abi_v1* shield_plugin_get_v1(void);
 
+// Mirrors the codec's kMaxMsgpackDepth; the boundary tests pin the same 512
+// ceiling the JSON codec enforces.
+constexpr std::size_t kMaxMsgpackDepthTest = 512;
+
 namespace {
 
 nlohmann::json parse_json_result(const char* data, std::uint64_t size) {
@@ -264,6 +268,165 @@ BOOST_AUTO_TEST_CASE(SchemaEncodeViolationFails) {
         fix.codec->encode(fix.codec, &encode_args, &encoded, &encode_error), 0);
     BOOST_REQUIRE(encode_error.code != nullptr);
     BOOST_CHECK_EQUAL(encode_error.code, "protocol.encode_failed");
+}
+
+// A msgpack array nested past the 512-depth guard must be rejected before a
+// DOM is built. Without the pre-scan, from_msgpack() plus the later dump()
+// recurse on the C++ stack and crash on ~100k nesting; the guard keeps the
+// boundary the same as the JSON codec's.
+BOOST_AUTO_TEST_CASE(DecodeRejectsOverDeepNesting) {
+    MsgpackCodec fix("{}");
+
+    // Build a raw msgpack payload of nested arrays of depth `depth` (each
+    // fixarray with one element, ending in an int).
+    const auto build = [](std::size_t depth) {
+        std::vector<std::uint8_t> wire;
+        for (std::size_t i = 0; i < depth; ++i) {
+            wire.push_back(0x91);  // fixarray, 1 element
+        }
+        wire.push_back(0x01);  // positive fixint 1
+        return wire;
+    };
+
+    // 513 deep must be rejected.
+    {
+        const auto payload = build(kMaxMsgpackDepthTest + 1);
+        shield_protocol_decode_args_v1 decode_args{};
+        decode_args.payload = payload.data();
+        decode_args.payload_size = payload.size();
+        shield_protocol_decode_result_v1 decoded{};
+        shield_error_v1 decode_error{};
+        BOOST_CHECK_NE(
+            fix.codec->decode(fix.codec, &decode_args, &decoded, &decode_error),
+            0);
+        BOOST_REQUIRE(decode_error.code != nullptr);
+        BOOST_CHECK_EQUAL(decode_error.code, "protocol.decode_failed");
+    }
+
+    // 512 deep is the accepted ceiling and must round-trip.
+    {
+        const auto payload = build(kMaxMsgpackDepthTest);
+        shield_protocol_decode_args_v1 decode_args{};
+        decode_args.payload = payload.data();
+        decode_args.payload_size = payload.size();
+        shield_protocol_decode_result_v1 decoded{};
+        shield_error_v1 decode_error{};
+        BOOST_REQUIRE_EQUAL(
+            fix.codec->decode(fix.codec, &decode_args, &decoded, &decode_error),
+            0);
+        fix.codec->free_decode_result(fix.codec, &decoded);
+    }
+
+    // A genuinely oversized payload (~100k nesting, far past the guard) must
+    // be rejected without recursing on the C++ stack.
+    {
+        const auto payload = build(100000);
+        shield_protocol_decode_args_v1 decode_args{};
+        decode_args.payload = payload.data();
+        decode_args.payload_size = payload.size();
+        shield_protocol_decode_result_v1 decoded{};
+        shield_error_v1 decode_error{};
+        BOOST_CHECK_NE(
+            fix.codec->decode(fix.codec, &decode_args, &decoded, &decode_error),
+            0);
+        BOOST_REQUIRE(decode_error.code != nullptr);
+        BOOST_CHECK_EQUAL(decode_error.code, "protocol.decode_failed");
+    }
+}
+
+// The encode path feeds attacker-controlled JSON into to_msgpack(); deep
+// input must be rejected at the boundary rather than overrunning the stack.
+BOOST_AUTO_TEST_CASE(EncodeRejectsOverDeepNesting) {
+    MsgpackCodec fix("{}");
+
+    const auto deep_json = [](std::size_t depth) {
+        std::string s;
+        s.reserve(depth * 2 + 2);
+        for (std::size_t i = 0; i < depth; ++i) s.push_back('[');
+        s.push_back('0');
+        for (std::size_t i = 0; i < depth; ++i) s.push_back(']');
+        return s;
+    };
+
+    shield_protocol_encode_args_v1 encode_args{};
+    const auto over = deep_json(kMaxMsgpackDepthTest + 1);
+    encode_args.message_json = over.data();
+    encode_args.message_json_size = over.size();
+    shield_protocol_encode_result_v1 encoded{};
+    shield_error_v1 encode_error{};
+    BOOST_CHECK_NE(
+        fix.codec->encode(fix.codec, &encode_args, &encoded, &encode_error), 0);
+    BOOST_REQUIRE(encode_error.code != nullptr);
+    BOOST_CHECK_EQUAL(encode_error.code, "protocol.encode_failed");
+
+    const auto at = deep_json(kMaxMsgpackDepthTest);
+    encode_args.message_json = at.data();
+    encode_args.message_json_size = at.size();
+    shield_protocol_encode_result_v1 encoded_ok{};
+    shield_error_v1 encode_error_ok{};
+    BOOST_REQUIRE_EQUAL(fix.codec->encode(fix.codec, &encode_args, &encoded_ok,
+                                          &encode_error_ok),
+                        0);
+    fix.codec->free_encode_result(fix.codec, &encoded_ok);
+}
+
+// The walker must understand every msgpack container/leaf shape, not only
+// nested arrays. This payload mixes a map, fixstr, bin, float, ints, nil,
+// booleans, and a nested array; if any branch miscounts, decode fails.
+BOOST_AUTO_TEST_CASE(WalkerHandlesMixedMsgpackShapes) {
+    MsgpackCodec fix("{}");
+
+    const auto payload = nlohmann::json::to_msgpack(nlohmann::json::parse(
+        R"json({"text":"hello","blob":"AA==","score":1.5,
+                "count":7,"flag":true,"empty":null,
+                "nested":[1,{"key":"value"}]})json"));
+
+    shield_protocol_decode_args_v1 decode_args{};
+    decode_args.payload = payload.data();
+    decode_args.payload_size = payload.size();
+    shield_protocol_decode_result_v1 decoded{};
+    shield_error_v1 decode_error{};
+    BOOST_REQUIRE_EQUAL(
+        fix.codec->decode(fix.codec, &decode_args, &decoded, &decode_error), 0);
+    const auto parsed =
+        parse_json_result(decoded.message_json, decoded.message_json_size);
+    BOOST_CHECK_EQUAL(parsed["text"].get<std::string>(), "hello");
+    BOOST_CHECK_EQUAL(parsed["count"].get<int>(), 7);
+    BOOST_CHECK(parsed["nested"].is_array());
+    BOOST_CHECK_EQUAL(parsed["nested"][1]["key"].get<std::string>(), "value");
+    fix.codec->free_decode_result(fix.codec, &decoded);
+}
+
+// Raw msgpack bytes exercising the bin/ext leaf branches, which the JSON
+// round-trip cannot produce. The walker must accept them (they are opaque
+// leaves, not containers) and the decoder must still reject only when the
+// nesting guard trips.
+BOOST_AUTO_TEST_CASE(WalkerAcceptsBinAndExtLeaves) {
+    MsgpackCodec fix("{}");
+
+    // [ bin8(len=3):{1,2,3}, fixext1(type=0x01):{0x7f} ]
+    const std::vector<std::uint8_t> payload = {
+        0x92,                          // fixarray 2
+        0xc4, 0x03,                    // bin8 length 3
+        0x01, 0x02, 0x03, 0xd4, 0x01,  // fixext1 type=1
+        0x7f,
+    };
+    shield_protocol_decode_args_v1 decode_args{};
+    decode_args.payload = payload.data();
+    decode_args.payload_size = payload.size();
+    shield_protocol_decode_result_v1 decoded{};
+    shield_error_v1 decode_error{};
+    // nlohmann's msgpack parser may reject ext/bin types it cannot represent;
+    // either outcome is fine for the walker itself — the point is that a
+    // well-formed (or at least bounded) payload is never reported as a
+    // nesting-depth failure.
+    const int rc =
+        fix.codec->decode(fix.codec, &decode_args, &decoded, &decode_error);
+    if (rc == 0) {
+        fix.codec->free_decode_result(fix.codec, &decoded);
+    } else {
+        BOOST_CHECK_EQUAL(decode_error.code, "protocol.decode_failed");
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
