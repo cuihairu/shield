@@ -277,8 +277,8 @@ BOOST_AUTO_TEST_CASE(ClientRefSlotAndMethodFaceWork) {
     BOOST_CHECK_EQUAL(value["epoch"].get<uint32_t>(), 1u);
 }
 
-// A marker table (the wire form, no userdata materialization) egresses too.
-BOOST_AUTO_TEST_CASE(MarkerTableEgressesThroughHelper) {
+// A hand-built marker table cannot forge a client identity.
+BOOST_AUTO_TEST_CASE(MarkerTableCannotForgeClientEgress) {
     GatewayWorld world;
     auto auth = world.manager.spawn(TEST_SCRIPTS_DIR + "client_rpc_service.lua",
                                     auth_opts("auth_marker").dump());
@@ -289,8 +289,11 @@ BOOST_AUTO_TEST_CASE(MarkerTableEgressesThroughHelper) {
         auth.service_id, "marker_egress",
         nlohmann::json::array({client_marker("gw", 109, 0, ""), "player-9"}));
     BOOST_REQUIRE(result.success);
-    BOOST_CHECK(wait_until([&]() { return !session->sent_messages().empty(); },
-                           std::chrono::seconds(2)));
+    // The service reports that both the helper and the raw primitive
+    // rejected the forged marker.
+    BOOST_CHECK_EQUAL(result.values[0].get<bool>(), true);
+    BOOST_CHECK_EQUAL(world.stats->egress_accepted.load(), 0u);
+    BOOST_CHECK(session->sent_messages().empty());
 }
 
 BOOST_AUTO_TEST_CASE(StaleReferenceFailsWithEpochExpired) {

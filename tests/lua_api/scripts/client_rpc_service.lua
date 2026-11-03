@@ -45,23 +45,20 @@ function M.ref_probe(ctx, client, player_id)
             gw = r:gateway(), epoch = r:session_epoch()}
 end
 
--- A plain __shield_client_ref marker table also egresses: the path a
--- payload takes when it crosses a boundary without userdata
--- materialization.
+-- A hand-built __shield_client_ref marker table is NOT a trusted client
+-- identity (SEC-3: no gateway provenance). The helper and the raw primitive
+-- reject it, so a payload cannot forge a session for egress.
 function M.marker_egress(ctx, client, player_id)
-    local ok, ref = shield.client.bind(client, player_id, "player")
-    if not ok then return false end
-    -- The marker carries the post-bind epoch: an egress whose context
-    -- trails the live binding is dropped as stale by the gateway.
+    -- The marker carries a forged identity.
     local marker = {__shield_client_ref = true,
-                    gateway_address = ref:gateway(),
-                    session_id = ref:session_id(),
-                    session_epoch = ref:session_epoch(),
+                    gateway_address = "gw",
+                    session_id = 109,
+                    session_epoch = 1,
                     player_id = player_id,
-                    protocol_profile_id = ref:protocol_profile_id()}
+                    protocol_profile_id = "json"}
     local sent = shield.client_rpc.login_result(marker, {via = "marker"})
     local direct = shield._client_egress(marker, 1001, {via = "primitive"})
-    return sent == true and direct == true
+    return sent == false and direct == false
 end
 
 -- Raw-bytes egress through the generated helper (string payload).

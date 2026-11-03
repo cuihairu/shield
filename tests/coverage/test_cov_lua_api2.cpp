@@ -456,13 +456,16 @@ BOOST_AUTO_TEST_CASE(ClientPrimitivesWithoutGateway) {
         "'json')\n"
         "assert(shield.client.close(ctx, 'bye') == false)"));
 
-    // The same request through the raw primitive with the marker-table
-    // form (the shape a client identity takes inside message payloads).
-    lua["ref_marker"] = shield::lua::json_to_lua(
-        lua, shield::lua::ClientContextData{"ghost_gw", 1, 0, "p1", "json"}
-                 .to_json());
+    // A bare __shield_client_ref table (no gateway provenance, SEC-3) is
+    // rejected before identity extraction.
     BOOST_CHECK(run_script(
-        lua, "assert(shield._client_close(ref_marker, 'bye') == false)"));
+        lua,
+        "ref_marker = {__shield_client_ref = true,\n"
+        "  gateway_address = 'ghost_gw', session_id = 1,\n"
+        "  session_epoch = 0, player_id = 'p1',\n"
+        "  protocol_profile_id = 'json'}\n"
+        "assert(shield._client_close(ref_marker, 'bye') == false)\n"
+        "assert(shield._client_egress(ref_marker, 7, 'bytes') == false)"));
 
     // Egress with no gateway: dropped regardless of payload shape.
     BOOST_CHECK(run_script(
@@ -470,7 +473,6 @@ BOOST_AUTO_TEST_CASE(ClientPrimitivesWithoutGateway) {
         "local ctx = __shield_make_client_context(1, 0, 'p1', 'ghost_gw', "
         "'json')\n"
         "assert(shield._client_egress(ctx, 7, {k = 'v'}) == false)\n"
-        "assert(shield._client_egress(ref_marker, 7, 'bytes') == false)\n"
         // A non-client first argument never yields identity data, so the
         // request is rejected before the gateway lookup.
         "assert(shield._client_egress(nil, 7, 'bytes') == false)"));
@@ -1163,9 +1165,11 @@ BOOST_AUTO_TEST_CASE(ConfigExponentNotationParsesAsFloat) {
 }
 
 // The _client_bind primitive refuses (returns 0, no suspension) when the
-// player id or the target service is empty. The client argument is a valid
-// marker table, so the 0 returns come from the empty-field guards and not
-// from client-argument rejection.
+// player id or the target service is empty. The client argument is a
+// materialized identity, so the 0 returns come from the empty-field guards
+// and not from client-argument rejection. A bare __shield_client_ref marker
+// table (SEC-3) carries no gateway provenance and is rejected outright by
+// client_arg_to_data before any field guard runs.
 BOOST_AUTO_TEST_CASE(ClientBindEmptyFieldGuards) {
     shd::state lua;
     lua.open_libraries(shd::lib::base, shd::lib::coroutine, shd::lib::table,
@@ -1174,14 +1178,20 @@ BOOST_AUTO_TEST_CASE(ClientBindEmptyFieldGuards) {
 
     BOOST_CHECK(
         run_script(lua,
+                   "local ctx = __shield_make_client_context(7, 3, 'p1', "
+                   "'ghost_gw', 'json')\n"
+                   "assert(shield._client_bind(ctx, '', 'target', 100) == 0)\n"
+                   "assert(shield._client_bind(ctx, 'p1', '', 100) == 0)\n"
                    "ctx_marker = {__shield_client_ref = true,\n"
                    "  gateway_address = 'ghost_gw', session_id = 7,\n"
                    "  session_epoch = 3, player_id = 'p1',\n"
                    "  protocol_profile_id = 'json'}\n"
-                   "assert(shield._client_bind(ctx_marker, '', 'target', "
+                   "assert(shield._client_bind(ctx_marker, 'p1', 'target', "
                    "100) == 0)\n"
-                   "assert(shield._client_bind(ctx_marker, 'p1', '', 100) == "
-                   "0)"));
+                   "assert(shield._client_close(ctx_marker, 'bye') == "
+                   "false)\n"
+                   "assert(shield._client_egress(ctx_marker, 7, 'bytes') == "
+                   "false)"));
 }
 
 // register_client_rpc_helper: the route-name reverse map is created on

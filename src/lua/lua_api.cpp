@@ -153,21 +153,20 @@ private:
 
 }  // namespace
 
-// Reads the client identity out of a ClientContext/ClientRef argument (or a
-// __shield_client_ref marker table that travelled through a path without
-// materialization). Used by shield.client.bind/close and the client_rpc
-// egress helpers.
+// Reads the client identity out of a ClientContext/ClientRef argument.
+// Used by shield.client.bind/close and the client_rpc egress helpers.
+//
+// SEC-3: only the read-only identity userdata (ClientContextBox / ClientRefBox,
+// which Lua cannot construct or mutate) is accepted. A bare
+// __shield_client_ref marker table is NOT trusted here: the marker is the wire
+// form that only the gateway produces, and by the time a service handler sees
+// it (via json_to_lua) it is already materialized as the userdata. Accepting
+// the raw table would let an untrusted message payload passed straight into
+// shield.client.bind/close/_client_egress forge a session identity.
 static bool client_arg_to_data(const shd::object& object,
                                ClientContextData* out) {
     if (extract_client_data(object, out)) {
         return true;
-    }
-    if (object.is<shd::table>()) {
-        auto data = ClientContextData::from_json(lua_to_json(object));
-        if (data.has_value()) {
-            *out = std::move(*data);
-            return true;
-        }
     }
     return false;
 }
