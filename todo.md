@@ -161,7 +161,7 @@
 ## 代码深审 P2/P3 待办（2026-11-01）
 - [x] **BUG-3 redis.driver free_value 浅释放（内存泄漏）**：`plugins/redis.driver/shield_redis_driver.cpp:577` 的 free_value 只深走 3 层；XREADGROUP / 深层嵌套回复（streams→entries→fields 达 5 层）的深层字符串不释放，driver 路径每读一批泄漏。改真递归（每层对 items 逐元素调自身）。
 - [x] **RACE-2 lua_http_bridge 路由槽 UAF 窗口**：`src/lua/lua_http_bridge.cpp:71-78` attach 装 sink（捕获 this）、detach 清 sink；`src/lua/lua_runtime.cpp:498` 读 sink 与 detach 清空之间竞态——sink 拷贝先于清空、调用在 bridge 析构后 → 悬垂。sink 改存 weak / 经 manager 间接。**已修（2026-11-03）**：路由槽可变状态移入 `LuaHttpBridgeState`（`std::shared_ptr`），sink 与每路由 handler 均捕获 state（`enable_shared_from_this`）而非 bridge `this`——detach+析构后到达的注册/分发看到 `server==nullptr` 安全返回，bridge 仅剩 attach/detach/handle 门面；`test_cov_lua_http_bridge`/`test_cov_http_bridge2`/`test_cov_lua_runtime2` 全绿。
-- [x] **BUG-2 _resume_after 定时器失败泄漏**：`src/lua/lua_api.cpp:1129` `_resume_after` 定时器失效/协程已死时不回收 continuation 资源。**已修（2026-11-03）**：`SleepAnchor` RAII 精确一次释放 registry ref（正常续跑 / 定时器被取消或服务退出销毁回调 / 调度失败三臂全收口），并持有 VM 保活防止销毁路径 UAF；新增 `PendingSleepAnchorReleasesAtManagerTeardown` 回归测试。（<commit-sha>；test_cov_lua_service / test_cov_cpp_lua_api / test_lua_api_timers 全绿）
+- [x] **BUG-2 _resume_after 定时器失败泄漏**：`src/lua/lua_api.cpp:1129` `_resume_after` 定时器失效/协程已死时不回收 continuation 资源。**已修（2026-11-03）**：`SleepAnchor` RAII 精确一次释放 registry ref（正常续跑 / 定时器被取消或服务退出销毁回调 / 调度失败三臂全收口），并持有 VM 保活防止销毁路径 UAF；新增 `PendingSleepAnchorReleasesAtManagerTeardown` 回归测试。（7c69651；test_cov_lua_service / test_cov_cpp_lua_api / test_lua_api_timers 全绿）
 - [ ] **BUG-6 console_session send_line 裸 this 投递**：`src/net/console_session.cpp:65-70` send_line post 捕获裸 this；若会话在排队写完成前销毁 → UAF。改 weak_from_this 或保证会话生命周期。
 - [ ] **BUG-7 postgresql rewrite_placeholders 串字面量误改**：`plugins/postgresql/shield_db_pgsql.cpp:199` 把 SQL 中字符串字面量/注释里的 `?` 也改成 `$N` → 语义错乱。需字符串/注释感知。
 - [ ] **RACE-3/4 running_/listening_ 裸 bool**：`include/shield/net/http_server.hpp:147` running_、`include/shield/net/listener.hpp:193` listening_、`include/shield/net/console_server.hpp:63` listening_ 为非原子 bool 跨线程读写 → 改 std::atomic<bool>。
@@ -188,3 +188,14 @@
 - [x] 审核发现：公共 ABI 契约未随语义更新——属实。redis.h 同步更新 pipeline 签名/释放契约及 free_value 语义（include/shield/plugin/redis.h:98-118）。
 - [x] 审核发现：测试缺口——属实。新增 pipeline 所有权契约单测与真实 redis-server 集成测试（tests/plugin/test_redis_driver_free_value.cpp:190-346）。
 - [x] 审核发现：低危——free_value_contents 任意深度递归（栈深随 Redis 回复嵌套无上限）——属实，属既有对称暴露面，与 reply_to_value 一致，暂标注为接受（plugins/redis.driver/shield_redis_driver.cpp:258-272）。
+
+## 审核（394351ab76c5..HEAD，只审不改）— commits 7a94beb Fix Redis pipeline ownership contract / 715a0a3 count inbound replies before trust checks / 178d73b keep http bridge route slots alive across teardown
+
+覆盖范围：`git diff 394351ab76c5..HEAD`，10 文件（redis.h / docs / shield_redis_driver.cpp / cluster_transport.cpp / lua_http_bridge.cpp/.hpp / CMakeLists.txt / test_cov_cluster.cpp / test_redis_driver_free_value.cpp / todo.md），+336/-61。逐文件审查完毕。
+
+- [x] 审核发现：**pipeline 的 out_array calloc 返回值未判空**——属实。非空回复下 calloc 失败改为抛 `bad_alloc` 并落入既有错误返回；测试插桩 calloc 强制失败钉住 `-1`/空输出/错误码——PENDING（plugins/redis.driver/shield_redis_driver.cpp:569-571、tests/plugin/test_redis_driver_free_value.cpp:407-422）。
+- [x] 审核发现：**pipeline 公共 ABI 破坏性签名变更未升版本（低危/兼容性）**——属实。冻结 v1 契约、接口升为 `shield.redis.v2`，driver 不再返回 v1 vtable，三个 Redis 上层消费者与 manifest/docs 同步；测试钉住 v1 请求必须为 NULL——PENDING（include/shield/plugin/redis.h:13-26、:38-39、plugins/redis.driver/shield_redis_driver.cpp:299、:1076、tests/plugin/test_redis_driver_free_value.cpp:342-349）。
+- [x] 审核发现：**测试缺口——pipeline 错误路径未覆盖**——属实（部分）。补齐可确定性构造的 `count==0` 与 calloc OOM 臂；`pipe.exec()`/`reply_to_value` 中途异常无注入面，不造假测试——PENDING（tests/plugin/test_redis_driver_free_value.cpp:381-424）。
+- [x] 审核发现：**测试缺口——http bridge 路由 handler 在 bridge 析构后被调用的场景未直接覆盖**——属实。新增 loopback socket 经真实 `HttpServer` accept/read/dispatch/route table 调用，并先后覆盖 bridge 存活与析构后两臂——PENDING（tests/coverage/test_cov_http_bridge2.cpp:390-445）。
+
+已核无问题部分：cluster_transport `rx_messages` 计数前移——两处入站 handler（:670 EnvelopeMsg、:820 EnvelopeReplyMsg）各自在到达时计数、互不重复，前移仅使被信任检查丢弃的伪造回复也被计入（语义符合"每帧都计数"），转发臂（LocalDispatch+peer）为出站路径不计数，无双重计数；`LuaHttpBridgeState` shared_ptr 生命周期——server 路由表/route sink 均在 lua_runtime/lua_services 之前销毁（bootstrap.cpp:1664-1668 vs :348-349），state 持有的 runtime/manager 引用及 forked task 捕获的 `&runtime` 均无悬垂窗口；`shared_from_this()` 调用点（attach 重放经 `state_`、sink 经拷贝）均在 shared_ptr 托管内，无 bad_weak_ptr；`register_on_server` 的 server 读/写均在 server_mutex 下，无数据竞争；`test_cov_cluster` 轮询等待有界（≤3s）无挂死；`free_value_pipeline_contract` 计数（baseline+7 → 释放 7）与集成测试 `BOOST_CHECK_LT(g_live, baseline)` 均自洽。
