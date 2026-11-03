@@ -24,7 +24,7 @@ Shield 通过插件系统 v1 提供后端能力。每个插件是一个独立的
 
 | 包 ID | 接口 | 说明 |
 |-------|------|------|
-| [redis.driver](/zh/plugins/redis-driver) | `shield.redis.v1` | Redis 底层驱动，统一连接池与 typed 命令，被其他 Redis 插件依赖 |
+| [redis.driver](/zh/plugins/redis-driver) | `shield.redis.v2` | Redis 底层驱动，统一连接池与 typed 命令，被其他 Redis 插件依赖 |
 | [cache.redis](/zh/plugins/cache-redis) | `shield.cache.v1` | Redis key-value、hash、TTL、counter |
 | [queue.redis](/plugins/queue-redis) | `shield.queue.v1` | Redis Streams 消息队列（consumer group + ack） |
 | [leaderboard.redis](/zh/plugins/leaderboard-redis) | `shield.leaderboard.v1` | Redis ZSET 排行榜，支持复合评分 |

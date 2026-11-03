@@ -1,13 +1,27 @@
-// [SHIELD_PLUGIN] shield.redis.v1 interface.
+// [SHIELD_PLUGIN] shield.redis.v2 interface.
 //
 // Unified Redis driver. A package providing this interface returns a
-// shield_redis_v1* from instance->get_interface("shield.redis.v1").
+// shield_redis_v2* from instance->get_interface("shield.redis.v2").
 // The driver holds the redis++ connection pool internally; callers execute
 // commands through typed methods (get/set/hset/...) or raw command fallback.
 //
 // Memory: all methods that return a shield_redis_value_v1* allocate via
 // malloc. Callers MUST call free_value() when done. Nested arrays (e.g.
 // hgetall) are recursively freed by free_value().
+//
+// ABI history:
+//   - v1 ("shield.redis.v1", frozen): pipeline() received a flat
+//     shield_redis_value_v1* array (elements shallow-copied inline). The
+//     interface name did not change when that shape was corrected, which was
+//     a binary-incompatible repurpose under the same identifier. Old consumers
+//     compiled against v1 must NOT be loaded against a v2 driver: the pipeline
+//     slot now points to an array of pointers and a flat-array consumer would
+//     free_value() each pointer-sized slot as a value node -> heap corruption.
+//   - v2 ("shield.redis.v2", current): pipeline() returns a heap-allocated
+//     array of shield_redis_value_v1* (one independently allocated node per
+//     command). The interface name is bumped so a v1 consumer asking for the
+//     old identifier gets NULL from get_interface() instead of silently
+//     corrupting memory.
 #pragma once
 
 #include <stdint.h>
@@ -18,7 +32,10 @@
 extern "C" {
 #endif
 
+// Legacy frozen identifier. A v2 driver deliberately does NOT provide it.
 #define SHIELD_REDIS_V1 "shield.redis.v1"
+// Current interface identifier.
+#define SHIELD_REDIS_V2 "shield.redis.v2"
 
 // Value type discriminator.
 typedef enum shield_redis_type_v1 {
@@ -58,9 +75,9 @@ typedef struct shield_redis_command_v1 {
 } shield_redis_command_v1;
 
 // The main interface vtable.
-typedef struct shield_redis_v1 {
+typedef struct shield_redis_v2 {
     uint32_t struct_size;
-    const char* interface_name;  // "shield.redis.v1"
+    const char* interface_name;  // "shield.redis.v2"
 
     // --- Connection handle ---
     // Returns an opaque handle for use with all methods below. The handle is
@@ -71,7 +88,7 @@ typedef struct shield_redis_v1 {
     // instance config). err_buf receives an error message on failure.
     // disconnect() releases the handle (the underlying connection pool is
     // managed by the driver instance and is NOT torn down by disconnect).
-    void* (*connect)(const shield_redis_v1* self, const void* cfg,
+    void* (*connect)(const shield_redis_v2* self, const void* cfg,
                      char* err_buf, int err_buf_size);
     void (*disconnect)(void* handle);
 
@@ -117,7 +134,7 @@ typedef struct shield_redis_v1 {
     // arrays and the value node itself. Safe to call with NULL. Do not call
     // twice on the same non-NULL pointer; the node is freed by this call.
     void (*free_value)(shield_redis_value_v1* value);
-} shield_redis_v1;
+} shield_redis_v2;
 
 #ifdef __cplusplus
 }

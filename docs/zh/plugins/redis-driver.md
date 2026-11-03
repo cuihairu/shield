@@ -1,11 +1,11 @@
 # redis.driver
 
-> Shield 官方 Redis 底层驱动插件。统一持有 redis++ 客户端、连接池和连接模式配置，为 `cache.redis`、`queue.redis`、`leaderboard.redis` 等上层插件提供 `shield.redis.v1` typed Redis 能力。
+> Shield 官方 Redis 底层驱动插件。统一持有 redis++ 客户端、连接池和连接模式配置，为 `cache.redis`、`queue.redis`、`leaderboard.redis` 等上层插件提供 `shield.redis.v2` typed Redis 能力。
 
 ## 包信息
 
 - **包 ID**: `redis.driver`
-- **接口**: `shield.redis.v1`
+- **接口**: `shield.redis.v2`
 - **Capabilities**: `typed-command`、`pipeline`、`raw-command`
 - **版本**: 1.0.0
 - **CMake 选项**: `SHIELD_BUILD_PLUGIN_REDIS_DRIVER`
@@ -22,15 +22,15 @@ cmake -B build -DSHIELD_BUILD_PLUGIN_REDIS_DRIVER=ON
 
 ## 定位
 
-`redis.driver` 不是业务语义插件。它封装 redis++ 的核心能力（连接池、typed 命令、pipeline、raw command），对外暴露稳定 C ABI 的 `shield.redis.v1`；cluster、sentinel、TLS 为规划中能力（当前未实现）。
+`redis.driver` 不是业务语义插件。它封装 redis++ 的核心能力（连接池、typed 命令、pipeline、raw command），对外暴露稳定 C ABI 的 `shield.redis.v2`；cluster、sentinel、TLS 为规划中能力（当前未实现）。
 
 业务侧优先使用上层能力插件：
 
 | 上层插件 | 依赖接口 | 暴露接口 |
 | --- | --- | --- |
-| `cache.redis` | `shield.redis.v1` | `shield.cache.v1` |
-| `queue.redis` | `shield.redis.v1` | `shield.queue.v1` (Streams) |
-| `leaderboard.redis` | `shield.redis.v1` | `shield.leaderboard.v1` |
+| `cache.redis` | `shield.redis.v2` | `shield.cache.v1` |
+| `queue.redis` | `shield.redis.v2` | `shield.queue.v1` (Streams) |
+| `leaderboard.redis` | `shield.redis.v2` | `shield.leaderboard.v1` |
 
 这些插件不再各自创建 Redis 连接，而是通过插件依赖注入拿到 `shield.redis_v1*` vtable，直接调用 typed Redis 方法。
 
@@ -131,7 +131,7 @@ plugins:
 
 ## C ABI 接口
 
-源文件：`include/shield/plugin/redis.h`。`redis.driver` 提供 `shield.redis.v1`，覆盖常用 Redis 数据结构操作，同时保留 raw command 逃生口。
+源文件：`include/shield/plugin/redis.h`。`redis.driver` 提供 `shield.redis.v2`，覆盖常用 Redis 数据结构操作，同时保留 raw command 逃生口。
 
 ### 值类型
 
@@ -184,14 +184,14 @@ typedef struct shield_redis_command_v1 {
 ### 主接口
 
 ```c
-#define SHIELD_REDIS_V1 "shield.redis.v1"
+#define SHIELD_REDIS_V2 "shield.redis.v2"
 
-typedef struct shield_redis_v1 {
+typedef struct shield_redis_v2 {
     uint32_t struct_size;
     const char* interface_name;
 
     // Connection handle
-    void* (*connect)(const shield_redis_v1* self, const void* cfg,
+    void* (*connect)(const shield_redis_v2* self, const void* cfg,
                      char* err_buf, int err_buf_size);
     void  (*disconnect)(void* handle);
 
@@ -228,7 +228,7 @@ typedef struct shield_redis_v1 {
 
     // Memory management
     void (*free_value)(shield_redis_value_v1* value);
-} shield_redis_v1;
+} shield_redis_v2;
 ```
 
 ### 方法说明
@@ -288,7 +288,7 @@ typedef struct shield_redis_v1 {
 #include "shield/plugin/plugin_host.hpp"
 
 auto redis = shield::plugin::global_host()
-                 .get_by_binding<shield_redis_v1>("redis.default");
+                 .get_by_binding<shield_redis_v2>("redis.default");
 ```
 
 ### C++ 使用示例
@@ -298,7 +298,7 @@ auto redis = shield::plugin::global_host()
 #include "shield/plugin/plugin_host.hpp"
 
 auto redis = shield::plugin::global_host()
-                 .get_by_binding<shield_redis_v1>("redis.default");
+                 .get_by_binding<shield_redis_v2>("redis.default");
 
 // Get an opaque handle for all subsequent calls.
 char err_buf[256];
@@ -442,7 +442,7 @@ helper 覆盖的方法：`get`、`set`、`del`、`hget`、`hset`、`hgetall`、`
 
 ## 插件依赖
 
-上层 Redis 插件通过 manifest 声明对 `shield.redis.v1` 的依赖。
+上层 Redis 插件通过 manifest 声明对 `shield.redis.v2` 的依赖。
 
 ### manifest 声明
 
@@ -452,7 +452,7 @@ helper 覆盖的方法：`get`、`set`、`del`、`hget`、`hset`、`hgetall`、`
 # cache.redis / leaderboard.redis / queue.redis 的 manifest.yaml
 requires:
   - name: redis
-    interface: shield.redis.v1
+    interface: shield.redis.v2
     optional: true   # 可选；接线后走 redis.driver 共享池，未接线时回退自建连接
 ```
 
@@ -467,10 +467,10 @@ requires:
 inst->shell.start = [](shield_plugin_instance_v1* self,
                        shield_error_v1*) -> int {
     auto* ci = reinterpret_cast<cache_instance*>(self);
-    // 获取 redis.driver 暴露的 shield.redis.v1
+    // 获取 redis.driver 暴露的 shield.redis.v2
     if (ci->host_api && ci->host_api->dependency) {
-        auto* drv = static_cast<const shield_redis_v1*>(
-            ci->host_api->dependency(ci->ctx, "redis", SHIELD_REDIS_V1));
+        auto* drv = static_cast<const shield_redis_v2*>(
+            ci->host_api->dependency(ci->ctx, "redis", SHIELD_REDIS_V2));
         if (drv && drv->connect) {
             char err_buf[256] = {};
             void* handle =
@@ -493,7 +493,7 @@ inst->shell.start = [](shield_plugin_instance_v1* self,
 host 的拓扑排序保证 `redis.driver` 先于依赖它的插件启动：
 
 1. `redis.main`（`redis.driver`）→ start → `state = started`
-2. `cache.session`（`cache.redis`）→ `dependency("redis", "shield.redis.v1")` 返回有效 vtable → start
+2. `cache.session`（`cache.redis`）→ `dependency("redis", "shield.redis.v2")` 返回有效 vtable → start
 3. `leaderboard.global`（`leaderboard.redis`）→ 同上
 
 ## 能力覆盖
@@ -521,14 +521,14 @@ host 的拓扑排序保证 `redis.driver` 先于依赖它的插件启动：
 
 ### Phase 2：可选依赖
 
-- 给 `cache.redis` 等插件增加可选依赖 `shield.redis.v1`。
+- 给 `cache.redis` 等插件增加可选依赖 `shield.redis.v2`。
 - 有依赖时走 `redis.driver` 的 vtable；无依赖时保留旧内部连接（向后兼容）。
 
 ```yaml
 # Phase 2: 可选依赖
 requires:
   - name: redis
-    interface: shield.redis.v1
+    interface: shield.redis.v2
     optional: true   # 可选，无依赖时走旧路径
 ```
 

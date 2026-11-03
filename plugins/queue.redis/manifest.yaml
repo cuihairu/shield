@@ -21,7 +21,7 @@ provides:
     capabilities: []
 requires:
   - name: redis
-    interface: shield.redis.v1
+    interface: shield.redis.v2
     optional: true
 lua:
   namespace: queue.redis

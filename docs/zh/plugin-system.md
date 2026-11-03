@@ -492,13 +492,13 @@ plugins:
 | `shield.metrics.v1` | metrics exporter。 |
 | `shield.health.v1` | health contributor。 |
 | `shield.protocol.codec.v1` | 网络协议 `BodyCodec` provider，例如 protobuf、msgpack、xmldef-native。 |
-| `shield.redis.v1` | 共享 Redis 连接池 driver（typed 命令 + pipeline + raw command），供上层 Redis 插件依赖。 |
+| `shield.redis.v2` | 共享 Redis 连接池 driver（typed 命令 + pipeline + raw command），供上层 Redis 插件依赖。 |
 | `shield.auth.v1` | **已弃用（2026-09-28）**：认证/JWT 属业务语义，不放 C++ 插件层。参考实现改为 Lua 层 `scripts/lib/jwt.lua`（HS256/EdDSA 双算法 + JWKS，基于 `shield.crypto` 原语，API 表见 [lua-api.md](lua-api.md)）；`plugins/auth_jwt` 保留一个过渡期后移除，新项目勿采用。 |
 | `shield.matchmaking.v1` | 匹配 provider（ELO 评分，`plugins/matchmaking_elo` 提供）。 |
 
 `shield.document.v1` 与 `shield.database.v1` 并列而非继承：文档库的 filter / aggregation / _id 语义与 SQL 差距过大，强行套用 SQL 接口（query/execute/last_insert_id）会丢掉文档库的核心价值。两个接口可以由不同 package 各自提供。
 
-面向业务的 Redis 能力不直接暴露连接，而是落到具体 provider：`cache.redis`、`queue.redis`、`leaderboard.redis`。这些 provider 不各自建连——它们通过 manifest `requires` + `plugins.instances[].dependencies` 依赖 `redis.driver`（`shield.redis.v1`），共享驱动实例的连接池（当前为 Phase 2 可选依赖双路径，见 [redis.driver](plugins/redis-driver.md)）。
+面向业务的 Redis 能力不直接暴露连接，而是落到具体 provider：`cache.redis`、`queue.redis`、`leaderboard.redis`。这些 provider 不各自建连——它们通过 manifest `requires` + `plugins.instances[].dependencies` 依赖 `redis.driver`（`shield.redis.v2`），共享驱动实例的连接池（当前为 Phase 2 可选依赖双路径，见 [redis.driver](plugins/redis-driver.md)）。
 
 ## 官方插件矩阵
 
@@ -513,7 +513,7 @@ plugins:
 | `cache.redis` | `shield.cache.v1` | `SHIELD_BUILD_PLUGIN_CACHE_REDIS` | `shield.cache.redis` | 依赖 `redis.driver` 连接池。 |
 | `queue.redis` | `shield.queue.v1` | `SHIELD_BUILD_PLUGIN_QUEUE_REDIS` | `shield.queue.redis` | pub/sub，依赖 `redis.driver`。 |
 | `leaderboard.redis` | `shield.leaderboard.v1` | `SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS` | `shield.leaderboard.redis` | ZSET 排行榜，依赖 `redis.driver`。 |
-| `redis.driver` | `shield.redis.v1` | `SHIELD_BUILD_PLUGIN_REDIS_DRIVER` | `shield.redis` | 基础设施包：共享连接池 driver，供上层 Redis provider 依赖，也可直接 `shield.redis(binding)` 调用。 |
+| `redis.driver` | `shield.redis.v2` | `SHIELD_BUILD_PLUGIN_REDIS_DRIVER` | `shield.redis` | 基础设施包：共享连接池 driver，供上层 Redis provider 依赖，也可直接 `shield.redis(binding)` 调用。 |
 | `health.http` | `shield.health.v1` | `SHIELD_BUILD_PLUGIN_HEALTH` | — | HTTP 健康端点（`/health`、`/ready`），内嵌 beast 监听。 |
 | `metrics.prometheus` | `shield.metrics.v1` | `SHIELD_BUILD_PLUGIN_METRIC` | `shield.metrics` | Prometheus 文本端点；Lua 面 `shield.metrics(binding)` 提供 counter / gauge / histogram 记录。 |
 | `matchmaking.elo` | `shield.matchmaking.v1` | `SHIELD_BUILD_PLUGIN_MATCHMAKING` | — | ELO 匹配。 |

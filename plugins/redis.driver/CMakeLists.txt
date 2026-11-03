@@ -1,8 +1,8 @@
-# redis.driver — Unified Redis driver for shield.redis.v1 (plugin system v1).
+# redis.driver — Unified Redis driver for shield.redis.v2 (plugin system v1).
 #
 # Builds a runtime-loadable MODULE library implementing shield_plugin_get_v1.
 # This plugin owns the redis++ connection pool and exposes typed Redis commands
-# through the shield.redis.v1 C ABI. Other Redis plugins (cache.redis,
+# through the shield.redis.v2 C ABI. Other Redis plugins (cache.redis,
 # queue.redis, leaderboard.redis) depend on it instead of connecting to Redis
 # independently.
 find_package(redis++ CONFIG REQUIRED)

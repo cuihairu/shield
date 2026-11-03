@@ -1,4 +1,4 @@
-// [SHIELD_PLUGIN] redis.driver — Unified Redis driver for shield.redis.v1.
+// [SHIELD_PLUGIN] redis.driver — Unified Redis driver for shield.redis.v2.
 //
 // v1 ABI. Holds a single sw::redis::Redis connection pool per instance and
 // exposes typed Redis commands through the shield.redis_v1 C ABI vtable.
@@ -23,6 +23,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -146,10 +147,10 @@ shield_redis_value_v1* reply_to_value(const redisReply* reply) {
 
 struct redis_instance {
     shield_plugin_instance_v1 shell;
-    // Per-instance shield.redis.v1 vtable. Each instance owns its own copy so
+    // Per-instance shield.redis.v2 vtable. Each instance owns its own copy so
     // that get_interface() returns an instance-bound vtable and connect()
     // can recover THIS instance from the self pointer (multi-instance safe).
-    shield_redis_v1 vtable_{};
+    shield_redis_v2 vtable_{};
     std::string instance_id;
     const shield_host_api_v1* host_api = nullptr;
     shield_plugin_context_v1* ctx = nullptr;
@@ -292,16 +293,16 @@ void free_value_impl(shield_redis_value_v1* value) {
 // wired to — never "the first started instance".
 // ---------------------------------------------------------------------------
 
-void init_vtable(shield_redis_v1* out) {
-    *out = shield_redis_v1{
-        sizeof(shield_redis_v1),
-        SHIELD_REDIS_V1,
+void init_vtable(shield_redis_v2* out) {
+    *out = shield_redis_v2{
+        sizeof(shield_redis_v2),
+        SHIELD_REDIS_V2,
 
         // connect — returns the driver instance that owns `self` as an opaque
         // handle. cfg is ignored (the driver uses its own config from
         // startup). Dependent plugins call this once to get a handle for all
         // methods.
-        [](const shield_redis_v1* self, const void* /*cfg*/, char* err_buf,
+        [](const shield_redis_v2* self, const void* /*cfg*/, char* err_buf,
            int err_buf_size) -> void* {
             // Resolve the owning instance via vtable identity: get_interface()
             // returned exactly &inst->vtable_ for some started instance.
@@ -565,6 +566,9 @@ void init_vtable(shield_redis_v1* out) {
                 *out_count = replies.size();
                 *out_array = static_cast<shield_redis_value_v1**>(std::calloc(
                     replies.size(), sizeof(shield_redis_value_v1*)));
+                if (replies.size() != 0 && !*out_array) {
+                    throw std::bad_alloc();
+                }
                 for (size_t i = 0; i < replies.size(); ++i) {
                     (*out_array)[i] = reply_to_value(&replies.get(i));
                 }
@@ -662,7 +666,7 @@ std::string lua_to_string(shd::object obj) {
 // Build a per-instance Lua proxy.
 shd::table make_instance_proxy(shd::state_view lua, redis_instance* inst) {
     auto proxy = lua.create_table();
-    const shield_redis_v1& v = inst->vtable_;
+    const shield_redis_v2& v = inst->vtable_;
 
     // get(key) -> ok, value|nil|error
     proxy.set_function("get",
@@ -1069,7 +1073,7 @@ int redis_driver_create(const shield_plugin_create_args_v1* args,
     inst->shell.get_interface = [](shield_plugin_instance_v1* self,
                                    const char* iface,
                                    shield_error_v1*) -> const void* {
-        if (iface && std::strcmp(iface, SHIELD_REDIS_V1) == 0)
+        if (iface && std::strcmp(iface, SHIELD_REDIS_V2) == 0)
             return &reinterpret_cast<redis_instance*>(self)->vtable_;
         return nullptr;
     };

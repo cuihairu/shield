@@ -3,7 +3,7 @@ id: redis.driver
 name: Redis Driver
 version: 1.0.0
 kind: redis
-description: Unified Redis driver providing shield.redis.v1 typed interface, pipeline, and raw command
+description: Unified Redis driver providing shield.redis.v2 typed interface, pipeline, and raw command
 documentation:
   url: https://cuihairu.github.io/shield/plugins/redis-driver
   description: Unified Redis driver with connection pool, typed commands, pipeline, and raw command fallback
@@ -13,7 +13,7 @@ library:
   linux: bin/libshield_redis_driver.so
   macos: bin/libshield_redis_driver.dylib
 provides:
-  - interface: shield.redis.v1
+  - interface: shield.redis.v2
     capabilities:
       - typed-command
       - pipeline

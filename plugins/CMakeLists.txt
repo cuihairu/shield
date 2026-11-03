@@ -42,7 +42,7 @@ endif()
 # --- Redis-backed infrastructure plugins ---
 #
 # redis.driver is the unified Redis driver that owns the redis++ connection
-# pool and exposes shield.redis.v1. Other Redis plugins (cache, queue,
+# pool and exposes shield.redis.v2. Other Redis plugins (cache, queue,
 # leaderboard) depend on it instead of connecting to Redis independently.
 
 if(SHIELD_BUILD_PLUGIN_REDIS_DRIVER)

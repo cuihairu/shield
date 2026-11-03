@@ -317,7 +317,7 @@ struct lua_subscription {
     // Preferred (Phase 2 dual-path): redis.driver vtable + handle. When set,
     // redis stays null and all commands run through the driver's shared pool
     // via the raw command() escape hatch.
-    const shield_redis_v1* redis_driver = nullptr;
+    const shield_redis_v2* redis_driver = nullptr;
     void* redis_handle = nullptr;
     shd::protected_function callback;
     std::thread worker;
@@ -338,7 +338,7 @@ struct lua_subscription {
           consumer_name("shield-lua-" + ch),
           service_id(std::move(owner_service_id)) {}
 
-    lua_subscription(const shield_redis_v1* drv, void* handle,
+    lua_subscription(const shield_redis_v2* drv, void* handle,
                      shd::protected_function cb, const std::string& ch,
                      std::string owner_service_id)
         : redis_driver(drv),
@@ -407,7 +407,7 @@ bool read_group_own(sw::redis::Redis& redis, const std::string& channel,
 
 // XREADGROUP via the redis.driver vtable. Same reply shape as read_group_own
 // but delivered as shield_redis_value_v1 trees. Returns false on error.
-bool read_group_driver(const shield_redis_v1* drv, void* handle,
+bool read_group_driver(const shield_redis_v2* drv, void* handle,
                        const std::string& channel, const std::string& consumer,
                        StreamDeliveries* out) {
     std::string count = std::to_string(kReadCount);
@@ -493,7 +493,7 @@ void xack(const lua_subscription& s, const std::string& msg_id) {
 }
 
 // XGROUP CREATE via the driver vtable. Idempotent — BUSYGROUP is ignored.
-bool ensure_group_driver(const shield_redis_v1* drv, void* handle,
+bool ensure_group_driver(const shield_redis_v2* drv, void* handle,
                          const std::string& stream, std::string* err_msg) {
     const shield_redis_arg_v1 args[] = {
         {"XGROUP", 6},
@@ -533,7 +533,7 @@ struct queue_instance {
     std::string password;
     int connect_timeout_ms = 5000;
     int command_timeout_ms = 2000;
-    const shield_redis_v1* redis_driver = nullptr;
+    const shield_redis_v2* redis_driver = nullptr;
     void* redis_handle = nullptr;
 
     std::mutex subs_mu;
@@ -1063,8 +1063,8 @@ int queue_create(const shield_plugin_create_args_v1* args,
                            shield_error_v1*) -> int {
         auto* qi = reinterpret_cast<queue_instance*>(self);
         if (qi->host_api && qi->host_api->dependency) {
-            auto* drv = static_cast<const shield_redis_v1*>(
-                qi->host_api->dependency(qi->ctx, "redis", SHIELD_REDIS_V1));
+            auto* drv = static_cast<const shield_redis_v2*>(
+                qi->host_api->dependency(qi->ctx, "redis", SHIELD_REDIS_V2));
             if (drv && drv->connect) {
                 char err_buf[256] = {};
                 void* handle =

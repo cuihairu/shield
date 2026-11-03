@@ -38,7 +38,8 @@ void __real_free(void* ptr);
 
 namespace {
 std::size_t g_live = 0;
-}
+bool g_fail_next_calloc = false;
+}  // namespace
 
 extern "C" void* __wrap_malloc(size_t size) {
     void* p = __real_malloc(size);
@@ -47,6 +48,10 @@ extern "C" void* __wrap_malloc(size_t size) {
 }
 
 extern "C" void* __wrap_calloc(size_t n, size_t size) {
+    if (g_fail_next_calloc) {
+        g_fail_next_calloc = false;
+        return nullptr;
+    }
     void* p = __real_calloc(n, size);
     if (p) ++g_live;
     return p;
@@ -125,8 +130,8 @@ shield_redis_value_v1* build_xreadgroup_tree() {
 
 // Resolve the driver vtable once. The instance is shut down after the copy,
 // so the returned function pointer stays valid (it is a static lambda).
-const shield_redis_v1* driver_vtable() {
-    static const shield_redis_v1* vt = [] {
+const shield_redis_v2* driver_vtable() {
+    static const shield_redis_v2* vt = [] {
         const auto* abi = shield_plugin_get_v1();
         BOOST_REQUIRE(abi != nullptr);
         shield_plugin_create_args_v1 args{};
@@ -136,14 +141,14 @@ const shield_redis_v1* driver_vtable() {
         shield_plugin_instance_v1* inst = nullptr;
         BOOST_REQUIRE_EQUAL(abi->create(&args, &inst, &err), 0);
         BOOST_REQUIRE(inst != nullptr);
-        const auto* vtable = static_cast<const shield_redis_v1*>(
-            inst->get_interface(inst, SHIELD_REDIS_V1, &err));
+        const auto* vtable = static_cast<const shield_redis_v2*>(
+            inst->get_interface(inst, SHIELD_REDIS_V2, &err));
         BOOST_REQUIRE(vtable != nullptr);
         BOOST_REQUIRE(vtable->free_value != nullptr);
         // free_value is a static lambda; it stays valid after the instance
         // is destroyed. Copy the function pointer so the test does not touch
         // the freed instance memory.
-        static shield_redis_v1 copy = *vtable;
+        static shield_redis_v2 copy = *vtable;
         inst->shutdown(inst);
         return &copy;
     }();
@@ -155,7 +160,7 @@ const shield_redis_v1* driver_vtable() {
 extern "C" const shield_plugin_abi_v1* shield_plugin_get_v1(void);
 
 BOOST_AUTO_TEST_CASE(free_value_releases_deep_xreadgroup_tree) {
-    const shield_redis_v1* vt = driver_vtable();
+    const shield_redis_v2* vt = driver_vtable();
     const std::size_t baseline = g_live;
 
     auto* tree = build_xreadgroup_tree();
@@ -168,7 +173,7 @@ BOOST_AUTO_TEST_CASE(free_value_releases_deep_xreadgroup_tree) {
 }
 
 BOOST_AUTO_TEST_CASE(free_value_null_and_empty_are_safe) {
-    const shield_redis_v1* vt = driver_vtable();
+    const shield_redis_v2* vt = driver_vtable();
     const std::size_t baseline = g_live;
 
     vt->free_value(nullptr);
@@ -180,7 +185,7 @@ BOOST_AUTO_TEST_CASE(free_value_null_and_empty_are_safe) {
 }
 
 BOOST_AUTO_TEST_CASE(free_value_single_string) {
-    const shield_redis_v1* vt = driver_vtable();
+    const shield_redis_v2* vt = driver_vtable();
     const std::size_t baseline = g_live;
 
     auto* s = make_string("abc");
@@ -194,7 +199,7 @@ BOOST_AUTO_TEST_CASE(free_value_single_string) {
 // This test pins that exact ownership shape so a flat inline-element array
 // cannot regress the ABI and trigger invalid frees / heap corruption.
 BOOST_AUTO_TEST_CASE(free_value_pipeline_contract) {
-    const shield_redis_v1* vt = driver_vtable();
+    const shield_redis_v2* vt = driver_vtable();
     const std::size_t baseline = g_live;
     const std::size_t count = 3;
 
@@ -325,8 +330,20 @@ BOOST_AUTO_TEST_CASE(pipeline_abi_real_server_ownership_contract) {
     BOOST_REQUIRE_EQUAL(abi->create(&args, &inst, &err), 0);
     BOOST_REQUIRE(inst != nullptr);
     BOOST_REQUIRE_EQUAL(inst->start(inst, &err), 0);
-    const auto* vt = static_cast<const shield_redis_v1*>(
-        inst->get_interface(inst, SHIELD_REDIS_V1, &err));
+
+    // A v2 driver must NOT hand out the frozen v1 identifier: an old
+    // consumer compiled against the flat-array pipeline would free_value()
+    // each pointer-sized slot as a value node and corrupt the heap. Asking
+    // for v1 returns NULL instead of a silently-incompatible vtable.
+    {
+        shield_error_v1 legacy_err{};
+        const void* legacy =
+            inst->get_interface(inst, SHIELD_REDIS_V1, &legacy_err);
+        BOOST_CHECK(legacy == nullptr);
+    }
+
+    const auto* vt = static_cast<const shield_redis_v2*>(
+        inst->get_interface(inst, SHIELD_REDIS_V2, &err));
     BOOST_REQUIRE(vt != nullptr);
     BOOST_REQUIRE(vt->pipeline != nullptr);
     BOOST_REQUIRE(vt->free_value != nullptr);
@@ -369,6 +386,39 @@ BOOST_AUTO_TEST_CASE(pipeline_abi_real_server_ownership_contract) {
 
     shield_redis_value_v1** out_array = nullptr;
     uint64_t out_count = 0;
+
+    // A zero-command pipeline is a valid no-op: it succeeds with zero replies.
+    // calloc(0, size) is implementation-defined (null or a unique pointer), so
+    // the caller must only rely on out_count == 0 and never dereference the
+    // array. This pins that the driver never touches out_array when empty.
+    {
+        shield_error_v1 empty_err{};
+        shield_redis_value_v1** empty_array = nullptr;
+        uint64_t empty_count = 0;
+        const int empty_rc = vt->pipeline(handle, cmds, 0, &empty_array,
+                                          &empty_count, &empty_err);
+        BOOST_CHECK_EQUAL(empty_rc, 0);
+        BOOST_CHECK_EQUAL(empty_count, 0u);
+        // Release whatever calloc(0) returned (null is a safe free; a non-null
+        // pointer from calloc(0) must also be freed).
+        std::free(empty_array);
+    }
+
+    // Allocation failure is an ABI error, never a null dereference on return.
+    {
+        g_fail_next_calloc = true;
+        shield_error_v1 alloc_err{};
+        shield_redis_value_v1** alloc_array = nullptr;
+        uint64_t alloc_count = 0;
+        const int alloc_rc = vt->pipeline(handle, cmds, 4, &alloc_array,
+                                          &alloc_count, &alloc_err);
+        BOOST_CHECK_EQUAL(alloc_rc, -1);
+        BOOST_CHECK(alloc_array == nullptr);
+        BOOST_CHECK_EQUAL(alloc_count, 0u);
+        BOOST_CHECK_EQUAL(std::string(alloc_err.code ? alloc_err.code : ""),
+                          "redis.pipeline.failed");
+    }
+
     const int rc = vt->pipeline(handle, cmds, 4, &out_array, &out_count, &err);
     BOOST_REQUIRE_EQUAL(rc, 0);
     BOOST_REQUIRE(out_array != nullptr);
