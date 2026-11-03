@@ -60,7 +60,7 @@ private:
     boost::asio::ip::tcp::acceptor acceptor_;
 #endif
     std::string socket_path_;
-    bool listening_{false};
+    std::atomic<bool> listening_{false};
 
     std::function<void(std::shared_ptr<ConsoleSession>, std::string)> on_line_;
 

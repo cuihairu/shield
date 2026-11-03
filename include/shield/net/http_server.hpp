@@ -1,6 +1,7 @@
 // [SHIELD_NET] HTTP server using Boost.Beast
 #pragma once
 
+#include <atomic>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/http.hpp>
 #include <functional>
@@ -144,7 +145,7 @@ private:
 
     net::io_context io_context_;
     std::unique_ptr<net::ip::tcp::acceptor> acceptor_;
-    bool running_ = false;
+    std::atomic<bool> running_{false};
     std::thread io_thread_;
 };
 

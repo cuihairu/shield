@@ -190,7 +190,7 @@ private:
     IpBlocklist blocklist_;
     std::unordered_map<std::string, size_t> ip_counts_;
     std::string last_rejection_;
-    bool listening_ = false;
+    std::atomic<bool> listening_{false};
 
     // Gateway observability counters (relaxed: stats-only, no ordering
     // expectations across listeners or with the session map).
