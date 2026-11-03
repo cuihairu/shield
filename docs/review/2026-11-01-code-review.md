@@ -155,3 +155,74 @@ Lua 侧：`load`/`safe_script` 仅用于受信脚本（自仓 scripts/ 与 confi
 - 稳定性：P1×4（终止/失能/UAF/恒败）已修，回归测试落位。
 - 遗留：P2/P3×14 记 todo（本报告逐条复核 3 项 + 并行代理 11 项，含信任边界加固/资源清理/竞态收口，均非可直接利用的线上缺陷）。
 - 门禁：四棵树编译 0 警告；全量 ctest 100/100；clang-format 0 违规；docs build 绿。
+
+## 九、第二波深审（本会话：安全静态扫描 + 三路读审代理，2026-11-03）
+
+> 第一波（§一~八）覆盖 9 项主发现 + 11 项并行代理 P2/P3。本波为独立第二遍全量深审，由三路读审代理（bootstrap/console/global/cluster、net/transport/protocol、lua/core）与安全静态扫描产生，**与第一波无重叠**；全部条目已逐条对照本仓源码复核（非转述代理结论）。sampler 一项按臂拆分（TOCTOU 已修、跨线程门控待办），故复核后条目数 = 原始发现数 + 1。
+
+### 9.1 安全静态扫描（补充）
+
+- **P1 — /ops/config 未脱敏返回密钥类配置**（已修）：`src/console/ops_http_handler.cpp` `handle_config` 把任意 config 键原样返回；`password`/`token`/`secret`/`api_key`/`credential`/`private_key` 等键经未认证 `/ops/config` 端点泄露。修复：新增 `kSecretNeedles` 匹配，命中即返回 `***redacted***`；回归断言 `tests/coverage/test_cov_ops_http.cpp`（`ConfigEndpointValueShapes`：`cov3.password` → `***redacted***`，`cov3.normal_key` → 原值）。commit `e4e3567`。
+- 其余安全面（硬编码密钥 / 命令注入 / SQL 拼接 / eval / 反序列化 / 路径穿越）与第一波结论一致：未发现。`/ops/eval` 为 opt-in 默认关 + Bearer token + 受限 VM（去 os.execute/io/require/package），属功能面非漏洞；`token_matches` 常量时间比较。
+
+### 9.2 隐藏 bug 猎捕（第二波）
+
+**P1（已修 ×4）**
+
+| 编号 | 发现 | 证据 | 修复 | commit |
+| --- | --- | --- | --- | --- |
+| B1 | 关停顺序 UAF：server/global manager 的定时器/tick 回调捕获 `lua_services`，但 `stop()` 在 `lua_services.reset()` **之后**才 join——窗口内回调可解引用已释放 manager（违反本仓自身注释「stop() joins before lua_services is freed」）；`shutdown()` 与 startup-failure 两条路径同病 | `src/bootstrap/bootstrap.cpp`（修复前）`:1744,1769,1775` 与 `:348,355,366`；回调捕获 `src/global/global_manager.cpp:770-780`、`src/server/server_manager.cpp:190-199`；tick join `global_manager.cpp:427-434` | 两条路径的 server/global `stop()+set_global+reset` 均前移至 `lua_services.reset()` 之前 | `e42bd3f`（shutdown 路径）、`b90be2e`（startup-failure 路径） |
+| B2 | `shield.http.*` 处理器按引用捕获函数局部 lambda；注册表持久而 lambda 随函数返回析构——每次调用经悬垂引用（正式 UB；因 lambda 现为无捕获故实际不崩溃，属潜在腐蚀） | `src/lua/lua_api.cpp:4741` 等 13 处 `[&to_table,&parse_opts]`/`[&to_table]`；定义 `:4634,:4679`；`shield["http"]=http` `:4975` | 全部改按值捕获 `[to_table,parse_opts]`/`[to_table]`（无捕获拷贝零成本） | `9c2afd3` |
+| B3 | `ProfileSampler::sweep_active` 双重 load TOCTOU：两次 load 间并发 uninstall 置空 → 第二次返回 nullptr → `nullptr->sweep_once()` 空指针崩溃 | `src/lua/profile_sampler.cpp:134-135`；uninstall 置空 `:166` | 收敛单次 load + 判空 | `00aef5f` |
+
+**P2（记 todo ×8）**
+
+| 编号 | 发现 | 证据 |
+| --- | --- | --- |
+| C1 | TLS 握手状态持裸 `TcpListener*`；`stop()` 不取消在飞握手 → 监听器析构后慢握手完成调 `adopt_connection` UAF | `src/net/listener.cpp:104,79` |
+| C2 | `last_rejection_`（std::string）accept 线程无锁写、stats 线程无锁读 → 读写 UB（同文件 `listening_` 已由 a1f5d8e 收 atomic，本条为残余） | `src/net/listener.cpp:258`、`include/shield/net/listener.hpp:104,192` |
+| C3 | msgpack 解码无嵌套深度上限：`from_msgpack`/`dump` 递归走 C++ 栈，攻击者 ~100k 层嵌套 payload 栈耗尽；json 编解码器有 512 深度预扫描而 msgpack 缺 | `plugins/protocol.msgpack/shield_protocol_msgpack.cpp:118,124`；对照 `src/transport/protocol.cpp:1012,1026` |
+| C4 | `impl_->actor`（refcounted caf::actor）跨线程无锁读写——stop 置空与 send 路径拷贝竞争 refcount | `src/cluster/cluster_transport.cpp:948,981,1042` |
+| C5 | `remote_send_fn` 在 `send_remote` 无锁读（写于 mutex 下） | `src/cluster/cluster_manager.cpp:325-328,336` |
+| C6 | `broadcast_attach` 在 `next_seq==0`（首播前入组）时 `try_emplace(next_seq-1)` 下溢为 UINT64_MAX → `broadcast_since` 的 `seq<=cursor` 全丢弃，该组永远收不到广播 | `src/global/global_manager.cpp:994,1014` |
+| C7 | sampler 跨线程 sweep：`sweep_active` 可被任意 service actor 线程调用，对采样会话的 lua_State 跨线程操作（违 `profile_sampler.hpp:4-6` 不变式）；TOCTOU 部分已由 B3 修，门控设计待做 | `src/lua/profile_sampler.cpp:133-137`、`src/lua/lua_runtime.cpp:1531`、`src/lua/lua_service.cpp:6223` |
+| C8 | sleep 定时器 id 被丢弃（`(void)`）不可取消；死协程 `lua_resume` 误报「sleep continuation error」计入 panic 阈值。BUG-2（7c69651）+ force_remove 取消（ce26cce）已收窄资源/退出臂，取消面仍缺显式入口 | `src/lua/lua_api.cpp:1186,1204,1241-1242,1265` |
+
+**P3（记 todo ×8）**
+
+| 编号 | 发现 | 证据 |
+| --- | --- | --- |
+| D1 | `running`（bool）在 `run_tick` 无锁读（写于 start/stop） | `src/cluster/cluster_manager.cpp:39,90` |
+| D2 | `node_id_`（std::string）在 `resolve` 无锁读（写于 set_locality） | `src/player/player_manager.cpp:262,112` |
+| D3 | cron `step` 经 atoi 仅查 `<=0` 无上界 → `v += step` 有符号溢出 UB | `src/global/global_manager.cpp:72-74,109` |
+| D4 | `max_frame_size` 构造参数从未存储/使用——listener 声称的帧上限是死旋钮，实际限 16 MiB 默认 | `src/net/session.cpp:56-66`、`src/net/listener.cpp:347` |
+| D5 | `error_code_`（std::string）跨线程无同步读写 | `include/shield/net/session.hpp:254,318`、`src/net/session.cpp:427` |
+| D6 | `limited_count_`（uint64_t）跨线程无同步读写 | `include/shield/net/session.hpp:81,95` |
+| D7 | HTTP 客户端响应体无上限 append、未设 `CURLOPT_MAXFILESIZE`——不可控 URL 可无界增长内存 | `src/net/http_client.cpp:31` |
+| D8 | `on_close`/accept 处理器捕获裸 `this`（ConsoleServer）；会话可超服务器存活 → 析构后回调 UAF（BUG-6 已收 `console_session::send_line`，本条为服务器侧残余） | `src/net/console_server.cpp:96` |
+
+### 9.3 质量门（第二波）
+
+| 门 | 结果 | 证据 |
+| --- | --- | --- |
+| 编译 | 绿 | `shield_bootstrap` + 相关测试目标增量构建 0 错误 |
+| 测试（改动面） | 绿 | `test_cov_bootstrap`/`test_cov_bootstrap2`/`test_cov_lua_shutdown`/`shield_runtime_lua_smoke`/`shield_runtime_registry_smoke`/`test_cov_lua_http_bridge`/`test_cov_http_bridge2`/`test_cov_lua_api2`/`test_cov_cpp_lua_api`/`test_cov_lua_runtime2`/`test_ops_profile` 全过 |
+| clang-tidy（改动的 3 个 TU） | 无新增 | 仅既有 wrapper 头（binding.hpp/logger.hpp）风格警告，改动行 0 诊断 |
+| 测试基线 | 绿 | CI（ci.yml）+ Optional Plugins CI 在审计基线上成功 |
+
+### 9.4 第二波汇总
+
+- **原始发现 19 项**（安全扫描 1 + 三路代理 18）；sampler 一项按臂拆二 → **复核后 20 条**（P1×4、P2×8、P3×8）。
+- **已修 4 项（P1 全部）**：`e4e3567`、`e42bd3f`、`b90be2e`、`9c2afd3`、`00aef5f`（B1 占两 commit）。
+- **剩余 16 条**（P2×8 + P3×8）记 todo（todo.md「代码深审第二波 P2/P3 待办（2026-11-03）」节）。
+- 三路代理 18 项 + 安全扫描 1 项，全部经本仓源码复核，无转述、无与第一波重叠。
+
+### 9.5 第二波 commit 清单
+
+| commit | 说明 |
+| --- | --- |
+| `e4e3567` | fix: redact secret config keys from unauthenticated /ops/config endpoint |
+| `e42bd3f` | fix: join manager threads before freeing lua services |
+| `b90be2e` | fix: same manager ordering on startup failure path |
+| `9c2afd3` | fix: capture http helpers by value in lua api |
+| `00aef5f` | fix: single load in sampler sweep_active |
