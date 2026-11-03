@@ -327,7 +327,10 @@ void TcpListener::do_accept() {
         // never touched for them.
         if (blocklist_.blocked(remote_ep.address())) {
             blocked_rejects_total_.fetch_add(1, std::memory_order_relaxed);
-            last_rejection_ = "blocked_ip";
+            {
+                std::lock_guard lock(rejection_mutex_);
+                last_rejection_ = "blocked_ip";
+            }
             auto& log = shield::log::get_logger("net");
             SHIELD_LOG_WARNING(log, "Connection rejected: address blocked (" +
                                         remote_ip + ")");
@@ -343,7 +346,10 @@ void TcpListener::do_accept() {
             if (max_connections_ > 0 && sessions_.size() >= max_connections_) {
                 conn_limit_rejects_total_.fetch_add(1,
                                                     std::memory_order_relaxed);
-                last_rejection_ = "connection_limit";
+                {
+                    std::lock_guard lock(rejection_mutex_);
+                    last_rejection_ = "connection_limit";
+                }
                 auto& log = shield::log::get_logger("net");
                 SHIELD_LOG_WARNING(log, "Connection rejected: limit reached (" +
                                             std::to_string(max_connections_) +
@@ -363,7 +369,10 @@ void TcpListener::do_accept() {
                 if (it != ip_counts_.end() && it->second >= max_per_ip_) {
                     ip_limit_rejects_total_.fetch_add(
                         1, std::memory_order_relaxed);
-                    last_rejection_ = "ip_limit";
+                    {
+                        std::lock_guard lock(rejection_mutex_);
+                        last_rejection_ = "ip_limit";
+                    }
                     auto& log = shield::log::get_logger("net");
                     SHIELD_LOG_WARNING(
                         log, "Connection rejected: IP limit for " + remote_ip +

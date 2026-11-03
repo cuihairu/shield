@@ -115,7 +115,10 @@ public:
     }
 
     /// @brief Get last rejection reason
-    std::string last_rejection_reason() const { return last_rejection_; }
+    std::string last_rejection_reason() const {
+        std::lock_guard lock(rejection_mutex_);
+        return last_rejection_;
+    }
 
     /// @brief True when the underlying acceptor was opened, bound and
     /// listening.
@@ -209,6 +212,7 @@ private:
     // a blocked peer costs one address comparison and nothing else.
     IpBlocklist blocklist_;
     std::unordered_map<std::string, size_t> ip_counts_;
+    mutable std::mutex rejection_mutex_;
     std::string last_rejection_;
     std::atomic<bool> listening_{false};
 

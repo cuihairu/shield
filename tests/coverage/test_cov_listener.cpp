@@ -813,4 +813,54 @@ BOOST_AUTO_TEST_CASE(OptionSettersDriveReadIdleExpiry) {
     io.run_for(100ms);
 }
 
+// last_rejection_reason() is read from another thread while the accept path
+// writes it. The mutex in the getter and every writer makes the concurrent
+// std::string access defined (TSan/ASan catch the data race if it regresses).
+BOOST_AUTO_TEST_CASE(LastRejectionReadableUnderConcurrentWrites) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    TcpListener listener(io, port, callbacks);
+    listener.set_max_connections(1);
+    listener.start();
+
+    Client c1;
+    BOOST_REQUIRE(c1.connect(port));
+    io.run_for(100ms);
+    Client c2;
+    BOOST_REQUIRE(c2.connect(port));
+    io.run_for(200ms);
+    BOOST_CHECK(wait_until([&] {
+        return listener.last_rejection_reason() == "connection_limit";
+    }));
+
+    std::atomic<bool> stop{false};
+    std::atomic<bool> ok{true};
+    std::thread reader([&] {
+        while (!stop.load(std::memory_order_relaxed)) {
+            const auto reason = listener.last_rejection_reason();
+            if (reason != "" && reason != "connection_limit" &&
+                reason != "blocked_ip" && reason != "ip_limit") {
+                ok.store(false, std::memory_order_relaxed);
+                break;
+            }
+        }
+    });
+
+    for (int i = 0; i < 20; ++i) {
+        Client c;
+        c.connect(port);
+        io.run_for(20ms);
+    }
+    stop.store(true, std::memory_order_relaxed);
+    reader.join();
+    BOOST_CHECK(ok.load(std::memory_order_relaxed));
+
+    c1.close();
+    c2.close();
+    listener.stop();
+    io.run_for(100ms);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
