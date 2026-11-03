@@ -15,15 +15,18 @@ namespace shield::net {
 ConsoleServer::ConsoleServer(boost::asio::io_context& io_context,
                              const std::string& socket_path)
     : io_(io_context),
-#ifndef _WIN32
-      acceptor_(io_context),
-#else
-      acceptor_(io_context),
-#endif
-      socket_path_(socket_path) {
-}
+      socket_path_(socket_path),
+      state_(std::make_shared<SharedState>(io_context)) {}
 
 ConsoleServer::~ConsoleServer() { stop(); }
+
+ConsoleServer::SharedState::SharedState(boost::asio::io_context& io_context)
+#ifndef _WIN32
+    : acceptor(io_context) {
+#else
+    : acceptor(io_context) {
+#endif
+}
 
 void ConsoleServer::start() {
 #ifndef _WIN32
@@ -31,10 +34,10 @@ void ConsoleServer::start() {
     ::unlink(socket_path_.c_str());
 
     boost::asio::local::stream_protocol::endpoint ep(socket_path_);
-    acceptor_.open(ep.protocol());
-    acceptor_.set_option(boost::asio::socket_base::reuse_address(true));
-    acceptor_.bind(ep);
-    acceptor_.listen();
+    state_->acceptor.open(ep.protocol());
+    state_->acceptor.set_option(boost::asio::socket_base::reuse_address(true));
+    state_->acceptor.bind(ep);
+    state_->acceptor.listen();
 
     // Restrict to same user
     ::chmod(socket_path_.c_str(), 0600);
@@ -42,24 +45,25 @@ void ConsoleServer::start() {
     // Windows: use TCP loopback on a random port
     boost::asio::ip::tcp::endpoint ep(boost::asio::ip::address_v4::loopback(),
                                       0);
-    acceptor_.open(ep.protocol());
-    acceptor_.set_option(boost::asio::socket_base::reuse_address(true));
-    acceptor_.bind(ep);
-    acceptor_.listen();
+    state_->acceptor.open(ep.protocol());
+    state_->acceptor.set_option(boost::asio::socket_base::reuse_address(true));
+    state_->acceptor.bind(ep);
+    state_->acceptor.listen();
     std::cerr << "[console] Windows: listening on TCP loopback port "
-              << acceptor_.local_endpoint().port() << std::endl;
+              << state_->acceptor.local_endpoint().port() << std::endl;
 #endif
 
-    listening_ = true;
-    do_accept();
+    state_->listening.store(true, std::memory_order_release);
+    do_accept(state_);
 }
 
 void ConsoleServer::stop() {
-    if (!listening_) return;
-    listening_ = false;
+    if (!state_->listening.exchange(false, std::memory_order_acq_rel)) {
+        return;
+    }
 
     boost::system::error_code ec;
-    acceptor_.close(ec);
+    state_->acceptor.close(ec);
 
     close_all_sessions();
 
@@ -68,39 +72,46 @@ void ConsoleServer::stop() {
 #endif
 }
 
-void ConsoleServer::do_accept() {
-    if (!listening_)  // GCOVR_EXCL_BR_LINE (defensive: early-return arm)
+void ConsoleServer::do_accept(std::shared_ptr<SharedState> state) {
+    if (!state->listening.load(
+            std::memory_order_acquire))  // GCOVR_EXCL_BR_LINE (defensive:
+                                         // early-return arm)
         return;  // GCOVR_EXCL_LINE (only a stop-vs-accept race reaches this
-                 // return: start() sets listening_ before calling, stop()
+                 // return: start() sets listening before calling, stop()
                  // closes the acceptor so the callback exits on
                  // operation_aborted before re-arming)
 
 #ifndef _WIN32
-    acceptor_.async_accept(
-        [this](boost::system::error_code ec,
-               boost::asio::local::stream_protocol::socket socket) {
+    state->acceptor.async_accept(
+        [state](boost::system::error_code ec,
+                boost::asio::local::stream_protocol::socket socket) {
             if (ec) {
-                if (listening_) {
+                if (state->listening.load(std::memory_order_acquire)) {
                     std::cerr << "[console] accept error: " << ec.message()
                               << std::endl;
                 }
                 return;
             }
 
-            auto id = next_session_id_.fetch_add(1);
+            auto id = state->next_session_id.fetch_add(1);
 
             // Build session callbacks: on_line from dispatcher, on_close for
-            // cleanup
+            // cleanup. The on_close lambda captures only the shared state,
+            // never `this`: a pending async completion can outlive the
+            // ConsoleServer and must not dereference a freed server.
             ConsoleSessionCallbacks cbs;
-            cbs.on_line = on_line_;
-            cbs.on_close = [this](std::shared_ptr<ConsoleSession> session) {
-                std::lock_guard<std::mutex> lock(sessions_mutex_);
-                auto it =
-                    std::find(sessions_.begin(), sessions_.end(), session);
-                if (it !=
-                    sessions_.end()) {  // GCOVR_EXCL_BR_LINE (defensive: a
-                                        // session is closed exactly once)
-                    sessions_.erase(it);
+            {
+                std::lock_guard<std::mutex> lock(state->callback_mutex);
+                cbs.on_line = state->on_line;
+            }
+            cbs.on_close = [state](std::shared_ptr<ConsoleSession> session) {
+                std::lock_guard<std::mutex> lock(state->sessions_mutex);
+                auto it = std::find(state->sessions.begin(),
+                                    state->sessions.end(), session);
+                if (it != state->sessions.end()) {  // GCOVR_EXCL_BR_LINE
+                                                    // (defensive: a session is
+                                                    // closed exactly once)
+                    state->sessions.erase(it);
                 }
             };
 
@@ -108,44 +119,44 @@ void ConsoleServer::do_accept() {
                 id, std::move(socket), std::move(cbs));
 
             {
-                std::lock_guard<std::mutex> lock(sessions_mutex_);
-                sessions_.push_back(session);
+                std::lock_guard<std::mutex> lock(state->sessions_mutex);
+                state->sessions.push_back(session);
             }
 
             session->start();
-            do_accept();
+            do_accept(state);
         });
 #else
-    acceptor_.async_accept([this](boost::system::error_code ec,
-                                  boost::asio::ip::tcp::socket socket) {
+    state->acceptor.async_accept([state](boost::system::error_code ec,
+                                         boost::asio::ip::tcp::socket socket) {
         if (ec) {
-            if (listening_) {
+            if (state->listening.load(std::memory_order_acquire)) {
                 std::cerr << "[console] accept error: " << ec.message()
                           << std::endl;
             }
             return;
         }
 
-        auto id = next_session_id_.fetch_add(1);
+        auto id = state->next_session_id.fetch_add(1);
         std::cerr << "[console] Windows session " << id << " accepted"
                   << std::endl;
         socket.close();
-        do_accept();
+        do_accept(state);
     });
 #endif
 }
 
 size_t ConsoleServer::session_count() const {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    return sessions_.size();
+    std::lock_guard<std::mutex> lock(state_->sessions_mutex);
+    return state_->sessions.size();
 }
 
 void ConsoleServer::close_all_sessions() {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    for (auto& session : sessions_) {
+    std::lock_guard<std::mutex> lock(state_->sessions_mutex);
+    for (auto& session : state_->sessions) {
         session->close();
     }
-    sessions_.clear();
+    state_->sessions.clear();
 }
 
 }  // namespace shield::net

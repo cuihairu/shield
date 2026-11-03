@@ -476,5 +476,40 @@ BOOST_AUTO_TEST_CASE(SessionStateHelpers) {
     server.stop();
 }
 
+// A pending async completion holds the session (shared_from_this) and the
+// on_close callback after stop(). Destroying the server immediately must not
+// let that completion touch freed server state; the callback now captures
+// only the shared registry, which outlives the server. ASan catches the
+// use-after-free if a completion dereferences the freed ConsoleServer.
+BOOST_AUTO_TEST_CASE(SessionCompletionOutlivesServerDestruction) {
+    remove_socket();
+    boost::asio::io_context io;
+
+    std::shared_ptr<ConsoleSession> captured;
+    auto server = std::make_unique<ConsoleServer>(io, SOCK_PATH);
+    server->set_on_line([&](std::shared_ptr<ConsoleSession> session,
+                            std::string) { captured = session; });
+    server->start();
+    IoRunner runner(io);
+
+    ConsoleClient client;
+    BOOST_REQUIRE(client.connect(SOCK_PATH));
+    BOOST_CHECK(wait_until([&] { return server->session_count() == 1; }));
+
+    // Read a line so the session's async read keeps a completion holding it.
+    client.send_line("go");
+    BOOST_CHECK(wait_until([&] { return captured != nullptr; }));
+
+    // Stop and destroy the server while the session completion is still
+    // pending (the client socket is still open, so no close callback ran).
+    server->stop();
+    server.reset();
+
+    // Close the peer: the session's pending read fails and its handle_close
+    // fires the on_close callback that must only touch the shared registry.
+    client.close();
+    std::this_thread::sleep_for(200ms);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 #endif  // !_WIN32

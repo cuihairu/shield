@@ -44,29 +44,36 @@ public:
     void set_on_line(
         std::function<void(std::shared_ptr<ConsoleSession>, std::string)>
             on_line) {
-        on_line_ = std::move(on_line);
+        std::lock_guard<std::mutex> lock(state_->callback_mutex);
+        state_->on_line = std::move(on_line);
     }
 
     /// @brief Close all connected sessions
     void close_all_sessions();
 
 private:
-    void do_accept();
+    struct SharedState {
+        explicit SharedState(boost::asio::io_context& io_context);
+
+#ifndef _WIN32
+        boost::asio::local::stream_protocol::acceptor acceptor;
+#else
+        boost::asio::ip::tcp::acceptor acceptor;
+#endif
+        std::atomic<bool> listening{false};
+        std::mutex callback_mutex;
+        std::function<void(std::shared_ptr<ConsoleSession>, std::string)>
+            on_line;
+        std::mutex sessions_mutex;
+        std::vector<std::shared_ptr<ConsoleSession>> sessions;
+        std::atomic<uint64_t> next_session_id{1};
+    };
+
+    static void do_accept(std::shared_ptr<SharedState> state);
 
     boost::asio::io_context& io_;
-#ifndef _WIN32
-    boost::asio::local::stream_protocol::acceptor acceptor_;
-#else
-    boost::asio::ip::tcp::acceptor acceptor_;
-#endif
     std::string socket_path_;
-    std::atomic<bool> listening_{false};
-
-    std::function<void(std::shared_ptr<ConsoleSession>, std::string)> on_line_;
-
-    std::vector<std::shared_ptr<ConsoleSession>> sessions_;
-    mutable std::mutex sessions_mutex_;
-    std::atomic<uint64_t> next_session_id_{1};
+    std::shared_ptr<SharedState> state_;
 };
 
 }  // namespace shield::net
