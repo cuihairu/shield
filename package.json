@@ -2,7 +2,7 @@
   "name": "shield-workspace",
   "private": true,
   "devDependencies": {
-    "postcss": "^8.5.23"
+    "postcss": "^8.5.32"
   },
   "pnpm": {
     "overrides": {
