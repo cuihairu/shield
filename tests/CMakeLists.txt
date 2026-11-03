@@ -883,3 +883,25 @@ if(SHIELD_BUILD_PLUGIN_LEADERBOARD_REDIS)
         LABELS "plugin" TIMEOUT 60)
     shield_copy_runtime_dlls(test_plugin_leaderboard_names)
 endif()
+
+# ---------------------------------------------------------------------------
+# test_plugin_auth_jwt — SEC-2 regression: a token with a missing exp must be
+# rejected (token_expired), not treated as never-expiring. Builds a no-exp
+# HS256 token by hand and drives it through the auth.jwt ABI.
+# ---------------------------------------------------------------------------
+if(SHIELD_BUILD_PLUGIN_AUTH)
+    find_package(OpenSSL REQUIRED)
+    add_executable(test_plugin_auth_jwt plugin/test_plugin_auth_jwt.cpp)
+    target_link_libraries(test_plugin_auth_jwt
+        PRIVATE shield_plugin OpenSSL::Crypto Boost::unit_test_framework
+        Boost::headers)
+    target_include_directories(test_plugin_auth_jwt
+        PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_definitions(test_plugin_auth_jwt PRIVATE
+        SHIELD_AUTH_JWT_LIBRARY="$<TARGET_FILE:shield_auth_jwt>")
+    add_dependencies(test_plugin_auth_jwt shield_auth_jwt)
+    add_test(NAME test_plugin_auth_jwt COMMAND test_plugin_auth_jwt)
+    set_tests_properties(test_plugin_auth_jwt PROPERTIES
+        LABELS "plugin" TIMEOUT 30)
+    shield_copy_runtime_dlls(test_plugin_auth_jwt)
+endif()

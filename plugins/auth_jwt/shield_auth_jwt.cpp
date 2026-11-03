@@ -8,10 +8,6 @@
 // handle returned from connect() is the instance itself — no per-session
 // state is needed for stateless JWT.
 
-#include "shield/plugin/abi.h"
-#include "shield/plugin/auth.h"
-#include "shield/plugin/host_api.h"
-
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -24,6 +20,10 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+
+#include "shield/plugin/abi.h"
+#include "shield/plugin/auth.h"
+#include "shield/plugin/host_api.h"
 
 namespace {
 
@@ -82,10 +82,8 @@ std::vector<unsigned char> hmac_sha256(const std::string& key,
                                        const std::string& msg) {
     unsigned char md[EVP_MAX_MD_SIZE];
     unsigned int md_len = 0;
-    if (!HMAC(EVP_sha256(),
-              key.data(), static_cast<int>(key.size()),
-              reinterpret_cast<const unsigned char*>(msg.data()),
-              msg.size(),
+    if (!HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()),
+              reinterpret_cast<const unsigned char*>(msg.data()), msg.size(),
               md, &md_len)) {
         return {};
     }
@@ -107,13 +105,27 @@ std::string json_escape(const std::string& s) {
     out.reserve(s.size() + 2);
     for (char c : s) {
         switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\b':
+                out += "\\b";
+                break;
+            case '\f':
+                out += "\\f";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20) {
                     char buf[8];
@@ -141,8 +153,12 @@ std::string json_get_string(const std::string& j, const std::string& key) {
     ++p;
     std::string out;
     while (p < j.size() && j[p] != '"') {
-        if (j[p] == '\\' && p + 1 < j.size()) { out += j[p + 1]; p += 2; }
-        else { out += j[p++]; }
+        if (j[p] == '\\' && p + 1 < j.size()) {
+            out += j[p + 1];
+            p += 2;
+        } else {
+            out += j[p++];
+        }
     }
     return out;
 }
@@ -157,7 +173,10 @@ int64_t json_get_int(const std::string& j, const std::string& key) {
     ++p;
     while (p < j.size() && (j[p] == ' ' || j[p] == '\t')) ++p;
     bool neg = false;
-    if (p < j.size() && j[p] == '-') { neg = true; ++p; }
+    if (p < j.size() && j[p] == '-') {
+        neg = true;
+        ++p;
+    }
     int64_t v = 0;
     bool any = false;
     while (p < j.size() && j[p] >= '0' && j[p] <= '9') {
@@ -215,24 +234,24 @@ char* dup_cstr(const char* s) {
     return out;
 }
 
-char* dup_cstr(const std::string& s) {
-    return dup_cstr(s.c_str());
-}
+char* dup_cstr(const std::string& s) { return dup_cstr(s.c_str()); }
 
 // Build an HS256-signed JWT for the given subject.
 std::string create_jwt(const auth_config& cfg, const std::string& user_id) {
-    static const std::string header_json = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+    static const std::string header_json =
+        "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
     std::string header_b64 = b64url_encode(
         reinterpret_cast<const unsigned char*>(header_json.data()),
         header_json.size());
 
     auto now = std::time(nullptr);
-    std::string payload_json =
-        "{\"sub\":\"" + json_escape(user_id) + "\"" +
-        ",\"iat\":" + std::to_string(now) +
-        ",\"exp\":" + std::to_string(now + cfg.token_ttl_seconds);
-    if (!cfg.issuer.empty())   payload_json += ",\"iss\":\"" + json_escape(cfg.issuer) + "\"";
-    if (!cfg.audience.empty()) payload_json += ",\"aud\":\"" + json_escape(cfg.audience) + "\"";
+    std::string payload_json = "{\"sub\":\"" + json_escape(user_id) + "\"" +
+                               ",\"iat\":" + std::to_string(now) + ",\"exp\":" +
+                               std::to_string(now + cfg.token_ttl_seconds);
+    if (!cfg.issuer.empty())
+        payload_json += ",\"iss\":\"" + json_escape(cfg.issuer) + "\"";
+    if (!cfg.audience.empty())
+        payload_json += ",\"aud\":\"" + json_escape(cfg.audience) + "\"";
     payload_json += "}";
     std::string payload_b64 = b64url_encode(
         reinterpret_cast<const unsigned char*>(payload_json.data()),
@@ -272,8 +291,11 @@ bool verify_jwt(const auth_config& cfg, const std::string& token,
                         payload_bytes.size());
 
     auto now = std::time(nullptr);
+    // SEC-2: an absent exp must not be treated as "never expires". A token
+    // without exp (or with a non-positive exp) is rejected outright, so a
+    // forged "no-expiry" token cannot bypass the expiry check.
     int64_t exp = json_get_int(payload, "exp");
-    if (exp && now > exp + cfg.leeway_seconds) {
+    if (!exp || now > exp + cfg.leeway_seconds) {
         error = "token_expired";
         return false;
     }
@@ -284,11 +306,17 @@ bool verify_jwt(const auth_config& cfg, const std::string& token,
     }
     if (!cfg.issuer.empty()) {
         std::string iss = json_get_string(payload, "iss");
-        if (iss != cfg.issuer) { error = "invalid_issuer"; return false; }
+        if (iss != cfg.issuer) {
+            error = "invalid_issuer";
+            return false;
+        }
     }
     if (!cfg.audience.empty()) {
         std::string aud = json_get_string(payload, "aud");
-        if (aud != cfg.audience) { error = "invalid_audience"; return false; }
+        if (aud != cfg.audience) {
+            error = "invalid_audience";
+            return false;
+        }
     }
     user_id = json_get_string(payload, "sub");
     if (user_id.empty()) {
@@ -308,8 +336,8 @@ const shield_auth_v1& auth_vtable() {
         "jwt",
         "1.0.0",
         // connect — returns the instance cast as the session handle.
-        [](const struct shield_auth_config* cfg,
-           char* err_buf, int err_buf_size) -> struct shield_auth_session* {
+        [](const struct shield_auth_config* cfg, char* err_buf,
+           int err_buf_size) -> struct shield_auth_session* {
             (void)cfg;
             if (err_buf && err_buf_size > 0) err_buf[0] = '\0';
             return nullptr;  // no-op; instance owns config already.
@@ -354,18 +382,20 @@ const shield_auth_v1& auth_vtable() {
             return -1;
         },
         // authorize — default allow; applications layer RBAC on top.
-        [](struct shield_auth_session* session,
-           const char* user_id, const char* resource,
-           const char* action, struct shield_authz_result* out) -> int {
-            (void)session; (void)user_id; (void)resource; (void)action;
+        [](struct shield_auth_session* session, const char* user_id,
+           const char* resource, const char* action,
+           struct shield_authz_result* out) -> int {
+            (void)session;
+            (void)user_id;
+            (void)resource;
+            (void)action;
             if (!out) return -1;
             out->allowed = 1;
             out->reason = nullptr;
             return 0;
         },
         // refresh_token — verify the refresh token, mint a fresh one.
-        [](struct shield_auth_session* session,
-           const char* refresh_token,
+        [](struct shield_auth_session* session, const char* refresh_token,
            struct shield_auth_result* out) -> int {
             auto* inst = reinterpret_cast<auth_instance*>(session);
             if (!inst || !refresh_token || !out) return -1;
@@ -401,9 +431,9 @@ const shield_auth_v1& auth_vtable() {
         [](struct shield_auth_result* r) {
             if (!r) return;
             if (r->error_code) std::free(const_cast<char*>(r->error_code));
-            if (r->error_msg)  std::free(const_cast<char*>(r->error_msg));
-            if (r->user_id)    std::free(const_cast<char*>(r->user_id));
-            if (r->token)      std::free(const_cast<char*>(r->token));
+            if (r->error_msg) std::free(const_cast<char*>(r->error_msg));
+            if (r->user_id) std::free(const_cast<char*>(r->user_id));
+            if (r->token) std::free(const_cast<char*>(r->token));
             if (r->roles_json) std::free(const_cast<char*>(r->roles_json));
             if (r->extra_json) std::free(const_cast<char*>(r->extra_json));
             r->error_code = r->error_msg = r->user_id = nullptr;
@@ -427,7 +457,10 @@ int auth_create(const struct shield_plugin_create_args_v1* args,
     if (!args || !out) return 1;
     auto* inst = new (std::nothrow) auth_instance;
     if (!inst) {
-        if (err) { err->code = "plugin.create.failed"; err->message = "auth.jwt: oom"; }
+        if (err) {
+            err->code = "plugin.create.failed";
+            err->message = "auth.jwt: oom";
+        }
         return 1;
     }
     inst->instance_id = args->instance_id ? args->instance_id : "";
@@ -447,12 +480,12 @@ int auth_create(const struct shield_plugin_create_args_v1* args,
                                    const char* iface,
                                    struct shield_error_v1*) -> const void* {
         if (!self || !iface) return nullptr;
-        if (std::strcmp(iface, SHIELD_AUTH_INTERFACE) == 0) return &auth_vtable();
+        if (std::strcmp(iface, SHIELD_AUTH_INTERFACE) == 0)
+            return &auth_vtable();
         return nullptr;
     };
-    inst->shell.start = [](struct shield_plugin_instance_v1*, struct shield_error_v1*) {
-        return 0;
-    };
+    inst->shell.start = [](struct shield_plugin_instance_v1*,
+                           struct shield_error_v1*) { return 0; };
     inst->shell.shutdown = [](struct shield_plugin_instance_v1* self) {
         delete reinterpret_cast<auth_instance*>(self);
     };
@@ -465,8 +498,8 @@ int auth_create(const struct shield_plugin_create_args_v1* args,
 
 }  // namespace
 
-extern "C" SHIELD_PLUGIN_EXPORT
-const struct shield_plugin_abi_v1* shield_plugin_get_v1(void) {
+extern "C" SHIELD_PLUGIN_EXPORT const struct shield_plugin_abi_v1*
+shield_plugin_get_v1(void) {
     static const struct shield_plugin_abi_v1 abi = {
         SHIELD_PLUGIN_ABI_VERSION,
         sizeof(shield_plugin_abi_v1),
