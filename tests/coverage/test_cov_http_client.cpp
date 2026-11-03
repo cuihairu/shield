@@ -91,6 +91,11 @@ struct LocalServer {
             r.body() = "empty-header";
             return r;
         });
+        server->get("/large", [](const HttpRequest&) {
+            HttpResponse r{http::status::ok, 11};
+            r.body() = std::string(4096, 'x');
+            return r;
+        });
         server->start();
     }
 };
@@ -365,6 +370,32 @@ BOOST_AUTO_TEST_CASE(EmptyResponseHeaderValueIsCaptured) {
     // it under an empty string.
     BOOST_CHECK_EQUAL(r.headers.count("X-Empty"), 1u);
     BOOST_CHECK_EQUAL(r.headers.at("X-Empty"), "");
+
+    srv.server->stop();
+}
+
+// A response larger than max_response_size must abort the transfer instead
+// of growing the in-memory body without bound.
+BOOST_AUTO_TEST_CASE(MaxResponseSizeAbortsLargeBody) {
+    shield::net::HttpClient::initialize();
+    LocalServer srv;
+    srv.start();
+    const std::string base = "http://127.0.0.1:" + std::to_string(srv.port);
+
+    HttpClientOptions opts;
+    opts.url = base + "/large";
+    opts.timeout_seconds = 5;
+    opts.max_response_size = 1024;
+    auto r = HttpClient::request(opts);
+    BOOST_CHECK(!r.error.empty());
+    BOOST_CHECK(r.body.size() <= 1024);
+
+    // A cap at or above the body size passes normally.
+    opts.max_response_size = 8192;
+    auto ok = HttpClient::request(opts);
+    BOOST_CHECK(ok.error.empty());
+    BOOST_CHECK_EQUAL(ok.status_code, 200);
+    BOOST_CHECK_EQUAL(ok.body.size(), 4096u);
 
     srv.server->stop();
 }

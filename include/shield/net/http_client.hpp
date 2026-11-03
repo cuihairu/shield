@@ -32,6 +32,10 @@ struct HttpClientOptions {
     std::unordered_map<std::string, std::string> form_fields;  // form data
     std::vector<HttpFileField> files;  // multipart uploads
     int timeout_seconds = 10;
+    // Maximum response body bytes to accept (0 = unlimited). When exceeded
+    // the transfer aborts with CURLE_WRITE_ERROR so a hostile or huge
+    // endpoint cannot grow the in-memory body without bound.
+    std::size_t max_response_size = 0;
     bool follow_redirects = true;
     int max_redirects = 5;
     // Auth

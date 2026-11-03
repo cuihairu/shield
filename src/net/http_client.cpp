@@ -25,11 +25,24 @@ void HttpClient::cleanup() { curl_global_cleanup(); }
 
 namespace {
 
-// Callback for writing response body.
+// Callback for writing response body. A user-supplied cap aborts the
+// transfer once the accumulated body would exceed it, so a hostile endpoint
+// cannot grow the in-memory buffer without bound.
+struct WriteContext {
+    std::string* body;
+    std::size_t max_bytes;
+    bool over_limit = false;
+};
+
 size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
-    auto* body = static_cast<std::string*>(userdata);
-    body->append(ptr, size * nmemb);
-    return size * nmemb;
+    auto* ctx = static_cast<WriteContext*>(userdata);
+    const std::size_t incoming = size * nmemb;
+    if (ctx->max_bytes != 0 && incoming > ctx->max_bytes - ctx->body->size()) {
+        ctx->over_limit = true;
+        return 0;  // tell libcurl to abort with CURLE_WRITE_ERROR
+    }
+    ctx->body->append(ptr, incoming);
+    return incoming;
 }
 
 // Callback for reading response headers.
@@ -139,7 +152,8 @@ HttpClientResponse HttpClient::request(const HttpClientOptions& options) {
 
     // Set response callbacks.
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
+    WriteContext write_ctx{&response.body, options.max_response_size};
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_ctx);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response.headers);
 
@@ -161,8 +175,13 @@ HttpClientResponse HttpClient::request(const HttpClientOptions& options) {
         response.headers.clear();
         response.status_code = 0;
         response.error.clear();
+        write_ctx.over_limit = false;
 
         res = curl_easy_perform(curl);
+        if (write_ctx.over_limit) {
+            response.error = "response body exceeds max_response_size";
+            break;
+        }
         if (res == CURLE_OK) {
             long status = 0;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -288,7 +307,8 @@ HttpClientResponse HttpClient::upload(
 
     // Response callbacks.
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
+    WriteContext write_ctx{&response.body, 0};
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_ctx);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response.headers);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Shield/1.0");
