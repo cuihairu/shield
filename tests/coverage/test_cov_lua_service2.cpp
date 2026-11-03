@@ -255,6 +255,55 @@ BOOST_AUTO_TEST_CASE(ShutdownAllBudgetForcePath) {
     BOOST_CHECK(manager.list_services().empty());
 }
 
+// force_remove (shutdown budget exhausted) must cancel the service's actor
+// timers before the VM is erased, mirroring exit(): the timer callbacks hold
+// shd::function references into the service's lua_State, so releasing them
+// after the VM is destroyed would luaL_unref on a closed state. A long
+// one-shot timer armed in on_init must be gone by the time shutdown_all
+// returns.
+BOOST_AUTO_TEST_CASE(ForceRemoveCancelsActorTimers) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov2_force_timer.lua",
+                     "local M = {}\n"
+                     "function M.on_init(args)\n"
+                     "  shield.timer_once(60000, function() end)\n"
+                     "end\n"
+                     "function M.on_exit(reason)\n"
+                     "  local t0 = os.clock()\n"
+                     "  while os.clock() - t0 < 0.25 do end\n"
+                     "end\n"
+                     "return M\n");
+    auto svc = manager.spawn(path, opts_for("cov2_force_timer"));
+    BOOST_REQUIRE(svc.success);
+    BOOST_CHECK_GT(manager.active_actor_timer_count(), 0u);
+
+    // Spawn a sacrificial slow service AFTER the timer service: shutdown_all
+    // walks reverse spawn order, so the slow service exits first and exhausts
+    // the 1ms budget, leaving the timer service past the deadline to be
+    // force-removed.
+    const std::string slow_path =
+        write_script("cov2_force_slow.lua",
+                     "local M = {}\n"
+                     "function M.on_exit(reason)\n"
+                     "  local t0 = os.clock()\n"
+                     "  while os.clock() - t0 < 0.25 do end\n"
+                     "end\n"
+                     "return M\n");
+    auto slow = manager.spawn(slow_path, opts_for("cov2_force_slow"));
+    BOOST_REQUIRE(slow.success);
+
+    // The armed 60s timer must be cancelled and joined before the VM is
+    // erased.
+    manager.shutdown_all("force_timer", 1);
+    BOOST_CHECK(manager.list_services().empty());
+    BOOST_CHECK_EQUAL(manager.active_actor_timer_count(), 0u);
+}
+
 // ---------------------------------------------------------------------------
 // spawn(): name collisions and option parsing edges.
 // ---------------------------------------------------------------------------

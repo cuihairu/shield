@@ -3495,6 +3495,46 @@ void LuaServiceManager::drain_all(std::string_view reason,
 void LuaServiceManager::force_remove(const std::string& id,
                                      const std::string& reason) {
     (void)reason;
+    // Cancel forked tasks / timers / coroutines BEFORE erasing the service
+    // VM (same rationale as exit()): the actor_timers and actor_call_timeouts
+    // entries hold shd::function / std::function callbacks and driver handles
+    // that reference this service's lua_State, so releasing them after the
+    // VM is destroyed would luaL_unref on a closed state.
+    cancel_forked_tasks_for_service(id);
+    std::vector<caf::actor> actors_to_stop;
+    std::vector<uint64_t> actor_timer_ids;
+    {
+        std::shared_lock lock(impl_->registry_mutex);
+        auto timers_it = impl_->actor_timers_by_service.find(id);
+        if (timers_it != impl_->actor_timers_by_service.end()) {
+            actor_timer_ids.assign(timers_it->second.begin(),
+                                   timers_it->second.end());
+        }
+    }
+    for (auto timer_id : actor_timer_ids) {
+        impl_->collect_actor_timer_for_cancel(timer_id, &actors_to_stop);
+    }
+    // Cancel any pending CAF call-timeout drivers for calls originated by
+    // this service (same shape as exit(): the timeout handler no-ops when
+    // the session is already gone from pending_calls).
+    {
+        std::unique_lock lock(impl_->registry_mutex);
+        for (auto it = impl_->actor_call_timeouts.begin();
+             it != impl_->actor_call_timeouts.end();) {
+            auto pc_it = impl_->pending_calls.find(it->first);
+            if (pc_it != impl_->pending_calls.end() &&
+                pc_it->second.caller_service == id) {
+                if (it->second) {  // GCOVR_EXCL_BR_LINE (defensive:
+                                   // call-timeout entries always carry their
+                                   // driver; the null arm is a contract guard)
+                    actors_to_stop.push_back(std::move(it->second));
+                }
+                it = impl_->actor_call_timeouts.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
     caf::actor actor;
     std::vector<std::string> retracted;
     {
@@ -3535,7 +3575,6 @@ void LuaServiceManager::force_remove(const std::string& id,
             impl_->service_actors.erase(actor_it);
         }
     }
-    cancel_forked_tasks_for_service(id);
     if (actor) {  // GCOVR_EXCL_BR_LINE (defensive: the moved-out actor is
                   // non-null whenever the slot existed)
         caf::anon_send_exit(actor, caf::exit_reason::user_shutdown);
@@ -3546,6 +3585,11 @@ void LuaServiceManager::force_remove(const std::string& id,
     for (const auto& name : retracted) {
         impl_->notify_name_change(name, "");
     }
+    impl_->stop_and_wait_for_actors(actors_to_stop);
+    // The drivers were joined above, but releasing the last reference on
+    // this thread can still race the CAF worker's final unwind of a driver's
+    // message loop — park the handles in the graveyard (same policy as exit).
+    impl_->retire_actors(std::move(actors_to_stop));
 }
 
 bool LuaServiceManager::enqueue_async_spawn(uint64_t session,
