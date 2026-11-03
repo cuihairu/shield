@@ -2,6 +2,7 @@
 #include "shield/cluster/cluster_manager.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -36,7 +37,7 @@ struct ClusterManager::Impl {
     std::unordered_map<std::string, std::string> local_routes;
     mutable std::shared_mutex mutex;
     RemoteSendFn remote_send_fn;
-    bool running = false;
+    std::atomic<bool> running{false};
     // Drives run_tick() at heartbeat_interval_ms; started by start(),
     // joined by stop().
     std::jthread heartbeat_thread;
@@ -87,7 +88,7 @@ struct ClusterManager::Impl {
     // Degradation pass over node states. Called by the heartbeat thread and
     // by ClusterManager::tick() (tests / external schedulers).
     int run_tick() {
-        if (!running) return 0;
+        if (!running.load(std::memory_order_relaxed)) return 0;
 
         int changes = 0;
         const int64_t now = now_ms();
@@ -168,8 +169,8 @@ ClusterManager::ClusterManager(const ClusterConfig& config)
 ClusterManager::~ClusterManager() { stop(); }
 
 void ClusterManager::start() {
-    if (impl_->running) return;
-    impl_->running = true;
+    if (impl_->running.load(std::memory_order_relaxed)) return;
+    impl_->running.store(true, std::memory_order_release);
 
     auto& log = shield::log::get_logger("cluster");
     SHIELD_LOG_INFO(log,
@@ -213,8 +214,8 @@ void ClusterManager::start() {
 }
 
 void ClusterManager::stop() {
-    if (!impl_->running) return;
-    impl_->running = false;
+    if (!impl_->running.load(std::memory_order_relaxed)) return;
+    impl_->running.store(false, std::memory_order_release);
 
     // Discovery first: resetting it unregisters this node and joins the
     // loop, so no add_peer/on_discovery_lost callback can land during
@@ -447,7 +448,8 @@ void ClusterManager::set_node_discovery(
     impl_->discovery = std::move(discovery);
     // Attached to an already-running manager: begin discovering now
     // (start_discovery is a no-op without a discovery object).
-    if (impl_->running) impl_->start_discovery();
+    if (impl_->running.load(std::memory_order_relaxed))
+        impl_->start_discovery();
 }
 
 void ClusterManager::on_discovery_lost(const std::string& node_id) {
