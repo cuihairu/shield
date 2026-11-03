@@ -46,7 +46,7 @@ bool TokenBucket::try_acquire() {
         tokens_ = std::min(burst_, tokens_ + whole);
     }
     if (tokens_ < 1.0) {
-        ++limited_count_;
+        limited_count_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     tokens_ -= 1.0;

@@ -78,7 +78,9 @@ public:
     bool try_acquire();
 
     /// @brief Number of messages rejected since construction.
-    uint64_t limited_count() const { return limited_count_; }
+    uint64_t limited_count() const {
+        return limited_count_.load(std::memory_order_relaxed);
+    }
 
     /// @brief Current token count (fractional part truncated). Test/diagnostic
     ///        accessor; the value is only meaningful on the owning strand.
@@ -92,7 +94,7 @@ private:
     // drip of low-rate buckets still refills exactly, with no drift.
     double refill_credit_ = 0;
     std::chrono::steady_clock::time_point last_refill_;
-    uint64_t limited_count_ = 0;
+    std::atomic<uint64_t> limited_count_{0};
 };
 
 /// @brief Single-target binding of a live session. The gateway keeps exactly
