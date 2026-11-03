@@ -236,7 +236,7 @@
 
 覆盖范围：`git diff 178d73b7ae8a6a3abda5da4b9a8e54f2b4d578c5..HEAD`，33 文件（+1532/-240）。逐文件审查完毕：源码 17 文件（bootstrap / gateway_actor / lua_api / lua_runtime / lua_service / profile_sampler / console_session / listener / auth_jwt / cache.redis / leaderboard.redis / pgsql 及其新重写器头 / 4 个头文件）+ 测试 10 文件 + tests/CMakeLists.txt + docs/review + todo.md。上一节 6 条未勾选发现经本轮逐条复核**全部属实**，不重复登记。本轮新增 1 条：
 
-- [x] 审核发现：**测试缺口——新 pgsql 占位符重写器单测只覆盖 happy path**（tests/plugin/test_plugin_db_pgsql_rewrite.cpp:1-95）。未覆盖已登记的两处缺陷输入（未加引号标识符含 `$` 如 `a$b$c`、嵌套块注释 `/* /* */ */`），也未覆盖头文件自述的 `?`/`?|`/`?&` JSON 运算符限制（plugins/postgresql/shield_db_rewrite.hpp:18-22、:109-158）——该限制对经原始 SQL 传入的 `col ? 'key'` 会静默把运算符改写为 `$N`，属既有（v1 同样误改）且已文档化的正确性坑，本轮无回归测试钉住。**已修（2026-11-04）**：`DollarInUnquotedIdentifierIsNotDollarQuote` 与 `NestedBlockCommentKeepsQuestion` 两回归覆盖两处缺陷输入（随重写器修复 fab5e5e 一并提交）；本轮新增 `JsonOperatorQuestionIsPlaceholderPerV1Contract` 钉住 `?`/`?|`/`?&` 运算符的 v1 合同（既有文档化正确性坑，不属本轮修复范围，保留原语义）。（待提交；`test_plugin_db_pgsql_rewrite` 12/12、`test_db_net_async` 全绿）
+- [x] 审核发现：**测试缺口——新 pgsql 占位符重写器单测只覆盖 happy path**（tests/plugin/test_plugin_db_pgsql_rewrite.cpp:1-95）。未覆盖已登记的两处缺陷输入（未加引号标识符含 `$` 如 `a$b$c`、嵌套块注释 `/* /* */ */`），也未覆盖头文件自述的 `?`/`?|`/`?&` JSON 运算符限制（plugins/postgresql/shield_db_rewrite.hpp:18-22、:109-158）——该限制对经原始 SQL 传入的 `col ? 'key'` 会静默把运算符改写为 `$N`，属既有（v1 同样误改）且已文档化的正确性坑，本轮无回归测试钉住。**已修（2026-11-04）**：`DollarInUnquotedIdentifierIsNotDollarQuote` 与 `NestedBlockCommentKeepsQuestion` 两回归覆盖两处缺陷输入（随重写器修复 fab5e5e 一并提交）；本轮新增 `JsonOperatorQuestionIsPlaceholderPerV1Contract` 钉住 `?`/`?|`/`?&` 运算符的 v1 合同（既有文档化正确性坑，不属本轮修复范围，保留原语义）。（77cc19c；`test_plugin_db_pgsql_rewrite` 12/12、`test_db_net_async` 全绿）
 
 已核无问题部分（逐条核对源码，非转述）：
 
