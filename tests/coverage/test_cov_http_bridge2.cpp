@@ -5,6 +5,7 @@
 // tasks are cancelled (the cancelled task never fulfils its promise, so the
 // caller observes the dispatch timeout).
 #define BOOST_TEST_MODULE CovHttpBridge2
+#include <boost/asio/ip/tcp.hpp>
 #include <boost/test/unit_test.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
@@ -44,6 +45,56 @@ nlohmann::json opts_for(const std::string& name) {
         {"args", nlohmann::json::object()},
         {"config", nlohmann::json::object()},
     };
+}
+
+// Minimal loopback HTTP client for exercising the server's route table over a
+// real socket. The route handlers installed by LuaHttpBridgeState sit in
+// HttpServer::routes_ until the server dies; dispatching through a socket is
+// the only path that exercises them as the server does in production (the
+// bridge.handle() facade used elsewhere bypasses the route table entirely).
+struct RawHttpClient {
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::socket socket{io};
+
+    bool connect(uint16_t port) {
+        boost::system::error_code ec;
+        socket.connect(boost::asio::ip::tcp::endpoint(
+                           boost::asio::ip::address_v4::loopback(), port),
+                       ec);
+        return !ec;
+    }
+
+    std::string request(const std::string& raw) {
+        boost::system::error_code ec;
+        boost::asio::write(socket, boost::asio::buffer(raw), ec);
+        if (ec) return {};
+        std::string out;
+        char buf[4096];
+        socket.non_blocking(true, ec);
+        for (;;) {
+            std::size_t n = socket.read_some(boost::asio::buffer(buf), ec);
+            if (ec == boost::asio::error::would_block ||
+                ec == boost::asio::error::try_again) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+            if (ec || n == 0) break;
+            out.append(buf, n);
+        }
+        return out;
+    }
+
+    void close() {
+        boost::system::error_code ec;
+        socket.close(ec);
+    }
+};
+
+uint16_t free_port() {
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::acceptor probe(
+        io, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), 0));
+    return probe.local_endpoint().port();
 }
 
 struct CafInitFixture {
@@ -324,5 +375,71 @@ BOOST_AUTO_TEST_CASE(RaisingHandlerYields500WithLuaError) {
     BOOST_CHECK_EQUAL(resp.result_int(), 500);
     BOOST_CHECK(resp.body().find("handler kaboom") != std::string::npos);
 
+    manager.shutdown_all("done");
+}
+
+// ---------------------------------------------------------------------------
+// The route handlers the bridge installs into HttpServer::routes_ capture the
+// shared LuaHttpBridgeState, not the bridge object. Bootstrap resets the
+// bridge before HttpServer::stop(), so a request arriving after the bridge is
+// destroyed must still dispatch through the server's route table without a
+// use-after-free. This case drives the exact production path (socket ->
+// HttpServer::dispatch -> route table -> state->handle) that the facade-based
+// cases never exercise.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ServerRouteTableDispatchAfterBridgeDestroyed) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string module = write_script(
+        "cov2_server_dispatch.lua",
+        "local M = {}\n"
+        "function M.on_init()\n"
+        "    shield.httpd.get('/svc', function(req) return 'from-server' end)\n"
+        "end\n"
+        "return M\n");
+    auto svc = manager.spawn(module, opts_for("cov2_server_dispatch").dump());
+    BOOST_REQUIRE(svc.success);
+
+    shield::net::HttpServerConfig scfg;
+    scfg.host = "127.0.0.1";
+    scfg.port = free_port();
+    shield::net::HttpServer server(scfg);
+
+    {
+        LuaHttpBridge bridge(runtime, manager);
+        bridge.attach(server);
+        server.start();
+        BOOST_REQUIRE(server.is_running());
+
+        // Dispatch through the server while the bridge is alive.
+        RawHttpClient c;
+        BOOST_REQUIRE(c.connect(scfg.port));
+        auto resp = c.request("GET /svc HTTP/1.0\r\nHost: cov\r\n\r\n");
+        c.close();
+        BOOST_CHECK(resp.find("200") != std::string::npos);
+        BOOST_CHECK(resp.find("from-server") != std::string::npos);
+
+        // The bridge is destroyed here (scoped block), but the route handler
+        // it installed remains in the server's route table — exactly the
+        // bootstrap teardown order (bridge reset before server stop).
+        bridge.detach();
+    }
+
+    // Request now arrives after LuaHttpBridge is gone; the captured state
+    // (shared_ptr) must keep the routing state alive through the dispatch.
+    {
+        RawHttpClient c;
+        BOOST_REQUIRE(c.connect(scfg.port));
+        auto resp = c.request("GET /svc HTTP/1.0\r\nHost: cov\r\n\r\n");
+        c.close();
+        BOOST_CHECK(resp.find("200") != std::string::npos);
+        BOOST_CHECK(resp.find("from-server") != std::string::npos);
+    }
+
+    server.stop();
+    runtime.remove_http_routes_for_service(svc.service_id);
     manager.shutdown_all("done");
 }
