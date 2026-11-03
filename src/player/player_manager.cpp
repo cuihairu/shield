@@ -104,7 +104,10 @@ void PlayerManager::set_global(PlayerManager* manager) {
 
 std::uint64_t PlayerManager::node_epoch() const { return node_epoch_; }
 
-std::string PlayerManager::node_id() const { return node_id_; }
+std::string PlayerManager::node_id() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return node_id_;
+}
 
 void PlayerManager::set_locality(const std::string& node_id,
                                  std::uint64_t epoch) {
@@ -259,7 +262,8 @@ std::vector<std::string> PlayerManager::get_devices(
 }
 
 std::optional<SessionInfo> PlayerManager::resolve(const PlayerRef& ref) const {
-    if (!ref.node_id.empty() && ref.node_id != node_id_) {
+    const std::string self_node_id = node_id();
+    if (!ref.node_id.empty() && ref.node_id != self_node_id) {
         return std::nullopt;  // remote ref: P0 resolve is local-only
     }
     return get(ref.uid);
