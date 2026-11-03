@@ -1739,6 +1739,33 @@ void shutdown() {
         g_state->cluster_transport->stop();
     }
 #endif
+#ifdef SHIELD_ENABLE_SERVER
+    // Halt the shutdown timer and clear the notify/stop callbacks BEFORE
+    // releasing the manager AND before lua_services is freed below: the
+    // timer body reads the stop callback under the manager lock, and the
+    // notify callback captures lua_services. stop() joins the timer, so
+    // nothing can fire into the teardown.
+    if (g_state->server_manager) {  // GCOVR_EXCL_BR_LINE (defensive: same
+                                    // initialized-invariant as the
+                                    // schedule_shutdown guard)
+        g_state->server_manager->stop();
+    }
+    shield::server::ServerManager::set_global(nullptr);
+    g_state->server_manager.reset();
+#endif
+#ifdef SHIELD_ENABLE_GLOBAL
+    // Join the scheduler tick thread and drop the fire callback (it
+    // captures lua_services, freed below) BEFORE the manager goes away
+    // and before lua_services is freed: stop() guarantees no fire races
+    // the teardown.
+    if (g_state->global_manager) {  // GCOVR_EXCL_BR_LINE (defensive: same
+                                    // initialized-invariant as the server
+                                    // manager guards)
+        g_state->global_manager->stop();
+    }
+    shield::global::GlobalManager::set_global(nullptr);
+    g_state->global_manager.reset();
+#endif
     g_state->lua_services.reset();
     g_state->lua_runtime.reset();
 #ifdef SHIELD_ENABLE_CLUSTER
@@ -1750,32 +1777,6 @@ void shutdown() {
     // was already stopped by shutdown_all above.
     shield::player::PlayerManager::set_global(nullptr);
     g_state->player_manager.reset();
-#endif
-#ifdef SHIELD_ENABLE_SERVER
-    // Halt the shutdown timer and clear the notify/stop callbacks BEFORE
-    // releasing the manager: the timer body reads the stop callback under
-    // the manager lock, and the notify callback captures lua_services
-    // (released above). stop() joins the timer, so nothing can fire into
-    // the teardown.
-    if (g_state->server_manager) {  // GCOVR_EXCL_BR_LINE (defensive: same
-                                    // initialized-invariant as the
-                                    // schedule_shutdown guard)
-        g_state->server_manager->stop();
-    }
-    shield::server::ServerManager::set_global(nullptr);
-    g_state->server_manager.reset();
-#endif
-#ifdef SHIELD_ENABLE_GLOBAL
-    // Join the scheduler tick thread and drop the fire callback (it
-    // captures lua_services, released above) BEFORE the manager goes
-    // away: stop() guarantees no fire races the teardown.
-    if (g_state->global_manager) {  // GCOVR_EXCL_BR_LINE (defensive: same
-                                    // initialized-invariant as the server
-                                    // manager guards)
-        g_state->global_manager->stop();
-    }
-    shield::global::GlobalManager::set_global(nullptr);
-    g_state->global_manager.reset();
 #endif
     g_state->actor_system.reset();
 #ifdef SHIELD_ENABLE_CLUSTER
