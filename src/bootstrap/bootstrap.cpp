@@ -345,13 +345,9 @@ void cleanup_failed_initialize() {
         if (g_state->lua_services) {
             g_state->lua_services->shutdown_all("startup_failed");
         }
-        g_state->lua_services.reset();
-        g_state->lua_runtime.reset();
-        shield::plugin::global_host().shutdown();
 #ifdef SHIELD_ENABLE_SERVER
-        // Mirror the successful-teardown order: halt the timer and drop the
-        // injected callbacks first (they capture lua_services, released
-        // above), then unregister the global.
+        // Halt the timer and drop the injected callbacks BEFORE lua_services
+        // is freed below (same ordering rule as the successful teardown).
         if (g_state->server_manager) {
             g_state->server_manager->stop();
         }
@@ -359,15 +355,17 @@ void cleanup_failed_initialize() {
         g_state->server_manager.reset();
 #endif
 #ifdef SHIELD_ENABLE_GLOBAL
-        // Same ordering rule as the successful teardown: stop() joins the
-        // tick thread and drops the fire callback (which captures
-        // lua_services, released above) before the manager is destroyed.
+        // stop() joins the tick thread and drops the fire callback before
+        // lua_services is freed below, so a fire cannot race the teardown.
         if (g_state->global_manager) {
             g_state->global_manager->stop();
         }
         shield::global::GlobalManager::set_global(nullptr);
         g_state->global_manager.reset();
 #endif
+        g_state->lua_services.reset();
+        g_state->lua_runtime.reset();
+        shield::plugin::global_host().shutdown();
 #ifdef SHIELD_ENABLE_CLUSTER
         // The transport actor lives in the CAF system: unpublish and kill it
         // while the system (and the manager its callbacks point at) are
