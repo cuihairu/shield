@@ -106,6 +106,9 @@ bool parse_cron_field(const std::string& body, int field, std::uint64_t* out,
             return fail("value out of range " + std::to_string(lo) + "-" +
                         std::to_string(hi));
         }
+        if (step > end - begin + 1) {
+            return fail("step exceeds field range");
+        }
         for (int v = begin; v <= end; v += step) {
             bits |= (std::uint64_t(1) << v);
         }

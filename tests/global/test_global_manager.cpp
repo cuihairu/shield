@@ -157,6 +157,10 @@ BOOST_AUTO_TEST_CASE(RejectsMalformedExpressions) {
     BOOST_CHECK(!parse_cron("1,,2 * * * *", &f, &error));
     BOOST_CHECK(!parse_cron("1- * * * *", &f, &error));
     BOOST_CHECK(!parse_cron("*/ * * * *", &f, &error));
+    // A step wider than the field's range would overflow the v += step
+    // loop head (signed overflow UB); reject it instead.
+    BOOST_CHECK(!parse_cron("*/999999999 * * * *", &f, &error));
+    BOOST_CHECK(!parse_cron("1-3/999999999 * * * *", &f, &error));
     BOOST_CHECK_NE(error.size(), 0u);
 }
 
