@@ -363,16 +363,20 @@ void cleanup_failed_initialize() {
         shield::global::GlobalManager::set_global(nullptr);
         g_state->global_manager.reset();
 #endif
+#ifdef SHIELD_ENABLE_CLUSTER
+        // Stop the transport BEFORE releasing the service manager: inbound
+        // envelope bridges dispatch into lua_services, so it must outlive the
+        // transport actor's message loop (same ordering rule as the
+        // successful teardown; a straggler mailbox message becomes a no-op
+        // because stop() clears the bridges).
+        if (g_state->cluster_transport) {
+            g_state->cluster_transport->stop();
+        }
+#endif
         g_state->lua_services.reset();
         g_state->lua_runtime.reset();
         shield::plugin::global_host().shutdown();
 #ifdef SHIELD_ENABLE_CLUSTER
-        // The transport actor lives in the CAF system: unpublish and kill it
-        // while the system (and the manager its callbacks point at) are
-        // still alive.
-        if (g_state->cluster_transport) {
-            g_state->cluster_transport->stop();
-        }
         shield::cluster::set_global_cluster_transport(nullptr);
         g_state->cluster_transport.reset();
         if (g_state->cluster_manager) {

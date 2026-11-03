@@ -443,6 +443,42 @@ BOOST_AUTO_TEST_CASE(InvalidClusterAuthAbortsInitialize) {
     unsetenv(env);
 }
 
+// A cluster listen failure after the transport was constructed must run
+// cleanup_failed_initialize without freeing lua_services under the transport
+// actor's message loop (the inbound envelope bridges dispatch into it). This
+// pins the startup-failure teardown ordering to mirror the successful
+// shutdown() path: cluster_transport->stop() must run before
+// lua_services.reset(). A wrong order is a use-after-free on the next
+// inbound envelope and is caught by ASan.
+BOOST_AUTO_TEST_CASE(ClusterListenFailureCleansUpAfterTransportStops) {
+    // Occupy the cluster listen port so ClusterTransport::start() fails.
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::acceptor blocker(
+        io, boost::asio::ip::tcp::endpoint(
+                boost::asio::ip::make_address("127.0.0.1"), 0));
+    const uint16_t cluster_port = blocker.local_endpoint().port();
+
+    fs::path script = echo_script("shield_cov_boot_clusterfail.lua");
+    fs::path cfg = write_config(
+        "app:\n  name: cov\n"
+        "actors:\n"
+        "  - name: plain\n    script: " +
+        script.string() +
+        "\ncluster:\n"
+        "  node_id: cov-clusterfail\n"
+        "  listen: 127.0.0.1:" +
+        std::to_string(cluster_port) +
+        "\n"
+        "  auth:\n"
+        "    type: token\n"
+        "    token: 0123456789abcdef0123456789abcdef0123456789abcdef\n");
+    shield::bootstrap::RuntimeConfig rc;
+    rc.config_files = {cfg.string()};
+    BOOST_CHECK(!shield::bootstrap::initialize(rc));
+    BOOST_CHECK(!shield::bootstrap::is_initialized());
+    shield::bootstrap::shutdown();
+}
+
 BOOST_AUTO_TEST_CASE(FullStackInitializeAndShutdown) {
     // --- scripts resolved via source_dir and lua.script_path ---
     fs::path work = base_dir("shield_cov_boot_full");
