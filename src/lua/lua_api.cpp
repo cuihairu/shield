@@ -1194,6 +1194,15 @@ void register_timer_api(shd::table& shield, LuaServiceManager* manager,
             // error panics the service).
             std::shared_ptr<LuaVM> vm_keepalive =
                 manager->service_vm(service_id);
+            // Another resume source already completed this coroutine (e.g.
+            // the service exited, or a call completion resumed it while the
+            // sleep timer was still armed): nothing to resume and no error to
+            // report. Without this guard the lua_resume below would report a
+            // bogus "sleep continuation error" against a healthy service.
+            if (lua_status(co) != LUA_YIELD) {
+                anchor->unref();
+                return;
+            }
             int nres = 0;
             // Driving-phase registration: a call completion arriving
             // while this guard is held is re-enqueued by resume_caller
