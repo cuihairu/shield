@@ -251,7 +251,10 @@ public:
     }
     void close(std::string reason) override;
     bool is_alive() const override { return alive_.load(); }
-    std::string error_code() const override { return error_code_; }
+    std::string error_code() const override {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        return error_code_;
+    }
 
     void set_user_data(std::string key, std::string value) override {
         std::lock_guard<std::mutex> lock(user_data_mutex_);
@@ -315,6 +318,7 @@ private:
     RemoteAddress remote_addr_;
     SessionCallbacks callbacks_;
     std::atomic<bool> alive_{true};
+    mutable std::mutex error_mutex_;
     std::string error_code_;
 
     mutable std::mutex user_data_mutex_;

@@ -8,6 +8,7 @@
 #include <boost/asio/strand.hpp>
 #include <chrono>
 #include <cmath>
+#include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
 
@@ -427,12 +428,13 @@ void TcpSession::handle_error(std::string reason) {
     SHIELD_LOG_ERROR(log,
                      "Session " + std::to_string(id_) + " error: " + reason);
     // Map error reason to stable error code.
+    std::string code;
     if (reason.find("idle") != std::string::npos) {
-        error_code_ = "read_idle_timeout";
+        code = "read_idle_timeout";
     } else if (reason == "protocol_not_configured") {
-        error_code_ = "protocol_not_configured";
+        code = "protocol_not_configured";
     } else if (reason.find("decode") != std::string::npos) {
-        error_code_ = "decode_error";
+        code = "decode_error";
     } else if (reason.find("timeout") !=  // GCOVR_EXCL_BR_LINE
                std::string::npos) {  // GCOVR_EXCL_BR_LINE (defensive: no call
                                      // site produces a reason containing
@@ -441,10 +443,14 @@ void TcpSession::handle_error(std::string reason) {
                                      // minutes-long kernel retransmits)
         // GCOVR_EXCL_START (gated branch: no call site produces a non-idle
         // timeout reason today; kept for handshake-stage errors)
-        error_code_ = "handshake_timeout";
+        code = "handshake_timeout";
         // GCOVR_EXCL_STOP
     } else {
-        error_code_ = "session_closed";
+        code = "session_closed";
+    }
+    {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        error_code_ = std::move(code);
     }
     close(reason);
 }
