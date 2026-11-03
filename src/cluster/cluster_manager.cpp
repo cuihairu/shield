@@ -333,9 +333,14 @@ bool ClusterManager::send_remote(const std::string& target_node,
                                  const std::string& args_json,
                                  uint64_t call_session, int32_t timeout_ms,
                                  std::string* error) {
-    if (impl_->remote_send_fn) {
-        return impl_->remote_send_fn(target_node, service_id, method, args_json,
-                                     call_session, timeout_ms, error);
+    RemoteSendFn fn;
+    {
+        std::shared_lock lock(impl_->mutex);
+        fn = impl_->remote_send_fn;
+    }
+    if (fn) {
+        return fn(target_node, service_id, method, args_json, call_session,
+                  timeout_ms, error);
     }
     if (error) {
         *error = "node_offline";
