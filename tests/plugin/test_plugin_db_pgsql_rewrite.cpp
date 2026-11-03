@@ -67,6 +67,19 @@ BOOST_AUTO_TEST_CASE(BlockCommentKeepsQuestion) {
     BOOST_CHECK_EQUAL(rewrite_placeholders("SELECT 1 /* ?"), "SELECT 1 /* ?");
 }
 
+// PostgreSQL block comments nest: an inner /* opens a level and only the
+// matching */ closes it, so a '?' inside the inner comment is not a
+// placeholder and the outer comment's trailing '?' stays verbatim.
+BOOST_AUTO_TEST_CASE(NestedBlockCommentKeepsQuestion) {
+    BOOST_CHECK_EQUAL(
+        rewrite_placeholders("SELECT a FROM t /* outer /* inner ? */ ? */ "
+                             "WHERE a = ?"),
+        "SELECT a FROM t /* outer /* inner ? */ ? */ WHERE a = $1");
+    BOOST_CHECK_EQUAL(
+        rewrite_placeholders("SELECT 1 /* /* */ ? */ WHERE a = ?"),
+        "SELECT 1 /* /* */ ? */ WHERE a = $1");
+}
+
 BOOST_AUTO_TEST_CASE(DollarQuotedKeepsQuestion) {
     BOOST_CHECK_EQUAL(
         rewrite_placeholders("SELECT $body$ a?b $body$ FROM t WHERE a = ?"),
@@ -88,6 +101,23 @@ BOOST_AUTO_TEST_CASE(MixedConstructs) {
         "/* ? */ "
         "SELECT \"?\", $2";
     BOOST_CHECK_EQUAL(rewrite_placeholders(sql), expected);
+}
+
+// Unquoted identifiers may legally contain '$' after the first character
+// (PostgreSQL allows $ in identifiers). A '$' inside such an identifier is
+// NOT a dollar-quote delimiter, even if a later '$' would form a valid tag.
+BOOST_AUTO_TEST_CASE(DollarInUnquotedIdentifierIsNotDollarQuote) {
+    BOOST_CHECK_EQUAL(rewrite_placeholders("SELECT a$b$c FROM t WHERE x = ?"),
+                      "SELECT a$b$c FROM t WHERE x = $1");
+    // Tag-like sequence without a closing delimiter must not swallow the
+    // rest of the SQL.
+    BOOST_CHECK_EQUAL(
+        rewrite_placeholders("SELECT a$b$c FROM t WHERE x = ? AND y = ?"),
+        "SELECT a$b$c FROM t WHERE x = $1 AND y = $2");
+    // A real dollar-quoted string after an identifier boundary still works.
+    BOOST_CHECK_EQUAL(rewrite_placeholders(
+                          "SELECT x$y$, $body$ a?b $body$ FROM t WHERE a = ?"),
+                      "SELECT x$y$, $body$ a?b $body$ FROM t WHERE a = $1");
 }
 
 BOOST_AUTO_TEST_CASE(NullInput) {

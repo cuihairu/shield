@@ -11,7 +11,7 @@
 //   * single-quoted string literals (', with '' escaping, E'...' escapes)
 //   * double-quoted identifiers ("...", with "" escaping)
 //   * line comments (-- ...)
-//   * block comments (/* ... */, non-nested per PostgreSQL)
+//   * block comments (/* ... */, nested per PostgreSQL)
 //   * dollar-quoted strings ($tag$ ... $tag$, e.g. $body$ ... $body$)
 //
 // It intentionally does NOT understand PostgreSQL operator forms that use '?'
@@ -104,11 +104,21 @@ inline std::string rewrite_placeholders(const char* sql) {
         if (*p == '/' && p[1] == '*') {
             out.push_back(*p++);
             out.push_back(*p++);
+            int depth = 1;
             while (*p) {
+                // PostgreSQL block comments nest: an inner /* increments the
+                // depth and only a matching */ decrements it.
+                if (*p == '/' && p[1] == '*') {
+                    out.push_back(*p++);
+                    out.push_back(*p++);
+                    ++depth;
+                    continue;
+                }
                 if (*p == '*' && p[1] == '/') {
                     out.push_back(*p++);
                     out.push_back(*p++);
-                    break;
+                    if (--depth == 0) break;
+                    continue;
                 }
                 out.push_back(*p++);
             }
@@ -116,6 +126,14 @@ inline std::string rewrite_placeholders(const char* sql) {
         }
         // Dollar-quoted string: $tag$ ... $tag$ (tag may be empty).
         if (*p == '$') {
+            // Inside an unquoted identifier ('$' is legal after the first
+            // identifier character): this '$' belongs to the identifier, not
+            // to a dollar-quote delimiter. Treat it as ordinary text.
+            if (p > sql && (std::isalnum(static_cast<unsigned char>(p[-1])) ||
+                            p[-1] == '_' || p[-1] == '$')) {
+                out.push_back(*p++);
+                continue;
+            }
             const char* tag_end = std::strchr(p + 1, '$');
             if (tag_end) {
                 // A valid tag is [A-Za-z_][A-Za-z0-9_]* or empty.
