@@ -179,7 +179,7 @@
 
 > 第一波见上节「代码深审 P2/P3 待办（2026-11-01）」。本节为独立第二遍全量深审（bootstrap/console/global/cluster、net/transport/protocol、lua/core 三路 + 安全扫描），与第一波无重叠。所有条目均已对照本仓源码复核。第二波 P1 已当场修复（见 `docs/review/2026-11-01-code-review.md` 第九节，commit e4e3567 / e42bd3f / b90be2e / 9c2afd3 / 00aef5f）。
 
-- [ ] **C1 TLS 握手状态持裸 `TcpListener*`（P2）**：`TlsHandshakeState`（`src/net/listener.cpp:104`）自引用堆对象持有裸 `TcpListener*` 并在 `on_handshake`（:79）解引用；`stop()` 明确不取消在飞握手（头注释「each one carries its own deadline and self-closes」），监听器在慢客户端握手中途析构 → UAF。建议：改持 `weak_ptr`/`shared_ptr`，或 stop()/析构时登记并取消全部 `TlsHandshakeState`。
+- [x] **C1 TLS 握手状态持裸 `TcpListener*`（P2）**：`TlsHandshakeState`（`src/net/listener.cpp:104`）自引用堆对象持有裸 `TcpListener*` 并在 `on_handshake`（:79）解引用；`stop()` 明确不取消在飞握手（头注释「each one carries its own deadline and self-closes」），监听器在慢客户端握手中途析构 → UAF。**已修（2026-11-04）**：在飞握手状态登记为 weak_ptr registry，`stop()`/析构经 `cancel_in_flight_handshakes` 置 cancelled 并关 socket；成功路径经独立 `HandshakeGate`（shared_ptr，比监听器与握手状态都长寿）与 teardown 互斥——teardown 在 gate 锁内置 stopping，成功完成见 stopping 即退出，赢得锁者先 adopt 再放行 teardown，监听器不被存活完成解引用；`adopt_connection` 再查 `stopping_` 丢弃 socket。（6477508；`test_cov_tls` 13/13、`test_cov_listener` 19/19、`test_cov_session`/`test_cov_bootstrap`/`test_cov_bootstrap2`/`test_cov_http_server` 全绿，新增 `HandshakeOutlivesListenerDestruction` 回归用例：tests/coverage/test_cov_tls.cpp:453-499）
 - [ ] **C2 `last_rejection_` 跨线程无同步（P2）**：`src/net/listener.cpp:258` 在 accept 完成路径无锁写 `last_rejection_`（std::string），`include/shield/net/listener.hpp:104` `last_rejection_reason()` 跨线程读 → std::string 读写 UB。同文件 `listening_` 已被 a1f5d8e 收为 atomic，本条为残余。建议：mutex 或原子封装。
 - [ ] **C3 msgpack 解码无嵌套深度上限（P2）**：`plugins/protocol.msgpack/shield_protocol_msgpack.cpp:118` `from_msgpack` + :124 `dump()` 均递归走 C++ 栈无深度封顶；攻击者经 `ExternalBodyCodec` 投喂 ~100k 层嵌套 array 即可栈溢出。同仓 json 编解码器有 512 深度预扫描（`src/transport/protocol.cpp:1012/1026`），msgpack 缺同款守卫。建议：有界 msgpack walker 预扫或 `dump()` 前深度校验，对齐 `json_nesting_within`。
 - [ ] **C4 `impl_->actor` 跨线程无锁读写（P2）**：`src/cluster/cluster_transport.cpp` 中 `impl_->actor`（refcounted caf::actor）写于 start()（:920/:942）与 stop()（:948/:981），无锁读于 :956/:965/:966/:979/:1042（anon_send 拷贝 refcount）与 unpublish → 并发读写 refcount UB。建议：peers_mutex 守护或原子化。
@@ -220,3 +220,36 @@
 - [x] 审核发现：**测试缺口——http bridge 路由 handler 在 bridge 析构后被调用的场景未直接覆盖**——属实。新增 loopback socket 经真实 `HttpServer` accept/read/dispatch/route table 调用，并先后覆盖 bridge 存活与析构后两臂——PENDING（tests/coverage/test_cov_http_bridge2.cpp:390-445）。
 
 已核无问题部分：cluster_transport `rx_messages` 计数前移——两处入站 handler（:670 EnvelopeMsg、:820 EnvelopeReplyMsg）各自在到达时计数、互不重复，前移仅使被信任检查丢弃的伪造回复也被计入（语义符合"每帧都计数"），转发臂（LocalDispatch+peer）为出站路径不计数，无双重计数；`LuaHttpBridgeState` shared_ptr 生命周期——server 路由表/route sink 均在 lua_runtime/lua_services 之前销毁（bootstrap.cpp:1664-1668 vs :348-349），state 持有的 runtime/manager 引用及 forked task 捕获的 `&runtime` 均无悬垂窗口；`shared_from_this()` 调用点（attach 重放经 `state_`、sink 经拷贝）均在 shared_ptr 托管内，无 bad_weak_ptr；`register_on_server` 的 server 读/写均在 server_mutex 下，无数据竞争；`test_cov_cluster` 轮询等待有界（≤3s）无挂死；`free_value_pipeline_contract` 计数（baseline+7 → 释放 7）与集成测试 `BOOST_CHECK_LT(g_live, baseline)` 均自洽。
+
+## 审核发现
+
+覆盖范围：`git diff 178d73b7ae8a6a3abda5da4b9a8e54f2b4d578c5..HEAD`（33 文件，+1532/-240），即第二波修复批次（BUG-2/5/6/7/8/9、RACE-3~7、SEC-2/3、P3 force_remove、B1 bootstrap 顺序、B2 http 捕获、B3 sampler 单次 load）。
+
+- [ ] 审核发现：**SEC-3 修复不完整——伪造标记仍可经 json_to_lua 物化路径绕过**（P2/安全）。`client_arg_to_data` 仅拒裸标记表（src/lua/lua_api.cpp:159-171），但 `json_to_lua` 对任意 JSON 对象（含客户端可控消息体）中的 `__shield_client_ref` 标记仍物化为受信 `ClientContextBox` userdata（src/lua/lua_api.cpp:242-252）；`invoke_client_rpc` 把客户端 `decoded_request` 直接 `json_to_lua`（src/lua/lua_runtime.cpp:1802），`decoded_request` 来自客户端包体、无脱敏（src/lua/lua_gateway_bridge.cpp:132）。客户端在请求体（含嵌套）放 `{"__shield_client_ref":true,"session_id":<受害会话>,...}` 即物化为 userdata，handler 透传给 `shield.client.bind/close/_client_egress` 时被 `extract_client_data` 接受——SEC-3 所述"不受信 payload 透传"路径未收口。
+- [ ] 审核发现：**启动失败路径 cluster_transport 关停顺序未镜像成功路径（B1 同类残留）**（P2）。`cleanup_failed_initialize` 在 `lua_services.reset()`（src/bootstrap/bootstrap.cpp:366）之后才 `cluster_transport->stop()`（:374），而 `shutdown()` 明确把 `cluster_transport->stop()` 置于 `lua_services.reset()` 之前（:1737 vs :1767，注释明示"inbound envelope bridges dispatch into lua_services, so it must outlive the transport actor's message loop"）；失败路径窗口内入站 envelope 经 bridge 派发进已释放 lua_services → UAF。b90be2e/e42bd3f 只收口了 server/global manager，cluster transport 遗漏。
+- [ ] 审核发现：**占位符重写器把含 `$` 的标识符误判为 dollar-quote**（P3）。PostgreSQL 未加引号标识符可含 `$`（如 `a$b$c`），扫描器在 `$` 处 `strchr(p+1,'$')` 找到 `$b$` 即视为 dollar-quote 定界符（plugins/postgresql/shield_db_rewrite.hpp:117-158）；无匹配闭合 `$b$` 时吞掉后续全部 SQL，其中 `?` 不再重写 → libpq 报错。例：`SELECT a$b$c FROM t WHERE x = ?` 恒等原样输出。
+- [ ] 审核发现：**占位符重写器块注释嵌套语义与 PostgreSQL 不符**（P3）。PostgreSQL 支持嵌套块注释（`/* /* */ */`），扫描器在首个 `*/` 即闭合（plugins/postgresql/shield_db_rewrite.hpp:109-128）；嵌套注释外层残余 `?` 会被当作占位符重写 → 服务端语法错误；头文件注释"non-nested per PostgreSQL"（:14）与事实相悖。
+- [ ] 审核发现：**test_plugin_cache_redis_incrby 未覆盖本次修复的 driver 路径（测试缺口）**。测试实例 config 仅 host/port、未设 `host_api.dependency`（tests/plugin/test_plugin_cache_redis_incrby.cpp:126-135），`inst->redis_driver` 恒空 → 走 sw::redis 自持回退路径；BUG-8 实际改动——driver 路径 `out->type == SHIELD_REDIS_INTEGER` 护栏及 `cache_invalid_reply` 错误臂（plugins/cache.redis/shield_cache_redis.cpp:650、:706）——未被任何用例执行。
+- [ ] 审核发现：**force_remove 未按 exit() 对 recently_exited 封顶（轻微）**（P3）。exit() 在插入前按 `kRecentlyExitedLimit` 清空（src/lua/lua_service.cpp:3347-3350），force_remove 直接 `insert`（:3564）无封顶——与提交"与 exit() 同构"说明不符；虽仅 shutdown 预算耗尽路径触发，但为两路径不一致。
+
+## 审核（复核 178d73b7..HEAD，只审不改）
+
+覆盖范围：`git diff 178d73b7ae8a6a3abda5da4b9a8e54f2b4d578c5..HEAD`，33 文件（+1532/-240）。逐文件审查完毕：源码 17 文件（bootstrap / gateway_actor / lua_api / lua_runtime / lua_service / profile_sampler / console_session / listener / auth_jwt / cache.redis / leaderboard.redis / pgsql 及其新重写器头 / 4 个头文件）+ 测试 10 文件 + tests/CMakeLists.txt + docs/review + todo.md。上一节 6 条未勾选发现经本轮逐条复核**全部属实**，不重复登记。本轮新增 1 条：
+
+- [ ] 审核发现：**测试缺口——新 pgsql 占位符重写器单测只覆盖 happy path**（tests/plugin/test_plugin_db_pgsql_rewrite.cpp:1-95）。未覆盖已登记的两处缺陷输入（未加引号标识符含 `$` 如 `a$b$c`、嵌套块注释 `/* /* */ */`），也未覆盖头文件自述的 `?`/`?|`/`?&` JSON 运算符限制（plugins/postgresql/shield_db_rewrite.hpp:18-22、:109-158）——该限制对经原始 SQL 传入的 `col ? 'key'` 会静默把运算符改写为 `$N`，属既有（v1 同样误改）且已文档化的正确性坑，本轮无回归测试钉住。
+
+已核无问题部分（逐条核对源码，非转述）：
+
+- SEC-2（auth_jwt `verify_jwt`）：`if (!exp || now > exp + leeway)` 正确——`json_get_int` 对缺键返回 0，`!exp` 拒掉无 exp/非正 exp token；测试 `missing_exp_is_rejected` 钉住 `token_expired`（tests/plugin/test_plugin_auth_jwt.cpp:82-111）。其余 auth_jwt 改动为格式化。
+- BUG-6（console_session `send_line` `shared_from_this`）：会话恒为 `make_shared` 托管（console_server.cpp:107）且 `dispatch` 以 `shared_ptr` 传入（command_dispatcher.cpp:24-25），`shared_from_this()` 无 `bad_weak_ptr` 路径；比裸 `this` 严格更优。测试 `QueuedSendLineOutlivesSessionErase` 覆盖 erase 后发送。
+- BUG-2（lua_api `SleepAnchor`）：单实例 `shared_ptr` 托管、`released_` 幂等、析构仅在共享引用归零时运行一次；定时器触发/取消/调度失败三路径互斥，`released_` 访问单线程，无双重 `luaL_unref`；`vm_` 末位声明保证先 `luaL_unref` 后释放 VM。
+- BUG-5（leaderboard `BoardField` 自持 `std::string`）：`materialize_board` 拷贝（:136），`free_board_config_names` 仅 clear（:576-581），`encode_composite` 语义等价；测试 `create_board_copies_field_names` 覆盖栈缓冲覆写后仍保名。
+- BUG-8（cache.redis 整数回复护栏）：`out->type == SHIELD_REDIS_INTEGER` 判型 + `cache_invalid_reply` 错误臂，`free_value(out)` 恒执行，无泄漏/误读。
+- BUG-7/9（lua_runtime 表键窄化）：数组检测 `index>INT_MAX` 拒绝且 `max_index<=INT_MAX` 无溢出；对象分支 `to_string(as<int64_t>)` 全值输出；与已提交回归测试（`t_huge_key`→`"1099511627776"`）自洽。
+- RACE-7（gateway close epoch 校验）：`binding` 单次快照（epoch 与 target_service 同源）；新建未绑定会话 epoch=0 与 bridge `client_context`（bridge.cpp:22）同值，合法 close 不受影响；陈旧引用被拒为预期行为。测试 `CloseWithStaleEpochIsRejected` 覆盖两臂。
+- RACE-3/4（listener `do_accept` 护栏）：`listening_` 为 `std::atomic<bool>`，完成处理器对 `operation_aborted` 不重挂、其余错误重挂；`!listening_` 提前返回，无闭 acceptor 上重挂。
+- B2（http 处理器按值捕获）：`to_table`/`parse_opts` 为 register_http_api 函数局部 lambda（lua_api.cpp:4634、:4679），按值捕获消除悬垂引用。
+- B3（sampler 单次 load）：单次 `acquire` load + 判空，消除双 load TOCTOU 空指针。
+- force_remove 取消顺序：`cancel_forked_tasks` 前移、定时器/调用超时驱动先收集后 `stop_and_wait_for_actors`+`retire_actors`，锁作用域不嵌套，镜像 exit()。
+- bootstrap 成功路径 `shutdown()`：`cluster_transport->stop()`（:1738）在 `lua_services.reset()`（:1766）之前，server/global `stop()` 亦在之前，回调先于服务释放——正确；仅 startup-failure 路径 cluster_transport 顺序未镜像（已登记）。
+- 原子标志：console_server `listening_`、http_server `running_`、listener `listening_` 均 `std::atomic<bool>`，消除读写竞态。
