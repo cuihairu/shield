@@ -64,20 +64,22 @@ void ConsoleSession::do_read() {
 
 void ConsoleSession::send_line(const std::string& line) {
     auto msg = std::make_shared<std::string>(line + "\n");
-    // Capture raw `this` — safe because the session outlives the posted work
-    // (it's kept alive by the sessions_ vector in ConsoleServer).
-    // do_write() uses shared_from_this() for async_write lifetime.
-    boost::asio::post(strand_, [this, msg]() {
+    // Capture shared_from_this() so the session stays alive until the posted
+    // write runs. The session is managed by a shared_ptr in ConsoleServer and
+    // may be erased from sessions_ (e.g. on close) while the write is still
+    // queued; a raw `this` would then be a use-after-free.
+    auto self = shared_from_this();
+    boost::asio::post(strand_, [self, msg]() {
         bool idle =
-            send_queue_.empty() &&
-            !write_in_progress_;  // GCOVR_EXCL_BR_LINE (defensive: strand
-                                  // serialization implies an empty queue means
-                                  // the prior write finished and reset
-                                  // write_in_progress_, so both-true is
-                                  // unreachable)
-        send_queue_.push_back(std::move(*msg));
+            self->send_queue_.empty() &&
+            !self->write_in_progress_;  // GCOVR_EXCL_BR_LINE (defensive: strand
+                                        // serialization implies an empty queue
+                                        // means the prior write finished and
+                                        // reset write_in_progress_, so
+                                        // both-true is unreachable)
+        self->send_queue_.push_back(std::move(*msg));
         if (idle) {
-            do_write();
+            self->do_write();
         }
     });
 }

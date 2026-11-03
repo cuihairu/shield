@@ -293,6 +293,48 @@ BOOST_AUTO_TEST_CASE(StopRemovesSocketFileAndAbortsAccept) {
     server.stop();
 }
 
+// ---------------------------------------------------------------------------
+// BUG-6 regression: send_line() must keep the session alive until its queued
+// write runs. Previously the posted lambda captured raw `this`; a session
+// erased from the server (peer close -> on_close -> sessions_.erase) while a
+// send was still queued would use-after-free. With shared_from_this() the
+// posted write owns a reference and the last external shared_ptr can drop
+// before the strand runs the write.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(QueuedSendLineOutlivesSessionErase) {
+    remove_socket();
+    boost::asio::io_context io;
+
+    std::shared_ptr<ConsoleSession> captured;
+    ConsoleServer server(io, SOCK_PATH);
+    server.set_on_line(
+        [&](std::shared_ptr<ConsoleSession> session, std::string line) {
+            if (!captured) captured = session;
+            // Queue two writes while the peer may already be closing: the
+            // posted lambdas must own the session.
+            session->send_line("queued-1:" + line);
+            session->send_line("queued-2:" + line);
+        });
+    server.start();
+    IoRunner runner(io);
+
+    ConsoleClient client;
+    BOOST_REQUIRE(client.connect(SOCK_PATH));
+    client.send_line("go");
+
+    // Let the on_line callback queue both sends, then drop every external
+    // reference while the queued writes are still in flight.
+    BOOST_CHECK(wait_until([&] { return captured != nullptr; }));
+    client.close();
+    BOOST_CHECK(wait_until([&] { return server.session_count() == 0; }));
+    captured.reset();
+    // The io_context drains the posted writes here; a raw-`this` capture
+    // would crash or trip sanitizer diagnostics on the destroyed session.
+    std::this_thread::sleep_for(200ms);
+
+    server.stop();
+}
+
 #ifndef _WIN32
 BOOST_AUTO_TEST_CASE(AcceptErrorWhileListeningIsLogged) {
     remove_socket();
