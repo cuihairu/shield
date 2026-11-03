@@ -4885,7 +4885,7 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
                 sampler_ptr != nullptr) {  // GCOVR_EXCL_BR_LINE (defensive:
                                            // published above; only a stale
                                            // install race can null it)
-                sampler_ptr->install(main_L);
+                sampler_ptr->install(main_L, service_id);
             }
         });  // GCOVR_EXCL_BR_LINE (compiler artifact: install lambda tail arcs)
     if (task_id == 0) {  // GCOVR_EXCL_BR_LINE (race: actor-gone rollback
@@ -6220,7 +6220,7 @@ void LuaServiceManager::resume_suspended_caller(
     // Arm the resumed coroutine in case it was created after the sampling
     // install (Lua 5.5 does not propagate hooks to new threads); one
     // thread_local read when no sampling session is on this owner thread.
-    ProfileSampler::sweep_active();
+    ProfileSampler::sweep_active(caller_service);
     lua_pushboolean(caller_co, ok ? 1 : 0);
     int nargs = 1;
     if (values.is_array()) {

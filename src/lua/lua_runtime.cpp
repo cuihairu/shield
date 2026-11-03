@@ -1528,7 +1528,7 @@ bool LuaRuntime::invoke_coroutine(
         // was created after install — the count hook would never see it.
         // No-op (one thread_local read) while no sampling session is on
         // this owner thread.
-        ProfileSampler::sweep_active();
+        ProfileSampler::sweep_active(service_id);
         const int status = lua_resume(co, L, 0, &nres);
         if (status == LUA_OK) {
             // Terminal: this resume observed the coroutine complete.

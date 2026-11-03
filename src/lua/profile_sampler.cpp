@@ -130,24 +130,28 @@ void ProfileSampler::sweep_once() {
     }
 }
 
-void ProfileSampler::sweep_active() {
+void ProfileSampler::sweep_active(std::string_view service_id) {
     // Single load: a concurrent uninstall between two loads could yield a
-    // null second load and call sweep_once on nullptr. The cross-thread
-    // sweep of another service's lua_State is a separate design concern
-    // (see todo); this guards the dereference itself.
-    if (ProfileSampler* sampler =
-            g_active_sampler.load(std::memory_order_acquire)) {
+    // null second load and call sweep_once on nullptr. The service binding
+    // is the thread-safety gate: sweep_active runs on arbitrary service
+    // actor threads, while sweep_once walks that sampler's registered
+    // lua_State values and may call lua_sethook. Only the owner service's
+    // dispatch thread may touch its sampler's coroutines; every other
+    // service drive point is a no-op.
+    ProfileSampler* sampler = g_active_sampler.load(std::memory_order_acquire);
+    if (sampler != nullptr && sampler->service_id_ == service_id) {
         sampler->sweep_once();
     }
 }
 
-void ProfileSampler::install(lua_State* main_L) {
+void ProfileSampler::install(lua_State* main_L, std::string service_id) {
     // Save, then arm, then publish — a hook firing between sethook and the
     // publish would find no sampler and disarm itself.
     saved_hook_ = lua_gethook(main_L);
     saved_mask_ = lua_gethookmask(main_L);
     saved_count_ = lua_gethookcount(main_L);
     main_L_ = main_L;
+    service_id_ = std::move(service_id);
 
     g_active_sampler.store(this, std::memory_order_release);
     lua_sethook(main_L_, &sampler_hook, LUA_MASKCOUNT,

@@ -9,6 +9,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "shield/lua/profile_session.hpp"
@@ -47,7 +49,9 @@ public:
     /// @brief Arm the count hook on the given main state and every live
     /// coroutine, and publish this sampler on the thread_local slot.
     /// `main_L` must be resolved on the owner thread (vm_main_state).
-    void install(lua_State* main_L);
+    /// @param service_id Owner service; sweep_active() only sweeps when the
+    ///        calling thread is executing this service's dispatch context.
+    void install(lua_State* main_L, std::string service_id);
 
     /// @brief Restore the saved main-state hook, clear hooks from live
     /// coroutines, and unpublish the thread_local slot.
@@ -65,7 +69,11 @@ public:
     /// never executes bytecode in a coroutine-driven service — so the
     /// in-hook sweep would never fire. One thread_local read when no
     /// session is active.
-    static void sweep_active();
+    /// @brief Re-arm hooks on this thread's live coroutines, when a sampler
+    ///        bound to @p service_id is active on this thread. Called at the
+    ///        coroutine drive points: a sampler for a different service must
+    ///        never touch another service's lua_State from this thread.
+    static void sweep_active(std::string_view service_id);
 
 private:
     static void record_current_stack(ProfileSampler* self, lua_State* L);
@@ -74,6 +82,7 @@ private:
     lua_State* main_L_;
     ProfileSession& session_;
     CoProvider co_provider_;
+    std::string service_id_;
 
     // Saved main-state hook state (restored on uninstall; in practice no
     // other hook user exists — the sampler is the sole owner — but the

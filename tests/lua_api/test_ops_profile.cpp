@@ -239,7 +239,7 @@ BOOST_AUTO_TEST_CASE(SamplerRecordsBusyLoopHotspotAndStopsAfterUninstall) {
     ProfileSession session(cfg);
     ProfileSampler sampler(session, [] { return std::vector<lua_State*>{}; });
 
-    sampler.install(vm.L);
+    sampler.install(vm.L, "gw");
     // Plain assignment call (not `return workloop(...)` — that would be a
     // tail call, whose frame has no inferable name; Task 1 c3).
     do_chunk(vm.L,
@@ -306,7 +306,7 @@ BOOST_AUTO_TEST_CASE(SamplerArmsSuspendedCoroutineBeforeResume) {
     ProfileSampler sampler(session,
                            [co] { return std::vector<lua_State*>{co}; });
 
-    sampler.install(vm.L);
+    sampler.install(vm.L, "gw");
     do_chunk(vm.L,
              "local ok = coroutine.resume(profile_co, 500000) assert(ok)");
     sampler.uninstall(vm.L);
@@ -350,7 +350,7 @@ BOOST_AUTO_TEST_CASE(RescanSweepPicksUpCoroutineCreatedAfterInstall) {
     cfg.interval = 50;
     ProfileSession session(cfg);
     ProfileSampler sampler(session, provider);
-    sampler.install(vm.L);
+    sampler.install(vm.L, "gw");
 
     // Create a NEW coroutine after install (hooks do not propagate — b1),
     // park it at its first yield, burn enough main-state instructions to
@@ -401,7 +401,7 @@ BOOST_AUTO_TEST_CASE(RescanSweepInvokesCoProvider) {
         return std::vector<lua_State*>{};
     });
 
-    sampler.install(vm.L);  // first provider call
+    sampler.install(vm.L, "gw");  // first provider call
     do_chunk(vm.L,
              "local s = 0 "
              "for i = 1, 500000 do s = s + i end");  // >> kRescanEvery hits
@@ -426,6 +426,37 @@ BOOST_AUTO_TEST_CASE(StaleHookDisarmsItselfWithoutSampler) {
     // The stale hook disarmed itself on the first hit.
     BOOST_CHECK(lua_gethook(vm.L) == nullptr);
     BOOST_TEST(session.total_samples() == 0U);
+}
+
+/// sweep_active() must not touch another service's sampler. A sampler bound
+/// to "gw" is installed, then drive points for other services call
+/// sweep_active("other") / sweep_active(""): the provider must not run (it
+/// would lua_sethook on "gw"'s coroutines from the wrong thread).
+BOOST_AUTO_TEST_CASE(SweepActiveSkipsForeignService) {
+    BareVM vm;
+    BOOST_REQUIRE(vm.L != nullptr);
+
+    int provider_calls = 0;
+    ProfileSessionConfig cfg;
+    cfg.service = "gw";
+    ProfileSession session(cfg);
+    ProfileSampler sampler(session, [&] {
+        ++provider_calls;
+        return std::vector<lua_State*>{};
+    });
+    sampler.install(vm.L, "gw");
+    // install() enumerates the provider once to arm already-live
+    // coroutines; count that baseline before asserting the gate.
+    const int baseline = provider_calls;
+
+    ProfileSampler::sweep_active("other");
+    ProfileSampler::sweep_active("");
+    BOOST_TEST(provider_calls == baseline);
+
+    ProfileSampler::sweep_active("gw");
+    BOOST_TEST(provider_calls == baseline + 1);
+
+    sampler.uninstall(vm.L);
 }
 
 /// The provider may yield null entries (a racing teardown can drop a
@@ -460,7 +491,7 @@ BOOST_AUTO_TEST_CASE(SweepSkipsNullEntriesAndRearmsClearedHooks) {
     ProfileSession session(cfg);
     ProfileSampler sampler(
         session, [co] { return std::vector<lua_State*>{nullptr, co}; });
-    sampler.install(vm.L);
+    sampler.install(vm.L, "gw");
     // Main-state bytecode drives the rescan sweep, which must skip the
     // null entry and re-arm the cleared coroutine.
     do_chunk(vm.L,
@@ -489,7 +520,7 @@ BOOST_AUTO_TEST_CASE(InstallUninstallWithoutProviderTolerated) {
     cfg.service = "gw";
     ProfileSession session(cfg);
     ProfileSampler sampler(session, {});
-    sampler.install(vm.L);
+    sampler.install(vm.L, "gw");
     do_chunk(vm.L,
              "local s = 0 "
              "for i = 1, 500000 do s = s + i end");
@@ -509,7 +540,7 @@ BOOST_AUTO_TEST_CASE(DeepStackIsTruncatedAtMaxDepth) {
     cfg.max_depth = 4;
     ProfileSession session(cfg);
     ProfileSampler sampler(session, [] { return std::vector<lua_State*>{}; });
-    sampler.install(vm.L);
+    sampler.install(vm.L, "gw");
     do_chunk(vm.L,
              "local function dive(n) "
              "  if n <= 0 then return 0 end "
