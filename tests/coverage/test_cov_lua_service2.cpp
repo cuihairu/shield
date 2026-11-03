@@ -630,6 +630,33 @@ BOOST_AUTO_TEST_CASE(RecentlyExitedTombstoneCapClearsSet) {
     BOOST_CHECK(manager.list_services().empty());
 }
 
+// force_remove (shutdown-budget exhausted) must cap the tombstone set the
+// same way exit() does. Drive it through shutdown_all with a zero budget so
+// every service past the first is force-removed; the set is capped on the
+// overflow and the loop completes without runaway growth.
+BOOST_AUTO_TEST_CASE(ForceRemoveCapsRecentlyExitedTombstones) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov7_force_cap.lua", "local M = {}\nreturn M\n");
+
+    const int kLimit = 4096;
+    std::vector<std::string> ids;
+    for (int i = 0; i < kLimit; ++i) {
+        auto res =
+            manager.spawn(path, opts_for("cov7_fc_" + std::to_string(i)));
+        BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
+        ids.push_back(res.service_id);
+    }
+    // Zero budget: only the first (reverse-order) service exits cleanly, the
+    // rest are force-removed. The tombstone cap must keep the set bounded.
+    manager.shutdown_all("force_cap", 0);
+    BOOST_CHECK(manager.list_services().empty());
+}
+
 // ---------------------------------------------------------------------------
 // M3 route learning hook: the name-change notifier observes every committed
 // publication change — spawn publish, in-handler register/unregister, and

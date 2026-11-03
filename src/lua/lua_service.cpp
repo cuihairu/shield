@@ -3561,6 +3561,12 @@ void LuaServiceManager::force_remove(const std::string& id,
         impl_->service_order.erase(std::remove(impl_->service_order.begin(),
                                                impl_->service_order.end(), id),
                                    impl_->service_order.end());
+        // Cap the tombstone set identically to exit(): a forced removal can
+        // also exhaust the budget, and an uncapped insert would grow
+        // unbounded on repeated shutdown-budget force_remove calls.
+        if (impl_->recently_exited.size() >= Impl::kRecentlyExitedLimit) {
+            impl_->recently_exited.clear();
+        }
         impl_->recently_exited.insert(id);
         impl_->runtime.remove_http_routes_for_service(id);
         if (auto actor_it = impl_->service_actors.find(id);
