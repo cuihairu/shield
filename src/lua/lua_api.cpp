@@ -111,6 +111,46 @@ bool extract_client_data(const shd::object& object, ClientContextData* out) {
     return false;
 }
 
+/// Releases the registry reference that anchors a sleeping coroutine exactly
+/// once, whichever of the mutually exclusive outcomes happens:
+///  * the timer fires and the continuation runs — the continuation calls
+///    unref() on its terminal / re-yield arms;
+///  * the timer is cancelled or the service exits before firing — the stored
+///    callback is destroyed without running, and the destructor unrefs;
+///  * scheduling fails before the callback is stored — the caller's local
+///    copy drops at the end of _resume_after and the destructor unrefs.
+/// Without this guard the registry reference (and with it the suspended
+/// coroutine thread and everything it holds) leaked on the last two paths.
+/// The exit / shutdown paths destroy these callbacks before the owning
+/// lua_State is closed, so the destructor's luaL_unref runs on a live state.
+class SleepAnchor {
+public:
+    SleepAnchor(lua_State* co, int ref, std::shared_ptr<LuaVM> vm)
+        : co_(co), ref_(ref), vm_(std::move(vm)) {}
+    SleepAnchor(const SleepAnchor&) = delete;
+    SleepAnchor& operator=(const SleepAnchor&) = delete;
+    ~SleepAnchor() {
+        if (!released_) {
+            luaL_unref(co_, LUA_REGISTRYINDEX, ref_);
+        }
+    }
+    /// Release the reference (called by the running continuation). Idempotent.
+    void unref() {
+        if (!released_) {
+            released_ = true;
+            luaL_unref(co_, LUA_REGISTRYINDEX, ref_);
+        }
+    }
+
+private:
+    lua_State* co_;
+    int ref_;
+    bool released_ = false;
+
+    // Declared last so it is destroyed after luaL_unref() in ~SleepAnchor.
+    std::shared_ptr<LuaVM> vm_;
+};
+
 }  // namespace
 
 // Reads the client identity out of a ClientContext/ClientRef argument (or a
@@ -1126,17 +1166,25 @@ void register_timer_api(shd::table& shield, LuaServiceManager* manager,
     // timer to resume the current coroutine and then yields. The C primitive
     // _resume_after anchors the running coroutine against GC and arms the
     // timer; coroutine.yield suspends until the timer fires and resumes us.
-    shield.set_function("_resume_after", [manager](shd::this_state state,
-                                                   int delay_ms) {
+    shield.set_function("_resume_after", [manager, runtime](
+                                             shd::this_state state,
+                                             int delay_ms) {
         if (delay_ms < 0) {
             delay_ms = 0;
         }
         lua_State* co = state;  // current coroutine thread
-        // Anchor the thread so it survives GC while suspended.
+        // Anchor the thread so it survives GC while suspended. The guard
+        // releases the reference exactly once whether the timer fires (the
+        // continuation unrefs below), is cancelled / the service exits before
+        // firing (the stored callback is dropped without running and the
+        // destructor unrefs), or scheduling fails before the callback is
+        // stored (the local copy drops at the end of this lambda).
         lua_pushthread(co);
         const int ref = luaL_ref(co, LUA_REGISTRYINDEX);
         const std::string service_id = manager->current_service_id();
-        auto resume_fn = [co, ref, manager, service_id]() {
+        auto anchor = std::make_shared<SleepAnchor>(
+            co, ref, runtime ? runtime->vm_for_state(co) : nullptr);
+        auto resume_fn = [co, anchor, manager, service_id]() {
             // Keep the service VM alive for the whole continuation: a
             // terminal error can trip the consecutive-error panic
             // threshold, whose exit() erases the service from the registry
@@ -1159,7 +1207,7 @@ void register_timer_api(shd::table& shield, LuaServiceManager* manager,
                 // Yielded again (e.g. another sleep/call): the API
                 // that yielded has already anchored the coroutine for
                 // its own resume source, so release this sleep anchor.
-                luaL_unref(co, LUA_REGISTRYINDEX, ref);
+                anchor->unref();
                 return;
             }
             // Terminal (LUA_OK or error): drop the live-coroutine entry.
@@ -1212,12 +1260,17 @@ void register_timer_api(shd::table& shield, LuaServiceManager* manager,
                 manager->finish_pending_exit(service_id);
             }
             // LUA_OK (completed) or an error: release the anchor.
-            luaL_unref(co, LUA_REGISTRYINDEX, ref);
+            anchor->unref();
         };
         if (!service_id.empty()) {
             (void)manager->schedule_actor_timer_once_fn(
                 delay_ms, std::move(resume_fn), service_id);
         }
+        // If service_id was empty (unreachable in practice — the schedule
+        // site is only reached from a running coroutine) or scheduling failed
+        // (the service left the registry / the driver actor could not spawn,
+        // both returning 0), resume_fn was never stored and will never run;
+        // the local anchor copy drops here and its destructor unrefs.
     });
 
     // Blocking sleep used when shield.sleep is invoked outside any coroutine

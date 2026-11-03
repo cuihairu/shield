@@ -3542,3 +3542,47 @@ BOOST_AUTO_TEST_CASE(RequestExitReasonArms) {
         [&]() { return manager.query_service("cov_exit_named_svc").empty(); },
         std::chrono::seconds(2)));
 }
+
+// ---------------------------------------------------------------------------
+// BUG-2: _resume_after's coroutine anchor must be released when the service
+// exits (or its timer is cancelled) before the continuation runs. The anchor
+// keeps a registry reference to the sleeping coroutine; if it is never
+// released the thread (and everything it holds) leaks, and if it is released
+// after the owning lua_State closed it is use-after-free. This case drives a
+// long shield.sleep (timer never fires) and then destroys the manager, so the
+// destructor drops the pending sleep callback; the anchor must release the
+// registry reference while the VM is still alive.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(PendingSleepAnchorReleasesAtManagerTeardown) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    {
+        LuaRuntime runtime;
+        LuaServiceManager manager(runtime, system);
+
+        const std::string module =
+            write_script("cov_sleep_anchor.lua",
+                         "local M = {}\n"
+                         "function M.nap(ctx)\n"
+                         "  shield.sleep(60000)\n"
+                         "  return 'never'\n"
+                         "end\n"
+                         "function M.ping(ctx) return 'pong' end\n"
+                         "return M\n");
+        auto svc = manager.spawn(module, opts_for("cov_sleep_anchor_svc"));
+        BOOST_REQUIRE(svc.success);
+
+        // Fire the handler so its coroutine suspends on shield.sleep; the
+        // timer is armed for 60 s and will not fire before teardown.
+        BOOST_CHECK(
+            manager.send(svc.service_id, "nap", nlohmann::json::array()));
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+        // The service is still alive (sleeping), so the manager destructor
+        // must drop the pending sleep callback and release the coroutine
+        // anchor without touching a closed lua_State.
+        BOOST_CHECK(!manager.query_service("cov_sleep_anchor_svc").empty());
+    }
+    // ~LuaServiceManager / ~LuaRuntime run here; reaching this point without
+    // a crash means the anchor was released on a live VM.
+}
