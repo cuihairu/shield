@@ -30,10 +30,12 @@ namespace shield::net {
 // a different type.
 struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
     TlsHandshakeState(TcpListener* owner, std::unique_ptr<TlsStream> tls_stream,
+                      std::shared_ptr<TcpListener::HandshakeGate> gate,
                       std::shared_ptr<TcpListener::HandshakeCounters> counters,
                       std::string peer_ip)
         : listener(owner),
           stream(std::move(tls_stream)),
+          gate(std::move(gate)),
           strand(
               boost::asio::make_strand(stream->lowest_socket().get_executor())),
           deadline(strand),
@@ -55,7 +57,27 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
                 }));
     }
 
+    /// @brief Called by the listener while it tears down (C1). Sets the
+    ///        abort flag, cancels the deadline and closes the TLS socket.
+    ///        The socket close is thread-safe with respect to the in-flight
+    ///        handshake, so any completion already queued on the strand
+    ///        observes `cancelled` before touching the listener; a state
+    ///        that already settled is left alone (the adopt path owns it and
+    ///        checks `stopping_` itself).
+    void cancel() {
+        if (settled.load(std::memory_order_acquire)) {
+            return;
+        }
+        cancelled.store(true, std::memory_order_release);
+        deadline.cancel();
+        boost::system::error_code close_ec;
+        stream->lowest_socket().close(close_ec);
+    }
+
     void on_timeout(const boost::system::error_code& ec) {
+        if (cancelled.load(std::memory_order_acquire)) {
+            return;
+        }
         if (ec) {
             return;  // cancelled: the handshake side owns the outcome
         }
@@ -70,8 +92,21 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
         if (ec == boost::asio::error::operation_aborted) {
             return;  // listener teardown path; the timeout side owns teardown
         }
+        if (cancelled.load(std::memory_order_acquire)) {
+            return;
+        }
         if (ec) {
             settle("TLS handshake failed: " + ec.message());
+            return;
+        }
+        // Serialize with listener teardown through the gate, which we hold
+        // by shared_ptr and which therefore outlives both the listener and
+        // this state. If teardown already set stopping, the listener is
+        // going away: never dereference it. If we win the mutex first,
+        // teardown blocks until adoption completes, so the listener cannot
+        // be freed underneath us.
+        std::lock_guard lock(gate->mutex);
+        if (gate->stopping) {
             return;
         }
         settled.store(true, std::memory_order_release);
@@ -103,11 +138,13 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
 
     TcpListener* listener;
     std::unique_ptr<TlsStream> stream;
+    std::shared_ptr<TcpListener::HandshakeGate> gate;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     boost::asio::steady_timer deadline;
     std::shared_ptr<TcpListener::HandshakeCounters> counters;
     std::string remote_ip;
     std::atomic<bool> settled{false};
+    std::atomic<bool> cancelled{false};
 };
 
 std::atomic<SessionId> TcpListener::g_next_session_id{1};
@@ -170,7 +207,15 @@ TcpListener::TcpListener(boost::asio::io_context& io_context, uint16_t port,
     ListenerRegistry::instance().add(this);
 }  // GCOVR_EXCL_LINE (uncalled exit clone)
 
-TcpListener::~TcpListener() { ListenerRegistry::instance().remove(this); }
+TcpListener::~TcpListener() {
+    stopping_.store(true, std::memory_order_release);
+    {
+        std::lock_guard lock(handshake_gate_->mutex);
+        handshake_gate_->stopping = true;
+    }
+    cancel_in_flight_handshakes();
+    ListenerRegistry::instance().remove(this);
+}
 
 void TcpListener::start() {
     if (!listening_) {
@@ -180,6 +225,12 @@ void TcpListener::start() {
 }
 
 void TcpListener::stop() {
+    stopping_.store(true, std::memory_order_release);
+    {
+        std::lock_guard lock(handshake_gate_->mutex);
+        handshake_gate_->stopping = true;
+    }
+    cancel_in_flight_handshakes();
     boost::system::error_code ec;
     acceptor_.close(ec);
     listening_ = false;
@@ -196,6 +247,27 @@ void TcpListener::stop() {
 
     for (auto& session : sessions) {
         session->close("listener shutdown");
+    }
+}
+
+void TcpListener::cancel_in_flight_handshakes() {
+    // Snapshot strong refs under the lock (cancel() never calls back into
+    // this listener), then cancel outside it.
+    std::vector<std::shared_ptr<TlsHandshakeState>> states;
+    {
+        std::lock_guard lock(handshakes_mutex_);
+        for (auto it = in_flight_handshakes_.begin();
+             it != in_flight_handshakes_.end();) {
+            if (auto locked = it->lock()) {
+                states.push_back(std::move(locked));
+                ++it;
+            } else {
+                it = in_flight_handshakes_.erase(it);
+            }
+        }
+    }
+    for (auto& state : states) {
+        state->cancel();
     }
 }
 
@@ -351,6 +423,17 @@ void TcpListener::adopt_connection(std::unique_ptr<SessionStream> stream,
     // Store session
     {
         std::unique_lock lock(sessions_mutex_);
+        // stop() sets stopping_ before it takes sessions_mutex_ to snapshot,
+        // so once we hold the lock and stopping_ is clear, every later
+        // stop()/destructor will see this session in its snapshot. If
+        // stopping_ is already set, the listener is tearing down: drop the
+        // socket instead of registering a session whose callbacks capture
+        // the dying listener.
+        if (stopping_.load(std::memory_order_acquire)) {
+            boost::system::error_code close_ec;
+            stream->lowest_socket().close(close_ec);
+            return;
+        }
         sessions_[id] = session;
         ++ip_counts_[remote_ip];
     }
@@ -363,7 +446,22 @@ void TcpListener::begin_tls_handshake(boost::asio::ip::tcp::socket socket,
                                       std::string remote_ip) {
     auto stream = std::make_unique<TlsStream>(std::move(socket), *tls_context_);
     auto state = std::make_shared<TlsHandshakeState>(
-        this, std::move(stream), tls_counters_, std::move(remote_ip));
+        this, std::move(stream), handshake_gate_, tls_counters_,
+        std::move(remote_ip));
+    {
+        std::lock_guard lock(handshakes_mutex_);
+        // Prune expired entries so the registry stays bounded by the peak
+        // number of concurrent handshakes on a long-lived listener.
+        for (auto it = in_flight_handshakes_.begin();
+             it != in_flight_handshakes_.end();) {
+            if (it->expired()) {
+                it = in_flight_handshakes_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        in_flight_handshakes_.push_back(state);
+    }
     state->run(tls_handshake_timeout_ms_);
 }
 

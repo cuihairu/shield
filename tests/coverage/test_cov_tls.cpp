@@ -450,6 +450,51 @@ BOOST_AUTO_TEST_CASE(SessionToleratesDisconnectedPeerAtAdoption) {
     BOOST_CHECK(disconnected.load());
 }
 
+// A silent TLS peer keeps a handshake alive past stop(); destroying the
+// listener immediately afterwards must not let the still-pending completion
+// touch freed listener state. ASan catches the use-after-free when this
+// regression slips.
+BOOST_AUTO_TEST_CASE(HandshakeOutlivesListenerDestruction) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    callbacks.create_protocol_pipeline = [] { return make_json_pipeline(); };
+
+    auto listener =
+        std::make_unique<TcpListener>(io, port, std::move(callbacks));
+    listener->set_tls(make_fixture_context(), 10000);
+    listener->start();
+
+    std::thread io_thread([&io] { io.run(); });
+
+    // Complete TCP and stall before the TLS ClientHello: the server-side
+    // handshake stays pending with no timeout completion ready yet.
+    boost::asio::io_context client_io;
+    tcp::socket client(client_io);
+    boost::system::error_code connect_ec;
+    client.connect(tcp::endpoint(boost::asio::ip::address_v4::loopback(), port),
+                   connect_ec);
+    BOOST_REQUIRE(!connect_ec);
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (listener->tls_handshake_failures_total() == 0 &&
+           listener->tls_handshakes_total() == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    // Neither side settled: the peer is still silent and the deadline is far
+    // in the future. A tiny grace wait also covers accept scheduling skew.
+    BOOST_CHECK_EQUAL(listener->tls_handshake_failures_total(), 0u);
+    BOOST_CHECK_EQUAL(listener->tls_handshakes_total(), 0u);
+
+    listener->stop();
+    listener.reset();
+    io.stop();
+    io_thread.join();
+}
+
 // SessionStream contract on the TLS path: the transport tag is "tls" and the
 // wrapped stream is reachable for the listener-side handshake.
 BOOST_AUTO_TEST_CASE(TlsStreamTransportTag) {

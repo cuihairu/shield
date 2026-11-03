@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -25,6 +26,18 @@ struct TlsHandshakeState;
 /// @brief TCP Listener
 class TcpListener {
 public:
+    /// @brief Synchronizes a handshake completion with listener teardown
+    ///        (C1). Heap-owned so it outlives both the listener and every
+    ///        in-flight handshake state: a completion that sees `stopping`
+    ///        true walks away without dereferencing the listener, and a
+    ///        completion that wins the mutex runs `adopt_connection` while
+    ///        teardown waits — so the listener is never freed underneath a
+    ///        live completion.
+    struct HandshakeGate {
+        std::mutex mutex;
+        bool stopping{false};
+    };
+
     TcpListener(boost::asio::io_context& io_context, uint16_t port,
                 SessionCallbacks callbacks);
 
@@ -36,9 +49,10 @@ public:
     void start();
 
     /// @brief Stop accepting connections
-    /// @note In-flight TLS handshakes are not force-closed here; each one
-    ///       carries its own deadline and self-closes, so io_context::run()
-    ///       drains within handshake_timeout_ms of the last accept.
+    /// @note Cancels every in-flight TLS handshake: each pending state's
+    ///       socket is closed and its deadline cancelled, so no completion
+    ///       can dereference the listener after this returns (C1). Existing
+    ///       sessions are closed as before.
     void stop();
 
     /// @brief Get listen port
@@ -170,6 +184,12 @@ private:
 
     void on_session_close(std::shared_ptr<Session> session, std::string reason);
 
+    /// @brief Cancel every in-flight TLS handshake state (C1). Called by
+    ///        stop() and the destructor; a state that completes after this
+    ///        returns observes its cancelled flag and never touches the
+    ///        listener.
+    void cancel_in_flight_handshakes();
+
     boost::asio::io_context& io_context_;
     boost::asio::ip::tcp::acceptor acceptor_;
     uint16_t port_;
@@ -208,6 +228,17 @@ private:
         std::atomic<uint64_t> handshakes{0};
         std::atomic<uint64_t> failures{0};
     };
+    // Non-owning refs to the self-owned in-flight handshake states, so
+    // stop()/the destructor can cancel them. Guarded by handshakes_mutex_;
+    // expired entries are pruned on the next registration.
+    std::mutex handshakes_mutex_;
+    std::vector<std::weak_ptr<TlsHandshakeState>> in_flight_handshakes_;
+    // Set before stop()/the destructor disarms in-flight handshakes; a
+    // handshake completion or the plaintext accept tail racing teardown
+    // consults it and bails instead of touching a listener about to die.
+    std::atomic<bool> stopping_{false};
+    std::shared_ptr<HandshakeGate> handshake_gate_ =
+        std::make_shared<HandshakeGate>();
     std::shared_ptr<boost::asio::ssl::context> tls_context_;
     uint32_t tls_handshake_timeout_ms_ = 0;  // 0 = TLS disabled
     std::shared_ptr<HandshakeCounters> tls_counters_ =
