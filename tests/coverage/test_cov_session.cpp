@@ -568,6 +568,35 @@ BOOST_AUTO_TEST_CASE(PipelineEnvelopeErrorClosesSession) {
     BOOST_CHECK_EQUAL(session->error_code(), "decode_error");
 }
 
+// The listener passes max_frame_size into TcpSession; the session must apply
+// it to the pipeline's envelope even when the profile declared no cap, so an
+// operator-shrunk limit is honored instead of silently falling back to the
+// 16 MiB default (D4).
+BOOST_AUTO_TEST_CASE(SessionMaxFrameSizeOverridesPipelineDefault) {
+    SocketPair p;
+
+    std::atomic<bool> disconnected{false};
+    SessionCallbacks cbs;
+    cbs.create_protocol_pipeline = [] {
+        return make_json_pipeline();
+    };  // no cap
+    cbs.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
+        disconnected = true;
+    };
+
+    auto session =
+        std::make_shared<TcpSession>(13, std::move(p.server), cbs, 16);
+    session->start();
+
+    auto local = make_json_pipeline();
+    std::string big(256, 'z');
+    write_client(p.client, encode_packet(*local, big));
+    p.io.run_for(200ms);
+
+    BOOST_CHECK(disconnected.load());
+    BOOST_CHECK_EQUAL(session->error_code(), "decode_error");
+}
+
 BOOST_AUTO_TEST_CASE(PipelineDispatchErrorClosesSession) {
     SocketPair p;
 

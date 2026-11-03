@@ -72,6 +72,7 @@ TcpSession::TcpSession(SessionId id, std::unique_ptr<SessionStream> stream,
       strand_(
           boost::asio::make_strand(stream_->lowest_socket().get_executor())),
       callbacks_(std::move(callbacks)),
+      max_frame_size_(max_frame_size),
       max_send_queue_(max_send_queue),
       read_deadline_(strand_),
       read_idle_timeout_ms_(read_idle_timeout_ms),
@@ -95,6 +96,9 @@ TcpSession::TcpSession(SessionId id, std::unique_ptr<SessionStream> stream,
     socket.set_option(boost::asio::ip::tcp::no_delay(true), nodelay_ec);
     if (callbacks_.create_protocol_pipeline) {
         protocol_pipeline_ = callbacks_.create_protocol_pipeline();
+        if (protocol_pipeline_ && max_frame_size_ != 0) {
+            protocol_pipeline_->set_max_frame_size(max_frame_size_);
+        }
     }
 }
 

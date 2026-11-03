@@ -144,6 +144,12 @@ public:
     virtual std::vector<std::uint8_t> encode(const PacketRef& packet) = 0;
 
     const EnvelopeConfig& config() const { return config_; }
+    /// @brief Override the frame cap from the session layer. A non-zero
+    ///        value replaces the configured or default limit; 0 is a no-op
+    ///        (keep whatever the profile declared).
+    void set_max_frame_size(std::size_t limit) {
+        if (limit != 0) config_.max_frame_size = limit;
+    }
     const std::string& error() const { return error_; }
     bool has_error() const { return !error_.empty(); }
     virtual void reset();
@@ -359,6 +365,11 @@ public:
 
     const ProtocolProfile& profile() const { return profile_; }
     const Envelope& envelope() const { return *envelope_; }
+    /// @brief Override the frame cap for this pipeline (session-layer
+    ///        max_frame_size). See Envelope::set_max_frame_size.
+    void set_max_frame_size(std::size_t limit) {
+        envelope_->set_max_frame_size(limit);
+    }
     RouteTable& routes() { return routes_; }
     const RouteTable& routes() const { return routes_; }
     BodyCodecRegistry& codecs() { return codecs_; }

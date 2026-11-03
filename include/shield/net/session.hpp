@@ -337,6 +337,7 @@ private:
     std::deque<std::vector<uint8_t>> send_queue_;
     bool send_in_progress_ = false;
     size_t max_send_queue_ = 0;  // 0 = unlimited (queued message count)
+    size_t max_frame_size_ = 0;  // 0 = transport default (16 MiB)
     std::atomic<size_t> queued_count_{0};
 
     // Optional read idle timeout. 0 disables it.
