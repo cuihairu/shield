@@ -131,8 +131,13 @@ void ProfileSampler::sweep_once() {
 }
 
 void ProfileSampler::sweep_active() {
-    if (g_active_sampler.load(std::memory_order_acquire) != nullptr) {
-        g_active_sampler.load(std::memory_order_relaxed)->sweep_once();
+    // Single load: a concurrent uninstall between two loads could yield a
+    // null second load and call sweep_once on nullptr. The cross-thread
+    // sweep of another service's lua_State is a separate design concern
+    // (see todo); this guards the dereference itself.
+    if (ProfileSampler* sampler =
+            g_active_sampler.load(std::memory_order_acquire)) {
+        sampler->sweep_once();
     }
 }
 
