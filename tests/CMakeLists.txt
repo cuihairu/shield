@@ -837,3 +837,27 @@ add_test(NAME test_plugin_db_pgsql_rewrite
 set_tests_properties(test_plugin_db_pgsql_rewrite PROPERTIES
     LABELS "plugin"
     TIMEOUT 30)
+
+# ---------------------------------------------------------------------------
+# test_plugin_cache_redis_incrby — BUG-8 regression: cache.redis incr_by must
+# report a stable error on Redis overflow instead of a wrapped/undefined
+# value. Runs against a real redis-server (skipped when unavailable) through
+# the plugin ABI + register_lua.
+# ---------------------------------------------------------------------------
+if(SHIELD_BUILD_PLUGIN_CACHE_REDIS)
+    add_executable(test_plugin_cache_redis_incrby
+        plugin/test_plugin_cache_redis_incrby.cpp)
+    target_link_libraries(test_plugin_cache_redis_incrby
+        PRIVATE shield_plugin ${LUA_LIBRARIES} Boost::unit_test_framework
+        Boost::headers)
+    target_include_directories(test_plugin_cache_redis_incrby
+        PRIVATE ${CMAKE_SOURCE_DIR}/include ${LUA_INCLUDE_DIR})
+    target_compile_definitions(test_plugin_cache_redis_incrby PRIVATE
+        SHIELD_CACHE_REDIS_LIBRARY="$<TARGET_FILE:shield_cache_redis>")
+    add_dependencies(test_plugin_cache_redis_incrby shield_cache_redis)
+    add_test(NAME test_plugin_cache_redis_incrby
+             COMMAND test_plugin_cache_redis_incrby)
+    set_tests_properties(test_plugin_cache_redis_incrby PROPERTIES
+        LABELS "plugin" TIMEOUT 60)
+    shield_copy_runtime_dlls(test_plugin_cache_redis_incrby)
+endif()

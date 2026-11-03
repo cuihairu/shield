@@ -3,7 +3,7 @@
 // v1 ABI (shield_plugin_get_v1). Dual-path connection model (Phase 2 of the
 // redis.driver migration): when the instance is wired to a redis.driver
 // instance via manifest `requires` + `plugins.instances[].dependencies`, all
-// operations go through the driver's shield.redis.v1 vtable on that
+// operations go through the driver's shield.redis.v2 vtable on that
 // instance's shared connection pool. When no dependency is wired, each
 // operation falls back to a self-owned sw::redis::Redis connection built
 // from this instance's own config.
@@ -45,7 +45,7 @@
 // declared in cache.h.
 struct shield_cache_conn {
     std::shared_ptr<sw::redis::Redis> redis;        // fallback: own connection
-    const shield_redis_v1* redis_driver = nullptr;  // preferred: redis.driver
+    const shield_redis_v2* redis_driver = nullptr;  // preferred: redis.driver
     void* redis_handle = nullptr;                   // opaque handle from driver
 };
 
@@ -310,7 +310,7 @@ struct cache_instance {
     int connect_timeout_ms = 5000;
     int command_timeout_ms = 5000;
     // Optional redis.driver dependency (Phase 2 migration).
-    const shield_redis_v1* redis_driver = nullptr;
+    const shield_redis_v2* redis_driver = nullptr;
     void* redis_handle = nullptr;  // opaque handle from redis_driver->connect()
 };
 
@@ -585,7 +585,7 @@ shd::table make_instance_proxy(shd::state_view lua, cache_instance* inst) {
         });
 
     // exists, incr, incr_by, hdel: use redis.driver raw command for operations
-    // not in the typed shield.redis.v1 API.
+    // not in the typed shield.redis.v2 API.
 
     proxy.set_function(
         "exists",
@@ -647,15 +647,20 @@ shd::table make_instance_proxy(shd::state_view lua, cache_instance* inst) {
                 shield_error_v1 err{};
                 int rc = inst->redis_driver->command(inst->redis_handle, args,
                                                      2, &out, &err);
-                if (rc == 0 && out) {
+                if (rc == 0 && out && out->type == SHIELD_REDIS_INTEGER) {
                     results.push_back(shd::make_object(lua, true));
                     results.push_back(shd::make_object(
                         lua, static_cast<lua_Integer>(out->integer)));
                 } else {
                     results.push_back(shd::make_object(lua, false));
                     results.push_back(make_error_table(
-                        lua, err.code ? err.code : "cache_query_failed",
-                        err.message ? err.message : "incr failed"));
+                        lua,
+                        (rc == 0 && out)
+                            ? "cache_invalid_reply"
+                            : (err.code ? err.code : "cache_query_failed"),
+                        (rc == 0 && out)
+                            ? "incr: expected integer reply"
+                            : (err.message ? err.message : "incr failed")));
                 }
                 if (out) inst->redis_driver->free_value(out);
                 return results;
@@ -698,15 +703,20 @@ shd::table make_instance_proxy(shd::state_view lua, cache_instance* inst) {
                 shield_error_v1 err{};
                 int rc = inst->redis_driver->command(inst->redis_handle, args,
                                                      3, &out, &err);
-                if (rc == 0 && out) {
+                if (rc == 0 && out && out->type == SHIELD_REDIS_INTEGER) {
                     results.push_back(shd::make_object(lua, true));
                     results.push_back(shd::make_object(
                         lua, static_cast<lua_Integer>(out->integer)));
                 } else {
                     results.push_back(shd::make_object(lua, false));
                     results.push_back(make_error_table(
-                        lua, err.code ? err.code : "cache_query_failed",
-                        err.message ? err.message : "incr_by failed"));
+                        lua,
+                        (rc == 0 && out)
+                            ? "cache_invalid_reply"
+                            : (err.code ? err.code : "cache_query_failed"),
+                        (rc == 0 && out)
+                            ? "incr_by: expected integer reply"
+                            : (err.message ? err.message : "incr_by failed")));
                 }
                 if (out) inst->redis_driver->free_value(out);
                 return results;
@@ -956,8 +966,8 @@ int cache_create(const shield_plugin_create_args_v1* args,
         auto* ci = reinterpret_cast<cache_instance*>(self);
         // Try to get redis.driver dependency (optional — Phase 2 migration).
         if (ci->host_api && ci->host_api->dependency) {
-            auto* drv = static_cast<const shield_redis_v1*>(
-                ci->host_api->dependency(ci->ctx, "redis", SHIELD_REDIS_V1));
+            auto* drv = static_cast<const shield_redis_v2*>(
+                ci->host_api->dependency(ci->ctx, "redis", SHIELD_REDIS_V2));
             if (drv && drv->connect) {
                 char err_buf[256] = {};
                 void* handle =
