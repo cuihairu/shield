@@ -819,3 +819,21 @@ if(SHIELD_BUILD_PLUGIN_REDIS_DRIVER)
         TIMEOUT 30)
     shield_copy_runtime_dlls(test_redis_driver_free_value)
 endif()
+
+# ---------------------------------------------------------------------------
+# test_plugin_db_pgsql_rewrite — SQL-aware ? → $N placeholder rewriting.
+# The rewriter lives in a header shared with the PostgreSQL plugin, so this
+# test compiles the same inline function directly (no libpq dependency and
+# no MODULE dlopen), which keeps it green in any build tree.
+# ---------------------------------------------------------------------------
+add_executable(test_plugin_db_pgsql_rewrite
+    plugin/test_plugin_db_pgsql_rewrite.cpp)
+target_link_libraries(test_plugin_db_pgsql_rewrite
+    PRIVATE Boost::unit_test_framework Boost::headers)
+target_include_directories(test_plugin_db_pgsql_rewrite
+    PRIVATE ${CMAKE_SOURCE_DIR}/plugins/postgresql)
+add_test(NAME test_plugin_db_pgsql_rewrite
+         COMMAND test_plugin_db_pgsql_rewrite)
+set_tests_properties(test_plugin_db_pgsql_rewrite PROPERTIES
+    LABELS "plugin"
+    TIMEOUT 30)

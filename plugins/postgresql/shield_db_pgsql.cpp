@@ -58,6 +58,7 @@
 #include "shield/plugin/pool_stats.h"
 #include "shield_db_async_shim.hpp"
 #include "shield_db_mapper.hpp"
+#include "shield_db_rewrite.hpp"
 #include "shield_lua_plugin_binding.hpp"
 
 // shield_db_conn is forward-declared opaque in database.h. The concrete
@@ -67,6 +68,8 @@
 struct shield_db_conn {
     PGconn* pg;
 };
+
+using shield::db::pgsql::rewrite_placeholders;
 
 namespace {
 
@@ -192,25 +195,6 @@ int fill_from_pgresult(PGresult* res, bool is_select, shield_db_result* out) {
     const char* sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
     out->error_code = dup_string(map_sqlstate(sqlstate));
     return 0;
-}
-
-// Rewrite ? placeholders to $N (libpq native form). Shared by both the C
-// vtable and the Lua proxy. Naive about literals/comments — see file header.
-std::string rewrite_placeholders(const char* sql) {
-    std::string out;
-    out.reserve(std::strlen(sql) + 8);
-    int index = 0;
-    for (const char* p = sql; *p; ++p) {
-        if (*p == '?') {
-            out.push_back('$');
-            char buf[12];
-            std::snprintf(buf, sizeof(buf), "%d", ++index);
-            out += buf;
-        } else {
-            out.push_back(*p);
-        }
-    }
-    return out;
 }
 
 int run_pg_query(PGconn* conn, const char* sql, const char* const* params,
