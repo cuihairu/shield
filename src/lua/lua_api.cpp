@@ -4738,8 +4738,8 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     //   follow_redirects, max_redirects
     http.set_function(
         "request",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
 
             shield::net::HttpClientOptions options;
@@ -4756,8 +4756,8 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // Convenience: shield.http.get(url [, options]) -> response_table
     http.set_function(
         "get",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "GET";
@@ -4769,9 +4769,9 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // Convenience: shield.http.post(url [, body] [, options]) -> response_table
     http.set_function(
         "post",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 std::optional<std::string> body,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               std::optional<std::string> body,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "POST";
@@ -4785,9 +4785,9 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // Convenience: shield.http.put(url [, body] [, options]) -> response_table
     http.set_function(
         "put",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 std::optional<std::string> body,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               std::optional<std::string> body,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PUT";
@@ -4801,8 +4801,8 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // Convenience: shield.http.delete(url [, options]) -> response_table
     http.set_function(
         "delete",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "DELETE";
@@ -4815,9 +4815,9 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // response_table
     http.set_function(
         "patch",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 std::optional<std::string> body,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               std::optional<std::string> body,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PATCH";
@@ -4837,9 +4837,9 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // 通用 JSON POST（最常用场景）
     http.set_function(
         "json",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 shd::object data,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               shd::object data,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "POST";
@@ -4855,9 +4855,9 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // shield.http.json_post(url, data [, options]) -> response_table
     http.set_function(
         "json_post",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 shd::object data,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               shd::object data,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "POST";
@@ -4872,9 +4872,9 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // shield.http.json_put(url, data [, options]) -> response_table
     http.set_function(
         "json_put",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 shd::object data,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               shd::object data,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PUT";
@@ -4889,9 +4889,9 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // shield.http.json_patch(url, data [, options]) -> response_table
     http.set_function(
         "json_patch",
-        [&to_table, &parse_opts](shd::this_state state, std::string url,
-                                 shd::object data,
-                                 std::optional<shd::table> opts) -> shd::table {
+        [to_table, parse_opts](shd::this_state state, std::string url,
+                               shd::object data,
+                               std::optional<shd::table> opts) -> shd::table {
             shd::state_view lua(state);
             shield::net::HttpClientOptions options;
             options.method = "PATCH";
@@ -4908,9 +4908,9 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // fields: table of form field key-value pairs
     http.set_function(
         "upload",
-        [&to_table](shd::this_state state, std::string url, shd::table files,
-                    std::optional<shd::table> fields,
-                    std::optional<int> timeout) -> shd::table {
+        [to_table](shd::this_state state, std::string url, shd::table files,
+                   std::optional<shd::table> fields,
+                   std::optional<int> timeout) -> shd::table {
             shd::state_view lua(state);
 
             std::vector<shield::net::HttpFileField> file_list;
@@ -4943,9 +4943,9 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
 
     // shield.http.download(url, output_path [, timeout]) -> response_table
     http.set_function("download",
-                      [&to_table](shd::this_state state, std::string url,
-                                  std::string output_path,
-                                  std::optional<int> timeout) -> shd::table {
+                      [to_table](shd::this_state state, std::string url,
+                                 std::string output_path,
+                                 std::optional<int> timeout) -> shd::table {
                           shd::state_view lua(state);
                           auto res = shield::net::HttpClient::download(
                               url, output_path, timeout.value_or(60));
@@ -4956,8 +4956,8 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
     // fields: table of key-value pairs for application/x-www-form-urlencoded
     http.set_function(
         "post_form",
-        [&to_table](shd::this_state state, std::string url, shd::table fields,
-                    std::optional<int> timeout) -> shd::table {
+        [to_table](shd::this_state state, std::string url, shd::table fields,
+                   std::optional<int> timeout) -> shd::table {
             shd::state_view lua(state);
 
             std::unordered_map<std::string, std::string> field_map;
