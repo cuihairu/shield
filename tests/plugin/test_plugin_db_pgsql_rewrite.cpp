@@ -120,6 +120,24 @@ BOOST_AUTO_TEST_CASE(DollarInUnquotedIdentifierIsNotDollarQuote) {
                       "SELECT x$y$, $body$ a?b $body$ FROM t WHERE a = $1");
 }
 
+// The scanner intentionally does not recognize PostgreSQL JSON/JSONB operator
+// forms that use '?' (the ? / ?| / ?& operators). shield::data SQL helpers
+// never emit them, and a '?' outside the quoted constructs is treated as a
+// placeholder, matching the v1 documented behaviour. This case pins that
+// contract so a future change that starts recognizing operators stays
+// deliberate and the v1-parity assumption is recorded.
+BOOST_AUTO_TEST_CASE(JsonOperatorQuestionIsPlaceholderPerV1Contract) {
+    BOOST_CHECK_EQUAL(
+        rewrite_placeholders("SELECT data ? 'key' FROM t WHERE a = ?"),
+        "SELECT data $1 'key' FROM t WHERE a = $2");
+    BOOST_CHECK_EQUAL(
+        rewrite_placeholders("SELECT data ?| ARRAY['a','b'] FROM t"),
+        "SELECT data $1| ARRAY['a','b'] FROM t");
+    BOOST_CHECK_EQUAL(
+        rewrite_placeholders("SELECT data ?& ARRAY['a','b'] FROM t"),
+        "SELECT data $1& ARRAY['a','b'] FROM t");
+}
+
 BOOST_AUTO_TEST_CASE(NullInput) {
     BOOST_CHECK_EQUAL(rewrite_placeholders(nullptr), "");
 }
