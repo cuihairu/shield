@@ -991,8 +991,8 @@ std::uint64_t GlobalManager::broadcast_attach(const std::string& name,
                                               const std::string& group) {
     std::lock_guard<std::mutex> lock(queues_mutex_);
     auto& queue = broadcast_queues_[name];
-    auto [it, inserted] =
-        queue.group_cursors.try_emplace(group, queue.next_seq - 1);
+    auto [it, inserted] = queue.group_cursors.try_emplace(
+        group, queue.next_seq == 0 ? 0 : queue.next_seq - 1);
     (void)inserted;
     return it->second;
 }

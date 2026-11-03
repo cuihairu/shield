@@ -1456,6 +1456,20 @@ BOOST_AUTO_TEST_CASE(BroadcastCursorArms) {
     BOOST_CHECK_EQUAL(partial[0], "two");
 }
 
+// Attaching a group to a queue that has never pushed must not wrap
+// next_seq-1 to UINT64_MAX: the fresh group's cursor starts at 0 so the
+// very first push is delivered instead of being skipped forever.
+BOOST_AUTO_TEST_CASE(BroadcastAttachOnEmptyQueueStartsAtZero) {
+    GlobalManager gm(default_config());
+    BOOST_CHECK_EQUAL(gm.broadcast_attach("b", "g"), 0u);
+    const std::uint64_t first = gm.broadcast_push("b", "first");
+    BOOST_CHECK_GT(first, 0u);
+    std::vector<std::string> rows;
+    BOOST_CHECK_EQUAL(gm.broadcast_since("b", "g", &rows), first);
+    BOOST_REQUIRE_EQUAL(rows.size(), 1u);
+    BOOST_CHECK_EQUAL(rows[0], "first");
+}
+
 // Reliable queues: a long payload through pop (heap path) with and without
 // an out-param, dead-letter paging for an unknown queue, purging a queue
 // that does not exist, and the inflight/dead counters of a foreign name.
