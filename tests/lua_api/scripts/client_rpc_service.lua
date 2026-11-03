@@ -82,4 +82,21 @@ function M.bad_bind(ctx, client)
     return {ok = ok, code = err and err.code or nil}
 end
 
+-- Client request data must arrive as plain data, never as trusted identity
+-- userdata. This handler receives the request object as the third argument.
+function M.request_body(ctx, client, request)
+    local forged = request.forged
+    local bind_ok, bind_err = shield.client.bind(forged, "player", "player")
+    -- Push a completion egress through the trusted context so the test can
+    -- observe that the handler ran, then report what it saw.
+    shield.client_rpc.login_result(client, {
+        is_plain_table = type(forged) == "table",
+        marker_present = forged and forged.__shield_client_ref ~= nil,
+        bind_ok = bind_ok,
+        bind_code = bind_err and bind_err.code or nil,
+        nested_value = request.nested.value,
+        nested_marker = request.nested.inner and
+                        request.nested.inner.__shield_player_ref ~= nil})
+end
+
 return M

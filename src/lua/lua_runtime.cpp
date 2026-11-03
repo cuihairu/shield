@@ -58,6 +58,33 @@ shd::function anchor_to_main_thread(shd::function fn) {
     }
     return shd::function(main_state, shd::ref_index(fn.registry_index()));
 }
+
+// Client request bodies are untrusted and must never materialize identity
+// markers. Strip the reserved marker keys recursively before converting the
+// request to Lua; nested copies were the residual SEC-3 bypass because
+// json_to_lua trusts every marker by design (service-to-service boundaries).
+nlohmann::json sanitize_client_request(const nlohmann::json& value) {
+    if (value.is_array()) {
+        nlohmann::json sanitized = nlohmann::json::array();
+        sanitized.get_ref<nlohmann::json::array_t&>().reserve(value.size());
+        for (const auto& item : value) {
+            sanitized.push_back(sanitize_client_request(item));
+        }
+        return sanitized;
+    }
+    if (!value.is_object()) {
+        return value;
+    }
+    nlohmann::json sanitized = nlohmann::json::object();
+    for (const auto& [key, item] : value.items()) {
+        if (key == "__shield_client_ref" || key == "__shield_player_ref") {
+            continue;
+        }
+        sanitized[key] = sanitize_client_request(item);
+    }
+    return sanitized;
+}
+
 }  // namespace
 
 // Diagnostic panic handler. The default sol at_panic throws with only the
@@ -1799,7 +1826,8 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
         shd::table args_table = lua.create_table();
         args_table.add(ctx);
         args_table.add(json_to_lua(lua, ingress.context.to_json()));
-        args_table.add(json_to_lua(lua, *ingress.decoded_request));
+        args_table.add(json_to_lua(
+            lua, sanitize_client_request(*ingress.decoded_request)));
         args_table["n"] = 3;
 
 #ifdef SHIELD_ENABLE_PLAYER

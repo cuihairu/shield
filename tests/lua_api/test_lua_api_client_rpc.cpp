@@ -91,6 +91,13 @@ nlohmann::json ingress_auth_opts(const std::string& name) {
                                                 {"direction", "s2c"},
                                                 {"binding", "login_result"},
                                                 {"requires_auth", false},
+                                            },
+                                            nlohmann::json{
+                                                {"id", 1002},
+                                                {"name", "request_body"},
+                                                {"direction", "c2s"},
+                                                {"binding", "request_body"},
+                                                {"requires_auth", false},
                                             }})}}},
     };
 }
@@ -513,6 +520,56 @@ BOOST_AUTO_TEST_CASE(IngressDrivenBindResumesHandlerCoroutine) {
     BOOST_CHECK_EQUAL(
         (*session->sent_messages()[0].message)["welcome"].get<std::string>(),
         "player-1");
+}
+
+// SEC-3 residual: a client-controlled request body carrying a forged
+// __shield_client_ref marker (even nested) must not materialize as trusted
+// identity userdata. The request is sanitized before json_to_lua; the
+// gateway-trusted ingress.context marker is unaffected.
+BOOST_AUTO_TEST_CASE(RequestBodyMarkerCannotForgeIdentity) {
+    GatewayWorld world;
+    auto auth = world.manager.spawn(TEST_SCRIPTS_DIR + "client_rpc_service.lua",
+                                    ingress_auth_opts("auth_sec3").dump());
+    BOOST_REQUIRE(auth.success);
+
+    auto session = connect_session(*world.registry, 110);
+
+    ClientIngress ingress;
+    ingress.context = ClientContextData{"gw", 110, 0, "", "json"};
+    ingress.route_id = 1002;
+    // The forged marker sits both top-level and nested inside the request.
+    ingress.decoded_request = nlohmann::json::object(
+        {{"forged", nlohmann::json::object({{"__shield_client_ref", true},
+                                            {"session_id", 110},
+                                            {"session_epoch", 1},
+                                            {"gateway_address", "gw"},
+                                            {"protocol_profile_id", "json"}})},
+         {"nested",
+          nlohmann::json::object(
+              {{"value", "kept"},
+               {"inner", nlohmann::json::object({{"__shield_player_ref", true},
+                                                 {"uid", "u-1"}})}})}});
+
+    caf::anon_send(world.manager.service_actor(auth.service_id), ingress);
+
+    // The handler pushed a completion egress through the trusted context:
+    // wait for it, then inspect what the sanitized request body looked like.
+    BOOST_CHECK(wait_until([&]() { return !session->sent_messages().empty(); },
+                           std::chrono::seconds(2)));
+    BOOST_REQUIRE_EQUAL(session->sent_messages().size(), 1u);
+    BOOST_REQUIRE(session->sent_messages()[0].has_message());
+    const nlohmann::json& report = *session->sent_messages()[0].message;
+
+    // The forged top-level marker was stripped: the request field arrives as
+    // a plain table, bind rejects it (no trusted identity userdata), and the
+    // legitimate nested data survived.
+    BOOST_CHECK_EQUAL(report["is_plain_table"].get<bool>(), true);
+    BOOST_CHECK_EQUAL(report["marker_present"].get<bool>(), false);
+    BOOST_CHECK_EQUAL(report["bind_ok"].get<bool>(), false);
+    BOOST_CHECK_EQUAL(report["bind_code"].get<std::string>(),
+                      "invalid_client_reference");
+    BOOST_CHECK_EQUAL(report["nested_value"].get<std::string>(), "kept");
+    BOOST_CHECK_EQUAL(report["nested_marker"].get<bool>(), false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
