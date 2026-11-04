@@ -1,23 +1,10 @@
-import type { Envelope, HealthData, OpsStatusData } from '../types';
+import { fetchJson } from './polling';
+import type { HealthData, OpsStatusData } from '../types';
 
-export interface FetchResult<T> {
-  data: T;
-  httpStatus: number;
-}
-
-async function get<T>(path: string, signal?: AbortSignal): Promise<FetchResult<T>> {
-  const res = await fetch(path, { signal, cache: 'no-store' });
-  if (res.status === 401) {
-    throw new Error('Unauthorized');
-  }
-  const body = (await res.json()) as Envelope<T>;
-  if (body.type === 'error') {
-    throw new Error(String(body.data));
-  }
-  return { data: body.data, httpStatus: res.status };
-}
-
+// Typed client over the FIX-WEB-01 contract. Every call returns the
+// envelope's `data`, throws a typed Error on non-2xx / error envelope,
+// and honours the caller's AbortSignal for cancellation.
 export const api = {
-  health: (signal?: AbortSignal) => get<HealthData>('/ops/health', signal),
-  status: (signal?: AbortSignal) => get<OpsStatusData>('/ops/status', signal),
+  health: (signal?: AbortSignal) => fetchJson<HealthData>('/ops/health', signal),
+  status: (signal?: AbortSignal) => fetchJson<OpsStatusData>('/ops/status', signal),
 };

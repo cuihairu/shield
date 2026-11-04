@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
 import { Alert, Badge, Card, Col, Empty, Row, Spin, Statistic, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { usePolling } from '../services/polling';
 import { api } from '../services/api';
 import type { ClusterNode, HealthData, OpsStatusData } from '../types';
 
@@ -35,60 +35,31 @@ const nodeColumns: ColumnsType<ClusterNode> = [
 ];
 
 export default function Dashboard() {
-  const [status, setStatus] = useState<Status>('loading');
-  const [health, setHealth] = useState<HealthData | null>(null);
-  const [opsStatus, setOpsStatus] = useState<OpsStatusData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [stale, setStale] = useState(false);
-  const [lastOk, setLastOk] = useState<number | null>(null);
+  // Race-safe polling: a late response can never overwrite a newer query,
+  // and on network failure we keep the last snapshot marked stale.
+  const healthPoll = usePolling<HealthData>(
+    (signal) => api.health(signal),
+    { intervalMs: 2000, pauseWhenHidden: true, hasData: (d) => Object.keys(d.checks).length > 0 },
+  );
+  const statusPoll = usePolling<OpsStatusData>(
+    (signal) => api.status(signal),
+    { intervalMs: 2000, pauseWhenHidden: true, hasData: (d) => !!d.server || !!d.cluster },
+  );
 
-  useEffect(() => {
-    const controller = new AbortController();
-    let alive = true;
-    let timer: ReturnType<typeof setInterval> | null = null;
+  const status: Status =
+    healthPoll.status === 'loading' || statusPoll.status === 'loading'
+      ? 'loading'
+      : healthPoll.status === 'unauthorized' || statusPoll.status === 'unauthorized'
+        ? 'unauthorized'
+        : healthPoll.status === 'error' || statusPoll.status === 'error'
+          ? 'error'
+          : healthPoll.status === 'empty' && statusPoll.status === 'empty'
+            ? 'empty'
+            : 'ready';
 
-    async function poll() {
-      try {
-        const [h, s] = await Promise.all([
-          api.health(controller.signal),
-          api.status(controller.signal),
-        ]);
-        if (!alive) return;
-        setHealth(h.data);
-        setOpsStatus(s.data);
-        setStale(false);
-        setLastOk(Date.now());
-        const hasData = Object.keys(h.data?.checks ?? {}).length > 0 || !!s.data?.server;
-        setStatus(hasData ? 'ready' : 'empty');
-        setError(null);
-      } catch (e) {
-        if (!alive || controller.signal.aborted) return;
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes('401') || msg.includes('Unauthorized')) {
-          setStatus('unauthorized');
-        } else {
-          // Network failure: keep last data but mark it stale (never show
-          // a frozen value as current).
-          setStale(true);
-          if (lastOk === null) {
-            setStatus('error');
-            setError(msg);
-          } else {
-            setStatus('ready');
-            setError(null);
-          }
-        }
-      }
-    }
-
-    poll();
-    timer = setInterval(poll, 2000);
-    return () => {
-      alive = false;
-      controller.abort();
-      if (timer) clearInterval(timer);
-    };
-  }, [lastOk]);
+  const health = healthPoll.data;
+  const opsStatus = statusPoll.data;
+  const stale = healthPoll.stale || statusPoll.stale;
 
   if (status === 'loading') {
     return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />;
@@ -97,7 +68,7 @@ export default function Dashboard() {
     return <Alert type="warning" showIcon message="Unauthorized" description="Authentication is required to view this console." />;
   }
   if (status === 'error') {
-    return <Alert type="error" showIcon message="Failed to load data" description={error} />;
+    return <Alert type="error" showIcon message="Failed to load data" description={healthPoll.error ?? statusPoll.error} />;
   }
   if (status === 'empty') {
     return <Empty description="No data available" style={{ margin: '80px auto' }} />;
