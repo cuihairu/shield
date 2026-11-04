@@ -1,309 +1,281 @@
 # TODO
-## metric Lua 面：shield.metrics 脚本侧注册接口
-- [x] **插件面**（`plugins/metric_prometheus/shield_metric_prometheus.cpp`）： 实例 registry（mutex+map，create 注册 / shutdown 注销）； `shield.metrics(binding)` 返回记录代理，方法 counter / gauge / histogram 与 C vtable 三方法一一对应，`(name, value[, labels])` labels 为字符串键值表；成功返回 `true`，labels 非法返回 `false, { code = "invalid_labels", ... }`；binding 解析失败 soft-fail （`nil, { code = "module_unavailable", ... }`，facade 合同 rule 5）。 namespace 定名 `shield.metrics`（不带 prometheus 后缀：换 statsd 等 exporter 业务代码不改，redis.driver → `shield.redis` 同例）。 冒号/点号双调用形状等价（首参 `std::optional<shd::table> self` 槽：冒号调 self=proxy、点号调缺槽，后续参数自然对齐；sqlite 的 Lua wrapper `a == proxy` 分流是同目标的老办法）。
-- [x] **facade 合同测试**（`test_plugin_lua_facade.cpp` +2 case）：soft-failure 臂走共享脚本；resolving 臂真调方法（内存 registry 无需服务器）—— 方法面 presence、双形状等价、invalid_labels 错误表、soft-fail 复查 全钉住。CMake facade foreach 加 METRIC 项，直链套件补链 Lua。
-- [x] **kickstart 升级为真实演示**：app.yaml 加 `metrics.default` binding； game.lua 心跳记 `kickstart_heartbeats_total{note=...}` + `kickstart_last_heartbeat_id`；README 换掉「空 body 属预期」声明 （上轮走查时它还是「示例无指标注册者」，本批后是真实示例输出）。
-- [x] **文档 4 处**：metrics-prometheus.md「Lua（规划中）」节转正（含 错误语义与 soft-fail 契约）；lua-api.md 规划表删 metrics 行 + Leaderboard 后新增「Metrics — shield.metrics」示例节；plugin-system.md 插件矩阵与 namespace 表两行转正；manifest 加 `lua:` 块。
-> 验收：facade 套件 3/3 绿（sqlite 1 + metric 2）；metric 直链套件 4/4 绿；
-## 验收打磨：实机走查抓出端点插件两真 bug
-- [x] **health.http /health 返回畸形 JSON（真 bug）**： `shield_health_http.cpp` 序列化写 `\"checks:[`（键名漏闭合引号）， 所有 JSON 解析器必拒——端点对其唯一职责（k8s probe 解析）就是坏的。 修复 + 新测试套件 `tests/plugin/test_plugin_health_http.cpp` （4 用例：合法 JSON+聚合状态回归锚——body 一律过 nlohmann 解析、 fail→503+message 逃逸、404 JSON、check_all vtable 面）。测法照 protocol.json 先例：插件源经 object lib 直链测试二进制。
-- [x] **health.http / metrics.prometheus 停机死锁（真 bug，实机证据）**： accept 循环用同步阻塞 `accept()`，shutdown 从另一线程 `close()` 不会唤醒阻塞在 syscall 的线程 → `join()` 永久挂死。SIGTERM 一个 起 health 插件的真实 kickstart 进程必现卡死。修法：shutdown 在 close 后 poke 一条 loopback 连接让 accept 返回，循环见到 running=false 即退（poke 连接在循环里被 running 守卫丢弃， 不会落进 http::read 造成二次挂死）。两插件同修。
-- [x] **两插件 CI 零构建零测试（腐烂根因）**：ci.yml 与 plugins-ci.yml 均未开 `SHIELD_BUILD_PLUGIN_HEALTH/METRIC`。plugins-ci 补两开关 （三平台编译 + health 套件进 `ctest -L plugin`），health_http CMake 拆 object+MODULE（protocol.json 同款）供测试直链。
-- [x] **metrics.prometheus 测试套件**（同批收口）：`tests/plugin/ test_plugin_metric_prometheus.cpp` 4 用例——counter 累加/gauge 后写 胜出/直方图 _sum·_count 的 Prometheus 文本格式逐行断言（含标签按键 排序）、record()/record_batch() 点形态 + TIMER 渲染为直方图、 404 文本体、空注册表 200 空体（kickstart 既有行为的回归钉，README 35 行已如实声明「空 body 属预期」——示例无需改）；metric 侧 CMake 同拆 object+MODULE；停机 poke 修复被「二进制正常退出」整体钉住。
-> 验收：新套件 build/build-plug 两树 4/4 绿（挂死修复后二进制正常退出）；
+
+## metric 插件 Lua 面（shield.metrics）
+- [x] `shield.metrics(binding)` 脚本侧注册接口：counter/gauge/histogram 对齐 C vtable，labels 为键值表，非法 labels 返回 `invalid_labels`，binding 解析失败 soft-fail
+- [x] facade 合同测试补 metric 用例（方法面、冒号/点号双形状、invalid_labels 错误表、soft-fail）
+  > facade 套件 3/3 绿；metric 直链套件 4/4 绿
+- [x] kickstart 真实演示：app.yaml `metrics.default` binding + game.lua 心跳指标，README 换真实示例输出
+- [x] 文档转正 4 处：metrics-prometheus.md Lua 节、lua-api.md Metrics 节、plugin-system.md 矩阵与 namespace 表、manifest `lua:` 块
+
+## 端点插件修复（health.http / metrics.prometheus）
+- [x] health.http /health 畸形 JSON 修复 + 新增测试套件
+  > test_plugin_health_http 4/4 绿
+- [x] health.http / metrics.prometheus 停机死锁修复（shutdown poke loopback 唤醒 accept 循环）
+  > 新套件 build/build-plug 两树 4/4 绿，二进制正常退出
+- [x] ci.yml / plugins-ci.yml 补 SHIELD_BUILD_PLUGIN_HEALTH / SHIELD_BUILD_PLUGIN_METRIC 开关
+- [x] metrics.prometheus 测试套件（文本格式逐行断言、record/record_batch、404、空注册表 200 空体）
+  > 两树 4/4 绿
+
 ## ops 内嵌仪表盘
-- [x] **嵌入单页仪表盘**：`/` 与 `/ops/dashboard` 注册同一自包含 HTML（内联 CSS+JS、无外部资源、零框架），2s 轮询同源只读 `/ops/*` 端点，渲染 health / gateway·session 计数 / 每服务状态表 / 滚动指标曲线（canvas）/ 可选 profiler 面板。实现为一个 raw-string 常量，无文件系统或依赖足迹（src/console/ops_http_handler.cpp:161-530、:542-546、:1344-1357）。
-- [x] **测试**：`test_cov_ops_http` 新增 `DashboardServesSelfContainedHtml`——`/` 200 text/html、body 以 `<!DOCTYPE html>` 开头、引用 `/ops/health`·`/ops/metrics`·`/ops/status`、无外部 `http`/`//` 资源引用、`/ops/dashboard` 别名同字节、查询串不影响路由、深层路径 404 无通配泄漏（tests/coverage/test_cov_ops_http.cpp:2425-2465）。
-> 验收：已提交 1d6cbbd；`test_cov_ops_http` 全绿（含新用例，build 树）；
+- [x] `/` 与 `/ops/dashboard` 内嵌自包含单页仪表盘（2s 轮询只读 `/ops/*`，raw-string 实现）
+- [x] DashboardServesSelfContainedHtml 测试
+  > 1d6cbbd · test_cov_ops_http 全绿（build 树）
+
 ## 依赖更新
-- [x] **postcss ^8.5.23 → ^8.5.32 + vite 补丁 pin**：`package.json` devDependencies 升 postcss；`pnpm-workspace.yaml` 加 `vite@<6.4.4: 6.4.4` overrides 消除依赖树内 vite 漂移；`pnpm-lock.yaml` 同步（含 rollup/postcss/@shikijs/vue 传递版本）。`pnpm install --lockfile-only --offline` 验证自洽（已提交 4ad06a1）。
-## shield.crypto 二期切片 1：密钥派生原语
-- [x] **PBKDF2-HMAC-SHA256**（`shield.crypto.pbkdf2_hmac_sha256`，RFC 8018 §5.2）：口令哈希原语；守卫面 iterations 1–1000 万 / salt 非空 / dklen 1–1024，空口令合法；canonical SHA-256 向量组（iterations 1/2/4096 + 多块 40 字节例）+ 守卫臂 pcall 矩阵 + 空口令 C++ 交叉核验。
-- [x] **HKDF-SHA256**（`shield.crypto.hkdf_sha256`，RFC 5869）：协商密钥 按用途展开原语；守卫面 ikm 非空 / length 1–8160（255×32 上限）； salt/info 允许空串（空 salt 取 32 字节零序列）；RFC 5869 TC1–TC3 全量锁定（含 82 字节多块展开）+ 守卫臂矩阵。
-- [x] 文档：`docs/lua-api.md` crypto 表新增「密钥派生（二期）」节 + 正确性锚点行补 RFC 8018 / RFC 5869。
-- [x] 提交 36c7782（crypto 一期 19 用例 + 新 5 = test_cov_lua_crypto 24/24 单跑绿）。五树全量门禁受宿主机外部高负载干扰（load 峰值 87）， 非本改动失败项见下。
-## 门禁遗留：test_db_sqlite_async 预存在回归
-- [x] 修复：poisons 用例的 3s blind sleep 换成 gauge 观测排空 （`pending_async == 0`，30s 上限），随后再断言超时载荷未被迟到完成 覆盖——比原断言更强（迟到 resume 必已尝试并拒绝）。kSlowSql 注释 同步改口径：等排空等 gauge，不等墙钟。默认树 104/104 全绿 ×3。
-- [x] 判定期望收口（2026-10-09）：build job 的 Linux 腿开 `SHIELD_BUILD_DB_PLUGIN_SQLITE=ON` + `VCPKG_MANIFEST_FEATURES=database-sqlite`（走 vcpkg.json 既有 database-sqlite feature，清单文件不动），`test_db_sqlite_async` 与 facade 的 SQLITE 用例自此进入 CI ctest。Windows 腿不跟（z-applocal 部署竞态家族），macOS 保持与 codec 插件同口径。
-- [x] 首轮 CI 即抓到第二层时序依赖（8dc5f02，2026-10-09）：CI release runner 上 kSlowSql 只要 ~200ms（本地 release ~0.9s），对 db.short 的 150ms 预算只有 1.33x 边际——tx 超时用例被翻到「回滚抢在自己预算内 跑完 → shim 出 `transaction_rolled_back`」的合法分支，断言钉死 `fail:timeout` 即红。修法三件：断言改合法二值析取 + 排空后回滚证据 （tx 建的表必须不存在，两分支皆真）；超时前提用例（poisons / shutdown-drains）改绑专配 30ms 预算的 `db.poison`——「语句远超预算」 由构造保证而非边际硬扛；kSlowSql 保持 2M 行不动（CTE 超线性， 4M 本地 release 已 ~5.6s，不能靠加长语句买边际）。教训：**测试若 依赖「A 在 B 之前/之后完成」，先问自己在最慢与最快的目标机上 A/B 的时序关系是否都成立——不成立就改断言为合法析取或把前提结构化。**
-## shield.crypto 二期切片 2：AES-256-GCM AEAD
-- [x] `shield.crypto.aead_aes256gcm_encrypt(key, nonce, plaintext, aad)`： 返回 combined `ciphertext‖tag`（16 字节 GCM tag 尾附），nonce 钉死 12 字节；`aad` 可空串。key 必须 32 字节、nonce 12 字节，越界抛 error。
-- [x] `shield.crypto.aead_aes256gcm_decrypt(key, nonce, combined, aad)`： 校验 tag 常数时间、失败抛 error（不返回部分明文）。
-- [x] 测试：NIST GCM 已知向量（TC13 空明文 / TC14 / canonical 非零密钥 60 字节例）+ 往返（含 AAD 绑定与空 AAD）+ 篡改 tag/密文/AAD/nonce/ 密钥拒绝矩阵 + 守卫臂 pcall（5 臂）。
-- [x] 文档：`docs/lua-api.md` crypto 表新增「AEAD（二期）」节，正确性 锚点行并入 AES-256-GCM。
-- [x] 覆盖率门禁：CI 37895555333 因 KDF 多行 `||` 链的防御臂未入 GCOVR_EXCL_BR_LINE 标记而 99.9% 红 —— 教训固化：**多行布尔链一律 用 GCOVR_EXCL_BR_START/STOP 区间**，行内标记只对单行 if 生效 （同 [[shield-branch-batch-reflow-pitfall]]）；本地 build-cov-ci 以 CI 同参（CRASHPAD=OFF）+ gcovr 8.6 复跑 100% branch。
-## shield.crypto 二期切片 3：Ed25519 签名验签
-- [x] `shield.crypto.ed25519_public_key(secret_key)`：32 字节 RFC 8032 seed → 32 字节原始公钥（EVP_PKEY_get_raw_public_key）。
-- [x] `shield.crypto.ed25519_sign(secret_key, message)`：one-shot EVP_DigestSign，确定性 64 字节原始签名（Ed25519 无 nonce 无随机性）。
-- [x] `shield.crypto.ed25519_verify(public_key, message, signature)`： one-shot EVP_DigestVerify，boolean。**尺寸护栏分两侧**：key 尺寸不符 抛 error（调用方编程错，与 AEAD 护栏同口径）；signature 非 64 字节 返回 false（「不是合法签名」本身是验签答案，JWT 式调用方留在 非抛出路径）。OpenSSL 返回值三态：1=过 / 0=不过（篡改用例驱动、 保持计测）/ 负数=契约错（防御臂标记）。
-- [x] 防御臂纪律：全部防御 if 收成**单行条件 + 行内 BR 标记 + START/STOP 包 throw 体**——不再给多行 if 条件配行内标记（切片 2 的教训直接 前置应用：条件调用拆 `const int rc = ...;` 单行判）。
-- [x] 测试：RFC 8032 §7.2 TEST 1（空消息）+ §7.3 EXAMPLE（af82）逐字节 锁定（含 seed→公钥推导锁定）；随机密钥对往返 + 消息/签名/密钥三侧 篡改拒绝；63/65 字节签名 false 不抛矩阵；6 臂 pcall 护栏。 test_cov_lua_crypto 27→31 用例全绿。
-- [x] 文档：`docs/lua-api.md` crypto 表新增「非对称签名验签（二期）」节， 正确性锚点行并入 RFC 8032。
-- [x] JWKS / EdDSA JWT 后置依赖已随本切片解除 → 切片 4 启动（见下）。
-## shield.crypto 二期切片 4：EdDSA JWT + JWKS
-- [x] **jwt.lua EdDSA**：`alg=EdDSA`（Ed25519）签发/校验，复用 `shield.crypto.ed25519_sign/verify/public_key`；`opts.alg` 覆盖 header.alg（默认 HS256）；`opts.kid` 入 header + verify 侧 pin （`bad_kid`）；EdDSA key 必须 32 字节（seed 签 / 公钥验），不符 `malformed`；签名段 b64 解码失败 `malformed`、验签不过 `bad_signature`；alg 钉调用方（`opts.alg`），header.alg ≠ alg → `unsupported_alg`（算法混淆双向 + `alg:none` 均拒）。
-- [x] **jwt.lua JWKS**：`jwks_build(keys)`（`{kid, seed}` → OKP/Ed25519 文档，`x` = b64url 公钥）+ `jwks_parse(doc)`（返回 `{kid, public_key}`；非 OKP/非 Ed25519 跳过；声称 Ed25519 但 x 坏 → 整文档 `malformed`）。
-- [x] **测试**：`test_cov_lua_crypto.cpp` 31→40 用例——RFC 8037 A.1 向量逐字节锁定（d/x 交叉锁 RFC 8032 TEST 1 + A.1 签名）、EdDSA 往返 + C++ 直签交叉核验 + kid pin、EdDSA 拒绝矩阵（篡改/错钥/ 63B 签名/坏 b64/算法混淆双向/kid/31B 公钥/expired/bad_issuer）、 EdDSA key 尺寸护栏、HS256 kid 往返、JWKS A.1 构造/解析、JWKS 解析错误 + 跳过矩阵、JWKS build 护栏、JWKS→JWT 全链路往返。
-- [x] **文档**：`docs/lua-api.md` jwt.lua 节更新为 HS256+EdDSA+JWKS （用法/错误码表/安全语义/JWKS 小节）。
-## 认证业务语义出插件层：原语库 shield.crypto + Lua 层 jwt.lua
-- [x] **原语库 `shield.crypto`**（`include/shield/lua/lua_crypto.hpp` + `src/lua/lua_crypto.cpp`，`register_full_shield_api` 装配， `shield_lua` 显式链 `OpenSSL::Crypto`）：base64 / base64url / hex 编解码、`sha256`、`hmac_sha256`、 `random_bytes`（1 MiB 上限）、`constant_time_compare`（ OpenSSL `CRYPTO_memcmp`）。编解码本地自写 （而非 `EVP_DecodeBlock` / BIO）：前者填充数量语义 不严、后者带新行处理，两者都比 ~30 行 RFC 4648 参考实现难用正确。哈希/MAC/随机走 OpenSSL，不自开实现。
-- [x] **`scripts/lib/jwt.lua`**（HS256 / RFC 7519 参考实现）：只用 原语拼装，自带最小 JSON 编解码（保持自包含， 不扩 runtime API 面）；`alg` 钉死 HS256（`alg:none` / 算法混淆 在信任任何 claim 前拒绝）、签名常数时间比较、 `exp`/`nbf`（带 leeway）/`iss`/`aud`（string 与 array 双形）校验、 `verify` 失败返回 `nil, code, message`。
-- [x] **`plugins/auth_jwt` 标弃用**（不物理删除，保留一个过渡期）： manifest 加 `deprecated` 块 + description 前缀（manifest 解析仅 `require_field("id")` + `.value()`，未知键忽略，无破坏）； plugin-system.md 接口矩阵标已弃用 + 替代路径；README 提醒。
-- [x] **测试**：`tests/coverage/test_cov_lua_crypto.cpp` 12 用例——RFC 4648 §4/§5 向量 + 往返、RFC 6234 SHA-256（空串/"abc"/百万 'a'）、 RFC 4231 HMAC TC1–TC4、hex/base64 非法输入拒绝、random_bytes 边界、jwt 签发/校验交叉验证（签名用 C++ OpenSSL 独立算得后比对，不自证）、claim 嵌套/数组、七类 拒绝码矩阵、`register_full_shield_api` 生产注册路径。
-- [x] **文档**：`docs/lua-api.md` 新增 Crypto API 表 + jwt.lua 用法； `docs/architecture-decisions.md` 新增 AD-08（原语/语义分层裁定）； `docs/runtime-primitives.md` 落档一期实现状态与 **命名口径差异**（文档建议 `digest`/`hmac`/ `timing_safe_equal` 算法无关名，实落为算法专名 `sha256`/`hmac_sha256`，加 SHA-512 是新增函数而非既有函数语义扩张）； `open-decisions.md` OD-015 后续执行注、`roadmap.md` Later 记一期切片。
-- [x] 门禁：五树 ctest 全绿 + 覆盖率六口径全绿（见下）。
+- [x] postcss ^8.5.32 + vite 补丁 pin（pnpm-workspace overrides）+ lockfile 同步
+  > 4ad06a1 · `pnpm install --lockfile-only --offline` 自洽
+
+## shield.crypto 一期 + jwt.lua
+- [x] 原语库 `shield.crypto`：base64/base64url/hex/sha256/hmac_sha256/random_bytes/constant_time_compare
+- [x] `scripts/lib/jwt.lua` HS256 参考实现（alg 钉死、签名常数时间比较、exp/nbf/iss/aud 校验）
+- [x] plugins/auth_jwt 标弃用（manifest deprecated 块 + 文档标注替代路径）
+- [x] test_cov_lua_crypto 一期 12 用例（RFC 向量 + jwt 交叉验证 + 生产注册路径）
+- [x] 文档：lua-api.md Crypto 表与 jwt.lua 用法、architecture-decisions.md AD-08、runtime-primitives.md 命名口径差异、open-decisions.md OD-015、roadmap.md Later
+  > 五树 ctest 全绿 + 覆盖率六口径全绿
+
+## shield.crypto 二期
+- [x] 切片 1：PBKDF2-HMAC-SHA256（RFC 8018 §5.2 向量 + 守卫矩阵）
+- [x] 切片 1：HKDF-SHA256（RFC 5869 TC1–TC3 + 守卫矩阵）
+  > 36c7782 · test_cov_lua_crypto 24/24 单跑绿
+- [x] 切片 2：AES-256-GCM AEAD encrypt/decrypt（NIST 向量 + 篡改拒绝矩阵 + 守卫）
+- [x] 切片 3：Ed25519 public_key/sign/verify（RFC 8032 向量 + 尺寸护栏分侧）
+  > test_cov_lua_crypto 27→31 用例全绿
+- [x] 切片 4：jwt.lua EdDSA + JWKS（RFC 8037 A.1 向量 + 拒绝矩阵 + 全链路往返）
+  > test_cov_lua_crypto 31→40 用例全绿
+- [x] 文档：lua-api.md 密钥派生/AEAD/签名验签/EdDSA+JWKS 各节
+- [x] 覆盖率门禁修复：多行布尔链改用 GCOVR_EXCL_BR_START/STOP 区间
+  > CI 37895555333 红 → 本地 CI 同参复跑 100% branch
+
 ## jwt.lua 配套测试补全
-- [x] **JwtJsonEscapeEncoding**：`json_escape` 全臂（`"`、`\\`、`\b`/ `\f`/`\n`/`\r`/`\t` 命名形 + 未命名控制字节 `\u0000`/`\u0001`）—— 载荷段字节断言 + 含控制字符 claims 的 sign→verify 往返；键排序 确定性（两次不同插入序的表产出相同 token 字节）。
-- [x] **JwtJsonNumberEncoding**：整数 `%d`（含 2^53-1 边界）、小数与 指数形 `%.14g`（1e16 ≥ 2^53 走 `1e+16`）、NaN/±inf 编码硬错、 function 值类型硬错。勘误记档：2.5e15 整数且 <2^53 走 `%d` 而非 `%.14g`（首版断言预期写错，实测行为正确）。
-- [x] **JwtJsonDecodeEscapes**：攻击者形状载荷（用 shield.crypto 重算 HS256 伪造合法签名，越过签名门专打解析器）——简单转义七件、 `\uXXXX` 四档 UTF-8 宽度（1/2/3 字节 + 代理对 `😀` → U+1F600 四字节形）、true/false/null 字面量、 空对象/空数组、空白容忍。
-- [x] **JwtJsonDecodeMalformed**：未知转义字母、截断/非十六进制 `\u`、 未闭合字符串、顶层后尾随内容、无数字数字（`{"n":-}`）、可解码但 非表载荷（`999` → "undecodable payload"）——全部经 malformed 码返回。
-- [x] **JwtVerifyKeyAndTypedClaimArms**：空 key / 缺 key 守卫、 exp/nbf 类型错（`"exp":"9"` 带合法签名 → malformed）、sign 的 opts.header 覆盖臂（typ/kid 透传 + alg 回填 HS256，verify 钉死 仍接受）。
-- [x] **JwtNonArrayObjectKeysAndSignGuards**：复核对象分支时挖出的 **真 bug 修复 + 回归钉**——非连续整数键的表（稀疏数组 `{[1]='a',[3]='c'}`）降级成 JSON 对象，而编码器收集的是 `tostring(k)` 再用**字符串**键回查 `v[k]`，数值键因此取到 nil， claim 被静默编码成 `null`（丢值，往返后无任何报错）。修法＝排序 并回查**原键**、比较器按字符串形排序并用 type 破同形平局（1 与 "1" 可共存于一张 Lua 表，需要全序保证 token 字节确定性）；普通 字符串键输出逐字节不变。顺带钉住 sign() 的 claims/key 参数守卫。 修复前该用例对旧 jwt.lua 精确复现 `{"1":null,"3":null}`。
-- [x] 门禁：五树 ctest 全绿 + 覆盖率六口径全绿（仅测试文件 + jwt.lua， src/ 无改动）。
-## 并发 spawn 竞态用例的去定时脆弱
-- [x] 改起跑屏障（`parked` + `go` 两原子自旋同步）：两个调用同时释放、 真正并发；断言改为与角色无关的**不变量**（恰好一个成功、败者被 入口守卫拒绝、胜者可 query 到），不再假设"第一个必胜"。败者错误码 接受 `reserved`（init 期间被预留）与 `already exists`（check→ insert 窗口被抢占双双进入时，publish 处的二次检查兜底），两种 结局都证明"同名只有一个属主"。
-- [x] 门禁：五树 ctest 全绿（并入本轮门禁一起跑）。
-## 头文件层覆盖收口
-- [x] **真缺口补真测试**（不删防御分支、不 mock、不造假用例）： - `base/result.hpp` map() 两臂：此前测试用两个**不同闭包**调 map， 模板按闭包类型实例化，每个实例化只走一个分支——兄弟实例化的恒 0 记录在 gcovr 行视图里互相掩蔽（**新伪影形态：模板多实例化单臂 掩蔽**，裸 gcov 可见各实例化 `#####` 错位）。修法与同文件 and_then 既有风格一致：共享一个闭包，单实例化走双臂 - `net/session_stream.hpp` `transport_name()`（75/110）：8cd43fb 引入的诊断 API 全库零调用点；test_cov_session / test_cov_tls 各加 一条契约用例（"tcp"/"tls" 标签 + 基类引用多态分发一致） - `net/ip_blocklist.hpp` v6 非字节对齐前缀（126-127 的 `prefix_matches_bytes<unsigned char,16>` 实例化）：既有 v4 /20 用例只覆盖 4 字节数组实例化；加 `2001:db8::/33` 边界用例。 62-63 空白条目臂：`set_rules` 自己 trim 跳过空条目，parser 的 文档化空白契约（no-op + 零值 Rule）只有直调 `parse_blocklist_entry` 才可达——补直调用例（error 出参不被 触碰也在断言内）
-- [x] **不可达臂 / 编译器伪影按登记口径标注**（理由在注释里）： - ip_blocklist.hpp `blocked()` 的 `!is_v4() && !is_v6()` 臂： boost address 是 v4/v6 判别联合，构造上不可达 → GCOVR_EXCL_START/STOP - session_stream.hpp 基类析构行（`= default`）：一行挂抽象基类 deleting-dtor D0（删除经派生类 vtable 分发，抽象类自身 D0 不可达） 与每个测试都在跑的 base-object D2 → GCOVR_EXCL_LINE（与 session.cpp `TcpSession::~TcpSession` 同族，gcovr --json 可见 D2 计 51 次） - base/byte_buffer.hpp `hex_dump` 闭括号行：出口/清理块挂闭括号 恒 0，函数本体全路径已执行（含 `...` 截断分支）→ GCOVR_EXCL_LINE（catch 闭括号同族）
-- [x] 实测（build-cov 清 `.gcda` + 全部 97 用例）：src/ 门禁 line=100 / branch 11385/11385 / function=100 EXIT=0； include/ 口径 **520/520 = 100%**（3 行按登记排除后出测量面）
-- [x] **维持复核（2026-09-28，清 `.gcda` 复跑全部用例）**：五树 ctest 全绿 （build 97 / net 99 / plug 99 / dbg 97 / cov 97），src/ 门禁 line=100 / branch 11385/11385 / function=100 EXIT=0，include/ 诊断 520/520 = 100%——与收口轮数字一致，无新可达缺口。 本地构建环境备注：本地 vcpkg-tool 仓已变为单提交 snapshot（不含 vcpkg.json builtin-baseline 对象），manifest install 会失败；本地 五树 configure 加 `-DVCPKG_MANIFEST_INSTALL=OFF` 复用已装 `vcpkg_installed/` 即可（CI 不受影响，CI 用 vcpkgGitCommitId 自取）
-- [x] **纳入门禁（2026-09-28）**：ci.yml coverage job filter 扩为 `../src/` + `../include/shield/`，阈值 98/100/100 不动。实测 （清 `.gcda` 五树全量）：五树 ctest 全绿（97/99/99/97/97）； src/ 门禁 line=100 / branch 11385/11385 / function=100 EXIT=0； **include/ line 522/522、branch 192/192、function=100 全 EXIT=0**；合并口径 11577/11577 = 100%。 真正的门槛是**分支记录按 TU 槽位跟踪、不跨 gcda 合并**（行覆盖 合并、分支不合并——任一 TU 的零分支槽位即报 missing，哪怕 test TU 已双臂覆盖，裸 gcov 实锤）。lib TU 固定调用模式留下的槽位 测试无法驱动 → 6 处 GCOVR_EXCL_BR_* 分支口径登记（error.hpp 4 参 ctor detail 三元 / lua_service.hpp SpawnResult::ok 聚合返回 / http_server.hpp RouteKey::operator== / listener_registry.hpp magic-static 守卫 / session.hpp get_user_data 三元 / ip_blocklist.hpp blocked() 判别联合守卫；c0a0266 写在注释行上的 4 个标记不生效， 已纠正到代码行）。真缺口补真测试 8 个测试文件：uint16 过末读、 空白条目 tab 变体、parser error 出参 nullptr 契约、v6-only 规则 非空、tab 填充规则过 listener、config/bootstrap deny 列表 tab 条目贯通断言、apply_binding 无出参 + kAnyEpoch、SpawnResult 工厂、DispatchResult should_drop 真值表。
-## 覆盖率口径纠偏
-- [x] `claim_name`「当前服务未运行」「旧 owner 已死」两臂按 `register_name` / `unregister_name` 既有先例标注不可达（同一 lock 下退出清理先回收名字， 死 owner / 已摘除的 claimer 不可观测）
-- [x] `claim_name` 移交后从旧 owner `owned_names` 摘名一支按「发布必记名」 不变量标注（与 `unregister_name` 同款）
-- [x] `claim_name` 三个 `if (error)` 空 out-param 臂**补真测试**（不豁免）： 关键点是这些守卫需要**活的 dispatch 上下文**（`current_service_id()` 只在 owner actor 跑 handler 时有值），因此走 `enqueue_forked_task` 往 owner actor 上投任务——Lua 绑定恒传 error table，name-change notifier 又是锁外回调（会在「requires current service context」 提前返回），两者都够不着这几臂
-- [x] `on_rate_limited` 链接两臂（5581ddf 引入）： listener 侧 `ListenerChainsRateLimitedCallback`（调用方回调仍被调用 + listener 累计计数一致且不随 session 消失）与 `ListenerCounterWithoutUserRateLimitedCallback`（该钩子纯可选，未安装 时计数照常）；session 侧 `SessionRateLimitedWithoutUserCallback` （未安装钩子时丢帧仍计数、连接仍存活）
-- [x] config.cpp blocklist 的 `GCOVR_EXCL_BR_LINE` 标记：内联深嵌套下 clang-format 会把 `catch (...)` 拆行、标记失效；标记需与 `catch` 同行 才生效（b5cdc43 已修）
-> 验收（`rm -rf build-cov` 从零重建 + 全部 94 用例，Release/Debug/覆盖率三树）：
+- [x] JwtJsonEscapeEncoding：json_escape 全臂 + 键排序确定性
+- [x] JwtJsonNumberEncoding：整数/小数/指数/NaN/inf/function 分支
+- [x] JwtJsonDecodeEscapes：转义与 UTF-8 宽度矩阵（含代理对）
+- [x] JwtJsonDecodeMalformed：七类畸形载荷全走 malformed
+- [x] JwtVerifyKeyAndTypedClaimArms：key/exp/nbf 守卫 + opts.header 覆盖
+- [x] JwtNonArrayObjectKeysAndSignGuards：稀疏数组键静默丢值 bug 修复 + 回归钉
+  > 五树 ctest 全绿 + 覆盖率六口径全绿（仅测试文件 + jwt.lua）
+
+## 并发 spawn 竞态用例
+- [x] 起跑屏障 + 角色无关不变量断言（恰好一个成功，败者错误码接受 reserved/already exists）
+  > 五树 ctest 全绿
+
+## 覆盖率收口
+- [x] 头文件层真缺口补真测试：result.hpp map 双臂单实例化、session_stream transport_name、ip_blocklist v6 非对齐前缀与空白条目
+- [x] 不可达臂 / 编译器伪影按登记口径标注（GCOVR_EXCL_*，理由入注释）
+- [x] 覆盖率纳入 CI 门禁：filter 扩为 `../src/` + `../include/shield/`，阈值 98/100/100
+- [x] 覆盖率口径纠偏：claim_name 不可达臂标注 + 空 out-param 臂补真测试 + on_rate_limited 两臂
+  > src/ line/branch/function 100%（11385/11385）；include/ 520/520 与 522/522 两轮；五树 ctest 全绿（97/99/99/97/97）
+
+## 门禁遗留修复（test_db_sqlite_async）
+- [x] 预存在回归修复：3s blind sleep 换 gauge 观测排空 + 迟到完成断言
+  > 默认树 104/104 全绿 ×3
+- [x] CI Linux 腿开 SHIELD_BUILD_DB_PLUGIN_SQLITE=ON + VCPKG_MANIFEST_FEATURES=database-sqlite
+- [x] 第二层时序依赖修复：断言改合法二值析取 + 超时前提用例绑 30ms 预算的 db.poison
+  > 8dc5f02（2026-10-09）
+
 ## 产品化 + 架构安全默认值
-- [x] 架构评估文档 `docs/architecture-review.md`：九维逐项判断（进程线程/ 网络协议/会话状态/存储持久化/定时调度/热更新/扩展点/容错监控/横向扩展）， 风险清单（严重度 + file:line），必须/过度/欠缺分析
-- [x] 产品化差距文档 `docs/product-gap.md`：8 维对照 skynet，top-3 挡路项 排序（默认配置可观测、模板工程、启动脚本与文档线性化）
-- [x] P0-1 默认配置可观测：config/app.yaml 增加 echo actor （scripts/echo.lua，TCP 0.0.0.0:7900，idlen+json，echo id=1 → echo_result id=100，无认证）+ 默认配置真实启动 acceptance 测试 （tests/acceptance/test_default_config_boot.cpp，ops 端点 hermetic 化补丁后按原始文件启动并完成 TCP 回包闭环）
-- [x] P0-2 模板工程一条命令生成：templates/minimal_game/（config+scripts+ README，<APP_NAME> 占位符）+ scripts/new_project.sh（生成 + 自动 --check-config 自检）+ ctest 锚定（shield_new_project_scaffold， POSIX 平台）
-- [x] P0-3a build.sh 环境预检：cmake ≥ 3.30 / C++23 编译器探测（-std=c++23 试编译）/ ninja / VCPKG_ROOT，缺失给一行修复指引，不再让 vcpkg 的 二级错误（"unable to find Ninja"）背锅
-- [x] P0-3b 客户端样例 scripts/client_demo.py：stdlib-only idlen+json 客户端，打通 echo / hello_world login，quickstart 的"连接验证"步骤
-- [x] P0-3c quickstart.md 重写为线性 10 分钟路径（前置矩阵 → 构建 → 启动 → 连接验证 → 脚手架 → hello_world → FAQ）；tutorial-game-backend.md 头部改为显式指向已验证路径；Dockerfile 过时 EXPOSE 注释对齐实际 （echo 7900；http ops 默认 127.0.0.1 的容器口径说明）
-- [x] 架构 P0 安全默认值 1：max_frame_size 默认从「0=不限」改为 「0=16MiB 默认上限」（kDefaultMaxFrameSize；5 处封包检查点统一走 effective_max_frame_size），异常长度前缀不再能驱动服务端按其分配
-- [x] 架构 P0 安全默认值 2：accepted socket 统一 TCP_NODELAY（游戏小包 低延迟；best-effort 不影响建连）
-- [x] 架构 P0 诚实性：lua.sandbox.allow_os/allow_io 从死配置键变为真实 开关（VM 创建期条件 open io/os 库；未设置=历史行为开放，随仓库分发 的默认配置声明 false）+ SandboxGatesOsAndIoLibraries 测试
-- [x] 全量构建 + ctest 全绿验证（91 + 新增 3 个测试用例，93/93），逐块 commit + push（7b395c2 安全默认值 / b1c4cbb 产品化三件套 / f337072 评估文档与 todo 重排）
-- [x] CI Coverage（Debug 构建）红修复：绑定层在 Debug 下开启安全检查， 从 nil proxy（os 被 sandbox 关闭时）构造 table 即触发 "(type check failed in constructor)" panic-abort，`.valid()` 守卫 来不及执行——本地 Release（NDEBUG）编译掉该检查故全绿。两处 （lua_api.cpp AD-07 os 钩子、lua_runtime.cpp restrict_vm）改为 `get<shd::optional<shd::table>>()` nil 容忍读取；SandboxGates 测试 补 restrict_vm 双臂真覆盖（替换原 GCOVR 分支豁免）；本地 Debug 树复现配置验证 + 全量回归
+- [x] docs/architecture-review.md 九维架构评估
+- [x] docs/product-gap.md 8 维对照 skynet + top-3 挡路项
+- [x] P0-1 默认配置可观测：echo actor + 真实启动 acceptance 测试
+- [x] P0-2 模板工程一条命令：templates/minimal_game + scripts/new_project.sh + ctest 锚定
+- [x] P0-3 build.sh 环境预检 + scripts/client_demo.py + quickstart.md 线性化
+- [x] 安全默认值：max_frame_size 默认 16MiB 上限、accepted socket TCP_NODELAY、lua.sandbox allow_os/allow_io 真实开关
+- [x] CI Coverage（Debug）红修复：绑定层 nil 容忍读取 + SandboxGates 真覆盖
+  > 7b395c2 / b1c4cbb / f337072 · 93/93 全绿
+
 ## 回归修复
-- [x] 固定端口测试并行互撞（`shield_config_default_check` Failed）： `--check-config` 走**完整** bootstrap，会真绑配置声明的所有端口 （echo 7900 / http ops 8080 / console socket），不是纯 YAML 校验。 `test_default_config_boot` 按设计**保留**shipped 端口 7900（那正是它 的断言），ops 端点才做 hermetic 化；两者并发时 7900 撞 "Address already in use"。`shield_new_project_scaffold` 与默认配置 共享 8080，同样互撞。三者统一挂 CTest `RESOURCE_LOCK fixed_ports` ——只串行化这 3 个，其余 90 个测试保持并行。
-- [x] `ms_left` 断言差一（`test_cov_lua_commands` InspectTimersAndCallsDetail）： `ms_left = deadline_ms - now`，deadline 是「发起时刻 + 5000」；若检查 落在发起的同一毫秒，读数**恰好** 5000。原 `< 5000` 把这个合法值判失败 （CI 串行时机器负载低、极少命中，`-j` 下必现）。改为 `<= 5000` 并 注释写清等号来源，保留下界 `> 0`（仍在途）与上界（预算未被改写）。
-- [x] 验证：Release 与 Debug 双树各 93/93 绿；`-j 8` 连跑 4 次全绿 （修复前必现失败）。
-- [x] docs/deployment.md 重写（构建产物/容器端口口径/systemd/停机预算/ 观测接入/多实例边界）：修正了草稿里 `build-release/bin/shield` 的 事实错误——`build.sh` 固定用 `build/`，不存在 build-release 目录。
-## 连接级限流
-- [x] 配置面（config.hpp / config.cpp / bootstrap.cpp）： `RuntimeActorConfig` 新增 `rate_limit_per_second` / `rate_limit_burst`； YAML 键 `network.rate_limit.messages_per_second` + `burst`； 范围校验（0=禁用 / 1..1e6），burst=0 意为「等于 rate」。
-- [x] 监听器/会话（listener.hpp&cpp / session.hpp&cpp）： `TokenBucket` 类（惰性回填，无定时器线程）； `TcpListener::set_rate_limit()` 透传到每个新 `TcpSession`； `TcpSession::do_receive()` 里 `protocol_pipeline_->feed()` 结果遍历时 `rate_limiter_.try_acquire()`，**按解码后消息**计费（批量读一个 TCP 段里的多帧不能绕过预算）。
-- [x] 观测：`Session::rate_limited_count()` 纯虚，`TcpSession` 实现返回 `TokenBucket::limited_count()`；`test_cov_session` 新增 5 个用例 覆盖 token bucket 逻辑、会话级丢包、无限制通行。
-- [x] 配置层测试：`test_cov_config` 新增 5 个用例覆盖 rate_limit 解析、 类型/范围校验、非 map 拒绝、零 burst 默认值。
-- [x] Bootstrap 集成测试：`test_cov_bootstrap` 新增 `RateLimitWiredToListener` 验证配置真落到 listener。
-- [x] 覆盖率：新代码全覆盖；CI gate `--fail-under-line 98 --fail-under-branch 100` 通过（100% line / 100% branch / 100% function）。
-- [x] `include/shield/net/ip_blocklist.hpp`（header-only，config 与 net 两侧共用同一解析器、无链接环）：`parse_blocklist_entry`（纯地址或 CIDR，v4/v6，前后空白容忍）/ `IpBlocklist`（v4/v6 分表、shared_mutex、 安装期原子替换——坏条目保留旧规则集）。
-- [x] 配置面：`network.blocklist.deny` 数组；校验复用同一解析器 （typo = 启动错误，报错带 `deny[i]` 下标与原因）；deny 缺省/空均合法。
-- [x] accept 路径：listener 在**建 session 之前**判 `blocked()`——被拒对端 不占连接数/IP 计数，`last_rejection_reason() == "blocked_ip"` + WARNING 日志。
-- [x] 测试：`test_cov_ip_blocklist`（18 用例：精确/字节对齐与非对齐 CIDR/ v6 族隔离/解析错误矩阵/原子替换/空白容忍）；`test_cov_listener` 4 个 accept 用例（拒绝/段拒绝/放行/坏安装保留旧规则）； `test_cov_config` 校验矩阵 + null error sink 扩展； `test_cov_bootstrap` `BlocklistWiredToListener`。
-- [x] 文档：runtime-security.md「速率限制/地址黑名单」两节重写为已实现 语义；architecture-review.md §2 风险关闭；runtime-network.md 配置表 补两键。
-- [x] 网关观测收口（2026-09-26）：TcpListener 原子计数（accepts/ blocked/conn_limit/ip_limit 拒绝）+ `SessionCallbacks.on_rate_limited` 链式回调驱动的 listener 级限流累计计数（跨会话单调， Prometheus-clean）；ListenerRegistry（listener 构造注册/析构注销， bind 失败不注册）→ `/ops/metrics` 新增 `shield_gateway_connections_total` / `rejections_total{port,reason}` / `active_sessions` / `rate_limited_messages_total`（port 标签分 listener）。 测试：listener 计数断言 + registry 生命周期 + ops 端到端 scrape + session 丢帧回调恰好一次。runtime-ops.md 指标表 / runtime-security.md 补观测口径。
-## Phase 1 候选
-- [x] DB 使用纪律文档 + 示例：docs/db-discipline.md——同步 ABI 硬规则 （DB 调用隔离进专职 service、业务经 shield.call/call_timeout 访问、 call_timeout < query_timeout、pool 才是并发闸门）+ 完整正反例 + 观测止损（pending_calls）；入口挂 index.md / runtime-persistence.md； 见 architecture-review.md §4（Phase 2 异步 ABI 落地后降级为推荐）
-- [x] /ops/metrics 口径补全：runtime-ops.md 指标表后新增「抓取口径」—— 单进程口径、gauge 瞬时采样 vs counter 单调、服务级 counter respawn 归零与 rate 断点、shield_services 500ms 超时省略语义、抓取间隔 ≥5s
-- [x] net.threads 默认值评估与调优指引：runtime-config.md 新增评估小节—— 结论维持默认 0（小规模确定性优先、改默认动存量语义、net 线程不跑 业务 Lua 故保守无隐藏成本）；何时调大（千连接/TLS 终结/ops 隔离）、 2–4 取值、strand 安全性、验证方法
-- [x] 顶号/重连语义在 gateway.md 显式化：「顶号与重连的时序语义」节—— epoch CAS 确切语义（kAnyEpoch 哨兵仅失效用）、三检查点一不查 （bind CAS / egress 相等 / close 无条件；ingress 快照不校验+回包侧 兜底）、kick 四步顺序保证（Unbound 先于失效先于关 socket）与 disconnect 空绑定防双通知、重连=新 session 新 epoch（唯一性归 player 模块）、在途窗口速查表
-## Phase 2 候选
-- [x] DB ABI 异步入口立项文档（2026-09-26 完成）：docs/db-async-design.md ——协程恢复式（复用 shield.call 挂起/恢复机器 + 插件 worker 池 + host_api 尾部追加 lua_suspend_current/lua_resume_session 两原语）； 备选否决理由、事务硬规则（tx body 内禁止任意让出）、超时≠取消 （毒化连接）语义、M1-M4 里程碑与未决问题。
-- [x] DB 异步入口实现（2026-09-26~09-27 完成，db-async-design.md M1-M4）：M1 host 原语 lua_suspend_current/lua_resume_session 挂起-恢复（dc2700a）→ M2 sqlite Lua shim + worker 线程 + 端到端时序测试（46634f5）→ M3 mysql/postgresql 接入，acquire 移入 worker + 共享 shim（d2b68ef）→ M4 tx 异步形态 + pending/holding 指标 + 文档降级收口（10133a1）。
-- [x] 连接级限流/黑名单（runtime-security.md 草案落地）——2026-09-26 完成，见上方「连接级限流」节（7779971 限流 + 本次黑名单）
-- [x] blue-green 热更新落地——2026-09-26 完成：设计稿的 `unregister + register(handle)` 序列在现有原语下不可实现 （register 只认当前 service；先注销再注册有解析空窗），落地为 **`shield.claim(name)`** 原子接管（LuaServiceManager::claim_name： registry 锁内换 owner + name 变更通知；幂等再 claim 无通知不报错； 旧 owner 退出不影响已接管 name）。测试：registry 蓝绿交接用例 + coverage 通知/守卫/幂等/错误矩阵；runtime-lua-vm.md 实现 API 节 改为 claim 时序；lua-api.md / runtime-errors.md（claim_failed）对齐
-- [x] TLS（network.tls 配置面）——2026-09-27 完成，设计见 docs/tls-design.md（M1 已落地）：per-actor `network.tls` （enabled/cert_file/key_file/handshake_timeout_ms，未配则行为不变）； config 校验 + bootstrap 加载证书双层 fail-loud，绝不带病回落明文； SessionStream 抽象（TcpSession 持流接口，Plain/Tls 两实现，原 socket 构造保留零调用方扰动）；accept 路径 blocklist/限流先于 握手，握手失败/超时关连接不建 session，计数经 ListenerRegistry 进 /ops/metrics（shield_gateway_tls_handshakes_total/_failures）； 一个端口全 TLS 或全明文，无降级；v1 不做热更新（atomic context swap 路径已预留）。测试：config 校验 11 臂 + context 单元 + bootstrap 接线/fail-loud + 自签证书回环握手矩阵（成功帧往返/ 明文拒绝/超时/blocklist 优先），附带修复 session 采纳竞态下 remote_endpoint 抛异常（对端提前断开不再炸 io 线程）
+- [x] 固定端口测试互撞：3 套件挂 CTest RESOURCE_LOCK fixed_ports
+- [x] ms_left 断言差一：改 `<= 5000` 并注释等号来源
+  > Release/Debug 双树 93/93，-j 8 连跑 4 次全绿
+- [x] docs/deployment.md 重写（修正 build-release 目录事实错误，build.sh 固定用 build/）
+
+## 连接级限流与黑名单
+- [x] network.rate_limit 配置面 + TokenBucket（按解码后消息计费，惰性回填）
+- [x] network.blocklist.deny 配置 + accept 建会话前拦截（不占连接计数）
+- [x] 测试：test_cov_ip_blocklist 18 用例 + listener 4 用例 + config/bootstrap 校验与接线
+- [x] 网关观测收口：listener 原子计数 + ListenerRegistry + `/ops/metrics` 指标族
+  > CI gate line/branch/function 100%
+
+## Phase 1 / Phase 2 候选
+- [x] docs/db-discipline.md 使用纪律 + 示例
+- [x] runtime-ops.md `/ops/metrics` 抓取口径
+- [x] runtime-config.md net.threads 默认值评估与调优指引
+- [x] gateway.md 顶号/重连时序语义显式化
+- [x] DB 异步入口：db-async-design.md 立项 + M1-M4 实现（挂起恢复原语 → sqlite shim → mysql/pg 接入 → tx 异步 + 指标）
+  > dc2700a / 46634f5 / d2b68ef / 10133a1
+- [x] blue-green 热更新：`shield.claim(name)` 原子接管 + 测试 + 文档对齐
+- [x] TLS：network.tls 配置面（双层 fail-loud、SessionStream 抽象、握手前 blocklist/限流、无降级）
+- [x] schema 方向不对称评估（结论无需 ABI 扩展）+ 无 schema codec 校验插件 + request_codec 评估（保留）
+- [x] Schema 寻址收敛：ABI 删 schema_id/route_id/codec_id，只留 route_name；已删键 YAML/JSON 双路径报错
+  > 全量重编 + build-plugins 串行测试 + clang-format
+- [x] listener bind 失败三类悬垂根因修复（ASan 取证）+ 三用例摘平台守卫
+  > 57dea31 · CI 三平台全绿
+- [x] shield.sleep 续延错误臂对齐 + load_script 改 luaL_loadfile+pcall 保护式
+- [x] xmldef 工具链/文档适配：descriptor 契约全导出面移除数字 schema_id
+
 ## 服务停机 hook on_shutdown
-- [x] on_shutdown(ctx) drain 调度（lua-api.md/runtime-service.md 目标契约 落地）：bootstrap shutdown 在停止 accept/readiness（console/HTTP ops/ listener + net 线程收尾）之后、shutdown_all 之前调用 LuaServiceManager::drain_all("stopping", shutdown.timeout.service_drain)； 按 spawn 逆序（依赖图未实现前的反向顺序）在各 service actor 线程上 运行 on_shutdown（新增 ServiceDrainRequest CAF 消息 + run_drain_handler， 复用 invoke_coroutine 协程 dispatch——hook 内 shield.call/sleep 可用， in_exit=false 与 on_exit 的 call guard 区分）；整段共享 drain 预算 （对齐 shutdown_all 共享 deadline 模式），ctx={reason, deadline_ms, timeout_ms（进入本 hook 时的剩余预算）}，deadline_ms 取业务 Clock （与 shield.now() 同源，文档示例的 `ctx.deadline_ms - shield.now()` 算术成立——原文档写 InfraClock 与示例矛盾，按可实现口径修正文档）； 预算耗尽剩余 hook 跳过记 WARN；hook 抛错/超时记日志继续；缺失 hook 立即 no-op（默认配置零回归）；超时被放弃的 hook 不中断，由 shutdown_all 统一收尾（complete_call 对已擦除 session 安全 drop， 不再另设 expiry driver——有界等待即超时权威，免嗅探错误串）； drain 期间 spawn 拒绝（spawn()/enqueue_async_spawn 双守卫， draining 原子置位后保持 latched）。测试： tests/coverage/test_cov_lua_shutdown.cpp（6 用例：逆序+ctx 形状/ 缺失 no-op/报错继续/超时放弃+跳过+预算有界/drain 中 spawn 拒绝/ 零预算惰性）；docs/lua-api.md、runtime-service.md、 runtime-config.md 实现状态翻转
+- [x] on_shutdown(ctx) drain 调度落地（spawn 逆序 + 共享预算 + drain 期间 spawn 拒绝）
+  > test_cov_lua_shutdown 6 用例 · lua-api/runtime-service/runtime-config 实现状态翻转
+
 ## 测试质量 + 防回退收口
-- [x] 弱测试扫描与加强（12 处）：gateway_bridge 6 处 CHECK(true)→ registry/is_alive/binding 真断言；logger 2 处（ConsoleSink 重定向 rdbuf 断流分流+Error 升级、RotatingFileSink 残留断言）； caf_bridge 析构后 service_manager==nullptr + respawn； http_client cleanup 后真请求；global_manager start/stop 幂等后 data 存活断言
-- [x] RegistrationStubs「被 mock 掉真实逻辑」修复（20a0158）：测试 自声明在 namespace shield::lua::api 内链接到 1396 行空 stub 而非 968 行真实现；两 namespace 各自声明，stub 照调保函数分母， monotonic() 真断言（>0 且单调不减）
-- [x] 函数门禁防假绿核对：902 实体按 basename 逐文件核对 line-rate=1.0 零缺口，与 CI 分母一致；「自声明链错实现」全仓库 仅 RegistrationStubs 一处；make_error 唯一定义
-- [x] ci-fix-report.html 误提交移除（21f6ec1）+ .gitignore 防再犯
-- [x] test_global_manager 纳入 CI（7453b32）：tests/CMakeLists 注释 声称 cluster job 经 global 标签运行它，但从未开 SHIELD_ENABLE_GLOBAL——测试资产空转；cluster job 补开该开关 + label 加 global；本地 Release 树预验证全绿；coverage 维度不开 （避免 shield_global 进函数分母）
-- [x] Windows /proc 平台分支修复（3881f97）：unopenable-path 用例在 Windows 把 /proc 解析到盘根真创建成功致 !exists 必败；Windows 改用 C:\Windows\win.ini\x.log
-> 验收：全量 91/91 绿，三维 100%（11550/10854/902），CI 双 run 全绿
-## Schema 寻址收敛
-- [x] ABI（`include/shield/plugin/protocol_codec.h`）：`decode_args_v1` / `encode_args_v1` 删除 `route_id` / `codec_id` / `schema_id`，只留 `route_name` + payload/message 字段；注释写明 route_name 语义 = host 解析好的最终 schema 类型名
-- [x] `RpcDescriptor`：删 `response_schema` 死字段；`request_schema` 语义改为「显式 schema 类型名覆盖；空 = 同名约定」
-- [x] `RouteEntry`：删 `schema_id`；新增 `schema_name`（`request_schema` 非空取之，否则取 `debug_name`）
-- [x] `DecodedBody`：删 `schema_id`；`codec_id` 无消费点则一并删
-- [x] `ExternalBodyCodec::decode/encode`：`args.route_name` 改用 `route.schema_name`；核实出站（response table key）路径统一走 `schema_name`
-- [x] xmldef catalog：删 `schema_id` / `schema` attr 解析段 （连同 `RouteEntry.codec_id` 死字段与 `XmldefCatalogOptions.default_codec_id` 一并删除—— `codec_for_route` 有意不用 route.codec_id，管线绑定单一 codec）
-- [x] `config.cpp`：routes 键白名单删 `response_schema`；`schema_id` / `response_schema` 已删键在 YAML 与 JSON 两条解析路径均「出现即报错」 （pre-1.0 不做静默兼容读，先例：`network.protocol.routes`）
-- [x] `protocol.protobuf` / `protocol.flatbuffers`：删 `schema_names` / `route_names` 两张映射与 `messages` 配置解析，resolve 收为单行 按名查找；manifest `config_schema` 删 `messages`（fbs 的映射本是 死代码：decode/encode 从未调用 resolve）
-- [x] `protocol.msgpack`：跟随新 ABI 签名（零字段引用，无需改动）
-- [x] 测试：fake codec 跟随新 ABI；schema_id 用例改写为 「同名约定默认」+「request_schema 覆盖优先」两条正路用例； config 新增已删键报错用例（YAML/JSON 双路径）
-- [x] docs：`protocol-routing-design.md` 字段表已更新； `protocol-codec-plugins.md` Implementation Order 第 5 条已改写为 收敛后口径
-> 验收：全量重编 + 串行测试（build-plugins 与主树）+ clang-format，
-## Phase 2 候选
-- [x] 方向不对称 schema 评估完成（2026-09-20），结论**无需 ABI 扩展**， "需要 encode 侧独立 response schema 寻址"的前提已过时：出站 encode 按目标 s2c 路由自己的 `RouteEntry.schema_name` 寻址 （`ExternalBodyCodec::encode` → `resolve_outbound_route`）， gateway 出站强制 `direction == ServerToClient`（同 route_id 回包被 `egress_direction_rejected` 拒绝；测试锚点 test_cov_gateway_actor.cpp:251、test_cov_lua_gateway_bridge.cpp:306），req≠resp 即「c2s 一条 + s2c 一条路由」 各自声明，类型名与路由名不一致用 `request_schema` 覆盖。 protocol-codec-plugins.md 三处过时表述（决策第 5 点、已知 边界、Known Limitations）已同步勘正。
-- [x] 无 schema codec（json/msgpack）的可选 schema 校验插件（2026-09-20）： 校验嵌入 codec 插件本体（零管线改动）。新增 `protocol.json` 校验替身 provider；`protocol.msgpack` 升 1.1.0。实例配置 `schemas`（键 = `RouteEntry.schema_name`）XOR `schemas_file`、`require_schema` （miss → `protocol.schema_not_found`）、`on_violation` reject|warn。校验核心复用 host 子集校验器并补 `additionalProperties`（仅布尔 false 强制——拼写错误的最后防线）/ `minLength`/`maxLength`/`minItems`/`maxItems`。decode 违规（reject） 沿用 decode 失败语义即断连，`warn` 为观察模式。方向不对称 schema 仍留 Phase 2（上一条）。
-- [x] 寻址软收敛完成后的下一步：`request_codec` per-route 覆盖评估 已完成（2026-09-20），结论**保留**：全仓库唯一消费点是 lua_service.cpp 客户端 RPC dispatch 的 json/raw 启发式——无 codec 插件产出 `decoded_request` 时，空或 "json" 由目标 VM 尝试 JSON 解码（失败回退原始字节字符串），其他值原样传字节。它是 无 codec 插件 profile 下同监听器混合 JSON/二进制路由的唯一 控制点，删除即破坏真实部署形态（gateway 测试的 raw 路由是 语义而非测试杠杆）。已修正误导表述：字段注释与 protocol-routing-design.md 字段表原先称 "per-route codec 覆盖 / 空 = profile 默认 codec"，收敛后 codec 绑定恒为 profile 级单一、 本字段从不参与 codec 插件选择，已改写为"解码提示，非 codec 选择"的准确口径。
-- [x] listener bind 失败清理路径的跨平台崩溃已根因修复（2026-09-19， Linux ASan 现场取证，非猜测）：不是单一竞态，而是 bootstrap 拆除顺序的**三类悬垂**——macOS/Windows 分配器不复用 freed chunk 故必炸，Linux 靠 chunk 复用侥幸存活（推断，解释为何 coverage 长期绿）—— (a) console 命令对象悬垂 `this`：`RootCommands`/`LuaCommands` 是 initialize 局部 shared_ptr，注册进 dispatcher 的 lambda 捕 裸 `this`，initialize 一返回即悬垂（ASan：FullStack 里 `cmd_help` 读已释放的 RootCommands；Linux 上疑似 LuaCommands 复用同 chunk 且字段同布局，帮助命令"照常工作"实为读错对象） → 两者移入 GlobalState； (b) console dispatcher 先于 net 线程 join 销毁：shutdown 顶部 reset dispatcher 时 net 线程还可能在跑 console read 完成回调 （ASan 实证 T9 正在 dispatch、T0 已 free）→ dispatcher 与命令 对象改到 net 线程 join 之后销毁（cleanup_failed_initialize 本 就先 join，顺序不动）； (c) initialize 失败点在监听器循环**内部**调 cleanup_failed_initialize：`g_state_owner.reset()` 销毁 GlobalState 之后 `return false` 的栈展开才析构循环局部（失败的 listener/bridge/callbacks），其捕获仍指 GlobalState 内存 （ASan：~TcpListener 读 freed `vector<uint8_t>`）→ 主体改 `initialize_impl`，cleanup 由 wrapper 统一延迟到栈展开完成后； 附带：gateway actor `anon_send_exit` 异步退出与 `lua_services` 销毁竞态（GatewayDeps.manager 裸指针）→ 新增 `exit_gateway_actors_and_wait`（monitor + down_msg + 5s 兜底， 惯用法同 lua_service `wait_for_actors_until`），shutdown 与 cleanup 共用。 验证：ASan 树（build-asan）复现 → 修复后 test_cov_bootstrap 全量与 test_cov_lua_http_bridge 零报错；三个用例已摘除 `#ifndef __APPLE__`（DuplicateListenerPortFails / FullStackInitializeAndShutdown / HttpPortBindFailureIsNonFatal）， CI 三平台真平台复核通过（2026-09-19，57dea31：macOS/Windows/ ubuntu job 全绿，三个用例在 macOS 首次真实运行无崩溃）； http_bridge 的 0x40/0x9 近空指针家族在 Linux ASan 下未复现， 暂无证据指向同类，先不动。 线索勘误存档（2026-09-19 重读 ac48657 attempt-1 完整日志）： 该次 Windows job 实为两个独立失败——smoke 的 nil panic（requeue spin cap 触顶 → 旧 throw 式 panic handler 的绑定层异常逃逸 actor → on_init 超时；c2ce720 后将以 abort+forensics 确定性 暴露）与 08:48 `DuplicateListenerPortFails` 段错误，与本条目 (a)(b)(c) 同根；"`[C]: in global 'error'` 携带 nil" 系误读 （doomed/flaky 用例故意在 main chunk 调 error 的良性加载失败 日志，错误对象是字符串）。
-- [x] shield.sleep 续延（lua_api.cpp `_resume_after` resume_fn）的终态 错误分支已与其它 resume 路径对齐（2026-09-20）：错误臂补齐 `lua_settop(co,0)`（错误对象不再滞留协程栈）、 `on_handler_failed`（sleep 后 error 的在途 call 从"挂到超时"变 为立即收到失败）、`invoke_error_hook`（error_type 取 "sleep"、 method_label 空，对齐 ("fork","") 先例；on_error 钩子 + 连续 错误阈值 panic 计数自此覆盖 sleep 路径）。顺序镜像 invoke_coroutine 终态错误臂；文档注释同步。 集成用例：SleepContinuationErrorRoutesFailureAndHook （string error 上游收到 boom 消息 + on_error 收到 {type="sleep"}；table error 走默认消息 "sleep continuation error"；无 call 会话的 plain handler 只计数不上报）+ SleepContinuationErrorsCountTowardPanic（10 次连续 sleep 错误 触发 panic 退出，与 handler 路径阈值语义一致）。
-- [x] `load_script`（lua_runtime.cpp）的 sol `script_file` throw 式 API 已消除（2026-09-19）：c2ce720 的 panic-abort 语义让它从"清理项" 变成承重 bug——NDEBUG 下 script_file 退化为 luaL_dofile，加载 失败直达 at_panic（原 throw 设计靠绑定层 catch 兜住，abort 设计下直接 SIGABRT），三平台 Release 矩阵的 LoadScriptFile / LoadFailures / LoadScriptOnDirectoryFails 全灭。已改为 luaL_loadfile + lua_pcall 保护式（失败返回 false，永不 raise）， 并补了执行期 error 分支用例。
-- [x] xmldef 工具链/文档适配完成（2026-09-22）：runtime 侧经核查无需 改动——catalog 解析器与 `route_entry_from_descriptor` 两条编译 路径均已只产出 `schema_name`（显式覆盖 ∨ 路由名同名约定）， 代码里残余的 `schema_id` 全部是「已删键报错」路径。文档面把 数字 `schema_id` 从 descriptor 契约的全部导出面移除： xmldef-descriptor-spec.md（源模型 `schema` attr、语义字段、 Required Checks、Method/Route IR、debug.json 要求、 route_constants.json 示例、稳定性规则改 `schema_name`；Route 节写明边界——数字编号只是具体 schema 系统内部概念，不进 descriptor 契约与 codec ABI）；xmldef-phase1-implementation.md （methods/routes/route_constants 示例、decode 元字段改 `__xmldef_schema_name`）；xmldef-toolchain-design.md（IR 字段、 Descriptor Registry 映射、Current Gap 现状注记）； xmldef-unity-generator-spec.md（必需 descriptor 字段 schema name）
-## 覆盖率巡检：可选模块全表面实测
-- [x] **test_lua_api_global 真实分支整套烂掉且无人知（双根因，已修）**： 1) 真 bug（src/lua/lua_api.cpp kGlobalOrchestration 编排 chunk）：`make_exclusive` 先建 `ttl` 字段、随后 `function lock:ttl()` 方法把字段覆盖成方法 → `try_acquire`/`extend` 把 function 传给 `prim.lock_try` 第 4 参 → 绑定层报 "expected number, received function"，mutex/spinlock/distributed_mutex 三组用例确定性红 + 级联 SIGFPE。修法：字段改 `_ttl`（公开读法 `lock:ttl()` 是文档化 API，docs/runtime-global.md:238，保持不动）。 2) rot 根因（tests/lua_api/CMakeLists.txt）：`shield_lua_api_test` 统一打 label "lua_api"，GLOBAL 块没加 "global" 标签 → CI Cluster job （`ctest -L "cluster|player|server|global"`，四开关全开）编译了真实 分支但从不执行；Coverage job（默认树）只跑 stub 分支。已补 label， 该套件自此进 CI Cluster job 真实执行（本地 GLOBAL-on 13/13 绿）。
-- [x] **已补测（真用例，无 mock）**：tests/global/test_global_manager.cpp +2 用例（PriorityAndBroadcastQueueCounts、RateLimitSuite/ KeyCountAndPurgeCoverBothBackends）——上轮巡检确认的 4 个未覆盖函数 （priority_queue_count / broadcast_queue_count / rate_limit_key_count / rate_limit_purge，含未知名 no-op 臂与双后端分叉）全数收口； test_cov_root_commands.cpp 新增 GlobalCommandsReportManagerSnapshot （真 GlobalManager 挂 set_global，root.global / root.status 数据臂 + build_global_status_json 全身）；test_cov_ops_http.cpp ServiceStatsMetrics 扩展（manager 挂载下 /ops/metrics global 段、/ops/status global JSON、 /ops/health global check 三路断言）。GLOBAL-on 形态下 console/ 三文件 （global_status / ops_http_handler / root_commands）line+branch 实测 100%；braced-init 归因伪影按仓内双标记惯例登记（GCOVR_EXCL_LINE GCOVR_EXCL_BR_LINE，理由注明 fixture 已真实驱动）。
-- [x] **GLOBAL-on 实测余量（下一轮收口清单，行数为 GLOBAL-on 实测口径）** （已收口，见「GLOBAL-on 余量收口」节）： src/lua/lua_api.cpp global facade 深层错误臂（93 行 / 221 分支记录缺失， register_global_api 尾段：rw_write_extend、reliable/data/rate 的 error 臂； line 94% / branch 89%）；src/global/global_manager.cpp 方法级错误臂长尾 （32 行 / 130 分支记录，line 97% / branch 87%）； src/bootstrap/bootstrap.cpp GLOBAL gated 装配行 + 分支（bootstrap 套件 未装 global 配置，9 行 / 20 分支记录）。
-- [x] **可选模块未测量 TU（默认树门禁结构性盲区）**（已收口，见 「可选模块三口径实测 + CI 覆盖率 job」节）：四开关（GLOBAL/CLUSTER/ PLAYER/SERVER=ON）本地三口径实测，cluster/server/player 四 TU 与 console 两状态文件 line 全 100%，GLOBAL 三 TU 四开关口径亦 100%； src/main.cpp 结构不可测（GCOVR_EXCL 全文排除 + 无 gcda）； CI 已增设 coverage-optional job（四开关 + gcovr line --fail-under-line 100， 九文件过滤）封死盲区，branch 余量（93%）登记待后续轮。
-## 覆盖率巡检续：不可测余量台账
-## GLOBAL-on 余量收口
-## 四开关口径收割
-## 可选模块三口径实测 + CI 覆盖率 job
-## 覆盖率 branch 口径真臂长尾批次
-## 批次：cluster Redis 服务发现切片 1
-## 批次：shield_global 数据域 Redis 后端切片 1
-## 批次：shield_global 独占锁域 Redis 后端切片 2
-## 批次：shield_global 读写锁域 Redis 后端切片 3
-## 批次：shield_global 排行域 Redis 后端切片 4
-## 代码深审 P2/P3 待办（2026-11-01）
-- [x] **BUG-3 redis.driver free_value 浅释放（内存泄漏）**：`plugins/redis.driver/shield_redis_driver.cpp:577` 的 free_value 只深走 3 层；XREADGROUP / 深层嵌套回复（streams→entries→fields 达 5 层）的深层字符串不释放，driver 路径每读一批泄漏。改真递归（每层对 items 逐元素调自身）。
-- [x] **RACE-2 lua_http_bridge 路由槽 UAF 窗口**：`src/lua/lua_http_bridge.cpp:71-78` attach 装 sink（捕获 this）、detach 清 sink；`src/lua/lua_runtime.cpp:498` 读 sink 与 detach 清空之间竞态——sink 拷贝先于清空、调用在 bridge 析构后 → 悬垂。sink 改存 weak / 经 manager 间接。**已修（2026-11-03）**：路由槽可变状态移入 `LuaHttpBridgeState`（`std::shared_ptr`），sink 与每路由 handler 均捕获 state（`enable_shared_from_this`）而非 bridge `this`——detach+析构后到达的注册/分发看到 `server==nullptr` 安全返回，bridge 仅剩 attach/detach/handle 门面；`test_cov_lua_http_bridge`/`test_cov_http_bridge2`/`test_cov_lua_runtime2` 全绿。
-- [x] **BUG-2 _resume_after 定时器失败泄漏**：`src/lua/lua_api.cpp:1129` `_resume_after` 定时器失效/协程已死时不回收 continuation 资源。**已修（2026-11-03）**：`SleepAnchor` RAII 精确一次释放 registry ref（正常续跑 / 定时器被取消或服务退出销毁回调 / 调度失败三臂全收口），并持有 VM 保活防止销毁路径 UAF；新增 `PendingSleepAnchorReleasesAtManagerTeardown` 回归测试。（7c69651；test_cov_lua_service / test_cov_cpp_lua_api / test_lua_api_timers 全绿）
-- [x] **BUG-6 console_session send_line 裸 this 投递**：`src/net/console_session.cpp:65-70` send_line post 捕获裸 this；若会话在排队写完成前销毁 → UAF。**已修（2026-11-03）**：post 捕获 `shared_from_this()` 保活会话直至排队写完成；新增 `QueuedSendLineOutlivesSessionErase` 回归测试（会话被 server 擦除且外部引用释放后，排队写仍安全）。(a173bf0；test_console_server / test_cov_console_net / test_cov_root_commands 全绿)
-- [x] **BUG-7 postgresql rewrite_placeholders 串字面量误改**：`plugins/postgresql/shield_db_pgsql.cpp:199` 把 SQL 中字符串字面量/注释里的 `?` 也改成 `$N` → 语义错乱。**已修（2026-11-03）**：重写器提取为 `shield_db_rewrite.hpp` 共享头，SQL 词法感知——单引号字面量（含 `''` 转义 / `E'...'` 反斜杠转义）、双引号标识符（`""` 转义）、`--` 行注释、`/* */` 块注释、`$tag$` dollar-quoted 字符串均原样保留 `?`，仅真实参数位重写为 `$N`；新增 `test_plugin_db_pgsql_rewrite` 9 用例锁定行为（字面量/注释/嵌套引号/E-string/dollar-quoted/混合/NULL）。(9c3172a；test_plugin_db_pgsql_rewrite / test_db_net_async（真实加载 postgresql 插件）/ test_plugin_pool_stats_real / test_plugin_lua_facade 全绿)
-- [x] **RACE-3/4 running_/listening_ 裸 bool**：`include/shield/net/http_server.hpp:147` running_、`include/shield/net/listener.hpp:193` listening_、`include/shield/net/console_server.hpp:63` listening_ 为非原子 bool 跨线程读写 → **已修（2026-11-03）**：三处均改 `std::atomic<bool>`（http_server.hpp / listener.hpp / console_server.hpp），`is_running()`/`is_open()` 外部查询与工作线程写不再构成数据竞争。(a1f5d8e；test_cov_http_server / test_cov_listener / test_cov_console_net / test_console_server / test_cov_session / test_cov_tls 全绿)
-- [x] **RACE-5/6 acceptor close-vs-accept**：`src/net/listener.cpp:184/203` stop() 关 acceptor 与在途 async_accept 完成窗口（operation_aborted 判据已覆盖主路径，收口残余窗口）。**已修（2026-11-03）**：`do_accept()` 入口加 `listening_` 守卫——stop() 置 false 后，任何在途 accept 完成（错误臂、拒绝臂、成功臂递归）都不再重投递 `async_accept` 到已关闭 acceptor，消除收口窗口。(7400271；test_cov_listener / test_cov_session 全绿)
-- [x] **BUG-9 lua_runtime 收窄转换**：`src/lua/lua_runtime.cpp:837/2251` 对 Lua 数值键 `as<int>()`——非整数/越界值截断。**已修（2026-11-03）**：三处 `as<int>()` 改读完整 `int64_t`（`lua_to_json` 数组判据 + 对象键序列化 + `LuaPackEncoder` 数组判据），并检查 `> INT_MAX` 拒绝误判密集数组；新增 `t_huge_key`（`[2^40]`）在 `LuaToJsonBranches` 与 `LuaPackEncodeBranches` 的回归锚（超大键编码为对象/map，不截断）。(e7acdc0；test_cov_lua_runtime / test_cov_lua_runtime2 / test_cov_lua_api2 / test_cov_cpp_lua_api / test_cov_lua_service 全绿)
-- [x] **BUG-8 cache.redis incr_by 溢出**：`plugins/cache.redis/shield_cache_redis.cpp:694` INCRBY 无溢出/类型护栏。**已修（2026-11-03）**：driver 路径 `incr`/`incr_by` 在读取回复前校验 `out->type == SHIELD_REDIS_INTEGER`（非整数回复走 `cache_invalid_reply` 错误臂，不再返回截断值）；sw::redis fallback 路径的溢出已有异常捕获→`cache_query_failed`。新增 `test_plugin_cache_redis_incrby` 真实 redis-server 集成测试：先 `set` 至 `LLONG_MAX-1` 再 `incr_by` 溢出，断言 `false, {code="cache_query_failed"}`，正常 `incr_by` 返回新值。(c29b889；test_plugin_cache_redis_incrby / test_plugin_lua_facade / test_plugin_pool_stats_real 全绿)
-- [x] **BUG-5 leaderboard 悬垂名字**：`plugins/leaderboard.redis/shield_leaderboard_redis.cpp:76` 场名/板名以外部指针存活期外引用。**已修（2026-11-03）**：`BoardConfig.field_defs` 由 `vector<shield_leaderboard_field_def>`（`name` 为外部 `const char*`）改为 `vector<BoardField>`（`name` 为自持 `std::string`）——C vtable `create_board` 经 `materialize_board` 复制调用方 `field_defs[].name`，Lua 路径统一为 string 存储，`free_board_config_names` 简化；`encode_composite` 改用 string 比较。新增 `test_plugin_leaderboard_names` 真实 redis-server 测试：栈缓冲 field name 在 `create_board` 后覆写为 `'X'`，`get_entry` 仍返回原 "score"（证明已复制）。(a63bdcb；test_plugin_leaderboard_names / test_plugin_lua_facade / test_plugin_pool_stats_real 全绿)
-- [x] **SEC-2 JWT 缺 exp 注**：`plugins/auth_jwt/shield_auth_jwt.cpp:275` `json_get_int(payload,"exp")` 缺 exp 时返回 0、`if (exp && ...)` 跳过过期检查 → 无 exp 令牌视为永不过期。**已修（2026-11-03）**：`if (!exp || now > exp + cfg.leeway_seconds)` 缺省拒绝（缺 exp 或非正 exp → `token_expired`），无 exp 令牌不再绕过过期检查。新增 `test_plugin_auth_jwt`：手工构造无 exp 的 HS256 token（payload 仅 sub/iat），经 `auth.jwt` ABI `authenticate` 断言 `token_expired`。(b04240c；test_plugin_auth_jwt 全绿)
-- [x] **SEC-3 __shield_client_ref 自证标记无来源校验（P2）**：`src/core/service_message.cpp:31` `ClientContextData::from_json` 接受任意 `{"__shield_client_ref": true, ...}` 且身份字段（session_id/player_id/gateway_address/protocol_profile_id）照单全收，无来源校验；`src/lua/lua_api.cpp:203` `json_to_lua` 把它物化为受信 ClientContext。**已修（2026-11-03）**：`client_arg_to_data` 不再接受裸 `__shield_client_ref` 标记表，只收受信 `ClientContextBox` / `ClientRefBox` userdata（Lua 不可构造）——受信 ingress 经 `json_to_lua` 物化为 userdata 后传入，不受影响；新增裸标记伪造 bind/close/egress 拒绝回归测试。（eb216a3；test_cov_lua_api2 / test_cov_cpp_lua_api / test_cov_lua_service / test_lua_api_client_rpc 全绿）
-- [x] **RACE-7 gateway close 缺 epoch 校验（P2）**：`src/lua/gateway_actor.cpp:210` `handle_client_close` 按 session_id 直接关会话，不像 `handle_client_egress`（:112）比对 `session_epoch`——持过期 ClientContext 的服务可关闭已 rebind 到别的 target 的会话。**已修（2026-11-03）**：close 前比对 `request.context.session_epoch == binding.epoch`，过期引用拒绝并计入新增 `close_stale_epoch` 计数；新增 `CloseWithStaleEpochIsRejected` 回归测试（过期引用不关会话，当前 epoch 引用正常关）。（3302983；test_cov_gateway_actor / test_lua_api_client_rpc / test_cov_lua_service 全绿）
-- [x] **P3 force_remove timer 清理不对称**：`src/lua/lua_service.cpp:3495` `force_remove` 没有 `exit()`（:3282）的 per-service actor-timer / call-timeout 驱动清理；timers 只能等 manager 析构统一清。**已修（2026-11-03）**：`force_remove` 在擦除服务 VM 前取消该服务的 fork 任务 / actor-timer / call-timeout 驱动并 join（与 `exit()` 同构），驱动句柄入 graveyard 释放——timer 回调持有的 `shd::function` 不再在 VM 销毁后 `luaL_unref` 关闭的 state；新增 `ForceRemoveCancelsActorTimers` 回归测试（on_init 常驻 timer 经预算耗尽 force_remove 后 `active_actor_timer_count()==0`）。（ce26cce；test_cov_lua_service2 / test_cov_lua_service / test_lua_api_timers / test_cov_lua_service3 / test_cov_lua_service4 / test_cov_lua_shutdown 全绿）
-- [x] **P3 观察**：clang-tidy 既有警告（narrowing-conversions ×2、convert-member-functions-to-static ×3、inefficient-vector-operation ×2）非本批引入；同仓 JSON 深度防护面（`plugins/protocol.json` / `src/transport/protocol.cpp`）已随本批 commit 落地（见 `fix: reject over-deep json payloads at codec boundary` / `fix: depth-guard json plugin decode and encode`）。**已确认（2026-11-03）**：重跑 clang-tidy（`lua_api.cpp` / `lua_service.cpp` / `bootstrap.cpp`）确认 warning 类别仍为既有（`cppcoreguidelines-narrowing-conversions` / `readability-convert-member-functions-to-static` / `performance-inefficient-vector-operation`），无本批新增；JSON 深度防护面（`c808f3d` / `5bfe132`）在批次 `8a191944d65e..HEAD` 内。（10bd7be；纯观察，无代码改动）
+- [x] 弱测试扫描与加强 12 处（CHECK(true) → 真断言）
+- [x] RegistrationStubs 错链空 stub 修复
+  > 20a0158
+- [x] 函数门禁防假绿核对：902 实体零缺口
+- [x] ci-fix-report.html 误提交移除 + .gitignore 防再犯
+  > 21f6ec1
+- [x] test_global_manager 纳入 CI（cluster job 开 SHIELD_ENABLE_GLOBAL）
+  > 7453b32
+- [x] Windows /proc 平台分支修复
+  > 3881f97
+  > 全量 91/91 绿，三维 100%（11550/10854/902），CI 双 run 全绿
 
-## 代码深审第二波 P2/P3 待办（2026-11-03，本会话三路读审代理 + 安全扫描）
+## 覆盖率巡检：可选模块
+- [x] test_lua_api_global 真分支双根因修复（kGlobalOrchestration ttl 字段覆盖 + CI label 缺失）
+  > GLOBAL-on 13/13 绿，套件进 CI Cluster job
+- [x] global_manager 4 未覆盖函数补真用例 + console 三文件 GLOBAL-on 100% 实测
+- [x] 四开关三口径实测 + CI coverage-optional job 封死盲区
+  > cluster/server/player/global TU line 100%
 
-> 第一波见上节「代码深审 P2/P3 待办（2026-11-01）」。本节为独立第二遍全量深审（bootstrap/console/global/cluster、net/transport/protocol、lua/core 三路 + 安全扫描），与第一波无重叠。所有条目均已对照本仓源码复核。第二波 P1 已当场修复（见 `docs/review/2026-11-01-code-review.md` 第九节，commit e4e3567 / e42bd3f / b90be2e / 9c2afd3 / 00aef5f）。
+## 代码深审 P2/P3（第一波，2026-11-01）
+- [x] BUG-3 redis.driver free_value 浅释放改真递归
+- [x] RACE-2 lua_http_bridge 路由槽 UAF 改 shared state
+  > test_cov_lua_http_bridge / test_cov_http_bridge2 / test_cov_lua_runtime2 全绿
+- [x] BUG-2 _resume_after 定时器失败泄漏改 SleepAnchor RAII
+  > 7c69651 · test_cov_lua_service / test_cov_cpp_lua_api / test_lua_api_timers 全绿
+- [x] BUG-6 console_session send_line 裸 this 改 shared_from_this
+  > a173bf0 · test_console_server / test_cov_console_net / test_cov_root_commands 全绿
+- [x] BUG-7 pgsql rewrite 字面量误改改词法感知重写器
+  > 9c3172a · test_plugin_db_pgsql_rewrite 9 用例全绿
+- [x] RACE-3/4 running_/listening_ 改 std::atomic&lt;bool&gt;
+  > a1f5d8e · 相关六套件全绿
+- [x] RACE-5/6 acceptor close-vs-accept 收口（do_accept 入口 listening_ 守卫）
+  > 7400271 · test_cov_listener / test_cov_session 全绿
+- [x] BUG-9 lua_runtime 窄化转换改 int64 + INT_MAX 拒绝
+  > e7acdc0 · 相关五套件全绿
+- [x] BUG-8 cache.redis incr_by 整数回复护栏 + 真实 redis 集成测试
+  > c29b889 · test_plugin_cache_redis_incrby 全绿
+- [x] BUG-5 leaderboard 悬垂名字改自持 std::string
+  > a63bdcb · test_plugin_leaderboard_names 全绿
+- [x] SEC-2 JWT 缺 exp 拒绝（token_expired）
+  > b04240c · test_plugin_auth_jwt 全绿
+- [x] SEC-3 裸 __shield_client_ref 标记伪造拒绝（只收受信 userdata）
+  > eb216a3 · 相关四套件全绿
+- [x] RACE-7 gateway close 补 epoch 校验
+  > 3302983 · test_cov_gateway_actor / test_lua_api_client_rpc 全绿
+- [x] P3 force_remove 补 timer/call-timeout 驱动清理（与 exit() 同构）
+  > ce26cce · 相关六套件全绿
+- [x] P3 clang-tidy 既有警告确认无本批新增（观察项，无代码改动）
+  > 10bd7be
 
-- [x] **C1 TLS 握手状态持裸 `TcpListener*`（P2）**：`TlsHandshakeState`（`src/net/listener.cpp:104`）自引用堆对象持有裸 `TcpListener*` 并在 `on_handshake`（:79）解引用；`stop()` 明确不取消在飞握手（头注释「each one carries its own deadline and self-closes」），监听器在慢客户端握手中途析构 → UAF。**已修（2026-11-04）**：在飞握手状态登记为 weak_ptr registry，`stop()`/析构经 `cancel_in_flight_handshakes` 置 cancelled 并关 socket；成功路径经独立 `HandshakeGate`（shared_ptr，比监听器与握手状态都长寿）与 teardown 互斥——teardown 在 gate 锁内置 stopping，成功完成见 stopping 即退出，赢得锁者先 adopt 再放行 teardown，监听器不被存活完成解引用；`adopt_connection` 再查 `stopping_` 丢弃 socket。（6477508；`test_cov_tls` 13/13、`test_cov_listener` 19/19、`test_cov_session`/`test_cov_bootstrap`/`test_cov_bootstrap2`/`test_cov_http_server` 全绿，新增 `HandshakeOutlivesListenerDestruction` 回归用例：tests/coverage/test_cov_tls.cpp:453-499）
-- [x] **C2 `last_rejection_` 跨线程无同步（P2）**：`src/net/listener.cpp:258` 在 accept 完成路径无锁写 `last_rejection_`（std::string），`include/shield/net/listener.hpp:104` `last_rejection_reason()` 跨线程读 → std::string 读写 UB。**已修（2026-11-04）**：新增 `rejection_mutex_`，getter 返回副本、blocked_ip/connection_limit/ip_limit 三处写入均在锁内；新增 `LastRejectionReadableUnderConcurrentWrites` 回归测试（accept 写入同时另一线程持续读取）。（356a0c8；`test_cov_listener` 20/20 绿，tests/coverage/test_cov_listener.cpp:817-862）
-- [x] **C3 msgpack 解码无嵌套深度上限（P2）**：`plugins/protocol.msgpack/shield_protocol_msgpack.cpp:118` `from_msgpack` + :124 `dump()` 均递归走 C++ 栈无深度封顶；攻击者经 `ExternalBodyCodec` 投喂 ~100k 层嵌套 array 即可栈溢出。**已修（2026-11-04）**：新增非递归 msgpack walker 预扫原始字节（`msgpack_nesting_within`），array/map 嵌套超过 512（对齐 json 守卫 `kMaxJsonDepth`）在构建 DOM 前拒绝；walker 覆盖全部 msgpack 形状（fixint/bin/str/ext/float/int/map/array），校验边界并拒截断/非法字节，map 对与 ext 大小乘法防回绕；encode 侧 `to_msgpack` 前对 JSON 输入同款深度守卫。（d83c1e8；`test_protocol_msgpack_plugin` 11/11 绿——含 513 深拒绝、512 上限通过、100k 深 payload 拒绝、混合形状、bin/ext 叶；tests/plugin/test_protocol_msgpack_plugin.cpp:270-420）
-- [x] **C4 `impl_->actor` 跨线程无锁读写（P2）**：`src/cluster/cluster_transport.cpp` 中 `impl_->actor`（refcounted caf::actor）写于 start()（:920/:942）与 stop()（:948/:981），无锁读于 :956/:965/:966/:979/:1042（anon_send 拷贝 refcount）与 unpublish → 并发读写 refcount UB。**已修（2026-11-04）**：删除 `impl_->actor` 字段，全部访问统一经 `side->outbound_actor`（`peers_mutex` 守护）；`send_envelope` 在取 peer handle 的同一共享锁内拷贝 publisher，`stop()` 在独占锁内 unpublish/清空，publish 失败路径对局部 actor 发 exit。（cb142c5；`test_cluster_transport`/`test_cluster_manager` 28 例/`test_cov_cluster` 12 例全绿）
-- [x] **C5 `remote_send_fn` 无锁读（P2）**：`src/cluster/cluster_manager.cpp:336` `send_remote` 无锁读 `remote_send_fn`（写于 :325-328 的 mutex 下） → 数据竞争。**已修（2026-11-04）**：`send_remote` 在 `impl_->mutex` 共享锁内拷贝 `RemoteSendFn` 快照后再调用，与 `set_remote_send_fn` 的独占写互斥。（b1d3a46；`test_cluster_manager` 28 例 / `test_cov_cluster` 12 例全绿）
-- [x] **C6 `broadcast_attach` 初始游标下溢（P2）**：`src/global/global_manager.cpp:994` `try_emplace(group, queue.next_seq - 1)` 在 `next_seq==0`（该队列从未推送）时下溢为 UINT64_MAX；`broadcast_since` 过滤 `if (seq <= cursor) continue`（:1014）→ 该新组永远收不到任何广播。**已修（2026-11-04）**：从未推送时初始游标钳 0（`next_seq == 0 ? 0 : next_seq - 1`）；新增 `BroadcastAttachOnEmptyQueueStartsAtZero` 回归（attach 先于首推，`broadcast_since` 仍收到首条）。（c5fd319；`test_global_manager` 77/77 绿，tests/global/test_global_manager.cpp:1458-1472）
-- [x] **C7 sampler 跨线程 sweep 门控（P2，TOCTOU 臂已修）**：`ProfileSampler::sweep_active`（`src/lua/profile_sampler.cpp:133-137`）可被任意 service actor 线程调用（调用点 `src/lua/lua_runtime.cpp:1531`、`src/lua/lua_service.cpp:6223`），对采样会话的 lua_State 跨线程 `lua_sethook`/遍历，违 `include/shield/lua/profile_sampler.hpp:4-6`「仅 owner actor 线程」不变式。**已修（2026-11-04）**：sampler 在 install 绑定 service_id，`sweep_active(service_id)` 以当前派发 service 为门控，不匹配即 no-op；`invoke_coroutine`/`resume_suspended_caller` 传各自 service；新增 `SweepActiveSkipsForeignService` 回归（foreign/空 service 不触发 provider，owner 才触发）。（269807e；`test_ops_profile` 17/17、`test_cov_lua_service`/`test_cov_lua_runtime` 等 8 套件全绿）
-- [x] **C8 sleep 定时器不可取消 + 误报错误计入 panic（P2，已收窄）**：`src/lua/lua_api.cpp:1265` `_resume_after` 把 `schedule_actor_timer_once_fn` 返回值 `(void)` 丢弃 → 定时器无任何显式取消路径；终端错误臂（:1241-1242 `on_handler_failed` + `invoke_error_hook("sleep")`）对死协程的 `lua_resume` 报「sleep continuation error」并计入 panic 阈值。**已修（2026-11-04）**：采用 `lua_status` 守卫方案——timer 回调先检查协程状态，`!= LUA_YIELD`（已被其它 resume 源完成）时释放 anchor 静默返回，不 `lua_resume`、不计错误、不进 panic；正常挂起协程照常驱动。取消面（保留 timer id 显式 cancel）与 BUG-2/ce26cce 的资源收口正交，本条取守卫臂即消除误报根因。（c0fab65；`test_cov_lua_service` 50/50、`test_cov_cpp_lua_api` 9/9、`test_ops_profile` 17/17 全绿）
-- [x] **D1 `running` 裸 bool 跨线程（P3）**：`src/cluster/cluster_manager.cpp:39` `bool running = false` 在 `run_tick`（:90）无锁读（写于 start/stop）。**已修（2026-11-04）**：改为 `std::atomic<bool>`，`run_tick`/`start_discovery` relaxed load，start/stop release store。（51c252c；`test_cluster_manager` 28/28、`test_cov_cluster` 12/12 全绿）
-- [x] **D2 `node_id_` 跨线程读（P3）**：`src/player/player_manager.cpp:262` `resolve` 无锁读 `node_id_`（std::string，写于 set_locality :112）。**已修（2026-11-04）**：`node_id()` 返回加锁、`resolve` 先经 `node_id()` 快照再比对。（f4808a5；`test_player_manager` 28/28 绿）
-- [x] **D3 cron step 有符号溢出（P3）**：`src/global/global_manager.cpp:72-74` `atoi` 仅查 `step <= 0` 无上界，循环 `for (int v = begin; v <= end; v += step)`（:109）在 step 巨大时 `v += step` 溢出 UB。**已修（2026-11-04）**：在范围校验后拒绝 `step > end - begin + 1`（超范围 step 至多命中起点且必致溢出）；新增 `*/999999999` 与 `1-3/999999999` 拒绝用例。（9c5fa65；`test_global_manager` 77/77 绿，tests/global/test_global_manager.cpp:156-159）
-- [x] **D4 `max_frame_size` 构造参数死旋钮（P3）**：`src/net/session.cpp:56-66` `TcpSession` 构造接 `max_frame_size` 但从不存储/使用（session.hpp 无成员）；`src/net/listener.cpp:347` 传入后静默无效，实际上限恒为 pipeline 默认（16 MiB）。**已修（2026-11-04）**：`TcpSession` 存储 `max_frame_size_`，`start()` 创建 pipeline 后经新增 `ProtocolPipeline::set_max_frame_size`/`Envelope::set_max_frame_size` 应用到 envelope（0 保留 profile 配置，非 0 覆盖）；新增 `SessionMaxFrameSizeOverridesPipelineDefault` 回归（pipeline 无上限 + session 16 字节限 → 超限帧断连）。（daa233d；`test_cov_session` 30/30、`test_cov_listener` 20/20、`test_cov_tls` 13/13 全绿）
-- [x] **D5 `error_code_` 跨线程无同步（P3）**：`include/shield/net/session.hpp:254` `error_code()` 跨线程读、`:318` 声明 std::string、写于 `src/net/session.cpp:427`（strand 上）→ std::string 读写 UB。**已修（2026-11-04）**：新增 `error_mutex_`，getter 返回副本，`on_session_error` 先映射到局部 `code` 再锁内写。（b40e897；`test_cov_session` 30/30、`test_cov_listener` 20/20 绿）
-- [x] **D6 `limited_count_` 跨线程读（P3）**：`include/shield/net/session.hpp:81` `rate_limited_count()` 跨线程读 `limited_count_`（uint64_t，:95），写于 `try_acquire`（strand）。**已修（2026-11-04）**：改 `std::atomic<uint64_t>`，getter relaxed load、`try_acquire` 丢弃路径 `fetch_add`。（2b9e90e；`test_cov_session` 30/30 绿）
-- [x] **D7 HTTP 客户端响应体无上限（P3）**：`src/net/http_client.cpp:31` `write_callback` 无 cap 追加、`CURLOPT_MAXFILESIZE` 未设 → 被抓取 URL 可无界增长内存。**已修（2026-11-04）**：`HttpClientOptions::max_response_size`（0=无限），write_callback 以 `WriteContext` 检查累计体超限返回 0（CURLE_WRITE_ERROR）并报 `response body exceeds max_response_size`；upload 同步新回调契约；新增 `MaxResponseSizeAbortsLargeBody` 回归（4KB body / 1KB cap 中止、8KB cap 通过）。（01bd3a9；`test_cov_http_client` 11/11 绿）
-- [x] **D8 `ConsoleServer` on_close/accept 捕获裸 `this`（P3）**：`src/net/console_server.cpp:96` `cbs.on_close`（及 accept handler :80/:119）捕获裸 `this`；会话 pending 异步完成持有 session shared_from_this，服务器析构后 `handle_close()` 在已析构服务器上回调 → UAF。BUG-6 已收 `console_session::send_line`，本条为服务器侧残余。**已修（2026-11-04）**：会话注册表/accept 器迁入 `ConsoleServer::SharedState`（shared_ptr，随 async 完成持有，比服务器长寿）；accept 完成与 `on_close` 均只捕获 `state` 而非 `this`，`set_on_line` 经回调锁拷贝；新增 `SessionCompletionOutlivesServerDestruction` 回归（会话 pending 期间 stop+析构，再关对端触发 handle_close）。（1588a77；`test_console_server` 5/5、`test_cov_console_net` 12/12、`test_cov_bootstrap2` 全绿）
+## 代码深审第二波（2026-11-03/04）
+- [x] C1 TLS 握手状态 UAF：weak registry + HandshakeGate + adopt 复查
+  > 6477508 · test_cov_tls 13/13 等全绿
+- [x] C2 last_rejection_ 跨线程读写加锁
+  > 356a0c8 · test_cov_listener 20/20 绿
+- [x] C3 msgpack 解码深度守卫 512（非递归 walker + encode 侧同款）
+  > d83c1e8 · test_protocol_msgpack_plugin 11/11 绿
+- [x] C4 cluster_transport impl_->actor 无锁读写删字段统一 outbound_actor
+  > cb142c5 · test_cluster_transport / test_cluster_manager / test_cov_cluster 全绿
+- [x] C5 remote_send_fn 锁内快照后再调用
+  > b1d3a46 · test_cluster_manager 28 例 / test_cov_cluster 12 例全绿
+- [x] C6 broadcast_attach 初始游标下溢钳 0
+  > c5fd319 · test_global_manager 77/77 绿
+- [x] C7 sampler sweep_active 按服务门控
+  > 269807e · test_ops_profile 17/17 等 8 套件全绿
+- [x] C8 sleep 定时器误报错误：lua_status 守卫替代盲目 resume
+  > c0fab65 · test_cov_lua_service 50/50 等全绿
+- [x] D1 cluster running 改原子
+  > 51c252c · test_cluster_manager 28/28 / test_cov_cluster 12/12 绿
+- [x] D2 player node_id_ 加锁快照
+  > f4808a5 · test_player_manager 28/28 绿
+- [x] D3 cron step 上界拒绝防溢出
+  > 9c5fa65 · test_global_manager 77/77 绿
+- [x] D4 max_frame_size 构造死旋钮生效（session 级覆盖 pipeline）
+  > daa233d · test_cov_session 30/30 等全绿
+- [x] D5 error_code_ 跨线程读写加锁
+  > b40e897 · test_cov_session 30/30 绿
+- [x] D6 limited_count_ 改原子
+  > 2b9e90e · test_cov_session 30/30 绿
+- [x] D7 HTTP 客户端响应体上限（max_response_size）
+  > 01bd3a9 · test_cov_http_client 11/11 绿
+- [x] D8 ConsoleServer 裸 this 改 SharedState
+  > 1588a77 · test_console_server 5/5 等全绿
 
-## 审核批次：8a191944d65e..HEAD（单提交 394351a Fix recursive Redis value freeing）
-- [x] 审核发现：**free_value 语义变更引入 heap corruption（回归）**——属实。pipeline 改为每元素独立堆分配（`shield_redis_value_v1***` 指针数组），Lua 绑定逐元素 `free_value(out_array[i])` 后释放指针数组（plugins/redis.driver/shield_redis_driver.cpp:565-570、:980-982）；真实 redis-server 集成测试钉住所有权契约（tests/plugin/test_redis_driver_free_value.cpp:246-346）。
-- [x] 审核发现：**free_value 不再幂等，违反文档契约**——属实。更新 redis.h 与 docs，明确"释放节点本身、同一指针不可二次释放、NULL 安全"（include/shield/plugin/redis.h:114-118、docs/zh/plugins/redis-driver.md:282）。
-- [x] 审核发现：**ABI 头契约与实现不一致**——属实。pipeline 签名改为 `shield_redis_value_v1***`（指针数组），契约改为"逐元素 free_value 后释放指针数组"，与实现一致（include/shield/plugin/redis.h:98-106）。
-- [x] 审核发现：**测试缺口——新测试未覆盖 pipeline 内联元素释放**——属实。新增 pipeline 所有权契约单测（指针数组 + 逐元素 free）与真实 redis-server 集成测试（tests/plugin/test_redis_driver_free_value.cpp:190-346）。
-- [x] 审核发现：**测试可移植性——`-Wl,--wrap=` 无平台护栏**——属实。`--wrap` 链接选项加 `CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"` 护栏（tests/CMakeLists.txt:807-813）。
-- 不属实：本轮 diff 其余部分整体未见问题——pipeline 路径即属本次回归（见前四条属实发现），不能以"未见问题"整段勾选。
+## Redis 审核收口（394351a / 7a94beb / 715a0a3 / 178d73b 批次）
+- [x] free_value 语义变更回归修复：pipeline 元素独立堆分配 + 逐元素释放
+- [x] ABI 契约同步：free_value 语义 + pipeline `shield_redis_value_v1***` 签名写入 redis.h
+- [x] v1 ABI 冻结、接口升 shield.redis.v2，v1 vtable 请求返回 NULL
+  > b9f9fd0 · test_redis_driver_free_value 5/5 绿
+- [x] pipeline calloc 判空（bad_alloc 错误臂 + 注入测试）
+  > b9f9fd0 · test_redis_driver_free_value 5/5 绿
+- [x] 测试补齐：pipeline 所有权契约单测 + 真实 redis-server 集成 + bridge 析构后路由覆盖
+  > cab3aed · test_cov_http_bridge2 7/7 绿
+- [x] `--wrap` 链接选项加 GNU/Clang 平台护栏
+- [x] free_value_contents 深递归标注为既有对称暴露面（接受）
 
-## 审核（8a191944d65e..HEAD，只审不改）— commit 394351a "Fix recursive Redis value freeing"
-- [x] 审核发现：free_value 语义被改成"释放节点本身"，pipeline 仍按旧契约对内联元素 free_value——属实。修为独立堆分配 + 逐元素 free_value，真实 server 测试钉住契约（plugins/redis.driver/shield_redis_driver.cpp:565-570、:980-982；tests/plugin/test_redis_driver_free_value.cpp:246-346）。
-- [x] 审核发现：公共 ABI 契约未随语义更新——属实。redis.h 同步更新 pipeline 签名/释放契约及 free_value 语义（include/shield/plugin/redis.h:98-118）。
-- [x] 审核发现：测试缺口——属实。新增 pipeline 所有权契约单测与真实 redis-server 集成测试（tests/plugin/test_redis_driver_free_value.cpp:190-346）。
-- [x] 审核发现：低危——free_value_contents 任意深度递归（栈深随 Redis 回复嵌套无上限）——属实，属既有对称暴露面，与 reply_to_value 一致，暂标注为接受（plugins/redis.driver/shield_redis_driver.cpp:258-272）。
+## 修复批次复审（178d73b..HEAD）
+- [x] SEC-3 收口：invoke_client_rpc 剔除不受信 decoded_request 中的伪造标记
+  > 9053060 · test_lua_api_client_rpc 11/11 等全绿
+- [x] cleanup_failed_initialize 的 cluster_transport->stop() 前移镜像成功路径
+  > f3bf9a8 · test_cov_bootstrap / test_cluster_* 全绿
+- [x] pgsql 重写器：含 `$` 未加引号标识符不再误判 dollar-quote
+- [x] pgsql 重写器：块注释改 depth 计数支持嵌套
+  > fab5e5e · test_plugin_db_pgsql_rewrite 11/11 / test_db_net_async 全绿
+- [x] incr_by 测试补 driver 路径两用例（伪造 vtable 注入）
+  > af8b571 · test_plugin_cache_redis_incrby 3/3 绿
+- [x] force_remove 补 recently_exited 封顶
+  > 30bf228 · 相关五套件全绿
+- [x] pgsql JSON 运算符 `?`/`?|`/`?&` v1 合同钉住
+  > 77cc19c · test_plugin_db_pgsql_rewrite 12/12 绿
+- [x] upload() 响应体上限 1 MiB + 回归
+- [x] plaintext accept 完成尾部并入 HandshakeGate 守卫
+- [x] settle()/cancel() 对同一 socket 的 close 串行化
+  > test_cov_tls 15/15 绿（上三条同批）
+- [x] invoke_client_rpc 补 ProfileSampler::sweep_active(service_id)
+  > test_cov_lua_runtime 48/48 绿
+- [x] redis.driver 头注释更新为 v2 口径
+  > test_redis_driver_free_value 全绿
+- [x] console_server 弃用 io_ 成员移除
+  > test_cov_console_net 12/12 绿
+- [x] 测试助手补整体 deadline + port 0 临时端口消除 TOCTOU
+  > test_cov_http_bridge2 7/7 绿
 
-## 审核（394351ab76c5..HEAD，只审不改）— commits 7a94beb Fix Redis pipeline ownership contract / 715a0a3 count inbound replies before trust checks / 178d73b keep http bridge route slots alive across teardown
+## dashboard 立项：React + TS + antd + ProComponents 运维控制台（FIX-WEB-01~14）
+- [x] FIX-WEB-01 钉住 ops API 契约 docs/dashboard-api.md（逐端点 envelope/错误/超时 + 缺口清单）
+  > test_cov_ops_http 45/45 绿
+- [x] FIX-WEB-02 React 控制台工程（react 18.3.1 / antd 5.27.6 / pro-components 2.8.10 / vite 6.4.4 锁版本，入 pnpm workspace）
+  > pnpm build 成功 · C++ 回归 108/108 绿
+- [x] FIX-WEB-03 ops Bearer 认证门（http.ops_auth_token，/ops/health 豁免，常数时间比较）
+  > test_cov_ops_http 48/48 绿
+- [x] FIX-WEB-04 静态托管与 SPA 路由（set_static_root、穿越防护、未知 /ops/* JSON 404）
+  > test_cov_ops_http 52/52 绿
+- [x] FIX-WEB-05 只读运维总览页（health/server/cluster/uptime，断网 stale 标记）
+  > pnpm build 成功 · 套件 52/52 绿
+- [x] FIX-WEB-06 Lua 服务页（列表 + 详情，timeout 504 与 404 区分展示）
+  > pnpm test 4/4 绿
+- [x] FIX-WEB-07 插件与连接池页（required degraded 口径与 health 一致，池指标同源对账）
+  > pnpm test 6/6 绿 · test_cov_ops_http 53/53 绿
+- [x] FIX-WEB-09 进程机资源指标（shield_process_rss_bytes/threads/open_fds/cpu_percent）
+  > test_cov_ops_http 53/53 绿（ProcessResourceMetricsEmitted）
+- [x] FIX-WEB-10 类型化客户端与轮询层（2s 基线、指数退避、queryId 竞态防护）
+  > pnpm test 2/2 绿 · C++ 108/108 绿
+- [ ] FIX-WEB-08 网关连接与限流页（per-listener 计数/TLS 握手成败）
+- [ ] FIX-WEB-11 配置脱敏视图页（脱敏键族标注，不回显原文）
+- [ ] FIX-WEB-12 eval/profile 受控操作页（opt-in 可达、token 不落盘、分支如实展示）
+- [ ] FIX-WEB-13 真机浏览器验收与安全门（真实进程 + 真浏览器证据，不得以进程内用例充当）
+- [ ] FIX-WEB-14 生产构建与托管收口（CI 构建产物、无秘密检查、文档接入说明）
 
-覆盖范围：`git diff 394351ab76c5..HEAD`，10 文件（redis.h / docs / shield_redis_driver.cpp / cluster_transport.cpp / lua_http_bridge.cpp/.hpp / CMakeLists.txt / test_cov_cluster.cpp / test_redis_driver_free_value.cpp / todo.md），+336/-61。逐文件审查完毕。
-
-- [x] 审核发现：**pipeline 的 out_array calloc 返回值未判空**——属实。非空回复下 calloc 失败改为抛 `bad_alloc` 并落入既有错误返回；测试插桩 calloc 强制失败钉住 `-1`/空输出/错误码——已提交 b9f9fd0；`test_redis_driver_free_value` 5/5 绿（tests/plugin/test_redis_driver_free_value.cpp:381-424）。
-- [x] 审核发现：**pipeline 公共 ABI 破坏性签名变更未升版本（低危/兼容性）**——属实。冻结 v1 契约、接口升为 `shield.redis.v2`，driver 不再返回 v1 vtable，三个 Redis 上层消费者与 manifest/docs 同步；测试钉住 v1 请求必须为 NULL——已提交 b9f9fd0；`test_redis_driver_free_value` 5/5 绿（tests/plugin/test_redis_driver_free_value.cpp:342-349）。
-- [x] 审核发现：**测试缺口——pipeline 错误路径未覆盖**——属实（部分）。补齐可确定性构造的 `count==0` 与 calloc OOM 臂；`pipe.exec()`/`reply_to_value` 中途异常无注入面，不造假测试——已提交 b9f9fd0；`test_redis_driver_free_value` 5/5 绿（tests/plugin/test_redis_driver_free_value.cpp:381-424）。
-- [x] 审核发现：**测试缺口——http bridge 路由 handler 在 bridge 析构后被调用的场景未直接覆盖**——属实。新增 loopback socket 经真实 `HttpServer` accept/read/dispatch/route table 调用，并先后覆盖 bridge 存活与析构后两臂——已提交 cab3aed；`test_cov_http_bridge2` 7/7 绿（tests/coverage/test_cov_http_bridge2.cpp:390-445）。
-
-已核无问题部分：cluster_transport `rx_messages` 计数前移——两处入站 handler（:670 EnvelopeMsg、:820 EnvelopeReplyMsg）各自在到达时计数、互不重复，前移仅使被信任检查丢弃的伪造回复也被计入（语义符合"每帧都计数"），转发臂（LocalDispatch+peer）为出站路径不计数，无双重计数；`LuaHttpBridgeState` shared_ptr 生命周期——server 路由表/route sink 均在 lua_runtime/lua_services 之前销毁（bootstrap.cpp:1664-1668 vs :348-349），state 持有的 runtime/manager 引用及 forked task 捕获的 `&runtime` 均无悬垂窗口；`shared_from_this()` 调用点（attach 重放经 `state_`、sink 经拷贝）均在 shared_ptr 托管内，无 bad_weak_ptr；`register_on_server` 的 server 读/写均在 server_mutex 下，无数据竞争；`test_cov_cluster` 轮询等待有界（≤3s）无挂死；`free_value_pipeline_contract` 计数（baseline+7 → 释放 7）与集成测试 `BOOST_CHECK_LT(g_live, baseline)` 均自洽。
-
-## 审核发现
-
-覆盖范围：`git diff 178d73b7ae8a6a3abda5da4b9a8e54f2b4d578c5..HEAD`（33 文件，+1532/-240），即第二波修复批次（BUG-2/5/6/7/8/9、RACE-3~7、SEC-2/3、P3 force_remove、B1 bootstrap 顺序、B2 http 捕获、B3 sampler 单次 load）。
-
-- [x] 审核发现：**SEC-3 修复不完整——伪造标记仍可经 json_to_lua 物化路径绕过**（P2/安全）。`client_arg_to_data` 仅拒裸标记表（src/lua/lua_api.cpp:159-171），但 `json_to_lua` 对任意 JSON 对象（含客户端可控消息体）中的 `__shield_client_ref` 标记仍物化为受信 `ClientContextBox` userdata（src/lua/lua_api.cpp:242-252）；`invoke_client_rpc` 把客户端 `decoded_request` 直接 `json_to_lua`（src/lua/lua_runtime.cpp:1802），`decoded_request` 来自客户端包体、无脱敏（src/lua/lua_gateway_bridge.cpp:132）。客户端在请求体（含嵌套）放 `{"__shield_client_ref":true,"session_id":<受害会话>,...}` 即物化为 userdata，handler 透传给 `shield.client.bind/close/_client_egress` 时被 `extract_client_data` 接受——SEC-3 所述"不受信 payload 透传"路径未收口。**已修（2026-11-04）**：`invoke_client_rpc` 仅对不受信 `decoded_request` 递归剔除 `__shield_client_ref` / `__shield_player_ref` 保留键后再 `json_to_lua`；gateway 传入的受信 `ingress.context` 仍正常物化。新增 `RequestBodyMarkerCannotForgeIdentity` 回归（嵌套 client/player 标记变普通表、bind 拒绝、合法嵌套数据保留）。（9053060；`test_lua_api_client_rpc` 11/11、`test_cov_lua_api2`/`test_cov_cpp_lua_api`/`test_cov_lua_runtime*`/`test_cov_lua_service` 全绿）
-- [x] 审核发现：**启动失败路径 cluster_transport 关停顺序未镜像成功路径（B1 同类残留）**（P2）。`cleanup_failed_initialize` 在 `lua_services.reset()`（src/bootstrap/bootstrap.cpp:366）之后才 `cluster_transport->stop()`（:374），而 `shutdown()` 明确把 `cluster_transport->stop()` 置于 `lua_services.reset()` 之前（:1737 vs :1767，注释明示"inbound envelope bridges dispatch into lua_services, so it must outlive the transport actor's message loop"）；失败路径窗口内入站 envelope 经 bridge 派发进已释放 lua_services → UAF。b90be2e/e42bd3f 只收口了 server/global manager，cluster transport 遗漏。**已修（2026-11-04）**：`cleanup_failed_initialize` 把 `cluster_transport->stop()` 前移到 `lua_services.reset()` 之前，与 `shutdown()` 成功路径同序；新增 `ClusterListenFailureCleansUpAfterTransportStops` 回归（占用 cluster listen 端口令 `start()` 失败，走 startup-failure 清理路径）。（f3bf9a8；`test_cov_bootstrap` 全绿、`test_cluster_transport`/`test_cluster_manager`/`test_cov_cluster` 全绿）
-- [x] 审核发现：**占位符重写器把含 `$` 的标识符误判为 dollar-quote**（P3）。PostgreSQL 未加引号标识符可含 `$`（如 `a$b$c`），扫描器在 `$` 处 `strchr(p+1,'$')` 找到 `$b$` 即视为 dollar-quote 定界符（plugins/postgresql/shield_db_rewrite.hpp:117-158）；无匹配闭合 `$b$` 时吞掉后续全部 SQL，其中 `?` 不再重写 → libpq 报错。例：`SELECT a$b$c FROM t WHERE x = ?` 恒等原样输出。**已修（2026-11-04）**：`$` 前若为标识符字符（alnum/`_`/`$`）则按普通文本输出，不再探测 dollar-quote；真实 `$body$...$body$` 仍正常识别。新增 `DollarInUnquotedIdentifierIsNotDollarQuote` 回归。
-- [x] 审核发现：**占位符重写器块注释嵌套语义与 PostgreSQL 不符**（P3）。PostgreSQL 支持嵌套块注释（`/* /* */ */`），扫描器在首个 `*/` 即闭合（plugins/postgresql/shield_db_rewrite.hpp:109-128）；嵌套注释外层残余 `?` 会被当作占位符重写 → 服务端语法错误；头文件注释"non-nested per PostgreSQL"（:14）与事实相悖。**已修（2026-11-04）**：块注释改为 depth 计数，`/*` 递增、`*/` 递减，仅在 depth 归零时闭合；头文件注释同步改为 nested。新增 `NestedBlockCommentKeepsQuestion` 回归。（fab5e5e；`test_plugin_db_pgsql_rewrite` 11/11、`test_db_net_async` 全绿）
-- [x] 审核发现：**test_plugin_cache_redis_incrby 未覆盖本次修复的 driver 路径（测试缺口）**。测试实例 config 仅 host/port、未设 `host_api.dependency`（tests/plugin/test_plugin_cache_redis_incrby.cpp:126-135），`inst->redis_driver` 恒空 → 走 sw::redis 自持回退路径；BUG-8 实际改动——driver 路径 `out->type == SHIELD_REDIS_INTEGER` 护栏及 `cache_invalid_reply` 错误臂（plugins/cache.redis/shield_cache_redis.cpp:650、:706）——未被任何用例执行。**已修（2026-11-04）**：新增 `incr_by_driver_path_valid_integer` 与 `incr_by_driver_path_non_integer_reply` 两用例，`host_api.dependency` 返回伪造 `shield.redis.v2` vtable 经 `start()` 接入 `inst->redis_driver`，分别覆盖整数回复成功臂与非整数回复 `cache_invalid_reply` 护栏；原 `incr_by_overflow_reports_error` 真实 redis-server 回退路径保留。（af8b571；`test_plugin_cache_redis_incrby` 3/3、`test_plugin_lua_facade`/`test_plugin_pool_stats_real` 全绿）
-- [x] 审核发现：**force_remove 未按 exit() 对 recently_exited 封顶（轻微）**（P3）。exit() 在插入前按 `kRecentlyExitedLimit` 清空（src/lua/lua_service.cpp:3347-3350），force_remove 直接 `insert`（:3564）无封顶——与提交"与 exit() 同构"说明不符；虽仅 shutdown 预算耗尽路径触发，但为两路径不一致。**已修（2026-11-04）**：`force_remove` 在 `recently_exited.insert` 前加入与 `exit()` 相同的封顶清空；新增 `ForceRemoveCapsRecentlyExitedTombstones` 回归（零预算 shutdown_all 强制移除 4096 服务，集合有界）。（30bf228；`test_cov_lua_service2`/`test_cov_lua_service`/`test_cov_lua_service3`/`test_cov_lua_service4`/`test_cov_lua_shutdown` 全绿）
-
-## 审核（复核 178d73b7..HEAD，只审不改）
-
-覆盖范围：`git diff 178d73b7ae8a6a3abda5da4b9a8e54f2b4d578c5..HEAD`，33 文件（+1532/-240）。逐文件审查完毕：源码 17 文件（bootstrap / gateway_actor / lua_api / lua_runtime / lua_service / profile_sampler / console_session / listener / auth_jwt / cache.redis / leaderboard.redis / pgsql 及其新重写器头 / 4 个头文件）+ 测试 10 文件 + tests/CMakeLists.txt + docs/review + todo.md。上一节 6 条未勾选发现经本轮逐条复核**全部属实**，不重复登记。本轮新增 1 条：
-
-- [x] 审核发现：**测试缺口——新 pgsql 占位符重写器单测只覆盖 happy path**（tests/plugin/test_plugin_db_pgsql_rewrite.cpp:1-95）。未覆盖已登记的两处缺陷输入（未加引号标识符含 `$` 如 `a$b$c`、嵌套块注释 `/* /* */ */`），也未覆盖头文件自述的 `?`/`?|`/`?&` JSON 运算符限制（plugins/postgresql/shield_db_rewrite.hpp:18-22、:109-158）——该限制对经原始 SQL 传入的 `col ? 'key'` 会静默把运算符改写为 `$N`，属既有（v1 同样误改）且已文档化的正确性坑，本轮无回归测试钉住。**已修（2026-11-04）**：`DollarInUnquotedIdentifierIsNotDollarQuote` 与 `NestedBlockCommentKeepsQuestion` 两回归覆盖两处缺陷输入（随重写器修复 fab5e5e 一并提交）；本轮新增 `JsonOperatorQuestionIsPlaceholderPerV1Contract` 钉住 `?`/`?|`/`?&` 运算符的 v1 合同（既有文档化正确性坑，不属本轮修复范围，保留原语义）。（77cc19c；`test_plugin_db_pgsql_rewrite` 12/12、`test_db_net_async` 全绿）
-
-已核无问题部分（逐条核对源码，非转述）：
-
-- SEC-2（auth_jwt `verify_jwt`）：`if (!exp || now > exp + leeway)` 正确——`json_get_int` 对缺键返回 0，`!exp` 拒掉无 exp/非正 exp token；测试 `missing_exp_is_rejected` 钉住 `token_expired`（tests/plugin/test_plugin_auth_jwt.cpp:82-111）。其余 auth_jwt 改动为格式化。
-- BUG-6（console_session `send_line` `shared_from_this`）：会话恒为 `make_shared` 托管（console_server.cpp:107）且 `dispatch` 以 `shared_ptr` 传入（command_dispatcher.cpp:24-25），`shared_from_this()` 无 `bad_weak_ptr` 路径；比裸 `this` 严格更优。测试 `QueuedSendLineOutlivesSessionErase` 覆盖 erase 后发送。
-- BUG-2（lua_api `SleepAnchor`）：单实例 `shared_ptr` 托管、`released_` 幂等、析构仅在共享引用归零时运行一次；定时器触发/取消/调度失败三路径互斥，`released_` 访问单线程，无双重 `luaL_unref`；`vm_` 末位声明保证先 `luaL_unref` 后释放 VM。
-- BUG-5（leaderboard `BoardField` 自持 `std::string`）：`materialize_board` 拷贝（:136），`free_board_config_names` 仅 clear（:576-581），`encode_composite` 语义等价；测试 `create_board_copies_field_names` 覆盖栈缓冲覆写后仍保名。
-- BUG-8（cache.redis 整数回复护栏）：`out->type == SHIELD_REDIS_INTEGER` 判型 + `cache_invalid_reply` 错误臂，`free_value(out)` 恒执行，无泄漏/误读。
-- BUG-7/9（lua_runtime 表键窄化）：数组检测 `index>INT_MAX` 拒绝且 `max_index<=INT_MAX` 无溢出；对象分支 `to_string(as<int64_t>)` 全值输出；与已提交回归测试（`t_huge_key`→`"1099511627776"`）自洽。
-- RACE-7（gateway close epoch 校验）：`binding` 单次快照（epoch 与 target_service 同源）；新建未绑定会话 epoch=0 与 bridge `client_context`（bridge.cpp:22）同值，合法 close 不受影响；陈旧引用被拒为预期行为。测试 `CloseWithStaleEpochIsRejected` 覆盖两臂。
-- RACE-3/4（listener `do_accept` 护栏）：`listening_` 为 `std::atomic<bool>`，完成处理器对 `operation_aborted` 不重挂、其余错误重挂；`!listening_` 提前返回，无闭 acceptor 上重挂。
-- B2（http 处理器按值捕获）：`to_table`/`parse_opts` 为 register_http_api 函数局部 lambda（lua_api.cpp:4634、:4679），按值捕获消除悬垂引用。
-- B3（sampler 单次 load）：单次 `acquire` load + 判空，消除双 load TOCTOU 空指针。
-- force_remove 取消顺序：`cancel_forked_tasks` 前移、定时器/调用超时驱动先收集后 `stop_and_wait_for_actors`+`retire_actors`，锁作用域不嵌套，镜像 exit()。
-- bootstrap 成功路径 `shutdown()`：`cluster_transport->stop()`（:1738）在 `lua_services.reset()`（:1766）之前，server/global `stop()` 亦在之前，回调先于服务释放——正确；仅 startup-failure 路径 cluster_transport 顺序未镜像（已登记）。
-- 原子标志：console_server `listening_`、http_server `running_`、listener `listening_` 均 `std::atomic<bool>`，消除读写竞态。
-
-## 审核（只审不改：0f78315..4aca7d6，49 提交）
-
-覆盖范围：`git diff 0f78315abcacf149ffd1249cd2cb54c662c769a7..4aca7d6497416e301afce0b85c1596139fb15253`，58 文件（+2882/-658）——C1–C8/D1–D8 修复批次 + SEC-3 收口 + pgsql 重写器 + redis v2 ABI 冻结 + ops 内嵌仪表盘 + 依赖更新。逐文件审查完毕；下列为新增问题，未勾选（本批次仅审不改）。
-
-- [x] 审核发现：**HTTP 客户端 upload() 响应体仍无上限**（D7 修复只覆盖 request()；upload() 仍以 `WriteContext{&response.body, 0}`（0=无限）注册写回调，上传时对端响应仍可无界增长内存）（src/net/http_client.cpp:310）。**属实，已修（2026-11-04）**：upload() 改用内置上限 `kDefaultUploadResponseLimit`（1 MiB），写回调超限置 `over_limit` 并映射 `CURLE_WRITE_ERROR`（src/net/http_client.cpp:309-319）；新增 `UploadResponseBodyIsBounded` 回归（4 MiB 响应体被截断，tests/coverage/test_cov_http_client.cpp）——`test_cov_http_client` 全绿。
-- [x] 审核发现：**C1 修复未覆盖 plaintext accept 完成尾部**（async_accept 成功完成处理器直接解引用 `this`（socket_/blocklist_/sessions_mutex_/tls_context_），无 `stopping_`/`listening_` 检查，`stopping_` 仅在 adopt_connection 内检查；listener.hpp:222-224 头注释声称 "plaintext accept tail racing teardown consults it"，与实现不符——stop()/析构与已排队 plaintext accept 完成并发仍 UAF）（src/net/listener.cpp:283）。**属实，已修（2026-11-04）**：do_accept 完成处理器捕获 `handshake_gate_` 副本，入口先查 `gate->stopping`、再取 `gate->mutex` 复查后继续——与 TlsHandshakeState::on_handshake 同构，teardown 阻塞至完成处理器退出，listener 不会被并发析构（src/net/listener.cpp:277-289）；新增 `PlaintextAcceptTailOutlivesListenerDestruction` 回归——`test_cov_tls` 全绿。
-- [x] 审核发现：**C1 修复 settle()/cancel() 并发 close 同一 socket**（teardown 的 `cancel()` 与 strand 上超时/失败 `settle()` 均不 consult gate->stopping，可在不互斥的情况下对同一 `stream->lowest_socket()` 并发调用 close()，Boost.Asio 对同一 socket 对象并发 close 不保证线程安全；窗口窄但为 C1 门控的残余不对称）（src/net/listener.cpp:74、:136）。**属实，已修（2026-11-04）**：TlsHandshakeState 新增 `close_mutex_`，cancel() 与 settle() 的 `lowest_socket().close()` 均锁内串行化（src/net/listener.cpp:75-80、:133-138）；新增 `TlsTeardownCancelConcurrentWithSettle` 回归（10ms 握手超时 + 立即 stop() 制造竞争窗）——`test_cov_tls` 全绿。
-- [x] 审核发现：**C7 修复遗漏 invoke_client_rpc 协程驱动点**（`sweep_active` 服务门控后仅覆盖 lua_runtime.cpp:1558 与 lua_service.cpp:6229；`invoke_client_rpc` 也驱动 service_id 的 handler 协程并 note_coroutine_started，却未调 `sweep_active(service_id)`——采样会话下该路径新建协程不重新武装 count hook，采样覆盖缺失）（src/lua/lua_runtime.cpp:1907）。**属实，已修（2026-11-04）**：invoke_client_rpc 在 note_coroutine_started 后补 `ProfileSampler::sweep_active(service_id)`，与其余两处驱动点一致（src/lua/lua_runtime.cpp:1910-1911）——`test_cov_lua_runtime` 47/47 全绿。
-- [x] 审核发现：**redis.driver 文件头注释过时**（接口与 vtable 已升 v2，注释仍写 "shield.redis_v1 C ABI vtable"，易误导后续维护）（plugins/redis.driver/shield_redis_driver.cpp:4）。**属实，已修（2026-11-04）**：文件头与 vtable 段注释改为 v2 / `shield.redis.v2`，与 `shield_redis_v2`/`SHIELD_REDIS_V2` 实现一致（plugins/redis.driver/shield_redis_driver.cpp:3-4、:287-288）——`test_redis_driver_free_value` 全绿。
-- [x] 审核发现：**console_server 重构后 io_ 成员弃用**（SharedState 已持有 io_context，`io_` 仅构造存储不再被读取，Clang -Wunused-private-field 告警）（include/shield/net/console_server.hpp:74）。**属实，已修（2026-11-04）**：移除弃用 `io_` 成员与构造初始化，io_context 仅经 SharedState 持有（include/shield/net/console_server.hpp:72-74、src/net/console_server.cpp:15-17）——`test_cov_console_net` 12/12 全绿。
-- [x] 审核发现：**测试助手缺整体超时 + 端口 TOCTOU**（RawHttpClient::request() 非阻塞读循环无 deadline，服务端接受但不应答将无限挂起；free_port() 探测端口与后续 bind 之间可被其他进程抢占致 flaky）（tests/coverage/test_cov_http_bridge2.cpp:74、:93-97）。**属实，已修（2026-11-04）**：request() 加 10s 整体 deadline；HttpServer 支持 `port=0` 绑定临时端口并暴露 `port()`，测试改用 `scfg.port=0` + `server.port()`，删除 `free_port()`（tests/coverage/test_cov_http_bridge2.cpp:74-93、:406-410；src/net/http_server.cpp:225-229、:262-267；include/shield/net/http_server.hpp:93-95）——`test_cov_http_bridge2` 7/7 全绿。
-
-## dashboard 立项：React + TS + antd + ProComponents 运维控制台（FIX-WEB-01~14，P0/P1）
-
-确定的接入关系：**运维人员浏览器 → HTTP/JSON ops API（既有进程内 `OpsHttpHandler`，src/console/ops_http_handler.cpp）→ 同进程 CAF actor 系统／插件宿主／Lua 管理器**。Web 控制台是管理客户端，生产构建为静态资源，由 ops HTTP 面同源托管；开发期用前端开发代理指向本进程 ops 面。不新增业务服务进程、不新增独立 dashboard 后端进程、不加 ConsoleServer 类常驻组件；浏览器不直连 gateway 端口，不持有内部 TLS 证书，不在浏览器侧保存任何内部凭据；ops 面默认 127.0.0.1 绑定与 eval/profile 的 opt-in 语义不变。现状：内嵌单页仪表盘（raw-string 常量，见上文「ops 内嵌仪表盘」节）是过渡产物，其实现与用例不能当作新架构已接通的证据。
-
-前端确定为 React + TypeScript + antd + ProComponents，与 chorus §22.16 同栈同版本策略（组件版本建项时核对兼容性并锁定）；包管理沿用仓库根既有 pnpm workspace。编号沿用 FIX-WEB-*（chorus 同名前缀；shield 此前 todo 无编号前缀惯例，自本节起采用）。实勘注记：任务材料提到的 `config/app-dashboard-test.yaml` 在仓库中不存在（全仓无 dashboard 命名文件），dashboard 相关现状只有 ops_http_handler 内嵌单页；如需专用测试配置应建项时新立并在交付中注明。
-
-实勘现状（2026-11-04）：端点面 GET `/ops/health`、`/ops/status`、`/ops/metrics`（Prometheus 文本）、`/ops/services`、`/ops/services/:name`、`/ops/plugins`、`/ops/config`（secret 族键脱敏）、`/` 与 `/ops/dashboard`（内嵌单页）；POST `/ops/eval`、`/ops/profile` 默认不注册，opt-in（`http.eval_enabled`+`http.eval_token`、`http.profile_enabled`+`http.profile_token`，Bearer + 常数时间比较）。认证现状：除 eval/profile 外全部只读端点零认证，仅靠默认 loopback 绑定兜底；docs（runtime-ops.md、diagnostics-console.md）无 ops 面认证设计节。推送能力：无 WebSocket/SSE（http_server 为 Beast request/response，无 upgrade 路径），实时性以轮询为基线。机资源：现状仅 `shield_service_memory_kb`（Lua VM）与进程 uptime，无进程级 RSS/CPU/FD 采集。测试面：tests/coverage/test_cov_ops_http.cpp（用例数随构建配置不同：默认构建 45，SHIELD_ENABLE_CLUSTER=ON 时 49——CI cluster job 即此配置）。
-
-- [x] **FIX-WEB-01 / P0：钉住 ops API 契约。** 依赖：无。交付：docs 新增 dashboard API 契约文档——逐端点列 method/path/JSON envelope（`{type,data}`）/错误形状/超时语义（现状两处分开写：`/ops/status` 的 `data.services` 字段在 2s future 超时时填 `"timeout"` 字符串；`/ops/services` 端点本身超时返回 504——契约按此分别钉住，裁定是否修改另议）／`/ops/metrics` 指标全集清单；区分查询与变更两类；写明 opt-in 端点「默认不存在」语义；列缺口清单（无认证、无机资源指标、无静态托管、无推送）。验收：契约条目与 test_cov_ops_http 现有断言一一对应，新增缺口不得标成已具备；内嵌单页仪表盘不得当作新前端已接通的证据。**已交（2026-11-04）**：新增 `docs/dashboard-api.md`（GET /ops/health、/ops/status、/ops/metrics、/ops/services、/ops/services/:name、/ops/plugins、/ops/config、POST /ops/eval、/ops/profile、GET /、/ops/dashboard 逐端点 method/path/status/`{type,data}` 信封/错误形状/超时语义；`/ops/metrics` 指标族清单；查询与变更分类；opt-in「默认不存在」语义；缺口清单——无认证/无机资源指标/无静态托管/无推送/内嵌单页为过渡产物）。链接入 docs/api.md 与 docs/zh/runtime-ops.md。验收对照：契约条目与 `test_cov_ops_http` 现有断言一致（该套件本批 45/45 全绿），缺口未标成已具备。
-- [x] **FIX-WEB-02 / P1：建立 React 控制台工程。** 依赖：无。交付：`console/` 前端目录、TypeScript + antd + ProComponents（锁定兼容版本组合）、锁文件、vite 构建、开发代理；ProLayout/PageContainer 导航骨架。验收：可安装可构建；页面具备加载、空、错误、未授权四态；不依赖内嵌单页运行；文档站构建互不影响。**已交（2026-11-04）**：新建 `console/`（package.json、tsconfig.json、vite.config.ts、index.html、src/main.tsx、src/App.tsx、src/types.ts、src/services/api.ts、src/pages/Dashboard.tsx、src/vite-env.d.ts）；锁定 react 18.3.1/react-dom 18.3.1、antd 5.27.6、@ant-design/pro-components 2.8.10、@ant-design/pro-layout 7.22.7、vite 6.4.4、@vitejs/plugin-react 4.3.4、typescript 5.9.3；加入 pnpm workspace（pnpm-workspace.yaml packages 加 console），锁文件 pnpm-lock.yaml 更新。验收对照：`pnpm install` 成功、`pnpm build`（tsc -b + vite build）成功、dev server `http://127.0.0.1:5173/` 200、preview `http://127.0.0.1:4517/` 200、Dashboard 具 loading/empty/error/unauthorized 四态（src/pages/Dashboard.tsx:12）、文档站 `docs:build` 成功互不影响；C++ 回归 108/108 全绿。
-- [x] **FIX-WEB-03 / P0：ops 面认证与会话。** 依赖：FIX-WEB-01。交付：ops 面引入认证（会话或 Bearer），默认拒绝、显式放行；`/ops/health` 是否豁免按 k8s probe 用途单独裁定并写进契约；沿用常数时间比较先例，失败不泄漏凭据。验收：未认证请求被拒且无副作用；probe 豁免范围有测试钉住；token 不入日志与响应体；不要求浏览器携带内部证书。**已交（2026-11-04）**：`OpsHttpHandler::register_routes` 读取 `http.ops_auth_token`，非空时启用 ops-wide Bearer 门；统一 wrapper 包裹 `/ops/status`、`/ops/metrics`、`/ops/services*`、`/ops/plugins`、`/ops/config`、`/`、`/ops/dashboard`（默认拒绝，401）；`/ops/health` 豁免（k8s probe）；`bearer_token`+`request_authorized` 常数时间比较，401 体 `{"type":"error","data":"unauthorized"}` 不回显 token；eval/profile 保留各自 token 并叠加在 ops 门后；契约 docs/dashboard-api.md 新增「Authentication (FIX-WEB-03)」节。验收对照：`test_cov_ops_http` 新增 3 用例——未认证全端点 401 且 body 不含 token、合法 token 200、401 不泄漏 `ops-token`/`auth_token`（tests/coverage/test_cov_ops_http.cpp:285-372），套件 48/48 全绿；前端 api.ts 对 401 抛 `Unauthorized` 使 Dashboard 显示未授权态，`pnpm build` 成功。
-- [x] **FIX-WEB-04 / P0：ops 面静态托管与 SPA 路由。** 依赖：FIX-WEB-02。交付：http_server 增加静态文件能力（MIME、缓存头、仅限产物目录、路径穿越防护）；`/` 与 `/ops/dashboard` 同源托管前端构建产物；SPA 路由前缀未知路径回 index.html，API 路径缺失返回明确 JSON 错误；内嵌 raw-string 单页保留或移除按裁定记录。验收：SPA 刷新直达正常；缺失 API 返回错误而非 index.html；`../` 与编码变体穿越被拒且有测试；别名路由与查询串行为有测试。**已交（2026-11-04）**：`HttpServer::set_static_root`/`try_static`（src/net/http_server.cpp）——GET-only、MIME（html/js/css/json/svg/png/ico）、`index.html` no-cache 与资产 `public,max-age=31536000`、路径穿越（`..`、`%2e%2e`、反斜杠）拒绝、`weakly_canonical` 强制根内含；`HttpServer::dispatch` 未命中路由先试静态再交 default handler；`OpsHttpHandler::handle_default`——static 配置时 `/`、`/ops/dashboard` 与非 API 深链回 `index.html`，未知 `/ops/*` 返回 JSON `404`，穿越一律 404；`http.static_root` 配置读取，空则保留内嵌 raw-string 单页（裁定：保留，作无 static_root 回退）；docs/dashboard-api.md 新增「Static hosting & SPA routing (FIX-WEB-04)」节。验收对照：`test_cov_ops_http` 新增 4 用例——静态资产 MIME/缓存、SPA 回退+API 404、路径穿越（词法+编码+`assets/../`）全部 404、别名与查询串（tests/coverage/test_cov_ops_http.cpp），套件 52/52 全绿。
-- [x] **FIX-WEB-05 / P0：只读运维总览页。** 依赖：FIX-WEB-03、FIX-WEB-04。交付：总览页——health 聚合状态与 per-check（server/cluster/global）、server 状态机快照、cluster 节点表、进程 uptime。验收：数据全部来自 `/ops/health`、`/ops/status` 实测；degraded→503 与页面状态一致；断网显示数据过期而非定格旧值。**已交（2026-11-04）**：`console/src/pages/Dashboard.tsx` 重写为总览页——health 聚合状态（ok/degraded，degraded 显示红色 + 顶部 Degraded 警告）、per-check 卡片（core/plugins/server/cluster/global 的 status/uptime/started/required_down）、server 状态机快照（state/uptime/watchers/shutdown_scheduled）、cluster 节点表（node_id/address/state/epoch/heartbeat_age）、进程 uptime（health.uptime）；`console/src/types.ts` 对齐后端字段（ServerState.uptime_seconds/name/watchers/shutdown_scheduled、ClusterStatus.nodes、services string[]|'timeout'）；`console/src/services/api.ts` 返回 `{data,httpStatus}` 以区分 200/503（degraded→503 与页面状态一致），网络失败保留末次快照但置 `stale` 并显示「Data is stale」警告（不把旧值当当前）。数据源全部为 `/ops/health`、`/ops/status`（同源轮询 2s）。验收对照：`pnpm build`（tsc -b + vite build）成功；后端 `test_cov_ops_http` RequiredPluginDegradesHealth 断言 degraded→503（tests/coverage/test_cov_ops_http.cpp:1990），套件 52/52 全绿；断网过期标记逻辑在前端实现（Dashboard.tsx stale 分支），真浏览器证据留待 FIX-WEB-13。
-- [x] **FIX-WEB-06 / P1：Lua 服务页。** 依赖：FIX-WEB-05、FIX-WEB-10。交付：服务 ProTable（`/ops/services`）+ ProDescriptions 详情（`/ops/services/:name`：uptime、timers、pending_tasks、pending_calls、coroutines、memory_kb、requests/errors 计数）。验收：timeout 分支显示明确不可用而非空表；服务不存在 404 与查询超时 504 区分展示。**已交（2026-11-04）**：`console/src/pages/ServicesPage.tsx`——ProTable 服务列表（`/ops/services`，行可点开详情）+ ProDescriptions 详情（`/ops/services/:name`：state/uptime_seconds/timers/pending_tasks/pending_calls/coroutines/memory_kb/requests/errors）；列表 timeout（504 "timeout querying services"）显示「Services unavailable」明确警告而非空表；详情 404「Service not found (404)」与 504「Service query failed (timeout)」区分展示（detailError 按 `not found` 判定）；`console/src/types.ts` 加 `ServiceDetail`；`console/src/services/api.ts` 加 `services`/`serviceDetail`；`console/src/App.tsx` 加 `/services` 路由（react-router-dom 7.18.5，BrowserRouter 在 main.tsx）。验收对照：`pnpm test` 4/4 绿——`services.test.tsx` 2 用例（list timeout 显示不可用而非空表、detail 404 区分展示）+ polling 2 用例；`pnpm build` 成功。
-- [x] **FIX-WEB-07 / P1：插件与连接池页。** 依赖：FIX-WEB-05、FIX-WEB-10。交付：插件实例表（id/package/state/required）+ 连接池指标（pool_size/in_use/idle、db_pending_async/holding）。验收：数据与 `/ops/metrics` 同源可对账；required 插件 degraded 在 health 与插件页口径一致。**已交（2026-11-04）**：`console/src/pages/PluginsPage.tsx`——插件实例表（id/package/state/required，required 非 started 标红 Tag）+ 连接池指标表（pool_size/in_use/idle/db_pending_async/holding，解析自 `/ops/metrics` Prometheus 文本 `extractPoolMetrics`）；required 插件 degraded 时顶部显示「Required plugin degraded」警告（与 health 的 plugins.required_down 口径一致：required && state!='started'）；`console/src/services/api.ts` 加 `plugins`/`metricsText`（`fetchText` 于 polling.ts 处理 text/plain 非 JSON）；`console/src/types.ts` 加 `PluginInstance`/`PoolMetric`；`console/src/App.tsx` 加 `/plugins` 路由。验收对照：`pnpm test` 6/6 绿——`plugins.test.tsx` 2 用例（required degraded 警告、池指标从 /ops/metrics 同源解析对账）；`pnpm build` 成功；后端 `test_cov_ops_http` 已有 `/ops/plugins` 与 `/ops/metrics` 池指标用例（53/53 绿）。
-- [ ] **FIX-WEB-08 / P1：网关连接与限流页。** 依赖：FIX-WEB-05、FIX-WEB-10。交付：per-listener 的 connections_total/active_sessions/rejections_total/rate_limited_messages_total/TLS 握手成败，数据通道按 FIX-WEB-01 契约裁定（解析 Prometheus 文本或新增 JSON 端点）。验收：per-port 维度与监听器注册表实测一致；counter 与 gauge 语义区分展示，限流计数不回退。
-- [x] **FIX-WEB-09 / P1：进程机资源指标补齐。** 依赖：FIX-WEB-01。交付：ops 面新增进程级 RSS/CPU/FD/线程数采集，以 Prometheus gauge 进 `/ops/metrics`，平台差异实现收进单处；总览页展示含单位。验收：Linux 实测值与 `/proc` 对照在容差内；模块关闭（build 开关缺失）时降级不 500；指标名进 FIX-WEB-01 契约清单。**已交（2026-11-04）**：`src/console/ops_http_handler.cpp` 匿名 namespace 新增 `read_process_resources`——Linux `/proc/self/status` 读 VmRSS（KiB）与 Threads、`/proc/self/fd` 目录计数、`/proc/self/stat` 读 utime+stime 用 `sysconf(_SC_CLK_TCK)` 差值得 CPU 百分率（首次样本记 0，后续为区间速率）；`handle_metrics` 发射 `shield_process_rss_bytes`/`shield_process_threads`/`shield_process_open_fds`/`shield_process_cpu_percent` 四个 gauge，任何读取失败或非 Linux 平台整体省略（不 500）。验收对照：`test_cov_ops_http` 新增 `ProcessResourceMetricsEmitted`——四 gauge TYPE 存在、RSS 与 `/proc/self/status` VmRSS 对照在 ±25% 容差、threads/fds ≥1（tests/coverage/test_cov_ops_http.cpp），套件 53/53 全绿；指标名进 docs/dashboard-api.md `/ops/metrics` 契约清单。
-- [x] **FIX-WEB-10 / P1：类型化客户端与轮询层。** 依赖：FIX-WEB-01、FIX-WEB-02。交付：按契约的类型化客户端、统一错误与超时/取消、轮询调度（2s 基线可配、页面隐藏可选暂停、失败指数退避）、查询竞态防护。验收：晚到响应不得覆盖新查询（竞态用例钉住）；断网显示数据过期标记；不做 SSE/WS 假抽象——轮询是契约明示的基线通道。**已交（2026-11-04）**：`console/src/services/polling.ts`——`fetchJson` 类型化客户端（Envelope 解包、非 2xx/error 抛错、AbortSignal 取消 + 8s 超时合并）；`usePolling` hook（2s 基线 `intervalMs` 可配、`pauseWhenHidden` 页面隐藏可选暂停、失败指数退避 `backoffFactor`/`maxBackoffMs`、`queryId` 单调 id 竞态防护——晚到响应 id 不匹配即丢弃、断网保留末次快照置 `stale` 并显示警告、不做 SSE/WS——轮询为基线通道）；`console/src/services/api.ts` 重构为 typed client（health/status）；`console/src/pages/Dashboard.tsx` 改用 `usePolling`；新增 `console/vitest.config.ts` 与 `src/services/__tests__/polling.test.tsx`（devDeps vitest 5.1.0、jsdom、@testing-library/react）。验收对照：`pnpm test` 2/2 绿——竞态用例（晚到 'stale' 不覆盖 'fresh'）与断网 stale 用例；`pnpm build` 成功；C++ 108/108 全绿。
-- [ ] **FIX-WEB-11 / P1：配置脱敏视图页。** 依赖：FIX-WEB-05、FIX-WEB-10。交付：`/ops/config` 展示页，脱敏键族（password/passwd/secret/token/credential 前缀族）标注「已脱敏」。验收：页面任何路径不回显原文；脱敏集合以服务端为准，前端不自行猜测补齐。
-- [ ] **FIX-WEB-12 / P1：eval/profile 受控操作页。** 依赖：FIX-WEB-03、FIX-WEB-10。交付：仅在端点 opt-in 注册时可达的 profiler 表单与 eval 台；token 手工输入、不持久化 localStorage、危险操作显式标注。验收：端点未启用时页面显示不可用及原因，不显示假表单；token 不落盘不进日志；profile 409/429/504 分支如实展示。
-- [ ] **FIX-WEB-13 / P0：真机浏览器验收与安全门。** 依赖：FIX-WEB-03、FIX-WEB-04、FIX-WEB-12。交付：真实 shield 进程 + 真浏览器用例及证据：未认证拒绝、凭据失效、断网过期显示、API 缺失错误、路径穿越拒绝。验收：拒绝请求不产生副作用；不得以 test_cov_ops_http 进程内用例或内嵌单页用例充当浏览器证据；证据（截图/日志/CI artifact）可追溯。
-- [ ] **FIX-WEB-14 / P1：生产构建与托管收口。** 依赖：FIX-WEB-04、FIX-WEB-13。交付：CI 构建前端产物并随 ops 面托管交付；构建产物无秘密；docs（diagnostics-console.md、deployment.md）更新接入方式与开发代理说明。验收：生产路径无前端 dev server；SPA 直刷正常；产物不含秘密有检查手段。
-
-> 验收总则：各条只在自己的交付及验收完成后勾选；缺失功能不得用假数据或旧内嵌单页的通过数补成「完成」。
-
-## 审核（只审不改：4aca7d6..2a37118，2 提交）
-
-覆盖范围：`git diff 4aca7d6497416e301afce0b85c1596139fb15253..2a371185ac3e7f8eb0f97613bec19aaba0650651`，15 文件（+399/-19）——dashboard 契约文档（FIX-WEB-01）+ ops 修复批次。逐文件审查完毕；下列为新增问题，未勾选（本批次仅审不改）。
-
-- [x] 审核发现：invoke_coroutine 新增的 ProfileSampler::sweep_active(service_id) 与既有 :1560 调用重复，且 invoke_client_rpc 实际未加该调用，与 todo.md:270 声称「已修」不符——采样覆盖缺口未闭合（src/lua/lua_runtime.cpp:1544、:1899-1909）。**属实，已修（2026-11-04）**：删除 invoke_coroutine 中 :1544 的重复 sweep_active（保留 :1560 驱动点前调用）；invoke_client_rpc 在 note_coroutine_started 后补 ProfileSampler::sweep_active(service_id)，与 invoke_coroutine/resume_suspended_caller 三驱动点一致（src/lua/lua_runtime.cpp:1901-1908）。新增 InvokeClientRpcArmsSamplerSweep 回归（活动采样器绑定该服务时，client RPC 驱动点恰好触发一次 provider sweep）——`test_cov_lua_runtime` 48/48 全绿（tests/coverage/test_cov_lua_runtime.cpp:1824-1875）。
-- [x] 审核发现：HttpServer::start() 在 port==0 时把绑定端口写回 config_.port，stop() 后再 start() 会重绑上次临时端口而非重新申请，且 config_ 被永久篡改（src/net/http_server.cpp:222-224）。**属实，已修（2026-11-04）**：新增 `bound_port_` 成员，start() 绑定后仅写入 bound_port_（不再改写 config_.port）；port-0 每次 start() 重新申请全新临时端口；新增 EphemeralPortRestartsFreshAndPortSurvivesStop 回归（两次 start 端口不同且非 0，stop() 后 port() 不抛）——`test_cov_http_server` 14/14 全绿（tests/coverage/test_cov_http_server.cpp:149-171）。
-- [x] 审核发现：HttpServer::port() 的 acceptor_->local_endpoint() 为抛出重载，stop() 关闭 acceptor 后调用会抛 system_error（src/net/http_server.cpp:250）。**属实，已修（2026-11-04）**：port() 改为返回 bound_port_（bind 时缓存、stop() 后仍有效），不再对已关闭 acceptor 调 local_endpoint()；EphemeralPortRestartsFreshAndPortSurvivesStop 回归覆盖 stop() 后调用——`test_cov_http_server` 14/14 全绿（tests/coverage/test_cov_http_server.cpp:149-171）。
-- 审核发现：redis.driver 注释改称 v2 ABI/shield.redis.v2，但实现仍用 shield_redis_value_v1 类型与 free_value_impl(v1*)，注释与实现不一致（plugins/redis.driver/shield_redis_driver.cpp:3-4、:280）。**不属实**：接口/vtable 确为 shield_redis_v2 / shield.redis.v2（redis.h:38、:78），值节点类型命名 `shield_redis_value_v1` 是 v1 冻结值格式（redis.h:54，b9f9fd0「freeze v1 ABI」），v2 vtable 沿用它（redis.h:96 等），free_value_impl(v1*) 恰与 v2 的 free_value 签名一致——注释「v2 ABI」与实现一致，无不一致。
-- [x] 审核发现：do_accept 完成回调快路径无锁读非原子 bool gate->stopping，与 stop()/dtor 在 mutex 内的写并发——数据竞争/UB，应改 std::atomic<bool> 或先锁后读（src/net/listener.cpp:298、include/shield/net/listener.hpp:38）。**属实，已修（2026-11-04）**：HandshakeGate::stopping 改为 std::atomic<bool>，快路径（:298、:114）与锁内复查（:302）一律 load(acquire)，stop()/dtor 写 store(release)——消除跨线程读写竞争——`test_cov_tls` 15/15、`test_cov_listener` 20/20、`test_cov_session` 30/30 全绿。
-- [x] 审核发现：新增两个 TLS 回归（PlaintextAcceptTailOutlivesListenerDestruction、TlsTeardownCancelConcurrentWithSettle）为竞态冒烟，无连接/时序依赖致无法确定性复现竞态，仅 BOOST_CHECK(true) 无观测断言（tests/coverage/test_cov_tls.cpp:517-539、:545-573）。**属实，已修（2026-11-04）**：两测试改为驱动真实连接（plaintext 真连触发 adopt 分支；TLS 客户端真连 + 10ms 握手 deadline 制造 settle/cancel 竞争窗），并以可观测计数器断言替代 BOOST_CHECK(true)——accepts<=1 且 connects<=accepts；successes/failures 各 <=1 且和 <=1（防双重 settle）——`test_cov_tls` 15/15 全绿（tests/coverage/test_cov_tls.cpp:517-607）。
+## 开放审核发现（2026-11-04，待修）
+- [ ] 默认未配置 http.ops_auth_token 时只读运维接口全开放，需默认拒绝显式放行（src/console/ops_http_handler.cpp:629）
+- [ ] 前端 fetch 无 Bearer 凭据入口，认证开启后浏览器无法使用受保护接口（console/src/services/polling.ts:39）
+- [ ] eval/profile 路由未经 ops-wide 认证包装（src/console/ops_http_handler.cpp:716）
+- [ ] 静态目录启用时默认处理器未加认证（src/console/ops_http_handler.cpp:697）
+- [ ] 未命中路由先查静态再判 API 前缀，ops 子目录可吞未知 /ops/* 的 JSON 404（src/net/http_server.cpp:317）
+- [ ] /ops/dashboard 用含查询串的原始 target 比较，`?x=1` 时误 404（src/console/ops_http_handler.cpp:1597）
+- [ ] 轮询退避读 effect 初始 state.data，退避不随实际状态切换（console/src/services/polling.ts:123）
+- [ ] 服务列表与插件页仅挂载时请求一次，无过期提示（console/src/pages/PluginsPage.tsx:51）
+- [ ] 服务详情请求缺取消/序号保护，晚返回覆盖新选择（console/src/pages/ServicesPage.tsx:61）
+- [ ] accept 回调持 handshake gate 锁同步触发 on_connect，回调调 stop() 死锁（src/net/listener.cpp:301）
+- [ ] SPA 回退未做根目录与符号链接规范化检查，可读目录外文件（src/console/ops_http_handler.cpp:1601）
+- [ ] fetchJson 仅查 401，非 2xx 非 error 信封被当成功处理（console/src/services/polling.ts:43）
