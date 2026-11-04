@@ -10,6 +10,8 @@ Shield's authoritative contracts are spread across the documents below; this pag
 - **[Runtime Semantics Decisions](runtime-semantics.md)** — runtime semantics decisions A1-A35.
 - **[Quick Start](quickstart.md)** — the C++ entry point `shield::run` and a minimal example.
 - **[Game Backend Tutorial](tutorial-game-backend.md)** — an end-to-end Lua example.
+- **[Dashboard HTTP API Contract](dashboard-api.md)** — the `/ops/*` JSON
+  contract consumed by the ops dashboard frontend (FIX-WEB-01).
 
 ## Implementation Status
 

@@ -96,6 +96,13 @@ struct LocalServer {
             r.body() = std::string(4096, 'x');
             return r;
         });
+        // A response far larger than the upload() built-in cap. upload()
+        // sends multipart POST, so register the route on POST.
+        server->post("/huge", [](const HttpRequest&) {
+            HttpResponse r{http::status::ok, 11};
+            r.body() = std::string(4 * 1024 * 1024, 'h');
+            return r;
+        });
         server->start();
     }
 };
@@ -287,6 +294,30 @@ BOOST_AUTO_TEST_CASE(UploadMultipart) {
     BOOST_CHECK(!r2.error.empty());
 
     std::remove(path.c_str());
+    srv.server->stop();
+}
+
+// upload() registers a bounded write callback for the response body too
+// (D7 fixed request() only): a hostile endpoint's oversized response must
+// abort the transfer instead of growing memory without bound.
+BOOST_AUTO_TEST_CASE(UploadResponseBodyIsBounded) {
+    shield::net::HttpClient::initialize();
+    LocalServer srv;
+    srv.start();
+    const std::string base = "http://127.0.0.1:" + std::to_string(srv.port);
+
+    std::vector<HttpFileField> files;
+    HttpFileField f;
+    f.field_name = "file";
+    f.file_path = "/dev/null";
+    f.content_type = "text/plain";
+    files.push_back(f);
+
+    auto r = HttpClient::upload(base + "/huge", files, {}, 5);
+    BOOST_CHECK(!r.error.empty());
+    // The built-in upload cap must hold the body below the 4 MiB response.
+    BOOST_CHECK(r.body.size() < 4 * 1024 * 1024);
+
     srv.server->stop();
 }
 

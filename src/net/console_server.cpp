@@ -14,8 +14,7 @@ namespace shield::net {
 
 ConsoleServer::ConsoleServer(boost::asio::io_context& io_context,
                              const std::string& socket_path)
-    : io_(io_context),
-      socket_path_(socket_path),
+    : socket_path_(socket_path),
       state_(std::make_shared<SharedState>(io_context)) {}
 
 ConsoleServer::~ConsoleServer() { stop(); }

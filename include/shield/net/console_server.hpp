@@ -71,7 +71,6 @@ private:
 
     static void do_accept(std::shared_ptr<SharedState> state);
 
-    boost::asio::io_context& io_;
     std::string socket_path_;
     std::shared_ptr<SharedState> state_;
 };

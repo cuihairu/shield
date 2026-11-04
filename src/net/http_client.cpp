@@ -14,6 +14,7 @@ namespace shield::net {
 
 namespace {
 std::once_flag g_curl_init;
+constexpr std::size_t kDefaultUploadResponseLimit = 1u << 20;
 }  // namespace
 
 void HttpClient::initialize() {
@@ -307,13 +308,16 @@ HttpClientResponse HttpClient::upload(
 
     // Response callbacks.
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    WriteContext write_ctx{&response.body, 0};
+    WriteContext write_ctx{&response.body, kDefaultUploadResponseLimit};
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_ctx);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response.headers);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Shield/1.0");
 
     CURLcode res = curl_easy_perform(curl);
+    if (write_ctx.over_limit) {
+        res = CURLE_WRITE_ERROR;
+    }
 
     if (res != CURLE_OK) {
         response.error = curl_easy_strerror(res);

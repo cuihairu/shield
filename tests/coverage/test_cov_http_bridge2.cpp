@@ -70,8 +70,12 @@ struct RawHttpClient {
         if (ec) return {};
         std::string out;
         char buf[4096];
+        // Overall deadline: a server that accepts but never answers would
+        // otherwise spin this non-blocking loop forever.
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(10);
         socket.non_blocking(true, ec);
-        for (;;) {
+        while (std::chrono::steady_clock::now() < deadline) {
             std::size_t n = socket.read_some(boost::asio::buffer(buf), ec);
             if (ec == boost::asio::error::would_block ||
                 ec == boost::asio::error::try_again) {
@@ -89,13 +93,6 @@ struct RawHttpClient {
         socket.close(ec);
     }
 };
-
-uint16_t free_port() {
-    boost::asio::io_context io;
-    boost::asio::ip::tcp::acceptor probe(
-        io, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), 0));
-    return probe.local_endpoint().port();
-}
 
 struct CafInitFixture {
     CafInitFixture() { initialize_caf_types(); }
@@ -405,7 +402,7 @@ BOOST_AUTO_TEST_CASE(ServerRouteTableDispatchAfterBridgeDestroyed) {
 
     shield::net::HttpServerConfig scfg;
     scfg.host = "127.0.0.1";
-    scfg.port = free_port();
+    scfg.port = 0;
     shield::net::HttpServer server(scfg);
 
     {
@@ -413,6 +410,7 @@ BOOST_AUTO_TEST_CASE(ServerRouteTableDispatchAfterBridgeDestroyed) {
         bridge.attach(server);
         server.start();
         BOOST_REQUIRE(server.is_running());
+        scfg.port = server.port();
 
         // Dispatch through the server while the bridge is alive.
         RawHttpClient c;

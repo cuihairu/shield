@@ -219,6 +219,9 @@ void HttpServer::start() {
         auto address = net::ip::make_address(config_.host);
         acceptor_ = std::make_unique<net::ip::tcp::acceptor>(
             io_context_, net::ip::tcp::endpoint(address, config_.port));
+        if (config_.port == 0) {
+            config_.port = acceptor_->local_endpoint().port();
+        }
 
         acceptor_->set_option(net::socket_base::reuse_address(true));
 
@@ -238,6 +241,13 @@ void HttpServer::start() {
             log, "HTTP server failed to start: " + std::string(e.what()));
         running_ = false;
     }
+}
+
+uint16_t HttpServer::port() const {
+    if (config_.port != 0) {
+        return config_.port;
+    }
+    return acceptor_ ? acceptor_->local_endpoint().port() : 0;
 }
 
 void HttpServer::stop() {

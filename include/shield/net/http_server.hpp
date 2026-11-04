@@ -90,8 +90,9 @@ public:
     /// @brief Check if server is running
     bool is_running() const;
 
-    /// @brief Get the configured port
-    uint16_t port() const { return config_.port; }
+    /// @brief Get the configured port. When the server was configured with
+    ///        port 0 and is running, returns the bound ephemeral port.
+    uint16_t port() const;
 
     /// @brief Set a default handler for unmatched routes
     void set_default_handler(HttpHandler handler);

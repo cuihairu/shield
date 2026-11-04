@@ -40,6 +40,8 @@ Core 不内建：Prometheus metrics、HealthCheckRegistry、`/metrics` 端点、
 - Unix socket 诊断控制台（`root.*` / Lua 命令，见 [Lua 诊断控制台设计](ops-lua-console.md)）
 - HTTP ops 端点：`/ops/health`、`/ops/status`、`/ops/metrics`、`/ops/services`、`/ops/plugins`、`/ops/config`、`/ops/eval`
 - Lua 业务侧 `shield.httpd.*` 可注册自有管理端点（见 [Lua API 契约](lua-api.md)）
+- Dashboard 前端消费的 `/ops/*` 逐端点契约（method/path/JSON envelope）见
+  [Dashboard HTTP API Contract](../dashboard-api.md)（FIX-WEB-01）
 
 HTTP ops 服务端安全基线：
 

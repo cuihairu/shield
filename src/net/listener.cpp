@@ -71,6 +71,11 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
         cancelled.store(true, std::memory_order_release);
         deadline.cancel();
         boost::system::error_code close_ec;
+        // Serialize the socket close with a concurrent settle() (timeout /
+        // handshake-failure completion on the strand): Boost.Asio does not
+        // guarantee that two threads calling close() on the same socket
+        // object are safe, and teardown's cancel() runs off-strand.
+        std::lock_guard lock(close_mutex_);
         stream->lowest_socket().close(close_ec);
     }
 
@@ -133,6 +138,7 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
         auto& log = shield::log::get_logger("net");
         SHIELD_LOG_WARNING(log, why + " (" + remote_ip + ")");
         boost::system::error_code close_ec;
+        std::lock_guard lock(close_mutex_);
         stream->lowest_socket().close(close_ec);
     }
 
@@ -145,6 +151,7 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
     std::string remote_ip;
     std::atomic<bool> settled{false};
     std::atomic<bool> cancelled{false};
+    std::mutex close_mutex_;
 };
 
 std::atomic<SessionId> TcpListener::g_next_session_id{1};
@@ -280,7 +287,21 @@ void TcpListener::do_accept() {
     if (!listening_) {
         return;
     }
-    acceptor_.async_accept(socket_, [this](auto ec) {
+    auto gate = handshake_gate_;
+    acceptor_.async_accept(socket_, [this, gate](auto ec) {
+        // C1: teardown (stop()/dtor) may run on another thread while this
+        // accept completion is queued. The gate outlives the listener, so
+        // the fast path bails before touching `this`; the slow path takes
+        // the gate mutex, which blocks teardown until this completion is
+        // done — the listener cannot be freed underneath us (mirrors
+        // TlsHandshakeState::on_handshake).
+        if (gate->stopping) {
+            return;
+        }
+        std::lock_guard lock(gate->mutex);
+        if (gate->stopping) {
+            return;
+        }
         if (ec) {
             if (ec != boost::asio::error::operation_aborted) {
                 auto& log = shield::log::get_logger("net");

@@ -1541,6 +1541,8 @@ bool LuaRuntime::invoke_coroutine(
                                             co_anchor);
         }
 
+        ProfileSampler::sweep_active(service_id);
+
         int nres = 0;
         // Driving-phase registration: resume_caller on another thread
         // re-enqueues a completion arriving while this guard is held

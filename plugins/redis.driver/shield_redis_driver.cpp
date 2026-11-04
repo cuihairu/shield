@@ -1,7 +1,7 @@
 // [SHIELD_PLUGIN] redis.driver — Unified Redis driver for shield.redis.v2.
 //
-// v1 ABI. Holds a single sw::redis::Redis connection pool per instance and
-// exposes typed Redis commands through the shield.redis_v1 C ABI vtable.
+// v2 ABI. Holds a single sw::redis::Redis connection pool per instance and
+// exposes typed Redis commands through the shield.redis.v2 C ABI vtable.
 // Other Redis plugins (cache.redis, queue.redis, leaderboard.redis) depend
 // on this plugin instead of creating their own Redis connections.
 //
@@ -284,7 +284,7 @@ void free_value_impl(shield_redis_value_v1* value) {
 }
 
 // ---------------------------------------------------------------------------
-// v1 vtable — typed methods
+// v2 vtable — typed methods
 //
 // The function pointers are shared, but every instance gets its own vtable
 // copy (redis_instance::vtable_) filled by init_vtable(). connect() receives

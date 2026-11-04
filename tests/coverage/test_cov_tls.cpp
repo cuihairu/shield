@@ -508,4 +508,69 @@ BOOST_AUTO_TEST_CASE(TlsStreamTransportTag) {
     BOOST_CHECK_EQUAL(base.transport_name(), "tls");
 }
 
+// A plaintext listener whose accept completion races listener destruction:
+// the completion handler must consult the gate before touching `this`, or
+// the listener would be freed underneath it (UAF). The gate is heap-owned
+// and outlives the listener, so a completion that loses the race walks away
+// cleanly. This exercises the plaintext branch that C1 originally covered
+// only for the TLS handshake path.
+BOOST_AUTO_TEST_CASE(PlaintextAcceptTailOutlivesListenerDestruction) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    callbacks.create_protocol_pipeline = [] { return make_json_pipeline(); };
+
+    auto listener =
+        std::make_unique<TcpListener>(io, port, std::move(callbacks));
+    listener->start();
+
+    std::thread io_thread([&io] { io.run(); });
+
+    // Race: destroy the listener while a plaintext accept may still be
+    // completing. stop() sets the gate's stopping flag and closes the
+    // acceptor; the completion (if queued) must observe it and bail.
+    listener->stop();
+    listener.reset();
+    io.stop();
+    io_thread.join();
+
+    // No crash, no leak: the test completing is the assertion.
+    BOOST_CHECK(true);
+}
+
+// stop()'s cancel() and a strand-side settle() may race on the same TLS
+// socket. The close() calls must be serialized (Boost.Asio does not
+// guarantee thread-safety for concurrent close on one socket object).
+BOOST_AUTO_TEST_CASE(TlsTeardownCancelConcurrentWithSettle) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    callbacks.create_protocol_pipeline = [] { return make_json_pipeline(); };
+
+    auto listener =
+        std::make_unique<TcpListener>(io, port, std::move(callbacks));
+    listener->set_tls(make_fixture_context(), 10);  // tiny handshake deadline
+    listener->start();
+
+    std::thread io_thread([&io] { io.run(); });
+
+    // Complete TCP and stall: the server-side handshake deadline is 10 ms,
+    // so settle() (timeout) and teardown cancel() race within the window.
+    boost::asio::io_context client_io;
+    tcp::socket client(client_io);
+    boost::system::error_code connect_ec;
+    client.connect(tcp::endpoint(boost::asio::ip::address_v4::loopback(), port),
+                   connect_ec);
+    BOOST_REQUIRE(!connect_ec);
+
+    listener->stop();
+    listener.reset();
+    io.stop();
+    io_thread.join();
+
+    BOOST_CHECK(true);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
