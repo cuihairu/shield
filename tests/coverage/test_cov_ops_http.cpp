@@ -147,6 +147,17 @@ struct RawHttpClient {
                        timeout);
     }
 
+    // GET with an Authorization: Bearer header; empty token sends none.
+    std::string get_auth(
+        const std::string& path, const std::string& token,
+        std::chrono::milliseconds timeout = std::chrono::milliseconds(8000)) {
+        std::string auth =
+            token.empty() ? "" : "Authorization: Bearer " + token + "\r\n";
+        return request(
+            "GET " + path + " HTTP/1.0\r\nHost: cov\r\n" + auth + "\r\n",
+            timeout);
+    }
+
     std::string post(
         const std::string& path, const std::string& body,
         std::chrono::milliseconds timeout = std::chrono::milliseconds(8000)) {
@@ -273,6 +284,91 @@ struct OpsFixture {
 }  // namespace
 
 BOOST_FIXTURE_TEST_SUITE(OpsHttpTests, OpsFixture)
+
+// Build an independent ops server with the auth gate enabled, so the auth
+// cases do not perturb the fixture's unauthenticated endpoint assertions.
+struct AuthGateServer {
+    std::unique_ptr<shield::net::HttpServer> server;
+    std::unique_ptr<shield::console::OpsHttpHandler> handler;
+    uint16_t port = 0;
+
+    AuthGateServer(shield::lua::LuaServiceManager& mgr,
+                   shield::lua::LuaRuntime& rt) {
+        shield::config::global_config().set("http.ops_auth_token",
+                                            std::string("ops-token"));
+        port = free_port();
+        shield::net::HttpServerConfig cfg;
+        cfg.host = "127.0.0.1";
+        cfg.port = port;
+        server = std::make_unique<shield::net::HttpServer>(cfg);
+        handler = std::make_unique<shield::console::OpsHttpHandler>(mgr, rt);
+        handler->register_routes(*server);
+        server->start();
+    }
+    ~AuthGateServer() {
+        if (server) server->stop();
+        shield::config::global_config().set("http.ops_auth_token",
+                                            std::string(""));
+    }
+};
+
+BOOST_AUTO_TEST_CASE(OpsAuthGateDeniesUnauthenticated) {
+    AuthGateServer auth(*manager, *runtime);
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", auth.port);
+
+    // No token -> 401 on protected endpoints.
+    std::string response = client.get("/ops/status");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 401);
+    BOOST_CHECK(RawHttpClient::body(response).find("ops-token") ==
+                std::string::npos);
+
+    // Wrong token -> 401.
+    response = client.get_auth("/ops/status", "nope");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 401);
+
+    // /ops/metrics, /ops/services, /ops/plugins, /ops/config, dashboard all
+    // deny unauthenticated.
+    for (const char* path : {"/ops/metrics", "/ops/services", "/ops/plugins",
+                             "/ops/config", "/ops/dashboard"}) {
+        response = client.get(path);
+        BOOST_REQUIRE(!response.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 401);
+    }
+
+    // /ops/health is exempt (k8s probe) -> 200 without a token.
+    response = client.get("/ops/health");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+}
+
+BOOST_AUTO_TEST_CASE(OpsAuthGateAllowsValidToken) {
+    AuthGateServer auth(*manager, *runtime);
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", auth.port);
+
+    std::string response = client.get_auth("/ops/status", "ops-token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    auto resp = nlohmann::json::parse(RawHttpClient::body(response));
+    BOOST_CHECK(resp["type"] == "result");
+}
+
+BOOST_AUTO_TEST_CASE(OpsAuthGateNoTokenLeak) {
+    AuthGateServer auth(*manager, *runtime);
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", auth.port);
+
+    // The 401 body must never echo the expected token or a hint about it.
+    std::string response = client.get("/ops/config?key=http.ops_auth_token");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 401);
+    const std::string body = RawHttpClient::body(response);
+    BOOST_CHECK(body.find("ops-token") == std::string::npos);
+    BOOST_CHECK(body.find("auth_token") == std::string::npos);
+}
 
 BOOST_AUTO_TEST_CASE(StatusEndpoint) {
     RawHttpClient client;

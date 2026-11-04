@@ -23,6 +23,30 @@ The ops HTTP listener is configured by the `http:` config block. It binds
 `http.host` (default `127.0.0.1`) and `http.port` (default `8080`). The
 frontend is served from the same origin (see FIX-WEB-04).
 
+## Authentication (FIX-WEB-03)
+
+The read-only `/ops/*` endpoints are protected by a bearer-token gate. Set
+`http.ops_auth_token` to a non-empty secret to enable it; an empty or absent
+value leaves the gate off (legacy behaviour, no auth). When enabled, every
+protected endpoint denies requests without a matching
+`Authorization: Bearer <token>` header.
+
+- **Auth**: `Authorization: Bearer <token>` (constant-time compare); when
+  `http.ops_auth_token` is enabled, that gate must be satisfied first.
+- **Status**: `401` on missing/mismatched token; the body is
+  `{ "type": "error", "data": "unauthorized" }` and never echoes the
+  configured token or any hint about it.
+- **Exempt**: `GET /ops/health` is always unauthenticated. It is the k8s
+  liveness/readiness probe; it only exposes process-local health state and
+  never secrets, configuration, or service internals.
+- **Default-deny**: when the gate is enabled, protected endpoints never
+  answer without credentials, and an unauthorized request has no side
+  effects (read-only endpoints never mutate state).
+- **Opt-in eval/profile**: `POST /ops/eval` and `POST /ops/profile` keep
+  their own independent token gates (`http.eval_token`,
+  `http.profile_token`) and are additionally behind the ops-wide gate when
+  it is enabled.
+
 ## Endpoints
 
 ### GET /ops/health
@@ -177,7 +201,8 @@ and `http.eval_token` is non-empty (otherwise the request 404s).
 Profiler control (opt-in like `/ops/eval`; requires
 `http.profile_enabled=true` + non-empty `http.profile_token`).
 
-- **Auth**: `Authorization: Bearer <token>`.
+- **Auth**: `Authorization: Bearer <token>`; when `http.ops_auth_token` is
+  enabled, that gate must be satisfied first.
 - **Body**: `{ "action": "status"|"start"|"stop"|"report", ... }`.
 - **Status**: `200`; `404` service missing; `409` session already running;
   `429` cooldown; `401` bad token.

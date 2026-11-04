@@ -73,6 +73,17 @@ private:
     static bool token_matches(const std::string& provided,
                               const std::string& expected);
 
+    // Helper: true when the request carries a valid Bearer token for the
+    // ops-wide auth gate. An empty configured token means the gate is off
+    // (explicit opt-out / legacy behaviour); otherwise missing or mismatched
+    // credentials return 401 without leaking anything about the expected
+    // token.
+    static bool request_authorized(const shield::net::HttpRequest& req,
+                                   const std::string& expected);
+
+    // Helper: constant-time extract of the Bearer token from a request.
+    static std::string bearer_token(const shield::net::HttpRequest& req);
+
     // Helper: create JSON response
     static shield::net::HttpResponse make_json_response(
         int status_code, const nlohmann::json& data);
@@ -82,6 +93,7 @@ private:
     shield::lua::LuaServiceManager& lua_mgr_;
     shield::lua::LuaRuntime& lua_rt_;
     std::string eval_token_;
+    std::string auth_token_;
 
     // /ops/profile state. The report future is created at start and
     // consumed at stop/report; the mutex covers its hand-off between

@@ -522,31 +522,59 @@ OpsHttpHandler::OpsHttpHandler(shield::lua::LuaServiceManager& lua_mgr,
     : lua_mgr_(lua_mgr), lua_rt_(lua_rt) {}
 
 void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
+    // Ops-wide auth gate. When http.ops_auth_token is non-empty, every
+    // /ops/* endpoint below (except the k8s-probe-exempt /ops/health) is
+    // denied to requests without a matching "Authorization: Bearer <token>".
+    // An empty token keeps the gate off (legacy behaviour, no auth).
+    auth_token_ = shield::config::get("http.ops_auth_token", "");
+
+    // Wrap a handler with the ops-wide auth check, unless the gate is off.
+    auto authed = [this](shield::net::HttpHandler inner) {
+        if (auth_token_.empty()) {
+            return inner;
+        }
+        return shield::net::HttpHandler{
+            [this, inner](const shield::net::HttpRequest& req)
+                -> shield::net::HttpResponse {
+                if (!request_authorized(req, auth_token_)) {
+                    return make_error_response(401, "unauthorized");
+                }
+                return inner(req);
+            }};
+    };
+
+    // /ops/health is exempt from the ops-wide gate: k8s liveness/readiness
+    // probes are unauthenticated by design. It only exposes process-local
+    // health state, never secrets or configuration.
     server.get("/ops/health",
                [this](const auto& req) { return handle_health(req); });
     server.get("/ops/status",
-               [this](const auto& req) { return handle_status(req); });
+               authed([this](const auto& req) { return handle_status(req); }));
     server.get("/ops/metrics",
-               [this](const auto& req) { return handle_metrics(req); });
-    server.get("/ops/services",
-               [this](const auto& req) { return handle_services(req); });
+               authed([this](const auto& req) { return handle_metrics(req); }));
+    server.get("/ops/services", authed([this](const auto& req) {
+                   return handle_services(req);
+               }));
     // ":name" pattern matches only when the exact "/ops/services" route
     // missed, so list vs. detail never shadow each other.
-    server.get("/ops/services/:name",
-               [this](const auto& req) { return handle_service_detail(req); });
+    server.get("/ops/services/:name", authed([this](const auto& req) {
+                   return handle_service_detail(req);
+               }));
     server.get("/ops/plugins",
-               [this](const auto& req) { return handle_plugins(req); });
+               authed([this](const auto& req) { return handle_plugins(req); }));
     server.get("/ops/config",
-               [this](const auto& req) { return handle_config(req); });
+               authed([this](const auto& req) { return handle_config(req); }));
 
     // Embedded single-page dashboard: one self-contained HTML document (no
     // external assets, no build step, no new dependencies) that polls the
     // read-only /ops/* endpoints above and renders health, per-service
     // state, metric curves and profile results client-side. Registered on
     // both "/" and "/ops/dashboard" so a bare ops-port visit lands on it.
-    server.get("/", [this](const auto& req) { return handle_dashboard(req); });
-    server.get("/ops/dashboard",
-               [this](const auto& req) { return handle_dashboard(req); });
+    server.get(
+        "/", authed([this](const auto& req) { return handle_dashboard(req); }));
+    server.get("/ops/dashboard", authed([this](const auto& req) {
+                   return handle_dashboard(req);
+               }));
 
     // /ops/eval is a remote-code-entry point: opt-in (http.eval_enabled),
     // token-gated (http.eval_token), and served in a restricted VM. The
@@ -623,6 +651,27 @@ bool OpsHttpHandler::token_matches(const std::string& provided,
                 static_cast<unsigned char>(expected[i]);
     }
     return diff == 0;
+}
+
+std::string OpsHttpHandler::bearer_token(const shield::net::HttpRequest& req) {
+    auto auth_it = req.find(boost::beast::http::field::authorization);
+    std::string provided;
+    if (auth_it != req.end()) {
+        provided = std::string(auth_it->value());
+    }
+    constexpr char kBearerPrefix[] = "Bearer ";
+    if (provided.rfind(kBearerPrefix, 0) == 0) {
+        provided = provided.substr(sizeof(kBearerPrefix) - 1);
+    }
+    return provided;
+}
+
+bool OpsHttpHandler::request_authorized(const shield::net::HttpRequest& req,
+                                        const std::string& expected) {
+    // Constant-time compare: length mismatch returns immediately (only
+    // leaks the length, never content); equal lengths compare over every
+    // byte so timing reveals nothing about the expected token.
+    return token_matches(bearer_token(req), expected);
 }
 
 shield::net::HttpResponse OpsHttpHandler::handle_health(
@@ -1361,16 +1410,7 @@ shield::net::HttpResponse OpsHttpHandler::handle_eval(
     // Written as a plain if instead of a ternary: the inlined string
     // constructions of the ternary arms produced pseudo line entries the
     // counters never landed on (coverage artifact).
-    auto auth_it = req.find(boost::beast::http::field::authorization);
-    std::string provided;
-    if (auth_it != req.end()) {
-        provided = std::string(auth_it->value());
-    }
-    constexpr char kBearerPrefix[] = "Bearer ";
-    if (provided.rfind(kBearerPrefix, 0) == 0) {
-        provided = provided.substr(sizeof(kBearerPrefix) - 1);
-    }
-    if (!token_matches(provided, eval_token_)) {
+    if (!token_matches(bearer_token(req), eval_token_)) {
         return make_error_response(401, "unauthorized");
     }
 
@@ -1421,16 +1461,7 @@ shield::net::HttpResponse OpsHttpHandler::handle_eval(
 shield::net::HttpResponse OpsHttpHandler::handle_profile(
     const shield::net::HttpRequest& req) {
     // Bearer token gate (same shape as /ops/eval, separate token).
-    auto auth_it = req.find(boost::beast::http::field::authorization);
-    std::string provided;
-    if (auth_it != req.end()) {
-        provided = std::string(auth_it->value());
-    }
-    constexpr char kBearerPrefix[] = "Bearer ";
-    if (provided.rfind(kBearerPrefix, 0) == 0) {
-        provided = provided.substr(sizeof(kBearerPrefix) - 1);
-    }
-    if (!token_matches(provided, profile_token_)) {
+    if (!token_matches(bearer_token(req), profile_token_)) {
         return make_error_response(401, "unauthorized");
     }
 
