@@ -259,3 +259,28 @@
 - force_remove 取消顺序：`cancel_forked_tasks` 前移、定时器/调用超时驱动先收集后 `stop_and_wait_for_actors`+`retire_actors`，锁作用域不嵌套，镜像 exit()。
 - bootstrap 成功路径 `shutdown()`：`cluster_transport->stop()`（:1738）在 `lua_services.reset()`（:1766）之前，server/global `stop()` 亦在之前，回调先于服务释放——正确；仅 startup-failure 路径 cluster_transport 顺序未镜像（已登记）。
 - 原子标志：console_server `listening_`、http_server `running_`、listener `listening_` 均 `std::atomic<bool>`，消除读写竞态。
+
+## dashboard 立项：React + TS + antd + ProComponents 运维控制台（FIX-WEB-01~14，P0/P1）
+
+确定的接入关系：**运维人员浏览器 → HTTP/JSON ops API（既有进程内 `OpsHttpHandler`，src/console/ops_http_handler.cpp）→ 同进程 CAF actor 系统／插件宿主／Lua 管理器**。Web 控制台是管理客户端，生产构建为静态资源，由 ops HTTP 面同源托管；开发期用前端开发代理指向本进程 ops 面。不新增业务服务进程、不新增独立 dashboard 后端进程、不加 ConsoleServer 类常驻组件；浏览器不直连 gateway 端口，不持有内部 TLS 证书，不在浏览器侧保存任何内部凭据；ops 面默认 127.0.0.1 绑定与 eval/profile 的 opt-in 语义不变。现状：内嵌单页仪表盘（raw-string 常量，见上文「ops 内嵌仪表盘」节）是过渡产物，其实现与用例不能当作新架构已接通的证据。
+
+前端确定为 React + TypeScript + antd + ProComponents，与 chorus §22.16 同栈同版本策略（组件版本建项时核对兼容性并锁定）；包管理沿用仓库根既有 pnpm workspace。编号沿用 FIX-WEB-*（chorus 同名前缀；shield 此前 todo 无编号前缀惯例，自本节起采用）。实勘注记：任务材料提到的 `config/app-dashboard-test.yaml` 在仓库中不存在（全仓无 dashboard 命名文件），dashboard 相关现状只有 ops_http_handler 内嵌单页；如需专用测试配置应建项时新立并在交付中注明。
+
+实勘现状（2026-11-04）：端点面 GET `/ops/health`、`/ops/status`、`/ops/metrics`（Prometheus 文本）、`/ops/services`、`/ops/services/:name`、`/ops/plugins`、`/ops/config`（secret 族键脱敏）、`/` 与 `/ops/dashboard`（内嵌单页）；POST `/ops/eval`、`/ops/profile` 默认不注册，opt-in（`http.eval_enabled`+`http.eval_token`、`http.profile_enabled`+`http.profile_token`，Bearer + 常数时间比较）。认证现状：除 eval/profile 外全部只读端点零认证，仅靠默认 loopback 绑定兜底；docs（runtime-ops.md、diagnostics-console.md）无 ops 面认证设计节。推送能力：无 WebSocket/SSE（http_server 为 Beast request/response，无 upgrade 路径），实时性以轮询为基线。机资源：现状仅 `shield_service_memory_kb`（Lua VM）与进程 uptime，无进程级 RSS/CPU/FD 采集。测试面：tests/coverage/test_cov_ops_http.cpp（用例数随构建配置不同：默认构建 45，SHIELD_ENABLE_CLUSTER=ON 时 49——CI cluster job 即此配置）。
+
+- [ ] **FIX-WEB-01 / P0：钉住 ops API 契约。** 依赖：无。交付：docs 新增 dashboard API 契约文档——逐端点列 method/path/JSON envelope（`{type,data}`）/错误形状/超时语义（现状两处分开写：`/ops/status` 的 `data.services` 字段在 2s future 超时时填 `"timeout"` 字符串；`/ops/services` 端点本身超时返回 504——契约按此分别钉住，裁定是否修改另议）／`/ops/metrics` 指标全集清单；区分查询与变更两类；写明 opt-in 端点「默认不存在」语义；列缺口清单（无认证、无机资源指标、无静态托管、无推送）。验收：契约条目与 test_cov_ops_http 现有断言一一对应，新增缺口不得标成已具备；内嵌单页仪表盘不得当作新前端已接通的证据。
+- [ ] **FIX-WEB-02 / P1：建立 React 控制台工程。** 依赖：无。交付：`console/` 前端目录、TypeScript + antd + ProComponents（锁定兼容版本组合）、锁文件、vite 构建、开发代理；ProLayout/PageContainer 导航骨架。验收：可安装可构建；页面具备加载、空、错误、未授权四态；不依赖内嵌单页运行；文档站构建互不影响。
+- [ ] **FIX-WEB-03 / P0：ops 面认证与会话。** 依赖：FIX-WEB-01。交付：ops 面引入认证（会话或 Bearer），默认拒绝、显式放行；`/ops/health` 是否豁免按 k8s probe 用途单独裁定并写进契约；沿用常数时间比较先例，失败不泄漏凭据。验收：未认证请求被拒且无副作用；probe 豁免范围有测试钉住；token 不入日志与响应体；不要求浏览器携带内部证书。
+- [ ] **FIX-WEB-04 / P0：ops 面静态托管与 SPA 路由。** 依赖：FIX-WEB-02。交付：http_server 增加静态文件能力（MIME、缓存头、仅限产物目录、路径穿越防护）；`/` 与 `/ops/dashboard` 同源托管前端构建产物；SPA 路由前缀未知路径回 index.html，API 路径缺失返回明确 JSON 错误；内嵌 raw-string 单页保留或移除按裁定记录。验收：SPA 刷新直达正常；缺失 API 返回错误而非 index.html；`../` 与编码变体穿越被拒且有测试；别名路由与查询串行为有测试。
+- [ ] **FIX-WEB-05 / P0：只读运维总览页。** 依赖：FIX-WEB-03、FIX-WEB-04。交付：总览页——health 聚合状态与 per-check（server/cluster/global）、server 状态机快照、cluster 节点表、进程 uptime。验收：数据全部来自 `/ops/health`、`/ops/status` 实测；degraded→503 与页面状态一致；断网显示数据过期而非定格旧值。
+- [ ] **FIX-WEB-06 / P1：Lua 服务页。** 依赖：FIX-WEB-05、FIX-WEB-10。交付：服务 ProTable（`/ops/services`）+ ProDescriptions 详情（`/ops/services/:name`：uptime、timers、pending_tasks、pending_calls、coroutines、memory_kb、requests/errors 计数）。验收：timeout 分支显示明确不可用而非空表；服务不存在 404 与查询超时 504 区分展示。
+- [ ] **FIX-WEB-07 / P1：插件与连接池页。** 依赖：FIX-WEB-05、FIX-WEB-10。交付：插件实例表（id/package/state/required）+ 连接池指标（pool_size/in_use/idle、db_pending_async/holding）。验收：数据与 `/ops/metrics` 同源可对账；required 插件 degraded 在 health 与插件页口径一致。
+- [ ] **FIX-WEB-08 / P1：网关连接与限流页。** 依赖：FIX-WEB-05、FIX-WEB-10。交付：per-listener 的 connections_total/active_sessions/rejections_total/rate_limited_messages_total/TLS 握手成败，数据通道按 FIX-WEB-01 契约裁定（解析 Prometheus 文本或新增 JSON 端点）。验收：per-port 维度与监听器注册表实测一致；counter 与 gauge 语义区分展示，限流计数不回退。
+- [ ] **FIX-WEB-09 / P1：进程机资源指标补齐。** 依赖：FIX-WEB-01。交付：ops 面新增进程级 RSS/CPU/FD/线程数采集，以 Prometheus gauge 进 `/ops/metrics`，平台差异实现收进单处；总览页展示含单位。验收：Linux 实测值与 `/proc` 对照在容差内；模块关闭（build 开关缺失）时降级不 500；指标名进 FIX-WEB-01 契约清单。
+- [ ] **FIX-WEB-10 / P1：类型化客户端与轮询层。** 依赖：FIX-WEB-01、FIX-WEB-02。交付：按契约的类型化客户端、统一错误与超时/取消、轮询调度（2s 基线可配、页面隐藏可选暂停、失败指数退避）、查询竞态防护。验收：晚到响应不得覆盖新查询（竞态用例钉住）；断网显示数据过期标记；不做 SSE/WS 假抽象——轮询是契约明示的基线通道。
+- [ ] **FIX-WEB-11 / P1：配置脱敏视图页。** 依赖：FIX-WEB-05、FIX-WEB-10。交付：`/ops/config` 展示页，脱敏键族（password/passwd/secret/token/credential 前缀族）标注「已脱敏」。验收：页面任何路径不回显原文；脱敏集合以服务端为准，前端不自行猜测补齐。
+- [ ] **FIX-WEB-12 / P1：eval/profile 受控操作页。** 依赖：FIX-WEB-03、FIX-WEB-10。交付：仅在端点 opt-in 注册时可达的 profiler 表单与 eval 台；token 手工输入、不持久化 localStorage、危险操作显式标注。验收：端点未启用时页面显示不可用及原因，不显示假表单；token 不落盘不进日志；profile 409/429/504 分支如实展示。
+- [ ] **FIX-WEB-13 / P0：真机浏览器验收与安全门。** 依赖：FIX-WEB-03、FIX-WEB-04、FIX-WEB-12。交付：真实 shield 进程 + 真浏览器用例及证据：未认证拒绝、凭据失效、断网过期显示、API 缺失错误、路径穿越拒绝。验收：拒绝请求不产生副作用；不得以 test_cov_ops_http 进程内用例或内嵌单页用例充当浏览器证据；证据（截图/日志/CI artifact）可追溯。
+- [ ] **FIX-WEB-14 / P1：生产构建与托管收口。** 依赖：FIX-WEB-04、FIX-WEB-13。交付：CI 构建前端产物并随 ops 面托管交付；构建产物无秘密；docs（diagnostics-console.md、deployment.md）更新接入方式与开发代理说明。验收：生产路径无前端 dev server；SPA 直刷正常；产物不含秘密有检查手段。
+
+> 验收总则：各条只在自己的交付及验收完成后勾选；缺失功能不得用假数据或旧内嵌单页的通过数补成「完成」。
