@@ -1,5 +1,5 @@
 import { fetchJson } from './polling';
-import type { HealthData, OpsStatusData } from '../types';
+import type { HealthData, OpsStatusData, ServiceDetail } from '../types';
 
 // Typed client over the FIX-WEB-01 contract. Every call returns the
 // envelope's `data`, throws a typed Error on non-2xx / error envelope,
@@ -7,4 +7,7 @@ import type { HealthData, OpsStatusData } from '../types';
 export const api = {
   health: (signal?: AbortSignal) => fetchJson<HealthData>('/ops/health', signal),
   status: (signal?: AbortSignal) => fetchJson<OpsStatusData>('/ops/status', signal),
+  services: (signal?: AbortSignal) => fetchJson<string[] | 'timeout'>('/ops/services', signal),
+  serviceDetail: (name: string, signal?: AbortSignal) =>
+    fetchJson<ServiceDetail>(`/ops/services/${encodeURIComponent(name)}`, signal),
 };

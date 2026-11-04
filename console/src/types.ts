@@ -47,3 +47,18 @@ export interface OpsStatusData {
   services?: string[] | 'timeout';
   cluster?: ClusterStatus;
 }
+
+export interface ServiceDetail {
+  name: string;
+  state: string;
+  script?: string;
+  rpc_routes?: string[];
+  requests?: number;
+  errors?: number;
+  uptime_seconds?: number;
+  timers?: number;
+  pending_calls?: number;
+  pending_tasks?: number;
+  coroutines?: number;
+  memory_kb?: number;
+}
