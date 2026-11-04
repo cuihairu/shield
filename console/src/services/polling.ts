@@ -153,3 +153,25 @@ export function usePolling<T>(
     refresh: () => setTick((t) => t + 1),
   };
 }
+
+// Raw text fetch for Prometheus exposition (not the JSON envelope). Same
+// timeout/cancel semantics as fetchJson.
+export async function fetchText(
+  path: string,
+  signal?: AbortSignal,
+  timeoutMs = 8000,
+): Promise<string> {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(path, { signal: controller.signal, cache: 'no-store' });
+    if (res.status === 401) throw new Error('Unauthorized');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}

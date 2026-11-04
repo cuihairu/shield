@@ -3,10 +3,12 @@ import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import { ProLayout } from '@ant-design/pro-components';
 import Dashboard from './pages/Dashboard';
 import ServicesPage from './pages/ServicesPage';
+import PluginsPage from './pages/PluginsPage';
 
 const routes = [
   { path: '/', name: 'Overview', icon: 'dashboard' },
   { path: '/services', name: 'Services', icon: 'appstore' },
+  { path: '/plugins', name: 'Plugins & Pools', icon: 'database' },
 ];
 
 export default function AppShell() {
@@ -33,6 +35,7 @@ export default function AppShell() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/services" element={<ServicesPage />} />
+        <Route path="/plugins" element={<PluginsPage />} />
         <Route path="/ops/dashboard" element={<Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

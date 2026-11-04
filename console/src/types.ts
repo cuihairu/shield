@@ -62,3 +62,20 @@ export interface ServiceDetail {
   coroutines?: number;
   memory_kb?: number;
 }
+
+export interface PluginInstance {
+  id: string;
+  package: string;
+  state: string;
+  required: boolean;
+}
+
+export interface PoolMetric {
+  plugin: string;
+  instance: string;
+  pool_size?: number;
+  in_use?: number;
+  idle?: number;
+  pending_async?: number;
+  holding?: number;
+}
