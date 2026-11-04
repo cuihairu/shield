@@ -48,7 +48,9 @@
 - [配置运行时语义](runtime-config.md)
 - [日志运行时语义](runtime-log.md)
 - [运维语义](runtime-ops.md)
+- [交互式诊断控制台](diagnostics-console.md)
 - [Lua 诊断控制台设计](ops-lua-console.md)
+- [Dashboard HTTP API 契约](../dashboard-api.md)（英文）
 
 ## 当前口径
 

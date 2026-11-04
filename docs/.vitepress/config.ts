@@ -80,6 +80,8 @@ export default defineConfig({
               { text: 'Gateway Design', link: '/gateway' },
               { text: 'DB Usage Discipline', link: '/db-discipline' },
               { text: 'Starter System', link: '/starter-system' },
+              { text: 'Diagnostics Console', link: '/diagnostics-console' },
+              { text: 'Dashboard HTTP API', link: '/dashboard-api' },
             ],
           },
           {
@@ -192,6 +194,7 @@ export default defineConfig({
               { text: '玩家生命周期', link: '/zh/runtime-player' },
               { text: '服务器状态', link: '/zh/runtime-server' },
               { text: '运维语义', link: '/zh/runtime-ops' },
+              { text: '诊断控制台', link: '/zh/diagnostics-console' },
             ],
           },
           {

@@ -48,7 +48,8 @@ Ops and deployment read first:
 - Runtime Config Semantics
 - [Runtime Log Semantics](runtime-log.md)
 - Ops Semantics
-- Lua Diagnostics Console Design
+- [Lua Diagnostics Console](diagnostics-console.md)
+- [Dashboard HTTP API Contract](dashboard-api.md)
 
 ## Current Conventions
 

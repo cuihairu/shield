@@ -44,8 +44,9 @@ protected endpoint denies requests without a matching
   effects (read-only endpoints never mutate state).
 - **Opt-in eval/profile**: `POST /ops/eval` and `POST /ops/profile` keep
   their own independent token gates (`http.eval_token`,
-  `http.profile_token`) and are additionally behind the ops-wide gate when
-  it is enabled.
+  `http.profile_token`). They are currently registered **without** the
+  ops-wide gate (src/console/ops_http_handler.cpp:716, :765); applying the
+  ops-wide gate to them is a pending fix tracked in `todo.md`.
 
 ## Static hosting & SPA routing (FIX-WEB-04)
 
@@ -228,8 +229,9 @@ and `http.eval_token` is non-empty (otherwise the request 404s).
 Profiler control (opt-in like `/ops/eval`; requires
 `http.profile_enabled=true` + non-empty `http.profile_token`).
 
-- **Auth**: `Authorization: Bearer <token>`; when `http.ops_auth_token` is
-  enabled, that gate must be satisfied first.
+- **Auth**: `Authorization: Bearer <token>` (`http.profile_token`,
+  constant-time compare). Like `/ops/eval`, this endpoint is currently not
+  behind the ops-wide gate; see the note above and `todo.md`.
 - **Body**: `{ "action": "status"|"start"|"stop"|"report", ... }`.
 - **Status**: `200`; `404` service missing; `409` session already running;
   `429` cooldown; `401` bad token.
