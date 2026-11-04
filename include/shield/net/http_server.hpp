@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -97,6 +98,16 @@ public:
     /// @brief Set a default handler for unmatched routes
     void set_default_handler(HttpHandler handler);
 
+    /// @brief Configure a static file root. When set, unmatched non-API
+    /// requests may be served from this directory (see try_static).
+    void set_static_root(const std::string& root);
+
+    /// @brief Attempt to serve a static file for the request path.
+    /// Returns an empty optional when the path is not a safe, existing file
+    /// under the static root (path traversal is denied; missing files are
+    /// left for the caller's fallback). Only valid after set_static_root.
+    std::optional<HttpResponse> try_static(const HttpRequest& req) const;
+
 private:
     struct RouteKey {
         HttpMethod method;
@@ -143,6 +154,7 @@ private:
                        RouteKeyHash>
         routes_;
     HttpHandler default_handler_;
+    std::string static_root_;
 
     net::io_context io_context_;
     std::unique_ptr<net::ip::tcp::acceptor> acceptor_;

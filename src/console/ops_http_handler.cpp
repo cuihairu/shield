@@ -2,6 +2,8 @@
 #include "shield/console/ops_http_handler.hpp"
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <map>
 #include <nlohmann/json.hpp>
@@ -528,6 +530,15 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
     // An empty token keeps the gate off (legacy behaviour, no auth).
     auth_token_ = shield::config::get("http.ops_auth_token", "");
 
+    // Static frontend root (FIX-WEB-04). When configured, the built console
+    // is served from this directory; unmatched non-API GETs fall through to
+    // the SPA index.html (handle_default). Empty means the embedded
+    // raw-string single page remains the fallback (no filesystem access).
+    static_root_ = shield::config::get("http.static_root", "");
+    if (!static_root_.empty()) {
+        server.set_static_root(static_root_);
+    }
+
     // Wrap a handler with the ops-wide auth check, unless the gate is off.
     auto authed = [this](shield::net::HttpHandler inner) {
         if (auth_token_.empty()) {
@@ -569,12 +580,24 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
     // external assets, no build step, no new dependencies) that polls the
     // read-only /ops/* endpoints above and renders health, per-service
     // state, metric curves and profile results client-side. Registered on
-    // both "/" and "/ops/dashboard" so a bare ops-port visit lands on it.
-    server.get(
-        "/", authed([this](const auto& req) { return handle_dashboard(req); }));
-    server.get("/ops/dashboard", authed([this](const auto& req) {
-                   return handle_dashboard(req);
-               }));
+    // both "/" and "/ops/dashboard" only when no static root is configured;
+    // with a static root the default handler serves the built console
+    // instead (same-origin, FIX-WEB-04).
+    if (static_root_.empty()) {
+        server.get("/", authed([this](const auto& req) {
+                       return handle_dashboard(req);
+                   }));
+        server.get("/ops/dashboard", authed([this](const auto& req) {
+                       return handle_dashboard(req);
+                   }));
+    }
+
+    // SPA fallback: unknown non-API paths serve the console index.html so a
+    // deep link refreshes correctly; unknown /ops/* API paths get a clear
+    // JSON 404 instead of HTML. Only the default handler sees unmatched
+    // routes, so it runs after static serving (see HttpServer::dispatch).
+    server.set_default_handler(
+        [this](const auto& req) { return handle_default(req); });
 
     // /ops/eval is a remote-code-entry point: opt-in (http.eval_enabled),
     // token-gated (http.eval_token), and served in a restricted VM. The
@@ -1402,6 +1425,80 @@ shield::net::HttpResponse OpsHttpHandler::handle_dashboard(
     resp.body() = kDashboardHtml;
     resp.prepare_payload();
     return resp;
+}
+
+shield::net::HttpResponse OpsHttpHandler::handle_default(
+    const shield::net::HttpRequest& req) {
+    const std::string path(req.target());
+
+    // Reject any traversal or backslash before the SPA fallback; a deep
+    // link with ".." is never a legitimate route and must not be answered
+    // with the SPA shell (which would mask a path-escape attempt).
+    if (path.find("..") != std::string::npos ||
+        path.find('\\') != std::string::npos) {
+        return make_error_response(404, "not found");
+    }
+    // Also reject percent-encoded traversal ("%2e%2e", "%2f") so encoded
+    // variants cannot reach the SPA fallback either.
+    {
+        std::string decoded;
+        decoded.reserve(path.size());
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            if (path[i] == '%' && i + 2 < path.size()) {
+                const auto hex = [](char c) -> int {
+                    if (c >= '0' && c <= '9') return c - '0';
+                    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                    return -1;
+                };
+                const int hi = hex(path[i + 1]);
+                const int lo = hex(path[i + 2]);
+                if (hi >= 0 && lo >= 0) {
+                    decoded.push_back(static_cast<char>((hi << 4) | lo));
+                    i += 2;
+                    continue;
+                }
+            }
+            decoded.push_back(path[i]);
+        }
+        if (decoded.find("..") != std::string::npos ||
+            decoded.find('\\') != std::string::npos) {
+            return make_error_response(404, "not found");
+        }
+    }
+
+    // With a static root, "/" and "/ops/dashboard" serve the built console
+    // (same-origin, SPA route), and any other non-API deep link gets the SPA
+    // shell too so a direct refresh lands correctly. Unknown /ops/* API paths
+    // stay a clear JSON 404, never HTML (would mask configuration errors).
+    if (!static_root_.empty()) {
+        if (path.rfind("/ops/", 0) == 0 && path != "/ops/dashboard") {
+            return make_error_response(404, "not found");
+        }
+        namespace fs = std::filesystem;
+        const fs::path index = fs::path(static_root_) / "index.html";
+        std::ifstream file(index, std::ios::binary);
+        if (file) {
+            std::string body((std::istreambuf_iterator<char>(file)),
+                             std::istreambuf_iterator<char>());
+            shield::net::HttpResponse resp;
+            resp.result(boost::beast::http::status::ok);
+            resp.set(boost::beast::http::field::content_type,
+                     "text/html; charset=utf-8");
+            resp.set(boost::beast::http::field::cache_control, "no-cache");
+            resp.body() = std::move(body);
+            resp.prepare_payload();
+            return resp;
+        }
+    }
+
+    // Unknown /ops/* API path without a static root: JSON 404.
+    if (path.rfind("/ops/", 0) == 0 || path.rfind("/ops", 0) == 0) {
+        return make_error_response(404, "not found");
+    }
+
+    // No static root (or no index.html): embedded transitional single page.
+    return handle_dashboard(req);
 }
 
 shield::net::HttpResponse OpsHttpHandler::handle_eval(

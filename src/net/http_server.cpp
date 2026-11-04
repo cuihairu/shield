@@ -7,6 +7,8 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/version.hpp>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 #include "shield/log/logger.hpp"
@@ -132,6 +134,134 @@ void HttpServer::set_default_handler(HttpHandler handler) {
     default_handler_ = std::move(handler);
 }
 
+void HttpServer::set_static_root(const std::string& root) {
+    std::lock_guard<std::mutex> lock(routes_mutex_);
+    static_root_ = root;
+}
+
+std::optional<HttpResponse> HttpServer::try_static(
+    const HttpRequest& req) const {
+    if (static_root_.empty()) {
+        return std::nullopt;
+    }
+
+    std::string path(req.target());
+    const auto query_pos = path.find('?');
+    if (query_pos != std::string::npos) {
+        path = path.substr(0, query_pos);
+    }
+    // Only GET serves static files.
+    if (req.method() != http::verb::get) {
+        return std::nullopt;
+    }
+
+    // Decode %2e ('.') variants so "..%2f" cannot smuggle a traversal.
+    // We reject any path containing a NUL or a backslash outright; dots
+    // are re-checked after canonicalisation below.
+    if (path.find('\0') != std::string::npos) {
+        return std::nullopt;
+    }
+    std::string decoded;
+    decoded.reserve(path.size());
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        if (path[i] == '%' && i + 2 < path.size()) {
+            const auto hex = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            const int hi = hex(path[i + 1]);
+            const int lo = hex(path[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                decoded.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        decoded.push_back(path[i]);
+    }
+
+    // Reject traversal, backslash, and any path that escapes the root.
+    if (decoded.find("..") != std::string::npos ||
+        decoded.find('\\') != std::string::npos) {
+        return std::nullopt;
+    }
+
+    namespace fs = std::filesystem;
+    fs::path root(static_root_);
+    // Root must be absolute and exist; otherwise no static serving.
+    if (!root.is_absolute() || !fs::exists(root)) {
+        return std::nullopt;
+    }
+
+    fs::path target = root;
+    std::string rel = decoded;
+    if (!rel.empty() && rel.front() == '/') {
+        rel.erase(rel.begin());
+    }
+    target /= rel;
+
+    // Canonicalise and verify containment under the root (resolves symlinks
+    // and any remaining ".." that survived lexical checks).
+    std::error_code ec;
+    const fs::path canon = fs::weakly_canonical(target, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    const fs::path canon_root = fs::weakly_canonical(root, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    const auto root_str = canon_root.string();
+    if (canon.string() != root_str &&
+        canon.string().rfind(root_str + "/", 0) != 0) {
+        return std::nullopt;
+    }
+
+    if (!fs::is_regular_file(canon, ec) || ec) {
+        return std::nullopt;
+    }
+
+    std::ifstream file(canon, std::ios::binary);
+    if (!file) {
+        return std::nullopt;
+    }
+    std::string body((std::istreambuf_iterator<char>(file)),
+                     std::istreambuf_iterator<char>());
+
+    HttpResponse response;
+    response.result(http::status::ok);
+    const std::string ext = canon.extension().string();
+    if (ext == ".html" || ext == ".htm") {
+        response.set(http::field::content_type, "text/html; charset=utf-8");
+    } else if (ext == ".js" || ext == ".mjs") {
+        response.set(http::field::content_type, "application/javascript");
+    } else if (ext == ".css") {
+        response.set(http::field::content_type, "text/css");
+    } else if (ext == ".json") {
+        response.set(http::field::content_type, "application/json");
+    } else if (ext == ".svg") {
+        response.set(http::field::content_type, "image/svg+xml");
+    } else if (ext == ".png") {
+        response.set(http::field::content_type, "image/png");
+    } else if (ext == ".ico") {
+        response.set(http::field::content_type, "image/x-icon");
+    } else {
+        response.set(http::field::content_type, "application/octet-stream");
+    }
+    // Cache built assets aggressively; index.html stays revalidated so a
+    // fresh deploy is picked up on navigation.
+    if (ext == ".html" || ext == ".htm") {
+        response.set(http::field::cache_control, "no-cache");
+    } else {
+        response.set(http::field::cache_control, "public, max-age=31536000");
+    }
+    response.body() = std::move(body);
+    response.prepare_payload();
+    return response;
+}
+
 std::shared_ptr<const HttpHandler> HttpServer::match_route(
     HttpMethod method, const std::string& path) const {
     std::lock_guard<std::mutex> lock(routes_mutex_);
@@ -182,8 +312,14 @@ HttpResponse HttpServer::dispatch(const HttpRequest& req) const {
         if (handler) {
             response = (*handler)(req);
         } else if (default_handler_) {
-            auto def = default_handler_;
-            response = def(req);
+            // Try static files first; the default handler (SPA fallback /
+            // API 404) only runs when no static file matched.
+            if (auto static_resp = try_static(req)) {
+                response = std::move(*static_resp);
+            } else {
+                auto def = default_handler_;
+                response = def(req);
+            }
         } else {
             response.result(http::status::not_found);
             response.set(http::field::content_type, "application/json");

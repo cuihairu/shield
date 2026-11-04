@@ -2560,4 +2560,136 @@ BOOST_AUTO_TEST_CASE(DashboardServesSelfContainedHtml) {
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(nested), 404);
 }
 
+// Serve the console build from a temp static root with the SPA fallback
+// wired up. Independent server so it does not perturb the default fixture.
+struct StaticServer {
+    std::unique_ptr<shield::net::HttpServer> server;
+    std::unique_ptr<shield::console::OpsHttpHandler> handler;
+    uint16_t port = 0;
+    fs::path root;
+
+    StaticServer(shield::lua::LuaServiceManager& mgr,
+                 shield::lua::LuaRuntime& rt) {
+        root = fs::temp_directory_path() / "shield_cov_ops_static";
+        fs::remove_all(root);
+        fs::create_directories(root);
+        fs::create_directories(root / "assets");
+        std::ofstream(root / "index.html")
+            << "<!DOCTYPE html><html><body>SPA</body></html>";
+        std::ofstream(root / "assets" / "app.js") << "console.log('hi');";
+        std::ofstream(root / "assets" / "app.css") << "body{color:red}";
+        std::ofstream(root / "assets" / "app.svg") << "<svg></svg>";
+
+        shield::config::global_config().set("http.static_root", root.string());
+        port = free_port();
+        shield::net::HttpServerConfig cfg;
+        cfg.host = "127.0.0.1";
+        cfg.port = port;
+        server = std::make_unique<shield::net::HttpServer>(cfg);
+        handler = std::make_unique<shield::console::OpsHttpHandler>(mgr, rt);
+        handler->register_routes(*server);
+        server->start();
+    }
+    ~StaticServer() {
+        if (server) server->stop();
+        shield::config::global_config().set("http.static_root",
+                                            std::string(""));
+        fs::remove_all(root);
+    }
+};
+
+BOOST_AUTO_TEST_CASE(StaticServesBuiltAssets) {
+    StaticServer st(*manager, *runtime);
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", st.port);
+
+    // index.html at "/" (route registered) serves the build.
+    std::string idx = client.get("/");
+    BOOST_REQUIRE(!idx.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(idx), 200);
+    BOOST_CHECK(idx.find("text/html") != std::string::npos);
+    BOOST_CHECK(RawHttpClient::body(idx).find("SPA") != std::string::npos);
+
+    // Built asset served with correct MIME and cache headers.
+    std::string js = client.get("/assets/app.js");
+    BOOST_REQUIRE(!js.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(js), 200);
+    BOOST_CHECK(js.find("application/javascript") != std::string::npos);
+    BOOST_CHECK(js.find("max-age=31536000") != std::string::npos);
+    BOOST_CHECK(RawHttpClient::body(js).find("console.log") !=
+                std::string::npos);
+
+    std::string css = client.get("/assets/app.css");
+    BOOST_REQUIRE(!css.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(css), 200);
+    BOOST_CHECK(css.find("text/css") != std::string::npos);
+
+    std::string svg = client.get("/assets/app.svg");
+    BOOST_REQUIRE(!svg.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(svg), 200);
+    BOOST_CHECK(svg.find("image/svg+xml") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(StaticSpaFallbackAndApi404) {
+    StaticServer st(*manager, *runtime);
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", st.port);
+
+    // Unknown non-API deep link -> SPA index.html (refresh works).
+    std::string deep = client.get("/some/spa/route");
+    BOOST_REQUIRE(!deep.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(deep), 200);
+    BOOST_CHECK(deep.find("text/html") != std::string::npos);
+    BOOST_CHECK(RawHttpClient::body(deep).find("SPA") != std::string::npos);
+
+    // Unknown /ops API path -> JSON 404, never index.html.
+    std::string missing = client.get("/ops/does-not-exist");
+    BOOST_REQUIRE(!missing.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(missing), 404);
+    const std::string missing_body = RawHttpClient::body(missing);
+    BOOST_CHECK(missing_body.find("SPA") == std::string::npos);
+    BOOST_CHECK(missing_body.find("not found") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(StaticDeniesPathTraversal) {
+    StaticServer st(*manager, *runtime);
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", st.port);
+
+    // Lexical "../" traversal.
+    std::string trav = client.get("/../etc/passwd");
+    BOOST_REQUIRE(!trav.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(trav), 404);
+    BOOST_CHECK(RawHttpClient::body(trav).find("root:") == std::string::npos);
+
+    // Encoded %2e%2e and %2f variants must not escape either.
+    trav = client.get("/%2e%2e/%2e%2e/etc/passwd");
+    BOOST_REQUIRE(!trav.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(trav), 404);
+    BOOST_CHECK(RawHttpClient::body(trav).find("root:") == std::string::npos);
+
+    trav = client.get("/assets/../index.html");
+    BOOST_REQUIRE(!trav.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(trav), 404);
+}
+
+BOOST_AUTO_TEST_CASE(StaticAliasAndQuery) {
+    StaticServer st(*manager, *runtime);
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", st.port);
+
+    // "/ops/dashboard" alias serves the SPA shell (the dashboard route is
+    // registered, so it returns the embedded page, not a static file).
+    std::string alias = client.get("/ops/dashboard");
+    BOOST_REQUIRE(!alias.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(alias), 200);
+
+    // Query string on a static asset does not break serving.
+    std::string q = client.get("/assets/app.js?v=123");
+    BOOST_REQUIRE(!q.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(q), 200);
+    BOOST_CHECK(RawHttpClient::body(q).find("console.log") !=
+                std::string::npos);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

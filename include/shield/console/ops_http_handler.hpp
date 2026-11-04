@@ -65,6 +65,8 @@ private:
         const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_dashboard(
         const shield::net::HttpRequest& req);
+    shield::net::HttpResponse handle_default(
+        const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_eval(const shield::net::HttpRequest& req);
     shield::net::HttpResponse handle_profile(
         const shield::net::HttpRequest& req);
@@ -94,6 +96,7 @@ private:
     shield::lua::LuaRuntime& lua_rt_;
     std::string eval_token_;
     std::string auth_token_;
+    std::string static_root_;
 
     // /ops/profile state. The report future is created at start and
     // consumed at stop/report; the mutex covers its hand-off between

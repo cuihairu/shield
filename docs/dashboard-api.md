@@ -47,6 +47,28 @@ protected endpoint denies requests without a matching
   `http.profile_token`) and are additionally behind the ops-wide gate when
   it is enabled.
 
+## Static hosting & SPA routing (FIX-WEB-04)
+
+Set `http.static_root` to an absolute directory holding the built console
+(the `console/` Vite build output). When configured:
+
+- `GET /` and `GET /ops/dashboard` serve `index.html` from that directory
+  (same origin, no separate frontend server).
+- Built assets (`/assets/*`) are served with correct MIME types and a
+  one-year immutable cache; `index.html` is served with `no-cache`.
+- Unknown non-API deep links (e.g. `/some/spa/route`) fall back to
+  `index.html` so a direct refresh works.
+- Unknown `/ops/*` API paths return a JSON `404` (`{ "type": "error",
+  "data": "not found" }`), never the HTML shell.
+- Path traversal (`../`, `%2e%2e`, backslashes) is rejected with `404`; no
+  file outside the static root is ever served.
+
+When `http.static_root` is empty, the embedded raw-string single page
+remains the fallback (no filesystem access), and `/`/`/ops/dashboard` serve
+that transitional page. The embedded page is retained for now; it is
+documented as transitional and replaced by the static build whenever the
+root is configured.
+
 ## Endpoints
 
 ### GET /ops/health
