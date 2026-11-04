@@ -11,6 +11,7 @@
 #include <future>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2690,6 +2691,68 @@ BOOST_AUTO_TEST_CASE(StaticAliasAndQuery) {
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(q), 200);
     BOOST_CHECK(RawHttpClient::body(q).find("console.log") !=
                 std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(ProcessResourceMetricsEmitted) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+    std::string response = client.get("/ops/metrics");
+    BOOST_REQUIRE(!response.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 200);
+    const std::string& body = RawHttpClient::body(response);
+
+    // Linux /proc-backed gauges. Values must be present and parseable.
+    BOOST_CHECK(body.find("# TYPE shield_process_rss_bytes gauge") !=
+                std::string::npos);
+    BOOST_CHECK(body.find("# TYPE shield_process_threads gauge") !=
+                std::string::npos);
+    BOOST_CHECK(body.find("# TYPE shield_process_open_fds gauge") !=
+                std::string::npos);
+    BOOST_CHECK(body.find("# TYPE shield_process_cpu_percent gauge") !=
+                std::string::npos);
+
+    // RSS in bytes should be within a sane tolerance of /proc/self/status
+    // VmRSS read independently (the process is the same binary).
+    auto find_value = [&](const std::string& name) -> double {
+        // Find the sample line (a line starting with <name> followed by a
+        // space and a number), skipping the "# TYPE ..." header which also
+        // contains the name.
+        std::istringstream lines(body);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (line.rfind(name + " ", 0) == 0) {
+                std::istringstream iss(line.substr(name.size() + 1));
+                double v = -1;
+                iss >> v;
+                if (v >= 0) return v;
+            }
+        }
+        return -1;
+    };
+    const double rss_bytes = find_value("shield_process_rss_bytes");
+    BOOST_CHECK(rss_bytes > 0);
+
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    double proc_rss_kib = -1;
+    while (std::getline(status, line)) {
+        if (line.rfind("VmRSS:", 0) == 0) {
+            std::istringstream iss(line.substr(6));
+            std::string unit;
+            iss >> proc_rss_kib >> unit;
+            break;
+        }
+    }
+    if (proc_rss_kib > 0) {
+        const double proc_rss_bytes = proc_rss_kib * 1024.0;
+        BOOST_CHECK(rss_bytes > proc_rss_bytes * 0.75);
+        BOOST_CHECK(rss_bytes < proc_rss_bytes * 1.25);
+    }
+
+    const double threads = find_value("shield_process_threads");
+    BOOST_CHECK(threads >= 1);
+    const double fds = find_value("shield_process_open_fds");
+    BOOST_CHECK(fds >= 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

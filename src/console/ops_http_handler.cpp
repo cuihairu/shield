@@ -1,6 +1,8 @@
 // [SHIELD_CONSOLE] HTTP ops endpoints implementation
 #include "shield/console/ops_http_handler.hpp"
 
+#include <unistd.h>
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -8,6 +10,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <sstream>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -46,6 +49,101 @@ double process_uptime_seconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                          kProcessStart)
         .count();
+}
+
+/// Process-level resource gauges (Linux /proc). Platform differences are
+/// isolated here: non-Linux builds return no entries (gauges omitted).
+/// Values are bytes (RSS), count (FD/threads), or percent (CPU).
+struct ProcessResource {
+    double rss_kib = -1;      // VmRSS, KiB
+    double threads = -1;      // Threads count
+    double fd_count = -1;     // open file descriptors
+    double cpu_percent = -1;  // CPU since last sample
+};
+
+// Last CPU sample (jiffies of utime+stime and the wall timestamp) so the
+// CPU gauge is a rate over the interval, not a cumulative counter.
+struct CpuSample {
+    unsigned long long ticks = 0;
+    std::chrono::steady_clock::time_point at;
+};
+CpuSample& last_cpu_sample() {
+    static CpuSample s;
+    return s;
+}
+
+ProcessResource read_process_resources() {
+    ProcessResource r;
+
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.rfind("VmRSS:", 0) == 0) {
+            std::istringstream iss(line.substr(6));
+            std::string unit;
+            double v = 0;
+            if (iss >> v >> unit && unit == "kB") {
+                r.rss_kib = v;
+            }
+        } else if (line.rfind("Threads:", 0) == 0) {
+            std::istringstream iss(line.substr(8));
+            double v = 0;
+            if (iss >> v) {
+                r.threads = v;
+            }
+        }
+    }
+
+    // Open FDs: count entries in /proc/self/fd.
+    std::error_code ec;
+    std::size_t fd_count = 0;
+    for (auto it = std::filesystem::directory_iterator("/proc/self/fd", ec);
+         it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        if (!ec) ++fd_count;
+        if (ec) break;
+    }
+    if (!ec) {
+        r.fd_count = static_cast<double>(fd_count);
+    }
+
+    // CPU: utime + stime from /proc/self/stat (fields 14 and 15, 1-based).
+    // The sample is clock ticks since process start; a delta over the wall
+    // interval yields a percentage (assuming 100 ticks/sec via sysconf).
+    std::ifstream stat("/proc/self/stat");
+    std::string content((std::istreambuf_iterator<char>(stat)),
+                        std::istreambuf_iterator<char>());
+    if (!content.empty()) {
+        auto rparen = content.rfind(')');
+        if (rparen != std::string::npos && rparen + 2 < content.size()) {
+            std::istringstream iss(content.substr(rparen + 2));
+            std::string field;
+            for (int i = 3; i <= 13; ++i) iss >> field;
+            unsigned long long utime = 0, stime = 0;
+            if (iss >> utime >> stime) {
+                const auto now = std::chrono::steady_clock::now();
+                CpuSample& last = last_cpu_sample();
+                const unsigned long long now_ticks = utime + stime;
+                if (last.ticks != 0) {
+                    const double dt =
+                        std::chrono::duration<double>(now - last.at).count();
+                    const long hz = sysconf(_SC_CLK_TCK);
+                    if (dt > 0 && hz > 0) {
+                        const double delta =
+                            static_cast<double>(now_ticks - last.ticks) / hz;
+                        r.cpu_percent = (delta / dt) * 100.0;
+                    }
+                } else {
+                    // First sample: no interval yet, report 0 so the gauge
+                    // is present immediately (subsequent polls carry a rate).
+                    r.cpu_percent = 0.0;
+                }
+                last.ticks = now_ticks;
+                last.at = now;
+            }
+        }
+    }
+
+    return r;
 }
 
 /// The slow_calls section attached to /ops/profile status and report:
@@ -807,6 +905,30 @@ shield::net::HttpResponse OpsHttpHandler::handle_metrics(
     std::string out;
     prom_emit(out, "shield_uptime_seconds", "gauge",
               "Process uptime in seconds", "", process_uptime_seconds());
+
+    // Process-level resource gauges (Linux /proc, isolated in
+    // read_process_resources). Omitted entirely on platforms without the
+    // source (or when a read fails), so the endpoint never 500s.
+    {
+        const ProcessResource pr = read_process_resources();
+        if (pr.rss_kib >= 0) {
+            prom_emit(out, "shield_process_rss_bytes", "gauge",
+                      "Resident set size in bytes", "", pr.rss_kib * 1024.0);
+        }
+        if (pr.threads >= 0) {
+            prom_emit(out, "shield_process_threads", "gauge",
+                      "Number of threads in the process", "", pr.threads);
+        }
+        if (pr.fd_count >= 0) {
+            prom_emit(out, "shield_process_open_fds", "gauge",
+                      "Open file descriptors", "", pr.fd_count);
+        }
+        if (pr.cpu_percent >= 0) {
+            prom_emit(out, "shield_process_cpu_percent", "gauge",
+                      "Process CPU usage percent since last sample", "",
+                      pr.cpu_percent);
+        }
+    }
 
     // Plugins grouped by lifecycle state.
     {
