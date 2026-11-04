@@ -518,8 +518,10 @@ BOOST_AUTO_TEST_CASE(PlaintextAcceptTailOutlivesListenerDestruction) {
     boost::asio::io_context io;
     const auto port = reserve_ephemeral_port(io);
 
+    std::atomic<int> connects{0};
     SessionCallbacks callbacks;
     callbacks.create_protocol_pipeline = [] { return make_json_pipeline(); };
+    callbacks.on_connect = [&](std::shared_ptr<Session>) { ++connects; };
 
     auto listener =
         std::make_unique<TcpListener>(io, port, std::move(callbacks));
@@ -527,16 +529,35 @@ BOOST_AUTO_TEST_CASE(PlaintextAcceptTailOutlivesListenerDestruction) {
 
     std::thread io_thread([&io] { io.run(); });
 
+    // Drive a real plaintext accept completion: a completed TCP connection is
+    // the only way the accept handler reaches the adopt path, so the tail can
+    // actually race teardown (an aborted accept never adopts). Without this
+    // connection the test is a vacuous smoke that never enters do_accept's
+    // adopt branch.
+    boost::asio::io_context client_io;
+    tcp::socket client(client_io);
+    boost::system::error_code connect_ec;
+    client.connect(tcp::endpoint(boost::asio::ip::address_v4::loopback(), port),
+                   connect_ec);
+    BOOST_REQUIRE(!connect_ec);
+
     // Race: destroy the listener while a plaintext accept may still be
     // completing. stop() sets the gate's stopping flag and closes the
     // acceptor; the completion (if queued) must observe it and bail.
     listener->stop();
+    const auto accepts = listener->accepts_total();
     listener.reset();
     io.stop();
     io_thread.join();
 
-    // No crash, no leak: the test completing is the assertion.
-    BOOST_CHECK(true);
+    // Observable invariant: at most one connection is accepted (the gate
+    // prevents a post-stop completion from re-arming the loop), and no
+    // session is ever adopted after teardown began (connects never exceeds
+    // accepts; adopt_connection may drop the socket without firing on_connect
+    // if stop() wins the sessions lock first). This asserts the gate's
+    // protection rather than merely "no crash".
+    BOOST_CHECK(accepts <= 1);
+    BOOST_CHECK(connects.load() <= static_cast<int>(accepts));
 }
 
 // stop()'s cancel() and a strand-side settle() may race on the same TLS
@@ -566,11 +587,19 @@ BOOST_AUTO_TEST_CASE(TlsTeardownCancelConcurrentWithSettle) {
     BOOST_REQUIRE(!connect_ec);
 
     listener->stop();
+    const auto successes = listener->tls_handshakes_total();
+    const auto failures = listener->tls_handshake_failures_total();
     listener.reset();
     io.stop();
     io_thread.join();
 
-    BOOST_CHECK(true);
+    // Observable invariant: settle() and cancel() are mutually exclusive via
+    // the settled/cancelled flags, so at most one of the success/failure
+    // counters increments per handshake attempt (a double-settle would
+    // report failures > 1 and a lost-close-race would not settle at all).
+    BOOST_CHECK(successes <= 1);
+    BOOST_CHECK(failures <= 1);
+    BOOST_CHECK(successes + failures <= 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

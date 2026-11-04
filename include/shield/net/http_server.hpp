@@ -92,7 +92,8 @@ public:
     bool is_running() const;
 
     /// @brief Get the configured port. When the server was configured with
-    ///        port 0 and is running, returns the bound ephemeral port.
+    ///        port 0, returns the bound ephemeral port (persists after
+    ///        stop() so callers can query it for logging and reconnects).
     uint16_t port() const;
 
     /// @brief Set a default handler for unmatched routes
@@ -149,6 +150,7 @@ private:
     void handle_session(std::shared_ptr<net::ip::tcp::socket> socket);
 
     HttpServerConfig config_;
+    uint16_t bound_port_{0};
     mutable std::mutex routes_mutex_;
     std::unordered_map<RouteKey, std::shared_ptr<const HttpHandler>,
                        RouteKeyHash>

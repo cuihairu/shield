@@ -355,9 +355,12 @@ void HttpServer::start() {
         auto address = net::ip::make_address(config_.host);
         acceptor_ = std::make_unique<net::ip::tcp::acceptor>(
             io_context_, net::ip::tcp::endpoint(address, config_.port));
-        if (config_.port == 0) {
-            config_.port = acceptor_->local_endpoint().port();
-        }
+        // Record the actually-bound port in a separate member instead of
+        // mutating config_.port: a port-0 (ephemeral) config must re-request
+        // a fresh ephemeral port on every start() rather than silently
+        // rebinding the previous temporary port, and the caller's config
+        // must not be permanently rewritten.
+        bound_port_ = acceptor_->local_endpoint().port();
 
         acceptor_->set_option(net::socket_base::reuse_address(true));
 
@@ -367,7 +370,7 @@ void HttpServer::start() {
         io_thread_ = std::thread([this]() { io_context_.run(); });
 
         SHIELD_LOG_INFO(log, "HTTP server started on " + config_.host + ":" +
-                                 std::to_string(config_.port));
+                                 std::to_string(bound_port_));
     } catch (  // GCOVR_EXCL_BR_LINE (compiler artifact: catch RTTI-miss
         const std::exception&
             e) {  // arm; make_address/bind only throw std::exception
@@ -383,7 +386,10 @@ uint16_t HttpServer::port() const {
     if (config_.port != 0) {
         return config_.port;
     }
-    return acceptor_ ? acceptor_->local_endpoint().port() : 0;
+    // bound_port_ is set at bind time and survives stop() (which closes the
+    // acceptor and would otherwise make local_endpoint() throw). It is 0
+    // before the first start().
+    return bound_port_;
 }
 
 void HttpServer::stop() {

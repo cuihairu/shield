@@ -22,6 +22,8 @@
 #include "shield/lua/lua_api.hpp"
 #include "shield/lua/lua_runtime.hpp"
 #include "shield/lua/lua_service.hpp"
+#include "shield/lua/profile_sampler.hpp"
+#include "shield/lua/profile_session.hpp"
 
 using namespace shield::lua;
 
@@ -1817,6 +1819,58 @@ BOOST_AUTO_TEST_CASE(InvokeClientRpcNullErrorAndManagerCombos) {
     BOOST_CHECK(!runtime.invoke_client_rpc(vm2, ok2, ingress, nullptr));
     lua2.script("__shield_run_handler = function() return {} end");
     BOOST_CHECK(!runtime.invoke_client_rpc(vm2, ok2, ingress, nullptr));
+}
+
+// invoke_client_rpc drives a brand-new handler coroutine per call. While a
+// sampler bound to that service is active, the drive point must sweep its
+// provider so the new coroutine gets the count hook (Lua 5.5 does not
+// propagate hooks to new threads).
+BOOST_AUTO_TEST_CASE(InvokeClientRpcArmsSamplerSweep) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string path =
+        write_script("cov18_rpc.lua",
+                     "local M = {}\n"
+                     "function M.gw_ok(ctx, client, req) return 'done' end\n"
+                     "_G.__cov18_ok = M.gw_ok\n"
+                     "return M\n");
+    auto svc = manager.spawn(path, R"({"name": "cov18_rpc"})");
+    BOOST_REQUIRE(svc.success);
+    auto vm = manager.service_vm(svc.service_id);
+    BOOST_REQUIRE(vm != nullptr);
+    shd::state& lua = runtime.vm_state(vm);
+    shd::function ok_h = lua["__cov18_ok"];
+    BOOST_REQUIRE(ok_h.valid());
+
+    ClientIngress ingress;
+    ingress.route_id = 0x1001;
+    ingress.decoded_request = nlohmann::json::object();
+
+    shield::lua::ProfileSessionConfig profile_cfg;
+    profile_cfg.service = svc.service_id;
+    profile_cfg.interval = 100;
+    shield::lua::ProfileSession session(profile_cfg);
+    int provider_calls = 0;
+    shield::lua::ProfileSampler sampler(session, [&] {
+        ++provider_calls;
+        return std::vector<lua_State*>{};
+    });
+    lua_State* main_state = runtime.vm_main_state(vm);
+    BOOST_REQUIRE(main_state != nullptr);
+    sampler.install(main_state, svc.service_id);
+    const int baseline = provider_calls;
+
+    BOOST_CHECK(runtime.invoke_client_rpc(vm, ok_h, ingress, nullptr, &manager,
+                                          svc.service_id));
+
+    // install() itself enumerates the provider once to arm already-live
+    // coroutines; the drive point must add exactly one more sweep.
+    BOOST_CHECK_EQUAL(provider_calls, baseline + 1);
+
+    sampler.uninstall(main_state);
 }
 
 // exec_lua with error = nullptr across load / exec failures, plus the

@@ -1541,8 +1541,6 @@ bool LuaRuntime::invoke_coroutine(
                                             co_anchor);
         }
 
-        ProfileSampler::sweep_active(service_id);
-
         int nres = 0;
         // Driving-phase registration: resume_caller on another thread
         // re-enqueues a completion arriving while this guard is held
@@ -1899,6 +1897,13 @@ bool LuaRuntime::invoke_client_rpc(std::shared_ptr<LuaVM> vm,
             manager->note_coroutine_started(co, service_id, "client_rpc",
                                             co_anchor);
         }
+
+        // Arm the brand-new handler coroutine before its first drive: Lua
+        // 5.5 does not propagate hooks to new threads, and this coroutine
+        // was created after install — the count hook would never see it.
+        // No-op (one thread_local read) while no sampling session is on
+        // this owner thread. Mirrors the invoke_coroutine drive point.
+        ProfileSampler::sweep_active(service_id);
 
         int nres = 0;
         std::unique_ptr<LuaServiceManager::DrivingGuard> driving;

@@ -146,6 +146,29 @@ BOOST_AUTO_TEST_CASE(StartStopLifecycle) {
     }
 }
 
+BOOST_AUTO_TEST_CASE(EphemeralPortRestartsFreshAndPortSurvivesStop) {
+    boost::asio::io_context io;
+
+    auto server = make_server(0);
+    server.start();
+    BOOST_REQUIRE(server.is_running());
+    const auto first_port = server.port();
+    BOOST_CHECK_NE(first_port, 0u);
+    server.stop();
+
+    // port() must not dereference a closed acceptor (which would throw) —
+    // the bound port is cached for logging / reconnect bookkeeping.
+    BOOST_CHECK_EQUAL(server.port(), first_port);
+
+    // stop()/start() must re-request a fresh ephemeral port, not permanently
+    // latch the previous one into the caller's config.
+    server.start();
+    BOOST_REQUIRE(server.is_running());
+    const auto second_port = server.port();
+    BOOST_CHECK_NE(second_port, 0u);
+    server.stop();
+}
+
 BOOST_AUTO_TEST_CASE(StartFailsOnBusyPort) {
 #if defined(__APPLE__) || defined(_WIN32)
     // BSD SO_REUSEADDR (boost.asio's default) lets a second acceptor bind

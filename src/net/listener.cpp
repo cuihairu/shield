@@ -111,7 +111,7 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
         // teardown blocks until adoption completes, so the listener cannot
         // be freed underneath us.
         std::lock_guard lock(gate->mutex);
-        if (gate->stopping) {
+        if (gate->stopping.load(std::memory_order_acquire)) {
             return;
         }
         settled.store(true, std::memory_order_release);
@@ -218,7 +218,7 @@ TcpListener::~TcpListener() {
     stopping_.store(true, std::memory_order_release);
     {
         std::lock_guard lock(handshake_gate_->mutex);
-        handshake_gate_->stopping = true;
+        handshake_gate_->stopping.store(true, std::memory_order_release);
     }
     cancel_in_flight_handshakes();
     ListenerRegistry::instance().remove(this);
@@ -235,7 +235,7 @@ void TcpListener::stop() {
     stopping_.store(true, std::memory_order_release);
     {
         std::lock_guard lock(handshake_gate_->mutex);
-        handshake_gate_->stopping = true;
+        handshake_gate_->stopping.store(true, std::memory_order_release);
     }
     cancel_in_flight_handshakes();
     boost::system::error_code ec;
@@ -295,11 +295,11 @@ void TcpListener::do_accept() {
         // the gate mutex, which blocks teardown until this completion is
         // done — the listener cannot be freed underneath us (mirrors
         // TlsHandshakeState::on_handshake).
-        if (gate->stopping) {
+        if (gate->stopping.load(std::memory_order_acquire)) {
             return;
         }
         std::lock_guard lock(gate->mutex);
-        if (gate->stopping) {
+        if (gate->stopping.load(std::memory_order_acquire)) {
             return;
         }
         if (ec) {

@@ -35,7 +35,7 @@ public:
     ///        live completion.
     struct HandshakeGate {
         std::mutex mutex;
-        bool stopping{false};
+        std::atomic<bool> stopping{false};
     };
 
     TcpListener(boost::asio::io_context& io_context, uint16_t port,
