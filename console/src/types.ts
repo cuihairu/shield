@@ -21,14 +21,29 @@ export interface HealthData {
 
 export interface ServerState {
   state: string;
-  uptime: number;
-  version?: string;
+  uptime_seconds?: number;
+  name?: string;
   watchers?: number;
-  services?: Record<string, { state: string; uptime: number }>;
+  shutdown_scheduled?: boolean;
+}
+
+export interface ClusterNode {
+  node_id: string;
+  address?: string;
+  state?: string;
+  epoch?: string;
+  last_heartbeat_ms?: number;
+  heartbeat_age_ms?: number;
+}
+
+export interface ClusterStatus {
+  node_id?: string;
+  node_epoch?: string;
+  nodes: ClusterNode[];
 }
 
 export interface OpsStatusData {
   server?: ServerState;
-  services?: Record<string, { state: string; uptime: number }>;
-  cluster?: { nodes_online: number; nodes_down: number };
+  services?: string[] | 'timeout';
+  cluster?: ClusterStatus;
 }
