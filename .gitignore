@@ -124,3 +124,7 @@ build-cov/
 
 # crashpad minidump output (default crash.dump_dir, docs/crash-reporting.md)
 /crash/
+
+# console frontend build output
+console/dist/
+console/tsconfig.tsbuildinfo
