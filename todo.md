@@ -262,7 +262,8 @@
   > pnpm test 2/2 绿 · C++ 108/108 绿
 - [x] FIX-WEB-08 网关连接与限流页（per-listener 计数/TLS 握手成败）
   > pnpm test 9/9 绿 · pnpm build 成功 · test_cov_ops_http 53/53 绿（GatewayMetricsEmittedFromListenerRegistry/GatewayTlsMetricsEmittedFromListenerRegistry）
-- [ ] FIX-WEB-11 配置脱敏视图页（脱敏键族标注，不回显原文）
+- [x] FIX-WEB-11 配置脱敏视图页（脱敏键族标注，不回显原文）
+  > eecc22b · pnpm test 12/12 绿 · pnpm build 成功 · test_cov_ops_http 53/53 绿 · ctest 108/108 绿（console/src/pages/ConfigPage.tsx:11,32,91 · console/src/pages/__tests__/config.test.tsx:40,53）
 - [ ] FIX-WEB-12 eval/profile 受控操作页（opt-in 可达、token 不落盘、分支如实展示）
 - [ ] FIX-WEB-13 真机浏览器验收与安全门（真实进程 + 真浏览器证据，不得以进程内用例充当）
 - [ ] FIX-WEB-14 生产构建与托管收口（CI 构建产物、无秘密检查、文档接入说明）
