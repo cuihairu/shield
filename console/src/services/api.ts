@@ -11,5 +11,7 @@ export const api = {
   serviceDetail: (name: string, signal?: AbortSignal) =>
     fetchJson<ServiceDetail>(`/ops/services/${encodeURIComponent(name)}`, signal),
   plugins: (signal?: AbortSignal) => fetchJson<PluginInstance[]>('/ops/plugins', signal),
+  config: (key: string, signal?: AbortSignal) =>
+    fetchJson<string | null>(`/ops/config?key=${encodeURIComponent(key)}`, signal),
   metricsText: (signal?: AbortSignal) => fetchText('/ops/metrics', signal),
 };
