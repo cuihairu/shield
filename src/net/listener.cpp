@@ -467,25 +467,28 @@ std::shared_ptr<Session> TcpListener::adopt_connection(
             user_rate_limited();
         }
     };
-    auto session = std::make_shared<TcpSession>(
-        id, std::move(stream), std::move(callbacks), max_frame_size_,
-        max_send_queue_, read_idle_timeout_ms_, rate_limit_per_second_,
-        rate_limit_burst_);
-
-    // Store session
+    // Store session. stop() sets stopping_ before it takes sessions_mutex_
+    // to snapshot, so once we hold the lock and stopping_ is clear, every
+    // later stop()/destructor will see this session in its snapshot. If
+    // stopping_ is already set, the listener is tearing down: drop the
+    // socket instead of registering a session whose callbacks capture the
+    // dying listener.
+    std::shared_ptr<Session> session;
     {
         std::unique_lock lock(sessions_mutex_);
-        // stop() sets stopping_ before it takes sessions_mutex_ to snapshot,
-        // so once we hold the lock and stopping_ is clear, every later
-        // stop()/destructor will see this session in its snapshot. If
-        // stopping_ is already set, the listener is tearing down: drop the
-        // socket instead of registering a session whose callbacks capture
-        // the dying listener.
         if (stopping_.load(std::memory_order_acquire)) {
+            // Close before moving stream into TcpSession: the move above
+            // (or below) leaves the unique_ptr null, so dereferencing it
+            // here would crash. Holding sessions_mutex_ guarantees stopping_
+            // stays fixed for this decision.
             boost::system::error_code close_ec;
             stream->lowest_socket().close(close_ec);
             return nullptr;
         }
+        session = std::make_shared<TcpSession>(
+            id, std::move(stream), std::move(callbacks), max_frame_size_,
+            max_send_queue_, read_idle_timeout_ms_, rate_limit_per_second_,
+            rate_limit_burst_);
         sessions_[id] = session;
         ++ip_counts_[remote_ip];
     }

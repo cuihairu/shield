@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "shield/net/listener.hpp"
+#include "shield/net/session_stream.hpp"
 #include "shield/transport/protocol.hpp"
 
 #ifndef _WIN32
@@ -165,6 +166,20 @@ private:
 
 }  // namespace
 
+// Friend declared in TcpListener (see listener.hpp): grants the test direct
+// access to the private adopt_connection tail so the stopping_ race can be
+// driven deterministically instead of relying on thread timing.
+namespace shield::net {
+struct ListenerTestAccess {
+    static std::shared_ptr<Session> adopt(TcpListener* listener,
+                                          std::unique_ptr<SessionStream> stream,
+                                          std::string remote_ip) {
+        return listener->adopt_connection(std::move(stream),
+                                          std::move(remote_ip));
+    }
+};
+}  // namespace shield::net
+
 BOOST_AUTO_TEST_SUITE(ListenerCoverage)
 
 BOOST_AUTO_TEST_CASE(BindFailureAndStartNoOp) {
@@ -295,6 +310,33 @@ BOOST_AUTO_TEST_CASE(ConcurrentStopDuringAcceptTailIsSafe) {
         owned.reset();  // destructor; must not race a live completion
         io.run_for(10ms);
     }
+}
+
+// Directly exercises the adopt_connection stopping_ branch: stop() may set
+// stopping_ while the accept tail is between the gate check and the
+// sessions_mutex_ snapshot. adopt_connection must then close the socket and
+// return null WITHOUT dereferencing the stream, because the stream was
+// already moved into TcpSession in the buggy path. Under ASan/TSan this
+// crashes on the old code; here it must return null and leave no session.
+BOOST_AUTO_TEST_CASE(AdoptConnectionAfterStopDropsSocket) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    SessionCallbacks callbacks;
+    TcpListener listener(io, port, callbacks);
+    listener.start();
+    io.run_for(20ms);
+    BOOST_REQUIRE(listener.is_open());
+
+    // stop() sets stopping_ before blocking on the gate, so after it returns
+    // any subsequent adopt_connection sees stopping_ and must drop cleanly.
+    listener.stop();
+    boost::asio::ip::tcp::socket sock(io);
+    auto stream = std::make_unique<shield::net::PlainStream>(std::move(sock));
+    auto session = shield::net::ListenerTestAccess::adopt(
+        &listener, std::move(stream), "127.0.0.1");
+    BOOST_CHECK(session == nullptr);
+    BOOST_CHECK_EQUAL(listener.session_count(), 0u);
 }
 
 BOOST_AUTO_TEST_CASE(SharedIpCountDecrementsWithoutErase) {

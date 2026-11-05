@@ -170,6 +170,7 @@ public:
 
 private:
     friend struct TlsHandshakeState;
+    friend struct ListenerTestAccess;
 
     void do_accept();
 
