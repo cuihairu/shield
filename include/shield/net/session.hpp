@@ -325,6 +325,9 @@ private:
     RemoteAddress remote_addr_;
     SessionCallbacks callbacks_;
     std::atomic<bool> alive_{true};
+    // Serializes connect/disconnect callback delivery. Recursive because an
+    // on_connect callback may synchronously close the same session.
+    std::recursive_mutex lifecycle_mutex_;
     mutable std::mutex error_mutex_;
     std::string error_code_;
 

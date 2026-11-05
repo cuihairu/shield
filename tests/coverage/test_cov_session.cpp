@@ -1080,4 +1080,37 @@ BOOST_AUTO_TEST_CASE(StartOnClosedSessionIsNoOp) {
     BOOST_CHECK_EQUAL(connects.load(), 0);
 }
 
+BOOST_AUTO_TEST_CASE(ConcurrentCloseDuringConnectPreservesEventOrder) {
+    SocketPair p;
+    std::atomic<bool> connect_entered{false};
+    std::atomic<bool> release_connect{false};
+    std::atomic<int> disconnects{0};
+    SessionCallbacks cbs;
+    cbs.on_connect = [&](std::shared_ptr<Session>) {
+        connect_entered.store(true);
+        while (!release_connect.load()) {
+            std::this_thread::sleep_for(1ms);
+        }
+    };
+    cbs.on_disconnect = [&](std::shared_ptr<Session>, std::string_view) {
+        ++disconnects;
+    };
+
+    auto session = std::make_shared<TcpSession>(100, std::move(p.server), cbs);
+    std::thread starter([&] { session->start(); });
+    while (!connect_entered.load()) {
+        std::this_thread::sleep_for(1ms);
+    }
+
+    std::thread closer([&] { session->close("concurrent close"); });
+    std::this_thread::sleep_for(20ms);
+    BOOST_CHECK_EQUAL(disconnects.load(), 0);
+
+    release_connect.store(true);
+    starter.join();
+    closer.join();
+    BOOST_CHECK_EQUAL(disconnects.load(), 1);
+    BOOST_CHECK(!session->is_alive());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

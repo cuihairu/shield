@@ -117,6 +117,7 @@ void TcpSession::start() {
     // session must not fire on_connect or begin receiving: that would emit a
     // connection event after the disconnect event and start I/O on a closed
     // socket. Bail here so start() on an already-closed session is a no-op.
+    std::lock_guard lock(lifecycle_mutex_);
     if (!alive_.load(std::memory_order_acquire)) {
         return;
     }
@@ -289,6 +290,8 @@ void TcpSession::do_async_write() {
 void TcpSession::close(std::string reason) {
     bool expected = true;
     if (!alive_.compare_exchange_strong(expected, false)) return;
+
+    std::lock_guard lock(lifecycle_mutex_);
 
     boost::system::error_code ec;
     // Hard close on the lowest layer; no TLS close_notify (documented in

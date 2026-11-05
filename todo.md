@@ -352,3 +352,5 @@
   > 配置改为占位符，run-e2e 渲染时从 checkout ROOT 解析 `console/dist` 绝对路径；本地验证渲染结果为绝对路径且存在（tests/acceptance/e2e/shield-e2e.yaml:47 · tests/acceptance/e2e/run-e2e.mjs:51-58）
 - [x] 审核发现：穿越验收使用 fetch 发送 %2e%2e 路径时客户端先将其规范化为 /etc/passwd，服务端实际未收到穿越路径而测试仍可通过（tests/acceptance/e2e/run-e2e.mjs:164）。
   > 改用 Node http.request 原样发送 `/%2e%2e/...`，断言真实穿透返回 JSON 404 且无 /etc/passwd/HTML；真实 shield 进程实测 status=404、body=not found（tests/acceptance/e2e/run-e2e.mjs:105-130,196-212）
+- [x] 审核发现：start 的 alive_ 检查与 on_connect 调用未同步，若 stop 在两者之间关闭 session，仍会在 on_disconnect 之后触发 on_connect 并尝试接收（src/net/session.cpp:120）。
+  > 用可重入 lifecycle_mutex_ 串行化 start/close 的 connect/disconnect 回调投递；on_connect 期间并发 close() 不再先发 on_disconnect。新增 ConcurrentCloseDuringConnectPreservesEventOrder 回归（src/net/session.cpp:112-127,290-293 · include/shield/net/session.hpp:329 · tests/coverage/test_cov_session.cpp:1083 · build 树 test_cov_session 32/32 与 test_cov_listener 23/23 绿、ctest 108/108 绿）
