@@ -56,6 +56,33 @@
 
 namespace {
 
+/// Percent-decode a URL query component. The ops API client encodes the key
+/// with encodeURIComponent, so the server must decode before looking it up:
+/// keys containing spaces, '/', ':', '&' or '=' never match otherwise.
+std::string url_decode(std::string_view in) {
+    std::string out;
+    out.reserve(in.size());
+    const auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '%' && i + 2 < in.size()) {
+            const int hi = hex(in[i + 1]);
+            const int lo = hex(in[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>((hi << 4) | lo));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(in[i]);
+    }
+    return out;
+}
+
 /// Process start reference for uptime-based health and metrics. First use
 /// in this translation unit pins the process start (good enough for a
 /// health probe; the optional server module has the authoritative clock).
@@ -1643,6 +1670,7 @@ shield::net::HttpResponse OpsHttpHandler::handle_config(
             if (amp != std::string::npos) {
                 target = target.substr(0, amp);
             }
+            target = url_decode(target);
         }
     }
 
@@ -1671,8 +1699,10 @@ shield::net::HttpResponse OpsHttpHandler::handle_config(
     // name is the only signal available here; keep to strong secret
     // indicators so ordinary config keys are not masked.
     static constexpr std::string_view kSecretNeedles[] = {
-        "password", "passwd", "secret",     "token",      "credential",
-        "api_key",  "apikey", "access_key", "private_key"};
+        "password",          "passwd",  "secret", "token",
+        "credential",        "api_key", "apikey", "access_key",
+        "private_key",       "bearer",  "auth",   "pass",
+        "connection_string", "dsn",     "pwd"};
     bool is_secret = false;
     for (std::string_view needle : kSecretNeedles) {
         if (target.find(needle) != std::string::npos) {

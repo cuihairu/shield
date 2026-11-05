@@ -195,6 +195,7 @@ export default defineConfig({
               { text: '服务器状态', link: '/zh/runtime-server' },
               { text: '运维语义', link: '/zh/runtime-ops' },
               { text: '诊断控制台', link: '/zh/diagnostics-console' },
+              { text: 'Dashboard HTTP API 契约（英文）', link: '/dashboard-api' },
             ],
           },
           {

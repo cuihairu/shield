@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Empty, Spin, Tag } from 'antd';
 import { ProDescriptions, ProTable } from '@ant-design/pro-components';
 import type { ProColumns } from '@ant-design/pro-components';
 import { api } from '../services/api';
 import type { ServiceDetail } from '../types';
+import LoginGate from '../components/LoginGate';
 
 interface ServiceRow {
   name: string;
@@ -42,6 +43,11 @@ export default function ServicesPage() {
   const [detail, setDetail] = useState<ServiceDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // Sequence guard: a late response from a previously selected service must
+  // never overwrite a newer selection. The AbortController cancels in-flight
+  // teardown; this ref orders the post-resolution commits.
+  const detailSeq = useRef(0);
+  const detailAbort = useRef<AbortController | null>(null);
 
   const columns: ProColumns<ServiceRow>[] = [
     {
@@ -54,17 +60,24 @@ export default function ServicesPage() {
   ];
 
   async function openDetail(name: string) {
+    const seq = ++detailSeq.current;
+    detailAbort.current?.abort();
+    const controller = new AbortController();
+    detailAbort.current = controller;
     setDetailLoading(true);
     setDetailError(null);
     setDetail(null);
     try {
-      const d = await api.serviceDetail(name);
+      const d = await api.serviceDetail(name, controller.signal);
+      if (seq !== detailSeq.current) return; // stale: newer selection owns UI
       setDetail(d);
     } catch (e) {
+      if (seq !== detailSeq.current) return; // stale: drop
       const msg = e instanceof Error ? e.message : String(e);
-      setDetailError(msg);
+      if (msg === 'Unauthorized') setDetailError('Unauthorized');
+      else setDetailError(msg);
     } finally {
-      setDetailLoading(false);
+      if (seq === detailSeq.current) setDetailLoading(false);
     }
   }
 
@@ -73,6 +86,9 @@ export default function ServicesPage() {
   }
   if (services.timedOut) {
     return <Alert type="warning" showIcon message="Services unavailable" description="The service list query timed out (2s); the actor mesh may be unresponsive." />;
+  }
+  if (services.error === 'Unauthorized') {
+    return <LoginGate />;
   }
   if (services.error) {
     return <Alert type="error" showIcon message="Failed to load services" description={services.error} />;
@@ -94,6 +110,7 @@ export default function ServicesPage() {
         toolBarRender={false}
       />
       {detailLoading && <Spin style={{ margin: 24 }} />}
+      {detailError === 'Unauthorized' && <LoginGate />}
       {detailError && (
         <Alert style={{ marginTop: 16 }}
           type={detailError.includes('not found') ? 'error' : 'warning'}

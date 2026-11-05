@@ -56,17 +56,14 @@ code {
 .vp-doc div[class*='language-'] pre,
 .vp-doc div[class*='language-'] pre code {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
-.VPDoc .container > .content {
-  max-width: 960px !important;
-}
-.VPDoc:not(.has-sidebar) .content {
-  max-width: 960px !important;
-}
-.VPDoc.has-aside .content-container {
-  max-width: 960px !important;
-}
+/* Remove the duplicated !important max-width rules. They overrode VitePress's
+   own responsive widths (752px >=960px, 784px >=1440px) and, on the
+   has-aside layout, did not reserve room for the right TOC sidebar (default
+   max-width 256px + 32px gap), squeezing it at 1280-1440px viewports. The
+   default VitePress content width now governs, which is the intended
+   responsive behaviour. */
 .vp-doc table {
   display: block;
   overflow-x: auto;

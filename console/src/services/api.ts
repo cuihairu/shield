@@ -14,4 +14,10 @@ export const api = {
   config: (key: string, signal?: AbortSignal) =>
     fetchJson<string | null>(`/ops/config?key=${encodeURIComponent(key)}`, signal),
   metricsText: (signal?: AbortSignal) => fetchText('/ops/metrics', signal),
+  // Control endpoints (opt-in). The caller supplies the endpoint-specific
+  // token as the Bearer header via the token-aware fetch helpers.
+  evalCode: (code: string, token: string, signal?: AbortSignal) =>
+    fetchJson<unknown>('/ops/eval', signal, 8000, token, { method: 'POST', body: { code } }),
+  profile: (action: string, body: Record<string, unknown>, token: string, signal?: AbortSignal) =>
+    fetchJson<unknown>('/ops/profile', signal, 8000, token, { method: 'POST', body: { action, ...body } }),
 };

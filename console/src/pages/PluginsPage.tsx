@@ -1,21 +1,43 @@
-import { useEffect, useState } from 'react';
 import { Alert, Empty, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from '../services/api';
 import type { PluginInstance, PoolMetric } from '../types';
+import { usePolling } from '../services/polling';
+import LoginGate from '../components/LoginGate';
 
 // Parse a Prometheus exposition sample line into {name, labels, value}.
 function parseSample(line: string): { name: string; labels: Record<string, string>; value: number } | null {
-  const m = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{([^}]*)\})?\s+([-0-9.eE+]+)$/.exec(line.trim());
+  const m = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{([^}]*)\})?\s+([-+]?(?:Inf|NaN|[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?))$/.exec(line.trim());
   if (!m) return null;
   const labels: Record<string, string> = {};
   if (m[3]) {
-    for (const kv of m[3].split(',')) {
+    const parts: string[] = [];
+    let depth = 0;
+    let cur = '';
+    for (const ch of m[3]) {
+      if (ch === '"') depth ^= 1;
+      if (ch === ',' && depth === 0) {
+        parts.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    if (cur) parts.push(cur);
+    for (const kv of parts) {
       const eq = kv.indexOf('=');
-      if (eq > 0) labels[kv.slice(0, eq)] = kv.slice(eq + 1).replace(/"/g, '');
+      if (eq > 0) {
+        const raw = kv.slice(eq + 1).trim();
+        const value = raw.startsWith('"') && raw.endsWith('"')
+          ? raw.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+          : raw;
+        labels[kv.slice(0, eq).trim()] = value;
+      }
     }
   }
-  return { name: m[1], labels, value: parseFloat(m[4]) };
+  const raw = m[4];
+  const value = raw === '+Inf' ? Infinity : raw === '-Inf' ? -Infinity : raw === 'NaN' ? NaN : parseFloat(raw);
+  return { name: m[1], labels, value };
 }
 
 function extractPoolMetrics(text: string): PoolMetric[] {
@@ -43,29 +65,23 @@ function extractPoolMetrics(text: string): PoolMetric[] {
 }
 
 export default function PluginsPage() {
-  const [plugins, setPlugins] = useState<PluginInstance[] | null>(null);
-  const [pools, setPools] = useState<PoolMetric[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Poll like the other pages so a dropped connection surfaces as a stale
+  // banner instead of a silent one-shot page frozen at mount.
+  const poll = usePolling<{ plugins: PluginInstance[]; pools: PoolMetric[] }>(
+    (signal) =>
+      Promise.all([api.plugins(signal), api.metricsText(signal)]).then(
+        ([pl, metrics]) => ({ plugins: pl, pools: extractPoolMetrics(metrics) }),
+      ),
+    { intervalMs: 2000, pauseWhenHidden: true, hasData: (d) => d.plugins.length > 0 },
+  );
 
-  useEffect(() => {
-    const controller = new AbortController();
-    Promise.all([api.plugins(controller.signal), api.metricsText(controller.signal)])
-      .then(([pl, metrics]) => {
-        setPlugins(pl);
-        setPools(extractPoolMetrics(metrics));
-        setError(null);
-      })
-      .catch((e) => {
-        setError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => setLoading(false));
-    return () => controller.abort();
-  }, []);
+  if (poll.status === 'loading') return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />;
+  if (poll.status === 'unauthorized') return <LoginGate />;
+  if (poll.status === 'error') return <Alert type="error" showIcon message="Failed to load plugins" description={poll.error} />;
+  if (!poll.data || poll.data.plugins.length === 0) return <Empty description="No plugins" />;
 
-  if (loading) return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />;
-  if (error) return <Alert type="error" showIcon message="Failed to load plugins" description={error} />;
-  if (!plugins || plugins.length === 0) return <Empty description="No plugins" />;
+  const plugins = poll.data.plugins;
+  const pools = poll.data.pools;
 
   const requiredDegraded = plugins.some((p) => p.required && p.state !== 'started');
 
@@ -95,6 +111,11 @@ export default function PluginsPage() {
 
   return (
     <div>
+      {poll.stale && (
+        <Alert type="warning" showIcon style={{ marginBottom: 16 }}
+          message="Data is stale"
+          description="The ops server is unreachable; showing last successful snapshot. New data will appear when the connection recovers." />
+      )}
       {requiredDegraded && (
         <Alert type="error" showIcon style={{ marginBottom: 16 }}
           message="Required plugin degraded" description="At least one required plugin is not started; health reports degraded accordingly." />

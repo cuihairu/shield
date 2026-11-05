@@ -3,6 +3,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { usePolling } from '../services/polling';
 import { api } from '../services/api';
 import type { ClusterNode, HealthData, OpsStatusData } from '../types';
+import LoginGate from '../components/LoginGate';
 
 type Status = 'loading' | 'ready' | 'empty' | 'error' | 'unauthorized';
 
@@ -65,7 +66,7 @@ export default function Dashboard() {
     return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />;
   }
   if (status === 'unauthorized') {
-    return <Alert type="warning" showIcon message="Unauthorized" description="Authentication is required to view this console." />;
+    return <LoginGate />;
   }
   if (status === 'error') {
     return <Alert type="error" showIcon message="Failed to load data" description={healthPoll.error ?? statusPoll.error} />;

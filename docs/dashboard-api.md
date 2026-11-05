@@ -25,11 +25,14 @@ frontend is served from the same origin (see FIX-WEB-04).
 
 ## Authentication (FIX-WEB-03)
 
-The read-only `/ops/*` endpoints are protected by a bearer-token gate. Set
-`http.ops_auth_token` to a non-empty secret to enable it; an empty or absent
-value leaves the gate off (legacy behaviour, no auth). When enabled, every
-protected endpoint denies requests without a matching
-`Authorization: Bearer <token>` header.
+The read-only `/ops/*` endpoints are protected by a bearer-token gate. The
+gate is **default-deny**: with no `http.ops_auth_token` configured, every
+protected endpoint still denies requests that do not carry a matching
+`Authorization: Bearer <token>` header. The only way to leave the gate off is
+an explicit opt-out: set `http.ops_allow_unauthenticated=true` (a trusted
+local deployment that deliberately exposes the read-only endpoints without a
+bearer token). When `http.ops_auth_token` is a non-empty secret, requests
+must present that token.
 
 - **Auth**: `Authorization: Bearer <token>` (constant-time compare); when
   `http.ops_auth_token` is enabled, that gate must be satisfied first.
@@ -44,9 +47,14 @@ protected endpoint denies requests without a matching
   effects (read-only endpoints never mutate state).
 - **Opt-in eval/profile**: `POST /ops/eval` and `POST /ops/profile` keep
   their own independent token gates (`http.eval_token`,
-  `http.profile_token`). They are currently registered **without** the
-  ops-wide gate (src/console/ops_http_handler.cpp:716, :765); applying the
-  ops-wide gate to them is a pending fix tracked in `todo.md`.
+  `http.profile_token`). They are also behind the ops-wide gate: when
+  `http.ops_auth_token` is configured, the Bearer token must satisfy it
+  first (src/console/ops_http_handler.cpp:716, :765). With no ops token
+  configured their own opt-in token gate remains the sole barrier (they are
+  explicit opt-ins, not part of the read-only surface).
+- **Default-deny for static & SPA**: the static root and the SPA fallback
+  handler are behind the same ops-wide gate; a request without a valid
+  token gets `401` before any file is served.
 
 ## Static hosting & SPA routing (FIX-WEB-04)
 
@@ -230,8 +238,8 @@ Profiler control (opt-in like `/ops/eval`; requires
 `http.profile_enabled=true` + non-empty `http.profile_token`).
 
 - **Auth**: `Authorization: Bearer <token>` (`http.profile_token`,
-  constant-time compare). Like `/ops/eval`, this endpoint is currently not
-  behind the ops-wide gate; see the note above and `todo.md`.
+  constant-time compare). Like `/ops/eval`, when `http.ops_auth_token` is
+  configured the Bearer must satisfy the ops-wide gate first.
 - **Body**: `{ "action": "status"|"start"|"stop"|"report", ... }`.
 - **Status**: `200`; `404` service missing; `409` session already running;
   `429` cooldown; `401` bad token.

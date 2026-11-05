@@ -59,7 +59,7 @@ describe('GatewayPage', () => {
       </MemoryRouter>,
     );
     await waitFor(() =>
-      expect(screen.getByText(/Authentication is required/)).toBeTruthy(),
+      expect(screen.getByText(/Authentication required/)).toBeTruthy(),
     );
   }, 30000);
 

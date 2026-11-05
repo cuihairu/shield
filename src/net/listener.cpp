@@ -298,9 +298,11 @@ void TcpListener::do_accept() {
         if (gate->stopping.load(std::memory_order_acquire)) {
             return;
         }
-        std::lock_guard lock(gate->mutex);
-        if (gate->stopping.load(std::memory_order_acquire)) {
-            return;
+        {
+            std::lock_guard lock(gate->mutex);
+            if (gate->stopping.load(std::memory_order_acquire)) {
+                return;
+            }
         }
         if (ec) {
             if (ec != boost::asio::error::operation_aborted) {
@@ -406,6 +408,18 @@ void TcpListener::do_accept() {
             }
         }
 
+        // Verify this listener is still active under the gate (blocks a
+        // concurrent teardown), then release the gate BEFORE adopting the
+        // connection. Session start fires on_connect synchronously; if that
+        // callback calls stop(), stop() must be able to take the gate mutex.
+        // Holding it here would deadlock the accept thread.
+        {
+            std::lock_guard lock(gate->mutex);
+            if (gate->stopping.load(std::memory_order_acquire)) {
+                return;
+            }
+        }
+
         // Branch on transport before any per-connection state exists: a TLS
         // listener runs the handshake outside the accept loop (parallel
         // re-accept below keeps the pipeline full), a plain listener builds
@@ -414,7 +428,7 @@ void TcpListener::do_accept() {
             begin_tls_handshake(std::move(socket_), std::move(remote_ip));
         } else {
             adopt_connection(std::make_unique<PlainStream>(std::move(socket_)),
-                             remote_ip);
+                             std::move(remote_ip));
         }
 
         // Accept next

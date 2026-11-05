@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Button, Empty, Input, Space, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { api } from '../services/api';
+import LoginGate from '../components/LoginGate';
 
 // The /ops/config endpoint is single-key (never a full snapshot), so the page
 // queries an explicit set of ops-relevant keys. Redaction is decided by the
@@ -35,30 +36,42 @@ export default function ConfigPage() {
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [queryKey, setQueryKey] = useState('');
+  const [unauthorized, setUnauthorized] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
-    Promise.all(OPS_KEYS.map((k) => api.config(k, controller.signal)))
-      .then((values) => {
-        setRows(
-          OPS_KEYS.map((k, i) => ({
-            key: k,
-            value: values[i],
-            redacted: values[i] === REDACTED,
-          })),
-        );
-        setError(null);
-      })
-      .catch((e) => {
-        setError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => setLoading(false));
+    const entries = new Map<string, ConfigRow>();
+    OPS_KEYS.forEach((k) => entries.set(k, { key: k, value: null, redacted: false }));
+    let settled = 0;
+    OPS_KEYS.forEach((k) => {
+      api
+        .config(k, controller.signal)
+        .then((value) => {
+          entries.set(k, { key: k, value, redacted: value === REDACTED });
+        })
+        .catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (msg === 'Unauthorized') {
+            setUnauthorized(true);
+          } else {
+            setError(msg);
+          }
+        })
+        .finally(() => {
+          settled += 1;
+          if (settled === OPS_KEYS.length) {
+            setRows(Array.from(entries.values()));
+            setLoading(false);
+          }
+        });
+    });
     return () => controller.abort();
   }, []);
 
   async function addKey() {
     const key = queryKey.trim();
     if (!key) return;
+    if (pending) return; // gate: an in-flight query owns the input
     setPending(true);
     try {
       const value = await api.config(key);
@@ -69,7 +82,12 @@ export default function ConfigPage() {
       setQueryKey('');
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg === 'Unauthorized') {
+        setUnauthorized(true);
+      } else {
+        setError(msg);
+      }
     } finally {
       setPending(false);
     }
@@ -77,6 +95,9 @@ export default function ConfigPage() {
 
   if (loading) {
     return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />;
+  }
+  if (unauthorized) {
+    return <LoginGate />;
   }
   if (error && !rows) {
     return <Alert type="error" showIcon message="Failed to load config" description={error} />;

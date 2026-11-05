@@ -247,6 +247,12 @@ struct OpsFixture {
         shield::config::global_config().set("http.profile_cooldown_seconds",
                                             std::string("0"));
 
+        // The fixture exercises the endpoints without a bearer token, so it
+        // opts into the explicit unauthenticated mode. The default-deny gate
+        // is itself covered by the AuthGateServer cases below.
+        shield::config::global_config().set("http.ops_allow_unauthenticated",
+                                            std::string("true"));
+
         port = free_port();
         shield::net::HttpServerConfig cfg;
         cfg.host = "127.0.0.1";
@@ -297,6 +303,10 @@ struct AuthGateServer {
                    shield::lua::LuaRuntime& rt) {
         shield::config::global_config().set("http.ops_auth_token",
                                             std::string("ops-token"));
+        // The gate must actually be on for these cases (the fixture opted
+        // into unauthenticated mode for its own endpoint tests).
+        shield::config::global_config().set("http.ops_allow_unauthenticated",
+                                            std::string("false"));
         port = free_port();
         shield::net::HttpServerConfig cfg;
         cfg.host = "127.0.0.1";
@@ -309,6 +319,8 @@ struct AuthGateServer {
     ~AuthGateServer() {
         if (server) server->stop();
         shield::config::global_config().set("http.ops_auth_token",
+                                            std::string(""));
+        shield::config::global_config().set("http.ops_allow_unauthenticated",
                                             std::string(""));
     }
 };
@@ -369,6 +381,95 @@ BOOST_AUTO_TEST_CASE(OpsAuthGateNoTokenLeak) {
     const std::string body = RawHttpClient::body(response);
     BOOST_CHECK(body.find("ops-token") == std::string::npos);
     BOOST_CHECK(body.find("auth_token") == std::string::npos);
+}
+
+// An independent ops server with NO token configured and the explicit
+// unauthenticated opt-out left off (the production default). Every protected
+// endpoint must deny by default; only /ops/health stays open (k8s probe).
+BOOST_AUTO_TEST_CASE(OpsDefaultDenyWithNoTokenConfigured) {
+    shield::config::global_config().set("http.ops_auth_token", std::string(""));
+    shield::config::global_config().set("http.ops_allow_unauthenticated",
+                                        std::string("false"));
+
+    uint16_t p = free_port();
+    shield::net::HttpServerConfig cfg;
+    cfg.host = "127.0.0.1";
+    cfg.port = p;
+    shield::net::HttpServer server2(cfg);
+    shield::console::OpsHttpHandler handler2(*manager, *runtime);
+    handler2.register_routes(server2);
+    server2.start();
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", p);
+
+    // No token configured: still deny every protected endpoint (default
+    // deny is not dependent on the token being present).
+    for (const char* path :
+         {"/ops/status", "/ops/metrics", "/ops/services", "/ops/plugins",
+          "/ops/config", "/ops/dashboard", "/"}) {
+        std::string response = client.get(path);
+        BOOST_REQUIRE(!response.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(response), 401);
+    }
+
+    // eval/profile are explicit opt-ins with their own token gates. With no
+    // ops token configured their own gate still applies: no token denies,
+    // the correct eval/profile token passes (the endpoint's opt-in is the
+    // explicit authorization for these control operations).
+    std::string ev =
+        client.post_auth("/ops/eval", R"({"code": "return 1"})", "");
+    BOOST_REQUIRE(!ev.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(ev), 401);
+    ev = client.post_auth("/ops/eval", R"({"code": "return 1"})", "cov-token");
+    BOOST_REQUIRE(!ev.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(ev), 200);
+
+    std::string pr =
+        client.post_auth("/ops/profile", R"({"action":"status"})", "");
+    BOOST_REQUIRE(!pr.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(pr), 401);
+    pr = client.post_auth("/ops/profile", R"({"action":"status"})",
+                          "prof-token");
+    BOOST_REQUIRE(!pr.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(pr), 200);
+
+    // /ops/health is the k8s probe: exempt, always 200.
+    std::string health = client.get("/ops/health");
+    BOOST_REQUIRE(!health.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(health), 200);
+
+    server2.stop();
+    shield::config::global_config().set("http.ops_auth_token", std::string(""));
+    shield::config::global_config().set("http.ops_allow_unauthenticated",
+                                        std::string(""));
+}
+
+// eval/profile routes must honour the ops-wide gate: with a valid ops token
+// they pass the gate, then their own eval/profile token still applies.
+BOOST_AUTO_TEST_CASE(OpsAuthGateCoversEvalAndProfile) {
+    AuthGateServer auth(*manager, *runtime);
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", auth.port);
+
+    // Correct eval token but no ops token -> denied by the ops-wide gate.
+    std::string ev =
+        client.post_auth("/ops/eval", R"({"code": "return 1"})", "cov-token");
+    BOOST_REQUIRE(!ev.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(ev), 401);
+
+    // Correct eval token AND correct ops token -> passes the gate; the eval
+    // VM gate then also checks the eval token (same header).
+    ev = client.post_auth("/ops/eval", R"({"code": "return 1"})", "ops-token");
+    BOOST_REQUIRE(!ev.empty());
+    // ops-token is not the eval token, so the eval gate denies (401).
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(ev), 401);
+
+    // profile: same shape.
+    std::string pr = client.post_auth("/ops/profile", R"({"action":"status"})",
+                                      "prof-token");
+    BOOST_REQUIRE(!pr.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(pr), 401);
 }
 
 BOOST_AUTO_TEST_CASE(StatusEndpoint) {
@@ -1660,6 +1761,27 @@ BOOST_AUTO_TEST_CASE(ConfigEndpointValueShapes) {
     BOOST_CHECK_EQUAL(
         get_data("/ops/config?key=cov3.normal_key").get<std::string>(),
         "visible-value");
+
+    // A key whose name contains characters that must be percent-encoded
+    // (space, '/', ':') must still match after the server URL-decodes it.
+    cfg.set("cov3.a b/c:d", std::string("spaced"));
+    BOOST_CHECK_EQUAL(
+        get_data("/ops/config?key=cov3.a%20b%2Fc%3Ad").get<std::string>(),
+        "spaced");
+
+    // Secret families that do not contain the original needle substring must
+    // still be redacted (auth.bearer, mysql.pass, db.connection_string).
+    cfg.set("auth.bearer", std::string("tok-123"));
+    BOOST_CHECK_EQUAL(
+        get_data("/ops/config?key=auth.bearer").get<std::string>(),
+        "***redacted***");
+    cfg.set("mysql.pass", std::string("pw-456"));
+    BOOST_CHECK_EQUAL(get_data("/ops/config?key=mysql.pass").get<std::string>(),
+                      "***redacted***");
+    cfg.set("db.connection_string", std::string("host=..."));
+    BOOST_CHECK_EQUAL(
+        get_data("/ops/config?key=db.connection_string").get<std::string>(),
+        "***redacted***");
 }
 
 BOOST_AUTO_TEST_CASE(EvalEndpointBodyDiversity) {
@@ -2582,6 +2704,11 @@ struct StaticServer {
         std::ofstream(root / "assets" / "app.svg") << "<svg></svg>";
 
         shield::config::global_config().set("http.static_root", root.string());
+        // Static-serving tests exercise assets without a bearer token, so they
+        // opt into explicit unauthenticated mode. The default-deny gate on the
+        // static path is covered by StaticGate case below.
+        shield::config::global_config().set("http.ops_allow_unauthenticated",
+                                            std::string("true"));
         port = free_port();
         shield::net::HttpServerConfig cfg;
         cfg.host = "127.0.0.1";
@@ -2594,6 +2721,8 @@ struct StaticServer {
     ~StaticServer() {
         if (server) server->stop();
         shield::config::global_config().set("http.static_root",
+                                            std::string(""));
+        shield::config::global_config().set("http.ops_allow_unauthenticated",
                                             std::string(""));
         fs::remove_all(root);
     }
@@ -2691,6 +2820,59 @@ BOOST_AUTO_TEST_CASE(StaticAliasAndQuery) {
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(q), 200);
     BOOST_CHECK(RawHttpClient::body(q).find("console.log") !=
                 std::string::npos);
+}
+
+// The static root must honour the ops-wide gate: with no explicit opt-out,
+// both the asset route (try_static) and the SPA default handler deny 401.
+BOOST_AUTO_TEST_CASE(StaticGateDeniesByDefault) {
+    // Build the static tree and register the routes with the gate ON
+    // (do NOT set the explicit unauthenticated opt-out).
+    fs::path root = fs::temp_directory_path() / "shield_cov_ops_static_gate";
+    fs::remove_all(root);
+    fs::create_directories(root / "assets");
+    std::ofstream(root / "index.html")
+        << "<!DOCTYPE html><html><body>SPA-GATE</body></html>";
+    std::ofstream(root / "assets" / "app.js") << "console.log('hi');";
+
+    shield::config::global_config().set("http.static_root", root.string());
+    shield::config::global_config().set("http.ops_allow_unauthenticated",
+                                        std::string("false"));
+
+    uint16_t p = free_port();
+    shield::net::HttpServerConfig cfg;
+    cfg.host = "127.0.0.1";
+    cfg.port = p;
+    shield::net::HttpServer server3(cfg);
+    shield::console::OpsHttpHandler handler3(*manager, *runtime);
+    handler3.register_routes(server3);
+    server3.start();
+
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", p);
+
+    // Static asset (unmatched -> try_static) must be behind the gate.
+    std::string asset = client.get("/assets/app.js");
+    BOOST_REQUIRE(!asset.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(asset), 401);
+    BOOST_CHECK(RawHttpClient::body(asset).find("console.log") ==
+                std::string::npos);
+
+    // SPA fallback default handler must also be behind the gate.
+    std::string spa = client.get("/some/spa/route");
+    BOOST_REQUIRE(!spa.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(spa), 401);
+    BOOST_CHECK(RawHttpClient::body(spa).find("SPA-GATE") == std::string::npos);
+
+    // /ops/health remains exempt even when static root is configured.
+    std::string health = client.get("/ops/health");
+    BOOST_REQUIRE(!health.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(health), 200);
+
+    server3.stop();
+    shield::config::global_config().set("http.static_root", std::string(""));
+    shield::config::global_config().set("http.ops_allow_unauthenticated",
+                                        std::string(""));
+    fs::remove_all(root);
 }
 
 BOOST_AUTO_TEST_CASE(ProcessResourceMetricsEmitted) {

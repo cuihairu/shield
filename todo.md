@@ -264,20 +264,59 @@
   > pnpm test 9/9 绿 · pnpm build 成功 · test_cov_ops_http 53/53 绿（GatewayMetricsEmittedFromListenerRegistry/GatewayTlsMetricsEmittedFromListenerRegistry）
 - [x] FIX-WEB-11 配置脱敏视图页（脱敏键族标注，不回显原文）
   > eecc22b · pnpm test 12/12 绿 · pnpm build 成功 · test_cov_ops_http 53/53 绿 · ctest 108/108 绿（console/src/pages/ConfigPage.tsx:11,32,91 · console/src/pages/__tests__/config.test.tsx:40,53）
-- [ ] FIX-WEB-12 eval/profile 受控操作页（opt-in 可达、token 不落盘、分支如实展示）
-- [ ] FIX-WEB-13 真机浏览器验收与安全门（真实进程 + 真浏览器证据，不得以进程内用例充当）
-- [ ] FIX-WEB-14 生产构建与托管收口（CI 构建产物、无秘密检查、文档接入说明）
+- [x] FIX-WEB-12 eval/profile 受控操作页（依赖 FIX-WEB-03、FIX-WEB-10：仅在端点 opt-in 注册时可达的 profiler 表单与 eval 台；token 手工输入、不持久化 localStorage、危险操作显式标注。验收：端点未启用时页面显示不可用及原因，不显示假表单；token 不落盘不进日志；profile 409/429/504 分支如实展示）
+  > console/src/pages/EvalProfilePage.tsx（端点启用判定、token 仅 state、409/429/504 分支、不可用原因）· console/src/services/api.ts:19-23 · console/src/services/polling.ts:28-48 · console/src/App.tsx · pnpm test 16/16 绿 · pnpm build 成功
+- [ ] FIX-WEB-13 真机浏览器验收与安全门（依赖 FIX-WEB-03、FIX-WEB-04、FIX-WEB-12：真实 shield 进程 + 真浏览器用例及证据——未认证拒绝、凭据失效、断网过期显示、API 缺失错误、路径穿越拒绝。验收：拒绝请求不产生副作用；不得以 test_cov_ops_http 进程内用例或内嵌单页用例充当浏览器证据；证据（截图/日志/CI artifact）可追溯）
+- [ ] FIX-WEB-14 生产构建与托管收口（依赖 FIX-WEB-04、FIX-WEB-13：CI 构建前端产物并随 ops 面托管交付；构建产物无秘密；docs（diagnostics-console.md、deployment.md）更新接入方式与开发代理说明。验收：生产路径无前端 dev server；SPA 直刷正常；产物不含秘密有检查手段）
 
 ## 开放审核发现（2026-11-04，待修）
-- [ ] 默认未配置 http.ops_auth_token 时只读运维接口全开放，需默认拒绝显式放行（src/console/ops_http_handler.cpp:629）
-- [ ] 前端 fetch 无 Bearer 凭据入口，认证开启后浏览器无法使用受保护接口（console/src/services/polling.ts:39）
-- [ ] eval/profile 路由未经 ops-wide 认证包装（src/console/ops_http_handler.cpp:716）
-- [ ] 静态目录启用时默认处理器未加认证（src/console/ops_http_handler.cpp:697）
-- [ ] 未命中路由先查静态再判 API 前缀，ops 子目录可吞未知 /ops/* 的 JSON 404（src/net/http_server.cpp:317）
-- [ ] /ops/dashboard 用含查询串的原始 target 比较，`?x=1` 时误 404（src/console/ops_http_handler.cpp:1597）
-- [ ] 轮询退避读 effect 初始 state.data，退避不随实际状态切换（console/src/services/polling.ts:123）
-- [ ] 服务列表与插件页仅挂载时请求一次，无过期提示（console/src/pages/PluginsPage.tsx:51）
-- [ ] 服务详情请求缺取消/序号保护，晚返回覆盖新选择（console/src/pages/ServicesPage.tsx:61）
-- [ ] accept 回调持 handshake gate 锁同步触发 on_connect，回调调 stop() 死锁（src/net/listener.cpp:301）
-- [ ] SPA 回退未做根目录与符号链接规范化检查，可读目录外文件（src/console/ops_http_handler.cpp:1601）
-- [ ] fetchJson 仅查 401，非 2xx 非 error 信封被当成功处理（console/src/services/polling.ts:43）
+- [x] 默认未配置 http.ops_auth_token 时只读运维接口全开放，需默认拒绝显式放行（src/console/ops_http_handler.cpp:629）
+  > register_routes 改为默认拒绝：auth_token_ 为空仍拒绝，仅 http.ops_allow_unauthenticated=true 显式放行；OpsDefaultDenyWithNoTokenConfigured 覆盖（tests/coverage/test_cov_ops_http.cpp:389-441）
+- [x] 前端 fetch 无 Bearer 凭据入口，认证开启后浏览器无法使用受保护接口（console/src/services/polling.ts:39）
+  > LoginGate 组件 + getOpsToken/setOpsToken（sessionStorage，不落盘）；fetchJson/fetchText 附 Bearer 头（console/src/components/LoginGate.tsx · console/src/services/polling.ts:28-48）
+- [x] eval/profile 路由未经 ops-wide 认证包装（src/console/ops_http_handler.cpp:716）
+  > authed_control 包装 /ops/eval 与 /ops/profile：ops_auth_token 配置时 Bearer 须先过 ops 门（src/console/ops_http_handler.cpp:660-676,745,779）；OpsAuthGateCoversEvalAndProfile 覆盖
+- [x] 静态目录启用时默认处理器未加认证（src/console/ops_http_handler.cpp:697）
+  > set_default_handler 包 authed + set_static_guard 保护 try_static（src/console/ops_http_handler.cpp:655-673,727 · src/net/http_server.cpp:148-158）；StaticGateDeniesByDefault 覆盖
+- [x] 未命中路由先查静态再判 API 前缀，ops 子目录可吞未知 /ops/* 的 JSON 404（src/net/http_server.cpp:317）
+  > dispatch 对 /ops/* 前缀先走 default handler（JSON 404），仅非 API 路径落静态（src/net/http_server.cpp:316-329）
+- [x] /ops/dashboard 用含查询串的原始 target 比较，`?x=1` 时误 404（src/console/ops_http_handler.cpp:1597）
+  > handle_default 先剥查询串再判路径（src/console/ops_http_handler.cpp:1590-1595）
+- [x] 轮询退避读 effect 初始 state.data，退避不随实际状态切换（console/src/services/polling.ts:123）
+  > usePolling 用 hasDataRef 跟踪最新快照决定退避（console/src/services/polling.ts:110-113,160-163）
+- [x] 服务列表与插件页仅挂载时请求一次，无过期提示（console/src/pages/PluginsPage.tsx:51）
+  > PluginsPage 改用 usePolling（stale 横幅 + 401 登录门）；ServicesPage 增序号/取消保护（console/src/pages/PluginsPage.tsx:47-60 · console/src/pages/ServicesPage.tsx:31-34,55-78）
+- [x] 服务详情请求缺取消/序号保护，晚返回覆盖新选择（console/src/pages/ServicesPage.tsx:61）
+  > detailSeq + detailAbort：晚返回被丢弃（console/src/pages/ServicesPage.tsx:55-78）
+- [x] accept 回调持 handshake gate 锁同步触发 on_connect，回调调 stop() 死锁（src/net/listener.cpp:301）
+  > do_accept 验证 stopping 后释放 gate 再 adopt_connection（src/net/listener.cpp:413-432）；test_cov_listener/tls/session 全绿
+- [x] SPA 回退未做根目录与符号链接规范化检查，可读目录外文件（src/console/ops_http_handler.cpp:1601）
+  > handle_default 对 static_root 与 index.html 做 weakly_canonical + 包含检查（src/console/ops_http_handler.cpp:1620-1642）
+- [x] fetchJson 仅查 401，非 2xx 非 error 信封被当成功处理（console/src/services/polling.ts:43）
+  > fetchJson/fetchText 对 !res.ok 抛 HttpError（带状态码），error 信封取 data/message（console/src/services/polling.ts:52-72）
+
+## 审核发现
+- [x] 审核发现：整理未完成的 FIX-WEB-08～14 时删除了原有依赖及关键交付和验收条件，包括网关计数语义、eval/profile token 禁止持久化、浏览器安全场景与生产托管要求，后续可在遗漏这些约束时误判完成（todo.md:263）。
+  > todo.md 已为 FIX-WEB-12~14 补齐依赖、交付与验收条件（todo.md:267-269）
+- [x] 审核发现：波次 2 审计称中英文侧栏均已补充 Dashboard HTTP API 入口，但中文侧栏只新增诊断控制台，中文站点侧栏仍无法导航到该契约（docs/审计-文档一致性.md:83）。
+  > 中文侧栏"官方可选模块"补 `Dashboard HTTP API 契约（英文）` 条目（docs/.vitepress/config.ts:199）
+- [x] 审核发现：.VPDoc.has-aside .content-container 强制 max-width:960px 未为右侧 TOC 侧栏（默认 max-width:256px+32px 间距）预留空间，1280–1440px 视口下内容列+侧栏总宽约 1248px 超出可用宽度，右侧目录会被挤压或裁切（docs/.vitepress/theme/custom.css:67）
+  > 移除 .VPDoc.has-aside .content-container 与两条重复 max-width 规则，恢复 VitePress 响应式（docs/.vitepress/theme/custom.css:59-66）
+- [x] 审核发现：word-break: break-word 为规范弃用的非标准值，等价于 overflow-wrap: break-word，建议改用标准属性（docs/.vitepress/theme/custom.css:59）
+  > 改用标准 overflow-wrap: break-word（docs/.vitepress/theme/custom.css:58-60）
+- [x] 审核发现：.VPDoc .container > .content 与 .VPDoc:not(.has-sidebar) .content 两条规则均强制 max-width:960px !important，功能重复；且 !important 会覆盖 VitePress 默认响应式宽度（≥960px 时 752px、≥1440px 时 784px），破坏其响应式布局意图（docs/.vitepress/theme/custom.css:61-66）
+  > 两条重复规则已删除（docs/.vitepress/theme/custom.css:61-66）
+- [x] 审核发现：新"查询任意配置键"功能将非脱敏值以明文 `<code>` 回显，脱敏完全依赖服务端按固定子串（token/password/passwd/secret/credential/api_key/apikey/access_key/private_key）匹配，`auth.bearer`、`mysql.pass`、`db.connection_string` 等不命中子串的密钥会被当普通配置原样回显（console/src/pages/ConfigPage.tsx:93，服务端匹配见 src/console/ops_http_handler.cpp:1517-1524）。
+  > 服务端 kSecretNeedles 扩充 bearer/auth/pass/connection_string/dsn/pwd；ConfigEndpointValueShapes 覆盖（src/console/ops_http_handler.cpp:1517-1524 · tests/coverage/test_cov_ops_http.cpp:1775-1788）
+- [x] 审核发现：客户端对 key 用 encodeURIComponent 编码（console/src/services/api.ts:15），但服务端 /ops/config 直接取原始查询串不 URL 解码（src/console/ops_http_handler.cpp:1483），含空格 `/` `:` `&` `=` 等字符的用户输入键永不匹配真实键，一律误显"未配置"。
+  > handle_config 新增 url_decode；ConfigEndpointValueShapes 覆盖空格/斜杠/冒号键（src/console/ops_http_handler.cpp:60-84,1647 · tests/coverage/test_cov_ops_http.cpp:1768-1773）
+- [x] 审核发现：初始加载用 Promise.all 全有全无，任一键查询失败（401/超时/信封错误）即整体报错页，即使其余键已成功也无部分结果渲染（console/src/pages/ConfigPage.tsx:41）。
+  > ConfigPage 逐键独立查询，成功键照常渲染；unauthorized/error 单独分流（console/src/pages/ConfigPage.tsx:47-79）
+- [x] 审核发现：计数器回归检测在端口行从某次快照消失时丢弃其前值，监听器重启若短暂移除端口行再以重置计数回归则不被标记，与"监听器重启即异常"的注释意图不符（console/src/pages/GatewayPage.tsx:87-96）。
+  > GatewayPage 合并前值：消失端口的前值保留，重置计数回归仍被标记（console/src/pages/GatewayPage.tsx:95-100）
+- [x] 审核发现：parseSample 数值正则 [-0-9.eE+]+ 不含 N/I/f，Prometheus 合法 NaN、+Inf、-Inf 采样整行被静默丢弃；形如 `1.2.3` 的畸形数值经 parseFloat 截断为 1.2 而非拒绝该行；标签按 `,` split 对含逗号的引号值（如 reason="a,b"）解析错位（console/src/pages/GatewayPage.tsx:18,22,27）。
+  > GatewayPage/PluginsPage parseSample 支持 NaN/±Inf、拒绝畸形数字、引号标签逗号感知（console/src/pages/GatewayPage.tsx:18-47 · console/src/pages/PluginsPage.tsx:8-37）
+- [x] 审核发现：ConfigPage 无独立 unauthorized 处理（与 GatewayPage 不同），/ops/config 返回 401 时仅显示通用"Failed to load config"而非"Authentication is required"提示（console/src/pages/ConfigPage.tsx:38）。
+  > ConfigPage 新增 unauthorized 状态并渲染 LoginGate（console/src/pages/ConfigPage.tsx:31,98-101）
+- [x] 审核发现：addKey 的 onPressEnter 未以 pending 门控，按钮 loading 禁用期间按回车仍会触发并发请求，多个查询交错 resolve 时错误/结果状态可互相覆盖（console/src/pages/ConfigPage.tsx:118）。
+  > addKey 以 pending 门控，in-flight 时 onPressEnter 直接返回（console/src/pages/ConfigPage.tsx:67-69）

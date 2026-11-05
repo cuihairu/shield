@@ -103,6 +103,11 @@ public:
     /// requests may be served from this directory (see try_static).
     void set_static_root(const std::string& root);
 
+    /// @brief Optional gate for static file serving. When set, try_static
+    /// only serves a file after this predicate returns true for the request
+    /// (e.g. an ops-wide auth check). A null predicate allows every request.
+    void set_static_guard(std::function<bool(const HttpRequest&)> guard);
+
     /// @brief Attempt to serve a static file for the request path.
     /// Returns an empty optional when the path is not a safe, existing file
     /// under the static root (path traversal is denied; missing files are
@@ -157,6 +162,7 @@ private:
         routes_;
     HttpHandler default_handler_;
     std::string static_root_;
+    std::function<bool(const HttpRequest&)> static_guard_;
 
     net::io_context io_context_;
     std::unique_ptr<net::ip::tcp::acceptor> acceptor_;

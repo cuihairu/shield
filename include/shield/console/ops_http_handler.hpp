@@ -96,6 +96,10 @@ private:
     shield::lua::LuaRuntime& lua_rt_;
     std::string eval_token_;
     std::string auth_token_;
+    // Default-deny: when no ops_auth_token is configured the ops-wide gate
+    // still rejects unauthenticated requests unless this is explicitly set
+    // to "true" (opt-out for a trusted local deployment). See register_routes.
+    bool allow_unauthenticated_ = false;
     std::string static_root_;
 
     // /ops/profile state. The report future is created at start and

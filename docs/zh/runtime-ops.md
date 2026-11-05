@@ -371,6 +371,8 @@ http:
   enabled: true                # 默认 false；总开关
   host: "127.0.0.1"            # 默认 127.0.0.1（环回）
   port: 8080                   # 默认 8080
+  ops_auth_token: ""           # 默认空；默认拒绝——未配置时只读 /ops/* 仍拒绝，除非显式放行
+  ops_allow_unauthenticated: false  # 默认 false；true 为显式放行（可信本地部署，绕过 Bearer 门）
   eval_enabled: false          # 默认 false；/ops/eval 注册开关
   eval_token: ""               # 默认空；eval_enabled=true 时必须非空
   profile_enabled: false       # 默认 false；/ops/profile 注册开关

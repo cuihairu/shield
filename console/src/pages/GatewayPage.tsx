@@ -3,6 +3,7 @@ import { Alert, Empty, Spin, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { usePolling } from '../services/polling';
 import { api } from '../services/api';
+import LoginGate from '../components/LoginGate';
 
 interface PortRow {
   port: string;
@@ -15,16 +16,43 @@ interface PortRow {
 }
 
 function parseSample(line: string): { name: string; labels: Record<string, string>; value: number } | null {
-  const m = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{([^}]*)\})?\s+([-0-9.eE+]+)$/.exec(line.trim());
+  // Prometheus exposition: name, optional {labels}, value. The value may be a
+  // float or one of +Inf / -Inf / NaN (legal Prometheus samples). A malformed
+  // numeric token (e.g. "1.2.3") is rejected rather than silently truncated by
+  // parseFloat. A label value may be a quoted string containing a comma.
+  const m = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{([^}]*)\})?\s+([-+]?(?:Inf|NaN|[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?))$/.exec(line.trim());
   if (!m) return null;
   const labels: Record<string, string> = {};
   if (m[3]) {
-    for (const kv of m[3].split(',')) {
+    // Split labels on commas that are not inside a double-quoted value.
+    const parts: string[] = [];
+    let depth = 0;
+    let cur = '';
+    for (const ch of m[3]) {
+      if (ch === '"') depth ^= 1;
+      if (ch === ',' && depth === 0) {
+        parts.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    if (cur) parts.push(cur);
+    for (const kv of parts) {
       const eq = kv.indexOf('=');
-      if (eq > 0) labels[kv.slice(0, eq)] = kv.slice(eq + 1).replace(/"/g, '');
+      if (eq > 0) {
+        const raw = kv.slice(eq + 1).trim();
+        // Unquote a quoted value, preserving commas/escaped quotes.
+        const value = raw.startsWith('"') && raw.endsWith('"')
+          ? raw.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+          : raw;
+        labels[kv.slice(0, eq).trim()] = value;
+      }
     }
   }
-  return { name: m[1], labels, value: parseFloat(m[4]) };
+  const raw = m[4];
+  const value = raw === '+Inf' ? Infinity : raw === '-Inf' ? -Infinity : raw === 'NaN' ? NaN : parseFloat(raw);
+  return { name: m[1], labels, value };
 }
 
 function buildRows(text: string): PortRow[] {
@@ -66,8 +94,7 @@ export default function GatewayPage() {
     return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />;
   }
   if (poll.status === 'unauthorized') {
-    return <Alert type="warning" showIcon message="Unauthorized"
-      description="Authentication is required to view this console." />;
+    return <LoginGate />;
   }
   if (poll.status === 'error') {
     return <Alert type="error" showIcon message="Failed to load gateway metrics" description={poll.error} />;
@@ -93,7 +120,12 @@ export default function GatewayPage() {
       if (prev !== undefined && r[key] < prev) regressed = true;
     }
   }
-  prevCounters.current = currentCounters;
+  // Preserve counters for ports absent from this snapshot: a listener that
+  // briefly disappears and returns with reset counters must still be
+  // detected as a regression. Only overwrite keys observed here.
+  const mergedCounters = new Map(prevCounters.current);
+  for (const [key, value] of currentCounters) mergedCounters.set(key, value);
+  prevCounters.current = mergedCounters;
 
   const cols: ColumnsType<PortRow> = [
     { title: 'Port', dataIndex: 'port' },
