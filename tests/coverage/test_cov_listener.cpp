@@ -261,6 +261,42 @@ BOOST_AUTO_TEST_CASE(OnConnectMayStopListenerWithoutDeadlockOrUseAfterFree) {
     BOOST_CHECK_EQUAL(owned.session_count(), 0u);
 }
 
+// The accept completion handler must hold the handshake gate across its
+// entire member-accessing tail (not just the initial stopping check), so a
+// concurrent stop()/destructor cannot free the listener underneath it. The
+// tail has no externally observable pause point, so this is a safety stress
+// test: each round connects a client while another thread races stop() and
+// teardown. A regression that drops the gate would surface as a deadlock
+// (stop() never returns) or, under ASan/TSan, as a use-after-free. It never
+// asserts a false failure: if the race window is not hit, the state checks
+// still hold.
+BOOST_AUTO_TEST_CASE(ConcurrentStopDuringAcceptTailIsSafe) {
+    for (int round = 0; round < 25; ++round) {
+        boost::asio::io_context io;
+        const auto port = reserve_ephemeral_port(io);
+
+        SessionCallbacks callbacks;
+        callbacks.on_connect = [](std::shared_ptr<Session>) {};
+
+        auto owned = std::make_unique<TcpListener>(io, port, callbacks);
+        owned->start();
+
+        std::thread stopper([&] {
+            // Let the accept completion land, then tear down mid-tail.
+            std::this_thread::sleep_for(1ms);
+            owned->stop();
+        });
+
+        Client client;
+        BOOST_REQUIRE(client.connect(port));
+        io.run_for(20ms);
+        stopper.join();
+        BOOST_CHECK(!owned->is_open());
+        owned.reset();  // destructor; must not race a live completion
+        io.run_for(10ms);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(SharedIpCountDecrementsWithoutErase) {
     boost::asio::io_context io;
     const auto port = reserve_ephemeral_port(io);

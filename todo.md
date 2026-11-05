@@ -340,3 +340,10 @@
   > macOS RSS 改用 mach_task_basic_info resident_size（实时驻留），ru_maxrss 仅作回退（src/console/ops_http_handler.cpp:189-201）
 - [x] 审核发现：macOS 每次 task_threads 调用取得的线程端口未逐个释放，仅释放数组会使持续抓取指标不断泄漏 Mach 端口权限（src/console/ops_http_handler.cpp:201）。
   > task_threads 返回的每个线程端口逐个 mach_port_deallocate（src/console/ops_http_handler.cpp:203-209）
+- [x] 审核发现：accept 回调在取得生命周期锁并检查后立即释放锁，随后仍访问 socket_ 等成员，监听器并发析构时仍可能发生 use-after-free（src/net/listener.cpp:428）。
+  > accept 回调整段持有 gate（含 remote_endpoint/blocklist/adopt_connection 等所有 this 成员访问），仅 session->start() 前释放，避免并发析构 UAF；新增 ConcurrentStopDuringAcceptTailIsSafe 并发竞态回归（src/net/listener.cpp:313,442 · tests/coverage/test_cov_listener.cpp:273 · build/build-cov 两树 test_cov_listener 绿）
+- [ ] 审核发现：stop 在握有 gate 的接纳过程期间设置 stopping_ 时，adopt_connection 会解引用已移入 TcpSession 的空 stream，导致进程崩溃（src/net/listener.cpp:490）。
+- [ ] 审核发现：释放 gate 后调用 start 前若 stop 已关闭该 session，仍会触发 on_connect 并启动接收，造成关闭后的连接事件和断开事件顺序颠倒（src/net/listener.cpp:447）。
+- [ ] 审核发现：错误信封在检查 HTTP 状态前被转换为普通 Error，导致 profile 的 409、429、504 状态码分支失效（console/src/services/polling.ts:106）。
+- [ ] 审核发现：浏览器验收配置把静态目录硬编码为本机绝对路径，其他工作区或 CI 无法加载控制台并复现验收（tests/acceptance/e2e/shield-e2e.yaml:47）。
+- [ ] 审核发现：穿越验收使用 fetch 发送 %2e%2e 路径时客户端先将其规范化为 /etc/passwd，服务端实际未收到穿越路径而测试仍可通过（tests/acceptance/e2e/run-e2e.mjs:164）。

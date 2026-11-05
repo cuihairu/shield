@@ -304,11 +304,15 @@ void TcpListener::do_accept() {
         if (gate->stopping.load(std::memory_order_acquire)) {
             return;
         }
-        {
-            std::lock_guard lock(gate->mutex);
-            if (gate->stopping.load(std::memory_order_acquire)) {
-                return;
-            }
+        // Hold the gate for the whole handler, not just the initial check:
+        // the slow path below dereferences `this` (socket_, acceptor_,
+        // callbacks_, ...). Releasing it here would let a concurrent
+        // stop()/destructor run to completion and free the listener while
+        // this handler is still touching those members (use-after-free).
+        // Teardown blocks on this mutex until every member access finishes.
+        std::unique_lock gate_lock(gate->mutex);
+        if (gate->stopping.load(std::memory_order_acquire)) {
+            return;
         }
         if (ec) {
             if (ec != boost::asio::error::operation_aborted) {
@@ -414,36 +418,28 @@ void TcpListener::do_accept() {
             }
         }
 
-        // Verify this listener is still active under the gate (blocks a
-        // concurrent teardown). Register the connection and re-arm the
-        // accept loop while the gate is held, then release it before
+        // The gate is still held (see above), so this listener is still
+        // alive and no teardown is racing us. Register the connection and
+        // re-arm the accept loop, then release the gate before
         // session->start(): on_connect may call stop(), which must be able
-        // to take the gate mutex. Holding it here would deadlock the
-        // accept thread. Starting outside the gate also avoids a UAF: if
-        // stop() or the destructor runs between gate release and
-        // session->start(), the local shared_ptr keeps the session alive
-        // and no member access happens after the gate.
+        // to take this same mutex. Holding it here would deadlock the
+        // accept thread. Re-arming before the release ensures a concurrent
+        // stop() that races between gate release and do_accept() cannot
+        // leave the listener with a closed acceptor and no pending accept
+        // (which would idle forever). async_accept never runs its
+        // completion synchronously, so holding the gate here cannot
+        // re-enter.
         std::shared_ptr<Session> pending_session;
-        {
-            std::lock_guard lock(gate->mutex);
-            if (gate->stopping.load(std::memory_order_acquire)) {
-                return;
-            }
-            if (tls_context_ != nullptr) {
-                begin_tls_handshake(std::move(socket_), std::move(remote_ip));
-            } else {
-                pending_session = adopt_connection(
-                    std::make_unique<PlainStream>(std::move(socket_)),
-                    std::move(remote_ip));
-            }
-            // Re-arm before releasing the gate so a concurrent stop() that
-            // races between gate release and do_accept() cannot leave the
-            // listener with a closed acceptor and no pending accept (which
-            // would idle forever). async_accept never runs its completion
-            // synchronously, so holding the gate here cannot re-enter.
-            do_accept();
+        if (tls_context_ != nullptr) {
+            begin_tls_handshake(std::move(socket_), std::move(remote_ip));
+        } else {
+            pending_session = adopt_connection(
+                std::make_unique<PlainStream>(std::move(socket_)),
+                std::move(remote_ip));
         }
+        do_accept();
         // Gate released; on_connect may now safely call stop().
+        gate_lock.unlock();
         if (pending_session) pending_session->start();
     });
 }
