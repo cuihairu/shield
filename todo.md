@@ -344,7 +344,8 @@
   > accept 回调整段持有 gate（含 remote_endpoint/blocklist/adopt_connection 等所有 this 成员访问），仅 session->start() 前释放，避免并发析构 UAF；新增 ConcurrentStopDuringAcceptTailIsSafe 并发竞态回归（src/net/listener.cpp:313,442 · tests/coverage/test_cov_listener.cpp:273 · build/build-cov 两树 test_cov_listener 绿）
 - [x] 审核发现：stop 在握有 gate 的接纳过程期间设置 stopping_ 时，adopt_connection 会解引用已移入 TcpSession 的空 stream，导致进程崩溃（src/net/listener.cpp:490）。
   > stopping_ 检查移入 sessions_mutex_ 临界区并在 make_shared<TcpSession>（move stream）之前执行，命中时先 close 再返回 null，不再解引用空 unique_ptr；新增 AdoptConnectionAfterStopDropsSocket 确定性回归（src/net/listener.cpp:479-493 · tests/coverage/test_cov_listener.cpp:319 · build/build-cov 两树 test_cov_listener 绿）
-- [ ] 审核发现：释放 gate 后调用 start 前若 stop 已关闭该 session，仍会触发 on_connect 并启动接收，造成关闭后的连接事件和断开事件顺序颠倒（src/net/listener.cpp:447）。
+- [x] 审核发现：释放 gate 后调用 start 前若 stop 已关闭该 session，仍会触发 on_connect 并启动接收，造成关闭后的连接事件和断开事件顺序颠倒（src/net/listener.cpp:447）。
+  > TcpSession::start 入口加 alive_ 守卫，已关闭 session 直接 no-op（不触发 on_connect、不启动接收）；新增 StartOnClosedSessionIsNoOp 确定性回归（src/net/session.cpp:112 · tests/coverage/test_cov_session.cpp:1065 · build/build-cov 两树 test_cov_session 绿）
 - [ ] 审核发现：错误信封在检查 HTTP 状态前被转换为普通 Error，导致 profile 的 409、429、504 状态码分支失效（console/src/services/polling.ts:106）。
 - [ ] 审核发现：浏览器验收配置把静态目录硬编码为本机绝对路径，其他工作区或 CI 无法加载控制台并复现验收（tests/acceptance/e2e/shield-e2e.yaml:47）。
 - [ ] 审核发现：穿越验收使用 fetch 发送 %2e%2e 路径时客户端先将其规范化为 /etc/passwd，服务端实际未收到穿越路径而测试仍可通过（tests/acceptance/e2e/run-e2e.mjs:164）。

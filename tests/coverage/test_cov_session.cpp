@@ -1057,4 +1057,27 @@ BOOST_AUTO_TEST_CASE(PlainStreamTransportTag) {
     BOOST_CHECK_EQUAL(base.transport_name(), "tcp");
 }
 
+// The listener releases the handshake gate before session->start() so an
+// on_connect that calls stop() cannot deadlock. In that window stop() may
+// run to completion and close the session before start() executes: start()
+// must then be a no-op (no on_connect, no receive), not a late connection
+// event after the disconnect.
+BOOST_AUTO_TEST_CASE(StartOnClosedSessionIsNoOp) {
+    SocketPair p;
+    std::atomic<int> connects{0};
+    SessionCallbacks cbs;
+    cbs.on_connect = [&](std::shared_ptr<Session>) { ++connects; };
+
+    auto session = std::make_shared<TcpSession>(99, std::move(p.server), cbs);
+    session->close("listener shutdown");
+    BOOST_CHECK(!session->is_alive());
+
+    session->start();
+    BOOST_CHECK_EQUAL(connects.load(), 0);
+    // No receive started: the session must remain closed after start().
+    BOOST_CHECK(!session->is_alive());
+    p.io.run_for(100ms);
+    BOOST_CHECK_EQUAL(connects.load(), 0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

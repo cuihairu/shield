@@ -110,6 +110,16 @@ TcpSession::TcpSession(SessionId id, std::unique_ptr<SessionStream> stream,
 TcpSession::~TcpSession() = default;  // GCOVR_EXCL_LINE
 
 void TcpSession::start() {
+    // The listener releases the handshake gate before calling start() so an
+    // on_connect that calls stop() cannot deadlock. That release also opens
+    // a window where stop()/the destructor runs to completion and closes
+    // this session (alive_ = false) before start() executes. A closed
+    // session must not fire on_connect or begin receiving: that would emit a
+    // connection event after the disconnect event and start I/O on a closed
+    // socket. Bail here so start() on an already-closed session is a no-op.
+    if (!alive_.load(std::memory_order_acquire)) {
+        return;
+    }
     if (callbacks_.on_connect) {
         callbacks_.on_connect(shared_from_this());
     }
