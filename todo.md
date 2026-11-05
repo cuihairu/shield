@@ -260,7 +260,8 @@
   > test_cov_ops_http 53/53 绿（ProcessResourceMetricsEmitted）
 - [x] FIX-WEB-10 类型化客户端与轮询层（2s 基线、指数退避、queryId 竞态防护）
   > pnpm test 2/2 绿 · C++ 108/108 绿
-- [ ] FIX-WEB-08 网关连接与限流页（per-listener 计数/TLS 握手成败）
+- [x] FIX-WEB-08 网关连接与限流页（per-listener 计数/TLS 握手成败）
+  > pnpm test 9/9 绿 · pnpm build 成功 · test_cov_ops_http 53/53 绿（GatewayMetricsEmittedFromListenerRegistry/GatewayTlsMetricsEmittedFromListenerRegistry）
 - [ ] FIX-WEB-11 配置脱敏视图页（脱敏键族标注，不回显原文）
 - [ ] FIX-WEB-12 eval/profile 受控操作页（opt-in 可达、token 不落盘、分支如实展示）
 - [ ] FIX-WEB-13 真机浏览器验收与安全门（真实进程 + 真浏览器证据，不得以进程内用例充当）
