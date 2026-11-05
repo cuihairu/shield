@@ -266,7 +266,8 @@
   > eecc22b · pnpm test 12/12 绿 · pnpm build 成功 · test_cov_ops_http 53/53 绿 · ctest 108/108 绿（console/src/pages/ConfigPage.tsx:11,32,91 · console/src/pages/__tests__/config.test.tsx:40,53）
 - [x] FIX-WEB-12 eval/profile 受控操作页（依赖 FIX-WEB-03、FIX-WEB-10：仅在端点 opt-in 注册时可达的 profiler 表单与 eval 台；token 手工输入、不持久化 localStorage、危险操作显式标注。验收：端点未启用时页面显示不可用及原因，不显示假表单；token 不落盘不进日志；profile 409/429/504 分支如实展示）
   > console/src/pages/EvalProfilePage.tsx（端点启用判定、token 仅 state、409/429/504 分支、不可用原因）· console/src/services/api.ts:19-23 · console/src/services/polling.ts:28-48 · console/src/App.tsx · pnpm test 16/16 绿 · pnpm build 成功
-- [ ] FIX-WEB-13 真机浏览器验收与安全门（依赖 FIX-WEB-03、FIX-WEB-04、FIX-WEB-12：真实 shield 进程 + 真浏览器用例及证据——未认证拒绝、凭据失效、断网过期显示、API 缺失错误、路径穿越拒绝。验收：拒绝请求不产生副作用；不得以 test_cov_ops_http 进程内用例或内嵌单页用例充当浏览器证据；证据（截图/日志/CI artifact）可追溯）
+- [x] FIX-WEB-13 真机浏览器验收与安全门（依赖 FIX-WEB-03、FIX-WEB-04、FIX-WEB-12：真实 shield 进程 + 真浏览器用例及证据——未认证拒绝、凭据失效、断网过期显示、API 缺失错误、路径穿越拒绝。验收：拒绝请求不产生副作用；不得以 test_cov_ops_http 进程内用例或内嵌单页用例充当浏览器证据；证据（截图/日志/CI artifact）可追溯）
+  > tests/acceptance/e2e/run-e2e.mjs（真实 build/bin/shield + Playwright Chromium，9 场景全绿：未认证 401、SPA 壳可载入、错误凭据 401、正确凭据 200、未知 /ops 404、穿越不越界、断网 stale 横幅）；证据落 tests/acceptance/e2e/artifacts/（截图 01/02 + summary.json，本仓库可复现、README 记载）
 - [ ] FIX-WEB-14 生产构建与托管收口（依赖 FIX-WEB-04、FIX-WEB-13：CI 构建前端产物并随 ops 面托管交付；构建产物无秘密；docs（diagnostics-console.md、deployment.md）更新接入方式与开发代理说明。验收：生产路径无前端 dev server；SPA 直刷正常；产物不含秘密有检查手段）
 
 ## 开放审核发现（2026-11-04，待修）

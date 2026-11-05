@@ -1,0 +1,49 @@
+app:
+  name: shield-e2e
+  version: "0.1.0"
+log:
+  level: warn
+  console: true
+crash:
+  enabled: false
+lua:
+  vm:
+    mode: per_service
+    max_vms: 16
+    max_memory_mb: 64
+  sandbox:
+    allow_os: false
+    allow_io: false
+  script_path: "scripts"
+  module_path: "scripts/?.lua;scripts/?/init.lua"
+  cache:
+    enabled: false
+actors:
+  - name: bootstrap
+    script: ../scripts/bootstrap.lua
+    instances: 1
+    required: true
+bootstrap:
+  timeout:
+    config_load: 5000
+    log_init: 5000
+    core_init: 10000
+    plugin_init: 30000
+    net_init: 10000
+    script_init: 10000
+    service_spawn: 60000
+shutdown:
+  timeout:
+    service_drain: 30000
+    service_stop: 10000
+    plugin_shutdown: 10000
+    total: 60000
+console:
+  enabled: false
+http:
+  enabled: true
+  host: "127.0.0.1"
+  port: 35513
+  static_root: "/home/cui/workspaces/shield/console/dist"
+  ops_auth_token: "e2e-ops-secret"
+  ops_allow_unauthenticated: "false"

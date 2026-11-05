@@ -128,3 +128,6 @@ build-cov/
 # console frontend build output
 console/dist/
 console/tsconfig.tsbuildinfo
+
+# FIX-WEB-13 browser acceptance evidence (regenerated per run)
+tests/acceptance/e2e/artifacts/
