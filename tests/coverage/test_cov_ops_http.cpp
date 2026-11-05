@@ -445,31 +445,30 @@ BOOST_AUTO_TEST_CASE(OpsDefaultDenyWithNoTokenConfigured) {
                                         std::string(""));
 }
 
-// eval/profile routes must honour the ops-wide gate: with a valid ops token
-// they pass the gate, then their own eval/profile token still applies.
-BOOST_AUTO_TEST_CASE(OpsAuthGateCoversEvalAndProfile) {
+// eval/profile routes are explicit opt-ins with their own token gates. The
+// ops-wide gate covers the read-only ops surface; it must not also require a
+// different token in the same Authorization header.
+BOOST_AUTO_TEST_CASE(ControlEndpointsUseTheirOwnTokenUnderOpsAuth) {
     AuthGateServer auth(*manager, *runtime);
     RawHttpClient client;
     client.connect_target("127.0.0.1", auth.port);
 
-    // Correct eval token but no ops token -> denied by the ops-wide gate.
+    // The endpoint's own token authorizes the opt-in control operation.
     std::string ev =
         client.post_auth("/ops/eval", R"({"code": "return 1"})", "cov-token");
     BOOST_REQUIRE(!ev.empty());
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(ev), 401);
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(ev), 200);
 
-    // Correct eval token AND correct ops token -> passes the gate; the eval
-    // VM gate then also checks the eval token (same header).
+    // The ops token is not the eval token: the endpoint gate denies it.
     ev = client.post_auth("/ops/eval", R"({"code": "return 1"})", "ops-token");
     BOOST_REQUIRE(!ev.empty());
-    // ops-token is not the eval token, so the eval gate denies (401).
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(ev), 401);
 
-    // profile: same shape.
+    // Profile follows the same independent-token discipline.
     std::string pr = client.post_auth("/ops/profile", R"({"action":"status"})",
                                       "prof-token");
     BOOST_REQUIRE(!pr.empty());
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(pr), 401);
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(pr), 200);
 }
 
 BOOST_AUTO_TEST_CASE(StatusEndpoint) {
@@ -2850,18 +2849,28 @@ BOOST_AUTO_TEST_CASE(StaticGateDeniesByDefault) {
     RawHttpClient client;
     client.connect_target("127.0.0.1", p);
 
-    // Static asset (unmatched -> try_static) must be behind the gate.
+    // The SPA shell and its static assets must be publicly loadable: a
+    // browser's first navigation cannot attach an Authorization header, and
+    // the shell contains no process data (the data APIs stay gated).
     std::string asset = client.get("/assets/app.js");
     BOOST_REQUIRE(!asset.empty());
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(asset), 401);
-    BOOST_CHECK(RawHttpClient::body(asset).find("console.log") ==
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(asset), 200);
+    BOOST_CHECK(RawHttpClient::body(asset).find("console.log") !=
                 std::string::npos);
 
-    // SPA fallback default handler must also be behind the gate.
+    // SPA fallback default handler is public too (deep-link refresh).
     std::string spa = client.get("/some/spa/route");
     BOOST_REQUIRE(!spa.empty());
-    BOOST_CHECK_EQUAL(RawHttpClient::status_code(spa), 401);
-    BOOST_CHECK(RawHttpClient::body(spa).find("SPA-GATE") == std::string::npos);
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(spa), 200);
+    BOOST_CHECK(RawHttpClient::body(spa).find("SPA-GATE") != std::string::npos);
+
+    // Data APIs remain behind the gate.
+    std::string status = client.get("/ops/status");
+    BOOST_REQUIRE(!status.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(status), 401);
+    std::string metrics = client.get("/ops/metrics");
+    BOOST_REQUIRE(!metrics.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(metrics), 401);
 
     // /ops/health remains exempt even when static root is configured.
     std::string health = client.get("/ops/health");

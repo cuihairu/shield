@@ -320,3 +320,21 @@
   > ConfigPage 新增 unauthorized 状态并渲染 LoginGate（console/src/pages/ConfigPage.tsx:31,98-101）
 - [x] 审核发现：addKey 的 onPressEnter 未以 pending 门控，按钮 loading 禁用期间按回车仍会触发并发请求，多个查询交错 resolve 时错误/结果状态可互相覆盖（console/src/pages/ConfigPage.tsx:118）。
   > addKey 以 pending 门控，in-flight 时 onPressEnter 直接返回（console/src/pages/ConfigPage.tsx:67-69）
+- [x] 审核发现：启用 ops Bearer 认证后，浏览器首次导航和加载静态资源无法携带该请求头，因而连登录页面都无法加载（src/console/ops_http_handler.cpp:787）。
+  > 静态 SPA 壳与静态资源改为公开加载（浏览器首次导航无 Authorization），数据 API（/ops/*）仍走 Bearer 门；页面首次 401 渲染 LoginGate（src/console/ops_http_handler.cpp:781-800,864-877 · tests/coverage/test_cov_ops_http.cpp:2826-2860 StaticGateDeniesByDefault 覆盖资产公开+数据 API 仍 401）
+- [x] 审核发现：受控接口同时用同一个 Authorization 头校验 ops token 和独立的 eval/profile token，两个 token 不同时相等时请求必然返回 401（src/console/ops_http_handler.cpp:826）。
+  > eval/profile 为显式 opt-in，其独立 token 门即授权；不再叠加 ops-wide 门（单个头无法携带两个 token）（src/console/ops_http_handler.cpp:814-819 · tests/coverage/test_cov_ops_http.cpp:450-472 ControlEndpointsUseTheirOwnTokenUnderOpsAuth 覆盖独立 token 200）
+- [x] 审核发现：健康接口在服务降级时以 503 返回有效的健康数据，新 fetchJson 却将其当作请求失败，导致仪表盘无法显示降级详情且可能保留旧的健康状态（console/src/services/polling.ts:92）。
+  > fetchJson 对 503 仍解析信封返回 data，仅 401 与错误信封/非 JSON 算失败（console/src/services/polling.ts:83-107 · console/src/services/__tests__/polling.test.tsx fetchJson 503 degraded 用例）
+- [x] 审核发现：监听器接受回调释放生命周期锁后仍访问 this，stop 或析构可在检查后并发完成，导致关闭后仍接纳连接或访问已销毁对象（src/net/listener.cpp:417）。
+  > adopt_connection 注册后返回 session；session->start() 移至释放 gate 之后，on_connect 调 stop() 不死锁，且本地下游 shared_ptr 防 UAF（src/net/listener.cpp:108-122,411-447 · tests/coverage/test_cov_listener.cpp:236-262 OnConnectMayStopListenerWithoutDeadlockOrUseAfterFree）
+- [x] 审核发现：受控操作页只检查 enabled 配置，启用标志为 true 但对应 token 为空时服务端并未注册端点，页面仍显示可操作表单（console/src/pages/EvalProfilePage.tsx:53）。
+  > EvalProfilePage 同时查询 eval_token/profile_token，token 为空时判为未启用（console/src/pages/EvalProfilePage.tsx:41-54 · console/src/pages/__tests__/eval-profile.test.tsx enabled-but-empty-token 用例）
+- [x] 审核发现：轮询的 hasDataRef 在每次 run 内重新初始化，成功快照后的每次失败仍按无数据状态退避，无法按预期依据已有快照选择轮询间隔（console/src/services/polling.ts:155）。
+  > everHadData 提升到 effect 作用域，跨 run 持久；成功后失败仍按正常间隔轮询（console/src/services/polling.ts:147-150,156,190 · console/src/services/__tests__/polling.test.tsx 成功后退避用例）
+- [x] 审核发现：SPA 回退的目录包含检查使用硬编码正斜杠，Windows 原生路径使用反斜杠时会拒绝根目录内的 index.html，导致深链接刷新失败（src/console/ops_http_handler.cpp:1811）。
+  > 用 lexically_relative 做分隔符无关包含检查（src/console/ops_http_handler.cpp:1804-1811）
+- [x] 审核发现：macOS 指标采集使用 ru_maxrss 作为当前 RSS，进程内存下降后仍报告历史峰值，误导资源监控（src/console/ops_http_handler.cpp:190）。
+  > macOS RSS 改用 mach_task_basic_info resident_size（实时驻留），ru_maxrss 仅作回退（src/console/ops_http_handler.cpp:189-201）
+- [x] 审核发现：macOS 每次 task_threads 调用取得的线程端口未逐个释放，仅释放数组会使持续抓取指标不断泄漏 Mach 端口权限（src/console/ops_http_handler.cpp:201）。
+  > task_threads 返回的每个线程端口逐个 mach_port_deallocate（src/console/ops_http_handler.cpp:203-209）

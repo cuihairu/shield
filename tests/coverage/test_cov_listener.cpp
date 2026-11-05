@@ -233,6 +233,34 @@ BOOST_AUTO_TEST_CASE(AcceptSessionRejectsRawIngressAndDisconnects) {
     io.run_for(100ms);
 }
 
+BOOST_AUTO_TEST_CASE(OnConnectMayStopListenerWithoutDeadlockOrUseAfterFree) {
+    boost::asio::io_context io;
+    const auto port = reserve_ephemeral_port(io);
+
+    TcpListener* listener = nullptr;
+    std::atomic<bool> stopping{false};
+    std::atomic<bool> connected{false};
+    SessionCallbacks callbacks;
+    callbacks.on_connect = [&](std::shared_ptr<Session>) {
+        connected.store(true, std::memory_order_release);
+        if (!stopping.exchange(true, std::memory_order_acq_rel)) {
+            listener->stop();
+        }
+    };
+
+    TcpListener owned(io, port, callbacks);
+    listener = &owned;
+    owned.start();
+
+    Client client;
+    BOOST_REQUIRE(client.connect(port));
+    io.run_for(300ms);
+    BOOST_CHECK(connected.load(std::memory_order_acquire));
+    BOOST_CHECK(stopping.load(std::memory_order_acquire));
+    BOOST_CHECK(!owned.is_open());
+    BOOST_CHECK_EQUAL(owned.session_count(), 0u);
+}
+
 BOOST_AUTO_TEST_CASE(SharedIpCountDecrementsWithoutErase) {
     boost::asio::io_context io;
     const auto port = reserve_ephemeral_port(io);

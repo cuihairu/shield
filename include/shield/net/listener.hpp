@@ -174,9 +174,12 @@ private:
     void do_accept();
 
     /// @brief Shared accept tail for both transports: wrap callbacks, build
-    /// the session around @p stream, register it and start it.
-    void adopt_connection(std::unique_ptr<SessionStream> stream,
-                          std::string remote_ip);
+    /// the session around @p stream and register it. Returns the session
+    /// (or null when the listener is already tearing down); the caller is
+    /// responsible for starting it AFTER releasing the handshake gate, so
+    /// an on_connect callback that calls stop() cannot deadlock.
+    std::shared_ptr<Session> adopt_connection(
+        std::unique_ptr<SessionStream> stream, std::string remote_ip);
 
     /// @brief Hand the accepted socket to the per-connection handshake state
     /// machine (heap-owned; completes independently of the accept loop).

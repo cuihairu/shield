@@ -89,20 +89,34 @@ export async function fetchJson<T>(
     if (res.status === 401) {
       throw new Error('Unauthorized');
     }
-    if (!res.ok) {
+    // 503 from /ops/health is NOT a request failure: it carries a valid
+    // degraded health envelope (the verdict maps onto the HTTP status while
+    // the body keeps the per-check detail). Only 401 (auth) and non-JSON /
+    // error envelopes are real failures.
+    let body: Envelope<T> | null = null;
+    try {
+      body = (await res.json()) as Envelope<T>;
+    } catch {
+      // non-JSON body (e.g. a proxy's HTML error page)
+      if (!res.ok) {
+        throw new HttpError(res.status, `HTTP ${res.status}`);
+      }
+      throw new Error('invalid JSON response');
+    }
+    if (body.type === 'error') {
+      const data = body.data ?? (body as { message?: string }).message;
+      throw new Error(String(data ?? 'error'));
+    }
+    if (!res.ok && res.status !== 503) {
       let detail = `HTTP ${res.status}`;
       try {
-        const errBody = (await res.json()) as { type?: string; data?: unknown; message?: string };
-        if (errBody && errBody.message) detail = String(errBody.message);
+        if (body && (body as { message?: string }).message) {
+          detail = String((body as { message?: string }).message);
+        }
       } catch {
         // non-JSON error body: keep the status-based message
       }
       throw new HttpError(res.status, detail);
-    }
-    const body = (await res.json()) as Envelope<T>;
-    if (body.type === 'error') {
-      const data = body.data ?? (body as { message?: string }).message;
-      throw new Error(String(data ?? 'error'));
     }
     return body.data;
   } finally {
@@ -144,21 +158,23 @@ export function usePolling<T>(
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let backoff = initialBackoffMs;
+    // Track whether the latest committed query ever produced data. This must
+    // persist across runs inside the effect; resetting it in run() would make
+    // every failure after a successful snapshot poll as if there were no
+    // prior data (using backoff instead of the normal interval).
+    let everHadData = false;
 
     async function run() {
       const id = ++queryIdRef.current;
       const controller = new AbortController();
       abortRef.current?.abort();
       abortRef.current = controller;
-    // Track the latest data inside the effect so the backoff decision below
-    // reads the live snapshot, not the initial state captured at mount.
-    let hasDataRef = false;
       try {
         const data = await fetchFn(controller.signal);
         if (cancelled || id !== queryIdRef.current) return; // race: drop stale
-      hasDataRef = data !== null;
+        everHadData = data !== null;
         setState({
-          status: hasData && !hasData(data) ? 'empty' : 'ready',
+          status: everHadData && hasData && !hasData(data) ? 'empty' : 'ready',
           data,
           stale: false,
           error: null,
@@ -184,9 +200,9 @@ export function usePolling<T>(
       }
       if (cancelled) return;
       // Schedule next poll with exponential backoff after failures.
-      const delay = hasDataRef ? intervalMs : backoff;
+      const delay = everHadData ? intervalMs : backoff;
       timer = setTimeout(run, delay);
-      if (!hasDataRef) {
+      if (!everHadData) {
         backoff = Math.min(backoff * backoffFactor, maxBackoffMs);
       }
     }

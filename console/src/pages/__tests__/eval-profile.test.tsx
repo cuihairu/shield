@@ -17,11 +17,19 @@ const configMock = api.config as ReturnType<typeof vi.fn>;
 const evalMock = api.evalCode as ReturnType<typeof vi.fn>;
 const profileMock = api.profile as ReturnType<typeof vi.fn>;
 
-function mockConfig(evalEnabled: boolean, profileEnabled: boolean, cooldown: string | null) {
+function mockConfig(
+  evalEnabled: boolean,
+  profileEnabled: boolean,
+  cooldown: string | null,
+  evalToken: string | null = evalEnabled ? '***redacted***' : null,
+  profileToken: string | null = profileEnabled ? '***redacted***' : null,
+) {
   configMock.mockImplementation((key: string) =>
     Promise.resolve(
       key === 'http.eval_enabled' ? String(evalEnabled)
-        : key === 'http.profile_enabled' ? String(profileEnabled)
+        : key === 'http.eval_token' ? evalToken
+          : key === 'http.profile_enabled' ? String(profileEnabled)
+            : key === 'http.profile_token' ? profileToken
           : cooldown,
     ),
   );
@@ -41,6 +49,22 @@ describe('EvalProfilePage', () => {
       expect(screen.getAllByText(/Endpoint not enabled/).length).toBe(2),
     );
     // No fake forms should be rendered.
+    expect(screen.queryByText(/Run eval/)).toBeNull();
+    expect(screen.queryByText(/Start/)).toBeNull();
+  }, 30000);
+
+  it('treats enabled-but-empty-token endpoints as not live', async () => {
+    // enabled=true but the token is empty: the server never registers the
+    // route, so the page must not render an operable form.
+    mockConfig(true, true, null, null, null);
+    render(
+      <MemoryRouter>
+        <EvalProfilePage />
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect(screen.getAllByText(/Endpoint not enabled/).length).toBe(2),
+    );
     expect(screen.queryByText(/Run eval/)).toBeNull();
     expect(screen.queryByText(/Start/)).toBeNull();
   }, 30000);

@@ -185,10 +185,22 @@ ProcessResource read_process_resources() {
         }
     }
 #elif defined(__APPLE__)
-    // RSS: ru_maxrss is in bytes on macOS (KiB on Linux).
+    // RSS: ru_maxrss is in bytes on macOS (KiB on Linux) and is a *peak*
+    // (high-water mark) value: it never decreases, so it would misreport a
+    // process whose memory has dropped. Read the current resident size from
+    // mach_task_basic_info instead, which reflects the live working set.
     struct rusage ru{};
     if (getrusage(RUSAGE_SELF, &ru) == 0 && ru.ru_maxrss > 0) {
-        r.rss_kib = static_cast<double>(ru.ru_maxrss) / 1024.0;
+        // ru_maxrss is only the fallback if the live-size query fails.
+        mach_task_basic_info_data_t info{};
+        mach_msg_type_number_t info_count = MACH_TASK_BASIC_INFO_COUNT;
+        if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                      reinterpret_cast<task_info_t>(&info),
+                      &info_count) == KERN_SUCCESS) {
+            r.rss_kib = static_cast<double>(info.resident_size) / 1024.0;
+        } else {
+            r.rss_kib = static_cast<double>(ru.ru_maxrss) / 1024.0;
+        }
     }
     // Threads: mach task thread list.
     {
@@ -197,6 +209,12 @@ ProcessResource read_process_resources() {
         if (task_threads(mach_task_self(), &list, &count) == KERN_SUCCESS &&
             list != nullptr) {
             r.threads = static_cast<double>(count);
+            // task_threads returns one Mach port per thread; each must be
+            // released individually, otherwise every metrics poll leaks the
+            // port rights (the task_threads documentation requires it).
+            for (mach_msg_type_number_t i = 0; i < count; ++i) {
+                mach_port_deallocate(mach_task_self(), list[i]);
+            }
             vm_deallocate(mach_task_self(),
                           reinterpret_cast<vm_address_t>(list),
                           static_cast<vm_size_t>(count * sizeof(thread_act_t)));
@@ -780,16 +798,10 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
     static_root_ = shield::config::get("http.static_root", "");
     if (!static_root_.empty()) {
         server.set_static_root(static_root_);
-        // Static files are served by HttpServer::try_static before the
-        // default handler runs, so the ops-wide gate must also guard them
-        // here. A denied request yields nullopt, falling through to the
-        // authed default handler which returns the 401.
-        server.set_static_guard([this](const shield::net::HttpRequest& req) {
-            if (allow_unauthenticated_) {
-                return true;
-            }
-            return !auth_token_.empty() && request_authorized(req, auth_token_);
-        });
+        // Static assets and the SPA shell must be loadable by a normal
+        // browser navigation, which cannot attach an Authorization header.
+        // They contain no process data; the data APIs below remain behind
+        // the ops token, and the SPA renders LoginGate on its first 401.
     }
 
     // Wrap a read-only handler with the ops-wide auth check. The gate is on
@@ -811,24 +823,14 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
         }};
     };
 
-    // Wrap an opt-in control handler (/ops/eval, /ops/profile). These keep
-    // their own independent token gates; the ops-wide gate is an ADDITIONAL
-    // layer that only bites when http.ops_auth_token is configured. With no
-    // ops token the endpoint's own gate remains the sole barrier (they are
-    // explicit opt-ins, not part of the read-only surface).
-    auto authed_control = [this](shield::net::HttpHandler inner) {
-        if (allow_unauthenticated_ || auth_token_.empty()) {
-            return inner;
-        }
-        return shield::net::HttpHandler{
-            [this, inner](const shield::net::HttpRequest& req)
-                -> shield::net::HttpResponse {
-                if (!request_authorized(req, auth_token_)) {
-                    return make_error_response(401, "unauthorized");
-                }
-                return inner(req);
-            }};
-    };
+    // Control handlers (/ops/eval, /ops/profile) are explicit opt-ins with
+    // their own independent token gates (http.eval_token / http.profile_token).
+    // They are NOT part of the read-only ops surface, so the ops-wide gate
+    // must not be layered on top: a single Authorization header can only carry
+    // one token, and requiring it to equal BOTH the ops token and a different
+    // endpoint token would make the endpoint permanently 401 when the two
+    // tokens differ. The endpoint's own token is the authorization for these
+    // dangerous operations.
 
     // /ops/health is exempt from the ops-wide gate: k8s liveness/readiness
     // probes are unauthenticated by design. It only exposes process-local
@@ -866,16 +868,30 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
         server.get("/ops/dashboard", authed([this](const auto& req) {
                        return handle_dashboard(req);
                    }));
+    } else {
+        // With a filesystem SPA, these shell routes must be public so the
+        // browser can load the app and its LoginGate. API requests still
+        // require the Bearer token.
+        server.get("/",
+                   [this](const auto& req) { return handle_default(req); });
+        server.get("/ops/dashboard",
+                   [this](const auto& req) { return handle_default(req); });
     }
 
     // SPA fallback: unknown non-API paths serve the console index.html so a
     // deep link refreshes correctly; unknown /ops/* API paths get a clear
     // JSON 404 instead of HTML. Only the default handler sees unmatched
-    // routes, so it runs after static serving (see HttpServer::dispatch). It
-    // is also behind the ops-wide gate: static assets and the SPA shell are
-    // not public when the gate is on.
-    server.set_default_handler(
-        authed([this](const auto& req) { return handle_default(req); }));
+    // routes, so it runs after static serving (see HttpServer::dispatch).
+    // With a static root the shell is public (browser navigation cannot
+    // attach an Authorization header); with the embedded dashboard it stays
+    // behind the ops-wide gate.
+    if (static_root_.empty()) {
+        server.set_default_handler(
+            authed([this](const auto& req) { return handle_default(req); }));
+    } else {
+        server.set_default_handler(
+            [this](const auto& req) { return handle_default(req); });
+    }
 
     // /ops/eval is a remote-code-entry point: opt-in (http.eval_enabled),
     // token-gated (http.eval_token), and served in a restricted VM. The
@@ -893,9 +909,8 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
                              "/ops/eval NOT registered: http.eval_enabled=true "
                              "requires a non-empty http.eval_token");
         } else {
-            server.post("/ops/eval", authed_control([this](const auto& req) {
-                            return handle_eval(req);
-                        }));
+            server.post("/ops/eval",
+                        [this](const auto& req) { return handle_eval(req); });
         }
     }
 
@@ -918,9 +933,8 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
             "a non-empty http.profile_token");
         return;
     }
-    server.post("/ops/profile", authed_control([this](const auto& req) {
-                    return handle_profile(req);
-                }));
+    server.post("/ops/profile",
+                [this](const auto& req) { return handle_profile(req); });
 
     // Phase B slow-call metering arms with the endpoint (the only reader
     // of the ring), at a fixed threshold for the process lifetime: the
@@ -1806,9 +1820,12 @@ shield::net::HttpResponse OpsHttpHandler::handle_default(
         if (canon_ec) {
             return make_error_response(404, "not found");
         }
-        const std::string root_str = canon_root.string();
-        if (index.string() != root_str &&
-            index.string().rfind(root_str + "/", 0) != 0) {
+        // Separator-agnostic containment: canonical paths carry native
+        // separators ("/" on POSIX, "\\" on Windows), so a literal prefix
+        // match on "/" rejects every nested file on Windows. lexically_relative
+        // compares path components regardless of separator.
+        const fs::path rel = index.lexically_relative(canon_root);
+        if (rel.empty() || *rel.begin() == "..") {
             return make_error_response(404, "not found");
         }
         std::ifstream file(index, std::ios::binary);

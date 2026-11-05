@@ -118,6 +118,11 @@ public:
     /// @brief Get session ID
     virtual SessionId id() const = 0;
 
+    /// @brief Begin receiving on the session. Called by the listener only
+    ///        after the handshake gate is released, so an on_connect
+    ///        callback that calls stop() cannot deadlock.
+    virtual void start() {}
+
     /// @brief Get remote address
     virtual RemoteAddress remote_addr() const = 0;
 

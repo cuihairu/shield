@@ -45,13 +45,21 @@ export default function EvalProfilePage() {
     const controller = new AbortController();
     Promise.all([
       api.config('http.eval_enabled', controller.signal),
+      api.config('http.eval_token', controller.signal),
       api.config('http.profile_enabled', controller.signal),
+      api.config('http.profile_token', controller.signal),
       api.config('http.profile_cooldown_seconds', controller.signal),
     ])
-      .then(([evalOn, profOn, cool]) => {
+      .then(([evalOn, evalTok, profOn, profTok, cool]) => {
+        // The server registers the endpoint only when BOTH the enabled flag
+        // and a non-empty token are present. The config endpoint returns
+        // null for an empty token and the redaction marker for a configured
+        // one, so a non-null value here means the endpoint is actually live.
+        const evalLive = evalOn === 'true' && evalTok != null;
+        const profileLive = profOn === 'true' && profTok != null;
         setCfg({
-          evalEnabled: evalOn === 'true',
-          profileEnabled: profOn === 'true',
+          evalEnabled: evalLive,
+          profileEnabled: profileLive,
           cooldownSeconds: cool == null ? null : Number(cool),
           loading: false,
           error: null,

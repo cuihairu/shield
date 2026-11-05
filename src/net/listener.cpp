@@ -110,13 +110,19 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
         // going away: never dereference it. If we win the mutex first,
         // teardown blocks until adoption completes, so the listener cannot
         // be freed underneath us.
-        std::lock_guard lock(gate->mutex);
+        std::unique_lock lock(gate->mutex);
         if (gate->stopping.load(std::memory_order_acquire)) {
             return;
         }
         settled.store(true, std::memory_order_release);
         counters->handshakes.fetch_add(1, std::memory_order_relaxed);
-        listener->adopt_connection(std::move(stream), remote_ip);
+        auto session = listener->adopt_connection(std::move(stream), remote_ip);
+        // Release the gate before session->start(): on_connect may call
+        // stop(), which must be able to take this same mutex. Holding it
+        // here would deadlock the accept thread. The session keeps the
+        // connection alive; the caller starts it after the gate is freed.
+        lock.unlock();
+        if (session) session->start();
     }
 
     /// @brief Record the failure/timeout, close the peer and log. Exactly one
@@ -409,35 +415,41 @@ void TcpListener::do_accept() {
         }
 
         // Verify this listener is still active under the gate (blocks a
-        // concurrent teardown), then release the gate BEFORE adopting the
-        // connection. Session start fires on_connect synchronously; if that
-        // callback calls stop(), stop() must be able to take the gate mutex.
-        // Holding it here would deadlock the accept thread.
+        // concurrent teardown). Register the connection and re-arm the
+        // accept loop while the gate is held, then release it before
+        // session->start(): on_connect may call stop(), which must be able
+        // to take the gate mutex. Holding it here would deadlock the
+        // accept thread. Starting outside the gate also avoids a UAF: if
+        // stop() or the destructor runs between gate release and
+        // session->start(), the local shared_ptr keeps the session alive
+        // and no member access happens after the gate.
+        std::shared_ptr<Session> pending_session;
         {
             std::lock_guard lock(gate->mutex);
             if (gate->stopping.load(std::memory_order_acquire)) {
                 return;
             }
+            if (tls_context_ != nullptr) {
+                begin_tls_handshake(std::move(socket_), std::move(remote_ip));
+            } else {
+                pending_session = adopt_connection(
+                    std::make_unique<PlainStream>(std::move(socket_)),
+                    std::move(remote_ip));
+            }
+            // Re-arm before releasing the gate so a concurrent stop() that
+            // races between gate release and do_accept() cannot leave the
+            // listener with a closed acceptor and no pending accept (which
+            // would idle forever). async_accept never runs its completion
+            // synchronously, so holding the gate here cannot re-enter.
+            do_accept();
         }
-
-        // Branch on transport before any per-connection state exists: a TLS
-        // listener runs the handshake outside the accept loop (parallel
-        // re-accept below keeps the pipeline full), a plain listener builds
-        // the session immediately. Both paths share the accept tail.
-        if (tls_context_ != nullptr) {
-            begin_tls_handshake(std::move(socket_), std::move(remote_ip));
-        } else {
-            adopt_connection(std::make_unique<PlainStream>(std::move(socket_)),
-                             std::move(remote_ip));
-        }
-
-        // Accept next
-        do_accept();
+        // Gate released; on_connect may now safely call stop().
+        if (pending_session) pending_session->start();
     });
 }
 
-void TcpListener::adopt_connection(std::unique_ptr<SessionStream> stream,
-                                   std::string remote_ip) {
+std::shared_ptr<Session> TcpListener::adopt_connection(
+    std::unique_ptr<SessionStream> stream, std::string remote_ip) {
     // Create session
     SessionId id = g_next_session_id.fetch_add(1);
     SessionCallbacks callbacks = callbacks_;
@@ -476,14 +488,13 @@ void TcpListener::adopt_connection(std::unique_ptr<SessionStream> stream,
         if (stopping_.load(std::memory_order_acquire)) {
             boost::system::error_code close_ec;
             stream->lowest_socket().close(close_ec);
-            return;
+            return nullptr;
         }
         sessions_[id] = session;
         ++ip_counts_[remote_ip];
     }
 
-    // Start session
-    session->start();
+    return session;
 }
 
 void TcpListener::begin_tls_handshake(boost::asio::ip::tcp::socket socket,
