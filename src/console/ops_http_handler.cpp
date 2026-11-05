@@ -1,7 +1,9 @@
 // [SHIELD_CONSOLE] HTTP ops endpoints implementation
 #include "shield/console/ops_http_handler.hpp"
 
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #include <chrono>
 #include <filesystem>
@@ -126,7 +128,14 @@ ProcessResource read_process_resources() {
                 if (last.ticks != 0) {
                     const double dt =
                         std::chrono::duration<double>(now - last.at).count();
-                    const long hz = sysconf(_SC_CLK_TCK);
+                    const long hz =
+#ifdef _WIN32
+                        100;  // no sysconf on Windows; the documented
+                              // assumption holds and /proc/self/stat is
+                              // absent anyway, so this path stays dead there
+#else
+                        sysconf(_SC_CLK_TCK);
+#endif
                     if (dt > 0 && hz > 0) {
                         const double delta =
                             static_cast<double>(now_ticks - last.ticks) / hz;
