@@ -22,6 +22,43 @@ this document does not cover it.
   export VCPKG_DEFAULT_BINARY_CACHE=/var/cache/shield/vcpkg
   ```
 
+## Ops Console (FIX-WEB-04 / FIX-WEB-14)
+
+The browser-based ops console (`console/`, React + Vite) is **not** a dev
+server in production. Build it once and serve the static output from the
+shield process itself via `http.static_root`:
+
+```bash
+# 1. Build the frontend (requires pnpm; the CI `console-build` job does this
+#    and uploads `shield-console-dist` as an artifact).
+cd console && pnpm install --frozen-lockfile && pnpm run build && cd ..
+
+# 2. Point shield's HTTP ops listener at the built output. The path is used
+#    verbatim, so pass an absolute directory.
+cat >> config/app.yaml <<'YAML'
+http:
+  static_root: /opt/shield/console/dist
+YAML
+
+# 3. The ops API stays bearer-gated; the SPA shell + static assets are
+#    public so the browser can load the app and its login gate.
+./build/bin/shield --config config/app.yaml
+```
+
+- **No dev server**: the production path serves `console/dist` directly from
+  the shield HTTP listener (same origin). `vite dev` / `vite preview` are for
+  local development only; do not expose them.
+- **SPA deep links**: unknown non-API paths fall back to `index.html`, so a
+  direct refresh on `/services`, `/config`, etc. works. Unknown `/ops/*` API
+  paths return a JSON `404`, never the HTML shell.
+- **No secrets in the bundle**: the CI `console-build` job scans the built
+  JS/CSS/HTML for secret-bearing strings (private keys, AWS/gh/sk tokens,
+  bearer tokens, api_key/password/secret assignments) and fails the build on
+  any hit. Keep secrets out of the frontend entirely.
+- **Development proxy**: `vite.config.ts` proxies `/ops` to
+  `http://127.0.0.1:8080` during local development only; the production
+  bundle never contains a proxy target (it is served from the same origin).
+
 ## Containers
 
 The repo ships a multi-stage Dockerfile (runs `--check-config` self-check at build time, non-root at run time):

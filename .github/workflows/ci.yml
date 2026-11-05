@@ -478,6 +478,63 @@ jobs:
           name: coverage-optional-report
           path: build-cov-opt/coverage-optional.txt
 
+  # 前端控制台构建 (FIX-WEB-14): 构建 React 控制台产物并验证其中不含
+  # 秘密/凭据，随后以 artifact 交付（随 ops 面托管，生产路径无 dev server）。
+  console-build:
+    name: Console Build
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-26.04' }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6.1.0
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build console
+        working-directory: ./console
+        run: pnpm run build
+
+      # 构建产物不得含秘密/凭据/密钥：前端是随 ops 面公开托管的静态产物，
+      # 任何硬编码 secret、token、api_key、password 都属安全回归。只扫描
+      # 产物 JS/CSS/HTML（排除 source map 与 node_modules）。
+      - name: Verify no secrets in build output
+        shell: bash
+        run: |
+          echo "Scanning console/dist for secret-bearing strings..."
+          found=0
+          while IFS= read -r f; do
+            if grep -Eq '(-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-[A-Za-z0-9]{32,}|Bearer [A-Za-z0-9._-]{16,}|api[_-]?key["'"'"']?\s*[:=]\s*["'"'"'][^"'"'"']{8,}|password["'"'"']?\s*[:=]\s*["'"'"'][^"'"'"']{8,}|secret["'"'"']?\s*[:=]\s*["'"'"'][^"'"'"']{8,})' "$f"; then
+              echo "SECRET FOUND in $f"
+              found=1
+            fi
+          done < <(find console/dist -type f \( -name '*.js' -o -name '*.css' -o -name '*.html' \))
+          if [ "$found" -ne 0 ]; then
+            echo "::error::console build output contains secret-bearing strings"
+            exit 1
+          fi
+          echo "OK: no secret-bearing strings in console/dist"
+
+      - name: Upload console build
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: shield-console-dist
+          path: console/dist
+          if-no-files-found: error
+
   # Docker 构建 (仅 main 分支)
   # 崩溃采集验收（docs/crash-reporting.md）：RelWithDebInfo 构建产物跑
   # --crash-test 空指针样例，断言 minidump 落盘，且 dump_syms +

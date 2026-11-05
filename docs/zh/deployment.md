@@ -22,6 +22,36 @@
   export VCPKG_DEFAULT_BINARY_CACHE=/var/cache/shield/vcpkg
   ```
 
+## 运维控制台（FIX-WEB-04 / FIX-WEB-14）
+
+浏览器端运维控制台（`console/`，React + Vite）在生产**不是** dev server：
+构建一次，静态产物直接由 shield 进程经 `http.static_root` 托管：
+
+```bash
+# 1. 构建前端（需 pnpm；CI `console-build` job 会构建并以
+#    `shield-console-dist` artifact 交付）。
+cd console && pnpm install --frozen-lockfile && pnpm run build && cd ..
+
+# 2. 把 shield 的 HTTP ops 监听指向构建产物。路径原样使用，须传绝对目录。
+cat >> config/app.yaml <<'YAML'
+http:
+  static_root: /opt/shield/console/dist
+YAML
+
+# 3. ops API 仍走 Bearer 门；SPA 壳与静态资源公开，浏览器可加载应用与登录门。
+./build/bin/shield --config config/app.yaml
+```
+
+- **无 dev server**：生产路径由 shield HTTP 监听直接托管 `console/dist`
+  （同源）。`vite dev` / `vite preview` 仅限本地开发，勿对外暴露。
+- **SPA 深链**：未知非 API 路径回退 `index.html`，`/services`、`/config`
+  等直刷正常；未知 `/ops/*` API 路径返回 JSON `404`，绝不返回 HTML 壳。
+- **产物无秘密**：CI `console-build` job 扫描构建产物 JS/CSS/HTML 中
+  的秘密串（私钥、AWS/gh/sk token、bearer token、api_key/password/secret
+  赋值），命中即构建失败。秘密一律不进前端。
+- **开发代理**：`vite.config.ts` 仅在本地开发把 `/ops` 代理到
+  `http://127.0.0.1:8080`；生产产物不含代理目标（同源托管）。
+
 ## 容器
 
 仓库自带多阶段 Dockerfile（构建期跑 `--check-config` 自检，运行期非 root）：

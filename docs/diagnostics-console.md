@@ -47,7 +47,16 @@ http:
   enabled: true
   host: "0.0.0.0"        # listen address
   port: 8080             # listen port
+  static_root: /opt/shield/console/dist   # built React console (FIX-WEB-14)
 ```
+
+When `http.static_root` is set, shield serves the built browser console
+(`console/dist`) from the same origin — there is **no** frontend dev server
+in the production path. The SPA shell and its static assets are public so the
+browser can load the app and its login gate; every `/ops/*` data API remains
+behind the bearer-token gate (FIX-WEB-03). During local development only,
+`vite.config.ts` proxies `/ops` to `http://127.0.0.1:8080`; the production
+bundle never carries a proxy target.
 
 After startup, connect with `shield-console`:
 
