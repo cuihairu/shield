@@ -139,10 +139,23 @@ void HttpServer::set_static_root(const std::string& root) {
     static_root_ = root;
 }
 
+void HttpServer::set_static_guard(
+    std::function<bool(const HttpRequest&)> guard) {
+    std::lock_guard<std::mutex> lock(routes_mutex_);
+    static_guard_ = std::move(guard);
+}
+
 std::optional<HttpResponse> HttpServer::try_static(
     const HttpRequest& req) const {
     if (static_root_.empty()) {
         return std::nullopt;
+    }
+    // Honour the static guard (e.g. ops auth) before serving any file.
+    {
+        std::lock_guard<std::mutex> lock(routes_mutex_);
+        if (static_guard_ && !static_guard_(req)) {
+            return std::nullopt;
+        }
     }
 
     std::string path(req.target());
@@ -213,9 +226,12 @@ std::optional<HttpResponse> HttpServer::try_static(
     if (ec) {
         return std::nullopt;
     }
-    const auto root_str = canon_root.string();
-    if (canon.string() != root_str &&
-        canon.string().rfind(root_str + "/", 0) != 0) {
+    // Containment check via a relative path so it is separator-agnostic:
+    // canonical paths carry native separators ("/" on POSIX, "\\" on
+    // Windows), so a literal prefix+slash match rejects every nested file
+    // on Windows.
+    const fs::path canon_rel = canon.lexically_relative(canon_root);
+    if (canon_rel.empty() || *canon_rel.begin() == "..") {
         return std::nullopt;
     }
 
@@ -312,9 +328,14 @@ HttpResponse HttpServer::dispatch(const HttpRequest& req) const {
         if (handler) {
             response = (*handler)(req);
         } else if (default_handler_) {
-            // Try static files first; the default handler (SPA fallback /
-            // API 404) only runs when no static file matched.
-            if (auto static_resp = try_static(req)) {
+            // A request under the API prefix must never be swallowed by the
+            // static file tree: unknown /ops/* paths stay JSON 404s (the
+            // default handler checks the prefix). Only other unmatched routes
+            // fall through to static serving.
+            if (path.rfind("/ops/", 0) == 0) {
+                auto def = default_handler_;
+                response = def(req);
+            } else if (auto static_resp = try_static(req)) {
                 response = std::move(*static_resp);
             } else {
                 auto def = default_handler_;

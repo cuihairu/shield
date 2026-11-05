@@ -648,6 +648,11 @@ target_link_libraries(shield_bootstrap
     PRIVATE nlohmann_json::nlohmann_json ${LUA_LIBRARIES}
 )
 
+# GetProcessMemoryInfo (ops process gauges) lives in psapi on Windows.
+if(WIN32)
+  target_link_libraries(shield_bootstrap PRIVATE psapi)
+endif()
+
 target_include_directories(shield_bootstrap
     PRIVATE ${LUA_INCLUDE_DIR}
 )

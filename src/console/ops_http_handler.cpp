@@ -5,6 +5,21 @@
 #include <unistd.h>
 #endif
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <psapi.h>
+#include <tlhelp32.h>
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <sys/resource.h>
+#endif
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -53,20 +68,22 @@ double process_uptime_seconds() {
         .count();
 }
 
-/// Process-level resource gauges (Linux /proc). Platform differences are
-/// isolated here: non-Linux builds return no entries (gauges omitted).
+/// Process-level resource gauges. Platform differences are isolated here:
+/// each supported platform fills the fields it can measure; unset fields
+/// stay negative and their gauges are omitted from /ops/metrics.
 /// Values are bytes (RSS), count (FD/threads), or percent (CPU).
 struct ProcessResource {
-    double rss_kib = -1;      // VmRSS, KiB
+    double rss_kib = -1;      // resident set size, KiB
     double threads = -1;      // Threads count
-    double fd_count = -1;     // open file descriptors
+    double fd_count = -1;     // open file descriptors (handles on Windows)
     double cpu_percent = -1;  // CPU since last sample
 };
 
-// Last CPU sample (jiffies of utime+stime and the wall timestamp) so the
-// CPU gauge is a rate over the interval, not a cumulative counter.
+// Last CPU sample (cumulative user+system CPU seconds and the wall
+// timestamp) so the CPU gauge is a rate over the interval, not a
+// cumulative counter.
 struct CpuSample {
-    unsigned long long ticks = 0;
+    double cpu_seconds = 0;
     std::chrono::steady_clock::time_point at;
 };
 CpuSample& last_cpu_sample() {
@@ -74,9 +91,114 @@ CpuSample& last_cpu_sample() {
     return s;
 }
 
+/// Record a cumulative CPU-time reading and turn the delta over the wall
+/// interval into the cpu_percent gauge (0 on the first sample, so the
+/// gauge is present immediately; subsequent polls carry the rate).
+void apply_cpu_sample(ProcessResource& r, double cpu_seconds) {
+    const auto now = std::chrono::steady_clock::now();
+    CpuSample& last = last_cpu_sample();
+    if (last.at != std::chrono::steady_clock::time_point{}) {
+        const double dt = std::chrono::duration<double>(now - last.at).count();
+        if (dt > 0) {
+            r.cpu_percent = ((cpu_seconds - last.cpu_seconds) / dt) * 100.0;
+        }
+    } else {
+        r.cpu_percent = 0.0;
+    }
+    last.cpu_seconds = cpu_seconds;
+    last.at = now;
+}
+
 ProcessResource read_process_resources() {
     ProcessResource r;
 
+#if defined(_WIN32)
+    // RSS: process working set size.
+    PROCESS_MEMORY_COUNTERS pmc{};
+    pmc.cb = sizeof(pmc);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        r.rss_kib = static_cast<double>(pmc.WorkingSetSize) / 1024.0;
+    }
+    // Threads: system thread snapshot filtered to this process.
+    {
+        const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            THREADENTRY32 te{};
+            te.dwSize = sizeof(te);
+            const DWORD pid = GetCurrentProcessId();
+            double n = 0;
+            if (Thread32First(snap, &te)) {
+                do {
+                    if (te.th32OwnerProcessID == pid) ++n;
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
+            if (n > 0) {
+                r.threads = n;
+            }
+        }
+    }
+    // Open handles: the Windows analogue of open file descriptors.
+    DWORD handle_count = 0;
+    if (GetProcessHandleCount(GetCurrentProcess(), &handle_count)) {
+        r.fd_count = static_cast<double>(handle_count);
+    }
+    // CPU: kernel + user time in 100 ns units since process start.
+    {
+        FILETIME create_time{}, exit_time{}, kernel{}, user{};
+        if (GetProcessTimes(GetCurrentProcess(), &create_time, &exit_time,
+                            &kernel, &user)) {
+            const auto to_seconds = [](const FILETIME& ft) {
+                ULARGE_INTEGER v{};
+                v.LowPart = ft.dwLowDateTime;
+                v.HighPart = ft.dwHighDateTime;
+                return static_cast<double>(v.QuadPart) / 1e7;
+            };
+            apply_cpu_sample(r, to_seconds(kernel) + to_seconds(user));
+        }
+    }
+#elif defined(__APPLE__)
+    // RSS: ru_maxrss is in bytes on macOS (KiB on Linux).
+    struct rusage ru{};
+    if (getrusage(RUSAGE_SELF, &ru) == 0 && ru.ru_maxrss > 0) {
+        r.rss_kib = static_cast<double>(ru.ru_maxrss) / 1024.0;
+    }
+    // Threads: mach task thread list.
+    {
+        thread_act_array_t list = nullptr;
+        mach_msg_type_number_t count = 0;
+        if (task_threads(mach_task_self(), &list, &count) == KERN_SUCCESS &&
+            list != nullptr) {
+            r.threads = static_cast<double>(count);
+            vm_deallocate(mach_task_self(),
+                          reinterpret_cast<vm_address_t>(list),
+                          static_cast<vm_size_t>(count * sizeof(thread_act_t)));
+        }
+    }
+    // Open FDs: count entries in /dev/fd.
+    std::error_code ec;
+    std::size_t fd_count = 0;
+    for (auto it = std::filesystem::directory_iterator("/dev/fd", ec);
+         it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        if (!ec) ++fd_count;
+        if (ec) break;
+    }
+    if (!ec) {
+        r.fd_count = static_cast<double>(fd_count);
+    }
+    // CPU: user + system time in microseconds.
+    {
+        struct rusage rc{};
+        if (getrusage(RUSAGE_SELF, &rc) == 0) {
+            const double seconds =
+                static_cast<double>(rc.ru_utime.tv_sec) +
+                static_cast<double>(rc.ru_utime.tv_usec) / 1e6 +
+                static_cast<double>(rc.ru_stime.tv_sec) +
+                static_cast<double>(rc.ru_stime.tv_usec) / 1e6;
+            apply_cpu_sample(r, seconds);
+        }
+    }
+#else
     std::ifstream status("/proc/self/status");
     std::string line;
     while (std::getline(status, line)) {
@@ -109,8 +231,8 @@ ProcessResource read_process_resources() {
     }
 
     // CPU: utime + stime from /proc/self/stat (fields 14 and 15, 1-based).
-    // The sample is clock ticks since process start; a delta over the wall
-    // interval yields a percentage (assuming 100 ticks/sec via sysconf).
+    // The sample is clock ticks since process start; sysconf converts it
+    // to seconds and the delta over the wall interval yields a percentage.
     std::ifstream stat("/proc/self/stat");
     std::string content((std::istreambuf_iterator<char>(stat)),
                         std::istreambuf_iterator<char>());
@@ -122,35 +244,15 @@ ProcessResource read_process_resources() {
             for (int i = 3; i <= 13; ++i) iss >> field;
             unsigned long long utime = 0, stime = 0;
             if (iss >> utime >> stime) {
-                const auto now = std::chrono::steady_clock::now();
-                CpuSample& last = last_cpu_sample();
-                const unsigned long long now_ticks = utime + stime;
-                if (last.ticks != 0) {
-                    const double dt =
-                        std::chrono::duration<double>(now - last.at).count();
-                    const long hz =
-#ifdef _WIN32
-                        100;  // no sysconf on Windows; the documented
-                              // assumption holds and /proc/self/stat is
-                              // absent anyway, so this path stays dead there
-#else
-                        sysconf(_SC_CLK_TCK);
-#endif
-                    if (dt > 0 && hz > 0) {
-                        const double delta =
-                            static_cast<double>(now_ticks - last.ticks) / hz;
-                        r.cpu_percent = (delta / dt) * 100.0;
-                    }
-                } else {
-                    // First sample: no interval yet, report 0 so the gauge
-                    // is present immediately (subsequent polls carry a rate).
-                    r.cpu_percent = 0.0;
+                const long hz = sysconf(_SC_CLK_TCK);
+                if (hz > 0) {
+                    apply_cpu_sample(r, static_cast<double>(utime + stime) /
+                                            static_cast<double>(hz));
                 }
-                last.ticks = now_ticks;
-                last.at = now;
             }
         }
     }
+#endif
 
     return r;
 }
@@ -631,11 +733,18 @@ OpsHttpHandler::OpsHttpHandler(shield::lua::LuaServiceManager& lua_mgr,
     : lua_mgr_(lua_mgr), lua_rt_(lua_rt) {}
 
 void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
-    // Ops-wide auth gate. When http.ops_auth_token is non-empty, every
-    // /ops/* endpoint below (except the k8s-probe-exempt /ops/health) is
-    // denied to requests without a matching "Authorization: Bearer <token>".
-    // An empty token keeps the gate off (legacy behaviour, no auth).
+    // Ops-wide auth gate. Default-deny: every /ops/* endpoint below (except
+    // the k8s-probe-exempt /ops/health) is denied to requests without a
+    // matching "Authorization: Bearer <token>", whether or not
+    // http.ops_auth_token is configured. The only way to leave the gate off
+    // is an explicit opt-out: http.ops_allow_unauthenticated=true (a trusted
+    // local deployment that deliberately exposes the read-only endpoints
+    // without a bearer token). This is the reverse of the previous legacy
+    // behaviour, where an empty token silently left every endpoint open.
     auth_token_ = shield::config::get("http.ops_auth_token", "");
+    allow_unauthenticated_ =
+        shield::config::get("http.ops_allow_unauthenticated", "false") ==
+        "true";
 
     // Static frontend root (FIX-WEB-04). When configured, the built console
     // is served from this directory; unmatched non-API GETs fall through to
@@ -644,11 +753,44 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
     static_root_ = shield::config::get("http.static_root", "");
     if (!static_root_.empty()) {
         server.set_static_root(static_root_);
+        // Static files are served by HttpServer::try_static before the
+        // default handler runs, so the ops-wide gate must also guard them
+        // here. A denied request yields nullopt, falling through to the
+        // authed default handler which returns the 401.
+        server.set_static_guard([this](const shield::net::HttpRequest& req) {
+            if (allow_unauthenticated_) {
+                return true;
+            }
+            return !auth_token_.empty() && request_authorized(req, auth_token_);
+        });
     }
 
-    // Wrap a handler with the ops-wide auth check, unless the gate is off.
+    // Wrap a read-only handler with the ops-wide auth check. The gate is on
+    // by default; an explicit http.ops_allow_unauthenticated=true is the only
+    // way to bypass it. When a token is configured it must match; with no
+    // token the gate still denies (default-deny) so an accidentally blank
+    // config never re-opens the endpoint.
     auto authed = [this](shield::net::HttpHandler inner) {
-        if (auth_token_.empty()) {
+        if (allow_unauthenticated_) {
+            return inner;
+        }
+        return shield::net::HttpHandler{[this, inner](
+                                            const shield::net::HttpRequest& req)
+                                            -> shield::net::HttpResponse {
+            if (auth_token_.empty() || !request_authorized(req, auth_token_)) {
+                return make_error_response(401, "unauthorized");
+            }
+            return inner(req);
+        }};
+    };
+
+    // Wrap an opt-in control handler (/ops/eval, /ops/profile). These keep
+    // their own independent token gates; the ops-wide gate is an ADDITIONAL
+    // layer that only bites when http.ops_auth_token is configured. With no
+    // ops token the endpoint's own gate remains the sole barrier (they are
+    // explicit opt-ins, not part of the read-only surface).
+    auto authed_control = [this](shield::net::HttpHandler inner) {
+        if (allow_unauthenticated_ || auth_token_.empty()) {
             return inner;
         }
         return shield::net::HttpHandler{
@@ -702,9 +844,11 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
     // SPA fallback: unknown non-API paths serve the console index.html so a
     // deep link refreshes correctly; unknown /ops/* API paths get a clear
     // JSON 404 instead of HTML. Only the default handler sees unmatched
-    // routes, so it runs after static serving (see HttpServer::dispatch).
+    // routes, so it runs after static serving (see HttpServer::dispatch). It
+    // is also behind the ops-wide gate: static assets and the SPA shell are
+    // not public when the gate is on.
     server.set_default_handler(
-        [this](const auto& req) { return handle_default(req); });
+        authed([this](const auto& req) { return handle_default(req); }));
 
     // /ops/eval is a remote-code-entry point: opt-in (http.eval_enabled),
     // token-gated (http.eval_token), and served in a restricted VM. The
@@ -722,8 +866,9 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
                              "/ops/eval NOT registered: http.eval_enabled=true "
                              "requires a non-empty http.eval_token");
         } else {
-            server.post("/ops/eval",
-                        [this](const auto& req) { return handle_eval(req); });
+            server.post("/ops/eval", authed_control([this](const auto& req) {
+                            return handle_eval(req);
+                        }));
         }
     }
 
@@ -746,8 +891,9 @@ void OpsHttpHandler::register_routes(shield::net::HttpServer& server) {
             "a non-empty http.profile_token");
         return;
     }
-    server.post("/ops/profile",
-                [this](const auto& req) { return handle_profile(req); });
+    server.post("/ops/profile", authed_control([this](const auto& req) {
+                    return handle_profile(req);
+                }));
 
     // Phase B slow-call metering arms with the endpoint (the only reader
     // of the ring), at a fixed threshold for the process lifetime: the
@@ -1560,7 +1706,13 @@ shield::net::HttpResponse OpsHttpHandler::handle_dashboard(
 
 shield::net::HttpResponse OpsHttpHandler::handle_default(
     const shield::net::HttpRequest& req) {
-    const std::string path(req.target());
+    // Strip the query string before the SPA/404 checks: dispatch matches
+    // routes on the bare path, so "/ops/dashboard?refresh=1" must still be
+    // recognised as the dashboard route (not a static / unknown path).
+    std::string path(req.target());
+    if (const auto qpos = path.find('?'); qpos != std::string::npos) {
+        path = path.substr(0, qpos);
+    }
 
     // Reject any traversal or backslash before the SPA fallback; a deep
     // link with ".." is never a legitimate route and must not be answered
@@ -1603,11 +1755,32 @@ shield::net::HttpResponse OpsHttpHandler::handle_default(
     // shell too so a direct refresh lands correctly. Unknown /ops/* API paths
     // stay a clear JSON 404, never HTML (would mask configuration errors).
     if (!static_root_.empty()) {
+        // Canonicalise the root once per request: a relative or symlinked
+        // static_root_ must never make the SPA fallback read outside the
+        // intended directory.
+        namespace fs = std::filesystem;
+        std::error_code canon_ec;
+        const fs::path canon_root =
+            fs::weakly_canonical(static_root_, canon_ec);
+        if (canon_ec || !canon_root.is_absolute()) {
+            return make_error_response(404, "not found");
+        }
         if (path.rfind("/ops/", 0) == 0 && path != "/ops/dashboard") {
             return make_error_response(404, "not found");
         }
-        namespace fs = std::filesystem;
-        const fs::path index = fs::path(static_root_) / "index.html";
+        // The SPA shell must live inside the canonical root. A symlinked
+        // index.html that points outside the root is refused: the fallback
+        // must never serve a file from outside the configured directory.
+        const fs::path index_candidate = canon_root / "index.html";
+        const fs::path index = fs::weakly_canonical(index_candidate, canon_ec);
+        if (canon_ec) {
+            return make_error_response(404, "not found");
+        }
+        const std::string root_str = canon_root.string();
+        if (index.string() != root_str &&
+            index.string().rfind(root_str + "/", 0) != 0) {
+            return make_error_response(404, "not found");
+        }
         std::ifstream file(index, std::ios::binary);
         if (file) {
             std::string body((std::istreambuf_iterator<char>(file)),
