@@ -105,7 +105,13 @@ export async function fetchJson<T>(
     }
     if (body.type === 'error') {
       const data = body.data ?? (body as { message?: string }).message;
-      throw new Error(String(data ?? 'error'));
+      // Error envelopes carry the HTTP status (e.g. 409/429/504 from the
+      // profile endpoints). Throw HttpError so callers can branch on the
+      // specific code instead of losing it to a generic Error.
+      throw new HttpError(
+        res.status,
+        String(data ?? (res.ok ? 'error' : `HTTP ${res.status}`)),
+      );
     }
     if (!res.ok && res.status !== 503) {
       let detail = `HTTP ${res.status}`;

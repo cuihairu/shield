@@ -33,6 +33,27 @@ describe('fetchJson', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it.each([409, 429, 504])(
+    'preserves HTTP %i status from an error envelope',
+    async (status) => {
+      const err = {
+        status,
+        ok: false,
+        json: () => Promise.resolve({ type: 'error', message: 'rejected' }),
+      };
+      const fetchMock = vi.fn().mockResolvedValue(err);
+      vi.stubGlobal('fetch', fetchMock);
+      try {
+        await expect(fetchJson('/ops/profile')).rejects.toMatchObject({
+          name: 'HttpError',
+          status,
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 });
 
 describe('usePolling race protection', () => {
