@@ -348,5 +348,7 @@
   > TcpSession::start 入口加 alive_ 守卫，已关闭 session 直接 no-op（不触发 on_connect、不启动接收）；新增 StartOnClosedSessionIsNoOp 确定性回归（src/net/session.cpp:112 · tests/coverage/test_cov_session.cpp:1065 · build/build-cov 两树 test_cov_session 绿）
 - [x] 审核发现：错误信封在检查 HTTP 状态前被转换为普通 Error，导致 profile 的 409、429、504 状态码分支失效（console/src/services/polling.ts:106）。
   > fetchJson 对 type=error 信封改抛 HttpError（携带 res.status），profile 页面可按 409/429/504 分支；新增 polling.test.tsx 三个状态码参数化用例（console/src/services/polling.ts:108-115 · console/src/services/__tests__/polling.test.tsx:33-54 · vitest 全绿 23/23）
-- [ ] 审核发现：浏览器验收配置把静态目录硬编码为本机绝对路径，其他工作区或 CI 无法加载控制台并复现验收（tests/acceptance/e2e/shield-e2e.yaml:47）。
-- [ ] 审核发现：穿越验收使用 fetch 发送 %2e%2e 路径时客户端先将其规范化为 /etc/passwd，服务端实际未收到穿越路径而测试仍可通过（tests/acceptance/e2e/run-e2e.mjs:164）。
+- [x] 审核发现：浏览器验收配置把静态目录硬编码为本机绝对路径，其他工作区或 CI 无法加载控制台并复现验收（tests/acceptance/e2e/shield-e2e.yaml:47）。
+  > 配置改为占位符，run-e2e 渲染时从 checkout ROOT 解析 `console/dist` 绝对路径；本地验证渲染结果为绝对路径且存在（tests/acceptance/e2e/shield-e2e.yaml:47 · tests/acceptance/e2e/run-e2e.mjs:51-58）
+- [x] 审核发现：穿越验收使用 fetch 发送 %2e%2e 路径时客户端先将其规范化为 /etc/passwd，服务端实际未收到穿越路径而测试仍可通过（tests/acceptance/e2e/run-e2e.mjs:164）。
+  > 改用 Node http.request 原样发送 `/%2e%2e/...`，断言真实穿透返回 JSON 404 且无 /etc/passwd/HTML；真实 shield 进程实测 status=404、body=not found（tests/acceptance/e2e/run-e2e.mjs:105-130,196-212）

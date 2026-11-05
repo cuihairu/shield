@@ -44,6 +44,6 @@ http:
   enabled: true
   host: "127.0.0.1"
   port: 35513
-  static_root: "/home/cui/workspaces/shield/console/dist"
+  static_root: "__SHIELD_E2E_STATIC_ROOT__"
   ops_auth_token: "e2e-ops-secret"
   ops_allow_unauthenticated: "false"

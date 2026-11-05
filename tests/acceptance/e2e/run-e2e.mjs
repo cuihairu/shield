@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import net from 'node:net';
+import http from 'node:http';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../../..');
@@ -50,6 +51,12 @@ const CONFIG_RENDERED = path.join(ARTIFACTS, 'shield-e2e-now.yaml');
 const configText = readFileSync(CONFIG, 'utf8').replace(
   /port: \d+/,
   `port: ${PORT}`,
+).replace(
+  /__SHIELD_E2E_STATIC_ROOT__/,
+  // Resolve the static root relative to this checkout so the acceptance
+  // config is portable across workspaces and CI (the old hardcoded absolute
+  // path only worked on one machine).
+  path.join(ROOT, 'console', 'dist'),
 );
 writeFileSync(CONFIG_RENDERED, configText);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -93,6 +100,35 @@ async function fetchStatus(url, headers) {
   } catch (e) {
     return { status: 0, text: String(e) };
   }
+}
+
+// Send a raw request with a literal (non-normalised) request target. fetch()
+// canonicalises `%2e%2e` to `..` client-side before it ever reaches the
+// server, so the traversal scenario must use a raw HTTP request to actually
+// place the percent-encoded path on the wire. Otherwise the test passes
+// trivially without the server ever seeing a traversal attempt.
+function rawRequest(port, rawPath, headers) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: rawPath,
+        method: 'GET',
+        headers,
+      },
+      (res) => {
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (d) => (text += d));
+        res.on('end', () =>
+          resolve({ status: res.statusCode ?? 0, text }),
+        );
+      },
+    );
+    req.on('error', (e) => resolve({ status: 0, text: String(e) }));
+    req.end();
+  });
 }
 
 let browser;
@@ -158,16 +194,22 @@ async function main() {
       `status=${missingStatus.status}`);
 
     // --- Scenario 5: path traversal rejected ---
-    // fetch normalises a literal "../" client-side, so send a percent-encoded
-    // variant the server decodes and rejects (handled in both try_static and
-    // handle_default).
-    const travStatus = await fetchStatus(`${BASE}/%2e%2e/%2e%2e/etc/passwd`, {
-      Authorization: `Bearer ${TOKEN}`,
-    });
-    // The unknown path falls back to the SPA shell (by design). The security
-    // invariant is that it NEVER serves a file outside the static root.
-    record('traversal-no-outside-file', !travStatus.text.includes('root:') &&
-      travStatus.text.includes('<!DOCTYPE html>'),
+    // fetch normalises `%2e%2e` to `..` client-side, so the server never sees
+    // a traversal attempt. Use a raw HTTP request to put the literal encoded
+    // path on the wire; the server's own %2e decoder must reject it.
+    const travStatus = await rawRequest(
+      PORT,
+      '/%2e%2e/%2e%2e/etc/passwd',
+      { Authorization: `Bearer ${TOKEN}` },
+    );
+    // The traversal attempt is rejected outright: the server's own %2e
+    // decoder sees ".." and answers a JSON 404. The security invariant is
+    // that it NEVER serves a file outside the static root (nor the SPA
+    // shell, which would mask the escape attempt).
+    record('traversal-no-outside-file',
+      travStatus.status === 404 && !travStatus.text.includes('root:') &&
+        !travStatus.text.includes('<!DOCTYPE html>') &&
+        travStatus.text.includes('not found'),
       `status=${travStatus.status}`);
 
     // --- Scenario 6: stale banner on disconnect after success ---
