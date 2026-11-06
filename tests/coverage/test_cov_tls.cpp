@@ -295,6 +295,33 @@ BOOST_AUTO_TEST_CASE(TlsHandshakeServesFramesBothWays) {
     client.close();
     BOOST_CHECK(wait_until([&] { return disconnected.load(); },
                            std::chrono::seconds(5)));
+
+    // A second handshake re-enters begin_tls_handshake, whose prune loop
+    // finds the first handshake's now-expired registry entry and erases it
+    // (the completed state's strong reference is released on adoption).
+    TlsClient client2;
+    BOOST_CHECK(client2.connect(port));
+    BOOST_CHECK(wait_until([&] { return connects.load() == 2; },
+                           std::chrono::seconds(5)));
+    client2.close();
+
+    // Concurrent-handshake arm of the prune loop: a stalled TCP peer (connected
+    // but never sending a ClientHello) keeps its handshake state live in the
+    // registry. The next handshake's prune loop must iterate past it (the
+    // not-expired ++it arm) rather than erasing it. The two connections are
+    // accepted in FIFO order on the single io thread, so the stalled entry is
+    // registered before client3's prune runs.
+    boost::asio::io_context stall_io;
+    tcp::socket stall(stall_io);
+    stall.connect(tcp::endpoint(boost::asio::ip::address_v4::loopback(), port));
+    TlsClient client3;
+    BOOST_CHECK(client3.connect(port));
+    BOOST_CHECK(wait_until([&] { return listener.tls_handshakes_total() == 3; },
+                           std::chrono::seconds(5)));
+    BOOST_CHECK(wait_until([&] { return connects.load() == 3; },
+                           std::chrono::seconds(5)));
+    client3.close();
+
     listener.stop();
     io.stop();
     io_thread.join();
@@ -477,21 +504,26 @@ BOOST_AUTO_TEST_CASE(HandshakeOutlivesListenerDestruction) {
                    connect_ec);
     BOOST_REQUIRE(!connect_ec);
 
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (listener->tls_handshake_failures_total() == 0 &&
-           listener->tls_handshakes_total() == 0 &&
-           std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    // Neither side settled: the peer is still silent and the deadline is far
-    // in the future. A tiny grace wait also covers accept scheduling skew.
+    // Wait until the stalled peer's handshake state is registered, so the
+    // stop() below deterministically cancels it (the cancel arm of
+    // on_timeout, listener.cpp:88). Neither side settles while the peer is
+    // silent and the deadline is far in the future.
+    BOOST_CHECK(
+        wait_until([&] { return listener->tls_in_flight_handshakes() == 1; },
+                   std::chrono::seconds(5)));
     BOOST_CHECK_EQUAL(listener->tls_handshake_failures_total(), 0u);
     BOOST_CHECK_EQUAL(listener->tls_handshakes_total(), 0u);
 
     listener->stop();
     listener.reset();
-    io.stop();
+    // stop() cancelled the in-flight handshake's deadline timer, which queues
+    // on_timeout(operation_aborted) on the io thread. That handler observes
+    // `cancelled` (set by cancel() before the timer abort) and returns at
+    // listener.cpp:88 — the branch the coverage gate requires. Drain it
+    // deterministically: the follower posted here is enqueued after the
+    // timer-abort completion on the single io thread, so it stops the loop
+    // only after on_timeout has run.
+    boost::asio::post(io, [&io] { io.stop(); });
     io_thread.join();
 }
 

@@ -69,19 +69,25 @@ void ConsoleSession::send_line(const std::string& line) {
     // may be erased from sessions_ (e.g. on close) while the write is still
     // queued; a raw `this` would then be a use-after-free.
     auto self = shared_from_this();
-    boost::asio::post(strand_, [self, msg]() {
-        bool idle =
-            self->send_queue_.empty() &&
-            !self->write_in_progress_;  // GCOVR_EXCL_BR_LINE (defensive: strand
-                                        // serialization implies an empty queue
-                                        // means the prior write finished and
-                                        // reset write_in_progress_, so
-                                        // both-true is unreachable)
-        self->send_queue_.push_back(std::move(*msg));
-        if (idle) {
-            self->do_write();
-        }
-    });
+    boost::asio::post(
+        strand_,
+        [self, msg]() {  // GCOVR_EXCL_BR_LINE (compiler artifact: the inlined
+                         // lambda's return/exception pseudo-branch is
+                         // attributed to the lambda opening line)
+            // Defensive: strand serialization implies an empty queue means the
+            // prior write finished and reset write_in_progress_, so the
+            // both-true arm of the idle computation is unreachable.
+            bool idle =
+                self->send_queue_.empty() &&
+                !self->write_in_progress_;  // GCOVR_EXCL_BR_LINE (defensive:
+                                            // see note above — the
+                                            // write_in_progress_ true arm is
+                                            // unreachable)
+            self->send_queue_.push_back(std::move(*msg));
+            if (idle) {
+                self->do_write();
+            }
+        });
 }
 
 void ConsoleSession::do_write() {

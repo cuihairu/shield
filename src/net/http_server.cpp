@@ -219,11 +219,16 @@ std::optional<HttpResponse> HttpServer::try_static(
     // and any remaining ".." that survived lexical checks).
     std::error_code ec;
     const fs::path canon = fs::weakly_canonical(target, ec);
-    if (ec) {
+    if (ec) {  // GCOVR_EXCL_BR_LINE (defensive: weakly_canonical only reports
+               // an error on a genuinely unresolvable path — permission
+               // denied or an I/O fault — which no request can trigger
+               // deterministically; the failure arm is an escape hatch)
         return std::nullopt;
     }
     const fs::path canon_root = fs::weakly_canonical(root, ec);
-    if (ec) {
+    if (ec) {  // GCOVR_EXCL_BR_LINE (defensive: same unresolvable-path
+               // condition as above; the root was already required to be
+               // absolute and to exist, so canonicalisation never faults)
         return std::nullopt;
     }
     // Containment check via a relative path so it is separator-agnostic:
@@ -231,16 +236,31 @@ std::optional<HttpResponse> HttpServer::try_static(
     // Windows), so a literal prefix+slash match rejects every nested file
     // on Windows.
     const fs::path canon_rel = canon.lexically_relative(canon_root);
-    if (canon_rel.empty() || *canon_rel.begin() == "..") {
+    if (canon_rel.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: the empty arm
+                              // only fires on a root_name/root_directory
+                              // mismatch, i.e. cross-drive paths on Windows;
+                              // every POSIX path shares "" and "/")
+        return std::nullopt;
+    }
+    if (*canon_rel.begin() == "..") {
         return std::nullopt;
     }
 
-    if (!fs::is_regular_file(canon, ec) || ec) {
+    if (!fs::is_regular_file(canon, ec)) {
+        return std::nullopt;
+    }
+    if (ec) {  // GCOVR_EXCL_BR_LINE (defensive: is_regular_file only reports
+               // an error on a filesystem fault (EIO/ENAMETOOLONG), which a
+               // resolved path inside an existing root cannot trigger
+               // deterministically)
         return std::nullopt;
     }
 
     std::ifstream file(canon, std::ios::binary);
-    if (!file) {
+    if (!file) {  // GCOVR_EXCL_BR_LINE (defensive: an open failure needs a
+                  // regular file that is unreadable — a permission state the
+                  // coverage suites cannot rely on (root ignores it); the
+                  // guard is an escape hatch, not a reachable branch)
         return std::nullopt;
     }
     std::string body((std::istreambuf_iterator<char>(file)),

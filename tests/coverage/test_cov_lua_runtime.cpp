@@ -1183,6 +1183,14 @@ BOOST_AUTO_TEST_CASE(ClientIngressDispatchBranches) {
     BOOST_CHECK(!runtime.invoke_client_rpc(vm, boom_fn, ingress, &error,
                                            &manager, "cov_ingress_svc"));
     BOOST_CHECK(error.find("rpc boom") != std::string::npos);
+
+    // 8. Array request body: sanitize_client_request recurses into its array
+    // arm (a JSON array is a valid client message body).
+    ingress.decoded_request = nlohmann::json::array({1, 2, 3});
+    error.clear();
+    BOOST_CHECK(runtime.invoke_client_rpc(vm, ok_fn, ingress, &error, &manager,
+                                          "cov_ingress_svc"));
+    BOOST_CHECK(error.empty());
 }
 
 // ---------------------------------------------------------------------------

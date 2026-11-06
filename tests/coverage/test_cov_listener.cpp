@@ -296,14 +296,21 @@ BOOST_AUTO_TEST_CASE(ConcurrentStopDuringAcceptTailIsSafe) {
         auto owned = std::make_unique<TcpListener>(io, port, callbacks);
         owned->start();
 
+        // Establish the connection before the stopper can close the acceptor:
+        // connect() is a blocking handshake on the main thread, so running it
+        // after the stopper starts would let the stopper win the race and
+        // refuse the connect (a false failure, not the race under test). The
+        // stopper then tears down while the accept completion below is being
+        // drained, preserving the concurrent-stop-during-tail interleaving.
+        Client client;
+        BOOST_REQUIRE(client.connect(port));
+
         std::thread stopper([&] {
             // Let the accept completion land, then tear down mid-tail.
             std::this_thread::sleep_for(1ms);
             owned->stop();
         });
 
-        Client client;
-        BOOST_REQUIRE(client.connect(port));
         io.run_for(20ms);
         stopper.join();
         BOOST_CHECK(!owned->is_open());

@@ -630,10 +630,12 @@ BOOST_AUTO_TEST_CASE(RecentlyExitedTombstoneCapClearsSet) {
     BOOST_CHECK(manager.list_services().empty());
 }
 
-// force_remove (shutdown-budget exhausted) must cap the tombstone set the
-// same way exit() does. Drive it through shutdown_all with a zero budget so
-// every service past the first is force-removed; the set is capped on the
-// overflow and the loop completes without runaway growth.
+// force_remove must cap the tombstone set the same way exit() does. A
+// non-positive shutdown budget makes the graceful deadline
+// time_point::max(), so every service would exit gracefully and force_remove
+// would never run — a 1ms budget flips the loop to force_remove after the
+// first few graceful exits. The set is cleared on the overflow insert, so the
+// loop completes without runaway growth.
 BOOST_AUTO_TEST_CASE(ForceRemoveCapsRecentlyExitedTombstones) {
     caf::actor_system_config cfg;
     caf::actor_system system(cfg);
@@ -643,7 +645,10 @@ BOOST_AUTO_TEST_CASE(ForceRemoveCapsRecentlyExitedTombstones) {
     const std::string path =
         write_script("cov7_force_cap.lua", "local M = {}\nreturn M\n");
 
-    const int kLimit = 4096;
+    // Spawn past the limit (kLimit+16 inserts): the tombstone cap fires on a
+    // force_remove insert long before the budget can be consumed gracefully,
+    // because a trivial on_exit cannot absorb 4096 exits in 1ms.
+    const int kLimit = 4096 + 16;
     std::vector<std::string> ids;
     for (int i = 0; i < kLimit; ++i) {
         auto res =
@@ -651,9 +656,7 @@ BOOST_AUTO_TEST_CASE(ForceRemoveCapsRecentlyExitedTombstones) {
         BOOST_REQUIRE_MESSAGE(res.success, res.error_message);
         ids.push_back(res.service_id);
     }
-    // Zero budget: only the first (reverse-order) service exits cleanly, the
-    // rest are force-removed. The tombstone cap must keep the set bounded.
-    manager.shutdown_all("force_cap", 0);
+    manager.shutdown_all("force_cap", 1);
     BOOST_CHECK(manager.list_services().empty());
 }
 

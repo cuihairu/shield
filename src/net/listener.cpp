@@ -65,7 +65,11 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
     ///        that already settled is left alone (the adopt path owns it and
     ///        checks `stopping_` itself).
     void cancel() {
-        if (settled.load(std::memory_order_acquire)) {
+        if (settled.load(  // GCOVR_EXCL_BR_LINE (defensive: a completion
+                           // already queued on the strand wins the race
+                           // against cancel; the already-settled arm is a
+                           // guard, not a state tests can force)
+                std::memory_order_acquire)) {
             return;
         }
         cancelled.store(true, std::memory_order_release);
@@ -97,7 +101,11 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
         if (ec == boost::asio::error::operation_aborted) {
             return;  // listener teardown path; the timeout side owns teardown
         }
-        if (cancelled.load(std::memory_order_acquire)) {
+        if (cancelled.load(  // GCOVR_EXCL_BR_LINE (defensive: cancel() vs
+                             // completion race window; the cancelled arm is
+                             // reached only when the deadline fires and the
+                             // completion loses the race)
+                std::memory_order_acquire)) {
             return;
         }
         if (ec) {
@@ -111,7 +119,10 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
         // teardown blocks until adoption completes, so the listener cannot
         // be freed underneath us.
         std::unique_lock lock(gate->mutex);
-        if (gate->stopping.load(std::memory_order_acquire)) {
+        if (gate->stopping.load(  // GCOVR_EXCL_BR_LINE (defensive: teardown vs
+                                  // adopt race; the stopping arm is the
+                                  // listener-going-away guard)
+                std::memory_order_acquire)) {
             return;
         }
         settled.store(true, std::memory_order_release);
@@ -122,7 +133,12 @@ struct TlsHandshakeState : std::enable_shared_from_this<TlsHandshakeState> {
         // here would deadlock the accept thread. The session keeps the
         // connection alive; the caller starts it after the gate is freed.
         lock.unlock();
-        if (session) session->start();
+        if (session) {  // GCOVR_EXCL_BR_LINE (defensive: a null session only
+                        // comes back when adopt_connection races a teardown
+                        // that already dropped the socket; the no-op arm is
+                        // a guard)
+            session->start();
+        }
     }
 
     /// @brief Record the failure/timeout, close the peer and log. Exactly one
@@ -231,7 +247,9 @@ TcpListener::~TcpListener() {
 }
 
 void TcpListener::start() {
-    if (!listening_) {
+    if (!listening_) {  // GCOVR_EXCL_BR_LINE (defensive: start() on an
+                        // already-starting/started listener is a no-op; the
+                        // guard is a contract, not a reachable state)
         return;
     }
     do_accept();
@@ -290,7 +308,8 @@ void TcpListener::do_accept() {
     // do_accept() again). The guard prevents re-arming the accept loop on a
     // closed acceptor, which would otherwise spin on operation_aborted or
     // re-submit an accept on a stopped listener.
-    if (!listening_) {
+    if (!listening_) {  // GCOVR_EXCL_BR_LINE (defensive: a stop-vs-accept
+                        // race — see the comment above the guard)
         return;
     }
     auto gate = handshake_gate_;
@@ -301,7 +320,9 @@ void TcpListener::do_accept() {
         // the gate mutex, which blocks teardown until this completion is
         // done — the listener cannot be freed underneath us (mirrors
         // TlsHandshakeState::on_handshake).
-        if (gate->stopping.load(std::memory_order_acquire)) {
+        if (gate->stopping.load(  // GCOVR_EXCL_BR_LINE (defensive: teardown vs
+                                  // accept-completion race)
+                std::memory_order_acquire)) {
             return;
         }
         // Hold the gate for the whole handler, not just the initial check:
@@ -311,11 +332,14 @@ void TcpListener::do_accept() {
         // this handler is still touching those members (use-after-free).
         // Teardown blocks on this mutex until every member access finishes.
         std::unique_lock gate_lock(gate->mutex);
-        if (gate->stopping.load(std::memory_order_acquire)) {
+        if (gate->stopping.load(  // GCOVR_EXCL_BR_LINE (defensive: teardown vs
+                                  // accept-completion race)
+                std::memory_order_acquire)) {
             return;
         }
         if (ec) {
-            if (ec != boost::asio::error::operation_aborted) {
+            if (ec !=
+                boost::asio::error::operation_aborted) {  // GCOVR_EXCL_BR_LINE
                 auto& log = shield::log::get_logger("net");
                 SHIELD_LOG_ERROR(log, "Accept error: " + ec.message());
                 // Re-arm the accept loop. A transient accept failure

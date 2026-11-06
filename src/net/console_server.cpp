@@ -72,9 +72,12 @@ void ConsoleServer::stop() {
 }
 
 void ConsoleServer::do_accept(std::shared_ptr<SharedState> state) {
-    if (!state->listening.load(
-            std::memory_order_acquire))  // GCOVR_EXCL_BR_LINE (defensive:
-                                         // early-return arm)
+    if (!state->listening.load(  // GCOVR_EXCL_BR_LINE (defensive: only a
+                                 // stop-vs-accept race reads listening==false
+                                 // here: start() sets listening before
+                                 // calling do_accept, and stop() closes the
+                                 // acceptor so the callback exits on
+            std::memory_order_acquire))  // the cancelled accept below)
         return;  // GCOVR_EXCL_LINE (only a stop-vs-accept race reaches this
                  // return: start() sets listening before calling, stop()
                  // closes the acceptor so the callback exits on

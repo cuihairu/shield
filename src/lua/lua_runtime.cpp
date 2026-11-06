@@ -65,12 +65,18 @@ shd::function anchor_to_main_thread(shd::function fn) {
 // json_to_lua trusts every marker by design (service-to-service boundaries).
 nlohmann::json sanitize_client_request(const nlohmann::json& value) {
     if (value.is_array()) {
-        nlohmann::json sanitized = nlohmann::json::array();
+        nlohmann::json sanitized =
+            nlohmann::json::array();  // GCOVR_EXCL_BR_LINE (compiler artifact:
+                                      // the array arm is executed (count 2) but
+                                      // the inlined nlohmann::json braced-init
+                                      // produces a never-taken pseudo-branch)
         sanitized.get_ref<nlohmann::json::array_t&>().reserve(value.size());
         for (const auto& item : value) {
             sanitized.push_back(sanitize_client_request(item));
         }
-        return sanitized;
+        return sanitized;  // GCOVR_EXCL_BR_LINE (compiler artifact: inlined
+                           // return of the nlohmann::json value produces a
+                           // pseudo-branch)
     }
     if (!value.is_object()) {
         return value;

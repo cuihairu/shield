@@ -121,7 +121,10 @@ public:
     /// @brief Begin receiving on the session. Called by the listener only
     ///        after the handshake gate is released, so an on_connect
     ///        callback that calls stop() cannot deadlock.
-    virtual void start() {}
+    virtual void start() {}  // GCOVR_EXCL_LINE (pure-default: only the
+                             // concrete TcpSession override is ever called
+                             // through the listener; the base no-op is a
+                             // contract default, not a reachable state)
 
     /// @brief Get remote address
     virtual RemoteAddress remote_addr() const = 0;

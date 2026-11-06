@@ -354,3 +354,5 @@
   > 改用 Node http.request 原样发送 `/%2e%2e/...`，断言真实穿透返回 JSON 404 且无 /etc/passwd/HTML；真实 shield 进程实测 status=404、body=not found（tests/acceptance/e2e/run-e2e.mjs:105-130,196-212）
 - [x] 审核发现：start 的 alive_ 检查与 on_connect 调用未同步，若 stop 在两者之间关闭 session，仍会在 on_disconnect 之后触发 on_connect 并尝试接收（src/net/session.cpp:120）。
   > 用可重入 lifecycle_mutex_ 串行化 start/close 的 connect/disconnect 回调投递；on_connect 期间并发 close() 不再先发 on_disconnect。新增 ConcurrentCloseDuringConnectPreservesEventOrder 回归（src/net/session.cpp:112-127,290-293 · include/shield/net/session.hpp:329 · tests/coverage/test_cov_session.cpp:1083 · build 树 test_cov_session 32/32 与 test_cov_listener 23/23 绿、ctest 108/108 绿）
+- [x] 审核发现：本轮 diff 未见问题（65d5b46f..HEAD）。
+  > 核实：65d5b46f..HEAD 仅含 1b8c3db（删除 package.json 中已由 pnpm-workspace.yaml 承接的 stale overrides），lockfile 离线自洽（pnpm install --lockfile-only --offline 无变更）；pnpm test 23/23 绿、pnpm build 成功。

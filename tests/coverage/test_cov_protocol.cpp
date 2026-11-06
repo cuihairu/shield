@@ -249,6 +249,23 @@ BOOST_AUTO_TEST_CASE(FeedNullDataReportsError) {
     BOOST_CHECK_EQUAL(envelope.error(), "lenprefix feed received null data");
 }
 
+// Envelope::set_max_frame_size: a non-zero limit overrides the profile's
+// cap, while 0 is a documented no-op (keep whatever was declared). Both arms
+// of the `if (limit != 0)` guard must be exercised.
+BOOST_AUTO_TEST_CASE(SetMaxFrameSizeZeroIsNoOp) {
+    EnvelopeConfig config;
+    config.length_bytes = 4;
+    config.max_frame_size = 64;
+    LenPrefixEnvelope envelope(config);
+    BOOST_CHECK_EQUAL(envelope.config().max_frame_size, 64u);
+
+    envelope.set_max_frame_size(0);
+    BOOST_CHECK_EQUAL(envelope.config().max_frame_size, 64u);
+
+    envelope.set_max_frame_size(128);
+    BOOST_CHECK_EQUAL(envelope.config().max_frame_size, 128u);
+}
+
 BOOST_AUTO_TEST_CASE(FeedInvalidWidthReportsError) {
     EnvelopeConfig config;
     config.length_bytes = 3;
@@ -944,6 +961,47 @@ BOOST_AUTO_TEST_CASE(JsonDecodeReadsMsgIdAndMethodKeys) {
     BOOST_CHECK_EQUAL(decoded.route_name, "ping");
     BOOST_REQUIRE(decoded.has_message());
     BOOST_CHECK(!decoded.message->contains("payload"));
+}
+
+// json_nesting_within guards every JsonBodyCodec entry point. The pre-scan
+// arms are string-escape aware, so this drives the in-string backslash path,
+// the unbalanced-closer rejection and the over-depth rejection through both
+// route_key (returns nullopt) and decode (throws).
+BOOST_AUTO_TEST_CASE(JsonCodecNestingScanArms) {
+    JsonBodyCodec codec;
+    RouteEntry route;
+    route.route_id = 1001;
+
+    // Backslash escape inside a JSON string: the escaped/backslash arms of
+    // the depth pre-scan only fire when a string value contains a `\\`.
+    {
+        Packet escaped;
+        escaped.body = bytes(R"({"a":"b\\c"})");
+        (void)codec.route_key(escaped.ref());
+    }
+
+    // Unbalanced leading closer: the depth==0 arm rejects before parsing.
+    {
+        Packet unbalanced;
+        unbalanced.body = bytes("}");
+        BOOST_CHECK(!codec.route_key(unbalanced.ref()).has_value());
+        BOOST_CHECK_THROW(codec.decode(unbalanced.ref(), route),
+                          std::runtime_error);
+    }
+
+    // Nesting deeper than kMaxJsonDepth (512): route_key rejects, decode
+    // throws before a DOM is built.
+    std::string deep;
+    deep.reserve(513 * 2);
+    deep.append(513, '{');
+    deep.append(513, '}');
+    {
+        Packet too_deep;
+        too_deep.body = bytes(deep);
+        BOOST_CHECK(!codec.route_key(too_deep.ref()).has_value());
+        BOOST_CHECK_THROW(codec.decode(too_deep.ref(), route),
+                          std::runtime_error);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -2946,4 +2946,251 @@ BOOST_AUTO_TEST_CASE(ProcessResourceMetricsEmitted) {
     BOOST_CHECK(fds >= 1);
 }
 
+// handle_config's key lookup runs url_decode over the raw query value, so
+// every hex-decoding arm of the shared decoder is reachable through the
+// endpoint: digit/lower/upper nibbles decode, invalid and truncated escapes
+// pass through verbatim (and then simply miss in the config lookup).
+BOOST_AUTO_TEST_CASE(OpsConfigUrlDecodeArms) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    // All three hex-nibble classes decode; the decoded key never exists in
+    // config so the answer is a null data value (the lookup result is not
+    // the point — running the decoder is).
+    struct Case {
+        const char* query;
+        const char* label;
+    };
+    const Case cases[] = {
+        {"/ops/config?key=%30%6a%4A%AF", "digit/lower/upper nibbles"},
+        {"/ops/config?key=%0z", "hi valid, lo invalid"},
+        {"/ops/config?key=%zz", "both nibbles invalid"},
+        {"/ops/config?key=%!9", "nibble below '0' (digit-arm miss)"},
+        {"/ops/config?key=%:9", "nibble below 'A' (upper-arm miss)"},
+        {"/ops/config?key=%2", "truncated escape"},
+    };
+    for (const auto& c : cases) {
+        std::string resp = client.get(c.query);
+        BOOST_REQUIRE_MESSAGE(!resp.empty(), c.label);
+        BOOST_CHECK_MESSAGE(RawHttpClient::status_code(resp) == 200, c.label);
+        BOOST_CHECK_MESSAGE(RawHttpClient::body(resp).find("\"data\": null") !=
+                                std::string::npos,
+                            c.label << " -> " << resp);
+    }
+
+    // A decodable key that actually exists round-trips through the decoder:
+    // cov.ops.str is set by the fixture, and its url-encoded form must be
+    // decoded before the lookup succeeds.
+    std::string resp = client.get("/ops/config?key=cov.ops.str");
+    BOOST_REQUIRE(!resp.empty());
+    BOOST_CHECK(RawHttpClient::body(resp).find("value") != std::string::npos);
+}
+
+// handle_default without a static root: traversal (lexical and
+// percent-encoded) is refused before the SPA fallback, a plain deep link
+// still gets the embedded dashboard, and an unknown /ops/* API path is a
+// JSON 404 rather than HTML.
+BOOST_AUTO_TEST_CASE(OpsDefaultTraversalDecodeAndUnknown) {
+    RawHttpClient client;
+    client.connect_target("127.0.0.1", port);
+
+    // Lexical traversal and backslash never reach the fallback.
+    std::string trav = client.get("/a/../b");
+    BOOST_REQUIRE(!trav.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(trav), 404);
+    trav = client.get("/a\\b");
+    BOOST_REQUIRE(!trav.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(trav), 404);
+
+    // Percent-encoded traversal decodes to ".." and is refused too. The
+    // lowercase form exercises the lower-nibble hex arm, the uppercase form
+    // the upper-nibble arm.
+    trav = client.get("/%2e%2e/etc/passwd");
+    BOOST_REQUIRE(!trav.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(trav), 404);
+    trav = client.get("/%2E%2E/etc/passwd");
+    BOOST_REQUIRE(!trav.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(trav), 404);
+
+    // A valid percent escape that is NOT traversal passes the decode check
+    // and lands on the dashboard fallback.
+    std::string decoded = client.get("/%41");
+    BOOST_REQUIRE(!decoded.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(decoded), 200);
+    BOOST_CHECK(RawHttpClient::body(decoded).find("<!DOCTYPE html>") !=
+                std::string::npos);
+
+    // Invalid-nibble escapes exercise the decoder's miss arms (the same
+    // handle_default inline hex lambda): a nibble below '0' ('!'), a nibble
+    // below 'A' after failing the lower class (':'), a nibble above 'F' ('z'),
+    // and a hi-valid/lo-invalid pair. None decode to traversal, so each
+    // passes the containment check and falls back to the dashboard.
+    const char* invalid_escapes[] = {"/%!zz", "/%:zz", "/%zz", "/%0z", "/%a"};
+    for (const char* path : invalid_escapes) {
+        std::string resp = client.get(path);
+        BOOST_REQUIRE(!resp.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(resp), 200);
+        BOOST_CHECK(RawHttpClient::body(resp).find("<!DOCTYPE html>") !=
+                    std::string::npos);
+    }
+
+    // A deep link with a query string: handle_default strips the query
+    // before the route checks, so the dashboard fallback answers.
+    std::string deep = client.get("/deep/link?refresh=1");
+    BOOST_REQUIRE(!deep.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(deep), 200);
+    BOOST_CHECK(RawHttpClient::body(deep).find("<!DOCTYPE html>") !=
+                std::string::npos);
+
+    // Unknown /ops/* API path without a static root: JSON 404.
+    std::string unknown = client.get("/ops/does-not-exist");
+    BOOST_REQUIRE(!unknown.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(unknown), 404);
+    BOOST_CHECK(RawHttpClient::body(unknown).find("not found") !=
+                std::string::npos);
+}
+
+// The static-root containment checks in handle_default: a symlink-loop
+// static root and a symlink-loop index.html fail weakly_canonical (JSON
+// 404), and an index.html symlinked outside the root is refused by the
+// lexical containment check.
+BOOST_AUTO_TEST_CASE(StaticSymlinkContainment) {
+    // Case 1: the static root itself is a symlink loop — the root
+    // canonicalisation fails and every shell route 404s.
+    {
+        fs::path loop = fs::temp_directory_path() / "shield_cov_ops_loop";
+        fs::remove_all(loop);
+        std::error_code ec;
+        fs::create_symlink(loop, loop, ec);  // self-referential loop
+        BOOST_REQUIRE_MESSAGE(!ec, ec.message());
+        // register_routes reads http.static_root at construction time.
+        shield::config::global_config().set("http.static_root", loop.string());
+        shield::net::HttpServerConfig cfg;
+        cfg.host = "127.0.0.1";
+        cfg.port = free_port();
+        shield::net::HttpServer srv(cfg);
+        shield::console::OpsHttpHandler h(*manager, *runtime);
+        h.register_routes(srv);
+        srv.start();
+
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", cfg.port);
+        std::string resp = client.get("/");
+        BOOST_REQUIRE(!resp.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(resp), 404);
+
+        srv.stop();
+        fs::remove_all(loop);
+        shield::config::global_config().set("http.static_root",
+                                            std::string(""));
+    }
+
+    // Case 2: index.html inside a good root is a symlink loop — the index
+    // canonicalisation fails and the shell 404s.
+    {
+        fs::path root = fs::temp_directory_path() / "shield_cov_ops_idxloop";
+        fs::remove_all(root);
+        fs::create_directories(root);
+        fs::path loop = fs::temp_directory_path() / "shield_cov_ops_idx_loop";
+        fs::remove_all(loop);
+        std::error_code ec;
+        fs::create_symlink(loop, loop, ec);  // self-referential loop
+        BOOST_REQUIRE_MESSAGE(!ec, ec.message());
+        fs::create_symlink(loop, root / "index.html", ec);
+        BOOST_REQUIRE_MESSAGE(!ec, ec.message());
+
+        shield::config::global_config().set("http.static_root", root.string());
+        shield::net::HttpServerConfig cfg;
+        cfg.host = "127.0.0.1";
+        cfg.port = free_port();
+        shield::net::HttpServer srv(cfg);
+        shield::console::OpsHttpHandler h(*manager, *runtime);
+        h.register_routes(srv);
+        srv.start();
+
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", cfg.port);
+        std::string resp = client.get("/");
+        BOOST_REQUIRE(!resp.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(resp), 404);
+
+        srv.stop();
+        fs::remove_all(root);
+        fs::remove_all(loop);
+        shield::config::global_config().set("http.static_root",
+                                            std::string(""));
+    }
+
+    // Case 3: index.html is a symlink pointing outside the root — the
+    // canonical index sits outside the canonical root (".." first
+    // component) and the fallback refuses to serve it.
+    {
+        fs::path root = fs::temp_directory_path() / "shield_cov_ops_escape";
+        fs::remove_all(root);
+        fs::create_directories(root);
+        fs::path outside = fs::temp_directory_path() / "shield_cov_ops_out";
+        fs::remove_all(outside);
+        fs::create_directories(outside);
+        std::ofstream(outside / "index.html")
+            << "<!DOCTYPE html><html><body>OUTSIDE</body></html>";
+        std::error_code ec;
+        fs::create_symlink(outside / "index.html", root / "index.html", ec);
+        BOOST_REQUIRE_MESSAGE(!ec, ec.message());
+
+        shield::config::global_config().set("http.static_root", root.string());
+        shield::net::HttpServerConfig cfg;
+        cfg.host = "127.0.0.1";
+        cfg.port = free_port();
+        shield::net::HttpServer srv(cfg);
+        shield::console::OpsHttpHandler h(*manager, *runtime);
+        h.register_routes(srv);
+        srv.start();
+
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", cfg.port);
+        std::string resp = client.get("/");
+        BOOST_REQUIRE(!resp.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(resp), 404);
+        BOOST_CHECK(RawHttpClient::body(resp).find("OUTSIDE") ==
+                    std::string::npos);
+
+        srv.stop();
+        fs::remove_all(root);
+        fs::remove_all(outside);
+        shield::config::global_config().set("http.static_root",
+                                            std::string(""));
+    }
+
+    // Case 4: a static root without an index.html — the SPA shell open fails
+    // (the if (file) false arm) and the request falls through to the embedded
+    // dashboard instead of erroring.
+    {
+        fs::path root = fs::temp_directory_path() / "shield_cov_ops_noidx";
+        fs::remove_all(root);
+        fs::create_directories(root);
+
+        shield::config::global_config().set("http.static_root", root.string());
+        shield::net::HttpServerConfig cfg;
+        cfg.host = "127.0.0.1";
+        cfg.port = free_port();
+        shield::net::HttpServer srv(cfg);
+        shield::console::OpsHttpHandler h(*manager, *runtime);
+        h.register_routes(srv);
+        srv.start();
+
+        RawHttpClient client;
+        client.connect_target("127.0.0.1", cfg.port);
+        std::string resp = client.get("/");
+        BOOST_REQUIRE(!resp.empty());
+        BOOST_CHECK_EQUAL(RawHttpClient::status_code(resp), 200);
+        BOOST_CHECK(RawHttpClient::body(resp).find("<!DOCTYPE html>") !=
+                    std::string::npos);
+
+        srv.stop();
+        fs::remove_all(root);
+        shield::config::global_config().set("http.static_root",
+                                            std::string(""));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

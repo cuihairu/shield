@@ -1,6 +1,7 @@
 // [SHIELD_NET] Listener types
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -112,6 +113,17 @@ public:
     /// @brief TLS handshakes that failed or timed out (no session built).
     uint64_t tls_handshake_failures_total() const {
         return tls_counters_->failures.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Live in-flight TLS handshakes (registered, not yet settled).
+    ///        Test observability: lets a test wait until a stalled peer's
+    ///        handshake state is registered before stop()/teardown, so the
+    ///        cancel path deterministically finds it.
+    size_t tls_in_flight_handshakes() const {
+        std::lock_guard lock(handshakes_mutex_);
+        return static_cast<size_t>(std::count_if(
+            in_flight_handshakes_.begin(), in_flight_handshakes_.end(),
+            [](const auto& state) { return !state.expired(); }));
     }
 
     /// @brief Get last rejection reason
@@ -239,7 +251,7 @@ private:
     // Non-owning refs to the self-owned in-flight handshake states, so
     // stop()/the destructor can cancel them. Guarded by handshakes_mutex_;
     // expired entries are pruned on the next registration.
-    std::mutex handshakes_mutex_;
+    mutable std::mutex handshakes_mutex_;
     std::vector<std::weak_ptr<TlsHandshakeState>> in_flight_handshakes_;
     // Set before stop()/the destructor disarms in-flight handshakes; a
     // handshake completion or the plaintext accept tail racing teardown

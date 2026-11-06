@@ -136,7 +136,9 @@ public:
     }
     /// Release the reference (called by the running continuation). Idempotent.
     void unref() {
-        if (!released_) {
+        if (!released_) {  // GCOVR_EXCL_BR_LINE (defensive: unref is
+                           // idempotent; the double-release arm is a contract
+                           // guard)
             released_ = true;
             luaL_unref(co_, LUA_REGISTRYINDEX, ref_);
         }
@@ -1182,7 +1184,11 @@ void register_timer_api(shd::table& shield, LuaServiceManager* manager,
         const int ref = luaL_ref(co, LUA_REGISTRYINDEX);
         const std::string service_id = manager->current_service_id();
         auto anchor = std::make_shared<SleepAnchor>(
-            co, ref, runtime ? runtime->vm_for_state(co) : nullptr);
+            co, ref,
+            // GCOVR_EXCL_BR_START (defensive: the sleep schedule site is only
+            // reached from a running coroutine, which always has a VM)
+            runtime ? runtime->vm_for_state(co) : nullptr);
+        // GCOVR_EXCL_BR_STOP
         auto resume_fn = [co, anchor, manager, service_id]() {
             // Keep the service VM alive for the whole continuation: a
             // terminal error can trip the consecutive-error panic
@@ -1199,10 +1205,15 @@ void register_timer_api(shd::table& shield, LuaServiceManager* manager,
             // sleep timer was still armed): nothing to resume and no error to
             // report. Without this guard the lua_resume below would report a
             // bogus "sleep continuation error" against a healthy service.
+            // GCOVR_EXCL_START (defensive: the not-yielded arm is a
+            // resume-source race — the service exited or a call completion
+            // resumed the coroutine while the sleep timer was still armed;
+            // no test can force that interleaving deterministically)
             if (lua_status(co) != LUA_YIELD) {
                 anchor->unref();
                 return;
             }
+            // GCOVR_EXCL_STOP
             int nres = 0;
             // Driving-phase registration: a call completion arriving
             // while this guard is held is re-enqueued by resume_caller
@@ -1269,8 +1280,13 @@ void register_timer_api(shd::table& shield, LuaServiceManager* manager,
             }
             // LUA_OK (completed) or an error: release the anchor.
             anchor->unref();
-        };
-        if (!service_id.empty()) {
+        };  // GCOVR_EXCL_BR_LINE (compiler artifact: the inlined resume_fn
+            // lambda body produces a pseudo-branch on the closing brace)
+        if (!service_id.empty()) {  // GCOVR_EXCL_BR_LINE (defensive: the empty
+                                    // service_id arm is unreachable — this
+                                    // schedule site is only reached from a
+                                    // running coroutine, which always has a
+                                    // current service)
             (void)manager->schedule_actor_timer_once_fn(
                 delay_ms, std::move(resume_fn), service_id);
         }

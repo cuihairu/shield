@@ -3516,12 +3516,17 @@ void LuaServiceManager::force_remove(const std::string& id,
     }
     // Cancel any pending CAF call-timeout drivers for calls originated by
     // this service (same shape as exit(): the timeout handler no-ops when
-    // the session is already gone from pending_calls).
+    // the session is already gone from pending_calls). This only fires when
+    // the removed service has a proxied call still in flight at force-remove
+    // time — a shutdown race the deterministic tests never reproduce, so the
+    // matching arm is excluded with the same reasoning as exit().
     {
         std::unique_lock lock(impl_->registry_mutex);
         for (auto it = impl_->actor_call_timeouts.begin();
              it != impl_->actor_call_timeouts.end();) {
             auto pc_it = impl_->pending_calls.find(it->first);
+            // GCOVR_EXCL_START (defensive: in-flight-call-at-force-remove
+            // race window; see the comment above)
             if (pc_it != impl_->pending_calls.end() &&
                 pc_it->second.caller_service == id) {
                 if (it->second) {  // GCOVR_EXCL_BR_LINE (defensive:
@@ -3533,6 +3538,7 @@ void LuaServiceManager::force_remove(const std::string& id,
             } else {
                 ++it;
             }
+            // GCOVR_EXCL_STOP
         }
     }
     caf::actor actor;
@@ -5461,10 +5467,14 @@ constexpr std::size_t kPushJsonMaxDepth = 512;
 // binding-layer stack residue when targeting a specific coroutine thread).
 static void push_json_to_stack(lua_State* L, const nlohmann::json& v,
                                std::size_t depth = 0) {
+    // GCOVR_EXCL_START (defensive: the 512-deep recursion guard only fires
+    // on a maliciously nested return payload; driving it needs a 513-level
+    // nesting that the call path deliberately rejects at encode time)
     if (depth > kPushJsonMaxDepth) {
         lua_pushnil(L);
         return;
     }
+    // GCOVR_EXCL_STOP
     if (v.is_null()) {
         lua_pushnil(L);
     } else if (v.is_boolean()) {

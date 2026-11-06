@@ -5,8 +5,11 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -720,6 +723,177 @@ BOOST_AUTO_TEST_CASE(ConnectionHeaderValueVariants) {
     }
 
     server.stop();
+}
+
+// try_static is the static-file-serving path behind set_static_root. The
+// guard, method, NUL, percent-decode, traversal, root, containment and
+// content-type arms are all driven here through direct calls so the whole
+// branch surface stays green.
+BOOST_AUTO_TEST_CASE(StaticFileServingBranches) {
+    namespace fs = std::filesystem;
+    HttpServer server = make_server(0);
+
+    // port() on a never-started server whose configured port is 0 falls
+    // through to the bind-time bound_port_ (still 0).
+    BOOST_CHECK_EQUAL(server.port(), 0u);
+
+    // port() on a server constructed with a fixed non-zero port returns the
+    // configured port without starting (the config_override arm).
+    BOOST_CHECK_EQUAL(make_server(40000).port(), 40000u);
+
+    const auto dir = fs::temp_directory_path() / "shield_cov_http_static";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+
+    auto write_file = [&dir](const std::string& name, const std::string& body) {
+        std::ofstream out(dir / name, std::ios::binary);
+        out << body;
+    };
+    write_file("index.html", "<html></html>");
+    write_file("page.htm", "<html></html>");
+    write_file("app.js", "console.log(1);");
+    write_file("mod.mjs", "export {};");
+    write_file("style.css", "body{}");
+    write_file("data.json", "{}");
+    write_file("img.svg", "<svg/>");
+    write_file("pic.png", "png");
+    write_file("fav.ico", "ico");
+    write_file("blob.bin", "bin");
+
+    server.set_static_root(dir.string());
+
+    auto request = [](http::verb method, const std::string& target) {
+        HttpRequest req{method, target, 11};
+        return req;
+    };
+
+    // A rejecting static guard defers to the caller's fallback.
+    server.set_static_guard([](const HttpRequest&) { return false; });
+    BOOST_CHECK(!server.try_static(request(http::verb::get, "/index.html"))
+                     .has_value());
+    server.set_static_guard([](const HttpRequest&) { return true; });
+
+    // Only GET serves static files.
+    BOOST_CHECK(!server.try_static(request(http::verb::post, "/index.html"))
+                     .has_value());
+
+    // A NUL byte in the target is rejected outright.
+    {
+        std::string nul_target = "/index";
+        nul_target.push_back('\0');
+        nul_target += ".html";
+        HttpRequest nul_req = request(http::verb::get, nul_target);
+        BOOST_CHECK(!server.try_static(nul_req).has_value());
+    }
+
+    // Non-existent absolute root: rejected before canonicalisation.
+    server.set_static_root("/nonexistent/shield/cov/static_root");
+    BOOST_CHECK(!server.try_static(request(http::verb::get, "/index.html"))
+                     .has_value());
+    // Relative root: not absolute, rejected.
+    server.set_static_root("shield_cov_relative_root");
+    BOOST_CHECK(!server.try_static(request(http::verb::get, "/index.html"))
+                     .has_value());
+    server.set_static_root(dir.string());
+
+    // Traversal and backslash are rejected before containment.
+    BOOST_CHECK(
+        !server.try_static(request(http::verb::get, "/../secret")).has_value());
+    BOOST_CHECK(
+        !server.try_static(request(http::verb::get, "/a\\b")).has_value());
+
+    // Percent decoding: digit / lower / upper hex decode, invalid hex passes
+    // through verbatim, and a truncated escape is not decoded.
+    {
+        auto ok = server.try_static(
+            request(http::verb::get, "/%69ndex.html"));  // %69 -> 'i'
+        BOOST_REQUIRE(ok.has_value());
+        BOOST_CHECK(ok->body().find("<html></html>") != std::string::npos);
+        BOOST_CHECK(
+            !server.try_static(request(http::verb::get, "/%30ndex.html"))
+                 .has_value());  // %30 -> '0', no such file
+        BOOST_CHECK(
+            !server.try_static(request(http::verb::get, "/%6Endex.html"))
+                 .has_value());  // %6E -> 'N', lower-nibble hex arm
+        BOOST_CHECK(
+            !server.try_static(request(http::verb::get, "/%4Endex.html"))
+                 .has_value());  // %4E -> 'N', upper-nibble hex arm
+        BOOST_CHECK(
+            !server.try_static(request(http::verb::get, "/%zzndex.html"))
+                 .has_value());  // invalid hex, no such file
+        BOOST_CHECK(
+            !server.try_static(request(http::verb::get, "/%0zndex.html"))
+                 .has_value());  // hi valid, lo invalid -> not decoded
+        BOOST_CHECK(!server.try_static(request(http::verb::get, "/%!zz"))
+                         .has_value());  // first nibble < '0' (digit-arm miss)
+        BOOST_CHECK(!server.try_static(request(http::verb::get, "/%:zz"))
+                         .has_value());  // first nibble < 'A' (upper-arm miss)
+        BOOST_CHECK(
+            !server.try_static(request(http::verb::get, "/index.html%2"))
+                 .has_value());  // truncated escape, no such file
+    }
+
+    // A path without a leading slash is served relative to the root.
+    {
+        auto ok = server.try_static(request(http::verb::get, "index.html"));
+        BOOST_REQUIRE(ok.has_value());
+    }
+
+    // An empty target leaves rel empty (the no-leading-slash arm of the rel
+    // split); it resolves to the root directory, refused at the file check.
+    BOOST_CHECK(!server.try_static(request(http::verb::get, "")).has_value());
+
+    // A directory (not a regular file) is refused at the file-type check.
+    BOOST_CHECK(!server.try_static(request(http::verb::get, "/")).has_value());
+
+    // Content-type mapping and cache-control: every extension arm.
+    auto content_type_of = [&](const std::string& target) {
+        auto resp = server.try_static(request(http::verb::get, target));
+        BOOST_REQUIRE(resp.has_value());
+        return std::string(resp->at(http::field::content_type));
+    };
+    BOOST_CHECK_EQUAL(content_type_of("/index.html"),
+                      "text/html; charset=utf-8");
+    BOOST_CHECK_EQUAL(content_type_of("/page.htm"), "text/html; charset=utf-8");
+    BOOST_CHECK_EQUAL(content_type_of("/app.js"), "application/javascript");
+    BOOST_CHECK_EQUAL(content_type_of("/mod.mjs"), "application/javascript");
+    BOOST_CHECK_EQUAL(content_type_of("/style.css"), "text/css");
+    BOOST_CHECK_EQUAL(content_type_of("/data.json"), "application/json");
+    BOOST_CHECK_EQUAL(content_type_of("/img.svg"), "image/svg+xml");
+    BOOST_CHECK_EQUAL(content_type_of("/pic.png"), "image/png");
+    BOOST_CHECK_EQUAL(content_type_of("/fav.ico"), "image/x-icon");
+    BOOST_CHECK_EQUAL(content_type_of("/blob.bin"), "application/octet-stream");
+
+    // HTML is revalidated; every other extension is cached aggressively.
+    {
+        auto html = server.try_static(request(http::verb::get, "/index.html"));
+        BOOST_REQUIRE(html.has_value());
+        BOOST_CHECK_EQUAL(html->at(http::field::cache_control), "no-cache");
+        auto css = server.try_static(request(http::verb::get, "/style.css"));
+        BOOST_REQUIRE(css.has_value());
+        BOOST_CHECK(css->at(http::field::cache_control).find("max-age") !=
+                    std::string::npos);
+    }
+
+    // A symlink inside the root pointing outside is resolved and refused by
+    // the containment check.
+    {
+        const fs::path outside =
+            fs::temp_directory_path() / "shield_cov_http_outside";
+        fs::remove_all(outside);
+        fs::create_directories(outside);
+        {
+            std::ofstream out(outside / "secret.txt");
+            out << "outside";
+        }
+        std::error_code sym_ec;
+        fs::create_symlink(outside / "secret.txt", dir / "escape.txt", sym_ec);
+        if (!sym_ec) {
+            BOOST_CHECK(
+                !server.try_static(request(http::verb::get, "/escape.txt"))
+                     .has_value());
+        }
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
