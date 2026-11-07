@@ -356,3 +356,56 @@
   > 用可重入 lifecycle_mutex_ 串行化 start/close 的 connect/disconnect 回调投递；on_connect 期间并发 close() 不再先发 on_disconnect。新增 ConcurrentCloseDuringConnectPreservesEventOrder 回归（src/net/session.cpp:112-127,290-293 · include/shield/net/session.hpp:329 · tests/coverage/test_cov_session.cpp:1083 · build 树 test_cov_session 32/32 与 test_cov_listener 23/23 绿、ctest 108/108 绿）
 - [x] 审核发现：本轮 diff 未见问题（65d5b46f..HEAD）。
   > 核实：65d5b46f..HEAD 仅含 1b8c3db（删除 package.json 中已由 pnpm-workspace.yaml 承接的 stale overrides），lockfile 离线自洽（pnpm install --lockfile-only --offline 无变更）；pnpm test 23/23 绿、pnpm build 成功。
+- [ ] 审核发现：新增符号链接测试强制要求创建链接成功，而 Windows 普通权限或未启用开发者模式时创建符号链接会失败，导致 Windows 测试矩阵失败（tests/coverage/test_cov_ops_http.cpp:3064）。
+- [ ] 审核发现：覆盖率排除区域屏蔽了实际可达的未知 API 404 分支和强制移除服务时的超时清理分支，令 CI 的行及分支覆盖率门禁无法发现这些逻辑未被测试（src/console/ops_http_handler.cpp:1906、src/lua/lua_service.cpp:3528）。
+- [ ] 审核发现：ForceRemoveCapsRecentlyExitedTombstones 仅断言服务列表为空，并未验证墓碑集合是否受限或清空，因此即使上限逻辑失效测试仍会通过（tests/coverage/test_cov_lua_service2.cpp:659）。
+
+## 源码分层分析 2026-11-07
+
+### 抽象层清单
+
+- 基础值与标识：提供无依赖 ID/时间/Result/Error 基础类型（include/shield/base/base.hpp:5）。
+- 可观测诊断：提供日志 sink、崩溃 dump 采集和上传留位（src/crash/crash.cpp:31）。
+- 配置总线：加载、校验并暴露进程级运行时配置（src/config/config.cpp:1111）。
+- 进程装配：按序组合、失败回滚并关停全部子系统（src/bootstrap/bootstrap.cpp:402）。
+- 消息契约：定义本地服务与跨节点 CAF 消息形状（include/shield/core/service_message.hpp:46）。
+- Lua 服务域：串行执行服务 VM、协程、调用和生命周期（src/lua/lua_service.cpp:2884）。
+- 客户端网关：执行接入准入、协议解析和单目标 session 路由（include/shield/net/listener.hpp:76）。
+- 可插拔能力：编排 manifest、ABI、实例、binding 与插件生命周期（src/plugin/plugin_host.cpp:1066）。
+- 后端提供者：持有外部 Redis/SQL/文档/协议/运维资源的连接与操作（plugins/cache.redis/shield_cache_redis.cpp:969）。
+- 全局运行态：承载跨服务数据、锁、排行、队列、调度和限流（src/global/global_manager.cpp:319）。
+- 多节点通信：维护节点发现、认证心跳、路由快照和远端 envelope（src/cluster/cluster_transport.cpp:889）。
+- 玩家索引：维护玩家准入、重连、设备与服务定位（src/player/player_manager.cpp:102）。
+- 服务器状态：维护进程状态机、watcher 和关停请求（src/server/server_manager.cpp:60）。
+- 运维入口：暴露只读 HTTP/console 快照和显式启用的控制动作（src/console/ops_http_handler.cpp:805）。
+- 管理端应用：轮询认证运维快照并呈现浏览器页面（console/src/services/api.ts:14）。
+
+### 超大文件候选
+
+- [ ] LAY-001 [P1] 拆分 src/lua/lua_service.cpp（6966 行）——服务 actor、协程、timer、profile、async plugin、命名与强移治理耦合在同一实现（src/lua/lua_service.cpp:360）。
+- [ ] LAY-002 [P1] 拆分 src/lua/lua_api.cpp（5273 行）——service、message、timer、client、http、crypto、plugin 与可选模块 facade 共享一个注册文件（src/lua/lua_api.cpp:5145）。
+- [ ] LAY-003 [P1] 拆分 include/shield/lua/binding.hpp（2767 行）——绑定桥接与各能力 facade 的模板实现集中在公共头（include/shield/lua/binding.hpp:1）。
+- [ ] LAY-004 [P1] 拆分 src/lua/lua_runtime.cpp（2598 行）——VM 策略、loader、handler 编译和多种安全重入机制集中在一个 runtime 文件（src/lua/lua_runtime.cpp:1）。
+- [ ] LAY-005 [P1] 拆分 src/console/ops_http_handler.cpp（2173 行）——内嵌 dashboard、路由、认证、指标、SPA 和 eval/profile 控制混在一个 handler（src/console/ops_http_handler.cpp:805）。
+- [ ] LAY-006 [P1] 拆分 plugins/mysql/shield_db_mysql.cpp（2077 行）——连接池、SQL 类型映射、Lua proxy、async worker、事务 lane 与生命周期同文件实现（plugins/mysql/shield_db_mysql.cpp:1796）。
+- [ ] LAY-007 [P1] 拆分 plugins/mongodb/shield_doc_mongodb.cpp（2026 行）——文档 CRUD、聚合、索引、事务、错误映射和 Lua proxy 耦合在同一 provider（plugins/mongodb/shield_doc_mongodb.cpp:1861）。
+- [ ] LAY-008 [P1] 拆分 src/transport/protocol.cpp（1893 行）——envelope、codec、路由、descriptor 编译和外部 codec 绑定集中实现（src/transport/protocol.cpp:1622）。
+- [ ] LAY-009 [P1] 拆分 plugins/postgresql/shield_db_pgsql.cpp（1853 行）——连接池、SQL 执行/重写、Lua proxy、async worker 与事务状态耦合（plugins/postgresql/shield_db_pgsql.cpp:1264）。
+- [ ] LAY-010 [P1] 拆分 src/bootstrap/bootstrap.cpp（1823 行）——CLI、装配、可选模块、gateway、console、HTTP、失败清理和关停顺序在一个入口（src/bootstrap/bootstrap.cpp:402）。
+- [ ] LAY-011 [P1] 拆分 src/config/config.cpp（1818 行）——锁式存储、schema 校验、可选模块门禁和 runtime accessor 混在同一文件（src/config/config.cpp:1115）。
+- [ ] LAY-012 [P1] 拆分 src/global/global_manager.cpp（1550 行）——data/lock/rank 委托与队列、调度器、限流状态机集中实现（src/global/global_manager.cpp:1196）。
+- [ ] LAY-013 [P1] 拆分 plugins/sqlite/shield_db_sqlite.cpp（1473 行）——本地数据库驱动、mapper、Lua proxy、async shim 和生命周期同文件承载（plugins/sqlite/shield_db_sqlite.cpp:1）。
+- [ ] LAY-014 [P1] 拆分 src/plugin/plugin_host.cpp（1327 行）——manifest 编排、ABI 守卫、host API、依赖解析、Lua 钩子和生命周期集中（src/plugin/plugin_host.cpp:1066）。
+- [ ] LAY-015 [P1] 拆分 plugins/leaderboard.redis/shield_leaderboard_redis.cpp（1166 行）——Redis 协议封装、复合分数、结果映射、Lua proxy 与实例生命周期耦合（plugins/leaderboard.redis/shield_leaderboard_redis.cpp:525）。
+- [ ] LAY-016 [P1] 拆分 plugins/redis.driver/shield_redis_driver.cpp（1116 行）——连接池、Redis 命令、pipeline、Lua 代理与生命周期在一个驱动实现（plugins/redis.driver/shield_redis_driver.cpp:1060）。
+- [ ] LAY-017 [P1] 拆分 plugins/queue.redis/shield_queue_redis.cpp（1108 行）——stream 队列、消费组、订阅线程、driver fallback 与 Lua proxy 耦合（plugins/queue.redis/shield_queue_redis.cpp:344）。
+- [ ] LAY-018 [P1] 拆分 src/cluster/cluster_transport.cpp（1102 行）——握手、心跳、路由同步、envelope 桥接和 CAF 连接生命周期集中（src/cluster/cluster_transport.cpp:554）。
+- [ ] LAY-019 [P1] 拆分 plugins/cache.redis/shield_cache_redis.cpp（1011 行）——driver/内置 Redis 双路径、KV/hash/TTL、Lua proxy 与池统计耦合（plugins/cache.redis/shield_cache_redis.cpp:41）。
+
+### 目录/分类不合理处
+
+- `src/core` 只有 CAF 初始化和消息类型，名字暗示服务核心；服务注册、dispatch 和生命周期实际位于 `src/lua/lua_service.cpp:360`，抽象核心契约与执行实现分居两个目录。
+- `src/shield_base` 是唯一带前缀的源码目录；其他模块均无 `shield_` 前缀，且基础类型声明集中在 `include/shield/base/base.hpp:5`，命名模式不一致。
+- `include/shield/core/service_message.hpp:1` 定义 `namespace shield::lua` 类型；core 头承载 Lua 命名空间契约是为了打破依赖，但路径与命名空间、服务实现所在层不一致。
+- `src/plugin/schema_validator.hpp` 是与实现同目录的私有头，而其他模块契约集中放在 `include/shield/`；插件公共宿主 API 与内部校验器的可见性边界混在同一目录类型。
+- 仓库根残留大量 `.gcov` 覆盖产物（例如 actor.hpp.gcov:1），与 `.cache/`、`build/`、`Testing/` 生成物混在源码工作区，掩盖源码清单。

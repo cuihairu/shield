@@ -142,6 +142,8 @@ export default defineConfig({
             items: [
               { text: '架构总纲', link: '/zh/architecture' },
               { text: '核心设计理念', link: '/zh/architecture-core-concepts' },
+              { text: '源码分层分析', link: '/zh/source-layer-analysis' },
+              { text: '源码分层术语表', link: '/zh/glossary' },
               { text: 'Lua API 契约', link: '/zh/lua-api' },
               { text: '配置语义', link: '/zh/runtime-config' },
               { text: '错误码参考', link: '/zh/runtime-errors' },

@@ -119,3 +119,11 @@ Plugins own connection pooling and driver integration; core provides no ORM, gen
 - `shield_ops` owns metrics, health, profile, diagnostics, and the console.
 - `shield_ops` may read internal state, but must not depend on core semantics in reverse.
 - Business code should not call `shield_ops` directly; it may only use it through management endpoints or the console.
+
+## 9. Source Layer Map
+
+The source records fifteen responsibility boundaries, documented with storage,
+channels, configuration, lifecycle, implementation evidence, and split rationale
+in [Source Layer Analysis](source-layer-analysis.md). Terms are defined in the
+[Source Layer Glossary](glossary.md). Those pages preserve the boundaries that
+the source establishes; they do not rename existing runtime modules.

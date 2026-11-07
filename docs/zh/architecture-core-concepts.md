@@ -119,3 +119,9 @@ q:publish("chat.world", { text = "hello" })
 - `shield_ops` 负责 metrics、health、profile、diagnostics、console。
 - `shield_ops` 可以读取内部状态，但不能反向依赖 core 语义。
 - 业务代码不应该直接调用 `shield_ops`，只能通过管理端点或控制台使用它。
+
+## 9. 源码分层地图
+
+源码归纳出十五个职责边界；其状态存储、调用面、配置输入、生命周期、实现证据和拆分理由见
+[源码分层分析](source-layer-analysis.md)，术语见 [源码分层术语表](glossary.md)。
+这些页面保留源码已形成的边界，不重命名既有 runtime 模块。
