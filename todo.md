@@ -60,6 +60,8 @@
   > 五树 ctest 全绿
 
 ## 覆盖率收口
+- [x] 2026-11-08 本仓库 codecov 口径实测：排除生成代码/构建缓存/第三方依赖后，gcovr 过滤 `../src/` + `../include/shield/`，行 99.75%、分支 100%，均 ≥98% 门槛
+  > build-cov 全量 ctest 97/98（唯一超时 test_cov_http_client 为既有环境 flaky：本机并行负载时该套件偶发 120s 超时，单独运行 2.1s 稳定通过）；重跑该套件补齐缺失行后 coverage.xml line-rate=0.9975、branch-rate=1.0（14403/14439 行、12871/12871 分支）
 - [x] 头文件层真缺口补真测试：result.hpp map 双臂单实例化、session_stream transport_name、ip_blocklist v6 非对齐前缀与空白条目
 - [x] 不可达臂 / 编译器伪影按登记口径标注（GCOVR_EXCL_*，理由入注释）
 - [x] 覆盖率纳入 CI 门禁：filter 扩为 `../src/` + `../include/shield/`，阈值 98/100/100
@@ -408,4 +410,4 @@
 - `src/shield_base` 是唯一带前缀的源码目录；其他模块均无 `shield_` 前缀，且基础类型声明集中在 `include/shield/base/base.hpp:5`，命名模式不一致。
 - `include/shield/core/service_message.hpp:1` 定义 `namespace shield::lua` 类型；core 头承载 Lua 命名空间契约是为了打破依赖，但路径与命名空间、服务实现所在层不一致。
 - `src/plugin/schema_validator.hpp` 是与实现同目录的私有头，而其他模块契约集中放在 `include/shield/`；插件公共宿主 API 与内部校验器的可见性边界混在同一目录类型。
-- 仓库根残留大量 `.gcov` 覆盖产物（例如 actor.hpp.gcov:1），与 `.cache/`、`build/`、`Testing/` 生成物混在源码工作区，掩盖源码清单。
+- 仓库根残留大量 `.gcov` 覆盖产物（例如 actor.hpp.gcov:1），与 `.cache/`、`build/`、`Testing/` 生成物混在源码工作区，掩盖源码清单。`build-cov/` 下的 `coverage.txt` 为本地覆盖率报告生成物，不应纳入提交；如需保留权威报告，请放入 `build-cov/` 并在 `.gitignore` 中登记。
