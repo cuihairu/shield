@@ -358,7 +358,8 @@
   > 用可重入 lifecycle_mutex_ 串行化 start/close 的 connect/disconnect 回调投递；on_connect 期间并发 close() 不再先发 on_disconnect。新增 ConcurrentCloseDuringConnectPreservesEventOrder 回归（src/net/session.cpp:112-127,290-293 · include/shield/net/session.hpp:329 · tests/coverage/test_cov_session.cpp:1083 · build 树 test_cov_session 32/32 与 test_cov_listener 23/23 绿、ctest 108/108 绿）
 - [x] 审核发现：本轮 diff 未见问题（65d5b46f..HEAD）。
   > 核实：65d5b46f..HEAD 仅含 1b8c3db（删除 package.json 中已由 pnpm-workspace.yaml 承接的 stale overrides），lockfile 离线自洽（pnpm install --lockfile-only --offline 无变更）；pnpm test 23/23 绿、pnpm build 成功。
-- [ ] 审核发现：新增符号链接测试强制要求创建链接成功，而 Windows 普通权限或未启用开发者模式时创建符号链接会失败，导致 Windows 测试矩阵失败（tests/coverage/test_cov_ops_http.cpp:3064）。
+- [x] 审核发现：新增符号链接测试强制要求创建链接成功，而 Windows 普通权限或未启用开发者模式时创建符号链接会失败，导致 Windows 测试矩阵失败（tests/coverage/test_cov_ops_http.cpp:3064）。
+  > 用 Boost.Test precondition 装饰器替换硬性 REQUIRE：一次性探测 create_symlink，失败即整体跳过该用例（Windows 无开发者模式），Linux 仍全 4 case 原样运行。实测 Linux build 树 test_cov_ops_http StaticSymlinkContainment 4 case 全绿（121ms 无错）；Windows 语义由 precondition 声明 skipped 而非失败。commit 4d98840（tests/coverage/test_cov_ops_http.cpp:291-309,3079-3083）。
 - [ ] 审核发现：覆盖率排除区域屏蔽了实际可达的未知 API 404 分支和强制移除服务时的超时清理分支，令 CI 的行及分支覆盖率门禁无法发现这些逻辑未被测试（src/console/ops_http_handler.cpp:1906、src/lua/lua_service.cpp:3528）。
 - [ ] 审核发现：ForceRemoveCapsRecentlyExitedTombstones 仅断言服务列表为空，并未验证墓碑集合是否受限或清空，因此即使上限逻辑失效测试仍会通过（tests/coverage/test_cov_lua_service2.cpp:659）。
 
