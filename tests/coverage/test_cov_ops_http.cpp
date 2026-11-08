@@ -288,6 +288,28 @@ struct OpsFixture {
     }
 };
 
+// Windows runners without Developer Mode (or without
+// SeCreateSymbolicLinkPrivilege) reject symlink creation outright. Probe
+// once and let the symlink case declare itself skipped there, instead of
+// hard-failing the Windows matrix on an environment limitation.
+boost::test_tools::assertion_result symlinks_supported(
+    boost::unit_test::test_unit_id) {
+    static const bool supported = [] {
+        std::error_code ec;
+        fs::path base = fs::temp_directory_path() / "shield_cov_symlink_probe";
+        fs::remove_all(base);
+        fs::create_directories(base);
+        {
+            std::ofstream out(base / "target");
+            out << "probe";
+        }
+        fs::create_symlink(base / "target", base / "link", ec);
+        fs::remove_all(base);
+        return !ec;
+    }();
+    return boost::test_tools::assertion_result(supported);
+}
+
 }  // namespace
 
 BOOST_FIXTURE_TEST_SUITE(OpsHttpTests, OpsFixture)
@@ -3053,8 +3075,10 @@ BOOST_AUTO_TEST_CASE(OpsDefaultTraversalDecodeAndUnknown) {
 // The static-root containment checks in handle_default: a symlink-loop
 // static root and a symlink-loop index.html fail weakly_canonical (JSON
 // 404), and an index.html symlinked outside the root is refused by the
-// lexical containment check.
-BOOST_AUTO_TEST_CASE(StaticSymlinkContainment) {
+// lexical containment check. Needs real symlinks, so environments where
+// they cannot be created (Windows without Developer Mode) skip it.
+BOOST_AUTO_TEST_CASE(StaticSymlinkContainment,
+                     *boost::unit_test::precondition(symlinks_supported)) {
     // Case 1: the static root itself is a symlink loop — the root
     // canonicalisation fails and every shell route 404s.
     {
