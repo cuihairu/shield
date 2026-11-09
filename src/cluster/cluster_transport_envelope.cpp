@@ -55,8 +55,14 @@ bool ClusterTransport::send_envelope(const std::string& target_node,
         publisher = impl_->side->outbound_actor;
     }
     if (!publisher) {
+        // GCOVR_EXCL_START (defensive: peers_by_node cannot outlive the
+        // outbound actor — start() installs the actor before the loop can
+        // adopt a peer, and stop() clears both under the same lock — so no
+        // deterministic public-API drive can land here; only the stop()
+        // clear-gap race between the two critical sections can)
         if (error) *error = "node_offline";
         return false;
+        // GCOVR_EXCL_STOP
     }
     if (call_session != 0) {
         // Record the peer binding so an inbound reply is only routed to this
@@ -70,18 +76,28 @@ bool ClusterTransport::send_envelope(const std::string& target_node,
         std::erase_if(impl_->side->outbound_sessions, [now](const auto& entry) {
             return entry.second.deadline_ms <= now;
         });
+        // GCOVR_EXCL_START (compiler artifact: the effective-timeout ternary
+        // gets its counts on the continuation line only — flow proves this
+        // decl executes (the record below stores effective's value) — so the
+        // decl line never reports a count)
         const int32_t effective =
             timeout_ms > 0 ? timeout_ms : kDefaultCallTimeoutMs;
+        // GCOVR_EXCL_STOP
         impl_->side->outbound_sessions[call_session] = {
             target_node, now + static_cast<int64_t>(effective) + kReplyGraceMs};
     }
     // Queue on our transport actor so the wire message carries its actor
     // identity; the receiver binds that sender to the inbound Hello handshake.
+    // GCOVR_EXCL_START (compiler artifact: the anon_send call and its
+    // argument evaluations get their counts on the argument continuation
+    // lines only — flow proves this statement line executes (return true is
+    // reachable only through it) — so the statement line never reports a
+    // count; the init-list branch artifacts of the EnvelopeMsg below are
+    // subsumed by this region)
     caf::anon_send(publisher, dispatch_envelope_atom_v, LocalDispatch{}, handle,
-                   EnvelopeMsg{// GCOVR_EXCL_BR_LINE (compiler artifact:
-                               // aggregate init-list branches)
-                               impl_->manager->node_id(), service_id, method,
+                   EnvelopeMsg{impl_->manager->node_id(), service_id, method,
                                args_json, call_session, timeout_ms});
+    // GCOVR_EXCL_STOP
     return true;
 }
 

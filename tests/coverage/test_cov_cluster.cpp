@@ -24,6 +24,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
@@ -1007,6 +1008,68 @@ BOOST_AUTO_TEST_CASE(EnvelopeUnknownServicePaths) {
     dispatch_mode = 2;
     inject(79);
     BOOST_CHECK_EQUAL(reply_code, "service_not_found");
+
+    // Deadline-expiry reply arms. A call-style envelope leaves b holding a
+    // pending proxied call whose a-side peer binding dies after
+    // timeout_ms + the reply grace (1s + 5s here). The binding entry itself
+    // is only swept when the NEXT send runs its erase_if, so a reply that
+    // arrives after the deadline splits into two arms:
+    //   - entry still present (no send since): dropped as too late,
+    //   - entry already swept (a send ran):    unknown session, dropped.
+    // Both must be honest drops — the caller's reply_handler never fires.
+    allocate_mode = 1;
+    dispatch_mode = 0;
+    std::mutex alloc_mu;
+    std::vector<uint64_t> allocated;
+    shield::cluster::EnvelopeBridges b_call_bridges;
+    b_call_bridges.call_begin = [&](int32_t) {
+        const uint64_t local = begin_seq.fetch_add(1);
+        std::lock_guard lk(alloc_mu);
+        allocated.push_back(local);
+        return local;
+    };
+    b_call_bridges.call_dispatch = [](uint64_t, const std::string&,
+                                      const std::string&, const std::string&,
+                                      std::string*) { return true; };
+    b.transport->set_envelope_bridges(std::move(b_call_bridges));
+    auto alloc_count = [&]() {
+        std::lock_guard lk(alloc_mu);
+        return allocated.size();
+    };
+
+    // Stale-but-present entry: the reply is dropped as too late.
+    reply_landed = false;
+    std::string expiry_error;
+    BOOST_REQUIRE(a.transport->send_envelope("cov-b", "ghost_svc", "echo", "[]",
+                                             600, 1000, &expiry_error));
+    BOOST_CHECK(wait_until([&] { return alloc_count() >= 1; },
+                           std::chrono::milliseconds(5000)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(6300));
+    const auto rx_before_late = a.transport->stats().rx_messages;
+    b.transport->complete_proxied_call(allocated[0], true, "[]", "", "");
+    BOOST_CHECK(wait_until(
+        [&] { return a.transport->stats().rx_messages > rx_before_late; },
+        std::chrono::milliseconds(5000)));
+    BOOST_CHECK(!reply_landed.load());
+
+    // Swept entry: a fresh send's erase_if reclaims the expired binding, so
+    // the late reply finds no session at all.
+    reply_landed = false;
+    BOOST_REQUIRE(a.transport->send_envelope("cov-b", "ghost_svc", "echo", "[]",
+                                             700, 1000, &expiry_error));
+    BOOST_CHECK(wait_until([&] { return alloc_count() >= 2; },
+                           std::chrono::milliseconds(5000)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(6300));
+    BOOST_REQUIRE(a.transport->send_envelope("cov-b", "ghost_svc", "echo", "[]",
+                                             701, 1000, &expiry_error));
+    BOOST_CHECK(wait_until([&] { return alloc_count() >= 3; },
+                           std::chrono::milliseconds(5000)));
+    const auto rx_before_unknown = a.transport->stats().rx_messages;
+    b.transport->complete_proxied_call(allocated[1], true, "[]", "", "");
+    BOOST_CHECK(wait_until(
+        [&] { return a.transport->stats().rx_messages > rx_before_unknown; },
+        std::chrono::milliseconds(5000)));
+    BOOST_CHECK(!reply_landed.load());
 
     // Keep the nodes alive past a heartbeat tick: the liveness handler and
     // the piggybacked route tables must land (heartbeat + RoutesMsg paths).
