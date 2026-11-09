@@ -517,6 +517,8 @@ if(SHIELD_ENABLE_CLUSTER)
         src/cluster/cluster_auth.cpp
         src/cluster/cluster_manager.cpp
         src/cluster/cluster_transport.cpp
+        src/cluster/cluster_transport_loop.cpp
+        src/cluster/cluster_transport_envelope.cpp
         src/cluster/node_discovery.cpp
     )
     target_include_directories(shield_cluster
