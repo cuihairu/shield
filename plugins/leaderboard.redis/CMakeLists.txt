@@ -10,7 +10,11 @@
 # and Lua stays a PRIVATE dependency — its symbols must NOT leak into the
 # host process (headers at compile time, lua52/53/luajit import library at
 # link time).
-add_library(shield_leaderboard_redis MODULE shield_leaderboard_redis.cpp)
+add_library(shield_leaderboard_redis MODULE
+    shield_leaderboard_redis.cpp
+    shield_leaderboard_exec.cpp
+    shield_leaderboard_lua.cpp
+)
 
 target_include_directories(shield_leaderboard_redis
     PRIVATE
