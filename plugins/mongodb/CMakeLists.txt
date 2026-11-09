@@ -16,6 +16,9 @@
 # inside this plugin DLL.
 add_library(shield_doc_mongodb MODULE
     shield_doc_mongodb.cpp
+    shield_doc_mongo_engine.cpp
+    shield_doc_mongo_exec.cpp
+    shield_doc_mongo_lua.cpp
 )
 
 target_include_directories(shield_doc_mongodb
