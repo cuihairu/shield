@@ -10,7 +10,12 @@
 # Lua stays a PRIVATE dependency — its symbols must NOT leak into the host
 # process (headers at compile time, lua52/53/luajit import library at link
 # time).
-add_library(shield_database_sqlite MODULE shield_db_sqlite.cpp)
+add_library(shield_database_sqlite MODULE
+    shield_db_sqlite.cpp
+    shield_db_sqlite_exec.cpp
+    shield_db_sqlite_async.cpp
+    shield_db_sqlite_lua.cpp
+)
 
 target_include_directories(shield_database_sqlite
     PRIVATE
