@@ -640,6 +640,10 @@ add_library(shield_bootstrap STATIC
     src/console/root_commands.cpp
     src/console/lua_commands.cpp
     src/console/ops_http_handler.cpp
+    src/console/ops_http_metrics.cpp
+    src/console/ops_http_handlers.cpp
+    src/console/ops_http_dashboard.cpp
+    src/console/ops_http_eval.cpp
     src/console/cluster_status.cpp
     src/console/server_status.cpp
     src/console/global_status.cpp
