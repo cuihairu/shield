@@ -377,6 +377,9 @@ target_link_libraries(shield_log
 # -----------------------------------------------------------------------------
 add_library(shield_config STATIC
     src/config/config.cpp
+    src/config/config_yaml.cpp
+    src/config/config_validate.cpp
+    src/config/config_runtime.cpp
 )
 
 target_include_directories(shield_config
