@@ -639,6 +639,10 @@ endif()
 add_library(shield_bootstrap STATIC
     src/shield.cpp
     src/bootstrap/bootstrap.cpp
+    src/bootstrap/bootstrap_init_runtime.cpp
+    src/bootstrap/bootstrap_init_system.cpp
+    src/bootstrap/bootstrap_init_actors.cpp
+    src/bootstrap/bootstrap_init_servers.cpp
     src/bootstrap/starter.cpp
     src/console/command_dispatcher.cpp
     src/console/root_commands.cpp
