@@ -430,6 +430,8 @@ add_library(shield_plugin STATIC
     src/plugin/schema_validator.cpp
     src/plugin/plugin_config.cpp
     src/plugin/plugin_host.cpp
+    src/plugin/plugin_host_api.cpp
+    src/plugin/plugin_host_lua.cpp
 )
 
 target_include_directories(shield_plugin
