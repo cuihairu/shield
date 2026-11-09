@@ -18,7 +18,11 @@ endif()
 # (same structure as protocol.json / health.http) instead of dlopen'ing the
 # module. This makes allocator instrumentation usable for memory-contract
 # tests because __wrap_malloc/free resolve within the same linked binary.
-add_library(shield_redis_driver_obj OBJECT shield_redis_driver.cpp)
+add_library(shield_redis_driver_obj OBJECT
+    shield_redis_driver.cpp
+    shield_redis_driver_exec.cpp
+    shield_redis_driver_lua.cpp
+)
 set_target_properties(shield_redis_driver_obj PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
