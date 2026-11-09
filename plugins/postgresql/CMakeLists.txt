@@ -10,7 +10,12 @@
 # and Lua stays a PRIVATE dependency — its symbols must NOT leak into the
 # host process (headers at compile time, lua52/53/luajit import library at
 # link time).
-add_library(shield_db_pgsql MODULE shield_db_pgsql.cpp)
+add_library(shield_db_pgsql MODULE
+    shield_db_pgsql.cpp
+    shield_db_pgsql_exec.cpp
+    shield_db_pgsql_async.cpp
+    shield_db_pgsql_lua.cpp
+)
 
 target_include_directories(shield_db_pgsql
     PRIVATE
