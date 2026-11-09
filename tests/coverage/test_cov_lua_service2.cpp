@@ -698,9 +698,15 @@ BOOST_AUTO_TEST_CASE(ForceRemoveCancelsPendingCallTimeouts) {
 
     auto callee = manager.spawn(slow_module, opts_for("cov2_fr_callee"));
     auto caller = manager.spawn(hang_module, opts_for("cov2_fr_caller"));
+    // A second suspended caller: shutdown_all drains in reverse spawn order,
+    // so caller2 is force-removed BEFORE caller. Its sweep walks caller1's
+    // still-registered entry — pc_it != end() with caller_service != id —
+    // which is the skip arm of the compound check; caller1's own entry then
+    // exercises the cancel arm.
+    auto caller2 = manager.spawn(hang_module, opts_for("cov2_fr_caller2"));
     // Sacrificial slow-exit service spawned LAST: shutdown_all drains in
     // reverse spawn order, so it exits first and exhausts the 1ms budget,
-    // leaving the caller (with its proxied call in flight) to be
+    // leaving the callers (with proxied calls in flight) to be
     // force-removed.
     const std::string sac_module =
         write_script("cov2_fr_sacrifice.lua",
@@ -711,7 +717,8 @@ BOOST_AUTO_TEST_CASE(ForceRemoveCancelsPendingCallTimeouts) {
                      "end\n"
                      "return M\n");
     auto sac = manager.spawn(sac_module, opts_for("cov2_fr_sac"));
-    BOOST_REQUIRE(callee.success && caller.success && sac.success);
+    BOOST_REQUIRE(callee.success && caller.success && caller2.success &&
+                  sac.success);
 
     // The outer manager.call times out, but the service coroutine stays
     // suspended on its 5s proxied call: the call is in flight at
@@ -720,16 +727,25 @@ BOOST_AUTO_TEST_CASE(ForceRemoveCancelsPendingCallTimeouts) {
         manager.call(caller.service_id, "hang_call",
                      nlohmann::json::array({"cov2_fr_callee"}), 500);
     BOOST_CHECK(!timed_out.success);
-    BOOST_CHECK(wait_until(
-        [&]() {
-            CallResult cr = manager.call(caller.service_id, "get_hanging",
-                                         nlohmann::json::array(), 1000);
-            return cr.success && cr.values[0].get<bool>();
-        },
-        std::chrono::seconds(2)));
+    CallResult timed_out2 =
+        manager.call(caller2.service_id, "hang_call",
+                     nlohmann::json::array({"cov2_fr_callee"}), 500);
+    BOOST_CHECK(!timed_out2.success);
+    auto hanging = [&](const std::string& id) {
+        return wait_until(
+            [&]() {
+                CallResult cr = manager.call(id, "get_hanging",
+                                             nlohmann::json::array(), 1000);
+                return cr.success && cr.values[0].get<bool>();
+            },
+            std::chrono::seconds(2));
+    };
+    BOOST_CHECK(hanging(caller.service_id));
+    BOOST_CHECK(hanging(caller2.service_id));
 
-    // The budget forces the caller through force_remove, which cancels its
-    // in-flight call-timeout driver before the VM is erased (the covered arm).
+    // The budget forces both callers through force_remove: caller2's sweep
+    // skips caller1's foreign entry (the skip arm) and cancels its own (the
+    // cancel arm); caller1's sweep then cancels the remaining driver.
     manager.shutdown_all("force_cleanup", 1);
     BOOST_CHECK(manager.list_services().empty());
 }
