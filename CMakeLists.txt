@@ -455,6 +455,10 @@ endif()
 # -----------------------------------------------------------------------------
 add_library(shield_transport STATIC
     src/transport/protocol.cpp
+    src/transport/protocol_envelope.cpp
+    src/transport/protocol_codec.cpp
+    src/transport/protocol_route.cpp
+    src/transport/protocol_registry.cpp
     src/transport/rpc_descriptor.cpp
 )
 
