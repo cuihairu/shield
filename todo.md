@@ -365,6 +365,9 @@
 - [x] 审核发现：ForceRemoveCapsRecentlyExitedTombstones 仅断言服务列表为空，并未验证墓碑集合是否受限或清空，因此即使上限逻辑失效测试仍会通过（tests/coverage/test_cov_lua_service2.cpp:659）。
   > 新增 recently_exited_count()/recently_exited_contains() 可观测访问器（与 active_actor_timer_count 同风格），断言 4112 次移除触发一次清空后恰好保留 16 条：末移除的 ids.front() 在集合内、首移除的 ids.back() 已被清空淘汰。实测该用例 61s 通过，count==16 与双向成员断言全绿，commit e216836。
 
+- [x] 审核发现：本轮 diff 未见问题（9bb8f5b557..HEAD）。
+  > 属实，已独立复核：该区间恰为 LAY-015…019 五个大文件拆分 commit（leaderboard.redis/redis.driver/queue.redis/cluster_transport/cache.redis）。方法：对五份拆分前原始快照与新 TU+impl 头并集各做 gcc -fpreprocessed -dD -E -P 剥注释，按代码行多重集（Counter）对比——五份 dropped 全为 NONE（纯搬移零丢行零改行）；新增行全部为预期白名单：impl 头平铺函数前向声明、per-TU anon ns/namespace shield::cluster 结构包裹、跨行声明续行，无任何逻辑增删改。叠加拆分当时门禁：build-redis 全量构建 exit 0 + ctest 103/103（plugin 标签 10 测），build-opt cluster 通道 ctest -L "cluster|player|server|global" 10/10。复核脚本 /tmp/audit_splits.py 五段全绿输出。
+
 ## 源码分层分析 2026-11-07
 
 ### 抽象层清单
