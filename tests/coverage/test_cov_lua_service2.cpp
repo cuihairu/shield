@@ -661,6 +661,70 @@ BOOST_AUTO_TEST_CASE(ForceRemoveCapsRecentlyExitedTombstones) {
 }
 
 // ---------------------------------------------------------------------------
+// force_remove() cancels the call-timeout drivers of proxied calls the
+// removed service still has in flight (the force twin of
+// ExitCancelsPendingCallTimeouts in test_cov_lua_service.cpp — the arm that
+// used to be excluded from the coverage gate as an "unreproducible race").
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ForceRemoveCancelsPendingCallTimeouts) {
+    caf::actor_system_config cfg;
+    caf::actor_system system(cfg);
+    LuaRuntime runtime;
+    LuaServiceManager manager(runtime, system);
+
+    const std::string hang_module =
+        write_script("cov2_force_hang.lua",
+                     "local M = {}\n"
+                     "local st = { hanging = false }\n"
+                     "function M.hang_call(ctx, target)\n"
+                     "  st.hanging = true\n"
+                     "  return shield.call_timeout(5000, target, 'slow')\n"
+                     "end\n"
+                     "function M.get_hanging(ctx) return st.hanging end\n"
+                     "return M\n");
+    const std::string slow_module = write_script(
+        "cov2_force_slowpoke.lua",
+        "return { slow = function(ctx) shield.sleep(8000) return 1 end }\n");
+
+    auto callee = manager.spawn(slow_module, opts_for("cov2_fr_callee"));
+    auto caller = manager.spawn(hang_module, opts_for("cov2_fr_caller"));
+    // Sacrificial slow-exit service spawned LAST: shutdown_all drains in
+    // reverse spawn order, so it exits first and exhausts the 1ms budget,
+    // leaving the caller (with its proxied call in flight) to be
+    // force-removed.
+    const std::string sac_module =
+        write_script("cov2_fr_sacrifice.lua",
+                     "local M = {}\n"
+                     "function M.on_exit(reason)\n"
+                     "  local t0 = os.clock()\n"
+                     "  while os.clock() - t0 < 0.25 do end\n"
+                     "end\n"
+                     "return M\n");
+    auto sac = manager.spawn(sac_module, opts_for("cov2_fr_sac"));
+    BOOST_REQUIRE(callee.success && caller.success && sac.success);
+
+    // The outer manager.call times out, but the service coroutine stays
+    // suspended on its 5s proxied call: the call is in flight at
+    // force-remove time with its timeout driver registered.
+    CallResult timed_out =
+        manager.call(caller.service_id, "hang_call",
+                     nlohmann::json::array({"cov2_fr_callee"}), 500);
+    BOOST_CHECK(!timed_out.success);
+    BOOST_CHECK(wait_until(
+        [&]() {
+            CallResult cr = manager.call(caller.service_id, "get_hanging",
+                                         nlohmann::json::array(), 1000);
+            return cr.success && cr.values[0].get<bool>();
+        },
+        std::chrono::seconds(2)));
+
+    // The budget forces the caller through force_remove, which cancels its
+    // in-flight call-timeout driver before the VM is erased (the covered arm).
+    manager.shutdown_all("force_cleanup", 1);
+    BOOST_CHECK(manager.list_services().empty());
+}
+
+// ---------------------------------------------------------------------------
 // M3 route learning hook: the name-change notifier observes every committed
 // publication change — spawn publish, in-handler register/unregister, and
 // exit retraction — with an empty service_id marking a retraction.
