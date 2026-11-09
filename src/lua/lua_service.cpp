@@ -6818,6 +6818,17 @@ size_t LuaServiceManager::active_actor_timer_count() const {
     return impl_->actor_timers.size();
 }
 
+size_t LuaServiceManager::recently_exited_count() const {
+    std::shared_lock lock(impl_->registry_mutex);
+    return impl_->recently_exited.size();
+}
+
+bool LuaServiceManager::recently_exited_contains(
+    const std::string& service_id) const {
+    std::shared_lock lock(impl_->registry_mutex);
+    return impl_->recently_exited.count(service_id) > 0;
+}
+
 bool LuaServiceManager::schedule_external_call_timeout(int32_t timeout_ms,
                                                        uint64_t session) {
     if (timeout_ms <= 0) {

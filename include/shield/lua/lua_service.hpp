@@ -634,6 +634,12 @@ public:
     bool cancel_actor_timer(uint64_t id);
     size_t active_actor_timer_count() const;
 
+    // Recently-exited tombstone set observability (test support): the set is
+    // capped — inserting past the limit clears it first — so its size and
+    // membership after a bulk shutdown prove the cap actually fired.
+    size_t recently_exited_count() const;
+    bool recently_exited_contains(const std::string& service_id) const;
+
     // CAF-backed call-timeout bookkeeping. When a coroutine call is suspended
     // under an attached CAF actor system, a delayed event is scheduled to
     // resume the caller with a timeout error unless the call completes first.

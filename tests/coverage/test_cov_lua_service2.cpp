@@ -658,6 +658,16 @@ BOOST_AUTO_TEST_CASE(ForceRemoveCapsRecentlyExitedTombstones) {
     }
     manager.shutdown_all("force_cap", 1);
     BOOST_CHECK(manager.list_services().empty());
+
+    // shutdown_all inserts exactly one tombstone per service (graceful exit
+    // and force_remove both insert). 4112 inserts against the 4096 cap fire
+    // the clear exactly once, so the final set holds exactly the last 16
+    // removed ids. shutdown_all drains in reverse spawn order: the last
+    // spawned (ids.back()) was removed first and evicted by the clear, the
+    // first spawned (ids.front()) was removed last and is still retained.
+    BOOST_CHECK_EQUAL(manager.recently_exited_count(), 16u);
+    BOOST_CHECK(manager.recently_exited_contains(ids.front()));
+    BOOST_CHECK(!manager.recently_exited_contains(ids.back()));
 }
 
 // ---------------------------------------------------------------------------
