@@ -360,8 +360,10 @@
   > 核实：65d5b46f..HEAD 仅含 1b8c3db（删除 package.json 中已由 pnpm-workspace.yaml 承接的 stale overrides），lockfile 离线自洽（pnpm install --lockfile-only --offline 无变更）；pnpm test 23/23 绿、pnpm build 成功。
 - [x] 审核发现：新增符号链接测试强制要求创建链接成功，而 Windows 普通权限或未启用开发者模式时创建符号链接会失败，导致 Windows 测试矩阵失败（tests/coverage/test_cov_ops_http.cpp:3064）。
   > 用 Boost.Test precondition 装饰器替换硬性 REQUIRE：一次性探测 create_symlink，失败即整体跳过该用例（Windows 无开发者模式），Linux 仍全 4 case 原样运行。实测 Linux build 树 test_cov_ops_http StaticSymlinkContainment 4 case 全绿（121ms 无错）；Windows 语义由 precondition 声明 skipped 而非失败。commit 4d98840（tests/coverage/test_cov_ops_http.cpp:291-309,3079-3083）。
-- [ ] 审核发现：覆盖率排除区域屏蔽了实际可达的未知 API 404 分支和强制移除服务时的超时清理分支，令 CI 的行及分支覆盖率门禁无法发现这些逻辑未被测试（src/console/ops_http_handler.cpp:1906、src/lua/lua_service.cpp:3528）。
-- [ ] 审核发现：ForceRemoveCapsRecentlyExitedTombstones 仅断言服务列表为空，并未验证墓碑集合是否受限或清空，因此即使上限逻辑失效测试仍会通过（tests/coverage/test_cov_lua_service2.cpp:659）。
+- [x] 审核发现：覆盖率排除区域屏蔽了实际可达的未知 API 404 分支和强制移除服务时的超时清理分支，令 CI 的行及分支覆盖率门禁无法发现这些逻辑未被测试（src/console/ops_http_handler.cpp:1906、src/lua/lua_service.cpp:3528）。
+  > 两处 EXCL 区均删除并补测：ops 的 `/ops/...` 与裸 `/ops` 复合前缀判定由 OpsDefaultTraversalDecodeAndUnknown 用 GET 实测（gcov：首臂 true、次臂 true、次臂 false 三向 arc 全覆盖），commit 4454a56；force_remove 的 actor_call_timeouts 清理是 exit() 已验证同形的孪生逻辑，新增 ForceRemoveCancelsPendingCallTimeouts（未完成外呼 + 牺牲服务耗尽预算），gcov 实测 3527 行 a-true/a-false/b-false 与 else 体 `++it` 全部命中，commit 2317ec9（三套 lua_service 套件全绿 rc=0）。
+- [x] 审核发现：ForceRemoveCapsRecentlyExitedTombstones 仅断言服务列表为空，并未验证墓碑集合是否受限或清空，因此即使上限逻辑失效测试仍会通过（tests/coverage/test_cov_lua_service2.cpp:659）。
+  > 新增 recently_exited_count()/recently_exited_contains() 可观测访问器（与 active_actor_timer_count 同风格），断言 4112 次移除触发一次清空后恰好保留 16 条：末移除的 ids.front() 在集合内、首移除的 ids.back() 已被清空淘汰。实测该用例 61s 通过，count==16 与双向成员断言全绿，commit e216836。
 
 ## 源码分层分析 2026-11-07
 
