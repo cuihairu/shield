@@ -388,7 +388,7 @@
 ### 超大文件候选
 
 - [x] LAY-001 [P1] 拆分 src/lua/lua_service.cpp（6966 行）——已拆为私有实现头 lua_service_impl.hpp（Impl 数据/方法声明 + DispatchFrame，661 行）与四个域 TU：lua_service.cpp（core 2222 行）、lua_service_calls.cpp（收发/协程恢复/call 超时 1812 行）、lua_service_inspect.cpp（命名注册/inspect/profile 1828 行）、lua_service_timers.cpp（timer/fork/gateway 734 行）；全部方法单实例化出线定义避免 gcovr per-TU 臂伪影；clang-format 0 违规，ctest 98/98 全绿，gcovr branch 13300/13300=100% 全门禁通过。
-- [ ] LAY-002 [P1] 拆分 src/lua/lua_api.cpp（5273 行）——service、message、timer、client、http、crypto、plugin 与可选模块 facade 共享一个注册文件（src/lua/lua_api.cpp:5145）。
+- [x] LAY-002 [P1] 拆分 src/lua/lua_api.cpp（5273 行）——已拆为私有声明头 lua_api_detail.hpp（make_error/lua_table_to_json + 各域注册入口）与三个域 TU：lua_api.cpp（core 共享转换器 + service/message/timer/task/config/log/client/cluster + register_full_shield_api 入口，2079 行）、lua_api_player_server.cpp（player/server 的 SHIELD_ENABLE_* 守卫块与编译出 stub，1375 行）、lua_api_global.cpp（global 域 + stub，1471 行）、lua_api_http.cpp（http/plugin，547 行）；ifdef 区块逐字搬移保持守卫结构；clang-format 0 违规，ctest 98/98 全绿（负载假红一例串行复验通过），gcovr branch 13300/13300=100%，modules-off 默认构建 RC=0。
 - [ ] LAY-003 [P1] 拆分 include/shield/lua/binding.hpp（2767 行）——绑定桥接与各能力 facade 的模板实现集中在公共头（include/shield/lua/binding.hpp:1）。
 - [ ] LAY-004 [P1] 拆分 src/lua/lua_runtime.cpp（2598 行）——VM 策略、loader、handler 编译和多种安全重入机制集中在一个 runtime 文件（src/lua/lua_runtime.cpp:1）。
 - [ ] LAY-005 [P1] 拆分 src/console/ops_http_handler.cpp（2173 行）——内嵌 dashboard、路由、认证、指标、SPA 和 eval/profile 控制混在一个 handler（src/console/ops_http_handler.cpp:805）。
