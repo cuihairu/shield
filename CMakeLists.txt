@@ -583,6 +583,9 @@ add_library(shield_lua STATIC
     src/lua/lua_api_http.cpp
     src/lua/lua_crypto.cpp
     src/lua/lua_runtime.cpp
+    src/lua/lua_runtime_calls.cpp
+    src/lua/lua_runtime_http.cpp
+    src/lua/lua_runtime_pack.cpp
     src/lua/lua_gateway_bridge.cpp
     src/lua/gateway_actor.cpp
     src/lua/lua_http_bridge.cpp
