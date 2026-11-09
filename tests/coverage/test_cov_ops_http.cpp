@@ -3070,6 +3070,16 @@ BOOST_AUTO_TEST_CASE(OpsDefaultTraversalDecodeAndUnknown) {
     BOOST_CHECK_EQUAL(RawHttpClient::status_code(unknown), 404);
     BOOST_CHECK(RawHttpClient::body(unknown).find("not found") !=
                 std::string::npos);
+
+    // The bare "/ops" prefix (no trailing slash) is equally an unknown API
+    // path: it reaches the second arm of the compound prefix check, which no
+    // other request exercises (the arm that used to be excluded from the
+    // coverage gate as "unreachable").
+    std::string bare = client.get("/ops");
+    BOOST_REQUIRE(!bare.empty());
+    BOOST_CHECK_EQUAL(RawHttpClient::status_code(bare), 404);
+    BOOST_CHECK(RawHttpClient::body(bare).find("not found") !=
+                std::string::npos);
 }
 
 // The static-root containment checks in handle_default: a symlink-loop

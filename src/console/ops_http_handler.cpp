@@ -1902,13 +1902,14 @@ shield::net::HttpResponse OpsHttpHandler::handle_default(
         }
     }
 
-    // Unknown /ops/* API path without a static root: JSON 404.
-    // GCOVR_EXCL_START (compiler artifact: the compound-|| condition inserts
-    // an intermediate branch that no input reaches)
+    // Unknown /ops/* API path without a static root: JSON 404. Both arms of
+    // the compound-prefix check are reachable — an unmatched "/ops/..." path
+    // hits the first (OpsDefaultTraversalDecodeAndUnknown), the bare "/ops"
+    // prefix (no trailing slash) hits the second — so they are tested, not
+    // excluded.
     if (path.rfind("/ops/", 0) == 0 || path.rfind("/ops", 0) == 0) {
         return make_error_response(404, "not found");
     }
-    // GCOVR_EXCL_STOP
 
     // No static root (or no index.html): embedded transitional single page.
     return handle_dashboard(req);
