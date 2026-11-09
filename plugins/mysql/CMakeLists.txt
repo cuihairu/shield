@@ -13,7 +13,12 @@
 # Lua stays a PRIVATE dependency — its symbols must NOT leak into the host
 # process (headers at compile time, lua52/53/luajit import library at link
 # time).
-add_library(shield_db_mysql MODULE shield_db_mysql.cpp)
+add_library(shield_db_mysql MODULE
+    shield_db_mysql.cpp
+    shield_db_mysql_exec.cpp
+    shield_db_mysql_async.cpp
+    shield_db_mysql_lua.cpp
+)
 
 target_include_directories(shield_db_mysql
     PRIVATE
