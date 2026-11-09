@@ -387,7 +387,7 @@
 
 ### 超大文件候选
 
-- [ ] LAY-001 [P1] 拆分 src/lua/lua_service.cpp（6966 行）——服务 actor、协程、timer、profile、async plugin、命名与强移治理耦合在同一实现（src/lua/lua_service.cpp:360）。
+- [x] LAY-001 [P1] 拆分 src/lua/lua_service.cpp（6966 行）——已拆为私有实现头 lua_service_impl.hpp（Impl 数据/方法声明 + DispatchFrame，661 行）与四个域 TU：lua_service.cpp（core 2222 行）、lua_service_calls.cpp（收发/协程恢复/call 超时 1812 行）、lua_service_inspect.cpp（命名注册/inspect/profile 1828 行）、lua_service_timers.cpp（timer/fork/gateway 734 行）；全部方法单实例化出线定义避免 gcovr per-TU 臂伪影；clang-format 0 违规，ctest 98/98 全绿，gcovr branch 13300/13300=100% 全门禁通过。
 - [ ] LAY-002 [P1] 拆分 src/lua/lua_api.cpp（5273 行）——service、message、timer、client、http、crypto、plugin 与可选模块 facade 共享一个注册文件（src/lua/lua_api.cpp:5145）。
 - [ ] LAY-003 [P1] 拆分 include/shield/lua/binding.hpp（2767 行）——绑定桥接与各能力 facade 的模板实现集中在公共头（include/shield/lua/binding.hpp:1）。
 - [ ] LAY-004 [P1] 拆分 src/lua/lua_runtime.cpp（2598 行）——VM 策略、loader、handler 编译和多种安全重入机制集中在一个 runtime 文件（src/lua/lua_runtime.cpp:1）。

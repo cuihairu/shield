@@ -574,6 +574,9 @@ endif()
 # -----------------------------------------------------------------------------
 add_library(shield_lua STATIC
     src/lua/lua_service.cpp
+    src/lua/lua_service_calls.cpp
+    src/lua/lua_service_inspect.cpp
+    src/lua/lua_service_timers.cpp
     src/lua/lua_api.cpp
     src/lua/lua_crypto.cpp
     src/lua/lua_runtime.cpp
