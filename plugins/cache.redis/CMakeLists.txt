@@ -10,7 +10,11 @@
 # Lua stays a PRIVATE dependency — its symbols must NOT leak into the host
 # process (headers at compile time, lua52/53/luajit import library at link
 # time).
-add_library(shield_cache_redis MODULE shield_cache_redis.cpp)
+add_library(shield_cache_redis MODULE
+    shield_cache_redis.cpp
+    shield_cache_redis_exec.cpp
+    shield_cache_redis_lua.cpp
+)
 
 target_include_directories(shield_cache_redis
     PRIVATE
