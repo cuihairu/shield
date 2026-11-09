@@ -945,6 +945,11 @@ add_test(NAME shield_source_boundary_check
 if(SHIELD_ENABLE_GLOBAL)
     add_library(shield_global STATIC
         src/global/global_manager.cpp
+        src/global/global_data.cpp
+        src/global/global_lock_rank.cpp
+        src/global/global_queue.cpp
+        src/global/global_broadcast.cpp
+        src/global/global_sched.cpp
         src/global/global_data_backend.cpp
         src/global/global_lock_backend.cpp
         src/global/global_rank_backend.cpp
