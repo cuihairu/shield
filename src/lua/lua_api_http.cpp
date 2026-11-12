@@ -111,7 +111,10 @@ void register_http_api(shd::table& shield, LuaServiceManager* manager,
             options.body = opts["body"].get<std::string>();
         }
         if (opts["timeout"].valid()) {
-            options.timeout_seconds = opts["timeout"].get<int>();
+            // Clamp the timeout to >= 1s: CURLOPT_TIMEOUT treats 0 as "no
+            // timeout", which would let a script block its actor thread
+            // forever.
+            options.timeout_seconds = std::max(opts["timeout"].get<int>(), 1);
         }
         if (opts["headers"].valid()) {
             shd::table hdrs = opts["headers"];

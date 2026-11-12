@@ -1423,6 +1423,15 @@ BOOST_AUTO_TEST_CASE(HttpAndPluginApis) {
         "local r = shield.http.get('http://127.0.0.1:9/x', {timeout = 2})\n"
         "assert(r.ok == false and #r.error > 0)"));
 
+    // A zero/negative timeout is clamped to >= 1s (CURLOPT_TIMEOUT treats 0 as
+    // "no timeout", which would block the actor thread forever).
+    BOOST_CHECK(run_script(
+        lua,
+        "local r = shield.http.get(base_url .. 'plain', {timeout = 0})\n"
+        "assert(r.ok == true and r.status == 200 and r.body == 'plain')\n"
+        "local n = shield.http.get(base_url .. 'plain', {timeout = -5})\n"
+        "assert(n.ok == true and n.status == 200)"));
+
     // Full option parsing across every convenience wrapper.
     BOOST_CHECK(run_script(
         lua,
