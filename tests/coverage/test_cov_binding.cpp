@@ -534,6 +534,10 @@ BOOST_AUTO_TEST_CASE(IsArmsForInvalidAndUsertypes) {
     // The !valid() guard across the other is<> dispatch arms: primitives
     // (integral/floating/string) before anything is pushed.
     BOOST_CHECK(!nothing.is<int>());
+    // The 64-bit integral instantiation (int64_t is long on this platform):
+    // lua_table_to_json / lua_runtime object-key walks dispatch through it,
+    // so its !valid() guard must be covered too.
+    BOOST_CHECK(!nothing.is<std::int64_t>());
     BOOST_CHECK(!nothing.is<bool>());
     BOOST_CHECK(!nothing.is<double>());
     BOOST_CHECK(!nothing.is<std::string>());
