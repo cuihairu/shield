@@ -57,6 +57,19 @@ public:
     /// coroutines, and unpublish the thread_local slot.
     void uninstall(lua_State* main_L);
 
+    /// @brief Unpublish this sampler from the global slot without touching
+    /// any lua_State.
+    ///
+    /// Uninstall must run on the owning actor thread (it calls lua_sethook);
+    /// abandon paths run on foreign teardown threads, so they clear the
+    /// slot with this instead. After it returns a firing hook observes the
+    /// null slot and disarms itself, and sweep_active() becomes a no-op.
+    /// The object itself stays alive: a hook that loaded the pointer just
+    /// before the swap may still be dereferencing it, so destruction is the
+    /// caller's deferred responsibility (the manager parks abandoned
+    /// sessions until every dispatch thread is gone).
+    void deactivate();
+
     /// @brief Hook entry (LUA_MASKCOUNT). Public so it can be named by
     /// lua_sethook; never call it directly.
     static void sampler_hook(lua_State* L, lua_Debug* ar);

@@ -27,11 +27,19 @@ constexpr int kMaxHookDepthFallback = 64;
 ProfileSampler::ProfileSampler(ProfileSession& session, CoProvider co_provider)
     : session_(session), co_provider_(std::move(co_provider)) {}
 
+void ProfileSampler::deactivate() {
+    // Clear the slot only while it still points at this sampler: the
+    // manager arbitrates one session per process, so a second sampler's
+    // deactivate must never unpublish the active one. No lua_State is
+    // touched — safe on any thread, unlike uninstall().
+    ProfileSampler* expected = this;
+    g_active_sampler.compare_exchange_strong(expected, nullptr);
+}
+
 ProfileSampler::~ProfileSampler() {
     // Defensive: an uninstall that never ran must not leave the slot
     // dangling. Hooks themselves die with the VM.
-    ProfileSampler* expected = this;
-    g_active_sampler.compare_exchange_strong(expected, nullptr);
+    deactivate();
 }
 
 void ProfileSampler::record_current_stack(ProfileSampler* self, lua_State* L) {

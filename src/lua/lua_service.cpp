@@ -119,8 +119,25 @@ void LuaServiceManager::Impl::abandon_profile_session_locked(
                    // under the same lock)
         return;
     }
-    auto profile = std::move(profile_session);
+    // Park the state instead of letting the local die: this helper runs on
+    // teardown threads foreign to the sampled service, whose actor may be
+    // mid-dispatch — possibly inside the sampling hook holding the pointer
+    // it loaded from the slot. The sampler object must outlive every such
+    // reader; abandoned_profiles frees it at Impl destruction (after the
+    // manager dtor has joined/drained the actors).
+    auto profile =
+        std::make_shared<ProfileSessionState>(std::move(*profile_session));
+    abandoned_profiles.push_back(profile);
     profile_session.reset();
+    // Unpublish immediately (the parked dtor would only clear the slot
+    // much later): a firing hook observes the null slot and disarms
+    // itself, and a hung-in-Lua service stops feeding samples into the
+    // abandoned session.
+    if (profile->sampler) {  // GCOVR_EXCL_BR_LINE (defensive: null only in
+        // the pre-install window; no test exits a service inside that
+        // window)
+        profile->sampler->deactivate();
+    }
     // Kill the duration driver if the install task already spawned it:
     // a live driver idles until its delayed tick and keeps the actor
     // system's teardown waiting for the whole duration.

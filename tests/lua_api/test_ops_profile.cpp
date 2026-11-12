@@ -459,6 +459,39 @@ BOOST_AUTO_TEST_CASE(SweepActiveSkipsForeignService) {
     sampler.uninstall(vm.L);
 }
 
+/// deactivate() unpublishes the slot without touching any lua_State: a
+/// drive point after it must not run the provider (the slot is null), and
+/// the still-installed hook self-disarms on its next hit — the abandon
+/// paths' substitute for uninstall(), which only the owner thread may run.
+BOOST_AUTO_TEST_CASE(DeactivateUnpublishesSlotAndHookSelfDisarms) {
+    BareVM vm;
+    BOOST_REQUIRE(vm.L != nullptr);
+
+    int provider_calls = 0;
+    ProfileSessionConfig cfg;
+    cfg.service = "gw";
+    cfg.interval = 1;  // deterministic: the chunk's first hit disarms
+    ProfileSession session(cfg);
+    ProfileSampler sampler(session, [&] {
+        ++provider_calls;
+        return std::vector<lua_State*>{};
+    });
+    sampler.install(vm.L, "gw");
+    const int baseline = provider_calls;  // install()'s arming sweep
+
+    sampler.deactivate();
+    ProfileSampler::sweep_active("gw");
+    BOOST_TEST(provider_calls == baseline);
+
+    // The count hook is still installed (no uninstall ran); its next hit
+    // must observe the null slot and disarm itself without sampling.
+    do_chunk(vm.L,
+             "local s = 0 "
+             "for i = 1, 100000 do s = s + i end");
+    BOOST_CHECK(lua_gethook(vm.L) == nullptr);
+    BOOST_TEST(session.total_samples() == 0U);
+}
+
 /// The provider may yield null entries (a racing teardown can drop a
 /// coroutine between collection and use) and coroutines whose hook was
 /// cleared since install: both must be tolerated — null skipped, hookless

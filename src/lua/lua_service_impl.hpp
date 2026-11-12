@@ -152,12 +152,13 @@ struct LuaServiceManager::Impl {
 
     // Settle an active /ops/profile session whose service is leaving:
     // fulfill the promise as abandoned (the caller's 2s wait ends with an
-    // honest answer instead of a timeout) and drop the state. The sampler
-    // dies without an uninstall pass — in hung_service_teardown the VM is
-    // parked (its lua_State is untouchable) and on the other paths the VM
-    // dies with the hooks on it; a count hook on an undriven VM never
-    // fires. Must hold the registry mutex. Unlike the drop_* helpers this
-    // does not run on the owner thread, so it never calls uninstall().
+    // honest answer instead of a timeout) and park the state in
+    // abandoned_profiles (see below). The sampler dies without an
+    // uninstall pass — in hung_service_teardown the VM is parked (its
+    // lua_State is untouchable) and on the other paths the VM dies with
+    // the hooks on it; a count hook on an undriven VM never fires. Must
+    // hold the registry mutex. Unlike the drop_* helpers this does not
+    // run on the owner thread, so it never calls uninstall().
     void abandon_profile_session_locked(const std::string& id);
 
     // RAII over the init_vms entry: spawn registers the VM before on_init
@@ -378,6 +379,22 @@ struct LuaServiceManager::Impl {
         std::chrono::steady_clock::time_point started_at;
     };
     std::optional<ProfileSessionState> profile_session;
+
+    // Parked states of abandoned /ops/profile sessions (abandon_
+    // profile_session_locked moves the live state here instead of letting
+    // it die at the end of its critical section). The teardown threads
+    // that abandon are foreign to the sampled service: force_remove and
+    // hung_service_teardown can run while that service's actor thread is
+    // mid-dispatch — possibly inside the sampling hook, holding the
+    // pointer it loaded from g_active_sampler. Destroying the sampler
+    // there is the same load-then-deref race the manager dtor closes by
+    // keeping dying_profile alive until every actor joins; the hung path
+    // can never join, so the state is parked until the Impl destructor
+    // (which runs after the dtor's actor graveyard drain) frees it. The
+    // slot itself is cleared promptly by ProfileSampler::deactivate(), so
+    // no new hook hit dereferences the parked object and a hung-in-Lua
+    // service cannot keep feeding samples into the abandoned session.
+    std::vector<std::shared_ptr<ProfileSessionState>> abandoned_profiles;
 
     // Read-only JSON form of the refs summary (null when not captured).
     static nlohmann::json refs_summary_to_json(
