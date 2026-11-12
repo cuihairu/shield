@@ -297,10 +297,16 @@ public:
     /// @param code Lua source code
     /// @param result Output: JSON array of return values (nullptr to ignore)
     /// @param error Output: error message on failure (nullptr to ignore)
+    /// @param instruction_budget Abort the chunk with "eval instruction
+    ///        limit exceeded" once it burns more than a fixed VM-instruction
+    ///        budget. On by default (a code-entry endpoint must not hang its
+    ///        thread forever); the console REPL opts out because its contract
+    ///        is the console-side 5s deadline with the task running to
+    ///        completion.
     /// @return true if compilation and execution succeeded
     bool exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
                   nlohmann::json* result = nullptr,
-                  std::string* error = nullptr);
+                  std::string* error = nullptr, bool instruction_budget = true);
 
     // Set global variable
     void set_global(std::shared_ptr<LuaVM> vm, std::string_view name,

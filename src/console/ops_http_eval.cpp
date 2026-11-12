@@ -122,7 +122,9 @@ shield::net::HttpResponse OpsHttpHandler::handle_eval(
 
     nlohmann::json result;
     std::string error;
-    bool ok = lua_rt_.exec_lua(vm, code, &result, &error);
+    // Instruction budget on: /ops/eval is machine-facing code entry and must
+    // not hang the ops io thread on a snippet that never returns.
+    bool ok = lua_rt_.exec_lua(vm, code, &result, &error, true);
 
     // VM will be automatically destroyed when shared_ptr goes out of scope
     vm.reset();

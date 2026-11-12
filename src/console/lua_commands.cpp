@@ -520,7 +520,10 @@ void LuaCommands::cmd_eval(shield::net::ConsoleSession& session,
     lua_rt_.register_api(vm);
     nlohmann::json result;
     std::string error;
-    const bool ok = lua_rt_.exec_lua(vm, code, &result, &error);
+    const bool ok = lua_rt_.exec_lua(vm, code, &result, &error,
+                                     false);  // console REPL semantics: no
+                                              // instruction budget (the
+                                              // operator watches this thread)
     nlohmann::json data;
     if (ok) {
         data = std::move(result);

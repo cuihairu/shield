@@ -2203,7 +2203,11 @@ bool LuaServiceManager::exec_lua(const std::string& service_id,
         if (error) *error = "Service not found: " + service_id;
         return false;
     }
-    return impl_->runtime.exec_lua(service, code, result, error);
+    // Console REPL path: no instruction budget. Its contract is the
+    // console-side 5s deadline with the exec task still running to
+    // completion, and a count budget would preempt long-running snippets
+    // long before that deadline lapses.
+    return impl_->runtime.exec_lua(service, code, result, error, false);
 }
 
 void LuaServiceManager::attach_clock(std::shared_ptr<Clock> clock) {

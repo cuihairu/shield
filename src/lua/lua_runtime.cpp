@@ -627,7 +627,8 @@ lua_State* LuaRuntime::vm_main_state(std::shared_ptr<LuaVM> vm) {
 }
 
 bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
-                          nlohmann::json* result, std::string* error) {
+                          nlohmann::json* result, std::string* error,
+                          bool instruction_budget) {
     if (!vm || !vm->state()) {  // GCOVR_EXCL_BR_LINE (defensive: Impl::state()
                                 // is never null on a live VM)
         if (error) *error = "invalid VM";
@@ -655,14 +656,22 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
     // that never returns aborts here instead of hanging the calling thread.
     // Any previous hook (e.g. a profile sampler on a service VM) is saved
     // and restored, matching profile_sampler's own save/restore convention.
+    // The console REPL opts out: its contract is the console-side 5s
+    // deadline with the task still running to completion, and a count budget
+    // would preempt that long before the deadline lapses.
     lua_Hook prev_hook = lua_gethook(L);
     const int prev_mask = lua_gethookmask(L);
     const int prev_count = lua_gethookcount(L);
-    lua_sethook(L, &eval_instruction_hook, LUA_MASKCOUNT, kEvalMaxInstructions);
+    if (instruction_budget) {
+        lua_sethook(L, &eval_instruction_hook, LUA_MASKCOUNT,
+                    kEvalMaxInstructions);
+    }
     int base = lua_gettop(L);  // function is at base
     int call_status = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (call_status != LUA_OK) {
-        lua_sethook(L, prev_hook, prev_mask, prev_count);
+        if (instruction_budget) {
+            lua_sethook(L, prev_hook, prev_mask, prev_count);
+        }
         if (error) {
             *error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "exec error";
         }
@@ -731,7 +740,9 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
         }
     }
     // Clean up stack
-    lua_sethook(L, prev_hook, prev_mask, prev_count);
+    if (instruction_budget) {
+        lua_sethook(L, prev_hook, prev_mask, prev_count);
+    }
     lua_settop(L, base - 1);
     return true;
 }
