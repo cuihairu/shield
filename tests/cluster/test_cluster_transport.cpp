@@ -1758,3 +1758,53 @@ BOOST_AUTO_TEST_CASE(ExplicitAuthDisabledModeAndModeMismatch) {
     BOOST_CHECK(wait_until([&] { return dispatched.load() == 1; },
                            std::chrono::seconds(3)));
 }
+
+BOOST_AUTO_TEST_CASE(AuthDisabledHeartbeatAndRoutesRequireBoundSender) {
+    // Audit P1-3: with auth disabled, a bare CAF connection that never sent
+    // Hello must not forge liveness or a route table for an adopted peer.
+    // The handshake still binds a sender identity in auth-disabled mode (the
+    // "explicitly disabled" Hello branch), so a legitimate peer keeps
+    // working; only an unbound sender is dropped. This mirrors the
+    // EnvelopeReplyMsg peer-binding precedent (9fdbaed).
+    enable_test_logging();
+    uint16_t port_a = 0;
+    uint16_t port_b = 0;
+    auto noauth = [](Node& n) {
+        n.config.auth.enabled = false;
+        n.config.auth.token.clear();
+    };
+    auto [a, b] = make_node_pair(port_a, port_b, true, noauth, noauth);
+    wait_online(*a->manager, "node-b");
+    wait_online(*b->manager, "node-a");
+
+    const uint64_t epoch_b = a->manager->find_node("node-b")->epoch;
+
+    // Take the legitimate peer down so node-a demotes its entry to Offline.
+    // The forged messages below are then the only heartbeat/routes traffic
+    // that could touch node-b's entry, isolating the attack on node-a.
+    b->transport->stop();
+    BOOST_REQUIRE(wait_for_state(*a->manager, "node-b", NodeState::Offline,
+                                 std::chrono::milliseconds(5000)));
+    const uint64_t before = a->transport->stats().rx_heartbeats;
+
+    // Bare client: connects but never completes the Hello handshake, so no
+    // sender identity is ever bound for this connection.
+    PskClient client(port_a);
+    client.send(shield::cluster::HeartbeatMsg{"node-b", epoch_b, 1});
+    client.send(shield::cluster::RoutesMsg{
+        "node-b",
+        epoch_b,
+        {shield::cluster::RouteEntry{"poison", "attacker-svc"}}});
+
+    // Let the transport process both forged messages. An unbound sender must
+    // not refresh liveness (node-b stays Offline), count a heartbeat, or
+    // land a route in the cache.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    BOOST_CHECK_EQUAL(a->transport->stats().rx_heartbeats, before);
+    BOOST_CHECK(a->manager->find_node("node-b")->state == NodeState::Offline);
+    BOOST_CHECK(a->manager->query_remote("node-b", "poison").empty());
+
+    a->transport->stop();
+    a->manager->stop();
+    b->manager->stop();
+}

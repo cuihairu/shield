@@ -411,9 +411,12 @@ BOOST_AUTO_TEST_CASE(TransportMalformedInjections) {
     // Nothing was adopted: the peer table is still empty.
     BOOST_CHECK(manager->find_node("intruder") == nullptr);
 
-    // M5: inbound frames counted on arrival (two envelopes + one reply, one
-    // heartbeat), but nothing left — the envelope reply had no connection
-    // to the announced source and dropped.
+    // M5: inbound frames counted on arrival (two envelopes + one reply), but
+    // nothing left — the envelope reply had no connection to the announced
+    // source and dropped. The forged heartbeat from this unbound sender is
+    // rejected at the door (audit P1-3: handshake-bound identity is required
+    // even when auth is disabled) and therefore never counted as a received
+    // heartbeat, matching the auth-enabled counting semantics.
     // CI 定时抖动：轮询等待入站计数到齐，不再依赖固定 200ms 睡眠。
     auto stats = transport->stats();
     for (int i = 0; i < 150 && stats.rx_messages < 3u; ++i) {
@@ -423,7 +426,7 @@ BOOST_AUTO_TEST_CASE(TransportMalformedInjections) {
     BOOST_CHECK_EQUAL(stats.live_connections, 0u);
     BOOST_CHECK_EQUAL(stats.tx_messages, 0u);
     BOOST_CHECK_GE(stats.rx_messages, 3u);
-    BOOST_CHECK_GE(stats.rx_heartbeats, 1u);
+    BOOST_CHECK_EQUAL(stats.rx_heartbeats, 0u);
 
     transport.reset();
     system.reset();

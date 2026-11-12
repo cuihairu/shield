@@ -498,8 +498,13 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
         },
         // -- liveness --------------------------------------------------------
         [self, side](const HeartbeatMsg& hb) {
-            if (self->state().auth.enabled &&
-                sender_identity(side, self->current_sender()) != hb.node_id)
+            // Require a handshake-bound sender identity even when auth is
+            // disabled: an unbound CAF connection must not forge liveness.
+            const std::string hb_sender =
+                sender_identity(side, self->current_sender());
+            if (hb_sender.empty() ||
+                hb_sender != hb.node_id)  // GCOVR_EXCL_BR_LINE (hostile-peer
+                                          // arm: unbound or forged sender)
                 return;  // GCOVR_EXCL_LINE (hostile-peer arm: heartbeat sender
                          // identity mismatch)
             side->rx_heartbeats.fetch_add(1, std::memory_order_relaxed);
@@ -542,8 +547,14 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
         [self,
          side](const RoutesMsg& routes) {  // GCOVR_EXCL_LINE (gcov attributes
                                            // no code to this line)
-            if (self->state().auth.enabled &&
-                sender_identity(side, self->current_sender()) != routes.node_id)
+            // Same handshake-bound sender requirement as heartbeats: without
+            // auth the bare CAF connection must not publish a route table.
+            const std::string routes_sender =
+                sender_identity(side, self->current_sender());
+            if (routes_sender.empty() ||
+                routes_sender !=
+                    routes.node_id)  // GCOVR_EXCL_BR_LINE (hostile-peer arm:
+                                     // unbound or forged sender)
                 return;  // GCOVR_EXCL_LINE (hostile-peer arm: routes sender
                          // identity mismatch)
             // The manager seam takes pairs to keep cluster_manager.hpp
