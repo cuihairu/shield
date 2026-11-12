@@ -779,6 +779,37 @@ BOOST_AUTO_TEST_CASE(ExecLuaBranches) {
 }
 
 // ---------------------------------------------------------------------------
+// exec_lua instruction budget: a chunk that never returns aborts via the
+// count hook instead of hanging the calling thread (the ops HTTP io thread
+// serves every /ops endpoint on one thread).
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(ExecLuaInstructionBudget) {
+    LuaRuntime runtime;
+    auto vm = runtime.create_vm();
+    nlohmann::json result;
+    std::string error;
+
+    // Infinite loop: the hook fires and luaL_error unwinds to the pcall.
+    error.clear();
+    BOOST_CHECK(!runtime.exec_lua(vm, "while true do end", &result, &error));
+    BOOST_CHECK(error.find("instruction limit") != std::string::npos);
+
+    // The VM survives the longjmp and stays usable.
+    error.clear();
+    BOOST_CHECK(runtime.exec_lua(vm, "return 1 + 1", &result, &error));
+    BOOST_REQUIRE_EQUAL(result.size(), 1u);
+    BOOST_CHECK_EQUAL(result[0].get<int64_t>(), 2);
+
+    // A loop that finishes under the budget still succeeds.
+    error.clear();
+    BOOST_CHECK(runtime.exec_lua(
+        vm, "local s = 0 for i = 1, 1000 do s = s + i end return s", &result,
+        &error));
+    BOOST_REQUIRE_EQUAL(result.size(), 1u);
+    BOOST_CHECK_EQUAL(result[0].get<int64_t>(), 500500);
+}
+
+// ---------------------------------------------------------------------------
 // LuaPack encoder.
 // ---------------------------------------------------------------------------
 namespace {

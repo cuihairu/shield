@@ -241,6 +241,19 @@ struct to_json_limit {
     std::size_t depth = 0;
     std::unordered_map<const void*, std::size_t> active;  // on current path
 };
+
+// Instruction budget for exec_lua: a chunk stuck in an infinite loop
+// (while true do end) aborts via luaL_error instead of hanging the calling
+// thread. The ops HTTP io thread serves every /ops endpoint on a single
+// thread, so one stuck eval would take the liveness probes down with it;
+// service-targeted exec would hang its actor the same way. The budget is
+// generous for legitimate snippets yet trips a bare dead loop in well under
+// a second.
+constexpr int kEvalMaxInstructions = 10000000;
+
+void eval_instruction_hook(lua_State* L, lua_Debug*) {
+    luaL_error(L, "eval instruction limit exceeded");
+}
 }  // namespace
 
 bool lua_to_json_rec(const shd::object& value, nlohmann::json* out,
@@ -635,10 +648,18 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
         return false;
     }
 
-    // Execute
+    // Execute. Guard the chunk with an instruction-count hook so a snippet
+    // that never returns aborts here instead of hanging the calling thread.
+    // Any previous hook (e.g. a profile sampler on a service VM) is saved
+    // and restored, matching profile_sampler's own save/restore convention.
+    lua_Hook prev_hook = lua_gethook(L);
+    const int prev_mask = lua_gethookmask(L);
+    const int prev_count = lua_gethookcount(L);
+    lua_sethook(L, &eval_instruction_hook, LUA_MASKCOUNT, kEvalMaxInstructions);
     int base = lua_gettop(L);  // function is at base
     int call_status = lua_pcall(L, 0, LUA_MULTRET, 0);
     if (call_status != LUA_OK) {
+        lua_sethook(L, prev_hook, prev_mask, prev_count);
         if (error) {
             *error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "exec error";
         }
@@ -707,6 +728,7 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
         }
     }
     // Clean up stack
+    lua_sethook(L, prev_hook, prev_mask, prev_count);
     lua_settop(L, base - 1);
     return true;
 }
