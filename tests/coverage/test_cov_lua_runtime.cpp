@@ -207,6 +207,57 @@ BOOST_AUTO_TEST_CASE(LuaToJsonBranches) {
 }
 
 // ---------------------------------------------------------------------------
+// lua_to_json cycle and depth guards. shd::table is a registry-reference
+// proxy, so a self-referencing table (the OO parent/back pattern) would
+// recurse forever without the guard; a deep nesting chain would exhaust the
+// C++ stack. Both must degrade to the "<unsupported>" sentinel, while a
+// shared-but-acyclic table (DAG) keeps converting on every occurrence.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(LuaToJsonCyclesAndDepth) {
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::string);
+
+    lua.script(R"lua(
+        t_self = {}
+        t_self.self = t_self
+        t_mut_a = {}
+        t_mut_b = {}
+        t_mut_a.peer = t_mut_b
+        t_mut_b.peer = t_mut_a
+        parent = {child = {}}
+        parent.child.parent = parent
+        shared = {x = 1}
+        dag = {a = shared, b = shared}
+        chain = {}
+        for i = 1, 600 do
+            chain = {next = chain}
+        end
+    )lua");
+
+    nlohmann::json converted;
+    // Direct self reference: cut at the cycle entry.
+    BOOST_CHECK(!lua_to_json(lua["t_self"], &converted));
+    BOOST_CHECK_EQUAL(lua_to_json(lua["t_self"]).get<std::string>(),
+                      "<unsupported>");
+    // Mutual cycle across two tables.
+    BOOST_CHECK(!lua_to_json(lua["t_mut_a"], &converted));
+    BOOST_CHECK_EQUAL(lua_to_json(lua["t_mut_a"]).get<std::string>(),
+                      "<unsupported>");
+    // Back reference: the parent field degrades to the sentinel while the
+    // rest of the structure survives.
+    BOOST_CHECK(!lua_to_json(lua["parent"], &converted));
+    BOOST_CHECK_EQUAL(converted.dump(),
+                      R"({"child":{"parent":"<unsupported>"}})");
+    // A table shared by two siblings (acyclic) converts on every occurrence.
+    BOOST_CHECK(lua_to_json(lua["dag"], &converted));
+    BOOST_CHECK_EQUAL(converted.dump(), R"({"a":{"x":1},"b":{"x":1}})");
+    // A nesting chain deeper than the depth budget degrades instead of
+    // exhausting the C++ stack.
+    BOOST_CHECK(!lua_to_json(lua["chain"], &converted));
+    BOOST_CHECK(converted.dump().find("<unsupported>") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
 // load_service_module: file-open failure and cache interactions.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(LoadServiceModuleFileMissing) {

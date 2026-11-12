@@ -232,11 +232,34 @@ bool LuaRuntime::load_script(std::shared_ptr<LuaVM> vm,
     return true;
 }
 
+// Guard state for the lua_to_json recursion: depth budget plus the set of
+// tables on the current conversion path. Table identity is the pointer from
+// lua_topointer (stable for the registry-ref'd lifetime — Lua tables are not
+// moved by the GC).
+namespace {
+struct to_json_limit {
+    std::size_t depth = 0;
+    std::unordered_map<const void*, std::size_t> active;  // on current path
+};
+}  // namespace
+
+bool lua_to_json_rec(const shd::object& value, nlohmann::json* out,
+                     to_json_limit* limit);
+
 bool lua_to_json(const shd::object& value, nlohmann::json* out) {
     if (!out) {
         return true;
     }
+    to_json_limit limit;
+    return lua_to_json_rec(value, out, &limit);
+}
 
+// Recursive core. lua_api.cpp's lua_table_to_json wrapper converts its child
+// values through the 1-arg lua_to_json above, so every table it reaches is
+// guarded by a fresh limit — cycles and over-depth chains degrade to the
+// "<unsupported>" sentinel instead of exhausting the C++ stack.
+bool lua_to_json_rec(const shd::object& value, nlohmann::json* out,
+                     to_json_limit* limit) {
     if (!value.valid() ||     // GCOVR_EXCL_BR_LINE (defensive: always valid)
         value == shd::nil) {  // GCOVR_EXCL_BR_LINE (defensive: a service-table
                               // index always yields a valid object)
@@ -292,7 +315,35 @@ bool lua_to_json(const shd::object& value, nlohmann::json* out) {
         return false;
     }
 
+    // Depth cap (parity with the inbound kMaxJsonDepth=512 / kPushJsonMaxDepth
+    // guards): a nesting chain deeper than the budget degrades to the
+    // "<unsupported>" sentinel instead of exhausting the C++ stack.
+    constexpr std::size_t kToJsonMaxDepth = 512;
+    if (limit->depth >= kToJsonMaxDepth) {
+        *out = "<unsupported>";
+        return false;
+    }
+
+    // Cycle guard: table identity via lua_topointer. Table values in this
+    // binding are registry references (shd::table is a copyable proxy, not a
+    // deep copy), so a self-referencing table recurses through this same
+    // conversion and must be cut here. The map is a path set (pushed before
+    // iterating, popped on exit), so a table shared by two siblings converts
+    // once per occurrence while a table reaching itself never re-enters.
     shd::table table = value.as<shd::table>();
+    lua_State* table_L = table.lua_state();
+    const int table_push = table.push();
+    const void* table_id = lua_topointer(table_L, table_push);
+    lua_pop(table_L, 1);
+
+    auto [active_it, is_new] = limit->active.emplace(table_id, limit->depth);
+    if (!is_new) {
+        // Re-entering a table already on the conversion path: a cycle.
+        *out = "<unsupported>";
+        return false;
+    }
+    ++limit->depth;
+
     bool array_like = true;
     std::size_t max_index = 0;
     std::size_t entry_count = 0;
@@ -324,12 +375,14 @@ bool lua_to_json(const shd::object& value, nlohmann::json* out) {
         bool all_supported = true;
         for (std::size_t i = 1; i <= max_index; ++i) {
             nlohmann::json item;
-            if (!lua_to_json(table[static_cast<int>(i)], &item)) {
+            if (!lua_to_json_rec(table[static_cast<int>(i)], &item, limit)) {
                 all_supported = false;
             }
             array.push_back(std::move(item));
         }
         *out = std::move(array);
+        limit->active.erase(active_it);
+        --limit->depth;
         return all_supported;
     }
 
@@ -347,12 +400,14 @@ bool lua_to_json(const shd::object& value, nlohmann::json* out) {
         }
 
         nlohmann::json item;
-        if (!lua_to_json(val, &item)) {
+        if (!lua_to_json_rec(val, &item, limit)) {
             all_supported = false;
         }
         object[object_key] = std::move(item);
     }
     *out = std::move(object);
+    limit->active.erase(active_it);
+    --limit->depth;
     return all_supported;
 }
 
