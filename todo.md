@@ -299,6 +299,17 @@
 - [x] fetchJson 仅查 401，非 2xx 非 error 信封被当成功处理（console/src/services/polling.ts:43）
   > fetchJson/fetchText 对 !res.ok 抛 HttpError（带状态码），error 信封取 data/message（console/src/services/polling.ts:52-72）
 
+## 审核修复批（2026-11-12，audit-batch6 shield 节）
+- [x] P1-1 lua_to_json 深度/环防护：深度上限 512 + lua_topointer 环检测（src/lua/lua_runtime.cpp:331-340）；LuaToJsonCyclesAndDepth 10 断言（tests/coverage/test_cov_lua_runtime.cpp:216），022e61f
+- [x] P1-2 /ops/eval 指令预算：10M 指令钩子（src/lua/lua_runtime.cpp:252,665-667），console REPL 显式豁免（src/lua/lua_service.cpp:2210 · src/console/lua_commands.cpp:523-526 · src/console/ops_http_eval.cpp:127）；ExecLuaInstructionBudget 8 断言（tests/coverage/test_cov_lua_runtime.cpp:786）+ ReplExecutionTimeout 恢复绿（tests/coverage/test_cov_lua_commands.cpp:448），d21a6cb + 9512c50
+- [x] P1-3 cluster 心跳/路由无条件发送方身份校验（src/cluster/cluster_transport_loop.cpp:517,564-567）；AuthDisabledHeartbeatAndRoutesRequireBoundSender（tests/coverage/test_cluster_transport.cpp:1762）+ TransportMalformedInjections rx_heartbeats==0，3d9a633
+- [x] P2-1 listen/peer 端口 stoi invalid_argument/out_of_range 双臂守卫（src/cluster/cluster_transport.cpp:86-99 · src/cluster/cluster_transport_loop.cpp:141-152）；TransportStartFailurePaths 11 断言（tests/coverage/test_cov_cluster.cpp:282），61541e6
+- [x] P2-2 JSON int64 键：is<int64_t>（src/lua/lua_api.cpp:375-376 · src/lua/lua_runtime.cpp:409-413）；TableToJsonKeepsLargeIntKeys 2 断言（tests/coverage/test_cov_cpp_lua_api.cpp:651）+ is<int64_t> 无效臂补测（tests/coverage/test_cov_binding.cpp:536-540），664235f + 41ef913
+- [x] P2-3 http timeout 钳制 ≥1s：CURLOPT_TIMEOUT 0 = 无超时（src/lua/lua_api_http.cpp:113-119）；HttpAndPluginApis timeout=0/-5 两臂（tests/coverage/test_cov_cpp_lua_api.cpp:1420-1432），36a7c3b
+- [x] P2-4 限流器 per-key map 封顶 max_keys=65536（include/shield/global/global_manager.hpp:147 · src/global/global_sched.cpp rate_limit_allow）；RateLimitMapCapacityBounds 14 断言（tests/global/test_global_manager.cpp:1200），d6c32b1
+- [x] P2-5 ProfileSampler 析构延寿至 actors join 后（dying_profile，src/lua/lua_service.cpp:805,852,875）；ProfileManagerDtorAbandonsActiveSession 9 断言（tests/coverage/test_cov_ops_http.cpp:1604），f3fdf58
+- [ ] 残留观察：abandon_profile_session_locked 同型窄窗口（src/lua/lua_service.cpp:114-144，审计未点名），修复需重构 3 处调用点，另行处理
+
 ## 审核发现
 - [x] 审核发现：整理未完成的 FIX-WEB-08～14 时删除了原有依赖及关键交付和验收条件，包括网关计数语义、eval/profile token 禁止持久化、浏览器安全场景与生产托管要求，后续可在遗漏这些约束时误判完成（todo.md:263）。
   > todo.md 已为 FIX-WEB-12~14 补齐依赖、交付与验收条件（todo.md:267-269）
