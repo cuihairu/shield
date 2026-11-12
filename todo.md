@@ -308,7 +308,7 @@
 - [x] P2-3 http timeout 钳制 ≥1s：CURLOPT_TIMEOUT 0 = 无超时（src/lua/lua_api_http.cpp:113-119）；HttpAndPluginApis timeout=0/-5 两臂（tests/coverage/test_cov_cpp_lua_api.cpp:1420-1432），36a7c3b
 - [x] P2-4 限流器 per-key map 封顶 max_keys=65536（include/shield/global/global_manager.hpp:147 · src/global/global_sched.cpp rate_limit_allow）；RateLimitMapCapacityBounds 14 断言（tests/global/test_global_manager.cpp:1200），d6c32b1
 - [x] P2-5 ProfileSampler 析构延寿至 actors join 后（dying_profile，src/lua/lua_service.cpp:805,852,875）；ProfileManagerDtorAbandonsActiveSession 9 断言（tests/coverage/test_cov_ops_http.cpp:1604），f3fdf58
-- [ ] 残留观察：abandon_profile_session_locked 同型窄窗口（src/lua/lua_service.cpp:114-144，审计未点名），修复需重构 3 处调用点，另行处理
+- [x] abandon_profile_session_locked 同型窄窗口已修（审计未点名，本轮自查）：外线程 teardown（exit/force_remove/hung_service_teardown）把会话状态移入局部变量，函数返回即析构 sampler，可与被采样服务 actor 内「hook 已载入槽位指针后解引用」竞速（dtor 路径同款竞态，force_remove 不等 actor 静默故窗口真实）；改 ProfileSampler::deactivate() 立即 CAS 清槽（不碰 lua_State，hook 自解除、sweep_active 变空操作、挂死服务不再往已弃会话灌样本）+ 状态移入 abandoned_profiles 滞留至 Impl 析构（manager dtor 的 graveyard drain 之后）。deactivate include/shield/lua/profile_sampler.hpp:71 · src/lua/profile_sampler.cpp:30,42；滞留 src/lua/lua_service.cpp:114-137（130 push_back）· src/lua/lua_service_impl.hpp:397；测试 DeactivateUnpublishesSlotAndHookSelfDisarms tests/lua_api/test_ops_profile.cpp:466（test_ops_profile 18/18 · test_cov_ops_http Profile* 16/16），389d21b
 
 ## 审核发现
 - [x] 审核发现：整理未完成的 FIX-WEB-08～14 时删除了原有依赖及关键交付和验收条件，包括网关计数语义、eval/profile token 禁止持久化、浏览器安全场景与生产托管要求，后续可在遗漏这些约束时误判完成（todo.md:263）。
