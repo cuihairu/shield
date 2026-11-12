@@ -794,6 +794,15 @@ LuaServiceManager::~LuaServiceManager() {
 
     // Tear down CAF actors before releasing Lua VMs. Their handlers capture
     // this manager and may still have queued timer/call messages.
+    //
+    // A dying profile session must outlive this whole block: its sampler is
+    // never uninstalled (a firing hook self-disarms on the null slot), so
+    // g_active_sampler points at it until ~ProfileSampler's CAS clears the
+    // slot — and a dispatch thread that loaded the pointer before that CAS
+    // can still dereference it while the object dies. Keeping the state
+    // alive until stop_and_wait_for_actors has joined every dispatch thread
+    // closes that window; only then is it safe to drop the session.
+    std::optional<LuaServiceManager::Impl::ProfileSessionState> dying_profile;
     {
         std::unique_lock lock(impl_->registry_mutex);
         actors_to_stop.reserve(
@@ -840,18 +849,19 @@ LuaServiceManager::~LuaServiceManager() {
         // like that helper this never uninstalls: the sampler dies with
         // the state and a firing hook self-disarms on the null slot.
         if (impl_->profile_session) {
-            auto profile = std::move(impl_->profile_session);
+            dying_profile = std::move(impl_->profile_session);
             impl_->profile_session.reset();
-            if (profile->duration_driver) {  // GCOVR_EXCL_BR_LINE (race:
+            if (dying_profile->duration_driver) {  // GCOVR_EXCL_BR_LINE (race:
                 // null only inside profile_start's spawn-to-register
                 // window — the same pre-install window class the
                 // abandon helper excludes)
-                actors_to_stop.push_back(std::move(profile->duration_driver));
+                actors_to_stop.push_back(
+                    std::move(dying_profile->duration_driver));
             }
-            profile->done->set_value(nlohmann::json{
+            dying_profile->done->set_value(nlohmann::json{
                 {"abandoned", true},
-                {"service", profile->service_id},
-                {"total_samples", profile->session->total_samples()}});
+                {"service", dying_profile->service_id},
+                {"total_samples", dying_profile->session->total_samples()}});
         }
     }
     impl_->stop_and_wait_for_actors(actors_to_stop);
@@ -859,6 +869,10 @@ LuaServiceManager::~LuaServiceManager() {
     // vector here: an entry whose driver already terminated is harmless, but
     // routing every release through the graveyard keeps one single policy.
     impl_->retire_actors(std::move(actors_to_stop));
+    // Every dispatch thread has joined above; no sweep_active reader can be
+    // in flight anymore, so the sampler can die now (its dtor CAS still
+    // clears g_active_sampler as defense in depth).
+    dying_profile.reset();
 
     // Wake up any pending sync calls (manager->call() / call_with_session
     // blocked on a CV) so they don't hang forever during shutdown, then wait
