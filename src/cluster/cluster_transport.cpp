@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -81,8 +82,20 @@ bool ClusterTransport::start(uint16_t* bound_port, std::string& error) {
     uint16_t port = 0;
     if (colon != std::string::npos &&
         colon + 1 < impl_->config.listen_address.size()) {
-        port = static_cast<uint16_t>(
-            std::stoi(impl_->config.listen_address.substr(colon + 1)));
+        // Guard the port parse: a non-numeric or out-of-range suffix must
+        // not throw out of start() (which would terminate the caller).
+        try {
+            port = static_cast<uint16_t>(
+                std::stoi(impl_->config.listen_address.substr(colon + 1)));
+        } catch (const std::invalid_argument&) {
+            error = "invalid cluster.listen_address port: " +
+                    impl_->config.listen_address;
+            return false;
+        } catch (const std::out_of_range&) {
+            error = "invalid cluster.listen_address port: " +
+                    impl_->config.listen_address;
+            return false;
+        }
     }
     const char* bind_host =
         (host.empty() || host == "0.0.0.0" ||

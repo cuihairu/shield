@@ -319,12 +319,52 @@ BOOST_AUTO_TEST_CASE(TransportStartFailurePaths) {
     manager->stop();
     manager.reset();
 
-    // Unparseable peer addresses are skipped at connect-tick time.
+    // A non-numeric or out-of-range listen port must fail start() cleanly,
+    // not throw.
+    ClusterConfig badlisten;
+    badlisten.enabled = true;
+    badlisten.node_id = "cov-badlisten";
+    badlisten.listen_address = "127.0.0.1:abc";
+    auto manager3 = std::make_unique<ClusterManager>(badlisten);
+    auto system3 = std::make_unique<caf::actor_system>(caf_config);
+    auto transport3 = std::make_unique<shield::cluster::ClusterTransport>(
+        *system3, *manager3, badlisten);
+    std::string error3;
+    uint16_t bound3 = 0;
+    BOOST_CHECK(!transport3->start(&bound3, error3));
+    BOOST_CHECK(error3.find("invalid cluster.listen_address port") !=
+                std::string::npos);
+    transport3.reset();
+    system3.reset();
+    manager3->stop();
+    manager3.reset();
+
+    ClusterConfig badlisten2;
+    badlisten2.enabled = true;
+    badlisten2.node_id = "cov-badlisten2";
+    badlisten2.listen_address = "127.0.0.1:99999999999";
+    auto manager4 = std::make_unique<ClusterManager>(badlisten2);
+    auto system4 = std::make_unique<caf::actor_system>(caf_config);
+    auto transport4 = std::make_unique<shield::cluster::ClusterTransport>(
+        *system4, *manager4, badlisten2);
+    std::string error4;
+    uint16_t bound4 = 0;
+    BOOST_CHECK(!transport4->start(&bound4, error4));
+    BOOST_CHECK(error4.find("invalid cluster.listen_address port") !=
+                std::string::npos);
+    transport4.reset();
+    system4.reset();
+    manager4->stop();
+    manager4.reset();
+
+    // Unparseable peer addresses (including non-numeric ports) are skipped at
+    // connect-tick time.
     ClusterConfig badpeers;
     badpeers.enabled = true;
     badpeers.node_id = "cov-badpeers";
     badpeers.listen_address = "127.0.0.1:0";
-    badpeers.peers = {"no-colon-here", ":123", "host:"};
+    badpeers.peers = {"no-colon-here", ":123", "host:", "127.0.0.1:abc",
+                      "127.0.0.1:99999999999"};
     auto manager2 = std::make_unique<ClusterManager>(badpeers);
     auto system2 = std::make_unique<caf::actor_system>(caf_config);
     auto transport2 = std::make_unique<shield::cluster::ClusterTransport>(

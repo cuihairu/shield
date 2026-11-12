@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -137,7 +138,18 @@ caf::behavior transport_loop(transport_actor* self, ClusterManager* manager,
         PeerLink link;
         link.address = address;
         link.host = address.substr(0, colon);
-        link.port = static_cast<uint16_t>(std::stoi(address.substr(colon + 1)));
+        try {
+            link.port =
+                static_cast<uint16_t>(std::stoi(address.substr(colon + 1)));
+        } catch (const std::invalid_argument&) {
+            auto& log = shield::log::get_logger("cluster");
+            SHIELD_LOG_ERROR(log, "Invalid peer port, skipping: " + address);
+            continue;
+        } catch (const std::out_of_range&) {
+            auto& log = shield::log::get_logger("cluster");
+            SHIELD_LOG_ERROR(log, "Invalid peer port, skipping: " + address);
+            continue;
+        }
         st.peers.push_back(std::move(link));
     }
 
