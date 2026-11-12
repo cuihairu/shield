@@ -48,6 +48,12 @@ namespace shield::lua::api {
 void register_timer_api(shd::table& shield, LuaServiceManager* manager,
                         LuaRuntime* runtime);
 }
+// lua_table_to_json is a free function in lua_api.cpp (declared in the private
+// lua_api_detail.hpp header); declare it here so the test can unit-test the
+// integer-key handling directly.
+namespace shield::lua {
+nlohmann::json lua_table_to_json(const shd::table& table);
+}
 
 namespace {
 
@@ -634,6 +640,24 @@ BOOST_AUTO_TEST_CASE(JsonToLuaTypeBranches) {
         {{"__shield_client_ref", false}, {"session_id", 1}});
     lua["v_fake"] = json_to_lua(lua, fake);
     BOOST_CHECK(lua["v_fake"].get_type() == shd::type::table);
+}
+
+// ---------------------------------------------------------------------------
+// lua_table_to_json must keep 64-bit integer keys (audit P2): a key above
+// INT_MAX is silently dropped when the conversion uses is<int>(), so spawn
+// opts / http json bodies lose data. The value-side int64 handling is already
+// covered by lua_to_json; this locks the key side for both implementations.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(TableToJsonKeepsLargeIntKeys) {
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::table, shd::lib::string);
+    shd::table table = lua.create_table();
+    const std::int64_t big = INT64_C(1) << 40;  // 1099511627776, > INT_MAX
+    table[big] = "x";
+    table[1] = "a";
+    const auto json = shield::lua::lua_table_to_json(table);
+    BOOST_CHECK_EQUAL(json.at(std::to_string(big)).get<std::string>(), "x");
+    BOOST_CHECK_EQUAL(json.at("1").get<std::string>(), "a");
 }
 
 // ---------------------------------------------------------------------------

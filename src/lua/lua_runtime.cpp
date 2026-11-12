@@ -406,8 +406,11 @@ bool lua_to_json_rec(const shd::object& value, nlohmann::json* out,
         std::string object_key;
         if (key_obj.is<std::string>()) {
             object_key = key_obj.as<std::string>();
-        } else if (key_obj.is<int>()) {
-            object_key = std::to_string(key_obj.as<int64_t>());
+        } else if (key_obj.is<std::int64_t>()) {
+            // 64-bit integer keys: a Lua integer above INT_MAX must survive
+            // (audit P2, mirrors lua_table_to_json); is<int>() would silently
+            // drop it.
+            object_key = std::to_string(key_obj.as<std::int64_t>());
         } else {
             continue;
         }
