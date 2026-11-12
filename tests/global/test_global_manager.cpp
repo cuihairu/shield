@@ -1194,6 +1194,44 @@ BOOST_AUTO_TEST_CASE(RateLimitWindowTails) {
     BOOST_CHECK_EQUAL(gm.rate_limit_remaining("fx", "fresh"), 4.0);
 }
 
+// The per-key maps are capped at max_keys: a flood of distinct keys must not
+// grow them without bound, and a new key past the cap is denied rather than
+// tracked (existing keys keep working).
+BOOST_AUTO_TEST_CASE(RateLimitMapCapacityBounds) {
+    GlobalManager gm(default_config());
+
+    // Sliding: cap at 3 keys, generous window so nothing ages out mid-test.
+    RateLimitConfig sliding;
+    sliding.sliding = true;
+    sliding.window_ms = 60000;
+    sliding.max_requests = 100;
+    sliding.max_keys = 3;
+    gm.rate_limit_configure("capsl", sliding);
+    for (int i = 0; i < 3; ++i) {
+        BOOST_CHECK(
+            gm.rate_limit_allow("capsl", "k" + std::to_string(i), 1).allowed);
+    }
+    BOOST_CHECK_EQUAL(gm.rate_limit_key_count("capsl"), 3u);
+    BOOST_CHECK(!gm.rate_limit_allow("capsl", "k3", 1).allowed);
+    BOOST_CHECK(!gm.rate_limit_allow("capsl", "k4", 1).allowed);
+    BOOST_CHECK_EQUAL(gm.rate_limit_key_count("capsl"), 3u);
+    // An existing key is unaffected by the cap.
+    BOOST_CHECK(gm.rate_limit_allow("capsl", "k0", 1).allowed);
+
+    // Fixed: cap at 2 keys, full burst so a tracked key never depletes.
+    RateLimitConfig fixed;
+    fixed.rate = 1000;
+    fixed.burst = 100;
+    fixed.max_keys = 2;
+    gm.rate_limit_configure("capfx", fixed);
+    BOOST_CHECK(gm.rate_limit_allow("capfx", "a", 1).allowed);
+    BOOST_CHECK(gm.rate_limit_allow("capfx", "b", 1).allowed);
+    BOOST_CHECK_EQUAL(gm.rate_limit_key_count("capfx"), 2u);
+    BOOST_CHECK(!gm.rate_limit_allow("capfx", "c", 1).allowed);
+    BOOST_CHECK_EQUAL(gm.rate_limit_key_count("capfx"), 2u);
+    BOOST_CHECK(gm.rate_limit_allow("capfx", "a", 1).allowed);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
 
 // ---------------------------------------------------------------------------

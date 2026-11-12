@@ -1416,6 +1416,8 @@ void register_global_api(shd::table& shield, LuaServiceManager* manager,
                     static_cast<std::uint64_t>(o.get_or("window", 60000.0));
                 config.max_requests =
                     static_cast<std::uint64_t>(o.get_or("max_requests", 100.0));
+                config.max_keys =
+                    static_cast<std::size_t>(o.get_or("max_keys", 65536.0));
             }
             mgr->rate_limit_configure(name, config);
             shd::table limiter = s.create_table();

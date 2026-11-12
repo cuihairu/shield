@@ -399,7 +399,20 @@ RateLimitResult GlobalManager::rate_limit_allow(const std::string& name,
     RateLimitResult out;
     if (cfg.sliding) {  // GCOVR_EXCL_BR_LINE (both sliding/fixed arms exercised
                         // by tests)
-        auto& hits = it->second.windows[key].hits;
+        auto& windows = it->second.windows;
+        auto wit = windows.find(key);
+        if (wit == windows.end()) {
+            // Cap per-key state: a flood of distinct keys must not grow the
+            // map without bound (memory DoS). A new key past the cap is
+            // denied rather than tracked.
+            if (windows.size() >= cfg.max_keys) {
+                out.remaining = 0.0;
+                out.retry_after_ms = cfg.window_ms;
+                return out;
+            }
+            wit = windows.emplace(key, RateWindow{}).first;
+        }
+        auto& hits = wit->second.hits;
         while (!hits.empty() && now - hits.front() >= cfg.window_ms) {
             hits.pop_front();
         }
@@ -415,7 +428,18 @@ RateLimitResult GlobalManager::rate_limit_allow(const std::string& name,
         return out;
     }
 
-    auto& bucket = it->second.buckets[key];
+    auto& buckets = it->second.buckets;
+    auto bit = buckets.find(key);
+    if (bit == buckets.end()) {
+        if (buckets.size() >= cfg.max_keys) {
+            out.remaining = 0.0;
+            out.retry_after_ms = static_cast<std::uint64_t>(
+                std::max(cfg.burst / std::max(cfg.rate, 1.0) * 1000.0, 1.0));
+            return out;
+        }
+        bit = buckets.emplace(key, RateBucket{}).first;
+    }
+    auto& bucket = bit->second;
     if (bucket.last_refill_ms == 0) {
         bucket.tokens = cfg.burst;
     }

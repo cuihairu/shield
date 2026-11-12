@@ -144,6 +144,7 @@ struct RateLimitConfig {
     bool sliding = false;              /// true: exact window, ignore rate/burst
     std::uint64_t window_ms = 60000;   /// window size (sliding)
     std::uint64_t max_requests = 100;  /// per-window cap (sliding)
+    std::size_t max_keys = 65536;      /// max distinct keys tracked per limiter
 };
 
 struct RateLimitResult {
