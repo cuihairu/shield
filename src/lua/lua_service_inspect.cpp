@@ -1392,7 +1392,7 @@ LuaServiceManager::ProfileStartResult LuaServiceManager::profile_start(
                 return cos;
             };
             auto sampler =
-                std::make_unique<ProfileSampler>(*session, std::move(provider));
+                std::make_shared<ProfileSampler>(session, std::move(provider));
             ProfileSampler* sampler_ptr = nullptr;
             {
                 std::unique_lock lock(impl->registry_mutex);

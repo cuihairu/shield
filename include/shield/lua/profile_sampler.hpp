@@ -7,8 +7,10 @@
 // locks. See docs/superpowers/plans/2026-09-22-ops-profile-v1.md.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,7 +28,16 @@ namespace shield::lua {
 /// atomic slot: the manager arbitrates at most one session per process,
 /// and CAF does not pin an actor to one OS thread, so a thread_local slot
 /// would be published by one worker and read as null by the next.
-class ProfileSampler {
+///
+/// The slot holds a shared_ptr, not a raw pointer: sweep_active() runs at
+/// the coroutine drive points of every service actor thread, and a
+/// concurrent stop path may destroy the session state while such a reader
+/// holds the loaded pointer (the old load-then-deref was a use-after-free
+/// window). Readers load the shared_ptr, so the sampler — and the
+/// ProfileSession it owns — stay alive until the last in-flight reader is
+/// done; the slot is cleared promptly by deactivate()/uninstall() and the
+/// object frees itself when the last copy drops.
+class ProfileSampler : public std::enable_shared_from_this<ProfileSampler> {
 public:
     /// Owner-thread collection of this service's live coroutines (plain
     /// pointers, safe to use only on the owner thread while the session
@@ -40,7 +51,10 @@ public:
     /// up by the next sweep.
     static constexpr int kRescanEvery = 100;
 
-    ProfileSampler(ProfileSession& session, CoProvider co_provider);
+    /// The sampler owns its session: an in-flight reader holding a slot
+    /// copy keeps both alive past the manager-side state teardown.
+    ProfileSampler(std::shared_ptr<ProfileSession> session,
+                   CoProvider co_provider);
     ~ProfileSampler();
 
     ProfileSampler(const ProfileSampler&) = delete;
@@ -93,7 +107,7 @@ private:
     void sweep_once();
 
     lua_State* main_L_;
-    ProfileSession& session_;
+    std::shared_ptr<ProfileSession> session_;
     CoProvider co_provider_;
     std::string service_id_;
 

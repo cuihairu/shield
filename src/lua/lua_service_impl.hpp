@@ -373,7 +373,10 @@ struct LuaServiceManager::Impl {
     struct ProfileSessionState {
         std::string service_id;
         std::shared_ptr<ProfileSession> session;
-        std::unique_ptr<ProfileSampler> sampler;
+        // Shared, not unique: the global slot carries the same shared_ptr,
+        // and readers (the hook, sweep_active) copy it, so the sampler and
+        // its session outlive this state until the last reader is done.
+        std::shared_ptr<ProfileSampler> sampler;
         std::shared_ptr<std::promise<nlohmann::json>> done;
         caf::actor duration_driver;
         std::chrono::steady_clock::time_point started_at;
