@@ -25,9 +25,10 @@ namespace shield::lua {
 /// @brief Owner-thread sampling session bound to one VM.
 ///
 /// The active sampler is found by the C hook through a process-global
-/// atomic slot: the manager arbitrates at most one session per process,
-/// and CAF does not pin an actor to one OS thread, so a thread_local slot
-/// would be published by one worker and read as null by the next.
+/// thread-safe slot: the manager arbitrates at most one session per
+/// process, and CAF does not pin an actor to one OS thread, so a
+/// thread_local slot would be published by one worker and read as null by
+/// the next.
 ///
 /// The slot holds a shared_ptr, not a raw pointer: sweep_active() runs at
 /// the coroutine drive points of every service actor thread, and a

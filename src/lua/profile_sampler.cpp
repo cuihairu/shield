@@ -2,6 +2,9 @@
 
 #include <atomic>
 #include <cstddef>
+#include <memory>
+#include <mutex>
+#include <utility>
 
 // lua.h itself carries no extern "C" guard; lua.hpp provides the C++
 // entry point (include lua.hpp from C++ translation units).
@@ -23,7 +26,51 @@ namespace {
 // take a shared_ptr copy (the sampler owns its session, which keeps the
 // aggregation tree alive with it) instead of dereferencing a raw pointer
 // that can dangle between the load and the use.
-std::atomic<std::shared_ptr<ProfileSampler>> g_active_sampler;
+// NOTE: std::atomic<std::shared_ptr<T>> is not used. It is implemented by
+// libstdc++, but libc++ (macOS CI) and MSVC do not provide the specialization,
+// so the portable equivalent is a mutex-guarded slot with the same
+// acquire/release shape. Every method grabs the lock, hence no unlocked
+// fast path is needed.
+struct AtomicSlot {
+    // Both mutations hand the displaced value back to the caller. Destroying
+    // a shared_ptr can run the last ProfileSampler's destructor, which calls
+    // deactivate() -> clear_if() and would re-enter this very mutex (not
+    // recursive) and hang; handing the value out means it drops — and any
+    // destructor fires — after the lock_guard has unwound. The return is a
+    // prvalue bound at the end of the caller's full expression, i.e. outside
+    // this scope, so the sequencing is what the lock relies on.
+    std::shared_ptr<ProfileSampler> store(
+        std::shared_ptr<ProfileSampler> sampler) {
+        std::lock_guard<std::mutex> lk(lock_);
+        return std::exchange(value_, std::move(sampler));
+    }
+    std::shared_ptr<ProfileSampler> load() const {
+        std::lock_guard<std::mutex> lk(lock_);
+        return value_;
+    }
+    // Unpublish only while the slot still holds sampler: the CAS contract the
+    // revoke and uninstall paths need (an abandoned session must never clear
+    // the slot a later session published, audit F4/F5). The address compare
+    // is safe — a slot value is always a live object (the shared_ptr keeps it
+    // that way), and the owner is alive for the duration of the caller's own
+    // member function, including its destructor path. An empty return means
+    // the slot held someone else (or nothing): every sampler's destructor
+    // reaches it, deactivate() having already cleared the slot before the
+    // last reference drops.
+    std::shared_ptr<ProfileSampler> clear_if(const ProfileSampler* sampler) {
+        std::lock_guard<std::mutex> lk(lock_);
+        if (value_ && value_.get() == sampler) {
+            return std::exchange(value_, std::shared_ptr<ProfileSampler>());
+        }
+        return {};
+    }
+
+private:
+    mutable std::mutex lock_;
+    std::shared_ptr<ProfileSampler> value_;
+};
+
+AtomicSlot g_active_sampler;
 
 // Registry identity key: only the address is used, the char is never read
 // or written. install() stores the sampler's address under this key in the
@@ -50,20 +97,10 @@ void ProfileSampler::deactivate() {
     // points at this sampler: the manager arbitrates one session per
     // process, so a second sampler's deactivate must never unpublish the
     // active one. No lua_State is touched — safe on any thread, unlike
-    // uninstall(). The load returns a copy, so the object stays alive
-    // across the swap even when this runs from the destructor.
+    // uninstall(). clear_if compares addresses, so it needs no
+    // shared_from_this and stays callable from the destructor.
     revoked_.store(true, std::memory_order_release);
-    std::shared_ptr<ProfileSampler> current =
-        g_active_sampler.load(std::memory_order_acquire);
-    if (current.get() != this) {  // GCOVR_EXCL_BR_LINE (defensive: an
-        // unpublished sampler's deactivate is unreachable end-to-end —
-        // abandon and dtor paths only run for sessions that were handed
-        // out; kept so the CAS below never fabricates a shared_ptr of a
-        // possibly-freed object)
-        return;  // GCOVR_EXCL_LINE (defensive: see above)
-    }
-    g_active_sampler.compare_exchange_strong(current,
-                                             std::shared_ptr<ProfileSampler>());
+    g_active_sampler.clear_if(this);
 }
 
 ProfileSampler::~ProfileSampler() {
@@ -126,8 +163,7 @@ void ProfileSampler::record_current_stack(ProfileSampler* self, lua_State* L) {
 void ProfileSampler::sampler_hook(lua_State* L, lua_Debug* /*ar*/) {
     // The copy keeps the sampler (and its session) alive for the whole
     // hook body, however the stop path races this firing.
-    std::shared_ptr<ProfileSampler> self =
-        g_active_sampler.load(std::memory_order_acquire);
+    std::shared_ptr<ProfileSampler> self = g_active_sampler.load();
     if (self == nullptr) {
         // Stale hook without an active sampler (should not happen: hooks
         // are cleared on uninstall before the sampler dies). Disarm.
@@ -193,8 +229,7 @@ void ProfileSampler::sweep_active(std::string_view service_id) {
     // sampler's registered lua_State values and may call lua_sethook. Only
     // the owner service's dispatch thread may touch its sampler's
     // coroutines; every other service drive point is a no-op.
-    std::shared_ptr<ProfileSampler> sampler =
-        g_active_sampler.load(std::memory_order_acquire);
+    std::shared_ptr<ProfileSampler> sampler = g_active_sampler.load();
     if (sampler != nullptr && sampler->service_id_ == service_id) {
         sampler->sweep_once();
     }
@@ -218,7 +253,7 @@ void ProfileSampler::install(lua_State* main_L, std::string service_id) {
     lua_pushlightuserdata(main_L, this);
     lua_rawset(main_L, LUA_REGISTRYINDEX);
 
-    g_active_sampler.store(shared_from_this(), std::memory_order_release);
+    g_active_sampler.store(shared_from_this());
     if (revoked_.load(std::memory_order_acquire)) {
         // Abandon won the race: deactivate() ran between the manager's
         // lock-protected handout and this install's publish (or before it
@@ -227,9 +262,7 @@ void ProfileSampler::install(lua_State* main_L, std::string service_id) {
         // a session legitimately installed after the abandon is never
         // clobbered by this lagging task — then leave the VM untouched
         // (no hook armed).
-        std::shared_ptr<ProfileSampler> published = shared_from_this();
-        g_active_sampler.compare_exchange_strong(
-            published, std::shared_ptr<ProfileSampler>());
+        g_active_sampler.clear_if(this);
         return;
     }
     lua_sethook(main_L_, &sampler_hook, LUA_MASKCOUNT,
@@ -254,9 +287,7 @@ void ProfileSampler::uninstall(lua_State* main_L) {
     // fork task delayed past a newer session's install) must not clobber
     // the new session's publication (audit F5) — only a slot still holding
     // this sampler gets cleared.
-    std::shared_ptr<ProfileSampler> expected = shared_from_this();
-    g_active_sampler.compare_exchange_strong(expected,
-                                             std::shared_ptr<ProfileSampler>());
+    g_active_sampler.clear_if(this);
     if (main_L != nullptr) {  // GCOVR_EXCL_BR_LINE (defensive: callers pass
         // the main state of the still-alive service VM)
 
