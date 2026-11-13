@@ -722,7 +722,12 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
         int status;
         try {
             status = lua_resume(co, L, 0, &nres);
-        } catch (const EvalKill&) {
+        } catch (const EvalKill&) {  // GCOVR_EXCL_BR_LINE (defensive: the
+            // escalated escape arms only when the yield degraded to a
+            // catchable error — unreachable end-to-end in Lua 5.5; the
+            // hook-side escalation at eval_instruction_hook carries the
+            // mirrored exclusion)
+            // GCOVR_EXCL_START (defensive: see above)
             // The C++ escape unwound through Lua's C frames mid-execution:
             // close the thread (its stack resets with it) and drive the
             // shared GC state through a full cycle so no mid-step phase
@@ -735,6 +740,7 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
                 *error = "eval instruction limit exceeded";
             }
             return false;
+            // GCOVR_EXCL_STOP
         }
         const bool budget_kill = t_eval_kill_issued;
         t_eval_kill_issued = false;

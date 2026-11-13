@@ -2021,6 +2021,25 @@ BOOST_AUTO_TEST_CASE(ExecLuaNullErrorAndTostringFallbacks) {
     BOOST_REQUIRE(result.is_array() && result.size() == 1u);
     BOOST_CHECK(result[0].get<std::string>().find("non-string error") !=
                 std::string::npos);
+
+    // The non-budget path runs the chunk with a plain pcall on the main
+    // state: its error shapes mirror the budgeted ones.
+    BOOST_CHECK(!runtime.exec_lua(vm, "error('nb')", nullptr, nullptr, false));
+    error.clear();
+    BOOST_CHECK(!runtime.exec_lua(vm, "error('nb2')", &result, &error, false));
+    // Lua prefixes runtime errors with the chunkname (exec_lua loads with
+    // the '=' literal prefix, so the chunk is "console").
+    BOOST_CHECK(error.find("nb2") != std::string::npos);
+    BOOST_CHECK(!runtime.exec_lua(vm, "error({})", &result, &error, false));
+    BOOST_CHECK_EQUAL(error, "exec error");
+    result.clear();
+    BOOST_CHECK(runtime.exec_lua(vm, "return 41 + 1", &result, nullptr, false));
+    BOOST_REQUIRE(result.is_array() && result.size() == 1u);
+    BOOST_CHECK_EQUAL(result[0].get<int>(), 42);
+
+    // A user yield on the budgeted path with no error out-param still
+    // fails the eval (the message is dropped).
+    BOOST_CHECK(!runtime.exec_lua(vm, "coroutine.yield(1)"));
 }
 
 // LuaPack edge shapes: a default-constructed shd::object encodes as Nil,
