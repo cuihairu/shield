@@ -661,6 +661,25 @@ BOOST_AUTO_TEST_CASE(TableToJsonKeepsLargeIntKeys) {
 }
 
 // ---------------------------------------------------------------------------
+// The single-big-key shape: a lone key like 2^32+1 must NOT take the array
+// branch. is<int>() accepts any integer and as<int>() narrows 2^32+1 down to
+// 1, which made the one-entry table look like the array [1], read the
+// nonexistent table[1], and return [null] with the real key dropped. The
+// companion key 1 in TableToJsonKeepsLargeIntKeys masked this by breaking
+// the array scan on its own path. Regression for the codex deep-audit.
+// ---------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(TableToJsonSingleBigKeyStaysObject) {
+    shd::state lua;
+    lua.open_libraries(shd::lib::base, shd::lib::table, shd::lib::string);
+    shd::table table = lua.create_table();
+    const std::int64_t big = INT64_C(4294967297);  // 2^32 + 1 -> narrows to 1
+    table[big] = "x";
+    const auto json = shield::lua::lua_table_to_json(table);
+    BOOST_CHECK_MESSAGE(json.is_object(), "single 2^32+1 key is not an array");
+    BOOST_CHECK_EQUAL(json.at("4294967297").get<std::string>(), "x");
+}
+
+// ---------------------------------------------------------------------------
 // Namespace-level registration stubs.
 // ---------------------------------------------------------------------------
 BOOST_AUTO_TEST_CASE(RegistrationStubs) {

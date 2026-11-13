@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -68,6 +69,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -340,13 +342,19 @@ nlohmann::json lua_table_to_json(const shd::table& table) {
     for (const auto& [key, _] : table) {
         ++entry_count;
         shd::object key_obj = key;
-        if (!key_obj.is<int>()) {
+        // Read the key at full 64-bit width: is<int>() only checks the
+        // integer type, and as<int>() would silently narrow a key like
+        // 2^32+1 down to 1 — making the single-key table look array-like,
+        // taking the array branch, and reading a table[1] that does not
+        // exist (the value was lost). Anything outside the positive int
+        // range is an object key, same as the runtime converter.
+        if (!key_obj.is<std::int64_t>()) {
             array_like = false;
             break;
         }
 
-        const int index = key_obj.as<int>();
-        if (index <= 0) {
+        const std::int64_t index = key_obj.as<std::int64_t>();
+        if (index <= 0 || index > std::numeric_limits<int>::max()) {
             array_like = false;
             break;
         }
