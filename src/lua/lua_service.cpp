@@ -119,15 +119,15 @@ void LuaServiceManager::Impl::abandon_profile_session_locked(
                    // under the same lock)
         return;
     }
-    // Park the state instead of letting the local die: this helper runs on
-    // teardown threads foreign to the sampled service, whose actor may be
-    // mid-dispatch — possibly inside the sampling hook holding the pointer
-    // it loaded from the slot. The sampler object must outlive every such
-    // reader; abandoned_profiles frees it at Impl destruction (after the
-    // manager dtor has joined/drained the actors).
+    // The state dies at the end of this critical section: the sampler slot
+    // carries shared_ptr copies (an in-flight hook keeps the sampler — and
+    // the ProfileSession it owns — alive until it returns), and the
+    // duration driver holds no state reference (it is exited below). The
+    // former abandoned_profiles park only stretched this lifetime
+    // unboundedly — nothing ever removed entries, so each abandon leaked a
+    // session's worth of memory until process exit (audit F8).
     auto profile =
         std::make_shared<ProfileSessionState>(std::move(*profile_session));
-    abandoned_profiles.push_back(profile);
     profile_session.reset();
     // Unpublish immediately (the parked dtor would only clear the slot
     // much later): a firing hook observes the null slot and disarms

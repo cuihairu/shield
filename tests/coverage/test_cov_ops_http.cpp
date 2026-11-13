@@ -1625,6 +1625,45 @@ BOOST_AUTO_TEST_CASE(ProfileManagerDtorAbandonsActiveSession) {
     BOOST_CHECK(teardown < std::chrono::seconds(20));
 }
 
+// Repeated abandon cycles (audit F8): every force_remove with a live
+// session settles that session's start promise as abandoned and leaves
+// nothing parked behind — the manager stays fully functional for the next
+// cycle instead of accumulating dead session state until process exit.
+BOOST_AUTO_TEST_CASE(RepeatedProfileAbandonCyclesStayFunctional) {
+    for (int round = 0; round < 3; ++round) {
+        const std::string svc = "prof_cycle_svc" + std::to_string(round);
+        spawn_burn_service(*manager, svc);
+        shield::lua::ProfileSessionConfig config;
+        config.service = svc;
+        auto promise = std::make_shared<std::promise<nlohmann::json>>();
+        auto report = promise->get_future().share();
+        BOOST_REQUIRE(
+            manager->profile_start(svc, config, promise) ==
+            shield::lua::LuaServiceManager::ProfileStartResult::kStarted);
+        manager->exit(svc, "test cycle");
+        BOOST_REQUIRE(report.wait_for(std::chrono::seconds(10)) ==
+                      std::future_status::ready);
+        auto data = report.get();
+        BOOST_CHECK(data["abandoned"] == true);
+        BOOST_CHECK_EQUAL(data["service"], svc);
+    }
+
+    // The manager is still fully operational after the cycles.
+    const std::string svc = spawn_burn_service(*manager, "prof_cycle_final");
+    shield::lua::ProfileSessionConfig config;
+    config.service = svc;
+    auto promise = std::make_shared<std::promise<nlohmann::json>>();
+    auto report = promise->get_future();
+    BOOST_REQUIRE(manager->profile_start(svc, config, promise) ==
+                  shield::lua::LuaServiceManager::ProfileStartResult::kStarted);
+    BOOST_CHECK(manager->profile_stop(svc, nullptr));
+    BOOST_REQUIRE(report.wait_for(std::chrono::seconds(10)) ==
+                  std::future_status::ready);
+    BOOST_CHECK(report.get()["abandoned"].is_boolean() == false);
+
+    manager->shutdown_all("done");
+}
+
 BOOST_AUTO_TEST_CASE(ProfileStopAfterNaturalExpiry409) {
     spawn_burn_service(*manager, "prof_exp_svc");
     RawHttpClient client;
