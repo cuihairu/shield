@@ -335,20 +335,37 @@ jobs:
         run: |
           SUMMARY_FILE=coverage-summary.md
           cd build-cov
-          gcovr -r . \
-            --exclude-directories '^\.(?!$)' \
-            --filter '\.\./src/' \
-            --filter '\.\./include/shield/' \
-            --txt coverage.txt \
-            --txt-metric branch \
-            --exclude-unreachable-branches \
-            --exclude-throw-branches \
-            --xml coverage.xml \
-            --html-details coverage.html \
-            --gcov-ignore-parse-errors negative_hits.warn \
-            --fail-under-line 98 \
-            --fail-under-branch 100 \
-            --fail-under-function 100
+          collect() {
+            gcovr -r . \
+              --exclude-directories '^\.(?!$)' \
+              --filter '\.\./src/' \
+              --filter '\.\./include/shield/' \
+              --txt coverage.txt \
+              --txt-metric branch \
+              --exclude-unreachable-branches \
+              --exclude-throw-branches \
+              --xml coverage.xml \
+              --html-details coverage.html \
+              --gcov-ignore-parse-errors negative_hits.warn \
+              --fail-under-line 98 \
+              --fail-under-branch 100 \
+              --fail-under-function 100
+          }
+          # fork()ing tests can tear the merged gcda counters and produce
+          # negative line hits; gcovr then reports those lines uncovered even
+          # though the tests executed them. If the failure log shows exactly
+          # that, rerun the suite once for a clean merge before failing.
+          if ! collect 2>&1 | tee /tmp/gcovr-main.log; then
+            if grep -q "Ignoring negative hits" /tmp/gcovr-main.log; then
+              echo "Negative gcda hits detected; rerunning the suite once"
+              find . -name '*.gcda' -delete
+              ctest --build-config Debug --output-on-failure
+              collect
+            else
+              tail -40 /tmp/gcovr-main.log
+              exit 1
+            fi
+          fi
           TOTAL=$(grep -E '^TOTAL' coverage.txt)
           echo "### Branch coverage (src/ + include/shield/)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -446,25 +463,42 @@ jobs:
         shell: bash
         run: |
           cd build-cov-opt
-          gcovr -r . \
-            --exclude-directories '^\.(?!$)' \
-            --filter '\.\./src/cluster/' \
-            --filter '\.\./src/player/' \
-            --filter '\.\./src/server/' \
-            --filter '\.\./src/console/cluster_status\.cpp' \
-            --filter '\.\./src/console/server_status\.cpp' \
-            --filter '\.\./src/lua/lua_api\.cpp' \
-            --filter '\.\./src/global/global_manager\.cpp' \
-            --filter '\.\./src/global/global_data_backend\.cpp' \
-            --filter '\.\./src/global/global_lock_backend\.cpp' \
-            --filter '\.\./src/global/global_rank_backend\.cpp' \
-            --filter '\.\./src/bootstrap/bootstrap\.cpp' \
-            --txt coverage-optional.txt \
-            --txt-metric line \
-            --exclude-unreachable-branches \
-            --exclude-throw-branches \
-            --gcov-ignore-parse-errors negative_hits.warn \
-            --fail-under-line 100
+          collect() {
+            gcovr -r . \
+              --exclude-directories '^\.(?!$)' \
+              --filter '\.\./src/cluster/' \
+              --filter '\.\./src/player/' \
+              --filter '\.\./src/server/' \
+              --filter '\.\./src/console/cluster_status\.cpp' \
+              --filter '\.\./src/console/server_status\.cpp' \
+              --filter '\.\./src/lua/lua_api\.cpp' \
+              --filter '\.\./src/global/global_manager\.cpp' \
+              --filter '\.\./src/global/global_data_backend\.cpp' \
+              --filter '\.\./src/global/global_lock_backend\.cpp' \
+              --filter '\.\./src/global/global_rank_backend\.cpp' \
+              --filter '\.\./src/bootstrap/bootstrap\.cpp' \
+              --txt coverage-optional.txt \
+              --txt-metric line \
+              --exclude-unreachable-branches \
+              --exclude-throw-branches \
+              --gcov-ignore-parse-errors negative_hits.warn \
+              --fail-under-line 100
+          }
+          # Same negative-hit gcda merge hazard as the main coverage job:
+          # fork()ing tests can leave torn counters that gcovr counts as
+          # uncovered lines. Detect the signature, rerun the suite once for
+          # a clean merge, and only then fail for real.
+          if ! collect 2>&1 | tee /tmp/gcovr-opt.log; then
+            if grep -q "Ignoring negative hits" /tmp/gcovr-opt.log; then
+              echo "Negative gcda hits detected; rerunning the suite once"
+              find . -name '*.gcda' -delete
+              ctest --build-config Debug --output-on-failure
+              collect
+            else
+              tail -40 /tmp/gcovr-opt.log
+              exit 1
+            fi
+          fi
           TOTAL=$(grep -E '^TOTAL' coverage-optional.txt)
           echo "### Optional-module line coverage (four switches ON)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
