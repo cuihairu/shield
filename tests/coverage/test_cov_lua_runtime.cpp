@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <thread>
 
@@ -1971,15 +1972,15 @@ BOOST_AUTO_TEST_CASE(InvokeClientRpcArmsSamplerSweep) {
     shield::lua::ProfileSessionConfig profile_cfg;
     profile_cfg.service = svc.service_id;
     profile_cfg.interval = 100;
-    shield::lua::ProfileSession session(profile_cfg);
+    auto session = std::make_shared<shield::lua::ProfileSession>(profile_cfg);
     int provider_calls = 0;
-    shield::lua::ProfileSampler sampler(session, [&] {
+    auto sampler = std::make_shared<shield::lua::ProfileSampler>(session, [&] {
         ++provider_calls;
         return std::vector<lua_State*>{};
     });
     lua_State* main_state = runtime.vm_main_state(vm);
     BOOST_REQUIRE(main_state != nullptr);
-    sampler.install(main_state, svc.service_id);
+    sampler->install(main_state, svc.service_id);
     const int baseline = provider_calls;
 
     BOOST_CHECK(runtime.invoke_client_rpc(vm, ok_h, ingress, nullptr, &manager,
@@ -1989,7 +1990,7 @@ BOOST_AUTO_TEST_CASE(InvokeClientRpcArmsSamplerSweep) {
     // coroutines; the drive point must add exactly one more sweep.
     BOOST_CHECK_EQUAL(provider_calls, baseline + 1);
 
-    sampler.uninstall(main_state);
+    sampler->uninstall(main_state);
 }
 
 // exec_lua with error = nullptr across load / exec failures, plus the
