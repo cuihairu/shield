@@ -72,16 +72,16 @@ public:
     void uninstall(lua_State* main_L);
 
     /// @brief Unpublish this sampler from the global slot without touching
-    /// any lua_State.
+    /// any lua_State, and revoke it: a lagging install task that runs after
+    /// this call detects the revoke and no-ops instead of republishing
+    /// (abandon can win the race against the install it was handed out to).
     ///
     /// Uninstall must run on the owning actor thread (it calls lua_sethook);
     /// abandon paths run on foreign teardown threads, so they clear the
     /// slot with this instead. After it returns a firing hook observes the
     /// null slot and disarms itself, and sweep_active() becomes a no-op.
-    /// The object itself stays alive: a hook that loaded the pointer just
-    /// before the swap may still be dereferencing it, so destruction is the
-    /// caller's deferred responsibility (the manager parks abandoned
-    /// sessions until every dispatch thread is gone).
+    /// The object itself stays alive until the last shared_ptr copy drops
+    /// (the slot and every in-flight hook hold one).
     void deactivate();
 
     /// @brief Hook entry (LUA_MASKCOUNT). Public so it can be named by
@@ -119,6 +119,12 @@ private:
     int saved_count_ = 0;
 
     int hits_ = 0;  ///< hook invocations since install (drives rescan)
+
+    // Set by deactivate(): a revoked sampler is un-publishable — install()
+    // checks this before arming and again after publishing (the abandon
+    // path can run between the manager's handout and the install task's
+    // execution), so an abandoned sampler can never reappear on the slot.
+    std::atomic<bool> revoked_{false};
 };
 
 }  // namespace shield::lua

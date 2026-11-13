@@ -659,6 +659,39 @@ BOOST_AUTO_TEST_CASE(StaleHookOnAbandonedVMDoesNotAdoptNextSampler) {
     sampler_b->uninstall(vm_b.L);
 }
 
+/// An install task handed out before the abandon but running after
+/// deactivate() must not republish the revoked sampler (audit F4): the
+/// revoke protocol makes install a no-op — the slot stays empty, no hook
+/// is armed on the VM, and drive-point sweeps record nothing.
+BOOST_AUTO_TEST_CASE(InstallAfterDeactivateDoesNotRepublish) {
+    BareVM vm;
+    BOOST_REQUIRE(vm.L != nullptr);
+
+    ProfileSessionConfig cfg;
+    cfg.service = "gw";
+    cfg.interval = 1;
+    auto session = std::make_shared<ProfileSession>(cfg);
+    auto sampler = std::make_shared<ProfileSampler>(
+        session, [] { return std::vector<lua_State*>{}; });
+
+    // Abandon path: deactivate runs before the lagging install task gets
+    // scheduled.
+    sampler->deactivate();
+    sampler->install(vm.L, "gw");  // must be a no-op
+
+    do_chunk(vm.L,
+             "local s = 0 "
+             "for i = 1, 100000 do s = s + i end");
+    BOOST_TEST(session->total_samples() == 0U);
+    BOOST_CHECK(lua_gethook(vm.L) == nullptr);
+
+    // A drive point after the failed install sweeps nothing.
+    ProfileSampler::sweep_active("gw");
+    BOOST_TEST(session->total_samples() == 0U);
+
+    sampler->uninstall(vm.L);  // teardown stays balanced
+}
+
 /// The stop path races sweep_active() on foreign service threads: a drive
 /// point can load the slot right before the owner clears it and drops the
 /// last sampler reference. The old raw load-then-deref read

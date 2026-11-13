@@ -44,12 +44,15 @@ ProfileSampler::ProfileSampler(std::shared_ptr<ProfileSession> session,
     : session_(std::move(session)), co_provider_(std::move(co_provider)) {}
 
 void ProfileSampler::deactivate() {
-    // Clear the slot only while it still points at this sampler: the
-    // manager arbitrates one session per process, so a second sampler's
-    // deactivate must never unpublish the active one. No lua_State is
-    // touched — safe on any thread, unlike uninstall(). The load returns a
-    // copy, so the object stays alive across the swap even when this runs
-    // from the destructor.
+    // Revoke first: after this store a lagging install task's install()
+    // detects the revoke and no-ops, so abandon can never be undone by a
+    // republication (audit F4). Then clear the slot only while it still
+    // points at this sampler: the manager arbitrates one session per
+    // process, so a second sampler's deactivate must never unpublish the
+    // active one. No lua_State is touched — safe on any thread, unlike
+    // uninstall(). The load returns a copy, so the object stays alive
+    // across the swap even when this runs from the destructor.
+    revoked_.store(true, std::memory_order_release);
     std::shared_ptr<ProfileSampler> current =
         g_active_sampler.load(std::memory_order_acquire);
     if (current.get() != this) {  // GCOVR_EXCL_BR_LINE (defensive: an
@@ -198,6 +201,13 @@ void ProfileSampler::sweep_active(std::string_view service_id) {
 }
 
 void ProfileSampler::install(lua_State* main_L, std::string service_id) {
+    if (revoked_.load(std::memory_order_acquire)) {
+        // The abandon path deactivated this sampler before the install
+        // task got scheduled (the handout is lock-protected, the install
+        // runs outside the lock): a deactivated sampler must never come
+        // back (audit F4). Slot and VM stay untouched.
+        return;
+    }
     // Save, then arm, then publish — a hook firing between sethook and the
     // publish would find no sampler and disarm itself. The publish stores
     // shared_from_this(): the caller handed this sampler to the session
@@ -216,6 +226,17 @@ void ProfileSampler::install(lua_State* main_L, std::string service_id) {
     lua_rawset(main_L, LUA_REGISTRYINDEX);
 
     g_active_sampler.store(shared_from_this(), std::memory_order_release);
+    if (revoked_.load(std::memory_order_acquire)) {
+        // Abandon won the race between the revoked_ check above and this
+        // publish: deactivate() cleared the slot before the revoke store or
+        // its CAS will. Unpublish — but only while the slot still holds
+        // this sampler, so a session legitimately installed after the
+        // abandon is never clobbered by this lagging task.
+        std::shared_ptr<ProfileSampler> published = shared_from_this();
+        g_active_sampler.compare_exchange_strong(
+            published, std::shared_ptr<ProfileSampler>());
+        return;
+    }
     lua_sethook(main_L_, &sampler_hook, LUA_MASKCOUNT,
                 static_cast<int>(session_->config().interval));
 
