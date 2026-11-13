@@ -692,6 +692,44 @@ BOOST_AUTO_TEST_CASE(InstallAfterDeactivateDoesNotRepublish) {
     sampler->uninstall(vm.L);  // teardown stays balanced
 }
 
+/// A lagging uninstall of an already-superseded session must not clobber
+/// the newer session's publication (audit F5): the slot clear is a CAS on
+/// `this`, so after A's uninstall the slot still holds B and B keeps
+/// sampling its own VM.
+BOOST_AUTO_TEST_CASE(LaggingUninstallKeepsNextSessionSlot) {
+    BareVM vm_a;
+    BOOST_REQUIRE(vm_a.L != nullptr);
+    BareVM vm_b;
+    BOOST_REQUIRE(vm_b.L != nullptr);
+
+    // A installs; B's install supersedes it on the process slot.
+    ProfileSessionConfig cfg_a;
+    cfg_a.service = "gw";
+    cfg_a.interval = 1;
+    auto session_a = std::make_shared<ProfileSession>(cfg_a);
+    auto sampler_a = std::make_shared<ProfileSampler>(
+        session_a, [] { return std::vector<lua_State*>{}; });
+    sampler_a->install(vm_a.L, "gw");
+
+    ProfileSessionConfig cfg_b;
+    cfg_b.service = "other";
+    cfg_b.interval = 1;
+    auto session_b = std::make_shared<ProfileSession>(cfg_b);
+    auto sampler_b = std::make_shared<ProfileSampler>(
+        session_b, [] { return std::vector<lua_State*>{}; });
+    sampler_b->install(vm_b.L, "other");
+
+    // A's lagging teardown: must leave B published.
+    sampler_a->uninstall(vm_a.L);
+
+    do_chunk(vm_b.L,
+             "local s = 0 "
+             "for i = 1, 100000 do s = s + i end");
+    BOOST_TEST(session_b->total_samples() > 0U);
+
+    sampler_b->uninstall(vm_b.L);
+}
+
 /// The stop path races sweep_active() on foreign service threads: a drive
 /// point can load the slot right before the owner clears it and drops the
 /// last sampler reference. The old raw load-then-deref read

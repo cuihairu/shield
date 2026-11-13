@@ -254,8 +254,14 @@ void ProfileSampler::install(lua_State* main_L, std::string service_id) {
 
 void ProfileSampler::uninstall(lua_State* main_L) {
     // Unpublish first so a hook firing mid-teardown finds nothing and
-    // disarms itself instead of recording into a dying session.
-    g_active_sampler.store(nullptr, std::memory_order_release);
+    // disarms itself instead of recording into a dying session. The clear
+    // is a CAS: a lagging uninstall of an already-superseded session (its
+    // fork task delayed past a newer session's install) must not clobber
+    // the new session's publication (audit F5) — only a slot still holding
+    // this sampler gets cleared.
+    std::shared_ptr<ProfileSampler> expected = shared_from_this();
+    g_active_sampler.compare_exchange_strong(expected,
+                                             std::shared_ptr<ProfileSampler>());
     if (main_L != nullptr) {  // GCOVR_EXCL_BR_LINE (defensive: callers pass
         // the main state of the still-alive service VM)
 
