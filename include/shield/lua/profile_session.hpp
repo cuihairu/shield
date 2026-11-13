@@ -8,6 +8,7 @@
 
 #include <stddef.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -53,13 +54,23 @@ public:
     explicit ProfileSession(ProfileSessionConfig config);
 
     /// @brief Accumulate one sampled stack. Owner thread only (no locks).
+    ///
+    /// total_samples is the one counter that is read from foreign threads:
+    /// an abandon path settles the report promise with the count while a
+    /// hook that already loaded the sampler can still be running
+    /// concurrently (deactivate clears the slot but does not wait for
+    /// in-flight hooks). It is therefore atomic; every other counter is
+    /// only read by finish_report on the owning thread after the hooks are
+    /// gone.
     void add_sample(const std::vector<ProfileFrame>& frames);
 
     /// @brief Freeze the session and export the full report as JSON.
     nlohmann::json finish_report(uint64_t elapsed_ms);
 
     const ProfileSessionConfig& config() const { return config_; }
-    uint64_t total_samples() const { return total_samples_; }
+    uint64_t total_samples() const {
+        return total_samples_.load(std::memory_order_relaxed);
+    }
     bool finished() const { return finished_; }
 
 private:
@@ -76,7 +87,8 @@ private:
     ProfileSessionConfig config_;
     std::unique_ptr<Node> root_;
     std::size_t node_count_ = 0;
-    uint64_t total_samples_ = 0;
+    std::atomic<uint64_t> total_samples_{
+        0};  ///< read from foreign threads (abandon report), hence atomic
     uint64_t truncated_frames_ = 0;  ///< samples folded early: node budget
     uint64_t dropped_samples_ = 0;   ///< samples cut at max_depth
     double started_at_ = 0.0;        ///< unix seconds at construction

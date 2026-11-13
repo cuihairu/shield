@@ -118,8 +118,11 @@ nlohmann::json ProfileSession::finish_report(uint64_t elapsed_ms) {
     std::stable_sort(
         kids.begin(), kids.end(),
         [](const Node* a, const Node* b) { return a->hits > b->hits; });
+    // One relaxed read up front: finish_report runs on the owning thread
+    // after the hooks are gone, so the value cannot move under the export.
+    const uint64_t total = total_samples_.load(std::memory_order_relaxed);
     for (const auto* kid : kids) {
-        frames.push_back(export_node(*kid, total_samples_));
+        frames.push_back(export_node(*kid, total));
     }
 
     return {{"service", config_.service},
@@ -128,7 +131,7 @@ nlohmann::json ProfileSession::finish_report(uint64_t elapsed_ms) {
             {"started_at", started_at_},
             {"stopped_at", stopped_at},
             {"elapsed_ms", elapsed_ms},
-            {"total_samples", total_samples_},
+            {"total_samples", total},
             {"truncated_frames", truncated_frames_},
             {"dropped_samples", dropped_samples_},
             {"frames", std::move(frames)}};  // GCOVR_EXCL_BR_LINE (compiler
