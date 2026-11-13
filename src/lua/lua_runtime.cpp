@@ -243,16 +243,42 @@ struct to_json_limit {
 };
 
 // Instruction budget for exec_lua: a chunk stuck in an infinite loop
-// (while true do end) aborts via luaL_error instead of hanging the calling
-// thread. The ops HTTP io thread serves every /ops endpoint on a single
-// thread, so one stuck eval would take the liveness probes down with it;
-// service-targeted exec would hang its actor the same way. The budget is
-// generous for legitimate snippets yet trips a bare dead loop in well under
-// a second.
+// (while true do end) aborts instead of hanging the calling thread. The ops
+// HTTP io thread serves every /ops endpoint on a single thread, so one stuck
+// eval would take the liveness probes down with it; service-targeted exec
+// would hang its actor the same way. The budget is generous for legitimate
+// snippets yet trips a bare dead loop in well under a second.
 constexpr int kEvalMaxInstructions = 10000000;
 
+// Kill flag for the budget hook: set right before the hook yields, read by
+// exec_lua when the resume returns (to tell a budget kill from a snippet's
+// own coroutine.yield), and re-read by the hook itself for escalation.
+// thread_local because the hook runs on the same OS thread as the resume
+// that drives it, and two evals never interleave on one thread.
+thread_local bool t_eval_kill_issued = false;
+
+// Raised by the hook when a previous yield-kill attempt was swallowed by
+// the snippet (the yield degraded to a plain catchable error — possible
+// only in a non-yieldable C-call context). No Lua handler can intercept a
+// C++ exception, so this escapes every pcall; exec_lua catches it and
+// closes the eval coroutine.
+struct EvalKill {};
+
 void eval_instruction_hook(lua_State* L, lua_Debug*) {
-    luaL_error(L, "eval instruction limit exceeded");
+    if (t_eval_kill_issued) {  // GCOVR_EXCL_BR_LINE (defensive: the yield
+        // kill ends the snippet on the first firing; the escalated escape
+        // only arms when the yield degraded to a catchable error, which no
+        // test can reach end-to-end — see test_ops EvalBudgetPcallSwallow
+        // for the yieldable path)
+        t_eval_kill_issued = false;
+        lua_sethook(L, nullptr, 0, 0);
+        throw EvalKill{};  // GCOVR_EXCL_LINE (defensive: see above)
+    }
+    t_eval_kill_issued = true;
+    lua_sethook(L, nullptr, 0, 0);
+    // A yield is not an error: every pcall the snippet wrapped around the
+    // loop is skipped and the driving lua_resume returns LUA_YIELD.
+    lua_yield(L, 0);
 }
 }  // namespace
 
@@ -652,31 +678,90 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
         return false;
     }
 
-    // Execute. Guard the chunk with an instruction-count hook so a snippet
-    // that never returns aborts here instead of hanging the calling thread.
-    // Any previous hook (e.g. a profile sampler on a service VM) is saved
-    // and restored, matching profile_sampler's own save/restore convention.
-    // The console REPL opts out: its contract is the console-side 5s
-    // deadline with the task still running to completion, and a count budget
-    // would preempt that long before the deadline lapses.
-    lua_Hook prev_hook = lua_gethook(L);
-    const int prev_mask = lua_gethookmask(L);
-    const int prev_count = lua_gethookcount(L);
-    if (instruction_budget) {
-        lua_sethook(L, &eval_instruction_hook, LUA_MASKCOUNT,
+    // Execute. The two execution mechanisms share the result-capture tail
+    // below; `base` is the L stack index the results start at in both.
+    //
+    // Budgeted snippets run in a fresh coroutine: a count hook that only
+    // raises luaL_error is swallowable (the sandbox keeps pcall, so
+    // `while true do pcall(function() while true do end end) end` catches
+    // the budget error forever). The hook instead yields, and a yield is
+    // not an error — it unwinds past every pcall and the driving
+    // lua_resume returns LUA_YIELD (verified on the shipped Lua 5.5: even
+    // metamethod contexts yield). A hook-issued yield is reported as the
+    // budget error; a snippet's own coroutine.yield gets its own message —
+    // either way the thread is closed and the calling thread is free.
+    // The console REPL opts out entirely: its contract is the console-side
+    // 5s deadline with the task still running to completion, and a count
+    // budget would preempt that long before the deadline lapses. Its
+    // protected call runs on the main state with whatever hook is already
+    // installed there (e.g. a profile sampler), untouched.
+    int base = 0;
+    if (!instruction_budget) {
+        base = lua_gettop(L);  // function is at base
+        int call_status = lua_pcall(L, 0, LUA_MULTRET, 0);
+        if (call_status != LUA_OK) {
+            if (error) {
+                *error =
+                    lua_tostring(L, -1) ? lua_tostring(L, -1) : "exec error";
+            }
+            lua_pop(L, 1);
+            return false;
+        }
+    } else {
+        // The thread is anchored by its stack slot on L for the whole call.
+        // The loaded chunk sits below the thread slot: copy it to the top,
+        // then move that copy onto the thread.
+        lua_State* co = lua_newthread(L);
+        const int anchor = lua_gettop(L);
+        lua_pushvalue(L, anchor - 1);
+        lua_xmove(L, co, 1);
+        t_eval_kill_issued = false;
+        lua_sethook(co, &eval_instruction_hook, LUA_MASKCOUNT,
                     kEvalMaxInstructions);
-    }
-    int base = lua_gettop(L);  // function is at base
-    int call_status = lua_pcall(L, 0, LUA_MULTRET, 0);
-    if (call_status != LUA_OK) {
-        if (instruction_budget) {
-            lua_sethook(L, prev_hook, prev_mask, prev_count);
+        int nres = 0;
+        int status;
+        try {
+            status = lua_resume(co, L, 0, &nres);
+        } catch (const EvalKill&) {
+            // The C++ escape unwound through Lua's C frames mid-execution:
+            // close the thread (its stack resets with it) and drive the
+            // shared GC state through a full cycle so no mid-step phase
+            // lingers. The main state itself never entered the coroutine.
+            t_eval_kill_issued = false;
+            lua_closethread(co, L);
+            lua_settop(L, anchor - 1);
+            lua_gc(L, LUA_GCCOLLECT);
+            if (error) {
+                *error = "eval instruction limit exceeded";
+            }
+            return false;
         }
-        if (error) {
-            *error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "exec error";
+        const bool budget_kill = t_eval_kill_issued;
+        t_eval_kill_issued = false;
+        if (status == LUA_YIELD) {
+            lua_closethread(co, L);
+            lua_settop(L, anchor - 1);
+            if (error) {
+                *error = budget_kill ? "eval instruction limit exceeded"
+                                     : "eval must not yield";
+            }
+            return false;
         }
-        lua_pop(L, 1);
-        return false;
+        if (status != LUA_OK) {
+            // Runtime error: the message object sits on the thread's stack.
+            if (error) {
+                *error =
+                    lua_tostring(co, -1) ? lua_tostring(co, -1) : "exec error";
+            }
+            lua_settop(co, 0);
+            lua_settop(L, anchor - 1);
+            return false;
+        }
+        // Success: move the results over, then drop the anchor slot so the
+        // results sit exactly at `base` for the shared capture tail.
+        lua_xmove(co, L, nres);
+        lua_remove(L, anchor);
+        base = anchor;
     }
 
     // Capture return values
@@ -739,10 +824,9 @@ bool LuaRuntime::exec_lua(std::shared_ptr<LuaVM> vm, const std::string& code,
             }
         }
     }
-    // Clean up stack
-    if (instruction_budget) {
-        lua_sethook(L, prev_hook, prev_mask, prev_count);
-    }
+    // Clean up stack. The main-state hook was never modified (the budget
+    // hook lives on the eval coroutine, which dies with its anchor), so
+    // nothing is restored here.
     lua_settop(L, base - 1);
     return true;
 }

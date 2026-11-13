@@ -807,6 +807,35 @@ BOOST_AUTO_TEST_CASE(ExecLuaInstructionBudget) {
         &error));
     BOOST_REQUIRE_EQUAL(result.size(), 1u);
     BOOST_CHECK_EQUAL(result[0].get<int64_t>(), 500500);
+
+    // A pcall-swallowing loop cannot eat the budget: a plain luaL_error is
+    // catchable, so `while true do pcall(<dead loop>) end` used to hang the
+    // calling thread forever. The budget hook yields instead — a yield is
+    // not an error and unwinds past every pcall — so the kill lands in one
+    // hook firing and the caller gets the limit error in bounded time.
+    error.clear();
+    BOOST_CHECK(!runtime.exec_lua(
+        vm, "while true do pcall(function() while true do end end) end",
+        &result, &error));
+    BOOST_CHECK(error.find("instruction limit") != std::string::npos);
+
+    // The VM survives the swallow-kill and stays usable.
+    error.clear();
+    BOOST_CHECK(runtime.exec_lua(vm, "return 2 + 2", &result, &error));
+    BOOST_REQUIRE_EQUAL(result.size(), 1u);
+    BOOST_CHECK_EQUAL(result[0].get<int64_t>(), 4);
+
+    // A snippet that yields on its own must not suspend the caller either:
+    // the thread is closed and the request ends with a distinct error.
+    error.clear();
+    BOOST_CHECK(!runtime.exec_lua(vm, "coroutine.yield(1)", &result, &error));
+    BOOST_CHECK_EQUAL(error, "eval must not yield");
+
+    // Still usable after the yield refusal.
+    error.clear();
+    BOOST_CHECK(runtime.exec_lua(vm, "return 3", &result, &error));
+    BOOST_REQUIRE_EQUAL(result.size(), 1u);
+    BOOST_CHECK_EQUAL(result[0].get<int64_t>(), 3);
 }
 
 // ---------------------------------------------------------------------------
