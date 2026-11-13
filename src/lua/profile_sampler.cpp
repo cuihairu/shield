@@ -25,6 +25,16 @@ namespace {
 // that can dangle between the load and the use.
 std::atomic<std::shared_ptr<ProfileSampler>> g_active_sampler;
 
+// Registry identity key: only the address is used, the char is never read
+// or written. install() stores the sampler's address under this key in the
+// VM's registry (one registry per global_State, shared by every coroutine),
+// and the hook compares it against the slot sampler before recording. A
+// stale hook orphaned on an abandoned VM (deactivate without uninstall)
+// must not adopt the NEXT session's sampler that was installed after the
+// abandon — that would record this VM's stacks into the other session and
+// drive its rescan sweep from this VM's thread.
+char g_sampler_identity_key = 0;
+
 constexpr int kMaxHookDepthFallback = 64;
 
 }  // namespace
@@ -121,6 +131,18 @@ void ProfileSampler::sampler_hook(lua_State* L, lua_Debug* /*ar*/) {
         lua_sethook(L, nullptr, 0, 0);
         return;
     }
+    // Identity gate: only the VM this sampler installed on may record. A
+    // stale hook orphaned on an abandoned VM observes the NEXT session's
+    // sampler on the slot here and must not record this VM's stacks into
+    // that session, or drive its rescan sweep from this thread.
+    lua_pushlightuserdata(L, &g_sampler_identity_key);
+    lua_rawget(L, LUA_REGISTRYINDEX);
+    const void* published = lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    if (published != self.get()) {
+        lua_sethook(L, nullptr, 0, 0);
+        return;
+    }
     record_current_stack(self.get(), L);
 
     // Periodic re-arm sweep for main-state bytecode execution (exec_lua and
@@ -186,6 +208,13 @@ void ProfileSampler::install(lua_State* main_L, std::string service_id) {
     main_L_ = main_L;
     service_id_ = std::move(service_id);
 
+    // Identity first, slot second: by the time a hook anywhere in this VM
+    // can observe the published sampler, the registry identity it compares
+    // against is already in place.
+    lua_pushlightuserdata(main_L, &g_sampler_identity_key);
+    lua_pushlightuserdata(main_L, this);
+    lua_rawset(main_L, LUA_REGISTRYINDEX);
+
     g_active_sampler.store(shared_from_this(), std::memory_order_release);
     lua_sethook(main_L_, &sampler_hook, LUA_MASKCOUNT,
                 static_cast<int>(session_->config().interval));
@@ -209,6 +238,11 @@ void ProfileSampler::uninstall(lua_State* main_L) {
     if (main_L != nullptr) {  // GCOVR_EXCL_BR_LINE (defensive: callers pass
         // the main state of the still-alive service VM)
 
+        // Drop the registry identity: after uninstall this VM's stale
+        // hooks (if any survive) must never adopt a later session either.
+        lua_pushlightuserdata(main_L, &g_sampler_identity_key);
+        lua_pushnil(main_L);
+        lua_rawset(main_L, LUA_REGISTRYINDEX);
         lua_sethook(main_L, saved_hook_, saved_mask_, saved_count_);
     }
     if (co_provider_) {

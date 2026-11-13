@@ -609,6 +609,56 @@ BOOST_AUTO_TEST_CASE(DeepStackIsTruncatedAtMaxDepth) {
     }
 }
 
+/// A stale hook orphaned on an abandoned VM (deactivate without uninstall)
+/// must not adopt the NEXT session's sampler: without an identity gate it
+/// would record this VM's stacks into the new session and drive its sweep
+/// from this VM's thread (audit F2). The registry identity check makes the
+/// hook disarm itself instead — the new session's totals stay zero and it
+/// keeps sampling its own VM.
+BOOST_AUTO_TEST_CASE(StaleHookOnAbandonedVMDoesNotAdoptNextSampler) {
+    BareVM vm_a;
+    BOOST_REQUIRE(vm_a.L != nullptr);
+    BareVM vm_b;
+    BOOST_REQUIRE(vm_b.L != nullptr);
+
+    ProfileSessionConfig cfg_a;
+    cfg_a.service = "gw";
+    cfg_a.interval = 1;
+    auto session_a = std::make_shared<ProfileSession>(cfg_a);
+    auto sampler_a = std::make_shared<ProfileSampler>(
+        session_a, [] { return std::vector<lua_State*>{}; });
+    sampler_a->install(vm_a.L, "gw");
+
+    // Abandon-path teardown: deactivate only — the hook stays armed on
+    // A's VM (uninstall needs the owner thread; abandon runs foreign).
+    sampler_a->deactivate();
+
+    // The next session installs on its own VM and publishes the slot.
+    ProfileSessionConfig cfg_b;
+    cfg_b.service = "other";
+    cfg_b.interval = 1;
+    auto session_b = std::make_shared<ProfileSession>(cfg_b);
+    auto sampler_b = std::make_shared<ProfileSampler>(
+        session_b, [] { return std::vector<lua_State*>{}; });
+    sampler_b->install(vm_b.L, "other");
+
+    // Burn bytecode on the ABANDONED VM: the stale hook fires, observes a
+    // published sampler that is not its own, and must disarm silently.
+    do_chunk(vm_a.L,
+             "local s = 0 "
+             "for i = 1, 100000 do s = s + i end");
+    BOOST_CHECK(lua_gethook(vm_a.L) == nullptr);
+    BOOST_TEST(session_b->total_samples() == 0U);
+
+    // The new session keeps sampling its own VM normally.
+    do_chunk(vm_b.L,
+             "local s = 0 "
+             "for i = 1, 100000 do s = s + i end");
+    BOOST_TEST(session_b->total_samples() > 0U);
+
+    sampler_b->uninstall(vm_b.L);
+}
+
 /// The stop path races sweep_active() on foreign service threads: a drive
 /// point can load the slot right before the owner clears it and drops the
 /// last sampler reference. The old raw load-then-deref read
