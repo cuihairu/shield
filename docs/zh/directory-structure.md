@@ -67,7 +67,12 @@ shield/
 ├── LICENSE                     # 许可证
 ├── vcpkg.json                  # 依赖管理
 │
-├── cmake/                      # （未建：无此目录，CMake 辅助逻辑在根 CMakeLists.txt）
+├── cmake/                      # CMake 辅助模块（根 CMakeLists.txt 用 include()/
+│   ├── CheckDeps.cmake         # -P 脚本调用，不在根文件内联全部逻辑）
+│   ├── AssertCommand.cmake     # 断言脚本
+│   ├── CheckSourceBoundary.cmake
+│   ├── GitHooks.cmake
+│   └── crashpad.cmake          # 崩溃采集依赖（条件 include）
 │
 ├── config/                     # 配置文件示例
 │   ├── app.yaml
