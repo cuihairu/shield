@@ -12,10 +12,11 @@ envelope shape:
 { "type": "result", "data": { ... } }
 ```
 
-Errors use `{ "type": "error", "data": <message-string> }` unless the
-endpoint documents a different shape. The HTTP status code carries the
-outcome; `type`/`data` is the body envelope (so a 503 from `/ops/health`
-still has a readable `data.checks`).
+Errors use `{ "type": "error", "message": <message-string> }` unless the
+endpoint documents a different shape. Success bodies carry the payload in
+`data`; error bodies carry the reason in `message` and never set `data`.
+The HTTP status code carries the outcome; the envelope keys only describe
+the body (so a 503 from `/ops/health` still has a readable `data.checks`).
 
 ## Binding
 
@@ -37,7 +38,7 @@ must present that token.
 - **Auth**: `Authorization: Bearer <token>` (constant-time compare); when
   `http.ops_auth_token` is enabled, that gate must be satisfied first.
 - **Status**: `401` on missing/mismatched token; the body is
-  `{ "type": "error", "data": "unauthorized" }` and never echoes the
+  `{ "type": "error", "message": "unauthorized" }` and never echoes the
   configured token or any hint about it.
 - **Exempt**: `GET /ops/health` is always unauthenticated. It is the k8s
   liveness/readiness probe; it only exposes process-local health state and
@@ -47,14 +48,23 @@ must present that token.
   effects (read-only endpoints never mutate state).
 - **Opt-in eval/profile**: `POST /ops/eval` and `POST /ops/profile` keep
   their own independent token gates (`http.eval_token`,
-  `http.profile_token`). They are also behind the ops-wide gate: when
-  `http.ops_auth_token` is configured, the Bearer token must satisfy it
-  first (src/console/ops_http_handler.cpp:716, :765). With no ops token
-  configured their own opt-in token gate remains the sole barrier (they are
-  explicit opt-ins, not part of the read-only surface).
-- **Default-deny for static & SPA**: the static root and the SPA fallback
-  handler are behind the same ops-wide gate; a request without a valid
-  token gets `401` before any file is served.
+  `http.profile_token`) and are **not** layered under the ops-wide gate
+  (src/console/ops_http_handler.cpp:111-118 for the rationale; the routes
+  are registered bare at :197 and :221). The exemption is deliberate: one
+  `Authorization` header
+  carries a single token, so requiring it to equal both `http.ops_auth_token`
+  and the endpoint token would make either endpoint permanently `401`
+  whenever the two differ. Their own opt-in token is the full barrier;
+  they are explicit opt-ins, not part of the read-only surface.
+- **Shell and static assets are public**: when `http.static_root` is set,
+  the SPA shell (`GET /`, `GET /ops/dashboard`), the built assets, and the
+  unmatched-route fallback are served without the ops-wide gate
+  (src/console/ops_http_handler.cpp:160-164 for the public shell routes,
+  :176-178 for the public fallback). Browser navigation cannot attach
+  an `Authorization` header, so the shell has to load unauthenticated and the
+  SPA renders its login gate on the first `401`; the data APIs below remain
+  behind the ops token. With no `http.static_root` (embedded dashboard) the
+  shell routes and the fallback stay behind the ops-wide gate instead.
 
 ## Static hosting & SPA routing (FIX-WEB-04)
 
@@ -68,7 +78,7 @@ Set `http.static_root` to an absolute directory holding the built console
 - Unknown non-API deep links (e.g. `/some/spa/route`) fall back to
   `index.html` so a direct refresh works.
 - Unknown `/ops/*` API paths return a JSON `404` (`{ "type": "error",
-  "data": "not found" }`), never the HTML shell.
+  "message": "not found" }`), never the HTML shell.
 - Path traversal (`../`, `%2e%2e`, backslashes) is rejected with `404`; no
   file outside the static root is ever served.
 
@@ -181,7 +191,7 @@ omitted when the platform lacks `/proc` or a read fails (never a 500).
 
 Published service names.
 
-- **Status**: `200`; `504` `{ "type": "error", "data": "timeout querying services" }`
+- **Status**: `200`; `504` `{ "type": "error", "message": "timeout querying services" }`
   when the 2s actor-mesh wait expires.
 - **Envelope**: `{ "type": "result", "data": ["gateway", "room_1"] }`.
 
@@ -189,8 +199,8 @@ Published service names.
 
 Per-service read-only snapshot (registry snapshot via forked task).
 
-- **Status**: `200`; `404` `{ "type": "error", "data": "service not found: <name>" }`;
-  `504` `{ "type": "error", "data": "timeout querying service" }`.
+- **Status**: `200`; `404` `{ "type": "error", "message": "service not found: <name>" }`;
+  `504` `{ "type": "error", "message": "timeout querying service" }`.
 - **Envelope**: `{ "type": "result", "data": { "name", "state", "script",
   "rpc_routes", "requests", "errors", "uptime_seconds", "timers",
   "pending_calls", "pending_tasks", "coroutines", "memory_kb" } }`.
@@ -230,7 +240,7 @@ and `http.eval_token` is non-empty (otherwise the request 404s).
   `4xx` for invalid request.
 - **Body**: JSON with a `code` field executed in a restricted VM.
 - **Envelope**: `{ "type": "result", "data": <lua-result> }` on success;
-  `{ "type": "error", "data": <message> }` on failure.
+  `{ "type": "error", "message": <message> }` on failure.
 
 ### POST /ops/profile
 
@@ -238,8 +248,8 @@ Profiler control (opt-in like `/ops/eval`; requires
 `http.profile_enabled=true` + non-empty `http.profile_token`).
 
 - **Auth**: `Authorization: Bearer <token>` (`http.profile_token`,
-  constant-time compare). Like `/ops/eval`, when `http.ops_auth_token` is
-  configured the Bearer must satisfy the ops-wide gate first.
+  constant-time compare). Like `/ops/eval`, it is **not** under the
+  ops-wide gate, so this single token is the only barrier.
 - **Body**: `{ "action": "status"|"start"|"stop"|"report", ... }`.
 - **Status**: `200`; `404` service missing; `409` session already running;
   `429` cooldown; `401` bad token.
