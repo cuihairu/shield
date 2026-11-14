@@ -74,12 +74,21 @@ shield/
 │   ├── GitHooks.cmake
 │   └── crashpad.cmake          # 崩溃采集依赖（条件 include）
 │
+├── ports-overlay/              # vcpkg 端口覆盖（第三方库补丁与 portfile）
+│   └── mongo-c-driver/
+│
+├── third_party/                # vendored 第三方源码（crashpad、lss、mini_chromium）
+│
 ├── config/                     # 配置文件示例
 │   ├── app.yaml
 │   ├── app-dev.yaml
 │   ├── app-prod.yaml
 │   ├── app-with-redis.yaml
 │   └── app-with-sqlite.yaml
+│
+├── console/                    # ops 前端（pnpm 包 shield-console；dist/ 为构建
+│                               # 产物不入库，CI 以 shield-console-dist artifact
+│                               # 交付，生产经 http.static_root 托管）
 │
 ├── docs/                       # 文档
 │   ├── architecture.md         # 架构文档
@@ -151,6 +160,14 @@ shield/
 │   ├── bootstrap.lua  echo.lua  lib/
 │   ├── new_project.sh          # 新工程生成器
 │   └── client_demo.py          # Python 演示客户端
+│
+├── tools/                      # 开发/运维工具（CMake 侧由 SHIELD_BUILD_TOOLS 门控）
+│   ├── bots/                   # 压测与故障注入（probe / run / chaos 三子命令）
+│   ├── shield-console/         # 诊断控制台客户端
+│   ├── shield-devcore/         # IDE 扩展无关核心（transport 帧 + ops HTTP 封装）
+│   ├── shield-vscode/          # VS Code 扩展（attach 运行中的节点）
+│   ├── new_plugin.sh           # 插件包脚手架
+│   └── symbolize-crash.sh      # 崩溃转储符号化
 │
 └── templates/                  # 工程模板（给用户复制）
     └── minimal_game/
