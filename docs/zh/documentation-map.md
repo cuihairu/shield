@@ -86,4 +86,6 @@ DB 使用纪律见 [DB 使用纪律](db-discipline.md)（异步入口落地后�
 
 崩溃采集（Crashpad 选型、handler 初始化点、dump 落盘、符号分离、上传留位默认关）以 [崩溃采集](crash-reporting.md) 为专项入口。
 
+压测与网关故障注入（`probe` / `run` / `chaos` 三子命令、YAML load plan、ramp 阶段、按 route 的延迟分位数）以 `tools/bots/README.md` 为入口；完整工具清单见 [目录结构](directory-structure.md) 的顶层目录树。
+
 如果后续需要讨论 Lua primitives、cosocket 风格出站 I/O、CAF adapter 复用边界与 `auth-first` 的否定结论，可参考后置草案 [基础组件与运行时适配边界](runtime-primitives.md)。

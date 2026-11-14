@@ -85,4 +85,6 @@ For client-facing TLS (the `network.tls` configuration surface, handshake/timeou
 
 For crash capture (Crashpad selection, handler initialization point, dump writing, symbol separation, upload placeholder off by default), [Crash Reporting](crash-reporting.md) is the special-topic entry.
 
+For load testing and gateway fault injection (the `probe` / `run` / `chaos` CLI, YAML load plans, ramp stages, per-route latency percentiles), `tools/bots/README.md` is the entry. The full tool inventory is listed in the directory tree of the (Chinese) Directory Structure page.
+
 For later discussions of Lua primitives, cosocket-style outbound I/O, CAF adapter reuse boundaries, and the negative conclusion on `auth-first`, see the later draft [Base Components and Runtime Adaptation Boundaries](runtime-primitives.md).
