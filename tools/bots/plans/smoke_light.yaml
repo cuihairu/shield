@@ -1,0 +1,17 @@
+# smoke_light.yaml - quick listener sanity: 4 bots, 2 seconds.
+# Run: bots run --plan plans/smoke_light.yaml
+name: smoke-light
+target: "127.0.0.1:8001"
+duration_seconds: 2
+connections: 4
+requests_per_second: 5
+timeout_ms: 2000
+login:
+  route_id: 1
+  reply_route_id: 100
+  body: {player_id: bot}
+work_routes:
+  - route_id: 2
+    weight: 1
+    reply_route_id: 200
+    body: {x: 3, y: 4}

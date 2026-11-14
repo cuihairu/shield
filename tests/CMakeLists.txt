@@ -53,6 +53,34 @@ set_tests_properties(test_client_rpc_e2e PROPERTIES
 )
 shield_copy_runtime_dlls(test_client_rpc_e2e)
 
+# tools/bots acceptance smoke: the bots core (idlen client, load runner,
+# chaos injector) drives the hello_world closure booted in-process. Only
+# when the tools subtree is built (it owns the shield_bots_core target).
+if(TARGET shield_bots_core)
+add_executable(test_bots_smoke acceptance/test_bots_smoke.cpp)
+target_link_libraries(test_bots_smoke
+    PRIVATE
+        shield_bootstrap
+        shield_lua
+        shield_bots_core
+        Boost::unit_test_framework
+        Boost::headers
+)
+target_include_directories(test_bots_smoke
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+)
+target_compile_definitions(test_bots_smoke
+    PRIVATE SHIELD_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME test_bots_smoke COMMAND test_bots_smoke)
+set_tests_properties(test_bots_smoke PROPERTIES
+    LABELS "acceptance"
+    TIMEOUT 120
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+shield_copy_runtime_dlls(test_bots_smoke)
+endif()
+
 # Default-config boot acceptance: the shipped config/app.yaml boots into an
 # observable state — the echo listener answers a real TCP round trip on the
 # port declared in the shipped file (ops endpoints are patched hermetic).

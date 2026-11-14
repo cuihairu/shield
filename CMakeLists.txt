@@ -1020,9 +1020,10 @@ endif()
 # =============================================================================
 # TOOLS
 # =============================================================================
-option(SHIELD_BUILD_TOOLS "Build diagnostic tools (shield-console)" ON)
+option(SHIELD_BUILD_TOOLS "Build diagnostic tools (shield-console, bots)" ON)
 if(SHIELD_BUILD_TOOLS)
     add_subdirectory(tools/shield-console)
+    add_subdirectory(tools/bots)
 endif()
 
 # =============================================================================

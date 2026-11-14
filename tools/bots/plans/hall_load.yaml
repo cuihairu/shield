@@ -1,0 +1,21 @@
+# hall_load.yaml - ramp to 50 bots on the hello_world closure (moves only).
+# Run: bots run --plan plans/hall_load.yaml
+name: hall-load
+target: "127.0.0.1:8001"
+duration_seconds: 12
+ramp:
+  - {at_second: 0, connections: 5}
+  - {at_second: 2, connections: 25}
+  - {at_second: 5, connections: 50}
+requests_per_second: 5
+timeout_ms: 2000
+reconnect_max_attempts: 3
+login:
+  route_id: 1
+  reply_route_id: 100
+  body: {player_id: bot}
+work_routes:
+  - route_id: 2
+    weight: 9
+    reply_route_id: 200
+    body: {x: 10, y: 20}
